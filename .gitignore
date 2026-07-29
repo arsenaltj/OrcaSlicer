@@ -1,0 +1,57 @@
+Build
+Build.bat
+/build*/
+CMakeLists.txt.user
+**/CMakeLists.txt.autosave
+deps/build*
+MYMETA.json
+MYMETA.yml
+_build
+blib
+xs/buildtmp
+*.o
+*.log
+MANIFEST.bak
+xs/MANIFEST.bak
+xs/assertlib*
+.init_bundle.ini
+.vs/*
+local-lib
+/src/TAGS
+/.vscode/
+/.vscode
+build-linux/*
+deps/build*/*
+**/.DS_Store
+install_*
+build_*/
+SVG
+src/OrcaSlicer-doc/
+.idea/
+/.cache/
+*.mo
+**/process_full/
+**/machine_full/
+**/filament_full/
+/deps/DL_CACHE/
+/deps/DL_CACHE
+**/.flatpak-builder/
+*.no-debug.yml
+resources/profiles/user/default
+*.code-workspace
+deps_src/build/
+test.js
+/.cache/
+.clangd
+internal_docs/
+*.flatpak
+/flatpak-repo/
+# Python bytecode
+__pycache__/
+*.pyc
+
+# 第三方依赖的本地构建产物由上方 deps/build* 规则忽略；
+# 上游仓库自身提交的预编译库（deps/GMP、deps/MPFR、deps/WebView2）此处不忽略，正常跟踪。
+
+# AI 工具生成的本地上游参考副本（.claude/ 下克隆的完整 upstream，不进主仓库）
+/.claude/upstream-orcaslicer/

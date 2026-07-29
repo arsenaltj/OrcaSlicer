@@ -1,0 +1,892 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="3200" height="2350" viewBox="0 0 3200 2350" role="img" aria-labelledby="title desc">
+  <title id="title">OrcaSlicer 代码级架构类图与扩展导航</title>
+  <desc id="desc">基于官方 main 提交 a62fb17e 的代码级类关系图，展示 GUI 编排、配置预设、场景模型、板与后台任务、切片输出、持久化、设备网络类之间的组合、借用、继承、调用和异步事件关系，并提供需求修改入口。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 Z" fill="var(--line-strong)"/>
+    </marker>
+    <marker id="triangle" markerWidth="13" markerHeight="13" refX="12" refY="6.5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L12,6.5 L0,13 Z" fill="var(--surface)" stroke="var(--line-strong)" stroke-width="1.4"/>
+    </marker>
+    <marker id="diamond" markerWidth="14" markerHeight="14" refX="1" refY="7" orient="auto" markerUnits="strokeWidth">
+      <path d="M1,7 L7,1 L13,7 L7,13 Z" fill="var(--line-strong)"/>
+    </marker>
+    <marker id="openDiamond" markerWidth="14" markerHeight="14" refX="1" refY="7" orient="auto" markerUnits="strokeWidth">
+      <path d="M1,7 L7,1 L13,7 L7,13 Z" fill="var(--surface)" stroke="var(--line-strong)" stroke-width="1.4"/>
+    </marker>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#000" flood-opacity="0.08"/>
+    </filter>
+    <style>
+      :root {
+        color-scheme: light;
+        --page:#f9f9f7; --surface:#fcfcfb; --surface-2:#f4f4f1; --card:#fff;
+        --ink:#0b0b0b; --ink-2:#52514e; --muted:#898781; --grid:#e1e0d9;
+        --line:#c3c2b7; --line-strong:#696862;
+        --s1:#2a78d6; --s2:#1baf7a; --s3:#eda100; --s4:#008300; --s5:#4a3aa7; --s6:#e34948;
+        --call:#2a78d6; --event:#4a3aa7; --warning-bg:#fff6de;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          color-scheme:dark;
+          --page:#0d0d0d; --surface:#1a1a19; --surface-2:#232321; --card:#262624;
+          --ink:#fff; --ink-2:#c3c2b7; --muted:#898781; --grid:#2c2c2a;
+          --line:#383835; --line-strong:#b4b3ad;
+          --s1:#3987e5; --s2:#199e70; --s3:#c98500; --s4:#008300; --s5:#9085e9; --s6:#e66767;
+          --call:#3987e5; --event:#9085e9; --warning-bg:#332b18;
+        }
+      }
+      text { font-family:system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif; fill:var(--ink); }
+      .page{fill:var(--page)} .panel{fill:var(--surface);stroke:var(--grid);stroke-width:1.5}
+      .pkg{fill:var(--surface-2);stroke:var(--grid);stroke-width:1.5}
+      .class{fill:var(--card);stroke:var(--grid);stroke-width:1.5}
+      .interface{fill:var(--card);stroke:var(--s5);stroke-width:1.7;stroke-dasharray:7 4}
+      .boundary{fill:var(--card);stroke:var(--s3);stroke-width:1.7}
+      .title{font-size:38px;font-weight:740;letter-spacing:-.5px}
+      .subtitle{font-size:16px;fill:var(--ink-2)} .section{font-size:23px;font-weight:720}
+      .pkg-title{font-size:19px;font-weight:720;fill:var(--ink-2)}
+      .class-name{font-size:17px;font-weight:740} .stereotype{font-size:12px;fill:var(--muted);font-style:italic}
+      .member{font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;font-size:12.5px;fill:var(--ink-2)}
+      .note{font-size:12.5px;fill:var(--ink-2)} .body{font-size:14px;fill:var(--ink-2)}
+      .small{font-size:12px;fill:var(--muted)} .nav-title{font-size:16px;font-weight:720}
+      .nav-body{font-size:13px;fill:var(--ink-2)} .nav-code{font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;font-size:12px;fill:var(--ink-2)}
+      .divider{stroke:var(--grid);stroke-width:1}
+      .owns{fill:none;stroke:var(--line-strong);stroke-width:1.8;marker-start:url(#diamond);marker-end:url(#arrow)}
+      .borrows{fill:none;stroke:var(--line-strong);stroke-width:1.5;stroke-dasharray:7 5;marker-end:url(#arrow)}
+      .inherits{fill:none;stroke:var(--line-strong);stroke-width:1.6;marker-end:url(#triangle)}
+      .calls{fill:none;stroke:var(--call);stroke-width:1.7;marker-end:url(#arrow)}
+      .event{fill:none;stroke:var(--event);stroke-width:1.6;stroke-dasharray:3 5;marker-end:url(#arrow)}
+      .rel-label{font-size:11px;fill:var(--ink-2);paint-order:stroke;stroke:var(--surface);stroke-width:5;stroke-linejoin:round}
+      .accent1{fill:var(--s1)} .accent2{fill:var(--s2)} .accent3{fill:var(--s3)}
+      .accent4{fill:var(--s4)} .accent5{fill:var(--s5)} .accent6{fill:var(--s6)}
+      .badge{fill:var(--surface-2);stroke:var(--grid);stroke-width:1.3}
+      .badge-text{font-size:13px;font-weight:650;fill:var(--ink-2)}
+      .legend-line{stroke-width:2;fill:none}
+      .hotspot{fill:var(--warning-bg);stroke:var(--s3);stroke-width:1.4}
+    </style>
+  </defs>
+
+  <rect class="page" width="3200" height="2350"/>
+  <text class="title" x="55" y="62">OrcaSlicer 代码级架构类图与扩展导航</text>
+  <text class="subtitle" x="57" y="91">类、所有权、调用、事件和扩展入口 · 当前基线不包含本地未提交修改</text>
+  <rect class="badge" x="2575" y="30" width="570" height="66" rx="14"/>
+  <text class="badge-text" x="2600" y="56">OrcaSlicer/OrcaSlicer · main</text>
+  <text class="member" x="2600" y="81">a62fb17e03d159d5b562cc6d64163346e454b5de</text>
+
+  <!-- legend -->
+  <rect class="panel" x="55" y="115" width="3090" height="72" rx="16"/>
+  <text class="pkg-title" x="78" y="145">关系图例</text>
+  <path class="owns" d="M210 143 H295"/><text class="body" x="310" y="149">组合 / 生命周期控制</text>
+  <path class="borrows" d="M510 143 H595"/><text class="body" x="610" y="149">非拥有引用 / 借用</text>
+  <path class="inherits" d="M800 143 H885"/><text class="body" x="900" y="149">继承 / 接口实现</text>
+  <path class="calls" d="M1095 143 H1180"/><text class="body" x="1195" y="149">同步调用 / 数据流</text>
+  <path class="event" d="M1405 143 H1490"/><text class="body" x="1505" y="149">wx Event / callback / CallAfter</text>
+  <rect class="interface" x="1780" y="127" width="106" height="31" rx="8"/><text class="small" x="1800" y="147">«interface»</text>
+  <text class="body" x="1900" y="149">扩展接口</text>
+  <rect class="boundary" x="2025" y="127" width="106" height="31" rx="8"/><text class="small" x="2043" y="147">«boundary»</text>
+  <text class="body" x="2145" y="149">格式 / 外部边界</text>
+  <rect class="hotspot" x="2325" y="127" width="106" height="31" rx="8"/><text class="small" x="2347" y="147">修改联动</text>
+  <text class="body" x="2445" y="149">需跨层同步修改</text>
+
+  <!-- LEFT MAIN DIAGRAM -->
+  <rect class="panel" x="55" y="210" width="2440" height="2075" rx="22" filter="url(#shadow)"/>
+
+  <!-- GUI package -->
+  <rect class="pkg" x="80" y="235" width="2390" height="370" rx="18"/>
+  <text class="pkg-title" x="105" y="268">package slic3r/GUI — 应用壳与编辑器编排</text>
+
+  <!-- GUI_App -->
+  <g>
+    <rect class="class" x="105" y="292" width="315" height="265" rx="13"/>
+    <rect class="accent1" x="105" y="292" width="7" height="265" rx="3"/>
+    <text class="stereotype" x="130" y="315">«application root»</text>
+    <text class="class-name" x="130" y="340">GUI_App</text>
+    <line class="divider" x1="125" y1="352" x2="400" y2="352"/>
+    <text class="member" x="130" y="375">- app_config: AppConfig*</text>
+    <text class="member" x="130" y="397">- preset_bundle: PresetBundle*</text>
+    <text class="member" x="130" y="419">- mainframe: MainFrame*</text>
+    <text class="member" x="130" y="441">- network_agent: NetworkAgent*</text>
+    <text class="member" x="130" y="463">- device_manager: DeviceManager*</text>
+    <line class="divider" x1="125" y1="476" x2="400" y2="476"/>
+    <text class="member" x="130" y="499">+ OnInit()</text>
+    <text class="member" x="130" y="521">+ load_current_presets()</text>
+    <text class="member" x="130" y="543">+ CallAfter(callback)</text>
+  </g>
+
+  <!-- MainFrame -->
+  <g>
+    <rect class="class" x="465" y="292" width="310" height="235" rx="13"/>
+    <rect class="accent1" x="465" y="292" width="7" height="235" rx="3"/>
+    <text class="stereotype" x="490" y="315">«wxFrame»</text>
+    <text class="class-name" x="490" y="340">MainFrame</text>
+    <line class="divider" x1="485" y1="352" x2="755" y2="352"/>
+    <text class="member" x="490" y="375">- plater: Plater*</text>
+    <text class="member" x="490" y="397">- tabpanel / monitor / settings</text>
+    <line class="divider" x1="485" y1="410" x2="755" y2="410"/>
+    <text class="member" x="490" y="433">+ init_tabpanel()</text>
+    <text class="member" x="490" y="455">+ request_select_tab()</text>
+    <text class="member" x="490" y="477">+ reslice_now()</text>
+    <text class="member" x="490" y="499">+ shutdown()</text>
+  </g>
+
+  <!-- Plater -->
+  <g>
+    <rect class="hotspot" x="820" y="275" width="410" height="310" rx="14"/>
+    <rect class="accent2" x="820" y="275" width="8" height="310" rx="4"/>
+    <text class="stereotype" x="848" y="300">«application coordinator»</text>
+    <text class="class-name" x="848" y="327">Plater</text>
+    <line class="divider" x1="842" y1="340" x2="1208" y2="340"/>
+    <text class="member" x="848" y="365">- p: Plater::priv</text>
+    <text class="member" x="848" y="387">  Model / PartPlateList / Views</text>
+    <text class="member" x="848" y="409">  BackgroundSlicingProcess / Worker</text>
+    <text class="member" x="848" y="431">  ProjectDirtyStateManager</text>
+    <line class="divider" x1="842" y1="444" x2="1208" y2="444"/>
+    <text class="member" x="848" y="468">+ load_files() / load_model_objects()</text>
+    <text class="member" x="848" y="490">+ on_config_change()</text>
+    <text class="member" x="848" y="512">+ update_background_process()</text>
+    <text class="member" x="848" y="534">+ reslice() / export_3mf()</text>
+    <text class="member" x="848" y="556">+ send_gcode_legacy()</text>
+  </g>
+
+  <!-- Sidebar -->
+  <g>
+    <rect class="class" x="1275" y="292" width="280" height="235" rx="13"/>
+    <rect class="accent2" x="1275" y="292" width="7" height="235" rx="3"/>
+    <text class="stereotype" x="1300" y="315">«editor UI»</text>
+    <text class="class-name" x="1300" y="340">Sidebar</text>
+    <line class="divider" x1="1295" y1="352" x2="1535" y2="352"/>
+    <text class="member" x="1300" y="375">- object_list: ObjectList*</text>
+    <text class="member" x="1300" y="397">- preset selectors</text>
+    <text class="member" x="1300" y="419">- object / plate settings</text>
+    <line class="divider" x1="1295" y1="432" x2="1535" y2="432"/>
+    <text class="member" x="1300" y="455">+ update_presets()</text>
+    <text class="member" x="1300" y="477">+ on_select_preset()</text>
+    <text class="member" x="1300" y="499">+ object_list()</text>
+  </g>
+
+  <!-- GLCanvas -->
+  <g>
+    <rect class="class" x="1600" y="292" width="350" height="265" rx="13"/>
+    <rect class="accent2" x="1600" y="292" width="7" height="265" rx="3"/>
+    <text class="stereotype" x="1625" y="315">«OpenGL interaction»</text>
+    <text class="class-name" x="1625" y="340">GLCanvas3D</text>
+    <line class="divider" x1="1620" y1="352" x2="1930" y2="352"/>
+    <text class="member" x="1625" y="375">- selection / camera / gizmos</text>
+    <text class="member" x="1625" y="397">- volumes / GCodeViewer</text>
+    <text class="member" x="1625" y="419">- model: Model*  {borrowed}</text>
+    <line class="divider" x1="1620" y1="432" x2="1930" y2="432"/>
+    <text class="member" x="1625" y="455">+ do_move() / do_rotate()</text>
+    <text class="member" x="1625" y="477">+ do_scale() / do_mirror()</text>
+    <text class="member" x="1625" y="499">+ load_gcode_preview(result)</text>
+    <text class="member" x="1625" y="521">+ post wx events</text>
+  </g>
+
+  <!-- ObjectList -->
+  <g>
+    <rect class="class" x="1995" y="292" width="315" height="235" rx="13"/>
+    <rect class="accent2" x="1995" y="292" width="7" height="235" rx="3"/>
+    <text class="stereotype" x="2020" y="315">«wxDataViewCtrl»</text>
+    <text class="class-name" x="2020" y="340">ObjectList</text>
+    <line class="divider" x1="2015" y1="352" x2="2290" y2="352"/>
+    <text class="member" x="2020" y="375">- ModelObject* view projection</text>
+    <text class="member" x="2020" y="397">- selection guards</text>
+    <text class="member" x="2020" y="419">- plate / volume / instance rows</text>
+    <line class="divider" x1="2015" y1="432" x2="2290" y2="432"/>
+    <text class="member" x="2020" y="455">+ reload_all_plates()</text>
+    <text class="member" x="2020" y="477">+ update_selections()</text>
+    <text class="member" x="2020" y="499">+ selection_changed()</text>
+  </g>
+
+  <!-- Compact GUI collaborators -->
+  <g>
+    <rect class="class" x="1585" y="565" width="250" height="30" rx="8"/>
+    <text class="member" x="1602" y="585">Preview / GCodeViewer</text>
+  </g>
+  <g>
+    <rect class="class" x="1847" y="565" width="180" height="30" rx="8"/>
+    <text class="member" x="1864" y="585">MonitorPanel</text>
+  </g>
+  <g>
+    <rect class="interface" x="2039" y="565" width="271" height="30" rx="8"/>
+    <text class="member" x="2056" y="585">PluginManager / capabilities</text>
+  </g>
+
+  <!-- GUI relations -->
+  <path class="owns" d="M420 365 H463"/><text class="rel-label" x="422" y="350">owns</text>
+  <path class="owns" d="M775 410 H818"/><text class="rel-label" x="780" y="394">wx child</text>
+  <path class="owns" d="M1230 365 H1273"/><text class="rel-label" x="1232" y="350">creates</text>
+  <path class="owns" d="M1555 390 H1598"/><text class="rel-label" x="1560" y="375">view</text>
+  <path class="owns" d="M1555 485 C1740 590 1880 590 1993 490"/><text class="rel-label" x="1738" y="570">Sidebar child</text>
+  <path class="event" d="M1600 525 C1480 600 1320 600 1228 525"/><text class="rel-label" x="1370" y="590">selection / transform / schedule</text>
+  <path class="event" d="M1995 505 C1760 625 1450 625 1228 545"/><text class="rel-label" x="1610" y="617">object selection / config events</text>
+  <path class="owns" d="M1775 557 V563"/><text class="rel-label" x="1785" y="556">viewer</text>
+  <path class="owns" d="M620 527 C850 600 1520 610 1845 580"/><text class="rel-label" x="1390" y="602">Device page</text>
+  <path class="owns" d="M350 557 C700 630 1690 625 2037 580"/><text class="rel-label" x="1880" y="615">plugin host</text>
+
+  <!-- Config package -->
+  <rect class="pkg" x="80" y="630" width="655" height="500" rx="18"/>
+  <text class="pkg-title" x="105" y="663">package libslic3r/Config + Preset — 配置与预设</text>
+
+  <g>
+    <rect class="class" x="105" y="690" width="255" height="150" rx="12"/>
+    <rect class="accent1" x="105" y="690" width="6" height="150" rx="3"/>
+    <text class="class-name" x="128" y="719">AppConfig</text>
+    <line class="divider" x1="124" y1="731" x2="340" y2="731"/>
+    <text class="member" x="128" y="754">应用偏好 / 当前选择</text>
+    <text class="member" x="128" y="776">用户目录 / 语言 / UI 状态</text>
+    <line class="divider" x1="124" y1="789" x2="340" y2="789"/>
+    <text class="member" x="128" y="812">+ load() / save()</text>
+  </g>
+
+  <g>
+    <rect class="class" x="390" y="690" width="315" height="190" rx="12"/>
+    <rect class="accent1" x="390" y="690" width="6" height="190" rx="3"/>
+    <text class="class-name" x="414" y="719">PresetBundle</text>
+    <line class="divider" x1="410" y1="731" x2="685" y2="731"/>
+    <text class="member" x="414" y="754">- printers / filaments / prints</text>
+    <text class="member" x="414" y="776">- physical_printers</text>
+    <text class="member" x="414" y="798">- project_config</text>
+    <line class="divider" x1="410" y1="811" x2="685" y2="811"/>
+    <text class="member" x="414" y="834">+ load_presets()</text>
+    <text class="member" x="414" y="856">+ full_config()</text>
+  </g>
+
+  <g>
+    <rect class="class" x="105" y="875" width="255" height="205" rx="12"/>
+    <rect class="accent1" x="105" y="875" width="6" height="205" rx="3"/>
+    <text class="class-name" x="128" y="904">PresetCollection</text>
+    <line class="divider" x1="124" y1="916" x2="340" y2="916"/>
+    <text class="member" x="128" y="939">- presets: vector&lt;Preset&gt;</text>
+    <text class="member" x="128" y="961">- selected preset</text>
+    <text class="member" x="128" y="983">- compatible / visible sets</text>
+    <line class="divider" x1="124" y1="996" x2="340" y2="996"/>
+    <text class="member" x="128" y="1019">+ select_preset()</text>
+    <text class="member" x="128" y="1041">+ update_compatible()</text>
+  </g>
+
+  <g>
+    <rect class="class" x="390" y="910" width="315" height="170" rx="12"/>
+    <rect class="accent1" x="390" y="910" width="6" height="170" rx="3"/>
+    <text class="class-name" x="414" y="939">Preset</text>
+    <line class="divider" x1="410" y1="951" x2="685" y2="951"/>
+    <text class="member" x="414" y="974">- config: DynamicPrintConfig</text>
+    <text class="member" x="414" y="996">- parent / vendor / type</text>
+    <text class="member" x="414" y="1018">- is_system / is_dirty</text>
+    <line class="divider" x1="410" y1="1031" x2="685" y2="1031"/>
+    <text class="member" x="414" y="1054">+ inherits() / compatible()</text>
+  </g>
+
+  <g>
+    <rect class="hotspot" x="350" y="1088" width="300" height="32" rx="8"/>
+    <text class="member" x="370" y="1109">DynamicPrintConfig : DynamicConfig</text>
+  </g>
+  <path class="owns" d="M548 880 V1086"/><text class="rel-label" x="558" y="1072">effective config</text>
+  <path class="borrows" d="M548 1088 C500 1060 470 1055 470 1055"/>
+
+  <!-- Scene package -->
+  <rect class="pkg" x="765" y="630" width="835" height="500" rx="18"/>
+  <text class="pkg-title" x="790" y="663">package libslic3r/Model — 项目与场景聚合</text>
+
+  <g>
+    <rect class="hotspot" x="790" y="690" width="300" height="205" rx="12"/>
+    <rect class="accent2" x="790" y="690" width="7" height="205" rx="3"/>
+    <text class="stereotype" x="815" y="714">«aggregate root»</text>
+    <text class="class-name" x="815" y="739">Model</text>
+    <line class="divider" x1="810" y1="751" x2="1070" y2="751"/>
+    <text class="member" x="815" y="774">- objects: vector&lt;ModelObject*&gt;</text>
+    <text class="member" x="815" y="796">- materials / custom_gcodes</text>
+    <text class="member" x="815" y="818">- project metadata</text>
+    <line class="divider" x1="810" y1="831" x2="1070" y2="831"/>
+    <text class="member" x="815" y="854">+ read_from_archive/file/step()</text>
+    <text class="member" x="815" y="876">+ add_object() / delete_object()</text>
+  </g>
+
+  <g>
+    <rect class="class" x="1125" y="690" width="310" height="205" rx="12"/>
+    <rect class="accent2" x="1125" y="690" width="7" height="205" rx="3"/>
+    <text class="class-name" x="1150" y="721">ModelObject</text>
+    <line class="divider" x1="1145" y1="733" x2="1415" y2="733"/>
+    <text class="member" x="1150" y="756">- volumes: ModelVolume*</text>
+    <text class="member" x="1150" y="778">- instances: ModelInstance*</text>
+    <text class="member" x="1150" y="800">- config / layer ranges</text>
+    <line class="divider" x1="1145" y1="813" x2="1415" y2="813"/>
+    <text class="member" x="1150" y="836">+ add_volume() / add_instance()</text>
+    <text class="member" x="1150" y="858">+ invalidate_bounding_box()</text>
+    <text class="member" x="1150" y="880">+ ensure_on_bed()</text>
+  </g>
+
+  <g>
+    <rect class="class" x="790" y="935" width="300" height="160" rx="12"/>
+    <rect class="accent2" x="790" y="935" width="7" height="160" rx="3"/>
+    <text class="class-name" x="815" y="966">ModelVolume</text>
+    <line class="divider" x1="810" y1="978" x2="1070" y2="978"/>
+    <text class="member" x="815" y="1001">- mesh: shared_ptr&lt;const TriangleMesh&gt;</text>
+    <text class="member" x="815" y="1023">- transformation / config / type</text>
+    <line class="divider" x1="810" y1="1036" x2="1070" y2="1036"/>
+    <text class="member" x="815" y="1059">+ mesh() / raw_mesh()</text>
+    <text class="member" x="815" y="1081">+ invalidate_convex_hull()</text>
+  </g>
+
+  <g>
+    <rect class="class" x="1125" y="935" width="310" height="160" rx="12"/>
+    <rect class="accent2" x="1125" y="935" width="7" height="160" rx="3"/>
+    <text class="class-name" x="1150" y="966">ModelInstance</text>
+    <line class="divider" x1="1145" y1="978" x2="1415" y2="978"/>
+    <text class="member" x="1150" y="1001">- transformation</text>
+    <text class="member" x="1150" y="1023">- printable / plate relation</text>
+    <line class="divider" x1="1145" y1="1036" x2="1415" y2="1036"/>
+    <text class="member" x="1150" y="1059">+ get_matrix()</text>
+    <text class="member" x="1150" y="1081">+ get_printable_state()</text>
+  </g>
+
+  <g>
+    <rect class="class" x="1460" y="790" width="115" height="160" rx="12"/>
+    <text class="class-name" x="1475" y="823">Triangle</text>
+    <text class="class-name" x="1475" y="845">Mesh</text>
+    <line class="divider" x1="1473" y1="858" x2="1562" y2="858"/>
+    <text class="small" x="1475" y="883">shared</text>
+    <text class="small" x="1475" y="902">immutable</text>
+    <text class="small" x="1475" y="921">geometry</text>
+  </g>
+
+  <path class="owns" d="M1090 780 H1123"/><text class="rel-label" x="1092" y="766">1..*</text>
+  <path class="owns" d="M1210 895 C1110 920 1030 930 1010 933"/><text class="rel-label" x="1075" y="917">volumes</text>
+  <path class="owns" d="M1310 895 V933"/><text class="rel-label" x="1320" y="920">instances</text>
+  <path class="borrows" d="M1090 1015 C1240 1130 1430 1040 1460 930"/><text class="rel-label" x="1270" y="1076">shared_ptr&lt;const&gt;</text>
+
+  <!-- Workflow package -->
+  <rect class="pkg" x="1630" y="630" width="840" height="500" rx="18"/>
+  <text class="pkg-title" x="1655" y="663">package GUI/Plater workflow — Plate、dirty 与后台任务</text>
+
+  <g>
+    <rect class="class" x="1655" y="690" width="300" height="190" rx="12"/>
+    <rect class="accent2" x="1655" y="690" width="7" height="190" rx="3"/>
+    <text class="class-name" x="1680" y="721">PartPlateList</text>
+    <line class="divider" x1="1675" y1="733" x2="1935" y2="733"/>
+    <text class="member" x="1680" y="756">- plates: PartPlate*</text>
+    <text class="member" x="1680" y="778">- current_plate</text>
+    <text class="member" x="1680" y="800">- per-plate Print / GCodeResult</text>
+    <line class="divider" x1="1675" y1="813" x2="1935" y2="813"/>
+    <text class="member" x="1680" y="836">+ select_plate()</text>
+    <text class="member" x="1680" y="858">+ notify_instance_update()</text>
+  </g>
+
+  <g>
+    <rect class="class" x="1990" y="690" width="275" height="190" rx="12"/>
+    <rect class="accent2" x="1990" y="690" width="7" height="190" rx="3"/>
+    <text class="class-name" x="2015" y="721">PartPlate</text>
+    <line class="divider" x1="2010" y1="733" x2="2245" y2="733"/>
+    <text class="member" x="2015" y="756">- object/instance indexes</text>
+    <text class="member" x="2015" y="778">- config / lock / validity</text>
+    <text class="member" x="2015" y="800">- Print* / result* {borrowed}</text>
+    <line class="divider" x1="2010" y1="813" x2="2245" y2="813"/>
+    <text class="member" x="2015" y="836">+ config()</text>
+    <text class="member" x="2015" y="858">+ is_slice_result_valid()</text>
+  </g>
+
+  <g>
+    <rect class="hotspot" x="1655" y="920" width="365" height="180" rx="12"/>
+    <rect class="accent3" x="1655" y="920" width="7" height="180" rx="3"/>
+    <text class="class-name" x="1680" y="951">BackgroundSlicingProcess</text>
+    <line class="divider" x1="1675" y1="963" x2="2000" y2="963"/>
+    <text class="member" x="1680" y="986">- m_print / m_current_plate {borrowed}</text>
+    <text class="member" x="1680" y="1008">- worker thread / state / UI task</text>
+    <line class="divider" x1="1675" y1="1021" x2="2000" y2="1021"/>
+    <text class="member" x="1680" y="1044">+ apply(model, config)</text>
+    <text class="member" x="1680" y="1066">+ start() / stop() / process_fff()</text>
+    <text class="member" x="1680" y="1088">+ schedule_export/upload()</text>
+  </g>
+
+  <g>
+    <rect class="class" x="2050" y="920" width="395" height="180" rx="12"/>
+    <rect class="accent1" x="2050" y="920" width="7" height="180" rx="3"/>
+    <text class="class-name" x="2075" y="951">Worker + Job</text>
+    <line class="divider" x1="2070" y1="963" x2="2425" y2="963"/>
+    <text class="member" x="2075" y="986">Worker::push / cancel / cancel_all</text>
+    <text class="member" x="2075" y="1008">Job::process(Ctl&amp;)  {worker thread}</text>
+    <text class="member" x="2075" y="1030">Job::finalize()      {GUI thread}</text>
+    <line class="divider" x1="2070" y1="1043" x2="2425" y2="1043"/>
+    <text class="member" x="2075" y="1066">扩展：ArrangeJob / PrintJob / SendJob</text>
+    <text class="member" x="2075" y="1088">规则：process 不直接操作 wx 控件</text>
+  </g>
+
+  <path class="owns" d="M1955 780 H1988"/><text class="rel-label" x="1955" y="765">1..*</text>
+  <path class="borrows" d="M1990 840 C1880 900 1835 900 1835 918"/><text class="rel-label" x="1870" y="900">current plate</text>
+  <path class="event" d="M2050 1090 C1910 1160 1720 1160 1600 1080"/><text class="rel-label" x="1760" y="1150">status / finalize on UI</text>
+
+  <!-- Cross top-to-middle relations -->
+  <path class="owns" d="M1010 585 V628"/><text class="rel-label" x="1020" y="613">Model</text>
+  <path class="owns" d="M1080 585 C1400 610 1650 610 1730 688"/><text class="rel-label" x="1370" y="612">PartPlateList / workers</text>
+  <path class="owns" d="M320 557 C300 610 285 635 275 688"/><text class="rel-label" x="285" y="616">AppConfig</text>
+  <path class="owns" d="M390 557 C470 610 515 635 535 688"/><text class="rel-label" x="455" y="615">PresetBundle</text>
+  <path class="calls" d="M820 450 C700 500 620 600 590 688"/><text class="rel-label" x="650" y="566">select / full_config</text>
+  <path class="borrows" d="M790 780 C650 760 580 620 1050 584"/><text class="rel-label" x="650" y="700">Plater owns Model</text>
+  <path class="borrows" d="M1655 760 C1500 700 1370 690 1090 735"/><text class="rel-label" x="1380" y="690">Model membership by index</text>
+
+  <!-- SLICING package -->
+  <rect class="pkg" x="80" y="1160" width="1520" height="690" rx="18"/>
+  <text class="pkg-title" x="105" y="1193">package libslic3r/Print + GCode — 切片状态机与输出</text>
+
+  <g>
+    <rect class="class" x="105" y="1220" width="310" height="230" rx="13"/>
+    <rect class="accent3" x="105" y="1220" width="7" height="230" rx="3"/>
+    <text class="stereotype" x="130" y="1244">«base»</text>
+    <text class="class-name" x="130" y="1268">PrintBase</text>
+    <line class="divider" x1="125" y1="1280" x2="395" y2="1280"/>
+    <text class="member" x="130" y="1303">- m_model: Model  {snapshot}</text>
+    <text class="member" x="130" y="1325">- m_state_mutex</text>
+    <text class="member" x="130" y="1347">- cancel/status callbacks</text>
+    <text class="member" x="130" y="1369">- atomic CancelStatus</text>
+    <line class="divider" x1="125" y1="1382" x2="395" y2="1382"/>
+    <text class="member" x="130" y="1405">+ throw_if_canceled()</text>
+    <text class="member" x="130" y="1427">+ set_status()</text>
+  </g>
+
+  <g>
+    <rect class="hotspot" x="455" y="1220" width="345" height="270" rx="13"/>
+    <rect class="accent3" x="455" y="1220" width="7" height="270" rx="3"/>
+    <text class="stereotype" x="480" y="1244">«PrintBaseWithState&lt;PrintStep&gt;»</text>
+    <text class="class-name" x="480" y="1268">Print</text>
+    <line class="divider" x1="475" y1="1280" x2="780" y2="1280"/>
+    <text class="member" x="480" y="1303">- m_objects: PrintObject*</text>
+    <text class="member" x="480" y="1325">- m_regions: PrintRegion*</text>
+    <text class="member" x="480" y="1347">- config: PrintConfig</text>
+    <text class="member" x="480" y="1369">- PrintState&lt;PrintStep&gt;</text>
+    <line class="divider" x1="475" y1="1382" x2="780" y2="1382"/>
+    <text class="member" x="480" y="1405">+ apply(Model, DynamicPrintConfig)</text>
+    <text class="member" x="480" y="1427">+ process()</text>
+    <text class="member" x="480" y="1449">+ invalidate_step(s)</text>
+    <text class="member" x="480" y="1471">+ export_gcode()</text>
+  </g>
+
+  <g>
+    <rect class="class" x="845" y="1220" width="345" height="270" rx="13"/>
+    <rect class="accent3" x="845" y="1220" width="7" height="270" rx="3"/>
+    <text class="stereotype" x="870" y="1244">«PrintObjectBaseWithState&lt;Step&gt;»</text>
+    <text class="class-name" x="870" y="1268">PrintObject</text>
+    <line class="divider" x1="865" y1="1280" x2="1170" y2="1280"/>
+    <text class="member" x="870" y="1303">- m_print: Print*</text>
+    <text class="member" x="870" y="1325">- m_model_object: ModelObject*</text>
+    <text class="member" x="870" y="1347">- layers / support_layers</text>
+    <text class="member" x="870" y="1369">- PrintState&lt;PrintObjectStep&gt;</text>
+    <line class="divider" x1="865" y1="1382" x2="1170" y2="1382"/>
+    <text class="member" x="870" y="1405">+ slice() / make_perimeters()</text>
+    <text class="member" x="870" y="1427">+ prepare_infill() / infill()</text>
+    <text class="member" x="870" y="1449">+ generate_support_material()</text>
+    <text class="member" x="870" y="1471">+ invalidate_step(s)</text>
+  </g>
+
+  <g>
+    <rect class="class" x="1235" y="1220" width="335" height="210" rx="13"/>
+    <rect class="accent3" x="1235" y="1220" width="7" height="210" rx="3"/>
+    <text class="class-name" x="1260" y="1252">PrintRegion</text>
+    <line class="divider" x1="1255" y1="1264" x2="1550" y2="1264"/>
+    <text class="member" x="1260" y="1287">- region config / extruder mapping</text>
+    <text class="member" x="1260" y="1309">- object-region references</text>
+    <line class="divider" x1="1255" y1="1322" x2="1550" y2="1322"/>
+    <text class="member" x="1260" y="1345">共享相同配置的打印区域</text>
+    <text class="member" x="1260" y="1367">由 Print 管理生命周期</text>
+    <text class="member" x="1260" y="1389">对象步骤读取 region 参数</text>
+  </g>
+
+  <g>
+    <rect class="class" x="105" y="1530" width="330" height="260" rx="13"/>
+    <rect class="accent3" x="105" y="1530" width="7" height="260" rx="3"/>
+    <text class="class-name" x="130" y="1562">PrintState&lt;Step&gt;</text>
+    <line class="divider" x1="125" y1="1574" x2="415" y2="1574"/>
+    <text class="member" x="130" y="1597">State: INVALID / STARTED / DONE</text>
+    <text class="member" x="130" y="1619">timestamp / warnings / active step</text>
+    <line class="divider" x1="125" y1="1632" x2="415" y2="1632"/>
+    <text class="member" x="130" y="1655">+ set_started() / set_done()</text>
+    <text class="member" x="130" y="1677">+ invalidate(step, cancel_cb)</text>
+    <text class="member" x="130" y="1699">+ invalidate_all()</text>
+    <line class="divider" x1="125" y1="1712" x2="415" y2="1712"/>
+    <text class="note" x="130" y="1735">PrintStep：wipe/skirt-brim/export/…</text>
+    <text class="note" x="130" y="1757">ObjectStep：slice/perimeter/infill/support/…</text>
+  </g>
+
+  <g>
+    <rect class="class" x="480" y="1530" width="315" height="260" rx="13"/>
+    <rect class="accent3" x="480" y="1530" width="7" height="260" rx="3"/>
+    <text class="class-name" x="505" y="1562">Layer / Surface</text>
+    <line class="divider" x1="500" y1="1574" x2="775" y2="1574"/>
+    <text class="member" x="505" y="1597">LayerRegion / surfaces</text>
+    <text class="member" x="505" y="1619">perimeters / fills / supports</text>
+    <text class="member" x="505" y="1641">ExtrusionEntity collections</text>
+    <line class="divider" x1="500" y1="1654" x2="775" y2="1654"/>
+    <text class="member" x="505" y="1677">PrintObject 的中间结果</text>
+    <text class="member" x="505" y="1699">步骤缓存与下游输入</text>
+    <text class="member" x="505" y="1721">层内并行需避免相邻层共享写</text>
+    <text class="member" x="505" y="1743">取消点需覆盖长循环</text>
+  </g>
+
+  <g>
+    <rect class="class" x="840" y="1530" width="315" height="260" rx="13"/>
+    <rect class="accent3" x="840" y="1530" width="7" height="260" rx="3"/>
+    <text class="class-name" x="865" y="1562">GCode</text>
+    <line class="divider" x1="860" y1="1574" x2="1135" y2="1574"/>
+    <text class="member" x="865" y="1597">- writer / generator state</text>
+    <text class="member" x="865" y="1619">- tool ordering / cooling / wipe</text>
+    <line class="divider" x1="860" y1="1632" x2="1135" y2="1632"/>
+    <text class="member" x="865" y="1655">+ do_export(Print,...)</text>
+    <text class="member" x="865" y="1677">+ process_layer()</text>
+    <text class="member" x="865" y="1699">+ generate()</text>
+    <line class="divider" x1="860" y1="1712" x2="1135" y2="1712"/>
+    <text class="note" x="865" y="1735">消费 ExtrusionEntity</text>
+    <text class="note" x="865" y="1757">写文件并驱动 GCodeProcessor</text>
+  </g>
+
+  <g>
+    <rect class="class" x="1200" y="1530" width="370" height="260" rx="13"/>
+    <rect class="accent3" x="1200" y="1530" width="7" height="260" rx="3"/>
+    <text class="class-name" x="1225" y="1562">GCodeProcessorResult</text>
+    <line class="divider" x1="1220" y1="1574" x2="1550" y2="1574"/>
+    <text class="member" x="1225" y="1597">- moves: MoveVertex[]</text>
+    <text class="member" x="1225" y="1619">- time / filament / warnings</text>
+    <text class="member" x="1225" y="1641">- nozzle groups / conflicts</text>
+    <line class="divider" x1="1220" y1="1654" x2="1550" y2="1654"/>
+    <text class="member" x="1225" y="1677">Preview 与打印调度的结果 DTO</text>
+    <text class="member" x="1225" y="1699">每个 FFF plate 独立保存</text>
+    <text class="member" x="1225" y="1721">模型/配置变化时标记失效</text>
+    <text class="member" x="1225" y="1743">+ moves / statistics access</text>
+  </g>
+
+  <path class="inherits" d="M455 1305 H417"/><text class="rel-label" x="418" y="1292">extends</text>
+  <path class="owns" d="M800 1320 H843"/><text class="rel-label" x="803" y="1305">1..*</text>
+  <path class="owns" d="M800 1380 C990 1510 1160 1480 1235 1390"/><text class="rel-label" x="1045" y="1472">regions</text>
+  <path class="borrows" d="M845 1360 C760 1320 740 1300 800 1285"/><text class="rel-label" x="760" y="1328">m_print</text>
+  <path class="owns" d="M610 1490 C560 1510 520 1520 435 1600"/><text class="rel-label" x="500" y="1525">state</text>
+  <path class="owns" d="M950 1490 C860 1510 790 1530 795 1600"/><text class="rel-label" x="820" y="1525">layers</text>
+  <path class="calls" d="M760 1470 C760 1500 880 1510 920 1528"/><text class="rel-label" x="770" y="1505">export</text>
+  <path class="calls" d="M1155 1660 H1198"/><text class="rel-label" x="1158" y="1645">produces</text>
+
+  <!-- Device package -->
+  <rect class="pkg" x="1630" y="1160" width="840" height="690" rx="18"/>
+  <text class="pkg-title" x="1655" y="1193">package Utils + GUI/Device — 设备与网络扩展</text>
+
+  <g>
+    <rect class="class" x="1655" y="1220" width="340" height="205" rx="12"/>
+    <rect class="accent5" x="1655" y="1220" width="7" height="205" rx="3"/>
+    <text class="class-name" x="1680" y="1251">NetworkAgent</text>
+    <line class="divider" x1="1675" y1="1263" x2="1975" y2="1263"/>
+    <text class="member" x="1680" y="1286">- printer_agent: shared_ptr</text>
+    <text class="member" x="1680" y="1308">- cloud_agents[provider]</text>
+    <text class="member" x="1680" y="1330">- cached callbacks</text>
+    <line class="divider" x1="1675" y1="1343" x2="1975" y2="1343"/>
+    <text class="member" x="1680" y="1366">+ set_printer_agent()</text>
+    <text class="member" x="1680" y="1388">+ start_print() / send_gcode()</text>
+    <text class="member" x="1680" y="1410">+ set_on_*_fn()</text>
+  </g>
+
+  <g>
+    <rect class="interface" x="2030" y="1220" width="375" height="205" rx="12"/>
+    <text class="stereotype" x="2055" y="1244">«interface»</text>
+    <text class="class-name" x="2055" y="1268">IPrinterAgent</text>
+    <line class="divider" x1="2050" y1="1280" x2="2385" y2="1280"/>
+    <text class="member" x="2055" y="1303">+ discovery / connect / disconnect</text>
+    <text class="member" x="2055" y="1325">+ start_print() / send_gcode()</text>
+    <text class="member" x="2055" y="1347">+ LAN / cloud message callbacks</text>
+    <line class="divider" x1="2050" y1="1360" x2="2385" y2="1360"/>
+    <text class="note" x="2055" y="1383">实现：内建 agent / 动态库 agent</text>
+    <text class="note" x="2055" y="1405">/ Python PrinterConnection capability</text>
+  </g>
+
+  <g>
+    <rect class="interface" x="1655" y="1460" width="340" height="180" rx="12"/>
+    <text class="stereotype" x="1680" y="1484">«interface»</text>
+    <text class="class-name" x="1680" y="1508">ICloudServiceAgent</text>
+    <line class="divider" x1="1675" y1="1520" x2="1975" y2="1520"/>
+    <text class="member" x="1680" y="1543">+ login / token / server state</text>
+    <text class="member" x="1680" y="1565">+ preset sync / print task APIs</text>
+    <text class="member" x="1680" y="1587">+ provider callbacks</text>
+    <text class="note" x="1680" y="1617">按 provider 存入 NetworkAgent</text>
+  </g>
+
+  <g>
+    <rect class="class" x="2030" y="1460" width="375" height="180" rx="12"/>
+    <rect class="accent5" x="2030" y="1460" width="7" height="180" rx="3"/>
+    <text class="class-name" x="2055" y="1491">NetworkAgentFactory</text>
+    <line class="divider" x1="2050" y1="1503" x2="2385" y2="1503"/>
+    <text class="member" x="2055" y="1526">+ register_printer_agent()</text>
+    <text class="member" x="2055" y="1548">+ create_printer_agent_by_id()</text>
+    <text class="member" x="2055" y="1570">+ create_cloud_agent(provider)</text>
+    <text class="member" x="2055" y="1592">+ register_python_printer_agent()</text>
+    <text class="note" x="2055" y="1620">registry + cache + plugin bridge</text>
+  </g>
+
+  <g>
+    <rect class="class" x="1655" y="1675" width="340" height="145" rx="12"/>
+    <rect class="accent5" x="1655" y="1675" width="7" height="145" rx="3"/>
+    <text class="class-name" x="1680" y="1706">DeviceManager</text>
+    <line class="divider" x1="1675" y1="1718" x2="1975" y2="1718"/>
+    <text class="member" x="1680" y="1741">- local/user MachineObject* maps</text>
+    <text class="member" x="1680" y="1763">- selected_machine id</text>
+    <text class="member" x="1680" y="1785">+ on_machine_alive() / select()</text>
+    <text class="member" x="1680" y="1807">+ get_selected_machine()</text>
+  </g>
+
+  <g>
+    <rect class="class" x="2030" y="1675" width="375" height="145" rx="12"/>
+    <rect class="accent5" x="2030" y="1675" width="7" height="145" rx="3"/>
+    <text class="class-name" x="2055" y="1706">MachineObject</text>
+    <line class="divider" x1="2050" y1="1718" x2="2385" y2="1718"/>
+    <text class="member" x="2055" y="1741">- device/task/AMS/HMS/firmware state</text>
+    <text class="member" x="2055" y="1763">- connectivity timestamps</text>
+    <text class="member" x="2055" y="1785">+ parse_json(tunnel, payload)</text>
+    <text class="member" x="2055" y="1807">+ is_connected() / is_info_ready()</text>
+  </g>
+
+  <!-- Compact device workflow classes -->
+  <g>
+    <rect class="interface" x="1655" y="1644" width="340" height="27" rx="8"/>
+    <text class="member" x="1673" y="1663">PluginManager → Python printer capability</text>
+  </g>
+  <g>
+    <rect class="class" x="2030" y="1644" width="375" height="27" rx="8"/>
+    <text class="member" x="2048" y="1663">PrintJob / SendJob : Job</text>
+  </g>
+
+  <path class="owns" d="M1995 1300 H2028"/><text class="rel-label" x="1997" y="1285">current</text>
+  <path class="owns" d="M1820 1425 V1458"/><text class="rel-label" x="1830" y="1445">provider map</text>
+  <path class="calls" d="M2200 1460 V1427"/><text class="rel-label" x="2210" y="1445">creates</text>
+  <path class="calls" d="M1825 1644 C1880 1580 2010 1560 2028 1550"/><text class="rel-label" x="1880" y="1583">register</text>
+  <path class="inherits" d="M2218 1644 C2200 1580 2175 1535 2175 1427"/><text class="rel-label" x="2190" y="1578">Jobs use agent</text>
+  <path class="calls" d="M2030 1550 H1997"/><text class="rel-label" x="1988" y="1535">creates</text>
+  <path class="owns" d="M1995 1745 H2028"/><text class="rel-label" x="1996" y="1730">owns</text>
+  <path class="event" d="M1710 1425 C1600 1550 1585 1670 1653 1750"/><text class="rel-label" x="1580" y="1570">callbacks → GUI_App::CallAfter</text>
+
+  <!-- Persistence package -->
+  <rect class="pkg" x="80" y="1880" width="1520" height="370" rx="18"/>
+  <text class="pkg-title" x="105" y="1913">package libslic3r/Format + Plater persistence — 导入、3MF 与 dirty</text>
+
+  <g>
+    <rect class="boundary" x="105" y="1940" width="330" height="255" rx="13"/>
+    <text class="stereotype" x="130" y="1964">«boundary»</text>
+    <text class="class-name" x="130" y="1988">Model::read_from_*</text>
+    <line class="divider" x1="125" y1="2000" x2="415" y2="2000"/>
+    <text class="member" x="130" y="2023">+ read_from_archive(.3mf/.amf)</text>
+    <text class="member" x="130" y="2045">+ read_from_file(.stl/.obj/...)</text>
+    <text class="member" x="130" y="2067">+ read_from_step()</text>
+    <line class="divider" x1="125" y1="2080" x2="415" y2="2080"/>
+    <text class="note" x="130" y="2103">输出统一 Model / ModelObject</text>
+    <text class="note" x="130" y="2125">进度、取消、配置替换和 plate data</text>
+    <text class="note" x="130" y="2147">新增格式：在 Format 层实现解析</text>
+    <text class="note" x="130" y="2169">并接入 Plater 文件过滤与 load strategy</text>
+  </g>
+
+  <g>
+    <rect class="hotspot" x="470" y="1940" width="335" height="255" rx="13"/>
+    <rect class="accent6" x="470" y="1940" width="7" height="255" rx="3"/>
+    <text class="class-name" x="495" y="1975">ProjectDirtyStateManager</text>
+    <line class="divider" x1="490" y1="1987" x2="785" y2="1987"/>
+    <text class="member" x="495" y="2010">- plater_dirty</text>
+    <text class="member" x="495" y="2032">- presets_dirty</text>
+    <text class="member" x="495" y="2054">- project_config_dirty</text>
+    <line class="divider" x1="490" y1="2067" x2="785" y2="2067"/>
+    <text class="member" x="495" y="2090">+ is_dirty()</text>
+    <text class="member" x="495" y="2112">+ update_from_undo_redo_stack()</text>
+    <text class="member" x="495" y="2134">+ reset_after_save()</text>
+    <text class="note" x="495" y="2164">持久状态变化必须联动 dirty / undo</text>
+  </g>
+
+  <g>
+    <rect class="boundary" x="840" y="1940" width="330" height="255" rx="13"/>
+    <text class="stereotype" x="865" y="1964">«boundary DTO»</text>
+    <text class="class-name" x="865" y="1988">StoreParams</text>
+    <line class="divider" x1="860" y1="2000" x2="1150" y2="2000"/>
+    <text class="member" x="865" y="2023">model / plate_data / config</text>
+    <text class="member" x="865" y="2045">project presets / thumbnails</text>
+    <text class="member" x="865" y="2067">metadata / progress callback</text>
+    <line class="divider" x1="860" y1="2080" x2="1150" y2="2080"/>
+    <text class="member" x="865" y="2103">strategy: Backup / WithGcode / ...</text>
+    <text class="note" x="865" y="2133">Plater::export_3mf() 组装</text>
+    <text class="note" x="865" y="2155">新增项目字段需在此穿透</text>
+    <text class="note" x="865" y="2177">并提供旧项目迁移与 round-trip 测试</text>
+  </g>
+
+  <g>
+    <rect class="boundary" x="1205" y="1940" width="365" height="255" rx="13"/>
+    <text class="stereotype" x="1230" y="1964">«boundary function»</text>
+    <text class="class-name" x="1230" y="1988">store_bbs_3mf(StoreParams&amp;)</text>
+    <line class="divider" x1="1225" y1="2000" x2="1550" y2="2000"/>
+    <text class="member" x="1230" y="2023">3D model / Metadata / Auxiliaries</text>
+    <text class="member" x="1230" y="2045">plate / config / embedded presets</text>
+    <text class="member" x="1230" y="2067">optional G-code / thumbnails</text>
+    <line class="divider" x1="1225" y1="2080" x2="1550" y2="2080"/>
+    <text class="member" x="1230" y="2103">write target.3mf.tmp</text>
+    <text class="member" x="1230" y="2125">→ close ZIP → atomic rename</text>
+    <text class="note" x="1230" y="2155">失败时删除 tmp，不清 dirty</text>
+    <text class="note" x="1230" y="2177">兼容边界：版本、旧字段、forward substitution</text>
+  </g>
+
+  <path class="calls" d="M435 2050 H468"/><text class="rel-label" x="437" y="2035">Plater load</text>
+  <path class="calls" d="M805 2070 H838"/><text class="rel-label" x="806" y="2055">save assembles</text>
+  <path class="calls" d="M1170 2070 H1203"/><text class="rel-label" x="1172" y="2055">serialize</text>
+
+  <!-- PrintHost lane -->
+  <rect class="pkg" x="1630" y="1880" width="840" height="370" rx="18"/>
+  <text class="pkg-title" x="1655" y="1913">传统 PrintHost 通道 — 文件上传型协议</text>
+
+  <g>
+    <rect class="class" x="1655" y="1940" width="245" height="220" rx="12"/>
+    <rect class="accent4" x="1655" y="1940" width="7" height="220" rx="3"/>
+    <text class="class-name" x="1680" y="1971">PrintHostJob</text>
+    <line class="divider" x1="1675" y1="1983" x2="1880" y2="1983"/>
+    <text class="member" x="1680" y="2006">local path</text>
+    <text class="member" x="1680" y="2028">remote path</text>
+    <text class="member" x="1680" y="2050">post-upload action</text>
+    <line class="divider" x1="1675" y1="2063" x2="1880" y2="2063"/>
+    <text class="member" x="1680" y="2086">StartPrint / UploadOnly</text>
+    <text class="note" x="1680" y="2116">由 Plater 构造</text>
+    <text class="note" x="1680" y="2138">切片完成后入队</text>
+  </g>
+
+  <g>
+    <rect class="class" x="1935" y="1940" width="245" height="220" rx="12"/>
+    <rect class="accent4" x="1935" y="1940" width="7" height="220" rx="3"/>
+    <text class="class-name" x="1960" y="1971">PrintHost</text>
+    <line class="divider" x1="1955" y1="1983" x2="2160" y2="1983"/>
+    <text class="member" x="1960" y="2006">+ test()</text>
+    <text class="member" x="1960" y="2028">+ upload()</text>
+    <text class="member" x="1960" y="2050">+ get_print_host(config)</text>
+    <line class="divider" x1="1955" y1="2063" x2="2160" y2="2063"/>
+    <text class="note" x="1960" y="2086">抽象 HTTP 文件上传</text>
+    <text class="note" x="1960" y="2110">无持续设备状态模型</text>
+    <text class="note" x="1960" y="2134">由 host_type 选择实现</text>
+  </g>
+
+  <g>
+    <rect class="interface" x="2215" y="1940" width="230" height="220" rx="12"/>
+    <text class="stereotype" x="2240" y="1964">«implementations»</text>
+    <text class="class-name" x="2240" y="1988">Host adapters</text>
+    <line class="divider" x1="2235" y1="2000" x2="2425" y2="2000"/>
+    <text class="member" x="2240" y="2023">OctoPrint</text>
+    <text class="member" x="2240" y="2045">Moonraker</text>
+    <text class="member" x="2240" y="2067">PrusaLink / Connect</text>
+    <text class="member" x="2240" y="2089">Duet / Repetier / ...</text>
+    <line class="divider" x1="2235" y1="2102" x2="2425" y2="2102"/>
+    <text class="note" x="2240" y="2125">新“上传型协议”</text>
+    <text class="note" x="2240" y="2147">在此实现 PrintHost</text>
+  </g>
+
+  <path class="calls" d="M1900 2040 H1933"/><text class="rel-label" x="1902" y="2025">queue</text>
+  <path class="inherits" d="M2215 2040 H2182"/><text class="rel-label" x="2182" y="2025">implements</text>
+
+  <!-- Major cross-package runtime paths -->
+  <path class="calls" d="M500 1120 C540 1160 570 1185 590 1218"/><text class="rel-label" x="515" y="1172">Print::apply(config)</text>
+  <path class="calls" d="M590 880 C720 1120 520 1150 560 1218"/><text class="rel-label" x="605" y="1120">full_config()</text>
+  <path class="calls" d="M790 820 C600 1120 450 1100 520 1218"/><text class="rel-label" x="520" y="1125">Model snapshot</text>
+  <path class="borrows" d="M1835 1100 C1760 1180 1580 1160 800 1320"/><text class="rel-label" x="1390" y="1175">m_print</text>
+  <path class="calls" d="M1835 920 C1570 800 1350 760 705 790"/><text class="rel-label" x="1270" y="805">plate config apply()</text>
+  <path class="event" d="M1835 1100 C1720 1280 1650 1420 1570 1660"/><text class="rel-label" x="1650" y="1340">completed event + result</text>
+  <path class="calls" d="M1200 1660 C920 1870 700 1850 420 520"/><text class="rel-label" x="700" y="1840">Preview → GLCanvas3D::load_gcode_preview()</text>
+  <path class="calls" d="M2280 1100 C2350 1160 2360 1180 2250 1218"/><text class="rel-label" x="2310" y="1168">PrintJob / SendJob</text>
+  <path class="calls" d="M1228 555 C1500 1750 1690 1800 1740 1938"/><text class="rel-label" x="1500" y="1800">legacy send</text>
+  <path class="calls" d="M1010 585 C960 1500 980 1770 1000 1938"/><text class="rel-label" x="980" y="1870">save / export</text>
+
+  <!-- RIGHT NAVIGATION -->
+  <rect class="panel" x="2525" y="210" width="620" height="2075" rx="22" filter="url(#shadow)"/>
+  <text class="section" x="2560" y="252">需求 → 修改入口导航</text>
+  <text class="body" x="2560" y="280">先定状态所有权，再选扩展边界；不要直接把逻辑堆进 Plater。</text>
+
+  <!-- nav 1 -->
+  <g>
+    <rect class="class" x="2560" y="310" width="550" height="172" rx="15"/>
+    <rect class="accent1" x="2560" y="310" width="7" height="172" rx="3"/>
+    <text class="nav-title" x="2585" y="340">1. 新菜单、页面或交互工具</text>
+    <text class="nav-code" x="2585" y="367">MainFrame → Plater → Sidebar / GLCanvas3D</text>
+    <text class="nav-body" x="2585" y="394">菜单与导航放 MainFrame；跨场景用例由 Plater 编排；</text>
+    <text class="nav-body" x="2585" y="416">纯交互/渲染放 Canvas 或 Gizmo；对象树表现放 ObjectList。</text>
+    <text class="nav-body" x="2585" y="444">联动：wx event、Undo snapshot、dirty、后台失效。</text>
+  </g>
+
+  <g>
+    <rect class="hotspot" x="2560" y="500" width="550" height="190" rx="15"/>
+    <rect class="accent2" x="2560" y="500" width="7" height="190" rx="3"/>
+    <text class="nav-title" x="2585" y="530">2. 新项目/对象/Plate 持久状态</text>
+    <text class="nav-code" x="2585" y="557">Model / ModelObject / ModelVolume / PartPlate</text>
+    <text class="nav-body" x="2585" y="584">先决定项目级、对象级、volume 级还是 plate 级。</text>
+    <text class="nav-body" x="2585" y="606">不能只加 GUI 字段，否则保存、Undo、复制和切片看不到。</text>
+    <text class="nav-body" x="2585" y="634">必须联动：StoreParams + bbs_3mf 读写 + migration</text>
+    <text class="nav-body" x="2585" y="656">+ dirty/undo + round-trip/旧 3MF 测试。</text>
+  </g>
+
+  <g>
+    <rect class="hotspot" x="2560" y="708" width="550" height="215" rx="15"/>
+    <rect class="accent3" x="2560" y="708" width="7" height="215" rx="3"/>
+    <text class="nav-title" x="2585" y="738">3. 新切片参数或行为</text>
+    <text class="nav-code" x="2585" y="765">PrintConfigDef → DynamicPrintConfig → Print::apply</text>
+    <text class="nav-body" x="2585" y="792">参数定义、默认值、profile schema、UI 和有效配置需一起改。</text>
+    <text class="nav-body" x="2585" y="814">为它声明受影响的 PrintStep / PrintObjectStep；</text>
+    <text class="nav-body" x="2585" y="836">算法放对应 PrintObject 阶段或独立 libslic3r 组件。</text>
+    <text class="nav-body" x="2585" y="864">必须联动：失效规则、取消点、TBB 共享写审查、</text>
+    <text class="nav-body" x="2585" y="886">功能关闭回归和 profile validator。</text>
+  </g>
+
+  <g>
+    <rect class="class" x="2560" y="941" width="550" height="180" rx="15"/>
+    <rect class="accent3" x="2560" y="941" width="7" height="180" rx="3"/>
+    <text class="nav-title" x="2585" y="971">4. 新预览数据或可视化</text>
+    <text class="nav-code" x="2585" y="998">GCodeProcessorResult → GLCanvas3D / GCodeViewer</text>
+    <text class="nav-body" x="2585" y="1025">计算结果先进入 result DTO；渲染和筛选进入 Viewer。</text>
+    <text class="nav-body" x="2585" y="1047">若数据用于打印调度或 3MF，还要扩展输出/持久化。</text>
+    <text class="nav-body" x="2585" y="1075">不要让 Viewer 反向成为切片真值或修改 Model。</text>
+  </g>
+
+  <g>
+    <rect class="class" x="2560" y="1139" width="550" height="180" rx="15"/>
+    <rect class="accent1" x="2560" y="1139" width="7" height="180" rx="3"/>
+    <text class="nav-title" x="2585" y="1169">5. 新导入/导出格式</text>
+    <text class="nav-code" x="2585" y="1196">libslic3r/Format + Model::read_from_* + Plater</text>
+    <text class="nav-body" x="2585" y="1223">解析器归一化为 Model；Plater 仅负责对话框、策略和反馈。</text>
+    <text class="nav-body" x="2585" y="1245">项目格式需同时处理配置、plate、metadata 和版本。</text>
+    <text class="nav-body" x="2585" y="1273">必须联动：过滤器、进度取消、错误、Unicode、round-trip。</text>
+  </g>
+
+  <g>
+    <rect class="class" x="2560" y="1337" width="550" height="200" rx="15"/>
+    <rect class="accent5" x="2560" y="1337" width="7" height="200" rx="3"/>
+    <text class="nav-title" x="2585" y="1367">6. 新打印机连接或协议</text>
+    <text class="nav-code" x="2585" y="1394">上传型 → PrintHost；状态型 → IPrinterAgent</text>
+    <text class="nav-body" x="2585" y="1421">只上传文件/启动任务：实现 PrintHost adapter。</text>
+    <text class="nav-body" x="2585" y="1443">需要发现、持续状态、LAN/云消息：实现 IPrinterAgent，</text>
+    <text class="nav-body" x="2585" y="1465">并由 NetworkAgentFactory 注册；不要在 Plater 分厂商。</text>
+    <text class="nav-body" x="2585" y="1493">联动：认证、错误、取消、Device UI、三平台网络测试。</text>
+  </g>
+
+  <g>
+    <rect class="class" x="2560" y="1555" width="550" height="175" rx="15"/>
+    <rect class="accent5" x="2560" y="1555" width="7" height="175" rx="3"/>
+    <text class="nav-title" x="2585" y="1585">7. 新云 provider 或插件能力</text>
+    <text class="nav-code" x="2585" y="1612">ICloudServiceAgent / NetworkAgentFactory / PluginManager</text>
+    <text class="nav-body" x="2585" y="1639">认证与云 API 属于 CloudServiceAgent；设备通信独立。</text>
+    <text class="nav-body" x="2585" y="1661">Python PrinterConnection 通过 factory capability 注册。</text>
+    <text class="nav-body" x="2585" y="1689">避免继续扩大 ICloudServiceAgent 的单体接口。</text>
+  </g>
+
+  <g>
+    <rect class="hotspot" x="2560" y="1748" width="550" height="250" rx="15"/>
+    <rect class="accent6" x="2560" y="1748" width="7" height="250" rx="3"/>
+    <text class="nav-title" x="2585" y="1778">任何需求都要先回答的 6 个问题</text>
+    <text class="nav-body" x="2585" y="1810">① 状态归谁：应用 / 项目 / plate / 对象 / 任务 / 设备？</text>
+    <text class="nav-body" x="2585" y="1841">② 是否写入 3MF、profile、AppConfig 或仅为运行时状态？</text>
+    <text class="nav-body" x="2585" y="1872">③ 哪些切片步骤应失效？功能关闭时是否完全不变？</text>
+    <text class="nav-body" x="2585" y="1903">④ 在 UI 线程、Job worker、切片线程还是 TBB 内执行？</text>
+    <text class="nav-body" x="2585" y="1934">⑤ 取消、异常、Undo、dirty、恢复分别如何收敛？</text>
+    <text class="nav-body" x="2585" y="1965">⑥ Windows / macOS / Linux 与旧项目如何验证？</text>
+  </g>
+
+  <g>
+    <rect class="class" x="2560" y="2016" width="550" height="225" rx="15"/>
+    <text class="nav-title" x="2585" y="2047">优先避免继续膨胀的类</text>
+    <text class="nav-code" x="2585" y="2076">GUI_App · Plater · MachineObject · ICloudServiceAgent</text>
+    <text class="nav-body" x="2585" y="2105">这些类已经承担较多协调或聚合职责。新业务若形成独立</text>
+    <text class="nav-body" x="2585" y="2127">生命周期，应先做窄接口/服务/Job/领域组件，再由它们编排。</text>
+    <line class="divider" x1="2585" y1="2147" x2="3085" y2="2147"/>
+    <text class="nav-body" x="2585" y="2175">推荐依赖方向：</text>
+    <text class="nav-code" x="2585" y="2202">GUI → application workflow → libslic3r domain</text>
+    <text class="nav-code" x="2585" y="2224">                    → device / persistence adapters</text>
+  </g>
+
+  <text class="small" x="55" y="2325">读图：从 GUI 包向下追踪运行时；从右侧按需求类型反查修改入口。类成员仅保留用于判断职责和扩展位置的关键部分。</text>
+</svg>

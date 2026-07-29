@@ -1,0 +1,370 @@
+from __future__ import annotations
+
+import email.utils
+import ipaddress
+import json
+import os
+import socket
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable, Mapping
+
+_DEFAULT_BASE_URL = "https://openapi.tripo3d.com/v3"
+_DEFAULT_MODEL = "v3.1-20260211"
+_DEFAULT_DEADLINE = 900.0
+_POLL_INTERVAL = 1.5
+_REQUEST_TIMEOUT = 120.0
+_MAX_JSON_BYTES = 4 * 1024 * 1024
+_MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+_TRANSIENT_CODES = {408, 425, 429, 500, 502, 503, 504}
+
+
+class TripoError(RuntimeError):
+    """A Tripo request or task failed safely."""
+
+
+def _config() -> tuple[str, str, str]:
+    key = os.environ.get("TRIPO_API_KEY", "")
+    base = os.environ.get("TRIPO_API_BASE", _DEFAULT_BASE_URL).rstrip("/")
+    model = os.environ.get("TRIPO_MODEL", _DEFAULT_MODEL)
+    if not key:
+        raise TripoError("TRIPO_API_KEY is not configured.")
+    parsed = urllib.parse.urlsplit(base)
+    if parsed.scheme.lower() != "https" or not parsed.hostname or parsed.username or parsed.password:
+        raise TripoError("TRIPO_API_BASE must be a credential-free HTTPS URL.")
+    return base, key, model
+
+
+class _RejectRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> None:
+        return None
+
+
+def _read_json(response: Any) -> dict[str, Any]:
+    content_length = response.headers.get("Content-Length")
+    if content_length:
+        try:
+            if int(content_length) > _MAX_JSON_BYTES:
+                raise TripoError("Tripo returned an oversized response.")
+        except ValueError:
+            pass
+    body = response.read(_MAX_JSON_BYTES + 1)
+    if len(body) > _MAX_JSON_BYTES:
+        raise TripoError("Tripo returned an oversized response.")
+    try:
+        value = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise TripoError("Tripo returned an invalid response.") from None
+    if not isinstance(value, dict):
+        raise TripoError("Tripo returned an invalid response.")
+    return value
+
+
+def _data(envelope: Mapping[str, Any]) -> dict[str, Any]:
+    code = envelope.get("code")
+    data = envelope.get("data")
+    if code != 0 or not isinstance(data, dict):
+        raise TripoError("Tripo rejected the request.")
+    return data
+
+
+def _retry_after(headers: Any, attempt: int) -> float:
+    value = headers.get("Retry-After") if headers else None
+    if value:
+        try:
+            return max(0.0, min(float(value), 30.0))
+        except ValueError:
+            try:
+                parsed = email.utils.parsedate_to_datetime(value)
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                return max(0.0, min((parsed - datetime.now(timezone.utc)).total_seconds(), 30.0))
+            except (TypeError, ValueError, OverflowError):
+                pass
+    return min(0.75 * (2**attempt), 8.0)
+
+
+def _request(
+    method: str,
+    path: str,
+    body: bytes | None = None,
+    content_type: str | None = None,
+    *,
+    status_retries: int = 0,
+    stop_event: Any = None,
+    deadline: float | None = None,
+) -> dict[str, Any]:
+    base, key, _ = _config()
+    opener = urllib.request.build_opener(_RejectRedirects())
+    for attempt in range(status_retries + 1):
+        if stop_event is not None and stop_event.is_set():
+            raise TripoError("The operation was cancelled.")
+        request = urllib.request.Request(base + path, data=body, method=method)
+        request.add_header("Authorization", "Bearer " + key)
+        request.add_header("Accept", "application/json")
+        if content_type:
+            request.add_header("Content-Type", content_type)
+        try:
+            timeout = _REQUEST_TIMEOUT
+            if deadline is not None:
+                timeout = min(timeout, max(0.1, deadline - time.monotonic()))
+            with opener.open(request, timeout=timeout) as response:
+                return _read_json(response)
+        except TripoError:
+            raise
+        except urllib.error.HTTPError as exc:
+            if exc.code in _TRANSIENT_CODES and attempt < status_retries:
+                delay = _retry_after(exc.headers, attempt)
+            else:
+                if exc.code == 429:
+                    message = "Tripo is rate limiting requests; try again later."
+                elif 400 <= exc.code < 500:
+                    message = "Tripo rejected the request."
+                else:
+                    message = "Tripo is temporarily unavailable."
+                raise TripoError(message) from None
+        except (urllib.error.URLError, TimeoutError, OSError):
+            if attempt < status_retries:
+                delay = _retry_after(None, attempt)
+            else:
+                raise TripoError("Could not connect to Tripo.") from None
+        if deadline is not None and time.monotonic() + delay >= deadline:
+            raise TripoError("The Tripo task deadline expired.")
+        if stop_event is not None:
+            if stop_event.wait(delay):
+                raise TripoError("The operation was cancelled.")
+        else:
+            time.sleep(delay)
+    raise TripoError("Could not connect to Tripo.")
+
+
+def _post_json(path: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return _data(_request("POST", path, body, "application/json"))
+
+
+def _task_id(data: Mapping[str, Any]) -> str:
+    task_id = data.get("task_id")
+    if not isinstance(task_id, str) or not task_id:
+        raise TripoError("Tripo did not return a task reference.")
+    return task_id
+
+
+def create_text_task(prompt: str) -> str:
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise TripoError("A text prompt is required.")
+    _, _, model = _config()
+    return _task_id(_post_json("/generation/text-to-model", {"prompt": prompt, "model": model}))
+
+
+def _image_kind(path: Path) -> tuple[str, str]:
+    try:
+        with path.open("rb") as stream:
+            signature = stream.read(16)
+    except OSError:
+        raise TripoError("The input image could not be read.") from None
+    if signature.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png", "png"
+    if signature.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg", "jpg"
+    raise TripoError("The input image must be PNG or JPEG.")
+
+
+def upload_image(path: str | os.PathLike[str]) -> str:
+    source = Path(path)
+    mime_type, extension = _image_kind(source)
+    try:
+        if source.stat().st_size > _MAX_UPLOAD_BYTES:
+            raise TripoError("The input image exceeds the 20 MB limit.")
+        image = source.read_bytes()
+    except TripoError:
+        raise
+    except OSError:
+        raise TripoError("The input image could not be read.") from None
+    boundary = "----OrcaAI" + uuid.uuid4().hex
+    body = b"".join(
+        [
+            f"--{boundary}\r\n".encode("ascii"),
+            f'Content-Disposition: form-data; name="file"; filename="input.{extension}"\r\n'.encode("ascii"),
+            f"Content-Type: {mime_type}\r\n\r\n".encode("ascii"),
+            image,
+            b"\r\n",
+            f"--{boundary}--\r\n".encode("ascii"),
+        ]
+    )
+    data = _data(_request("POST", "/files", body, "multipart/form-data; boundary=" + boundary))
+    token = data.get("file_token")
+    if not isinstance(token, str) or not token:
+        raise TripoError("Tripo did not return a file reference.")
+    return token
+
+
+def create_image_task(file_token: str) -> str:
+    if not isinstance(file_token, str) or not file_token:
+        raise TripoError("An uploaded image reference is required.")
+    _, _, model = _config()
+    return _task_id(_post_json("/generation/image-to-model", {"input": file_token, "model": model}))
+
+
+def get_task(task_id: str) -> dict[str, Any]:
+    if not isinstance(task_id, str) or not task_id:
+        raise TripoError("A task reference is required.")
+    quoted = urllib.parse.quote(task_id, safe="")
+    return _data(_request("GET", "/tasks/" + quoted, status_retries=3))
+
+
+def wait_for_task(
+    task_id: str,
+    stop_event: Any = None,
+    progress: Callable[[int | float | None], None] | None = None,
+    deadline: float | None = None,
+) -> dict[str, Any]:
+    if not isinstance(task_id, str) or not task_id:
+        raise TripoError("A task reference is required.")
+    if deadline is None:
+        try:
+            duration = float(os.environ.get("TRIPO_TASK_DEADLINE_SECONDS", str(_DEFAULT_DEADLINE)))
+        except ValueError:
+            duration = _DEFAULT_DEADLINE
+        end = time.monotonic() + max(0.0, duration)
+    else:
+        end = time.monotonic() + max(0.0, float(deadline))
+    quoted = urllib.parse.quote(task_id, safe="")
+    while True:
+        if stop_event is not None and stop_event.is_set():
+            raise TripoError("The operation was cancelled.")
+        if time.monotonic() >= end:
+            raise TripoError("The Tripo task deadline expired.")
+        result = _data(
+            _request(
+                "GET",
+                "/tasks/" + quoted,
+                status_retries=3,
+                stop_event=stop_event,
+                deadline=end,
+            )
+        )
+        state_value = result.get("status", result.get("state", ""))
+        state = str(state_value).strip().lower()
+        if progress is not None:
+            try:
+                progress(result.get("progress"))
+            except Exception:
+                raise TripoError("The progress callback failed.") from None
+        if state == "success":
+            return result
+        if state == "failed":
+            raise TripoError("The Tripo task failed.")
+        if state == "cancelled" or state == "canceled":
+            raise TripoError("The Tripo task was cancelled.")
+        if state not in {"queued", "running"}:
+            raise TripoError("The Tripo task ended in an unknown state.")
+        remaining = end - time.monotonic()
+        delay = min(_POLL_INTERVAL, remaining)
+        if delay <= 0:
+            raise TripoError("The Tripo task deadline expired.")
+        if stop_event is not None:
+            if stop_event.wait(delay):
+                raise TripoError("The operation was cancelled.")
+        else:
+            time.sleep(delay)
+
+
+def create_conversion(task_id: str, format: str) -> str:
+    if not isinstance(task_id, str) or not task_id:
+        raise TripoError("A source task reference is required.")
+    if not isinstance(format, str) or not format.strip():
+        raise TripoError("A conversion format is required.")
+    return _task_id(_post_json("/models/convert", {"input": task_id, "format": format.upper()}))
+
+
+def _artifact_url(task_result: Mapping[str, Any]) -> str:
+    output = task_result.get("output", task_result)
+    if not isinstance(output, Mapping):
+        raise TripoError("The Tripo task returned no downloadable artifact.")
+    preferred = ("model_url", "url", "base_model", "pbr_model", "rendered_image")
+    for key in preferred:
+        value = output.get(key)
+        if isinstance(value, str) and value:
+            return value
+    for value in output.values():
+        if isinstance(value, str) and value.lower().startswith("https://"):
+            return value
+        if isinstance(value, Mapping):
+            try:
+                return _artifact_url(value)
+            except TripoError:
+                pass
+    raise TripoError("The Tripo task returned no downloadable artifact.")
+
+
+def _validate_artifact_url(url: str) -> None:
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme.lower() != "https" or not parsed.hostname or parsed.username or parsed.password:
+        raise TripoError("Tripo returned an unsafe artifact location.")
+    try:
+        addresses = socket.getaddrinfo(parsed.hostname, parsed.port or 443, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        raise TripoError("The artifact host could not be resolved.") from None
+    if not addresses:
+        raise TripoError("The artifact host could not be resolved.")
+    for address in addresses:
+        try:
+            ip = ipaddress.ip_address(address[4][0].split("%", 1)[0])
+        except ValueError:
+            raise TripoError("Tripo returned an unsafe artifact location.") from None
+        if not ip.is_global:
+            raise TripoError("Tripo returned an unsafe artifact location.")
+
+
+class _SafeArtifactRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> Any:
+        _validate_artifact_url(newurl)
+        return urllib.request.Request(newurl, headers={"Accept": "application/octet-stream"}, method="GET")
+
+
+def download_task_artifact(
+    task_result: Mapping[str, Any], output_path: str | os.PathLike[str], max_bytes: int = 500 * 1024 * 1024
+) -> Path:
+    if max_bytes <= 0:
+        raise TripoError("The artifact size limit must be positive.")
+    url = _artifact_url(task_result)
+    _validate_artifact_url(url)
+    destination = Path(output_path)
+    part = destination.with_name(destination.name + ".part")
+    request = urllib.request.Request(url, headers={"Accept": "application/octet-stream"}, method="GET")
+    try:
+        with urllib.request.build_opener(_SafeArtifactRedirects()).open(request, timeout=_REQUEST_TIMEOUT) as response:
+            content_length = response.headers.get("Content-Length")
+            if content_length:
+                try:
+                    if int(content_length) > max_bytes:
+                        raise TripoError("The artifact exceeds the configured size limit.")
+                except ValueError:
+                    pass
+            total = 0
+            with part.open("wb") as stream:
+                while chunk := response.read(min(64 * 1024, max_bytes + 1 - total)):
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise TripoError("The artifact exceeds the configured size limit.")
+                    stream.write(chunk)
+        os.replace(part, destination)
+        return destination
+    except TripoError:
+        try:
+            part.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError):
+        try:
+            part.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise TripoError("The artifact could not be downloaded.") from None

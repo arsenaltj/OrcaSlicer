@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2600" height="1650" viewBox="0 0 2600 1650" role="img" aria-labelledby="title desc">
+  <title id="title">OrcaSlicer AI 模块级目标架构</title>
+  <desc id="desc">比代码类图更抽象一层的能力和模块架构。蓝色代表 ORCA 已有能力，橙色代表拟新增能力，展示用户体验、AI 业务编排、AI 核心能力、ORCA 核心域、平台服务和外部 Provider，以及三条关键业务闭环。</desc>
+  <defs>
+    <marker id="ab" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="var(--base)"/></marker>
+    <marker id="ap" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="var(--plan)"/></marker>
+    <marker id="an" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="var(--line)"/></marker>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%"><feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#000" flood-opacity=".08"/></filter>
+    <style>
+      :root{color-scheme:light;--page:#f9f9f7;--surface:#fcfcfb;--surface2:#f4f4f1;--card:#fff;--ink:#0b0b0b;--ink2:#52514e;--muted:#898781;--grid:#e1e0d9;--line:#696862;--base:#2a78d6;--plan:#eda100;--basebg:#edf5ff;--planbg:#fff6de}
+      @media(prefers-color-scheme:dark){:root{color-scheme:dark;--page:#0d0d0d;--surface:#1a1a19;--surface2:#232321;--card:#262624;--ink:#fff;--ink2:#c3c2b7;--muted:#898781;--grid:#2c2c2a;--line:#b4b3ad;--base:#3987e5;--plan:#c98500;--basebg:#17263a;--planbg:#332b18}}
+      text{font-family:system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;fill:var(--ink)}.page{fill:var(--page)}.panel{fill:var(--surface);stroke:var(--grid);stroke-width:1.5}.band{fill:var(--surface2);stroke:var(--grid);stroke-width:1.5}.base{fill:var(--basebg);stroke:var(--base);stroke-width:1.8}.plan{fill:var(--planbg);stroke:var(--plan);stroke-width:2;stroke-dasharray:9 5}.external{fill:var(--card);stroke:var(--grid);stroke-width:1.7}.title{font-size:38px;font-weight:750}.subtitle{font-size:16px;fill:var(--ink2)}.band-title{font-size:20px;font-weight:740;fill:var(--ink2)}.name{font-size:21px;font-weight:750}.body{font-size:14px;fill:var(--ink2)}.small{font-size:12px;fill:var(--muted)}.label{font-size:13px;font-weight:730;fill:var(--ink2);paint-order:stroke;stroke:var(--surface);stroke-width:6;stroke-linejoin:round}.badge{font-size:12px;font-weight:760;fill:#fff}.base-line{fill:none;stroke:var(--base);stroke-width:2.3;marker-end:url(#ab)}.plan-line{fill:none;stroke:var(--plan);stroke-width:2.5;stroke-dasharray:9 6;marker-end:url(#ap)}.neutral-line{fill:none;stroke:var(--line);stroke-width:1.8;marker-end:url(#an)}.feedback{fill:none;stroke:var(--plan);stroke-width:2.5;stroke-dasharray:4 6;marker-end:url(#ap)}.divider{stroke:var(--grid);stroke-width:1}.base-tag{fill:var(--base)}.plan-tag{fill:var(--plan)}
+    </style>
+  </defs>
+  <rect class="page" width="2600" height="1650"/>
+  <text class="title" x="55" y="62">OrcaSlicer AI 模块级目标架构</text>
+  <text class="subtitle" x="57" y="91">能力与模块视角 · 上承产品旅程，下接代码级架构和开发任务</text>
+  <rect class="external" x="2150" y="27" width="395" height="67" rx="14"/><text class="small" x="2175" y="52">ORCA 官方基线</text><text class="body" x="2175" y="78">main @ a62fb17e</text>
+
+  <rect class="panel" x="55" y="115" width="2490" height="80" rx="16"/>
+  <text class="band-title" x="82" y="149">图例</text>
+  <rect class="base-tag" x="185" y="132" width="140" height="32" rx="8"/><text class="badge" x="208" y="153">ORCA 已有</text><text class="body" x="340" y="153">现有能力域</text>
+  <rect class="plan-tag" x="585" y="132" width="150" height="32" rx="8"/><text class="badge" x="608" y="153">拟新增能力</text><text class="body" x="750" y="153">内嵌到 ORCA 的 AI 模块</text>
+  <path class="base-line" d="M1160 148 H1240"/><text class="body" x="1255" y="153">现有业务流</text>
+  <path class="plan-line" d="M1535 148 H1615"/><text class="body" x="1630" y="153">新增能力流</text>
+  <path class="feedback" d="M1925 148 H2005"/><text class="body" x="2020" y="153">结果反馈 / 闭环</text>
+
+  <rect class="panel" x="55" y="220" width="2490" height="1360" rx="22" filter="url(#shadow)"/>
+
+  <!-- User experience -->
+  <rect class="band" x="85" y="250" width="2430" height="215" rx="18"/><text class="band-title" x="110" y="286">1. 用户体验与交互层</text>
+  <g><rect class="base" x="120" y="315" width="400" height="110" rx="14"/><rect class="base-tag" x="140" y="331" width="96" height="25" rx="6"/><text class="badge" x="153" y="349">ORCA 已有</text><text class="name" x="140" y="386">建模与切片工作台</text><text class="body" x="140" y="411">Prepare · Preview · Device · 项目操作</text></g>
+  <g><rect class="plan" x="590" y="300" width="630" height="135" rx="14"/><rect class="plan-tag" x="610" y="316" width="103" height="25" rx="6"/><text class="badge" x="624" y="334">拟新增</text><text class="name" x="610" y="372">AI 一体化工作区</text><text class="body" x="610" y="398">图/文生成 · 模型诊断 · 修复确认 · 参数调优 · 候选比较</text><text class="body" x="610" y="420">统一进度、取消、重试、历史、应用与回滚</text></g>
+  <g><rect class="plan" x="1290" y="300" width="550" height="135" rx="14"/><rect class="plan-tag" x="1310" y="316" width="103" height="25" rx="6"/><text class="badge" x="1324" y="334">拟新增</text><text class="name" x="1310" y="372">AI 结果可解释与对比</text><text class="body" x="1310" y="398">问题定位 · 修复差异 · 参数变化 · 时间/耗材/质量权衡</text><text class="body" x="1310" y="420">用户接受前不改变正式项目状态</text></g>
+  <g><rect class="base" x="1910" y="315" width="565" height="110" rx="14"/><rect class="base-tag" x="1930" y="331" width="96" height="25" rx="6"/><text class="badge" x="1943" y="349">ORCA 已有</text><text class="name" x="1930" y="386">标准项目交互</text><text class="body" x="1930" y="411">对象树 · 3D 场景 · Undo/Redo · Save/Export/Print</text></g>
+  <path class="base-line" d="M520 370 H588"/><path class="plan-line" d="M1220 370 H1288"/><path class="plan-line" d="M1840 370 H1908"/>
+
+  <!-- Orchestration -->
+  <rect class="band" x="85" y="495" width="2430" height="215" rx="18"/><text class="band-title" x="110" y="531">2. AI 业务编排层</text>
+  <g><rect class="base" x="120" y="560" width="400" height="110" rx="14"/><rect class="base-tag" x="140" y="576" width="96" height="25" rx="6"/><text class="badge" x="153" y="594">ORCA 已有</text><text class="name" x="140" y="631">ORCA 用例编排</text><text class="body" x="140" y="656">Plater · Job/Worker · wx Event · Background Process</text></g>
+  <g><rect class="plan" x="590" y="545" width="550" height="135" rx="14"/><rect class="plan-tag" x="610" y="561" width="103" height="25" rx="6"/><text class="badge" x="624" y="579">拟新增</text><text class="name" x="610" y="617">AI 工作流引擎</text><text class="body" x="610" y="643">生成 / 检查 / 修复 / 调优的状态机与步骤编排</text><text class="body" x="610" y="665">进度、取消、重试、恢复、接受与回滚</text></g>
+  <g><rect class="plan" x="1205" y="545" width="550" height="135" rx="14"/><rect class="plan-tag" x="1225" y="561" width="103" height="25" rx="6"/><text class="badge" x="1239" y="579">拟新增</text><text class="name" x="1225" y="617">候选评估与决策</text><text class="body" x="1225" y="643">隔离试切 · 多候选评分 · 基线对比 · 选择建议</text><text class="body" x="1225" y="665">候选阶段不污染正式 Print 和项目配置</text></g>
+  <g><rect class="base" x="1820" y="560" width="655" height="110" rx="14"/><rect class="base-tag" x="1840" y="576" width="96" height="25" rx="6"/><text class="badge" x="1853" y="594">ORCA 已有</text><text class="name" x="1840" y="631">正式应用流程</text><text class="body" x="1840" y="656">导入模型 · 更新配置 · Dirty/Undo · 正式切片 · Preview</text></g>
+  <path class="base-line" d="M520 615 H588"/><path class="plan-line" d="M1140 615 H1203"/><path class="plan-line" d="M1755 615 H1818"/>
+
+  <!-- AI capability domains -->
+  <rect class="band" x="85" y="740" width="2430" height="290" rx="18"/><text class="band-title" x="110" y="776">3. AI 核心能力层</text>
+  <g><rect class="plan" x="120" y="810" width="520" height="170" rx="14"/><rect class="plan-tag" x="140" y="826" width="103" height="25" rx="6"/><text class="badge" x="154" y="844">拟新增</text><text class="name" x="140" y="882">模型生成能力</text><text class="body" x="140" y="909">图/文请求预处理 · Provider 调度 · 任务追踪</text><text class="body" x="140" y="933">产物下载校验 · 统一模型导入</text><text class="small" x="140" y="958">输出：可进入 ORCA Model 的几何资产</text></g>
+  <g><rect class="plan" x="690" y="810" width="520" height="170" rx="14"/><rect class="plan-tag" x="710" y="826" width="103" height="25" rx="6"/><text class="badge" x="724" y="844">拟新增</text><text class="name" x="710" y="882">模型理解与修复能力</text><text class="body" x="710" y="909">几何健康检查 · 可打印性检查 · 风险证据</text><text class="body" x="710" y="933">修复计划 · ORCA 修复能力适配 · 差异确认</text><text class="small" x="710" y="958">输出：诊断报告或用户确认后的 Model 变更</text></g>
+  <g><rect class="plan" x="1260" y="810" width="520" height="170" rx="14"/><rect class="plan-tag" x="1280" y="826" width="103" height="25" rx="6"/><text class="badge" x="1294" y="844">拟新增</text><text class="name" x="1280" y="882">智能参数调优能力</text><text class="body" x="1280" y="909">切片上下文构建 · 参数候选生成 · 严格校验</text><text class="body" x="1280" y="933">试切评估 · 时间/耗材/质量多目标比较</text><text class="small" x="1280" y="958">输出：可解释、可接受、可回滚的配置候选</text></g>
+  <g><rect class="plan" x="1830" y="810" width="645" height="170" rx="14"/><rect class="plan-tag" x="1850" y="826" width="103" height="25" rx="6"/><text class="badge" x="1864" y="844">拟新增</text><text class="name" x="1850" y="882">AI 服务抽象</text><text class="body" x="1850" y="909">Provider 无关接口 · Sidecar/远端服务适配 · 健康检查</text><text class="body" x="1850" y="933">凭据边界 · 版本/能力发现 · 错误与重试规范</text><text class="small" x="1850" y="958">AI 业务不直接依赖单一厂商 SDK 或协议</text></g>
+  <path class="plan-line" d="M640 895 H688"/><path class="plan-line" d="M1210 895 H1258"/><path class="plan-line" d="M1780 895 H1828"/>
+
+  <!-- ORCA core -->
+  <rect class="band" x="85" y="1060" width="2430" height="250" rx="18"/><text class="band-title" x="110" y="1096">4. ORCA 核心业务域</text>
+  <g><rect class="base" x="120" y="1130" width="430" height="130" rx="14"/><rect class="base-tag" x="140" y="1146" width="96" height="25" rx="6"/><text class="badge" x="153" y="1164">ORCA 已有</text><text class="name" x="140" y="1201">项目与场景域</text><text class="body" x="140" y="1228">Model · Object · Volume · Instance · Plate</text></g>
+  <g><rect class="base" x="590" y="1130" width="430" height="130" rx="14"/><rect class="base-tag" x="610" y="1146" width="96" height="25" rx="6"/><text class="badge" x="623" y="1164">ORCA 已有</text><text class="name" x="610" y="1201">配置与预设域</text><text class="body" x="610" y="1228">Printer · Filament · Process · Dynamic Config</text></g>
+  <g><rect class="base" x="1060" y="1130" width="430" height="130" rx="14"/><rect class="base-tag" x="1080" y="1146" width="96" height="25" rx="6"/><text class="badge" x="1093" y="1164">ORCA 已有</text><text class="name" x="1080" y="1201">几何与修复域</text><text class="body" x="1080" y="1228">Mesh · CGAL · BuildVolume · Geometry</text></g>
+  <g><rect class="base" x="1530" y="1130" width="430" height="130" rx="14"/><rect class="base-tag" x="1550" y="1146" width="96" height="25" rx="6"/><text class="badge" x="1563" y="1164">ORCA 已有</text><text class="name" x="1550" y="1201">切片与 G-code 域</text><text class="body" x="1550" y="1228">Print · Layers · Paths · GCode · Statistics</text></g>
+  <g><rect class="base" x="2000" y="1130" width="475" height="130" rx="14"/><rect class="base-tag" x="2020" y="1146" width="96" height="25" rx="6"/><text class="badge" x="2033" y="1164">ORCA 已有</text><text class="name" x="2020" y="1201">预览、项目与设备输出</text><text class="body" x="2020" y="1228">Preview · 3MF · Export · Send · Print</text></g>
+  <path class="base-line" d="M550 1195 H588"/><path class="base-line" d="M1020 1195 H1058"/><path class="base-line" d="M1490 1195 H1528"/><path class="base-line" d="M1960 1195 H1998"/>
+
+  <!-- Platform -->
+  <rect class="band" x="85" y="1340" width="2430" height="205" rx="18"/><text class="band-title" x="110" y="1376">5. 平台、持久化与外部生态</text>
+  <g><rect class="base" x="120" y="1410" width="430" height="95" rx="14"/><text class="name" x="140" y="1448">ORCA 桌面平台</text><text class="body" x="140" y="1477">wxWidgets · CMake · 三平台 · 插件机制</text></g>
+  <g><rect class="plan" x="590" y="1400" width="430" height="115" rx="14"/><text class="name" x="610" y="1438">AI 运行与任务服务</text><text class="body" x="610" y="1465">服务生命周期 · 任务历史 · 缓存 · 清理</text><text class="small" x="610" y="1491">默认不把任务历史写入项目 3MF</text></g>
+  <g><rect class="base" x="1060" y="1410" width="430" height="95" rx="14"/><text class="name" x="1080" y="1448">项目与配置持久化</text><text class="body" x="1080" y="1477">3MF · Profiles · AppConfig · Backup</text></g>
+  <g><rect class="plan" x="1530" y="1400" width="430" height="115" rx="14"/><text class="name" x="1550" y="1438">AI 质量保障</text><text class="body" x="1550" y="1465">Mock · 契约 · 工作流 · 兼容 · E2E 测试</text><text class="small" x="1550" y="1491">功能关闭、旧项目、三平台行为不变</text></g>
+  <g><rect class="external" x="2000" y="1400" width="475" height="115" rx="14"/><text class="name" x="2020" y="1438">外部 AI Provider / Sidecar</text><text class="body" x="2020" y="1465">模型生成 · 推理服务 · 云 API · 本地能力</text><text class="small" x="2020" y="1491">只通过 AI 服务抽象进入 ORCA</text></g>
+  <path class="plan-line" d="M550 1457 H588"/><path class="plan-line" d="M1020 1457 H1058"/><path class="base-line" d="M1490 1457 H1528"/><path class="plan-line" d="M1960 1457 H1998"/>
+
+  <!-- Vertical mappings; intentionally few -->
+  <path class="plan-line" d="M905 435 V543"/><text class="label" x="920" y="497">交互提交 AI 用例</text>
+  <path class="plan-line" d="M1480 680 V808"/><text class="label" x="1495" y="752">编排调用能力</text>
+  <path class="plan-line" d="M380 980 C380 1040 335 1060 335 1128"/><text class="label" x="180" y="1052">生成资产进入 Model</text>
+  <path class="plan-line" d="M950 980 C950 1040 1275 1060 1275 1128"/><text class="label" x="995" y="1042">诊断/修复复用几何域并回写 Model</text>
+  <path class="plan-line" d="M1520 980 C1450 1045 930 1050 805 1128"/><text class="label" x="1050" y="1034">配置候选经校验进入 Config</text>
+  <path class="feedback" d="M1745 1130 C1745 1050 1570 1035 1570 980"/><text class="label" x="1690" y="1044">试切结果反馈评分</text>
+  <path class="feedback" d="M2237 1130 C2300 940 2290 710 2140 670"/><text class="label" x="2235" y="900">正式结果回到对比与用户决策</text>
+  <path class="plan-line" d="M2215 1400 C2215 1280 2150 1120 2148 980"/><text class="label" x="2225" y="1285">Provider 能力</text>
+
+  <text class="small" x="85" y="1558">架构原则：ORCA 的 Model、Config、Print、Preview 继续作为业务真值；AI 负责生成建议、候选和工作流，不建立第二套项目或切片核心。</text>
+  <text class="small" x="55" y="1618">下一层详见《OrcaSlicer 内嵌 AI 目标代码架构》；本图用于产品、架构和工作包边界评审。</text>
+</svg>

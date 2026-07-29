@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(claude-api)",
+      "Skill(claude-api:*)",
+      "Bash(cmake --build \"D:/Workspace/06_3DDY_claude/build\" --config RelWithDebInfo --target ALL_BUILD -- -m)",
+      "Bash(cmd.exe /c where cmake)",
+      "WebSearch",
+      "Bash(\"/c/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe\" --build build --config Release --target libslic3r_gui -- -m)",
+      "Bash(python -m py_compile \"D:/Workspace/06_3DDY_claude/tools/ai/openai_preprocessor.py\" \"D:/Workspace/06_3DDY_claude/tools/ai/tripo_client.py\")",
+      "Bash(python -m py_compile \"D:/Workspace/06_3DDY_claude/tools/ai_sidecar_mock.py\")",
+      "Bash(python -m py_compile \"tools/ai_sidecar_mock.py\")",
+      "Bash(ORCASLICER_AI_SIDECAR_PORT=18767 python \"tools/ai_sidecar_mock.py\")",
+      "Bash(git -C \"D:/Workspace/06_3DDY_claude\" status --short -- \"tools/ai_sidecar_mock.py\")",
+      "Bash(git -C \"D:/Workspace/06_3DDY_claude\" diff --stat -- \"tools/ai_sidecar_mock.py\")",
+      "Bash(python -m py_compile \"D:/Workspace/06_3DDY_claude/tools/ai/orca_ai_sidecar.py\")",
+      "Bash(powershell.exe -NoProfile -Command 'Get-Process orca-slicer -ErrorAction SilentlyContinue | Stop-Process -ErrorAction SilentlyContinue')",
+      "Bash(\"/c/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe\" --build build --config Release --target ALL_BUILD -- -m)",
+      "Bash(\"/c/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe\" --build build --config Release --target install -- -m)",
+      "Bash(powershell.exe -NoProfile -Command '$env:ORCASLICER_AI_SIDECAR_URL=\"http://127.0.0.1:18767\"; Start-Process -FilePath \"D:\\\\Workspace\\\\06_3DDY_claude\\\\build\\\\OrcaSlicer\\\\orca-slicer.exe\" -WorkingDirectory \"D:\\\\Workspace\\\\06_3DDY_claude\\\\build\\\\OrcaSlicer\" -PassThru | Select-Object Id')",
+      "Bash(python -)"
+    ]
+  }
+}

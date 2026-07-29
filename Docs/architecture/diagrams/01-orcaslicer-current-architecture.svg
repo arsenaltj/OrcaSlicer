@@ -1,0 +1,461 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2400" height="1700" viewBox="0 0 2400 1700" role="img" aria-labelledby="title desc">
+  <title id="title">OrcaSlicer 现状用户旅程与技术架构总览</title>
+  <desc id="desc">基于官方 main 分支提交 a62fb17e 的现状架构图，展示用户旅程、应用协调层、项目场景、配置预设、切片输出、设备网络、持久化、编译运行基础及关键兼容约束。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,4.5 L0,9 Z" fill="var(--line-strong)"/>
+    </marker>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#000000" flood-opacity="0.08"/>
+    </filter>
+    <style>
+      :root {
+        color-scheme: light;
+        --page: #f9f9f7;
+        --surface: #fcfcfb;
+        --surface-2: #f4f4f1;
+        --card: #ffffff;
+        --ink: #0b0b0b;
+        --ink-2: #52514e;
+        --muted: #898781;
+        --grid: #e1e0d9;
+        --line: #c3c2b7;
+        --line-strong: #696862;
+        --s1: #2a78d6;
+        --s2: #1baf7a;
+        --s3: #eda100;
+        --s4: #008300;
+        --s5: #4a3aa7;
+        --s6: #e34948;
+        --warn-bg: #fff6de;
+        --warn-line: #eda100;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          color-scheme: dark;
+          --page: #0d0d0d;
+          --surface: #1a1a19;
+          --surface-2: #232321;
+          --card: #262624;
+          --ink: #ffffff;
+          --ink-2: #c3c2b7;
+          --muted: #898781;
+          --grid: #2c2c2a;
+          --line: #383835;
+          --line-strong: #b4b3ad;
+          --s1: #3987e5;
+          --s2: #199e70;
+          --s3: #c98500;
+          --s4: #008300;
+          --s5: #9085e9;
+          --s6: #e66767;
+          --warn-bg: #332b18;
+          --warn-line: #c98500;
+        }
+      }
+      * { box-sizing: border-box; }
+      text { font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; fill: var(--ink); }
+      .page { fill: var(--page); }
+      .panel { fill: var(--surface); stroke: var(--grid); stroke-width: 1.5; }
+      .layer { fill: var(--surface-2); stroke: var(--grid); stroke-width: 1.5; }
+      .card { fill: var(--card); stroke: var(--grid); stroke-width: 1.5; }
+      .journey-card { fill: var(--card); stroke: var(--grid); stroke-width: 1.5; }
+      .title { font-size: 38px; font-weight: 720; letter-spacing: -0.5px; }
+      .subtitle { font-size: 17px; fill: var(--ink-2); }
+      .section-title { font-size: 23px; font-weight: 700; }
+      .layer-title { font-size: 18px; font-weight: 700; fill: var(--ink-2); }
+      .card-title { font-size: 20px; font-weight: 700; }
+      .card-title-sm { font-size: 17px; font-weight: 700; }
+      .body { font-size: 16px; fill: var(--ink-2); }
+      .body-sm { font-size: 14px; fill: var(--ink-2); }
+      .label { font-size: 14px; font-weight: 700; fill: var(--ink-2); }
+      .journey-title { font-size: 18px; font-weight: 700; }
+      .journey-sub { font-size: 13px; fill: var(--ink-2); }
+      .num { font-size: 15px; font-weight: 800; fill: #ffffff; text-anchor: middle; dominant-baseline: central; }
+      .badge { fill: var(--surface-2); stroke: var(--grid); stroke-width: 1.5; }
+      .badge-text { font-size: 14px; font-weight: 650; fill: var(--ink-2); }
+      .connector { fill: none; stroke: var(--line-strong); stroke-width: 2; marker-end: url(#arrow); }
+      .dependency { fill: none; stroke: var(--line); stroke-width: 1.5; marker-end: url(#arrow); }
+      .divider { stroke: var(--grid); stroke-width: 1.2; }
+      .s1 { fill: var(--s1); } .s2 { fill: var(--s2); } .s3 { fill: var(--s3); }
+      .s4 { fill: var(--s4); } .s5 { fill: var(--s5); } .s6 { fill: var(--s6); }
+      .stroke-s1 { stroke: var(--s1); } .stroke-s2 { stroke: var(--s2); }
+      .stroke-s3 { stroke: var(--s3); } .stroke-s4 { stroke: var(--s4); }
+      .stroke-s5 { stroke: var(--s5); } .stroke-s6 { stroke: var(--s6); }
+      .accent { stroke-width: 6; }
+      .constraint { fill: var(--warn-bg); stroke: var(--warn-line); stroke-width: 1.5; }
+      .mono { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 13px; fill: var(--ink-2); }
+    </style>
+  </defs>
+
+  <rect class="page" width="2400" height="1700"/>
+
+  <!-- Header -->
+  <text id="titleText" class="title" x="70" y="68">OrcaSlicer 现状用户旅程与技术架构总览</text>
+  <text class="subtitle" x="72" y="99">当前架构基线，不包含本地未提交修改</text>
+  <rect class="badge" x="1805" y="38" width="525" height="64" rx="14"/>
+  <text class="badge-text" x="1830" y="64">官方 main · 固定提交</text>
+  <text class="mono" x="1830" y="88">a62fb17e03d159d5b562cc6d64163346e454b5de</text>
+
+  <!-- User journey -->
+  <rect class="panel" x="70" y="130" width="2260" height="270" rx="22" filter="url(#shadow)"/>
+  <text class="section-title" x="105" y="174">一、核心用户旅程</text>
+  <text class="body-sm" x="340" y="174">从首次启动到设备监控；颜色与编号同时表达阶段，不依赖颜色识别</text>
+
+  <!-- Journey connectors -->
+  <path class="connector" d="M330 280 H365"/>
+  <path class="connector" d="M595 280 H630"/>
+  <path class="connector" d="M860 280 H895"/>
+  <path class="connector" d="M1125 280 H1160"/>
+  <path class="connector" d="M1390 280 H1425"/>
+  <path class="connector" d="M1655 280 H1690"/>
+  <path class="connector" d="M1920 280 H1955"/>
+
+  <!-- Journey cards -->
+  <g>
+    <rect class="journey-card" x="100" y="215" width="230" height="130" rx="16"/>
+    <rect class="s1" x="100" y="215" width="230" height="7" rx="4"/>
+    <circle class="s1" cx="126" cy="246" r="15"/><text class="num" x="126" y="246">1</text>
+    <text class="journey-title" x="151" y="253">启动与配置</text>
+    <text class="journey-sub" x="120" y="285">资源、AppConfig、profiles</text>
+    <text class="journey-sub" x="120" y="308">首次向导；登录非强依赖</text>
+  </g>
+  <g>
+    <rect class="journey-card" x="365" y="215" width="230" height="130" rx="16"/>
+    <rect class="s1" x="365" y="215" width="230" height="7" rx="4"/>
+    <circle class="s1" cx="391" cy="246" r="15"/><text class="num" x="391" y="246">2</text>
+    <text class="journey-title" x="416" y="253">项目与导入</text>
+    <text class="journey-sub" x="385" y="285">新建 / 打开 3MF</text>
+    <text class="journey-sub" x="385" y="308">STL、STEP、OBJ 等导入</text>
+  </g>
+  <g>
+    <rect class="journey-card" x="630" y="215" width="230" height="130" rx="16"/>
+    <rect class="s2" x="630" y="215" width="230" height="7" rx="4"/>
+    <circle class="s2" cx="656" cy="246" r="15"/><text class="num" x="656" y="246">3</text>
+    <text class="journey-title" x="681" y="253">Prepare 编辑</text>
+    <text class="journey-sub" x="650" y="285">选择、移动、旋转、缩放</text>
+    <text class="journey-sub" x="650" y="308">对象树、Gizmo、多盘排布</text>
+  </g>
+  <g>
+    <rect class="journey-card" x="895" y="215" width="230" height="130" rx="16"/>
+    <rect class="s2" x="895" y="215" width="230" height="7" rx="4"/>
+    <circle class="s2" cx="921" cy="246" r="15"/><text class="num" x="921" y="246">4</text>
+    <text class="journey-title" x="946" y="253">参数与预设</text>
+    <text class="journey-sub" x="915" y="285">打印机 / 耗材 / 工艺</text>
+    <text class="journey-sub" x="915" y="308">兼容、继承、对象级覆盖</text>
+  </g>
+  <g>
+    <rect class="journey-card" x="1160" y="215" width="230" height="130" rx="16"/>
+    <rect class="s3" x="1160" y="215" width="230" height="7" rx="4"/>
+    <circle class="s3" cx="1186" cy="246" r="15"/><text class="num" x="1186" y="246">5</text>
+    <text class="journey-title" x="1211" y="253">切片</text>
+    <text class="journey-sub" x="1180" y="285">校验、增量失效、后台处理</text>
+    <text class="journey-sub" x="1180" y="308">墙 / 填充 / 支撑 / G-code</text>
+  </g>
+  <g>
+    <rect class="journey-card" x="1425" y="215" width="230" height="130" rx="16"/>
+    <rect class="s3" x="1425" y="215" width="230" height="7" rx="4"/>
+    <circle class="s3" cx="1451" cy="246" r="15"/><text class="num" x="1451" y="246">6</text>
+    <text class="journey-title" x="1476" y="253">Preview 预览</text>
+    <text class="journey-sub" x="1445" y="285">图层、特征、时间、耗材</text>
+    <text class="journey-sub" x="1445" y="308">逐盘结果与失效状态</text>
+  </g>
+  <g>
+    <rect class="journey-card" x="1690" y="215" width="230" height="130" rx="16"/>
+    <rect class="s4" x="1690" y="215" width="230" height="7" rx="4"/>
+    <circle class="s4" cx="1716" cy="246" r="15"/><text class="num" x="1716" y="246">7</text>
+    <text class="journey-title" x="1741" y="253">导出与打印</text>
+    <text class="journey-sub" x="1710" y="285">G-code / 可移动磁盘</text>
+    <text class="journey-sub" x="1710" y="308">上传、发送、开始打印</text>
+  </g>
+  <g>
+    <rect class="journey-card" x="1955" y="215" width="335" height="130" rx="16"/>
+    <rect class="s5" x="1955" y="215" width="335" height="7" rx="4"/>
+    <circle class="s5" cx="1981" cy="246" r="15"/><text class="num" x="1981" y="246">8</text>
+    <text class="journey-title" x="2006" y="253">Device 监控</text>
+    <text class="journey-sub" x="1975" y="285">发现、认证、状态、任务</text>
+    <text class="journey-sub" x="1975" y="308">温度 / AMS / 固件 / HMS / 存储</text>
+  </g>
+  <text class="body-sm" x="105" y="378">横切旅程：Save / Save As · Undo / Redo · 自动恢复备份 · 取消 / 错误 / 重试 · 关闭确认</text>
+
+  <!-- Main architecture panel -->
+  <rect class="panel" x="70" y="430" width="1685" height="1200" rx="22" filter="url(#shadow)"/>
+  <text class="section-title" x="105" y="478">二、软件架构分层与运行时主链</text>
+  <text class="body-sm" x="506" y="478">上层编排用户流程；领域层维护状态；底层提供格式、平台与扩展能力</text>
+
+  <!-- Layer 1 -->
+  <rect class="layer" x="105" y="510" width="1615" height="125" rx="17"/>
+  <text class="layer-title" x="130" y="541">应用壳与顶层导航</text>
+  <g>
+    <rect class="card" x="330" y="528" width="310" height="88" rx="13"/>
+    <rect class="s1" x="330" y="528" width="6" height="88" rx="3"/>
+    <text class="card-title-sm" x="355" y="556">CLI / GUI_App</text>
+    <text class="body-sm" x="355" y="580">启动、资源、配置、语言、服务组合根</text>
+  </g>
+  <g>
+    <rect class="card" x="665" y="528" width="295" height="88" rx="13"/>
+    <rect class="s1" x="665" y="528" width="6" height="88" rx="3"/>
+    <text class="card-title-sm" x="690" y="556">MainFrame</text>
+    <text class="body-sm" x="690" y="580">菜单、快捷键、顶层页面与关闭流程</text>
+  </g>
+  <g>
+    <rect class="card" x="985" y="528" width="315" height="88" rx="13"/>
+    <rect class="s2" x="985" y="528" width="6" height="88" rx="3"/>
+    <text class="card-title-sm" x="1010" y="556">Prepare / Preview</text>
+    <text class="body-sm" x="1010" y="580">同一 Plater 的编辑态与结果态</text>
+  </g>
+  <g>
+    <rect class="card" x="1325" y="528" width="365" height="88" rx="13"/>
+    <rect class="s5" x="1325" y="528" width="6" height="88" rx="3"/>
+    <text class="card-title-sm" x="1350" y="556">Device / WebView / 设置</text>
+    <text class="body-sm" x="1350" y="580">设备监控、网页面板、校准与插件入口</text>
+  </g>
+
+  <!-- Down arrow -->
+  <path class="connector" d="M913 635 V657"/>
+
+  <!-- Layer 2 -->
+  <rect class="layer" x="105" y="665" width="1615" height="145" rx="17"/>
+  <text class="layer-title" x="130" y="696">工作流协调与状态管理</text>
+  <g>
+    <rect class="card" x="330" y="684" width="300" height="105" rx="13"/>
+    <rect class="s2" x="330" y="684" width="6" height="105" rx="3"/>
+    <text class="card-title" x="355" y="716">Plater</text>
+    <text class="body-sm" x="355" y="742">模型、配置、plate、视图与操作总协调</text>
+    <text class="body-sm" x="355" y="765">当前最大的业务编排中心</text>
+  </g>
+  <g>
+    <rect class="card" x="655" y="684" width="310" height="105" rx="13"/>
+    <rect class="s3" x="655" y="684" width="6" height="105" rx="3"/>
+    <text class="card-title-sm" x="680" y="716">BackgroundSlicingProcess</text>
+    <text class="body-sm" x="680" y="742">专用切片线程、进度、取消与完成事件</text>
+    <text class="body-sm" x="680" y="765">每次激活一个 FFF / SLA Print</text>
+  </g>
+  <g>
+    <rect class="card" x="990" y="684" width="320" height="105" rx="13"/>
+    <rect class="s1" x="990" y="684" width="6" height="105" rx="3"/>
+    <text class="card-title-sm" x="1015" y="716">wx Events / Jobs / Worker</text>
+    <text class="body-sm" x="1015" y="742">UI 事件、通用后台任务、主线程 finalize</text>
+    <text class="body-sm" x="1015" y="765">Arrange / Orient / Send / Print 等</text>
+  </g>
+  <g>
+    <rect class="card" x="1335" y="684" width="355" height="105" rx="13"/>
+    <rect class="s6" x="1335" y="684" width="6" height="105" rx="3"/>
+    <text class="card-title-sm" x="1360" y="716">Dirty / Undo / Backup</text>
+    <text class="body-sm" x="1360" y="742">项目修改、快照、自动恢复与关闭确认</text>
+    <text class="body-sm" x="1360" y="765">多套 freshness 账本并存</text>
+  </g>
+
+  <path class="connector" d="M913 810 V842"/>
+
+  <!-- Domain layer -->
+  <text class="layer-title" x="105" y="866">核心领域与子系统</text>
+  <g>
+    <rect class="card" x="105" y="885" width="380" height="250" rx="17"/>
+    <rect class="s2" x="105" y="885" width="380" height="7" rx="4"/>
+    <text class="card-title" x="132" y="927">项目与场景域</text>
+    <text class="body" x="132" y="958">Model → ModelObject</text>
+    <text class="body" x="132" y="986">→ ModelVolume / ModelInstance</text>
+    <text class="body" x="132" y="1014">PartPlate / PartPlateList</text>
+    <line class="divider" x1="132" y1="1037" x2="456" y2="1037"/>
+    <text class="body-sm" x="132" y="1065">权威状态：编辑模型与空间变换</text>
+    <text class="body-sm" x="132" y="1088">职责：导入、编辑、排布、盘归属</text>
+    <text class="body-sm" x="132" y="1111">GUI 与内核以 Model / Print::apply 交接</text>
+  </g>
+  <g>
+    <rect class="card" x="510" y="885" width="380" height="250" rx="17"/>
+    <rect class="s1" x="510" y="885" width="380" height="7" rx="4"/>
+    <text class="card-title" x="537" y="927">配置与预设域</text>
+    <text class="body" x="537" y="958">AppConfig</text>
+    <text class="body" x="537" y="986">PresetBundle / PresetCollection</text>
+    <text class="body" x="537" y="1014">DynamicPrintConfig / ProjectConfig</text>
+    <line class="divider" x1="537" y1="1037" x2="861" y2="1037"/>
+    <text class="body-sm" x="537" y="1065">系统 / 厂商 / 用户 / 项目内嵌层级</text>
+    <text class="body-sm" x="537" y="1088">Printer + Filament + Process + overrides</text>
+    <text class="body-sm" x="537" y="1111">兼容、继承、迁移与有效配置合成</text>
+  </g>
+  <g>
+    <rect class="card" x="915" y="885" width="380" height="250" rx="17"/>
+    <rect class="s3" x="915" y="885" width="380" height="7" rx="4"/>
+    <text class="card-title" x="942" y="927">切片与输出域</text>
+    <text class="body" x="942" y="958">Print / PrintObject / PrintRegion</text>
+    <text class="body" x="942" y="986">Layer / Surface / ExtrusionEntity</text>
+    <text class="body" x="942" y="1014">GCode / GCodeProcessor / libvgcode</text>
+    <line class="divider" x1="942" y1="1037" x2="1266" y2="1037"/>
+    <text class="body-sm" x="942" y="1065">步骤状态、增量失效与独立 Model 快照</text>
+    <text class="body-sm" x="942" y="1088">墙 / 填充 / 支撑 / 路径 / G-code</text>
+    <text class="body-sm" x="942" y="1111">后台线程编排，TBB 负责内部并行</text>
+  </g>
+  <g>
+    <rect class="card" x="1320" y="885" width="400" height="250" rx="17"/>
+    <rect class="s5" x="1320" y="885" width="400" height="7" rx="4"/>
+    <text class="card-title" x="1347" y="927">设备与网络域</text>
+    <text class="body" x="1347" y="958">DeviceManager / MachineObject</text>
+    <text class="body" x="1347" y="986">PrintHost / NetworkAgent</text>
+    <text class="body" x="1347" y="1014">IPrinterAgent / ICloudServiceAgent</text>
+    <line class="divider" x1="1347" y1="1037" x2="1691" y2="1037"/>
+    <text class="body-sm" x="1347" y="1065">传统上传与持续设备连接两套通道</text>
+    <text class="body-sm" x="1347" y="1088">发现、认证、状态、发送与云同步</text>
+    <text class="body-sm" x="1347" y="1111">插件可动态注册 printer agent</text>
+  </g>
+
+  <!-- Domain relationships -->
+  <path class="dependency" d="M485 1010 H508"/>
+  <path class="dependency" d="M890 1010 H913"/>
+  <path class="dependency" d="M1295 1010 H1318"/>
+
+  <!-- Data boundaries -->
+  <text class="layer-title" x="105" y="1173">数据输入、持久化与外部边界</text>
+  <g>
+    <rect class="card" x="105" y="1192" width="380" height="160" rx="15"/>
+    <rect class="s1" x="105" y="1192" width="6" height="160" rx="3"/>
+    <text class="card-title-sm" x="132" y="1226">项目 / 几何文件</text>
+    <text class="body-sm" x="132" y="1255">3MF · STL · STEP · OBJ · AMF · SVG</text>
+    <text class="body-sm" x="132" y="1280">统一归一化为 ModelObject</text>
+    <text class="body-sm" x="132" y="1305">3MF 聚合模型、plate、配置与元数据</text>
+    <text class="body-sm" x="132" y="1330">临时文件写入后原子 rename</text>
+  </g>
+  <g>
+    <rect class="card" x="510" y="1192" width="380" height="160" rx="15"/>
+    <rect class="s6" x="510" y="1192" width="6" height="160" rx="3"/>
+    <text class="card-title-sm" x="537" y="1226">Profiles 与恢复数据</text>
+    <text class="body-sm" x="537" y="1255">resources/profiles · user presets</text>
+    <text class="body-sm" x="537" y="1280">项目 embedded presets · legacy migration</text>
+    <text class="body-sm" x="537" y="1305">Undo snapshots · 临时恢复目录</text>
+    <text class="body-sm" x="537" y="1330">保存后更新 dirty 与备份基线</text>
+  </g>
+  <g>
+    <rect class="card" x="915" y="1192" width="380" height="160" rx="15"/>
+    <rect class="s3" x="915" y="1192" width="6" height="160" rx="3"/>
+    <text class="card-title-sm" x="942" y="1226">切片产物</text>
+    <text class="body-sm" x="942" y="1255">每 FFF plate：Print + GCode result</text>
+    <text class="body-sm" x="942" y="1280">Preview 图层、特征、时间与耗材统计</text>
+    <text class="body-sm" x="942" y="1305">导出 G-code / G-code.3MF / 可移动盘</text>
+    <text class="body-sm" x="942" y="1330">模型或配置变化后结果失效</text>
+  </g>
+  <g>
+    <rect class="card" x="1320" y="1192" width="400" height="160" rx="15"/>
+    <rect class="s5" x="1320" y="1192" width="6" height="160" rx="3"/>
+    <text class="card-title-sm" x="1347" y="1226">打印机与外部服务</text>
+    <text class="body-sm" x="1347" y="1255">OctoPrint / Moonraker / PrusaLink 等</text>
+    <text class="body-sm" x="1347" y="1280">LAN printer agent / 云 provider</text>
+    <text class="body-sm" x="1347" y="1305">WebView printer UI / Python 插件</text>
+    <text class="body-sm" x="1347" y="1330">本地功能不以云登录为前提</text>
+  </g>
+
+  <!-- Foundation -->
+  <text class="layer-title" x="105" y="1390">编译、平台与质量基础</text>
+  <rect class="layer" x="105" y="1408" width="1615" height="180" rx="17"/>
+  <g>
+    <rect class="card" x="130" y="1430" width="350" height="135" rx="13"/>
+    <text class="card-title-sm" x="155" y="1463">libslic3r</text>
+    <text class="body-sm" x="155" y="1490">Model · Config · Format</text>
+    <text class="body-sm" x="155" y="1514">FFF / SLA · GCode · Fill · Support</text>
+    <text class="body-sm" x="155" y="1538">领域与算法核心静态库</text>
+  </g>
+  <g>
+    <rect class="card" x="500" y="1430" width="350" height="135" rx="13"/>
+    <text class="card-title-sm" x="525" y="1463">libslic3r_gui</text>
+    <text class="body-sm" x="525" y="1490">wxWidgets GUI · Device · Network</text>
+    <text class="body-sm" x="525" y="1514">WebView · Python · Plugin</text>
+    <text class="body-sm" x="525" y="1538">大型桌面应用聚合库</text>
+  </g>
+  <g>
+    <rect class="card" x="870" y="1430" width="390" height="135" rx="13"/>
+    <text class="card-title-sm" x="895" y="1463">第三方运行基础</text>
+    <text class="body-sm" x="895" y="1490">wxWidgets · OpenGL · TBB · Boost</text>
+    <text class="body-sm" x="895" y="1514">CGAL · OCCT · OpenVDB · CURL</text>
+    <text class="body-sm" x="895" y="1538">几何、并行、UI 与网络能力</text>
+  </g>
+  <g>
+    <rect class="card" x="1280" y="1430" width="410" height="135" rx="13"/>
+    <text class="card-title-sm" x="1305" y="1463">交付与质量</text>
+    <text class="body-sm" x="1305" y="1490">CMake · Windows / macOS / Linux</text>
+    <text class="body-sm" x="1305" y="1514">Catch2 · profile validator · CI matrix</text>
+    <text class="body-sm" x="1305" y="1538">格式兼容与真实 profile slice 验证</text>
+  </g>
+
+  <!-- Side panel -->
+  <rect class="panel" x="1780" y="430" width="550" height="1200" rx="22" filter="url(#shadow)"/>
+  <text class="section-title" x="1815" y="478">三、状态所有权与扩展约束</text>
+
+  <!-- Ownership -->
+  <text class="layer-title" x="1815" y="520">关键状态归属</text>
+  <rect class="card" x="1815" y="540" width="480" height="350" rx="16"/>
+  <g>
+    <circle class="s1" cx="1842" cy="579" r="7"/>
+    <text class="card-title-sm" x="1862" y="585">应用级</text>
+    <text class="body-sm" x="1970" y="585">GUI_App · AppConfig · PresetBundle</text>
+  </g>
+  <line class="divider" x1="1835" y1="608" x2="2275" y2="608"/>
+  <g>
+    <circle class="s2" cx="1842" cy="643" r="7"/>
+    <text class="card-title-sm" x="1862" y="649">项目级</text>
+    <text class="body-sm" x="1970" y="649">Plater::Model · ProjectConfig</text>
+  </g>
+  <line class="divider" x1="1835" y1="672" x2="2275" y2="672"/>
+  <g>
+    <circle class="s2" cx="1842" cy="707" r="7"/>
+    <text class="card-title-sm" x="1862" y="713">Plate 级</text>
+    <text class="body-sm" x="1970" y="713">PartPlate · Print · GCodeResult</text>
+  </g>
+  <line class="divider" x1="1835" y1="736" x2="2275" y2="736"/>
+  <g>
+    <circle class="s3" cx="1842" cy="771" r="7"/>
+    <text class="card-title-sm" x="1862" y="777">任务级</text>
+    <text class="body-sm" x="1970" y="777">Background process · Job / Worker</text>
+  </g>
+  <line class="divider" x1="1835" y1="800" x2="2275" y2="800"/>
+  <g>
+    <circle class="s5" cx="1842" cy="835" r="7"/>
+    <text class="card-title-sm" x="1862" y="841">设备级</text>
+    <text class="body-sm" x="1970" y="841">DeviceManager · MachineObject</text>
+  </g>
+  <text class="body-sm" x="1835" y="872">设计新状态前，必须先确定它属于哪一级。</text>
+
+  <!-- Constraints -->
+  <text class="layer-title" x="1815" y="930">不可破坏的兼容边界</text>
+  <rect class="constraint" x="1815" y="950" width="480" height="300" rx="16"/>
+  <g>
+    <circle class="s6" cx="1843" cy="990" r="13"/><text class="num" x="1843" y="990">1</text>
+    <text class="card-title-sm" x="1868" y="996">3MF 项目格式</text>
+    <text class="body-sm" x="1868" y="1019">模型、plate、配置和元数据需向后兼容</text>
+  </g>
+  <g>
+    <circle class="s6" cx="1843" cy="1055" r="13"/><text class="num" x="1843" y="1055">2</text>
+    <text class="card-title-sm" x="1868" y="1061">Profiles 公共 schema</text>
+    <text class="body-sm" x="1868" y="1084">key、枚举、默认值和继承都需迁移</text>
+  </g>
+  <g>
+    <circle class="s6" cx="1843" cy="1120" r="13"/><text class="num" x="1843" y="1120">3</text>
+    <text class="card-title-sm" x="1868" y="1126">功能关闭时行为不变</text>
+    <text class="body-sm" x="1868" y="1149">不得改变现有默认切片结果和用户流程</text>
+  </g>
+  <g>
+    <circle class="s6" cx="1843" cy="1185" r="13"/><text class="num" x="1843" y="1185">4</text>
+    <text class="card-title-sm" x="1868" y="1191">三平台真实验证</text>
+    <text class="body-sm" x="1868" y="1214">Windows · macOS · Linux 均需工作</text>
+  </g>
+
+  <!-- Extension routes -->
+  <text class="layer-title" x="1815" y="1290">新增能力应接入的位置</text>
+  <rect class="card" x="1815" y="1310" width="480" height="275" rx="16"/>
+  <text class="body" x="1840" y="1348">新模型格式</text>
+  <text class="body-sm" x="1980" y="1348">→ Model::read_from_* → ModelObject</text>
+  <line class="divider" x1="1838" y1="1365" x2="2275" y2="1365"/>
+  <text class="body" x="1840" y="1398">新几何任务</text>
+  <text class="body-sm" x="1980" y="1398">→ Job::process / finalize</text>
+  <line class="divider" x1="1838" y1="1415" x2="2275" y2="1415"/>
+  <text class="body" x="1840" y="1448">新切片选项</text>
+  <text class="body-sm" x="1980" y="1448">→ Config + step invalidation + tests</text>
+  <line class="divider" x1="1838" y1="1465" x2="2275" y2="1465"/>
+  <text class="body" x="1840" y="1498">新打印协议</text>
+  <text class="body-sm" x="1980" y="1498">→ PrintHost 或 IPrinterAgent</text>
+  <line class="divider" x1="1838" y1="1515" x2="2275" y2="1515"/>
+  <text class="body" x="1840" y="1548">新云能力</text>
+  <text class="body-sm" x="1980" y="1548">→ ICloudServiceAgent / capability</text>
+
+  <!-- Footer -->
+  <text class="body-sm" x="70" y="1670">读图方式：上方按用户流程阅读；中间自上而下理解调用和依赖；右侧用于判断新需求的状态归属、兼容风险和接入边界。</text>
+  <text class="body-sm" x="2050" y="1670">OrcaSlicer 现状基线 · 2026-07-25</text>
+</svg>
