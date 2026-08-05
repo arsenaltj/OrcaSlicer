@@ -282,10 +282,16 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/health":
             self.send_json({
                 "ok": True,
-                "features": [
-                    "config-proposal", "chat", "model-jobs-text", "model-jobs-image",
-                    "model-job-preview", "model-job-stl-artifact",
-                ],
+                "protocol_version": 1,
+                "sidecar_version": "orcaslicer-ai-sidecar-mock-v1",
+                "capabilities": {
+                    "config_proposal": {"available": True},
+                    "model_generation": {
+                        "available": True,
+                        "sources": ["text", "image"],
+                        "artifact_formats": ["3mf", "stl"],
+                    },
+                },
             }, 200)
             return
 

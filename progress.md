@@ -64,10 +64,34 @@
 - **状态：** complete
 - 给出 M0-M6 里程碑、各阶段验收标准和最短实施路径；建议先平台补洞和生成验收，再从 `PrintabilityIssue/Report` 与 `ModelPreflightService` 开始核心开发。
 
+### 阶段 8：M0 AI 功能门控与能力发现
+- **状态：** blocked — 代码与 Python 验证完成，C++ 构建/E2E 等待可用 Windows 工具链。
+- 执行的操作：
+  - 已重新读取 `task_plan.md`、`findings.md` 和 `progress.md`；`session-catchup.py` 无标准输出并以退出码 49 结束，未提供可操作的恢复报告。
+  - 重新确认当前 Git 工作区可用，并审计 ModelGenerationPanel、AIAssistantPanel、MainFrame、Plater、AppConfig、Preferences 与 production/mock sidecar。
+  - 实现 `enable_ai_features=false` 默认开关、实验设置 UI 与 `AppConfig` Catch2 覆盖。
+  - 统一 `/health` 为 v1 capability schema，并新增 production/mock 无外部调用的 Python 契约测试。
+  - 实现 `AIServiceManager` 的异步、loopback-only discovery、严格 schema 校验与关闭期取消；将生成页、AI Assistant AUI pane 和 View menu 改为 capability 成功后延迟注册。
+  - 恢复标准 `TabPosition` 索引，生成页改为末尾追加且不自动选择；新增 inactive generate 图标。
+  - `cmake --build` 失败，原因是 shell 找不到 `cmake`；随后 `where.exe` 也未找到 CMake、MSBuild、devenv 或 Ninja。构建目录仍有 `build/OrcaSlicer.sln`，但无可执行工具链可驱动它。
+
 ## 测试结果
 | 测试 | 输入 | 预期结果 | 实际结果 | 状态 |
 |------|------|---------|---------|------|
 | 会话恢复 | 项目根目录 | 找到历史上下文或明确无记录 | 脚本无输出 | 完成 |
+| Sidecar health contract | production/mock 临时 loopback server | v1 capability schema 一致且不泄露配置 | 3 tests passed | 完成 |
+| Python syntax | sidecar、mock、contract test | Python 可编译 | `py_compile` 成功 | 完成 |
+| Diff format | 当前工作区 | 无空白错误 | `git diff --check` 成功 | 完成 |
+| C++ GUI build | `libslic3r_gui` Release | 编译改动后的 GUI 静态库 | 成功；日志含 AIServiceManager/MainFrame/Plater | 完成 |
+| Application link | `OrcaSlicer` Release | 链接可启动应用目标 | 成功；生成并安装 `build/OrcaSlicer/orca-slicer.exe` | 完成 |
+| GUI E2E (disabled) | 隔离 `--datadir` + mock | AI 默认关闭时无 discovery | 应用正常启动，配置持久化为 `enable_ai_features=false`，mock 无应用 `/health` 请求 | 完成 |
+| GUI E2E (enabled) | 隔离 `--datadir` + mock | 发现后注册并打开生成页 | mock 收到 `/health`；窗口响应；“3D Generate” 内容页实际加载且未抢占默认页 | 完成 |
+| Catch2 AppConfig | 独立 `.workbuddy/build-tests` Release | 构建并运行新增测试 | `AppConfig AI feature gate`：3 assertions 通过，随机顺序执行 | 完成 |
+| AI Assistant menu E2E | OrcaSlicer 自定义菜单 | 验证菜单项与 AUI pane 显示/隐藏 | wx 顶栏未向 UI Automation 暴露命令，DPI 坐标点击不可靠；代码路径已在 Release 构建通过 | 待补充 |
+| Simplified AI Python contract | `tools/ai/test_sidecar_contract.py` | 验证 OpenAI/Tripo capability matrix | 4/4 通过：无凭据、OpenAI-only、OpenAI+Tripo、mock schema | 完成 |
+| Simplified AI Release build | VS 2022 CMake `OrcaSlicer` target | 构建固定生成页与 OpenAI migration | 成功，重新编译 AppConfig、MainFrame、ModelGenerationPanel、Preferences | 完成 |
+| Permanent 3D Generate page | 无凭据 production sidecar + 隔离 `--datadir` | 页面无开关默认存在 | `/health` 两项能力均 false；实际窗口顶部仍显示 3D Generate | 完成 |
+| Disabled generation controls | 无凭据 production sidecar | 打开页面后验证禁用动作与状态文案 | 当前桌面环境持续抢占 OrcaSlicer 前台，无法可靠进入自定义页完成视觉断言 | 待手动确认 |
 
 ## 错误日志
 | 时间戳 | 错误 | 尝试次数 | 解决方案 |
@@ -77,6 +101,10 @@
 | 2026-07-29 | 补充 GUI 追踪代理因上下文超限返回 502 | 1 | 不重复调用；现有独立证据已覆盖该范围 |
 | 2026-07-29 | 新阶段恢复时 `git diff --stat` 因根目录无 `.git` 失败 | 1 | 停止根目录 Git 检查，沿用文件与历史证据 |
 | 2026-07-29 | 模型检查/修复盘点代理因上游连接失败返回 502 | 1 | 缩小任务范围并复用同一代理上下文 |
+| 2026-07-30 | `cmake --install build --config Release` 无法覆盖 `build/OrcaSlicer/OrcaSlicer.dll`（permission denied） | 1 | 用户关闭运行实例后重试安装成功；完成隔离 GUI E2E |
+| 2026-07-30 | `libslic3r_tests` target 不存在 | 1 | 确认当前 CMake cache 禁用 `BUILD_TESTING`/`BUILD_TESTS`；不更改已有 build 配置，待独立测试构建目录 |
+| 2026-07-30 | OrcaSlicer 自定义菜单不暴露标准 UI Automation 命令 | 1 | 不伪造菜单验收；记录 AI Assistant menu/pane 交互测试待专用驱动补充 |
+| 2026-07-30 | 主 build 未生成 Catch2 target | 1 | 新建隔离 `.workbuddy/build-tests`，显式启用 `BUILD_TESTS`/`BUILD_TESTING`；`AppConfig AI feature gate` 随机顺序测试通过 |
 
 ## 五问重启检查
 | 问题 | 答案 |

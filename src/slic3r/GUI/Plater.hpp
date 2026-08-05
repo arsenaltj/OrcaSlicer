@@ -442,6 +442,7 @@ public:
     void collapse_sidebar(bool collapse);
     Sidebar::DockingState get_sidebar_docking_state() const;
 
+    void enable_ai_assistant();
     bool is_ai_assistant_shown() const;
     void show_ai_assistant(bool show);
 

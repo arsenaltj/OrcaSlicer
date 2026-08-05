@@ -311,6 +311,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/ModelGenerationPanel.hpp
     GUI/AISidecarClient.cpp
     GUI/AISidecarClient.hpp
+    GUI/AIServiceManager.cpp
+    GUI/AIServiceManager.hpp
     GUI/KBShortcutsDialog.cpp
     GUI/KBShortcutsDialog.hpp
     GUI/LibVGCode/LibVGCodeWrapper.hpp

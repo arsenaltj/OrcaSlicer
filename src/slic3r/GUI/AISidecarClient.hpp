@@ -38,6 +38,7 @@ public:
     void set_endpoint(std::string endpoint) { m_endpoint = std::move(endpoint); }
 
     static std::string default_endpoint();
+    static bool is_loopback_endpoint(const std::string& endpoint);
 
 private:
     std::string           m_endpoint;

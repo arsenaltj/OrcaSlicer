@@ -18,7 +18,25 @@
       "Bash(\"/c/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe\" --build build --config Release --target ALL_BUILD -- -m)",
       "Bash(\"/c/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe\" --build build --config Release --target install -- -m)",
       "Bash(powershell.exe -NoProfile -Command '$env:ORCASLICER_AI_SIDECAR_URL=\"http://127.0.0.1:18767\"; Start-Process -FilePath \"D:\\\\Workspace\\\\06_3DDY_claude\\\\build\\\\OrcaSlicer\\\\orca-slicer.exe\" -WorkingDirectory \"D:\\\\Workspace\\\\06_3DDY_claude\\\\build\\\\OrcaSlicer\" -PassThru | Select-Object Id')",
-      "Bash(python -)"
+      "Bash(python -)",
+      "Bash(python \"D:/Workspace/06_3DDY_claude/tools/ai/test_sidecar_contract.py\")",
+      "Bash(python -m py_compile \"D:/Workspace/06_3DDY_claude/tools/ai/orca_ai_sidecar.py\" \"D:/Workspace/06_3DDY_claude/tools/ai_sidecar_mock.py\" \"D:/Workspace/06_3DDY_claude/tools/ai/test_sidecar_contract.py\")",
+      "Bash(cmake --build \"D:/Workspace/06_3DDY_claude/build\" --config Release --target OrcaSlicer -- -m)",
+      "Bash(where.exe cmake *)",
+      "Bash(where.exe MSBuild.exe)",
+      "Bash(where.exe vswhere.exe)",
+      "Bash(where.exe devenv.com)",
+      "Bash(where.exe ninja.exe)",
+      "Bash(\"C:/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe\" --build build --config Release --target libslic3r_gui -- -m)",
+      "Bash(python -m py_compile \"D:/Workspace/06_3DDY_claude/tools/ai/openai_preprocessor.py\" \"D:/Workspace/06_3DDY_claude/tools/ai/orca_ai_sidecar.py\" \"D:/Workspace/06_3DDY_claude/tools/ai_sidecar_mock.py\" \"D:/Workspace/06_3DDY_claude/tools/ai/test_sidecar_contract.py\")",
+      "Bash(\"D:/Workspace/06_3DDY_claude/.workbuddy/build-tests/tests/libslic3r/Release/libslic3r_tests.exe\" \"AppConfig network version helpers\" --order rand --warn NoAssertions)",
+      "Bash(\"C:/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe\" --build build --config Release --target OrcaSlicer -- -m)",
+      "Bash(powershell.exe -NoProfile -Command \"Get-Process orca-slicer -ErrorAction SilentlyContinue | Select-Object Id,Path | Format-Table -AutoSize\")",
+      "Bash(\"C:/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe\" --install build --config Release)",
+      "Bash(PYTHONUNBUFFERED=1 OPENAI_API_KEY= TRIPO_API_KEY= ORCASLICER_AI_SIDECAR_PORT=18764 python \"tools/ai/orca_ai_sidecar.py\")",
+      "Bash(python -c \"import json, urllib.request; print\\(json.dumps\\(json.load\\(urllib.request.urlopen\\('http://127.0.0.1:18764/health', timeout=5\\)\\), ensure_ascii=False\\)\\)\")",
+      "Bash(powershell.exe -NoProfile -Command '$env:ORCASLICER_AI_SIDECAR_URL='\\\\''http://127.0.0.1:18764'\\\\''; $p=Start-Process -FilePath '\\\\''D:\\\\Workspace\\\\06_3DDY_claude\\\\build\\\\OrcaSlicer\\\\orca-slicer.exe'\\\\'' -ArgumentList '\\\\''--datadir'\\\\'','\\\\''D:\\\\Workspace\\\\06_3DDY_claude\\\\.workbuddy\\\\unconfigured-ai-test'\\\\'' -PassThru; $p.Id')",
+      "Bash(PYTHONUNBUFFERED=1 ORCASLICER_AI_SIDECAR_PORT=18765 python \"tools/ai_sidecar_mock.py\")"
     ]
   }
 }

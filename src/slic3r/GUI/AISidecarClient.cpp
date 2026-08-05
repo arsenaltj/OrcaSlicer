@@ -10,9 +10,7 @@
 
 namespace Slic3r::GUI {
 
-namespace {
-
-bool is_loopback_endpoint(const std::string& endpoint)
+bool AISidecarClient::is_loopback_endpoint(const std::string& endpoint)
 {
     static const std::regex pattern(R"(^https?://(\[[^\]]+\]|[^/:?#]+)(?::[0-9]+)?(?:[/?#]|$))", std::regex::icase);
     std::smatch match;
@@ -22,6 +20,8 @@ bool is_loopback_endpoint(const std::string& endpoint)
     std::transform(host.begin(), host.end(), host.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
     return host == "localhost" || host == "127.0.0.1" || host == "[::1]";
 }
+
+namespace {
 
 std::string proposal_url(const std::string& endpoint)
 {

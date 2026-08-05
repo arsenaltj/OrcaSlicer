@@ -13,6 +13,7 @@
 
 #include <string>
 #include <map>
+#include <memory>
 
 #include "GUI_Utils.hpp"
 #include "Event.hpp"
@@ -23,6 +24,7 @@
 #include "Project.hpp"
 #include "CalibrationPanel.hpp"
 #include "UnsavedChangesDialog.hpp"
+#include "AIServiceManager.hpp"
 #include "Widgets/SideButton.hpp"
 #include "Widgets/SideMenuPopup.hpp"
 #include "FilamentGroupPopup.hpp"
@@ -106,6 +108,7 @@ class MainFrame : public DPIFrame
     wxString    m_last_config = wxEmptyString;
 
     wxMenuBar*  m_menubar{ nullptr };
+    wxMenu*      m_view_menu{ nullptr };
     //wxMenu* publishMenu{ nullptr };
     wxMenu *    m_calib_menu{nullptr};
     bool        enable_multi_machine{ false };
@@ -219,15 +222,14 @@ public:
     enum TabPosition
     {
         tpHome            = 0,
-        tpModelGeneration = 1,
-        tp3DEditor        = 2,
-        tpPreview         = 3,
-        tpMonitor         = 4,
-        tpMultiDevice     = 5,
-        tpProject         = 6,
-        tpCalibration     = 7,
-        tpAuxiliary       = 8,
-        toDebugTool       = 9,
+        tp3DEditor        = 1,
+        tpPreview         = 2,
+        tpMonitor         = 3,
+        tpMultiDevice     = 4,
+        tpProject         = 5,
+        tpCalibration     = 6,
+        tpAuxiliary       = 7,
+        toDebugTool       = 8,
     };
 
     //BBS: add slice&&print status update logic
@@ -275,6 +277,7 @@ public:
 	void        update_title_colour_after_set_title();
     void        show_option(bool show);
     void        init_tabpanel();
+    void        register_ai_features(AIServiceAvailability availability);
     void        create_preset_tabs();
     //BBS: GUI refactor
     void        add_created_tab(Tab* panel, const std::string& bmp_name = "");
@@ -378,6 +381,7 @@ public:
     PrintHostQueueDialog* printhost_queue_dlg() { return m_printhost_queue_dlg; }
     Plater*               m_plater { nullptr };
     ModelGenerationPanel* m_model_generation { nullptr };
+    std::unique_ptr<AIServiceManager> m_ai_service_manager;
     //BBS: GUI refactor
     MonitorPanel*         m_monitor{ nullptr };
 

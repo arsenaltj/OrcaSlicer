@@ -5021,7 +5021,6 @@ Plater::priv::priv(Plater *q, MainFrame *main_frame)
         "best_object_pos",  "master_extruder_id"
         }))
     , sidebar(new Sidebar(q))
-    , ai_assistant_panel(new AIAssistantPanel(q, q))
     , notification_manager(std::make_unique<NotificationManager>(q))
     , m_worker{q, std::make_unique<NotificationProgressIndicator>(notification_manager.get()), "ui_worker"}
     , m_sla_import_dlg{new SLAImportDialog{q}}
@@ -5136,16 +5135,6 @@ Plater::priv::priv(Plater *q, MainFrame *main_frame)
                                    .BottomDockable(false)
                                    .BestSize(wxSize(39 * wxGetApp().em_unit(), 90 * wxGetApp().em_unit())));
 
-    m_aui_mgr.AddPane(ai_assistant_panel, wxAuiPaneInfo()
-                                            .Name("ai_assistant")
-                                            .Caption(_L("AI Assistant"))
-                                            .Right()
-                                            .CloseButton(true)
-                                            .TopDockable(false)
-                                            .BottomDockable(false)
-                                            .BestSize(wxSize(32 * wxGetApp().em_unit(), 70 * wxGetApp().em_unit()))
-                                            .Hide());
-
     auto* panel_sizer = new wxBoxSizer(wxHORIZONTAL);
     panel_sizer->Add(view3D, 1, wxEXPAND | wxALL, 0);
     panel_sizer->Add(preview, 1, wxEXPAND | wxALL, 0);
@@ -5177,8 +5166,6 @@ Plater::priv::priv(Plater *q, MainFrame *main_frame)
 
             sidebar_layout.is_collapsed = !sidebar.IsShown();
         }
-
-        m_aui_mgr.GetPane(ai_assistant_panel).Hide();
 
         // Keep tracking the current sidebar size, by storing it using `best_size`, which will be stored
         // in the config and re-applied when the app is opened again.
@@ -5830,7 +5817,8 @@ void Plater::priv::reset_window_layout()
 {
     m_aui_mgr.LoadPerspective(m_default_window_layout, false);
     sidebar_layout.is_collapsed = false;
-    m_aui_mgr.GetPane(ai_assistant_panel).Hide();
+    if (ai_assistant_panel != nullptr)
+        m_aui_mgr.GetPane(ai_assistant_panel).Hide();
     update_sidebar(true);
 }
 
@@ -14638,9 +14626,33 @@ bool Plater::is_sidebar_collapsed() const { return p->sidebar_layout.is_collapse
 void Plater::collapse_sidebar(bool collapse) { p->collapse_sidebar(collapse); }
 Sidebar::DockingState Plater::get_sidebar_docking_state() const { return p->get_sidebar_docking_state(); }
 
-bool Plater::is_ai_assistant_shown() const { return p->m_aui_mgr.GetPane(p->ai_assistant_panel).IsShown(); }
+bool Plater::is_ai_assistant_shown() const
+{
+    return p->ai_assistant_panel != nullptr && p->m_aui_mgr.GetPane(p->ai_assistant_panel).IsShown();
+}
+
+void Plater::enable_ai_assistant()
+{
+    if (p->ai_assistant_panel != nullptr)
+        return;
+
+    p->ai_assistant_panel = new AIAssistantPanel(this, this);
+    p->m_aui_mgr.AddPane(p->ai_assistant_panel, wxAuiPaneInfo()
+                                                     .Name("ai_assistant")
+                                                     .Caption(_L("AI Assistant"))
+                                                     .Right()
+                                                     .CloseButton(true)
+                                                     .TopDockable(false)
+                                                     .BottomDockable(false)
+                                                     .BestSize(wxSize(32 * wxGetApp().em_unit(), 70 * wxGetApp().em_unit()))
+                                                     .Hide());
+    p->m_aui_mgr.Update();
+}
+
 void Plater::show_ai_assistant(bool show)
 {
+    if (p->ai_assistant_panel == nullptr)
+        return;
     auto& pane = p->m_aui_mgr.GetPane(p->ai_assistant_panel);
     if (!pane.IsOk())
         return;

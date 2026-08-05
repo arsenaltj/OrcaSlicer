@@ -10,8 +10,6 @@ import socket
 import sys
 import tempfile
 import threading
-import urllib.error
-import urllib.request
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -21,7 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, BinaryIO, Callable
 
-from openai_preprocessor import OpenAIPreprocessorError, preprocess_image, preprocess_text
+from openai_preprocessor import OpenAIPreprocessorError, complete_text, preprocess_image, preprocess_text
 from tripo_client import (
     TripoError,
     create_conversion,
@@ -34,8 +32,6 @@ from tripo_client import (
 
 HOST = os.environ.get("ORCASLICER_AI_SIDECAR_HOST", "127.0.0.1")
 PORT = int(os.environ.get("ORCASLICER_AI_SIDECAR_PORT", "18764"))
-DEFAULT_API_BASE = "https://apihub.agnes-ai.com/v1"
-DEFAULT_MODEL = "agnes-2.0-flash"
 SIDECAR_VERSION = "orcaslicer-ai-sidecar-v2"
 MAX_REQUEST_BYTES = 256 * 1024
 MAX_CHANGES = 8
@@ -82,14 +78,6 @@ class RequestError(Exception):
 
 class JobStopped(Exception):
     pass
-
-
-def load_config() -> dict[str, str]:
-    return {
-        "api_base": os.environ.get("AGNES_API_BASE", DEFAULT_API_BASE),
-        "api_key": os.environ.get("AGNES_API_KEY", ""),
-        "model": os.environ.get("AGNES_CHAT_MODEL", DEFAULT_MODEL),
-    }
 
 
 def extract_allowed_keys(request: dict[str, Any]) -> dict[str, set[str]]:
@@ -140,49 +128,14 @@ def build_user_payload(request: dict[str, Any]) -> dict[str, Any]:
 
 
 def provider_request(request: dict[str, Any]) -> dict[str, Any]:
-    config = load_config()
-    if not config["api_key"]:
-        raise RuntimeError("AGNES_API_KEY is not set")
-
-    payload = {
-        "model": config["model"],
-        "messages": [
-            {"role": "system", "content": build_system_prompt(request)},
-            {
-                "role": "user",
-                "content": json.dumps(build_user_payload(request), ensure_ascii=False),
-            },
-        ],
-        "temperature": 0.2,
-    }
-    encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    provider_url = config["api_base"].rstrip("/") + "/chat/completions"
-    provider_call = urllib.request.Request(provider_url, data=encoded, method="POST")
-    provider_call.add_header("Authorization", "Bearer " + config["api_key"])
-    provider_call.add_header("Content-Type", "application/json")
-    provider_call.add_header("Accept", "application/json")
-
     try:
-        with urllib.request.urlopen(provider_call, timeout=110) as response:
-            result = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"AGNES HTTP {exc.code}: {detail}") from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"AGNES connection failed: {exc.reason}") from exc
-
-    choices = result.get("choices", [])
-    if not choices or not isinstance(choices[0], dict):
-        raise RuntimeError("AGNES returned no choices")
-    content = choices[0].get("message", {}).get("content", "")
-    if isinstance(content, list):
-        content = "".join(
-            str(part.get("text", "")) if isinstance(part, dict) else str(part)
-            for part in content
+        content = complete_text(
+            build_system_prompt(request),
+            json.dumps(build_user_payload(request), ensure_ascii=False, separators=(",", ":")),
         )
-    if not str(content).strip():
-        raise RuntimeError("AGNES returned an empty response")
-    return extract_json_object(str(content))
+    except OpenAIPreprocessorError as exc:
+        raise RuntimeError(str(exc)) from None
+    return extract_json_object(content)
 
 
 def extract_json_object(text: str) -> dict[str, Any]:
@@ -197,14 +150,14 @@ def extract_json_object(text: str) -> dict[str, Any]:
         start = stripped.find("{")
         end = stripped.rfind("}")
         if start < 0 or end <= start:
-            raise RuntimeError("AGNES response did not contain a JSON object")
+            raise RuntimeError("The AI service response did not contain a JSON object")
         try:
             parsed = json.loads(stripped[start : end + 1])
         except json.JSONDecodeError as exc:
-            raise RuntimeError("AGNES response contained invalid JSON") from exc
+            raise RuntimeError("The AI service response contained invalid JSON") from exc
 
     if not isinstance(parsed, dict):
-        raise RuntimeError("AGNES response was not a JSON object")
+        raise RuntimeError("The AI service response was not a JSON object")
     return parsed
 
 
@@ -244,7 +197,7 @@ def normalize_proposal(raw: dict[str, Any], request: dict[str, Any]) -> dict[str
     if isinstance(questions, list):
         assistant_parts.extend(str(question).strip() for question in questions if str(question).strip())
     if not assistant_parts:
-        assistant_parts.append("AGNES 未返回可显示的说明。")
+        assistant_parts.append("AI service did not return a displayable explanation.")
 
     return {
         "request_id": str(request.get("request_id", "")),
@@ -719,18 +672,19 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if self.path == "/health":
-            config = load_config()
+            config = os.environ.get("OPENAI_API_KEY", "")
             self.send_json(
                 200,
                 {
                     "ok": True,
+                    "protocol_version": 1,
                     "sidecar_version": SIDECAR_VERSION,
-                    "features": {
-                        "config_proposal": {"configured": bool(config["api_key"])},
-                        "gpt_preprocessing": {"configured": bool(os.environ.get("OPENAI_API_KEY", ""))},
+                    "capabilities": {
+                        "config_proposal": {"available": bool(config)},
                         "model_generation": {
-                            "configured": bool(os.environ.get("TRIPO_API_KEY", "")),
-                            "formats": ["3mf", "stl"],
+                            "available": bool(config) and bool(os.environ.get("TRIPO_API_KEY", "")),
+                            "sources": ["text", "image"],
+                            "artifact_formats": ["3mf", "stl"],
                         },
                     },
                 },

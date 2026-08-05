@@ -100,23 +100,17 @@ def _content_text(value: Any) -> str:
     return ""
 
 
-def preprocess_text(instruction: str) -> str:
-    if not isinstance(instruction, str) or not instruction.strip():
-        raise OpenAIPreprocessorError("A text instruction is required.")
+def complete_text(system_prompt: str, user_content: str) -> str:
+    if not isinstance(system_prompt, str) or not system_prompt.strip():
+        raise OpenAIPreprocessorError("A system prompt is required.")
+    if not isinstance(user_content, str) or not user_content.strip():
+        raise OpenAIPreprocessorError("User content is required.")
     _, _, model, _ = _config()
     payload = {
         "model": model,
         "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "Rewrite the user's request as one concise prompt for Tripo text-to-3D. "
-                    "Describe a single watertight, printable object with stable geometry, a flat base, "
-                    "adequate wall thickness, and no unsupported details. Preserve the requested subject "
-                    "and style. Return only the prompt, without markdown."
-                ),
-            },
-            {"role": "user", "content": instruction},
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
         ],
     }
     result = _provider_request(
@@ -131,6 +125,23 @@ def preprocess_text(instruction: str) -> str:
         content = _content_text(message.get("content") if isinstance(message, dict) else message)
     if not content:
         content = _content_text(result.get("output_text")) or _content_text(result.get("output"))
+    if not content.strip():
+        raise OpenAIPreprocessorError("The preprocessing service returned an empty response.")
+    return content.strip()
+
+
+def preprocess_text(instruction: str) -> str:
+    if not isinstance(instruction, str) or not instruction.strip():
+        raise OpenAIPreprocessorError("A text instruction is required.")
+    content = complete_text(
+        (
+            "Rewrite the user's request as one concise prompt for a text-to-3D model. "
+            "Describe a single watertight, printable object with stable geometry, a flat base, "
+            "adequate wall thickness, and no unsupported details. Preserve the requested subject "
+            "and style. Return only the prompt, without markdown."
+        ),
+        instruction,
+    )
     prompt = content.strip()
     if prompt.startswith("```") and prompt.endswith("```"):
         lines = prompt.splitlines()

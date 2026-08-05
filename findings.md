@@ -191,6 +191,19 @@ Intake
 - 新面板已加入 gettext 抽取清单，但 POT 创建日期早于这轮接入，新增 AI/Tripo/GPT 文案尚未进入 POT/PO 目录。
 - 当前启动方式是批处理分别启动 sidecar 和 OrcaSlicer，无 readiness、健康版本协商、崩溃重启或关闭联动。
 - 7 月 28 日这一轮主要把此前独立的客户端/sidecar 能力接成可见产品 UI，包括新页签、停靠助手、导入回调、关闭清理和 CMake 接入；现状是首个可操作纵向切片，而非完整 AI Workspace。
+## M0 AI 功能门控与能力发现实现（2026-07-30）
+- 已新增 `enable_ai_features` AppConfig 布尔设置，默认 `false`；Preferences 的 Developer → Experimental Features 提供需重启生效的显式开关。默认状态不创建 AI page/menu/AUI pane，也不会请求 sidecar。
+- production 与 mock 的 `GET /health` 已统一为 provider-neutral v1 文档：`ok`、整数 `protocol_version`、诊断性 `sidecar_version` 与 `capabilities.config_proposal/model_generation`。模型生成仅在 OpenAI 预处理与 Tripo 均配置时标记 available；协议不暴露 provider、密钥、模型或 endpoint。
+- 新增 `tools/ai/test_sidecar_contract.py`，使用临时 loopback servers 验证 production/mock schema、未配置/配置 capability 和无凭据泄露；该测试不触发外部 provider 请求。
+- 新增 `AIServiceManager`，只在用户启用功能后非阻塞请求 loopback `/health`，限制响应为 16 KiB，接受严格 v1 schema；请求取消和 `CallAfter` 生命周期由 weak token 保护。非 loopback endpoint 直接 fail closed，与模型生成路径的本地信任边界一致。
+- `MainFrame` 将 3D Generate 改为 capability 成功后追加标签，不再占用 `TabPosition` 固定 index，因此默认 Prepare/Preview 等现有索引回到历史位置；新增 active/inactive 专用图标。AI Assistant 也仅在 config proposal capability 成功后延迟创建 AUI pane 和 View 菜单项。
+- `Plater` 的 AI pane API 已做空指针安全处理，避免无 capability、reset layout 或关闭过程访问不存在的 pane。
+- 验证已通过：`python tools/ai/test_sidecar_contract.py`（3 tests）、对三份 Python 文件的 `py_compile`、`git diff --check`。未完成：C++ GUI 编译、Catch2 AppConfig 测试和运行时 GUI E2E；本 shell 没有可用的 `cmake`、`MSBuild.exe`、`devenv.com` 或 `ninja.exe`，即使 `build/OrcaSlicer.sln` 存在也不能在当前会话执行。
+
+- 验证更新：用户关闭占用实例后，Visual Studio CMake 成功构建 `libslic3r_gui` 与 `OrcaSlicer` Release target，并生成安装目录的 `orca-slicer.exe`。隔离 `--datadir` GUI E2E 证实默认值会持久化为 `enable_ai_features=false` 且不触发 mock discovery；启用后 mock 收到 `/health`，响应窗口实际出现并可打开运行时追加的 `3D Generate` 完整输入/预览页面，且该页没有抢占默认首页。当前 build 禁用 `BUILD_TESTING`/`BUILD_TESTS`，没有生成 Catch2 target；wx 自定义菜单未暴露给 Windows UI Automation，故 “Show AI Assistant” 菜单/停靠 pane 的互动验收待专用驱动补充。
+
+- 验证补充：已在隔离 `.workbuddy/build-tests`（`BUILD_TESTS=ON`、`BUILD_TESTING=ON`）构建 `libslic3r_tests`，并随机顺序执行 `AppConfig AI feature gate`，3 项断言全部通过。AI Assistant 菜单与 AUI pane 的实际点击验证仍待专用 wx/DPI-aware 驱动；现有 Windows UI Automation 不暴露顶栏菜单项，坐标自动化会误触其他 GUI 控件，故未将其宣称为已验证。
+
 ## 技术决策
 | 决策 | 理由 |
 |------|------|

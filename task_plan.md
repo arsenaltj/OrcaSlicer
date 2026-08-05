@@ -49,6 +49,19 @@
 - [x] 输出建议优先级和下一步实施起点
 - **状态：** complete
 
+### 阶段 8：M0 AI 功能门控与能力发现
+- [x] 读取计划、发现和进度日志
+- [x] 重新确认当前 Git 工作区、AI GUI 接入点与 sidecar 契约差异
+- [x] 增加默认关闭的 `enable_ai_features` 应用设置及 Preferences 实验开关
+- [x] 统一 production/mock 的 `/health` v1 capability schema 并添加 Python 契约测试
+- [x] 新增异步、loopback-only 的 `AIServiceManager`，仅在 capability 可用时延迟注册 AI UI
+- [x] 恢复标准标签固定索引；3D Generate 改为 discovery 成功后追加且不抢占默认页
+- [x] 在已提供 Windows CMake 路径后编译 `libslic3r_gui` 与 `OrcaSlicer` Release 目标
+- [x] 使用隔离 `--datadir`、mock sidecar 和安装目录可执行文件完成默认关闭与已启用模型生成页的 GUI E2E
+- [x] 在独立 `build-tests` 目录启用测试并运行新增 AppConfig Catch2 覆盖（3 assertions 通过）
+- [ ] 在支持 OrcaSlicer 自定义菜单的驱动中验证 “Show AI Assistant” 菜单项与停靠 pane 显示/隐藏；当前 Windows DPI 坐标与 UI Automation 未能可靠驱动该菜单
+- **状态：** complete — M0 核心门控、discovery、生成页、Release 编译与 AppConfig 单测均已验证；AI Assistant 的菜单交互为唯一后续补充
+
 ## 关键问题
 1. 四项 AI 能力各自已经达到什么程度，哪些只是 UI/规划？
 2. 哪些能力应复用 OrcaSlicer 的确定性算法，哪些适合交给 LLM/Agent？

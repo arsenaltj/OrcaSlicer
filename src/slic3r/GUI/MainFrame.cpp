@@ -38,6 +38,8 @@
 #include "GLCanvas3D.hpp"
 #include "Plater.hpp"
 #include "ModelGenerationPanel.hpp"
+#include "AIServiceManager.hpp"
+#include "AISidecarClient.hpp"
 #include "WebViewDialog.hpp"
 #include "../Utils/Process.hpp"
 #include "format.hpp"
@@ -411,6 +413,13 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
         init_menubar_as_gcodeviewer();
     else
         init_menubar_as_editor();
+
+    if (wxGetApp().is_editor()) {
+        m_ai_service_manager = std::make_unique<AIServiceManager>(AISidecarClient::default_endpoint());
+        m_ai_service_manager->discover_async([this](AIServiceAvailability availability) {
+            register_ai_features(std::move(availability));
+        });
+    }
 
     // BBS
 #if 0
@@ -1117,6 +1126,8 @@ void MainFrame::shutdown()
     Slic3r::set_backup_callback(nullptr);
     if (m_model_generation != nullptr)
         m_model_generation->shutdown();
+    if (m_ai_service_manager)
+        m_ai_service_manager->shutdown();
 #ifdef _WIN32
 	if (m_hDeviceNotify) {
 		::UnregisterDeviceNotification(HDEVNOTIFY(m_hDeviceNotify));
@@ -1324,14 +1335,14 @@ void MainFrame::init_tabpanel() {
 
     wxGetApp().plater_ = m_plater;
 
+    create_preset_tabs();
+
     m_model_generation = new ModelGenerationPanel(m_tabpanel, m_plater, [this]() {
         request_select_tab(tp3DEditor);
     });
     m_model_generation->SetBackgroundColour(*wxWHITE);
-    m_tabpanel->InsertPage(tpModelGeneration, m_model_generation, _L("3D Generate"),
-                           std::string("menu_obj_cube"), std::string("menu_obj_cube"), false);
-
-    create_preset_tabs();
+    m_tabpanel->AddPage(m_model_generation, _L("3D Generate"), std::string("tab_generate_3d_active"), std::string("tab_generate_3d"), false);
+    m_model_generation->Hide();
 
         //BBS add pages
     m_monitor = new MonitorPanel(m_tabpanel, wxID_ANY, wxDefaultPosition, wxDefaultSize);
@@ -1376,7 +1387,29 @@ void MainFrame::init_tabpanel() {
     }
 }
 
-// SoftFever
+void MainFrame::register_ai_features(AIServiceAvailability availability)
+{
+    if (m_model_generation != nullptr) {
+        const std::string message = availability.compatible && !availability.model_generation_available
+            ? "Configure the local AI service to enable 3D generation."
+            : availability.error;
+        m_model_generation->set_service_availability(availability.compatible && availability.model_generation_available, message);
+    }
+
+    if (!availability.compatible) {
+        BOOST_LOG_TRIVIAL(info) << "AI features unavailable: " << availability.error;
+        return;
+    }
+
+    if (availability.config_proposal_available && m_plater != nullptr && m_view_menu != nullptr) {
+        m_plater->enable_ai_assistant();
+        append_menu_check_item(m_view_menu, wxID_ANY, _L("Show AI Assistant"), _L("Show AI assistant panel."),
+            [this](wxCommandEvent&) { m_plater->show_ai_assistant(!m_plater->is_ai_assistant_shown()); }, this,
+            [this]() { return m_tabpanel->GetSelection() == TabPosition::tp3DEditor || m_tabpanel->GetSelection() == TabPosition::tpPreview; },
+            [this]() { return m_plater->is_ai_assistant_shown(); }, this);
+    }
+}
+
 void MainFrame::show_device(bool bBBLPrinter) {
     auto idx = -1;
     if (bBBLPrinter) {
@@ -3060,6 +3093,7 @@ void MainFrame::init_menubar_as_editor()
     wxMenu* viewMenu = nullptr;
     if (m_plater) {
         viewMenu = new wxMenu();
+        m_view_menu = viewMenu;
         add_common_view_menu_items(viewMenu, this, std::bind(&MainFrame::can_change_view, this));
         viewMenu->AppendSeparator();
 
@@ -3107,11 +3141,6 @@ void MainFrame::init_menubar_as_editor()
             },
             this, [this]() { return m_tabpanel->GetSelection() == TabPosition::tp3DEditor || m_tabpanel->GetSelection() == TabPosition::tpPreview; },
             [this]() { return wxGetApp().show_3d_navigator(); }, this);
-
-        append_menu_check_item(viewMenu, wxID_ANY, _L("Show AI Assistant"), _L("Show AI assistant panel."),
-            [this](wxCommandEvent&) { m_plater->show_ai_assistant(!m_plater->is_ai_assistant_shown()); }, this,
-            [this]() { return m_tabpanel->GetSelection() == TabPosition::tp3DEditor || m_tabpanel->GetSelection() == TabPosition::tpPreview; },
-            [this]() { return m_plater->is_ai_assistant_shown(); }, this);
 
         append_menu_check_item(viewMenu, wxID_ANY, _L("Show Gridlines"), _L("Show Gridlines on plate"),
             [this](wxCommandEvent&) {

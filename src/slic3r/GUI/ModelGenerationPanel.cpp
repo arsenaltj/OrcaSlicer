@@ -84,12 +84,26 @@ ModelGenerationPanel::ModelGenerationPanel(wxWindow* parent, Plater* plater, Imp
     SetBackgroundColour(*wxWHITE);
     build_page();
     Bind(wxEVT_TIMER, &ModelGenerationPanel::on_poll, this, POLL_TIMER_ID);
+    m_status->SetLabel(_L("Checking the local 3D generation service..."));
+    m_result_summary->SetLabel(_L("3D generation is unavailable until the local service is ready."));
     refresh_controls();
 }
 
 ModelGenerationPanel::~ModelGenerationPanel()
 {
     shutdown();
+}
+
+void ModelGenerationPanel::set_service_availability(bool available, const std::string& message)
+{
+    if (m_shutdown)
+        return;
+    m_service_available = available;
+    if (!available && !m_busy) {
+        m_status->SetLabel(message.empty() ? _L("Configure and start the local AI service to enable 3D generation.") : wxString::FromUTF8(message));
+        m_result_summary->SetLabel(_L("3D generation is unavailable."));
+    }
+    refresh_controls();
 }
 
 void ModelGenerationPanel::shutdown()
@@ -126,7 +140,7 @@ void ModelGenerationPanel::build_page()
 
     auto* right = new wxBoxSizer(wxVERTICAL);
     right->Add(build_preview_panel(this), 3, wxEXPAND | wxTOP | wxRIGHT | wxBOTTOM, FromDIP(18));
-    right->Add(build_library_placeholder(this), 1, wxEXPAND | wxRIGHT | wxBOTTOM, FromDIP(18));
+    right->Add(build_model_library(this), 1, wxEXPAND | wxRIGHT | wxBOTTOM, FromDIP(18));
     content->Add(right, 1, wxEXPAND);
     root->Add(content, 1, wxEXPAND);
     SetSizer(root);
@@ -139,6 +153,15 @@ wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
     scroll->SetBackgroundColour(wxColour(250, 251, 251));
     scroll->SetScrollRate(0, FromDIP(12));
     auto* sizer = new wxBoxSizer(wxVERTICAL);
+
+    m_workflow_steps = new wxStaticText(scroll, wxID_ANY, _L("Input  →  Prepare  →  Review  →  Generate  →  Import"));
+    m_workflow_steps->SetForegroundColour(wxColour(91, 104, 107));
+    sizer->Add(m_workflow_steps, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(16));
+    m_workflow_phase = new wxStaticText(scroll, wxID_ANY, _L("Checking local service"));
+    wxFont workflow_font = m_workflow_phase->GetFont();
+    workflow_font.SetWeight(wxFONTWEIGHT_BOLD);
+    m_workflow_phase->SetFont(workflow_font);
+    sizer->Add(m_workflow_phase, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP | wxBOTTOM, FromDIP(8));
 
     sizer->Add(section_label(scroll, _L("1. Input")), 0, wxEXPAND | wxALL, FromDIP(16));
     wxArrayString modes;
@@ -160,31 +183,32 @@ wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
     image_row->Add(m_selected_image, 1, wxALIGN_CENTER_VERTICAL);
     sizer->Add(image_row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(16));
 
-    m_upload_notice = new wxStaticText(scroll, wxID_ANY, _L("Only the selected PNG/JPEG and your instruction are sent for GPT redrawing. Project meshes, G-code, credentials, and local paths are not sent."));
+    m_upload_notice = new wxStaticText(scroll, wxID_ANY, _L("Only the selected PNG/JPEG and your instruction are sent for AI image preparation. Project meshes, G-code, credentials, and local paths are not sent."));
     m_upload_notice->Wrap(FromDIP(360));
     m_upload_notice->SetForegroundColour(wxColour(91, 104, 107));
     sizer->Add(m_upload_notice, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(16));
 
-    sizer->Add(section_label(scroll, _L("2. GPT preprocessing")), 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP | wxBOTTOM, FromDIP(16));
-    m_preprocess = new wxButton(scroll, wxID_ANY, _L("Preprocess with GPT"));
+    sizer->Add(section_label(scroll, _L("2. AI preprocessing")), 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP | wxBOTTOM, FromDIP(16));
+    m_preprocess = new wxButton(scroll, wxID_ANY, _L("Preprocess"));
     sizer->Add(m_preprocess, 0, wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(16));
-    m_prepared_prompt_label = new wxStaticText(scroll, wxID_ANY, _L("Prepared Tripo prompt"));
+    m_prepared_prompt_label = new wxStaticText(scroll, wxID_ANY, _L("Prepared 3D prompt"));
     sizer->Add(m_prepared_prompt_label, 0, wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(16));
     m_prepared_prompt = new wxTextCtrl(scroll, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(-1, FromDIP(95)), wxTE_MULTILINE);
     sizer->Add(m_prepared_prompt, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(16));
 
     sizer->Add(section_label(scroll, _L("3. Generate and import")), 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP | wxBOTTOM, FromDIP(16));
     auto* generation_buttons = new wxBoxSizer(wxHORIZONTAL);
-    m_generate = new wxButton(scroll, wxID_ANY, _L("Generate with Tripo"));
+    m_generate = new wxButton(scroll, wxID_ANY, _L("Generate 3D model"));
     m_stop = new wxButton(scroll, wxID_ANY, _L("Stop"));
     generation_buttons->Add(m_generate, 0, wxRIGHT, FromDIP(8));
     generation_buttons->Add(m_stop, 0);
     sizer->Add(generation_buttons, 0, wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(16));
 
-    m_progress = new wxGauge(scroll, wxID_ANY, 100);
+    m_generation_progress = new wxGauge(scroll, wxID_ANY, 100);
+    m_generation_progress->Hide();
     m_status = new wxStaticText(scroll, wxID_ANY, _L("Idle"));
     m_status->Wrap(FromDIP(360));
-    sizer->Add(m_progress, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(16));
+    sizer->Add(m_generation_progress, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(16));
     sizer->Add(m_status, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(16));
 
     auto* result_buttons = new wxBoxSizer(wxHORIZONTAL);
@@ -220,19 +244,23 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     auto* sizer = new wxBoxSizer(wxVERTICAL);
     sizer->Add(section_label(panel, _L("Preview and result")), 0, wxEXPAND | wxALL, FromDIP(18));
 
-    auto* preview_area = new wxPanel(panel);
-    preview_area->SetBackgroundColour(wxColour(241, 244, 245));
-    preview_area->SetMinSize(wxSize(FromDIP(480), FromDIP(330)));
+    m_preview_area = new wxPanel(panel);
+    m_preview_area->SetBackgroundColour(wxColour(241, 244, 245));
+    m_preview_area->SetMinSize(wxSize(FromDIP(480), FromDIP(330)));
     auto* preview_sizer = new wxBoxSizer(wxVERTICAL);
-    m_preview = new wxStaticBitmap(preview_area, wxID_ANY, wxNullBitmap);
-    m_preview_message = new wxStaticText(preview_area, wxID_ANY, _L("Start with a description or reference image."));
+    m_preview = new wxStaticBitmap(m_preview_area, wxID_ANY, wxNullBitmap);
+    m_preview_message = new wxStaticText(m_preview_area, wxID_ANY, _L("Start with a description or reference image."));
     m_preview_message->SetForegroundColour(wxColour(91, 104, 107));
     preview_sizer->AddStretchSpacer();
     preview_sizer->Add(m_preview, 0, wxALIGN_CENTER | wxLEFT | wxRIGHT, FromDIP(20));
     preview_sizer->Add(m_preview_message, 0, wxALIGN_CENTER | wxALL, FromDIP(14));
     preview_sizer->AddStretchSpacer();
-    preview_area->SetSizer(preview_sizer);
-    sizer->Add(preview_area, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(18));
+    m_preview_area->SetSizer(preview_sizer);
+    m_preview_area->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
+        rescale_preview_to_fit();
+        event.Skip();
+    });
+    sizer->Add(m_preview_area, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(18));
 
     m_result_summary = new wxStaticText(panel, wxID_ANY, _L("No generated model yet."));
     m_result_summary->Wrap(FromDIP(520));
@@ -241,16 +269,25 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     return panel;
 }
 
-wxWindow* ModelGenerationPanel::build_library_placeholder(wxWindow* parent)
+wxWindow* ModelGenerationPanel::build_model_library(wxWindow* parent)
 {
     auto* panel = new wxPanel(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_SIMPLE);
     panel->SetBackgroundColour(*wxWHITE);
     auto* sizer = new wxBoxSizer(wxVERTICAL);
-    sizer->Add(section_label(panel, _L("Model Library")), 0, wxEXPAND | wxALL, FromDIP(18));
-    auto* empty = new wxStaticText(panel, wxID_ANY, _L("Generated models, favorites, and online collections can be added here later."));
-    empty->SetForegroundColour(wxColour(110, 122, 125));
-    sizer->Add(empty, 0, wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(18));
+    sizer->Add(section_label(panel, _L("Model Library")), 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(18));
+    auto* session = new wxStaticText(panel, wxID_ANY, _L("This session"));
+    session->SetForegroundColour(wxColour(91, 104, 107));
+    sizer->Add(session, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(18));
+    m_library_empty = new wxStaticText(panel, wxID_ANY, _L("Models you import in this session appear here. No copies are saved."));
+    m_library_empty->SetForegroundColour(wxColour(110, 122, 125));
+    sizer->Add(m_library_empty, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(18));
+    m_library_scroller = new wxScrolledWindow(panel, wxID_ANY, wxDefaultPosition, FromDIP(wxSize(-1, 180)), wxVSCROLL);
+    m_library_scroller->SetScrollRate(0, FromDIP(8));
+    m_library_sizer = new wxBoxSizer(wxVERTICAL);
+    m_library_scroller->SetSizer(m_library_sizer);
+    sizer->Add(m_library_scroller, 1, wxEXPAND | wxALL, FromDIP(12));
     panel->SetSizer(sizer);
+    refresh_library();
     return panel;
 }
 
@@ -294,7 +331,7 @@ void ModelGenerationPanel::on_preprocess(wxCommandEvent&)
     if (image_mode) {
         static const std::regex absolute_path(R"(^\s*(?:[A-Za-z]:[\\/]|/).*)");
         if (std::regex_match(prompt, absolute_path)) {
-            MessageDialog dlg(this, _L("Describe how GPT should redraw the selected image. Do not paste a local file path into the instruction."), wxEmptyString, wxOK | wxICON_INFORMATION);
+            MessageDialog dlg(this, _L("Describe how AI should redraw the selected image. Do not paste a local file path into the instruction."), wxEmptyString, wxOK | wxICON_INFORMATION);
             dlg.ShowModal();
             return;
         }
@@ -304,7 +341,7 @@ void ModelGenerationPanel::on_preprocess(wxCommandEvent&)
             return;
         }
         wxString message;
-        message << _L("Upload this image to GPT for redrawing?\n\n")
+        message << _L("Upload this image for AI preparation?\n\n")
                 << wxString::FromUTF8(m_selected_image_path.filename().string()) << "\n"
                 << _L("Only this image and the instruction are sent.");
         MessageDialog confirm(this, message, _L("Confirm image upload"), wxYES_NO | wxICON_QUESTION);
@@ -315,8 +352,8 @@ void ModelGenerationPanel::on_preprocess(wxCommandEvent&)
     reset(true);
     m_busy = true;
     const uint64_t sequence = ++m_sequence;
-    m_status->SetLabel(_L("Preprocessing with GPT..."));
-    m_result_summary->SetLabel(_L("Preparing a Tripo-ready input."));
+    m_status->SetLabel(_L("Preparing AI input..."));
+    m_result_summary->SetLabel(_L("Preparing a 3D-generation input."));
     refresh_controls();
 
     wxWeakRef<ModelGenerationPanel> weak(this);
@@ -346,13 +383,13 @@ void ModelGenerationPanel::on_generate(wxCommandEvent&)
 {
     if (!m_awaiting_confirmation || m_job_id.empty())
         return;
-    MessageDialog confirm(this, _L("Generate the reviewed input with Tripo? This may consume API credits."), _L("Confirm 3D generation"), wxYES_NO | wxICON_QUESTION);
+    MessageDialog confirm(this, _L("Generate the reviewed 3D input? This may consume API credits."), _L("Confirm 3D generation"), wxYES_NO | wxICON_QUESTION);
     if (confirm.ShowModal() != wxID_YES)
         return;
     m_busy = true;
     m_awaiting_confirmation = false;
     const uint64_t sequence = m_sequence;
-    m_status->SetLabel(_L("Submitting to Tripo..."));
+    m_status->SetLabel(_L("Submitting 3D generation request..."));
     refresh_controls();
     const std::string prepared = m_mode->GetSelection() == 0 ? m_prepared_prompt->GetValue().ToUTF8().data() : std::string();
     wxWeakRef<ModelGenerationPanel> weak(this);
@@ -377,7 +414,7 @@ void ModelGenerationPanel::on_stop(wxCommandEvent&)
         return;
     m_poll_timer.Stop();
     m_client.cancel_current();
-    m_status->SetLabel(_L("Stopping locally. A submitted Tripo task may continue remotely."));
+    m_status->SetLabel(_L("Stopping locally. A submitted generation task may continue remotely."));
     const uint64_t sequence = m_sequence;
     wxWeakRef<ModelGenerationPanel> weak(this);
     m_client.stop(m_job_id,
@@ -408,10 +445,12 @@ void ModelGenerationPanel::handle_error(const std::string& error, uint64_t seque
     m_awaiting_confirmation = false;
     m_ready = false;
     m_artifact_format.clear();
-    m_progress->SetValue(0);
+    m_generation_progress->SetValue(0);
+    m_generation_progress->Hide();
+    update_workflow();
     wxString message = wxString::FromUTF8(error);
     if (message.Contains("not reachable") || message.Contains("Couldn't connect") || message.Contains("Failed to connect") || message.Contains("Connection refused"))
-        message = _L("AI sidecar is not running. Start OrcaSlicer with start_orcaslicer_with_ai.bat, then retry.");
+        message = _L("The local AI service is not reachable. Check its configuration and try again.");
     m_status->SetLabel(message);
     m_result_summary->SetLabel(_L("Generation stopped before a model was ready."));
     refresh_controls();
@@ -422,7 +461,6 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
     if (m_shutdown || sequence != m_sequence)
         return;
     m_job_id = status.id;
-    m_progress->SetValue(status.progress);
     m_status->SetLabel(wxString::FromUTF8(status.message));
     m_busy = status.state == "preprocessing" || status.state == "queued" || status.state == "running" || status.state == "stopping";
     m_awaiting_confirmation = status.state == "awaiting_confirmation";
@@ -439,9 +477,18 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
             summary << wxString::Format(" · %.1f MB", double(status.artifact_size) / (1024.0 * 1024.0));
         m_result_summary->SetLabel(summary);
     } else if (m_awaiting_confirmation) {
-        m_result_summary->SetLabel(_L("Review the GPT-prepared input before starting 3D generation."));
+        m_result_summary->SetLabel(_L("Review the prepared input before starting 3D generation."));
     } else {
         m_result_summary->SetLabel(wxString::FromUTF8(status.message));
+    }
+    update_workflow(&status);
+    if (status.phase == "generating" || status.phase == "converting" || status.phase == "downloading_artifact") {
+        const int normalized = std::max(0, std::min(100, (status.progress - 20) * 100 / 80));
+        m_generation_progress->SetValue(normalized);
+        m_generation_progress->Show();
+    } else {
+        m_generation_progress->SetValue(0);
+        m_generation_progress->Hide();
     }
     if (m_busy)
         m_poll_timer.StartOnce(1500);
@@ -480,25 +527,23 @@ void ModelGenerationPanel::download_preview(uint64_t sequence)
                 if (!weak || weak->m_shutdown || sequence != weak->m_sequence)
                     return;
                 wxImage image(path.wstring());
-                if (!image.IsOk())
+                if (!image.IsOk()) {
+                    weak->m_preview_path.clear();
                     return;
-                const int max_width = weak->FromDIP(520);
-                const int max_height = weak->FromDIP(360);
-                const double scale = std::min(double(max_width) / image.GetWidth(), double(max_height) / image.GetHeight());
-                const int width = std::max(1, int(image.GetWidth() * std::min(1.0, scale)));
-                const int height = std::max(1, int(image.GetHeight() * std::min(1.0, scale)));
-                if (width != image.GetWidth() || height != image.GetHeight())
-                    image.Rescale(width, height, wxIMAGE_QUALITY_HIGH);
-                weak->m_preview->SetBitmap(wxBitmap(image));
-                weak->m_preview_message->SetLabel(_L("Review the GPT-redrawn image before generating the model."));
+                }
+                weak->m_preview_image = image;
+                weak->m_preview_message->SetLabel(_L("Prepared reference image — review it before generating the model."));
+                weak->rescale_preview_to_fit();
                 weak->Layout();
             });
         },
         [weak, sequence](std::string error) mutable {
             if (!weak) return;
             wxGetApp().CallAfter([weak, sequence, error = std::move(error)]() {
-                if (weak && sequence == weak->m_sequence)
+                if (weak && sequence == weak->m_sequence) {
+                    weak->m_preview_path.clear();
                     weak->m_preview_message->SetLabel(wxString::FromUTF8(error));
+                }
             });
         });
 }
@@ -538,6 +583,8 @@ void ModelGenerationPanel::download_and_import()
                     weak->refresh_controls();
                     return;
                 }
+                const size_t artifact_size = boost::filesystem::file_size(path);
+                weak->add_library_entry(artifact_size);
                 const std::string job_id = weak->m_job_id;
                 weak->cleanup_files();
                 weak->m_client.remove(job_id, [] {}, [](std::string) {});
@@ -547,7 +594,9 @@ void ModelGenerationPanel::download_and_import()
                 weak->m_busy = false;
                 weak->m_awaiting_confirmation = false;
                 weak->m_ready = false;
-                weak->m_progress->SetValue(0);
+                weak->m_generation_progress->SetValue(0);
+                weak->m_generation_progress->Hide();
+                weak->update_workflow();
                 weak->m_prepared_prompt->Clear();
                 weak->m_status->SetLabel(_L("Generated model imported."));
                 weak->m_result_summary->SetLabel(_L("The model was added to the current plate."));
@@ -571,7 +620,7 @@ void ModelGenerationPanel::refresh_controls()
     if (m_shutdown)
         return;
     const bool image_mode = m_mode->GetSelection() == 1;
-    m_prompt_label->SetLabel(image_mode ? _L("Describe how GPT should redraw the selected image") : _L("Describe the printable object"));
+    m_prompt_label->SetLabel(image_mode ? _L("Describe how AI should redraw the selected image") : _L("Describe the printable object"));
     m_choose_image->Show(image_mode);
     m_selected_image->Show(image_mode);
     m_upload_notice->Show(image_mode);
@@ -581,12 +630,12 @@ void ModelGenerationPanel::refresh_controls()
     m_mode->Enable(!m_busy);
     m_prompt->Enable(!m_busy);
     m_choose_image->Enable(!m_busy);
-    m_preprocess->Enable(!m_busy && valid_input);
-    m_prepared_prompt->Enable(!m_busy && m_awaiting_confirmation && !image_mode);
-    m_generate->Enable(!m_busy && m_awaiting_confirmation);
-    m_stop->Enable(m_busy && !m_job_id.empty());
-    m_import->Enable(!m_busy && m_ready);
-    m_discard->Enable(!m_busy && !m_job_id.empty());
+    m_preprocess->Enable(m_service_available && !m_busy && valid_input);
+    m_prepared_prompt->Enable(m_service_available && !m_busy && m_awaiting_confirmation && !image_mode);
+    m_generate->Enable(m_service_available && !m_busy && m_awaiting_confirmation);
+    m_stop->Enable(m_service_available && m_busy && !m_job_id.empty());
+    m_import->Enable(m_service_available && !m_busy && m_ready);
+    m_discard->Enable(m_service_available && !m_busy && !m_job_id.empty());
     Layout();
 }
 
@@ -602,7 +651,9 @@ void ModelGenerationPanel::reset(bool remove_remote)
     m_busy = false;
     m_awaiting_confirmation = false;
     m_ready = false;
-    m_progress->SetValue(0);
+    m_generation_progress->SetValue(0);
+    m_generation_progress->Hide();
+    update_workflow();
     m_status->SetLabel(_L("Idle"));
     m_prepared_prompt->Clear();
     set_preview_empty(_L("Start with a description or reference image."));
@@ -623,8 +674,99 @@ void ModelGenerationPanel::cleanup_files()
     m_artifact_path.clear();
 }
 
+void ModelGenerationPanel::add_library_entry(size_t artifact_size)
+{
+    GeneratedModelEntry entry;
+    entry.title = _L("Generated ") + wxString::FromUTF8(m_artifact_format.empty() ? "model" : m_artifact_format);
+    entry.details = _L("Imported this session") + " · " + wxString::FromUTF8(m_mode->GetSelection() == 1 ? "Image + text" : "Text") +
+                    wxString::Format(" · %.1f MB", double(artifact_size) / (1024.0 * 1024.0));
+    if (m_preview_image.IsOk()) {
+        wxImage thumbnail = m_preview_image;
+        thumbnail.Rescale(FromDIP(96), FromDIP(96), wxIMAGE_QUALITY_HIGH);
+        entry.preview = wxBitmap(thumbnail);
+    }
+    m_library_entries.push_back(std::move(entry));
+    if (m_library_entries.size() > 12)
+        m_library_entries.erase(m_library_entries.begin());
+    refresh_library();
+}
+
+void ModelGenerationPanel::refresh_library()
+{
+    if (m_library_sizer == nullptr || m_library_scroller == nullptr)
+        return;
+    m_library_sizer->Clear(true);
+    m_library_empty->Show(m_library_entries.empty());
+    for (const GeneratedModelEntry& entry : m_library_entries) {
+        auto* card = new wxPanel(m_library_scroller, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_SIMPLE);
+        auto* row = new wxBoxSizer(wxHORIZONTAL);
+        if (entry.preview.IsOk()) {
+            auto* bitmap = new wxStaticBitmap(card, wxID_ANY, entry.preview);
+            row->Add(bitmap, 0, wxALL, FromDIP(8));
+        } else {
+            auto* format = new wxStaticText(card, wxID_ANY, entry.title);
+            format->SetForegroundColour(wxColour(31, 122, 116));
+            row->Add(format, 0, wxALIGN_CENTER_VERTICAL | wxALL, FromDIP(12));
+        }
+        auto* text = new wxBoxSizer(wxVERTICAL);
+        auto* title = new wxStaticText(card, wxID_ANY, entry.title);
+        wxFont title_font = title->GetFont();
+        title_font.SetWeight(wxFONTWEIGHT_BOLD);
+        title->SetFont(title_font);
+        text->Add(title, 0, wxBOTTOM, FromDIP(3));
+        auto* details = new wxStaticText(card, wxID_ANY, entry.details);
+        details->SetForegroundColour(wxColour(91, 104, 107));
+        text->Add(details, 0);
+        row->Add(text, 1, wxALIGN_CENTER_VERTICAL | wxTOP | wxRIGHT | wxBOTTOM, FromDIP(8));
+        card->SetSizer(row);
+        m_library_sizer->Add(card, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(8));
+    }
+    m_library_scroller->FitInside();
+    m_library_scroller->Layout();
+}
+
+void ModelGenerationPanel::rescale_preview_to_fit()
+{
+    if (!m_preview_image.IsOk() || m_preview_area == nullptr)
+        return;
+    const wxSize available = m_preview_area->GetClientSize();
+    const int max_width = std::max(1, available.GetWidth() - FromDIP(40));
+    const int max_height = std::max(1, available.GetHeight() - FromDIP(72));
+    const double scale = std::min(double(max_width) / m_preview_image.GetWidth(), double(max_height) / m_preview_image.GetHeight());
+    const int width = std::max(1, int(m_preview_image.GetWidth() * std::min(1.0, scale)));
+    const int height = std::max(1, int(m_preview_image.GetHeight() * std::min(1.0, scale)));
+    wxImage image = m_preview_image;
+    if (width != image.GetWidth() || height != image.GetHeight())
+        image.Rescale(width, height, wxIMAGE_QUALITY_HIGH);
+    m_preview->SetBitmap(wxBitmap(image));
+    m_preview_area->Layout();
+}
+
+void ModelGenerationPanel::update_workflow(const AIModelGenerationClient::JobStatus* status)
+{
+    wxString phase = _L("Input");
+    wxString steps = _L("Input  →  Prepare  →  Review  →  Generate  →  Import");
+    if (status != nullptr) {
+        if (status->state == "preprocessing")
+            phase = _L("Prepare input");
+        else if (status->state == "awaiting_confirmation")
+            phase = _L("Review prepared input");
+        else if (status->phase == "generating")
+            phase = _L("Generate model");
+        else if (status->phase == "converting" || status->phase == "downloading_artifact")
+            phase = _L("Finalize model");
+        else if (status->state == "ready")
+            phase = _L("Import model");
+        else if (status->state == "stopping")
+            phase = _L("Stopping generation");
+    }
+    m_workflow_phase->SetLabel(phase);
+    m_workflow_steps->SetLabel(steps);
+}
+
 void ModelGenerationPanel::set_preview_empty(const wxString& message)
 {
+    m_preview_image = wxImage();
     m_preview->SetBitmap(wxNullBitmap);
     m_preview_message->SetLabel(message);
 }
