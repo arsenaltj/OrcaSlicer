@@ -24,6 +24,8 @@
 #include "Project.hpp"
 #include "CalibrationPanel.hpp"
 #include "UnsavedChangesDialog.hpp"
+#include <wx/timer.h>
+
 #include "AIServiceManager.hpp"
 #include "Widgets/SideButton.hpp"
 #include "Widgets/SideMenuPopup.hpp"
@@ -277,6 +279,8 @@ public:
 	void        update_title_colour_after_set_title();
     void        show_option(bool show);
     void        init_tabpanel();
+    void        discover_ai_service();
+    void        on_ai_service_retry(wxTimerEvent& event);
     void        register_ai_features(AIServiceAvailability availability);
     void        create_preset_tabs();
     //BBS: GUI refactor
@@ -382,6 +386,9 @@ public:
     Plater*               m_plater { nullptr };
     ModelGenerationPanel* m_model_generation { nullptr };
     std::unique_ptr<AIServiceManager> m_ai_service_manager;
+    wxTimer                m_ai_service_retry_timer;
+    unsigned               m_ai_service_retry_count { 0 };
+    bool                   m_ai_service_discovery_active { false };
     //BBS: GUI refactor
     MonitorPanel*         m_monitor{ nullptr };
 

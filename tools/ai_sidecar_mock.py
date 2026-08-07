@@ -44,36 +44,15 @@ def _mock_png():
 
 
 TINY_PNG = _mock_png()
-TINY_STL = b"""solid orcaslicer_mock
-  facet normal 0 0 -1
-    outer loop
-      vertex 0 0 0
-      vertex 0 10 0
-      vertex 10 0 0
-    endloop
-  endfacet
-  facet normal 0 -1 0
-    outer loop
-      vertex 0 0 0
-      vertex 10 0 0
-      vertex 0 0 10
-    endloop
-  endfacet
-  facet normal -1 0 0
-    outer loop
-      vertex 0 0 0
-      vertex 0 0 10
-      vertex 0 10 0
-    endloop
-  endfacet
-  facet normal 1 1 1
-    outer loop
-      vertex 10 0 0
-      vertex 0 10 0
-      vertex 0 0 10
-    endloop
-  endfacet
-endsolid orcaslicer_mock
+TINY_OBJ = b"""# orcaslicer mock vertex-color tetrahedron
+v 0 0 0 1 0 0
+v 10 0 0 0 1 0
+v 0 10 0 0 0 1
+v 0 0 10 1 1 0
+f 1 3 2
+f 1 2 4
+f 1 4 3
+f 2 3 4
 """
 
 _jobs = {}
@@ -217,9 +196,10 @@ def advance_job(job, status_call=False):
             progress=100,
             artifact={
                 "ready": True,
-                "format": "stl",
-                "filename": "orcaslicer-model-%s.stl" % job["id"],
-                "size_bytes": len(TINY_STL),
+                "format": "obj",
+                "color_encoding": "vertex_colors",
+                "filename": "orcaslicer-model-%s.obj" % job["id"],
+                "size_bytes": len(TINY_OBJ),
             },
         )
 
@@ -289,7 +269,7 @@ class Handler(BaseHTTPRequestHandler):
                     "model_generation": {
                         "available": True,
                         "sources": ["text", "image"],
-                        "artifact_formats": ["3mf", "stl"],
+                        "artifact_formats": ["obj", "3mf", "stl"],
                     },
                 },
             }, 200)
@@ -462,7 +442,7 @@ class Handler(BaseHTTPRequestHandler):
         if kind == "preview":
             self.send_bytes(TINY_PNG, "image/png", filename)
         else:
-            self.send_bytes(TINY_STL, "model/stl", filename)
+            self.send_bytes(TINY_OBJ, "model/obj", filename)
 
     def require_native_client(self):
         if self.headers.get("X-OrcaSlicer-Client") != "native":

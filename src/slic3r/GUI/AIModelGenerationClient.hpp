@@ -25,6 +25,7 @@ public:
         bool        preview_ready { false };
         bool        artifact_ready { false };
         std::string artifact_format;
+        std::string artifact_color_encoding;
         size_t      artifact_size { 0 };
     };
 

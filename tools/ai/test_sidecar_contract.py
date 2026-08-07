@@ -81,7 +81,7 @@ class SidecarHealthContractTests(unittest.TestCase):
         generation = capabilities["model_generation"]
         self.assertIsInstance(generation["available"], bool)
         self.assertEqual(generation["sources"], ["text", "image"])
-        self.assertEqual(generation["artifact_formats"], ["3mf", "stl"])
+        self.assertEqual(generation["artifact_formats"], ["obj", "3mf", "stl"])
 
         payload = json.dumps(health)
         for secret in ("OPENAI_API_KEY", "TRIPO_API_KEY", "test-openai", "test-tripo"):

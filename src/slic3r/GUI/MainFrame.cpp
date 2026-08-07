@@ -416,9 +416,9 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
 
     if (wxGetApp().is_editor()) {
         m_ai_service_manager = std::make_unique<AIServiceManager>(AISidecarClient::default_endpoint());
-        m_ai_service_manager->discover_async([this](AIServiceAvailability availability) {
-            register_ai_features(std::move(availability));
-        });
+        m_ai_service_retry_timer.SetOwner(this);
+        Bind(wxEVT_TIMER, &MainFrame::on_ai_service_retry, this, m_ai_service_retry_timer.GetId());
+        discover_ai_service();
     }
 
     // BBS
@@ -1126,6 +1126,7 @@ void MainFrame::shutdown()
     Slic3r::set_backup_callback(nullptr);
     if (m_model_generation != nullptr)
         m_model_generation->shutdown();
+    m_ai_service_retry_timer.Stop();
     if (m_ai_service_manager)
         m_ai_service_manager->shutdown();
 #ifdef _WIN32
@@ -1385,6 +1386,29 @@ void MainFrame::init_tabpanel() {
             m_plater->on_filament_count_change(full_config.option<ConfigOptionStrings>("filament_colour")->values.size());
         }
     }
+}
+
+void MainFrame::discover_ai_service()
+{
+    if (m_ai_service_discovery_active || !m_ai_service_manager)
+        return;
+    m_ai_service_discovery_active = true;
+    m_ai_service_manager->discover_async(this, [this](AIServiceAvailability availability) {
+        m_ai_service_discovery_active = false;
+        register_ai_features(availability);
+        if (availability.compatible) {
+            m_ai_service_retry_timer.Stop();
+            m_ai_service_retry_count = 0;
+        } else if (availability.transient && m_ai_service_retry_count < 20) {
+            ++m_ai_service_retry_count;
+            m_ai_service_retry_timer.StartOnce(500);
+        }
+    });
+}
+
+void MainFrame::on_ai_service_retry(wxTimerEvent&)
+{
+    discover_ai_service();
 }
 
 void MainFrame::register_ai_features(AIServiceAvailability availability)

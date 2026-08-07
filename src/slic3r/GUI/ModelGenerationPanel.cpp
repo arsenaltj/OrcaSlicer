@@ -99,7 +99,11 @@ void ModelGenerationPanel::set_service_availability(bool available, const std::s
     if (m_shutdown)
         return;
     m_service_available = available;
-    if (!available && !m_busy) {
+    if (available && !m_busy) {
+        m_status->SetLabel(_L("Local 3D generation service is ready."));
+        m_result_summary->SetLabel(_L("Describe an object to begin 3D generation."));
+        update_workflow();
+    } else if (!m_busy) {
         m_status->SetLabel(message.empty() ? _L("Configure and start the local AI service to enable 3D generation.") : wxString::FromUTF8(message));
         m_result_summary->SetLabel(_L("3D generation is unavailable."));
     }
@@ -205,7 +209,7 @@ wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
     sizer->Add(generation_buttons, 0, wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(16));
 
     m_generation_progress = new wxGauge(scroll, wxID_ANY, 100);
-    m_generation_progress->Hide();
+    m_generation_progress->SetValue(0);
     m_status = new wxStaticText(scroll, wxID_ANY, _L("Idle"));
     m_status->Wrap(FromDIP(360));
     sizer->Add(m_generation_progress, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(16));
@@ -352,6 +356,8 @@ void ModelGenerationPanel::on_preprocess(wxCommandEvent&)
     reset(true);
     m_busy = true;
     const uint64_t sequence = ++m_sequence;
+    m_generation_progress->SetValue(15);
+    update_workflow();
     m_status->SetLabel(_L("Preparing AI input..."));
     m_result_summary->SetLabel(_L("Preparing a 3D-generation input."));
     refresh_controls();
@@ -446,7 +452,6 @@ void ModelGenerationPanel::handle_error(const std::string& error, uint64_t seque
     m_ready = false;
     m_artifact_format.clear();
     m_generation_progress->SetValue(0);
-    m_generation_progress->Hide();
     update_workflow();
     wxString message = wxString::FromUTF8(error);
     if (message.Contains("not reachable") || message.Contains("Couldn't connect") || message.Contains("Failed to connect") || message.Contains("Connection refused"))
@@ -466,6 +471,7 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
     m_awaiting_confirmation = status.state == "awaiting_confirmation";
     m_ready = status.state == "ready" && status.artifact_ready;
     m_artifact_format = status.artifact_format;
+    m_artifact_color_encoding = status.artifact_color_encoding;
     if (!status.prepared_prompt.empty())
         m_prepared_prompt->SetValue(wxString::FromUTF8(status.prepared_prompt));
     if (status.preview_ready && m_preview_path.empty())
@@ -481,15 +487,13 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
     } else {
         m_result_summary->SetLabel(wxString::FromUTF8(status.message));
     }
+    int workflow_progress = std::clamp(status.progress, 0, 80);
+    if (status.state == "awaiting_confirmation")
+        workflow_progress = 15;
+    else if (status.state == "ready")
+        workflow_progress = 94;
+    m_generation_progress->SetValue(workflow_progress);
     update_workflow(&status);
-    if (status.phase == "generating" || status.phase == "converting" || status.phase == "downloading_artifact") {
-        const int normalized = std::max(0, std::min(100, (status.progress - 20) * 100 / 80));
-        m_generation_progress->SetValue(normalized);
-        m_generation_progress->Show();
-    } else {
-        m_generation_progress->SetValue(0);
-        m_generation_progress->Hide();
-    }
     if (m_busy)
         m_poll_timer.StartOnce(1500);
     refresh_controls();
@@ -552,12 +556,17 @@ void ModelGenerationPanel::download_and_import()
 {
     if (!m_ready || m_job_id.empty())
         return;
-    if (m_artifact_format != "3mf" && m_artifact_format != "stl") {
+    if (m_artifact_format == "obj" && m_artifact_color_encoding != "vertex_colors") {
+        m_status->SetLabel(_L("Generated OBJ does not contain supported vertex colors."));
+        return;
+    }
+    if (m_artifact_format != "obj" && m_artifact_format != "3mf" && m_artifact_format != "stl") {
         m_status->SetLabel(_L("Unsupported generated model format."));
         return;
     }
     m_artifact_path = temp_path(m_job_id, m_artifact_format);
     m_busy = true;
+    m_generation_progress->SetValue(94);
     const uint64_t sequence = m_sequence;
     m_status->SetLabel(_L("Downloading generated model from the local sidecar..."));
     refresh_controls();
@@ -576,6 +585,8 @@ void ModelGenerationPanel::download_and_import()
                     return;
                 }
                 const size_t before = weak->m_plater->model().objects.size();
+                weak->m_generation_progress->SetValue(97);
+                weak->m_status->SetLabel(_L("Importing generated model..."));
                 weak->m_plater->add_model(false, path.string());
                 if (weak->m_plater->model().objects.size() <= before) {
                     weak->m_status->SetLabel(_L("The generated model could not be imported."));
@@ -594,8 +605,7 @@ void ModelGenerationPanel::download_and_import()
                 weak->m_busy = false;
                 weak->m_awaiting_confirmation = false;
                 weak->m_ready = false;
-                weak->m_generation_progress->SetValue(0);
-                weak->m_generation_progress->Hide();
+                weak->m_generation_progress->SetValue(100);
                 weak->update_workflow();
                 weak->m_prepared_prompt->Clear();
                 weak->m_status->SetLabel(_L("Generated model imported."));
@@ -652,7 +662,6 @@ void ModelGenerationPanel::reset(bool remove_remote)
     m_awaiting_confirmation = false;
     m_ready = false;
     m_generation_progress->SetValue(0);
-    m_generation_progress->Hide();
     update_workflow();
     m_status->SetLabel(_L("Idle"));
     m_prepared_prompt->Clear();

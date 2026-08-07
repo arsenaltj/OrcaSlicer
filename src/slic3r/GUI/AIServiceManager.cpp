@@ -38,7 +38,7 @@ AIServiceAvailability parse_health_response(const std::string& body)
     const auto config_proposal = capabilities.find("config_proposal");
     const auto model_generation = capabilities.find("model_generation");
     const auto expected_sources = nlohmann::json::array({ "text", "image" });
-    const auto expected_artifact_formats = nlohmann::json::array({ "3mf", "stl" });
+    const auto expected_artifact_formats = nlohmann::json::array({ "obj", "3mf", "stl" });
     if (config_proposal == capabilities.end() || !config_proposal->is_object() || !config_proposal->contains("available") ||
         !(*config_proposal)["available"].is_boolean() || model_generation == capabilities.end() || !model_generation->is_object() ||
         !model_generation->contains("available") || !(*model_generation)["available"].is_boolean() ||
@@ -68,43 +68,47 @@ AIServiceManager::~AIServiceManager()
     shutdown();
 }
 
-void AIServiceManager::discover_async(CompleteFn on_complete)
+void AIServiceManager::discover_async(wxWindow* target, CompleteFn on_complete)
 {
     shutdown();
     m_lifetime = std::make_shared<int>(0);
     const std::weak_ptr<int> lifetime = m_lifetime;
+    const wxWeakRef<wxWindow> weak_target(target);
 
     if (!AISidecarClient::is_loopback_endpoint(m_endpoint)) {
         AIServiceAvailability result;
         result.error = "AI sidecar discovery requires a loopback endpoint.";
-        wxGetApp().CallAfter([lifetime, on_complete, result = std::move(result)]() mutable {
-            if (!lifetime.expired() && on_complete)
-                on_complete(std::move(result));
-        });
+        if (weak_target) {
+            weak_target->CallAfter([weak_target, lifetime, on_complete, result = std::move(result)]() mutable {
+                if (weak_target && !lifetime.expired() && on_complete)
+                    on_complete(std::move(result));
+            });
+        }
         return;
     }
 
     auto http = Http::get(health_url(m_endpoint));
     http.timeout_connect(2).timeout_max(5).size_limit(16 * 1024);
 
-    http.on_complete([lifetime, on_complete](std::string body, unsigned) mutable {
+    http.on_complete([weak_target, lifetime, on_complete](std::string body, unsigned) mutable {
         auto result = parse_health_response(body);
-        wxGetApp().CallAfter([lifetime, on_complete, result = std::move(result)]() mutable {
-            if (lifetime.expired())
-                return;
-            if (on_complete)
-                on_complete(std::move(result));
-        });
+        if (weak_target) {
+            weak_target->CallAfter([weak_target, lifetime, on_complete, result = std::move(result)]() mutable {
+                if (weak_target && !lifetime.expired() && on_complete)
+                    on_complete(std::move(result));
+            });
+        }
     });
-    http.on_error([lifetime, on_complete](std::string, std::string, unsigned) mutable {
+    http.on_error([weak_target, lifetime, on_complete](std::string, std::string, unsigned) mutable {
         AIServiceAvailability result;
+        result.transient = true;
         result.error = "AI sidecar is not reachable.";
-        wxGetApp().CallAfter([lifetime, on_complete, result = std::move(result)]() mutable {
-            if (lifetime.expired())
-                return;
-            if (on_complete)
-                on_complete(std::move(result));
-        });
+        if (weak_target) {
+            weak_target->CallAfter([weak_target, lifetime, on_complete, result = std::move(result)]() mutable {
+                if (weak_target && !lifetime.expired() && on_complete)
+                    on_complete(std::move(result));
+            });
+        }
     });
     m_active_request = http.perform();
 }

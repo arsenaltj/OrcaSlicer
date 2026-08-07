@@ -173,7 +173,7 @@ void AIModelGenerationClient::download_artifact(const std::string& job_id, const
                                                  const boost::filesystem::path& path,
                                                  PathFn on_complete, ErrorFn on_error)
 {
-    if (format != "3mf" && format != "stl") {
+    if (format != "obj" && format != "3mf" && format != "stl") {
         if (on_error)
             on_error("The generated artifact format is not supported.");
         return;
@@ -232,6 +232,7 @@ void AIModelGenerationClient::parse_status_response(std::string body, StatusFn o
     if (job.contains("artifact") && job["artifact"].is_object()) {
         status.artifact_ready = job["artifact"].value("ready", false);
         status.artifact_format = job["artifact"].value("format", std::string());
+        status.artifact_color_encoding = job["artifact"].value("color_encoding", std::string());
         status.artifact_size = job["artifact"].value("size_bytes", size_t(0));
     }
     if (status.id.empty() || status.state.empty()) {

@@ -108,6 +108,7 @@ private:
     std::vector<GeneratedModelEntry> m_library_entries;
     std::string m_job_id;
     std::string m_artifact_format;
+    std::string m_artifact_color_encoding;
     uint64_t m_sequence { 0 };
     bool m_busy { false };
     bool m_awaiting_confirmation { false };

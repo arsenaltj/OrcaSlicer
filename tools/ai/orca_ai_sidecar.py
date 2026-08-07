@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import atexit
+import math
 import json
 import os
 import re
@@ -263,6 +264,7 @@ def _public_job(job: Job) -> dict[str, Any]:
         "artifact": {
             "ready": artifact_ready,
             "format": job.artifact_format if artifact_ready else "",
+            "color_encoding": "vertex_colors" if artifact_ready and job.artifact_format == "obj" else "",
             "filename": artifact_filename,
             "size_bytes": artifact_size if artifact_ready else 0,
         },
@@ -416,6 +418,57 @@ def _download_conversion(job: Job, generation_id: str, format_name: str) -> Path
     return destination
 
 
+def _validate_obj_vertex_colors(path: Path) -> None:
+    vertices: list[bool] = []
+    referenced_vertices: set[int] = set()
+    try:
+        with path.open("r", encoding="utf-8", errors="strict") as stream:
+            for line in stream:
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                fields = stripped.split()
+                keyword = fields[0].lower()
+                if keyword in {"mtllib", "usemtl", "vt", "vn", "map_kd"}:
+                    raise TripoError("The generated OBJ depends on external materials or textures.")
+                if keyword == "v":
+                    if len(fields) not in {7, 8}:
+                        vertices.append(False)
+                        continue
+                    try:
+                        values = [float(value) for value in fields[1:]]
+                    except ValueError:
+                        vertices.append(False)
+                        continue
+                    if not all(math.isfinite(value) for value in values):
+                        vertices.append(False)
+                        continue
+                    colors = values[3:]
+                    vertices.append(all(0.0 <= value <= 1.0 for value in colors))
+                elif keyword == "f":
+                    if len(fields) < 4:
+                        raise TripoError("The generated OBJ has an invalid face.")
+                    for field in fields[1:]:
+                        if "/" in field:
+                            raise TripoError("The generated OBJ contains unsupported texture or normal references.")
+                        try:
+                            index = int(field)
+                        except ValueError:
+                            raise TripoError("The generated OBJ has an invalid vertex index.") from None
+                        if index == 0:
+                            raise TripoError("The generated OBJ has an invalid vertex index.")
+                        resolved = index - 1 if index > 0 else len(vertices) + index
+                        if resolved < 0 or resolved >= len(vertices):
+                            raise TripoError("The generated OBJ references a missing vertex.")
+                        referenced_vertices.add(resolved)
+    except UnicodeDecodeError:
+        raise TripoError("The generated OBJ is not valid UTF-8 text.") from None
+    except OSError:
+        raise TripoError("The generated OBJ could not be read.") from None
+    if not referenced_vertices or any(not vertices[index] for index in referenced_vertices):
+        raise TripoError("The generated OBJ does not provide valid vertex colors.")
+
+
 def _validate_artifact(path: Path, format_name: str) -> int:
     try:
         size = path.stat().st_size
@@ -425,6 +478,8 @@ def _validate_artifact(path: Path, format_name: str) -> int:
         raise TripoError("The generated artifact could not be read.") from None
     if size <= 0 or size > MAX_ARTIFACT_BYTES:
         raise TripoError("The generated artifact has an invalid size.")
+    if format_name == "obj":
+        _validate_obj_vertex_colors(path)
     if format_name == "3mf" and not signature.startswith(b"PK\x03\x04"):
         raise TripoError("Tripo returned an invalid 3MF artifact.")
     if format_name == "stl":
@@ -460,14 +515,20 @@ def _generate_job(job: Job, prepared_prompt: str) -> None:
         )
         _stop_boundary(job)
 
-        try:
-            artifact = _download_conversion(job, generation_id, "3mf")
-            artifact_format = "3mf"
-        except TripoError:
-            if job.stop_event.is_set():
-                raise JobStopped()
-            artifact = _download_conversion(job, generation_id, "stl")
-            artifact_format = "stl"
+        artifact = None
+        artifact_format = ""
+        last_error: TripoError | None = None
+        for candidate in ("obj", "3mf", "stl"):
+            try:
+                artifact = _download_conversion(job, generation_id, candidate)
+                artifact_format = candidate
+                break
+            except TripoError as exc:
+                if job.stop_event.is_set():
+                    raise JobStopped()
+                last_error = exc
+        if artifact is None:
+            raise last_error or TripoError("No supported generated artifact was available.")
 
         with _JOBS_LOCK:
             if job.stop_event.is_set():
@@ -684,7 +745,7 @@ class Handler(BaseHTTPRequestHandler):
                         "model_generation": {
                             "available": bool(config) and bool(os.environ.get("TRIPO_API_KEY", "")),
                             "sources": ["text", "image"],
-                            "artifact_formats": ["3mf", "stl"],
+                            "artifact_formats": ["obj", "3mf", "stl"],
                         },
                     },
                 },
@@ -904,6 +965,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._model_error(409, f"{kind}_not_ready", f"Model job {kind} is not ready.", True)
                 return
             content_type = job.preview_content_type if kind == "preview" else {
+                "obj": "model/obj",
                 "3mf": "application/vnd.ms-package.3dmanufacturing-3dmodel+xml",
                 "stl": "model/stl",
             }.get(job.artifact_format, "application/octet-stream")

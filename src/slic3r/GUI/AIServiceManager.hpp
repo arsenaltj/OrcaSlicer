@@ -1,6 +1,9 @@
 #ifndef slic3r_GUI_AIServiceManager_hpp_
 #define slic3r_GUI_AIServiceManager_hpp_
 
+#include <wx/weakref.h>
+#include <wx/window.h>
+
 #include <functional>
 #include <memory>
 #include <string>
@@ -13,6 +16,7 @@ namespace GUI {
 struct AIServiceAvailability
 {
     bool        compatible { false };
+    bool        transient { false };
     bool        config_proposal_available { false };
     bool        model_generation_available { false };
     std::string sidecar_version;
@@ -27,7 +31,7 @@ public:
     explicit AIServiceManager(std::string endpoint);
     ~AIServiceManager();
 
-    void discover_async(CompleteFn on_complete);
+    void discover_async(wxWindow* target, CompleteFn on_complete);
     void shutdown();
 
 private:
