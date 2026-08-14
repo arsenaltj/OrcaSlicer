@@ -1682,6 +1682,34 @@ Sidebar::Sidebar(Plater *parent)
     p->scrolled->SetDoubleBuffered(true);
 #endif //__WINDOWS__
 
+    m_ai_workflow_panel = new wxPanel(p->scrolled, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
+    m_ai_workflow_panel->SetBackgroundColour(wxColour(242, 248, 247));
+    auto* ai_workflow_sizer = new wxBoxSizer(wxVERTICAL);
+    auto* ai_workflow_title = new wxStaticText(m_ai_workflow_panel, wxID_ANY, _L("AI 自动流程"));
+    wxFont ai_title_font = ai_workflow_title->GetFont();
+    ai_title_font.SetWeight(wxFONTWEIGHT_BOLD);
+    ai_workflow_title->SetFont(ai_title_font);
+    ai_workflow_sizer->Add(ai_workflow_title, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
+    m_ai_workflow_summary = new wxStaticText(m_ai_workflow_panel, wxID_ANY, _L("等待开始"));
+    m_ai_workflow_summary->SetForegroundColour(wxColour(76, 88, 91));
+    ai_workflow_sizer->Add(m_ai_workflow_summary, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
+
+    const std::array<wxString, AIWorkflowStepCount> ai_step_names {
+        _L("模型导入"), _L("网格检查/修复"), _L("颜色处理"),
+        _L("自动摆放"), _L("切片"), _L("G-code")
+    };
+    for (size_t index = 0; index < ai_step_names.size(); ++index) {
+        m_ai_workflow_steps[index] = new wxStaticText(
+            m_ai_workflow_panel, wxID_ANY,
+            wxString::Format("%llu. ", static_cast<unsigned long long>(index + 1)) + ai_step_names[index] + _L("  等待"));
+        m_ai_workflow_steps[index]->SetForegroundColour(wxColour(107, 114, 128));
+        ai_workflow_sizer->Add(m_ai_workflow_steps[index], 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
+    }
+    ai_workflow_sizer->AddSpacer(FromDIP(10));
+    m_ai_workflow_panel->SetSizer(ai_workflow_sizer);
+    scrolled_sizer->Add(m_ai_workflow_panel, 0, wxEXPAND);
+    m_ai_workflow_panel->Hide();
+
     // add printer
     {
         /***************** 1. create printer title bar    **************/
@@ -2332,6 +2360,89 @@ Sidebar::Sidebar(Plater *parent)
 }
 
 Sidebar::~Sidebar() {}
+
+void Sidebar::start_ai_workflow(const wxString& summary)
+{
+    // Reset the rows while the panel is inactive. Showing the panel from each
+    // row update can re-enter wx layout code when a second AI import starts.
+    m_ai_workflow_active = false;
+    if (m_ai_workflow_summary != nullptr) {
+        m_ai_workflow_summary->SetLabel(summary);
+        m_ai_workflow_summary->SetForegroundColour(wxColour(76, 88, 91));
+    }
+    for (size_t index = 0; index < AIWorkflowStepCount; ++index)
+        update_ai_workflow_step(static_cast<AIWorkflowStep>(index), AIWorkflowStatus::Waiting);
+    m_ai_workflow_active = true;
+    if (m_ai_workflow_panel != nullptr) {
+        m_ai_workflow_panel->Show();
+        m_ai_workflow_panel->Layout();
+    }
+    if (p && p->scrolled)
+        p->scrolled->Layout();
+    Layout();
+}
+
+void Sidebar::update_ai_workflow_step(AIWorkflowStep step, AIWorkflowStatus status, const wxString& detail)
+{
+    const size_t index = static_cast<size_t>(step);
+    if (index >= m_ai_workflow_steps.size() || m_ai_workflow_steps[index] == nullptr)
+        return;
+
+    static const std::array<wxString, AIWorkflowStepCount> names {
+        _L("模型导入"), _L("网格检查/修复"), _L("颜色处理"),
+        _L("自动摆放"), _L("切片"), _L("G-code")
+    };
+    wxString state;
+    wxColour colour;
+    switch (status) {
+    case AIWorkflowStatus::Running:
+        state = _L("进行中");
+        colour = wxColour(0, 121, 107);
+        break;
+    case AIWorkflowStatus::Success:
+        state = _L("完成");
+        colour = wxColour(46, 125, 50);
+        break;
+    case AIWorkflowStatus::Warning:
+        state = _L("需处理");
+        colour = wxColour(154, 103, 0);
+        break;
+    case AIWorkflowStatus::Failed:
+        state = _L("失败");
+        colour = wxColour(179, 38, 30);
+        break;
+    case AIWorkflowStatus::Waiting:
+    default:
+        state = _L("等待");
+        colour = wxColour(107, 114, 128);
+        break;
+    }
+
+    wxString label = wxString::Format("%llu. ", static_cast<unsigned long long>(index + 1)) + names[index] + "  " + state;
+    if (!detail.empty())
+        label += _L(" · ") + detail;
+    m_ai_workflow_steps[index]->SetLabel(label);
+    m_ai_workflow_steps[index]->SetForegroundColour(colour);
+    m_ai_workflow_steps[index]->Wrap(FromDIP(340));
+    if (p && p->scrolled)
+        p->scrolled->Layout();
+    Layout();
+}
+
+void Sidebar::finish_ai_workflow(bool success, const wxString& summary)
+{
+    if (!m_ai_workflow_active)
+        return;
+    if (m_ai_workflow_summary != nullptr) {
+        m_ai_workflow_summary->SetLabel(summary);
+        m_ai_workflow_summary->SetForegroundColour(success ? wxColour(46, 125, 50) : wxColour(179, 38, 30));
+        m_ai_workflow_summary->Wrap(FromDIP(340));
+    }
+    if (p && p->scrolled)
+        p->scrolled->Layout();
+    Layout();
+    m_ai_workflow_active = false;
+}
 
 void Sidebar::on_enter_image_printer_bed(wxMouseEvent &evt) {
     //p->image_printer_bed->Bind(wxEVT_LEAVE_WINDOW, &Sidebar::on_leave_image_printer_bed, this);
@@ -4495,6 +4606,7 @@ struct Plater::priv
 
     wxTimer                     background_process_timer;
     wxTimer                     auto_reslice_timer;
+    wxTimer                     ai_workflow_stability_timer;
 
     std::string                 label_btn_export;
     std::string                 label_btn_send;
@@ -4635,7 +4747,10 @@ struct Plater::priv
     BoundingBox scaled_bed_shape_bb() const;
 
     // BBS: backup & restore
-    std::vector<size_t> load_files(const std::vector<fs::path>& input_files, LoadStrategy strategy, bool ask_multi = false);
+    std::vector<size_t> load_files(const std::vector<fs::path>& input_files,
+                                   LoadStrategy strategy,
+                                   bool ask_multi = false,
+                                   ObjImportColorFn obj_color_fn = nullptr);
     std::vector<size_t> load_model_objects(const ModelObjectPtrs& model_objects, bool allow_negative_z = false, bool split_object = false, bool auto_drop = true);
 
     fs::path get_export_file_path(GUI::FileType file_type);
@@ -4717,6 +4832,7 @@ struct Plater::priv
     void schedule_background_process();
     void schedule_auto_reslice_if_needed();
     void trigger_auto_reslice_now();
+    void confirm_ai_workflow_stability();
     int  auto_slice_delay_seconds() const;
     // Update background processing thread from the current config and Model.
     enum UpdateBackgroundProcessReturnState {
@@ -5111,6 +5227,7 @@ Plater::priv::priv(Plater *q, MainFrame *main_frame)
 
     this->background_process_timer.SetOwner(this->q, 0);
     this->auto_reslice_timer.SetOwner(this->q, 0);
+    this->ai_workflow_stability_timer.SetOwner(this->q, 0);
     this->q->Bind(wxEVT_TIMER, [this](wxTimerEvent &evt)
     {
         if (&evt.GetTimer() == &this->background_process_timer) {
@@ -5119,6 +5236,9 @@ Plater::priv::priv(Plater *q, MainFrame *main_frame)
         } else if (&evt.GetTimer() == &this->auto_reslice_timer) {
             this->auto_reslice_timer.Stop();
             this->trigger_auto_reslice_now();
+        } else if (&evt.GetTimer() == &this->ai_workflow_stability_timer) {
+            this->ai_workflow_stability_timer.Stop();
+            this->confirm_ai_workflow_stability();
         } else {
             evt.Skip();
         }
@@ -5941,7 +6061,10 @@ void read_binary_stl(const std::string& filename, std::string& model_id, std::st
 }
 
 // BBS: backup & restore
-std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_files, LoadStrategy strategy, bool ask_multi)
+std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_files,
+                                             LoadStrategy strategy,
+                                             bool ask_multi,
+                                             ObjImportColorFn obj_color_fn)
 {
     std::vector<size_t> empty_result;
     bool dlg_cont = true;
@@ -6629,16 +6752,17 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
                 bool                  is_xxx;
                 Semver                file_version;
 
-                //ObjImportColorFn obj_color_fun=nullptr;
-                auto obj_color_fun = [this, &path](ObjDialogInOut &in_out) {
-
-                    if (!boost::iends_with(path.string(), ".obj")) { return; }
-                    const std::vector<std::string> extruder_colours = wxGetApp().plater()->get_extruder_colors_from_plater_config();
-                    ObjColorDialog                 color_dlg(nullptr, in_out, extruder_colours, Sidebar::should_show_SEMM_buttons());
-                    if (color_dlg.ShowModal() != wxID_OK) {
-                        in_out.filament_ids.clear();
-                    }
-                };
+                ObjImportColorFn obj_color_fun = obj_color_fn;
+                if (!obj_color_fun) {
+                    obj_color_fun = [this, &path](ObjDialogInOut &in_out) {
+                        if (!boost::iends_with(path.string(), ".obj"))
+                            return;
+                        const std::vector<std::string> extruder_colours = wxGetApp().plater()->get_extruder_colors_from_plater_config();
+                        ObjColorDialog color_dlg(nullptr, in_out, extruder_colours, Sidebar::should_show_SEMM_buttons());
+                        if (color_dlg.ShowModal() != wxID_OK)
+                            in_out.filament_ids.clear();
+                    };
+                }
                 if (boost::iends_with(path.string(), ".stp") ||
                     boost::iends_with(path.string(), ".step")) {
                         double linear = string_to_double_decimal_point(wxGetApp().app_config->get("linear_deflection"));
@@ -7868,6 +7992,36 @@ void Plater::priv::trigger_auto_reslice_now()
         return;
 
     this->q->reslice();
+}
+
+void Plater::priv::confirm_ai_workflow_stability()
+{
+    if (!sidebar->ai_workflow_active())
+        return;
+
+    PartPlate* plate = partplate_list.get_curr_plate();
+    if (plate != nullptr && plate->is_slice_result_ready_for_export() && !q->is_background_process_slicing()) {
+        sidebar->update_ai_workflow_step(Sidebar::AISlice, Sidebar::AIWorkflowStatus::Success);
+        sidebar->update_ai_workflow_step(Sidebar::AIGCode, Sidebar::AIWorkflowStatus::Success,
+                                         _L("预览已就绪"));
+        sidebar->finish_ai_workflow(true, _L("自动流程完成，可以检查切片结果"));
+        return;
+    }
+
+    if (plate != nullptr && plate->is_slice_result_valid() && !q->is_background_process_slicing()) {
+        sidebar->update_ai_workflow_step(Sidebar::AISlice, Sidebar::AIWorkflowStatus::Failed,
+                                         _L("切片结果不可打印"));
+        sidebar->update_ai_workflow_step(Sidebar::AIGCode, Sidebar::AIWorkflowStatus::Failed,
+                                         _L("请检查热床边界或 G-code 错误"));
+        sidebar->finish_ai_workflow(false, _L("自动流程未通过可打印性检查"));
+        return;
+    }
+
+    sidebar->update_ai_workflow_step(Sidebar::AISlice, Sidebar::AIWorkflowStatus::Running,
+                                     _L("布局已更新，正在自动重试"));
+    sidebar->update_ai_workflow_step(Sidebar::AIGCode, Sidebar::AIWorkflowStatus::Waiting);
+    if (!q->is_background_process_slicing())
+        q->reslice();
 }
 
 int Plater::priv::auto_slice_delay_seconds() const
@@ -10001,6 +10155,11 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
             m_slice_all_only_has_gcode = false;
     }
 
+    // Print::apply() may internally cancel an in-flight export before Orca automatically
+    // starts a replacement slice. Keep the AI workflow alive for that replacement result.
+    const bool ai_internal_restart = evt.cancelled() &&
+        sidebar->ai_workflow_active() && background_process.is_internal_cancelled();
+
     // Stop the background task, wait until the thread goes into the "Idle" state.
     // At this point of time the thread should be either finished or canceled,
     // so the following call just confirms, that the produced data were consumed.
@@ -10143,6 +10302,28 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
     //    }
     //}
 
+
+    if (is_finished && sidebar->ai_workflow_active()) {
+        if (evt.success() && !has_error && !evt.cancelled()) {
+            sidebar->update_ai_workflow_step(Sidebar::AISlice, Sidebar::AIWorkflowStatus::Running,
+                                             _L("正在确认最终结果"));
+            sidebar->update_ai_workflow_step(Sidebar::AIGCode, Sidebar::AIWorkflowStatus::Waiting,
+                                             _L("正在加载预览"));
+            ai_workflow_stability_timer.Stop();
+            ai_workflow_stability_timer.StartOnce(1200);
+        } else if (ai_internal_restart) {
+            sidebar->update_ai_workflow_step(Sidebar::AISlice, Sidebar::AIWorkflowStatus::Running,
+                                             _L("配置已更新，正在自动重试"));
+            sidebar->update_ai_workflow_step(Sidebar::AIGCode, Sidebar::AIWorkflowStatus::Waiting);
+        } else {
+            sidebar->update_ai_workflow_step(Sidebar::AISlice, Sidebar::AIWorkflowStatus::Failed,
+                                             evt.cancelled() ? _L("已取消") : _L("切片失败"));
+            sidebar->update_ai_workflow_step(Sidebar::AIGCode, Sidebar::AIWorkflowStatus::Failed,
+                                             _L("未生成"));
+            sidebar->finish_ai_workflow(false, evt.cancelled() ? _L("自动切片已取消")
+                                                               : _L("自动切片失败，请检查错误"));
+        }
+    }
 
     if (is_finished)
     {
@@ -13875,22 +14056,28 @@ void Plater::force_update_all_plate_thumbnails()
 }
 
 // BBS: backup
-std::vector<size_t> Plater::load_files(const std::vector<fs::path>& input_files, LoadStrategy strategy, bool ask_multi) {
+std::vector<size_t> Plater::load_files(const std::vector<fs::path>& input_files,
+                                       LoadStrategy strategy,
+                                       bool ask_multi,
+                                       ObjImportColorFn obj_color_fn) {
     //BBS: wish to reset state when load a new file
     p->m_slice_all_only_has_gcode = false;
     //BBS: wish to reset all plates stats item selected state when load a new file
     p->preview->get_canvas3d()->reset_select_plate_toolbar_selection();
-    return p->load_files(input_files, strategy, ask_multi);
+    return p->load_files(input_files, strategy, ask_multi, std::move(obj_color_fn));
 }
 
 // To be called when providing a list of files to the GUI slic3r on command line.
-std::vector<size_t> Plater::load_files(const std::vector<std::string>& input_files, LoadStrategy strategy,  bool ask_multi)
+std::vector<size_t> Plater::load_files(const std::vector<std::string>& input_files,
+                                       LoadStrategy strategy,
+                                       bool ask_multi,
+                                       ObjImportColorFn obj_color_fn)
 {
     std::vector<fs::path> paths;
     paths.reserve(input_files.size());
     for (const std::string& path : input_files)
         paths.emplace_back(path);
-    return p->load_files(paths, strategy, ask_multi);
+    return p->load_files(paths, strategy, ask_multi, std::move(obj_color_fn));
 }
 
 bool Plater::preview_zip_archive(const boost::filesystem::path& archive_path)

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import os
+import re
 import struct
 import threading
 import time
@@ -17,6 +18,9 @@ MAX_JSON_BYTES = 1024 * 1024
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_MULTIPART_BYTES = MAX_IMAGE_BYTES + 256 * 1024
 MAX_PROMPT_BYTES = 64 * 1024
+MAX_PALETTE_COLORS = 16
+MODEL_FACE_LIMITS = (100000, 300000, 500000, 1000000)
+DEFAULT_MODEL_FACE_LIMIT = 300000
 
 
 def _png_chunk(kind, data):
@@ -54,6 +58,23 @@ f 1 2 4
 f 1 4 3
 f 2 3 4
 """
+
+
+def _load_mock_obj():
+    configured_path = os.environ.get("ORCASLICER_AI_MOCK_OBJ_PATH", "").strip()
+    if not configured_path:
+        return TINY_OBJ
+    try:
+        with open(configured_path, "rb") as stream:
+            payload = stream.read()
+    except OSError as exc:
+        raise RuntimeError("ORCASLICER_AI_MOCK_OBJ_PATH could not be read: %s" % exc) from exc
+    if not payload:
+        raise RuntimeError("ORCASLICER_AI_MOCK_OBJ_PATH points to an empty file.")
+    return payload
+
+
+MOCK_OBJ = _load_mock_obj()
 
 _jobs = {}
 _jobs_lock = threading.Lock()
@@ -138,7 +159,35 @@ def empty_artifact():
     return {"ready": False, "format": "", "filename": "", "size_bytes": 0}
 
 
-def new_job(source, prepared_prompt):
+def normalize_palette(value):
+    if not isinstance(value, list) or len(value) > MAX_PALETTE_COLORS:
+        raise ValueError("palette must contain between 0 and 16 colors")
+    normalized = []
+    for color in value:
+        if not isinstance(color, str) or re.fullmatch(r"#[0-9A-Fa-f]{6}", color) is None:
+            raise ValueError("palette colors must use #RRGGBB format")
+        color = color.upper()
+        if color not in normalized:
+            normalized.append(color)
+    return normalized
+
+
+def normalize_face_limit(value):
+    if isinstance(value, bool) or not isinstance(value, int) or value not in MODEL_FACE_LIMITS:
+        raise ValueError("face_limit must be 100000, 300000, 500000, or 1000000 triangles")
+    return value
+
+
+def multipart_palette(value):
+    if not isinstance(value, str):
+        raise ValueError("palette is required")
+    try:
+        return normalize_palette(json.loads(value))
+    except json.JSONDecodeError as exc:
+        raise ValueError("palette must be a JSON color array") from exc
+
+
+def new_job(source, prepared_prompt, palette):
     job_id = str(uuid.uuid4())
     job = {
         "id": job_id,
@@ -148,6 +197,8 @@ def new_job(source, prepared_prompt):
         "message": "Preparing model generation request.",
         "progress": 5,
         "prepared_prompt": "",
+        "face_limit": DEFAULT_MODEL_FACE_LIMIT,
+        "_palette": palette,
         "preview": {"ready": False, "content_type": "", "size_bytes": 0},
         "artifact": empty_artifact(),
         "_next_prompt": prepared_prompt,
@@ -199,7 +250,7 @@ def advance_job(job, status_call=False):
                 "format": "obj",
                 "color_encoding": "vertex_colors",
                 "filename": "orcaslicer-model-%s.obj" % job["id"],
-                "size_bytes": len(TINY_OBJ),
+                "size_bytes": len(MOCK_OBJ),
             },
         )
 
@@ -213,6 +264,7 @@ def public_job(job):
         "message": job["message"],
         "progress": job["progress"],
         "prepared_prompt": job["prepared_prompt"] if job["source"] == "text" else "",
+        "face_limit": job["face_limit"],
         "preview": dict(job["preview"]),
         "artifact": dict(job["artifact"]),
     }
@@ -269,7 +321,9 @@ class Handler(BaseHTTPRequestHandler):
                     "model_generation": {
                         "available": True,
                         "sources": ["text", "image"],
-                        "artifact_formats": ["obj", "3mf", "stl"],
+                        "artifact_formats": ["obj"],
+                        "face_limits": list(MODEL_FACE_LIMITS),
+                        "default_face_limit": DEFAULT_MODEL_FACE_LIMIT,
                     },
                 },
             }, 200)
@@ -331,13 +385,14 @@ class Handler(BaseHTTPRequestHandler):
             request = self.read_json()
             request_id = text_field(request.get("request_id"), "request_id")
             prompt = text_field(request.get("prompt"), "prompt")
+            palette = normalize_palette(request.get("palette"))
         except Exception as exc:
             self.model_error("invalid_request", str(exc), 400)
             return
 
         prepared = "Create a printable 3D model from this description: %s" % prompt
         with _jobs_lock:
-            job = new_job("text", prepared)
+            job = new_job("text", prepared, palette)
             response = public_job(job)
         self.send_json({"job": response}, 202)
 
@@ -346,6 +401,7 @@ class Handler(BaseHTTPRequestHandler):
             fields, image, image_type = self.read_image_multipart()
             request_id = text_field(fields.get("request_id"), "request_id")
             instruction = text_field(fields.get("instruction"), "instruction")
+            palette = multipart_palette(fields.get("palette"))
             if not image or len(image) > MAX_IMAGE_BYTES:
                 raise RequestError("image_too_large", "Image must be no larger than 20 MB.", 413)
             detected = self.detect_image_type(image)
@@ -362,7 +418,7 @@ class Handler(BaseHTTPRequestHandler):
 
         prepared = "Create a printable 3D model based on the uploaded image. Instruction: %s" % instruction
         with _jobs_lock:
-            job = new_job("image", prepared)
+            job = new_job("image", prepared, palette)
             response = public_job(job)
         self.send_json({"job": response}, 202)
 
@@ -380,6 +436,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             request = self.read_json()
             prepared_prompt = text_field(request.get("prepared_prompt", ""), "prepared_prompt", allow_empty=True)
+            palette = normalize_palette(request.get("palette"))
+            face_limit = normalize_face_limit(request.get("face_limit", DEFAULT_MODEL_FACE_LIMIT))
         except Exception as exc:
             self.model_error("invalid_request", str(exc), 400)
             return
@@ -393,12 +451,16 @@ class Handler(BaseHTTPRequestHandler):
             if job["state"] != "awaiting_confirmation":
                 self.model_error("invalid_job_state", "Job is not awaiting confirmation.", 409)
                 return
+            if palette != job["_palette"]:
+                self.model_error("palette_changed", "The filament palette changed after preview.", 409)
+                return
             job.update(
                 state="queued",
                 phase="generating",
                 message="Generation queued.",
                 progress=20,
                 prepared_prompt=prepared_prompt,
+                face_limit=face_limit,
                 artifact=empty_artifact(),
                 _stage_started=time.monotonic(),
                 _status_calls=0,
@@ -442,7 +504,7 @@ class Handler(BaseHTTPRequestHandler):
         if kind == "preview":
             self.send_bytes(TINY_PNG, "image/png", filename)
         else:
-            self.send_bytes(TINY_OBJ, "model/obj", filename)
+            self.send_bytes(MOCK_OBJ, "model/obj", filename)
 
     def require_native_client(self):
         if self.headers.get("X-OrcaSlicer-Client") != "native":
@@ -497,7 +559,7 @@ class Handler(BaseHTTPRequestHandler):
             if part.is_multipart():
                 raise RequestError("invalid_multipart", "Nested multipart data is not supported.", 400)
             name = part.get_param("name", header="content-disposition")
-            if name not in ("request_id", "instruction", "image") or name in fields or (name == "image" and image is not None):
+            if name not in ("request_id", "instruction", "palette", "image") or name in fields or (name == "image" and image is not None):
                 raise RequestError("invalid_multipart", "Unexpected or duplicate multipart field.", 400)
             payload = part.get_payload(decode=True) or b""
             if name == "image":

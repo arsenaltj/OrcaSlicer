@@ -1,6 +1,7 @@
 #ifndef slic3r_Plater_hpp_
 #define slic3r_Plater_hpp_
 
+#include <array>
 #include <memory>
 #include <vector>
 #include <boost/filesystem/path.hpp>
@@ -8,6 +9,7 @@
 #include <wx/panel.h>
 // BBS
 #include <wx/notebook.h>
+#include <wx/weakref.h>
 
 #include "Selection.hpp"
 
@@ -34,6 +36,7 @@
 class wxButton;
 class ScalableButton;
 class wxScrolledWindow;
+class wxStaticText;
 class wxString;
 class ComboBox;
 class Button;
@@ -143,6 +146,26 @@ class Sidebar : public wxPanel
     void update_sync_ams_btn_enable(wxUpdateUIEvent &e);
 
 public:
+    enum class AIWorkflowStatus
+    {
+        Waiting,
+        Running,
+        Success,
+        Warning,
+        Failed
+    };
+
+    enum AIWorkflowStep : size_t
+    {
+        AIImportModel = 0,
+        AICheckMesh,
+        AIProcessColors,
+        AIArrange,
+        AISlice,
+        AIGCode,
+        AIWorkflowStepCount
+    };
+
     enum DockingState
     {
         None, Left, Right
@@ -258,6 +281,11 @@ public:
     Search::OptionsSearcher&        get_searcher();
     std::string&                    get_search_line();
     void                            update_printer_thumbnail();
+    void                            start_ai_workflow(const wxString& summary);
+    void                            update_ai_workflow_step(AIWorkflowStep step, AIWorkflowStatus status,
+                                                            const wxString& detail = wxString());
+    void                            finish_ai_workflow(bool success, const wxString& summary);
+    bool                            ai_workflow_active() const { return m_ai_workflow_active; }
 
     bool need_auto_sync_after_connect_printer() const { return m_need_auto_sync_after_connect_printer; }
     void set_need_auto_sync_after_connect_printer(bool need_auto_sync) { m_need_auto_sync_after_connect_printer = need_auto_sync; }
@@ -270,6 +298,10 @@ private:
     std::unique_ptr<priv> p;
 
     wxBoxSizer* m_scrolled_sizer = nullptr;
+    wxWeakRef<wxPanel> m_ai_workflow_panel;
+    wxWeakRef<wxStaticText> m_ai_workflow_summary;
+    std::array<wxWeakRef<wxStaticText>, AIWorkflowStepCount> m_ai_workflow_steps {};
+    bool m_ai_workflow_active = false;
     bool            m_need_auto_sync_after_connect_printer{false};
 };
 
@@ -375,9 +407,15 @@ public:
     bool preview_zip_archive(const boost::filesystem::path& archive_path);
 
     // BBS: restore
-    std::vector<size_t> load_files(const std::vector<boost::filesystem::path>& input_files, LoadStrategy strategy = LoadStrategy::LoadModel | LoadStrategy::LoadConfig,  bool ask_multi = false);
+    std::vector<size_t> load_files(const std::vector<boost::filesystem::path>& input_files,
+                                   LoadStrategy strategy = LoadStrategy::LoadModel | LoadStrategy::LoadConfig,
+                                   bool ask_multi = false,
+                                   ObjImportColorFn obj_color_fn = nullptr);
     // To be called when providing a list of files to the GUI slic3r on command line.
-    std::vector<size_t> load_files(const std::vector<std::string>& input_files, LoadStrategy strategy = LoadStrategy::LoadModel | LoadStrategy::LoadConfig,  bool ask_multi = false);
+    std::vector<size_t> load_files(const std::vector<std::string>& input_files,
+                                   LoadStrategy strategy = LoadStrategy::LoadModel | LoadStrategy::LoadConfig,
+                                   bool ask_multi = false,
+                                   ObjImportColorFn obj_color_fn = nullptr);
     // to be called on drag and drop
     bool load_files(const wxArrayString& filenames);
 

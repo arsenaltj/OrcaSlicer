@@ -305,6 +305,11 @@ set(SLIC3R_GUI_SOURCES
     GUI/AIAssistantConfig.hpp
     GUI/AIAssistantPanel.cpp
     GUI/AIAssistantPanel.hpp
+    AI/ModelGeneration/GeneratedModelArtifact.hpp
+    AI/ModelGeneration/IPrintablePaletteProvider.hpp
+    AI/SmartSlicing/IModelArtifactConsumer.hpp
+    GUI/AI/Orca/OrcaWorkspaceAdapter.cpp
+    GUI/AI/Orca/OrcaWorkspaceAdapter.hpp
     GUI/AIModelGenerationClient.cpp
     GUI/AIModelGenerationClient.hpp
     GUI/ModelGenerationPanel.cpp

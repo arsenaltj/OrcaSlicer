@@ -12,7 +12,7 @@ namespace Slic3r::GUI {
 namespace {
 
 constexpr size_t MAX_PREVIEW_SIZE = 10 * 1024 * 1024;
-constexpr size_t MAX_ARTIFACT_SIZE = 250 * 1024 * 1024;
+constexpr size_t MAX_ARTIFACT_SIZE = 768 * 1024 * 1024;
 
 std::string normalize_endpoint(std::string endpoint)
 {
@@ -69,15 +69,19 @@ std::string AIModelGenerationClient::url(const std::string& path) const
 }
 
 void AIModelGenerationClient::preprocess_text(const std::string& request_id, const std::string& prompt,
+                                               const std::vector<std::string>& palette,
+                                               const std::string& style,
                                                StatusFn on_complete, ErrorFn on_error)
 {
     post_json("/v1/orcaslicer/model-jobs/text",
-              json::object({ { "request_id", request_id }, { "prompt", prompt } }),
+              json::object({ { "request_id", request_id }, { "prompt", prompt }, { "palette", palette }, { "style", style } }),
               std::move(on_complete), std::move(on_error));
 }
 
 void AIModelGenerationClient::preprocess_image(const std::string& request_id, const std::string& instruction,
                                                 const boost::filesystem::path& image_path,
+                                                const std::vector<std::string>& palette,
+                                                const std::string& style,
                                                 StatusFn on_complete, ErrorFn on_error)
 {
     cancel_current();
@@ -94,6 +98,8 @@ void AIModelGenerationClient::preprocess_image(const std::string& request_id, co
         .size_limit(1024 * 1024)
         .form_add("request_id", request_id)
         .form_add("instruction", instruction)
+        .form_add("palette", json(palette).dump())
+        .form_add("style", style)
         .form_add_file("image", image_path, image_path.filename().string());
     http.on_complete([this, on_complete = std::move(on_complete), on_error](std::string body, unsigned) mutable {
         parse_status_response(std::move(body), std::move(on_complete), on_error);
@@ -106,10 +112,12 @@ void AIModelGenerationClient::preprocess_image(const std::string& request_id, co
 }
 
 void AIModelGenerationClient::generate(const std::string& job_id, const std::string& prepared_prompt,
+                                       const std::vector<std::string>& palette, int face_limit,
                                        StatusFn on_complete, ErrorFn on_error)
 {
     post_json("/v1/orcaslicer/model-jobs/" + job_id + "/generate",
-              json::object({ { "prepared_prompt", prepared_prompt } }),
+              json::object({ { "prepared_prompt", prepared_prompt }, { "palette", palette },
+                             { "face_limit", face_limit } }),
               std::move(on_complete), std::move(on_error));
 }
 
@@ -130,6 +138,39 @@ void AIModelGenerationClient::get_status(const std::string& job_id, StatusFn on_
     http.on_error([on_error = std::move(on_error)](std::string body, std::string error, unsigned status) {
         if (on_error)
             on_error(error_message(body, error, status));
+    });
+    m_active_request = http.perform();
+}
+
+void AIModelGenerationClient::get_latest(LatestFn on_complete, ErrorFn on_error)
+{
+    cancel_current();
+    if (!is_loopback_endpoint(m_endpoint)) {
+        if (on_error)
+            on_error("Model generation requires a loopback AI sidecar endpoint.");
+        return;
+    }
+    auto http = Http::get(url("/v1/orcaslicer/model-jobs/latest"));
+    http.header("X-OrcaSlicer-Client", "native").timeout_connect(5).timeout_max(15).size_limit(1024 * 1024);
+    http.on_complete([on_complete = std::move(on_complete), on_error](std::string body, unsigned) mutable {
+        auto parsed = json::parse(body, nullptr, false);
+        if (parsed.is_discarded() || !parsed.contains("job")) {
+            if (on_error) on_error("AI sidecar returned an invalid model job response.");
+            return;
+        }
+        if (parsed["job"].is_null()) {
+            if (on_complete) on_complete(std::nullopt);
+            return;
+        }
+        auto status = parse_job(parsed["job"]);
+        if (!status) {
+            if (on_error) on_error("AI sidecar returned an incomplete model job response.");
+            return;
+        }
+        if (on_complete) on_complete(std::move(status));
+    });
+    http.on_error([on_error = std::move(on_error)](std::string body, std::string error, unsigned status) {
+        if (on_error) on_error(error_message(body, error, status));
     });
     m_active_request = http.perform();
 }
@@ -166,6 +207,13 @@ void AIModelGenerationClient::download_preview(const std::string& job_id, const 
                                                 PathFn on_complete, ErrorFn on_error)
 {
     download("/v1/orcaslicer/model-jobs/" + job_id + "/preview", path, MAX_PREVIEW_SIZE,
+             std::move(on_complete), std::move(on_error));
+}
+
+void AIModelGenerationClient::download_input(const std::string& job_id, const boost::filesystem::path& path,
+                                               PathFn on_complete, ErrorFn on_error)
+{
+    download("/v1/orcaslicer/model-jobs/" + job_id + "/input", path, MAX_PREVIEW_SIZE,
              std::move(on_complete), std::move(on_error));
 }
 
@@ -218,7 +266,20 @@ void AIModelGenerationClient::parse_status_response(std::string body, StatusFn o
         return;
     }
 
-    const json& job = parsed["job"];
+    auto status = parse_job(parsed["job"]);
+    if (!status) {
+        if (on_error)
+            on_error("AI sidecar returned an incomplete model job response.");
+        return;
+    }
+    if (on_complete)
+        on_complete(std::move(*status));
+}
+
+std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse_job(const json& job)
+{
+    if (!job.is_object())
+        return std::nullopt;
     JobStatus status;
     status.id = job.value("id", std::string());
     status.source = job.value("source", std::string());
@@ -226,7 +287,17 @@ void AIModelGenerationClient::parse_status_response(std::string body, StatusFn o
     status.phase = job.value("phase", std::string());
     status.message = job.value("message", std::string());
     status.prepared_prompt = job.value("prepared_prompt", std::string());
+    status.user_prompt = job.value("user_prompt", std::string());
     status.progress = std::clamp(job.value("progress", 0), 0, 100);
+    status.face_limit = job.value("face_limit", 300000);
+    status.style = job.value("style", std::string());
+    status.updated_at = job.value("updated_at", 0.0);
+    if (job.contains("palette") && job["palette"].is_array()) {
+        for (const auto& color : job["palette"])
+            if (color.is_string()) status.palette.emplace_back(color.get<std::string>());
+    }
+    if (job.contains("input") && job["input"].is_object())
+        status.input_ready = job["input"].value("ready", false);
     if (job.contains("preview") && job["preview"].is_object())
         status.preview_ready = job["preview"].value("ready", false);
     if (job.contains("artifact") && job["artifact"].is_object()) {
@@ -236,12 +307,9 @@ void AIModelGenerationClient::parse_status_response(std::string body, StatusFn o
         status.artifact_size = job["artifact"].value("size_bytes", size_t(0));
     }
     if (status.id.empty() || status.state.empty()) {
-        if (on_error)
-            on_error("AI sidecar returned an incomplete model job response.");
-        return;
+        return std::nullopt;
     }
-    if (on_complete)
-        on_complete(std::move(status));
+    return status;
 }
 
 void AIModelGenerationClient::download(const std::string& path, const boost::filesystem::path& destination,

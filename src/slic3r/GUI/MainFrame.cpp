@@ -38,6 +38,7 @@
 #include "GLCanvas3D.hpp"
 #include "Plater.hpp"
 #include "ModelGenerationPanel.hpp"
+#include "AI/Orca/OrcaWorkspaceAdapter.hpp"
 #include "AIServiceManager.hpp"
 #include "AISidecarClient.hpp"
 #include "WebViewDialog.hpp"
@@ -1336,14 +1337,24 @@ void MainFrame::init_tabpanel() {
 
     wxGetApp().plater_ = m_plater;
 
-    create_preset_tabs();
-
-    m_model_generation = new ModelGenerationPanel(m_tabpanel, m_plater, [this]() {
-        request_select_tab(tp3DEditor);
+    m_ai_orca_workspace = std::make_unique<OrcaWorkspaceAdapter>(m_plater, [this](bool slice) {
+        m_plater->exit_gizmo();
+        m_plater->update(true, true);
+        if (slice) {
+            wxPostEvent(m_plater, SimpleEvent(EVT_GLTOOLBAR_SLICE_PLATE));
+            select_tab(tpPreview);
+        } else {
+            select_tab(tp3DEditor);
+        }
     });
+    m_model_generation = new ModelGenerationPanel(
+        m_tabpanel, *m_ai_orca_workspace, *m_ai_orca_workspace);
     m_model_generation->SetBackgroundColour(*wxWHITE);
-    m_tabpanel->AddPage(m_model_generation, _L("3D Generate"), std::string("tab_generate_3d_active"), std::string("tab_generate_3d"), false);
+    m_tabpanel->InsertPage(tpGenerate3D, m_model_generation, _L("3D 生成"),
+                           std::string("tab_generate_3d_active"), std::string("tab_generate_3d"), false);
     m_model_generation->Hide();
+
+    create_preset_tabs();
 
         //BBS add pages
     m_monitor = new MonitorPanel(m_tabpanel, wxID_ANY, wxDefaultPosition, wxDefaultSize);

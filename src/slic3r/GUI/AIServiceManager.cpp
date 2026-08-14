@@ -38,7 +38,7 @@ AIServiceAvailability parse_health_response(const std::string& body)
     const auto config_proposal = capabilities.find("config_proposal");
     const auto model_generation = capabilities.find("model_generation");
     const auto expected_sources = nlohmann::json::array({ "text", "image" });
-    const auto expected_artifact_formats = nlohmann::json::array({ "obj", "3mf", "stl" });
+    const auto expected_artifact_formats = nlohmann::json::array({ "obj" });
     if (config_proposal == capabilities.end() || !config_proposal->is_object() || !config_proposal->contains("available") ||
         !(*config_proposal)["available"].is_boolean() || model_generation == capabilities.end() || !model_generation->is_object() ||
         !model_generation->contains("available") || !(*model_generation)["available"].is_boolean() ||

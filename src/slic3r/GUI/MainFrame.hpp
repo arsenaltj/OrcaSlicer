@@ -51,6 +51,7 @@ namespace GUI
 {
 
 class ModelGenerationPanel;
+class OrcaWorkspaceAdapter;
 
 class Tab;
 class PrintHostQueueDialog;
@@ -224,14 +225,15 @@ public:
     enum TabPosition
     {
         tpHome            = 0,
-        tp3DEditor        = 1,
-        tpPreview         = 2,
-        tpMonitor         = 3,
-        tpMultiDevice     = 4,
-        tpProject         = 5,
-        tpCalibration     = 6,
-        tpAuxiliary       = 7,
-        toDebugTool       = 8,
+        tpGenerate3D      = 1,
+        tp3DEditor        = 2,
+        tpPreview         = 3,
+        tpMonitor         = 4,
+        tpMultiDevice     = 5,
+        tpProject         = 6,
+        tpCalibration     = 7,
+        tpAuxiliary       = 8,
+        toDebugTool       = 9,
     };
 
     //BBS: add slice&&print status update logic
@@ -385,6 +387,7 @@ public:
     PrintHostQueueDialog* printhost_queue_dlg() { return m_printhost_queue_dlg; }
     Plater*               m_plater { nullptr };
     ModelGenerationPanel* m_model_generation { nullptr };
+    std::unique_ptr<OrcaWorkspaceAdapter> m_ai_orca_workspace;
     std::unique_ptr<AIServiceManager> m_ai_service_manager;
     wxTimer                m_ai_service_retry_timer;
     unsigned               m_ai_service_retry_count { 0 };

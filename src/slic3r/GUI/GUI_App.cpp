@@ -836,14 +836,14 @@ void GUI_App::post_init()
             BOOST_LOG_TRIVIAL(warning) << __FUNCTION__ << ": glcontext not ready, postpone init";
             plater_->canvas3D()->enable_render(true);
             plater_->canvas3D()->set_as_dirty();
-#ifdef __linux__
-            // Wayland/EGL may not have committed the GL surface yet; ask the
-            // idle loop to retry post_init when the canvas is actually mapped.
-            // Without this, GL function pointers stay null and the first
-            // Preview focus crashes in Camera::apply_viewport.
+            // The native surface may not be mapped during the first idle event.
+            // Retry after the frame is visible so Prepare does not pay the GL
+            // initialization cost on its first user-initiated activation.
+#ifndef __linux__
+            mainframe->Thaw();
+#endif
             m_post_initialized = false;
             return;
-#endif
         } else {
             Size canvas_size = plater_->canvas3D()->get_canvas_size();
             wxGetApp().imgui()->set_display_size(static_cast<float>(canvas_size.get_width()), static_cast<float>(canvas_size.get_height()));

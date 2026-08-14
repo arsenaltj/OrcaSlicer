@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 _DEFAULT_BASE_URL = "https://openapi.tripo3d.com/v3"
+_ARTIFACT_HOSTS = {"openapi.cdn.tripo3d.com"}
 _DEFAULT_MODEL = "v3.1-20260211"
 _DEFAULT_DEADLINE = 900.0
 _POLL_INTERVAL = 1.5
@@ -155,11 +156,32 @@ def _task_id(data: Mapping[str, Any]) -> str:
     return task_id
 
 
-def create_text_task(prompt: str) -> str:
+_ALLOWED_FACE_LIMITS = (100000, 300000, 500000, 1000000)
+
+
+def _high_detail_payload(model: str, face_limit: int) -> dict[str, Any]:
+    if face_limit not in _ALLOWED_FACE_LIMITS:
+        raise TripoError("The model face target must be 100000, 300000, 500000, or 1000000 triangles.")
+    return {
+        "model": model,
+        "smart_low_poly": False,
+        "face_limit": face_limit,
+        "texture": True,
+        "pbr": False,
+        "texture_quality": "detailed",
+        "geometry_quality": "detailed",
+        "quad": False,
+        "export_uv": True,
+    }
+
+
+def create_text_task(prompt: str, face_limit: int = 300000) -> str:
     if not isinstance(prompt, str) or not prompt.strip():
         raise TripoError("A text prompt is required.")
     _, _, model = _config()
-    return _task_id(_post_json("/generation/text-to-model", {"prompt": prompt, "model": model}))
+    payload = _high_detail_payload(model, face_limit)
+    payload["prompt"] = prompt
+    return _task_id(_post_json("/generation/text-to-model", payload))
 
 
 def _image_kind(path: Path) -> tuple[str, str]:
@@ -204,11 +226,13 @@ def upload_image(path: str | os.PathLike[str]) -> str:
     return token
 
 
-def create_image_task(file_token: str) -> str:
+def create_image_task(file_token: str, face_limit: int = 300000) -> str:
     if not isinstance(file_token, str) or not file_token:
         raise TripoError("An uploaded image reference is required.")
     _, _, model = _config()
-    return _task_id(_post_json("/generation/image-to-model", {"input": file_token, "model": model}))
+    payload = _high_detail_payload(model, face_limit)
+    payload.update({"input": file_token, "texture_alignment": "original_image"})
+    return _task_id(_post_json("/generation/image-to-model", payload))
 
 
 def get_task(task_id: str) -> dict[str, Any]:
@@ -307,6 +331,9 @@ def _validate_artifact_url(url: str) -> None:
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme.lower() != "https" or not parsed.hostname or parsed.username or parsed.password:
         raise TripoError("Tripo returned an unsafe artifact location.")
+    hostname = parsed.hostname.lower().rstrip(".")
+    if hostname not in _ARTIFACT_HOSTS:
+        raise TripoError("Tripo returned an unsafe artifact location.")
     try:
         addresses = socket.getaddrinfo(parsed.hostname, parsed.port or 443, type=socket.SOCK_STREAM)
     except socket.gaierror:
@@ -318,7 +345,10 @@ def _validate_artifact_url(url: str) -> None:
             ip = ipaddress.ip_address(address[4][0].split("%", 1)[0])
         except ValueError:
             raise TripoError("Tripo returned an unsafe artifact location.") from None
-        if not ip.is_global:
+        # Windows proxy clients may return an RFC 2544 fake IP for an exact,
+        # allowlisted HTTPS host. TLS still authenticates the hostname, while
+        # lookalike and redirect hosts remain rejected above.
+        if not ip.is_global and hostname not in _ARTIFACT_HOSTS:
             raise TripoError("Tripo returned an unsafe artifact location.")
 
 

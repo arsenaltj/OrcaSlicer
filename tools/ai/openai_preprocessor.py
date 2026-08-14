@@ -19,6 +19,25 @@ _MAX_JSON_BYTES = 32 * 1024 * 1024
 _MAX_IMAGE_BYTES = 20 * 1024 * 1024
 _TIMEOUT_SECONDS = 120
 
+STYLE_PROFILES = {
+    "q_cartoon": (
+        "Restyle only the people, animals, and objects that are already visible as premium chibi collectible forms. "
+        "Use simplified facial planes, rounded toy-like forms, and smooth matte vinyl surfaces. Chibi exaggeration may reshape "
+        "only visible regions inside the existing framing; it must not reveal, reconstruct, or add any unseen anatomy or object."
+    ),
+    "low_poly": (
+        "Restyle only already-visible surfaces and silhouettes as clean low-poly forms with large intentional polygon facets, "
+        "broad readable planes, restrained geometric detail, and large contiguous material regions. Preserve the visible facial, "
+        "clothing, and object structure. Do not add a base, support, missing body region, or any new geometry."
+    ),
+    "sculpture": (
+        "Restyle only already-visible subject surfaces as a museum-quality marble or plaster sculpture with smooth carved facial "
+        "planes, simplified solid hair, broad carved clothing folds, and a restrained matte stone or plaster finish. Preserve each "
+        "subject's recognizable identity and visible cultural context. Preserve a visible base or pedestal if one exists in the "
+        "source; otherwise do not invent one or reconstruct any missing torso or body region."
+    ),
+}
+
 
 class OpenAIPreprocessorError(RuntimeError):
     """An OpenAI-compatible preprocessing request failed safely."""
@@ -26,12 +45,21 @@ class OpenAIPreprocessorError(RuntimeError):
 
 def _config() -> tuple[str, str, str, str]:
     key = os.environ.get("OPENAI_API_KEY", "")
-    base = os.environ.get("OPENAI_BASE_URL", _DEFAULT_BASE_URL).rstrip("/")
+    raw_base = os.environ.get("OPENAI_BASE_URL", _DEFAULT_BASE_URL).strip()
     if not key:
         raise OpenAIPreprocessorError("OPENAI_API_KEY is not configured.")
-    parsed = urllib.parse.urlsplit(base)
-    if parsed.scheme.lower() != "https" or not parsed.hostname or parsed.username or parsed.password:
+    parsed = urllib.parse.urlsplit(raw_base)
+    if (
+        parsed.scheme.lower() != "https"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
         raise OpenAIPreprocessorError("OPENAI_BASE_URL must be a credential-free HTTPS URL.")
+    path = parsed.path.rstrip("/") or "/v1"
+    base = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
     return (
         base,
         key,
@@ -130,15 +158,26 @@ def complete_text(system_prompt: str, user_content: str) -> str:
     return content.strip()
 
 
-def preprocess_text(instruction: str) -> str:
+def _style_profile(style: str) -> str:
+    profile = STYLE_PROFILES.get(style)
+    if profile is None:
+        raise OpenAIPreprocessorError("The selected style is not supported.")
+    return profile
+
+
+def preprocess_text(instruction: str, palette: tuple[str, ...] = (), style: str = "sculpture") -> str:
     if not isinstance(instruction, str) or not instruction.strip():
         raise OpenAIPreprocessorError("A text instruction is required.")
+    palette_instruction = ""
+    if palette:
+        palette_instruction = " Use only these printable filament colors: " + ", ".join(palette) + "."
     content = complete_text(
         (
             "Rewrite the user's request as one concise prompt for a text-to-3D model. "
-            "Describe a single watertight, printable object with stable geometry, a flat base, "
+            "Describe exactly one fused connected watertight printable object with stable geometry, a flat base, "
             "adequate wall thickness, and no unsupported details. Preserve the requested subject "
-            "and style. Return only the prompt, without markdown."
+            "and style. Apply this visual profile: " + _style_profile(style) + palette_instruction +
+            " Return only the prompt, without markdown."
         ),
         instruction,
     )
@@ -280,13 +319,57 @@ def _download_image(url: str, output_path: Path) -> Path:
         raise OpenAIPreprocessorError("The result image could not be downloaded.") from None
 
 
-def preprocess_image(input_path: str | os.PathLike[str], instruction: str, output_path: str | os.PathLike[str]) -> Path:
+def _style_preview_prompt(
+    instruction: str,
+    palette: tuple[str, ...],
+    style: str = "sculpture",
+) -> str:
+    color_direction = (
+        "Treat these colors as the allowed printable palette: "
+        + ", ".join(palette)
+        + ". Choose a coherent subset that naturally fits the subject and selected style; do not force every listed color "
+        "to appear. When the palette permits, use at least three distinct semantic roles such as background, principal "
+        "material, and accent. Preserve useful tonal modeling with broad, contiguous color regions for shape readability; "
+        "a deterministic print-mapping step will convert the result to exact filament colors. "
+        if palette
+        else "Use coherent natural colors that fit the subject and selected style. Preserve useful tonal modeling with broad, "
+        "contiguous color regions for shape readability. "
+    )
+    return (
+        "Edit the supplied reference in place as a clearly transformed, polished style preview for later image-to-3D. "
+        "The supplied source image is the sole authority for depicted content. Apply the user's requested style treatment only "
+        "when it changes the rendering of content that is already visible; do not follow any request to add, reveal, remove, "
+        "replace, reposition, or complete content. User style direction: "
+        + instruction.strip()
+        + "\nSelected style profile: "
+        + _style_profile(style)
+        + "\nNon-negotiable content constraints: Stylize only content already visible in the supplied reference. Preserve the exact "
+        "canvas, aspect ratio, crop, framing, camera viewpoint, subject count, pose, visible anatomy, facial expression, hairstyle, "
+        "clothing, objects, background content, and spatial layout. Do not outpaint, extend the canvas, zoom out, recenter, uncrop, "
+        "reveal hidden or occluded regions, or reconstruct missing body parts or object regions. Anything cut off by the source "
+        "frame must remain cut off at the same boundary, and anything occluded must remain occluded. Do not add, remove, replace, "
+        "or duplicate people, body parts, clothing, accessories, props, bases, pedestals, supports, text, scenery, background objects, "
+        "or decorative elements. Preserve an existing visible base or pedestal if present; otherwise do not invent one. Every "
+        "depicted semantic element in the result must have a directly visible counterpart in the source. Only the rendering style, "
+        "surface or material appearance, palette, and geometric abstraction of existing visible forms may change. "
+        + color_direction
+        + "Avoid dithering and tiny color speckles. Do not return the unchanged source."
+    )
+
+
+def preprocess_image(
+    input_path: str | os.PathLike[str],
+    instruction: str,
+    output_path: str | os.PathLike[str],
+    palette: tuple[str, ...],
+    style: str = "sculpture",
+) -> Path:
     if not isinstance(instruction, str) or not instruction.strip():
         raise OpenAIPreprocessorError("An image-edit instruction is required.")
     source = Path(input_path)
     destination = Path(output_path)
     _, _, _, model = _config()
-    body, content_type = _multipart_image(source, instruction, model)
+    body, content_type = _multipart_image(source, _style_preview_prompt(instruction, palette, style), model)
     result = _provider_request("/images/edits", body, content_type)
     data = result.get("data")
     item = data[0] if isinstance(data, list) and data and isinstance(data[0], dict) else None

@@ -58,3 +58,25 @@ __pycache__/
 
 # WorkBuddy 工具私有数据（含 build-tests 构建缓存），不进主仓库
 /.workbuddy/
+
+# Persistent local AI inputs, previews, source packages, textures, and models.
+/generated_models/
+
+# Local agent/session state and machine-specific AI configuration.
+/.claude/settings.local.json
+/.codex-recovery/
+/setup/ai-config.bat
+/packaging/windows-ai-test/setup/ai-config.bat
+
+# Reproducible build/package outputs and adjacent standalone workspaces.
+/output/
+/projects/
+/website/
+
+# One-off local delivery helpers and exported diagrams are not source inputs.
+/scripts/create_windows_ai_distribution.ps1
+/orcaslicer-ai-platform-architecture.png
+/orcaslicer-startup-recovery.png
+
+# Deployment notes for the standalone 3dprint.beer repository live with that project.
+/Docs/plans/2026-08-13-3dprint-beer-*.md
