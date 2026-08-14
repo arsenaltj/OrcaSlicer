@@ -21,9 +21,10 @@
 
 ### 面向产品和架构评审
 
-1. [AI 模块级目标架构](03-ai-target-architecture.md)
-2. [OrcaSlicer 现状架构基线](01-orcaslicer-current-baseline.md)
-3. [开发任务拆解指南](04-development-decomposition-guide.md)
+1. [模型生成与智能切片双主线解耦架构](06-model-generation-smart-slicing-decoupling.md)
+2. [AI 模块级目标架构](03-ai-target-architecture.md)
+3. [OrcaSlicer 现状架构基线](01-orcaslicer-current-baseline.md)
+4. [开发任务拆解指南](04-development-decomposition-guide.md)
 
 ### 面向技术负责人和开发人员
 
@@ -31,6 +32,7 @@
 2. [ORCA 内嵌 AI 目标代码架构图](diagrams/03-orcaslicer-integrated-ai-target-architecture.svg)
 3. [开发任务拆解指南](04-development-decomposition-guide.md)
 4. [分析基线与证据索引](05-analysis-basis-and-evidence.md)
+5. [ADR-001：同仓模块化单体与 Orca 防腐适配层](ADR-001-ai-modular-monolith-orca-adapter.md)
 
 ## 4. 图表目录
 

@@ -47,6 +47,60 @@ If you come across any of these in search results, please <b>report them</b> as 
 
 </div>
 
+# AI 双人协作基线
+
+本 fork 正在并行开发“模型生成”和“智能切片”。共享集成基线为
+`codex/ai-integration-20260814`，不直接在 `master` 上开发。
+
+| 主线 | 负责人 | 主要目录 |
+|------|--------|----------|
+| 模型生成 | 项目负责人 | `src/slic3r/AI/ModelGeneration/`、`ModelGenerationPanel.*`、`AIModelGenerationClient.*`、`tools/ai/` 的生成链路 |
+| 智能切片 | 协作开发者 | `src/slic3r/AI/SmartSlicing/`、智能切片应用服务与对应测试 |
+| Orca 适配 | 共享、接口先行 | `src/slic3r/GUI/AI/Orca/`，只放 `Plater`、Preset、OBJ 导入、修复和切片等 Orca 细节 |
+
+模型生成只发布 `GeneratedModelArtifact`，不得直接调用 `Plater`。智能切片通过
+`IModelArtifactConsumer` 和后续工作区端口消费制品，不依赖 Tripo/OpenAI 任务对象。
+共享契约改动应使用独立 commit，并在合入前通知另一位开发者。
+
+## 首次获取与创建个人分支
+
+```powershell
+git clone --recurse-submodules https://github.com/arsenaltj/OrcaSlicer.git
+cd OrcaSlicer
+git fetch origin
+git switch -c codex/smart-slicing origin/codex/ai-integration-20260814
+git submodule update --init --recursive
+```
+
+模型生成分支相应使用 `codex/model-generation`。双方只向自己的功能分支推送，
+通过 Pull Request 合入共享集成分支，不 force-push 共享分支。
+
+## 日常同步
+
+```powershell
+git fetch origin
+git switch codex/smart-slicing
+git merge origin/codex/ai-integration-20260814
+```
+
+官方 Orca 更新必须从 `upstream` 拉到独立的 `codex/upstream-sync-YYYYMMDD`
+分支，完成构建和兼容测试后再合入集成分支，不与功能开发混在一个 commit 中。
+
+不要提交 `build/`、`output/`、`generated_models/`、API Key、本机 Codex/Claude
+配置、运行日志、模型或 G-code。发布包由 `scripts/package_windows_ai_test.ps1`
+生成；仓库只保存 `ai-config.example.bat`，打包时生成供测试人员手动填写的
+`setup/ai-config.bat`。
+
+当前架构、边界和实施结果见：
+
+- [模型生成与智能切片解耦架构](Docs/architecture/06-model-generation-smart-slicing-decoupling.md)
+- [模块化单体与 Orca Adapter ADR](Docs/architecture/ADR-001-ai-modular-monolith-orca-adapter.md)
+- [第一批 Orca 解耦实施结果](Docs/plans/2026-08-14-model-generation-orca-decoupling-implementation-plan.md)
+
+基线验证要求：Windows Release 编译/链接、`python -m unittest discover -s tools/ai -p "test_*.py"`、
+Python `py_compile`、`git diff --check` 和模型生成页面 Orca 依赖边界扫描均通过；
+测试不得发起收费图片或 3D 任务。
+
 # Main features
 
 - **[Advanced Calibration Tools](https://www.orcaslicer.com/wiki/calibration_guide)**  
