@@ -699,3 +699,5 @@ Intake
 - `scripts/create_windows_ai_distribution.ps1` 固定引用旧 `demo3` ZIP 和输出名，只是一次性外发包装器，已由通用 `package_windows_ai_test.ps1` 替代；前者不提交，后者保留。
 - 原 `packaging/windows-ai-test/setup/ai-config.bat` 虽为空，但一旦开发者本地填写真实 Key 就会形成 tracked secret 风险。基线改存 `ai-config.example.bat`，通用打包脚本在输出目录复制生成真正的 `ai-config.bat`。
 - 根 README 的协作说明固定共享基线、两条主线目录所有权、Orca adapter 共享边界、个人分支/PR/上游同步流程和禁止提交的本地数据，可作为另一台电脑 Codex 的首要入口。
+- 共享基线最终使用 `codex/ai-integration-20260814`，不移动 `master`；核心 OBJ、核心 Mesh、正式 AI 和协作文档拆成独立 commit，便于同事审查及后续 Orca 上游冲突处理。
+- Git 提交后工作树干净；被移除跟踪的 `.claude/settings.local.json` 仍保留本机并由 `.gitignore` 保护，大体积输出、模型、网站和 PPT 工程同样未删除且未上传。
