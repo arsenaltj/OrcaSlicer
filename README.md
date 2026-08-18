@@ -114,6 +114,12 @@ Windows 本地启动使用：
 - [局部顶点色编辑设计](Docs/plans/2026-08-17-local-vertex-color-editing-design.md)
 - [局部改色架构复核](Docs/architecture/2026-08-17-phase55-local-recolor-review.md)
 
+完整开发过程与当前执行状态见：
+
+- [任务计划与阶段验收](task_plan.md)
+- [技术发现与决策记录](findings.md)
+- [开发进度与验证日志](progress.md)
+
 当前架构、边界和实施结果见：
 
 - [模型生成与智能切片解耦架构](Docs/architecture/06-model-generation-smart-slicing-decoupling.md)
