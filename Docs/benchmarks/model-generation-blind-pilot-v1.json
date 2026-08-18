@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "benchmark_id": "model-generation-blind-pilot-v1",
+  "frozen_at": "2026-08-16",
+  "face_limit": 300000,
+  "cases": [
+    {
+      "id": "fox_explorer",
+      "category": "character_animal",
+      "style": "q_cartoon",
+      "prompt": "一只成年红狐探险家设计师玩具，全身站立，戴短檐探险帽和简洁小背包，一只前爪扶着粗短指南针，蓬松尾巴贴近身体形成稳定支撑。四肢、尾巴和身体必须连成结实整体，站在低矮圆形一体底座上；正面三分之四视角，完整轮廓，不要文字和场景道具。",
+      "palette": ["#E4572E", "#1D3557", "#F1FAEE", "#2A9D8F"]
+    },
+    {
+      "id": "robot_mechanic",
+      "category": "character",
+      "style": "cel_shaded",
+      "prompt": "一个友善的复古机器人技师设计师玩具，全身站立，圆角方形头部，粗壮机械四肢，胸前有一个大号扳手徽记，右手握一把粗短扳手并与手掌清晰连接。所有关节和工具都必须粗壮相连，双脚固定在低矮六边形一体底座上；正面三分之四视角，完整轮廓，不要电线、文字或漂浮零件。",
+      "palette": ["#6C4AB6", "#2CB67D", "#F7D154", "#F2F2F2"]
+    },
+    {
+      "id": "instant_camera",
+      "category": "stable_product",
+      "style": "enamel_inlay",
+      "prompt": "一台复古拍立得相机的收藏级设计师玩具，主体为稳定的圆角方盒结构，正面有一个大圆镜头、粗大的快门按钮和清晰的出片槽，细节均为厚实几何结构。相机自身平放站立，不要额外底座、背带、文字、品牌标志、背景道具或漂浮零件；正面三分之四视角，完整轮廓。",
+      "palette": ["#222222", "#D94F4F", "#E8E2D0", "#3A7CA5"]
+    },
+    {
+      "id": "pagoda_watchtower",
+      "category": "complex_structure",
+      "style": "low_poly",
+      "prompt": "一座紧凑的三层中式塔楼收藏模型，三层屋檐逐层收分，四角翘檐短而厚，立柱、墙体、楼层和屋顶全部以可见实体牢固连接。塔楼固定在低矮方形一体地台上，门窗使用大块凹凸几何而不是纹理；正面三分之四视角，完整轮廓，不要树木、人物、灯笼、文字或悬空装饰。",
+      "palette": ["#B43A32", "#2F6B4F", "#D8B35A", "#F0E9D2"]
+    }
+  ]
+}

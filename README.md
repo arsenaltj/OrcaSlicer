@@ -54,7 +54,7 @@ If you come across any of these in search results, please <b>report them</b> as 
 
 | 主线 | 负责人 | 主要目录 |
 |------|--------|----------|
-| 模型生成 | 项目负责人 | `src/slic3r/AI/ModelGeneration/`、`ModelGenerationPanel.*`、`AIModelGenerationClient.*`、`tools/ai/` 的生成链路 |
+| 模型生成 | 项目负责人 | `src/slic3r/AI/ModelGeneration/`、`src/slic3r/GUI/AI/Model/`、`ModelGenerationPanel.*`、`AIModelGenerationClient.*`、`tools/ai/` |
 | 智能切片 | 协作开发者 | `src/slic3r/AI/SmartSlicing/`、智能切片应用服务与对应测试 |
 | Orca 适配 | 共享、接口先行 | `src/slic3r/GUI/AI/Orca/`，只放 `Plater`、Preset、OBJ 导入、修复和切片等 Orca 细节 |
 
@@ -87,9 +87,32 @@ git merge origin/codex/ai-integration-20260814
 分支，完成构建和兼容测试后再合入集成分支，不与功能开发混在一个 commit 中。
 
 不要提交 `build/`、`output/`、`generated_models/`、API Key、本机 Codex/Claude
-配置、运行日志、模型或 G-code。发布包由 `scripts/package_windows_ai_test.ps1`
+配置、`.planning/`、运行日志、模型或 G-code。发布包由 `scripts/package_windows_ai_test.ps1`
 生成；仓库只保存 `ai-config.example.bat`，打包时生成供测试人员手动填写的
 `setup/ai-config.bat`。
+
+## 模型生成当前版本
+
+当前 `codex/model-generation` 已跑通正式图文生图、固定四种打印颜色、10/30/50/100
+万面 OBJ 生成、图片与 3D 质量检查、历史模型恢复、Orca 导入以及 3D 预览局部改色。
+日常运行和 GUI 验收只使用正式 Sidecar；`tools/ai_sidecar_mock.py` 仅用于无付费调用的
+协议回归测试，不进入 Windows 发布包。
+
+Windows 本地启动使用：
+
+```powershell
+.\start_orcaslicer_with_ai.bat
+```
+
+测试人员配置从 `packaging/windows-ai-test/setup/ai-config.example.bat` 复制或由打包脚本
+生成模板后填写。API Key、模型文件和生成结果始终保留在本机，不提交到仓库。
+
+当前能力、限制和下一阶段建议见：
+
+- [模型生成 Beta 1 状态与路线图](Docs/MODEL_GENERATION_BETA1_STATUS_AND_ROADMAP.md)
+- [四色可打印图片流水线](Docs/FOUR_COLOR_IMAGE_PIPELINE.md)
+- [局部顶点色编辑设计](Docs/plans/2026-08-17-local-vertex-color-editing-design.md)
+- [局部改色架构复核](Docs/architecture/2026-08-17-phase55-local-recolor-review.md)
 
 当前架构、边界和实施结果见：
 
@@ -100,6 +123,14 @@ git merge origin/codex/ai-integration-20260814
 基线验证要求：Windows Release 编译/链接、`python -m unittest discover -s tools/ai -p "test_*.py"`、
 Python `py_compile`、`git diff --check` 和模型生成页面 Orca 依赖边界扫描均通过；
 测试不得发起收费图片或 3D 任务。
+
+提交前建议先执行：
+
+```powershell
+python -m unittest discover -s tools/ai -p "test_*.py"
+git diff --check
+git status --short
+```
 
 # Main features
 

@@ -65,6 +65,7 @@ __pycache__/
 # Local agent/session state and machine-specific AI configuration.
 /.claude/settings.local.json
 /.codex-recovery/
+/.planning/
 /setup/ai-config.bat
 /packaging/windows-ai-test/setup/ai-config.bat
 
