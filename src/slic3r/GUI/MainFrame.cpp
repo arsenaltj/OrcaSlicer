@@ -1337,6 +1337,7 @@ void MainFrame::init_tabpanel() {
 
     wxGetApp().plater_ = m_plater;
 
+    BOOST_LOG_TRIVIAL(info) << "AI model generation startup: creating Orca workspace adapter";
     m_ai_orca_workspace = std::make_unique<OrcaWorkspaceAdapter>(m_plater, [this](bool slice) {
         m_plater->exit_gizmo();
         m_plater->update(true, true);
@@ -1347,14 +1348,18 @@ void MainFrame::init_tabpanel() {
             select_tab(tp3DEditor);
         }
     });
+    BOOST_LOG_TRIVIAL(info) << "AI model generation startup: creating model generation panel";
     m_model_generation = new ModelGenerationPanel(
         m_tabpanel, *m_ai_orca_workspace, *m_ai_orca_workspace);
+    BOOST_LOG_TRIVIAL(info) << "AI model generation startup: model generation panel created";
     m_model_generation->SetBackgroundColour(*wxWHITE);
     m_tabpanel->InsertPage(tpGenerate3D, m_model_generation, _L("3D 生成"),
                            std::string("tab_generate_3d_active"), std::string("tab_generate_3d"), false);
     m_model_generation->Hide();
 
+    BOOST_LOG_TRIVIAL(info) << "AI model generation startup: creating preset tabs";
     create_preset_tabs();
+    BOOST_LOG_TRIVIAL(info) << "AI model generation startup: preset tabs created";
 
         //BBS add pages
     m_monitor = new MonitorPanel(m_tabpanel, wxID_ANY, wxDefaultPosition, wxDefaultSize);

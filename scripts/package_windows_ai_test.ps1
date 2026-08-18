@@ -31,6 +31,11 @@ Copy-Item -LiteralPath (Join-Path $runtimeSource "resources") -Destination (Join
 $aiRuntimeFiles = @(
     "check_sidecar_capability.ps1",
     "openai_preprocessor.py",
+    "printable_image_pipeline.py",
+    "printable_model_quality.py",
+    "printable_model_views.py",
+    "printable_palette.py",
+    "printable_visual_quality.py",
     "orca_ai_sidecar.py",
     "refresh_ai_environment.bat",
     "start_orca_ai_sidecar.bat",

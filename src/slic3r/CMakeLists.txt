@@ -310,6 +310,8 @@ set(SLIC3R_GUI_SOURCES
     AI/SmartSlicing/IModelArtifactConsumer.hpp
     GUI/AI/Orca/OrcaWorkspaceAdapter.cpp
     GUI/AI/Orca/OrcaWorkspaceAdapter.hpp
+    GUI/AI/Model/VertexColorRegionEditor.cpp
+    GUI/AI/Model/VertexColorRegionEditor.hpp
     GUI/AIModelGenerationClient.cpp
     GUI/AIModelGenerationClient.hpp
     GUI/ModelGenerationPanel.cpp

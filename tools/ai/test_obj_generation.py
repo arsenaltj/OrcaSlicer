@@ -73,6 +73,31 @@ class TripoHighDetailRequestTests(unittest.TestCase):
         self.assert_high_detail_payload(payload)
         self.assertEqual(payload["texture_alignment"], "original_image")
 
+    def test_multiview_generation_uses_named_canonical_views(self):
+        with mock.patch.object(TRIPO, "_post_json", return_value={"task_id": "multiview-id"}) as post:
+            task_id = TRIPO.create_multiview_task({
+                "right": "right-token",
+                "front": "front-token",
+                "back": "back-token",
+            })
+        self.assertEqual(task_id, "multiview-id")
+        path, payload = post.call_args.args
+        self.assertEqual(path, "/generation/multiview-to-model")
+        self.assertEqual(payload["inputs"], [
+            {"front": "front-token"},
+            {"back": "back-token"},
+            {"right": "right-token"},
+        ])
+        self.assert_high_detail_payload(payload)
+
+    def test_multiview_generation_requires_front_and_another_view(self):
+        with mock.patch.object(TRIPO, "_post_json") as post:
+            with self.assertRaisesRegex(TRIPO.TripoError, "front"):
+                TRIPO.create_multiview_task({"left": "left-token", "back": "back-token"})
+            with self.assertRaisesRegex(TRIPO.TripoError, "additional"):
+                TRIPO.create_multiview_task({"front": "front-token"})
+        post.assert_not_called()
+
     def test_supported_face_target_is_forwarded(self):
         with mock.patch.object(TRIPO, "_post_json", return_value={"task_id": "text-id"}) as post:
             TRIPO.create_text_task("printable figure", 1000000)
@@ -237,6 +262,8 @@ class PrintablePaletteTests(unittest.TestCase):
         self.assertEqual(SIDECAR._normalize_style(None), "sculpture")
         self.assertEqual(SIDECAR._normalize_style("q_cartoon"), "q_cartoon")
         self.assertEqual(SIDECAR._normalize_style("low_poly"), "low_poly")
+        self.assertEqual(SIDECAR._normalize_style("cel_shaded"), "cel_shaded")
+        self.assertEqual(SIDECAR._normalize_style("enamel_inlay"), "enamel_inlay")
         self.assertEqual(SIDECAR._normalize_style("sculpture"), "sculpture")
         with self.assertRaises(SIDECAR.RequestError):
             SIDECAR._normalize_style("classical")
@@ -681,8 +708,23 @@ class ObjGenerationTests(unittest.TestCase):
         self.assertLessEqual(output_colors, {(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0)})
         forbidden = ("mtllib ", "usemtl ", "vt ", "vn ")
         self.assertFalse(any(line.lower().startswith(forbidden) for line in lines))
+        metrics = json.loads((self.job.directory / "vertex-color-metrics.json").read_text(encoding="utf-8"))
+        self.assertEqual(metrics["face_count"], 4)
+        self.assertEqual(metrics["three_color_faces"], 0)
+        quality = json.loads((self.job.directory / SIDECAR.MODEL_QUALITY_FILENAME).read_text(encoding="utf-8"))
+        self.assertEqual(quality["status"], "pass")
+        self.assertEqual(quality["metrics"]["face_count"], 4)
         SIDECAR._validate_obj_vertex_colors(artifact)
         SIDECAR._validate_obj_topology(artifact)
+
+    def test_model_quality_report_write_failure_is_a_controlled_generation_error(self):
+        raw = self.job.directory / "artifact-raw.download"
+        self._write_package(raw)
+        failure = SIDECAR.ModelQualityError("report_write_failed", "quality report unavailable")
+
+        with mock.patch.object(SIDECAR, "write_model_quality_report", side_effect=failure):
+            with self.assertRaisesRegex(SIDECAR.TripoError, "quality report unavailable"):
+                SIDECAR._prepare_obj_artifact(raw, self.job.directory, self.palette)
 
     def test_zip_texture_preserves_natural_vertex_colors_without_printable_palette(self):
         raw = self.job.directory / "artifact-raw.download"
@@ -768,6 +810,33 @@ class ObjGenerationTests(unittest.TestCase):
         self.assertEqual(SIDECAR._validate_obj_topology(artifact, allow_repairable=True), (127, 1, 3))
         with self.assertRaisesRegex(SIDECAR.TripoError, "watertight"):
             SIDECAR._validate_obj_topology(artifact)
+
+    def test_inconsistent_face_winding_is_normalized_before_orca_import(self):
+        raw = self.job.directory / "artifact-raw.download"
+        raw.write_text(
+            "v 0 0 0 1 0 0\n"
+            "v 1 0 0 0 1 0\n"
+            "v 0 1 0 0 0 1\n"
+            "v 0 0 1 1 1 0\n"
+            "f 1 2 3\n"
+            "f 1 2 4\n"
+            "f 1 4 3\n"
+            "f 2 3 4\n",
+            encoding="ascii",
+        )
+
+        with self.assertRaisesRegex(SIDECAR.TripoError, "inconsistently wound"):
+            SIDECAR._validate_obj_topology(raw)
+
+        artifact = SIDECAR._prepare_obj_artifact(raw, self.job.directory, self.palette)
+
+        self.assertEqual(SIDECAR._validate_obj_topology(artifact), (4, 1, 0))
+        report = json.loads((self.job.directory / "mesh-repair.json").read_text(encoding="utf-8"))
+        self.assertEqual(report["topology_status"], "repaired")
+        self.assertEqual(report["original_inconsistent_winding_edges"], 3)
+        self.assertEqual(report["flipped_winding_faces"], 1)
+        self.assertEqual(report["remaining_inconsistent_winding_edges"], 0)
+        self.assertEqual(report["remaining_invalid_edges"], 0)
 
     def test_small_non_manifold_defect_is_repaired_with_palette_colors(self):
         raw = self.job.directory / "artifact-raw.download"

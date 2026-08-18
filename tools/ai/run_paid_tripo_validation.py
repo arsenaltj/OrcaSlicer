@@ -14,6 +14,7 @@ from PIL import Image
 
 import orca_ai_sidecar as sidecar
 import tripo_client
+from printable_palette import PrintablePaletteError, normalize_palette
 
 
 DEFAULT_INPUT = Path("generated_models/paid-image-validation/palette-preview-v2-final.png")
@@ -127,9 +128,6 @@ def _create_or_resume_generation(
     file_token = tripo_client.upload_image(input_path)
     print("Input uploaded; creating one paid Tripo image-to-model task.", flush=True)
     task_id = tripo_client.create_image_task(file_token, face_limit)
-    task_directory = _task_directory(output_root, task_id)
-    task_directory.mkdir(parents=True, exist_ok=False)
-    shutil.copy2(input_path, task_directory / "input.png")
     state = {
         "input_sha256": input_info["sha256"],
         "face_limit": face_limit,
@@ -139,7 +137,15 @@ def _create_or_resume_generation(
         "conversion_task_id": None,
         "conversion_status": "not_submitted",
     }
+    # Persist the paid task ID before non-essential directory/copy work. If the
+    # process stops after provider acceptance, the next run can resume instead
+    # of accidentally creating a second paid generation.
     _write_json(state_path, state)
+    task_directory = _task_directory(output_root, task_id)
+    task_directory.mkdir(parents=True, exist_ok=True)
+    input_copy = task_directory / "input.png"
+    if not input_copy.exists():
+        shutil.copy2(input_path, input_copy)
     _write_json(task_directory / "validation-state.json", state)
     print(f"Paid Tripo task submitted: {task_id}", flush=True)
     return state, task_directory
@@ -150,97 +156,19 @@ def _record_state(state_path: Path, task_directory: Path, state: dict[str, Any])
     _write_json(task_directory / "validation-state.json", state)
 
 
-def _inspect_obj(path: Path, palette: tuple[str, ...]) -> dict[str, Any]:
-    vertex_count = 0
-    faces: list[tuple[int, int, int]] = []
-    colors: Counter[str] = Counter()
-    with path.open("r", encoding="utf-8", errors="strict") as stream:
-        for line in stream:
-            fields = line.strip().split()
-            if not fields:
-                continue
-            if fields[0].lower() == "v":
-                vertex_count += 1
-                if len(fields) in {7, 8}:
-                    rgb = tuple(round(float(value) * 255) for value in fields[4:7])
-                    colors["#{:02X}{:02X}{:02X}".format(*rgb)] += 1
-            elif fields[0].lower() == "f":
-                if len(fields) != 4:
-                    raise RuntimeError("The generated OBJ contains non-triangular faces.")
-                faces.append(
-                    tuple(sidecar._resolve_obj_index(value, vertex_count, "vertex") for value in fields[1:])
-                )
-
-    parent = list(range(vertex_count))
-
-    def find(index: int) -> int:
-        while parent[index] != index:
-            parent[index] = parent[parent[index]]
-            index = parent[index]
-        return index
-
-    def unite(left: int, right: int) -> None:
-        left_root, right_root = find(left), find(right)
-        if left_root != right_root:
-            parent[right_root] = left_root
-
-    referenced: set[int] = set()
-    edge_counts: Counter[tuple[int, int]] = Counter()
-    degenerate_triangles = 0
-    for face in faces:
-        if len(set(face)) != 3:
-            degenerate_triangles += 1
-        referenced.update(face)
-        unite(face[0], face[1])
-        unite(face[1], face[2])
-        for left, right in ((face[0], face[1]), (face[1], face[2]), (face[2], face[0])):
-            edge_counts[tuple(sorted((left, right)))] += 1
-
-    components = Counter(find(index) for index in referenced)
-    allowed_colors = set(palette)
-    displayed_colors = dict(sorted(colors.items())) if palette else dict(colors.most_common(64))
-    return {
-        "vertices": vertex_count,
-        "referenced_vertices": len(referenced),
-        "triangle_faces": len(faces),
-        "connected_components": len(components),
-        "component_vertex_counts": sorted(components.values(), reverse=True),
-        "boundary_edges": sum(count == 1 for count in edge_counts.values()),
-        "non_manifold_edges": sum(count > 2 for count in edge_counts.values()),
-        "degenerate_triangles": degenerate_triangles,
-        "vertex_color_count": len(colors),
-        "palette_colors_used": displayed_colors,
-        "colors_outside_palette": sorted(set(colors) - allowed_colors) if palette else [],
-    }
-
-
-def run(
-    input_path: Path,
-    output_root: Path,
-    confirm_paid_call: bool,
+def complete_generation(
+    state: dict[str, Any],
+    state_path: Path,
+    task_directory: Path,
     face_limit: int,
     palette: tuple[str, ...],
 ) -> Path:
-    input_path = input_path.resolve()
-    output_root = output_root.resolve()
-    output_root.mkdir(parents=True, exist_ok=True)
-    input_info = _check_input(input_path, palette)
-    _write_json(
-        output_root / "input-preflight.json",
-        {**input_info, "palette": list(palette), "face_limit": face_limit},
-    )
-    print(
-        f"Input preflight passed: {input_info['width']}x{input_info['height']}, "
-        f"{input_info['colors_used']} colors, face limit={face_limit}, SHA256={input_info['sha256']}",
-        flush=True,
-    )
+    """Finish one recorded Tripo task through conversion and OBJ validation.
 
-    state_path = output_root / "validation-state.json"
-    state, task_directory = _create_or_resume_generation(
-        input_path, input_info, output_root, state_path, confirm_paid_call, face_limit, palette
-    )
+    Single-image and multiview entry points share this provider-independent
+    artifact path so topology, palette handling, and recovery cannot drift.
+    """
     generation_id = state["generation_task_id"]
-
     generation_result = tripo_client.wait_for_task(
         generation_id,
         progress=lambda value: print(f"Generation progress: {value}%", flush=True),
@@ -333,6 +261,98 @@ def run(
     return artifact
 
 
+def _inspect_obj(path: Path, palette: tuple[str, ...]) -> dict[str, Any]:
+    vertex_count = 0
+    faces: list[tuple[int, int, int]] = []
+    colors: Counter[str] = Counter()
+    with path.open("r", encoding="utf-8", errors="strict") as stream:
+        for line in stream:
+            fields = line.strip().split()
+            if not fields:
+                continue
+            if fields[0].lower() == "v":
+                vertex_count += 1
+                if len(fields) in {7, 8}:
+                    rgb = tuple(round(float(value) * 255) for value in fields[4:7])
+                    colors["#{:02X}{:02X}{:02X}".format(*rgb)] += 1
+            elif fields[0].lower() == "f":
+                if len(fields) != 4:
+                    raise RuntimeError("The generated OBJ contains non-triangular faces.")
+                faces.append(
+                    tuple(sidecar._resolve_obj_index(value, vertex_count, "vertex") for value in fields[1:])
+                )
+
+    parent = list(range(vertex_count))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def unite(left: int, right: int) -> None:
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    referenced: set[int] = set()
+    edge_counts: Counter[tuple[int, int]] = Counter()
+    degenerate_triangles = 0
+    for face in faces:
+        if len(set(face)) != 3:
+            degenerate_triangles += 1
+        referenced.update(face)
+        unite(face[0], face[1])
+        unite(face[1], face[2])
+        for left, right in ((face[0], face[1]), (face[1], face[2]), (face[2], face[0])):
+            edge_counts[tuple(sorted((left, right)))] += 1
+
+    components = Counter(find(index) for index in referenced)
+    allowed_colors = set(palette)
+    displayed_colors = dict(sorted(colors.items())) if palette else dict(colors.most_common(64))
+    return {
+        "vertices": vertex_count,
+        "referenced_vertices": len(referenced),
+        "triangle_faces": len(faces),
+        "connected_components": len(components),
+        "component_vertex_counts": sorted(components.values(), reverse=True),
+        "boundary_edges": sum(count == 1 for count in edge_counts.values()),
+        "non_manifold_edges": sum(count > 2 for count in edge_counts.values()),
+        "degenerate_triangles": degenerate_triangles,
+        "vertex_color_count": len(colors),
+        "palette_colors_used": displayed_colors,
+        "colors_outside_palette": sorted(set(colors) - allowed_colors) if palette else [],
+    }
+
+
+def run(
+    input_path: Path,
+    output_root: Path,
+    confirm_paid_call: bool,
+    face_limit: int,
+    palette: tuple[str, ...],
+) -> Path:
+    input_path = input_path.resolve()
+    output_root = output_root.resolve()
+    output_root.mkdir(parents=True, exist_ok=True)
+    input_info = _check_input(input_path, palette)
+    _write_json(
+        output_root / "input-preflight.json",
+        {**input_info, "palette": list(palette), "face_limit": face_limit},
+    )
+    print(
+        f"Input preflight passed: {input_info['width']}x{input_info['height']}, "
+        f"{input_info['colors_used']} colors, face limit={face_limit}, SHA256={input_info['sha256']}",
+        flush=True,
+    )
+
+    state_path = output_root / "validation-state.json"
+    state, task_directory = _create_or_resume_generation(
+        input_path, input_info, output_root, state_path, confirm_paid_call, face_limit, palette
+    )
+    return complete_generation(state, state_path, task_directory, face_limit, palette)
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run one resumable paid Tripo high-detail OBJ validation.")
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
@@ -341,12 +361,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--confirm-paid-call", action="store_true")
     parser.add_argument("--face-limit", type=int, choices=FACE_LIMITS, default=300000)
     parser.add_argument("--natural-color", action="store_true")
+    parser.add_argument(
+        "--palette",
+        help="Comma-separated printable colors in #RRGGBB form; limited to four unique colors.",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    palette = () if args.natural_color else PALETTE
+    if args.natural_color and args.palette:
+        print("Validation failed: --natural-color and --palette cannot be combined.", file=sys.stderr)
+        return 1
+    try:
+        palette = (
+            ()
+            if args.natural_color
+            else normalize_palette(args.palette.split(",")) if args.palette else PALETTE
+        )
+    except PrintablePaletteError as exc:
+        print(f"Validation failed: {exc}", file=sys.stderr)
+        return 1
     try:
         if args.preflight_only:
             info = _check_input(args.input.resolve(), palette)

@@ -197,6 +197,11 @@ AI::PrintablePaletteSnapshot OrcaWorkspaceAdapter::printable_palette() const
         }
     }
 
+    // The printable AI workflow targets four-filament printers. Keep physical slot order stable so generated colors can be
+    // mapped back to the same project, while leaving valid_slots untouched for diagnostics and manual import.
+    if (snapshot.compatible_slots.size() > 4)
+        snapshot.compatible_slots.resize(4);
+
     for (const size_t slot : snapshot.compatible_slots) {
         if (slot >= snapshot.project_colors.size())
             continue;

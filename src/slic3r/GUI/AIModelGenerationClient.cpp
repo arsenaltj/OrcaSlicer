@@ -70,19 +70,28 @@ std::string AIModelGenerationClient::url(const std::string& path) const
 
 void AIModelGenerationClient::preprocess_text(const std::string& request_id, const std::string& prompt,
                                                const std::vector<std::string>& palette,
+                                               const PaletteRoles& palette_roles,
                                                const std::string& style,
+                                               const std::string& custom_style,
+                                               const ImagePrintSettings& print_settings,
                                                StatusFn on_complete, ErrorFn on_error)
 {
     post_json("/v1/orcaslicer/model-jobs/text",
-              json::object({ { "request_id", request_id }, { "prompt", prompt }, { "palette", palette }, { "style", style } }),
+              json::object({ { "request_id", request_id }, { "prompt", prompt }, { "palette", palette },
+                             { "palette_roles", palette_roles }, { "style", style },
+                             { "custom_style", custom_style },
+                             { "print", serialize_print_settings(print_settings) } }),
               std::move(on_complete), std::move(on_error));
 }
 
 void AIModelGenerationClient::preprocess_image(const std::string& request_id, const std::string& instruction,
                                                 const boost::filesystem::path& image_path,
-                                                const std::vector<std::string>& palette,
-                                                const std::string& style,
-                                                StatusFn on_complete, ErrorFn on_error)
+                                                 const std::vector<std::string>& palette,
+                                                 const PaletteRoles& palette_roles,
+                                                 const std::string& style,
+                                                 const std::string& custom_style,
+                                                 const ImagePrintSettings& print_settings,
+                                                 StatusFn on_complete, ErrorFn on_error)
 {
     cancel_current();
     if (!is_loopback_endpoint(m_endpoint)) {
@@ -99,7 +108,10 @@ void AIModelGenerationClient::preprocess_image(const std::string& request_id, co
         .form_add("request_id", request_id)
         .form_add("instruction", instruction)
         .form_add("palette", json(palette).dump())
+        .form_add("palette_roles", json(palette_roles).dump())
         .form_add("style", style)
+        .form_add("custom_style", custom_style)
+        .form_add("print", serialize_print_settings(print_settings).dump())
         .form_add_file("image", image_path, image_path.filename().string());
     http.on_complete([this, on_complete = std::move(on_complete), on_error](std::string body, unsigned) mutable {
         parse_status_response(std::move(body), std::move(on_complete), on_error);
@@ -175,6 +187,18 @@ void AIModelGenerationClient::get_latest(LatestFn on_complete, ErrorFn on_error)
     m_active_request = http.perform();
 }
 
+void AIModelGenerationClient::recheck(const std::string& job_id, StatusFn on_complete, ErrorFn on_error)
+{
+    post_json("/v1/orcaslicer/model-jobs/" + job_id + "/recheck", json::object(),
+              std::move(on_complete), std::move(on_error));
+}
+
+void AIModelGenerationClient::visual_review(const std::string& job_id, StatusFn on_complete, ErrorFn on_error)
+{
+    post_json("/v1/orcaslicer/model-jobs/" + job_id + "/visual-review", json::object(),
+              std::move(on_complete), std::move(on_error));
+}
+
 void AIModelGenerationClient::stop(const std::string& job_id, StatusFn on_complete, ErrorFn on_error)
 {
     post_json("/v1/orcaslicer/model-jobs/" + job_id + "/stop", json::object(),
@@ -207,6 +231,20 @@ void AIModelGenerationClient::download_preview(const std::string& job_id, const 
                                                 PathFn on_complete, ErrorFn on_error)
 {
     download("/v1/orcaslicer/model-jobs/" + job_id + "/preview", path, MAX_PREVIEW_SIZE,
+             std::move(on_complete), std::move(on_error));
+}
+
+void AIModelGenerationClient::download_image_output(const std::string& job_id, const std::string& output,
+                                                      const boost::filesystem::path& path,
+                                                      PathFn on_complete, ErrorFn on_error)
+{
+    static const std::vector<std::string> allowed { "raw-preview", "strict-preview", "preview", "heatmap" };
+    if (std::find(allowed.begin(), allowed.end(), output) == allowed.end()) {
+        if (on_error)
+            on_error("The requested printable image output is not supported.");
+        return;
+    }
+    download("/v1/orcaslicer/model-jobs/" + job_id + "/" + output, path, MAX_PREVIEW_SIZE,
              std::move(on_complete), std::move(on_error));
 }
 
@@ -291,25 +329,121 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
     status.progress = std::clamp(job.value("progress", 0), 0, 100);
     status.face_limit = job.value("face_limit", 300000);
     status.style = job.value("style", std::string());
+    status.custom_style = job.value("custom_style", std::string());
     status.updated_at = job.value("updated_at", 0.0);
     if (job.contains("palette") && job["palette"].is_array()) {
         for (const auto& color : job["palette"])
             if (color.is_string()) status.palette.emplace_back(color.get<std::string>());
     }
+    if (job.contains("palette_roles") && job["palette_roles"].is_object()) {
+        for (const auto& [role, color] : job["palette_roles"].items())
+            if (color.is_string()) status.palette_roles.emplace(role, color.get<std::string>());
+    }
+    if (job.contains("print") && job["print"].is_object()) {
+        const auto& print = job["print"];
+        status.print_settings.width_mm = print.value("width_mm", 160.0);
+        status.print_settings.nozzle_mm = print.value("nozzle_mm", 0.4);
+        status.print_settings.line_width_mm = print.value("line_width_mm", 0.4);
+        status.print_settings.minimum_feature_mm = print.value("minimum_feature_mm", 0.8);
+        status.print_settings.color_distance = print.value("color_distance", std::string("ciede2000"));
+        status.print_settings.print_mode = print.value("print_mode", std::string("solid_regions"));
+        status.print_settings.shadow_color = print.value("shadow_color", std::string("blue"));
+    }
     if (job.contains("input") && job["input"].is_object())
         status.input_ready = job["input"].value("ready", false);
     if (job.contains("preview") && job["preview"].is_object())
         status.preview_ready = job["preview"].value("ready", false);
+    if (job.contains("image_outputs") && job["image_outputs"].is_object()) {
+        const auto& outputs = job["image_outputs"];
+        const auto ready = [&outputs](const char* name) {
+            return outputs.contains(name) && outputs[name].is_object() && outputs[name].value("ready", false);
+        };
+        status.raw_preview_ready = ready("raw_preview");
+        status.strict_preview_ready = ready("strict_preview");
+        status.heatmap_ready = ready("heatmap");
+        status.metadata_ready = ready("metadata");
+    }
+    if (job.contains("image_metrics") && job["image_metrics"].is_object()) {
+        const auto& metrics = job["image_metrics"];
+        status.image_score = metrics.value("score", 0.0);
+        status.mean_color_error = metrics.value("mean_color_error", 0.0);
+        status.small_region_ratio = metrics.value("small_region_ratio_after", 0.0);
+        status.boundary_complexity = metrics.value("boundary_complexity", 0.0);
+        status.minimum_feature_px = metrics.value("minimum_feature_px", 0);
+        status.meaningful_palette_count = metrics.value("meaningful_palette_count", 0);
+        status.meaningful_subject_color_count = metrics.value("meaningful_subject_color_count", 0);
+        status.printable_subject_area_ratio = metrics.value("printable_subject_area_ratio", 0.0);
+        status.largest_subject_component_ratio = metrics.value("largest_subject_component_ratio", 0.0);
+        status.palette_quality_ok = metrics.value("palette_quality_ok", true);
+    }
     if (job.contains("artifact") && job["artifact"].is_object()) {
         status.artifact_ready = job["artifact"].value("ready", false);
         status.artifact_format = job["artifact"].value("format", std::string());
         status.artifact_color_encoding = job["artifact"].value("color_encoding", std::string());
         status.artifact_size = job["artifact"].value("size_bytes", size_t(0));
     }
+    if (job.contains("model_quality") && job["model_quality"].is_object()) {
+        const auto& quality = job["model_quality"];
+        status.model_quality.status = quality.value("status", std::string());
+        status.model_quality.available = !status.model_quality.status.empty();
+        const auto read_codes = [&quality](const char* name, std::vector<std::string>& output) {
+            if (!quality.contains(name) || !quality[name].is_array())
+                return;
+            for (const auto& code : quality[name])
+                if (code.is_string()) output.emplace_back(code.get<std::string>());
+        };
+        read_codes("errors", status.model_quality.errors);
+        read_codes("warnings", status.model_quality.warnings);
+        if (quality.contains("metrics") && quality["metrics"].is_object()) {
+            const auto& metrics = quality["metrics"];
+            status.model_quality.vertex_count = metrics.value("vertex_count", size_t(0));
+            status.model_quality.face_count = metrics.value("face_count", size_t(0));
+            status.model_quality.component_count = metrics.value("component_count", size_t(0));
+            status.model_quality.tiny_component_count = metrics.value("tiny_component_count", size_t(0));
+            status.model_quality.largest_component_face_ratio = metrics.value("largest_component_face_ratio", 0.0);
+            status.model_quality.contact_span_ratio = metrics.value("contact_span_ratio", 0.0);
+            status.model_quality.downward_surface_ratio = metrics.value("downward_surface_ratio", 0.0);
+            status.model_quality.repairable_topology = metrics.value("repairable_topology", false);
+        }
+    }
+    if (job.contains("visual_quality") && job["visual_quality"].is_object()) {
+        const auto& quality = job["visual_quality"];
+        status.visual_quality.status = quality.value("status", std::string());
+        status.visual_quality.available = !status.visual_quality.status.empty();
+        status.visual_quality.score = std::clamp(quality.value("score", 0), 0, 100);
+        status.visual_quality.confidence = std::clamp(quality.value("confidence", 0.0), 0.0, 1.0);
+        status.visual_quality.summary = quality.value("summary", std::string());
+        const auto read_codes = [&quality](const char* name, std::vector<std::string>& output) {
+            if (!quality.contains(name) || !quality[name].is_array())
+                return;
+            for (const auto& code : quality[name])
+                if (code.is_string()) output.emplace_back(code.get<std::string>());
+        };
+        read_codes("errors", status.visual_quality.errors);
+        read_codes("warnings", status.visual_quality.warnings);
+        if (quality.contains("checks") && quality["checks"].is_object()) {
+            for (const auto& [name, check] : quality["checks"].items())
+                if (check.is_object() && check.value("status", std::string()) == "review")
+                    status.visual_quality.check_reasons.emplace(name, check.value("reason", std::string()));
+        }
+    }
     if (status.id.empty() || status.state.empty()) {
         return std::nullopt;
     }
     return status;
+}
+
+AIModelGenerationClient::json AIModelGenerationClient::serialize_print_settings(const ImagePrintSettings& settings)
+{
+    return json::object({
+        { "width_mm", settings.width_mm },
+        { "nozzle_mm", settings.nozzle_mm },
+        { "line_width_mm", settings.line_width_mm },
+        { "minimum_feature_mm", settings.minimum_feature_mm },
+        { "color_distance", settings.color_distance },
+        { "print_mode", settings.print_mode },
+        { "shadow_color", settings.shadow_color },
+    });
 }
 
 void AIModelGenerationClient::download(const std::string& path, const boost::filesystem::path& destination,

@@ -17,14 +17,18 @@ import time
 import uuid
 import zipfile
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from email import policy
 from email.parser import BytesParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, BinaryIO, Callable
 
-from openai_preprocessor import OpenAIPreprocessorError, complete_text, preprocess_image, preprocess_text
+from openai_preprocessor import OpenAIPreprocessorError, complete_text, generate_image, preprocess_image, preprocess_text
+from printable_image_pipeline import PrintSettings, PrintableImageError, process_printable_image
+from printable_model_quality import ModelQualityError, analyze_printable_obj, write_model_quality_report
+from printable_visual_quality import REPORT_FILENAME as VISUAL_QUALITY_FILENAME, review_model_visual_quality
+from printable_palette import MAX_PRINTABLE_COLORS, PrintablePaletteError, assign_palette_roles
 from tripo_client import (
     TripoError,
     create_conversion,
@@ -37,17 +41,18 @@ from tripo_client import (
 
 HOST = os.environ.get("ORCASLICER_AI_SIDECAR_HOST", "127.0.0.1")
 PORT = int(os.environ.get("ORCASLICER_AI_SIDECAR_PORT", "18764"))
-SIDECAR_VERSION = "orcaslicer-ai-sidecar-v4"
+SIDECAR_VERSION = "orcaslicer-ai-sidecar-v5"
 MAX_REQUEST_BYTES = 256 * 1024
 MAX_CHANGES = 8
 MAX_PROMPT_BYTES = 2000
+MAX_CUSTOM_STYLE_BYTES = 1000
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_MULTIPART_BYTES = MAX_IMAGE_BYTES + 256 * 1024
 MAX_ARTIFACT_BYTES = 768 * 1024 * 1024
 MAX_ARCHIVE_FILES = 128
 MAX_UNPACKED_BYTES = 1024 * 1024 * 1024
 MAX_TEXTURE_PIXELS = 64 * 1024 * 1024
-MAX_PALETTE_COLORS = 16
+MAX_PALETTE_COLORS = MAX_PRINTABLE_COLORS
 MAX_MODEL_FACES = 1000000
 MIN_MODEL_FACE_RATIO = 0.90
 MAX_MODEL_FACE_RATIO = 1.25
@@ -62,7 +67,8 @@ MAX_LOCAL_REPAIR_FACE_RATIO = 0.01
 MAX_LOCAL_BOUNDARY_EDGES = 64
 DEFAULT_MODEL_SIZE_MM = 100.0
 MODEL_ARTIFACT_FORMAT = "obj"
-STYLE_IDS = ("q_cartoon", "low_poly", "sculpture")
+MODEL_QUALITY_FILENAME = "model-quality.json"
+STYLE_IDS = ("q_cartoon", "low_poly", "cel_shaded", "enamel_inlay", "sculpture", "custom")
 DEFAULT_IMAGE_INSTRUCTION = (
     "Stylize only the content already visible in the reference image. Preserve the exact crop, framing, visible regions, "
     "occlusions, subjects, objects, and background; do not add, remove, reveal, reconstruct, or extend anything."
@@ -93,13 +99,25 @@ class Job:
     message: str = "Preparing model generation request."
     progress: int = 5
     palette: tuple[str, ...] = field(default_factory=tuple)
+    palette_roles: dict[str, str] = field(default_factory=dict)
+    print_settings: dict[str, Any] = field(default_factory=lambda: asdict(PrintSettings()))
     style: str = "sculpture"
+    custom_style: str = ""
     face_limit: int = DEFAULT_MODEL_FACE_LIMIT
     user_prompt: str = ""
     prepared_prompt: str = ""
     input_path: Path | None = None
+    raw_preview_path: Path | None = None
+    strict_preview_path: Path | None = None
     preview_path: Path | None = None
+    model_reference_path: Path | None = None
     preview_content_type: str = ""
+    heatmap_path: Path | None = None
+    metadata_path: Path | None = None
+    background_mask_path: Path | None = None
+    subject_mask_path: Path | None = None
+    mask_paths: dict[str, Path] = field(default_factory=dict)
+    image_metrics: dict[str, Any] = field(default_factory=dict)
     artifact_path: Path | None = None
     artifact_format: str = ""
     attempts: list[dict[str, Any]] = field(default_factory=list)
@@ -294,6 +312,33 @@ def _multipart_palette(value: Any) -> tuple[str, ...]:
     return _normalize_palette(parsed)
 
 
+def _normalize_palette_roles(value: Any, palette: tuple[str, ...]) -> dict[str, str]:
+    if not palette:
+        if value in (None, {}):
+            return {}
+        raise RequestError("invalid_palette_roles", "palette roles require printable colors.", 400)
+    if value is None:
+        value = {}
+    if not isinstance(value, dict) or any(not isinstance(key, str) or not isinstance(color, str) for key, color in value.items()):
+        raise RequestError("invalid_palette_roles", "palette_roles must be a color-role object.", 400)
+    try:
+        return assign_palette_roles(palette, value).color_by_role
+    except PrintablePaletteError as exc:
+        raise RequestError("invalid_palette_roles", str(exc), 400) from None
+
+
+def _multipart_palette_roles(value: Any, palette: tuple[str, ...]) -> dict[str, str]:
+    if value in (None, ""):
+        return _normalize_palette_roles(None, palette)
+    if not isinstance(value, str):
+        raise RequestError("invalid_palette_roles", "palette_roles must be valid JSON.", 400)
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        raise RequestError("invalid_palette_roles", "palette_roles must be valid JSON.", 400) from None
+    return _normalize_palette_roles(parsed, palette)
+
+
 def _image_type(data: bytes) -> str | None:
     if data.startswith(b"\x89PNG\r\n\x1a\n"):
         return "image/png"
@@ -306,8 +351,27 @@ def _normalize_style(value: Any) -> str:
     if value is None or value == "":
         return "sculpture"
     if not isinstance(value, str) or value not in STYLE_IDS:
-        raise RequestError("invalid_style", "style must be q_cartoon, low_poly, or sculpture.", 400)
+        raise RequestError(
+            "invalid_style", "style must be q_cartoon, low_poly, cel_shaded, enamel_inlay, sculpture, or custom.", 400
+        )
     return value
+
+
+def _normalize_custom_style(value: Any, style: str) -> str:
+    if value is None:
+        value = ""
+    if not isinstance(value, str):
+        raise RequestError("invalid_custom_style", "custom_style must be a string.", 400)
+    description = value.strip()
+    if style == "custom":
+        if not description:
+            raise RequestError("invalid_custom_style", "custom_style is required when style is custom.", 400)
+        if len(description.encode("utf-8")) > MAX_CUSTOM_STYLE_BYTES:
+            raise RequestError("invalid_custom_style", "custom_style exceeds the 1000-byte limit.", 400)
+        return description
+    if description:
+        raise RequestError("invalid_custom_style", "custom_style is only allowed when style is custom.", 400)
+    return ""
 
 
 def _normalize_face_limit(value: Any) -> int:
@@ -351,15 +415,42 @@ def _normalize_image_instruction(value: Any) -> str:
     return value.strip() or DEFAULT_IMAGE_INSTRUCTION
 
 
-def _new_job(source: str, palette: tuple[str, ...] = (), style: str = "sculpture") -> Job:
+def _normalize_print_settings(value: Any) -> dict[str, Any]:
+    try:
+        return asdict(PrintSettings.from_mapping(value))
+    except PrintableImageError as exc:
+        raise RequestError("invalid_print_settings", str(exc), 400) from None
+
+
+def _model_output_root() -> Path:
+    return Path(os.environ.get("ORCASLICER_AI_OUTPUT_DIR", Path.cwd() / "generated_models")).resolve()
+
+
+def _new_job(
+    source: str,
+    palette: tuple[str, ...] = (),
+    palette_roles: dict[str, str] | None = None,
+    style: str = "sculpture",
+    custom_style: str = "",
+    print_settings: dict[str, Any] | None = None,
+) -> Job:
     job_id = str(uuid.uuid4())
-    output_root = Path(os.environ.get("ORCASLICER_AI_OUTPUT_DIR", Path.cwd() / "generated_models")).resolve()
+    output_root = _model_output_root()
     directory = output_root / job_id
     try:
         directory.mkdir(parents=True, exist_ok=False)
     except OSError:
         raise RequestError("service_unavailable", "The generated-model directory could not be created.", 503, True) from None
-    job = Job(id=job_id, source=source, directory=directory, palette=palette, style=style)
+    job = Job(
+        id=job_id,
+        source=source,
+        directory=directory,
+        palette=palette,
+        palette_roles=dict(palette_roles or {}),
+        style=style,
+        custom_style=custom_style,
+        print_settings=print_settings or asdict(PrintSettings()),
+    )
     _persist_job(job)
     return job
 
@@ -396,13 +487,25 @@ def _persist_job(job: Job, *, touch: bool = True) -> None:
         "message": job.message,
         "progress": job.progress,
         "palette": list(job.palette),
+        "palette_roles": job.palette_roles,
+        "print_settings": job.print_settings,
         "style": job.style,
+        "custom_style": job.custom_style,
         "face_limit": job.face_limit,
         "user_prompt": job.user_prompt,
         "prepared_prompt": job.prepared_prompt,
         "input_path": _job_path_value(job, job.input_path),
+        "raw_preview_path": _job_path_value(job, job.raw_preview_path),
+        "strict_preview_path": _job_path_value(job, job.strict_preview_path),
         "preview_path": _job_path_value(job, job.preview_path),
+        "model_reference_path": _job_path_value(job, job.model_reference_path),
         "preview_content_type": job.preview_content_type,
+        "heatmap_path": _job_path_value(job, job.heatmap_path),
+        "metadata_path": _job_path_value(job, job.metadata_path),
+        "background_mask_path": _job_path_value(job, job.background_mask_path),
+        "subject_mask_path": _job_path_value(job, job.subject_mask_path),
+        "mask_paths": {key: _job_path_value(job, path) for key, path in job.mask_paths.items()},
+        "image_metrics": job.image_metrics,
         "artifact_path": _job_path_value(job, job.artifact_path),
         "artifact_format": job.artifact_format,
         "attempts": job.attempts,
@@ -439,14 +542,27 @@ def _load_job(directory: Path) -> Job | None:
         return None
     try:
         palette = _normalize_palette(payload.get("palette", []))
+        palette_roles = _normalize_palette_roles(payload.get("palette_roles"), palette)
         style = _normalize_style(payload.get("style"))
+        custom_style = _normalize_custom_style(payload.get("custom_style"), style)
         face_limit = _normalize_face_limit(payload.get("face_limit", DEFAULT_MODEL_FACE_LIMIT))
+        print_settings = _normalize_print_settings(payload.get("print_settings"))
     except RequestError:
         return None
     attempts = payload.get("attempts", [])
     if not isinstance(attempts, list) or any(not isinstance(attempt, dict) for attempt in attempts):
         return None
-    job = Job(id=job_id, source=source, directory=directory, palette=palette, style=style, face_limit=face_limit)
+    job = Job(
+        id=job_id,
+        source=source,
+        directory=directory,
+        palette=palette,
+        palette_roles=palette_roles,
+        style=style,
+        custom_style=custom_style,
+        face_limit=face_limit,
+        print_settings=print_settings,
+    )
     job.state = str(payload.get("state", "failed"))
     job.phase = str(payload.get("phase", job.state))
     job.message = str(payload.get("message", "Recovered model job."))
@@ -454,8 +570,23 @@ def _load_job(directory: Path) -> Job | None:
     job.user_prompt = str(payload.get("user_prompt", ""))
     job.prepared_prompt = str(payload.get("prepared_prompt", ""))
     job.input_path = _job_file(job, payload.get("input_path"))
+    job.raw_preview_path = _job_file(job, payload.get("raw_preview_path"))
+    job.strict_preview_path = _job_file(job, payload.get("strict_preview_path"))
     job.preview_path = _job_file(job, payload.get("preview_path"))
+    job.model_reference_path = _job_file(job, payload.get("model_reference_path"))
     job.preview_content_type = str(payload.get("preview_content_type", ""))
+    job.heatmap_path = _job_file(job, payload.get("heatmap_path"))
+    job.metadata_path = _job_file(job, payload.get("metadata_path"))
+    job.background_mask_path = _job_file(job, payload.get("background_mask_path"))
+    job.subject_mask_path = _job_file(job, payload.get("subject_mask_path"))
+    raw_masks = payload.get("mask_paths", {})
+    if isinstance(raw_masks, dict):
+        job.mask_paths = {
+            str(key): path for key, value in raw_masks.items()
+            if (path := _job_file(job, value)) is not None
+        }
+    raw_metrics = payload.get("image_metrics", {})
+    job.image_metrics = raw_metrics if isinstance(raw_metrics, dict) else {}
     job.artifact_path = _job_file(job, payload.get("artifact_path"))
     job.artifact_format = str(payload.get("artifact_format", ""))
     job.attempts = attempts
@@ -467,7 +598,7 @@ def _load_job(directory: Path) -> Job | None:
 
 
 def _restore_jobs() -> None:
-    output_root = Path(os.environ.get("ORCASLICER_AI_OUTPUT_DIR", Path.cwd() / "generated_models")).resolve()
+    output_root = _model_output_root()
     try:
         directories = [path for path in output_root.iterdir() if path.is_dir()]
     except OSError:
@@ -531,6 +662,56 @@ def _restore_jobs() -> None:
             _submit(job, _generate_job, job.prepared_prompt, True)
 
 
+def _adopt_legacy_completed_job(job_id: str) -> Job | None:
+    """Register a pre-manifest model library entry without accepting an arbitrary path."""
+    try:
+        if str(uuid.UUID(job_id)) != job_id.lower():
+            return None
+    except ValueError:
+        return None
+    output_root = _model_output_root()
+    try:
+        directory = (output_root / job_id).resolve(strict=True)
+        directory.relative_to(output_root)
+        if not directory.is_dir():
+            return None
+        artifact = (directory / "model-vertex-color.obj").resolve(strict=True)
+        artifact.relative_to(directory)
+        artifact_size = artifact.stat().st_size
+        if not artifact.is_file() or artifact_size <= 0 or artifact_size > MAX_ARTIFACT_BYTES:
+            return None
+    except (OSError, ValueError):
+        return None
+
+    job = Job(id=job_id, source="image", directory=directory)
+    job.state = "ready"
+    job.phase = "ready"
+    job.message = "Recovered historical model library entry."
+    job.progress = 100
+    job.artifact_path = artifact
+    job.artifact_format = MODEL_ARTIFACT_FORMAT
+    preview = directory / "preview.png"
+    try:
+        resolved_preview = preview.resolve(strict=True)
+        resolved_preview.relative_to(directory)
+        if resolved_preview.is_file() and resolved_preview.stat().st_size > 0:
+            job.preview_path = resolved_preview
+            job.preview_content_type = "image/png"
+    except (OSError, ValueError):
+        pass
+    try:
+        job.updated_at = artifact.stat().st_mtime
+    except OSError:
+        pass
+
+    with _JOBS_LOCK:
+        existing = _JOBS.get(job_id)
+        if existing is not None:
+            return existing
+        _JOBS[job_id] = job
+    return job
+
+
 def _file_info(path: Path | None) -> tuple[bool, int]:
     if path is None:
         return False, 0
@@ -551,10 +732,30 @@ def _stored_image_type(path: Path | None) -> str:
         return ""
 
 
+def _read_job_report(job: Job, filename: str) -> dict[str, Any]:
+    path = job.directory / filename
+    try:
+        if path.is_file() and path.stat().st_size <= MAX_JOB_STATE_BYTES:
+            candidate = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(candidate, dict):
+                return candidate
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        pass
+    return {}
+
+
 def _public_job(job: Job) -> dict[str, Any]:
     input_ready, input_size = _file_info(job.input_path)
     preview_ready, preview_size = _file_info(job.preview_path)
+    raw_preview_ready, raw_preview_size = _file_info(job.raw_preview_path)
+    strict_preview_ready, strict_preview_size = _file_info(job.strict_preview_path)
+    model_reference_ready, model_reference_size = _file_info(job.model_reference_path)
+    heatmap_ready, heatmap_size = _file_info(job.heatmap_path)
+    metadata_ready, metadata_size = _file_info(job.metadata_path)
     artifact_ready, artifact_size = _file_info(job.artifact_path)
+    model_quality = _read_job_report(job, MODEL_QUALITY_FILENAME)
+    visual_quality = _read_job_report(job, VISUAL_QUALITY_FILENAME)
+    model_view_sheet_ready, model_view_sheet_size = _file_info(job.directory / "model-view-sheet.png")
     artifact_filename = ""
     if artifact_ready:
         artifact_filename = f"orcaslicer-model-{job.id}.{job.artifact_format}"
@@ -562,6 +763,7 @@ def _public_job(job: Job) -> dict[str, Any]:
         "id": job.id,
         "source": job.source,
         "style": job.style,
+        "custom_style": job.custom_style,
         "face_limit": job.face_limit,
         "state": job.state,
         "phase": job.phase,
@@ -572,6 +774,15 @@ def _public_job(job: Job) -> dict[str, Any]:
         "prepared_prompt": job.prepared_prompt if job.source == "text" else "",
         "user_prompt": job.user_prompt,
         "palette": list(job.palette),
+        "palette_roles": job.palette_roles,
+        "print": job.print_settings,
+        "image_metrics": job.image_metrics,
+        "model_quality": model_quality,
+        "visual_quality": visual_quality,
+        "model_views": {
+            "ready": model_view_sheet_ready,
+            "size_bytes": model_view_sheet_size if model_view_sheet_ready else 0,
+        },
         "updated_at": job.updated_at,
         "input": {
             "ready": input_ready,
@@ -582,6 +793,15 @@ def _public_job(job: Job) -> dict[str, Any]:
             "ready": preview_ready,
             "content_type": job.preview_content_type if preview_ready else "",
             "size_bytes": preview_size if preview_ready else 0,
+        },
+        "image_outputs": {
+            "raw_preview": {"ready": raw_preview_ready, "size_bytes": raw_preview_size},
+            "strict_preview": {"ready": strict_preview_ready, "size_bytes": strict_preview_size},
+            "clean_preview": {"ready": preview_ready, "size_bytes": preview_size},
+            "model_reference": {"ready": model_reference_ready, "size_bytes": model_reference_size},
+            "heatmap": {"ready": heatmap_ready, "size_bytes": heatmap_size},
+            "metadata": {"ready": metadata_ready, "size_bytes": metadata_size},
+            "masks": sorted(job.mask_paths),
         },
         "artifact": {
             "ready": artifact_ready,
@@ -943,19 +1163,74 @@ def _quantize_image_to_palette(
             pass
 
 
+def _apply_printable_image_pipeline(job: Job, raw_preview: Path) -> dict[str, int]:
+    try:
+        result = process_printable_image(
+            raw_preview, job.directory, job.palette, job.print_settings, palette_roles=job.palette_roles
+        )
+    except PrintableImageError as exc:
+        raise OpenAIPreprocessorError(str(exc)) from None
+    job.raw_preview_path = raw_preview
+    job.strict_preview_path = result.strict_preview
+    job.preview_path = result.clean_preview
+    job.model_reference_path = result.model_reference
+    job.heatmap_path = result.heatmap
+    job.metadata_path = result.metadata
+    job.background_mask_path = result.background_mask
+    job.subject_mask_path = result.subject_mask
+    job.mask_paths = result.masks
+    job.image_metrics = result.metrics
+    return result.palette_usage
+
+
+def _printable_preview_message(job: Job, fallback: str) -> str:
+    if job.palette and not bool(job.image_metrics.get("palette_quality_ok", True)):
+        subject_ratio = float(job.image_metrics.get("printable_subject_area_ratio", 0.0))
+        continuity = float(job.image_metrics.get("largest_subject_component_ratio", 0.0))
+        if subject_ratio < 0.18:
+            return "The printable subject is too small in the preview; regenerate with a larger subject."
+        if continuity < 0.90:
+            return "The printable subject is disconnected; regenerate with one connected subject."
+        return "The printable preview failed its geometry quality check; regenerate the preview."
+    return fallback
+
+
 def _preprocess_text_job(job: Job, prompt: str) -> None:
     try:
         _stop_boundary(job)
-        prepared = _generation_prompt(preprocess_text(prompt, job.palette, job.style), job.palette)
+        prepared = _generation_prompt(preprocess_text(prompt, job.palette, job.style, job.custom_style), job.palette)
         if not prepared or len(prepared.encode("utf-8")) > MAX_PROMPT_BYTES:
             raise OpenAIPreprocessorError("The prepared prompt is empty or exceeds the 2000-byte limit.")
+        if job.palette:
+            raw_preview = job.directory / "style-preview-raw.png"
+            generate_image(
+                prompt, raw_preview, job.palette, job.style,
+                str(job.print_settings.get("shadow_color", "blue")), job.palette_roles, job.custom_style,
+            )
+            color_usage = _apply_printable_image_pipeline(job, raw_preview)
+            (job.directory / "preview-colors.json").write_text(
+                json.dumps(
+                    {
+                        "style": job.style,
+                        "palette_constrained": True,
+                        "palette_pixels": color_usage,
+                        "palette_roles": job.palette_roles,
+                        "print": job.print_settings,
+                        "metrics": job.image_metrics,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            job.preview_content_type = "image/png"
         with _JOBS_LOCK:
             if job.stop_event.is_set():
                 raise JobStopped()
             job.prepared_prompt = prepared
             job.state = "awaiting_confirmation"
             job.phase = "awaiting_confirmation"
-            job.message = "Review the prepared prompt before generation."
+            job.message = _printable_preview_message(job, "Review the prepared prompt before generation.")
             job.progress = 15
     except JobStopped:
         _mark_stopped(job)
@@ -980,12 +1255,34 @@ def _preprocess_image_job(job: Job, input_path: Path, instruction: str) -> None:
     preview = job.directory / "preview.png"
     try:
         _stop_boundary(job)
-        preprocess_image(input_path, instruction, raw_preview, job.palette, job.style)
-        shutil.copyfile(raw_preview, preview)
-        color_usage = _quantize_image_to_palette(preview, job.palette, job.style) if job.palette else {}
+        preprocess_image(
+            input_path,
+            instruction,
+            raw_preview,
+            job.palette,
+            job.style,
+            str(job.print_settings.get("shadow_color", "blue")),
+            job.palette_roles,
+            job.custom_style,
+        )
+        job.raw_preview_path = raw_preview
+        if job.palette:
+            color_usage = _apply_printable_image_pipeline(job, raw_preview)
+            preview = job.preview_path or preview
+        else:
+            shutil.copyfile(raw_preview, preview)
+            job.preview_path = preview
+            color_usage = {}
         (job.directory / "preview-colors.json").write_text(
             json.dumps(
-                {"style": job.style, "palette_constrained": bool(job.palette), "palette_pixels": color_usage},
+                {
+                    "style": job.style,
+                    "palette_constrained": bool(job.palette),
+                    "palette_pixels": color_usage,
+                    "palette_roles": job.palette_roles,
+                    "print": job.print_settings,
+                    "metrics": job.image_metrics,
+                },
                 ensure_ascii=False,
                 indent=2,
             ),
@@ -1007,7 +1304,7 @@ def _preprocess_image_job(job: Job, input_path: Path, instruction: str) -> None:
             job.preview_content_type = content_type
             job.state = "awaiting_confirmation"
             job.phase = "awaiting_confirmation"
-            job.message = "Review the prepared image before generation."
+            job.message = _printable_preview_message(job, "Review the prepared image before generation.")
             job.progress = 15
     except JobStopped:
         _mark_stopped(job)
@@ -1299,6 +1596,7 @@ def _bake_obj_texture_to_vertex_colors(
         output_color_sums = array("Q")
         output_sample_counts = array("I")
         output_vertices: dict[int, int] = {}
+        face_vertices = array("I")
         face_count = 0
         current_material = ""
         try:
@@ -1363,11 +1661,63 @@ def _bake_obj_texture_to_vertex_colors(
                             output_color_sums[color_offset + channel] += sampled[channel]
                         output_sample_counts[output_index - 1] += 1
                     face_indices.append(str(output_index))
+                    face_vertices.append(output_index - 1)
                 face_stream.write("f " + " ".join(face_indices) + "\n")
                 face_count += 1
 
         if not output_sources or not face_count:
             raise TripoError("The generated OBJ does not contain textured faces.")
+        output_palette_indices: list[int] = []
+        if palette_rgb:
+            output_palette_indices = [
+                max(range(len(counts)), key=lambda item: (counts[item], -item))
+                for counts in output_color_counts
+            ]
+            # Orca intentionally uses two-color triangles to encode an MMU boundary. Three-color triangles are much harder to
+            # print predictably. Relabel the highest palette index in each offending face to one of its two lower labels. Every
+            # edit is monotonic, so adjacent faces cannot oscillate forever; shared vertices and watertight topology stay intact.
+            vertex_faces: list[list[int]] = [[] for _ in output_palette_indices]
+            pending: deque[int] = deque()
+            queued = bytearray(face_count)
+            for face_index, offset in enumerate(range(0, len(face_vertices), 3)):
+                vertices = face_vertices[offset:offset + 3]
+                for vertex in vertices:
+                    vertex_faces[vertex].append(face_index)
+                if len({output_palette_indices[index] for index in vertices}) == 3:
+                    pending.append(face_index)
+                    queued[face_index] = 1
+            changes = 0
+            max_changes = len(output_palette_indices) * max(1, len(palette_rgb) - 1)
+            while pending:
+                face_index = pending.popleft()
+                queued[face_index] = 0
+                offset = face_index * 3
+                vertices = face_vertices[offset:offset + 3]
+                labels = [output_palette_indices[index] for index in vertices]
+                if len(set(labels)) < 3:
+                    continue
+                current = max(labels)
+                corner = labels.index(current)
+                vertex = vertices[corner]
+                counts = output_color_counts[vertex]
+                targets = [label for label in labels if label < current]
+                target = max(targets, key=lambda label: (counts[label], -label))
+                output_palette_indices[vertex] = target
+                changes += 1
+                if changes > max_changes:
+                    raise TripoError("The printable vertex-color pass did not converge.")
+                for adjacent_face in vertex_faces[vertex]:
+                    if not queued[adjacent_face]:
+                        pending.append(adjacent_face)
+                        queued[adjacent_face] = 1
+            remaining_three_color_faces = sum(
+                len({output_palette_indices[index] for index in face_vertices[offset:offset + 3]}) == 3
+                for offset in range(0, len(face_vertices), 3)
+            )
+            if remaining_three_color_faces:
+                raise TripoError(
+                    f"The printable vertex-color pass left {remaining_three_color_faces} three-color triangles."
+                )
         try:
             with destination.open("w", encoding="ascii", newline="\n") as output:
                 output.write("# OrcaSlicer AI vertex-color OBJ\n")
@@ -1375,8 +1725,7 @@ def _bake_obj_texture_to_vertex_colors(
                 for output_index, source_index in enumerate(output_sources):
                     offset = source_index * 3
                     if palette_rgb:
-                        counts = output_color_counts[output_index]
-                        palette_index = max(range(len(counts)), key=lambda item: (counts[item], -item))
+                        palette_index = output_palette_indices[output_index]
                         red, green, blue = palette_rgb[palette_index]
                     else:
                         samples = max(1, output_sample_counts[output_index])
@@ -1532,7 +1881,16 @@ def _prepare_obj_artifact(raw_download: Path, job_directory: Path, palette: tupl
         _validate_obj_palette(destination, palette)
     else:
         _validate_obj_vertex_colors(destination)
+    _write_obj_vertex_color_metrics(destination, job_directory / "vertex-color-metrics.json")
     _validate_artifact(destination, "obj", allow_repairable_obj=True)
+    quality = analyze_printable_obj(destination, allow_repairable_topology=True)
+    try:
+        write_model_quality_report(quality, job_directory / MODEL_QUALITY_FILENAME)
+    except ModelQualityError as exc:
+        raise TripoError(str(exc)) from None
+    if quality.get("status") == "reject":
+        errors = ", ".join(str(code) for code in quality.get("errors", [])) or "unknown structural error"
+        raise TripoError(f"The generated OBJ failed the structural quality gate: {errors}.")
     return destination
 
 
@@ -1688,6 +2046,58 @@ def _validate_obj_palette(path: Path, palette: tuple[str, ...]) -> None:
         raise TripoError("The generated OBJ does not provide valid vertex colors.")
 
 
+def _obj_vertex_color_metrics(path: Path) -> dict[str, Any]:
+    colors: list[tuple[int, int, int]] = []
+    faces: list[tuple[int, int, int]] = []
+    try:
+        with path.open("r", encoding="utf-8", errors="strict") as stream:
+            for line in stream:
+                fields = line.strip().split()
+                if not fields or fields[0].startswith("#"):
+                    continue
+                if fields[0].lower() == "v":
+                    if len(fields) not in {7, 8}:
+                        raise TripoError("The generated OBJ does not provide valid vertex colors.")
+                    colors.append(tuple(round(float(value) * 255) for value in fields[4:7]))
+                elif fields[0].lower() == "f":
+                    if len(fields) != 4:
+                        raise TripoError("The generated OBJ must contain only triangular faces.")
+                    faces.append(tuple(_resolve_obj_index(value, len(colors), "vertex") for value in fields[1:]))
+    except (OSError, UnicodeDecodeError, ValueError):
+        raise TripoError("The generated OBJ color metrics could not be calculated.") from None
+    distribution = Counter(len({colors[index] for index in face}) for face in faces)
+    vertex_usage = Counter(colors)
+    total = max(1, len(faces))
+    return {
+        "vertex_count": len(colors),
+        "face_count": len(faces),
+        "vertex_color_count": len(vertex_usage),
+        "uniform_faces": distribution[1],
+        "two_color_faces": distribution[2],
+        "three_color_faces": distribution[3],
+        "two_color_face_ratio": round(distribution[2] / total, 6),
+        "three_color_face_ratio": round(distribution[3] / total, 6),
+        "vertex_color_usage": {
+            "#{:02X}{:02X}{:02X}".format(*color): count for color, count in sorted(vertex_usage.items())
+        },
+    }
+
+
+def _write_obj_vertex_color_metrics(path: Path, report_path: Path) -> dict[str, Any]:
+    metrics = _obj_vertex_color_metrics(path)
+    temporary = report_path.with_suffix(report_path.suffix + ".part")
+    try:
+        temporary.write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(temporary, report_path)
+    except OSError:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise TripoError("The generated OBJ color metrics could not be saved.") from None
+    return metrics
+
+
 def _write_mesh_repair_report(path: Path, report: dict[str, Any]) -> None:
     temporary = path.with_suffix(path.suffix + ".part")
     try:
@@ -1839,18 +2249,28 @@ def _repair_small_obj_topology_defects(
     original_usage = edge_usage(faces)
     original_boundary = sum(len(uses) == 1 for uses in original_usage.values())
     original_non_manifold = sum(len(uses) > 2 for uses in original_usage.values())
+    original_inconsistent_winding = sum(
+        len(uses) == 2 and uses[0][1:] == uses[1][1:]
+        for uses in original_usage.values()
+    )
     report.update(
-        topology_status="not_needed" if not original_boundary and not original_non_manifold else "deferred",
+        topology_status=(
+            "not_needed"
+            if not original_boundary and not original_non_manifold and not original_inconsistent_winding
+            else "deferred"
+        ),
         original_boundary_edges=original_boundary,
         original_non_manifold_edges=original_non_manifold,
+        original_inconsistent_winding_edges=original_inconsistent_winding,
         removed_non_manifold_faces=0,
+        flipped_winding_faces=0,
         removed_topology_vertices=0,
         filled_boundary_loops=0,
         added_vertices=0,
         added_faces=0,
-        remaining_invalid_edges=original_boundary + original_non_manifold,
+        remaining_invalid_edges=original_boundary + original_non_manifold + original_inconsistent_winding,
     )
-    if not original_boundary and not original_non_manifold:
+    if not original_boundary and not original_non_manifold and not original_inconsistent_winding:
         _write_mesh_repair_report(report_path, report)
         return report
 
@@ -1861,7 +2281,7 @@ def _repair_small_obj_topology_defects(
         _write_mesh_repair_report(report_path, report)
         return report
 
-    working_faces = faces
+    working_faces = list(faces)
     removed_face_count = 0
     if original_non_manifold:
         remove_indices = {
@@ -1915,6 +2335,65 @@ def _repair_small_obj_topology_defects(
             return report
         working_faces = [face for index, face in enumerate(faces) if index not in remove_indices]
         removed_face_count = len(remove_indices)
+
+    def normalize_face_winding(
+        source_faces: list[tuple[int, int, int]],
+    ) -> tuple[list[tuple[int, int, int]] | None, int, int]:
+        usage = edge_usage(source_faces)
+        adjacency: list[list[tuple[int, bool]]] = [[] for _ in source_faces]
+        inconsistent_before = 0
+        for uses in usage.values():
+            if len(uses) != 2:
+                continue
+            left_face, left_from, left_to = uses[0]
+            right_face, right_from, right_to = uses[1]
+            same_direction = left_from == right_from and left_to == right_to
+            inconsistent_before += int(same_direction)
+            adjacency[left_face].append((right_face, same_direction))
+            adjacency[right_face].append((left_face, same_direction))
+
+        flips: list[bool | None] = [None] * len(source_faces)
+        for start in range(len(source_faces)):
+            if flips[start] is not None:
+                continue
+            flips[start] = False
+            pending = [start]
+            component: list[int] = []
+            while pending:
+                face_index = pending.pop()
+                component.append(face_index)
+                for adjacent, must_differ in adjacency[face_index]:
+                    expected = bool(flips[face_index]) ^ must_differ
+                    if flips[adjacent] is None:
+                        flips[adjacent] = expected
+                        pending.append(adjacent)
+                    elif flips[adjacent] != expected:
+                        return None, 0, inconsistent_before
+            if sum(bool(flips[index]) for index in component) > len(component) // 2:
+                for index in component:
+                    flips[index] = not bool(flips[index])
+
+        oriented_faces = [
+            (face[0], face[2], face[1]) if flips[index] else face
+            for index, face in enumerate(source_faces)
+        ]
+        oriented_usage = edge_usage(oriented_faces)
+        inconsistent_after = sum(
+            len(uses) == 2 and uses[0][1:] == uses[1][1:]
+            for uses in oriented_usage.values()
+        )
+        return oriented_faces, sum(bool(value) for value in flips), inconsistent_after
+
+    oriented_faces, flipped_face_count, remaining_inconsistent_winding = normalize_face_winding(working_faces)
+    report.update(
+        flipped_winding_faces=flipped_face_count,
+        remaining_inconsistent_winding_edges=remaining_inconsistent_winding,
+    )
+    if oriented_faces is None or remaining_inconsistent_winding:
+        report["topology_deferred_reason"] = "non_orientable_face_winding"
+        _write_mesh_repair_report(report_path, report)
+        return report
+    working_faces = oriented_faces
 
     usage = edge_usage(working_faces)
     if any(len(uses) > 2 for uses in usage.values()):
@@ -2052,6 +2531,7 @@ def _repair_small_obj_topology_defects(
         filled_boundary_loops=len(cycles),
         added_vertices=len(cycles),
         added_faces=sum(len(cycle) - 1 for cycle in cycles),
+        remaining_inconsistent_winding_edges=0,
         remaining_invalid_edges=0,
     )
     report.pop("topology_deferred_reason", None)
@@ -2101,23 +2581,27 @@ def _validate_obj_topology(path: Path, allow_repairable: bool = False) -> tuple[
             parent[right_root] = left_root
 
     referenced: set[int] = set()
-    edge_counts: dict[tuple[int, int], int] = {}
+    edge_uses: dict[tuple[int, int], list[tuple[int, int]]] = {}
     for face in faces:
         referenced.update(face)
         unite(face[0], face[1])
         unite(face[1], face[2])
         for left, right in ((face[0], face[1]), (face[1], face[2]), (face[2], face[0])):
             edge = (left, right) if left < right else (right, left)
-            edge_counts[edge] = edge_counts.get(edge, 0) + 1
+            edge_uses.setdefault(edge, []).append((left, right))
 
     component_count = len({find(index) for index in referenced})
-    invalid_edges = sum(count != 2 for count in edge_counts.values())
+    invalid_edges = sum(
+        len(uses) != 2 or (len(uses) == 2 and uses[0] == uses[1])
+        for uses in edge_uses.values()
+    )
     repairable_edge_limit = max(64, len(faces) // 100)
     if invalid_edges and (
         not allow_repairable or len(faces) < 4 or invalid_edges > repairable_edge_limit
     ):
         raise TripoError(
-            "Tripo generated a non-watertight or non-manifold mesh. Regenerate before importing into OrcaSlicer."
+            "Tripo generated a non-watertight, non-manifold, or inconsistently wound mesh. "
+            "Regenerate before importing into OrcaSlicer."
         )
     return len(faces), component_count, invalid_edges
 
@@ -2161,10 +2645,10 @@ def _generate_job(job: Job, prepared_prompt: str, resume: bool = False) -> None:
             if not isinstance(generation_id, str) or not generation_id:
                 if resume:
                     raise TripoError("The paid model task reference is unavailable; start a new generation manually.")
-                if job.source == "text":
+                if job.source == "text" and job.preview_path is None:
                     generation_id = create_text_task(prepared_prompt, job.face_limit)
                 else:
-                    preview = job.preview_path
+                    preview = job.model_reference_path or job.preview_path
                     if preview is None:
                         raise RuntimeError("The prepared preview is unavailable.")
                     token = upload_image(preview)
@@ -2360,7 +2844,7 @@ class Handler(BaseHTTPRequestHandler):
             if part.is_multipart() or part.get_content_disposition() != "form-data":
                 raise RequestError("invalid_multipart", "Nested or invalid multipart data is not supported.", 400)
             name = part.get_param("name", header="content-disposition")
-            if name not in {"request_id", "instruction", "palette", "style", "image"} or name in seen:
+            if name not in {"request_id", "instruction", "palette", "palette_roles", "style", "custom_style", "print", "image"} or name in seen:
                 raise RequestError("invalid_multipart", "Multipart fields are unexpected or duplicated.", 400)
             seen.add(name)
             payload = part.get_payload(decode=True) or b""
@@ -2401,7 +2885,14 @@ class Handler(BaseHTTPRequestHandler):
         parts = path[len(prefix) :].split("/")
         if len(parts) == 1 and parts[0]:
             action = "status"
-        elif len(parts) == 2 and parts[0] and parts[1] in {"preview", "generate", "stop", "artifact"}:
+        elif len(parts) == 2 and parts[0] and (
+            parts[1] in {
+                "raw-preview", "strict-preview", "preview", "heatmap", "metadata",
+                "background-mask", "subject-mask", "generate", "stop", "artifact",
+                "recheck", "visual-review", "model-view-sheet",
+            }
+            or re.fullmatch(r"mask-[a-z0-9_]+", parts[1])
+        ):
             action = parts[1]
         else:
             return None, None
@@ -2435,9 +2926,19 @@ class Handler(BaseHTTPRequestHandler):
                         "model_generation": {
                             "available": generation_preprocessing and bool(os.environ.get("TRIPO_API_KEY", "")),
                             "sources": ["text", "image"],
+                            "styles": list(STYLE_IDS),
                             "artifact_formats": [MODEL_ARTIFACT_FORMAT],
                             "face_limits": list(MODEL_FACE_LIMITS),
                             "default_face_limit": DEFAULT_MODEL_FACE_LIMIT,
+                            "printable_image_pipeline": {
+                                "available": True,
+                                "print_modes": ["solid_regions"],
+                                "color_distances": ["ciede2000", "delta_e76"],
+                                "outputs": [
+                                    "raw_preview", "strict_preview", "clean_preview", "model_reference",
+                                    "heatmap", "masks", "metadata",
+                                ],
+                            },
                         },
                     },
                 },
@@ -2459,7 +2960,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200, {"job": response})
             return
         job_id, action = self._job_route(self.path)
-        if not job_id or action not in {"status", "input", "preview", "artifact"}:
+        downloadable = {
+            "status", "input", "raw-preview", "strict-preview", "preview", "heatmap", "metadata",
+            "background-mask", "subject-mask", "artifact", "model-view-sheet",
+        }
+        if not job_id or (action not in downloadable and not (action or "").startswith("mask-")):
             self._model_error(404, "not_found", "Model job route not found.")
             return
         job = self._get_job(job_id)
@@ -2503,11 +3008,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._create_image_job()
                 return
             job_id, action = self._job_route(self.path)
-            if not job_id or action not in {"generate", "stop"}:
+            if not job_id or action not in {"generate", "stop", "recheck", "visual-review"}:
                 self._model_error(404, "not_found", "Model job route not found.")
                 return
             if action == "generate":
                 self._generate(job_id)
+            elif action == "recheck":
+                self._recheck(job_id)
+            elif action == "visual-review":
+                self._visual_review(job_id)
             else:
                 self._stop(job_id)
         except RequestError as exc:
@@ -2547,8 +3056,11 @@ class Handler(BaseHTTPRequestHandler):
         _text_field(request.get("request_id"), "request_id")
         prompt = _text_field(request.get("prompt"), "prompt")
         palette = _normalize_palette(request.get("palette"))
+        palette_roles = _normalize_palette_roles(request.get("palette_roles"), palette)
         style = _normalize_style(request.get("style"))
-        job = _new_job("text", palette, style)
+        custom_style = _normalize_custom_style(request.get("custom_style"), style)
+        print_settings = _normalize_print_settings(request.get("print"))
+        job = _new_job("text", palette, palette_roles, style, custom_style, print_settings)
         job.user_prompt = prompt
         _persist_job(job)
         with _JOBS_LOCK:
@@ -2571,7 +3083,14 @@ class Handler(BaseHTTPRequestHandler):
         _text_field(fields.get("request_id"), "request_id")
         instruction = _normalize_image_instruction(fields.get("instruction"))
         palette = _multipart_palette(fields.get("palette"))
+        palette_roles = _multipart_palette_roles(fields.get("palette_roles"), palette)
         style = _normalize_style(fields.get("style"))
+        custom_style = _normalize_custom_style(fields.get("custom_style"), style)
+        try:
+            print_payload = json.loads(fields.get("print", "{}"))
+        except json.JSONDecodeError:
+            raise RequestError("invalid_print_settings", "print settings must be valid JSON", 400) from None
+        print_settings = _normalize_print_settings(print_payload)
         if len(image) > MAX_IMAGE_BYTES:
             raise RequestError("image_too_large", "Image exceeds the 20 MB limit.", 413)
         detected_type = _image_type(image)
@@ -2579,7 +3098,7 @@ class Handler(BaseHTTPRequestHandler):
             raise RequestError("unsupported_image", "Image must be PNG or JPEG.", 415)
         if declared_type not in {"application/octet-stream", detected_type}:
             raise RequestError("unsupported_image", "Image Content-Type does not match its data.", 415)
-        job = _new_job("image", palette, style)
+        job = _new_job("image", palette, palette_roles, style, custom_style, print_settings)
         job.user_prompt = instruction
         suffix = ".png" if detected_type == "image/png" else ".jpg"
         input_path = job.directory / f"input-{uuid.uuid4().hex}{suffix}"
@@ -2678,19 +3197,113 @@ class Handler(BaseHTTPRequestHandler):
             response = _public_job(job)
         self.send_json(200, {"job": response})
 
+    def _recheck(self, job_id: str) -> None:
+        self._read_model_json()
+        job = self._get_job(job_id)
+        if job is None:
+            job = _adopt_legacy_completed_job(job_id)
+        if job is None:
+            raise RequestError("job_not_found", "Model job not found.", 404)
+        with _JOBS_LOCK:
+            if job.state in {"preprocessing", "queued", "running", "stopping"}:
+                raise RequestError("invalid_job_state", "Model quality cannot be checked while the job is running.", 409)
+            artifact = job.artifact_path
+            artifact_format = job.artifact_format
+        if artifact is None or artifact_format != "obj":
+            raise RequestError("artifact_not_ready", "The model OBJ is not available for quality checking.", 409)
+        try:
+            resolved_artifact = artifact.resolve(strict=True)
+            resolved_artifact.relative_to(job.directory.resolve(strict=True))
+        except (OSError, ValueError):
+            raise RequestError("artifact_not_ready", "The registered model OBJ is unavailable.", 409) from None
+        quality = analyze_printable_obj(resolved_artifact, allow_repairable_topology=True)
+        try:
+            write_model_quality_report(quality, job.directory / MODEL_QUALITY_FILENAME)
+        except ModelQualityError as exc:
+            raise RequestError("quality_report_unavailable", str(exc), 503, True) from None
+        with _JOBS_LOCK:
+            if _JOBS.get(job_id) is not job:
+                raise RequestError("job_not_found", "Model job is no longer available.", 404)
+            _persist_job(job)
+            response = _public_job(job)
+        self.send_json(200, {"job": response})
+
+    def _visual_review(self, job_id: str) -> None:
+        request = self._read_model_json()
+        force = request.get("force", False)
+        if not isinstance(force, bool):
+            raise RequestError("invalid_request", "force must be a boolean.", 400)
+        job = self._get_job(job_id)
+        if job is None:
+            job = _adopt_legacy_completed_job(job_id)
+        if job is None:
+            raise RequestError("job_not_found", "Model job not found.", 404)
+        with _JOBS_LOCK:
+            if job.state in {"preprocessing", "queued", "running", "stopping"}:
+                raise RequestError("job_busy", "Model generation is still running.", 409)
+            artifact = job.artifact_path
+        if artifact is None or job.artifact_format != MODEL_ARTIFACT_FORMAT:
+            raise RequestError("artifact_not_ready", "The model OBJ is not available for visual review.", 409)
+        try:
+            resolved_directory = job.directory.resolve(strict=True)
+            resolved_artifact = artifact.resolve(strict=True)
+            resolved_artifact.relative_to(resolved_directory)
+        except (OSError, ValueError):
+            raise RequestError("artifact_not_ready", "The registered model OBJ is unavailable.", 409) from None
+        reference: Path | None = None
+        if job.source == "image" and job.input_path is not None:
+            try:
+                candidate = job.input_path.resolve(strict=True)
+                candidate.relative_to(resolved_directory)
+                reference = candidate
+            except (OSError, ValueError):
+                reference = None
+        review_model_visual_quality(
+            resolved_artifact,
+            resolved_directory,
+            description=job.user_prompt,
+            style=job.style,
+            reference_path=reference,
+            force=force,
+        )
+        with _JOBS_LOCK:
+            if _JOBS.get(job_id) is not job:
+                raise RequestError("job_not_found", "Model job is no longer available.", 404)
+            _persist_job(job)
+            response = _public_job(job)
+        self.send_json(200, {"job": response})
+
     def _download_job_file(self, job: Job, kind: str) -> None:
         with _JOBS_LOCK:
-            path = job.input_path if kind == "input" else job.preview_path if kind == "preview" else job.artifact_path
+            fixed_paths = {
+                "input": job.input_path,
+                "raw-preview": job.raw_preview_path,
+                "strict-preview": job.strict_preview_path,
+                "preview": job.preview_path,
+                "model-reference": job.model_reference_path,
+                "heatmap": job.heatmap_path,
+                "metadata": job.metadata_path,
+                "background-mask": job.background_mask_path,
+                "subject-mask": job.subject_mask_path,
+                "artifact": job.artifact_path,
+                "model-view-sheet": job.directory / "model-view-sheet.png",
+            }
+            path = job.mask_paths.get(kind[5:]) if kind.startswith("mask-") else fixed_paths.get(kind)
             ready, size = _file_info(path)
             if not ready or path is None:
                 self._model_error(409, f"{kind}_not_ready", f"Model job {kind} is not ready.", True)
                 return
-            content_type = _stored_image_type(path) if kind == "input" else job.preview_content_type if kind == "preview" else {
+            image_kinds = {
+                "input", "raw-preview", "strict-preview", "preview", "model-reference", "heatmap",
+                "background-mask", "subject-mask", "model-view-sheet",
+            }
+            content_type = _stored_image_type(path) if kind in image_kinds or kind.startswith("mask-") else \
+                "application/json; charset=utf-8" if kind == "metadata" else {
                 "obj": "model/obj",
                 "3mf": "application/vnd.ms-package.3dmanufacturing-3dmodel+xml",
                 "stl": "model/stl",
             }.get(job.artifact_format, "application/octet-stream")
-            filename = None if kind in {"input", "preview"} else f"orcaslicer-model-{job.id}.{job.artifact_format}"
+            filename = f"orcaslicer-model-{job.id}.{job.artifact_format}" if kind == "artifact" else None
             try:
                 stream = path.open("rb")
             except OSError:

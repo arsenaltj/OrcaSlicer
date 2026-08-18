@@ -321,9 +321,19 @@ class Handler(BaseHTTPRequestHandler):
                     "model_generation": {
                         "available": True,
                         "sources": ["text", "image"],
+                        "styles": ["q_cartoon", "low_poly", "cel_shaded", "enamel_inlay", "sculpture", "custom"],
                         "artifact_formats": ["obj"],
                         "face_limits": list(MODEL_FACE_LIMITS),
                         "default_face_limit": DEFAULT_MODEL_FACE_LIMIT,
+                        "printable_image_pipeline": {
+                            "available": True,
+                            "print_modes": ["solid_regions"],
+                            "color_distances": ["ciede2000", "delta_e76"],
+                            "outputs": [
+                                "raw_preview", "strict_preview", "clean_preview", "model_reference",
+                                "heatmap", "masks", "metadata",
+                            ],
+                        },
                     },
                 },
             }, 200)

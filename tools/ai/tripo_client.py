@@ -235,6 +235,28 @@ def create_image_task(file_token: str, face_limit: int = 300000) -> str:
     return _task_id(_post_json("/generation/image-to-model", payload))
 
 
+_MULTIVIEW_ORDER = ("front", "left", "back", "right")
+
+
+def create_multiview_task(view_tokens: Mapping[str, str], face_limit: int = 300000) -> str:
+    if not isinstance(view_tokens, Mapping):
+        raise TripoError("Named multiview inputs are required.")
+    unknown = set(view_tokens) - set(_MULTIVIEW_ORDER)
+    if unknown:
+        raise TripoError("Multiview inputs contain an unsupported view name.")
+    normalized: dict[str, str] = {}
+    for view, token in view_tokens.items():
+        if not isinstance(token, str) or not token.strip():
+            raise TripoError("Each multiview input requires an uploaded image reference.")
+        normalized[view] = token.strip()
+    if "front" not in normalized or len(normalized) < 2:
+        raise TripoError("Multiview generation requires front and at least one additional view.")
+    _, _, model = _config()
+    payload = _high_detail_payload(model, face_limit)
+    payload["inputs"] = [{view: normalized[view]} for view in _MULTIVIEW_ORDER if view in normalized]
+    return _task_id(_post_json("/generation/multiview-to-model", payload))
+
+
 def get_task(task_id: str) -> dict[str, Any]:
     if not isinstance(task_id, str) or not task_id:
         raise TripoError("A task reference is required.")

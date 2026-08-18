@@ -11,6 +11,7 @@ import urllib.request
 import uuid
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOLS_AI = Path(__file__).resolve().parent
@@ -83,13 +84,48 @@ class SidecarHealthContractTests(unittest.TestCase):
         generation = capabilities["model_generation"]
         self.assertIsInstance(generation["available"], bool)
         self.assertEqual(generation["sources"], ["text", "image"])
+        self.assertEqual(
+            generation["styles"],
+            ["q_cartoon", "low_poly", "cel_shaded", "enamel_inlay", "sculpture", "custom"],
+        )
         self.assertEqual(generation["artifact_formats"], ["obj"])
         self.assertEqual(generation["face_limits"], [100000, 300000, 500000, 1000000])
         self.assertEqual(generation["default_face_limit"], 300000)
+        self.assertIn("model_reference", generation["printable_image_pipeline"]["outputs"])
 
         payload = json.dumps(health)
         for secret in ("OPENAI_API_KEY", "TRIPO_API_KEY", "test-openai", "test-tripo"):
             self.assertNotIn(secret, payload)
+
+    def test_custom_style_contract_is_explicit_and_bounded(self):
+        self.assertEqual(
+            PRODUCTION._normalize_custom_style("  粗线条木刻玩具  ", "custom"),
+            "粗线条木刻玩具",
+        )
+        with self.assertRaisesRegex(PRODUCTION.RequestError, "required"):
+            PRODUCTION._normalize_custom_style("", "custom")
+        with self.assertRaisesRegex(PRODUCTION.RequestError, "only allowed"):
+            PRODUCTION._normalize_custom_style("woodcut", "q_cartoon")
+        with self.assertRaisesRegex(PRODUCTION.RequestError, "1000-byte"):
+            PRODUCTION._normalize_custom_style("a" * 1001, "custom")
+
+    def test_custom_style_is_persisted_and_exposed_for_task_recovery(self):
+        job_id = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory() as directory:
+            job_directory = Path(directory) / job_id
+            job_directory.mkdir()
+            job = PRODUCTION.Job(
+                id=job_id,
+                source="text",
+                directory=job_directory,
+                style="custom",
+                custom_style="复古木刻版画",
+            )
+            PRODUCTION._persist_job(job)
+            restored = PRODUCTION._load_job(job_directory)
+            self.assertIsNotNone(restored)
+            self.assertEqual(restored.custom_style, "复古木刻版画")
+            self.assertEqual(PRODUCTION._public_job(restored)["custom_style"], "复古木刻版画")
 
     def test_latest_job_endpoint_returns_persisted_job_without_secrets(self):
         job_id = str(uuid.uuid4())
@@ -115,6 +151,260 @@ class SidecarHealthContractTests(unittest.TestCase):
                 self.assertEqual(payload["job"]["id"], job.id)
                 self.assertEqual(payload["job"]["prepared_prompt"], "printable object")
                 self.assertNotIn("API_KEY", json.dumps(payload))
+            finally:
+                with PRODUCTION._JOBS_LOCK:
+                    PRODUCTION._JOBS.clear()
+                    PRODUCTION._JOBS.update(previous)
+
+    def test_public_job_exposes_persisted_model_quality_report(self):
+        job_id = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory() as directory:
+            job_directory = Path(directory) / job_id
+            job_directory.mkdir()
+            quality = {
+                "schema_version": 1,
+                "gate_version": "structural-v1",
+                "status": "review",
+                "errors": [],
+                "warnings": ["tiny_detached_components"],
+                "metrics": {"component_count": 3},
+            }
+            (job_directory / PRODUCTION.MODEL_QUALITY_FILENAME).write_text(
+                json.dumps(quality), encoding="utf-8"
+            )
+            job = PRODUCTION.Job(id=job_id, source="image", directory=job_directory)
+
+            public = PRODUCTION._public_job(job)
+
+            self.assertEqual(public["model_quality"], quality)
+
+    def test_public_job_exposes_persisted_visual_quality_and_view_sheet(self):
+        job_id = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory() as directory:
+            job_directory = Path(directory) / job_id
+            job_directory.mkdir()
+            visual = {
+                "schema_version": 1,
+                "review_version": "visual-v1",
+                "status": "review",
+                "score": 72,
+                "warnings": ["visual_silhouette_unclear"],
+            }
+            (job_directory / PRODUCTION.VISUAL_QUALITY_FILENAME).write_text(json.dumps(visual), encoding="utf-8")
+            (job_directory / "model-view-sheet.png").write_bytes(b"\x89PNG\r\n\x1a\nexample")
+            job = PRODUCTION.Job(id=job_id, source="image", directory=job_directory)
+
+            public = PRODUCTION._public_job(job)
+
+            self.assertEqual(public["visual_quality"], visual)
+            self.assertTrue(public["model_views"]["ready"])
+
+    def test_job_status_endpoint_returns_registered_job(self):
+        job_id = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory() as directory:
+            job_directory = Path(directory) / job_id
+            job_directory.mkdir()
+            job = PRODUCTION.Job(id=job_id, source="text", directory=job_directory)
+            job.state = "awaiting_confirmation"
+            job.phase = "awaiting_confirmation"
+            with PRODUCTION._JOBS_LOCK:
+                previous = dict(PRODUCTION._JOBS)
+                PRODUCTION._JOBS.clear()
+                PRODUCTION._JOBS[job.id] = job
+            try:
+                with sidecar_server(PRODUCTION.Handler) as port:
+                    request = urllib.request.Request(
+                        f"http://127.0.0.1:{port}/v1/orcaslicer/model-jobs/{job.id}",
+                        headers={"X-OrcaSlicer-Client": "native"},
+                    )
+                    with urllib.request.urlopen(request, timeout=5) as response:
+                        payload = json.loads(response.read())
+                self.assertEqual(payload["job"]["id"], job.id)
+                self.assertEqual(payload["job"]["state"], "awaiting_confirmation")
+            finally:
+                with PRODUCTION._JOBS_LOCK:
+                    PRODUCTION._JOBS.clear()
+                    PRODUCTION._JOBS.update(previous)
+
+    def test_recheck_analyzes_only_the_registered_obj_without_paid_calls(self):
+        job_id = str(uuid.uuid4())
+        tetrahedron = (
+            "v 0 0 0 1 0 0\n"
+            "v 10 0 0 1 0 0\n"
+            "v 0 10 0 1 0 0\n"
+            "v 0 0 10 1 0 0\n"
+            "f 1 3 2\n"
+            "f 1 2 4\n"
+            "f 1 4 3\n"
+            "f 2 3 4\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            job_directory = Path(directory) / job_id
+            job_directory.mkdir()
+            artifact = job_directory / "model-vertex-color.obj"
+            artifact.write_text(tetrahedron, encoding="ascii")
+            job = PRODUCTION.Job(id=job_id, source="image", directory=job_directory)
+            job.state = "ready"
+            job.phase = "ready"
+            job.artifact_path = artifact
+            job.artifact_format = "obj"
+            with PRODUCTION._JOBS_LOCK:
+                previous = dict(PRODUCTION._JOBS)
+                PRODUCTION._JOBS.clear()
+                PRODUCTION._JOBS[job.id] = job
+            try:
+                paid = [
+                    mock.patch.object(PRODUCTION, name)
+                    for name in ("create_text_task", "create_image_task", "create_conversion", "upload_image")
+                ]
+                with paid[0] as text_task, paid[1] as image_task, paid[2] as conversion, paid[3] as upload:
+                    with sidecar_server(PRODUCTION.Handler) as port:
+                        request = urllib.request.Request(
+                            f"http://127.0.0.1:{port}/v1/orcaslicer/model-jobs/{job.id}/recheck",
+                            data=b"{}",
+                            method="POST",
+                            headers={"X-OrcaSlicer-Client": "native", "Content-Type": "application/json"},
+                        )
+                        with urllib.request.urlopen(request, timeout=5) as response:
+                            payload = json.loads(response.read())
+                    self.assertEqual(payload["job"]["model_quality"]["status"], "pass")
+                    self.assertTrue((job_directory / PRODUCTION.MODEL_QUALITY_FILENAME).is_file())
+                    for provider in (text_task, image_task, conversion, upload):
+                        provider.assert_not_called()
+            finally:
+                with PRODUCTION._JOBS_LOCK:
+                    PRODUCTION._JOBS.clear()
+                    PRODUCTION._JOBS.update(previous)
+
+    def test_recheck_rejects_an_artifact_outside_the_registered_job_directory(self):
+        job_id = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            job_directory = root / job_id
+            job_directory.mkdir()
+            artifact = root / "outside.obj"
+            artifact.write_text("v 0 0 0\n", encoding="ascii")
+            job = PRODUCTION.Job(id=job_id, source="text", directory=job_directory)
+            job.state = "ready"
+            job.phase = "ready"
+            job.artifact_path = artifact
+            job.artifact_format = "obj"
+            with PRODUCTION._JOBS_LOCK:
+                previous = dict(PRODUCTION._JOBS)
+                PRODUCTION._JOBS.clear()
+                PRODUCTION._JOBS[job.id] = job
+            try:
+                with sidecar_server(PRODUCTION.Handler) as port:
+                    request = urllib.request.Request(
+                        f"http://127.0.0.1:{port}/v1/orcaslicer/model-jobs/{job.id}/recheck",
+                        data=b"{}",
+                        method="POST",
+                        headers={"X-OrcaSlicer-Client": "native", "Content-Type": "application/json"},
+                    )
+                    with self.assertRaises(urllib.error.HTTPError) as raised:
+                        urllib.request.urlopen(request, timeout=5)
+                self.assertEqual(raised.exception.code, 409)
+            finally:
+                with PRODUCTION._JOBS_LOCK:
+                    PRODUCTION._JOBS.clear()
+                    PRODUCTION._JOBS.update(previous)
+
+    def test_recheck_adopts_a_legacy_model_library_entry_without_paid_calls(self):
+        job_id = str(uuid.uuid4())
+        tetrahedron = (
+            "v 0 0 0 1 0 0\n"
+            "v 10 0 0 1 0 0\n"
+            "v 0 10 0 1 0 0\n"
+            "v 0 0 10 1 0 0\n"
+            "f 1 3 2\n"
+            "f 1 2 4\n"
+            "f 1 4 3\n"
+            "f 2 3 4\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            job_directory = root / job_id
+            job_directory.mkdir()
+            (job_directory / "model-vertex-color.obj").write_text(tetrahedron, encoding="ascii")
+            with PRODUCTION._JOBS_LOCK:
+                previous = dict(PRODUCTION._JOBS)
+                PRODUCTION._JOBS.clear()
+            try:
+                paid = [
+                    mock.patch.object(PRODUCTION, name)
+                    for name in ("create_text_task", "create_image_task", "create_conversion", "upload_image")
+                ]
+                with temporary_environment(ORCASLICER_AI_OUTPUT_DIR=str(root)):
+                    with paid[0] as text_task, paid[1] as image_task, paid[2] as conversion, paid[3] as upload:
+                        with sidecar_server(PRODUCTION.Handler) as port:
+                            request = urllib.request.Request(
+                                f"http://127.0.0.1:{port}/v1/orcaslicer/model-jobs/{job_id}/recheck",
+                                data=b"{}",
+                                method="POST",
+                                headers={"X-OrcaSlicer-Client": "native", "Content-Type": "application/json"},
+                            )
+                            with urllib.request.urlopen(request, timeout=5) as response:
+                                payload = json.loads(response.read())
+                        self.assertEqual(payload["job"]["state"], "ready")
+                        self.assertEqual(payload["job"]["model_quality"]["status"], "pass")
+                        self.assertTrue((job_directory / PRODUCTION.MODEL_QUALITY_FILENAME).is_file())
+                        self.assertTrue((job_directory / PRODUCTION.JOB_STATE_FILENAME).is_file())
+                        for provider in (text_task, image_task, conversion, upload):
+                            provider.assert_not_called()
+            finally:
+                with PRODUCTION._JOBS_LOCK:
+                    PRODUCTION._JOBS.clear()
+                    PRODUCTION._JOBS.update(previous)
+
+    def test_visual_review_uses_only_registered_artifact_and_returns_advisory_report(self):
+        job_id = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory() as directory:
+            job_directory = Path(directory) / job_id
+            job_directory.mkdir()
+            artifact = job_directory / "model-vertex-color.obj"
+            artifact.write_text(
+                "v 0 0 0 1 0 0\nv 10 0 0 0 1 0\nv 0 10 0 0 0 1\nf 1 2 3\n",
+                encoding="ascii",
+            )
+            job = PRODUCTION.Job(id=job_id, source="text", directory=job_directory)
+            job.state = "ready"
+            job.phase = "ready"
+            job.artifact_path = artifact
+            job.artifact_format = "obj"
+            with PRODUCTION._JOBS_LOCK:
+                previous = dict(PRODUCTION._JOBS)
+                PRODUCTION._JOBS.clear()
+                PRODUCTION._JOBS[job.id] = job
+
+            def review(obj_path, root, **kwargs):
+                self.assertEqual(Path(obj_path), artifact.resolve())
+                report = {
+                    "schema_version": 1,
+                    "review_version": "visual-v1",
+                    "status": "review",
+                    "score": 70,
+                    "confidence": 0.8,
+                    "summary": "建议检查轮廓。",
+                    "warnings": ["visual_silhouette_unclear"],
+                    "errors": [],
+                    "checks": {},
+                }
+                (Path(root) / PRODUCTION.VISUAL_QUALITY_FILENAME).write_text(json.dumps(report), encoding="utf-8")
+                return report
+
+            try:
+                with mock.patch.object(PRODUCTION, "review_model_visual_quality", side_effect=review) as visual_review:
+                    with sidecar_server(PRODUCTION.Handler) as port:
+                        request = urllib.request.Request(
+                            f"http://127.0.0.1:{port}/v1/orcaslicer/model-jobs/{job.id}/visual-review",
+                            data=b"{}",
+                            method="POST",
+                            headers={"X-OrcaSlicer-Client": "native", "Content-Type": "application/json"},
+                        )
+                        with urllib.request.urlopen(request, timeout=5) as response:
+                            payload = json.loads(response.read())
+                self.assertEqual(payload["job"]["visual_quality"]["status"], "review")
+                visual_review.assert_called_once()
             finally:
                 with PRODUCTION._JOBS_LOCK:
                     PRODUCTION._JOBS.clear()
