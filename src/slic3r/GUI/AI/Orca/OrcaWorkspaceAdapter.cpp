@@ -404,6 +404,10 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
 
     workflow.update_ai_workflow_step(Sidebar::AIArrange, Sidebar::AIWorkflowStatus::Running,
                                      _L("正在放置到打印板"));
+    // Keep the established import-and-slice compatibility path until smart slicing
+    // owns this entry point and can present an explicit transactional decision.
+    // Removing these writes before that migration would change the existing AI
+    // import behavior even when the smart-slicing workbench is never opened.
     if (result.slice_after_import && wxGetApp().preset_bundle != nullptr) {
         PresetBundle* preset_bundle = wxGetApp().preset_bundle;
         DynamicPrintConfig& print_config = preset_bundle->prints.get_edited_preset().config;

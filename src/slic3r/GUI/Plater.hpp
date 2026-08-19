@@ -484,6 +484,10 @@ public:
     bool is_ai_assistant_shown() const;
     void show_ai_assistant(bool show);
 
+    void enable_smart_slicing();
+    bool is_smart_slicing_shown() const;
+    void show_smart_slicing(bool show);
+
     void reset_window_layout();
 
     // Called after the Preferences dialog is closed and the program settings are saved.

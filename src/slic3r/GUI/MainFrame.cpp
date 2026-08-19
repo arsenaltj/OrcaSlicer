@@ -3137,6 +3137,13 @@ void MainFrame::init_menubar_as_editor()
         add_common_view_menu_items(viewMenu, this, std::bind(&MainFrame::can_change_view, this));
         viewMenu->AppendSeparator();
 
+        m_plater->enable_smart_slicing();
+        append_menu_check_item(viewMenu, wxID_ANY, _L("Show Smart Slicing"), _L("Show the smart slicing workbench."),
+            [this](wxCommandEvent&) { m_plater->show_smart_slicing(!m_plater->is_smart_slicing_shown()); }, this,
+            [this]() { return m_tabpanel->GetSelection() == TabPosition::tp3DEditor || m_tabpanel->GetSelection() == TabPosition::tpPreview; },
+            [this]() { return m_plater->is_smart_slicing_shown(); }, this);
+        viewMenu->AppendSeparator();
+
         //BBS perspective view
         wxWindowID camera_id_base = wxWindow::NewControlId(int(wxID_CAMERA_COUNT));
         auto perspective_item = append_menu_radio_item(viewMenu, wxID_CAMERA_PERSPECTIVE + camera_id_base, _L("Use Perspective View"), _L("Use Perspective View"),
