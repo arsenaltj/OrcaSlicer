@@ -28,6 +28,7 @@ class wxScrolledWindow;
 class wxSpinCtrlDouble;
 class wxStaticText;
 class wxTextCtrl;
+class wxToggleButton;
 
 namespace Slic3r::GUI {
 
@@ -185,13 +186,18 @@ private:
     wxStaticText*   m_model_preview_message { nullptr };
     wxStaticText*   m_model_stats { nullptr };
     wxButton*       m_reset_model_view { nullptr };
-    wxCollapsiblePane* m_local_recolor_pane { nullptr };
-    wxChoice*       m_region_operation { nullptr };
+    wxPanel*        m_local_recolor_panel { nullptr };
+    wxToggleButton* m_local_recolor_toggle { nullptr };
+    wxPanel*        m_local_recolor_controls { nullptr };
+    std::array<wxToggleButton*, 3> m_region_operation_buttons { nullptr, nullptr, nullptr };
     wxChoice*       m_region_range { nullptr };
-    wxChoice*       m_region_color { nullptr };
+    std::array<wxToggleButton*, 4> m_region_color_buttons { nullptr, nullptr, nullptr, nullptr };
     wxStaticText*   m_region_selection_summary { nullptr };
+    wxButton*       m_undo_region_selection { nullptr };
     wxButton*       m_clear_region_selection { nullptr };
     wxButton*       m_apply_region_color { nullptr };
+    int             m_region_operation_index { 0 };
+    int             m_region_color_index { 0 };
     std::vector<std::string> m_region_palette;
     wxPanel*        m_model_quality_panel { nullptr };
     wxStaticText*   m_model_quality_status { nullptr };

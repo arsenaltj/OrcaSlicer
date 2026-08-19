@@ -45,6 +45,7 @@
 #include <wx/statbox.h>
 #include <wx/stattext.h>
 #include <wx/textctrl.h>
+#include <wx/tglbtn.h>
 #include <wx/utils.h>
 #include <wx/weakref.h>
 
@@ -382,6 +383,21 @@ public:
             m_zoom = std::clamp(m_zoom * std::pow(1.15, turns), 0.45, 2.5);
             m_canvas->Refresh(false);
         });
+        m_canvas->Bind(wxEVT_KEY_DOWN, [this](wxKeyEvent& event) {
+            if (!m_selection_enabled) {
+                event.Skip();
+                return;
+            }
+            if (event.ControlDown() && (event.GetKeyCode() == 'Z' || event.GetKeyCode() == 'z')) {
+                undo_selection();
+                return;
+            }
+            if (event.GetKeyCode() == WXK_ESCAPE) {
+                clear_selection();
+                return;
+            }
+            event.Skip();
+        });
     }
 
     ~ModelPreview3D() override { clear(); }
@@ -527,6 +543,7 @@ public:
         m_models.clear();
         m_selection_model.reset();
         m_region_editor.clear();
+        m_selection_history.clear();
         m_palette.clear();
         m_has_model = false;
         if (m_canvas != nullptr)
@@ -552,11 +569,16 @@ public:
 
     void set_selection_enabled(bool enabled)
     {
-        m_selection_enabled = enabled && m_region_editor.ready();
+        const bool selection_enabled = enabled && m_region_editor.ready();
+        if (selection_enabled == m_selection_enabled)
+            return;
+        m_selection_enabled = selection_enabled;
         if (m_canvas != nullptr)
             m_canvas->SetCursor(wxCursor(m_selection_enabled ? wxCURSOR_CROSS : wxCURSOR_ARROW));
-        if (!m_selection_enabled)
-            clear_selection();
+        if (!m_selection_enabled) {
+            m_selection_history.clear();
+            clear_selection(false);
+        }
     }
 
     void set_selection_operation(AI::RegionSelectionOperation operation)
@@ -583,14 +605,34 @@ public:
         m_selection_changed = std::move(callback);
     }
 
-    void clear_selection()
+    void clear_selection(bool record_history = true)
     {
+        if (record_history && m_region_editor.selected_face_count() > 0)
+            push_selection_history(m_region_editor.selected_faces());
         m_region_editor.clear_selection();
         rebuild_selection_model();
         notify_selection_changed();
+        if (m_canvas != nullptr)
+            m_canvas->Refresh(false);
     }
 
     size_t selected_face_count() const { return m_region_editor.selected_face_count(); }
+    bool can_undo_selection() const { return !m_selection_history.empty(); }
+
+    bool undo_selection()
+    {
+        if (m_selection_history.empty())
+            return false;
+        std::vector<uint8_t> previous = std::move(m_selection_history.back());
+        m_selection_history.pop_back();
+        if (!m_region_editor.restore_selection(previous))
+            return false;
+        rebuild_selection_model();
+        notify_selection_changed();
+        if (m_canvas != nullptr)
+            m_canvas->Refresh(false);
+        return true;
+    }
 
     bool apply_selection_color(const RGBA& color, const boost::filesystem::path& source,
                                const boost::filesystem::path& destination, std::string& error)
@@ -599,6 +641,14 @@ public:
     }
 
 private:
+    void push_selection_history(const std::vector<uint8_t>& selected_faces)
+    {
+        constexpr size_t max_history = 20;
+        if (m_selection_history.size() >= max_history)
+            m_selection_history.erase(m_selection_history.begin());
+        m_selection_history.push_back(selected_faces);
+    }
+
     void finish_drag()
     {
         m_dragging = false;
@@ -638,7 +688,10 @@ private:
         const std::optional<size_t> face = m_region_editor.pick_face(origin, direction);
         if (!face)
             return;
+        const std::vector<uint8_t> previous = m_region_editor.selected_faces();
         m_region_editor.update_selection(*face, m_selection_operation, m_selection_settings);
+        if (previous != m_region_editor.selected_faces())
+            push_selection_history(previous);
         rebuild_selection_model();
         notify_selection_changed();
         m_canvas->Refresh(false);
@@ -782,6 +835,7 @@ private:
     std::vector<std::unique_ptr<GLModel>> m_models;
     std::unique_ptr<GLModel> m_selection_model;
     AI::VertexColorRegionEditor m_region_editor;
+    std::vector<std::vector<uint8_t>> m_selection_history;
     std::vector<std::string> m_palette;
     BoundingBoxf3 m_bounds;
     wxPoint m_last_mouse;
@@ -1468,51 +1522,93 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     model_sizer->Add(model_toolbar, 0, wxEXPAND | wxALL, FromDIP(12));
     m_model_preview = new ModelPreview3D(model_page);
     model_sizer->Add(m_model_preview, 1, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
-    m_local_recolor_pane = new wxCollapsiblePane(
-        model_page, wxID_ANY, _L("局部改色（点击模型选区）"));
-    auto* recolor_panel = m_local_recolor_pane->GetPane();
+    m_local_recolor_panel = new wxPanel(
+        model_page, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_SIMPLE);
+    m_local_recolor_panel->SetBackgroundColour(*wxWHITE);
     auto* recolor_sizer = new wxBoxSizer(wxVERTICAL);
+    auto* recolor_header = new wxBoxSizer(wxHORIZONTAL);
+    m_local_recolor_toggle = new wxToggleButton(
+        m_local_recolor_panel, wxID_ANY, _L("编辑局部颜色"));
+    m_local_recolor_toggle->SetMinSize(wxSize(FromDIP(150), FromDIP(38)));
+    m_local_recolor_toggle->SetToolTip(_L("打开局部改色工具，在模型上直接选择需要换色的部位"));
+    auto* recolor_intro = new wxStaticText(
+        m_local_recolor_panel, wxID_ANY, _L("在模型上选择部位，并换成当前打印机耗材颜色"));
+    recolor_intro->SetForegroundColour(wxColour(91, 104, 107));
+    recolor_header->Add(m_local_recolor_toggle, 0, wxALIGN_CENTER_VERTICAL);
+    recolor_header->Add(recolor_intro, 1, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(12));
+    recolor_sizer->Add(recolor_header, 0, wxEXPAND | wxALL, FromDIP(10));
+
+    m_local_recolor_controls = new wxPanel(m_local_recolor_panel);
+    m_local_recolor_controls->SetBackgroundColour(*wxWHITE);
+    auto* controls_sizer = new wxBoxSizer(wxVERTICAL);
     auto* selection_row = new wxBoxSizer(wxHORIZONTAL);
-    wxArrayString region_operations;
-    region_operations.Add(_L("智能选区"));
-    region_operations.Add(_L("补选"));
-    region_operations.Add(_L("擦除"));
-    m_region_operation = new wxChoice(recolor_panel, wxID_ANY, wxDefaultPosition, wxDefaultSize,
-                                      region_operations);
-    m_region_operation->SetSelection(0);
+    selection_row->Add(new wxStaticText(m_local_recolor_controls, wxID_ANY, _L("选择部位")), 0,
+                       wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
+    const std::array<wxString, 3> operation_labels {
+        _L("自动识别"), _L("添加区域"), _L("减去区域")
+    };
+    const std::array<wxString, 3> operation_tips {
+        _L("点击一个部位，自动识别相邻的同色连续区域"),
+        _L("在现有选区上继续添加局部区域"),
+        _L("从现有选区中擦除局部区域")
+    };
+    for (size_t index = 0; index < m_region_operation_buttons.size(); ++index) {
+        m_region_operation_buttons[index] = new wxToggleButton(
+            m_local_recolor_controls, wxID_ANY, operation_labels[index]);
+        m_region_operation_buttons[index]->SetMinSize(wxSize(FromDIP(94), FromDIP(36)));
+        m_region_operation_buttons[index]->SetToolTip(operation_tips[index]);
+        selection_row->Add(m_region_operation_buttons[index], 0,
+                           wxALIGN_CENTER_VERTICAL | (index == 0 ? 0 : wxLEFT), FromDIP(4));
+    }
     wxArrayString region_ranges;
     region_ranges.Add(_L("精细"));
     region_ranges.Add(_L("标准"));
     region_ranges.Add(_L("宽松"));
-    m_region_range = new wxChoice(recolor_panel, wxID_ANY, wxDefaultPosition, wxDefaultSize, region_ranges);
+    m_region_range = new wxChoice(
+        m_local_recolor_controls, wxID_ANY, wxDefaultPosition, wxDefaultSize, region_ranges);
     m_region_range->SetSelection(1);
-    m_region_selection_summary = new wxStaticText(recolor_panel, wxID_ANY, _L("尚未选择区域"));
+    selection_row->Add(new wxStaticText(m_local_recolor_controls, wxID_ANY, _L("识别范围")), 0,
+                       wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, FromDIP(12));
+    selection_row->Add(m_region_range, 0, wxALIGN_CENTER_VERTICAL);
+    m_region_selection_summary = new wxStaticText(
+        m_local_recolor_controls, wxID_ANY, _L("点击模型选择要改色的部位"));
     m_region_selection_summary->SetForegroundColour(wxColour(91, 104, 107));
-    m_clear_region_selection = new wxButton(recolor_panel, wxID_ANY, _L("清除选区"));
-    selection_row->Add(new wxStaticText(recolor_panel, wxID_ANY, _L("点击方式")), 0,
-                       wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(6));
-    selection_row->Add(m_region_operation, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(10));
-    selection_row->Add(new wxStaticText(recolor_panel, wxID_ANY, _L("范围")), 0,
-                       wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(6));
-    selection_row->Add(m_region_range, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(10));
-    selection_row->Add(m_region_selection_summary, 1, wxALIGN_CENTER_VERTICAL);
-    selection_row->Add(m_clear_region_selection, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(8));
-    recolor_sizer->Add(selection_row, 0, wxEXPAND | wxALL, FromDIP(10));
+    selection_row->Add(m_region_selection_summary, 1, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(12));
+    m_undo_region_selection = new wxButton(m_local_recolor_controls, wxID_ANY, _L("撤销"));
+    m_undo_region_selection->SetToolTip(_L("撤销最近一次选区变化（Ctrl+Z）"));
+    m_clear_region_selection = new wxButton(m_local_recolor_controls, wxID_ANY, _L("清空"));
+    m_clear_region_selection->SetToolTip(_L("清空当前选区（Esc）"));
+    selection_row->Add(m_undo_region_selection, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(6));
+    selection_row->Add(m_clear_region_selection, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(6));
+    controls_sizer->Add(selection_row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(10));
+
     auto* color_row = new wxBoxSizer(wxHORIZONTAL);
-    m_region_color = new wxChoice(recolor_panel, wxID_ANY);
-    m_apply_region_color = new wxButton(recolor_panel, wxID_ANY, _L("应用改色"));
-    color_row->Add(new wxStaticText(recolor_panel, wxID_ANY, _L("目标耗材颜色")), 0,
-                   wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(6));
-    color_row->Add(m_region_color, 1, wxALIGN_CENTER_VERTICAL);
-    color_row->Add(m_apply_region_color, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(10));
-    recolor_sizer->Add(color_row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
+    color_row->Add(new wxStaticText(m_local_recolor_controls, wxID_ANY, _L("改成")), 0,
+                   wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
+    for (size_t index = 0; index < m_region_color_buttons.size(); ++index) {
+        m_region_color_buttons[index] = new wxToggleButton(
+            m_local_recolor_controls, wxID_ANY,
+            wxString::Format(_L("耗材 %llu"), static_cast<unsigned long long>(index + 1)));
+        m_region_color_buttons[index]->SetMinSize(wxSize(FromDIP(96), FromDIP(46)));
+        color_row->Add(m_region_color_buttons[index], 0,
+                       wxALIGN_CENTER_VERTICAL | (index == 0 ? 0 : wxLEFT), FromDIP(6));
+    }
+    color_row->AddStretchSpacer();
+    m_apply_region_color = new wxButton(
+        m_local_recolor_controls, wxID_ANY, _L("选择部位后应用"));
+    m_apply_region_color->SetMinSize(wxSize(FromDIP(150), FromDIP(42)));
+    color_row->Add(m_apply_region_color, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(12));
+    controls_sizer->Add(color_row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(10));
     auto* recolor_hint = new wxStaticText(
-        recolor_panel, wxID_ANY,
-        _L("模型高亮会预览目标耗材色；短按选择，拖动旋转，选错时使用“补选”或“擦除”。"));
+        m_local_recolor_controls, wxID_ANY,
+        _L("短按选择 · 拖动旋转 · 滚轮缩放 · Esc 清空 · Ctrl+Z 撤销"));
     recolor_hint->SetForegroundColour(wxColour(91, 104, 107));
-    recolor_sizer->Add(recolor_hint, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
-    recolor_panel->SetSizer(recolor_sizer);
-    model_sizer->Add(m_local_recolor_pane, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
+    controls_sizer->Add(recolor_hint, 0, wxEXPAND | wxALL, FromDIP(10));
+    m_local_recolor_controls->SetSizer(controls_sizer);
+    m_local_recolor_controls->Hide();
+    recolor_sizer->Add(m_local_recolor_controls, 0, wxEXPAND);
+    m_local_recolor_panel->SetSizer(recolor_sizer);
+    model_sizer->Add(m_local_recolor_panel, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
     m_model_quality_panel = new wxPanel(model_page, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_SIMPLE);
     auto* quality_sizer = new wxBoxSizer(wxVERTICAL);
     auto* quality_header = new wxBoxSizer(wxHORIZONTAL);
@@ -1578,21 +1674,17 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     });
     m_recheck_model->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_recheck_model, this);
     m_visual_review_model->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_visual_review_model, this);
-    m_local_recolor_pane->Bind(wxEVT_COLLAPSIBLEPANE_CHANGED, [this, model_page](wxCollapsiblePaneEvent& event) {
-        if (m_model_preview != nullptr)
-            m_model_preview->set_selection_enabled(!event.GetCollapsed() && m_model_preview_ready);
+    m_local_recolor_toggle->Bind(wxEVT_TOGGLEBUTTON, [this, model_page](wxCommandEvent&) {
         refresh_local_recolor_controls();
         model_page->Layout();
-        event.Skip();
     });
-    const auto update_region_mode = [this](wxCommandEvent&) {
+    const auto update_region_mode = [this]() {
         if (m_model_preview == nullptr)
             return;
-        const int operation = m_region_operation->GetSelection();
         m_model_preview->set_selection_operation(
-            operation == 2 ? AI::RegionSelectionOperation::Remove :
-            operation == 1 ? AI::RegionSelectionOperation::Add :
-                             AI::RegionSelectionOperation::Replace);
+            m_region_operation_index == 2 ? AI::RegionSelectionOperation::Remove :
+            m_region_operation_index == 1 ? AI::RegionSelectionOperation::Add :
+                                            AI::RegionSelectionOperation::Replace);
         const int range = m_region_range->GetSelection();
         AI::RegionSelectionSettings settings;
         if (range == 0)
@@ -1601,9 +1693,24 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
             settings = {0.24f, 85.0f, 0.060f};
         m_model_preview->set_selection_settings(settings);
     };
-    m_region_operation->Bind(wxEVT_CHOICE, update_region_mode);
-    m_region_range->Bind(wxEVT_CHOICE, update_region_mode);
-    m_region_color->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) { refresh_local_recolor_controls(); });
+    for (size_t index = 0; index < m_region_operation_buttons.size(); ++index) {
+        m_region_operation_buttons[index]->Bind(wxEVT_TOGGLEBUTTON, [this, index, update_region_mode](wxCommandEvent&) {
+            m_region_operation_index = static_cast<int>(index);
+            update_region_mode();
+            refresh_local_recolor_controls();
+        });
+    }
+    m_region_range->Bind(wxEVT_CHOICE, [update_region_mode](wxCommandEvent&) { update_region_mode(); });
+    for (size_t index = 0; index < m_region_color_buttons.size(); ++index) {
+        m_region_color_buttons[index]->Bind(wxEVT_TOGGLEBUTTON, [this, index](wxCommandEvent&) {
+            m_region_color_index = static_cast<int>(index);
+            refresh_local_recolor_controls();
+        });
+    }
+    m_undo_region_selection->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        if (m_model_preview != nullptr)
+            m_model_preview->undo_selection();
+    });
     m_clear_region_selection->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         if (m_model_preview != nullptr)
             m_model_preview->clear_selection();
@@ -1612,12 +1719,13 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     m_model_preview->set_selection_changed_callback([this](size_t selected_faces) {
         if (m_region_selection_summary != nullptr) {
             m_region_selection_summary->SetLabel(selected_faces == 0
-                ? _L("尚未选择区域")
-                : wxString::Format(_L("已选择 %llu 个三角面"),
+                ? _L("点击模型选择要改色的部位")
+                : wxString::Format(_L("已选择区域 · %llu 个三角面"),
                                    static_cast<unsigned long long>(selected_faces)));
         }
         refresh_local_recolor_controls();
     });
+    update_region_mode();
     m_preview_book->Bind(wxEVT_NOTEBOOK_PAGE_CHANGED, [this, panel](wxBookCtrlEvent& event) {
         const int selection = event.GetSelection();
         const bool image_page = selection == 0;
@@ -2808,31 +2916,68 @@ std::vector<std::string> ModelGenerationPanel::local_recolor_palette() const
 
 void ModelGenerationPanel::refresh_local_recolor_controls()
 {
-    if (m_local_recolor_pane == nullptr)
+    if (m_local_recolor_panel == nullptr || m_local_recolor_toggle == nullptr ||
+        m_local_recolor_controls == nullptr)
         return;
-    m_local_recolor_pane->Show(m_model_preview_ready);
+    const bool ready = m_model_preview_ready;
+    if (!ready)
+        m_local_recolor_toggle->SetValue(false);
+    const bool editing = ready && m_local_recolor_toggle->GetValue();
+    m_local_recolor_panel->Show(ready);
+    m_local_recolor_controls->Show(editing);
+    m_local_recolor_toggle->SetLabel(editing ? _L("收起改色工具") : _L("编辑局部颜色"));
+    m_local_recolor_toggle->Enable(ready && !m_busy);
+    if (m_model_preview != nullptr)
+        m_model_preview->set_selection_enabled(editing);
+
     const std::vector<std::string> palette = local_recolor_palette();
     if (palette != m_region_palette) {
-        const int previous = m_region_color == nullptr ? wxNOT_FOUND : m_region_color->GetSelection();
         m_region_palette = palette;
-        if (m_region_color != nullptr) {
-            m_region_color->Freeze();
-            m_region_color->Clear();
-            for (size_t index = 0; index < palette.size(); ++index) {
-                m_region_color->Append(
-                    wxString::Format(_L("耗材 %llu · "), static_cast<unsigned long long>(index + 1)) +
-                    from_u8(palette[index]));
-            }
-            if (!palette.empty())
-                m_region_color->SetSelection(std::clamp(previous, 0, int(palette.size()) - 1));
-            m_region_color->Thaw();
-        }
+        m_region_color_index = palette.empty()
+            ? 0 : std::clamp(m_region_color_index, 0, int(palette.size()) - 1);
     }
-    const bool expanded = m_model_preview_ready && !m_local_recolor_pane->IsCollapsed();
     const bool has_selection = m_model_preview != nullptr && m_model_preview->selected_face_count() > 0;
-    const int selected_color = m_region_color == nullptr ? wxNOT_FOUND : m_region_color->GetSelection();
-    if (m_model_preview != nullptr && selected_color != wxNOT_FOUND && selected_color < int(palette.size())) {
-        const wxColour preview(from_u8(palette[selected_color]));
+    const bool can_undo = m_model_preview != nullptr && m_model_preview->can_undo_selection();
+    m_region_selection_summary->SetLabel(has_selection
+        ? wxString::Format(_L("已选择区域 · %llu 个三角面"),
+                           static_cast<unsigned long long>(m_model_preview->selected_face_count()))
+        : _L("点击模型选择要改色的部位"));
+
+    for (size_t index = 0; index < m_region_operation_buttons.size(); ++index) {
+        wxToggleButton* button = m_region_operation_buttons[index];
+        const bool selected = int(index) == m_region_operation_index;
+        button->SetValue(selected);
+        button->SetBackgroundColour(selected ? wxColour(221, 242, 240) : wxColour(248, 249, 249));
+        button->SetForegroundColour(selected ? wxColour(0, 114, 110) : wxColour(37, 48, 50));
+        button->Enable(editing && !m_busy);
+    }
+    m_region_range->Enable(editing && !m_busy);
+
+    for (size_t index = 0; index < m_region_color_buttons.size(); ++index) {
+        wxToggleButton* button = m_region_color_buttons[index];
+        const bool visible = index < palette.size();
+        button->Show(visible);
+        if (!visible)
+            continue;
+        const wxColour color(from_u8(palette[index]));
+        const bool selected = int(index) == m_region_color_index;
+        button->SetValue(selected);
+        button->SetLabel(wxString::Format(
+            selected ? _L("耗材 %llu（已选）\n") : _L("耗材 %llu\n"),
+            static_cast<unsigned long long>(index + 1)) + from_u8(palette[index]));
+        button->SetToolTip(wxString::Format(
+            _L("将选中区域改为耗材 %llu："), static_cast<unsigned long long>(index + 1)) +
+            from_u8(palette[index]));
+        if (color.IsOk()) {
+            button->SetBackgroundColour(color);
+            const double luminance = 0.299 * color.Red() + 0.587 * color.Green() + 0.114 * color.Blue();
+            button->SetForegroundColour(luminance >= 150.0 ? *wxBLACK : *wxWHITE);
+        }
+        button->Enable(editing && !m_busy);
+    }
+
+    if (m_model_preview != nullptr && m_region_color_index < int(palette.size())) {
+        const wxColour preview(from_u8(palette[m_region_color_index]));
         if (preview.IsOk()) {
             m_model_preview->set_selection_preview_color(ColorRGBA(
                 preview.Red() / 255.0f,
@@ -2841,11 +2986,15 @@ void ModelGenerationPanel::refresh_local_recolor_controls()
                 1.0f));
         }
     }
-    m_region_operation->Enable(expanded && !m_busy);
-    m_region_range->Enable(expanded && !m_busy);
-    m_region_color->Enable(expanded && !m_busy && !palette.empty());
-    m_clear_region_selection->Enable(expanded && !m_busy && has_selection);
-    m_apply_region_color->Enable(expanded && !m_busy && has_selection && !palette.empty());
+    m_undo_region_selection->Enable(editing && !m_busy && can_undo);
+    m_clear_region_selection->Enable(editing && !m_busy && has_selection);
+    m_apply_region_color->SetLabel(palette.empty()
+        ? _L("没有可用耗材颜色")
+        : wxString::Format(_L("应用为耗材 %d"), m_region_color_index + 1));
+    m_apply_region_color->Enable(editing && !m_busy && has_selection && !palette.empty());
+    m_local_recolor_panel->Layout();
+    if (m_local_recolor_panel->GetParent() != nullptr)
+        m_local_recolor_panel->GetParent()->Layout();
 }
 
 void ModelGenerationPanel::on_apply_local_recolor(wxCommandEvent&)
@@ -2854,7 +3003,7 @@ void ModelGenerationPanel::on_apply_local_recolor(wxCommandEvent&)
         m_model_preview->selected_face_count() == 0)
         return;
     const std::vector<std::string> palette = local_recolor_palette();
-    const int color_index = m_region_color == nullptr ? wxNOT_FOUND : m_region_color->GetSelection();
+    const int color_index = m_region_color_index;
     if (color_index == wxNOT_FOUND || color_index >= int(palette.size())) {
         m_status->SetLabel(_L("请先选择一个当前打印机耗材颜色。"));
         return;
@@ -2951,7 +3100,7 @@ void ModelGenerationPanel::on_apply_local_recolor(wxCommandEvent&)
     load_library_entries();
     refresh_model_quality_card();
     refresh_controls();
-    m_model_preview->set_selection_enabled(!m_local_recolor_pane->IsCollapsed());
+    m_model_preview->set_selection_enabled(m_local_recolor_toggle->GetValue());
     m_model_preview->refresh();
 }
 

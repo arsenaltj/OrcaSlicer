@@ -260,6 +260,18 @@ void VertexColorRegionEditor::clear_selection()
     m_selected_face_count = 0;
 }
 
+bool VertexColorRegionEditor::restore_selection(const std::vector<uint8_t>& selected_faces)
+{
+    if (!ready() || selected_faces.size() != m_selected_faces.size())
+        return false;
+    m_selected_face_count = 0;
+    for (size_t face_index = 0; face_index < selected_faces.size(); ++face_index) {
+        m_selected_faces[face_index] = selected_faces[face_index] == 0 ? 0 : 1;
+        m_selected_face_count += m_selected_faces[face_index];
+    }
+    return true;
+}
+
 bool VertexColorRegionEditor::apply_color(const RGBA& color)
 {
     if (!ready() || m_selected_face_count == 0)

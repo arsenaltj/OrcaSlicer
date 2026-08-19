@@ -44,6 +44,7 @@ public:
     size_t update_selection(size_t seed_face, RegionSelectionOperation operation,
                             const RegionSelectionSettings& settings);
     void clear_selection();
+    bool restore_selection(const std::vector<uint8_t>& selected_faces);
     bool apply_color(const RGBA& color);
     bool apply_color_to_obj_copy(const RGBA& color,
                                  const boost::filesystem::path& source,

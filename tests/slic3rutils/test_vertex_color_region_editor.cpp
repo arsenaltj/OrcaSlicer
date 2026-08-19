@@ -65,6 +65,25 @@ TEST_CASE("vertex color local patches support add and remove", "[AI][VertexColor
     CHECK(editor.update_selection(1, AI::RegionSelectionOperation::Remove, settings) == 0);
 }
 
+TEST_CASE("vertex color selection snapshots can be restored safely", "[AI][VertexColorRegion]")
+{
+    AI::VertexColorRegionEditor editor;
+    std::string error;
+    REQUIRE(editor.initialize(square_mesh(), red_colors(), error));
+
+    AI::RegionSelectionSettings settings;
+    settings.local_radius_ratio = 0.01f;
+    REQUIRE(editor.update_selection(0, AI::RegionSelectionOperation::Add, settings) == 1);
+    const std::vector<uint8_t> snapshot = editor.selected_faces();
+    REQUIRE(editor.update_selection(1, AI::RegionSelectionOperation::Add, settings) == 2);
+
+    REQUIRE(editor.restore_selection(snapshot));
+    CHECK(editor.selected_face_count() == 1);
+    CHECK(editor.selected_faces() == snapshot);
+    CHECK_FALSE(editor.restore_selection({1}));
+    CHECK(editor.selected_faces() == snapshot);
+}
+
 TEST_CASE("vertex color smart region stops at sharp geometry boundaries", "[AI][VertexColorRegion]")
 {
     indexed_triangle_set mesh;
