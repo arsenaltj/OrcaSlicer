@@ -17,11 +17,51 @@ namespace {
 
 constexpr float PI = 3.14159265358979323846f;
 
+struct PositionCell
+{
+    int64_t x {0};
+    int64_t y {0};
+    int64_t z {0};
+
+    bool operator==(const PositionCell& other) const
+    {
+        return x == other.x && y == other.y && z == other.z;
+    }
+};
+
+struct PositionCellHash
+{
+    size_t operator()(const PositionCell& cell) const
+    {
+        size_t seed = std::hash<int64_t> {}(cell.x);
+        seed ^= std::hash<int64_t> {}(cell.y) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+        seed ^= std::hash<int64_t> {}(cell.z) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+        return seed;
+    }
+};
+
+struct IndexedEdgeOwner
+{
+    uint32_t first_vertex {0};
+    uint32_t second_vertex {0};
+    uint32_t first_face {0};
+    uint32_t use_count {1};
+};
+
 uint64_t edge_key(uint32_t first, uint32_t second)
 {
     if (first > second)
         std::swap(first, second);
     return (uint64_t(first) << 32) | uint64_t(second);
+}
+
+PositionCell position_cell(const Vec3f& position, double cell_size)
+{
+    return {
+        int64_t(std::floor(double(position.x()) / cell_size)),
+        int64_t(std::floor(double(position.y()) / cell_size)),
+        int64_t(std::floor(double(position.z()) / cell_size))
+    };
 }
 
 float color_distance_squared(const RGBA& left, const RGBA& right)
@@ -89,8 +129,8 @@ bool VertexColorRegionEditor::initialize(indexed_triangle_set mesh, std::vector<
     }
     m_mesh_diagonal = (maximum - minimum).norm();
 
-    std::unordered_map<uint64_t, uint32_t> first_face_by_edge;
-    first_face_by_edge.reserve(m_mesh.indices.size() * 3);
+    std::unordered_map<uint64_t, IndexedEdgeOwner> indexed_edges;
+    indexed_edges.reserve(m_mesh.indices.size() * 3);
     for (size_t face_index = 0; face_index < m_mesh.indices.size(); ++face_index) {
         const stl_triangle_vertex_indices& face = m_mesh.indices[face_index];
         const Vec3f& a = m_mesh.vertices[face[0]];
@@ -111,14 +151,71 @@ bool VertexColorRegionEditor::initialize(indexed_triangle_set mesh, std::vector<
         }};
         for (const auto& edge : edges) {
             const uint64_t key = edge_key(edge.first, edge.second);
-            const auto owner = first_face_by_edge.find(key);
-            if (owner == first_face_by_edge.end()) {
-                first_face_by_edge.emplace(key, uint32_t(face_index));
-            } else if (owner->second != face_index) {
-                m_face_neighbors[face_index].push_back(owner->second);
-                m_face_neighbors[owner->second].push_back(uint32_t(face_index));
+            const auto [owner, inserted] = indexed_edges.emplace(
+                key, IndexedEdgeOwner {edge.first, edge.second, uint32_t(face_index), 1});
+            if (!inserted) {
+                ++owner->second.use_count;
+                if (owner->second.first_face != face_index) {
+                    m_face_neighbors[face_index].push_back(owner->second.first_face);
+                    m_face_neighbors[owner->second.first_face].push_back(uint32_t(face_index));
+                }
             }
         }
+    }
+
+    // OBJ exporters commonly duplicate vertices along UV or material seams. Weld only
+    // boundary-edge endpoints for selection adjacency; the mesh and its indices remain unchanged.
+    const double position_tolerance = std::clamp(double(m_mesh_diagonal) * 1e-7, 1e-7, 1e-4);
+    const double tolerance_squared = position_tolerance * position_tolerance;
+    std::unordered_map<PositionCell, std::vector<uint32_t>, PositionCellHash> vertices_by_cell;
+    vertices_by_cell.reserve(m_mesh.vertices.size());
+    std::vector<uint32_t> canonical_vertices(m_mesh.vertices.size());
+    for (size_t vertex_index = 0; vertex_index < m_mesh.vertices.size(); ++vertex_index) {
+        const Vec3f& vertex = m_mesh.vertices[vertex_index];
+        const PositionCell cell = position_cell(vertex, position_tolerance);
+        uint32_t canonical = std::numeric_limits<uint32_t>::max();
+        for (int64_t dx = -1; dx <= 1; ++dx) {
+            for (int64_t dy = -1; dy <= 1; ++dy) {
+                for (int64_t dz = -1; dz <= 1; ++dz) {
+                    const auto candidates = vertices_by_cell.find({cell.x + dx, cell.y + dy, cell.z + dz});
+                    if (candidates == vertices_by_cell.end())
+                        continue;
+                    for (uint32_t candidate : candidates->second) {
+                        if ((m_mesh.vertices[candidate].cast<double>() - vertex.cast<double>()).squaredNorm() <=
+                            tolerance_squared)
+                            canonical = std::min(canonical, candidate);
+                    }
+                }
+            }
+        }
+        if (canonical == std::numeric_limits<uint32_t>::max()) {
+            canonical = uint32_t(vertex_index);
+            vertices_by_cell[cell].push_back(canonical);
+        }
+        canonical_vertices[vertex_index] = canonical;
+    }
+
+    std::unordered_map<uint64_t, std::vector<uint32_t>> faces_by_geometric_edge;
+    faces_by_geometric_edge.reserve(indexed_edges.size());
+    for (const auto& item : indexed_edges) {
+        const IndexedEdgeOwner& edge = item.second;
+        if (edge.use_count != 1)
+            continue;
+        const uint32_t first = canonical_vertices[edge.first_vertex];
+        const uint32_t second = canonical_vertices[edge.second_vertex];
+        if (first != second)
+            faces_by_geometric_edge[edge_key(first, second)].push_back(edge.first_face);
+    }
+    for (const auto& item : faces_by_geometric_edge) {
+        const std::vector<uint32_t>& faces = item.second;
+        if (faces.size() != 2 || faces[0] == faces[1])
+            continue;
+        m_face_neighbors[faces[0]].push_back(faces[1]);
+        m_face_neighbors[faces[1]].push_back(faces[0]);
+    }
+    for (std::vector<uint32_t>& neighbors : m_face_neighbors) {
+        std::sort(neighbors.begin(), neighbors.end());
+        neighbors.erase(std::unique(neighbors.begin(), neighbors.end()), neighbors.end());
     }
     return true;
 }
