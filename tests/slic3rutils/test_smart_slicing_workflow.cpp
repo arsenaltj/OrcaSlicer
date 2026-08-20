@@ -231,6 +231,55 @@ TEST_CASE("ready candidate workflow projects into optimization and apply stages"
     CHECK(view.summary_key == "candidates_ready");
     CHECK(view.stages[2].status == Slic3r::GUI::SmartSlicingStageStatus::Complete);
     CHECK(view.stages[3].status == Slic3r::GUI::SmartSlicingStageStatus::Active);
+    REQUIRE(view.candidates.size() == 1);
+    CHECK(view.candidates.front().recommended);
+    CHECK(view.candidates.front().selected);
+    CHECK(view.can_apply);
+}
+
+TEST_CASE("candidate cards expose baseline deltas selection and retry without workspace mutation", "[AI][SmartSlicing][Workflow]")
+{
+    WorkflowWorkspace workspace;
+    FakeTrialSliceExecutor executor;
+    bool fail_alternative = true;
+    executor.result_for = [&fail_alternative](const SliceCandidate& candidate, size_t) {
+        TrialSliceResult result;
+        result.candidate_id  = candidate.id;
+        result.base_revision = candidate.base_revision;
+        result.status = candidate.id == "alternative" && fail_alternative ? TrialSliceStatus::Failed : TrialSliceStatus::Succeeded;
+        if (result.status == TrialSliceStatus::Succeeded) {
+            result.metrics = SlicingMetrics{};
+            result.metrics->estimated_time_seconds = candidate.id == "baseline" ? 100.0 : 80.0;
+            result.metrics->filament_volume_mm3     = candidate.id == "baseline" ? 500.0 : 450.0;
+            result.metrics->support_volume_mm3      = candidate.id == "baseline" ? 20.0 : 10.0;
+            result.metrics->tool_changes            = candidate.id == "baseline" ? 4 : 2;
+        }
+        return result;
+    };
+    SmartSlicingCoordinator coordinator(workspace, executor);
+    coordinator.start();
+    REQUIRE(coordinator.plan_and_slice_candidates({proposal("alternative", workspace.context.revision)}));
+
+    Slic3r::GUI::SmartSlicingViewModel failed_view =
+        Slic3r::GUI::SmartSlicingViewModel::from_snapshot(coordinator.snapshot());
+    REQUIRE(failed_view.candidates.size() == 2);
+    CHECK(failed_view.candidates[1].failed);
+    CHECK(failed_view.candidates[1].can_retry);
+    CHECK_FALSE(coordinator.select_candidate("alternative"));
+    CHECK(coordinator.select_candidate("baseline"));
+
+    fail_alternative = false;
+    REQUIRE(coordinator.retry_candidate("alternative"));
+    REQUIRE(coordinator.select_candidate("alternative"));
+    const Slic3r::GUI::SmartSlicingViewModel ready_view =
+        Slic3r::GUI::SmartSlicingViewModel::from_snapshot(coordinator.snapshot());
+    REQUIRE(ready_view.candidates.size() == 2);
+    CHECK(ready_view.candidates[1].selected);
+    CHECK(ready_view.candidates[1].time_delta_seconds == -20.0);
+    CHECK(ready_view.candidates[1].filament_delta_mm3 == -50.0);
+    CHECK(ready_view.candidates[1].support_delta_mm3 == -10.0);
+    CHECK(ready_view.candidates[1].tool_change_delta == -2);
+    CHECK(workspace.context.revision.fingerprint == "revision-a");
 }
 
 TEST_CASE("workspace edits during trial slicing make all results stale", "[AI][SmartSlicing][Workflow]")

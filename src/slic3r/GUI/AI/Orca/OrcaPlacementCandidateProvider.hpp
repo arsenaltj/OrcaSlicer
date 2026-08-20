@@ -4,6 +4,7 @@
 #include "slic3r/AI/SmartSlicing/Domain/SliceCandidate.hpp"
 
 #include <algorithm>
+#include <iterator>
 #include <set>
 #include <utility>
 #include <vector>
@@ -15,6 +16,7 @@ struct OrcaPlacementCandidateInput
     Model model;
     DynamicPrintConfig config;
     arrangement::ArrangeParams arrange_params;
+    arrangement::ArrangePolygons fixed_regions;
     std::set<uint64_t> locked_object_ids;
     std::set<uint64_t> locked_instance_ids;
     bool plate_locked{false};
@@ -36,6 +38,8 @@ public:
         std::vector<std::pair<ModelInstance*, Transform3d>> fixed_instances;
 
         try {
+            fixed.insert(fixed.end(), std::make_move_iterator(input.fixed_regions.begin()),
+                         std::make_move_iterator(input.fixed_regions.end()));
             for (ModelObject* object : input.model.objects) {
                 if (object == nullptr)
                     continue;

@@ -1,6 +1,8 @@
 #pragma once
 
 #include "slic3r/AI/SmartSlicing/Ports/IOrcaWorkspace.hpp"
+#include "OrcaPlacementCandidateProvider.hpp"
+#include "OrcaTrialSliceExecutor.hpp"
 
 namespace Slic3r::GUI {
 
@@ -16,6 +18,9 @@ public:
 
     AI::SmartSlicing::WorkspaceRevision current_revision() const override;
     AI::SmartSlicing::WorkspaceContext capture_context() const override;
+    OrcaTrialSliceInput capture_trial_slice_input() const;
+    std::vector<AI::SmartSlicing::SliceCandidate>
+    placement_candidates(const AI::SmartSlicing::WorkspaceRevision& revision) const;
 
 private:
     AI::SmartSlicing::WorkspaceContext capture_context_impl(bool include_diagnostics) const;

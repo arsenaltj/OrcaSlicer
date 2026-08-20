@@ -35,6 +35,7 @@ struct WorkflowSnapshot
     std::optional<PrintabilityReport> report;
     std::vector<SliceCandidate> candidates;
     std::optional<CandidateComparison> comparison;
+    CandidateId selected_candidate_id;
     CandidateGoal goal{CandidateGoal::Stability};
     std::string detail;
 

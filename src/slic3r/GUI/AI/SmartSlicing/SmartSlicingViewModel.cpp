@@ -10,12 +10,48 @@ SmartSlicingViewModel SmartSlicingViewModel::from_snapshot(const AI::SmartSlicin
     SmartSlicingViewModel view;
     view.can_start  = snapshot.can_start();
     view.can_cancel = snapshot.can_cancel();
+    view.can_plan_candidates = snapshot.state == WorkflowState::ReadyForCandidatePlanning;
+    view.can_apply = snapshot.state == WorkflowState::ReadyToApply && !snapshot.selected_candidate_id.empty();
     view.detail     = snapshot.detail;
     if (snapshot.report) {
         view.issue_count = snapshot.report->issues.size();
         view.issues.reserve(snapshot.report->issues.size());
         for (const AI::SmartSlicing::PrintabilityIssue& issue : snapshot.report->issues)
             view.issues.emplace_back(AI::SmartSlicing::issue_code_name(issue.code), issue.evidence);
+    }
+    const AI::SmartSlicing::SlicingMetrics* baseline_metrics =
+        !snapshot.candidates.empty() && snapshot.candidates.front().metrics ? &*snapshot.candidates.front().metrics : nullptr;
+    view.candidates.reserve(snapshot.candidates.size());
+    for (const AI::SmartSlicing::SliceCandidate& candidate : snapshot.candidates) {
+        SmartSlicingCandidateView card;
+        card.id              = candidate.id;
+        card.explanation     = candidate.explanation;
+        card.diagnostic_code = candidate.diagnostic_code;
+        card.recommended     = snapshot.comparison && snapshot.comparison->recommended_candidate_id == candidate.id;
+        card.selected        = snapshot.selected_candidate_id == candidate.id;
+        card.failed          = candidate.status == AI::SmartSlicing::CandidateStatus::Failed;
+        card.can_retry       = snapshot.state == WorkflowState::ReadyToApply && card.failed;
+        if (card.recommended && snapshot.comparison)
+            card.evidence_codes = snapshot.comparison->recommendation_evidence_codes;
+        if (candidate.metrics) {
+            const auto& metrics = *candidate.metrics;
+            card.estimated_time_seconds = metrics.estimated_time_seconds;
+            card.filament_volume_mm3    = metrics.filament_volume_mm3;
+            card.support_volume_mm3     = metrics.support_volume_mm3;
+            card.tool_changes           = metrics.tool_changes;
+            if (baseline_metrics != nullptr) {
+                if (metrics.estimated_time_seconds && baseline_metrics->estimated_time_seconds)
+                    card.time_delta_seconds = *metrics.estimated_time_seconds - *baseline_metrics->estimated_time_seconds;
+                if (metrics.filament_volume_mm3 && baseline_metrics->filament_volume_mm3)
+                    card.filament_delta_mm3 = *metrics.filament_volume_mm3 - *baseline_metrics->filament_volume_mm3;
+                if (metrics.support_volume_mm3 && baseline_metrics->support_volume_mm3)
+                    card.support_delta_mm3 = *metrics.support_volume_mm3 - *baseline_metrics->support_volume_mm3;
+                if (metrics.tool_changes && baseline_metrics->tool_changes)
+                    card.tool_change_delta = static_cast<long long>(*metrics.tool_changes) -
+                                             static_cast<long long>(*baseline_metrics->tool_changes);
+            }
+        }
+        view.candidates.push_back(std::move(card));
     }
 
     auto complete_through = [&view](size_t index) {

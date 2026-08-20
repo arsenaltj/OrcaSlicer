@@ -4527,6 +4527,7 @@ struct Plater::priv
     Sidebar *  sidebar;
     AIAssistantPanel* ai_assistant_panel { nullptr };
     std::unique_ptr<OrcaSmartSlicingAdapter> smart_slicing_workspace;
+    std::unique_ptr<OrcaTrialSliceExecutor> smart_slicing_trial_executor;
     std::unique_ptr<AI::SmartSlicing::SmartSlicingCoordinator> smart_slicing_coordinator;
     std::unique_ptr<SmartSlicingPresenter> smart_slicing_presenter;
     SmartSlicingPanel* smart_slicing_panel { nullptr };
@@ -14868,10 +14869,18 @@ void Plater::enable_smart_slicing()
         return;
 
     p->smart_slicing_workspace = std::make_unique<OrcaSmartSlicingAdapter>(this);
+    p->smart_slicing_trial_executor = std::make_unique<OrcaTrialSliceExecutor>([this] {
+        return p->smart_slicing_workspace->capture_trial_slice_input();
+    });
     p->smart_slicing_coordinator =
-        std::make_unique<AI::SmartSlicing::SmartSlicingCoordinator>(*p->smart_slicing_workspace);
+        std::make_unique<AI::SmartSlicing::SmartSlicingCoordinator>(*p->smart_slicing_workspace,
+                                                                    *p->smart_slicing_trial_executor);
     p->smart_slicing_presenter = std::make_unique<SmartSlicingPresenter>(*p->smart_slicing_coordinator);
-    p->smart_slicing_panel = new SmartSlicingPanel(this, *p->smart_slicing_coordinator);
+    p->smart_slicing_panel = new SmartSlicingPanel(this, *p->smart_slicing_coordinator, [this] {
+        const auto& snapshot = p->smart_slicing_coordinator->snapshot();
+        return snapshot.context ? p->smart_slicing_workspace->placement_candidates(snapshot.context->revision) :
+                                  std::vector<AI::SmartSlicing::SliceCandidate>{};
+    });
     p->smart_slicing_presenter->set_view_changed([this](const SmartSlicingViewModel& view) {
         if (p->smart_slicing_panel != nullptr)
             p->smart_slicing_panel->render(view);

@@ -5,9 +5,13 @@
 #include "slic3r/GUI/I18N.hpp"
 
 #include <algorithm>
+#include <cmath>
+#include <utility>
 #include <wx/button.h>
+#include <wx/radiobut.h>
 #include <wx/settings.h>
 #include <wx/sizer.h>
+#include <wx/statbox.h>
 #include <wx/statline.h>
 #include <wx/stattext.h>
 
@@ -26,6 +30,14 @@ wxString summary_text(const std::string& key)
         return _L("检查完成，但仍有提示需要留意");
     if (key == "preflight_complete")
         return _L("检查完成，可以进入候选优化");
+    if (key == "planning_candidates")
+        return _L("正在生成确定性候选方案…");
+    if (key == "trial_slicing_baseline")
+        return _L("正在试切当前基线方案…");
+    if (key == "trial_slicing_candidates")
+        return _L("正在顺序试切候选方案…");
+    if (key == "candidates_ready")
+        return _L("试切完成，请比较并选择方案");
     if (key == "canceling")
         return _L("正在取消…");
     if (key == "canceled")
@@ -43,7 +55,7 @@ wxString status_text(SmartSlicingStageStatus status)
     case SmartSlicingStageStatus::Active: return _L("进行中");
     case SmartSlicingStageStatus::Complete: return _L("完成");
     case SmartSlicingStageStatus::NeedsAttention: return _L("需处理");
-    case SmartSlicingStageStatus::Disabled: return _L("P1 启用");
+    case SmartSlicingStageStatus::Disabled: return _L("尚未开始");
     case SmartSlicingStageStatus::Waiting: return _L("等待");
     }
     return _L("等待");
@@ -72,10 +84,52 @@ wxString issue_name(const std::string& code)
     return _L("可打印性问题");
 }
 
+wxString format_duration(const std::optional<double>& seconds)
+{
+    if (!seconds)
+        return _L("不可用");
+    const long long total_minutes = static_cast<long long>(std::llround(*seconds / 60.0));
+    return wxString::Format("%lldh %02lldm", total_minutes / 60, total_minutes % 60);
+}
+
+wxString format_volume(const std::optional<double>& volume_mm3)
+{
+    return volume_mm3 ? wxString::Format("%.2f cm³", *volume_mm3 / 1000.0) : _L("不可用");
+}
+
+wxString format_delta(const std::optional<double>& value, double scale, const wxString& unit)
+{
+    return value ? wxString::Format("%+.2f %s", *value / scale, unit.c_str()) : _L("—");
+}
+
+wxString candidate_reason(const SmartSlicingCandidateView& candidate)
+{
+    if (candidate.failed)
+        return _L("试切失败，可单独重试；基线仍然可用。");
+    if (candidate.id == "baseline")
+        return _L("当前正式工作区的只读基线。");
+    wxString reason = candidate.recommended ? _L("推荐方案。") : _L("可选方案。");
+    for (const std::string& evidence : candidate.evidence_codes) {
+        if (evidence == "fewer_slice_warnings")
+            reason += _L(" 切片警告更少。");
+        else if (evidence == "lower_estimated_time")
+            reason += _L(" 预计时间更短。");
+        else if (evidence == "lower_filament_volume")
+            reason += _L(" 材料用量更低。");
+        else if (evidence == "lower_support_volume")
+            reason += _L(" 支撑用量更低。");
+    }
+    return reason;
+}
+
 } // namespace
 
-SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSlicingCoordinator& coordinator)
-    : wxPanel(parent), m_coordinator(coordinator), m_revision_timer(this)
+SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSlicingCoordinator& coordinator,
+                                     PlanCandidatesFn plan_candidates)
+    : wxPanel(parent)
+    , m_coordinator(coordinator)
+    , m_plan_candidates(std::move(plan_candidates))
+    , m_revision_timer(this)
 {
     SetBackgroundColour(wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOW));
     auto* root        = new wxBoxSizer(wxVERTICAL);
@@ -101,10 +155,51 @@ SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSl
     m_issues->Wrap(FromDIP(330));
     root->Add(m_issues, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(16));
 
-    m_p0_notice = new wxStaticText(this, wxID_ANY, _L("P0 仅执行只读预检；候选比较与事务应用将在 P1 启用。"));
+    m_p0_notice = new wxStaticText(this, wxID_ANY, _L("预检与候选试切均在隔离副本中执行。"));
     m_p0_notice->SetForegroundColour(wxSystemSettings::GetColour(wxSYS_COLOUR_GRAYTEXT));
     m_p0_notice->Wrap(FromDIP(330));
     root->Add(m_p0_notice, 0, wxEXPAND | wxALL, FromDIP(16));
+
+    m_candidate_section = new wxPanel(this);
+    auto* candidate_root = new wxBoxSizer(wxVERTICAL);
+    for (size_t index = 0; index < m_candidate_controls.size(); ++index) {
+        CandidateControls& controls = m_candidate_controls[index];
+        controls.panel = new wxPanel(m_candidate_section);
+        auto* box = new wxStaticBoxSizer(wxVERTICAL, controls.panel, _L("候选方案"));
+        controls.selector = new wxRadioButton(controls.panel, wxID_ANY, _L("选择此方案"), wxDefaultPosition,
+                                              wxDefaultSize, index == 0 ? wxRB_GROUP : 0);
+        controls.metrics = new wxStaticText(controls.panel, wxID_ANY, "");
+        controls.reason  = new wxStaticText(controls.panel, wxID_ANY, "");
+        controls.reason->Wrap(FromDIP(300));
+        controls.retry = new wxButton(controls.panel, wxID_ANY, _L("重试此方案"));
+        box->Add(controls.selector, 0, wxEXPAND | wxALL, FromDIP(8));
+        box->Add(controls.metrics, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(8));
+        box->Add(controls.reason, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(8));
+        box->Add(controls.retry, 0, wxALIGN_RIGHT | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(8));
+        controls.panel->SetSizer(box);
+        candidate_root->Add(controls.panel, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
+        controls.selector->Bind(wxEVT_RADIOBUTTON, [this, index](wxCommandEvent&) {
+            if (!m_candidate_ids[index].empty())
+                m_coordinator.select_candidate(m_candidate_ids[index]);
+        });
+        controls.retry->Bind(wxEVT_BUTTON, [this, index](wxCommandEvent&) {
+            if (!m_candidate_ids[index].empty())
+                m_coordinator.retry_candidate(m_candidate_ids[index]);
+        });
+    }
+    auto* candidate_actions = new wxBoxSizer(wxHORIZONTAL);
+    m_keep_baseline = new wxButton(m_candidate_section, wxID_ANY, _L("保留当前方案"));
+    m_apply         = new wxButton(m_candidate_section, wxID_ANY, _L("确认并应用"));
+    candidate_actions->Add(m_keep_baseline, 0, wxRIGHT, FromDIP(8));
+    candidate_actions->Add(m_apply, 1, wxEXPAND);
+    candidate_root->Add(candidate_actions, 0, wxEXPAND);
+    m_candidate_section->SetSizer(candidate_root);
+    root->Add(m_candidate_section, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(16));
+    m_candidate_section->Hide();
+    m_keep_baseline->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { m_coordinator.select_candidate("baseline"); });
+    // The transaction gateway is connected in the apply stage; keeping the
+    // button in place prevents the primary action from jumping between states.
+    m_apply->Enable(false);
     root->AddStretchSpacer();
 
     auto* actions = new wxBoxSizer(wxHORIZONTAL);
@@ -115,7 +210,13 @@ SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSl
     root->Add(actions, 0, wxEXPAND | wxALL, FromDIP(16));
     SetSizer(root);
 
-    m_start->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { m_coordinator.start(); });
+    m_start->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        if (m_can_plan_candidates)
+            m_coordinator.plan_and_slice_candidates(m_plan_candidates ? m_plan_candidates() :
+                                                                         std::vector<AI::SmartSlicing::SliceCandidate>{});
+        else
+            m_coordinator.start();
+    });
     m_cancel->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { m_coordinator.cancel(); });
     Bind(wxEVT_TIMER, &SmartSlicingPanel::on_revision_timer, this, m_revision_timer.GetId());
 }
@@ -141,9 +242,53 @@ void SmartSlicingPanel::render(const SmartSlicingViewModel& view_model)
         m_issues->SetLabel(issues);
         m_issues->Wrap(FromDIP(330));
     }
-    m_start->Enable(view_model.can_start);
-    m_start->SetLabel(view_model.is_stale ? _L("重新检查") : _L("开始检查"));
+    m_can_plan_candidates = view_model.can_plan_candidates;
+    m_start->Enable(view_model.can_start || view_model.can_plan_candidates);
+    m_start->SetLabel(view_model.can_plan_candidates ? _L("生成并试切方案") :
+                      view_model.is_stale ? _L("重新检查") : _L("开始检查"));
     m_cancel->Enable(view_model.can_cancel);
+
+    const bool show_candidates = !view_model.candidates.empty();
+    m_candidate_section->Show(show_candidates);
+    for (size_t index = 0; index < m_candidate_controls.size(); ++index) {
+        CandidateControls& controls = m_candidate_controls[index];
+        const bool visible = index < view_model.candidates.size();
+        controls.panel->Show(visible);
+        m_candidate_ids[index].clear();
+        if (!visible)
+            continue;
+        const SmartSlicingCandidateView& candidate = view_model.candidates[index];
+        m_candidate_ids[index] = candidate.id;
+        controls.selector->SetLabel(candidate.id == "baseline" ? _L("当前方案（基线）") :
+                                    candidate.recommended ? _L("推荐候选") : _L("候选方案"));
+        controls.selector->SetValue(candidate.selected);
+        controls.selector->Enable(!candidate.failed);
+        wxString metrics = _L("时间：") + format_duration(candidate.estimated_time_seconds) +
+                           _L("  材料：") + format_volume(candidate.filament_volume_mm3) +
+                           _L("\n支撑：") + format_volume(candidate.support_volume_mm3) +
+                           _L("  换料：") +
+                           (candidate.tool_changes ?
+                                wxString::Format("%llu", static_cast<unsigned long long>(*candidate.tool_changes)) :
+                                _L("不可用"));
+        if (candidate.id != "baseline") {
+            const wxString tool_delta = candidate.tool_change_delta ?
+                wxString::Format("%+lld", *candidate.tool_change_delta) : _L("—");
+            metrics += _L("\n相对基线：时间 ") + format_delta(candidate.time_delta_seconds, 60.0, _L("分钟")) +
+                       _L("，材料 ") + format_delta(candidate.filament_delta_mm3, 1000.0, _L("cm³")) +
+                       _L("，支撑 ") + format_delta(candidate.support_delta_mm3, 1000.0, _L("cm³")) +
+                       _L("，换料 ") + tool_delta;
+        }
+        controls.metrics->SetLabel(metrics);
+        controls.reason->SetLabel(candidate_reason(candidate));
+        controls.retry->Show(candidate.can_retry);
+    }
+    m_keep_baseline->Enable(std::any_of(view_model.candidates.begin(), view_model.candidates.end(),
+                                       [](const SmartSlicingCandidateView& candidate) {
+                                           return candidate.id == "baseline" && !candidate.selected && !candidate.failed;
+                                       }));
+    m_apply->Enable(false);
+    m_p0_notice->SetLabel(show_candidates ? _L("确认前不会修改正式模型、配置或正式切片结果。") :
+                                            _L("预检与候选试切均在隔离副本中执行。"));
     if (view_model.can_cancel && !m_revision_timer.IsRunning())
         m_revision_timer.Start(1000);
     else if (!view_model.can_cancel && m_revision_timer.IsRunning())

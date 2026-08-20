@@ -26,6 +26,8 @@ public:
     bool refresh_revision();
     bool plan_and_slice_candidates(std::vector<SliceCandidate> proposals = {},
                                    CandidateGoal goal = CandidateGoal::Stability);
+    bool select_candidate(const CandidateId& candidate_id);
+    bool retry_candidate(const CandidateId& candidate_id);
 
 private:
     void transition(WorkflowState state, std::string detail = {});

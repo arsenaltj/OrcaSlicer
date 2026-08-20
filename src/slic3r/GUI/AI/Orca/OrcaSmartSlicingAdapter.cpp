@@ -5,6 +5,7 @@
 #include "libslic3r/Print.hpp"
 #include "libslic3r/PrintConfig.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
+#include "slic3r/GUI/Jobs/ArrangeJob.hpp"
 #include "slic3r/GUI/PartPlate.hpp"
 #include "slic3r/GUI/Plater.hpp"
 
@@ -57,11 +58,68 @@ std::string canonical_config(const DynamicPrintConfig& config)
     return stream.str();
 }
 
+Model current_plate_model_copy(const Plater& plater, PartPlate& plate)
+{
+    Model copied = plater.model();
+    for (size_t object_index = copied.objects.size(); object_index > 0; --object_index) {
+        const size_t source_object_index = object_index - 1;
+        ModelObject* object = copied.objects[source_object_index];
+        for (size_t instance_index = object->instances.size(); instance_index > 0; --instance_index) {
+            const size_t source_instance_index = instance_index - 1;
+            if (!plate.contain_instance(static_cast<int>(source_object_index), static_cast<int>(source_instance_index)))
+                object->delete_instance(source_instance_index);
+        }
+        if (object->instances.empty())
+            copied.delete_object(source_object_index);
+    }
+    return copied;
+}
+
 } // namespace
 
 AI::SmartSlicing::WorkspaceRevision OrcaSmartSlicingAdapter::current_revision() const { return capture_context_impl(false).revision; }
 
 AI::SmartSlicing::WorkspaceContext OrcaSmartSlicingAdapter::capture_context() const { return capture_context_impl(true); }
+
+OrcaTrialSliceInput OrcaSmartSlicingAdapter::capture_trial_slice_input() const
+{
+    if (m_plater == nullptr || wxGetApp().preset_bundle == nullptr)
+        throw std::runtime_error("Orca workspace is unavailable.");
+    PartPlateList& plates = m_plater->get_partplate_list();
+    PartPlate* plate = plates.get_curr_plate();
+    if (plate == nullptr)
+        throw std::runtime_error("The current plate is unavailable.");
+
+    OrcaTrialSliceInput input;
+    input.model                    = current_plate_model_copy(*m_plater, *plate);
+    input.config                   = wxGetApp().preset_bundle->full_config();
+    input.plate_index              = plates.get_curr_plate_index();
+    input.plate_name               = plate->get_plate_name();
+    input.extruder_filament_info   = wxGetApp().preset_bundle->get_extruder_filament_info();
+    return input;
+}
+
+std::vector<AI::SmartSlicing::SliceCandidate>
+OrcaSmartSlicingAdapter::placement_candidates(const AI::SmartSlicing::WorkspaceRevision& revision) const
+{
+    if (m_plater == nullptr || wxGetApp().preset_bundle == nullptr)
+        return {};
+    PartPlateList& plates = m_plater->get_partplate_list();
+    PartPlate* plate = plates.get_curr_plate();
+    if (plate == nullptr)
+        return {};
+
+    OrcaPlacementCandidateInput input;
+    input.model          = current_plate_model_copy(*m_plater, *plate);
+    input.config         = wxGetApp().preset_bundle->full_config();
+    input.arrange_params = init_arrange_params(m_plater);
+    input.plate_locked   = plate->is_locked();
+    const bool enable_wrapping = input.config.opt_bool("enable_wrapping_detection");
+    plates.preprocess_exclude_areas(input.arrange_params.excluded_regions, enable_wrapping, 1, scale_(1));
+    if (const auto wipe_tower = get_wipe_tower_arrangepoly(*m_plater))
+        input.fixed_regions.push_back(*wipe_tower);
+    return OrcaPlacementCandidateProvider().generate(std::move(input), revision);
+}
 
 AI::SmartSlicing::WorkspaceContext OrcaSmartSlicingAdapter::capture_context_impl(bool include_diagnostics) const
 {

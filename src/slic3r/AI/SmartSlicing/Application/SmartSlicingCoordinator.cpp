@@ -1,6 +1,7 @@
 #include "SmartSlicingCoordinator.hpp"
 #include "TrialSlicingWorkflow.hpp"
 
+#include <algorithm>
 #include <exception>
 #include <utility>
 
@@ -74,6 +75,7 @@ void SmartSlicingCoordinator::cancel()
         m_trial_slice_executor->cancel_trial_slice();
     m_snapshot.candidates.clear();
     m_snapshot.comparison.reset();
+    m_snapshot.selected_candidate_id.clear();
     transition(WorkflowState::Canceled, "canceled");
 }
 
@@ -100,6 +102,7 @@ bool SmartSlicingCoordinator::plan_and_slice_candidates(std::vector<SliceCandida
         m_snapshot.goal       = goal;
         m_snapshot.candidates = m_candidate_planner.plan(*m_snapshot.context, std::move(proposals), goal);
         m_snapshot.comparison.reset();
+        m_snapshot.selected_candidate_id.clear();
         if (m_snapshot.candidates.empty()) {
             transition(WorkflowState::Failed, "no_candidates");
             return false;
@@ -143,6 +146,7 @@ bool SmartSlicingCoordinator::plan_and_slice_candidates(std::vector<SliceCandida
             transition(WorkflowState::Failed, "no_comparable_candidate");
             return false;
         }
+        m_snapshot.selected_candidate_id = m_snapshot.comparison->recommended_candidate_id;
         transition(WorkflowState::ReadyToApply, "candidates_ready");
         return true;
     } catch (const std::exception& error) {
@@ -151,6 +155,70 @@ bool SmartSlicingCoordinator::plan_and_slice_candidates(std::vector<SliceCandida
         transition(WorkflowState::Failed, "unknown_candidate_error");
     }
     return false;
+}
+
+bool SmartSlicingCoordinator::select_candidate(const CandidateId& candidate_id)
+{
+    if (m_snapshot.state != WorkflowState::ReadyToApply || candidate_id.empty())
+        return false;
+    if (!workspace_revision_matches()) {
+        transition(WorkflowState::Stale, "workspace_changed");
+        return false;
+    }
+    const auto candidate = std::find_if(m_snapshot.candidates.begin(), m_snapshot.candidates.end(),
+                                        [&candidate_id](const SliceCandidate& item) {
+                                            return item.id == candidate_id && item.status == CandidateStatus::Ready;
+                                        });
+    if (candidate == m_snapshot.candidates.end())
+        return false;
+    m_snapshot.selected_candidate_id = candidate_id;
+    transition(WorkflowState::ReadyToApply, "candidate_selected");
+    return true;
+}
+
+bool SmartSlicingCoordinator::retry_candidate(const CandidateId& candidate_id)
+{
+    if (m_snapshot.state != WorkflowState::ReadyToApply || m_trial_slice_executor == nullptr || !m_snapshot.context)
+        return false;
+    auto candidate = std::find_if(m_snapshot.candidates.begin(), m_snapshot.candidates.end(),
+                                  [&candidate_id](const SliceCandidate& item) {
+                                      return item.id == candidate_id && item.status == CandidateStatus::Failed;
+                                  });
+    if (candidate == m_snapshot.candidates.end())
+        return false;
+    if (!workspace_revision_matches()) {
+        transition(WorkflowState::Stale, "workspace_changed");
+        return false;
+    }
+
+    transition(WorkflowState::TrialSlicingCandidates, "retrying_trial_slice");
+    candidate->status = CandidateStatus::TrialSlicing;
+    TrialSliceResult result = m_trial_slice_executor->execute_trial_slice(*candidate);
+    if (!workspace_revision_matches()) {
+        for (SliceCandidate& planned : m_snapshot.candidates)
+            planned.status = CandidateStatus::Stale;
+        m_snapshot.comparison.reset();
+        m_snapshot.selected_candidate_id.clear();
+        transition(WorkflowState::Stale, "workspace_changed");
+        return false;
+    }
+    if (result.status == TrialSliceStatus::Canceled && TrialSlicingWorkflow::result_matches(*candidate, result)) {
+        candidate->status          = CandidateStatus::Failed;
+        candidate->metrics.reset();
+        candidate->diagnostic_code = "retry_canceled";
+        transition(WorkflowState::ReadyToApply, "retry_canceled");
+        return false;
+    }
+
+    const bool accepted = TrialSlicingWorkflow::accept_result(*candidate, std::move(result));
+    m_snapshot.comparison = compare_candidates(m_snapshot.candidates, m_snapshot.goal);
+    if (m_snapshot.selected_candidate_id.empty() ||
+        std::none_of(m_snapshot.candidates.begin(), m_snapshot.candidates.end(), [this](const SliceCandidate& item) {
+            return item.id == m_snapshot.selected_candidate_id && item.status == CandidateStatus::Ready;
+        }))
+        m_snapshot.selected_candidate_id = m_snapshot.comparison->recommended_candidate_id;
+    transition(WorkflowState::ReadyToApply, accepted ? "candidate_retry_succeeded" : "candidate_retry_failed");
+    return accepted;
 }
 
 bool SmartSlicingCoordinator::refresh_revision()
@@ -167,6 +235,10 @@ bool SmartSlicingCoordinator::refresh_revision()
         return false;
     }
 
+    for (SliceCandidate& candidate : m_snapshot.candidates)
+        candidate.status = CandidateStatus::Stale;
+    m_snapshot.comparison.reset();
+    m_snapshot.selected_candidate_id.clear();
     transition(WorkflowState::Stale, "workspace_changed");
     return true;
 }
