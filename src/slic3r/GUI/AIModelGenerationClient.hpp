@@ -57,6 +57,23 @@ public:
         std::map<std::string, std::string> check_reasons;
     };
 
+    struct PaletteRecommendationColor
+    {
+        std::string hex;
+        std::string name;
+        std::string role;
+        std::string usage;
+        std::string reason;
+    };
+
+    struct PaletteRecommendation
+    {
+        bool                                    available { false };
+        bool                                    confirmed { false };
+        std::string                             summary;
+        std::vector<PaletteRecommendationColor> colors;
+    };
+
     struct JobStatus
     {
         std::string id;
@@ -96,6 +113,7 @@ public:
         size_t      artifact_size { 0 };
         ModelQuality model_quality;
         VisualQuality visual_quality;
+        PaletteRecommendation palette_recommendation;
     };
 
     using StatusFn = std::function<void(JobStatus)>;
@@ -117,6 +135,17 @@ public:
                            const PaletteRoles& palette_roles, const std::string& style, const std::string& custom_style,
                            const ImagePrintSettings& print_settings,
                            StatusFn on_complete, ErrorFn on_error);
+    void recommend_text_palette(const std::string& request_id, const std::string& prompt,
+                                const std::string& style, const std::string& custom_style,
+                                const ImagePrintSettings& print_settings,
+                                StatusFn on_complete, ErrorFn on_error);
+    void recommend_image_palette(const std::string& request_id, const std::string& instruction,
+                                 const boost::filesystem::path& image_path,
+                                 const std::string& style, const std::string& custom_style,
+                                 const ImagePrintSettings& print_settings,
+                                 StatusFn on_complete, ErrorFn on_error);
+    void confirm_palette(const std::string& job_id, const std::vector<std::string>& palette,
+                         const PaletteRoles& palette_roles, StatusFn on_complete, ErrorFn on_error);
     void generate(const std::string& job_id, const std::string& prepared_prompt,
                   const std::vector<std::string>& palette, int face_limit,
                   StatusFn on_complete, ErrorFn on_error);

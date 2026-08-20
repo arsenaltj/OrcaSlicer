@@ -35,6 +35,26 @@ class MockArtifactTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "could not be read"):
                 MOCK_SIDECAR._load_mock_obj()
 
+    def test_public_job_keeps_recovery_inputs(self):
+        job = MOCK_SIDECAR.new_job("text", "prepared", [])
+        self.addCleanup(MOCK_SIDECAR._jobs.pop, job["id"], None)
+        job.update(user_prompt="mechanical cat", style="q_cartoon", custom_style="")
+
+        public = MOCK_SIDECAR.public_job(job)
+
+        self.assertEqual(public["user_prompt"], "mechanical cat")
+        self.assertEqual(public["style"], "q_cartoon")
+        self.assertEqual(public["custom_style"], "")
+
+    def test_printable_text_job_exposes_mock_preview(self):
+        job = MOCK_SIDECAR.new_job("text", "prepared", ["#112233"])
+        self.addCleanup(MOCK_SIDECAR._jobs.pop, job["id"], None)
+
+        MOCK_SIDECAR.advance_job(job, status_call=True)
+
+        self.assertTrue(job["preview"]["ready"])
+        self.assertEqual(job["preview"]["content_type"], "image/png")
+
 
 if __name__ == "__main__":
     unittest.main()

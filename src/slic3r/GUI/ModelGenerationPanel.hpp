@@ -55,6 +55,8 @@ private:
     void on_printable_colors_toggled(wxCommandEvent& event);
     void on_palette_source_changed(wxCommandEvent& event);
     void on_add_custom_color(wxCommandEvent& event);
+    void on_recommend_palette(wxCommandEvent& event);
+    void on_confirm_recommended_palette(wxCommandEvent& event);
     void on_palette_role_changed(size_t role_index);
     void on_preprocess(wxCommandEvent& event);
     void on_generate(wxCommandEvent& event);
@@ -81,6 +83,8 @@ private:
     std::vector<std::string> current_palette() const;
     AIModelGenerationClient::PaletteRoles current_palette_roles() const;
     void refresh_palette_roles(const std::vector<std::string>& palette);
+    void refresh_palette_recommendation();
+    void replace_recommended_color(size_t index);
     bool use_printable_colors() const;
     std::string current_style() const;
     std::string current_custom_style() const;
@@ -90,6 +94,7 @@ private:
     bool has_image_input() const;
     bool job_uses_image() const;
     bool job_inputs_match() const;
+    bool job_base_inputs_match() const;
     void remove_custom_color(const std::string& color);
     void reset(bool remove_remote);
     void download_preview(uint64_t sequence);
@@ -155,6 +160,15 @@ private:
     wxColourPickerCtrl* m_custom_color { nullptr };
     wxButton*       m_add_custom_color { nullptr };
     wxStaticText*   m_palette_summary { nullptr };
+    wxPanel*        m_palette_recommendation_panel { nullptr };
+    wxButton*       m_recommend_palette { nullptr };
+    wxButton*       m_confirm_recommended_palette { nullptr };
+    wxStaticText*   m_palette_recommendation_summary { nullptr };
+    std::array<wxPanel*, 4> m_palette_recommendation_cards { nullptr, nullptr, nullptr, nullptr };
+    std::array<wxPanel*, 4> m_palette_recommendation_swatches { nullptr, nullptr, nullptr, nullptr };
+    std::array<wxStaticText*, 4> m_palette_recommendation_details { nullptr, nullptr, nullptr, nullptr };
+    std::array<wxButton*, 4> m_palette_recommendation_replace { nullptr, nullptr, nullptr, nullptr };
+    std::array<wxButton*, 4> m_palette_recommendation_remove { nullptr, nullptr, nullptr, nullptr };
     wxPanel*        m_palette_roles_panel { nullptr };
     std::array<wxChoice*, 4> m_palette_role_choices { nullptr, nullptr, nullptr, nullptr };
     wxPanel*        m_model_settings_panel { nullptr };
@@ -245,6 +259,9 @@ private:
     AIModelGenerationClient::PaletteRoles m_job_palette_roles;
     std::vector<std::string> m_palette_roles_source;
     std::vector<std::string> m_displayed_model_palette;
+    AIModelGenerationClient::PaletteRecommendation m_palette_recommendation;
+    std::vector<std::string> m_user_adjusted_palette_colors;
+    std::string m_palette_recommendation_job_id;
     wxString m_job_prompt;
     std::string m_job_style;
     std::string m_job_custom_style;
@@ -257,6 +274,8 @@ private:
     uint64_t m_sequence { 0 };
     bool m_busy { false };
     bool m_awaiting_confirmation { false };
+    bool m_awaiting_palette_confirmation { false };
+    bool m_palette_recommendation_confirmed { false };
     bool m_ready { false };
     bool m_artifact_download_started { false };
     bool m_model_preview_ready { false };

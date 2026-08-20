@@ -206,6 +206,9 @@ def new_job(source, prepared_prompt, palette):
         "message": "Preparing model generation request.",
         "progress": 5,
         "prepared_prompt": "",
+        "user_prompt": "",
+        "style": "sculpture",
+        "custom_style": "",
         "face_limit": DEFAULT_MODEL_FACE_LIMIT,
         "palette": list(palette),
         "palette_roles": {},
@@ -235,7 +238,7 @@ def advance_job(job, status_call=False):
             "progress": 15,
             "prepared_prompt": job["_next_prompt"],
         })
-        if job["source"] == "image":
+        if job["source"] == "image" or job["palette"]:
             job["preview"] = {"ready": True, "content_type": "image/png", "size_bytes": len(TINY_PNG)}
         return
 
@@ -277,6 +280,9 @@ def public_job(job):
         "message": job["message"],
         "progress": job["progress"],
         "prepared_prompt": job["prepared_prompt"] if job["source"] == "text" else "",
+        "user_prompt": job["user_prompt"],
+        "style": job["style"],
+        "custom_style": job["custom_style"],
         "face_limit": job["face_limit"],
         "palette": list(job["palette"]),
         "palette_roles": dict(job["palette_roles"]),
@@ -435,6 +441,11 @@ class Handler(BaseHTTPRequestHandler):
         prepared = "Create a printable 3D model from this description: %s" % prompt
         with _jobs_lock:
             job = new_job("text", prepared, palette)
+            job.update(
+                user_prompt=prompt,
+                style=request.get("style", "sculpture"),
+                custom_style=request.get("custom_style", ""),
+            )
             response = public_job(job)
         self.send_json({"job": response}, 202)
 
@@ -461,6 +472,11 @@ class Handler(BaseHTTPRequestHandler):
         prepared = "Create a printable 3D model based on the uploaded image. Instruction: %s" % instruction
         with _jobs_lock:
             job = new_job("image", prepared, palette)
+            job.update(
+                user_prompt=instruction,
+                style=fields.get("style", "sculpture"),
+                custom_style=fields.get("custom_style", ""),
+            )
             response = public_job(job)
         self.send_json({"job": response}, 202)
 
@@ -479,6 +495,9 @@ class Handler(BaseHTTPRequestHandler):
                 phase="awaiting_palette_confirmation",
                 message="Review and confirm the recommended design colors.",
                 progress=10,
+                user_prompt=prompt,
+                style=request.get("style", "sculpture"),
+                custom_style=request.get("custom_style", ""),
                 palette_recommendation=json.loads(json.dumps(MOCK_PALETTE_RECOMMENDATION)),
             )
             response = public_job(job)
@@ -505,6 +524,9 @@ class Handler(BaseHTTPRequestHandler):
                 phase="awaiting_palette_confirmation",
                 message="Review and confirm the recommended design colors.",
                 progress=10,
+                user_prompt=instruction,
+                style=fields.get("style", "sculpture"),
+                custom_style=fields.get("custom_style", ""),
                 palette_recommendation=json.loads(json.dumps(MOCK_PALETTE_RECOMMENDATION)),
             )
             response = public_job(job)

@@ -29,6 +29,7 @@
 #include <wx/checkbox.h>
 #include <wx/choice.h>
 #include <wx/collpane.h>
+#include <wx/colordlg.h>
 #include <wx/clrpicker.h>
 #include <wx/dcbuffer.h>
 #include <wx/dcclient.h>
@@ -150,6 +151,10 @@ int remap_progress(int value, int input_start, int input_end, int output_start, 
 
 int display_progress(const AIModelGenerationClient::JobStatus& status)
 {
+    if (status.state == "recommending_palette")
+        return remap_progress(status.progress, 5, 10, 3, 10);
+    if (status.state == "awaiting_palette_confirmation")
+        return 10;
     if (status.state == "preprocessing")
         return remap_progress(status.progress, 5, 15, 10, 25);
     if (status.state == "awaiting_confirmation")
@@ -264,6 +269,10 @@ wxStaticText* section_label(wxWindow* parent, const wxString& text)
 
 wxString localized_job_status(const AIModelGenerationClient::JobStatus& status)
 {
+    if (status.state == "recommending_palette")
+        return _L("AI 正在分析主体并推荐四种目标色...");
+    if (status.state == "awaiting_palette_confirmation")
+        return _L("AI 配色已准备好，请修改或确认后生成图片预览。");
     if (status.state == "preprocessing")
         return _L("AI 正在准备提示词和图片预览...");
     if (status.state == "awaiting_confirmation")
@@ -944,7 +953,7 @@ void ModelGenerationPanel::restore_job(AIModelGenerationClient::JobStatus status
     m_job_palette_roles = status.palette_roles.empty() ? automatic_palette_roles(status.palette) : status.palette_roles;
     m_palette_roles = m_job_palette_roles;
     m_palette_roles_source = status.palette;
-    m_job_use_printable_colors = !status.palette.empty();
+    m_job_use_printable_colors = !status.palette.empty() || status.palette_recommendation.available;
     m_palette = status.palette;
     m_job_style = status.style;
     m_job_custom_style = status.custom_style;
@@ -1010,7 +1019,7 @@ void ModelGenerationPanel::download_restored_input(uint64_t sequence)
                 weak->m_restoring_input = false;
                 weak->m_selected_image->SetLabel(_L("已恢复上次参考图"));
                 weak->show_selected_image_preview();
-                if (weak->m_preview_path.empty() && !weak->m_style_preview_ready)
+                if (!weak->m_awaiting_palette_confirmation && weak->m_preview_path.empty() && !weak->m_style_preview_ready)
                     weak->download_preview(sequence);
                 weak->refresh_controls();
             });
@@ -1021,7 +1030,8 @@ void ModelGenerationPanel::download_restored_input(uint64_t sequence)
             wxGetApp().CallAfter([weak, sequence]() {
                 if (!weak || weak->m_shutdown || sequence != weak->m_sequence) return;
                 weak->m_restoring_input = false;
-                weak->download_preview(sequence);
+                if (!weak->m_awaiting_palette_confirmation)
+                    weak->download_preview(sequence);
             });
         });
 }
@@ -1188,8 +1198,9 @@ wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
     sizer->Add(m_use_printable_colors, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
     sizer->AddSpacer(FromDIP(6));
     wxArrayString palette_sources;
-    palette_sources.Add(_L("使用当前耗材（推荐）"));
+    palette_sources.Add(_L("使用当前耗材"));
     palette_sources.Add(_L("自定义 1–4 种颜色"));
+    palette_sources.Add(_L("AI 推荐目标色（用户匹配耗材）"));
     m_palette_source = new wxChoice(scroll, wxID_ANY, wxDefaultPosition, wxDefaultSize, palette_sources);
     m_palette_source->SetSelection(0);
     sizer->Add(m_palette_source, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
@@ -1214,6 +1225,64 @@ wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
     custom_color_row->Add(m_add_custom_color, 0);
     m_custom_color_panel->SetSizer(custom_color_row);
     sizer->Add(m_custom_color_panel, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
+    sizer->AddSpacer(FromDIP(6));
+
+    m_palette_recommendation_panel = new wxPanel(scroll, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_SIMPLE);
+    m_palette_recommendation_panel->SetBackgroundColour(*wxWHITE);
+    auto* recommendation_sizer = new wxBoxSizer(wxVERTICAL);
+    auto* recommendation_actions = new wxBoxSizer(wxVERTICAL);
+    m_recommend_palette = new wxButton(m_palette_recommendation_panel, wxID_ANY, _L("AI 推荐四色"));
+    m_recommend_palette->SetToolTip(_L("根据文字、参考图和风格推荐四个设计目标色；不会修改打印机耗材槽"));
+    m_confirm_recommended_palette = new wxButton(
+        m_palette_recommendation_panel, wxID_ANY, _L("确认配色并生成预览"));
+    recommendation_actions->Add(m_recommend_palette, 0, wxEXPAND | wxBOTTOM, FromDIP(4));
+    recommendation_actions->Add(m_confirm_recommended_palette, 0, wxEXPAND);
+    recommendation_sizer->Add(recommendation_actions, 0, wxEXPAND | wxALL, FromDIP(8));
+    m_palette_recommendation_summary = new wxStaticText(
+        m_palette_recommendation_panel, wxID_ANY,
+        _L("AI 会推荐理想目标色；确认后再由你匹配实际耗材。"));
+    m_palette_recommendation_summary->SetForegroundColour(wxColour(91, 104, 107));
+    m_palette_recommendation_summary->Wrap(FromDIP(300));
+    recommendation_sizer->Add(
+        m_palette_recommendation_summary, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(8));
+    for (size_t index = 0; index < m_palette_recommendation_cards.size(); ++index) {
+        auto* card = new wxPanel(m_palette_recommendation_panel, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_SIMPLE);
+        card->SetBackgroundColour(wxColour(250, 251, 251));
+        auto* card_sizer = new wxBoxSizer(wxVERTICAL);
+        auto* content = new wxBoxSizer(wxHORIZONTAL);
+        auto* swatch = new wxPanel(card, wxID_ANY, wxDefaultPosition, FromDIP(wxSize(30, 30)), wxBORDER_SIMPLE);
+        swatch->SetMinSize(FromDIP(wxSize(30, 30)));
+        auto* details = new wxStaticText(card, wxID_ANY, wxEmptyString);
+        details->Wrap(FromDIP(230));
+        auto* replace = new wxButton(
+            card, wxID_ANY, _L("替换"), wxDefaultPosition, FromDIP(wxSize(52, 28)), wxBU_EXACTFIT);
+        auto* remove = new wxButton(
+            card, wxID_ANY, _L("删除"), wxDefaultPosition, FromDIP(wxSize(52, 28)), wxBU_EXACTFIT);
+        content->Add(swatch, 0, wxALIGN_CENTER_VERTICAL | wxALL, FromDIP(6));
+        content->Add(details, 1, wxALIGN_CENTER_VERTICAL | wxTOP | wxRIGHT | wxBOTTOM, FromDIP(6));
+        auto* actions = new wxBoxSizer(wxHORIZONTAL);
+        actions->AddStretchSpacer();
+        actions->Add(replace, 0, wxRIGHT, FromDIP(4));
+        actions->Add(remove, 0);
+        actions->AddSpacer(FromDIP(20));
+        card_sizer->Add(content, 0, wxEXPAND);
+        card_sizer->Add(actions, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(6));
+        card->SetSizer(card_sizer);
+        recommendation_sizer->Add(card, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(6));
+        m_palette_recommendation_cards[index] = card;
+        m_palette_recommendation_swatches[index] = swatch;
+        m_palette_recommendation_details[index] = details;
+        m_palette_recommendation_replace[index] = replace;
+        m_palette_recommendation_remove[index] = remove;
+        replace->Bind(wxEVT_BUTTON, [this, index](wxCommandEvent&) { replace_recommended_color(index); });
+        remove->Bind(wxEVT_BUTTON, [this, index](wxCommandEvent&) {
+            if (index < m_custom_palette.size())
+                remove_custom_color(m_custom_palette[index]);
+        });
+    }
+    m_palette_recommendation_panel->SetSizer(recommendation_sizer);
+    m_palette_recommendation_panel->Hide();
+    sizer->Add(m_palette_recommendation_panel, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
     sizer->AddSpacer(FromDIP(6));
 
     m_advanced_toggle = new wxButton(scroll, wxID_ANY, _L("显示高级设置"), wxDefaultPosition,
@@ -1376,6 +1445,9 @@ wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
     m_import_color_mode->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) { refresh_controls(); });
     m_auto_slice_after_import->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) { refresh_controls(); });
     m_add_custom_color->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_add_custom_color, this);
+    m_recommend_palette->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_recommend_palette, this);
+    m_confirm_recommended_palette->Bind(
+        wxEVT_BUTTON, &ModelGenerationPanel::on_confirm_recommended_palette, this);
     for (size_t index = 0; index < m_palette_role_choices.size(); ++index)
         m_palette_role_choices[index]->Bind(wxEVT_CHOICE, [this, index](wxCommandEvent&) { on_palette_role_changed(index); });
     for (wxSpinCtrlDouble* control : {m_print_width, m_nozzle_size, m_line_width, m_minimum_feature})
@@ -1778,7 +1850,7 @@ void ModelGenerationPanel::on_choose_image(wxCommandEvent&)
         error.ShowModal();
         return;
     }
-    if (!m_job_id.empty())
+    if (!m_job_id.empty() && !m_awaiting_palette_confirmation)
         reset(true);
     m_selected_image_path = std::move(path);
     m_style_preview_ready = false;
@@ -1794,7 +1866,7 @@ void ModelGenerationPanel::on_choose_image(wxCommandEvent&)
 
 void ModelGenerationPanel::on_clear_image(wxCommandEvent&)
 {
-    if (!m_job_id.empty())
+    if (!m_job_id.empty() && !m_awaiting_palette_confirmation)
         reset(true);
     m_selected_image_path.clear();
     m_selected_image->SetLabel(_L("未选择图片"));
@@ -1818,7 +1890,7 @@ void ModelGenerationPanel::on_printable_colors_toggled(wxCommandEvent&)
 
 void ModelGenerationPanel::on_add_custom_color(wxCommandEvent&)
 {
-    if (m_palette_source->GetSelection() != 1)
+    if (m_palette_source->GetSelection() == 0)
         return;
     if (m_custom_palette.size() >= 4) {
         MessageDialog dlg(this, _L("可打印风格最多支持 4 种耗材颜色。"), wxEmptyString, wxOK | wxICON_INFORMATION);
@@ -1829,10 +1901,126 @@ void ModelGenerationPanel::on_add_custom_color(wxCommandEvent&)
     std::transform(color.begin(), color.end(), color.begin(), [](unsigned char ch) {
         return static_cast<char>(std::toupper(ch));
     });
-    if (std::find(m_custom_palette.begin(), m_custom_palette.end(), color) == m_custom_palette.end())
+    if (std::find(m_custom_palette.begin(), m_custom_palette.end(), color) == m_custom_palette.end()) {
         m_custom_palette.emplace_back(std::move(color));
+        if (m_palette_source->GetSelection() == 2)
+            m_user_adjusted_palette_colors.emplace_back(m_custom_palette.back());
+    }
     refresh_palette();
     refresh_controls();
+}
+
+void ModelGenerationPanel::on_recommend_palette(wxCommandEvent&)
+{
+    const std::string prompt = m_prompt->GetValue().ToUTF8().data();
+    const bool image_mode = has_image_input();
+    if (prompt.empty() && !image_mode) {
+        MessageDialog dlg(this, _L("请先输入描述或选择参考图。"), wxEmptyString, wxOK | wxICON_INFORMATION);
+        dlg.ShowModal();
+        return;
+    }
+    if (current_style() == "custom" && current_custom_style().empty()) {
+        MessageDialog dlg(this, _L("请描述希望使用的自定义风格。"), wxEmptyString, wxOK | wxICON_INFORMATION);
+        dlg.ShowModal();
+        m_custom_style->SetFocus();
+        return;
+    }
+    MessageDialog confirm(
+        this,
+        image_mode
+            ? _L("要让 AI 根据文字、参考图和风格推荐四个设计目标色吗？\n\n此操作可能消耗 API 额度；不会修改打印机耗材槽。")
+            : _L("要让 AI 根据文字和风格推荐四个设计目标色吗？\n\n此操作可能消耗 API 额度；不会修改打印机耗材槽。"),
+        _L("AI 推荐四色"), wxYES_NO | wxICON_QUESTION);
+    if (confirm.ShowModal() != wxID_YES)
+        return;
+
+    reset(true);
+    m_palette_source->SetSelection(2);
+    m_job_palette.clear();
+    m_job_palette_roles.clear();
+    m_job_use_printable_colors = true;
+    m_job_prompt = m_prompt->GetValue();
+    m_job_style = current_style();
+    m_job_custom_style = current_custom_style();
+    m_job_print_settings = current_print_settings();
+    m_job_image_path = m_selected_image_path;
+    m_palette_recommendation_confirmed = false;
+    m_awaiting_palette_confirmation = false;
+    m_busy = true;
+    const uint64_t sequence = ++m_sequence;
+    update_progress(3, 1, _L("推荐打印配色"));
+    m_status->SetLabel(_L("AI 正在分析主体、风格和打印色区..."));
+    m_result_summary->SetLabel(_L("推荐完成后可以替换、删除或补充颜色，再确认生成图片预览。"));
+    refresh_controls();
+
+    wxWeakRef<ModelGenerationPanel> weak(this);
+    auto success = [weak, sequence](AIModelGenerationClient::JobStatus status) mutable {
+        if (!weak) return;
+        wxGetApp().CallAfter([weak, sequence, status = std::move(status)]() mutable {
+            if (weak) weak->handle_status(std::move(status), sequence);
+        });
+    };
+    auto failure = [weak, sequence](std::string error) mutable {
+        if (!weak) return;
+        wxGetApp().CallAfter([weak, sequence, error = std::move(error)]() {
+            if (weak) weak->handle_error(error, sequence);
+        });
+    };
+    if (image_mode) {
+        m_client.recommend_image_palette(new_request_id(), prompt, m_selected_image_path, m_job_style,
+                                         m_job_custom_style, m_job_print_settings,
+                                         std::move(success), std::move(failure));
+    } else {
+        m_client.recommend_text_palette(new_request_id(), prompt, m_job_style, m_job_custom_style,
+                                        m_job_print_settings, std::move(success), std::move(failure));
+    }
+}
+
+void ModelGenerationPanel::on_confirm_recommended_palette(wxCommandEvent& event)
+{
+    if (!m_awaiting_palette_confirmation || m_job_id.empty() || m_custom_palette.empty())
+        return;
+    if (!job_base_inputs_match()) {
+        MessageDialog confirm(
+            this,
+            _L("输入内容已经变化。要保留当前推荐配色，并用新的输入生成图片预览吗？\n\n此操作可能消耗 API 额度。"),
+            _L("继续使用当前配色"), wxYES_NO | wxICON_QUESTION);
+        if (confirm.ShowModal() != wxID_YES)
+            return;
+        on_preprocess(event);
+        return;
+    }
+    MessageDialog confirm(
+        this,
+        _L("确认使用当前目标色生成可打印图片预览吗？\n\n目标色不会自动绑定耗材槽；此操作可能消耗 API 额度。"),
+        _L("确认推荐配色"), wxYES_NO | wxICON_QUESTION);
+    if (confirm.ShowModal() != wxID_YES)
+        return;
+
+    m_job_palette = current_palette();
+    m_job_palette_roles = current_palette_roles();
+    m_palette_recommendation_confirmed = true;
+    m_awaiting_palette_confirmation = false;
+    m_busy = true;
+    const uint64_t sequence = m_sequence;
+    update_progress(10, 2, _L("生成可打印预览"));
+    m_status->SetLabel(_L("正在应用确认的目标色并生成图片预览..."));
+    refresh_controls();
+    wxWeakRef<ModelGenerationPanel> weak(this);
+    m_client.confirm_palette(
+        m_job_id, m_job_palette, m_job_palette_roles,
+        [weak, sequence](AIModelGenerationClient::JobStatus status) mutable {
+            if (!weak) return;
+            wxGetApp().CallAfter([weak, sequence, status = std::move(status)]() mutable {
+                if (weak) weak->handle_status(std::move(status), sequence);
+            });
+        },
+        [weak, sequence](std::string error) mutable {
+            if (!weak) return;
+            wxGetApp().CallAfter([weak, sequence, error = std::move(error)]() {
+                if (weak) weak->handle_error(error, sequence);
+            });
+        });
 }
 
 void ModelGenerationPanel::on_preprocess(wxCommandEvent&)
@@ -1896,6 +2084,8 @@ void ModelGenerationPanel::on_preprocess(wxCommandEvent&)
     m_job_face_limit = current_face_limit();
     m_job_print_settings = current_print_settings();
     m_job_image_path = m_selected_image_path;
+    m_palette_recommendation_confirmed = m_palette_source->GetSelection() == 2 &&
+                                         m_palette_recommendation.available;
     m_busy = true;
     const bool preview_mode = image_mode || m_job_use_printable_colors;
     if (preview_mode) {
@@ -2038,6 +2228,8 @@ void ModelGenerationPanel::handle_error(const std::string& error, uint64_t seque
     m_poll_timer.Stop();
     m_busy = false;
     m_awaiting_confirmation = false;
+    m_awaiting_palette_confirmation = false;
+    m_palette_recommendation_confirmed = false;
     m_ready = false;
     m_artifact_download_started = false;
     m_model_preview_ready = false;
@@ -2075,8 +2267,45 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
     if (m_shutdown || sequence != m_sequence)
         return;
     m_job_id = status.id;
+    if (status.palette_recommendation.available) {
+        const bool new_recommendation = m_palette_recommendation_job_id != status.id;
+        m_palette_recommendation = status.palette_recommendation;
+        m_palette_recommendation_confirmed = status.palette_recommendation.confirmed;
+        if (new_recommendation) {
+            m_palette_recommendation_job_id = status.id;
+            m_user_adjusted_palette_colors.clear();
+            m_custom_palette.clear();
+            m_palette_roles.clear();
+            if (status.palette_recommendation.confirmed && !status.palette.empty()) {
+                m_custom_palette = status.palette;
+                m_palette_roles = status.palette_roles.empty() ? automatic_palette_roles(status.palette) : status.palette_roles;
+                for (const std::string& color : status.palette) {
+                    const auto recommended = std::find_if(
+                        status.palette_recommendation.colors.begin(), status.palette_recommendation.colors.end(),
+                        [&color](const AIModelGenerationClient::PaletteRecommendationColor& item) { return item.hex == color; });
+                    if (recommended == status.palette_recommendation.colors.end())
+                        m_user_adjusted_palette_colors.emplace_back(color);
+                }
+            } else {
+                for (const auto& color : status.palette_recommendation.colors) {
+                    m_custom_palette.emplace_back(color.hex);
+                    m_palette_roles[color.role] = color.hex;
+                }
+            }
+            m_palette_roles_source = m_custom_palette;
+            if (m_palette_source != nullptr)
+                m_palette_source->SetSelection(2);
+            m_job_use_printable_colors = true;
+        }
+    }
+    if (!status.palette.empty()) {
+        m_job_palette = status.palette;
+        m_job_use_printable_colors = true;
+    }
     m_status->SetLabel(localized_job_status(status));
-    m_busy = status.state == "preprocessing" || status.state == "queued" || status.state == "running" || status.state == "stopping";
+    m_busy = status.state == "recommending_palette" || status.state == "preprocessing" ||
+             status.state == "queued" || status.state == "running" || status.state == "stopping";
+    m_awaiting_palette_confirmation = status.state == "awaiting_palette_confirmation";
     m_awaiting_confirmation = status.state == "awaiting_confirmation";
     m_ready = status.state == "ready" && status.artifact_ready;
     m_artifact_format = status.artifact_format;
@@ -2109,6 +2338,9 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
         if (status.artifact_size > 0)
             summary << wxString::Format(_L(" · %.1f MB"), double(status.artifact_size) / (1024.0 * 1024.0));
         m_result_summary->SetLabel(summary);
+    } else if (m_awaiting_palette_confirmation) {
+        m_result_summary->SetLabel(
+            _L("AI 已推荐四个设计目标色。可以替换、删除或补充颜色；确认后再由你匹配实际耗材。"));
     } else if (m_awaiting_confirmation) {
         if (status.preview_ready && !status.palette.empty() && !status.palette_quality_ok) {
             const int required_colors = std::min<int>(status.palette.size(), 3);
@@ -2492,6 +2724,8 @@ void ModelGenerationPanel::import_local_artifact(const boost::filesystem::path& 
     m_artifact_color_encoding.clear();
     m_busy = false;
     m_awaiting_confirmation = false;
+    m_awaiting_palette_confirmation = false;
+    m_palette_recommendation_confirmed = false;
     m_ready = false;
     m_artifact_download_started = false;
     m_library_model_loaded = false;
@@ -2588,7 +2822,8 @@ void ModelGenerationPanel::refresh_controls()
     const bool custom_style_ready = !custom_style_selected || !current_custom_style().empty();
     const bool valid_input = (!m_prompt->GetValue().empty() || image_input) && custom_style_ready;
     const bool printable_colors = use_printable_colors();
-    const bool palette_matches = m_job_id.empty() ||
+    const bool ai_palette_source = printable_colors && m_palette_source->GetSelection() == 2;
+    const bool palette_matches = m_awaiting_palette_confirmation || m_job_id.empty() ||
         (printable_colors == m_job_use_printable_colors && (!printable_colors || m_palette == m_job_palette));
     const bool stale_job = !m_job_id.empty() && (!job_inputs_match() || !palette_matches);
     const bool auto_slice_after_import = m_auto_slice_after_import == nullptr ||
@@ -2597,7 +2832,9 @@ void ModelGenerationPanel::refresh_controls()
     const bool local_artifact = is_nonempty_obj(m_artifact_path) ||
         (!m_job_id.empty() && is_nonempty_obj(temp_path(m_job_id, "obj")));
 
-    m_preprocess->SetLabel(m_awaiting_confirmation && !m_palette_quality_ok
+    m_preprocess->SetLabel(ai_palette_source && m_palette_recommendation_confirmed
+                               ? _L("使用当前目标色生成预览")
+                               : m_awaiting_confirmation && !m_palette_quality_ok
                                ? _L("重新生成设计师玩具预览")
                                : image_input && printable_colors ? _L("生成设计师玩具图片")
                                : image_input ? _L("生成风格图片预览")
@@ -2641,8 +2878,8 @@ void ModelGenerationPanel::refresh_controls()
     m_palette_source->Enable(!m_busy && printable_colors);
     m_import_color_mode->Enable(!m_busy);
     m_auto_slice_after_import->Enable(!m_busy);
-    m_custom_color->Enable(!m_busy && printable_colors && m_palette_source->GetSelection() == 1);
-    m_add_custom_color->Enable(!m_busy && printable_colors && m_palette_source->GetSelection() == 1 && m_custom_palette.size() < 4);
+    m_custom_color->Enable(!m_busy && printable_colors && m_palette_source->GetSelection() != 0);
+    m_add_custom_color->Enable(!m_busy && printable_colors && m_palette_source->GetSelection() != 0 && m_custom_palette.size() < 4);
     for (wxSpinCtrlDouble* control : {m_print_width, m_nozzle_size, m_line_width, m_minimum_feature})
         control->Enable(!m_busy && printable_colors);
     if (m_shadow_color != nullptr)
@@ -2663,8 +2900,10 @@ void ModelGenerationPanel::refresh_controls()
                                   m_model_preview_ready && !m_displayed_model_job_id.empty());
     m_discard->Enable(!m_busy && (!m_job_id.empty() || m_ready));
 
-    const bool show_preprocess = !m_busy && (!m_ready || stale_job) && (m_job_id.empty() || stale_job ||
-        (!m_awaiting_confirmation && !m_ready) || (m_awaiting_confirmation && !m_palette_quality_ok));
+    const bool show_preprocess = !m_busy && (!m_ready || stale_job) &&
+        (!ai_palette_source || m_palette_recommendation_confirmed) &&
+        (m_job_id.empty() || stale_job || (!m_awaiting_confirmation && !m_ready) ||
+         (m_awaiting_confirmation && !m_palette_quality_ok));
     m_preprocess->Show(show_preprocess);
     m_generate->Show(!m_busy && m_awaiting_confirmation && !stale_job && m_palette_quality_ok);
     m_stop->Show(m_busy);
@@ -2673,9 +2912,15 @@ void ModelGenerationPanel::refresh_controls()
     if (!m_busy && ((m_job_id.empty() && !m_ready) || stale_job))
         update_progress(0, 1, _L("输入"));
     if (!m_busy && stale_job)
-        m_status->SetLabel(_L("输入或颜色已变化，请重新生成图片预览。"));
+        m_status->SetLabel(m_awaiting_palette_confirmation
+                               ? _L("输入已变化；可重新推荐，或继续使用当前配色。")
+                               : _L("输入或颜色已变化，请重新生成图片预览。"));
     if (m_ready && !stale_job)
         m_workflow_steps->SetLabel(_L("检查右侧 3D 模型，然后选择导入方式"));
+    else if (m_awaiting_palette_confirmation)
+        m_workflow_steps->SetLabel(stale_job
+                                       ? _L("输入已变化：重新推荐或确认继续使用当前配色")
+                                       : _L("修改或确认 AI 推荐的四个设计目标色"));
     else if (m_awaiting_confirmation && !stale_job)
         m_workflow_steps->SetLabel(m_palette_quality_ok
                                        ? _L("确认右侧图片效果，并选择 3D 模型精度")
@@ -3124,7 +3369,7 @@ std::vector<std::string> ModelGenerationPanel::current_palette() const
 {
     if (!use_printable_colors())
         return {};
-    return m_palette_source != nullptr && m_palette_source->GetSelection() == 1 ? m_custom_palette : project_palette();
+    return m_palette_source != nullptr && m_palette_source->GetSelection() != 0 ? m_custom_palette : project_palette();
 }
 
 AIModelGenerationClient::PaletteRoles ModelGenerationPanel::current_palette_roles() const
@@ -3248,6 +3493,12 @@ bool ModelGenerationPanel::job_uses_image() const
 
 bool ModelGenerationPanel::job_inputs_match() const
 {
+    return job_base_inputs_match() &&
+           (m_awaiting_palette_confirmation || current_palette_roles() == m_job_palette_roles);
+}
+
+bool ModelGenerationPanel::job_base_inputs_match() const
+{
     const auto settings = current_print_settings();
     const bool print_matches = std::abs(settings.width_mm - m_job_print_settings.width_mm) < 0.001 &&
         std::abs(settings.nozzle_mm - m_job_print_settings.nozzle_mm) < 0.001 &&
@@ -3256,19 +3507,114 @@ bool ModelGenerationPanel::job_inputs_match() const
         settings.shadow_color == m_job_print_settings.shadow_color;
     return m_job_id.empty() || (m_prompt->GetValue() == m_job_prompt && m_selected_image_path == m_job_image_path &&
                                 current_style() == m_job_style && current_custom_style() == m_job_custom_style &&
-                                current_palette_roles() == m_job_palette_roles &&
                                 print_matches);
 }
 
 void ModelGenerationPanel::remove_custom_color(const std::string& color)
 {
-    if (m_busy || m_palette_source->GetSelection() != 1)
+    if (m_busy || m_palette_source->GetSelection() == 0)
         return;
     const auto item = std::find(m_custom_palette.begin(), m_custom_palette.end(), color);
     if (item != m_custom_palette.end())
         m_custom_palette.erase(item);
     refresh_palette();
     refresh_controls();
+}
+
+void ModelGenerationPanel::replace_recommended_color(size_t index)
+{
+    if (m_busy || m_palette_source->GetSelection() != 2 || index >= m_custom_palette.size())
+        return;
+    wxColourData data;
+    data.SetChooseFull(true);
+    data.SetColour(wxColour(from_u8(m_custom_palette[index])));
+    wxColourDialog dialog(this, &data);
+    if (dialog.ShowModal() != wxID_OK)
+        return;
+    std::string replacement = dialog.GetColourData().GetColour().GetAsString(wxC2S_HTML_SYNTAX).ToStdString();
+    std::transform(replacement.begin(), replacement.end(), replacement.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::toupper(ch));
+    });
+    const auto duplicate = std::find(m_custom_palette.begin(), m_custom_palette.end(), replacement);
+    if (duplicate != m_custom_palette.end() && size_t(std::distance(m_custom_palette.begin(), duplicate)) != index) {
+        MessageDialog warning(this, _L("这个颜色已经在当前目标色板中。"), wxEmptyString, wxOK | wxICON_INFORMATION);
+        warning.ShowModal();
+        return;
+    }
+    const std::string previous = m_custom_palette[index];
+    m_custom_palette[index] = replacement;
+    for (auto& [role, color] : m_palette_roles)
+        if (color == previous) color = replacement;
+    for (auto& color : m_palette_recommendation.colors)
+        if (color.hex == previous) color.hex = replacement;
+    if (std::find(m_user_adjusted_palette_colors.begin(), m_user_adjusted_palette_colors.end(), replacement) ==
+        m_user_adjusted_palette_colors.end())
+        m_user_adjusted_palette_colors.emplace_back(replacement);
+    refresh_palette();
+    refresh_controls();
+}
+
+void ModelGenerationPanel::refresh_palette_recommendation()
+{
+    if (m_palette_recommendation_panel == nullptr || m_palette_source == nullptr)
+        return;
+    const bool ai_source = use_printable_colors() && m_palette_source->GetSelection() == 2;
+    m_palette_recommendation_panel->Show(ai_source);
+    if (!ai_source)
+        return;
+
+    const bool stale = !m_job_id.empty() && !job_base_inputs_match();
+    if (m_busy && !m_awaiting_confirmation)
+        m_palette_recommendation_summary->SetLabel(_L("AI 正在分析主体、风格和适合打印的大色区..."));
+    else if (m_palette_recommendation.available) {
+        wxString text = from_u8(m_palette_recommendation.summary);
+        if (stale)
+            text += _L("\n输入已变化：可重新推荐，或确认继续使用当前配色。");
+        else if (m_palette_recommendation_confirmed)
+            text += _L("\n已确认；导入时请把这些目标色匹配到实际耗材。");
+        else
+            text += _L("\n可替换、删除或补充颜色，确认后再生成图片预览。");
+        m_palette_recommendation_summary->SetLabel(text);
+    } else {
+        m_palette_recommendation_summary->SetLabel(
+            _L("AI 会推荐理想目标色；确认后再由你匹配实际耗材。"));
+    }
+    m_palette_recommendation_summary->Wrap(FromDIP(300));
+
+    const std::vector<std::string> palette = current_palette();
+    for (size_t index = 0; index < m_palette_recommendation_cards.size(); ++index) {
+        const bool visible = index < palette.size();
+        m_palette_recommendation_cards[index]->Show(visible);
+        if (!visible)
+            continue;
+        const std::string& hex = palette[index];
+        m_palette_recommendation_swatches[index]->SetBackgroundColour(wxColour(from_u8(hex)));
+        const auto detail = std::find_if(
+            m_palette_recommendation.colors.begin(), m_palette_recommendation.colors.end(),
+            [&hex](const AIModelGenerationClient::PaletteRecommendationColor& color) { return color.hex == hex; });
+        wxString label = from_u8(hex);
+        if (detail != m_palette_recommendation.colors.end()) {
+            label += _L(" · ") + from_u8(detail->name) + _L(" · ") + from_u8(detail->usage) +
+                     "\n" + from_u8(detail->reason);
+        } else {
+            label += _L(" · 用户添加的目标色");
+        }
+        if (std::find(m_user_adjusted_palette_colors.begin(), m_user_adjusted_palette_colors.end(), hex) !=
+            m_user_adjusted_palette_colors.end())
+            label += _L("（用户已调整）");
+        m_palette_recommendation_details[index]->SetLabel(label);
+        m_palette_recommendation_details[index]->Wrap(FromDIP(230));
+        m_palette_recommendation_replace[index]->Enable(!m_busy);
+        m_palette_recommendation_remove[index]->Enable(!m_busy && palette.size() > 1);
+    }
+    const bool valid_input = !m_prompt->GetValue().empty() || has_image_input();
+    m_recommend_palette->SetLabel(m_palette_recommendation.available ? _L("重新推荐四色") : _L("AI 推荐四色"));
+    m_recommend_palette->Enable(m_service_available && !m_busy && valid_input);
+    m_confirm_recommended_palette->Show(m_awaiting_palette_confirmation);
+    m_confirm_recommended_palette->SetLabel(stale ? _L("继续使用此配色") : _L("确认配色并生成预览"));
+    m_confirm_recommended_palette->Enable(
+        m_service_available && !m_busy && m_awaiting_palette_confirmation && !palette.empty());
+    m_palette_recommendation_panel->Layout();
 }
 
 void ModelGenerationPanel::refresh_palette()
@@ -3278,7 +3624,7 @@ void ModelGenerationPanel::refresh_palette()
     const std::vector<std::string> palette = current_palette();
     refresh_palette_roles(palette);
     const bool enabled = use_printable_colors();
-    const bool custom = m_palette_source->GetSelection() == 1;
+    const bool custom = m_palette_source->GetSelection() != 0;
     const bool palette_changed = palette != m_palette || custom != m_palette_is_custom;
     if (palette_changed) {
         m_palette = palette;
@@ -3299,12 +3645,20 @@ void ModelGenerationPanel::refresh_palette()
     if (!enabled) {
         m_palette_summary->SetLabel(_L("保留自然颜色生成，不限制到耗材色板。\n导入时按“导入颜色”设置处理。"));
         m_palette_summary->SetForegroundColour(wxColour(91, 104, 107));
+    } else if (m_palette.empty() && m_palette_source->GetSelection() == 2) {
+        m_palette_summary->SetLabel(_L("尚未生成 AI 设计目标色。"));
+        m_palette_summary->SetForegroundColour(wxColour(91, 104, 107));
     } else if (m_palette.empty()) {
         m_palette_summary->SetLabel(_L("当前没有配置有效的耗材颜色。"));
         m_palette_summary->SetForegroundColour(wxColour(180, 55, 55));
     } else if (!m_job_palette.empty() && m_palette != m_job_palette) {
         m_palette_summary->SetLabel(_L("耗材颜色已变化，请重新生成预览以使用当前色板。"));
         m_palette_summary->SetForegroundColour(wxColour(180, 55, 55));
+    } else if (m_palette_source->GetSelection() == 2) {
+        m_palette_summary->SetLabel(wxString::Format(
+            _L("%llu 种 AI 设计目标色 · 导入时由你匹配实际耗材"),
+            static_cast<unsigned long long>(m_palette.size())));
+        m_palette_summary->SetForegroundColour(wxColour(91, 104, 107));
     } else if (m_palette_source->GetSelection() == 1) {
         m_palette_summary->SetLabel(wxString::Format(_L("%llu 种自定义颜色 · 点击色块可移除"),
                                                      static_cast<unsigned long long>(m_palette.size())));
@@ -3332,6 +3686,7 @@ void ModelGenerationPanel::refresh_palette()
     m_palette_panel->Show(enabled);
     m_palette_roles_panel->Show(enabled && !m_palette.empty());
     m_custom_color_panel->Show(enabled && custom);
+    refresh_palette_recommendation();
     m_palette_panel->Layout();
     m_palette_panel->GetParent()->Layout();
 }
@@ -3356,6 +3711,8 @@ void ModelGenerationPanel::reset(bool remove_remote)
     m_artifact_color_encoding.clear();
     m_busy = false;
     m_awaiting_confirmation = false;
+    m_awaiting_palette_confirmation = false;
+    m_palette_recommendation_confirmed = false;
     m_ready = false;
     m_artifact_download_started = false;
     m_model_preview_ready = false;
@@ -3869,7 +4226,15 @@ void ModelGenerationPanel::update_workflow(const AIModelGenerationClient::JobSta
     int progress = 0;
     if (status != nullptr) {
         progress = display_progress(*status);
-        if (status->state == "preprocessing") {
+        if (status->state == "recommending_palette") {
+            phase = _L("推荐打印配色");
+            guidance = _L("AI 正在分析主体、风格和适合打印的大色区");
+            step = 1;
+        } else if (status->state == "awaiting_palette_confirmation") {
+            phase = _L("确认目标配色");
+            guidance = _L("修改或确认四个设计目标色，再生成图片预览");
+            step = 1;
+        } else if (status->state == "preprocessing") {
             phase = image_mode ? _L("生成可打印预览") : _L("准备提示词");
             guidance = image_mode ? _L("AI 正在生成并检查图片，请稍候") : _L("AI 正在整理 3D 提示词");
             step = 2;

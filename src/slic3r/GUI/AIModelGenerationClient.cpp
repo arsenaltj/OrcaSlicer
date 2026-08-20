@@ -13,6 +13,7 @@ namespace {
 
 constexpr size_t MAX_PREVIEW_SIZE = 10 * 1024 * 1024;
 constexpr size_t MAX_ARTIFACT_SIZE = 768 * 1024 * 1024;
+constexpr size_t MAX_RECOMMENDATION_TEXT_SIZE = 2048;
 
 std::string normalize_endpoint(std::string endpoint)
 {
@@ -38,6 +39,17 @@ std::string error_message(const std::string& body, const std::string& error, uns
             return parsed["error"].get<std::string>();
     }
     return "Model generation request failed with HTTP " + std::to_string(status) + ".";
+}
+
+bool valid_recommendation_text(const std::string& value)
+{
+    return !value.empty() && value.size() <= MAX_RECOMMENDATION_TEXT_SIZE;
+}
+
+bool valid_hex_color(const std::string& value)
+{
+    static const std::regex pattern(R"(^#[0-9A-Fa-f]{6}$)");
+    return std::regex_match(value, pattern);
 }
 
 } // namespace
@@ -121,6 +133,60 @@ void AIModelGenerationClient::preprocess_image(const std::string& request_id, co
             on_error(error_message(body, error, status));
     });
     m_active_request = http.perform();
+}
+
+void AIModelGenerationClient::recommend_text_palette(const std::string& request_id, const std::string& prompt,
+                                                       const std::string& style, const std::string& custom_style,
+                                                       const ImagePrintSettings& print_settings,
+                                                       StatusFn on_complete, ErrorFn on_error)
+{
+    post_json("/v1/orcaslicer/model-jobs/recommend-text-palette",
+              json::object({ { "request_id", request_id }, { "prompt", prompt }, { "style", style },
+                             { "custom_style", custom_style },
+                             { "print", serialize_print_settings(print_settings) } }),
+              std::move(on_complete), std::move(on_error));
+}
+
+void AIModelGenerationClient::recommend_image_palette(const std::string& request_id, const std::string& instruction,
+                                                        const boost::filesystem::path& image_path,
+                                                        const std::string& style, const std::string& custom_style,
+                                                        const ImagePrintSettings& print_settings,
+                                                        StatusFn on_complete, ErrorFn on_error)
+{
+    cancel_current();
+    if (!is_loopback_endpoint(m_endpoint)) {
+        if (on_error)
+            on_error("Palette recommendation requires a loopback AI sidecar endpoint.");
+        return;
+    }
+    auto http = Http::post(url("/v1/orcaslicer/model-jobs/recommend-image-palette"));
+    http.header("X-OrcaSlicer-Client", "native")
+        .timeout_connect(5)
+        .timeout_max(130)
+        .size_limit(1024 * 1024)
+        .form_add("request_id", request_id)
+        .form_add("instruction", instruction)
+        .form_add("style", style)
+        .form_add("custom_style", custom_style)
+        .form_add("print", serialize_print_settings(print_settings).dump())
+        .form_add_file("image", image_path, image_path.filename().string());
+    http.on_complete([this, on_complete = std::move(on_complete), on_error](std::string body, unsigned) mutable {
+        parse_status_response(std::move(body), std::move(on_complete), on_error);
+    });
+    http.on_error([on_error = std::move(on_error)](std::string body, std::string error, unsigned status) {
+        if (on_error)
+            on_error(error_message(body, error, status));
+    });
+    m_active_request = http.perform();
+}
+
+void AIModelGenerationClient::confirm_palette(const std::string& job_id, const std::vector<std::string>& palette,
+                                                const PaletteRoles& palette_roles,
+                                                StatusFn on_complete, ErrorFn on_error)
+{
+    post_json("/v1/orcaslicer/model-jobs/" + job_id + "/confirm-palette",
+              json::object({ { "palette", palette }, { "palette_roles", palette_roles } }),
+              std::move(on_complete), std::move(on_error));
 }
 
 void AIModelGenerationClient::generate(const std::string& job_id, const std::string& prepared_prompt,
@@ -338,6 +404,38 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
     if (job.contains("palette_roles") && job["palette_roles"].is_object()) {
         for (const auto& [role, color] : job["palette_roles"].items())
             if (color.is_string()) status.palette_roles.emplace(role, color.get<std::string>());
+    }
+    status.palette_recommendation.confirmed = job.value("palette_recommendation_confirmed", false);
+    if (job.contains("palette_recommendation") && job["palette_recommendation"].is_object()) {
+        const auto& recommendation = job["palette_recommendation"];
+        const std::string summary = recommendation.value("summary", std::string());
+        std::vector<PaletteRecommendationColor> colors;
+        std::vector<std::string> roles;
+        const std::vector<std::string> allowed_roles { "primary", "structure", "light", "accent" };
+        if (valid_recommendation_text(summary) && recommendation.contains("colors") && recommendation["colors"].is_array()) {
+            for (const auto& value : recommendation["colors"]) {
+                if (!value.is_object())
+                    continue;
+                PaletteRecommendationColor color;
+                color.hex = value.value("hex", std::string());
+                color.name = value.value("name", std::string());
+                color.role = value.value("role", std::string());
+                color.usage = value.value("usage", std::string());
+                color.reason = value.value("reason", std::string());
+                if (!valid_hex_color(color.hex) || !valid_recommendation_text(color.name) ||
+                    !valid_recommendation_text(color.usage) || !valid_recommendation_text(color.reason) ||
+                    std::find(allowed_roles.begin(), allowed_roles.end(), color.role) == allowed_roles.end() ||
+                    std::find(roles.begin(), roles.end(), color.role) != roles.end())
+                    continue;
+                roles.emplace_back(color.role);
+                colors.emplace_back(std::move(color));
+            }
+        }
+        if (colors.size() == allowed_roles.size()) {
+            status.palette_recommendation.available = true;
+            status.palette_recommendation.summary = summary;
+            status.palette_recommendation.colors = std::move(colors);
+        }
     }
     if (job.contains("print") && job["print"].is_object()) {
         const auto& print = job["print"];
