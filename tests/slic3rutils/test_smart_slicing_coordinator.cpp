@@ -263,3 +263,21 @@ TEST_CASE("idle view model initializes every stage and legacy step", "[AI][Smart
     CHECK(view.can_start);
     CHECK_FALSE(view.can_cancel);
 }
+
+TEST_CASE("canceled view model does not expose a report from an obsolete workspace", "[AI][SmartSlicing]")
+{
+    FakeWorkspace workspace;
+    workspace.context.materials.push_back({"material", "#FFFFFF"});
+    workspace.context.objects.front().open_edge_count = 3;
+    SmartSlicingCoordinator coordinator(workspace);
+    coordinator.start();
+    REQUIRE(coordinator.snapshot().report);
+    REQUIRE_FALSE(coordinator.snapshot().report->issues.empty());
+
+    coordinator.cancel();
+
+    const Slic3r::GUI::SmartSlicingViewModel view = Slic3r::GUI::SmartSlicingViewModel::from_snapshot(coordinator.snapshot());
+    CHECK(view.summary_key == "canceled");
+    CHECK(view.issue_count == 0);
+    CHECK(view.issues.empty());
+}

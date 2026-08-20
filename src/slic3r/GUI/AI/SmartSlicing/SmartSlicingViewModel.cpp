@@ -65,6 +65,8 @@ SmartSlicingViewModel SmartSlicingViewModel::from_snapshot(const AI::SmartSlicin
     case WorkflowState::Canceling: view.summary_key = "canceling"; break;
     case WorkflowState::Canceled:
         view.summary_key = "canceled";
+        view.issue_count = 0;
+        view.issues.clear();
         view.legacy_steps.fill(LegacyAIWorkflowStatus::Warning);
         break;
     case WorkflowState::Stale:

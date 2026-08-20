@@ -66,9 +66,11 @@
 
 - Configured an isolated Windows build in `build` using the existing Orca dependency install tree.
 - Built `slic3rutils_tests`, `OrcaSlicer`, and `OrcaSlicer_app_gui` in Release mode with MSVC 19.44.
-- Smart-slicing tests: 14 test cases, 73 assertions, all passed.
-- Full `slic3rutils_tests`: 25 test cases, 180 assertions, all passed.
-- Runtime smoke test reached the `Untitled - OrcaSlicer` editor window without a new crash log. Windows UI automation could read the editor tree, but the desktop session was locked and Windows refused to activate the wx/OpenGL window, so menu-level GUI journeys remain pending on an unlocked session.
+- Smart-slicing tests: 15 test cases, 79 assertions, all passed.
+- Full `slic3rutils_tests`: 26 test cases, 186 assertions, all passed.
+- Built the follow-up `OrcaSlicer_app_gui` Release target after the view-model change; the updated DLL and launcher linked successfully.
+- On an unlocked Windows desktop, real GUI automation verified the View menu entry, native-themed right pane, empty-plate report, matching legacy Sidebar projection, stale detection after changing the build plate, successful recheck after restoring the plate, and a real two-object 3MF preflight with only the expected native-validation warning.
+- The unlocked journey exposed one misleading state: canceling a completed report retained issue text that could belong to a subsequently opened workspace. The canceled view model now clears the projected issue count/list; a targeted test and a final GUI rerun verified `检查已取消` together with `未发现结构化问题`.
 - Read-only audit found no Model, DynamicPrintConfig, project-dirty, background-slice, or preview mutation call in the P0 smart-slicing adapter/application path.
 - Existing model-generation import behavior remains unchanged and outside the smart-slicing coordinator path.
 - The root `task_plan.md`, `findings.md`, and `progress.md` remained unmodified.
