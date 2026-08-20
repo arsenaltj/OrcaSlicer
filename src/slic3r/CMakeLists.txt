@@ -311,6 +311,8 @@ set(SLIC3R_GUI_SOURCES
     AI/SmartSlicing/Application/SmartSlicingCoordinator.hpp
     AI/SmartSlicing/Application/PrintabilityInspector.cpp
     AI/SmartSlicing/Application/PrintabilityInspector.hpp
+    AI/SmartSlicing/Domain/CandidateComparison.cpp
+    AI/SmartSlicing/Domain/CandidateComparison.hpp
     AI/SmartSlicing/Domain/ParameterProposal.hpp
     AI/SmartSlicing/Domain/PlacementCandidate.hpp
     AI/SmartSlicing/Domain/PrintabilityReport.hpp

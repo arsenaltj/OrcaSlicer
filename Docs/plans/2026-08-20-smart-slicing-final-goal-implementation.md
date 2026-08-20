@@ -214,6 +214,7 @@
 2. Build Release `slic3rutils_tests`, focused Print tests, `OrcaSlicer`, and `OrcaSlicer_app_gui`.
 3. Run full available Catch2/CTest suites relevant to changed slicing and GUI code.
 4. Smoke-test ordinary import/slice/Preview with the workbench closed and AI unavailable.
+   Launch only `D:/Workspace/06_3DDY_smart_slicing/build-p0/OrcaSlicer/orca-slicer.exe`, and verify the process executable path before interaction so no installed or other-workspace Orca instance is used.
 5. Smoke-test old 3MF/profile loading, single/multicolor, multi-plate, locked objects, cancel, stale, apply, one-step Undo, and official Preview.
 6. Record any platform verification that cannot run locally as an explicit CI gate rather than claiming it passed.
 7. Review the diff for architecture boundaries, remove duplication and generated-code bloat, and commit final documentation.

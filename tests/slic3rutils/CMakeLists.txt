@@ -2,6 +2,7 @@ get_filename_component(_TEST_NAME ${CMAKE_CURRENT_LIST_DIR} NAME)
 add_executable(${_TEST_NAME}_tests
     ${_TEST_NAME}_tests_main.cpp
     test_smart_slicing_coordinator.cpp
+    test_smart_slicing_candidates.cpp
     test_vertex_color_region_editor.cpp
     )
 
