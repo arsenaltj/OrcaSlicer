@@ -309,8 +309,10 @@ set(SLIC3R_GUI_SOURCES
     AI/ModelGeneration/IPrintablePaletteProvider.hpp
     AI/SmartSlicing/Application/SmartSlicingCoordinator.cpp
     AI/SmartSlicing/Application/SmartSlicingCoordinator.hpp
+    AI/SmartSlicing/Application/CandidatePlanningWorkflow.hpp
     AI/SmartSlicing/Application/PrintabilityInspector.cpp
     AI/SmartSlicing/Application/PrintabilityInspector.hpp
+    AI/SmartSlicing/Application/TrialSlicingWorkflow.hpp
     AI/SmartSlicing/Domain/CandidateComparison.cpp
     AI/SmartSlicing/Domain/CandidateComparison.hpp
     AI/SmartSlicing/Domain/ParameterProposal.hpp
@@ -337,6 +339,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/AI/SmartSlicing/SmartSlicingViewModel.hpp
     GUI/AI/Orca/OrcaSmartSlicingAdapter.cpp
     GUI/AI/Orca/OrcaSmartSlicingAdapter.hpp
+    GUI/AI/Orca/OrcaTrialSliceExecutor.cpp
+    GUI/AI/Orca/OrcaTrialSliceExecutor.hpp
     GUI/AI/Orca/OrcaWorkspaceAdapter.cpp
     GUI/AI/Orca/OrcaWorkspaceAdapter.hpp
     GUI/AI/Model/VertexColorRegionEditor.cpp

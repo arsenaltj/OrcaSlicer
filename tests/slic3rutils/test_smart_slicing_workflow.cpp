@@ -2,12 +2,16 @@
 
 #include "slic3r/AI/SmartSlicing/Application/CandidatePlanningWorkflow.hpp"
 #include "slic3r/AI/SmartSlicing/Application/SmartSlicingCoordinator.hpp"
+#include "slic3r/GUI/AI/Orca/OrcaTrialSliceExecutor.hpp"
 #include "slic3r/GUI/AI/SmartSlicing/SmartSlicingViewModel.hpp"
+
+#include "libslic3r/TriangleMesh.hpp"
 
 #include <functional>
 #include <stdexcept>
 
 using namespace Slic3r::AI::SmartSlicing;
+using namespace Slic3r;
 
 namespace {
 
@@ -249,4 +253,81 @@ TEST_CASE("workspace edits during trial slicing make all results stale", "[AI][S
     CHECK_FALSE(coordinator.plan_and_slice_candidates());
     CHECK(coordinator.snapshot().state == WorkflowState::Stale);
     CHECK(coordinator.snapshot().comparison == std::nullopt);
+}
+
+TEST_CASE("Orca trial slicing owns model config print and gcode copies", "[AI][SmartSlicing][Workflow][OrcaTrial]")
+{
+    Model formal_model;
+    ModelObject* object = formal_model.add_object();
+    object->name        = "trial cube";
+    object->add_volume(make_cube(5.0, 5.0, 5.0));
+    ModelInstance* instance = object->add_instance();
+    instance->set_offset(Vec3d(50.0, 50.0, 0.0));
+    object->ensure_on_bed();
+    DynamicPrintConfig formal_config = DynamicPrintConfig::full_print_config();
+    formal_config.set("layer_height", 0.25);
+    formal_config.set("layer_change_gcode", std::string("G92 E0\n"));
+
+    const ObjectID object_id = object->id();
+    const ObjectID instance_id = instance->id();
+    const Transform3d original_transform = instance->get_matrix();
+    const std::string original_layer_height = formal_config.opt_serialize("layer_height");
+    Slic3r::GUI::OrcaTrialSliceExecutor executor([&formal_model, &formal_config] {
+        Slic3r::GUI::OrcaTrialSliceInput input;
+        input.model       = formal_model;
+        input.config      = formal_config;
+        input.plate_index = 0;
+        input.plate_name  = "Trial";
+        return input;
+    });
+    SliceCandidate candidate = proposal("baseline", WorkspaceRevision{1, 2, 3, "revision-a"});
+    candidate.status = CandidateStatus::Draft;
+    candidate.metrics.reset();
+    ObjectTransform cloned_transform;
+    cloned_transform.object_id   = object_id.id;
+    cloned_transform.instance_id = instance_id.id;
+    Transform3d candidate_transform = original_transform;
+    candidate_transform.translation().x() += 10.0;
+    for (Eigen::Index row = 0; row < candidate_transform.rows(); ++row)
+        for (Eigen::Index column = 0; column < candidate_transform.cols(); ++column)
+            cloned_transform.matrix[static_cast<size_t>(row * candidate_transform.cols() + column)] =
+                candidate_transform(row, column);
+    candidate.placement.transforms.push_back(cloned_transform);
+
+    const TrialSliceResult result = executor.execute_trial_slice(candidate);
+
+    INFO("trial diagnostic: " << result.diagnostic_code);
+    REQUIRE(result.status == TrialSliceStatus::Succeeded);
+    REQUIRE(result.metrics);
+    CHECK(result.metrics->estimated_time_seconds.value_or(0.0) > 0.0);
+    CHECK(result.metrics->filament_volume_mm3.value_or(0.0) > 0.0);
+    REQUIRE(formal_model.objects.size() == 1);
+    CHECK(formal_model.objects.front()->id() == object_id);
+    REQUIRE(formal_model.objects.front()->instances.size() == 1);
+    CHECK(formal_model.objects.front()->instances.front()->id() == instance_id);
+    CHECK(formal_model.objects.front()->instances.front()->get_matrix().isApprox(original_transform));
+    CHECK(formal_config.opt_serialize("layer_height") == original_layer_height);
+}
+
+TEST_CASE("Orca trial slicing rejects unvalidated patches and observes early cancellation", "[AI][SmartSlicing][Workflow][OrcaTrial]")
+{
+    SliceCandidate candidate = proposal("candidate", WorkspaceRevision{1, 2, 3, "revision-a"});
+    candidate.parameters.entries.push_back({"layer_height", 0.2, "plate"});
+    Slic3r::GUI::OrcaTrialSliceExecutor rejected_executor([] { return Slic3r::GUI::OrcaTrialSliceInput{}; });
+
+    const TrialSliceResult rejected = rejected_executor.execute_trial_slice(candidate);
+    CHECK(rejected.status == TrialSliceStatus::Failed);
+    CHECK(rejected.diagnostic_code == "parameter_patch_not_validated");
+
+    Slic3r::GUI::OrcaTrialSliceExecutor* executor_ptr = nullptr;
+    Slic3r::GUI::OrcaTrialSliceExecutor canceled_executor([&executor_ptr] {
+        executor_ptr->cancel_trial_slice();
+        return Slic3r::GUI::OrcaTrialSliceInput{};
+    });
+    executor_ptr = &canceled_executor;
+    candidate.parameters.entries.clear();
+
+    const TrialSliceResult canceled = canceled_executor.execute_trial_slice(candidate);
+    CHECK(canceled.status == TrialSliceStatus::Canceled);
+    CHECK(canceled.diagnostic_code == "trial_slice_canceled");
 }
