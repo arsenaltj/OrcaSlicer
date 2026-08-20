@@ -1,8 +1,12 @@
 #include <catch2/catch_all.hpp>
 
 #include "slic3r/AI/SmartSlicing/Domain/CandidateComparison.hpp"
+#include "slic3r/GUI/AI/Orca/OrcaPlacementCandidateProvider.hpp"
+
+#include "libslic3r/TriangleMesh.hpp"
 
 using namespace Slic3r::AI::SmartSlicing;
+using namespace Slic3r;
 
 namespace {
 
@@ -23,6 +27,28 @@ SliceCandidate ready_candidate(std::string id,
     for (size_t index = 0; index < warning_count; ++index)
         candidate.metrics->warning_codes.push_back("warning_" + std::to_string(index));
     return candidate;
+}
+
+GUI::OrcaPlacementCandidateInput placement_input(double bed_size = 100.0)
+{
+    GUI::OrcaPlacementCandidateInput input;
+    input.config = DynamicPrintConfig::full_print_config();
+    input.config.set_key_value("printable_area", new ConfigOptionPoints{
+        {0.0, 0.0}, {bed_size, 0.0}, {bed_size, bed_size}, {0.0, bed_size}});
+    input.arrange_params.allow_rotations = false;
+    input.arrange_params.accuracy        = 0.25f;
+    input.arrange_params.min_obj_distance = scaled(5.0);
+    return input;
+}
+
+ModelInstance* add_cube(Model& model, double size, const Vec3d& offset)
+{
+    ModelObject* object = model.add_object();
+    object->add_volume(make_cube(size, size, size));
+    ModelInstance* instance = object->add_instance();
+    instance->set_offset(offset);
+    object->ensure_on_bed();
+    return instance;
 }
 
 } // namespace
@@ -92,4 +118,70 @@ TEST_CASE("stability comparison treats warnings as hard evidence before support 
     REQUIRE(comparison.ordered_candidate_ids.size() == 2);
     CHECK(comparison.ordered_candidate_ids.front() == "clean");
     CHECK(comparison.recommendation_evidence_codes == std::vector<std::string>{"fewer_slice_warnings"});
+}
+
+TEST_CASE("native placement candidates are deterministic and keep baseline isolated", "[AI][SmartSlicing][Candidate][OrcaPlacement]")
+{
+    GUI::OrcaPlacementCandidateInput formal = placement_input();
+    ModelInstance* formal_instance = add_cube(formal.model, 10.0, Vec3d(75.0, 75.0, 0.0));
+    const Transform3d formal_transform = formal_instance->get_matrix();
+    GUI::OrcaPlacementCandidateInput first  = formal;
+    GUI::OrcaPlacementCandidateInput second = formal;
+    GUI::OrcaPlacementCandidateProvider provider;
+    const WorkspaceRevision revision{1, 2, 3, "revision-a"};
+
+    const std::vector<SliceCandidate> first_result  = provider.generate(std::move(first), revision);
+    const std::vector<SliceCandidate> second_result = provider.generate(std::move(second), revision);
+
+    REQUIRE(first_result.size() == 1);
+    REQUIRE(second_result.size() == 1);
+    CHECK(first_result.front().id == "placement-stability-native-v1");
+    CHECK(first_result.front().base_revision == revision);
+    CHECK(first_result.front().placement.transforms.size() == 1);
+    CHECK(first_result.front().placement.transforms.front().matrix == second_result.front().placement.transforms.front().matrix);
+    CHECK(formal_instance->get_matrix().isApprox(formal_transform));
+}
+
+TEST_CASE("native placement candidates protect locked targets and locked plates", "[AI][SmartSlicing][Candidate][OrcaPlacement]")
+{
+    GUI::OrcaPlacementCandidateInput input = placement_input();
+    ModelInstance* locked = add_cube(input.model, 10.0, Vec3d(20.0, 20.0, 0.0));
+    add_cube(input.model, 10.0, Vec3d(75.0, 75.0, 0.0));
+    const uint64_t locked_instance_id = locked->id().id;
+    input.locked_instance_ids.insert(locked_instance_id);
+    GUI::OrcaPlacementCandidateInput locked_plate_input = input;
+    locked_plate_input.plate_locked = true;
+    GUI::OrcaPlacementCandidateProvider provider;
+
+    const std::vector<SliceCandidate> candidates = provider.generate(std::move(input), {1, 2, 3, "revision-a"});
+
+    REQUIRE(candidates.size() == 1);
+    REQUIRE(candidates.front().placement.transforms.size() == 1);
+    CHECK(candidates.front().placement.transforms.front().instance_id != locked_instance_id);
+    CHECK(provider.generate(std::move(locked_plate_input), {1, 2, 3, "revision-a"}).empty());
+}
+
+TEST_CASE("native placement candidates reject objects that cannot fit", "[AI][SmartSlicing][Candidate][OrcaPlacement]")
+{
+    GUI::OrcaPlacementCandidateInput input = placement_input(10.0);
+    add_cube(input.model, 30.0, Vec3d(0.0, 0.0, 0.0));
+    GUI::OrcaPlacementCandidateProvider provider;
+
+    CHECK(provider.generate(std::move(input), {1, 2, 3, "revision-a"}).empty());
+}
+
+TEST_CASE("native placement candidates honor native excluded regions", "[AI][SmartSlicing][Candidate][OrcaPlacement]")
+{
+    GUI::OrcaPlacementCandidateInput input = placement_input();
+    add_cube(input.model, 10.0, Vec3d(75.0, 75.0, 0.0));
+    arrangement::ArrangePolygon exclusion;
+    exclusion.poly.contour.points = {
+        Point{scaled(0.0), scaled(0.0)}, Point{scaled(100.0), scaled(0.0)},
+        Point{scaled(100.0), scaled(100.0)}, Point{scaled(0.0), scaled(100.0)}};
+    exclusion.bed_idx        = 0;
+    exclusion.is_virt_object = true;
+    input.arrange_params.excluded_regions.push_back(std::move(exclusion));
+    GUI::OrcaPlacementCandidateProvider provider;
+
+    CHECK(provider.generate(std::move(input), {1, 2, 3, "revision-a"}).empty());
 }

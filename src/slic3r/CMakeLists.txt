@@ -339,6 +339,7 @@ set(SLIC3R_GUI_SOURCES
     GUI/AI/SmartSlicing/SmartSlicingViewModel.hpp
     GUI/AI/Orca/OrcaSmartSlicingAdapter.cpp
     GUI/AI/Orca/OrcaSmartSlicingAdapter.hpp
+    GUI/AI/Orca/OrcaPlacementCandidateProvider.hpp
     GUI/AI/Orca/OrcaTrialSliceExecutor.cpp
     GUI/AI/Orca/OrcaTrialSliceExecutor.hpp
     GUI/AI/Orca/OrcaWorkspaceAdapter.cpp
