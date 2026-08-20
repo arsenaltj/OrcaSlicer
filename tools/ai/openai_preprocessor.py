@@ -11,13 +11,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
 try:
-    from .printable_palette import PrintablePaletteError, assign_palette_roles
+    from .printable_palette import PALETTE_ROLES, PrintablePaletteError, assign_palette_roles, normalize_palette
 except ImportError:
-    from printable_palette import PrintablePaletteError, assign_palette_roles
+    from printable_palette import PALETTE_ROLES, PrintablePaletteError, assign_palette_roles, normalize_palette
 
 _DEFAULT_BASE_URL = "https://api.openai.com/v1"
 _MAX_JSON_BYTES = 32 * 1024 * 1024
@@ -60,10 +61,41 @@ STYLE_PROFILES = {
 
 CUSTOM_STYLE_ID = "custom"
 MAX_CUSTOM_STYLE_BYTES = 1000
+MAX_PALETTE_RECOMMENDATION_SUMMARY_BYTES = 400
+MAX_PALETTE_RECOMMENDATION_NAME_BYTES = 80
+MAX_PALETTE_RECOMMENDATION_USAGE_BYTES = 160
+MAX_PALETTE_RECOMMENDATION_REASON_BYTES = 400
 
 
 class OpenAIPreprocessorError(RuntimeError):
     """An OpenAI-compatible preprocessing request failed safely."""
+
+
+@dataclass(frozen=True)
+class PrintablePaletteRecommendationColor:
+    hex: str
+    name: str
+    role: str
+    usage: str
+    reason: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "hex": self.hex,
+            "name": self.name,
+            "role": self.role,
+            "usage": self.usage,
+            "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True)
+class PrintablePaletteRecommendation:
+    summary: str
+    colors: tuple[PrintablePaletteRecommendationColor, ...]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"summary": self.summary, "colors": [color.as_dict() for color in self.colors]}
 
 
 def _config() -> tuple[str, str, str, str]:
@@ -360,6 +392,110 @@ def complete_vision(system_prompt: str, user_content: str, image_paths: tuple[Pa
     if not response:
         raise OpenAIPreprocessorError("The preprocessing service returned an empty response.")
     return response
+
+
+def _bounded_recommendation_text(value: Any, field: str, maximum_bytes: int) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise OpenAIPreprocessorError(f"The palette recommendation {field} is required.")
+    text = value.strip()
+    if len(text.encode("utf-8")) > maximum_bytes:
+        raise OpenAIPreprocessorError(f"The palette recommendation {field} is too long.")
+    return text
+
+
+def _palette_recommendation_payload(response: str) -> dict[str, Any]:
+    text = response.strip()
+    if text.startswith("```") and text.endswith("```"):
+        lines = text.splitlines()
+        if len(lines) >= 3:
+            text = "\n".join(lines[1:-1]).strip()
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        raise OpenAIPreprocessorError("The palette recommendation is not valid JSON.") from None
+    if not isinstance(value, dict):
+        raise OpenAIPreprocessorError("The palette recommendation must be a JSON object.")
+    return value
+
+
+def recommend_printable_palette(
+    instruction: str,
+    style: str,
+    custom_style: str = "",
+    image_path: Path | None = None,
+) -> PrintablePaletteRecommendation:
+    """Recommend four provider-neutral design colors without binding Orca filament slots."""
+
+    prompt = instruction.strip() if isinstance(instruction, str) else ""
+    if not prompt and image_path is None:
+        raise OpenAIPreprocessorError("A text instruction or reference image is required.")
+    style_direction = _style_profile(style, custom_style)
+    system_prompt = (
+        "You are a color designer for printable 3D collectibles. Return exactly one JSON object and no markdown. "
+        "Recommend exactly one four-color palette for the primary subject. The colors are ideal design targets, not known "
+        "physical filaments. Use this schema: "
+        '{"summary":string,"colors":[{"hex":"#RRGGBB","name":string,'
+        '"role":"primary"|"structure"|"light"|"accent","usage":string,"reason":string}]}. '
+        "Return every role exactly once. Choose broad solid material regions with strong perceptual separation; avoid gradients, "
+        "near-duplicate shades, tiny accents, transparency, metallic effects and colors that only work as lighting. The primary "
+        "color should cover the largest semantic region, structure should support silhouette and boundaries, light should provide "
+        "a readable light material, and accent should distinguish one secondary semantic part. Use concise Chinese for summary, "
+        "name, usage and reason. Apply this style direction: "
+        + style_direction
+    )
+    user_content = prompt or "Analyze the primary visible subject in the reference image."
+    if image_path is None:
+        response = complete_text(system_prompt, user_content)
+    else:
+        response = complete_vision(system_prompt, user_content, (Path(image_path),))
+
+    payload = _palette_recommendation_payload(response)
+    summary = _bounded_recommendation_text(
+        payload.get("summary"), "summary", MAX_PALETTE_RECOMMENDATION_SUMMARY_BYTES
+    )
+    raw_colors = payload.get("colors")
+    if not isinstance(raw_colors, list) or len(raw_colors) != len(PALETTE_ROLES):
+        raise OpenAIPreprocessorError("The palette recommendation must contain exactly four colors.")
+
+    records_by_role: dict[str, PrintablePaletteRecommendationColor] = {}
+    raw_hex: list[str] = []
+    for value in raw_colors:
+        if not isinstance(value, dict):
+            raise OpenAIPreprocessorError("Each palette recommendation color must be an object.")
+        role = value.get("role")
+        if not isinstance(role, str) or role not in PALETTE_ROLES or role in records_by_role:
+            raise OpenAIPreprocessorError("The palette recommendation roles must be unique and complete.")
+        raw_color = value.get("hex")
+        if not isinstance(raw_color, str):
+            raise OpenAIPreprocessorError("The palette recommendation color must use #RRGGBB format.")
+        try:
+            color = normalize_palette((raw_color,))[0]
+        except PrintablePaletteError as exc:
+            raise OpenAIPreprocessorError(str(exc)) from None
+        raw_hex.append(color)
+        records_by_role[role] = PrintablePaletteRecommendationColor(
+            hex=color,
+            name=_bounded_recommendation_text(
+                value.get("name"), "color name", MAX_PALETTE_RECOMMENDATION_NAME_BYTES
+            ),
+            role=role,
+            usage=_bounded_recommendation_text(
+                value.get("usage"), "color usage", MAX_PALETTE_RECOMMENDATION_USAGE_BYTES
+            ),
+            reason=_bounded_recommendation_text(
+                value.get("reason"), "color reason", MAX_PALETTE_RECOMMENDATION_REASON_BYTES
+            ),
+        )
+    try:
+        palette = normalize_palette(raw_hex)
+        assignment = assign_palette_roles(palette, {role: records_by_role[role].hex for role in PALETTE_ROLES})
+    except PrintablePaletteError as exc:
+        raise OpenAIPreprocessorError(str(exc)) from None
+    if len(palette) != len(PALETTE_ROLES):
+        raise OpenAIPreprocessorError("The palette recommendation colors must be unique.")
+    if assignment.low_contrast:
+        raise OpenAIPreprocessorError("The palette recommendation does not provide enough color contrast.")
+    return PrintablePaletteRecommendation(summary, tuple(records_by_role[role] for role in PALETTE_ROLES))
 
 
 def _multipart_image(path: Path, instruction: str, model: str) -> tuple[bytes, str]:

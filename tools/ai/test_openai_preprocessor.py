@@ -198,6 +198,67 @@ class VisionCompletionTests(unittest.TestCase):
             preprocessor.complete_vision("system", "user", (path, path, path))
 
 
+class PrintablePaletteRecommendationTests(unittest.TestCase):
+    def recommendation_json(self, **overrides):
+        value = {
+            "summary": "温暖主体配合深色结构和冷色点缀",
+            "colors": [
+                {"hex": "#D96B43", "name": "陶土橙", "role": "primary", "usage": "主体服装", "reason": "形成视觉中心"},
+                {"hex": "#2B2422", "name": "深棕", "role": "structure", "usage": "头发与轮廓", "reason": "稳定结构边界"},
+                {"hex": "#F2D7B5", "name": "暖白", "role": "light", "usage": "面部与高光", "reason": "保持明暗层次"},
+                {"hex": "#2F6B5F", "name": "墨绿", "role": "accent", "usage": "配件与底座", "reason": "增加冷暖对比"},
+            ],
+        }
+        value.update(overrides)
+        return json.dumps(value, ensure_ascii=False)
+
+    def test_text_recommendation_accepts_fenced_json_and_preserves_roles(self):
+        response = "```json\n" + self.recommendation_json() + "\n```"
+        with mock.patch.object(preprocessor, "complete_text", return_value=response) as complete:
+            result = preprocessor.recommend_printable_palette("一只机械麒麟", "q_cartoon")
+
+        self.assertEqual(result.summary, "温暖主体配合深色结构和冷色点缀")
+        self.assertEqual([color.hex for color in result.colors], ["#D96B43", "#2B2422", "#F2D7B5", "#2F6B5F"])
+        self.assertEqual([color.role for color in result.colors], ["primary", "structure", "light", "accent"])
+        self.assertIn("four-color palette", complete.call_args.args[0])
+
+    def test_image_recommendation_uses_vision_completion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = Path(directory) / "reference.png"
+            Image.new("RGB", (8, 8), "red").save(image_path)
+            with mock.patch.object(preprocessor, "complete_vision", return_value=self.recommendation_json()) as complete:
+                result = preprocessor.recommend_printable_palette(
+                    "保留角色身份", "cel_shaded", image_path=image_path
+                )
+
+        self.assertEqual(len(result.colors), 4)
+        self.assertEqual(complete.call_args.args[2], (image_path,))
+
+    def test_rejects_invalid_provider_responses(self):
+        valid = json.loads(self.recommendation_json())
+        cases = {
+            "malformed": "not json",
+            "duplicate_color": json.dumps({**valid, "colors": [*valid["colors"][:3], {**valid["colors"][3], "hex": "#D96B43"}]}),
+            "invalid_hex": json.dumps({**valid, "colors": [{**valid["colors"][0], "hex": "orange"}, *valid["colors"][1:]]}),
+            "duplicate_role": json.dumps({**valid, "colors": [*valid["colors"][:3], {**valid["colors"][3], "role": "primary"}]}),
+            "missing_role": json.dumps({**valid, "colors": valid["colors"][:3]}),
+            "long_reason": json.dumps({**valid, "colors": [{**valid["colors"][0], "reason": "x" * 401}, *valid["colors"][1:]]}),
+        }
+        for name, response in cases.items():
+            with self.subTest(name=name), mock.patch.object(preprocessor, "complete_text", return_value=response):
+                with self.assertRaises(preprocessor.OpenAIPreprocessorError):
+                    preprocessor.recommend_printable_palette("a toy", "low_poly")
+
+    def test_rejects_low_contrast_recommendation_without_retry(self):
+        value = json.loads(self.recommendation_json())
+        for color, hex_value in zip(value["colors"], ("#777777", "#787878", "#797979", "#7A7A7A")):
+            color["hex"] = hex_value
+        with mock.patch.object(preprocessor, "complete_text", return_value=json.dumps(value)) as complete:
+            with self.assertRaisesRegex(preprocessor.OpenAIPreprocessorError, "contrast"):
+                preprocessor.recommend_printable_palette("a toy", "low_poly")
+        complete.assert_called_once()
+
+
 class ExactImageEditTests(unittest.TestCase):
     def test_exact_prompt_is_sent_without_style_wrapper(self):
         with tempfile.TemporaryDirectory() as directory:

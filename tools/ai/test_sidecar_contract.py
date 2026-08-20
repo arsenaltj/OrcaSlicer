@@ -6,7 +6,9 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
+import urllib.error
 import urllib.request
 import uuid
 from http.server import ThreadingHTTPServer
@@ -92,6 +94,8 @@ class SidecarHealthContractTests(unittest.TestCase):
         self.assertEqual(generation["face_limits"], [100000, 300000, 500000, 1000000])
         self.assertEqual(generation["default_face_limit"], 300000)
         self.assertIn("model_reference", generation["printable_image_pipeline"]["outputs"])
+        self.assertIsInstance(generation["palette_recommendation"]["available"], bool)
+        self.assertEqual(generation["palette_recommendation"]["max_colors"], 4)
 
         payload = json.dumps(health)
         for secret in ("OPENAI_API_KEY", "TRIPO_API_KEY", "test-openai", "test-tripo"):
@@ -126,6 +130,210 @@ class SidecarHealthContractTests(unittest.TestCase):
             self.assertIsNotNone(restored)
             self.assertEqual(restored.custom_style, "复古木刻版画")
             self.assertEqual(PRODUCTION._public_job(restored)["custom_style"], "复古木刻版画")
+
+    def test_palette_recommendation_is_persisted_and_exposed_for_task_recovery(self):
+        job_id = str(uuid.uuid4())
+        recommendation = {
+            "summary": "温暖主体配合深色结构",
+            "colors": [
+                {"hex": "#D96B43", "name": "陶土橙", "role": "primary", "usage": "主体", "reason": "视觉中心"},
+                {"hex": "#2B2422", "name": "深棕", "role": "structure", "usage": "结构", "reason": "稳定轮廓"},
+                {"hex": "#F2D7B5", "name": "暖白", "role": "light", "usage": "高光", "reason": "明暗层次"},
+                {"hex": "#2F6B5F", "name": "墨绿", "role": "accent", "usage": "点缀", "reason": "冷暖对比"},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            job_directory = Path(directory) / job_id
+            job_directory.mkdir()
+            job = PRODUCTION.Job(id=job_id, source="text", directory=job_directory)
+            job.state = "awaiting_palette_confirmation"
+            job.phase = "awaiting_palette_confirmation"
+            job.palette_recommendation = recommendation
+            PRODUCTION._persist_job(job)
+
+            restored = PRODUCTION._load_job(job_directory)
+
+            self.assertIsNotNone(restored)
+            self.assertEqual(restored.palette_recommendation, recommendation)
+            public = PRODUCTION._public_job(restored)
+            self.assertEqual(public["palette_recommendation"], recommendation)
+            self.assertFalse(public["palette_recommendation_confirmed"])
+
+    def test_recommendation_worker_forwards_stored_reference_image(self):
+        job_id = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory() as directory:
+            job_directory = Path(directory) / job_id
+            job_directory.mkdir()
+            image_path = job_directory / "input.png"
+            image_path.write_bytes(b"\x89PNG\r\n\x1a\nexample")
+            job = PRODUCTION.Job(id=job_id, source="image", directory=job_directory, user_prompt="保留主体")
+            job.input_path = image_path
+            result = mock.Mock()
+            result.as_dict.return_value = {
+                "summary": "summary",
+                "colors": [
+                    {"hex": "#D96B43", "name": "a", "role": "primary", "usage": "u", "reason": "r"},
+                    {"hex": "#2B2422", "name": "b", "role": "structure", "usage": "u", "reason": "r"},
+                    {"hex": "#F2D7B5", "name": "c", "role": "light", "usage": "u", "reason": "r"},
+                    {"hex": "#2F6B5F", "name": "d", "role": "accent", "usage": "u", "reason": "r"},
+                ],
+            }
+            with mock.patch.object(PRODUCTION, "recommend_printable_palette", return_value=result) as recommend:
+                PRODUCTION._recommend_palette_job(job)
+
+            self.assertEqual(job.state, "awaiting_palette_confirmation")
+            self.assertEqual(recommend.call_args.kwargs["image_path"], image_path)
+
+    def test_text_recommendation_confirmation_continues_the_same_job(self):
+        result = mock.Mock()
+        result.as_dict.return_value = {
+            "summary": "summary",
+            "colors": [
+                {"hex": "#D96B43", "name": "a", "role": "primary", "usage": "u", "reason": "r"},
+                {"hex": "#2B2422", "name": "b", "role": "structure", "usage": "u", "reason": "r"},
+                {"hex": "#F2D7B5", "name": "c", "role": "light", "usage": "u", "reason": "r"},
+                {"hex": "#2F6B5F", "name": "d", "role": "accent", "usage": "u", "reason": "r"},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory, temporary_environment(
+            OPENAI_API_KEY="test-openai", ORCASLICER_AI_OUTPUT_DIR=directory
+        ), mock.patch.object(PRODUCTION, "recommend_printable_palette", return_value=result), mock.patch.object(
+            PRODUCTION, "_preprocess_text_job"
+        ) as preprocess:
+            with PRODUCTION._JOBS_LOCK:
+                previous = dict(PRODUCTION._JOBS)
+                PRODUCTION._JOBS.clear()
+            try:
+                with sidecar_server(PRODUCTION.Handler) as port:
+                    create = urllib.request.Request(
+                        f"http://127.0.0.1:{port}/v1/orcaslicer/model-jobs/recommend-text-palette",
+                        data=json.dumps({"request_id": "r1", "prompt": "一只机械麒麟", "style": "q_cartoon", "print": {}}).encode(),
+                        method="POST",
+                        headers={"X-OrcaSlicer-Client": "native", "Content-Type": "application/json"},
+                    )
+                    with urllib.request.urlopen(create, timeout=5) as response:
+                        job_id = json.loads(response.read())["job"]["id"]
+                    deadline = time.time() + 5
+                    while time.time() < deadline:
+                        with PRODUCTION._JOBS_LOCK:
+                            state = PRODUCTION._JOBS[job_id].state
+                        if state == "awaiting_palette_confirmation":
+                            break
+                        time.sleep(0.01)
+                    self.assertEqual(state, "awaiting_palette_confirmation")
+
+                    confirm = urllib.request.Request(
+                        f"http://127.0.0.1:{port}/v1/orcaslicer/model-jobs/{job_id}/confirm-palette",
+                        data=json.dumps({
+                            "palette": ["#D96B43", "#2B2422", "#F2D7B5", "#2F6B5F"],
+                            "palette_roles": {"primary": "#D96B43", "structure": "#2B2422", "light": "#F2D7B5", "accent": "#2F6B5F"},
+                        }).encode(),
+                        method="POST",
+                        headers={"X-OrcaSlicer-Client": "native", "Content-Type": "application/json"},
+                    )
+                    with urllib.request.urlopen(confirm, timeout=5) as response:
+                        payload = json.loads(response.read())
+
+                self.assertEqual(payload["job"]["id"], job_id)
+                self.assertTrue(payload["job"]["palette_recommendation_confirmed"])
+                self.assertEqual(payload["job"]["palette"][0], "#D96B43")
+                preprocess.assert_called_once()
+            finally:
+                with PRODUCTION._JOBS_LOCK:
+                    PRODUCTION._JOBS.clear()
+                    PRODUCTION._JOBS.update(previous)
+
+    def test_image_palette_recommendation_route_stores_the_reference(self):
+        result = mock.Mock()
+        result.as_dict.return_value = {
+            "summary": "summary",
+            "colors": [
+                {"hex": "#D96B43", "name": "a", "role": "primary", "usage": "u", "reason": "r"},
+                {"hex": "#2B2422", "name": "b", "role": "structure", "usage": "u", "reason": "r"},
+                {"hex": "#F2D7B5", "name": "c", "role": "light", "usage": "u", "reason": "r"},
+                {"hex": "#2F6B5F", "name": "d", "role": "accent", "usage": "u", "reason": "r"},
+            ],
+        }
+        boundary = "----OrcaPaletteTest"
+        parts = []
+        for name, value in {
+            "request_id": "r2",
+            "instruction": "保留主体",
+            "style": "cel_shaded",
+            "custom_style": "",
+            "print": "{}",
+        }.items():
+            parts.append(
+                f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n".encode("utf-8")
+            )
+        parts.append(
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"image\"; filename=\"input.png\"\r\n"
+            "Content-Type: image/png\r\n\r\n".encode("ascii")
+            + b"\x89PNG\r\n\x1a\nexample\r\n"
+        )
+        parts.append(f"--{boundary}--\r\n".encode("ascii"))
+        body = b"".join(parts)
+        with tempfile.TemporaryDirectory() as directory, temporary_environment(
+            OPENAI_API_KEY="test-openai", ORCASLICER_AI_OUTPUT_DIR=directory
+        ), mock.patch.object(PRODUCTION, "recommend_printable_palette", return_value=result) as recommend:
+            with PRODUCTION._JOBS_LOCK:
+                previous = dict(PRODUCTION._JOBS)
+                PRODUCTION._JOBS.clear()
+            try:
+                with sidecar_server(PRODUCTION.Handler) as port:
+                    request = urllib.request.Request(
+                        f"http://127.0.0.1:{port}/v1/orcaslicer/model-jobs/recommend-image-palette",
+                        data=body,
+                        method="POST",
+                        headers={
+                            "X-OrcaSlicer-Client": "native",
+                            "Content-Type": f"multipart/form-data; boundary={boundary}",
+                        },
+                    )
+                    with urllib.request.urlopen(request, timeout=5) as response:
+                        job_id = json.loads(response.read())["job"]["id"]
+                    deadline = time.time() + 5
+                    while time.time() < deadline:
+                        with PRODUCTION._JOBS_LOCK:
+                            job = PRODUCTION._JOBS[job_id]
+                            state = job.state
+                        if state == "awaiting_palette_confirmation":
+                            break
+                        time.sleep(0.01)
+
+                self.assertEqual(state, "awaiting_palette_confirmation")
+                self.assertTrue(job.input_path.is_file())
+                self.assertEqual(recommend.call_args.kwargs["image_path"], job.input_path)
+            finally:
+                with PRODUCTION._JOBS_LOCK:
+                    PRODUCTION._JOBS.clear()
+                    PRODUCTION._JOBS.update(previous)
+
+    def test_confirm_palette_rejects_wrong_job_state(self):
+        job_id = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory() as directory:
+            job_directory = Path(directory) / job_id
+            job_directory.mkdir()
+            job = PRODUCTION.Job(id=job_id, source="text", directory=job_directory, state="awaiting_confirmation")
+            with PRODUCTION._JOBS_LOCK:
+                previous = dict(PRODUCTION._JOBS)
+                PRODUCTION._JOBS.clear()
+                PRODUCTION._JOBS[job_id] = job
+            try:
+                with sidecar_server(PRODUCTION.Handler) as port:
+                    request = urllib.request.Request(
+                        f"http://127.0.0.1:{port}/v1/orcaslicer/model-jobs/{job_id}/confirm-palette",
+                        data=json.dumps({"palette": ["#D96B43"]}).encode(),
+                        method="POST",
+                        headers={"X-OrcaSlicer-Client": "native", "Content-Type": "application/json"},
+                    )
+                    with self.assertRaises(urllib.error.HTTPError) as error:
+                        urllib.request.urlopen(request, timeout=5)
+                self.assertEqual(error.exception.code, 409)
+            finally:
+                with PRODUCTION._JOBS_LOCK:
+                    PRODUCTION._JOBS.clear()
+                    PRODUCTION._JOBS.update(previous)
 
     def test_latest_job_endpoint_returns_persisted_job_without_secrets(self):
         job_id = str(uuid.uuid4())
@@ -413,12 +621,45 @@ class SidecarHealthContractTests(unittest.TestCase):
     def test_mock_health_contract(self):
         self.assert_contract(self.fetch_health(MOCK.Handler))
 
+    def test_mock_palette_recommendation_supports_offline_gui_flow(self):
+        with MOCK._jobs_lock:
+            previous = dict(MOCK._jobs)
+            MOCK._jobs.clear()
+        try:
+            with sidecar_server(MOCK.Handler) as port:
+                create = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/v1/orcaslicer/model-jobs/recommend-text-palette",
+                    data=json.dumps({"request_id": "mock", "prompt": "一只机械麒麟"}).encode(),
+                    method="POST",
+                    headers={"X-OrcaSlicer-Client": "native", "Content-Type": "application/json"},
+                )
+                with urllib.request.urlopen(create, timeout=5) as response:
+                    created = json.loads(response.read())["job"]
+                self.assertEqual(created["state"], "awaiting_palette_confirmation")
+                self.assertEqual(len(created["palette_recommendation"]["colors"]), 4)
+
+                confirm = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/v1/orcaslicer/model-jobs/{created['id']}/confirm-palette",
+                    data=json.dumps({"palette": ["#D96B43", "#2B2422", "#F2D7B5", "#2F6B5F"]}).encode(),
+                    method="POST",
+                    headers={"X-OrcaSlicer-Client": "native", "Content-Type": "application/json"},
+                )
+                with urllib.request.urlopen(confirm, timeout=5) as response:
+                    confirmed = json.loads(response.read())["job"]
+            self.assertTrue(confirmed["palette_recommendation_confirmed"])
+            self.assertEqual(confirmed["state"], "preprocessing")
+        finally:
+            with MOCK._jobs_lock:
+                MOCK._jobs.clear()
+                MOCK._jobs.update(previous)
+
     def test_production_health_contract_without_credentials(self):
         with temporary_environment(OPENAI_API_KEY=None, TRIPO_API_KEY=None):
             health = self.fetch_health(PRODUCTION.Handler)
         self.assert_contract(health)
         self.assertFalse(health["capabilities"]["config_proposal"]["available"])
         self.assertFalse(health["capabilities"]["model_generation"]["available"])
+        self.assertFalse(health["capabilities"]["model_generation"]["palette_recommendation"]["available"])
 
     def test_production_health_contract_with_openai_only(self):
         with temporary_environment(OPENAI_API_KEY="test-openai", TRIPO_API_KEY=None):
@@ -426,6 +667,7 @@ class SidecarHealthContractTests(unittest.TestCase):
         self.assert_contract(health)
         self.assertTrue(health["capabilities"]["config_proposal"]["available"])
         self.assertFalse(health["capabilities"]["model_generation"]["available"])
+        self.assertTrue(health["capabilities"]["model_generation"]["palette_recommendation"]["available"])
 
     def test_production_health_contract_with_generation_credentials(self):
         with temporary_environment(
@@ -437,6 +679,7 @@ class SidecarHealthContractTests(unittest.TestCase):
         self.assert_contract(health)
         self.assertTrue(health["capabilities"]["config_proposal"]["available"])
         self.assertTrue(health["capabilities"]["model_generation"]["available"])
+        self.assertTrue(health["capabilities"]["model_generation"]["palette_recommendation"]["available"])
 
     def test_production_health_reports_provider_url_without_credentials(self):
         with temporary_environment(
@@ -458,6 +701,7 @@ class SidecarHealthContractTests(unittest.TestCase):
         self.assert_contract(health)
         self.assertFalse(health["capabilities"]["config_proposal"]["available"])
         self.assertTrue(health["capabilities"]["model_generation"]["available"])
+        self.assertFalse(health["capabilities"]["model_generation"]["palette_recommendation"]["available"])
 
 
 if __name__ == "__main__":

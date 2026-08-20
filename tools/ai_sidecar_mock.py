@@ -18,9 +18,18 @@ MAX_JSON_BYTES = 1024 * 1024
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_MULTIPART_BYTES = MAX_IMAGE_BYTES + 256 * 1024
 MAX_PROMPT_BYTES = 64 * 1024
-MAX_PALETTE_COLORS = 16
+MAX_PALETTE_COLORS = 4
 MODEL_FACE_LIMITS = (100000, 300000, 500000, 1000000)
 DEFAULT_MODEL_FACE_LIMIT = 300000
+MOCK_PALETTE_RECOMMENDATION = {
+    "summary": "暖色主体配合深色结构、浅色层次和冷色点缀",
+    "colors": [
+        {"hex": "#D96B43", "name": "陶土橙", "role": "primary", "usage": "主体区域", "reason": "形成稳定的视觉中心"},
+        {"hex": "#2B2422", "name": "深棕", "role": "structure", "usage": "轮廓与承力结构", "reason": "增强边界可读性"},
+        {"hex": "#F2D7B5", "name": "暖白", "role": "light", "usage": "面部与浅色区域", "reason": "保持清晰明暗层次"},
+        {"hex": "#2F6B5F", "name": "墨绿", "role": "accent", "usage": "配件与底座点缀", "reason": "提供冷暖对比"},
+    ],
+}
 
 
 def _png_chunk(kind, data):
@@ -161,7 +170,7 @@ def empty_artifact():
 
 def normalize_palette(value):
     if not isinstance(value, list) or len(value) > MAX_PALETTE_COLORS:
-        raise ValueError("palette must contain between 0 and 16 colors")
+        raise ValueError("palette must contain between 0 and 4 colors")
     normalized = []
     for color in value:
         if not isinstance(color, str) or re.fullmatch(r"#[0-9A-Fa-f]{6}", color) is None:
@@ -198,6 +207,10 @@ def new_job(source, prepared_prompt, palette):
         "progress": 5,
         "prepared_prompt": "",
         "face_limit": DEFAULT_MODEL_FACE_LIMIT,
+        "palette": list(palette),
+        "palette_roles": {},
+        "palette_recommendation": {},
+        "palette_recommendation_confirmed": False,
         "_palette": palette,
         "preview": {"ready": False, "content_type": "", "size_bytes": 0},
         "artifact": empty_artifact(),
@@ -265,6 +278,10 @@ def public_job(job):
         "progress": job["progress"],
         "prepared_prompt": job["prepared_prompt"] if job["source"] == "text" else "",
         "face_limit": job["face_limit"],
+        "palette": list(job["palette"]),
+        "palette_roles": dict(job["palette_roles"]),
+        "palette_recommendation": dict(job["palette_recommendation"]),
+        "palette_recommendation_confirmed": job["palette_recommendation_confirmed"],
         "preview": dict(job["preview"]),
         "artifact": dict(job["artifact"]),
     }
@@ -297,10 +314,18 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/v1/orcaslicer/model-jobs/image":
                 self.create_image_job()
                 return
+            if path == "/v1/orcaslicer/model-jobs/recommend-text-palette":
+                self.create_text_palette_recommendation()
+                return
+            if path == "/v1/orcaslicer/model-jobs/recommend-image-palette":
+                self.create_image_palette_recommendation()
+                return
             job_id, action = self.job_route(path)
-            if job_id and action in ("generate", "stop"):
+            if job_id and action in ("generate", "stop", "confirm-palette"):
                 if action == "generate":
                     self.generate_job(job_id)
+                elif action == "confirm-palette":
+                    self.confirm_palette(job_id)
                 else:
                     self.stop_job(job_id)
                 return
@@ -325,6 +350,7 @@ class Handler(BaseHTTPRequestHandler):
                         "artifact_formats": ["obj"],
                         "face_limits": list(MODEL_FACE_LIMITS),
                         "default_face_limit": DEFAULT_MODEL_FACE_LIMIT,
+                        "palette_recommendation": {"available": True, "max_colors": 4},
                         "printable_image_pipeline": {
                             "available": True,
                             "print_modes": ["solid_regions"],
@@ -341,6 +367,12 @@ class Handler(BaseHTTPRequestHandler):
 
         if path.startswith("/v1/orcaslicer/model-jobs"):
             if not self.require_native_client():
+                return
+            if path == "/v1/orcaslicer/model-jobs/latest":
+                with _jobs_lock:
+                    job = next(reversed(_jobs.values()), None) if _jobs else None
+                    response = public_job(job) if job is not None else None
+                self.send_json({"job": response}, 200)
                 return
             job_id, action = self.job_route(path)
             if not job_id:
@@ -431,6 +463,87 @@ class Handler(BaseHTTPRequestHandler):
             job = new_job("image", prepared, palette)
             response = public_job(job)
         self.send_json({"job": response}, 202)
+
+    def create_text_palette_recommendation(self):
+        try:
+            request = self.read_json()
+            text_field(request.get("request_id"), "request_id")
+            prompt = text_field(request.get("prompt"), "prompt")
+        except Exception as exc:
+            self.model_error("invalid_request", str(exc), 400)
+            return
+        with _jobs_lock:
+            job = new_job("text", "Create a printable 3D model from this description: %s" % prompt, [])
+            job.update(
+                state="awaiting_palette_confirmation",
+                phase="awaiting_palette_confirmation",
+                message="Review and confirm the recommended design colors.",
+                progress=10,
+                palette_recommendation=json.loads(json.dumps(MOCK_PALETTE_RECOMMENDATION)),
+            )
+            response = public_job(job)
+        self.send_json({"job": response}, 202)
+
+    def create_image_palette_recommendation(self):
+        try:
+            fields, image, image_type = self.read_image_multipart()
+            text_field(fields.get("request_id"), "request_id")
+            instruction = text_field(fields.get("instruction"), "instruction")
+            detected = self.detect_image_type(image)
+            if detected is None or image_type not in ("application/octet-stream", detected):
+                raise RequestError("unsupported_image", "Image must be PNG or JPEG.", 415)
+        except RequestError as exc:
+            self.model_error(exc.code, exc.message, exc.status)
+            return
+        except Exception as exc:
+            self.model_error("invalid_request", str(exc), 400)
+            return
+        with _jobs_lock:
+            job = new_job("image", "Create a printable 3D model based on the uploaded image. Instruction: %s" % instruction, [])
+            job.update(
+                state="awaiting_palette_confirmation",
+                phase="awaiting_palette_confirmation",
+                message="Review and confirm the recommended design colors.",
+                progress=10,
+                palette_recommendation=json.loads(json.dumps(MOCK_PALETTE_RECOMMENDATION)),
+            )
+            response = public_job(job)
+        self.send_json({"job": response}, 202)
+
+    def confirm_palette(self, job_id):
+        try:
+            request = self.read_json()
+            palette = normalize_palette(request.get("palette"))
+            if not palette:
+                raise ValueError("at least one confirmed color is required")
+            palette_roles = request.get("palette_roles", {})
+            if not isinstance(palette_roles, dict):
+                raise ValueError("palette_roles must be an object")
+        except Exception as exc:
+            self.model_error("invalid_request", str(exc), 400)
+            return
+        with _jobs_lock:
+            job = _jobs.get(job_id)
+            if job is None:
+                self.model_error("job_not_found", "Model job not found.", 404)
+                return
+            if job["state"] != "awaiting_palette_confirmation":
+                self.model_error("invalid_job_state", "Job is not awaiting palette confirmation.", 409)
+                return
+            job.update(
+                state="preprocessing",
+                phase="preprocessing",
+                message="Confirmed colors are being applied to the printable preview.",
+                progress=10,
+                palette=list(palette),
+                palette_roles=dict(palette_roles),
+                palette_recommendation_confirmed=True,
+                _palette=list(palette),
+                _stage_started=time.monotonic(),
+                _status_calls=0,
+            )
+            response = public_job(job)
+        self.send_json({"job": response}, 200)
 
     def get_job_status(self, job_id):
         with _jobs_lock:
@@ -569,7 +682,7 @@ class Handler(BaseHTTPRequestHandler):
             if part.is_multipart():
                 raise RequestError("invalid_multipart", "Nested multipart data is not supported.", 400)
             name = part.get_param("name", header="content-disposition")
-            if name not in ("request_id", "instruction", "palette", "image") or name in fields or (name == "image" and image is not None):
+            if name not in ("request_id", "instruction", "palette", "palette_roles", "style", "custom_style", "print", "image") or name in fields or (name == "image" and image is not None):
                 raise RequestError("invalid_multipart", "Unexpected or duplicate multipart field.", 400)
             payload = part.get_payload(decode=True) or b""
             if name == "image":
@@ -602,7 +715,7 @@ class Handler(BaseHTTPRequestHandler):
         parts = path[len(prefix):].split("/")
         if len(parts) == 1 and parts[0]:
             return parts[0], "status"
-        if len(parts) == 2 and parts[0] and parts[1] in ("preview", "generate", "stop", "artifact"):
+        if len(parts) == 2 and parts[0] and parts[1] in ("preview", "generate", "stop", "artifact", "confirm-palette"):
             return parts[0], parts[1]
         return None, None
 

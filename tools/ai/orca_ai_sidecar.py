@@ -24,7 +24,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, BinaryIO, Callable
 
-from openai_preprocessor import OpenAIPreprocessorError, complete_text, generate_image, preprocess_image, preprocess_text
+from openai_preprocessor import (
+    OpenAIPreprocessorError,
+    complete_text,
+    generate_image,
+    preprocess_image,
+    preprocess_text,
+    recommend_printable_palette,
+)
 from printable_image_pipeline import PrintSettings, PrintableImageError, process_printable_image
 from printable_model_quality import ModelQualityError, analyze_printable_obj, write_model_quality_report
 from printable_visual_quality import REPORT_FILENAME as VISUAL_QUALITY_FILENAME, review_model_visual_quality
@@ -120,6 +127,8 @@ class Job:
     image_metrics: dict[str, Any] = field(default_factory=dict)
     artifact_path: Path | None = None
     artifact_format: str = ""
+    palette_recommendation: dict[str, Any] = field(default_factory=dict)
+    palette_recommendation_confirmed: bool = False
     attempts: list[dict[str, Any]] = field(default_factory=list)
     updated_at: float = field(default_factory=time.time)
     stop_event: threading.Event = field(default_factory=threading.Event, repr=False)
@@ -327,6 +336,49 @@ def _normalize_palette_roles(value: Any, palette: tuple[str, ...]) -> dict[str, 
         raise RequestError("invalid_palette_roles", str(exc), 400) from None
 
 
+def _normalize_palette_recommendation(value: Any) -> dict[str, Any]:
+    if value in (None, {}):
+        return {}
+    if not isinstance(value, dict):
+        raise RequestError("invalid_palette_recommendation", "palette recommendation must be an object.", 400)
+    summary = value.get("summary")
+    colors = value.get("colors")
+    if not isinstance(summary, str) or not summary.strip() or len(summary.strip().encode("utf-8")) > 400:
+        raise RequestError("invalid_palette_recommendation", "palette recommendation summary is invalid.", 400)
+    if not isinstance(colors, list) or len(colors) != MAX_PALETTE_COLORS:
+        raise RequestError("invalid_palette_recommendation", "palette recommendation must contain four colors.", 400)
+    roles = ("primary", "structure", "light", "accent")
+    by_role: dict[str, dict[str, str]] = {}
+    palette_values: list[str] = []
+    limits = {"name": 80, "usage": 160, "reason": 400}
+    for item in colors:
+        if not isinstance(item, dict):
+            raise RequestError("invalid_palette_recommendation", "palette recommendation color is invalid.", 400)
+        role = item.get("role")
+        if role not in roles or role in by_role:
+            raise RequestError("invalid_palette_recommendation", "palette recommendation roles are invalid.", 400)
+        color = item.get("hex")
+        palette = _normalize_palette([color])
+        fields: dict[str, str] = {"hex": palette[0], "role": role}
+        for name, maximum in limits.items():
+            text = item.get(name)
+            if not isinstance(text, str) or not text.strip() or len(text.strip().encode("utf-8")) > maximum:
+                raise RequestError("invalid_palette_recommendation", f"palette recommendation {name} is invalid.", 400)
+            fields[name] = text.strip()
+        by_role[role] = fields
+        palette_values.append(palette[0])
+    palette = _normalize_palette(palette_values)
+    if len(palette) != MAX_PALETTE_COLORS or set(by_role) != set(roles):
+        raise RequestError("invalid_palette_recommendation", "palette recommendation colors and roles must be unique.", 400)
+    try:
+        assignment = assign_palette_roles(palette, {role: by_role[role]["hex"] for role in roles})
+    except PrintablePaletteError as exc:
+        raise RequestError("invalid_palette_recommendation", str(exc), 400) from None
+    if assignment.low_contrast:
+        raise RequestError("invalid_palette_recommendation", "palette recommendation colors have insufficient contrast.", 400)
+    return {"summary": summary.strip(), "colors": [by_role[role] for role in roles]}
+
+
 def _multipart_palette_roles(value: Any, palette: tuple[str, ...]) -> dict[str, str]:
     if value in (None, ""):
         return _normalize_palette_roles(None, palette)
@@ -508,6 +560,8 @@ def _persist_job(job: Job, *, touch: bool = True) -> None:
         "image_metrics": job.image_metrics,
         "artifact_path": _job_path_value(job, job.artifact_path),
         "artifact_format": job.artifact_format,
+        "palette_recommendation": job.palette_recommendation,
+        "palette_recommendation_confirmed": job.palette_recommendation_confirmed,
         "attempts": job.attempts,
         "updated_at": job.updated_at,
     }
@@ -547,6 +601,7 @@ def _load_job(directory: Path) -> Job | None:
         custom_style = _normalize_custom_style(payload.get("custom_style"), style)
         face_limit = _normalize_face_limit(payload.get("face_limit", DEFAULT_MODEL_FACE_LIMIT))
         print_settings = _normalize_print_settings(payload.get("print_settings"))
+        palette_recommendation = _normalize_palette_recommendation(payload.get("palette_recommendation"))
     except RequestError:
         return None
     attempts = payload.get("attempts", [])
@@ -589,6 +644,8 @@ def _load_job(directory: Path) -> Job | None:
     job.image_metrics = raw_metrics if isinstance(raw_metrics, dict) else {}
     job.artifact_path = _job_file(job, payload.get("artifact_path"))
     job.artifact_format = str(payload.get("artifact_format", ""))
+    job.palette_recommendation = palette_recommendation
+    job.palette_recommendation_confirmed = bool(payload.get("palette_recommendation_confirmed", False))
     job.attempts = attempts
     try:
         job.updated_at = float(payload.get("updated_at", state_path.stat().st_mtime))
@@ -631,10 +688,10 @@ def _restore_jobs() -> None:
             job.phase = "resuming"
             job.message = "Retrying the existing remote artifact download after restart."
             job.progress = max(75, job.progress)
-        if job.state == "preprocessing":
+        if job.state in {"preprocessing", "recommending_palette"}:
             job.state = "failed"
             job.phase = "failed"
-            job.message = "The sidecar restarted while creating the preview. Create the preview again manually."
+            job.message = "The sidecar restarted during a local AI step. Start that step again manually."
             job.progress = 0
         if job.state in {"queued", "running", "stopping"}:
             generation_id = next(
@@ -775,6 +832,8 @@ def _public_job(job: Job) -> dict[str, Any]:
         "user_prompt": job.user_prompt,
         "palette": list(job.palette),
         "palette_roles": job.palette_roles,
+        "palette_recommendation": job.palette_recommendation,
+        "palette_recommendation_confirmed": job.palette_recommendation_confirmed,
         "print": job.print_settings,
         "image_metrics": job.image_metrics,
         "model_quality": model_quality,
@@ -1193,6 +1252,41 @@ def _printable_preview_message(job: Job, fallback: str) -> str:
             return "The printable subject is disconnected; regenerate with one connected subject."
         return "The printable preview failed its geometry quality check; regenerate the preview."
     return fallback
+
+
+def _recommend_palette_job(job: Job) -> None:
+    try:
+        _stop_boundary(job)
+        with _JOBS_LOCK:
+            job.state = "recommending_palette"
+            job.phase = "recommending_palette"
+            job.message = "AI is recommending four printable design colors."
+            job.progress = 6
+            _persist_job(job)
+        recommendation = recommend_printable_palette(
+            job.user_prompt,
+            job.style,
+            job.custom_style,
+            image_path=job.input_path,
+        )
+        _stop_boundary(job)
+        normalized = _normalize_palette_recommendation(recommendation.as_dict())
+        with _JOBS_LOCK:
+            job.palette_recommendation = normalized
+            job.palette_recommendation_confirmed = False
+            job.state = "awaiting_palette_confirmation"
+            job.phase = "awaiting_palette_confirmation"
+            job.message = "Review and confirm the recommended design colors."
+            job.progress = 10
+            _persist_job(job)
+    except JobStopped:
+        pass
+    except (OpenAIPreprocessorError, RequestError) as exc:
+        _fail_job(job, str(exc))
+    except Exception:
+        _fail_job(job, "AI printable color recommendation failed.")
+    finally:
+        _finish_deleted(job)
 
 
 def _preprocess_text_job(job: Job, prompt: str) -> None:
@@ -2889,7 +2983,7 @@ class Handler(BaseHTTPRequestHandler):
             parts[1] in {
                 "raw-preview", "strict-preview", "preview", "heatmap", "metadata",
                 "background-mask", "subject-mask", "generate", "stop", "artifact",
-                "recheck", "visual-review", "model-view-sheet",
+                "recheck", "visual-review", "model-view-sheet", "confirm-palette",
             }
             or re.fullmatch(r"mask-[a-z0-9_]+", parts[1])
         ):
@@ -2930,6 +3024,10 @@ class Handler(BaseHTTPRequestHandler):
                             "artifact_formats": [MODEL_ARTIFACT_FORMAT],
                             "face_limits": list(MODEL_FACE_LIMITS),
                             "default_face_limit": DEFAULT_MODEL_FACE_LIMIT,
+                            "palette_recommendation": {
+                                "available": bool(config),
+                                "max_colors": MAX_PALETTE_COLORS,
+                            },
                             "printable_image_pipeline": {
                                 "available": True,
                                 "print_modes": ["solid_regions"],
@@ -2954,7 +3052,10 @@ class Handler(BaseHTTPRequestHandler):
             with _JOBS_LOCK:
                 candidates = [
                     job for job in _JOBS.values()
-                    if job.state in {"preprocessing", "awaiting_confirmation", "queued", "running", "stopping", "ready"}
+                    if job.state in {
+                        "recommending_palette", "awaiting_palette_confirmation", "preprocessing",
+                        "awaiting_confirmation", "queued", "running", "stopping", "ready",
+                    }
                 ]
                 response = _public_job(max(candidates, key=lambda item: item.updated_at)) if candidates else None
             self.send_json(200, {"job": response})
@@ -3007,12 +3108,20 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/v1/orcaslicer/model-jobs/image":
                 self._create_image_job()
                 return
+            if self.path == "/v1/orcaslicer/model-jobs/recommend-text-palette":
+                self._create_text_palette_recommendation()
+                return
+            if self.path == "/v1/orcaslicer/model-jobs/recommend-image-palette":
+                self._create_image_palette_recommendation()
+                return
             job_id, action = self._job_route(self.path)
-            if not job_id or action not in {"generate", "stop", "recheck", "visual-review"}:
+            if not job_id or action not in {"generate", "stop", "recheck", "visual-review", "confirm-palette"}:
                 self._model_error(404, "not_found", "Model job route not found.")
                 return
             if action == "generate":
                 self._generate(job_id)
+            elif action == "confirm-palette":
+                self._confirm_palette(job_id)
             elif action == "recheck":
                 self._recheck(job_id)
             elif action == "visual-review":
@@ -3037,7 +3146,7 @@ class Handler(BaseHTTPRequestHandler):
             if job is None:
                 self._model_error(404, "job_not_found", "Model job not found.")
                 return
-            if job.state in {"preprocessing", "queued", "running", "stopping"}:
+            if job.state in {"recommending_palette", "preprocessing", "queued", "running", "stopping"}:
                 job.delete_requested = True
                 job.stop_event.set()
                 job.state = "stopping"
@@ -3071,6 +3180,35 @@ class Handler(BaseHTTPRequestHandler):
             with _JOBS_LOCK:
                 _JOBS.pop(job.id, None)
             _cleanup_job(job)
+            raise
+        with _JOBS_LOCK:
+            response = _public_job(job)
+        self.send_json(202, {"job": response})
+
+    def _create_text_palette_recommendation(self) -> None:
+        if not os.environ.get("OPENAI_API_KEY", ""):
+            raise RequestError("feature_unavailable", "AI printable color recommendation is not configured.", 503)
+        request = self._read_model_json()
+        _text_field(request.get("request_id"), "request_id")
+        prompt = _text_field(request.get("prompt"), "prompt")
+        style = _normalize_style(request.get("style"))
+        custom_style = _normalize_custom_style(request.get("custom_style"), style)
+        print_settings = _normalize_print_settings(request.get("print"))
+        job = _new_job("text", (), {}, style, custom_style, print_settings)
+        job.user_prompt = prompt
+        job.state = "recommending_palette"
+        job.phase = "recommending_palette"
+        job.message = "AI printable color recommendation queued."
+        job.progress = 5
+        _persist_job(job)
+        with _JOBS_LOCK:
+            _JOBS[job.id] = job
+        try:
+            _submit(job, _recommend_palette_job)
+        except RequestError:
+            with _JOBS_LOCK:
+                _JOBS.pop(job.id, None)
+            _remove_job_state(job)
             raise
         with _JOBS_LOCK:
             response = _public_job(job)
@@ -3121,6 +3259,94 @@ class Handler(BaseHTTPRequestHandler):
         with _JOBS_LOCK:
             response = _public_job(job)
         self.send_json(202, {"job": response})
+
+    def _create_image_palette_recommendation(self) -> None:
+        if not os.environ.get("OPENAI_API_KEY", ""):
+            raise RequestError("feature_unavailable", "AI printable color recommendation is not configured.", 503)
+        fields, image, declared_type = self._read_image_multipart()
+        _text_field(fields.get("request_id"), "request_id")
+        instruction = _normalize_image_instruction(fields.get("instruction"))
+        style = _normalize_style(fields.get("style"))
+        custom_style = _normalize_custom_style(fields.get("custom_style"), style)
+        try:
+            print_payload = json.loads(fields.get("print", "{}"))
+        except json.JSONDecodeError:
+            raise RequestError("invalid_print_settings", "print settings must be valid JSON", 400) from None
+        print_settings = _normalize_print_settings(print_payload)
+        if len(image) > MAX_IMAGE_BYTES:
+            raise RequestError("image_too_large", "Image exceeds the 20 MB limit.", 413)
+        detected_type = _image_type(image)
+        if detected_type is None:
+            raise RequestError("unsupported_image", "Image must be PNG or JPEG.", 415)
+        if declared_type not in {"application/octet-stream", detected_type}:
+            raise RequestError("unsupported_image", "Image Content-Type does not match its data.", 415)
+        job = _new_job("image", (), {}, style, custom_style, print_settings)
+        job.user_prompt = instruction
+        suffix = ".png" if detected_type == "image/png" else ".jpg"
+        input_path = job.directory / f"input-{uuid.uuid4().hex}{suffix}"
+        try:
+            input_path.write_bytes(image)
+        except OSError:
+            _remove_job_state(job)
+            raise RequestError("service_unavailable", "The uploaded image could not be stored.", 503, True) from None
+        job.input_path = input_path
+        job.state = "recommending_palette"
+        job.phase = "recommending_palette"
+        job.message = "AI printable color recommendation queued."
+        job.progress = 5
+        _persist_job(job)
+        with _JOBS_LOCK:
+            _JOBS[job.id] = job
+        try:
+            _submit(job, _recommend_palette_job)
+        except RequestError:
+            with _JOBS_LOCK:
+                _JOBS.pop(job.id, None)
+            _remove_job_state(job)
+            raise
+        with _JOBS_LOCK:
+            response = _public_job(job)
+        self.send_json(202, {"job": response})
+
+    def _confirm_palette(self, job_id: str) -> None:
+        request = self._read_model_json()
+        palette = _normalize_palette(request.get("palette"))
+        if not palette:
+            raise RequestError("invalid_palette", "At least one confirmed color is required.", 400)
+        palette_roles = _normalize_palette_roles(request.get("palette_roles"), palette)
+        job = self._get_job(job_id)
+        if job is None:
+            raise RequestError("job_not_found", "Model job not found.", 404)
+        with _JOBS_LOCK:
+            if job.state != "awaiting_palette_confirmation" or not job.palette_recommendation:
+                raise RequestError("invalid_job_state", "Job is not awaiting palette confirmation.", 409)
+            job.palette = palette
+            job.palette_roles = palette_roles
+            job.palette_recommendation_confirmed = True
+            job.state = "preprocessing"
+            job.phase = "preprocessing"
+            job.message = "Confirmed colors are being applied to the printable preview."
+            job.progress = 10
+            _persist_job(job)
+        try:
+            if job.source == "text":
+                _submit(job, _preprocess_text_job, job.user_prompt)
+            elif job.input_path is not None:
+                _submit(job, _preprocess_image_job, job.input_path, job.user_prompt)
+            else:
+                raise RequestError("input_unavailable", "The stored reference image is unavailable.", 409)
+        except RequestError:
+            with _JOBS_LOCK:
+                job.palette_recommendation_confirmed = False
+                job.state = "awaiting_palette_confirmation"
+                job.phase = "awaiting_palette_confirmation"
+                job.message = "Review and confirm the recommended design colors."
+                job.progress = 10
+                _persist_job(job)
+            raise
+        with _JOBS_LOCK:
+            response = _public_job(job)
+        self.send_json(200, {"job": response})
 
     def _generate(self, job_id: str) -> None:
         request = self._read_model_json()
@@ -3179,13 +3405,13 @@ class Handler(BaseHTTPRequestHandler):
         if job is None:
             raise RequestError("job_not_found", "Model job not found.", 404)
         with _JOBS_LOCK:
-            if job.state in {"preprocessing", "queued", "running", "stopping"}:
+            if job.state in {"recommending_palette", "preprocessing", "queued", "running", "stopping"}:
                 job.stop_event.set()
                 job.state = "stopping"
                 job.phase = "stopping"
                 job.message = "Stopping model generation."
                 _persist_job(job)
-            elif job.state == "awaiting_confirmation":
+            elif job.state in {"awaiting_palette_confirmation", "awaiting_confirmation"}:
                 job.stop_event.set()
                 job.state = "stopped"
                 job.phase = "stopped"
