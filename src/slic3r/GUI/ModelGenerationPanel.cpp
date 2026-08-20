@@ -292,6 +292,7 @@ wxString localized_job_status(const AIModelGenerationClient::JobStatus& status)
 wxString model_quality_code_label(const std::string& code)
 {
     if (code == "tiny_detached_components") return _L("检测到微小脱离部件，请旋转模型确认是否需要保留。");
+    if (code == "tiny_printable_color_regions") return _L("检测到过小的耗材色块，打印时可能产生碎片化换色。");
     if (code == "weak_bed_contact") return _L("模型与热床接触面积较小，请检查底座稳定性。");
     if (code == "extreme_aspect_ratio") return _L("模型比例较极端，请检查缩放和摆放方向。");
     if (code == "high_downward_surface_ratio") return _L("向下表面较多，打印时可能需要更多支撑。");

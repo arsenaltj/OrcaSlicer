@@ -20,8 +20,13 @@ def tetrahedron(offset=(0.0, 0.0, 0.0), scale=(10.0, 10.0, 10.0)) -> tuple[list[
 def obj_text(parts) -> str:
     lines = []
     vertex_offset = 0
-    for vertices, faces in parts:
-        lines.extend("v {} {} {} 1 0 0".format(*vertex) for vertex in vertices)
+    for part in parts:
+        vertices, faces = part[:2]
+        color = part[2] if len(part) > 2 else (1.0, 0.0, 0.0)
+        if color is None:
+            lines.extend("v {} {} {}".format(*vertex) for vertex in vertices)
+        else:
+            lines.extend("v {} {} {} {} {} {}".format(*vertex, *color) for vertex in vertices)
         lines.extend("f {} {} {}".format(*(index + vertex_offset for index in face)) for face in faces)
         vertex_offset += len(vertices)
     return "\n".join(lines) + "\n"
@@ -98,6 +103,109 @@ class PrintableModelQualityTests(unittest.TestCase):
         self.assertEqual(report["status"], "review")
         self.assertIn("weak_bed_contact", report["warnings"])
 
+    def test_coherent_printable_color_regions_pass(self):
+        red_vertices, red_faces = tetrahedron()
+        blue_vertices, blue_faces = tetrahedron((20.0, 0.0, 0.0))
+        report = self.analyze(
+            obj_text([
+                (red_vertices, red_faces, (1.0, 0.0, 0.0)),
+                (blue_vertices, blue_faces, (0.0, 0.0, 1.0)),
+            ])
+        )
+
+        self.assertEqual(report["status"], "pass")
+        self.assertTrue(report["metrics"]["has_complete_vertex_colors"])
+        self.assertEqual(report["metrics"]["printable_color_count"], 2)
+        self.assertEqual(report["metrics"]["color_region_count"], 2)
+        self.assertEqual(report["metrics"]["tiny_color_region_count"], 0)
+
+    def test_color_regions_cross_exact_duplicate_vertex_seams(self):
+        source = self.root / "seamed.obj"
+        source.write_text(
+            "\n".join(
+                [
+                    "v 0 0 0 1 0 0",
+                    "v 1 0 0 1 0 0",
+                    "v 0 1 0 1 0 0",
+                    "v 1 0 0 1 0 0",
+                    "v 1 1 0 1 0 0",
+                    "v 0 1 0 1 0 0",
+                    "f 1 2 3",
+                    "f 4 5 6",
+                ]
+            )
+            + "\n",
+            encoding="ascii",
+        )
+
+        report = analyze_printable_obj(source, allow_repairable_topology=True)
+
+        self.assertTrue(report["metrics"]["has_complete_vertex_colors"])
+        self.assertEqual(report["metrics"]["printable_color_count"], 1)
+        self.assertEqual(report["metrics"]["color_region_count"], 1)
+
+    def test_tiny_printable_color_island_requires_review(self):
+        red_vertices, red_faces = tetrahedron()
+        blue_vertices, blue_faces = tetrahedron((5.0, 5.0, 0.0), (0.1, 0.1, 0.1))
+        thresholds = ModelQualityThresholds(
+            tiny_color_region_face_ratio=0.6,
+            tiny_color_region_area_ratio=0.001,
+        )
+        report = self.analyze(
+            obj_text([
+                (red_vertices, red_faces, (1.0, 0.0, 0.0)),
+                (blue_vertices, blue_faces, (0.0, 0.0, 1.0)),
+            ]),
+            thresholds,
+        )
+
+        self.assertEqual(report["status"], "review")
+        self.assertIn("tiny_printable_color_regions", report["warnings"])
+        self.assertEqual(report["metrics"]["tiny_color_region_count"], 1)
+        self.assertEqual(report["metrics"]["printable_color_count"], 2)
+
+    def test_uncolored_obj_keeps_structural_behavior(self):
+        vertices, faces = tetrahedron()
+        report = self.analyze(obj_text([(vertices, faces, None)]))
+
+        self.assertEqual(report["status"], "pass")
+        self.assertFalse(report["metrics"]["has_complete_vertex_colors"])
+        self.assertEqual(report["metrics"]["printable_color_count"], 0)
+        self.assertEqual(report["metrics"]["color_region_count"], 0)
+        self.assertNotIn("tiny_printable_color_regions", report["warnings"])
+
+    def test_byte_vertex_colors_are_normalized(self):
+        red_vertices, red_faces = tetrahedron()
+        blue_vertices, blue_faces = tetrahedron((20.0, 0.0, 0.0))
+        report = self.analyze(
+            obj_text([
+                (red_vertices, red_faces, (255.0, 0.0, 0.0)),
+                (blue_vertices, blue_faces, (0.0, 0.0, 255.0)),
+            ])
+        )
+
+        self.assertEqual(report["status"], "pass")
+        self.assertTrue(report["metrics"]["has_complete_vertex_colors"])
+        self.assertEqual(report["metrics"]["printable_color_count"], 2)
+
+    def test_incomplete_or_invalid_vertex_colors_disable_color_metrics(self):
+        vertices, faces = tetrahedron()
+        second_vertices, second_faces = tetrahedron((20.0, 0.0, 0.0))
+        cases = (
+            obj_text([
+                (vertices, faces, (1.0, 0.0, 0.0)),
+                (second_vertices, second_faces, None),
+            ]),
+            obj_text([(vertices, faces, (256.0, 0.0, 0.0))]),
+        )
+        for content in cases:
+            with self.subTest(content=content):
+                report = self.analyze(content)
+                self.assertEqual(report["status"], "pass")
+                self.assertFalse(report["metrics"]["has_complete_vertex_colors"])
+                self.assertEqual(report["metrics"]["printable_color_count"], 0)
+                self.assertEqual(report["metrics"]["color_region_count"], 0)
+
     def test_face_limit_is_a_hard_rejection(self):
         report = self.analyze(obj_text([tetrahedron()]), ModelQualityThresholds(max_faces=3))
         self.assertEqual(report["status"], "reject")
@@ -107,7 +215,7 @@ class PrintableModelQualityTests(unittest.TestCase):
         report = self.analyze(obj_text([tetrahedron()]))
         destination = write_model_quality_report(report, self.root / "model-quality.json")
         self.assertTrue(destination.is_file())
-        self.assertIn('"gate_version": "structural-v1"', destination.read_text(encoding="utf-8"))
+        self.assertIn('"gate_version": "structural-v2"', destination.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

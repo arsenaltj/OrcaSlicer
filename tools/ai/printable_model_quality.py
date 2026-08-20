@@ -13,7 +13,7 @@ from typing import Any
 
 
 REPORT_SCHEMA_VERSION = 1
-GATE_VERSION = "structural-v1"
+GATE_VERSION = "structural-v2"
 
 
 @dataclass(frozen=True)
@@ -27,6 +27,8 @@ class ModelQualityThresholds:
     max_short_edge_ratio: float = 0.50
     tiny_component_face_ratio: float = 0.001
     tiny_component_diagonal_ratio: float = 0.05
+    tiny_color_region_face_ratio: float = 0.0005
+    tiny_color_region_area_ratio: float = 0.0001
     degenerate_area_epsilon_mm2: float = 1e-10
 
 
@@ -62,8 +64,15 @@ def _rejected_report(path: Path, thresholds: ModelQualityThresholds, error: Mode
     }
 
 
-def _parse_obj(path: Path, max_faces: int) -> tuple[list[tuple[float, float, float]], list[tuple[int, int, int]]]:
+def _parse_obj(
+    path: Path, max_faces: int
+) -> tuple[
+    list[tuple[float, float, float]],
+    list[tuple[float, float, float] | None],
+    list[tuple[int, int, int]],
+]:
     vertices: list[tuple[float, float, float]] = []
+    vertex_colors: list[tuple[float, float, float] | None] = []
     faces: list[tuple[int, int, int]] = []
     try:
         with path.open("r", encoding="utf-8", errors="strict") as stream:
@@ -82,6 +91,15 @@ def _parse_obj(path: Path, max_faces: int) -> tuple[list[tuple[float, float, flo
                     if not all(math.isfinite(value) for value in vertex):
                         raise ModelQualityError("invalid_vertex", "OBJ contains a non-finite vertex coordinate.")
                     vertices.append(vertex)
+                    color = None
+                    if len(fields) >= 7:
+                        try:
+                            parsed_color = tuple(float(value) for value in fields[4:7])
+                        except ValueError:
+                            parsed_color = ()
+                        if len(parsed_color) == 3 and all(math.isfinite(value) for value in parsed_color):
+                            color = parsed_color
+                    vertex_colors.append(color)
                 elif keyword == "f":
                     if len(fields) != 4:
                         raise ModelQualityError("non_triangular_face", "Printable OBJ must contain only triangular faces.")
@@ -95,7 +113,17 @@ def _parse_obj(path: Path, max_faces: int) -> tuple[list[tuple[float, float, flo
         raise ModelQualityError("unreadable_file", "OBJ could not be read.") from None
     if not vertices or not faces:
         raise ModelQualityError("missing_geometry", "OBJ does not contain usable vertices and triangular faces.")
-    return vertices, faces
+    return vertices, vertex_colors, faces
+
+
+def _printable_color_key(color: tuple[float, float, float] | None) -> tuple[int, int, int] | None:
+    if color is None:
+        return None
+    if all(0.0 <= value <= 1.0 for value in color):
+        return tuple(round(value * 255.0) for value in color)
+    if all(0.0 <= value <= 255.0 for value in color):
+        return tuple(round(value) for value in color)
+    return None
 
 
 def _vector_length(x: float, y: float, z: float) -> float:
@@ -113,7 +141,7 @@ def analyze_printable_obj(
     source = Path(path)
     limits = thresholds or ModelQualityThresholds()
     try:
-        vertices, faces = _parse_obj(source, limits.max_faces)
+        vertices, vertex_colors, faces = _parse_obj(source, limits.max_faces)
     except ModelQualityError as error:
         return _rejected_report(source, limits, error)
 
@@ -130,8 +158,9 @@ def analyze_printable_obj(
         if left_root != right_root:
             parent[right_root] = left_root
 
-    edge_uses: dict[tuple[int, int], list[tuple[int, int]]] = {}
+    edge_uses: dict[tuple[int, int], list[tuple[int, int, int]]] = {}
     referenced: set[int] = set()
+    face_areas: list[float] = []
     degenerate_faces = 0
     surface_area = 0.0
     downward_area = 0.0
@@ -140,7 +169,7 @@ def analyze_printable_obj(
     minimum_edge = math.inf
     maximum_edge = 0.0
 
-    for face in faces:
+    for face_index, face in enumerate(faces):
         referenced.update(face)
         unite(face[0], face[1])
         unite(face[1], face[2])
@@ -156,14 +185,16 @@ def analyze_printable_obj(
         area = double_area * 0.5
         if len(set(face)) != 3 or area <= limits.degenerate_area_epsilon_mm2:
             degenerate_faces += 1
+            face_areas.append(0.0)
         else:
             surface_area += area
+            face_areas.append(area)
             if cross[2] / double_area < -math.sqrt(0.5):
                 downward_area += area
 
         for left, right in ((face[0], face[1]), (face[1], face[2]), (face[2], face[0])):
             edge = (left, right) if left < right else (right, left)
-            edge_uses.setdefault(edge, []).append((left, right))
+            edge_uses.setdefault(edge, []).append((face_index, left, right))
             start, end = vertices[left], vertices[right]
             length = _vector_length(end[0] - start[0], end[1] - start[1], end[2] - start[2])
             minimum_edge = min(minimum_edge, length)
@@ -173,7 +204,32 @@ def analyze_printable_obj(
 
     boundary_edges = sum(len(uses) == 1 for uses in edge_uses.values())
     non_manifold_edges = sum(len(uses) > 2 for uses in edge_uses.values())
-    inconsistent_winding_edges = sum(len(uses) == 2 and uses[0] == uses[1] for uses in edge_uses.values())
+    inconsistent_winding_edges = sum(
+        len(uses) == 2 and uses[0][1:] == uses[1][1:] for uses in edge_uses.values()
+    )
+
+    face_neighbors: list[set[int]] = [set() for _ in faces]
+    for uses in edge_uses.values():
+        if len(uses) != 2:
+            continue
+        left_face, right_face = uses[0][0], uses[1][0]
+        face_neighbors[left_face].add(right_face)
+        face_neighbors[right_face].add(left_face)
+
+    geometric_boundary_faces: dict[
+        tuple[tuple[float, float, float], tuple[float, float, float]], list[int]
+    ] = {}
+    for edge, uses in edge_uses.items():
+        if len(uses) != 1:
+            continue
+        endpoints = (vertices[edge[0]], vertices[edge[1]])
+        geometric_edge = endpoints if endpoints[0] < endpoints[1] else (endpoints[1], endpoints[0])
+        geometric_boundary_faces.setdefault(geometric_edge, []).append(uses[0][0])
+    for joined_faces in geometric_boundary_faces.values():
+        if len(joined_faces) != 2 or joined_faces[0] == joined_faces[1]:
+            continue
+        face_neighbors[joined_faces[0]].add(joined_faces[1])
+        face_neighbors[joined_faces[1]].add(joined_faces[0])
 
     roots = {index: find(index) for index in referenced}
     component_faces = Counter(roots[face[0]] for face in faces)
@@ -216,6 +272,65 @@ def analyze_printable_obj(
     aspect_ratio = max(positive_dimensions) / min(positive_dimensions) if len(positive_dimensions) == 3 else math.inf
     downward_ratio = downward_area / surface_area if surface_area > 0.0 else 0.0
     short_edge_ratio = short_edges / edge_samples if edge_samples else 0.0
+
+    normalized_vertex_colors = [_printable_color_key(color) for color in vertex_colors]
+    has_complete_vertex_colors = bool(normalized_vertex_colors) and all(
+        color is not None for color in normalized_vertex_colors
+    )
+    printable_colors = (
+        {normalized_vertex_colors[index] for index in referenced}
+        if has_complete_vertex_colors
+        else set()
+    )
+    face_colors: list[tuple[int, int, int] | None] = []
+    if has_complete_vertex_colors:
+        for face in faces:
+            counts = Counter(normalized_vertex_colors[index] for index in face)
+            maximum_count = max(counts.values())
+            candidates = [color for color, count in counts.items() if count == maximum_count]
+            face_colors.append(min(candidates) if maximum_count >= 2 else None)
+
+    color_region_count = 0
+    tiny_color_regions = 0
+    smallest_color_region_face_ratio: float | None = None
+    smallest_color_region_area_ratio: float | None = None
+    if has_complete_vertex_colors:
+        visited = [False] * len(faces)
+        for seed, color in enumerate(face_colors):
+            if visited[seed] or color is None:
+                continue
+            visited[seed] = True
+            pending = [seed]
+            region_faces = 0
+            region_area = 0.0
+            while pending:
+                current = pending.pop()
+                region_faces += 1
+                region_area += face_areas[current]
+                for neighbor in face_neighbors[current]:
+                    if not visited[neighbor] and face_colors[neighbor] == color:
+                        visited[neighbor] = True
+                        pending.append(neighbor)
+            face_ratio = region_faces / len(faces)
+            area_ratio = region_area / surface_area if surface_area > 0.0 else 0.0
+            color_region_count += 1
+            smallest_color_region_face_ratio = (
+                face_ratio
+                if smallest_color_region_face_ratio is None
+                else min(smallest_color_region_face_ratio, face_ratio)
+            )
+            smallest_color_region_area_ratio = (
+                area_ratio
+                if smallest_color_region_area_ratio is None
+                else min(smallest_color_region_area_ratio, area_ratio)
+            )
+            if (
+                len(printable_colors) > 1
+                and region_area > limits.degenerate_area_epsilon_mm2
+                and face_ratio <= limits.tiny_color_region_face_ratio
+                and area_ratio <= limits.tiny_color_region_area_ratio
+            ):
+                tiny_color_regions += 1
 
     errors: list[str] = []
     warnings: list[str] = []
@@ -261,6 +376,11 @@ def analyze_printable_obj(
         add_warning("high_downward_surface_ratio", "A large share of surface area faces downward and may require support.")
     if short_edge_ratio > limits.max_short_edge_ratio:
         add_warning("dense_micro_triangles", "More than half of sampled triangle edges are shorter than 0.15 mm.")
+    if tiny_color_regions:
+        add_warning(
+            "tiny_printable_color_regions",
+            f"Model contains {tiny_color_regions} very small printable-color regions that may create noisy filament changes.",
+        )
 
     status = "reject" if errors else "review" if warnings else "pass"
     metrics = {
@@ -291,6 +411,20 @@ def analyze_printable_obj(
         "short_edge_ratio": round(short_edge_ratio, 6),
         "minimum_edge_mm": round(minimum_edge, 6) if math.isfinite(minimum_edge) else None,
         "maximum_edge_mm": round(maximum_edge, 6),
+        "has_complete_vertex_colors": has_complete_vertex_colors,
+        "printable_color_count": len(printable_colors),
+        "color_region_count": color_region_count,
+        "tiny_color_region_count": tiny_color_regions,
+        "smallest_color_region_face_ratio": (
+            round(smallest_color_region_face_ratio, 6)
+            if smallest_color_region_face_ratio is not None
+            else None
+        ),
+        "smallest_color_region_area_ratio": (
+            round(smallest_color_region_area_ratio, 6)
+            if smallest_color_region_area_ratio is not None
+            else None
+        ),
     }
     return {
         "schema_version": REPORT_SCHEMA_VERSION,
