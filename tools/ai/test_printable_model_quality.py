@@ -95,6 +95,33 @@ class PrintableModelQualityTests(unittest.TestCase):
         self.assertIn("tiny_detached_components", report["warnings"])
         self.assertEqual(report["metrics"]["component_count"], 2)
 
+    def test_equal_size_floating_component_requires_review(self):
+        report = self.analyze(
+            obj_text([
+                tetrahedron(),
+                tetrahedron((20.0, 0.0, 15.0)),
+            ])
+        )
+
+        self.assertEqual(report["status"], "review")
+        self.assertIn("floating_disconnected_components", report["warnings"])
+        self.assertEqual(report["metrics"]["floating_component_count"], 1)
+        self.assertGreater(report["metrics"]["minimum_floating_clearance_mm"], 10.0)
+
+    def test_nearby_separate_shell_is_treated_as_supported(self):
+        report = self.analyze(
+            obj_text([
+                tetrahedron(),
+                tetrahedron((10.1, 0.0, 5.0)),
+            ]),
+            ModelQualityThresholds(component_contact_tolerance_mm=0.2),
+        )
+
+        self.assertEqual(report["status"], "pass")
+        self.assertNotIn("floating_disconnected_components", report["warnings"])
+        self.assertEqual(report["metrics"]["floating_component_count"], 0)
+        self.assertIsNone(report["metrics"]["minimum_floating_clearance_mm"])
+
     def test_weak_contact_requires_review_without_rejecting_topology(self):
         vertices, faces = tetrahedron(scale=(10.0, 10.0, 10.0))
         vertices[1] = (10.0, 0.0, 1.0)
@@ -215,7 +242,7 @@ class PrintableModelQualityTests(unittest.TestCase):
         report = self.analyze(obj_text([tetrahedron()]))
         destination = write_model_quality_report(report, self.root / "model-quality.json")
         self.assertTrue(destination.is_file())
-        self.assertIn('"gate_version": "structural-v2"', destination.read_text(encoding="utf-8"))
+        self.assertIn('"gate_version": "structural-v3"', destination.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

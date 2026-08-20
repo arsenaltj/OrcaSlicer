@@ -13,7 +13,7 @@ from typing import Any
 
 
 REPORT_SCHEMA_VERSION = 1
-GATE_VERSION = "structural-v2"
+GATE_VERSION = "structural-v3"
 
 
 @dataclass(frozen=True)
@@ -27,6 +27,7 @@ class ModelQualityThresholds:
     max_short_edge_ratio: float = 0.50
     tiny_component_face_ratio: float = 0.001
     tiny_component_diagonal_ratio: float = 0.05
+    component_contact_tolerance_mm: float = 0.2
     tiny_color_region_face_ratio: float = 0.0005
     tiny_color_region_area_ratio: float = 0.0001
     degenerate_area_epsilon_mm2: float = 1e-10
@@ -128,6 +129,14 @@ def _printable_color_key(color: tuple[float, float, float] | None) -> tuple[int,
 
 def _vector_length(x: float, y: float, z: float) -> float:
     return math.sqrt(x * x + y * y + z * z)
+
+
+def _bounds_distance(left: list[list[float]], right: list[list[float]]) -> float:
+    gaps = [
+        max(0.0, left[0][axis] - right[1][axis], right[0][axis] - left[1][axis])
+        for axis in range(3)
+    ]
+    return _vector_length(*gaps)
 
 
 def analyze_printable_obj(
@@ -258,6 +267,35 @@ def analyze_printable_obj(
         ):
             tiny_components += 1
 
+    supported_bounds = [[math.inf] * 3, [-math.inf] * 3]
+    has_supported_bounds = False
+    floating_components = 0
+    minimum_floating_clearance: float | None = None
+
+    def extend_supported(bounds: list[list[float]]) -> None:
+        nonlocal has_supported_bounds
+        for axis in range(3):
+            supported_bounds[0][axis] = min(supported_bounds[0][axis], bounds[0][axis])
+            supported_bounds[1][axis] = max(supported_bounds[1][axis], bounds[1][axis])
+        has_supported_bounds = True
+
+    contact_tolerance = max(0.0, limits.component_contact_tolerance_mm)
+    ground_limit = minimum[2] + limits.ground_band_mm
+    for _, bounds in sorted(component_bounds.items(), key=lambda item: (item[1][0][2], item[0])):
+        if bounds[0][2] <= ground_limit:
+            extend_supported(bounds)
+            continue
+        clearance = _bounds_distance(bounds, supported_bounds) if has_supported_bounds else math.inf
+        if clearance <= contact_tolerance:
+            extend_supported(bounds)
+            continue
+        floating_components += 1
+        minimum_floating_clearance = (
+            clearance
+            if minimum_floating_clearance is None
+            else min(minimum_floating_clearance, clearance)
+        )
+
     contact_indices = [index for index in referenced if vertices[index][2] <= minimum[2] + limits.ground_band_mm]
     if contact_indices:
         contact_x = max(vertices[index][0] for index in contact_indices) - min(vertices[index][0] for index in contact_indices)
@@ -368,6 +406,11 @@ def analyze_printable_obj(
         add_error("flat_or_empty_axis", "Model has no measurable extent on at least one axis.")
     if tiny_components:
         add_warning("tiny_detached_components", f"Model contains {tiny_components} very small connected components.")
+    if floating_components:
+        add_warning(
+            "floating_disconnected_components",
+            f"Model contains {floating_components} disconnected components with no detected bed or model contact.",
+        )
     if len(contact_indices) < 3 or contact_span_ratio < limits.min_contact_span_ratio:
         add_warning("weak_bed_contact", "The lowest 0.5 mm of the model has a very small bed-contact footprint.")
     if math.isfinite(aspect_ratio) and aspect_ratio > limits.max_aspect_ratio:
@@ -391,6 +434,12 @@ def analyze_printable_obj(
         "component_count": len(component_faces),
         "largest_component_face_ratio": round(largest_component_faces / face_count, 6),
         "tiny_component_count": tiny_components,
+        "floating_component_count": floating_components,
+        "minimum_floating_clearance_mm": (
+            round(minimum_floating_clearance, 6)
+            if minimum_floating_clearance is not None and math.isfinite(minimum_floating_clearance)
+            else None
+        ),
         "boundary_edges": boundary_edges,
         "non_manifold_edges": non_manifold_edges,
         "inconsistent_winding_edges": inconsistent_winding_edges,
