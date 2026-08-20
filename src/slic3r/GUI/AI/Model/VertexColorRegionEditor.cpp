@@ -8,6 +8,7 @@
 #include <cmath>
 #include <iomanip>
 #include <limits>
+#include <numeric>
 #include <queue>
 #include <sstream>
 #include <unordered_map>
@@ -16,6 +17,7 @@ namespace Slic3r::AI {
 namespace {
 
 constexpr float PI = 3.14159265358979323846f;
+constexpr size_t PICK_BVH_LEAF_SIZE = 8;
 
 struct PositionCell
 {
@@ -97,6 +99,35 @@ bool ray_triangle_intersection(const Vec3d& origin, const Vec3d& direction,
         return false;
     distance = edge_b.dot(q) * inverse;
     return distance > epsilon;
+}
+
+bool ray_box_intersection(const Vec3d& origin, const Vec3d& direction,
+                          const Vec3f& minimum_float, const Vec3f& maximum_float,
+                          double maximum_distance, double& entry_distance)
+{
+    constexpr double direction_epsilon = 1e-12;
+    constexpr double bounds_epsilon = 1e-7;
+    const Vec3d minimum = minimum_float.cast<double>().array() - bounds_epsilon;
+    const Vec3d maximum = maximum_float.cast<double>().array() + bounds_epsilon;
+    double near_distance = 0.0;
+    double far_distance = maximum_distance;
+    for (size_t axis = 0; axis < 3; ++axis) {
+        if (std::abs(direction[axis]) <= direction_epsilon) {
+            if (origin[axis] < minimum[axis] || origin[axis] > maximum[axis])
+                return false;
+            continue;
+        }
+        double first = (minimum[axis] - origin[axis]) / direction[axis];
+        double second = (maximum[axis] - origin[axis]) / direction[axis];
+        if (first > second)
+            std::swap(first, second);
+        near_distance = std::max(near_distance, first);
+        far_distance = std::min(far_distance, second);
+        if (near_distance > far_distance)
+            return false;
+    }
+    entry_distance = near_distance;
+    return far_distance > 0.0;
 }
 
 } // namespace
@@ -217,7 +248,59 @@ bool VertexColorRegionEditor::initialize(indexed_triangle_set mesh, std::vector<
         std::sort(neighbors.begin(), neighbors.end());
         neighbors.erase(std::unique(neighbors.begin(), neighbors.end()), neighbors.end());
     }
+
+    m_pick_face_order.resize(m_mesh.indices.size());
+    std::iota(m_pick_face_order.begin(), m_pick_face_order.end(), uint32_t(0));
+    m_pick_nodes.reserve(std::max<size_t>(1, m_mesh.indices.size() / 2));
+    build_pick_bvh(0, m_pick_face_order.size());
     return true;
+}
+
+uint32_t VertexColorRegionEditor::build_pick_bvh(size_t begin, size_t end)
+{
+    PickBvhNode node;
+    node.minimum = Vec3f::Constant(std::numeric_limits<float>::infinity());
+    node.maximum = Vec3f::Constant(-std::numeric_limits<float>::infinity());
+    Vec3f center_minimum = node.minimum;
+    Vec3f center_maximum = node.maximum;
+    for (size_t item = begin; item < end; ++item) {
+        const uint32_t face_index = m_pick_face_order[item];
+        const stl_triangle_vertex_indices& face = m_mesh.indices[face_index];
+        for (size_t corner = 0; corner < 3; ++corner) {
+            const Vec3f& vertex = m_mesh.vertices[face[corner]];
+            node.minimum = node.minimum.cwiseMin(vertex);
+            node.maximum = node.maximum.cwiseMax(vertex);
+        }
+        center_minimum = center_minimum.cwiseMin(m_face_centers[face_index]);
+        center_maximum = center_maximum.cwiseMax(m_face_centers[face_index]);
+    }
+
+    const uint32_t node_index = uint32_t(m_pick_nodes.size());
+    m_pick_nodes.emplace_back(node);
+    const size_t count = end - begin;
+    if (count <= PICK_BVH_LEAF_SIZE) {
+        m_pick_nodes[node_index].first = uint32_t(begin);
+        m_pick_nodes[node_index].count = uint32_t(count);
+        return node_index;
+    }
+
+    Eigen::Index split_axis = 0;
+    (center_maximum - center_minimum).maxCoeff(&split_axis);
+    const size_t middle = begin + count / 2;
+    std::nth_element(
+        m_pick_face_order.begin() + begin,
+        m_pick_face_order.begin() + middle,
+        m_pick_face_order.begin() + end,
+        [this, split_axis](uint32_t left, uint32_t right) {
+            const float left_value = m_face_centers[left][split_axis];
+            const float right_value = m_face_centers[right][split_axis];
+            return left_value == right_value ? left < right : left_value < right_value;
+        });
+    const uint32_t left = build_pick_bvh(begin, middle);
+    const uint32_t right = build_pick_bvh(middle, end);
+    m_pick_nodes[node_index].left = left;
+    m_pick_nodes[node_index].right = right;
+    return node_index;
 }
 
 void VertexColorRegionEditor::clear()
@@ -227,6 +310,8 @@ void VertexColorRegionEditor::clear()
     m_face_normals.clear();
     m_face_centers.clear();
     m_face_neighbors.clear();
+    m_pick_face_order.clear();
+    m_pick_nodes.clear();
     m_selected_faces.clear();
     m_selected_face_count = 0;
     m_mesh_diagonal = 0.0f;
@@ -240,14 +325,64 @@ std::optional<size_t> VertexColorRegionEditor::pick_face(const Vec3d& ray_origin
     const Vec3d direction = ray_direction.normalized();
     double nearest = std::numeric_limits<double>::infinity();
     std::optional<size_t> result;
-    for (size_t face_index = 0; face_index < m_mesh.indices.size(); ++face_index) {
-        const stl_triangle_vertex_indices& face = m_mesh.indices[face_index];
-        double distance = 0.0;
-        if (ray_triangle_intersection(ray_origin, direction,
-                                      m_mesh.vertices[face[0]], m_mesh.vertices[face[1]],
-                                      m_mesh.vertices[face[2]], distance) && distance < nearest) {
-            nearest = distance;
-            result = face_index;
+    if (m_pick_nodes.empty())
+        return result;
+
+    struct PendingNode
+    {
+        uint32_t index;
+        double entry_distance;
+    };
+    double root_distance = 0.0;
+    if (!ray_box_intersection(ray_origin, direction, m_pick_nodes.front().minimum,
+                              m_pick_nodes.front().maximum, nearest, root_distance))
+        return result;
+    std::vector<PendingNode> pending {{0, root_distance}};
+    pending.reserve(64);
+    while (!pending.empty()) {
+        const PendingNode current = pending.back();
+        pending.pop_back();
+        if (current.entry_distance > nearest)
+            continue;
+        const PickBvhNode& node = m_pick_nodes[current.index];
+        if (node.is_leaf()) {
+            for (uint32_t item = node.first; item < node.first + node.count; ++item) {
+                const size_t face_index = m_pick_face_order[item];
+                const stl_triangle_vertex_indices& face = m_mesh.indices[face_index];
+                double distance = 0.0;
+                if (!ray_triangle_intersection(ray_origin, direction,
+                                               m_mesh.vertices[face[0]], m_mesh.vertices[face[1]],
+                                               m_mesh.vertices[face[2]], distance))
+                    continue;
+                if (distance < nearest - 1e-9 ||
+                    (std::abs(distance - nearest) <= 1e-9 && (!result || face_index < *result))) {
+                    nearest = distance;
+                    result = face_index;
+                }
+            }
+            continue;
+        }
+
+        const PickBvhNode& left = m_pick_nodes[node.left];
+        const PickBvhNode& right = m_pick_nodes[node.right];
+        double left_distance = 0.0;
+        double right_distance = 0.0;
+        const bool hit_left = ray_box_intersection(
+            ray_origin, direction, left.minimum, left.maximum, nearest, left_distance);
+        const bool hit_right = ray_box_intersection(
+            ray_origin, direction, right.minimum, right.maximum, nearest, right_distance);
+        if (hit_left && hit_right) {
+            if (left_distance <= right_distance) {
+                pending.push_back({node.right, right_distance});
+                pending.push_back({node.left, left_distance});
+            } else {
+                pending.push_back({node.left, left_distance});
+                pending.push_back({node.right, right_distance});
+            }
+        } else if (hit_left) {
+            pending.push_back({node.left, left_distance});
+        } else if (hit_right) {
+            pending.push_back({node.right, right_distance});
         }
     }
     return result;

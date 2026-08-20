@@ -56,6 +56,19 @@ public:
                         std::string& error) const;
 
 private:
+    struct PickBvhNode
+    {
+        Vec3f minimum {Vec3f::Zero()};
+        Vec3f maximum {Vec3f::Zero()};
+        uint32_t first {0};
+        uint32_t count {0};
+        uint32_t left {0};
+        uint32_t right {0};
+
+        bool is_leaf() const { return count != 0; }
+    };
+
+    uint32_t build_pick_bvh(size_t begin, size_t end);
     std::vector<size_t> smart_region(size_t seed_face, const RegionSelectionSettings& settings) const;
     std::vector<size_t> local_patch(size_t seed_face, const RegionSelectionSettings& settings) const;
     RGBA face_color(size_t face_index) const;
@@ -65,6 +78,8 @@ private:
     std::vector<Vec3f> m_face_normals;
     std::vector<Vec3f> m_face_centers;
     std::vector<std::vector<uint32_t>> m_face_neighbors;
+    std::vector<uint32_t> m_pick_face_order;
+    std::vector<PickBvhNode> m_pick_nodes;
     std::vector<uint8_t> m_selected_faces;
     size_t m_selected_face_count {0};
     float m_mesh_diagonal {0.0f};

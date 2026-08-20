@@ -54,6 +54,22 @@ std::vector<RGBA> solid_colors(size_t count, const RGBA& color)
     return std::vector<RGBA>(count, color);
 }
 
+indexed_triangle_set stacked_triangle_mesh(size_t layers)
+{
+    indexed_triangle_set mesh;
+    mesh.vertices.reserve(layers * 3);
+    mesh.indices.reserve(layers);
+    for (size_t layer = 0; layer < layers; ++layer) {
+        const float z = float(layer) * 0.01f;
+        const uint32_t first = uint32_t(mesh.vertices.size());
+        mesh.vertices.emplace_back(0.0f, 0.0f, z);
+        mesh.vertices.emplace_back(1.0f, 0.0f, z);
+        mesh.vertices.emplace_back(0.0f, 1.0f, z);
+        mesh.indices.emplace_back(first, first + 1, first + 2);
+    }
+    return mesh;
+}
+
 } // namespace
 
 TEST_CASE("vertex color smart region follows connected color blocks", "[AI][VertexColorRegion]")
@@ -200,6 +216,21 @@ TEST_CASE("vertex color picking returns the nearest visible face", "[AI][VertexC
     REQUIRE(hit);
     CHECK(*hit == 0);
     CHECK_FALSE(editor.pick_face({2.0, 2.0, 1.0}, {0.0, 0.0, -1.0}));
+}
+
+TEST_CASE("vertex color picking acceleration preserves nearest and deterministic hits", "[AI][VertexColorRegion]")
+{
+    indexed_triangle_set mesh = stacked_triangle_mesh(512);
+    mesh.indices.push_back(mesh.indices.back());
+    AI::VertexColorRegionEditor editor;
+    std::string error;
+    REQUIRE(editor.initialize(mesh, solid_colors(mesh.vertices.size(), {1.0f, 0.0f, 0.0f, 1.0f}), error));
+
+    const std::optional<size_t> hit = editor.pick_face({0.2, 0.2, 10.0}, {0.0, 0.0, -4.0});
+    REQUIRE(hit);
+    CHECK(*hit == 511);
+    CHECK_FALSE(editor.pick_face({1.2, 1.2, 10.0}, {0.0, 0.0, -1.0}));
+    CHECK_FALSE(editor.pick_face({0.2, 0.2, 10.0}, {0.0, 0.0, 0.0}));
 }
 
 TEST_CASE("vertex color OBJ copy preserves structure and rewrites selected vertices", "[AI][VertexColorRegion]")
