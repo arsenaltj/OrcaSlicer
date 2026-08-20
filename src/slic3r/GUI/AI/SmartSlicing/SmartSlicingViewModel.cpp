@@ -62,6 +62,26 @@ SmartSlicingViewModel SmartSlicingViewModel::from_snapshot(const AI::SmartSlicin
             view.legacy_steps[1] = LegacyAIWorkflowStatus::Warning;
         break;
     }
+    case WorkflowState::PlanningCandidates:
+        view.summary_key = "planning_candidates";
+        complete_through(1);
+        view.stages[2].status = SmartSlicingStageStatus::Active;
+        break;
+    case WorkflowState::TrialSlicingBaseline:
+        view.summary_key = "trial_slicing_baseline";
+        complete_through(1);
+        view.stages[2].status = SmartSlicingStageStatus::Active;
+        break;
+    case WorkflowState::TrialSlicingCandidates:
+        view.summary_key = "trial_slicing_candidates";
+        complete_through(1);
+        view.stages[2].status = SmartSlicingStageStatus::Active;
+        break;
+    case WorkflowState::ReadyToApply:
+        view.summary_key = "candidates_ready";
+        complete_through(2);
+        view.stages[3].status = SmartSlicingStageStatus::Active;
+        break;
     case WorkflowState::Canceling: view.summary_key = "canceling"; break;
     case WorkflowState::Canceled:
         view.summary_key = "canceled";

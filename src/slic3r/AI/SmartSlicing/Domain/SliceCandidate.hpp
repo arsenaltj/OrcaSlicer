@@ -21,6 +21,7 @@ struct SliceCandidate
     PlacementCandidate placement;
     ParameterProposal parameters;
     std::string explanation;
+    std::string diagnostic_code;
     CandidateStatus status{CandidateStatus::Draft};
     std::optional<SlicingMetrics> metrics;
 };
