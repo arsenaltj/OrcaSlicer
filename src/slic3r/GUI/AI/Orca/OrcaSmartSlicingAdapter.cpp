@@ -93,14 +93,16 @@ OrcaTrialSliceInput OrcaSmartSlicingAdapter::capture_trial_slice_input() const
     OrcaTrialSliceInput input;
     input.model                    = current_plate_model_copy(*m_plater, *plate);
     input.config                   = wxGetApp().preset_bundle->full_config();
+    input.config.apply(*plate->config(), true);
     input.plate_index              = plates.get_curr_plate_index();
+    input.plate_id                 = plate->id().id;
     input.plate_name               = plate->get_plate_name();
     input.extruder_filament_info   = wxGetApp().preset_bundle->get_extruder_filament_info();
     return input;
 }
 
 std::vector<AI::SmartSlicing::SliceCandidate>
-OrcaSmartSlicingAdapter::placement_candidates(const AI::SmartSlicing::WorkspaceRevision& revision) const
+OrcaSmartSlicingAdapter::candidate_proposals(const AI::SmartSlicing::WorkspaceRevision& revision) const
 {
     if (m_plater == nullptr || wxGetApp().preset_bundle == nullptr)
         return {};
@@ -118,7 +120,48 @@ OrcaSmartSlicingAdapter::placement_candidates(const AI::SmartSlicing::WorkspaceR
     plates.preprocess_exclude_areas(input.arrange_params.excluded_regions, enable_wrapping, 1, scale_(1));
     if (const auto wipe_tower = get_wipe_tower_arrangepoly(*m_plater))
         input.fixed_regions.push_back(*wipe_tower);
-    return OrcaPlacementCandidateProvider().generate(std::move(input), revision);
+    std::vector<AI::SmartSlicing::SliceCandidate> candidates =
+        OrcaPlacementCandidateProvider().generate(std::move(input), revision);
+
+    DynamicPrintConfig current_config = wxGetApp().preset_bundle->full_config();
+    current_config.apply(*plate->config(), true);
+    const double current_brim_width = current_config.opt_float("brim_width");
+    bool benefits_from_brim = false;
+    const Model& model = m_plater->model();
+    for (size_t object_index = 0; object_index < model.objects.size() && !benefits_from_brim; ++object_index) {
+        const ModelObject* object = model.objects[object_index];
+        if (object == nullptr)
+            continue;
+        for (size_t instance_index = 0; instance_index < object->instances.size(); ++instance_index) {
+            const ModelInstance* instance = object->instances[instance_index];
+            if (instance == nullptr || !instance->printable ||
+                !plate->contain_instance(static_cast<int>(object_index), static_cast<int>(instance_index)))
+                continue;
+            const Vec3d size = object->instance_bounding_box(*instance).size();
+            const double minimum_footprint = std::min(size.x(), size.y());
+            benefits_from_brim = minimum_footprint > 0.0 &&
+                (minimum_footprint <= 8.0 || size.z() >= 2.0 * minimum_footprint);
+            if (benefits_from_brim)
+                break;
+        }
+    }
+    if (benefits_from_brim && current_brim_width < 10.0) {
+        const double proposed_brim_width = std::min(10.0, std::max(5.0, current_brim_width + 2.0));
+        AI::SmartSlicing::SliceCandidate candidate;
+        candidate.id            = "parameter-brim-stability-v1";
+        candidate.base_revision = revision;
+        candidate.goal          = AI::SmartSlicing::CandidateGoal::Stability;
+        candidate.explanation   = "small_or_slender_footprint_brim_candidate";
+        candidate.parameters.entries.push_back({AI::SmartSlicing::ConfigScope::Plate,
+                                                AI::SmartSlicing::PresetOwner::Process,
+                                                static_cast<int64_t>(plate->id().id),
+                                                "brim_width",
+                                                current_brim_width,
+                                                proposed_brim_width,
+                                                "improve_small_footprint_adhesion"});
+        candidates.push_back(std::move(candidate));
+    }
+    return candidates;
 }
 
 AI::SmartSlicing::WorkspaceContext OrcaSmartSlicingAdapter::capture_context_impl(bool include_diagnostics) const
@@ -218,6 +261,7 @@ AI::SmartSlicing::WorkspaceContext OrcaSmartSlicingAdapter::capture_context_impl
     plate_stream << context.plate_index << ':' << plate->id().id << ':' << static_cast<int>(plate->get_bed_type(true)) << ':'
                  << static_cast<int>(plate->get_real_print_seq()) << ':' << static_cast<int>(plate->get_filament_map_mode()) << ':'
                  << plate->is_locked() << ':' << plate->get_spiral_vase_mode();
+    plate_stream << ":config:\n" << canonical_config(*plate->config());
     for (const int map : plate->get_filament_maps())
         plate_stream << ":filament_map:" << map;
     for (const int extruder : plate->get_first_layer_print_sequence())

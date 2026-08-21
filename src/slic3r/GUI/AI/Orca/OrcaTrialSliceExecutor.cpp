@@ -1,4 +1,5 @@
 #include "OrcaTrialSliceExecutor.hpp"
+#include "OrcaParameterProposalAdapter.hpp"
 
 #include "libslic3r/GCode/GCodeProcessor.hpp"
 #include "libslic3r/Print.hpp"
@@ -133,15 +134,21 @@ TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice(const SliceCandidat
     m_cancel_requested.store(false, std::memory_order_release);
 
     try {
-        if (!candidate.parameters.entries.empty()) {
-            result.diagnostic_code = "parameter_patch_not_validated";
-            return result;
-        }
         OrcaTrialSliceInput input = m_input_provider();
         if (m_cancel_requested.load(std::memory_order_acquire)) {
             result.status          = TrialSliceStatus::Canceled;
             result.diagnostic_code = "trial_slice_canceled";
             return result;
+        }
+        if (!candidate.parameters.entries.empty()) {
+            DynamicPrintConfig patched_config;
+            const OrcaParameterApplyResult parameter_result = OrcaParameterProposalAdapter().validate_and_apply(
+                candidate.parameters, input.plate_id, input.config, patched_config);
+            if (!parameter_result.accepted) {
+                result.diagnostic_code = parameter_result.diagnostic_code;
+                return result;
+            }
+            input.config = std::move(patched_config);
         }
         if (!apply_placement(input.model, candidate.placement)) {
             result.diagnostic_code = "invalid_candidate_placement";

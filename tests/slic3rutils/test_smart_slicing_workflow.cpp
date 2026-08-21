@@ -486,6 +486,7 @@ TEST_CASE("Orca trial slicing owns model config print and gcode copies", "[AI][S
         input.model       = formal_model;
         input.config      = formal_config;
         input.plate_index = 0;
+        input.plate_id    = 7;
         input.plate_name  = "Trial";
         return input;
     });
@@ -502,6 +503,8 @@ TEST_CASE("Orca trial slicing owns model config print and gcode copies", "[AI][S
             cloned_transform.matrix[static_cast<size_t>(row * candidate_transform.cols() + column)] =
                 candidate_transform(row, column);
     candidate.placement.transforms.push_back(cloned_transform);
+    candidate.parameters.entries.push_back({ConfigScope::Plate, PresetOwner::Process, 7, "layer_height",
+                                            0.25, 0.20, "improve_surface_detail"});
 
     const TrialSliceResult result = executor.execute_trial_slice(candidate);
 
@@ -518,15 +521,20 @@ TEST_CASE("Orca trial slicing owns model config print and gcode copies", "[AI][S
     CHECK(formal_config.opt_serialize("layer_height") == original_layer_height);
 }
 
-TEST_CASE("Orca trial slicing rejects unvalidated patches and observes early cancellation", "[AI][SmartSlicing][Workflow][OrcaTrial]")
+TEST_CASE("Orca trial slicing rejects forbidden patches and observes early cancellation", "[AI][SmartSlicing][Workflow][OrcaTrial]")
 {
     SliceCandidate candidate = proposal("candidate", WorkspaceRevision{1, 2, 3, "revision-a"});
-    candidate.parameters.entries.push_back({"layer_height", 0.2, "plate"});
-    Slic3r::GUI::OrcaTrialSliceExecutor rejected_executor([] { return Slic3r::GUI::OrcaTrialSliceInput{}; });
+    candidate.parameters.entries.push_back({ConfigScope::Plate, PresetOwner::Process, 0, "nozzle_diameter",
+                                            0.4, 0.6, "unsafe_hardware_change"});
+    Slic3r::GUI::OrcaTrialSliceExecutor rejected_executor([] {
+        Slic3r::GUI::OrcaTrialSliceInput input;
+        input.plate_id = 0;
+        return input;
+    });
 
     const TrialSliceResult rejected = rejected_executor.execute_trial_slice(candidate);
     CHECK(rejected.status == TrialSliceStatus::Failed);
-    CHECK(rejected.diagnostic_code == "parameter_patch_not_validated");
+    CHECK(rejected.diagnostic_code == "parameter_key_forbidden");
 
     Slic3r::GUI::OrcaTrialSliceExecutor* executor_ptr = nullptr;
     Slic3r::GUI::OrcaTrialSliceExecutor canceled_executor([&executor_ptr] {

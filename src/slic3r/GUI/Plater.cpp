@@ -2,6 +2,7 @@
 #include "AIAssistantPanel.hpp"
 #include "AI/Orca/OrcaSmartSlicingAdapter.hpp"
 #include "AI/Orca/OrcaOfficialSliceGateway.hpp"
+#include "AI/Orca/OrcaParameterProposalAdapter.hpp"
 #include "AI/SmartSlicing/SmartSlicingPanel.hpp"
 #include "AI/SmartSlicing/SmartSlicingPresenter.hpp"
 #include "slic3r/AI/SmartSlicing/Application/SmartSlicingCoordinator.hpp"
@@ -14878,10 +14879,6 @@ struct SmartSlicingTransformTarget
 bool collect_smart_slicing_targets(Plater& plater, const AI::SmartSlicing::SliceCandidate& candidate,
                                    std::vector<SmartSlicingTransformTarget>& targets, std::string& diagnostic)
 {
-    if (!candidate.parameters.entries.empty()) {
-        diagnostic = "parameter_patch_not_validated";
-        return false;
-    }
     PartPlate* plate = plater.get_partplate_list().get_curr_plate();
     if (plate == nullptr) {
         diagnostic = "current_plate_unavailable";
@@ -14944,6 +14941,41 @@ bool collect_smart_slicing_targets(Plater& plater, const AI::SmartSlicing::Slice
     return true;
 }
 
+bool prepare_smart_slicing_parameter_patch(Plater& plater, const AI::SmartSlicing::SliceCandidate& candidate,
+                                           DynamicPrintConfig& plate_patch, std::string& diagnostic)
+{
+    if (candidate.parameters.entries.empty())
+        return true;
+    if (wxGetApp().preset_bundle == nullptr) {
+        diagnostic = "current_config_unavailable";
+        return false;
+    }
+    PartPlate* plate = plater.get_partplate_list().get_curr_plate();
+    if (plate == nullptr) {
+        diagnostic = "current_plate_unavailable";
+        return false;
+    }
+
+    DynamicPrintConfig current_config = wxGetApp().preset_bundle->full_config();
+    current_config.apply(*plate->config(), true);
+    DynamicPrintConfig patched_config;
+    const OrcaParameterApplyResult result = OrcaParameterProposalAdapter().validate_and_apply(
+        candidate.parameters, plate->id().id, current_config, patched_config);
+    if (!result.accepted) {
+        diagnostic = result.diagnostic_code;
+        return false;
+    }
+    for (const AI::SmartSlicing::ConfigPatchEntry& entry : candidate.parameters.entries) {
+        const ConfigOption* replacement = patched_config.option(entry.key);
+        if (replacement == nullptr) {
+            diagnostic = "parameter_native_option_unavailable";
+            return false;
+        }
+        plate_patch.set_key_value(entry.key, replacement->clone());
+    }
+    return true;
+}
+
 } // namespace
 
 bool Plater::is_smart_slicing_shown() const
@@ -14964,13 +14996,19 @@ void Plater::enable_smart_slicing()
         [this] { return p->smart_slicing_workspace->current_revision(); },
         [this](const AI::SmartSlicing::SliceCandidate& candidate) {
             std::vector<SmartSlicingTransformTarget> targets;
+            DynamicPrintConfig parameter_patch;
             std::string diagnostic;
-            return collect_smart_slicing_targets(*this, candidate, targets, diagnostic) ? std::string{} : diagnostic;
+            if (!collect_smart_slicing_targets(*this, candidate, targets, diagnostic) ||
+                !prepare_smart_slicing_parameter_patch(*this, candidate, parameter_patch, diagnostic))
+                return diagnostic;
+            return std::string{};
         },
         [this](const AI::SmartSlicing::SliceCandidate& candidate) {
             std::vector<SmartSlicingTransformTarget> targets;
+            DynamicPrintConfig parameter_patch;
             std::string diagnostic;
-            if (!collect_smart_slicing_targets(*this, candidate, targets, diagnostic))
+            if (!collect_smart_slicing_targets(*this, candidate, targets, diagnostic) ||
+                !prepare_smart_slicing_parameter_patch(*this, candidate, parameter_patch, diagnostic))
                 return OrcaApplyMutationResult{false, false, std::move(diagnostic)};
 
             std::vector<SmartSlicingTransformTarget> changed;
@@ -14981,7 +15019,7 @@ void Plater::enable_smart_slicing()
                     changed_object_indices.push_back(target.object_index);
                 }
             }
-            if (changed.empty())
+            if (changed.empty() && candidate.parameters.entries.empty())
                 return OrcaApplyMutationResult{true, false, {}};
             std::sort(changed_object_indices.begin(), changed_object_indices.end());
             changed_object_indices.erase(std::unique(changed_object_indices.begin(), changed_object_indices.end()),
@@ -14994,7 +15032,19 @@ void Plater::enable_smart_slicing()
                     transaction_started = true;
                     for (const SmartSlicingTransformTarget& target : changed)
                         target.instance->set_transformation(Geometry::Transformation(target.matrix));
-                    changed_objects(changed_object_indices);
+                    PartPlate* plate = get_partplate_list().get_curr_plate();
+                    if (plate == nullptr)
+                        throw std::runtime_error("Current plate disappeared while applying a smart-slicing candidate.");
+                    for (const AI::SmartSlicing::ConfigPatchEntry& entry : candidate.parameters.entries) {
+                        const ConfigOption* replacement = parameter_patch.option(entry.key);
+                        if (replacement == nullptr)
+                            throw std::runtime_error("Validated smart-slicing parameter disappeared before apply.");
+                        plate->config()->set_key_value(entry.key, replacement->clone());
+                    }
+                    if (!changed_object_indices.empty())
+                        changed_objects(changed_object_indices);
+                    if (!candidate.parameters.entries.empty())
+                        plate->update_slice_result_valid_state(false);
                     update_title_dirty_status();
                 }
                 return OrcaApplyMutationResult{true, true, {}};
@@ -15036,7 +15086,7 @@ void Plater::enable_smart_slicing()
     p->smart_slicing_presenter = std::make_unique<SmartSlicingPresenter>(*p->smart_slicing_coordinator);
     p->smart_slicing_panel = new SmartSlicingPanel(this, *p->smart_slicing_coordinator, [this] {
         const auto& snapshot = p->smart_slicing_coordinator->snapshot();
-        return snapshot.context ? p->smart_slicing_workspace->placement_candidates(snapshot.context->revision) :
+        return snapshot.context ? p->smart_slicing_workspace->candidate_proposals(snapshot.context->revision) :
                                   std::vector<AI::SmartSlicing::SliceCandidate>{};
     });
     p->smart_slicing_presenter->set_view_changed([this](const SmartSlicingViewModel& view) {

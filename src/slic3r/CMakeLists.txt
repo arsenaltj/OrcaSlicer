@@ -316,6 +316,8 @@ set(SLIC3R_GUI_SOURCES
     AI/SmartSlicing/Domain/CandidateComparison.cpp
     AI/SmartSlicing/Domain/CandidateComparison.hpp
     AI/SmartSlicing/Domain/ParameterProposal.hpp
+    AI/SmartSlicing/Domain/ParameterProposalValidator.cpp
+    AI/SmartSlicing/Domain/ParameterProposalValidator.hpp
     AI/SmartSlicing/Domain/PlacementCandidate.hpp
     AI/SmartSlicing/Domain/PrintabilityReport.hpp
     AI/SmartSlicing/Domain/RepairPlan.hpp
@@ -339,6 +341,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/AI/SmartSlicing/SmartSlicingViewModel.hpp
     GUI/AI/Orca/OrcaSmartSlicingAdapter.cpp
     GUI/AI/Orca/OrcaSmartSlicingAdapter.hpp
+    GUI/AI/Orca/OrcaParameterProposalAdapter.cpp
+    GUI/AI/Orca/OrcaParameterProposalAdapter.hpp
     GUI/AI/Orca/OrcaPlacementCandidateProvider.hpp
     GUI/AI/Orca/OrcaTrialSliceExecutor.cpp
     GUI/AI/Orca/OrcaTrialSliceExecutor.hpp

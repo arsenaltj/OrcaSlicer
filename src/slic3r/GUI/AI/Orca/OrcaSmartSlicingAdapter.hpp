@@ -20,7 +20,7 @@ public:
     AI::SmartSlicing::WorkspaceContext capture_context() const override;
     OrcaTrialSliceInput capture_trial_slice_input() const;
     std::vector<AI::SmartSlicing::SliceCandidate>
-    placement_candidates(const AI::SmartSlicing::WorkspaceRevision& revision) const;
+    candidate_proposals(const AI::SmartSlicing::WorkspaceRevision& revision) const;
 
 private:
     AI::SmartSlicing::WorkspaceContext capture_context_impl(bool include_diagnostics) const;

@@ -22,6 +22,7 @@ struct OrcaTrialSliceInput
     Model model;
     DynamicPrintConfig config;
     int plate_index{0};
+    int64_t plate_id{-1};
     std::string plate_name;
     std::vector<std::vector<DynamicPrintConfig>> extruder_filament_info;
 };
