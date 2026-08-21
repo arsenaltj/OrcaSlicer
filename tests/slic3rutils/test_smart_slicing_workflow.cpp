@@ -1,7 +1,9 @@
 #include <catch2/catch_all.hpp>
 
 #include "slic3r/AI/SmartSlicing/Application/CandidatePlanningWorkflow.hpp"
+#include "slic3r/AI/SmartSlicing/Application/ApplyWorkflow.hpp"
 #include "slic3r/AI/SmartSlicing/Application/SmartSlicingCoordinator.hpp"
+#include "slic3r/GUI/AI/Orca/OrcaOfficialSliceGateway.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaTrialSliceExecutor.hpp"
 #include "slic3r/GUI/AI/SmartSlicing/SmartSlicingViewModel.hpp"
 
@@ -73,6 +75,34 @@ public:
     }
 
     void cancel_trial_slice() override { ++cancel_count; }
+};
+
+class FakeOfficialSliceGateway final : public IOfficialSliceGateway
+{
+public:
+    OfficialSliceResult prepared{OfficialSlicePhase::Prepared, {}, false, false};
+    OfficialSliceResult committed{OfficialSlicePhase::Slicing, {}, true, true};
+    OfficialSliceResult polled{OfficialSlicePhase::Slicing, {}, true, true};
+    size_t prepare_calls{0};
+    size_t commit_calls{0};
+    size_t undo_calls{0};
+
+    OfficialSliceResult prepare(const SliceCandidate&, const WorkspaceRevision&) override
+    {
+        ++prepare_calls;
+        return prepared;
+    }
+    OfficialSliceResult commit(const SliceCandidate&, const WorkspaceRevision&) override
+    {
+        ++commit_calls;
+        return committed;
+    }
+    OfficialSliceResult poll() override { return polled; }
+    bool undo_last_apply() override
+    {
+        ++undo_calls;
+        return true;
+    }
 };
 
 } // namespace
@@ -302,6 +332,136 @@ TEST_CASE("workspace edits during trial slicing make all results stale", "[AI][S
     CHECK_FALSE(coordinator.plan_and_slice_candidates());
     CHECK(coordinator.snapshot().state == WorkflowState::Stale);
     CHECK(coordinator.snapshot().comparison == std::nullopt);
+}
+
+TEST_CASE("apply workflow rejects stale candidates before entering the transaction gateway", "[AI][SmartSlicing][Apply]")
+{
+    FakeOfficialSliceGateway gateway;
+    SliceCandidate candidate = proposal("candidate", WorkspaceRevision{1, 2, 3, "revision-a"});
+
+    const OfficialSliceResult result = ApplyWorkflow().start(
+        candidate, candidate.base_revision, WorkspaceRevision{1, 2, 3, "revision-b"}, gateway);
+
+    CHECK(result.phase == OfficialSlicePhase::Rejected);
+    CHECK(result.diagnostic_code == "stale_revision");
+    CHECK(gateway.prepare_calls == 0);
+    CHECK(gateway.commit_calls == 0);
+}
+
+TEST_CASE("coordinator applies once then waits for official slice completion", "[AI][SmartSlicing][Apply]")
+{
+    WorkflowWorkspace workspace;
+    FakeTrialSliceExecutor trial;
+    FakeOfficialSliceGateway official;
+    SmartSlicingCoordinator coordinator(workspace, trial, official);
+    coordinator.start();
+    REQUIRE(coordinator.plan_and_slice_candidates());
+
+    REQUIRE(coordinator.apply_selected_candidate());
+    CHECK(coordinator.snapshot().state == WorkflowState::OfficialSlicing);
+    CHECK(official.prepare_calls == 1);
+    CHECK(official.commit_calls == 1);
+
+    official.polled = {OfficialSlicePhase::Completed, {}, true, true};
+    CHECK(coordinator.poll_official_slice());
+    CHECK(coordinator.snapshot().state == WorkflowState::Completed);
+    CHECK(coordinator.snapshot().can_start());
+}
+
+TEST_CASE("compatibility rejection and apply failure never claim an official slice", "[AI][SmartSlicing][Apply]")
+{
+    WorkflowWorkspace workspace;
+    FakeTrialSliceExecutor trial;
+    FakeOfficialSliceGateway official;
+    official.prepared = {OfficialSlicePhase::Rejected, "compatibility_revalidation_failed", false, false};
+    SmartSlicingCoordinator coordinator(workspace, trial, official);
+    coordinator.start();
+    REQUIRE(coordinator.plan_and_slice_candidates());
+
+    CHECK_FALSE(coordinator.apply_selected_candidate());
+    CHECK(coordinator.snapshot().state == WorkflowState::ApplyFailed);
+    CHECK_FALSE(coordinator.snapshot().can_undo_apply);
+    CHECK(official.commit_calls == 0);
+}
+
+TEST_CASE("official slice failure exposes exactly one native undo recovery", "[AI][SmartSlicing][Apply]")
+{
+    WorkflowWorkspace workspace;
+    FakeTrialSliceExecutor trial;
+    FakeOfficialSliceGateway official;
+    SmartSlicingCoordinator coordinator(workspace, trial, official);
+    coordinator.start();
+    REQUIRE(coordinator.plan_and_slice_candidates());
+    REQUIRE(coordinator.apply_selected_candidate());
+
+    official.polled = {OfficialSlicePhase::Failed, "official_slice_failed", true, true};
+    REQUIRE(coordinator.poll_official_slice());
+    REQUIRE(coordinator.snapshot().state == WorkflowState::ApplyFailed);
+    REQUIRE(coordinator.snapshot().can_undo_apply);
+    CHECK(coordinator.undo_applied_candidate());
+    CHECK(official.undo_calls == 1);
+    CHECK(coordinator.snapshot().state == WorkflowState::ReadyToApply);
+    CHECK_FALSE(coordinator.undo_applied_candidate());
+}
+
+TEST_CASE("Orca official gateway double checks revision and enters Preview only after success", "[AI][SmartSlicing][Apply]")
+{
+    WorkspaceRevision current{1, 2, 3, "revision-a"};
+    size_t apply_calls = 0;
+    size_t slice_calls = 0;
+    size_t preview_calls = 0;
+    size_t undo_calls = 0;
+    Slic3r::GUI::OrcaOfficialSliceGateway gateway(
+        [&current] { return current; }, [](const SliceCandidate&) { return std::string{}; },
+        [&apply_calls](const SliceCandidate&) {
+            ++apply_calls;
+            return Slic3r::GUI::OrcaApplyMutationResult{true, true, {}};
+        },
+        [&slice_calls] { ++slice_calls; return true; },
+        [&preview_calls] { ++preview_calls; return true; },
+        [&undo_calls] { ++undo_calls; return true; });
+    SliceCandidate candidate = proposal("candidate", current);
+
+    CHECK(gateway.prepare(candidate, current).phase == OfficialSlicePhase::Prepared);
+    current.fingerprint = "revision-b";
+    CHECK(gateway.commit(candidate, candidate.base_revision).phase == OfficialSlicePhase::Rejected);
+    CHECK(apply_calls == 0);
+
+    current.fingerprint = "revision-a";
+    CHECK(gateway.commit(candidate, current).phase == OfficialSlicePhase::Slicing);
+    CHECK(apply_calls == 1);
+    CHECK(slice_calls == 1);
+    CHECK(preview_calls == 0);
+    gateway.notify_slice_completed(true);
+    CHECK(gateway.poll().phase == OfficialSlicePhase::Completed);
+    CHECK(preview_calls == 1);
+    CHECK(gateway.poll().phase == OfficialSlicePhase::Completed);
+    CHECK(preview_calls == 1);
+
+    CHECK(gateway.prepare(candidate, current).phase == OfficialSlicePhase::Prepared);
+    CHECK(gateway.commit(candidate, current).phase == OfficialSlicePhase::Slicing);
+    gateway.notify_slice_completed(true);
+    CHECK(gateway.poll().phase == OfficialSlicePhase::Completed);
+    CHECK(preview_calls == 2);
+}
+
+TEST_CASE("Orca official gateway preserves native undo recovery when slicing cannot start", "[AI][SmartSlicing][Apply]")
+{
+    const WorkspaceRevision revision{1, 2, 3, "revision-a"};
+    size_t undo_calls = 0;
+    Slic3r::GUI::OrcaOfficialSliceGateway gateway(
+        [revision] { return revision; }, [](const SliceCandidate&) { return std::string{}; },
+        [](const SliceCandidate&) { return Slic3r::GUI::OrcaApplyMutationResult{true, true, {}}; },
+        [] { return false; }, [] { return true; }, [&undo_calls] { ++undo_calls; return true; });
+    SliceCandidate candidate = proposal("candidate", revision);
+
+    const OfficialSliceResult failed = gateway.commit(candidate, revision);
+    CHECK(failed.phase == OfficialSlicePhase::Failed);
+    CHECK(failed.diagnostic_code == "official_slice_not_started");
+    REQUIRE(failed.can_undo);
+    CHECK(gateway.undo_last_apply());
+    CHECK(undo_calls == 1);
+    CHECK_FALSE(gateway.undo_last_apply());
 }
 
 TEST_CASE("Orca trial slicing owns model config print and gcode copies", "[AI][SmartSlicing][Workflow][OrcaTrial]")

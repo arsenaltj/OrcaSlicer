@@ -50,6 +50,7 @@ private:
     std::array<std::string, 3> m_candidate_ids{};
     wxButton* m_keep_baseline{nullptr};
     wxButton* m_apply{nullptr};
+    wxButton* m_undo_apply{nullptr};
     wxButton* m_start{nullptr};
     wxButton* m_cancel{nullptr};
     wxTimer m_revision_timer;

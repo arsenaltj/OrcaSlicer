@@ -38,6 +38,14 @@ wxString summary_text(const std::string& key)
         return _L("正在顺序试切候选方案…");
     if (key == "candidates_ready")
         return _L("试切完成，请比较并选择方案");
+    if (key == "applying_candidate")
+        return _L("正在事务式应用所选方案…");
+    if (key == "official_slicing")
+        return _L("方案已应用，正在执行正式切片…");
+    if (key == "official_slice_complete")
+        return _L("正式切片完成，已进入预览");
+    if (key == "official_slice_failed")
+        return _L("正式切片失败，可一键撤销本次应用");
     if (key == "canceling")
         return _L("正在取消…");
     if (key == "canceled")
@@ -189,17 +197,18 @@ SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSl
     }
     auto* candidate_actions = new wxBoxSizer(wxHORIZONTAL);
     m_keep_baseline = new wxButton(m_candidate_section, wxID_ANY, _L("保留当前方案"));
+    m_undo_apply    = new wxButton(m_candidate_section, wxID_ANY, _L("撤销本次应用"));
     m_apply         = new wxButton(m_candidate_section, wxID_ANY, _L("确认并应用"));
     candidate_actions->Add(m_keep_baseline, 0, wxRIGHT, FromDIP(8));
+    candidate_actions->Add(m_undo_apply, 0, wxRIGHT, FromDIP(8));
     candidate_actions->Add(m_apply, 1, wxEXPAND);
     candidate_root->Add(candidate_actions, 0, wxEXPAND);
     m_candidate_section->SetSizer(candidate_root);
     root->Add(m_candidate_section, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(16));
     m_candidate_section->Hide();
     m_keep_baseline->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { m_coordinator.select_candidate("baseline"); });
-    // The transaction gateway is connected in the apply stage; keeping the
-    // button in place prevents the primary action from jumping between states.
-    m_apply->Enable(false);
+    m_undo_apply->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { m_coordinator.undo_applied_candidate(); });
+    m_apply->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { m_coordinator.apply_selected_candidate(); });
     root->AddStretchSpacer();
 
     auto* actions = new wxBoxSizer(wxHORIZONTAL);
@@ -286,12 +295,14 @@ void SmartSlicingPanel::render(const SmartSlicingViewModel& view_model)
                                        [](const SmartSlicingCandidateView& candidate) {
                                            return candidate.id == "baseline" && !candidate.selected && !candidate.failed;
                                        }));
-    m_apply->Enable(false);
+    m_apply->Enable(view_model.can_apply);
+    m_undo_apply->Show(view_model.can_undo_apply);
+    m_undo_apply->Enable(view_model.can_undo_apply);
     m_p0_notice->SetLabel(show_candidates ? _L("确认前不会修改正式模型、配置或正式切片结果。") :
                                             _L("预检与候选试切均在隔离副本中执行。"));
-    if (view_model.can_cancel && !m_revision_timer.IsRunning())
+    if ((view_model.can_cancel || view_model.needs_polling) && !m_revision_timer.IsRunning())
         m_revision_timer.Start(1000);
-    else if (!view_model.can_cancel && m_revision_timer.IsRunning())
+    else if (!view_model.can_cancel && !view_model.needs_polling && m_revision_timer.IsRunning())
         m_revision_timer.Stop();
     Layout();
 }

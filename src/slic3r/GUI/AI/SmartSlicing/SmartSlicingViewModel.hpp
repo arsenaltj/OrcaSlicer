@@ -52,6 +52,8 @@ struct SmartSlicingViewModel
     bool can_cancel{false};
     bool can_plan_candidates{false};
     bool can_apply{false};
+    bool can_undo_apply{false};
+    bool needs_polling{false};
     bool is_stale{false};
 
     static SmartSlicingViewModel from_snapshot(const AI::SmartSlicing::WorkflowSnapshot& snapshot);

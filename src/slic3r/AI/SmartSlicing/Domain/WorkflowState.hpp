@@ -21,6 +21,10 @@ enum class WorkflowState {
     TrialSlicingBaseline,
     TrialSlicingCandidates,
     ReadyToApply,
+    Applying,
+    OfficialSlicing,
+    Completed,
+    ApplyFailed,
     Canceling,
     Canceled,
     Stale,
@@ -36,13 +40,15 @@ struct WorkflowSnapshot
     std::vector<SliceCandidate> candidates;
     std::optional<CandidateComparison> comparison;
     CandidateId selected_candidate_id;
+    bool can_undo_apply{false};
     CandidateGoal goal{CandidateGoal::Stability};
     std::string detail;
 
     bool can_start() const
     {
         return state == WorkflowState::Idle || state == WorkflowState::Canceled || state == WorkflowState::Stale ||
-               state == WorkflowState::Failed;
+               state == WorkflowState::Failed || state == WorkflowState::Completed ||
+               (state == WorkflowState::ApplyFailed && !can_undo_apply);
     }
     bool can_cancel() const
     {

@@ -1,4 +1,5 @@
 #include "SmartSlicingCoordinator.hpp"
+#include "ApplyWorkflow.hpp"
 #include "TrialSlicingWorkflow.hpp"
 
 #include <algorithm>
@@ -11,6 +12,13 @@ SmartSlicingCoordinator::SmartSlicingCoordinator(IOrcaWorkspace& workspace) : m_
 
 SmartSlicingCoordinator::SmartSlicingCoordinator(IOrcaWorkspace& workspace, ITrialSliceExecutor& trial_slice_executor)
     : m_workspace(workspace), m_trial_slice_executor(&trial_slice_executor)
+{}
+
+SmartSlicingCoordinator::SmartSlicingCoordinator(IOrcaWorkspace& workspace, ITrialSliceExecutor& trial_slice_executor,
+                                                 IOfficialSliceGateway& official_slice_gateway)
+    : m_workspace(workspace)
+    , m_trial_slice_executor(&trial_slice_executor)
+    , m_official_slice_gateway(&official_slice_gateway)
 {}
 
 void SmartSlicingCoordinator::set_observer(Observer observer)
@@ -221,8 +229,107 @@ bool SmartSlicingCoordinator::retry_candidate(const CandidateId& candidate_id)
     return accepted;
 }
 
+bool SmartSlicingCoordinator::apply_selected_candidate()
+{
+    if (m_snapshot.state != WorkflowState::ReadyToApply || m_official_slice_gateway == nullptr ||
+        !m_snapshot.context || m_snapshot.selected_candidate_id.empty())
+        return false;
+
+    const auto candidate = std::find_if(m_snapshot.candidates.begin(), m_snapshot.candidates.end(), [this](const SliceCandidate& item) {
+        return item.id == m_snapshot.selected_candidate_id && item.status == CandidateStatus::Ready;
+    });
+    if (candidate == m_snapshot.candidates.end())
+        return false;
+
+    WorkspaceRevision current_revision;
+    try {
+        current_revision = m_workspace.current_revision();
+    } catch (...) {
+        transition(WorkflowState::ApplyFailed, "apply_revision_unavailable");
+        return false;
+    }
+    if (current_revision != m_snapshot.context->revision) {
+        transition(WorkflowState::Stale, "workspace_changed");
+        return false;
+    }
+
+    transition(WorkflowState::Applying, "applying_candidate");
+    OfficialSliceResult result;
+    try {
+        result = ApplyWorkflow().start(*candidate, m_snapshot.context->revision, current_revision,
+                                       *m_official_slice_gateway);
+    } catch (...) {
+        transition(WorkflowState::ApplyFailed, "apply_gateway_exception");
+        return false;
+    }
+    m_snapshot.can_undo_apply = result.can_undo;
+    switch (result.phase) {
+    case OfficialSlicePhase::Slicing:
+        transition(WorkflowState::OfficialSlicing, "official_slicing");
+        return true;
+    case OfficialSlicePhase::Completed:
+        transition(WorkflowState::Completed, "official_slice_complete");
+        return true;
+    case OfficialSlicePhase::Rejected:
+        transition(result.diagnostic_code == "stale_revision" ? WorkflowState::Stale : WorkflowState::ApplyFailed,
+                   result.diagnostic_code.empty() ? "apply_rejected" : result.diagnostic_code);
+        return false;
+    case OfficialSlicePhase::Failed:
+        transition(WorkflowState::ApplyFailed,
+                   result.diagnostic_code.empty() ? "official_slice_failed" : result.diagnostic_code);
+        return false;
+    case OfficialSlicePhase::Prepared:
+        transition(WorkflowState::ApplyFailed, "commit_not_started");
+        return false;
+    }
+    return false;
+}
+
+bool SmartSlicingCoordinator::poll_official_slice()
+{
+    if (m_snapshot.state != WorkflowState::OfficialSlicing || m_official_slice_gateway == nullptr)
+        return false;
+    OfficialSliceResult result;
+    try {
+        result = m_official_slice_gateway->poll();
+    } catch (...) {
+        transition(WorkflowState::ApplyFailed, "official_slice_poll_failed");
+        return true;
+    }
+    m_snapshot.can_undo_apply        = result.can_undo;
+    if (result.phase == OfficialSlicePhase::Completed) {
+        transition(WorkflowState::Completed, "official_slice_complete");
+        return true;
+    }
+    if (result.phase == OfficialSlicePhase::Failed || result.phase == OfficialSlicePhase::Rejected) {
+        transition(WorkflowState::ApplyFailed,
+                   result.diagnostic_code.empty() ? "official_slice_failed" : result.diagnostic_code);
+        return true;
+    }
+    return false;
+}
+
+bool SmartSlicingCoordinator::undo_applied_candidate()
+{
+    if (m_snapshot.state != WorkflowState::ApplyFailed || !m_snapshot.can_undo_apply ||
+        m_official_slice_gateway == nullptr)
+        return false;
+    try {
+        if (!m_official_slice_gateway->undo_last_apply())
+            return false;
+    } catch (...) {
+        transition(WorkflowState::ApplyFailed, "apply_undo_failed");
+        return false;
+    }
+    m_snapshot.can_undo_apply = false;
+    transition(WorkflowState::ReadyToApply, "apply_undone");
+    return true;
+}
+
 bool SmartSlicingCoordinator::refresh_revision()
 {
+    if (m_snapshot.state == WorkflowState::OfficialSlicing)
+        return poll_official_slice();
     if (!m_snapshot.context || !m_snapshot.can_cancel())
         return false;
 
