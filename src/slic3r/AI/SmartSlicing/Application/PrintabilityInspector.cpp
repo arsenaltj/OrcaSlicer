@@ -39,6 +39,30 @@ PrintabilityReport PrintabilityInspector::inspect(const WorkspaceContext& contex
                                           [](const MaterialSnapshot& material) { return !material.preset_id.empty(); });
     if (!has_material)
         add_issue(report, IssueCode::MissingMaterial, Severity::Error, IssueScope::Material, "No material preset is selected.", true, false);
+    switch (context.multicolor.physical_slot_compatibility) {
+    case PhysicalSlotCompatibility::Incompatible:
+        add_issue(report, IssueCode::IncompatiblePhysicalSlots, Severity::Error, IssueScope::Material,
+                  "Used physical slots have incompatible material temperature ranges.", true, false);
+        break;
+    case PhysicalSlotCompatibility::InvalidTemperatureRange:
+        add_issue(report, IssueCode::InvalidMaterialTemperatureRange, Severity::Error, IssueScope::Material,
+                  "A used material has an invalid recommended temperature range.", true, false);
+        break;
+    case PhysicalSlotCompatibility::Unavailable:
+        add_issue(report, IssueCode::MulticolorEvidenceUnavailable, Severity::Warning, IssueScope::Material,
+                  "Physical-slot compatibility evidence is unavailable.", false, false);
+        break;
+    case PhysicalSlotCompatibility::NotApplicable:
+    case PhysicalSlotCompatibility::Compatible: break;
+    }
+    if (context.multicolor.color_mapping_degraded)
+        add_issue(report, IssueCode::ColorMappingDegraded, Severity::Error, IssueScope::Material,
+                  "The current color-to-physical-slot mapping does not cover every used filament.", true, false);
+    if (context.multicolor.used_logical_filament_ids.size() >= 2 &&
+        context.multicolor.physical_slot_compatibility == PhysicalSlotCompatibility::Compatible &&
+        (!context.multicolor.flush_matrix_available || !context.multicolor.flush_multiplier_available))
+        add_issue(report, IssueCode::MulticolorEvidenceUnavailable, Severity::Warning, IssueScope::Material,
+                  "Flush matrix or multiplier evidence is unavailable.", false, false);
     if (!context.native_validation_available)
         add_issue(report, IssueCode::NativeValidationUnavailable, Severity::Warning, IssueScope::Configuration,
                   "Native configuration validation is unavailable until the current plate has a valid slice.", false, false, 0,

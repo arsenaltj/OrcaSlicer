@@ -15,7 +15,7 @@ OptionalMetric primary_metric(const SliceCandidate& candidate, CandidateGoal goa
 
     switch (goal) {
     case CandidateGoal::Speed: return candidate.metrics->estimated_time_seconds;
-    case CandidateGoal::MaterialSaving: return candidate.metrics->filament_volume_mm3;
+    case CandidateGoal::MaterialSaving: return candidate.metrics->total_material_volume_mm3();
     case CandidateGoal::Quality: return candidate.metrics->support_volume_mm3;
     case CandidateGoal::Stability: return static_cast<double>(candidate.metrics->warning_codes.size());
     }
@@ -39,6 +39,14 @@ OptionalMetric metric_or_missing(const SliceCandidate& candidate, const Optional
     return candidate.metrics ? candidate.metrics.value().*member : std::nullopt;
 }
 
+OptionalMetric count_or_missing(const SliceCandidate& candidate, const std::optional<size_t> SlicingMetrics::* member)
+{
+    if (!candidate.metrics)
+        return std::nullopt;
+    const std::optional<size_t>& value = candidate.metrics.value().*member;
+    return value ? OptionalMetric(static_cast<double>(*value)) : std::nullopt;
+}
+
 bool candidate_less(const SliceCandidate* lhs, const SliceCandidate* rhs, CandidateGoal goal)
 {
     const OptionalMetric lhs_primary = primary_metric(*lhs, goal);
@@ -50,6 +58,21 @@ bool candidate_less(const SliceCandidate* lhs, const SliceCandidate* rhs, Candid
     const OptionalMetric rhs_warnings = rhs->metrics ? OptionalMetric(rhs->metrics->warning_codes.size()) : std::nullopt;
     if (!equal_optional(lhs_warnings, rhs_warnings))
         return less_optional(lhs_warnings, rhs_warnings);
+
+    const OptionalMetric lhs_tool_changes = count_or_missing(*lhs, &SlicingMetrics::tool_changes);
+    const OptionalMetric rhs_tool_changes = count_or_missing(*rhs, &SlicingMetrics::tool_changes);
+    if (!equal_optional(lhs_tool_changes, rhs_tool_changes))
+        return less_optional(lhs_tool_changes, rhs_tool_changes);
+
+    const OptionalMetric lhs_flush = metric_or_missing(*lhs, &SlicingMetrics::flush_volume_mm3);
+    const OptionalMetric rhs_flush = metric_or_missing(*rhs, &SlicingMetrics::flush_volume_mm3);
+    if (!equal_optional(lhs_flush, rhs_flush))
+        return less_optional(lhs_flush, rhs_flush);
+
+    const OptionalMetric lhs_wipe_tower = metric_or_missing(*lhs, &SlicingMetrics::wipe_tower_volume_mm3);
+    const OptionalMetric rhs_wipe_tower = metric_or_missing(*rhs, &SlicingMetrics::wipe_tower_volume_mm3);
+    if (!equal_optional(lhs_wipe_tower, rhs_wipe_tower))
+        return less_optional(lhs_wipe_tower, rhs_wipe_tower);
 
     const OptionalMetric lhs_support = metric_or_missing(*lhs, &SlicingMetrics::support_volume_mm3);
     const OptionalMetric rhs_support = metric_or_missing(*rhs, &SlicingMetrics::support_volume_mm3);
@@ -78,15 +101,28 @@ std::string recommendation_evidence(const SliceCandidate& winner, const SliceCan
         case CandidateGoal::Stability: return "fewer_slice_warnings";
         case CandidateGoal::Quality: return "less_support_material";
         case CandidateGoal::Speed: return "shorter_print_time";
-        case CandidateGoal::MaterialSaving: return "less_material";
+        case CandidateGoal::MaterialSaving: return "less_total_material_including_multicolor_waste";
         }
     }
+    const OptionalMetric winner_tool_changes = count_or_missing(winner, &SlicingMetrics::tool_changes);
+    const OptionalMetric runner_tool_changes = count_or_missing(runner_up, &SlicingMetrics::tool_changes);
+    if (!equal_optional(winner_tool_changes, runner_tool_changes))
+        return "fewer_tool_changes";
+    const OptionalMetric winner_flush = metric_or_missing(winner, &SlicingMetrics::flush_volume_mm3);
+    const OptionalMetric runner_flush = metric_or_missing(runner_up, &SlicingMetrics::flush_volume_mm3);
+    if (!equal_optional(winner_flush, runner_flush))
+        return "lower_flush_volume";
+    const OptionalMetric winner_wipe = metric_or_missing(winner, &SlicingMetrics::wipe_tower_volume_mm3);
+    const OptionalMetric runner_wipe = metric_or_missing(runner_up, &SlicingMetrics::wipe_tower_volume_mm3);
+    if (!equal_optional(winner_wipe, runner_wipe))
+        return "lower_wipe_tower_volume";
     return "deterministic_tie_break";
 }
 
 bool usable(const SliceCandidate& candidate)
 {
-    return candidate.status == CandidateStatus::Ready && candidate.metrics.has_value();
+    return candidate.status == CandidateStatus::Ready && candidate.metrics.has_value() &&
+           candidate.metrics->physical_slots_compatible != false && candidate.metrics->color_mapping_degraded != true;
 }
 
 } // namespace

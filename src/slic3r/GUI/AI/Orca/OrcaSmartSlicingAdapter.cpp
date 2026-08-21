@@ -187,13 +187,83 @@ AI::SmartSlicing::WorkspaceContext OrcaSmartSlicingAdapter::capture_context_impl
         context.nozzle_diameters = nozzles->values;
 
     const auto* colors = full_config.option<ConfigOptionStrings>("filament_colour");
+    const auto* types = full_config.option<ConfigOptionStrings>("filament_type");
+    const auto* temperatures = full_config.option<ConfigOptionInts>("nozzle_temperature");
+    const auto* temperature_lows = full_config.option<ConfigOptionInts>("nozzle_temperature_range_low");
+    const auto* temperature_highs = full_config.option<ConfigOptionInts>("nozzle_temperature_range_high");
+    context.multicolor.used_logical_filament_ids = plate->get_extruders(true);
+    context.multicolor.filament_to_physical_slot = plate->get_real_filament_maps(bundle.project_config);
+    context.multicolor.first_layer_tool_sequence = plate->get_first_layer_print_sequence();
+    for (const LayerPrintSequence& sequence : plate->get_other_layers_print_sequence())
+        context.multicolor.other_layer_tool_sequences.push_back(
+            {sequence.first.first, sequence.first.second, sequence.second});
+    if (const auto* prime_tower = full_config.option<ConfigOptionBool>("enable_prime_tower"))
+        context.multicolor.prime_tower_enabled = prime_tower->value;
+    context.multicolor.flush_matrix_available = full_config.option("flush_volumes_matrix") != nullptr;
+    context.multicolor.flush_multiplier_available = full_config.option("flush_multiplier") != nullptr;
+
     context.materials.reserve(bundle.filament_presets.size());
     for (size_t index = 0; index < bundle.filament_presets.size(); ++index) {
         MaterialSnapshot material;
         material.preset_id = bundle.filament_presets[index];
+        material.logical_filament_id = static_cast<int>(index + 1);
         if (colors != nullptr && index < colors->values.size())
             material.color = colors->values[index];
+        if (types != nullptr && index < types->values.size())
+            material.filament_type = types->get_at(index);
+        if (temperatures != nullptr && index < temperatures->values.size())
+            material.nozzle_temperature = temperatures->get_at(index);
+        if (temperature_lows != nullptr && index < temperature_lows->values.size())
+            material.nozzle_temperature_range_low = temperature_lows->get_at(index);
+        if (temperature_highs != nullptr && index < temperature_highs->values.size())
+            material.nozzle_temperature_range_high = temperature_highs->get_at(index);
+        if (index < context.multicolor.filament_to_physical_slot.size())
+            material.physical_slot_id = context.multicolor.filament_to_physical_slot[index];
+        material.used_on_plate = std::find(context.multicolor.used_logical_filament_ids.begin(),
+                                           context.multicolor.used_logical_filament_ids.end(),
+                                           material.logical_filament_id) != context.multicolor.used_logical_filament_ids.end();
         context.materials.emplace_back(std::move(material));
+    }
+
+    if (context.multicolor.used_logical_filament_ids.size() >= 2) {
+        std::vector<std::string> used_types;
+        std::vector<int> used_temperatures;
+        std::vector<int> used_lows;
+        std::vector<int> used_highs;
+        bool complete = true;
+        for (const int filament_id : context.multicolor.used_logical_filament_ids) {
+            const size_t index = filament_id > 0 ? static_cast<size_t>(filament_id - 1) : context.materials.size();
+            if (index >= context.materials.size() || context.materials[index].filament_type.empty()) {
+                complete = false;
+                break;
+            }
+            const MaterialSnapshot& material = context.materials[index];
+            used_types.push_back(material.filament_type);
+            used_temperatures.push_back(material.nozzle_temperature);
+            used_lows.push_back(material.nozzle_temperature_range_low);
+            used_highs.push_back(material.nozzle_temperature_range_high);
+        }
+        if (!complete) {
+            context.multicolor.physical_slot_compatibility = PhysicalSlotCompatibility::Unavailable;
+        } else {
+            const FilamentCompatibilityType compatibility = Print::check_multi_filaments_compatibility(
+                used_types, used_temperatures, used_lows, used_highs);
+            context.multicolor.physical_slot_compatibility =
+                compatibility == FilamentCompatibilityType::Compatible ? PhysicalSlotCompatibility::Compatible :
+                compatibility == FilamentCompatibilityType::InvalidTemperatureRange ?
+                    PhysicalSlotCompatibility::InvalidTemperatureRange : PhysicalSlotCompatibility::Incompatible;
+        }
+        const size_t physical_slot_count = context.nozzle_diameters.size();
+        for (const int filament_id : context.multicolor.used_logical_filament_ids) {
+            const size_t index = filament_id > 0 ? static_cast<size_t>(filament_id - 1) :
+                                                   context.multicolor.filament_to_physical_slot.size();
+            if (index >= context.multicolor.filament_to_physical_slot.size() || physical_slot_count == 0 ||
+                context.multicolor.filament_to_physical_slot[index] <= 0 ||
+                static_cast<size_t>(context.multicolor.filament_to_physical_slot[index]) > physical_slot_count) {
+                context.multicolor.color_mapping_degraded = true;
+                break;
+            }
+        }
     }
 
     std::ostringstream model_stream;

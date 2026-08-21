@@ -42,7 +42,9 @@ private:
     class ActivePrintGuard;
 
     bool apply_placement(Model& model, const AI::SmartSlicing::PlacementCandidate& placement) const;
-    static AI::SmartSlicing::SlicingMetrics extract_metrics(const GCodeProcessorResult& result);
+    static AI::SmartSlicing::SlicingMetrics extract_metrics(const GCodeProcessorResult& result,
+                                                             const std::vector<int>& expected_filament_mapping,
+                                                             bool prime_tower_enabled);
 
     InputProvider m_input_provider;
     std::atomic<bool> m_cancel_requested{false};

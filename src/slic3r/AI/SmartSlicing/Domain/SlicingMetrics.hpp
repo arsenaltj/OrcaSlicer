@@ -15,7 +15,20 @@ struct SlicingMetrics
     std::optional<double> flush_volume_mm3;
     std::optional<double> wipe_tower_volume_mm3;
     std::optional<size_t> tool_changes;
+    std::optional<bool> physical_slots_compatible;
+    std::optional<bool> color_mapping_degraded;
+    std::optional<bool> prime_tower_enabled;
+    std::vector<int> filament_to_physical_slot;
+    std::vector<size_t> filament_change_sequence;
+    std::vector<std::vector<size_t>> layer_tool_sequences;
     std::vector<std::string> warning_codes;
+
+    std::optional<double> total_material_volume_mm3() const
+    {
+        if (!filament_volume_mm3 || !flush_volume_mm3 || !wipe_tower_volume_mm3)
+            return std::nullopt;
+        return *filament_volume_mm3 + *flush_volume_mm3 + *wipe_tower_volume_mm3;
+    }
 };
 
 } // namespace Slic3r::AI::SmartSlicing

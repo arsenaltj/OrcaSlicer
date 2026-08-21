@@ -252,6 +252,36 @@ TEST_CASE("empty material preset entries do not satisfy printability prerequisit
     CHECK(report.has_blocking_issue());
 }
 
+TEST_CASE("multicolor preflight makes compatibility and mapping evidence explicit", "[AI][SmartSlicing][Multicolor]")
+{
+    WorkspaceContext context = context_with_revision("revision-a");
+    context.materials.push_back({"pla", "#FFFFFF"});
+    context.materials.push_back({"petg", "#000000"});
+    context.multicolor.used_logical_filament_ids = {1, 2};
+    context.multicolor.filament_to_physical_slot = {1, 1};
+    context.multicolor.first_layer_tool_sequence = {1, 2};
+    context.multicolor.other_layer_tool_sequences.push_back({1, 25, {2, 1}});
+    context.multicolor.physical_slot_compatibility = PhysicalSlotCompatibility::Incompatible;
+    context.multicolor.color_mapping_degraded = true;
+
+    const PrintabilityReport blocked = PrintabilityInspector().inspect(context);
+    REQUIRE(blocked.issues.size() == 2);
+    CHECK(blocked.issues[0].code == IssueCode::IncompatiblePhysicalSlots);
+    CHECK(blocked.issues[1].code == IssueCode::ColorMappingDegraded);
+    CHECK(blocked.has_blocking_issue());
+    CHECK(blocked.readiness == Readiness::Blocked);
+    CHECK(context.multicolor.first_layer_tool_sequence == std::vector<int>{1, 2});
+    CHECK(context.multicolor.other_layer_tool_sequences.front().logical_filament_ids == std::vector<int>{2, 1});
+
+    context.multicolor.color_mapping_degraded = false;
+    context.multicolor.physical_slot_compatibility = PhysicalSlotCompatibility::Unavailable;
+    const PrintabilityReport unavailable = PrintabilityInspector().inspect(context);
+    REQUIRE(unavailable.issues.size() == 1);
+    CHECK(unavailable.issues.front().code == IssueCode::MulticolorEvidenceUnavailable);
+    CHECK_FALSE(unavailable.has_blocking_issue());
+    CHECK(unavailable.readiness == Readiness::NeedsAttention);
+}
+
 TEST_CASE("idle view model initializes every stage and legacy step", "[AI][SmartSlicing]")
 {
     const Slic3r::GUI::SmartSlicingViewModel view = Slic3r::GUI::SmartSlicingViewModel::from_snapshot(WorkflowSnapshot{});

@@ -41,10 +41,11 @@ const std::array<Rule, 9>& rules()
 
 bool forbidden_key(std::string_view key)
 {
-    static constexpr std::array<std::string_view, 12> forbidden = {
+    static constexpr std::array<std::string_view, 14> forbidden = {
         "nozzle_diameter", "printable_area", "printable_height", "machine_max_acceleration_x",
         "machine_max_acceleration_y", "machine_max_speed_x", "machine_max_speed_y", "filament_flow_ratio",
-        "pressure_advance", "nozzle_temperature", "bed_temperature", "flush_volumes_matrix"};
+        "pressure_advance", "nozzle_temperature", "bed_temperature", "flush_volumes_matrix", "flush_multiplier",
+        "enable_prime_tower"};
     return std::find(forbidden.begin(), forbidden.end(), key) != forbidden.end();
 }
 

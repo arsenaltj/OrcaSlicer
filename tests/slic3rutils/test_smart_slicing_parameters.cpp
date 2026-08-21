@@ -62,6 +62,14 @@ TEST_CASE("typed parameter proposals enforce scope ownership forbidden keys and 
     hardware.entries.push_back(change("nozzle_diameter", 0.40, 0.60));
     CHECK(first_rejection(hardware) == ParameterRejectionCode::ForbiddenKey);
 
+    ParameterProposal unsafe_flush;
+    unsafe_flush.entries.push_back(change("flush_multiplier", 1.0, 0.8));
+    CHECK(first_rejection(unsafe_flush) == ParameterRejectionCode::ForbiddenKey);
+
+    ParameterProposal unsafe_tower;
+    unsafe_tower.entries.push_back(change("enable_prime_tower", true, false));
+    CHECK(first_rejection(unsafe_tower) == ParameterRejectionCode::ForbiddenKey);
+
     ParameterProposal excessive_delta;
     excessive_delta.entries.push_back(change("brim_width", 0.0, 20.0));
     CHECK(first_rejection(excessive_delta) == ParameterRejectionCode::ChangeBudgetExceeded);

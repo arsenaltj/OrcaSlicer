@@ -83,6 +83,14 @@ wxString issue_name(const std::string& code)
         return _L("未选择工艺预设");
     if (code == "missing_material")
         return _L("未选择材料");
+    if (code == "incompatible_physical_slots")
+        return _L("物理槽位材料温区不兼容");
+    if (code == "invalid_material_temperature_range")
+        return _L("材料推荐温区无效");
+    if (code == "color_mapping_degraded")
+        return _L("颜色到物理槽位映射不完整");
+    if (code == "multicolor_evidence_unavailable")
+        return _L("多色兼容证据不可用");
     if (code == "native_validation_unavailable")
         return _L("当前原生配置校验尚不可用");
     if (code == "configuration_validation_error")
@@ -120,12 +128,20 @@ wxString candidate_reason(const SmartSlicingCandidateView& candidate)
     for (const std::string& evidence : candidate.evidence_codes) {
         if (evidence == "fewer_slice_warnings")
             reason += _L(" 切片警告更少。");
-        else if (evidence == "lower_estimated_time")
+        else if (evidence == "lower_estimated_time" || evidence == "shorter_print_time")
             reason += _L(" 预计时间更短。");
-        else if (evidence == "lower_filament_volume")
+        else if (evidence == "lower_filament_volume" || evidence == "less_material")
             reason += _L(" 材料用量更低。");
-        else if (evidence == "lower_support_volume")
+        else if (evidence == "lower_support_volume" || evidence == "less_support_material")
             reason += _L(" 支撑用量更低。");
+        else if (evidence == "less_total_material_including_multicolor_waste")
+            reason += _L(" 包含冲刷和擦料塔在内的总材料更少。");
+        else if (evidence == "fewer_tool_changes")
+            reason += _L(" 换料次数更少。");
+        else if (evidence == "lower_flush_volume")
+            reason += _L(" 冲刷废料更少。");
+        else if (evidence == "lower_wipe_tower_volume")
+            reason += _L(" 擦料塔用料更少。");
     }
     return reason;
 }
@@ -278,14 +294,25 @@ void SmartSlicingPanel::render(const SmartSlicingViewModel& view_model)
                            _L("  换料：") +
                            (candidate.tool_changes ?
                                 wxString::Format("%llu", static_cast<unsigned long long>(*candidate.tool_changes)) :
-                                _L("不可用"));
+                                _L("不可用")) +
+                           _L("\n冲刷：") + format_volume(candidate.flush_volume_mm3) +
+                           _L("  擦料塔：") + format_volume(candidate.wipe_tower_volume_mm3);
+        if (candidate.layer_tool_sequence_count > 0)
+            metrics += wxString::Format(_L("\n层级工具序列：%llu 组"),
+                                        static_cast<unsigned long long>(candidate.layer_tool_sequence_count));
+        if (candidate.color_mapping_degraded == true)
+            metrics += _L("\n颜色映射：已退化");
+        else if (candidate.color_mapping_degraded == false)
+            metrics += _L("\n颜色映射：保持一致");
         if (candidate.id != "baseline") {
             const wxString tool_delta = candidate.tool_change_delta ?
                 wxString::Format("%+lld", *candidate.tool_change_delta) : _L("—");
             metrics += _L("\n相对基线：时间 ") + format_delta(candidate.time_delta_seconds, 60.0, _L("分钟")) +
                        _L("，材料 ") + format_delta(candidate.filament_delta_mm3, 1000.0, _L("cm³")) +
                        _L("，支撑 ") + format_delta(candidate.support_delta_mm3, 1000.0, _L("cm³")) +
-                       _L("，换料 ") + tool_delta;
+                       _L("，换料 ") + tool_delta +
+                       _L("，冲刷 ") + format_delta(candidate.flush_delta_mm3, 1000.0, _L("cm³")) +
+                       _L("，擦料塔 ") + format_delta(candidate.wipe_tower_delta_mm3, 1000.0, _L("cm³"));
         }
         controls.metrics->SetLabel(metrics);
         controls.reason->SetLabel(candidate_reason(candidate));

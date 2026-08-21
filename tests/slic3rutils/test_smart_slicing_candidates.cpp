@@ -4,6 +4,7 @@
 #include "slic3r/GUI/AI/Orca/OrcaPlacementCandidateProvider.hpp"
 
 #include "libslic3r/TriangleMesh.hpp"
+#include "libslic3r/Print.hpp"
 
 using namespace Slic3r::AI::SmartSlicing;
 using namespace Slic3r;
@@ -24,6 +25,9 @@ SliceCandidate ready_candidate(std::string id,
     candidate.metrics->estimated_time_seconds = time_seconds;
     candidate.metrics->filament_volume_mm3     = material_mm3;
     candidate.metrics->support_volume_mm3      = support_mm3;
+    candidate.metrics->flush_volume_mm3        = 0.0;
+    candidate.metrics->wipe_tower_volume_mm3   = 0.0;
+    candidate.metrics->tool_changes            = 0;
     for (size_t index = 0; index < warning_count; ++index)
         candidate.metrics->warning_codes.push_back("warning_" + std::to_string(index));
     return candidate;
@@ -106,6 +110,61 @@ TEST_CASE("candidate comparison keeps unavailable metrics explicit", "[AI][Smart
     REQUIRE(comparison.ordered_candidate_ids.size() == 2);
     CHECK(comparison.ordered_candidate_ids.front() == "measured");
     CHECK(comparison.missing_metric_candidate_ids == std::vector<CandidateId>{"unknown"});
+}
+
+TEST_CASE("multicolor comparison includes flush wipe tower and tool-change evidence", "[AI][SmartSlicing][Candidate][Multicolor]")
+{
+    SliceCandidate lower_flush = ready_candidate("lower-flush", 100.0, 500.0, 10.0);
+    lower_flush.metrics->flush_volume_mm3 = 40.0;
+    lower_flush.metrics->wipe_tower_volume_mm3 = 20.0;
+    lower_flush.metrics->tool_changes = 12;
+    lower_flush.metrics->filament_change_sequence = {0, 1, 0};
+    lower_flush.metrics->layer_tool_sequences = {{0}, {0, 1}};
+
+    SliceCandidate higher_flush = ready_candidate("higher-flush", 100.0, 490.0, 10.0);
+    higher_flush.metrics->flush_volume_mm3 = 80.0;
+    higher_flush.metrics->wipe_tower_volume_mm3 = 30.0;
+    higher_flush.metrics->tool_changes = 18;
+
+    const CandidateComparison comparison =
+        compare_candidates({higher_flush, lower_flush}, CandidateGoal::MaterialSaving);
+
+    REQUIRE(comparison.ordered_candidate_ids.size() == 2);
+    CHECK(comparison.ordered_candidate_ids.front() == "lower-flush");
+    CHECK(comparison.recommendation_evidence_codes ==
+          std::vector<std::string>{"less_total_material_including_multicolor_waste"});
+    CHECK(lower_flush.metrics->total_material_volume_mm3() == Catch::Approx(560.0));
+    CHECK(lower_flush.metrics->filament_change_sequence == std::vector<size_t>{0, 1, 0});
+    CHECK(lower_flush.metrics->layer_tool_sequences.size() == 2);
+}
+
+TEST_CASE("degraded color mappings are excluded and incomplete multicolor cost stays unavailable",
+          "[AI][SmartSlicing][Candidate][Multicolor]")
+{
+    SliceCandidate degraded = ready_candidate("degraded", 80.0, 400.0, 10.0);
+    degraded.metrics->color_mapping_degraded = true;
+
+    SliceCandidate incomplete = ready_candidate("incomplete", 90.0, 450.0, 10.0);
+    incomplete.metrics->flush_volume_mm3.reset();
+
+    const CandidateComparison comparison =
+        compare_candidates({degraded, incomplete}, CandidateGoal::MaterialSaving);
+
+    CHECK(comparison.excluded_candidate_ids == std::vector<CandidateId>{"degraded"});
+    CHECK(comparison.missing_metric_candidate_ids == std::vector<CandidateId>{"incomplete"});
+    CHECK_FALSE(incomplete.metrics->total_material_volume_mm3().has_value());
+}
+
+TEST_CASE("native physical-slot compatibility distinguishes compatible invalid and mixed ranges",
+          "[AI][SmartSlicing][Candidate][Multicolor]")
+{
+    CHECK(Print::check_multi_filaments_compatibility(
+              {"PLA", "PLA"}, {220, 215}, {190, 190}, {240, 240}) == FilamentCompatibilityType::Compatible);
+    CHECK(Print::check_multi_filaments_compatibility(
+              {"PLA", "PETG"}, {220, 260}, {190, 240}, {230, 280}) == FilamentCompatibilityType::HighLowMixed);
+    CHECK(Print::check_multi_filaments_compatibility(
+              {"PLA", "PLA"}, {220, 220}, {240, 190}, {230, 240}) ==
+          FilamentCompatibilityType::InvalidTemperatureRange);
 }
 
 TEST_CASE("stability comparison treats warnings as hard evidence before support cost", "[AI][SmartSlicing][Candidate]")

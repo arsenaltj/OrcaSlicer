@@ -40,7 +40,13 @@ SmartSlicingViewModel SmartSlicingViewModel::from_snapshot(const AI::SmartSlicin
             card.estimated_time_seconds = metrics.estimated_time_seconds;
             card.filament_volume_mm3    = metrics.filament_volume_mm3;
             card.support_volume_mm3     = metrics.support_volume_mm3;
+            card.flush_volume_mm3       = metrics.flush_volume_mm3;
+            card.wipe_tower_volume_mm3  = metrics.wipe_tower_volume_mm3;
             card.tool_changes           = metrics.tool_changes;
+            card.physical_slots_compatible = metrics.physical_slots_compatible;
+            card.color_mapping_degraded    = metrics.color_mapping_degraded;
+            card.prime_tower_enabled       = metrics.prime_tower_enabled;
+            card.layer_tool_sequence_count = metrics.layer_tool_sequences.size();
             if (baseline_metrics != nullptr) {
                 if (metrics.estimated_time_seconds && baseline_metrics->estimated_time_seconds)
                     card.time_delta_seconds = *metrics.estimated_time_seconds - *baseline_metrics->estimated_time_seconds;
@@ -48,6 +54,10 @@ SmartSlicingViewModel SmartSlicingViewModel::from_snapshot(const AI::SmartSlicin
                     card.filament_delta_mm3 = *metrics.filament_volume_mm3 - *baseline_metrics->filament_volume_mm3;
                 if (metrics.support_volume_mm3 && baseline_metrics->support_volume_mm3)
                     card.support_delta_mm3 = *metrics.support_volume_mm3 - *baseline_metrics->support_volume_mm3;
+                if (metrics.flush_volume_mm3 && baseline_metrics->flush_volume_mm3)
+                    card.flush_delta_mm3 = *metrics.flush_volume_mm3 - *baseline_metrics->flush_volume_mm3;
+                if (metrics.wipe_tower_volume_mm3 && baseline_metrics->wipe_tower_volume_mm3)
+                    card.wipe_tower_delta_mm3 = *metrics.wipe_tower_volume_mm3 - *baseline_metrics->wipe_tower_volume_mm3;
                 if (metrics.tool_changes && baseline_metrics->tool_changes)
                     card.tool_change_delta = static_cast<long long>(*metrics.tool_changes) -
                                              static_cast<long long>(*baseline_metrics->tool_changes);

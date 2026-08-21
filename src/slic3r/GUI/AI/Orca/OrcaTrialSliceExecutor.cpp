@@ -110,7 +110,9 @@ bool OrcaTrialSliceExecutor::apply_placement(Model& model, const PlacementCandid
     return true;
 }
 
-SlicingMetrics OrcaTrialSliceExecutor::extract_metrics(const GCodeProcessorResult& result)
+SlicingMetrics OrcaTrialSliceExecutor::extract_metrics(const GCodeProcessorResult& result,
+                                                       const std::vector<int>& expected_filament_mapping,
+                                                       bool prime_tower_enabled)
 {
     const PrintEstimatedStatistics& statistics = result.print_statistics;
     SlicingMetrics metrics;
@@ -120,6 +122,25 @@ SlicingMetrics OrcaTrialSliceExecutor::extract_metrics(const GCodeProcessorResul
     metrics.flush_volume_mm3       = sum_values(statistics.flush_per_filament);
     metrics.wipe_tower_volume_mm3  = sum_values(statistics.wipe_tower_volumes_per_extruder);
     metrics.tool_changes           = statistics.total_filament_changes;
+    metrics.physical_slots_compatible = true;
+    metrics.prime_tower_enabled       = prime_tower_enabled;
+    if (!result.filament_maps.empty()) {
+        metrics.filament_to_physical_slot = result.filament_maps;
+        metrics.color_mapping_degraded    = result.filament_maps != expected_filament_mapping;
+    }
+    metrics.filament_change_sequence.reserve(result.filament_change_sequence.size());
+    for (const unsigned int filament : result.filament_change_sequence)
+        metrics.filament_change_sequence.push_back(static_cast<size_t>(filament));
+    metrics.layer_tool_sequences.reserve(result.layer_filaments.size());
+    for (const auto& layer_entry : result.layer_filaments) {
+        const std::vector<unsigned int>& filaments = layer_entry.first;
+        std::vector<size_t> sequence;
+        sequence.reserve(filaments.size());
+        for (const unsigned int filament : filaments)
+            sequence.push_back(static_cast<size_t>(filament));
+        metrics.layer_tool_sequences.push_back(std::move(sequence));
+    }
+    std::sort(metrics.layer_tool_sequences.begin(), metrics.layer_tool_sequences.end());
     metrics.warning_codes.reserve(result.warnings.size());
     for (const GCodeProcessorResult::SliceWarning& warning : result.warnings)
         metrics.warning_codes.push_back(!warning.error_code.empty() ? warning.error_code : "gcode_warning");
@@ -164,6 +185,10 @@ TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice(const SliceCandidat
         for (ModelObject* object : input.model.objects)
             if (object != nullptr)
                 trial_print.auto_assign_extruders(object);
+        const auto* filament_mapping = input.config.option<ConfigOptionInts>("filament_map");
+        const std::vector<int> expected_filament_mapping = filament_mapping != nullptr ? filament_mapping->values :
+                                                                                    std::vector<int>{};
+        const bool prime_tower_enabled = input.config.opt_bool("enable_prime_tower");
         trial_print.apply(input.model, std::move(input.config));
 
         std::vector<StringObjectException> validation_warnings;
@@ -177,7 +202,7 @@ TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice(const SliceCandidat
         ScopedTrialGCode temporary_gcode;
         GCodeProcessorResult gcode_result;
         temporary_gcode.set_actual_path(trial_print.export_gcode(temporary_gcode.requested_path(), &gcode_result, nullptr));
-        result.metrics = extract_metrics(gcode_result);
+        result.metrics = extract_metrics(gcode_result, expected_filament_mapping, prime_tower_enabled);
         result.metrics->warning_codes.insert(result.metrics->warning_codes.end(), validation_warnings.size(),
                                              "native_validation_warning");
         result.status = TrialSliceStatus::Succeeded;
