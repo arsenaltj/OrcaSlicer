@@ -41,6 +41,23 @@ SliceCandidate proposal(std::string id, const WorkspaceRevision& revision)
     return candidate;
 }
 
+Slic3r::GUI::OrcaTrialSliceInput tiny_trial_input()
+{
+    Slic3r::GUI::OrcaTrialSliceInput input;
+    ModelObject* object = input.model.add_object();
+    object->name = "budget cube";
+    object->add_volume(make_cube(5.0, 5.0, 5.0));
+    object->add_instance()->set_offset(Vec3d(50.0, 50.0, 0.0));
+    object->ensure_on_bed();
+    input.config = DynamicPrintConfig::full_print_config();
+    input.config.set("layer_height", 0.25);
+    input.config.set("layer_change_gcode", std::string("G92 E0\n"));
+    input.plate_index = 0;
+    input.plate_id = 7;
+    input.plate_name = "Budget Trial";
+    return input;
+}
+
 class WorkflowWorkspace final : public IOrcaWorkspace
 {
 public:
@@ -295,6 +312,8 @@ TEST_CASE("candidate cards expose baseline deltas selection and retry without wo
     REQUIRE(failed_view.candidates.size() == 2);
     CHECK(failed_view.candidates[1].failed);
     CHECK(failed_view.candidates[1].can_retry);
+    CHECK(failed_view.candidates[0].can_select);
+    CHECK_FALSE(failed_view.candidates[1].can_select);
     CHECK_FALSE(coordinator.select_candidate("alternative"));
     CHECK(coordinator.select_candidate("baseline"));
 
@@ -305,6 +324,7 @@ TEST_CASE("candidate cards expose baseline deltas selection and retry without wo
         Slic3r::GUI::SmartSlicingViewModel::from_snapshot(coordinator.snapshot());
     REQUIRE(ready_view.candidates.size() == 2);
     CHECK(ready_view.candidates[1].selected);
+    CHECK(ready_view.candidates[1].can_select);
     CHECK(ready_view.candidates[1].time_delta_seconds == -20.0);
     CHECK(ready_view.candidates[1].filament_delta_mm3 == -50.0);
     CHECK(ready_view.candidates[1].support_delta_mm3 == -10.0);
@@ -547,4 +567,29 @@ TEST_CASE("Orca trial slicing rejects forbidden patches and observes early cance
     const TrialSliceResult canceled = canceled_executor.execute_trial_slice(candidate);
     CHECK(canceled.status == TrialSliceStatus::Canceled);
     CHECK(canceled.diagnostic_code == "trial_slice_canceled");
+}
+
+TEST_CASE("Orca trial slicing enforces execution memory timeout and disk budgets", "[AI][SmartSlicing][Workflow][OrcaTrial][Runtime]")
+{
+    SliceCandidate candidate = proposal("candidate", WorkspaceRevision{1, 2, 3, "revision-a"});
+    candidate.status = CandidateStatus::Draft;
+    candidate.metrics.reset();
+
+    Slic3r::GUI::OrcaTrialSliceExecutor memory_limited([] { return tiny_trial_input(); });
+    memory_limited.set_resource_limits(std::chrono::minutes(1), 1, 1024 * 1024);
+    const TrialSliceResult memory_result = memory_limited.execute_trial_slice(candidate);
+    CHECK(memory_result.status == TrialSliceStatus::Failed);
+    CHECK(memory_result.diagnostic_code == "workflow_memory_budget_exceeded");
+
+    Slic3r::GUI::OrcaTrialSliceExecutor timed_out([] { return tiny_trial_input(); });
+    timed_out.set_resource_limits(std::chrono::seconds(0), 1024 * 1024, 1024 * 1024);
+    const TrialSliceResult timeout_result = timed_out.execute_trial_slice(candidate);
+    CHECK(timeout_result.status == TrialSliceStatus::Canceled);
+    CHECK(timeout_result.diagnostic_code == "workflow_timeout");
+
+    Slic3r::GUI::OrcaTrialSliceExecutor disk_limited([] { return tiny_trial_input(); });
+    disk_limited.set_resource_limits(std::chrono::minutes(1), 1024 * 1024, 0);
+    const TrialSliceResult disk_result = disk_limited.execute_trial_slice(candidate);
+    CHECK(disk_result.status == TrialSliceStatus::Failed);
+    CHECK(disk_result.diagnostic_code == "workflow_disk_budget_exceeded");
 }

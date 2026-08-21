@@ -3,7 +3,9 @@
 #include "SmartSlicingViewModel.hpp"
 
 #include <array>
+#include <atomic>
 #include <functional>
+#include <thread>
 #include <wx/panel.h>
 #include <wx/timer.h>
 
@@ -22,9 +24,11 @@ class SmartSlicingPanel final : public wxPanel
 {
 public:
     using PlanCandidatesFn = std::function<std::vector<AI::SmartSlicing::SliceCandidate>()>;
+    using CancelTrialFn = std::function<void()>;
 
     SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSlicingCoordinator& coordinator,
-                      PlanCandidatesFn plan_candidates = {});
+                      PlanCandidatesFn plan_candidates = {}, CancelTrialFn cancel_trial = {});
+    ~SmartSlicingPanel() override;
     void render(const SmartSlicingViewModel& view_model);
 
 private:
@@ -38,9 +42,11 @@ private:
     };
 
     void on_revision_timer(wxTimerEvent& event);
+    bool run_in_background(std::function<void()> work);
 
     AI::SmartSlicing::SmartSlicingCoordinator& m_coordinator;
     PlanCandidatesFn m_plan_candidates;
+    CancelTrialFn m_cancel_trial;
     std::array<wxStaticText*, 4> m_stage_labels{};
     wxStaticText* m_summary{nullptr};
     wxStaticText* m_issues{nullptr};
@@ -55,6 +61,8 @@ private:
     wxButton* m_cancel{nullptr};
     wxTimer m_revision_timer;
     bool m_can_plan_candidates{false};
+    std::atomic<bool> m_worker_running{false};
+    std::thread m_worker;
 };
 
 } // namespace Slic3r::GUI

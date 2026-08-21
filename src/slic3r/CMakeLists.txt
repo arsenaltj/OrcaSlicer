@@ -327,6 +327,7 @@ set(SLIC3R_GUI_SOURCES
     AI/SmartSlicing/Domain/WorkflowState.hpp
     AI/SmartSlicing/Domain/WorkspaceContext.hpp
     AI/SmartSlicing/Domain/WorkspaceRevision.hpp
+    AI/SmartSlicing/Domain/WorkflowResourceBudget.hpp
     AI/SmartSlicing/IModelArtifactConsumer.hpp
     AI/SmartSlicing/Ports/IOfficialSliceGateway.hpp
     AI/SmartSlicing/Ports/IOrcaWorkspace.hpp
@@ -346,6 +347,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/AI/Orca/OrcaPlacementCandidateProvider.hpp
     GUI/AI/Orca/OrcaTrialSliceExecutor.cpp
     GUI/AI/Orca/OrcaTrialSliceExecutor.hpp
+    GUI/AI/Orca/OrcaWorkflowRuntimeStore.cpp
+    GUI/AI/Orca/OrcaWorkflowRuntimeStore.hpp
     GUI/AI/Orca/OrcaWorkspaceAdapter.cpp
     GUI/AI/Orca/OrcaWorkspaceAdapter.hpp
     GUI/AI/Model/VertexColorRegionEditor.cpp

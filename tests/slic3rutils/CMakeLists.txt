@@ -4,6 +4,7 @@ add_executable(${_TEST_NAME}_tests
     test_smart_slicing_coordinator.cpp
     test_smart_slicing_candidates.cpp
     test_smart_slicing_parameters.cpp
+    test_smart_slicing_runtime.cpp
     test_smart_slicing_workflow.cpp
     test_vertex_color_region_editor.cpp
     )

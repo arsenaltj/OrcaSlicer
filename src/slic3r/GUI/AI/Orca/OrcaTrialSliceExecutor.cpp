@@ -7,10 +7,13 @@
 #include <boost/filesystem.hpp>
 
 #include <algorithm>
+#include <condition_variable>
 #include <cmath>
 #include <map>
+#include <limits>
 #include <numeric>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 
 namespace Slic3r::GUI {
@@ -36,10 +39,48 @@ public:
 
     std::string requested_path() const { return m_requested_path.string(); }
     void set_actual_path(std::string path) { m_actual_path = std::move(path); }
+    bool exceeds(uint64_t maximum_bytes) const
+    {
+        boost::system::error_code error;
+        const boost::filesystem::path path = m_actual_path.empty() ? m_requested_path : boost::filesystem::path(m_actual_path);
+        if (!boost::filesystem::exists(path, error) || error)
+            return false;
+        const uintmax_t size = boost::filesystem::file_size(path, error);
+        return !error && size > maximum_bytes;
+    }
 
 private:
     boost::filesystem::path m_requested_path;
     boost::filesystem::path m_actual_path;
+};
+
+class ScopedTrialDeadline
+{
+public:
+    ScopedTrialDeadline(std::chrono::seconds duration, std::function<void()> expired)
+        : m_thread([this, duration, expired = std::move(expired)] {
+              std::unique_lock<std::mutex> lock(m_mutex);
+              if (!m_condition.wait_for(lock, duration, [this] { return m_finished; }))
+                  expired();
+          })
+    {}
+
+    ~ScopedTrialDeadline()
+    {
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            m_finished = true;
+        }
+        m_condition.notify_all();
+        if (m_thread.joinable())
+            m_thread.join();
+    }
+
+private:
+    std::mutex m_mutex;
+    std::condition_variable m_condition;
+    bool m_finished{false};
+    std::thread m_thread;
 };
 
 double sum_values(const std::map<size_t, double>& values)
@@ -80,6 +121,28 @@ OrcaTrialSliceExecutor::OrcaTrialSliceExecutor(InputProvider input_provider) : m
 }
 
 OrcaTrialSliceExecutor::~OrcaTrialSliceExecutor() { cancel_trial_slice(); }
+
+void OrcaTrialSliceExecutor::prepare_session_input(OrcaTrialSliceInput input)
+{
+    std::lock_guard<std::mutex> lock(m_session_mutex);
+    m_session_input = std::move(input);
+    m_cancel_requested.store(false, std::memory_order_release);
+    m_timed_out.store(false, std::memory_order_release);
+}
+
+void OrcaTrialSliceExecutor::clear_session_input()
+{
+    std::lock_guard<std::mutex> lock(m_session_mutex);
+    m_session_input.reset();
+}
+
+void OrcaTrialSliceExecutor::set_resource_limits(std::chrono::seconds maximum_duration, uint64_t maximum_memory_bytes,
+                                                uint64_t maximum_temporary_disk_bytes)
+{
+    m_maximum_duration = maximum_duration;
+    m_maximum_memory_bytes = maximum_memory_bytes;
+    m_maximum_temporary_disk_bytes = maximum_temporary_disk_bytes;
+}
 
 bool OrcaTrialSliceExecutor::apply_placement(Model& model, const PlacementCandidate& placement) const
 {
@@ -152,13 +215,50 @@ TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice(const SliceCandidat
     TrialSliceResult result;
     result.candidate_id  = candidate.id;
     result.base_revision = candidate.base_revision;
-    m_cancel_requested.store(false, std::memory_order_release);
-
     try {
-        OrcaTrialSliceInput input = m_input_provider();
+        OrcaTrialSliceInput input;
+        bool prepared_session = false;
+        {
+            std::lock_guard<std::mutex> lock(m_session_mutex);
+            if (m_session_input) {
+                input = *m_session_input;
+                prepared_session = true;
+            }
+        }
+        if (!prepared_session) {
+            m_cancel_requested.store(false, std::memory_order_release);
+            m_timed_out.store(false, std::memory_order_release);
+            input = m_input_provider();
+        }
+        uint64_t estimated_model_bytes = 0;
+        for (const ModelObject* object : input.model.objects) {
+            if (object == nullptr)
+                continue;
+            for (const ModelVolume* volume : object->volumes) {
+                if (volume == nullptr)
+                    continue;
+                const uint64_t facet_count = static_cast<uint64_t>(volume->mesh().facets_count());
+                if (facet_count > std::numeric_limits<uint64_t>::max() / 128ull ||
+                    estimated_model_bytes > std::numeric_limits<uint64_t>::max() - facet_count * 128ull) {
+                    estimated_model_bytes = std::numeric_limits<uint64_t>::max();
+                    break;
+                }
+                estimated_model_bytes += facet_count * 128ull;
+            }
+            if (estimated_model_bytes == std::numeric_limits<uint64_t>::max())
+                break;
+        }
+        if (estimated_model_bytes > m_maximum_memory_bytes) {
+            result.diagnostic_code = "workflow_memory_budget_exceeded";
+            return result;
+        }
+        ScopedTrialDeadline deadline(m_maximum_duration, [this] {
+            m_timed_out.store(true, std::memory_order_release);
+            cancel_trial_slice();
+        });
         if (m_cancel_requested.load(std::memory_order_acquire)) {
             result.status          = TrialSliceStatus::Canceled;
-            result.diagnostic_code = "trial_slice_canceled";
+            result.diagnostic_code = m_timed_out.load(std::memory_order_acquire) ? "workflow_timeout" : "trial_slice_canceled";
             return result;
         }
         if (!candidate.parameters.entries.empty()) {
@@ -202,6 +302,10 @@ TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice(const SliceCandidat
         ScopedTrialGCode temporary_gcode;
         GCodeProcessorResult gcode_result;
         temporary_gcode.set_actual_path(trial_print.export_gcode(temporary_gcode.requested_path(), &gcode_result, nullptr));
+        if (temporary_gcode.exceeds(m_maximum_temporary_disk_bytes)) {
+            result.diagnostic_code = "workflow_disk_budget_exceeded";
+            return result;
+        }
         result.metrics = extract_metrics(gcode_result, expected_filament_mapping, prime_tower_enabled);
         result.metrics->warning_codes.insert(result.metrics->warning_codes.end(), validation_warnings.size(),
                                              "native_validation_warning");
@@ -209,7 +313,7 @@ TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice(const SliceCandidat
         return result;
     } catch (const CanceledException&) {
         result.status          = TrialSliceStatus::Canceled;
-        result.diagnostic_code = "trial_slice_canceled";
+        result.diagnostic_code = m_timed_out.load(std::memory_order_acquire) ? "workflow_timeout" : "trial_slice_canceled";
     } catch (...) {
         result.status          = TrialSliceStatus::Failed;
         result.diagnostic_code = "trial_slice_exception";

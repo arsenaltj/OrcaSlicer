@@ -33,6 +33,7 @@ SmartSlicingViewModel SmartSlicingViewModel::from_snapshot(const AI::SmartSlicin
         card.selected        = snapshot.selected_candidate_id == candidate.id;
         card.failed          = candidate.status == AI::SmartSlicing::CandidateStatus::Failed;
         card.can_retry       = snapshot.state == WorkflowState::ReadyToApply && card.failed;
+        card.can_select      = snapshot.state == WorkflowState::ReadyToApply && !card.failed;
         if (card.recommended && snapshot.comparison)
             card.evidence_codes = snapshot.comparison->recommendation_evidence_codes;
         if (candidate.metrics) {
@@ -165,7 +166,8 @@ SmartSlicingViewModel SmartSlicingViewModel::from_snapshot(const AI::SmartSlicin
         view.legacy_steps.fill(LegacyAIWorkflowStatus::Warning);
         break;
     case WorkflowState::Failed:
-        view.summary_key      = "preflight_failed";
+        view.summary_key      = snapshot.detail == "interrupted_workflow_recovered" ?
+                                    "interrupted_workflow_recovered" : "preflight_failed";
         view.stages[0].status = SmartSlicingStageStatus::NeedsAttention;
         view.legacy_steps.fill(LegacyAIWorkflowStatus::Failed);
         break;

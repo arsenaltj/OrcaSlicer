@@ -3,6 +3,7 @@
 #include "AI/Orca/OrcaSmartSlicingAdapter.hpp"
 #include "AI/Orca/OrcaOfficialSliceGateway.hpp"
 #include "AI/Orca/OrcaParameterProposalAdapter.hpp"
+#include "AI/Orca/OrcaWorkflowRuntimeStore.hpp"
 #include "AI/SmartSlicing/SmartSlicingPanel.hpp"
 #include "AI/SmartSlicing/SmartSlicingPresenter.hpp"
 #include "slic3r/AI/SmartSlicing/Application/SmartSlicingCoordinator.hpp"
@@ -4531,6 +4532,7 @@ struct Plater::priv
     std::unique_ptr<OrcaSmartSlicingAdapter> smart_slicing_workspace;
     std::unique_ptr<OrcaTrialSliceExecutor> smart_slicing_trial_executor;
     std::unique_ptr<OrcaOfficialSliceGateway> smart_slicing_official_gateway;
+    std::unique_ptr<OrcaWorkflowRuntimeStore> smart_slicing_runtime_store;
     std::unique_ptr<AI::SmartSlicing::SmartSlicingCoordinator> smart_slicing_coordinator;
     std::unique_ptr<SmartSlicingPresenter> smart_slicing_presenter;
     SmartSlicingPanel* smart_slicing_panel { nullptr };
@@ -15083,15 +15085,37 @@ void Plater::enable_smart_slicing()
         std::make_unique<AI::SmartSlicing::SmartSlicingCoordinator>(*p->smart_slicing_workspace,
                                                                     *p->smart_slicing_trial_executor,
                                                                     *p->smart_slicing_official_gateway);
-    p->smart_slicing_presenter = std::make_unique<SmartSlicingPresenter>(*p->smart_slicing_coordinator);
+    AI::SmartSlicing::WorkflowResourceBudget smart_slicing_budget;
+    p->smart_slicing_trial_executor->set_resource_limits(smart_slicing_budget.maximum_elapsed,
+                                                         smart_slicing_budget.maximum_memory_bytes,
+                                                         smart_slicing_budget.maximum_temporary_disk_bytes);
+    p->smart_slicing_coordinator->set_resource_budget(smart_slicing_budget);
+    p->smart_slicing_runtime_store = std::make_unique<OrcaWorkflowRuntimeStore>(
+        boost::filesystem::temp_directory_path() / "OrcaSlicer-smart-slicing-runtime-v1.json");
+    p->smart_slicing_coordinator->set_runtime_store(*p->smart_slicing_runtime_store);
+    p->smart_slicing_presenter = std::make_unique<SmartSlicingPresenter>(
+        *p->smart_slicing_coordinator, [](std::function<void()> publish) {
+            if (wxIsMainThread())
+                publish();
+            else
+                wxGetApp().CallAfter(std::move(publish));
+        });
     p->smart_slicing_panel = new SmartSlicingPanel(this, *p->smart_slicing_coordinator, [this] {
         const auto& snapshot = p->smart_slicing_coordinator->snapshot();
-        return snapshot.context ? p->smart_slicing_workspace->candidate_proposals(snapshot.context->revision) :
-                                  std::vector<AI::SmartSlicing::SliceCandidate>{};
+        if (!snapshot.context)
+            return std::vector<AI::SmartSlicing::SliceCandidate>{};
+        p->smart_slicing_trial_executor->prepare_session_input(
+            p->smart_slicing_workspace->capture_trial_slice_input());
+        return p->smart_slicing_workspace->candidate_proposals(snapshot.context->revision);
+    }, [this] {
+        p->smart_slicing_trial_executor->cancel_trial_slice();
     });
     p->smart_slicing_presenter->set_view_changed([this](const SmartSlicingViewModel& view) {
         if (p->smart_slicing_panel != nullptr)
             p->smart_slicing_panel->render(view);
+        if (view.summary_key == "official_slice_complete" || view.summary_key == "canceled" ||
+            view.summary_key == "workspace_changed" || view.summary_key == "preflight_failed")
+            p->smart_slicing_trial_executor->clear_session_input();
 
         if (view.summary_key == "ready_to_start")
             return;

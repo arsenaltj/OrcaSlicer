@@ -3,6 +3,7 @@
 #include "TrialSlicingWorkflow.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <exception>
 #include <utility>
 
@@ -28,12 +29,85 @@ void SmartSlicingCoordinator::set_observer(Observer observer)
         m_observer(m_snapshot);
 }
 
+bool SmartSlicingCoordinator::set_runtime_store(IWorkflowRuntimeStore& runtime_store, bool recover)
+{
+    m_runtime_store = &runtime_store;
+    if (!recover)
+        return false;
+    try {
+        const std::optional<WorkflowRuntimeRecord> record = m_runtime_store->load();
+        if (!record)
+            return false;
+        m_last_workflow_id = std::max(m_last_workflow_id, record->workflow_id);
+        const WorkspaceRevision current = m_workspace.current_revision();
+        m_runtime_store->clear(record->workflow_id);
+        if (!record->revision.valid() || current != record->revision)
+            return false;
+        m_snapshot = {};
+        m_snapshot.workflow_id = record->workflow_id;
+        m_snapshot.state = WorkflowState::Failed;
+        m_snapshot.detail = "interrupted_workflow_recovered";
+        return true;
+    } catch (...) {
+        try {
+            m_runtime_store->clear(0);
+        } catch (...) {
+        }
+        return false;
+    }
+}
+
+void SmartSlicingCoordinator::set_resource_budget(WorkflowResourceBudget budget,
+                                                  std::function<WorkflowResourceUsage()> usage_probe)
+{
+    m_resource_budget = std::move(budget);
+    m_usage_probe = std::move(usage_probe);
+}
+
+std::string SmartSlicingCoordinator::resource_violation(size_t candidate_count) const
+{
+    const WorkflowResourceUsage usage = m_usage_probe ? m_usage_probe() : WorkflowResourceUsage{};
+    return workflow_budget_violation(m_resource_budget, candidate_count,
+                                     std::chrono::steady_clock::now() - m_started_at, usage);
+}
+
+void SmartSlicingCoordinator::persist_runtime_state()
+{
+    if (m_runtime_store == nullptr || m_snapshot.workflow_id == 0)
+        return;
+    const bool terminal = m_snapshot.state == WorkflowState::Idle || m_snapshot.state == WorkflowState::Completed ||
+                          m_snapshot.state == WorkflowState::Canceled || m_snapshot.state == WorkflowState::Stale ||
+                          m_snapshot.state == WorkflowState::Failed;
+    try {
+        if (terminal) {
+            m_runtime_store->clear(m_snapshot.workflow_id);
+            return;
+        }
+        if (!m_snapshot.context)
+            return;
+        WorkflowRuntimeRecord record;
+        record.workflow_id = m_snapshot.workflow_id;
+        record.state = m_snapshot.state;
+        record.revision = m_snapshot.context->revision;
+        record.detail = m_snapshot.detail;
+        record.updated_at_epoch_seconds = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        record.candidates.reserve(m_snapshot.candidates.size());
+        for (const SliceCandidate& candidate : m_snapshot.candidates)
+            record.candidates.push_back({candidate.id, candidate.goal, candidate.status});
+        m_runtime_store->save(record);
+    } catch (...) {
+        // Runtime recovery is best effort and must never break normal slicing.
+    }
+}
+
 void SmartSlicingCoordinator::transition(WorkflowState state, std::string detail)
 {
     m_snapshot.state  = state;
     m_snapshot.detail = std::move(detail);
     if (m_observer)
         m_observer(m_snapshot);
+    persist_runtime_state();
 }
 
 void SmartSlicingCoordinator::start()
@@ -43,6 +117,7 @@ void SmartSlicingCoordinator::start()
 
     m_snapshot             = {};
     m_snapshot.workflow_id = ++m_last_workflow_id;
+    m_started_at = std::chrono::steady_clock::now();
 
     try {
         transition(WorkflowState::CapturingContext, "capturing_workspace");
@@ -92,14 +167,15 @@ bool SmartSlicingCoordinator::workspace_revision_matches() const
     return m_snapshot.context && m_workspace.current_revision() == m_snapshot.context->revision;
 }
 
-bool SmartSlicingCoordinator::plan_and_slice_candidates(std::vector<SliceCandidate> proposals, CandidateGoal goal)
+bool SmartSlicingCoordinator::plan_and_slice_candidates(std::vector<SliceCandidate> proposals, CandidateGoal goal,
+                                                        bool defer_revision_checks)
 {
     if (m_snapshot.state != WorkflowState::ReadyForCandidatePlanning || !m_snapshot.context ||
         m_trial_slice_executor == nullptr)
         return false;
 
     try {
-        if (!workspace_revision_matches()) {
+        if (!defer_revision_checks && !workspace_revision_matches()) {
             transition(WorkflowState::Stale, "workspace_changed");
             return false;
         }
@@ -115,8 +191,23 @@ bool SmartSlicingCoordinator::plan_and_slice_candidates(std::vector<SliceCandida
             transition(WorkflowState::Failed, "no_candidates");
             return false;
         }
+        if (const std::string violation = resource_violation(m_snapshot.candidates.size()); !violation.empty()) {
+            transition(WorkflowState::Failed, violation);
+            return false;
+        }
 
         for (size_t index = 0; index < m_snapshot.candidates.size(); ++index) {
+            if (const std::string violation = resource_violation(m_snapshot.candidates.size()); !violation.empty()) {
+                if (index == 0) {
+                    transition(WorkflowState::Failed, violation);
+                    return false;
+                }
+                for (size_t skipped = index; skipped < m_snapshot.candidates.size(); ++skipped) {
+                    m_snapshot.candidates[skipped].status = CandidateStatus::Failed;
+                    m_snapshot.candidates[skipped].diagnostic_code = violation;
+                }
+                break;
+            }
             transition(index == 0 ? WorkflowState::TrialSlicingBaseline : WorkflowState::TrialSlicingCandidates,
                        index == 0 ? "trial_slicing_baseline" : "trial_slicing_candidate");
             const WorkflowState expected_state =
@@ -128,7 +219,7 @@ bool SmartSlicingCoordinator::plan_and_slice_candidates(std::vector<SliceCandida
             candidate.status          = CandidateStatus::TrialSlicing;
             TrialSliceResult result   = m_trial_slice_executor->execute_trial_slice(candidate);
 
-            if (!workspace_revision_matches()) {
+            if (!defer_revision_checks && !workspace_revision_matches()) {
                 for (SliceCandidate& planned : m_snapshot.candidates)
                     planned.status = CandidateStatus::Stale;
                 m_snapshot.comparison.reset();
@@ -146,6 +237,20 @@ bool SmartSlicingCoordinator::plan_and_slice_candidates(std::vector<SliceCandida
             if (index == 0 && !accepted) {
                 transition(WorkflowState::Failed, "baseline_trial_failed");
                 return false;
+            }
+            if (const std::string violation = resource_violation(m_snapshot.candidates.size()); !violation.empty()) {
+                if (index == 0) {
+                    for (size_t skipped = 1; skipped < m_snapshot.candidates.size(); ++skipped) {
+                        m_snapshot.candidates[skipped].status = CandidateStatus::Failed;
+                        m_snapshot.candidates[skipped].diagnostic_code = violation;
+                    }
+                    break;
+                }
+                for (size_t skipped = index + 1; skipped < m_snapshot.candidates.size(); ++skipped) {
+                    m_snapshot.candidates[skipped].status = CandidateStatus::Failed;
+                    m_snapshot.candidates[skipped].diagnostic_code = violation;
+                }
+                break;
             }
         }
 
@@ -184,7 +289,7 @@ bool SmartSlicingCoordinator::select_candidate(const CandidateId& candidate_id)
     return true;
 }
 
-bool SmartSlicingCoordinator::retry_candidate(const CandidateId& candidate_id)
+bool SmartSlicingCoordinator::retry_candidate(const CandidateId& candidate_id, bool defer_revision_checks)
 {
     if (m_snapshot.state != WorkflowState::ReadyToApply || m_trial_slice_executor == nullptr || !m_snapshot.context)
         return false;
@@ -194,7 +299,7 @@ bool SmartSlicingCoordinator::retry_candidate(const CandidateId& candidate_id)
                                   });
     if (candidate == m_snapshot.candidates.end())
         return false;
-    if (!workspace_revision_matches()) {
+    if (!defer_revision_checks && !workspace_revision_matches()) {
         transition(WorkflowState::Stale, "workspace_changed");
         return false;
     }
@@ -202,7 +307,7 @@ bool SmartSlicingCoordinator::retry_candidate(const CandidateId& candidate_id)
     transition(WorkflowState::TrialSlicingCandidates, "retrying_trial_slice");
     candidate->status = CandidateStatus::TrialSlicing;
     TrialSliceResult result = m_trial_slice_executor->execute_trial_slice(*candidate);
-    if (!workspace_revision_matches()) {
+    if (!defer_revision_checks && !workspace_revision_matches()) {
         for (SliceCandidate& planned : m_snapshot.candidates)
             planned.status = CandidateStatus::Stale;
         m_snapshot.comparison.reset();

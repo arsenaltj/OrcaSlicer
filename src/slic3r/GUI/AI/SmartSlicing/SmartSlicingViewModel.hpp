@@ -45,6 +45,7 @@ struct SmartSlicingCandidateView
     bool selected{false};
     bool failed{false};
     bool can_retry{false};
+    bool can_select{false};
 };
 
 struct SmartSlicingViewModel
