@@ -229,3 +229,40 @@
 - Sidecar absence, candidate failure, cancellation, and workbench closure do not alter normal Orca behavior.
 - Typed parameter and multicolor changes obey compatibility, scope, calibration, and hardware boundaries.
 - Tests, build evidence, compatibility notes, and remaining CI-only gates are documented honestly.
+
+## Verification result (2026-08-21)
+
+Tasks 1-9 are implemented. Task 10 was completed on Windows with the exceptions explicitly listed under CI and known-test gates below.
+
+### Architecture and safety audit
+
+- Domain/Application remain independent of wx and provider implementation details. Orca cloning, native Arrange, real trial slicing, formal application, Undo, and Preview integration remain under `GUI/AI/Orca` and the Plater composition root.
+- Pre-confirmation paths copy the current-plate `Model` and effective `DynamicPrintConfig`; placement and typed parameter patches are applied only to those copies. Trial output uses a local `Print` and RAII-owned temporary G-code which is removed on every exit path.
+- The only formal transform/config writes are in the `OrcaOfficialSliceGateway` apply callback reached from the visible `确认并应用` command. Application and adapter layers independently re-read and compare `WorkspaceRevision` immediately before that write.
+- Formal application is wrapped in one `Plater::TakeSnapshot`; a post-commit slicing failure exposes one native Undo recovery. Preview navigation occurs only after the standard official slice reports completion.
+- Candidate generation is current-plate-only, treats locked plates and non-printable/fixed targets as immovable, includes exclusion and wipe-tower regions in native Arrange, and rejects transforms whose IDs do not resolve to the current plate at final apply.
+- The runtime journal contains only bounded workflow metadata and candidate descriptors. It does not persist meshes, trial G-code, raw provider text, credentials, or generated-model business data.
+- The implementation commits changed only smart-slicing Domain/Application/Ports, smart-slicing GUI/Orca adapters, the Plater composition/apply gateway, smart-slicing tests, CMake registration, and this plan. Repository-root `task_plan.md`, `findings.md`, and `progress.md` were not changed during this implementation run.
+
+### Build and automated tests
+
+- Windows RelWithDebInfo incremental builds passed for `OrcaSlicer`, `OrcaSlicer_app_gui`, `slic3rutils_tests`, and `fff_print_tests`.
+- Smart-slicing filter: 53 test cases, 347 assertions, all passed.
+- Full `slic3rutils_tests`: 64 test cases, 454 assertions, all passed.
+- Focused real Orca trial slicing: 3 test cases, 20 assertions, all passed. The fixture verifies isolated `Model`/config state, typed-patch rejection, cancellation, timeout, memory budget, disk budget, and temporary-file cleanup.
+- Full `fff_print_tests` with RNG seed `635773145` reproducibly reaches an existing order-dependent SIGSEGV in `Scenario: Skirt and brim generation` after 36 passing cases/425 assertions. The failing scenario passes alone (1 case/7 assertions), and the same full suite excluding only that scenario passes 56 cases/621 assertions. Smart-slicing does not modify `libslic3r` print/skirt/brim code; this remains a separately tracked baseline test-isolation gate rather than an in-scope core change.
+- Test runner working directories emit the existing `info/nozzle_info.json` parse warning; it does not fail the suites and is unrelated to the smart-slicing paths.
+
+### Local GUI verification
+
+- GUI automation interacted only with `D:/Workspace/06_3DDY_smart_slicing/build-p0/OrcaSlicer/orca-slicer.exe`; the running process executable path was checked before interaction. No installed or other-workspace Orca process was used.
+- The restored `Büchse` project and WonderMaker profile loaded, exercising 3MF/profile compatibility without any format or profile schema change.
+- Verified the dockable workbench, cancellation during real trial slicing, baseline plus deterministic alternative completion, real time/material/support/tool-change/flush/wipe-tower/layer-sequence evidence, candidate selection, and baseline restoration.
+- A prior local-app pass verified transactional transform/plate-parameter application, standard official slicing/Preview, and one native Undo restoration. In the final restored-project pass, `确认并应用` was deliberately not clicked, so the unsaved user project was left untouched.
+- Sidecar/provider absence degrades to deterministic local candidates and a non-blocking explanation; it does not block ordinary Orca operation.
+
+### Remaining CI/manual gates
+
+- Build and run the focused and full relevant suites on macOS and Linux; cross-platform success is not claimed from this Windows workstation.
+- Keep the deterministic `fff_print` seed above as a baseline isolation gate and fix the pre-existing shared-state SIGSEGV outside the smart-slicing scope.
+- Re-run the ordinary workbench-closed import/slice/Preview smoke on a disposable project in release QA. It was not repeated against the currently restored unsaved user project because doing so would alter its formal slice result.
