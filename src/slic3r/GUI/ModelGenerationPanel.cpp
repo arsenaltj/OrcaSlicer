@@ -1898,6 +1898,12 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
                 : wxString::Format(_L("已选择区域 · %llu 个三角面"),
                                    static_cast<unsigned long long>(selected_faces)));
         }
+        if (m_model_preview_message != nullptr) {
+            m_model_preview_message->SetLabel(selected_faces == 0
+                ? _L("生成完成后可拖动旋转模型，并使用滚轮缩放。")
+                : wxString::Format(_L("当前选区包含 %llu 个三角面；可继续检查或手动增减。"),
+                                   static_cast<unsigned long long>(selected_faces)));
+        }
         refresh_local_recolor_controls();
     });
     update_region_mode();
