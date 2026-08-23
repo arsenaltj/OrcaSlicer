@@ -552,10 +552,15 @@ public:
         triangle_count = its.indices.size();
         dimensions = m_bounds.size().cast<double>();
         color_count = std::count(used.begin(), used.end(), true);
-        if (!has_vertex_colors ||
-            !m_region_editor.initialize(std::move(mesh.its), std::move(obj_info.vertex_colors), error)) {
-            m_models.clear();
-            return false;
+        if (has_vertex_colors) {
+            if (!m_region_editor.initialize(std::move(mesh.its), std::move(obj_info.vertex_colors), error)) {
+                m_models.clear();
+                return false;
+            }
+        } else {
+            // Preview and structural review do not require vertex colors. Keep the
+            // color-dependent editor unavailable instead of rejecting a valid OBJ.
+            m_region_editor.clear();
         }
         m_palette = palette;
         m_has_model = true;
@@ -647,6 +652,7 @@ public:
     }
 
     size_t selected_face_count() const { return m_region_editor.selected_face_count(); }
+    bool region_editing_ready() const { return m_region_editor.ready(); }
     bool can_undo_selection() const { return !m_selection_history.empty(); }
 
     bool undo_selection()
@@ -3297,7 +3303,8 @@ void ModelGenerationPanel::refresh_local_recolor_controls()
     if (m_local_recolor_panel == nullptr || m_local_recolor_toggle == nullptr ||
         m_local_recolor_controls == nullptr)
         return;
-    const bool ready = m_model_preview_ready;
+    const bool ready = m_model_preview_ready && m_model_preview != nullptr &&
+                       m_model_preview->region_editing_ready();
     if (!ready)
         m_local_recolor_toggle->SetValue(false);
     const bool editing = ready && m_local_recolor_toggle->GetValue();

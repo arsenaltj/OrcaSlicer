@@ -439,3 +439,34 @@ TEST_CASE("vertex color OBJ round trip preserves RGB channel order", "[AI][Verte
         }
     }
 }
+
+TEST_CASE("uncolored OBJ loads safely without enabling local recoloring", "[AI][ModelPreview]")
+{
+    const boost::filesystem::path root =
+        boost::filesystem::current_path() / "generated_models" / "test-uncolored-preview";
+    boost::filesystem::create_directories(root);
+    const boost::filesystem::path source = root / "uncolored.obj";
+    {
+        boost::filesystem::ofstream stream(source, std::ios::trunc);
+        stream << "v 0 0 0\n"
+               << "v 10 0 0\n"
+               << "v 0 10 0\n"
+               << "v 0 0 10\n"
+               << "f 1 3 2\n"
+               << "f 1 2 4\n"
+               << "f 2 3 4\n"
+               << "f 3 1 4\n";
+    }
+
+    TriangleMesh mesh;
+    ObjInfo obj_info;
+    std::string message;
+    REQUIRE(load_obj(source.string().c_str(), &mesh, obj_info, message));
+    CHECK(mesh.its.indices.size() == 4);
+    CHECK(obj_info.vertex_colors.empty());
+
+    AI::VertexColorRegionEditor editor;
+    CHECK_FALSE(editor.initialize(std::move(mesh.its), std::move(obj_info.vertex_colors), message));
+    CHECK_FALSE(editor.ready());
+    CHECK(message == "Local recoloring requires OBJ vertex colors.");
+}
