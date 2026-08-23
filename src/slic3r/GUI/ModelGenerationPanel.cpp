@@ -323,6 +323,7 @@ wxString model_quality_code_label(const std::string& code)
     if (code == "weak_bed_contact") return _L("模型与热床接触面积较小，请检查底座稳定性。");
     if (code == "extreme_aspect_ratio") return _L("模型比例较极端，请检查缩放和摆放方向。");
     if (code == "high_downward_surface_ratio") return _L("向下表面较多，打印时可能需要更多支撑。");
+    if (code == "localized_overhang_regions") return _L("检测到局部悬垂面，请旋转模型检查是否需要支撑。");
     if (code == "dense_micro_triangles") return _L("局部三角面非常密集，请检查细小结构。");
     if (code == "repairable_boundary_edges") return _L("存在少量开放边，将在导入时交给 Orca 修复。");
     if (code == "repairable_non_manifold_edges") return _L("存在少量非流形边，将在导入时交给 Orca 修复。");
@@ -3086,10 +3087,22 @@ void ModelGenerationPanel::refresh_model_quality_card()
                     static_cast<unsigned long long>(m_model_quality.face_count),
                     static_cast<unsigned long long>(m_model_quality.vertex_count),
                     static_cast<unsigned long long>(m_model_quality.component_count));
-        details << wxString::Format(_L("最大部件占比：%.1f%% · 接地覆盖：%.1f%% · 向下表面：%.1f%%"),
-                    m_model_quality.largest_component_face_ratio * 100.0,
-                    m_model_quality.contact_span_ratio * 100.0,
-                    m_model_quality.downward_surface_ratio * 100.0);
+        if (m_model_quality.bed_contact_area_available) {
+            details << wxString::Format(_L("最大部件占比：%.1f%% · 接地跨度：%.1f%% · 接地面积：%.1f%%\n"),
+                        m_model_quality.largest_component_face_ratio * 100.0,
+                        m_model_quality.contact_span_ratio * 100.0,
+                        m_model_quality.bed_contact_area_ratio * 100.0);
+            details << wxString::Format(_L("向下表面：%.1f%%"),
+                        m_model_quality.downward_surface_ratio * 100.0);
+            if (m_model_quality.overhang_region_metrics_available)
+                details << wxString::Format(_L(" · 显著局部悬垂：%llu 个"),
+                            static_cast<unsigned long long>(m_model_quality.significant_overhang_region_count));
+        } else {
+            details << wxString::Format(_L("最大部件占比：%.1f%% · 接地覆盖：%.1f%% · 向下表面：%.1f%%"),
+                        m_model_quality.largest_component_face_ratio * 100.0,
+                        m_model_quality.contact_span_ratio * 100.0,
+                        m_model_quality.downward_surface_ratio * 100.0);
+        }
         const auto& codes = m_model_quality.status == "reject" ? m_model_quality.errors : m_model_quality.warnings;
         for (const std::string& code : codes)
             details += _L("\n• ") + model_quality_code_label(code);

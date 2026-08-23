@@ -17,6 +17,30 @@ def tetrahedron(offset=(0.0, 0.0, 0.0), scale=(10.0, 10.0, 10.0)) -> tuple[list[
     return vertices, faces
 
 
+def box(offset=(0.0, 0.0, 0.0), size=(10.0, 10.0, 10.0)) -> tuple[list[tuple[float, float, float]], list[tuple[int, int, int]]]:
+    ox, oy, oz = offset
+    sx, sy, sz = size
+    vertices = [
+        (ox, oy, oz),
+        (ox + sx, oy, oz),
+        (ox + sx, oy + sy, oz),
+        (ox, oy + sy, oz),
+        (ox, oy, oz + sz),
+        (ox + sx, oy, oz + sz),
+        (ox + sx, oy + sy, oz + sz),
+        (ox, oy + sy, oz + sz),
+    ]
+    faces = [
+        (1, 3, 2), (1, 4, 3),
+        (5, 6, 7), (5, 7, 8),
+        (1, 2, 6), (1, 6, 5),
+        (2, 3, 7), (2, 7, 6),
+        (3, 4, 8), (3, 8, 7),
+        (4, 1, 5), (4, 5, 8),
+    ]
+    return vertices, faces
+
+
 def obj_text(parts) -> str:
     lines = []
     vertex_offset = 0
@@ -117,8 +141,9 @@ class PrintableModelQualityTests(unittest.TestCase):
             ModelQualityThresholds(component_contact_tolerance_mm=0.2),
         )
 
-        self.assertEqual(report["status"], "pass")
+        self.assertEqual(report["status"], "review")
         self.assertNotIn("floating_disconnected_components", report["warnings"])
+        self.assertIn("localized_overhang_regions", report["warnings"])
         self.assertEqual(report["metrics"]["floating_component_count"], 0)
         self.assertIsNone(report["metrics"]["minimum_floating_clearance_mm"])
 
@@ -129,6 +154,39 @@ class PrintableModelQualityTests(unittest.TestCase):
         report = self.analyze(obj_text([(vertices, faces)]))
         self.assertEqual(report["status"], "review")
         self.assertIn("weak_bed_contact", report["warnings"])
+
+    def test_widely_spaced_point_contacts_use_actual_projected_area(self):
+        report = self.analyze(
+            obj_text([
+                tetrahedron(scale=(0.1, 0.1, 1.0)),
+                tetrahedron((100.0, 0.0, 0.0), (0.1, 0.1, 1.0)),
+            ])
+        )
+
+        self.assertEqual(report["metrics"]["contact_span_ratio"], 1.0)
+        self.assertLess(report["metrics"]["bed_contact_area_ratio"], 0.002)
+        self.assertIn("weak_bed_contact", report["warnings"])
+
+    def test_wide_flat_base_has_full_projected_contact_area(self):
+        report = self.analyze(obj_text([box()]))
+
+        self.assertEqual(report["status"], "pass")
+        self.assertEqual(report["metrics"]["bed_contact_area_mm2"], 100.0)
+        self.assertEqual(report["metrics"]["bed_contact_area_ratio"], 1.0)
+
+    def test_localized_elevated_overhang_is_reported_before_global_ratio(self):
+        report = self.analyze(
+            obj_text([
+                box(size=(10.0, 10.0, 20.0)),
+                box((-5.0, -5.0, 20.0), (20.0, 20.0, 1.0)),
+            ])
+        )
+
+        self.assertLess(report["metrics"]["downward_surface_ratio"], 0.35)
+        self.assertNotIn("high_downward_surface_ratio", report["warnings"])
+        self.assertIn("localized_overhang_regions", report["warnings"])
+        self.assertEqual(report["metrics"]["significant_overhang_region_count"], 1)
+        self.assertGreater(report["metrics"]["lowest_overhang_clearance_mm"], 19.0)
 
     def test_coherent_printable_color_regions_pass(self):
         red_vertices, red_faces = tetrahedron()
@@ -242,7 +300,7 @@ class PrintableModelQualityTests(unittest.TestCase):
         report = self.analyze(obj_text([tetrahedron()]))
         destination = write_model_quality_report(report, self.root / "model-quality.json")
         self.assertTrue(destination.is_file())
-        self.assertIn('"gate_version": "structural-v3"', destination.read_text(encoding="utf-8"))
+        self.assertIn('"gate_version": "structural-v4"', destination.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

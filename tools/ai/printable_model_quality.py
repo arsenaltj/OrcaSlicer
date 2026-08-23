@@ -13,7 +13,7 @@ from typing import Any
 
 
 REPORT_SCHEMA_VERSION = 1
-GATE_VERSION = "structural-v3"
+GATE_VERSION = "structural-v4"
 
 
 @dataclass(frozen=True)
@@ -21,8 +21,11 @@ class ModelQualityThresholds:
     max_faces: int = 1_000_000
     ground_band_mm: float = 0.5
     min_contact_span_ratio: float = 0.005
+    min_contact_area_ratio: float = 0.002
     max_aspect_ratio: float = 20.0
     max_downward_area_ratio: float = 0.35
+    min_overhang_region_area_mm2: float = 4.0
+    min_overhang_region_area_ratio: float = 0.0005
     short_edge_mm: float = 0.15
     max_short_edge_ratio: float = 0.50
     tiny_component_face_ratio: float = 0.001
@@ -170,6 +173,10 @@ def analyze_printable_obj(
     edge_uses: dict[tuple[int, int], list[tuple[int, int, int]]] = {}
     referenced: set[int] = set()
     face_areas: list[float] = []
+    face_projected_areas: list[float] = []
+    face_downward: list[bool] = []
+    face_minimum_z: list[float] = []
+    face_maximum_z: list[float] = []
     degenerate_faces = 0
     surface_area = 0.0
     downward_area = 0.0
@@ -192,14 +199,21 @@ def analyze_printable_obj(
         )
         double_area = _vector_length(*cross)
         area = double_area * 0.5
+        is_downward = False
         if len(set(face)) != 3 or area <= limits.degenerate_area_epsilon_mm2:
             degenerate_faces += 1
             face_areas.append(0.0)
+            face_projected_areas.append(0.0)
         else:
             surface_area += area
             face_areas.append(area)
-            if cross[2] / double_area < -math.sqrt(0.5):
+            face_projected_areas.append(abs(cross[2]) * 0.5)
+            is_downward = cross[2] / double_area < -math.sqrt(0.5)
+            if is_downward:
                 downward_area += area
+        face_downward.append(is_downward)
+        face_minimum_z.append(min(a[2], b[2], c[2]))
+        face_maximum_z.append(max(a[2], b[2], c[2]))
 
         for left, right in ((face[0], face[1]), (face[1], face[2]), (face[2], face[0])):
             edge = (left, right) if left < right else (right, left)
@@ -305,6 +319,53 @@ def analyze_printable_obj(
     x_ratio = contact_x / dimensions[0] if dimensions[0] > 0.0 else 0.0
     y_ratio = contact_y / dimensions[1] if dimensions[1] > 0.0 else 0.0
     contact_span_ratio = x_ratio * y_ratio
+    bed_contact_area = sum(
+        face_projected_areas[index]
+        for index in range(len(faces))
+        if face_downward[index] and face_maximum_z[index] <= ground_limit
+    )
+    footprint_area = dimensions[0] * dimensions[1]
+    bed_contact_area_ratio = min(1.0, bed_contact_area / footprint_area) if footprint_area > 0.0 else 0.0
+
+    overhang_candidates = {
+        index
+        for index in range(len(faces))
+        if face_downward[index] and face_minimum_z[index] > ground_limit
+    }
+    overhang_region_count = 0
+    significant_overhang_regions = 0
+    largest_overhang_region_area_ratio = 0.0
+    lowest_overhang_clearance: float | None = None
+    visited_overhangs: set[int] = set()
+    for seed in sorted(overhang_candidates):
+        if seed in visited_overhangs:
+            continue
+        visited_overhangs.add(seed)
+        pending = [seed]
+        region_area = 0.0
+        region_minimum_z = math.inf
+        while pending:
+            current = pending.pop()
+            region_area += face_areas[current]
+            region_minimum_z = min(region_minimum_z, face_minimum_z[current])
+            for neighbor in face_neighbors[current]:
+                if neighbor in overhang_candidates and neighbor not in visited_overhangs:
+                    visited_overhangs.add(neighbor)
+                    pending.append(neighbor)
+        overhang_region_count += 1
+        area_ratio = region_area / surface_area if surface_area > 0.0 else 0.0
+        largest_overhang_region_area_ratio = max(largest_overhang_region_area_ratio, area_ratio)
+        if (
+            region_area >= limits.min_overhang_region_area_mm2
+            and area_ratio >= limits.min_overhang_region_area_ratio
+        ):
+            significant_overhang_regions += 1
+            clearance = max(0.0, region_minimum_z - minimum[2])
+            lowest_overhang_clearance = (
+                clearance
+                if lowest_overhang_clearance is None
+                else min(lowest_overhang_clearance, clearance)
+            )
 
     positive_dimensions = [value for value in dimensions if value > 1e-9]
     aspect_ratio = max(positive_dimensions) / min(positive_dimensions) if len(positive_dimensions) == 3 else math.inf
@@ -411,12 +472,21 @@ def analyze_printable_obj(
             "floating_disconnected_components",
             f"Model contains {floating_components} disconnected components with no detected bed or model contact.",
         )
-    if len(contact_indices) < 3 or contact_span_ratio < limits.min_contact_span_ratio:
+    if (
+        len(contact_indices) < 3
+        or contact_span_ratio < limits.min_contact_span_ratio
+        or bed_contact_area_ratio < limits.min_contact_area_ratio
+    ):
         add_warning("weak_bed_contact", "The lowest 0.5 mm of the model has a very small bed-contact footprint.")
     if math.isfinite(aspect_ratio) and aspect_ratio > limits.max_aspect_ratio:
         add_warning("extreme_aspect_ratio", "Model has an extreme bounding-box aspect ratio.")
     if downward_ratio > limits.max_downward_area_ratio:
         add_warning("high_downward_surface_ratio", "A large share of surface area faces downward and may require support.")
+    elif significant_overhang_regions:
+        add_warning(
+            "localized_overhang_regions",
+            f"Model contains {significant_overhang_regions} elevated downward-facing regions that may require support.",
+        )
     if short_edge_ratio > limits.max_short_edge_ratio:
         add_warning("dense_micro_triangles", "More than half of sampled triangle edges are shorter than 0.15 mm.")
     if tiny_color_regions:
@@ -456,7 +526,17 @@ def analyze_printable_obj(
         "surface_area_mm2": round(surface_area, 6),
         "contact_vertex_count": len(contact_indices),
         "contact_span_ratio": round(contact_span_ratio, 6),
+        "bed_contact_area_mm2": round(bed_contact_area, 6),
+        "bed_contact_area_ratio": round(bed_contact_area_ratio, 6),
         "downward_surface_ratio": round(downward_ratio, 6),
+        "overhang_region_count": overhang_region_count,
+        "significant_overhang_region_count": significant_overhang_regions,
+        "largest_overhang_region_area_ratio": round(largest_overhang_region_area_ratio, 6),
+        "lowest_overhang_clearance_mm": (
+            round(lowest_overhang_clearance, 6)
+            if lowest_overhang_clearance is not None and math.isfinite(lowest_overhang_clearance)
+            else None
+        ),
         "short_edge_ratio": round(short_edge_ratio, 6),
         "minimum_edge_mm": round(minimum_edge, 6) if math.isfinite(minimum_edge) else None,
         "maximum_edge_mm": round(maximum_edge, 6),

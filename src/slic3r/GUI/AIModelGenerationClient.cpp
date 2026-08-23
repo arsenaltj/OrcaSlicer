@@ -500,7 +500,13 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
             status.model_quality.tiny_component_count = metrics.value("tiny_component_count", size_t(0));
             status.model_quality.largest_component_face_ratio = metrics.value("largest_component_face_ratio", 0.0);
             status.model_quality.contact_span_ratio = metrics.value("contact_span_ratio", 0.0);
+            status.model_quality.bed_contact_area_available = metrics.contains("bed_contact_area_ratio");
+            status.model_quality.bed_contact_area_ratio = metrics.value("bed_contact_area_ratio", 0.0);
             status.model_quality.downward_surface_ratio = metrics.value("downward_surface_ratio", 0.0);
+            status.model_quality.overhang_region_metrics_available =
+                metrics.contains("significant_overhang_region_count");
+            status.model_quality.significant_overhang_region_count =
+                metrics.value("significant_overhang_region_count", size_t(0));
             status.model_quality.repairable_topology = metrics.value("repairable_topology", false);
         }
     }

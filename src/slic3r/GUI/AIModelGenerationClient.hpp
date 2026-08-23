@@ -41,7 +41,11 @@ public:
         size_t                   tiny_component_count { 0 };
         double                   largest_component_face_ratio { 0.0 };
         double                   contact_span_ratio { 0.0 };
+        bool                     bed_contact_area_available { false };
+        double                   bed_contact_area_ratio { 0.0 };
         double                   downward_surface_ratio { 0.0 };
+        bool                     overhang_region_metrics_available { false };
+        size_t                   significant_overhang_region_count { 0 };
         bool                     repairable_topology { false };
     };
 
