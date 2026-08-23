@@ -139,10 +139,13 @@ OrcaSmartSlicingAdapter::prepare_candidate_proposals(const AI::SmartSlicing::Wor
     if (plate == nullptr)
         return std::nullopt;
 
+    DynamicPrintConfig effective_config = wxGetApp().preset_bundle->full_config();
+    effective_config.apply(*plate->config(), true);
+
     OrcaCandidateProposalInput prepared;
     prepared.context                  = context;
     prepared.placement.model          = current_plate_model_copy(*m_plater, *plate);
-    prepared.placement.config         = wxGetApp().preset_bundle->full_config();
+    prepared.placement.config         = effective_config;
     prepared.placement.arrange_params = init_arrange_params(m_plater);
     prepared.placement.plate_locked   = plate->is_locked();
     const bool enable_wrapping = prepared.placement.config.opt_bool("enable_wrapping_detection");
@@ -151,13 +154,11 @@ OrcaSmartSlicingAdapter::prepare_candidate_proposals(const AI::SmartSlicing::Wor
         prepared.placement.fixed_regions.push_back(*wipe_tower);
 
     prepared.orientation.model        = current_plate_model_copy(*m_plater, *plate);
-    prepared.orientation.config       = wxGetApp().preset_bundle->full_config();
+    prepared.orientation.config       = effective_config;
     prepared.orientation.plate_locked = plate->is_locked();
 
-    DynamicPrintConfig current_config = wxGetApp().preset_bundle->full_config();
-    current_config.apply(*plate->config(), true);
     prepared.parameters.plate_id = static_cast<int64_t>(plate->id().id);
-    prepared.parameters.current_brim_width = current_config.opt_float("brim_width");
+    prepared.parameters.current_brim_width = effective_config.opt_float("brim_width");
     const Model& model = m_plater->model();
     for (size_t object_index = 0; object_index < model.objects.size(); ++object_index) {
         const ModelObject* object = model.objects[object_index];

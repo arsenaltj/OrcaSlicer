@@ -8,6 +8,8 @@
 #include "libslic3r/TriangleMesh.hpp"
 #include "libslic3r/Print.hpp"
 
+#include <cmath>
+
 using namespace Slic3r::AI::SmartSlicing;
 using namespace Slic3r;
 
@@ -255,6 +257,30 @@ TEST_CASE("native placement candidates honor native excluded regions", "[AI][Sma
     GUI::OrcaPlacementCandidateProvider provider;
 
     CHECK(provider.generate(std::move(input), {1, 2, 3, "revision-a"}).empty());
+}
+
+TEST_CASE("native placement candidates preserve sequential print head clearance",
+          "[AI][SmartSlicing][Candidate][OrcaPlacement][SequentialPrint]")
+{
+    GUI::OrcaPlacementCandidateInput input = placement_input(200.0);
+    add_cube(input.model, 10.0, Vec3d(80.0, 80.0, 0.0));
+    add_cube(input.model, 10.0, Vec3d(82.0, 82.0, 0.0));
+    input.arrange_params.is_seq_print            = true;
+    input.arrange_params.clearance_radius        = 30.0;
+    input.arrange_params.clearance_height_to_rod = 50.0;
+    input.arrange_params.clearance_height_to_lid = 50.0;
+    input.arrange_params.nozzle_height            = 1.0;
+
+    const std::vector<SliceCandidate> candidates =
+        GUI::OrcaPlacementCandidateProvider().generate(std::move(input), {1, 2, 3, "revision-a"});
+
+    REQUIRE(candidates.size() == 1);
+    REQUIRE(candidates.front().placement.transforms.size() == 2);
+    const ObjectTransform& first  = candidates.front().placement.transforms[0];
+    const ObjectTransform& second = candidates.front().placement.transforms[1];
+    const double center_distance = std::hypot(first.matrix[3] - second.matrix[3],
+                                              first.matrix[7] - second.matrix[7]);
+    CHECK(center_distance >= 40.0);
 }
 
 TEST_CASE("native orientation candidates are deterministic and keep the input model isolated",
