@@ -31,15 +31,17 @@
 - warning 只产生 `review`，不阻断导入、不自动加厚或删除几何。
 - 该尺寸是“组件整体最薄方向”，不是局部壁厚，也不用于推导喷嘴或切片参数。
 
+GUI 薄片验收同时暴露出既有向下表面规则会把平放底面误当作支撑风险。`structural-v5` 保留原 `downward_surface_ratio` 供旧报告兼容，新增 `elevated_downward_surface_ratio`；支撑 warning 和新界面显示只使用接地带以上的向下表面，平底不计为悬垂。
+
 ## 契约
 
 - 报告 schema 保持 `1`，门禁版本提升为 `structural-v5`。
 - 新 thresholds：`min_component_thickness_mm`、`min_thin_component_diagonal_mm`。
 - 新 metrics：`component_thickness_available`、`thin_component_count`、`minimum_component_thickness_mm`。
+- 支撑指标新增 `elevated_downward_surface_ratio`，旧 `downward_surface_ratio` 字段含义不变。
 - 新 warning：`thin_structural_components`。
 - C++ 只读取可选字段并显示中文建议；旧报告继续按原路径显示。
 
 ## 边界
 
 实现只修改模型生成质量模块、Sidecar/C++ 模型生成契约、模型生成 GUI 和测试。不修改 3MF、profile、打印参数、Orca 网格修复或智能切片逻辑，不调用任何 Provider。
-

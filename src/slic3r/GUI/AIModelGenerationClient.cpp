@@ -503,10 +503,21 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
             status.model_quality.bed_contact_area_available = metrics.contains("bed_contact_area_ratio");
             status.model_quality.bed_contact_area_ratio = metrics.value("bed_contact_area_ratio", 0.0);
             status.model_quality.downward_surface_ratio = metrics.value("downward_surface_ratio", 0.0);
+            status.model_quality.elevated_downward_surface_ratio_available =
+                metrics.contains("elevated_downward_surface_ratio");
+            status.model_quality.elevated_downward_surface_ratio =
+                metrics.value("elevated_downward_surface_ratio", 0.0);
             status.model_quality.overhang_region_metrics_available =
                 metrics.contains("significant_overhang_region_count");
             status.model_quality.significant_overhang_region_count =
                 metrics.value("significant_overhang_region_count", size_t(0));
+            status.model_quality.component_thickness_available =
+                metrics.value("component_thickness_available", false);
+            status.model_quality.thin_component_count = metrics.value("thin_component_count", size_t(0));
+            if (metrics.contains("minimum_component_thickness_mm") &&
+                metrics["minimum_component_thickness_mm"].is_number())
+                status.model_quality.minimum_component_thickness_mm =
+                    metrics["minimum_component_thickness_mm"].get<double>();
             status.model_quality.repairable_topology = metrics.value("repairable_topology", false);
         }
     }

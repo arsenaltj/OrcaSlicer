@@ -13,7 +13,7 @@ from typing import Any
 
 
 REPORT_SCHEMA_VERSION = 1
-GATE_VERSION = "structural-v4"
+GATE_VERSION = "structural-v5"
 
 
 @dataclass(frozen=True)
@@ -31,6 +31,8 @@ class ModelQualityThresholds:
     tiny_component_face_ratio: float = 0.001
     tiny_component_diagonal_ratio: float = 0.05
     component_contact_tolerance_mm: float = 0.2
+    min_component_thickness_mm: float = 0.8
+    min_thin_component_diagonal_mm: float = 2.0
     tiny_color_region_face_ratio: float = 0.0005
     tiny_color_region_area_ratio: float = 0.0001
     degenerate_area_epsilon_mm2: float = 1e-10
@@ -142,6 +144,63 @@ def _bounds_distance(left: list[list[float]], right: list[list[float]]) -> float
     return _vector_length(*gaps)
 
 
+def _smallest_principal_axis(points: list[tuple[float, float, float]]) -> tuple[float, float, float] | None:
+    if len(points) < 3:
+        return None
+    inverse_count = 1.0 / len(points)
+    center = tuple(sum(point[axis] for point in points) * inverse_count for axis in range(3))
+    matrix = [[0.0] * 3 for _ in range(3)]
+    for point in points:
+        offset = [point[axis] - center[axis] for axis in range(3)]
+        for row in range(3):
+            for column in range(row, 3):
+                matrix[row][column] += offset[row] * offset[column] * inverse_count
+    for row in range(3):
+        for column in range(row):
+            matrix[row][column] = matrix[column][row]
+
+    eigenvectors = [[1.0 if row == column else 0.0 for column in range(3)] for row in range(3)]
+    for _ in range(24):
+        left, right = max(((0, 1), (0, 2), (1, 2)), key=lambda pair: abs(matrix[pair[0]][pair[1]]))
+        off_diagonal = matrix[left][right]
+        if abs(off_diagonal) <= 1e-12:
+            break
+        angle = 0.5 * math.atan2(
+            2.0 * off_diagonal,
+            matrix[right][right] - matrix[left][left],
+        )
+        cosine, sine = math.cos(angle), math.sin(angle)
+        left_diagonal, right_diagonal = matrix[left][left], matrix[right][right]
+        for index in range(3):
+            if index in (left, right):
+                continue
+            old_left, old_right = matrix[index][left], matrix[index][right]
+            matrix[index][left] = matrix[left][index] = cosine * old_left - sine * old_right
+            matrix[index][right] = matrix[right][index] = sine * old_left + cosine * old_right
+        matrix[left][left] = (
+            cosine * cosine * left_diagonal
+            - 2.0 * sine * cosine * off_diagonal
+            + sine * sine * right_diagonal
+        )
+        matrix[right][right] = (
+            sine * sine * left_diagonal
+            + 2.0 * sine * cosine * off_diagonal
+            + cosine * cosine * right_diagonal
+        )
+        matrix[left][right] = matrix[right][left] = 0.0
+        for row in range(3):
+            old_left, old_right = eigenvectors[row][left], eigenvectors[row][right]
+            eigenvectors[row][left] = cosine * old_left - sine * old_right
+            eigenvectors[row][right] = sine * old_left + cosine * old_right
+
+    smallest = min(range(3), key=lambda index: (matrix[index][index], index))
+    axis = tuple(eigenvectors[row][smallest] for row in range(3))
+    length = _vector_length(*axis)
+    if not math.isfinite(length) or length <= 1e-12:
+        return None
+    return tuple(value / length for value in axis)
+
+
 def analyze_printable_obj(
     path: Path | str,
     thresholds: ModelQualityThresholds | None = None,
@@ -230,6 +289,7 @@ def analyze_printable_obj(
     inconsistent_winding_edges = sum(
         len(uses) == 2 and uses[0][1:] == uses[1][1:] for uses in edge_uses.values()
     )
+    invalid_edge_count = boundary_edges + non_manifold_edges + inconsistent_winding_edges
 
     face_neighbors: list[set[int]] = [set() for _ in faces]
     for uses in edge_uses.values():
@@ -257,9 +317,11 @@ def analyze_printable_obj(
     roots = {index: find(index) for index in referenced}
     component_faces = Counter(roots[face[0]] for face in faces)
     component_bounds: dict[int, list[list[float]]] = {}
-    for index in referenced:
+    component_vertices: dict[int, list[int]] = {}
+    for index in sorted(referenced):
         root = roots[index]
         point = vertices[index]
+        component_vertices.setdefault(root, []).append(index)
         bounds = component_bounds.setdefault(root, [[math.inf] * 3, [-math.inf] * 3])
         for axis in range(3):
             bounds[0][axis] = min(bounds[0][axis], point[axis])
@@ -280,6 +342,30 @@ def analyze_printable_obj(
             diagonal <= 0.0 or component_diagonal / diagonal <= limits.tiny_component_diagonal_ratio
         ):
             tiny_components += 1
+
+    component_thickness_available = invalid_edge_count == 0 and degenerate_faces == 0
+    thin_components = 0
+    measured_component_thicknesses: list[float] = []
+    if component_thickness_available:
+        for root, indices in component_vertices.items():
+            bounds = component_bounds[root]
+            component_size = [bounds[1][axis] - bounds[0][axis] for axis in range(3)]
+            component_diagonal = _vector_length(*component_size)
+            if component_diagonal < limits.min_thin_component_diagonal_mm:
+                continue
+            points = [vertices[index] for index in indices]
+            axis = _smallest_principal_axis(points)
+            if axis is None:
+                component_thickness_available = False
+                thin_components = 0
+                measured_component_thicknesses.clear()
+                break
+            projections = [sum(point[coordinate] * axis[coordinate] for coordinate in range(3)) for point in points]
+            thickness = max(projections) - min(projections)
+            measured_component_thicknesses.append(thickness)
+            if thickness < limits.min_component_thickness_mm:
+                thin_components += 1
+    minimum_component_thickness = min(measured_component_thicknesses, default=None)
 
     supported_bounds = [[math.inf] * 3, [-math.inf] * 3]
     has_supported_bounds = False
@@ -332,6 +418,8 @@ def analyze_printable_obj(
         for index in range(len(faces))
         if face_downward[index] and face_minimum_z[index] > ground_limit
     }
+    elevated_downward_area = sum(face_areas[index] for index in overhang_candidates)
+    elevated_downward_ratio = elevated_downward_area / surface_area if surface_area > 0.0 else 0.0
     overhang_region_count = 0
     significant_overhang_regions = 0
     largest_overhang_region_area_ratio = 0.0
@@ -445,7 +533,7 @@ def analyze_printable_obj(
 
     if degenerate_faces:
         add_error("degenerate_faces", f"Model contains {degenerate_faces} zero-area or repeated-index triangles.")
-    invalid_edges = boundary_edges + non_manifold_edges + inconsistent_winding_edges
+    invalid_edges = invalid_edge_count
     repairable_edge_limit = max(64, face_count // 100)
     repairable_topology = bool(invalid_edges) and allow_repairable_topology and invalid_edges <= repairable_edge_limit
     if boundary_edges:
@@ -472,6 +560,11 @@ def analyze_printable_obj(
             "floating_disconnected_components",
             f"Model contains {floating_components} disconnected components with no detected bed or model contact.",
         )
+    if component_thickness_available and thin_components:
+        add_warning(
+            "thin_structural_components",
+            f"Model contains {thin_components} connected components thinner than {limits.min_component_thickness_mm:g} mm.",
+        )
     if (
         len(contact_indices) < 3
         or contact_span_ratio < limits.min_contact_span_ratio
@@ -480,7 +573,7 @@ def analyze_printable_obj(
         add_warning("weak_bed_contact", "The lowest 0.5 mm of the model has a very small bed-contact footprint.")
     if math.isfinite(aspect_ratio) and aspect_ratio > limits.max_aspect_ratio:
         add_warning("extreme_aspect_ratio", "Model has an extreme bounding-box aspect ratio.")
-    if downward_ratio > limits.max_downward_area_ratio:
+    if elevated_downward_ratio > limits.max_downward_area_ratio:
         add_warning("high_downward_surface_ratio", "A large share of surface area faces downward and may require support.")
     elif significant_overhang_regions:
         add_warning(
@@ -510,6 +603,13 @@ def analyze_printable_obj(
             if minimum_floating_clearance is not None and math.isfinite(minimum_floating_clearance)
             else None
         ),
+        "component_thickness_available": component_thickness_available,
+        "thin_component_count": thin_components,
+        "minimum_component_thickness_mm": (
+            round(minimum_component_thickness, 6)
+            if minimum_component_thickness is not None and math.isfinite(minimum_component_thickness)
+            else None
+        ),
         "boundary_edges": boundary_edges,
         "non_manifold_edges": non_manifold_edges,
         "inconsistent_winding_edges": inconsistent_winding_edges,
@@ -529,6 +629,7 @@ def analyze_printable_obj(
         "bed_contact_area_mm2": round(bed_contact_area, 6),
         "bed_contact_area_ratio": round(bed_contact_area_ratio, 6),
         "downward_surface_ratio": round(downward_ratio, 6),
+        "elevated_downward_surface_ratio": round(elevated_downward_ratio, 6),
         "overhang_region_count": overhang_region_count,
         "significant_overhang_region_count": significant_overhang_regions,
         "largest_overhang_region_area_ratio": round(largest_overhang_region_area_ratio, 6),

@@ -44,8 +44,13 @@ public:
         bool                     bed_contact_area_available { false };
         double                   bed_contact_area_ratio { 0.0 };
         double                   downward_surface_ratio { 0.0 };
+        bool                     elevated_downward_surface_ratio_available { false };
+        double                   elevated_downward_surface_ratio { 0.0 };
         bool                     overhang_region_metrics_available { false };
         size_t                   significant_overhang_region_count { 0 };
+        bool                     component_thickness_available { false };
+        size_t                   thin_component_count { 0 };
+        double                   minimum_component_thickness_mm { 0.0 };
         bool                     repairable_topology { false };
     };
 

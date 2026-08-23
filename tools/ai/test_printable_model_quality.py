@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -39,6 +40,19 @@ def box(offset=(0.0, 0.0, 0.0), size=(10.0, 10.0, 10.0)) -> tuple[list[tuple[flo
         (4, 1, 5), (4, 5, 8),
     ]
     return vertices, faces
+
+
+def rotate_part(part, y_degrees=37.0, z_degrees=23.0):
+    vertices, faces = part
+    y_radians = math.radians(y_degrees)
+    z_radians = math.radians(z_degrees)
+    cy, sy = math.cos(y_radians), math.sin(y_radians)
+    cz, sz = math.cos(z_radians), math.sin(z_radians)
+    rotated = []
+    for x, y, z in vertices:
+        x1, z1 = cy * x + sy * z, -sy * x + cy * z
+        rotated.append((cz * x1 - sz * y, sz * x1 + cz * y, z1))
+    return rotated, faces
 
 
 def obj_text(parts) -> str:
@@ -188,6 +202,45 @@ class PrintableModelQualityTests(unittest.TestCase):
         self.assertEqual(report["metrics"]["significant_overhang_region_count"], 1)
         self.assertGreater(report["metrics"]["lowest_overhang_clearance_mm"], 19.0)
 
+    def test_thin_closed_component_requires_review(self):
+        report = self.analyze(obj_text([box(size=(20.0, 10.0, 0.4))]))
+
+        self.assertEqual(report["status"], "review")
+        self.assertTrue(report["metrics"]["component_thickness_available"])
+        self.assertEqual(report["metrics"]["thin_component_count"], 1)
+        self.assertAlmostEqual(report["metrics"]["minimum_component_thickness_mm"], 0.4, places=5)
+        self.assertIn("thin_structural_components", report["warnings"])
+        self.assertGreater(report["metrics"]["downward_surface_ratio"], 0.35)
+        self.assertEqual(report["metrics"]["elevated_downward_surface_ratio"], 0.0)
+        self.assertNotIn("high_downward_surface_ratio", report["warnings"])
+
+    def test_thin_component_detection_is_rotation_invariant(self):
+        report = self.analyze(obj_text([rotate_part(box(size=(20.0, 10.0, 0.4)))]))
+
+        self.assertTrue(report["metrics"]["component_thickness_available"])
+        self.assertEqual(report["metrics"]["thin_component_count"], 1)
+        self.assertAlmostEqual(report["metrics"]["minimum_component_thickness_mm"], 0.4, places=5)
+
+    def test_small_chunky_component_is_not_mistaken_for_a_thin_plate(self):
+        report = self.analyze(obj_text([box(size=(2.0, 2.0, 2.0))]))
+
+        self.assertEqual(report["status"], "pass")
+        self.assertTrue(report["metrics"]["component_thickness_available"])
+        self.assertEqual(report["metrics"]["thin_component_count"], 0)
+        self.assertAlmostEqual(report["metrics"]["minimum_component_thickness_mm"], 2.0, places=5)
+
+    def test_open_mesh_leaves_component_thickness_unknown(self):
+        vertices, faces = box(size=(20.0, 10.0, 0.4))
+        source = self.root / "open-thin.obj"
+        source.write_text(obj_text([(vertices, faces[:-1])]), encoding="ascii")
+
+        report = analyze_printable_obj(source, allow_repairable_topology=True)
+
+        self.assertFalse(report["metrics"]["component_thickness_available"])
+        self.assertEqual(report["metrics"]["thin_component_count"], 0)
+        self.assertIsNone(report["metrics"]["minimum_component_thickness_mm"])
+        self.assertNotIn("thin_structural_components", report["warnings"])
+
     def test_coherent_printable_color_regions_pass(self):
         red_vertices, red_faces = tetrahedron()
         blue_vertices, blue_faces = tetrahedron((20.0, 0.0, 0.0))
@@ -300,7 +353,7 @@ class PrintableModelQualityTests(unittest.TestCase):
         report = self.analyze(obj_text([tetrahedron()]))
         destination = write_model_quality_report(report, self.root / "model-quality.json")
         self.assertTrue(destination.is_file())
-        self.assertIn('"gate_version": "structural-v4"', destination.read_text(encoding="utf-8"))
+        self.assertIn('"gate_version": "structural-v5"', destination.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
