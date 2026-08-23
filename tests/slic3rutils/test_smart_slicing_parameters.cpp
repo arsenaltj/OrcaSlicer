@@ -1,7 +1,10 @@
 #include <catch2/catch_all.hpp>
 
 #include "slic3r/AI/SmartSlicing/Domain/ParameterProposalValidator.hpp"
+#include "slic3r/GUI/AI/Orca/OrcaParameterAdvisor.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaParameterProposalAdapter.hpp"
+
+#include <type_traits>
 
 using namespace Slic3r;
 using namespace Slic3r::AI::SmartSlicing;
@@ -24,6 +27,8 @@ ParameterRejectionCode first_rejection(const ParameterProposal& proposal)
 }
 
 } // namespace
+
+static_assert(std::is_base_of_v<IParameterAdvisor, Slic3r::GUI::OrcaParameterAdvisor>);
 
 TEST_CASE("typed parameter proposals enforce key type range and enum policy", "[AI][SmartSlicing][Parameters]")
 {
@@ -113,4 +118,61 @@ TEST_CASE("Orca parameter adapter applies only to a matching config clone", "[AI
     const auto stale_value = Slic3r::GUI::OrcaParameterProposalAdapter().validate_and_apply(proposal, 3, base, ignored);
     CHECK_FALSE(stale_value.accepted);
     CHECK(stale_value.diagnostic_code == "parameter_expected_value_changed");
+}
+
+TEST_CASE("Orca parameter advisor proposes one bounded brim change for fragile geometry",
+          "[AI][SmartSlicing][Parameters][OrcaAdvisor]")
+{
+    Slic3r::GUI::OrcaParameterAdvisorInput input;
+    input.plate_id = 7;
+    input.current_brim_width = 1.0;
+    input.printable_instances.push_back({6.0, 20.0, 40.0});
+    WorkspaceContext context;
+    context.plate_index = 0;
+    context.objects.push_back({1, "slender", 1, 12, 0, false});
+
+    const ParameterProposal proposal = Slic3r::GUI::OrcaParameterAdvisor(std::move(input)).advise(context);
+
+    REQUIRE(proposal.entries.size() == 1);
+    const ConfigPatchEntry& entry = proposal.entries.front();
+    CHECK(entry.scope == ConfigScope::Plate);
+    CHECK(entry.owner == PresetOwner::Process);
+    CHECK(entry.target_id == 7);
+    CHECK(entry.key == "brim_width");
+    CHECK(std::get<double>(entry.expected_value) == Catch::Approx(1.0));
+    CHECK(std::get<double>(entry.new_value) == Catch::Approx(5.0));
+    CHECK(entry.reason_code == "improve_small_footprint_adhesion");
+    CHECK(proposal.explanation_codes == std::vector<std::string>{"small_or_slender_footprint"});
+    CHECK(ParameterProposalValidator().validate(proposal).accepted());
+}
+
+TEST_CASE("Orca parameter advisor stays empty without actionable bounded evidence",
+          "[AI][SmartSlicing][Parameters][OrcaAdvisor]")
+{
+    WorkspaceContext context;
+    context.plate_index = 0;
+    context.objects.push_back({1, "stable", 1, 12, 0, false});
+
+    Slic3r::GUI::OrcaParameterAdvisorInput stable;
+    stable.plate_id = 7;
+    stable.current_brim_width = 1.0;
+    stable.printable_instances.push_back({30.0, 30.0, 10.0});
+    CHECK(Slic3r::GUI::OrcaParameterAdvisor(std::move(stable)).advise(context).entries.empty());
+
+    Slic3r::GUI::OrcaParameterAdvisorInput capped;
+    capped.plate_id = 7;
+    capped.current_brim_width = 10.0;
+    capped.printable_instances.push_back({6.0, 20.0, 40.0});
+    CHECK(Slic3r::GUI::OrcaParameterAdvisor(std::move(capped)).advise(context).entries.empty());
+
+    Slic3r::GUI::OrcaParameterAdvisorInput missing_target;
+    missing_target.current_brim_width = 1.0;
+    missing_target.printable_instances.push_back({6.0, 20.0, 40.0});
+    CHECK(Slic3r::GUI::OrcaParameterAdvisor(std::move(missing_target)).advise(context).entries.empty());
+
+    Slic3r::GUI::OrcaParameterAdvisorInput missing_workspace;
+    missing_workspace.plate_id = 7;
+    missing_workspace.current_brim_width = 1.0;
+    missing_workspace.printable_instances.push_back({6.0, 20.0, 40.0});
+    CHECK(Slic3r::GUI::OrcaParameterAdvisor(std::move(missing_workspace)).advise({}).entries.empty());
 }

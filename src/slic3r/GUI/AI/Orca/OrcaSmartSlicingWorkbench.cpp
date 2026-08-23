@@ -89,7 +89,7 @@ OrcaSmartSlicingWorkbench::OrcaSmartSlicingWorkbench(Plater& plater, StartSliceF
             if (!snapshot.context)
                 return std::vector<AI::SmartSlicing::SliceCandidate>{};
             m_trial_executor->prepare_session_input(m_workspace->capture_trial_slice_input());
-            return m_workspace->candidate_proposals(snapshot.context->revision);
+            return m_workspace->candidate_proposals(*snapshot.context);
         },
         [this] { m_trial_executor->cancel_trial_slice(); });
     m_presenter->set_view_changed([this](const SmartSlicingViewModel& view) {

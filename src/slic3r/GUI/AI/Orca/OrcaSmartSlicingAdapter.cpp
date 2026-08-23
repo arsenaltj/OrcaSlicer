@@ -1,6 +1,7 @@
 #include "OrcaSmartSlicingAdapter.hpp"
 
 #include "OrcaOrientationCandidateProvider.hpp"
+#include "OrcaParameterAdvisor.hpp"
 
 #include "libslic3r/Model.hpp"
 #include "libslic3r/PresetBundle.hpp"
@@ -105,7 +106,7 @@ OrcaTrialSliceInput OrcaSmartSlicingAdapter::capture_trial_slice_input() const
 }
 
 std::vector<AI::SmartSlicing::SliceCandidate>
-OrcaSmartSlicingAdapter::candidate_proposals(const AI::SmartSlicing::WorkspaceRevision& revision) const
+OrcaSmartSlicingAdapter::candidate_proposals(const AI::SmartSlicing::WorkspaceContext& context) const
 {
     if (m_plater == nullptr || wxGetApp().preset_bundle == nullptr)
         return {};
@@ -113,6 +114,7 @@ OrcaSmartSlicingAdapter::candidate_proposals(const AI::SmartSlicing::WorkspaceRe
     PartPlate* plate = plates.get_curr_plate();
     if (plate == nullptr)
         return {};
+    const AI::SmartSlicing::WorkspaceRevision& revision = context.revision;
 
     OrcaPlacementCandidateInput input;
     input.model          = current_plate_model_copy(*m_plater, *plate);
@@ -137,10 +139,11 @@ OrcaSmartSlicingAdapter::candidate_proposals(const AI::SmartSlicing::WorkspaceRe
 
     DynamicPrintConfig current_config = wxGetApp().preset_bundle->full_config();
     current_config.apply(*plate->config(), true);
-    const double current_brim_width = current_config.opt_float("brim_width");
-    bool benefits_from_brim = false;
+    OrcaParameterAdvisorInput advisor_input;
+    advisor_input.plate_id = static_cast<int64_t>(plate->id().id);
+    advisor_input.current_brim_width = current_config.opt_float("brim_width");
     const Model& model = m_plater->model();
-    for (size_t object_index = 0; object_index < model.objects.size() && !benefits_from_brim; ++object_index) {
+    for (size_t object_index = 0; object_index < model.objects.size(); ++object_index) {
         const ModelObject* object = model.objects[object_index];
         if (object == nullptr)
             continue;
@@ -150,27 +153,18 @@ OrcaSmartSlicingAdapter::candidate_proposals(const AI::SmartSlicing::WorkspaceRe
                 !plate->contain_instance(static_cast<int>(object_index), static_cast<int>(instance_index)))
                 continue;
             const Vec3d size = object->instance_bounding_box(*instance).size();
-            const double minimum_footprint = std::min(size.x(), size.y());
-            benefits_from_brim = minimum_footprint > 0.0 &&
-                (minimum_footprint <= 8.0 || size.z() >= 2.0 * minimum_footprint);
-            if (benefits_from_brim)
-                break;
+            advisor_input.printable_instances.push_back({size.x(), size.y(), size.z()});
         }
     }
-    if (benefits_from_brim && current_brim_width < 10.0) {
-        const double proposed_brim_width = std::min(10.0, std::max(5.0, current_brim_width + 2.0));
+    AI::SmartSlicing::ParameterProposal parameter_proposal =
+        OrcaParameterAdvisor(std::move(advisor_input)).advise(context);
+    if (!parameter_proposal.entries.empty()) {
         AI::SmartSlicing::SliceCandidate candidate;
         candidate.id            = "parameter-brim-stability-v1";
         candidate.base_revision = revision;
         candidate.goal          = AI::SmartSlicing::CandidateGoal::Stability;
         candidate.explanation   = "small_or_slender_footprint_brim_candidate";
-        candidate.parameters.entries.push_back({AI::SmartSlicing::ConfigScope::Plate,
-                                                AI::SmartSlicing::PresetOwner::Process,
-                                                static_cast<int64_t>(plate->id().id),
-                                                "brim_width",
-                                                current_brim_width,
-                                                proposed_brim_width,
-                                                "improve_small_footprint_adhesion"});
+        candidate.parameters    = std::move(parameter_proposal);
         candidates.push_back(std::move(candidate));
     }
     return candidates;
