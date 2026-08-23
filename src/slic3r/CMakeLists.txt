@@ -309,6 +309,7 @@ set(SLIC3R_GUI_SOURCES
     AI/ModelGeneration/IPrintablePaletteProvider.hpp
     AI/SmartSlicing/Application/SmartSlicingCoordinator.cpp
     AI/SmartSlicing/Application/SmartSlicingCoordinator.hpp
+    AI/SmartSlicing/Application/CachingTrialSliceExecutor.hpp
     AI/SmartSlicing/Application/CandidatePlanningWorkflow.hpp
     AI/SmartSlicing/Application/PrintabilityInspector.cpp
     AI/SmartSlicing/Application/PrintabilityInspector.hpp

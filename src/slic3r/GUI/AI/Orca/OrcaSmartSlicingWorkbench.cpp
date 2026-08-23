@@ -4,6 +4,7 @@
 #include "OrcaSmartSlicingAdapter.hpp"
 #include "OrcaTrialSliceExecutor.hpp"
 #include "OrcaWorkflowRuntimeStore.hpp"
+#include "slic3r/AI/SmartSlicing/Application/CachingTrialSliceExecutor.hpp"
 #include "slic3r/AI/SmartSlicing/Application/SmartSlicingCoordinator.hpp"
 #include "slic3r/GUI/AI/SmartSlicing/SmartSlicingPanel.hpp"
 #include "slic3r/GUI/AI/SmartSlicing/SmartSlicingPresenter.hpp"
@@ -62,12 +63,14 @@ OrcaSmartSlicingWorkbench::OrcaSmartSlicingWorkbench(Plater& plater, StartSliceF
     , m_trial_executor(std::make_unique<OrcaTrialSliceExecutor>([this] {
         return m_workspace->capture_trial_slice_input();
     }))
+    , m_cached_trial_executor(
+          std::make_unique<AI::SmartSlicing::CachingTrialSliceExecutor>(*m_trial_executor))
     , m_official_gateway(std::make_unique<OrcaOfficialSliceGateway>(
           plater, [this] { return m_workspace->current_revision(); }, std::move(start_slice)))
     , m_runtime_store(std::make_unique<OrcaWorkflowRuntimeStore>(
           boost::filesystem::temp_directory_path() / "OrcaSlicer-smart-slicing-runtime-v1.json"))
     , m_coordinator(std::make_unique<AI::SmartSlicing::SmartSlicingCoordinator>(
-          *m_workspace, *m_trial_executor, *m_official_gateway))
+          *m_workspace, *m_cached_trial_executor, *m_official_gateway))
 {
     AI::SmartSlicing::WorkflowResourceBudget budget;
     m_trial_executor->set_resource_limits(
@@ -91,7 +94,7 @@ OrcaSmartSlicingWorkbench::OrcaSmartSlicingWorkbench(Plater& plater, StartSliceF
             m_trial_executor->prepare_session_input(m_workspace->capture_trial_slice_input());
             return m_workspace->candidate_proposals(*snapshot.context);
         },
-        [this] { m_trial_executor->cancel_trial_slice(); });
+        [this] { m_cached_trial_executor->cancel_trial_slice(); });
     m_presenter->set_view_changed([this](const SmartSlicingViewModel& view) {
         m_panel->render(view);
         if (should_clear_trial_input(view.summary_key))
@@ -112,7 +115,7 @@ OrcaSmartSlicingWorkbench::OrcaSmartSlicingWorkbench(Plater& plater, StartSliceF
 
 OrcaSmartSlicingWorkbench::~OrcaSmartSlicingWorkbench()
 {
-    m_trial_executor->cancel_trial_slice();
+    m_cached_trial_executor->cancel_trial_slice();
     m_panel.reset();
     m_presenter.reset();
 }

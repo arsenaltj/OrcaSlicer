@@ -2,6 +2,7 @@
 
 #include "slic3r/AI/SmartSlicing/Application/CandidatePlanningWorkflow.hpp"
 #include "slic3r/AI/SmartSlicing/Application/ApplyWorkflow.hpp"
+#include "slic3r/AI/SmartSlicing/Application/CachingTrialSliceExecutor.hpp"
 #include "slic3r/AI/SmartSlicing/Application/SmartSlicingCoordinator.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaOfficialSliceGateway.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaTrialSliceExecutor.hpp"
@@ -124,6 +125,101 @@ public:
 };
 
 } // namespace
+
+TEST_CASE("successful trial results are cached by complete candidate content",
+          "[AI][SmartSlicing][Workflow][Cache]")
+{
+    FakeTrialSliceExecutor delegate;
+    CachingTrialSliceExecutor cache(delegate);
+    SliceCandidate candidate = proposal("candidate", WorkspaceRevision{1, 2, 3, "revision-a"});
+
+    const TrialSliceResult first  = cache.execute_trial_slice(candidate);
+    const TrialSliceResult second = cache.execute_trial_slice(candidate);
+
+    REQUIRE(first.metrics);
+    REQUIRE(second.metrics);
+    CHECK(first.metrics->estimated_time_seconds == second.metrics->estimated_time_seconds);
+    CHECK(delegate.calls.size() == 1);
+
+    SliceCandidate moved = candidate;
+    ObjectTransform transform;
+    transform.object_id   = 42;
+    transform.instance_id = 7;
+    transform.matrix[0]   = 1.0;
+    moved.placement.transforms.push_back(transform);
+    cache.execute_trial_slice(moved);
+
+    SliceCandidate configured = candidate;
+    configured.parameters.entries.push_back({ConfigScope::Plate, PresetOwner::Process, 4,
+                                              "brim_width", 0.0, 3.0, "stability"});
+    cache.execute_trial_slice(configured);
+
+    SliceCandidate revised = candidate;
+    revised.base_revision.config_revision += 1;
+    cache.execute_trial_slice(revised);
+
+    CHECK(delegate.calls.size() == 4);
+}
+
+TEST_CASE("failed and canceled trial results are not cached and cancellation delegates",
+          "[AI][SmartSlicing][Workflow][Cache]")
+{
+    FakeTrialSliceExecutor delegate;
+    delegate.result_for = [](const SliceCandidate& candidate, size_t index) {
+        TrialSliceResult result;
+        result.candidate_id  = candidate.id;
+        result.base_revision = candidate.base_revision;
+        result.status = index < 2 ? TrialSliceStatus::Failed : TrialSliceStatus::Canceled;
+        return result;
+    };
+    CachingTrialSliceExecutor cache(delegate);
+    const SliceCandidate candidate = proposal("candidate", WorkspaceRevision{1, 2, 3, "revision-a"});
+
+    CHECK(cache.execute_trial_slice(candidate).status == TrialSliceStatus::Failed);
+    CHECK(cache.execute_trial_slice(candidate).status == TrialSliceStatus::Failed);
+    CHECK(cache.execute_trial_slice(candidate).status == TrialSliceStatus::Canceled);
+    CHECK(cache.execute_trial_slice(candidate).status == TrialSliceStatus::Canceled);
+    CHECK(delegate.calls.size() == 4);
+
+    cache.cancel_trial_slice();
+    CHECK(delegate.cancel_count == 1);
+}
+
+TEST_CASE("mismatched successful trial results are not cached",
+          "[AI][SmartSlicing][Workflow][Cache]")
+{
+    FakeTrialSliceExecutor delegate;
+    delegate.result_for = [](const SliceCandidate& candidate, size_t) {
+        TrialSliceResult result;
+        result.candidate_id  = "different-candidate";
+        result.base_revision = candidate.base_revision;
+        result.status        = TrialSliceStatus::Succeeded;
+        result.metrics       = SlicingMetrics{};
+        return result;
+    };
+    CachingTrialSliceExecutor cache(delegate);
+    const SliceCandidate candidate = proposal("candidate", WorkspaceRevision{1, 2, 3, "revision-a"});
+
+    cache.execute_trial_slice(candidate);
+    cache.execute_trial_slice(candidate);
+
+    CHECK(delegate.calls.size() == 2);
+}
+
+TEST_CASE("trial result cache evicts the oldest successful entry",
+          "[AI][SmartSlicing][Workflow][Cache]")
+{
+    FakeTrialSliceExecutor delegate;
+    CachingTrialSliceExecutor cache(delegate, 2);
+    const WorkspaceRevision revision{1, 2, 3, "revision-a"};
+
+    cache.execute_trial_slice(proposal("a", revision));
+    cache.execute_trial_slice(proposal("b", revision));
+    cache.execute_trial_slice(proposal("c", revision));
+    cache.execute_trial_slice(proposal("a", revision));
+
+    CHECK(delegate.calls == std::vector<CandidateId>{"a", "b", "c", "a"});
+}
 
 TEST_CASE("candidate planning binds drafts to one workspace revision and caps proposals", "[AI][SmartSlicing][Workflow]")
 {

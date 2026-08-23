@@ -7,6 +7,7 @@
 class wxWindow;
 
 namespace Slic3r::AI::SmartSlicing {
+class CachingTrialSliceExecutor;
 class SmartSlicingCoordinator;
 }
 
@@ -38,6 +39,7 @@ private:
     Plater& m_plater;
     std::unique_ptr<OrcaSmartSlicingAdapter> m_workspace;
     std::unique_ptr<OrcaTrialSliceExecutor> m_trial_executor;
+    std::unique_ptr<AI::SmartSlicing::CachingTrialSliceExecutor> m_cached_trial_executor;
     std::unique_ptr<OrcaOfficialSliceGateway> m_official_gateway;
     std::unique_ptr<OrcaWorkflowRuntimeStore> m_runtime_store;
     std::unique_ptr<AI::SmartSlicing::SmartSlicingCoordinator> m_coordinator;
