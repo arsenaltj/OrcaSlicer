@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <regex>
 #include <utility>
 
@@ -492,6 +493,17 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
         };
         read_codes("errors", status.model_quality.errors);
         read_codes("warnings", status.model_quality.warnings);
+        if (quality.contains("thresholds") && quality["thresholds"].is_object()) {
+            const auto& thresholds = quality["thresholds"];
+            if (thresholds.contains("min_local_wall_thickness_mm") &&
+                thresholds["min_local_wall_thickness_mm"].is_number()) {
+                const double threshold = thresholds["min_local_wall_thickness_mm"].get<double>();
+                if (std::isfinite(threshold) && threshold > 0.0) {
+                    status.model_quality.local_wall_thickness_threshold_available = true;
+                    status.model_quality.minimum_local_wall_thickness_mm = threshold;
+                }
+            }
+        }
         if (quality.contains("metrics") && quality["metrics"].is_object()) {
             const auto& metrics = quality["metrics"];
             status.model_quality.vertex_count = metrics.value("vertex_count", size_t(0));

@@ -74,7 +74,9 @@ constexpr const char* GENERATED_MODEL_PREFIX = "orcaslicer-ai-";
 constexpr std::array<const char*, 4> PALETTE_ROLE_IDS {"primary", "structure", "light", "accent"};
 
 wxString thin_local_region_metrics(
-    const AIModelGenerationClient::ModelQuality::ThinLocalRegion& region)
+    const AIModelGenerationClient::ModelQuality::ThinLocalRegion& region,
+    bool threshold_available,
+    double minimum_wall_thickness_mm)
 {
     wxString metrics;
     const auto append = [&metrics](const wxString& item) {
@@ -82,8 +84,14 @@ wxString thin_local_region_metrics(
             metrics += _L(" · ");
         metrics += item;
     };
-    if (std::isfinite(region.minimum_thickness_mm) && region.minimum_thickness_mm > 0.0)
-        append(wxString::Format(_L("最薄 %.3f mm"), region.minimum_thickness_mm));
+    if (std::isfinite(region.minimum_thickness_mm) && region.minimum_thickness_mm > 0.0) {
+        wxString thickness = wxString::Format(_L("最薄 %.3f mm"), region.minimum_thickness_mm);
+        if (threshold_available && std::isfinite(minimum_wall_thickness_mm) &&
+            minimum_wall_thickness_mm > 0.0) {
+            thickness += wxString::Format(_L(" / 建议 ≥ %.3f mm"), minimum_wall_thickness_mm);
+        }
+        append(thickness);
+    }
     if (region.sample_count > 0) {
         append(wxString::Format(_L("%llu 个采样"),
                                 static_cast<unsigned long long>(region.sample_count)));
@@ -96,13 +104,16 @@ wxString thin_local_region_metrics(
 wxString thin_local_region_status(
     size_t region_index,
     size_t region_count,
-    const AIModelGenerationClient::ModelQuality::ThinLocalRegion& region)
+    const AIModelGenerationClient::ModelQuality::ThinLocalRegion& region,
+    bool threshold_available,
+    double minimum_wall_thickness_mm)
 {
     wxString status = wxString::Format(
         _L("第 %llu/%llu 处薄壁"),
         static_cast<unsigned long long>(region_index + 1),
         static_cast<unsigned long long>(region_count));
-    const wxString metrics = thin_local_region_metrics(region);
+    const wxString metrics = thin_local_region_metrics(
+        region, threshold_available, minimum_wall_thickness_mm);
     if (!metrics.empty())
         status += _L(" · ") + metrics;
     status += _L("；仅供复核。");
@@ -1943,13 +1954,20 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
                 static_cast<unsigned long long>(localized),
                 static_cast<unsigned long long>(region_count));
             const auto& region = m_model_quality.thin_local_regions[region_index];
-            const wxString metrics = thin_local_region_metrics(region);
+            const wxString metrics = thin_local_region_metrics(
+                region,
+                m_model_quality.local_wall_thickness_threshold_available,
+                m_model_quality.minimum_local_wall_thickness_mm);
             if (!metrics.empty())
                 preview_message += _L(" · ") + metrics;
             preview_message += _L("；可旋转复核或手动增减。");
             m_model_preview_message->SetLabel(preview_message);
             m_status->SetLabel(thin_local_region_status(
-                region_index, m_model_quality.thin_local_regions.size(), region));
+                region_index,
+                m_model_quality.thin_local_regions.size(),
+                region,
+                m_model_quality.local_wall_thickness_threshold_available,
+                m_model_quality.minimum_local_wall_thickness_mm));
         } else {
             m_model_preview_message->SetLabel(wxString::Format(
                 _L("已高亮 %llu 个局部薄壁采样面；可旋转复核，或在局部区域工具中手动增减。"),
@@ -2060,7 +2078,9 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
                 m_status->SetLabel(thin_local_region_status(
                     matched_region_index,
                     m_model_quality.thin_local_regions.size(),
-                    m_model_quality.thin_local_regions[matched_region_index]));
+                    m_model_quality.thin_local_regions[matched_region_index],
+                    m_model_quality.local_wall_thickness_threshold_available,
+                    m_model_quality.minimum_local_wall_thickness_mm));
             } else {
                 m_status->SetLabel(selected_faces == 0
                     ? _L("当前未选择局部区域。")
