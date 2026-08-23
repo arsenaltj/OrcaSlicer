@@ -14,6 +14,8 @@
 #include <boost/filesystem/operations.hpp>
 
 #include <cstddef>
+#include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -87,12 +89,19 @@ OrcaSmartSlicingWorkbench::OrcaSmartSlicingWorkbench(Plater& plater, StartSliceF
         });
     m_panel = std::make_unique<SmartSlicingPanel>(
         &plater, *m_coordinator,
-        [this] {
+        [this]() -> SmartSlicingPanel::CandidatePlanTask {
             const auto& snapshot = m_coordinator->snapshot();
             if (!snapshot.context)
-                return std::vector<AI::SmartSlicing::SliceCandidate>{};
+                return {};
             m_trial_executor->prepare_session_input(m_workspace->capture_trial_slice_input());
-            return m_workspace->candidate_proposals(*snapshot.context);
+            std::optional<OrcaCandidateProposalTask> prepared =
+                m_workspace->prepare_candidate_proposals(*snapshot.context);
+            if (!prepared)
+                return {};
+            auto task = std::make_shared<OrcaCandidateProposalTask>(std::move(*prepared));
+            return [task = std::move(task)](SmartSlicingPanel::CancelPredicate canceled) {
+                return task->execute(std::move(canceled));
+            };
         },
         [this] { m_cached_trial_executor->cancel_trial_slice(); },
         [this](uint64_t object_id) { m_workspace->focus_object(object_id); });

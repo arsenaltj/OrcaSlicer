@@ -1,8 +1,5 @@
 #include "OrcaSmartSlicingAdapter.hpp"
 
-#include "OrcaOrientationCandidateProvider.hpp"
-#include "OrcaParameterAdvisor.hpp"
-
 #include "libslic3r/Model.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/Print.hpp"
@@ -132,43 +129,35 @@ OrcaTrialSliceInput OrcaSmartSlicingAdapter::capture_trial_slice_input() const
     return input;
 }
 
-std::vector<AI::SmartSlicing::SliceCandidate>
-OrcaSmartSlicingAdapter::candidate_proposals(const AI::SmartSlicing::WorkspaceContext& context) const
+std::optional<OrcaCandidateProposalTask>
+OrcaSmartSlicingAdapter::prepare_candidate_proposals(const AI::SmartSlicing::WorkspaceContext& context) const
 {
     if (m_plater == nullptr || wxGetApp().preset_bundle == nullptr)
-        return {};
+        return std::nullopt;
     PartPlateList& plates = m_plater->get_partplate_list();
     PartPlate* plate = plates.get_curr_plate();
     if (plate == nullptr)
-        return {};
-    const AI::SmartSlicing::WorkspaceRevision& revision = context.revision;
+        return std::nullopt;
 
-    OrcaPlacementCandidateInput input;
-    input.model          = current_plate_model_copy(*m_plater, *plate);
-    input.config         = wxGetApp().preset_bundle->full_config();
-    input.arrange_params = init_arrange_params(m_plater);
-    input.plate_locked   = plate->is_locked();
-    const bool enable_wrapping = input.config.opt_bool("enable_wrapping_detection");
-    plates.preprocess_exclude_areas(input.arrange_params.excluded_regions, enable_wrapping, 1, scale_(1));
+    OrcaCandidateProposalInput prepared;
+    prepared.context                  = context;
+    prepared.placement.model          = current_plate_model_copy(*m_plater, *plate);
+    prepared.placement.config         = wxGetApp().preset_bundle->full_config();
+    prepared.placement.arrange_params = init_arrange_params(m_plater);
+    prepared.placement.plate_locked   = plate->is_locked();
+    const bool enable_wrapping = prepared.placement.config.opt_bool("enable_wrapping_detection");
+    plates.preprocess_exclude_areas(prepared.placement.arrange_params.excluded_regions, enable_wrapping, 1, scale_(1));
     if (const auto wipe_tower = get_wipe_tower_arrangepoly(*m_plater))
-        input.fixed_regions.push_back(*wipe_tower);
-    std::vector<AI::SmartSlicing::SliceCandidate> candidates =
-        OrcaPlacementCandidateProvider().generate(std::move(input), revision);
+        prepared.placement.fixed_regions.push_back(*wipe_tower);
 
-    OrcaOrientationCandidateInput orientation_input;
-    orientation_input.model        = current_plate_model_copy(*m_plater, *plate);
-    orientation_input.config       = wxGetApp().preset_bundle->full_config();
-    orientation_input.plate_locked = plate->is_locked();
-    std::vector<AI::SmartSlicing::SliceCandidate> orientation_candidates =
-        OrcaOrientationCandidateProvider().generate(std::move(orientation_input), revision);
-    candidates.insert(candidates.end(), std::make_move_iterator(orientation_candidates.begin()),
-                      std::make_move_iterator(orientation_candidates.end()));
+    prepared.orientation.model        = current_plate_model_copy(*m_plater, *plate);
+    prepared.orientation.config       = wxGetApp().preset_bundle->full_config();
+    prepared.orientation.plate_locked = plate->is_locked();
 
     DynamicPrintConfig current_config = wxGetApp().preset_bundle->full_config();
     current_config.apply(*plate->config(), true);
-    OrcaParameterAdvisorInput advisor_input;
-    advisor_input.plate_id = static_cast<int64_t>(plate->id().id);
-    advisor_input.current_brim_width = current_config.opt_float("brim_width");
+    prepared.parameters.plate_id = static_cast<int64_t>(plate->id().id);
+    prepared.parameters.current_brim_width = current_config.opt_float("brim_width");
     const Model& model = m_plater->model();
     for (size_t object_index = 0; object_index < model.objects.size(); ++object_index) {
         const ModelObject* object = model.objects[object_index];
@@ -180,21 +169,10 @@ OrcaSmartSlicingAdapter::candidate_proposals(const AI::SmartSlicing::WorkspaceCo
                 !plate->contain_instance(static_cast<int>(object_index), static_cast<int>(instance_index)))
                 continue;
             const Vec3d size = object->instance_bounding_box(*instance).size();
-            advisor_input.printable_instances.push_back({size.x(), size.y(), size.z()});
+            prepared.parameters.printable_instances.push_back({size.x(), size.y(), size.z()});
         }
     }
-    AI::SmartSlicing::ParameterProposal parameter_proposal =
-        OrcaParameterAdvisor(std::move(advisor_input)).advise(context);
-    if (!parameter_proposal.entries.empty()) {
-        AI::SmartSlicing::SliceCandidate candidate;
-        candidate.id            = "parameter-brim-stability-v1";
-        candidate.base_revision = revision;
-        candidate.goal          = AI::SmartSlicing::CandidateGoal::Stability;
-        candidate.explanation   = "small_or_slender_footprint_brim_candidate";
-        candidate.parameters    = std::move(parameter_proposal);
-        candidates.push_back(std::move(candidate));
-    }
-    return candidates;
+    return OrcaCandidateProposalTask(std::move(prepared));
 }
 
 AI::SmartSlicing::WorkspaceContext OrcaSmartSlicingAdapter::capture_context_impl(bool include_diagnostics) const

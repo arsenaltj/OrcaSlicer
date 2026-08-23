@@ -4,6 +4,7 @@
 #include "slic3r/AI/SmartSlicing/Domain/SliceCandidate.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <set>
 #include <string>
 #include <utility>
@@ -17,6 +18,7 @@ struct OrcaOrientationCandidateInput
     DynamicPrintConfig config;
     std::set<uint64_t> locked_object_ids;
     std::set<uint64_t> locked_instance_ids;
+    std::function<bool()> stopcondition;
     bool plate_locked{false};
 };
 
@@ -26,7 +28,7 @@ public:
     std::vector<AI::SmartSlicing::SliceCandidate>
     generate(OrcaOrientationCandidateInput input, const AI::SmartSlicing::WorkspaceRevision& revision) const
     {
-        if (input.plate_locked || input.model.objects.empty())
+        if (input.plate_locked || input.model.objects.empty() || (input.stopcondition && input.stopcondition()))
             return {};
 
         orientation::OrientMeshs selected;
@@ -74,8 +76,10 @@ public:
             orientation::OrientParams params;
             params.parallel = false;
             params.progressind = [](unsigned, std::string) {};
-            params.stopcondition = [] { return false; };
+            params.stopcondition = input.stopcondition ? std::move(input.stopcondition) : [] { return false; };
             orientation::orient(selected, excluded, params);
+            if (params.stopcondition())
+                return {};
             for (const orientation::OrientMesh& orient_mesh : selected)
                 orient_mesh.apply();
 

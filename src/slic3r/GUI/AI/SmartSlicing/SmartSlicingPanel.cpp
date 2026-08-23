@@ -151,11 +151,11 @@ wxString candidate_reason(const SmartSlicingCandidateView& candidate)
 } // namespace
 
 SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSlicingCoordinator& coordinator,
-                                     PlanCandidatesFn plan_candidates, CancelTrialFn cancel_trial,
+                                     PrepareCandidatesFn prepare_candidates, CancelTrialFn cancel_trial,
                                      FocusIssueFn focus_issue)
     : wxPanel(parent)
     , m_coordinator(coordinator)
-    , m_plan_candidates(std::move(plan_candidates))
+    , m_prepare_candidates(std::move(prepare_candidates))
     , m_cancel_trial(std::move(cancel_trial))
     , m_focus_issue(std::move(focus_issue))
     , m_revision_timer(this)
@@ -256,30 +256,47 @@ SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSl
         if (m_can_accept_risk) {
             m_coordinator.accept_printability_risk();
         } else if (m_can_plan_candidates) {
-            std::vector<AI::SmartSlicing::SliceCandidate> candidates;
+            CandidatePlanTask plan_task;
             try {
-                if (m_plan_candidates)
-                    candidates = m_plan_candidates();
+                if (m_prepare_candidates)
+                    plan_task = m_prepare_candidates();
             } catch (...) {
-                candidates.clear();
+                plan_task = {};
             }
-            run_in_background([this, candidates = std::move(candidates)]() mutable {
+            const bool started = run_in_background([this, plan_task = std::move(plan_task)]() mutable {
+                const CancelPredicate canceled = [this] {
+                    return m_cancel_requested.load(std::memory_order_acquire);
+                };
+                std::vector<AI::SmartSlicing::SliceCandidate> candidates =
+                    plan_task ? plan_task(canceled) : std::vector<AI::SmartSlicing::SliceCandidate>{};
+                if (canceled()) {
+                    m_coordinator.cancel();
+                    return;
+                }
                 m_coordinator.plan_and_slice_candidates(std::move(candidates),
                                                         AI::SmartSlicing::CandidateGoal::Stability, true);
             });
+            if (started) {
+                m_start->Enable(false);
+                m_start->SetLabel(_L("正在生成方案…"));
+            }
         } else {
             m_coordinator.start();
         }
     });
     m_cancel->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        m_cancel_requested.store(true, std::memory_order_release);
         if (m_cancel_trial)
             m_cancel_trial();
         if (!m_worker_running.load(std::memory_order_acquire))
             m_coordinator.cancel();
     });
     Bind(wxEVT_SHOW, [this](wxShowEvent& event) {
-        if (!event.IsShown() && m_worker_running.load(std::memory_order_acquire) && m_cancel_trial)
-            m_cancel_trial();
+        if (!event.IsShown() && m_worker_running.load(std::memory_order_acquire)) {
+            m_cancel_requested.store(true, std::memory_order_release);
+            if (m_cancel_trial)
+                m_cancel_trial();
+        }
         event.Skip();
     });
     Bind(wxEVT_TIMER, &SmartSlicingPanel::on_revision_timer, this, m_revision_timer.GetId());
@@ -288,6 +305,7 @@ SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSl
 SmartSlicingPanel::~SmartSlicingPanel()
 {
     m_revision_timer.Stop();
+    m_cancel_requested.store(true, std::memory_order_release);
     if (m_worker_running.load(std::memory_order_acquire) && m_cancel_trial)
         m_cancel_trial();
     if (m_worker.joinable())
@@ -298,6 +316,7 @@ bool SmartSlicingPanel::run_in_background(std::function<void()> work)
 {
     if (!work || m_worker_running.exchange(true, std::memory_order_acq_rel))
         return false;
+    m_cancel_requested.store(false, std::memory_order_release);
     if (m_worker.joinable())
         m_worker.join();
     m_worker = std::thread([this, work = std::move(work)] {

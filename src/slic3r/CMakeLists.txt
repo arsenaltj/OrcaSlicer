@@ -347,6 +347,7 @@ set(SLIC3R_GUI_SOURCES
     GUI/AI/Orca/OrcaSmartSlicingWorkbench.hpp
     GUI/AI/Orca/OrcaOfficialSliceGateway.cpp
     GUI/AI/Orca/OrcaOfficialSliceGateway.hpp
+    GUI/AI/Orca/OrcaCandidateProposalTask.hpp
     GUI/AI/Orca/OrcaOrientationCandidateProvider.hpp
     GUI/AI/Orca/OrcaParameterAdvisor.cpp
     GUI/AI/Orca/OrcaParameterAdvisor.hpp

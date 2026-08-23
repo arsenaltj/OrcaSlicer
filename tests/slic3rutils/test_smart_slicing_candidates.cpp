@@ -1,6 +1,7 @@
 #include <catch2/catch_all.hpp>
 
 #include "slic3r/AI/SmartSlicing/Domain/CandidateComparison.hpp"
+#include "slic3r/GUI/AI/Orca/OrcaCandidateProposalTask.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaOrientationCandidateProvider.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaPlacementCandidateProvider.hpp"
 
@@ -305,4 +306,40 @@ TEST_CASE("native orientation candidates protect locked and unprintable targets"
     REQUIRE(candidates.front().placement.transforms.size() == 1);
     CHECK(candidates.front().placement.transforms.front().instance_id == movable_id);
     CHECK(provider.generate(std::move(locked_plate_input), {1, 2, 3, "revision-a"}).empty());
+}
+
+TEST_CASE("native candidate providers honor cancellation before expensive planning",
+          "[AI][SmartSlicing][Candidate][Cancellation]")
+{
+    GUI::OrcaPlacementCandidateInput placement = placement_input();
+    add_cube(placement.model, 10.0, Vec3d(75.0, 75.0, 0.0));
+    placement.arrange_params.stopcondition = [] { return true; };
+    CHECK(GUI::OrcaPlacementCandidateProvider().generate(std::move(placement), {1, 2, 3, "revision-a"}).empty());
+
+    GUI::OrcaOrientationCandidateInput orientation;
+    orientation.config = DynamicPrintConfig::full_print_config();
+    add_box(orientation.model, Vec3d(8.0, 12.0, 40.0), Vec3d(30.0, 30.0, 0.0));
+    orientation.stopcondition = [] { return true; };
+    CHECK(GUI::OrcaOrientationCandidateProvider().generate(std::move(orientation), {1, 2, 3, "revision-a"}).empty());
+}
+
+TEST_CASE("prepared candidate proposal task discards partial work after cancellation",
+          "[AI][SmartSlicing][Candidate][Cancellation][ProposalTask]")
+{
+    GUI::OrcaCandidateProposalInput input;
+    input.context.plate_index = 0;
+    input.context.revision = {1, 2, 3, "revision-a"};
+    input.placement = placement_input();
+    add_cube(input.placement.model, 10.0, Vec3d(75.0, 75.0, 0.0));
+    input.orientation.config = DynamicPrintConfig::full_print_config();
+    add_box(input.orientation.model, Vec3d(8.0, 12.0, 40.0), Vec3d(30.0, 30.0, 0.0));
+
+    size_t cancellation_polls = 0;
+    GUI::OrcaCandidateProposalTask task(std::move(input));
+    const std::vector<SliceCandidate> candidates = task.execute([&cancellation_polls] {
+        return ++cancellation_polls >= 2;
+    });
+
+    CHECK(candidates.empty());
+    CHECK(cancellation_polls >= 2);
 }

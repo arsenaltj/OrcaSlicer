@@ -28,7 +28,8 @@ public:
     std::vector<AI::SmartSlicing::SliceCandidate>
     generate(OrcaPlacementCandidateInput input, const AI::SmartSlicing::WorkspaceRevision& revision) const
     {
-        if (input.plate_locked || input.model.objects.empty())
+        if (input.plate_locked || input.model.objects.empty() ||
+            (input.arrange_params.stopcondition && input.arrange_params.stopcondition()))
             return {};
 
         arrangement::ArrangePolygons selected;
@@ -77,6 +78,8 @@ public:
                 return {};
 
             arrangement::arrange(selected, fixed, bed, params);
+            if (params.stopcondition && params.stopcondition())
+                return {};
             if (std::any_of(selected.begin(), selected.end(), [](const arrangement::ArrangePolygon& polygon) {
                     return polygon.bed_idx != 0;
                 }))
