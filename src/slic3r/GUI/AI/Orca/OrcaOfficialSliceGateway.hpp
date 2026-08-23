@@ -8,6 +8,8 @@
 
 namespace Slic3r::GUI {
 
+class Plater;
+
 struct OrcaApplyMutationResult
 {
     bool success{false};
@@ -32,6 +34,8 @@ public:
         , m_show_preview(std::move(show_preview))
         , m_undo(std::move(undo))
     {}
+
+    OrcaOfficialSliceGateway(Plater& plater, RevisionFn revision, ActionFn start_slice);
 
     AI::SmartSlicing::OfficialSliceResult
     prepare(const AI::SmartSlicing::SliceCandidate& candidate,
