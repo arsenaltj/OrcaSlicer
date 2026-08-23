@@ -15,7 +15,7 @@ from sampled_local_thickness import sample_local_thickness
 
 
 REPORT_SCHEMA_VERSION = 1
-GATE_VERSION = "structural-v8"
+GATE_VERSION = "structural-v9"
 
 
 @dataclass(frozen=True)
@@ -47,6 +47,7 @@ class ModelQualityThresholds:
     max_opposing_normal_dot: float = -0.5
     tiny_color_region_face_ratio: float = 0.0005
     tiny_color_region_area_ratio: float = 0.0001
+    meaningful_target_palette_surface_ratio: float = 0.02
     degenerate_area_epsilon_mm2: float = 1e-10
 
 
@@ -142,6 +143,20 @@ def _printable_color_key(color: tuple[float, float, float] | None) -> tuple[int,
     if all(0.0 <= value <= 255.0 for value in color):
         return tuple(round(value) for value in color)
     return None
+
+
+def _target_palette_keys(palette: tuple[str, ...]) -> list[tuple[int, int, int]]:
+    result: list[tuple[int, int, int]] = []
+    for value in palette[:4]:
+        if not isinstance(value, str) or len(value) != 7 or not value.startswith("#"):
+            continue
+        try:
+            color = tuple(int(value[index:index + 2], 16) for index in (1, 3, 5))
+        except ValueError:
+            continue
+        if color not in result:
+            result.append(color)
+    return result
 
 
 def _vector_length(x: float, y: float, z: float) -> float:
@@ -337,11 +352,13 @@ def analyze_printable_obj(
     thresholds: ModelQualityThresholds | None = None,
     *,
     allow_repairable_topology: bool = False,
+    target_palette: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Analyze a normalized Z-up OBJ and return a stable quality report."""
 
     source = Path(path)
     limits = thresholds or ModelQualityThresholds()
+    target_palette_keys = _target_palette_keys(target_palette)
     try:
         vertices, vertex_colors, faces = _parse_obj(source, limits.max_faces)
     except ModelQualityError as error:
@@ -710,6 +727,47 @@ def analyze_printable_obj(
             ):
                 tiny_color_regions += 1
 
+    target_palette_metrics_available = has_complete_vertex_colors and bool(target_palette_keys)
+    target_palette_surface_usage: list[dict[str, Any]] = []
+    target_palette_surface_coverage_ratio = 0.0
+    used_target_palette_color_count = 0
+    meaningful_target_palette_color_count = 0
+    required_meaningful_target_palette_color_count = min(len(target_palette_keys), 3)
+    target_palette_diversity_ok = False
+    minimum_target_palette_surface_ratio: float | None = None
+    if target_palette_metrics_available:
+        target_areas = {color: 0.0 for color in target_palette_keys}
+        for face, area in zip(faces, face_areas):
+            if area <= 0.0:
+                continue
+            contribution = area / 3.0
+            for vertex_index in face:
+                color = normalized_vertex_colors[vertex_index]
+                if color in target_areas:
+                    target_areas[color] += contribution
+        ratios = [target_areas[color] / surface_area if surface_area > 0.0 else 0.0
+                  for color in target_palette_keys]
+        target_palette_surface_coverage_ratio = sum(ratios)
+        used_target_palette_color_count = sum(
+            area > limits.degenerate_area_epsilon_mm2 for area in target_areas.values()
+        )
+        meaningful_target_palette_color_count = sum(
+            ratio >= limits.meaningful_target_palette_surface_ratio for ratio in ratios
+        )
+        target_palette_diversity_ok = (
+            meaningful_target_palette_color_count >= required_meaningful_target_palette_color_count
+        )
+        minimum_target_palette_surface_ratio = min(ratios, default=None)
+        target_palette_surface_usage = [
+            {
+                "color": "#{:02X}{:02X}{:02X}".format(*color),
+                "surface_area_mm2": round(target_areas[color], 6),
+                "surface_ratio": round(ratio, 6),
+                "meaningful": ratio >= limits.meaningful_target_palette_surface_ratio,
+            }
+            for color, ratio in zip(target_palette_keys, ratios)
+        ]
+
     errors: list[str] = []
     warnings: list[str] = []
     messages: dict[str, str] = {}
@@ -787,6 +845,16 @@ def analyze_printable_obj(
         add_warning(
             "tiny_printable_color_regions",
             f"Model contains {tiny_color_regions} very small printable-color regions that may create noisy filament changes.",
+        )
+    if target_palette_metrics_available and target_palette_surface_coverage_ratio < 1.0 - 1e-9:
+        add_warning(
+            "colors_outside_target_palette",
+            "Model contains vertex colors outside the confirmed target palette.",
+        )
+    if target_palette_metrics_available and not target_palette_diversity_ok:
+        add_warning(
+            "too_few_meaningful_target_palette_colors",
+            "Too few confirmed target colors cover a meaningful share of the final model surface.",
         )
 
     status = "reject" if errors else "review" if warnings else "pass"
@@ -867,6 +935,18 @@ def analyze_printable_obj(
             if smallest_color_region_area_ratio is not None
             else None
         ),
+        "target_palette_metrics_available": target_palette_metrics_available,
+        "target_palette_color_count": len(target_palette_keys),
+        "used_target_palette_color_count": used_target_palette_color_count,
+        "meaningful_target_palette_color_count": meaningful_target_palette_color_count,
+        "required_meaningful_target_palette_color_count": required_meaningful_target_palette_color_count,
+        "target_palette_surface_coverage_ratio": round(target_palette_surface_coverage_ratio, 6),
+        "minimum_target_palette_surface_ratio": (
+            round(minimum_target_palette_surface_ratio, 6)
+            if minimum_target_palette_surface_ratio is not None
+            else None
+        ),
+        "target_palette_diversity_ok": target_palette_diversity_ok,
     }
     return {
         "schema_version": REPORT_SCHEMA_VERSION,
@@ -881,6 +961,7 @@ def analyze_printable_obj(
         "evidence": {
             "thin_local_face_indices": thin_local_face_indices,
             "thin_local_regions": thin_local_regions,
+            "target_palette_surface_usage": target_palette_surface_usage,
         },
     }
 

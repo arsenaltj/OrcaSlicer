@@ -454,6 +454,7 @@ class SidecarHealthContractTests(unittest.TestCase):
             job = PRODUCTION.Job(id=job_id, source="image", directory=job_directory)
             job.state = "ready"
             job.phase = "ready"
+            job.palette = ("#FF0000",)
             job.artifact_path = artifact
             job.artifact_format = "obj"
             with PRODUCTION._JOBS_LOCK:
@@ -476,6 +477,11 @@ class SidecarHealthContractTests(unittest.TestCase):
                         with urllib.request.urlopen(request, timeout=5) as response:
                             payload = json.loads(response.read())
                     self.assertEqual(payload["job"]["model_quality"]["status"], "pass")
+                    metrics = payload["job"]["model_quality"]["metrics"]
+                    self.assertTrue(metrics["target_palette_metrics_available"])
+                    self.assertEqual(metrics["target_palette_color_count"], 1)
+                    self.assertEqual(metrics["meaningful_target_palette_color_count"], 1)
+                    self.assertAlmostEqual(metrics["target_palette_surface_coverage_ratio"], 1.0)
                     self.assertTrue((job_directory / PRODUCTION.MODEL_QUALITY_FILENAME).is_file())
                     for provider in (text_task, image_task, conversion, upload):
                         provider.assert_not_called()

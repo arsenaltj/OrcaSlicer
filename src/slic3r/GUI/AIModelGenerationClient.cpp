@@ -544,6 +544,24 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
                 metrics.value("thin_local_region_count", size_t(0));
             status.model_quality.reported_thin_local_region_count =
                 metrics.value("reported_thin_local_region_count", size_t(0));
+            status.model_quality.target_palette_metrics_available =
+                metrics.value("target_palette_metrics_available", false);
+            status.model_quality.target_palette_color_count =
+                metrics.value("target_palette_color_count", size_t(0));
+            status.model_quality.used_target_palette_color_count =
+                metrics.value("used_target_palette_color_count", size_t(0));
+            status.model_quality.meaningful_target_palette_color_count =
+                metrics.value("meaningful_target_palette_color_count", size_t(0));
+            status.model_quality.required_meaningful_target_palette_color_count =
+                metrics.value("required_meaningful_target_palette_color_count", size_t(0));
+            if (metrics.contains("target_palette_surface_coverage_ratio") &&
+                metrics["target_palette_surface_coverage_ratio"].is_number()) {
+                const double coverage = metrics["target_palette_surface_coverage_ratio"].get<double>();
+                if (std::isfinite(coverage))
+                    status.model_quality.target_palette_surface_coverage_ratio = std::clamp(coverage, 0.0, 1.0);
+            }
+            status.model_quality.target_palette_diversity_ok =
+                metrics.value("target_palette_diversity_ok", false);
             status.model_quality.repairable_topology = metrics.value("repairable_topology", false);
         }
         if (quality.contains("evidence") && quality["evidence"].is_object()) {
@@ -583,6 +601,24 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
                         }
                     }
                     status.model_quality.thin_local_regions.emplace_back(std::move(region));
+                }
+            }
+            if (evidence.contains("target_palette_surface_usage") &&
+                evidence["target_palette_surface_usage"].is_array()) {
+                for (const auto& item : evidence["target_palette_surface_usage"]) {
+                    if (!item.is_object() || status.model_quality.target_palette_surface_usage.size() >= 4)
+                        continue;
+                    AIModelGenerationClient::ModelQuality::TargetPaletteUsage usage;
+                    usage.color = item.value("color", std::string());
+                    if (!valid_hex_color(usage.color) || !item.contains("surface_ratio") ||
+                        !item["surface_ratio"].is_number())
+                        continue;
+                    const double ratio = item["surface_ratio"].get<double>();
+                    if (!std::isfinite(ratio))
+                        continue;
+                    usage.surface_ratio = std::clamp(ratio, 0.0, 1.0);
+                    usage.meaningful = item.value("meaningful", false);
+                    status.model_quality.target_palette_surface_usage.emplace_back(std::move(usage));
                 }
             }
         }

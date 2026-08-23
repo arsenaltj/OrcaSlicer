@@ -369,6 +369,8 @@ wxString model_quality_code_label(const std::string& code)
     if (code == "thin_structural_components") return _L("检测到整体厚度较薄的连通部件，请检查是否需要加厚。");
     if (code == "thin_local_wall_regions") return _L("检测到附着在主体上的局部薄壁或细连接，请检查是否需要加厚。");
     if (code == "tiny_printable_color_regions") return _L("检测到过小的耗材色块，打印时可能产生碎片化换色。");
+    if (code == "too_few_meaningful_target_palette_colors") return _L("最终模型中显著目标色不足，请检查四色角色是否在建模后丢失。");
+    if (code == "colors_outside_target_palette") return _L("最终模型包含目标调色板之外的颜色，请重新检查颜色量化结果。");
     if (code == "weak_bed_contact") return _L("模型与热床接触面积较小，请检查底座稳定性。");
     if (code == "extreme_aspect_ratio") return _L("模型比例较极端，请检查缩放和摆放方向。");
     if (code == "high_downward_surface_ratio") return _L("向下表面较多，打印时可能需要更多支撑。");
@@ -3348,6 +3350,25 @@ void ModelGenerationPanel::refresh_model_quality_card()
                     details << wxString::Format(_L("\n局部薄壁风险区：%llu 个 · 报告前 %llu 个"),
                                 static_cast<unsigned long long>(m_model_quality.thin_local_region_count),
                                 static_cast<unsigned long long>(m_model_quality.reported_thin_local_region_count));
+            }
+            if (m_model_quality.target_palette_metrics_available) {
+                details << wxString::Format(
+                    _L("\n最终模型目标色：显著 %llu/%llu · 建议至少 %llu · 覆盖 %.1f%%"),
+                    static_cast<unsigned long long>(m_model_quality.meaningful_target_palette_color_count),
+                    static_cast<unsigned long long>(m_model_quality.target_palette_color_count),
+                    static_cast<unsigned long long>(
+                        m_model_quality.required_meaningful_target_palette_color_count),
+                    m_model_quality.target_palette_surface_coverage_ratio * 100.0);
+                if (!m_model_quality.target_palette_surface_usage.empty()) {
+                    details << _L("\n逐色表面积：");
+                    for (size_t index = 0; index < m_model_quality.target_palette_surface_usage.size(); ++index) {
+                        if (index > 0)
+                            details << _L(" · ");
+                        const auto& usage = m_model_quality.target_palette_surface_usage[index];
+                        details << from_u8(usage.color)
+                                << wxString::Format(_L(" %.1f%%"), usage.surface_ratio * 100.0);
+                    }
+                }
             }
         } else {
             details << wxString::Format(_L("最大部件占比：%.1f%% · 接地覆盖：%.1f%% · 向下表面：%.1f%%"),

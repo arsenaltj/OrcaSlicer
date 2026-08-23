@@ -40,6 +40,13 @@ public:
             std::vector<size_t> face_indices;
         };
 
+        struct TargetPaletteUsage
+        {
+            std::string color;
+            double      surface_ratio { 0.0 };
+            bool        meaningful { false };
+        };
+
         bool                     available { false };
         std::string              status;
         std::vector<std::string> errors;
@@ -70,6 +77,14 @@ public:
         size_t                   reported_thin_local_region_count { 0 };
         std::vector<size_t>      thin_local_face_indices;
         std::vector<ThinLocalRegion> thin_local_regions;
+        bool                     target_palette_metrics_available { false };
+        size_t                   target_palette_color_count { 0 };
+        size_t                   used_target_palette_color_count { 0 };
+        size_t                   meaningful_target_palette_color_count { 0 };
+        size_t                   required_meaningful_target_palette_color_count { 0 };
+        double                   target_palette_surface_coverage_ratio { 0.0 };
+        bool                     target_palette_diversity_ok { false };
+        std::vector<TargetPaletteUsage> target_palette_surface_usage;
         bool                     repairable_topology { false };
     };
 

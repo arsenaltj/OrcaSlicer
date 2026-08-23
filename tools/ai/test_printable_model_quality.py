@@ -121,10 +121,10 @@ class PrintableModelQualityTests(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
-    def analyze(self, content: str, thresholds=None):
+    def analyze(self, content: str, thresholds=None, target_palette=()):
         source = self.root / "model.obj"
         source.write_text(content, encoding="ascii")
-        return analyze_printable_obj(source, thresholds)
+        return analyze_printable_obj(source, thresholds, target_palette=target_palette)
 
     def test_closed_grounded_tetrahedron_passes(self):
         report = self.analyze(obj_text([tetrahedron()]))
@@ -287,7 +287,7 @@ class PrintableModelQualityTests(unittest.TestCase):
     def test_attached_thin_neck_requires_local_thickness_review(self):
         report = self.analyze(obj_text([attached_thin_neck()]))
 
-        self.assertEqual(report["gate_version"], "structural-v8")
+        self.assertEqual(report["gate_version"], "structural-v9")
         self.assertEqual(report["status"], "review")
         self.assertEqual(report["metrics"]["thin_component_count"], 0)
         self.assertTrue(report["metrics"]["local_thickness_available"])
@@ -469,6 +469,62 @@ class PrintableModelQualityTests(unittest.TestCase):
                 self.assertEqual(report["metrics"]["printable_color_count"], 0)
                 self.assertEqual(report["metrics"]["color_region_count"], 0)
 
+    def test_three_meaningful_target_colors_preserve_four_color_palette_signal(self):
+        colors = (
+            ("#FF0000", (1.0, 0.0, 0.0), (0.0, 0.0, 0.0), (10.0, 10.0, 10.0)),
+            ("#00FF00", (0.0, 1.0, 0.0), (20.0, 0.0, 0.0), (10.0, 10.0, 10.0)),
+            ("#0000FF", (0.0, 0.0, 1.0), (40.0, 0.0, 0.0), (10.0, 10.0, 10.0)),
+            ("#FFFF00", (1.0, 1.0, 0.0), (60.0, 0.0, 0.0), (1.0, 1.0, 1.0)),
+        )
+        parts = []
+        for _, rgb, offset, scale in colors:
+            vertices, faces = tetrahedron(offset, scale)
+            parts.append((vertices, faces, rgb))
+        report = self.analyze(obj_text(parts), target_palette=tuple(color for color, *_ in colors))
+
+        metrics = report["metrics"]
+        self.assertTrue(metrics["target_palette_metrics_available"])
+        self.assertEqual(metrics["target_palette_color_count"], 4)
+        self.assertEqual(metrics["used_target_palette_color_count"], 4)
+        self.assertEqual(metrics["meaningful_target_palette_color_count"], 3)
+        self.assertEqual(metrics["required_meaningful_target_palette_color_count"], 3)
+        self.assertTrue(metrics["target_palette_diversity_ok"])
+        self.assertAlmostEqual(metrics["target_palette_surface_coverage_ratio"], 1.0)
+        self.assertNotIn("too_few_meaningful_target_palette_colors", report["warnings"])
+        usage = report["evidence"]["target_palette_surface_usage"]
+        self.assertEqual([entry["color"] for entry in usage], [color for color, *_ in colors])
+        self.assertEqual([entry["meaningful"] for entry in usage], [True, True, True, False])
+
+    def test_two_meaningful_target_colors_require_review(self):
+        palette = ("#FF0000", "#00FF00", "#0000FF", "#FFFF00")
+        parts = [
+            (*tetrahedron((0.0, 0.0, 0.0)), (1.0, 0.0, 0.0)),
+            (*tetrahedron((20.0, 0.0, 0.0)), (0.0, 1.0, 0.0)),
+            (*tetrahedron((40.0, 0.0, 0.0), (1.0, 1.0, 1.0)), (0.0, 0.0, 1.0)),
+            (*tetrahedron((50.0, 0.0, 0.0), (1.0, 1.0, 1.0)), (1.0, 1.0, 0.0)),
+        ]
+        report = self.analyze(obj_text(parts), target_palette=palette)
+
+        self.assertEqual(report["metrics"]["meaningful_target_palette_color_count"], 2)
+        self.assertFalse(report["metrics"]["target_palette_diversity_ok"])
+        self.assertIn("too_few_meaningful_target_palette_colors", report["warnings"])
+
+    def test_target_palette_is_optional_and_outside_colors_reduce_coverage(self):
+        red_vertices, red_faces = tetrahedron()
+        green_vertices, green_faces = tetrahedron((20.0, 0.0, 0.0))
+        content = obj_text([
+            (red_vertices, red_faces, (1.0, 0.0, 0.0)),
+            (green_vertices, green_faces, (0.0, 1.0, 0.0)),
+        ])
+
+        without_palette = self.analyze(content)
+        self.assertFalse(without_palette["metrics"]["target_palette_metrics_available"])
+        self.assertEqual(without_palette["evidence"]["target_palette_surface_usage"], [])
+
+        with_palette = self.analyze(content, target_palette=("#FF0000", "#0000FF"))
+        self.assertAlmostEqual(with_palette["metrics"]["target_palette_surface_coverage_ratio"], 0.5)
+        self.assertIn("colors_outside_target_palette", with_palette["warnings"])
+
     def test_face_limit_is_a_hard_rejection(self):
         report = self.analyze(obj_text([tetrahedron()]), ModelQualityThresholds(max_faces=3))
         self.assertEqual(report["status"], "reject")
@@ -478,7 +534,7 @@ class PrintableModelQualityTests(unittest.TestCase):
         report = self.analyze(obj_text([tetrahedron()]))
         destination = write_model_quality_report(report, self.root / "model-quality.json")
         self.assertTrue(destination.is_file())
-        self.assertIn('"gate_version": "structural-v8"', destination.read_text(encoding="utf-8"))
+        self.assertIn('"gate_version": "structural-v9"', destination.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

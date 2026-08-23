@@ -1977,7 +1977,11 @@ def _prepare_obj_artifact(raw_download: Path, job_directory: Path, palette: tupl
         _validate_obj_vertex_colors(destination)
     _write_obj_vertex_color_metrics(destination, job_directory / "vertex-color-metrics.json")
     _validate_artifact(destination, "obj", allow_repairable_obj=True)
-    quality = analyze_printable_obj(destination, allow_repairable_topology=True)
+    quality = analyze_printable_obj(
+        destination,
+        allow_repairable_topology=True,
+        target_palette=palette,
+    )
     try:
         write_model_quality_report(quality, job_directory / MODEL_QUALITY_FILENAME)
     except ModelQualityError as exc:
@@ -3442,7 +3446,11 @@ class Handler(BaseHTTPRequestHandler):
             resolved_artifact.relative_to(job.directory.resolve(strict=True))
         except (OSError, ValueError):
             raise RequestError("artifact_not_ready", "The registered model OBJ is unavailable.", 409) from None
-        quality = analyze_printable_obj(resolved_artifact, allow_repairable_topology=True)
+        quality = analyze_printable_obj(
+            resolved_artifact,
+            allow_repairable_topology=True,
+            target_palette=job.palette,
+        )
         try:
             write_model_quality_report(quality, job.directory / MODEL_QUALITY_FILENAME)
         except ModelQualityError as exc:
