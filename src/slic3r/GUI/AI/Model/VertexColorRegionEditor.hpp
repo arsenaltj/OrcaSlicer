@@ -25,6 +25,13 @@ struct RegionSelectionSettings {
     float local_radius_ratio {0.035f};
 };
 
+struct OverhangRegionSettings {
+    float ground_band_mm {0.5f};
+    float maximum_surface_angle_degrees {45.0f};
+    float minimum_region_area_mm2 {4.0f};
+    float minimum_region_area_ratio {0.0005f};
+};
+
 // Pure mesh/color editor used by the AI preview. It intentionally has no wxWidgets
 // or Orca workspace dependencies so future semantic segmenters can feed the same
 // face-selection contract without touching the slicer core.
@@ -44,6 +51,8 @@ public:
     size_t update_selection(size_t seed_face, RegionSelectionOperation operation,
                             const RegionSelectionSettings& settings);
     size_t select_palette_material(const std::vector<RGBA>& palette, size_t palette_index);
+    size_t select_elevated_overhang_regions(
+        const OverhangRegionSettings& settings = OverhangRegionSettings {});
     void clear_selection();
     bool restore_selection(const std::vector<uint8_t>& selected_faces);
     bool apply_color(const RGBA& color);

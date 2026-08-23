@@ -86,6 +86,24 @@ indexed_triangle_set separated_triangle_mesh(size_t count)
     return mesh;
 }
 
+indexed_triangle_set overhang_region_mesh()
+{
+    indexed_triangle_set mesh;
+    mesh.vertices = {
+        {20.0f, 0.0f, 0.0f}, {20.0f, 10.0f, 0.0f}, {30.0f, 0.0f, 0.0f}, {30.0f, 10.0f, 0.0f},
+        {0.0f, 0.0f, 5.0f}, {0.0f, 10.0f, 5.0f}, {10.0f, 0.0f, 5.0f}, {10.0f, 10.0f, 5.0f},
+        {40.0f, 0.0f, 3.0f}, {40.0f, 0.1f, 3.0f}, {40.1f, 0.0f, 3.0f},
+        {50.0f, 0.0f, 4.0f}, {51.0f, 0.0f, 4.0f}, {50.0f, 1.0f, 4.0f}
+    };
+    mesh.indices = {
+        {0, 1, 2}, {1, 3, 2},       // Downward bed-contact surface.
+        {4, 5, 6}, {5, 7, 6},       // Significant elevated downward region.
+        {8, 9, 10},                  // Elevated but too small to be significant.
+        {11, 12, 13}                 // Upward-facing surface.
+    };
+    return mesh;
+}
+
 } // namespace
 
 TEST_CASE("vertex color smart region follows connected color blocks", "[AI][VertexColorRegion]")
@@ -258,6 +276,37 @@ TEST_CASE("vertex color material selection rejects invalid inputs without changi
     CHECK(editor.select_palette_material({}, 0) == 2);
     CHECK(editor.selected_faces() == snapshot);
     CHECK(editor.select_palette_material(palette, 1) == 2);
+    CHECK(editor.selected_faces() == snapshot);
+}
+
+TEST_CASE("vertex color overhang localization selects only significant elevated regions", "[AI][VertexColorRegion]")
+{
+    indexed_triangle_set mesh = overhang_region_mesh();
+    AI::VertexColorRegionEditor editor;
+    std::string error;
+    REQUIRE(editor.initialize(mesh, solid_colors(mesh.vertices.size(), {1.0f, 0.0f, 0.0f, 1.0f}), error));
+
+    CHECK(editor.select_elevated_overhang_regions() == 2);
+    CHECK(editor.selected_faces() == std::vector<uint8_t> {0, 0, 1, 1, 0, 0});
+}
+
+TEST_CASE("vertex color overhang localization preserves selection when no region qualifies", "[AI][VertexColorRegion]")
+{
+    indexed_triangle_set mesh = overhang_region_mesh();
+    AI::VertexColorRegionEditor editor;
+    std::string error;
+    REQUIRE(editor.initialize(mesh, solid_colors(mesh.vertices.size(), {1.0f, 0.0f, 0.0f, 1.0f}), error));
+    REQUIRE(editor.select_palette_material({{1.0f, 0.0f, 0.0f, 1.0f}}, 0) == mesh.indices.size());
+    const std::vector<uint8_t> snapshot = editor.selected_faces();
+
+    AI::OverhangRegionSettings settings;
+    settings.ground_band_mm = 6.0f;
+    CHECK(editor.select_elevated_overhang_regions(settings) == 0);
+    CHECK(editor.selected_faces() == snapshot);
+
+    settings.ground_band_mm = 0.5f;
+    settings.minimum_region_area_mm2 = 101.0f;
+    CHECK(editor.select_elevated_overhang_regions(settings) == 0);
     CHECK(editor.selected_faces() == snapshot);
 }
 
