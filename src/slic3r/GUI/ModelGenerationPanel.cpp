@@ -73,6 +73,42 @@ constexpr int MAX_PREVIEW_BITMAP_DIMENSION = 4096;
 constexpr const char* GENERATED_MODEL_PREFIX = "orcaslicer-ai-";
 constexpr std::array<const char*, 4> PALETTE_ROLE_IDS {"primary", "structure", "light", "accent"};
 
+wxString thin_local_region_metrics(
+    const AIModelGenerationClient::ModelQuality::ThinLocalRegion& region)
+{
+    wxString metrics;
+    const auto append = [&metrics](const wxString& item) {
+        if (!metrics.empty())
+            metrics += _L(" · ");
+        metrics += item;
+    };
+    if (std::isfinite(region.minimum_thickness_mm) && region.minimum_thickness_mm > 0.0)
+        append(wxString::Format(_L("最薄 %.3f mm"), region.minimum_thickness_mm));
+    if (region.sample_count > 0) {
+        append(wxString::Format(_L("%llu 个采样"),
+                                static_cast<unsigned long long>(region.sample_count)));
+    }
+    if (std::isfinite(region.sampled_area_mm2) && region.sampled_area_mm2 > 0.0)
+        append(wxString::Format(_L("%.3f mm²"), region.sampled_area_mm2));
+    return metrics;
+}
+
+wxString thin_local_region_status(
+    size_t region_index,
+    size_t region_count,
+    const AIModelGenerationClient::ModelQuality::ThinLocalRegion& region)
+{
+    wxString status = wxString::Format(
+        _L("第 %llu/%llu 处薄壁"),
+        static_cast<unsigned long long>(region_index + 1),
+        static_cast<unsigned long long>(region_count));
+    const wxString metrics = thin_local_region_metrics(region);
+    if (!metrics.empty())
+        status += _L(" · ") + metrics;
+    status += _L("；仅供复核。");
+    return status;
+}
+
 struct LabColor {
     double l { 0.0 };
     double a { 0.0 };
@@ -1900,16 +1936,20 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
         if (has_ranked_region) {
             const size_t region_count = std::max(
                 m_model_quality.thin_local_region_count, m_model_quality.thin_local_regions.size());
-            m_model_preview_message->SetLabel(wxString::Format(
-                _L("已高亮薄壁风险区 %llu/%llu 的 %llu 个采样面（共识别 %llu 个）；可旋转复核或手动增减。"),
+            wxString preview_message = wxString::Format(
+                _L("已高亮薄壁风险区 %llu/%llu 的 %llu 个证据面（共识别 %llu 个）"),
                 static_cast<unsigned long long>(region_index + 1),
                 static_cast<unsigned long long>(m_model_quality.thin_local_regions.size()),
                 static_cast<unsigned long long>(localized),
-                static_cast<unsigned long long>(region_count)));
-            m_status->SetLabel(wxString::Format(
-                _L("已定位第 %llu/%llu 个已报告薄壁风险区；这里只做复核，不会自动修改模型。"),
-                static_cast<unsigned long long>(region_index + 1),
-                static_cast<unsigned long long>(m_model_quality.thin_local_regions.size())));
+                static_cast<unsigned long long>(region_count));
+            const auto& region = m_model_quality.thin_local_regions[region_index];
+            const wxString metrics = thin_local_region_metrics(region);
+            if (!metrics.empty())
+                preview_message += _L(" · ") + metrics;
+            preview_message += _L("；可旋转复核或手动增减。");
+            m_model_preview_message->SetLabel(preview_message);
+            m_status->SetLabel(thin_local_region_status(
+                region_index, m_model_quality.thin_local_regions.size(), region));
         } else {
             m_model_preview_message->SetLabel(wxString::Format(
                 _L("已高亮 %llu 个局部薄壁采样面；可旋转复核，或在局部区域工具中手动增减。"),
@@ -2017,10 +2057,10 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
         }
         if (m_status != nullptr) {
             if (matched_region) {
-                m_status->SetLabel(wxString::Format(
-                    _L("已定位第 %llu/%llu 个已报告薄壁风险区；这里只做复核，不会自动修改模型。"),
-                    static_cast<unsigned long long>(matched_region_index + 1),
-                    static_cast<unsigned long long>(m_model_quality.thin_local_regions.size())));
+                m_status->SetLabel(thin_local_region_status(
+                    matched_region_index,
+                    m_model_quality.thin_local_regions.size(),
+                    m_model_quality.thin_local_regions[matched_region_index]));
             } else {
                 m_status->SetLabel(selected_faces == 0
                     ? _L("当前未选择局部区域。")
