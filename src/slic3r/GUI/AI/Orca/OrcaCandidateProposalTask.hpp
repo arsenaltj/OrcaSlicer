@@ -51,7 +51,10 @@ public:
             OrcaParameterAdvisor(std::move(m_input.parameters)).advise(m_input.context);
         if (canceled())
             return {};
-        if (!parameter_proposal.entries.empty()) {
+        if (parameter_proposal.entries.empty())
+            return candidates;
+
+        if (candidates.empty()) {
             AI::SmartSlicing::SliceCandidate candidate;
             candidate.id            = "parameter-brim-stability-v1";
             candidate.base_revision = m_input.context.revision;
@@ -59,6 +62,9 @@ public:
             candidate.explanation   = "small_or_slender_footprint_brim_candidate";
             candidate.parameters    = std::move(parameter_proposal);
             candidates.push_back(std::move(candidate));
+        } else {
+            for (AI::SmartSlicing::SliceCandidate& candidate : candidates)
+                candidate.parameters = parameter_proposal;
         }
         return candidates;
     }

@@ -369,3 +369,49 @@ TEST_CASE("prepared candidate proposal task discards partial work after cancella
     CHECK(candidates.empty());
     CHECK(cancellation_polls >= 2);
 }
+
+TEST_CASE("prepared candidate proposal task composes typed advice into native alternatives",
+          "[AI][SmartSlicing][Candidate][ProposalTask][Parameters]")
+{
+    GUI::OrcaCandidateProposalInput input;
+    input.context.plate_index = 0;
+    input.context.revision    = {1, 2, 3, "revision-a"};
+    input.placement           = placement_input();
+    add_cube(input.placement.model, 10.0, Vec3d(75.0, 75.0, 0.0));
+    input.orientation.config = DynamicPrintConfig::full_print_config();
+    add_box(input.orientation.model, Vec3d(8.0, 12.0, 40.0), Vec3d(30.0, 30.0, 0.0));
+    input.parameters.plate_id           = 42;
+    input.parameters.current_brim_width = 1.0;
+    input.parameters.printable_instances.push_back({6.0, 20.0, 40.0});
+
+    const std::vector<SliceCandidate> candidates =
+        GUI::OrcaCandidateProposalTask(std::move(input)).execute();
+
+    REQUIRE(candidates.size() == 2);
+    CHECK(candidates[0].id == "placement-stability-native-v1");
+    CHECK(candidates[1].id == "orientation-stability-native-v1");
+    for (const SliceCandidate& candidate : candidates) {
+        REQUIRE(candidate.parameters.entries.size() == 1);
+        CHECK(candidate.parameters.entries.front().target_id == 42);
+        CHECK(candidate.parameters.entries.front().key == "brim_width");
+    }
+}
+
+TEST_CASE("prepared candidate proposal task keeps typed advice when native alternatives are unavailable",
+          "[AI][SmartSlicing][Candidate][ProposalTask][Parameters]")
+{
+    GUI::OrcaCandidateProposalInput input;
+    input.context.plate_index = 0;
+    input.context.revision    = {1, 2, 3, "revision-a"};
+    input.parameters.plate_id           = 42;
+    input.parameters.current_brim_width = 1.0;
+    input.parameters.printable_instances.push_back({6.0, 20.0, 40.0});
+
+    const std::vector<SliceCandidate> candidates =
+        GUI::OrcaCandidateProposalTask(std::move(input)).execute();
+
+    REQUIRE(candidates.size() == 1);
+    CHECK(candidates.front().id == "parameter-brim-stability-v1");
+    REQUIRE(candidates.front().parameters.entries.size() == 1);
+    CHECK(candidates.front().parameters.entries.front().key == "brim_width");
+}
