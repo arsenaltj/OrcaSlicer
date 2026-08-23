@@ -441,7 +441,11 @@ def recommend_printable_palette(
         "color should cover the largest semantic region, structure should support silhouette and boundaries, light should provide "
         "a readable light material, and accent should distinguish one secondary semantic part. The accent should normally use a "
         "clearly different hue family from primary, not a lighter or darker substitute for the same material; only keep related "
-        "hues when the subject semantics make that distinction unmistakable. Use concise Chinese for summary, "
+        "hues when the subject semantics make that distinction unmistakable. This full-color printable palette requirement "
+        "overrides any monochrome stone, plaster, clay, metal, or grayscale wording in the selected style; keep the style's shape "
+        "language while assigning visibly distinct material colors. Make structure visibly dark, light visibly bright, and keep "
+        "primary and accent as medium-value colors from clearly different hue families so no two roles look interchangeable as "
+        "physical materials. Use concise Chinese for summary, "
         "name, usage and reason. Apply this style direction: "
         + style_direction
     )

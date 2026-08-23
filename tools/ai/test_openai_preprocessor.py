@@ -224,6 +224,8 @@ class PrintablePaletteRecommendationTests(unittest.TestCase):
         self.assertEqual([color.role for color in result.colors], ["primary", "structure", "light", "accent"])
         self.assertIn("four-color palette", complete.call_args.args[0])
         self.assertIn("different hue family from primary", complete.call_args.args[0])
+        self.assertIn("overrides any monochrome", complete.call_args.args[0])
+        self.assertIn("structure visibly dark", complete.call_args.args[0])
 
     def test_image_recommendation_uses_vision_completion(self):
         with tempfile.TemporaryDirectory() as directory:
