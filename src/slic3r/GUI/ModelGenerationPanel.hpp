@@ -225,6 +225,8 @@ private:
     wxButton*       m_recheck_model { nullptr };
     wxButton*       m_locate_thin_regions { nullptr };
     wxButton*       m_locate_overhang_regions { nullptr };
+    bool            m_thin_region_navigation_active { false };
+    size_t          m_thin_region_navigation_index { 0 };
     wxStaticText*   m_visual_quality_status { nullptr };
     wxStaticText*   m_visual_quality_summary { nullptr };
     wxButton*       m_visual_review_model { nullptr };

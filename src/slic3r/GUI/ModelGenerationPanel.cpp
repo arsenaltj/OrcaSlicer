@@ -656,6 +656,21 @@ public:
     bool region_editing_ready() const { return m_region_editor.ready(); }
     bool can_undo_selection() const { return !m_selection_history.empty(); }
 
+    bool selection_matches_face_evidence(const std::vector<size_t>& face_indices) const
+    {
+        if (!m_region_editor.ready() || face_indices.empty())
+            return false;
+        std::vector<uint8_t> expected(m_region_editor.selected_faces().size(), 0);
+        bool has_valid_face = false;
+        for (size_t face_index : face_indices) {
+            if (face_index >= expected.size())
+                continue;
+            expected[face_index] = 1;
+            has_valid_face = true;
+        }
+        return has_valid_face && expected == m_region_editor.selected_faces();
+    }
+
     bool undo_selection()
     {
         if (m_selection_history.empty())
@@ -1862,14 +1877,21 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
             return;
         const bool has_ranked_region = !m_model_quality.thin_local_regions.empty() &&
             !m_model_quality.thin_local_regions.front().face_indices.empty();
-        const std::vector<size_t>& evidence = has_ranked_region
-            ? m_model_quality.thin_local_regions.front().face_indices
-            : m_model_quality.thin_local_face_indices;
-        const size_t localized = m_model_preview->select_face_evidence(evidence);
+        size_t region_index = 0;
+        const std::vector<size_t>* evidence = &m_model_quality.thin_local_face_indices;
+        if (has_ranked_region) {
+            region_index = m_thin_region_navigation_active
+                ? (m_thin_region_navigation_index + 1) % m_model_quality.thin_local_regions.size()
+                : 0;
+            evidence = &m_model_quality.thin_local_regions[region_index].face_indices;
+        }
+        const size_t localized = m_model_preview->select_face_evidence(*evidence);
         if (localized == 0) {
             m_status->SetLabel(_L("当前质量报告没有可定位的局部薄壁证据。"));
             return;
         }
+        m_thin_region_navigation_active = has_ranked_region;
+        m_thin_region_navigation_index = region_index;
         m_local_recolor_toggle->SetValue(true);
         refresh_local_recolor_controls();
         model_page->Layout();
@@ -1879,10 +1901,15 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
             const size_t region_count = std::max(
                 m_model_quality.thin_local_region_count, m_model_quality.thin_local_regions.size());
             m_model_preview_message->SetLabel(wxString::Format(
-                _L("已高亮最高风险薄壁区域的 %llu 个采样面（共 %llu 个区域）；可旋转复核或手动增减。"),
+                _L("已高亮薄壁风险区 %llu/%llu 的 %llu 个采样面（共识别 %llu 个）；可旋转复核或手动增减。"),
+                static_cast<unsigned long long>(region_index + 1),
+                static_cast<unsigned long long>(m_model_quality.thin_local_regions.size()),
                 static_cast<unsigned long long>(localized),
                 static_cast<unsigned long long>(region_count)));
-            m_status->SetLabel(_L("已定位最高风险局部薄壁区域；这里只做复核，不会自动修改模型。"));
+            m_status->SetLabel(wxString::Format(
+                _L("已定位第 %llu/%llu 个已报告薄壁风险区；这里只做复核，不会自动修改模型。"),
+                static_cast<unsigned long long>(region_index + 1),
+                static_cast<unsigned long long>(m_model_quality.thin_local_regions.size())));
         } else {
             m_model_preview_message->SetLabel(wxString::Format(
                 _L("已高亮 %llu 个局部薄壁采样面；可旋转复核，或在局部区域工具中手动增减。"),
@@ -1958,6 +1985,24 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     });
     m_apply_region_color->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_apply_local_recolor, this);
     m_model_preview->set_selection_changed_callback([this](size_t selected_faces) {
+        bool matched_region = false;
+        size_t matched_region_index = 0;
+        if (m_model_preview != nullptr) {
+            for (size_t index = 0; index < m_model_quality.thin_local_regions.size(); ++index) {
+                if (!m_model_preview->selection_matches_face_evidence(
+                        m_model_quality.thin_local_regions[index].face_indices))
+                    continue;
+                m_thin_region_navigation_active = true;
+                m_thin_region_navigation_index = index;
+                matched_region = true;
+                matched_region_index = index;
+                break;
+            }
+        }
+        if (!matched_region) {
+            m_thin_region_navigation_active = false;
+            m_thin_region_navigation_index = 0;
+        }
         if (m_region_selection_summary != nullptr) {
             m_region_selection_summary->SetLabel(selected_faces == 0
                 ? _L("点击模型选择要改色的部位")
@@ -1969,6 +2014,18 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
                 ? _L("生成完成后可拖动旋转模型，并使用滚轮缩放。")
                 : wxString::Format(_L("当前选区包含 %llu 个三角面；可继续检查或手动增减。"),
                                    static_cast<unsigned long long>(selected_faces)));
+        }
+        if (m_status != nullptr) {
+            if (matched_region) {
+                m_status->SetLabel(wxString::Format(
+                    _L("已定位第 %llu/%llu 个已报告薄壁风险区；这里只做复核，不会自动修改模型。"),
+                    static_cast<unsigned long long>(matched_region_index + 1),
+                    static_cast<unsigned long long>(m_model_quality.thin_local_regions.size())));
+            } else {
+                m_status->SetLabel(selected_faces == 0
+                    ? _L("当前未选择局部区域。")
+                    : _L("已选择局部区域；可继续复核或手动增减。"));
+            }
         }
         refresh_local_recolor_controls();
     });
@@ -3141,6 +3198,8 @@ void ModelGenerationPanel::clear_model_quality()
     m_visual_quality = {};
     m_quality_check_busy = false;
     m_visual_check_busy = false;
+    m_thin_region_navigation_active = false;
+    m_thin_region_navigation_index = 0;
     refresh_model_quality_card();
 }
 
@@ -3285,6 +3344,8 @@ void ModelGenerationPanel::on_recheck_model(wxCommandEvent&)
         return;
     const std::string job_id = m_displayed_model_job_id;
     const uint64_t sequence = m_sequence;
+    m_thin_region_navigation_active = false;
+    m_thin_region_navigation_index = 0;
     m_quality_check_busy = true;
     m_status->SetLabel(_L("正在重新检查当前 3D 模型..."));
     refresh_model_quality_card();
@@ -3388,9 +3449,13 @@ void ModelGenerationPanel::refresh_local_recolor_controls()
     m_local_recolor_toggle->Enable(ready && !m_busy);
     if (m_locate_overhang_regions != nullptr)
         m_locate_overhang_regions->Enable(ready && !m_busy);
-    if (m_locate_thin_regions != nullptr)
+    if (m_locate_thin_regions != nullptr) {
+        m_locate_thin_regions->SetLabel(
+            m_thin_region_navigation_active && m_model_quality.thin_local_regions.size() > 1
+                ? _L("下一处薄壁") : _L("定位薄壁"));
         m_locate_thin_regions->Enable(
             ready && !m_busy && !m_model_quality.thin_local_face_indices.empty());
+    }
     if (m_model_preview != nullptr)
         m_model_preview->set_selection_enabled(editing);
 
