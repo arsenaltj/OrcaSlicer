@@ -156,3 +156,39 @@ Per the local-only validation rule, they were not terminated and the workspace e
 - No model-generation business code was copied or modified in this hardening batch.
 - No configuration schema, dependency, network port, 3MF/profile format, profile data, or default Orca behavior changed. The existing temporary smart-slicing runtime journal location is unchanged; no new data directory was introduced.
 - macOS and Linux build/test gates remain for CI or their native build hosts.
+
+## Cache and Release gate — 2026-08-24
+
+Commit `79627374dfae927b1b461fe92f9d2a7b7d4c1cb3` adds an Application-layer
+`ITrialSliceExecutor` decorator. It keeps at most 16 successful, identity-matching results in memory.
+The key includes the workspace revision and all executable candidate repair, transform, and typed-parameter
+content. Failed, canceled, and mismatched results are never cached; cancellation is delegated to the native
+executor. The cache writes no disk data, runtime journal, 3MF, profile, or official slice result.
+
+### Release build and tests
+
+- Windows Release builds passed for `slic3rutils_tests`, `fff_print_tests`, `OrcaSlicer`, and
+  `OrcaSlicer_app_gui` from `build-p0`.
+- Cache focus: 4 test cases, 13 assertions, all passed. The tests cover content hits and misses,
+  revision isolation, failure/cancellation/mismatch rejection, cancellation delegation, and FIFO eviction.
+- Smart-slicing suite: 63 test cases, 405 assertions, all passed.
+- Full `slic3rutils_tests`: 74 test cases, 512 assertions, all passed. The existing
+  `info/nozzle_info.json` working-directory warning remains non-failing.
+- FFF fixed seed `635773145`:
+  - exact `Scenario: Skirt and brim generation`: 1 test case, 7 assertions, all passed;
+  - suite excluding `[SkirtBrim]`: 47 test cases, 578 assertions, all passed.
+
+| Release artifact | Size | Build timestamp (Asia/Shanghai) | SHA-256 |
+| --- | ---: | --- | --- |
+| `build-p0/src/Release/orca-slicer.exe` | 270,848 bytes | 2026-08-24 04:33:10.067 +08:00 | `83EE9595630138C9C107F92F88750260D144F16DCE0BF7DCE88F9CBD976D625C` |
+| `build-p0/src/Release/OrcaSlicer.dll` | 73,097,728 bytes | 2026-08-24 04:33:02.292 +08:00 | `0602F7FC9E3841C6C5BF58A94BEB5F7AD3C5F23B9ED2837883FACD98F75A526C` |
+
+GUI automation could not proceed safely. The workspace Release executable was selected explicitly, but it
+did not expose a targetable window. A subsequent process-path check showed that the two unrelated integration
+instances (PIDs 35252 and 39428) were still active; the earlier compact process output had obscured them. The
+workspace-local process (PID 24800) was path-verified and stopped, while the unrelated processes were left
+untouched. No GUI action was performed. The local-only GUI scenarios and macOS/Linux build gates remain open.
+
+This batch changes no configuration, dependency, network port, data directory, 3MF/profile format, profile
+data, or default Orca behavior. Its only shared-file change is the smart-slicing source registration in
+`src/slic3r/CMakeLists.txt`; `MainFrame.cpp` and `Plater.cpp` are unchanged.
