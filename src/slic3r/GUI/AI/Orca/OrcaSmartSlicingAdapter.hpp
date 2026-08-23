@@ -4,6 +4,8 @@
 #include "OrcaPlacementCandidateProvider.hpp"
 #include "OrcaTrialSliceExecutor.hpp"
 
+#include <cstdint>
+
 namespace Slic3r::GUI {
 
 class Plater;
@@ -18,6 +20,7 @@ public:
 
     AI::SmartSlicing::WorkspaceRevision current_revision() const override;
     AI::SmartSlicing::WorkspaceContext capture_context() const override;
+    bool focus_object(uint64_t object_id) const;
     OrcaTrialSliceInput capture_trial_slice_input() const;
     std::vector<AI::SmartSlicing::SliceCandidate>
     candidate_proposals(const AI::SmartSlicing::WorkspaceContext& context) const;

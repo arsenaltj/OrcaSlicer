@@ -19,7 +19,8 @@ SmartSlicingViewModel SmartSlicingViewModel::from_snapshot(const AI::SmartSlicin
         view.issue_count = snapshot.report->issues.size();
         view.issues.reserve(snapshot.report->issues.size());
         for (const AI::SmartSlicing::PrintabilityIssue& issue : snapshot.report->issues)
-            view.issues.emplace_back(AI::SmartSlicing::issue_code_name(issue.code), issue.evidence);
+            view.issues.push_back(
+                {AI::SmartSlicing::issue_code_name(issue.code), issue.evidence, issue.object_id});
     }
     const AI::SmartSlicing::SlicingMetrics* baseline_metrics =
         !snapshot.candidates.empty() && snapshot.candidates.front().metrics ? &*snapshot.candidates.front().metrics : nullptr;

@@ -74,6 +74,23 @@ TEST_CASE("blocking printability issues require a decision", "[AI][SmartSlicing]
     CHECK(coordinator.snapshot().report->has_blocking_issue());
 }
 
+TEST_CASE("object printability targets survive view model projection", "[AI][SmartSlicing][IssueNavigation]")
+{
+    FakeWorkspace workspace;
+    workspace.context.materials.push_back({"material", "#FFFFFF"});
+    workspace.context.objects.front().open_edge_count = 3;
+    SmartSlicingCoordinator coordinator(workspace);
+    coordinator.start();
+
+    const Slic3r::GUI::SmartSlicingViewModel view =
+        Slic3r::GUI::SmartSlicingViewModel::from_snapshot(coordinator.snapshot());
+
+    REQUIRE(view.issues.size() == 1);
+    CHECK(view.issues.front().code == "open_mesh");
+    CHECK(view.issues.front().object_id == 42);
+    CHECK(view.issues.front().evidence == "3 open mesh edges.");
+}
+
 TEST_CASE("smart slicing coordinator supports cancel and restart", "[AI][SmartSlicing]")
 {
     FakeWorkspace workspace;

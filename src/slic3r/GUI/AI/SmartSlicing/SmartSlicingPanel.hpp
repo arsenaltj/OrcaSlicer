@@ -4,6 +4,7 @@
 
 #include <array>
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <thread>
 #include <wx/panel.h>
@@ -25,9 +26,11 @@ class SmartSlicingPanel final : public wxPanel
 public:
     using PlanCandidatesFn = std::function<std::vector<AI::SmartSlicing::SliceCandidate>()>;
     using CancelTrialFn = std::function<void()>;
+    using FocusIssueFn = std::function<void(uint64_t)>;
 
     SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSlicingCoordinator& coordinator,
-                      PlanCandidatesFn plan_candidates = {}, CancelTrialFn cancel_trial = {});
+                      PlanCandidatesFn plan_candidates = {}, CancelTrialFn cancel_trial = {},
+                      FocusIssueFn focus_issue = {});
     ~SmartSlicingPanel() override;
     void render(const SmartSlicingViewModel& view_model);
 
@@ -47,9 +50,12 @@ private:
     AI::SmartSlicing::SmartSlicingCoordinator& m_coordinator;
     PlanCandidatesFn m_plan_candidates;
     CancelTrialFn m_cancel_trial;
+    FocusIssueFn m_focus_issue;
     std::array<wxStaticText*, 4> m_stage_labels{};
     wxStaticText* m_summary{nullptr};
     wxStaticText* m_issues{nullptr};
+    std::array<wxButton*, 5> m_issue_focus_buttons{};
+    std::array<uint64_t, 5> m_issue_object_ids{};
     wxStaticText* m_p0_notice{nullptr};
     wxPanel* m_candidate_section{nullptr};
     std::array<CandidateControls, 3> m_candidate_controls{};

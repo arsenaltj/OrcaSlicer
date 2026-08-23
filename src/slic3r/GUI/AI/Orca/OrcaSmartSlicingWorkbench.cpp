@@ -94,7 +94,8 @@ OrcaSmartSlicingWorkbench::OrcaSmartSlicingWorkbench(Plater& plater, StartSliceF
             m_trial_executor->prepare_session_input(m_workspace->capture_trial_slice_input());
             return m_workspace->candidate_proposals(*snapshot.context);
         },
-        [this] { m_cached_trial_executor->cancel_trial_slice(); });
+        [this] { m_cached_trial_executor->cancel_trial_slice(); },
+        [this](uint64_t object_id) { m_workspace->focus_object(object_id); });
     m_presenter->set_view_changed([this](const SmartSlicingViewModel& view) {
         m_panel->render(view);
         if (should_clear_trial_input(view.summary_key))

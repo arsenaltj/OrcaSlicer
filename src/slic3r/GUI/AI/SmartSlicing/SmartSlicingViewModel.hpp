@@ -4,9 +4,9 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
-#include <utility>
 #include <vector>
 
 namespace Slic3r::GUI {
@@ -48,13 +48,20 @@ struct SmartSlicingCandidateView
     bool can_select{false};
 };
 
+struct SmartSlicingIssueView
+{
+    std::string code;
+    std::string evidence;
+    uint64_t object_id{0};
+};
+
 struct SmartSlicingViewModel
 {
     std::array<SmartSlicingStageView, 4> stages{};
     std::array<LegacyAIWorkflowStatus, 6> legacy_steps{};
     std::string summary_key{"ready_to_start"};
     std::string detail;
-    std::vector<std::pair<std::string, std::string>> issues;
+    std::vector<SmartSlicingIssueView> issues;
     std::vector<SmartSlicingCandidateView> candidates;
     size_t issue_count{0};
     bool can_start{true};

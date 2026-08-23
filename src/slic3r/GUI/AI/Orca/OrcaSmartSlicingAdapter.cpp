@@ -8,6 +8,8 @@
 #include "libslic3r/Print.hpp"
 #include "libslic3r/PrintConfig.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
+#include "slic3r/GUI/GLCanvas3D.hpp"
+#include "slic3r/GUI/GUI_ObjectList.hpp"
 #include "slic3r/GUI/Jobs/ArrangeJob.hpp"
 #include "slic3r/GUI/PartPlate.hpp"
 #include "slic3r/GUI/Plater.hpp"
@@ -84,6 +86,31 @@ Model current_plate_model_copy(const Plater& plater, PartPlate& plate)
 AI::SmartSlicing::WorkspaceRevision OrcaSmartSlicingAdapter::current_revision() const { return capture_context_impl(false).revision; }
 
 AI::SmartSlicing::WorkspaceContext OrcaSmartSlicingAdapter::capture_context() const { return capture_context_impl(true); }
+
+bool OrcaSmartSlicingAdapter::focus_object(uint64_t object_id) const
+{
+    if (m_plater == nullptr || object_id == 0)
+        return false;
+    const auto object_it = std::find_if(m_plater->model().objects.begin(), m_plater->model().objects.end(),
+                                        [object_id](const ModelObject* object) {
+                                            return object != nullptr && object->id().id == object_id;
+                                        });
+    if (object_it == m_plater->model().objects.end())
+        return false;
+
+    m_plater->select_view_3D("3D");
+    GLCanvas3D* canvas = m_plater->get_view3D_canvas3D();
+    if (canvas == nullptr)
+        return false;
+    Selection& selection = canvas->get_selection();
+    selection.clear();
+    selection.add_object(static_cast<unsigned int>(std::distance(m_plater->model().objects.begin(), object_it)), false);
+    m_plater->sidebar().obj_list()->update_selections();
+    canvas->update_gizmos_on_off_state();
+    canvas->zoom_to_selection();
+    canvas->set_as_dirty();
+    return true;
+}
 
 OrcaTrialSliceInput OrcaSmartSlicingAdapter::capture_trial_slice_input() const
 {

@@ -151,11 +151,13 @@ wxString candidate_reason(const SmartSlicingCandidateView& candidate)
 } // namespace
 
 SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSlicingCoordinator& coordinator,
-                                     PlanCandidatesFn plan_candidates, CancelTrialFn cancel_trial)
+                                     PlanCandidatesFn plan_candidates, CancelTrialFn cancel_trial,
+                                     FocusIssueFn focus_issue)
     : wxPanel(parent)
     , m_coordinator(coordinator)
     , m_plan_candidates(std::move(plan_candidates))
     , m_cancel_trial(std::move(cancel_trial))
+    , m_focus_issue(std::move(focus_issue))
     , m_revision_timer(this)
 {
     SetBackgroundColour(wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOW));
@@ -181,6 +183,16 @@ SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSl
     m_issues = new wxStaticText(this, wxID_ANY, _L("尚未运行检查"));
     m_issues->Wrap(FromDIP(330));
     root->Add(m_issues, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(16));
+    for (size_t index = 0; index < m_issue_focus_buttons.size(); ++index) {
+        wxButton* button = new wxButton(this, wxID_ANY, _L("定位对象"));
+        button->Hide();
+        button->Bind(wxEVT_BUTTON, [this, index](wxCommandEvent&) {
+            if (m_focus_issue && m_issue_object_ids[index] != 0)
+                m_focus_issue(m_issue_object_ids[index]);
+        });
+        m_issue_focus_buttons[index] = button;
+        root->Add(button, 0, wxALIGN_LEFT | wxLEFT | wxRIGHT | wxTOP, FromDIP(16));
+    }
 
     m_p0_notice = new wxStaticText(this, wxID_ANY, _L("预检与候选试切均在隔离副本中执行。"));
     m_p0_notice->SetForegroundColour(wxSystemSettings::GetColour(wxSYS_COLOUR_GRAYTEXT));
@@ -309,14 +321,30 @@ void SmartSlicingPanel::render(const SmartSlicingViewModel& view_model)
         wxString issues = wxString::Format(_L("发现 %llu 个结构化问题"), static_cast<unsigned long long>(view_model.issue_count));
         const size_t visible_issue_count = std::min<size_t>(view_model.issues.size(), 5);
         for (size_t index = 0; index < visible_issue_count; ++index) {
-            const auto& [code, evidence] = view_model.issues[index];
-            issues += _L("\n• ") + issue_name(code) + (evidence.empty() ? wxString() : wxString(": ") + from_u8(evidence));
+            const SmartSlicingIssueView& issue = view_model.issues[index];
+            issues += _L("\n• ") + issue_name(issue.code) +
+                      (issue.evidence.empty() ? wxString() : wxString(": ") + from_u8(issue.evidence));
         }
         if (visible_issue_count < view_model.issues.size())
             issues += wxString::Format(_L("\n…另有 %llu 项"),
                                        static_cast<unsigned long long>(view_model.issues.size() - visible_issue_count));
         m_issues->SetLabel(issues);
         m_issues->Wrap(FromDIP(330));
+    }
+    for (size_t index = 0; index < m_issue_focus_buttons.size(); ++index) {
+        m_issue_object_ids[index] = 0;
+        m_issue_focus_buttons[index]->Hide();
+    }
+    size_t focus_button_index = 0;
+    for (const SmartSlicingIssueView& issue : view_model.issues) {
+        if (focus_button_index == m_issue_focus_buttons.size())
+            break;
+        if (issue.object_id == 0)
+            continue;
+        m_issue_object_ids[focus_button_index] = issue.object_id;
+        m_issue_focus_buttons[focus_button_index]->SetLabel(_L("定位对象：") + issue_name(issue.code));
+        m_issue_focus_buttons[focus_button_index]->Show();
+        ++focus_button_index;
     }
     m_can_plan_candidates = view_model.can_plan_candidates;
     m_start->Enable(view_model.can_start || view_model.can_plan_candidates);
