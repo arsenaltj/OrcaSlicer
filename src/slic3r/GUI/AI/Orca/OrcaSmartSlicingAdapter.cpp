@@ -1,5 +1,7 @@
 #include "OrcaSmartSlicingAdapter.hpp"
 
+#include "OrcaOrientationCandidateProvider.hpp"
+
 #include "libslic3r/Model.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/Print.hpp"
@@ -11,6 +13,7 @@
 
 #include <algorithm>
 #include <iomanip>
+#include <iterator>
 #include <limits>
 #include <locale>
 #include <sstream>
@@ -122,6 +125,15 @@ OrcaSmartSlicingAdapter::candidate_proposals(const AI::SmartSlicing::WorkspaceRe
         input.fixed_regions.push_back(*wipe_tower);
     std::vector<AI::SmartSlicing::SliceCandidate> candidates =
         OrcaPlacementCandidateProvider().generate(std::move(input), revision);
+
+    OrcaOrientationCandidateInput orientation_input;
+    orientation_input.model        = current_plate_model_copy(*m_plater, *plate);
+    orientation_input.config       = wxGetApp().preset_bundle->full_config();
+    orientation_input.plate_locked = plate->is_locked();
+    std::vector<AI::SmartSlicing::SliceCandidate> orientation_candidates =
+        OrcaOrientationCandidateProvider().generate(std::move(orientation_input), revision);
+    candidates.insert(candidates.end(), std::make_move_iterator(orientation_candidates.begin()),
+                      std::make_move_iterator(orientation_candidates.end()));
 
     DynamicPrintConfig current_config = wxGetApp().preset_bundle->full_config();
     current_config.apply(*plate->config(), true);
