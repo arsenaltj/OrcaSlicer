@@ -74,6 +74,56 @@ TEST_CASE("blocking printability issues require a decision", "[AI][SmartSlicing]
     CHECK(coordinator.snapshot().report->has_blocking_issue());
 }
 
+TEST_CASE("acknowledged mesh risk continues without recapturing or mutating the workspace",
+          "[AI][SmartSlicing][RiskDecision]")
+{
+    FakeWorkspace workspace;
+    workspace.context.materials.push_back({"material", "#FFFFFF"});
+    workspace.context.objects.front().open_edge_count = 3;
+    SmartSlicingCoordinator coordinator(workspace);
+    coordinator.start();
+
+    REQUIRE(coordinator.snapshot().state == WorkflowState::AwaitingRiskDecision);
+    CHECK(coordinator.accept_printability_risk());
+    CHECK(coordinator.snapshot().state == WorkflowState::ReadyForCandidatePlanning);
+    CHECK(coordinator.snapshot().detail == "printability_risk_accepted");
+    CHECK(workspace.capture_count == 1);
+
+    const Slic3r::GUI::SmartSlicingViewModel view =
+        Slic3r::GUI::SmartSlicingViewModel::from_snapshot(coordinator.snapshot());
+    CHECK(view.summary_key == "preflight_complete_with_warnings");
+    CHECK(view.stages[1].status == Slic3r::GUI::SmartSlicingStageStatus::NeedsAttention);
+    CHECK_FALSE(view.can_accept_risk);
+    CHECK(view.can_plan_candidates);
+}
+
+TEST_CASE("risk acknowledgement rejects non-overridable blockers and stale workspaces",
+          "[AI][SmartSlicing][RiskDecision]")
+{
+    SECTION("a missing material cannot be acknowledged") {
+        FakeWorkspace workspace;
+        workspace.context.objects.front().open_edge_count = 3;
+        SmartSlicingCoordinator coordinator(workspace);
+        coordinator.start();
+
+        REQUIRE(coordinator.snapshot().state == WorkflowState::AwaitingRiskDecision);
+        CHECK_FALSE(coordinator.accept_printability_risk());
+        CHECK(coordinator.snapshot().state == WorkflowState::AwaitingRiskDecision);
+    }
+
+    SECTION("an acknowledged report cannot be applied to a newer revision") {
+        FakeWorkspace workspace;
+        workspace.context.materials.push_back({"material", "#FFFFFF"});
+        workspace.context.objects.front().open_edge_count = 3;
+        SmartSlicingCoordinator coordinator(workspace);
+        coordinator.start();
+        workspace.context.revision.fingerprint = "revision-b";
+
+        CHECK_FALSE(coordinator.accept_printability_risk());
+        CHECK(coordinator.snapshot().state == WorkflowState::Stale);
+    }
+}
+
 TEST_CASE("object printability targets survive view model projection", "[AI][SmartSlicing][IssueNavigation]")
 {
     FakeWorkspace workspace;
@@ -89,6 +139,7 @@ TEST_CASE("object printability targets survive view model projection", "[AI][Sma
     CHECK(view.issues.front().code == "open_mesh");
     CHECK(view.issues.front().object_id == 42);
     CHECK(view.issues.front().evidence == "3 open mesh edges.");
+    CHECK(view.can_accept_risk);
 }
 
 TEST_CASE("smart slicing coordinator supports cancel and restart", "[AI][SmartSlicing]")

@@ -3,6 +3,7 @@
 #include "SmartSlicingTypes.hpp"
 #include "WorkspaceRevision.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -33,6 +34,21 @@ struct PrintabilityReport
             if (issue.blocks_trial_slice)
                 return true;
         return false;
+    }
+
+    bool can_accept_risk() const
+    {
+        bool has_overridable_blocker = false;
+        for (const PrintabilityIssue& issue : issues) {
+            if (!issue.blocks_trial_slice)
+                continue;
+            if (!issue.requires_user_decision ||
+                std::find(issue.resolution_codes.begin(), issue.resolution_codes.end(), "keep_current_mesh") ==
+                    issue.resolution_codes.end())
+                return false;
+            has_overridable_blocker = true;
+        }
+        return has_overridable_blocker;
     }
 };
 

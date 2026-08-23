@@ -178,6 +178,23 @@ void SmartSlicingCoordinator::cancel()
     transition(WorkflowState::Canceled, "canceled");
 }
 
+bool SmartSlicingCoordinator::accept_printability_risk()
+{
+    if (m_snapshot.state != WorkflowState::AwaitingRiskDecision || !m_snapshot.context || !m_snapshot.report ||
+        !m_snapshot.report->can_accept_risk())
+        return false;
+    try {
+        if (!workspace_revision_matches()) {
+            transition(WorkflowState::Stale, "workspace_changed");
+            return false;
+        }
+    } catch (...) {
+        return false;
+    }
+    transition(WorkflowState::ReadyForCandidatePlanning, "printability_risk_accepted");
+    return true;
+}
+
 bool SmartSlicingCoordinator::workspace_revision_matches() const
 {
     return m_snapshot.context && m_workspace.current_revision() == m_snapshot.context->revision;

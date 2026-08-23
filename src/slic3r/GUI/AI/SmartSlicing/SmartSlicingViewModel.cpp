@@ -10,6 +10,8 @@ SmartSlicingViewModel SmartSlicingViewModel::from_snapshot(const AI::SmartSlicin
     SmartSlicingViewModel view;
     view.can_start  = snapshot.can_start();
     view.can_cancel = snapshot.can_cancel();
+    view.can_accept_risk = snapshot.state == WorkflowState::AwaitingRiskDecision && snapshot.report &&
+                           snapshot.report->can_accept_risk();
     view.can_plan_candidates = snapshot.state == WorkflowState::ReadyForCandidatePlanning;
     view.can_apply = snapshot.state == WorkflowState::ReadyToApply && !snapshot.selected_candidate_id.empty();
     view.can_undo_apply = snapshot.state == WorkflowState::ApplyFailed && snapshot.can_undo_apply;
@@ -101,7 +103,7 @@ SmartSlicingViewModel SmartSlicingViewModel::from_snapshot(const AI::SmartSlicin
                                  LegacyAIWorkflowStatus::Waiting, LegacyAIWorkflowStatus::Waiting, LegacyAIWorkflowStatus::Waiting};
         break;
     case WorkflowState::ReadyForCandidatePlanning: {
-        const bool needs_attention = snapshot.report && snapshot.report->readiness == AI::SmartSlicing::Readiness::NeedsAttention;
+        const bool needs_attention = snapshot.report && snapshot.report->readiness != AI::SmartSlicing::Readiness::Ready;
         if (needs_attention) {
             view.summary_key = "preflight_complete_with_warnings";
             complete_through(0);

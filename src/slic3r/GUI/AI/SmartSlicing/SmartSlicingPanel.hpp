@@ -66,6 +66,7 @@ private:
     wxButton* m_start{nullptr};
     wxButton* m_cancel{nullptr};
     wxTimer m_revision_timer;
+    bool m_can_accept_risk{false};
     bool m_can_plan_candidates{false};
     std::atomic<bool> m_worker_running{false};
     std::thread m_worker;

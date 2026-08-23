@@ -32,6 +32,7 @@ public:
 
     void start();
     void cancel();
+    bool accept_printability_risk();
     bool refresh_revision();
     bool plan_and_slice_candidates(std::vector<SliceCandidate> proposals = {},
                                    CandidateGoal goal = CandidateGoal::Stability,

@@ -66,6 +66,7 @@ struct SmartSlicingViewModel
     size_t issue_count{0};
     bool can_start{true};
     bool can_cancel{false};
+    bool can_accept_risk{false};
     bool can_plan_candidates{false};
     bool can_apply{false};
     bool can_undo_apply{false};

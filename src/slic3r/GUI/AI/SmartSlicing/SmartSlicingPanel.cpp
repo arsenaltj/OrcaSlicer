@@ -253,7 +253,9 @@ SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSl
     SetSizer(root);
 
     m_start->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-        if (m_can_plan_candidates) {
+        if (m_can_accept_risk) {
+            m_coordinator.accept_printability_risk();
+        } else if (m_can_plan_candidates) {
             std::vector<AI::SmartSlicing::SliceCandidate> candidates;
             try {
                 if (m_plan_candidates)
@@ -346,11 +348,14 @@ void SmartSlicingPanel::render(const SmartSlicingViewModel& view_model)
         m_issue_focus_buttons[focus_button_index]->Show();
         ++focus_button_index;
     }
+    m_can_accept_risk = view_model.can_accept_risk;
     m_can_plan_candidates = view_model.can_plan_candidates;
-    m_start->Enable(view_model.can_start || view_model.can_plan_candidates);
-    m_start->SetLabel(view_model.can_plan_candidates ? _L("生成并试切方案") :
+    m_start->Enable(view_model.can_start || view_model.can_plan_candidates || view_model.can_accept_risk);
+    m_start->SetLabel(view_model.can_accept_risk ? _L("保留当前网格并继续") :
+                      view_model.can_plan_candidates ? _L("生成并试切方案") :
                       view_model.is_stale ? _L("重新检查") : _L("开始检查"));
     m_cancel->Enable(view_model.can_cancel);
+    m_cancel->SetLabel(view_model.can_accept_risk ? _L("先修复模型") : _L("取消"));
 
     const bool show_candidates = !view_model.candidates.empty();
     m_candidate_section->Show(show_candidates);
