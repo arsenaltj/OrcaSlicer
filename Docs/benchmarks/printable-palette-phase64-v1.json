@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "benchmark_id": "printable-palette-phase64-v1",
+  "frozen_at": "2026-08-23",
+  "cases": [
+    {
+      "id": "astronaut_gardener",
+      "category": "character",
+      "style": "q_cartoon",
+      "prompt": "一名友善的太空园丁设计师玩具，全身站立，圆润头盔、粗壮手套和靴子，双手抱着一个与身体牢固连接的矮胖花盆。人物固定在低矮圆形一体底座上，正面三分之四视角，完整轮廓，不要文字、透明面罩、细管或漂浮零件。"
+    },
+    {
+      "id": "owl_librarian",
+      "category": "character_animal",
+      "style": "cel_shaded",
+      "prompt": "一只猫头鹰图书管理员收藏玩具，双翼贴近身体，一只翅膀扶着厚实闭合的书本，眼镜框粗而完整。双脚和尾部与低矮树桩形底座牢固连接，正面三分之四视角，大块清晰色区，不要文字、羽毛碎片或悬空装饰。"
+    },
+    {
+      "id": "sea_turtle_courier",
+      "category": "animal",
+      "style": "enamel_inlay",
+      "prompt": "一只海龟快递员设计师玩具，四肢短粗并贴近龟壳，背上固定一个圆角小包裹，头部抬起但颈部粗壮。腹部与椭圆形浅水纹一体底座连接，正面三分之四视角，使用大面积珐琅拼色，不要文字、绳索或漂浮水花。"
+    },
+    {
+      "id": "espresso_machine",
+      "category": "stable_product",
+      "style": "enamel_inlay",
+      "prompt": "一台紧凑的复古意式咖啡机收藏模型，圆角箱体稳定落地，正面有一个大圆压力表、两个粗短旋钮和与机身连接的厚实冲煮头。不要额外底座、品牌文字、透明杯子、细管、背景道具或漂浮零件；正面三分之四视角。"
+    },
+    {
+      "id": "portable_radio",
+      "category": "stable_product",
+      "style": "low_poly",
+      "prompt": "一台便携式复古收音机低多边形收藏模型，圆角长方体机身，正面一个大扬声器格栅和两个粗旋钮，顶部提手必须粗壮并与机身两端连接。机身自身稳定落地，不要文字、天线、线缆、背景或悬空零件。"
+    },
+    {
+      "id": "retro_scooter",
+      "category": "vehicle",
+      "style": "cel_shaded",
+      "prompt": "一辆复古踏板摩托车设计师玩具，车轮和挡泥板厚实，车把与前叉牢固连接，座椅和车身形成连续体。使用低矮道路形一体底座支撑两个车轮，正面三分之四视角，完整轮廓，不要骑手、文字、后视镜细杆或漂浮零件。"
+    },
+    {
+      "id": "lunar_rover",
+      "category": "vehicle",
+      "style": "low_poly",
+      "prompt": "一辆紧凑的月球探测车低多边形收藏模型，六个厚轮、矮胖车体和粗壮折叠机械臂组成牢固整体，顶部相机为厚实方块结构。车轮接触低矮月面一体底座，正面三分之四视角，不要天线细丝、文字或漂浮岩石。"
+    },
+    {
+      "id": "mushroom_cottage",
+      "category": "architecture",
+      "style": "q_cartoon",
+      "prompt": "一座蘑菇形小屋设计师玩具，粗壮蘑菇柄作为墙体，圆润屋顶与墙体完整连接，正面有一扇大门和两扇大块凹凸窗。小屋固定在低矮圆形草地底座上，正面三分之四视角，不要树木、烟雾、文字或悬空装饰。"
+    },
+    {
+      "id": "coastal_lighthouse",
+      "category": "architecture",
+      "style": "sculpture",
+      "prompt": "一座紧凑海岸灯塔收藏雕塑，略微收分的粗塔身、厚实环形平台和圆顶灯室牢固连接，门窗为大块浅浮雕。灯塔固定在低矮岩石形一体底座上，正面三分之四视角，不要透明玻璃、栏杆细丝、海浪飞沫、文字或背景。"
+    },
+    {
+      "id": "cactus_guardian",
+      "category": "organic_character",
+      "style": "q_cartoon",
+      "prompt": "一名仙人掌守卫设计师玩具，主体为粗壮柱状仙人掌，两条短粗手臂贴近躯干，戴宽大但厚实的护目镜和小披肩。根部与矮胖花盆及圆形底座连成整体，正面三分之四视角，不要尖刺细丝、文字或漂浮配件。"
+    },
+    {
+      "id": "coral_music_box",
+      "category": "organic_product",
+      "style": "enamel_inlay",
+      "prompt": "一个珊瑚主题八音盒收藏模型，稳定的圆柱盒体上长出三簇粗短圆角珊瑚，所有枝条与顶盖牢固连接，盒体正面只有一个大贝壳浮雕。使用大块珐琅拼色，不要透明材料、细小分叉、文字、人物或漂浮气泡。"
+    },
+    {
+      "id": "armored_chess_knight",
+      "category": "sculpture",
+      "style": "sculpture",
+      "prompt": "一个装甲战马造型的国际象棋骑士收藏雕塑，马头、粗颈、胸甲和棋子圆形底座形成连续实体，鬃毛简化为大块层次，轮廓庄重清晰。正面三分之四视角，不要骑手、武器、文字、细链或漂浮装饰。"
+    }
+  ]
+}
+
