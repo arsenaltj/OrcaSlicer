@@ -1,11 +1,6 @@
 #include "Plater.hpp"
 #include "AIAssistantPanel.hpp"
-#include "AI/Orca/OrcaSmartSlicingAdapter.hpp"
-#include "AI/Orca/OrcaOfficialSliceGateway.hpp"
-#include "AI/Orca/OrcaWorkflowRuntimeStore.hpp"
-#include "AI/SmartSlicing/SmartSlicingPanel.hpp"
-#include "AI/SmartSlicing/SmartSlicingPresenter.hpp"
-#include "slic3r/AI/SmartSlicing/Application/SmartSlicingCoordinator.hpp"
+#include "AI/Orca/OrcaSmartSlicingWorkbench.hpp"
 #include "libslic3r/Config.hpp"
 #include "libslic3r_version.h"
 
@@ -4528,13 +4523,7 @@ struct Plater::priv
     Plater *q;
     Sidebar *  sidebar;
     AIAssistantPanel* ai_assistant_panel { nullptr };
-    std::unique_ptr<OrcaSmartSlicingAdapter> smart_slicing_workspace;
-    std::unique_ptr<OrcaTrialSliceExecutor> smart_slicing_trial_executor;
-    std::unique_ptr<OrcaOfficialSliceGateway> smart_slicing_official_gateway;
-    std::unique_ptr<OrcaWorkflowRuntimeStore> smart_slicing_runtime_store;
-    std::unique_ptr<AI::SmartSlicing::SmartSlicingCoordinator> smart_slicing_coordinator;
-    std::unique_ptr<SmartSlicingPresenter> smart_slicing_presenter;
-    SmartSlicingPanel* smart_slicing_panel { nullptr };
+    std::unique_ptr<OrcaSmartSlicingWorkbench> smart_slicing_workbench;
     MainFrame *main_frame;
 
     MenuFactory menus;
@@ -5952,8 +5941,8 @@ void Plater::priv::reset_window_layout()
     sidebar_layout.is_collapsed = false;
     if (ai_assistant_panel != nullptr)
         m_aui_mgr.GetPane(ai_assistant_panel).Hide();
-    if (smart_slicing_panel != nullptr)
-        m_aui_mgr.GetPane(smart_slicing_panel).Hide();
+    if (smart_slicing_workbench != nullptr)
+        m_aui_mgr.GetPane(smart_slicing_workbench->panel()).Hide();
     update_sidebar(true);
 }
 
@@ -10306,9 +10295,9 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
 
     exporting_status = ExportingStatus::NOT_EXPORTING;
 
-    if (is_finished && !ai_internal_restart && smart_slicing_official_gateway != nullptr) {
+    if (is_finished && !ai_internal_restart && smart_slicing_workbench != nullptr) {
         const bool success = evt.success() && !has_error && !evt.cancelled();
-        smart_slicing_official_gateway->notify_slice_completed(
+        smart_slicing_workbench->notify_slice_completed(
             success, evt.cancelled() ? "official_slice_canceled" : "official_slice_failed");
     }
 
@@ -14870,20 +14859,17 @@ void Plater::show_ai_assistant(bool show)
 
 bool Plater::is_smart_slicing_shown() const
 {
-    return p->smart_slicing_panel != nullptr && p->m_aui_mgr.GetPane(p->smart_slicing_panel).IsShown();
+    return p->smart_slicing_workbench != nullptr &&
+           p->m_aui_mgr.GetPane(p->smart_slicing_workbench->panel()).IsShown();
 }
 
 void Plater::enable_smart_slicing()
 {
-    if (p->smart_slicing_panel != nullptr)
+    if (p->smart_slicing_workbench != nullptr)
         return;
 
-    p->smart_slicing_workspace = std::make_unique<OrcaSmartSlicingAdapter>(this);
-    p->smart_slicing_trial_executor = std::make_unique<OrcaTrialSliceExecutor>([this] {
-        return p->smart_slicing_workspace->capture_trial_slice_input();
-    });
-    p->smart_slicing_official_gateway = std::make_unique<OrcaOfficialSliceGateway>(
-        *this, [this] { return p->smart_slicing_workspace->current_revision(); },
+    p->smart_slicing_workbench = std::make_unique<OrcaSmartSlicingWorkbench>(
+        *this,
         [this] {
             if (printer_technology() != ptFFF || p->process_completed_with_error == p->partplate_list.get_curr_plate_index())
                 return false;
@@ -14899,70 +14885,7 @@ void Plater::enable_smart_slicing()
             reslice();
             return p->m_is_slicing;
         });
-    p->smart_slicing_coordinator =
-        std::make_unique<AI::SmartSlicing::SmartSlicingCoordinator>(*p->smart_slicing_workspace,
-                                                                    *p->smart_slicing_trial_executor,
-                                                                    *p->smart_slicing_official_gateway);
-    AI::SmartSlicing::WorkflowResourceBudget smart_slicing_budget;
-    p->smart_slicing_trial_executor->set_resource_limits(smart_slicing_budget.maximum_elapsed,
-                                                         smart_slicing_budget.maximum_memory_bytes,
-                                                         smart_slicing_budget.maximum_temporary_disk_bytes);
-    p->smart_slicing_coordinator->set_resource_budget(smart_slicing_budget);
-    p->smart_slicing_runtime_store = std::make_unique<OrcaWorkflowRuntimeStore>(
-        boost::filesystem::temp_directory_path() / "OrcaSlicer-smart-slicing-runtime-v1.json");
-    p->smart_slicing_coordinator->set_runtime_store(*p->smart_slicing_runtime_store);
-    p->smart_slicing_presenter = std::make_unique<SmartSlicingPresenter>(
-        *p->smart_slicing_coordinator, [](std::function<void()> publish) {
-            if (wxIsMainThread())
-                publish();
-            else
-                wxGetApp().CallAfter(std::move(publish));
-        });
-    p->smart_slicing_panel = new SmartSlicingPanel(this, *p->smart_slicing_coordinator, [this] {
-        const auto& snapshot = p->smart_slicing_coordinator->snapshot();
-        if (!snapshot.context)
-            return std::vector<AI::SmartSlicing::SliceCandidate>{};
-        p->smart_slicing_trial_executor->prepare_session_input(
-            p->smart_slicing_workspace->capture_trial_slice_input());
-        return p->smart_slicing_workspace->candidate_proposals(snapshot.context->revision);
-    }, [this] {
-        p->smart_slicing_trial_executor->cancel_trial_slice();
-    });
-    p->smart_slicing_presenter->set_view_changed([this](const SmartSlicingViewModel& view) {
-        if (p->smart_slicing_panel != nullptr)
-            p->smart_slicing_panel->render(view);
-        if (view.summary_key == "official_slice_complete" || view.summary_key == "canceled" ||
-            view.summary_key == "workspace_changed" || view.summary_key == "preflight_failed")
-            p->smart_slicing_trial_executor->clear_session_input();
-
-        if (view.summary_key == "ready_to_start")
-            return;
-        auto to_sidebar_status = [](LegacyAIWorkflowStatus status) {
-            switch (status) {
-            case LegacyAIWorkflowStatus::Running: return Sidebar::AIWorkflowStatus::Running;
-            case LegacyAIWorkflowStatus::Success: return Sidebar::AIWorkflowStatus::Success;
-            case LegacyAIWorkflowStatus::Warning: return Sidebar::AIWorkflowStatus::Warning;
-            case LegacyAIWorkflowStatus::Failed: return Sidebar::AIWorkflowStatus::Failed;
-            case LegacyAIWorkflowStatus::Waiting: return Sidebar::AIWorkflowStatus::Waiting;
-            }
-            return Sidebar::AIWorkflowStatus::Waiting;
-        };
-        const wxString summary = view.is_stale ? _L("工程已变化，需要重新检查") :
-                                 view.summary_key == "preflight_complete" ? _L("可打印性检查完成") :
-                                 view.summary_key == "preflight_complete_with_warnings" ? _L("可打印性检查完成，仍有提示") :
-                                 view.summary_key == "printability_action_required" ? _L("发现需要处理的问题") :
-                                 view.summary_key == "preflight_failed" ? _L("可打印性检查失败") :
-                                 view.summary_key == "canceled" ? _L("可打印性检查已取消") :
-                                 _L("正在执行智能切片预检");
-        p->sidebar->start_ai_workflow(summary);
-        for (size_t index = 0; index < view.legacy_steps.size(); ++index)
-            p->sidebar->update_ai_workflow_step(static_cast<Sidebar::AIWorkflowStep>(index),
-                                                to_sidebar_status(view.legacy_steps[index]));
-        if (view.can_start && !view.can_cancel)
-            p->sidebar->finish_ai_workflow(false, summary);
-    });
-
-    p->m_aui_mgr.AddPane(p->smart_slicing_panel, wxAuiPaneInfo()
+    p->m_aui_mgr.AddPane(p->smart_slicing_workbench->panel(), wxAuiPaneInfo()
                                                      .Name("smart_slicing")
                                                      .Caption(_L("智能切片"))
                                                      .Right()
@@ -14976,9 +14899,9 @@ void Plater::enable_smart_slicing()
 
 void Plater::show_smart_slicing(bool show)
 {
-    if (p->smart_slicing_panel == nullptr)
+    if (p->smart_slicing_workbench == nullptr)
         return;
-    auto& pane = p->m_aui_mgr.GetPane(p->smart_slicing_panel);
+    auto& pane = p->m_aui_mgr.GetPane(p->smart_slicing_workbench->panel());
     if (!pane.IsOk())
         return;
     pane.Show(show);
