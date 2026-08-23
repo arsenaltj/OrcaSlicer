@@ -282,6 +282,55 @@ TEST_CASE("ready candidate workflow projects into optimization and apply stages"
     CHECK(view.candidates.front().recommended);
     CHECK(view.candidates.front().selected);
     CHECK(view.can_apply);
+    CHECK(view.legacy_steps == std::array<Slic3r::GUI::LegacyAIWorkflowStatus, 6>{
+                                   Slic3r::GUI::LegacyAIWorkflowStatus::Success,
+                                   Slic3r::GUI::LegacyAIWorkflowStatus::Success,
+                                   Slic3r::GUI::LegacyAIWorkflowStatus::Success,
+                                   Slic3r::GUI::LegacyAIWorkflowStatus::Success,
+                                   Slic3r::GUI::LegacyAIWorkflowStatus::Waiting,
+                                   Slic3r::GUI::LegacyAIWorkflowStatus::Waiting});
+}
+
+TEST_CASE("formal apply states keep the legacy projection aligned with the workbench",
+          "[AI][SmartSlicing][Workflow]")
+{
+    using LegacyStatus = Slic3r::GUI::LegacyAIWorkflowStatus;
+
+    WorkflowSnapshot snapshot;
+    snapshot.state = WorkflowState::PlanningCandidates;
+    CHECK(Slic3r::GUI::SmartSlicingViewModel::from_snapshot(snapshot).legacy_steps ==
+          std::array<LegacyStatus, 6>{LegacyStatus::Success, LegacyStatus::Success, LegacyStatus::Success,
+                                      LegacyStatus::Running, LegacyStatus::Waiting, LegacyStatus::Waiting});
+
+    snapshot.state = WorkflowState::TrialSlicingBaseline;
+    CHECK(Slic3r::GUI::SmartSlicingViewModel::from_snapshot(snapshot).legacy_steps ==
+          std::array<LegacyStatus, 6>{LegacyStatus::Success, LegacyStatus::Success, LegacyStatus::Success,
+                                      LegacyStatus::Success, LegacyStatus::Running, LegacyStatus::Waiting});
+
+    snapshot.state = WorkflowState::TrialSlicingCandidates;
+    CHECK(Slic3r::GUI::SmartSlicingViewModel::from_snapshot(snapshot).legacy_steps ==
+          std::array<LegacyStatus, 6>{LegacyStatus::Success, LegacyStatus::Success, LegacyStatus::Success,
+                                      LegacyStatus::Success, LegacyStatus::Running, LegacyStatus::Waiting});
+
+    snapshot.state = WorkflowState::Applying;
+    CHECK(Slic3r::GUI::SmartSlicingViewModel::from_snapshot(snapshot).legacy_steps ==
+          std::array<LegacyStatus, 6>{LegacyStatus::Success, LegacyStatus::Success, LegacyStatus::Success,
+                                      LegacyStatus::Success, LegacyStatus::Running, LegacyStatus::Waiting});
+
+    snapshot.state = WorkflowState::OfficialSlicing;
+    CHECK(Slic3r::GUI::SmartSlicingViewModel::from_snapshot(snapshot).legacy_steps ==
+          std::array<LegacyStatus, 6>{LegacyStatus::Success, LegacyStatus::Success, LegacyStatus::Success,
+                                      LegacyStatus::Success, LegacyStatus::Running, LegacyStatus::Waiting});
+
+    snapshot.state = WorkflowState::Completed;
+    CHECK(Slic3r::GUI::SmartSlicingViewModel::from_snapshot(snapshot).legacy_steps ==
+          std::array<LegacyStatus, 6>{LegacyStatus::Success, LegacyStatus::Success, LegacyStatus::Success,
+                                      LegacyStatus::Success, LegacyStatus::Success, LegacyStatus::Success});
+
+    snapshot.state = WorkflowState::ApplyFailed;
+    CHECK(Slic3r::GUI::SmartSlicingViewModel::from_snapshot(snapshot).legacy_steps ==
+          std::array<LegacyStatus, 6>{LegacyStatus::Success, LegacyStatus::Success, LegacyStatus::Success,
+                                      LegacyStatus::Success, LegacyStatus::Failed, LegacyStatus::Waiting});
 }
 
 TEST_CASE("candidate cards expose baseline deltas selection and retry without workspace mutation", "[AI][SmartSlicing][Workflow]")

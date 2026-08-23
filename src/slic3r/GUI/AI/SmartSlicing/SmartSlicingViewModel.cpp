@@ -71,6 +71,12 @@ SmartSlicingViewModel SmartSlicingViewModel::from_snapshot(const AI::SmartSlicin
         for (size_t i = 0; i <= index && i < view.stages.size(); ++i)
             view.stages[i].status = SmartSlicingStageStatus::Complete;
     };
+    auto set_legacy_prepared = [&view](LegacyAIWorkflowStatus slice_status = LegacyAIWorkflowStatus::Waiting,
+                                       LegacyAIWorkflowStatus gcode_status = LegacyAIWorkflowStatus::Waiting) {
+        view.legacy_steps = {LegacyAIWorkflowStatus::Success, LegacyAIWorkflowStatus::Success,
+                             LegacyAIWorkflowStatus::Success, LegacyAIWorkflowStatus::Success,
+                             slice_status, gcode_status};
+    };
 
     switch (snapshot.state) {
     case WorkflowState::Idle: view.summary_key = "ready_to_start"; break;
@@ -115,31 +121,39 @@ SmartSlicingViewModel SmartSlicingViewModel::from_snapshot(const AI::SmartSlicin
         view.summary_key = "planning_candidates";
         complete_through(1);
         view.stages[2].status = SmartSlicingStageStatus::Active;
+        view.legacy_steps = {LegacyAIWorkflowStatus::Success, LegacyAIWorkflowStatus::Success,
+                             LegacyAIWorkflowStatus::Success, LegacyAIWorkflowStatus::Running,
+                             LegacyAIWorkflowStatus::Waiting, LegacyAIWorkflowStatus::Waiting};
         break;
     case WorkflowState::TrialSlicingBaseline:
         view.summary_key = "trial_slicing_baseline";
         complete_through(1);
         view.stages[2].status = SmartSlicingStageStatus::Active;
+        set_legacy_prepared(LegacyAIWorkflowStatus::Running);
         break;
     case WorkflowState::TrialSlicingCandidates:
         view.summary_key = "trial_slicing_candidates";
         complete_through(1);
         view.stages[2].status = SmartSlicingStageStatus::Active;
+        set_legacy_prepared(LegacyAIWorkflowStatus::Running);
         break;
     case WorkflowState::ReadyToApply:
         view.summary_key = "candidates_ready";
         complete_through(2);
         view.stages[3].status = SmartSlicingStageStatus::Active;
+        set_legacy_prepared();
         break;
     case WorkflowState::Applying:
         view.summary_key = "applying_candidate";
         complete_through(2);
         view.stages[3].status = SmartSlicingStageStatus::Active;
+        set_legacy_prepared(LegacyAIWorkflowStatus::Running);
         break;
     case WorkflowState::OfficialSlicing:
         view.summary_key = "official_slicing";
         complete_through(2);
         view.stages[3].status = SmartSlicingStageStatus::Active;
+        set_legacy_prepared(LegacyAIWorkflowStatus::Running);
         break;
     case WorkflowState::Completed:
         view.summary_key = "official_slice_complete";
@@ -150,7 +164,7 @@ SmartSlicingViewModel SmartSlicingViewModel::from_snapshot(const AI::SmartSlicin
         view.summary_key = "official_slice_failed";
         complete_through(2);
         view.stages[3].status = SmartSlicingStageStatus::NeedsAttention;
-        view.legacy_steps.fill(LegacyAIWorkflowStatus::Failed);
+        set_legacy_prepared(LegacyAIWorkflowStatus::Failed);
         break;
     case WorkflowState::Canceling: view.summary_key = "canceling"; break;
     case WorkflowState::Canceled:
