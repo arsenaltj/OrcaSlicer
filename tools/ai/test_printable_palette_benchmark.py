@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 import tempfile
 import unittest
@@ -12,9 +13,12 @@ from tools.ai.openai_preprocessor import (
 )
 from tools.ai.printable_palette_benchmark import (
     PaletteBenchmarkError,
+    collect_results,
     load_case_state,
     load_manifest,
+    parse_args,
     prepare_case,
+    record_manual_review,
     review_case,
     select_cases,
 )
@@ -351,6 +355,81 @@ class PrintablePaletteBenchmarkStateTests(unittest.TestCase):
             self.assertEqual(state["paid_calls"]["visual_review"], 1)
             self.assertEqual(state["visual_review"]["status"], "pass")
             self.assertEqual(resumed["visual_review"]["score"], 91)
+
+
+class PrintablePaletteBenchmarkSummaryTests(unittest.TestCase):
+    def _loaded(self, root: Path):
+        path = root / "manifest.json"
+        path.write_text(json.dumps(_manifest([
+            {"id": "first", "category": "character", "style": "q_cartoon", "prompt": "第一个玩具"},
+            {"id": "second", "category": "product", "style": "low_poly", "prompt": "第二个玩具"},
+        ])), encoding="utf-8")
+        return load_manifest(path)
+
+    @staticmethod
+    def _sha(payload: bytes) -> str:
+        return hashlib.sha256(payload).hexdigest()
+
+    def test_manual_approval_and_summary_require_matching_complete_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "output"
+            manifest = self._loaded(Path(directory))
+            case = manifest.cases[0]
+            case_root = output / case.case_id
+            state = load_case_state(case_root, manifest, case)
+            strict_payload = b"strict"
+            strict = case_root / "strict.png"
+            strict.write_bytes(strict_payload)
+            visual_payload = json.dumps({"status": "pass", "score": 90}).encode()
+            visual = case_root / "visual.json"
+            visual.write_bytes(visual_payload)
+            state["artifacts"].update({
+                "strict_preview": {"path": "strict.png", "sha256": self._sha(strict_payload)},
+                "visual_review": {"path": "visual.json", "sha256": self._sha(visual_payload)},
+            })
+            state["stages"]["local_gate"]["status"] = "complete"
+            state["stages"]["visual_review"]["status"] = "complete"
+            state["metrics"] = {"palette_quality_ok": True, "meaningful_subject_color_count": 4}
+            state["visual_review"] = {"status": "pass", "score": 90}
+            (case_root / "palette-case-state.json").write_text(json.dumps(state), encoding="utf-8")
+
+            recorded = record_manual_review(
+                case_root, manifest, case, decision="approved", note="轮廓和大色块清楚"
+            )
+            summary = collect_results(output, manifest)
+
+            self.assertEqual(recorded["manual_review"]["decision"], "approved")
+            self.assertTrue(summary["cases"][0]["tripo_candidate"])
+            self.assertFalse(summary["cases"][1]["tripo_candidate"])
+            self.assertEqual(summary["totals"]["tripo_candidates"], 1)
+            self.assertTrue((output / "benchmark-summary.json").is_file())
+            self.assertTrue((output / "benchmark-summary.csv").is_file())
+
+            strict.write_bytes(b"changed")
+            changed = collect_results(output, manifest)
+            self.assertFalse(changed["cases"][0]["tripo_candidate"])
+
+    def test_manual_review_rejects_invalid_decision_or_missing_strict_preview(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = self._loaded(root)
+            case = manifest.cases[0]
+            case_root = root / "output" / case.case_id
+            load_case_state(case_root, manifest, case)
+            with self.assertRaisesRegex(PaletteBenchmarkError, "decision"):
+                record_manual_review(case_root, manifest, case, decision="maybe", note="x")
+            with self.assertRaisesRegex(PaletteBenchmarkError, "strict preview"):
+                record_manual_review(case_root, manifest, case, decision="rejected", note="轮廓缺失")
+
+    def test_parse_args_supports_case_filter_and_explicit_confirmations(self) -> None:
+        args = parse_args([
+            "prepare", "--case", "first", "--case", "second",
+            "--stop-after", "preview", "--confirm-recommendation-call", "--confirm-image-call",
+        ])
+        self.assertEqual(args.action, "prepare")
+        self.assertEqual(args.case, ["first", "second"])
+        self.assertTrue(args.confirm_recommendation_call)
+        self.assertTrue(args.confirm_image_call)
 
 
 if __name__ == "__main__":

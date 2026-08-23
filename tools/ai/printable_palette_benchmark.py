@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import argparse
+import csv
 from dataclasses import dataclass
 import hashlib
 import json
@@ -37,6 +39,8 @@ SCHEMA_VERSION = 1
 CASE_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 MAX_PROMPT_BYTES = 4000
 STATE_FILENAME = "palette-case-state.json"
+DEFAULT_MANIFEST = Path("Docs/benchmarks/printable-palette-phase64-v1.json")
+DEFAULT_OUTPUT = Path("generated_models/printable-palette-phase64-v1")
 
 
 class PaletteBenchmarkError(ValueError):
@@ -503,3 +507,268 @@ def review_case(
     stage["model"] = os.environ.get("OPENAI_TEXT_MODEL", "gpt-5.4")
     _save_state(root, state)
     return state
+
+
+def record_manual_review(
+    case_directory: Path | str,
+    manifest: PaletteBenchmarkManifest,
+    case: PaletteBenchmarkCase,
+    *,
+    decision: str,
+    note: str,
+) -> dict[str, Any]:
+    if decision not in {"approved", "rejected"}:
+        raise PaletteBenchmarkError("Manual review decision must be approved or rejected.")
+    root = Path(case_directory).resolve()
+    state = load_case_state(root, manifest, case)
+    strict_record = state["artifacts"].get("strict_preview")
+    if not _artifact_valid(root, strict_record):
+        raise PaletteBenchmarkError("The strict preview must exist before manual review.")
+    text = note.strip()
+    if decision == "rejected" and not text:
+        raise PaletteBenchmarkError("A rejection note is required.")
+    visual_record = state["artifacts"].get("visual_review")
+    review = {
+        "decision": decision,
+        "note": text[:1000],
+        "strict_preview_sha256": strict_record["sha256"],
+        "visual_review_sha256": visual_record.get("sha256", "") if isinstance(visual_record, dict) else "",
+        "reviewed_at": time.time(),
+    }
+    review_path = root / "human-review.json"
+    _write_json(review_path, review)
+    state["manual_review"] = review
+    state["artifacts"]["manual_review"] = _artifact_record(root, review_path)
+    state["stages"]["manual_review"].update({"status": "complete", "error": ""})
+    _save_state(root, state)
+    return state
+
+
+def _case_summary(
+    output_root: Path,
+    manifest: PaletteBenchmarkManifest,
+    case: PaletteBenchmarkCase,
+) -> dict[str, Any]:
+    root = output_root / case.case_id
+    state_path = root / STATE_FILENAME
+    if not state_path.is_file():
+        return {
+            "case_id": case.case_id,
+            "category": case.category,
+            "style": case.style,
+            "recommendation_status": "pending",
+            "preview_status": "pending",
+            "local_gate_status": "pending",
+            "local_quality_ok": False,
+            "visual_status": "pending",
+            "visual_score": 0,
+            "manual_decision": "pending",
+            "tripo_candidate": False,
+            "paid_calls": {"recommendation": 0, "image2": 0, "visual_review": 0, "tripo": 0},
+            "error": "",
+        }
+    try:
+        state = load_case_state(root, manifest, case)
+    except PaletteBenchmarkError as exc:
+        return {
+            "case_id": case.case_id,
+            "category": case.category,
+            "style": case.style,
+            "recommendation_status": "invalid",
+            "preview_status": "invalid",
+            "local_gate_status": "invalid",
+            "local_quality_ok": False,
+            "visual_status": "invalid",
+            "visual_score": 0,
+            "manual_decision": "invalid",
+            "tripo_candidate": False,
+            "paid_calls": {"recommendation": 0, "image2": 0, "visual_review": 0, "tripo": 0},
+            "error": str(exc)[:500],
+        }
+    stages = state.get("stages", {})
+    metrics = state.get("metrics") if isinstance(state.get("metrics"), dict) else {}
+    visual = state.get("visual_review") if isinstance(state.get("visual_review"), dict) else {}
+    manual = state.get("manual_review") if isinstance(state.get("manual_review"), dict) else {}
+    strict_record = state.get("artifacts", {}).get("strict_preview") if isinstance(state.get("artifacts"), dict) else None
+    visual_record = state.get("artifacts", {}).get("visual_review") if isinstance(state.get("artifacts"), dict) else None
+    manual_bound = (
+        isinstance(strict_record, dict)
+        and manual.get("strict_preview_sha256") == strict_record.get("sha256")
+        and _artifact_valid(root, strict_record)
+        and (
+            not manual.get("visual_review_sha256")
+            or (
+                isinstance(visual_record, dict)
+                and manual.get("visual_review_sha256") == visual_record.get("sha256")
+                and _artifact_valid(root, visual_record)
+            )
+        )
+    )
+    local_ok = stages.get("local_gate", {}).get("status") == "complete" and metrics.get("palette_quality_ok") is True
+    visual_pass = stages.get("visual_review", {}).get("status") == "complete" and visual.get("status") == "pass"
+    manual_approved = stages.get("manual_review", {}).get("status") == "complete" and manual.get("decision") == "approved"
+    errors = [
+        str(value.get("error", ""))
+        for value in stages.values()
+        if isinstance(value, dict) and value.get("status") in {"failed", "uncertain"} and value.get("error")
+    ]
+    calls = state.get("paid_calls") if isinstance(state.get("paid_calls"), dict) else {}
+    return {
+        "case_id": case.case_id,
+        "category": case.category,
+        "style": case.style,
+        "recommendation_status": str(stages.get("recommendation", {}).get("status", "pending")),
+        "preview_status": str(stages.get("preview", {}).get("status", "pending")),
+        "local_gate_status": str(stages.get("local_gate", {}).get("status", "pending")),
+        "local_quality_ok": local_ok,
+        "meaningful_subject_color_count": int(metrics.get("meaningful_subject_color_count", 0) or 0),
+        "visual_status": str(visual.get("status", "pending")),
+        "visual_score": int(visual.get("score", 0) or 0),
+        "manual_decision": str(manual.get("decision", "pending")),
+        "tripo_candidate": bool(local_ok and visual_pass and manual_approved and manual_bound),
+        "paid_calls": {
+            name: int(calls.get(name, 0) or 0)
+            for name in ("recommendation", "image2", "visual_review", "tripo")
+        },
+        "error": "; ".join(errors)[:500],
+    }
+
+
+def collect_results(
+    output_root: Path | str,
+    manifest: PaletteBenchmarkManifest,
+) -> dict[str, Any]:
+    output = Path(output_root).resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    rows = [_case_summary(output, manifest, case) for case in manifest.cases]
+    paid = {name: sum(row["paid_calls"][name] for row in rows) for name in (
+        "recommendation", "image2", "visual_review", "tripo"
+    )}
+    count = len(rows)
+    totals = {
+        "cases": count,
+        "recommendations_complete": sum(row["recommendation_status"] == "complete" for row in rows),
+        "previews_complete": sum(row["preview_status"] == "complete" for row in rows),
+        "local_quality_pass": sum(row["local_quality_ok"] for row in rows),
+        "visual_pass": sum(row["visual_status"] == "pass" for row in rows),
+        "visual_review": sum(row["visual_status"] == "review" for row in rows),
+        "manual_approved": sum(row["manual_decision"] == "approved" for row in rows),
+        "tripo_candidates": sum(row["tripo_candidate"] for row in rows),
+        "errors": sum(bool(row["error"]) for row in rows),
+    }
+    rates = {
+        "recommendation_success": round(totals["recommendations_complete"] / count, 4),
+        "preview_success": round(totals["previews_complete"] / count, 4),
+        "local_quality_pass": round(totals["local_quality_pass"] / count, 4),
+        "visual_pass": round(totals["visual_pass"] / count, 4),
+        "manual_approval": round(totals["manual_approved"] / count, 4),
+    }
+    summary = {
+        "schema_version": SCHEMA_VERSION,
+        "benchmark_id": manifest.benchmark_id,
+        "manifest_fingerprint": manifest.fingerprint,
+        "generated_at": time.time(),
+        "totals": totals,
+        "rates": rates,
+        "paid_calls": paid,
+        "cases": rows,
+    }
+    _write_json(output / "benchmark-summary.json", summary)
+    with (output / "benchmark-summary.csv").open("w", encoding="utf-8-sig", newline="") as stream:
+        fieldnames = (
+            "case_id", "category", "style", "recommendation_status", "preview_status",
+            "local_gate_status", "local_quality_ok", "meaningful_subject_color_count",
+            "visual_status", "visual_score", "manual_decision", "tripo_candidate", "error",
+        )
+        writer = csv.DictWriter(stream, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({name: row.get(name, "") for name in fieldnames})
+    return summary
+
+
+def _common_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
+    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--case", action="append", default=[])
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    subparsers = parser.add_subparsers(dest="action", required=True)
+
+    prepare = subparsers.add_parser("prepare", help="recommend colors, create Image2 preview, and run local gates")
+    _common_arguments(prepare)
+    prepare.add_argument("--stop-after", choices=("recommendation", "preview", "local_gate"), default="local_gate")
+    prepare.add_argument("--confirm-recommendation-call", action="store_true")
+    prepare.add_argument("--confirm-image-call", action="store_true")
+    prepare.add_argument("--allow-retry-uncertain", action="store_true")
+
+    review = subparsers.add_parser("review", help="run advisory GPT vision review")
+    _common_arguments(review)
+    review.add_argument("--confirm-visual-call", action="store_true")
+    review.add_argument("--allow-retry-uncertain", action="store_true")
+
+    report = subparsers.add_parser("report", help="write JSON and CSV benchmark summaries")
+    _common_arguments(report)
+
+    manual = subparsers.add_parser("manual-review", help="bind an explicit human decision to the current preview")
+    _common_arguments(manual)
+    manual.add_argument("--decision", choices=("approved", "rejected"), required=True)
+    manual.add_argument("--note", default="")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    try:
+        manifest = load_manifest(args.manifest)
+        cases = select_cases(manifest.cases, args.case)
+        if args.action == "manual-review" and len(cases) != 1:
+            raise PaletteBenchmarkError("manual-review requires exactly one --case.")
+        failures: list[dict[str, str]] = []
+        for case in cases:
+            root = args.output.resolve() / case.case_id
+            try:
+                if args.action == "prepare":
+                    state = prepare_case(
+                        root,
+                        manifest,
+                        case,
+                        confirm_recommendation_call=args.confirm_recommendation_call,
+                        confirm_image_call=args.confirm_image_call,
+                        allow_retry_uncertain=args.allow_retry_uncertain,
+                        stop_after=args.stop_after,
+                    )
+                elif args.action == "review":
+                    state = review_case(
+                        root,
+                        manifest,
+                        case,
+                        confirm_visual_call=args.confirm_visual_call,
+                        allow_retry_uncertain=args.allow_retry_uncertain,
+                    )
+                elif args.action == "manual-review":
+                    state = record_manual_review(
+                        root, manifest, case, decision=args.decision, note=args.note,
+                    )
+                else:
+                    continue
+                print(json.dumps({
+                    "case_id": case.case_id,
+                    "stages": {name: value.get("status") for name, value in state["stages"].items()},
+                    "paid_calls": state["paid_calls"],
+                }, ensure_ascii=False), flush=True)
+            except Exception as exc:
+                failures.append({"case_id": case.case_id, "error": f"{type(exc).__name__}: {exc}"[:500]})
+                print(json.dumps(failures[-1], ensure_ascii=False), flush=True)
+        summary = collect_results(args.output, manifest)
+        print(json.dumps({"totals": summary["totals"], "paid_calls": summary["paid_calls"]}, ensure_ascii=False))
+        return 1 if failures else 0
+    except PaletteBenchmarkError as exc:
+        print(json.dumps({"error": str(exc)}, ensure_ascii=False))
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
