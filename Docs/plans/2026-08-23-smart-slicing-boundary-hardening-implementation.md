@@ -117,3 +117,42 @@
 4. Add cache/benchmark and cross-platform gates as separate commits.
 5. Stop before any integration-line fetch or handoff until the project owner confirms.
 
+---
+
+## Verification record — 2026-08-24
+
+### RelWithDebInfo build and tests
+
+- Built `slic3rutils_tests`, `fff_print_tests`, `OrcaSlicer`, and `OrcaSlicer_app_gui` successfully from `build-p0`.
+- Smart-slicing suite: 55 test cases, 366 assertions, all passed.
+- Full `slic3rutils_tests`: 66 test cases, 473 assertions, all passed. The existing test-working-directory warning for `info/nozzle_info.json` remains non-failing.
+- Focused native trial slice (`[OrcaTrial]`): 3 test cases, 20 assertions, all passed.
+- Focused native-validation evidence reconciliation: 1 test case, 11 assertions, all passed.
+- FFF fixed seed `635773145`:
+  - exact `Scenario: Skirt and brim generation`: 1 test case, 7 assertions, all passed;
+  - suite excluding `[SkirtBrim]`: 47 test cases, 578 assertions, all passed;
+  - full suite reproduced the established order-sensitive `SIGSEGV` at `tests/fff_print/test_skirt_brim.cpp:308` (37 cases run, 36 passed and 1 failed; 426 assertions, 425 passed and 1 failed). The two isolated runs above keep this pre-existing failure separate from the smart-slicing changes.
+
+### Workspace-local package
+
+The normal CMake install step staged the latest binaries into `build-p0/OrcaSlicer`. Source-build and installed hashes match:
+
+| Artifact | Size | Build timestamp (Asia/Shanghai) | SHA-256 |
+| --- | ---: | --- | --- |
+| `orca-slicer.exe` | 336,896 bytes | 2026-08-24 01:18:03.671 +08:00 | `69A4A99198F3037F22D5D6308AC859267F50E829800136138A164478E6E38252` |
+| `OrcaSlicer.dll` | 126,475,776 bytes | 2026-08-24 01:17:55.369 +08:00 | `F559FAF895975A6C2CF75E04B06602866B34C186134AFEF417832A2507FEA845` |
+
+GUI interaction was intentionally not started. Two unrelated Orca instances were still active from
+`C:/Users/ltj/AppData/Local/Temp/orca_ai_integration_v1_release_build2/src/orca-slicer.exe`
+(PIDs 35252 and 39428, both using `--datadir C:/Users/ltj/AppData/Local/Temp/orca_ai_gui_smoke_3d188b4abd`).
+Per the local-only validation rule, they were not terminated and the workspace executable was not launched alongside them. The GUI scenarios in Task 6 step 6 therefore remain an external-environment verification gate.
+
+### Boundary audit
+
+- `git diff --check` passed and the worktree was clean before this verification record.
+- Domain, Application, and Ports contain no wxWidgets or `Plater` includes.
+- Formal candidate transform/config writes, snapshot rollback, native Undo, and Preview transition are confined to `OrcaOfficialSliceGateway`.
+- The other candidate-related mutations are isolated: `OrcaTrialSliceExecutor` writes only to cloned trial models, and `OrcaParameterProposalAdapter` writes only to a temporary validation config.
+- No model-generation business code was copied or modified in this hardening batch.
+- No configuration schema, dependency, network port, 3MF/profile format, profile data, or default Orca behavior changed. The existing temporary smart-slicing runtime journal location is unchanged; no new data directory was introduced.
+- macOS and Linux build/test gates remain for CI or their native build hosts.
