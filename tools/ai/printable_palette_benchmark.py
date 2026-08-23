@@ -605,7 +605,10 @@ def _case_summary(
         )
     )
     local_ok = stages.get("local_gate", {}).get("status") == "complete" and metrics.get("palette_quality_ok") is True
-    visual_pass = stages.get("visual_review", {}).get("status") == "complete" and visual.get("status") == "pass"
+    visual_reviewed = (
+        stages.get("visual_review", {}).get("status") == "complete"
+        and visual.get("status") in {"pass", "review"}
+    )
     manual_approved = stages.get("manual_review", {}).get("status") == "complete" and manual.get("decision") == "approved"
     errors = [
         str(value.get("error", ""))
@@ -625,7 +628,7 @@ def _case_summary(
         "visual_status": str(visual.get("status", "pending")),
         "visual_score": int(visual.get("score", 0) or 0),
         "manual_decision": str(manual.get("decision", "pending")),
-        "tripo_candidate": bool(local_ok and visual_pass and manual_approved and manual_bound),
+        "tripo_candidate": bool(local_ok and visual_reviewed and manual_approved and manual_bound),
         "paid_calls": {
             name: int(calls.get(name, 0) or 0)
             for name in ("recommendation", "image2", "visual_review", "tripo")

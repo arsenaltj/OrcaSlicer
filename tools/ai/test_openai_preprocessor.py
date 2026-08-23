@@ -165,6 +165,8 @@ class TextImagePromptTests(unittest.TestCase):
         self.assertIn("transparent background", prompt)
         self.assertIn("load-bearing connections, base contact", prompt)
         self.assertIn("unless that exact shade is one of the listed printable colors", prompt)
+        self.assertIn("closed component inventory", prompt)
+        self.assertIn("never as lighting highlights", prompt)
 
     def test_text_image_prompt_omits_palette_language_in_natural_mode(self):
         prompt = preprocessor._text_image_prompt("a toy dragon", (), "low_poly")
@@ -221,6 +223,7 @@ class PrintablePaletteRecommendationTests(unittest.TestCase):
         self.assertEqual([color.hex for color in result.colors], ["#D96B43", "#2B2422", "#F2D7B5", "#2F6B5F"])
         self.assertEqual([color.role for color in result.colors], ["primary", "structure", "light", "accent"])
         self.assertIn("four-color palette", complete.call_args.args[0])
+        self.assertIn("different hue family from primary", complete.call_args.args[0])
 
     def test_image_recommendation_uses_vision_completion(self):
         with tempfile.TemporaryDirectory() as directory:

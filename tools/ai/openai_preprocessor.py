@@ -439,7 +439,9 @@ def recommend_printable_palette(
         "Return every role exactly once. Choose broad solid material regions with strong perceptual separation; avoid gradients, "
         "near-duplicate shades, tiny accents, transparency, metallic effects and colors that only work as lighting. The primary "
         "color should cover the largest semantic region, structure should support silhouette and boundaries, light should provide "
-        "a readable light material, and accent should distinguish one secondary semantic part. Use concise Chinese for summary, "
+        "a readable light material, and accent should distinguish one secondary semantic part. The accent should normally use a "
+        "clearly different hue family from primary, not a lighter or darker substitute for the same material; only keep related "
+        "hues when the subject semantics make that distinction unmistakable. Use concise Chinese for summary, "
         "name, usage and reason. Apply this style direction: "
         + style_direction
     )
@@ -688,8 +690,11 @@ def _text_image_prompt(
         + (_designer_toy_profile(style, custom_style) if palette else _style_profile(style, custom_style))
         + "\nPrintable composition constraints: Use one clearly readable primary subject, a complete silhouette, a stable pose, "
         "simple depth layering, large closed color regions, hard clean boundaries, and only structurally meaningful details. "
+        "Treat the user description as a closed component inventory: do not add plausible category features, accessories, handles, "
+        "tools, rods, decorations, or secondary objects that were not explicitly requested. Simplify ambiguous details instead of inventing them. "
         + ("Use a transparent background with no cast shadow. " if palette else "")
         + color_direction
+        + ("Use palette colors only as solid semantic material regions, never as lighting highlights, reflections, rim light, or shading bands. " if palette else "")
         + "Do not use gradients, semi-transparent subject materials, soft shadows, photographic reflections, depth of field, blur, dithering, "
         "halftone dots, random noise, tiny isolated regions, dense texture, text, watermark, frame, or decorative clutter. "
         "The deterministic print pipeline will enforce the exact palette, so prioritize shape readability over tonal realism."

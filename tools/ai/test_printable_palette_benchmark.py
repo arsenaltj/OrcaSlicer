@@ -390,7 +390,7 @@ class PrintablePaletteBenchmarkSummaryTests(unittest.TestCase):
             state["stages"]["local_gate"]["status"] = "complete"
             state["stages"]["visual_review"]["status"] = "complete"
             state["metrics"] = {"palette_quality_ok": True, "meaningful_subject_color_count": 4}
-            state["visual_review"] = {"status": "pass", "score": 90}
+            state["visual_review"] = {"status": "review", "score": 82}
             (case_root / "palette-case-state.json").write_text(json.dumps(state), encoding="utf-8")
 
             recorded = record_manual_review(

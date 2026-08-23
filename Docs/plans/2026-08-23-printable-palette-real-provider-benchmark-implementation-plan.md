@@ -99,7 +99,7 @@ Expected: all tests pass with mocked provider functions.
 
 **Step 1: Write failing summary tests**
 
-Cover paid-call totals, stage counts, local and visual pass rates, `tripo_candidate` requiring local pass plus visual pass plus explicit human approval, deterministic JSON/CSV ordering, and error rows.
+Cover paid-call totals, stage counts, local and visual pass rates, `tripo_candidate` requiring local pass plus a completed advisory visual review plus explicit human approval, deterministic JSON/CSV ordering, and error rows.
 
 **Step 2: Implement collection and CLI**
 
