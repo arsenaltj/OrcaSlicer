@@ -356,6 +356,22 @@ class ObjGenerationTests(unittest.TestCase):
         face_lines = [f"f {a + 1} {b + 1} {c + 1}" for a, b, c in faces]
         return "\n".join(vertex_lines + face_lines) + "\n"
 
+    def _vertex_color_grid(self, size, color_for_vertex):
+        vertices = [
+            f"v {x} {y} 0 {color_for_vertex(x, y)}"
+            for y in range(size)
+            for x in range(size)
+        ]
+        faces = []
+        for y in range(size - 1):
+            for x in range(size - 1):
+                left = y * size + x
+                right = left + 1
+                upper = left + size
+                upper_right = upper + 1
+                faces.extend(((left, upper, right), (right, upper, upper_right)))
+        return "\n".join(vertices + [f"f {a + 1} {b + 1} {c + 1}" for a, b, c in faces]) + "\n"
+
     def test_new_job_uses_persistent_output_directory(self):
         self.assertEqual(self.job.directory.parent, self.output_root.resolve())
         self.assertTrue(self.job.directory.is_dir())
@@ -713,6 +729,8 @@ class ObjGenerationTests(unittest.TestCase):
         self.assertEqual(metrics["three_color_faces"], 0)
         cleanup = json.loads((self.job.directory / "vertex-color-cleanup.json").read_text(encoding="utf-8"))
         self.assertIn(cleanup["status"], {"not_needed", "consolidated"})
+        boundary = json.loads((self.job.directory / "color-boundary-cleanup.json").read_text(encoding="utf-8"))
+        self.assertIn(boundary["status"], {"not_needed", "regularized"})
         quality = json.loads((self.job.directory / SIDECAR.MODEL_QUALITY_FILENAME).read_text(encoding="utf-8"))
         self.assertEqual(quality["status"], "review")
         self.assertEqual(quality["metrics"]["face_count"], 4)
@@ -750,6 +768,7 @@ class ObjGenerationTests(unittest.TestCase):
         self.assertGreaterEqual(len(output_colors), 2)
         self.assertTrue(any(channel not in range(0, 256, 51) for color in output_colors for channel in color))
         self.assertFalse((self.job.directory / "vertex-color-cleanup.json").exists())
+        self.assertFalse((self.job.directory / "color-boundary-cleanup.json").exists())
         SIDECAR._validate_obj_vertex_colors(artifact)
         SIDECAR._validate_obj_topology(artifact)
 
@@ -907,6 +926,76 @@ class ObjGenerationTests(unittest.TestCase):
         self.assertEqual(report["recolored_vertices"], 1)
         self.assertEqual(report["final_vertex_color_usage"], {"#FF0000": size * size})
         SIDECAR._validate_obj_palette(source, ("#FF0000", "#0000FF"))
+
+    def test_isolated_color_boundary_spike_is_regularized(self):
+        source = self.job.directory / "boundary-spike.obj"
+        size = 21
+        center = size // 2
+        source.write_text(
+            self._vertex_color_grid(
+                size,
+                lambda x, y: "0 0 1" if (x, y) == (center, center) else "1 0 0",
+            ),
+            encoding="ascii",
+        )
+
+        report = SIDECAR._regularize_obj_color_boundaries(
+            source, self.job.directory / "boundary-spike-cleanup.json"
+        )
+
+        self.assertEqual(report["status"], "regularized")
+        self.assertEqual(report["recolored_vertices"], 1)
+        self.assertGreater(report["before"]["mixed_face_count"], 0)
+        self.assertEqual(report["after"]["mixed_face_count"], 0)
+        self.assertLess(
+            report["after"]["mixed_face_surface_area_mm2"],
+            report["before"]["mixed_face_surface_area_mm2"],
+        )
+        self.assertNotIn(" 0.000000 0.000000 1.000000", source.read_text(encoding="ascii"))
+        self.assertEqual(SIDECAR._obj_vertex_color_metrics(source)["three_color_faces"], 0)
+
+    def test_coherent_color_boundary_is_preserved(self):
+        source = self.job.directory / "coherent-boundary.obj"
+        size = 21
+        source.write_text(
+            self._vertex_color_grid(size, lambda x, _y: "1 0 0" if x < size // 2 else "0 0 1"),
+            encoding="ascii",
+        )
+        original = source.read_bytes()
+
+        report = SIDECAR._regularize_obj_color_boundaries(
+            source, self.job.directory / "coherent-boundary-cleanup.json"
+        )
+
+        self.assertEqual(report["status"], "not_needed")
+        self.assertEqual(report["recolored_vertices"], 0)
+        self.assertEqual(report["before"]["mixed_face_count"], report["after"]["mixed_face_count"])
+        self.assertEqual(source.read_bytes(), original)
+
+    def test_meaningful_palette_color_is_protected_from_boundary_cleanup(self):
+        source = self.job.directory / "meaningful-spike.obj"
+        size = 5
+        center = size // 2
+        source.write_text(
+            self._vertex_color_grid(
+                size,
+                lambda x, y: "0 0 1" if (x, y) == (center, center) else "1 0 0",
+            ),
+            encoding="ascii",
+        )
+
+        with (
+            mock.patch.object(SIDECAR, "MAX_COLOR_BOUNDARY_SURFACE_AREA_RATIO", 1.0),
+            mock.patch.object(SIDECAR, "MAX_COLOR_BOUNDARY_SOURCE_AREA_RATIO", 1.0),
+        ):
+            report = SIDECAR._regularize_obj_color_boundaries(
+                source, self.job.directory / "meaningful-spike-cleanup.json"
+            )
+
+        self.assertEqual(report["status"], "not_needed")
+        self.assertEqual(report["recolored_vertices"], 0)
+        self.assertGreater(report["protected_meaningful_candidates"], 0)
+        self.assertIn("v 2 2 0 0 0 1", source.read_text(encoding="ascii"))
 
     def test_repairable_open_edges_are_deferred_to_orca(self):
         raw = self.job.directory / "artifact-raw.download"

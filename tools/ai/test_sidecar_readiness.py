@@ -12,6 +12,7 @@ from pathlib import Path
 
 CHECKER = Path(__file__).with_name("check_sidecar_capability.ps1")
 POWERSHELL = shutil.which("powershell.exe") or shutil.which("powershell")
+CHECKER_PROCESS_TIMEOUT_SECONDS = 30
 
 
 def handler_for(payload):
@@ -73,7 +74,9 @@ class SidecarReadinessTests(unittest.TestCase):
             check=False,
             capture_output=True,
             text=True,
-            timeout=10,
+            # Windows PowerShell cold starts can exceed ten seconds on a busy
+            # Release-build host; the checker still has its own two-second HTTP timeout.
+            timeout=CHECKER_PROCESS_TIMEOUT_SECONDS,
         )
         return result.returncode
 
