@@ -8,6 +8,22 @@
 #include <utility>
 
 namespace Slic3r::AI::SmartSlicing {
+namespace {
+
+void resolve_native_validation_evidence(PrintabilityReport& report)
+{
+    const auto first_resolved = std::remove_if(report.issues.begin(), report.issues.end(),
+                                               [](const PrintabilityIssue& issue) {
+                                                   return issue.code == IssueCode::NativeValidationUnavailable;
+                                               });
+    if (first_resolved == report.issues.end())
+        return;
+    report.issues.erase(first_resolved, report.issues.end());
+    report.readiness = report.has_blocking_issue() ? Readiness::Blocked :
+                       report.issues.empty() ? Readiness::Ready : Readiness::NeedsAttention;
+}
+
+} // namespace
 
 SmartSlicingCoordinator::SmartSlicingCoordinator(IOrcaWorkspace& workspace) : m_workspace(workspace) {}
 
@@ -238,6 +254,8 @@ bool SmartSlicingCoordinator::plan_and_slice_candidates(std::vector<SliceCandida
                 transition(WorkflowState::Failed, "baseline_trial_failed");
                 return false;
             }
+            if (index == 0 && accepted && m_snapshot.report)
+                resolve_native_validation_evidence(*m_snapshot.report);
             if (const std::string violation = resource_violation(m_snapshot.candidates.size()); !violation.empty()) {
                 if (index == 0) {
                     for (size_t skipped = 1; skipped < m_snapshot.candidates.size(); ++skipped) {

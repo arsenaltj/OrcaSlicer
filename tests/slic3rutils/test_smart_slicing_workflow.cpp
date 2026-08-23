@@ -9,6 +9,7 @@
 
 #include "libslic3r/TriangleMesh.hpp"
 
+#include <algorithm>
 #include <functional>
 #include <stdexcept>
 
@@ -179,6 +180,37 @@ TEST_CASE("coordinator trial slices baseline first and retains it after an alter
     CHECK(coordinator.snapshot().candidates[2].status == CandidateStatus::Ready);
     REQUIRE(coordinator.snapshot().comparison);
     CHECK(coordinator.snapshot().comparison->recommended_candidate_id == "good-alternative");
+}
+
+TEST_CASE("successful baseline trial resolves only unavailable native validation evidence",
+          "[AI][SmartSlicing][Workflow]")
+{
+    WorkflowWorkspace workspace;
+    workspace.context.native_validation_available = false;
+    workspace.context.validation_warnings.push_back("Keep this native warning.");
+    FakeTrialSliceExecutor executor;
+    SmartSlicingCoordinator coordinator(workspace, executor);
+
+    coordinator.start();
+    REQUIRE(coordinator.snapshot().report);
+    REQUIRE(coordinator.snapshot().report->issues.size() == 2);
+    CHECK(coordinator.snapshot().report->readiness == Readiness::NeedsAttention);
+
+    REQUIRE(coordinator.plan_and_slice_candidates());
+
+    const WorkflowSnapshot& snapshot = coordinator.snapshot();
+    REQUIRE(snapshot.report);
+    CHECK(snapshot.report->revision == workspace.context.revision);
+    CHECK(std::none_of(snapshot.report->issues.begin(), snapshot.report->issues.end(), [](const PrintabilityIssue& issue) {
+        return issue.code == IssueCode::NativeValidationUnavailable;
+    }));
+    CHECK(std::any_of(snapshot.report->issues.begin(), snapshot.report->issues.end(), [](const PrintabilityIssue& issue) {
+        return issue.code == IssueCode::ConfigurationValidationWarning &&
+               issue.evidence == "Keep this native warning.";
+    }));
+    CHECK(snapshot.report->readiness == Readiness::NeedsAttention);
+    REQUIRE(snapshot.context);
+    CHECK_FALSE(snapshot.context->native_validation_available);
 }
 
 TEST_CASE("mismatched trial results are never attached to a candidate", "[AI][SmartSlicing][Workflow]")
