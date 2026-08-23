@@ -120,7 +120,9 @@ private:
     void save_library_entry(size_t artifact_size, size_t triangle_count, double width, double depth,
                             double height, size_t color_count);
     void load_library_entry(const boost::filesystem::path& model_path,
-                            const std::vector<std::string>& palette, bool use_printable_colors,
+                            const std::vector<std::string>& palette,
+                            const AIModelGenerationClient::PaletteRoles& palette_roles,
+                            bool use_printable_colors,
                             const std::string& job_id, const wxString& title);
     void refresh_library();
 
@@ -131,6 +133,7 @@ private:
         boost::filesystem::path model_path;
         boost::filesystem::path preview_path;
         std::vector<std::string> palette;
+        AIModelGenerationClient::PaletteRoles palette_roles;
         std::string job_id;
         std::time_t generated_at { 0 };
         bool use_printable_colors { false };
@@ -205,6 +208,7 @@ private:
     wxPanel*        m_local_recolor_controls { nullptr };
     std::array<wxToggleButton*, 3> m_region_operation_buttons { nullptr, nullptr, nullptr };
     wxChoice*       m_region_range { nullptr };
+    std::array<wxButton*, 4> m_region_material_buttons { nullptr, nullptr, nullptr, nullptr };
     std::array<wxToggleButton*, 4> m_region_color_buttons { nullptr, nullptr, nullptr, nullptr };
     wxStaticText*   m_region_selection_summary { nullptr };
     wxButton*       m_undo_region_selection { nullptr };
@@ -259,6 +263,7 @@ private:
     AIModelGenerationClient::PaletteRoles m_job_palette_roles;
     std::vector<std::string> m_palette_roles_source;
     std::vector<std::string> m_displayed_model_palette;
+    AIModelGenerationClient::PaletteRoles m_displayed_model_palette_roles;
     AIModelGenerationClient::PaletteRecommendation m_palette_recommendation;
     std::vector<std::string> m_user_adjusted_palette_colors;
     std::string m_palette_recommendation_job_id;

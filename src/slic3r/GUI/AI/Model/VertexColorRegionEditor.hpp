@@ -43,6 +43,7 @@ public:
     std::optional<size_t> pick_face(const Vec3d& ray_origin, const Vec3d& ray_direction) const;
     size_t update_selection(size_t seed_face, RegionSelectionOperation operation,
                             const RegionSelectionSettings& settings);
+    size_t select_palette_material(const std::vector<RGBA>& palette, size_t palette_index);
     void clear_selection();
     bool restore_selection(const std::vector<uint8_t>& selected_faces);
     bool apply_color(const RGBA& color);

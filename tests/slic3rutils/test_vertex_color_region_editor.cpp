@@ -70,6 +70,22 @@ indexed_triangle_set stacked_triangle_mesh(size_t layers)
     return mesh;
 }
 
+indexed_triangle_set separated_triangle_mesh(size_t count)
+{
+    indexed_triangle_set mesh;
+    mesh.vertices.reserve(count * 3);
+    mesh.indices.reserve(count);
+    for (size_t item = 0; item < count; ++item) {
+        const float x = float(item) * 2.0f;
+        const uint32_t first = uint32_t(mesh.vertices.size());
+        mesh.vertices.emplace_back(x, 0.0f, 0.0f);
+        mesh.vertices.emplace_back(x + 1.0f, 0.0f, 0.0f);
+        mesh.vertices.emplace_back(x, 1.0f, 0.0f);
+        mesh.indices.emplace_back(first, first + 1, first + 2);
+    }
+    return mesh;
+}
+
 } // namespace
 
 TEST_CASE("vertex color smart region follows connected color blocks", "[AI][VertexColorRegion]")
@@ -184,6 +200,64 @@ TEST_CASE("vertex color selection snapshots can be restored safely", "[AI][Verte
     CHECK(editor.selected_face_count() == 1);
     CHECK(editor.selected_faces() == snapshot);
     CHECK_FALSE(editor.restore_selection({1}));
+    CHECK(editor.selected_faces() == snapshot);
+}
+
+TEST_CASE("vertex color material selection spans disconnected matching faces", "[AI][VertexColorRegion]")
+{
+    indexed_triangle_set mesh = separated_triangle_mesh(3);
+    std::vector<RGBA> colors = solid_colors(mesh.vertices.size(), {1.0f, 0.0f, 0.0f, 1.0f});
+    for (size_t vertex = 3; vertex < 6; ++vertex)
+        colors[vertex] = {0.0f, 0.0f, 1.0f, 1.0f};
+
+    AI::VertexColorRegionEditor editor;
+    std::string error;
+    REQUIRE(editor.initialize(std::move(mesh), std::move(colors), error));
+    const std::vector<RGBA> palette {
+        {1.0f, 0.0f, 0.0f, 1.0f},
+        {0.0f, 0.0f, 1.0f, 1.0f}
+    };
+
+    CHECK(editor.select_palette_material(palette, 0) == 2);
+    CHECK(editor.selected_faces() == std::vector<uint8_t> {1, 0, 1});
+    CHECK(editor.select_palette_material(palette, 1) == 1);
+    CHECK(editor.selected_faces() == std::vector<uint8_t> {0, 1, 0});
+}
+
+TEST_CASE("vertex color material selection uses nearest palette color with stable ties", "[AI][VertexColorRegion]")
+{
+    indexed_triangle_set mesh = separated_triangle_mesh(2);
+    std::vector<RGBA> colors {
+        {0.8f, 0.1f, 0.1f, 1.0f}, {0.8f, 0.1f, 0.1f, 1.0f}, {0.8f, 0.1f, 0.1f, 1.0f},
+        {0.5f, 0.5f, 0.5f, 1.0f}, {0.5f, 0.5f, 0.5f, 1.0f}, {0.5f, 0.5f, 0.5f, 1.0f}
+    };
+    AI::VertexColorRegionEditor editor;
+    std::string error;
+    REQUIRE(editor.initialize(std::move(mesh), std::move(colors), error));
+    const std::vector<RGBA> palette {
+        {1.0f, 0.0f, 0.0f, 1.0f},
+        {0.0f, 1.0f, 0.0f, 1.0f}
+    };
+
+    CHECK(editor.select_palette_material(palette, 0) == 2);
+    const std::vector<uint8_t> snapshot = editor.selected_faces();
+    CHECK(editor.select_palette_material(palette, 1) == 0);
+    CHECK(editor.restore_selection(snapshot));
+    CHECK(editor.selected_face_count() == 2);
+}
+
+TEST_CASE("vertex color material selection rejects invalid inputs without changing selection", "[AI][VertexColorRegion]")
+{
+    AI::VertexColorRegionEditor editor;
+    std::string error;
+    REQUIRE(editor.initialize(square_mesh(), red_colors(), error));
+    const std::vector<RGBA> palette {{1.0f, 0.0f, 0.0f, 1.0f}};
+    REQUIRE(editor.select_palette_material(palette, 0) == 2);
+    const std::vector<uint8_t> snapshot = editor.selected_faces();
+
+    CHECK(editor.select_palette_material({}, 0) == 2);
+    CHECK(editor.selected_faces() == snapshot);
+    CHECK(editor.select_palette_material(palette, 1) == 2);
     CHECK(editor.selected_faces() == snapshot);
 }
 

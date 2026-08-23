@@ -486,6 +486,33 @@ size_t VertexColorRegionEditor::update_selection(size_t seed_face, RegionSelecti
     return m_selected_face_count;
 }
 
+size_t VertexColorRegionEditor::select_palette_material(const std::vector<RGBA>& palette,
+                                                        size_t palette_index)
+{
+    if (!ready() || palette.empty() || palette_index >= palette.size())
+        return m_selected_face_count;
+
+    std::fill(m_selected_faces.begin(), m_selected_faces.end(), uint8_t(0));
+    m_selected_face_count = 0;
+    for (size_t face_index = 0; face_index < m_mesh.indices.size(); ++face_index) {
+        const RGBA color = face_color(face_index);
+        size_t nearest_index = 0;
+        float nearest_distance = color_distance_squared(color, palette.front());
+        for (size_t candidate = 1; candidate < palette.size(); ++candidate) {
+            const float distance = color_distance_squared(color, palette[candidate]);
+            if (distance < nearest_distance) {
+                nearest_distance = distance;
+                nearest_index = candidate;
+            }
+        }
+        if (nearest_index != palette_index)
+            continue;
+        m_selected_faces[face_index] = 1;
+        ++m_selected_face_count;
+    }
+    return m_selected_face_count;
+}
+
 void VertexColorRegionEditor::clear_selection()
 {
     std::fill(m_selected_faces.begin(), m_selected_faces.end(), uint8_t(0));

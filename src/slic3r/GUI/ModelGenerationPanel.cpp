@@ -129,6 +129,23 @@ AIModelGenerationClient::PaletteRoles automatic_palette_roles(const std::vector<
     return result;
 }
 
+bool same_palette_color(const std::string& left, const std::string& right)
+{
+    return left.size() == right.size() && std::equal(
+        left.begin(), left.end(), right.begin(), [](unsigned char a, unsigned char b) {
+            return std::toupper(a) == std::toupper(b);
+        });
+}
+
+wxString palette_role_label(const std::string& role)
+{
+    if (role == "primary") return _L("主体");
+    if (role == "structure") return _L("结构");
+    if (role == "light") return _L("浅色");
+    if (role == "accent") return _L("强调");
+    return {};
+}
+
 double minimum_palette_distance(const std::vector<std::string>& palette)
 {
     double minimum = std::numeric_limits<double>::infinity();
@@ -649,6 +666,28 @@ public:
                                const boost::filesystem::path& destination, std::string& error)
     {
         return m_region_editor.apply_color_to_obj_copy(color, source, destination, error);
+    }
+
+    bool select_palette_material(size_t palette_index)
+    {
+        std::vector<ColorRGBA> decoded;
+        decode_colors(m_palette, decoded);
+        if (decoded.empty() || palette_index >= decoded.size())
+            return false;
+        std::vector<RGBA> palette;
+        palette.reserve(decoded.size());
+        for (const ColorRGBA& color : decoded)
+            palette.push_back({color.r(), color.g(), color.b(), color.a()});
+
+        const std::vector<uint8_t> previous = m_region_editor.selected_faces();
+        m_region_editor.select_palette_material(palette, palette_index);
+        if (previous != m_region_editor.selected_faces())
+            push_selection_history(previous);
+        rebuild_selection_model();
+        notify_selection_changed();
+        if (m_canvas != nullptr)
+            m_canvas->Refresh(false);
+        return true;
     }
 
 private:
@@ -1615,6 +1654,23 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     m_local_recolor_controls = new wxPanel(m_local_recolor_panel);
     m_local_recolor_controls->SetBackgroundColour(*wxWHITE);
     auto* controls_sizer = new wxBoxSizer(wxVERTICAL);
+    auto* material_row = new wxBoxSizer(wxHORIZONTAL);
+    material_row->Add(new wxStaticText(m_local_recolor_controls, wxID_ANY, _L("智能区域")), 0,
+                      wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
+    for (size_t index = 0; index < m_region_material_buttons.size(); ++index) {
+        m_region_material_buttons[index] = new wxButton(
+            m_local_recolor_controls, wxID_ANY,
+            wxString::Format(_L("材料 %llu"), static_cast<unsigned long long>(index + 1)));
+        m_region_material_buttons[index]->SetMinSize(wxSize(FromDIP(112), FromDIP(42)));
+        material_row->Add(m_region_material_buttons[index], 0,
+                          wxALIGN_CENTER_VERTICAL | (index == 0 ? 0 : wxLEFT), FromDIP(6));
+    }
+    auto* material_hint = new wxStaticText(
+        m_local_recolor_controls, wxID_ANY, _L("按 AI 色彩角色选中全部同类材料面，可再手动增减"));
+    material_hint->SetForegroundColour(wxColour(91, 104, 107));
+    material_row->Add(material_hint, 1, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(12));
+    controls_sizer->Add(material_row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(10));
+
     auto* selection_row = new wxBoxSizer(wxHORIZONTAL);
     selection_row->Add(new wxStaticText(m_local_recolor_controls, wxID_ANY, _L("选择部位")), 0,
                        wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
@@ -1779,6 +1835,12 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
         m_region_color_buttons[index]->Bind(wxEVT_TOGGLEBUTTON, [this, index](wxCommandEvent&) {
             m_region_color_index = static_cast<int>(index);
             refresh_local_recolor_controls();
+        });
+    }
+    for (size_t index = 0; index < m_region_material_buttons.size(); ++index) {
+        m_region_material_buttons[index]->Bind(wxEVT_BUTTON, [this, index](wxCommandEvent&) {
+            if (m_model_preview != nullptr)
+                m_model_preview->select_palette_material(index);
         });
     }
     m_undo_region_selection->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
@@ -2161,6 +2223,7 @@ void ModelGenerationPanel::on_generate(wxCommandEvent&)
     m_displayed_model_path.clear();
     m_displayed_model_job_id.clear();
     m_displayed_model_palette.clear();
+    m_displayed_model_palette_roles.clear();
     clear_model_quality();
     if (m_model_preview != nullptr)
         m_model_preview->clear();
@@ -2237,6 +2300,7 @@ void ModelGenerationPanel::handle_error(const std::string& error, uint64_t seque
     m_library_model_loaded = false;
     m_displayed_model_path.clear();
     m_displayed_model_palette.clear();
+    m_displayed_model_palette_roles.clear();
     if (m_model_preview != nullptr)
         m_model_preview->clear();
     m_artifact_format.clear();
@@ -2552,6 +2616,7 @@ void ModelGenerationPanel::download_model_preview(uint64_t sequence)
                 weak->m_displayed_model_path = path;
                 weak->m_displayed_model_job_id = weak->m_job_id;
                 weak->m_displayed_model_palette = weak->m_job_palette;
+                weak->m_displayed_model_palette_roles = weak->m_job_palette_roles;
                 weak->m_busy = false;
                 weak->m_model_preview_ready = true;
                 weak->m_library_model_loaded = false;
@@ -3190,6 +3255,42 @@ void ModelGenerationPanel::refresh_local_recolor_controls()
                            static_cast<unsigned long long>(m_model_preview->selected_face_count()))
         : _L("点击模型选择要改色的部位"));
 
+    std::vector<std::string> model_palette = m_displayed_model_palette;
+    if (model_palette.size() > m_region_material_buttons.size())
+        model_palette.resize(m_region_material_buttons.size());
+    AIModelGenerationClient::PaletteRoles model_roles = m_displayed_model_palette_roles;
+    if (model_roles.empty())
+        model_roles = automatic_palette_roles(model_palette);
+    for (size_t index = 0; index < m_region_material_buttons.size(); ++index) {
+        wxButton* button = m_region_material_buttons[index];
+        const bool visible = index < model_palette.size();
+        button->Show(visible);
+        if (!visible)
+            continue;
+        std::string role;
+        for (const char* candidate : PALETTE_ROLE_IDS) {
+            const auto found = model_roles.find(candidate);
+            if (found != model_roles.end() && same_palette_color(found->second, model_palette[index])) {
+                role = candidate;
+                break;
+            }
+        }
+        const wxString label = palette_role_label(role);
+        button->SetLabel((label.empty()
+            ? wxString::Format(_L("材料 %llu\n"), static_cast<unsigned long long>(index + 1))
+            : label + "\n") + from_u8(model_palette[index]));
+        button->SetToolTip((label.empty() ? _L("选择模型中属于此颜色的全部材料面：")
+                                          : _L("选择模型中属于此语义角色的全部材料面：")) +
+                           from_u8(model_palette[index]));
+        const wxColour color(from_u8(model_palette[index]));
+        if (color.IsOk()) {
+            button->SetBackgroundColour(color);
+            const double luminance = 0.299 * color.Red() + 0.587 * color.Green() + 0.114 * color.Blue();
+            button->SetForegroundColour(luminance >= 150.0 ? *wxBLACK : *wxWHITE);
+        }
+        button->Enable(editing && !m_busy);
+    }
+
     for (size_t index = 0; index < m_region_operation_buttons.size(); ++index) {
         wxToggleButton* button = m_region_operation_buttons[index];
         const bool selected = int(index) == m_region_operation_index;
@@ -3272,6 +3373,11 @@ void ModelGenerationPanel::on_apply_local_recolor(wxCommandEvent&)
     const bool source_uses_printable_colors = m_job_use_printable_colors;
     const std::vector<std::string> display_palette = source_uses_printable_colors
         ? palette : std::vector<std::string> {};
+    AIModelGenerationClient::PaletteRoles display_palette_roles =
+        display_palette == m_displayed_model_palette ? m_displayed_model_palette_roles
+                                                     : automatic_palette_roles(display_palette);
+    if (display_palette_roles.empty())
+        display_palette_roles = automatic_palette_roles(display_palette);
     const RGBA color {
         selected_color.Red() / 255.0f,
         selected_color.Green() / 255.0f,
@@ -3305,8 +3411,9 @@ void ModelGenerationPanel::on_apply_local_recolor(wxCommandEvent&)
     m_displayed_model_path = destination;
     m_displayed_model_job_id.clear();
     m_displayed_model_palette = display_palette;
+    m_displayed_model_palette_roles = display_palette_roles;
     m_job_palette = display_palette;
-    m_job_palette_roles = automatic_palette_roles(display_palette);
+    m_job_palette_roles = display_palette_roles;
     m_job_use_printable_colors = source_uses_printable_colors;
     m_model_preview_ready = true;
     m_library_model_loaded = false;
@@ -3327,6 +3434,7 @@ void ModelGenerationPanel::on_apply_local_recolor(wxCommandEvent&)
         {"source", "local_recolor"},
         {"prompt", "局部改色模型"},
         {"palette", display_palette},
+        {"palette_roles", display_palette_roles},
         {"use_printable_colors", source_uses_printable_colors},
         {"recolor_target", palette[color_index]},
         {"recolor_target_palette", palette},
@@ -3718,7 +3826,10 @@ void ModelGenerationPanel::reset(bool remove_remote)
     m_artifact_download_started = false;
     m_model_preview_ready = false;
     m_library_model_loaded = false;
+    m_displayed_model_path.clear();
     m_displayed_model_job_id.clear();
+    m_displayed_model_palette.clear();
+    m_displayed_model_palette_roles.clear();
     clear_model_quality();
     if (m_model_preview != nullptr)
         m_model_preview->clear();
@@ -3819,6 +3930,14 @@ void ModelGenerationPanel::load_library_entries()
                         entry.palette.push_back(color.get<std::string>());
                 }
             }
+            const auto roles = metadata.find("palette_roles");
+            if (roles != metadata.end() && roles->is_object()) {
+                for (const char* role : PALETTE_ROLE_IDS) {
+                    const auto color = roles->find(role);
+                    if (color != roles->end() && color->is_string())
+                        entry.palette_roles.emplace(role, color->get<std::string>());
+                }
+            }
         }
 
         const boost::filesystem::path job_preview = root / job_id / "preview.png";
@@ -3843,6 +3962,18 @@ void ModelGenerationPanel::load_library_entries()
             }
             entry.use_printable_colors = !entry.palette.empty();
         }
+        for (auto role = entry.palette_roles.begin(); role != entry.palette_roles.end();) {
+            const bool matches_palette = std::any_of(
+                entry.palette.begin(), entry.palette.end(), [&role](const std::string& color) {
+                    return same_palette_color(color, role->second);
+                });
+            if (!matches_palette)
+                role = entry.palette_roles.erase(role);
+            else
+                ++role;
+        }
+        if (entry.palette_roles.empty())
+            entry.palette_roles = automatic_palette_roles(entry.palette);
 
         if (entry.title.empty())
             entry.title = _L("AI 模型 ") + wxString::FromUTF8(job_id.substr(0, std::min<size_t>(8, job_id.size())));
@@ -3908,7 +4039,9 @@ void ModelGenerationPanel::save_library_entry(size_t artifact_size, size_t trian
 }
 
 void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& model_path,
-                                               const std::vector<std::string>& palette, bool use_printable_colors,
+                                               const std::vector<std::string>& palette,
+                                               const AIModelGenerationClient::PaletteRoles& palette_roles,
+                                               bool use_printable_colors,
                                                const std::string& job_id, const wxString& title)
 {
     if (m_busy || m_model_preview == nullptr)
@@ -3932,6 +4065,7 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
         m_library_model_loaded = false;
         m_displayed_model_path.clear();
         m_displayed_model_palette.clear();
+        m_displayed_model_palette_roles.clear();
         m_status->SetLabel(_L("历史 OBJ 模型加载失败。"));
         m_model_stats->SetLabel(_L("模型预览不可用"));
         m_result_summary->SetLabel(from_u8(error));
@@ -3944,6 +4078,7 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
     ++m_sequence;
     m_job_id.clear();
     m_job_palette = palette;
+    m_job_palette_roles = palette_roles.empty() ? automatic_palette_roles(palette) : palette_roles;
     m_job_use_printable_colors = use_printable_colors;
     m_job_prompt.clear();
     m_job_style.clear();
@@ -3961,6 +4096,7 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
     m_displayed_model_path = model_path;
     m_displayed_model_job_id = job_id;
     m_displayed_model_palette = palette;
+    m_displayed_model_palette_roles = m_job_palette_roles;
     m_model_preview_ready = true;
     m_library_model_loaded = true;
     clear_model_quality();
@@ -3985,6 +4121,10 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
                 if (!weak || weak->m_shutdown || sequence != weak->m_sequence ||
                     weak->m_displayed_model_job_id != job_id)
                     return;
+                if (!status.palette_roles.empty() && status.palette == weak->m_displayed_model_palette) {
+                    weak->m_job_palette_roles = status.palette_roles;
+                    weak->m_displayed_model_palette_roles = status.palette_roles;
+                }
                 weak->apply_model_quality(status.model_quality);
                 weak->apply_visual_quality(status.visual_quality);
                 weak->refresh_controls();
@@ -4026,14 +4166,15 @@ void ModelGenerationPanel::refresh_library()
         row->Add(text, 1, wxALIGN_CENTER_VERTICAL | wxTOP | wxRIGHT | wxBOTTOM, FromDIP(8));
         card->SetSizer(row);
         const auto bind_load = [this, model_path = entry.model_path, palette = entry.palette,
+                                palette_roles = entry.palette_roles,
                                 use_printable_colors = entry.use_printable_colors,
                                 job_id = entry.job_id,
                                 title_text = entry.title](wxWindow* window) {
             window->SetCursor(wxCursor(wxCURSOR_HAND));
             window->SetToolTip(_L("双击加载到 3D 模型预览"));
-            window->Bind(wxEVT_LEFT_DCLICK, [this, model_path, palette, use_printable_colors, job_id,
+            window->Bind(wxEVT_LEFT_DCLICK, [this, model_path, palette, palette_roles, use_printable_colors, job_id,
                                              title_text](wxMouseEvent&) {
-                load_library_entry(model_path, palette, use_printable_colors, job_id, title_text);
+                load_library_entry(model_path, palette, palette_roles, use_printable_colors, job_id, title_text);
             });
         };
         bind_load(card);
