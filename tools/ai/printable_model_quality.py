@@ -11,9 +11,11 @@ import os
 from pathlib import Path
 from typing import Any
 
+from sampled_local_thickness import sample_local_thickness
+
 
 REPORT_SCHEMA_VERSION = 1
-GATE_VERSION = "structural-v5"
+GATE_VERSION = "structural-v6"
 
 
 @dataclass(frozen=True)
@@ -33,6 +35,12 @@ class ModelQualityThresholds:
     component_contact_tolerance_mm: float = 0.2
     min_component_thickness_mm: float = 0.8
     min_thin_component_diagonal_mm: float = 2.0
+    min_local_wall_thickness_mm: float = 0.8
+    local_thickness_sample_limit: int = 4096
+    local_thickness_bvh_leaf_size: int = 24
+    min_thin_local_samples: int = 2
+    min_thin_local_sample_area_mm2: float = 1.0
+    max_opposing_normal_dot: float = -0.5
     tiny_color_region_face_ratio: float = 0.0005
     tiny_color_region_area_ratio: float = 0.0001
     degenerate_area_epsilon_mm2: float = 1e-10
@@ -234,6 +242,7 @@ def analyze_printable_obj(
     face_areas: list[float] = []
     face_projected_areas: list[float] = []
     face_downward: list[bool] = []
+    face_normals: list[tuple[float, float, float]] = []
     face_minimum_z: list[float] = []
     face_maximum_z: list[float] = []
     degenerate_faces = 0
@@ -263,10 +272,12 @@ def analyze_printable_obj(
             degenerate_faces += 1
             face_areas.append(0.0)
             face_projected_areas.append(0.0)
+            face_normals.append((0.0, 0.0, 1.0))
         else:
             surface_area += area
             face_areas.append(area)
             face_projected_areas.append(abs(cross[2]) * 0.5)
+            face_normals.append(tuple(value / double_area for value in cross))
             is_downward = cross[2] / double_area < -math.sqrt(0.5)
             if is_downward:
                 downward_area += area
@@ -366,6 +377,38 @@ def analyze_printable_obj(
             if thickness < limits.min_component_thickness_mm:
                 thin_components += 1
     minimum_component_thickness = min(measured_component_thicknesses, default=None)
+
+    local_thickness_available = component_thickness_available
+    local_thickness_samples = 0
+    thin_local_samples = 0
+    thin_local_sample_area = 0.0
+    minimum_sampled_local_thickness: float | None = None
+    if local_thickness_available:
+        face_components = [roots[face[0]] for face in faces]
+        try:
+            (
+                local_thickness_samples,
+                thin_local_samples,
+                thin_local_sample_area,
+                minimum_sampled_local_thickness,
+            ) = sample_local_thickness(
+                vertices,
+                faces,
+                face_areas,
+                face_normals,
+                face_neighbors,
+                face_components,
+                maximum_distance=max(0.0, limits.min_local_wall_thickness_mm),
+                sample_limit=max(0, limits.local_thickness_sample_limit),
+                bvh_leaf_size=max(4, limits.local_thickness_bvh_leaf_size),
+                maximum_opposing_normal_dot=max(-1.0, min(1.0, limits.max_opposing_normal_dot)),
+            )
+        except (ArithmeticError, MemoryError, OverflowError, ValueError):
+            local_thickness_available = False
+            local_thickness_samples = 0
+            thin_local_samples = 0
+            thin_local_sample_area = 0.0
+            minimum_sampled_local_thickness = None
 
     supported_bounds = [[math.inf] * 3, [-math.inf] * 3]
     has_supported_bounds = False
@@ -566,6 +609,16 @@ def analyze_printable_obj(
             f"Model contains {thin_components} connected components thinner than {limits.min_component_thickness_mm:g} mm.",
         )
     if (
+        local_thickness_available
+        and not thin_components
+        and thin_local_samples >= limits.min_thin_local_samples
+        and thin_local_sample_area >= limits.min_thin_local_sample_area_mm2
+    ):
+        add_warning(
+            "thin_local_wall_regions",
+            f"Model contains sampled local walls thinner than {limits.min_local_wall_thickness_mm:g} mm.",
+        )
+    if (
         len(contact_indices) < 3
         or contact_span_ratio < limits.min_contact_span_ratio
         or bed_contact_area_ratio < limits.min_contact_area_ratio
@@ -608,6 +661,15 @@ def analyze_printable_obj(
         "minimum_component_thickness_mm": (
             round(minimum_component_thickness, 6)
             if minimum_component_thickness is not None and math.isfinite(minimum_component_thickness)
+            else None
+        ),
+        "local_thickness_available": local_thickness_available,
+        "local_thickness_sample_count": local_thickness_samples,
+        "thin_local_surface_sample_count": thin_local_samples,
+        "thin_local_sample_area_mm2": round(thin_local_sample_area, 6),
+        "minimum_sampled_local_thickness_mm": (
+            round(minimum_sampled_local_thickness, 6)
+            if minimum_sampled_local_thickness is not None and math.isfinite(minimum_sampled_local_thickness)
             else None
         ),
         "boundary_edges": boundary_edges,

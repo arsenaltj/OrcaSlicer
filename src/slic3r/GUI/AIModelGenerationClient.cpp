@@ -518,6 +518,16 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
                 metrics["minimum_component_thickness_mm"].is_number())
                 status.model_quality.minimum_component_thickness_mm =
                     metrics["minimum_component_thickness_mm"].get<double>();
+            status.model_quality.local_thickness_available =
+                metrics.value("local_thickness_available", false);
+            status.model_quality.local_thickness_sample_count =
+                metrics.value("local_thickness_sample_count", size_t(0));
+            status.model_quality.thin_local_surface_sample_count =
+                metrics.value("thin_local_surface_sample_count", size_t(0));
+            if (metrics.contains("minimum_sampled_local_thickness_mm") &&
+                metrics["minimum_sampled_local_thickness_mm"].is_number())
+                status.model_quality.minimum_sampled_local_thickness_mm =
+                    metrics["minimum_sampled_local_thickness_mm"].get<double>();
             status.model_quality.repairable_topology = metrics.value("repairable_topology", false);
         }
     }

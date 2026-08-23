@@ -55,6 +55,49 @@ def rotate_part(part, y_degrees=37.0, z_degrees=23.0):
     return rotated, faces
 
 
+def attached_thin_neck() -> tuple[list[tuple[float, float, float]], list[tuple[int, int, int]]]:
+    """Closed 10 mm body with a 5 x 10 x 0.4 mm neck in the same component."""
+    x_coordinates = (0.0, 10.0, 15.0)
+    y_coordinates = (0.0, 10.0)
+    z_coordinates = (0.0, 4.8, 5.2, 10.0)
+    occupied = {(0, 0, 0), (0, 0, 1), (0, 0, 2), (1, 0, 1)}
+    vertices: list[tuple[float, float, float]] = []
+    vertex_indices: dict[tuple[float, float, float], int] = {}
+    faces: list[tuple[int, int, int]] = []
+
+    def vertex_index(point: tuple[float, float, float]) -> int:
+        if point not in vertex_indices:
+            vertex_indices[point] = len(vertices) + 1
+            vertices.append(point)
+        return vertex_indices[point]
+
+    side_corners = {
+        (-1, 0, 0): ("010", "000", "001", "011"),
+        (1, 0, 0): ("100", "110", "111", "101"),
+        (0, -1, 0): ("000", "100", "101", "001"),
+        (0, 1, 0): ("110", "010", "011", "111"),
+        (0, 0, -1): ("000", "010", "110", "100"),
+        (0, 0, 1): ("001", "101", "111", "011"),
+    }
+    for ix, iy, iz in sorted(occupied):
+        x0, x1 = x_coordinates[ix], x_coordinates[ix + 1]
+        y0, y1 = y_coordinates[iy], y_coordinates[iy + 1]
+        z0, z1 = z_coordinates[iz], z_coordinates[iz + 1]
+        corners = {
+            "000": (x0, y0, z0), "100": (x1, y0, z0),
+            "110": (x1, y1, z0), "010": (x0, y1, z0),
+            "001": (x0, y0, z1), "101": (x1, y0, z1),
+            "111": (x1, y1, z1), "011": (x0, y1, z1),
+        }
+        for direction, names in side_corners.items():
+            neighbor = (ix + direction[0], iy + direction[1], iz + direction[2])
+            if neighbor in occupied:
+                continue
+            quad = tuple(vertex_index(corners[name]) for name in names)
+            faces.extend(((quad[0], quad[1], quad[2]), (quad[0], quad[2], quad[3])))
+    return vertices, faces
+
+
 def obj_text(parts) -> str:
     lines = []
     vertex_offset = 0
@@ -241,6 +284,45 @@ class PrintableModelQualityTests(unittest.TestCase):
         self.assertIsNone(report["metrics"]["minimum_component_thickness_mm"])
         self.assertNotIn("thin_structural_components", report["warnings"])
 
+    def test_attached_thin_neck_requires_local_thickness_review(self):
+        report = self.analyze(obj_text([attached_thin_neck()]))
+
+        self.assertEqual(report["gate_version"], "structural-v6")
+        self.assertEqual(report["status"], "review")
+        self.assertEqual(report["metrics"]["thin_component_count"], 0)
+        self.assertTrue(report["metrics"]["local_thickness_available"])
+        self.assertGreaterEqual(report["metrics"]["thin_local_surface_sample_count"], 2)
+        self.assertAlmostEqual(report["metrics"]["minimum_sampled_local_thickness_mm"], 0.4, places=4)
+        self.assertIn("thin_local_wall_regions", report["warnings"])
+
+    def test_sampled_local_thickness_is_rotation_invariant(self):
+        report = self.analyze(obj_text([rotate_part(attached_thin_neck())]))
+
+        self.assertTrue(report["metrics"]["local_thickness_available"])
+        self.assertAlmostEqual(report["metrics"]["minimum_sampled_local_thickness_mm"], 0.4, places=4)
+        self.assertIn("thin_local_wall_regions", report["warnings"])
+
+    def test_chunky_box_has_no_local_thickness_warning(self):
+        report = self.analyze(obj_text([box()]))
+
+        self.assertTrue(report["metrics"]["local_thickness_available"])
+        self.assertEqual(report["metrics"]["thin_local_surface_sample_count"], 0)
+        self.assertIsNone(report["metrics"]["minimum_sampled_local_thickness_mm"])
+        self.assertNotIn("thin_local_wall_regions", report["warnings"])
+
+    def test_open_mesh_leaves_local_thickness_unknown(self):
+        vertices, faces = attached_thin_neck()
+        source = self.root / "open-local-thin.obj"
+        source.write_text(obj_text([(vertices, faces[:-1])]), encoding="ascii")
+
+        report = analyze_printable_obj(source, allow_repairable_topology=True)
+
+        self.assertFalse(report["metrics"]["local_thickness_available"])
+        self.assertEqual(report["metrics"]["local_thickness_sample_count"], 0)
+        self.assertEqual(report["metrics"]["thin_local_surface_sample_count"], 0)
+        self.assertIsNone(report["metrics"]["minimum_sampled_local_thickness_mm"])
+        self.assertNotIn("thin_local_wall_regions", report["warnings"])
+
     def test_coherent_printable_color_regions_pass(self):
         red_vertices, red_faces = tetrahedron()
         blue_vertices, blue_faces = tetrahedron((20.0, 0.0, 0.0))
@@ -353,7 +435,7 @@ class PrintableModelQualityTests(unittest.TestCase):
         report = self.analyze(obj_text([tetrahedron()]))
         destination = write_model_quality_report(report, self.root / "model-quality.json")
         self.assertTrue(destination.is_file())
-        self.assertIn('"gate_version": "structural-v5"', destination.read_text(encoding="utf-8"))
+        self.assertIn('"gate_version": "structural-v6"', destination.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

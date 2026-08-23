@@ -33,6 +33,7 @@ $aiRuntimeFiles = @(
     "openai_preprocessor.py",
     "printable_image_pipeline.py",
     "printable_model_quality.py",
+    "sampled_local_thickness.py",
     "printable_model_views.py",
     "printable_palette.py",
     "printable_visual_quality.py",

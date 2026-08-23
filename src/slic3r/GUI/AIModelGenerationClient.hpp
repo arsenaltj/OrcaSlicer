@@ -51,6 +51,10 @@ public:
         bool                     component_thickness_available { false };
         size_t                   thin_component_count { 0 };
         double                   minimum_component_thickness_mm { 0.0 };
+        bool                     local_thickness_available { false };
+        size_t                   local_thickness_sample_count { 0 };
+        size_t                   thin_local_surface_sample_count { 0 };
+        double                   minimum_sampled_local_thickness_mm { 0.0 };
         bool                     repairable_topology { false };
     };
 

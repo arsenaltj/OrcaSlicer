@@ -320,6 +320,7 @@ wxString model_quality_code_label(const std::string& code)
     if (code == "tiny_detached_components") return _L("检测到微小脱离部件，请旋转模型确认是否需要保留。");
     if (code == "floating_disconnected_components") return _L("检测到未接触热床或主体的悬空分离部件，请检查是否可打印。");
     if (code == "thin_structural_components") return _L("检测到整体厚度较薄的连通部件，请检查是否需要加厚。");
+    if (code == "thin_local_wall_regions") return _L("检测到附着在主体上的局部薄壁或细连接，请检查是否需要加厚。");
     if (code == "tiny_printable_color_regions") return _L("检测到过小的耗材色块，打印时可能产生碎片化换色。");
     if (code == "weak_bed_contact") return _L("模型与热床接触面积较小，请检查底座稳定性。");
     if (code == "extreme_aspect_ratio") return _L("模型比例较极端，请检查缩放和摆放方向。");
@@ -3156,6 +3157,16 @@ void ModelGenerationPanel::refresh_model_quality_card()
                 details << wxString::Format(_L("\n最薄组件：%.2f mm · 薄型组件：%llu 个"),
                             m_model_quality.minimum_component_thickness_mm,
                             static_cast<unsigned long long>(m_model_quality.thin_component_count));
+            if (m_model_quality.local_thickness_available) {
+                details << wxString::Format(_L("\n局部厚度采样：%llu 个"),
+                            static_cast<unsigned long long>(m_model_quality.local_thickness_sample_count));
+                if (m_model_quality.minimum_sampled_local_thickness_mm > 0.0)
+                    details << wxString::Format(_L(" · 最薄命中：%.2f mm · 薄面样本：%llu 个"),
+                                m_model_quality.minimum_sampled_local_thickness_mm,
+                                static_cast<unsigned long long>(m_model_quality.thin_local_surface_sample_count));
+                else
+                    details << _L(" · 未发现阈值内相对表面");
+            }
         } else {
             details << wxString::Format(_L("最大部件占比：%.1f%% · 接地覆盖：%.1f%% · 向下表面：%.1f%%"),
                         m_model_quality.largest_component_face_ratio * 100.0,
