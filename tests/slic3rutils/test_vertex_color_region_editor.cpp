@@ -290,6 +290,30 @@ TEST_CASE("vertex color overhang localization selects only significant elevated 
     CHECK(editor.selected_faces() == std::vector<uint8_t> {0, 0, 1, 1, 0, 0});
 }
 
+TEST_CASE("vertex color evidence selection ignores duplicate and invalid face indices", "[AI][VertexColorRegion]")
+{
+    AI::VertexColorRegionEditor editor;
+    std::string error;
+    REQUIRE(editor.initialize(square_mesh(), red_colors(), error));
+
+    CHECK(editor.select_faces({1, 1, 99}) == 1);
+    CHECK(editor.selected_faces() == std::vector<uint8_t> {0, 1});
+}
+
+TEST_CASE("vertex color evidence selection preserves an existing selection when evidence is empty", "[AI][VertexColorRegion]")
+{
+    AI::VertexColorRegionEditor editor;
+    std::string error;
+    REQUIRE(editor.initialize(square_mesh(), red_colors(), error));
+    REQUIRE(editor.select_faces({0}) == 1);
+    const std::vector<uint8_t> snapshot = editor.selected_faces();
+
+    CHECK(editor.select_faces({2, 100}) == 0);
+    CHECK(editor.selected_faces() == snapshot);
+    CHECK(editor.select_faces({}) == 0);
+    CHECK(editor.selected_faces() == snapshot);
+}
+
 TEST_CASE("vertex color overhang localization preserves selection when no region qualifies", "[AI][VertexColorRegion]")
 {
     indexed_triangle_set mesh = overhang_region_mesh();

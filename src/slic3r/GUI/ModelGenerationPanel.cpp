@@ -714,6 +714,21 @@ public:
         return localized;
     }
 
+    size_t select_face_evidence(const std::vector<size_t>& face_indices)
+    {
+        const std::vector<uint8_t> previous = m_region_editor.selected_faces();
+        const size_t localized = m_region_editor.select_faces(face_indices);
+        if (localized == 0)
+            return 0;
+        if (previous != m_region_editor.selected_faces())
+            push_selection_history(previous);
+        rebuild_selection_model();
+        notify_selection_changed();
+        if (m_canvas != nullptr)
+            m_canvas->Refresh(false);
+        return localized;
+    }
+
 private:
     void push_selection_history(const std::vector<uint8_t>& selected_faces)
     {
@@ -1772,10 +1787,14 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     m_model_quality_status->SetFont(quality_font);
     m_recheck_model = new wxButton(m_model_quality_panel, wxID_ANY, _L("重新检查"));
     m_recheck_model->SetToolTip(_L("使用本地结构门禁重新检查当前 OBJ，不会调用付费 AI"));
+    m_locate_thin_regions = new wxButton(m_model_quality_panel, wxID_ANY, _L("定位薄壁"));
+    m_locate_thin_regions->SetToolTip(
+        _L("高亮本地厚度采样命中的薄壁面片；结果用于复核，不会自动修改模型"));
     m_locate_overhang_regions = new wxButton(m_model_quality_panel, wxID_ANY, _L("定位悬垂面"));
     m_locate_overhang_regions->SetToolTip(
         _L("高亮显著的离床向下面，便于旋转检查；不会自动添加支撑或改变切片参数"));
     quality_header->Add(m_model_quality_status, 1, wxALIGN_CENTER_VERTICAL);
+    quality_header->Add(m_locate_thin_regions, 0, wxLEFT, FromDIP(12));
     quality_header->Add(m_locate_overhang_regions, 0, wxLEFT, FromDIP(12));
     quality_header->Add(m_recheck_model, 0, wxLEFT, FromDIP(12));
     quality_sizer->Add(quality_header, 0, wxEXPAND | wxALL, FromDIP(10));
@@ -1838,6 +1857,25 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
             m_model_preview->reset_view();
     });
     m_recheck_model->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_recheck_model, this);
+    m_locate_thin_regions->Bind(wxEVT_BUTTON, [this, model_page](wxCommandEvent&) {
+        if (m_model_preview == nullptr)
+            return;
+        const size_t localized = m_model_preview->select_face_evidence(
+            m_model_quality.thin_local_face_indices);
+        if (localized == 0) {
+            m_status->SetLabel(_L("当前质量报告没有可定位的局部薄壁证据。"));
+            return;
+        }
+        m_local_recolor_toggle->SetValue(true);
+        refresh_local_recolor_controls();
+        model_page->Layout();
+        if (m_preview_area != nullptr)
+            m_preview_area->FitInside();
+        m_model_preview_message->SetLabel(wxString::Format(
+            _L("已高亮 %llu 个局部薄壁采样面；可旋转复核，或在局部区域工具中手动增减。"),
+            static_cast<unsigned long long>(localized)));
+        m_status->SetLabel(_L("已定位局部薄壁证据；这里只做风险复核，不会自动修改模型。"));
+    });
     m_locate_overhang_regions->Bind(wxEVT_BUTTON, [this, model_page](wxCommandEvent&) {
         if (m_model_preview == nullptr)
             return;
@@ -3332,6 +3370,9 @@ void ModelGenerationPanel::refresh_local_recolor_controls()
     m_local_recolor_toggle->Enable(ready && !m_busy);
     if (m_locate_overhang_regions != nullptr)
         m_locate_overhang_regions->Enable(ready && !m_busy);
+    if (m_locate_thin_regions != nullptr)
+        m_locate_thin_regions->Enable(
+            ready && !m_busy && !m_model_quality.thin_local_face_indices.empty());
     if (m_model_preview != nullptr)
         m_model_preview->set_selection_enabled(editing);
 

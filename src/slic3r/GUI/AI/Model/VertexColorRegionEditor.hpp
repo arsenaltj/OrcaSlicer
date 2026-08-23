@@ -50,6 +50,7 @@ public:
     std::optional<size_t> pick_face(const Vec3d& ray_origin, const Vec3d& ray_direction) const;
     size_t update_selection(size_t seed_face, RegionSelectionOperation operation,
                             const RegionSelectionSettings& settings);
+    size_t select_faces(const std::vector<size_t>& face_indices);
     size_t select_palette_material(const std::vector<RGBA>& palette, size_t palette_index);
     size_t select_elevated_overhang_regions(
         const OverhangRegionSettings& settings = OverhangRegionSettings {});

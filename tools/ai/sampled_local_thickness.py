@@ -150,11 +150,12 @@ def sample_local_thickness(
     sample_limit: int,
     bvh_leaf_size: int,
     maximum_opposing_normal_dot: float,
-) -> tuple[int, int, float, float | None]:
-    """Return sampled count, thin hits, sampled thin area, and minimum hit distance."""
+    evidence_limit: int,
+) -> tuple[int, int, float, float | None, list[int]]:
+    """Return bounded sampling metrics and source-face indices for thin hits."""
 
     if not faces or maximum_distance <= 0.0 or sample_limit <= 0:
-        return 0, 0, 0.0, None
+        return 0, 0, 0.0, None, []
     order, nodes = _build_bvh(vertices, faces, max(4, bvh_leaf_size))
     if len(faces) <= sample_limit:
         samples = list(range(len(faces)))
@@ -169,6 +170,7 @@ def sample_local_thickness(
     thin_count = 0
     thin_area = 0.0
     minimum_thickness: float | None = None
+    thin_faces: list[int] = []
     for sample in samples:
         face = faces[sample]
         points = (vertices[face[0]], vertices[face[1]], vertices[face[2]])
@@ -214,6 +216,8 @@ def sample_local_thickness(
             continue
         thin_count += 1
         thin_area += face_areas[sample]
+        thin_faces.append(sample)
         minimum_thickness = nearest if minimum_thickness is None else min(minimum_thickness, nearest)
 
-    return len(samples), thin_count, thin_area, minimum_thickness
+    evidence = sorted(set(thin_faces))[:max(0, evidence_limit)]
+    return len(samples), thin_count, thin_area, minimum_thickness, evidence

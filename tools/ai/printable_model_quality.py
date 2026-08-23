@@ -15,7 +15,7 @@ from sampled_local_thickness import sample_local_thickness
 
 
 REPORT_SCHEMA_VERSION = 1
-GATE_VERSION = "structural-v6"
+GATE_VERSION = "structural-v7"
 
 
 @dataclass(frozen=True)
@@ -38,6 +38,7 @@ class ModelQualityThresholds:
     min_local_wall_thickness_mm: float = 0.8
     local_thickness_sample_limit: int = 4096
     local_thickness_bvh_leaf_size: int = 24
+    local_thickness_evidence_limit: int = 256
     min_thin_local_samples: int = 2
     min_thin_local_sample_area_mm2: float = 1.0
     max_opposing_normal_dot: float = -0.5
@@ -383,6 +384,7 @@ def analyze_printable_obj(
     thin_local_samples = 0
     thin_local_sample_area = 0.0
     minimum_sampled_local_thickness: float | None = None
+    thin_local_face_indices: list[int] = []
     if local_thickness_available:
         face_components = [roots[face[0]] for face in faces]
         try:
@@ -391,6 +393,7 @@ def analyze_printable_obj(
                 thin_local_samples,
                 thin_local_sample_area,
                 minimum_sampled_local_thickness,
+                thin_local_face_indices,
             ) = sample_local_thickness(
                 vertices,
                 faces,
@@ -402,6 +405,7 @@ def analyze_printable_obj(
                 sample_limit=max(0, limits.local_thickness_sample_limit),
                 bvh_leaf_size=max(4, limits.local_thickness_bvh_leaf_size),
                 maximum_opposing_normal_dot=max(-1.0, min(1.0, limits.max_opposing_normal_dot)),
+                evidence_limit=max(0, limits.local_thickness_evidence_limit),
             )
         except (ArithmeticError, MemoryError, OverflowError, ValueError):
             local_thickness_available = False
@@ -409,6 +413,7 @@ def analyze_printable_obj(
             thin_local_samples = 0
             thin_local_sample_area = 0.0
             minimum_sampled_local_thickness = None
+            thin_local_face_indices = []
 
     supported_bounds = [[math.inf] * 3, [-math.inf] * 3]
     has_supported_bounds = False
@@ -728,6 +733,7 @@ def analyze_printable_obj(
         "messages": messages,
         "thresholds": asdict(limits),
         "metrics": metrics,
+        "evidence": {"thin_local_face_indices": thin_local_face_indices},
     }
 
 

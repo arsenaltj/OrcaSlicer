@@ -287,13 +287,26 @@ class PrintableModelQualityTests(unittest.TestCase):
     def test_attached_thin_neck_requires_local_thickness_review(self):
         report = self.analyze(obj_text([attached_thin_neck()]))
 
-        self.assertEqual(report["gate_version"], "structural-v6")
+        self.assertEqual(report["gate_version"], "structural-v7")
         self.assertEqual(report["status"], "review")
         self.assertEqual(report["metrics"]["thin_component_count"], 0)
         self.assertTrue(report["metrics"]["local_thickness_available"])
         self.assertGreaterEqual(report["metrics"]["thin_local_surface_sample_count"], 2)
         self.assertAlmostEqual(report["metrics"]["minimum_sampled_local_thickness_mm"], 0.4, places=4)
         self.assertIn("thin_local_wall_regions", report["warnings"])
+        evidence = report["evidence"]["thin_local_face_indices"]
+        self.assertEqual(evidence, sorted(set(evidence)))
+        self.assertGreaterEqual(len(evidence), 2)
+        self.assertTrue(all(0 <= index < report["metrics"]["face_count"] for index in evidence))
+
+    def test_local_thickness_evidence_is_bounded(self):
+        report = self.analyze(
+            obj_text([attached_thin_neck()]),
+            thresholds=ModelQualityThresholds(local_thickness_evidence_limit=2),
+        )
+
+        self.assertEqual(len(report["evidence"]["thin_local_face_indices"]), 2)
+        self.assertGreater(report["metrics"]["thin_local_surface_sample_count"], 2)
 
     def test_sampled_local_thickness_is_rotation_invariant(self):
         report = self.analyze(obj_text([rotate_part(attached_thin_neck())]))
@@ -309,6 +322,7 @@ class PrintableModelQualityTests(unittest.TestCase):
         self.assertEqual(report["metrics"]["thin_local_surface_sample_count"], 0)
         self.assertIsNone(report["metrics"]["minimum_sampled_local_thickness_mm"])
         self.assertNotIn("thin_local_wall_regions", report["warnings"])
+        self.assertEqual(report["evidence"]["thin_local_face_indices"], [])
 
     def test_open_mesh_leaves_local_thickness_unknown(self):
         vertices, faces = attached_thin_neck()
@@ -435,7 +449,7 @@ class PrintableModelQualityTests(unittest.TestCase):
         report = self.analyze(obj_text([tetrahedron()]))
         destination = write_model_quality_report(report, self.root / "model-quality.json")
         self.assertTrue(destination.is_file())
-        self.assertIn('"gate_version": "structural-v6"', destination.read_text(encoding="utf-8"))
+        self.assertIn('"gate_version": "structural-v7"', destination.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

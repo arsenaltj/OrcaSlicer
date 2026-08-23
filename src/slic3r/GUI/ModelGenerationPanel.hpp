@@ -223,6 +223,7 @@ private:
     wxCollapsiblePane* m_model_quality_details_pane { nullptr };
     wxStaticText*   m_model_quality_details { nullptr };
     wxButton*       m_recheck_model { nullptr };
+    wxButton*       m_locate_thin_regions { nullptr };
     wxButton*       m_locate_overhang_regions { nullptr };
     wxStaticText*   m_visual_quality_status { nullptr };
     wxStaticText*   m_visual_quality_summary { nullptr };

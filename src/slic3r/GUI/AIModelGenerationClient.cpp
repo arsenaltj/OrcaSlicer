@@ -530,6 +530,19 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
                     metrics["minimum_sampled_local_thickness_mm"].get<double>();
             status.model_quality.repairable_topology = metrics.value("repairable_topology", false);
         }
+        if (quality.contains("evidence") && quality["evidence"].is_object()) {
+            const auto& evidence = quality["evidence"];
+            if (evidence.contains("thin_local_face_indices") &&
+                evidence["thin_local_face_indices"].is_array()) {
+                constexpr size_t max_evidence_faces = 256;
+                for (const auto& face_index : evidence["thin_local_face_indices"]) {
+                    if (!face_index.is_number_unsigned() ||
+                        status.model_quality.thin_local_face_indices.size() >= max_evidence_faces)
+                        continue;
+                    status.model_quality.thin_local_face_indices.emplace_back(face_index.get<size_t>());
+                }
+            }
+        }
     }
     if (job.contains("visual_quality") && job["visual_quality"].is_object()) {
         const auto& quality = job["visual_quality"];

@@ -486,6 +486,28 @@ size_t VertexColorRegionEditor::update_selection(size_t seed_face, RegionSelecti
     return m_selected_face_count;
 }
 
+size_t VertexColorRegionEditor::select_faces(const std::vector<size_t>& face_indices)
+{
+    if (!ready())
+        return 0;
+
+    std::vector<uint8_t> selected(m_mesh.indices.size(), 0);
+    size_t selected_count = 0;
+    for (size_t face_index : face_indices) {
+        if (face_index >= selected.size() || selected[face_index])
+            continue;
+        selected[face_index] = 1;
+        ++selected_count;
+    }
+    // Invalid or empty evidence is non-destructive, matching the other automatic
+    // localization helpers and preserving an in-progress manual selection.
+    if (selected_count == 0)
+        return 0;
+    m_selected_faces = std::move(selected);
+    m_selected_face_count = selected_count;
+    return selected_count;
+}
+
 size_t VertexColorRegionEditor::select_palette_material(const std::vector<RGBA>& palette,
                                                         size_t palette_index)
 {
