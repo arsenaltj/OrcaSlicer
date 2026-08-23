@@ -711,6 +711,8 @@ class ObjGenerationTests(unittest.TestCase):
         metrics = json.loads((self.job.directory / "vertex-color-metrics.json").read_text(encoding="utf-8"))
         self.assertEqual(metrics["face_count"], 4)
         self.assertEqual(metrics["three_color_faces"], 0)
+        cleanup = json.loads((self.job.directory / "vertex-color-cleanup.json").read_text(encoding="utf-8"))
+        self.assertIn(cleanup["status"], {"not_needed", "consolidated"})
         quality = json.loads((self.job.directory / SIDECAR.MODEL_QUALITY_FILENAME).read_text(encoding="utf-8"))
         self.assertEqual(quality["status"], "review")
         self.assertEqual(quality["metrics"]["face_count"], 4)
@@ -747,6 +749,7 @@ class ObjGenerationTests(unittest.TestCase):
         }
         self.assertGreaterEqual(len(output_colors), 2)
         self.assertTrue(any(channel not in range(0, 256, 51) for color in output_colors for channel in color))
+        self.assertFalse((self.job.directory / "vertex-color-cleanup.json").exists())
         SIDECAR._validate_obj_vertex_colors(artifact)
         SIDECAR._validate_obj_topology(artifact)
 
@@ -807,6 +810,103 @@ class ObjGenerationTests(unittest.TestCase):
         self.assertEqual(report["status"], "preserved")
         self.assertEqual(report["original_components"], 2)
         self.assertEqual(report["removed_components"], 0)
+
+    def test_bounded_detached_noise_is_removed_from_dense_model(self):
+        source = self.job.directory / "dense-with-noise.obj"
+        size = 151
+        vertices = [f"v {x} {y} 0 1 0 0" for y in range(size) for x in range(size)]
+        faces = []
+        for y in range(size - 1):
+            for x in range(size - 1):
+                left = y * size + x
+                right = left + 1
+                upper = left + size
+                upper_right = upper + 1
+                faces.extend(((left, upper, right), (right, upper, upper_right)))
+        noise_start = len(vertices)
+        vertices.extend((
+            "v 75 75 1 0 1 0",
+            "v 75.05 75 1 0 1 0",
+            "v 75 75.05 1 0 1 0",
+            "v 75 75 1.05 0 1 0",
+        ))
+        faces.extend((
+            (noise_start, noise_start + 2, noise_start + 1),
+            (noise_start, noise_start + 1, noise_start + 3),
+            (noise_start, noise_start + 3, noise_start + 2),
+            (noise_start + 1, noise_start + 2, noise_start + 3),
+        ))
+        source.write_text(
+            "\n".join(vertices + [f"f {a + 1} {b + 1} {c + 1}" for a, b, c in faces]) + "\n",
+            encoding="ascii",
+        )
+
+        report = SIDECAR._remove_small_detached_obj_components(
+            source, self.job.directory / "dense-mesh-repair.json"
+        )
+
+        self.assertEqual(report["status"], "removed")
+        self.assertEqual(report["removed_components"], 1)
+        self.assertEqual(report["removed_vertices"], 4)
+        self.assertEqual(report["removed_faces"], 4)
+        self.assertEqual(report["kept_faces"], (size - 1) * (size - 1) * 2)
+        self.assertNotIn("v 75 75 1 0 1 0", source.read_text(encoding="ascii"))
+
+    def test_unreferenced_vertex_is_removed_without_touching_main_component(self):
+        source = self.job.directory / "unreferenced-vertex.obj"
+        source.write_text(
+            "v 0 0 0 1 0 0\n"
+            "v 1 0 0 1 0 0\n"
+            "v 0 1 0 1 0 0\n"
+            "v 0 0 1 1 0 0\n"
+            "v 99 99 99 0 1 0\n"
+            "f 1 3 2\n"
+            "f 1 2 4\n"
+            "f 1 4 3\n"
+            "f 2 3 4\n",
+            encoding="ascii",
+        )
+
+        report = SIDECAR._remove_small_detached_obj_components(
+            source, self.job.directory / "unreferenced-mesh-repair.json"
+        )
+
+        self.assertEqual(report["status"], "removed")
+        self.assertEqual(report["removed_components"], 0)
+        self.assertEqual(report["removed_vertices"], 1)
+        self.assertEqual(SIDECAR._validate_obj_topology(source), (4, 1, 0))
+
+    def test_tiny_vertex_color_component_is_merged_into_strongest_neighbor(self):
+        source = self.job.directory / "tiny-color-island.obj"
+        size = 101
+        center = (size // 2) * size + size // 2
+        vertices = [
+            f"v {x} {y} 0 " + ("0 0 1" if y * size + x == center else "1 0 0")
+            for y in range(size)
+            for x in range(size)
+        ]
+        faces = []
+        for y in range(size - 1):
+            for x in range(size - 1):
+                left = y * size + x
+                right = left + 1
+                upper = left + size
+                upper_right = upper + 1
+                faces.extend(((left, upper, right), (right, upper, upper_right)))
+        source.write_text(
+            "\n".join(vertices + [f"f {a + 1} {b + 1} {c + 1}" for a, b, c in faces]) + "\n",
+            encoding="ascii",
+        )
+
+        report = SIDECAR._consolidate_tiny_obj_color_components(
+            source, self.job.directory / "tiny-color-cleanup.json"
+        )
+
+        self.assertEqual(report["status"], "consolidated")
+        self.assertEqual(report["merged_components"], 1)
+        self.assertEqual(report["recolored_vertices"], 1)
+        self.assertEqual(report["final_vertex_color_usage"], {"#FF0000": size * size})
+        SIDECAR._validate_obj_palette(source, ("#FF0000", "#0000FF"))
 
     def test_repairable_open_edges_are_deferred_to_orca(self):
         raw = self.job.directory / "artifact-raw.download"

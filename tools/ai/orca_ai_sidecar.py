@@ -72,6 +72,14 @@ MAX_JOB_STATE_BYTES = 64 * 1024
 MAX_LOCAL_REPAIR_DIAGONAL_RATIO = 0.05
 MAX_LOCAL_REPAIR_FACE_RATIO = 0.01
 MAX_LOCAL_BOUNDARY_EDGES = 64
+MAX_NOISE_COMPONENT_FACE_RATIO = 0.0001
+MAX_NOISE_COMPONENT_DIAGONAL_RATIO = 0.01
+MAX_TINY_COLOR_COMPONENT_AREA_RATIO = 0.0001
+MAX_TINY_COLOR_COMPONENT_VERTEX_RATIO = 0.0005
+MAX_COLOR_CLEANUP_SOURCE_AREA_RATIO = 0.10
+MAX_COLOR_CLEANUP_SURFACE_AREA_RATIO = 0.005
+MEANINGFUL_COLOR_SURFACE_AREA_RATIO = 0.02
+MAX_COLOR_CLEANUP_PASSES = 2
 DEFAULT_MODEL_SIZE_MM = 100.0
 MODEL_ARTIFACT_FORMAT = "obj"
 MODEL_QUALITY_FILENAME = "model-quality.json"
@@ -1972,6 +1980,7 @@ def _prepare_obj_artifact(raw_download: Path, job_directory: Path, palette: tupl
     repair_report = _remove_small_detached_obj_components(destination, job_directory / "mesh-repair.json")
     _repair_small_obj_topology_defects(destination, job_directory / "mesh-repair.json", repair_report)
     if palette:
+        _consolidate_tiny_obj_color_components(destination, job_directory / "vertex-color-cleanup.json")
         _validate_obj_palette(destination, palette)
     else:
         _validate_obj_vertex_colors(destination)
@@ -2208,10 +2217,217 @@ def _write_mesh_repair_report(path: Path, report: dict[str, Any]) -> None:
             pass
 
 
+def _consolidate_tiny_obj_color_components(path: Path, report_path: Path) -> dict[str, Any]:
+    positions: list[tuple[float, float, float]] = []
+    colors: list[tuple[int, int, int]] = []
+    faces: list[tuple[int, int, int]] = []
+    try:
+        with path.open("r", encoding="utf-8", errors="strict") as stream:
+            for line in stream:
+                fields = line.strip().split()
+                if not fields or fields[0].startswith("#"):
+                    continue
+                keyword = fields[0].lower()
+                if keyword == "v":
+                    if len(fields) not in {7, 8}:
+                        raise TripoError("The generated OBJ does not provide valid vertex colors.")
+                    try:
+                        position = tuple(float(value) for value in fields[1:4])
+                        color = tuple(round(float(value) * 255) for value in fields[4:7])
+                    except ValueError:
+                        raise TripoError("The generated OBJ has an invalid colored vertex.") from None
+                    if not all(math.isfinite(value) for value in position) or not all(
+                        0 <= value <= 255 for value in color
+                    ):
+                        raise TripoError("The generated OBJ has an invalid colored vertex.")
+                    positions.append(position)
+                    colors.append(color)
+                elif keyword == "f":
+                    if len(fields) != 4:
+                        raise TripoError("The generated OBJ must contain only triangular faces.")
+                    faces.append(tuple(_resolve_obj_index(value, len(positions), "vertex") for value in fields[1:]))
+    except UnicodeDecodeError:
+        raise TripoError("The generated OBJ is not valid UTF-8 text.") from None
+    except OSError:
+        raise TripoError("The generated OBJ could not be read for color cleanup.") from None
+    if not positions or not faces:
+        raise TripoError("The generated OBJ does not contain usable colored geometry.")
+
+    def triangle_area(face: tuple[int, int, int]) -> float:
+        left = positions[face[0]]
+        right = positions[face[1]]
+        third = positions[face[2]]
+        ab = tuple(right[axis] - left[axis] for axis in range(3))
+        ac = tuple(third[axis] - left[axis] for axis in range(3))
+        cross = (
+            ab[1] * ac[2] - ab[2] * ac[1],
+            ab[2] * ac[0] - ab[0] * ac[2],
+            ab[0] * ac[1] - ab[1] * ac[0],
+        )
+        return 0.5 * math.sqrt(sum(value * value for value in cross))
+
+    face_areas = [triangle_area(face) for face in faces]
+    surface_area = sum(face_areas)
+    if not math.isfinite(surface_area) or surface_area <= 0.0:
+        raise TripoError("The generated OBJ has invalid surface area for color cleanup.")
+    original_usage = Counter(colors)
+    total_merged_components = 0
+    total_recolored_vertices = 0
+    merged_area_by_color: Counter[tuple[int, int, int]] = Counter()
+    pass_reports: list[dict[str, Any]] = []
+
+    for pass_index in range(MAX_COLOR_CLEANUP_PASSES):
+        parent = list(range(len(positions)))
+
+        def find(index: int) -> int:
+            while parent[index] != index:
+                parent[index] = parent[parent[index]]
+                index = parent[index]
+            return index
+
+        def unite(left: int, right: int) -> None:
+            left_root, right_root = find(left), find(right)
+            if left_root != right_root:
+                parent[right_root] = left_root
+
+        for face in faces:
+            for left, right in ((face[0], face[1]), (face[1], face[2]), (face[2], face[0])):
+                if colors[left] == colors[right]:
+                    unite(left, right)
+
+        component_area: Counter[int] = Counter()
+        component_vertices: Counter[int] = Counter()
+        color_area: Counter[tuple[int, int, int]] = Counter()
+        for face, area in zip(faces, face_areas):
+            contribution = area / 3.0
+            for vertex in face:
+                root = find(vertex)
+                component_area[root] += contribution
+                color_area[colors[vertex]] += contribution
+        for index in range(len(positions)):
+            component_vertices[find(index)] += 1
+
+        boundary: dict[int, Counter[tuple[int, int, int]]] = {}
+        for face in faces:
+            for left, right in ((face[0], face[1]), (face[1], face[2]), (face[2], face[0])):
+                left_root, right_root = find(left), find(right)
+                if left_root == right_root or colors[left] == colors[right]:
+                    continue
+                edge_length = math.sqrt(sum(
+                    (positions[left][axis] - positions[right][axis]) ** 2 for axis in range(3)
+                ))
+                if edge_length <= 0.0 or not math.isfinite(edge_length):
+                    continue
+                boundary.setdefault(left_root, Counter())[colors[right]] += edge_length
+                boundary.setdefault(right_root, Counter())[colors[left]] += edge_length
+
+        candidates: list[tuple[float, int, tuple[int, int, int]]] = []
+        for root, area in component_area.items():
+            neighbors = boundary.get(root)
+            if not neighbors:
+                continue
+            if (
+                area / surface_area <= MAX_TINY_COLOR_COMPONENT_AREA_RATIO
+                and component_vertices[root] / len(positions) <= MAX_TINY_COLOR_COMPONENT_VERTEX_RATIO
+            ):
+                target = min(neighbors, key=lambda color: (-neighbors[color], color))
+                candidates.append((area, root, target))
+        candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+
+        merged_this_pass: dict[int, tuple[int, int, int]] = {}
+        pass_area_by_color: Counter[tuple[int, int, int]] = Counter()
+        for area, root, target in candidates:
+            source = colors[root]
+            if color_area[source] < surface_area * MEANINGFUL_COLOR_SURFACE_AREA_RATIO:
+                budget = min(color_area[source], surface_area * MAX_COLOR_CLEANUP_SURFACE_AREA_RATIO)
+            else:
+                budget = min(
+                    color_area[source] * MAX_COLOR_CLEANUP_SOURCE_AREA_RATIO,
+                    surface_area * MAX_COLOR_CLEANUP_SURFACE_AREA_RATIO,
+                    color_area[source] - surface_area * MEANINGFUL_COLOR_SURFACE_AREA_RATIO,
+                )
+            if pass_area_by_color[source] + area > budget + 1e-12:
+                continue
+            merged_this_pass[root] = target
+            pass_area_by_color[source] += area
+
+        recolored_this_pass = 0
+        for index in range(len(colors)):
+            target = merged_this_pass.get(find(index))
+            if target is not None and colors[index] != target:
+                colors[index] = target
+                recolored_this_pass += 1
+        pass_reports.append({
+            "pass": pass_index + 1,
+            "candidate_components": len(candidates),
+            "merged_components": len(merged_this_pass),
+            "recolored_vertices": recolored_this_pass,
+            "merged_surface_area_mm2": round(sum(pass_area_by_color.values()), 6),
+        })
+        total_merged_components += len(merged_this_pass)
+        total_recolored_vertices += recolored_this_pass
+        merged_area_by_color.update(pass_area_by_color)
+        if not recolored_this_pass:
+            break
+
+    if total_recolored_vertices:
+        temporary = path.with_name(path.name + ".colors")
+        vertex_index = 0
+        try:
+            with path.open("r", encoding="utf-8", errors="strict") as source, temporary.open(
+                "w", encoding="ascii", newline="\n"
+            ) as output:
+                for line in source:
+                    fields = line.strip().split()
+                    if fields and fields[0].lower() == "v":
+                        red, green, blue = colors[vertex_index]
+                        fields[4:7] = [f"{channel / 255.0:.6f}" for channel in (red, green, blue)]
+                        output.write(" ".join(fields) + "\n")
+                        vertex_index += 1
+                    else:
+                        output.write(line if line.endswith("\n") else line + "\n")
+            os.replace(temporary, path)
+        except (OSError, UnicodeDecodeError):
+            raise TripoError("Tiny printable-color regions could not be consolidated safely.") from None
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    final_usage = Counter(colors)
+    report = {
+        "status": "consolidated" if total_recolored_vertices else "not_needed",
+        "passes": pass_reports,
+        "merged_components": total_merged_components,
+        "recolored_vertices": total_recolored_vertices,
+        "surface_area_mm2": round(surface_area, 6),
+        "maximum_component_area_ratio": MAX_TINY_COLOR_COMPONENT_AREA_RATIO,
+        "maximum_component_vertex_ratio": MAX_TINY_COLOR_COMPONENT_VERTEX_RATIO,
+        "maximum_source_area_ratio": MAX_COLOR_CLEANUP_SOURCE_AREA_RATIO,
+        "maximum_surface_area_ratio": MAX_COLOR_CLEANUP_SURFACE_AREA_RATIO,
+        "original_vertex_color_usage": {
+            "#{:02X}{:02X}{:02X}".format(*color): count for color, count in sorted(original_usage.items())
+        },
+        "final_vertex_color_usage": {
+            "#{:02X}{:02X}{:02X}".format(*color): count for color, count in sorted(final_usage.items())
+        },
+        "merged_surface_area_by_color_mm2": {
+            "#{:02X}{:02X}{:02X}".format(*color): round(area, 6)
+            for color, area in sorted(merged_area_by_color.items())
+        },
+    }
+    _write_mesh_repair_report(report_path, report)
+    return report
+
+
 def _remove_small_detached_obj_components(path: Path, report_path: Path) -> dict[str, Any]:
     vertex_lines: list[str] = []
     vertices: list[tuple[float, float, float]] = []
     faces: list[tuple[int, int, int]] = []
+    face_sections: list[tuple[str, str]] = []
+    current_object = ""
+    current_group = ""
     try:
         with path.open("r", encoding="utf-8", errors="strict") as stream:
             for line in stream:
@@ -2237,6 +2453,11 @@ def _remove_small_detached_obj_components(path: Path, report_path: Path) -> dict
                     if len(set(face)) != 3:
                         raise TripoError("The generated OBJ contains a degenerate triangle.")
                     faces.append(face)
+                    face_sections.append((current_object, current_group))
+                elif keyword == "o":
+                    current_object = " ".join(fields)
+                elif keyword == "g":
+                    current_group = " ".join(fields)
     except UnicodeDecodeError:
         raise TripoError("The generated OBJ is not valid UTF-8 text.") from None
     except OSError:
@@ -2281,16 +2502,85 @@ def _remove_small_detached_obj_components(path: Path, report_path: Path) -> dict
     )
     main = components[0]
     main_face_count = len(component_faces[main])
+    mesh_vertices = {index for indices in component_vertices.values() for index in indices}
+    mesh_diagonal = diagonal(mesh_vertices)
+    removable: set[int] = set()
+    component_report: list[dict[str, Any]] = []
+    for root in components:
+        face_count = len(component_faces[root])
+        vertex_count = len(component_vertices[root])
+        component_diagonal = diagonal(component_vertices[root])
+        face_ratio = face_count / len(faces)
+        diagonal_ratio = component_diagonal / mesh_diagonal if mesh_diagonal > 0.0 else 0.0
+        remove = (
+            root != main
+            and face_ratio <= MAX_NOISE_COMPONENT_FACE_RATIO
+            and diagonal_ratio <= MAX_NOISE_COMPONENT_DIAGONAL_RATIO
+        )
+        if remove:
+            removable.add(root)
+        component_report.append({
+            "faces": face_count,
+            "vertices": vertex_count,
+            "diagonal_mm": round(component_diagonal, 6),
+            "face_ratio": round(face_ratio, 8),
+            "diagonal_ratio": round(diagonal_ratio, 8),
+            "removed": remove,
+        })
+
+    kept_face_records = [
+        (face, section)
+        for face, section in zip(faces, face_sections)
+        if find(face[0]) not in removable
+    ]
+    if not kept_face_records:
+        raise TripoError("Detached-component cleanup would remove all generated geometry.")
+    kept_vertex_indices = sorted({index for face, _section in kept_face_records for index in face})
+    vertex_map = {old: new for new, old in enumerate(kept_vertex_indices)}
+    removed_vertices = len(vertices) - len(kept_vertex_indices)
+    if removable or removed_vertices:
+        temporary = path.with_name(path.name + ".components")
+        try:
+            with temporary.open("w", encoding="ascii", newline="\n") as output:
+                output.write("# OrcaSlicer AI removed bounded detached mesh noise\n")
+                for old_index in kept_vertex_indices:
+                    output.write(vertex_lines[old_index] + "\n")
+                previous_section = ("", "")
+                for face, section in kept_face_records:
+                    if section != previous_section:
+                        if section[0]:
+                            output.write(section[0] + "\n")
+                        if section[1]:
+                            output.write(section[1] + "\n")
+                        previous_section = section
+                    output.write("f {} {} {}\n".format(*(vertex_map[index] + 1 for index in face)))
+            os.replace(temporary, path)
+        except OSError:
+            raise TripoError("Detached mesh noise could not be removed safely.") from None
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    removed_faces = sum(len(component_faces[root]) for root in removable)
     report: dict[str, Any] = {
-        "status": "not_needed" if len(components) == 1 else "preserved",
+        "status": (
+            "removed"
+            if removable or removed_vertices
+            else "not_needed" if len(components) == 1 else "preserved"
+        ),
         "original_components": len(components),
-        "kept_vertices": sum(len(indices) for indices in component_vertices.values()),
-        "kept_faces": sum(len(items) for items in component_faces.values()),
-        "removed_components": 0,
-        "removed_vertices": 0,
-        "removed_faces": 0,
+        "kept_vertices": len(kept_vertex_indices),
+        "kept_faces": len(kept_face_records),
+        "removed_components": len(removable),
+        "removed_vertices": removed_vertices,
+        "removed_faces": removed_faces,
         "largest_component_faces": main_face_count,
         "largest_component_diagonal": diagonal(component_vertices[main]),
+        "maximum_noise_component_face_ratio": MAX_NOISE_COMPONENT_FACE_RATIO,
+        "maximum_noise_component_diagonal_ratio": MAX_NOISE_COMPONENT_DIAGONAL_RATIO,
+        "components": component_report,
     }
 
     _write_mesh_repair_report(report_path, report)
