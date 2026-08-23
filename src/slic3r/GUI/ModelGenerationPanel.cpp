@@ -1789,6 +1789,13 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     quality_details_sizer->Add(m_model_quality_details, 0, wxEXPAND | wxALL, FromDIP(8));
     m_model_quality_details_pane->GetPane()->SetSizer(quality_details_sizer);
     quality_sizer->Add(m_model_quality_details_pane, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
+    m_model_quality_details_pane->Bind(wxEVT_COLLAPSIBLEPANE_CHANGED, [this, model_page](wxCollapsiblePaneEvent& event) {
+        m_model_quality_panel->Layout();
+        model_page->Layout();
+        if (m_model_preview != nullptr)
+            m_model_preview->refresh();
+        event.Skip();
+    });
     auto* visual_header = new wxBoxSizer(wxHORIZONTAL);
     m_visual_quality_status = new wxStaticText(m_model_quality_panel, wxID_ANY, _L("AI 视觉复核：未运行"));
     wxFont visual_font = m_visual_quality_status->GetFont();
