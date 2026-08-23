@@ -15,7 +15,7 @@ from sampled_local_thickness import sample_local_thickness
 
 
 REPORT_SCHEMA_VERSION = 1
-GATE_VERSION = "structural-v7"
+GATE_VERSION = "structural-v8"
 
 
 @dataclass(frozen=True)
@@ -39,6 +39,9 @@ class ModelQualityThresholds:
     local_thickness_sample_limit: int = 4096
     local_thickness_bvh_leaf_size: int = 24
     local_thickness_evidence_limit: int = 256
+    local_thickness_region_radius_mm: float = 2.0
+    local_thickness_region_limit: int = 16
+    local_thickness_region_face_limit: int = 64
     min_thin_local_samples: int = 2
     min_thin_local_sample_area_mm2: float = 1.0
     max_opposing_normal_dot: float = -0.5
@@ -151,6 +154,125 @@ def _bounds_distance(left: list[list[float]], right: list[list[float]]) -> float
         for axis in range(3)
     ]
     return _vector_length(*gaps)
+
+
+def _cluster_thin_local_hits(
+    vertices: list[tuple[float, float, float]],
+    faces: list[tuple[int, int, int]],
+    face_areas: list[float],
+    face_neighbors: list[set[int]],
+    face_components: list[int],
+    thin_hits: list[tuple[int, float]],
+    *,
+    radius_mm: float,
+    evidence_limit: int,
+    region_limit: int,
+    region_face_limit: int,
+) -> tuple[list[int], list[dict[str, Any]], int]:
+    if not thin_hits:
+        return [], [], 0
+
+    centers = [
+        tuple(
+            sum(vertices[faces[face_index][corner]][axis] for corner in range(3)) / 3.0
+            for axis in range(3)
+        )
+        for face_index, _ in thin_hits
+    ]
+    parents = list(range(len(thin_hits)))
+
+    def find(item: int) -> int:
+        while parents[item] != item:
+            parents[item] = parents[parents[item]]
+            item = parents[item]
+        return item
+
+    def unite(left: int, right: int) -> None:
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parents[right_root] = left_root
+
+    hit_positions = {face_index: position for position, (face_index, _) in enumerate(thin_hits)}
+    for position, (face_index, _) in enumerate(thin_hits):
+        for neighbor in face_neighbors[face_index]:
+            neighbor_position = hit_positions.get(neighbor)
+            if neighbor_position is not None:
+                unite(position, neighbor_position)
+
+    radius = max(0.0, radius_mm)
+    if radius > 0.0:
+        radius_squared = radius * radius
+        buckets: dict[tuple[int, int, int], list[int]] = {}
+        for position, center in enumerate(centers):
+            cell = tuple(math.floor(coordinate / radius) for coordinate in center)
+            for x_offset in (-1, 0, 1):
+                for y_offset in (-1, 0, 1):
+                    for z_offset in (-1, 0, 1):
+                        nearby = buckets.get(
+                            (cell[0] + x_offset, cell[1] + y_offset, cell[2] + z_offset), []
+                        )
+                        for candidate in nearby:
+                            candidate_face = thin_hits[candidate][0]
+                            if face_components[candidate_face] != face_components[thin_hits[position][0]]:
+                                continue
+                            distance_squared = sum(
+                                (center[axis] - centers[candidate][axis]) ** 2 for axis in range(3)
+                            )
+                            if distance_squared <= radius_squared:
+                                unite(position, candidate)
+            buckets.setdefault(cell, []).append(position)
+
+    groups: dict[int, list[int]] = {}
+    for position in range(len(thin_hits)):
+        groups.setdefault(find(position), []).append(position)
+
+    ranked: list[dict[str, Any]] = []
+    for positions in groups.values():
+        positions.sort(key=lambda position: (thin_hits[position][1], thin_hits[position][0]))
+        face_indices = [thin_hits[position][0] for position in positions]
+        ranked.append({
+            "sample_count": len(positions),
+            "sampled_area_mm2": sum(face_areas[face_index] for face_index in face_indices),
+            "minimum_thickness_mm": thin_hits[positions[0]][1],
+            "representative_face_index": thin_hits[positions[0]][0],
+            "ranked_face_indices": face_indices,
+        })
+    ranked.sort(key=lambda region: (
+        region["minimum_thickness_mm"],
+        -region["sampled_area_mm2"],
+        region["representative_face_index"],
+    ))
+
+    reported = ranked[:max(0, region_limit)]
+    allocations: list[list[int]] = [[] for _ in reported]
+    remaining = max(0, evidence_limit)
+    per_region_limit = max(0, region_face_limit)
+    if per_region_limit > 0:
+        for index, region in enumerate(reported):
+            if remaining == 0:
+                break
+            allocations[index].append(region["ranked_face_indices"][0])
+            remaining -= 1
+        for index, region in enumerate(reported):
+            if remaining == 0:
+                break
+            for face_index in region["ranked_face_indices"][1:per_region_limit]:
+                if remaining == 0:
+                    break
+                allocations[index].append(face_index)
+                remaining -= 1
+
+    evidence_faces = sorted(face_index for allocation in allocations for face_index in allocation)
+    region_evidence: list[dict[str, Any]] = []
+    for region, allocation in zip(reported, allocations):
+        region_evidence.append({
+            "sample_count": region["sample_count"],
+            "sampled_area_mm2": round(region["sampled_area_mm2"], 6),
+            "minimum_thickness_mm": round(region["minimum_thickness_mm"], 6),
+            "representative_face_index": region["representative_face_index"],
+            "face_indices": sorted(allocation),
+        })
+    return evidence_faces, region_evidence, len(ranked)
 
 
 def _smallest_principal_axis(points: list[tuple[float, float, float]]) -> tuple[float, float, float] | None:
@@ -384,7 +506,10 @@ def analyze_printable_obj(
     thin_local_samples = 0
     thin_local_sample_area = 0.0
     minimum_sampled_local_thickness: float | None = None
+    thin_local_hits: list[tuple[int, float]] = []
     thin_local_face_indices: list[int] = []
+    thin_local_regions: list[dict[str, Any]] = []
+    thin_local_region_count = 0
     if local_thickness_available:
         face_components = [roots[face[0]] for face in faces]
         try:
@@ -393,7 +518,7 @@ def analyze_printable_obj(
                 thin_local_samples,
                 thin_local_sample_area,
                 minimum_sampled_local_thickness,
-                thin_local_face_indices,
+                thin_local_hits,
             ) = sample_local_thickness(
                 vertices,
                 faces,
@@ -405,7 +530,22 @@ def analyze_printable_obj(
                 sample_limit=max(0, limits.local_thickness_sample_limit),
                 bvh_leaf_size=max(4, limits.local_thickness_bvh_leaf_size),
                 maximum_opposing_normal_dot=max(-1.0, min(1.0, limits.max_opposing_normal_dot)),
-                evidence_limit=max(0, limits.local_thickness_evidence_limit),
+            )
+            (
+                thin_local_face_indices,
+                thin_local_regions,
+                thin_local_region_count,
+            ) = _cluster_thin_local_hits(
+                vertices,
+                faces,
+                face_areas,
+                face_neighbors,
+                face_components,
+                thin_local_hits,
+                radius_mm=limits.local_thickness_region_radius_mm,
+                evidence_limit=limits.local_thickness_evidence_limit,
+                region_limit=limits.local_thickness_region_limit,
+                region_face_limit=limits.local_thickness_region_face_limit,
             )
         except (ArithmeticError, MemoryError, OverflowError, ValueError):
             local_thickness_available = False
@@ -413,7 +553,10 @@ def analyze_printable_obj(
             thin_local_samples = 0
             thin_local_sample_area = 0.0
             minimum_sampled_local_thickness = None
+            thin_local_hits = []
             thin_local_face_indices = []
+            thin_local_regions = []
+            thin_local_region_count = 0
 
     supported_bounds = [[math.inf] * 3, [-math.inf] * 3]
     has_supported_bounds = False
@@ -677,6 +820,8 @@ def analyze_printable_obj(
             if minimum_sampled_local_thickness is not None and math.isfinite(minimum_sampled_local_thickness)
             else None
         ),
+        "thin_local_region_count": thin_local_region_count,
+        "reported_thin_local_region_count": len(thin_local_regions),
         "boundary_edges": boundary_edges,
         "non_manifold_edges": non_manifold_edges,
         "inconsistent_winding_edges": inconsistent_winding_edges,
@@ -733,7 +878,10 @@ def analyze_printable_obj(
         "messages": messages,
         "thresholds": asdict(limits),
         "metrics": metrics,
-        "evidence": {"thin_local_face_indices": thin_local_face_indices},
+        "evidence": {
+            "thin_local_face_indices": thin_local_face_indices,
+            "thin_local_regions": thin_local_regions,
+        },
     }
 
 

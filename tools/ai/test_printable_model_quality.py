@@ -55,11 +55,11 @@ def rotate_part(part, y_degrees=37.0, z_degrees=23.0):
     return rotated, faces
 
 
-def attached_thin_neck() -> tuple[list[tuple[float, float, float]], list[tuple[int, int, int]]]:
-    """Closed 10 mm body with a 5 x 10 x 0.4 mm neck in the same component."""
+def attached_thin_neck(thickness=0.4) -> tuple[list[tuple[float, float, float]], list[tuple[int, int, int]]]:
+    """Closed 10 mm body with a 5 x 10 mm thin neck in the same component."""
     x_coordinates = (0.0, 10.0, 15.0)
     y_coordinates = (0.0, 10.0)
-    z_coordinates = (0.0, 4.8, 5.2, 10.0)
+    z_coordinates = (0.0, 5.0 - thickness * 0.5, 5.0 + thickness * 0.5, 10.0)
     occupied = {(0, 0, 0), (0, 0, 1), (0, 0, 2), (1, 0, 1)}
     vertices: list[tuple[float, float, float]] = []
     vertex_indices: dict[tuple[float, float, float], int] = {}
@@ -287,7 +287,7 @@ class PrintableModelQualityTests(unittest.TestCase):
     def test_attached_thin_neck_requires_local_thickness_review(self):
         report = self.analyze(obj_text([attached_thin_neck()]))
 
-        self.assertEqual(report["gate_version"], "structural-v7")
+        self.assertEqual(report["gate_version"], "structural-v8")
         self.assertEqual(report["status"], "review")
         self.assertEqual(report["metrics"]["thin_component_count"], 0)
         self.assertTrue(report["metrics"]["local_thickness_available"])
@@ -298,6 +298,13 @@ class PrintableModelQualityTests(unittest.TestCase):
         self.assertEqual(evidence, sorted(set(evidence)))
         self.assertGreaterEqual(len(evidence), 2)
         self.assertTrue(all(0 <= index < report["metrics"]["face_count"] for index in evidence))
+        self.assertEqual(report["metrics"]["thin_local_region_count"], 1)
+        self.assertEqual(report["metrics"]["reported_thin_local_region_count"], 1)
+        regions = report["evidence"]["thin_local_regions"]
+        self.assertEqual(len(regions), 1)
+        self.assertEqual(regions[0]["sample_count"], 4)
+        self.assertAlmostEqual(regions[0]["minimum_thickness_mm"], 0.4, places=4)
+        self.assertEqual(regions[0]["face_indices"], evidence)
 
     def test_local_thickness_evidence_is_bounded(self):
         report = self.analyze(
@@ -307,6 +314,26 @@ class PrintableModelQualityTests(unittest.TestCase):
 
         self.assertEqual(len(report["evidence"]["thin_local_face_indices"]), 2)
         self.assertGreater(report["metrics"]["thin_local_surface_sample_count"], 2)
+        self.assertEqual(len(report["evidence"]["thin_local_regions"][0]["face_indices"]), 2)
+        self.assertEqual(report["evidence"]["thin_local_regions"][0]["sample_count"], 4)
+
+    def test_distant_local_thickness_hits_form_stably_ordered_regions(self):
+        first = attached_thin_neck()
+        vertices, faces = attached_thin_neck(0.2)
+        second = ([(x + 40.0, y, z) for x, y, z in vertices], faces)
+        report = self.analyze(obj_text([first, second]))
+
+        self.assertEqual(report["metrics"]["thin_local_region_count"], 2)
+        regions = report["evidence"]["thin_local_regions"]
+        self.assertEqual(len(regions), 2)
+        self.assertEqual([region["sample_count"] for region in regions], [4, 4])
+        self.assertAlmostEqual(regions[0]["minimum_thickness_mm"], 0.2, places=4)
+        self.assertAlmostEqual(regions[1]["minimum_thickness_mm"], 0.4, places=4)
+        self.assertGreater(regions[0]["representative_face_index"], regions[1]["representative_face_index"])
+        self.assertEqual(
+            sorted(index for region in regions for index in region["face_indices"]),
+            report["evidence"]["thin_local_face_indices"],
+        )
 
     def test_sampled_local_thickness_is_rotation_invariant(self):
         report = self.analyze(obj_text([rotate_part(attached_thin_neck())]))
@@ -323,6 +350,8 @@ class PrintableModelQualityTests(unittest.TestCase):
         self.assertIsNone(report["metrics"]["minimum_sampled_local_thickness_mm"])
         self.assertNotIn("thin_local_wall_regions", report["warnings"])
         self.assertEqual(report["evidence"]["thin_local_face_indices"], [])
+        self.assertEqual(report["evidence"]["thin_local_regions"], [])
+        self.assertEqual(report["metrics"]["thin_local_region_count"], 0)
 
     def test_open_mesh_leaves_local_thickness_unknown(self):
         vertices, faces = attached_thin_neck()
@@ -449,7 +478,7 @@ class PrintableModelQualityTests(unittest.TestCase):
         report = self.analyze(obj_text([tetrahedron()]))
         destination = write_model_quality_report(report, self.root / "model-quality.json")
         self.assertTrue(destination.is_file())
-        self.assertIn('"gate_version": "structural-v7"', destination.read_text(encoding="utf-8"))
+        self.assertIn('"gate_version": "structural-v8"', destination.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

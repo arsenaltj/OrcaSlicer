@@ -1860,8 +1860,12 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     m_locate_thin_regions->Bind(wxEVT_BUTTON, [this, model_page](wxCommandEvent&) {
         if (m_model_preview == nullptr)
             return;
-        const size_t localized = m_model_preview->select_face_evidence(
-            m_model_quality.thin_local_face_indices);
+        const bool has_ranked_region = !m_model_quality.thin_local_regions.empty() &&
+            !m_model_quality.thin_local_regions.front().face_indices.empty();
+        const std::vector<size_t>& evidence = has_ranked_region
+            ? m_model_quality.thin_local_regions.front().face_indices
+            : m_model_quality.thin_local_face_indices;
+        const size_t localized = m_model_preview->select_face_evidence(evidence);
         if (localized == 0) {
             m_status->SetLabel(_L("当前质量报告没有可定位的局部薄壁证据。"));
             return;
@@ -1871,10 +1875,20 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
         model_page->Layout();
         if (m_preview_area != nullptr)
             m_preview_area->FitInside();
-        m_model_preview_message->SetLabel(wxString::Format(
-            _L("已高亮 %llu 个局部薄壁采样面；可旋转复核，或在局部区域工具中手动增减。"),
-            static_cast<unsigned long long>(localized)));
-        m_status->SetLabel(_L("已定位局部薄壁证据；这里只做风险复核，不会自动修改模型。"));
+        if (has_ranked_region) {
+            const size_t region_count = std::max(
+                m_model_quality.thin_local_region_count, m_model_quality.thin_local_regions.size());
+            m_model_preview_message->SetLabel(wxString::Format(
+                _L("已高亮最高风险薄壁区域的 %llu 个采样面（共 %llu 个区域）；可旋转复核或手动增减。"),
+                static_cast<unsigned long long>(localized),
+                static_cast<unsigned long long>(region_count)));
+            m_status->SetLabel(_L("已定位最高风险局部薄壁区域；这里只做复核，不会自动修改模型。"));
+        } else {
+            m_model_preview_message->SetLabel(wxString::Format(
+                _L("已高亮 %llu 个局部薄壁采样面；可旋转复核，或在局部区域工具中手动增减。"),
+                static_cast<unsigned long long>(localized)));
+            m_status->SetLabel(_L("已定位局部薄壁证据；这里只做风险复核，不会自动修改模型。"));
+        }
     });
     m_locate_overhang_regions->Bind(wxEVT_BUTTON, [this, model_page](wxCommandEvent&) {
         if (m_model_preview == nullptr)
@@ -3211,6 +3225,10 @@ void ModelGenerationPanel::refresh_model_quality_card()
                                 static_cast<unsigned long long>(m_model_quality.thin_local_surface_sample_count));
                 else
                     details << _L(" · 未发现阈值内相对表面");
+                if (m_model_quality.thin_local_region_count > 0)
+                    details << wxString::Format(_L("\n局部薄壁风险区：%llu 个 · 报告前 %llu 个"),
+                                static_cast<unsigned long long>(m_model_quality.thin_local_region_count),
+                                static_cast<unsigned long long>(m_model_quality.reported_thin_local_region_count));
             }
         } else {
             details << wxString::Format(_L("最大部件占比：%.1f%% · 接地覆盖：%.1f%% · 向下表面：%.1f%%"),

@@ -528,18 +528,49 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
                 metrics["minimum_sampled_local_thickness_mm"].is_number())
                 status.model_quality.minimum_sampled_local_thickness_mm =
                     metrics["minimum_sampled_local_thickness_mm"].get<double>();
+            status.model_quality.thin_local_region_count =
+                metrics.value("thin_local_region_count", size_t(0));
+            status.model_quality.reported_thin_local_region_count =
+                metrics.value("reported_thin_local_region_count", size_t(0));
             status.model_quality.repairable_topology = metrics.value("repairable_topology", false);
         }
         if (quality.contains("evidence") && quality["evidence"].is_object()) {
+            constexpr size_t max_evidence_faces = 256;
             const auto& evidence = quality["evidence"];
             if (evidence.contains("thin_local_face_indices") &&
                 evidence["thin_local_face_indices"].is_array()) {
-                constexpr size_t max_evidence_faces = 256;
                 for (const auto& face_index : evidence["thin_local_face_indices"]) {
                     if (!face_index.is_number_unsigned() ||
                         status.model_quality.thin_local_face_indices.size() >= max_evidence_faces)
                         continue;
                     status.model_quality.thin_local_face_indices.emplace_back(face_index.get<size_t>());
+                }
+            }
+            if (evidence.contains("thin_local_regions") && evidence["thin_local_regions"].is_array()) {
+                constexpr size_t max_regions = 16;
+                size_t total_region_faces = 0;
+                for (const auto& item : evidence["thin_local_regions"]) {
+                    if (!item.is_object() || status.model_quality.thin_local_regions.size() >= max_regions)
+                        continue;
+                    AIModelGenerationClient::ModelQuality::ThinLocalRegion region;
+                    if (item.contains("sample_count") && item["sample_count"].is_number_unsigned())
+                        region.sample_count = item["sample_count"].get<size_t>();
+                    if (item.contains("sampled_area_mm2") && item["sampled_area_mm2"].is_number())
+                        region.sampled_area_mm2 = item["sampled_area_mm2"].get<double>();
+                    if (item.contains("minimum_thickness_mm") && item["minimum_thickness_mm"].is_number())
+                        region.minimum_thickness_mm = item["minimum_thickness_mm"].get<double>();
+                    if (item.contains("representative_face_index") &&
+                        item["representative_face_index"].is_number_unsigned())
+                        region.representative_face_index = item["representative_face_index"].get<size_t>();
+                    if (item.contains("face_indices") && item["face_indices"].is_array()) {
+                        for (const auto& face_index : item["face_indices"]) {
+                            if (!face_index.is_number_unsigned() || total_region_faces >= max_evidence_faces)
+                                continue;
+                            region.face_indices.emplace_back(face_index.get<size_t>());
+                            ++total_region_faces;
+                        }
+                    }
+                    status.model_quality.thin_local_regions.emplace_back(std::move(region));
                 }
             }
         }

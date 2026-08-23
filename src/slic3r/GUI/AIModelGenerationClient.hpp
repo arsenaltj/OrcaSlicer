@@ -31,6 +31,15 @@ public:
 
     struct ModelQuality
     {
+        struct ThinLocalRegion
+        {
+            size_t              sample_count { 0 };
+            double              sampled_area_mm2 { 0.0 };
+            double              minimum_thickness_mm { 0.0 };
+            size_t              representative_face_index { 0 };
+            std::vector<size_t> face_indices;
+        };
+
         bool                     available { false };
         std::string              status;
         std::vector<std::string> errors;
@@ -55,7 +64,10 @@ public:
         size_t                   local_thickness_sample_count { 0 };
         size_t                   thin_local_surface_sample_count { 0 };
         double                   minimum_sampled_local_thickness_mm { 0.0 };
+        size_t                   thin_local_region_count { 0 };
+        size_t                   reported_thin_local_region_count { 0 };
         std::vector<size_t>      thin_local_face_indices;
+        std::vector<ThinLocalRegion> thin_local_regions;
         bool                     repairable_topology { false };
     };
 
