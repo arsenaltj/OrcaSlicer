@@ -780,6 +780,46 @@ TEST_CASE("retry executor exceptions retain the baseline and failed alternative"
     CHECK(coordinator.snapshot().comparison->recommended_candidate_id == "baseline");
 }
 
+TEST_CASE("candidate retry does not start after the workflow resource budget is exceeded",
+          "[AI][SmartSlicing][Workflow][CandidateFailure][Runtime]")
+{
+    WorkflowWorkspace workspace;
+    FakeTrialSliceExecutor executor;
+    bool fail_alternative = true;
+    executor.result_for = [&fail_alternative](const SliceCandidate& candidate, size_t) {
+        TrialSliceResult result;
+        result.candidate_id  = candidate.id;
+        result.base_revision = candidate.base_revision;
+        result.status = candidate.id == "alternative" && fail_alternative ? TrialSliceStatus::Failed :
+                                                                            TrialSliceStatus::Succeeded;
+        if (result.status == TrialSliceStatus::Succeeded) {
+            result.metrics = SlicingMetrics{};
+            result.metrics->estimated_time_seconds = candidate.id == "baseline" ? 100.0 : 80.0;
+        }
+        return result;
+    };
+    SmartSlicingCoordinator coordinator(workspace, executor);
+    WorkflowResourceBudget budget;
+    WorkflowResourceUsage usage;
+    coordinator.set_resource_budget(budget, [&usage] { return usage; });
+    coordinator.start();
+    REQUIRE(coordinator.plan_and_slice_candidates({proposal("alternative", workspace.context.revision)}));
+    REQUIRE(executor.calls == std::vector<CandidateId>{"baseline", "alternative"});
+
+    fail_alternative   = false;
+    usage.memory_bytes = budget.maximum_memory_bytes + 1;
+    CHECK_FALSE(coordinator.retry_candidate("alternative"));
+    CHECK(executor.calls == std::vector<CandidateId>{"baseline", "alternative"});
+    REQUIRE(coordinator.snapshot().candidates.size() == 2);
+    CHECK(coordinator.snapshot().state == WorkflowState::ReadyToApply);
+    CHECK(coordinator.snapshot().detail == "workflow_memory_budget_exceeded");
+    CHECK(coordinator.snapshot().selected_candidate_id == "baseline");
+    CHECK(coordinator.snapshot().candidates[0].status == CandidateStatus::Ready);
+    CHECK(coordinator.snapshot().candidates[1].status == CandidateStatus::Failed);
+    CHECK(coordinator.snapshot().candidates[1].diagnostic_code == "workflow_memory_budget_exceeded");
+    CHECK(coordinator.snapshot().comparison->recommended_candidate_id == "baseline");
+}
+
 TEST_CASE("retry discards a completed result when final revision capture is unavailable",
           "[AI][SmartSlicing][Workflow][CandidateFailure]")
 {

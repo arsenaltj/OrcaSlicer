@@ -912,3 +912,32 @@ This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-ge
 dependency, port, data directory contract, journal path/schema, 3MF/profile format, profile data, or default Orca
 behavior. It adds only comparison-safety enforcement and evidence presentation inside the smart-slicing modules.
 macOS and Linux native build/test execution remains a separate host/CI gate.
+
+## Candidate-retry resource-budget gate — 2026-08-24
+
+Failed-candidate retry now reuses the Application workflow's elapsed-time, memory, temporary-disk, and candidate
+count budget check after the final workspace-revision guard and before the trial executor is called. A budget
+violation leaves the failed alternative unavailable, retains the comparable baseline and ReadyToApply state, and
+publishes the existing stable budget diagnostic instead of starting more isolated slicing work.
+
+Before the gate, the initial candidate loop enforced the workflow budget but `retry_candidate` bypassed it. The
+focused regression raised measured memory above the configured limit after the first comparison; the retry still
+called the executor, accepted the alternative, and reported `candidate_retry_succeeded`. After the gate, the
+executor call count remains unchanged and the baseline remains selected with
+`workflow_memory_budget_exceeded` attached to the failed alternative.
+
+### Windows verification
+
+- Candidate-retry budget focus: 1 test case, 12 assertions, all passed in Release and RelWithDebInfo.
+- Smart-slicing suite: 105 test cases, 671 assertions; 104 passed and the opt-in benchmark remained explicitly
+  skipped, in Release and RelWithDebInfo.
+- Default full `slic3rutils_tests`: 115 test cases, 778 assertions, all passed in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings and
+  the non-failing test-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke was not repeated because this is a nonvisual Application resource-ownership correction with no new
+  interaction or formal-write path. The immediately preceding workspace-local isolated-data-directory GUI
+  evidence remains valid.
+
+This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, configuration,
+dependency, port, data directory, journal path/schema, 3MF/profile format, profile data, or default Orca behavior.
+macOS and Linux native build/test execution remains a separate host/CI gate.

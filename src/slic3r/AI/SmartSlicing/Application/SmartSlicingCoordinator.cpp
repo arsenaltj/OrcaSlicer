@@ -370,7 +370,7 @@ bool SmartSlicingCoordinator::retry_candidate(const CandidateId& candidate_id, b
     if (candidate == m_snapshot.candidates.end())
         return false;
 
-    const auto fail_retry = [this, &candidate](const char* diagnostic_code) {
+    const auto fail_retry = [this, &candidate](std::string diagnostic_code) {
         candidate->status = CandidateStatus::Failed;
         candidate->metrics.reset();
         candidate->diagnostic_code = diagnostic_code;
@@ -381,7 +381,7 @@ bool SmartSlicingCoordinator::retry_candidate(const CandidateId& candidate_id, b
                        m_snapshot.comparison->is_eligible(item.id);
             }))
             m_snapshot.selected_candidate_id = m_snapshot.comparison->recommended_candidate_id;
-        transition(WorkflowState::ReadyToApply, diagnostic_code);
+        transition(WorkflowState::ReadyToApply, std::move(diagnostic_code));
         return false;
     };
     if (!defer_revision_checks) {
@@ -394,6 +394,8 @@ bool SmartSlicingCoordinator::retry_candidate(const CandidateId& candidate_id, b
             return fail_retry("retry_revision_unavailable");
         }
     }
+    if (const std::string violation = resource_violation(m_snapshot.candidates.size()); !violation.empty())
+        return fail_retry(violation);
 
     transition(WorkflowState::TrialSlicingCandidates, "retrying_trial_slice");
     candidate->status = CandidateStatus::TrialSlicing;
