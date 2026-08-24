@@ -1069,3 +1069,40 @@ regression showed that the resulting parity diagnostic had no actionable GUI pro
 This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, configuration,
 dependency, public port, data directory, journal path/schema, 3MF/profile format, profile data, or default Orca
 behavior. macOS and Linux native build/test execution remains a separate host/CI gate.
+
+## Workbench comparison-goal selector — 2026-08-24
+
+The workbench now exposes the four comparison goals already supported by Domain and Application: stability,
+quality, speed, and material saving. The wx choice defaults to stability, preserves that default for an invalid
+selection, and is enabled only while candidate planning is available and no worker is running. The selected goal
+is captured on the GUI thread before candidate generation starts and passed into the isolated trial comparison;
+background work never reads the control. This changes ranking and recommendation only, using the existing real
+trial metrics. It introduces no candidate mutation field, parameter key, sidecar contract, or formal write path.
+
+Before this change, the comparison engine and focused tests supported all four goals, but the workbench always
+passed `CandidateGoal::Stability`, leaving quality, speed, and material-saving ranking unreachable from the GUI.
+The red regression first failed to compile because the selection-to-goal mapping did not exist, then covered all
+four valid indices plus the `wxNOT_FOUND` and out-of-range fallbacks after implementation.
+
+### Windows verification
+
+- Goal-selection focus: 1 test case, 6 assertions, all passed in Release and RelWithDebInfo.
+- Smart-slicing suite: 112 test cases; 111 passed and the opt-in benchmark remained explicitly skipped, with 714
+  assertions passed in Release and RelWithDebInfo.
+- Default full `slic3rutils_tests`: 122 test cases, 821 assertions, all passed in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings and
+  the non-failing test-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke launched only
+  `D:\Workspace\06_3DDY_smart_slicing\build-p0\src\Release\orca-slicer.exe` with isolated data directory
+  `D:\Workspace\06_3DDY_smart_slicing\build-p0\smart-slicing-gui-smoke-data` and the repository `Büchse.3mf`
+  fixture. The exact workspace process and window/menu ownership were verified before interaction. The workbench
+  displayed the unclipped optimization-goal row with `稳定打印` selected by default. A read-only preflight reached
+  the existing native-configuration-validator-unavailable diagnostic for this isolated fixture, so candidate
+  generation, trial slicing, and formal apply were not invoked. The source fixture SHA-256 remained
+  `DE20508DFF06F8FAF8CA992C00238D4AFFC916BA4B812E8FF9EC1571FEC533A1`, the workspace process closed, and no Orca
+  process remained.
+
+This batch changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, configuration,
+dependency, port, data directory contract, journal path/schema, 3MF/profile format, profile data, or default Orca
+behavior. The isolated smoke data directory only retained local GUI test state. macOS and Linux native build/test
+execution remains a separate host/CI gate.

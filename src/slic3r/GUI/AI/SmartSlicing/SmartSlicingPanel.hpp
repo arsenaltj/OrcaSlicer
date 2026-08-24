@@ -11,6 +11,7 @@
 #include <wx/timer.h>
 
 class wxButton;
+class wxChoice;
 class wxPanel;
 class wxRadioButton;
 class wxStaticText;
@@ -23,6 +24,7 @@ namespace Slic3r::GUI {
 
 wxString smart_slicing_summary_text(const std::string& key);
 wxString smart_slicing_candidate_failure_text(const std::string& diagnostic_code);
+AI::SmartSlicing::CandidateGoal smart_slicing_goal_from_selection(int selection);
 
 class SmartSlicingPanel final : public wxScrolledWindow
 {
@@ -67,6 +69,7 @@ private:
     std::array<wxButton*, 5> m_issue_focus_buttons{};
     std::array<uint64_t, 5> m_issue_object_ids{};
     wxStaticText* m_p0_notice{nullptr};
+    wxChoice* m_goal{nullptr};
     wxPanel* m_candidate_section{nullptr};
     std::array<CandidateControls, 3> m_candidate_controls{};
     std::array<std::string, 3> m_candidate_ids{};

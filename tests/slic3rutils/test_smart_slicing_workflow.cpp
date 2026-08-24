@@ -648,6 +648,17 @@ TEST_CASE("failed candidate diagnostics are projected as actionable localized re
     CHECK(Slic3r::GUI::smart_slicing_candidate_failure_text("") == fallback);
 }
 
+TEST_CASE("workbench goal selection maps every visible choice with a stable default",
+          "[AI][SmartSlicing][GUI][Goal]")
+{
+    CHECK(Slic3r::GUI::smart_slicing_goal_from_selection(0) == CandidateGoal::Stability);
+    CHECK(Slic3r::GUI::smart_slicing_goal_from_selection(1) == CandidateGoal::Quality);
+    CHECK(Slic3r::GUI::smart_slicing_goal_from_selection(2) == CandidateGoal::Speed);
+    CHECK(Slic3r::GUI::smart_slicing_goal_from_selection(3) == CandidateGoal::MaterialSaving);
+    CHECK(Slic3r::GUI::smart_slicing_goal_from_selection(wxNOT_FOUND) == CandidateGoal::Stability);
+    CHECK(Slic3r::GUI::smart_slicing_goal_from_selection(4) == CandidateGoal::Stability);
+}
+
 TEST_CASE("candidate cards expose baseline deltas selection and retry without workspace mutation", "[AI][SmartSlicing][Workflow]")
 {
     WorkflowWorkspace workspace;

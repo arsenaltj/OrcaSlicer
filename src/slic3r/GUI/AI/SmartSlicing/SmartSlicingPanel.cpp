@@ -9,6 +9,7 @@
 #include <utility>
 #include <wx/app.h>
 #include <wx/button.h>
+#include <wx/choice.h>
 #include <wx/radiobut.h>
 #include <wx/settings.h>
 #include <wx/sizer.h>
@@ -265,6 +266,17 @@ wxString smart_slicing_candidate_failure_text(const std::string& diagnostic_code
     return candidate_failure_text(diagnostic_code);
 }
 
+AI::SmartSlicing::CandidateGoal smart_slicing_goal_from_selection(int selection)
+{
+    using AI::SmartSlicing::CandidateGoal;
+    switch (selection) {
+    case 1: return CandidateGoal::Quality;
+    case 2: return CandidateGoal::Speed;
+    case 3: return CandidateGoal::MaterialSaving;
+    default: return CandidateGoal::Stability;
+    }
+}
+
 SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSlicingCoordinator& coordinator,
                                      PrepareCandidatesFn prepare_candidates, CancelTrialFn cancel_trial,
                                      FinalizeBackgroundFn finalize_background, FocusIssueFn focus_issue)
@@ -295,6 +307,18 @@ SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSl
         m_stage_labels[index] = new wxStaticText(this, wxID_ANY, stage_names[index] + _L("  等待"));
         root->Add(m_stage_labels[index], 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(16));
     }
+
+    auto* goal_row = new wxBoxSizer(wxHORIZONTAL);
+    goal_row->Add(new wxStaticText(this, wxID_ANY, _L("优化目标")), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT,
+                  FromDIP(8));
+    m_goal = new wxChoice(this, wxID_ANY);
+    m_goal->Append(_L("稳定打印"));
+    m_goal->Append(_L("质量优先"));
+    m_goal->Append(_L("速度优先"));
+    m_goal->Append(_L("节省材料"));
+    m_goal->SetSelection(0);
+    goal_row->Add(m_goal, 1, wxEXPAND);
+    root->Add(goal_row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(16));
 
     root->Add(new wxStaticLine(this), 0, wxEXPAND | wxALL, FromDIP(16));
     m_issues = new wxStaticText(this, wxID_ANY, _L("尚未运行检查"));
@@ -387,6 +411,8 @@ SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSl
         if (m_can_accept_risk) {
             m_coordinator.accept_printability_risk();
         } else if (m_can_plan_candidates) {
+            const AI::SmartSlicing::CandidateGoal goal =
+                smart_slicing_goal_from_selection(m_goal->GetSelection());
             CandidatePlanTask plan_task;
             try {
                 if (m_prepare_candidates)
@@ -394,7 +420,7 @@ SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSl
             } catch (...) {
                 plan_task = {};
             }
-            const bool started = run_in_background([this, plan_task = std::move(plan_task)]() mutable {
+            const bool started = run_in_background([this, goal, plan_task = std::move(plan_task)]() mutable {
                 const CancelPredicate canceled = [this] {
                     return m_cancel_requested.load(std::memory_order_acquire);
                 };
@@ -404,8 +430,7 @@ SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSl
                     m_coordinator.cancel();
                     return;
                 }
-                m_coordinator.plan_and_slice_candidates(std::move(candidates),
-                                                        AI::SmartSlicing::CandidateGoal::Stability, true);
+                m_coordinator.plan_and_slice_candidates(std::move(candidates), goal, true);
             });
             if (started) {
                 m_start->Enable(false);
@@ -507,6 +532,7 @@ void SmartSlicingPanel::render(const SmartSlicingViewModel& view_model)
     }
     m_can_accept_risk = view_model.can_accept_risk;
     m_can_plan_candidates = view_model.can_plan_candidates;
+    m_goal->Enable(view_model.can_plan_candidates && !m_worker_running.load(std::memory_order_acquire));
     m_start->Enable(view_model.can_start || view_model.can_plan_candidates || view_model.can_accept_risk);
     m_start->SetLabel(view_model.can_accept_risk ? _L("保留当前网格并继续") :
                       view_model.can_plan_candidates ? _L("生成并试切方案") :
