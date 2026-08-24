@@ -253,6 +253,10 @@ TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice(const SliceCandidat
     result.candidate_id  = candidate.id;
     result.base_revision = candidate.base_revision;
     try {
+        if (candidate.repair) {
+            result.diagnostic_code = "candidate_repair_unsupported";
+            return result;
+        }
         OrcaTrialSliceInput input;
         bool prepared_session = false;
         {

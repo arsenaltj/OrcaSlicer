@@ -1004,3 +1004,36 @@ retention and clean cancellation terminal state.
 This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, configuration,
 dependency, port, data directory contract, journal path/schema, 3MF/profile format, profile data, or default Orca
 behavior. macOS and Linux native build/test execution remains a separate host/CI gate.
+
+## Unsupported RepairPlan capability gate — 2026-08-24
+
+The current Orca trial and official-apply adapters now reject every candidate carrying a `RepairPlan` with the
+stable `candidate_repair_unsupported` diagnostic. The isolated executor rejects before acquiring or slicing a
+workspace copy. The official gateway rejects after its revision guard but before compatibility checks, formal
+mutation, or official slicing, both for prepare and a defensive direct commit. The workbench maps the diagnostic
+to an explicit message that this version cannot yet safely trial-slice or apply mesh repair.
+
+Before this gate, Domain and ViewModel could carry and display repair operations, but neither Orca adapter executed
+them. The red regressions showed a repair candidate completing a real isolated slice and the official gateway
+calling compatibility, apply, and slice callbacks. That made the candidate evidence and formal result disagree
+with its declared changes. Fail-closed behavior preserves candidate truthfulness until a future native,
+color-preserving, transaction-owned repair capability is implemented explicitly.
+
+### Windows verification
+
+- Repair capability boundary focus: 2 test cases, 10 assertions, all passed in Release and RelWithDebInfo.
+- Localized candidate diagnostic focus: 1 test case, 6 assertions, all passed in Release.
+- Smart-slicing suite: 110 test cases, 704 assertions; 109 passed and the opt-in benchmark remained explicitly
+  skipped, in Release and RelWithDebInfo.
+- Default full `slic3rutils_tests`: 120 test cases, 811 assertions, all passed in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings and
+  the non-failing test-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke was not repeated because production candidate providers do not emit RepairPlan today, so the state
+  cannot be constructed safely through the workbench. The focused gateway test proves compatibility, apply, and
+  official-slice callbacks remain at zero; the immediately preceding workspace-local isolated-data-directory GUI
+  evidence remains valid.
+
+This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, configuration,
+dependency, port, data directory, journal path/schema, 3MF/profile format, profile data, or default Orca behavior.
+It intentionally records native deterministic mesh repair as a remaining capability rather than claiming the
+existing RepairPlan is executable. macOS and Linux native build/test execution remains a separate host/CI gate.

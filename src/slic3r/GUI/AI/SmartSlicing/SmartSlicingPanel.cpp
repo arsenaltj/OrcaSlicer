@@ -139,6 +139,8 @@ wxString candidate_failure_text(const std::string& diagnostic_code)
     if (diagnostic_code == "invalid_candidate_placement" ||
         diagnostic_code == "trial_no_printable_objects")
         return _L("候选摆放或可打印对象无效");
+    if (diagnostic_code == "candidate_repair_unsupported")
+        return _L("当前版本尚不能安全试切或应用网格修复");
     if (diagnostic_code.rfind("parameter_", 0) == 0)
         return _L("候选参数未通过 Orca 安全校验");
     if (diagnostic_code == "invalid_candidate_metrics")

@@ -44,6 +44,8 @@ public:
     {
         if (!revision_matches(candidate, expected_revision))
             return rejected("stale_revision");
+        if (candidate.repair)
+            return rejected("candidate_repair_unsupported");
         std::string diagnostic;
         try {
             diagnostic = m_compatibility ? m_compatibility(candidate) : "compatibility_check_unavailable";
@@ -61,6 +63,8 @@ public:
     {
         if (!revision_matches(candidate, expected_revision))
             return rejected("stale_revision");
+        if (candidate.repair)
+            return rejected("candidate_repair_unsupported");
         m_pending = false;
         m_preview_shown = false;
         m_workspace_mutated = false;

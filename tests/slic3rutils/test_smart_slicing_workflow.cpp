@@ -634,11 +634,14 @@ TEST_CASE("failed candidate diagnostics are projected as actionable localized re
         Slic3r::GUI::smart_slicing_candidate_failure_text("retry_revision_unavailable");
     const wxString placement =
         Slic3r::GUI::smart_slicing_candidate_failure_text("invalid_candidate_placement");
+    const wxString repair =
+        Slic3r::GUI::smart_slicing_candidate_failure_text("candidate_repair_unsupported");
 
     CHECK_FALSE(memory == fallback);
     CHECK_FALSE(timeout == fallback);
     CHECK_FALSE(revision == fallback);
     CHECK_FALSE(placement == fallback);
+    CHECK_FALSE(repair == fallback);
     CHECK(Slic3r::GUI::smart_slicing_candidate_failure_text("") == fallback);
 }
 
@@ -1101,6 +1104,38 @@ TEST_CASE("Orca official gateway preserves native undo recovery when slicing can
     CHECK_FALSE(gateway.undo_last_apply());
 }
 
+TEST_CASE("Orca official gateway rejects unsupported repair plans before formal actions",
+          "[AI][SmartSlicing][Apply][Repair][Boundary]")
+{
+    const WorkspaceRevision revision{1, 2, 3, "revision-a"};
+    size_t compatibility_calls = 0;
+    size_t apply_calls = 0;
+    size_t slice_calls = 0;
+    Slic3r::GUI::OrcaOfficialSliceGateway gateway(
+        [revision] { return revision; },
+        [&compatibility_calls](const SliceCandidate&) {
+            ++compatibility_calls;
+            return std::string{};
+        },
+        [&apply_calls](const SliceCandidate&) {
+            ++apply_calls;
+            return Slic3r::GUI::OrcaApplyMutationResult{true, true, {}};
+        },
+        [&slice_calls] { ++slice_calls; return true; }, [] { return true; }, [] { return true; });
+    SliceCandidate candidate = proposal("repair", revision);
+    candidate.repair = RepairPlan{{"repair_open_edges"}, false};
+
+    const OfficialSliceResult prepared = gateway.prepare(candidate, revision);
+    CHECK(prepared.phase == OfficialSlicePhase::Rejected);
+    CHECK(prepared.diagnostic_code == "candidate_repair_unsupported");
+    const OfficialSliceResult committed = gateway.commit(candidate, revision);
+    CHECK(committed.phase == OfficialSlicePhase::Rejected);
+    CHECK(committed.diagnostic_code == "candidate_repair_unsupported");
+    CHECK(compatibility_calls == 0);
+    CHECK(apply_calls == 0);
+    CHECK(slice_calls == 0);
+}
+
 TEST_CASE("Orca official gateway never undoes a later workspace edit",
           "[AI][SmartSlicing][Apply][UndoOwnership]")
 {
@@ -1297,6 +1332,21 @@ TEST_CASE("Orca trial slicing rejects forbidden patches and observes early cance
     const TrialSliceResult canceled = canceled_executor.execute_trial_slice(candidate);
     CHECK(canceled.status == TrialSliceStatus::Canceled);
     CHECK(canceled.diagnostic_code == "trial_slice_canceled");
+}
+
+TEST_CASE("Orca trial slicing rejects repair plans it cannot execute",
+          "[AI][SmartSlicing][Workflow][OrcaTrial][Repair][Boundary]")
+{
+    Slic3r::GUI::OrcaTrialSliceExecutor executor([] { return tiny_trial_input(); });
+    SliceCandidate candidate = proposal("repair", WorkspaceRevision{1, 2, 3, "revision-a"});
+    candidate.status = CandidateStatus::Draft;
+    candidate.metrics.reset();
+    candidate.repair = RepairPlan{{"repair_open_edges"}, false};
+
+    const TrialSliceResult result = executor.execute_trial_slice(candidate);
+    CHECK(result.status == TrialSliceStatus::Failed);
+    CHECK(result.diagnostic_code == "candidate_repair_unsupported");
+    CHECK_FALSE(result.metrics);
 }
 
 TEST_CASE("Orca trial slicing rejects an input without printable objects", "[AI][SmartSlicing][Workflow][OrcaTrial]")
