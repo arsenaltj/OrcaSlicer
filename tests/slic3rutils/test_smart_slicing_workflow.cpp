@@ -681,6 +681,54 @@ TEST_CASE("candidate cards expose baseline deltas selection and retry without wo
     CHECK(workspace.context.revision.fingerprint == "revision-a");
 }
 
+TEST_CASE("multicolor candidates excluded by comparison cannot be selected",
+          "[AI][SmartSlicing][Workflow][Candidate][Multicolor][Eligibility]")
+{
+    WorkflowWorkspace workspace;
+    FakeTrialSliceExecutor executor;
+    executor.result_for = [](const SliceCandidate& candidate, size_t) {
+        TrialSliceResult result;
+        result.candidate_id  = candidate.id;
+        result.base_revision = candidate.base_revision;
+        result.status        = TrialSliceStatus::Succeeded;
+        result.metrics       = SlicingMetrics{};
+        result.metrics->estimated_time_seconds = candidate.id == "baseline" ? 100.0 : 80.0;
+        result.metrics->physical_slots_compatible = candidate.id != "incompatible";
+        result.metrics->color_mapping_degraded = candidate.id == "degraded";
+        return result;
+    };
+    SmartSlicingCoordinator coordinator(workspace, executor);
+    coordinator.start();
+
+    REQUIRE(coordinator.plan_and_slice_candidates({proposal("incompatible", workspace.context.revision),
+                                                   proposal("degraded", workspace.context.revision)}));
+    REQUIRE(coordinator.snapshot().comparison);
+    CHECK(coordinator.snapshot().comparison->excluded_candidate_ids ==
+          std::vector<CandidateId>{"degraded", "incompatible"});
+    CHECK(coordinator.snapshot().selected_candidate_id == "baseline");
+
+    const Slic3r::GUI::SmartSlicingViewModel view =
+        Slic3r::GUI::SmartSlicingViewModel::from_snapshot(coordinator.snapshot());
+    REQUIRE(view.candidates.size() == 3);
+    const auto incompatible = std::find_if(view.candidates.begin(), view.candidates.end(), [](const auto& candidate) {
+        return candidate.id == "incompatible";
+    });
+    const auto degraded = std::find_if(view.candidates.begin(), view.candidates.end(), [](const auto& candidate) {
+        return candidate.id == "degraded";
+    });
+    REQUIRE(incompatible != view.candidates.end());
+    REQUIRE(degraded != view.candidates.end());
+    CHECK(incompatible->excluded);
+    CHECK(incompatible->exclusion_reason_code == "incompatible_physical_slots");
+    CHECK_FALSE(incompatible->can_select);
+    CHECK(degraded->excluded);
+    CHECK(degraded->exclusion_reason_code == "color_mapping_degraded");
+    CHECK_FALSE(degraded->can_select);
+    CHECK_FALSE(coordinator.select_candidate("incompatible"));
+    CHECK_FALSE(coordinator.select_candidate("degraded"));
+    CHECK(coordinator.snapshot().selected_candidate_id == "baseline");
+}
+
 TEST_CASE("candidate selection keeps the ready comparison when revision capture is temporarily unavailable",
           "[AI][SmartSlicing][Workflow][CandidateFailure]")
 {

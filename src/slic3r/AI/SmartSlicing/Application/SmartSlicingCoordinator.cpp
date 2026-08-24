@@ -336,7 +336,8 @@ bool SmartSlicingCoordinator::plan_and_slice_candidates(std::vector<SliceCandida
 
 bool SmartSlicingCoordinator::select_candidate(const CandidateId& candidate_id)
 {
-    if (m_snapshot.state != WorkflowState::ReadyToApply || candidate_id.empty())
+    if (m_snapshot.state != WorkflowState::ReadyToApply || candidate_id.empty() || !m_snapshot.comparison ||
+        !m_snapshot.comparison->is_eligible(candidate_id))
         return false;
     try {
         if (!workspace_revision_matches()) {
@@ -376,7 +377,8 @@ bool SmartSlicingCoordinator::retry_candidate(const CandidateId& candidate_id, b
         m_snapshot.comparison = compare_candidates(m_snapshot.candidates, m_snapshot.goal);
         if (m_snapshot.selected_candidate_id.empty() ||
             std::none_of(m_snapshot.candidates.begin(), m_snapshot.candidates.end(), [this](const SliceCandidate& item) {
-                return item.id == m_snapshot.selected_candidate_id && item.status == CandidateStatus::Ready;
+                return item.id == m_snapshot.selected_candidate_id && item.status == CandidateStatus::Ready &&
+                       m_snapshot.comparison->is_eligible(item.id);
             }))
             m_snapshot.selected_candidate_id = m_snapshot.comparison->recommended_candidate_id;
         transition(WorkflowState::ReadyToApply, diagnostic_code);
@@ -427,7 +429,8 @@ bool SmartSlicingCoordinator::retry_candidate(const CandidateId& candidate_id, b
     m_snapshot.comparison = compare_candidates(m_snapshot.candidates, m_snapshot.goal);
     if (m_snapshot.selected_candidate_id.empty() ||
         std::none_of(m_snapshot.candidates.begin(), m_snapshot.candidates.end(), [this](const SliceCandidate& item) {
-            return item.id == m_snapshot.selected_candidate_id && item.status == CandidateStatus::Ready;
+            return item.id == m_snapshot.selected_candidate_id && item.status == CandidateStatus::Ready &&
+                   m_snapshot.comparison->is_eligible(item.id);
         }))
         m_snapshot.selected_candidate_id = m_snapshot.comparison->recommended_candidate_id;
     transition(WorkflowState::ReadyToApply, accepted ? "candidate_retry_succeeded" : "candidate_retry_failed");
@@ -437,7 +440,8 @@ bool SmartSlicingCoordinator::retry_candidate(const CandidateId& candidate_id, b
 bool SmartSlicingCoordinator::apply_selected_candidate()
 {
     if (m_snapshot.state != WorkflowState::ReadyToApply || m_official_slice_gateway == nullptr ||
-        !m_snapshot.context || m_snapshot.selected_candidate_id.empty())
+        !m_snapshot.context || m_snapshot.selected_candidate_id.empty() || !m_snapshot.comparison ||
+        !m_snapshot.comparison->is_eligible(m_snapshot.selected_candidate_id))
         return false;
 
     const auto candidate = std::find_if(m_snapshot.candidates.begin(), m_snapshot.candidates.end(), [this](const SliceCandidate& item) {

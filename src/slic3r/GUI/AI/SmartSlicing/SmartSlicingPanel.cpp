@@ -158,6 +158,13 @@ wxString candidate_reason(const SmartSlicingCandidateView& candidate)
     if (candidate.failed)
         return _L("试切失败：") + candidate_failure_text(candidate.diagnostic_code) +
                _L("。可单独重试；基线仍然可用。");
+    if (candidate.excluded) {
+        if (candidate.exclusion_reason_code == "incompatible_physical_slots")
+            return _L("物理槽位与材料温区不兼容，已排除且不能应用。");
+        if (candidate.exclusion_reason_code == "color_mapping_degraded")
+            return _L("颜色到物理槽位的映射发生退化，已排除且不能应用。");
+        return _L("候选缺少安全比较所需的有效证据，已排除且不能应用。");
+    }
     if (candidate.id == "baseline")
         return _L("当前正式工作区的只读基线。");
     wxString reason = candidate.recommended ? _L("推荐方案。") : _L("可选方案。");
@@ -517,7 +524,8 @@ void SmartSlicingPanel::render(const SmartSlicingViewModel& view_model)
         m_candidate_ids[index] = candidate.id;
         if (previous_candidate_id != candidate.id)
             m_candidate_details_expanded[index] = false;
-        controls.selector->SetLabel(candidate.id == "baseline" ? _L("当前方案（基线）") :
+        controls.selector->SetLabel(candidate.excluded ? _L("不可用候选") :
+                                    candidate.id == "baseline" ? _L("当前方案（基线）") :
                                     candidate.recommended ? _L("推荐候选") : _L("候选方案"));
         controls.selector->SetValue(candidate.selected);
         controls.selector->Enable(candidate.can_select);
@@ -536,10 +544,18 @@ void SmartSlicingPanel::render(const SmartSlicingViewModel& view_model)
         if (candidate.layer_tool_sequence_count > 0)
             metrics += wxString::Format(_L("\n层级工具序列：%llu 组"),
                                         static_cast<unsigned long long>(candidate.layer_tool_sequence_count));
+        if (candidate.physical_slots_compatible == true)
+            metrics += _L("\n物理槽位：兼容");
+        else if (candidate.physical_slots_compatible == false)
+            metrics += _L("\n物理槽位：不兼容");
         if (candidate.color_mapping_degraded == true)
             metrics += _L("\n颜色映射：已退化");
         else if (candidate.color_mapping_degraded == false)
             metrics += _L("\n颜色映射：保持一致");
+        if (candidate.prime_tower_enabled == true)
+            metrics += _L("\n擦料塔策略：启用");
+        else if (candidate.prime_tower_enabled == false)
+            metrics += _L("\n擦料塔策略：关闭");
         if (candidate.id != "baseline") {
             const wxString tool_delta = candidate.tool_change_delta ?
                 wxString::Format("%+lld", *candidate.tool_change_delta) : _L("—");

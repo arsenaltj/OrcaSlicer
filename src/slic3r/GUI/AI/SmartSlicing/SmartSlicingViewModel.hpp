@@ -24,6 +24,7 @@ struct SmartSlicingCandidateView
     std::string id;
     std::string explanation;
     std::string diagnostic_code;
+    std::string exclusion_reason_code;
     std::vector<std::string> evidence_codes;
     std::optional<double> estimated_time_seconds;
     std::optional<double> filament_volume_mm3;
@@ -60,6 +61,7 @@ struct SmartSlicingCandidateView
     bool recommended{false};
     bool selected{false};
     bool failed{false};
+    bool excluded{false};
     bool can_retry{false};
     bool can_select{false};
 };

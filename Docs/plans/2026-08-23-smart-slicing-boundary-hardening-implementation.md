@@ -875,3 +875,40 @@ normally.
 This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, configuration,
 dependency, port, data directory, journal path/schema, 3MF/profile format, profile data, or default Orca behavior.
 macOS and Linux native build/test execution remains a separate host/CI gate.
+
+## Multicolor comparison-eligibility gate — 2026-08-24
+
+Candidate comparison eligibility is now enforced at every command boundary. A Ready candidate excluded because
+its physical slots are incompatible or its color-to-slot mapping is degraded cannot be selected, retained after a
+retry, or passed to formal transactional apply. The presentation model exposes the same exclusion state and a
+stable reason code, disables the selector, and explains why the candidate is unavailable. Candidate cards also
+show physical-slot compatibility, color-mapping integrity, and prime-tower policy alongside the existing trial
+metrics.
+
+Before the gate, comparison correctly excluded these multicolor candidates from ranking, but the coordinator and
+GUI still treated every non-failed Ready candidate as selectable. A manually selected excluded candidate could
+therefore remain the selected candidate and reach `OfficialSliceGateway`. The focused regression first failed to
+compile because the exclusion fields did not exist, then verified both physical-slot and color-mapping rejection
+through the comparison, ViewModel, selection command, and retained baseline selection.
+
+### Windows verification
+
+- Multicolor eligibility focus: 1 test case, 16 assertions, all passed in Release and RelWithDebInfo.
+- Smart-slicing suite excluding the opt-in benchmark: 104 test cases, 659 assertions; 103 passed and the benchmark
+  case remained explicitly skipped, in Release and RelWithDebInfo.
+- Full `slic3rutils_tests`: 115 test cases, 766 assertions; 114 passed and the benchmark case remained explicitly
+  skipped, in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings are
+  unchanged.
+- GUI smoke used only
+  `D:\Workspace\06_3DDY_smart_slicing\build-p0\src\Release\orca-slicer.exe` with isolated data directory
+  `D:\Workspace\06_3DDY_smart_slicing\build-p0\smart-slicing-gui-smoke-data`. The restored disposable test project
+  completed preflight and isolated candidate slicing; both baseline and recommended cards visibly reported
+  physical slots compatible, color mapping preserved, and prime-tower policy enabled. The UI retained the
+  confirmation boundary, `确认并应用` was not clicked, and the verified workspace-local PID was stopped afterward.
+  The source 3MF remained unchanged.
+
+This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, configuration,
+dependency, port, data directory contract, journal path/schema, 3MF/profile format, profile data, or default Orca
+behavior. It adds only comparison-safety enforcement and evidence presentation inside the smart-slicing modules.
+macOS and Linux native build/test execution remains a separate host/CI gate.

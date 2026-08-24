@@ -13,7 +13,8 @@ SmartSlicingViewModel SmartSlicingViewModel::from_snapshot(const AI::SmartSlicin
     view.can_accept_risk = snapshot.state == WorkflowState::AwaitingRiskDecision && snapshot.report &&
                            snapshot.report->can_accept_risk();
     view.can_plan_candidates = snapshot.state == WorkflowState::ReadyForCandidatePlanning;
-    view.can_apply = snapshot.state == WorkflowState::ReadyToApply && !snapshot.selected_candidate_id.empty();
+    view.can_apply = snapshot.state == WorkflowState::ReadyToApply && snapshot.comparison &&
+                     snapshot.comparison->is_eligible(snapshot.selected_candidate_id);
     view.can_undo_apply = snapshot.state == WorkflowState::ApplyFailed && snapshot.can_undo_apply;
     view.needs_polling  = snapshot.state == WorkflowState::OfficialSlicing;
     view.detail     = snapshot.detail;
@@ -35,8 +36,17 @@ SmartSlicingViewModel SmartSlicingViewModel::from_snapshot(const AI::SmartSlicin
         card.recommended     = snapshot.comparison && snapshot.comparison->recommended_candidate_id == candidate.id;
         card.selected        = snapshot.selected_candidate_id == candidate.id;
         card.failed          = candidate.status == AI::SmartSlicing::CandidateStatus::Failed;
+        card.excluded        = snapshot.comparison && !snapshot.comparison->is_eligible(candidate.id);
+        if (card.excluded) {
+            if (candidate.metrics && candidate.metrics->physical_slots_compatible == false)
+                card.exclusion_reason_code = "incompatible_physical_slots";
+            else if (candidate.metrics && candidate.metrics->color_mapping_degraded == true)
+                card.exclusion_reason_code = "color_mapping_degraded";
+            else
+                card.exclusion_reason_code = "candidate_not_comparable";
+        }
         card.can_retry       = snapshot.state == WorkflowState::ReadyToApply && card.failed;
-        card.can_select      = snapshot.state == WorkflowState::ReadyToApply && !card.failed;
+        card.can_select      = snapshot.state == WorkflowState::ReadyToApply && !card.failed && !card.excluded;
         card.transformed_instance_count = candidate.placement.transforms.size();
         if (candidate.repair) {
             card.repair_operation_count = candidate.repair->operation_codes.size();

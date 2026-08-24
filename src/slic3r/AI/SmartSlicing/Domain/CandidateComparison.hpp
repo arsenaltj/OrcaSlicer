@@ -2,6 +2,7 @@
 
 #include "SliceCandidate.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <string>
 #include <vector>
@@ -17,6 +18,12 @@ struct CandidateComparison
     std::vector<CandidateId> excluded_candidate_ids;
     std::vector<CandidateId> missing_metric_candidate_ids;
     std::vector<std::string> recommendation_evidence_codes;
+
+    bool is_eligible(const CandidateId& candidate_id) const
+    {
+        return std::find(ordered_candidate_ids.begin(), ordered_candidate_ids.end(), candidate_id) !=
+               ordered_candidate_ids.end();
+    }
 };
 
 CandidateComparison compare_candidates(const std::vector<SliceCandidate>& candidates,
