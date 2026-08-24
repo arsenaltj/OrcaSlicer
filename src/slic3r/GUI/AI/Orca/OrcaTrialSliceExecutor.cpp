@@ -1,6 +1,7 @@
 #include "OrcaTrialSliceExecutor.hpp"
 #include "OrcaParameterAdvisor.hpp"
 #include "OrcaParameterProposalAdapter.hpp"
+#include "OrcaPlacementTransformValidator.hpp"
 
 #include "libslic3r/GCode/GCodeProcessor.hpp"
 #include "libslic3r/Print.hpp"
@@ -168,6 +169,8 @@ bool OrcaTrialSliceExecutor::apply_placement(Model& model, const PlacementCandid
                 matrix(row, column) = transform.matrix[static_cast<size_t>(row * matrix.cols() + column)];
         if (!matrix.matrix().allFinite() || std::abs(matrix.linear().determinant()) <= 1e-12 ||
             !matrix.matrix().row(3).isApprox(Eigen::RowVector4d(0.0, 0.0, 0.0, 1.0)))
+            return false;
+        if (!orca_placement_transform_preserves_geometry(target->get_matrix(), matrix))
             return false;
         target->set_transformation(Geometry::Transformation(matrix));
     }

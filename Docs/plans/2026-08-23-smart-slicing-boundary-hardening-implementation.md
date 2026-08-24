@@ -515,3 +515,32 @@ actual in-memory runtime-store port.
 This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, formal apply
 gateway, configuration, dependency, port, data directory, journal field/schema/path, 3MF/profile format, profile
 data, or default Orca behavior. macOS and Linux native build/test execution remains a separate host/CI gate.
+
+## Placement geometry-semantics gate — 2026-08-24
+
+Placement candidates can now change only position and orientation. A shared Orca adapter validator compares the
+current and requested linear-transform Gram matrices and determinant signs before both isolated trial slicing and
+formal transactional apply. This rejects candidate-introduced scaling, mirroring, and shear while still allowing
+translation and rotation over an instance that already has non-uniform scale, mirroring, or shear from the user's
+project.
+
+Before the gate, both a doubled-axis candidate and a newly mirrored candidate completed a real isolated slice as
+successful placement alternatives. The focused contract now verifies their rejection with the existing stable
+`invalid_candidate_placement` diagnostic and verifies that a rigid move preserves pre-existing complex geometry
+semantics. The formal gateway consumes the exact same pure validator, preventing trial/apply rule drift.
+
+### Windows verification
+
+- Placement geometry-boundary focus: 1 test case, 5 assertions, all passed in Release and RelWithDebInfo.
+- Smart-slicing suite excluding the opt-in benchmark: 90 test cases, 583 assertions, all passed in Release and
+  RelWithDebInfo; the benchmark case remained explicitly skipped.
+- Full `slic3rutils_tests`: 101 test cases, 690 assertions, all passed in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075, LNK4098, and the
+  non-failing empty-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke was not repeated because this is a nonvisual adapter validation gate with no new interaction; prior
+  workspace-local isolated-data-directory GUI evidence remains valid.
+
+This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, configuration,
+dependency, port, data directory, journal path/schema, 3MF/profile format, profile data, or default Orca behavior.
+It narrows the existing formal gateway to the documented placement-only semantics. macOS and Linux native
+build/test execution remains a separate host/CI gate.

@@ -1,6 +1,7 @@
 #include "OrcaOfficialSliceGateway.hpp"
 
 #include "OrcaParameterProposalAdapter.hpp"
+#include "OrcaPlacementTransformValidator.hpp"
 
 #include "libslic3r/Model.hpp"
 #include "libslic3r/PresetBundle.hpp"
@@ -84,6 +85,10 @@ bool collect_targets(Plater& plater, const AI::SmartSlicing::SliceCandidate& can
         }
         if (!found) {
             diagnostic = "transform_target_missing";
+            return false;
+        }
+        if (!orca_placement_transform_preserves_geometry(target.instance->get_matrix(), target.matrix)) {
+            diagnostic = "transform_changes_geometry";
             return false;
         }
         targets.push_back(std::move(target));

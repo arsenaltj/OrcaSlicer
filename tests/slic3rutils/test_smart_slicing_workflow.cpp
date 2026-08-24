@@ -5,6 +5,7 @@
 #include "slic3r/AI/SmartSlicing/Application/CachingTrialSliceExecutor.hpp"
 #include "slic3r/AI/SmartSlicing/Application/SmartSlicingCoordinator.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaOfficialSliceGateway.hpp"
+#include "slic3r/GUI/AI/Orca/OrcaPlacementTransformValidator.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaTrialSliceExecutor.hpp"
 #include "slic3r/GUI/AI/SmartSlicing/SmartSlicingViewModel.hpp"
 
@@ -920,6 +921,54 @@ TEST_CASE("Orca trial slicing owns model config print and gcode copies", "[AI][S
     CHECK(formal_model.objects.front()->instances.front()->id() == instance_id);
     CHECK(formal_model.objects.front()->instances.front()->get_matrix().isApprox(original_transform));
     CHECK(formal_config.opt_serialize("layer_height") == original_layer_height);
+}
+
+TEST_CASE("placement candidates cannot change existing geometry semantics",
+          "[AI][SmartSlicing][Workflow][OrcaTrial][Placement][GeometryBoundary]")
+{
+    Transform3d existing = Transform3d::Identity();
+    existing.linear() << 2.0, 0.25, 0.0,
+                         0.0, -3.0, 0.0,
+                         0.0, 0.0, 4.0;
+    Transform3d rigidly_moved = existing;
+    rigidly_moved.linear() = Eigen::AngleAxisd(0.7, Vec3d::UnitZ()).toRotationMatrix() * existing.linear();
+    rigidly_moved.translation() = Vec3d(15.0, 25.0, 5.0);
+    CHECK(Slic3r::GUI::orca_placement_transform_preserves_geometry(existing, rigidly_moved));
+
+    const auto execute_changed_transform = [](const std::function<void(Transform3d&)>& change) {
+        Slic3r::GUI::OrcaTrialSliceInput input = tiny_trial_input();
+        ModelObject* object = input.model.objects.front();
+        ModelInstance* instance = object->instances.front();
+        Transform3d matrix = instance->get_matrix();
+        change(matrix);
+
+        SliceCandidate candidate = proposal("geometry-changing", WorkspaceRevision{1, 2, 3, "revision-a"});
+        candidate.status = CandidateStatus::Draft;
+        candidate.metrics.reset();
+        ObjectTransform transform;
+        transform.object_id = object->id().id;
+        transform.instance_id = instance->id().id;
+        for (Eigen::Index row = 0; row < matrix.rows(); ++row)
+            for (Eigen::Index column = 0; column < matrix.cols(); ++column)
+                transform.matrix[static_cast<size_t>(row * matrix.cols() + column)] = matrix(row, column);
+        candidate.placement.transforms.push_back(std::move(transform));
+
+        Slic3r::GUI::OrcaTrialSliceExecutor executor(
+            [input = std::move(input)]() mutable { return std::move(input); });
+        return executor.execute_trial_slice(candidate);
+    };
+
+    const TrialSliceResult scaled = execute_changed_transform([](Transform3d& matrix) {
+        matrix.linear().col(0) *= 2.0;
+    });
+    CHECK(scaled.status == TrialSliceStatus::Failed);
+    CHECK(scaled.diagnostic_code == "invalid_candidate_placement");
+
+    const TrialSliceResult mirrored = execute_changed_transform([](Transform3d& matrix) {
+        matrix.linear().col(0) *= -1.0;
+    });
+    CHECK(mirrored.status == TrialSliceStatus::Failed);
+    CHECK(mirrored.diagnostic_code == "invalid_candidate_placement");
 }
 
 TEST_CASE("Orca trial slicing rejects forbidden patches and observes early cancellation", "[AI][SmartSlicing][Workflow][OrcaTrial]")
