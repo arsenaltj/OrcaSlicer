@@ -576,3 +576,34 @@ This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-ge
 dependency, port, data directory, journal path/schema, 3MF/profile format, profile data, or default Orca behavior.
 It only narrows candidate generation and apply eligibility for targets already marked unprintable. macOS and
 Linux native build/test execution remains a separate host/CI gate.
+
+## Printable parameter-evidence gate — 2026-08-24
+
+Bed-adhesion parameter advice and post-trial evidence now derive instance geometry through one shared Orca
+function. The function returns evidence only when both the owning object and the instance are printable. Candidate
+planning also retains its current-plate containment check, so excluded objects cannot influence an automatic Brim
+proposal and off-plate objects cannot enter the advice input. Trial metrics use the same object/instance rule,
+preventing planning and measured evidence from drifting.
+
+Before the gate, candidate planning checked only `ModelInstance::printable`; a slender object marked
+`ModelObject::printable == false` could therefore trigger an otherwise valid Brim alternative even though Orca's
+trial print excluded that object. The focused contract first failed to compile because the shared evidence
+function did not exist, then verified printable dimensions plus object-, instance-, and null-target exclusion.
+
+### Windows verification
+
+- Printable-geometry eligibility focus: 1 test case, 8 assertions, all passed in Release and RelWithDebInfo.
+- Parameter suite: 10 test cases, 92 assertions, all passed in Release and RelWithDebInfo.
+- Smart-slicing suite excluding the opt-in benchmark: 92 test cases, 594 assertions, all passed in Release and
+  RelWithDebInfo; the benchmark case remained explicitly skipped.
+- Full `slic3rutils_tests`: 103 test cases, 701 assertions, all passed in Release and RelWithDebInfo; the benchmark
+  case remained explicitly skipped.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings are
+  unchanged.
+- GUI smoke was not repeated because this is a nonvisual Orca evidence-selection correction with no interaction
+  or formal-write-path change; prior workspace-local isolated-data-directory GUI evidence remains valid.
+
+This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, configuration,
+dependency, port, data directory, journal path/schema, 3MF/profile format, profile data, or default Orca behavior.
+It only removes non-printing geometry from advisory evidence. macOS and Linux native build/test execution remains
+a separate host/CI gate.

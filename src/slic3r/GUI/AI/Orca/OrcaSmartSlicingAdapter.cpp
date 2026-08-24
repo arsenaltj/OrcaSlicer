@@ -167,11 +167,11 @@ OrcaSmartSlicingAdapter::prepare_candidate_proposals(const AI::SmartSlicing::Wor
             continue;
         for (size_t instance_index = 0; instance_index < object->instances.size(); ++instance_index) {
             const ModelInstance* instance = object->instances[instance_index];
-            if (instance == nullptr || !instance->printable ||
+            if (instance == nullptr ||
                 !plate->contain_instance(static_cast<int>(object_index), static_cast<int>(instance_index)))
                 continue;
-            const Vec3d size = object->instance_bounding_box(*instance).size();
-            prepared.parameters.printable_instances.push_back({size.x(), size.y(), size.z()});
+            if (const auto geometry = orca_printable_instance_geometry(object, instance))
+                prepared.parameters.printable_instances.push_back(*geometry);
         }
     }
     return OrcaCandidateProposalTask(std::move(prepared));

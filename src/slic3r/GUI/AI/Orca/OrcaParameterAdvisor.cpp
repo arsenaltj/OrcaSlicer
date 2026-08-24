@@ -3,10 +3,21 @@
 #include "slic3r/AI/SmartSlicing/Domain/ParameterProposalValidator.hpp"
 #include "slic3r/AI/SmartSlicing/Domain/SlicingMetrics.hpp"
 
+#include "libslic3r/Model.hpp"
+
 #include <algorithm>
 #include <cmath>
 
 namespace Slic3r::GUI {
+
+std::optional<OrcaInstanceGeometrySnapshot>
+orca_printable_instance_geometry(const ModelObject* object, const ModelInstance* instance)
+{
+    if (object == nullptr || instance == nullptr || !object->printable || !instance->printable)
+        return std::nullopt;
+    const Vec3d size = object->instance_bounding_box(*instance).size();
+    return OrcaInstanceGeometrySnapshot{size.x(), size.y(), size.z()};
+}
 
 std::optional<double>
 orca_bed_adhesion_risk_score(const std::vector<OrcaInstanceGeometrySnapshot>& printable_instances)

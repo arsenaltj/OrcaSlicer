@@ -4,6 +4,9 @@
 #include "slic3r/GUI/AI/Orca/OrcaParameterAdvisor.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaParameterProposalAdapter.hpp"
 
+#include "libslic3r/Model.hpp"
+#include "libslic3r/TriangleMesh.hpp"
+
 #include <limits>
 #include <type_traits>
 
@@ -30,6 +33,30 @@ ParameterRejectionCode first_rejection(const ParameterProposal& proposal)
 } // namespace
 
 static_assert(std::is_base_of_v<IParameterAdvisor, Slic3r::GUI::OrcaParameterAdvisor>);
+
+TEST_CASE("Orca parameter geometry excludes unprintable objects and instances",
+          "[AI][SmartSlicing][Parameters][OrcaAdvisor][TargetEligibility]")
+{
+    Model model;
+    ModelObject* object = model.add_object();
+    object->add_volume(make_cube(6.0, 20.0, 40.0));
+    ModelInstance* instance = object->add_instance();
+    object->ensure_on_bed();
+
+    const auto printable = Slic3r::GUI::orca_printable_instance_geometry(object, instance);
+    REQUIRE(printable);
+    CHECK(printable->width_mm == Catch::Approx(6.0));
+    CHECK(printable->depth_mm == Catch::Approx(20.0));
+    CHECK(printable->height_mm == Catch::Approx(40.0));
+
+    object->printable = false;
+    CHECK_FALSE(Slic3r::GUI::orca_printable_instance_geometry(object, instance));
+    object->printable = true;
+    instance->printable = false;
+    CHECK_FALSE(Slic3r::GUI::orca_printable_instance_geometry(object, instance));
+    CHECK_FALSE(Slic3r::GUI::orca_printable_instance_geometry(nullptr, instance));
+    CHECK_FALSE(Slic3r::GUI::orca_printable_instance_geometry(object, nullptr));
+}
 
 TEST_CASE("typed parameter proposals enforce key type range and enum policy", "[AI][SmartSlicing][Parameters]")
 {

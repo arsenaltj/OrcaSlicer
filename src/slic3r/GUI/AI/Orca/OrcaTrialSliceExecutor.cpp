@@ -288,14 +288,11 @@ TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice(const SliceCandidat
 
         std::vector<OrcaInstanceGeometrySnapshot> printable_instances;
         for (const ModelObject* object : input.model.objects) {
-            if (object == nullptr || !object->printable)
+            if (object == nullptr)
                 continue;
-            for (const ModelInstance* instance : object->instances) {
-                if (instance == nullptr || !instance->printable)
-                    continue;
-                const Vec3d size = object->instance_bounding_box(*instance).size();
-                printable_instances.push_back({size.x(), size.y(), size.z()});
-            }
+            for (const ModelInstance* instance : object->instances)
+                if (const auto geometry = orca_printable_instance_geometry(object, instance))
+                    printable_instances.push_back(*geometry);
         }
         const std::optional<double> bed_adhesion_risk =
             orca_bed_adhesion_risk_score(printable_instances);

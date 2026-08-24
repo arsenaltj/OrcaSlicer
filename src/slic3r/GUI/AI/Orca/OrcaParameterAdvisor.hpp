@@ -8,6 +8,11 @@
 #include <utility>
 #include <vector>
 
+namespace Slic3r {
+class ModelInstance;
+class ModelObject;
+}
+
 namespace Slic3r::GUI {
 
 struct OrcaInstanceGeometrySnapshot
@@ -27,6 +32,9 @@ struct OrcaParameterAdvisorInput
 
 std::optional<double>
 orca_bed_adhesion_risk_score(const std::vector<OrcaInstanceGeometrySnapshot>& printable_instances);
+
+std::optional<OrcaInstanceGeometrySnapshot>
+orca_printable_instance_geometry(const ModelObject* object, const ModelInstance* instance);
 
 class OrcaParameterAdvisor final : public AI::SmartSlicing::IParameterAdvisor
 {
