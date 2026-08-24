@@ -316,3 +316,31 @@ official gateway before any confirmed write.
 This gate adds a possible user-confirmed plate-level `brim_type: no_brim → auto_brim` candidate, but changes no
 configuration schema, profile/default value, dependency, port, data directory, runtime journal schema,
 3MF/profile format, or ordinary Orca behavior. It changes no shared `MainFrame`, `Plater`, or CMake file.
+
+## Candidate metric validity gate — 2026-08-24
+
+Candidate ranking now rejects a ready candidate when any measured time, volume, or bed-adhesion value is
+negative or non-finite. It also validates the derived total-material value so finite inputs whose sum overflows
+cannot enter the comparator. This keeps ordering deterministic and prevents corrupt trial evidence from winning
+by exploiting NaN or infinity comparison behavior. An absent optional metric remains admissible and continues
+to use the existing explicit missing-evidence reporting.
+
+The contract covers estimated time, filament, support, brim, flush and wipe-tower volume, bed-adhesion risk,
+derived-total overflow, and reversed candidate input order. Before the gate, the infinite-risk candidate was
+recommended and all four original assertions failed; after the gate, the valid candidate wins and every invalid
+candidate is excluded in stable identifier order.
+
+### Windows verification
+
+- Metric-validity focus: 1 test case, 4 assertions, all passed.
+- Smart-slicing suite excluding the opt-in benchmark: 78 test cases, 493 assertions, all passed in Release and
+  RelWithDebInfo.
+- Full `slic3rutils_tests`: 89 test cases, 600 assertions, all passed in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075, LNK4098, and the
+  non-failing empty-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke was not repeated because this is a Domain-only, nonvisual comparison gate with no interaction or
+  formal-write-path change; the preceding workspace-local isolated GUI evidence remains applicable.
+
+This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, configuration,
+dependency, port, data directory, journal path/schema, 3MF/profile format, profile data, or default Orca behavior.
+macOS and Linux native build/test execution remains a separate host/CI gate.

@@ -1,6 +1,7 @@
 #include "CandidateComparison.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <optional>
 
 namespace Slic3r::AI::SmartSlicing {
@@ -154,8 +155,23 @@ std::string recommendation_evidence(const SliceCandidate& winner, const SliceCan
 
 bool usable(const SliceCandidate& candidate)
 {
-    return candidate.status == CandidateStatus::Ready && candidate.metrics.has_value() &&
-           candidate.metrics->physical_slots_compatible != false && candidate.metrics->color_mapping_degraded != true;
+    if (candidate.status != CandidateStatus::Ready || !candidate.metrics ||
+        candidate.metrics->physical_slots_compatible == false || candidate.metrics->color_mapping_degraded == true)
+        return false;
+    const SlicingMetrics& metrics = *candidate.metrics;
+    const auto valid_measurement = [](const OptionalMetric& value) {
+        return !value || (std::isfinite(*value) && *value >= 0.0);
+    };
+    if (!valid_measurement(metrics.estimated_time_seconds) ||
+        !valid_measurement(metrics.filament_volume_mm3) ||
+        !valid_measurement(metrics.support_volume_mm3) ||
+        !valid_measurement(metrics.brim_volume_mm3) ||
+        !valid_measurement(metrics.bed_adhesion_risk_score) ||
+        !valid_measurement(metrics.flush_volume_mm3) ||
+        !valid_measurement(metrics.wipe_tower_volume_mm3))
+        return false;
+    const OptionalMetric total_material = metrics.total_material_volume_mm3();
+    return valid_measurement(total_material);
 }
 
 } // namespace

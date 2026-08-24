@@ -9,6 +9,7 @@
 #include "libslic3r/Print.hpp"
 
 #include <cmath>
+#include <limits>
 
 using namespace Slic3r::AI::SmartSlicing;
 using namespace Slic3r;
@@ -124,6 +125,45 @@ TEST_CASE("candidate comparison keeps unavailable metrics explicit", "[AI][Smart
     REQUIRE(comparison.ordered_candidate_ids.size() == 2);
     CHECK(comparison.ordered_candidate_ids.front() == "measured");
     CHECK(comparison.missing_metric_candidate_ids == std::vector<CandidateId>{"unknown"});
+}
+
+TEST_CASE("candidate comparison excludes non-finite and negative measured metrics deterministically",
+          "[AI][SmartSlicing][Candidate][MetricValidation]")
+{
+    SliceCandidate valid = ready_candidate("valid", 100.0, 500.0, 10.0);
+
+    SliceCandidate negative_time = ready_candidate("negative-time", -1.0, 500.0, 10.0);
+    SliceCandidate nan_material = ready_candidate("nan-material", 90.0, 500.0, 10.0);
+    nan_material.metrics->filament_volume_mm3 = std::numeric_limits<double>::quiet_NaN();
+    SliceCandidate negative_support = ready_candidate("negative-support", 90.0, 500.0, -1.0);
+    SliceCandidate infinite_risk = ready_candidate("infinite-risk", 90.0, 500.0, 10.0);
+    infinite_risk.metrics->bed_adhesion_risk_score = std::numeric_limits<double>::infinity();
+    SliceCandidate negative_brim = ready_candidate("negative-brim", 90.0, 500.0, 10.0);
+    negative_brim.metrics->brim_volume_mm3 = -1.0;
+    SliceCandidate negative_flush = ready_candidate("negative-flush", 90.0, 500.0, 10.0);
+    negative_flush.metrics->flush_volume_mm3 = -1.0;
+    SliceCandidate nan_wipe_tower = ready_candidate("nan-wipe-tower", 90.0, 500.0, 10.0);
+    nan_wipe_tower.metrics->wipe_tower_volume_mm3 = std::numeric_limits<double>::quiet_NaN();
+    SliceCandidate overflow_total = ready_candidate(
+        "overflow-total", 90.0, std::numeric_limits<double>::max(), 10.0);
+    overflow_total.metrics->flush_volume_mm3 = std::numeric_limits<double>::max();
+
+    const std::vector<CandidateId> expected_excluded{
+        "infinite-risk", "nan-material", "nan-wipe-tower", "negative-brim", "negative-flush",
+        "negative-support", "negative-time", "overflow-total"};
+    const CandidateComparison first = compare_candidates(
+        {negative_time, valid, infinite_risk, negative_brim, nan_material, negative_support,
+         negative_flush, nan_wipe_tower, overflow_total},
+        CandidateGoal::Stability);
+    const CandidateComparison reversed = compare_candidates(
+        {overflow_total, nan_wipe_tower, negative_flush, negative_support, nan_material,
+         negative_brim, infinite_risk, valid, negative_time},
+        CandidateGoal::Stability);
+
+    CHECK(first.recommended_candidate_id == "valid");
+    CHECK(first.excluded_candidate_ids == expected_excluded);
+    CHECK(reversed.recommended_candidate_id == "valid");
+    CHECK(reversed.excluded_candidate_ids == expected_excluded);
 }
 
 TEST_CASE("multicolor comparison includes flush wipe tower and tool-change evidence", "[AI][SmartSlicing][Candidate][Multicolor]")
