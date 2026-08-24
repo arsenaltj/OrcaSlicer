@@ -207,6 +207,35 @@ TEST_CASE("failed and canceled trial results are not cached and cancellation del
     CHECK(delegate.cancel_count == 1);
 }
 
+TEST_CASE("successful transport with invalid metrics is not cached",
+          "[AI][SmartSlicing][Workflow][Cache][MetricValidation]")
+{
+    FakeTrialSliceExecutor delegate;
+    delegate.result_for = [](const SliceCandidate& candidate, size_t index) {
+        TrialSliceResult result;
+        result.candidate_id  = candidate.id;
+        result.base_revision = candidate.base_revision;
+        result.status        = TrialSliceStatus::Succeeded;
+        result.metrics       = SlicingMetrics{};
+        result.metrics->estimated_time_seconds = index == 0 ? std::numeric_limits<double>::quiet_NaN() : 80.0;
+        return result;
+    };
+    CachingTrialSliceExecutor cache(delegate);
+    const SliceCandidate candidate = proposal("candidate", WorkspaceRevision{1, 2, 3, "revision-a"});
+
+    const TrialSliceResult invalid = cache.execute_trial_slice(candidate);
+    const TrialSliceResult valid   = cache.execute_trial_slice(candidate);
+    const TrialSliceResult reused  = cache.execute_trial_slice(candidate);
+
+    REQUIRE(invalid.metrics);
+    CHECK_FALSE(invalid.metrics->has_valid_measurements());
+    REQUIRE(valid.metrics);
+    CHECK(valid.metrics->has_valid_measurements());
+    REQUIRE(reused.metrics);
+    CHECK(reused.metrics->estimated_time_seconds == valid.metrics->estimated_time_seconds);
+    CHECK(delegate.calls.size() == 2);
+}
+
 TEST_CASE("trial cache converts execution exceptions and absorbs cancellation exceptions",
           "[AI][SmartSlicing][Workflow][Cache][ExceptionBoundary]")
 {

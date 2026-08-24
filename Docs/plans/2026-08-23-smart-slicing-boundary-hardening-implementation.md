@@ -1203,3 +1203,33 @@ comparison with `baseline_trial_failed` and retains no metrics.
 This batch changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, candidate DTO field,
 configuration, dependency, port, data directory contract, journal path/schema, 3MF/profile format, profile data,
 or default Orca behavior. macOS and Linux native build/test execution remains a separate host/CI gate.
+
+## Invalid trial metric cache-admission gate — 2026-08-24
+
+The trial-slice cache now admits a successful, revision-matched result only when its numeric measurements satisfy
+the shared Domain validity predicate. An invalid result still passes through unchanged so the Application layer can
+produce its stable diagnostic, but it is not persisted in the cache. A subsequent retry therefore executes the
+native trial slicer again and can recover; once a valid result is returned, later identical requests reuse it.
+
+Before this gate, a transport-success result containing a NaN time entered the cache. The first Application-level
+acceptance correctly rejected it, but the retry replayed the same invalid result without invoking the native
+executor. The red cache regression had one test case and seven assertions, with three failures: the second result
+remained invalid, the third result could not reuse a recovered measurement, and the delegate was called once rather
+than twice. The green contract covers invalid pass-through, recovery through a second delegate execution, and valid
+cache reuse on the third call.
+
+### Windows verification
+
+- Cache-admission focus: 1 test case and 7 assertions, all passed in Release and RelWithDebInfo.
+- Smart-slicing suite: 116 test cases; 115 passed and the opt-in benchmark remained explicitly skipped, with 752
+  assertions passed in Release and RelWithDebInfo.
+- Default full `slic3rutils_tests`: 126 test cases and 859 assertions, all passed in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings and
+  the non-failing test-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke was not repeated because this is an Application cache-admission correction with no layout, interaction,
+  startup, Orca adapter, or formal-write-path change. The preceding workspace-local isolated-data-directory GUI
+  evidence remains valid.
+
+This batch changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, candidate DTO field,
+configuration, dependency, port, data directory contract, journal path/schema, 3MF/profile format, profile data,
+or default Orca behavior. macOS and Linux native build/test execution remains a separate host/CI gate.

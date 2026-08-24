@@ -38,6 +38,7 @@ public:
 
         TrialSliceResult result = execute_delegate(candidate);
         if (result.status != TrialSliceStatus::Succeeded || !result.metrics ||
+            !result.metrics->has_valid_measurements() ||
             result.candidate_id != candidate.id || result.base_revision != candidate.base_revision)
             return result;
 
