@@ -115,6 +115,15 @@ wxString format_duration(const std::optional<double>& seconds)
     return wxString::Format("%lldh %02lldm", total_minutes / 60, total_minutes % 60);
 }
 
+void set_wrapped_label(wxStaticText& label, const wxString& text, int width)
+{
+    label.SetLabel(text);
+    // wxStaticText caches the last Wrap() width even after SetLabel(). Reset it so dynamic labels are rewrapped.
+    label.Wrap(-1);
+    label.Wrap(width);
+    label.InvalidateBestSize();
+}
+
 wxString format_volume(const std::optional<double>& volume_mm3)
 {
     return volume_mm3 ? wxString::Format("%.2f cm³", *volume_mm3 / 1000.0) : _L("不可用");
@@ -298,7 +307,8 @@ SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSl
     title->SetFont(title_font);
     root->Add(title, 0, wxEXPAND | wxALL, FromDIP(16));
 
-    m_summary = new wxStaticText(this, wxID_ANY, _L("从当前打印板开始智能切片"));
+    m_summary = new wxStaticText(this, wxID_ANY, _L("从当前打印板开始智能切片"), wxDefaultPosition,
+                                 wxDefaultSize, wxST_NO_AUTORESIZE);
     m_summary->Wrap(FromDIP(330));
     root->Add(m_summary, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(16));
 
@@ -321,7 +331,8 @@ SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSl
     root->Add(goal_row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(16));
 
     root->Add(new wxStaticLine(this), 0, wxEXPAND | wxALL, FromDIP(16));
-    m_issues = new wxStaticText(this, wxID_ANY, _L("尚未运行检查"));
+    m_issues = new wxStaticText(this, wxID_ANY, _L("尚未运行检查"), wxDefaultPosition, wxDefaultSize,
+                                wxST_NO_AUTORESIZE);
     m_issues->Wrap(FromDIP(330));
     root->Add(m_issues, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(16));
     for (size_t index = 0; index < m_issue_focus_buttons.size(); ++index) {
@@ -335,7 +346,8 @@ SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSl
         root->Add(button, 0, wxALIGN_LEFT | wxLEFT | wxRIGHT | wxTOP, FromDIP(16));
     }
 
-    m_p0_notice = new wxStaticText(this, wxID_ANY, _L("预检与候选试切均在隔离副本中执行。"));
+    m_p0_notice = new wxStaticText(this, wxID_ANY, _L("预检与候选试切均在隔离副本中执行。"),
+                                   wxDefaultPosition, wxDefaultSize, wxST_NO_AUTORESIZE);
     m_p0_notice->SetForegroundColour(wxSystemSettings::GetColour(wxSYS_COLOUR_GRAYTEXT));
     m_p0_notice->Wrap(FromDIP(330));
     root->Add(m_p0_notice, 0, wxEXPAND | wxALL, FromDIP(16));
@@ -348,10 +360,13 @@ SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSl
         auto* box = new wxStaticBoxSizer(wxVERTICAL, controls.panel, _L("候选方案"));
         controls.selector = new wxRadioButton(controls.panel, wxID_ANY, _L("选择此方案"), wxDefaultPosition,
                                               wxDefaultSize, index == 0 ? wxRB_GROUP : 0);
-        controls.metrics = new wxStaticText(controls.panel, wxID_ANY, "");
-        controls.reason  = new wxStaticText(controls.panel, wxID_ANY, "");
+        controls.metrics = new wxStaticText(controls.panel, wxID_ANY, "", wxDefaultPosition, wxDefaultSize,
+                                            wxST_NO_AUTORESIZE);
+        controls.reason  = new wxStaticText(controls.panel, wxID_ANY, "", wxDefaultPosition, wxDefaultSize,
+                                            wxST_NO_AUTORESIZE);
         controls.reason->Wrap(FromDIP(300));
-        controls.changes = new wxStaticText(controls.panel, wxID_ANY, "");
+        controls.changes = new wxStaticText(controls.panel, wxID_ANY, "", wxDefaultPosition, wxDefaultSize,
+                                            wxST_NO_AUTORESIZE);
         controls.changes->Wrap(FromDIP(300));
         controls.details = new wxButton(controls.panel, wxID_ANY, _L("查看全部变更"));
         controls.retry = new wxButton(controls.panel, wxID_ANY, _L("重试此方案"));
@@ -496,11 +511,12 @@ bool SmartSlicingPanel::run_in_background(std::function<void()> work)
 void SmartSlicingPanel::render(const SmartSlicingViewModel& view_model)
 {
     static const std::array<wxString, 4> names{_L("1. 模型与材料"), _L("2. 健康与准备"), _L("3. 优化方案"), _L("4. 检查并切片")};
-    m_summary->SetLabel(smart_slicing_summary_text(view_model.summary_key));
+    set_wrapped_label(*m_summary, smart_slicing_summary_text(view_model.summary_key), FromDIP(330));
     for (size_t index = 0; index < m_stage_labels.size(); ++index)
         m_stage_labels[index]->SetLabel(names[index] + _L("  ") + status_text(view_model.stages[index].status));
+    wxString issue_text;
     if (view_model.issues.empty()) {
-        m_issues->SetLabel(_L("未发现结构化问题"));
+        issue_text = _L("未发现结构化问题");
     } else {
         wxString issues = wxString::Format(_L("发现 %llu 个结构化问题"), static_cast<unsigned long long>(view_model.issue_count));
         const size_t visible_issue_count = std::min<size_t>(view_model.issues.size(), 5);
@@ -512,9 +528,9 @@ void SmartSlicingPanel::render(const SmartSlicingViewModel& view_model)
         if (visible_issue_count < view_model.issues.size())
             issues += wxString::Format(_L("\n…另有 %llu 项"),
                                        static_cast<unsigned long long>(view_model.issues.size() - visible_issue_count));
-        m_issues->SetLabel(issues);
-        m_issues->Wrap(FromDIP(330));
+        issue_text = std::move(issues);
     }
+    set_wrapped_label(*m_issues, issue_text, FromDIP(330));
     for (size_t index = 0; index < m_issue_focus_buttons.size(); ++index) {
         m_issue_object_ids[index] = 0;
         m_issue_focus_buttons[index]->Hide();
@@ -599,10 +615,10 @@ void SmartSlicingPanel::render(const SmartSlicingViewModel& view_model)
             if (candidate.bed_adhesion_risk_delta)
                 metrics += wxString::Format(_L("，附着风险 %+.2f"), *candidate.bed_adhesion_risk_delta);
         }
-        controls.metrics->SetLabel(metrics);
-        controls.reason->SetLabel(candidate_reason(candidate));
+        set_wrapped_label(*controls.metrics, metrics, FromDIP(300));
+        set_wrapped_label(*controls.reason, candidate_reason(candidate), FromDIP(300));
         const wxString changes = candidate_change_summary(candidate);
-        controls.changes->SetLabel(changes);
+        set_wrapped_label(*controls.changes, changes, FromDIP(300));
         controls.changes->Show(!changes.empty() && m_candidate_details_expanded[index]);
         controls.details->SetLabel(m_candidate_details_expanded[index] ? _L("收起变更") : _L("查看全部变更"));
         controls.details->Show(candidate.id != "baseline" && !changes.empty());
@@ -615,8 +631,10 @@ void SmartSlicingPanel::render(const SmartSlicingViewModel& view_model)
     m_apply->Enable(view_model.can_apply);
     m_undo_apply->Show(view_model.can_undo_apply);
     m_undo_apply->Enable(view_model.can_undo_apply);
-    m_p0_notice->SetLabel(show_candidates ? _L("确认前不会修改正式模型、配置或正式切片结果。") :
-                                            _L("预检与候选试切均在隔离副本中执行。"));
+    set_wrapped_label(*m_p0_notice,
+                      show_candidates ? _L("确认前不会修改正式模型、配置或正式切片结果。") :
+                                        _L("预检与候选试切均在隔离副本中执行。"),
+                      FromDIP(330));
     if ((view_model.can_cancel || view_model.needs_polling) && !m_revision_timer.IsRunning())
         m_revision_timer.Start(1000);
     else if (!view_model.can_cancel && !view_model.needs_polling && m_revision_timer.IsRunning())

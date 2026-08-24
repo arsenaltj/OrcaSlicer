@@ -1106,3 +1106,39 @@ This batch changes no shared `MainFrame`, `Plater`, or CMake file and no model-g
 dependency, port, data directory contract, journal path/schema, 3MF/profile format, profile data, or default Orca
 behavior. The isolated smoke data directory only retained local GUI test state. macOS and Linux native build/test
 execution remains a separate host/CI gate.
+
+## Dynamic workbench text wrapping gate — 2026-08-24
+
+Dynamic summary, issue, candidate-metric, reason, change, and isolation-notice labels now retain the workbench's
+bounded width after their text changes. These controls use `wxST_NO_AUTORESIZE`, and the shared label updater first
+disables the previous wrap before applying the intended DIP width and invalidating the best size. The reset is
+required because wxWidgets caches the last `Wrap()` width across `SetLabel()` calls and otherwise returns early
+when the same width is requested again.
+
+Before this gate, the read-only preflight evidence expanded its `wxStaticText` to roughly twice the panel width,
+clipping the diagnostic horizontally and pushing the primary action label out of view. An initial implementation
+that called only `SetLabel()` and `Wrap(width)` reproduced the defect. Resetting with `Wrap(-1)` before rewrapping
+produced the green GUI evidence: the complete diagnostic occupied three visible lines, the panel stayed bounded,
+and `生成并试切方案` and the enabled `稳定打印` goal selector remained visible.
+
+### Windows verification
+
+- Smart-slicing suite: 112 test cases; 111 passed and the opt-in benchmark remained explicitly skipped, with 714
+  assertions passed in Release and RelWithDebInfo.
+- Default full `slic3rutils_tests`: 122 test cases and 821 assertions, all passed in Release and RelWithDebInfo.
+  The first RelWithDebInfo full run had one transient failure in the unrelated external HTTP Digest test with
+  status zero; that test passed immediately in isolation and the subsequent full rerun passed completely.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings and
+  the non-failing test-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI verification used only
+  `D:\Workspace\06_3DDY_smart_slicing\build-p0\src\Release\orca-slicer.exe`, isolated data directory
+  `D:\Workspace\06_3DDY_smart_slicing\build-p0\smart-slicing-gui-smoke-data`, and the repository `Büchse.3mf`
+  fixture. The exact workspace process was verified before interaction. A read-only preflight exercised the
+  dynamic issue label without generating candidates, trial slicing, or applying a candidate. The source fixture
+  SHA-256 remained `DE20508DFF06F8FAF8CA992C00238D4AFFC916BA4B812E8FF9EC1571FEC533A1`; the process closed and no Orca
+  process remained.
+
+This batch changes no shared `MainFrame`, `Plater`, or CMake file and no workflow state, formal write path,
+model-generation code, configuration, dependency, port, data directory contract, journal path/schema, 3MF/profile
+format, profile data, or default Orca behavior. The isolated smoke data directory only retained local GUI test
+state. macOS and Linux native build/test execution remains a separate host/CI gate.
