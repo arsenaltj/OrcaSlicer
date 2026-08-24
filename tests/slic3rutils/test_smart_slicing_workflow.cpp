@@ -7,6 +7,7 @@
 #include "slic3r/GUI/AI/Orca/OrcaOfficialSliceGateway.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaPlacementTransformValidator.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaTrialSliceExecutor.hpp"
+#include "slic3r/GUI/AI/SmartSlicing/SmartSlicingPanel.hpp"
 #include "slic3r/GUI/AI/SmartSlicing/SmartSlicingViewModel.hpp"
 
 #include "libslic3r/TriangleMesh.hpp"
@@ -555,6 +556,21 @@ TEST_CASE("formal apply states keep the legacy projection aligned with the workb
     CHECK(Slic3r::GUI::SmartSlicingViewModel::from_snapshot(snapshot).legacy_steps ==
           std::array<LegacyStatus, 6>{LegacyStatus::Success, LegacyStatus::Success, LegacyStatus::Success,
                                       LegacyStatus::Success, LegacyStatus::Failed, LegacyStatus::Waiting});
+}
+
+TEST_CASE("legacy Sidebar uses the workbench summary for candidate and apply phases",
+          "[AI][SmartSlicing][GUI][LegacyProjection][Summary]")
+{
+    const wxString preflight = Slic3r::GUI::smart_slicing_summary_text("inspecting_printability");
+    const wxString fallback = Slic3r::GUI::smart_slicing_summary_text("unknown_summary");
+    const wxString candidates = Slic3r::GUI::smart_slicing_summary_text("candidates_ready");
+    const wxString applying = Slic3r::GUI::smart_slicing_summary_text("applying_candidate");
+    const wxString slicing = Slic3r::GUI::smart_slicing_summary_text("official_slicing");
+
+    CHECK_FALSE(candidates == preflight);
+    CHECK_FALSE(candidates == fallback);
+    CHECK_FALSE(applying == preflight);
+    CHECK_FALSE(slicing == preflight);
 }
 
 TEST_CASE("candidate cards expose baseline deltas selection and retry without workspace mutation", "[AI][SmartSlicing][Workflow]")

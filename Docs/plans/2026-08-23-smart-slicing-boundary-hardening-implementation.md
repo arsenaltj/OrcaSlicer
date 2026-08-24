@@ -525,6 +525,35 @@ This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-ge
 dependency, port, data directory, journal path/schema, 3MF/profile format, profile data, or default Orca behavior.
 macOS and Linux native build/test execution remains a separate host/CI gate.
 
+## Legacy summary projection gate — 2026-08-24
+
+The right-side smart-slicing workbench and the compatibility Sidebar now use one complete localized summary
+mapper. Candidate preparation, trial slicing, candidate application, and official slicing therefore retain their
+actual workflow summary when projected into the legacy Sidebar. Previously that projection had a separate partial
+mapping, so those phases could display the generic printability-preflight message even while their step states
+were correct.
+
+The regression contract first failed to compile because no shared summary mapper existed. It now verifies that
+candidate-ready, applying, and official-slicing summaries do not collapse to either the preflight text or the
+unknown-key fallback.
+
+### Windows verification
+
+- Legacy summary projection focus: 1 test case, 4 assertions, all passed in Release and RelWithDebInfo.
+- Smart-slicing suite excluding the opt-in benchmark: 101 test cases, 633 assertions; 100 passed and the benchmark
+  case remained explicitly skipped in Release and RelWithDebInfo.
+- Full `slic3rutils_tests`: 112 test cases, 740 assertions; 111 passed and the benchmark case remained explicitly
+  skipped in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings are
+  unchanged.
+- GUI smoke was not repeated because this is a nonvisual text-projection correction with no layout or interaction
+  change; prior workspace-local isolated-data-directory GUI evidence remains valid.
+
+This gate changes only smart-slicing GUI projection code and its tests. It changes no shared `MainFrame`, `Plater`,
+or CMake file and no model-generation code, configuration, dependency, port, data directory, journal path/schema,
+3MF/profile format, profile data, or default Orca behavior. macOS and Linux native build/test execution remains a
+separate host/CI gate.
+
 ## Candidate retry exception-containment gate — 2026-08-24
 
 Candidate selection and single-candidate retry now contain workspace-revision and trial-executor exceptions at

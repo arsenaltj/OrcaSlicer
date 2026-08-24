@@ -33,23 +33,6 @@ Sidebar::AIWorkflowStatus to_sidebar_status(LegacyAIWorkflowStatus status)
     return Sidebar::AIWorkflowStatus::Waiting;
 }
 
-wxString sidebar_summary(const SmartSlicingViewModel& view)
-{
-    if (view.is_stale)
-        return _L("工程已变化，需要重新检查");
-    if (view.summary_key == "preflight_complete")
-        return _L("可打印性检查完成");
-    if (view.summary_key == "preflight_complete_with_warnings")
-        return _L("可打印性检查完成，仍有提示");
-    if (view.summary_key == "printability_action_required")
-        return _L("发现需要处理的问题");
-    if (view.summary_key == "preflight_failed")
-        return _L("可打印性检查失败");
-    if (view.summary_key == "canceled")
-        return _L("可打印性检查已取消");
-    return _L("正在执行智能切片预检");
-}
-
 bool should_clear_trial_input(const std::string& summary_key)
 {
     return summary_key == "official_slice_complete" || summary_key == "canceled" ||
@@ -113,7 +96,8 @@ OrcaSmartSlicingWorkbench::OrcaSmartSlicingWorkbench(Plater& plater, StartSliceF
         if (view.summary_key == "ready_to_start")
             return;
         Sidebar& sidebar = m_plater.sidebar();
-        const wxString summary = sidebar_summary(view);
+        const wxString summary =
+            smart_slicing_summary_text(view.is_stale ? "workspace_changed" : view.summary_key);
         sidebar.start_ai_workflow(summary);
         for (size_t index = 0; index < view.legacy_steps.size(); ++index)
             sidebar.update_ai_workflow_step(static_cast<Sidebar::AIWorkflowStep>(index),

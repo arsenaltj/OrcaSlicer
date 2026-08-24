@@ -215,6 +215,8 @@ wxString candidate_change_summary(const SmartSlicingCandidateView& candidate)
 
 } // namespace
 
+wxString smart_slicing_summary_text(const std::string& key) { return summary_text(key); }
+
 SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSlicingCoordinator& coordinator,
                                      PrepareCandidatesFn prepare_candidates, CancelTrialFn cancel_trial,
                                      FinalizeBackgroundFn finalize_background, FocusIssueFn focus_issue)
@@ -421,7 +423,7 @@ bool SmartSlicingPanel::run_in_background(std::function<void()> work)
 void SmartSlicingPanel::render(const SmartSlicingViewModel& view_model)
 {
     static const std::array<wxString, 4> names{_L("1. 模型与材料"), _L("2. 健康与准备"), _L("3. 优化方案"), _L("4. 检查并切片")};
-    m_summary->SetLabel(summary_text(view_model.summary_key));
+    m_summary->SetLabel(smart_slicing_summary_text(view_model.summary_key));
     for (size_t index = 0; index < m_stage_labels.size(); ++index)
         m_stage_labels[index]->SetLabel(names[index] + _L("  ") + status_text(view_model.stages[index].status));
     if (view_model.issues.empty()) {

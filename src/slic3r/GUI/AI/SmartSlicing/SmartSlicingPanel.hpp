@@ -21,6 +21,8 @@ class SmartSlicingCoordinator;
 
 namespace Slic3r::GUI {
 
+wxString smart_slicing_summary_text(const std::string& key);
+
 class SmartSlicingPanel final : public wxScrolledWindow
 {
 public:
