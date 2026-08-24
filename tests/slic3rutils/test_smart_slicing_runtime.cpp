@@ -81,6 +81,22 @@ public:
     }
 };
 
+class ScopedRuntimeDirectory
+{
+public:
+    explicit ScopedRuntimeDirectory(boost::filesystem::path path) : m_path(std::move(path)) {}
+    ~ScopedRuntimeDirectory()
+    {
+        boost::system::error_code error;
+        boost::filesystem::remove_all(m_path, error);
+    }
+
+    const boost::filesystem::path& path() const { return m_path; }
+
+private:
+    boost::filesystem::path m_path;
+};
+
 SliceCandidate runtime_candidate(std::string id, const WorkspaceRevision& revision)
 {
     SliceCandidate candidate;
@@ -197,4 +213,32 @@ TEST_CASE("Orca runtime store round trips bounded metadata without workspace pay
     stream.close();
     store.clear(11);
     CHECK_FALSE(boost::filesystem::exists(path));
+}
+
+TEST_CASE("Orca runtime store supports Unicode data directories", "[AI][SmartSlicing][Runtime][Orca][Portability]")
+{
+#if defined(_WIN32)
+    const boost::filesystem::path unicode_component(L"\u8def\u5f84-\u0416");
+#else
+    const boost::filesystem::path unicode_component(u8"路径-Ж");
+#endif
+    ScopedRuntimeDirectory directory(
+        boost::filesystem::temp_directory_path() /
+        boost::filesystem::unique_path("orca-smart-runtime-%%%%-%%%%") /
+        unicode_component);
+    const boost::filesystem::path journal_path = directory.path() / "workflow.json";
+    Slic3r::GUI::OrcaWorkflowRuntimeStore store(journal_path);
+    const WorkflowRuntimeRecord record{12, WorkflowState::PlanningCandidates, {4, 5, 6, "unicode-revision"},
+                                       {{"baseline", CandidateGoal::Stability, CandidateStatus::Draft}},
+                                       "planning_candidates", 456};
+
+    store.save(record);
+    const std::optional<WorkflowRuntimeRecord> loaded = store.load();
+
+    REQUIRE(loaded);
+    CHECK(loaded->workflow_id == record.workflow_id);
+    CHECK(loaded->revision == record.revision);
+    CHECK(loaded->detail == record.detail);
+    store.clear(record.workflow_id);
+    CHECK_FALSE(boost::filesystem::exists(journal_path));
 }

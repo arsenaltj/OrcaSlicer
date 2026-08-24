@@ -1,9 +1,9 @@
 #include "OrcaWorkflowRuntimeStore.hpp"
 
 #include <boost/filesystem.hpp>
+#include <boost/nowide/fstream.hpp>
 #include <nlohmann/json.hpp>
 
-#include <fstream>
 #include <stdexcept>
 #include <utility>
 
@@ -83,7 +83,7 @@ std::optional<AI::SmartSlicing::WorkflowRuntimeRecord> OrcaWorkflowRuntimeStore:
         return std::nullopt;
     if (boost::filesystem::file_size(m_journal_path) > MAX_JOURNAL_BYTES)
         throw std::runtime_error("Smart-slicing runtime journal exceeds its size limit.");
-    std::ifstream stream(m_journal_path.string(), std::ios::binary);
+    boost::nowide::ifstream stream(m_journal_path, std::ios::binary);
     if (!stream)
         throw std::runtime_error("Smart-slicing runtime journal is unreadable.");
     WorkflowRuntimeRecord record = from_json(Json::parse(stream));
@@ -101,7 +101,7 @@ void OrcaWorkflowRuntimeStore::save(const AI::SmartSlicing::WorkflowRuntimeRecor
     boost::filesystem::path temporary = m_journal_path;
     temporary += ".tmp";
     {
-        std::ofstream stream(temporary.string(), std::ios::binary | std::ios::trunc);
+        boost::nowide::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
         if (!stream)
             throw std::runtime_error("Smart-slicing runtime journal is unwritable.");
         stream << serialized;
