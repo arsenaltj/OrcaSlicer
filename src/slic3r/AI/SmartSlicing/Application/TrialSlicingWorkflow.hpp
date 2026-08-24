@@ -23,6 +23,12 @@ public:
             candidate.diagnostic_code = result_matches(candidate, result) ? result.diagnostic_code : "trial_result_mismatch";
             return false;
         }
+        if (!result.metrics->has_valid_measurements()) {
+            candidate.status          = CandidateStatus::Failed;
+            candidate.metrics.reset();
+            candidate.diagnostic_code = "invalid_candidate_metrics";
+            return false;
+        }
 
         candidate.status          = CandidateStatus::Ready;
         candidate.metrics         = std::move(result.metrics);

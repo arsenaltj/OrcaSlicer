@@ -1172,3 +1172,34 @@ fixture was corrected to represent the same valid production contract rather tha
 This batch changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, candidate contract,
 configuration, dependency, port, data directory contract, journal path/schema, 3MF/profile format, profile data,
 or default Orca behavior. macOS and Linux native build/test execution remains a separate host/CI gate.
+
+## Trial metric acceptance gate — 2026-08-24
+
+Numeric trial measurements must now be finite and non-negative before a successful transport result can make a
+candidate `Ready`. The same Domain predicate covers time, print material, support, brim, bed-adhesion risk, flush,
+wipe-tower material, and overflow of their complete total-material sum; CandidateComparison reuses that predicate
+instead of maintaining a second validation implementation. Missing optional measurements remain valid unavailable
+evidence. Physical-slot incompatibility and degraded color mapping also retain their existing evidence-backed
+comparison exclusions rather than being reclassified as executor failures.
+
+Before this gate, an alternative carrying a NaN time was marked `Ready`, retained the invalid metrics without a
+diagnostic, and could not enter the retry path. The red workflow regression failed six assertions. After the gate,
+the result becomes a retryable failed candidate with `invalid_candidate_metrics`, a repeated invalid retry remains
+failed, and the valid baseline remains selected. A separate contract proves an invalid baseline fails before any
+comparison with `baseline_trial_failed` and retains no metrics.
+
+### Windows verification
+
+- Metric-validation focus: 4 test cases, 28 assertions, all passed in Release and RelWithDebInfo.
+- Smart-slicing suite: 115 test cases; 114 passed and the opt-in benchmark remained explicitly skipped, with 745
+  assertions passed in Release and RelWithDebInfo.
+- Default full `slic3rutils_tests`: 125 test cases and 852 assertions, all passed in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings and
+  the non-failing test-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke was not repeated because this is a Domain/Application result-acceptance correction with no layout,
+  interaction, startup, Orca adapter, or formal-write-path change. The immediately preceding workspace-local
+  isolated-data-directory GUI evidence remains valid.
+
+This batch changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, candidate DTO field,
+configuration, dependency, port, data directory contract, journal path/schema, 3MF/profile format, profile data,
+or default Orca behavior. macOS and Linux native build/test execution remains a separate host/CI gate.

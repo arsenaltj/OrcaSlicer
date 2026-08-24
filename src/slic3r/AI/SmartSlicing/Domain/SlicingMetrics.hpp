@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <cstddef>
 #include <optional>
 #include <string>
@@ -33,6 +34,16 @@ struct SlicingMetrics
         if (!filament_volume_mm3 || !flush_volume_mm3 || !wipe_tower_volume_mm3)
             return std::nullopt;
         return *filament_volume_mm3 + *flush_volume_mm3 + *wipe_tower_volume_mm3;
+    }
+
+    bool has_valid_measurements() const
+    {
+        const auto valid = [](const std::optional<double>& value) {
+            return !value || (std::isfinite(*value) && *value >= 0.0);
+        };
+        return valid(estimated_time_seconds) && valid(filament_volume_mm3) && valid(support_volume_mm3) &&
+               valid(brim_volume_mm3) && valid(bed_adhesion_risk_score) && valid(flush_volume_mm3) &&
+               valid(wipe_tower_volume_mm3) && valid(total_material_volume_mm3());
     }
 };
 

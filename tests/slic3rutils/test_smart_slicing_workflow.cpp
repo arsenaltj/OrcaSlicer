@@ -323,6 +323,68 @@ TEST_CASE("coordinator trial slices baseline first and retains it after an alter
     CHECK(coordinator.snapshot().comparison->recommended_candidate_id == "good-alternative");
 }
 
+TEST_CASE("invalid numeric trial metrics fail before a candidate becomes ready or retry succeeds",
+          "[AI][SmartSlicing][Workflow][MetricValidation]")
+{
+    WorkflowWorkspace workspace;
+    FakeTrialSliceExecutor executor;
+    executor.result_for = [](const SliceCandidate& candidate, size_t) {
+        TrialSliceResult result;
+        result.candidate_id  = candidate.id;
+        result.base_revision = candidate.base_revision;
+        result.status        = TrialSliceStatus::Succeeded;
+        result.metrics       = SlicingMetrics{};
+        result.metrics->estimated_time_seconds = candidate.id == "baseline" ? 100.0 :
+            std::numeric_limits<double>::quiet_NaN();
+        result.metrics->filament_volume_mm3 = 500.0;
+        result.metrics->support_volume_mm3 = 10.0;
+        return result;
+    };
+    SmartSlicingCoordinator coordinator(workspace, executor);
+    coordinator.start();
+
+    REQUIRE(coordinator.plan_and_slice_candidates({proposal("invalid-metrics", workspace.context.revision)}));
+    REQUIRE(coordinator.snapshot().candidates.size() == 2);
+    CHECK(coordinator.snapshot().state == WorkflowState::ReadyToApply);
+    CHECK(coordinator.snapshot().candidates[0].status == CandidateStatus::Ready);
+    CHECK(coordinator.snapshot().candidates[1].status == CandidateStatus::Failed);
+    CHECK_FALSE(coordinator.snapshot().candidates[1].metrics);
+    CHECK(coordinator.snapshot().candidates[1].diagnostic_code == "invalid_candidate_metrics");
+    CHECK(coordinator.snapshot().selected_candidate_id == "baseline");
+
+    CHECK_FALSE(coordinator.retry_candidate("invalid-metrics"));
+    CHECK(executor.calls == std::vector<CandidateId>{"baseline", "invalid-metrics", "invalid-metrics"});
+    CHECK(coordinator.snapshot().candidates[1].status == CandidateStatus::Failed);
+    CHECK(coordinator.snapshot().candidates[1].diagnostic_code == "invalid_candidate_metrics");
+}
+
+TEST_CASE("invalid baseline metrics fail the workflow before comparison",
+          "[AI][SmartSlicing][Workflow][MetricValidation]")
+{
+    WorkflowWorkspace workspace;
+    FakeTrialSliceExecutor executor;
+    executor.result_for = [](const SliceCandidate& candidate, size_t) {
+        TrialSliceResult result;
+        result.candidate_id  = candidate.id;
+        result.base_revision = candidate.base_revision;
+        result.status        = TrialSliceStatus::Succeeded;
+        result.metrics       = SlicingMetrics{};
+        result.metrics->estimated_time_seconds = -1.0;
+        return result;
+    };
+    SmartSlicingCoordinator coordinator(workspace, executor);
+    coordinator.start();
+
+    CHECK_FALSE(coordinator.plan_and_slice_candidates());
+    CHECK(coordinator.snapshot().state == WorkflowState::Failed);
+    CHECK(coordinator.snapshot().detail == "baseline_trial_failed");
+    REQUIRE(coordinator.snapshot().candidates.size() == 1);
+    CHECK(coordinator.snapshot().candidates.front().status == CandidateStatus::Failed);
+    CHECK_FALSE(coordinator.snapshot().candidates.front().metrics);
+    CHECK(coordinator.snapshot().candidates.front().diagnostic_code == "invalid_candidate_metrics");
+    CHECK_FALSE(coordinator.snapshot().comparison);
+}
+
 TEST_CASE("alternative executor exceptions become explicit failures while the baseline remains available",
           "[AI][SmartSlicing][Workflow][ExceptionBoundary]")
 {
