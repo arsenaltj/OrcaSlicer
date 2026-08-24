@@ -4,6 +4,7 @@
 #include "slic3r/GUI/AI/Orca/OrcaParameterAdvisor.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaParameterProposalAdapter.hpp"
 
+#include <limits>
 #include <type_traits>
 
 using namespace Slic3r;
@@ -191,6 +192,28 @@ TEST_CASE("Orca parameter advisor stays empty without actionable bounded evidenc
     missing_workspace.current_brim_width = 1.0;
     missing_workspace.printable_instances.push_back({6.0, 20.0, 40.0});
     CHECK(Slic3r::GUI::OrcaParameterAdvisor(std::move(missing_workspace)).advise({}).entries.empty());
+}
+
+TEST_CASE("bed adhesion evidence degrades safely when finite geometry overflows the derived risk",
+          "[AI][SmartSlicing][Parameters][OrcaAdvisor][MetricValidation]")
+{
+    const double extreme_footprint = std::numeric_limits<double>::min();
+    CHECK_FALSE(Slic3r::GUI::orca_bed_adhesion_risk_score(
+        {{extreme_footprint, 1.0, 1.0}}).has_value());
+
+    const std::optional<double> mixed = Slic3r::GUI::orca_bed_adhesion_risk_score(
+        {{extreme_footprint, 1.0, 1.0}, {10.0, 20.0, 30.0}});
+    REQUIRE(mixed);
+    CHECK(*mixed == Catch::Approx(1.5));
+
+    WorkspaceContext context;
+    context.plate_index = 0;
+    context.objects.push_back({1, "extreme", 1, 12, 0, false});
+    Slic3r::GUI::OrcaParameterAdvisorInput input;
+    input.plate_id = 7;
+    input.current_brim_type = "no_brim";
+    input.printable_instances.push_back({extreme_footprint, 1.0, 1.0});
+    CHECK(Slic3r::GUI::OrcaParameterAdvisor(std::move(input)).advise(context).entries.empty());
 }
 
 TEST_CASE("Orca parameter advisor uses native auto brim without duplicating an active native policy",

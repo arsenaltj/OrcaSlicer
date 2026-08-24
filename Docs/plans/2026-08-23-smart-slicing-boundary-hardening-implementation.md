@@ -374,3 +374,30 @@ candidate is excluded in stable identifier order.
 This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, configuration,
 dependency, port, data directory, journal path/schema, 3MF/profile format, profile data, or default Orca behavior.
 macOS and Linux native build/test execution remains a separate host/CI gate.
+
+## Bed-adhesion derived-metric degradation gate — 2026-08-24
+
+Bed-adhesion extraction now discards a non-finite derived risk even when all source dimensions are finite. This
+can occur when a positive footprint is small enough that the bounded formula division overflows. The invalid
+instance no longer contaminates other valid instances: a mixed input retains the maximum finite risk, while an
+all-invalid input reports the optional metric as unavailable and emits no brim proposal. Candidate comparison
+therefore retains its strict invalid-metric gate without excluding an otherwise valid trial due to a derived
+adapter overflow.
+
+### Windows verification
+
+- Derived-risk degradation focus: 1 test case, 4 assertions, all passed in Release and RelWithDebInfo. Before
+  the fix, the single-instance score was infinity, infinity masked a valid mixed score of 1.5, and a false
+  auto-brim proposal was emitted.
+- Parameter suite: 9 test cases, 84 assertions, all passed in Release and RelWithDebInfo.
+- Smart-slicing suite excluding the opt-in benchmark: 80 test cases, 507 assertions, all passed in Release and
+  RelWithDebInfo.
+- Full `slic3rutils_tests`: 91 test cases, 614 assertions, all passed in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075, LNK4098, and the
+  non-failing empty-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke was not repeated because this is a nonvisual metric-degradation correction with no interaction or
+  formal-write-path change; prior workspace-local isolated GUI evidence remains applicable.
+
+This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, configuration,
+dependency, port, data directory, journal path/schema, 3MF/profile format, profile data, or default Orca behavior.
+macOS and Linux native build/test execution remains a separate host/CI gate.

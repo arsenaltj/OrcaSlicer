@@ -21,6 +21,8 @@ orca_bed_adhesion_risk_score(const std::vector<OrcaInstanceGeometrySnapshot>& pr
             continue;
         const double risk = std::max(8.0 / minimum_footprint,
                                      instance.height_mm / (2.0 * minimum_footprint));
+        if (!std::isfinite(risk))
+            continue;
         maximum_risk = maximum_risk ? std::max(*maximum_risk, risk) : risk;
     }
     return maximum_risk;
