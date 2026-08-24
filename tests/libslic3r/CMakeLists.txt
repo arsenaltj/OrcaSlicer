@@ -29,6 +29,7 @@ add_executable(${_TEST_NAME}_tests
     test_nozzle_volume_type.cpp
     test_stl.cpp
     test_meshboolean.cpp
+    test_model_vertex_colors.cpp
     test_marchingsquares.cpp
     test_model.cpp
     test_utils.cpp

@@ -21,6 +21,8 @@
 #include <CGAL/Polygon_mesh_processing/remesh.h>
 #include <CGAL/Polygon_mesh_processing/repair_polygon_soup.h>
 #include <CGAL/Polygon_mesh_processing/orientation.h>
+#include <CGAL/Polygon_mesh_processing/stitch_borders.h>
+#include <CGAL/Polygon_mesh_processing/triangulate_hole.h>
 // BBS: for segment
 #include <CGAL/mesh_segmentation.h>
 #include <CGAL/property_map.h>
@@ -508,34 +510,49 @@ bool repair(TriangleMesh& mesh, RepairedMeshErrors* repaired_errors, std::string
         PMP::remove_degenerate_faces(cgal_mesh);
         PMP::remove_isolated_vertices(cgal_mesh);
 
-        // 5) Fix remaining non-manifold vertices
+        // 5) Fix remaining non-manifold vertices and reconnect coincident borders.
+        PMP::stitch_borders(cgal_mesh);
         PMP::duplicate_non_manifold_vertices(cgal_mesh);
+        PMP::stitch_borders(cgal_mesh);
 
-        // 6) Boolean union (keeps only outer shell)
-        _EpicMesh tmp;
-        if (PMP::corefine_and_compute_union(cgal_mesh, cgal_mesh, tmp)) {
-            cgal_mesh = std::move(tmp);
-        }
-        // If it fails, continue anyway with previous mesh
-
-        // 7) Fill holes
+        // 6) Fill one boundary cycle at a time. Re-extracting cycles after each
+        // mutation avoids keeping stale halfedge descriptors on complex repairs.
         if (!CGAL::is_closed(cgal_mesh)) {
             using halfedge_descriptor = boost::graph_traits<_EpicMesh>::halfedge_descriptor;
+            using face_descriptor = boost::graph_traits<_EpicMesh>::face_descriptor;
 
-            std::vector<halfedge_descriptor> borders;
-            PMP::extract_boundary_cycles(cgal_mesh, std::back_inserter(borders));
-
-            for (halfedge_descriptor h : borders) {
-                PMP::triangulate_and_refine_hole(cgal_mesh, h);
+            for (size_t attempt = 0; attempt < 256 && !CGAL::is_closed(cgal_mesh); ++attempt) {
+                std::vector<halfedge_descriptor> borders;
+                PMP::extract_boundary_cycles(cgal_mesh, std::back_inserter(borders));
+                bool filled = false;
+                for (halfedge_descriptor border : borders) {
+                    std::vector<face_descriptor> patch;
+                    PMP::triangulate_hole(
+                        cgal_mesh, border,
+                        CGAL::parameters::face_output_iterator(std::back_inserter(patch)));
+                    if (!patch.empty()) {
+                        filled = true;
+                        break;
+                    }
+                }
+                if (!filled)
+                    break;
             }
+            PMP::stitch_borders(cgal_mesh);
         }
 
-        // 8) Final validity check
+        // 7) Final validity check
         if (!CGAL::is_closed(cgal_mesh)) {
             if (error)
                 *error = "Repair failed: mesh still open after hole filling.";
             return false;
         }
+
+        // 8) Resolve self-intersections only after the mesh is closed. Keep the
+        // repaired shell if the optional union cannot produce a closed result.
+        _EpicMesh union_mesh;
+        if (PMP::corefine_and_compute_union(cgal_mesh, cgal_mesh, union_mesh) && CGAL::is_closed(union_mesh))
+            cgal_mesh = std::move(union_mesh);
 
         // 9) Ensure outward orientation
         if (!PMP::does_bound_a_volume(cgal_mesh))

@@ -15,6 +15,12 @@ add_executable(${_TEST_NAME}_tests
     test_plugin_sort.cpp
     test_plugin_cloud_metadata.cpp
     test_plugin_audit.cpp
+    test_vertex_color_region_editor.cpp
+    test_smart_slicing_candidates.cpp
+    test_smart_slicing_coordinator.cpp
+    test_smart_slicing_parameters.cpp
+    test_smart_slicing_runtime.cpp
+    test_smart_slicing_workflow.cpp
     ../fff_print/test_helpers.cpp
     )
 

@@ -13,6 +13,8 @@
 
 #include <string>
 #include <map>
+#include <memory>
+#include <wx/timer.h>
 
 #include "GUI_Utils.hpp"
 #include "Event.hpp"
@@ -23,6 +25,7 @@
 #include "Project.hpp"
 #include "CalibrationPanel.hpp"
 #include "UnsavedChangesDialog.hpp"
+#include "AIServiceManager.hpp"
 #include "Widgets/SideButton.hpp"
 #include "Widgets/SideMenuPopup.hpp"
 #include "FilamentGroupPopup.hpp"
@@ -40,6 +43,7 @@
 // Stable identifiers for MainFrame::m_tabpanel's built-in pages. These are
 // names rather than positional indices so optional pages cannot shift them.
 #define TAB_ID_HOME          "home"
+#define TAB_ID_GENERATE_3D   "generate_3d"
 #define TAB_ID_PREPARE       "prepare"
 #define TAB_ID_PREVIEW       "preview"
 #define TAB_ID_MONITOR       "monitor"
@@ -62,6 +66,8 @@ namespace Slic3r {
 namespace GUI
 {
 
+class ModelGenerationPanel;
+class OrcaWorkspaceAdapter;
 class Tab;
 class PrintHostQueueDialog;
 class Plater;
@@ -120,6 +126,7 @@ class MainFrame : public DPIFrame
     wxString    m_last_config = wxEmptyString;
 
     wxMenuBar*  m_menubar{ nullptr };
+    wxMenu*     m_view_menu{ nullptr };
     //wxMenu* publishMenu{ nullptr };
     wxMenu *    m_calib_menu{nullptr};
     bool        enable_multi_machine{ false };
@@ -275,6 +282,9 @@ public:
 	void        update_title_colour_after_set_title();
     void        show_option(bool show);
     void        init_tabpanel();
+    void        discover_ai_service();
+    void        on_ai_service_retry(wxTimerEvent& event);
+    void        register_ai_features(AIServiceAvailability availability);
     void        create_preset_tabs();
     //BBS: GUI refactor
     void        add_created_tab(Tab* panel, const std::string& bmp_name = "");
@@ -380,6 +390,13 @@ public:
     BBLTopbar*            m_topbar{ nullptr };
     PrintHostQueueDialog* printhost_queue_dlg() { return m_printhost_queue_dlg; }
     Plater*               m_plater { nullptr };
+    ModelGenerationPanel* m_model_generation { nullptr };
+    std::unique_ptr<OrcaWorkspaceAdapter> m_ai_orca_workspace;
+    std::unique_ptr<AIServiceManager> m_ai_service_manager;
+    wxTimer                m_ai_service_retry_timer;
+    unsigned               m_ai_service_retry_count { 0 };
+    bool                   m_ai_service_discovery_active { false };
+    bool                   m_ai_assistant_registered { false };
     //BBS: GUI refactor
     MonitorPanel*         m_monitor{ nullptr };
 

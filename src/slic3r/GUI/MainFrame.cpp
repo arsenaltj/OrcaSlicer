@@ -37,6 +37,10 @@
 #include "I18N.hpp"
 #include "GLCanvas3D.hpp"
 #include "Plater.hpp"
+#include "ModelGenerationPanel.hpp"
+#include "AI/Orca/OrcaWorkspaceAdapter.hpp"
+#include "AIServiceManager.hpp"
+#include "AISidecarClient.hpp"
 #include "WebViewDialog.hpp"
 #include "../Utils/Process.hpp"
 #include "format.hpp"
@@ -411,6 +415,13 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
         init_menubar_as_gcodeviewer();
     else
         init_menubar_as_editor();
+
+    if (wxGetApp().is_editor()) {
+        m_ai_service_manager = std::make_unique<AIServiceManager>(AISidecarClient::default_endpoint());
+        m_ai_service_retry_timer.SetOwner(this);
+        Bind(wxEVT_TIMER, &MainFrame::on_ai_service_retry, this, m_ai_service_retry_timer.GetId());
+        discover_ai_service();
+    }
 
     // BBS
 #if 0
@@ -1015,10 +1026,12 @@ void MainFrame::update_layout()
     case ESettingsLayout::Old:
     {
         m_plater->Reparent(m_tabpanel);
-        // Right after Home — or first, when there is no Home tab (PositionAfter() would
-        // append instead, and by now the other built-in tabs are already in place).
-        const int home_idx = m_tabpanel->FindPageByName(TAB_ID_HOME);
-        const size_t prepare_pos = (home_idx == wxNOT_FOUND) ? 0 : static_cast<size_t>(home_idx) + 1;
+        // Keep the optional generation page between Home and the two Plater views.
+        // Name-based placement preserves the order when plugins add or remove pages.
+        int anchor_idx = m_tabpanel->FindPageByName(TAB_ID_GENERATE_3D);
+        if (anchor_idx == wxNOT_FOUND)
+            anchor_idx = m_tabpanel->FindPageByName(TAB_ID_HOME);
+        const size_t prepare_pos = (anchor_idx == wxNOT_FOUND) ? 0 : static_cast<size_t>(anchor_idx) + 1;
         m_tabpanel->InsertPage(prepare_pos, TAB_ID_PREPARE, m_plater, _L("Prepare"), "tab_3d_active");
         m_tabpanel->InsertPage(prepare_pos + 1, TAB_ID_PREVIEW, m_plater, _L("Preview"), "tab_preview_active");
         m_main_sizer->Add(m_tabpanel, 1, wxEXPAND | wxTOP, 0);
@@ -1121,6 +1134,11 @@ void MainFrame::shutdown()
 #endif
     // BBS: backup
     Slic3r::set_backup_callback(nullptr);
+    if (m_model_generation != nullptr)
+        m_model_generation->shutdown();
+    m_ai_service_retry_timer.Stop();
+    if (m_ai_service_manager)
+        m_ai_service_manager->shutdown();
 #ifdef _WIN32
 	if (m_hDeviceNotify) {
 		::UnregisterDeviceNotification(HDEVNOTIFY(m_hDeviceNotify));
@@ -1309,6 +1327,21 @@ void MainFrame::init_tabpanel() {
 
     wxGetApp().plater_ = m_plater;
 
+    m_ai_orca_workspace = std::make_unique<OrcaWorkspaceAdapter>(m_plater, [this](bool slice) {
+        m_plater->exit_gizmo();
+        m_plater->update(true, true);
+        if (slice) {
+            wxPostEvent(m_plater, SimpleEvent(EVT_GLTOOLBAR_SLICE_PLATE));
+            select_tab(TAB_ID_PREVIEW);
+        } else {
+            select_tab(TAB_ID_PREPARE);
+        }
+    });
+    m_model_generation = new ModelGenerationPanel(m_tabpanel, *m_ai_orca_workspace, *m_ai_orca_workspace);
+    m_model_generation->SetBackgroundColour(*wxWHITE);
+    m_tabpanel->AddPage(TAB_ID_GENERATE_3D, m_model_generation, _L("3D 生成"), "tab_generate_3d_active");
+    m_model_generation->Hide();
+
     create_preset_tabs();
 
         //BBS add pages
@@ -1355,6 +1388,56 @@ void MainFrame::init_tabpanel() {
         if (full_config.has("filament_colour")) {
             m_plater->on_filament_count_change(full_config.option<ConfigOptionStrings>("filament_colour")->values.size());
         }
+    }
+}
+
+void MainFrame::discover_ai_service()
+{
+    if (m_ai_service_discovery_active || !m_ai_service_manager)
+        return;
+    m_ai_service_discovery_active = true;
+    m_ai_service_manager->discover_async(this, [this](AIServiceAvailability availability) {
+        m_ai_service_discovery_active = false;
+        register_ai_features(availability);
+        if (availability.compatible) {
+            m_ai_service_retry_timer.Stop();
+            m_ai_service_retry_count = 0;
+        } else if (availability.transient && m_ai_service_retry_count < 20) {
+            ++m_ai_service_retry_count;
+            m_ai_service_retry_timer.StartOnce(500);
+        }
+    });
+}
+
+void MainFrame::on_ai_service_retry(wxTimerEvent&)
+{
+    discover_ai_service();
+}
+
+void MainFrame::register_ai_features(AIServiceAvailability availability)
+{
+    if (m_model_generation != nullptr) {
+        const std::string message = availability.compatible && !availability.model_generation_available
+            ? "Configure the local AI service to enable 3D generation."
+            : availability.error;
+        m_model_generation->set_service_availability(
+            availability.compatible && availability.model_generation_available, message);
+    }
+
+    if (!availability.compatible) {
+        BOOST_LOG_TRIVIAL(info) << "AI features unavailable: " << availability.error;
+        return;
+    }
+
+    if (availability.config_proposal_available && m_plater != nullptr && m_view_menu != nullptr &&
+        !m_ai_assistant_registered) {
+        m_plater->enable_ai_assistant();
+        append_menu_check_item(
+            m_view_menu, wxID_ANY, _L("Show AI Assistant"), _L("Show AI assistant panel."),
+            [this](wxCommandEvent&) { m_plater->show_ai_assistant(!m_plater->is_ai_assistant_shown()); }, this,
+            [this]() { return is_prepare_or_preview_tab(); },
+            [this]() { return m_plater->is_ai_assistant_shown(); }, this);
+        m_ai_assistant_registered = true;
     }
 }
 
@@ -3124,7 +3207,16 @@ void MainFrame::init_menubar_as_editor()
     wxMenu* viewMenu = nullptr;
     if (m_plater) {
         viewMenu = new wxMenu();
+        m_view_menu = viewMenu;
         add_common_view_menu_items(viewMenu, this, std::bind(&MainFrame::can_change_view, this));
+        viewMenu->AppendSeparator();
+
+        m_plater->enable_smart_slicing();
+        append_menu_check_item(
+            viewMenu, wxID_ANY, _L("Show Smart Slicing"), _L("Show the smart slicing workbench."),
+            [this](wxCommandEvent&) { m_plater->show_smart_slicing(!m_plater->is_smart_slicing_shown()); }, this,
+            [this]() { return is_prepare_or_preview_tab(); },
+            [this]() { return m_plater->is_smart_slicing_shown(); }, this);
         viewMenu->AppendSeparator();
 
         //BBS perspective view

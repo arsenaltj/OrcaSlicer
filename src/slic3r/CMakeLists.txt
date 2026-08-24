@@ -327,6 +327,67 @@ set(SLIC3R_GUI_SOURCES
     GUI/Jobs/UpgradeNetworkJob.cpp
     GUI/Jobs/UpgradeNetworkJob.hpp
     GUI/Jobs/Worker.hpp
+    GUI/AIAssistantConfig.cpp
+    GUI/AIAssistantConfig.hpp
+    GUI/AIAssistantPanel.cpp
+    GUI/AIAssistantPanel.hpp
+    AI/ModelGeneration/GeneratedModelArtifact.hpp
+    AI/ModelGeneration/IPrintablePaletteProvider.hpp
+    AI/SmartSlicing/Application/SmartSlicingCoordinator.cpp
+    AI/SmartSlicing/Application/SmartSlicingCoordinator.hpp
+    AI/SmartSlicing/Application/CandidatePlanningWorkflow.hpp
+    AI/SmartSlicing/Application/PrintabilityInspector.cpp
+    AI/SmartSlicing/Application/PrintabilityInspector.hpp
+    AI/SmartSlicing/Application/TrialSlicingWorkflow.hpp
+    AI/SmartSlicing/Domain/CandidateComparison.cpp
+    AI/SmartSlicing/Domain/CandidateComparison.hpp
+    AI/SmartSlicing/Domain/ParameterProposal.hpp
+    AI/SmartSlicing/Domain/ParameterProposalValidator.cpp
+    AI/SmartSlicing/Domain/ParameterProposalValidator.hpp
+    AI/SmartSlicing/Domain/PlacementCandidate.hpp
+    AI/SmartSlicing/Domain/PrintabilityReport.hpp
+    AI/SmartSlicing/Domain/RepairPlan.hpp
+    AI/SmartSlicing/Domain/SliceCandidate.hpp
+    AI/SmartSlicing/Domain/SlicingMetrics.hpp
+    AI/SmartSlicing/Domain/SmartSlicingTypes.hpp
+    AI/SmartSlicing/Domain/WorkflowState.hpp
+    AI/SmartSlicing/Domain/WorkspaceContext.hpp
+    AI/SmartSlicing/Domain/WorkspaceRevision.hpp
+    AI/SmartSlicing/Domain/WorkflowResourceBudget.hpp
+    AI/SmartSlicing/IModelArtifactConsumer.hpp
+    AI/SmartSlicing/Ports/IOfficialSliceGateway.hpp
+    AI/SmartSlicing/Ports/IOrcaWorkspace.hpp
+    AI/SmartSlicing/Ports/IParameterAdvisor.hpp
+    AI/SmartSlicing/Ports/ITrialSliceExecutor.hpp
+    AI/SmartSlicing/Ports/IWorkflowRuntimeStore.hpp
+    GUI/AI/SmartSlicing/SmartSlicingPanel.cpp
+    GUI/AI/SmartSlicing/SmartSlicingPanel.hpp
+    GUI/AI/SmartSlicing/SmartSlicingPresenter.cpp
+    GUI/AI/SmartSlicing/SmartSlicingPresenter.hpp
+    GUI/AI/SmartSlicing/SmartSlicingViewModel.cpp
+    GUI/AI/SmartSlicing/SmartSlicingViewModel.hpp
+    GUI/AI/Orca/OrcaOfficialSliceGateway.hpp
+    GUI/AI/Orca/OrcaSmartSlicingAdapter.cpp
+    GUI/AI/Orca/OrcaSmartSlicingAdapter.hpp
+    GUI/AI/Orca/OrcaParameterProposalAdapter.cpp
+    GUI/AI/Orca/OrcaParameterProposalAdapter.hpp
+    GUI/AI/Orca/OrcaPlacementCandidateProvider.hpp
+    GUI/AI/Orca/OrcaTrialSliceExecutor.cpp
+    GUI/AI/Orca/OrcaTrialSliceExecutor.hpp
+    GUI/AI/Orca/OrcaWorkflowRuntimeStore.cpp
+    GUI/AI/Orca/OrcaWorkflowRuntimeStore.hpp
+    GUI/AI/Orca/OrcaWorkspaceAdapter.cpp
+    GUI/AI/Orca/OrcaWorkspaceAdapter.hpp
+    GUI/AI/Model/VertexColorRegionEditor.cpp
+    GUI/AI/Model/VertexColorRegionEditor.hpp
+    GUI/AIModelGenerationClient.cpp
+    GUI/AIModelGenerationClient.hpp
+    GUI/ModelGenerationPanel.cpp
+    GUI/ModelGenerationPanel.hpp
+    GUI/AISidecarClient.cpp
+    GUI/AISidecarClient.hpp
+    GUI/AIServiceManager.cpp
+    GUI/AIServiceManager.hpp
     GUI/KBShortcutsDialog.cpp
     GUI/KBShortcutsDialog.hpp
     GUI/LibVGCode/LibVGCodeWrapper.hpp

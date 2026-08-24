@@ -1109,6 +1109,22 @@ endif()
 # Resources install target, configure fhs.hpp on UNIX
 if (WIN32)
     install(DIRECTORY "${SLIC3R_RESOURCES_DIR}/" DESTINATION "./resources")
+    option(ORCA_AI_WINDOWS_INSTALLER "Package the integrated local AI runtime in the Windows installer" OFF)
+    set(ORCA_AI_PACKAGE_REVISION "local" CACHE STRING "Revision label used by the OrcaSlicer AI installer")
+    if(ORCA_AI_WINDOWS_INSTALLER)
+        set(ORCA_AI_SIDECAR_RUNTIME_FILES
+            "${CMAKE_SOURCE_DIR}/tools/ai/ai_diagnostics.py"
+            "${CMAKE_SOURCE_DIR}/tools/ai/openai_preprocessor.py"
+            "${CMAKE_SOURCE_DIR}/tools/ai/orca_ai_installed_bootstrap.py"
+            "${CMAKE_SOURCE_DIR}/tools/ai/orca_ai_sidecar.py"
+            "${CMAKE_SOURCE_DIR}/tools/ai/printable_image_pipeline.py"
+            "${CMAKE_SOURCE_DIR}/tools/ai/printable_model_quality.py"
+            "${CMAKE_SOURCE_DIR}/tools/ai/printable_model_views.py"
+            "${CMAKE_SOURCE_DIR}/tools/ai/printable_palette.py"
+            "${CMAKE_SOURCE_DIR}/tools/ai/printable_visual_quality.py"
+            "${CMAKE_SOURCE_DIR}/tools/ai/tripo_client.py")
+        install(FILES ${ORCA_AI_SIDECAR_RUNTIME_FILES} DESTINATION "./resources/tools/ai")
+    endif()
     if(ORCA_BUNDLED_UV_EXECUTABLE)
         install(PROGRAMS "${ORCA_BUNDLED_UV_EXECUTABLE}" DESTINATION "./resources/tools/uv" RENAME "${ORCA_BUNDLED_UV_FILENAME}")
     endif()
@@ -1146,12 +1162,22 @@ endif ()
 install(FILES ${CMAKE_SOURCE_DIR}/LICENSE.txt DESTINATION ".")
 configure_file(${LIBDIR}/dev-utils/platform/unix/fhs.hpp.in ${LIBDIR_BIN}/dev-utils/platform/unix/fhs.hpp)
 
-set (CPACK_PACKAGE_NAME "OrcaSlicer")
+if(WIN32 AND ORCA_AI_WINDOWS_INSTALLER)
+    set(CPACK_PACKAGE_NAME "OrcaSlicerAI")
+    set(CPACK_NSIS_DISPLAY_NAME "OrcaSlicer AI")
+    set(CPACK_PACKAGE_INSTALL_DIRECTORY "OrcaSlicer AI")
+    set(CPACK_PACKAGE_INSTALL_REGISTRY_KEY "OrcaSlicerAI")
+    set(CPACK_PACKAGE_FILE_NAME "OrcaSlicer_AI_Windows_Installer_V${SoftFever_VERSION}_${ORCA_AI_PACKAGE_REVISION}")
+else()
+    set(CPACK_PACKAGE_NAME "OrcaSlicer")
+    set(CPACK_PACKAGE_INSTALL_DIRECTORY ${CPACK_PACKAGE_NAME})
+    set(CPACK_PACKAGE_INSTALL_REGISTRY_KEY "OrcaSlicer")
+    set(CPACK_PACKAGE_FILE_NAME "OrcaSlicer_Windows_Installer_V${SoftFever_VERSION}")
+endif()
 set (CPACK_PACKAGE_VENDOR "SoftFever")
 set (CPACK_PACKAGE_VERSION_MAJOR "${ORCA_VERSION_MAJOR}")
 set (CPACK_PACKAGE_VERSION_MINOR "${ORCA_VERSION_MINOR}")
 set (CPACK_PACKAGE_VERSION_PATCH "${ORCA_VERSION_PATCH}")
-set (CPACK_PACKAGE_FILE_NAME "OrcaSlicer_Windows_Installer_V${SoftFever_VERSION}")
 # Suffix the Windows installer with its target arch so the x64 and arm64 builds
 # produce distinct filenames (matches ARCH_SUFFIX in build_orca.yml). Same
 # CMAKE_SYSTEM_PROCESSOR mapping used by orcaslicer_copy_dlls() above.
@@ -1164,17 +1190,19 @@ if (WIN32)
 endif ()
 set (CPACK_PACKAGE_DESCRIPTION_SUMMARY "Orca Slicer is an open source slicer for FDM printers")
 set (CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/OrcaSlicer/OrcaSlicer")
-set (CPACK_PACKAGE_INSTALL_DIRECTORY ${CPACK_PACKAGE_NAME})
 set (CPACK_PACKAGE_ICON "${CMAKE_SOURCE_DIR}/resources/images\\\\OrcaSlicer.ico")
 set (CPACK_NSIS_MUI_ICON "${CPACK_PACKAGE_ICON}")
 set (CPACK_NSIS_MUI_UNIICON "${CPACK_PACKAGE_ICON}")
 set (CPACK_NSIS_INSTALLED_ICON_NAME  "$INSTDIR\\\\orca-slicer.exe")
 set (CPACK_PACKAGE_CHECKSUM SHA256)
-set (CPACK_PACKAGE_INSTALL_REGISTRY_KEY "OrcaSlicer")
 set (CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
 set (CPACK_NSIS_EXECUTABLES_DIRECTORY ".")
 # set (CPACK_NSIS_MODIFY_PATH "ON")
-set(CPACK_PACKAGE_EXECUTABLES "orca-slicer;OrcaSlicer")
+if(WIN32 AND ORCA_AI_WINDOWS_INSTALLER)
+    set(CPACK_PACKAGE_EXECUTABLES "orca-slicer;OrcaSlicer AI")
+else()
+    set(CPACK_PACKAGE_EXECUTABLES "orca-slicer;OrcaSlicer")
+endif()
 set(CPACK_CREATE_DESKTOP_LINKS "orca-slicer")
 set (CPACK_RESOURCE_FILE_LICENSE ${CMAKE_SOURCE_DIR}/LICENSE.txt) # must also include in install command
 

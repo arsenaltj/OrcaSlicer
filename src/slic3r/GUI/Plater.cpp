@@ -1,4 +1,13 @@
 #include "Plater.hpp"
+#include "AIAssistantPanel.hpp"
+#include "AI/Orca/OrcaOfficialSliceGateway.hpp"
+#include "AI/Orca/OrcaParameterProposalAdapter.hpp"
+#include "AI/Orca/OrcaSmartSlicingAdapter.hpp"
+#include "AI/Orca/OrcaTrialSliceExecutor.hpp"
+#include "AI/Orca/OrcaWorkflowRuntimeStore.hpp"
+#include "AI/SmartSlicing/SmartSlicingPanel.hpp"
+#include "AI/SmartSlicing/SmartSlicingPresenter.hpp"
+#include "slic3r/AI/SmartSlicing/Application/SmartSlicingCoordinator.hpp"
 #include "../Utils/NetworkAgent.hpp"
 #include "../Utils/NetworkAgentFactory.hpp"
 #include "libslic3r/Config.hpp"
@@ -7,9 +16,12 @@
 #include <cstddef>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <numeric>
 #include <limits>
 #include <optional>
+#include <set>
+#include <stdexcept>
 #include <slic3r/plugin/PluginDescriptor.hpp>
 #include <slic3r/plugin/PluginManager.hpp>
 #include <slic3r/plugin/PluginResolver.hpp>
@@ -2399,6 +2411,34 @@ Sidebar::Sidebar(Plater *parent)
     p->scrolled->SetDoubleBuffered(true);
 #endif //__WINDOWS__
 
+    m_ai_workflow_panel = new wxPanel(p->scrolled, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
+    m_ai_workflow_panel->SetBackgroundColour(p->scrolled->GetBackgroundColour());
+    auto* ai_workflow_sizer = new wxBoxSizer(wxVERTICAL);
+    auto* ai_workflow_title = new wxStaticText(m_ai_workflow_panel, wxID_ANY, _L("AI 自动流程"));
+    wxFont ai_title_font = ai_workflow_title->GetFont();
+    ai_title_font.SetWeight(wxFONTWEIGHT_BOLD);
+    ai_workflow_title->SetFont(ai_title_font);
+    ai_workflow_sizer->Add(ai_workflow_title, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
+    m_ai_workflow_summary = new wxStaticText(m_ai_workflow_panel, wxID_ANY, _L("等待开始"));
+    m_ai_workflow_summary->SetForegroundColour(wxSystemSettings::GetColour(wxSYS_COLOUR_GRAYTEXT));
+    ai_workflow_sizer->Add(m_ai_workflow_summary, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
+
+    const std::array<wxString, AIWorkflowStepCount> ai_step_names {
+        _L("模型导入"), _L("网格检查/修复"), _L("颜色处理"),
+        _L("自动摆放"), _L("切片"), _L("G-code")
+    };
+    for (size_t index = 0; index < ai_step_names.size(); ++index) {
+        m_ai_workflow_steps[index] = new wxStaticText(
+            m_ai_workflow_panel, wxID_ANY,
+            wxString::Format("%llu. ", static_cast<unsigned long long>(index + 1)) + ai_step_names[index] + _L("  等待"));
+        m_ai_workflow_steps[index]->SetForegroundColour(wxSystemSettings::GetColour(wxSYS_COLOUR_GRAYTEXT));
+        ai_workflow_sizer->Add(m_ai_workflow_steps[index], 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
+    }
+    ai_workflow_sizer->AddSpacer(FromDIP(10));
+    m_ai_workflow_panel->SetSizer(ai_workflow_sizer);
+    scrolled_sizer->Add(m_ai_workflow_panel, 0, wxEXPAND);
+    m_ai_workflow_panel->Hide();
+
     // add printer
     {
         /***************** 1. create printer title bar    **************/
@@ -3087,6 +3127,87 @@ Sidebar::Sidebar(Plater *parent)
 }
 
 Sidebar::~Sidebar() {}
+
+void Sidebar::start_ai_workflow(const wxString& summary)
+{
+    m_ai_workflow_active = false;
+    if (m_ai_workflow_summary != nullptr) {
+        m_ai_workflow_summary->SetLabel(summary);
+        m_ai_workflow_summary->SetForegroundColour(wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOWTEXT));
+    }
+    for (size_t index = 0; index < AIWorkflowStepCount; ++index)
+        update_ai_workflow_step(static_cast<AIWorkflowStep>(index), AIWorkflowStatus::Waiting);
+    m_ai_workflow_active = true;
+    if (m_ai_workflow_panel != nullptr) {
+        m_ai_workflow_panel->Show();
+        m_ai_workflow_panel->Layout();
+    }
+    if (p && p->scrolled)
+        p->scrolled->Layout();
+    Layout();
+}
+
+void Sidebar::update_ai_workflow_step(AIWorkflowStep step, AIWorkflowStatus status, const wxString& detail)
+{
+    const size_t index = static_cast<size_t>(step);
+    if (index >= m_ai_workflow_steps.size() || m_ai_workflow_steps[index] == nullptr)
+        return;
+
+    static const std::array<wxString, AIWorkflowStepCount> names {
+        _L("模型导入"), _L("网格检查/修复"), _L("颜色处理"),
+        _L("自动摆放"), _L("切片"), _L("G-code")
+    };
+    wxString state;
+    wxColour colour;
+    switch (status) {
+    case AIWorkflowStatus::Running:
+        state = _L("进行中");
+        colour = wxColour(0, 121, 107);
+        break;
+    case AIWorkflowStatus::Success:
+        state = _L("完成");
+        colour = wxColour(46, 125, 50);
+        break;
+    case AIWorkflowStatus::Warning:
+        state = _L("需处理");
+        colour = wxColour(154, 103, 0);
+        break;
+    case AIWorkflowStatus::Failed:
+        state = _L("失败");
+        colour = wxColour(179, 38, 30);
+        break;
+    case AIWorkflowStatus::Waiting:
+    default:
+        state = _L("等待");
+        colour = wxSystemSettings::GetColour(wxSYS_COLOUR_GRAYTEXT);
+        break;
+    }
+
+    wxString label = wxString::Format("%llu. ", static_cast<unsigned long long>(index + 1)) + names[index] + "  " + state;
+    if (!detail.empty())
+        label += _L(" · ") + detail;
+    m_ai_workflow_steps[index]->SetLabel(label);
+    m_ai_workflow_steps[index]->SetForegroundColour(colour);
+    m_ai_workflow_steps[index]->Wrap(FromDIP(340));
+    if (p && p->scrolled)
+        p->scrolled->Layout();
+    Layout();
+}
+
+void Sidebar::finish_ai_workflow(bool success, const wxString& summary)
+{
+    if (!m_ai_workflow_active)
+        return;
+    if (m_ai_workflow_summary != nullptr) {
+        m_ai_workflow_summary->SetLabel(summary);
+        m_ai_workflow_summary->SetForegroundColour(success ? wxColour(46, 125, 50) : wxColour(179, 38, 30));
+        m_ai_workflow_summary->Wrap(FromDIP(340));
+    }
+    if (p && p->scrolled)
+        p->scrolled->Layout();
+    Layout();
+    m_ai_workflow_active = false;
+}
 
 void Sidebar::on_enter_image_printer_bed(wxMouseEvent &evt) {
     //p->image_printer_bed->Bind(wxEVT_LEAVE_WINDOW, &Sidebar::on_leave_image_printer_bed, this);
@@ -5225,6 +5346,14 @@ struct Plater::priv
     // PIMPL back pointer ("Q-Pointer")
     Plater *q;
     Sidebar *  sidebar;
+    AIAssistantPanel* ai_assistant_panel { nullptr };
+    std::unique_ptr<OrcaSmartSlicingAdapter> smart_slicing_workspace;
+    std::unique_ptr<OrcaTrialSliceExecutor> smart_slicing_trial_executor;
+    std::unique_ptr<OrcaOfficialSliceGateway> smart_slicing_official_gateway;
+    std::unique_ptr<OrcaWorkflowRuntimeStore> smart_slicing_runtime_store;
+    std::unique_ptr<AI::SmartSlicing::SmartSlicingCoordinator> smart_slicing_coordinator;
+    std::unique_ptr<SmartSlicingPresenter> smart_slicing_presenter;
+    SmartSlicingPanel* smart_slicing_panel { nullptr };
     MainFrame *main_frame;
 
     MenuFactory menus;
@@ -5317,6 +5446,7 @@ struct Plater::priv
 
     wxTimer                     background_process_timer;
     wxTimer                     auto_reslice_timer;
+    wxTimer                     ai_workflow_stability_timer;
 
     std::string                 label_btn_export;
     std::string                 label_btn_send;
@@ -5457,7 +5587,10 @@ struct Plater::priv
     BoundingBox scaled_bed_shape_bb() const;
 
     // BBS: backup & restore
-    std::vector<size_t> load_files(const std::vector<fs::path>& input_files, LoadStrategy strategy, bool ask_multi = false);
+    std::vector<size_t> load_files(const std::vector<fs::path>& input_files,
+                                   LoadStrategy strategy,
+                                   bool ask_multi = false,
+                                   ObjImportColorFn obj_color_fn = nullptr);
     std::vector<size_t> load_model_objects(const ModelObjectPtrs& model_objects, bool allow_negative_z = false, bool split_object = false, bool auto_drop = true);
 
     fs::path get_export_file_path(GUI::FileType file_type);
@@ -5539,6 +5672,7 @@ struct Plater::priv
     void schedule_background_process();
     void schedule_auto_reslice_if_needed();
     void trigger_auto_reslice_now();
+    void confirm_ai_workflow_stability();
     int  auto_slice_delay_seconds() const;
     // Update background processing thread from the current config and Model.
     enum UpdateBackgroundProcessReturnState {
@@ -5936,6 +6070,7 @@ Plater::priv::priv(Plater *q, MainFrame *main_frame)
 
     this->background_process_timer.SetOwner(this->q, 0);
     this->auto_reslice_timer.SetOwner(this->q, 0);
+    this->ai_workflow_stability_timer.SetOwner(this->q, 0);
     this->q->Bind(wxEVT_TIMER, [this](wxTimerEvent &evt)
     {
         if (&evt.GetTimer() == &this->background_process_timer) {
@@ -5944,6 +6079,9 @@ Plater::priv::priv(Plater *q, MainFrame *main_frame)
         } else if (&evt.GetTimer() == &this->auto_reslice_timer) {
             this->auto_reslice_timer.Stop();
             this->trigger_auto_reslice_now();
+        } else if (&evt.GetTimer() == &this->ai_workflow_stability_timer) {
+            this->ai_workflow_stability_timer.Stop();
+            this->confirm_ai_workflow_stability();
         } else {
             evt.Skip();
         }
@@ -6647,6 +6785,10 @@ void Plater::priv::reset_window_layout()
 {
     m_aui_mgr.LoadPerspective(m_default_window_layout, false);
     sidebar_layout.is_collapsed = false;
+    if (ai_assistant_panel != nullptr)
+        m_aui_mgr.GetPane(ai_assistant_panel).Hide();
+    if (smart_slicing_panel != nullptr)
+        m_aui_mgr.GetPane(smart_slicing_panel).Hide();
     update_sidebar(true);
 }
 
@@ -6769,7 +6911,10 @@ void read_binary_stl(const std::string& filename, std::string& model_id, std::st
 }
 
 // BBS: backup & restore
-std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_files, LoadStrategy strategy, bool ask_multi)
+std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_files,
+                                             LoadStrategy strategy,
+                                             bool ask_multi,
+                                             ObjImportColorFn obj_color_fn)
 {
     std::vector<size_t> empty_result;
     bool dlg_cont = true;
@@ -7482,16 +7627,17 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
                 bool                  is_xxx;
                 Semver                file_version;
 
-                //ObjImportColorFn obj_color_fun=nullptr;
-                auto obj_color_fun = [this, &path](ObjDialogInOut &in_out) {
-
-                    if (!boost::iends_with(path.string(), ".obj")) { return; }
-                    const std::vector<std::string> extruder_colours = wxGetApp().plater()->get_extruder_colors_from_plater_config();
-                    ObjColorDialog                 color_dlg(nullptr, in_out, extruder_colours, Sidebar::should_show_SEMM_buttons());
-                    if (color_dlg.ShowModal() != wxID_OK) {
-                        in_out.filament_ids.clear();
-                    }
-                };
+                ObjImportColorFn obj_color_fun = obj_color_fn;
+                if (!obj_color_fun) {
+                    obj_color_fun = [this, &path](ObjDialogInOut &in_out) {
+                        if (!boost::iends_with(path.string(), ".obj"))
+                            return;
+                        const std::vector<std::string> extruder_colours = wxGetApp().plater()->get_extruder_colors_from_plater_config();
+                        ObjColorDialog color_dlg(nullptr, in_out, extruder_colours, Sidebar::should_show_SEMM_buttons());
+                        if (color_dlg.ShowModal() != wxID_OK)
+                            in_out.filament_ids.clear();
+                    };
+                }
                 if (boost::iends_with(path.string(), ".stp") ||
                     boost::iends_with(path.string(), ".step")) {
                         double linear = string_to_double_decimal_point(wxGetApp().app_config->get("linear_deflection"));
@@ -8724,6 +8870,36 @@ void Plater::priv::trigger_auto_reslice_now()
         return;
 
     this->q->reslice();
+}
+
+void Plater::priv::confirm_ai_workflow_stability()
+{
+    if (!sidebar->ai_workflow_active())
+        return;
+
+    PartPlate* plate = partplate_list.get_curr_plate();
+    if (plate != nullptr && plate->is_slice_result_ready_for_export() && !q->is_background_process_slicing()) {
+        sidebar->update_ai_workflow_step(Sidebar::AISlice, Sidebar::AIWorkflowStatus::Success);
+        sidebar->update_ai_workflow_step(Sidebar::AIGCode, Sidebar::AIWorkflowStatus::Success,
+                                         _L("预览已就绪"));
+        sidebar->finish_ai_workflow(true, _L("自动流程完成，可以检查切片结果"));
+        return;
+    }
+
+    if (plate != nullptr && plate->is_slice_result_valid() && !q->is_background_process_slicing()) {
+        sidebar->update_ai_workflow_step(Sidebar::AISlice, Sidebar::AIWorkflowStatus::Failed,
+                                         _L("切片结果不可打印"));
+        sidebar->update_ai_workflow_step(Sidebar::AIGCode, Sidebar::AIWorkflowStatus::Failed,
+                                         _L("请检查热床边界或 G-code 错误"));
+        sidebar->finish_ai_workflow(false, _L("自动流程未通过可打印性检查"));
+        return;
+    }
+
+    sidebar->update_ai_workflow_step(Sidebar::AISlice, Sidebar::AIWorkflowStatus::Running,
+                                     _L("布局已更新，正在自动重试"));
+    sidebar->update_ai_workflow_step(Sidebar::AIGCode, Sidebar::AIWorkflowStatus::Waiting);
+    if (!q->is_background_process_slicing())
+        q->reslice();
 }
 
 int Plater::priv::auto_slice_delay_seconds() const
@@ -10863,6 +11039,11 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
             m_slice_all_only_has_gcode = false;
     }
 
+    // Print::apply() may cancel an in-flight export before Orca automatically starts a replacement
+    // slice. Keep the AI workflow alive until that replacement reports its final result.
+    const bool ai_internal_restart = evt.cancelled() &&
+        sidebar->ai_workflow_active() && background_process.is_internal_cancelled();
+
     // Stop the background task, wait until the thread goes into the "Idle" state.
     // At this point of time the thread should be either finished or canceled,
     // so the following call just confirms, that the produced data were consumed.
@@ -10994,6 +11175,12 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
 
     exporting_status = ExportingStatus::NOT_EXPORTING;
 
+    if (is_finished && !ai_internal_restart && smart_slicing_official_gateway != nullptr) {
+        const bool success = evt.success() && !has_error && !evt.cancelled();
+        smart_slicing_official_gateway->notify_slice_completed(
+            success, evt.cancelled() ? "official_slice_canceled" : "official_slice_failed");
+    }
+
 
     // BBS stop publishing if error occur
     //if (m_is_publishing) {
@@ -11005,6 +11192,28 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
     //    }
     //}
 
+
+    if (is_finished && sidebar->ai_workflow_active()) {
+        if (evt.success() && !has_error && !evt.cancelled()) {
+            sidebar->update_ai_workflow_step(Sidebar::AISlice, Sidebar::AIWorkflowStatus::Running,
+                                             _L("正在确认最终结果"));
+            sidebar->update_ai_workflow_step(Sidebar::AIGCode, Sidebar::AIWorkflowStatus::Waiting,
+                                             _L("正在加载预览"));
+            ai_workflow_stability_timer.Stop();
+            ai_workflow_stability_timer.StartOnce(1200);
+        } else if (ai_internal_restart) {
+            sidebar->update_ai_workflow_step(Sidebar::AISlice, Sidebar::AIWorkflowStatus::Running,
+                                             _L("配置已更新，正在自动重试"));
+            sidebar->update_ai_workflow_step(Sidebar::AIGCode, Sidebar::AIWorkflowStatus::Waiting);
+        } else {
+            sidebar->update_ai_workflow_step(Sidebar::AISlice, Sidebar::AIWorkflowStatus::Failed,
+                                             evt.cancelled() ? _L("已取消") : _L("切片失败"));
+            sidebar->update_ai_workflow_step(Sidebar::AIGCode, Sidebar::AIWorkflowStatus::Failed,
+                                             _L("未生成"));
+            sidebar->finish_ai_workflow(false, evt.cancelled() ? _L("自动切片已取消")
+                                                               : _L("自动切片失败，请检查错误"));
+        }
+    }
 
     if (is_finished)
     {
@@ -14870,22 +15079,28 @@ void Plater::force_update_all_plate_thumbnails()
 }
 
 // BBS: backup
-std::vector<size_t> Plater::load_files(const std::vector<fs::path>& input_files, LoadStrategy strategy, bool ask_multi) {
+std::vector<size_t> Plater::load_files(const std::vector<fs::path>& input_files,
+                                       LoadStrategy strategy,
+                                       bool ask_multi,
+                                       ObjImportColorFn obj_color_fn) {
     //BBS: wish to reset state when load a new file
     p->m_slice_all_only_has_gcode = false;
     //BBS: wish to reset all plates stats item selected state when load a new file
     p->preview->get_canvas3d()->reset_select_plate_toolbar_selection();
-    return p->load_files(input_files, strategy, ask_multi);
+    return p->load_files(input_files, strategy, ask_multi, std::move(obj_color_fn));
 }
 
 // To be called when providing a list of files to the GUI slic3r on command line.
-std::vector<size_t> Plater::load_files(const std::vector<std::string>& input_files, LoadStrategy strategy,  bool ask_multi)
+std::vector<size_t> Plater::load_files(const std::vector<std::string>& input_files,
+                                       LoadStrategy strategy,
+                                       bool ask_multi,
+                                       ObjImportColorFn obj_color_fn)
 {
     std::vector<fs::path> paths;
     paths.reserve(input_files.size());
     for (const std::string& path : input_files)
         paths.emplace_back(path);
-    return p->load_files(paths, strategy, ask_multi);
+    return p->load_files(paths, strategy, ask_multi, std::move(obj_color_fn));
 }
 
 bool Plater::preview_zip_archive(const boost::filesystem::path& archive_path)
@@ -15612,6 +15827,339 @@ void Plater::enable_sidebar(bool enabled) { p->enable_sidebar(enabled); }
 bool Plater::is_sidebar_collapsed() const { return p->sidebar_layout.is_collapsed; }
 void Plater::collapse_sidebar(bool collapse) { p->collapse_sidebar(collapse); }
 Sidebar::DockingState Plater::get_sidebar_docking_state() const { return p->get_sidebar_docking_state(); }
+
+bool Plater::is_ai_assistant_shown() const
+{
+    return p->ai_assistant_panel != nullptr && p->m_aui_mgr.GetPane(p->ai_assistant_panel).IsShown();
+}
+
+void Plater::enable_ai_assistant()
+{
+    if (p->ai_assistant_panel != nullptr)
+        return;
+
+    p->ai_assistant_panel = new AIAssistantPanel(this, this);
+    p->m_aui_mgr.AddPane(p->ai_assistant_panel, wxAuiPaneInfo()
+                                                     .Name("ai_assistant")
+                                                     .Caption(_L("AI Assistant"))
+                                                     .Right()
+                                                     .CloseButton(true)
+                                                     .TopDockable(false)
+                                                     .BottomDockable(false)
+                                                     .BestSize(wxSize(32 * wxGetApp().em_unit(), 70 * wxGetApp().em_unit()))
+                                                     .Hide());
+    p->m_aui_mgr.Update();
+}
+
+void Plater::show_ai_assistant(bool show)
+{
+    if (p->ai_assistant_panel == nullptr)
+        return;
+    auto& pane = p->m_aui_mgr.GetPane(p->ai_assistant_panel);
+    if (!pane.IsOk())
+        return;
+    pane.Show(show);
+    p->m_aui_mgr.Update();
+}
+
+namespace {
+
+struct SmartSlicingTransformTarget
+{
+    size_t object_index { 0 };
+    ModelInstance* instance { nullptr };
+    Transform3d matrix { Transform3d::Identity() };
+};
+
+bool collect_smart_slicing_targets(Plater& plater, const AI::SmartSlicing::SliceCandidate& candidate,
+                                   std::vector<SmartSlicingTransformTarget>& targets, std::string& diagnostic)
+{
+    PartPlate* plate = plater.get_partplate_list().get_curr_plate();
+    if (plate == nullptr) {
+        diagnostic = "current_plate_unavailable";
+        return false;
+    }
+    if (plate->is_locked()) {
+        diagnostic = "current_plate_locked";
+        return false;
+    }
+
+    std::set<uint64_t> seen_instances;
+    targets.reserve(candidate.placement.transforms.size());
+    Model& model = plater.model();
+    for (const AI::SmartSlicing::ObjectTransform& requested : candidate.placement.transforms) {
+        if (!seen_instances.insert(requested.instance_id).second) {
+            diagnostic = "duplicate_transform_target";
+            return false;
+        }
+        Transform3d matrix;
+        for (Eigen::Index row = 0; row < matrix.rows(); ++row)
+            for (Eigen::Index column = 0; column < matrix.cols(); ++column) {
+                const double value = requested.matrix[static_cast<size_t>(row * matrix.cols() + column)];
+                if (!std::isfinite(value)) {
+                    diagnostic = "invalid_transform";
+                    return false;
+                }
+                matrix(row, column) = value;
+            }
+        if (!matrix.matrix().row(3).isApprox(Eigen::RowVector4d(0.0, 0.0, 0.0, 1.0)) ||
+            std::abs(matrix.linear().determinant()) < 1e-12) {
+            diagnostic = "invalid_transform";
+            return false;
+        }
+
+        SmartSlicingTransformTarget target;
+        bool found = false;
+        for (size_t object_index = 0; object_index < model.objects.size() && !found; ++object_index) {
+            ModelObject* object = model.objects[object_index];
+            if (object == nullptr || object->id().id != requested.object_id)
+                continue;
+            for (size_t instance_index = 0; instance_index < object->instances.size(); ++instance_index) {
+                ModelInstance* instance = object->instances[instance_index];
+                if (instance != nullptr && instance->id().id == requested.instance_id) {
+                    if (!plate->contain_instance(static_cast<int>(object_index), static_cast<int>(instance_index))) {
+                        diagnostic = "transform_target_not_on_current_plate";
+                        return false;
+                    }
+                    target = { object_index, instance, matrix };
+                    found = true;
+                    break;
+                }
+            }
+        }
+        if (!found) {
+            diagnostic = "transform_target_missing";
+            return false;
+        }
+        targets.push_back(std::move(target));
+    }
+    return true;
+}
+
+bool prepare_smart_slicing_parameter_patch(Plater& plater, const AI::SmartSlicing::SliceCandidate& candidate,
+                                           DynamicPrintConfig& plate_patch, std::string& diagnostic)
+{
+    if (candidate.parameters.entries.empty())
+        return true;
+    if (wxGetApp().preset_bundle == nullptr) {
+        diagnostic = "current_config_unavailable";
+        return false;
+    }
+    PartPlate* plate = plater.get_partplate_list().get_curr_plate();
+    if (plate == nullptr) {
+        diagnostic = "current_plate_unavailable";
+        return false;
+    }
+
+    DynamicPrintConfig current_config = wxGetApp().preset_bundle->full_config();
+    current_config.apply(*plate->config(), true);
+    DynamicPrintConfig patched_config;
+    const OrcaParameterApplyResult result = OrcaParameterProposalAdapter().validate_and_apply(
+        candidate.parameters, plate->id().id, current_config, patched_config);
+    if (!result.accepted) {
+        diagnostic = result.diagnostic_code;
+        return false;
+    }
+    for (const AI::SmartSlicing::ConfigPatchEntry& entry : candidate.parameters.entries) {
+        const ConfigOption* replacement = patched_config.option(entry.key);
+        if (replacement == nullptr) {
+            diagnostic = "parameter_native_option_unavailable";
+            return false;
+        }
+        plate_patch.set_key_value(entry.key, replacement->clone());
+    }
+    return true;
+}
+
+} // namespace
+
+bool Plater::is_smart_slicing_shown() const
+{
+    return p->smart_slicing_panel != nullptr && p->m_aui_mgr.GetPane(p->smart_slicing_panel).IsShown();
+}
+
+void Plater::enable_smart_slicing()
+{
+    if (p->smart_slicing_panel != nullptr)
+        return;
+
+    p->smart_slicing_workspace = std::make_unique<OrcaSmartSlicingAdapter>(this);
+    p->smart_slicing_trial_executor = std::make_unique<OrcaTrialSliceExecutor>([this] {
+        return p->smart_slicing_workspace->capture_trial_slice_input();
+    });
+    p->smart_slicing_official_gateway = std::make_unique<OrcaOfficialSliceGateway>(
+        [this] { return p->smart_slicing_workspace->current_revision(); },
+        [this](const AI::SmartSlicing::SliceCandidate& candidate) {
+            std::vector<SmartSlicingTransformTarget> targets;
+            DynamicPrintConfig parameter_patch;
+            std::string diagnostic;
+            if (!collect_smart_slicing_targets(*this, candidate, targets, diagnostic) ||
+                !prepare_smart_slicing_parameter_patch(*this, candidate, parameter_patch, diagnostic))
+                return diagnostic;
+            return std::string {};
+        },
+        [this](const AI::SmartSlicing::SliceCandidate& candidate) {
+            std::vector<SmartSlicingTransformTarget> targets;
+            DynamicPrintConfig parameter_patch;
+            std::string diagnostic;
+            if (!collect_smart_slicing_targets(*this, candidate, targets, diagnostic) ||
+                !prepare_smart_slicing_parameter_patch(*this, candidate, parameter_patch, diagnostic))
+                return OrcaApplyMutationResult { false, false, std::move(diagnostic) };
+
+            std::vector<SmartSlicingTransformTarget> changed;
+            std::vector<size_t> changed_object_indices;
+            for (const SmartSlicingTransformTarget& target : targets) {
+                if (!target.instance->get_matrix().isApprox(target.matrix)) {
+                    changed.push_back(target);
+                    changed_object_indices.push_back(target.object_index);
+                }
+            }
+            if (changed.empty() && candidate.parameters.entries.empty())
+                return OrcaApplyMutationResult { true, false, {} };
+            std::sort(changed_object_indices.begin(), changed_object_indices.end());
+            changed_object_indices.erase(std::unique(changed_object_indices.begin(), changed_object_indices.end()),
+                                         changed_object_indices.end());
+
+            bool transaction_started = false;
+            try {
+                {
+                    Plater::TakeSnapshot transaction(this, "Apply Smart Slicing Candidate");
+                    transaction_started = true;
+                    for (const SmartSlicingTransformTarget& target : changed)
+                        target.instance->set_transformation(Geometry::Transformation(target.matrix));
+                    PartPlate* plate = get_partplate_list().get_curr_plate();
+                    if (plate == nullptr)
+                        throw std::runtime_error("Current plate disappeared while applying a smart-slicing candidate.");
+                    for (const AI::SmartSlicing::ConfigPatchEntry& entry : candidate.parameters.entries) {
+                        const ConfigOption* replacement = parameter_patch.option(entry.key);
+                        if (replacement == nullptr)
+                            throw std::runtime_error("Validated smart-slicing parameter disappeared before apply.");
+                        plate->config()->set_key_value(entry.key, replacement->clone());
+                    }
+                    if (!changed_object_indices.empty())
+                        changed_objects(changed_object_indices);
+                    if (!candidate.parameters.entries.empty())
+                        plate->update_slice_result_valid_state(false);
+                    update_title_dirty_status();
+                }
+                return OrcaApplyMutationResult { true, true, {} };
+            } catch (...) {
+                if (transaction_started && can_undo())
+                    undo();
+                return OrcaApplyMutationResult { false, false, "candidate_apply_rolled_back" };
+            }
+        },
+        [this] {
+            if (printer_technology() != ptFFF ||
+                p->process_completed_with_error == p->partplate_list.get_curr_plate_index())
+                return false;
+            PartPlate* plate = p->partplate_list.get_curr_plate();
+            if (plate == nullptr || !plate->has_printable_instances())
+                return false;
+            const DynamicPrintConfig& config = wxGetApp().preset_bundle->full_config();
+            Print& print = p->partplate_list.get_current_fff_print();
+            Model::setExtruderParams(config, wxGetApp().preset_bundle->filament_presets.size());
+            Model::setPrintSpeedTable(config, print.config());
+            p->m_slice_all = false;
+            plate->update_slice_result_valid_state(false);
+            reslice();
+            return p->m_is_slicing;
+        },
+        [this] {
+            select_view_3D("Preview");
+            return is_preview_shown();
+        },
+        [this] {
+            if (!can_undo())
+                return false;
+            undo();
+            return true;
+        });
+    p->smart_slicing_coordinator =
+        std::make_unique<AI::SmartSlicing::SmartSlicingCoordinator>(*p->smart_slicing_workspace,
+                                                                    *p->smart_slicing_trial_executor,
+                                                                    *p->smart_slicing_official_gateway);
+    AI::SmartSlicing::WorkflowResourceBudget smart_slicing_budget;
+    p->smart_slicing_trial_executor->set_resource_limits(smart_slicing_budget.maximum_elapsed,
+                                                         smart_slicing_budget.maximum_memory_bytes,
+                                                         smart_slicing_budget.maximum_temporary_disk_bytes);
+    p->smart_slicing_coordinator->set_resource_budget(smart_slicing_budget);
+    p->smart_slicing_runtime_store = std::make_unique<OrcaWorkflowRuntimeStore>(
+        boost::filesystem::temp_directory_path() / "OrcaSlicer-smart-slicing-runtime-v1.json");
+    p->smart_slicing_coordinator->set_runtime_store(*p->smart_slicing_runtime_store);
+    p->smart_slicing_presenter = std::make_unique<SmartSlicingPresenter>(
+        *p->smart_slicing_coordinator, [](std::function<void()> publish) {
+            if (wxIsMainThread())
+                publish();
+            else
+                wxGetApp().CallAfter(std::move(publish));
+        });
+    p->smart_slicing_panel = new SmartSlicingPanel(this, *p->smart_slicing_coordinator, [this] {
+        const auto& snapshot = p->smart_slicing_coordinator->snapshot();
+        if (!snapshot.context)
+            return std::vector<AI::SmartSlicing::SliceCandidate> {};
+        p->smart_slicing_trial_executor->prepare_session_input(
+            p->smart_slicing_workspace->capture_trial_slice_input());
+        return p->smart_slicing_workspace->candidate_proposals(snapshot.context->revision);
+    }, [this] {
+        p->smart_slicing_trial_executor->cancel_trial_slice();
+    });
+    p->smart_slicing_presenter->set_view_changed([this](const SmartSlicingViewModel& view) {
+        if (p->smart_slicing_panel != nullptr)
+            p->smart_slicing_panel->render(view);
+        if (view.summary_key == "official_slice_complete" || view.summary_key == "canceled" ||
+            view.summary_key == "workspace_changed" || view.summary_key == "preflight_failed")
+            p->smart_slicing_trial_executor->clear_session_input();
+
+        if (view.summary_key == "ready_to_start")
+            return;
+        auto to_sidebar_status = [](LegacyAIWorkflowStatus status) {
+            switch (status) {
+            case LegacyAIWorkflowStatus::Running: return Sidebar::AIWorkflowStatus::Running;
+            case LegacyAIWorkflowStatus::Success: return Sidebar::AIWorkflowStatus::Success;
+            case LegacyAIWorkflowStatus::Warning: return Sidebar::AIWorkflowStatus::Warning;
+            case LegacyAIWorkflowStatus::Failed: return Sidebar::AIWorkflowStatus::Failed;
+            case LegacyAIWorkflowStatus::Waiting: return Sidebar::AIWorkflowStatus::Waiting;
+            }
+            return Sidebar::AIWorkflowStatus::Waiting;
+        };
+        const wxString summary = view.is_stale ? _L("工程已变化，需要重新检查") :
+                                 view.summary_key == "preflight_complete" ? _L("可打印性检查完成") :
+                                 view.summary_key == "preflight_complete_with_warnings" ? _L("可打印性检查完成，仍有提示") :
+                                 view.summary_key == "printability_action_required" ? _L("发现需要处理的问题") :
+                                 view.summary_key == "preflight_failed" ? _L("可打印性检查失败") :
+                                 view.summary_key == "canceled" ? _L("可打印性检查已取消") :
+                                 _L("正在执行智能切片预检");
+        p->sidebar->start_ai_workflow(summary);
+        for (size_t index = 0; index < view.legacy_steps.size(); ++index)
+            p->sidebar->update_ai_workflow_step(static_cast<Sidebar::AIWorkflowStep>(index),
+                                                to_sidebar_status(view.legacy_steps[index]));
+        if (view.can_start && !view.can_cancel)
+            p->sidebar->finish_ai_workflow(false, summary);
+    });
+
+    p->m_aui_mgr.AddPane(p->smart_slicing_panel, wxAuiPaneInfo()
+                                                     .Name("smart_slicing")
+                                                     .Caption(_L("智能切片"))
+                                                     .Right()
+                                                     .CloseButton(true)
+                                                     .TopDockable(false)
+                                                     .BottomDockable(false)
+                                                     .BestSize(wxSize(38 * wxGetApp().em_unit(), 70 * wxGetApp().em_unit()))
+                                                     .Hide());
+    p->m_aui_mgr.Update();
+}
+
+void Plater::show_smart_slicing(bool show)
+{
+    if (p->smart_slicing_panel == nullptr)
+        return;
+    auto& pane = p->m_aui_mgr.GetPane(p->smart_slicing_panel);
+    if (!pane.IsOk())
+        return;
+    pane.Show(show);
+    p->m_aui_mgr.Update();
+}
 
 void Plater::reset_window_layout() { p->reset_window_layout(); }
 

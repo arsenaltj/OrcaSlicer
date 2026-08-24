@@ -1,0 +1,242 @@
+#include "AIServiceManager.hpp"
+
+#include "AISidecarClient.hpp"
+#include "GUI_App.hpp"
+#include "libslic3r/Utils.hpp"
+#include "slic3r/Utils/Http.hpp"
+
+#include <boost/nowide/convert.hpp>
+#include <boost/log/trivial.hpp>
+#include <boost/process.hpp>
+#ifdef _WIN32
+#include <boost/process/windows.hpp>
+#endif
+#include <nlohmann/json.hpp>
+#include <wx/filename.h>
+#include <wx/stdpaths.h>
+
+#include <cstdlib>
+#include <system_error>
+#include <utility>
+#include <vector>
+
+namespace Slic3r::GUI {
+
+struct AIServiceManager::SidecarProcess
+{
+    std::unique_ptr<boost::process::child> child;
+};
+
+namespace {
+
+constexpr const char* DEFAULT_LOCAL_ENDPOINT = "http://127.0.0.1:18764";
+
+bool environment_flag(const char* name)
+{
+    const char* value = std::getenv(name);
+    if (value == nullptr)
+        return false;
+    const std::string normalized(value);
+    return normalized == "1" || normalized == "true" || normalized == "TRUE" || normalized == "yes" || normalized == "YES";
+}
+
+bool has_explicit_sidecar_endpoint()
+{
+    const char* value = std::getenv("ORCASLICER_AI_SIDECAR_URL");
+    return value != nullptr && value[0] != '\0';
+}
+
+std::string health_url(const std::string& endpoint)
+{
+    if (!endpoint.empty() && endpoint.back() == '/')
+        return endpoint.substr(0, endpoint.size() - 1) + "/health";
+    return endpoint + "/health";
+}
+
+AIServiceAvailability parse_health_response(const std::string& body)
+{
+    AIServiceAvailability result;
+    const auto parsed = nlohmann::json::parse(body, nullptr, false);
+    if (parsed.is_discarded() || !parsed.is_object()) {
+        result.error = "AI sidecar returned an invalid health response.";
+        return result;
+    }
+
+    if (!parsed.value("ok", false) || !parsed.contains("protocol_version") || !parsed["protocol_version"].is_number_integer() ||
+        parsed["protocol_version"].get<int>() != 1 || !parsed.contains("sidecar_version") || !parsed["sidecar_version"].is_string() ||
+        !parsed.contains("capabilities") || !parsed["capabilities"].is_object()) {
+        result.error = "AI sidecar returned an incompatible health response.";
+        return result;
+    }
+
+    const auto& capabilities = parsed["capabilities"];
+    const auto config_proposal = capabilities.find("config_proposal");
+    const auto model_generation = capabilities.find("model_generation");
+    const auto expected_sources = nlohmann::json::array({ "text", "image" });
+    const auto expected_artifact_formats = nlohmann::json::array({ "obj" });
+    if (config_proposal == capabilities.end() || !config_proposal->is_object() || !config_proposal->contains("available") ||
+        !(*config_proposal)["available"].is_boolean() || model_generation == capabilities.end() || !model_generation->is_object() ||
+        !model_generation->contains("available") || !(*model_generation)["available"].is_boolean() ||
+        !model_generation->contains("sources") || (*model_generation)["sources"] != expected_sources ||
+        !model_generation->contains("artifact_formats") || (*model_generation)["artifact_formats"] != expected_artifact_formats) {
+        result.error = "AI sidecar returned incomplete capability data.";
+        return result;
+    }
+
+    result.compatible = true;
+    result.sidecar_version = parsed["sidecar_version"].get<std::string>();
+    result.config_proposal_available = (*config_proposal)["available"].get<bool>();
+    result.model_generation_available = (*model_generation)["available"].get<bool>();
+    return result;
+}
+
+} // namespace
+
+AIServiceManager::AIServiceManager(std::string endpoint)
+    : m_endpoint(std::move(endpoint))
+    , m_lifetime(std::make_shared<int>(0))
+{
+}
+
+AIServiceManager::~AIServiceManager()
+{
+    shutdown();
+}
+
+void AIServiceManager::discover_async(wxWindow* target, CompleteFn on_complete)
+{
+    cancel_discovery();
+    m_lifetime = std::make_shared<int>(0);
+    const std::weak_ptr<int> lifetime = m_lifetime;
+    const wxWeakRef<wxWindow> weak_target(target);
+
+    if (!AISidecarClient::is_loopback_endpoint(m_endpoint)) {
+        AIServiceAvailability result;
+        result.error = "AI sidecar discovery requires a loopback endpoint.";
+        if (weak_target) {
+            weak_target->CallAfter([weak_target, lifetime, on_complete, result = std::move(result)]() mutable {
+                if (weak_target && !lifetime.expired() && on_complete)
+                    on_complete(std::move(result));
+            });
+        }
+        return;
+    }
+
+    auto http = Http::get(health_url(m_endpoint));
+    http.timeout_connect(2).timeout_max(5).size_limit(16 * 1024);
+
+    http.on_complete([this, weak_target, lifetime, on_complete](std::string body, unsigned) mutable {
+        auto result = parse_health_response(body);
+        if (weak_target) {
+            weak_target->CallAfter([this, weak_target, lifetime, on_complete, result = std::move(result)]() mutable {
+                if (weak_target && !lifetime.expired() && on_complete) {
+                    if (result.compatible)
+                        m_autostart_attempts = 0;
+                    on_complete(std::move(result));
+                }
+            });
+        }
+    });
+    http.on_error([this, weak_target, lifetime, on_complete](std::string body, std::string error, unsigned status) mutable {
+        BOOST_LOG_TRIVIAL(warning) << "AI sidecar health check failed, status=" << status
+                                   << ", error=" << error << ", detail=" << body;
+        AIServiceAvailability result;
+        result.transient = true;
+        result.error = "AI sidecar is not reachable.";
+        if (weak_target) {
+            weak_target->CallAfter([this, weak_target, lifetime, on_complete, result = std::move(result)]() mutable {
+                if (weak_target && !lifetime.expired() && on_complete) {
+                    try_autostart_local_sidecar();
+                    on_complete(std::move(result));
+                }
+            });
+        }
+    });
+    m_active_request = http.perform();
+}
+
+void AIServiceManager::shutdown()
+{
+    cancel_discovery();
+    stop_owned_sidecar();
+}
+
+void AIServiceManager::cancel_discovery()
+{
+    m_lifetime.reset();
+    if (m_active_request) {
+        m_active_request->cancel();
+        m_active_request.reset();
+    }
+}
+
+void AIServiceManager::try_autostart_local_sidecar()
+{
+#ifdef _WIN32
+    if (m_endpoint != DEFAULT_LOCAL_ENDPOINT || has_explicit_sidecar_endpoint() ||
+        environment_flag("ORCASLICER_AI_DISABLE_AUTOSTART"))
+        return;
+
+    if (m_sidecar_process && m_sidecar_process->child) {
+        std::error_code ec;
+        if (m_sidecar_process->child->running(ec))
+            return;
+        m_sidecar_process->child->wait(ec);
+        m_sidecar_process.reset();
+    }
+
+    // Bound repeated startup failures during the existing health-check retry window.
+    if (m_autostart_attempts >= 3)
+        return;
+
+    const wxFileName application(wxStandardPaths::Get().GetExecutablePath());
+    const wxString executable_dir = application.GetPath();
+    const wxFileName python(executable_dir + wxFILE_SEP_PATH + "python", "pythonw.exe");
+    const wxFileName bootstrap(executable_dir + wxFILE_SEP_PATH + "resources" + wxFILE_SEP_PATH + "tools" +
+                                   wxFILE_SEP_PATH + "ai",
+                               "orca_ai_installed_bootstrap.py");
+    if (!python.FileExists() || !bootstrap.FileExists()) {
+        BOOST_LOG_TRIVIAL(info) << "Packaged AI sidecar runtime is unavailable; python=" << python.FileExists()
+                                << ", bootstrap=" << bootstrap.FileExists() << "; keeping AI features disabled.";
+        m_autostart_attempts = 3;
+        return;
+    }
+
+    ++m_autostart_attempts;
+    try {
+        BOOST_LOG_TRIVIAL(info) << "Starting packaged AI sidecar, attempt=" << m_autostart_attempts
+                                << ", diagnostics=" << Slic3r::data_dir() << "/log/orca-ai-sidecar.log";
+        namespace process = boost::process;
+        auto owned = std::make_unique<SidecarProcess>();
+        owned->child = std::make_unique<process::child>(
+            python.GetFullPath().ToStdWstring(),
+            process::args(std::vector<std::wstring>{ bootstrap.GetFullPath().ToStdWstring(),
+                                                     boost::nowide::widen(Slic3r::data_dir()) }),
+            process::start_dir(bootstrap.GetPath().ToStdWstring()),
+            process::std_out > process::null,
+            process::std_err > process::null,
+            process::windows::create_no_window);
+        BOOST_LOG_TRIVIAL(info) << "Started packaged AI sidecar, pid=" << owned->child->id();
+        m_sidecar_process = std::move(owned);
+    } catch (const std::exception& error) {
+        BOOST_LOG_TRIVIAL(error) << "Failed to start packaged AI sidecar: " << error.what();
+        m_sidecar_process.reset();
+    }
+#endif
+}
+
+void AIServiceManager::stop_owned_sidecar()
+{
+#ifdef _WIN32
+    if (!m_sidecar_process || !m_sidecar_process->child)
+        return;
+
+    std::error_code ec;
+    if (m_sidecar_process->child->running(ec))
+        m_sidecar_process->child->terminate(ec);
+    m_sidecar_process->child->wait(ec);
+    m_sidecar_process.reset();
+#endif
+}
+
+} // namespace Slic3r::GUI

@@ -1,0 +1,200 @@
+#include <catch2/catch_all.hpp>
+
+#include "slic3r/AI/SmartSlicing/Application/SmartSlicingCoordinator.hpp"
+#include "slic3r/GUI/AI/Orca/OrcaWorkflowRuntimeStore.hpp"
+
+#include <boost/filesystem.hpp>
+
+#include <fstream>
+
+using namespace Slic3r::AI::SmartSlicing;
+
+namespace {
+
+WorkspaceContext runtime_context(std::string fingerprint = "revision-a")
+{
+    WorkspaceContext context;
+    context.revision = {1, 2, 3, std::move(fingerprint)};
+    context.plate_index = 0;
+    context.printer_preset_id = "printer";
+    context.process_preset_id = "process";
+    context.materials.push_back({"material", "#FFFFFF"});
+    context.objects.push_back({42, "cube", 1, 12, 0, false});
+    context.native_validation_available = true;
+    return context;
+}
+
+class RuntimeWorkspace final : public IOrcaWorkspace
+{
+public:
+    WorkspaceContext context = runtime_context();
+    bool throw_on_revision{false};
+    WorkspaceRevision current_revision() const override
+    {
+        if (throw_on_revision)
+            throw std::runtime_error("GUI-thread-only revision access");
+        return context.revision;
+    }
+    WorkspaceContext capture_context() const override { return context; }
+};
+
+class RuntimeExecutor final : public ITrialSliceExecutor
+{
+public:
+    std::vector<CandidateId> calls;
+    TrialSliceResult execute_trial_slice(const SliceCandidate& candidate) override
+    {
+        calls.push_back(candidate.id);
+        TrialSliceResult result;
+        result.candidate_id = candidate.id;
+        result.base_revision = candidate.base_revision;
+        result.status = TrialSliceStatus::Succeeded;
+        result.metrics = SlicingMetrics{};
+        result.metrics->estimated_time_seconds = 1.0;
+        result.metrics->filament_volume_mm3 = 1.0;
+        result.metrics->support_volume_mm3 = 0.0;
+        result.metrics->flush_volume_mm3 = 0.0;
+        result.metrics->wipe_tower_volume_mm3 = 0.0;
+        result.metrics->tool_changes = 0;
+        return result;
+    }
+    void cancel_trial_slice() override {}
+};
+
+class MemoryRuntimeStore final : public IWorkflowRuntimeStore
+{
+public:
+    std::optional<WorkflowRuntimeRecord> record;
+    size_t saves{0};
+    size_t clears{0};
+
+    std::optional<WorkflowRuntimeRecord> load() override { return record; }
+    void save(const WorkflowRuntimeRecord& value) override
+    {
+        record = value;
+        ++saves;
+    }
+    void clear(WorkflowId) override
+    {
+        record.reset();
+        ++clears;
+    }
+};
+
+SliceCandidate runtime_candidate(std::string id, const WorkspaceRevision& revision)
+{
+    SliceCandidate candidate;
+    candidate.id = std::move(id);
+    candidate.base_revision = revision;
+    return candidate;
+}
+
+} // namespace
+
+TEST_CASE("runtime journal stores descriptors only and clears terminal workflows", "[AI][SmartSlicing][Runtime]")
+{
+    RuntimeWorkspace workspace;
+    RuntimeExecutor executor;
+    MemoryRuntimeStore store;
+    SmartSlicingCoordinator coordinator(workspace, executor);
+    coordinator.set_runtime_store(store, false);
+
+    coordinator.start();
+    REQUIRE(store.record);
+    CHECK(store.record->revision == workspace.context.revision);
+    CHECK(store.record->candidates.empty());
+
+    REQUIRE(coordinator.plan_and_slice_candidates({runtime_candidate("alternative", workspace.context.revision)}));
+    REQUIRE(store.record);
+    REQUIRE(store.record->candidates.size() == 2);
+    CHECK(store.record->candidates[0].id == "baseline");
+    CHECK(store.record->candidates[1].id == "alternative");
+    CHECK(executor.calls == std::vector<CandidateId>{"baseline", "alternative"});
+
+    coordinator.cancel();
+    CHECK_FALSE(store.record.has_value());
+    CHECK(store.clears > 0);
+}
+
+TEST_CASE("runtime recovery keeps a matching summary and discards stale journals", "[AI][SmartSlicing][Runtime]")
+{
+    RuntimeWorkspace workspace;
+    MemoryRuntimeStore matching;
+    matching.record = WorkflowRuntimeRecord{7, WorkflowState::TrialSlicingCandidates, workspace.context.revision,
+                                             {{"baseline", CandidateGoal::Stability, CandidateStatus::Ready}},
+                                             "trial_slicing_candidate", 1};
+    SmartSlicingCoordinator recovered(workspace);
+    CHECK(recovered.set_runtime_store(matching));
+    CHECK(recovered.snapshot().state == WorkflowState::Failed);
+    CHECK(recovered.snapshot().detail == "interrupted_workflow_recovered");
+    CHECK_FALSE(matching.record.has_value());
+
+    MemoryRuntimeStore stale;
+    stale.record = WorkflowRuntimeRecord{8, WorkflowState::PlanningCandidates, {9, 9, 9, "old"}, {}, "planning", 1};
+    SmartSlicingCoordinator discarded(workspace);
+    CHECK_FALSE(discarded.set_runtime_store(stale));
+    CHECK(discarded.snapshot().state == WorkflowState::Idle);
+    CHECK_FALSE(stale.record.has_value());
+}
+
+TEST_CASE("resource budgets expose candidate timeout memory and disk violations", "[AI][SmartSlicing][Runtime]")
+{
+    WorkflowResourceBudget budget;
+    CHECK(workflow_budget_violation(budget, 4, std::chrono::seconds(0), {}) == "candidate_budget_exceeded");
+    CHECK(workflow_budget_violation(budget, 3, std::chrono::minutes(31), {}) == "workflow_timeout");
+    CHECK(workflow_budget_violation(budget, 3, std::chrono::seconds(0),
+                                    {budget.maximum_memory_bytes + 1, 0}) == "workflow_memory_budget_exceeded");
+    CHECK(workflow_budget_violation(budget, 3, std::chrono::seconds(0),
+                                    {0, budget.maximum_temporary_disk_bytes + 1}) ==
+          "workflow_disk_budget_exceeded");
+
+    RuntimeWorkspace workspace;
+    RuntimeExecutor executor;
+    SmartSlicingCoordinator coordinator(workspace, executor);
+    budget.maximum_candidates = 2;
+    coordinator.set_resource_budget(budget);
+    coordinator.start();
+    CHECK_FALSE(coordinator.plan_and_slice_candidates({runtime_candidate("a", workspace.context.revision),
+                                                       runtime_candidate("b", workspace.context.revision)}));
+    CHECK(coordinator.snapshot().state == WorkflowState::Failed);
+    CHECK(coordinator.snapshot().detail == "candidate_budget_exceeded");
+    CHECK(executor.calls.empty());
+}
+
+TEST_CASE("background trials can defer GUI revision reads while keeping final apply guards", "[AI][SmartSlicing][Runtime]")
+{
+    RuntimeWorkspace workspace;
+    RuntimeExecutor executor;
+    SmartSlicingCoordinator coordinator(workspace, executor);
+    coordinator.start();
+    workspace.throw_on_revision = true;
+
+    CHECK(coordinator.plan_and_slice_candidates({}, CandidateGoal::Stability, true));
+    CHECK(coordinator.snapshot().state == WorkflowState::ReadyToApply);
+    CHECK(executor.calls == std::vector<CandidateId>{"baseline"});
+}
+
+TEST_CASE("Orca runtime store round trips bounded metadata without workspace payloads", "[AI][SmartSlicing][Runtime][Orca]")
+{
+    const boost::filesystem::path path = boost::filesystem::temp_directory_path() /
+                                         boost::filesystem::unique_path("orca-smart-runtime-%%%%-%%%%.json");
+    Slic3r::GUI::OrcaWorkflowRuntimeStore store(path);
+    WorkflowRuntimeRecord record{11, WorkflowState::TrialSlicingBaseline, {1, 2, 3, "revision"},
+                                 {{"baseline", CandidateGoal::Stability, CandidateStatus::TrialSlicing}},
+                                 "trial_slicing_baseline", 123};
+    store.save(record);
+    const std::optional<WorkflowRuntimeRecord> loaded = store.load();
+    REQUIRE(loaded);
+    CHECK(loaded->workflow_id == 11);
+    CHECK(loaded->revision == record.revision);
+    CHECK(loaded->candidates.size() == 1);
+
+    std::ifstream stream(path.string(), std::ios::binary);
+    const std::string serialized((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    CHECK(serialized.find("gcode") == std::string::npos);
+    CHECK(serialized.find("mesh") == std::string::npos);
+    CHECK(serialized.find("credential") == std::string::npos);
+    stream.close();
+    store.clear(11);
+    CHECK_FALSE(boost::filesystem::exists(path));
+}
