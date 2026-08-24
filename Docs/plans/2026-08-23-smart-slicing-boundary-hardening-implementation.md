@@ -488,3 +488,30 @@ record.
 This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, formal apply
 gateway, configuration, dependency, port, data directory, journal path/schema, 3MF/profile format, profile data,
 or default Orca behavior. macOS and Linux native build/test execution remains a separate host/CI gate.
+
+## Workflow identifier recovery-boundary gate — 2026-08-24
+
+Runtime recovery now rejects and clears the reserved workflow identifier zero. The coordinator also advances
+explicitly from the maximum unsigned identifier to one, rather than relying on overflowing increment behavior.
+Every started workflow therefore has a nonzero identifier and remains eligible for runtime-journal publication,
+even when the prior recovered record contains the maximum representable value.
+
+Before the gate, a zero identifier was accepted as a recoverable summary. A maximum identifier then caused the
+next start to emit zero, and `persist_runtime_state` intentionally skipped that workflow, silently removing crash
+recovery coverage. The contract verifies both the rejected-zero path and the maximum-to-one path through the
+actual in-memory runtime-store port.
+
+### Windows verification
+
+- Workflow-ID boundary focus: 1 test case, 10 assertions, all passed in Release and RelWithDebInfo.
+- Smart-slicing suite excluding the opt-in benchmark: 89 test cases, 578 assertions, all passed in Release and
+  RelWithDebInfo; the benchmark case remained explicitly skipped.
+- Full `slic3rutils_tests`: 100 test cases, 685 assertions, all passed in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075, LNK4098, and the
+  non-failing empty-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke was not repeated because this is a nonvisual Application recovery boundary with no interaction or
+  formal-write-path change; prior workspace-local isolated-data-directory GUI evidence remains valid.
+
+This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, formal apply
+gateway, configuration, dependency, port, data directory, journal field/schema/path, 3MF/profile format, profile
+data, or default Orca behavior. macOS and Linux native build/test execution remains a separate host/CI gate.

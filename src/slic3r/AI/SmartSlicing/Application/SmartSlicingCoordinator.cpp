@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <exception>
+#include <limits>
 #include <utility>
 
 namespace Slic3r::AI::SmartSlicing {
@@ -53,6 +54,10 @@ bool SmartSlicingCoordinator::set_runtime_store(IWorkflowRuntimeStore& runtime_s
         const std::optional<WorkflowRuntimeRecord> record = m_runtime_store->load();
         if (!record)
             return false;
+        if (record->workflow_id == 0) {
+            m_runtime_store->clear(record->workflow_id);
+            return false;
+        }
         m_last_workflow_id = std::max(m_last_workflow_id, record->workflow_id);
         const WorkspaceRevision current = m_workspace.current_revision();
         m_runtime_store->clear(record->workflow_id);
@@ -140,8 +145,10 @@ void SmartSlicingCoordinator::start()
     if (!m_snapshot.can_start())
         return;
 
-    m_snapshot             = {};
-    m_snapshot.workflow_id = ++m_last_workflow_id;
+    m_snapshot = {};
+    m_last_workflow_id = m_last_workflow_id == std::numeric_limits<WorkflowId>::max() ?
+                             1 : m_last_workflow_id + 1;
+    m_snapshot.workflow_id = m_last_workflow_id;
     m_started_at = std::chrono::steady_clock::now();
 
     try {

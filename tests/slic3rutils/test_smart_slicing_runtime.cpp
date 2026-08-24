@@ -6,6 +6,7 @@
 #include <boost/filesystem.hpp>
 
 #include <fstream>
+#include <limits>
 
 using namespace Slic3r::AI::SmartSlicing;
 
@@ -171,6 +172,43 @@ TEST_CASE("runtime recovery keeps a matching summary and discards stale journals
     CHECK_FALSE(discarded.set_runtime_store(stale));
     CHECK(discarded.snapshot().state == WorkflowState::Idle);
     CHECK_FALSE(stale.record.has_value());
+}
+
+TEST_CASE("runtime recovery never emits the reserved zero workflow id",
+          "[AI][SmartSlicing][Runtime][WorkflowId][Boundary]")
+{
+    SECTION("zero is rejected as invalid journal metadata") {
+        RuntimeWorkspace workspace;
+        RuntimeExecutor executor;
+        MemoryRuntimeStore store;
+        store.record = WorkflowRuntimeRecord{0, WorkflowState::PlanningCandidates, workspace.context.revision,
+                                             {}, "invalid_zero_id", 1};
+        SmartSlicingCoordinator coordinator(workspace, executor);
+
+        CHECK_FALSE(coordinator.set_runtime_store(store));
+        CHECK_FALSE(store.record.has_value());
+        coordinator.start();
+        CHECK(coordinator.snapshot().workflow_id == 1);
+        REQUIRE(store.record);
+        CHECK(store.record->workflow_id == 1);
+    }
+
+    SECTION("the sequence wraps from the maximum value directly to one") {
+        RuntimeWorkspace workspace;
+        RuntimeExecutor executor;
+        MemoryRuntimeStore store;
+        const WorkflowId maximum = std::numeric_limits<WorkflowId>::max();
+        store.record = WorkflowRuntimeRecord{maximum, WorkflowState::TrialSlicingCandidates,
+                                             workspace.context.revision, {}, "maximum_id", 1};
+        SmartSlicingCoordinator coordinator(workspace, executor);
+
+        REQUIRE(coordinator.set_runtime_store(store));
+        CHECK(coordinator.snapshot().workflow_id == maximum);
+        coordinator.start();
+        CHECK(coordinator.snapshot().workflow_id == 1);
+        REQUIRE(store.record);
+        CHECK(store.record->workflow_id == 1);
+    }
 }
 
 TEST_CASE("resource budgets expose candidate timeout memory and disk violations", "[AI][SmartSlicing][Runtime]")
