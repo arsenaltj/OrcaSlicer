@@ -1305,6 +1305,45 @@ TEST_CASE("Orca official gateway consumes native undo ownership after one safe r
     CHECK(undo_calls == 1);
 }
 
+TEST_CASE("Orca official gateway protects a failed apply until native recovery is resolved",
+          "[AI][SmartSlicing][Apply][UndoOwnership][TransactionBoundary][RecoveryPriority]")
+{
+    const WorkspaceRevision revision{1, 2, 3, "revision-a"};
+    const bool use_commit = GENERATE(false, true);
+    CAPTURE(use_commit);
+
+    size_t apply_calls = 0;
+    size_t slice_calls = 0;
+    size_t undo_calls = 0;
+    Slic3r::GUI::OrcaOfficialSliceGateway gateway(
+        [revision] { return revision; }, [](const SliceCandidate&) { return std::string{}; },
+        [&apply_calls](const SliceCandidate&) {
+            ++apply_calls;
+            return Slic3r::GUI::OrcaApplyMutationResult{true, true, {}};
+        },
+        [&slice_calls] { ++slice_calls; return false; }, [] { return true; },
+        [&undo_calls] { ++undo_calls; return true; });
+    SliceCandidate candidate = proposal("candidate", revision);
+    SliceCandidate other = proposal("other", revision);
+
+    REQUIRE(gateway.prepare(candidate, revision).phase == OfficialSlicePhase::Prepared);
+    const OfficialSliceResult failed = gateway.commit(candidate, revision);
+    REQUIRE(failed.phase == OfficialSlicePhase::Failed);
+    REQUIRE(failed.can_undo);
+
+    const OfficialSliceResult blocked = use_commit ? gateway.commit(other, revision) :
+                                                     gateway.prepare(other, revision);
+    CHECK(blocked.phase == OfficialSlicePhase::Rejected);
+    CHECK(blocked.diagnostic_code == "apply_recovery_required");
+    CHECK(apply_calls == 1);
+    CHECK(slice_calls == 1);
+    CHECK(gateway.poll().can_undo);
+
+    REQUIRE(gateway.undo_last_apply());
+    CHECK(undo_calls == 1);
+    CHECK(gateway.prepare(other, revision).phase == OfficialSlicePhase::Prepared);
+}
+
 TEST_CASE("Orca official gateway rejects unsupported repair plans before formal actions",
           "[AI][SmartSlicing][Apply][Repair][Boundary]")
 {

@@ -44,6 +44,8 @@ public:
     {
         if (m_pending)
             return rejected("official_slice_in_progress");
+        if (has_pending_apply_recovery())
+            return rejected("apply_recovery_required");
         clear_preparation();
         if (candidate.status != AI::SmartSlicing::CandidateStatus::Ready)
             return rejected("candidate_not_ready");
@@ -70,6 +72,8 @@ public:
     {
         if (m_pending)
             return rejected("official_slice_in_progress");
+        if (has_pending_apply_recovery())
+            return rejected("apply_recovery_required");
         if (candidate.status != AI::SmartSlicing::CandidateStatus::Ready) {
             clear_preparation();
             return rejected("candidate_not_ready");
@@ -176,6 +180,11 @@ public:
     }
 
 private:
+    bool has_pending_apply_recovery() const noexcept
+    {
+        return m_last.phase == AI::SmartSlicing::OfficialSlicePhase::Failed && m_can_undo;
+    }
+
     struct PreparedCandidateToken
     {
         AI::SmartSlicing::CandidateId id;

@@ -1299,3 +1299,34 @@ gateway with the Coordinator's existing rule that an unavailable recovery is dis
 This batch changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, Domain/Application
 contract, configuration, dependency, port, data directory contract, journal path/schema, 3MF/profile format,
 profile data, or default Orca behavior. macOS and Linux native build/test execution remains a separate host/CI gate.
+
+## Failed-apply recovery priority gate — 2026-08-24
+
+The Orca formal-apply gateway now rejects both prepare and commit while its last official transaction is Failed and
+still owns a revision-guarded native Undo. The stable `apply_recovery_required` result preserves the original
+mutation fact and recovery token without invoking compatibility, apply, or slice callbacks. After Undo succeeds, or
+after the one safe recovery attempt is consumed as unavailable, a new transaction can be prepared normally. A
+Completed transaction remains restartable even while its historical native Undo is still available; the gate is
+scoped only to unresolved failure recovery.
+
+Before this gate, prepare could replace the transaction context while recovery was pending, and a direct commit
+reported `candidate_not_prepared` instead of expressing the recovery ownership conflict. The two-input red
+regression had 22 assertions and three failures. The green contract verifies both entry points, one and only one
+apply/slice attempt before recovery, retained `can_undo`, successful native recovery, and normal prepare afterward.
+
+### Windows verification
+
+- Recovery-priority focus: 1 test case with 2 generated inputs and 22 assertions, all passed in Release and
+  RelWithDebInfo.
+- Smart-slicing suite: 119 test cases; 118 passed and the opt-in benchmark remained explicitly skipped, with 812
+  assertions passed in Release and RelWithDebInfo.
+- Default full `slic3rutils_tests`: 129 test cases and 919 assertions, all passed in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings and
+  the non-failing test-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke was not repeated because this is a defensive gateway state-priority correction with no layout,
+  interaction, startup, candidate generation, trial slicing, or normal Coordinator-path change. The preceding
+  workspace-local isolated-data-directory GUI evidence remains valid.
+
+This batch changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, Domain/Application
+contract, configuration, dependency, port, data directory contract, journal path/schema, 3MF/profile format,
+profile data, or default Orca behavior. macOS and Linux native build/test execution remains a separate host/CI gate.
