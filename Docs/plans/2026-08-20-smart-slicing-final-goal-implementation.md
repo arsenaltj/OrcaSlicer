@@ -260,9 +260,14 @@ Tasks 1-9 are implemented. Task 10 was completed on Windows with the exceptions 
 - Verified the dockable workbench, cancellation during real trial slicing, baseline plus deterministic alternative completion, real time/material/support/tool-change/flush/wipe-tower/layer-sequence evidence, candidate selection, and baseline restoration.
 - A prior local-app pass verified transactional transform/plate-parameter application, standard official slicing/Preview, and one native Undo restoration. In the final restored-project pass, `确认并应用` was deliberately not clicked, so the unsaved user project was left untouched.
 - Sidecar/provider absence degrades to deterministic local candidates and a non-blocking explanation; it does not block ordinary Orca operation.
+- On 2026-08-24, the ordinary workbench-closed path was repeated with only
+  `build-p0/src/Release/orca-slicer.exe`, the isolated `build-p0/smart-slicing-gui-smoke-data`, and the restored
+  disposable cube project. Directly invoking Orca's normal `Slice plate` action entered the normal Preview with
+  150 layers, 12m18s estimated time, and 1.17m/3.50g filament evidence. The smart-slicing panel remained closed
+  and did not intercept or alter the official path. Workspace-local PID 50148 was executable-path verified and
+  stopped; unrelated integration PIDs 35252 and 39428 were not targeted.
 
 ### Remaining CI/manual gates
 
 - Build and run the focused and full relevant suites on macOS and Linux; cross-platform success is not claimed from this Windows workstation.
 - Keep the deterministic `fff_print` seed above as a baseline isolation gate and fix the pre-existing shared-state SIGSEGV outside the smart-slicing scope.
-- Re-run the ordinary workbench-closed import/slice/Preview smoke on a disposable project in release QA. It was not repeated against the currently restored unsaved user project because doing so would alter its formal slice result.
