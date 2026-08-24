@@ -152,6 +152,10 @@ wxString candidate_reason(const SmartSlicingCandidateView& candidate)
             reason += _L(" 冲刷废料更少。");
         else if (evidence == "lower_wipe_tower_volume")
             reason += _L(" 擦料塔用料更少。");
+        else if (evidence == "lower_bed_adhesion_risk")
+            reason += _L(" 几何附着风险更低。");
+        else if (evidence == "stronger_bed_adhesion_aid")
+            reason += _L(" 对高风险底面提供了更多实际 brim 附着量。");
     }
     return reason;
 }
@@ -181,7 +185,12 @@ wxString candidate_change_summary(const SmartSlicingCandidateView& candidate)
     if (candidate.brim_width_before && candidate.brim_width_after) {
         append_line(wxString::Format(_L("打印板参数 · 附着边宽度：%.2f mm → %.2f mm"),
                                      *candidate.brim_width_before, *candidate.brim_width_after));
-        described_plate_parameters = 1;
+        ++described_plate_parameters;
+    }
+    if (candidate.brim_type_before && candidate.brim_type_after) {
+        append_line(_L("打印板参数 · 附着边策略：") + from_u8(*candidate.brim_type_before) + _L(" → ") +
+                    from_u8(*candidate.brim_type_after));
+        ++described_plate_parameters;
     }
     if (candidate.plate_parameter_change_count > described_plate_parameters)
         append_line(wxString::Format(_L("打印板参数 · 其他已校验变更：%llu 项"),
@@ -476,12 +485,15 @@ void SmartSlicingPanel::render(const SmartSlicingViewModel& view_model)
         wxString metrics = _L("时间：") + format_duration(candidate.estimated_time_seconds) +
                            _L("  材料：") + format_volume(candidate.filament_volume_mm3) +
                            _L("\n支撑：") + format_volume(candidate.support_volume_mm3) +
+                           _L("  Brim：") + format_volume(candidate.brim_volume_mm3) +
                            _L("  换料：") +
                            (candidate.tool_changes ?
                                 wxString::Format("%llu", static_cast<unsigned long long>(*candidate.tool_changes)) :
                                 _L("不可用")) +
                            _L("\n冲刷：") + format_volume(candidate.flush_volume_mm3) +
                            _L("  擦料塔：") + format_volume(candidate.wipe_tower_volume_mm3);
+        if (candidate.bed_adhesion_risk_score)
+            metrics += wxString::Format(_L("\n附着风险：%.2f（越低越稳）"), *candidate.bed_adhesion_risk_score);
         if (candidate.layer_tool_sequence_count > 0)
             metrics += wxString::Format(_L("\n层级工具序列：%llu 组"),
                                         static_cast<unsigned long long>(candidate.layer_tool_sequence_count));
@@ -495,9 +507,12 @@ void SmartSlicingPanel::render(const SmartSlicingViewModel& view_model)
             metrics += _L("\n相对基线：时间 ") + format_delta(candidate.time_delta_seconds, 60.0, _L("分钟")) +
                        _L("，材料 ") + format_delta(candidate.filament_delta_mm3, 1000.0, _L("cm³")) +
                        _L("，支撑 ") + format_delta(candidate.support_delta_mm3, 1000.0, _L("cm³")) +
+                       _L("，Brim ") + format_delta(candidate.brim_volume_delta_mm3, 1000.0, _L("cm³")) +
                        _L("，换料 ") + tool_delta +
                        _L("，冲刷 ") + format_delta(candidate.flush_delta_mm3, 1000.0, _L("cm³")) +
                        _L("，擦料塔 ") + format_delta(candidate.wipe_tower_delta_mm3, 1000.0, _L("cm³"));
+            if (candidate.bed_adhesion_risk_delta)
+                metrics += wxString::Format(_L("，附着风险 %+.2f"), *candidate.bed_adhesion_risk_delta);
         }
         controls.metrics->SetLabel(metrics);
         controls.reason->SetLabel(candidate_reason(candidate));

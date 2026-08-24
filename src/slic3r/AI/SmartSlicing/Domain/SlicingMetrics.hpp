@@ -7,11 +7,15 @@
 
 namespace Slic3r::AI::SmartSlicing {
 
+constexpr double BED_ADHESION_RISK_ATTENTION_THRESHOLD = 1.0;
+
 struct SlicingMetrics
 {
     std::optional<double> estimated_time_seconds;
     std::optional<double> filament_volume_mm3;
     std::optional<double> support_volume_mm3;
+    std::optional<double> brim_volume_mm3;
+    std::optional<double> bed_adhesion_risk_score;
     std::optional<double> flush_volume_mm3;
     std::optional<double> wipe_tower_volume_mm3;
     std::optional<size_t> tool_changes;

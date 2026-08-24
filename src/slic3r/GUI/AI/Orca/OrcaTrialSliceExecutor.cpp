@@ -1,4 +1,5 @@
 #include "OrcaTrialSliceExecutor.hpp"
+#include "OrcaParameterAdvisor.hpp"
 #include "OrcaParameterProposalAdapter.hpp"
 
 #include "libslic3r/GCode/GCodeProcessor.hpp"
@@ -182,6 +183,9 @@ SlicingMetrics OrcaTrialSliceExecutor::extract_metrics(const GCodeProcessorResul
     metrics.estimated_time_seconds = statistics.modes[static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Normal)].time;
     metrics.filament_volume_mm3    = sum_values(statistics.total_volumes_per_extruder);
     metrics.support_volume_mm3     = sum_values(statistics.support_volumes_per_extruder);
+    const auto brim = statistics.used_filaments_per_role.find(erBrim);
+    metrics.brim_volume_mm3 = brim == statistics.used_filaments_per_role.end() ? 0.0 :
+                                                                               std::max(0.0, brim->second.second);
     metrics.flush_volume_mm3       = sum_values(statistics.flush_per_filament);
     metrics.wipe_tower_volume_mm3  = sum_values(statistics.wipe_tower_volumes_per_extruder);
     metrics.tool_changes           = statistics.total_filament_changes;
@@ -276,6 +280,20 @@ TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice(const SliceCandidat
             return result;
         }
 
+        std::vector<OrcaInstanceGeometrySnapshot> printable_instances;
+        for (const ModelObject* object : input.model.objects) {
+            if (object == nullptr || !object->printable)
+                continue;
+            for (const ModelInstance* instance : object->instances) {
+                if (instance == nullptr || !instance->printable)
+                    continue;
+                const Vec3d size = object->instance_bounding_box(*instance).size();
+                printable_instances.push_back({size.x(), size.y(), size.z()});
+            }
+        }
+        const std::optional<double> bed_adhesion_risk =
+            orca_bed_adhesion_risk_score(printable_instances);
+
         Print trial_print;
         ActivePrintGuard active_print(*this, trial_print);
         trial_print.set_status_silent();
@@ -312,6 +330,7 @@ TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice(const SliceCandidat
             return result;
         }
         result.metrics = extract_metrics(gcode_result, expected_filament_mapping, prime_tower_enabled);
+        result.metrics->bed_adhesion_risk_score = bed_adhesion_risk;
         result.metrics->warning_codes.insert(result.metrics->warning_codes.end(), validation_warnings.size(),
                                              "native_validation_warning");
         result.status = TrialSliceStatus::Succeeded;

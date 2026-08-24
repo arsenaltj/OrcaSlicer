@@ -275,3 +275,44 @@ This gate intentionally changes only the runtime-journal data location. It chang
 dependency, network port, journal payload schema, 3MF/profile format, profile data, or default Orca slicing
 behavior. It changes no shared `MainFrame`, `Plater`, or CMake file. macOS and Linux native build/test execution
 remains a separate host/CI gate.
+
+## Deterministic bed-adhesion evidence gate — 2026-08-24
+
+The stability goal now compares bed adhesion with explicit evidence instead of allowing lower time/material
+cost to make a fragile baseline win automatically. Each isolated trial candidate records a geometry risk score
+from its transformed printable-instance dimensions: the maximum of the small-footprint ratio and the
+height-to-minimum-footprint ratio. A score of 1.0 is the deterministic attention threshold used by the local
+advisor. The candidate also records actual `erBrim` material volume from the exported trial G-code statistics.
+
+Slice warnings remain the first stability gate. With equal warnings, lower geometry risk wins; only while at
+least one candidate is at or above the attention threshold does additional real brim volume act as positive
+stability evidence. The remaining time, material, support, multicolor, and deterministic-ID tie breakers are
+unchanged. Tests also lock the inverse case: adding brim to a low-risk model does not beat a cheaper baseline.
+
+The local advisor now reads the effective plate `brim_type`. If Orca native `auto_brim` is already active it
+emits no duplicate proposal. For high-risk geometry with `no_brim`, it creates a typed, bounded plate patch from
+`no_brim` to `auto_brim`; supported manual outer-brim policies retain the existing bounded width proposal. The
+native config adapter revalidates the enum and expected value on the isolated trial config and again in the
+official gateway before any confirmed write.
+
+### Windows verification
+
+- Bed-adhesion comparison focus: 1 test case, 7 assertions, all passed.
+- Native auto-brim advisor focus: 1 test case, 6 assertions, all passed.
+- Real isolated trial focus: 1 test case, 12 assertions, all passed; the result includes measured risk and brim
+  volume while the formal model/config remain unchanged.
+- Smart-slicing suite excluding the opt-in benchmark: 77 test cases, 486 assertions, all passed.
+- Full Release `slic3rutils_tests`: 88 test cases, 596 assertions, all passed.
+- Full RelWithDebInfo `slic3rutils_tests`: 88 test cases, 596 assertions, all passed.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075, LNK4098, and the
+  non-failing empty-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke used only `build-p0/src/Release/orca-slicer.exe`, the isolated
+  `build-p0/smart-slicing-gui-smoke-data`, and `tests/data/test_3mf/Geräte/Büchse.3mf`. Candidate cards showed
+  baseline risk 1.50 and recommended-orientation risk 0.40, with actual brim volume 0.00 cm³ for both. This
+  proves the recommendation came from safer geometry rather than added material. `确认并应用` was not clicked.
+- Workspace-local PID 45232 was executable-path verified and stopped. Unrelated integration PIDs 35252 and
+  39428 were neither targeted nor stopped.
+
+This gate adds a possible user-confirmed plate-level `brim_type: no_brim → auto_brim` candidate, but changes no
+configuration schema, profile/default value, dependency, port, data directory, runtime journal schema,
+3MF/profile format, or ordinary Orca behavior. It changes no shared `MainFrame`, `Plater`, or CMake file.

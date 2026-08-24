@@ -34,6 +34,13 @@ bool equal_optional(const OptionalMetric& lhs, const OptionalMetric& rhs)
     return lhs.has_value() == rhs.has_value() && (!lhs || *lhs == *rhs);
 }
 
+bool greater_optional(const OptionalMetric& lhs, const OptionalMetric& rhs)
+{
+    if (lhs.has_value() != rhs.has_value())
+        return lhs.has_value();
+    return lhs && rhs && *lhs > *rhs;
+}
+
 OptionalMetric metric_or_missing(const SliceCandidate& candidate, const OptionalMetric SlicingMetrics::* member)
 {
     return candidate.metrics ? candidate.metrics.value().*member : std::nullopt;
@@ -58,6 +65,19 @@ bool candidate_less(const SliceCandidate* lhs, const SliceCandidate* rhs, Candid
     const OptionalMetric rhs_warnings = rhs->metrics ? OptionalMetric(rhs->metrics->warning_codes.size()) : std::nullopt;
     if (!equal_optional(lhs_warnings, rhs_warnings))
         return less_optional(lhs_warnings, rhs_warnings);
+
+    const OptionalMetric lhs_adhesion_risk = metric_or_missing(*lhs, &SlicingMetrics::bed_adhesion_risk_score);
+    const OptionalMetric rhs_adhesion_risk = metric_or_missing(*rhs, &SlicingMetrics::bed_adhesion_risk_score);
+    if (goal == CandidateGoal::Stability && !equal_optional(lhs_adhesion_risk, rhs_adhesion_risk))
+        return less_optional(lhs_adhesion_risk, rhs_adhesion_risk);
+
+    const OptionalMetric lhs_brim = metric_or_missing(*lhs, &SlicingMetrics::brim_volume_mm3);
+    const OptionalMetric rhs_brim = metric_or_missing(*rhs, &SlicingMetrics::brim_volume_mm3);
+    const bool adhesion_risk_present =
+        lhs_adhesion_risk.value_or(0.0) >= BED_ADHESION_RISK_ATTENTION_THRESHOLD ||
+        rhs_adhesion_risk.value_or(0.0) >= BED_ADHESION_RISK_ATTENTION_THRESHOLD;
+    if (goal == CandidateGoal::Stability && adhesion_risk_present && !equal_optional(lhs_brim, rhs_brim))
+        return greater_optional(lhs_brim, rhs_brim);
 
     const OptionalMetric lhs_tool_changes = count_or_missing(*lhs, &SlicingMetrics::tool_changes);
     const OptionalMetric rhs_tool_changes = count_or_missing(*rhs, &SlicingMetrics::tool_changes);
@@ -104,6 +124,19 @@ std::string recommendation_evidence(const SliceCandidate& winner, const SliceCan
         case CandidateGoal::MaterialSaving: return "less_total_material_including_multicolor_waste";
         }
     }
+    const OptionalMetric winner_adhesion_risk =
+        metric_or_missing(winner, &SlicingMetrics::bed_adhesion_risk_score);
+    const OptionalMetric runner_adhesion_risk =
+        metric_or_missing(runner_up, &SlicingMetrics::bed_adhesion_risk_score);
+    if (goal == CandidateGoal::Stability && !equal_optional(winner_adhesion_risk, runner_adhesion_risk))
+        return "lower_bed_adhesion_risk";
+    const OptionalMetric winner_brim = metric_or_missing(winner, &SlicingMetrics::brim_volume_mm3);
+    const OptionalMetric runner_brim = metric_or_missing(runner_up, &SlicingMetrics::brim_volume_mm3);
+    const bool adhesion_risk_present =
+        winner_adhesion_risk.value_or(0.0) >= BED_ADHESION_RISK_ATTENTION_THRESHOLD ||
+        runner_adhesion_risk.value_or(0.0) >= BED_ADHESION_RISK_ATTENTION_THRESHOLD;
+    if (goal == CandidateGoal::Stability && adhesion_risk_present && !equal_optional(winner_brim, runner_brim))
+        return "stronger_bed_adhesion_aid";
     const OptionalMetric winner_tool_changes = count_or_missing(winner, &SlicingMetrics::tool_changes);
     const OptionalMetric runner_tool_changes = count_or_missing(runner_up, &SlicingMetrics::tool_changes);
     if (!equal_optional(winner_tool_changes, runner_tool_changes))

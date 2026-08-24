@@ -193,6 +193,45 @@ TEST_CASE("stability comparison treats warnings as hard evidence before support 
     CHECK(comparison.recommendation_evidence_codes == std::vector<std::string>{"fewer_slice_warnings"});
 }
 
+TEST_CASE("stability comparison rewards deterministic bed adhesion evidence before raw cost",
+          "[AI][SmartSlicing][Candidate][BedAdhesion]")
+{
+    SliceCandidate baseline = ready_candidate("baseline", 90.0, 500.0, 5.0);
+    baseline.metrics->bed_adhesion_risk_score = 1.5;
+    baseline.metrics->brim_volume_mm3 = 0.0;
+
+    SliceCandidate native_brim = ready_candidate("native-auto-brim", 105.0, 560.0, 5.0);
+    native_brim.metrics->bed_adhesion_risk_score = 1.5;
+    native_brim.metrics->brim_volume_mm3 = 60.0;
+
+    const CandidateComparison adhesion =
+        compare_candidates({baseline, native_brim}, CandidateGoal::Stability);
+    REQUIRE(adhesion.ordered_candidate_ids.size() == 2);
+    CHECK(adhesion.ordered_candidate_ids.front() == "native-auto-brim");
+    CHECK(adhesion.recommendation_evidence_codes ==
+          std::vector<std::string>{"stronger_bed_adhesion_aid"});
+
+    SliceCandidate safer_orientation = ready_candidate("safer-orientation", 110.0, 540.0, 5.0);
+    safer_orientation.metrics->bed_adhesion_risk_score = 0.75;
+    safer_orientation.metrics->brim_volume_mm3 = 0.0;
+    const CandidateComparison orientation =
+        compare_candidates({native_brim, safer_orientation}, CandidateGoal::Stability);
+    REQUIRE(orientation.ordered_candidate_ids.size() == 2);
+    CHECK(orientation.ordered_candidate_ids.front() == "safer-orientation");
+    CHECK(orientation.recommendation_evidence_codes ==
+          std::vector<std::string>{"lower_bed_adhesion_risk"});
+
+    SliceCandidate stable_baseline = ready_candidate("stable-baseline", 90.0, 500.0, 5.0);
+    stable_baseline.metrics->bed_adhesion_risk_score = 0.5;
+    stable_baseline.metrics->brim_volume_mm3 = 0.0;
+    SliceCandidate unnecessary_brim = ready_candidate("unnecessary-brim", 105.0, 560.0, 5.0);
+    unnecessary_brim.metrics->bed_adhesion_risk_score = 0.5;
+    unnecessary_brim.metrics->brim_volume_mm3 = 60.0;
+    const CandidateComparison stable =
+        compare_candidates({stable_baseline, unnecessary_brim}, CandidateGoal::Stability);
+    CHECK(stable.recommended_candidate_id == "stable-baseline");
+}
+
 TEST_CASE("native placement candidates are deterministic and keep baseline isolated", "[AI][SmartSlicing][Candidate][OrcaPlacement]")
 {
     GUI::OrcaPlacementCandidateInput formal = placement_input();
@@ -381,6 +420,7 @@ TEST_CASE("prepared candidate proposal task composes typed advice into native al
     input.orientation.config = DynamicPrintConfig::full_print_config();
     add_box(input.orientation.model, Vec3d(8.0, 12.0, 40.0), Vec3d(30.0, 30.0, 0.0));
     input.parameters.plate_id           = 42;
+    input.parameters.current_brim_type  = "outer_only";
     input.parameters.current_brim_width = 1.0;
     input.parameters.printable_instances.push_back({6.0, 20.0, 40.0});
 
@@ -404,6 +444,7 @@ TEST_CASE("prepared candidate proposal task keeps typed advice when native alter
     input.context.plate_index = 0;
     input.context.revision    = {1, 2, 3, "revision-a"};
     input.parameters.plate_id           = 42;
+    input.parameters.current_brim_type  = "outer_only";
     input.parameters.current_brim_width = 1.0;
     input.parameters.printable_instances.push_back({6.0, 20.0, 40.0});
 

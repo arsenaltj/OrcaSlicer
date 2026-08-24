@@ -22,15 +22,17 @@ struct Rule
     std::initializer_list<std::string_view> values;
 };
 
-const std::array<Rule, 9>& rules()
+const std::array<Rule, 10>& rules()
 {
-    static const std::array<Rule, 9> value = {{
+    static const std::array<Rule, 10> value = {{
         {"layer_height", ValueKind::Floating, 0.04, 0.40, 0.12, {}},
         {"wall_loops", ValueKind::Integer, 1.0, 20.0, 4.0, {}},
         {"top_shell_layers", ValueKind::Integer, 0.0, 20.0, 5.0, {}},
         {"bottom_shell_layers", ValueKind::Integer, 0.0, 20.0, 5.0, {}},
         {"enable_support", ValueKind::Boolean, 0.0, 0.0, 0.0, {}},
         {"brim_width", ValueKind::Floating, 0.0, 30.0, 10.0, {}},
+        {"brim_type", ValueKind::Enumeration, 0.0, 0.0, 0.0,
+         {"auto_brim", "brim_ears", "painted", "outer_only", "inner_only", "outer_and_inner", "no_brim"}},
         {"initial_layer_print_height", ValueKind::Floating, 0.04, 1.0, 0.30, {}},
         {"support_interface_top_layers", ValueKind::Integer, 0.0, 10.0, 4.0, {}},
         {"seam_position", ValueKind::Enumeration, 0.0, 0.0, 0.0,

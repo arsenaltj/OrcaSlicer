@@ -118,6 +118,17 @@ TEST_CASE("Orca parameter adapter applies only to a matching config clone", "[AI
     const auto stale_value = Slic3r::GUI::OrcaParameterProposalAdapter().validate_and_apply(proposal, 3, base, ignored);
     CHECK_FALSE(stale_value.accepted);
     CHECK(stale_value.diagnostic_code == "parameter_expected_value_changed");
+
+    base.set_deserialize_strict("brim_type", "no_brim");
+    ParameterProposal native_auto_brim;
+    native_auto_brim.entries.push_back(
+        change("brim_type", std::string("no_brim"), std::string("auto_brim"), 3));
+    DynamicPrintConfig native_brim_config;
+    const auto native_brim = Slic3r::GUI::OrcaParameterProposalAdapter().validate_and_apply(
+        native_auto_brim, 3, base, native_brim_config);
+    REQUIRE(native_brim.accepted);
+    CHECK(native_brim_config.opt_serialize("brim_type") == "auto_brim");
+    CHECK(base.opt_serialize("brim_type") == "no_brim");
 }
 
 TEST_CASE("Orca parameter advisor proposes one bounded brim change for fragile geometry",
@@ -125,6 +136,7 @@ TEST_CASE("Orca parameter advisor proposes one bounded brim change for fragile g
 {
     Slic3r::GUI::OrcaParameterAdvisorInput input;
     input.plate_id = 7;
+    input.current_brim_type = "outer_only";
     input.current_brim_width = 1.0;
     input.printable_instances.push_back({6.0, 20.0, 40.0});
     WorkspaceContext context;
@@ -155,24 +167,55 @@ TEST_CASE("Orca parameter advisor stays empty without actionable bounded evidenc
 
     Slic3r::GUI::OrcaParameterAdvisorInput stable;
     stable.plate_id = 7;
+    stable.current_brim_type = "outer_only";
     stable.current_brim_width = 1.0;
     stable.printable_instances.push_back({30.0, 30.0, 10.0});
     CHECK(Slic3r::GUI::OrcaParameterAdvisor(std::move(stable)).advise(context).entries.empty());
 
     Slic3r::GUI::OrcaParameterAdvisorInput capped;
     capped.plate_id = 7;
+    capped.current_brim_type = "outer_only";
     capped.current_brim_width = 10.0;
     capped.printable_instances.push_back({6.0, 20.0, 40.0});
     CHECK(Slic3r::GUI::OrcaParameterAdvisor(std::move(capped)).advise(context).entries.empty());
 
     Slic3r::GUI::OrcaParameterAdvisorInput missing_target;
+    missing_target.current_brim_type = "outer_only";
     missing_target.current_brim_width = 1.0;
     missing_target.printable_instances.push_back({6.0, 20.0, 40.0});
     CHECK(Slic3r::GUI::OrcaParameterAdvisor(std::move(missing_target)).advise(context).entries.empty());
 
     Slic3r::GUI::OrcaParameterAdvisorInput missing_workspace;
     missing_workspace.plate_id = 7;
+    missing_workspace.current_brim_type = "outer_only";
     missing_workspace.current_brim_width = 1.0;
     missing_workspace.printable_instances.push_back({6.0, 20.0, 40.0});
     CHECK(Slic3r::GUI::OrcaParameterAdvisor(std::move(missing_workspace)).advise({}).entries.empty());
+}
+
+TEST_CASE("Orca parameter advisor uses native auto brim without duplicating an active native policy",
+          "[AI][SmartSlicing][Parameters][OrcaAdvisor][BedAdhesion]")
+{
+    WorkspaceContext context;
+    context.plate_index = 0;
+    context.objects.push_back({1, "slender", 1, 12, 0, false});
+
+    Slic3r::GUI::OrcaParameterAdvisorInput disabled;
+    disabled.plate_id = 7;
+    disabled.current_brim_type = "no_brim";
+    disabled.current_brim_width = 0.0;
+    disabled.printable_instances.push_back({6.0, 20.0, 40.0});
+    const ParameterProposal proposal = Slic3r::GUI::OrcaParameterAdvisor(std::move(disabled)).advise(context);
+    REQUIRE(proposal.entries.size() == 1);
+    CHECK(proposal.entries.front().key == "brim_type");
+    CHECK(std::get<std::string>(proposal.entries.front().expected_value) == "no_brim");
+    CHECK(std::get<std::string>(proposal.entries.front().new_value) == "auto_brim");
+    CHECK(ParameterProposalValidator().validate(proposal).accepted());
+
+    Slic3r::GUI::OrcaParameterAdvisorInput active;
+    active.plate_id = 7;
+    active.current_brim_type = "auto_brim";
+    active.current_brim_width = 0.0;
+    active.printable_instances.push_back({6.0, 20.0, 40.0});
+    CHECK(Slic3r::GUI::OrcaParameterAdvisor(std::move(active)).advise(context).entries.empty());
 }

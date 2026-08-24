@@ -28,12 +28,16 @@ struct SmartSlicingCandidateView
     std::optional<double> estimated_time_seconds;
     std::optional<double> filament_volume_mm3;
     std::optional<double> support_volume_mm3;
+    std::optional<double> brim_volume_mm3;
+    std::optional<double> bed_adhesion_risk_score;
     std::optional<double> flush_volume_mm3;
     std::optional<double> wipe_tower_volume_mm3;
     std::optional<size_t> tool_changes;
     std::optional<double> time_delta_seconds;
     std::optional<double> filament_delta_mm3;
     std::optional<double> support_delta_mm3;
+    std::optional<double> brim_volume_delta_mm3;
+    std::optional<double> bed_adhesion_risk_delta;
     std::optional<double> flush_delta_mm3;
     std::optional<double> wipe_tower_delta_mm3;
     std::optional<long long> tool_change_delta;
@@ -50,6 +54,8 @@ struct SmartSlicingCandidateView
     size_t workspace_parameter_change_count{0};
     std::optional<double> brim_width_before;
     std::optional<double> brim_width_after;
+    std::optional<std::string> brim_type_before;
+    std::optional<std::string> brim_type_after;
     bool repair_changes_geometry_semantics{false};
     bool recommended{false};
     bool selected{false};

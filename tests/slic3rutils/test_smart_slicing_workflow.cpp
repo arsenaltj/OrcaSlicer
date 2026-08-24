@@ -478,6 +478,8 @@ TEST_CASE("candidate cards expose baseline deltas selection and retry without wo
             result.metrics->filament_volume_mm3     = candidate.id == "baseline" ? 500.0 : 450.0;
             result.metrics->support_volume_mm3      = candidate.id == "baseline" ? 20.0 : 10.0;
             result.metrics->tool_changes            = candidate.id == "baseline" ? 4 : 2;
+            result.metrics->bed_adhesion_risk_score = candidate.id == "baseline" ? 1.5 : 0.75;
+            result.metrics->brim_volume_mm3         = candidate.id == "baseline" ? 0.0 : 60.0;
             if (candidate.id == "alternative")
                 result.metrics->warning_codes = {"native_validation_warning", "gcode_warning"};
         }
@@ -518,6 +520,8 @@ TEST_CASE("candidate cards expose baseline deltas selection and retry without wo
     CHECK(ready_view.candidates[1].time_delta_seconds == -20.0);
     CHECK(ready_view.candidates[1].filament_delta_mm3 == -50.0);
     CHECK(ready_view.candidates[1].support_delta_mm3 == -10.0);
+    CHECK(ready_view.candidates[1].bed_adhesion_risk_delta == -0.75);
+    CHECK(ready_view.candidates[1].brim_volume_delta_mm3 == 60.0);
     CHECK(ready_view.candidates[1].tool_change_delta == -2);
     CHECK(ready_view.candidates[1].repair_operation_count == 1);
     CHECK(ready_view.candidates[1].transformed_instance_count == 1);
@@ -730,6 +734,8 @@ TEST_CASE("Orca trial slicing owns model config print and gcode copies", "[AI][S
     REQUIRE(result.metrics);
     CHECK(result.metrics->estimated_time_seconds.value_or(0.0) > 0.0);
     CHECK(result.metrics->filament_volume_mm3.value_or(0.0) > 0.0);
+    CHECK(result.metrics->bed_adhesion_risk_score.value_or(0.0) >= 1.0);
+    CHECK(result.metrics->brim_volume_mm3.has_value());
     REQUIRE(formal_model.objects.size() == 1);
     CHECK(formal_model.objects.front()->id() == object_id);
     REQUIRE(formal_model.objects.front()->instances.size() == 1);

@@ -3,6 +3,8 @@
 #include "slic3r/AI/SmartSlicing/Ports/IParameterAdvisor.hpp"
 
 #include <cstdint>
+#include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -18,9 +20,13 @@ struct OrcaInstanceGeometrySnapshot
 struct OrcaParameterAdvisorInput
 {
     int64_t plate_id{-1};
+    std::string current_brim_type;
     double current_brim_width{0.0};
     std::vector<OrcaInstanceGeometrySnapshot> printable_instances;
 };
+
+std::optional<double>
+orca_bed_adhesion_risk_score(const std::vector<OrcaInstanceGeometrySnapshot>& printable_instances);
 
 class OrcaParameterAdvisor final : public AI::SmartSlicing::IParameterAdvisor
 {

@@ -158,6 +158,7 @@ OrcaSmartSlicingAdapter::prepare_candidate_proposals(const AI::SmartSlicing::Wor
     prepared.orientation.plate_locked = plate->is_locked();
 
     prepared.parameters.plate_id = static_cast<int64_t>(plate->id().id);
+    prepared.parameters.current_brim_type = effective_config.opt_serialize("brim_type");
     prepared.parameters.current_brim_width = effective_config.opt_float("brim_width");
     const Model& model = m_plater->model();
     for (size_t object_index = 0; object_index < model.objects.size(); ++object_index) {

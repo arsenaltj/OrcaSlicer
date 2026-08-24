@@ -49,6 +49,12 @@ SmartSlicingViewModel SmartSlicingViewModel::from_snapshot(const AI::SmartSlicin
             case AI::SmartSlicing::ConfigScope::Material: ++card.material_parameter_change_count; break;
             case AI::SmartSlicing::ConfigScope::Workspace: ++card.workspace_parameter_change_count; break;
             }
+            if (entry.key == "brim_type") {
+                if (const auto* value = std::get_if<std::string>(&entry.expected_value))
+                    card.brim_type_before = *value;
+                if (const auto* value = std::get_if<std::string>(&entry.new_value))
+                    card.brim_type_after = *value;
+            }
             if (entry.key != "brim_width")
                 continue;
             if (const auto* value = std::get_if<double>(&entry.expected_value))
@@ -63,6 +69,8 @@ SmartSlicingViewModel SmartSlicingViewModel::from_snapshot(const AI::SmartSlicin
             card.estimated_time_seconds = metrics.estimated_time_seconds;
             card.filament_volume_mm3    = metrics.filament_volume_mm3;
             card.support_volume_mm3     = metrics.support_volume_mm3;
+            card.brim_volume_mm3        = metrics.brim_volume_mm3;
+            card.bed_adhesion_risk_score = metrics.bed_adhesion_risk_score;
             card.flush_volume_mm3       = metrics.flush_volume_mm3;
             card.wipe_tower_volume_mm3  = metrics.wipe_tower_volume_mm3;
             card.tool_changes           = metrics.tool_changes;
@@ -78,6 +86,11 @@ SmartSlicingViewModel SmartSlicingViewModel::from_snapshot(const AI::SmartSlicin
                     card.filament_delta_mm3 = *metrics.filament_volume_mm3 - *baseline_metrics->filament_volume_mm3;
                 if (metrics.support_volume_mm3 && baseline_metrics->support_volume_mm3)
                     card.support_delta_mm3 = *metrics.support_volume_mm3 - *baseline_metrics->support_volume_mm3;
+                if (metrics.brim_volume_mm3 && baseline_metrics->brim_volume_mm3)
+                    card.brim_volume_delta_mm3 = *metrics.brim_volume_mm3 - *baseline_metrics->brim_volume_mm3;
+                if (metrics.bed_adhesion_risk_score && baseline_metrics->bed_adhesion_risk_score)
+                    card.bed_adhesion_risk_delta =
+                        *metrics.bed_adhesion_risk_score - *baseline_metrics->bed_adhesion_risk_score;
                 if (metrics.flush_volume_mm3 && baseline_metrics->flush_volume_mm3)
                     card.flush_delta_mm3 = *metrics.flush_volume_mm3 - *baseline_metrics->flush_volume_mm3;
                 if (metrics.wipe_tower_volume_mm3 && baseline_metrics->wipe_tower_volume_mm3)
