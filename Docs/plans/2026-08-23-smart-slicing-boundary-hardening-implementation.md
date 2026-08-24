@@ -1142,3 +1142,33 @@ This batch changes no shared `MainFrame`, `Plater`, or CMake file and no workflo
 model-generation code, configuration, dependency, port, data directory contract, journal path/schema, 3MF/profile
 format, profile data, or default Orca behavior. The isolated smoke data directory only retained local GUI test
 state. macOS and Linux native build/test execution remains a separate host/CI gate.
+
+## Current-plate material completeness gate — 2026-08-24
+
+Printability preflight now requires every logical filament referenced by the current plate to resolve to a
+non-empty material preset. An unrelated valid preset can no longer hide a missing used preset or a dangling logical
+filament reference. When a legacy workspace DTO has no explicit logical-filament list, `used_on_plate` flags remain
+authoritative; only DTOs with neither form of usage evidence retain the previous any-non-empty compatibility
+fallback. Empty presets that are not used on the current plate do not block preflight.
+
+Before this gate, a red regression supplied one valid unused material and one empty used material. Preflight
+reported no issue in both that case and a dangling logical-filament case. The green contract covers those failures,
+the legacy usage-flag path, and the non-blocking unused-empty case with 11 focused assertions. An older multicolor
+fixture also declared logical filament IDs 1 and 2 while leaving its material snapshot IDs at the default zero; the
+fixture was corrected to represent the same valid production contract rather than weakening the new boundary.
+
+### Windows verification
+
+- Material-boundary focus: 1 test case, 11 assertions, all passed in Release.
+- Smart-slicing suite: 113 test cases; 112 passed and the opt-in benchmark remained explicitly skipped, with 725
+  assertions passed in Release and RelWithDebInfo.
+- Default full `slic3rutils_tests`: 123 test cases and 832 assertions, all passed in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings and
+  the non-failing test-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke was not repeated because this is a Domain/Application preflight correction with no layout,
+  interaction, adapter, startup, candidate/trial execution, or formal-write-path change. The immediately preceding
+  workspace-local isolated-data-directory GUI evidence remains valid.
+
+This batch changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, candidate contract,
+configuration, dependency, port, data directory contract, journal path/schema, 3MF/profile format, profile data,
+or default Orca behavior. macOS and Linux native build/test execution remains a separate host/CI gate.

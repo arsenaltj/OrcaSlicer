@@ -20,6 +20,33 @@ void add_issue(PrintabilityReport& report,
     report.issues.push_back({code, severity, scope, object_id, std::move(evidence), std::move(resolutions), blocks, decision});
 }
 
+bool has_required_material_presets(const WorkspaceContext& context)
+{
+    if (!context.multicolor.used_logical_filament_ids.empty()) {
+        return std::all_of(context.multicolor.used_logical_filament_ids.begin(),
+                           context.multicolor.used_logical_filament_ids.end(),
+                           [&context](int logical_filament_id) {
+                               return std::any_of(context.materials.begin(), context.materials.end(),
+                                                  [logical_filament_id](const MaterialSnapshot& material) {
+                                                      return material.logical_filament_id == logical_filament_id &&
+                                                             !material.preset_id.empty();
+                                                  });
+                           });
+    }
+
+    const bool has_used_material_flags =
+        std::any_of(context.materials.begin(), context.materials.end(),
+                    [](const MaterialSnapshot& material) { return material.used_on_plate; });
+    if (has_used_material_flags) {
+        return std::all_of(context.materials.begin(), context.materials.end(), [](const MaterialSnapshot& material) {
+            return !material.used_on_plate || !material.preset_id.empty();
+        });
+    }
+
+    return std::any_of(context.materials.begin(), context.materials.end(),
+                       [](const MaterialSnapshot& material) { return !material.preset_id.empty(); });
+}
+
 } // namespace
 
 PrintabilityReport PrintabilityInspector::inspect(const WorkspaceContext& context) const
@@ -35,9 +62,7 @@ PrintabilityReport PrintabilityInspector::inspect(const WorkspaceContext& contex
     if (context.process_preset_id.empty())
         add_issue(report, IssueCode::MissingProcess, Severity::Error, IssueScope::Configuration, "No process preset is selected.", true,
                   false);
-    const bool has_material = std::any_of(context.materials.begin(), context.materials.end(),
-                                          [](const MaterialSnapshot& material) { return !material.preset_id.empty(); });
-    if (!has_material)
+    if (!has_required_material_presets(context))
         add_issue(report, IssueCode::MissingMaterial, Severity::Error, IssueScope::Material, "No material preset is selected.", true, false);
     switch (context.multicolor.physical_slot_compatibility) {
     case PhysicalSlotCompatibility::Incompatible:

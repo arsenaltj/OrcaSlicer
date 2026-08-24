@@ -378,11 +378,63 @@ TEST_CASE("empty material preset entries do not satisfy printability prerequisit
     CHECK(report.has_blocking_issue());
 }
 
+TEST_CASE("printability requires a preset for every material used on the current plate",
+          "[AI][SmartSlicing][MaterialBoundary]")
+{
+    WorkspaceContext context = context_with_revision("revision-a");
+    MaterialSnapshot unused_material;
+    unused_material.preset_id = "unused-material";
+    unused_material.logical_filament_id = 1;
+    MaterialSnapshot used_material;
+    used_material.logical_filament_id = 2;
+    used_material.used_on_plate = true;
+    context.materials = {unused_material, used_material};
+    context.multicolor.used_logical_filament_ids = {2};
+
+    SECTION("an unused preset cannot hide a missing used preset") {
+        const PrintabilityReport report = PrintabilityInspector().inspect(context);
+
+        REQUIRE(report.issues.size() == 1);
+        CHECK(report.issues.front().code == IssueCode::MissingMaterial);
+        CHECK(report.has_blocking_issue());
+    }
+
+    SECTION("every referenced material must resolve to a snapshot") {
+        context.multicolor.used_logical_filament_ids = {3};
+        const PrintabilityReport report = PrintabilityInspector().inspect(context);
+
+        REQUIRE(report.issues.size() == 1);
+        CHECK(report.issues.front().code == IssueCode::MissingMaterial);
+        CHECK(report.has_blocking_issue());
+    }
+
+    SECTION("used-on-plate flags remain authoritative when logical ids are unavailable") {
+        context.multicolor.used_logical_filament_ids.clear();
+        const PrintabilityReport report = PrintabilityInspector().inspect(context);
+
+        REQUIRE(report.issues.size() == 1);
+        CHECK(report.issues.front().code == IssueCode::MissingMaterial);
+        CHECK(report.has_blocking_issue());
+    }
+
+    SECTION("an unused empty preset does not block a valid used material") {
+        unused_material.preset_id.clear();
+        used_material.preset_id = "used-material";
+        context.materials = {unused_material, used_material};
+        const PrintabilityReport report = PrintabilityInspector().inspect(context);
+
+        CHECK(report.issues.empty());
+        CHECK_FALSE(report.has_blocking_issue());
+    }
+}
+
 TEST_CASE("multicolor preflight makes compatibility and mapping evidence explicit", "[AI][SmartSlicing][Multicolor]")
 {
     WorkspaceContext context = context_with_revision("revision-a");
     context.materials.push_back({"pla", "#FFFFFF"});
     context.materials.push_back({"petg", "#000000"});
+    context.materials[0].logical_filament_id = 1;
+    context.materials[1].logical_filament_id = 2;
     context.multicolor.used_logical_filament_ids = {1, 2};
     context.multicolor.filament_to_physical_slot = {1, 1};
     context.multicolor.first_layer_tool_sequence = {1, 2};
