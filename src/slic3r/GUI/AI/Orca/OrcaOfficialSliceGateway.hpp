@@ -3,6 +3,7 @@
 #include "slic3r/AI/SmartSlicing/Ports/IOfficialSliceGateway.hpp"
 
 #include <functional>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -64,17 +65,20 @@ public:
         m_preview_shown = false;
         m_workspace_mutated = false;
         m_can_undo = false;
+        m_undo_revision.reset();
         try {
             OrcaApplyMutationResult applied = m_apply ? m_apply(candidate) : OrcaApplyMutationResult{};
             m_workspace_mutated = applied.workspace_mutated;
-            m_can_undo          = applied.workspace_mutated;
+            capture_undo_revision();
             if (!applied.success) {
                 m_last = {AI::SmartSlicing::OfficialSlicePhase::Failed,
                           applied.diagnostic_code.empty() ? "candidate_apply_failed" : applied.diagnostic_code,
                           m_workspace_mutated, m_can_undo};
                 return m_last;
             }
-            if (!m_start_slice || !m_start_slice()) {
+            const bool slice_started = m_start_slice && m_start_slice();
+            capture_undo_revision();
+            if (!slice_started) {
                 m_last = {AI::SmartSlicing::OfficialSlicePhase::Failed, "official_slice_not_started",
                           m_workspace_mutated, m_can_undo};
                 return m_last;
@@ -102,12 +106,13 @@ public:
 
     bool undo_last_apply() override
     {
-        if (!m_can_undo || !m_undo || !m_undo())
+        if (!m_can_undo || !undo_revision_matches() || !m_undo || !m_undo())
             return false;
         m_can_undo = false;
         m_workspace_mutated = false;
         m_pending = false;
         m_preview_shown = false;
+        m_undo_revision.reset();
         m_last = {AI::SmartSlicing::OfficialSlicePhase::Prepared, "apply_undone", false, false};
         return true;
     }
@@ -124,6 +129,40 @@ public:
     }
 
 private:
+    void capture_undo_revision() noexcept
+    {
+        if (!m_workspace_mutated || !m_revision) {
+            m_can_undo = false;
+            m_undo_revision.reset();
+            return;
+        }
+        try {
+            AI::SmartSlicing::WorkspaceRevision revision = m_revision();
+            if (revision.valid()) {
+                m_undo_revision = std::move(revision);
+                m_can_undo = true;
+            }
+        } catch (...) {
+        }
+    }
+
+    bool undo_revision_matches() noexcept
+    {
+        if (!m_undo_revision || !m_revision) {
+            m_can_undo = false;
+            m_last.can_undo = false;
+            return false;
+        }
+        try {
+            if (m_revision() == *m_undo_revision)
+                return true;
+        } catch (...) {
+        }
+        m_can_undo = false;
+        m_last.can_undo = false;
+        return false;
+    }
+
     bool revision_matches(const AI::SmartSlicing::SliceCandidate& candidate,
                           const AI::SmartSlicing::WorkspaceRevision& expected_revision) const
     {
@@ -150,6 +189,7 @@ private:
     bool m_workspace_mutated{false};
     bool m_can_undo{false};
     bool m_preview_shown{false};
+    std::optional<AI::SmartSlicing::WorkspaceRevision> m_undo_revision;
 };
 
 } // namespace Slic3r::GUI

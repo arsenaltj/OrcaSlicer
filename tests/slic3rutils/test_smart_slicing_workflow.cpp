@@ -125,6 +125,7 @@ public:
     size_t prepare_calls{0};
     size_t commit_calls{0};
     size_t undo_calls{0};
+    bool undo_succeeds{true};
 
     OfficialSliceResult prepare(const SliceCandidate&, const WorkspaceRevision&) override
     {
@@ -140,7 +141,7 @@ public:
     bool undo_last_apply() override
     {
         ++undo_calls;
-        return true;
+        return undo_succeeds;
     }
 };
 
@@ -810,6 +811,27 @@ TEST_CASE("official slice failure exposes exactly one native undo recovery", "[A
     CHECK_FALSE(coordinator.undo_applied_candidate());
 }
 
+TEST_CASE("an unavailable native recovery is disabled after one safe refusal", "[AI][SmartSlicing][Apply][UndoOwnership]")
+{
+    WorkflowWorkspace workspace;
+    FakeTrialSliceExecutor trial;
+    FakeOfficialSliceGateway official;
+    SmartSlicingCoordinator coordinator(workspace, trial, official);
+    coordinator.start();
+    REQUIRE(coordinator.plan_and_slice_candidates());
+    REQUIRE(coordinator.apply_selected_candidate());
+
+    official.polled = {OfficialSlicePhase::Failed, "official_slice_failed", true, true};
+    REQUIRE(coordinator.poll_official_slice());
+    official.undo_succeeds = false;
+
+    CHECK_FALSE(coordinator.undo_applied_candidate());
+    CHECK(official.undo_calls == 1);
+    CHECK(coordinator.snapshot().state == WorkflowState::ApplyFailed);
+    CHECK_FALSE(coordinator.snapshot().can_undo_apply);
+    CHECK(coordinator.snapshot().detail == "apply_undo_unavailable");
+}
+
 TEST_CASE("Orca official gateway double checks revision and enters Preview only after success", "[AI][SmartSlicing][Apply]")
 {
     WorkspaceRevision current{1, 2, 3, "revision-a"};
@@ -868,6 +890,30 @@ TEST_CASE("Orca official gateway preserves native undo recovery when slicing can
     CHECK(gateway.undo_last_apply());
     CHECK(undo_calls == 1);
     CHECK_FALSE(gateway.undo_last_apply());
+}
+
+TEST_CASE("Orca official gateway never undoes a later workspace edit",
+          "[AI][SmartSlicing][Apply][UndoOwnership]")
+{
+    WorkspaceRevision current{1, 2, 3, "revision-a"};
+    size_t undo_calls = 0;
+    Slic3r::GUI::OrcaOfficialSliceGateway gateway(
+        [&current] { return current; }, [](const SliceCandidate&) { return std::string{}; },
+        [&current](const SliceCandidate&) {
+            current = {2, 2, 3, "revision-after-smart-apply"};
+            return Slic3r::GUI::OrcaApplyMutationResult{true, true, {}};
+        },
+        [] { return false; }, [] { return true; }, [&undo_calls] { ++undo_calls; return true; });
+    SliceCandidate candidate = proposal("candidate", WorkspaceRevision{1, 2, 3, "revision-a"});
+
+    const OfficialSliceResult failed = gateway.commit(candidate, candidate.base_revision);
+    REQUIRE(failed.phase == OfficialSlicePhase::Failed);
+    REQUIRE(failed.can_undo);
+    current = {3, 2, 3, "revision-after-user-edit"};
+
+    CHECK_FALSE(gateway.undo_last_apply());
+    CHECK(undo_calls == 0);
+    CHECK_FALSE(gateway.poll().can_undo);
 }
 
 TEST_CASE("Orca trial slicing owns model config print and gcode copies", "[AI][SmartSlicing][Workflow][OrcaTrial]")

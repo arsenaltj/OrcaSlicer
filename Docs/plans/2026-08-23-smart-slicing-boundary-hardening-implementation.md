@@ -495,6 +495,36 @@ This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-ge
 dependency, port, data directory, journal path/schema, 3MF/profile format, profile data, or default Orca behavior.
 macOS and Linux native build/test execution remains a separate host/CI gate.
 
+## Post-apply Undo ownership gate — 2026-08-24
+
+The official gateway now binds its one-click recovery action to the exact workspace revision captured after the
+smart-slicing mutation and official-slice start attempt. Before calling Orca's native Undo, it re-reads the current
+revision and requires an exact match. A later model, config, or plate edit therefore invalidates only the smart
+recovery shortcut instead of allowing that shortcut to undo the user's newer action. If ownership cannot be
+verified, Application disables the recovery entry after the first safe refusal and exposes the stable
+`apply_undo_unavailable` detail.
+
+Before the gate, `undo_last_apply()` checked only a boolean left by the original commit. The focused gateway
+contract changed the workspace revision after a failed official slice and observed the native Undo callback being
+called. The focused coordinator contract also observed `can_undo_apply` remaining true after a gateway refusal.
+Both behaviors are now rejected before any Undo mutation.
+
+### Windows verification
+
+- Post-apply Undo ownership focus: 2 test cases, 13 assertions, all passed in Release and RelWithDebInfo.
+- Smart-slicing suite excluding the opt-in benchmark: 100 test cases, 629 assertions; 99 passed and the benchmark
+  case remained explicitly skipped in Release and RelWithDebInfo.
+- Full `slic3rutils_tests`: 111 test cases, 736 assertions; 110 passed and the benchmark case remained explicitly
+  skipped in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings are
+  unchanged.
+- GUI smoke was not repeated because this is a nonvisual recovery-ownership gate; prior workspace-local
+  isolated-data-directory GUI evidence remains valid.
+
+This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, configuration,
+dependency, port, data directory, journal path/schema, 3MF/profile format, profile data, or default Orca behavior.
+macOS and Linux native build/test execution remains a separate host/CI gate.
+
 ## Candidate retry exception-containment gate — 2026-08-24
 
 Candidate selection and single-candidate retry now contain workspace-revision and trial-executor exceptions at

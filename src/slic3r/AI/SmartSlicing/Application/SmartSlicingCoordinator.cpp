@@ -520,9 +520,13 @@ bool SmartSlicingCoordinator::undo_applied_candidate()
         m_official_slice_gateway == nullptr)
         return false;
     try {
-        if (!m_official_slice_gateway->undo_last_apply())
+        if (!m_official_slice_gateway->undo_last_apply()) {
+            m_snapshot.can_undo_apply = false;
+            transition(WorkflowState::ApplyFailed, "apply_undo_unavailable");
             return false;
+        }
     } catch (...) {
+        m_snapshot.can_undo_apply = false;
         transition(WorkflowState::ApplyFailed, "apply_undo_failed");
         return false;
     }
