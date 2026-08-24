@@ -1055,6 +1055,34 @@ TEST_CASE("Orca trial placement cannot target an unprintable object",
     CHECK(result.diagnostic_code == "invalid_candidate_placement");
 }
 
+TEST_CASE("Orca trial placement rejects duplicate transform targets",
+          "[AI][SmartSlicing][Workflow][OrcaTrial][Placement][DuplicateTarget]")
+{
+    Slic3r::GUI::OrcaTrialSliceInput input = tiny_trial_input();
+    ModelObject* object = input.model.objects.front();
+    ModelInstance* instance = object->instances.front();
+    Transform3d requested = instance->get_matrix();
+    requested.translation().x() += 5.0;
+    ObjectTransform transform;
+    transform.object_id = object->id().id;
+    transform.instance_id = instance->id().id;
+    for (Eigen::Index row = 0; row < requested.rows(); ++row)
+        for (Eigen::Index column = 0; column < requested.cols(); ++column)
+            transform.matrix[static_cast<size_t>(row * requested.cols() + column)] = requested(row, column);
+
+    SliceCandidate candidate = proposal("duplicate-target", WorkspaceRevision{1, 2, 3, "revision-a"});
+    candidate.status = CandidateStatus::Draft;
+    candidate.metrics.reset();
+    candidate.placement.transforms.push_back(transform);
+    candidate.placement.transforms.push_back(std::move(transform));
+    Slic3r::GUI::OrcaTrialSliceExecutor executor(
+        [input = std::move(input)]() mutable { return std::move(input); });
+
+    const TrialSliceResult result = executor.execute_trial_slice(candidate);
+    CHECK(result.status == TrialSliceStatus::Failed);
+    CHECK(result.diagnostic_code == "invalid_candidate_placement");
+}
+
 TEST_CASE("Orca trial executor serializes concurrent slice requests",
           "[AI][SmartSlicing][Workflow][OrcaTrial][Concurrency]")
 {

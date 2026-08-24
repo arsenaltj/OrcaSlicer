@@ -375,6 +375,35 @@ This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-ge
 dependency, port, data directory, journal path/schema, 3MF/profile format, profile data, or default Orca behavior.
 macOS and Linux native build/test execution remains a separate host/CI gate.
 
+## Duplicate placement-target gate — 2026-08-24
+
+Isolated trial placement now rejects a candidate that contains more than one transform for the same instance.
+This matches the existing formal gateway rule and keeps candidate evaluation deterministic: a target has one
+declared final transform, rather than order-dependent repeated mutations. Invalid candidates fail before Orca
+creates or processes a trial `Print`, retaining the stable `invalid_candidate_placement` diagnostic.
+
+Before the gate, two identical transforms for one instance completed a real isolated trial slice successfully,
+while the formal gateway would later reject the same selected candidate as `duplicate_transform_target`. The
+focused contract reproduced that trial/apply rule drift, with a successful result and empty diagnostic before the
+fix.
+
+### Windows verification
+
+- Duplicate-target focus: 1 test case, 2 assertions, all passed in Release and RelWithDebInfo.
+- Smart-slicing suite excluding the opt-in benchmark: 94 test cases, 602 assertions, all passed in Release and
+  RelWithDebInfo; the benchmark case remained explicitly skipped.
+- Full `slic3rutils_tests`: 105 test cases, 709 assertions, all passed in Release and RelWithDebInfo; the benchmark
+  case remained explicitly skipped.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings are
+  unchanged.
+- GUI smoke was not repeated because this is a nonvisual trial-validation correction with no interaction or
+  formal-write-path change; prior workspace-local isolated-data-directory GUI evidence remains valid.
+
+This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, configuration,
+dependency, port, data directory, journal path/schema, 3MF/profile format, profile data, or default Orca behavior.
+It only aligns isolated trial validation with the existing formal apply contract. macOS and Linux native
+build/test execution remains a separate host/CI gate.
+
 ## Candidate retry exception-containment gate — 2026-08-24
 
 Candidate selection and single-candidate retry now contain workspace-revision and trial-executor exceptions at

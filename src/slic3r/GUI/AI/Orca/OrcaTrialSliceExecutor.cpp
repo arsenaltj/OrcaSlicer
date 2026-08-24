@@ -14,6 +14,7 @@
 #include <map>
 #include <limits>
 #include <numeric>
+#include <set>
 #include <stdexcept>
 #include <thread>
 #include <utility>
@@ -148,7 +149,10 @@ void OrcaTrialSliceExecutor::set_resource_limits(std::chrono::seconds maximum_du
 
 bool OrcaTrialSliceExecutor::apply_placement(Model& model, const PlacementCandidate& placement) const
 {
+    std::set<uint64_t> seen_instances;
     for (const ObjectTransform& transform : placement.transforms) {
+        if (!seen_instances.insert(transform.instance_id).second)
+            return false;
         ModelObject* target_object = nullptr;
         ModelInstance* target = nullptr;
         for (ModelObject* object : model.objects) {
