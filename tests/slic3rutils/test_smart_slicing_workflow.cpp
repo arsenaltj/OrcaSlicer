@@ -11,6 +11,7 @@
 #include "libslic3r/TriangleMesh.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <functional>
 #include <stdexcept>
 
@@ -781,6 +782,27 @@ TEST_CASE("Orca trial slicing rejects an input without printable objects", "[AI]
 
     CHECK(result.status == TrialSliceStatus::Failed);
     CHECK(result.diagnostic_code == "trial_no_printable_objects");
+}
+
+TEST_CASE("benchmark isolated trial slicing and successful cache hits",
+          "[AI][SmartSlicing][Performance][!benchmark]")
+{
+    if (std::getenv("ORCA_SMART_SLICING_BENCHMARK") == nullptr)
+        SKIP("Set ORCA_SMART_SLICING_BENCHMARK=1 to run the release benchmark.");
+
+    SliceCandidate candidate = proposal("benchmark", WorkspaceRevision{1, 2, 3, "benchmark-revision"});
+    candidate.status = CandidateStatus::Draft;
+    candidate.metrics.reset();
+
+    BENCHMARK("isolated tiny trial slice") {
+        Slic3r::GUI::OrcaTrialSliceExecutor executor([] { return tiny_trial_input(); });
+        return executor.execute_trial_slice(candidate);
+    };
+
+    Slic3r::GUI::OrcaTrialSliceExecutor native_executor([] { return tiny_trial_input(); });
+    CachingTrialSliceExecutor cached_executor(native_executor);
+    REQUIRE(cached_executor.execute_trial_slice(candidate).status == TrialSliceStatus::Succeeded);
+    BENCHMARK("successful trial cache hit") { return cached_executor.execute_trial_slice(candidate); };
 }
 
 TEST_CASE("Orca trial slicing enforces execution memory timeout and disk budgets", "[AI][SmartSlicing][Workflow][OrcaTrial][Runtime]")

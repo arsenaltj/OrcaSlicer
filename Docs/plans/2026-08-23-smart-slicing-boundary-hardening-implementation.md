@@ -192,3 +192,20 @@ untouched. No GUI action was performed. The local-only GUI scenarios and macOS/L
 This batch changes no configuration, dependency, network port, data directory, 3MF/profile format, profile
 data, or default Orca behavior. Its only shared-file change is the smart-slicing source registration in
 `src/slic3r/CMakeLists.txt`; `MainFrame.cpp` and `Plater.cpp` are unchanged.
+
+## Portability and benchmark gate — 2026-08-24
+
+The runtime journal uses `boost::nowide` streams so non-ASCII data-directory paths remain valid on Windows
+without adding platform-specific code. The portability contract creates a journal under a Unicode path,
+round trips bounded workflow metadata, and removes it through the existing store API. This test is part of
+the normal smart-slicing suite on every platform.
+
+The opt-in `[AI][SmartSlicing][Performance]` benchmark measures both a real isolated tiny trial slice and a
+successful in-memory cache hit. It is skipped unless `ORCA_SMART_SLICING_BENCHMARK=1` is set, so ordinary
+Catch/CTest execution remains deterministic. Release verification should run it with a small explicit
+sample count and record both timings; it is evidence for comparison, not a hardware-independent time limit.
+
+Windows Release evidence with three samples and a 50 ms warm-up: the isolated tiny trial averaged about
+86.1 ms, while a successful cache hit averaged about 0.551 us. These values are machine-specific and are
+recorded only as the first regression-comparison baseline; correctness and resource-budget gates remain the
+portable pass/fail criteria.
