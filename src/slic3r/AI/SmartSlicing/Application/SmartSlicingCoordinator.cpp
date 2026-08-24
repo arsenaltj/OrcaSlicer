@@ -24,6 +24,12 @@ void resolve_native_validation_evidence(PrintabilityReport& report)
                        report.issues.empty() ? Readiness::Ready : Readiness::NeedsAttention;
 }
 
+bool is_explicit_trial_cancellation(const SliceCandidate& candidate, const TrialSliceResult& result)
+{
+    return result.status == TrialSliceStatus::Canceled &&
+           TrialSlicingWorkflow::result_matches(candidate, result) && result.diagnostic_code != "workflow_timeout";
+}
+
 } // namespace
 
 SmartSlicingCoordinator::SmartSlicingCoordinator(IOrcaWorkspace& workspace) : m_workspace(workspace) {}
@@ -288,9 +294,10 @@ bool SmartSlicingCoordinator::plan_and_slice_candidates(std::vector<SliceCandida
                 transition(WorkflowState::Stale, "workspace_changed");
                 return false;
             }
-            if (result.status == TrialSliceStatus::Canceled && TrialSlicingWorkflow::result_matches(candidate, result)) {
+            if (is_explicit_trial_cancellation(candidate, result)) {
                 m_snapshot.candidates.clear();
                 m_snapshot.comparison.reset();
+                m_snapshot.selected_candidate_id.clear();
                 transition(WorkflowState::Canceled, "trial_slice_canceled");
                 return false;
             }
@@ -419,11 +426,11 @@ bool SmartSlicingCoordinator::retry_candidate(const CandidateId& candidate_id, b
             return fail_retry("retry_revision_unavailable");
         }
     }
-    if (result.status == TrialSliceStatus::Canceled && TrialSlicingWorkflow::result_matches(*candidate, result)) {
-        candidate->status          = CandidateStatus::Failed;
-        candidate->metrics.reset();
-        candidate->diagnostic_code = "retry_canceled";
-        transition(WorkflowState::ReadyToApply, "retry_canceled");
+    if (is_explicit_trial_cancellation(*candidate, result)) {
+        m_snapshot.candidates.clear();
+        m_snapshot.comparison.reset();
+        m_snapshot.selected_candidate_id.clear();
+        transition(WorkflowState::Canceled, "trial_slice_canceled");
         return false;
     }
 

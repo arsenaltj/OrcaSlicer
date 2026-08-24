@@ -971,3 +971,36 @@ did not exist, then passed after the adapter correction.
 This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, configuration,
 dependency, port, data directory, journal path/schema, 3MF/profile format, profile data, or default Orca behavior.
 macOS and Linux native build/test execution remains a separate host/CI gate.
+
+## Trial cancellation and timeout ownership gate — 2026-08-24
+
+Application now distinguishes an explicit user cancellation from an Orca trial deadline that reports the same
+`Canceled` transport status. A matched `workflow_timeout` is accepted as a failed candidate result: an alternative
+timeout retains the comparable baseline and continues to ReadyToApply. Other matched canceled results are owned by
+the workflow cancellation path, which clears candidates, comparison, and selection before entering the Canceled
+terminal state. The same rules apply to initial candidate slicing and a failed-candidate retry.
+
+Before the gate, an alternative timeout deleted the ready baseline and canceled the entire workflow, while an
+explicit cancellation during retry left the workflow in ReadyToApply with `retry_canceled` and retained candidate
+state. The two focused regressions first reproduced those opposite failures, then verified the intended baseline
+retention and clean cancellation terminal state.
+
+### Windows verification
+
+- Cancellation/timeout focus: 2 test cases, 16 assertions, all passed in Release and RelWithDebInfo.
+- Smart-slicing suite: 108 test cases, 693 assertions; 107 passed and the opt-in benchmark remained explicitly
+  skipped, in Release and RelWithDebInfo.
+- Default full `slic3rutils_tests`: 118 test cases, 800 assertions, all passed in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings and
+  the non-failing test-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke launched only
+  `D:\Workspace\06_3DDY_smart_slicing\build-p0\src\Release\orca-slicer.exe` with isolated data directory
+  `D:\Workspace\06_3DDY_smart_slicing\build-p0\smart-slicing-gui-smoke-data` and the disposable `Büchse.3mf`
+  fixture. The project loaded in Prepare. wx did not expose a reliable Windows UI Automation control tree, so no
+  coordinate-based retry/cancel or formal-apply action was attempted. The exact workspace PID 46648 was verified
+  and stopped, no workspace Orca process remained, and the source 3MF was unchanged. The coordinator focus tests
+  are the acceptance evidence for the retry cancellation transition itself.
+
+This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, configuration,
+dependency, port, data directory contract, journal path/schema, 3MF/profile format, profile data, or default Orca
+behavior. macOS and Linux native build/test execution remains a separate host/CI gate.

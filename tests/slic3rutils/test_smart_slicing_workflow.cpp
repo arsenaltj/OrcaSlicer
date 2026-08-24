@@ -489,6 +489,38 @@ TEST_CASE("late cancellation results cannot cancel the current workflow", "[AI][
     CHECK(coordinator.snapshot().candidates[1].status == CandidateStatus::Failed);
 }
 
+TEST_CASE("an alternative trial timeout retains the comparable baseline",
+          "[AI][SmartSlicing][Workflow][CandidateFailure][Runtime][Cancellation]")
+{
+    WorkflowWorkspace workspace;
+    FakeTrialSliceExecutor executor;
+    executor.result_for = [](const SliceCandidate& candidate, size_t index) {
+        TrialSliceResult result;
+        result.candidate_id  = candidate.id;
+        result.base_revision = candidate.base_revision;
+        result.status        = index == 0 ? TrialSliceStatus::Succeeded : TrialSliceStatus::Canceled;
+        if (index == 0) {
+            result.metrics = SlicingMetrics{};
+            result.metrics->estimated_time_seconds = 100.0;
+        } else {
+            result.diagnostic_code = "workflow_timeout";
+        }
+        return result;
+    };
+    SmartSlicingCoordinator coordinator(workspace, executor);
+    coordinator.start();
+
+    REQUIRE(coordinator.plan_and_slice_candidates({proposal("alternative", workspace.context.revision)}));
+    CHECK(coordinator.snapshot().state == WorkflowState::ReadyToApply);
+    REQUIRE(coordinator.snapshot().candidates.size() == 2);
+    CHECK(coordinator.snapshot().candidates[0].status == CandidateStatus::Ready);
+    CHECK(coordinator.snapshot().candidates[1].status == CandidateStatus::Failed);
+    CHECK(coordinator.snapshot().candidates[1].diagnostic_code == "workflow_timeout");
+    CHECK(coordinator.snapshot().selected_candidate_id == "baseline");
+    REQUIRE(coordinator.snapshot().comparison);
+    CHECK(coordinator.snapshot().comparison->recommended_candidate_id == "baseline");
+}
+
 TEST_CASE("ready candidate workflow projects into optimization and apply stages", "[AI][SmartSlicing][Workflow]")
 {
     WorkflowWorkspace workspace;
@@ -818,6 +850,42 @@ TEST_CASE("candidate retry does not start after the workflow resource budget is 
     CHECK(coordinator.snapshot().candidates[1].status == CandidateStatus::Failed);
     CHECK(coordinator.snapshot().candidates[1].diagnostic_code == "workflow_memory_budget_exceeded");
     CHECK(coordinator.snapshot().comparison->recommended_candidate_id == "baseline");
+}
+
+TEST_CASE("an explicit cancellation during candidate retry ends the workflow",
+          "[AI][SmartSlicing][Workflow][CandidateFailure][Cancellation]")
+{
+    WorkflowWorkspace workspace;
+    FakeTrialSliceExecutor executor;
+    executor.result_for = [](const SliceCandidate& candidate, size_t) {
+        TrialSliceResult result;
+        result.candidate_id  = candidate.id;
+        result.base_revision = candidate.base_revision;
+        result.status = candidate.id == "alternative" ? TrialSliceStatus::Failed : TrialSliceStatus::Succeeded;
+        if (result.status == TrialSliceStatus::Succeeded) {
+            result.metrics = SlicingMetrics{};
+            result.metrics->estimated_time_seconds = 100.0;
+        }
+        return result;
+    };
+    SmartSlicingCoordinator coordinator(workspace, executor);
+    coordinator.start();
+    REQUIRE(coordinator.plan_and_slice_candidates({proposal("alternative", workspace.context.revision)}));
+
+    executor.result_for = [](const SliceCandidate& candidate, size_t) {
+        TrialSliceResult result;
+        result.candidate_id    = candidate.id;
+        result.base_revision   = candidate.base_revision;
+        result.status          = TrialSliceStatus::Canceled;
+        result.diagnostic_code = "trial_slice_canceled";
+        return result;
+    };
+    CHECK_FALSE(coordinator.retry_candidate("alternative", true));
+    CHECK(coordinator.snapshot().state == WorkflowState::Canceled);
+    CHECK(coordinator.snapshot().detail == "trial_slice_canceled");
+    CHECK(coordinator.snapshot().candidates.empty());
+    CHECK_FALSE(coordinator.snapshot().comparison);
+    CHECK(coordinator.snapshot().selected_candidate_id.empty());
 }
 
 TEST_CASE("retry discards a completed result when final revision capture is unavailable",
