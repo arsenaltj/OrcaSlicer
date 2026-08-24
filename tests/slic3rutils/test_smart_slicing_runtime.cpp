@@ -190,6 +190,26 @@ TEST_CASE("background trials can defer GUI revision reads while keeping final ap
     CHECK(executor.calls == std::vector<CandidateId>{"baseline"});
 }
 
+TEST_CASE("Orca runtime journal paths isolate data directories and executable instances",
+          "[AI][SmartSlicing][Runtime][Orca][Isolation]")
+{
+    const boost::filesystem::path first_data_dir("first-data-dir");
+    const boost::filesystem::path second_data_dir("second-data-dir");
+    const boost::filesystem::path first =
+        Slic3r::GUI::orca_workflow_runtime_journal_path(first_data_dir, "executable-instance-a");
+    const boost::filesystem::path second_instance =
+        Slic3r::GUI::orca_workflow_runtime_journal_path(first_data_dir, "executable-instance-b");
+    const boost::filesystem::path second_data =
+        Slic3r::GUI::orca_workflow_runtime_journal_path(second_data_dir, "executable-instance-a");
+
+    CHECK(first.parent_path() == first_data_dir / "cache");
+    CHECK(second_data.parent_path() == second_data_dir / "cache");
+    CHECK(first != second_instance);
+    CHECK(first != second_data);
+    CHECK(first.extension() == ".json");
+    CHECK(first.filename().string().find("executable-instance-a") == std::string::npos);
+}
+
 TEST_CASE("Orca runtime store round trips bounded metadata without workspace payloads", "[AI][SmartSlicing][Runtime][Orca]")
 {
     const boost::filesystem::path path = boost::filesystem::temp_directory_path() /

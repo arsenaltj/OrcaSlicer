@@ -4,6 +4,9 @@
 #include <boost/nowide/fstream.hpp>
 #include <nlohmann/json.hpp>
 
+#include <cstdint>
+#include <iomanip>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 
@@ -14,6 +17,20 @@ using namespace AI::SmartSlicing;
 using Json = nlohmann::json;
 
 constexpr uintmax_t MAX_JOURNAL_BYTES = 64 * 1024;
+constexpr uint64_t FNV1A_OFFSET_BASIS = 14695981039346656037ULL;
+constexpr uint64_t FNV1A_PRIME = 1099511628211ULL;
+
+std::string instance_token(const std::string& executable_instance)
+{
+    uint64_t hash = FNV1A_OFFSET_BASIS;
+    for (const unsigned char byte : executable_instance) {
+        hash ^= byte;
+        hash *= FNV1A_PRIME;
+    }
+    std::ostringstream token;
+    token << std::hex << std::setfill('0') << std::setw(16) << hash;
+    return token.str();
+}
 
 Json to_json(const WorkflowRuntimeRecord& record)
 {
@@ -71,6 +88,13 @@ WorkflowRuntimeRecord from_json(const Json& value)
 }
 
 } // namespace
+
+boost::filesystem::path orca_workflow_runtime_journal_path(
+    const boost::filesystem::path& data_directory, const std::string& executable_instance)
+{
+    return data_directory / "cache" /
+           ("OrcaSlicer-smart-slicing-runtime-v1-" + instance_token(executable_instance) + ".json");
+}
 
 OrcaWorkflowRuntimeStore::OrcaWorkflowRuntimeStore(boost::filesystem::path journal_path)
     : m_journal_path(std::move(journal_path))

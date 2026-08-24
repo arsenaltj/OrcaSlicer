@@ -10,8 +10,7 @@
 #include "slic3r/GUI/AI/SmartSlicing/SmartSlicingPresenter.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/Plater.hpp"
-
-#include <boost/filesystem/operations.hpp>
+#include "libslic3r/Utils.hpp"
 
 #include <cstddef>
 #include <memory>
@@ -70,7 +69,7 @@ OrcaSmartSlicingWorkbench::OrcaSmartSlicingWorkbench(Plater& plater, StartSliceF
     , m_official_gateway(std::make_unique<OrcaOfficialSliceGateway>(
           plater, [this] { return m_workspace->current_revision(); }, std::move(start_slice)))
     , m_runtime_store(std::make_unique<OrcaWorkflowRuntimeStore>(
-          boost::filesystem::temp_directory_path() / "OrcaSlicer-smart-slicing-runtime-v1.json"))
+          orca_workflow_runtime_journal_path(Slic3r::data_dir(), wxGetApp().get_instance_hash_string())))
     , m_coordinator(std::make_unique<AI::SmartSlicing::SmartSlicingCoordinator>(
           *m_workspace, *m_cached_trial_executor, *m_official_gateway))
 {

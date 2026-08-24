@@ -241,3 +241,37 @@ the fix only the newest snapshot is published.
 This gate changes no shared `MainFrame`, `Plater`, or CMake file; no configuration, dependency, port, runtime
 journal path, persistent data directory, 3MF/profile format, profile data, or default Orca behavior changes.
 macOS and Linux native build/test execution remains a separate host/CI gate.
+
+## Multi-instance runtime journal isolation gate — 2026-08-24
+
+The recovery journal is now scoped to both the active Orca data directory and executable instance:
+`<datadir>/cache/OrcaSlicer-smart-slicing-runtime-v1-<instance-token>.json`. This prevents independent
+branches or installations from restoring, overwriting, or clearing one another's smart-slicing recovery
+state. The executable-instance value is reduced to a fixed-width FNV-1a token, so raw executable identity
+cannot become a path component or leak through the filename. The existing bounded `v1` journal payload and
+recovery semantics are unchanged.
+
+The former global temporary journal is deliberately neither migrated nor deleted: it may belong to another
+running branch. New workbench sessions no longer read or write it.
+
+### Windows verification
+
+- The path-isolation contract: 1 test case, 6 assertions, all passed. It covers data-directory isolation,
+  executable-instance isolation, cache placement, JSON extension, and raw-instance-name suppression.
+- Runtime focus: 8 test cases, 54 assertions, all passed.
+- Full Release `slic3rutils_tests`: 86 test cases, 576 assertions, all passed.
+- Full RelWithDebInfo `slic3rutils_tests`: 86 test cases, 576 assertions, all passed.
+- Release and RelWithDebInfo `OrcaSlicer` plus `OrcaSlicer_app_gui` built successfully. The existing LNK4075,
+  LNK4098, and non-failing empty-working-directory `info/nozzle_info.json` warnings are unchanged.
+- GUI smoke used only `build-p0/src/Release/orca-slicer.exe`,
+  `build-p0/smart-slicing-gui-smoke-data`, and `tests/data/test_3mf/Geräte/Büchse.3mf`. Starting preflight
+  created `cache/OrcaSlicer-smart-slicing-runtime-v1-5ed96e69b158ee23.json` inside that isolated data
+  directory. The legacy global temporary journal retained its earlier timestamp, proving this session did
+  not rewrite it. `确认并应用` was not clicked.
+- Workspace-local PID 31324 was executable-path verified and stopped. Unrelated integration PIDs 35252 and
+  39428 were neither targeted nor stopped.
+
+This gate intentionally changes only the runtime-journal data location. It changes no configuration schema,
+dependency, network port, journal payload schema, 3MF/profile format, profile data, or default Orca slicing
+behavior. It changes no shared `MainFrame`, `Plater`, or CMake file. macOS and Linux native build/test execution
+remains a separate host/CI gate.

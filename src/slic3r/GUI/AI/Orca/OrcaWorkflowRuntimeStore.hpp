@@ -5,8 +5,12 @@
 #include <boost/filesystem/path.hpp>
 
 #include <mutex>
+#include <string>
 
 namespace Slic3r::GUI {
+
+boost::filesystem::path orca_workflow_runtime_journal_path(
+    const boost::filesystem::path& data_directory, const std::string& executable_instance);
 
 class OrcaWorkflowRuntimeStore final : public AI::SmartSlicing::IWorkflowRuntimeStore
 {
