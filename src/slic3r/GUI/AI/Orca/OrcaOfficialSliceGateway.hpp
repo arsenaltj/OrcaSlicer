@@ -140,13 +140,26 @@ public:
 
     bool undo_last_apply() override
     {
-        if (!m_can_undo || !undo_revision_matches() || !m_undo || !m_undo())
+        if (!m_can_undo)
             return false;
-        m_can_undo = false;
+        if (!undo_revision_matches()) {
+            disable_undo_recovery();
+            return false;
+        }
+        bool undone = false;
+        try {
+            undone = m_undo && m_undo();
+        } catch (...) {
+            // Native recovery is one-shot; failure is projected below without escaping the gateway.
+        }
+        if (!undone) {
+            disable_undo_recovery();
+            return false;
+        }
+        disable_undo_recovery();
         m_workspace_mutated = false;
         m_pending = false;
         m_preview_shown = false;
-        m_undo_revision.reset();
         m_last = {AI::SmartSlicing::OfficialSlicePhase::Prepared, "apply_undone", false, false};
         return true;
     }
@@ -199,6 +212,13 @@ private:
     void clear_preparation() noexcept
     {
         m_prepared_candidate.reset();
+    }
+
+    void disable_undo_recovery() noexcept
+    {
+        m_can_undo = false;
+        m_undo_revision.reset();
+        m_last.can_undo = false;
     }
 
     void capture_undo_revision() noexcept

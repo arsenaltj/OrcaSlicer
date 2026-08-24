@@ -1273,6 +1273,38 @@ TEST_CASE("Orca official gateway preserves native undo recovery when slicing can
     CHECK_FALSE(gateway.undo_last_apply());
 }
 
+TEST_CASE("Orca official gateway consumes native undo ownership after one safe refusal",
+          "[AI][SmartSlicing][Apply][UndoOwnership][TransactionBoundary]")
+{
+    const WorkspaceRevision revision{1, 2, 3, "revision-a"};
+    const bool throw_on_undo = GENERATE(false, true);
+    CAPTURE(throw_on_undo);
+
+    size_t undo_calls = 0;
+    Slic3r::GUI::OrcaOfficialSliceGateway gateway(
+        [revision] { return revision; }, [](const SliceCandidate&) { return std::string{}; },
+        [](const SliceCandidate&) { return Slic3r::GUI::OrcaApplyMutationResult{true, true, {}}; },
+        [] { return false; }, [] { return true; },
+        [&undo_calls, throw_on_undo] {
+            ++undo_calls;
+            if (throw_on_undo)
+                throw std::runtime_error("native undo failed");
+            return false;
+        });
+    SliceCandidate candidate = proposal("candidate", revision);
+
+    REQUIRE(gateway.prepare(candidate, revision).phase == OfficialSlicePhase::Prepared);
+    const OfficialSliceResult failed = gateway.commit(candidate, revision);
+    REQUIRE(failed.phase == OfficialSlicePhase::Failed);
+    REQUIRE(failed.can_undo);
+
+    CHECK_FALSE(gateway.undo_last_apply());
+    CHECK(undo_calls == 1);
+    CHECK_FALSE(gateway.poll().can_undo);
+    CHECK_FALSE(gateway.undo_last_apply());
+    CHECK(undo_calls == 1);
+}
+
 TEST_CASE("Orca official gateway rejects unsupported repair plans before formal actions",
           "[AI][SmartSlicing][Apply][Repair][Boundary]")
 {

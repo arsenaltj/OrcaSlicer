@@ -1268,3 +1268,34 @@ coordinator.
 This batch changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, Domain/Application
 contract, configuration, dependency, port, data directory contract, journal path/schema, 3MF/profile format,
 profile data, or default Orca behavior. macOS and Linux native build/test execution remains a separate host/CI gate.
+
+## Native Undo refusal ownership gate — 2026-08-24
+
+The Orca formal-apply gateway now owns failure containment and one-shot cleanup for native Undo. If the native Undo
+callback reports unavailable or throws, the exception cannot leave the gateway, and the gateway consumes its
+recovery capability by clearing the guarded revision and every outward `can_undo` flag. It retains
+`workspace_mutated=true`, because a failed recovery must not claim that the formal workspace was restored. A later
+call therefore returns false without invoking native Undo again. Successful Undo retains its existing behavior and
+is the only path that clears the mutation fact.
+
+Before this gate, a false callback left `poll().can_undo` true and a second call invoked native Undo again; an
+exception escaped the gateway entirely. The two-input red regression executed 13 assertions before termination
+and reported four failures across those paths. The final contract passes 16 assertions and aligns the real Orca
+gateway with the Coordinator's existing rule that an unavailable recovery is disabled after one safe attempt.
+
+### Windows verification
+
+- Undo-ownership focus: 1 test case with 2 generated inputs and 16 assertions, all passed in Release and
+  RelWithDebInfo.
+- Smart-slicing suite: 118 test cases; 117 passed and the opt-in benchmark remained explicitly skipped, with 790
+  assertions passed in Release and RelWithDebInfo.
+- Default full `slic3rutils_tests`: 128 test cases and 897 assertions, all passed in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings and
+  the non-failing test-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke was not repeated because this is a gateway failure-containment correction with no layout, interaction,
+  startup, candidate generation, trial slicing, or successful formal-apply-path change. The preceding
+  workspace-local isolated-data-directory GUI evidence remains valid.
+
+This batch changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, Domain/Application
+contract, configuration, dependency, port, data directory contract, journal path/schema, 3MF/profile format,
+profile data, or default Orca behavior. macOS and Linux native build/test execution remains a separate host/CI gate.
