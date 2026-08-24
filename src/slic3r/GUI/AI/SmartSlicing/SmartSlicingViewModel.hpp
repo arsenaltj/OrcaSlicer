@@ -40,6 +40,7 @@ struct SmartSlicingCandidateView
     std::optional<bool> physical_slots_compatible;
     std::optional<bool> color_mapping_degraded;
     std::optional<bool> prime_tower_enabled;
+    std::vector<std::string> warning_codes;
     size_t layer_tool_sequence_count{0};
     size_t repair_operation_count{0};
     size_t transformed_instance_count{0};

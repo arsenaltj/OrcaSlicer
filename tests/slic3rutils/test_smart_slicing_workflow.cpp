@@ -477,6 +477,8 @@ TEST_CASE("candidate cards expose baseline deltas selection and retry without wo
             result.metrics->filament_volume_mm3     = candidate.id == "baseline" ? 500.0 : 450.0;
             result.metrics->support_volume_mm3      = candidate.id == "baseline" ? 20.0 : 10.0;
             result.metrics->tool_changes            = candidate.id == "baseline" ? 4 : 2;
+            if (candidate.id == "alternative")
+                result.metrics->warning_codes = {"native_validation_warning", "gcode_warning"};
         }
         return result;
     };
@@ -521,6 +523,8 @@ TEST_CASE("candidate cards expose baseline deltas selection and retry without wo
     CHECK(ready_view.candidates[1].plate_parameter_change_count == 1);
     CHECK(ready_view.candidates[1].brim_width_before == 1.0);
     CHECK(ready_view.candidates[1].brim_width_after == 5.0);
+    CHECK(ready_view.candidates[1].warning_codes ==
+          std::vector<std::string>{"native_validation_warning", "gcode_warning"});
     CHECK(workspace.context.revision.fingerprint == "revision-a");
 }
 

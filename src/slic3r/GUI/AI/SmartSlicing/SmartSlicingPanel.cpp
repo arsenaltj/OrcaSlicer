@@ -194,6 +194,11 @@ wxString candidate_change_summary(const SmartSlicingCandidateView& candidate)
     if (candidate.workspace_parameter_change_count > 0)
         append_line(wxString::Format(_L("工程参数 · 已校验变更：%llu 项"),
                                      static_cast<unsigned long long>(candidate.workspace_parameter_change_count)));
+    if (!candidate.warning_codes.empty())
+        append_line(wxString::Format(_L("试切仍有结构化警告：%llu 项"),
+                                     static_cast<unsigned long long>(candidate.warning_codes.size())));
+    if (candidate.id != "baseline")
+        append_line(_L("确认后：创建一次 Orca 撤销事务，应用以上变更并执行正式切片；成功后进入预览"));
     return summary;
 }
 

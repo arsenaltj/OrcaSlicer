@@ -69,6 +69,7 @@ SmartSlicingViewModel SmartSlicingViewModel::from_snapshot(const AI::SmartSlicin
             card.physical_slots_compatible = metrics.physical_slots_compatible;
             card.color_mapping_degraded    = metrics.color_mapping_degraded;
             card.prime_tower_enabled       = metrics.prime_tower_enabled;
+            card.warning_codes             = metrics.warning_codes;
             card.layer_tool_sequence_count = metrics.layer_tool_sequences.size();
             if (baseline_metrics != nullptr) {
                 if (metrics.estimated_time_seconds && baseline_metrics->estimated_time_seconds)
