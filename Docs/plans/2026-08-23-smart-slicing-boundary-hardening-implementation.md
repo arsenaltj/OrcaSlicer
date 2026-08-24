@@ -554,6 +554,36 @@ or CMake file and no model-generation code, configuration, dependency, port, dat
 3MF/profile format, profile data, or default Orca behavior. macOS and Linux native build/test execution remains a
 separate host/CI gate.
 
+## Apply recovery summary accuracy gate — 2026-08-24
+
+The workbench now promises one-click recovery only when the official gateway actually reports an owned native
+Undo action. A pre-commit compatibility rejection, unavailable revision, or other failure without recovery uses a
+neutral application/slicing failure summary and asks the user to inspect the project state. Failures after a
+mutation that retain an owned Undo action continue to expose the existing recovery summary and button.
+
+The focused projection contract first observed both failure classes producing `official_slice_failed`; it now
+requires a distinct `official_slice_failed_no_recovery` summary when `can_undo_apply` is false.
+
+### Windows verification
+
+- Apply recovery summary focus: 1 test case, 5 assertions, all passed in Release and RelWithDebInfo.
+- Smart-slicing suite excluding the opt-in benchmark: 102 test cases, 638 assertions; 101 passed and the benchmark
+  case remained explicitly skipped in Release and RelWithDebInfo.
+- Full `slic3rutils_tests`: 113 test cases, 745 assertions; 112 passed and the benchmark case remained explicitly
+  skipped in the final sequential Release and RelWithDebInfo matrix.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings are
+  unchanged.
+- One earlier six-process concurrent test launch produced a non-reproducible RelWithDebInfo full-suite failure;
+  the immediate isolated rerun and the complete sequential matrix passed. The recorded release gate therefore
+  uses sequential test-process execution.
+- GUI smoke was not repeated because this changes only state-derived failure text and no control layout or formal
+  write behavior; prior workspace-local isolated-data-directory GUI evidence remains valid.
+
+This gate changes only smart-slicing GUI projection code and its tests. It changes no shared `MainFrame`, `Plater`,
+or CMake file and no model-generation code, configuration, dependency, port, data directory, journal path/schema,
+3MF/profile format, profile data, or default Orca behavior. macOS and Linux native build/test execution remains a
+separate host/CI gate.
+
 ## Candidate retry exception-containment gate — 2026-08-24
 
 Candidate selection and single-candidate retry now contain workspace-revision and trial-executor exceptions at

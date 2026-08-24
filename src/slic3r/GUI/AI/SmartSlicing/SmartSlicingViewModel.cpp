@@ -197,7 +197,8 @@ SmartSlicingViewModel SmartSlicingViewModel::from_snapshot(const AI::SmartSlicin
         view.legacy_steps.fill(LegacyAIWorkflowStatus::Success);
         break;
     case WorkflowState::ApplyFailed:
-        view.summary_key = "official_slice_failed";
+        view.summary_key = snapshot.can_undo_apply ? "official_slice_failed" :
+                                                     "official_slice_failed_no_recovery";
         complete_through(2);
         view.stages[3].status = SmartSlicingStageStatus::NeedsAttention;
         set_legacy_prepared(LegacyAIWorkflowStatus::Failed);

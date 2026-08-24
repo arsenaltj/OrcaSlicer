@@ -573,6 +573,24 @@ TEST_CASE("legacy Sidebar uses the workbench summary for candidate and apply pha
     CHECK_FALSE(slicing == preflight);
 }
 
+TEST_CASE("apply failure summary only promises recovery when native undo is available",
+          "[AI][SmartSlicing][GUI][Apply][Summary]")
+{
+    WorkflowSnapshot snapshot;
+    snapshot.state = WorkflowState::ApplyFailed;
+
+    const auto without_recovery = Slic3r::GUI::SmartSlicingViewModel::from_snapshot(snapshot);
+    CHECK_FALSE(without_recovery.can_undo_apply);
+    CHECK(without_recovery.summary_key == "official_slice_failed_no_recovery");
+
+    snapshot.can_undo_apply = true;
+    const auto with_recovery = Slic3r::GUI::SmartSlicingViewModel::from_snapshot(snapshot);
+    CHECK(with_recovery.can_undo_apply);
+    CHECK(with_recovery.summary_key == "official_slice_failed");
+    CHECK_FALSE(Slic3r::GUI::smart_slicing_summary_text(without_recovery.summary_key) ==
+                Slic3r::GUI::smart_slicing_summary_text(with_recovery.summary_key));
+}
+
 TEST_CASE("candidate cards expose baseline deltas selection and retry without workspace mutation", "[AI][SmartSlicing][Workflow]")
 {
     WorkflowWorkspace workspace;

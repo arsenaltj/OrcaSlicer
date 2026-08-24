@@ -48,6 +48,8 @@ wxString summary_text(const std::string& key)
         return _L("正式切片完成，已进入预览");
     if (key == "official_slice_failed")
         return _L("正式切片失败，可一键撤销本次应用");
+    if (key == "official_slice_failed_no_recovery")
+        return _L("方案应用或正式切片失败，请检查工程状态");
     if (key == "canceling")
         return _L("正在取消…");
     if (key == "canceled")
