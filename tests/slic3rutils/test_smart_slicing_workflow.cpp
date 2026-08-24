@@ -996,6 +996,14 @@ TEST_CASE("placement matrices share finite affine and determinant boundaries",
     CHECK_FALSE(Slic3r::GUI::orca_placement_transform_is_valid(collapsed));
 }
 
+TEST_CASE("plate locks block placement transforms without blocking unchanged slicing",
+          "[AI][SmartSlicing][Apply][Orca][Placement][PlateLock]")
+{
+    CHECK(Slic3r::GUI::orca_placement_respects_plate_lock(false, 1));
+    CHECK(Slic3r::GUI::orca_placement_respects_plate_lock(true, 0));
+    CHECK_FALSE(Slic3r::GUI::orca_placement_respects_plate_lock(true, 1));
+}
+
 TEST_CASE("Orca trial slicing rejects forbidden patches and observes early cancellation", "[AI][SmartSlicing][Workflow][OrcaTrial]")
 {
     SliceCandidate candidate = proposal("candidate", WorkspaceRevision{1, 2, 3, "revision-a"});

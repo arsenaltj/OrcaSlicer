@@ -433,6 +433,37 @@ This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-ge
 dependency, port, data directory, journal path/schema, 3MF/profile format, profile data, or default Orca behavior.
 macOS and Linux native build/test execution remains a separate host/CI gate.
 
+## Plate-lock placement-scope gate — 2026-08-24
+
+The formal transactional gateway now treats the native plate lock as a placement constraint instead of a slicing
+ban. A locked current plate rejects candidates that contain one or more placement transforms, while a baseline or
+parameter-only candidate with no transforms continues through the existing official slicing and typed-config
+path. Placement and orientation providers already emit no transforms for a locked plate, and the gateway remains
+the final guard against a forged or stale placement candidate.
+
+Before the gate, `OrcaOfficialSliceGateway` rejected every candidate on a locked plate, including an unchanged
+baseline and a parameter-only alternative. This was stricter than Orca's native behavior, where plate locking is
+consulted by arrange, orient, and movement operations but does not disable ordinary slicing. The focused contract
+first failed to compile without a shared placement-scope rule, then verified unlocked placement, locked unchanged,
+and locked placement cases.
+
+### Windows verification
+
+- Plate-lock placement-scope focus: 1 test case, 3 assertions, all passed in Release and RelWithDebInfo.
+- Smart-slicing suite excluding the opt-in benchmark: 97 test cases, 609 assertions; 96 passed and the benchmark
+  case remained explicitly skipped in Release and RelWithDebInfo.
+- Full `slic3rutils_tests`: 108 test cases, 716 assertions; 107 passed and the benchmark case remained explicitly
+  skipped in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075, LNK4098, and the
+  non-failing empty-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke was not repeated because this is a nonvisual formal gateway rule with no new interaction; prior
+  workspace-local isolated-data-directory GUI evidence remains valid.
+
+This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, configuration,
+dependency, port, data directory, journal path/schema, 3MF/profile format, profile data, or default Orca behavior.
+It only restores native slicing behavior for locked plates when no placement mutation is requested. macOS and
+Linux native build/test execution remains a separate host/CI gate.
+
 ## Candidate retry exception-containment gate — 2026-08-24
 
 Candidate selection and single-candidate retry now contain workspace-revision and trial-executor exceptions at

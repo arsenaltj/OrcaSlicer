@@ -3,12 +3,18 @@
 #include "libslic3r/Model.hpp"
 
 #include <cmath>
+#include <cstddef>
 
 namespace Slic3r::GUI {
 
 inline bool orca_placement_target_is_eligible(const ModelObject* object, const ModelInstance* instance)
 {
     return object != nullptr && instance != nullptr && object->printable && instance->printable;
+}
+
+inline bool orca_placement_respects_plate_lock(bool plate_locked, std::size_t transform_count)
+{
+    return !plate_locked || transform_count == 0;
 }
 
 inline bool orca_placement_transform_is_valid(const Transform3d& matrix)

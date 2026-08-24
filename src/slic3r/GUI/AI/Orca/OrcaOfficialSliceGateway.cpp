@@ -34,7 +34,7 @@ bool collect_targets(Plater& plater, const AI::SmartSlicing::SliceCandidate& can
         diagnostic = "current_plate_unavailable";
         return false;
     }
-    if (plate->is_locked()) {
+    if (!orca_placement_respects_plate_lock(plate->is_locked(), candidate.placement.transforms.size())) {
         diagnostic = "current_plate_locked";
         return false;
     }
