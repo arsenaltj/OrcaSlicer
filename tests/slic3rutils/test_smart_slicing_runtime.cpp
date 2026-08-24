@@ -235,6 +235,55 @@ TEST_CASE("Orca runtime store round trips bounded metadata without workspace pay
     CHECK_FALSE(boost::filesystem::exists(path));
 }
 
+TEST_CASE("Orca runtime store recovers an interrupted journal publication and clears every generation",
+          "[AI][SmartSlicing][Runtime][Orca][Recovery]")
+{
+    ScopedRuntimeDirectory directory(
+        boost::filesystem::temp_directory_path() /
+        boost::filesystem::unique_path("orca-smart-runtime-recovery-%%%%-%%%%"));
+    const boost::filesystem::path journal_path = directory.path() / "workflow.json";
+    boost::filesystem::path backup_path = journal_path;
+    backup_path += ".bak";
+    boost::filesystem::path temporary_path = journal_path;
+    temporary_path += ".tmp";
+    Slic3r::GUI::OrcaWorkflowRuntimeStore store(journal_path);
+    const WorkflowRuntimeRecord record{13, WorkflowState::TrialSlicingCandidates, {7, 8, 9, "recovery-revision"},
+                                       {{"candidate", CandidateGoal::Stability, CandidateStatus::TrialSlicing}},
+                                       "trial_slicing_candidate", 789};
+
+    store.save(record);
+    boost::filesystem::rename(journal_path, backup_path);
+    {
+        std::ofstream interrupted_temporary(temporary_path.string(), std::ios::binary | std::ios::trunc);
+        interrupted_temporary << "partial";
+    }
+
+    const std::optional<WorkflowRuntimeRecord> recovered = store.load();
+    CHECK(recovered.has_value());
+    if (recovered)
+        CHECK(recovered->workflow_id == record.workflow_id);
+
+    WorkflowRuntimeRecord resumed = record;
+    resumed.detail = "resumed";
+    resumed.updated_at_epoch_seconds = 790;
+    store.save(resumed);
+    WorkflowRuntimeRecord latest = resumed;
+    latest.detail = "latest";
+    latest.updated_at_epoch_seconds = 791;
+    store.save(latest);
+    const std::optional<WorkflowRuntimeRecord> republished = store.load();
+    REQUIRE(republished);
+    CHECK(republished->detail == "latest");
+    CHECK(boost::filesystem::exists(journal_path));
+    CHECK_FALSE(boost::filesystem::exists(backup_path));
+    CHECK_FALSE(boost::filesystem::exists(temporary_path));
+
+    store.clear(record.workflow_id);
+    CHECK_FALSE(boost::filesystem::exists(journal_path));
+    CHECK_FALSE(boost::filesystem::exists(backup_path));
+    CHECK_FALSE(boost::filesystem::exists(temporary_path));
+}
+
 TEST_CASE("Orca runtime store supports Unicode data directories", "[AI][SmartSlicing][Runtime][Orca][Portability]")
 {
 #if defined(_WIN32)

@@ -242,6 +242,36 @@ This gate changes no shared `MainFrame`, `Plater`, or CMake file; no configurati
 journal path, persistent data directory, 3MF/profile format, profile data, or default Orca behavior changes.
 macOS and Linux native build/test execution remains a separate host/CI gate.
 
+## Crash-resilient runtime journal publication gate — 2026-08-24
+
+Runtime metadata publication now keeps two complete same-directory generations. A save first writes and closes
+the bounded `.tmp` payload, atomically renames the prior primary to `.bak`, then renames the complete temporary
+generation to the primary path. If publication fails, the adapter attempts to restore the prior primary before
+reporting failure. Loading falls back to a valid backup when an interrupted publication left the primary absent
+or unreadable, and terminal cleanup removes primary, temporary, and backup generations.
+
+The recovery contract simulates the precise interruption window with a valid `.bak` and partial `.tmp`, verifies
+the prior workflow summary is recovered, then performs repeated saves and proves the newest primary wins without
+leaving side generations. Before the implementation, recovery was empty and cleanup left the backup behind.
+
+### Windows verification
+
+- Interrupted-publication focus: 1 test case, 10 assertions, all passed in Release and RelWithDebInfo.
+- Runtime suite: 9 test cases, 64 assertions, all passed.
+- Smart-slicing suite excluding the opt-in benchmark: 79 test cases, 503 assertions, all passed in Release and
+  RelWithDebInfo.
+- Full `slic3rutils_tests`: 90 test cases, 610 assertions, all passed in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075, LNK4098, and the
+  non-failing empty-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke was not repeated because this adapter-only change has no visual, interaction, candidate, or formal
+  workspace-write behavior; prior workspace-local isolated GUI evidence remains applicable.
+
+The scoped primary journal path and bounded JSON v1 payload are unchanged. `.tmp` and `.bak` are private,
+transient siblings in the same isolated `datadir/cache` and never enter 3MF/profile data. This gate changes no
+shared `MainFrame`, `Plater`, or CMake file and no model-generation code, configuration, dependency, port,
+persistent schema, profile/default data, or ordinary Orca behavior. macOS and Linux native build/test execution
+remains a separate host/CI gate.
+
 ## Multi-instance runtime journal isolation gate — 2026-08-24
 
 The recovery journal is now scoped to both the active Orca data directory and executable instance:

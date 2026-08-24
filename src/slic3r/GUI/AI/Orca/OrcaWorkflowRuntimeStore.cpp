@@ -87,6 +87,25 @@ WorkflowRuntimeRecord from_json(const Json& value)
     return record;
 }
 
+boost::filesystem::path sibling_generation(const boost::filesystem::path& journal_path, const char* suffix)
+{
+    boost::filesystem::path path = journal_path;
+    path += suffix;
+    return path;
+}
+
+std::optional<WorkflowRuntimeRecord> load_record(const boost::filesystem::path& path)
+{
+    if (!boost::filesystem::exists(path))
+        return std::nullopt;
+    if (boost::filesystem::file_size(path) > MAX_JOURNAL_BYTES)
+        throw std::runtime_error("Smart-slicing runtime journal exceeds its size limit.");
+    boost::nowide::ifstream stream(path, std::ios::binary);
+    if (!stream)
+        throw std::runtime_error("Smart-slicing runtime journal is unreadable.");
+    return from_json(Json::parse(stream));
+}
+
 } // namespace
 
 boost::filesystem::path orca_workflow_runtime_journal_path(
@@ -103,15 +122,18 @@ OrcaWorkflowRuntimeStore::OrcaWorkflowRuntimeStore(boost::filesystem::path journ
 std::optional<AI::SmartSlicing::WorkflowRuntimeRecord> OrcaWorkflowRuntimeStore::load()
 {
     std::lock_guard<std::mutex> lock(m_mutex);
-    if (!boost::filesystem::exists(m_journal_path))
-        return std::nullopt;
-    if (boost::filesystem::file_size(m_journal_path) > MAX_JOURNAL_BYTES)
-        throw std::runtime_error("Smart-slicing runtime journal exceeds its size limit.");
-    boost::nowide::ifstream stream(m_journal_path, std::ios::binary);
-    if (!stream)
-        throw std::runtime_error("Smart-slicing runtime journal is unreadable.");
-    WorkflowRuntimeRecord record = from_json(Json::parse(stream));
-    m_known_workflow_id = record.workflow_id;
+    const boost::filesystem::path backup = sibling_generation(m_journal_path, ".bak");
+    std::optional<WorkflowRuntimeRecord> record;
+    try {
+        record = load_record(m_journal_path);
+    } catch (...) {
+        if (!boost::filesystem::exists(backup))
+            throw;
+    }
+    if (!record)
+        record = load_record(backup);
+    if (record)
+        m_known_workflow_id = record->workflow_id;
     return record;
 }
 
@@ -122,8 +144,8 @@ void OrcaWorkflowRuntimeStore::save(const AI::SmartSlicing::WorkflowRuntimeRecor
     if (serialized.size() > MAX_JOURNAL_BYTES)
         throw std::runtime_error("Smart-slicing runtime journal exceeds its size limit.");
     boost::filesystem::create_directories(m_journal_path.parent_path());
-    boost::filesystem::path temporary = m_journal_path;
-    temporary += ".tmp";
+    const boost::filesystem::path temporary = sibling_generation(m_journal_path, ".tmp");
+    const boost::filesystem::path backup = sibling_generation(m_journal_path, ".bak");
     {
         boost::nowide::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
         if (!stream)
@@ -133,11 +155,41 @@ void OrcaWorkflowRuntimeStore::save(const AI::SmartSlicing::WorkflowRuntimeRecor
             throw std::runtime_error("Smart-slicing runtime journal write failed.");
     }
     boost::system::error_code error;
-    boost::filesystem::remove(m_journal_path, error);
+    boost::filesystem::remove(backup, error);
+    if (error) {
+        boost::system::error_code cleanup_error;
+        boost::filesystem::remove(temporary, cleanup_error);
+        throw boost::filesystem::filesystem_error(
+            "Unable to clear the previous smart-slicing runtime journal backup.", error);
+    }
+
+    const bool had_journal = boost::filesystem::exists(m_journal_path);
+    if (had_journal) {
+        boost::filesystem::rename(m_journal_path, backup, error);
+        if (error) {
+            boost::system::error_code cleanup_error;
+            boost::filesystem::remove(temporary, cleanup_error);
+            throw boost::filesystem::filesystem_error(
+                "Unable to preserve the previous smart-slicing runtime journal.", error);
+        }
+    }
+
     error.clear();
     boost::filesystem::rename(temporary, m_journal_path, error);
-    if (error)
-        throw boost::filesystem::filesystem_error("Unable to publish smart-slicing runtime journal.", error);
+    if (error) {
+        const boost::system::error_code publish_error = error;
+        if (had_journal) {
+            error.clear();
+            boost::filesystem::rename(backup, m_journal_path, error);
+            if (error)
+                throw boost::filesystem::filesystem_error(
+                    "Unable to restore the previous smart-slicing runtime journal.", error);
+        }
+        boost::filesystem::remove(temporary, error);
+        throw boost::filesystem::filesystem_error(
+            "Unable to publish smart-slicing runtime journal.", publish_error);
+    }
+    boost::filesystem::remove(backup, error);
     m_known_workflow_id = record.workflow_id;
 }
 
@@ -148,9 +200,10 @@ void OrcaWorkflowRuntimeStore::clear(AI::SmartSlicing::WorkflowId workflow_id)
         return;
     boost::system::error_code error;
     boost::filesystem::remove(m_journal_path, error);
-    boost::filesystem::path temporary = m_journal_path;
-    temporary += ".tmp";
-    boost::filesystem::remove(temporary, error);
+    error.clear();
+    boost::filesystem::remove(sibling_generation(m_journal_path, ".tmp"), error);
+    error.clear();
+    boost::filesystem::remove(sibling_generation(m_journal_path, ".bak"), error);
     m_known_workflow_id = 0;
 }
 
