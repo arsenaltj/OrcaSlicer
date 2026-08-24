@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 from pathlib import Path
 import sys
@@ -17,6 +18,42 @@ SPEC.loader.exec_module(BOOTSTRAP)
 
 
 class InstalledBootstrapTests(unittest.TestCase):
+    def test_internal_defaults_load_only_allowlisted_missing_environment_values(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            defaults_path = Path(directory) / "defaults.json"
+            defaults_path.write_text(json.dumps({
+                "version": 1,
+                "OPENAI_API_KEY": "packaged-openai",
+                "OPENAI_BASE_URL": "https://internal.example/v1",
+                "TRIPO_API_KEY": "packaged-tripo",
+            }), encoding="utf-8")
+            environment = {
+                "OPENAI_API_KEY": "explicit-openai",
+            }
+            with mock.patch.dict(os.environ, environment, clear=True):
+                loaded = BOOTSTRAP.load_internal_defaults(defaults_path)
+                self.assertEqual(os.environ["OPENAI_API_KEY"], "explicit-openai")
+                self.assertEqual(os.environ["OPENAI_BASE_URL"], "https://internal.example/v1")
+                self.assertEqual(os.environ["TRIPO_API_KEY"], "packaged-tripo")
+                self.assertEqual(loaded, ("OPENAI_BASE_URL", "TRIPO_API_KEY"))
+
+    def test_internal_defaults_reject_unknown_malformed_and_oversized_payloads(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            defaults_path = Path(directory) / "defaults.json"
+            invalid_payloads = (
+                "not-json",
+                json.dumps({"version": True, "OPENAI_API_KEY": "secret"}),
+                json.dumps({"version": 1, "OPENAI_API_KEY": "secret", "UNEXPECTED": "value"}),
+                json.dumps({"version": 1, "OPENAI_API_KEY": "secret\nvalue"}),
+                " " * (BOOTSTRAP.MAX_INTERNAL_DEFAULTS_BYTES + 1),
+            )
+            for payload in invalid_payloads:
+                with self.subTest(payload_size=len(payload)):
+                    defaults_path.write_text(payload, encoding="utf-8")
+                    with mock.patch.dict(os.environ, {}, clear=True):
+                        self.assertEqual(BOOTSTRAP.load_internal_defaults(defaults_path), ())
+                        self.assertNotIn("OPENAI_API_KEY", os.environ)
+
     def test_configure_runtime_uses_data_directory_and_preserves_override(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             override = str(Path(directory) / "custom-output")

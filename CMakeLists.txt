@@ -1111,6 +1111,7 @@ if (WIN32)
     install(DIRECTORY "${SLIC3R_RESOURCES_DIR}/" DESTINATION "./resources")
     option(ORCA_AI_WINDOWS_INSTALLER "Package the integrated local AI runtime in the Windows installer" OFF)
     set(ORCA_AI_PACKAGE_REVISION "local" CACHE STRING "Revision label used by the OrcaSlicer AI installer")
+    set(ORCA_AI_INTERNAL_DEFAULTS_FILE "" CACHE FILEPATH "Optional package-only OrcaSlicer AI defaults payload")
     if(ORCA_AI_WINDOWS_INSTALLER)
         set(ORCA_AI_SIDECAR_RUNTIME_FILES
             "${CMAKE_SOURCE_DIR}/tools/ai/ai_diagnostics.py"
@@ -1124,6 +1125,14 @@ if (WIN32)
             "${CMAKE_SOURCE_DIR}/tools/ai/printable_visual_quality.py"
             "${CMAKE_SOURCE_DIR}/tools/ai/tripo_client.py")
         install(FILES ${ORCA_AI_SIDECAR_RUNTIME_FILES} DESTINATION "./resources/tools/ai")
+        if(ORCA_AI_INTERNAL_DEFAULTS_FILE)
+            if(NOT EXISTS "${ORCA_AI_INTERNAL_DEFAULTS_FILE}")
+                message(FATAL_ERROR "ORCA_AI_INTERNAL_DEFAULTS_FILE does not exist")
+            endif()
+            install(FILES "${ORCA_AI_INTERNAL_DEFAULTS_FILE}"
+                DESTINATION "./resources/tools/ai"
+                RENAME "orca_ai_internal_defaults.json")
+        endif()
     endif()
     if(ORCA_BUNDLED_UV_EXECUTABLE)
         install(PROGRAMS "${ORCA_BUNDLED_UV_EXECUTABLE}" DESTINATION "./resources/tools/uv" RENAME "${ORCA_BUNDLED_UV_FILENAME}")
