@@ -222,6 +222,7 @@ SlicingMetrics OrcaTrialSliceExecutor::extract_metrics(const GCodeProcessorResul
 
 TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice(const SliceCandidate& candidate)
 {
+    const std::lock_guard<std::mutex> execution_lock(m_execution_mutex);
     TrialSliceResult result;
     result.candidate_id  = candidate.id;
     result.base_revision = candidate.base_revision;

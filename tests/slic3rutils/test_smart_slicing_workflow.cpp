@@ -12,9 +12,14 @@
 #include "libslic3r/TriangleMesh.hpp"
 
 #include <algorithm>
+#include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <functional>
+#include <future>
+#include <mutex>
 #include <stdexcept>
+#include <thread>
 
 using namespace Slic3r::AI::SmartSlicing;
 using namespace Slic3r;
@@ -1048,6 +1053,62 @@ TEST_CASE("Orca trial placement cannot target an unprintable object",
     const TrialSliceResult result = executor.execute_trial_slice(candidate);
     CHECK(result.status == TrialSliceStatus::Failed);
     CHECK(result.diagnostic_code == "invalid_candidate_placement");
+}
+
+TEST_CASE("Orca trial executor serializes concurrent slice requests",
+          "[AI][SmartSlicing][Workflow][OrcaTrial][Concurrency]")
+{
+    std::mutex provider_mutex;
+    std::condition_variable provider_changed;
+    size_t provider_entries = 0;
+    bool release_first = false;
+    Slic3r::GUI::OrcaTrialSliceExecutor executor([&] {
+        std::unique_lock<std::mutex> lock(provider_mutex);
+        ++provider_entries;
+        provider_changed.notify_all();
+        if (provider_entries == 1)
+            provider_changed.wait(lock, [&] { return release_first; });
+        Slic3r::GUI::OrcaTrialSliceInput input;
+        input.config = DynamicPrintConfig::full_print_config();
+        return input;
+    });
+    const SliceCandidate candidate = proposal("serialized-trial", WorkspaceRevision{1, 2, 3, "revision-a"});
+    TrialSliceResult first_result;
+    TrialSliceResult second_result;
+
+    std::thread first([&] { first_result = executor.execute_trial_slice(candidate); });
+    bool first_entered = false;
+    {
+        std::unique_lock<std::mutex> lock(provider_mutex);
+        first_entered = provider_changed.wait_for(
+            lock, std::chrono::seconds(5), [&] { return provider_entries == 1; });
+    }
+    std::promise<void> second_started;
+    std::future<void> second_started_future = second_started.get_future();
+    std::thread second([&] {
+        second_started.set_value();
+        second_result = executor.execute_trial_slice(candidate);
+    });
+    const bool second_invoked =
+        second_started_future.wait_for(std::chrono::seconds(5)) == std::future_status::ready;
+
+    bool entered_concurrently = false;
+    {
+        std::unique_lock<std::mutex> lock(provider_mutex);
+        entered_concurrently = provider_changed.wait_for(
+            lock, std::chrono::milliseconds(500), [&] { return provider_entries > 1; });
+        release_first = true;
+    }
+    provider_changed.notify_all();
+    first.join();
+    second.join();
+
+    CHECK(first_entered);
+    CHECK(second_invoked);
+    CHECK_FALSE(entered_concurrently);
+    CHECK(provider_entries == 2);
+    CHECK(first_result.status == TrialSliceStatus::Failed);
+    CHECK(second_result.status == TrialSliceStatus::Failed);
 }
 
 TEST_CASE("benchmark isolated trial slicing and successful cache hits",

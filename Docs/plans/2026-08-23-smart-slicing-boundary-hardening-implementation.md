@@ -607,3 +607,33 @@ This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-ge
 dependency, port, data directory, journal path/schema, 3MF/profile format, profile data, or default Orca behavior.
 It only removes non-printing geometry from advisory evidence. macOS and Linux native build/test execution remains
 a separate host/CI gate.
+
+## Trial-execution serialization gate — 2026-08-24
+
+`OrcaTrialSliceExecutor` now serializes its complete execution boundary with one mutex. Even if a caller outside
+the current sequential Application workflow issues overlapping requests, only one request can own an active Orca
+`Print`, input snapshot, deadline, temporary G-code lifecycle, and cancellation target at a time. Cancellation
+remains independent of the execution mutex, so it can still interrupt the active print while another request is
+waiting.
+
+Before the gate, two calls entered the input provider concurrently and could replace `m_active_print`; a cancel
+signal would then target only the most recently registered Print. The focused two-thread contract held the first
+request at the provider boundary and observed the second entering concurrently (`entered_concurrently == true`).
+After the gate, the second request does not enter until the first has completed and both requests terminate
+normally.
+
+### Windows verification
+
+- Trial concurrency focus: 1 test case, 6 assertions, all passed in Release and RelWithDebInfo.
+- Smart-slicing suite excluding the opt-in benchmark: 93 test cases, 600 assertions, all passed in Release and
+  RelWithDebInfo; the benchmark case remained explicitly skipped.
+- Full `slic3rutils_tests`: 104 test cases, 707 assertions, all passed in Release and RelWithDebInfo; the benchmark
+  case remained explicitly skipped.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075, LNK4098, and the
+  non-failing empty-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke was not repeated because this is a nonvisual Orca execution-ownership gate with no interaction or
+  formal-write-path change; prior workspace-local isolated-data-directory GUI evidence remains valid.
+
+This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, configuration,
+dependency, port, data directory, journal path/schema, 3MF/profile format, profile data, or default Orca behavior.
+macOS and Linux native build/test execution remains a separate host/CI gate.

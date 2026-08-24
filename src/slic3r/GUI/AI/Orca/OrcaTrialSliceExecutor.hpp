@@ -54,6 +54,7 @@ private:
                                                              bool prime_tower_enabled);
 
     InputProvider m_input_provider;
+    std::mutex m_execution_mutex;
     std::atomic<bool> m_cancel_requested{false};
     std::atomic<bool> m_timed_out{false};
     std::mutex m_active_print_mutex;
