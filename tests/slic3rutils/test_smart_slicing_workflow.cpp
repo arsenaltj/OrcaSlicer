@@ -81,6 +81,7 @@ class FakeTrialSliceExecutor final : public ITrialSliceExecutor
 public:
     std::vector<CandidateId> calls;
     size_t cancel_count{0};
+    bool throw_on_cancel{false};
     std::function<TrialSliceResult(const SliceCandidate&, size_t)> result_for;
 
     TrialSliceResult execute_trial_slice(const SliceCandidate& candidate) override
@@ -100,7 +101,12 @@ public:
         return result;
     }
 
-    void cancel_trial_slice() override { ++cancel_count; }
+    void cancel_trial_slice() override
+    {
+        ++cancel_count;
+        if (throw_on_cancel)
+            throw std::runtime_error("cancel signal failed");
+    }
 };
 
 class FakeOfficialSliceGateway final : public IOfficialSliceGateway
@@ -189,6 +195,29 @@ TEST_CASE("failed and canceled trial results are not cached and cancellation del
     CHECK(delegate.calls.size() == 4);
 
     cache.cancel_trial_slice();
+    CHECK(delegate.cancel_count == 1);
+}
+
+TEST_CASE("trial cache converts execution exceptions and absorbs cancellation exceptions",
+          "[AI][SmartSlicing][Workflow][Cache][ExceptionBoundary]")
+{
+    FakeTrialSliceExecutor delegate;
+    delegate.result_for = [](const SliceCandidate&, size_t) -> TrialSliceResult {
+        throw std::runtime_error("delegate execution failed");
+    };
+    delegate.throw_on_cancel = true;
+    CachingTrialSliceExecutor cache(delegate);
+    const SliceCandidate candidate = proposal("candidate", WorkspaceRevision{1, 2, 3, "revision-a"});
+
+    const TrialSliceResult first = cache.execute_trial_slice(candidate);
+    CHECK(first.candidate_id == candidate.id);
+    CHECK(first.base_revision == candidate.base_revision);
+    CHECK(first.status == TrialSliceStatus::Failed);
+    CHECK_FALSE(first.metrics.has_value());
+    CHECK(first.diagnostic_code == "trial_slice_executor_exception");
+    CHECK(cache.execute_trial_slice(candidate).status == TrialSliceStatus::Failed);
+    CHECK(delegate.calls.size() == 2);
+    CHECK_NOTHROW(cache.cancel_trial_slice());
     CHECK(delegate.cancel_count == 1);
 }
 
@@ -285,6 +314,36 @@ TEST_CASE("coordinator trial slices baseline first and retains it after an alter
     CHECK(coordinator.snapshot().comparison->recommended_candidate_id == "good-alternative");
 }
 
+TEST_CASE("alternative executor exceptions become explicit failures while the baseline remains available",
+          "[AI][SmartSlicing][Workflow][ExceptionBoundary]")
+{
+    WorkflowWorkspace workspace;
+    FakeTrialSliceExecutor executor;
+    executor.result_for = [](const SliceCandidate& candidate, size_t) {
+        if (candidate.id == "alternative")
+            throw std::runtime_error("alternative executor failed");
+
+        TrialSliceResult result;
+        result.candidate_id  = candidate.id;
+        result.base_revision = candidate.base_revision;
+        result.status        = TrialSliceStatus::Succeeded;
+        result.metrics       = SlicingMetrics{};
+        result.metrics->estimated_time_seconds = 100.0;
+        return result;
+    };
+    SmartSlicingCoordinator coordinator(workspace, executor);
+    coordinator.start();
+
+    REQUIRE(coordinator.plan_and_slice_candidates({proposal("alternative", workspace.context.revision)}));
+    REQUIRE(coordinator.snapshot().candidates.size() == 2);
+    CHECK(coordinator.snapshot().state == WorkflowState::ReadyToApply);
+    CHECK(coordinator.snapshot().candidates[0].status == CandidateStatus::Ready);
+    CHECK(coordinator.snapshot().candidates[1].status == CandidateStatus::Failed);
+    CHECK(coordinator.snapshot().candidates[1].diagnostic_code == "trial_slice_executor_exception");
+    CHECK(coordinator.snapshot().comparison->recommended_candidate_id == "baseline");
+    CHECK(coordinator.snapshot().selected_candidate_id == "baseline");
+}
+
 TEST_CASE("successful baseline trial resolves only unavailable native validation evidence",
           "[AI][SmartSlicing][Workflow]")
 {
@@ -352,6 +411,28 @@ TEST_CASE("cancel during a trial state propagates before executor work starts", 
 
     CHECK_FALSE(coordinator.plan_and_slice_candidates());
     CHECK(coordinator.snapshot().state == WorkflowState::Canceled);
+    CHECK(executor.cancel_count == 1);
+    CHECK(executor.calls.empty());
+    CHECK(coordinator.snapshot().candidates.empty());
+    CHECK_FALSE(coordinator.snapshot().comparison);
+}
+
+TEST_CASE("cancel reaches a clean terminal state even when the executor cancel signal throws",
+          "[AI][SmartSlicing][Workflow][ExceptionBoundary]")
+{
+    WorkflowWorkspace workspace;
+    FakeTrialSliceExecutor executor;
+    executor.throw_on_cancel = true;
+    SmartSlicingCoordinator coordinator(workspace, executor);
+    coordinator.start();
+    coordinator.set_observer([&coordinator](const WorkflowSnapshot& snapshot) {
+        if (snapshot.state == WorkflowState::TrialSlicingBaseline)
+            coordinator.cancel();
+    });
+
+    CHECK_FALSE(coordinator.plan_and_slice_candidates());
+    CHECK(coordinator.snapshot().state == WorkflowState::Canceled);
+    CHECK(coordinator.snapshot().detail == "canceled");
     CHECK(executor.cancel_count == 1);
     CHECK(executor.calls.empty());
     CHECK(coordinator.snapshot().candidates.empty());

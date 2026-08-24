@@ -170,8 +170,13 @@ void SmartSlicingCoordinator::cancel()
     const bool trial_slice_running = m_snapshot.state == WorkflowState::TrialSlicingBaseline ||
                                      m_snapshot.state == WorkflowState::TrialSlicingCandidates;
     transition(WorkflowState::Canceling, "canceling");
-    if (trial_slice_running && m_trial_slice_executor != nullptr)
-        m_trial_slice_executor->cancel_trial_slice();
+    if (trial_slice_running && m_trial_slice_executor != nullptr) {
+        try {
+            m_trial_slice_executor->cancel_trial_slice();
+        } catch (...) {
+            // Cancellation is best effort. Terminal cleanup must not depend on the adapter.
+        }
+    }
     m_snapshot.candidates.clear();
     m_snapshot.comparison.reset();
     m_snapshot.selected_candidate_id.clear();
@@ -250,7 +255,15 @@ bool SmartSlicingCoordinator::plan_and_slice_candidates(std::vector<SliceCandida
 
             SliceCandidate& candidate = m_snapshot.candidates[index];
             candidate.status          = CandidateStatus::TrialSlicing;
-            TrialSliceResult result   = m_trial_slice_executor->execute_trial_slice(candidate);
+            TrialSliceResult result;
+            try {
+                result = m_trial_slice_executor->execute_trial_slice(candidate);
+            } catch (...) {
+                result.candidate_id    = candidate.id;
+                result.base_revision   = candidate.base_revision;
+                result.status          = TrialSliceStatus::Failed;
+                result.diagnostic_code = "trial_slice_executor_exception";
+            }
 
             if (!defer_revision_checks && !workspace_revision_matches()) {
                 for (SliceCandidate& planned : m_snapshot.candidates)

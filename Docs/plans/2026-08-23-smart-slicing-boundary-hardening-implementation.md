@@ -432,3 +432,32 @@ adapter overflow.
 This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, configuration,
 dependency, port, data directory, journal path/schema, 3MF/profile format, profile data, or default Orca behavior.
 macOS and Linux native build/test execution remains a separate host/CI gate.
+
+## Trial-executor exception-boundary gate — 2026-08-24
+
+Trial execution failures are now represented as explicit failed results with the stable
+`trial_slice_executor_exception` diagnostic instead of escaping the Application boundary. The cache wrapper
+does not retain these failed results, and the coordinator independently contains an uncaught executor exception
+as defense in depth. An alternative failure therefore leaves a successful baseline available, selected, and
+ready to apply; a baseline failure continues to fail the workflow without exposing an infrastructure exception.
+
+Cancellation signaling is now best effort at both the caching executor and coordinator boundaries. Even if an
+adapter throws while receiving the signal, candidate and comparison state is cleared and the workflow reaches
+the deterministic `Canceled` terminal state. Before this gate, the three focused contracts all failed: execution
+escaped the cache, an alternative exception failed the entire workflow, and a cancel exception left the workflow
+in `Failed` with candidate state retained.
+
+### Windows verification
+
+- Exception-boundary focus: 3 test cases, 24 assertions, all passed in Release and RelWithDebInfo.
+- Smart-slicing suite excluding the opt-in benchmark: 86 test cases, 556 assertions, all passed in Release and
+  RelWithDebInfo; the benchmark case remained explicitly skipped.
+- Full `slic3rutils_tests`: 97 test cases, 663 assertions, all passed in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075, LNK4098, and the
+  non-failing empty-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI fault injection was not repeated because this gate changes only nonvisual Application exception handling;
+  the prior workspace-local, isolated-data-directory ordinary-slice GUI verification remains valid.
+
+This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, formal apply
+gateway, configuration, dependency, port, data directory, journal path/schema, 3MF/profile format, profile data,
+or default Orca behavior. macOS and Linux native build/test execution remains a separate host/CI gate.

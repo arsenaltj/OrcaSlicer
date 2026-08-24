@@ -26,7 +26,7 @@ public:
     TrialSliceResult execute_trial_slice(const SliceCandidate& candidate) override
     {
         if (m_maximum_entries == 0)
-            return m_delegate.execute_trial_slice(candidate);
+            return execute_delegate(candidate);
 
         const std::string key = candidate_key(candidate);
         {
@@ -36,7 +36,7 @@ public:
                 return found->second;
         }
 
-        TrialSliceResult result = m_delegate.execute_trial_slice(candidate);
+        TrialSliceResult result = execute_delegate(candidate);
         if (result.status != TrialSliceStatus::Succeeded || !result.metrics ||
             result.candidate_id != candidate.id || result.base_revision != candidate.base_revision)
             return result;
@@ -53,9 +53,30 @@ public:
         return result;
     }
 
-    void cancel_trial_slice() override { m_delegate.cancel_trial_slice(); }
+    void cancel_trial_slice() override
+    {
+        try {
+            m_delegate.cancel_trial_slice();
+        } catch (...) {
+            // Cancellation is best effort. The coordinator must still finish terminal cleanup.
+        }
+    }
 
 private:
+    TrialSliceResult execute_delegate(const SliceCandidate& candidate)
+    {
+        try {
+            return m_delegate.execute_trial_slice(candidate);
+        } catch (...) {
+            TrialSliceResult result;
+            result.candidate_id    = candidate.id;
+            result.base_revision   = candidate.base_revision;
+            result.status          = TrialSliceStatus::Failed;
+            result.diagnostic_code = "trial_slice_executor_exception";
+            return result;
+        }
+    }
+
     static void append_uint64(std::string& key, uint64_t value)
     {
         for (size_t index = 0; index < sizeof(value); ++index) {
