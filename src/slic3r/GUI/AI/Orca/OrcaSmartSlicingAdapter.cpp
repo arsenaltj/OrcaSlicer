@@ -109,7 +109,8 @@ bool OrcaSmartSlicingAdapter::focus_object(uint64_t object_id) const
     return true;
 }
 
-OrcaTrialSliceInput OrcaSmartSlicingAdapter::capture_trial_slice_input() const
+OrcaTrialSliceInput OrcaSmartSlicingAdapter::capture_trial_slice_input(
+    const AI::SmartSlicing::WorkspaceContext* context) const
 {
     if (m_plater == nullptr || wxGetApp().preset_bundle == nullptr)
         throw std::runtime_error("Orca workspace is unavailable.");
@@ -126,6 +127,11 @@ OrcaTrialSliceInput OrcaSmartSlicingAdapter::capture_trial_slice_input() const
     input.plate_id                 = plate->id().id;
     input.plate_name               = plate->get_plate_name();
     input.extruder_filament_info   = wxGetApp().preset_bundle->get_extruder_filament_info();
+    if (context != nullptr) {
+        input.physical_slots_compatible =
+            orca_physical_slots_compatible(context->multicolor.physical_slot_compatibility);
+        input.color_mapping_degraded = context->multicolor.color_mapping_degraded;
+    }
     return input;
 }
 

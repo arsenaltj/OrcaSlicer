@@ -2,6 +2,7 @@
 
 #include "libslic3r/Model.hpp"
 #include "libslic3r/PrintConfig.hpp"
+#include "slic3r/AI/SmartSlicing/Domain/WorkspaceContext.hpp"
 #include "slic3r/AI/SmartSlicing/Ports/ITrialSliceExecutor.hpp"
 
 #include <atomic>
@@ -19,6 +20,20 @@ struct GCodeProcessorResult;
 
 namespace GUI {
 
+inline std::optional<bool>
+orca_physical_slots_compatible(AI::SmartSlicing::PhysicalSlotCompatibility compatibility)
+{
+    using AI::SmartSlicing::PhysicalSlotCompatibility;
+    switch (compatibility) {
+    case PhysicalSlotCompatibility::NotApplicable:
+    case PhysicalSlotCompatibility::Compatible: return true;
+    case PhysicalSlotCompatibility::Incompatible:
+    case PhysicalSlotCompatibility::InvalidTemperatureRange: return false;
+    case PhysicalSlotCompatibility::Unavailable: return std::nullopt;
+    }
+    return std::nullopt;
+}
+
 struct OrcaTrialSliceInput
 {
     Model model;
@@ -27,6 +42,8 @@ struct OrcaTrialSliceInput
     int64_t plate_id{-1};
     std::string plate_name;
     std::vector<std::vector<DynamicPrintConfig>> extruder_filament_info;
+    std::optional<bool> physical_slots_compatible;
+    std::optional<bool> color_mapping_degraded;
 };
 
 class OrcaTrialSliceExecutor final : public AI::SmartSlicing::ITrialSliceExecutor
@@ -51,7 +68,9 @@ private:
     bool apply_placement(Model& model, const AI::SmartSlicing::PlacementCandidate& placement) const;
     static AI::SmartSlicing::SlicingMetrics extract_metrics(const GCodeProcessorResult& result,
                                                              const std::vector<int>& expected_filament_mapping,
-                                                             bool prime_tower_enabled);
+                                                             bool prime_tower_enabled,
+                                                             std::optional<bool> physical_slots_compatible,
+                                                             std::optional<bool> color_mapping_degraded);
 
     InputProvider m_input_provider;
     std::mutex m_execution_mutex;

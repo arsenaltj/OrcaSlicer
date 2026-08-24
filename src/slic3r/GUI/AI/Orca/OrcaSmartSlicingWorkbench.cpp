@@ -92,7 +92,7 @@ OrcaSmartSlicingWorkbench::OrcaSmartSlicingWorkbench(Plater& plater, StartSliceF
             const auto& snapshot = m_coordinator->snapshot();
             if (!snapshot.context)
                 return {};
-            m_trial_executor->prepare_session_input(m_workspace->capture_trial_slice_input());
+            m_trial_executor->prepare_session_input(m_workspace->capture_trial_slice_input(&*snapshot.context));
             std::optional<OrcaCandidateProposalTask> prepared =
                 m_workspace->prepare_candidate_proposals(*snapshot.context);
             if (!prepared)

@@ -464,6 +464,37 @@ dependency, port, data directory, journal path/schema, 3MF/profile format, profi
 It only restores native slicing behavior for locked plates when no placement mutation is requested. macOS and
 Linux native build/test execution remains a separate host/CI gate.
 
+## Trial multicolor evidence-availability gate — 2026-08-24
+
+Isolated trial metrics now preserve the workflow snapshot's physical-slot compatibility evidence. Compatible and
+single-material/not-applicable contexts become explicit `true`, incompatible and invalid-temperature contexts
+become explicit `false`, and unavailable evidence remains unavailable. The same session input carries the captured
+color-mapping degradation flag; generated G-code mapping evidence can only retain or worsen that flag, never erase
+an already detected degradation.
+
+Before the gate, every successful trial unconditionally set `physical_slots_compatible` to `true`, even when
+preflight could not establish compatibility. That converted missing evidence into a fabricated success and made
+candidate cards/comparison data disagree with the immutable workspace context. The focused contract first failed
+to compile without the explicit compatibility mapper, then verified all five domain states. The real isolated
+slice contract also verifies that adapter-less input keeps both compatibility and mapping evidence unavailable.
+
+### Windows verification
+
+- Multicolor evidence-availability focus: 1 test case, 5 assertions, all passed in Release and RelWithDebInfo.
+- Real isolated ownership/evidence focus: 1 test case, 14 assertions, all passed in Release.
+- Smart-slicing suite excluding the opt-in benchmark: 98 test cases, 616 assertions; 97 passed and the benchmark
+  case remained explicitly skipped in Release and RelWithDebInfo.
+- Full `slic3rutils_tests`: 109 test cases, 723 assertions; 108 passed and the benchmark case remained explicitly
+  skipped in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings are
+  unchanged.
+- GUI smoke was not repeated because this is a nonvisual evidence-propagation correction; prior workspace-local
+  isolated-data-directory GUI evidence remains valid.
+
+This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, configuration,
+dependency, port, data directory, journal path/schema, 3MF/profile format, profile data, or default Orca behavior.
+macOS and Linux native build/test execution remains a separate host/CI gate.
+
 ## Candidate retry exception-containment gate — 2026-08-24
 
 Candidate selection and single-candidate retry now contain workspace-revision and trial-executor exceptions at

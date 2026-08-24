@@ -921,6 +921,8 @@ TEST_CASE("Orca trial slicing owns model config print and gcode copies", "[AI][S
     CHECK(result.metrics->filament_volume_mm3.value_or(0.0) > 0.0);
     CHECK(result.metrics->bed_adhesion_risk_score.value_or(0.0) >= 1.0);
     CHECK(result.metrics->brim_volume_mm3.has_value());
+    CHECK_FALSE(result.metrics->physical_slots_compatible.has_value());
+    CHECK_FALSE(result.metrics->color_mapping_degraded.has_value());
     REQUIRE(formal_model.objects.size() == 1);
     CHECK(formal_model.objects.front()->id() == object_id);
     REQUIRE(formal_model.objects.front()->instances.size() == 1);
@@ -1002,6 +1004,16 @@ TEST_CASE("plate locks block placement transforms without blocking unchanged sli
     CHECK(Slic3r::GUI::orca_placement_respects_plate_lock(false, 1));
     CHECK(Slic3r::GUI::orca_placement_respects_plate_lock(true, 0));
     CHECK_FALSE(Slic3r::GUI::orca_placement_respects_plate_lock(true, 1));
+}
+
+TEST_CASE("Orca trial input preserves physical-slot compatibility availability",
+          "[AI][SmartSlicing][Workflow][OrcaTrial][Multicolor][EvidenceAvailability]")
+{
+    CHECK(Slic3r::GUI::orca_physical_slots_compatible(PhysicalSlotCompatibility::NotApplicable) == true);
+    CHECK(Slic3r::GUI::orca_physical_slots_compatible(PhysicalSlotCompatibility::Compatible) == true);
+    CHECK(Slic3r::GUI::orca_physical_slots_compatible(PhysicalSlotCompatibility::Incompatible) == false);
+    CHECK(Slic3r::GUI::orca_physical_slots_compatible(PhysicalSlotCompatibility::InvalidTemperatureRange) == false);
+    CHECK_FALSE(Slic3r::GUI::orca_physical_slots_compatible(PhysicalSlotCompatibility::Unavailable).has_value());
 }
 
 TEST_CASE("Orca trial slicing rejects forbidden patches and observes early cancellation", "[AI][SmartSlicing][Workflow][OrcaTrial]")

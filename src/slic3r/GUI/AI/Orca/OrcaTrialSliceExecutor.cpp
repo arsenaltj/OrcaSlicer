@@ -184,7 +184,9 @@ bool OrcaTrialSliceExecutor::apply_placement(Model& model, const PlacementCandid
 
 SlicingMetrics OrcaTrialSliceExecutor::extract_metrics(const GCodeProcessorResult& result,
                                                        const std::vector<int>& expected_filament_mapping,
-                                                       bool prime_tower_enabled)
+                                                       bool prime_tower_enabled,
+                                                       std::optional<bool> physical_slots_compatible,
+                                                       std::optional<bool> color_mapping_degraded)
 {
     const PrintEstimatedStatistics& statistics = result.print_statistics;
     SlicingMetrics metrics;
@@ -197,11 +199,13 @@ SlicingMetrics OrcaTrialSliceExecutor::extract_metrics(const GCodeProcessorResul
     metrics.flush_volume_mm3       = sum_values(statistics.flush_per_filament);
     metrics.wipe_tower_volume_mm3  = sum_values(statistics.wipe_tower_volumes_per_extruder);
     metrics.tool_changes           = statistics.total_filament_changes;
-    metrics.physical_slots_compatible = true;
+    metrics.physical_slots_compatible = physical_slots_compatible;
+    metrics.color_mapping_degraded    = color_mapping_degraded;
     metrics.prime_tower_enabled       = prime_tower_enabled;
     if (!result.filament_maps.empty()) {
         metrics.filament_to_physical_slot = result.filament_maps;
-        metrics.color_mapping_degraded    = result.filament_maps != expected_filament_mapping;
+        metrics.color_mapping_degraded    = metrics.color_mapping_degraded.value_or(false) ||
+                                            result.filament_maps != expected_filament_mapping;
     }
     metrics.filament_change_sequence.reserve(result.filament_change_sequence.size());
     for (const unsigned int filament : result.filament_change_sequence)
@@ -335,7 +339,8 @@ TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice(const SliceCandidat
             result.diagnostic_code = "workflow_disk_budget_exceeded";
             return result;
         }
-        result.metrics = extract_metrics(gcode_result, expected_filament_mapping, prime_tower_enabled);
+        result.metrics = extract_metrics(gcode_result, expected_filament_mapping, prime_tower_enabled,
+                                         input.physical_slots_compatible, input.color_mapping_degraded);
         result.metrics->bed_adhesion_risk_score = bed_adhesion_risk;
         result.metrics->warning_codes.insert(result.metrics->warning_codes.end(), validation_warnings.size(),
                                              "native_validation_warning");

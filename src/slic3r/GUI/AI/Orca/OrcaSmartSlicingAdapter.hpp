@@ -22,7 +22,8 @@ public:
     AI::SmartSlicing::WorkspaceRevision current_revision() const override;
     AI::SmartSlicing::WorkspaceContext capture_context() const override;
     bool focus_object(uint64_t object_id) const;
-    OrcaTrialSliceInput capture_trial_slice_input() const;
+    OrcaTrialSliceInput capture_trial_slice_input(
+        const AI::SmartSlicing::WorkspaceContext* context = nullptr) const;
     std::optional<OrcaCandidateProposalTask>
     prepare_candidate_proposals(const AI::SmartSlicing::WorkspaceContext& context) const;
 
