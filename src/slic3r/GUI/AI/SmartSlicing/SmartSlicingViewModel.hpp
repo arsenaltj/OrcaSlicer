@@ -41,6 +41,15 @@ struct SmartSlicingCandidateView
     std::optional<bool> color_mapping_degraded;
     std::optional<bool> prime_tower_enabled;
     size_t layer_tool_sequence_count{0};
+    size_t repair_operation_count{0};
+    size_t transformed_instance_count{0};
+    size_t plate_parameter_change_count{0};
+    size_t object_parameter_change_count{0};
+    size_t material_parameter_change_count{0};
+    size_t workspace_parameter_change_count{0};
+    std::optional<double> brim_width_before;
+    std::optional<double> brim_width_after;
+    bool repair_changes_geometry_semantics{false};
     bool recommended{false};
     bool selected{false};
     bool failed{false};

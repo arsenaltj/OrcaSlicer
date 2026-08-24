@@ -37,6 +37,25 @@ SmartSlicingViewModel SmartSlicingViewModel::from_snapshot(const AI::SmartSlicin
         card.failed          = candidate.status == AI::SmartSlicing::CandidateStatus::Failed;
         card.can_retry       = snapshot.state == WorkflowState::ReadyToApply && card.failed;
         card.can_select      = snapshot.state == WorkflowState::ReadyToApply && !card.failed;
+        card.transformed_instance_count = candidate.placement.transforms.size();
+        if (candidate.repair) {
+            card.repair_operation_count = candidate.repair->operation_codes.size();
+            card.repair_changes_geometry_semantics = candidate.repair->changes_geometry_semantics;
+        }
+        for (const AI::SmartSlicing::ConfigPatchEntry& entry : candidate.parameters.entries) {
+            switch (entry.scope) {
+            case AI::SmartSlicing::ConfigScope::Plate: ++card.plate_parameter_change_count; break;
+            case AI::SmartSlicing::ConfigScope::Object: ++card.object_parameter_change_count; break;
+            case AI::SmartSlicing::ConfigScope::Material: ++card.material_parameter_change_count; break;
+            case AI::SmartSlicing::ConfigScope::Workspace: ++card.workspace_parameter_change_count; break;
+            }
+            if (entry.key != "brim_width")
+                continue;
+            if (const auto* value = std::get_if<double>(&entry.expected_value))
+                card.brim_width_before = *value;
+            if (const auto* value = std::get_if<double>(&entry.new_value))
+                card.brim_width_after = *value;
+        }
         if (card.recommended && snapshot.comparison)
             card.evidence_codes = snapshot.comparison->recommendation_evidence_codes;
         if (candidate.metrics) {

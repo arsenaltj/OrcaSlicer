@@ -302,13 +302,17 @@ AI::SmartSlicing::WorkspaceContext OrcaSmartSlicingAdapter::capture_context_impl
         for (size_t instance_index = 0; instance_index < object->instances.size(); ++instance_index) {
             if (!plate->contain_instance(static_cast<int>(object_index), static_cast<int>(instance_index)))
                 continue;
-            ++instance_count;
-            if (include_diagnostics)
-                outside |= plate->check_outside(static_cast<int>(object_index), static_cast<int>(instance_index));
             const ModelInstance* instance = object->instances[instance_index];
+            if (instance == nullptr)
+                continue;
             model_stream << "instance:" << instance->id().id << ':' << instance->timestamp() << ':' << instance->printable << ':'
                          << instance->auto_drop << ':' << instance->arrange_order << ':';
             append_matrix(model_stream, instance->get_matrix());
+            if (!object->printable || !instance->printable)
+                continue;
+            ++instance_count;
+            if (include_diagnostics)
+                outside |= plate->check_outside(static_cast<int>(object_index), static_cast<int>(instance_index));
         }
         if (instance_count == 0)
             continue;

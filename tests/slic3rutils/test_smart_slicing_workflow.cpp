@@ -482,7 +482,17 @@ TEST_CASE("candidate cards expose baseline deltas selection and retry without wo
     };
     SmartSlicingCoordinator coordinator(workspace, executor);
     coordinator.start();
-    REQUIRE(coordinator.plan_and_slice_candidates({proposal("alternative", workspace.context.revision)}));
+    SliceCandidate alternative = proposal("alternative", workspace.context.revision);
+    alternative.repair = RepairPlan{{"repair_open_edges"}, false};
+    alternative.placement.transforms.push_back({42, 84, {}});
+    alternative.parameters.entries.push_back({ConfigScope::Plate,
+                                                PresetOwner::Process,
+                                                3,
+                                                "brim_width",
+                                                1.0,
+                                                5.0,
+                                                "improve_small_footprint_adhesion"});
+    REQUIRE(coordinator.plan_and_slice_candidates({std::move(alternative)}));
 
     Slic3r::GUI::SmartSlicingViewModel failed_view =
         Slic3r::GUI::SmartSlicingViewModel::from_snapshot(coordinator.snapshot());
@@ -506,6 +516,11 @@ TEST_CASE("candidate cards expose baseline deltas selection and retry without wo
     CHECK(ready_view.candidates[1].filament_delta_mm3 == -50.0);
     CHECK(ready_view.candidates[1].support_delta_mm3 == -10.0);
     CHECK(ready_view.candidates[1].tool_change_delta == -2);
+    CHECK(ready_view.candidates[1].repair_operation_count == 1);
+    CHECK(ready_view.candidates[1].transformed_instance_count == 1);
+    CHECK(ready_view.candidates[1].plate_parameter_change_count == 1);
+    CHECK(ready_view.candidates[1].brim_width_before == 1.0);
+    CHECK(ready_view.candidates[1].brim_width_after == 5.0);
     CHECK(workspace.context.revision.fingerprint == "revision-a");
 }
 
@@ -744,6 +759,24 @@ TEST_CASE("Orca trial slicing rejects forbidden patches and observes early cance
     const TrialSliceResult canceled = canceled_executor.execute_trial_slice(candidate);
     CHECK(canceled.status == TrialSliceStatus::Canceled);
     CHECK(canceled.diagnostic_code == "trial_slice_canceled");
+}
+
+TEST_CASE("Orca trial slicing rejects an input without printable objects", "[AI][SmartSlicing][Workflow][OrcaTrial]")
+{
+    Slic3r::GUI::OrcaTrialSliceInput input = tiny_trial_input();
+    REQUIRE(input.model.objects.size() == 1);
+    REQUIRE(input.model.objects.front()->instances.size() == 1);
+    input.model.objects.front()->instances.front()->printable = false;
+
+    Slic3r::GUI::OrcaTrialSliceExecutor executor([input = std::move(input)]() mutable { return std::move(input); });
+    SliceCandidate candidate = proposal("candidate", WorkspaceRevision{1, 2, 3, "revision-a"});
+    candidate.status = CandidateStatus::Draft;
+    candidate.metrics.reset();
+
+    const TrialSliceResult result = executor.execute_trial_slice(candidate);
+
+    CHECK(result.status == TrialSliceStatus::Failed);
+    CHECK(result.diagnostic_code == "trial_no_printable_objects");
 }
 
 TEST_CASE("Orca trial slicing enforces execution memory timeout and disk budgets", "[AI][SmartSlicing][Workflow][OrcaTrial][Runtime]")

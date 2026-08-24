@@ -290,6 +290,11 @@ TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice(const SliceCandidat
                                                                                     std::vector<int>{};
         const bool prime_tower_enabled = input.config.opt_bool("enable_prime_tower");
         trial_print.apply(input.model, std::move(input.config));
+        if (trial_print.objects().empty()) {
+            result.status          = TrialSliceStatus::Failed;
+            result.diagnostic_code = "trial_no_printable_objects";
+            return result;
+        }
 
         std::vector<StringObjectException> validation_warnings;
         const StringObjectException validation_error = trial_print.validate(&validation_warnings);

@@ -127,6 +127,12 @@ wxString candidate_reason(const SmartSlicingCandidateView& candidate)
     if (candidate.id == "baseline")
         return _L("当前正式工作区的只读基线。");
     wxString reason = candidate.recommended ? _L("推荐方案。") : _L("可选方案。");
+    if (candidate.explanation == "native_arrange_stability_candidate")
+        reason += _L(" 使用 Orca 原生摆盘约束生成。");
+    else if (candidate.explanation == "native_auto_orientation_stability_candidate")
+        reason += _L(" 使用 Orca 原生多指标自动朝向生成。");
+    else if (candidate.explanation == "small_or_slender_footprint_brim_candidate")
+        reason += _L(" 针对小底面或细长模型增强首层附着。");
     for (const std::string& evidence : candidate.evidence_codes) {
         if (evidence == "fewer_slice_warnings")
             reason += _L(" 切片警告更少。");
@@ -148,12 +154,55 @@ wxString candidate_reason(const SmartSlicingCandidateView& candidate)
     return reason;
 }
 
+wxString candidate_change_summary(const SmartSlicingCandidateView& candidate)
+{
+    wxString summary;
+    const auto append_line = [&summary](const wxString& line) {
+        if (!summary.empty())
+            summary += "\n";
+        summary += _L("• ") + line;
+    };
+    if (candidate.repair_operation_count > 0) {
+        wxString repair = wxString::Format(_L("网格修复：%llu 项"),
+                                           static_cast<unsigned long long>(candidate.repair_operation_count));
+        if (candidate.repair_changes_geometry_semantics)
+            repair += _L("（会改变几何语义）");
+        append_line(repair);
+    }
+    if (candidate.transformed_instance_count > 0) {
+        const wxString action = candidate.explanation == "native_auto_orientation_stability_candidate" ?
+            _L("自动朝向") : _L("方向或摆盘");
+        append_line(wxString::Format(_L("%s：%llu 个实例"), action.c_str(),
+                                     static_cast<unsigned long long>(candidate.transformed_instance_count)));
+    }
+    size_t described_plate_parameters = 0;
+    if (candidate.brim_width_before && candidate.brim_width_after) {
+        append_line(wxString::Format(_L("打印板参数 · 附着边宽度：%.2f mm → %.2f mm"),
+                                     *candidate.brim_width_before, *candidate.brim_width_after));
+        described_plate_parameters = 1;
+    }
+    if (candidate.plate_parameter_change_count > described_plate_parameters)
+        append_line(wxString::Format(_L("打印板参数 · 其他已校验变更：%llu 项"),
+                                     static_cast<unsigned long long>(candidate.plate_parameter_change_count -
+                                                                     described_plate_parameters)));
+    if (candidate.object_parameter_change_count > 0)
+        append_line(wxString::Format(_L("对象参数 · 已校验变更：%llu 项"),
+                                     static_cast<unsigned long long>(candidate.object_parameter_change_count)));
+    if (candidate.material_parameter_change_count > 0)
+        append_line(wxString::Format(_L("材料参数 · 已校验变更：%llu 项"),
+                                     static_cast<unsigned long long>(candidate.material_parameter_change_count)));
+    if (candidate.workspace_parameter_change_count > 0)
+        append_line(wxString::Format(_L("工程参数 · 已校验变更：%llu 项"),
+                                     static_cast<unsigned long long>(candidate.workspace_parameter_change_count)));
+    return summary;
+}
+
 } // namespace
 
 SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSlicingCoordinator& coordinator,
                                      PrepareCandidatesFn prepare_candidates, CancelTrialFn cancel_trial,
                                      FocusIssueFn focus_issue)
-    : wxPanel(parent)
+    : wxScrolledWindow(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVSCROLL)
     , m_coordinator(coordinator)
     , m_prepare_candidates(std::move(prepare_candidates))
     , m_cancel_trial(std::move(cancel_trial))
@@ -161,6 +210,7 @@ SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSl
     , m_revision_timer(this)
 {
     SetBackgroundColour(wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOW));
+    SetScrollRate(0, FromDIP(10));
     auto* root        = new wxBoxSizer(wxVERTICAL);
     auto* title       = new wxStaticText(this, wxID_ANY, _L("智能切片"));
     wxFont title_font = title->GetFont();
@@ -210,10 +260,15 @@ SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSl
         controls.metrics = new wxStaticText(controls.panel, wxID_ANY, "");
         controls.reason  = new wxStaticText(controls.panel, wxID_ANY, "");
         controls.reason->Wrap(FromDIP(300));
+        controls.changes = new wxStaticText(controls.panel, wxID_ANY, "");
+        controls.changes->Wrap(FromDIP(300));
+        controls.details = new wxButton(controls.panel, wxID_ANY, _L("查看全部变更"));
         controls.retry = new wxButton(controls.panel, wxID_ANY, _L("重试此方案"));
         box->Add(controls.selector, 0, wxEXPAND | wxALL, FromDIP(8));
         box->Add(controls.metrics, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(8));
         box->Add(controls.reason, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(8));
+        box->Add(controls.changes, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(8));
+        box->Add(controls.details, 0, wxALIGN_RIGHT | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(8));
         box->Add(controls.retry, 0, wxALIGN_RIGHT | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(8));
         controls.panel->SetSizer(box);
         candidate_root->Add(controls.panel, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
@@ -226,6 +281,15 @@ SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSl
                 run_in_background([this, candidate_id = m_candidate_ids[index]] {
                     m_coordinator.retry_candidate(candidate_id, true);
                 });
+        });
+        controls.details->Bind(wxEVT_BUTTON, [this, index](wxCommandEvent&) {
+            m_candidate_details_expanded[index] = !m_candidate_details_expanded[index];
+            m_candidate_controls[index].changes->Show(m_candidate_details_expanded[index]);
+            m_candidate_controls[index].details->SetLabel(
+                m_candidate_details_expanded[index] ? _L("收起变更") : _L("查看全部变更"));
+            m_candidate_controls[index].panel->Layout();
+            Layout();
+            FitInside();
         });
     }
     auto* candidate_actions = new wxBoxSizer(wxHORIZONTAL);
@@ -382,11 +446,14 @@ void SmartSlicingPanel::render(const SmartSlicingViewModel& view_model)
         CandidateControls& controls = m_candidate_controls[index];
         const bool visible = index < view_model.candidates.size();
         controls.panel->Show(visible);
+        const std::string previous_candidate_id = m_candidate_ids[index];
         m_candidate_ids[index].clear();
         if (!visible)
             continue;
         const SmartSlicingCandidateView& candidate = view_model.candidates[index];
         m_candidate_ids[index] = candidate.id;
+        if (previous_candidate_id != candidate.id)
+            m_candidate_details_expanded[index] = false;
         controls.selector->SetLabel(candidate.id == "baseline" ? _L("当前方案（基线）") :
                                     candidate.recommended ? _L("推荐候选") : _L("候选方案"));
         controls.selector->SetValue(candidate.selected);
@@ -419,6 +486,11 @@ void SmartSlicingPanel::render(const SmartSlicingViewModel& view_model)
         }
         controls.metrics->SetLabel(metrics);
         controls.reason->SetLabel(candidate_reason(candidate));
+        const wxString changes = candidate_change_summary(candidate);
+        controls.changes->SetLabel(changes);
+        controls.changes->Show(!changes.empty() && m_candidate_details_expanded[index]);
+        controls.details->SetLabel(m_candidate_details_expanded[index] ? _L("收起变更") : _L("查看全部变更"));
+        controls.details->Show(candidate.id != "baseline" && !changes.empty());
         controls.retry->Show(candidate.can_retry);
     }
     m_keep_baseline->Enable(std::any_of(view_model.candidates.begin(), view_model.candidates.end(),
@@ -435,6 +507,7 @@ void SmartSlicingPanel::render(const SmartSlicingViewModel& view_model)
     else if (!view_model.can_cancel && !view_model.needs_polling && m_revision_timer.IsRunning())
         m_revision_timer.Stop();
     Layout();
+    FitInside();
 }
 
 void SmartSlicingPanel::on_revision_timer(wxTimerEvent&)

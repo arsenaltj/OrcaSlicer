@@ -7,7 +7,7 @@
 #include <cstdint>
 #include <functional>
 #include <thread>
-#include <wx/panel.h>
+#include <wx/scrolwin.h>
 #include <wx/timer.h>
 
 class wxButton;
@@ -21,7 +21,7 @@ class SmartSlicingCoordinator;
 
 namespace Slic3r::GUI {
 
-class SmartSlicingPanel final : public wxPanel
+class SmartSlicingPanel final : public wxScrolledWindow
 {
 public:
     using CancelPredicate = std::function<bool()>;
@@ -44,6 +44,8 @@ private:
         wxRadioButton* selector{nullptr};
         wxStaticText* metrics{nullptr};
         wxStaticText* reason{nullptr};
+        wxStaticText* changes{nullptr};
+        wxButton* details{nullptr};
         wxButton* retry{nullptr};
     };
 
@@ -63,6 +65,7 @@ private:
     wxPanel* m_candidate_section{nullptr};
     std::array<CandidateControls, 3> m_candidate_controls{};
     std::array<std::string, 3> m_candidate_ids{};
+    std::array<bool, 3> m_candidate_details_expanded{};
     wxButton* m_keep_baseline{nullptr};
     wxButton* m_apply{nullptr};
     wxButton* m_undo_apply{nullptr};
