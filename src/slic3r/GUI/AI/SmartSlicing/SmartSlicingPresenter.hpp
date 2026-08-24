@@ -3,8 +3,9 @@
 #include "SmartSlicingViewModel.hpp"
 #include "slic3r/AI/SmartSlicing/Application/SmartSlicingCoordinator.hpp"
 
-#include <functional>
 #include <atomic>
+#include <cstdint>
+#include <functional>
 #include <memory>
 
 namespace Slic3r::GUI {
@@ -27,6 +28,7 @@ private:
     ViewChangedFn m_view_changed;
     DispatchFn m_dispatch;
     std::shared_ptr<std::atomic<bool>> m_alive;
+    std::shared_ptr<std::atomic<uint64_t>> m_publish_sequence;
 };
 
 } // namespace Slic3r::GUI

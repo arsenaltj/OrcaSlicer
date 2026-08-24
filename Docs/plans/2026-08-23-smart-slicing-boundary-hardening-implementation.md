@@ -209,3 +209,35 @@ Windows Release evidence with three samples and a 50 ms warm-up: the isolated ti
 86.1 ms, while a successful cache hit averaged about 0.551 us. These values are machine-specific and are
 recorded only as the first regression-comparison baseline; correctness and resource-budget gates remain the
 portable pass/fail criteria.
+
+## Asynchronous UI ordering gate — 2026-08-24
+
+Background candidate generation intentionally avoids reading `Plater` from the worker thread, but that also
+defers workspace-revision validation until control returns to the UI thread. The panel now schedules an
+immediate UI-thread revision refresh when background work finishes. The callback is guarded by a wx weak
+reference, so closing or destroying the workbench cannot leave a live panel callback behind.
+
+Presenter publications carry a monotonically increasing sequence. A delayed older dispatch is discarded
+instead of replacing a newer workflow view. The contract test runs all four preflight publications in reverse
+dispatch order; before the fix the final view regressed from `preflight_complete` to `ready_to_start`, and after
+the fix only the newest snapshot is published.
+
+### Windows verification
+
+- Presenter focus: 1 test case, 4 assertions, all passed.
+- Smart-slicing suite: 75 test cases, 463 assertions passed; the opt-in benchmark remains skipped by default.
+- Full Release `slic3rutils_tests`: 85 test cases, 570 assertions, all passed.
+- Full RelWithDebInfo `slic3rutils_tests`: 85 test cases, 570 assertions, all passed.
+- Release and RelWithDebInfo `OrcaSlicer` plus `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and
+  LNK4098 warnings are unchanged.
+- GUI smoke used only `build-p0/src/Release/orca-slicer.exe`, the existing workspace-local
+  `build-p0/smart-slicing-gui-smoke-data`, and `tests/data/test_3mf/Geräte/Büchse.3mf`. Preflight and isolated
+  candidate trial slicing completed, the final view remained `candidates_ready`, the native-validation warning
+  resolved after the baseline trial, and baseline plus the recommended orientation candidate were visible.
+  `确认并应用` was not clicked, so no formal model/config/slice mutation was performed.
+- Workspace-local PID 37776 was path-verified and stopped after the smoke. Unrelated integration PIDs 35252
+  and 39428 were neither targeted nor stopped.
+
+This gate changes no shared `MainFrame`, `Plater`, or CMake file; no configuration, dependency, port, runtime
+journal path, persistent data directory, 3MF/profile format, profile data, or default Orca behavior changes.
+macOS and Linux native build/test execution remains a separate host/CI gate.

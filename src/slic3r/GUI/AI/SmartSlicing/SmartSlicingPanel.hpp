@@ -29,11 +29,12 @@ public:
         std::function<std::vector<AI::SmartSlicing::SliceCandidate>(CancelPredicate)>;
     using PrepareCandidatesFn = std::function<CandidatePlanTask()>;
     using CancelTrialFn = std::function<void()>;
+    using FinalizeBackgroundFn = std::function<void()>;
     using FocusIssueFn = std::function<void(uint64_t)>;
 
     SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSlicingCoordinator& coordinator,
                       PrepareCandidatesFn prepare_candidates = {}, CancelTrialFn cancel_trial = {},
-                      FocusIssueFn focus_issue = {});
+                      FinalizeBackgroundFn finalize_background = {}, FocusIssueFn focus_issue = {});
     ~SmartSlicingPanel() override;
     void render(const SmartSlicingViewModel& view_model);
 
@@ -55,6 +56,7 @@ private:
     AI::SmartSlicing::SmartSlicingCoordinator& m_coordinator;
     PrepareCandidatesFn m_prepare_candidates;
     CancelTrialFn m_cancel_trial;
+    FinalizeBackgroundFn m_finalize_background;
     FocusIssueFn m_focus_issue;
     std::array<wxStaticText*, 4> m_stage_labels{};
     wxStaticText* m_summary{nullptr};

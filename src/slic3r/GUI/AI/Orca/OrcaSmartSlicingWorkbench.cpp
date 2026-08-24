@@ -104,6 +104,7 @@ OrcaSmartSlicingWorkbench::OrcaSmartSlicingWorkbench(Plater& plater, StartSliceF
             };
         },
         [this] { m_cached_trial_executor->cancel_trial_slice(); },
+        [this] { m_coordinator->refresh_revision(); },
         [this](uint64_t object_id) { m_workspace->focus_object(object_id); });
     m_presenter->set_view_changed([this](const SmartSlicingViewModel& view) {
         m_panel->render(view);

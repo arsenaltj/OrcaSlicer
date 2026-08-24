@@ -3,6 +3,7 @@
 #include <stdexcept>
 
 #include "slic3r/AI/SmartSlicing/Application/SmartSlicingCoordinator.hpp"
+#include "slic3r/GUI/AI/SmartSlicing/SmartSlicingPresenter.hpp"
 #include "slic3r/GUI/AI/SmartSlicing/SmartSlicingViewModel.hpp"
 
 using namespace Slic3r::AI::SmartSlicing;
@@ -266,6 +267,31 @@ TEST_CASE("coordinator publishes deterministic synchronous preflight transitions
     CHECK(states[1] == WorkflowState::CapturingContext);
     CHECK(states[2] == WorkflowState::Preflighting);
     CHECK(states[3] == WorkflowState::ReadyForCandidatePlanning);
+}
+
+TEST_CASE("smart slicing presenter ignores superseded dispatched snapshots",
+          "[AI][SmartSlicing][Presenter]")
+{
+    FakeWorkspace workspace;
+    workspace.context.materials.push_back({"material", "#FFFFFF"});
+    SmartSlicingCoordinator coordinator(workspace);
+    std::vector<std::function<void()>> pending;
+    Slic3r::GUI::SmartSlicingPresenter presenter(
+        coordinator, [&pending](std::function<void()> publish) { pending.push_back(std::move(publish)); });
+    std::vector<std::string> summaries;
+    presenter.set_view_changed([&summaries](const Slic3r::GUI::SmartSlicingViewModel& view) {
+        summaries.push_back(view.summary_key);
+    });
+
+    coordinator.start();
+
+    REQUIRE(pending.size() == 4);
+    for (auto publish = pending.rbegin(); publish != pending.rend(); ++publish)
+        (*publish)();
+
+    REQUIRE(summaries.size() == 2);
+    CHECK(summaries.back() == "preflight_complete");
+    CHECK(presenter.view_model().summary_key == "preflight_complete");
 }
 
 TEST_CASE("minimum printability prerequisites use stable issue ordering", "[AI][SmartSlicing]")

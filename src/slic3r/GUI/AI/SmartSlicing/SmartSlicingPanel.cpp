@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <utility>
+#include <wx/app.h>
 #include <wx/button.h>
 #include <wx/radiobut.h>
 #include <wx/settings.h>
@@ -14,6 +15,7 @@
 #include <wx/statbox.h>
 #include <wx/statline.h>
 #include <wx/stattext.h>
+#include <wx/weakref.h>
 
 namespace Slic3r::GUI {
 namespace {
@@ -206,11 +208,12 @@ wxString candidate_change_summary(const SmartSlicingCandidateView& candidate)
 
 SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSlicingCoordinator& coordinator,
                                      PrepareCandidatesFn prepare_candidates, CancelTrialFn cancel_trial,
-                                     FocusIssueFn focus_issue)
+                                     FinalizeBackgroundFn finalize_background, FocusIssueFn focus_issue)
     : wxScrolledWindow(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVSCROLL)
     , m_coordinator(coordinator)
     , m_prepare_candidates(std::move(prepare_candidates))
     , m_cancel_trial(std::move(cancel_trial))
+    , m_finalize_background(std::move(finalize_background))
     , m_focus_issue(std::move(focus_issue))
     , m_revision_timer(this)
 {
@@ -388,13 +391,20 @@ bool SmartSlicingPanel::run_in_background(std::function<void()> work)
     m_cancel_requested.store(false, std::memory_order_release);
     if (m_worker.joinable())
         m_worker.join();
-    m_worker = std::thread([this, work = std::move(work)] {
+    const wxWeakRef<SmartSlicingPanel> weak_panel(this);
+    m_worker = std::thread([this, weak_panel, work = std::move(work)] {
         try {
             work();
         } catch (...) {
             m_coordinator.cancel();
         }
         m_worker_running.store(false, std::memory_order_release);
+        if (wxTheApp != nullptr) {
+            wxTheApp->CallAfter([weak_panel] {
+                if (weak_panel && weak_panel->m_finalize_background)
+                    weak_panel->m_finalize_background();
+            });
+        }
     });
     return true;
 }
