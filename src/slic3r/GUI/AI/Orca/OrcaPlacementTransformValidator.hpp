@@ -1,10 +1,15 @@
 #pragma once
 
-#include "libslic3r/Geometry.hpp"
+#include "libslic3r/Model.hpp"
 
 #include <cmath>
 
 namespace Slic3r::GUI {
+
+inline bool orca_placement_target_is_eligible(const ModelObject* object, const ModelInstance* instance)
+{
+    return object != nullptr && instance != nullptr && object->printable && instance->printable;
+}
 
 inline bool orca_placement_transform_preserves_geometry(const Transform3d& current,
                                                         const Transform3d& requested)

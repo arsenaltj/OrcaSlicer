@@ -73,6 +73,10 @@ bool collect_targets(Plater& plater, const AI::SmartSlicing::SliceCandidate& can
             for (size_t instance_index = 0; instance_index < object->instances.size(); ++instance_index) {
                 ModelInstance* instance = object->instances[instance_index];
                 if (instance != nullptr && instance->id().id == requested.instance_id) {
+                    if (!orca_placement_target_is_eligible(object, instance)) {
+                        diagnostic = "transform_target_not_printable";
+                        return false;
+                    }
                     if (!plate->contain_instance(static_cast<int>(object_index), static_cast<int>(instance_index))) {
                         diagnostic = "transform_target_not_on_current_plate";
                         return false;

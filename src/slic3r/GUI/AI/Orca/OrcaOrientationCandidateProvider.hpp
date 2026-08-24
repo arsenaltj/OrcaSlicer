@@ -2,6 +2,7 @@
 
 #include "libslic3r/Orient.hpp"
 #include "slic3r/AI/SmartSlicing/Domain/SliceCandidate.hpp"
+#include "slic3r/GUI/AI/Orca/OrcaPlacementTransformValidator.hpp"
 
 #include <cstdint>
 #include <functional>
@@ -53,7 +54,8 @@ public:
                         input.config.opt_int("support_threshold_angle");
 
                     const bool is_locked = object_locked ||
-                        input.locked_instance_ids.count(instance->id().id) != 0 || !instance->printable;
+                        input.locked_instance_ids.count(instance->id().id) != 0 ||
+                        !orca_placement_target_is_eligible(object, instance);
                     if (is_locked) {
                         excluded.push_back(std::move(orient_mesh));
                         continue;

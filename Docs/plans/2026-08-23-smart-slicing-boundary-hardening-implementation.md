@@ -544,3 +544,35 @@ This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-ge
 dependency, port, data directory, journal path/schema, 3MF/profile format, profile data, or default Orca behavior.
 It narrows the existing formal gateway to the documented placement-only semantics. macOS and Linux native
 build/test execution remains a separate host/CI gate.
+
+## Unprintable placement-target gate — 2026-08-24
+
+Placement and orientation providers now treat an object-level `printable == false` marker exactly like an
+instance-level marker: the target remains fixed and is never emitted in a candidate transform. A shared Orca
+adapter eligibility check requires both the owning object and the instance to be printable. Isolated trial apply
+and the formal transactional gateway enforce the same rule, so a forged or stale candidate cannot move an
+excluded formal object. Trial rejection retains the stable `invalid_candidate_placement` diagnostic; the formal
+gateway reports `transform_target_not_printable` before any workspace mutation.
+
+Before the gate, the native placement and orientation providers each emitted a transform for an object-level
+unprintable target, and isolated trial execution accepted such a transform. The three focused contracts failed
+at those exact boundaries before the shared eligibility rule was connected.
+
+### Windows verification
+
+- Placement-provider focus: 5 test cases, 17 assertions, all passed in Release and RelWithDebInfo.
+- Orientation-provider focus: 2 test cases, 12 assertions, all passed in Release and RelWithDebInfo.
+- Trial target-eligibility focus: 1 test case, 2 assertions, all passed in Release and RelWithDebInfo.
+- Smart-slicing suite excluding the opt-in benchmark: 91 test cases, 586 assertions, all passed in Release and
+  RelWithDebInfo; the benchmark case remained explicitly skipped.
+- Full `slic3rutils_tests`: 102 test cases, 693 assertions, all passed in Release and RelWithDebInfo; the benchmark
+  case remained explicitly skipped.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075, LNK4098, and the
+  non-failing empty-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke was not repeated because this is a nonvisual Orca adapter safety gate with no new interaction; prior
+  workspace-local isolated-data-directory GUI evidence remains valid.
+
+This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, configuration,
+dependency, port, data directory, journal path/schema, 3MF/profile format, profile data, or default Orca behavior.
+It only narrows candidate generation and apply eligibility for targets already marked unprintable. macOS and
+Linux native build/test execution remains a separate host/CI gate.

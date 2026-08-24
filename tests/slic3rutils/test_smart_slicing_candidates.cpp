@@ -298,8 +298,11 @@ TEST_CASE("native placement candidates protect locked targets and locked plates"
 {
     GUI::OrcaPlacementCandidateInput input = placement_input();
     ModelInstance* locked = add_cube(input.model, 10.0, Vec3d(20.0, 20.0, 0.0));
-    add_cube(input.model, 10.0, Vec3d(75.0, 75.0, 0.0));
+    ModelInstance* movable = add_cube(input.model, 10.0, Vec3d(75.0, 75.0, 0.0));
+    ModelInstance* object_unprintable = add_cube(input.model, 10.0, Vec3d(50.0, 75.0, 0.0));
+    object_unprintable->get_object()->printable = false;
     const uint64_t locked_instance_id = locked->id().id;
+    const uint64_t movable_instance_id = movable->id().id;
     input.locked_instance_ids.insert(locked_instance_id);
     GUI::OrcaPlacementCandidateInput locked_plate_input = input;
     locked_plate_input.plate_locked = true;
@@ -309,6 +312,7 @@ TEST_CASE("native placement candidates protect locked targets and locked plates"
 
     REQUIRE(candidates.size() == 1);
     REQUIRE(candidates.front().placement.transforms.size() == 1);
+    CHECK(candidates.front().placement.transforms.front().instance_id == movable_instance_id);
     CHECK(candidates.front().placement.transforms.front().instance_id != locked_instance_id);
     CHECK(provider.generate(std::move(locked_plate_input), {1, 2, 3, "revision-a"}).empty());
 }
@@ -398,6 +402,8 @@ TEST_CASE("native orientation candidates protect locked and unprintable targets"
     ModelInstance* movable = add_box(input.model, Vec3d(7.0, 11.0, 35.0), Vec3d(60.0, 60.0, 0.0));
     ModelInstance* unprintable = add_box(input.model, Vec3d(6.0, 10.0, 30.0), Vec3d(80.0, 20.0, 0.0));
     unprintable->printable = false;
+    ModelInstance* object_unprintable = add_box(input.model, Vec3d(5.0, 9.0, 25.0), Vec3d(80.0, 60.0, 0.0));
+    object_unprintable->get_object()->printable = false;
     input.locked_instance_ids.insert(locked->id().id);
     input.locked_object_ids.insert(object_locked->get_object()->id().id);
     const uint64_t movable_id = movable->id().id;

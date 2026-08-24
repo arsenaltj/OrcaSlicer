@@ -1017,6 +1017,39 @@ TEST_CASE("Orca trial slicing rejects an input without printable objects", "[AI]
     CHECK(result.diagnostic_code == "trial_no_printable_objects");
 }
 
+TEST_CASE("Orca trial placement cannot target an unprintable object",
+          "[AI][SmartSlicing][Workflow][OrcaTrial][Placement][TargetEligibility]")
+{
+    Slic3r::GUI::OrcaTrialSliceInput input = tiny_trial_input();
+    ModelObject* target_object = input.model.objects.front();
+    ModelInstance* target_instance = target_object->instances.front();
+    target_object->printable = false;
+    ModelObject* printable_object = input.model.add_object();
+    printable_object->add_volume(make_cube(5.0, 5.0, 5.0));
+    printable_object->add_instance()->set_offset(Vec3d(70.0, 70.0, 0.0));
+    printable_object->ensure_on_bed();
+
+    Transform3d requested = target_instance->get_matrix();
+    requested.translation().x() += 5.0;
+    ObjectTransform transform;
+    transform.object_id = target_object->id().id;
+    transform.instance_id = target_instance->id().id;
+    for (Eigen::Index row = 0; row < requested.rows(); ++row)
+        for (Eigen::Index column = 0; column < requested.cols(); ++column)
+            transform.matrix[static_cast<size_t>(row * requested.cols() + column)] = requested(row, column);
+
+    SliceCandidate candidate = proposal("unprintable-target", WorkspaceRevision{1, 2, 3, "revision-a"});
+    candidate.status = CandidateStatus::Draft;
+    candidate.metrics.reset();
+    candidate.placement.transforms.push_back(std::move(transform));
+    Slic3r::GUI::OrcaTrialSliceExecutor executor(
+        [input = std::move(input)]() mutable { return std::move(input); });
+
+    const TrialSliceResult result = executor.execute_trial_slice(candidate);
+    CHECK(result.status == TrialSliceStatus::Failed);
+    CHECK(result.diagnostic_code == "invalid_candidate_placement");
+}
+
 TEST_CASE("benchmark isolated trial slicing and successful cache hits",
           "[AI][SmartSlicing][Performance][!benchmark]")
 {

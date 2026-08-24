@@ -149,6 +149,7 @@ void OrcaTrialSliceExecutor::set_resource_limits(std::chrono::seconds maximum_du
 bool OrcaTrialSliceExecutor::apply_placement(Model& model, const PlacementCandidate& placement) const
 {
     for (const ObjectTransform& transform : placement.transforms) {
+        ModelObject* target_object = nullptr;
         ModelInstance* target = nullptr;
         for (ModelObject* object : model.objects) {
             if (object == nullptr || object->id().id != transform.object_id)
@@ -156,11 +157,13 @@ bool OrcaTrialSliceExecutor::apply_placement(Model& model, const PlacementCandid
             const auto instance = std::find_if(object->instances.begin(), object->instances.end(), [&transform](const ModelInstance* item) {
                 return item != nullptr && item->id().id == transform.instance_id;
             });
-            if (instance != object->instances.end())
+            if (instance != object->instances.end()) {
+                target_object = object;
                 target = *instance;
+            }
             break;
         }
-        if (target == nullptr)
+        if (!orca_placement_target_is_eligible(target_object, target))
             return false;
 
         Transform3d matrix;

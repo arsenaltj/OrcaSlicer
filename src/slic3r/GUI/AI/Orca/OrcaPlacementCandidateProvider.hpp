@@ -2,6 +2,7 @@
 
 #include "libslic3r/ModelArrange.hpp"
 #include "slic3r/AI/SmartSlicing/Domain/SliceCandidate.hpp"
+#include "slic3r/GUI/AI/Orca/OrcaPlacementTransformValidator.hpp"
 
 #include <algorithm>
 #include <iterator>
@@ -50,7 +51,8 @@ public:
                         continue;
                     arrangement::ArrangePolygon polygon = get_instance_arrange_poly(instance, input.config);
                     const bool instance_locked = object_locked ||
-                        input.locked_instance_ids.count(instance->id().id) != 0 || !instance->printable;
+                        input.locked_instance_ids.count(instance->id().id) != 0 ||
+                        !orca_placement_target_is_eligible(object, instance);
                     if (instance_locked) {
                         polygon.itemid = static_cast<int>(fixed.size());
                         fixed.push_back(std::move(polygon));
