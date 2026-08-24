@@ -1173,6 +1173,7 @@ TEST_CASE("Orca official gateway double checks revision and enters Preview only 
     CHECK(apply_calls == 0);
 
     current.fingerprint = "revision-a";
+    REQUIRE(gateway.prepare(candidate, current).phase == OfficialSlicePhase::Prepared);
     CHECK(gateway.commit(candidate, current).phase == OfficialSlicePhase::Slicing);
     CHECK(apply_calls == 1);
     CHECK(slice_calls == 1);
@@ -1190,6 +1191,68 @@ TEST_CASE("Orca official gateway double checks revision and enters Preview only 
     CHECK(preview_calls == 2);
 }
 
+TEST_CASE("Orca official gateway requires one prepared ready candidate before formal mutation",
+          "[AI][SmartSlicing][Apply][TransactionBoundary]")
+{
+    const WorkspaceRevision revision{1, 2, 3, "revision-a"};
+    size_t compatibility_calls = 0;
+    size_t apply_calls = 0;
+    size_t slice_calls = 0;
+    Slic3r::GUI::OrcaOfficialSliceGateway gateway(
+        [revision] { return revision; },
+        [&compatibility_calls](const SliceCandidate&) {
+            ++compatibility_calls;
+            return std::string{};
+        },
+        [&apply_calls](const SliceCandidate&) {
+            ++apply_calls;
+            return Slic3r::GUI::OrcaApplyMutationResult{true, true, {}};
+        },
+        [&slice_calls] { ++slice_calls; return true; }, [] { return true; }, [] { return true; });
+    SliceCandidate candidate = proposal("candidate", revision);
+
+    const OfficialSliceResult unprepared = gateway.commit(candidate, revision);
+    CHECK(unprepared.phase == OfficialSlicePhase::Rejected);
+    CHECK(unprepared.diagnostic_code == "candidate_not_prepared");
+
+    candidate.status = CandidateStatus::Failed;
+    const OfficialSliceResult not_ready = gateway.prepare(candidate, revision);
+    CHECK(not_ready.phase == OfficialSlicePhase::Rejected);
+    CHECK(not_ready.diagnostic_code == "candidate_not_ready");
+
+    candidate.status = CandidateStatus::Ready;
+    REQUIRE(gateway.prepare(candidate, revision).phase == OfficialSlicePhase::Prepared);
+    const OfficialSliceResult different_candidate = gateway.commit(proposal("other", revision), revision);
+    CHECK(different_candidate.phase == OfficialSlicePhase::Rejected);
+    CHECK(different_candidate.diagnostic_code == "candidate_not_prepared");
+
+    REQUIRE(gateway.prepare(candidate, revision).phase == OfficialSlicePhase::Prepared);
+    SliceCandidate changed_content = candidate;
+    ObjectTransform added_transform;
+    added_transform.object_id = 42;
+    added_transform.instance_id = 43;
+    added_transform.matrix = {1.0, 0.0, 0.0, 5.0,
+                              0.0, 1.0, 0.0, 0.0,
+                              0.0, 0.0, 1.0, 0.0,
+                              0.0, 0.0, 0.0, 1.0};
+    changed_content.placement.transforms.push_back(added_transform);
+    const OfficialSliceResult changed_candidate = gateway.commit(changed_content, revision);
+    CHECK(changed_candidate.phase == OfficialSlicePhase::Rejected);
+    CHECK(changed_candidate.diagnostic_code == "candidate_not_prepared");
+
+    REQUIRE(gateway.prepare(candidate, revision).phase == OfficialSlicePhase::Prepared);
+    REQUIRE(gateway.commit(candidate, revision).phase == OfficialSlicePhase::Slicing);
+    const OfficialSliceResult overlapping_prepare = gateway.prepare(proposal("other", revision), revision);
+    CHECK(overlapping_prepare.phase == OfficialSlicePhase::Rejected);
+    CHECK(overlapping_prepare.diagnostic_code == "official_slice_in_progress");
+    const OfficialSliceResult consumed = gateway.commit(candidate, revision);
+    CHECK(consumed.phase == OfficialSlicePhase::Rejected);
+    CHECK(consumed.diagnostic_code == "official_slice_in_progress");
+    CHECK(compatibility_calls == 4);
+    CHECK(apply_calls == 1);
+    CHECK(slice_calls == 1);
+}
+
 TEST_CASE("Orca official gateway preserves native undo recovery when slicing cannot start", "[AI][SmartSlicing][Apply]")
 {
     const WorkspaceRevision revision{1, 2, 3, "revision-a"};
@@ -1200,6 +1263,7 @@ TEST_CASE("Orca official gateway preserves native undo recovery when slicing can
         [] { return false; }, [] { return true; }, [&undo_calls] { ++undo_calls; return true; });
     SliceCandidate candidate = proposal("candidate", revision);
 
+    REQUIRE(gateway.prepare(candidate, revision).phase == OfficialSlicePhase::Prepared);
     const OfficialSliceResult failed = gateway.commit(candidate, revision);
     CHECK(failed.phase == OfficialSlicePhase::Failed);
     CHECK(failed.diagnostic_code == "official_slice_not_started");
@@ -1255,6 +1319,7 @@ TEST_CASE("Orca official gateway never undoes a later workspace edit",
         [] { return false; }, [] { return true; }, [&undo_calls] { ++undo_calls; return true; });
     SliceCandidate candidate = proposal("candidate", WorkspaceRevision{1, 2, 3, "revision-a"});
 
+    REQUIRE(gateway.prepare(candidate, candidate.base_revision).phase == OfficialSlicePhase::Prepared);
     const OfficialSliceResult failed = gateway.commit(candidate, candidate.base_revision);
     REQUIRE(failed.phase == OfficialSlicePhase::Failed);
     REQUIRE(failed.can_undo);

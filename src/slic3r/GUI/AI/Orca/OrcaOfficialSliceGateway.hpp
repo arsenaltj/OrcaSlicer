@@ -42,6 +42,11 @@ public:
     prepare(const AI::SmartSlicing::SliceCandidate& candidate,
             const AI::SmartSlicing::WorkspaceRevision& expected_revision) override
     {
+        if (m_pending)
+            return rejected("official_slice_in_progress");
+        clear_preparation();
+        if (candidate.status != AI::SmartSlicing::CandidateStatus::Ready)
+            return rejected("candidate_not_ready");
         if (!revision_matches(candidate, expected_revision))
             return rejected("stale_revision");
         if (candidate.repair)
@@ -54,6 +59,8 @@ public:
         }
         if (!diagnostic.empty())
             return rejected(diagnostic);
+        m_prepared_candidate = PreparedCandidateToken{
+            candidate.id, expected_revision, candidate.placement, candidate.parameters};
         return {AI::SmartSlicing::OfficialSlicePhase::Prepared, {}, false, false};
     }
 
@@ -61,10 +68,33 @@ public:
     commit(const AI::SmartSlicing::SliceCandidate& candidate,
            const AI::SmartSlicing::WorkspaceRevision& expected_revision) override
     {
-        if (!revision_matches(candidate, expected_revision))
+        if (m_pending)
+            return rejected("official_slice_in_progress");
+        if (candidate.status != AI::SmartSlicing::CandidateStatus::Ready) {
+            clear_preparation();
+            return rejected("candidate_not_ready");
+        }
+        if (!revision_matches(candidate, expected_revision)) {
+            clear_preparation();
             return rejected("stale_revision");
-        if (candidate.repair)
+        }
+        if (candidate.repair) {
+            clear_preparation();
             return rejected("candidate_repair_unsupported");
+        }
+        const bool prepared = m_prepared_candidate &&
+                              prepared_candidate_matches(*m_prepared_candidate, candidate, expected_revision);
+        clear_preparation();
+        if (!prepared)
+            return rejected("candidate_not_prepared");
+        try {
+            const std::string diagnostic =
+                m_compatibility ? m_compatibility(candidate) : "compatibility_check_unavailable";
+            if (!diagnostic.empty())
+                return rejected(diagnostic);
+        } catch (...) {
+            return rejected("compatibility_check_failed");
+        }
         m_pending = false;
         m_preview_shown = false;
         m_workspace_mutated = false;
@@ -133,6 +163,44 @@ public:
     }
 
 private:
+    struct PreparedCandidateToken
+    {
+        AI::SmartSlicing::CandidateId id;
+        AI::SmartSlicing::WorkspaceRevision revision;
+        AI::SmartSlicing::PlacementCandidate placement;
+        AI::SmartSlicing::ParameterProposal parameters;
+    };
+
+    static bool prepared_candidate_matches(const PreparedCandidateToken& prepared,
+                                           const AI::SmartSlicing::SliceCandidate& candidate,
+                                           const AI::SmartSlicing::WorkspaceRevision& expected_revision)
+    {
+        if (prepared.id != candidate.id || prepared.revision != expected_revision ||
+            prepared.revision != candidate.base_revision ||
+            prepared.placement.transforms.size() != candidate.placement.transforms.size() ||
+            prepared.parameters.entries.size() != candidate.parameters.entries.size())
+            return false;
+        for (size_t index = 0; index < prepared.placement.transforms.size(); ++index) {
+            const auto& lhs = prepared.placement.transforms[index];
+            const auto& rhs = candidate.placement.transforms[index];
+            if (lhs.object_id != rhs.object_id || lhs.instance_id != rhs.instance_id || lhs.matrix != rhs.matrix)
+                return false;
+        }
+        for (size_t index = 0; index < prepared.parameters.entries.size(); ++index) {
+            const auto& lhs = prepared.parameters.entries[index];
+            const auto& rhs = candidate.parameters.entries[index];
+            if (lhs.scope != rhs.scope || lhs.owner != rhs.owner || lhs.target_id != rhs.target_id ||
+                lhs.key != rhs.key || lhs.expected_value != rhs.expected_value || lhs.new_value != rhs.new_value)
+                return false;
+        }
+        return true;
+    }
+
+    void clear_preparation() noexcept
+    {
+        m_prepared_candidate.reset();
+    }
+
     void capture_undo_revision() noexcept
     {
         if (!m_workspace_mutated || !m_revision) {
@@ -193,6 +261,7 @@ private:
     bool m_workspace_mutated{false};
     bool m_can_undo{false};
     bool m_preview_shown{false};
+    std::optional<PreparedCandidateToken> m_prepared_candidate;
     std::optional<AI::SmartSlicing::WorkspaceRevision> m_undo_revision;
 };
 

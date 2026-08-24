@@ -1233,3 +1233,38 @@ cache reuse on the third call.
 This batch changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, candidate DTO field,
 configuration, dependency, port, data directory contract, journal path/schema, 3MF/profile format, profile data,
 or default Orca behavior. macOS and Linux native build/test execution remains a separate host/CI gate.
+
+## Official gateway prepare/commit transaction gate — 2026-08-24
+
+`OrcaOfficialSliceGateway` now requires a one-use preparation token before any formal candidate mutation. The token
+is bound to the Ready candidate ID, expected workspace revision, and an exact lightweight snapshot of executable
+placement and parameter content. It is invalidated by a failed commit guard and consumed before compatibility
+revalidation and apply. Commit repeats the compatibility check so candidate content cannot bypass the last
+non-mutating validation boundary after prepare. While an official slice is pending, both a new prepare and a second
+commit fail closed with `official_slice_in_progress` and leave the active transaction untouched.
+
+Before this gate, direct `commit()` entered Slicing without `prepare()`, a Failed candidate could become Prepared,
+and a second commit replaced the in-flight gateway state while invoking apply and slice again. The initial red
+regression had one test case and 11 assertions, with eight failures and three apply/slice executions instead of one.
+A second red step changed placement content while retaining the prepared ID and revision; it entered Slicing and
+then blocked the original candidate from re-preparing, failing three assertions. The final 19-assertion contract
+covers an unprepared commit, a non-Ready candidate, a token bound to a different candidate, same-ID executable
+content substitution, compatibility revalidation, one successful mutation, and both prepare/commit overlap
+rejection. Existing undo tests were also corrected to enter the same public two-phase transaction used by the
+coordinator.
+
+### Windows verification
+
+- Transaction-boundary focus: 1 test case and 19 assertions, all passed in Release and RelWithDebInfo.
+- Smart-slicing suite: 117 test cases; 116 passed and the opt-in benchmark remained explicitly skipped, with 774
+  assertions passed in Release and RelWithDebInfo.
+- Default full `slic3rutils_tests`: 127 test cases and 881 assertions, all passed in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings and
+  the non-failing test-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke was not repeated because this is an Orca gateway transaction-state correction with no layout,
+  interaction, startup, candidate generation, or trial-slice change. The preceding workspace-local
+  isolated-data-directory GUI evidence remains valid.
+
+This batch changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, Domain/Application
+contract, configuration, dependency, port, data directory contract, journal path/schema, 3MF/profile format,
+profile data, or default Orca behavior. macOS and Linux native build/test execution remains a separate host/CI gate.
