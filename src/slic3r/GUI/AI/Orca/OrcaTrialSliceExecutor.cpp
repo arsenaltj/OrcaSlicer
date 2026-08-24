@@ -10,7 +10,6 @@
 
 #include <algorithm>
 #include <condition_variable>
-#include <cmath>
 #include <map>
 #include <limits>
 #include <numeric>
@@ -174,8 +173,7 @@ bool OrcaTrialSliceExecutor::apply_placement(Model& model, const PlacementCandid
         for (Eigen::Index row = 0; row < matrix.rows(); ++row)
             for (Eigen::Index column = 0; column < matrix.cols(); ++column)
                 matrix(row, column) = transform.matrix[static_cast<size_t>(row * matrix.cols() + column)];
-        if (!matrix.matrix().allFinite() || std::abs(matrix.linear().determinant()) <= 1e-12 ||
-            !matrix.matrix().row(3).isApprox(Eigen::RowVector4d(0.0, 0.0, 0.0, 1.0)))
+        if (!orca_placement_transform_is_valid(matrix))
             return false;
         if (!orca_placement_transform_preserves_geometry(target->get_matrix(), matrix))
             return false;

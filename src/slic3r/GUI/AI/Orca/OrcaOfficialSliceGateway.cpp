@@ -11,7 +11,6 @@
 #include "slic3r/GUI/Plater.hpp"
 
 #include <algorithm>
-#include <cmath>
 #include <set>
 #include <stdexcept>
 #include <utility>
@@ -50,16 +49,9 @@ bool collect_targets(Plater& plater, const AI::SmartSlicing::SliceCandidate& can
         }
         Transform3d matrix;
         for (Eigen::Index row = 0; row < matrix.rows(); ++row)
-            for (Eigen::Index column = 0; column < matrix.cols(); ++column) {
-                const double value = requested.matrix[static_cast<size_t>(row * matrix.cols() + column)];
-                if (!std::isfinite(value)) {
-                    diagnostic = "invalid_transform";
-                    return false;
-                }
-                matrix(row, column) = value;
-            }
-        if (!matrix.matrix().row(3).isApprox(Eigen::RowVector4d(0.0, 0.0, 0.0, 1.0)) ||
-            std::abs(matrix.linear().determinant()) < 1e-12) {
+            for (Eigen::Index column = 0; column < matrix.cols(); ++column)
+                matrix(row, column) = requested.matrix[static_cast<size_t>(row * matrix.cols() + column)];
+        if (!orca_placement_transform_is_valid(matrix)) {
             diagnostic = "invalid_transform";
             return false;
         }

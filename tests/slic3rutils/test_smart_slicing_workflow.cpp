@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <functional>
 #include <future>
+#include <limits>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
@@ -974,6 +975,25 @@ TEST_CASE("placement candidates cannot change existing geometry semantics",
     });
     CHECK(mirrored.status == TrialSliceStatus::Failed);
     CHECK(mirrored.diagnostic_code == "invalid_candidate_placement");
+}
+
+TEST_CASE("placement matrices share finite affine and determinant boundaries",
+          "[AI][SmartSlicing][Workflow][OrcaTrial][Placement][MatrixBoundary]")
+{
+    const Transform3d valid = Transform3d::Identity();
+    CHECK(Slic3r::GUI::orca_placement_transform_is_valid(valid));
+
+    Transform3d non_finite = valid;
+    non_finite.translation().x() = std::numeric_limits<double>::quiet_NaN();
+    CHECK_FALSE(Slic3r::GUI::orca_placement_transform_is_valid(non_finite));
+
+    Transform3d non_affine = valid;
+    non_affine.matrix()(3, 0) = 0.1;
+    CHECK_FALSE(Slic3r::GUI::orca_placement_transform_is_valid(non_affine));
+
+    Transform3d collapsed = valid;
+    collapsed.linear()(0, 0) = 1e-12;
+    CHECK_FALSE(Slic3r::GUI::orca_placement_transform_is_valid(collapsed));
 }
 
 TEST_CASE("Orca trial slicing rejects forbidden patches and observes early cancellation", "[AI][SmartSlicing][Workflow][OrcaTrial]")

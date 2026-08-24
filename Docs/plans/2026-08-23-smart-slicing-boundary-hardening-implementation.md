@@ -404,6 +404,35 @@ dependency, port, data directory, journal path/schema, 3MF/profile format, profi
 It only aligns isolated trial validation with the existing formal apply contract. macOS and Linux native
 build/test execution remains a separate host/CI gate.
 
+## Placement matrix-validity gate — 2026-08-24
+
+Isolated trial and formal transactional apply now use one Orca validator for transform finiteness, affine
+homogeneous form, and nonsingular linear geometry. The shared determinant rule requires an absolute determinant
+strictly greater than `1e-12`; both boundaries therefore reject the threshold value instead of disagreeing at
+exact equality. The existing geometry-semantics validator remains a separate second gate for scale, mirror, and
+shear preservation.
+
+Before the gate, trial validation rejected `abs(determinant) <= 1e-12` while the formal gateway rejected only
+values below the threshold, and both duplicated finite/affine checks. The focused contract first failed to compile
+without a shared function, then verified a valid affine transform plus NaN, non-affine last-row, and determinant
+threshold rejection.
+
+### Windows verification
+
+- Matrix-validity focus: 1 test case, 4 assertions, all passed in Release and RelWithDebInfo.
+- Smart-slicing suite excluding the opt-in benchmark: 95 test cases, 606 assertions, all passed in Release and
+  RelWithDebInfo; the benchmark case remained explicitly skipped.
+- Full `slic3rutils_tests`: 106 test cases, 713 assertions, all passed in Release and RelWithDebInfo; the benchmark
+  case remained explicitly skipped.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075, LNK4098, and the
+  non-failing empty-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke was not repeated because this is a nonvisual shared validation gate with no new interaction; prior
+  workspace-local isolated-data-directory GUI evidence remains valid.
+
+This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, configuration,
+dependency, port, data directory, journal path/schema, 3MF/profile format, profile data, or default Orca behavior.
+macOS and Linux native build/test execution remains a separate host/CI gate.
+
 ## Candidate retry exception-containment gate — 2026-08-24
 
 Candidate selection and single-candidate retry now contain workspace-revision and trial-executor exceptions at

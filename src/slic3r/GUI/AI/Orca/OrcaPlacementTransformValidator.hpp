@@ -11,6 +11,12 @@ inline bool orca_placement_target_is_eligible(const ModelObject* object, const M
     return object != nullptr && instance != nullptr && object->printable && instance->printable;
 }
 
+inline bool orca_placement_transform_is_valid(const Transform3d& matrix)
+{
+    return matrix.matrix().allFinite() && std::abs(matrix.linear().determinant()) > 1e-12 &&
+           matrix.matrix().row(3).isApprox(Eigen::RowVector4d(0.0, 0.0, 0.0, 1.0));
+}
+
 inline bool orca_placement_transform_preserves_geometry(const Transform3d& current,
                                                         const Transform3d& requested)
 {
