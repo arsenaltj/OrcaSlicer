@@ -126,6 +126,7 @@ OrcaTrialSliceInput OrcaSmartSlicingAdapter::capture_trial_slice_input(
     input.plate_index              = plates.get_curr_plate_index();
     input.plate_id                 = plate->id().id;
     input.plate_name               = plate->get_plate_name();
+    input.plate_locked             = plate->is_locked();
     input.extruder_filament_info   = wxGetApp().preset_bundle->get_extruder_filament_info();
     if (context != nullptr) {
         input.physical_slots_compatible =

@@ -139,6 +139,8 @@ wxString candidate_failure_text(const std::string& diagnostic_code)
     if (diagnostic_code == "invalid_candidate_placement" ||
         diagnostic_code == "trial_no_printable_objects")
         return _L("候选摆放或可打印对象无效");
+    if (diagnostic_code == "current_plate_locked")
+        return _L("当前打印盘已锁定，不能应用候选摆放");
     if (diagnostic_code == "candidate_repair_unsupported")
         return _L("当前版本尚不能安全试切或应用网格修复");
     if (diagnostic_code.rfind("parameter_", 0) == 0)

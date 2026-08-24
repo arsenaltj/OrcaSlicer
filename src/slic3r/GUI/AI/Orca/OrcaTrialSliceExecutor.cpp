@@ -302,6 +302,10 @@ TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice(const SliceCandidat
             result.diagnostic_code = m_timed_out.load(std::memory_order_acquire) ? "workflow_timeout" : "trial_slice_canceled";
             return result;
         }
+        if (!orca_placement_respects_plate_lock(input.plate_locked, candidate.placement.transforms.size())) {
+            result.diagnostic_code = "current_plate_locked";
+            return result;
+        }
         if (!candidate.parameters.entries.empty()) {
             DynamicPrintConfig patched_config;
             const OrcaParameterApplyResult parameter_result = OrcaParameterProposalAdapter().validate_and_apply(

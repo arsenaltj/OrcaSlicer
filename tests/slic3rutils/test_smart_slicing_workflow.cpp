@@ -634,6 +634,8 @@ TEST_CASE("failed candidate diagnostics are projected as actionable localized re
         Slic3r::GUI::smart_slicing_candidate_failure_text("retry_revision_unavailable");
     const wxString placement =
         Slic3r::GUI::smart_slicing_candidate_failure_text("invalid_candidate_placement");
+    const wxString locked_plate =
+        Slic3r::GUI::smart_slicing_candidate_failure_text("current_plate_locked");
     const wxString repair =
         Slic3r::GUI::smart_slicing_candidate_failure_text("candidate_repair_unsupported");
 
@@ -641,6 +643,7 @@ TEST_CASE("failed candidate diagnostics are projected as actionable localized re
     CHECK_FALSE(timeout == fallback);
     CHECK_FALSE(revision == fallback);
     CHECK_FALSE(placement == fallback);
+    CHECK_FALSE(locked_plate == fallback);
     CHECK_FALSE(repair == fallback);
     CHECK(Slic3r::GUI::smart_slicing_candidate_failure_text("") == fallback);
 }
@@ -1294,6 +1297,37 @@ TEST_CASE("plate locks block placement transforms without blocking unchanged sli
     CHECK(Slic3r::GUI::orca_placement_respects_plate_lock(false, 1));
     CHECK(Slic3r::GUI::orca_placement_respects_plate_lock(true, 0));
     CHECK_FALSE(Slic3r::GUI::orca_placement_respects_plate_lock(true, 1));
+}
+
+TEST_CASE("Orca trial slicing rejects placement transforms on a locked plate",
+          "[AI][SmartSlicing][Workflow][OrcaTrial][Placement][PlateLock]")
+{
+    Slic3r::GUI::OrcaTrialSliceInput input = tiny_trial_input();
+    input.plate_locked = true;
+    ModelObject* object = input.model.objects.front();
+    ModelInstance* instance = object->instances.front();
+    Transform3d requested = instance->get_matrix();
+    requested.translation().x() += 5.0;
+
+    ObjectTransform transform;
+    transform.object_id = object->id().id;
+    transform.instance_id = instance->id().id;
+    for (Eigen::Index row = 0; row < requested.rows(); ++row)
+        for (Eigen::Index column = 0; column < requested.cols(); ++column)
+            transform.matrix[static_cast<size_t>(row * requested.cols() + column)] = requested(row, column);
+
+    SliceCandidate candidate = proposal("locked-plate", WorkspaceRevision{1, 2, 3, "revision-a"});
+    candidate.status = CandidateStatus::Draft;
+    candidate.metrics.reset();
+    candidate.placement.transforms.push_back(std::move(transform));
+    Slic3r::GUI::OrcaTrialSliceExecutor executor(
+        [input = std::move(input)]() mutable { return std::move(input); });
+
+    const TrialSliceResult result = executor.execute_trial_slice(candidate);
+
+    CHECK(result.status == TrialSliceStatus::Failed);
+    CHECK(result.diagnostic_code == "current_plate_locked");
+    CHECK_FALSE(result.metrics);
 }
 
 TEST_CASE("Orca trial input preserves physical-slot compatibility availability",

@@ -1037,3 +1037,35 @@ This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-ge
 dependency, port, data directory, journal path/schema, 3MF/profile format, profile data, or default Orca behavior.
 It intentionally records native deterministic mesh repair as a remaining capability rather than claiming the
 existing RepairPlan is executable. macOS and Linux native build/test execution remains a separate host/CI gate.
+
+## Locked-plate trial/apply parity gate — 2026-08-24
+
+The isolated Orca trial snapshot now carries the current plate lock state. A candidate containing placement
+transforms on a locked plate is rejected before parameter patching, model-copy mutation, or native slicing with
+the same stable `current_plate_locked` diagnostic used by `OfficialSliceGateway`. A locked plate still permits a
+candidate without placement transforms, preserving parameter-only and unchanged baseline slicing behavior. The
+smart-slicing panel maps the diagnostic to an explicit locked-plate explanation instead of the unknown-failure
+fallback.
+
+Before this gate, candidate providers normally suppressed placement proposals for a locked plate and the formal
+gateway rejected any defensive or externally supplied transform, but the isolated trial input omitted the lock
+fact. The red regression demonstrated that such a candidate completed a native trial slice successfully and
+published metrics even though the identical candidate could not pass formal transactional apply. A second red
+regression showed that the resulting parity diagnostic had no actionable GUI projection.
+
+### Windows verification
+
+- Locked-plate parity focus: 2 test cases, 6 assertions, all passed in Release and RelWithDebInfo.
+- Localized candidate diagnostic focus: 1 test case, 7 assertions, all passed in Release and RelWithDebInfo.
+- Smart-slicing suite: 111 test cases, 708 assertions; 110 passed and the opt-in benchmark remained explicitly
+  skipped, in Release and RelWithDebInfo.
+- Default full `slic3rutils_tests`: 121 test cases, 815 assertions, all passed in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings and
+  the non-failing test-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke was not repeated because this is a non-layout snapshot/validation parity correction with no startup,
+  interaction, or formal-write-path change. The immediately preceding workspace-local isolated-data-directory GUI
+  evidence remains valid.
+
+This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, configuration,
+dependency, public port, data directory, journal path/schema, 3MF/profile format, profile data, or default Orca
+behavior. macOS and Linux native build/test execution remains a separate host/CI gate.

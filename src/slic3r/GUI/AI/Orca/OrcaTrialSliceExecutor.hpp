@@ -44,6 +44,7 @@ struct OrcaTrialSliceInput
     int plate_index{0};
     int64_t plate_id{-1};
     std::string plate_name;
+    bool plate_locked{false};
     std::vector<std::vector<DynamicPrintConfig>> extruder_filament_info;
     std::optional<bool> physical_slots_compatible;
     std::optional<bool> color_mapping_degraded;
