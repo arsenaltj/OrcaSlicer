@@ -375,6 +375,37 @@ This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-ge
 dependency, port, data directory, journal path/schema, 3MF/profile format, profile data, or default Orca behavior.
 macOS and Linux native build/test execution remains a separate host/CI gate.
 
+## Candidate retry exception-containment gate — 2026-08-24
+
+Candidate selection and single-candidate retry now contain workspace-revision and trial-executor exceptions at
+the Application boundary. A temporarily unavailable revision prevents selection without changing the current
+selection or comparison. A retry executor exception, or an unavailable final revision after retry work finishes,
+discards only that retry result, marks the alternative failed with a stable diagnostic, recomputes comparison,
+and returns to `ReadyToApply` with the valid baseline retained. A real revision mismatch still invalidates the
+workflow as stale; unavailable evidence is not misreported as a confirmed workspace edit.
+
+Before the gate, all three contracts propagated exceptions out of `SmartSlicingCoordinator`; the GUI worker's
+outer safety net would then cancel and clear the complete candidate set. The focused contract now locks baseline
+retention, selected-candidate retention, metric discard, deterministic recomparison, and the
+`candidate_selection_revision_unavailable`, `retry_executor_exception`, and `retry_revision_unavailable`
+diagnostics.
+
+### Windows verification
+
+- Candidate-failure focus: 3 test cases, 25 assertions, all passed in Release and RelWithDebInfo.
+- Smart-slicing suite excluding the opt-in benchmark: 83 test cases, 532 assertions, all passed in Release and
+  RelWithDebInfo.
+- Full `slic3rutils_tests`: 94 test cases, 639 assertions, all passed in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075, LNK4098, and the
+  non-failing empty-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI fault injection was not repeated because the changed behavior is an Application-only exception contract;
+  candidate projection is covered by the same test target, and the current workspace-local ordinary-slice GUI
+  verification remains valid.
+
+This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, formal apply
+gateway, configuration, dependency, port, data directory, journal path/schema, 3MF/profile format, profile data,
+or default Orca behavior. macOS and Linux native build/test execution remains a separate host/CI gate.
+
 ## Bed-adhesion derived-metric degradation gate — 2026-08-24
 
 Bed-adhesion extraction now discards a non-finite derived risk even when all source dimensions are finite. This

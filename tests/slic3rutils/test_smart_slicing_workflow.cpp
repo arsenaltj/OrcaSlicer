@@ -65,8 +65,14 @@ class WorkflowWorkspace final : public IOrcaWorkspace
 {
 public:
     WorkspaceContext context = printable_context();
+    bool throw_on_revision{false};
 
-    WorkspaceRevision current_revision() const override { return context.revision; }
+    WorkspaceRevision current_revision() const override
+    {
+        if (throw_on_revision)
+            throw std::runtime_error("revision unavailable");
+        return context.revision;
+    }
     WorkspaceContext capture_context() const override { return context; }
 };
 
@@ -531,6 +537,97 @@ TEST_CASE("candidate cards expose baseline deltas selection and retry without wo
     CHECK(ready_view.candidates[1].warning_codes ==
           std::vector<std::string>{"native_validation_warning", "gcode_warning"});
     CHECK(workspace.context.revision.fingerprint == "revision-a");
+}
+
+TEST_CASE("candidate selection keeps the ready comparison when revision capture is temporarily unavailable",
+          "[AI][SmartSlicing][Workflow][CandidateFailure]")
+{
+    WorkflowWorkspace workspace;
+    FakeTrialSliceExecutor executor;
+    SmartSlicingCoordinator coordinator(workspace, executor);
+    coordinator.start();
+    REQUIRE(coordinator.plan_and_slice_candidates({proposal("alternative", workspace.context.revision)}));
+    REQUIRE(coordinator.snapshot().selected_candidate_id == "alternative");
+
+    workspace.throw_on_revision = true;
+    CHECK_FALSE(coordinator.select_candidate("baseline"));
+    CHECK(coordinator.snapshot().state == WorkflowState::ReadyToApply);
+    CHECK(coordinator.snapshot().detail == "candidate_selection_revision_unavailable");
+    CHECK(coordinator.snapshot().selected_candidate_id == "alternative");
+    CHECK(coordinator.snapshot().candidates.size() == 2);
+}
+
+TEST_CASE("retry executor exceptions retain the baseline and failed alternative",
+          "[AI][SmartSlicing][Workflow][CandidateFailure]")
+{
+    WorkflowWorkspace workspace;
+    FakeTrialSliceExecutor executor;
+    executor.result_for = [](const SliceCandidate& candidate, size_t) {
+        TrialSliceResult result;
+        result.candidate_id  = candidate.id;
+        result.base_revision = candidate.base_revision;
+        result.status = candidate.id == "alternative" ? TrialSliceStatus::Failed : TrialSliceStatus::Succeeded;
+        if (result.status == TrialSliceStatus::Succeeded) {
+            result.metrics = SlicingMetrics{};
+            result.metrics->estimated_time_seconds = 100.0;
+        }
+        return result;
+    };
+    SmartSlicingCoordinator coordinator(workspace, executor);
+    coordinator.start();
+    REQUIRE(coordinator.plan_and_slice_candidates({proposal("alternative", workspace.context.revision)}));
+
+    executor.result_for = [](const SliceCandidate&, size_t) -> TrialSliceResult {
+        throw std::runtime_error("retry executor failed");
+    };
+    CHECK_FALSE(coordinator.retry_candidate("alternative"));
+    REQUIRE(coordinator.snapshot().candidates.size() == 2);
+    CHECK(coordinator.snapshot().state == WorkflowState::ReadyToApply);
+    CHECK(coordinator.snapshot().selected_candidate_id == "baseline");
+    CHECK(coordinator.snapshot().candidates[0].status == CandidateStatus::Ready);
+    CHECK(coordinator.snapshot().candidates[1].status == CandidateStatus::Failed);
+    CHECK(coordinator.snapshot().candidates[1].diagnostic_code == "retry_executor_exception");
+    CHECK(coordinator.snapshot().comparison->recommended_candidate_id == "baseline");
+}
+
+TEST_CASE("retry discards a completed result when final revision capture is unavailable",
+          "[AI][SmartSlicing][Workflow][CandidateFailure]")
+{
+    WorkflowWorkspace workspace;
+    FakeTrialSliceExecutor executor;
+    executor.result_for = [](const SliceCandidate& candidate, size_t) {
+        TrialSliceResult result;
+        result.candidate_id  = candidate.id;
+        result.base_revision = candidate.base_revision;
+        result.status = candidate.id == "alternative" ? TrialSliceStatus::Failed : TrialSliceStatus::Succeeded;
+        if (result.status == TrialSliceStatus::Succeeded) {
+            result.metrics = SlicingMetrics{};
+            result.metrics->estimated_time_seconds = 100.0;
+        }
+        return result;
+    };
+    SmartSlicingCoordinator coordinator(workspace, executor);
+    coordinator.start();
+    REQUIRE(coordinator.plan_and_slice_candidates({proposal("alternative", workspace.context.revision)}));
+
+    executor.result_for = [&workspace](const SliceCandidate& candidate, size_t) {
+        TrialSliceResult result;
+        result.candidate_id  = candidate.id;
+        result.base_revision = candidate.base_revision;
+        result.status        = TrialSliceStatus::Succeeded;
+        result.metrics       = SlicingMetrics{};
+        result.metrics->estimated_time_seconds = 80.0;
+        workspace.throw_on_revision = true;
+        return result;
+    };
+    CHECK_FALSE(coordinator.retry_candidate("alternative"));
+    REQUIRE(coordinator.snapshot().candidates.size() == 2);
+    CHECK(coordinator.snapshot().state == WorkflowState::ReadyToApply);
+    CHECK(coordinator.snapshot().candidates[0].status == CandidateStatus::Ready);
+    CHECK(coordinator.snapshot().candidates[1].status == CandidateStatus::Failed);
+    CHECK_FALSE(coordinator.snapshot().candidates[1].metrics.has_value());
+    CHECK(coordinator.snapshot().candidates[1].diagnostic_code == "retry_revision_unavailable");
+    CHECK(coordinator.snapshot().comparison->recommended_candidate_id == "baseline");
 }
 
 TEST_CASE("workspace edits during trial slicing make all results stale", "[AI][SmartSlicing][Workflow]")
