@@ -461,3 +461,30 @@ in `Failed` with candidate state retained.
 This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, formal apply
 gateway, configuration, dependency, port, data directory, journal path/schema, 3MF/profile format, profile data,
 or default Orca behavior. macOS and Linux native build/test execution remains a separate host/CI gate.
+
+## Observer exception-isolation gate — 2026-08-24
+
+Coordinator observers are now a best-effort presentation channel: failures during initial publication or later
+state transitions cannot escape an Application API, change workflow state, or suppress runtime-journal
+publication. Notification remains synchronous and in the same order, so existing reentrant cancellation behavior
+is preserved; only observer control over the workflow through an exception is removed.
+
+Before the gate, an initial observer exception escaped `set_observer`, while a transition observer exception
+prevented workspace capture, caused a false `Failed` state, escaped `start`, and skipped the corresponding journal
+save. The focused contracts now cover both immediate and transition publication plus the final recoverable runtime
+record.
+
+### Windows verification
+
+- Observer exception focus: 2 test cases, 12 assertions, all passed in Release and RelWithDebInfo.
+- Smart-slicing suite excluding the opt-in benchmark: 88 test cases, 568 assertions, all passed in Release and
+  RelWithDebInfo; the benchmark case remained explicitly skipped.
+- Full `slic3rutils_tests`: 99 test cases, 675 assertions, all passed in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075, LNK4098, and the
+  non-failing empty-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI fault injection was not repeated because this is a nonvisual Application notification contract; the prior
+  workspace-local isolated-data-directory GUI evidence remains valid.
+
+This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, formal apply
+gateway, configuration, dependency, port, data directory, journal path/schema, 3MF/profile format, profile data,
+or default Orca behavior. macOS and Linux native build/test execution remains a separate host/CI gate.

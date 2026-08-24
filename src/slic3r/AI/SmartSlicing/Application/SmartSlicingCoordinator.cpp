@@ -41,8 +41,7 @@ SmartSlicingCoordinator::SmartSlicingCoordinator(IOrcaWorkspace& workspace, ITri
 void SmartSlicingCoordinator::set_observer(Observer observer)
 {
     m_observer = std::move(observer);
-    if (m_observer)
-        m_observer(m_snapshot);
+    notify_observer();
 }
 
 bool SmartSlicingCoordinator::set_runtime_store(IWorkflowRuntimeStore& runtime_store, bool recover)
@@ -121,9 +120,19 @@ void SmartSlicingCoordinator::transition(WorkflowState state, std::string detail
 {
     m_snapshot.state  = state;
     m_snapshot.detail = std::move(detail);
-    if (m_observer)
-        m_observer(m_snapshot);
+    notify_observer();
     persist_runtime_state();
+}
+
+void SmartSlicingCoordinator::notify_observer() noexcept
+{
+    if (!m_observer)
+        return;
+    try {
+        m_observer(m_snapshot);
+    } catch (...) {
+        // Presentation is best effort and must never control the workflow or its journal.
+    }
 }
 
 void SmartSlicingCoordinator::start()

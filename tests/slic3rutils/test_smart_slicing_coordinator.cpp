@@ -269,6 +269,38 @@ TEST_CASE("coordinator publishes deterministic synchronous preflight transitions
     CHECK(states[3] == WorkflowState::ReadyForCandidatePlanning);
 }
 
+TEST_CASE("observer exceptions never escape or control coordinator state",
+          "[AI][SmartSlicing][Observer][ExceptionBoundary]")
+{
+    SECTION("initial publication is best effort") {
+        FakeWorkspace workspace;
+        SmartSlicingCoordinator coordinator(workspace);
+
+        CHECK_NOTHROW(coordinator.set_observer([](const WorkflowSnapshot&) {
+            throw std::runtime_error("initial observer failed");
+        }));
+        CHECK(coordinator.snapshot().state == WorkflowState::Idle);
+    }
+
+    SECTION("transition publication cannot fail preflight") {
+        FakeWorkspace workspace;
+        workspace.context.materials.push_back({"material", "#FFFFFF"});
+        SmartSlicingCoordinator coordinator(workspace);
+        size_t notifications = 0;
+        coordinator.set_observer([&notifications](const WorkflowSnapshot& snapshot) {
+            ++notifications;
+            if (snapshot.state != WorkflowState::Idle)
+                throw std::runtime_error("transition observer failed");
+        });
+
+        CHECK_NOTHROW(coordinator.start());
+        CHECK(workspace.capture_count == 1);
+        CHECK(coordinator.snapshot().state == WorkflowState::ReadyForCandidatePlanning);
+        CHECK(coordinator.snapshot().detail == "preflight_complete");
+        CHECK(notifications == 4);
+    }
+}
+
 TEST_CASE("smart slicing presenter ignores superseded dispatched snapshots",
           "[AI][SmartSlicing][Presenter]")
 {

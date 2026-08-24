@@ -132,6 +132,26 @@ TEST_CASE("runtime journal stores descriptors only and clears terminal workflows
     CHECK(store.clears > 0);
 }
 
+TEST_CASE("observer failures cannot suppress runtime journal publication",
+          "[AI][SmartSlicing][Runtime][Observer][ExceptionBoundary]")
+{
+    RuntimeWorkspace workspace;
+    RuntimeExecutor executor;
+    MemoryRuntimeStore store;
+    SmartSlicingCoordinator coordinator(workspace, executor);
+    coordinator.set_runtime_store(store, false);
+    coordinator.set_observer([](const WorkflowSnapshot& snapshot) {
+        if (snapshot.state != WorkflowState::Idle)
+            throw std::runtime_error("observer publication failed");
+    });
+
+    CHECK_NOTHROW(coordinator.start());
+    CHECK(coordinator.snapshot().state == WorkflowState::ReadyForCandidatePlanning);
+    REQUIRE(store.record);
+    CHECK(store.record->state == WorkflowState::ReadyForCandidatePlanning);
+    CHECK(store.record->detail == "preflight_complete");
+}
+
 TEST_CASE("runtime recovery keeps a matching summary and discards stale journals", "[AI][SmartSlicing][Runtime]")
 {
     RuntimeWorkspace workspace;

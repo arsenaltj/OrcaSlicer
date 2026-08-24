@@ -45,6 +45,7 @@ public:
 
 private:
     void transition(WorkflowState state, std::string detail = {});
+    void notify_observer() noexcept;
     bool workspace_revision_matches() const;
     void persist_runtime_state();
     std::string resource_violation(size_t candidate_count) const;
