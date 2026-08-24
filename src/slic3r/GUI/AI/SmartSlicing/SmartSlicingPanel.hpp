@@ -22,6 +22,7 @@ class SmartSlicingCoordinator;
 namespace Slic3r::GUI {
 
 wxString smart_slicing_summary_text(const std::string& key);
+wxString smart_slicing_candidate_failure_text(const std::string& diagnostic_code);
 
 class SmartSlicingPanel final : public wxScrolledWindow
 {

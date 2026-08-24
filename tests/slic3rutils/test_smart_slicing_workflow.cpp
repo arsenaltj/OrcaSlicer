@@ -591,6 +591,25 @@ TEST_CASE("apply failure summary only promises recovery when native undo is avai
                 Slic3r::GUI::smart_slicing_summary_text(with_recovery.summary_key));
 }
 
+TEST_CASE("failed candidate diagnostics are projected as actionable localized reasons",
+          "[AI][SmartSlicing][GUI][CandidateFailure][Diagnostic]")
+{
+    const wxString fallback = Slic3r::GUI::smart_slicing_candidate_failure_text("unknown_failure");
+    const wxString memory =
+        Slic3r::GUI::smart_slicing_candidate_failure_text("workflow_memory_budget_exceeded");
+    const wxString timeout = Slic3r::GUI::smart_slicing_candidate_failure_text("workflow_timeout");
+    const wxString revision =
+        Slic3r::GUI::smart_slicing_candidate_failure_text("retry_revision_unavailable");
+    const wxString placement =
+        Slic3r::GUI::smart_slicing_candidate_failure_text("invalid_candidate_placement");
+
+    CHECK_FALSE(memory == fallback);
+    CHECK_FALSE(timeout == fallback);
+    CHECK_FALSE(revision == fallback);
+    CHECK_FALSE(placement == fallback);
+    CHECK(Slic3r::GUI::smart_slicing_candidate_failure_text("") == fallback);
+}
+
 TEST_CASE("candidate cards expose baseline deltas selection and retry without workspace mutation", "[AI][SmartSlicing][Workflow]")
 {
     WorkflowWorkspace workspace;

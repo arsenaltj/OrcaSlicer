@@ -584,6 +584,35 @@ or CMake file and no model-generation code, configuration, dependency, port, dat
 3MF/profile format, profile data, or default Orca behavior. macOS and Linux native build/test execution remains a
 separate host/CI gate.
 
+## Candidate failure explanation gate — 2026-08-24
+
+Failed candidate cards now consume their existing structured `diagnostic_code` instead of showing one generic
+trial-failure sentence. The localized projection distinguishes timeout, memory and temporary-disk budgets,
+cancellation, unavailable workspace revision, invalid placement or printable objects, forbidden parameters,
+invalid metrics, native validation, stale/mismatched results, and isolated executor failures. Unknown diagnostics
+degrade to a bounded generic reason and never expose raw internal codes to the user.
+
+The focused GUI projection contract first failed to compile because no candidate-failure text mapper existed. It
+now verifies that the major resource, revision, and placement classes do not collapse to the unknown fallback.
+
+### Windows verification
+
+- Candidate failure diagnostic focus: 1 test case, 5 assertions, all passed in Release and RelWithDebInfo.
+- Smart-slicing suite excluding the opt-in benchmark: 103 test cases, 643 assertions; 102 passed and the benchmark
+  case remained explicitly skipped in Release and RelWithDebInfo.
+- Full `slic3rutils_tests`: 114 test cases, 750 assertions; 113 passed and the benchmark case remained explicitly
+  skipped in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings are
+  unchanged.
+- GUI smoke was not repeated because candidate reason text already uses the existing wrapped label and no control,
+  layout, interaction, or formal write behavior changed; prior workspace-local isolated-data-directory GUI
+  evidence remains valid.
+
+This gate changes only smart-slicing GUI projection code and its tests. It changes no shared `MainFrame`, `Plater`,
+or CMake file and no model-generation code, configuration, dependency, port, data directory, journal path/schema,
+3MF/profile format, profile data, or default Orca behavior. macOS and Linux native build/test execution remains a
+separate host/CI gate.
+
 ## Candidate retry exception-containment gate — 2026-08-24
 
 Candidate selection and single-candidate retry now contain workspace-revision and trial-executor exceptions at

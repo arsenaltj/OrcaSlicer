@@ -124,10 +124,40 @@ wxString format_delta(const std::optional<double>& value, double scale, const wx
     return value ? wxString::Format("%+.2f %s", *value / scale, unit.c_str()) : _L("—");
 }
 
+wxString candidate_failure_text(const std::string& diagnostic_code)
+{
+    if (diagnostic_code == "workflow_timeout")
+        return _L("超过本次试切时间预算");
+    if (diagnostic_code == "workflow_memory_budget_exceeded")
+        return _L("候选副本超过内存预算");
+    if (diagnostic_code == "workflow_disk_budget_exceeded")
+        return _L("临时切片文件超过磁盘预算");
+    if (diagnostic_code == "trial_slice_canceled" || diagnostic_code == "retry_canceled")
+        return _L("本次试切已取消");
+    if (diagnostic_code == "retry_revision_unavailable")
+        return _L("无法确认当前工程版本");
+    if (diagnostic_code == "invalid_candidate_placement" ||
+        diagnostic_code == "trial_no_printable_objects")
+        return _L("候选摆放或可打印对象无效");
+    if (diagnostic_code.rfind("parameter_", 0) == 0)
+        return _L("候选参数未通过 Orca 安全校验");
+    if (diagnostic_code == "invalid_candidate_metrics")
+        return _L("试切指标不完整或无效");
+    if (diagnostic_code == "trial_slice_executor_exception" ||
+        diagnostic_code == "retry_executor_exception" || diagnostic_code == "trial_slice_exception")
+        return _L("隔离试切执行失败");
+    if (diagnostic_code == "trial_validation_failed")
+        return _L("候选未通过 Orca 原生打印校验");
+    if (diagnostic_code == "trial_result_mismatch")
+        return _L("试切结果已过期或不属于当前候选");
+    return _L("试切未完成");
+}
+
 wxString candidate_reason(const SmartSlicingCandidateView& candidate)
 {
     if (candidate.failed)
-        return _L("试切失败，可单独重试；基线仍然可用。");
+        return _L("试切失败：") + candidate_failure_text(candidate.diagnostic_code) +
+               _L("。可单独重试；基线仍然可用。");
     if (candidate.id == "baseline")
         return _L("当前正式工作区的只读基线。");
     wxString reason = candidate.recommended ? _L("推荐方案。") : _L("可选方案。");
@@ -218,6 +248,11 @@ wxString candidate_change_summary(const SmartSlicingCandidateView& candidate)
 } // namespace
 
 wxString smart_slicing_summary_text(const std::string& key) { return summary_text(key); }
+
+wxString smart_slicing_candidate_failure_text(const std::string& diagnostic_code)
+{
+    return candidate_failure_text(diagnostic_code);
+}
 
 SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSlicingCoordinator& coordinator,
                                      PrepareCandidatesFn prepare_candidates, CancelTrialFn cancel_trial,
