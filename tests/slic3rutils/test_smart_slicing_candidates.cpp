@@ -4,6 +4,7 @@
 #include "slic3r/GUI/AI/Orca/OrcaCandidateProposalTask.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaOrientationCandidateProvider.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaPlacementCandidateProvider.hpp"
+#include "slic3r/GUI/AI/Orca/OrcaTrialSliceExecutor.hpp"
 
 #include "libslic3r/TriangleMesh.hpp"
 #include "libslic3r/Print.hpp"
@@ -190,6 +191,26 @@ TEST_CASE("multicolor comparison includes flush wipe tower and tool-change evide
     CHECK(lower_flush.metrics->total_material_volume_mm3() == Catch::Approx(560.0));
     CHECK(lower_flush.metrics->filament_change_sequence == std::vector<size_t>{0, 1, 0});
     CHECK(lower_flush.metrics->layer_tool_sequences.size() == 2);
+}
+
+TEST_CASE("Orca total material normalization does not double count multicolor waste",
+          "[AI][SmartSlicing][Candidate][Multicolor][Orca][MaterialAccounting]")
+{
+    const std::optional<double> filament =
+        Slic3r::GUI::orca_filament_volume_excluding_multicolor_waste(650.0, 100.0, 50.0);
+    REQUIRE(filament);
+    CHECK(*filament == Catch::Approx(500.0));
+
+    SlicingMetrics metrics;
+    metrics.filament_volume_mm3   = filament;
+    metrics.flush_volume_mm3      = 100.0;
+    metrics.wipe_tower_volume_mm3 = 50.0;
+    REQUIRE(metrics.total_material_volume_mm3());
+    CHECK(*metrics.total_material_volume_mm3() == Catch::Approx(650.0));
+
+    CHECK_FALSE(Slic3r::GUI::orca_filament_volume_excluding_multicolor_waste(100.0, 80.0, 30.0));
+    CHECK_FALSE(Slic3r::GUI::orca_filament_volume_excluding_multicolor_waste(
+        std::numeric_limits<double>::quiet_NaN(), 0.0, 0.0));
 }
 
 TEST_CASE("degraded color mappings are excluded and incomplete multicolor cost stays unavailable",

@@ -9,6 +9,7 @@
 #include <boost/filesystem.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <condition_variable>
 #include <map>
 #include <limits>
@@ -92,6 +93,20 @@ double sum_values(const std::map<size_t, double>& values)
 }
 
 } // namespace
+
+std::optional<double> orca_filament_volume_excluding_multicolor_waste(
+    double total_volume_mm3, double flush_volume_mm3, double wipe_tower_volume_mm3)
+{
+    if (!std::isfinite(total_volume_mm3) || !std::isfinite(flush_volume_mm3) ||
+        !std::isfinite(wipe_tower_volume_mm3) || total_volume_mm3 < 0.0 || flush_volume_mm3 < 0.0 ||
+        wipe_tower_volume_mm3 < 0.0)
+        return std::nullopt;
+    const double multicolor_waste = flush_volume_mm3 + wipe_tower_volume_mm3;
+    if (!std::isfinite(multicolor_waste) ||
+        multicolor_waste > total_volume_mm3 + std::max(1.0, total_volume_mm3) * 1e-9)
+        return std::nullopt;
+    return std::max(0.0, total_volume_mm3 - multicolor_waste);
+}
 
 class OrcaTrialSliceExecutor::ActivePrintGuard
 {
@@ -191,13 +206,18 @@ SlicingMetrics OrcaTrialSliceExecutor::extract_metrics(const GCodeProcessorResul
     const PrintEstimatedStatistics& statistics = result.print_statistics;
     SlicingMetrics metrics;
     metrics.estimated_time_seconds = statistics.modes[static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Normal)].time;
-    metrics.filament_volume_mm3    = sum_values(statistics.total_volumes_per_extruder);
     metrics.support_volume_mm3     = sum_values(statistics.support_volumes_per_extruder);
     const auto brim = statistics.used_filaments_per_role.find(erBrim);
     metrics.brim_volume_mm3 = brim == statistics.used_filaments_per_role.end() ? 0.0 :
                                                                                std::max(0.0, brim->second.second);
-    metrics.flush_volume_mm3       = sum_values(statistics.flush_per_filament);
-    metrics.wipe_tower_volume_mm3  = sum_values(statistics.wipe_tower_volumes_per_extruder);
+    const double flush_volume      = sum_values(statistics.flush_per_filament);
+    const double wipe_tower_volume = sum_values(statistics.wipe_tower_volumes_per_extruder);
+    metrics.flush_volume_mm3       = flush_volume;
+    metrics.wipe_tower_volume_mm3  = wipe_tower_volume;
+    // Orca's native total already contains flush and wipe-tower extrusion. Domain keeps those as explicit
+    // evidence, so normalize the remaining filament volume before total_material_volume_mm3() adds them back.
+    metrics.filament_volume_mm3 = orca_filament_volume_excluding_multicolor_waste(
+        sum_values(statistics.total_volumes_per_extruder), flush_volume, wipe_tower_volume);
     metrics.tool_changes           = statistics.total_filament_changes;
     metrics.physical_slots_compatible = physical_slots_compatible;
     metrics.color_mapping_degraded    = color_mapping_degraded;

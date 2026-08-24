@@ -941,3 +941,33 @@ executor call count remains unchanged and the baseline remains selected with
 This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, configuration,
 dependency, port, data directory, journal path/schema, 3MF/profile format, profile data, or default Orca behavior.
 macOS and Linux native build/test execution remains a separate host/CI gate.
+
+## Multicolor material-accounting normalization gate — 2026-08-24
+
+The Orca trial adapter now normalizes native multicolor material statistics before publishing the Domain
+`SlicingMetrics`. Orca's native total volume already includes flush and wipe-tower extrusion, while the Domain
+contract tracks print material, flush, and wipe-tower waste separately and adds them when calculating total
+material. The adapter therefore subtracts the explicit waste components from the native total instead of causing
+the Domain total to count them twice.
+
+The focused regression uses a native total of 650 mm3 with 100 mm3 of flush and 50 mm3 of wipe-tower material.
+The normalized print-material value is 500 mm3, and the Domain total remains the original 650 mm3. Non-finite,
+negative, or internally inconsistent native breakdowns now degrade the print-material metric to unavailable
+instead of fabricating a comparable value. The regression first failed to compile because the normalization helper
+did not exist, then passed after the adapter correction.
+
+### Windows verification
+
+- Material-accounting focus: 1 test case, 6 assertions, all passed in Release and RelWithDebInfo.
+- Multicolor candidate focus: 5 test cases, 34 assertions, all passed in Release and RelWithDebInfo.
+- Smart-slicing suite: 106 test cases, 677 assertions; 105 passed and the opt-in benchmark remained explicitly
+  skipped, in Release and RelWithDebInfo.
+- Default full `slic3rutils_tests`: 116 test cases, 784 assertions, all passed in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings and
+  the non-failing test-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke was not repeated because this is numeric adapter normalization with no interaction, layout, or formal
+  write-path change. The immediately preceding workspace-local isolated-data-directory GUI evidence remains valid.
+
+This gate changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, configuration,
+dependency, port, data directory, journal path/schema, 3MF/profile format, profile data, or default Orca behavior.
+macOS and Linux native build/test execution remains a separate host/CI gate.

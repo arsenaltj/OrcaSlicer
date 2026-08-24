@@ -12,6 +12,7 @@ constexpr double BED_ADHESION_RISK_ATTENTION_THRESHOLD = 1.0;
 struct SlicingMetrics
 {
     std::optional<double> estimated_time_seconds;
+    // Print material excluding flush and wipe-tower waste, which are tracked separately below.
     std::optional<double> filament_volume_mm3;
     std::optional<double> support_volume_mm3;
     std::optional<double> brim_volume_mm3;

@@ -34,6 +34,9 @@ orca_physical_slots_compatible(AI::SmartSlicing::PhysicalSlotCompatibility compa
     return std::nullopt;
 }
 
+std::optional<double> orca_filament_volume_excluding_multicolor_waste(
+    double total_volume_mm3, double flush_volume_mm3, double wipe_tower_volume_mm3);
+
 struct OrcaTrialSliceInput
 {
     Model model;
