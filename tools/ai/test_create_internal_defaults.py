@@ -24,8 +24,10 @@ class CreateInternalDefaultsTests(unittest.TestCase):
             "UNRELATED_SECRET": "must-not-copy",
         })
         self.assertEqual(payload["version"], 1)
+        self.assertEqual(payload["mode"], "internal_locked")
         self.assertEqual(payload["OPENAI_API_KEY"], "openai-secret")
         self.assertEqual(payload["TRIPO_API_KEY"], "tripo-secret")
+        self.assertEqual(payload["TRIPO_API_BASE"], GENERATOR.DEFAULT_TRIPO_API_BASE)
         self.assertNotIn("UNRELATED_SECRET", payload)
 
     def test_main_reports_only_count_and_writes_atomic_json(self) -> None:
@@ -33,6 +35,7 @@ class CreateInternalDefaultsTests(unittest.TestCase):
             output_path = Path(directory) / "defaults.json"
             environment = {
                 "OPENAI_API_KEY": "openai-secret",
+                "OPENAI_BASE_URL": "https://internal.example/v1",
                 "TRIPO_API_KEY": "tripo-secret",
             }
             with mock.patch.dict(GENERATOR.os.environ, environment, clear=True), \
@@ -44,10 +47,10 @@ class CreateInternalDefaultsTests(unittest.TestCase):
             output = " ".join(str(argument) for call in print_mock.call_args_list for argument in call.args)
             self.assertNotIn("openai-secret", output)
             self.assertNotIn("tripo-secret", output)
-            self.assertIn("2 configured setting(s)", output)
+            self.assertIn("4 configured setting(s)", output)
 
-    def test_missing_credentials_are_rejected(self) -> None:
-        with self.assertRaisesRegex(ValueError, "No supported API credential"):
+    def test_incomplete_internal_configuration_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Missing required internal setting"):
             GENERATOR.build_payload({"OPENAI_BASE_URL": "https://internal.example/v1"})
 
 

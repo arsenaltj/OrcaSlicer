@@ -18,11 +18,12 @@ SPEC.loader.exec_module(BOOTSTRAP)
 
 
 class InstalledBootstrapTests(unittest.TestCase):
-    def test_internal_defaults_load_only_allowlisted_missing_environment_values(self) -> None:
+    def test_internal_locked_defaults_override_allowlisted_environment_values(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             defaults_path = Path(directory) / "defaults.json"
             defaults_path.write_text(json.dumps({
                 "version": 1,
+                "mode": "internal_locked",
                 "OPENAI_API_KEY": "packaged-openai",
                 "OPENAI_BASE_URL": "https://internal.example/v1",
                 "TRIPO_API_KEY": "packaged-tripo",
@@ -32,19 +33,23 @@ class InstalledBootstrapTests(unittest.TestCase):
             }
             with mock.patch.dict(os.environ, environment, clear=True):
                 loaded = BOOTSTRAP.load_internal_defaults(defaults_path)
-                self.assertEqual(os.environ["OPENAI_API_KEY"], "explicit-openai")
+                self.assertEqual(os.environ["OPENAI_API_KEY"], "packaged-openai")
                 self.assertEqual(os.environ["OPENAI_BASE_URL"], "https://internal.example/v1")
                 self.assertEqual(os.environ["TRIPO_API_KEY"], "packaged-tripo")
-                self.assertEqual(loaded, ("OPENAI_BASE_URL", "TRIPO_API_KEY"))
+                self.assertEqual(os.environ["ORCASLICER_AI_CONFIG_MODE"], "internal_locked")
+                self.assertEqual(loaded, ("OPENAI_API_KEY", "OPENAI_BASE_URL", "TRIPO_API_KEY"))
 
     def test_internal_defaults_reject_unknown_malformed_and_oversized_payloads(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             defaults_path = Path(directory) / "defaults.json"
             invalid_payloads = (
                 "not-json",
-                json.dumps({"version": True, "OPENAI_API_KEY": "secret"}),
-                json.dumps({"version": 1, "OPENAI_API_KEY": "secret", "UNEXPECTED": "value"}),
-                json.dumps({"version": 1, "OPENAI_API_KEY": "secret\nvalue"}),
+                json.dumps({"version": True, "mode": "internal_locked", "OPENAI_API_KEY": "secret"}),
+                json.dumps({"version": 1, "OPENAI_API_KEY": "secret"}),
+                json.dumps({"version": 1, "mode": "fallback", "OPENAI_API_KEY": "secret"}),
+                json.dumps({"version": 1, "mode": "internal_locked", "OPENAI_API_KEY": "secret", "UNEXPECTED": "value"}),
+                json.dumps({"version": 1, "mode": "internal_locked", "OPENAI_API_KEY": "secret\nvalue"}),
+                json.dumps({"version": 1, "mode": "internal_locked", "OPENAI_API_KEY": "secret"}),
                 " " * (BOOTSTRAP.MAX_INTERNAL_DEFAULTS_BYTES + 1),
             )
             for payload in invalid_payloads:
@@ -53,6 +58,7 @@ class InstalledBootstrapTests(unittest.TestCase):
                     with mock.patch.dict(os.environ, {}, clear=True):
                         self.assertEqual(BOOTSTRAP.load_internal_defaults(defaults_path), ())
                         self.assertNotIn("OPENAI_API_KEY", os.environ)
+                        self.assertNotIn("ORCASLICER_AI_CONFIG_MODE", os.environ)
 
     def test_configure_runtime_uses_data_directory_and_preserves_override(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

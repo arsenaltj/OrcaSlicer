@@ -17,18 +17,23 @@ DEFAULT_NAMES = (
     "TRIPO_API_KEY",
     "TRIPO_MODEL",
 )
+DEFAULT_TRIPO_API_BASE = "https://openapi.tripo3d.com/v3"
+INTERNAL_CONFIG_MODE = "internal_locked"
+REQUIRED_NAMES = ("OPENAI_API_KEY", "OPENAI_BASE_URL", "TRIPO_API_KEY")
 
 
 def build_payload(environ: Mapping[str, str]) -> dict[str, object]:
-    payload: dict[str, object] = {"version": 1}
+    payload: dict[str, object] = {"version": 1, "mode": INTERNAL_CONFIG_MODE}
     for name in DEFAULT_NAMES:
         value = environ.get(name, "")
         if value:
             if len(value) > 8192 or any(char in value for char in "\0\r\n"):
                 raise ValueError(f"{name} contains an unsupported value")
             payload[name] = value
-    if "OPENAI_API_KEY" not in payload and "TRIPO_API_KEY" not in payload:
-        raise ValueError("No supported API credential is configured")
+    missing_names = [name for name in REQUIRED_NAMES if name not in payload]
+    if missing_names:
+        raise ValueError(f"Missing required internal setting(s): {', '.join(missing_names)}")
+    payload.setdefault("TRIPO_API_BASE", DEFAULT_TRIPO_API_BASE)
     return payload
 
 
@@ -59,7 +64,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         write_payload(arguments.output, payload)
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
-    print(f"Created internal defaults with {len(payload) - 1} configured setting(s).")
+    print(f"Created internal defaults with {len(payload) - 2} configured setting(s).")
     return 0
 
 

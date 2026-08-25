@@ -52,7 +52,7 @@ from tripo_client import (
 
 HOST = os.environ.get("ORCASLICER_AI_SIDECAR_HOST", "127.0.0.1")
 PORT = int(os.environ.get("ORCASLICER_AI_SIDECAR_PORT", "18764"))
-SIDECAR_VERSION = "orcaslicer-ai-sidecar-v6"
+SIDECAR_VERSION = "orcaslicer-ai-sidecar-v7"
 MAX_REQUEST_BYTES = 256 * 1024
 MAX_CHANGES = 8
 MAX_PROMPT_BYTES = 2000
@@ -3044,6 +3044,9 @@ class Handler(BaseHTTPRequestHandler):
                     "sidecar_version": SIDECAR_VERSION,
                     "runtime": {
                         "openai_base_url": os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/"),
+                        "configuration_mode": "internal_locked"
+                        if os.environ.get("ORCASLICER_AI_CONFIG_MODE") == "internal_locked"
+                        else "external",
                     },
                     "capabilities": {
                         "config_proposal": {"available": bool(config)},
@@ -3589,6 +3592,9 @@ def main() -> int:
         output_directory=str(_model_output_root()),
         openai_configured=bool(os.environ.get("OPENAI_API_KEY", "")),
         tripo_configured=bool(os.environ.get("TRIPO_API_KEY", "")),
+        configuration_mode="internal_locked"
+        if os.environ.get("ORCASLICER_AI_CONFIG_MODE") == "internal_locked"
+        else "external",
         openai_endpoint=safe_endpoint(os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")),
         proxy_schemes=sorted(urllib.request.getproxies()),
     )

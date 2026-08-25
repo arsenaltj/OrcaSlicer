@@ -689,9 +689,11 @@ class SidecarHealthContractTests(unittest.TestCase):
             OPENAI_BASE_URL="https://laotie.dev/",
             OPENAI_API_KEY="test-openai",
             TRIPO_API_KEY="test-tripo",
+            ORCASLICER_AI_CONFIG_MODE="internal_locked",
         ):
             health = self.fetch_health(PRODUCTION.Handler)
         self.assertEqual(health["runtime"]["openai_base_url"], "https://laotie.dev")
+        self.assertEqual(health["runtime"]["configuration_mode"], "internal_locked")
         self.assertNotIn("test-openai", json.dumps(health))
 
     def test_production_health_contract_with_tripo_and_preprocess_fallback(self):

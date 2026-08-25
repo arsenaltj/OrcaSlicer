@@ -12,6 +12,7 @@ MAX_LOG_BYTES = 5 * 1024 * 1024
 LOG_BACKUPS = 3
 INTERNAL_DEFAULTS_FILENAME = "orca_ai_internal_defaults.json"
 MAX_INTERNAL_DEFAULTS_BYTES = 32 * 1024
+INTERNAL_CONFIG_MODE = "internal_locked"
 INTERNAL_DEFAULT_NAMES = frozenset({
     "OPENAI_API_KEY",
     "OPENAI_BASE_URL",
@@ -32,9 +33,14 @@ def load_internal_defaults(defaults_path: Path | None = None) -> tuple[str, ...]
     except (OSError, UnicodeError, json.JSONDecodeError):
         return ()
 
-    if not isinstance(payload, dict) or type(payload.get("version")) is not int or payload["version"] != 1:
+    if (
+        not isinstance(payload, dict)
+        or type(payload.get("version")) is not int
+        or payload["version"] != 1
+        or payload.get("mode") != INTERNAL_CONFIG_MODE
+    ):
         return ()
-    if set(payload) - (INTERNAL_DEFAULT_NAMES | {"version"}):
+    if set(payload) - (INTERNAL_DEFAULT_NAMES | {"version", "mode"}):
         return ()
 
     defaults: dict[str, str] = {}
@@ -51,12 +57,14 @@ def load_internal_defaults(defaults_path: Path | None = None) -> tuple[str, ...]
             return ()
         defaults[name] = value
 
-    loaded: list[str] = []
+    required_names = {"OPENAI_API_KEY", "OPENAI_BASE_URL", "TRIPO_API_KEY"}
+    if not required_names.issubset(defaults):
+        return ()
+
     for name, value in defaults.items():
-        if name not in os.environ:
-            os.environ[name] = value
-            loaded.append(name)
-    return tuple(sorted(loaded))
+        os.environ[name] = value
+    os.environ["ORCASLICER_AI_CONFIG_MODE"] = INTERNAL_CONFIG_MODE
+    return tuple(sorted(defaults))
 
 
 def configure_runtime(data_directory: str) -> tuple[Path, Path]:
