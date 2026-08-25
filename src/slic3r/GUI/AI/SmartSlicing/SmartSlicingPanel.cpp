@@ -441,11 +441,16 @@ SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSl
             const AI::SmartSlicing::CandidateGoal goal =
                 smart_slicing_goal_from_selection(m_goal->GetSelection());
             CandidatePlanTask plan_task;
-            try {
-                if (m_prepare_candidates)
+            if (m_prepare_candidates) {
+                try {
                     plan_task = m_prepare_candidates();
-            } catch (...) {
-                plan_task = {};
+                } catch (...) {
+                    // Project GUI-thread capture failures through the Coordinator below.
+                }
+                if (!plan_task) {
+                    m_coordinator.fail_candidate_preparation();
+                    return;
+                }
             }
             const bool started = run_in_background([this, goal, plan_task = std::move(plan_task)]() mutable {
                 const CancelPredicate canceled = [this] {

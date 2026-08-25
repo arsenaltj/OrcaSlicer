@@ -223,6 +223,15 @@ bool SmartSlicingCoordinator::accept_printability_risk()
     return true;
 }
 
+bool SmartSlicingCoordinator::fail_candidate_preparation(std::string diagnostic_code)
+{
+    if (m_snapshot.state != WorkflowState::ReadyForCandidatePlanning)
+        return false;
+    transition(WorkflowState::Failed,
+               diagnostic_code.empty() ? "candidate_preparation_failed" : std::move(diagnostic_code));
+    return true;
+}
+
 bool SmartSlicingCoordinator::workspace_revision_matches() const
 {
     return m_snapshot.context && m_workspace.current_revision() == m_snapshot.context->revision;

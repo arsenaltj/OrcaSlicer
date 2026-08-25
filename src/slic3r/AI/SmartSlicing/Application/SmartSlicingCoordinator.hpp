@@ -34,6 +34,7 @@ public:
     void start();
     void cancel();
     bool accept_printability_risk();
+    bool fail_candidate_preparation(std::string diagnostic_code = "candidate_preparation_failed");
     bool refresh_revision();
     bool plan_and_slice_candidates(std::vector<SliceCandidate> proposals = {},
                                    CandidateGoal goal = CandidateGoal::Stability,

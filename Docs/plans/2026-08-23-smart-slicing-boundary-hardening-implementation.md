@@ -1523,3 +1523,32 @@ This batch changes no shared `MainFrame`, `Plater`, or CMake file and no model-g
 contract, formal workspace write path, configuration, dependency, port, data directory contract, journal
 path/schema, 3MF/profile format, profile data, or default Orca behavior. macOS and Linux native build/test execution
 remains a separate host/CI gate.
+
+## GUI-thread candidate input preparation gate — 2026-08-25
+
+The workbench now starts a candidate worker only after its configured preparation callback returns a valid task.
+Model, plate configuration, placement input, and proposal input therefore must all be cloned on the GUI thread
+before background trial work can begin. If that capture throws or returns no task, the Coordinator enters the
+terminal `candidate_preparation_failed` state and no trial executor is called, preventing the executor's standalone
+fallback provider from reading the formal `Plater` or preset bundle on a worker thread.
+
+When the isolated trial input was prepared successfully but optional deterministic proposal preparation returns no
+proposal task, the Orca adapter supplies an explicit empty task. That preserves the safe baseline-only trial path
+without conflating it with a failed GUI capture. The red regression initially failed at compile time because the
+Coordinator had no preparation-failure projection; its green contract proves the terminal state and zero executor
+calls.
+
+### Windows verification
+
+- Candidate preparation boundary focus: 1 test case and 5 assertions, all passed in Release and RelWithDebInfo.
+- Smart-slicing suite: 126 test cases; 125 passed and the opt-in benchmark remained explicitly skipped, with 862
+  assertions passed in Release and RelWithDebInfo.
+- Default full `slic3rutils_tests`: 136 test cases and 969 assertions, all passed in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings and
+  the non-failing test-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke was not repeated because the changed behavior is an exception/fallback ownership boundary with no
+  layout or normal interaction-path change. No Orca process was launched.
+
+This batch changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, formal workspace
+write path, configuration, dependency, port, data directory contract, journal path/schema, 3MF/profile format,
+profile data, or default Orca behavior. macOS and Linux native build/test execution remains a separate host/CI gate.

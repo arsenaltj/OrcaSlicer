@@ -80,7 +80,9 @@ OrcaSmartSlicingWorkbench::OrcaSmartSlicingWorkbench(Plater& plater, StartSliceF
             std::optional<OrcaCandidateProposalTask> prepared =
                 m_workspace->prepare_candidate_proposals(*snapshot.context);
             if (!prepared)
-                return {};
+                return [](SmartSlicingPanel::CancelPredicate) {
+                    return std::vector<AI::SmartSlicing::SliceCandidate>{};
+                };
             auto task = std::make_shared<OrcaCandidateProposalTask>(std::move(*prepared));
             return [task = std::move(task)](SmartSlicingPanel::CancelPredicate canceled) {
                 return task->execute(std::move(canceled));

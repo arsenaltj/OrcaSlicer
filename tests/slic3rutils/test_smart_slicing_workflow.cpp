@@ -414,6 +414,21 @@ TEST_CASE("invalid baseline metrics fail the workflow before comparison",
     CHECK_FALSE(coordinator.snapshot().comparison);
 }
 
+TEST_CASE("candidate preparation failure terminates before any trial executor fallback",
+          "[AI][SmartSlicing][Workflow][GUIThreadBoundary]")
+{
+    WorkflowWorkspace workspace;
+    FakeTrialSliceExecutor executor;
+    SmartSlicingCoordinator coordinator(workspace, executor);
+    coordinator.start();
+
+    REQUIRE(coordinator.snapshot().state == WorkflowState::ReadyForCandidatePlanning);
+    CHECK(coordinator.fail_candidate_preparation());
+    CHECK(coordinator.snapshot().state == WorkflowState::Failed);
+    CHECK(coordinator.snapshot().detail == "candidate_preparation_failed");
+    CHECK(executor.calls.empty());
+}
+
 TEST_CASE("alternative executor exceptions become explicit failures while the baseline remains available",
           "[AI][SmartSlicing][Workflow][ExceptionBoundary]")
 {
