@@ -140,6 +140,13 @@ std::string recommendation_evidence(const SliceCandidate& winner, const SliceCan
     const OptionalMetric runner_primary = primary_metric(runner_up, goal);
     if (const auto evidence = difference_evidence(winner_primary, runner_primary, primary_evidence(goal)))
         return *evidence;
+    const OptionalMetric winner_warnings =
+        winner.metrics ? OptionalMetric(winner.metrics->warning_codes.size()) : std::nullopt;
+    const OptionalMetric runner_warnings =
+        runner_up.metrics ? OptionalMetric(runner_up.metrics->warning_codes.size()) : std::nullopt;
+    if (const auto evidence = difference_evidence(
+            winner_warnings, runner_warnings, "fewer_slice_warnings"))
+        return *evidence;
     const OptionalMetric winner_adhesion_risk =
         metric_or_missing(winner, &SlicingMetrics::bed_adhesion_risk_score);
     const OptionalMetric runner_adhesion_risk =

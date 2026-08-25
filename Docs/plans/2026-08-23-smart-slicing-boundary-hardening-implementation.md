@@ -1666,3 +1666,31 @@ This batch changes no shared `MainFrame`, `Plater`, or CMake file and no model-g
 formal workspace write path, configuration, dependency, port, data directory contract, journal path/schema,
 3MF/profile format, profile data, or default Orca behavior. macOS and Linux native build/test execution remains a
 separate host/CI gate.
+
+## Warning-order evidence consistency gate — 2026-08-25
+
+For quality, speed, and material-saving goals, candidate ordering uses fewer trial-slice warnings immediately after
+the selected goal's primary metric. Recommendation evidence now follows that same step. When the primary metric is
+tied and warning count selects the winner, the workbench reports `fewer_slice_warnings` instead of skipping ahead
+to a later cost metric or incorrectly reporting `deterministic_tie_break`.
+
+The red regression exercised all three non-stability goals. Candidate selection was already correct in each case,
+but all three evidence assertions received `deterministic_tie_break`. The green change adds the missing warning
+comparison to the evidence ladder without changing candidate eligibility or ordering.
+
+### Windows verification
+
+- Warning-order evidence focus: 1 test case and 6 assertions, all passed in Release and RelWithDebInfo.
+- Smart-slicing suite: 132 test cases; 131 passed and the opt-in benchmark remained explicitly skipped, with 892
+  assertions passed in Release and RelWithDebInfo.
+- Default full `slic3rutils_tests`: 142 test cases and 999 assertions, all passed in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings and
+  the non-failing test-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke was not repeated because this is a Domain evidence-code correction using an existing GUI mapping; it
+  changes no layout, control lifecycle, startup, trial execution, or formal mutation path. No Orca process was
+  launched.
+
+This batch changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, candidate ranking,
+formal workspace write path, configuration, dependency, port, data directory contract, journal path/schema,
+3MF/profile format, profile data, or default Orca behavior. macOS and Linux native build/test execution remains a
+separate host/CI gate.

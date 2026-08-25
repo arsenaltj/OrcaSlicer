@@ -285,6 +285,23 @@ TEST_CASE("stability comparison treats warnings as hard evidence before support 
     CHECK(comparison.recommendation_evidence_codes == std::vector<std::string>{"fewer_slice_warnings"});
 }
 
+TEST_CASE("candidate evidence follows warning ordering after a non-stability primary tie",
+          "[AI][SmartSlicing][Candidate][Evidence]")
+{
+    const CandidateGoal goal = GENERATE(CandidateGoal::Quality, CandidateGoal::Speed,
+                                        CandidateGoal::MaterialSaving);
+    CAPTURE(goal);
+
+    const SliceCandidate clean = ready_candidate("clean", 100.0, 500.0, 10.0, 0);
+    const SliceCandidate warned = ready_candidate("warned", 100.0, 500.0, 10.0, 1);
+
+    const CandidateComparison comparison = compare_candidates({warned, clean}, goal);
+
+    REQUIRE(comparison.recommended_candidate_id == "clean");
+    CHECK(comparison.recommendation_evidence_codes ==
+          std::vector<std::string>{"fewer_slice_warnings"});
+}
+
 TEST_CASE("candidate comparison explains the measured fallback that breaks a primary-goal tie",
           "[AI][SmartSlicing][Candidate][Evidence]")
 {
