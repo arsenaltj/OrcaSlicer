@@ -81,12 +81,13 @@ OrcaSmartSlicingWorkbench::OrcaSmartSlicingWorkbench(Plater& plater, StartSliceF
             std::optional<OrcaCandidateProposalTask> prepared =
                 m_workspace->prepare_candidate_proposals(*snapshot.context);
             if (!prepared)
-                return [](SmartSlicingPanel::CancelPredicate) {
+                return [](AI::SmartSlicing::CandidateGoal, SmartSlicingPanel::CancelPredicate) {
                     return std::vector<AI::SmartSlicing::SliceCandidate>{};
                 };
             auto task = std::make_shared<OrcaCandidateProposalTask>(std::move(*prepared));
-            return [task = std::move(task)](SmartSlicingPanel::CancelPredicate canceled) {
-                return task->execute(std::move(canceled));
+            return [task = std::move(task)](AI::SmartSlicing::CandidateGoal goal,
+                                            SmartSlicingPanel::CancelPredicate canceled) {
+                return task->execute(goal, std::move(canceled));
             };
         },
         [this] { m_cached_trial_executor->cancel_trial_slice(); },

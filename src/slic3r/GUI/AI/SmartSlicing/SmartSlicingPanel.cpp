@@ -488,7 +488,7 @@ SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSl
                     return m_cancel_requested.load(std::memory_order_acquire);
                 };
                 std::vector<AI::SmartSlicing::SliceCandidate> candidates =
-                    plan_task ? plan_task(canceled) : std::vector<AI::SmartSlicing::SliceCandidate>{};
+                    plan_task ? plan_task(goal, canceled) : std::vector<AI::SmartSlicing::SliceCandidate>{};
                 if (canceled()) {
                     m_coordinator.cancel();
                     return;

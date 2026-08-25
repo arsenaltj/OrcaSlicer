@@ -167,6 +167,8 @@ OrcaSmartSlicingAdapter::prepare_candidate_proposals(const AI::SmartSlicing::Wor
     prepared.parameters.plate_id = static_cast<int64_t>(plate->id().id);
     prepared.parameters.current_brim_type = effective_config.opt_serialize("brim_type");
     prepared.parameters.current_brim_width = effective_config.opt_float("brim_width");
+    if (const ConfigOptionFloat* layer_height = effective_config.option<ConfigOptionFloat>("layer_height"))
+        prepared.parameters.current_layer_height = layer_height->value;
     const Model& model = m_plater->model();
     for (size_t object_index = 0; object_index < model.objects.size(); ++object_index) {
         const ModelObject* object = model.objects[object_index];

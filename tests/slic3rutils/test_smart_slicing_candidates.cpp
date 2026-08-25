@@ -556,7 +556,7 @@ TEST_CASE("prepared candidate proposal task discards partial work after cancella
 
     size_t cancellation_polls = 0;
     GUI::OrcaCandidateProposalTask task(std::move(input));
-    const std::vector<SliceCandidate> candidates = task.execute([&cancellation_polls] {
+    const std::vector<SliceCandidate> candidates = task.execute(CandidateGoal::Stability, [&cancellation_polls] {
         return ++cancellation_polls >= 2;
     });
 
@@ -580,7 +580,7 @@ TEST_CASE("prepared candidate proposal task composes typed advice into native al
     input.parameters.printable_instances.push_back({6.0, 20.0, 40.0});
 
     const std::vector<SliceCandidate> candidates =
-        GUI::OrcaCandidateProposalTask(std::move(input)).execute();
+        GUI::OrcaCandidateProposalTask(std::move(input)).execute(CandidateGoal::Stability);
 
     REQUIRE(candidates.size() == 2);
     CHECK(candidates[0].id == "placement-stability-native-v1");
@@ -604,10 +604,66 @@ TEST_CASE("prepared candidate proposal task keeps typed advice when native alter
     input.parameters.printable_instances.push_back({6.0, 20.0, 40.0});
 
     const std::vector<SliceCandidate> candidates =
-        GUI::OrcaCandidateProposalTask(std::move(input)).execute();
+        GUI::OrcaCandidateProposalTask(std::move(input)).execute(CandidateGoal::Stability);
 
     REQUIRE(candidates.size() == 1);
     CHECK(candidates.front().id == "parameter-brim-stability-v1");
     REQUIRE(candidates.front().parameters.entries.size() == 1);
     CHECK(candidates.front().parameters.entries.front().key == "brim_width");
+}
+
+TEST_CASE("prepared candidate proposal task isolates quality and speed advice from stability geometry",
+          "[AI][SmartSlicing][Candidate][ProposalTask][Parameters][Goal]")
+{
+    GUI::OrcaCandidateProposalInput input;
+    input.context.plate_index = 0;
+    input.context.revision = {1, 2, 3, "revision-a"};
+    input.context.nozzle_diameters = {0.4};
+    input.placement = placement_input();
+    add_cube(input.placement.model, 10.0, Vec3d(75.0, 75.0, 0.0));
+    input.orientation.config = DynamicPrintConfig::full_print_config();
+    add_box(input.orientation.model, Vec3d(8.0, 12.0, 40.0), Vec3d(30.0, 30.0, 0.0));
+    input.parameters.plate_id = 42;
+    input.parameters.current_layer_height = 0.20;
+
+    GUI::OrcaCandidateProposalInput speed_input = input;
+    const std::vector<SliceCandidate> quality =
+        GUI::OrcaCandidateProposalTask(std::move(input)).execute(CandidateGoal::Quality);
+    const std::vector<SliceCandidate> speed =
+        GUI::OrcaCandidateProposalTask(std::move(speed_input)).execute(CandidateGoal::Speed);
+
+    REQUIRE(quality.size() == 1);
+    CHECK(quality.front().id == "parameter-quality-layer-height-v1");
+    CHECK(quality.front().goal == CandidateGoal::Quality);
+    CHECK(quality.front().placement.transforms.empty());
+    CHECK(quality.front().parameters.intent == ParameterIntent::Quality);
+
+    REQUIRE(speed.size() == 1);
+    CHECK(speed.front().id == "parameter-speed-layer-height-v1");
+    CHECK(speed.front().goal == CandidateGoal::Speed);
+    CHECK(speed.front().placement.transforms.empty());
+    CHECK(speed.front().parameters.intent == ParameterIntent::Speed);
+}
+
+TEST_CASE("prepared candidate proposal task keeps native fallback when stability advice is empty",
+          "[AI][SmartSlicing][Candidate][ProposalTask][Parameters][Fallback]")
+{
+    GUI::OrcaCandidateProposalInput input;
+    input.context.plate_index = 0;
+    input.context.revision = {1, 2, 3, "revision-a"};
+    input.placement = placement_input();
+    add_cube(input.placement.model, 10.0, Vec3d(75.0, 75.0, 0.0));
+    input.orientation.config = DynamicPrintConfig::full_print_config();
+    add_box(input.orientation.model, Vec3d(8.0, 12.0, 40.0), Vec3d(30.0, 30.0, 0.0));
+    input.parameters.plate_id = 42;
+    input.parameters.current_brim_type = "outer_only";
+    input.parameters.current_brim_width = 1.0;
+    input.parameters.printable_instances.push_back({30.0, 30.0, 10.0});
+
+    const std::vector<SliceCandidate> candidates =
+        GUI::OrcaCandidateProposalTask(std::move(input)).execute(CandidateGoal::Stability);
+
+    REQUIRE(candidates.size() == 2);
+    CHECK(candidates[0].parameters.entries.empty());
+    CHECK(candidates[1].parameters.entries.empty());
 }

@@ -35,7 +35,8 @@ class SmartSlicingPanel final : public wxScrolledWindow
 public:
     using CancelPredicate = std::function<bool()>;
     using CandidatePlanTask =
-        std::function<std::vector<AI::SmartSlicing::SliceCandidate>(CancelPredicate)>;
+        std::function<std::vector<AI::SmartSlicing::SliceCandidate>(AI::SmartSlicing::CandidateGoal,
+                                                                    CancelPredicate)>;
     using PrepareCandidatesFn = std::function<CandidatePlanTask()>;
     using CancelTrialFn = std::function<void()>;
     using FinalizeBackgroundFn = std::function<void()>;

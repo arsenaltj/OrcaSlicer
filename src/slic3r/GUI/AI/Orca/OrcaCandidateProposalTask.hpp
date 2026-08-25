@@ -26,29 +26,37 @@ public:
 
     explicit OrcaCandidateProposalTask(OrcaCandidateProposalInput input) : m_input(std::move(input)) {}
 
-    std::vector<AI::SmartSlicing::SliceCandidate> execute(CancelPredicate canceled = {})
+    std::vector<AI::SmartSlicing::SliceCandidate>
+    execute(AI::SmartSlicing::CandidateGoal goal, CancelPredicate canceled = {})
     {
         if (!canceled)
             canceled = [] { return false; };
         if (canceled())
             return {};
 
-        m_input.placement.arrange_params.stopcondition = canceled;
-        std::vector<AI::SmartSlicing::SliceCandidate> candidates =
-            OrcaPlacementCandidateProvider().generate(std::move(m_input.placement), m_input.context.revision);
-        if (canceled())
-            return {};
+        std::vector<AI::SmartSlicing::SliceCandidate> candidates;
+        const bool include_native_geometry = goal == AI::SmartSlicing::CandidateGoal::Stability ||
+                                             goal == AI::SmartSlicing::CandidateGoal::MaterialSaving;
+        if (include_native_geometry) {
+            m_input.placement.arrange_params.stopcondition = canceled;
+            candidates = OrcaPlacementCandidateProvider().generate(
+                std::move(m_input.placement), m_input.context.revision);
+            if (canceled())
+                return {};
 
-        m_input.orientation.stopcondition = canceled;
-        std::vector<AI::SmartSlicing::SliceCandidate> orientation_candidates =
-            OrcaOrientationCandidateProvider().generate(std::move(m_input.orientation), m_input.context.revision);
-        if (canceled())
-            return {};
-        candidates.insert(candidates.end(), std::make_move_iterator(orientation_candidates.begin()),
-                          std::make_move_iterator(orientation_candidates.end()));
+            m_input.orientation.stopcondition = canceled;
+            std::vector<AI::SmartSlicing::SliceCandidate> orientation_candidates =
+                OrcaOrientationCandidateProvider().generate(std::move(m_input.orientation), m_input.context.revision);
+            if (canceled())
+                return {};
+            candidates.insert(candidates.end(), std::make_move_iterator(orientation_candidates.begin()),
+                              std::make_move_iterator(orientation_candidates.end()));
+        }
+        for (AI::SmartSlicing::SliceCandidate& candidate : candidates)
+            candidate.goal = goal;
 
         AI::SmartSlicing::ParameterProposal parameter_proposal =
-            OrcaParameterAdvisor(std::move(m_input.parameters)).advise(m_input.context);
+            OrcaParameterAdvisor(std::move(m_input.parameters)).advise(m_input.context, goal);
         if (canceled())
             return {};
         if (parameter_proposal.entries.empty())
@@ -56,13 +64,27 @@ public:
 
         if (candidates.empty()) {
             AI::SmartSlicing::SliceCandidate candidate;
-            candidate.id            = "parameter-brim-stability-v1";
+            switch (goal) {
+            case AI::SmartSlicing::CandidateGoal::Stability:
+                candidate.id          = "parameter-brim-stability-v1";
+                candidate.explanation = "small_or_slender_footprint_brim_candidate";
+                break;
+            case AI::SmartSlicing::CandidateGoal::Quality:
+                candidate.id          = "parameter-quality-layer-height-v1";
+                candidate.explanation = "finer_validated_layer_height_candidate";
+                break;
+            case AI::SmartSlicing::CandidateGoal::Speed:
+                candidate.id          = "parameter-speed-layer-height-v1";
+                candidate.explanation = "coarser_validated_layer_height_candidate";
+                break;
+            case AI::SmartSlicing::CandidateGoal::MaterialSaving:
+                return candidates;
+            }
             candidate.base_revision = m_input.context.revision;
-            candidate.goal          = AI::SmartSlicing::CandidateGoal::Stability;
-            candidate.explanation   = "small_or_slender_footprint_brim_candidate";
+            candidate.goal          = goal;
             candidate.parameters    = std::move(parameter_proposal);
             candidates.push_back(std::move(candidate));
-        } else {
+        } else if (goal == AI::SmartSlicing::CandidateGoal::Stability) {
             for (AI::SmartSlicing::SliceCandidate& candidate : candidates)
                 candidate.parameters = parameter_proposal;
         }

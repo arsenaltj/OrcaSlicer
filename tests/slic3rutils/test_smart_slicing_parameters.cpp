@@ -292,7 +292,8 @@ TEST_CASE("Orca parameter advisor proposes one bounded brim change for fragile g
     context.plate_index = 0;
     context.objects.push_back({1, "slender", 1, 12, 0, false});
 
-    const ParameterProposal proposal = Slic3r::GUI::OrcaParameterAdvisor(std::move(input)).advise(context);
+    const ParameterProposal proposal = Slic3r::GUI::OrcaParameterAdvisor(std::move(input)).advise(
+        context, CandidateGoal::Stability);
 
     REQUIRE(proposal.entries.size() == 1);
     const ConfigPatchEntry& entry = proposal.entries.front();
@@ -304,7 +305,43 @@ TEST_CASE("Orca parameter advisor proposes one bounded brim change for fragile g
     CHECK(std::get<double>(entry.new_value) == Catch::Approx(5.0));
     CHECK(entry.reason_code == "improve_small_footprint_adhesion");
     CHECK(proposal.explanation_codes == std::vector<std::string>{"small_or_slender_footprint"});
+    CHECK(proposal.intent == ParameterIntent::Stability);
     CHECK(ParameterProposalValidator().validate(proposal).accepted());
+}
+
+TEST_CASE("Orca parameter advisor emits bounded goal-specific layer height intent",
+          "[AI][SmartSlicing][Parameters][OrcaAdvisor][Goal]")
+{
+    WorkspaceContext context;
+    context.plate_index = 0;
+    context.nozzle_diameters = {0.4};
+
+    Slic3r::GUI::OrcaParameterAdvisorInput input;
+    input.plate_id = 7;
+    input.current_layer_height = 0.20;
+
+    const ParameterProposal quality = Slic3r::GUI::OrcaParameterAdvisor(input).advise(
+        context, CandidateGoal::Quality);
+    REQUIRE(quality.entries.size() == 1);
+    CHECK(quality.intent == ParameterIntent::Quality);
+    CHECK(quality.entries.front().key == "layer_height");
+    CHECK(std::get<double>(quality.entries.front().expected_value) == Catch::Approx(0.20));
+    CHECK(std::get<double>(quality.entries.front().new_value) == Catch::Approx(0.16));
+    CHECK(quality.entries.front().reason_code == "use_finer_validated_layer_height");
+    CHECK(ParameterProposalValidator().validate(quality).accepted());
+
+    const ParameterProposal speed = Slic3r::GUI::OrcaParameterAdvisor(input).advise(
+        context, CandidateGoal::Speed);
+    REQUIRE(speed.entries.size() == 1);
+    CHECK(speed.intent == ParameterIntent::Speed);
+    CHECK(speed.entries.front().key == "layer_height");
+    CHECK(std::get<double>(speed.entries.front().expected_value) == Catch::Approx(0.20));
+    CHECK(std::get<double>(speed.entries.front().new_value) == Catch::Approx(0.24));
+    CHECK(speed.entries.front().reason_code == "use_coarser_validated_layer_height");
+    CHECK(ParameterProposalValidator().validate(speed).accepted());
+
+    CHECK(Slic3r::GUI::OrcaParameterAdvisor(input).advise(
+        context, CandidateGoal::MaterialSaving).entries.empty());
 }
 
 TEST_CASE("Orca parameter advisor stays empty without actionable bounded evidence",
@@ -319,27 +356,31 @@ TEST_CASE("Orca parameter advisor stays empty without actionable bounded evidenc
     stable.current_brim_type = "outer_only";
     stable.current_brim_width = 1.0;
     stable.printable_instances.push_back({30.0, 30.0, 10.0});
-    CHECK(Slic3r::GUI::OrcaParameterAdvisor(std::move(stable)).advise(context).entries.empty());
+    CHECK(Slic3r::GUI::OrcaParameterAdvisor(std::move(stable)).advise(
+        context, CandidateGoal::Stability).entries.empty());
 
     Slic3r::GUI::OrcaParameterAdvisorInput capped;
     capped.plate_id = 7;
     capped.current_brim_type = "outer_only";
     capped.current_brim_width = 10.0;
     capped.printable_instances.push_back({6.0, 20.0, 40.0});
-    CHECK(Slic3r::GUI::OrcaParameterAdvisor(std::move(capped)).advise(context).entries.empty());
+    CHECK(Slic3r::GUI::OrcaParameterAdvisor(std::move(capped)).advise(
+        context, CandidateGoal::Stability).entries.empty());
 
     Slic3r::GUI::OrcaParameterAdvisorInput missing_target;
     missing_target.current_brim_type = "outer_only";
     missing_target.current_brim_width = 1.0;
     missing_target.printable_instances.push_back({6.0, 20.0, 40.0});
-    CHECK(Slic3r::GUI::OrcaParameterAdvisor(std::move(missing_target)).advise(context).entries.empty());
+    CHECK(Slic3r::GUI::OrcaParameterAdvisor(std::move(missing_target)).advise(
+        context, CandidateGoal::Stability).entries.empty());
 
     Slic3r::GUI::OrcaParameterAdvisorInput missing_workspace;
     missing_workspace.plate_id = 7;
     missing_workspace.current_brim_type = "outer_only";
     missing_workspace.current_brim_width = 1.0;
     missing_workspace.printable_instances.push_back({6.0, 20.0, 40.0});
-    CHECK(Slic3r::GUI::OrcaParameterAdvisor(std::move(missing_workspace)).advise({}).entries.empty());
+    CHECK(Slic3r::GUI::OrcaParameterAdvisor(std::move(missing_workspace)).advise(
+        {}, CandidateGoal::Stability).entries.empty());
 }
 
 TEST_CASE("bed adhesion evidence degrades safely when finite geometry overflows the derived risk",
@@ -361,7 +402,8 @@ TEST_CASE("bed adhesion evidence degrades safely when finite geometry overflows 
     input.plate_id = 7;
     input.current_brim_type = "no_brim";
     input.printable_instances.push_back({extreme_footprint, 1.0, 1.0});
-    CHECK(Slic3r::GUI::OrcaParameterAdvisor(std::move(input)).advise(context).entries.empty());
+    CHECK(Slic3r::GUI::OrcaParameterAdvisor(std::move(input)).advise(
+        context, CandidateGoal::Stability).entries.empty());
 }
 
 TEST_CASE("Orca parameter advisor uses native auto brim without duplicating an active native policy",
@@ -376,7 +418,8 @@ TEST_CASE("Orca parameter advisor uses native auto brim without duplicating an a
     disabled.current_brim_type = "no_brim";
     disabled.current_brim_width = 0.0;
     disabled.printable_instances.push_back({6.0, 20.0, 40.0});
-    const ParameterProposal proposal = Slic3r::GUI::OrcaParameterAdvisor(std::move(disabled)).advise(context);
+    const ParameterProposal proposal = Slic3r::GUI::OrcaParameterAdvisor(std::move(disabled)).advise(
+        context, CandidateGoal::Stability);
     REQUIRE(proposal.entries.size() == 1);
     CHECK(proposal.entries.front().key == "brim_type");
     CHECK(std::get<std::string>(proposal.entries.front().expected_value) == "no_brim");
@@ -388,5 +431,6 @@ TEST_CASE("Orca parameter advisor uses native auto brim without duplicating an a
     active.current_brim_type = "auto_brim";
     active.current_brim_width = 0.0;
     active.printable_instances.push_back({6.0, 20.0, 40.0});
-    CHECK(Slic3r::GUI::OrcaParameterAdvisor(std::move(active)).advise(context).entries.empty());
+    CHECK(Slic3r::GUI::OrcaParameterAdvisor(std::move(active)).advise(
+        context, CandidateGoal::Stability).entries.empty());
 }
