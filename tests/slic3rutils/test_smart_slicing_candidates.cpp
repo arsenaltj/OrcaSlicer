@@ -254,6 +254,46 @@ TEST_CASE("stability comparison treats warnings as hard evidence before support 
     CHECK(comparison.recommendation_evidence_codes == std::vector<std::string>{"fewer_slice_warnings"});
 }
 
+TEST_CASE("candidate comparison explains the measured fallback that breaks a primary-goal tie",
+          "[AI][SmartSlicing][Candidate][Evidence]")
+{
+    SECTION("support volume") {
+        const SliceCandidate lower_support = ready_candidate("lower-support", 100.0, 500.0, 5.0);
+        const SliceCandidate higher_support = ready_candidate("higher-support", 100.0, 500.0, 20.0);
+
+        const CandidateComparison comparison =
+            compare_candidates({higher_support, lower_support}, CandidateGoal::Stability);
+
+        CHECK(comparison.recommended_candidate_id == "lower-support");
+        CHECK(comparison.recommendation_evidence_codes ==
+              std::vector<std::string>{"lower_support_volume"});
+    }
+
+    SECTION("estimated time") {
+        const SliceCandidate faster = ready_candidate("faster", 80.0, 500.0, 10.0);
+        const SliceCandidate slower = ready_candidate("slower", 120.0, 500.0, 10.0);
+
+        const CandidateComparison comparison =
+            compare_candidates({slower, faster}, CandidateGoal::Stability);
+
+        CHECK(comparison.recommended_candidate_id == "faster");
+        CHECK(comparison.recommendation_evidence_codes ==
+              std::vector<std::string>{"lower_estimated_time"});
+    }
+
+    SECTION("print material") {
+        const SliceCandidate lower_material = ready_candidate("lower-material", 100.0, 400.0, 10.0);
+        const SliceCandidate higher_material = ready_candidate("higher-material", 100.0, 600.0, 10.0);
+
+        const CandidateComparison comparison =
+            compare_candidates({higher_material, lower_material}, CandidateGoal::Stability);
+
+        CHECK(comparison.recommended_candidate_id == "lower-material");
+        CHECK(comparison.recommendation_evidence_codes ==
+              std::vector<std::string>{"lower_filament_volume"});
+    }
+}
+
 TEST_CASE("stability comparison rewards deterministic bed adhesion evidence before raw cost",
           "[AI][SmartSlicing][Candidate][BedAdhesion]")
 {

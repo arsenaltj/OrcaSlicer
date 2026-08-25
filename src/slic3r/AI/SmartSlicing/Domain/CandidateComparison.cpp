@@ -149,6 +149,18 @@ std::string recommendation_evidence(const SliceCandidate& winner, const SliceCan
     const OptionalMetric runner_wipe = metric_or_missing(runner_up, &SlicingMetrics::wipe_tower_volume_mm3);
     if (!equal_optional(winner_wipe, runner_wipe))
         return "lower_wipe_tower_volume";
+    const OptionalMetric winner_support = metric_or_missing(winner, &SlicingMetrics::support_volume_mm3);
+    const OptionalMetric runner_support = metric_or_missing(runner_up, &SlicingMetrics::support_volume_mm3);
+    if (!equal_optional(winner_support, runner_support))
+        return "lower_support_volume";
+    const OptionalMetric winner_time = metric_or_missing(winner, &SlicingMetrics::estimated_time_seconds);
+    const OptionalMetric runner_time = metric_or_missing(runner_up, &SlicingMetrics::estimated_time_seconds);
+    if (!equal_optional(winner_time, runner_time))
+        return "lower_estimated_time";
+    const OptionalMetric winner_material = metric_or_missing(winner, &SlicingMetrics::filament_volume_mm3);
+    const OptionalMetric runner_material = metric_or_missing(runner_up, &SlicingMetrics::filament_volume_mm3);
+    if (!equal_optional(winner_material, runner_material))
+        return "lower_filament_volume";
     return "deterministic_tie_break";
 }
 

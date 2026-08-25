@@ -1552,3 +1552,31 @@ calls.
 This batch changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, formal workspace
 write path, configuration, dependency, port, data directory contract, journal path/schema, 3MF/profile format,
 profile data, or default Orca behavior. macOS and Linux native build/test execution remains a separate host/CI gate.
+
+## Candidate fallback-evidence consistency gate — 2026-08-25
+
+Candidate recommendation evidence now follows the complete deterministic comparison ladder. When the selected
+goal's primary metric and all earlier safety or multicolor evidence are tied, a winner chosen by lower support
+volume, shorter estimated time, or lower print-material volume reports that measured reason instead of the
+incorrect `deterministic_tie_break` fallback. The workbench already maps these stable evidence codes to explicit
+user-facing reasons, so the displayed explanation now matches the actual Domain ordering decision.
+
+The red regression proved all three mismatches independently: each winner ID was already correct, while each
+evidence assertion received `deterministic_tie_break`. The green contract preserves the existing comparison order
+and changes only the explanation emitted for a measured tie breaker.
+
+### Windows verification
+
+- Fallback-evidence focus: 1 test case and 6 assertions, all passed in Release and RelWithDebInfo.
+- Smart-slicing suite: 127 test cases; 126 passed and the opt-in benchmark remained explicitly skipped, with 868
+  assertions passed in Release and RelWithDebInfo.
+- Default full `slic3rutils_tests`: 137 test cases and 975 assertions, all passed in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings and
+  the non-failing test-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke was not repeated because this is a Domain evidence-label correction using existing workbench mappings;
+  it changes no layout, interaction, startup, trial execution, or formal mutation behavior. No Orca process was
+  launched.
+
+This batch changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, formal workspace
+write path, configuration, dependency, port, data directory contract, journal path/schema, 3MF/profile format,
+profile data, or default Orca behavior. macOS and Linux native build/test execution remains a separate host/CI gate.
