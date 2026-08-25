@@ -103,7 +103,8 @@ void SmartSlicingCoordinator::persist_runtime_state()
         return;
     const bool terminal = m_snapshot.state == WorkflowState::Idle || m_snapshot.state == WorkflowState::Completed ||
                           m_snapshot.state == WorkflowState::Canceled || m_snapshot.state == WorkflowState::Stale ||
-                          m_snapshot.state == WorkflowState::Failed;
+                          m_snapshot.state == WorkflowState::Failed ||
+                          (m_snapshot.state == WorkflowState::ApplyFailed && !m_snapshot.can_undo_apply);
     try {
         if (terminal) {
             m_runtime_store->clear(m_snapshot.workflow_id);

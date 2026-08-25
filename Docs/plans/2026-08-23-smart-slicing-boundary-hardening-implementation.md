@@ -1473,3 +1473,25 @@ This batch changes no shared `MainFrame`, `Plater`, or CMake file and no model-g
 contract, formal workspace write path, configuration, dependency, port, data directory contract, journal
 path/schema, 3MF/profile format, profile data, or default Orca behavior. macOS and Linux native build/test execution
 remains a separate host/CI gate.
+
+## Terminal apply-failure runtime ownership gate — 2026-08-25
+
+`ApplyFailed` now retains a runtime journal only while the gateway still owns native Undo recovery. A failure with
+no recovery path is terminal and clears its runtime descriptor, so a clean restart cannot misreport the finished
+failure as an interrupted workflow. The regression contract covers both ownership branches: no-Undo failures clear
+the descriptor, while recoverable failures retain it until the recovery responsibility is resolved.
+
+### Windows verification
+
+- Runtime recovery-ownership focus: 1 test case and 12 assertions, all passed in Release and RelWithDebInfo.
+- Smart-slicing suite: 125 test cases; 124 passed and the opt-in benchmark remained explicitly skipped, with 857
+  assertions passed in Release and RelWithDebInfo.
+- Default full `slic3rutils_tests`: 135 test cases and 964 assertions, all passed in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings and
+  the non-failing test-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke was not repeated because this is a nonvisual persistence-state correction with no layout, interaction,
+  startup, trial execution, or formal mutation-path change. No Orca process was launched.
+
+This batch changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, formal workspace
+write path, configuration, dependency, port, data directory contract, journal path/schema, 3MF/profile format,
+profile data, or default Orca behavior. macOS and Linux native build/test execution remains a separate host/CI gate.

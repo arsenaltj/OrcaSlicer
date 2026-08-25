@@ -63,6 +63,25 @@ public:
     void cancel_trial_slice() override {}
 };
 
+class RuntimeOfficialGateway final : public IOfficialSliceGateway
+{
+public:
+    bool can_undo{false};
+
+    OfficialSliceResult prepare(const SliceCandidate&, const WorkspaceRevision&) override
+    {
+        return {OfficialSlicePhase::Prepared, {}, false, false};
+    }
+
+    OfficialSliceResult commit(const SliceCandidate&, const WorkspaceRevision&) override
+    {
+        return {OfficialSlicePhase::Failed, "official_slice_not_started", true, can_undo};
+    }
+
+    OfficialSliceResult poll() override { return {}; }
+    bool undo_last_apply() override { return false; }
+};
+
 class MemoryRuntimeStore final : public IWorkflowRuntimeStore
 {
 public:
@@ -132,6 +151,28 @@ TEST_CASE("runtime journal stores descriptors only and clears terminal workflows
     coordinator.cancel();
     CHECK_FALSE(store.record.has_value());
     CHECK(store.clears > 0);
+}
+
+TEST_CASE("runtime journal retains only apply failures that still own native recovery",
+          "[AI][SmartSlicing][Runtime][Apply][RecoveryOwnership]")
+{
+    RuntimeWorkspace workspace;
+    RuntimeExecutor executor;
+    RuntimeOfficialGateway official;
+    MemoryRuntimeStore store;
+    SmartSlicingCoordinator coordinator(workspace, executor, official);
+    coordinator.set_runtime_store(store, false);
+
+    coordinator.start();
+    REQUIRE(coordinator.plan_and_slice_candidates());
+    REQUIRE(store.record);
+
+    official.can_undo = GENERATE(false, true);
+    CAPTURE(official.can_undo);
+    CHECK_FALSE(coordinator.apply_selected_candidate());
+    CHECK(coordinator.snapshot().state == WorkflowState::ApplyFailed);
+    CHECK(coordinator.snapshot().can_undo_apply == official.can_undo);
+    CHECK(store.record.has_value() == official.can_undo);
 }
 
 TEST_CASE("observer failures cannot suppress runtime journal publication",
