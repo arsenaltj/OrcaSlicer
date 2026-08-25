@@ -307,6 +307,8 @@ SmartSlicingHideAction smart_slicing_hide_action(bool shown, bool worker_running
     return can_cancel ? SmartSlicingHideAction::CancelDirectly : SmartSlicingHideAction::None;
 }
 
+bool smart_slicing_workflow_command_allowed(bool worker_running) { return !worker_running; }
+
 SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSlicingCoordinator& coordinator,
                                      PrepareCandidatesFn prepare_candidates, CancelTrialFn cancel_trial,
                                      FinalizeBackgroundFn finalize_background, FocusIssueFn focus_issue)
@@ -400,11 +402,15 @@ SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSl
         controls.panel->SetSizer(box);
         candidate_root->Add(controls.panel, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
         controls.selector->Bind(wxEVT_RADIOBUTTON, [this, index](wxCommandEvent&) {
-            if (!m_candidate_ids[index].empty())
+            if (smart_slicing_workflow_command_allowed(
+                    m_worker_running.load(std::memory_order_acquire)) &&
+                !m_candidate_ids[index].empty())
                 m_coordinator.select_candidate(m_candidate_ids[index]);
         });
         controls.retry->Bind(wxEVT_BUTTON, [this, index](wxCommandEvent&) {
-            if (!m_candidate_ids[index].empty()) {
+            if (smart_slicing_workflow_command_allowed(
+                    m_worker_running.load(std::memory_order_acquire)) &&
+                !m_candidate_ids[index].empty()) {
                 run_in_background([this, candidate_id = m_candidate_ids[index]] {
                     m_coordinator.retry_candidate(candidate_id, true, [this] {
                         return m_cancel_requested.load(std::memory_order_acquire);
@@ -433,9 +439,18 @@ SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSl
     m_candidate_section->SetSizer(candidate_root);
     root->Add(m_candidate_section, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(16));
     m_candidate_section->Hide();
-    m_keep_baseline->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { m_coordinator.select_candidate("baseline"); });
-    m_undo_apply->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { m_coordinator.undo_applied_candidate(); });
-    m_apply->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { m_coordinator.apply_selected_candidate(); });
+    m_keep_baseline->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        if (smart_slicing_workflow_command_allowed(m_worker_running.load(std::memory_order_acquire)))
+            m_coordinator.select_candidate("baseline");
+    });
+    m_undo_apply->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        if (smart_slicing_workflow_command_allowed(m_worker_running.load(std::memory_order_acquire)))
+            m_coordinator.undo_applied_candidate();
+    });
+    m_apply->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        if (smart_slicing_workflow_command_allowed(m_worker_running.load(std::memory_order_acquire)))
+            m_coordinator.apply_selected_candidate();
+    });
     root->AddStretchSpacer();
 
     auto* actions = new wxBoxSizer(wxHORIZONTAL);
@@ -447,6 +462,8 @@ SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSl
     SetSizer(root);
 
     m_start->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        if (!smart_slicing_workflow_command_allowed(m_worker_running.load(std::memory_order_acquire)))
+            return;
         if (m_can_accept_risk) {
             m_coordinator.accept_printability_risk();
         } else if (m_can_plan_candidates) {
@@ -525,6 +542,9 @@ bool SmartSlicingPanel::run_in_background(std::function<void()> work)
 {
     if (!work || m_worker_running.exchange(true, std::memory_order_acq_rel))
         return false;
+    // The worker has exclusive Coordinator ownership until it publishes its terminal state. Disable synchronously
+    // so a queued GUI event cannot act on the previous view before the first background transition is rendered.
+    disable_workflow_commands();
     m_cancel_requested.store(false, std::memory_order_release);
     if (m_worker.joinable())
         m_worker.join();
@@ -548,6 +568,19 @@ bool SmartSlicingPanel::run_in_background(std::function<void()> work)
         }
     });
     return true;
+}
+
+void SmartSlicingPanel::disable_workflow_commands()
+{
+    m_goal->Enable(false);
+    m_start->Enable(false);
+    m_keep_baseline->Enable(false);
+    m_apply->Enable(false);
+    m_undo_apply->Enable(false);
+    for (CandidateControls& controls : m_candidate_controls) {
+        controls.selector->Enable(false);
+        controls.retry->Enable(false);
+    }
 }
 
 void SmartSlicingPanel::render(const SmartSlicingViewModel& view_model)
@@ -590,8 +623,11 @@ void SmartSlicingPanel::render(const SmartSlicingViewModel& view_model)
     }
     m_can_accept_risk = view_model.can_accept_risk;
     m_can_plan_candidates = view_model.can_plan_candidates;
-    m_goal->Enable(view_model.can_plan_candidates && !m_worker_running.load(std::memory_order_acquire));
-    m_start->Enable(view_model.can_start || view_model.can_plan_candidates || view_model.can_accept_risk);
+    const bool commands_allowed = smart_slicing_workflow_command_allowed(
+        m_worker_running.load(std::memory_order_acquire));
+    m_goal->Enable(view_model.can_plan_candidates && commands_allowed);
+    m_start->Enable((view_model.can_start || view_model.can_plan_candidates || view_model.can_accept_risk) &&
+                    commands_allowed);
     m_start->SetLabel(view_model.can_accept_risk ? _L("保留当前网格并继续") :
                       view_model.can_plan_candidates ? _L("生成并试切方案") :
                       view_model.is_stale ? _L("重新检查") : _L("开始检查"));
@@ -616,7 +652,7 @@ void SmartSlicingPanel::render(const SmartSlicingViewModel& view_model)
                                     candidate.id == "baseline" ? _L("当前方案（基线）") :
                                     candidate.recommended ? _L("推荐候选") : _L("候选方案"));
         controls.selector->SetValue(candidate.selected);
-        controls.selector->Enable(candidate.can_select);
+        controls.selector->Enable(candidate.can_select && commands_allowed);
         wxString metrics = _L("时间：") + format_duration(candidate.estimated_time_seconds) +
                            _L("  材料：") + format_volume(candidate.filament_volume_mm3) +
                            _L("\n支撑：") + format_volume(candidate.support_volume_mm3) +
@@ -665,14 +701,15 @@ void SmartSlicingPanel::render(const SmartSlicingViewModel& view_model)
         controls.details->SetLabel(m_candidate_details_expanded[index] ? _L("收起变更") : _L("查看全部变更"));
         controls.details->Show(candidate.id != "baseline" && !changes.empty());
         controls.retry->Show(candidate.can_retry);
+        controls.retry->Enable(candidate.can_retry && commands_allowed);
     }
     m_keep_baseline->Enable(std::any_of(view_model.candidates.begin(), view_model.candidates.end(),
                                        [](const SmartSlicingCandidateView& candidate) {
                                            return candidate.id == "baseline" && !candidate.selected && candidate.can_select;
-                                       }));
-    m_apply->Enable(view_model.can_apply);
+                                       }) && commands_allowed);
+    m_apply->Enable(view_model.can_apply && commands_allowed);
     m_undo_apply->Show(view_model.can_undo_apply);
-    m_undo_apply->Enable(view_model.can_undo_apply);
+    m_undo_apply->Enable(view_model.can_undo_apply && commands_allowed);
     set_wrapped_label(*m_p0_notice,
                       show_candidates ? _L("确认前不会修改正式模型、配置或正式切片结果。") :
                                         _L("预检与候选试切均在隔离副本中执行。"),

@@ -28,6 +28,7 @@ wxString smart_slicing_candidate_reason_text(const SmartSlicingCandidateView& ca
 AI::SmartSlicing::CandidateGoal smart_slicing_goal_from_selection(int selection);
 enum class SmartSlicingHideAction { None, RequestBackgroundCancel, CancelDirectly };
 SmartSlicingHideAction smart_slicing_hide_action(bool shown, bool worker_running, bool can_cancel);
+bool smart_slicing_workflow_command_allowed(bool worker_running);
 
 class SmartSlicingPanel final : public wxScrolledWindow
 {
@@ -60,6 +61,7 @@ private:
 
     void on_revision_timer(wxTimerEvent& event);
     bool run_in_background(std::function<void()> work);
+    void disable_workflow_commands();
 
     AI::SmartSlicing::SmartSlicingCoordinator& m_coordinator;
     PrepareCandidatesFn m_prepare_candidates;

@@ -892,6 +892,13 @@ TEST_CASE("hiding the workbench never reads workflow eligibility across a runnin
     CHECK(smart_slicing_hide_action(false, true, false) == SmartSlicingHideAction::RequestBackgroundCancel);
 }
 
+TEST_CASE("workflow commands are gated while a smart-slicing worker owns the coordinator",
+          "[AI][SmartSlicing][GUI][Lifecycle][WorkerOwnership]")
+{
+    CHECK(Slic3r::GUI::smart_slicing_workflow_command_allowed(false));
+    CHECK_FALSE(Slic3r::GUI::smart_slicing_workflow_command_allowed(true));
+}
+
 TEST_CASE("candidate cards expose baseline deltas selection and retry without workspace mutation", "[AI][SmartSlicing][Workflow]")
 {
     WorkflowWorkspace workspace;

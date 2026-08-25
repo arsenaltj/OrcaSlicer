@@ -1758,3 +1758,39 @@ changes no external network port, shared `MainFrame`, `Plater`, or CMake file, m
 workspace write path, configuration, dependency, data directory contract, journal path/schema, 3MF/profile
 format, profile data, or default Orca behavior. macOS and Linux native build/test execution remains a separate
 host/CI gate.
+
+## Background-worker GUI command ownership gate — 2026-08-25
+
+Candidate generation and candidate retry execute Coordinator operations on the smart-slicing background worker.
+The workbench now disables workflow commands synchronously as soon as that worker claims ownership, before the
+thread is created, and every Coordinator-mutating GUI callback independently checks the same ownership gate.
+Goal/start, candidate selection/retry, keep-baseline, apply, and undo therefore cannot act on the previous view
+while the worker owns the Coordinator. Cancellation remains available and continues to signal the running trial.
+
+The red contract failed to compile because the worker-ownership command gate did not exist. The green contract
+checks both idle and worker-owned states; the panel additionally applies the gate when rendering commands so a
+queued presenter update cannot re-enable them during background work.
+
+### Windows verification
+
+- Worker-ownership focus: 1 test case and 2 assertions passed in Release.
+- Smart-slicing suite: 135 test cases; 134 passed and the opt-in benchmark remained explicitly skipped, with 911
+  assertions passed in Release and RelWithDebInfo.
+- Default full `slic3rutils_tests`: 145 test cases and 1018 assertions, all passed in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings and
+  the non-failing test-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke used only
+  `D:\Workspace\06_3DDY_smart_slicing\build-p0\src\Release\orca-slicer.exe`, isolated `--datadir` directories,
+  and the workspace `tests\data\20mm_cube.obj` fixture. Preflight reached candidate planning, isolated trial slicing
+  completed with the read-only baseline candidate, and the completed view kept the goal and start controls
+  disabled. The trial completed before the automation call returned, so the worker-running frame itself was not
+  captured visually; synchronous worker-state behavior is covered by the focused contract. `确认并应用` was never
+  invoked, the workflow was canceled after observation, and both verified workspace-local processes were stopped.
+  The unrelated Orca process from `D:\tmp\ocar-ai` was neither targeted nor stopped.
+
+This batch changes only the smart-slicing panel and its targeted test/documentation. It changes no shared
+`MainFrame`, `Plater`, or CMake file and no Domain/Application/Ports API, model-generation code, formal workspace
+write path, configuration, dependency, external network port, data directory contract, journal path/schema,
+3MF/profile format, profile data, or default Orca behavior. The isolated smoke-test directories are disposable
+runtime data, not a product data-directory change. macOS and Linux native build/test execution remains a separate
+host/CI gate.
