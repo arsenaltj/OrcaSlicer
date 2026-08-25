@@ -62,7 +62,7 @@ public:
         if (!diagnostic.empty())
             return rejected(diagnostic);
         m_prepared_candidate = PreparedCandidateToken{
-            candidate.id, expected_revision, candidate.placement, candidate.parameters};
+            candidate.id, candidate.workflow_id, expected_revision, candidate.placement, candidate.parameters};
         return {AI::SmartSlicing::OfficialSlicePhase::Prepared, {}, false, false};
     }
 
@@ -188,6 +188,7 @@ private:
     struct PreparedCandidateToken
     {
         AI::SmartSlicing::CandidateId id;
+        AI::SmartSlicing::WorkflowId workflow_id{0};
         AI::SmartSlicing::WorkspaceRevision revision;
         AI::SmartSlicing::PlacementCandidate placement;
         AI::SmartSlicing::ParameterProposal parameters;
@@ -197,7 +198,8 @@ private:
                                            const AI::SmartSlicing::SliceCandidate& candidate,
                                            const AI::SmartSlicing::WorkspaceRevision& expected_revision)
     {
-        if (prepared.id != candidate.id || prepared.revision != expected_revision ||
+        if (prepared.id != candidate.id || prepared.workflow_id != candidate.workflow_id ||
+            prepared.revision != expected_revision ||
             prepared.revision != candidate.base_revision ||
             prepared.placement.transforms.size() != candidate.placement.transforms.size() ||
             prepared.parameters.entries.size() != candidate.parameters.entries.size())

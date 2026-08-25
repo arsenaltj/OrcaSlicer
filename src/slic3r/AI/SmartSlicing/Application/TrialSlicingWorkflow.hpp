@@ -12,7 +12,8 @@ class TrialSlicingWorkflow
 public:
     static bool result_matches(const SliceCandidate& candidate, const TrialSliceResult& result)
     {
-        return result.candidate_id == candidate.id && result.base_revision == candidate.base_revision;
+        return result.workflow_id == candidate.workflow_id && result.candidate_id == candidate.id &&
+               result.base_revision == candidate.base_revision;
     }
 
     static bool accept_result(SliceCandidate& candidate, TrialSliceResult result)

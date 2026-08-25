@@ -11,6 +11,7 @@ enum class TrialSliceStatus { Succeeded, Canceled, Failed };
 
 struct TrialSliceResult
 {
+    WorkflowId workflow_id{0};
     CandidateId candidate_id;
     WorkspaceRevision base_revision;
     TrialSliceStatus status{TrialSliceStatus::Failed};

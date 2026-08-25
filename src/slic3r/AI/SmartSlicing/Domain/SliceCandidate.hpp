@@ -15,6 +15,7 @@ namespace Slic3r::AI::SmartSlicing {
 struct SliceCandidate
 {
     CandidateId id;
+    WorkflowId workflow_id{0};
     WorkspaceRevision base_revision;
     CandidateGoal goal{CandidateGoal::Stability};
     std::optional<RepairPlan> repair;

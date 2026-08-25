@@ -48,6 +48,7 @@ public:
     {
         calls.push_back(candidate.id);
         TrialSliceResult result;
+        result.workflow_id = candidate.workflow_id;
         result.candidate_id = candidate.id;
         result.base_revision = candidate.base_revision;
         result.status = TrialSliceStatus::Succeeded;

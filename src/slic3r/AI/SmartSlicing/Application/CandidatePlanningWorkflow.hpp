@@ -16,10 +16,12 @@ class CandidatePlanningWorkflow
 public:
     std::vector<SliceCandidate> plan(const WorkspaceContext& context,
                                      std::vector<SliceCandidate> proposals,
-                                     CandidateGoal goal = CandidateGoal::Stability) const
+                                     CandidateGoal goal = CandidateGoal::Stability,
+                                     WorkflowId workflow_id = 0) const
     {
         SliceCandidate baseline;
         baseline.id            = "baseline";
+        baseline.workflow_id   = workflow_id;
         baseline.base_revision = context.revision;
         baseline.goal          = goal;
 
@@ -36,6 +38,7 @@ public:
             if (proposal.id.empty() || proposal.base_revision != context.revision || !accepted_ids.insert(proposal.id).second)
                 continue;
 
+            proposal.workflow_id   = workflow_id;
             proposal.base_revision  = context.revision;
             proposal.goal           = goal;
             proposal.status         = CandidateStatus::Draft;

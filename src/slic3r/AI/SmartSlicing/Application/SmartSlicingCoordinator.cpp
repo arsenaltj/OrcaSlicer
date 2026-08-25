@@ -268,7 +268,8 @@ bool SmartSlicingCoordinator::plan_and_slice_candidates(std::vector<SliceCandida
         if (m_snapshot.state != WorkflowState::PlanningCandidates)
             return false;
         m_snapshot.goal       = goal;
-        m_snapshot.candidates = m_candidate_planner.plan(*m_snapshot.context, std::move(proposals), goal);
+        m_snapshot.candidates =
+            m_candidate_planner.plan(*m_snapshot.context, std::move(proposals), goal, m_snapshot.workflow_id);
         m_snapshot.comparison.reset();
         m_snapshot.selected_candidate_id.clear();
         if (cancel_if_requested(cancellation_requested))
@@ -309,6 +310,7 @@ bool SmartSlicingCoordinator::plan_and_slice_candidates(std::vector<SliceCandida
             try {
                 result = m_trial_slice_executor->execute_trial_slice(candidate);
             } catch (...) {
+                result.workflow_id    = candidate.workflow_id;
                 result.candidate_id    = candidate.id;
                 result.base_revision   = candidate.base_revision;
                 result.status          = TrialSliceStatus::Failed;

@@ -252,6 +252,7 @@ TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice(const SliceCandidat
     const std::lock_guard<std::mutex> execution_lock(m_execution_mutex);
     m_timed_out.store(false, std::memory_order_release);
     TrialSliceResult result;
+    result.workflow_id    = candidate.workflow_id;
     result.candidate_id  = candidate.id;
     result.base_revision = candidate.base_revision;
     try {

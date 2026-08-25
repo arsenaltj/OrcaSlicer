@@ -1721,3 +1721,40 @@ This batch changes no shared `MainFrame`, `Plater`, or CMake file and no model-g
 formal workspace write path, configuration, dependency, port, data directory contract, journal path/schema,
 3MF/profile format, profile data, or default Orca behavior. macOS and Linux native build/test execution remains a
 separate host/CI gate.
+
+## Workflow-owned trial-result gate — 2026-08-25
+
+Every planned candidate and trial-slice result is now bound to the originating `WorkflowId` in addition to its
+candidate id and base workspace revision. A delayed result from an older workflow is rejected as
+`trial_result_mismatch` even when deterministic planning produced the same candidate id on the same revision and
+the result otherwise contains valid metrics. The prepared-candidate token held by `OrcaOfficialSliceGateway` uses
+the same three-part identity, so a token cannot be committed through a candidate object rebound to another
+workflow.
+
+The trial cache deliberately continues to key complete slicing input rather than workflow ownership. A successful
+cache hit reuses the isolated metrics but stamps the requesting candidate's `WorkflowId` on the returned result;
+failed, canceled, invalid, or mismatched results retain the existing no-cache behavior. The red contract first
+failed to compile because neither `SliceCandidate` nor the `ITrialSliceExecutor` result DTO carried a workflow id,
+which demonstrated the missing ownership field before the implementation was added.
+
+### Windows verification
+
+- Cross-workflow result rejection: 1 focused test case and 8 assertions passed in Release; the contract also
+  passed in the Release and RelWithDebInfo smart-slicing suites.
+- Cache ownership rebinding: 1 focused test case and 7 assertions passed in Release; the contract also passed in
+  both smart-slicing suites without a second delegate execution.
+- Prepared official-token ownership: 1 focused test case and 22 assertions passed in Release; changing only the
+  workflow id after preparation is rejected as `candidate_not_prepared`.
+- Smart-slicing suite: 134 test cases; 133 passed and the opt-in benchmark remained explicitly skipped, with 909
+  assertions passed in Release and RelWithDebInfo.
+- Default full `slic3rutils_tests`: 144 test cases and 1016 assertions, all passed in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings and
+  the non-failing test-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke was not repeated because this is a nonvisual ownership-contract correction with no layout, startup,
+  ordinary interaction, trial input, or formal mutation-path change. No Orca process was launched.
+
+This batch changes the internal smart-slicing `ITrialSliceExecutor` port DTO by adding workflow ownership. It
+changes no external network port, shared `MainFrame`, `Plater`, or CMake file, model-generation code, formal
+workspace write path, configuration, dependency, data directory contract, journal path/schema, 3MF/profile
+format, profile data, or default Orca behavior. macOS and Linux native build/test execution remains a separate
+host/CI gate.

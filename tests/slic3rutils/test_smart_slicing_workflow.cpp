@@ -95,10 +95,15 @@ public:
     TrialSliceResult execute_trial_slice(const SliceCandidate& candidate) override
     {
         calls.push_back(candidate.id);
-        if (result_for)
-            return result_for(candidate, calls.size() - 1);
+        if (result_for) {
+            TrialSliceResult result = result_for(candidate, calls.size() - 1);
+            if (result.workflow_id == 0)
+                result.workflow_id = candidate.workflow_id;
+            return result;
+        }
 
         TrialSliceResult result;
+        result.workflow_id = candidate.workflow_id;
         result.candidate_id = candidate.id;
         result.base_revision = candidate.base_revision;
         result.status = TrialSliceStatus::Succeeded;
@@ -154,6 +159,7 @@ TEST_CASE("successful trial results are cached by complete candidate content",
     FakeTrialSliceExecutor delegate;
     CachingTrialSliceExecutor cache(delegate);
     SliceCandidate candidate = proposal("candidate", WorkspaceRevision{1, 2, 3, "revision-a"});
+    candidate.workflow_id = 1;
 
     const TrialSliceResult first  = cache.execute_trial_slice(candidate);
     const TrialSliceResult second = cache.execute_trial_slice(candidate);
@@ -161,6 +167,12 @@ TEST_CASE("successful trial results are cached by complete candidate content",
     REQUIRE(first.metrics);
     REQUIRE(second.metrics);
     CHECK(first.metrics->estimated_time_seconds == second.metrics->estimated_time_seconds);
+    CHECK(delegate.calls.size() == 1);
+
+    SliceCandidate resumed = candidate;
+    resumed.workflow_id = 2;
+    const TrialSliceResult rebound = cache.execute_trial_slice(resumed);
+    CHECK(rebound.workflow_id == resumed.workflow_id);
     CHECK(delegate.calls.size() == 1);
 
     SliceCandidate moved = candidate;
@@ -509,6 +521,34 @@ TEST_CASE("mismatched trial results are never attached to a candidate", "[AI][Sm
     CHECK(coordinator.plan_and_slice_candidates({proposal("alternative", workspace.context.revision)}));
     REQUIRE(coordinator.snapshot().candidates.size() == 2);
     CHECK(coordinator.snapshot().candidates[1].status == CandidateStatus::Failed);
+    CHECK_FALSE(coordinator.snapshot().candidates[1].metrics);
+    CHECK(coordinator.snapshot().comparison->ordered_candidate_ids == std::vector<CandidateId>{"baseline"});
+}
+
+TEST_CASE("trial results from another workflow are never attached to a current candidate",
+          "[AI][SmartSlicing][Workflow][Ownership]")
+{
+    WorkflowWorkspace workspace;
+    FakeTrialSliceExecutor executor;
+    executor.result_for = [](const SliceCandidate& candidate, size_t index) {
+        TrialSliceResult result;
+        result.workflow_id = index == 0 ? candidate.workflow_id : candidate.workflow_id + 1;
+        result.candidate_id = candidate.id;
+        result.base_revision = candidate.base_revision;
+        result.status = TrialSliceStatus::Succeeded;
+        result.metrics = SlicingMetrics{};
+        result.metrics->estimated_time_seconds = index == 0 ? 100.0 : 80.0;
+        return result;
+    };
+    SmartSlicingCoordinator coordinator(workspace, executor);
+    coordinator.start();
+
+    CHECK(coordinator.plan_and_slice_candidates({proposal("alternative", workspace.context.revision)}));
+    REQUIRE(coordinator.snapshot().candidates.size() == 2);
+    CHECK(coordinator.snapshot().candidates[0].workflow_id == coordinator.snapshot().workflow_id);
+    CHECK(coordinator.snapshot().candidates[0].status == CandidateStatus::Ready);
+    CHECK(coordinator.snapshot().candidates[1].status == CandidateStatus::Failed);
+    CHECK(coordinator.snapshot().candidates[1].diagnostic_code == "trial_result_mismatch");
     CHECK_FALSE(coordinator.snapshot().candidates[1].metrics);
     CHECK(coordinator.snapshot().comparison->ordered_candidate_ids == std::vector<CandidateId>{"baseline"});
 }
@@ -1392,6 +1432,7 @@ TEST_CASE("Orca official gateway requires one prepared ready candidate before fo
         },
         [&slice_calls] { ++slice_calls; return true; }, [] { return true; }, [] { return true; });
     SliceCandidate candidate = proposal("candidate", revision);
+    candidate.workflow_id = 7;
 
     const OfficialSliceResult unprepared = gateway.commit(candidate, revision);
     CHECK(unprepared.phase == OfficialSlicePhase::Rejected);
@@ -1423,6 +1464,13 @@ TEST_CASE("Orca official gateway requires one prepared ready candidate before fo
     CHECK(changed_candidate.diagnostic_code == "candidate_not_prepared");
 
     REQUIRE(gateway.prepare(candidate, revision).phase == OfficialSlicePhase::Prepared);
+    SliceCandidate changed_workflow = candidate;
+    changed_workflow.workflow_id = 8;
+    const OfficialSliceResult changed_owner = gateway.commit(changed_workflow, revision);
+    CHECK(changed_owner.phase == OfficialSlicePhase::Rejected);
+    CHECK(changed_owner.diagnostic_code == "candidate_not_prepared");
+
+    REQUIRE(gateway.prepare(candidate, revision).phase == OfficialSlicePhase::Prepared);
     REQUIRE(gateway.commit(candidate, revision).phase == OfficialSlicePhase::Slicing);
     const OfficialSliceResult overlapping_prepare = gateway.prepare(proposal("other", revision), revision);
     CHECK(overlapping_prepare.phase == OfficialSlicePhase::Rejected);
@@ -1430,7 +1478,7 @@ TEST_CASE("Orca official gateway requires one prepared ready candidate before fo
     const OfficialSliceResult consumed = gateway.commit(candidate, revision);
     CHECK(consumed.phase == OfficialSlicePhase::Rejected);
     CHECK(consumed.diagnostic_code == "official_slice_in_progress");
-    CHECK(compatibility_calls == 4);
+    CHECK(compatibility_calls == 5);
     CHECK(apply_calls == 1);
     CHECK(slice_calls == 1);
 }

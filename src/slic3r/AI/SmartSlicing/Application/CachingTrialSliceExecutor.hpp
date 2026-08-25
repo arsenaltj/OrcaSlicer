@@ -14,8 +14,9 @@
 
 namespace Slic3r::AI::SmartSlicing {
 
-// Reuses only completed trial metrics. Candidate status, diagnostics, and attached metrics are
-// deliberately excluded from the key because they are workflow output rather than slicing input.
+// Reuses only completed trial metrics. Workflow identity, candidate status, diagnostics, and attached metrics are
+// deliberately excluded from the key because they are workflow output rather than slicing input. A cache hit is
+// rebound to the requesting workflow before it crosses the executor port.
 class CachingTrialSliceExecutor final : public ITrialSliceExecutor
 {
 public:
@@ -32,14 +33,18 @@ public:
         {
             const std::lock_guard<std::mutex> lock(m_mutex);
             const auto found = m_results.find(key);
-            if (found != m_results.end())
-                return found->second;
+            if (found != m_results.end()) {
+                TrialSliceResult rebound = found->second;
+                rebound.workflow_id = candidate.workflow_id;
+                return rebound;
+            }
         }
 
         TrialSliceResult result = execute_delegate(candidate);
         if (result.status != TrialSliceStatus::Succeeded || !result.metrics ||
             !result.metrics->has_valid_measurements() ||
-            result.candidate_id != candidate.id || result.base_revision != candidate.base_revision)
+            result.workflow_id != candidate.workflow_id || result.candidate_id != candidate.id ||
+            result.base_revision != candidate.base_revision)
             return result;
 
         const std::lock_guard<std::mutex> lock(m_mutex);
@@ -70,6 +75,7 @@ private:
             return m_delegate.execute_trial_slice(candidate);
         } catch (...) {
             TrialSliceResult result;
+            result.workflow_id    = candidate.workflow_id;
             result.candidate_id    = candidate.id;
             result.base_revision   = candidate.base_revision;
             result.status          = TrialSliceStatus::Failed;
