@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
+import os
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
 from tools.ai.model_provider_gateway import (
+    ModelProviderGateway,
+    ModelTaskRequest,
     PaidTaskAuthorization,
     ProviderGatewayError,
     provider_policy,
 )
+from tools.ai.tripo_client import TripoError
 
 
 class ProviderPolicyTests(unittest.TestCase):
@@ -54,6 +61,111 @@ class PaidTaskAuthorizationTests(unittest.TestCase):
             PaidTaskAuthorization.confirmed("   ")
 
         self.assertEqual(raised.exception.code, "invalid_authorization")
+
+
+class ModelTaskGatewayTests(unittest.TestCase):
+    def gateway(self, **overrides):
+        dependencies = {
+            "create_text_task": mock.Mock(return_value="text-task"),
+            "upload_image": mock.Mock(return_value="image-token"),
+            "create_image_task": mock.Mock(return_value="image-task"),
+        }
+        dependencies.update(overrides)
+        return ModelProviderGateway(**dependencies), dependencies
+
+    def test_existing_task_is_reused_without_authorization_or_provider_calls(self):
+        gateway, dependencies = self.gateway()
+
+        result = gateway.start_or_reuse_model_task(
+            ModelTaskRequest(source="text", prompt="printable radio", face_limit=300000),
+            existing_task_id="existing-task",
+        )
+
+        self.assertEqual(result.provider, "tripo")
+        self.assertEqual(result.task_id, "existing-task")
+        self.assertTrue(result.reused)
+        for dependency in dependencies.values():
+            dependency.assert_not_called()
+
+    def test_text_task_requires_and_consumes_explicit_authorization(self):
+        gateway, dependencies = self.gateway()
+        authorization = PaidTaskAuthorization.confirmed("job-1:model:1")
+
+        result = gateway.start_or_reuse_model_task(
+            ModelTaskRequest(source="text", prompt="printable radio", face_limit=300000),
+            authorization=authorization,
+        )
+
+        self.assertEqual(result.task_id, "text-task")
+        self.assertFalse(result.reused)
+        dependencies["create_text_task"].assert_called_once_with("printable radio", 300000)
+        dependencies["upload_image"].assert_not_called()
+        dependencies["create_image_task"].assert_not_called()
+        with self.assertRaises(ProviderGatewayError) as raised:
+            gateway.start_or_reuse_model_task(
+                ModelTaskRequest(source="text", prompt="second task", face_limit=300000),
+                authorization=authorization,
+            )
+        self.assertEqual(raised.exception.code, "authorization_consumed")
+        self.assertEqual(dependencies["create_text_task"].call_count, 1)
+
+    def test_image_task_uploads_one_reference_then_creates_one_task(self):
+        gateway, dependencies = self.gateway()
+        authorization = PaidTaskAuthorization.confirmed("job-2:model:1")
+        with tempfile.TemporaryDirectory() as directory:
+            reference = Path(directory) / "reference.png"
+            reference.write_bytes(b"preview")
+
+            result = gateway.start_or_reuse_model_task(
+                ModelTaskRequest(source="image", image_path=reference, face_limit=500000),
+                authorization=authorization,
+            )
+
+        self.assertEqual(result.task_id, "image-task")
+        dependencies["upload_image"].assert_called_once_with(reference)
+        dependencies["create_image_task"].assert_called_once_with("image-token", 500000)
+        dependencies["create_text_task"].assert_not_called()
+
+    def test_missing_authorization_performs_no_provider_call(self):
+        gateway, dependencies = self.gateway()
+
+        with self.assertRaises(ProviderGatewayError) as raised:
+            gateway.start_or_reuse_model_task(
+                ModelTaskRequest(source="text", prompt="printable radio", face_limit=300000)
+            )
+
+        self.assertEqual(raised.exception.code, "authorization_required")
+        for dependency in dependencies.values():
+            dependency.assert_not_called()
+
+    def test_provider_failure_is_classified_without_fallback_or_retry(self):
+        create_text = mock.Mock(side_effect=TripoError("Could not connect to Tripo."))
+        gateway, dependencies = self.gateway(create_text_task=create_text)
+
+        with self.assertRaises(ProviderGatewayError) as raised:
+            gateway.start_or_reuse_model_task(
+                ModelTaskRequest(source="text", prompt="printable radio", face_limit=300000),
+                authorization=PaidTaskAuthorization.confirmed("job-3:model:1"),
+            )
+
+        self.assertEqual(raised.exception.code, "provider_unavailable")
+        self.assertEqual(raised.exception.category, "availability")
+        self.assertTrue(raised.exception.retryable)
+        self.assertTrue(raised.exception.ambiguous)
+        create_text.assert_called_once_with("printable radio", 300000)
+        dependencies["upload_image"].assert_not_called()
+        dependencies["create_image_task"].assert_not_called()
+
+    def test_configuration_availability_is_read_without_provider_call(self):
+        gateway, dependencies = self.gateway()
+
+        with mock.patch.dict(os.environ, {"TRIPO_API_KEY": ""}, clear=False):
+            self.assertFalse(gateway.model_generation_available())
+        with mock.patch.dict(os.environ, {"TRIPO_API_KEY": "configured"}, clear=False):
+            self.assertTrue(gateway.model_generation_available())
+
+        for dependency in dependencies.values():
+            dependency.assert_not_called()
 
 
 if __name__ == "__main__":
