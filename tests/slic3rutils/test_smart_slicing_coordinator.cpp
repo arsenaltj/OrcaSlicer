@@ -234,7 +234,7 @@ TEST_CASE("invalid or unavailable workspace capture fails without leaving the wo
     workspace.throw_on_capture = true;
     coordinator.start();
     CHECK(coordinator.snapshot().state == WorkflowState::Failed);
-    CHECK(coordinator.snapshot().detail == "capture unavailable");
+    CHECK(coordinator.snapshot().detail == "workspace_capture_exception");
 }
 
 TEST_CASE("revision refresh is stable for equal or temporarily unavailable revisions", "[AI][SmartSlicing]")

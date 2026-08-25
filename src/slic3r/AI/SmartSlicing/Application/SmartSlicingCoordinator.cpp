@@ -4,7 +4,6 @@
 
 #include <algorithm>
 #include <chrono>
-#include <exception>
 #include <limits>
 #include <utility>
 
@@ -179,10 +178,8 @@ void SmartSlicingCoordinator::start()
             transition(WorkflowState::AwaitingRiskDecision, "printability_action_required");
         else
             transition(WorkflowState::ReadyForCandidatePlanning, "preflight_complete");
-    } catch (const std::exception& error) {
-        transition(WorkflowState::Failed, error.what());
     } catch (...) {
-        transition(WorkflowState::Failed, "unknown_preflight_error");
+        transition(WorkflowState::Failed, "workspace_capture_exception");
     }
 }
 
@@ -368,10 +365,8 @@ bool SmartSlicingCoordinator::plan_and_slice_candidates(std::vector<SliceCandida
         m_snapshot.selected_candidate_id = m_snapshot.comparison->recommended_candidate_id;
         transition(WorkflowState::ReadyToApply, "candidates_ready");
         return true;
-    } catch (const std::exception& error) {
-        transition(WorkflowState::Failed, error.what());
     } catch (...) {
-        transition(WorkflowState::Failed, "unknown_candidate_error");
+        transition(WorkflowState::Failed, "candidate_workflow_exception");
     }
     return false;
 }

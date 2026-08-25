@@ -1694,3 +1694,30 @@ This batch changes no shared `MainFrame`, `Plater`, or CMake file and no model-g
 formal workspace write path, configuration, dependency, port, data directory contract, journal path/schema,
 3MF/profile format, profile data, or default Orca behavior. macOS and Linux native build/test execution remains a
 separate host/CI gate.
+
+## Stable workflow-exception diagnostics gate — 2026-08-25
+
+Workspace capture/preflight and top-level candidate workflow failures now terminate with stable diagnostic codes
+instead of copying `std::exception::what()` into the workflow snapshot. This also prevents adapter implementation
+details, local paths, or provider text from reaching the best-effort runtime journal through `snapshot.detail`.
+Normal candidate-level executor failures retain their existing specific codes.
+
+The red contracts observed the raw `capture unavailable` message from workspace capture and an intentionally
+sensitive adapter message from a throwing resource probe. The green behavior reports `workspace_capture_exception`
+and `candidate_workflow_exception`; the sensitive sample text is absent from the snapshot.
+
+### Windows verification
+
+- Exception-boundary focus: 2 test cases and 11 assertions, all passed in Release and RelWithDebInfo.
+- Smart-slicing suite: 133 test cases; 132 passed and the opt-in benchmark remained explicitly skipped, with 896
+  assertions passed in Release and RelWithDebInfo.
+- Default full `slic3rutils_tests`: 143 test cases and 1003 assertions, all passed in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings and
+  the non-failing test-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke was not repeated because this is an Application diagnostic-boundary correction with no layout,
+  startup, interaction, trial execution, or formal mutation-path change. No Orca process was launched.
+
+This batch changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, candidate ranking,
+formal workspace write path, configuration, dependency, port, data directory contract, journal path/schema,
+3MF/profile format, profile data, or default Orca behavior. macOS and Linux native build/test execution remains a
+separate host/CI gate.

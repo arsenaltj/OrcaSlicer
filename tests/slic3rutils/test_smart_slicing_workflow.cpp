@@ -571,6 +571,23 @@ TEST_CASE("cancel during candidate planning cannot be overwritten by a later tri
     CHECK(executor.cancel_count == 0);
 }
 
+TEST_CASE("candidate workflow exceptions do not expose adapter details",
+          "[AI][SmartSlicing][Workflow][ExceptionBoundary]")
+{
+    WorkflowWorkspace workspace;
+    FakeTrialSliceExecutor executor;
+    SmartSlicingCoordinator coordinator(workspace, executor);
+    coordinator.set_resource_budget({}, []() -> WorkflowResourceUsage {
+        throw std::runtime_error("sensitive local path and adapter details");
+    });
+    coordinator.start();
+
+    CHECK_FALSE(coordinator.plan_and_slice_candidates());
+    CHECK(coordinator.snapshot().state == WorkflowState::Failed);
+    CHECK(coordinator.snapshot().detail == "candidate_workflow_exception");
+    CHECK(coordinator.snapshot().detail.find("sensitive") == std::string::npos);
+}
+
 TEST_CASE("a cancellation requested as the final trial returns wins over candidate publication",
           "[AI][SmartSlicing][Workflow][Cancellation][Background]")
 {
