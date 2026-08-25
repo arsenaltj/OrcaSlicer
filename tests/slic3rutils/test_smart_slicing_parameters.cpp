@@ -280,6 +280,51 @@ TEST_CASE("Orca parameter adapter applies only to a matching config clone", "[AI
     CHECK(base.opt_serialize("brim_type") == "no_brim");
 }
 
+TEST_CASE("Orca parameter adapter rejects a whole patch without touching its output clone",
+          "[AI][SmartSlicing][Parameters][Orca][Atomic]")
+{
+    DynamicPrintConfig base = DynamicPrintConfig::full_print_config();
+    base.set("layer_height", 0.20);
+    base.set("wall_loops", 2);
+
+    DynamicPrintConfig output = DynamicPrintConfig::full_print_config();
+    output.set("layer_height", 0.28);
+    output.set("wall_loops", 7);
+
+    const ParameterProposal stale_second_entry = intended(
+        ParameterIntent::Quality,
+        {change("layer_height", 0.20, 0.16, 3),
+         change("wall_loops", int64_t{3}, int64_t{4}, 3)});
+    const auto stale = Slic3r::GUI::OrcaParameterProposalAdapter().validate_and_apply(
+        stale_second_entry, 3, base, output);
+
+    CHECK_FALSE(stale.accepted);
+    CHECK(stale.diagnostic_code == "parameter_expected_value_changed");
+    CHECK(output.opt_float("layer_height") == Catch::Approx(0.28));
+    CHECK(output.opt_int("wall_loops") == 7);
+
+    DynamicPrintConfig limited;
+    limited.set_key_value("layer_height", new ConfigOptionFloat(0.20));
+    const ParameterProposal unsupported = intended(
+        ParameterIntent::Quality,
+        {change("wall_loops", int64_t{2}, int64_t{3}, 3)});
+    const auto missing = Slic3r::GUI::OrcaParameterProposalAdapter().validate_and_apply(
+        unsupported, 3, limited, output);
+    CHECK_FALSE(missing.accepted);
+    CHECK(missing.diagnostic_code == "parameter_not_supported_by_current_config");
+    CHECK(output.opt_float("layer_height") == Catch::Approx(0.28));
+    CHECK(output.opt_int("wall_loops") == 7);
+
+    const ParameterProposal outside_domain_range = intended(
+        ParameterIntent::Quality,
+        {change("layer_height", 0.20, 0.80, 3)});
+    const auto range = Slic3r::GUI::OrcaParameterProposalAdapter().validate_and_apply(
+        outside_domain_range, 3, base, output);
+    CHECK_FALSE(range.accepted);
+    CHECK(range.diagnostic_code == "parameter_range_violation");
+    CHECK(output.opt_float("layer_height") == Catch::Approx(0.28));
+}
+
 TEST_CASE("Orca parameter advisor proposes one bounded brim change for fragile geometry",
           "[AI][SmartSlicing][Parameters][OrcaAdvisor]")
 {

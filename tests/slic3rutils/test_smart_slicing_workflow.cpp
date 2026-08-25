@@ -1608,6 +1608,67 @@ TEST_CASE("Orca official gateway requires one prepared ready candidate before fo
     CHECK(slice_calls == 1);
 }
 
+TEST_CASE("Orca official gateway binds parameter intent content and current values before mutation",
+          "[AI][SmartSlicing][Apply][Parameters][TransactionBoundary]")
+{
+    const WorkspaceRevision revision{1, 2, 3, "revision-a"};
+    double current_layer_height = 0.20;
+    size_t apply_calls = 0;
+    size_t slice_calls = 0;
+    Slic3r::GUI::OrcaOfficialSliceGateway gateway(
+        [revision] { return revision; },
+        [&current_layer_height](const SliceCandidate& candidate) {
+            if (candidate.parameters.entries.empty())
+                return std::string{};
+            const ConfigPatchEntry& entry = candidate.parameters.entries.front();
+            return std::get<double>(entry.expected_value) == current_layer_height ?
+                std::string{} : std::string("parameter_expected_value_changed");
+        },
+        [&apply_calls](const SliceCandidate&) {
+            ++apply_calls;
+            return Slic3r::GUI::OrcaApplyMutationResult{true, true, {}};
+        },
+        [&slice_calls] {
+            ++slice_calls;
+            return true;
+        },
+        [] { return true; }, [] { return true; });
+
+    SliceCandidate candidate = proposal("parameter-candidate", revision);
+    candidate.parameters.intent = ParameterIntent::Quality;
+    candidate.parameters.entries.push_back({ConfigScope::Plate, PresetOwner::Process, 7, "layer_height",
+                                             0.20, 0.16, "use_finer_validated_layer_height"});
+    candidate.parameters.explanation_codes = {"finer_effective_layer_height"};
+
+    REQUIRE(gateway.prepare(candidate, revision).phase == OfficialSlicePhase::Prepared);
+    SliceCandidate changed_intent = candidate;
+    changed_intent.parameters.intent = ParameterIntent::Speed;
+    CHECK(gateway.commit(changed_intent, revision).diagnostic_code == "candidate_not_prepared");
+
+    REQUIRE(gateway.prepare(candidate, revision).phase == OfficialSlicePhase::Prepared);
+    SliceCandidate changed_expected = candidate;
+    changed_expected.parameters.entries.front().expected_value = 0.24;
+    CHECK(gateway.commit(changed_expected, revision).diagnostic_code == "candidate_not_prepared");
+
+    REQUIRE(gateway.prepare(candidate, revision).phase == OfficialSlicePhase::Prepared);
+    SliceCandidate changed_target = candidate;
+    changed_target.parameters.entries.front().target_id = 8;
+    CHECK(gateway.commit(changed_target, revision).diagnostic_code == "candidate_not_prepared");
+
+    REQUIRE(gateway.prepare(candidate, revision).phase == OfficialSlicePhase::Prepared);
+    SliceCandidate changed_reason = candidate;
+    changed_reason.parameters.entries.front().reason_code = "different_reason";
+    CHECK(gateway.commit(changed_reason, revision).diagnostic_code == "candidate_not_prepared");
+
+    REQUIRE(gateway.prepare(candidate, revision).phase == OfficialSlicePhase::Prepared);
+    current_layer_height = 0.24;
+    const OfficialSliceResult stale = gateway.commit(candidate, revision);
+    CHECK(stale.phase == OfficialSlicePhase::Rejected);
+    CHECK(stale.diagnostic_code == "parameter_expected_value_changed");
+    CHECK(apply_calls == 0);
+    CHECK(slice_calls == 0);
+}
+
 TEST_CASE("Orca official gateway rejects invalid transaction identity before compatibility or mutation",
           "[AI][SmartSlicing][Apply][TransactionBoundary][Identity]")
 {

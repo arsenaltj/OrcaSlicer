@@ -228,7 +228,9 @@ private:
             prepared.revision != expected_revision ||
             prepared.revision != candidate.base_revision ||
             prepared.placement.transforms.size() != candidate.placement.transforms.size() ||
-            prepared.parameters.entries.size() != candidate.parameters.entries.size())
+            prepared.parameters.intent != candidate.parameters.intent ||
+            prepared.parameters.entries.size() != candidate.parameters.entries.size() ||
+            prepared.parameters.explanation_codes != candidate.parameters.explanation_codes)
             return false;
         for (size_t index = 0; index < prepared.placement.transforms.size(); ++index) {
             const auto& lhs = prepared.placement.transforms[index];
@@ -240,7 +242,8 @@ private:
             const auto& lhs = prepared.parameters.entries[index];
             const auto& rhs = candidate.parameters.entries[index];
             if (lhs.scope != rhs.scope || lhs.owner != rhs.owner || lhs.target_id != rhs.target_id ||
-                lhs.key != rhs.key || lhs.expected_value != rhs.expected_value || lhs.new_value != rhs.new_value)
+                lhs.key != rhs.key || lhs.expected_value != rhs.expected_value || lhs.new_value != rhs.new_value ||
+                lhs.reason_code != rhs.reason_code)
                 return false;
         }
         return true;
