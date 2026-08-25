@@ -1440,3 +1440,36 @@ path/schema, 3MF/profile format, profile data, or default Orca behavior. The ren
 executable remains only as an ignored, regenerable build artifact because the environment safety policy rejected
 its deletion; it is not source or delivery content. macOS and Linux native build/test execution remains a separate
 host/CI gate.
+
+## Hidden workbench cleanup ownership gate — 2026-08-25
+
+Closing or hiding the smart-slicing pane now requests cleanup whenever the current Coordinator snapshot is still
+cancelable. If native planning or trial slicing is running, the panel keeps the existing asynchronous cancellation
+path and lets the worker finalize the terminal state. If no worker is running, the GUI thread cancels the
+Coordinator immediately; candidate/comparison state, runtime journal state, and the retained cloned trial input are
+then cleared through the existing Canceled projection. Hiding during official slicing or while a failed formal apply
+still owns native Undo recovery does nothing, preserving transaction completion and recovery authority.
+
+Before this gate, the wx show handler considered only `m_worker_running`. Hiding at AwaitingRiskDecision,
+ReadyForCandidatePlanning, or ReadyToApply therefore left the isolated session and AI Sidebar workflow active; a
+later ordinary manual slice could still encounter that abandoned presentation state. The six-assertion red policy
+contract reported two failures: a hidden cancelable no-worker state was ignored, while a hypothetical running but
+non-cancelable state was accepted. The green contract covers shown/hidden, worker/no-worker, and cancelable/
+non-cancelable combinations.
+
+### Windows verification
+
+- Hidden-workbench lifecycle focus: 1 test case and 6 assertions, all passed in Release and RelWithDebInfo.
+- Smart-slicing suite: 124 test cases; 123 passed and the opt-in benchmark remained explicitly skipped, with 845
+  assertions passed in Release and RelWithDebInfo.
+- Default full `slic3rutils_tests`: 134 test cases and 952 assertions, all passed in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings and
+  the non-failing test-working-directory `info/nozzle_info.json` warning are unchanged.
+- Interactive GUI smoke was not repeated because another Orca instance had previously owned the targetable window.
+  No process was launched or targeted for this batch; the policy contract and both workspace-local application
+  builds cover the nonvisual close-state decision without risking cross-instance input.
+
+This batch changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, Domain/Application
+contract, formal workspace write path, configuration, dependency, port, data directory contract, journal
+path/schema, 3MF/profile format, profile data, or default Orca behavior. macOS and Linux native build/test execution
+remains a separate host/CI gate.

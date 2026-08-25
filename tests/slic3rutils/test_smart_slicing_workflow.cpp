@@ -780,6 +780,20 @@ TEST_CASE("workbench goal selection maps every visible choice with a stable defa
     CHECK(Slic3r::GUI::smart_slicing_goal_from_selection(4) == CandidateGoal::Stability);
 }
 
+TEST_CASE("hiding the workbench requests cleanup only for cancelable workflows",
+          "[AI][SmartSlicing][GUI][Lifecycle][Hide]")
+{
+    using Slic3r::GUI::smart_slicing_hide_action;
+    using Slic3r::GUI::SmartSlicingHideAction;
+
+    CHECK(smart_slicing_hide_action(false, false, true) == SmartSlicingHideAction::CancelDirectly);
+    CHECK(smart_slicing_hide_action(false, true, true) == SmartSlicingHideAction::RequestBackgroundCancel);
+    CHECK(smart_slicing_hide_action(true, false, true) == SmartSlicingHideAction::None);
+    CHECK(smart_slicing_hide_action(true, true, true) == SmartSlicingHideAction::None);
+    CHECK(smart_slicing_hide_action(false, false, false) == SmartSlicingHideAction::None);
+    CHECK(smart_slicing_hide_action(false, true, false) == SmartSlicingHideAction::None);
+}
+
 TEST_CASE("candidate cards expose baseline deltas selection and retry without workspace mutation", "[AI][SmartSlicing][Workflow]")
 {
     WorkflowWorkspace workspace;

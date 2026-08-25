@@ -286,6 +286,14 @@ AI::SmartSlicing::CandidateGoal smart_slicing_goal_from_selection(int selection)
     }
 }
 
+SmartSlicingHideAction smart_slicing_hide_action(bool shown, bool worker_running, bool can_cancel)
+{
+    if (shown || !can_cancel)
+        return SmartSlicingHideAction::None;
+    return worker_running ? SmartSlicingHideAction::RequestBackgroundCancel :
+                            SmartSlicingHideAction::CancelDirectly;
+}
+
 SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSlicingCoordinator& coordinator,
                                      PrepareCandidatesFn prepare_candidates, CancelTrialFn cancel_trial,
                                      FinalizeBackgroundFn finalize_background, FocusIssueFn focus_issue)
@@ -466,10 +474,19 @@ SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSl
             m_coordinator.cancel();
     });
     Bind(wxEVT_SHOW, [this](wxShowEvent& event) {
-        if (!event.IsShown() && m_worker_running.load(std::memory_order_acquire)) {
+        const bool worker_running = m_worker_running.load(std::memory_order_acquire);
+        switch (smart_slicing_hide_action(event.IsShown(), worker_running,
+                                          m_coordinator.snapshot().can_cancel())) {
+        case SmartSlicingHideAction::RequestBackgroundCancel:
             m_cancel_requested.store(true, std::memory_order_release);
             if (m_cancel_trial)
                 m_cancel_trial();
+            break;
+        case SmartSlicingHideAction::CancelDirectly:
+            m_coordinator.cancel();
+            break;
+        case SmartSlicingHideAction::None:
+            break;
         }
         event.Skip();
     });
