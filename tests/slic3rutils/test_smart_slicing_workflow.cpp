@@ -809,6 +809,18 @@ TEST_CASE("recommended baseline keeps its measured recommendation explanation",
     CHECK(reason.Find(wxString::FromUTF8(u8"支撑用量更低")) != wxNOT_FOUND);
 }
 
+TEST_CASE("candidate explanation distinguishes complete evidence from a measured advantage",
+          "[AI][SmartSlicing][GUI][CandidateEvidence]")
+{
+    Slic3r::GUI::SmartSlicingCandidateView candidate;
+    candidate.recommended = true;
+    candidate.evidence_codes = {"more_complete_trial_evidence"};
+
+    const wxString reason = Slic3r::GUI::smart_slicing_candidate_reason_text(candidate);
+
+    CHECK(reason.Find(wxString::FromUTF8(u8"试切证据更完整")) != wxNOT_FOUND);
+}
+
 TEST_CASE("hiding the workbench never reads workflow eligibility across a running worker",
           "[AI][SmartSlicing][GUI][Lifecycle][Hide]")
 {

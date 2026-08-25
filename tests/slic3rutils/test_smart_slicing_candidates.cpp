@@ -126,6 +126,37 @@ TEST_CASE("candidate comparison keeps unavailable metrics explicit", "[AI][Smart
     REQUIRE(comparison.ordered_candidate_ids.size() == 2);
     CHECK(comparison.ordered_candidate_ids.front() == "measured");
     CHECK(comparison.missing_metric_candidate_ids == std::vector<CandidateId>{"unknown"});
+    CHECK(comparison.recommendation_evidence_codes ==
+          std::vector<std::string>{"more_complete_trial_evidence"});
+}
+
+TEST_CASE("candidate comparison does not describe measurement completeness as a magnitude advantage",
+          "[AI][SmartSlicing][Candidate][Evidence]")
+{
+    SliceCandidate measured_risk = ready_candidate("measured-risk", 100.0, 500.0, 10.0);
+    measured_risk.metrics->bed_adhesion_risk_score = 1.5;
+    SliceCandidate missing_risk = ready_candidate("missing-risk", 100.0, 500.0, 10.0);
+    CandidateComparison comparison =
+        compare_candidates({missing_risk, measured_risk}, CandidateGoal::Stability);
+    CHECK(comparison.recommended_candidate_id == "measured-risk");
+    CHECK(comparison.recommendation_evidence_codes ==
+          std::vector<std::string>{"more_complete_trial_evidence"});
+
+    SliceCandidate measured_changes = ready_candidate("measured-changes", 100.0, 500.0, 10.0);
+    SliceCandidate missing_changes = ready_candidate("missing-changes", 100.0, 500.0, 10.0);
+    missing_changes.metrics->tool_changes.reset();
+    comparison = compare_candidates({missing_changes, measured_changes}, CandidateGoal::Stability);
+    CHECK(comparison.recommended_candidate_id == "measured-changes");
+    CHECK(comparison.recommendation_evidence_codes ==
+          std::vector<std::string>{"more_complete_trial_evidence"});
+
+    SliceCandidate measured_flush = ready_candidate("measured-flush", 100.0, 500.0, 10.0);
+    SliceCandidate missing_flush = ready_candidate("missing-flush", 100.0, 500.0, 10.0);
+    missing_flush.metrics->flush_volume_mm3.reset();
+    comparison = compare_candidates({missing_flush, measured_flush}, CandidateGoal::Stability);
+    CHECK(comparison.recommended_candidate_id == "measured-flush");
+    CHECK(comparison.recommendation_evidence_codes ==
+          std::vector<std::string>{"more_complete_trial_evidence"});
 }
 
 TEST_CASE("candidate comparison excludes non-finite and negative measured metrics deterministically",

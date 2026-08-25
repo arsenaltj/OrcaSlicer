@@ -1634,3 +1634,35 @@ decision logic out of Domain comparison or changing candidate eligibility, ranki
 This batch changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, formal workspace
 write path, configuration, dependency, port, data directory contract, journal path/schema, 3MF/profile format,
 profile data, or default Orca behavior. macOS and Linux native build/test execution remains a separate host/CI gate.
+
+## Incomplete-measurement evidence gate — 2026-08-25
+
+Candidate comparison still prefers a usable trial result with a measured optional metric over an otherwise tied
+result where that metric is unavailable. Its recommendation explanation now distinguishes that completeness rule
+from a measured magnitude advantage. Missing primary, bed-adhesion-risk, brim, tool-change, flush, wipe-tower,
+support, time, or material evidence therefore emits `more_complete_trial_evidence` instead of incorrectly claiming
+that the winner was faster, lower-risk, or cheaper. When both values are measured, the existing specific evidence
+codes and deterministic ordering remain unchanged.
+
+The workbench maps the new stable code to `试切证据更完整`. The initial Domain regression selected the correct
+candidate but received `shorter_print_time`; one of four assertions failed. The initial GUI regression received no
+completeness text and its only assertion failed. Additional contracts cover the same distinction at adhesion-risk,
+tool-change, and flush-volume fallback stages.
+
+### Windows verification
+
+- Measurement-completeness evidence contracts: 3 test cases and 11 assertions, all passed as part of the Release
+  and RelWithDebInfo smart-slicing suites.
+- Smart-slicing suite: 131 test cases; 130 passed and the opt-in benchmark remained explicitly skipped, with 886
+  assertions passed in Release and RelWithDebInfo.
+- Default full `slic3rutils_tests`: 141 test cases and 993 assertions, all passed in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings and
+  the non-failing test-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke was not repeated because this is a Domain evidence-code and existing text-projection correction with
+  no layout, control lifecycle, startup, trial execution, or formal mutation-path change. No Orca process was
+  launched.
+
+This batch changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, candidate ranking,
+formal workspace write path, configuration, dependency, port, data directory contract, journal path/schema,
+3MF/profile format, profile data, or default Orca behavior. macOS and Linux native build/test execution remains a
+separate host/CI gate.

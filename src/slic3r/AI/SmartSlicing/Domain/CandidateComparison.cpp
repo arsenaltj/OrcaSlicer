@@ -41,6 +41,28 @@ bool greater_optional(const OptionalMetric& lhs, const OptionalMetric& rhs)
     return lhs && rhs && *lhs > *rhs;
 }
 
+std::optional<std::string> difference_evidence(const OptionalMetric& winner,
+                                               const OptionalMetric& runner_up,
+                                               const char* measured_evidence)
+{
+    if (equal_optional(winner, runner_up))
+        return std::nullopt;
+    if (winner.has_value() != runner_up.has_value())
+        return "more_complete_trial_evidence";
+    return measured_evidence;
+}
+
+const char* primary_evidence(CandidateGoal goal)
+{
+    switch (goal) {
+    case CandidateGoal::Stability: return "fewer_slice_warnings";
+    case CandidateGoal::Quality: return "less_support_material";
+    case CandidateGoal::Speed: return "shorter_print_time";
+    case CandidateGoal::MaterialSaving: return "less_total_material_including_multicolor_waste";
+    }
+    return "deterministic_tie_break";
+}
+
 OptionalMetric metric_or_missing(const SliceCandidate& candidate, const OptionalMetric SlicingMetrics::* member)
 {
     return candidate.metrics ? candidate.metrics.value().*member : std::nullopt;
@@ -116,51 +138,51 @@ std::string recommendation_evidence(const SliceCandidate& winner, const SliceCan
 {
     const OptionalMetric winner_primary = primary_metric(winner, goal);
     const OptionalMetric runner_primary = primary_metric(runner_up, goal);
-    if (!equal_optional(winner_primary, runner_primary)) {
-        switch (goal) {
-        case CandidateGoal::Stability: return "fewer_slice_warnings";
-        case CandidateGoal::Quality: return "less_support_material";
-        case CandidateGoal::Speed: return "shorter_print_time";
-        case CandidateGoal::MaterialSaving: return "less_total_material_including_multicolor_waste";
-        }
-    }
+    if (const auto evidence = difference_evidence(winner_primary, runner_primary, primary_evidence(goal)))
+        return *evidence;
     const OptionalMetric winner_adhesion_risk =
         metric_or_missing(winner, &SlicingMetrics::bed_adhesion_risk_score);
     const OptionalMetric runner_adhesion_risk =
         metric_or_missing(runner_up, &SlicingMetrics::bed_adhesion_risk_score);
-    if (goal == CandidateGoal::Stability && !equal_optional(winner_adhesion_risk, runner_adhesion_risk))
-        return "lower_bed_adhesion_risk";
+    if (goal == CandidateGoal::Stability) {
+        if (const auto evidence = difference_evidence(
+                winner_adhesion_risk, runner_adhesion_risk, "lower_bed_adhesion_risk"))
+            return *evidence;
+    }
     const OptionalMetric winner_brim = metric_or_missing(winner, &SlicingMetrics::brim_volume_mm3);
     const OptionalMetric runner_brim = metric_or_missing(runner_up, &SlicingMetrics::brim_volume_mm3);
     const bool adhesion_risk_present =
         winner_adhesion_risk.value_or(0.0) >= BED_ADHESION_RISK_ATTENTION_THRESHOLD ||
         runner_adhesion_risk.value_or(0.0) >= BED_ADHESION_RISK_ATTENTION_THRESHOLD;
-    if (goal == CandidateGoal::Stability && adhesion_risk_present && !equal_optional(winner_brim, runner_brim))
-        return "stronger_bed_adhesion_aid";
+    if (goal == CandidateGoal::Stability && adhesion_risk_present) {
+        if (const auto evidence = difference_evidence(
+                winner_brim, runner_brim, "stronger_bed_adhesion_aid"))
+            return *evidence;
+    }
     const OptionalMetric winner_tool_changes = count_or_missing(winner, &SlicingMetrics::tool_changes);
     const OptionalMetric runner_tool_changes = count_or_missing(runner_up, &SlicingMetrics::tool_changes);
-    if (!equal_optional(winner_tool_changes, runner_tool_changes))
-        return "fewer_tool_changes";
+    if (const auto evidence = difference_evidence(winner_tool_changes, runner_tool_changes, "fewer_tool_changes"))
+        return *evidence;
     const OptionalMetric winner_flush = metric_or_missing(winner, &SlicingMetrics::flush_volume_mm3);
     const OptionalMetric runner_flush = metric_or_missing(runner_up, &SlicingMetrics::flush_volume_mm3);
-    if (!equal_optional(winner_flush, runner_flush))
-        return "lower_flush_volume";
+    if (const auto evidence = difference_evidence(winner_flush, runner_flush, "lower_flush_volume"))
+        return *evidence;
     const OptionalMetric winner_wipe = metric_or_missing(winner, &SlicingMetrics::wipe_tower_volume_mm3);
     const OptionalMetric runner_wipe = metric_or_missing(runner_up, &SlicingMetrics::wipe_tower_volume_mm3);
-    if (!equal_optional(winner_wipe, runner_wipe))
-        return "lower_wipe_tower_volume";
+    if (const auto evidence = difference_evidence(winner_wipe, runner_wipe, "lower_wipe_tower_volume"))
+        return *evidence;
     const OptionalMetric winner_support = metric_or_missing(winner, &SlicingMetrics::support_volume_mm3);
     const OptionalMetric runner_support = metric_or_missing(runner_up, &SlicingMetrics::support_volume_mm3);
-    if (!equal_optional(winner_support, runner_support))
-        return "lower_support_volume";
+    if (const auto evidence = difference_evidence(winner_support, runner_support, "lower_support_volume"))
+        return *evidence;
     const OptionalMetric winner_time = metric_or_missing(winner, &SlicingMetrics::estimated_time_seconds);
     const OptionalMetric runner_time = metric_or_missing(runner_up, &SlicingMetrics::estimated_time_seconds);
-    if (!equal_optional(winner_time, runner_time))
-        return "lower_estimated_time";
+    if (const auto evidence = difference_evidence(winner_time, runner_time, "lower_estimated_time"))
+        return *evidence;
     const OptionalMetric winner_material = metric_or_missing(winner, &SlicingMetrics::filament_volume_mm3);
     const OptionalMetric runner_material = metric_or_missing(runner_up, &SlicingMetrics::filament_volume_mm3);
-    if (!equal_optional(winner_material, runner_material))
-        return "lower_filament_volume";
+    if (const auto evidence = difference_evidence(winner_material, runner_material, "lower_filament_volume"))
+        return *evidence;
     return "deterministic_tie_break";
 }
 

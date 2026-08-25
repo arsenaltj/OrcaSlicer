@@ -214,6 +214,8 @@ wxString candidate_reason_text_impl(const SmartSlicingCandidateView& candidate)
             reason += _L(" 几何附着风险更低。");
         else if (evidence == "stronger_bed_adhesion_aid")
             reason += _L(" 对高风险底面提供了更多实际 brim 附着量。");
+        else if (evidence == "more_complete_trial_evidence")
+            reason += _L(" 试切证据更完整。");
     }
     return reason;
 }
