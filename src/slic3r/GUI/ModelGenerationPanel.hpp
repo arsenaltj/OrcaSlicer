@@ -64,6 +64,7 @@ private:
     void on_import(wxCommandEvent& event);
     void on_recheck_model(wxCommandEvent& event);
     void on_visual_review_model(wxCommandEvent& event);
+    void on_apply_model_refinement(wxCommandEvent& event);
     void on_apply_local_recolor(wxCommandEvent& event);
     void on_discard(wxCommandEvent& event);
     void on_poll(wxTimerEvent& event);
@@ -112,6 +113,7 @@ private:
     void update_workflow(const AIModelGenerationClient::JobStatus* status = nullptr);
     void apply_model_quality(const AIModelGenerationClient::ModelQuality& quality);
     void apply_visual_quality(const AIModelGenerationClient::VisualQuality& quality);
+    void apply_model_refinement(const AIModelGenerationClient::ModelRefinementAdvice& refinement);
     void clear_model_quality();
     void refresh_model_quality_card();
     void refresh_local_recolor_controls();
@@ -230,6 +232,10 @@ private:
     wxStaticText*   m_visual_quality_status { nullptr };
     wxStaticText*   m_visual_quality_summary { nullptr };
     wxButton*       m_visual_review_model { nullptr };
+    wxPanel*        m_model_refinement_panel { nullptr };
+    wxStaticText*   m_model_refinement_status { nullptr };
+    wxStaticText*   m_model_refinement_summary { nullptr };
+    wxButton*       m_apply_model_refinement { nullptr };
     wxButton*       m_generate { nullptr };
     wxButton*       m_stop { nullptr };
     wxStaticText*   m_progress_percent { nullptr };
@@ -309,6 +315,7 @@ private:
     double m_preview_zoom_factor { 1.0 };
     AIModelGenerationClient::ModelQuality m_model_quality;
     AIModelGenerationClient::VisualQuality m_visual_quality;
+    AIModelGenerationClient::ModelRefinementAdvice m_model_refinement;
 };
 
 } // namespace Slic3r::GUI

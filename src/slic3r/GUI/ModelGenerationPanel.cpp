@@ -67,6 +67,7 @@ namespace {
 
 constexpr int POLL_TIMER_ID = wxID_HIGHEST + 913;
 constexpr size_t MAX_IMAGE_SIZE = 20 * 1024 * 1024;
+constexpr size_t MAX_MODEL_INPUT_BYTES = 2000;
 constexpr double MIN_PREVIEW_ZOOM = 0.5;
 constexpr double MAX_PREVIEW_ZOOM = 4.0;
 constexpr int MAX_PREVIEW_BITMAP_DIMENSION = 4096;
@@ -1893,6 +1894,29 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
         _L("模型准备好后可按需生成五视图并进行 AI 外观复核。"));
     m_visual_quality_summary->Wrap(FromDIP(500));
     quality_sizer->Add(m_visual_quality_summary, 0, wxEXPAND | wxALL, FromDIP(10));
+
+    m_model_refinement_panel = new wxPanel(m_model_quality_panel);
+    auto* refinement_sizer = new wxBoxSizer(wxVERTICAL);
+    auto* refinement_header = new wxBoxSizer(wxHORIZONTAL);
+    m_model_refinement_status = new wxStaticText(
+        m_model_refinement_panel, wxID_ANY, _L("下一次生成优化"));
+    wxFont refinement_font = m_model_refinement_status->GetFont();
+    refinement_font.SetWeight(wxFONTWEIGHT_BOLD);
+    m_model_refinement_status->SetFont(refinement_font);
+    m_apply_model_refinement = new wxButton(
+        m_model_refinement_panel, wxID_ANY, _L("应用到下一次生成"));
+    m_apply_model_refinement->SetToolTip(
+        _L("把本地质量建议加入文字输入；不会立即调用 Image2、Tripo 或其他付费服务"));
+    refinement_header->Add(m_model_refinement_status, 1, wxALIGN_CENTER_VERTICAL);
+    refinement_header->Add(m_apply_model_refinement, 0, wxLEFT, FromDIP(12));
+    refinement_sizer->Add(refinement_header, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(10));
+    m_model_refinement_summary = new wxStaticText(m_model_refinement_panel, wxID_ANY, wxEmptyString);
+    m_model_refinement_summary->SetForegroundColour(wxColour(91, 104, 107));
+    m_model_refinement_summary->Wrap(FromDIP(500));
+    refinement_sizer->Add(m_model_refinement_summary, 0, wxEXPAND | wxALL, FromDIP(10));
+    m_model_refinement_panel->SetSizer(refinement_sizer);
+    m_model_refinement_panel->Hide();
+    quality_sizer->Add(m_model_refinement_panel, 0, wxEXPAND);
     m_model_quality_panel->SetSizer(quality_sizer);
     model_sizer->Add(m_model_quality_panel, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
     m_model_preview_message = new wxStaticText(model_page, wxID_ANY, _L("生成完成后可拖动旋转模型，并使用滚轮缩放。"));
@@ -1996,6 +2020,7 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
         m_status->SetLabel(_L("已定位显著局部悬垂；这里只做风险复核，不会自动生成支撑。"));
     });
     m_visual_review_model->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_visual_review_model, this);
+    m_apply_model_refinement->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_apply_model_refinement, this);
     m_local_recolor_toggle->Bind(wxEVT_TOGGLEBUTTON, [this, model_page](wxCommandEvent&) {
         refresh_local_recolor_controls();
         model_page->Layout();
@@ -2615,6 +2640,7 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
         m_displayed_model_job_id = status.id;
         apply_model_quality(status.model_quality);
         apply_visual_quality(status.visual_quality);
+        apply_model_refinement(status.refinement);
     }
     if (!status.palette_roles.empty())
         m_job_palette_roles = status.palette_roles;
@@ -3194,6 +3220,12 @@ void ModelGenerationPanel::refresh_controls()
                             m_model_preview_ready && !m_displayed_model_job_id.empty());
     m_visual_review_model->Enable(m_service_available && !m_busy && !m_quality_check_busy && !m_visual_check_busy &&
                                   m_model_preview_ready && !m_displayed_model_job_id.empty());
+    const wxString refinement_suffix = from_u8(m_model_refinement.prompt_suffix);
+    const bool refinement_already_applied = !refinement_suffix.empty() &&
+        m_prompt->GetValue().Find(refinement_suffix) != wxNOT_FOUND;
+    m_apply_model_refinement->Enable(!m_busy && m_model_refinement.available &&
+                                     !m_model_refinement.prompt_suffix.empty() &&
+                                     !refinement_already_applied);
     m_discard->Enable(!m_busy && (!m_job_id.empty() || m_ready));
 
     const bool show_preprocess = !m_busy && (!m_ready || stale_job) &&
@@ -3254,10 +3286,18 @@ void ModelGenerationPanel::apply_visual_quality(const AIModelGenerationClient::V
     refresh_model_quality_card();
 }
 
+void ModelGenerationPanel::apply_model_refinement(
+    const AIModelGenerationClient::ModelRefinementAdvice& refinement)
+{
+    m_model_refinement = refinement;
+    refresh_model_quality_card();
+}
+
 void ModelGenerationPanel::clear_model_quality()
 {
     m_model_quality = {};
     m_visual_quality = {};
+    m_model_refinement = {};
     m_quality_check_busy = false;
     m_visual_check_busy = false;
     m_thin_region_navigation_active = false;
@@ -3415,6 +3455,21 @@ void ModelGenerationPanel::refresh_model_quality_card()
     m_visual_quality_status->SetLabel(visual_status);
     m_visual_quality_status->SetForegroundColour(visual_foreground);
     m_visual_quality_summary->SetLabel(visual_summary);
+    if (m_model_refinement.available && !m_model_refinement.prompt_suffix.empty()) {
+        wxString refinement_summary = from_u8(m_model_refinement.summary);
+        const size_t visible = std::min<size_t>(3, m_model_refinement.issues.size());
+        for (size_t index = 0; index < visible; ++index)
+            refinement_summary += _L("\n• ") + from_u8(m_model_refinement.issues[index].title);
+        if (m_model_refinement.issues.size() > visible)
+            refinement_summary += wxString::Format(
+                _L("\n• 另有 %llu 类建议"),
+                static_cast<unsigned long long>(m_model_refinement.issues.size() - visible));
+        m_model_refinement_summary->SetLabel(refinement_summary);
+        m_model_refinement_panel->Show();
+    } else {
+        m_model_refinement_summary->SetLabel(wxEmptyString);
+        m_model_refinement_panel->Hide();
+    }
     m_model_quality_panel->Layout();
     m_model_quality_panel->GetParent()->Layout();
 }
@@ -3442,6 +3497,7 @@ void ModelGenerationPanel::on_recheck_model(wxCommandEvent&)
                 weak->m_quality_check_busy = false;
                 weak->apply_model_quality(status.model_quality);
                 weak->apply_visual_quality(status.visual_quality);
+                weak->apply_model_refinement(status.refinement);
                 weak->m_status->SetLabel(status.model_quality.status == "pass"
                     ? _L("结构检查通过。") : status.model_quality.status == "review"
                     ? _L("结构检查完成，建议复核提示项。") : _L("结构检查未通过，已禁用导入。"));
@@ -3482,6 +3538,7 @@ void ModelGenerationPanel::on_visual_review_model(wxCommandEvent&)
                     return;
                 weak->m_visual_check_busy = false;
                 weak->apply_visual_quality(status.visual_quality);
+                weak->apply_model_refinement(status.refinement);
                 weak->m_status->SetLabel(status.visual_quality.status == "pass"
                     ? _L("AI 视觉复核完成，未发现明显外观风险。")
                     : status.visual_quality.status == "review"
@@ -3502,6 +3559,31 @@ void ModelGenerationPanel::on_visual_review_model(wxCommandEvent&)
                 weak->refresh_controls();
             });
         });
+}
+
+void ModelGenerationPanel::on_apply_model_refinement(wxCommandEvent&)
+{
+    if (m_busy || !m_model_refinement.available || m_model_refinement.prompt_suffix.empty())
+        return;
+    const wxString suffix = from_u8(m_model_refinement.prompt_suffix);
+    wxString prompt = m_prompt->GetValue();
+    if (prompt.Find(suffix) != wxNOT_FOUND) {
+        m_status->SetLabel(_L("优化建议已在文字输入中，不会重复添加。"));
+        refresh_controls();
+        return;
+    }
+    const wxString candidate = prompt + (prompt.empty() ? wxEmptyString : _L("\n\n")) + suffix;
+    const auto encoded = candidate.ToUTF8();
+    if (!encoded || encoded.length() > MAX_MODEL_INPUT_BYTES) {
+        m_status->SetLabel(_L("文字输入接近长度上限，请先精简原描述再应用优化建议。"));
+        return;
+    }
+    m_prompt->ChangeValue(candidate);
+    m_prompt->SetInsertionPointEnd();
+    m_prompt->SetFocus();
+    refresh_controls();
+    m_status->SetLabel(_L("优化建议已加入下一次输入；尚未调用付费服务，请检查后重新生成图片预览。"));
+    m_result_summary->SetLabel(_L("当前模型和质量报告仍保留，可与下一次生成结果对比。"));
 }
 
 std::vector<std::string> ModelGenerationPanel::local_recolor_palette() const
@@ -4425,6 +4507,7 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
                 }
                 weak->apply_model_quality(status.model_quality);
                 weak->apply_visual_quality(status.visual_quality);
+                weak->apply_model_refinement(status.refinement);
                 weak->refresh_controls();
             });
         },
