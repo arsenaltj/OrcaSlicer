@@ -66,7 +66,8 @@ public:
         if (!diagnostic.empty())
             return rejected(diagnostic);
         m_prepared_candidate = PreparedCandidateToken{
-            candidate.id, candidate.workflow_id, expected_revision, candidate.placement, candidate.parameters};
+            candidate.id, candidate.workflow_id, expected_revision, candidate.placement, candidate.parameters,
+            candidate.tool_sequence};
         return {AI::SmartSlicing::OfficialSlicePhase::Prepared, {}, false, false};
     }
 
@@ -218,6 +219,7 @@ private:
         AI::SmartSlicing::WorkspaceRevision revision;
         AI::SmartSlicing::PlacementCandidate placement;
         AI::SmartSlicing::ParameterProposal parameters;
+        std::optional<AI::SmartSlicing::ToolSequenceProposal> tool_sequence;
     };
 
     static bool prepared_candidate_matches(const PreparedCandidateToken& prepared,
@@ -230,7 +232,8 @@ private:
             prepared.placement.transforms.size() != candidate.placement.transforms.size() ||
             prepared.parameters.intent != candidate.parameters.intent ||
             prepared.parameters.entries.size() != candidate.parameters.entries.size() ||
-            prepared.parameters.explanation_codes != candidate.parameters.explanation_codes)
+            prepared.parameters.explanation_codes != candidate.parameters.explanation_codes ||
+            prepared.tool_sequence != candidate.tool_sequence)
             return false;
         for (size_t index = 0; index < prepared.placement.transforms.size(); ++index) {
             const auto& lhs = prepared.placement.transforms[index];

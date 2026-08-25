@@ -3,6 +3,7 @@
 #include "OrcaOrientationCandidateProvider.hpp"
 #include "OrcaParameterAdvisor.hpp"
 #include "OrcaPlacementCandidateProvider.hpp"
+#include "OrcaToolSequenceCandidateProvider.hpp"
 
 #include <functional>
 #include <iterator>
@@ -44,16 +45,21 @@ public:
             if (canceled())
                 return {};
 
-            m_input.orientation.stopcondition = canceled;
-            std::vector<AI::SmartSlicing::SliceCandidate> orientation_candidates =
-                OrcaOrientationCandidateProvider().generate(std::move(m_input.orientation), m_input.context.revision);
-            if (canceled())
-                return {};
-            candidates.insert(candidates.end(), std::make_move_iterator(orientation_candidates.begin()),
-                              std::make_move_iterator(orientation_candidates.end()));
+            if (goal == AI::SmartSlicing::CandidateGoal::Stability) {
+                m_input.orientation.stopcondition = canceled;
+                std::vector<AI::SmartSlicing::SliceCandidate> orientation_candidates =
+                    OrcaOrientationCandidateProvider().generate(std::move(m_input.orientation), m_input.context.revision);
+                if (canceled())
+                    return {};
+                candidates.insert(candidates.end(), std::make_move_iterator(orientation_candidates.begin()),
+                                  std::make_move_iterator(orientation_candidates.end()));
+            }
         }
         for (AI::SmartSlicing::SliceCandidate& candidate : candidates)
             candidate.goal = goal;
+
+        if (const auto sequence_candidate = OrcaToolSequenceCandidateProvider().generate(m_input.context, goal))
+            candidates.push_back(*sequence_candidate);
 
         AI::SmartSlicing::ParameterProposal parameter_proposal =
             OrcaParameterAdvisor(std::move(m_input.parameters)).advise(m_input.context, goal);

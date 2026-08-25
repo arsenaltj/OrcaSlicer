@@ -2,8 +2,10 @@
 #include "OrcaParameterAdvisor.hpp"
 #include "OrcaParameterProposalAdapter.hpp"
 #include "OrcaPlacementTransformValidator.hpp"
+#include "slic3r/AI/SmartSlicing/Domain/ToolSequenceProposalValidator.hpp"
 
 #include "libslic3r/GCode/GCodeProcessor.hpp"
+#include "libslic3r/ParameterUtils.hpp"
 #include "libslic3r/Print.hpp"
 
 #include <boost/filesystem.hpp>
@@ -320,6 +322,25 @@ TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice(const SliceCandidat
             }
             input.config = std::move(patched_config);
         }
+        if (candidate.tool_sequence) {
+            const ToolSequenceValidationResult sequence_result =
+                ToolSequenceProposalValidator().validate(*candidate.tool_sequence, input.multicolor);
+            if (!sequence_result.accepted()) {
+                result.diagnostic_code = tool_sequence_rejection_code_name(sequence_result.rejections.front());
+                return result;
+            }
+            input.config.set_key_value("first_layer_print_sequence",
+                                       new ConfigOptionInts(candidate.tool_sequence->new_first_layer_sequence));
+            std::vector<LayerPrintSequence> ranges;
+            ranges.reserve(candidate.tool_sequence->new_other_layer_sequences.size());
+            for (const ToolSequenceLayerRange& sequence : candidate.tool_sequence->new_other_layer_sequences)
+                ranges.push_back({{sequence.minimum_layer, sequence.maximum_layer}, sequence.logical_filament_ids});
+            int range_count = 0;
+            std::vector<int> flattened;
+            get_other_layers_print_sequence(ranges, range_count, flattened);
+            input.config.set_key_value("other_layers_print_sequence", new ConfigOptionInts(flattened));
+            input.config.set_key_value("other_layers_print_sequence_nums", new ConfigOptionInt(range_count));
+        }
         if (!apply_placement(input.model, candidate.placement)) {
             result.diagnostic_code = "invalid_candidate_placement";
             return result;
@@ -373,6 +394,15 @@ TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice(const SliceCandidat
         }
         result.metrics = extract_metrics(gcode_result, expected_filament_mapping, prime_tower_enabled,
                                          input.physical_slots_compatible, input.color_mapping_degraded);
+        if (candidate.tool_sequence &&
+            (result.metrics->filament_to_physical_slot != candidate.tool_sequence->expected_filament_to_physical_slot ||
+             result.metrics->prime_tower_enabled != candidate.tool_sequence->expected_prime_tower_enabled ||
+             result.metrics->physical_slots_compatible != true ||
+             result.metrics->color_mapping_degraded != false)) {
+            result.metrics.reset();
+            result.diagnostic_code = "tool_sequence_trial_constraints_changed";
+            return result;
+        }
         result.metrics->bed_adhesion_risk_score = bed_adhesion_risk;
         result.metrics->warning_codes.insert(result.metrics->warning_codes.end(), validation_warnings.size(),
                                              "native_validation_warning");

@@ -324,6 +324,9 @@ set(SLIC3R_GUI_SOURCES
     AI/SmartSlicing/Domain/RepairPlan.hpp
     AI/SmartSlicing/Domain/SliceCandidate.hpp
     AI/SmartSlicing/Domain/SlicingMetrics.hpp
+    AI/SmartSlicing/Domain/ToolSequenceProposal.hpp
+    AI/SmartSlicing/Domain/ToolSequenceProposalValidator.cpp
+    AI/SmartSlicing/Domain/ToolSequenceProposalValidator.hpp
     AI/SmartSlicing/Domain/SmartSlicingTypes.hpp
     AI/SmartSlicing/Domain/WorkflowState.hpp
     AI/SmartSlicing/Domain/WorkspaceContext.hpp
@@ -356,6 +359,7 @@ set(SLIC3R_GUI_SOURCES
     GUI/AI/Orca/OrcaPlacementCandidateProvider.hpp
     GUI/AI/Orca/OrcaTrialSliceExecutor.cpp
     GUI/AI/Orca/OrcaTrialSliceExecutor.hpp
+    GUI/AI/Orca/OrcaToolSequenceCandidateProvider.hpp
     GUI/AI/Orca/OrcaWorkflowRuntimeStore.cpp
     GUI/AI/Orca/OrcaWorkflowRuntimeStore.hpp
     GUI/AI/Orca/OrcaWorkspaceAdapter.cpp

@@ -132,6 +132,7 @@ OrcaTrialSliceInput OrcaSmartSlicingAdapter::capture_trial_slice_input(
         input.physical_slots_compatible =
             orca_physical_slots_compatible(context->multicolor.physical_slot_compatibility);
         input.color_mapping_degraded = context->multicolor.color_mapping_degraded;
+        input.multicolor = context->multicolor;
     }
     return input;
 }

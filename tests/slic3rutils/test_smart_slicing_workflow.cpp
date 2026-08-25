@@ -1669,6 +1669,56 @@ TEST_CASE("Orca official gateway binds parameter intent content and current valu
     CHECK(slice_calls == 0);
 }
 
+TEST_CASE("Orca official gateway binds the complete tool sequence proposal before mutation",
+          "[AI][SmartSlicing][Apply][Multicolor][Sequence][TransactionBoundary]")
+{
+    const WorkspaceRevision revision{1, 2, 3, "revision-a"};
+    size_t apply_calls = 0;
+    size_t slice_calls = 0;
+    Slic3r::GUI::OrcaOfficialSliceGateway gateway(
+        [revision] { return revision; }, [](const SliceCandidate&) { return std::string{}; },
+        [&apply_calls](const SliceCandidate&) {
+            ++apply_calls;
+            return Slic3r::GUI::OrcaApplyMutationResult{true, true, {}};
+        },
+        [&slice_calls] {
+            ++slice_calls;
+            return true;
+        },
+        [] { return true; }, [] { return true; });
+
+    SliceCandidate candidate = proposal("sequence-candidate", revision);
+    ToolSequenceProposal sequence;
+    sequence.used_logical_filament_ids = {1, 2};
+    sequence.expected_filament_to_physical_slot = {1, 2};
+    sequence.expected_physical_slot_compatibility = PhysicalSlotCompatibility::Compatible;
+    sequence.expected_first_layer_sequence = {1, 2};
+    sequence.new_first_layer_sequence = {1, 2};
+    sequence.expected_other_layer_sequences = {{2, 10, {1, 2}}};
+    sequence.new_other_layer_sequences = {{2, 10, {2, 1}}};
+    candidate.tool_sequence = sequence;
+
+    REQUIRE(gateway.prepare(candidate, revision).phase == OfficialSlicePhase::Prepared);
+    SliceCandidate changed_order = candidate;
+    changed_order.tool_sequence->new_other_layer_sequences.front().logical_filament_ids = {1, 2};
+    CHECK(gateway.commit(changed_order, revision).diagnostic_code == "candidate_not_prepared");
+
+    REQUIRE(gateway.prepare(candidate, revision).phase == OfficialSlicePhase::Prepared);
+    SliceCandidate changed_mapping = candidate;
+    changed_mapping.tool_sequence->expected_filament_to_physical_slot = {2, 1};
+    CHECK(gateway.commit(changed_mapping, revision).diagnostic_code == "candidate_not_prepared");
+
+    REQUIRE(gateway.prepare(candidate, revision).phase == OfficialSlicePhase::Prepared);
+    SliceCandidate changed_tower = candidate;
+    changed_tower.tool_sequence->expected_prime_tower_enabled = true;
+    CHECK(gateway.commit(changed_tower, revision).diagnostic_code == "candidate_not_prepared");
+
+    REQUIRE(gateway.prepare(candidate, revision).phase == OfficialSlicePhase::Prepared);
+    CHECK(gateway.commit(candidate, revision).phase == OfficialSlicePhase::Slicing);
+    CHECK(apply_calls == 1);
+    CHECK(slice_calls == 1);
+}
+
 TEST_CASE("Orca official gateway rejects invalid transaction identity before compatibility or mutation",
           "[AI][SmartSlicing][Apply][TransactionBoundary][Identity]")
 {

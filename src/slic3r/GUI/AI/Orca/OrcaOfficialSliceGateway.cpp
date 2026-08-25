@@ -2,6 +2,8 @@
 
 #include "OrcaParameterProposalAdapter.hpp"
 #include "OrcaPlacementTransformValidator.hpp"
+#include "OrcaSmartSlicingAdapter.hpp"
+#include "slic3r/AI/SmartSlicing/Domain/ToolSequenceProposalValidator.hpp"
 
 #include "libslic3r/Model.hpp"
 #include "libslic3r/PresetBundle.hpp"
@@ -127,13 +129,35 @@ bool prepare_parameter_patch(Plater& plater, const AI::SmartSlicing::SliceCandid
     return true;
 }
 
+bool prepare_tool_sequence(Plater& plater, const AI::SmartSlicing::SliceCandidate& candidate,
+                           std::vector<LayerPrintSequence>& replacement, std::string& diagnostic)
+{
+    if (!candidate.tool_sequence)
+        return true;
+    const AI::SmartSlicing::MulticolorSnapshot current =
+        OrcaSmartSlicingAdapter(&plater).capture_context().multicolor;
+    const AI::SmartSlicing::ToolSequenceValidationResult result =
+        AI::SmartSlicing::ToolSequenceProposalValidator().validate(*candidate.tool_sequence, current);
+    if (!result.accepted()) {
+        diagnostic = AI::SmartSlicing::tool_sequence_rejection_code_name(result.rejections.front());
+        return false;
+    }
+    replacement.reserve(candidate.tool_sequence->new_other_layer_sequences.size());
+    for (const AI::SmartSlicing::ToolSequenceLayerRange& sequence :
+         candidate.tool_sequence->new_other_layer_sequences)
+        replacement.push_back({{sequence.minimum_layer, sequence.maximum_layer}, sequence.logical_filament_ids});
+    return true;
+}
+
 std::string validate_candidate(Plater& plater, const AI::SmartSlicing::SliceCandidate& candidate)
 {
     std::vector<SmartSlicingTransformTarget> targets;
     DynamicPrintConfig parameter_patch;
+    std::vector<LayerPrintSequence> tool_sequence;
     std::string diagnostic;
     if (!collect_targets(plater, candidate, targets, diagnostic) ||
-        !prepare_parameter_patch(plater, candidate, parameter_patch, diagnostic))
+        !prepare_parameter_patch(plater, candidate, parameter_patch, diagnostic) ||
+        !prepare_tool_sequence(plater, candidate, tool_sequence, diagnostic))
         return diagnostic;
     return {};
 }
@@ -142,9 +166,11 @@ OrcaApplyMutationResult apply_candidate(Plater& plater, const AI::SmartSlicing::
 {
     std::vector<SmartSlicingTransformTarget> targets;
     DynamicPrintConfig parameter_patch;
+    std::vector<LayerPrintSequence> tool_sequence;
     std::string diagnostic;
     if (!collect_targets(plater, candidate, targets, diagnostic) ||
-        !prepare_parameter_patch(plater, candidate, parameter_patch, diagnostic))
+        !prepare_parameter_patch(plater, candidate, parameter_patch, diagnostic) ||
+        !prepare_tool_sequence(plater, candidate, tool_sequence, diagnostic))
         return {false, false, std::move(diagnostic)};
 
     std::vector<SmartSlicingTransformTarget> changed;
@@ -155,7 +181,7 @@ OrcaApplyMutationResult apply_candidate(Plater& plater, const AI::SmartSlicing::
             changed_object_indices.push_back(target.object_index);
         }
     }
-    if (changed.empty() && candidate.parameters.entries.empty())
+    if (changed.empty() && candidate.parameters.entries.empty() && !candidate.tool_sequence)
         return {true, false, {}};
     std::sort(changed_object_indices.begin(), changed_object_indices.end());
     changed_object_indices.erase(std::unique(changed_object_indices.begin(), changed_object_indices.end()),
@@ -177,9 +203,13 @@ OrcaApplyMutationResult apply_candidate(Plater& plater, const AI::SmartSlicing::
                     throw std::runtime_error("Validated smart-slicing parameter disappeared before apply.");
                 plate->config()->set_key_value(entry.key, replacement->clone());
             }
+            if (candidate.tool_sequence) {
+                plate->set_first_layer_print_sequence(candidate.tool_sequence->new_first_layer_sequence);
+                plate->set_other_layers_print_sequence(tool_sequence);
+            }
             if (!changed_object_indices.empty())
                 plater.changed_objects(changed_object_indices);
-            if (!candidate.parameters.entries.empty())
+            if (!candidate.parameters.entries.empty() || candidate.tool_sequence)
                 plate->update_slice_result_valid_state(false);
             plater.update_title_dirty_status();
         }

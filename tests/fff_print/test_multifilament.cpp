@@ -7,6 +7,7 @@
 #include <cctype>
 #include <set>
 #include <string>
+#include <vector>
 
 using namespace Slic3r;
 using namespace Slic3r::Test;
@@ -23,6 +24,18 @@ static std::set<int> tools_for_role(const std::string& gcode, const std::string&
             current_tool = std::stoi(cmd.substr(1));
         else if (line.extruding(self) && std::string(line.comment()).find(role) != std::string::npos)
             tools.insert(current_tool);
+    });
+    return tools;
+}
+
+static std::vector<int> tool_sequence(const std::string& gcode)
+{
+    std::vector<int> tools;
+    GCodeReader reader;
+    reader.parse_buffer(gcode, [&tools](GCodeReader&, const GCodeReader::GCodeLine& line) {
+        const std::string cmd(line.cmd());
+        if (cmd.size() >= 2 && cmd[0] == 'T' && std::isdigit((unsigned char) cmd[1]))
+            tools.push_back(std::stoi(cmd.substr(1)));
     });
     return tools;
 }
@@ -84,4 +97,27 @@ TEST_CASE("Per-object wall filament override is honored", "[MultiFilament]")
         { {}, { { "outer_wall_filament_id", 2 }, { "inner_wall_filament_id", 2 } } });
     CHECK(tools_for_role(gcode, "perimeter") == std::set<int>{ 0, 1 });
     CHECK(tools_for_role(gcode, "infill")    == std::set<int>{ 0 }); // infill not overridden: stays on F1
+}
+
+TEST_CASE("Custom tool order preserves feature filament assignment", "[MultiFilament][SmartSlicingSequence]")
+{
+    DynamicPrintConfig baseline_config = multifilament_config(2, {
+        {"sparse_infill_filament_id", 1}, {"internal_solid_filament_id", 1},
+        {"top_surface_filament_id", 1}, {"bottom_surface_filament_id", 1},
+        {"outer_wall_filament_id", 2}, {"inner_wall_filament_id", 2},
+        {"skirt_loops", 0}, {"brim_type", "no_brim"},
+    });
+    DynamicPrintConfig reordered_config = baseline_config;
+    reordered_config.set_key_value("first_layer_print_sequence", new ConfigOptionInts({2, 1}));
+    reordered_config.set_key_value("other_layers_print_sequence", new ConfigOptionInts({2, 1000, 2, 1}));
+    reordered_config.set_key_value("other_layers_print_sequence_nums", new ConfigOptionInt(1));
+
+    const std::string baseline = slice({cube(20)}, baseline_config);
+    const std::string reordered = slice({cube(20)}, reordered_config);
+
+    CHECK(tools_for_role(baseline, "perimeter") == std::set<int>{1});
+    CHECK(tools_for_role(reordered, "perimeter") == std::set<int>{1});
+    CHECK(tools_for_role(baseline, "infill") == std::set<int>{0});
+    CHECK(tools_for_role(reordered, "infill") == std::set<int>{0});
+    CHECK(tool_sequence(baseline) != tool_sequence(reordered));
 }

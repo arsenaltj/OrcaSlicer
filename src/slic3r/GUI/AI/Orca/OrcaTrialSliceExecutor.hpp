@@ -48,6 +48,7 @@ struct OrcaTrialSliceInput
     std::vector<std::vector<DynamicPrintConfig>> extruder_filament_info;
     std::optional<bool> physical_slots_compatible;
     std::optional<bool> color_mapping_degraded;
+    AI::SmartSlicing::MulticolorSnapshot multicolor;
 };
 
 class OrcaTrialSliceExecutor final : public AI::SmartSlicing::ITrialSliceExecutor

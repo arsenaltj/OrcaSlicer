@@ -5,6 +5,7 @@
 #include "RepairPlan.hpp"
 #include "SlicingMetrics.hpp"
 #include "SmartSlicingTypes.hpp"
+#include "ToolSequenceProposal.hpp"
 #include "WorkspaceRevision.hpp"
 
 #include <optional>
@@ -21,6 +22,7 @@ struct SliceCandidate
     std::optional<RepairPlan> repair;
     PlacementCandidate placement;
     ParameterProposal parameters;
+    std::optional<ToolSequenceProposal> tool_sequence;
     std::string explanation;
     std::string diagnostic_code;
     CandidateStatus status{CandidateStatus::Draft};

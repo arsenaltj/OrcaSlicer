@@ -1,9 +1,11 @@
 #include <catch2/catch_all.hpp>
 
 #include "slic3r/AI/SmartSlicing/Domain/CandidateComparison.hpp"
+#include "slic3r/AI/SmartSlicing/Domain/ToolSequenceProposalValidator.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaCandidateProposalTask.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaOrientationCandidateProvider.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaPlacementCandidateProvider.hpp"
+#include "slic3r/GUI/AI/Orca/OrcaToolSequenceCandidateProvider.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaTrialSliceExecutor.hpp"
 
 #include "libslic3r/TriangleMesh.hpp"
@@ -69,6 +71,22 @@ ModelInstance* add_box(Model& model, const Vec3d& size, const Vec3d& offset)
     instance->set_offset(offset);
     object->ensure_on_bed();
     return instance;
+}
+
+WorkspaceContext multicolor_context()
+{
+    WorkspaceContext context;
+    context.revision = {1, 2, 3, "revision-a"};
+    context.multicolor.used_logical_filament_ids = {1, 2, 3};
+    context.multicolor.filament_to_physical_slot = {1, 2, 3};
+    context.multicolor.first_layer_tool_sequence = {1, 2, 3};
+    context.multicolor.other_layer_tool_sequences = {
+        {2, 5, {1, 2, 3}}, {6, 10, {1, 2, 3}}};
+    context.multicolor.physical_slot_compatibility = PhysicalSlotCompatibility::Compatible;
+    context.multicolor.prime_tower_enabled = true;
+    context.multicolor.flush_matrix_available = true;
+    context.multicolor.flush_multiplier_available = true;
+    return context;
 }
 
 } // namespace
@@ -259,6 +277,82 @@ TEST_CASE("degraded color mappings are excluded and incomplete multicolor cost s
     CHECK(comparison.excluded_candidate_ids == std::vector<CandidateId>{"degraded"});
     CHECK(comparison.missing_metric_candidate_ids == std::vector<CandidateId>{"incomplete"});
     CHECK_FALSE(incomplete.metrics->total_material_volume_mm3().has_value());
+}
+
+TEST_CASE("typed tool sequence validation preserves every multicolor constraint",
+          "[AI][SmartSlicing][Candidate][Multicolor][Sequence]")
+{
+    const WorkspaceContext context = multicolor_context();
+    const auto generated = GUI::OrcaToolSequenceCandidateProvider().generate(
+        context, CandidateGoal::MaterialSaving);
+    REQUIRE(generated);
+    REQUIRE(generated->tool_sequence);
+    const ToolSequenceProposal proposal = *generated->tool_sequence;
+    CHECK(ToolSequenceProposalValidator().validate(proposal, context.multicolor).accepted());
+
+    auto rejected = [&context](ToolSequenceProposal changed) {
+        return !ToolSequenceProposalValidator().validate(changed, context.multicolor).accepted();
+    };
+
+    ToolSequenceProposal duplicate = proposal;
+    duplicate.new_first_layer_sequence = {1, 1, 3};
+    CHECK(rejected(duplicate));
+    ToolSequenceProposal missing = proposal;
+    missing.new_other_layer_sequences.front().logical_filament_ids = {1, 2};
+    CHECK(rejected(missing));
+    ToolSequenceProposal unknown = proposal;
+    unknown.new_other_layer_sequences.front().logical_filament_ids = {1, 2, 4};
+    CHECK(rejected(unknown));
+    ToolSequenceProposal range = proposal;
+    range.new_other_layer_sequences.front().minimum_layer = 3;
+    CHECK(rejected(range));
+    ToolSequenceProposal no_op = proposal;
+    no_op.new_first_layer_sequence = no_op.expected_first_layer_sequence;
+    no_op.new_other_layer_sequences = no_op.expected_other_layer_sequences;
+    CHECK(rejected(no_op));
+
+    MulticolorSnapshot remapped = context.multicolor;
+    remapped.filament_to_physical_slot = {3, 2, 1};
+    CHECK_FALSE(ToolSequenceProposalValidator().validate(proposal, remapped).accepted());
+    MulticolorSnapshot tower_changed = context.multicolor;
+    tower_changed.prime_tower_enabled = false;
+    CHECK_FALSE(ToolSequenceProposalValidator().validate(proposal, tower_changed).accepted());
+    MulticolorSnapshot incompatible = context.multicolor;
+    incompatible.physical_slot_compatibility = PhysicalSlotCompatibility::Incompatible;
+    CHECK_FALSE(ToolSequenceProposalValidator().validate(proposal, incompatible).accepted());
+    MulticolorSnapshot degraded = context.multicolor;
+    degraded.color_mapping_degraded = true;
+    CHECK_FALSE(ToolSequenceProposalValidator().validate(proposal, degraded).accepted());
+}
+
+TEST_CASE("tool sequence candidate generation is deterministic goal-gated and no-op aware",
+          "[AI][SmartSlicing][Candidate][Multicolor][Sequence]")
+{
+    const WorkspaceContext context = multicolor_context();
+    const GUI::OrcaToolSequenceCandidateProvider provider;
+    const auto first = provider.generate(context, CandidateGoal::MaterialSaving);
+    const auto second = provider.generate(context, CandidateGoal::MaterialSaving);
+
+    REQUIRE(first);
+    REQUIRE(second);
+    CHECK(first->id == "tool-sequence-material-saving-v1");
+    CHECK(first->id == second->id);
+    CHECK(first->tool_sequence == second->tool_sequence);
+    REQUIRE(first->tool_sequence);
+    CHECK(first->tool_sequence->new_first_layer_sequence == std::vector<int>{1, 2, 3});
+    CHECK(first->tool_sequence->new_other_layer_sequences[0].logical_filament_ids ==
+          std::vector<int>{3, 1, 2});
+    CHECK(first->tool_sequence->new_other_layer_sequences[1].logical_filament_ids ==
+          std::vector<int>{2, 3, 1});
+    CHECK_FALSE(provider.generate(context, CandidateGoal::Quality));
+
+    WorkspaceContext single = context;
+    single.multicolor.used_logical_filament_ids = {1};
+    CHECK_FALSE(provider.generate(single, CandidateGoal::MaterialSaving));
+    WorkspaceContext no_op = context;
+    no_op.multicolor.other_layer_tool_sequences = {
+        {2, 5, {3, 1, 2}}, {6, 10, {2, 3, 1}}};
+    CHECK_FALSE(provider.generate(no_op, CandidateGoal::MaterialSaving));
 }
 
 TEST_CASE("native physical-slot compatibility distinguishes compatible invalid and mixed ranges",
@@ -810,4 +904,27 @@ TEST_CASE("prepared candidate proposal task keeps native fallback when stability
     REQUIRE(candidates.size() == 2);
     CHECK(candidates[0].parameters.entries.empty());
     CHECK(candidates[1].parameters.entries.empty());
+}
+
+TEST_CASE("prepared candidate proposal task keeps one native and one sequence material alternative",
+          "[AI][SmartSlicing][Candidate][Multicolor][Sequence][ProposalTask]")
+{
+    GUI::OrcaCandidateProposalInput input;
+    input.context = multicolor_context();
+    input.context.plate_index = 0;
+    input.placement = placement_input();
+    add_cube(input.placement.model, 10.0, Vec3d(75.0, 75.0, 0.0));
+    input.orientation.config = DynamicPrintConfig::full_print_config();
+    add_box(input.orientation.model, Vec3d(8.0, 12.0, 40.0), Vec3d(30.0, 30.0, 0.0));
+
+    const std::vector<SliceCandidate> candidates =
+        GUI::OrcaCandidateProposalTask(std::move(input)).execute(CandidateGoal::MaterialSaving);
+
+    REQUIRE(candidates.size() == 2);
+    CHECK(candidates[0].id == "placement-stability-native-v1");
+    CHECK(candidates[0].goal == CandidateGoal::MaterialSaving);
+    CHECK_FALSE(candidates[0].tool_sequence);
+    CHECK(candidates[1].id == "tool-sequence-material-saving-v1");
+    CHECK(candidates[1].goal == CandidateGoal::MaterialSaving);
+    CHECK(candidates[1].tool_sequence.has_value());
 }
