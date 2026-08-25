@@ -69,6 +69,9 @@ class ModelTaskGatewayTests(unittest.TestCase):
             "create_text_task": mock.Mock(return_value="text-task"),
             "upload_image": mock.Mock(return_value="image-token"),
             "create_image_task": mock.Mock(return_value="image-task"),
+            "create_conversion": mock.Mock(return_value="conversion-task"),
+            "wait_for_task": mock.Mock(return_value={"status": "success"}),
+            "download_task_artifact": mock.Mock(return_value=Path("artifact.obj")),
         }
         dependencies.update(overrides)
         return ModelProviderGateway(**dependencies), dependencies
@@ -86,6 +89,73 @@ class ModelTaskGatewayTests(unittest.TestCase):
         self.assertTrue(result.reused)
         for dependency in dependencies.values():
             dependency.assert_not_called()
+
+    def test_existing_conversion_is_reused_without_provider_call(self):
+        gateway, dependencies = self.gateway()
+
+        result = gateway.start_or_reuse_conversion(
+            "generation-task", "obj", existing_task_id="existing-conversion", allow_create=False
+        )
+
+        self.assertEqual(result.task_id, "existing-conversion")
+        self.assertTrue(result.reused)
+        dependencies["create_conversion"].assert_not_called()
+
+    def test_conversion_creation_requires_explicit_permission(self):
+        gateway, dependencies = self.gateway()
+
+        with self.assertRaises(ProviderGatewayError) as raised:
+            gateway.start_or_reuse_conversion("generation-task", "obj", allow_create=False)
+
+        self.assertEqual(raised.exception.code, "conversion_creation_not_allowed")
+        dependencies["create_conversion"].assert_not_called()
+
+    def test_conversion_is_created_once_when_explicitly_allowed(self):
+        gateway, dependencies = self.gateway()
+
+        result = gateway.start_or_reuse_conversion("generation-task", "obj", allow_create=True)
+
+        self.assertEqual(result.task_id, "conversion-task")
+        self.assertFalse(result.reused)
+        dependencies["create_conversion"].assert_called_once_with("generation-task", "obj")
+
+    def test_wait_delegates_cancellation_and_progress_without_new_task(self):
+        gateway, dependencies = self.gateway()
+        stop_event = object()
+        progress = mock.Mock()
+
+        result = gateway.wait_for_task("existing-task", stop_event=stop_event, progress=progress)
+
+        self.assertEqual(result, {"status": "success"})
+        dependencies["wait_for_task"].assert_called_once_with(
+            "existing-task", stop_event=stop_event, progress=progress
+        )
+        dependencies["create_text_task"].assert_not_called()
+        dependencies["create_image_task"].assert_not_called()
+
+    def test_download_delegates_the_byte_limit(self):
+        gateway, dependencies = self.gateway()
+        task_result = {"output": {"model_url": "https://example.invalid/model.obj"}}
+        destination = Path("bounded-artifact.download")
+
+        result = gateway.download_artifact(task_result, destination, 12345)
+
+        self.assertEqual(result, Path("artifact.obj"))
+        dependencies["download_task_artifact"].assert_called_once_with(task_result, destination, 12345)
+
+    def test_unsafe_artifact_error_is_classified_without_model_fallback(self):
+        download = mock.Mock(side_effect=TripoError("Tripo returned an unsafe artifact location."))
+        gateway, dependencies = self.gateway(download_task_artifact=download)
+
+        with self.assertRaises(ProviderGatewayError) as raised:
+            gateway.download_artifact({}, Path("artifact.download"), 100)
+
+        self.assertEqual(raised.exception.code, "unsafe_artifact")
+        self.assertEqual(raised.exception.category, "security")
+        self.assertFalse(raised.exception.retryable)
+        self.assertFalse(raised.exception.ambiguous)
+        dependencies["create_text_task"].assert_not_called()
+        dependencies["create_image_task"].assert_not_called()
 
     def test_text_task_requires_and_consumes_explicit_authorization(self):
         gateway, dependencies = self.gateway()
