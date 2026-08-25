@@ -1453,6 +1453,55 @@ TEST_CASE("Orca official gateway double checks revision and enters Preview only 
     CHECK(preview_calls == 2);
 }
 
+TEST_CASE("Orca official gateway rejects completion when revision ownership changes or becomes unavailable",
+          "[AI][SmartSlicing][Apply][CompletionOwnership][TransactionBoundary]")
+{
+    const WorkspaceRevision original{1, 2, 3, "revision-a"};
+    WorkspaceRevision current = original;
+    bool revision_unavailable = false;
+    size_t preview_calls = 0;
+    size_t undo_calls = 0;
+    Slic3r::GUI::OrcaOfficialSliceGateway gateway(
+        [&current, &revision_unavailable] {
+            if (revision_unavailable)
+                throw std::runtime_error("revision unavailable");
+            return current;
+        },
+        [](const SliceCandidate&) { return std::string{}; },
+        [&current](const SliceCandidate&) {
+            current = {2, 2, 3, "revision-after-smart-apply"};
+            return Slic3r::GUI::OrcaApplyMutationResult{true, true, {}};
+        },
+        [] { return true; },
+        [&preview_calls] {
+            ++preview_calls;
+            return true;
+        },
+        [&undo_calls] {
+            ++undo_calls;
+            return true;
+        });
+    SliceCandidate candidate = proposal("candidate", original);
+
+    REQUIRE(gateway.prepare(candidate, original).phase == OfficialSlicePhase::Prepared);
+    REQUIRE(gateway.commit(candidate, original).phase == OfficialSlicePhase::Slicing);
+    revision_unavailable = GENERATE(false, true);
+    CAPTURE(revision_unavailable);
+    if (!revision_unavailable)
+        current = {3, 2, 3, "revision-after-user-edit"};
+    gateway.notify_slice_completed(true);
+
+    const OfficialSliceResult result = gateway.poll();
+    CHECK(result.phase == OfficialSlicePhase::Failed);
+    CHECK(result.diagnostic_code == (revision_unavailable ? "official_slice_revision_unavailable" :
+                                                           "official_slice_revision_changed"));
+    CHECK(result.workspace_mutated);
+    CHECK_FALSE(result.can_undo);
+    CHECK(preview_calls == 0);
+    CHECK_FALSE(gateway.undo_last_apply());
+    CHECK(undo_calls == 0);
+}
+
 TEST_CASE("Orca official gateway requires one prepared ready candidate before formal mutation",
           "[AI][SmartSlicing][Apply][TransactionBoundary]")
 {

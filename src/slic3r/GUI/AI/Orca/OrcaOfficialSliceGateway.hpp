@@ -116,6 +116,7 @@ public:
         m_workspace_mutated = false;
         m_can_undo = false;
         m_undo_revision.reset();
+        m_official_slice_revision.reset();
         try {
             OrcaApplyMutationResult applied = m_apply ? m_apply(candidate) : OrcaApplyMutationResult{};
             m_workspace_mutated = applied.workspace_mutated;
@@ -133,6 +134,7 @@ public:
                           m_workspace_mutated, m_can_undo};
                 return m_last;
             }
+            capture_official_slice_revision();
             m_pending = true;
             m_last = {AI::SmartSlicing::OfficialSlicePhase::Slicing, {}, m_workspace_mutated, m_can_undo};
             return m_last;
@@ -185,6 +187,16 @@ public:
         if (!m_pending)
             return;
         m_pending = false;
+        const OfficialSliceRevisionStatus revision_status = official_slice_revision_status();
+        m_official_slice_revision.reset();
+        if (revision_status != OfficialSliceRevisionStatus::Matches) {
+            disable_undo_recovery();
+            m_last = {AI::SmartSlicing::OfficialSlicePhase::Failed,
+                      revision_status == OfficialSliceRevisionStatus::Changed ?
+                          "official_slice_revision_changed" : "official_slice_revision_unavailable",
+                      m_workspace_mutated, false};
+            return;
+        }
         m_last = {success ? AI::SmartSlicing::OfficialSlicePhase::Completed :
                             AI::SmartSlicing::OfficialSlicePhase::Failed,
                   success ? std::string{} : (diagnostic_code.empty() ? "official_slice_failed" : std::move(diagnostic_code)),
@@ -192,6 +204,8 @@ public:
     }
 
 private:
+    enum class OfficialSliceRevisionStatus { Matches, Changed, Unavailable };
+
     bool has_pending_apply_recovery() const noexcept
     {
         return m_last.phase == AI::SmartSlicing::OfficialSlicePhase::Failed && m_can_undo;
@@ -261,6 +275,34 @@ private:
         }
     }
 
+    void capture_official_slice_revision() noexcept
+    {
+        m_official_slice_revision.reset();
+        if (!m_revision)
+            return;
+        try {
+            AI::SmartSlicing::WorkspaceRevision revision = m_revision();
+            if (revision.valid())
+                m_official_slice_revision = std::move(revision);
+        } catch (...) {
+        }
+    }
+
+    OfficialSliceRevisionStatus official_slice_revision_status() noexcept
+    {
+        if (!m_official_slice_revision || !m_revision)
+            return OfficialSliceRevisionStatus::Unavailable;
+        try {
+            const AI::SmartSlicing::WorkspaceRevision current = m_revision();
+            if (!current.valid())
+                return OfficialSliceRevisionStatus::Unavailable;
+            return current == *m_official_slice_revision ? OfficialSliceRevisionStatus::Matches :
+                                                           OfficialSliceRevisionStatus::Changed;
+        } catch (...) {
+            return OfficialSliceRevisionStatus::Unavailable;
+        }
+    }
+
     bool undo_revision_matches() noexcept
     {
         if (!m_undo_revision || !m_revision) {
@@ -306,6 +348,7 @@ private:
     bool m_preview_shown{false};
     std::optional<PreparedCandidateToken> m_prepared_candidate;
     std::optional<AI::SmartSlicing::WorkspaceRevision> m_undo_revision;
+    std::optional<AI::SmartSlicing::WorkspaceRevision> m_official_slice_revision;
 };
 
 } // namespace Slic3r::GUI

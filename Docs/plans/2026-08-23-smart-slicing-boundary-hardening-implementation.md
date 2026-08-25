@@ -1826,3 +1826,34 @@ test/documentation. It changes no shared `MainFrame`, `Plater`, or CMake file an
 DTO, valid formal workspace write, configuration, dependency, external network port, data directory contract,
 journal path/schema, 3MF/profile format, profile data, or default Orca behavior. macOS and Linux native build/test
 execution remains a separate host/CI gate.
+
+## Official-slice completion revision ownership gate — 2026-08-25
+
+`OrcaOfficialSliceGateway` now binds an accepted official-slice operation to the valid workspace revision captured
+immediately after Orca starts that slice. A later global slice-completion notification is accepted only while the
+current workspace still has that revision. If the revision changed, or if the revision probe is missing, invalid,
+or throws, the operation fails closed as `official_slice_revision_changed` or
+`official_slice_revision_unavailable`. The gateway preserves the fact that the formal workspace was mutated,
+does not navigate to Preview, and disables smart undo recovery because revision ownership is no longer safe enough
+to undo without risking a later user edit.
+
+The initial red changed-revision contract ran 1 test case and 9 assertions, with 4 expected failures: completion
+was incorrectly reported as successful, no diagnostic was returned, undo remained enabled, and Preview was shown.
+The green contract covers both a later workspace edit and an unavailable revision probe.
+
+### Windows verification
+
+- Completion-ownership focus: 1 test case and 18 assertions, all passed in Release.
+- Smart-slicing suite: 138 test cases; 137 passed and the opt-in benchmark remained explicitly skipped, with 965
+  assertions passed in Release and RelWithDebInfo.
+- Default full `slic3rutils_tests`: 148 test cases and 1072 assertions, all passed in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings and
+  the non-failing test-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke was not repeated because this is a nonvisual completion-ownership boundary with no layout, startup,
+  ordinary interaction, trial execution, or valid revision-owned success-path change. No Orca process was
+  launched for this batch.
+
+This batch changes only the smart-slicing Orca official gateway and its targeted test/documentation. It changes no
+shared `MainFrame`, `Plater`, or CMake file and no model-generation code, Port DTO, configuration, dependency,
+external network port, data directory contract, journal path/schema, 3MF/profile format, profile data, or default
+Orca behavior. macOS and Linux native build/test execution remains a separate host/CI gate.
