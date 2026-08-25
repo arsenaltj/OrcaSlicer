@@ -38,6 +38,7 @@ from model_provider_gateway import (
     ModelTaskRequest,
     PaidTaskAuthorization,
     ProviderGatewayError,
+    provider_policy,
 )
 from model_refinement import build_model_refinement_advice
 from printable_model_quality import ModelQualityError, analyze_printable_obj, write_model_quality_report
@@ -3640,6 +3641,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/health":
             config = os.environ.get("OPENAI_API_KEY", "")
             generation_preprocessing = bool(config) or _preprocess_fallback_enabled()
+            policy = provider_policy()
             self.send_json(
                 200,
                 {
@@ -3652,12 +3654,20 @@ class Handler(BaseHTTPRequestHandler):
                     "capabilities": {
                         "config_proposal": {"available": bool(config)},
                         "model_generation": {
-                            "available": generation_preprocessing and bool(os.environ.get("TRIPO_API_KEY", "")),
+                            "available": generation_preprocessing and
+                                _MODEL_PROVIDER_GATEWAY.model_generation_available(),
                             "sources": ["text", "image"],
                             "styles": list(STYLE_IDS),
                             "artifact_formats": [MODEL_ARTIFACT_FORMAT],
                             "face_limits": list(MODEL_FACE_LIMITS),
                             "default_face_limit": DEFAULT_MODEL_FACE_LIMIT,
+                            "provider_policy": {
+                                "design_providers": list(policy.design_providers),
+                                "geometry_provider": policy.geometry_provider,
+                                "automatic_fallback": policy.automatic_fallback,
+                                "max_paid_model_tasks_per_confirmation":
+                                    policy.max_paid_model_tasks_per_confirmation,
+                            },
                             "palette_recommendation": {
                                 "available": bool(config),
                                 "max_colors": MAX_PALETTE_COLORS,

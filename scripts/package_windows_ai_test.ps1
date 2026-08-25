@@ -31,6 +31,7 @@ Copy-Item -LiteralPath (Join-Path $runtimeSource "resources") -Destination (Join
 $aiRuntimeFiles = @(
     "check_sidecar_capability.ps1",
     "openai_preprocessor.py",
+    "model_provider_gateway.py",
     "model_refinement.py",
     "printable_image_pipeline.py",
     "printable_model_quality.py",

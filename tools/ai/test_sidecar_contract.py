@@ -767,6 +767,26 @@ class SidecarHealthContractTests(unittest.TestCase):
         self.assertFalse(health["capabilities"]["model_generation"]["available"])
         self.assertFalse(health["capabilities"]["model_generation"]["palette_recommendation"]["available"])
 
+    def test_production_health_exposes_quality_first_provider_policy(self):
+        with temporary_environment(OPENAI_API_KEY=None, TRIPO_API_KEY=None):
+            health = self.fetch_health(PRODUCTION.Handler)
+
+        policy = health["capabilities"]["model_generation"]["provider_policy"]
+        self.assertEqual(policy["design_providers"], ["gpt", "image2"])
+        self.assertEqual(policy["geometry_provider"], "tripo")
+        self.assertFalse(policy["automatic_fallback"])
+        self.assertEqual(policy["max_paid_model_tasks_per_confirmation"], 1)
+
+    def test_windows_package_manifests_include_model_provider_gateway(self):
+        repository = TOOLS_AI.parents[1]
+        package_script = (repository / "scripts" / "package_windows_ai_test.ps1").read_text(encoding="utf-8")
+        environment_check = (
+            repository / "packaging" / "windows-ai-test" / "setup" / "Check-Environment.ps1"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('"model_provider_gateway.py"', package_script)
+        self.assertIn('Check-File "tools\\ai\\model_provider_gateway.py"', environment_check)
+
     def test_production_health_contract_with_openai_only(self):
         with temporary_environment(OPENAI_API_KEY="test-openai", TRIPO_API_KEY=None):
             health = self.fetch_health(PRODUCTION.Handler)
