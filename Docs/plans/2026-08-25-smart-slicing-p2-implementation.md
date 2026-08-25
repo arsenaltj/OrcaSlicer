@@ -12,7 +12,7 @@
 
 ## Execution gate and non-goals
 
-- **Current status: planning only.** ADR-004 is still `Proposed`; do not execute Tasks 1-7 until the decision makers change it to `Accepted`.
+- **Current status: approved for execution.** ADR-004 was accepted by the product owner on 2026-08-25; execute Tasks 1-7 within its staged-scope boundaries.
 - This plan does not change model-generation business code and does not consume code from `codex/orca-integration-v2`.
 - Do not modify repository-root `task_plan.md`, `findings.md`, or `progress.md`.
 - Do not add a weighted score, user weight sliders, direct flush tuning, material remapping, profile writes, or 3MF/profile schema changes.

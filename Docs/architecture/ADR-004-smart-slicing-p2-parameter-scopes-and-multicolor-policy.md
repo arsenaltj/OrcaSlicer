@@ -1,6 +1,6 @@
 # ADR-004: Smart Slicing P2 Parameter Scopes and Multicolor Policy
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-25
 - Decision makers: Product owner, Smart Slicing technical lead
 - Supersedes: None
@@ -128,7 +128,7 @@ Rejected. The required calibration evidence and material-remapping guarantees ar
 
 ### Staged scopes with constraint-preserving multicolor search
 
-Proposed. It provides useful deterministic optimization while preserving the transaction and compatibility boundaries established by ADR-002.
+Accepted. It provides useful deterministic optimization while preserving the transaction and compatibility boundaries established by ADR-002.
 
 ## Acceptance criteria
 
@@ -147,4 +147,4 @@ P2 implementation may be accepted only when all applicable gates pass:
 
 ## Approval gate
 
-This ADR is **Proposed**. P2 implementation that expands parameter scopes, changes candidate ordering policy, or adds multicolor mutation must not begin until the designated decision makers mark it **Accepted**. P1 hardening, tests, documentation, and implementation-neutral P2 preparation may continue meanwhile.
+This ADR was **Accepted** by the product owner on 2026-08-25. P2 implementation may proceed subject to the acceptance criteria and staged-scope boundaries above.
