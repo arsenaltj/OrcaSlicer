@@ -15,6 +15,10 @@ namespace {
 constexpr size_t MAX_PREVIEW_SIZE = 10 * 1024 * 1024;
 constexpr size_t MAX_ARTIFACT_SIZE = 768 * 1024 * 1024;
 constexpr size_t MAX_RECOMMENDATION_TEXT_SIZE = 2048;
+constexpr size_t MAX_REFINEMENT_ISSUES = 6;
+constexpr size_t MAX_REFINEMENT_SUMMARY_SIZE = 1024;
+constexpr size_t MAX_REFINEMENT_PROMPT_SIZE = 1200;
+constexpr size_t MAX_REFINEMENT_FIELD_SIZE = 512;
 
 std::string normalize_endpoint(std::string endpoint)
 {
@@ -51,6 +55,36 @@ bool valid_hex_color(const std::string& value)
 {
     static const std::regex pattern(R"(^#[0-9A-Fa-f]{6}$)");
     return std::regex_match(value, pattern);
+}
+
+bool valid_refinement_text(const std::string& value, size_t maximum_size)
+{
+    return !value.empty() && value.size() <= maximum_size;
+}
+
+bool valid_refinement_code(const std::string& value)
+{
+    static const std::vector<std::string> allowed {
+        "degenerate_faces", "boundary_edges", "non_manifold_edges", "inconsistent_winding_edges",
+        "flat_or_empty_axis", "repairable_boundary_edges", "repairable_non_manifold_edges",
+        "repairable_inconsistent_winding_edges", "floating_disconnected_components",
+        "tiny_detached_components", "visual_detached_artifacts", "thin_structural_components",
+        "thin_local_wall_regions", "extreme_aspect_ratio", "weak_bed_contact",
+        "visual_base_relationship", "high_downward_surface_ratio", "localized_overhang_regions",
+        "dense_micro_triangles", "visual_subject_incomplete", "visual_semantic_incoherence",
+        "visual_silhouette_unclear", "colors_outside_target_palette",
+        "too_few_meaningful_target_palette_colors", "tiny_printable_color_regions",
+        "visual_color_regions_unclear"
+    };
+    return std::find(allowed.begin(), allowed.end(), value) != allowed.end();
+}
+
+bool valid_refinement_category(const std::string& value)
+{
+    static const std::vector<std::string> allowed {
+        "topology", "attachments", "thickness", "base", "overhang", "detail", "semantics", "color"
+    };
+    return std::find(allowed.begin(), allowed.end(), value) != allowed.end();
 }
 
 } // namespace
@@ -642,6 +676,42 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
             for (const auto& [name, check] : quality["checks"].items())
                 if (check.is_object() && check.value("status", std::string()) == "review")
                     status.visual_quality.check_reasons.emplace(name, check.value("reason", std::string()));
+        }
+    }
+    if (job.contains("refinement") && job["refinement"].is_object()) {
+        const auto& refinement = job["refinement"];
+        if (refinement.value("schema", 0) == 1 && refinement.value("available", false) &&
+            refinement.contains("summary") && refinement["summary"].is_string() &&
+            refinement.contains("prompt_suffix") && refinement["prompt_suffix"].is_string() &&
+            refinement.contains("issues") && refinement["issues"].is_array()) {
+            const std::string summary = refinement["summary"].get<std::string>();
+            const std::string prompt_suffix = refinement["prompt_suffix"].get<std::string>();
+            if (valid_refinement_text(summary, MAX_REFINEMENT_SUMMARY_SIZE) &&
+                valid_refinement_text(prompt_suffix, MAX_REFINEMENT_PROMPT_SIZE)) {
+                for (const auto& value : refinement["issues"]) {
+                    if (!value.is_object() || status.refinement.issues.size() >= MAX_REFINEMENT_ISSUES ||
+                        !value.contains("code") || !value["code"].is_string() ||
+                        !value.contains("category") || !value["category"].is_string() ||
+                        !value.contains("title") || !value["title"].is_string() ||
+                        !value.contains("instruction") || !value["instruction"].is_string())
+                        continue;
+                    ModelRefinementAdvice::Issue issue;
+                    issue.code = value["code"].get<std::string>();
+                    issue.category = value["category"].get<std::string>();
+                    issue.title = value["title"].get<std::string>();
+                    issue.instruction = value["instruction"].get<std::string>();
+                    if (!valid_refinement_code(issue.code) || !valid_refinement_category(issue.category) ||
+                        !valid_refinement_text(issue.title, MAX_REFINEMENT_FIELD_SIZE) ||
+                        !valid_refinement_text(issue.instruction, MAX_REFINEMENT_FIELD_SIZE))
+                        continue;
+                    status.refinement.issues.emplace_back(std::move(issue));
+                }
+                if (!status.refinement.issues.empty()) {
+                    status.refinement.available = true;
+                    status.refinement.summary = summary;
+                    status.refinement.prompt_suffix = prompt_suffix;
+                }
+            }
         }
     }
     if (status.id.empty() || status.state.empty()) {

@@ -100,6 +100,22 @@ public:
         std::map<std::string, std::string> check_reasons;
     };
 
+    struct ModelRefinementAdvice
+    {
+        struct Issue
+        {
+            std::string code;
+            std::string category;
+            std::string title;
+            std::string instruction;
+        };
+
+        bool               available { false };
+        std::string        summary;
+        std::string        prompt_suffix;
+        std::vector<Issue> issues;
+    };
+
     struct PaletteRecommendationColor
     {
         std::string hex;
@@ -156,6 +172,7 @@ public:
         size_t      artifact_size { 0 };
         ModelQuality model_quality;
         VisualQuality visual_quality;
+        ModelRefinementAdvice refinement;
         PaletteRecommendation palette_recommendation;
     };
 
