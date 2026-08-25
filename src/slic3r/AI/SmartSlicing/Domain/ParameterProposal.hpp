@@ -11,6 +11,7 @@ using ConfigValue = std::variant<bool, int64_t, double, std::string>;
 
 enum class ConfigScope { Plate, Object, Material, Workspace };
 enum class PresetOwner { Process, Filament, Printer, Project };
+enum class ParameterIntent { Unspecified, Stability, Quality, Speed, MaterialSaving };
 
 struct ConfigPatchEntry
 {
@@ -25,6 +26,7 @@ struct ConfigPatchEntry
 
 struct ParameterProposal
 {
+    ParameterIntent intent{ParameterIntent::Unspecified};
     std::vector<ConfigPatchEntry> entries;
     std::vector<std::string> explanation_codes;
 };

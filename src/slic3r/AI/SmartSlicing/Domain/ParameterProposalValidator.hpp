@@ -21,7 +21,12 @@ enum class ParameterRejectionCode {
     TargetNotSpecified,
     ForbiddenKey,
     ChangeBudgetExceeded,
-    NoEffectiveChange
+    NoEffectiveChange,
+    IntentNotSpecified,
+    IntentKeyNotAllowed,
+    MixedTargets,
+    MissingDependency,
+    ForbiddenCombination
 };
 
 struct ParameterRejection

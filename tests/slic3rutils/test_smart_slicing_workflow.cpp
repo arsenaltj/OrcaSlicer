@@ -185,6 +185,7 @@ TEST_CASE("successful trial results are cached by complete candidate content",
     cache.execute_trial_slice(moved);
 
     SliceCandidate configured = candidate;
+    configured.parameters.intent = ParameterIntent::Stability;
     configured.parameters.entries.push_back({ConfigScope::Plate, PresetOwner::Process, 4,
                                               "brim_width", 0.0, 3.0, "stability"});
     cache.execute_trial_slice(configured);
@@ -937,6 +938,7 @@ TEST_CASE("candidate cards expose baseline deltas selection and retry without wo
     SliceCandidate alternative = proposal("alternative", workspace.context.revision);
     alternative.repair = RepairPlan{{"repair_open_edges"}, false};
     alternative.placement.transforms.push_back({42, 84, {}});
+    alternative.parameters.intent = ParameterIntent::Stability;
     alternative.parameters.entries.push_back({ConfigScope::Plate,
                                                 PresetOwner::Process,
                                                 3,
@@ -1858,6 +1860,7 @@ TEST_CASE("Orca trial slicing owns model config print and gcode copies", "[AI][S
             cloned_transform.matrix[static_cast<size_t>(row * candidate_transform.cols() + column)] =
                 candidate_transform(row, column);
     candidate.placement.transforms.push_back(cloned_transform);
+    candidate.parameters.intent = ParameterIntent::Quality;
     candidate.parameters.entries.push_back({ConfigScope::Plate, PresetOwner::Process, 7, "layer_height",
                                             0.25, 0.20, "improve_surface_detail"});
 
@@ -1999,6 +2002,7 @@ TEST_CASE("Orca trial input preserves physical-slot compatibility availability",
 TEST_CASE("Orca trial slicing rejects forbidden patches and observes early cancellation", "[AI][SmartSlicing][Workflow][OrcaTrial]")
 {
     SliceCandidate candidate = proposal("candidate", WorkspaceRevision{1, 2, 3, "revision-a"});
+    candidate.parameters.intent = ParameterIntent::Stability;
     candidate.parameters.entries.push_back({ConfigScope::Plate, PresetOwner::Process, 0, "nozzle_diameter",
                                             0.4, 0.6, "unsafe_hardware_change"});
     Slic3r::GUI::OrcaTrialSliceExecutor rejected_executor([] {

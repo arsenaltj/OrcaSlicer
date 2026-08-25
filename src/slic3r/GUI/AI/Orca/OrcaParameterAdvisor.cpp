@@ -44,6 +44,7 @@ OrcaParameterAdvisor::advise(const AI::SmartSlicing::WorkspaceContext& context)
 {
     using namespace AI::SmartSlicing;
     ParameterProposal proposal;
+    proposal.intent = ParameterIntent::Stability;
     if (context.plate_index < 0 || m_input.plate_id < 0 || !std::isfinite(m_input.current_brim_width) ||
         m_input.current_brim_width < 0.0)
         return proposal;

@@ -30,6 +30,14 @@ ParameterRejectionCode first_rejection(const ParameterProposal& proposal)
     return result.rejections.front().code;
 }
 
+ParameterProposal intended(ParameterIntent intent, std::initializer_list<ConfigPatchEntry> entries)
+{
+    ParameterProposal proposal;
+    proposal.intent  = intent;
+    proposal.entries = entries;
+    return proposal;
+}
+
 } // namespace
 
 static_assert(std::is_base_of_v<IParameterAdvisor, Slic3r::GUI::OrcaParameterAdvisor>);
@@ -61,58 +69,169 @@ TEST_CASE("Orca parameter geometry excludes unprintable objects and instances",
 TEST_CASE("typed parameter proposals enforce key type range and enum policy", "[AI][SmartSlicing][Parameters]")
 {
     ParameterProposal valid;
+    valid.intent = ParameterIntent::Quality;
     valid.entries.push_back(change("layer_height", 0.20, 0.16));
     CHECK(ParameterProposalValidator().validate(valid).accepted());
 
     ParameterProposal unknown;
+    unknown.intent = ParameterIntent::Quality;
     unknown.entries.push_back(change("invented_setting", 1.0, 2.0));
     CHECK(first_rejection(unknown) == ParameterRejectionCode::UnknownKey);
 
     ParameterProposal wrong_type;
+    wrong_type.intent = ParameterIntent::Quality;
     wrong_type.entries.push_back(change("layer_height", 0.20, std::string("0.16")));
     CHECK(first_rejection(wrong_type) == ParameterRejectionCode::TypeMismatch);
 
     ParameterProposal out_of_range;
+    out_of_range.intent = ParameterIntent::Quality;
     out_of_range.entries.push_back(change("layer_height", 0.20, 0.80));
     CHECK(first_rejection(out_of_range) == ParameterRejectionCode::RangeViolation);
 
     ParameterProposal invalid_enum;
+    invalid_enum.intent = ParameterIntent::Quality;
     invalid_enum.entries.push_back(change("seam_position", std::string("aligned"), std::string("hidden")));
     CHECK(first_rejection(invalid_enum) == ParameterRejectionCode::EnumViolation);
+}
+
+TEST_CASE("typed parameter proposals require one coherent intent and target",
+          "[AI][SmartSlicing][Parameters][Intent]")
+{
+    ParameterProposal unspecified;
+    unspecified.entries.push_back(change("layer_height", 0.20, 0.16));
+    CHECK(first_rejection(unspecified) == ParameterRejectionCode::IntentNotSpecified);
+
+    const ParameterProposal quality = intended(
+        ParameterIntent::Quality, {change("layer_height", 0.20, 0.16)});
+    CHECK(ParameterProposalValidator().validate(quality).accepted());
+
+    const ParameterProposal wrong_family = intended(
+        ParameterIntent::Stability, {change("layer_height", 0.20, 0.16)});
+    CHECK(first_rejection(wrong_family) == ParameterRejectionCode::IntentKeyNotAllowed);
+
+    const ParameterProposal mixed_targets = intended(
+        ParameterIntent::Quality,
+        {change("wall_loops", int64_t{2}, int64_t{3}, 4),
+         change("layer_height", 0.20, 0.16, 5)});
+    CHECK(first_rejection(mixed_targets) == ParameterRejectionCode::MixedTargets);
+}
+
+TEST_CASE("typed parameter proposal owner and scope matrix stays plate process only",
+          "[AI][SmartSlicing][Parameters][ScopeMatrix]")
+{
+    const ConfigScope scope = GENERATE(ConfigScope::Object, ConfigScope::Material, ConfigScope::Workspace);
+    CAPTURE(scope);
+    const ParameterProposal proposal = intended(
+        ParameterIntent::Quality,
+        {change("layer_height", 0.20, 0.16, 0, scope, PresetOwner::Process)});
+    CHECK(first_rejection(proposal) == ParameterRejectionCode::ScopeNotAllowed);
+
+    const PresetOwner owner = GENERATE(PresetOwner::Filament, PresetOwner::Printer, PresetOwner::Project);
+    CAPTURE(owner);
+    const ParameterProposal wrong_owner = intended(
+        ParameterIntent::Quality,
+        {change("layer_height", 0.20, 0.16, 0, ConfigScope::Plate, owner)});
+    CHECK(first_rejection(wrong_owner) == ParameterRejectionCode::OwnerNotAllowed);
+}
+
+TEST_CASE("typed parameter proposals enforce dependent keys and forbidden combinations",
+          "[AI][SmartSlicing][Parameters][Coherence]")
+{
+    const ParameterProposal missing_shell_dependency = intended(
+        ParameterIntent::Quality,
+        {change("top_shell_layers", int64_t{3}, int64_t{4})});
+    CHECK(first_rejection(missing_shell_dependency) == ParameterRejectionCode::MissingDependency);
+
+    const ParameterProposal coherent_shells = intended(
+        ParameterIntent::Quality,
+        {change("top_shell_layers", int64_t{3}, int64_t{4}),
+         change("bottom_shell_layers", int64_t{3}, int64_t{4})});
+    CHECK(ParameterProposalValidator().validate(coherent_shells).accepted());
+
+    const ParameterProposal disabled_support_interface = intended(
+        ParameterIntent::MaterialSaving,
+        {change("enable_support", true, false),
+         change("support_interface_top_layers", int64_t{2}, int64_t{1})});
+    CHECK(first_rejection(disabled_support_interface) == ParameterRejectionCode::ForbiddenCombination);
+
+    const ParameterProposal disabled_brim_with_growth = intended(
+        ParameterIntent::Stability,
+        {change("brim_type", std::string("outer_only"), std::string("no_brim")),
+         change("brim_width", 1.0, 5.0)});
+    CHECK(first_rejection(disabled_brim_with_growth) == ParameterRejectionCode::ForbiddenCombination);
+
+    const ParameterProposal quality_wrong_direction = intended(
+        ParameterIntent::Quality, {change("layer_height", 0.20, 0.24)});
+    CHECK(first_rejection(quality_wrong_direction) == ParameterRejectionCode::ForbiddenCombination);
+
+    const ParameterProposal speed_wrong_direction = intended(
+        ParameterIntent::Speed, {change("layer_height", 0.20, 0.16)});
+    CHECK(first_rejection(speed_wrong_direction) == ParameterRejectionCode::ForbiddenCombination);
+}
+
+TEST_CASE("typed parameter proposals reject raw sequence flushing hardware and calibration keys",
+          "[AI][SmartSlicing][Parameters][Forbidden]")
+{
+    const std::string key = GENERATE(
+        std::string("first_layer_print_sequence"),
+        std::string("other_layers_print_sequence"),
+        std::string("other_layers_print_sequence_nums"),
+        std::string("flush_volumes_matrix"),
+        std::string("flush_multiplier"),
+        std::string("enable_prime_tower"),
+        std::string("nozzle_diameter"),
+        std::string("printable_area"),
+        std::string("machine_max_acceleration_x"),
+        std::string("nozzle_temperature"),
+        std::string("bed_temperature"),
+        std::string("filament_flow_ratio"),
+        std::string("pressure_advance"));
+    CAPTURE(key);
+    const ParameterProposal proposal = intended(
+        ParameterIntent::Stability, {change(key, std::string("before"), std::string("after"))});
+    CHECK(first_rejection(proposal) == ParameterRejectionCode::ForbiddenKey);
 }
 
 TEST_CASE("typed parameter proposals enforce scope ownership forbidden keys and budgets", "[AI][SmartSlicing][Parameters]")
 {
     ParameterProposal wrong_scope;
+    wrong_scope.intent = ParameterIntent::Quality;
     wrong_scope.entries.push_back(change("layer_height", 0.20, 0.16, 0, ConfigScope::Object));
     CHECK(first_rejection(wrong_scope) == ParameterRejectionCode::ScopeNotAllowed);
 
     ParameterProposal wrong_owner;
+    wrong_owner.intent = ParameterIntent::Quality;
     wrong_owner.entries.push_back(change("layer_height", 0.20, 0.16, 0, ConfigScope::Plate, PresetOwner::Printer));
     CHECK(first_rejection(wrong_owner) == ParameterRejectionCode::OwnerNotAllowed);
 
     ParameterProposal hardware;
+    hardware.intent = ParameterIntent::Stability;
     hardware.entries.push_back(change("nozzle_diameter", 0.40, 0.60));
     CHECK(first_rejection(hardware) == ParameterRejectionCode::ForbiddenKey);
 
     ParameterProposal unsafe_flush;
+    unsafe_flush.intent = ParameterIntent::MaterialSaving;
     unsafe_flush.entries.push_back(change("flush_multiplier", 1.0, 0.8));
     CHECK(first_rejection(unsafe_flush) == ParameterRejectionCode::ForbiddenKey);
 
     ParameterProposal unsafe_tower;
+    unsafe_tower.intent = ParameterIntent::MaterialSaving;
     unsafe_tower.entries.push_back(change("enable_prime_tower", true, false));
     CHECK(first_rejection(unsafe_tower) == ParameterRejectionCode::ForbiddenKey);
 
     ParameterProposal excessive_delta;
+    excessive_delta.intent = ParameterIntent::Stability;
     excessive_delta.entries.push_back(change("brim_width", 0.0, 20.0));
     CHECK(first_rejection(excessive_delta) == ParameterRejectionCode::ChangeBudgetExceeded);
 
     ParameterProposal duplicate;
+    duplicate.intent = ParameterIntent::Quality;
     duplicate.entries.push_back(change("wall_loops", int64_t{2}, int64_t{3}));
     duplicate.entries.push_back(change("wall_loops", int64_t{2}, int64_t{4}));
     CHECK(first_rejection(duplicate) == ParameterRejectionCode::DuplicateChange);
 
     ParameterProposal too_many;
+    too_many.intent = ParameterIntent::Quality;
     too_many.entries = {
         change("wall_loops", int64_t{2}, int64_t{3}),
         change("top_shell_layers", int64_t{3}, int64_t{4}),
@@ -128,6 +247,7 @@ TEST_CASE("Orca parameter adapter applies only to a matching config clone", "[AI
     DynamicPrintConfig base = DynamicPrintConfig::full_print_config();
     base.set("layer_height", 0.20);
     ParameterProposal proposal;
+    proposal.intent = ParameterIntent::Quality;
     proposal.entries.push_back(change("layer_height", 0.20, 0.16, 3));
 
     DynamicPrintConfig patched;
@@ -149,6 +269,7 @@ TEST_CASE("Orca parameter adapter applies only to a matching config clone", "[AI
 
     base.set_deserialize_strict("brim_type", "no_brim");
     ParameterProposal native_auto_brim;
+    native_auto_brim.intent = ParameterIntent::Stability;
     native_auto_brim.entries.push_back(
         change("brim_type", std::string("no_brim"), std::string("auto_brim"), 3));
     DynamicPrintConfig native_brim_config;
