@@ -96,6 +96,10 @@ class PaidTaskAuthorization:
             )
         return cls(normalized, "tripo", "model_generation")
 
+    @property
+    def consumed(self) -> bool:
+        return self._consumed
+
     def consume(self, provider: str, operation: str) -> None:
         if provider != self.provider or operation != self.operation:
             raise ProviderGatewayError(

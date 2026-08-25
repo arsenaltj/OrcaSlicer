@@ -33,19 +33,19 @@ from openai_preprocessor import (
     recommend_printable_palette,
 )
 from printable_image_pipeline import PrintSettings, PrintableImageError, process_printable_image
+from model_provider_gateway import (
+    ModelProviderGateway,
+    ModelTaskRequest,
+    PaidTaskAuthorization,
+    ProviderGatewayError,
+)
 from model_refinement import build_model_refinement_advice
 from printable_model_quality import ModelQualityError, analyze_printable_obj, write_model_quality_report
 from printable_visual_quality import REPORT_FILENAME as VISUAL_QUALITY_FILENAME, review_model_visual_quality
 from printable_palette import MAX_PRINTABLE_COLORS, PrintablePaletteError, assign_palette_roles
-from tripo_client import (
-    TripoError,
-    create_conversion,
-    create_image_task,
-    create_text_task,
-    download_task_artifact,
-    upload_image,
-    wait_for_task,
-)
+from tripo_client import TripoError
+
+_MODEL_PROVIDER_GATEWAY = ModelProviderGateway()
 
 HOST = os.environ.get("ORCASLICER_AI_SIDECAR_HOST", "127.0.0.1")
 PORT = int(os.environ.get("ORCASLICER_AI_SIDECAR_PORT", "18764"))
@@ -2043,8 +2043,14 @@ def _download_conversion(
         _persist_job(job)
     existing = job.attempts[attempt_number - 1] if resume and len(job.attempts) >= attempt_number else {}
     conversion_id = existing.get("conversion_task_id", "")
-    if not isinstance(conversion_id, str) or not conversion_id:
-        conversion_id = create_conversion(generation_id, format_name)
+    conversion_ref = _MODEL_PROVIDER_GATEWAY.start_or_reuse_conversion(
+        generation_id,
+        format_name,
+        existing_task_id=conversion_id if isinstance(conversion_id, str) else "",
+        allow_create=True,
+    )
+    conversion_id = conversion_ref.task_id
+    if not conversion_ref.reused:
         _record_attempt(job, attempt_number, conversion_task_id=conversion_id)
     attempt_directory = job.directory / f"attempt-{attempt_number:02d}"
     attempt_directory.mkdir(parents=False, exist_ok=True)
@@ -2058,7 +2064,7 @@ def _download_conversion(
                 continue
             return candidate
     _stop_boundary(job)
-    result = wait_for_task(
+    result = _MODEL_PROVIDER_GATEWAY.wait_for_task(
         conversion_id,
         stop_event=job.stop_event,
         progress=_progress_callback(job, 75, 95),
@@ -2077,7 +2083,7 @@ def _download_conversion(
         work_directory = attempt_directory / f"recovery-{recovery_number:02d}"
         work_directory.mkdir(parents=False, exist_ok=False)
     destination = work_directory / "artifact-raw.download"
-    download_task_artifact(result, destination, MAX_ARTIFACT_BYTES)
+    _MODEL_PROVIDER_GATEWAY.download_artifact(result, destination, MAX_ARTIFACT_BYTES)
     _stop_boundary(job)
     if format_name == "obj":
         return _prepare_obj_artifact(destination, work_directory, job.palette)
@@ -3291,11 +3297,18 @@ def _validate_artifact(path: Path, format_name: str, allow_repairable_obj: bool 
     return size
 
 
-def _generate_job(job: Job, prepared_prompt: str, resume: bool = False) -> None:
+def _generate_job(
+    job: Job,
+    prepared_prompt: str,
+    resume: bool = False,
+    authorization: PaidTaskAuthorization | None = None,
+) -> None:
+    active_attempt = 0
     try:
         artifact: Path | None = None
-        last_quality_error: TripoError | None = None
+        last_quality_error: TripoError | ProviderGatewayError | None = None
         for attempt_number in range(1, MAX_GENERATION_ATTEMPTS + 1):
+            active_attempt = attempt_number
             _stop_boundary(job)
             with _JOBS_LOCK:
                 job.state = "running"
@@ -3305,21 +3318,45 @@ def _generate_job(job: Job, prepared_prompt: str, resume: bool = False) -> None:
                 _persist_job(job)
             existing = job.attempts[attempt_number - 1] if resume and len(job.attempts) >= attempt_number else {}
             generation_id = existing.get("generation_task_id", "")
-            if not isinstance(generation_id, str) or not generation_id:
-                if resume:
-                    raise TripoError("The paid model task reference is unavailable; start a new generation manually.")
-                if job.source == "text" and job.preview_path is None:
-                    generation_id = create_text_task(prepared_prompt, job.face_limit)
-                else:
-                    preview = job.model_reference_path or job.preview_path
-                    if preview is None:
-                        raise RuntimeError("The prepared preview is unavailable.")
-                    token = upload_image(preview)
-                    _stop_boundary(job)
-                    generation_id = create_image_task(token, job.face_limit)
+            if not isinstance(generation_id, str):
+                generation_id = ""
+            if resume and not generation_id:
+                raise TripoError("The paid model task reference is unavailable; start a new generation manually.")
+            preview = job.model_reference_path or job.preview_path
+            request_source = "text" if job.source == "text" and preview is None else "image"
+            if not generation_id:
+                if authorization is None:
+                    raise ProviderGatewayError(
+                        "Explicit confirmation is required before creating a paid model task.",
+                        code="authorization_required",
+                        category="authorization",
+                        provider="tripo",
+                        operation="model_generation",
+                    )
+                _record_attempt(
+                    job,
+                    attempt_number,
+                    provider="tripo",
+                    provider_operation="model_generation",
+                    provider_request_id=authorization.request_id,
+                    status="creating",
+                    error="",
+                )
+            task_ref = _MODEL_PROVIDER_GATEWAY.start_or_reuse_model_task(
+                ModelTaskRequest(
+                    source=request_source,
+                    prompt=prepared_prompt,
+                    image_path=preview,
+                    face_limit=job.face_limit,
+                ),
+                existing_task_id=generation_id,
+                authorization=authorization,
+            )
+            generation_id = task_ref.task_id
+            if not task_ref.reused:
                 _record_attempt(job, attempt_number, generation_task_id=generation_id, status="running")
             _stop_boundary(job)
-            wait_for_task(
+            _MODEL_PROVIDER_GATEWAY.wait_for_task(
                 generation_id,
                 stop_event=job.stop_event,
                 progress=_progress_callback(job, 20, 70),
@@ -3335,7 +3372,7 @@ def _generate_job(job: Job, prepared_prompt: str, resume: bool = False) -> None:
                     shutil.copyfile(candidate, artifact)
                 _record_attempt(job, attempt_number, status="accepted", artifact=str(candidate.name), error="")
                 break
-            except TripoError as exc:
+            except (TripoError, ProviderGatewayError) as exc:
                 if _SHUT_DOWN:
                     raise SidecarRestart() from None
                 message = str(exc)
@@ -3343,7 +3380,15 @@ def _generate_job(job: Job, prepared_prompt: str, resume: bool = False) -> None:
                     marker in message.lower()
                     for marker in ("triangle limit", "non-watertight", "non-manifold", "degenerate triangle")
                 )
-                _record_attempt(job, attempt_number, status="rejected", error=message)
+                updates: dict[str, Any] = {"status": "rejected", "error": message}
+                if isinstance(exc, ProviderGatewayError):
+                    updates.update(
+                        provider_error_code=exc.code,
+                        provider_error_category=exc.category,
+                        provider_error_retryable=exc.retryable,
+                        provider_error_ambiguous=exc.ambiguous,
+                    )
+                _record_attempt(job, attempt_number, **updates)
                 if not retryable_quality_error or attempt_number == MAX_GENERATION_ATTEMPTS:
                     raise
                 last_quality_error = exc
@@ -3368,6 +3413,26 @@ def _generate_job(job: Job, prepared_prompt: str, resume: bool = False) -> None:
             _persist_job(job)
     except JobStopped:
         _mark_stopped(job)
+    except ProviderGatewayError as exc:
+        if active_attempt:
+            _record_attempt(
+                job,
+                active_attempt,
+                status="rejected",
+                error=str(exc),
+                provider_error_code=exc.code,
+                provider_error_category=exc.category,
+                provider_error_retryable=exc.retryable,
+                provider_error_ambiguous=exc.ambiguous,
+            )
+        if _SHUT_DOWN:
+            with _JOBS_LOCK:
+                job.state = "queued"
+                job.phase = "resuming"
+                job.message = "The existing paid model task will resume when the sidecar restarts."
+                _persist_job(job)
+        else:
+            _fail_job(job, str(exc))
     except TripoError as exc:
         if _SHUT_DOWN:
             with _JOBS_LOCK:
@@ -3943,8 +4008,9 @@ class Handler(BaseHTTPRequestHandler):
             prepared_prompt = raw_prompt.strip()
             if job.source == "text" and not prepared_prompt:
                 raise RequestError("invalid_request", "prepared_prompt is required for text generation.", 400)
-            if not os.environ.get("TRIPO_API_KEY", ""):
+            if not _MODEL_PROVIDER_GATEWAY.model_generation_available():
                 raise RequestError("feature_unavailable", "Model generation is not configured.", 503)
+            authorization = PaidTaskAuthorization.confirmed(f"{job.id}:model:1")
             job.prepared_prompt = prepared_prompt if job.source == "text" else ""
             job.face_limit = face_limit
             job.state = "queued"
@@ -3955,7 +4021,7 @@ class Handler(BaseHTTPRequestHandler):
             job.artifact_format = ""
             _persist_job(job)
         try:
-            _submit(job, _generate_job, prepared_prompt)
+            _submit(job, _generate_job, prepared_prompt, False, authorization)
         except RequestError:
             with _JOBS_LOCK:
                 job.state = "awaiting_confirmation"

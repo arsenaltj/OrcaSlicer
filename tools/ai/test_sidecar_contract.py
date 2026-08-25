@@ -364,6 +364,51 @@ class SidecarHealthContractTests(unittest.TestCase):
                     PRODUCTION._JOBS.clear()
                     PRODUCTION._JOBS.update(previous)
 
+    def test_generate_route_passes_one_shot_authorization_after_validation(self):
+        job_id = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory() as directory:
+            job_directory = Path(directory) / job_id
+            job_directory.mkdir()
+            job = PRODUCTION.Job(id=job_id, source="text", directory=job_directory)
+            job.state = "awaiting_confirmation"
+            job.phase = "awaiting_confirmation"
+            with PRODUCTION._JOBS_LOCK:
+                previous = dict(PRODUCTION._JOBS)
+                PRODUCTION._JOBS.clear()
+                PRODUCTION._JOBS[job.id] = job
+            gateway = mock.Mock()
+            gateway.model_generation_available.return_value = True
+            try:
+                with (
+                    mock.patch.object(PRODUCTION, "_MODEL_PROVIDER_GATEWAY", gateway),
+                    mock.patch.object(PRODUCTION, "_submit") as submit,
+                    sidecar_server(PRODUCTION.Handler) as port,
+                ):
+                    request = urllib.request.Request(
+                        f"http://127.0.0.1:{port}/v1/orcaslicer/model-jobs/{job.id}/generate",
+                        data=json.dumps(
+                            {"prepared_prompt": "printable object", "palette": [], "face_limit": 300000}
+                        ).encode(),
+                        method="POST",
+                        headers={"X-OrcaSlicer-Client": "native", "Content-Type": "application/json"},
+                    )
+                    with urllib.request.urlopen(request, timeout=5) as response:
+                        payload = json.loads(response.read())
+
+                self.assertEqual(payload["job"]["state"], "queued")
+                submit.assert_called_once()
+                args = submit.call_args.args
+                self.assertIs(args[0], job)
+                self.assertIs(args[1], PRODUCTION._generate_job)
+                self.assertEqual(args[2:4], ("printable object", False))
+                authorization = args[4]
+                self.assertEqual(authorization.request_id, f"{job.id}:model:1")
+                self.assertFalse(authorization.consumed)
+            finally:
+                with PRODUCTION._JOBS_LOCK:
+                    PRODUCTION._JOBS.clear()
+                    PRODUCTION._JOBS.update(previous)
+
     def test_public_job_exposes_persisted_model_quality_report(self):
         job_id = str(uuid.uuid4())
         with tempfile.TemporaryDirectory() as directory:
@@ -519,11 +564,8 @@ class SidecarHealthContractTests(unittest.TestCase):
                 PRODUCTION._JOBS.clear()
                 PRODUCTION._JOBS[job.id] = job
             try:
-                paid = [
-                    mock.patch.object(PRODUCTION, name)
-                    for name in ("create_text_task", "create_image_task", "create_conversion", "upload_image")
-                ]
-                with paid[0] as text_task, paid[1] as image_task, paid[2] as conversion, paid[3] as upload:
+                gateway = mock.Mock()
+                with mock.patch.object(PRODUCTION, "_MODEL_PROVIDER_GATEWAY", gateway):
                     with sidecar_server(PRODUCTION.Handler) as port:
                         request = urllib.request.Request(
                             f"http://127.0.0.1:{port}/v1/orcaslicer/model-jobs/{job.id}/recheck",
@@ -540,8 +582,10 @@ class SidecarHealthContractTests(unittest.TestCase):
                     self.assertEqual(metrics["meaningful_target_palette_color_count"], 1)
                     self.assertAlmostEqual(metrics["target_palette_surface_coverage_ratio"], 1.0)
                     self.assertTrue((job_directory / PRODUCTION.MODEL_QUALITY_FILENAME).is_file())
-                    for provider in (text_task, image_task, conversion, upload):
-                        provider.assert_not_called()
+                    gateway.start_or_reuse_model_task.assert_not_called()
+                    gateway.start_or_reuse_conversion.assert_not_called()
+                    gateway.wait_for_task.assert_not_called()
+                    gateway.download_artifact.assert_not_called()
             finally:
                 with PRODUCTION._JOBS_LOCK:
                     PRODUCTION._JOBS.clear()
@@ -601,12 +645,9 @@ class SidecarHealthContractTests(unittest.TestCase):
                 previous = dict(PRODUCTION._JOBS)
                 PRODUCTION._JOBS.clear()
             try:
-                paid = [
-                    mock.patch.object(PRODUCTION, name)
-                    for name in ("create_text_task", "create_image_task", "create_conversion", "upload_image")
-                ]
+                gateway = mock.Mock()
                 with temporary_environment(ORCASLICER_AI_OUTPUT_DIR=str(root)):
-                    with paid[0] as text_task, paid[1] as image_task, paid[2] as conversion, paid[3] as upload:
+                    with mock.patch.object(PRODUCTION, "_MODEL_PROVIDER_GATEWAY", gateway):
                         with sidecar_server(PRODUCTION.Handler) as port:
                             request = urllib.request.Request(
                                 f"http://127.0.0.1:{port}/v1/orcaslicer/model-jobs/{job_id}/recheck",
@@ -620,8 +661,10 @@ class SidecarHealthContractTests(unittest.TestCase):
                         self.assertEqual(payload["job"]["model_quality"]["status"], "pass")
                         self.assertTrue((job_directory / PRODUCTION.MODEL_QUALITY_FILENAME).is_file())
                         self.assertTrue((job_directory / PRODUCTION.JOB_STATE_FILENAME).is_file())
-                        for provider in (text_task, image_task, conversion, upload):
-                            provider.assert_not_called()
+                        gateway.start_or_reuse_model_task.assert_not_called()
+                        gateway.start_or_reuse_conversion.assert_not_called()
+                        gateway.wait_for_task.assert_not_called()
+                        gateway.download_artifact.assert_not_called()
             finally:
                 with PRODUCTION._JOBS_LOCK:
                     PRODUCTION._JOBS.clear()
