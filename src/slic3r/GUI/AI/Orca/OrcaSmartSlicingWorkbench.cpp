@@ -33,13 +33,14 @@ Sidebar::AIWorkflowStatus to_sidebar_status(LegacyAIWorkflowStatus status)
     return Sidebar::AIWorkflowStatus::Waiting;
 }
 
-bool should_clear_trial_input(const std::string& summary_key)
+} // namespace
+
+bool smart_slicing_should_clear_trial_input(const std::string& summary_key)
 {
     return summary_key == "official_slice_complete" || summary_key == "canceled" ||
-           summary_key == "workspace_changed" || summary_key == "preflight_failed";
+           summary_key == "workspace_changed" || summary_key == "preflight_failed" ||
+           summary_key == "official_slice_failed_no_recovery";
 }
-
-} // namespace
 
 OrcaSmartSlicingWorkbench::OrcaSmartSlicingWorkbench(Plater& plater, StartSliceFn start_slice)
     : m_plater(plater)
@@ -90,7 +91,7 @@ OrcaSmartSlicingWorkbench::OrcaSmartSlicingWorkbench(Plater& plater, StartSliceF
         [this](uint64_t object_id) { m_workspace->focus_object(object_id); });
     m_presenter->set_view_changed([this](const SmartSlicingViewModel& view) {
         m_panel->render(view);
-        if (should_clear_trial_input(view.summary_key))
+        if (smart_slicing_should_clear_trial_input(view.summary_key))
             m_trial_executor->clear_session_input();
 
         if (view.summary_key == "ready_to_start")

@@ -1,6 +1,7 @@
 #include <catch2/catch_all.hpp>
 
 #include "slic3r/AI/SmartSlicing/Application/SmartSlicingCoordinator.hpp"
+#include "slic3r/GUI/AI/Orca/OrcaSmartSlicingWorkbench.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaWorkflowRuntimeStore.hpp"
 
 #include <boost/filesystem.hpp>
@@ -246,6 +247,21 @@ TEST_CASE("background trials can defer GUI revision reads while keeping final ap
     CHECK(coordinator.plan_and_slice_candidates({}, CandidateGoal::Stability, true));
     CHECK(coordinator.snapshot().state == WorkflowState::ReadyToApply);
     CHECK(executor.calls == std::vector<CandidateId>{"baseline"});
+}
+
+TEST_CASE("terminal workbench states release prepared trial input unless native recovery still needs it",
+          "[AI][SmartSlicing][Runtime][Cleanup]")
+{
+    using Slic3r::GUI::smart_slicing_should_clear_trial_input;
+
+    CHECK(smart_slicing_should_clear_trial_input("official_slice_complete"));
+    CHECK(smart_slicing_should_clear_trial_input("canceled"));
+    CHECK(smart_slicing_should_clear_trial_input("workspace_changed"));
+    CHECK(smart_slicing_should_clear_trial_input("preflight_failed"));
+    CHECK(smart_slicing_should_clear_trial_input("official_slice_failed_no_recovery"));
+    CHECK_FALSE(smart_slicing_should_clear_trial_input("official_slice_failed"));
+    CHECK_FALSE(smart_slicing_should_clear_trial_input("candidates_ready"));
+    CHECK_FALSE(smart_slicing_should_clear_trial_input("official_slicing"));
 }
 
 TEST_CASE("Orca runtime journal paths isolate data directories and executable instances",

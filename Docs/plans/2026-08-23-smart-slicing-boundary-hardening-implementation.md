@@ -1373,3 +1373,35 @@ write path, configuration, dependency, port, data directory contract, journal pa
 profile data, or default Orca behavior. The new coordinator argument is an in-process Application cancellation
 contract; it neither changes persisted data nor broadens mutation authority. macOS and Linux native build/test
 execution remains a separate host/CI gate.
+
+## Unrecoverable apply-failure trial session cleanup gate — 2026-08-25
+
+The Orca workbench now releases its retained cloned `OrcaTrialSliceInput` when an official apply failure has no
+native recovery path. That terminal state can start a new analysis but cannot return to ReadyToApply, so retaining
+the cloned Model and DynamicPrintConfig served no retry or Undo purpose. Recoverable `official_slice_failed`
+continues to retain the trial session because its native Undo path may restore a retryable candidate; candidate-ready
+and official-slicing states likewise retain ownership until their workflow reaches a terminal result.
+
+Before this gate, `official_slice_failed_no_recovery` was the only terminal workbench state that kept the isolated
+trial input alive. The eight-assertion red policy contract reported one failure for that state while confirming the
+existing terminal and recoverable-state behavior. The green contract covers all cleanup decisions without requiring
+GUI lifetime timing or a formal workspace mutation.
+
+### Windows verification
+
+- Trial-session cleanup focus: 1 test case and 8 assertions, all passed in Release and RelWithDebInfo.
+- Smart-slicing suite: 122 test cases; 121 passed and the opt-in benchmark remained explicitly skipped, with 834
+  assertions passed in Release and RelWithDebInfo.
+- Default full `slic3rutils_tests`: 132 test cases and 941 assertions, all passed in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. The RelWithDebInfo linker initially met a
+  stale handle on its regenerable test executable; renaming only that old build artifact released the output path,
+  after which the build and both test configurations passed. Existing LNK4075 and LNK4098 warnings and the
+  non-failing test-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke was not repeated because this is a nonvisual terminal resource-lifetime policy with no layout,
+  interaction, startup, trial execution, or formal apply-path change. Avoiding another launch also preserves the
+  workspace-local-only rule while an unrelated Orca instance may be present.
+
+This batch changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, Domain/Application
+contract, formal workspace write path, configuration, dependency, port, data directory contract, journal
+path/schema, 3MF/profile format, profile data, or default Orca behavior. macOS and Linux native build/test execution
+remains a separate host/CI gate.

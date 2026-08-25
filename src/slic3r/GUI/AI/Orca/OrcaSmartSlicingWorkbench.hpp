@@ -13,6 +13,8 @@ class SmartSlicingCoordinator;
 
 namespace Slic3r::GUI {
 
+bool smart_slicing_should_clear_trial_input(const std::string& summary_key);
+
 class OrcaOfficialSliceGateway;
 class OrcaSmartSlicingAdapter;
 class OrcaTrialSliceExecutor;
