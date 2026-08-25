@@ -33,6 +33,7 @@ from openai_preprocessor import (
     recommend_printable_palette,
 )
 from printable_image_pipeline import PrintSettings, PrintableImageError, process_printable_image
+from model_refinement import build_model_refinement_advice
 from printable_model_quality import ModelQualityError, analyze_printable_obj, write_model_quality_report
 from printable_visual_quality import REPORT_FILENAME as VISUAL_QUALITY_FILENAME, review_model_visual_quality
 from printable_palette import MAX_PRINTABLE_COLORS, PrintablePaletteError, assign_palette_roles
@@ -825,6 +826,7 @@ def _public_job(job: Job) -> dict[str, Any]:
     artifact_ready, artifact_size = _file_info(job.artifact_path)
     model_quality = _read_job_report(job, MODEL_QUALITY_FILENAME)
     visual_quality = _read_job_report(job, VISUAL_QUALITY_FILENAME)
+    refinement = build_model_refinement_advice(model_quality, visual_quality)
     model_view_sheet_ready, model_view_sheet_size = _file_info(job.directory / "model-view-sheet.png")
     artifact_filename = ""
     if artifact_ready:
@@ -851,6 +853,7 @@ def _public_job(job: Job) -> dict[str, Any]:
         "image_metrics": job.image_metrics,
         "model_quality": model_quality,
         "visual_quality": visual_quality,
+        "refinement": refinement,
         "model_views": {
             "ready": model_view_sheet_ready,
             "size_bytes": model_view_sheet_size if model_view_sheet_ready else 0,

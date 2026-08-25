@@ -407,6 +407,63 @@ class SidecarHealthContractTests(unittest.TestCase):
             self.assertEqual(public["visual_quality"], visual)
             self.assertTrue(public["model_views"]["ready"])
 
+    def test_public_job_exposes_model_refinement_advice(self):
+        job_id = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory() as directory:
+            job_directory = Path(directory) / job_id
+            job_directory.mkdir()
+            quality = {
+                "schema_version": 1,
+                "gate_version": "structural-v9",
+                "status": "review",
+                "errors": [],
+                "warnings": ["thin_local_wall_regions", "localized_overhang_regions"],
+            }
+            visual = {
+                "schema_version": 1,
+                "review_version": "visual-v1",
+                "status": "review",
+                "warnings": ["visual_color_regions_unclear"],
+            }
+            (job_directory / PRODUCTION.MODEL_QUALITY_FILENAME).write_text(
+                json.dumps(quality), encoding="utf-8"
+            )
+            (job_directory / PRODUCTION.VISUAL_QUALITY_FILENAME).write_text(
+                json.dumps(visual), encoding="utf-8"
+            )
+            job = PRODUCTION.Job(id=job_id, source="image", directory=job_directory)
+
+            public = PRODUCTION._public_job(job)
+
+            self.assertTrue(public["refinement"]["available"])
+            self.assertEqual(
+                [issue["code"] for issue in public["refinement"]["issues"]],
+                ["thin_local_wall_regions", "localized_overhang_regions", "visual_color_regions_unclear"],
+            )
+            self.assertIn("打印优化要求", public["refinement"]["prompt_suffix"])
+
+    def test_public_job_refinement_is_unavailable_for_passing_quality(self):
+        job_id = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory() as directory:
+            job_directory = Path(directory) / job_id
+            job_directory.mkdir()
+            quality = {
+                "schema_version": 1,
+                "gate_version": "structural-v9",
+                "status": "pass",
+                "errors": [],
+                "warnings": [],
+            }
+            (job_directory / PRODUCTION.MODEL_QUALITY_FILENAME).write_text(
+                json.dumps(quality), encoding="utf-8"
+            )
+            job = PRODUCTION.Job(id=job_id, source="text", directory=job_directory)
+
+            public = PRODUCTION._public_job(job)
+
+            self.assertFalse(public["refinement"]["available"])
+            self.assertEqual(public["refinement"]["issues"], [])
+
     def test_job_status_endpoint_returns_registered_job(self):
         job_id = str(uuid.uuid4())
         with tempfile.TemporaryDirectory() as directory:
