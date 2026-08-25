@@ -167,7 +167,7 @@ wxString candidate_failure_text(const std::string& diagnostic_code)
     return _L("试切未完成");
 }
 
-wxString candidate_reason(const SmartSlicingCandidateView& candidate)
+wxString candidate_reason_text_impl(const SmartSlicingCandidateView& candidate)
 {
     if (candidate.failed)
         return _L("试切失败：") + candidate_failure_text(candidate.diagnostic_code) +
@@ -179,15 +179,20 @@ wxString candidate_reason(const SmartSlicingCandidateView& candidate)
             return _L("颜色到物理槽位的映射发生退化，已排除且不能应用。");
         return _L("候选缺少安全比较所需的有效证据，已排除且不能应用。");
     }
-    if (candidate.id == "baseline")
-        return _L("当前正式工作区的只读基线。");
-    wxString reason = candidate.recommended ? _L("推荐方案。") : _L("可选方案。");
-    if (candidate.explanation == "native_arrange_stability_candidate")
-        reason += _L(" 使用 Orca 原生摆盘约束生成。");
-    else if (candidate.explanation == "native_auto_orientation_stability_candidate")
-        reason += _L(" 使用 Orca 原生多指标自动朝向生成。");
-    else if (candidate.explanation == "small_or_slender_footprint_brim_candidate")
-        reason += _L(" 针对小底面或细长模型增强首层附着。");
+    wxString reason;
+    if (candidate.id == "baseline") {
+        reason = _L("当前正式工作区的只读基线。");
+        if (candidate.recommended)
+            reason += _L(" 根据真实试切指标，推荐保留当前方案。");
+    } else {
+        reason = candidate.recommended ? _L("推荐方案。") : _L("可选方案。");
+        if (candidate.explanation == "native_arrange_stability_candidate")
+            reason += _L(" 使用 Orca 原生摆盘约束生成。");
+        else if (candidate.explanation == "native_auto_orientation_stability_candidate")
+            reason += _L(" 使用 Orca 原生多指标自动朝向生成。");
+        else if (candidate.explanation == "small_or_slender_footprint_brim_candidate")
+            reason += _L(" 针对小底面或细长模型增强首层附着。");
+    }
     for (const std::string& evidence : candidate.evidence_codes) {
         if (evidence == "fewer_slice_warnings")
             reason += _L(" 切片警告更少。");
@@ -273,6 +278,11 @@ wxString smart_slicing_summary_text(const std::string& key) { return summary_tex
 wxString smart_slicing_candidate_failure_text(const std::string& diagnostic_code)
 {
     return candidate_failure_text(diagnostic_code);
+}
+
+wxString smart_slicing_candidate_reason_text(const SmartSlicingCandidateView& candidate)
+{
+    return candidate_reason_text_impl(candidate);
 }
 
 AI::SmartSlicing::CandidateGoal smart_slicing_goal_from_selection(int selection)
@@ -646,7 +656,7 @@ void SmartSlicingPanel::render(const SmartSlicingViewModel& view_model)
                 metrics += wxString::Format(_L("，附着风险 %+.2f"), *candidate.bed_adhesion_risk_delta);
         }
         set_wrapped_label(*controls.metrics, metrics, FromDIP(300));
-        set_wrapped_label(*controls.reason, candidate_reason(candidate), FromDIP(300));
+        set_wrapped_label(*controls.reason, smart_slicing_candidate_reason_text(candidate), FromDIP(300));
         const wxString changes = candidate_change_summary(candidate);
         set_wrapped_label(*controls.changes, changes, FromDIP(300));
         controls.changes->Show(!changes.empty() && m_candidate_details_expanded[index]);

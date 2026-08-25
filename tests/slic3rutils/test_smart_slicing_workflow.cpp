@@ -795,6 +795,20 @@ TEST_CASE("workbench goal selection maps every visible choice with a stable defa
     CHECK(Slic3r::GUI::smart_slicing_goal_from_selection(4) == CandidateGoal::Stability);
 }
 
+TEST_CASE("recommended baseline keeps its measured recommendation explanation",
+          "[AI][SmartSlicing][GUI][CandidateEvidence]")
+{
+    Slic3r::GUI::SmartSlicingCandidateView baseline;
+    baseline.id = "baseline";
+    baseline.recommended = true;
+    baseline.evidence_codes = {"lower_support_volume"};
+
+    const wxString reason = Slic3r::GUI::smart_slicing_candidate_reason_text(baseline);
+
+    CHECK(reason.Find(wxString::FromUTF8(u8"推荐保留")) != wxNOT_FOUND);
+    CHECK(reason.Find(wxString::FromUTF8(u8"支撑用量更低")) != wxNOT_FOUND);
+}
+
 TEST_CASE("hiding the workbench never reads workflow eligibility across a running worker",
           "[AI][SmartSlicing][GUI][Lifecycle][Hide]")
 {

@@ -24,6 +24,7 @@ namespace Slic3r::GUI {
 
 wxString smart_slicing_summary_text(const std::string& key);
 wxString smart_slicing_candidate_failure_text(const std::string& diagnostic_code);
+wxString smart_slicing_candidate_reason_text(const SmartSlicingCandidateView& candidate);
 AI::SmartSlicing::CandidateGoal smart_slicing_goal_from_selection(int selection);
 enum class SmartSlicingHideAction { None, RequestBackgroundCancel, CancelDirectly };
 SmartSlicingHideAction smart_slicing_hide_action(bool shown, bool worker_running, bool can_cancel);
