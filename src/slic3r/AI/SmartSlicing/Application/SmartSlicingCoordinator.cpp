@@ -451,6 +451,8 @@ bool SmartSlicingCoordinator::retry_candidate(const CandidateId& candidate_id, b
     try {
         result = m_trial_slice_executor->execute_trial_slice(*candidate);
     } catch (...) {
+        if (cancel_if_requested(cancellation_requested))
+            return false;
         return fail_retry("retry_executor_exception");
     }
     if (cancel_if_requested(cancellation_requested))

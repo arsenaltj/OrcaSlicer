@@ -1580,3 +1580,30 @@ and changes only the explanation emitted for a measured tie breaker.
 This batch changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, formal workspace
 write path, configuration, dependency, port, data directory contract, journal path/schema, 3MF/profile format,
 profile data, or default Orca behavior. macOS and Linux native build/test execution remains a separate host/CI gate.
+
+## Retry exception cancellation-ownership gate — 2026-08-25
+
+A candidate retry now checks its background cancellation source before projecting an executor exception as a
+retryable candidate failure. If cancellation was requested while the executor was returning by exception, the
+workflow reaches the same clean `Canceled` terminal state as a successful or explicit canceled retry result:
+candidates, comparison, and selection are cleared, and the executor receives the normal cancellation signal.
+
+The red regression set the cancellation flag immediately before throwing from the retry executor. Before the gate,
+the Coordinator returned early through `retry_executor_exception`, retained `ReadyToApply`, kept candidate state,
+and never called cancellation. Six terminal-ownership assertions failed. The green contract adds the missing final
+cancel check without changing ordinary exception retry behavior.
+
+### Windows verification
+
+- Retry exception-cancellation focus: 1 test case and 8 assertions, all passed in Release and RelWithDebInfo.
+- Smart-slicing suite: 128 test cases; 127 passed and the opt-in benchmark remained explicitly skipped, with 876
+  assertions passed in Release and RelWithDebInfo.
+- Default full `slic3rutils_tests`: 138 test cases and 983 assertions, all passed in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings and
+  the non-failing test-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke was not repeated because this is a nonvisual background terminal-ownership correction with no layout,
+  startup, ordinary interaction, trial input, or formal mutation-path change. No Orca process was launched.
+
+This batch changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, formal workspace
+write path, configuration, dependency, port, data directory contract, journal path/schema, 3MF/profile format,
+profile data, or default Orca behavior. macOS and Linux native build/test execution remains a separate host/CI gate.
