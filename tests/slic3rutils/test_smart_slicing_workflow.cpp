@@ -556,6 +556,36 @@ TEST_CASE("cancel during candidate planning cannot be overwritten by a later tri
     CHECK(executor.cancel_count == 0);
 }
 
+TEST_CASE("a cancellation requested as the final trial returns wins over candidate publication",
+          "[AI][SmartSlicing][Workflow][Cancellation][Background]")
+{
+    WorkflowWorkspace workspace;
+    FakeTrialSliceExecutor executor;
+    bool cancellation_requested = false;
+    executor.result_for = [&cancellation_requested](const SliceCandidate& candidate, size_t) {
+        TrialSliceResult result;
+        result.candidate_id = candidate.id;
+        result.base_revision = candidate.base_revision;
+        result.status = TrialSliceStatus::Succeeded;
+        result.metrics = SlicingMetrics{};
+        result.metrics->estimated_time_seconds = 100.0;
+        cancellation_requested = true;
+        return result;
+    };
+    SmartSlicingCoordinator coordinator(workspace, executor);
+    coordinator.start();
+
+    CHECK_FALSE(coordinator.plan_and_slice_candidates({}, CandidateGoal::Stability, true,
+                                                       [&cancellation_requested] {
+                                                           return cancellation_requested;
+                                                       }));
+    CHECK(coordinator.snapshot().state == WorkflowState::Canceled);
+    CHECK(coordinator.snapshot().detail == "canceled");
+    CHECK(coordinator.snapshot().candidates.empty());
+    CHECK_FALSE(coordinator.snapshot().comparison);
+    CHECK(executor.cancel_count == 1);
+}
+
 TEST_CASE("late cancellation results cannot cancel the current workflow", "[AI][SmartSlicing][Workflow]")
 {
     WorkflowWorkspace workspace;
@@ -994,6 +1024,49 @@ TEST_CASE("an explicit cancellation during candidate retry ends the workflow",
     CHECK(coordinator.snapshot().candidates.empty());
     CHECK_FALSE(coordinator.snapshot().comparison);
     CHECK(coordinator.snapshot().selected_candidate_id.empty());
+}
+
+TEST_CASE("a cancellation requested as a retry returns wins over the successful result",
+          "[AI][SmartSlicing][Workflow][CandidateFailure][Cancellation][Background]")
+{
+    WorkflowWorkspace workspace;
+    FakeTrialSliceExecutor executor;
+    executor.result_for = [](const SliceCandidate& candidate, size_t) {
+        TrialSliceResult result;
+        result.candidate_id = candidate.id;
+        result.base_revision = candidate.base_revision;
+        result.status = candidate.id == "alternative" ? TrialSliceStatus::Failed : TrialSliceStatus::Succeeded;
+        if (result.status == TrialSliceStatus::Succeeded) {
+            result.metrics = SlicingMetrics{};
+            result.metrics->estimated_time_seconds = 100.0;
+        }
+        return result;
+    };
+    SmartSlicingCoordinator coordinator(workspace, executor);
+    coordinator.start();
+    REQUIRE(coordinator.plan_and_slice_candidates({proposal("alternative", workspace.context.revision)}));
+
+    bool cancellation_requested = false;
+    executor.result_for = [&cancellation_requested](const SliceCandidate& candidate, size_t) {
+        TrialSliceResult result;
+        result.candidate_id = candidate.id;
+        result.base_revision = candidate.base_revision;
+        result.status = TrialSliceStatus::Succeeded;
+        result.metrics = SlicingMetrics{};
+        result.metrics->estimated_time_seconds = 80.0;
+        cancellation_requested = true;
+        return result;
+    };
+
+    CHECK_FALSE(coordinator.retry_candidate("alternative", true, [&cancellation_requested] {
+        return cancellation_requested;
+    }));
+    CHECK(coordinator.snapshot().state == WorkflowState::Canceled);
+    CHECK(coordinator.snapshot().detail == "canceled");
+    CHECK(coordinator.snapshot().candidates.empty());
+    CHECK_FALSE(coordinator.snapshot().comparison);
+    CHECK(coordinator.snapshot().selected_candidate_id.empty());
+    CHECK(executor.cancel_count == 1);
 }
 
 TEST_CASE("retry discards a completed result when final revision capture is unavailable",

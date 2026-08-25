@@ -383,10 +383,13 @@ SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSl
                 m_coordinator.select_candidate(m_candidate_ids[index]);
         });
         controls.retry->Bind(wxEVT_BUTTON, [this, index](wxCommandEvent&) {
-            if (!m_candidate_ids[index].empty())
+            if (!m_candidate_ids[index].empty()) {
                 run_in_background([this, candidate_id = m_candidate_ids[index]] {
-                    m_coordinator.retry_candidate(candidate_id, true);
+                    m_coordinator.retry_candidate(candidate_id, true, [this] {
+                        return m_cancel_requested.load(std::memory_order_acquire);
+                    });
                 });
+            }
         });
         controls.details->Bind(wxEVT_BUTTON, [this, index](wxCommandEvent&) {
             m_candidate_details_expanded[index] = !m_candidate_details_expanded[index];
@@ -445,7 +448,7 @@ SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSl
                     m_coordinator.cancel();
                     return;
                 }
-                m_coordinator.plan_and_slice_candidates(std::move(candidates), goal, true);
+                m_coordinator.plan_and_slice_candidates(std::move(candidates), goal, true, canceled);
             });
             if (started) {
                 m_start->Enable(false);
@@ -500,7 +503,11 @@ bool SmartSlicingPanel::run_in_background(std::function<void()> work)
         m_worker_running.store(false, std::memory_order_release);
         if (wxTheApp != nullptr) {
             wxTheApp->CallAfter([weak_panel] {
-                if (weak_panel && weak_panel->m_finalize_background)
+                if (!weak_panel)
+                    return;
+                if (weak_panel->m_cancel_requested.load(std::memory_order_acquire))
+                    weak_panel->m_coordinator.cancel();
+                if (weak_panel->m_finalize_background)
                     weak_panel->m_finalize_background();
             });
         }

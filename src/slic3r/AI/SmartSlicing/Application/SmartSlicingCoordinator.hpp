@@ -18,6 +18,7 @@ class SmartSlicingCoordinator
 {
 public:
     using Observer = std::function<void(const WorkflowSnapshot&)>;
+    using CancellationRequested = std::function<bool()>;
 
     explicit SmartSlicingCoordinator(IOrcaWorkspace& workspace);
     SmartSlicingCoordinator(IOrcaWorkspace& workspace, ITrialSliceExecutor& trial_slice_executor);
@@ -36,9 +37,11 @@ public:
     bool refresh_revision();
     bool plan_and_slice_candidates(std::vector<SliceCandidate> proposals = {},
                                    CandidateGoal goal = CandidateGoal::Stability,
-                                   bool defer_revision_checks = false);
+                                   bool defer_revision_checks = false,
+                                   CancellationRequested cancellation_requested = {});
     bool select_candidate(const CandidateId& candidate_id);
-    bool retry_candidate(const CandidateId& candidate_id, bool defer_revision_checks = false);
+    bool retry_candidate(const CandidateId& candidate_id, bool defer_revision_checks = false,
+                         CancellationRequested cancellation_requested = {});
     bool apply_selected_candidate();
     bool poll_official_slice();
     bool undo_applied_candidate();
@@ -47,6 +50,7 @@ private:
     void transition(WorkflowState state, std::string detail = {});
     void notify_observer() noexcept;
     bool workspace_revision_matches() const;
+    bool cancel_if_requested(const CancellationRequested& cancellation_requested);
     void persist_runtime_state();
     std::string resource_violation(size_t candidate_count) const;
 

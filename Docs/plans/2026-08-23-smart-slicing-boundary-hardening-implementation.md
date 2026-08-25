@@ -1330,3 +1330,46 @@ apply/slice attempt before recovery, retained `can_undo`, successful native reco
 This batch changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, Domain/Application
 contract, configuration, dependency, port, data directory contract, journal path/schema, 3MF/profile format,
 profile data, or default Orca behavior. macOS and Linux native build/test execution remains a separate host/CI gate.
+
+## Background cancellation ownership gate — 2026-08-25
+
+Background candidate planning and retry now carry the panel's cancellation predicate into the Application
+coordinator. The coordinator checks that predicate before native trial work, after every native trial result, and
+before publishing a comparison. A cancellation request therefore owns the terminal result even when it arrives as
+the final successful trial call returns. A throwing cancellation source also fails closed as cancellation instead
+of authorizing more isolated work. The GUI completion callback consumes any request that arrives after the worker's
+last coordinator check on the GUI thread, after the worker-running flag is cleared; a later click consequently
+cancels directly, while an earlier click is finalized by the queued callback.
+
+Before this gate, the panel only signaled the native executor while a worker was active. If the last trial result
+had already escaped the executor, candidate publication or a successful retry could overwrite the user's cancel
+intent. The two-case red contract ran 14 assertions and reported 13 failures: both calls returned success, both
+snapshots reached ReadyToApply, candidates/comparison remained published, and the cancellation delegate was never
+used. The green contract covers both initial planning and retry and requires a clean Canceled snapshot with no
+candidate, comparison, or selection residue.
+
+### Windows verification
+
+- Background-cancellation focus: 2 test cases and 14 assertions, all passed in Release and RelWithDebInfo.
+- Smart-slicing suite: 121 test cases; 120 passed and the opt-in benchmark remained explicitly skipped, with 826
+  assertions passed in Release and RelWithDebInfo.
+- Default full `slic3rutils_tests`: before the workspace permission profile changed, 131 test cases and 933
+  assertions passed in Release and RelWithDebInfo. The 2026-08-25 managed-profile rerun reconfirmed the focused and
+  smart-slicing suites, but the unrelated `[Http][NotWorking]` digest test received HTTP status 0 and subsequent
+  socket coverage stalled because outbound networking is restricted; those runs were terminated rather than
+  misreported as product regressions.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings and
+  the non-failing test-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI automation launched only
+  `D:\Workspace\06_3DDY_smart_slicing\build-p0\src\Release\orca-slicer.exe` with workspace-local isolated data
+  directory `build-p0/smart-slicing-cancel-smoke-data-20260825` and the repository `Büchse.3mf` fixture. The local
+  process path and project load were verified, but an unrelated Orca process already owned the only targetable
+  Orca window. No input was sent to that process and it was not closed; the workspace process was stopped instead,
+  so interactive cancel verification remains deferred until the desktop has no competing Orca instance. The
+  fixture SHA-256 remained `DE20508DFF06F8FAF8CA992C00238D4AFFC916BA4B812E8FF9EC1571FEC533A1`.
+
+This batch changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, formal workspace
+write path, configuration, dependency, port, data directory contract, journal path/schema, 3MF/profile format,
+profile data, or default Orca behavior. The new coordinator argument is an in-process Application cancellation
+contract; it neither changes persisted data nor broadens mutation authority. macOS and Linux native build/test
+execution remains a separate host/CI gate.
