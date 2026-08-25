@@ -1405,3 +1405,38 @@ This batch changes no shared `MainFrame`, `Plater`, or CMake file and no model-g
 contract, formal workspace write path, configuration, dependency, port, data directory contract, journal
 path/schema, 3MF/profile format, profile data, or default Orca behavior. macOS and Linux native build/test execution
 remains a separate host/CI gate.
+
+## Per-attempt trial timeout ownership gate — 2026-08-25
+
+The Orca trial executor now distinguishes an attempt deadline from an explicit user cancellation. A deadline marks
+only the current attempt as timed out and cancels only its active isolated `Print`; it no longer sets the
+session-level user-cancellation flag. Each serialized attempt resets its own timeout bit before starting, while the
+existing user-cancellation bit and coordinator cancellation predicate retain their cross-thread behavior. A timed
+out candidate can therefore be retried against the already prepared cloned Model/config input when the caller still
+has resource budget, without recapturing or touching the formal workspace.
+
+Before this gate, `ScopedTrialDeadline` called the public cancellation method. In a prepared workbench session that
+left both `m_timed_out` and `m_cancel_requested` set, so every later direct retry immediately returned the previous
+`workflow_timeout`. The prepared-session red regression had 5 assertions and 3 failures: the retry remained
+Canceled, retained a diagnostic, and produced no metrics. The green contract first proves the timeout and then
+raises the per-attempt limit and requires a real successful retry with isolated metrics. The existing early explicit
+user-cancellation contract remains green.
+
+### Windows verification
+
+- Prepared-session timeout-retry focus: 1 test case and 5 assertions, all passed in Release and RelWithDebInfo.
+- Explicit early user-cancellation focus: 1 test case and 4 assertions, all passed in Release.
+- Smart-slicing suite: 123 test cases; 122 passed and the opt-in benchmark remained explicitly skipped, with 839
+  assertions passed in Release and RelWithDebInfo.
+- Default full `slic3rutils_tests`: 133 test cases and 946 assertions, all passed in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings and
+  the non-failing test-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke was not repeated because this is a nonvisual isolated-executor lifecycle correction with no layout,
+  startup, formal apply, or default manual slicing-path change. No Orca process was launched.
+
+This batch changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, Domain/Application
+contract, formal workspace write path, configuration, dependency, port, data directory contract, journal
+path/schema, 3MF/profile format, profile data, or default Orca behavior. The renamed stale RelWithDebInfo test
+executable remains only as an ignored, regenerable build artifact because the environment safety policy rejected
+its deletion; it is not source or delivery content. macOS and Linux native build/test execution remains a separate
+host/CI gate.

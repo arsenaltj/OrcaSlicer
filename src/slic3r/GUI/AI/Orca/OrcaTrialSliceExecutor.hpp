@@ -69,6 +69,7 @@ public:
 private:
     class ActivePrintGuard;
 
+    void cancel_active_print();
     bool apply_placement(Model& model, const AI::SmartSlicing::PlacementCandidate& placement) const;
     static AI::SmartSlicing::SlicingMetrics extract_metrics(const GCodeProcessorResult& result,
                                                              const std::vector<int>& expected_filament_mapping,

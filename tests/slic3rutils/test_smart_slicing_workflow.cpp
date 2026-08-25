@@ -1874,3 +1874,24 @@ TEST_CASE("Orca trial slicing enforces execution memory timeout and disk budgets
     CHECK(disk_result.status == TrialSliceStatus::Failed);
     CHECK(disk_result.diagnostic_code == "workflow_disk_budget_exceeded");
 }
+
+TEST_CASE("a timed out prepared trial session can execute a later retry",
+          "[AI][SmartSlicing][Workflow][OrcaTrial][Runtime][TimeoutRetry]")
+{
+    SliceCandidate candidate = proposal("candidate", WorkspaceRevision{1, 2, 3, "revision-a"});
+    candidate.status = CandidateStatus::Draft;
+    candidate.metrics.reset();
+
+    Slic3r::GUI::OrcaTrialSliceExecutor executor([] { return tiny_trial_input(); });
+    executor.prepare_session_input(tiny_trial_input());
+    executor.set_resource_limits(std::chrono::seconds(0), 1024 * 1024, 1024 * 1024);
+    const TrialSliceResult timed_out = executor.execute_trial_slice(candidate);
+    REQUIRE(timed_out.status == TrialSliceStatus::Canceled);
+    REQUIRE(timed_out.diagnostic_code == "workflow_timeout");
+
+    executor.set_resource_limits(std::chrono::minutes(1), 1024 * 1024, 1024 * 1024);
+    const TrialSliceResult retried = executor.execute_trial_slice(candidate);
+    CHECK(retried.status == TrialSliceStatus::Succeeded);
+    CHECK(retried.diagnostic_code.empty());
+    CHECK(retried.metrics.has_value());
+}

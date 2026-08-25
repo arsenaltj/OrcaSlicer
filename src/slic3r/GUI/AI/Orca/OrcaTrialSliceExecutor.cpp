@@ -115,7 +115,8 @@ public:
     {
         std::lock_guard<std::mutex> lock(m_executor.m_active_print_mutex);
         m_executor.m_active_print = &m_print;
-        if (m_executor.m_cancel_requested.load(std::memory_order_acquire))
+        if (m_executor.m_cancel_requested.load(std::memory_order_acquire) ||
+            m_executor.m_timed_out.load(std::memory_order_acquire))
             m_print.cancel();
     }
 
@@ -249,6 +250,7 @@ SlicingMetrics OrcaTrialSliceExecutor::extract_metrics(const GCodeProcessorResul
 TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice(const SliceCandidate& candidate)
 {
     const std::lock_guard<std::mutex> execution_lock(m_execution_mutex);
+    m_timed_out.store(false, std::memory_order_release);
     TrialSliceResult result;
     result.candidate_id  = candidate.id;
     result.base_revision = candidate.base_revision;
@@ -295,9 +297,10 @@ TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice(const SliceCandidat
         }
         ScopedTrialDeadline deadline(m_maximum_duration, [this] {
             m_timed_out.store(true, std::memory_order_release);
-            cancel_trial_slice();
+            cancel_active_print();
         });
-        if (m_cancel_requested.load(std::memory_order_acquire)) {
+        if (m_cancel_requested.load(std::memory_order_acquire) ||
+            m_timed_out.load(std::memory_order_acquire)) {
             result.status          = TrialSliceStatus::Canceled;
             result.diagnostic_code = m_timed_out.load(std::memory_order_acquire) ? "workflow_timeout" : "trial_slice_canceled";
             return result;
@@ -387,6 +390,11 @@ TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice(const SliceCandidat
 void OrcaTrialSliceExecutor::cancel_trial_slice()
 {
     m_cancel_requested.store(true, std::memory_order_release);
+    cancel_active_print();
+}
+
+void OrcaTrialSliceExecutor::cancel_active_print()
+{
     std::lock_guard<std::mutex> lock(m_active_print_mutex);
     if (m_active_print != nullptr)
         m_active_print->cancel();
