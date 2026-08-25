@@ -288,10 +288,11 @@ AI::SmartSlicing::CandidateGoal smart_slicing_goal_from_selection(int selection)
 
 SmartSlicingHideAction smart_slicing_hide_action(bool shown, bool worker_running, bool can_cancel)
 {
-    if (shown || !can_cancel)
+    if (shown)
         return SmartSlicingHideAction::None;
-    return worker_running ? SmartSlicingHideAction::RequestBackgroundCancel :
-                            SmartSlicingHideAction::CancelDirectly;
+    if (worker_running)
+        return SmartSlicingHideAction::RequestBackgroundCancel;
+    return can_cancel ? SmartSlicingHideAction::CancelDirectly : SmartSlicingHideAction::None;
 }
 
 SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSlicingCoordinator& coordinator,
@@ -475,8 +476,8 @@ SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSl
     });
     Bind(wxEVT_SHOW, [this](wxShowEvent& event) {
         const bool worker_running = m_worker_running.load(std::memory_order_acquire);
-        switch (smart_slicing_hide_action(event.IsShown(), worker_running,
-                                          m_coordinator.snapshot().can_cancel())) {
+        const bool can_cancel = !worker_running && m_coordinator.snapshot().can_cancel();
+        switch (smart_slicing_hide_action(event.IsShown(), worker_running, can_cancel)) {
         case SmartSlicingHideAction::RequestBackgroundCancel:
             m_cancel_requested.store(true, std::memory_order_release);
             if (m_cancel_trial)

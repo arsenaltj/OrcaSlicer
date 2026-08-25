@@ -1495,3 +1495,31 @@ the descriptor, while recoverable failures retain it until the recovery responsi
 This batch changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, formal workspace
 write path, configuration, dependency, port, data directory contract, journal path/schema, 3MF/profile format,
 profile data, or default Orca behavior. macOS and Linux native build/test execution remains a separate host/CI gate.
+
+## Hidden-worker snapshot isolation gate — 2026-08-25
+
+The workbench hide handler no longer reads the Coordinator snapshot while a candidate planning or trial worker is
+running. The atomic worker flag is now sufficient to request asynchronous cancellation; only the no-worker branch
+queries `can_cancel()`. The worker's release/acquire handoff therefore precedes every GUI-side snapshot read, while
+the existing direct cancellation path remains available for idle pre-apply states.
+
+The six-assertion policy regression first failed on the hidden worker/non-cancelable-input case. It now proves that
+worker ownership takes priority over the snapshot hint, avoiding a cross-thread eligibility read during the short
+terminal handoff window. Official slicing and recoverable apply failure are unchanged because neither state owns a
+candidate background worker.
+
+### Windows verification
+
+- Hidden-worker isolation focus: 1 test case and 6 assertions, all passed in Release and RelWithDebInfo.
+- Smart-slicing suite: 125 test cases; 124 passed and the opt-in benchmark remained explicitly skipped, with 857
+  assertions passed in Release and RelWithDebInfo.
+- Default full `slic3rutils_tests`: 135 test cases and 964 assertions, all passed in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings and
+  the non-failing test-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke was not repeated because this is a nonvisual concurrency ownership correction with no layout or
+  startup-path change. No Orca process was launched.
+
+This batch changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, Domain/Application
+contract, formal workspace write path, configuration, dependency, port, data directory contract, journal
+path/schema, 3MF/profile format, profile data, or default Orca behavior. macOS and Linux native build/test execution
+remains a separate host/CI gate.
