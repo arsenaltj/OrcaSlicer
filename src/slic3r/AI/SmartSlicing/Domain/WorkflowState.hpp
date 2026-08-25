@@ -41,6 +41,7 @@ struct WorkflowSnapshot
     std::optional<CandidateComparison> comparison;
     CandidateId selected_candidate_id;
     bool can_undo_apply{false};
+    bool workspace_mutated{false};
     CandidateGoal goal{CandidateGoal::Stability};
     std::string detail;
 

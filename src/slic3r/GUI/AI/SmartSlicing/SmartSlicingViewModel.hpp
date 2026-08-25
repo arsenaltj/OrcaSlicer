@@ -88,6 +88,7 @@ struct SmartSlicingViewModel
     bool can_plan_candidates{false};
     bool can_apply{false};
     bool can_undo_apply{false};
+    bool workspace_mutated{false};
     bool needs_polling{false};
     bool is_stale{false};
 

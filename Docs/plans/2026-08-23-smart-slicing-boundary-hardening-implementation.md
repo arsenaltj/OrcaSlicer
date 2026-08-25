@@ -1857,3 +1857,35 @@ This batch changes only the smart-slicing Orca official gateway and its targeted
 shared `MainFrame`, `Plater`, or CMake file and no model-generation code, Port DTO, configuration, dependency,
 external network port, data directory contract, journal path/schema, 3MF/profile format, profile data, or default
 Orca behavior. macOS and Linux native build/test execution remains a separate host/CI gate.
+
+## Formal workspace mutation-fact projection gate — 2026-08-25
+
+Application now preserves the official gateway's `workspace_mutated` transaction fact in `WorkflowSnapshot` and
+the workbench view model. A pre-commit rejection remains explicitly unmutated, a successful native Undo clears the
+fact, and an unavailable or failed Undo retains it. An unrecoverable failure after formal mutation therefore uses
+the distinct `official_slice_failed_applied` summary instead of being merged with a rejection that never wrote the
+workspace. The Chinese workbench text tells the user that the candidate was written but cannot be safely undone by
+the smart-slicing shortcut. This is a projection of the existing gateway result; it adds no formal write path.
+
+The red contracts failed to compile at three assertions because `WorkflowSnapshot` had no `workspace_mutated`
+member, demonstrating that the Port result stopped at the Application boundary. The green contracts also keep
+terminal cloned trial-session cleanup enabled for the new unrecoverable summary.
+
+### Windows verification
+
+- Transaction-fact, failure-summary, and cleanup focus: 4 test cases and 30 assertions, all passed in Release and
+  RelWithDebInfo.
+- Smart-slicing suite: 139 test cases; 138 passed and the opt-in benchmark remained explicitly skipped, with 981
+  assertions passed in Release and RelWithDebInfo.
+- Default full `slic3rutils_tests`: 149 test cases and 1088 assertions, all passed in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings and
+  the non-failing test-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke was not repeated because the only visible change is a tested summary string for an abnormal internal
+  transaction state; layout, control lifecycle, startup, normal interaction, trial execution, valid apply, and
+  official success behavior are unchanged. No Orca process was launched for this batch.
+
+This batch changes only smart-slicing Domain/Application state projection, smart-slicing GUI/Orca cleanup policy,
+and targeted tests/documentation. It changes no shared `MainFrame`, `Plater`, or CMake file and no
+model-generation code, Port DTO, formal mutation implementation, configuration, dependency, external network
+port, data directory contract, journal path/schema, 3MF/profile format, profile data, or default Orca behavior.
+macOS and Linux native build/test execution remains a separate host/CI gate.

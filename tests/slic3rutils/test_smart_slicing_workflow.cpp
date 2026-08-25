@@ -815,6 +815,15 @@ TEST_CASE("apply failure summary only promises recovery when native undo is avai
     CHECK(with_recovery.summary_key == "official_slice_failed");
     CHECK_FALSE(Slic3r::GUI::smart_slicing_summary_text(without_recovery.summary_key) ==
                 Slic3r::GUI::smart_slicing_summary_text(with_recovery.summary_key));
+
+    snapshot.can_undo_apply = false;
+    snapshot.workspace_mutated = true;
+    const auto applied_without_recovery = Slic3r::GUI::SmartSlicingViewModel::from_snapshot(snapshot);
+    CHECK_FALSE(applied_without_recovery.can_undo_apply);
+    CHECK(applied_without_recovery.workspace_mutated);
+    CHECK(applied_without_recovery.summary_key == "official_slice_failed_applied");
+    CHECK_FALSE(Slic3r::GUI::smart_slicing_summary_text(applied_without_recovery.summary_key) ==
+                Slic3r::GUI::smart_slicing_summary_text(without_recovery.summary_key));
 }
 
 TEST_CASE("failed candidate diagnostics are projected as actionable localized reasons",
@@ -1367,7 +1376,30 @@ TEST_CASE("compatibility rejection and apply failure never claim an official sli
     CHECK_FALSE(coordinator.apply_selected_candidate());
     CHECK(coordinator.snapshot().state == WorkflowState::ApplyFailed);
     CHECK_FALSE(coordinator.snapshot().can_undo_apply);
+    CHECK_FALSE(coordinator.snapshot().workspace_mutated);
     CHECK(official.commit_calls == 0);
+}
+
+TEST_CASE("coordinator preserves whether an unrecoverable official failure already mutated the workspace",
+          "[AI][SmartSlicing][Apply][TransactionFact]")
+{
+    WorkflowWorkspace workspace;
+    FakeTrialSliceExecutor trial;
+    FakeOfficialSliceGateway official;
+    official.committed = {OfficialSlicePhase::Slicing, {}, true, false};
+    SmartSlicingCoordinator coordinator(workspace, trial, official);
+    coordinator.start();
+    REQUIRE(coordinator.plan_and_slice_candidates());
+
+    REQUIRE(coordinator.apply_selected_candidate());
+    CHECK(coordinator.snapshot().workspace_mutated);
+    CHECK_FALSE(coordinator.snapshot().can_undo_apply);
+
+    official.polled = {OfficialSlicePhase::Failed, "official_slice_revision_changed", true, false};
+    REQUIRE(coordinator.poll_official_slice());
+    CHECK(coordinator.snapshot().state == WorkflowState::ApplyFailed);
+    CHECK(coordinator.snapshot().workspace_mutated);
+    CHECK_FALSE(coordinator.snapshot().can_undo_apply);
 }
 
 TEST_CASE("official slice failure exposes exactly one native undo recovery", "[AI][SmartSlicing][Apply]")
@@ -1387,6 +1419,7 @@ TEST_CASE("official slice failure exposes exactly one native undo recovery", "[A
     CHECK(coordinator.undo_applied_candidate());
     CHECK(official.undo_calls == 1);
     CHECK(coordinator.snapshot().state == WorkflowState::ReadyToApply);
+    CHECK_FALSE(coordinator.snapshot().workspace_mutated);
     CHECK_FALSE(coordinator.undo_applied_candidate());
 }
 
@@ -1408,6 +1441,7 @@ TEST_CASE("an unavailable native recovery is disabled after one safe refusal", "
     CHECK(official.undo_calls == 1);
     CHECK(coordinator.snapshot().state == WorkflowState::ApplyFailed);
     CHECK_FALSE(coordinator.snapshot().can_undo_apply);
+    CHECK(coordinator.snapshot().workspace_mutated);
     CHECK(coordinator.snapshot().detail == "apply_undo_unavailable");
 }
 

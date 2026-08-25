@@ -15,9 +15,10 @@ SmartSlicingViewModel SmartSlicingViewModel::from_snapshot(const AI::SmartSlicin
     view.can_plan_candidates = snapshot.state == WorkflowState::ReadyForCandidatePlanning;
     view.can_apply = snapshot.state == WorkflowState::ReadyToApply && snapshot.comparison &&
                      snapshot.comparison->is_eligible(snapshot.selected_candidate_id);
-    view.can_undo_apply = snapshot.state == WorkflowState::ApplyFailed && snapshot.can_undo_apply;
-    view.needs_polling  = snapshot.state == WorkflowState::OfficialSlicing;
-    view.detail     = snapshot.detail;
+    view.can_undo_apply    = snapshot.state == WorkflowState::ApplyFailed && snapshot.can_undo_apply;
+    view.workspace_mutated = snapshot.workspace_mutated;
+    view.needs_polling     = snapshot.state == WorkflowState::OfficialSlicing;
+    view.detail            = snapshot.detail;
     if (snapshot.report) {
         view.issue_count = snapshot.report->issues.size();
         view.issues.reserve(snapshot.report->issues.size());
@@ -208,7 +209,8 @@ SmartSlicingViewModel SmartSlicingViewModel::from_snapshot(const AI::SmartSlicin
         break;
     case WorkflowState::ApplyFailed:
         view.summary_key = snapshot.can_undo_apply ? "official_slice_failed" :
-                                                     "official_slice_failed_no_recovery";
+                           snapshot.workspace_mutated ? "official_slice_failed_applied" :
+                                                        "official_slice_failed_no_recovery";
         complete_through(2);
         view.stages[3].status = SmartSlicingStageStatus::NeedsAttention;
         set_legacy_prepared(LegacyAIWorkflowStatus::Failed);

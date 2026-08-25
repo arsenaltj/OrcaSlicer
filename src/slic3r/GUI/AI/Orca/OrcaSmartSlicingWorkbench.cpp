@@ -39,7 +39,8 @@ bool smart_slicing_should_clear_trial_input(const std::string& summary_key)
 {
     return summary_key == "official_slice_complete" || summary_key == "canceled" ||
            summary_key == "workspace_changed" || summary_key == "preflight_failed" ||
-           summary_key == "official_slice_failed_no_recovery";
+           summary_key == "official_slice_failed_no_recovery" ||
+           summary_key == "official_slice_failed_applied";
 }
 
 OrcaSmartSlicingWorkbench::OrcaSmartSlicingWorkbench(Plater& plater, StartSliceFn start_slice)

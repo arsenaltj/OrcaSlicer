@@ -515,6 +515,7 @@ bool SmartSlicingCoordinator::apply_selected_candidate()
         return false;
     }
 
+    m_snapshot.workspace_mutated = false;
     transition(WorkflowState::Applying, "applying_candidate");
     OfficialSliceResult result;
     try {
@@ -524,7 +525,8 @@ bool SmartSlicingCoordinator::apply_selected_candidate()
         transition(WorkflowState::ApplyFailed, "apply_gateway_exception");
         return false;
     }
-    m_snapshot.can_undo_apply = result.can_undo;
+    m_snapshot.can_undo_apply    = result.can_undo;
+    m_snapshot.workspace_mutated = result.workspace_mutated;
     switch (result.phase) {
     case OfficialSlicePhase::Slicing:
         transition(WorkflowState::OfficialSlicing, "official_slicing");
@@ -558,7 +560,8 @@ bool SmartSlicingCoordinator::poll_official_slice()
         transition(WorkflowState::ApplyFailed, "official_slice_poll_failed");
         return true;
     }
-    m_snapshot.can_undo_apply        = result.can_undo;
+    m_snapshot.can_undo_apply    = result.can_undo;
+    m_snapshot.workspace_mutated = result.workspace_mutated;
     if (result.phase == OfficialSlicePhase::Completed) {
         transition(WorkflowState::Completed, "official_slice_complete");
         return true;
@@ -587,7 +590,8 @@ bool SmartSlicingCoordinator::undo_applied_candidate()
         transition(WorkflowState::ApplyFailed, "apply_undo_failed");
         return false;
     }
-    m_snapshot.can_undo_apply = false;
+    m_snapshot.can_undo_apply    = false;
+    m_snapshot.workspace_mutated = false;
     transition(WorkflowState::ReadyToApply, "apply_undone");
     return true;
 }

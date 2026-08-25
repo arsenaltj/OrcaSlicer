@@ -301,6 +301,7 @@ TEST_CASE("terminal workbench states release prepared trial input unless native 
     CHECK(smart_slicing_should_clear_trial_input("workspace_changed"));
     CHECK(smart_slicing_should_clear_trial_input("preflight_failed"));
     CHECK(smart_slicing_should_clear_trial_input("official_slice_failed_no_recovery"));
+    CHECK(smart_slicing_should_clear_trial_input("official_slice_failed_applied"));
     CHECK_FALSE(smart_slicing_should_clear_trial_input("official_slice_failed"));
     CHECK_FALSE(smart_slicing_should_clear_trial_input("candidates_ready"));
     CHECK_FALSE(smart_slicing_should_clear_trial_input("official_slicing"));
