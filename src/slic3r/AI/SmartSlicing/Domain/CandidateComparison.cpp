@@ -2,194 +2,185 @@
 
 #include <algorithm>
 #include <optional>
+#include <vector>
 
 namespace Slic3r::AI::SmartSlicing {
 namespace {
 
 using OptionalMetric = std::optional<double>;
 
-OptionalMetric primary_metric(const SliceCandidate& candidate, CandidateGoal goal)
+enum class ComparisonDimension
+{
+    Warnings,
+    AdhesionRisk,
+    BrimAssistance,
+    ToolChanges,
+    FlushVolume,
+    WipeTowerVolume,
+    SupportVolume,
+    EstimatedTime,
+    FilamentVolume,
+    TotalMaterial
+};
+
+enum class PreferredDirection { Lower, Higher };
+enum class Applicability { Always, StabilityBrimWhenRiskPresent };
+
+struct DimensionRule
+{
+    ComparisonDimension dimension;
+    PreferredDirection direction;
+    const char* evidence_code;
+    Applicability applicability = Applicability::Always;
+};
+
+struct PolicyDifference
+{
+    const DimensionRule* rule;
+    OptionalMetric lhs;
+    OptionalMetric rhs;
+    bool lhs_preferred;
+};
+
+const std::vector<DimensionRule>& comparison_policy(CandidateGoal goal)
+{
+    static const std::vector<DimensionRule> stability{
+        {ComparisonDimension::Warnings, PreferredDirection::Lower, "fewer_slice_warnings"},
+        {ComparisonDimension::AdhesionRisk, PreferredDirection::Lower, "lower_bed_adhesion_risk"},
+        {ComparisonDimension::BrimAssistance, PreferredDirection::Higher, "stronger_bed_adhesion_aid",
+         Applicability::StabilityBrimWhenRiskPresent},
+        {ComparisonDimension::ToolChanges, PreferredDirection::Lower, "fewer_tool_changes"},
+        {ComparisonDimension::FlushVolume, PreferredDirection::Lower, "lower_flush_volume"},
+        {ComparisonDimension::WipeTowerVolume, PreferredDirection::Lower, "lower_wipe_tower_volume"},
+        {ComparisonDimension::SupportVolume, PreferredDirection::Lower, "lower_support_volume"},
+        {ComparisonDimension::EstimatedTime, PreferredDirection::Lower, "lower_estimated_time"},
+        {ComparisonDimension::FilamentVolume, PreferredDirection::Lower, "lower_filament_volume"},
+    };
+    static const std::vector<DimensionRule> quality{
+        {ComparisonDimension::SupportVolume, PreferredDirection::Lower, "less_support_material"},
+        {ComparisonDimension::Warnings, PreferredDirection::Lower, "fewer_slice_warnings"},
+        {ComparisonDimension::EstimatedTime, PreferredDirection::Lower, "lower_estimated_time"},
+        {ComparisonDimension::FilamentVolume, PreferredDirection::Lower, "lower_filament_volume"},
+        {ComparisonDimension::ToolChanges, PreferredDirection::Lower, "fewer_tool_changes"},
+        {ComparisonDimension::FlushVolume, PreferredDirection::Lower, "lower_flush_volume"},
+        {ComparisonDimension::WipeTowerVolume, PreferredDirection::Lower, "lower_wipe_tower_volume"},
+    };
+    static const std::vector<DimensionRule> speed{
+        {ComparisonDimension::EstimatedTime, PreferredDirection::Lower, "shorter_print_time"},
+        {ComparisonDimension::Warnings, PreferredDirection::Lower, "fewer_slice_warnings"},
+        {ComparisonDimension::ToolChanges, PreferredDirection::Lower, "fewer_tool_changes"},
+        {ComparisonDimension::FlushVolume, PreferredDirection::Lower, "lower_flush_volume"},
+        {ComparisonDimension::WipeTowerVolume, PreferredDirection::Lower, "lower_wipe_tower_volume"},
+        {ComparisonDimension::SupportVolume, PreferredDirection::Lower, "lower_support_volume"},
+        {ComparisonDimension::FilamentVolume, PreferredDirection::Lower, "lower_filament_volume"},
+    };
+    static const std::vector<DimensionRule> material_saving{
+        {ComparisonDimension::TotalMaterial, PreferredDirection::Lower,
+         "less_total_material_including_multicolor_waste"},
+        {ComparisonDimension::Warnings, PreferredDirection::Lower, "fewer_slice_warnings"},
+        {ComparisonDimension::FlushVolume, PreferredDirection::Lower, "lower_flush_volume"},
+        {ComparisonDimension::WipeTowerVolume, PreferredDirection::Lower, "lower_wipe_tower_volume"},
+        {ComparisonDimension::ToolChanges, PreferredDirection::Lower, "fewer_tool_changes"},
+        {ComparisonDimension::SupportVolume, PreferredDirection::Lower, "lower_support_volume"},
+        {ComparisonDimension::EstimatedTime, PreferredDirection::Lower, "lower_estimated_time"},
+        {ComparisonDimension::FilamentVolume, PreferredDirection::Lower, "lower_filament_volume"},
+    };
+
+    switch (goal) {
+    case CandidateGoal::Stability: return stability;
+    case CandidateGoal::Quality: return quality;
+    case CandidateGoal::Speed: return speed;
+    case CandidateGoal::MaterialSaving: return material_saving;
+    }
+    return stability;
+}
+
+OptionalMetric metric(const SliceCandidate& candidate, ComparisonDimension dimension)
 {
     if (!candidate.metrics)
         return std::nullopt;
 
-    switch (goal) {
-    case CandidateGoal::Speed: return candidate.metrics->estimated_time_seconds;
-    case CandidateGoal::MaterialSaving: return candidate.metrics->total_material_volume_mm3();
-    case CandidateGoal::Quality: return candidate.metrics->support_volume_mm3;
-    case CandidateGoal::Stability: return static_cast<double>(candidate.metrics->warning_codes.size());
+    const SlicingMetrics& metrics = *candidate.metrics;
+    switch (dimension) {
+    case ComparisonDimension::Warnings:
+        return static_cast<double>(metrics.warning_codes.size());
+    case ComparisonDimension::AdhesionRisk: return metrics.bed_adhesion_risk_score;
+    case ComparisonDimension::BrimAssistance: return metrics.brim_volume_mm3;
+    case ComparisonDimension::ToolChanges:
+        return metrics.tool_changes ? OptionalMetric(static_cast<double>(*metrics.tool_changes)) : std::nullopt;
+    case ComparisonDimension::FlushVolume: return metrics.flush_volume_mm3;
+    case ComparisonDimension::WipeTowerVolume: return metrics.wipe_tower_volume_mm3;
+    case ComparisonDimension::SupportVolume: return metrics.support_volume_mm3;
+    case ComparisonDimension::EstimatedTime: return metrics.estimated_time_seconds;
+    case ComparisonDimension::FilamentVolume: return metrics.filament_volume_mm3;
+    case ComparisonDimension::TotalMaterial: return metrics.total_material_volume_mm3();
     }
     return std::nullopt;
 }
 
-bool less_optional(const OptionalMetric& lhs, const OptionalMetric& rhs)
-{
-    if (lhs.has_value() != rhs.has_value())
-        return lhs.has_value();
-    return lhs && rhs && *lhs < *rhs;
-}
-
-bool equal_optional(const OptionalMetric& lhs, const OptionalMetric& rhs)
+bool equal_metric(const OptionalMetric& lhs, const OptionalMetric& rhs)
 {
     return lhs.has_value() == rhs.has_value() && (!lhs || *lhs == *rhs);
 }
 
-bool greater_optional(const OptionalMetric& lhs, const OptionalMetric& rhs)
+bool rule_applies(const DimensionRule& rule, const SliceCandidate& lhs, const SliceCandidate& rhs)
+{
+    if (rule.applicability == Applicability::Always)
+        return true;
+    const OptionalMetric lhs_risk = metric(lhs, ComparisonDimension::AdhesionRisk);
+    const OptionalMetric rhs_risk = metric(rhs, ComparisonDimension::AdhesionRisk);
+    return lhs_risk.value_or(0.0) >= BED_ADHESION_RISK_ATTENTION_THRESHOLD ||
+           rhs_risk.value_or(0.0) >= BED_ADHESION_RISK_ATTENTION_THRESHOLD;
+}
+
+bool lhs_is_preferred(const OptionalMetric& lhs,
+                      const OptionalMetric& rhs,
+                      PreferredDirection direction)
 {
     if (lhs.has_value() != rhs.has_value())
         return lhs.has_value();
-    return lhs && rhs && *lhs > *rhs;
+    if (!lhs)
+        return false;
+    return direction == PreferredDirection::Lower ? *lhs < *rhs : *lhs > *rhs;
 }
 
-std::optional<std::string> difference_evidence(const OptionalMetric& winner,
-                                               const OptionalMetric& runner_up,
-                                               const char* measured_evidence)
+std::optional<PolicyDifference> first_policy_difference(const SliceCandidate& lhs,
+                                                        const SliceCandidate& rhs,
+                                                        CandidateGoal goal)
 {
-    if (equal_optional(winner, runner_up))
-        return std::nullopt;
-    if (winner.has_value() != runner_up.has_value())
-        return "more_complete_trial_evidence";
-    return measured_evidence;
-}
-
-const char* primary_evidence(CandidateGoal goal)
-{
-    switch (goal) {
-    case CandidateGoal::Stability: return "fewer_slice_warnings";
-    case CandidateGoal::Quality: return "less_support_material";
-    case CandidateGoal::Speed: return "shorter_print_time";
-    case CandidateGoal::MaterialSaving: return "less_total_material_including_multicolor_waste";
+    for (const DimensionRule& rule : comparison_policy(goal)) {
+        if (!rule_applies(rule, lhs, rhs))
+            continue;
+        const OptionalMetric lhs_value = metric(lhs, rule.dimension);
+        const OptionalMetric rhs_value = metric(rhs, rule.dimension);
+        if (!equal_metric(lhs_value, rhs_value))
+            return PolicyDifference{&rule, lhs_value, rhs_value,
+                                    lhs_is_preferred(lhs_value, rhs_value, rule.direction)};
     }
-    return "deterministic_tie_break";
+    return std::nullopt;
 }
 
-OptionalMetric metric_or_missing(const SliceCandidate& candidate, const OptionalMetric SlicingMetrics::* member)
+OptionalMetric primary_metric(const SliceCandidate& candidate, CandidateGoal goal)
 {
-    return candidate.metrics ? candidate.metrics.value().*member : std::nullopt;
-}
-
-OptionalMetric count_or_missing(const SliceCandidate& candidate, const std::optional<size_t> SlicingMetrics::* member)
-{
-    if (!candidate.metrics)
-        return std::nullopt;
-    const std::optional<size_t>& value = candidate.metrics.value().*member;
-    return value ? OptionalMetric(static_cast<double>(*value)) : std::nullopt;
+    return metric(candidate, comparison_policy(goal).front().dimension);
 }
 
 bool candidate_less(const SliceCandidate* lhs, const SliceCandidate* rhs, CandidateGoal goal)
 {
-    const OptionalMetric lhs_primary = primary_metric(*lhs, goal);
-    const OptionalMetric rhs_primary = primary_metric(*rhs, goal);
-    if (!equal_optional(lhs_primary, rhs_primary))
-        return less_optional(lhs_primary, rhs_primary);
-
-    const OptionalMetric lhs_warnings = lhs->metrics ? OptionalMetric(lhs->metrics->warning_codes.size()) : std::nullopt;
-    const OptionalMetric rhs_warnings = rhs->metrics ? OptionalMetric(rhs->metrics->warning_codes.size()) : std::nullopt;
-    if (!equal_optional(lhs_warnings, rhs_warnings))
-        return less_optional(lhs_warnings, rhs_warnings);
-
-    const OptionalMetric lhs_adhesion_risk = metric_or_missing(*lhs, &SlicingMetrics::bed_adhesion_risk_score);
-    const OptionalMetric rhs_adhesion_risk = metric_or_missing(*rhs, &SlicingMetrics::bed_adhesion_risk_score);
-    if (goal == CandidateGoal::Stability && !equal_optional(lhs_adhesion_risk, rhs_adhesion_risk))
-        return less_optional(lhs_adhesion_risk, rhs_adhesion_risk);
-
-    const OptionalMetric lhs_brim = metric_or_missing(*lhs, &SlicingMetrics::brim_volume_mm3);
-    const OptionalMetric rhs_brim = metric_or_missing(*rhs, &SlicingMetrics::brim_volume_mm3);
-    const bool adhesion_risk_present =
-        lhs_adhesion_risk.value_or(0.0) >= BED_ADHESION_RISK_ATTENTION_THRESHOLD ||
-        rhs_adhesion_risk.value_or(0.0) >= BED_ADHESION_RISK_ATTENTION_THRESHOLD;
-    if (goal == CandidateGoal::Stability && adhesion_risk_present && !equal_optional(lhs_brim, rhs_brim))
-        return greater_optional(lhs_brim, rhs_brim);
-
-    const OptionalMetric lhs_tool_changes = count_or_missing(*lhs, &SlicingMetrics::tool_changes);
-    const OptionalMetric rhs_tool_changes = count_or_missing(*rhs, &SlicingMetrics::tool_changes);
-    if (!equal_optional(lhs_tool_changes, rhs_tool_changes))
-        return less_optional(lhs_tool_changes, rhs_tool_changes);
-
-    const OptionalMetric lhs_flush = metric_or_missing(*lhs, &SlicingMetrics::flush_volume_mm3);
-    const OptionalMetric rhs_flush = metric_or_missing(*rhs, &SlicingMetrics::flush_volume_mm3);
-    if (!equal_optional(lhs_flush, rhs_flush))
-        return less_optional(lhs_flush, rhs_flush);
-
-    const OptionalMetric lhs_wipe_tower = metric_or_missing(*lhs, &SlicingMetrics::wipe_tower_volume_mm3);
-    const OptionalMetric rhs_wipe_tower = metric_or_missing(*rhs, &SlicingMetrics::wipe_tower_volume_mm3);
-    if (!equal_optional(lhs_wipe_tower, rhs_wipe_tower))
-        return less_optional(lhs_wipe_tower, rhs_wipe_tower);
-
-    const OptionalMetric lhs_support = metric_or_missing(*lhs, &SlicingMetrics::support_volume_mm3);
-    const OptionalMetric rhs_support = metric_or_missing(*rhs, &SlicingMetrics::support_volume_mm3);
-    if (!equal_optional(lhs_support, rhs_support))
-        return less_optional(lhs_support, rhs_support);
-
-    const OptionalMetric lhs_time = metric_or_missing(*lhs, &SlicingMetrics::estimated_time_seconds);
-    const OptionalMetric rhs_time = metric_or_missing(*rhs, &SlicingMetrics::estimated_time_seconds);
-    if (!equal_optional(lhs_time, rhs_time))
-        return less_optional(lhs_time, rhs_time);
-
-    const OptionalMetric lhs_material = metric_or_missing(*lhs, &SlicingMetrics::filament_volume_mm3);
-    const OptionalMetric rhs_material = metric_or_missing(*rhs, &SlicingMetrics::filament_volume_mm3);
-    if (!equal_optional(lhs_material, rhs_material))
-        return less_optional(lhs_material, rhs_material);
-
+    if (const auto difference = first_policy_difference(*lhs, *rhs, goal))
+        return difference->lhs_preferred;
     return lhs->id < rhs->id;
 }
 
-std::string recommendation_evidence(const SliceCandidate& winner, const SliceCandidate& runner_up, CandidateGoal goal)
+std::string recommendation_evidence(const SliceCandidate& winner,
+                                    const SliceCandidate& runner_up,
+                                    CandidateGoal goal)
 {
-    const OptionalMetric winner_primary = primary_metric(winner, goal);
-    const OptionalMetric runner_primary = primary_metric(runner_up, goal);
-    if (const auto evidence = difference_evidence(winner_primary, runner_primary, primary_evidence(goal)))
-        return *evidence;
-    const OptionalMetric winner_warnings =
-        winner.metrics ? OptionalMetric(winner.metrics->warning_codes.size()) : std::nullopt;
-    const OptionalMetric runner_warnings =
-        runner_up.metrics ? OptionalMetric(runner_up.metrics->warning_codes.size()) : std::nullopt;
-    if (const auto evidence = difference_evidence(
-            winner_warnings, runner_warnings, "fewer_slice_warnings"))
-        return *evidence;
-    const OptionalMetric winner_adhesion_risk =
-        metric_or_missing(winner, &SlicingMetrics::bed_adhesion_risk_score);
-    const OptionalMetric runner_adhesion_risk =
-        metric_or_missing(runner_up, &SlicingMetrics::bed_adhesion_risk_score);
-    if (goal == CandidateGoal::Stability) {
-        if (const auto evidence = difference_evidence(
-                winner_adhesion_risk, runner_adhesion_risk, "lower_bed_adhesion_risk"))
-            return *evidence;
+    if (const auto difference = first_policy_difference(winner, runner_up, goal)) {
+        if (difference->lhs.has_value() != difference->rhs.has_value())
+            return "more_complete_trial_evidence";
+        return difference->rule->evidence_code;
     }
-    const OptionalMetric winner_brim = metric_or_missing(winner, &SlicingMetrics::brim_volume_mm3);
-    const OptionalMetric runner_brim = metric_or_missing(runner_up, &SlicingMetrics::brim_volume_mm3);
-    const bool adhesion_risk_present =
-        winner_adhesion_risk.value_or(0.0) >= BED_ADHESION_RISK_ATTENTION_THRESHOLD ||
-        runner_adhesion_risk.value_or(0.0) >= BED_ADHESION_RISK_ATTENTION_THRESHOLD;
-    if (goal == CandidateGoal::Stability && adhesion_risk_present) {
-        if (const auto evidence = difference_evidence(
-                winner_brim, runner_brim, "stronger_bed_adhesion_aid"))
-            return *evidence;
-    }
-    const OptionalMetric winner_tool_changes = count_or_missing(winner, &SlicingMetrics::tool_changes);
-    const OptionalMetric runner_tool_changes = count_or_missing(runner_up, &SlicingMetrics::tool_changes);
-    if (const auto evidence = difference_evidence(winner_tool_changes, runner_tool_changes, "fewer_tool_changes"))
-        return *evidence;
-    const OptionalMetric winner_flush = metric_or_missing(winner, &SlicingMetrics::flush_volume_mm3);
-    const OptionalMetric runner_flush = metric_or_missing(runner_up, &SlicingMetrics::flush_volume_mm3);
-    if (const auto evidence = difference_evidence(winner_flush, runner_flush, "lower_flush_volume"))
-        return *evidence;
-    const OptionalMetric winner_wipe = metric_or_missing(winner, &SlicingMetrics::wipe_tower_volume_mm3);
-    const OptionalMetric runner_wipe = metric_or_missing(runner_up, &SlicingMetrics::wipe_tower_volume_mm3);
-    if (const auto evidence = difference_evidence(winner_wipe, runner_wipe, "lower_wipe_tower_volume"))
-        return *evidence;
-    const OptionalMetric winner_support = metric_or_missing(winner, &SlicingMetrics::support_volume_mm3);
-    const OptionalMetric runner_support = metric_or_missing(runner_up, &SlicingMetrics::support_volume_mm3);
-    if (const auto evidence = difference_evidence(winner_support, runner_support, "lower_support_volume"))
-        return *evidence;
-    const OptionalMetric winner_time = metric_or_missing(winner, &SlicingMetrics::estimated_time_seconds);
-    const OptionalMetric runner_time = metric_or_missing(runner_up, &SlicingMetrics::estimated_time_seconds);
-    if (const auto evidence = difference_evidence(winner_time, runner_time, "lower_estimated_time"))
-        return *evidence;
-    const OptionalMetric winner_material = metric_or_missing(winner, &SlicingMetrics::filament_volume_mm3);
-    const OptionalMetric runner_material = metric_or_missing(runner_up, &SlicingMetrics::filament_volume_mm3);
-    if (const auto evidence = difference_evidence(winner_material, runner_material, "lower_filament_volume"))
-        return *evidence;
     return "deterministic_tie_break";
 }
 

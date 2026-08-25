@@ -302,6 +302,150 @@ TEST_CASE("candidate evidence follows warning ordering after a non-stability pri
           std::vector<std::string>{"fewer_slice_warnings"});
 }
 
+TEST_CASE("candidate comparison follows explicit goal-specific secondary evidence order",
+          "[AI][SmartSlicing][Candidate][Evidence][Policy]")
+{
+    SECTION("quality considers elapsed time before lower-priority multicolor costs") {
+        SliceCandidate faster = ready_candidate("faster", 80.0, 500.0, 10.0);
+        faster.metrics->tool_changes = 20;
+        SliceCandidate fewer_changes = ready_candidate("fewer-changes", 120.0, 500.0, 10.0);
+        fewer_changes.metrics->tool_changes = 1;
+
+        const CandidateComparison comparison =
+            compare_candidates({fewer_changes, faster}, CandidateGoal::Quality);
+
+        CHECK(comparison.recommended_candidate_id == "faster");
+        CHECK(comparison.recommendation_evidence_codes ==
+              std::vector<std::string>{"lower_estimated_time"});
+    }
+
+    SECTION("material saving considers flush waste before tool-change count") {
+        SliceCandidate lower_flush = ready_candidate("lower-flush", 100.0, 570.0, 10.0);
+        lower_flush.metrics->flush_volume_mm3 = 20.0;
+        lower_flush.metrics->wipe_tower_volume_mm3 = 10.0;
+        lower_flush.metrics->tool_changes = 20;
+        SliceCandidate fewer_changes = ready_candidate("fewer-changes", 100.0, 500.0, 10.0);
+        fewer_changes.metrics->flush_volume_mm3 = 90.0;
+        fewer_changes.metrics->wipe_tower_volume_mm3 = 10.0;
+        fewer_changes.metrics->tool_changes = 1;
+        REQUIRE(lower_flush.metrics->total_material_volume_mm3() ==
+                fewer_changes.metrics->total_material_volume_mm3());
+
+        const CandidateComparison comparison =
+            compare_candidates({fewer_changes, lower_flush}, CandidateGoal::MaterialSaving);
+
+        CHECK(comparison.recommended_candidate_id == "lower-flush");
+        CHECK(comparison.recommendation_evidence_codes ==
+              std::vector<std::string>{"lower_flush_volume"});
+    }
+}
+
+TEST_CASE("candidate comparison can select a distinct winner for every goal",
+          "[AI][SmartSlicing][Candidate][Evidence][Policy]")
+{
+    SliceCandidate stability = ready_candidate("stability", 400.0, 900.0, 90.0, 0);
+    SliceCandidate quality   = ready_candidate("quality", 300.0, 800.0, 1.0, 1);
+    SliceCandidate speed     = ready_candidate("speed", 10.0, 700.0, 50.0, 1);
+    SliceCandidate material  = ready_candidate("material", 200.0, 100.0, 40.0, 1);
+    const std::vector<SliceCandidate> candidates{material, speed, quality, stability};
+
+    CHECK(compare_candidates(candidates, CandidateGoal::Stability).recommended_candidate_id ==
+          "stability");
+    CHECK(compare_candidates(candidates, CandidateGoal::Quality).recommended_candidate_id ==
+          "quality");
+    CHECK(compare_candidates(candidates, CandidateGoal::Speed).recommended_candidate_id ==
+          "speed");
+    CHECK(compare_candidates(candidates, CandidateGoal::MaterialSaving).recommended_candidate_id ==
+          "material");
+}
+
+TEST_CASE("candidate comparison treats every optional policy dimension as measured evidence",
+          "[AI][SmartSlicing][Candidate][Evidence][Completeness]")
+{
+    auto check_complete_evidence = [](SliceCandidate measured, SliceCandidate missing) {
+        const CandidateComparison comparison =
+            compare_candidates({std::move(missing), std::move(measured)}, CandidateGoal::Stability);
+        CHECK(comparison.recommended_candidate_id == "measured");
+        CHECK(comparison.recommendation_evidence_codes ==
+              std::vector<std::string>{"more_complete_trial_evidence"});
+    };
+
+    SECTION("adhesion risk") {
+        SliceCandidate measured = ready_candidate("measured", 100.0, 500.0, 10.0);
+        measured.metrics->bed_adhesion_risk_score = 0.5;
+        check_complete_evidence(measured, ready_candidate("missing", 100.0, 500.0, 10.0));
+    }
+    SECTION("brim assistance") {
+        SliceCandidate measured = ready_candidate("measured", 100.0, 500.0, 10.0);
+        SliceCandidate missing  = ready_candidate("missing", 100.0, 500.0, 10.0);
+        measured.metrics->bed_adhesion_risk_score = 1.5;
+        missing.metrics->bed_adhesion_risk_score  = 1.5;
+        measured.metrics->brim_volume_mm3 = 20.0;
+        check_complete_evidence(measured, missing);
+    }
+    SECTION("tool changes") {
+        SliceCandidate measured = ready_candidate("measured", 100.0, 500.0, 10.0);
+        SliceCandidate missing  = measured;
+        missing.id = "missing";
+        missing.metrics->tool_changes.reset();
+        check_complete_evidence(measured, missing);
+    }
+    SECTION("flush volume") {
+        SliceCandidate measured = ready_candidate("measured", 100.0, 500.0, 10.0);
+        SliceCandidate missing  = measured;
+        missing.id = "missing";
+        missing.metrics->flush_volume_mm3.reset();
+        check_complete_evidence(measured, missing);
+    }
+    SECTION("wipe tower volume") {
+        SliceCandidate measured = ready_candidate("measured", 100.0, 500.0, 10.0);
+        SliceCandidate missing  = measured;
+        missing.id = "missing";
+        missing.metrics->wipe_tower_volume_mm3.reset();
+        check_complete_evidence(measured, missing);
+    }
+    SECTION("support volume") {
+        SliceCandidate measured = ready_candidate("measured", 100.0, 500.0, 10.0);
+        SliceCandidate missing  = measured;
+        missing.id = "missing";
+        missing.metrics->support_volume_mm3.reset();
+        check_complete_evidence(measured, missing);
+    }
+    SECTION("estimated time") {
+        SliceCandidate measured = ready_candidate("measured", 100.0, 500.0, 10.0);
+        SliceCandidate missing  = measured;
+        missing.id = "missing";
+        missing.metrics->estimated_time_seconds.reset();
+        check_complete_evidence(measured, missing);
+    }
+    SECTION("filament volume") {
+        SliceCandidate measured = ready_candidate("measured", 100.0, 500.0, 10.0);
+        SliceCandidate missing  = measured;
+        missing.id = "missing";
+        missing.metrics->filament_volume_mm3.reset();
+        check_complete_evidence(measured, missing);
+    }
+}
+
+TEST_CASE("candidate comparison hard-gates incomplete slot and mapping evidence",
+          "[AI][SmartSlicing][Candidate][Eligibility]")
+{
+    SliceCandidate no_metrics = ready_candidate("no-metrics", 100.0, 500.0, 10.0);
+    no_metrics.metrics.reset();
+    SliceCandidate incompatible = ready_candidate("incompatible", 100.0, 500.0, 10.0);
+    incompatible.metrics->physical_slots_compatible = false;
+    SliceCandidate degraded = ready_candidate("degraded", 100.0, 500.0, 10.0);
+    degraded.metrics->color_mapping_degraded = true;
+    const SliceCandidate usable = ready_candidate("usable", 100.0, 500.0, 10.0);
+
+    const CandidateComparison comparison = compare_candidates(
+        {degraded, incompatible, no_metrics, usable}, CandidateGoal::Stability);
+
+    CHECK(comparison.recommended_candidate_id == "usable");
+    CHECK(comparison.excluded_candidate_ids ==
+          std::vector<CandidateId>{"degraded", "incompatible", "no-metrics"});
+}
+
 TEST_CASE("candidate comparison explains the measured fallback that breaks a primary-goal tie",
           "[AI][SmartSlicing][Candidate][Evidence]")
 {
