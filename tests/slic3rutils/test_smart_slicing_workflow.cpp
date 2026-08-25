@@ -45,6 +45,7 @@ SliceCandidate proposal(std::string id, const WorkspaceRevision& revision)
 {
     SliceCandidate candidate;
     candidate.id            = std::move(id);
+    candidate.workflow_id   = 1;
     candidate.base_revision = revision;
     candidate.status        = CandidateStatus::Ready;
     candidate.metrics       = SlicingMetrics{};
@@ -1301,6 +1302,38 @@ TEST_CASE("apply workflow rejects stale candidates before entering the transacti
     CHECK(gateway.commit_calls == 0);
 }
 
+TEST_CASE("apply workflow rejects invalid transaction identity before entering the gateway",
+          "[AI][SmartSlicing][Apply][TransactionBoundary][Identity]")
+{
+    FakeOfficialSliceGateway gateway;
+    const WorkspaceRevision revision{1, 2, 3, "revision-a"};
+    SliceCandidate candidate = proposal("candidate", revision);
+
+    SECTION("reserved workflow id") {
+        candidate.workflow_id = 0;
+        const OfficialSliceResult result = ApplyWorkflow().start(candidate, revision, revision, gateway);
+        CHECK(result.phase == OfficialSlicePhase::Rejected);
+        CHECK(result.diagnostic_code == "invalid_candidate_identity");
+    }
+
+    SECTION("empty candidate id") {
+        candidate.id.clear();
+        const OfficialSliceResult result = ApplyWorkflow().start(candidate, revision, revision, gateway);
+        CHECK(result.phase == OfficialSlicePhase::Rejected);
+        CHECK(result.diagnostic_code == "invalid_candidate_identity");
+    }
+
+    SECTION("invalid revision") {
+        candidate.base_revision = {};
+        const OfficialSliceResult result = ApplyWorkflow().start(candidate, {}, {}, gateway);
+        CHECK(result.phase == OfficialSlicePhase::Rejected);
+        CHECK(result.diagnostic_code == "invalid_workspace_revision");
+    }
+
+    CHECK(gateway.prepare_calls == 0);
+    CHECK(gateway.commit_calls == 0);
+}
+
 TEST_CASE("coordinator applies once then waits for official slice completion", "[AI][SmartSlicing][Apply]")
 {
     WorkflowWorkspace workspace;
@@ -1488,6 +1521,71 @@ TEST_CASE("Orca official gateway requires one prepared ready candidate before fo
     CHECK(compatibility_calls == 5);
     CHECK(apply_calls == 1);
     CHECK(slice_calls == 1);
+}
+
+TEST_CASE("Orca official gateway rejects invalid transaction identity before compatibility or mutation",
+          "[AI][SmartSlicing][Apply][TransactionBoundary][Identity]")
+{
+    WorkspaceRevision current{1, 2, 3, "revision-a"};
+    size_t revision_calls = 0;
+    size_t compatibility_calls = 0;
+    size_t apply_calls = 0;
+    size_t slice_calls = 0;
+    Slic3r::GUI::OrcaOfficialSliceGateway gateway(
+        [&current, &revision_calls] {
+            ++revision_calls;
+            return current;
+        },
+        [&compatibility_calls](const SliceCandidate&) {
+            ++compatibility_calls;
+            return std::string{};
+        },
+        [&apply_calls](const SliceCandidate&) {
+            ++apply_calls;
+            return Slic3r::GUI::OrcaApplyMutationResult{true, true, {}};
+        },
+        [&slice_calls] {
+            ++slice_calls;
+            return true;
+        },
+        [] { return true; }, [] { return true; });
+    SliceCandidate candidate = proposal("candidate", current);
+
+    SECTION("reserved workflow id") {
+        candidate.workflow_id = 0;
+        const OfficialSliceResult result = gateway.prepare(candidate, current);
+        CHECK(result.phase == OfficialSlicePhase::Rejected);
+        CHECK(result.diagnostic_code == "invalid_candidate_identity");
+        const OfficialSliceResult committed = gateway.commit(candidate, current);
+        CHECK(committed.phase == OfficialSlicePhase::Rejected);
+        CHECK(committed.diagnostic_code == "invalid_candidate_identity");
+    }
+
+    SECTION("empty candidate id") {
+        candidate.id.clear();
+        const OfficialSliceResult result = gateway.prepare(candidate, current);
+        CHECK(result.phase == OfficialSlicePhase::Rejected);
+        CHECK(result.diagnostic_code == "invalid_candidate_identity");
+        const OfficialSliceResult committed = gateway.commit(candidate, current);
+        CHECK(committed.phase == OfficialSlicePhase::Rejected);
+        CHECK(committed.diagnostic_code == "invalid_candidate_identity");
+    }
+
+    SECTION("invalid revision") {
+        candidate.base_revision = {};
+        current = {};
+        const OfficialSliceResult result = gateway.prepare(candidate, {});
+        CHECK(result.phase == OfficialSlicePhase::Rejected);
+        CHECK(result.diagnostic_code == "invalid_workspace_revision");
+        const OfficialSliceResult committed = gateway.commit(candidate, {});
+        CHECK(committed.phase == OfficialSlicePhase::Rejected);
+        CHECK(committed.diagnostic_code == "invalid_workspace_revision");
+    }
+
+    CHECK(revision_calls == 0);
+    CHECK(compatibility_calls == 0);
+    CHECK(apply_calls == 0);
+    CHECK(slice_calls == 0);
 }
 
 TEST_CASE("Orca official gateway preserves native undo recovery when slicing cannot start", "[AI][SmartSlicing][Apply]")

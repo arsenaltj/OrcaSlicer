@@ -47,6 +47,10 @@ public:
         if (has_pending_apply_recovery())
             return rejected("apply_recovery_required");
         clear_preparation();
+        if (candidate.id.empty() || candidate.workflow_id == 0)
+            return rejected("invalid_candidate_identity");
+        if (!candidate.base_revision.valid() || !expected_revision.valid())
+            return rejected("invalid_workspace_revision");
         if (candidate.status != AI::SmartSlicing::CandidateStatus::Ready)
             return rejected("candidate_not_ready");
         if (!revision_matches(candidate, expected_revision))
@@ -74,6 +78,14 @@ public:
             return rejected("official_slice_in_progress");
         if (has_pending_apply_recovery())
             return rejected("apply_recovery_required");
+        if (candidate.id.empty() || candidate.workflow_id == 0) {
+            clear_preparation();
+            return rejected("invalid_candidate_identity");
+        }
+        if (!candidate.base_revision.valid() || !expected_revision.valid()) {
+            clear_preparation();
+            return rejected("invalid_workspace_revision");
+        }
         if (candidate.status != AI::SmartSlicing::CandidateStatus::Ready) {
             clear_preparation();
             return rejected("candidate_not_ready");

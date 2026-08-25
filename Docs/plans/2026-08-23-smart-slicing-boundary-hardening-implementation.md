@@ -1794,3 +1794,35 @@ write path, configuration, dependency, external network port, data directory con
 3MF/profile format, profile data, or default Orca behavior. The isolated smoke-test directories are disposable
 runtime data, not a product data-directory change. macOS and Linux native build/test execution remains a separate
 host/CI gate.
+
+## Formal transaction identity gate — 2026-08-25
+
+Application and `OrcaOfficialSliceGateway` now reject a formal transaction before any gateway preparation,
+revision callback, compatibility check, mutation, or official slicing action when its candidate id is empty, its
+`WorkflowId` is the reserved zero value, or any participating `WorkspaceRevision` lacks a fingerprint. The stable
+diagnostics are `invalid_candidate_identity` and `invalid_workspace_revision`. Normal stale-revision comparison
+and the existing Ready-candidate requirement continue unchanged after those structural identity checks.
+
+The red contracts showed both boundaries accepting all three invalid inputs: Application called prepare and
+commit, while the Orca gateway returned Prepared and invoked revision/compatibility callbacks. The focused run had
+24 failures among 30 assertions. The green behavior fails closed at both independent layers and reaches none of
+the transaction callbacks.
+
+### Windows verification
+
+- Formal-identity focus: 2 test cases and 36 assertions, all passed in Release; the same contracts passed in the
+  Release and RelWithDebInfo smart-slicing suites.
+- Smart-slicing suite: 137 test cases; 136 passed and the opt-in benchmark remained explicitly skipped, with 947
+  assertions passed in Release and RelWithDebInfo.
+- Default full `slic3rutils_tests`: 147 test cases and 1054 assertions, all passed in Release and RelWithDebInfo.
+- Release and RelWithDebInfo `OrcaSlicer_app_gui` built successfully. Existing LNK4075 and LNK4098 warnings and
+  the non-failing test-working-directory `info/nozzle_info.json` warning are unchanged.
+- GUI smoke was not repeated because this is a nonvisual fail-closed contract reached only by structurally invalid
+  internal transaction metadata; no layout, startup, valid candidate interaction, trial execution, or successful
+  formal-apply behavior changed. No Orca process was launched for this batch.
+
+This batch changes only smart-slicing Application, the Orca official gateway, and their targeted
+test/documentation. It changes no shared `MainFrame`, `Plater`, or CMake file and no model-generation code, Port
+DTO, valid formal workspace write, configuration, dependency, external network port, data directory contract,
+journal path/schema, 3MF/profile format, profile data, or default Orca behavior. macOS and Linux native build/test
+execution remains a separate host/CI gate.
