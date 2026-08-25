@@ -301,4 +301,3 @@ git diff --check
 ```
 
 Expected: all model-generation changes committed; only the pre-existing unrelated `.tmp/` may remain untracked.
-

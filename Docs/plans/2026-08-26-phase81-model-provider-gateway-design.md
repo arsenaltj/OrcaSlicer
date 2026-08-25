@@ -44,4 +44,3 @@ Gateway 或 Tripo 不可用时，模型生成能力标记不可用；Orca 原有
 - Python 全量离线测试与 `py_compile` 必须通过。
 - Windows 测试包必须包含新模块，环境检查清单同步更新。
 - 因无 C++/GUI 行为变化，本阶段只做 Sidecar health/任务契约 smoke 和 Windows Release 增量构建；若 C++ 文件没有变化，不重复做交互式 GUI 操作。
-
