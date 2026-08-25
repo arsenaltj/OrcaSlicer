@@ -982,6 +982,72 @@ TEST_CASE("candidate cards expose baseline deltas selection and retry without wo
     CHECK(workspace.context.revision.fingerprint == "revision-a");
 }
 
+TEST_CASE("candidate view model projects every intent concrete delta and preserved sequence constraint",
+          "[AI][SmartSlicing][GUI][CandidateIntent][Multicolor]")
+{
+    WorkflowSnapshot snapshot;
+    snapshot.state = WorkflowState::ReadyToApply;
+    const std::array<ParameterIntent, 4> intents{
+        ParameterIntent::Stability, ParameterIntent::Quality,
+        ParameterIntent::Speed, ParameterIntent::MaterialSaving};
+    const std::array<std::string, 4> intent_codes{
+        "stability", "quality", "speed", "material_saving"};
+    const std::array<std::string, 4> keys{
+        "brim_width", "layer_height", "layer_height", "support_interface_top_layers"};
+    for (size_t index = 0; index < intents.size(); ++index) {
+        SliceCandidate candidate = proposal("intent-" + std::to_string(index), {1, 2, 3, "revision-a"});
+        candidate.parameters.intent = intents[index];
+        candidate.parameters.entries.push_back(
+            {ConfigScope::Plate, PresetOwner::Process, 7, keys[index],
+             index == 3 ? ConfigValue(int64_t{3}) : ConfigValue(0.20),
+             index == 3 ? ConfigValue(int64_t{2}) : ConfigValue(0.16), "bounded_intent_change"});
+        snapshot.candidates.push_back(std::move(candidate));
+    }
+    SliceCandidate sequence = proposal("sequence", {1, 2, 3, "revision-a"});
+    ToolSequenceProposal tool_sequence;
+    tool_sequence.used_logical_filament_ids = {1, 2};
+    tool_sequence.expected_filament_to_physical_slot = {1, 2};
+    tool_sequence.expected_physical_slot_compatibility = PhysicalSlotCompatibility::Compatible;
+    tool_sequence.expected_first_layer_sequence = {1, 2};
+    tool_sequence.new_first_layer_sequence = {1, 2};
+    tool_sequence.expected_other_layer_sequences = {{2, 10, {1, 2}}};
+    tool_sequence.new_other_layer_sequences = {{2, 10, {2, 1}}};
+    sequence.tool_sequence = std::move(tool_sequence);
+    sequence.explanation = "preserve_multicolor_constraints_reorder_tool_sequence";
+    snapshot.candidates.push_back(std::move(sequence));
+    SliceCandidate raw = proposal("raw-provider-text", {1, 2, 3, "revision-a"});
+    raw.explanation = "untrusted provider prose";
+    snapshot.candidates.push_back(std::move(raw));
+
+    const Slic3r::GUI::SmartSlicingViewModel view =
+        Slic3r::GUI::SmartSlicingViewModel::from_snapshot(snapshot);
+
+    REQUIRE(view.candidates.size() == 6);
+    for (size_t index = 0; index < intents.size(); ++index) {
+        CAPTURE(index);
+        CHECK(view.candidates[index].parameter_intent_code == intent_codes[index]);
+        REQUIRE(view.candidates[index].parameter_changes.size() == 1);
+        CHECK(view.candidates[index].parameter_changes.front().key == keys[index]);
+        CHECK(view.candidates[index].parameter_changes.front().reason_code == "bounded_intent_change");
+    }
+    CHECK(view.candidates[4].changed_tool_sequence_count == 1);
+    CHECK(view.candidates[4].tool_sequence_constraints_preserved);
+    CHECK(view.candidates[4].explanation == "preserve_multicolor_constraints_reorder_tool_sequence");
+    CHECK(view.candidates[5].explanation.empty());
+}
+
+TEST_CASE("candidate localized reasons describe concrete layer changes without general quality claims",
+          "[AI][SmartSlicing][GUI][CandidateIntent][Evidence]")
+{
+    Slic3r::GUI::SmartSlicingCandidateView quality;
+    quality.explanation = "finer_validated_layer_height_candidate";
+    const wxString reason = Slic3r::GUI::smart_slicing_candidate_reason_text(quality);
+
+    CHECK(reason.Find(wxString::FromUTF8(u8"更细有效层高")) != wxNOT_FOUND);
+    CHECK(reason.Find(wxString::FromUTF8(u8"质量提升")) == wxNOT_FOUND);
+    CHECK(reason.Find(wxString::FromUTF8(u8"更安全")) == wxNOT_FOUND);
+}
+
 TEST_CASE("multicolor candidates excluded by comparison cannot be selected",
           "[AI][SmartSlicing][Workflow][Candidate][Multicolor][Eligibility]")
 {

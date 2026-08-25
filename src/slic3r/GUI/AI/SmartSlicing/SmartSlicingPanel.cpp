@@ -136,6 +136,47 @@ wxString format_delta(const std::optional<double>& value, double scale, const wx
     return value ? wxString::Format("%+.2f %s", *value / scale, unit.c_str()) : _L("—");
 }
 
+wxString parameter_intent_text(const std::string& code)
+{
+    if (code == "stability")
+        return _L("稳定性");
+    if (code == "quality")
+        return _L("质量（具体参数）");
+    if (code == "speed")
+        return _L("速度");
+    if (code == "material_saving")
+        return _L("省料");
+    return {};
+}
+
+wxString parameter_key_text(const std::string& key)
+{
+    if (key == "layer_height") return _L("层高");
+    if (key == "wall_loops") return _L("墙圈数");
+    if (key == "top_shell_layers") return _L("顶壳层数");
+    if (key == "bottom_shell_layers") return _L("底壳层数");
+    if (key == "enable_support") return _L("启用支撑");
+    if (key == "brim_width") return _L("附着边宽度");
+    if (key == "brim_type") return _L("附着边策略");
+    if (key == "initial_layer_print_height") return _L("首层打印高度");
+    if (key == "support_interface_top_layers") return _L("支撑界面层数");
+    if (key == "seam_position") return _L("接缝位置");
+    return _L("已校验参数");
+}
+
+wxString parameter_value_text(const AI::SmartSlicing::ConfigValue& value)
+{
+    if (const auto* boolean = std::get_if<bool>(&value))
+        return *boolean ? _L("开启") : _L("关闭");
+    if (const auto* integer = std::get_if<int64_t>(&value))
+        return wxString::Format("%lld", static_cast<long long>(*integer));
+    if (const auto* number = std::get_if<double>(&value))
+        return wxString::Format("%.3g", *number);
+    if (const auto* text = std::get_if<std::string>(&value))
+        return from_u8(*text);
+    return _L("不可用");
+}
+
 wxString candidate_failure_text(const std::string& diagnostic_code)
 {
     if (diagnostic_code == "workflow_timeout")
@@ -157,6 +198,12 @@ wxString candidate_failure_text(const std::string& diagnostic_code)
         return _L("当前版本尚不能安全试切或应用网格修复");
     if (diagnostic_code.rfind("parameter_", 0) == 0)
         return _L("候选参数未通过 Orca 安全校验");
+    if (diagnostic_code.rfind("tool_sequence_", 0) == 0 ||
+        diagnostic_code == "invalid_sequence_permutation" ||
+        diagnostic_code == "physical_mapping_mismatch" ||
+        diagnostic_code == "prime_tower_state_mismatch" ||
+        diagnostic_code == "source_sequence_mismatch" || diagnostic_code == "layer_range_mismatch")
+        return _L("多色工具序列未通过约束保持校验");
     if (diagnostic_code == "invalid_candidate_metrics")
         return _L("试切指标不完整或无效");
     if (diagnostic_code == "trial_slice_executor_exception" ||
@@ -194,6 +241,12 @@ wxString candidate_reason_text_impl(const SmartSlicingCandidateView& candidate)
             reason += _L(" 使用 Orca 原生多指标自动朝向生成。");
         else if (candidate.explanation == "small_or_slender_footprint_brim_candidate")
             reason += _L(" 针对小底面或细长模型增强首层附着。");
+        else if (candidate.explanation == "finer_validated_layer_height_candidate")
+            reason += _L(" 使用经过范围校验的更细有效层高。");
+        else if (candidate.explanation == "coarser_validated_layer_height_candidate")
+            reason += _L(" 使用经过范围校验的更粗有效层高。");
+        else if (candidate.explanation == "preserve_multicolor_constraints_reorder_tool_sequence")
+            reason += _L(" 仅重排逻辑耗材执行顺序，不改变材料归属。");
     }
     for (const std::string& evidence : candidate.evidence_codes) {
         if (evidence == "fewer_slice_warnings")
@@ -218,6 +271,8 @@ wxString candidate_reason_text_impl(const SmartSlicingCandidateView& candidate)
             reason += _L(" 对高风险底面提供了更多实际 brim 附着量。");
         else if (evidence == "more_complete_trial_evidence")
             reason += _L(" 试切证据更完整。");
+        else if (evidence == "deterministic_tie_break")
+            reason += _L(" 指标相同，按稳定候选标识确定顺序；不代表质量差异。");
     }
     return reason;
 }
@@ -243,21 +298,25 @@ wxString candidate_change_summary(const SmartSlicingCandidateView& candidate)
         append_line(wxString::Format(_L("%s：%llu 个实例"), action.c_str(),
                                      static_cast<unsigned long long>(candidate.transformed_instance_count)));
     }
+    if (!candidate.parameter_intent_code.empty())
+        append_line(_L("优化意图：") + parameter_intent_text(candidate.parameter_intent_code));
     size_t described_plate_parameters = 0;
-    if (candidate.brim_width_before && candidate.brim_width_after) {
-        append_line(wxString::Format(_L("打印板参数 · 附着边宽度：%.2f mm → %.2f mm"),
-                                     *candidate.brim_width_before, *candidate.brim_width_after));
-        ++described_plate_parameters;
-    }
-    if (candidate.brim_type_before && candidate.brim_type_after) {
-        append_line(_L("打印板参数 · 附着边策略：") + from_u8(*candidate.brim_type_before) + _L(" → ") +
-                    from_u8(*candidate.brim_type_after));
+    for (const SmartSlicingParameterChangeView& change : candidate.parameter_changes) {
+        append_line(_L("打印板参数 · ") + parameter_key_text(change.key) + _L("：") +
+                    parameter_value_text(change.expected_value) + _L(" → ") +
+                    parameter_value_text(change.new_value));
         ++described_plate_parameters;
     }
     if (candidate.plate_parameter_change_count > described_plate_parameters)
         append_line(wxString::Format(_L("打印板参数 · 其他已校验变更：%llu 项"),
                                      static_cast<unsigned long long>(candidate.plate_parameter_change_count -
                                                                      described_plate_parameters)));
+    if (candidate.changed_tool_sequence_count > 0) {
+        append_line(wxString::Format(_L("多色工具序列：重排 %llu 组"),
+                                     static_cast<unsigned long long>(candidate.changed_tool_sequence_count)));
+        if (candidate.tool_sequence_constraints_preserved)
+            append_line(_L("保持约束：逻辑耗材集合、物理槽映射、擦料塔状态、层范围和冲刷设置均不变"));
+    }
     if (candidate.object_parameter_change_count > 0)
         append_line(wxString::Format(_L("对象参数 · 已校验变更：%llu 项"),
                                      static_cast<unsigned long long>(candidate.object_parameter_change_count)));

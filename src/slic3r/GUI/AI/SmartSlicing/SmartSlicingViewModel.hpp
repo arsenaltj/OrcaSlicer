@@ -1,6 +1,7 @@
 #pragma once
 
 #include "slic3r/AI/SmartSlicing/Domain/WorkflowState.hpp"
+#include "slic3r/AI/SmartSlicing/Domain/ParameterProposal.hpp"
 
 #include <array>
 #include <cstddef>
@@ -19,6 +20,14 @@ struct SmartSlicingStageView
     SmartSlicingStageStatus status{SmartSlicingStageStatus::Waiting};
 };
 
+struct SmartSlicingParameterChangeView
+{
+    std::string key;
+    AI::SmartSlicing::ConfigValue expected_value;
+    AI::SmartSlicing::ConfigValue new_value;
+    std::string reason_code;
+};
+
 struct SmartSlicingCandidateView
 {
     std::string id;
@@ -26,6 +35,8 @@ struct SmartSlicingCandidateView
     std::string diagnostic_code;
     std::string exclusion_reason_code;
     std::vector<std::string> evidence_codes;
+    std::string parameter_intent_code;
+    std::vector<SmartSlicingParameterChangeView> parameter_changes;
     std::optional<double> estimated_time_seconds;
     std::optional<double> filament_volume_mm3;
     std::optional<double> support_volume_mm3;
@@ -53,6 +64,8 @@ struct SmartSlicingCandidateView
     size_t object_parameter_change_count{0};
     size_t material_parameter_change_count{0};
     size_t workspace_parameter_change_count{0};
+    size_t changed_tool_sequence_count{0};
+    bool tool_sequence_constraints_preserved{false};
     std::optional<double> brim_width_before;
     std::optional<double> brim_width_after;
     std::optional<std::string> brim_type_before;

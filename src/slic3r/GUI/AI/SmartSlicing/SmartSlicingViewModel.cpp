@@ -1,6 +1,86 @@
 #include "SmartSlicingViewModel.hpp"
 
 #include <algorithm>
+#include <array>
+
+namespace {
+
+using namespace Slic3r::AI::SmartSlicing;
+
+std::string parameter_intent_code(ParameterIntent intent)
+{
+    switch (intent) {
+    case ParameterIntent::Stability: return "stability";
+    case ParameterIntent::Quality: return "quality";
+    case ParameterIntent::Speed: return "speed";
+    case ParameterIntent::MaterialSaving: return "material_saving";
+    case ParameterIntent::Unspecified: return {};
+    }
+    return {};
+}
+
+std::string safe_explanation_code(const std::string& explanation)
+{
+    static const std::array<const char*, 7> supported{
+        "native_arrange_stability_candidate", "native_auto_orientation_stability_candidate",
+        "small_or_slender_footprint_brim_candidate", "finer_validated_layer_height_candidate",
+        "coarser_validated_layer_height_candidate", "preserve_multicolor_constraints_reorder_tool_sequence",
+        "current_workspace_baseline"};
+    return std::find(supported.begin(), supported.end(), explanation) != supported.end() ? explanation :
+                                                                                          std::string{};
+}
+
+bool is_permutation(const std::vector<int>& sequence, const std::vector<int>& used)
+{
+    if (sequence.size() != used.size())
+        return false;
+    std::vector<int> ordered_sequence = sequence;
+    std::vector<int> ordered_used = used;
+    std::sort(ordered_sequence.begin(), ordered_sequence.end());
+    std::sort(ordered_used.begin(), ordered_used.end());
+    return ordered_sequence == ordered_used &&
+           std::adjacent_find(ordered_sequence.begin(), ordered_sequence.end()) == ordered_sequence.end();
+}
+
+bool sequence_constraints_preserved(const ToolSequenceProposal& proposal)
+{
+    if (proposal.expected_physical_slot_compatibility != PhysicalSlotCompatibility::Compatible ||
+        proposal.expected_color_mapping_degraded ||
+        !is_permutation(proposal.expected_first_layer_sequence, proposal.used_logical_filament_ids) ||
+        !is_permutation(proposal.new_first_layer_sequence, proposal.used_logical_filament_ids) ||
+        proposal.expected_other_layer_sequences.size() != proposal.new_other_layer_sequences.size())
+        return false;
+    for (const int logical_id : proposal.used_logical_filament_ids) {
+        const size_t index = logical_id > 0 ? static_cast<size_t>(logical_id - 1) :
+                                              proposal.expected_filament_to_physical_slot.size();
+        if (index >= proposal.expected_filament_to_physical_slot.size() ||
+            proposal.expected_filament_to_physical_slot[index] <= 0)
+            return false;
+    }
+    for (size_t index = 0; index < proposal.expected_other_layer_sequences.size(); ++index) {
+        const ToolSequenceLayerRange& expected = proposal.expected_other_layer_sequences[index];
+        const ToolSequenceLayerRange& replacement = proposal.new_other_layer_sequences[index];
+        if (expected.minimum_layer != replacement.minimum_layer ||
+            expected.maximum_layer != replacement.maximum_layer ||
+            !is_permutation(expected.logical_filament_ids, proposal.used_logical_filament_ids) ||
+            !is_permutation(replacement.logical_filament_ids, proposal.used_logical_filament_ids))
+            return false;
+    }
+    return true;
+}
+
+size_t changed_sequence_count(const ToolSequenceProposal& proposal)
+{
+    size_t count = proposal.expected_first_layer_sequence == proposal.new_first_layer_sequence ? 0 : 1;
+    const size_t ranges = std::min(proposal.expected_other_layer_sequences.size(),
+                                   proposal.new_other_layer_sequences.size());
+    for (size_t index = 0; index < ranges; ++index)
+        if (!(proposal.expected_other_layer_sequences[index] == proposal.new_other_layer_sequences[index]))
+            ++count;
+    return count;
+}
+
+} // namespace
 
 namespace Slic3r::GUI {
 
@@ -32,7 +112,7 @@ SmartSlicingViewModel SmartSlicingViewModel::from_snapshot(const AI::SmartSlicin
     for (const AI::SmartSlicing::SliceCandidate& candidate : snapshot.candidates) {
         SmartSlicingCandidateView card;
         card.id              = candidate.id;
-        card.explanation     = candidate.explanation;
+        card.explanation     = safe_explanation_code(candidate.explanation);
         card.diagnostic_code = candidate.diagnostic_code;
         card.recommended     = snapshot.comparison && snapshot.comparison->recommended_candidate_id == candidate.id;
         card.selected        = snapshot.selected_candidate_id == candidate.id;
@@ -49,11 +129,19 @@ SmartSlicingViewModel SmartSlicingViewModel::from_snapshot(const AI::SmartSlicin
         card.can_retry       = snapshot.state == WorkflowState::ReadyToApply && card.failed;
         card.can_select      = snapshot.state == WorkflowState::ReadyToApply && !card.failed && !card.excluded;
         card.transformed_instance_count = candidate.placement.transforms.size();
+        card.parameter_intent_code = parameter_intent_code(candidate.parameters.intent);
+        if (candidate.tool_sequence) {
+            card.changed_tool_sequence_count = changed_sequence_count(*candidate.tool_sequence);
+            card.tool_sequence_constraints_preserved =
+                sequence_constraints_preserved(*candidate.tool_sequence);
+        }
         if (candidate.repair) {
             card.repair_operation_count = candidate.repair->operation_codes.size();
             card.repair_changes_geometry_semantics = candidate.repair->changes_geometry_semantics;
         }
         for (const AI::SmartSlicing::ConfigPatchEntry& entry : candidate.parameters.entries) {
+            card.parameter_changes.push_back(
+                {entry.key, entry.expected_value, entry.new_value, entry.reason_code});
             switch (entry.scope) {
             case AI::SmartSlicing::ConfigScope::Plate: ++card.plate_parameter_change_count; break;
             case AI::SmartSlicing::ConfigScope::Object: ++card.object_parameter_change_count; break;
