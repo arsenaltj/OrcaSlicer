@@ -43,6 +43,7 @@ public:
 
     void shutdown();
     void set_service_availability(bool available, const std::string& message = {});
+    void set_service_retry_handler(std::function<void()> handler);
 
 private:
     void build_page();
@@ -64,6 +65,7 @@ private:
     void on_import(wxCommandEvent& event);
     void on_recheck_model(wxCommandEvent& event);
     void on_visual_review_model(wxCommandEvent& event);
+    void on_retry_service(wxCommandEvent& event);
     void on_apply_model_refinement(wxCommandEvent& event);
     void on_apply_local_recolor(wxCommandEvent& event);
     void on_discard(wxCommandEvent& event);
@@ -118,14 +120,18 @@ private:
     void refresh_model_quality_card();
     void refresh_local_recolor_controls();
     std::vector<std::string> local_recolor_palette() const;
+    struct GeneratedModelEntry;
     void load_library_entries();
     void save_library_entry(size_t artifact_size, size_t triangle_count, double width, double depth,
-                            double height, size_t color_count);
+                            double height, size_t color_count, double load_seconds);
     void load_library_entry(const boost::filesystem::path& model_path,
                             const std::vector<std::string>& palette,
                             const AIModelGenerationClient::PaletteRoles& palette_roles,
                             bool use_printable_colors,
                             const std::string& job_id, const wxString& title);
+    void delete_library_entry(const GeneratedModelEntry& entry);
+    void update_library_import_status(const std::string& job_id, bool auto_slice_requested);
+    void record_library_print_feedback(const std::string& job_id, const std::string& feedback);
     void refresh_library();
 
     struct GeneratedModelEntry
@@ -138,7 +144,13 @@ private:
         AIModelGenerationClient::PaletteRoles palette_roles;
         std::string job_id;
         std::time_t generated_at { 0 };
+        std::time_t imported_at { 0 };
+        std::time_t slice_requested_at { 0 };
+        size_t triangle_count { 0 };
+        double load_seconds { 0.0 };
+        std::string print_feedback;
         bool use_printable_colors { false };
+        bool auto_slice_requested { false };
     };
 
     AI::IModelArtifactConsumer&    m_artifact_consumer;
@@ -195,6 +207,8 @@ private:
     wxStaticText*   m_preview_kind { nullptr };
     wxChoice*       m_preview_stage { nullptr };
     wxStaticText*   m_preview_stage_hint { nullptr };
+    wxCollapsiblePane* m_preview_details_pane { nullptr };
+    wxStaticText*   m_preview_technical_details { nullptr };
     wxNotebook*     m_preview_book { nullptr };
     wxButton*       m_zoom_out { nullptr };
     wxButton*       m_zoom_fit { nullptr };
@@ -239,6 +253,7 @@ private:
     wxButton*       m_apply_model_refinement { nullptr };
     wxButton*       m_generate { nullptr };
     wxButton*       m_stop { nullptr };
+    wxButton*       m_retry_service { nullptr };
     wxStaticText*   m_progress_percent { nullptr };
     wxGauge*        m_generation_progress { nullptr };
     wxStaticText*   m_status { nullptr };
@@ -320,6 +335,7 @@ private:
     AIModelGenerationClient::ModelQuality m_model_quality;
     AIModelGenerationClient::VisualQuality m_visual_quality;
     AIModelGenerationClient::ModelRefinementAdvice m_model_refinement;
+    std::function<void()> m_service_retry_handler;
 };
 
 } // namespace Slic3r::GUI

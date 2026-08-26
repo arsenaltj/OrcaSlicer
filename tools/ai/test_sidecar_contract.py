@@ -599,6 +599,35 @@ class SidecarHealthContractTests(unittest.TestCase):
                     PRODUCTION._JOBS.clear()
                     PRODUCTION._JOBS.update(previous)
 
+    def test_image_job_input_can_be_downloaded_for_native_recovery(self):
+        job_id = str(uuid.uuid4())
+        input_bytes = b"\x89PNG\r\n\x1a\nrestored-input"
+        with tempfile.TemporaryDirectory() as directory:
+            job_directory = Path(directory) / job_id
+            job_directory.mkdir()
+            input_path = job_directory / "input.png"
+            input_path.write_bytes(input_bytes)
+            job = PRODUCTION.Job(id=job_id, source="image", directory=job_directory)
+            job.input_path = input_path
+            with PRODUCTION._JOBS_LOCK:
+                previous = dict(PRODUCTION._JOBS)
+                PRODUCTION._JOBS.clear()
+                PRODUCTION._JOBS[job.id] = job
+            try:
+                with sidecar_server(PRODUCTION.Handler) as port:
+                    request = urllib.request.Request(
+                        f"http://127.0.0.1:{port}/v1/orcaslicer/model-jobs/{job.id}/input",
+                        headers={"X-OrcaSlicer-Client": "native"},
+                    )
+                    with urllib.request.urlopen(request, timeout=5) as response:
+                        self.assertEqual(response.status, 200)
+                        self.assertEqual(response.headers.get_content_type(), "image/png")
+                        self.assertEqual(response.read(), input_bytes)
+            finally:
+                with PRODUCTION._JOBS_LOCK:
+                    PRODUCTION._JOBS.clear()
+                    PRODUCTION._JOBS.update(previous)
+
     def test_recheck_analyzes_only_the_registered_obj_without_paid_calls(self):
         job_id = str(uuid.uuid4())
         tetrahedron = (

@@ -744,7 +744,6 @@ AIModelGenerationClient::json AIModelGenerationClient::serialize_print_settings(
 void AIModelGenerationClient::download(const std::string& path, const boost::filesystem::path& destination,
                                        size_t size_limit, PathFn on_complete, ErrorFn on_error)
 {
-    cancel_current();
     if (!is_loopback_endpoint(m_endpoint)) {
         if (on_error)
             on_error("Generated files may only be downloaded from the loopback AI sidecar.");
@@ -783,7 +782,7 @@ void AIModelGenerationClient::download(const std::string& path, const boost::fil
         if (on_error)
             on_error(error_message(body, error, status));
     });
-    m_active_request = http.perform();
+    m_download_requests.emplace_back(http.perform());
 }
 
 void AIModelGenerationClient::cancel_current()
@@ -792,6 +791,11 @@ void AIModelGenerationClient::cancel_current()
         m_active_request->cancel();
         m_active_request.reset();
     }
+    for (const std::shared_ptr<Http>& request : m_download_requests) {
+        if (request)
+            request->cancel();
+    }
+    m_download_requests.clear();
 }
 
 } // namespace Slic3r::GUI

@@ -3636,7 +3636,7 @@ class Handler(BaseHTTPRequestHandler):
             action = "status"
         elif len(parts) == 2 and parts[0] and (
             parts[1] in {
-                "raw-preview", "strict-preview", "preview", "heatmap", "metadata",
+                "input", "raw-preview", "strict-preview", "preview", "heatmap", "metadata",
                 "background-mask", "subject-mask", "generate", "stop", "artifact",
                 "recheck", "visual-review", "model-view-sheet", "confirm-palette",
             }

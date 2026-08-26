@@ -1351,6 +1351,11 @@ void MainFrame::init_tabpanel() {
     BOOST_LOG_TRIVIAL(info) << "AI model generation startup: creating model generation panel";
     m_model_generation = new ModelGenerationPanel(
         m_tabpanel, *m_ai_orca_workspace, *m_ai_orca_workspace);
+    m_model_generation->set_service_retry_handler([this]() {
+        m_ai_service_retry_timer.Stop();
+        m_ai_service_retry_count = 0;
+        discover_ai_service();
+    });
     BOOST_LOG_TRIVIAL(info) << "AI model generation startup: model generation panel created";
     m_model_generation->SetBackgroundColour(*wxWHITE);
     m_tabpanel->InsertPage(tpGenerate3D, m_model_generation, _L("3D 生成"),

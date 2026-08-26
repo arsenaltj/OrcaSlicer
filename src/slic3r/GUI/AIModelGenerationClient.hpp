@@ -243,6 +243,7 @@ private:
 
     std::string           m_endpoint;
     std::shared_ptr<Http> m_active_request;
+    std::vector<std::shared_ptr<Http>> m_download_requests;
 };
 
 } // namespace Slic3r::GUI
