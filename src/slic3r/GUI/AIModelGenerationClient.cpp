@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <regex>
 #include <utility>
 
@@ -14,6 +15,10 @@ namespace {
 constexpr size_t MAX_PREVIEW_SIZE = 10 * 1024 * 1024;
 constexpr size_t MAX_ARTIFACT_SIZE = 768 * 1024 * 1024;
 constexpr size_t MAX_RECOMMENDATION_TEXT_SIZE = 2048;
+constexpr size_t MAX_REFINEMENT_ISSUES = 6;
+constexpr size_t MAX_REFINEMENT_SUMMARY_SIZE = 1024;
+constexpr size_t MAX_REFINEMENT_PROMPT_SIZE = 1200;
+constexpr size_t MAX_REFINEMENT_FIELD_SIZE = 512;
 
 std::string normalize_endpoint(std::string endpoint)
 {
@@ -50,6 +55,36 @@ bool valid_hex_color(const std::string& value)
 {
     static const std::regex pattern(R"(^#[0-9A-Fa-f]{6}$)");
     return std::regex_match(value, pattern);
+}
+
+bool valid_refinement_text(const std::string& value, size_t maximum_size)
+{
+    return !value.empty() && value.size() <= maximum_size;
+}
+
+bool valid_refinement_code(const std::string& value)
+{
+    static const std::vector<std::string> allowed {
+        "degenerate_faces", "boundary_edges", "non_manifold_edges", "inconsistent_winding_edges",
+        "flat_or_empty_axis", "repairable_boundary_edges", "repairable_non_manifold_edges",
+        "repairable_inconsistent_winding_edges", "floating_disconnected_components",
+        "tiny_detached_components", "visual_detached_artifacts", "thin_structural_components",
+        "thin_local_wall_regions", "extreme_aspect_ratio", "weak_bed_contact",
+        "visual_base_relationship", "high_downward_surface_ratio", "localized_overhang_regions",
+        "dense_micro_triangles", "visual_subject_incomplete", "visual_semantic_incoherence",
+        "visual_silhouette_unclear", "colors_outside_target_palette",
+        "too_few_meaningful_target_palette_colors", "tiny_printable_color_regions",
+        "visual_color_regions_unclear"
+    };
+    return std::find(allowed.begin(), allowed.end(), value) != allowed.end();
+}
+
+bool valid_refinement_category(const std::string& value)
+{
+    static const std::vector<std::string> allowed {
+        "topology", "attachments", "thickness", "base", "overhang", "detail", "semantics", "color"
+    };
+    return std::find(allowed.begin(), allowed.end(), value) != allowed.end();
 }
 
 } // namespace
@@ -466,6 +501,7 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
         status.image_score = metrics.value("score", 0.0);
         status.mean_color_error = metrics.value("mean_color_error", 0.0);
         status.small_region_ratio = metrics.value("small_region_ratio_after", 0.0);
+        status.changed_pixel_ratio = metrics.value("changed_pixel_ratio", 0.0);
         status.boundary_complexity = metrics.value("boundary_complexity", 0.0);
         status.minimum_feature_px = metrics.value("minimum_feature_px", 0);
         status.meaningful_palette_count = metrics.value("meaningful_palette_count", 0);
@@ -473,6 +509,13 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
         status.printable_subject_area_ratio = metrics.value("printable_subject_area_ratio", 0.0);
         status.largest_subject_component_ratio = metrics.value("largest_subject_component_ratio", 0.0);
         status.palette_quality_ok = metrics.value("palette_quality_ok", true);
+    }
+    if (job.contains("provider_failure") && job["provider_failure"].is_object()) {
+        const auto& failure = job["provider_failure"];
+        status.provider_error_code = failure.value("code", std::string());
+        status.provider_error_category = failure.value("category", std::string());
+        status.provider_error_retryable = failure.value("retryable", false);
+        status.provider_error_ambiguous = failure.value("ambiguous", false);
     }
     if (job.contains("artifact") && job["artifact"].is_object()) {
         status.artifact_ready = job["artifact"].value("ready", false);
@@ -492,6 +535,17 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
         };
         read_codes("errors", status.model_quality.errors);
         read_codes("warnings", status.model_quality.warnings);
+        if (quality.contains("thresholds") && quality["thresholds"].is_object()) {
+            const auto& thresholds = quality["thresholds"];
+            if (thresholds.contains("min_local_wall_thickness_mm") &&
+                thresholds["min_local_wall_thickness_mm"].is_number()) {
+                const double threshold = thresholds["min_local_wall_thickness_mm"].get<double>();
+                if (std::isfinite(threshold) && threshold > 0.0) {
+                    status.model_quality.local_wall_thickness_threshold_available = true;
+                    status.model_quality.minimum_local_wall_thickness_mm = threshold;
+                }
+            }
+        }
         if (quality.contains("metrics") && quality["metrics"].is_object()) {
             const auto& metrics = quality["metrics"];
             status.model_quality.vertex_count = metrics.value("vertex_count", size_t(0));
@@ -500,8 +554,115 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
             status.model_quality.tiny_component_count = metrics.value("tiny_component_count", size_t(0));
             status.model_quality.largest_component_face_ratio = metrics.value("largest_component_face_ratio", 0.0);
             status.model_quality.contact_span_ratio = metrics.value("contact_span_ratio", 0.0);
+            status.model_quality.bed_contact_area_available = metrics.contains("bed_contact_area_ratio");
+            status.model_quality.bed_contact_area_ratio = metrics.value("bed_contact_area_ratio", 0.0);
             status.model_quality.downward_surface_ratio = metrics.value("downward_surface_ratio", 0.0);
+            status.model_quality.elevated_downward_surface_ratio_available =
+                metrics.contains("elevated_downward_surface_ratio");
+            status.model_quality.elevated_downward_surface_ratio =
+                metrics.value("elevated_downward_surface_ratio", 0.0);
+            status.model_quality.overhang_region_metrics_available =
+                metrics.contains("significant_overhang_region_count");
+            status.model_quality.significant_overhang_region_count =
+                metrics.value("significant_overhang_region_count", size_t(0));
+            status.model_quality.component_thickness_available =
+                metrics.value("component_thickness_available", false);
+            status.model_quality.thin_component_count = metrics.value("thin_component_count", size_t(0));
+            if (metrics.contains("minimum_component_thickness_mm") &&
+                metrics["minimum_component_thickness_mm"].is_number())
+                status.model_quality.minimum_component_thickness_mm =
+                    metrics["minimum_component_thickness_mm"].get<double>();
+            status.model_quality.local_thickness_available =
+                metrics.value("local_thickness_available", false);
+            status.model_quality.local_thickness_sample_count =
+                metrics.value("local_thickness_sample_count", size_t(0));
+            status.model_quality.thin_local_surface_sample_count =
+                metrics.value("thin_local_surface_sample_count", size_t(0));
+            if (metrics.contains("minimum_sampled_local_thickness_mm") &&
+                metrics["minimum_sampled_local_thickness_mm"].is_number())
+                status.model_quality.minimum_sampled_local_thickness_mm =
+                    metrics["minimum_sampled_local_thickness_mm"].get<double>();
+            status.model_quality.thin_local_region_count =
+                metrics.value("thin_local_region_count", size_t(0));
+            status.model_quality.reported_thin_local_region_count =
+                metrics.value("reported_thin_local_region_count", size_t(0));
+            status.model_quality.target_palette_metrics_available =
+                metrics.value("target_palette_metrics_available", false);
+            status.model_quality.target_palette_color_count =
+                metrics.value("target_palette_color_count", size_t(0));
+            status.model_quality.used_target_palette_color_count =
+                metrics.value("used_target_palette_color_count", size_t(0));
+            status.model_quality.meaningful_target_palette_color_count =
+                metrics.value("meaningful_target_palette_color_count", size_t(0));
+            status.model_quality.required_meaningful_target_palette_color_count =
+                metrics.value("required_meaningful_target_palette_color_count", size_t(0));
+            if (metrics.contains("target_palette_surface_coverage_ratio") &&
+                metrics["target_palette_surface_coverage_ratio"].is_number()) {
+                const double coverage = metrics["target_palette_surface_coverage_ratio"].get<double>();
+                if (std::isfinite(coverage))
+                    status.model_quality.target_palette_surface_coverage_ratio = std::clamp(coverage, 0.0, 1.0);
+            }
+            status.model_quality.target_palette_diversity_ok =
+                metrics.value("target_palette_diversity_ok", false);
             status.model_quality.repairable_topology = metrics.value("repairable_topology", false);
+        }
+        if (quality.contains("evidence") && quality["evidence"].is_object()) {
+            constexpr size_t max_evidence_faces = 256;
+            const auto& evidence = quality["evidence"];
+            if (evidence.contains("thin_local_face_indices") &&
+                evidence["thin_local_face_indices"].is_array()) {
+                for (const auto& face_index : evidence["thin_local_face_indices"]) {
+                    if (!face_index.is_number_unsigned() ||
+                        status.model_quality.thin_local_face_indices.size() >= max_evidence_faces)
+                        continue;
+                    status.model_quality.thin_local_face_indices.emplace_back(face_index.get<size_t>());
+                }
+            }
+            if (evidence.contains("thin_local_regions") && evidence["thin_local_regions"].is_array()) {
+                constexpr size_t max_regions = 16;
+                size_t total_region_faces = 0;
+                for (const auto& item : evidence["thin_local_regions"]) {
+                    if (!item.is_object() || status.model_quality.thin_local_regions.size() >= max_regions)
+                        continue;
+                    AIModelGenerationClient::ModelQuality::ThinLocalRegion region;
+                    if (item.contains("sample_count") && item["sample_count"].is_number_unsigned())
+                        region.sample_count = item["sample_count"].get<size_t>();
+                    if (item.contains("sampled_area_mm2") && item["sampled_area_mm2"].is_number())
+                        region.sampled_area_mm2 = item["sampled_area_mm2"].get<double>();
+                    if (item.contains("minimum_thickness_mm") && item["minimum_thickness_mm"].is_number())
+                        region.minimum_thickness_mm = item["minimum_thickness_mm"].get<double>();
+                    if (item.contains("representative_face_index") &&
+                        item["representative_face_index"].is_number_unsigned())
+                        region.representative_face_index = item["representative_face_index"].get<size_t>();
+                    if (item.contains("face_indices") && item["face_indices"].is_array()) {
+                        for (const auto& face_index : item["face_indices"]) {
+                            if (!face_index.is_number_unsigned() || total_region_faces >= max_evidence_faces)
+                                continue;
+                            region.face_indices.emplace_back(face_index.get<size_t>());
+                            ++total_region_faces;
+                        }
+                    }
+                    status.model_quality.thin_local_regions.emplace_back(std::move(region));
+                }
+            }
+            if (evidence.contains("target_palette_surface_usage") &&
+                evidence["target_palette_surface_usage"].is_array()) {
+                for (const auto& item : evidence["target_palette_surface_usage"]) {
+                    if (!item.is_object() || status.model_quality.target_palette_surface_usage.size() >= 4)
+                        continue;
+                    AIModelGenerationClient::ModelQuality::TargetPaletteUsage usage;
+                    usage.color = item.value("color", std::string());
+                    if (!valid_hex_color(usage.color) || !item.contains("surface_ratio") ||
+                        !item["surface_ratio"].is_number())
+                        continue;
+                    const double ratio = item["surface_ratio"].get<double>();
+                    if (!std::isfinite(ratio))
+                        continue;
+                    usage.surface_ratio = std::clamp(ratio, 0.0, 1.0);
+                    usage.meaningful = item.value("meaningful", false);
+                    status.model_quality.target_palette_surface_usage.emplace_back(std::move(usage));
+                }
+            }
         }
     }
     if (job.contains("visual_quality") && job["visual_quality"].is_object()) {
@@ -523,6 +684,42 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
             for (const auto& [name, check] : quality["checks"].items())
                 if (check.is_object() && check.value("status", std::string()) == "review")
                     status.visual_quality.check_reasons.emplace(name, check.value("reason", std::string()));
+        }
+    }
+    if (job.contains("refinement") && job["refinement"].is_object()) {
+        const auto& refinement = job["refinement"];
+        if (refinement.value("schema", 0) == 1 && refinement.value("available", false) &&
+            refinement.contains("summary") && refinement["summary"].is_string() &&
+            refinement.contains("prompt_suffix") && refinement["prompt_suffix"].is_string() &&
+            refinement.contains("issues") && refinement["issues"].is_array()) {
+            const std::string summary = refinement["summary"].get<std::string>();
+            const std::string prompt_suffix = refinement["prompt_suffix"].get<std::string>();
+            if (valid_refinement_text(summary, MAX_REFINEMENT_SUMMARY_SIZE) &&
+                valid_refinement_text(prompt_suffix, MAX_REFINEMENT_PROMPT_SIZE)) {
+                for (const auto& value : refinement["issues"]) {
+                    if (!value.is_object() || status.refinement.issues.size() >= MAX_REFINEMENT_ISSUES ||
+                        !value.contains("code") || !value["code"].is_string() ||
+                        !value.contains("category") || !value["category"].is_string() ||
+                        !value.contains("title") || !value["title"].is_string() ||
+                        !value.contains("instruction") || !value["instruction"].is_string())
+                        continue;
+                    ModelRefinementAdvice::Issue issue;
+                    issue.code = value["code"].get<std::string>();
+                    issue.category = value["category"].get<std::string>();
+                    issue.title = value["title"].get<std::string>();
+                    issue.instruction = value["instruction"].get<std::string>();
+                    if (!valid_refinement_code(issue.code) || !valid_refinement_category(issue.category) ||
+                        !valid_refinement_text(issue.title, MAX_REFINEMENT_FIELD_SIZE) ||
+                        !valid_refinement_text(issue.instruction, MAX_REFINEMENT_FIELD_SIZE))
+                        continue;
+                    status.refinement.issues.emplace_back(std::move(issue));
+                }
+                if (!status.refinement.issues.empty()) {
+                    status.refinement.available = true;
+                    status.refinement.summary = summary;
+                    status.refinement.prompt_suffix = prompt_suffix;
+                }
+            }
         }
     }
     if (status.id.empty() || status.state.empty()) {
@@ -547,7 +744,6 @@ AIModelGenerationClient::json AIModelGenerationClient::serialize_print_settings(
 void AIModelGenerationClient::download(const std::string& path, const boost::filesystem::path& destination,
                                        size_t size_limit, PathFn on_complete, ErrorFn on_error)
 {
-    cancel_current();
     if (!is_loopback_endpoint(m_endpoint)) {
         if (on_error)
             on_error("Generated files may only be downloaded from the loopback AI sidecar.");
@@ -586,7 +782,7 @@ void AIModelGenerationClient::download(const std::string& path, const boost::fil
         if (on_error)
             on_error(error_message(body, error, status));
     });
-    m_active_request = http.perform();
+    m_download_requests.emplace_back(http.perform());
 }
 
 void AIModelGenerationClient::cancel_current()
@@ -595,6 +791,11 @@ void AIModelGenerationClient::cancel_current()
         m_active_request->cancel();
         m_active_request.reset();
     }
+    for (const std::shared_ptr<Http>& request : m_download_requests) {
+        if (request)
+            request->cancel();
+    }
+    m_download_requests.clear();
 }
 
 } // namespace Slic3r::GUI

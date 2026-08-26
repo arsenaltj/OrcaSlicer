@@ -486,6 +486,126 @@ size_t VertexColorRegionEditor::update_selection(size_t seed_face, RegionSelecti
     return m_selected_face_count;
 }
 
+size_t VertexColorRegionEditor::select_faces(const std::vector<size_t>& face_indices)
+{
+    if (!ready())
+        return 0;
+
+    std::vector<uint8_t> selected(m_mesh.indices.size(), 0);
+    size_t selected_count = 0;
+    for (size_t face_index : face_indices) {
+        if (face_index >= selected.size() || selected[face_index])
+            continue;
+        selected[face_index] = 1;
+        ++selected_count;
+    }
+    // Invalid or empty evidence is non-destructive, matching the other automatic
+    // localization helpers and preserving an in-progress manual selection.
+    if (selected_count == 0)
+        return 0;
+    m_selected_faces = std::move(selected);
+    m_selected_face_count = selected_count;
+    return selected_count;
+}
+
+size_t VertexColorRegionEditor::select_palette_material(const std::vector<RGBA>& palette,
+                                                        size_t palette_index)
+{
+    if (!ready() || palette.empty() || palette_index >= palette.size())
+        return m_selected_face_count;
+
+    std::fill(m_selected_faces.begin(), m_selected_faces.end(), uint8_t(0));
+    m_selected_face_count = 0;
+    for (size_t face_index = 0; face_index < m_mesh.indices.size(); ++face_index) {
+        const RGBA color = face_color(face_index);
+        size_t nearest_index = 0;
+        float nearest_distance = color_distance_squared(color, palette.front());
+        for (size_t candidate = 1; candidate < palette.size(); ++candidate) {
+            const float distance = color_distance_squared(color, palette[candidate]);
+            if (distance < nearest_distance) {
+                nearest_distance = distance;
+                nearest_index = candidate;
+            }
+        }
+        if (nearest_index != palette_index)
+            continue;
+        m_selected_faces[face_index] = 1;
+        ++m_selected_face_count;
+    }
+    return m_selected_face_count;
+}
+
+size_t VertexColorRegionEditor::select_elevated_overhang_regions(
+    const OverhangRegionSettings& settings)
+{
+    if (!ready())
+        return 0;
+
+    const float ground_band = std::max(0.0f, settings.ground_band_mm);
+    const float surface_angle = std::clamp(settings.maximum_surface_angle_degrees, 0.0f, 89.9f);
+    const float maximum_normal_z = -std::cos(surface_angle * PI / 180.0f);
+    const double minimum_region_area = std::max(0.0f, settings.minimum_region_area_mm2);
+    const double minimum_region_ratio = std::max(0.0f, settings.minimum_region_area_ratio);
+    const float ground_limit = std::min_element(
+        m_mesh.vertices.begin(), m_mesh.vertices.end(),
+        [](const Vec3f& left, const Vec3f& right) { return left.z() < right.z(); })->z() + ground_band;
+
+    std::vector<double> face_areas(m_mesh.indices.size(), 0.0);
+    std::vector<uint8_t> candidates(m_mesh.indices.size(), 0);
+    double surface_area = 0.0;
+    for (size_t face_index = 0; face_index < m_mesh.indices.size(); ++face_index) {
+        const stl_triangle_vertex_indices& face = m_mesh.indices[face_index];
+        const Vec3f& a = m_mesh.vertices[face[0]];
+        const Vec3f& b = m_mesh.vertices[face[1]];
+        const Vec3f& c = m_mesh.vertices[face[2]];
+        const double area = 0.5 * double((b - a).cross(c - a).norm());
+        face_areas[face_index] = area;
+        surface_area += area;
+        if (area > 1e-12 && m_face_normals[face_index].z() < maximum_normal_z &&
+            std::min({a.z(), b.z(), c.z()}) > ground_limit)
+            candidates[face_index] = 1;
+    }
+
+    std::vector<uint8_t> visited(m_mesh.indices.size(), 0);
+    std::vector<uint8_t> localized(m_mesh.indices.size(), 0);
+    size_t localized_count = 0;
+    for (size_t seed = 0; seed < candidates.size(); ++seed) {
+        if (!candidates[seed] || visited[seed])
+            continue;
+        visited[seed] = 1;
+        std::vector<size_t> pending {seed};
+        std::vector<size_t> region;
+        double region_area = 0.0;
+        while (!pending.empty()) {
+            const size_t face_index = pending.back();
+            pending.pop_back();
+            region.push_back(face_index);
+            region_area += face_areas[face_index];
+            for (uint32_t neighbor : m_face_neighbors[face_index]) {
+                if (!candidates[neighbor] || visited[neighbor])
+                    continue;
+                visited[neighbor] = 1;
+                pending.push_back(neighbor);
+            }
+        }
+        const double region_ratio = surface_area > 0.0 ? region_area / surface_area : 0.0;
+        if (region_area < minimum_region_area || region_ratio < minimum_region_ratio)
+            continue;
+        for (size_t face_index : region) {
+            localized[face_index] = 1;
+            ++localized_count;
+        }
+    }
+
+    // A failed localization is non-destructive: an existing manual/material selection
+    // remains available for the user to inspect or edit.
+    if (localized_count == 0)
+        return 0;
+    m_selected_faces = std::move(localized);
+    m_selected_face_count = localized_count;
+    return localized_count;
+}
+
 void VertexColorRegionEditor::clear_selection()
 {
     std::fill(m_selected_faces.begin(), m_selected_faces.end(), uint8_t(0));

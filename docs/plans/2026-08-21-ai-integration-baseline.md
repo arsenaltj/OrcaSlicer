@@ -17,7 +17,7 @@ The integration branch was created directly from the pinned commit and tracks `u
 
 | Feature | Live development branch | Accepted commit | Acceptance status |
 |---|---|---|---|
-| Model generation | `codex/model-generation` | `61f7b13e3e2f0acfbffcc7388911b302cd0f16ba` | Temporarily accepted for integration on 2026-08-22 |
+| Model generation | `codex/model-generation` | `ef9a99491be558cd688d5cc799ea258b507a80fc` | Accepted for integration on 2026-08-26 |
 | Smart slicing | `codex/smart-slicing` | `1c163d68906e287b946b40a975feb3bfd9aab68d` | Temporarily accepted for integration on 2026-08-22 |
 
 An observed branch head is not an accepted input. The accepted commit is written here only after the user confirms the corresponding GUI behavior.
@@ -75,6 +75,15 @@ An observed branch head is not an accepted input. The accepted commit is written
 - Smart-slicing source: `1c163d68906e287b946b40a975feb3bfd9aab68d`
 
 The feature repositories have no merge base with the official history. Cycle 1 therefore ports the final accepted module snapshots, adapts shared Orca touchpoints manually, and records the source SHAs in every port commit. Later cycles consume only newly accepted SHAs and compare them with the previous accepted snapshot.
+
+## Integration cycle 2
+
+- Previous accepted model-generation source: `61f7b13e3e2f0acfbffcc7388911b302cd0f16ba`
+- Reviewed model-generation checkpoint: `4b68ec1e12180afd18fc9dd60891e71425dea3c7`
+- Accepted model-generation source: `ef9a99491be558cd688d5cc799ea258b507a80fc`
+- Smart-slicing source remains: `1c163d68906e287b946b40a975feb3bfd9aab68d`
+
+Cycle 2 ports the complete model-generation delta from the previously integrated source to the accepted target. It retains integration-owned diagnostics, artifact-download recovery, packaged internal configuration and smart-slicing composition. The moving branch head is not consulted after the accepted target is resolved.
 
 ## Future integration checklist
 

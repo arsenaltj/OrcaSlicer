@@ -1115,6 +1115,8 @@ if (WIN32)
     if(ORCA_AI_WINDOWS_INSTALLER)
         set(ORCA_AI_SIDECAR_RUNTIME_FILES
             "${CMAKE_SOURCE_DIR}/tools/ai/ai_diagnostics.py"
+            "${CMAKE_SOURCE_DIR}/tools/ai/model_provider_gateway.py"
+            "${CMAKE_SOURCE_DIR}/tools/ai/model_refinement.py"
             "${CMAKE_SOURCE_DIR}/tools/ai/openai_preprocessor.py"
             "${CMAKE_SOURCE_DIR}/tools/ai/orca_ai_installed_bootstrap.py"
             "${CMAKE_SOURCE_DIR}/tools/ai/orca_ai_sidecar.py"
@@ -1123,6 +1125,7 @@ if (WIN32)
             "${CMAKE_SOURCE_DIR}/tools/ai/printable_model_views.py"
             "${CMAKE_SOURCE_DIR}/tools/ai/printable_palette.py"
             "${CMAKE_SOURCE_DIR}/tools/ai/printable_visual_quality.py"
+            "${CMAKE_SOURCE_DIR}/tools/ai/sampled_local_thickness.py"
             "${CMAKE_SOURCE_DIR}/tools/ai/tripo_client.py")
         install(FILES ${ORCA_AI_SIDECAR_RUNTIME_FILES} DESTINATION "./resources/tools/ai")
         if(ORCA_AI_INTERNAL_DEFAULTS_FILE)

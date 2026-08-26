@@ -348,6 +348,20 @@ class ObjGenerationTests(unittest.TestCase):
         self.environment.stop()
         self.temporary_directory.cleanup()
 
+    def _provider_gateway(self, generation_id="generation-id", conversion_id="existing-conversion"):
+        gateway = mock.Mock()
+        gateway.start_or_reuse_model_task.return_value = mock.Mock(
+            provider="tripo", task_id=generation_id, reused=False
+        )
+        gateway.start_or_reuse_conversion.return_value = mock.Mock(
+            provider="tripo", task_id=conversion_id, reused=True
+        )
+        gateway.wait_for_task.return_value = {}
+        return gateway
+
+    def _paid_authorization(self):
+        return SIDECAR.PaidTaskAuthorization.confirmed(f"{self.job.id}:model:1")
+
     def _write_package(self, archive, *, obj=None, mtl=None, texture=True, extra=None):
         obj = obj or (
             "mtllib model.mtl\n"
@@ -414,6 +428,22 @@ class ObjGenerationTests(unittest.TestCase):
         vertex_lines = [f"v {x:.9g} {y:.9g} {z:.9g} 1 0 0" for x, y, z in vertices]
         face_lines = [f"f {a + 1} {b + 1} {c + 1}" for a, b, c in faces]
         return "\n".join(vertex_lines + face_lines) + "\n"
+
+    def _vertex_color_grid(self, size, color_for_vertex):
+        vertices = [
+            f"v {x} {y} 0 {color_for_vertex(x, y)}"
+            for y in range(size)
+            for x in range(size)
+        ]
+        faces = []
+        for y in range(size - 1):
+            for x in range(size - 1):
+                left = y * size + x
+                right = left + 1
+                upper = left + size
+                upper_right = upper + 1
+                faces.extend(((left, upper, right), (right, upper, upper_right)))
+        return "\n".join(vertices + [f"f {a + 1} {b + 1} {c + 1}" for a, b, c in faces]) + "\n"
 
     def test_new_job_uses_persistent_output_directory(self):
         self.assertEqual(self.job.directory.parent, self.output_root.resolve())
@@ -596,17 +626,17 @@ class ObjGenerationTests(unittest.TestCase):
             "conversion_task_id": "existing-conversion",
         }]
 
+        gateway = self._provider_gateway()
         with (
+            mock.patch.object(SIDECAR, "_MODEL_PROVIDER_GATEWAY", gateway),
             mock.patch.object(SIDECAR, "_validate_artifact") as validate,
-            mock.patch.object(SIDECAR, "wait_for_task") as wait,
-            mock.patch.object(SIDECAR, "download_task_artifact") as download,
         ):
             result = SIDECAR._download_conversion(self.job, "existing-generation", "obj", 1, True)
 
         self.assertEqual(result, candidate)
         validate.assert_called_once_with(candidate, "obj", allow_repairable_obj=True)
-        wait.assert_not_called()
-        download.assert_not_called()
+        gateway.wait_for_task.assert_not_called()
+        gateway.download_artifact.assert_not_called()
 
     def test_resumed_download_uses_new_recovery_workspace_when_local_obj_is_invalid(self):
         attempt_directory = self.job.directory / "attempt-01"
@@ -623,17 +653,19 @@ class ObjGenerationTests(unittest.TestCase):
             destination.write_bytes(b"download")
 
         recovered = attempt_directory / "recovery-01" / "model-vertex-color.obj"
+        gateway = self._provider_gateway()
+        gateway.wait_for_task.return_value = {"output": {}}
+        gateway.download_artifact.side_effect = write_download
         with (
+            mock.patch.object(SIDECAR, "_MODEL_PROVIDER_GATEWAY", gateway),
             mock.patch.object(SIDECAR, "_validate_artifact", side_effect=SIDECAR.TripoError("invalid")),
-            mock.patch.object(SIDECAR, "wait_for_task", return_value={"output": {}}) as wait,
-            mock.patch.object(SIDECAR, "download_task_artifact", side_effect=write_download) as download,
             mock.patch.object(SIDECAR, "_prepare_obj_artifact", return_value=recovered) as prepare,
         ):
             result = SIDECAR._download_conversion(self.job, "existing-generation", "obj", 1, True)
 
         self.assertEqual(result, recovered)
-        wait.assert_called_once()
-        destination = download.call_args.args[1]
+        gateway.wait_for_task.assert_called_once()
+        destination = gateway.download_artifact.call_args.args[1]
         self.assertEqual(destination.parent, attempt_directory / "recovery-01")
         prepare.assert_called_once_with(destination, attempt_directory / "recovery-01", self.job.palette)
 
@@ -641,18 +673,77 @@ class ObjGenerationTests(unittest.TestCase):
         artifact = self.job.directory / "model-vertex-color.obj"
         artifact.write_text("v 0 0 0 1 0 0\nf 1 1 1\n", encoding="utf-8")
 
+        gateway = self._provider_gateway()
         with (
-            mock.patch.object(SIDECAR, "create_text_task", return_value="generation-id"),
-            mock.patch.object(SIDECAR, "wait_for_task", return_value={}),
+            mock.patch.object(SIDECAR, "_MODEL_PROVIDER_GATEWAY", gateway),
             mock.patch.object(SIDECAR, "_download_conversion", return_value=artifact) as download,
             mock.patch.object(SIDECAR, "_validate_obj_topology", return_value=(300000, 2, 0)),
         ):
-            SIDECAR._generate_job(self.job, "printable object")
+            SIDECAR._generate_job(self.job, "printable object", False, self._paid_authorization())
 
         download.assert_called_once_with(self.job, "generation-id", "obj", 1)
         self.assertEqual(self.job.state, "ready")
         self.assertEqual(self.job.artifact_format, "obj")
         self.assertEqual(self.job.artifact_path, artifact)
+
+    def test_generation_persists_provider_intent_before_paid_creation(self):
+        artifact = self.job.directory / "model-vertex-color.obj"
+        artifact.write_text("v 0 0 0 1 0 0\nf 1 1 1\n", encoding="utf-8")
+        gateway = self._provider_gateway()
+        def start_task(*_args, **_kwargs):
+            attempt = self.job.attempts[0]
+            self.assertEqual(attempt["status"], "creating")
+            self.assertEqual(attempt["provider_request_id"], f"{self.job.id}:model:1")
+            self.assertNotIn("generation_task_id", attempt)
+            return mock.Mock(provider="tripo", task_id="generation-id", reused=False)
+        gateway.start_or_reuse_model_task.side_effect = start_task
+
+        with (
+            mock.patch.object(SIDECAR, "_MODEL_PROVIDER_GATEWAY", gateway),
+            mock.patch.object(SIDECAR, "_download_conversion", return_value=artifact),
+            mock.patch.object(SIDECAR, "_validate_obj_topology", return_value=(300000, 2, 0)),
+        ):
+            SIDECAR._generate_job(
+                self.job,
+                "printable object",
+                False,
+                self._paid_authorization(),
+            )
+
+        attempt = self.job.attempts[0]
+        self.assertEqual(attempt["provider"], "tripo")
+        self.assertEqual(attempt["provider_operation"], "model_generation")
+        self.assertEqual(attempt["provider_request_id"], f"{self.job.id}:model:1")
+        self.assertEqual(attempt["generation_task_id"], "generation-id")
+        gateway.start_or_reuse_model_task.assert_called_once()
+
+    def test_ambiguous_provider_creation_failure_is_recorded_without_retry(self):
+        gateway = mock.Mock()
+        gateway.start_or_reuse_model_task.side_effect = SIDECAR.ProviderGatewayError(
+            "Could not connect to Tripo.",
+            code="provider_unavailable",
+            category="availability",
+            provider="tripo",
+            operation="model_generation",
+            retryable=True,
+            ambiguous=True,
+        )
+
+        with mock.patch.object(SIDECAR, "_MODEL_PROVIDER_GATEWAY", gateway):
+            SIDECAR._generate_job(
+                self.job,
+                "printable object",
+                False,
+                self._paid_authorization(),
+            )
+
+        self.assertEqual(gateway.start_or_reuse_model_task.call_count, 1)
+        self.assertEqual(self.job.state, "failed")
+        attempt = self.job.attempts[0]
+        self.assertEqual(attempt["provider_error_code"], "provider_unavailable")
+        self.assertEqual(attempt["provider_error_category"], "availability")
+        self.assertTrue(attempt["provider_error_retryable"])
+        self.assertTrue(attempt["provider_error_ambiguous"])
 
     def test_resumed_generation_reuses_remote_ids_without_paid_creation(self):
         artifact = self.job.directory / "model-vertex-color.obj"
@@ -664,29 +755,31 @@ class ObjGenerationTests(unittest.TestCase):
             "status": "running",
             "error": "old recoverable download failure",
         }]
+        gateway = self._provider_gateway("existing-generation")
+        gateway.start_or_reuse_model_task.return_value = mock.Mock(
+            provider="tripo", task_id="existing-generation", reused=True
+        )
         with (
-            mock.patch.object(SIDECAR, "create_text_task") as create_generation,
-            mock.patch.object(SIDECAR, "create_conversion") as create_conversion,
-            mock.patch.object(SIDECAR, "wait_for_task", return_value={}),
+            mock.patch.object(SIDECAR, "_MODEL_PROVIDER_GATEWAY", gateway),
             mock.patch.object(SIDECAR, "_download_conversion", return_value=artifact) as download,
             mock.patch.object(SIDECAR, "_validate_obj_topology", return_value=(300000, 2, 0)),
         ):
             SIDECAR._generate_job(self.job, "printable object", True)
 
-        create_generation.assert_not_called()
-        create_conversion.assert_not_called()
+        gateway.start_or_reuse_model_task.assert_called_once()
+        self.assertIsNone(gateway.start_or_reuse_model_task.call_args.kwargs["authorization"])
         download.assert_called_once_with(self.job, "existing-generation", "obj", 1, True)
         self.assertEqual(self.job.state, "ready")
         self.assertEqual(self.job.attempts[0]["error"], "")
 
     def test_obj_conversion_failure_does_not_fall_back(self):
         error = SIDECAR.TripoError("OBJ conversion failed")
+        gateway = self._provider_gateway()
         with (
-            mock.patch.object(SIDECAR, "create_text_task", return_value="generation-id"),
-            mock.patch.object(SIDECAR, "wait_for_task", return_value={}),
+            mock.patch.object(SIDECAR, "_MODEL_PROVIDER_GATEWAY", gateway),
             mock.patch.object(SIDECAR, "_download_conversion", side_effect=error) as download,
         ):
-            SIDECAR._generate_job(self.job, "printable object")
+            SIDECAR._generate_job(self.job, "printable object", False, self._paid_authorization())
 
         download.assert_called_once_with(self.job, "generation-id", "obj", 1)
         self.assertEqual(self.job.state, "failed")
@@ -698,14 +791,14 @@ class ObjGenerationTests(unittest.TestCase):
         quality_error = SIDECAR.TripoError(
             "Tripo generated a non-watertight or non-manifold mesh. Regenerate before importing into OrcaSlicer."
         )
+        gateway = self._provider_gateway("generation-1")
         with (
-            mock.patch.object(SIDECAR, "create_text_task", return_value="generation-1") as create,
-            mock.patch.object(SIDECAR, "wait_for_task", return_value={}),
+            mock.patch.object(SIDECAR, "_MODEL_PROVIDER_GATEWAY", gateway),
             mock.patch.object(SIDECAR, "_download_conversion", side_effect=quality_error) as download,
         ):
-            SIDECAR._generate_job(self.job, "printable object")
+            SIDECAR._generate_job(self.job, "printable object", False, self._paid_authorization())
 
-        create.assert_called_once_with("printable object", 300000)
+        self.assertEqual(gateway.start_or_reuse_model_task.call_count, 1)
         self.assertEqual(download.call_count, 1)
         self.assertEqual(self.job.state, "failed")
         self.assertEqual([attempt["status"] for attempt in self.job.attempts], ["rejected"])
@@ -714,14 +807,14 @@ class ObjGenerationTests(unittest.TestCase):
 
     def test_quality_failure_exhausts_single_attempt_budget(self):
         quality_error = SIDECAR.TripoError("The generated OBJ exceeds the 1000000-triangle limit.")
+        gateway = self._provider_gateway("generation-1")
         with (
-            mock.patch.object(SIDECAR, "create_text_task", return_value="generation-1") as create,
-            mock.patch.object(SIDECAR, "wait_for_task", return_value={}),
+            mock.patch.object(SIDECAR, "_MODEL_PROVIDER_GATEWAY", gateway),
             mock.patch.object(SIDECAR, "_download_conversion", side_effect=quality_error) as download,
         ):
-            SIDECAR._generate_job(self.job, "printable object")
+            SIDECAR._generate_job(self.job, "printable object", False, self._paid_authorization())
 
-        self.assertEqual(create.call_count, SIDECAR.MAX_GENERATION_ATTEMPTS)
+        self.assertEqual(gateway.start_or_reuse_model_task.call_count, SIDECAR.MAX_GENERATION_ATTEMPTS)
         self.assertEqual(download.call_count, SIDECAR.MAX_GENERATION_ATTEMPTS)
         self.assertEqual(self.job.state, "failed")
         self.assertEqual(len(self.job.attempts), SIDECAR.MAX_GENERATION_ATTEMPTS)
@@ -770,9 +863,20 @@ class ObjGenerationTests(unittest.TestCase):
         metrics = json.loads((self.job.directory / "vertex-color-metrics.json").read_text(encoding="utf-8"))
         self.assertEqual(metrics["face_count"], 4)
         self.assertEqual(metrics["three_color_faces"], 0)
+        cleanup = json.loads((self.job.directory / "vertex-color-cleanup.json").read_text(encoding="utf-8"))
+        self.assertIn(cleanup["status"], {"not_needed", "consolidated"})
+        boundary = json.loads((self.job.directory / "color-boundary-cleanup.json").read_text(encoding="utf-8"))
+        self.assertIn(boundary["status"], {"not_needed", "regularized"})
         quality = json.loads((self.job.directory / SIDECAR.MODEL_QUALITY_FILENAME).read_text(encoding="utf-8"))
-        self.assertEqual(quality["status"], "pass")
+        self.assertEqual(quality["status"], "review")
         self.assertEqual(quality["metrics"]["face_count"], 4)
+        self.assertTrue(quality["metrics"]["target_palette_metrics_available"])
+        self.assertEqual(quality["metrics"]["target_palette_color_count"], 4)
+        self.assertEqual(quality["metrics"]["meaningful_target_palette_color_count"], 2)
+        self.assertFalse(quality["metrics"]["target_palette_diversity_ok"])
+        self.assertAlmostEqual(quality["metrics"]["target_palette_surface_coverage_ratio"], 1.0)
+        self.assertEqual(len(quality["evidence"]["target_palette_surface_usage"]), 4)
+        self.assertIn("too_few_meaningful_target_palette_colors", quality["warnings"])
         SIDECAR._validate_obj_vertex_colors(artifact)
         SIDECAR._validate_obj_topology(artifact)
 
@@ -799,6 +903,8 @@ class ObjGenerationTests(unittest.TestCase):
         }
         self.assertGreaterEqual(len(output_colors), 2)
         self.assertTrue(any(channel not in range(0, 256, 51) for color in output_colors for channel in color))
+        self.assertFalse((self.job.directory / "vertex-color-cleanup.json").exists())
+        self.assertFalse((self.job.directory / "color-boundary-cleanup.json").exists())
         SIDECAR._validate_obj_vertex_colors(artifact)
         SIDECAR._validate_obj_topology(artifact)
 
@@ -859,6 +965,173 @@ class ObjGenerationTests(unittest.TestCase):
         self.assertEqual(report["status"], "preserved")
         self.assertEqual(report["original_components"], 2)
         self.assertEqual(report["removed_components"], 0)
+
+    def test_bounded_detached_noise_is_removed_from_dense_model(self):
+        source = self.job.directory / "dense-with-noise.obj"
+        size = 151
+        vertices = [f"v {x} {y} 0 1 0 0" for y in range(size) for x in range(size)]
+        faces = []
+        for y in range(size - 1):
+            for x in range(size - 1):
+                left = y * size + x
+                right = left + 1
+                upper = left + size
+                upper_right = upper + 1
+                faces.extend(((left, upper, right), (right, upper, upper_right)))
+        noise_start = len(vertices)
+        vertices.extend((
+            "v 75 75 1 0 1 0",
+            "v 75.05 75 1 0 1 0",
+            "v 75 75.05 1 0 1 0",
+            "v 75 75 1.05 0 1 0",
+        ))
+        faces.extend((
+            (noise_start, noise_start + 2, noise_start + 1),
+            (noise_start, noise_start + 1, noise_start + 3),
+            (noise_start, noise_start + 3, noise_start + 2),
+            (noise_start + 1, noise_start + 2, noise_start + 3),
+        ))
+        source.write_text(
+            "\n".join(vertices + [f"f {a + 1} {b + 1} {c + 1}" for a, b, c in faces]) + "\n",
+            encoding="ascii",
+        )
+
+        report = SIDECAR._remove_small_detached_obj_components(
+            source, self.job.directory / "dense-mesh-repair.json"
+        )
+
+        self.assertEqual(report["status"], "removed")
+        self.assertEqual(report["removed_components"], 1)
+        self.assertEqual(report["removed_vertices"], 4)
+        self.assertEqual(report["removed_faces"], 4)
+        self.assertEqual(report["kept_faces"], (size - 1) * (size - 1) * 2)
+        self.assertNotIn("v 75 75 1 0 1 0", source.read_text(encoding="ascii"))
+
+    def test_unreferenced_vertex_is_removed_without_touching_main_component(self):
+        source = self.job.directory / "unreferenced-vertex.obj"
+        source.write_text(
+            "v 0 0 0 1 0 0\n"
+            "v 1 0 0 1 0 0\n"
+            "v 0 1 0 1 0 0\n"
+            "v 0 0 1 1 0 0\n"
+            "v 99 99 99 0 1 0\n"
+            "f 1 3 2\n"
+            "f 1 2 4\n"
+            "f 1 4 3\n"
+            "f 2 3 4\n",
+            encoding="ascii",
+        )
+
+        report = SIDECAR._remove_small_detached_obj_components(
+            source, self.job.directory / "unreferenced-mesh-repair.json"
+        )
+
+        self.assertEqual(report["status"], "removed")
+        self.assertEqual(report["removed_components"], 0)
+        self.assertEqual(report["removed_vertices"], 1)
+        self.assertEqual(SIDECAR._validate_obj_topology(source), (4, 1, 0))
+
+    def test_tiny_vertex_color_component_is_merged_into_strongest_neighbor(self):
+        source = self.job.directory / "tiny-color-island.obj"
+        size = 101
+        center = (size // 2) * size + size // 2
+        vertices = [
+            f"v {x} {y} 0 " + ("0 0 1" if y * size + x == center else "1 0 0")
+            for y in range(size)
+            for x in range(size)
+        ]
+        faces = []
+        for y in range(size - 1):
+            for x in range(size - 1):
+                left = y * size + x
+                right = left + 1
+                upper = left + size
+                upper_right = upper + 1
+                faces.extend(((left, upper, right), (right, upper, upper_right)))
+        source.write_text(
+            "\n".join(vertices + [f"f {a + 1} {b + 1} {c + 1}" for a, b, c in faces]) + "\n",
+            encoding="ascii",
+        )
+
+        report = SIDECAR._consolidate_tiny_obj_color_components(
+            source, self.job.directory / "tiny-color-cleanup.json"
+        )
+
+        self.assertEqual(report["status"], "consolidated")
+        self.assertEqual(report["merged_components"], 1)
+        self.assertEqual(report["recolored_vertices"], 1)
+        self.assertEqual(report["final_vertex_color_usage"], {"#FF0000": size * size})
+        SIDECAR._validate_obj_palette(source, ("#FF0000", "#0000FF"))
+
+    def test_isolated_color_boundary_spike_is_regularized(self):
+        source = self.job.directory / "boundary-spike.obj"
+        size = 21
+        center = size // 2
+        source.write_text(
+            self._vertex_color_grid(
+                size,
+                lambda x, y: "0 0 1" if (x, y) == (center, center) else "1 0 0",
+            ),
+            encoding="ascii",
+        )
+
+        report = SIDECAR._regularize_obj_color_boundaries(
+            source, self.job.directory / "boundary-spike-cleanup.json"
+        )
+
+        self.assertEqual(report["status"], "regularized")
+        self.assertEqual(report["recolored_vertices"], 1)
+        self.assertGreater(report["before"]["mixed_face_count"], 0)
+        self.assertEqual(report["after"]["mixed_face_count"], 0)
+        self.assertLess(
+            report["after"]["mixed_face_surface_area_mm2"],
+            report["before"]["mixed_face_surface_area_mm2"],
+        )
+        self.assertNotIn(" 0.000000 0.000000 1.000000", source.read_text(encoding="ascii"))
+        self.assertEqual(SIDECAR._obj_vertex_color_metrics(source)["three_color_faces"], 0)
+
+    def test_coherent_color_boundary_is_preserved(self):
+        source = self.job.directory / "coherent-boundary.obj"
+        size = 21
+        source.write_text(
+            self._vertex_color_grid(size, lambda x, _y: "1 0 0" if x < size // 2 else "0 0 1"),
+            encoding="ascii",
+        )
+        original = source.read_bytes()
+
+        report = SIDECAR._regularize_obj_color_boundaries(
+            source, self.job.directory / "coherent-boundary-cleanup.json"
+        )
+
+        self.assertEqual(report["status"], "not_needed")
+        self.assertEqual(report["recolored_vertices"], 0)
+        self.assertEqual(report["before"]["mixed_face_count"], report["after"]["mixed_face_count"])
+        self.assertEqual(source.read_bytes(), original)
+
+    def test_meaningful_palette_color_is_protected_from_boundary_cleanup(self):
+        source = self.job.directory / "meaningful-spike.obj"
+        size = 5
+        center = size // 2
+        source.write_text(
+            self._vertex_color_grid(
+                size,
+                lambda x, y: "0 0 1" if (x, y) == (center, center) else "1 0 0",
+            ),
+            encoding="ascii",
+        )
+
+        with (
+            mock.patch.object(SIDECAR, "MAX_COLOR_BOUNDARY_SURFACE_AREA_RATIO", 1.0),
+            mock.patch.object(SIDECAR, "MAX_COLOR_BOUNDARY_SOURCE_AREA_RATIO", 1.0),
+        ):
+            report = SIDECAR._regularize_obj_color_boundaries(
+                source, self.job.directory / "meaningful-spike-cleanup.json"
+            )
+
+        self.assertEqual(report["status"], "not_needed")
+        self.assertEqual(report["recolored_vertices"], 0)
+        self.assertGreater(report["protected_meaningful_candidates"], 0)
+        self.assertIn("v 2 2 0 0 0 1", source.read_text(encoding="ascii"))
 
     def test_repairable_open_edges_are_deferred_to_orca(self):
         raw = self.job.directory / "artifact-raw.download"

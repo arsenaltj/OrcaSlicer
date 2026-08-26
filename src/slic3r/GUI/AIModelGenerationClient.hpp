@@ -31,6 +31,22 @@ public:
 
     struct ModelQuality
     {
+        struct ThinLocalRegion
+        {
+            size_t              sample_count { 0 };
+            double              sampled_area_mm2 { 0.0 };
+            double              minimum_thickness_mm { 0.0 };
+            size_t              representative_face_index { 0 };
+            std::vector<size_t> face_indices;
+        };
+
+        struct TargetPaletteUsage
+        {
+            std::string color;
+            double      surface_ratio { 0.0 };
+            bool        meaningful { false };
+        };
+
         bool                     available { false };
         std::string              status;
         std::vector<std::string> errors;
@@ -41,7 +57,34 @@ public:
         size_t                   tiny_component_count { 0 };
         double                   largest_component_face_ratio { 0.0 };
         double                   contact_span_ratio { 0.0 };
+        bool                     bed_contact_area_available { false };
+        double                   bed_contact_area_ratio { 0.0 };
         double                   downward_surface_ratio { 0.0 };
+        bool                     elevated_downward_surface_ratio_available { false };
+        double                   elevated_downward_surface_ratio { 0.0 };
+        bool                     overhang_region_metrics_available { false };
+        size_t                   significant_overhang_region_count { 0 };
+        bool                     component_thickness_available { false };
+        size_t                   thin_component_count { 0 };
+        double                   minimum_component_thickness_mm { 0.0 };
+        bool                     local_thickness_available { false };
+        bool                     local_wall_thickness_threshold_available { false };
+        double                   minimum_local_wall_thickness_mm { 0.0 };
+        size_t                   local_thickness_sample_count { 0 };
+        size_t                   thin_local_surface_sample_count { 0 };
+        double                   minimum_sampled_local_thickness_mm { 0.0 };
+        size_t                   thin_local_region_count { 0 };
+        size_t                   reported_thin_local_region_count { 0 };
+        std::vector<size_t>      thin_local_face_indices;
+        std::vector<ThinLocalRegion> thin_local_regions;
+        bool                     target_palette_metrics_available { false };
+        size_t                   target_palette_color_count { 0 };
+        size_t                   used_target_palette_color_count { 0 };
+        size_t                   meaningful_target_palette_color_count { 0 };
+        size_t                   required_meaningful_target_palette_color_count { 0 };
+        double                   target_palette_surface_coverage_ratio { 0.0 };
+        bool                     target_palette_diversity_ok { false };
+        std::vector<TargetPaletteUsage> target_palette_surface_usage;
         bool                     repairable_topology { false };
     };
 
@@ -55,6 +98,22 @@ public:
         std::vector<std::string> errors;
         std::vector<std::string> warnings;
         std::map<std::string, std::string> check_reasons;
+    };
+
+    struct ModelRefinementAdvice
+    {
+        struct Issue
+        {
+            std::string code;
+            std::string category;
+            std::string title;
+            std::string instruction;
+        };
+
+        bool               available { false };
+        std::string        summary;
+        std::string        prompt_suffix;
+        std::vector<Issue> issues;
     };
 
     struct PaletteRecommendationColor
@@ -100,6 +159,7 @@ public:
         double      image_score { 0.0 };
         double      mean_color_error { 0.0 };
         double      small_region_ratio { 0.0 };
+        double      changed_pixel_ratio { 0.0 };
         double      boundary_complexity { 0.0 };
         int         minimum_feature_px { 0 };
         int         meaningful_palette_count { 0 };
@@ -107,12 +167,17 @@ public:
         double      printable_subject_area_ratio { 0.0 };
         double      largest_subject_component_ratio { 0.0 };
         bool        palette_quality_ok { true };
+        std::string provider_error_code;
+        std::string provider_error_category;
+        bool        provider_error_retryable { false };
+        bool        provider_error_ambiguous { false };
         bool        artifact_ready { false };
         std::string artifact_format;
         std::string artifact_color_encoding;
         size_t      artifact_size { 0 };
         ModelQuality model_quality;
         VisualQuality visual_quality;
+        ModelRefinementAdvice refinement;
         PaletteRecommendation palette_recommendation;
     };
 
@@ -178,6 +243,7 @@ private:
 
     std::string           m_endpoint;
     std::shared_ptr<Http> m_active_request;
+    std::vector<std::shared_ptr<Http>> m_download_requests;
 };
 
 } // namespace Slic3r::GUI

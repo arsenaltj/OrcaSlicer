@@ -72,10 +72,15 @@ class StylePreviewPromptTests(unittest.TestCase):
         self.assertIn("do not add a pedestal", prompt)
         self.assertIn("finished bust or half-body collectible", prompt)
         self.assertIn("do not invent a pelvis, legs, or feet", prompt)
+        self.assertIn("Changing palette mode", prompt)
+        self.assertIn("must not change full-body versus bust framing", prompt)
         self.assertIn("isolate exactly one requested or dominant subject", prompt)
         self.assertIn("Remove scenery, floor shadows, text, logos, watermarks, camera UI", prompt)
         self.assertIn("roughly 92-percent identity-preserving and 8-percent playful", prompt)
         self.assertIn("Do not make an adult childlike", prompt)
+        self.assertIn("face aspect ratio", prompt)
+        self.assertIn("cheekbone placement", prompt)
+        self.assertIn("identity authority", prompt)
         self.assertIn("do not enlarge the eyes", prompt)
         self.assertIn("do not invent a white muzzle", prompt)
         self.assertIn("Do not return the unchanged source", prompt)
@@ -165,6 +170,8 @@ class TextImagePromptTests(unittest.TestCase):
         self.assertIn("transparent background", prompt)
         self.assertIn("load-bearing connections, base contact", prompt)
         self.assertIn("unless that exact shade is one of the listed printable colors", prompt)
+        self.assertIn("closed component inventory", prompt)
+        self.assertIn("never as lighting highlights", prompt)
 
     def test_text_image_prompt_omits_palette_language_in_natural_mode(self):
         prompt = preprocessor._text_image_prompt("a toy dragon", (), "low_poly")
@@ -221,6 +228,9 @@ class PrintablePaletteRecommendationTests(unittest.TestCase):
         self.assertEqual([color.hex for color in result.colors], ["#D96B43", "#2B2422", "#F2D7B5", "#2F6B5F"])
         self.assertEqual([color.role for color in result.colors], ["primary", "structure", "light", "accent"])
         self.assertIn("four-color palette", complete.call_args.args[0])
+        self.assertIn("different hue family from primary", complete.call_args.args[0])
+        self.assertIn("overrides any monochrome", complete.call_args.args[0])
+        self.assertIn("structure visibly dark", complete.call_args.args[0])
 
     def test_image_recommendation_uses_vision_completion(self):
         with tempfile.TemporaryDirectory() as directory:
