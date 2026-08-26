@@ -98,7 +98,8 @@ DEFAULT_IMAGE_INSTRUCTION = (
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 _JOBS_LOCK = threading.RLock()
 _JOBS: dict[str, "Job"] = {}
-_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="orca-model-job")
+_DESIGN_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="orca-design-job")
+_MODEL_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="orca-model-job")
 _SHUTDOWN_LOCK = threading.Lock()
 _SHUT_DOWN = False
 
@@ -832,6 +833,17 @@ def _public_job(job: Job) -> dict[str, Any]:
     artifact_filename = ""
     if artifact_ready:
         artifact_filename = f"orcaslicer-model-{job.id}.{job.artifact_format}"
+    provider_failure: dict[str, Any] = {}
+    latest_attempt = job.attempts[-1] if job.attempts else {}
+    code = latest_attempt.get("provider_error_code")
+    if isinstance(code, str) and code:
+        category = latest_attempt.get("provider_error_category")
+        provider_failure = {
+            "code": code,
+            "category": category if isinstance(category, str) else "",
+            "retryable": latest_attempt.get("provider_error_retryable") is True,
+            "ambiguous": latest_attempt.get("provider_error_ambiguous") is True,
+        }
     return {
         "id": job.id,
         "source": job.source,
@@ -855,6 +867,7 @@ def _public_job(job: Job) -> dict[str, Any]:
         "model_quality": model_quality,
         "visual_quality": visual_quality,
         "refinement": refinement,
+        "provider_failure": provider_failure,
         "model_views": {
             "ready": model_view_sheet_ready,
             "size_bytes": model_view_sheet_size if model_view_sheet_ready else 0,
@@ -3449,9 +3462,15 @@ def _generate_job(
         _finish_deleted(job)
 
 
+def _executor_for(worker: Callable[..., None]) -> ThreadPoolExecutor:
+    # Provider geometry is intentionally serialized in its own lane so a long
+    # paid task cannot starve palette recommendation or Image2 preprocessing.
+    return _MODEL_EXECUTOR if worker is _generate_job else _DESIGN_EXECUTOR
+
+
 def _submit(job: Job, worker: Callable[..., None], *args: Any) -> None:
     try:
-        future = _EXECUTOR.submit(worker, job, *args)
+        future = _executor_for(worker).submit(worker, job, *args)
     except RuntimeError:
         raise RequestError("service_unavailable", "The model job service is shutting down.", 503, True) from None
     with _JOBS_LOCK:
@@ -3468,7 +3487,8 @@ def shutdown_sidecar() -> None:
         jobs = list(_JOBS.values())
         for job in jobs:
             job.stop_event.set()
-    _EXECUTOR.shutdown(wait=True, cancel_futures=False)
+    _DESIGN_EXECUTOR.shutdown(wait=True, cancel_futures=False)
+    _MODEL_EXECUTOR.shutdown(wait=True, cancel_futures=False)
     with _JOBS_LOCK:
         _JOBS.clear()
 

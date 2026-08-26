@@ -358,6 +358,16 @@ wxString localized_job_status(const AIModelGenerationClient::JobStatus& status)
         return _L("正在停止生成任务...");
     if (status.state == "cancelled")
         return _L("生成任务已取消。");
+    if (status.state == "failed" && status.provider_error_ambiguous)
+        return _L("模型服务提交结果不明确，远端可能已创建付费任务。为避免重复计费，程序不会自动重试；请先到服务端确认任务状态。");
+    if (status.state == "failed" && status.provider_error_code == "provider_rejected")
+        return _L("模型服务拒绝了当前图片或提示词。请调整受限内容后手动重试；程序不会自动创建新的付费任务。");
+    if (status.state == "failed" && status.provider_error_code == "provider_rate_limited")
+        return _L("模型服务当前请求过多，请稍后手动重试；程序不会自动创建新的付费任务。");
+    if (status.state == "failed" && status.provider_error_code == "provider_timeout")
+        return _L("模型服务响应超时。请确认服务端没有遗留任务后再手动重试，避免重复计费。");
+    if (status.state == "failed" && status.provider_error_code == "provider_unavailable")
+        return _L("模型服务暂时不可用，请稍后手动重试；程序不会自动创建新的付费任务。");
     if (status.state == "failed")
         return status.message.empty() ? _L("生成任务失败。") : _L("生成任务失败：") + from_u8(status.message);
     return status.message.empty() ? _L("正在处理...") : from_u8(status.message);
@@ -1627,6 +1637,10 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     preview_stages.Add(_L("问题热力图"));
     m_preview_stage = new wxChoice(panel, wxID_ANY, wxDefaultPosition, wxDefaultSize, preview_stages);
     m_preview_stage->SetSelection(2);
+    m_preview_stage_hint = new wxStaticText(
+        panel, wxID_ANY, _L("可打印清理会合并小于最小特征的色块；若外观不变，表示当前图片无需额外清理。"));
+    m_preview_stage_hint->SetForegroundColour(wxColour(91, 104, 107));
+    m_preview_stage_hint->Wrap(FromDIP(760));
     m_zoom_out = new wxButton(panel, wxID_ANY, "-", wxDefaultPosition, wxSize(FromDIP(30), FromDIP(28)));
     m_zoom_fit = new wxButton(panel, wxID_ANY, _L("适应"), wxDefaultPosition, wxSize(FromDIP(54), FromDIP(28)));
     m_zoom_in = new wxButton(panel, wxID_ANY, "+", wxDefaultPosition, wxSize(FromDIP(30), FromDIP(28)));
@@ -1641,6 +1655,7 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     header->Add(m_zoom_in, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(4));
     header->Add(m_preview_zoom, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(6));
     sizer->Add(header, 0, wxEXPAND | wxALL, FromDIP(18));
+    sizer->Add(m_preview_stage_hint, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(18));
 
     m_preview_book = new wxNotebook(panel, wxID_ANY);
     m_preview_area = new wxScrolledWindow(m_preview_book, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxHSCROLL | wxVSCROLL);
@@ -2569,6 +2584,12 @@ void ModelGenerationPanel::handle_error(const std::string& error, uint64_t seque
         message = _L("图片生成请求过于频繁，请稍后重试。");
     else if (message.Contains("preprocessing service rejected the request"))
         message = _L("图片生成服务拒绝了请求，请检查图片和提示词后重试。");
+    else if (message.Contains("rejected the request") || message.Contains("Tripo rejected"))
+        message = _L("模型服务拒绝了当前图片或提示词。请调整内容后手动重试；程序不会自动创建新的付费任务。");
+    else if (message.Contains("rate limiting") || message.Contains("rate limited"))
+        message = _L("模型服务当前请求过多，请稍后手动重试；程序不会自动创建新的付费任务。");
+    else if (message.Contains("deadline expired") || message.Contains("timed out"))
+        message = _L("模型服务响应超时。请先确认服务端没有遗留任务，再手动重试以避免重复计费。");
     else if (message.Contains("not reachable") || message.Contains("Couldn't connect") || message.Contains("Failed to connect") || message.Contains("Connection refused"))
         message = _L("无法连接本地 AI 服务，请确认正式服务已启动后重试。");
     else
@@ -2633,6 +2654,9 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
     m_raw_preview_available = status.raw_preview_ready;
     m_strict_preview_available = status.strict_preview_ready;
     m_heatmap_available = status.heatmap_ready;
+    m_preview_metrics_available = status.metadata_ready;
+    m_preview_changed_pixel_ratio = status.changed_pixel_ratio;
+    m_preview_minimum_feature_px = status.minimum_feature_px;
     m_palette_quality_ok = status.palette_quality_ok;
     m_meaningful_palette_count = status.meaningful_palette_count;
     m_meaningful_subject_color_count = status.meaningful_subject_color_count;
@@ -3606,9 +3630,20 @@ void ModelGenerationPanel::refresh_local_recolor_controls()
     if (!ready)
         m_local_recolor_toggle->SetValue(false);
     const bool editing = ready && m_local_recolor_toggle->GetValue();
+    const auto has_tiny_color_regions = [this]() {
+        const auto contains = [](const std::vector<std::string>& codes) {
+            return std::find(codes.begin(), codes.end(), "tiny_printable_color_regions") != codes.end();
+        };
+        return contains(m_model_quality.warnings) || contains(m_model_quality.errors);
+    };
     m_local_recolor_panel->Show(ready);
     m_local_recolor_controls->Show(editing);
-    m_local_recolor_toggle->SetLabel(editing ? _L("收起改色工具") : _L("编辑局部颜色"));
+    const bool repair_color_regions = has_tiny_color_regions();
+    m_local_recolor_toggle->SetLabel(
+        editing ? _L("收起改色工具") : repair_color_regions ? _L("修复杂色色块") : _L("编辑局部颜色"));
+    m_local_recolor_toggle->SetToolTip(repair_color_regions
+        ? _L("检查已识别的过小耗材色块，在模型上选择区域并合并到合适的目标色")
+        : _L("打开局部改色工具，在模型上直接选择需要换色的部位"));
     m_local_recolor_toggle->Enable(ready && !m_busy);
     if (m_locate_overhang_regions != nullptr)
         m_locate_overhang_regions->Enable(ready && !m_busy);
@@ -4606,6 +4641,24 @@ void ModelGenerationPanel::apply_preview_stage(bool center)
     m_style_preview_bitmap = wxNullBitmap;
     if (m_preview_stage != nullptr)
         m_preview_stage->Enable(m_raw_preview_available || m_strict_preview_available || m_heatmap_available);
+    if (m_preview_stage_hint != nullptr) {
+        wxString hint;
+        if (selection == 0) {
+            hint = _L("供应商生成的风格原图；颜色数量和小色块尚未受打印约束。");
+        } else if (selection == 1) {
+            hint = _L("所有可见像素已映射到目标耗材色板；此步骤不会改变主体构图和可见范围。");
+        } else if (selection == 3) {
+            hint = _L("红色表示可打印清理阶段修改的像素；没有明显红色表示未检测到需要清理的区域。");
+        } else if (m_preview_metrics_available) {
+            hint = wxString::Format(
+                _L("已按 %d px 最小特征合并碎小色块，共修改 %.2f%% 像素；接近 0%% 表示严格色板结果已经满足清理规则。"),
+                m_preview_minimum_feature_px, m_preview_changed_pixel_ratio * 100.0);
+        } else {
+            hint = _L("可打印清理会合并小于最小特征的色块；若外观不变，表示当前图片无需额外清理。");
+        }
+        m_preview_stage_hint->SetLabel(hint);
+        m_preview_stage_hint->Wrap(FromDIP(760));
+    }
     update_preview_view(center);
     if (m_preview_area != nullptr)
         m_preview_area->Update();
@@ -4803,6 +4856,12 @@ void ModelGenerationPanel::set_preview_empty(const wxString& message)
     m_style_preview_placeholder.clear();
     if (m_preview_stage != nullptr)
         m_preview_stage->SetSelection(2);
+    m_preview_metrics_available = false;
+    m_preview_changed_pixel_ratio = 0.0;
+    m_preview_minimum_feature_px = 0;
+    if (m_preview_stage_hint != nullptr)
+        m_preview_stage_hint->SetLabel(
+            _L("可打印清理会合并小于最小特征的色块；若外观不变，表示当前图片无需额外清理。"));
     m_preview_zoom_factor = 1.0;
     if (m_preview_kind != nullptr)
         m_preview_kind->SetLabel(_L("暂无预览"));

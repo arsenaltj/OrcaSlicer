@@ -194,6 +194,7 @@ private:
     wxStaticText*   m_workflow_phase { nullptr };
     wxStaticText*   m_preview_kind { nullptr };
     wxChoice*       m_preview_stage { nullptr };
+    wxStaticText*   m_preview_stage_hint { nullptr };
     wxNotebook*     m_preview_book { nullptr };
     wxButton*       m_zoom_out { nullptr };
     wxButton*       m_zoom_fit { nullptr };
@@ -308,11 +309,14 @@ private:
     bool m_strict_preview_available { false };
     bool m_heatmap_available { false };
     bool m_palette_quality_ok { true };
+    bool m_preview_metrics_available { false };
     bool m_quality_check_busy { false };
     bool m_visual_check_busy { false };
     int m_meaningful_palette_count { 0 };
     int m_meaningful_subject_color_count { 0 };
     double m_preview_zoom_factor { 1.0 };
+    double m_preview_changed_pixel_ratio { 0.0 };
+    int m_preview_minimum_feature_px { 0 };
     AIModelGenerationClient::ModelQuality m_model_quality;
     AIModelGenerationClient::VisualQuality m_visual_quality;
     AIModelGenerationClient::ModelRefinementAdvice m_model_refinement;

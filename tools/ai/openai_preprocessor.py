@@ -30,7 +30,9 @@ STYLE_PROFILES = {
         "Restyle the selected primary subject as a premium designer-toy collectible. Preserve recognizable identity, facial "
         "relationships, hairstyle, signature clothing silhouette, pose, and cultural attributes before applying moderate chibi "
         "exaggeration. Use a roughly 92-percent identity-preserving and 8-percent playful treatment for a real person: keep their "
-        "adult age, craniofacial proportions, natural eye size, eyelid shape, nose, mouth, smile, jaw and face width. Do not make "
+        "adult age, face aspect ratio (long, oval, round, or square), craniofacial proportions, cheekbone placement, chin length, "
+        "natural eye size, eyelid shape, nose, mouth, smile, jaw contour and face width. The reference portrait remains the "
+        "identity authority; do not average it into a generic round toy face. Do not make "
         "an adult childlike, baby-faced, anime-like, or into a generic big-eyed doll. Keep any head enlargement subtle. Apply the "
         "stronger toy simplification to the body, hair masses, clothing folds and materials instead of replacing the face. Use "
         "rounded toy-like forms, grouped solid hair masses, and smooth matte vinyl surfaces."
@@ -301,6 +303,8 @@ def _image_to_3d_composition_direction(transparent_background: bool = False) -> 
         "clothing, end the lower torso with a clean sculpted boundary on the base, and do not invent a pelvis, legs, or feet. If the "
         "source is a multi-subject scenic photograph, isolate exactly one requested or dominant subject and omit all secondary "
         "subjects and background scenery. Never duplicate a face, limb, tower, statue, accessory, or architectural element. "
+        "Determine this source crop and visible anatomical extent before applying style or palette. Changing palette mode, palette "
+        "colors, or print constraints must not change full-body versus bust framing or reveal anatomy outside the source crop. "
     )
 
 
@@ -647,7 +651,8 @@ def _style_preview_prompt(
         + "Preserve the chosen subject's recognizable identity, facial expression, hairstyle, signature clothing or structural "
         "features, and visible pose. Simplify fine hair strands, fingers, jewelry, fabric patterns, foliage-like texture, and shallow "
         "surface noise into a few sturdy, connected, modelable forms. Do not turn the chosen person, animal, statue, building, or "
-        "object into a different subject. For a real adult person, preserve adult age and natural facial feature sizes; do not "
+        "object into a different subject. For a real adult person, preserve adult age, face aspect ratio, cheekbone placement, chin "
+        "length, jaw contour, and natural facial feature sizes; do not "
         "enlarge the eyes, shrink the nose or mouth, narrow the jaw, or replace the face with a generic doll face. For an animal, "
         "preserve its actual coat pattern and markings; do not invent a white muzzle, chest patch, socks, blaze, or spots that are "
         "absent from the source. Do not invent unseen anatomy; use the explicit bust treatment for cropped people instead. "

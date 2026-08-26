@@ -66,6 +66,69 @@ def temporary_environment(**values):
 
 
 class SidecarHealthContractTests(unittest.TestCase):
+    def test_design_work_uses_a_separate_executor_from_paid_model_generation(self):
+        self.assertIs(PRODUCTION._executor_for(PRODUCTION._generate_job), PRODUCTION._MODEL_EXECUTOR)
+        self.assertIs(PRODUCTION._executor_for(PRODUCTION._recommend_palette_job), PRODUCTION._DESIGN_EXECUTOR)
+        self.assertIs(PRODUCTION._executor_for(PRODUCTION._preprocess_image_job), PRODUCTION._DESIGN_EXECUTOR)
+        self.assertIsNot(PRODUCTION._MODEL_EXECUTOR, PRODUCTION._DESIGN_EXECUTOR)
+
+    def test_blocked_model_lane_does_not_starve_palette_lane(self):
+        model_started = threading.Event()
+        release_model = threading.Event()
+        palette_finished = threading.Event()
+
+        def blocking_model(_job):
+            model_started.set()
+            release_model.wait(timeout=5)
+
+        def recommend_palette(_job):
+            palette_finished.set()
+
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            PRODUCTION, "_generate_job", blocking_model
+        ):
+            root = Path(directory)
+            model_job = PRODUCTION.Job(id=str(uuid.uuid4()), source="text", directory=root / "model")
+            palette_job = PRODUCTION.Job(id=str(uuid.uuid4()), source="text", directory=root / "palette")
+            try:
+                PRODUCTION._submit(model_job, blocking_model)
+                self.assertTrue(model_started.wait(timeout=1))
+                PRODUCTION._submit(palette_job, recommend_palette)
+                self.assertTrue(palette_finished.wait(timeout=1))
+            finally:
+                release_model.set()
+                if model_job.future is not None:
+                    model_job.future.result(timeout=2)
+                if palette_job.future is not None:
+                    palette_job.future.result(timeout=2)
+
+    def test_public_job_exposes_latest_structured_provider_failure(self):
+        job_id = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory() as directory:
+            job_directory = Path(directory) / job_id
+            job_directory.mkdir()
+            job = PRODUCTION.Job(id=job_id, source="text", directory=job_directory)
+            job.attempts = [
+                {"attempt": 1, "status": "rejected", "error": "old quality failure"},
+                {
+                    "attempt": 2,
+                    "status": "rejected",
+                    "provider_error_code": "provider_timeout",
+                    "provider_error_category": "availability",
+                    "provider_error_retryable": True,
+                    "provider_error_ambiguous": True,
+                },
+            ]
+
+            public = PRODUCTION._public_job(job)
+
+            self.assertEqual(public["provider_failure"]["code"], "provider_timeout")
+            self.assertEqual(public["provider_failure"]["category"], "availability")
+            self.assertTrue(public["provider_failure"]["retryable"])
+            self.assertTrue(public["provider_failure"]["ambiguous"])
+            job.attempts.append({"attempt": 3, "status": "rejected", "error": "quality gate"})
+            self.assertEqual(PRODUCTION._public_job(job)["provider_failure"], {})
+
     def fetch_health(self, handler):
         with sidecar_server(handler) as port:
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=5) as response:

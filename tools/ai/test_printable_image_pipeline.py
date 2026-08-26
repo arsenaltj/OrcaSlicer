@@ -185,6 +185,27 @@ class PrintableImagePipelineTests(unittest.TestCase):
         self.assertEqual(result.metrics["meaningful_palette_count"], 1)
         self.assertIn("too_few_meaningful_palette_colors", result.metrics["quality_warnings"])
 
+    def test_single_filament_preserves_subject_silhouette_and_uses_exactly_one_color(self):
+        image = Image.new("RGB", (120, 100), (250, 250, 248))
+        for x in range(20, 101):
+            for y in range(15, 86):
+                image.putpixel((x, y), (45 + x, 35 + y, 90))
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        source = root / "source.png"
+        image.save(source)
+
+        result = pipeline.process_printable_image(source, root / "result", ("#237B45",), None)
+
+        with Image.open(result.clean_preview) as clean:
+            alpha = clean.getchannel("A")
+            self.assertEqual(alpha.getbbox(), (20, 15, 101, 86))
+            opaque_colors = {pixel[:3] for pixel in clean.getdata() if pixel[3] == 255}
+            self.assertEqual(opaque_colors, {(0x23, 0x7B, 0x45)})
+        self.assertEqual(result.metrics["meaningful_subject_color_count"], 1)
+        self.assertTrue(result.metrics["palette_quality_ok"])
+
     def test_quality_gate_accepts_three_meaningful_designer_toy_colors(self):
         image = Image.new("RGB", (120, 100), pipeline._hex_rgb(RGBW[3]))
         for x, color in ((20, RGBW[0]), (45, RGBW[1]), (70, RGBW[2])):

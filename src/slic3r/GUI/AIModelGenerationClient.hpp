@@ -159,6 +159,7 @@ public:
         double      image_score { 0.0 };
         double      mean_color_error { 0.0 };
         double      small_region_ratio { 0.0 };
+        double      changed_pixel_ratio { 0.0 };
         double      boundary_complexity { 0.0 };
         int         minimum_feature_px { 0 };
         int         meaningful_palette_count { 0 };
@@ -166,6 +167,10 @@ public:
         double      printable_subject_area_ratio { 0.0 };
         double      largest_subject_component_ratio { 0.0 };
         bool        palette_quality_ok { true };
+        std::string provider_error_code;
+        std::string provider_error_category;
+        bool        provider_error_retryable { false };
+        bool        provider_error_ambiguous { false };
         bool        artifact_ready { false };
         std::string artifact_format;
         std::string artifact_color_encoding;

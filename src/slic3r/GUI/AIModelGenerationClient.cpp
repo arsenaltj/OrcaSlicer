@@ -501,6 +501,7 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
         status.image_score = metrics.value("score", 0.0);
         status.mean_color_error = metrics.value("mean_color_error", 0.0);
         status.small_region_ratio = metrics.value("small_region_ratio_after", 0.0);
+        status.changed_pixel_ratio = metrics.value("changed_pixel_ratio", 0.0);
         status.boundary_complexity = metrics.value("boundary_complexity", 0.0);
         status.minimum_feature_px = metrics.value("minimum_feature_px", 0);
         status.meaningful_palette_count = metrics.value("meaningful_palette_count", 0);
@@ -508,6 +509,13 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
         status.printable_subject_area_ratio = metrics.value("printable_subject_area_ratio", 0.0);
         status.largest_subject_component_ratio = metrics.value("largest_subject_component_ratio", 0.0);
         status.palette_quality_ok = metrics.value("palette_quality_ok", true);
+    }
+    if (job.contains("provider_failure") && job["provider_failure"].is_object()) {
+        const auto& failure = job["provider_failure"];
+        status.provider_error_code = failure.value("code", std::string());
+        status.provider_error_category = failure.value("category", std::string());
+        status.provider_error_retryable = failure.value("retryable", false);
+        status.provider_error_ambiguous = failure.value("ambiguous", false);
     }
     if (job.contains("artifact") && job["artifact"].is_object()) {
         status.artifact_ready = job["artifact"].value("ready", false);
