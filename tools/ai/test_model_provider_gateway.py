@@ -80,7 +80,7 @@ class ModelTaskGatewayTests(unittest.TestCase):
         gateway, dependencies = self.gateway()
 
         result = gateway.start_or_reuse_model_task(
-            ModelTaskRequest(source="text", prompt="printable radio", face_limit=300000),
+            ModelTaskRequest(source="text", prompt="printable radio", face_limit=1000000),
             existing_task_id="existing-task",
         )
 
@@ -162,18 +162,18 @@ class ModelTaskGatewayTests(unittest.TestCase):
         authorization = PaidTaskAuthorization.confirmed("job-1:model:1")
 
         result = gateway.start_or_reuse_model_task(
-            ModelTaskRequest(source="text", prompt="printable radio", face_limit=300000),
+            ModelTaskRequest(source="text", prompt="printable radio", face_limit=1000000),
             authorization=authorization,
         )
 
         self.assertEqual(result.task_id, "text-task")
         self.assertFalse(result.reused)
-        dependencies["create_text_task"].assert_called_once_with("printable radio", 300000)
+        dependencies["create_text_task"].assert_called_once_with("printable radio", 1000000, "quality")
         dependencies["upload_image"].assert_not_called()
         dependencies["create_image_task"].assert_not_called()
         with self.assertRaises(ProviderGatewayError) as raised:
             gateway.start_or_reuse_model_task(
-                ModelTaskRequest(source="text", prompt="second task", face_limit=300000),
+                ModelTaskRequest(source="text", prompt="second task", face_limit=1000000),
                 authorization=authorization,
             )
         self.assertEqual(raised.exception.code, "authorization_consumed")
@@ -187,13 +187,18 @@ class ModelTaskGatewayTests(unittest.TestCase):
             reference.write_bytes(b"preview")
 
             result = gateway.start_or_reuse_model_task(
-                ModelTaskRequest(source="image", image_path=reference, face_limit=500000),
+                ModelTaskRequest(
+                    source="image",
+                    image_path=reference,
+                    face_limit=300000,
+                    generation_profile="performance",
+                ),
                 authorization=authorization,
             )
 
         self.assertEqual(result.task_id, "image-task")
         dependencies["upload_image"].assert_called_once_with(reference)
-        dependencies["create_image_task"].assert_called_once_with("image-token", 500000)
+        dependencies["create_image_task"].assert_called_once_with("image-token", 300000, "performance")
         dependencies["create_text_task"].assert_not_called()
 
     def test_missing_authorization_performs_no_provider_call(self):
@@ -201,10 +206,46 @@ class ModelTaskGatewayTests(unittest.TestCase):
 
         with self.assertRaises(ProviderGatewayError) as raised:
             gateway.start_or_reuse_model_task(
-                ModelTaskRequest(source="text", prompt="printable radio", face_limit=300000)
+                ModelTaskRequest(source="text", prompt="printable radio", face_limit=1000000)
             )
 
         self.assertEqual(raised.exception.code, "authorization_required")
+        for dependency in dependencies.values():
+            dependency.assert_not_called()
+
+    def test_generation_profile_and_face_limit_must_match(self):
+        gateway, dependencies = self.gateway()
+
+        with self.assertRaises(ProviderGatewayError) as raised:
+            gateway.start_or_reuse_model_task(
+                ModelTaskRequest(
+                    source="text",
+                    prompt="printable radio",
+                    face_limit=300000,
+                    generation_profile="quality",
+                ),
+                authorization=PaidTaskAuthorization.confirmed("job-profile:model:1"),
+            )
+
+        self.assertEqual(raised.exception.code, "invalid_model_request")
+        for dependency in dependencies.values():
+            dependency.assert_not_called()
+
+    def test_unknown_generation_profile_is_rejected_before_provider_call(self):
+        gateway, dependencies = self.gateway()
+
+        with self.assertRaises(ProviderGatewayError) as raised:
+            gateway.start_or_reuse_model_task(
+                ModelTaskRequest(
+                    source="text",
+                    prompt="printable radio",
+                    face_limit=300000,
+                    generation_profile="turbo",
+                ),
+                authorization=PaidTaskAuthorization.confirmed("job-profile:model:2"),
+            )
+
+        self.assertEqual(raised.exception.code, "invalid_model_request")
         for dependency in dependencies.values():
             dependency.assert_not_called()
 
@@ -214,7 +255,7 @@ class ModelTaskGatewayTests(unittest.TestCase):
 
         with self.assertRaises(ProviderGatewayError) as raised:
             gateway.start_or_reuse_model_task(
-                ModelTaskRequest(source="text", prompt="printable radio", face_limit=300000),
+                ModelTaskRequest(source="text", prompt="printable radio", face_limit=1000000),
                 authorization=PaidTaskAuthorization.confirmed("job-3:model:1"),
             )
 
@@ -222,7 +263,7 @@ class ModelTaskGatewayTests(unittest.TestCase):
         self.assertEqual(raised.exception.category, "availability")
         self.assertTrue(raised.exception.retryable)
         self.assertTrue(raised.exception.ambiguous)
-        create_text.assert_called_once_with("printable radio", 300000)
+        create_text.assert_called_once_with("printable radio", 1000000, "quality")
         dependencies["upload_image"].assert_not_called()
         dependencies["create_image_task"].assert_not_called()
 

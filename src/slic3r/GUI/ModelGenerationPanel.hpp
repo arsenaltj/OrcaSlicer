@@ -92,6 +92,8 @@ private:
     std::string current_style() const;
     std::string current_custom_style() const;
     wxString current_style_label() const;
+    std::string current_generation_profile() const;
+    wxString current_generation_profile_label() const;
     int current_face_limit() const;
     AIModelGenerationClient::ImagePrintSettings current_print_settings() const;
     bool has_image_input() const;
@@ -234,6 +236,10 @@ private:
     int             m_region_operation_index { 0 };
     int             m_region_color_index { 0 };
     std::vector<std::string> m_region_palette;
+    wxPanel*        m_model_decision_panel { nullptr };
+    wxStaticText*   m_model_decision_status { nullptr };
+    wxStaticText*   m_model_decision_summary { nullptr };
+    wxCollapsiblePane* m_model_advanced_pane { nullptr };
     wxPanel*        m_model_quality_panel { nullptr };
     wxStaticText*   m_model_quality_status { nullptr };
     wxStaticText*   m_model_quality_summary { nullptr };
@@ -298,6 +304,7 @@ private:
     std::string m_job_custom_style;
     AIModelGenerationClient::ImagePrintSettings m_job_print_settings;
     int m_job_face_limit { 300000 };
+    std::string m_job_generation_profile { "quality" };
     std::string m_job_id;
     std::string m_displayed_model_job_id;
     std::string m_artifact_format;
@@ -317,6 +324,7 @@ private:
     bool m_shutdown { false };
     bool m_updating_preview { false };
     bool m_style_preview_ready { false };
+    bool m_job_preview_expected { false };
     bool m_palette_is_custom { false };
     bool m_advanced_options_expanded { false };
     bool m_job_use_printable_colors { false };
@@ -327,6 +335,7 @@ private:
     bool m_preview_metrics_available { false };
     bool m_quality_check_busy { false };
     bool m_visual_check_busy { false };
+    bool m_journey_model_submitted { false };
     int m_meaningful_palette_count { 0 };
     int m_meaningful_subject_color_count { 0 };
     double m_preview_zoom_factor { 1.0 };

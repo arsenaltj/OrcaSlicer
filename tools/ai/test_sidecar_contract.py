@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import contextlib
 import importlib.util
+from io import BytesIO
 import json
 import os
 import sys
@@ -14,6 +15,8 @@ import uuid
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
+
+from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOLS_AI = Path(__file__).resolve().parent
@@ -32,6 +35,14 @@ def load_module(name: str, path: Path):
 
 MOCK = load_module("orca_ai_sidecar_mock_contract", ROOT / "ai_sidecar_mock.py")
 PRODUCTION = load_module("orca_ai_sidecar_production_contract", TOOLS_AI / "orca_ai_sidecar.py")
+
+
+def valid_png_bytes(size: int = 96) -> bytes:
+    output = BytesIO()
+    image = Image.new("RGB", (size, size), "white")
+    image.paste("navy", (size // 4, size // 4, size * 3 // 4, size * 3 // 4))
+    image.save(output, format="PNG")
+    return output.getvalue()
 
 
 @contextlib.contextmanager
@@ -66,6 +77,53 @@ def temporary_environment(**values):
 
 
 class SidecarHealthContractTests(unittest.TestCase):
+    def test_local_journey_event_log_accepts_only_privacy_safe_fields(self):
+        job_id = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory() as directory, temporary_environment(
+            ORCASLICER_AI_OUTPUT_DIR=directory
+        ):
+            with sidecar_server(PRODUCTION.Handler) as port:
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/v1/orcaslicer/journey-events",
+                    data=json.dumps({"event": "model_imported", "job_id": job_id}).encode(),
+                    method="POST",
+                    headers={"X-OrcaSlicer-Client": "native", "Content-Type": "application/json"},
+                )
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    self.assertEqual(response.status, 201)
+
+            records = [
+                json.loads(line)
+                for line in (Path(directory) / PRODUCTION.JOURNEY_EVENT_FILENAME).read_text(
+                    encoding="ascii"
+                ).splitlines()
+            ]
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["event"], "model_imported")
+        self.assertEqual(records[0]["job_id"], job_id)
+        self.assertEqual(set(records[0]), {"version", "event", "job_id", "recorded_at"})
+
+    def test_local_journey_event_log_rejects_content_and_paths(self):
+        with tempfile.TemporaryDirectory() as directory, temporary_environment(
+            ORCASLICER_AI_OUTPUT_DIR=directory
+        ):
+            with sidecar_server(PRODUCTION.Handler) as port:
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/v1/orcaslicer/journey-events",
+                    data=json.dumps({
+                        "event": "preview_requested",
+                        "job_id": str(uuid.uuid4()),
+                        "prompt": "private prompt",
+                        "image_path": "C:/private/image.png",
+                    }).encode(),
+                    method="POST",
+                    headers={"X-OrcaSlicer-Client": "native", "Content-Type": "application/json"},
+                )
+                with self.assertRaises(urllib.error.HTTPError) as raised:
+                    urllib.request.urlopen(request, timeout=5)
+                self.assertEqual(raised.exception.code, 400)
+            self.assertFalse((Path(directory) / PRODUCTION.JOURNEY_EVENT_FILENAME).exists())
+
     def test_design_work_uses_a_separate_executor_from_paid_model_generation(self):
         self.assertIs(PRODUCTION._executor_for(PRODUCTION._generate_job), PRODUCTION._MODEL_EXECUTOR)
         self.assertIs(PRODUCTION._executor_for(PRODUCTION._recommend_palette_job), PRODUCTION._DESIGN_EXECUTOR)
@@ -151,11 +209,13 @@ class SidecarHealthContractTests(unittest.TestCase):
         self.assertEqual(generation["sources"], ["text", "image"])
         self.assertEqual(
             generation["styles"],
-            ["q_cartoon", "low_poly", "cel_shaded", "enamel_inlay", "sculpture", "custom"],
+            ["sculpture", "realistic", "cartoon", "custom"],
         )
         self.assertEqual(generation["artifact_formats"], ["obj"])
-        self.assertEqual(generation["face_limits"], [100000, 300000, 500000, 1000000])
-        self.assertEqual(generation["default_face_limit"], 300000)
+        self.assertEqual(generation["face_limits"], [300000, 1000000])
+        self.assertEqual(generation["default_face_limit"], 1000000)
+        self.assertEqual(generation["generation_profiles"], ["quality", "performance"])
+        self.assertEqual(generation["default_generation_profile"], "quality")
         self.assertIn("model_reference", generation["printable_image_pipeline"]["outputs"])
         self.assertIsInstance(generation["palette_recommendation"]["available"], bool)
         self.assertEqual(generation["palette_recommendation"]["max_colors"], 4)
@@ -175,6 +235,12 @@ class SidecarHealthContractTests(unittest.TestCase):
             PRODUCTION._normalize_custom_style("woodcut", "q_cartoon")
         with self.assertRaisesRegex(PRODUCTION.RequestError, "1000-byte"):
             PRODUCTION._normalize_custom_style("a" * 1001, "custom")
+
+    def test_generation_profile_contract_has_only_two_public_values(self):
+        self.assertEqual(PRODUCTION._normalize_generation_profile("quality"), "quality")
+        self.assertEqual(PRODUCTION._normalize_generation_profile("performance"), "performance")
+        with self.assertRaisesRegex(PRODUCTION.RequestError, "quality or performance"):
+            PRODUCTION._normalize_generation_profile("turbo")
 
     def test_custom_style_is_persisted_and_exposed_for_task_recovery(self):
         job_id = str(uuid.uuid4())
@@ -325,7 +391,7 @@ class SidecarHealthContractTests(unittest.TestCase):
         for name, value in {
             "request_id": "r2",
             "instruction": "保留主体",
-            "style": "cel_shaded",
+            "style": "cartoon",
             "custom_style": "",
             "print": "{}",
         }.items():
@@ -335,7 +401,8 @@ class SidecarHealthContractTests(unittest.TestCase):
         parts.append(
             f"--{boundary}\r\nContent-Disposition: form-data; name=\"image\"; filename=\"input.png\"\r\n"
             "Content-Type: image/png\r\n\r\n".encode("ascii")
-            + b"\x89PNG\r\n\x1a\nexample\r\n"
+            + valid_png_bytes()
+            + b"\r\n"
         )
         parts.append(f"--{boundary}--\r\n".encode("ascii"))
         body = b"".join(parts)
@@ -453,7 +520,7 @@ class SidecarHealthContractTests(unittest.TestCase):
                     request = urllib.request.Request(
                         f"http://127.0.0.1:{port}/v1/orcaslicer/model-jobs/{job.id}/generate",
                         data=json.dumps(
-                            {"prepared_prompt": "printable object", "palette": [], "face_limit": 300000}
+                            {"prepared_prompt": "printable object", "palette": [], "generation_profile": "quality"}
                         ).encode(),
                         method="POST",
                         headers={"X-OrcaSlicer-Client": "native", "Content-Type": "application/json"},
@@ -462,6 +529,8 @@ class SidecarHealthContractTests(unittest.TestCase):
                         payload = json.loads(response.read())
 
                 self.assertEqual(payload["job"]["state"], "queued")
+                self.assertEqual(payload["job"]["generation_profile"], "quality")
+                self.assertEqual(payload["job"]["face_limit"], 1000000)
                 submit.assert_called_once()
                 args = submit.call_args.args
                 self.assertIs(args[0], job)

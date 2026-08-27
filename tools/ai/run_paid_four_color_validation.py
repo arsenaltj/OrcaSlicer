@@ -30,7 +30,7 @@ def main() -> int:
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     raw = output / "ai_raw.png"
-    generate_image(args.prompt, raw, DEFAULT_PALETTE, "q_cartoon", "blue")
+    generate_image(args.prompt, raw, DEFAULT_PALETTE, "cartoon", "blue")
     result = process_printable_image(
         raw,
         output,

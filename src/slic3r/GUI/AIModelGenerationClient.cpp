@@ -97,6 +97,10 @@ AIModelGenerationClient::AIModelGenerationClient(std::string endpoint)
 AIModelGenerationClient::~AIModelGenerationClient()
 {
     cancel_current();
+    for (const std::shared_ptr<Http>& request : m_background_requests) {
+        if (request)
+            request->cancel();
+    }
 }
 
 bool AIModelGenerationClient::is_loopback_endpoint(const std::string& endpoint)
@@ -225,12 +229,12 @@ void AIModelGenerationClient::confirm_palette(const std::string& job_id, const s
 }
 
 void AIModelGenerationClient::generate(const std::string& job_id, const std::string& prepared_prompt,
-                                       const std::vector<std::string>& palette, int face_limit,
+                                       const std::vector<std::string>& palette, const std::string& generation_profile,
                                        StatusFn on_complete, ErrorFn on_error)
 {
     post_json("/v1/orcaslicer/model-jobs/" + job_id + "/generate",
               json::object({ { "prepared_prompt", prepared_prompt }, { "palette", palette },
-                             { "face_limit", face_limit } }),
+                             { "generation_profile", generation_profile } }),
               std::move(on_complete), std::move(on_error));
 }
 
@@ -369,6 +373,25 @@ void AIModelGenerationClient::download_artifact(const std::string& job_id, const
              std::move(on_complete), std::move(on_error));
 }
 
+void AIModelGenerationClient::record_journey_event(const std::string& event, const std::string& job_id)
+{
+    if (!is_loopback_endpoint(m_endpoint))
+        return;
+    json body = json::object({ { "event", event } });
+    if (!job_id.empty())
+        body["job_id"] = job_id;
+    auto http = Http::post(url("/v1/orcaslicer/journey-events"));
+    http.header("Content-Type", "application/json")
+        .header("X-OrcaSlicer-Client", "native")
+        .timeout_connect(2)
+        .timeout_max(5)
+        .size_limit(64 * 1024)
+        .set_post_body(body.dump());
+    http.on_complete([](std::string, unsigned) {});
+    http.on_error([](std::string, std::string, unsigned) {});
+    m_background_requests.emplace_back(http.perform());
+}
+
 void AIModelGenerationClient::post_json(const std::string& path, const json& body,
                                         StatusFn on_complete, ErrorFn on_error)
 {
@@ -429,6 +452,7 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
     status.user_prompt = job.value("user_prompt", std::string());
     status.progress = std::clamp(job.value("progress", 0), 0, 100);
     status.face_limit = job.value("face_limit", 300000);
+    status.generation_profile = job.value("generation_profile", std::string("quality"));
     status.style = job.value("style", std::string());
     status.custom_style = job.value("custom_style", std::string());
     status.updated_at = job.value("updated_at", 0.0);

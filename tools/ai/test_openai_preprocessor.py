@@ -54,6 +54,14 @@ class OpenAIBaseUrlTests(unittest.TestCase):
             with self.assertRaises(preprocessor.OpenAIPreprocessorError):
                 preprocessor._config()
 
+    def test_image_quality_defaults_to_high_and_rejects_unknown_values(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("OPENAI_IMAGE_QUALITY", None)
+            self.assertEqual(preprocessor._image_quality(), "high")
+        with mock.patch.dict(os.environ, {"OPENAI_IMAGE_QUALITY": "ultra"}):
+            with self.assertRaises(preprocessor.OpenAIPreprocessorError):
+                preprocessor._image_quality()
+
 
 class StylePreviewPromptTests(unittest.TestCase):
     def test_short_user_instruction_is_wrapped_with_preview_constraints(self):
@@ -69,24 +77,24 @@ class StylePreviewPromptTests(unittest.TestCase):
         self.assertIn("clean product-shot reference for image-to-3D", prompt)
         self.assertIn("person, animal, statue", prompt)
         self.assertIn("inherently stable manufactured object", prompt)
-        self.assertIn("do not add a pedestal", prompt)
+        self.assertIn("Do not add any disc, plinth, stand, platform, presentation base, floor slab, or pedestal", prompt)
+        self.assertIn("manufactured-product exception overrides every general instruction", prompt)
         self.assertIn("finished bust or half-body collectible", prompt)
         self.assertIn("do not invent a pelvis, legs, or feet", prompt)
         self.assertIn("Changing palette mode", prompt)
         self.assertIn("must not change full-body versus bust framing", prompt)
         self.assertIn("isolate exactly one requested or dominant subject", prompt)
         self.assertIn("Remove scenery, floor shadows, text, logos, watermarks, camera UI", prompt)
-        self.assertIn("roughly 92-percent identity-preserving and 8-percent playful", prompt)
-        self.assertIn("Do not make an adult childlike", prompt)
-        self.assertIn("face aspect ratio", prompt)
-        self.assertIn("cheekbone placement", prompt)
-        self.assertIn("identity authority", prompt)
+        self.assertIn("friendly cute cartoon collectible", prompt)
+        self.assertIn("Preserve recognizable identity, age, expression", prompt)
+        self.assertIn("do not enlarge eyes excessively", prompt)
+        self.assertIn("do not add or remove elements", prompt)
         self.assertIn("do not enlarge the eyes", prompt)
         self.assertIn("do not invent a white muzzle", prompt)
         self.assertIn("Do not return the unchanged source", prompt)
         self.assertIn("#FF0000, #00FF00", prompt)
         self.assertIn("allowed printable palette", prompt)
-        self.assertIn("premium designer-toy collectible", prompt)
+        self.assertIn("friendly cute cartoon collectible", prompt)
         self.assertIn("full-color designer toy", prompt)
         self.assertIn("Use at least 2 listed colors", prompt)
         self.assertIn("Cover at least 65 percent of the visible subject", prompt)
@@ -98,24 +106,29 @@ class StylePreviewPromptTests(unittest.TestCase):
         self.assertNotIn("one fused connected object", prompt)
 
     def test_each_style_has_distinct_printable_direction(self):
-        q_prompt = preprocessor._style_preview_prompt("preserve pose", ("#FFFFFF", "#000000"), "q_cartoon")
-        low_poly_prompt = preprocessor._style_preview_prompt("preserve pose", ("#FFFFFF", "#000000"), "low_poly")
-        sculpture_prompt = preprocessor._style_preview_prompt("preserve pose", ("#FFFFFF", "#000000"), "sculpture")
-        cel_prompt = preprocessor._style_preview_prompt("preserve pose", ("#FFFFFF", "#000000"), "cel_shaded")
-        enamel_prompt = preprocessor._style_preview_prompt("preserve pose", ("#FFFFFF", "#000000"), "enamel_inlay")
+        realistic = preprocessor._style_preview_prompt("preserve pose", ("#FFFFFF", "#000000"), "realistic")
+        cartoon = preprocessor._style_preview_prompt("preserve pose", ("#FFFFFF", "#000000"), "cartoon")
+        sculpture = preprocessor._style_preview_prompt("preserve pose", (), "sculpture")
 
-        self.assertIn("92-percent identity-preserving", q_prompt)
-        self.assertIn("large intentional polygon facets", low_poly_prompt)
-        self.assertIn("marble or plaster sculpture", sculpture_prompt)
-        self.assertIn("two or three broad tone bands", cel_prompt)
-        self.assertIn("shallow raised separators", enamel_prompt)
-        self.assertIn("allowed printable palette", low_poly_prompt)
-        self.assertIn("full-color designer toy", low_poly_prompt)
-        self.assertIn("integrated round or softly polygonal display base", low_poly_prompt)
-        self.assertIn("do not add a pedestal", low_poly_prompt)
-        self.assertNotIn("otherwise do not invent one", sculpture_prompt)
-        self.assertNotIn("Merge the torso", sculpture_prompt)
-        self.assertNotIn("Give every listed color", low_poly_prompt)
+        self.assertIn("changing as little as possible", realistic)
+        self.assertIn("friendly cute cartoon collectible", cartoon)
+        self.assertIn("one monochrome museum-quality", sculpture)
+        for prompt in (realistic, cartoon, sculpture):
+            self.assertIn("Preserve the chosen subject's recognizable identity", prompt)
+            self.assertIn("Do not turn the chosen", prompt)
+        self.assertIn("allowed printable palette", realistic)
+        self.assertIn("full-color designer toy", realistic)
+        self.assertNotIn("allowed printable palette", sculpture)
+
+    def test_legacy_styles_resolve_to_the_new_four_style_profiles(self):
+        self.assertEqual(
+            preprocessor._style_profile("q_cartoon"),
+            preprocessor._style_profile("cartoon"),
+        )
+        self.assertEqual(
+            preprocessor._style_profile("low_poly"),
+            preprocessor._style_profile("realistic"),
+        )
 
     def test_natural_color_mode_omits_printable_palette_constraint(self):
         prompt = preprocessor._style_preview_prompt("preserve pose", (), "q_cartoon")
@@ -289,6 +302,8 @@ class ExactImageEditTests(unittest.TestCase):
 
         self.assertEqual(captured["path"], "/images/edits")
         self.assertIn(b"EXACT MULTIVIEW PROMPT", captured["body"])
+        self.assertIn(b'name="quality"\r\n\r\nhigh', captured["body"])
+        self.assertIn(b'name="size"\r\n\r\n1024x1024', captured["body"])
         self.assertNotIn(b"designer-ready style preview", captured["body"])
 
 
