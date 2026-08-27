@@ -5,7 +5,9 @@ param(
 
     [string] $OutputDir,
 
-    [string] $Revision
+    [string] $Revision,
+
+    [string] $NsisDir
 )
 
 $ErrorActionPreference = 'Stop'
@@ -61,6 +63,26 @@ $cpackExecutable = $cpackMatch.Groups[1].Value.Trim()
 if (-not (Test-Path -LiteralPath $cpackExecutable -PathType Leaf)) {
     throw "Configured CPack executable does not exist: $cpackExecutable"
 }
+
+# CPack only discovers NSIS from the registry or PATH. Internal builders often use
+# the portable NSIS bundle, so make that supported instead of requiring a manual
+# PATH edit before every package.
+$nsisCandidates = @()
+if (-not [string]::IsNullOrWhiteSpace($NsisDir)) {
+    $nsisCandidates += [System.IO.Path]::GetFullPath($NsisDir)
+}
+$nsisCandidates += @(
+    (Join-Path $env:ProgramFiles 'NSIS'),
+    (Join-Path ${env:ProgramFiles(x86)} 'NSIS'),
+    (Join-Path $env:TEMP 'nsis-3.12-portable')
+)
+$nsisRoot = $nsisCandidates |
+    Where-Object { Test-Path -LiteralPath (Join-Path $_ 'makensis.exe') -PathType Leaf } |
+    Select-Object -First 1
+if (-not $nsisRoot) {
+    throw 'NSIS makensis.exe was not found. Pass -NsisDir or install NSIS in a standard location.'
+}
+$env:PATH = "$nsisRoot;$env:PATH"
 
 Push-Location $repoRoot
 try {
