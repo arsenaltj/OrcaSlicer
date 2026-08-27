@@ -213,6 +213,19 @@ class IntegrationGuardrailTests(unittest.TestCase):
 
         self.assertTrue(any(error["code"] == "source.forbidden" for error in errors))
 
+    def test_source_contract_rejects_global_commit_compile_definition(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            path = root / "CMakeLists.txt"
+            path.write_text(
+                'add_definitions("-DGIT_COMMIT_HASH=\\\"deadbee\\\"")\n',
+                encoding="utf-8",
+            )
+
+            errors = GUARDRAILS.validate_source_constants(self.document, root)
+
+        self.assertTrue(any(error["code"] == "source.forbidden" for error in errors))
+
     def test_rejects_tracked_package_credentials(self) -> None:
         errors = GUARDRAILS.validate_tracked_paths(
             [

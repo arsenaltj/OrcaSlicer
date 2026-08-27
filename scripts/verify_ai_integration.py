@@ -703,6 +703,11 @@ def _source_requirements(document: dict[str, Any]) -> tuple[tuple[str, str, str]
             "commercial package source identity fail-closed gate",
         ),
         (
+            "src/slic3r/BuildInfo.cpp.in",
+            r'return\s+"@ORCA_SOURCE_COMMIT@"',
+            "isolated exact build identity",
+        ),
+        (
             ".github/workflows/build_all.yml",
             r"vars\.SELF_HOSTED\s*&&\s*github\.event_name\s*!=\s*'pull_request'",
             "pull-request self-hosted runner denial",
@@ -721,6 +726,11 @@ def _source_requirements(document: dict[str, Any]) -> tuple[tuple[str, str, str]
 
 
 FORBIDDEN_SOURCE_PATTERNS = (
+    (
+        "CMakeLists.txt",
+        r'add_definitions\s*\([^)]*GIT_COMMIT_HASH',
+        "source identity must not be a target-wide compiler definition",
+    ),
     (
         "src/slic3r/GUI/AIServiceManager.cpp",
         r'boost::this_process::environment\s*\(',

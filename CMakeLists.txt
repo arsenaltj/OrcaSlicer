@@ -96,31 +96,51 @@ else ()
 endif ()
 
 find_package(Git)
+
+# Keep the source identity out of target-wide compiler definitions. A global
+# GIT_COMMIT_HASH definition invalidates every object and PCH whenever HEAD
+# changes, even though only a few GUI surfaces display the value.
+set(ORCA_SOURCE_COMMIT "unknown")
+set(ORCA_GIT_COMMIT_HASH_SHORT "0000000")
+set(_ORCA_SOURCE_COMMIT_CANDIDATE "")
+set(_ORCA_SOURCE_COMMIT_RESULT 1)
 if(DEFINED ENV{git_commit_hash} AND NOT "$ENV{git_commit_hash}" STREQUAL "")
     message(STATUS "Specified git commit hash: $ENV{git_commit_hash}")
     if(GIT_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
-        # Convert the given hash to short hash
         execute_process(
-            COMMAND ${GIT_EXECUTABLE} rev-parse --short "$ENV{git_commit_hash}"
+            COMMAND ${GIT_EXECUTABLE} rev-parse "$ENV{git_commit_hash}^{commit}"
             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-            OUTPUT_VARIABLE GIT_COMMIT_HASH
+            OUTPUT_VARIABLE _ORCA_SOURCE_COMMIT_CANDIDATE
             OUTPUT_STRIP_TRAILING_WHITESPACE
-        )
+            RESULT_VARIABLE _ORCA_SOURCE_COMMIT_RESULT
+            ERROR_QUIET)
     else()
-        # No .git directory (e.g., Flatpak sandbox) — truncate directly
-        string(SUBSTRING "$ENV{git_commit_hash}" 0 7 GIT_COMMIT_HASH)
+        set(_ORCA_SOURCE_COMMIT_CANDIDATE "$ENV{git_commit_hash}")
+        set(_ORCA_SOURCE_COMMIT_RESULT 0)
     endif()
-    add_definitions("-DGIT_COMMIT_HASH=\"${GIT_COMMIT_HASH}\"")
 elseif(GIT_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
-    # Check current Git commit hash
     execute_process(
-        COMMAND ${GIT_EXECUTABLE} log -1 --format=%h
+        COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-        OUTPUT_VARIABLE GIT_COMMIT_HASH
+        OUTPUT_VARIABLE _ORCA_SOURCE_COMMIT_CANDIDATE
         OUTPUT_STRIP_TRAILING_WHITESPACE
-    )
-    add_definitions("-DGIT_COMMIT_HASH=\"${GIT_COMMIT_HASH}\"")
+        RESULT_VARIABLE _ORCA_SOURCE_COMMIT_RESULT
+        ERROR_QUIET)
 endif()
+
+string(LENGTH "${_ORCA_SOURCE_COMMIT_CANDIDATE}" _ORCA_SOURCE_COMMIT_LENGTH)
+if(_ORCA_SOURCE_COMMIT_RESULT EQUAL 0
+   AND _ORCA_SOURCE_COMMIT_CANDIDATE MATCHES "^[0-9A-Fa-f]+$")
+    if(_ORCA_SOURCE_COMMIT_LENGTH GREATER_EQUAL 7)
+        string(SUBSTRING "${_ORCA_SOURCE_COMMIT_CANDIDATE}" 0 7 ORCA_GIT_COMMIT_HASH_SHORT)
+    endif()
+    if(_ORCA_SOURCE_COMMIT_LENGTH EQUAL 40)
+        set(ORCA_SOURCE_COMMIT "${_ORCA_SOURCE_COMMIT_CANDIDATE}")
+    endif()
+endif()
+unset(_ORCA_SOURCE_COMMIT_CANDIDATE)
+unset(_ORCA_SOURCE_COMMIT_RESULT)
+unset(_ORCA_SOURCE_COMMIT_LENGTH)
 
 if(DEFINED ENV{SLIC3R_STATIC})
     set(SLIC3R_STATIC_INITIAL $ENV{SLIC3R_STATIC})
@@ -1283,34 +1303,13 @@ if (WIN32)
                 "Use the company Provider Gateway and short-lived device/account credentials instead.")
         endif()
 
-        set(ORCA_AI_APPLICATION_COMMIT "unknown")
-        set(_ORCA_AI_COMMIT_RESULT 1)
-        if(GIT_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
-            execute_process(
-                COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
-                WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-                OUTPUT_VARIABLE ORCA_AI_APPLICATION_COMMIT
-                OUTPUT_STRIP_TRAILING_WHITESPACE
-                RESULT_VARIABLE _ORCA_AI_COMMIT_RESULT
-                ERROR_QUIET)
-        elseif(DEFINED ENV{git_commit_hash})
-            set(ORCA_AI_APPLICATION_COMMIT "$ENV{git_commit_hash}")
-            set(_ORCA_AI_COMMIT_RESULT 0)
-        endif()
-        string(LENGTH "${ORCA_AI_APPLICATION_COMMIT}" _ORCA_AI_COMMIT_LENGTH)
-        if(NOT _ORCA_AI_COMMIT_RESULT EQUAL 0
-           OR NOT _ORCA_AI_COMMIT_LENGTH EQUAL 40
-           OR NOT ORCA_AI_APPLICATION_COMMIT MATCHES "^[0-9A-Fa-f]+$")
-            set(ORCA_AI_APPLICATION_COMMIT "unknown")
-        endif()
+        set(ORCA_AI_APPLICATION_COMMIT "${ORCA_SOURCE_COMMIT}")
         if(ORCA_AI_DISTRIBUTION_CHANNEL STREQUAL "commercial"
            AND ORCA_AI_APPLICATION_COMMIT STREQUAL "unknown")
             message(FATAL_ERROR
                 "Commercial AI packages require an exact 40-character source commit. "
                 "Build from a Git checkout or set git_commit_hash to the checked-out SHA.")
         endif()
-        unset(_ORCA_AI_COMMIT_RESULT)
-        unset(_ORCA_AI_COMMIT_LENGTH)
         set(ORCA_AI_BUILD_INFO_FILE "${CMAKE_CURRENT_BINARY_DIR}/orca_ai_build_info.json")
         configure_file(
             "${CMAKE_SOURCE_DIR}/tools/ai/orca_ai_build_info.json.in"

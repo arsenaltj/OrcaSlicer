@@ -64,12 +64,18 @@
       "scripts/package_internal_fast.ps1",
       "scripts/verify_ai_integration.py",
       "src/CMakeLists.txt",
+      "src/dev-utils/BaseException.cpp",
+      "src/slic3r/BuildInfo.cpp.in",
+      "src/slic3r/BuildInfo.hpp",
       "src/slic3r/CMakeLists.txt",
+      "src/slic3r/GUI/AboutDialog.cpp",
       "src/slic3r/GUI/AI/Orca",
+      "src/slic3r/GUI/GUI_App.cpp",
       "src/slic3r/GUI/MainFrame.cpp",
       "src/slic3r/GUI/MainFrame.hpp",
       "src/slic3r/GUI/Plater.cpp",
-      "src/slic3r/GUI/Plater.hpp"
+      "src/slic3r/GUI/Plater.hpp",
+      "src/slic3r/GUI/TroubleshootDialog.cpp"
     ],
     "shared_runtime_owned_paths": [
       "src/slic3r/GUI/AIServiceManager.cpp",

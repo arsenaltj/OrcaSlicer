@@ -1,0 +1,20 @@
+#include "slic3r/BuildInfo.hpp"
+
+namespace Slic3r {
+
+const char *build_commit_hash() noexcept
+{
+    return "@ORCA_GIT_COMMIT_HASH_SHORT@";
+}
+
+const char *build_source_commit() noexcept
+{
+    return "@ORCA_SOURCE_COMMIT@";
+}
+
+const wchar_t *build_commit_hash_wide() noexcept
+{
+    return L"@ORCA_GIT_COMMIT_HASH_SHORT@";
+}
+
+} // namespace Slic3r

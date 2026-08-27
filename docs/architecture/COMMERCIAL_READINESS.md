@@ -23,6 +23,7 @@ These controls reduce immediate integration and support risk but do not by thems
 - fixed-SHA merge of the reviewed Orca upstream snapshot, with one shared-file conflict resolved semantically;
 - machine-readable upstream/feature/runtime lock, dependency-boundary validator, CODEOWNERS, AI-specific PR checklist and required-check workflow;
 - distinct product/development port policy and full application/package/Sidecar identity in the installed runtime health/log contract;
+- exact source identity is isolated in one generated translation unit, avoiding a whole-tree rebuild when only the release commit changes;
 - protocol-v2 per-launch challenge/proof authentication for the GUI-managed loopback Sidecar, including rejection of a stale or foreign protected service; negative, replay and process-lifecycle qualification remains open;
 - one network policy for OpenAI, Tripo and artifact downloads, including the Windows `NO_PROXY`/system-proxy case and value-free route diagnostics;
 - explicit `internal` versus `commercial` packaging channels; commercial configuration fails if a package-only provider credential payload is supplied;

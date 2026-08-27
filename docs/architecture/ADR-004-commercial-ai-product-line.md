@@ -118,6 +118,7 @@ Operational logs use identifiers, timings, sizes, error categories and versions.
 - Pull-request code runs only on ephemeral hosted runners with no inherited repository secrets. Signing, notarization and publication credentials are available only to exact-SHA jobs behind a protected release environment.
 - Repository rulesets, not convention alone, must prohibit deletion/force-push and require PR, CODEOWNER approval and checks on integration, model-generation and smart-slicing branches.
 - Each release records upstream SHA, both feature SHAs, Sidecar protocol/build identity, Gateway API compatibility and the final integration SHA in a machine-readable lock manifest.
+- Source identity is generated into one integration-owned translation unit instead of a target-wide compiler definition. A commit-only identity change therefore rebuilds that object and relinks, rather than invalidating Orca's libraries and precompiled headers.
 - Changes in `libslic3r` must be provider-neutral Orca capabilities with focused regression tests. Product policy stays outside the slicing core.
 
 ## Observability and supportability

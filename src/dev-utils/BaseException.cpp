@@ -10,6 +10,7 @@
 #include <mutex>
 
 #include "libslic3r_version.h"
+#include "slic3r/BuildInfo.hpp"
 
 static std::string g_log_folder;
 static std::atomic<int> g_crash_log_count = 0;
@@ -39,7 +40,8 @@ CBaseException::CBaseException(HANDLE hProcess, WORD wPID, LPCTSTR lpSymbolPath,
 		output_file->open(log_filename, std::ios::out | std::ios::app);
 
 		// Output app build info in crash log so we could look for the correct PDB files
-        OutputString(_T("%s\n\n"), _T(SLIC3R_APP_NAME " " SoftFever_VERSION " Build " GIT_COMMIT_HASH));
+        OutputString(_T(SLIC3R_APP_NAME " " SoftFever_VERSION " Build %s\n\n"),
+                     Slic3r::build_commit_hash_wide());
 	}
 }
 

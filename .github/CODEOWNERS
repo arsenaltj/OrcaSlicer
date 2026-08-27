@@ -33,7 +33,12 @@
 /scripts/package_internal_fast.ps1 @arsenaltj
 /scripts/verify_ai_integration.py @arsenaltj
 /src/CMakeLists.txt @arsenaltj
+/src/dev-utils/BaseException.cpp @arsenaltj
+/src/slic3r/BuildInfo.* @arsenaltj
 /src/slic3r/CMakeLists.txt @arsenaltj
+/src/slic3r/GUI/AboutDialog.cpp @arsenaltj
 /src/slic3r/GUI/AI/Orca/ @arsenaltj
+/src/slic3r/GUI/GUI_App.cpp @arsenaltj
 /src/slic3r/GUI/MainFrame.* @arsenaltj
 /src/slic3r/GUI/Plater.* @arsenaltj
+/src/slic3r/GUI/TroubleshootDialog.cpp @arsenaltj

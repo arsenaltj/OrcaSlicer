@@ -1,5 +1,6 @@
 #include "TroubleshootDialog.hpp"
 #include "I18N.hpp"
+#include "slic3r/BuildInfo.hpp"
 
 #include "GUI.hpp"
 #include "GUI_App.hpp"
@@ -137,9 +138,9 @@ TroubleshootDialog::TroubleshootDialog()
     version->SetFont(version_font);
     version->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#363636")));
 
-    auto build = new Button(this, wxString(GIT_COMMIT_HASH));
+    auto build = new Button(this, wxString::FromUTF8(build_commit_hash()));
     build->SetStyle(ButtonStyle::Regular, ButtonType::Window);
-    auto hash_url = "https://github.com/OrcaSlicer/OrcaSlicer/commit/" + wxString(GIT_COMMIT_HASH);
+    auto hash_url = "https://github.com/OrcaSlicer/OrcaSlicer/commit/" + wxString::FromUTF8(build_source_commit());
     build->SetToolTip(hash_url);
     build->Bind(wxEVT_BUTTON, [hash_url](wxCommandEvent &e) {
          wxLaunchDefaultBrowser(hash_url);
@@ -371,7 +372,7 @@ wxString TroubleshootDialog::GetSysInfoAll()
 {
     wxString info;
     info += "Version   :  " + wxString(SoftFever_VERSION) + "\n"
-          + "Build     :  " + wxString(GIT_COMMIT_HASH)   + "\n"
+          + "Build     :  " + wxString::FromUTF8(build_commit_hash()) + "\n"
           + "Package   :  " + GetPackageType() + "\n"
           + "Platform  :  " + GetOSinfo()      + "\n"
           + "Processor :  " + GetCPUinfo() + "\n"
