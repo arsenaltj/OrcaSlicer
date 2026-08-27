@@ -1284,19 +1284,33 @@ if (WIN32)
         endif()
 
         set(ORCA_AI_APPLICATION_COMMIT "unknown")
+        set(_ORCA_AI_COMMIT_RESULT 1)
         if(GIT_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
             execute_process(
                 COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
                 WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
                 OUTPUT_VARIABLE ORCA_AI_APPLICATION_COMMIT
                 OUTPUT_STRIP_TRAILING_WHITESPACE
+                RESULT_VARIABLE _ORCA_AI_COMMIT_RESULT
                 ERROR_QUIET)
-        elseif(DEFINED ENV{git_commit_hash} AND "$ENV{git_commit_hash}" MATCHES "^[0-9A-Fa-f]{40}$")
+        elseif(DEFINED ENV{git_commit_hash})
             set(ORCA_AI_APPLICATION_COMMIT "$ENV{git_commit_hash}")
+            set(_ORCA_AI_COMMIT_RESULT 0)
         endif()
-        if(NOT ORCA_AI_APPLICATION_COMMIT MATCHES "^[0-9A-Fa-f]{40}$")
+        string(LENGTH "${ORCA_AI_APPLICATION_COMMIT}" _ORCA_AI_COMMIT_LENGTH)
+        if(NOT _ORCA_AI_COMMIT_RESULT EQUAL 0
+           OR NOT _ORCA_AI_COMMIT_LENGTH EQUAL 40
+           OR NOT ORCA_AI_APPLICATION_COMMIT MATCHES "^[0-9A-Fa-f]+$")
             set(ORCA_AI_APPLICATION_COMMIT "unknown")
         endif()
+        if(ORCA_AI_DISTRIBUTION_CHANNEL STREQUAL "commercial"
+           AND ORCA_AI_APPLICATION_COMMIT STREQUAL "unknown")
+            message(FATAL_ERROR
+                "Commercial AI packages require an exact 40-character source commit. "
+                "Build from a Git checkout or set git_commit_hash to the checked-out SHA.")
+        endif()
+        unset(_ORCA_AI_COMMIT_RESULT)
+        unset(_ORCA_AI_COMMIT_LENGTH)
         set(ORCA_AI_BUILD_INFO_FILE "${CMAKE_CURRENT_BINARY_DIR}/orca_ai_build_info.json")
         configure_file(
             "${CMAKE_SOURCE_DIR}/tools/ai/orca_ai_build_info.json.in"

@@ -698,6 +698,11 @@ def _source_requirements(document: dict[str, Any]) -> tuple[tuple[str, str, str]
             "installed runtime verification",
         ),
         (
+            "CMakeLists.txt",
+            r'Commercial AI packages require an exact 40-character source commit',
+            "commercial package source identity fail-closed gate",
+        ),
+        (
             ".github/workflows/build_all.yml",
             r"vars\.SELF_HOSTED\s*&&\s*github\.event_name\s*!=\s*'pull_request'",
             "pull-request self-hosted runner denial",

@@ -181,6 +181,7 @@ class IntegrationGuardrailTests(unittest.TestCase):
                 "Sidecar parent identity propagation",
                 "bundled runtime dependency manifest",
                 "installed runtime verification",
+                "commercial package source identity fail-closed gate",
                 "pull-request self-hosted runner denial",
                 "authenticated Sidecar graceful shutdown",
                 "deferred remote-job recovery",
