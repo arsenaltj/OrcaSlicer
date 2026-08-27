@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from io import BytesIO
 import os
 from pathlib import Path
 import socket
@@ -10,6 +11,8 @@ import tempfile
 import time
 import unittest
 import urllib.request
+
+from PIL import Image
 
 
 TOOLS_AI = Path(__file__).resolve().parent
@@ -42,10 +45,17 @@ def _multipart_image() -> tuple[bytes, str]:
     parts.append(
         f"--{boundary}\r\nContent-Disposition: form-data; name=\"image\"; filename=\"input.png\"\r\n"
         "Content-Type: image/png\r\n\r\n".encode()
-        + b"\x89PNG\r\n\x1a\nminimal-offline-test\r\n"
+        + _valid_png_bytes()
+        + b"\r\n"
     )
     parts.append(f"--{boundary}--\r\n".encode())
     return b"".join(parts), boundary
+
+
+def _valid_png_bytes() -> bytes:
+    output = BytesIO()
+    Image.new("RGB", (96, 96), (230, 230, 230)).save(output, format="PNG")
+    return output.getvalue()
 
 
 class DiagnosticFailureFlowTests(unittest.TestCase):
