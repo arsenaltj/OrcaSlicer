@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import contextlib
+import hmac
 import importlib.util
 from io import BytesIO
 import json
@@ -77,6 +78,162 @@ def temporary_environment(**values):
 
 
 class SidecarHealthContractTests(unittest.TestCase):
+    def test_parent_pid_validation_and_current_process_probe(self):
+        with temporary_environment(ORCASLICER_AI_PARENT_PID=None):
+            self.assertIsNone(PRODUCTION._configured_parent_pid())
+        for value in ("zero", "0", "-1", "4294967296", " 1x "):
+            with self.subTest(value=value), temporary_environment(ORCASLICER_AI_PARENT_PID=value):
+                self.assertIsNone(PRODUCTION._configured_parent_pid())
+        with temporary_environment(ORCASLICER_AI_PARENT_PID=str(os.getpid())):
+            self.assertEqual(PRODUCTION._configured_parent_pid(), os.getpid())
+            self.assertTrue(PRODUCTION._parent_process_alive(os.getpid()))
+        if os.name == "nt":
+            handle = PRODUCTION._open_parent_process_handle(os.getpid())
+            self.assertIsNotNone(handle)
+            try:
+                self.assertTrue(PRODUCTION._parent_process_handle_alive(handle))
+            finally:
+                PRODUCTION._close_parent_process_handle(handle)
+
+    def test_parent_monitor_stops_server_after_parent_exits(self):
+        stopped = threading.Event()
+
+        class FakeServer:
+            def shutdown(self):
+                stopped.set()
+
+        with mock.patch.object(PRODUCTION.os, "name", "posix"), \
+             mock.patch.object(PRODUCTION, "_parent_process_alive", return_value=False):
+            PRODUCTION._monitor_parent(FakeServer(), 12345)
+        self.assertTrue(stopped.is_set())
+
+    def test_session_capability_protects_health_and_does_not_leak(self):
+        token = "a1" * 32
+        with temporary_environment(ORCASLICER_AI_SESSION_TOKEN=token):
+            with sidecar_server(PRODUCTION.Handler) as port:
+                endpoint = f"http://127.0.0.1:{port}/health"
+                with self.assertRaises(urllib.error.HTTPError) as missing:
+                    urllib.request.urlopen(endpoint, timeout=5)
+                self.assertEqual(missing.exception.code, 401)
+
+                wrong = urllib.request.Request(endpoint, headers={"X-OrcaSlicer-Session": token})
+                with self.assertRaises(urllib.error.HTTPError) as rejected:
+                    urllib.request.urlopen(wrong, timeout=5)
+                self.assertEqual(rejected.exception.code, 401)
+
+                client_nonce = "c3" * 32
+                challenge_request = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/v1/orcaslicer/session-challenge",
+                    headers={"X-OrcaSlicer-Client-Nonce": client_nonce},
+                )
+                with urllib.request.urlopen(challenge_request, timeout=5) as response:
+                    challenge = json.loads(response.read())
+                expected_server_proof = hmac.new(
+                    token.encode("ascii"),
+                    f"server:{client_nonce}:{challenge['server_nonce']}".encode("ascii"),
+                    "sha256",
+                ).hexdigest()
+                self.assertTrue(hmac.compare_digest(challenge["server_proof"], expected_server_proof))
+                session_proof = hmac.new(
+                    token.encode("ascii"),
+                    f"client:{challenge['server_nonce']}".encode("ascii"),
+                    "sha256",
+                ).hexdigest()
+                accepted = urllib.request.Request(
+                    endpoint, headers={"X-OrcaSlicer-Session-Proof": session_proof}
+                )
+                with urllib.request.urlopen(accepted, timeout=5) as response:
+                    health = json.loads(response.read())
+
+        self.assertTrue(health["runtime"]["session_protected"])
+        self.assertNotIn(token, json.dumps(health))
+
+    def test_installed_runtime_requires_nonempty_session_capability(self):
+        with temporary_environment(
+            ORCASLICER_AI_SESSION_TOKEN=None,
+            ORCASLICER_AI_REQUIRE_SESSION="1",
+        ):
+            self.assertEqual(PRODUCTION.main(), 2)
+
+    def test_installed_runtime_requires_parent_process_identity(self):
+        with temporary_environment(
+            ORCASLICER_AI_SESSION_TOKEN="b2" * 32,
+            ORCASLICER_AI_REQUIRE_SESSION="1",
+            ORCASLICER_AI_PARENT_PID=None,
+        ):
+            self.assertEqual(PRODUCTION.main(), 2)
+
+    def test_installed_runtime_checks_parent_before_restoring_jobs(self):
+        with temporary_environment(
+            ORCASLICER_AI_SESSION_TOKEN="b3" * 32,
+            ORCASLICER_AI_REQUIRE_SESSION="1",
+            ORCASLICER_AI_PARENT_PID="12345",
+        ), mock.patch.object(PRODUCTION.os, "name", "posix"), \
+             mock.patch.object(PRODUCTION, "_parent_process_alive", return_value=False), \
+             mock.patch.object(PRODUCTION, "_restore_jobs") as restore_jobs:
+            self.assertEqual(PRODUCTION.main(), 2)
+        restore_jobs.assert_not_called()
+
+    def test_authenticated_shutdown_stops_the_loopback_server(self):
+        token = "d4" * 32
+        with temporary_environment(ORCASLICER_AI_SESSION_TOKEN=token):
+            with sidecar_server(PRODUCTION.Handler) as port:
+                endpoint = f"http://127.0.0.1:{port}/v1/orcaslicer/shutdown"
+                missing = urllib.request.Request(
+                    endpoint,
+                    data=b"",
+                    method="POST",
+                    headers={"X-OrcaSlicer-Client": "native"},
+                )
+                with self.assertRaises(urllib.error.HTTPError) as rejected:
+                    urllib.request.urlopen(missing, timeout=5)
+                self.assertEqual(rejected.exception.code, 401)
+
+                client_nonce = "e5" * 32
+                challenge_request = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/v1/orcaslicer/session-challenge",
+                    headers={"X-OrcaSlicer-Client-Nonce": client_nonce},
+                )
+                with urllib.request.urlopen(challenge_request, timeout=5) as response:
+                    challenge = json.loads(response.read())
+                session_proof = hmac.new(
+                    token.encode("ascii"),
+                    f"client:{challenge['server_nonce']}".encode("ascii"),
+                    "sha256",
+                ).hexdigest()
+                accepted = urllib.request.Request(
+                    endpoint,
+                    data=b"",
+                    method="POST",
+                    headers={
+                        "X-OrcaSlicer-Client": "native",
+                        "X-OrcaSlicer-Session-Proof": session_proof,
+                    },
+                )
+                with urllib.request.urlopen(accepted, timeout=5) as response:
+                    payload = json.loads(response.read())
+                self.assertEqual(response.status, 202)
+                self.assertEqual(payload, {"ok": True, "state": "stopping"})
+
+    def test_health_exposes_bounded_build_identity_for_support(self):
+        with temporary_environment(
+            ORCASLICER_AI_APP_VERSION="2.5.0-dev",
+            ORCASLICER_AI_APP_COMMIT="c" * 40,
+            ORCASLICER_AI_PACKAGE_REVISION="candidate-17",
+            ORCASLICER_AI_DISTRIBUTION_CHANNEL="commercial",
+            ORCASLICER_AI_SESSION_TOKEN="c1" * 32,
+        ):
+            health = self.fetch_health(PRODUCTION.Handler)
+
+        self.assertEqual(health["runtime"]["health_schema_version"], 2)
+        self.assertRegex(health["runtime"]["instance_id"], r"^[0-9a-f-]{36}$")
+        self.assertEqual(health["runtime"]["build"], {
+            "application_version": "2.5.0-dev",
+            "application_commit": "c" * 40,
+            "package_revision": "candidate-17",
+            "distribution_channel": "commercial",
+        })
+
     def test_local_journey_event_log_accepts_only_privacy_safe_fields(self):
         job_id = str(uuid.uuid4())
         with tempfile.TemporaryDirectory() as directory, temporary_environment(
@@ -189,13 +346,31 @@ class SidecarHealthContractTests(unittest.TestCase):
 
     def fetch_health(self, handler):
         with sidecar_server(handler) as port:
-            with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=5) as response:
+            headers = {}
+            token = os.environ.get("ORCASLICER_AI_SESSION_TOKEN", "")
+            if token:
+                client_nonce = "d4" * 32
+                challenge_request = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/v1/orcaslicer/session-challenge",
+                    headers={"X-OrcaSlicer-Client-Nonce": client_nonce},
+                )
+                with urllib.request.urlopen(challenge_request, timeout=5) as response:
+                    challenge = json.loads(response.read())
+                headers["X-OrcaSlicer-Session-Proof"] = hmac.new(
+                    token.encode("ascii"),
+                    f"client:{challenge['server_nonce']}".encode("ascii"),
+                    "sha256",
+                ).hexdigest()
+            health_request = urllib.request.Request(
+                f"http://127.0.0.1:{port}/health", headers=headers
+            )
+            with urllib.request.urlopen(health_request, timeout=5) as response:
                 self.assertEqual(response.status, 200)
                 return json.loads(response.read())
 
     def assert_contract(self, health):
         self.assertTrue(health["ok"])
-        self.assertEqual(health["protocol_version"], 1)
+        self.assertEqual(health["protocol_version"], 2)
         self.assertIsInstance(health["sidecar_version"], str)
         self.assertNotEqual(health["sidecar_version"], "")
         self.assertNotIn("features", health)
@@ -970,15 +1145,46 @@ class SidecarHealthContractTests(unittest.TestCase):
 
     def test_production_health_reports_provider_url_without_credentials(self):
         with temporary_environment(
-            OPENAI_BASE_URL="https://laotie.dev/",
+            OPENAI_BASE_URL="https://openai-user:openai-secret@laotie.dev/v1?token=hidden",
+            TRIPO_API_BASE="https://tripo-user:tripo-secret@openapi.tripo3d.com/v3?token=hidden",
             OPENAI_API_KEY="test-openai",
             TRIPO_API_KEY="test-tripo",
             ORCASLICER_AI_CONFIG_MODE="internal_locked",
+            ORCASLICER_AI_SESSION_TOKEN="e5" * 32,
         ):
             health = self.fetch_health(PRODUCTION.Handler)
-        self.assertEqual(health["runtime"]["openai_base_url"], "https://laotie.dev")
+        self.assertEqual(health["runtime"]["openai_base_url"], "https://laotie.dev/v1")
+        self.assertEqual(health["runtime"]["tripo_base_url"], "https://openapi.tripo3d.com/v3")
         self.assertEqual(health["runtime"]["configuration_mode"], "internal_locked")
-        self.assertNotIn("test-openai", json.dumps(health))
+        serialized = json.dumps(health)
+        self.assertNotIn("test-openai", serialized)
+        self.assertNotIn("openai-secret", serialized)
+        self.assertNotIn("tripo-secret", serialized)
+        self.assertNotIn("hidden", serialized)
+
+    def test_production_health_exposes_only_safe_network_metadata(self):
+        proxy = "http://proxy-user:proxy-secret@proxy-sensitive.example:8443"
+        with temporary_environment(
+            HTTP_PROXY=proxy,
+            HTTPS_PROXY=proxy,
+            http_proxy=proxy,
+            https_proxy=proxy,
+            NO_PROXY="127.0.0.1,localhost",
+            no_proxy="127.0.0.1,localhost",
+        ):
+            health = self.fetch_health(PRODUCTION.Handler)
+
+        network = health["runtime"]["network"]
+        self.assertEqual(set(network), {"openai", "tripo"})
+        for provider in network.values():
+            self.assertEqual(set(provider), {"source", "schemes", "bypass"})
+            self.assertIsInstance(provider["source"], str)
+            self.assertIsInstance(provider["schemes"], list)
+            self.assertIsInstance(provider["bypass"], bool)
+            self.assertIn("https", provider["schemes"])
+        serialized = json.dumps(network)
+        for secret in ("proxy-user", "proxy-secret", "proxy-sensitive.example", "8443"):
+            self.assertNotIn(secret, serialized)
 
     def test_production_health_contract_with_tripo_and_preprocess_fallback(self):
         with temporary_environment(

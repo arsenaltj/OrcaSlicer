@@ -4,6 +4,7 @@ on:
     pull_request:
       branches: 
        - main 
+       - codex/orca-integration-v2
       paths:
        - 'localization/**'
        - ".github/workflows/check_locale.yml"

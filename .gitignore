@@ -51,3 +51,14 @@ internal_docs/
 __pycache__/
 *.pyc
 *.opc
+
+# Package-only AI credentials must stay outside the repository. The commercial
+# channel rejects them at configure time; this also prevents accidental staging
+# while preparing an internal test package.
+orca_ai_internal_defaults.json
+*.orca-ai-internal-defaults.json
+.env
+.env.*
+
+# Local model-generation output and unit-test artifacts.
+/generated_models/

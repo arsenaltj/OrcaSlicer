@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import runpy
 import sys
 from typing import TextIO
@@ -11,7 +12,9 @@ from typing import TextIO
 MAX_LOG_BYTES = 5 * 1024 * 1024
 LOG_BACKUPS = 3
 INTERNAL_DEFAULTS_FILENAME = "orca_ai_internal_defaults.json"
+BUILD_INFO_FILENAME = "orca_ai_build_info.json"
 MAX_INTERNAL_DEFAULTS_BYTES = 32 * 1024
+MAX_BUILD_INFO_BYTES = 16 * 1024
 INTERNAL_CONFIG_MODE = "internal_locked"
 INTERNAL_DEFAULT_NAMES = frozenset({
     "OPENAI_API_KEY",
@@ -22,6 +25,52 @@ INTERNAL_DEFAULT_NAMES = frozenset({
     "TRIPO_API_KEY",
     "TRIPO_MODEL",
 })
+BUILD_INFO_ENVIRONMENT = {
+    "application_version": "ORCASLICER_AI_APP_VERSION",
+    "application_commit": "ORCASLICER_AI_APP_COMMIT",
+    "package_revision": "ORCASLICER_AI_PACKAGE_REVISION",
+    "distribution_channel": "ORCASLICER_AI_DISTRIBUTION_CHANNEL",
+}
+
+
+def load_build_info(build_info_path: Path | None = None) -> dict[str, str | int]:
+    """Load non-secret package identity and expose it to the Sidecar process."""
+    path = build_info_path or Path(__file__).with_name(BUILD_INFO_FILENAME)
+    try:
+        if not path.is_file() or path.stat().st_size > MAX_BUILD_INFO_BYTES:
+            return {}
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+
+    expected_keys = {
+        "schema_version", "application_version", "application_commit", "package_revision",
+        "distribution_channel", "sidecar_protocol_version", "sidecar_version",
+    }
+    if not isinstance(payload, dict) or set(payload) != expected_keys:
+        return {}
+    if type(payload.get("schema_version")) is not int or payload["schema_version"] != 1:
+        return {}
+    if type(payload.get("sidecar_protocol_version")) is not int or payload["sidecar_protocol_version"] != 2:
+        return {}
+    string_fields = expected_keys - {"schema_version", "sidecar_protocol_version"}
+    if any(not isinstance(payload.get(name), str) or not payload[name] or len(payload[name]) > 128
+           for name in string_fields):
+        return {}
+    if payload["application_commit"] != "unknown" and not re.fullmatch(r"[0-9A-Fa-f]{40}", payload["application_commit"]):
+        return {}
+    if not re.fullmatch(r"[0-9A-Za-z._+-]+", payload["application_version"]):
+        return {}
+    if not re.fullmatch(r"[0-9A-Za-z._-]+", payload["package_revision"]):
+        return {}
+    if payload["distribution_channel"] not in {"internal", "commercial"}:
+        return {}
+    if payload["sidecar_version"] != "orcaslicer-ai-sidecar-v8":
+        return {}
+
+    for field, environment_name in BUILD_INFO_ENVIRONMENT.items():
+        os.environ[environment_name] = payload[field]
+    return payload
 
 
 def load_internal_defaults(defaults_path: Path | None = None) -> tuple[str, ...]:
@@ -104,9 +153,43 @@ def rotate_log(log_path: Path, max_bytes: int = MAX_LOG_BYTES, backups: int = LO
         return
 
 
+def log_bootstrap_failure(log_path: Path, code: str) -> None:
+    """Best-effort preflight logging before stdout/stderr can be redirected."""
+    try:
+        rotate_log(log_path)
+        payload = {"level": "ERROR", "event": "bootstrap.failed", "code": code}
+        with log_path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    except OSError:
+        return
+
+
 def run_installed_sidecar(data_directory: str) -> None:
-    load_internal_defaults()
     _, log_path = configure_runtime(data_directory)
+    build_info = load_build_info()
+    if not build_info:
+        log_bootstrap_failure(log_path, "build_identity_invalid")
+        raise RuntimeError("Installed AI Sidecar build identity is missing or invalid.")
+    parent_pid = os.environ.get("ORCASLICER_AI_PARENT_PID", "").strip()
+    if not parent_pid.isascii() or not parent_pid.isdecimal() or not (0 < int(parent_pid) <= 0xFFFFFFFF):
+        log_bootstrap_failure(log_path, "parent_process_invalid")
+        raise RuntimeError("Installed AI Sidecar parent process identity is missing or invalid.")
+    defaults_path = Path(__file__).with_name(INTERNAL_DEFAULTS_FILENAME)
+    if build_info["distribution_channel"] == "commercial":
+        if defaults_path.exists():
+            log_bootstrap_failure(log_path, "commercial_credentials_present")
+            raise RuntimeError("Commercial AI Sidecar must not contain package-only provider credentials.")
+        # A commercial candidate must never silently fall back to long-lived
+        # provider credentials inherited from the desktop environment.
+        os.environ.pop("OPENAI_API_KEY", None)
+        os.environ.pop("TRIPO_API_KEY", None)
+    else:
+        loaded_defaults = load_internal_defaults(defaults_path)
+        if defaults_path.exists() and not loaded_defaults:
+            log_bootstrap_failure(log_path, "internal_defaults_invalid")
+            raise RuntimeError("Installed AI Sidecar internal defaults are invalid.")
+    os.environ["ORCASLICER_AI_REQUIRE_SESSION"] = "1"
+    os.environ["PYTHONNOUSERSITE"] = "1"
     stream = redirect_output(log_path)
     script_path = Path(__file__).with_name("orca_ai_sidecar.py").resolve()
     if not script_path.is_file():

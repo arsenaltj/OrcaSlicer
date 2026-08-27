@@ -6,6 +6,7 @@ on:
      - main
      - release/*
      - belt-printer
+     - codex/orca-integration-v2
     paths:
      - 'deps/**'
      - 'src/**'
@@ -18,11 +19,15 @@ on:
      - 'scripts/flatpak/**'
      - 'scripts/msix/**'
      - 'tests/**'
+     - 'tools/ai/**'
+     - 'scripts/package_internal_fast.ps1'
+     - 'docs/architecture/ai-integration-lock.json'
 
   pull_request:
     branches:
      - main
      - release/*
+     - codex/orca-integration-v2
     paths:
      - 'deps/**'
      - 'deps_src/**'
@@ -38,6 +43,9 @@ on:
      - 'scripts/flatpak/**'
      - 'scripts/msix/**'
      - 'tests/**'
+     - 'tools/ai/**'
+     - 'scripts/package_internal_fast.ps1'
+     - 'docs/architecture/ai-integration-lock.json'
 
 
   schedule:
@@ -56,6 +64,9 @@ concurrency:
   
 
 jobs:
+  # Pull-request code always uses ephemeral GitHub-hosted runners. This general
+  # build chain intentionally forwards no repository secrets; signing belongs
+  # to an exact-SHA job behind the protected release environment.
   build_linux:
     strategy:
       fail-fast: false
@@ -63,7 +74,7 @@ jobs:
       # is load-bearing: it keeps the historical 'linux-clang' deps cache key and
       # the unsuffixed asset names.
       matrix:
-        include: ${{ fromJSON(vars.SELF_HOSTED
+        include: ${{ fromJSON(vars.SELF_HOSTED && github.event_name != 'pull_request'
           && '[{"arch":"","os":"orca-lnx-server"}]'
           || '[{"arch":"","os":"ubuntu-24.04"},{"arch":"aarch64","os":"ubuntu-24.04-arm"}]') }}
     # Don't run scheduled builds on forks:
@@ -73,14 +84,13 @@ jobs:
       os: ${{ matrix.os }}
       arch: ${{ matrix.arch }}
       build-deps-only: ${{ inputs.build-deps-only || false }}
-    secrets: inherit
   build_windows:
     name: Build Windows ${{ matrix.arch }}
     strategy:
       fail-fast: false
       # SELF_HOSTED skips arm64 (the self-hosted Windows server is x64-only).
       matrix:
-        include: ${{ fromJSON(vars.SELF_HOSTED
+        include: ${{ fromJSON(vars.SELF_HOSTED && github.event_name != 'pull_request'
           && '[{"arch":"x64","os":"orca-win-server"}]'
           || '[{"arch":"x64","os":"windows-latest"},{"arch":"arm64","os":"windows-11-arm"}]') }}
     # Don't run scheduled builds on forks:
@@ -91,7 +101,7 @@ jobs:
       arch: ${{ matrix.arch }}
       build-deps-only: ${{ inputs.build-deps-only || false }}
       force-build: ${{ github.event_name == 'schedule' }}
-    secrets: inherit
+      ai-commercial-package: ${{ github.ref == 'refs/heads/codex/orca-integration-v2' || github.base_ref == 'codex/orca-integration-v2' }}
   build_macos_arch:
     strategy:
       fail-fast: false
@@ -103,21 +113,19 @@ jobs:
     if: ${{ !cancelled() && (github.event_name != 'schedule' || github.repository == 'OrcaSlicer/OrcaSlicer') }}
     uses: ./.github/workflows/build_check_cache.yml
     with:
-      os: ${{ vars.SELF_HOSTED && 'orca-macos-arm64' || 'macos-14' }}
+      os: ${{ vars.SELF_HOSTED && github.event_name != 'pull_request' && 'orca-macos-arm64' || 'macos-14' }}
       arch: ${{ matrix.arch }}
       build-deps-only: ${{ inputs.build-deps-only || false }}
       force-build: ${{ github.event_name == 'schedule' }}
-    secrets: inherit
   build_macos_universal:
     name: Build macOS Universal
     needs: build_macos_arch
     if: ${{ !cancelled() && needs.build_macos_arch.result == 'success' && !inputs.build-deps-only && (github.event_name != 'schedule' || github.repository == 'OrcaSlicer/OrcaSlicer') }}
     uses: ./.github/workflows/build_orca.yml
     with:
-      os: ${{ vars.SELF_HOSTED && 'orca-macos-arm64' || 'macos-14' }}
+      os: ${{ vars.SELF_HOSTED && github.event_name != 'pull_request' && 'orca-macos-arm64' || 'macos-14' }}
       arch: universal
       macos-combine-only: true
-    secrets: inherit
   # One test job per built arch, on the runner that built it.
   unit_tests_linux_x86_64:
     name: Linux x86_64
@@ -125,12 +133,12 @@ jobs:
     if: ${{ !cancelled() && success() }}
     uses: ./.github/workflows/unit_tests.yml
     with:
-      os: ${{ vars.SELF_HOSTED && 'orca-lnx-server' || 'ubuntu-24.04' }}
+      os: ${{ vars.SELF_HOSTED && github.event_name != 'pull_request' && 'orca-lnx-server' || 'ubuntu-24.04' }}
       artifact: ${{ github.sha }}-tests-linux-x86_64
   unit_tests_linux_aarch64:
     name: Linux aarch64
     needs: build_linux
-    if: ${{ !cancelled() && success() && !vars.SELF_HOSTED }}
+    if: ${{ !cancelled() && success() && !(vars.SELF_HOSTED && github.event_name != 'pull_request') }}
     uses: ./.github/workflows/unit_tests.yml
     with:
       os: ubuntu-24.04-arm
@@ -141,12 +149,12 @@ jobs:
     if: ${{ !cancelled() && success() }}
     uses: ./.github/workflows/unit_tests.yml
     with:
-      os: ${{ vars.SELF_HOSTED && 'orca-win-server' || 'windows-latest' }}
+      os: ${{ vars.SELF_HOSTED && github.event_name != 'pull_request' && 'orca-win-server' || 'windows-latest' }}
       artifact: ${{ github.sha }}-tests-windows-x64
   unit_tests_windows_arm64:
     name: Windows arm64
     needs: build_windows
-    if: ${{ !cancelled() && success() && !vars.SELF_HOSTED }}
+    if: ${{ !cancelled() && success() && !(vars.SELF_HOSTED && github.event_name != 'pull_request') }}
     uses: ./.github/workflows/unit_tests.yml
     with:
       os: windows-11-arm
@@ -158,7 +166,7 @@ jobs:
     if: ${{ !cancelled() && success() }}
     uses: ./.github/workflows/unit_tests.yml
     with:
-      os: ${{ vars.SELF_HOSTED && 'orca-macos-arm64' || 'macos-14' }}
+      os: ${{ vars.SELF_HOSTED && github.event_name != 'pull_request' && 'orca-macos-arm64' || 'macos-14' }}
       artifact: ${{ github.sha }}-tests-macos-arm64
       test-dir: build/arm64/tests
   # Slice a two-colour cube through every shipped printer so all custom g-code
@@ -167,18 +175,18 @@ jobs:
   # Profile-only PRs are covered by check_profiles.yml's nightly binary; this
   # covers src/engine PRs with the PR-built binary.
   slice_check_linux:
-    name: Slice check (Linux ${{ vars.SELF_HOSTED && 'x86_64' || 'aarch64' }})
+    name: Slice check (Linux ${{ vars.SELF_HOSTED && github.event_name != 'pull_request' && 'x86_64' || 'aarch64' }})
     needs: build_linux
     if: ${{ !cancelled() && success() }}
     # Follows whichever Linux leg built the validator.
-    runs-on: ${{ vars.SELF_HOSTED && 'orca-lnx-server' || 'ubuntu-24.04-arm' }}
+    runs-on: ${{ vars.SELF_HOSTED && github.event_name != 'pull_request' && 'orca-lnx-server' || 'ubuntu-24.04-arm' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
       - name: Download profile validator
         uses: actions/download-artifact@v8
         with:
-          name: ${{ github.sha }}-profile-validator-linux-${{ vars.SELF_HOSTED && 'x86_64' || 'aarch64' }}
+          name: ${{ github.sha }}-profile-validator-linux-${{ vars.SELF_HOSTED && github.event_name != 'pull_request' && 'x86_64' || 'aarch64' }}
           path: validator-bin
       - name: Validate slice (expand custom g-code)
         timeout-minutes: 60
@@ -229,7 +237,7 @@ jobs:
           - arch: aarch64
             runner: ubuntu-24.04-arm
     # Don't run scheduled builds on forks; skip entirely on self-hosted runners
-    if: ${{ !cancelled() && !vars.SELF_HOSTED && (github.event_name != 'schedule' || github.repository == 'OrcaSlicer/OrcaSlicer') }}
+    if: ${{ !cancelled() && !(vars.SELF_HOSTED && github.event_name != 'pull_request') && (github.event_name != 'schedule' || github.repository == 'OrcaSlicer/OrcaSlicer') }}
 
     runs-on: ${{ matrix.variant.runner }}
     env:

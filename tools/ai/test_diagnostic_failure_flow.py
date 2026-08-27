@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 from io import BytesIO
 import os
 from pathlib import Path
+import shutil
 import socket
 import subprocess
 import sys
@@ -18,6 +21,33 @@ from PIL import Image
 TOOLS_AI = Path(__file__).resolve().parent
 BOOTSTRAP = TOOLS_AI / "orca_ai_installed_bootstrap.py"
 LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def _session_headers(base_url: str, token: str) -> dict[str, str]:
+    client_nonce = "b" * 64
+    challenge = urllib.request.Request(
+        f"{base_url}/v1/orcaslicer/session-challenge",
+        headers={"X-OrcaSlicer-Client-Nonce": client_nonce},
+    )
+    with LOCAL_OPENER.open(challenge, timeout=1) as response:
+        payload = json.loads(response.read())
+    server_nonce = payload["server_nonce"]
+    expected_server_proof = hmac.new(
+        token.encode("ascii"),
+        f"server:{client_nonce}:{server_nonce}".encode("ascii"),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(payload["server_proof"], expected_server_proof):
+        raise RuntimeError("Sidecar returned an invalid server proof")
+    client_proof = hmac.new(
+        token.encode("ascii"),
+        f"client:{server_nonce}".encode("ascii"),
+        hashlib.sha256,
+    ).hexdigest()
+    return {
+        "X-OrcaSlicer-Client": "native",
+        "X-OrcaSlicer-Session-Proof": client_proof,
+    }
 
 
 def _free_port() -> int:
@@ -62,7 +92,26 @@ class DiagnosticFailureFlowTests(unittest.TestCase):
     def test_installed_sidecar_correlates_connection_failure_with_job_id(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             data_dir = Path(directory)
+            packaged_tools = data_dir / "runtime" / "tools" / "ai"
+            shutil.copytree(
+                TOOLS_AI,
+                packaged_tools,
+                ignore=shutil.ignore_patterns("test_*.py", "__pycache__"),
+            )
+            (packaged_tools / "orca_ai_build_info.json").write_text(
+                json.dumps({
+                    "schema_version": 1,
+                    "application_version": "2.5.0-test",
+                    "application_commit": "f" * 40,
+                    "package_revision": "diagnostic-test",
+                    "distribution_channel": "internal",
+                    "sidecar_protocol_version": 2,
+                    "sidecar_version": "orcaslicer-ai-sidecar-v8",
+                }),
+                encoding="utf-8",
+            )
             port = _free_port()
+            session_token = "a" * 64
             environment = dict(os.environ)
             environment.update(
                 OPENAI_API_KEY="test-openai",
@@ -71,20 +120,26 @@ class DiagnosticFailureFlowTests(unittest.TestCase):
                 ORCASLICER_AI_SIDECAR_HOST="127.0.0.1",
                 ORCASLICER_AI_SIDECAR_PORT=str(port),
                 ORCASLICER_AI_OUTPUT_DIR=str(data_dir / "generated_models"),
+                ORCASLICER_AI_PARENT_PID=str(os.getpid()),
+                ORCASLICER_AI_SESSION_TOKEN=session_token,
                 NO_PROXY="127.0.0.1,localhost",
                 no_proxy="127.0.0.1,localhost",
             )
             process = subprocess.Popen(
-                [sys.executable, str(BOOTSTRAP), str(data_dir)],
-                cwd=TOOLS_AI,
+                [sys.executable, str(packaged_tools / BOOTSTRAP.name), str(data_dir)],
+                cwd=packaged_tools,
                 env=environment,
             )
             try:
-                health_url = f"http://127.0.0.1:{port}/health"
+                base_url = f"http://127.0.0.1:{port}"
+                health_url = f"{base_url}/health"
+                session_headers: dict[str, str] = {}
                 deadline = time.time() + 10
                 while True:
                     try:
-                        with LOCAL_OPENER.open(health_url, timeout=1) as response:
+                        session_headers = _session_headers(base_url, session_token)
+                        health = urllib.request.Request(health_url, headers=session_headers)
+                        with LOCAL_OPENER.open(health, timeout=1) as response:
                             self.assertEqual(response.status, 200)
                             break
                     except OSError:
@@ -100,7 +155,7 @@ class DiagnosticFailureFlowTests(unittest.TestCase):
                     data=body,
                     method="POST",
                     headers={
-                        "X-OrcaSlicer-Client": "native",
+                        **session_headers,
                         "Content-Type": f"multipart/form-data; boundary={boundary}",
                     },
                 )
@@ -111,7 +166,7 @@ class DiagnosticFailureFlowTests(unittest.TestCase):
                 deadline = time.time() + 10
                 state = ""
                 while time.time() < deadline:
-                    status = urllib.request.Request(status_url, headers={"X-OrcaSlicer-Client": "native"})
+                    status = urllib.request.Request(status_url, headers=session_headers)
                     with LOCAL_OPENER.open(status, timeout=2) as response:
                         job = json.loads(response.read())["job"]
                     state = job["state"]

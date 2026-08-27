@@ -22,6 +22,10 @@ on:
       force-build:
         required: false
         type: boolean
+      ai-commercial-package:
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   build_deps:
@@ -131,7 +135,7 @@ jobs:
         if: runner.os == 'Windows'
         working-directory: ${{ github.workspace }}
         run: |
-            if (-not "${{ vars.SELF_HOSTED }}") {
+            if ("${{ startsWith(inputs.os, 'orca-') }}" -ne "true") {
               choco install strawberryperl
             }
             $arch = "${{ inputs.arch }}"
@@ -148,16 +152,16 @@ jobs:
         if: runner.os == 'macOS'
         working-directory: ${{ github.workspace }}
         run: |
-            if [ -z "${{ vars.SELF_HOSTED }}" ]; then
+            if [ "${{ startsWith(inputs.os, 'orca-') }}" != "true" ]; then
               brew install automake texinfo libtool
             fi
-            ./build_release_macos.sh -dx ${{ !vars.SELF_HOSTED && '-1' || '' }} -a ${{ inputs.arch }} -t 10.15
+            ./build_release_macos.sh -dx ${{ !startsWith(inputs.os, 'orca-') && '-1' || '' }} -a ${{ inputs.arch }} -t 10.15
             (cd "${{ github.workspace }}/deps/build/${{ inputs.arch }}" && \
             find . -mindepth 1 -maxdepth 1 ! -name 'OrcaSlicer_dep' -exec rm -rf {} +)
 
 
       - name: Apt-Install Dependencies
-        if: runner.os == 'Linux' && !vars.SELF_HOSTED
+        if: runner.os == 'Linux' && !startsWith(inputs.os, 'orca-')
         uses: ./.github/actions/apt-install-deps
 
       - name: Build on Ubuntu
@@ -204,4 +208,4 @@ jobs:
       cache-path: ${{ inputs.cache-path }}
       os: ${{ inputs.os }}
       arch: ${{ inputs.arch }}
-    secrets: inherit
+      ai-commercial-package: ${{ inputs.ai-commercial-package }}

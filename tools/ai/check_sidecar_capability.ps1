@@ -46,7 +46,7 @@ $generation = $health.capabilities.model_generation
 $sources = @($generation.sources)
 $formats = @($generation.artifact_formats)
 
-if ($health.protocol_version -ne 1 -or
+if ($health.protocol_version -ne 2 -or
     $null -eq $generation -or
     $generation.available -ne $true -or
     $sources -notcontains "text" -or

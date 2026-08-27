@@ -125,6 +125,9 @@ public:
 	// shared client for compatibility with self-signed print hosts; opt in for any
 	// request carrying authentication credentials or sensitive user data.
 	Http& tls_verify(bool enable);
+	// Restricts a loopback request to a direct connection and disables redirects.
+	// Use only after the caller has independently validated the URL as loopback.
+	Http& local_only();
 
 	Http& form_clear();
 	// Add a HTTP multipart form field

@@ -58,6 +58,73 @@ class AIDiagnosticsTests(unittest.TestCase):
         self.assertNotIn("super-secret", stream.getvalue())
         self.assertIn("<redacted>", payload["detail"])
 
+    def test_event_redacts_top_level_and_nested_sensitive_fields(self) -> None:
+        stream = io.StringIO()
+        secrets = {
+            "api_key": "api-key-value",
+            "accessToken": "access-token-value",
+            "client_secret": "client-secret-value",
+            "password": "password-value",
+            "Authorization": "Bearer authorization-value",
+            "cookie_header": "session=cookie-value",
+            "x_orcaslicer_session_proof": "proof-value",
+            "clientNonce": "client-nonce-value",
+            "server_nonce": "server-nonce-value",
+        }
+        with mock.patch.object(ai_diagnostics.sys, "stderr", stream):
+            ai_diagnostics.event(
+                "diagnostics.redaction",
+                api_key="top-level-api-key",
+                nested={"provider": secrets, "items": [{"refresh_token": "refresh-token-value"}]},
+                token_count=42,
+                nonce_length=64,
+                password_policy="managed",
+            )
+
+        payload = json.loads(stream.getvalue())
+        self.assertEqual(payload["api_key"], "<redacted>")
+        self.assertEqual(payload["nested"]["provider"], {key: "<redacted>" for key in secrets})
+        self.assertEqual(payload["nested"]["items"][0]["refresh_token"], "<redacted>")
+        self.assertEqual(payload["token_count"], 42)
+        self.assertEqual(payload["nonce_length"], 64)
+        self.assertEqual(payload["password_policy"], "managed")
+        for secret in ["top-level-api-key", *secrets.values(), "refresh-token-value"]:
+            self.assertNotIn(secret, stream.getvalue())
+
+    def test_redact_text_sanitizes_valid_and_embedded_json(self) -> None:
+        raw_json = json.dumps(
+            {
+                "safe": "visible",
+                "auth": {
+                    "TRIPO_API_KEY": "json-api-key",
+                    "sessionProof": ["proof-one", "proof-two"],
+                    "serverNonce": 123456,
+                },
+            }
+        )
+        payload = json.loads(ai_diagnostics.redact_text(raw_json))
+        self.assertEqual(payload["safe"], "visible")
+        self.assertEqual(payload["auth"]["TRIPO_API_KEY"], "<redacted>")
+        self.assertEqual(payload["auth"]["sessionProof"], "<redacted>")
+        self.assertEqual(payload["auth"]["serverNonce"], "<redacted>")
+
+        embedded = "provider failed: {'api_key':'embedded-key','password':'embedded-password'}"
+        redacted = ai_diagnostics.redact_text(embedded)
+        self.assertNotIn("embedded-key", redacted)
+        self.assertNotIn("embedded-password", redacted)
+        self.assertEqual(redacted.count("<redacted>"), 2)
+
+    def test_exception_details_redacts_json_encoded_credentials(self) -> None:
+        error = RuntimeError(
+            'provider response={"authorization":"Basic encoded-value",'
+            '"cookie":"sid=cookie-value","session_proof":"proof-value"}'
+        )
+        serialized = json.dumps(ai_diagnostics.exception_details(error))
+        self.assertNotIn("encoded-value", serialized)
+        self.assertNotIn("cookie-value", serialized)
+        self.assertNotIn("proof-value", serialized)
+        self.assertEqual(serialized.count("<redacted>"), 3)
+
     def test_event_write_failure_is_non_fatal(self) -> None:
         with mock.patch.object(ai_diagnostics.sys, "stderr", None):
             ai_diagnostics.event("diagnostics.unavailable", value="safe")

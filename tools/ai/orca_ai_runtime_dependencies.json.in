@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "python": {
+    "version": "@_bundled_python_version@",
+    "isolation_flag": "-I"
+  },
+  "packages": [
+    {
+      "name": "Pillow",
+      "version": "@ORCA_AI_PILLOW_VERSION@",
+      "architecture": "@ORCA_AI_RUNTIME_ARCHITECTURE@",
+      "wheel": "@ORCA_AI_PILLOW_WHEEL_FILENAME@",
+      "source_url": "@ORCA_AI_PILLOW_WHEEL_URL@",
+      "sha256": "@ORCA_AI_PILLOW_WHEEL_SHA256@"
+    }
+  ]
+}

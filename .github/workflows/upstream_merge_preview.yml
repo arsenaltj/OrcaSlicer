@@ -1,0 +1,85 @@
+name: Upstream merge preview
+
+# Read-only drift/conflict detector for the AI integration branch. It writes no
+# branch, tag or release and never pushes; a conflict is reported as a failed run.
+# Scheduled workflows run only from GitHub's default branch. Keep this file on the
+# default branch (currently codex/orca-integration-v2) if that setting changes.
+
+on:
+  schedule:
+    - cron: '30 17 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-merge-preview-codex-orca-integration-v2
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    name: Preview Orca upstream merge
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout integration branch without credentials
+        uses: actions/checkout@v7
+        with:
+          ref: codex/orca-integration-v2
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch official Orca main read-only
+        run: |
+          set -euo pipefail
+          git remote add upstream-preview https://github.com/OrcaSlicer/OrcaSlicer.git
+          git fetch --no-tags --filter=blob:none upstream-preview \
+            +refs/heads/main:refs/remotes/upstream-preview/main
+
+      - name: Report drift and preview merge without changing the worktree
+        run: |
+          set -euo pipefail
+          integration_sha=$(git rev-parse HEAD)
+          upstream_sha=$(git rev-parse refs/remotes/upstream-preview/main)
+          read -r integration_only upstream_only < <(
+            git rev-list --left-right --count "$integration_sha...$upstream_sha"
+          )
+          pinned_sha=$(jq -r '.upstream.sha' docs/architecture/ai-integration-lock.json)
+
+          {
+            echo "## Orca upstream merge preview"
+            echo
+            echo "- Integration: \`$integration_sha\`"
+            echo "- Latest upstream: \`$upstream_sha\`"
+            echo "- Pinned upstream baseline: \`$pinned_sha\`"
+            echo "- Integration-only commits: $integration_only"
+            echo "- New upstream commits: $upstream_only"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          set +e
+          git merge-tree --write-tree --messages "$integration_sha" "$upstream_sha" \
+            > upstream-merge-preview.txt 2>&1
+          merge_status=$?
+          set -e
+
+          if [ "$merge_status" -ne 0 ]; then
+            {
+              echo
+              echo "### Result: conflicts detected"
+              echo
+              echo '```text'
+              sed -n '1,200p' upstream-merge-preview.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            sed -n '1,200p' upstream-merge-preview.txt
+            echo "::error::Latest Orca main cannot be cleanly merged into the integration branch."
+            exit 1
+          fi
+
+          {
+            echo
+            echo "### Result: clean merge preview"
+            echo
+            echo "No GitHub branch, tag, release or other remote state was changed."
+          } >> "$GITHUB_STEP_SUMMARY"

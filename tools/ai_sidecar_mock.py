@@ -368,7 +368,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/health":
             self.send_json({
                 "ok": True,
-                "protocol_version": 1,
+                "protocol_version": 2,
                 "sidecar_version": "orcaslicer-ai-sidecar-mock-v1",
                 "capabilities": {
                     "config_proposal": {"available": True},

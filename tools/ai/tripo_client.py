@@ -14,6 +14,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+try:
+    from .ai_diagnostics import classify_connection_error, event as diagnostic_event, exception_details, safe_endpoint
+    from .network_policy import build_opener as build_network_opener, network_diagnostics
+except ImportError:
+    from ai_diagnostics import classify_connection_error, event as diagnostic_event, exception_details, safe_endpoint
+    from network_policy import build_opener as build_network_opener, network_diagnostics
+
 _DEFAULT_BASE_URL = "https://openapi.tripo3d.com/v3"
 _ARTIFACT_HOSTS = {"openapi.cdn.tripo3d.com"}
 _DEFAULT_MODEL = "v3.1-20260211"
@@ -75,6 +82,15 @@ def _data(envelope: Mapping[str, Any]) -> dict[str, Any]:
     code = envelope.get("code")
     data = envelope.get("data")
     if code != 0 or not isinstance(data, dict):
+        safe_code: int | str = code if type(code) is int else "<invalid>"
+        if isinstance(code, str) and len(code) <= 64 and all(char.isalnum() or char in "._-" for char in code):
+            safe_code = code
+        diagnostic_event(
+            "tripo.response.rejected",
+            level="ERROR",
+            provider_code=safe_code,
+            valid_data=isinstance(data, dict),
+        )
         raise TripoError("Tripo rejected the request.")
     return data
 
@@ -106,25 +122,77 @@ def _request(
     deadline: float | None = None,
 ) -> dict[str, Any]:
     base, key, _ = _config()
-    opener = urllib.request.build_opener(_RejectRedirects())
+    endpoint = base + path
+    network = network_diagnostics(endpoint)
+    opener = build_network_opener(_RejectRedirects())
     for attempt in range(status_retries + 1):
         if stop_event is not None and stop_event.is_set():
             raise TripoError("The operation was cancelled.")
-        request = urllib.request.Request(base + path, data=body, method=method)
+        request = urllib.request.Request(endpoint, data=body, method=method)
         request.add_header("Authorization", "Bearer " + key)
         request.add_header("Accept", "application/json")
         if content_type:
             request.add_header("Content-Type", content_type)
+        timeout = _REQUEST_TIMEOUT
+        if deadline is not None:
+            timeout = min(timeout, max(0.1, deadline - time.monotonic()))
+        started = time.monotonic()
+        diagnostic_event(
+            "tripo.request.started",
+            endpoint=safe_endpoint(endpoint),
+            method=method,
+            request_bytes=len(body) if body is not None else 0,
+            timeout_seconds=timeout,
+            attempt=attempt + 1,
+            max_attempts=status_retries + 1,
+            network=network,
+        )
         try:
-            timeout = _REQUEST_TIMEOUT
-            if deadline is not None:
-                timeout = min(timeout, max(0.1, deadline - time.monotonic()))
             with opener.open(request, timeout=timeout) as response:
-                return _read_json(response)
-        except TripoError:
+                result = _read_json(response)
+                diagnostic_event(
+                    "tripo.request.completed",
+                    endpoint=safe_endpoint(endpoint),
+                    method=method,
+                    http_status=getattr(response, "status", 200),
+                    elapsed_ms=round((time.monotonic() - started) * 1000),
+                    attempt=attempt + 1,
+                    network=network,
+                )
+                return result
+        except TripoError as exc:
+            diagnostic_event(
+                "tripo.response.invalid",
+                level="ERROR",
+                endpoint=safe_endpoint(endpoint),
+                method=method,
+                elapsed_ms=round((time.monotonic() - started) * 1000),
+                attempt=attempt + 1,
+                network=network,
+                exception_chain=exception_details(exc),
+            )
             raise
         except urllib.error.HTTPError as exc:
-            if exc.code in _TRANSIENT_CODES and attempt < status_retries:
+            retrying = exc.code in _TRANSIENT_CODES and attempt < status_retries
+            safe_headers = {
+                name: exc.headers.get(name, "")
+                for name in ("x-request-id", "request-id", "cf-ray", "retry-after")
+                if exc.headers and exc.headers.get(name)
+            }
+            diagnostic_event(
+                "tripo.http.failed",
+                level="ERROR",
+                endpoint=safe_endpoint(endpoint),
+                method=method,
+                http_status=exc.code,
+                response_headers=safe_headers,
+                elapsed_ms=round((time.monotonic() - started) * 1000),
+                attempt=attempt + 1,
+                retrying=retrying,
+                network=network,
+                exception_chain=exception_details(exc),
+            )
+            if retrying:
                 delay = _retry_after(exc.headers, attempt)
             else:
                 if exc.code == 429:
@@ -134,7 +202,20 @@ def _request(
                 else:
                     message = "Tripo is temporarily unavailable."
                 raise TripoError(message) from None
-        except (urllib.error.URLError, TimeoutError, OSError):
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            retrying = attempt < status_retries
+            diagnostic_event(
+                "tripo.connection.failed",
+                level="ERROR",
+                endpoint=safe_endpoint(endpoint),
+                method=method,
+                elapsed_ms=round((time.monotonic() - started) * 1000),
+                attempt=attempt + 1,
+                retrying=retrying,
+                network=network,
+                failure_kind=classify_connection_error(exc),
+                exception_chain=exception_details(exc),
+            )
             if attempt < status_retries:
                 delay = _retry_after(None, attempt)
             else:
@@ -432,6 +513,15 @@ def download_task_artifact(
     if max_bytes <= 0:
         raise TripoError("The artifact size limit must be positive.")
     url = _artifact_url(task_result)
+    network = network_diagnostics(url)
+    started = time.monotonic()
+    diagnostic_event(
+        "tripo.artifact_download.started",
+        endpoint=safe_endpoint(url),
+        max_bytes=max_bytes,
+        timeout_seconds=_REQUEST_TIMEOUT,
+        network=network,
+    )
     _validate_artifact_url(url)
     destination = Path(output_path)
     part = destination.with_name(destination.name + ".part")
@@ -445,7 +535,7 @@ def download_task_artifact(
             if offset:
                 request_headers["Range"] = f"bytes={offset}-"
             request = urllib.request.Request(url, headers=request_headers, method="GET")
-            with urllib.request.build_opener(_SafeArtifactRedirects()).open(
+            with build_network_opener(_SafeArtifactRedirects()).open(
                 request, timeout=_REQUEST_TIMEOUT
             ) as response:
                 resumed = offset > 0 and getattr(response, "status", 200) == 206
@@ -468,12 +558,29 @@ def download_task_artifact(
             if total <= 0:
                 raise _ArtifactDownloadInterrupted("The artifact download returned no data.")
             os.replace(part, destination)
+            diagnostic_event(
+                "tripo.artifact_download.completed",
+                endpoint=safe_endpoint(url),
+                response_bytes=total,
+                elapsed_ms=round((time.monotonic() - started) * 1000),
+                attempt=_ + 1,
+                network=network,
+            )
             return destination
-        except TripoError:
+        except TripoError as exc:
             try:
                 part.unlink(missing_ok=True)
             except OSError:
                 pass
+            diagnostic_event(
+                "tripo.artifact_download.failed",
+                level="ERROR",
+                endpoint=safe_endpoint(url),
+                elapsed_ms=round((time.monotonic() - started) * 1000),
+                attempt=_ + 1,
+                network=network,
+                exception_chain=exception_details(exc),
+            )
             raise
         except (
             urllib.error.HTTPError,
@@ -483,6 +590,17 @@ def download_task_artifact(
             _ArtifactDownloadInterrupted,
         ) as exc:
             last_error = exc
+            diagnostic_event(
+                "tripo.artifact_download.retry",
+                level="WARNING",
+                endpoint=safe_endpoint(url),
+                elapsed_ms=round((time.monotonic() - started) * 1000),
+                attempt=_ + 1,
+                retrying=_ + 1 < _ARTIFACT_DOWNLOAD_ATTEMPTS,
+                network=network,
+                failure_kind=classify_connection_error(exc),
+                exception_chain=exception_details(exc),
+            )
 
     try:
         part.unlink(missing_ok=True)

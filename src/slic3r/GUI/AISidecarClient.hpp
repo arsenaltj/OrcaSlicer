@@ -39,6 +39,14 @@ public:
 
     static std::string default_endpoint();
     static bool is_loopback_endpoint(const std::string& endpoint);
+    static bool initialize_local_session();
+    static bool session_protection_enabled();
+    static std::string create_session_nonce();
+    static bool accept_session_challenge(const std::string& client_nonce,
+                                         const std::string& server_nonce,
+                                         const std::string& server_proof);
+    static std::string session_token_for_child();
+    static void configure_native_request(Http& request);
 
 private:
     std::string           m_endpoint;

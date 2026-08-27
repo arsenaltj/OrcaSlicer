@@ -123,6 +123,7 @@ struct Http::priv
     std::string headers;
 	size_t limit;
 	bool cancel;
+	bool follow_redirects;
     std::unique_ptr<form_file> putFile;
 
 	std::thread io_thread;
@@ -178,6 +179,7 @@ Http::priv::priv(const std::string &url)
 	, error_buffer(CURL_ERROR_SIZE + 1, '\0')
 	, limit(0)
 	, cancel(false)
+	, follow_redirects(true)
 {
     Http::tls_global_init();
 
@@ -427,7 +429,7 @@ std::string Http::priv::body_size_error()
 
 void Http::priv::http_perform()
 {
-	::curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+	::curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, follow_redirects ? 1L : 0L);
 	::curl_easy_setopt(curl, CURLOPT_POSTREDIR, CURL_REDIR_POST_ALL);
 	::curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writecb);
 	::curl_easy_setopt(curl, CURLOPT_WRITEDATA, static_cast<void*>(this));
@@ -629,6 +631,18 @@ Http& Http::tls_verify(bool enable)
 		::curl_easy_setopt(p->curl, CURLOPT_SSL_VERIFYPEER, enable ? 1L : 0L);
 		::curl_easy_setopt(p->curl, CURLOPT_SSL_VERIFYHOST, enable ? 2L : 0L);
 		::curl_easy_setopt(p->curl, CURLOPT_SSL_OPTIONS, CURLSSLOPT_NATIVE_CA);
+	}
+	return *this;
+}
+
+Http& Http::local_only()
+{
+	if (p) {
+		p->follow_redirects = false;
+		// "*" bypasses every configured/environment proxy. Callers must validate
+		// the request URL as loopback before applying this transport policy.
+		::curl_easy_setopt(p->curl, CURLOPT_NOPROXY, "*");
+		::curl_easy_setopt(p->curl, CURLOPT_PROXY, "");
 	}
 	return *this;
 }

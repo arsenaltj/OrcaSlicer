@@ -18,6 +18,51 @@ SPEC.loader.exec_module(BOOTSTRAP)
 
 
 class InstalledBootstrapTests(unittest.TestCase):
+    def test_build_info_sets_only_valid_non_secret_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            build_info_path = Path(directory) / "build-info.json"
+            payload = {
+                "schema_version": 1,
+                "application_version": "2.5.0-dev",
+                "application_commit": "a" * 40,
+                "package_revision": "commercial-20260827.1",
+                "distribution_channel": "commercial",
+                "sidecar_protocol_version": 2,
+                "sidecar_version": "orcaslicer-ai-sidecar-v8",
+            }
+            build_info_path.write_text(json.dumps(payload), encoding="utf-8")
+            with mock.patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(BOOTSTRAP.load_build_info(build_info_path), payload)
+                self.assertEqual(os.environ["ORCASLICER_AI_APP_COMMIT"], "a" * 40)
+                self.assertEqual(os.environ["ORCASLICER_AI_PACKAGE_REVISION"], "commercial-20260827.1")
+                self.assertEqual(os.environ["ORCASLICER_AI_DISTRIBUTION_CHANNEL"], "commercial")
+
+    def test_build_info_rejects_unknown_fields_and_invalid_identity(self) -> None:
+        valid = {
+            "schema_version": 1,
+            "application_version": "2.5.0-dev",
+            "application_commit": "b" * 40,
+            "package_revision": "test",
+            "distribution_channel": "internal",
+            "sidecar_protocol_version": 2,
+            "sidecar_version": "orcaslicer-ai-sidecar-v8",
+        }
+        invalid_payloads = (
+            {**valid, "secret": "must-not-be-accepted"},
+            {**valid, "application_commit": "short"},
+            {**valid, "package_revision": "bad revision"},
+            {**valid, "distribution_channel": "public-with-keys"},
+            {**valid, "sidecar_version": "orcaslicer-ai-sidecar-v6"},
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            build_info_path = Path(directory) / "build-info.json"
+            for payload in invalid_payloads:
+                with self.subTest(payload=payload):
+                    build_info_path.write_text(json.dumps(payload), encoding="utf-8")
+                    with mock.patch.dict(os.environ, {}, clear=True):
+                        self.assertEqual(BOOTSTRAP.load_build_info(build_info_path), {})
+                        self.assertNotIn("ORCASLICER_AI_APP_COMMIT", os.environ)
+
     def test_internal_locked_defaults_override_allowlisted_environment_values(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             defaults_path = Path(directory) / "defaults.json"
@@ -99,7 +144,19 @@ class InstalledBootstrapTests(unittest.TestCase):
 
             original_stdout, original_stderr, original_argv = sys.stdout, sys.stderr, sys.argv
             try:
-                with mock.patch.object(BOOTSTRAP.runpy, "run_path", side_effect=fake_run_path):
+                valid_build_info = {
+                    "schema_version": 1,
+                    "application_version": "2.5.0-dev",
+                    "application_commit": "d" * 40,
+                    "package_revision": "installed-test",
+                    "distribution_channel": "internal",
+                    "sidecar_protocol_version": 2,
+                    "sidecar_version": "orcaslicer-ai-sidecar-v8",
+                }
+                with mock.patch.dict(os.environ, {"ORCASLICER_AI_PARENT_PID": str(os.getpid())}, clear=False), \
+                     mock.patch.object(BOOTSTRAP, "load_build_info", return_value=valid_build_info), \
+                     mock.patch.object(BOOTSTRAP, "load_internal_defaults", return_value=()), \
+                     mock.patch.object(BOOTSTRAP.runpy, "run_path", side_effect=fake_run_path):
                     BOOTSTRAP.run_installed_sidecar(directory)
                 sidecar_argv = list(sys.argv)
             finally:
@@ -111,6 +168,75 @@ class InstalledBootstrapTests(unittest.TestCase):
             self.assertEqual(Path(str(captured["path"])), MODULE_PATH.with_name("orca_ai_sidecar.py").resolve())
             self.assertEqual(captured["run_name"], "__main__")
             self.assertEqual(sidecar_argv, [str(MODULE_PATH.with_name("orca_ai_sidecar.py").resolve())])
+
+    def test_installed_sidecar_requires_valid_build_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch.object(BOOTSTRAP, "load_build_info", return_value={}):
+            with self.assertRaisesRegex(RuntimeError, "build identity"):
+                BOOTSTRAP.run_installed_sidecar(directory)
+            records = [
+                json.loads(line)
+                for line in (Path(directory) / "log" / "orca-ai-sidecar.log").read_text(
+                    encoding="utf-8"
+                ).splitlines()
+            ]
+            self.assertEqual(records[-1]["code"], "build_identity_invalid")
+
+    def test_installed_sidecar_requires_parent_process_identity(self) -> None:
+        valid_build_info = {
+            "schema_version": 1,
+            "application_version": "2.5.0-dev",
+            "application_commit": "e" * 40,
+            "package_revision": "installed-test",
+            "distribution_channel": "internal",
+            "sidecar_protocol_version": 2,
+            "sidecar_version": "orcaslicer-ai-sidecar-v8",
+        }
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch.dict(os.environ, {"ORCASLICER_AI_PARENT_PID": "invalid"}, clear=False), \
+             mock.patch.object(BOOTSTRAP, "load_build_info", return_value=valid_build_info):
+            with self.assertRaisesRegex(RuntimeError, "parent process"):
+                BOOTSTRAP.run_installed_sidecar(directory)
+            record = json.loads(
+                (Path(directory) / "log" / "orca-ai-sidecar.log").read_text(encoding="utf-8")
+            )
+            self.assertEqual(record["code"], "parent_process_invalid")
+
+    def test_commercial_runtime_drops_inherited_provider_credentials(self) -> None:
+        valid_build_info = {
+            "schema_version": 1,
+            "application_version": "2.5.0-dev",
+            "application_commit": "f" * 40,
+            "package_revision": "commercial-test",
+            "distribution_channel": "commercial",
+            "sidecar_protocol_version": 2,
+            "sidecar_version": "orcaslicer-ai-sidecar-v8",
+        }
+        captured: dict[str, str | None] = {}
+
+        def fake_run_path(path: str, *, run_name: str) -> None:
+            del path, run_name
+            captured["openai"] = os.environ.get("OPENAI_API_KEY")
+            captured["tripo"] = os.environ.get("TRIPO_API_KEY")
+
+        with tempfile.TemporaryDirectory() as directory:
+            original_stdout, original_stderr, original_argv = sys.stdout, sys.stderr, sys.argv
+            try:
+                with mock.patch.dict(os.environ, {
+                     "ORCASLICER_AI_PARENT_PID": str(os.getpid()),
+                     "OPENAI_API_KEY": "fake-inherited-openai",
+                     "TRIPO_API_KEY": "fake-inherited-tripo",
+                     }, clear=False), \
+                     mock.patch.object(BOOTSTRAP, "load_build_info", return_value=valid_build_info), \
+                     mock.patch.object(BOOTSTRAP.runpy, "run_path", side_effect=fake_run_path):
+                    BOOTSTRAP.run_installed_sidecar(directory)
+            finally:
+                redirected = sys.stdout
+                sys.stdout, sys.stderr = original_stdout, original_stderr
+                sys.argv = original_argv
+                if redirected is not original_stdout:
+                    redirected.close()
+        self.assertEqual(captured, {"openai": None, "tripo": None})
 
 
 if __name__ == "__main__":

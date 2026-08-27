@@ -4,6 +4,8 @@
 **Date:** 2026-08-21
 **Upstream baseline:** `6ef02a67dbb22ae1a019d9f485f46bfc3e1b44aa`
 
+**Current locked upstream (2026-08-28):** `6fdd4945c19348cc5fc9ed9ae2f26f22a778786b`; the original baseline above remains the branch-creation record.
+
 ## Context
 
 Model generation and smart slicing are developed and accepted independently. The earlier development repository was created from an aggregate source import and has no Git merge base with the official Orca `upstream/main` history. Directly merging or rebasing that history cannot provide a reliable long-term upstream update path.
@@ -19,6 +21,7 @@ The product must preserve Orca's native Model, Config, 3MF/profile, slicing and 
 5. The two feature modules do not depend on each other. Cross-feature handoff uses stable DTOs and Ports through a thin composition layer.
 6. `libslic3r` does not contain provider or AI workflow policy. Any necessary core change must be a generally useful Orca capability with focused tests.
 7. Feature-off behavior, old 3MF/profile compatibility and normal manual slicing are release gates.
+8. Shared runtime and loopback-security files (`AIServiceManager`, `AISidecarClient`, local HTTP policy, network diagnostics and installed bootstrap/build identity) require integration ownership even when a feature team proposes the change.
 
 ## Branch and commit policy
 
@@ -37,20 +40,30 @@ Each integration cycle records:
 - pinned upstream SHA;
 - accepted model-generation SHA and its verification evidence;
 - accepted smart-slicing SHA and its verification evidence;
+- a machine-verifiable receipt tying unchanged feature-owned Git objects to the accepted source SHA and the reviewed integration commit when history was snapshot-ported;
 - one commit per ported module or architectural boundary;
 - full build, test, compatibility and GUI results.
 
 ## Runtime isolation
 
-Concurrent development instances use separate build directories, `--datadir` values, Sidecar ports and output roots. The reserved defaults for local verification are:
+The installed product uses **18764** as its single default Sidecar port. A branch name or developer role must never silently change the product endpoint.
 
-| Role | Sidecar port | Runtime/output identity |
-|---|---:|---|
-| Model generation | 18764 | `model-generation` |
-| Smart slicing | 18765 | `smart-slicing` |
-| Combined integration | 18766 | `orca-integration-v2` |
+The current installed AI product contract is Sidecar v8 / protocol v2. Protocol changes update the machine-readable lock and both native/Python contract tests in the same reviewed change.
 
-GUI automation must select the executable path and concrete window identity. Combined acceptance runs only against the integration build.
+Concurrent development instances use separate build directories, `--datadir` values, output roots and explicit endpoint overrides. Ports 18765, 18766 and 18767 are development examples only; they are not alternate product defaults and must not appear as implicit release behavior.
+
+| Runtime | Sidecar port | Selection rule | Runtime/output identity |
+|---|---:|---|---|
+| Installed product / release candidate | 18764 | Product default | Product data directory |
+| Model-generation development instance | 18765 | Explicit developer override only | `model-generation` |
+| Smart-slicing development instance | 18766 | Explicit developer override only | `smart-slicing` |
+| Integration development instance | 18767 | Explicit developer override only | `orca-integration-v2` |
+
+Development overrides must set the supported Sidecar URL/port configuration explicitly and use an isolated `--datadir` and output directory. A smart-slicing development instance uses 18766 only when it launches a Sidecar; the number remains reserved for that development identity so concurrent automation is deterministic.
+
+The current commercial AI support target is Windows only. Cross-platform source compatibility remains required, but macOS/Linux AI distribution is not claimed until platform-specific Sidecar packaging, signing and qualification pass.
+
+GUI automation must select the executable path, endpoint, data directory and concrete window identity. Combined acceptance runs only against the integration build. Release verification first confirms that no development override changes the 18764 product default.
 
 ## Consequences
 

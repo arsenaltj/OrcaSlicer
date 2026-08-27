@@ -38,6 +38,9 @@ private:
     struct SidecarProcess;
 
     void cancel_discovery();
+    void probe_health(const wxWeakRef<wxWindow>& target,
+                      const std::weak_ptr<int>& lifetime,
+                      CompleteFn on_complete);
     void try_autostart_local_sidecar();
     void stop_owned_sidecar();
 

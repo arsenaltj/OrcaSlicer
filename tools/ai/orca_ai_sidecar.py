@@ -5,10 +5,12 @@ import atexit
 from array import array
 from collections import Counter, deque
 from io import BytesIO
+import hmac
 import math
 import json
 import os
 import re
+import secrets
 import shutil
 import socket
 import ssl
@@ -17,7 +19,6 @@ import sys
 import threading
 import time
 import uuid
-import urllib.request
 import zipfile
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
@@ -28,6 +29,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Callable
 
 from ai_diagnostics import diagnostic_context, event as diagnostic_event, exception_details, safe_endpoint
+from network_policy import network_diagnostics
 
 from openai_preprocessor import (
     OpenAIPreprocessorError,
@@ -55,7 +57,9 @@ _MODEL_PROVIDER_GATEWAY = ModelProviderGateway()
 
 HOST = os.environ.get("ORCASLICER_AI_SIDECAR_HOST", "127.0.0.1")
 PORT = int(os.environ.get("ORCASLICER_AI_SIDECAR_PORT", "18764"))
-SIDECAR_VERSION = "orcaslicer-ai-sidecar-v7"
+SIDECAR_VERSION = "orcaslicer-ai-sidecar-v8"
+SIDECAR_INSTANCE_ID = str(uuid.uuid4())
+SIDECAR_SESSION_NONCE = secrets.token_hex(32)
 MAX_REQUEST_BYTES = 256 * 1024
 MAX_CHANGES = 8
 MAX_PROMPT_BYTES = 2000
@@ -143,6 +147,190 @@ def _environment_flag(name: str) -> bool:
 
 def _preprocess_fallback_enabled() -> bool:
     return _environment_flag("ORCASLICER_AI_ALLOW_PREPROCESS_FALLBACK")
+
+
+def _runtime_network_metadata() -> dict[str, dict[str, object]]:
+    return {
+        "openai": network_diagnostics(
+            os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+        ),
+        "tripo": network_diagnostics(
+            os.environ.get("TRIPO_API_BASE", "https://openapi.tripo3d.com/v3")
+        ),
+    }
+
+
+def _configured_session_token() -> str | None:
+    value = os.environ.get("ORCASLICER_AI_SESSION_TOKEN", "")
+    if not value:
+        return ""
+    return value if re.fullmatch(r"[0-9A-Fa-f]{64}", value) else None
+
+
+def _session_required() -> bool:
+    return (
+        _environment_flag("ORCASLICER_AI_REQUIRE_SESSION")
+        or os.environ.get("ORCASLICER_AI_CONFIG_MODE") == "internal_locked"
+        or os.environ.get("ORCASLICER_AI_DISTRIBUTION_CHANNEL") in {"internal", "commercial"}
+    )
+
+
+def _session_hmac(token: str, message: str) -> str:
+    return hmac.new(token.encode("ascii"), message.encode("ascii"), "sha256").hexdigest()
+
+
+def _safe_runtime_identity() -> dict[str, str]:
+    version = os.environ.get("ORCASLICER_AI_APP_VERSION", "unknown")
+    if not re.fullmatch(r"[0-9A-Za-z._+-]{1,128}", version):
+        version = "unknown"
+    commit = os.environ.get("ORCASLICER_AI_APP_COMMIT", "unknown")
+    if commit != "unknown" and not re.fullmatch(r"[0-9A-Fa-f]{40}", commit):
+        commit = "unknown"
+    revision = os.environ.get("ORCASLICER_AI_PACKAGE_REVISION", "unknown")
+    if not re.fullmatch(r"[0-9A-Za-z._-]{1,128}", revision):
+        revision = "unknown"
+    channel = os.environ.get("ORCASLICER_AI_DISTRIBUTION_CHANNEL", "developer")
+    if channel not in {"developer", "internal", "commercial"}:
+        channel = "developer"
+    return {
+        "application_version": version,
+        "application_commit": commit,
+        "package_revision": revision,
+        "distribution_channel": channel,
+    }
+
+
+def _configured_parent_pid() -> int | None:
+    value = os.environ.get("ORCASLICER_AI_PARENT_PID", "").strip()
+    if not value:
+        return None
+    if not value.isascii() or not value.isdecimal():
+        return None
+    parent_pid = int(value)
+    return parent_pid if 0 < parent_pid <= 0xFFFFFFFF else None
+
+
+def _parent_process_alive(parent_pid: int) -> bool:
+    if os.name == "nt":
+        # os.kill(pid, 0) is not a harmless existence probe on Windows. Query a
+        # synchronize-only process handle and never inherit it into children.
+        import ctypes
+
+        synchronize = 0x00100000
+        wait_timeout = 0x00000102
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = (ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32)
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.WaitForSingleObject.argtypes = (ctypes.c_void_p, ctypes.c_uint32)
+        kernel32.WaitForSingleObject.restype = ctypes.c_uint32
+        kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+        kernel32.CloseHandle.restype = ctypes.c_int
+        handle = kernel32.OpenProcess(synchronize, False, parent_pid)
+        if not handle:
+            return False
+        try:
+            return kernel32.WaitForSingleObject(handle, 0) == wait_timeout
+        finally:
+            kernel32.CloseHandle(handle)
+
+    try:
+        os.kill(parent_pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _open_parent_process_handle(parent_pid: int) -> int | None:
+    if os.name != "nt":
+        return None
+    import ctypes
+
+    synchronize = 0x00100000
+    wait_timeout = 0x00000102
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = (ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32)
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.WaitForSingleObject.argtypes = (ctypes.c_void_p, ctypes.c_uint32)
+    kernel32.WaitForSingleObject.restype = ctypes.c_uint32
+    kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+    kernel32.CloseHandle.restype = ctypes.c_int
+    handle = kernel32.OpenProcess(synchronize, False, parent_pid)
+    if not handle:
+        return None
+    if kernel32.WaitForSingleObject(handle, 0) != wait_timeout:
+        kernel32.CloseHandle(handle)
+        return None
+    return int(handle)
+
+
+def _close_parent_process_handle(handle: int | None) -> None:
+    if os.name != "nt" or handle is None:
+        return
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+    kernel32.CloseHandle.restype = ctypes.c_int
+    kernel32.CloseHandle(handle)
+
+
+def _parent_process_handle_alive(handle: int) -> bool:
+    import ctypes
+
+    wait_timeout = 0x00000102
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.WaitForSingleObject.argtypes = (ctypes.c_void_p, ctypes.c_uint32)
+    kernel32.WaitForSingleObject.restype = ctypes.c_uint32
+    return kernel32.WaitForSingleObject(handle, 0) == wait_timeout
+
+
+def _monitor_parent(
+    server: ThreadingHTTPServer,
+    parent_pid: int,
+    parent_handle: int | None = None,
+) -> None:
+    if os.name == "nt":
+        # Keep one synchronize-only handle for the whole Sidecar lifetime. A
+        # handle continues to identify the original Orca process even if its PID
+        # is later reused by Windows.
+        import ctypes
+
+        synchronize = 0x00100000
+        wait_object_0 = 0x00000000
+        wait_timeout = 0x00000102
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = (ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32)
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.WaitForSingleObject.argtypes = (ctypes.c_void_p, ctypes.c_uint32)
+        kernel32.WaitForSingleObject.restype = ctypes.c_uint32
+        kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+        kernel32.CloseHandle.restype = ctypes.c_int
+        handle = parent_handle or kernel32.OpenProcess(synchronize, False, parent_pid)
+        if not handle:
+            diagnostic_event("sidecar.parent.unavailable", level="ERROR", parent_pid=parent_pid)
+            server.shutdown()
+            return
+        try:
+            while not _SHUT_DOWN:
+                result = kernel32.WaitForSingleObject(handle, 2000)
+                if result == wait_timeout:
+                    continue
+                event = "sidecar.parent.exited" if result == wait_object_0 else "sidecar.parent.wait_failed"
+                diagnostic_event(event, level="INFO" if result == wait_object_0 else "ERROR", parent_pid=parent_pid)
+                server.shutdown()
+                return
+        finally:
+            kernel32.CloseHandle(handle)
+        return
+
+    while not _SHUT_DOWN:
+        if not _parent_process_alive(parent_pid):
+            diagnostic_event("sidecar.parent.exited", parent_pid=parent_pid)
+            server.shutdown()
+            return
+        time.sleep(2.0)
 
 
 @dataclass
@@ -837,12 +1025,12 @@ def _load_job(directory: Path) -> Job | None:
     return job
 
 
-def _restore_jobs() -> None:
+def _restore_jobs(*, resume_jobs: bool = True) -> list[Job]:
     output_root = _model_output_root()
     try:
         directories = [path for path in output_root.iterdir() if path.is_dir()]
     except OSError:
-        return
+        return []
     restored: list[Job] = []
     for directory in directories:
         job = _load_job(directory)
@@ -928,6 +1116,12 @@ def _restore_jobs() -> None:
         for job in restored:
             _JOBS[job.id] = job
             _persist_job(job, touch=False)
+    if resume_jobs:
+        _resume_restored_jobs(restored)
+    return restored
+
+
+def _resume_restored_jobs(restored: list[Job]) -> None:
     for job in restored:
         if job.state == "queued" and job.phase == "resuming":
             _submit(job, _generate_job, job.prepared_prompt, True)
@@ -3880,11 +4074,27 @@ class Handler(BaseHTTPRequestHandler):
             raise RequestError("invalid_request", "image is required.", 400)
         return fields, image, image_content_type
 
+    def _require_session(self) -> bool:
+        expected = _configured_session_token()
+        if expected is None:
+            self._model_error(503, "session_configuration_invalid", "AI Sidecar session protection is invalid.")
+            return False
+        if not expected and _session_required():
+            self._model_error(503, "session_configuration_missing", "AI Sidecar session protection is required.")
+            return False
+        if expected:
+            expected_proof = _session_hmac(expected, f"client:{SIDECAR_SESSION_NONCE}")
+            provided = self.headers.get("X-OrcaSlicer-Session-Proof", "")
+            if len(provided) != len(expected_proof) or not hmac.compare_digest(provided, expected_proof):
+                self._model_error(401, "session_required", "A valid OrcaSlicer AI session is required.")
+                return False
+        return True
+
     def _require_native_client(self) -> bool:
         if self.headers.get("X-OrcaSlicer-Client") != "native":
             self._model_error(401, "client_required", "X-OrcaSlicer-Client must be native.")
             return False
-        return True
+        return self._require_session()
 
     def _model_error(
         self,
@@ -3927,7 +4137,32 @@ class Handler(BaseHTTPRequestHandler):
             return _JOBS.get(job_id)
 
     def do_GET(self) -> None:
+        if self.path == "/v1/orcaslicer/session-challenge":
+            token = _configured_session_token()
+            if token is None:
+                self._model_error(503, "session_configuration_invalid", "AI Sidecar session protection is invalid.")
+                return
+            client_nonce = self.headers.get("X-OrcaSlicer-Client-Nonce", "")
+            if not token or not re.fullmatch(r"[0-9A-Fa-f]{64}", client_nonce):
+                self._model_error(401, "session_challenge_required", "A valid session challenge is required.")
+                return
+            self.send_json(
+                200,
+                {
+                    "ok": True,
+                    "protocol_version": 2,
+                    "sidecar_version": SIDECAR_VERSION,
+                    "session_protected": True,
+                    "server_nonce": SIDECAR_SESSION_NONCE,
+                    "server_proof": _session_hmac(
+                        token, f"server:{client_nonce}:{SIDECAR_SESSION_NONCE}"
+                    ),
+                },
+            )
+            return
         if self.path == "/health":
+            if not self._require_session():
+                return
             config = os.environ.get("OPENAI_API_KEY", "")
             generation_preprocessing = bool(config) or _preprocess_fallback_enabled()
             policy = provider_policy()
@@ -3935,13 +4170,23 @@ class Handler(BaseHTTPRequestHandler):
                 200,
                 {
                     "ok": True,
-                    "protocol_version": 1,
+                    "protocol_version": 2,
                     "sidecar_version": SIDECAR_VERSION,
                     "runtime": {
-                        "openai_base_url": os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/"),
+                        "health_schema_version": 2,
+                        "instance_id": SIDECAR_INSTANCE_ID,
+                        "session_protected": bool(_configured_session_token()),
+                        "build": _safe_runtime_identity(),
+                        "openai_base_url": safe_endpoint(
+                            os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+                        ).rstrip("/"),
+                        "tripo_base_url": safe_endpoint(
+                            os.environ.get("TRIPO_API_BASE", "https://openapi.tripo3d.com/v3")
+                        ).rstrip("/"),
                         "configuration_mode": "internal_locked"
                         if os.environ.get("ORCASLICER_AI_CONFIG_MODE") == "internal_locked"
                         else "external",
+                        "network": _runtime_network_metadata(),
                     },
                     "capabilities": {
                         "config_proposal": {"available": bool(config)},
@@ -4018,7 +4263,20 @@ class Handler(BaseHTTPRequestHandler):
         self._download_job_file(job, action)
 
     def do_POST(self) -> None:
+        if self.path == "/v1/orcaslicer/shutdown":
+            if not self._require_native_client():
+                return
+            self.send_json(202, {"ok": True, "state": "stopping"})
+            threading.Thread(
+                target=self.server.shutdown,
+                name="orca-sidecar-shutdown",
+                daemon=True,
+            ).start()
+            return
+
         if self.path == "/v1/orcaslicer/config-proposal":
+            if not self._require_native_client():
+                return
             try:
                 request = self.read_json()
                 if not str(request.get("user_message", "")).strip():
@@ -4529,11 +4787,37 @@ def main() -> int:
     if host not in _LOOPBACK_HOSTS:
         print("ORCASLICER_AI_SIDECAR_HOST must be 127.0.0.1, localhost, or ::1.", file=sys.stderr)
         return 2
+    if _configured_session_token() is None:
+        print("ORCASLICER_AI_SESSION_TOKEN must be a 64-character hexadecimal capability.", file=sys.stderr)
+        return 2
+    if _session_required() and not _configured_session_token():
+        print("This AI Sidecar runtime requires an authenticated OrcaSlicer session.", file=sys.stderr)
+        return 2
+    parent_pid = _configured_parent_pid()
+    if os.environ.get("ORCASLICER_AI_PARENT_PID", "").strip() and parent_pid is None:
+        print("ORCASLICER_AI_PARENT_PID must identify the owning OrcaSlicer process.", file=sys.stderr)
+        return 2
+    if _session_required() and parent_pid is None:
+        print("This AI Sidecar runtime requires an owning OrcaSlicer process.", file=sys.stderr)
+        return 2
+    parent_handle: int | None = None
+    if parent_pid is not None:
+        if os.name == "nt":
+            parent_handle = _open_parent_process_handle(parent_pid)
+            parent_alive = parent_handle is not None
+        else:
+            parent_alive = _parent_process_alive(parent_pid)
+        if not parent_alive:
+            print("The owning OrcaSlicer process is no longer running.", file=sys.stderr)
+            return 2
     if host == "::1":
         LoopbackServer.address_family = socket.AF_INET6
     diagnostic_event(
         "sidecar.starting",
         sidecar_version=SIDECAR_VERSION,
+        instance_id=SIDECAR_INSTANCE_ID,
+        session_protected=bool(_configured_session_token()),
+        build=_safe_runtime_identity(),
         endpoint=safe_endpoint(f"http://{HOST}:{PORT}"),
         python_version=sys.version.split()[0],
         openssl_version=ssl.OPENSSL_VERSION,
@@ -4544,12 +4828,20 @@ def main() -> int:
         if os.environ.get("ORCASLICER_AI_CONFIG_MODE") == "internal_locked"
         else "external",
         openai_endpoint=safe_endpoint(os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")),
-        proxy_schemes=sorted(urllib.request.getproxies()),
+        tripo_endpoint=safe_endpoint(os.environ.get("TRIPO_API_BASE", "https://openapi.tripo3d.com/v3")),
+        network=_runtime_network_metadata(),
     )
-    _restore_jobs()
+    # Restore local state first, but do not touch an existing remote task until
+    # the owning Orca process has been rechecked and the listener is ready.
+    try:
+        restored_jobs = _restore_jobs(resume_jobs=False)
+    except Exception:
+        _close_parent_process_handle(parent_handle)
+        raise
     try:
         server = LoopbackServer((HOST, PORT), Handler)
     except OSError as exc:
+        _close_parent_process_handle(parent_handle)
         diagnostic_event(
             "sidecar.bind.failed",
             level="ERROR",
@@ -4557,12 +4849,31 @@ def main() -> int:
             exception_chain=exception_details(exc),
         )
         raise
+    if parent_pid is not None:
+        if os.name == "nt":
+            parent_alive = parent_handle is not None and _parent_process_handle_alive(parent_handle)
+        else:
+            parent_alive = _parent_process_alive(parent_pid)
+        if not parent_alive:
+            _close_parent_process_handle(parent_handle)
+            server.server_close()
+            diagnostic_event("sidecar.parent.unavailable", level="ERROR", parent_pid=parent_pid)
+            return 2
+        threading.Thread(
+            target=_monitor_parent,
+            args=(server, parent_pid, parent_handle),
+            name="orca-parent-monitor",
+            daemon=True,
+        ).start()
+        parent_handle = None  # The monitor thread owns and closes this handle.
+    _resume_restored_jobs(restored_jobs)
     diagnostic_event("sidecar.listening", endpoint=safe_endpoint(f"http://{HOST}:{PORT}"))
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        _close_parent_process_handle(parent_handle)
         server.server_close()
         shutdown_sidecar()
         diagnostic_event("sidecar.stopped")

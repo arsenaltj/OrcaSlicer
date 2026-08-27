@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "application_version": "@SoftFever_VERSION@",
+  "application_commit": "@ORCA_AI_APPLICATION_COMMIT@",
+  "package_revision": "@ORCA_AI_PACKAGE_REVISION@",
+  "distribution_channel": "@ORCA_AI_DISTRIBUTION_CHANNEL@",
+  "sidecar_protocol_version": 2,
+  "sidecar_version": "orcaslicer-ai-sidecar-v8"
+}

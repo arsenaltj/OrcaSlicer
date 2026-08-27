@@ -22,6 +22,11 @@ except ImportError:
     from ai_diagnostics import classify_connection_error, event as diagnostic_event, exception_details, safe_endpoint
 
 try:
+    from .network_policy import build_opener as build_network_opener, network_diagnostics
+except ImportError:
+    from network_policy import build_opener as build_network_opener, network_diagnostics
+
+try:
     from .printable_palette import PALETTE_ROLES, PrintablePaletteError, assign_palette_roles, normalize_palette
 except ImportError:
     from printable_palette import PALETTE_ROLES, PrintablePaletteError, assign_palette_roles, normalize_palette
@@ -162,23 +167,24 @@ def _provider_request(path: str, body: bytes, content_type: str) -> dict[str, An
     request.add_header("Content-Type", content_type)
     request.add_header("Accept", "application/json")
     started = time.monotonic()
-    proxy_schemes = sorted(urllib.request.getproxies())
+    network = network_diagnostics(endpoint)
     diagnostic_event(
         "provider.request.started",
         endpoint=safe_endpoint(endpoint),
         request_bytes=len(body),
         content_type=content_type,
         timeout_seconds=_TIMEOUT_SECONDS,
-        proxy_schemes=proxy_schemes,
+        network=network,
     )
     try:
-        with urllib.request.build_opener(_RejectRedirects()).open(request, timeout=_TIMEOUT_SECONDS) as response:
+        with build_network_opener(_RejectRedirects()).open(request, timeout=_TIMEOUT_SECONDS) as response:
             result = _read_json_response(response)
             diagnostic_event(
                 "provider.request.completed",
                 endpoint=safe_endpoint(endpoint),
                 http_status=getattr(response, "status", 200),
                 elapsed_ms=round((time.monotonic() - started) * 1000),
+                network=network,
             )
             return result
     except OpenAIPreprocessorError:
@@ -187,6 +193,7 @@ def _provider_request(path: str, body: bytes, content_type: str) -> dict[str, An
             level="ERROR",
             endpoint=safe_endpoint(endpoint),
             elapsed_ms=round((time.monotonic() - started) * 1000),
+            network=network,
         )
         raise
     except urllib.error.HTTPError as exc:
@@ -208,6 +215,7 @@ def _provider_request(path: str, body: bytes, content_type: str) -> dict[str, An
             http_status=exc.code,
             response_headers=safe_headers,
             elapsed_ms=round((time.monotonic() - started) * 1000),
+            network=network,
             exception_chain=exception_details(exc),
         )
         raise OpenAIPreprocessorError(message) from None
@@ -217,7 +225,7 @@ def _provider_request(path: str, body: bytes, content_type: str) -> dict[str, An
             level="ERROR",
             endpoint=safe_endpoint(endpoint),
             elapsed_ms=round((time.monotonic() - started) * 1000),
-            proxy_schemes=proxy_schemes,
+            network=network,
             failure_kind=classify_connection_error(exc),
             exception_chain=exception_details(exc),
         )
@@ -649,11 +657,19 @@ def _atomic_write(path: Path, data: bytes) -> Path:
 
 
 def _download_image(url: str, output_path: Path) -> Path:
-    _validate_artifact_url(url)
-    request = urllib.request.Request(url, headers={"Accept": "image/*"}, method="GET")
+    started = time.monotonic()
+    network = network_diagnostics(url)
+    diagnostic_event(
+        "provider.artifact_download.started",
+        endpoint=safe_endpoint(url),
+        timeout_seconds=_TIMEOUT_SECONDS,
+        network=network,
+    )
     part = output_path.with_name(output_path.name + ".part")
     try:
-        with urllib.request.build_opener(_SafeArtifactRedirects()).open(request, timeout=_TIMEOUT_SECONDS) as response:
+        _validate_artifact_url(url)
+        request = urllib.request.Request(url, headers={"Accept": "image/*"}, method="GET")
+        with build_network_opener(_SafeArtifactRedirects()).open(request, timeout=_TIMEOUT_SECONDS) as response:
             content_length = response.headers.get("Content-Length")
             if content_length:
                 try:
@@ -669,18 +685,42 @@ def _download_image(url: str, output_path: Path) -> Path:
                         raise OpenAIPreprocessorError("The result image exceeds the 20 MB limit.")
                     stream.write(chunk)
         os.replace(part, output_path)
+        diagnostic_event(
+            "provider.artifact_download.completed",
+            endpoint=safe_endpoint(url),
+            response_bytes=total,
+            elapsed_ms=round((time.monotonic() - started) * 1000),
+            network=network,
+        )
         return output_path
-    except OpenAIPreprocessorError:
+    except OpenAIPreprocessorError as exc:
         try:
             part.unlink(missing_ok=True)
         except OSError:
             pass
+        diagnostic_event(
+            "provider.artifact_download.failed",
+            level="ERROR",
+            endpoint=safe_endpoint(url),
+            elapsed_ms=round((time.monotonic() - started) * 1000),
+            network=network,
+            exception_chain=exception_details(exc),
+        )
         raise
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError):
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError) as exc:
         try:
             part.unlink(missing_ok=True)
         except OSError:
             pass
+        diagnostic_event(
+            "provider.artifact_download.failed",
+            level="ERROR",
+            endpoint=safe_endpoint(url),
+            elapsed_ms=round((time.monotonic() - started) * 1000),
+            network=network,
+            failure_kind=classify_connection_error(exc),
+            exception_chain=exception_details(exc),
+        )
         raise OpenAIPreprocessorError("The result image could not be downloaded.") from None
 
 

@@ -17,18 +17,24 @@ on:
           required: false
           type: boolean
           default: false
+        ai-commercial-package:
+          required: false
+          type: boolean
+          default: false
 
 jobs:
   build_orca:
     name: Build OrcaSlicer
     runs-on: ${{ inputs.os }}
+    # No caller in the general build chain forwards signing/notarization
+    # credentials. The upstream-only signing steps below are retained for merge
+    # compatibility and require a separate protected release caller to run.
     env:
       date:
       ver:
       ver_pure:
       ubuntu-ver: '2404'
       ubuntu-ver-str: '_Ubuntu2404'
-      ORCA_UPDATER_SIG_KEY: ${{ secrets.ORCA_UPDATER_SIG_KEY }}
       # Branches whose builds are published to the nightly release. The
       # belt-printer branch ships alongside main but its assets carry a `_belt`
       # suffix (nightly_suffix) so they never overwrite the main nightly assets.
@@ -124,14 +130,14 @@ jobs:
       - name: Install tools mac
         if: runner.os == 'macOS' && !inputs.macos-combine-only
         run: |
-          if [ -z "${{ vars.SELF_HOSTED }}" ]; then
+          if [ "${{ startsWith(inputs.os, 'orca-') }}" != "true" ]; then
             brew install libtool
             brew list
           fi
           mkdir -p ${{ github.workspace }}/deps/build/${{ inputs.arch }}
 
       - name: Free disk space
-        if: runner.os == 'macOS' && !inputs.macos-combine-only && !vars.SELF_HOSTED
+        if: runner.os == 'macOS' && !inputs.macos-combine-only && !startsWith(inputs.os, 'orca-')
         run: |
           df -hI /dev/disk3s1s1
           sudo find /Applications -maxdepth 1 -type d -name "Xcode_*.app" ! -name "Xcode_15.4.app" -exec rm -rf {} +
@@ -145,7 +151,7 @@ jobs:
         env:
           ORCA_TESTS_BUILD_ONLY: ${{ inputs.arch == 'arm64' && '1' || '' }}
         run: |
-          ./build_release_macos.sh -s -n -x ${{ !vars.SELF_HOSTED && '-1' || '' }} -a ${{ inputs.arch }} -t 10.15 ${{ inputs.arch == 'arm64' && '-T' || '' }}
+          ./build_release_macos.sh -s -n -x ${{ !startsWith(inputs.os, 'orca-') && '-1' || '' }} -a ${{ inputs.arch }} -t 10.15 ${{ inputs.arch == 'arm64' && '-T' || '' }}
 
       - name: Pack unit tests mac
         if: runner.os == 'macOS' && !inputs.macos-combine-only && inputs.arch == 'arm64'
@@ -204,7 +210,7 @@ jobs:
         if: runner.os == 'macOS' && inputs.macos-combine-only
         working-directory: ${{ github.workspace }}
         run: |
-          ./build_release_macos.sh -u -x ${{ !vars.SELF_HOSTED && '-1' || '' }} -a universal -t 10.15
+          ./build_release_macos.sh -u -x ${{ !startsWith(inputs.os, 'orca-') && '-1' || '' }} -a universal -t 10.15
 
  # Thanks to RaySajuuk, it's working now
       - name: Sign app and notary
@@ -333,7 +339,7 @@ jobs:
           path: ${{ github.workspace }}/OrcaSlicer_Mac_universal_${{ env.ver }}.dmg
 
       - name: Upload OrcaSlicer_profile_validator DMG mac
-        if: runner.os == 'macOS' && inputs.macos-combine-only && !vars.SELF_HOSTED
+        if: runner.os == 'macOS' && inputs.macos-combine-only && !startsWith(inputs.os, 'orca-')
         uses: actions/upload-artifact@v7
         with:
           name: OrcaSlicer_profile_validator_Mac_universal_DMG_${{ env.ver }}
@@ -341,7 +347,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Deploy Mac release
-        if: github.repository == 'OrcaSlicer/OrcaSlicer' && env.deploy_nightly == 'true' && runner.os == 'macOS' && inputs.macos-combine-only && !vars.SELF_HOSTED
+        if: github.repository == 'OrcaSlicer/OrcaSlicer' && env.deploy_nightly == 'true' && runner.os == 'macOS' && inputs.macos-combine-only && !startsWith(inputs.os, 'orca-')
         uses: WebFreak001/deploy-nightly@v3.2.0
         with:
           upload_url: https://uploads.github.com/repos/OrcaSlicer/OrcaSlicer/releases/137995723/assets{?name,label}
@@ -352,7 +358,7 @@ jobs:
           max_releases: 1 # optional, if there are more releases than this matching the asset_name, the oldest ones are going to be deleted
 
       - name: Deploy Mac OrcaSlicer_profile_validator DMG release
-        if: github.repository == 'OrcaSlicer/OrcaSlicer' && github.ref == 'refs/heads/main' && runner.os == 'macOS' && inputs.macos-combine-only && !vars.SELF_HOSTED
+        if: github.repository == 'OrcaSlicer/OrcaSlicer' && github.ref == 'refs/heads/main' && runner.os == 'macOS' && inputs.macos-combine-only && !startsWith(inputs.os, 'orca-')
         uses: WebFreak001/deploy-nightly@v3.2.0
         with:
           upload_url: https://uploads.github.com/repos/OrcaSlicer/OrcaSlicer/releases/137995723/assets{?name,label}
@@ -380,7 +386,7 @@ jobs:
         uses: microsoft/setup-msbuild@v3
 
       - name: Install nsis
-        if: runner.os == 'Windows' && !vars.SELF_HOSTED
+        if: runner.os == 'Windows' && !startsWith(inputs.os, 'orca-')
         run: |
           dir "C:/Program Files (x86)/Windows Kits/10/Include"
           choco install nsis
@@ -393,10 +399,108 @@ jobs:
         #   WindowsSdkDir: 'C:\Program Files (x86)\Windows Kits\10\'
         #   WindowsSDKVersion: '10.0.26100.0\'
         # "tests" builds the unit tests too; the unit_tests_windows_* jobs run them.
+        env:
+          ORCA_AI_WINDOWS_INSTALLER: ${{ inputs.ai-commercial-package && 'ON' || 'OFF' }}
+          ORCA_AI_DISTRIBUTION_CHANNEL: commercial
+          ORCA_AI_PACKAGE_REVISION: ci-${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           $arch = "${{ inputs.arch }}"
           if ($arch -eq "arm64") { .\build_release_vs.bat slicer arm64 tests } else { .\build_release_vs.bat slicer tests }
         shell: pwsh
+
+      - name: Verify commercial AI runtime identity
+        if: runner.os == 'Windows' && inputs.ai-commercial-package
+        shell: pwsh
+        run: |
+          $expectedCommit = (& git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $expectedCommit -notmatch '^[0-9a-fA-F]{40}$') {
+            throw 'Unable to resolve the exact checked-out source commit.'
+          }
+          $runtimeRoot = Join-Path '${{ env.BUILD_DIR }}' 'OrcaSlicer/resources/tools/ai'
+          $buildInfoPath = Join-Path $runtimeRoot 'orca_ai_build_info.json'
+          $runtimeDependenciesPath = Join-Path $runtimeRoot 'orca_ai_runtime_dependencies.json'
+          if (-not (Test-Path -LiteralPath $buildInfoPath -PathType Leaf)) {
+            throw "Commercial AI build identity is missing: $buildInfoPath"
+          }
+          if (-not (Test-Path -LiteralPath $runtimeDependenciesPath -PathType Leaf)) {
+            throw "Commercial AI dependency metadata is missing: $runtimeDependenciesPath"
+          }
+          $buildInfo = Get-Content -LiteralPath $buildInfoPath -Raw | ConvertFrom-Json
+          $runtimeDependencies = Get-Content -LiteralPath $runtimeDependenciesPath -Raw | ConvertFrom-Json
+          if ($buildInfo.schema_version -ne 1 -or
+              $buildInfo.application_commit -ne $expectedCommit -or
+              $buildInfo.distribution_channel -ne 'commercial' -or
+              $buildInfo.sidecar_protocol_version -ne 2 -or
+              $buildInfo.sidecar_version -ne 'orcaslicer-ai-sidecar-v8') {
+            throw 'Commercial AI build identity does not match the checked-out source and runtime contract.'
+          }
+          foreach ($required in @(
+              'orca_ai_installed_bootstrap.py', 'orca_ai_sidecar.py', 'network_policy.py',
+              'openai_preprocessor.py', 'tripo_client.py', 'verify_bundled_runtime.py')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $runtimeRoot $required) -PathType Leaf)) {
+              throw "Commercial AI runtime file is missing: $required"
+            }
+          }
+          $expectedArchitecture = if ('${{ inputs.arch }}' -eq 'arm64') { 'arm64' } else { 'x64' }
+          $expectedPillowHash = if ($expectedArchitecture -eq 'arm64') {
+            'af73337013e0b3b46f175e79492d96845b16126ddf79c438d7ea7ff27783a414'
+          } else {
+            '7f84204dee22a783350679a0333981df803dac21a0190d706a50475e361c93f5'
+          }
+          $pillowDependency = @($runtimeDependencies.packages) |
+            Where-Object { $_.name -eq 'Pillow' } |
+            Select-Object -First 1
+          if ($runtimeDependencies.schema_version -ne 1 -or
+              $runtimeDependencies.python.version -ne '3.12.13' -or
+              $runtimeDependencies.python.isolation_flag -ne '-I' -or
+              -not $pillowDependency -or
+              $pillowDependency.version -ne '12.2.0' -or
+              $pillowDependency.architecture -ne $expectedArchitecture -or
+              $pillowDependency.sha256 -ne $expectedPillowHash) {
+            throw 'Commercial AI dependency metadata does not match the pinned Python/Pillow runtime.'
+          }
+          $installedPythonRoot = Join-Path '${{ env.BUILD_DIR }}' 'OrcaSlicer/python'
+          $installedPython = Join-Path $installedPythonRoot 'python.exe'
+          if (-not (Test-Path -LiteralPath $installedPython -PathType Leaf)) {
+            throw "Commercial AI bundled Python is missing: $installedPython"
+          }
+          $runtimeProbeJson = & $installedPython -I (Join-Path $runtimeRoot 'verify_bundled_runtime.py') `
+            --python-root $installedPythonRoot --expect-python 3.12.13 --expect-pillow 12.2.0 --json
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Commercial AI bundled Python could not import Pillow in isolated mode.'
+          }
+          $runtimeProbe = $runtimeProbeJson | ConvertFrom-Json
+          if ($runtimeProbe.schema_version -ne 1 -or $runtimeProbe.python_version -ne '3.12.13' -or
+              $runtimeProbe.pillow_version -ne '12.2.0' -or $runtimeProbe.native_png_roundtrip -ne $true) {
+            throw 'Commercial AI Python/Pillow versions or module origin do not match the isolated install tree.'
+          }
+          if (Get-ChildItem -LiteralPath '${{ env.BUILD_DIR }}/OrcaSlicer' -Recurse -File |
+              Where-Object Name -eq 'orca_ai_internal_defaults.json') {
+            throw 'Commercial package must not contain package-only provider credentials.'
+          }
+          $manifest = [ordered]@{
+            schema_version = 1
+            source_commit = $expectedCommit
+            architecture = $expectedArchitecture
+            application_version = $buildInfo.application_version
+            package_revision = $buildInfo.package_revision
+            distribution_channel = $buildInfo.distribution_channel
+            sidecar_protocol_version = $buildInfo.sidecar_protocol_version
+            sidecar_version = $buildInfo.sidecar_version
+            python_version = $runtimeProbe.python_version
+            pillow_version = $runtimeProbe.pillow_version
+            runtime_dependencies = $runtimeDependencies
+          }
+          $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath '${{ env.BUILD_DIR }}/commercial-ai-build-manifest.json' -Encoding utf8
+
+      - name: Upload commercial AI build manifest
+        if: runner.os == 'Windows' && inputs.ai-commercial-package
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.sha }}-commercial-ai-manifest-${{ inputs.arch }}
+          path: ${{ env.BUILD_DIR }}/commercial-ai-build-manifest.json
+          retention-days: 14
+          if-no-files-found: error
 
       - name: Build system preset cache (Windows)
         if: runner.os == 'Windows'
@@ -424,7 +528,7 @@ jobs:
       # NSIS is x86-only; it runs (and the installer it emits runs) under ARM64's
       # x86 emulation, packaging the native arm64 payload from build-arm64.
       - name: Create installer Win
-        if: runner.os == 'Windows' && !vars.SELF_HOSTED
+        if: runner.os == 'Windows' && !startsWith(inputs.os, 'orca-')
         working-directory: ${{ github.workspace }}/${{ env.BUILD_DIR }}
         run: |
           cpack -G NSIS
@@ -436,7 +540,7 @@ jobs:
         run: '"C:/Program Files/7-Zip/7z.exe" a -tzip OrcaSlicer_Windows_${{ env.ver }}${{ env.ARCH_SUFFIX }}_portable.zip ${{ github.workspace }}/${{ env.BUILD_DIR }}/OrcaSlicer'
 
       - name: Pack PDB
-        if: runner.os == 'Windows' && inputs.arch != 'arm64' && !vars.SELF_HOSTED
+        if: runner.os == 'Windows' && inputs.arch != 'arm64' && !startsWith(inputs.os, 'orca-')
         working-directory: ${{ github.workspace }}/${{ env.BUILD_DIR }}/src/Release
         shell: cmd
         run: '"C:/Program Files/7-Zip/7z.exe" a -m0=lzma2 -mx9 Debug_PDB_${{ env.ver }}_for_developers_only.7z  *.pdb'
@@ -449,28 +553,28 @@ jobs:
           path: ${{ github.workspace }}/${{ env.BUILD_DIR }}/OrcaSlicer
 
       - name: Upload artifacts Win installer
-        if: runner.os == 'Windows' && !vars.SELF_HOSTED
+        if: runner.os == 'Windows' && !startsWith(inputs.os, 'orca-')
         uses: actions/upload-artifact@v7
         with:
           name: OrcaSlicer_Windows_${{ env.ver }}${{ env.ARCH_SUFFIX }}
           path: ${{ github.workspace }}/${{ env.BUILD_DIR }}/OrcaSlicer*.exe
 
       - name: Upload artifacts Win PDB
-        if: runner.os == 'Windows' && inputs.arch != 'arm64' && !vars.SELF_HOSTED
+        if: runner.os == 'Windows' && inputs.arch != 'arm64' && !startsWith(inputs.os, 'orca-')
         uses: actions/upload-artifact@v7
         with:
           name: PDB
           path: ${{ github.workspace }}/build/src/Release/Debug_PDB_${{ env.ver }}_for_developers_only.7z
 
       - name: Upload OrcaSlicer_profile_validator Win
-        if: runner.os == 'Windows' && inputs.arch != 'arm64' && !vars.SELF_HOSTED
+        if: runner.os == 'Windows' && inputs.arch != 'arm64' && !startsWith(inputs.os, 'orca-')
         uses: actions/upload-artifact@v7
         with:
           name: OrcaSlicer_profile_validator_Windows_${{ env.ver }}
           path: ${{ github.workspace }}/build/src/Release/OrcaSlicer_profile_validator.exe
 
       - name: Deploy Windows release portable
-        if: github.repository == 'OrcaSlicer/OrcaSlicer' && env.deploy_nightly == 'true' && runner.os == 'Windows' && !vars.SELF_HOSTED
+        if: github.repository == 'OrcaSlicer/OrcaSlicer' && env.deploy_nightly == 'true' && runner.os == 'Windows' && !startsWith(inputs.os, 'orca-')
         uses: WebFreak001/deploy-nightly@v3.2.0
         with:
           upload_url: https://uploads.github.com/repos/OrcaSlicer/OrcaSlicer/releases/137995723/assets{?name,label}
@@ -481,7 +585,7 @@ jobs:
           max_releases: 1
 
       - name: Deploy Windows release installer
-        if: github.repository == 'OrcaSlicer/OrcaSlicer' && env.deploy_nightly == 'true' && runner.os == 'Windows' && !vars.SELF_HOSTED
+        if: github.repository == 'OrcaSlicer/OrcaSlicer' && env.deploy_nightly == 'true' && runner.os == 'Windows' && !startsWith(inputs.os, 'orca-')
         uses: WebFreak001/deploy-nightly@v3.2.0
         with:
           upload_url: https://uploads.github.com/repos/OrcaSlicer/OrcaSlicer/releases/137995723/assets{?name,label}
@@ -492,7 +596,7 @@ jobs:
           max_releases: 1
 
       - name: Deploy Windows OrcaSlicer_profile_validator release
-        if: github.repository == 'OrcaSlicer/OrcaSlicer' && github.ref == 'refs/heads/main' && runner.os == 'Windows' && inputs.arch != 'arm64' && !vars.SELF_HOSTED
+        if: github.repository == 'OrcaSlicer/OrcaSlicer' && github.ref == 'refs/heads/main' && runner.os == 'Windows' && inputs.arch != 'arm64' && !startsWith(inputs.os, 'orca-')
         uses: WebFreak001/deploy-nightly@v3.2.0
         with:
           upload_url: https://uploads.github.com/repos/OrcaSlicer/OrcaSlicer/releases/137995723/assets{?name,label}
@@ -503,7 +607,7 @@ jobs:
           max_releases: 1
 
       - name: Build MSIX Store package Win
-        if: runner.os == 'Windows' && !vars.SELF_HOSTED
+        if: runner.os == 'Windows' && !startsWith(inputs.os, 'orca-')
         working-directory: ${{ github.workspace }}
         shell: pwsh
         run: |
@@ -516,7 +620,7 @@ jobs:
             -PublisherDisplayName "${{ vars.ORCA_MSIX_PUBLISHER_DISPLAY_NAME || 'OrcaSlicer' }}"
 
       - name: Upload artifacts Win MSIX
-        if: runner.os == 'Windows' && !vars.SELF_HOSTED
+        if: runner.os == 'Windows' && !startsWith(inputs.os, 'orca-')
         uses: actions/upload-artifact@v7
         with:
           name: OrcaSlicer_Windows_MSIX_${{ env.ver }}${{ env.ARCH_SUFFIX }}
@@ -524,7 +628,7 @@ jobs:
 
 # Ubuntu
       - name: Apt-Install Dependencies
-        if: runner.os == 'Linux' && !vars.SELF_HOSTED
+        if: runner.os == 'Linux' && !startsWith(inputs.os, 'orca-')
         uses: ./.github/actions/apt-install-deps
 
         # Tests must built at the same time as the slicer;
@@ -573,7 +677,7 @@ jobs:
         # the aarch64 leg so the sweep also exercises the arm build; x86_64 on
         # SELF_HOSTED, which skips arm64.
       - name: Upload profile validator (for slice check)
-        if: ${{ runner.os == 'Linux' && (vars.SELF_HOSTED && inputs.arch != 'aarch64' || !vars.SELF_HOSTED && inputs.arch == 'aarch64') }}
+        if: ${{ runner.os == 'Linux' && (startsWith(inputs.os, 'orca-') && inputs.arch != 'aarch64' || !startsWith(inputs.os, 'orca-') && inputs.arch == 'aarch64') }}
         uses: actions/upload-artifact@v7
         with:
           name: ${{ github.sha }}-profile-validator-linux-${{ inputs.arch == 'aarch64' && 'aarch64' || 'x86_64' }}
@@ -593,7 +697,7 @@ jobs:
           python3 "$test_repo_dir/run_test.py" "${{ github.workspace }}/build/package/bin/orca-slicer"
 
       - name: Build orca_custom_preset_tests
-        if: github.ref == 'refs/heads/main' && runner.os == 'Linux' && !vars.SELF_HOSTED && inputs.arch != 'aarch64'
+        if: github.ref == 'refs/heads/main' && runner.os == 'Linux' && !startsWith(inputs.os, 'orca-') && inputs.arch != 'aarch64'
         working-directory: ${{ github.workspace }}/build/src/Release
         shell: bash
         run: |
@@ -609,14 +713,14 @@ jobs:
           path: "./build/OrcaSlicer_Linux_AppImage${{ env.ubuntu-ver-str }}${{ env.arch_suffix }}_${{ env.ver }}.AppImage"
 
       - name: Upload OrcaSlicer_profile_validator Ubuntu
-        if: ${{ ! env.ACT && runner.os == 'Linux' && !vars.SELF_HOSTED && inputs.arch != 'aarch64' }}
+        if: ${{ ! env.ACT && runner.os == 'Linux' && !startsWith(inputs.os, 'orca-') && inputs.arch != 'aarch64' }}
         uses: actions/upload-artifact@v7
         with:
           name: OrcaSlicer_profile_validator_Linux_ubuntu_${{ env.ubuntu-ver }}_${{ env.ver }}
           path: './build/src/Release/OrcaSlicer_profile_validator'
 
       - name: Deploy Ubuntu release
-        if: ${{ github.repository == 'OrcaSlicer/OrcaSlicer' && ! env.ACT && env.deploy_nightly == 'true' && runner.os == 'Linux' && !vars.SELF_HOSTED }}
+        if: ${{ github.repository == 'OrcaSlicer/OrcaSlicer' && ! env.ACT && env.deploy_nightly == 'true' && runner.os == 'Linux' && !startsWith(inputs.os, 'orca-') }}
         uses: WebFreak001/deploy-nightly@v3.2.0
         with:
           upload_url: https://uploads.github.com/repos/OrcaSlicer/OrcaSlicer/releases/137995723/assets{?name,label}
@@ -626,7 +730,7 @@ jobs:
           asset_content_type: application/octet-stream
           max_releases: 1 # optional, if there are more releases than this matching the asset_name, the oldest ones are going to be deleted
       - name: Deploy Ubuntu release
-        if: ${{ github.repository == 'OrcaSlicer/OrcaSlicer' && ! env.ACT && github.ref == 'refs/heads/main' && runner.os == 'Linux' && !vars.SELF_HOSTED && inputs.arch != 'aarch64' }}
+        if: ${{ github.repository == 'OrcaSlicer/OrcaSlicer' && ! env.ACT && github.ref == 'refs/heads/main' && runner.os == 'Linux' && !startsWith(inputs.os, 'orca-') && inputs.arch != 'aarch64' }}
         uses: rickstaa/action-create-tag@v1
         with:
           tag: "nightly-builds"
@@ -635,7 +739,7 @@ jobs:
           message: "nightly-builds"
 
       - name: Deploy Ubuntu OrcaSlicer_profile_validator release
-        if: ${{ github.repository == 'OrcaSlicer/OrcaSlicer' && ! env.ACT && github.ref == 'refs/heads/main' && runner.os == 'Linux' && !vars.SELF_HOSTED && inputs.arch != 'aarch64' }}
+        if: ${{ github.repository == 'OrcaSlicer/OrcaSlicer' && ! env.ACT && github.ref == 'refs/heads/main' && runner.os == 'Linux' && !startsWith(inputs.os, 'orca-') && inputs.arch != 'aarch64' }}
         uses: WebFreak001/deploy-nightly@v3.2.0
         with:
           upload_url: https://uploads.github.com/repos/OrcaSlicer/OrcaSlicer/releases/137995723/assets{?name,label}
@@ -646,7 +750,7 @@ jobs:
           max_releases: 1
 
       - name: Deploy orca_custom_preset_tests
-        if: ${{ github.repository == 'OrcaSlicer/OrcaSlicer' && ! env.ACT && github.ref == 'refs/heads/main' && runner.os == 'Linux' && !vars.SELF_HOSTED && inputs.arch != 'aarch64' }}
+        if: ${{ github.repository == 'OrcaSlicer/OrcaSlicer' && ! env.ACT && github.ref == 'refs/heads/main' && runner.os == 'Linux' && !startsWith(inputs.os, 'orca-') && inputs.arch != 'aarch64' }}
         uses: WebFreak001/deploy-nightly@v3.2.0
         with:
           upload_url: https://uploads.github.com/repos/OrcaSlicer/OrcaSlicer/releases/137995723/assets{?name,label}

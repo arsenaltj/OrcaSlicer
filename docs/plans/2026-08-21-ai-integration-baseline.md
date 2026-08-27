@@ -17,8 +17,8 @@ The integration branch was created directly from the pinned commit and tracks `u
 
 | Feature | Live development branch | Accepted commit | Acceptance status |
 |---|---|---|---|
-| Model generation | `codex/model-generation` | `ef9a99491be558cd688d5cc799ea258b507a80fc` | Accepted for integration on 2026-08-26 |
-| Smart slicing | `codex/smart-slicing` | `1c163d68906e287b946b40a975feb3bfd9aab68d` | Temporarily accepted for integration on 2026-08-22 |
+| Model generation | `codex/model-generation` | `db81edc2b028c37822c997e99eb88c0465089f0c` | Accepted for integration on 2026-08-27 |
+| Smart slicing | `codex/smart-slicing` | `1c163d68906e287b946b40a975feb3bfd9aab68d` | Accepted for integration on 2026-08-22 |
 
 An observed branch head is not an accepted input. The accepted commit is written here only after the user confirms the corresponding GUI behavior.
 
@@ -45,6 +45,13 @@ An observed branch head is not an accepted input. The accepted commit is written
 - cross-feature DTO/Port adaptation;
 - runtime isolation defaults and combined verification;
 - upstream merges and conflict resolution.
+
+### Shared runtime (integration approval required)
+
+- `AIServiceManager` and `AISidecarClient` lifecycle/protocol/authentication;
+- loopback-only native HTTP transport and shared Python network policy;
+- diagnostics, installed bootstrap and package/build identity;
+- release/build workflows and the machine-readable integration lock.
 
 ## Forbidden dependency directions
 
@@ -84,6 +91,19 @@ The feature repositories have no merge base with the official history. Cycle 1 t
 - Smart-slicing source remains: `1c163d68906e287b946b40a975feb3bfd9aab68d`
 
 Cycle 2 ports the complete model-generation delta from the previously integrated source to the accepted target. It retains integration-owned diagnostics, artifact-download recovery, packaged internal configuration and smart-slicing composition. The moving branch head is not consulted after the accepted target is resolved.
+
+## Integration cycle 3
+
+- Fixed upstream source: `6fdd4945c19348cc5fc9ed9ae2f26f22a778786b`
+- Previous accepted model-generation source: `ef9a99491be558cd688d5cc799ea258b507a80fc`
+- Accepted model-generation source: `db81edc2b028c37822c997e99eb88c0465089f0c`
+- Smart-slicing source remains: `1c163d68906e287b946b40a975feb3bfd9aab68d`
+- Integration merge commit: `fc467b007fbfbe967aeaad99006b18ee0b589467`
+- Accepted-snapshot integration receipt commit: `c1cdfece8752d24637ec9d62edc70f2101455b1f`
+
+Cycle 3 records an explicit upstream intake and the next fixed model-generation snapshot. Smart slicing is unchanged. These identities describe source lineage only; build, test, GUI, installer and commercial-readiness evidence must be recorded separately against the final candidate and must not be inferred from this manifest.
+
+The v2 machine-readable lock adds a historical receipt for snapshot-ported feature history. At `c1cdfece8752d24637ec9d62edc70f2101455b1f`, the model-generation Domain tree and three unchanged native interface objects exactly match `db81edc2b028c37822c997e99eb88c0465089f0c`; the SmartSlicing Domain and GUI adapter trees exactly match `1c163d68906e287b946b40a975feb3bfd9aab68d`. The validator resolves both sides of every recorded path and compares their Git object IDs. Shared/composed files are intentionally not claimed as byte-identical receipts; they remain subject to integration review and combined tests.
 
 ## Future integration checklist
 

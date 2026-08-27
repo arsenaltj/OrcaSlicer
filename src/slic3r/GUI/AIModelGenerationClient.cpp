@@ -1,5 +1,7 @@
 #include "AIModelGenerationClient.hpp"
 
+#include "AISidecarClient.hpp"
+
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
 
@@ -152,8 +154,8 @@ void AIModelGenerationClient::preprocess_image(const std::string& request_id, co
     }
 
     auto http = Http::post(url("/v1/orcaslicer/model-jobs/image"));
-    http.header("X-OrcaSlicer-Client", "native")
-        .timeout_connect(5)
+    AISidecarClient::configure_native_request(http);
+    http.timeout_connect(5)
         .timeout_max(130)
         .size_limit(1024 * 1024)
         .form_add("request_id", request_id)
@@ -199,8 +201,8 @@ void AIModelGenerationClient::recommend_image_palette(const std::string& request
         return;
     }
     auto http = Http::post(url("/v1/orcaslicer/model-jobs/recommend-image-palette"));
-    http.header("X-OrcaSlicer-Client", "native")
-        .timeout_connect(5)
+    AISidecarClient::configure_native_request(http);
+    http.timeout_connect(5)
         .timeout_max(130)
         .size_limit(1024 * 1024)
         .form_add("request_id", request_id)
@@ -248,7 +250,8 @@ void AIModelGenerationClient::get_status(const std::string& job_id, StatusFn on_
     }
 
     auto http = Http::get(url("/v1/orcaslicer/model-jobs/" + job_id));
-    http.header("X-OrcaSlicer-Client", "native").timeout_connect(5).timeout_max(15).size_limit(1024 * 1024);
+    AISidecarClient::configure_native_request(http);
+    http.timeout_connect(5).timeout_max(15).size_limit(1024 * 1024);
     http.on_complete([this, on_complete = std::move(on_complete), on_error](std::string body, unsigned) mutable {
         parse_status_response(std::move(body), std::move(on_complete), on_error);
     });
@@ -268,7 +271,8 @@ void AIModelGenerationClient::get_latest(LatestFn on_complete, ErrorFn on_error)
         return;
     }
     auto http = Http::get(url("/v1/orcaslicer/model-jobs/latest"));
-    http.header("X-OrcaSlicer-Client", "native").timeout_connect(5).timeout_max(15).size_limit(1024 * 1024);
+    AISidecarClient::configure_native_request(http);
+    http.timeout_connect(5).timeout_max(15).size_limit(1024 * 1024);
     http.on_complete([on_complete = std::move(on_complete), on_error](std::string body, unsigned) mutable {
         auto parsed = json::parse(body, nullptr, false);
         if (parsed.is_discarded() || !parsed.contains("job")) {
@@ -320,7 +324,8 @@ void AIModelGenerationClient::remove(const std::string& job_id, CompleteFn on_co
     }
 
     auto http = Http::del(url("/v1/orcaslicer/model-jobs/" + job_id));
-    http.header("X-OrcaSlicer-Client", "native").timeout_connect(5).timeout_max(15).size_limit(1024 * 1024);
+    AISidecarClient::configure_native_request(http);
+    http.timeout_connect(5).timeout_max(15).size_limit(1024 * 1024);
     http.on_complete([on_complete = std::move(on_complete)](std::string, unsigned) {
         if (on_complete)
             on_complete();
@@ -381,8 +386,8 @@ void AIModelGenerationClient::record_journey_event(const std::string& event, con
     if (!job_id.empty())
         body["job_id"] = job_id;
     auto http = Http::post(url("/v1/orcaslicer/journey-events"));
+    AISidecarClient::configure_native_request(http);
     http.header("Content-Type", "application/json")
-        .header("X-OrcaSlicer-Client", "native")
         .timeout_connect(2)
         .timeout_max(5)
         .size_limit(64 * 1024)
@@ -403,8 +408,8 @@ void AIModelGenerationClient::post_json(const std::string& path, const json& bod
     }
 
     auto http = Http::post(url(path));
+    AISidecarClient::configure_native_request(http);
     http.header("Content-Type", "application/json")
-        .header("X-OrcaSlicer-Client", "native")
         .timeout_connect(5)
         .timeout_max(130)
         .size_limit(1024 * 1024)
@@ -776,7 +781,8 @@ void AIModelGenerationClient::download(const std::string& path, const boost::fil
 
     const boost::filesystem::path partial = destination.string() + ".part";
     auto http = Http::get(url(path));
-    http.header("X-OrcaSlicer-Client", "native").timeout_connect(5).timeout_max(180).size_limit(size_limit);
+    AISidecarClient::configure_native_request(http);
+    http.timeout_connect(5).timeout_max(180).size_limit(size_limit);
     http.on_complete([partial, destination, on_complete = std::move(on_complete), on_error](std::string body, unsigned) {
         boost::system::error_code ec;
         boost::filesystem::remove(partial, ec);

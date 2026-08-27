@@ -122,6 +122,25 @@ mkdir %build_dir%
 cd %build_dir%
 set "SIG_FLAG="
 if defined ORCA_UPDATER_SIG_KEY set "SIG_FLAG=-DORCA_UPDATER_SIG_KEY=%ORCA_UPDATER_SIG_KEY%"
+REM Always pass the complete AI cache tuple. Reusing build/ after an AI build
+REM must not silently leave the installer enabled or retain an old defaults file.
+set "AI_FLAGS=-DORCA_AI_WINDOWS_INSTALLER=OFF -DORCA_AI_DISTRIBUTION_CHANNEL=internal -DORCA_AI_PACKAGE_REVISION=non-ai"
+set "AI_DEFAULTS_FLAG=-DORCA_AI_INTERNAL_DEFAULTS_FILE:FILEPATH="
+if /I not "%ORCA_AI_WINDOWS_INSTALLER%"=="ON" goto :ai_flags_done
+if "%ORCA_AI_PACKAGE_REVISION%"=="" goto :ai_revision_missing
+set "AI_CHANNEL=%ORCA_AI_DISTRIBUTION_CHANNEL%"
+if not defined AI_CHANNEL set "AI_CHANNEL=internal"
+set "AI_FLAGS=-DORCA_AI_WINDOWS_INSTALLER=ON -DORCA_AI_DISTRIBUTION_CHANNEL=%AI_CHANNEL% -DORCA_AI_PACKAGE_REVISION=%ORCA_AI_PACKAGE_REVISION%"
+if /I not "%AI_CHANNEL%"=="internal" goto :ai_flags_done
+if not defined ORCA_AI_INTERNAL_DEFAULTS_FILE goto :ai_flags_done
+set "AI_DEFAULTS_FLAG=-DORCA_AI_INTERNAL_DEFAULTS_FILE:FILEPATH=%ORCA_AI_INTERNAL_DEFAULTS_FILE%"
+goto :ai_flags_done
+
+:ai_revision_missing
+echo Error: ORCA_AI_PACKAGE_REVISION is required when ORCA_AI_WINDOWS_INSTALLER=ON
+exit /b 1
+
+:ai_flags_done
 
 if "%1"=="slicer" (
     GOTO :slicer
@@ -151,10 +170,10 @@ cd %build_dir%
 echo on
 set CMAKE_POLICY_VERSION_MINIMUM=3.5
 if "%USE_NINJA%"=="1" (
-    cmake .. -G %CMAKE_GENERATOR% -DORCA_TOOLS=ON %SIG_FLAG% -DBUILD_TESTS=%BUILD_TESTS% -DCMAKE_BUILD_TYPE=%build_type%
+    cmake .. -G %CMAKE_GENERATOR% -DORCA_TOOLS=ON %SIG_FLAG% %AI_FLAGS% "%AI_DEFAULTS_FLAG%" -DBUILD_TESTS=%BUILD_TESTS% -DCMAKE_BUILD_TYPE=%build_type%
     cmake --build . --config %build_type% --target all
 ) else (
-    cmake .. -G %CMAKE_GENERATOR% -A %arch% -DORCA_TOOLS=ON %SIG_FLAG% -DBUILD_TESTS=%BUILD_TESTS% -DCMAKE_BUILD_TYPE=%build_type%
+    cmake .. -G %CMAKE_GENERATOR% -A %arch% -DORCA_TOOLS=ON %SIG_FLAG% %AI_FLAGS% "%AI_DEFAULTS_FLAG%" -DBUILD_TESTS=%BUILD_TESTS% -DCMAKE_BUILD_TYPE=%build_type%
     cmake --build . --config %build_type% --target ALL_BUILD -- -m
 )
 @echo off

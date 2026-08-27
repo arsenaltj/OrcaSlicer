@@ -83,7 +83,7 @@ class SidecarReadinessTests(unittest.TestCase):
     def ready_health(self):
         return {
             "ok": True,
-            "protocol_version": 1,
+            "protocol_version": 2,
             "sidecar_version": "orcaslicer-ai-sidecar-v4",
             "capabilities": {
                 "model_generation": {
@@ -106,7 +106,7 @@ class SidecarReadinessTests(unittest.TestCase):
 
     def test_incompatible_protocol_returns_two(self):
         health = self.ready_health()
-        health["protocol_version"] = 2
+        health["protocol_version"] = 1
         with health_server(health) as endpoint:
             self.assertEqual(self.run_checker(endpoint), 2)
 

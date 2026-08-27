@@ -175,7 +175,7 @@ class ModelGenerationSmokeClient:
         generation = (health.get("capabilities") or {}).get("model_generation") or {}
         if (
             health.get("ok") is not True
-            or health.get("protocol_version") != 1
+            or health.get("protocol_version") != 2
             or generation.get("available") is not True
             or not {"text", "image"}.issubset(set(generation.get("sources") or []))
             or not SUPPORTED_FORMATS.intersection(generation.get("artifact_formats") or [])

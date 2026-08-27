@@ -1,0 +1,39 @@
+# Default review owner. Replace or extend with team handles as the team grows.
+* @arsenaltj
+
+# Feature-owned modules.
+/src/slic3r/AI/ModelGeneration/ @arsenaltj
+/src/slic3r/GUI/AIModelGenerationClient.* @arsenaltj
+/src/slic3r/GUI/ModelGenerationPanel.* @arsenaltj
+/tools/ai/model_*.py @arsenaltj
+/tools/ai/openai_preprocessor.py @arsenaltj
+/tools/ai/orca_ai_sidecar.py @arsenaltj
+/tools/ai/printable_*.py @arsenaltj
+/tools/ai/sampled_local_thickness.py @arsenaltj
+/tools/ai/tripo_client.py @arsenaltj
+/src/slic3r/AI/SmartSlicing/ @arsenaltj
+/src/slic3r/GUI/AI/SmartSlicing/ @arsenaltj
+
+# Shared local runtime and loopback trust boundary; integration approval is required.
+/src/slic3r/GUI/AIServiceManager.* @arsenaltj
+/src/slic3r/GUI/AISidecarClient.* @arsenaltj
+/src/slic3r/Utils/Http.* @arsenaltj
+/tools/ai/ai_diagnostics.py @arsenaltj
+/tools/ai/network_policy.py @arsenaltj
+/tools/ai/orca_ai_build_info.json.in @arsenaltj
+/tools/ai/orca_ai_installed_bootstrap.py @arsenaltj
+/tools/ai/orca_ai_runtime_dependencies.json.in @arsenaltj
+/tools/ai/verify_bundled_runtime.py @arsenaltj
+
+# Integration-owned, high-conflict or release-sensitive surfaces.
+/.github/ @arsenaltj
+/CMakeLists.txt @arsenaltj
+/build_release_vs.bat @arsenaltj
+/docs/architecture/ai-integration-lock.json @arsenaltj
+/scripts/package_internal_fast.ps1 @arsenaltj
+/scripts/verify_ai_integration.py @arsenaltj
+/src/CMakeLists.txt @arsenaltj
+/src/slic3r/CMakeLists.txt @arsenaltj
+/src/slic3r/GUI/AI/Orca/ @arsenaltj
+/src/slic3r/GUI/MainFrame.* @arsenaltj
+/src/slic3r/GUI/Plater.* @arsenaltj
