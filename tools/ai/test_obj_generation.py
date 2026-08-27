@@ -31,7 +31,7 @@ SIDECAR = load_module("orca_ai_sidecar_obj_generation", TOOLS_AI / "orca_ai_side
 TRIPO = load_module("tripo_client_low_poly", TOOLS_AI / "tripo_client.py")
 
 
-class TripoHighDetailRequestTests(unittest.TestCase):
+class TripoGenerationProfileRequestTests(unittest.TestCase):
     def setUp(self):
         self.environment = mock.patch.dict(
             os.environ,
@@ -42,16 +42,16 @@ class TripoHighDetailRequestTests(unittest.TestCase):
     def tearDown(self):
         self.environment.stop()
 
-    def assert_high_detail_payload(self, payload, face_limit=300000):
+    def assert_profile_payload(self, payload, profile="quality", face_limit=1000000):
         self.assertEqual(payload["model"], "test-model")
         self.assertFalse(payload["smart_low_poly"])
         self.assertEqual(payload["face_limit"], face_limit)
         self.assertTrue(payload["texture"])
-        self.assertFalse(payload["pbr"])
-        self.assertEqual(payload["texture_quality"], "detailed")
-        self.assertEqual(payload["geometry_quality"], "detailed")
+        self.assertTrue(payload["pbr"])
+        self.assertEqual(payload["texture_quality"], "detailed" if profile == "quality" else "standard")
+        self.assertEqual(payload["geometry_quality"], "detailed" if profile == "quality" else "standard")
         self.assertFalse(payload["quad"])
-        self.assertTrue(payload["export_uv"])
+        self.assertEqual(payload["export_uv"], profile == "quality")
 
     def test_text_generation_requests_colored_high_detail_model(self):
         with mock.patch.object(TRIPO, "_post_json", return_value={"task_id": "text-id"}) as post:
@@ -60,7 +60,7 @@ class TripoHighDetailRequestTests(unittest.TestCase):
         path, payload = post.call_args.args
         self.assertEqual(path, "/generation/text-to-model")
         self.assertEqual(payload["prompt"], "one watertight figurine")
-        self.assert_high_detail_payload(payload)
+        self.assert_profile_payload(payload)
         self.assertNotIn("texture_alignment", payload)
 
     def test_image_generation_requests_original_image_texture_alignment(self):
@@ -70,8 +70,14 @@ class TripoHighDetailRequestTests(unittest.TestCase):
         path, payload = post.call_args.args
         self.assertEqual(path, "/generation/image-to-model")
         self.assertEqual(payload["input"], "file-token")
-        self.assert_high_detail_payload(payload)
+        self.assert_profile_payload(payload)
         self.assertEqual(payload["texture_alignment"], "original_image")
+
+    def test_performance_profile_keeps_texture_and_pbr_with_standard_quality(self):
+        with mock.patch.object(TRIPO, "_post_json", return_value={"task_id": "image-id"}) as post:
+            TRIPO.create_image_task("file-token", 300000, "performance")
+
+        self.assert_profile_payload(post.call_args.args[1], "performance", 300000)
 
     def test_multiview_generation_uses_named_canonical_views(self):
         with mock.patch.object(TRIPO, "_post_json", return_value={"task_id": "multiview-id"}) as post:
@@ -88,7 +94,7 @@ class TripoHighDetailRequestTests(unittest.TestCase):
             {"back": "back-token"},
             {"right": "right-token"},
         ])
-        self.assert_high_detail_payload(payload)
+        self.assert_profile_payload(payload)
 
     def test_multiview_generation_requires_front_and_another_view(self):
         with mock.patch.object(TRIPO, "_post_json") as post:
@@ -101,7 +107,13 @@ class TripoHighDetailRequestTests(unittest.TestCase):
     def test_supported_face_target_is_forwarded(self):
         with mock.patch.object(TRIPO, "_post_json", return_value={"task_id": "text-id"}) as post:
             TRIPO.create_text_task("printable figure", 1000000)
-        self.assert_high_detail_payload(post.call_args.args[1], 1000000)
+        self.assert_profile_payload(post.call_args.args[1], "quality", 1000000)
+
+    def test_unsupported_generation_profile_is_rejected_before_request(self):
+        with mock.patch.object(TRIPO, "_post_json") as post:
+            with self.assertRaisesRegex(TRIPO.TripoError, "generation profile"):
+                TRIPO.create_text_task("printable figure", 300000, "turbo")
+        post.assert_not_called()
 
     def test_unsupported_face_target_is_rejected_before_request(self):
         with mock.patch.object(TRIPO, "_post_json") as post:
@@ -260,11 +272,14 @@ class PrintablePaletteTests(unittest.TestCase):
 
     def test_style_ids_are_strict_and_default_to_sculpture(self):
         self.assertEqual(SIDECAR._normalize_style(None), "sculpture")
-        self.assertEqual(SIDECAR._normalize_style("q_cartoon"), "q_cartoon")
-        self.assertEqual(SIDECAR._normalize_style("low_poly"), "low_poly")
-        self.assertEqual(SIDECAR._normalize_style("cel_shaded"), "cel_shaded")
-        self.assertEqual(SIDECAR._normalize_style("enamel_inlay"), "enamel_inlay")
+        self.assertEqual(SIDECAR._normalize_style("realistic"), "realistic")
+        self.assertEqual(SIDECAR._normalize_style("cartoon"), "cartoon")
         self.assertEqual(SIDECAR._normalize_style("sculpture"), "sculpture")
+        self.assertEqual(SIDECAR._normalize_style("custom"), "custom")
+        self.assertEqual(SIDECAR._normalize_style("q_cartoon"), "cartoon")
+        self.assertEqual(SIDECAR._normalize_style("low_poly"), "realistic")
+        self.assertEqual(SIDECAR._normalize_style("cel_shaded"), "cartoon")
+        self.assertEqual(SIDECAR._normalize_style("enamel_inlay"), "realistic")
         with self.assertRaises(SIDECAR.RequestError):
             SIDECAR._normalize_style("classical")
 
@@ -497,11 +512,13 @@ class ObjGenerationTests(unittest.TestCase):
         self.assertEqual(restored.phase, "resuming")
         submit.assert_called_once_with(restored, SIDECAR._generate_job, "resume invalid local package", True)
 
-    def test_face_target_uses_per_tier_tolerance(self):
+    def test_face_limit_accepts_lower_adaptive_meshes_and_bounds_overshoot(self):
         for face_count, face_limit in (
+            (1, 100000),
             (90000, 100000),
             (95338, 100000),
             (125000, 100000),
+            (1000, 300000),
             (270000, 300000),
             (375000, 300000),
         ):
@@ -509,9 +526,7 @@ class ObjGenerationTests(unittest.TestCase):
                 SIDECAR._validate_face_target(face_count, face_limit)
 
         for face_count, face_limit in (
-            (89999, 100000),
             (125001, 100000),
-            (269999, 300000),
             (375001, 300000),
         ):
             with self.subTest(face_count=face_count, face_limit=face_limit):

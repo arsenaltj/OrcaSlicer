@@ -144,6 +144,7 @@ public:
         std::string user_prompt;
         int         progress { 0 };
         int         face_limit { 300000 };
+        std::string generation_profile { "quality" };
         std::string style;
         std::string custom_style;
         std::vector<std::string> palette;
@@ -212,7 +213,7 @@ public:
     void confirm_palette(const std::string& job_id, const std::vector<std::string>& palette,
                          const PaletteRoles& palette_roles, StatusFn on_complete, ErrorFn on_error);
     void generate(const std::string& job_id, const std::string& prepared_prompt,
-                  const std::vector<std::string>& palette, int face_limit,
+                  const std::vector<std::string>& palette, const std::string& generation_profile,
                   StatusFn on_complete, ErrorFn on_error);
     void get_status(const std::string& job_id, StatusFn on_complete, ErrorFn on_error);
     void get_latest(LatestFn on_complete, ErrorFn on_error);
@@ -226,6 +227,7 @@ public:
     void download_input(const std::string& job_id, const boost::filesystem::path& path, PathFn on_complete, ErrorFn on_error);
     void download_artifact(const std::string& job_id, const std::string& format,
                            const boost::filesystem::path& path, PathFn on_complete, ErrorFn on_error);
+    void record_journey_event(const std::string& event, const std::string& job_id = {});
     void cancel_current();
 
     static bool is_loopback_endpoint(const std::string& endpoint);
@@ -244,6 +246,7 @@ private:
     std::string           m_endpoint;
     std::shared_ptr<Http> m_active_request;
     std::vector<std::shared_ptr<Http>> m_download_requests;
+    std::vector<std::shared_ptr<Http>> m_background_requests;
 };
 
 } // namespace Slic3r::GUI

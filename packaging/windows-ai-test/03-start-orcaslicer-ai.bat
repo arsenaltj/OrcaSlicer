@@ -62,5 +62,5 @@ echo AI sidecar did not become ready within 30 seconds.
 exit /b 1
 
 :check_ai_sidecar
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\ai\check_sidecar_capability.ps1" -Endpoint "%ORCASLICER_AI_SIDECAR_URL%" -ExpectedOpenAIBaseUrl "%OPENAI_BASE_URL%" -ExpectedSidecarVersion "orcaslicer-ai-sidecar-v4" >nul 2>nul
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\ai\check_sidecar_capability.ps1" -Endpoint "%ORCASLICER_AI_SIDECAR_URL%" -ExpectedOpenAIBaseUrl "%OPENAI_BASE_URL%" -ExpectedSidecarVersion "orcaslicer-ai-sidecar-v5" >nul 2>nul
 exit /b %ERRORLEVEL%

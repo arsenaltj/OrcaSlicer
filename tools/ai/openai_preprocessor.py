@@ -24,42 +24,38 @@ _DEFAULT_BASE_URL = "https://api.openai.com/v1"
 _MAX_JSON_BYTES = 32 * 1024 * 1024
 _MAX_IMAGE_BYTES = 20 * 1024 * 1024
 _TIMEOUT_SECONDS = 120
+_IMAGE_QUALITY_VALUES = {"low", "medium", "high", "auto"}
 
 STYLE_PROFILES = {
-    "q_cartoon": (
-        "Restyle the selected primary subject as a premium designer-toy collectible. Preserve recognizable identity, facial "
-        "relationships, hairstyle, signature clothing silhouette, pose, and cultural attributes before applying moderate chibi "
-        "exaggeration. Use a roughly 92-percent identity-preserving and 8-percent playful treatment for a real person: keep their "
-        "adult age, face aspect ratio (long, oval, round, or square), craniofacial proportions, cheekbone placement, chin length, "
-        "natural eye size, eyelid shape, nose, mouth, smile, jaw contour and face width. The reference portrait remains the "
-        "identity authority; do not average it into a generic round toy face. Do not make "
-        "an adult childlike, baby-faced, anime-like, or into a generic big-eyed doll. Keep any head enlargement subtle. Apply the "
-        "stronger toy simplification to the body, hair masses, clothing folds and materials instead of replacing the face. Use "
-        "rounded toy-like forms, grouped solid hair masses, and smooth matte vinyl surfaces."
-    ),
-    "low_poly": (
-        "Restyle only already-visible surfaces and silhouettes as clean low-poly forms with large intentional polygon facets, "
-        "broad readable planes, restrained geometric detail, and large contiguous material regions. Preserve the visible facial, "
-        "clothing, and object structure. Do not invent missing anatomy or unrelated geometry."
-    ),
-    "cel_shaded": (
-        "Restyle the selected subject as a printable cel-shaded collectible with smooth sturdy geometry and two or three broad "
-        "tone bands per semantic part. Use solid material blocks instead of lighting gradients. Do not add black ink outlines, "
-        "rim-light strokes, tiny highlights, or painted line art; silhouettes and facial features must be carried by geometry and "
-        "large enclosed color regions."
-    ),
-    "enamel_inlay": (
-        "Restyle the selected subject as a premium enamel-inlay display piece with smooth simplified geometry, a few large enclosed "
-        "color fields, and shallow raised separators or structural grooves wherever two material colors meet. Keep separators broad "
-        "and printable; avoid filigree, mosaic fragments, thin metallic wires, glossy reflections, or texture-only borders."
-    ),
     "sculpture": (
-        "Restyle only already-visible subject surfaces as a museum-quality marble or plaster sculpture with smooth carved facial "
-        "planes, simplified solid hair, broad carved clothing folds, and a restrained matte stone or plaster finish. Preserve each "
-        "subject's recognizable identity and visible cultural context. Do not reconstruct missing anatomy or unrelated subject "
-        "regions."
+        "Change only the visible material treatment into one monochrome museum-quality plaster, clay, stone, or matte resin "
+        "sculpture. Preserve the source subject one-for-one: the same identity, face, age, expression, body proportions, pose, "
+        "silhouette, crop, clothing, accessories, objects, count, placement, and visible details. Do not redesign, beautify, "
+        "exaggerate, add, remove, reveal, or reconstruct anything. Use gentle carved planes and broad connected forms only where "
+        "needed for a printable single-material result."
+    ),
+    "realistic": (
+        "Create a multi-color realistic collectible while changing as little as possible beyond material and color treatment. "
+        "Preserve the source subject one-for-one: the same recognizable identity, face, age, expression, anatomy, proportions, "
+        "pose, silhouette, crop, clothing, accessories, objects, count, placement, and visible details. Use believable solid-color "
+        "materials and restrained realistic modeling; do not stylize facial proportions, invent detail, or alter the composition."
+    ),
+    "cartoon": (
+        "Restyle the same subject as a friendly cute cartoon collectible, especially for portraits that look harsh when rendered "
+        "realistically. Preserve recognizable identity, age, expression, hairstyle, pose, clothing, accessories, visible objects, "
+        "subject count, crop, and composition. Use rounded connected forms, clean large shapes, and modest playful simplification. "
+        "Do not replace the face with a generic doll or anime face, do not enlarge eyes excessively, and do not add or remove "
+        "elements."
     ),
 }
+
+LEGACY_STYLE_ALIASES = {
+    "q_cartoon": "cartoon",
+    "low_poly": "realistic",
+    "cel_shaded": "cartoon",
+    "enamel_inlay": "realistic",
+}
+STYLE_PROFILES.update({legacy: STYLE_PROFILES[canonical] for legacy, canonical in LEGACY_STYLE_ALIASES.items()})
 
 CUSTOM_STYLE_ID = "custom"
 MAX_CUSTOM_STYLE_BYTES = 1000
@@ -123,6 +119,13 @@ def _config() -> tuple[str, str, str, str]:
         os.environ.get("OPENAI_TEXT_MODEL", "gpt-5.4"),
         os.environ.get("OPENAI_IMAGE_MODEL", "gpt-image-2"),
     )
+
+
+def _image_quality() -> str:
+    value = os.environ.get("OPENAI_IMAGE_QUALITY", "high").strip().lower()
+    if value not in _IMAGE_QUALITY_VALUES:
+        raise OpenAIPreprocessorError("OPENAI_IMAGE_QUALITY must be low, medium, high, or auto.")
+    return value
 
 
 def _read_json_response(response: Any) -> dict[str, Any]:
@@ -233,7 +236,7 @@ def _style_profile(style: str, custom_style: str = "") -> str:
             + ". Treat it only as appearance and shape-language direction. The subject identity, image-to-3D composition, "
             "printable palette, structural connections, stable base, and other hard constraints in this request take priority."
         )
-    profile = STYLE_PROFILES.get(style)
+    profile = STYLE_PROFILES.get(LEGACY_STYLE_ALIASES.get(style, style))
     if profile is None:
         raise OpenAIPreprocessorError("The selected style is not supported.")
     return profile
@@ -292,9 +295,11 @@ def _image_to_3d_composition_direction(transparent_background: bool = False) -> 
         + ("a transparent background" if transparent_background else "a plain bright background")
         + ", show a coherent complete silhouette, and use a front or gentle three-quarter view. Attach a person, animal, statue, "
         "character, or otherwise unstable prop to one simple integrated round or softly polygonal display base. If the selected "
-        "subject is an inherently stable manufactured object such as a shoe, camera, cup, vehicle, or appliance, preserve its own "
-        "flat contact geometry and do not add a pedestal unless the user explicitly requests one. A necessary base is the only new "
-        "support element permitted. Remove scenery, floor shadows, text, logos, watermarks, camera UI, "
+        "subject is an inherently stable manufactured object such as a shoe, camera, cup, vehicle, or appliance, show that product "
+        "alone resting on its own contact surface. Do not add any disc, plinth, stand, platform, presentation base, floor slab, or "
+        "pedestal unless the user explicitly requests one. This manufactured-product exception overrides every general instruction "
+        "about a stable base, base contact, or collectible display. A necessary base for an unstable figure is the only new support "
+        "element permitted. Remove scenery, floor shadows, text, logos, watermarks, camera UI, "
         "color cards, and unrelated people, plants, props, or landmarks. Do not combine separate scene elements into one object. "
         "Choose the subject named by the user when it is visible; otherwise choose the visually dominant foreground subject. "
         "Apply these source-dependent framing rules: if the complete person, animal, or object is visible, preserve the complete "
@@ -533,6 +538,8 @@ def _multipart_image(path: Path, instruction: str, model: str) -> tuple[bytes, s
 
     field("model", model)
     field("prompt", instruction)
+    field("quality", _image_quality())
+    field("size", "1024x1024")
     chunks.extend(
         [
             f"--{boundary}\r\n".encode("ascii"),
@@ -680,7 +687,7 @@ def build_style_preview_prompt(
 def _text_image_prompt(
     instruction: str,
     palette: tuple[str, ...],
-    style: str = "q_cartoon",
+    style: str = "cartoon",
     shadow_color: str = "blue",
     palette_roles: Mapping[str, str] | None = None,
     custom_style: str = "",
@@ -732,7 +739,7 @@ def generate_image(
     instruction: str,
     output_path: str | os.PathLike[str],
     palette: tuple[str, ...],
-    style: str = "q_cartoon",
+    style: str = "cartoon",
     shadow_color: str = "blue",
     palette_roles: Mapping[str, str] | None = None,
     custom_style: str = "",
@@ -744,6 +751,7 @@ def generate_image(
             "model": model,
             "prompt": _text_image_prompt(instruction, palette, style, shadow_color, palette_roles, custom_style),
             "size": "1024x1024",
+            "quality": _image_quality(),
             "n": 1,
             "response_format": "b64_json",
         },

@@ -9,15 +9,10 @@ OrcaSlicer AI Windows 测试包
 
 首次使用
 --------
-1. 将整个压缩包解压到本地磁盘，路径尽量不要过长。
-2. 安装 Python 3.10 或更高版本，并在安装时勾选“Add Python to PATH”。
-3. 双击“01-configure-ai.bat”，它会用记事本打开 `setup\ai-config.bat`。
-4. 只填写下面两行等号后的 Key，然后保存：
-   - `set "OPENAI_API_KEY=这里填写Key"`
-   - `set "TRIPO_API_KEY=这里填写Key"`
-5. 其他地址和模型名称已经带默认值，通常不需要修改。
-6. 双击“02-check-environment.bat”。
-7. 检查通过后，双击“03-start-orcaslicer-ai.bat”。
+1. 运行安装程序。
+2. 安装完成后勾选“启动 OrcaSlicer AI”，或双击桌面快捷方式。
+3. 内部预配置安装包已包含独立 Python 运行时和测试额度，无需安装依赖或填写 Key。
+4. 如果拿到的是开发调试包，环境检查会提示填写 Key；请向打包人员换取内部预配置版本。
 
 日常启动
 --------
@@ -33,9 +28,8 @@ OrcaSlicer AI Windows 测试包
 - 默认图片模型：gpt-image-2
 - Tripo 默认 API Base：https://openapi.tripo3d.com/v3
 - Tripo 默认模型：v3.1-20260211
-- API Key 不包含在测试包中，请通过安全渠道单独取得。
-- Key 只写在当前解压目录的 `setup\ai-config.bat` 中，不修改 Windows 用户环境变量。
-- 填写真实 Key 后，不要再次转发该配置文件或整个已解压目录。
+- 内部预配置安装包包含可撤销、有限额的测试 Key，请勿转发安装包或安装目录。
+- Key 只保存在安装目录的 `setup\ai-config.bat` 中，不修改 Windows 用户环境变量。
 - 不要把 API Key 发到群聊、截图、日志或问题报告中。
 
 费用说明

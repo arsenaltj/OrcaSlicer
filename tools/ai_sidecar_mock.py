@@ -21,6 +21,9 @@ MAX_PROMPT_BYTES = 64 * 1024
 MAX_PALETTE_COLORS = 4
 MODEL_FACE_LIMITS = (100000, 300000, 500000, 1000000)
 DEFAULT_MODEL_FACE_LIMIT = 300000
+GENERATION_PROFILES = ("quality", "performance")
+DEFAULT_GENERATION_PROFILE = "quality"
+GENERATION_PROFILE_FACE_LIMITS = {"quality": 1000000, "performance": 300000}
 MOCK_PALETTE_RECOMMENDATION = {
     "summary": "暖色主体配合深色结构、浅色层次和冷色点缀",
     "colors": [
@@ -187,6 +190,12 @@ def normalize_face_limit(value):
     return value
 
 
+def normalize_generation_profile(value):
+    if not isinstance(value, str) or value not in GENERATION_PROFILES:
+        raise ValueError("generation_profile must be quality or performance")
+    return value
+
+
 def multipart_palette(value):
     if not isinstance(value, str):
         raise ValueError("palette is required")
@@ -210,6 +219,7 @@ def new_job(source, prepared_prompt, palette):
         "style": "sculpture",
         "custom_style": "",
         "face_limit": DEFAULT_MODEL_FACE_LIMIT,
+        "generation_profile": DEFAULT_GENERATION_PROFILE,
         "palette": list(palette),
         "palette_roles": {},
         "palette_recommendation": {},
@@ -234,12 +244,11 @@ def advance_job(job, status_call=False):
         job.update({
             "state": "awaiting_confirmation",
             "phase": "awaiting_confirmation",
-            "message": "Review the prepared image before generation." if job["source"] == "image" else "Review the prepared prompt before generation.",
+            "message": "Review the prepared image before generation.",
             "progress": 15,
             "prepared_prompt": job["_next_prompt"],
         })
-        if job["source"] == "image" or job["palette"]:
-            job["preview"] = {"ready": True, "content_type": "image/png", "size_bytes": len(TINY_PNG)}
+        job["preview"] = {"ready": True, "content_type": "image/png", "size_bytes": len(TINY_PNG)}
         return
 
     if job["state"] not in ("queued", "running"):
@@ -284,6 +293,7 @@ def public_job(job):
         "style": job["style"],
         "custom_style": job["custom_style"],
         "face_limit": job["face_limit"],
+        "generation_profile": job["generation_profile"],
         "palette": list(job["palette"]),
         "palette_roles": dict(job["palette_roles"]),
         "palette_recommendation": dict(job["palette_recommendation"]),
@@ -309,6 +319,19 @@ class Handler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if path in ("/v1/orcaslicer/config-proposal", "/v1/orcaslicer/chat"):
             self.handle_existing_post(path)
+            return
+
+        if path == "/v1/orcaslicer/journey-events":
+            if not self.require_native_client():
+                return
+            try:
+                request = self.read_json()
+                if set(request) - {"event", "job_id"} or not isinstance(request.get("event"), str):
+                    raise RequestError("invalid_journey_event", "Only event and job_id are accepted.", 400)
+            except RequestError as exc:
+                self.model_error(exc.code, exc.message, exc.status)
+                return
+            self.send_json({"event": request}, 201)
             return
 
         if path.startswith("/v1/orcaslicer/model-jobs"):
@@ -352,10 +375,12 @@ class Handler(BaseHTTPRequestHandler):
                     "model_generation": {
                         "available": True,
                         "sources": ["text", "image"],
-                        "styles": ["q_cartoon", "low_poly", "cel_shaded", "enamel_inlay", "sculpture", "custom"],
+                "styles": ["sculpture", "realistic", "cartoon", "custom"],
                         "artifact_formats": ["obj"],
-                        "face_limits": list(MODEL_FACE_LIMITS),
-                        "default_face_limit": DEFAULT_MODEL_FACE_LIMIT,
+                        "face_limits": sorted(set(GENERATION_PROFILE_FACE_LIMITS.values())),
+                        "default_face_limit": GENERATION_PROFILE_FACE_LIMITS[DEFAULT_GENERATION_PROFILE],
+                        "generation_profiles": list(GENERATION_PROFILES),
+                        "default_generation_profile": DEFAULT_GENERATION_PROFILE,
                         "palette_recommendation": {"available": True, "max_colors": 4},
                         "printable_image_pipeline": {
                             "available": True,
@@ -582,7 +607,12 @@ class Handler(BaseHTTPRequestHandler):
             request = self.read_json()
             prepared_prompt = text_field(request.get("prepared_prompt", ""), "prepared_prompt", allow_empty=True)
             palette = normalize_palette(request.get("palette"))
-            face_limit = normalize_face_limit(request.get("face_limit", DEFAULT_MODEL_FACE_LIMIT))
+            if "generation_profile" in request:
+                generation_profile = normalize_generation_profile(request.get("generation_profile"))
+                face_limit = GENERATION_PROFILE_FACE_LIMITS[generation_profile]
+            else:
+                face_limit = normalize_face_limit(request.get("face_limit", DEFAULT_MODEL_FACE_LIMIT))
+                generation_profile = "quality" if face_limit >= 500000 else "performance"
         except Exception as exc:
             self.model_error("invalid_request", str(exc), 400)
             return
@@ -606,6 +636,7 @@ class Handler(BaseHTTPRequestHandler):
                 progress=20,
                 prepared_prompt=prepared_prompt,
                 face_limit=face_limit,
+                generation_profile=generation_profile,
                 artifact=empty_artifact(),
                 _stage_started=time.monotonic(),
                 _status_calls=0,

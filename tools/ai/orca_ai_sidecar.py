@@ -4,6 +4,7 @@ from __future__ import annotations
 import atexit
 from array import array
 from collections import Counter, deque
+from io import BytesIO
 import math
 import json
 import os
@@ -57,6 +58,8 @@ MAX_PROMPT_BYTES = 2000
 MAX_CUSTOM_STYLE_BYTES = 1000
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_MULTIPART_BYTES = MAX_IMAGE_BYTES + 256 * 1024
+MIN_SOURCE_IMAGE_EDGE = 64
+MIN_MODEL_REFERENCE_EDGE = 256
 MAX_ARTIFACT_BYTES = 768 * 1024 * 1024
 MAX_ARCHIVE_FILES = 128
 MAX_UNPACKED_BYTES = 1024 * 1024 * 1024
@@ -67,10 +70,29 @@ MIN_MODEL_FACE_RATIO = 0.90
 MAX_MODEL_FACE_RATIO = 1.25
 MODEL_FACE_LIMITS = (100000, 300000, 500000, 1000000)
 DEFAULT_MODEL_FACE_LIMIT = 300000
+GENERATION_PROFILES = ("quality", "performance")
+DEFAULT_GENERATION_PROFILE = "quality"
+GENERATION_PROFILE_FACE_LIMITS = {"quality": 1000000, "performance": 300000}
 MAX_GENERATION_ATTEMPTS = 1
 JOB_STATE_FILENAME = "job.json"
 JOB_STATE_VERSION = 1
 MAX_JOB_STATE_BYTES = 64 * 1024
+JOURNEY_EVENT_FILENAME = "journey-events.jsonl"
+MAX_JOURNEY_EVENT_FILE_BYTES = 5 * 1024 * 1024
+JOURNEY_EVENT_NAMES = frozenset({
+    "preview_requested",
+    "preview_ready",
+    "preview_failed",
+    "preview_regenerated",
+    "preview_accepted",
+    "model_submitted",
+    "model_ready",
+    "model_failed",
+    "model_imported",
+    "slice_requested",
+    "print_feedback_success",
+    "print_feedback_issue",
+})
 MAX_LOCAL_REPAIR_DIAGONAL_RATIO = 0.05
 MAX_LOCAL_REPAIR_FACE_RATIO = 0.01
 MAX_LOCAL_BOUNDARY_EDGES = 64
@@ -90,7 +112,13 @@ MAX_COLOR_BOUNDARY_PASSES = 2
 DEFAULT_MODEL_SIZE_MM = 100.0
 MODEL_ARTIFACT_FORMAT = "obj"
 MODEL_QUALITY_FILENAME = "model-quality.json"
-STYLE_IDS = ("q_cartoon", "low_poly", "cel_shaded", "enamel_inlay", "sculpture", "custom")
+STYLE_IDS = ("sculpture", "realistic", "cartoon", "custom")
+LEGACY_STYLE_ALIASES = {
+    "q_cartoon": "cartoon",
+    "low_poly": "realistic",
+    "cel_shaded": "cartoon",
+    "enamel_inlay": "realistic",
+}
 DEFAULT_IMAGE_INSTRUCTION = (
     "Stylize only the content already visible in the reference image. Preserve the exact crop, framing, visible regions, "
     "occlusions, subjects, objects, and background; do not add, remove, reveal, reconstruct, or extend anything."
@@ -98,6 +126,7 @@ DEFAULT_IMAGE_INSTRUCTION = (
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 _JOBS_LOCK = threading.RLock()
 _JOBS: dict[str, "Job"] = {}
+_JOURNEY_EVENT_LOCK = threading.Lock()
 _DESIGN_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="orca-design-job")
 _MODEL_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="orca-model-job")
 _SHUTDOWN_LOCK = threading.Lock()
@@ -127,6 +156,7 @@ class Job:
     style: str = "sculpture"
     custom_style: str = ""
     face_limit: int = DEFAULT_MODEL_FACE_LIMIT
+    generation_profile: str = DEFAULT_GENERATION_PROFILE
     user_prompt: str = ""
     prepared_prompt: str = ""
     input_path: Path | None = None
@@ -415,12 +445,90 @@ def _image_type(data: bytes) -> str | None:
     return None
 
 
+@dataclass(frozen=True)
+class ValidatedImage:
+    content_type: str
+    width: int
+    height: int
+
+
+def _validate_image_data(
+    data: bytes,
+    *,
+    minimum_edge: int,
+    require_visual_detail: bool = False,
+) -> ValidatedImage:
+    """Fully decode an image before it is accepted by an AI or 3D provider."""
+    if not data or len(data) > MAX_IMAGE_BYTES:
+        raise ValueError("The image is empty or exceeds the 20 MB limit.")
+    content_type = _image_type(data[:16])
+    if content_type is None:
+        raise ValueError("The image must be PNG or JPEG.")
+    try:
+        from PIL import Image, UnidentifiedImageError
+    except ImportError:
+        raise ValueError("Pillow is required to validate the image.") from None
+    try:
+        with Image.open(BytesIO(data)) as opened:
+            expected_format = "PNG" if content_type == "image/png" else "JPEG"
+            if opened.format != expected_format:
+                raise ValueError("The image format does not match its file signature.")
+            width, height = opened.size
+            if (
+                width < minimum_edge
+                or height < minimum_edge
+                or width * height > MAX_TEXTURE_PIXELS
+            ):
+                raise ValueError(
+                    f"The image must be at least {minimum_edge} x {minimum_edge} pixels and no more than 64 megapixels."
+                )
+            opened.load()
+            if require_visual_detail:
+                rgba = opened.convert("RGBA")
+                extrema = rgba.getextrema()
+                if extrema[3][1] == 0:
+                    raise ValueError("The image is fully transparent.")
+                if all(low == high for low, high in extrema):
+                    raise ValueError("The image is blank and cannot be used for 3D generation.")
+    except ValueError:
+        raise
+    except (OSError, UnidentifiedImageError, Image.DecompressionBombError):
+        raise ValueError("The image is damaged or could not be decoded completely.") from None
+    return ValidatedImage(content_type, width, height)
+
+
+def _validate_image_file(
+    path: Path | None,
+    *,
+    minimum_edge: int,
+    require_visual_detail: bool = False,
+) -> ValidatedImage:
+    if path is None:
+        raise ValueError("The image file is unavailable.")
+    try:
+        size = path.stat().st_size
+        if size <= 0 or size > MAX_IMAGE_BYTES:
+            raise ValueError("The image is empty or exceeds the 20 MB limit.")
+        data = path.read_bytes()
+    except ValueError:
+        raise
+    except OSError:
+        raise ValueError("The image file could not be read.") from None
+    return _validate_image_data(
+        data,
+        minimum_edge=minimum_edge,
+        require_visual_detail=require_visual_detail,
+    )
+
+
 def _normalize_style(value: Any) -> str:
     if value is None or value == "":
         return "sculpture"
+    if isinstance(value, str):
+        value = LEGACY_STYLE_ALIASES.get(value, value)
     if not isinstance(value, str) or value not in STYLE_IDS:
         raise RequestError(
-            "invalid_style", "style must be q_cartoon, low_poly, cel_shaded, enamel_inlay, sculpture, or custom.", 400
+            "invalid_style", "style must be sculpture, realistic, cartoon, or custom.", 400
         )
     return value
 
@@ -452,13 +560,18 @@ def _normalize_face_limit(value: Any) -> int:
     return value
 
 
-def _validate_face_target(face_count: int, face_limit: int) -> None:
-    minimum = math.floor(face_limit * MIN_MODEL_FACE_RATIO)
-    maximum = min(MAX_MODEL_FACES, math.ceil(face_limit * MAX_MODEL_FACE_RATIO))
-    if face_count < minimum:
-        raise TripoError(
-            f"The generated OBJ contains {face_count} triangles; the {face_limit}-triangle target requires at least {minimum}."
+def _normalize_generation_profile(value: Any) -> str:
+    if not isinstance(value, str) or value not in GENERATION_PROFILES:
+        raise RequestError(
+            "invalid_generation_profile",
+            "generation_profile must be quality or performance.",
+            400,
         )
+    return value
+
+
+def _validate_face_target(face_count: int, face_limit: int) -> None:
+    maximum = min(MAX_MODEL_FACES, math.ceil(face_limit * MAX_MODEL_FACE_RATIO))
     if face_count > maximum:
         raise TripoError(
             f"The generated OBJ contains {face_count} triangles; the {face_limit}-triangle target allows at most {maximum}."
@@ -492,6 +605,51 @@ def _normalize_print_settings(value: Any) -> dict[str, Any]:
 
 def _model_output_root() -> Path:
     return Path(os.environ.get("ORCASLICER_AI_OUTPUT_DIR", Path.cwd() / "generated_models")).resolve()
+
+
+def _record_journey_event(request: dict[str, Any]) -> dict[str, Any]:
+    if set(request) - {"event", "job_id"}:
+        raise RequestError(
+            "invalid_journey_event",
+            "Journey events only accept event and job_id.",
+            400,
+        )
+    event = request.get("event")
+    if not isinstance(event, str) or event not in JOURNEY_EVENT_NAMES:
+        raise RequestError("invalid_journey_event", "Journey event is not allowed.", 400)
+    job_id = request.get("job_id", "")
+    if not isinstance(job_id, str):
+        raise RequestError("invalid_journey_event", "job_id must be a UUID string.", 400)
+    if job_id:
+        try:
+            parsed_job_id = uuid.UUID(job_id)
+        except ValueError:
+            raise RequestError("invalid_journey_event", "job_id must be a UUID string.", 400) from None
+        if str(parsed_job_id) != job_id.lower():
+            raise RequestError("invalid_journey_event", "job_id must be a canonical UUID string.", 400)
+        job_id = job_id.lower()
+
+    record = {
+        "version": 1,
+        "event": event,
+        "job_id": job_id,
+        "recorded_at": time.time(),
+    }
+    encoded = json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n"
+    output_root = _model_output_root()
+    destination = output_root / JOURNEY_EVENT_FILENAME
+    rotated = output_root / f"{JOURNEY_EVENT_FILENAME}.1"
+    try:
+        with _JOURNEY_EVENT_LOCK:
+            output_root.mkdir(parents=True, exist_ok=True)
+            if destination.is_file() and destination.stat().st_size + len(encoded) > MAX_JOURNEY_EVENT_FILE_BYTES:
+                rotated.unlink(missing_ok=True)
+                os.replace(destination, rotated)
+            with destination.open("a", encoding="ascii", newline="\n") as stream:
+                stream.write(encoded)
+    except OSError:
+        raise RequestError("journey_event_unavailable", "Local journey event log is unavailable.", 503) from None
+    return record
 
 
 def _new_job(
@@ -560,6 +718,7 @@ def _persist_job(job: Job, *, touch: bool = True) -> None:
         "style": job.style,
         "custom_style": job.custom_style,
         "face_limit": job.face_limit,
+        "generation_profile": job.generation_profile,
         "user_prompt": job.user_prompt,
         "prepared_prompt": job.prepared_prompt,
         "input_path": _job_path_value(job, job.input_path),
@@ -616,6 +775,9 @@ def _load_job(directory: Path) -> Job | None:
         style = _normalize_style(payload.get("style"))
         custom_style = _normalize_custom_style(payload.get("custom_style"), style)
         face_limit = _normalize_face_limit(payload.get("face_limit", DEFAULT_MODEL_FACE_LIMIT))
+        raw_generation_profile = payload.get("generation_profile")
+        generation_profile = _normalize_generation_profile(raw_generation_profile) if raw_generation_profile is not None else \
+            ("quality" if face_limit >= 500000 else "performance")
         print_settings = _normalize_print_settings(payload.get("print_settings"))
         palette_recommendation = _normalize_palette_recommendation(payload.get("palette_recommendation"))
     except RequestError:
@@ -632,6 +794,7 @@ def _load_job(directory: Path) -> Job | None:
         style=style,
         custom_style=custom_style,
         face_limit=face_limit,
+        generation_profile=generation_profile,
         print_settings=print_settings,
     )
     job.state = str(payload.get("state", "failed"))
@@ -681,6 +844,37 @@ def _restore_jobs() -> None:
         job = _load_job(directory)
         if job is None:
             continue
+        if job.input_path is not None:
+            try:
+                _validate_image_file(job.input_path, minimum_edge=MIN_SOURCE_IMAGE_EDGE)
+            except ValueError:
+                job.input_path = None
+        for attribute in ("raw_preview_path", "strict_preview_path", "preview_path", "model_reference_path"):
+            path = getattr(job, attribute)
+            if path is None:
+                continue
+            try:
+                _validate_image_file(
+                    path,
+                    minimum_edge=MIN_MODEL_REFERENCE_EDGE,
+                    require_visual_detail=True,
+                )
+            except ValueError:
+                setattr(job, attribute, None)
+        if (
+            job.source == "image"
+            and job.state in {"recommending_palette", "preprocessing", "awaiting_palette_confirmation", "awaiting_confirmation"}
+            and job.input_path is None
+        ):
+            job.state = "failed"
+            job.phase = "failed"
+            job.message = "The saved reference image is missing or damaged. Select the image again."
+            job.progress = 0
+        elif job.source == "image" and job.state == "awaiting_confirmation" and job.preview_path is None:
+            job.state = "failed"
+            job.phase = "failed"
+            job.message = "The saved image preview is missing or damaged. Generate the preview again."
+            job.progress = 0
         latest_attempt = job.attempts[-1] if job.attempts else {}
         recoverable_error = str(latest_attempt.get("error", "")).lower()
         can_retry_download = (
@@ -850,6 +1044,7 @@ def _public_job(job: Job) -> dict[str, Any]:
         "style": job.style,
         "custom_style": job.custom_style,
         "face_limit": job.face_limit,
+        "generation_profile": job.generation_profile,
         "state": job.state,
         "phase": job.phase,
         "message": job.message,
@@ -1077,7 +1272,7 @@ def _find_face_skin_mask(
     component_height = component_bottom - component_top
     expansion_x = int(max(2, min(component_width, subject_width * 0.18), subject_width * 0.08))
     expansion_y = int(max(2, min(component_height, subject_height * 0.18), subject_height * 0.08))
-    face_region_bottom = top + int(subject_height * (0.39 if style == "q_cartoon" else 0.17))
+    face_region_bottom = top + int(subject_height * (0.39 if style in {"cartoon", "q_cartoon"} else 0.17))
     for y in range(
         max(top, component_top - expansion_y),
         min(search_bottom, face_region_bottom, component_bottom + expansion_y),
@@ -1325,39 +1520,62 @@ def _preprocess_text_job(job: Job, prompt: str) -> None:
         prepared = _generation_prompt(preprocess_text(prompt, job.palette, job.style, job.custom_style), job.palette)
         if not prepared or len(prepared.encode("utf-8")) > MAX_PROMPT_BYTES:
             raise OpenAIPreprocessorError("The prepared prompt is empty or exceeds the 2000-byte limit.")
+        raw_preview = job.directory / "style-preview-raw.png"
+        generate_image(
+            prompt, raw_preview, job.palette, job.style,
+            str(job.print_settings.get("shadow_color", "blue")), job.palette_roles, job.custom_style,
+        )
+        _validate_image_file(
+            raw_preview,
+            minimum_edge=MIN_MODEL_REFERENCE_EDGE,
+            require_visual_detail=True,
+        )
+        job.raw_preview_path = raw_preview
         if job.palette:
-            raw_preview = job.directory / "style-preview-raw.png"
-            generate_image(
-                prompt, raw_preview, job.palette, job.style,
-                str(job.print_settings.get("shadow_color", "blue")), job.palette_roles, job.custom_style,
-            )
             color_usage = _apply_printable_image_pipeline(job, raw_preview)
-            (job.directory / "preview-colors.json").write_text(
-                json.dumps(
-                    {
-                        "style": job.style,
-                        "palette_constrained": True,
-                        "palette_pixels": color_usage,
-                        "palette_roles": job.palette_roles,
-                        "print": job.print_settings,
-                        "metrics": job.image_metrics,
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-                encoding="utf-8",
+            _validate_image_file(
+                job.model_reference_path,
+                minimum_edge=MIN_MODEL_REFERENCE_EDGE,
+                require_visual_detail=True,
             )
-            job.preview_content_type = "image/png"
+        else:
+            preview = job.directory / "preview.png"
+            shutil.copyfile(raw_preview, preview)
+            job.preview_path = preview
+            color_usage = {}
+        validated = _validate_image_file(
+            job.model_reference_path or job.preview_path,
+            minimum_edge=MIN_MODEL_REFERENCE_EDGE,
+            require_visual_detail=True,
+        )
+        (job.directory / "preview-colors.json").write_text(
+            json.dumps(
+                {
+                    "style": job.style,
+                    "palette_constrained": bool(job.palette),
+                    "palette_pixels": color_usage,
+                    "palette_roles": job.palette_roles,
+                    "print": job.print_settings,
+                    "metrics": job.image_metrics,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        job.preview_content_type = validated.content_type
         with _JOBS_LOCK:
             if job.stop_event.is_set():
                 raise JobStopped()
             job.prepared_prompt = prepared
             job.state = "awaiting_confirmation"
             job.phase = "awaiting_confirmation"
-            job.message = _printable_preview_message(job, "Review the prepared prompt before generation.")
+            job.message = _printable_preview_message(job, "Review the prepared image before generation.")
             job.progress = 15
     except JobStopped:
         _mark_stopped(job)
+    except ValueError as exc:
+        _fail_job(job, str(exc))
     except OpenAIPreprocessorError as exc:
         if not _preprocess_fallback_enabled():
             _fail_job(job, str(exc))
@@ -1389,6 +1607,11 @@ def _preprocess_image_job(job: Job, input_path: Path, instruction: str) -> None:
             job.palette_roles,
             job.custom_style,
         )
+        _validate_image_file(
+            raw_preview,
+            minimum_edge=MIN_MODEL_REFERENCE_EDGE,
+            require_visual_detail=True,
+        )
         job.raw_preview_path = raw_preview
         if job.palette:
             color_usage = _apply_printable_image_pipeline(job, raw_preview)
@@ -1397,6 +1620,12 @@ def _preprocess_image_job(job: Job, input_path: Path, instruction: str) -> None:
             shutil.copyfile(raw_preview, preview)
             job.preview_path = preview
             color_usage = {}
+        reference = job.model_reference_path or job.preview_path
+        validated = _validate_image_file(
+            reference,
+            minimum_edge=MIN_MODEL_REFERENCE_EDGE,
+            require_visual_detail=True,
+        )
         (job.directory / "preview-colors.json").write_text(
             json.dumps(
                 {
@@ -1413,25 +1642,19 @@ def _preprocess_image_job(job: Job, input_path: Path, instruction: str) -> None:
             encoding="utf-8",
         )
         _stop_boundary(job)
-        try:
-            size = preview.stat().st_size
-            signature = preview.read_bytes()[:16]
-        except OSError:
-            raise OpenAIPreprocessorError("The prepared preview could not be read.") from None
-        content_type = _image_type(signature)
-        if not content_type or size <= 0 or size > MAX_IMAGE_BYTES:
-            raise OpenAIPreprocessorError("The prepared preview is not a valid PNG or JPEG image.")
         with _JOBS_LOCK:
             if job.stop_event.is_set():
                 raise JobStopped()
             job.preview_path = preview
-            job.preview_content_type = content_type
+            job.preview_content_type = validated.content_type
             job.state = "awaiting_confirmation"
             job.phase = "awaiting_confirmation"
             job.message = _printable_preview_message(job, "Review the prepared image before generation.")
             job.progress = 15
     except JobStopped:
         _mark_stopped(job)
+    except ValueError as exc:
+        _fail_job(job, str(exc))
     except OpenAIPreprocessorError as exc:
         _fail_job(job, str(exc))
     except Exception:
@@ -3338,6 +3561,21 @@ def _generate_job(
                 raise TripoError("The paid model task reference is unavailable; start a new generation manually.")
             preview = job.model_reference_path or job.preview_path
             request_source = "text" if job.source == "text" and preview is None else "image"
+            if request_source == "image":
+                try:
+                    _validate_image_file(
+                        preview,
+                        minimum_edge=MIN_MODEL_REFERENCE_EDGE,
+                        require_visual_detail=True,
+                    )
+                except ValueError as exc:
+                    raise ProviderGatewayError(
+                        f"The generated image is not suitable for 3D input: {exc}",
+                        code="invalid_model_request",
+                        category="validation",
+                        provider="tripo",
+                        operation="model_generation",
+                    ) from None
             if not generation_id:
                 if authorization is None:
                     raise ProviderGatewayError(
@@ -3362,6 +3600,7 @@ def _generate_job(
                     prompt=prepared_prompt,
                     image_path=preview,
                     face_limit=job.face_limit,
+                    generation_profile=job.generation_profile,
                 ),
                 existing_task_id=generation_id,
                 authorization=authorization,
@@ -3679,8 +3918,10 @@ class Handler(BaseHTTPRequestHandler):
                             "sources": ["text", "image"],
                             "styles": list(STYLE_IDS),
                             "artifact_formats": [MODEL_ARTIFACT_FORMAT],
-                            "face_limits": list(MODEL_FACE_LIMITS),
-                            "default_face_limit": DEFAULT_MODEL_FACE_LIMIT,
+                            "face_limits": sorted(set(GENERATION_PROFILE_FACE_LIMITS.values())),
+                            "default_face_limit": GENERATION_PROFILE_FACE_LIMITS[DEFAULT_GENERATION_PROFILE],
+                            "generation_profiles": list(GENERATION_PROFILES),
+                            "default_generation_profile": DEFAULT_GENERATION_PROFILE,
                             "provider_policy": {
                                 "design_providers": list(policy.design_providers),
                                 "geometry_provider": policy.geometry_provider,
@@ -3758,6 +3999,16 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(400, {"error": str(exc)})
             except Exception as exc:
                 self.send_json(502, {"error": str(exc)})
+            return
+
+        if self.path == "/v1/orcaslicer/journey-events":
+            if not self._require_native_client():
+                return
+            try:
+                record = _record_journey_event(self._read_model_json())
+                self.send_json(201, {"event": record})
+            except RequestError as exc:
+                self._model_error(exc.status, exc.code, exc.message, exc.retryable)
             return
 
         if not self.path.startswith("/v1/orcaslicer/model-jobs"):
@@ -3900,6 +4151,10 @@ class Handler(BaseHTTPRequestHandler):
             raise RequestError("unsupported_image", "Image must be PNG or JPEG.", 415)
         if declared_type not in {"application/octet-stream", detected_type}:
             raise RequestError("unsupported_image", "Image Content-Type does not match its data.", 415)
+        try:
+            _validate_image_data(image, minimum_edge=MIN_SOURCE_IMAGE_EDGE)
+        except ValueError as exc:
+            raise RequestError("invalid_image", str(exc), 415) from None
         job = _new_job("image", palette, palette_roles, style, custom_style, print_settings)
         job.user_prompt = instruction
         suffix = ".png" if detected_type == "image/png" else ".jpg"
@@ -3944,6 +4199,10 @@ class Handler(BaseHTTPRequestHandler):
             raise RequestError("unsupported_image", "Image must be PNG or JPEG.", 415)
         if declared_type not in {"application/octet-stream", detected_type}:
             raise RequestError("unsupported_image", "Image Content-Type does not match its data.", 415)
+        try:
+            _validate_image_data(image, minimum_edge=MIN_SOURCE_IMAGE_EDGE)
+        except ValueError as exc:
+            raise RequestError("invalid_image", str(exc), 415) from None
         job = _new_job("image", (), {}, style, custom_style, print_settings)
         job.user_prompt = instruction
         suffix = ".png" if detected_type == "image/png" else ".jpg"
@@ -4022,10 +4281,15 @@ class Handler(BaseHTTPRequestHandler):
         if len(raw_prompt.strip().encode("utf-8")) > MAX_PROMPT_BYTES:
             raise RequestError("invalid_request", "prepared_prompt exceeds the 2000-byte limit.", 400)
         palette = _normalize_palette(request.get("palette"))
-        face_limit = _normalize_face_limit(request.get("face_limit", DEFAULT_MODEL_FACE_LIMIT))
         job = self._get_job(job_id)
         if job is None:
             raise RequestError("job_not_found", "Model job not found.", 404)
+        if "generation_profile" in request:
+            generation_profile = _normalize_generation_profile(request.get("generation_profile"))
+            face_limit = GENERATION_PROFILE_FACE_LIMITS[generation_profile]
+        else:
+            face_limit = _normalize_face_limit(request.get("face_limit", DEFAULT_MODEL_FACE_LIMIT))
+            generation_profile = "quality" if face_limit >= 500000 else "performance"
         with _JOBS_LOCK:
             if job.state != "awaiting_confirmation":
                 raise RequestError("invalid_job_state", "Job is not awaiting confirmation.", 409)
@@ -4036,13 +4300,28 @@ class Handler(BaseHTTPRequestHandler):
                     409,
                 )
             prepared_prompt = raw_prompt.strip()
-            if job.source == "text" and not prepared_prompt:
+            reference = job.model_reference_path or job.preview_path
+            if job.source == "text" and reference is None and not prepared_prompt:
                 raise RequestError("invalid_request", "prepared_prompt is required for text generation.", 400)
+            if job.source == "image" or reference is not None:
+                try:
+                    _validate_image_file(
+                        reference,
+                        minimum_edge=MIN_MODEL_REFERENCE_EDGE,
+                        require_visual_detail=True,
+                    )
+                except ValueError as exc:
+                    raise RequestError(
+                        "invalid_model_reference",
+                        f"The generated image is not suitable for 3D input: {exc}",
+                        409,
+                    ) from None
             if not _MODEL_PROVIDER_GATEWAY.model_generation_available():
                 raise RequestError("feature_unavailable", "Model generation is not configured.", 503)
             authorization = PaidTaskAuthorization.confirmed(f"{job.id}:model:1")
             job.prepared_prompt = prepared_prompt if job.source == "text" else ""
             job.face_limit = face_limit
+            job.generation_profile = generation_profile
             job.state = "queued"
             job.phase = "generating"
             job.message = "Generation queued."

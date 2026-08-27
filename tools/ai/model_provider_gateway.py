@@ -28,6 +28,7 @@ except ImportError:
 
 
 _MODEL_FACE_LIMITS = (100000, 300000, 500000, 1000000)
+_GENERATION_PROFILE_FACE_LIMITS = {"quality": 1000000, "performance": 300000}
 
 
 @dataclass(frozen=True)
@@ -47,7 +48,8 @@ class ModelTaskRequest:
     source: str
     prompt: str = ""
     image_path: Path | None = None
-    face_limit: int = 300000
+    face_limit: int = 1000000
+    generation_profile: str = "quality"
 
 
 @dataclass(frozen=True)
@@ -165,9 +167,9 @@ class ModelProviderGateway:
     def __init__(
         self,
         *,
-        create_text_task: Callable[[str, int], str] = create_text_task,
+        create_text_task: Callable[[str, int, str], str] = create_text_task,
         upload_image: Callable[[str | os.PathLike[str]], str] = upload_image,
-        create_image_task: Callable[[str, int], str] = create_image_task,
+        create_image_task: Callable[[str, int, str], str] = create_image_task,
         create_conversion: Callable[[str, str], str] = create_conversion,
         wait_for_task: Callable[..., dict[str, Any]] = wait_for_task,
         download_task_artifact: Callable[[Mapping[str, Any], str | os.PathLike[str], int], Path] =
@@ -211,6 +213,22 @@ class ModelProviderGateway:
                 provider="tripo",
                 operation="model_generation",
             )
+        if request.generation_profile not in {"quality", "performance"}:
+            raise ProviderGatewayError(
+                "The generation profile must be quality or performance.",
+                code="invalid_model_request",
+                category="validation",
+                provider="tripo",
+                operation="model_generation",
+            )
+        if request.face_limit != _GENERATION_PROFILE_FACE_LIMITS[request.generation_profile]:
+            raise ProviderGatewayError(
+                "The model face target does not match the selected generation profile.",
+                code="invalid_model_request",
+                category="validation",
+                provider="tripo",
+                operation="model_generation",
+            )
         prompt = request.prompt.strip() if isinstance(request.prompt, str) else ""
         image_path = Path(request.image_path) if request.image_path is not None else None
         if source == "text" and not prompt:
@@ -248,11 +266,11 @@ class ModelProviderGateway:
         authorization.consume("tripo", "model_generation")
         try:
             if source == "text":
-                task_id = self._create_text_task(prompt, request.face_limit)
+                task_id = self._create_text_task(prompt, request.face_limit, request.generation_profile)
             else:
                 assert image_path is not None
                 token = self._upload_image(image_path)
-                task_id = self._create_image_task(token, request.face_limit)
+                task_id = self._create_image_task(token, request.face_limit, request.generation_profile)
         except TripoError as error:
             raise _classify_tripo_error(error, "model_generation", creation_ambiguous=True) from None
         if not isinstance(task_id, str) or not task_id.strip():

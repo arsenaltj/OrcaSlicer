@@ -157,29 +157,33 @@ def _task_id(data: Mapping[str, Any]) -> str:
 
 
 _ALLOWED_FACE_LIMITS = (100000, 300000, 500000, 1000000)
+_GENERATION_PROFILES = ("quality", "performance")
 
 
-def _high_detail_payload(model: str, face_limit: int) -> dict[str, Any]:
+def _generation_payload(model: str, face_limit: int, generation_profile: str) -> dict[str, Any]:
     if face_limit not in _ALLOWED_FACE_LIMITS:
         raise TripoError("The model face target must be 100000, 300000, 500000, or 1000000 triangles.")
+    if generation_profile not in _GENERATION_PROFILES:
+        raise TripoError("The generation profile must be quality or performance.")
+    high_quality = generation_profile == "quality"
     return {
         "model": model,
         "smart_low_poly": False,
         "face_limit": face_limit,
         "texture": True,
-        "pbr": False,
-        "texture_quality": "detailed",
-        "geometry_quality": "detailed",
+        "pbr": True,
+        "texture_quality": "detailed" if high_quality else "standard",
+        "geometry_quality": "detailed" if high_quality else "standard",
         "quad": False,
-        "export_uv": True,
+        "export_uv": high_quality,
     }
 
 
-def create_text_task(prompt: str, face_limit: int = 300000) -> str:
+def create_text_task(prompt: str, face_limit: int = 1000000, generation_profile: str = "quality") -> str:
     if not isinstance(prompt, str) or not prompt.strip():
         raise TripoError("A text prompt is required.")
     _, _, model = _config()
-    payload = _high_detail_payload(model, face_limit)
+    payload = _generation_payload(model, face_limit, generation_profile)
     payload["prompt"] = prompt
     return _task_id(_post_json("/generation/text-to-model", payload))
 
@@ -226,11 +230,11 @@ def upload_image(path: str | os.PathLike[str]) -> str:
     return token
 
 
-def create_image_task(file_token: str, face_limit: int = 300000) -> str:
+def create_image_task(file_token: str, face_limit: int = 1000000, generation_profile: str = "quality") -> str:
     if not isinstance(file_token, str) or not file_token:
         raise TripoError("An uploaded image reference is required.")
     _, _, model = _config()
-    payload = _high_detail_payload(model, face_limit)
+    payload = _generation_payload(model, face_limit, generation_profile)
     payload.update({"input": file_token, "texture_alignment": "original_image"})
     return _task_id(_post_json("/generation/image-to-model", payload))
 
@@ -238,7 +242,11 @@ def create_image_task(file_token: str, face_limit: int = 300000) -> str:
 _MULTIVIEW_ORDER = ("front", "left", "back", "right")
 
 
-def create_multiview_task(view_tokens: Mapping[str, str], face_limit: int = 300000) -> str:
+def create_multiview_task(
+    view_tokens: Mapping[str, str],
+    face_limit: int = 1000000,
+    generation_profile: str = "quality",
+) -> str:
     if not isinstance(view_tokens, Mapping):
         raise TripoError("Named multiview inputs are required.")
     unknown = set(view_tokens) - set(_MULTIVIEW_ORDER)
@@ -252,7 +260,7 @@ def create_multiview_task(view_tokens: Mapping[str, str], face_limit: int = 3000
     if "front" not in normalized or len(normalized) < 2:
         raise TripoError("Multiview generation requires front and at least one additional view.")
     _, _, model = _config()
-    payload = _high_detail_payload(model, face_limit)
+    payload = _generation_payload(model, face_limit, generation_profile)
     payload["inputs"] = [{view: normalized[view]} for view in _MULTIVIEW_ORDER if view in normalized]
     return _task_id(_post_json("/generation/multiview-to-model", payload))
 

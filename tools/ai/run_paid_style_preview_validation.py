@@ -12,7 +12,7 @@ from PIL import Image
 import openai_preprocessor
 
 
-STYLES = ("q_cartoon", "low_poly", "sculpture")
+STYLES = ("sculpture", "realistic", "cartoon")
 INSTRUCTION = (
     "Restyle only visible source content. Preserve the exact framing and visible body extent. "
     "Do not add, remove, reveal, reconstruct, crop, zoom, outpaint, recenter, or reposition anything."

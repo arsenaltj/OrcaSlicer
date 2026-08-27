@@ -23,12 +23,12 @@ def hex_rgb(color):
 
 
 def synthetic_preview(path, *_args, **_kwargs):
-    image = Image.new("RGB", (96, 96), (244, 242, 235))
-    for x in range(16, 80):
-        for y in range(12, 84):
-            image.putpixel((x, y), (210, 55, 50) if x < 48 else (45, 105, 175))
-    for x in range(45, 51):
-        for y in range(44, 50):
+    image = Image.new("RGB", (512, 512), (244, 242, 235))
+    for x in range(86, 426):
+        for y in range(64, 448):
+            image.putpixel((x, y), (210, 55, 50) if x < 256 else (45, 105, 175))
+    for x in range(240, 272):
+        for y in range(235, 267):
             image.putpixel((x, y), (40, 150, 80))
     image.save(path)
     return Path(path)
@@ -43,7 +43,7 @@ class PrintableSidecarIntegrationTests(unittest.TestCase):
             source=source,
             directory=job_directory,
             palette=PALETTE,
-            style="q_cartoon",
+            style="cartoon",
             print_settings=sidecar._normalize_print_settings({
                 "width_mm": 96,
                 "nozzle_mm": 0.4,
