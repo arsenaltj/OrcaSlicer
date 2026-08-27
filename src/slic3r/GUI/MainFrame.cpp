@@ -3339,6 +3339,13 @@ void MainFrame::init_menubar_as_editor()
     auto preference_item = new wxMenuItem(parent_menu, ConfigMenuPreferences + config_id_base, _L("Preferences") + "\t" + ctrl + "P", "");
 
 #endif
+    const auto config_wizard_name = _(ConfigWizard::name(true));
+    const auto config_wizard_tooltip = from_u8((boost::format(_utf8(L("Open %s"))) % config_wizard_name).str());
+    append_menu_item(
+        parent_menu, wxID_ANY, config_wizard_name, config_wizard_tooltip,
+        [](wxCommandEvent &) { wxGetApp().run_wizard(ConfigWizard::RR_USER); },
+        "", nullptr, []() { return true; }, this);
+
     //auto printer_item = new wxMenuItem(parent_menu, ConfigMenuPrinter + config_id_base, _L("Printer"), "");
     //auto language_item = new wxMenuItem(parent_menu, ConfigMenuLanguage + config_id_base, _L("Switch Language"), "");
 //    parent_menu->Bind(wxEVT_MENU, [this, config_id_base](wxEvent& event) {

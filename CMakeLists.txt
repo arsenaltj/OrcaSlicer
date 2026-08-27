@@ -1113,6 +1113,16 @@ if (WIN32)
     set(ORCA_AI_PACKAGE_REVISION "local" CACHE STRING "Revision label used by the OrcaSlicer AI installer")
     set(ORCA_AI_INTERNAL_DEFAULTS_FILE "" CACHE FILEPATH "Optional package-only OrcaSlicer AI defaults payload")
     if(ORCA_AI_WINDOWS_INSTALLER)
+        install(CODE [[
+            foreach(_orca_ai_locale IN ITEMS zh_CN zh_TW)
+                set(_orca_ai_catalog "${CMAKE_INSTALL_PREFIX}/resources/i18n/${_orca_ai_locale}/OrcaSlicer.mo")
+                if(NOT EXISTS "${_orca_ai_catalog}")
+                    message(FATAL_ERROR
+                        "Missing packaged localization catalog: ${_orca_ai_catalog}. "
+                        "Run scripts/run_gettext.bat before creating the AI installer.")
+                endif()
+            endforeach()
+        ]])
         set(ORCA_AI_SIDECAR_RUNTIME_FILES
             "${CMAKE_SOURCE_DIR}/tools/ai/ai_diagnostics.py"
             "${CMAKE_SOURCE_DIR}/tools/ai/model_provider_gateway.py"
