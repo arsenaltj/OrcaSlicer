@@ -16,7 +16,7 @@ import sys
 from typing import Any, Iterable, Sequence
 
 
-SCHEMA = "orcaslicer.ai-integration-lock/v2"
+SCHEMA = "orcaslicer.ai-integration-lock/v3"
 EXPECTED_INTEGRATION_BRANCH = "codex/orca-integration-v2"
 EXPECTED_UPSTREAM = {
     "remote": "upstream",
@@ -64,6 +64,30 @@ EXPECTED_DEVELOPMENT_PORTS = {
     "smart_slicing": 18766,
     "integration": 18767,
 }
+EXPECTED_ARCHITECTURE = {
+    "pattern": "desktop_modular_monolith",
+    "migration_phase": "baseline_guarded",
+    "target_contract_root": "src/slic3r/AI/Contracts",
+}
+EXPECTED_COMPOSITION_ROOTS = {
+    "CMakeLists.txt",
+    "src/CMakeLists.txt",
+    "src/slic3r/CMakeLists.txt",
+    "src/slic3r/GUI/MainFrame.cpp",
+    "src/slic3r/GUI/MainFrame.hpp",
+    "src/slic3r/GUI/Plater.cpp",
+    "src/slic3r/GUI/Plater.hpp",
+}
+EXPECTED_DECOMPOSITION_TARGETS = {
+    "src/slic3r/GUI/ModelGenerationPanel.cpp",
+    "tools/ai/orca_ai_sidecar.py",
+}
+EXPECTED_RELEASE_PROMOTION = {
+    "internal_fast_promotable": False,
+    "commercial_candidate_requires_exact_sha": True,
+    "production_promotes_candidate_artifact": True,
+    "production_rebuild_allowed": False,
+}
 EXPECTED_BOUNDARY_FLAGS = (
     "integration_consumes_exact_accepted_sha",
     "feature_branches_receive_no_reverse_integration",
@@ -75,10 +99,11 @@ REQUIRED_INTEGRATION_PATHS = {
     ".github",
     "CMakeLists.txt",
     "build_release_vs.bat",
-    "docs/architecture/ai-integration-lock.json",
+    "docs/architecture",
     "scripts/package_internal_fast.ps1",
     "scripts/verify_ai_integration.py",
     "src/CMakeLists.txt",
+    "src/slic3r/AI/Contracts",
     "src/slic3r/CMakeLists.txt",
     "src/slic3r/GUI/AI/Orca",
     "src/slic3r/GUI/MainFrame.cpp",
@@ -205,6 +230,7 @@ def validate_document(document: Any) -> list[dict[str, str]]:
             "feature_sources",
             "integration_receipts",
             "runtime_contract",
+            "architecture_contract",
             "boundaries",
         ),
         "document",
@@ -299,6 +325,97 @@ def validate_document(document: Any) -> list[dict[str, str]]:
             _issue("runtime.port_policy", "development_port_policy must distinguish explicit overrides from product_port")
         )
 
+    architecture = _expect_object(root.get("architecture_contract"), "architecture_contract", errors)
+    _expect_exact_keys(
+        architecture,
+        (
+            *EXPECTED_ARCHITECTURE,
+            "composition_roots",
+            "decomposition_line_budgets",
+            "shared_touchpoint_diff_budgets",
+            "release_promotion",
+        ),
+        "architecture_contract",
+        errors,
+    )
+    for key, expected in EXPECTED_ARCHITECTURE.items():
+        _expect_constant(architecture.get(key), expected, f"architecture_contract.{key}", errors)
+
+    composition_roots = _validate_path_list(
+        architecture.get("composition_roots"), "architecture_contract.composition_roots", errors
+    )
+    if composition_roots != EXPECTED_COMPOSITION_ROOTS:
+        missing = sorted(EXPECTED_COMPOSITION_ROOTS - composition_roots)
+        unknown = sorted(composition_roots - EXPECTED_COMPOSITION_ROOTS)
+        if missing:
+            errors.append(
+                _issue("architecture.composition_roots", f"composition roots are missing: {', '.join(missing)}")
+            )
+        if unknown:
+            errors.append(
+                _issue("architecture.composition_roots", f"unknown composition roots: {', '.join(unknown)}")
+            )
+
+    line_budgets = _expect_object(
+        architecture.get("decomposition_line_budgets"),
+        "architecture_contract.decomposition_line_budgets",
+        errors,
+    )
+    line_budget_paths = _validate_path_list(
+        list(line_budgets), "architecture_contract.decomposition_line_budgets paths", errors
+    )
+    if line_budget_paths != EXPECTED_DECOMPOSITION_TARGETS:
+        missing = sorted(EXPECTED_DECOMPOSITION_TARGETS - line_budget_paths)
+        unknown = sorted(line_budget_paths - EXPECTED_DECOMPOSITION_TARGETS)
+        if missing:
+            errors.append(
+                _issue("architecture.line_budget", f"decomposition budgets are missing: {', '.join(missing)}")
+            )
+        if unknown:
+            errors.append(
+                _issue("architecture.line_budget", f"unknown decomposition budgets: {', '.join(unknown)}")
+            )
+    for path, maximum in line_budgets.items():
+        if type(maximum) is not int or maximum <= 0:
+            errors.append(
+                _issue("architecture.line_budget", f"decomposition line budget for {path} must be a positive integer")
+            )
+
+    diff_budgets = _expect_object(
+        architecture.get("shared_touchpoint_diff_budgets"),
+        "architecture_contract.shared_touchpoint_diff_budgets",
+        errors,
+    )
+    diff_budget_paths = _validate_path_list(
+        list(diff_budgets), "architecture_contract.shared_touchpoint_diff_budgets paths", errors
+    )
+    if diff_budget_paths != composition_roots:
+        errors.append(
+            _issue(
+                "architecture.diff_budget",
+                "shared touchpoint diff budgets must cover exactly the declared composition roots",
+            )
+        )
+    for path, value in diff_budgets.items():
+        budget = _expect_object(value, f"architecture_contract.shared_touchpoint_diff_budgets.{path}", errors)
+        _expect_exact_keys(
+            budget,
+            ("max_added_lines", "max_net_added_lines"),
+            f"architecture_contract.shared_touchpoint_diff_budgets.{path}",
+            errors,
+        )
+        for field in ("max_added_lines", "max_net_added_lines"):
+            maximum = budget.get(field)
+            if type(maximum) is not int or maximum < 0:
+                errors.append(
+                    _issue("architecture.diff_budget", f"{path} {field} must be a non-negative integer")
+                )
+
+    promotion = _expect_object(architecture.get("release_promotion"), "architecture_contract.release_promotion", errors)
+    _expect_exact_keys(promotion, EXPECTED_RELEASE_PROMOTION, "architecture_contract.release_promotion", errors)
+    for key, expected in EXPECTED_RELEASE_PROMOTION.items():
+        _expect_constant(promotion.get(key), expected, f"architecture_contract.release_promotion.{key}", errors)
+
     boundaries = _expect_object(root.get("boundaries"), "boundaries", errors)
     _expect_exact_keys(
         boundaries,
@@ -336,6 +453,11 @@ def validate_document(document: Any) -> list[dict[str, str]]:
     if missing_integration:
         errors.append(
             _issue("boundary.integration", f"integration ownership is missing: {', '.join(missing_integration)}")
+        )
+    target_contract_root = architecture.get("target_contract_root")
+    if target_contract_root not in integration_paths:
+        errors.append(
+            _issue("boundary.integration", "the target neutral contract root must be integration-owned")
         )
     missing_shared_runtime = sorted(REQUIRED_SHARED_RUNTIME_PATHS - shared_runtime_paths)
     if missing_shared_runtime:
@@ -378,6 +500,89 @@ def _run_git(repo_root: Path, arguments: Sequence[str]) -> subprocess.CompletedP
         encoding="utf-8",
         errors="replace",
     )
+
+
+def validate_architecture_budgets(document: dict[str, Any], repo_root: Path) -> list[dict[str, str]]:
+    """Prevent designated decomposition targets and Orca composition roots from growing silently."""
+    errors: list[dict[str, str]] = []
+    architecture = document.get("architecture_contract")
+    if not isinstance(architecture, dict):
+        return [_issue("architecture.contract", "architecture_contract must be an object")]
+
+    line_budgets = architecture.get("decomposition_line_budgets")
+    if not isinstance(line_budgets, dict):
+        errors.append(_issue("architecture.line_budget", "decomposition_line_budgets must be an object"))
+    else:
+        for relative_path, maximum in line_budgets.items():
+            if not isinstance(relative_path, str) or type(maximum) is not int or maximum <= 0:
+                errors.append(_issue("architecture.line_budget", "decomposition line budgets are malformed"))
+                continue
+            path = repo_root / relative_path
+            try:
+                line_count = len(path.read_text(encoding="utf-8", errors="replace").splitlines())
+            except OSError:
+                errors.append(_issue("architecture.missing_target", f"decomposition target is missing: {relative_path}"))
+                continue
+            if line_count > maximum:
+                errors.append(
+                    _issue(
+                        "architecture.line_budget",
+                        f"{relative_path} has {line_count} lines, exceeding its architecture budget of {maximum}",
+                    )
+                )
+
+    diff_budgets = architecture.get("shared_touchpoint_diff_budgets")
+    if not isinstance(diff_budgets, dict):
+        errors.append(_issue("architecture.diff_budget", "shared_touchpoint_diff_budgets must be an object"))
+        return errors
+    if not diff_budgets:
+        return errors
+
+    upstream = document.get("upstream")
+    upstream_sha = upstream.get("sha") if isinstance(upstream, dict) else None
+    if not isinstance(upstream_sha, str) or SHA_PATTERN.fullmatch(upstream_sha) is None:
+        errors.append(_issue("architecture.diff_base", "architecture diff budget requires a full upstream SHA"))
+        return errors
+
+    relative_paths = tuple(sorted(path for path in diff_budgets if isinstance(path, str)))
+    result = _run_git(
+        repo_root,
+        ["diff", "--no-renames", "--numstat", upstream_sha, "--", *relative_paths],
+    )
+    if result.returncode != 0:
+        errors.append(_issue("architecture.diff_failed", "shared touchpoint diff could not be measured"))
+        return errors
+
+    actual: dict[str, tuple[int, int]] = {}
+    for record in result.stdout.splitlines():
+        parts = record.split("\t", 2)
+        if len(parts) != 3:
+            errors.append(_issue("architecture.diff_failed", "shared touchpoint numstat output is malformed"))
+            continue
+        added_text, deleted_text, relative_path = parts
+        if not added_text.isdigit() or not deleted_text.isdigit():
+            errors.append(_issue("architecture.diff_binary", f"binary composition root is not allowed: {relative_path}"))
+            continue
+        actual[relative_path] = (int(added_text), int(deleted_text))
+
+    for relative_path, value in diff_budgets.items():
+        if not isinstance(value, dict):
+            continue
+        maximum_added = value.get("max_added_lines")
+        maximum_net_added = value.get("max_net_added_lines")
+        if type(maximum_added) is not int or type(maximum_net_added) is not int:
+            continue
+        added, deleted = actual.get(relative_path, (0, 0))
+        net_added = added - deleted
+        if added > maximum_added or net_added > maximum_net_added:
+            errors.append(
+                _issue(
+                    "architecture.diff_budget",
+                    f"{relative_path} diff is +{added}/-{deleted} (net {net_added}), "
+                    f"exceeding budgets +{maximum_added}/net {maximum_net_added}",
+                )
+            )
+    return errors
 
 
 def _git_ref_exists(repo_root: Path, ref: str) -> bool:
@@ -713,6 +918,16 @@ def _source_requirements(document: dict[str, Any]) -> tuple[tuple[str, str, str]
             "pull-request self-hosted runner denial",
         ),
         (
+            ".github/CODEOWNERS",
+            r"^/docs/architecture/\s+\S+",
+            "architecture documentation CODEOWNER",
+        ),
+        (
+            ".github/CODEOWNERS",
+            r"^/src/slic3r/AI/Contracts/\s+\S+",
+            "neutral AI contract CODEOWNER",
+        ),
+        (
             "tools/ai/orca_ai_sidecar.py",
             r'/v1/orcaslicer/shutdown',
             "authenticated Sidecar graceful shutdown",
@@ -875,6 +1090,7 @@ def validate(lock_path: Path, repo_root: Path, skip_git: bool = False) -> dict[s
     if not errors:
         errors.extend(validate_source_constants(document, repo_root))
         errors.extend(validate_dependency_boundaries(repo_root))
+        errors.extend(validate_architecture_budgets(document, repo_root))
         if not skip_git:
             git_errors, git_details = validate_git(document, repo_root)
             errors.extend(git_errors)

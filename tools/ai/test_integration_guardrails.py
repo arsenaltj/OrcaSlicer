@@ -27,6 +27,90 @@ class IntegrationGuardrailTests(unittest.TestCase):
         self.assertEqual([], GUARDRAILS.validate_document(self.document))
         self.assertEqual([], GUARDRAILS.validate_source_constants(self.document, REPO_ROOT))
 
+    def test_repository_lock_declares_guarded_modular_architecture(self) -> None:
+        self.assertEqual("orcaslicer.ai-integration-lock/v3", self.document["schema"])
+        architecture = self.document["architecture_contract"]
+
+        self.assertEqual("desktop_modular_monolith", architecture["pattern"])
+        self.assertEqual("baseline_guarded", architecture["migration_phase"])
+        self.assertEqual("src/slic3r/AI/Contracts", architecture["target_contract_root"])
+
+    def test_repository_architecture_budgets_pass(self) -> None:
+        self.assertEqual([], GUARDRAILS.validate_architecture_budgets(self.document, REPO_ROOT))
+
+    def test_architecture_line_budget_rejects_growth(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            path = root / "large.py"
+            path.write_text("first\nsecond\nthird\n", encoding="utf-8")
+            document = {
+                "upstream": {"sha": "0" * 40},
+                "architecture_contract": {
+                    "decomposition_line_budgets": {"large.py": 2},
+                    "shared_touchpoint_diff_budgets": {},
+                },
+            }
+
+            errors = GUARDRAILS.validate_architecture_budgets(document, root)
+
+        self.assertTrue(any(error["code"] == "architecture.line_budget" for error in errors))
+
+    def test_architecture_diff_budget_rejects_growth(self) -> None:
+        document = copy.deepcopy(self.document)
+        document["architecture_contract"]["shared_touchpoint_diff_budgets"][
+            "src/slic3r/GUI/MainFrame.cpp"
+        ]["max_added_lines"] = 110
+
+        errors = GUARDRAILS.validate_architecture_budgets(document, REPO_ROOT)
+
+        self.assertTrue(any(error["code"] == "architecture.diff_budget" for error in errors))
+
+    def test_architecture_diff_budget_includes_uncommitted_growth(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            relative_path = "shared.cpp"
+            path = root / relative_path
+            subprocess.run(["git", "init", "--quiet", str(root)], check=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.name", "Guardrail Test"], check=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.email", "guardrail@example.invalid"], check=True)
+            subprocess.run(["git", "-C", str(root), "config", "core.autocrlf", "false"], check=True)
+            path.write_text("baseline\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", relative_path], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "--quiet", "-m", "baseline"], check=True)
+            upstream_sha = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            ).stdout.strip()
+            path.write_text("baseline\nuncommitted growth\n", encoding="utf-8")
+            document = {
+                "upstream": {"sha": upstream_sha},
+                "architecture_contract": {
+                    "decomposition_line_budgets": {},
+                    "shared_touchpoint_diff_budgets": {
+                        relative_path: {"max_added_lines": 0, "max_net_added_lines": 0}
+                    },
+                },
+            }
+
+            errors = GUARDRAILS.validate_architecture_budgets(document, root)
+
+        self.assertTrue(any(error["code"] == "architecture.diff_budget" for error in errors))
+
+    def test_release_promotion_invariants_cannot_be_weakened(self) -> None:
+        document = copy.deepcopy(self.document)
+        promotion = document["architecture_contract"]["release_promotion"]
+        promotion["internal_fast_promotable"] = True
+        promotion["production_rebuild_allowed"] = True
+
+        errors = GUARDRAILS.validate_document(document)
+
+        messages = "\n".join(error["message"] for error in errors)
+        self.assertIn("internal_fast_promotable", messages)
+        self.assertIn("production_rebuild_allowed", messages)
+
     def test_rejects_short_or_changed_feature_sha(self) -> None:
         document = copy.deepcopy(self.document)
         document["feature_sources"]["model_generation"]["sha"] = "db81edc2"
@@ -185,6 +269,16 @@ class IntegrationGuardrailTests(unittest.TestCase):
                 "pull-request self-hosted runner denial",
                 "authenticated Sidecar graceful shutdown",
                 "deferred remote-job recovery",
+            }.issubset(labels)
+        )
+
+    def test_architecture_ownership_is_part_of_source_contract(self) -> None:
+        labels = {label for _, _, label in GUARDRAILS._source_requirements(self.document)}
+
+        self.assertTrue(
+            {
+                "architecture documentation CODEOWNER",
+                "neutral AI contract CODEOWNER",
             }.issubset(labels)
         )
 
