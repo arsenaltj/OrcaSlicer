@@ -2,6 +2,7 @@
 
 #include "slic3r/GUI/AIModelGenerationClient.hpp"
 #include "slic3r/GUI/GUI.hpp"
+#include "slic3r/GUI/I18N.hpp"
 
 namespace Slic3r::GUI::ModelGenerationStatusText {
 
