@@ -34,6 +34,7 @@
 /scripts/verify_ai_integration.py @arsenaltj
 /src/CMakeLists.txt @arsenaltj
 /src/dev-utils/BaseException.cpp @arsenaltj
+/src/slic3r/AI/CMakeLists.txt @arsenaltj
 /src/slic3r/AI/Contracts/ @arsenaltj
 /src/slic3r/BuildInfo.* @arsenaltj
 /src/slic3r/CMakeLists.txt @arsenaltj

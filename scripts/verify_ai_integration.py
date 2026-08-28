@@ -66,7 +66,7 @@ EXPECTED_DEVELOPMENT_PORTS = {
 }
 EXPECTED_ARCHITECTURE = {
     "pattern": "desktop_modular_monolith",
-    "migration_phase": "baseline_guarded",
+    "migration_phase": "neutral_contracts",
     "target_contract_root": "src/slic3r/AI/Contracts",
 }
 EXPECTED_COMPOSITION_ROOTS = {
@@ -103,6 +103,7 @@ REQUIRED_INTEGRATION_PATHS = {
     "scripts/package_internal_fast.ps1",
     "scripts/verify_ai_integration.py",
     "src/CMakeLists.txt",
+    "src/slic3r/AI/CMakeLists.txt",
     "src/slic3r/AI/Contracts",
     "src/slic3r/CMakeLists.txt",
     "src/slic3r/GUI/AI/Orca",
@@ -126,11 +127,43 @@ REQUIRED_SHARED_RUNTIME_PATHS = {
     "tools/ai/verify_bundled_runtime.py",
 }
 REQUIRED_CONTRACT_PATHS = {
-    "src/slic3r/AI/ModelGeneration/GeneratedModelArtifact.hpp",
-    "src/slic3r/AI/ModelGeneration/IPrintablePaletteProvider.hpp",
-    "src/slic3r/AI/SmartSlicing/IModelArtifactConsumer.hpp",
+    "src/slic3r/AI/Contracts/GeneratedModelArtifact.hpp",
+    "src/slic3r/AI/Contracts/IModelArtifactConsumer.hpp",
+    "src/slic3r/AI/Contracts/IPrintablePaletteProvider.hpp",
     "src/slic3r/GUI/AI/Orca/OrcaWorkspaceAdapter.hpp",
 }
+NEUTRAL_CONTRACT_HEADERS = (
+    "src/slic3r/AI/Contracts/GeneratedModelArtifact.hpp",
+    "src/slic3r/AI/Contracts/IModelArtifactConsumer.hpp",
+    "src/slic3r/AI/Contracts/IPrintablePaletteProvider.hpp",
+)
+LEGACY_CONTRACT_FORWARDERS = {
+    "src/slic3r/AI/ModelGeneration/GeneratedModelArtifact.hpp": (
+        '#pragma once\n\n#include "slic3r/AI/Contracts/GeneratedModelArtifact.hpp"\n'
+    ),
+    "src/slic3r/AI/ModelGeneration/IPrintablePaletteProvider.hpp": (
+        '#pragma once\n\n#include "slic3r/AI/Contracts/IPrintablePaletteProvider.hpp"\n'
+    ),
+    "src/slic3r/AI/SmartSlicing/IModelArtifactConsumer.hpp": (
+        '#pragma once\n\n#include "slic3r/AI/Contracts/IModelArtifactConsumer.hpp"\n'
+    ),
+}
+DIRECT_CONTRACT_CONSUMERS = {
+    "src/slic3r/GUI/ModelGenerationPanel.hpp": (
+        '#include "slic3r/AI/Contracts/IModelArtifactConsumer.hpp"',
+        '#include "slic3r/AI/Contracts/IPrintablePaletteProvider.hpp"',
+    ),
+    "src/slic3r/GUI/AI/Orca/OrcaWorkspaceAdapter.hpp": (
+        '#include "slic3r/AI/Contracts/IModelArtifactConsumer.hpp"',
+        '#include "slic3r/AI/Contracts/IPrintablePaletteProvider.hpp"',
+    ),
+}
+SMART_SLICING_CORE_SOURCES = (
+    "SmartSlicing/Application/SmartSlicingCoordinator.cpp",
+    "SmartSlicing/Application/PrintabilityInspector.cpp",
+    "SmartSlicing/Domain/CandidateComparison.cpp",
+    "SmartSlicing/Domain/ParameterProposalValidator.cpp",
+)
 SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 FORBIDDEN_TRACKED_SECRET_NAMES = {
     "orca_ai_internal_defaults.json",
@@ -924,6 +957,11 @@ def _source_requirements(document: dict[str, Any]) -> tuple[tuple[str, str, str]
         ),
         (
             ".github/CODEOWNERS",
+            r"^/src/slic3r/AI/CMakeLists\.txt\s+\S+",
+            "AI composition CODEOWNER",
+        ),
+        (
+            ".github/CODEOWNERS",
             r"^/src/slic3r/AI/Contracts/\s+\S+",
             "neutral AI contract CODEOWNER",
         ),
@@ -996,6 +1034,149 @@ def validate_source_constants(document: dict[str, Any], repo_root: Path) -> list
     return errors
 
 
+def validate_contract_layout(repo_root: Path) -> list[dict[str, str]]:
+    """Validate neutral contract ownership and source-compatible forwarding headers."""
+    errors: list[dict[str, str]] = []
+    for relative_path in NEUTRAL_CONTRACT_HEADERS:
+        if not (repo_root / relative_path).is_file():
+            errors.append(_issue("contract.missing", f"neutral contract is missing: {relative_path}"))
+
+    for relative_path, expected in LEGACY_CONTRACT_FORWARDERS.items():
+        path = repo_root / relative_path
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            errors.append(_issue("contract.missing", f"cannot read legacy contract header {relative_path}: {exc}"))
+            continue
+        if content != expected:
+            errors.append(
+                _issue("contract.forwarder", f"legacy contract header must be an exact forwarder: {relative_path}")
+            )
+
+    for relative_path, required_includes in DIRECT_CONTRACT_CONSUMERS.items():
+        path = repo_root / relative_path
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            errors.append(_issue("contract.consumer", f"cannot read direct contract consumer {relative_path}: {exc}"))
+            continue
+        for required_include in required_includes:
+            if required_include not in content:
+                errors.append(
+                    _issue(
+                        "contract.consumer",
+                        f"direct neutral contract include is missing from {relative_path}: {required_include}",
+                    )
+                )
+        for legacy_path in LEGACY_CONTRACT_FORWARDERS:
+            legacy_include = f'#include "{legacy_path.removeprefix("src/")}"'
+            if legacy_include in content:
+                errors.append(
+                    _issue(
+                        "contract.consumer",
+                        f"integration consumer must not use legacy contract include in {relative_path}: {legacy_include}",
+                    )
+                )
+    return errors
+
+
+def _cmake_call_body(content: str, command: str, target: str) -> str:
+    matches = re.findall(
+        rf"{re.escape(command)}\s*\(\s*{re.escape(target)}\b(.*?)\)",
+        content,
+        flags=re.DOTALL,
+    )
+    return "\n".join(matches)
+
+
+def _cmake_set_body(content: str, variable: str) -> str | None:
+    match = re.search(
+        rf"set\s*\(\s*{re.escape(variable)}\b(.*?)\n\s*\)",
+        content,
+        flags=re.DOTALL,
+    )
+    return match.group(1) if match else None
+
+
+def validate_ai_build_boundaries(repo_root: Path) -> list[dict[str, str]]:
+    """Validate explicit targets and exclusive SmartSlicing core source ownership."""
+    errors: list[dict[str, str]] = []
+    relative_path = "src/slic3r/AI/CMakeLists.txt"
+    path = repo_root / relative_path
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return [_issue("build.missing", f"cannot read {relative_path}: {exc}")]
+    gui_relative_path = "src/slic3r/CMakeLists.txt"
+    gui_path = repo_root / gui_relative_path
+    try:
+        gui_content = gui_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return [_issue("build.missing", f"cannot read {gui_relative_path}: {exc}")]
+
+    target_patterns = (
+        (r"add_library\s*\(\s*orcaslicer_ai_contracts\s+INTERFACE\s*\)", "AI contracts interface target"),
+        (
+            r"add_library\s*\(\s*OrcaSlicer::AIContracts\s+ALIAS\s+orcaslicer_ai_contracts\s*\)",
+            "AI contracts namespaced alias",
+        ),
+        (
+            r"add_library\s*\(\s*orcaslicer_ai_smart_slicing\s+STATIC\s+\$\{ORCA_AI_SMART_SLICING_SOURCES\}\s*\)",
+            "SmartSlicing static target",
+        ),
+        (
+            r"add_library\s*\(\s*OrcaSlicer::SmartSlicing\s+ALIAS\s+orcaslicer_ai_smart_slicing\s*\)",
+            "SmartSlicing namespaced alias",
+        ),
+    )
+    for pattern, label in target_patterns:
+        if re.search(pattern, content, flags=re.DOTALL) is None:
+            errors.append(_issue("build.target", f"{label} is missing from {relative_path}"))
+
+    contract_includes = _cmake_call_body(content, "target_include_directories", "orcaslicer_ai_contracts")
+    if "INTERFACE" not in contract_includes or "${CMAKE_CURRENT_SOURCE_DIR}/../.." not in contract_includes:
+        errors.append(_issue("build.target", "AI contracts target must export the src include root"))
+    contract_links = _cmake_call_body(content, "target_link_libraries", "orcaslicer_ai_contracts")
+    if "INTERFACE" not in contract_links or "boost_headeronly" not in contract_links:
+        errors.append(_issue("build.link", "AI contracts must propagate the Boost header dependency"))
+
+    smart_links = _cmake_call_body(content, "target_link_libraries", "orcaslicer_ai_smart_slicing")
+    if "PUBLIC" not in smart_links or "OrcaSlicer::AIContracts" not in smart_links:
+        errors.append(_issue("build.link", "SmartSlicing must link the neutral contracts target publicly"))
+    if re.search(r"libslic3r_gui|wxWidgets", smart_links):
+        errors.append(_issue("build.link", "SmartSlicing core must not link GUI dependencies"))
+
+    if re.search(r"add_subdirectory\s*\(\s*AI\s*\)", gui_content) is None:
+        errors.append(_issue("build.link", f"{gui_relative_path} must compose the AI subdirectory"))
+
+    gui_links = _cmake_call_body(gui_content, "target_link_libraries", "libslic3r_gui")
+    for required_target in ("OrcaSlicer::AIContracts", "OrcaSlicer::SmartSlicing"):
+        if required_target not in gui_links:
+            errors.append(_issue("build.link", f"libslic3r_gui must link {required_target}"))
+
+    smart_sources = _cmake_set_body(content, "ORCA_AI_SMART_SLICING_SOURCES")
+    gui_sources = _cmake_set_body(gui_content, "SLIC3R_GUI_SOURCES")
+    if smart_sources is None:
+        errors.append(_issue("build.target", "ORCA_AI_SMART_SLICING_SOURCES is missing"))
+    if gui_sources is None:
+        errors.append(_issue("build.target", "SLIC3R_GUI_SOURCES is missing"))
+    for source in SMART_SLICING_CORE_SOURCES:
+        occurrence_count = content.count(source)
+        if smart_sources is None or source not in smart_sources:
+            errors.append(_issue("build.source_ownership", f"SmartSlicing target does not own {source}"))
+        gui_source = f"AI/{source}"
+        if gui_sources is not None and gui_source in gui_sources:
+            errors.append(_issue("build.source_ownership", f"libslic3r_gui still owns {gui_source}"))
+        if occurrence_count != 1:
+            errors.append(
+                _issue(
+                    "build.source_ownership",
+                    f"{source} must appear exactly once in {relative_path}; found {occurrence_count}",
+                )
+            )
+    return errors
+
+
 def _cpp_files(path: Path) -> Iterable[Path]:
     if path.is_file():
         if path.suffix.lower() in {".cc", ".cpp", ".h", ".hpp"}:
@@ -1015,6 +1196,7 @@ def _dependency_issue(repo_root: Path, path: Path, line_number: int, rule: str) 
 def validate_dependency_boundaries(repo_root: Path) -> list[dict[str, str]]:
     """Scan the dependency directions that keep the feature lanes independent."""
     errors: list[dict[str, str]] = []
+    include_pattern = re.compile(r'^\s*#\s*include\s*[<"]([^">]+)[">]')
 
     model_locations = (
         repo_root / "src/slic3r/AI/ModelGeneration",
@@ -1028,18 +1210,28 @@ def validate_dependency_boundaries(repo_root: Path) -> list[dict[str, str]]:
             content = path.read_text(encoding="utf-8", errors="replace")
             for line_number, line in enumerate(content.splitlines(), 1):
                 normalized = line.replace("\\", "/")
-                allowed_contract = "SmartSlicing/IModelArtifactConsumer.hpp" in normalized
-                if ("SmartSlicing/" in normalized and not allowed_contract) or "SmartSlicing::" in normalized:
+                if "SmartSlicing/" in normalized or "SmartSlicing::" in normalized:
                     errors.append(
                         _dependency_issue(
                             repo_root,
                             path,
                             line_number,
-                            "model-generation isolation (only IModelArtifactConsumer is allowed)",
+                            "model-generation isolation",
                         )
                     )
 
-    include_pattern = re.compile(r'^\s*#\s*include\s*[<"]([^">]+)[">]')
+    contracts_location = repo_root / "src/slic3r/AI/Contracts"
+    forbidden_contract_include = re.compile(
+        r"(^|/)(ModelGeneration|SmartSlicing|GUI)(/|$)|(^|/)wx[^/]*(/|$)|tripo|openai|tools[/\\]ai",
+        re.IGNORECASE,
+    )
+    for path in _cpp_files(contracts_location):
+        content = path.read_text(encoding="utf-8", errors="replace")
+        for line_number, line in enumerate(content.splitlines(), 1):
+            match = include_pattern.match(line)
+            if match and forbidden_contract_include.search(match.group(1).replace("\\", "/")):
+                errors.append(_dependency_issue(repo_root, path, line_number, "neutral contract isolation"))
+
     forbidden_domain_include = re.compile(r"(^|/)(wx|gui)(/|$)|plater|provider|tripo|openai", re.IGNORECASE)
     for layer in ("Domain", "Application"):
         location = repo_root / "src/slic3r/AI/SmartSlicing" / layer
@@ -1089,6 +1281,8 @@ def validate(lock_path: Path, repo_root: Path, skip_git: bool = False) -> dict[s
     errors = validate_document(document)
     if not errors:
         errors.extend(validate_source_constants(document, repo_root))
+        errors.extend(validate_contract_layout(repo_root))
+        errors.extend(validate_ai_build_boundaries(repo_root))
         errors.extend(validate_dependency_boundaries(repo_root))
         errors.extend(validate_architecture_budgets(document, repo_root))
         if not skip_git:

@@ -5,6 +5,7 @@ add_executable(${_TEST_NAME}_tests
     test_filament_bitmap_utils.cpp
     test_network_versions.cpp
     test_action_source.cpp
+    test_ai_contracts.cpp
     test_ai_sidecar_client.cpp
     test_plugin_host_api.cpp
     test_plugin_capability_config.cpp
@@ -30,7 +31,7 @@ if (MSVC)
     target_link_libraries(${_TEST_NAME}_tests Setupapi.lib)
 endif ()
 
-target_link_libraries(${_TEST_NAME}_tests test_common libslic3r_gui libslic3r pybind11::embed Catch2::Catch2WithMain)
+target_link_libraries(${_TEST_NAME}_tests test_common libslic3r_gui libslic3r OrcaSlicer::AIContracts OrcaSlicer::SmartSlicing pybind11::embed Catch2::Catch2WithMain)
 set_property(TARGET ${_TEST_NAME}_tests PROPERTY FOLDER "tests")
 
 orcaslicer_copy_test_dlls()

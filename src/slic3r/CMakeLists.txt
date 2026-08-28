@@ -3,6 +3,8 @@ project(libslic3r_gui)
 
 include(PrecompiledHeader)
 
+add_subdirectory(AI)
+
 set(SLIC3R_GUI_SOURCES
     BuildInfo.hpp
     GUI/Widgets/AnimaController.hpp
@@ -332,35 +334,6 @@ set(SLIC3R_GUI_SOURCES
     GUI/AIAssistantConfig.hpp
     GUI/AIAssistantPanel.cpp
     GUI/AIAssistantPanel.hpp
-    AI/ModelGeneration/GeneratedModelArtifact.hpp
-    AI/ModelGeneration/IPrintablePaletteProvider.hpp
-    AI/SmartSlicing/Application/SmartSlicingCoordinator.cpp
-    AI/SmartSlicing/Application/SmartSlicingCoordinator.hpp
-    AI/SmartSlicing/Application/CandidatePlanningWorkflow.hpp
-    AI/SmartSlicing/Application/PrintabilityInspector.cpp
-    AI/SmartSlicing/Application/PrintabilityInspector.hpp
-    AI/SmartSlicing/Application/TrialSlicingWorkflow.hpp
-    AI/SmartSlicing/Domain/CandidateComparison.cpp
-    AI/SmartSlicing/Domain/CandidateComparison.hpp
-    AI/SmartSlicing/Domain/ParameterProposal.hpp
-    AI/SmartSlicing/Domain/ParameterProposalValidator.cpp
-    AI/SmartSlicing/Domain/ParameterProposalValidator.hpp
-    AI/SmartSlicing/Domain/PlacementCandidate.hpp
-    AI/SmartSlicing/Domain/PrintabilityReport.hpp
-    AI/SmartSlicing/Domain/RepairPlan.hpp
-    AI/SmartSlicing/Domain/SliceCandidate.hpp
-    AI/SmartSlicing/Domain/SlicingMetrics.hpp
-    AI/SmartSlicing/Domain/SmartSlicingTypes.hpp
-    AI/SmartSlicing/Domain/WorkflowState.hpp
-    AI/SmartSlicing/Domain/WorkspaceContext.hpp
-    AI/SmartSlicing/Domain/WorkspaceRevision.hpp
-    AI/SmartSlicing/Domain/WorkflowResourceBudget.hpp
-    AI/SmartSlicing/IModelArtifactConsumer.hpp
-    AI/SmartSlicing/Ports/IOfficialSliceGateway.hpp
-    AI/SmartSlicing/Ports/IOrcaWorkspace.hpp
-    AI/SmartSlicing/Ports/IParameterAdvisor.hpp
-    AI/SmartSlicing/Ports/ITrialSliceExecutor.hpp
-    AI/SmartSlicing/Ports/IWorkflowRuntimeStore.hpp
     GUI/AI/SmartSlicing/SmartSlicingPanel.cpp
     GUI/AI/SmartSlicing/SmartSlicingPanel.hpp
     GUI/AI/SmartSlicing/SmartSlicingPresenter.cpp
@@ -930,7 +903,7 @@ else()
     set(_opengl_link_lib OpenGL::GL)
 endif()
 
-target_link_libraries(libslic3r_gui libslic3r cereal::cereal imgui imguizmo minilzo libvgcode md4c-html glad ${_opengl_link_lib} hidapi mdns ${wxWidgets_LIBRARIES} glfw libcurl OpenSSL::SSL OpenSSL::Crypto noise::noise pybind11::embed)
+target_link_libraries(libslic3r_gui libslic3r OrcaSlicer::AIContracts OrcaSlicer::SmartSlicing cereal::cereal imgui imguizmo minilzo libvgcode md4c-html glad ${_opengl_link_lib} hidapi mdns ${wxWidgets_LIBRARIES} glfw libcurl OpenSSL::SSL OpenSSL::Crypto noise::noise pybind11::embed)
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # Linux finds wxWidgets in module mode, whose include dirs and definitions

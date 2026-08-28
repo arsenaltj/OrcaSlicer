@@ -1,7 +1,7 @@
 #pragma once
 
-#include "slic3r/AI/ModelGeneration/IPrintablePaletteProvider.hpp"
-#include "slic3r/AI/SmartSlicing/IModelArtifactConsumer.hpp"
+#include "slic3r/AI/Contracts/IModelArtifactConsumer.hpp"
+#include "slic3r/AI/Contracts/IPrintablePaletteProvider.hpp"
 
 #include <functional>
 

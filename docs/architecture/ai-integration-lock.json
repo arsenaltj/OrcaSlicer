@@ -52,7 +52,7 @@
   },
   "architecture_contract": {
     "pattern": "desktop_modular_monolith",
-    "migration_phase": "baseline_guarded",
+    "migration_phase": "neutral_contracts",
     "target_contract_root": "src/slic3r/AI/Contracts",
     "composition_roots": [
       "CMakeLists.txt",
@@ -119,6 +119,7 @@
       "scripts/verify_ai_integration.py",
       "src/CMakeLists.txt",
       "src/dev-utils/BaseException.cpp",
+      "src/slic3r/AI/CMakeLists.txt",
       "src/slic3r/AI/Contracts",
       "src/slic3r/BuildInfo.cpp.in",
       "src/slic3r/BuildInfo.hpp",
@@ -171,9 +172,9 @@
       "src/slic3r/GUI/AI/SmartSlicing"
     ],
     "allowed_cross_feature_contracts": [
-      "src/slic3r/AI/ModelGeneration/GeneratedModelArtifact.hpp",
-      "src/slic3r/AI/ModelGeneration/IPrintablePaletteProvider.hpp",
-      "src/slic3r/AI/SmartSlicing/IModelArtifactConsumer.hpp",
+      "src/slic3r/AI/Contracts/GeneratedModelArtifact.hpp",
+      "src/slic3r/AI/Contracts/IModelArtifactConsumer.hpp",
+      "src/slic3r/AI/Contracts/IPrintablePaletteProvider.hpp",
       "src/slic3r/GUI/AI/Orca/OrcaWorkspaceAdapter.hpp"
     ]
   }

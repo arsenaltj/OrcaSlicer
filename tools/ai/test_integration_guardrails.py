@@ -32,8 +32,94 @@ class IntegrationGuardrailTests(unittest.TestCase):
         architecture = self.document["architecture_contract"]
 
         self.assertEqual("desktop_modular_monolith", architecture["pattern"])
-        self.assertEqual("baseline_guarded", architecture["migration_phase"])
+        self.assertEqual("neutral_contracts", architecture["migration_phase"])
         self.assertEqual("src/slic3r/AI/Contracts", architecture["target_contract_root"])
+        self.assertEqual(
+            {
+                "src/slic3r/AI/Contracts/GeneratedModelArtifact.hpp",
+                "src/slic3r/AI/Contracts/IModelArtifactConsumer.hpp",
+                "src/slic3r/AI/Contracts/IPrintablePaletteProvider.hpp",
+                "src/slic3r/GUI/AI/Orca/OrcaWorkspaceAdapter.hpp",
+            },
+            set(self.document["boundaries"]["allowed_cross_feature_contracts"]),
+        )
+
+    def test_repository_neutral_contract_layout_passes(self) -> None:
+        self.assertEqual([], GUARDRAILS.validate_contract_layout(REPO_ROOT))
+
+    def test_contract_layout_rejects_nonforwarding_legacy_header(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            fixtures = {
+                "src/slic3r/AI/Contracts/GeneratedModelArtifact.hpp": "#pragma once\n",
+                "src/slic3r/AI/Contracts/IPrintablePaletteProvider.hpp": "#pragma once\n",
+                "src/slic3r/AI/Contracts/IModelArtifactConsumer.hpp": "#pragma once\n",
+                "src/slic3r/AI/ModelGeneration/GeneratedModelArtifact.hpp": (
+                    '#pragma once\n\n#include "slic3r/AI/ModelGeneration/Other.hpp"\n'
+                ),
+                "src/slic3r/AI/ModelGeneration/IPrintablePaletteProvider.hpp": (
+                    '#pragma once\n\n#include "slic3r/AI/Contracts/IPrintablePaletteProvider.hpp"\n'
+                ),
+                "src/slic3r/AI/SmartSlicing/IModelArtifactConsumer.hpp": (
+                    '#pragma once\n\n#include "slic3r/AI/Contracts/IModelArtifactConsumer.hpp"\n'
+                ),
+                "src/slic3r/GUI/ModelGenerationPanel.hpp": (
+                    '#include "slic3r/AI/Contracts/IModelArtifactConsumer.hpp"\n'
+                    '#include "slic3r/AI/Contracts/IPrintablePaletteProvider.hpp"\n'
+                ),
+                "src/slic3r/GUI/AI/Orca/OrcaWorkspaceAdapter.hpp": (
+                    '#include "slic3r/AI/Contracts/IModelArtifactConsumer.hpp"\n'
+                    '#include "slic3r/AI/Contracts/IPrintablePaletteProvider.hpp"\n'
+                ),
+            }
+            for relative_path, content in fixtures.items():
+                path = root / relative_path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+
+            errors = GUARDRAILS.validate_contract_layout(root)
+
+        self.assertEqual(1, len(errors))
+        self.assertEqual("contract.forwarder", errors[0]["code"])
+        self.assertIn("GeneratedModelArtifact.hpp", errors[0]["message"])
+
+    def test_repository_ai_build_boundaries_pass(self) -> None:
+        self.assertEqual([], GUARDRAILS.validate_ai_build_boundaries(REPO_ROOT))
+
+    def test_build_boundary_rejects_duplicate_gui_source_ownership(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            ai_path = root / "src/slic3r/AI/CMakeLists.txt"
+            ai_path.parent.mkdir(parents=True, exist_ok=True)
+            ai_path.write_text(
+                "add_library(orcaslicer_ai_contracts INTERFACE)\n"
+                "add_library(OrcaSlicer::AIContracts ALIAS orcaslicer_ai_contracts)\n"
+                "target_include_directories(orcaslicer_ai_contracts INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/../..)\n"
+                "target_link_libraries(orcaslicer_ai_contracts INTERFACE boost_headeronly)\n"
+                "set(ORCA_AI_SMART_SLICING_SOURCES\n"
+                "    SmartSlicing/Application/SmartSlicingCoordinator.cpp\n"
+                "    SmartSlicing/Application/PrintabilityInspector.cpp\n"
+                "    SmartSlicing/Domain/CandidateComparison.cpp\n"
+                "    SmartSlicing/Domain/ParameterProposalValidator.cpp\n"
+                ")\n"
+                "add_library(orcaslicer_ai_smart_slicing STATIC ${ORCA_AI_SMART_SLICING_SOURCES})\n"
+                "add_library(OrcaSlicer::SmartSlicing ALIAS orcaslicer_ai_smart_slicing)\n"
+                "target_link_libraries(orcaslicer_ai_smart_slicing PUBLIC OrcaSlicer::AIContracts)\n",
+                encoding="utf-8",
+            )
+            gui_path = root / "src/slic3r/CMakeLists.txt"
+            gui_path.write_text(
+                "add_subdirectory(AI)\n"
+                "set(SLIC3R_GUI_SOURCES\n"
+                "    AI/SmartSlicing/Application/SmartSlicingCoordinator.cpp\n"
+                ")\n"
+                "target_link_libraries(libslic3r_gui OrcaSlicer::AIContracts OrcaSlicer::SmartSlicing)\n",
+                encoding="utf-8",
+            )
+
+            errors = GUARDRAILS.validate_ai_build_boundaries(root)
+
+        self.assertTrue(any(error["code"] == "build.source_ownership" for error in errors))
 
     def test_repository_architecture_budgets_pass(self) -> None:
         self.assertEqual([], GUARDRAILS.validate_architecture_budgets(self.document, REPO_ROOT))
@@ -214,6 +300,9 @@ class IntegrationGuardrailTests(unittest.TestCase):
                 "src/slic3r/GUI/ModelGenerationPanel.hpp": (
                     '#include "slic3r/AI/SmartSlicing/IModelArtifactConsumer.hpp"\n'
                 ),
+                "src/slic3r/AI/Contracts/Bad.hpp": (
+                    '#include "slic3r/AI/SmartSlicing/Domain/SmartSlicingTypes.hpp"\n'
+                ),
                 "src/slic3r/AI/SmartSlicing/Domain/Bad.hpp": "#include <wx/panel.h>\n",
                 "src/slic3r/AI/SmartSlicing/Application/Bad.cpp": '#include "tripo_client.hpp"\n',
                 "src/slic3r/GUI/AI/SmartSlicing/Bad.cpp": (
@@ -227,10 +316,11 @@ class IntegrationGuardrailTests(unittest.TestCase):
 
             errors = GUARDRAILS.validate_dependency_boundaries(root)
 
-        self.assertEqual(5, len(errors))
+        self.assertEqual(7, len(errors))
         self.assertTrue(all(error["code"] == "boundary.dependency" for error in errors))
         messages = "\n".join(error["message"] for error in errors)
         self.assertIn("model-generation isolation", messages)
+        self.assertIn("neutral contract isolation", messages)
         self.assertIn("Domain/Application include isolation", messages)
         self.assertIn("SmartSlicing GUI provider/model-panel isolation", messages)
 
@@ -278,6 +368,7 @@ class IntegrationGuardrailTests(unittest.TestCase):
         self.assertTrue(
             {
                 "architecture documentation CODEOWNER",
+                "AI composition CODEOWNER",
                 "neutral AI contract CODEOWNER",
             }.issubset(labels)
         )
