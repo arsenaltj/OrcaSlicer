@@ -10,7 +10,7 @@
   "feature_sources": {
     "model_generation": {
       "branch": "codex/model-generation",
-      "sha": "db81edc2b028c37822c997e99eb88c0465089f0c"
+      "sha": "5081891766e64a35ad3ff586d722499a80e5e8d6"
     },
     "smart_slicing": {
       "branch": "codex/smart-slicing",
@@ -19,14 +19,19 @@
   },
   "integration_receipts": {
     "model_generation": {
-      "source_sha": "db81edc2b028c37822c997e99eb88c0465089f0c",
-      "integration_commit": "c1cdfece8752d24637ec9d62edc70f2101455b1f",
+      "source_sha": "5081891766e64a35ad3ff586d722499a80e5e8d6",
+      "integration_commit": "3c0cfe33be31cea39a4343f1c3c91ea12484ec39",
       "method": "verified_git_object_subset",
       "verified_git_objects": {
-        "src/slic3r/AI/ModelGeneration": "f12bb0e8d725bf428498639ae47f19abd0527e95",
-        "src/slic3r/GUI/AIModelGenerationClient.cpp": "a8a67cc4ffc4d7ae1097801fdf534c7257d32810",
-        "src/slic3r/GUI/AIModelGenerationClient.hpp": "50f3c9b8749199ca396fa2e00ccd407881c0f90b",
-        "src/slic3r/GUI/ModelGenerationPanel.hpp": "d3b3a42cb4a6c32f7a121ad8a4cb71d2129af5ec"
+        "src/slic3r/GUI/AIModelGenerationClient.hpp": "a0e3e8e81ad8abc0b02f6699599d0bd1f39642ac",
+        "tools/ai/collect_commons_benchmark_sources.py": "69ec390aed39ca6d49aaca6273fec4a3c6501217",
+        "tools/ai/image2_quality_benchmark.py": "d19f7a7eed30830014d4569b476d5a47c7015f57",
+        "tools/ai/model_input_image_quality.py": "08e22b389001aa60df33bde6c84e2765c5f79915",
+        "tools/ai/test_collect_commons_benchmark_sources.py": "f8a4291e93e815d0a21233c339a4b8fdb6489a91",
+        "tools/ai/test_image2_quality_benchmark.py": "d4e8a9baab157e3d5c34e33526211db90bef439a",
+        "tools/ai/test_image_path_stability.py": "383e66e53cd5d40e620443ac4986796e8e76ec88",
+        "tools/ai/test_model_input_image_quality.py": "cc9ae4fb564114777a6947e9f4b32b4006f2d62f",
+        "tools/ai/test_printable_sidecar_pipeline.py": "6378b63c6611f511e940a5b591cc365538e153b2"
       }
     },
     "smart_slicing": {
@@ -149,10 +154,15 @@
     ],
     "model_generation_owned_paths": [
       "src/slic3r/AI/ModelGeneration",
+      "src/slic3r/GUI/AI/ModelGeneration",
       "src/slic3r/GUI/AIModelGenerationClient.cpp",
       "src/slic3r/GUI/AIModelGenerationClient.hpp",
       "src/slic3r/GUI/ModelGenerationPanel.cpp",
       "src/slic3r/GUI/ModelGenerationPanel.hpp",
+      "tools/ai/collect_commons_benchmark_sources.py",
+      "tools/ai/image2_quality_benchmark.py",
+      "tools/ai/model_input_image_quality.py",
+      "tools/ai/model_job_support.py",
       "tools/ai/model_provider_gateway.py",
       "tools/ai/model_refinement.py",
       "tools/ai/openai_preprocessor.py",
