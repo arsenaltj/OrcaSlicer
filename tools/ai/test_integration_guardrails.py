@@ -260,7 +260,7 @@ class IntegrationGuardrailTests(unittest.TestCase):
         errors, receipts = GUARDRAILS.validate_integration_receipts(self.document, REPO_ROOT, head)
 
         self.assertEqual([], errors)
-        self.assertEqual(4, len(receipts["model_generation"]["verified_paths"]))
+        self.assertEqual(9, len(receipts["model_generation"]["verified_paths"]))
         self.assertEqual(2, len(receipts["smart_slicing"]["verified_paths"]))
 
     def test_rejects_duplicate_development_ports(self) -> None:
