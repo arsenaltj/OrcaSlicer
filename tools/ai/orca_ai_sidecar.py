@@ -40,6 +40,13 @@ from openai_preprocessor import (
     recommend_printable_palette,
 )
 from printable_image_pipeline import PrintSettings, PrintableImageError, process_printable_image
+from model_input_image_quality import ModelInputImageQualityError
+from model_job_support import (
+    assess_job_model_reference as _assess_job_model_reference, file_info as _file_info,
+    generation_prompt as _generation_prompt, image_type as _image_type,
+    model_input_quality_message as _model_input_quality_message, preprocess_failure_payload,
+    printable_preview_message as _printable_preview_message, stored_image_type as _stored_image_type,
+)
 from model_provider_gateway import (
     ModelProviderGateway,
     ModelTaskRequest,
@@ -363,6 +370,7 @@ class Job:
     subject_mask_path: Path | None = None
     mask_paths: dict[str, Path] = field(default_factory=dict)
     image_metrics: dict[str, Any] = field(default_factory=dict)
+    preprocess_failure: dict[str, Any] = field(default_factory=dict)
     artifact_path: Path | None = None
     artifact_format: str = ""
     palette_recommendation: dict[str, Any] = field(default_factory=dict)
@@ -627,14 +635,6 @@ def _multipart_palette_roles(value: Any, palette: tuple[str, ...]) -> dict[str, 
     except json.JSONDecodeError:
         raise RequestError("invalid_palette_roles", "palette_roles must be valid JSON.", 400) from None
     return _normalize_palette_roles(parsed, palette)
-
-
-def _image_type(data: bytes) -> str | None:
-    if data.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "image/png"
-    if data.startswith(b"\xff\xd8\xff"):
-        return "image/jpeg"
-    return None
 
 
 @dataclass(frozen=True)
@@ -925,6 +925,7 @@ def _persist_job(job: Job, *, touch: bool = True) -> None:
         "subject_mask_path": _job_path_value(job, job.subject_mask_path),
         "mask_paths": {key: _job_path_value(job, path) for key, path in job.mask_paths.items()},
         "image_metrics": job.image_metrics,
+        "preprocess_failure": job.preprocess_failure,
         "artifact_path": _job_path_value(job, job.artifact_path),
         "artifact_format": job.artifact_format,
         "palette_recommendation": job.palette_recommendation,
@@ -1013,6 +1014,8 @@ def _load_job(directory: Path) -> Job | None:
         }
     raw_metrics = payload.get("image_metrics", {})
     job.image_metrics = raw_metrics if isinstance(raw_metrics, dict) else {}
+    raw_preprocess_failure = payload.get("preprocess_failure", {})
+    job.preprocess_failure = raw_preprocess_failure if isinstance(raw_preprocess_failure, dict) else {}
     job.artifact_path = _job_file(job, payload.get("artifact_path"))
     job.artifact_format = str(payload.get("artifact_format", ""))
     job.palette_recommendation = palette_recommendation
@@ -1053,6 +1056,16 @@ def _restore_jobs(*, resume_jobs: bool = True) -> list[Job]:
                 )
             except ValueError:
                 setattr(job, attribute, None)
+        if job.state == "awaiting_confirmation" and (job.model_reference_path or job.preview_path) is not None:
+            try:
+                quality = _assess_job_model_reference(job)
+                if not bool(quality.get("model_input_eligible", False)):
+                    job.message = _model_input_quality_message(quality)
+            except ModelInputImageQualityError:
+                job.state = "failed"
+                job.phase = "failed"
+                job.message = "The saved image preview could not be checked. Generate the preview again."
+                job.progress = 0
         if (
             job.source == "image"
             and job.state in {"recommending_palette", "preprocessing", "awaiting_palette_confirmation", "awaiting_confirmation"}
@@ -1177,26 +1190,6 @@ def _adopt_legacy_completed_job(job_id: str) -> Job | None:
     return job
 
 
-def _file_info(path: Path | None) -> tuple[bool, int]:
-    if path is None:
-        return False, 0
-    try:
-        size = path.stat().st_size
-    except OSError:
-        return False, 0
-    return size > 0, size
-
-
-def _stored_image_type(path: Path | None) -> str:
-    if path is None:
-        return ""
-    try:
-        with path.open("rb") as stream:
-            return _image_type(stream.read(16)) or ""
-    except OSError:
-        return ""
-
-
 def _read_job_report(job: Job, filename: str) -> dict[str, Any]:
     path = job.directory / filename
     try:
@@ -1235,6 +1228,13 @@ def _public_job(job: Job) -> dict[str, Any]:
             "category": category if isinstance(category, str) else "",
             "retryable": latest_attempt.get("provider_error_retryable") is True,
             "ambiguous": latest_attempt.get("provider_error_ambiguous") is True,
+        }
+    elif job.preprocess_failure:
+        provider_failure = {
+            "code": str(job.preprocess_failure.get("code", "")),
+            "category": "image_preprocessing",
+            "retryable": job.preprocess_failure.get("retryable") is True,
+            "ambiguous": job.preprocess_failure.get("ambiguous") is True,
         }
     return {
         "id": job.id,
@@ -1354,21 +1354,9 @@ def _fail_job(job: Job, message: str) -> None:
         _persist_job(job)
 
 
-def _generation_prompt(prompt: str, palette: tuple[str, ...]) -> str:
-    suffix = (
-        " Generate a watertight printable model with a stable flat base. Preserve meaningful separate parts "
-        "and material regions in their original relative positions; do not create unintended floating debris, "
-        "internal shells, holes, or non-manifold geometry."
-    )
-    if palette:
-        suffix += " Use only these printable filament colors: " + ", ".join(palette) + "."
-    else:
-        suffix += " Preserve coherent natural colors with broad, clean material regions."
-    max_prefix_bytes = MAX_PROMPT_BYTES - len(suffix.encode("utf-8"))
-    prefix = prompt.strip().encode("utf-8")[:max(0, max_prefix_bytes)].decode("utf-8", errors="ignore").rstrip()
-    return prefix + suffix
-
-
+def _fail_preprocess_job(job: Job, error: OpenAIPreprocessorError) -> None:
+    job.preprocess_failure = preprocess_failure_payload(error)
+    _fail_job(job, str(error))
 def _is_warm_skin_color(color: tuple[int, int, int]) -> bool:
     red, green, blue = color
     return (
@@ -1666,18 +1654,6 @@ def _apply_printable_image_pipeline(job: Job, raw_preview: Path) -> dict[str, in
     return result.palette_usage
 
 
-def _printable_preview_message(job: Job, fallback: str) -> str:
-    if job.palette and not bool(job.image_metrics.get("palette_quality_ok", True)):
-        subject_ratio = float(job.image_metrics.get("printable_subject_area_ratio", 0.0))
-        continuity = float(job.image_metrics.get("largest_subject_component_ratio", 0.0))
-        if subject_ratio < 0.18:
-            return "The printable subject is too small in the preview; regenerate with a larger subject."
-        if continuity < 0.90:
-            return "The printable subject is disconnected; regenerate with one connected subject."
-        return "The printable preview failed its geometry quality check; regenerate the preview."
-    return fallback
-
-
 def _recommend_palette_job(job: Job) -> None:
     try:
         _stop_boundary(job)
@@ -1698,6 +1674,7 @@ def _recommend_palette_job(job: Job) -> None:
         with _JOBS_LOCK:
             job.palette_recommendation = normalized
             job.palette_recommendation_confirmed = False
+            job.preprocess_failure = {}
             job.state = "awaiting_palette_confirmation"
             job.phase = "awaiting_palette_confirmation"
             job.message = "Review and confirm the recommended design colors."
@@ -1705,7 +1682,9 @@ def _recommend_palette_job(job: Job) -> None:
             _persist_job(job)
     except JobStopped:
         pass
-    except (OpenAIPreprocessorError, RequestError) as exc:
+    except OpenAIPreprocessorError as exc:
+        _fail_preprocess_job(job, exc)
+    except RequestError as exc:
         _fail_job(job, str(exc))
     except Exception:
         _fail_job(job, "AI printable color recommendation failed.")
@@ -1716,7 +1695,11 @@ def _recommend_palette_job(job: Job) -> None:
 def _preprocess_text_job(job: Job, prompt: str) -> None:
     try:
         _stop_boundary(job)
-        prepared = _generation_prompt(preprocess_text(prompt, job.palette, job.style, job.custom_style), job.palette)
+        prepared = _generation_prompt(
+            preprocess_text(prompt, job.palette, job.style, job.custom_style),
+            job.palette,
+            max_prompt_bytes=MAX_PROMPT_BYTES,
+        )
         if not prepared or len(prepared.encode("utf-8")) > MAX_PROMPT_BYTES:
             raise OpenAIPreprocessorError("The prepared prompt is empty or exceeds the 2000-byte limit.")
         raw_preview = job.directory / "style-preview-raw.png"
@@ -1747,6 +1730,7 @@ def _preprocess_text_job(job: Job, prompt: str) -> None:
             minimum_edge=MIN_MODEL_REFERENCE_EDGE,
             require_visual_detail=True,
         )
+        _assess_job_model_reference(job)
         (job.directory / "preview-colors.json").write_text(
             json.dumps(
                 {
@@ -1767,6 +1751,7 @@ def _preprocess_text_job(job: Job, prompt: str) -> None:
             if job.stop_event.is_set():
                 raise JobStopped()
             job.prepared_prompt = prepared
+            job.preprocess_failure = {}
             job.state = "awaiting_confirmation"
             job.phase = "awaiting_confirmation"
             job.message = _printable_preview_message(job, "Review the prepared image before generation.")
@@ -1777,10 +1762,13 @@ def _preprocess_text_job(job: Job, prompt: str) -> None:
         _fail_job(job, str(exc))
     except OpenAIPreprocessorError as exc:
         if not _preprocess_fallback_enabled():
-            _fail_job(job, str(exc))
+            _fail_preprocess_job(job, exc)
         else:
             with _JOBS_LOCK:
-                job.prepared_prompt = _generation_prompt(prompt, job.palette)
+                job.prepared_prompt = _generation_prompt(
+                    prompt, job.palette, max_prompt_bytes=MAX_PROMPT_BYTES
+                )
+                job.preprocess_failure = {}
                 job.state = "awaiting_confirmation"
                 job.phase = "awaiting_confirmation"
                 job.message = "Preprocessing is unavailable; review the original prompt before generation."
@@ -1825,6 +1813,7 @@ def _preprocess_image_job(job: Job, input_path: Path, instruction: str) -> None:
             minimum_edge=MIN_MODEL_REFERENCE_EDGE,
             require_visual_detail=True,
         )
+        _assess_job_model_reference(job)
         (job.directory / "preview-colors.json").write_text(
             json.dumps(
                 {
@@ -1846,6 +1835,7 @@ def _preprocess_image_job(job: Job, input_path: Path, instruction: str) -> None:
                 raise JobStopped()
             job.preview_path = preview
             job.preview_content_type = validated.content_type
+            job.preprocess_failure = {}
             job.state = "awaiting_confirmation"
             job.phase = "awaiting_confirmation"
             job.message = _printable_preview_message(job, "Review the prepared image before generation.")
@@ -1855,7 +1845,7 @@ def _preprocess_image_job(job: Job, input_path: Path, instruction: str) -> None:
     except ValueError as exc:
         _fail_job(job, str(exc))
     except OpenAIPreprocessorError as exc:
-        _fail_job(job, str(exc))
+        _fail_preprocess_job(job, exc)
     except Exception:
         _fail_job(job, "Image preprocessing failed.")
     finally:
@@ -4607,6 +4597,16 @@ class Handler(BaseHTTPRequestHandler):
                         f"The generated image is not suitable for 3D input: {exc}",
                         409,
                     ) from None
+                try:
+                    model_input_quality = _assess_job_model_reference(job)
+                except ModelInputImageQualityError as exc:
+                    raise RequestError("invalid_model_reference", str(exc), 409) from None
+                if not bool(model_input_quality.get("model_input_eligible", False)):
+                    raise RequestError(
+                        "model_input_quality_failed",
+                        _model_input_quality_message(model_input_quality),
+                        409,
+                    )
             if not _MODEL_PROVIDER_GATEWAY.model_generation_available():
                 raise RequestError("feature_unavailable", "Model generation is not configured.", 503)
             authorization = PaidTaskAuthorization.confirmed(f"{job.id}:model:1")

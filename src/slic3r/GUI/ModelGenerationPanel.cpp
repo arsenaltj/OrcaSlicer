@@ -2,6 +2,7 @@
 
 #include "3DScene.hpp"
 #include "AI/Model/VertexColorRegionEditor.hpp"
+#include "AI/ModelGeneration/ModelGenerationStatusText.hpp"
 #include "AISidecarClient.hpp"
 #include "GUI.hpp"
 #include "GUI_App.hpp"
@@ -65,6 +66,7 @@
 #include <utility>
 
 namespace Slic3r::GUI {
+using namespace ModelGenerationStatusText;
 namespace {
 
 constexpr int POLL_TIMER_ID = wxID_HIGHEST + 913;
@@ -377,76 +379,6 @@ wxStaticText* section_label(wxWindow* parent, const wxString& text)
     label->SetFont(font);
     label->SetForegroundColour(wxColour(40, 55, 58));
     return label;
-}
-
-wxString localized_service_error(const std::string& error)
-{
-    wxString message = from_u8(error);
-    if (message.Contains("Could not connect to the preprocessing service"))
-        return _L("无法连接图片生成服务，请检查网络、代理和服务地址后重试。");
-    if (message.Contains("preprocessing service is temporarily unavailable"))
-        return _L("图片生成服务暂时不可用，请稍后重试。");
-    if (message.Contains("preprocessing service is rate limiting"))
-        return _L("图片生成请求过于频繁，请稍后重试。");
-    if (message.Contains("preprocessing service rejected the request"))
-        return _L("图片生成服务拒绝了请求，请检查图片和提示词后重试。");
-    if (message.Contains("rejected the request") || message.Contains("Tripo rejected"))
-        return _L("模型服务拒绝了当前图片或提示词。请调整内容后手动重试；程序不会自动创建新的付费任务。");
-    if (message.Contains("rate limiting") || message.Contains("rate limited"))
-        return _L("模型服务当前请求过多，请稍后手动重试；程序不会自动创建新的付费任务。");
-    if (message.Contains("deadline expired") || message.Contains("timed out"))
-        return _L("模型服务响应超时。请先确认服务端没有遗留任务，再手动重试以避免重复计费。");
-    if (message.Contains("not reachable") || message.Contains("Couldn't connect") ||
-        message.Contains("Failed to connect") || message.Contains("Connection refused"))
-        return _L("无法连接本地 AI 服务，请确认正式服务已启动后重试。");
-    return _L("操作失败：") + message;
-}
-
-wxString localized_job_status(const AIModelGenerationClient::JobStatus& status)
-{
-    if (status.state == "recommending_palette")
-        return _L("AI 正在分析主体并推荐四种目标色...");
-    if (status.state == "awaiting_palette_confirmation")
-        return _L("AI 配色已准备好，请修改或确认后生成图片预览。");
-    if (status.state == "preprocessing")
-        return _L("AI 正在准备提示词和图片预览...");
-    if (status.state == "awaiting_confirmation")
-        return status.palette_quality_ok
-            ? _L("预览已准备完成，请确认后继续生成 3D 模型。")
-            : _L("预览未通过打印性检查，请按提示调整后重新生成。");
-    if (status.state == "queued")
-        return _L("3D 生成任务已排队...");
-    if (status.state == "running" && status.phase == "generating")
-        return _L("AI 正在生成 3D 模型...");
-    if (status.state == "running" && status.phase == "converting")
-        return _L("正在转换并优化彩色低模 OBJ...");
-    if (status.state == "running" && status.phase == "downloading_artifact")
-        return _L("正在整理模型文件...");
-    if (status.state == "ready")
-        return _L("3D 模型生成完成。");
-    if (status.state == "stopping")
-        return _L("正在停止生成任务...");
-    if (status.state == "cancelled")
-        return _L("生成任务已取消。");
-    if (status.state == "failed") {
-        wxString message;
-        if (status.provider_error_ambiguous)
-            message = _L("模型服务提交结果不明确，远端可能已创建付费任务。为避免重复计费，程序不会自动重试；请先到服务端确认任务状态。");
-        else if (status.provider_error_code == "provider_rejected")
-            message = _L("模型服务拒绝了当前图片或提示词。请调整受限内容后手动重试；程序不会自动创建新的付费任务。");
-        else if (status.provider_error_code == "provider_rate_limited")
-            message = _L("模型服务当前请求过多，请稍后手动重试；程序不会自动创建新的付费任务。");
-        else if (status.provider_error_code == "provider_timeout")
-            message = _L("模型服务响应超时。请确认服务端没有遗留任务后再手动重试，避免重复计费。");
-        else if (status.provider_error_code == "provider_unavailable")
-            message = _L("模型服务暂时不可用，请稍后手动重试；程序不会自动创建新的付费任务。");
-        else
-            message = status.message.empty() ? _L("生成任务失败。") : localized_service_error(status.message);
-        if (!status.id.empty())
-            message += "\n" + _L("诊断 ID：") + from_u8(status.id);
-        return message;
-    }
-    return status.message.empty() ? _L("正在处理...") : from_u8(status.message);
 }
 
 wxString model_quality_code_label(const std::string& code)
@@ -1196,6 +1128,8 @@ void ModelGenerationPanel::restore_job(AIModelGenerationClient::JobStatus status
     m_job_style = status.style;
     m_job_custom_style = status.custom_style;
     m_palette_quality_ok = status.palette_quality_ok;
+    m_model_input_eligible = status.model_input_eligible;
+    m_model_input_primary_blocker = status.model_input_blockers.empty() ? std::string() : status.model_input_blockers.front();
     m_meaningful_palette_count = status.meaningful_palette_count;
     m_meaningful_subject_color_count = status.meaningful_subject_color_count;
     m_job_print_settings = status.print_settings;
@@ -2867,6 +2801,8 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
     m_preview_changed_pixel_ratio = status.changed_pixel_ratio;
     m_preview_minimum_feature_px = status.minimum_feature_px;
     m_palette_quality_ok = status.palette_quality_ok;
+    m_model_input_eligible = status.model_input_eligible;
+    m_model_input_primary_blocker = status.model_input_blockers.empty() ? std::string() : status.model_input_blockers.front();
     m_meaningful_palette_count = status.meaningful_palette_count;
     m_meaningful_subject_color_count = status.meaningful_subject_color_count;
     if (m_ready) {
@@ -2896,7 +2832,9 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
         m_result_summary->SetLabel(
             _L("AI 推荐配色已准备好。可以替换、删除或补充颜色；确认后再匹配实际耗材。"));
     } else if (m_awaiting_confirmation) {
-        if (status.preview_ready && !status.palette.empty() && !status.palette_quality_ok) {
+        if (status.preview_ready && !status.model_input_eligible) {
+            m_result_summary->SetLabel(model_input_quality_label(m_model_input_primary_blocker));
+        } else if (status.preview_ready && !status.palette.empty() && !status.palette_quality_ok) {
             const int required_colors = std::min<int>(status.palette.size(), 3);
             if (status.meaningful_subject_color_count < required_colors) {
                 m_result_summary->SetLabel(wxString::Format(
@@ -3399,6 +3337,7 @@ void ModelGenerationPanel::refresh_controls()
     const bool show_review = m_awaiting_confirmation && !image_job && !stale_job;
     const bool local_artifact = is_nonempty_obj(m_artifact_path) ||
         (!m_job_id.empty() && is_nonempty_obj(temp_path(m_job_id, "obj")));
+    const bool preview_quality_ok = m_palette_quality_ok && m_model_input_eligible;
 
     m_preprocess->SetLabel(ai_palette_source && m_awaiting_palette_confirmation && !stale_job
                                ? _L("采用配色并生成预览")
@@ -3406,7 +3345,7 @@ void ModelGenerationPanel::refresh_controls()
                                ? _L("AI 推荐配色")
                                : ai_palette_source && m_palette_recommendation_confirmed
                                ? _L("使用当前配色生成预览")
-                               : m_awaiting_confirmation && !m_palette_quality_ok
+                               : m_awaiting_confirmation && !preview_quality_ok
                                ? _L("重新生成图片预览")
                                : image_input && printable_colors ? _L("生成多色图片预览")
                                : image_input ? _L("生成风格图片预览")
@@ -3465,7 +3404,7 @@ void ModelGenerationPanel::refresh_controls()
                          (ai_palette_source || !printable_colors || !m_palette.empty()));
     m_prepared_prompt->Enable(m_service_available && !m_busy && show_review);
     m_generate->Enable(m_service_available && !m_busy && m_awaiting_confirmation && !stale_job &&
-                       m_palette_quality_ok &&
+                       preview_quality_ok &&
                        (!image_job || m_style_preview_ready));
     m_stop->Enable(m_busy && !m_job_id.empty() && (local_model_loading || m_service_available));
     m_retry_service->Enable(!m_service_available && !m_busy && static_cast<bool>(m_service_retry_handler));
@@ -3487,9 +3426,9 @@ void ModelGenerationPanel::refresh_controls()
 
     const bool show_preprocess = m_service_available && !m_busy && (!m_ready || stale_job) &&
         (m_job_id.empty() || stale_job || (!m_awaiting_confirmation && !m_ready) ||
-         (m_awaiting_confirmation && !m_palette_quality_ok));
+         (m_awaiting_confirmation && !preview_quality_ok));
     m_preprocess->Show(show_preprocess);
-    m_generate->Show(!m_busy && m_awaiting_confirmation && !stale_job && m_palette_quality_ok);
+    m_generate->Show(!m_busy && m_awaiting_confirmation && !stale_job && preview_quality_ok);
     m_stop->Show(m_busy);
     m_retry_service->Show(!m_service_available && !m_busy);
     m_import->Show(!m_busy && m_ready && !stale_job);
@@ -3507,9 +3446,9 @@ void ModelGenerationPanel::refresh_controls()
                                        ? _L("输入已变化：重新推荐或确认继续使用当前配色")
                                        : _L("修改或确认 AI 推荐的设计目标色"));
     else if (m_awaiting_confirmation && !stale_job)
-        m_workflow_steps->SetLabel(m_palette_quality_ok
+        m_workflow_steps->SetLabel(preview_quality_ok
                                        ? _L("确认右侧图片效果，并选择 3D 模型精度")
-                                       : _L("当前配色未通过检查，请重新生成图片"));
+                                       : _L("当前图片未通过 3D 输入检查，请重新生成"));
     else if (!m_busy)
         m_workflow_steps->SetLabel(custom_style_selected && !custom_style_ready
                                        ? _L("请补充自定义风格描述")
@@ -4524,6 +4463,8 @@ void ModelGenerationPanel::reset(bool remove_remote)
     m_strict_preview_available = false;
     m_heatmap_available = false;
     m_palette_quality_ok = true;
+    m_model_input_eligible = true;
+    m_model_input_primary_blocker.clear();
     m_meaningful_palette_count = 0;
     m_meaningful_subject_color_count = 0;
     m_generation_progress->SetValue(0);

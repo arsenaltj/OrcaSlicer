@@ -1,0 +1,457 @@
+{
+  "schema_version": 1,
+  "description": "One hundred public-image inputs derived from high-frequency maker-community use cases.",
+  "commons_categories": {
+    "portrait_gandhi_glasses": ["Mahatma Gandhi in photographs"],
+    "portrait_liliuokalani": ["Liliʻuokalani"],
+    "pose_chaplin_cane": ["Charlie Chaplin"],
+    "pose_isadora_duncan": ["Isadora Duncan"],
+    "pose_babe_ruth": ["Babe Ruth"],
+    "cat_tabby": ["Tabby cats"],
+    "cat_tuxedo": ["Tuxedo cats"],
+    "cat_calico": ["Calico cats"],
+    "cat_siamese": ["Siamese cats"],
+    "cat_maine_coon": ["Maine Coon cats"],
+    "dog_golden_retriever": ["Golden Retrievers"],
+    "dog_german_shepherd": ["German Shepherd dogs"],
+    "dog_dachshund": ["Dachshunds"],
+    "dog_poodle": ["Poodles"],
+    "dog_husky": ["Siberian Huskies"],
+    "bird_flamingo": ["Greater flamingos"],
+    "bird_peacock": ["Peafowl displaying"],
+    "bird_owl": ["Owls"],
+    "bird_eagle": ["Eagles"],
+    "bird_toucan": ["Toucans"],
+    "animal_sea_turtle": ["Sea turtles"],
+    "animal_octopus": ["Octopuses"],
+    "animal_seahorse": ["Hippocampus (genus)"],
+    "animal_chameleon": ["Chamaeleonidae"],
+    "animal_crab": ["Crabs"],
+    "product_vintage_camera": ["Vintage cameras"],
+    "product_portable_radio": ["Transistor radios"],
+    "product_headphones": ["Headphones"],
+    "product_microscope": ["Optical microscopes"],
+    "product_desk_fan": ["Electric fans"],
+    "kitchen_teapot": ["Teapots"],
+    "kitchen_mug": ["Mugs"],
+    "kitchen_kettle": ["Kettles"],
+    "kitchen_stand_mixer": ["Stand mixers"],
+    "kitchen_whisk": ["Whisks"],
+    "wearable_sneaker": ["Sneakers"],
+    "wearable_handbag": ["Handbags"],
+    "wearable_eyeglasses": ["Eyeglasses"],
+    "wearable_wristwatch": ["Wristwatches"],
+    "wearable_bicycle_helmet": ["Bicycle helmets"],
+    "tool_adjustable_wrench": ["Adjustable wrenches"],
+    "tool_cordless_drill": ["Cordless drills"],
+    "tool_toolbox": ["Toolboxes"],
+    "tool_storage_bins": ["Storage boxes"],
+    "tool_watering_can": ["Watering cans"],
+    "vehicle_road_bicycle": ["Road bicycles"],
+    "vehicle_motorcycle": ["Motorcycles"],
+    "vehicle_scooter": ["Motor scooters"],
+    "vehicle_unicycle": ["Unicycles"],
+    "vehicle_skateboard": ["Skateboards"],
+    "vehicle_classic_car": ["Vintage automobiles"],
+    "vehicle_pickup_truck": ["Pickup trucks"],
+    "vehicle_excavator": ["Excavators"],
+    "vehicle_bulldozer": ["Bulldozers"],
+    "vehicle_fire_engine": ["Fire engines"],
+    "mechanism_industrial_robot": ["Industrial robots"],
+    "mechanism_humanoid_robot": ["Humanoid robots"],
+    "mechanism_gears": ["Gears"],
+    "mechanism_piston_engine": ["Piston engines"],
+    "mechanism_clock": ["Clock mechanisms"],
+    "landmark_eiffel_tower": ["Eiffel Tower"],
+    "landmark_pagoda": ["Pagodas"],
+    "landmark_lighthouse": ["Lighthouses"],
+    "landmark_windmill": ["Windmills"],
+    "landmark_water_tower": ["Water towers"],
+    "sculpture_david": ["David (Michelangelo)"],
+    "sculpture_nefertiti": ["Bust of Nefertiti"],
+    "sculpture_thinker": ["The Thinker by Auguste Rodin"],
+    "sculpture_moai": ["Moai"],
+    "sculpture_lion": ["Stone lion statues"],
+    "architecture_cottage": ["Cottages"],
+    "architecture_castle": ["Castles"],
+    "architecture_arch_bridge": ["Stone arch bridges"],
+    "architecture_temple": ["Ancient Greek temples"],
+    "architecture_gazebo": ["Gazebos"],
+    "toy_wooden_mannequin": ["Wooden mannequins"],
+    "toy_teddy_bear": ["Teddy bears"],
+    "toy_dinosaur": ["Toy dinosaurs"],
+    "toy_robot": ["Toy robots"],
+    "toy_spinning_top": ["Spinning tops"],
+    "plant_sunflower": ["Sunflowers"],
+    "plant_monstera": ["Monstera deliciosa"],
+    "plant_cactus": ["Potted cacti"],
+    "plant_bonsai": ["Bonsai"],
+    "plant_orchid": ["Potted orchids"],
+    "thin_desk_lamp": ["Desk lamps"],
+    "thin_dining_chair": ["Dining chairs"],
+    "thin_acoustic_guitar": ["Acoustic guitars"],
+    "thin_violin": ["Violins"],
+    "thin_umbrella": ["Umbrellas" ]
+  },
+  "preferred_titles": {
+    "portrait_gandhi_glasses": "File:Portrait Gandhi.jpg",
+    "portrait_liliuokalani": "File:Liliuokalani, Queen of Hawaii, head and shoulders portrait LCCN2016651074 (cropped).jpg",
+    "pose_chaplin_cane": "File:Charlie Chaplin.jpg",
+    "cat_siamese": "File:Páli (Cat).jpg",
+    "dog_dachshund": "File:Side profile of a dachshund (8652873842).jpg",
+    "dog_poodle": "File:Bell Poodle Dog 2021.jpg",
+    "dog_husky": "File:Siberian husky1.JPG",
+    "bird_owl": "File:Spotted Eagle Owl Swartland SA.jpg",
+    "bird_toucan": "File:Ramphastos toco -perching on a branch-8a.jpg",
+    "animal_sea_turtle": "File:Sea turtle swimming.jpg",
+    "animal_octopus": "File:Common Octopus.jpg",
+    "product_vintage_camera": "File:Camera, box (AM 1995.202.52-1).jpg",
+    "product_portable_radio": "File:Vintage National Panasonic Model R-8 Transistor Radio, AM Band, 6 Transistors, Made In Japan (22396428645).jpg",
+    "product_headphones": "File:1970s or earlier Elega DR 243C stereo headphones made in Japan.jpg",
+    "product_microscope": "File:Compound Microscope (cropped).JPG",
+    "kitchen_stand_mixer": "File:Braun KM 32 Küchenmaschine -3437.jpg",
+    "wearable_sneaker": "File:Stanton Street Courts td (2018-12-31) 39 - Nike Huarache 2K4 2016.jpg",
+    "wearable_eyeglasses": "File:Eyeglasses (AM 71518-4).jpg",
+    "wearable_bicycle_helmet": "File:Bicycle Helmet.JPG",
+    "vehicle_scooter": "File:A Orange Motorcycle at Sam Shing Estate.jpg",
+    "vehicle_motorcycle": "File:Custom motorcycle side view.jpg",
+    "vehicle_skateboard": "File:Skateboard on side.JPG",
+    "vehicle_excavator": "File:Side view of a Yanmar excavator.jpg",
+    "vehicle_fire_engine": "File:Mount Pleasant Fire Department Engine 503 - 01.jpg",
+    "mechanism_industrial_robot": "File:Endüstriyel Robot.jpg",
+    "mechanism_humanoid_robot": "File:Club First Robot.jpg",
+    "mechanism_gears": "File:Gears (42935870260).jpg",
+    "landmark_eiffel_tower": "File:Paris, Eiffelturm -- 2014 -- 1238.jpg",
+    "landmark_lighthouse": "File:Point Loma Lighthouse.jpg",
+    "landmark_windmill": "File:Suncheon Bay National Garden- Part II - SuncheonBNG2945.jpg",
+    "landmark_water_tower": "File:Binbrook Water Tower.jpg",
+    "sculpture_david": "File:Statue of David (40883983615).jpg",
+    "architecture_cottage": "File:A charming wooden cottage features colorful flower boxes and sits amidst lush green fields, creating a peaceful retreat.jpg",
+    "architecture_castle": "File:Edinburgh castle.jpg",
+    "architecture_temple": "File:Temple of Apollo - front.jpg",
+    "toy_wooden_mannequin": "File:Wooden Mannequin.jpg",
+    "toy_spinning_top": "File:Wooden spinning top and whip.jpg",
+    "plant_monstera": "File:Monstera (22606003106).jpg",
+    "plant_cactus": "File:Cactus in pot.jpg",
+    "plant_orchid": "File:Orchid in pot.jpg",
+    "thin_acoustic_guitar": "File:00 Walden Acoustic Guitar D310e 01.jpg",
+    "thin_violin": "File:Amati Kurtz Violin MET cropped.jpg"
+  },
+  "groups": [
+    {
+      "category": "portrait_head",
+      "community_use": "人物胸像、纪念雕塑、个性化摆件",
+      "instruction": "Keep the exact adult person's identity, face, expression, head angle and visible clothing. Change only the requested rendering style.",
+      "challenges": ["identity", "face", "hair", "asymmetry"],
+      "preserve": ["identity", "facial proportions", "expression", "head angle"],
+      "cases": [
+        {"id": "portrait_einstein", "label": "爱因斯坦头像", "queries": ["Albert Einstein portrait photograph", "Albert Einstein head photograph"]},
+        {"id": "portrait_marie_curie", "label": "居里夫人头像", "queries": ["Marie Curie portrait photograph", "Maria Sklodowska Curie portrait"]},
+        {"id": "portrait_tesla", "label": "尼古拉·特斯拉头像", "queries": ["Nikola Tesla portrait photograph", "Nikola Tesla head portrait"]},
+        {"id": "portrait_mark_twain", "label": "马克·吐温头像", "queries": ["Mark Twain portrait photograph", "Samuel Clemens portrait photograph"]},
+        {"id": "portrait_douglass", "label": "弗雷德里克·道格拉斯头像", "queries": ["Frederick Douglass portrait photograph", "Frederick Douglass head portrait"]}
+      ]
+    },
+    {
+      "category": "portrait_accessory",
+      "community_use": "带眼镜、帽饰、胡须的定制人物摆件",
+      "instruction": "Keep the exact adult person's identity, face, expression and all visible accessories. Change only the requested rendering style.",
+      "challenges": ["identity", "accessories", "thin_parts", "hair"],
+      "preserve": ["identity", "eyewear or headwear", "facial hair", "silhouette"],
+      "cases": [
+        {"id": "portrait_roosevelt_glasses", "label": "戴眼镜的罗斯福", "queries": ["Theodore Roosevelt glasses portrait photograph", "Theodore Roosevelt portrait pince nez"]},
+        {"id": "portrait_gandhi_glasses", "label": "戴圆框眼镜的甘地", "queries": ["Mahatma Gandhi glasses portrait photograph", "Gandhi close portrait glasses"]},
+        {"id": "portrait_earhart_cap", "label": "戴飞行帽的埃尔哈特", "queries": ["Amelia Earhart flight cap portrait", "Amelia Earhart aviator portrait"]},
+        {"id": "portrait_lincoln_beard", "label": "林肯胡须头像", "queries": ["Abraham Lincoln beard portrait photograph", "Abraham Lincoln head portrait"]},
+        {"id": "portrait_liliuokalani", "label": "莉莉乌欧卡拉尼女王头饰", "queries": ["Queen Liliuokalani portrait photograph", "Liliuokalani royal portrait"]}
+      ]
+    },
+    {
+      "category": "portrait_pose",
+      "community_use": "全身人物、运动姿态、手持道具模型",
+      "instruction": "Keep the exact adult person, full-body pose, limb positions, hand gesture, clothing and held prop. Change only the requested rendering style.",
+      "challenges": ["full_body", "hands", "thin_limbs", "held_object"],
+      "preserve": ["pose", "limb count", "hand gesture", "held object"],
+      "cases": [
+        {"id": "pose_chaplin_cane", "label": "卓别林持手杖全身", "queries": ["Charlie Chaplin full length cane photograph", "Charlie Chaplin standing cane"]},
+        {"id": "pose_isadora_duncan", "label": "伊莎多拉·邓肯舞姿", "queries": ["Isadora Duncan dancing full body", "Isadora Duncan dance photograph"]},
+        {"id": "pose_babe_ruth", "label": "贝比·鲁斯投球姿态", "queries": ["Babe Ruth batting photograph full body", "Babe Ruth baseball swing"]},
+        {"id": "pose_houdini", "label": "胡迪尼站姿", "queries": ["Harry Houdini full length photograph", "Harry Houdini standing portrait"]},
+        {"id": "pose_sarah_bernhardt", "label": "莎拉·伯恩哈特戏剧姿态", "queries": ["Sarah Bernhardt full length pose photograph", "Sarah Bernhardt standing portrait"]}
+      ]
+    },
+    {
+      "category": "cat",
+      "community_use": "宠物复刻、桌面摆件、纪念模型",
+      "instruction": "Keep the exact cat's pose, body proportions, face, ears, tail and distinctive coat markings. Change only the requested rendering style.",
+      "challenges": ["fur", "coat_markings", "ears", "tail"],
+      "preserve": ["pose", "coat pattern", "ear shape", "tail shape"],
+      "cases": [
+        {
+          "id": "cat_tabby", "label": "两只虎斑猫", "queries": ["tabby cat standing full body photograph", "tabby cat side view"],
+          "instruction": "Keep exactly both cats, their relative poses, body proportions, tails and distinct coat markings. Change only the requested rendering style.",
+          "challenges": ["multiple_subjects", "subject_count", "coat_markings", "tails"],
+          "preserve": ["exactly two cats", "relative poses", "both tails", "each coat pattern"]
+        },
+        {
+          "id": "cat_tuxedo", "label": "黑白双猫", "queries": ["tuxedo cat sitting full body photograph", "black white cat sitting"],
+          "instruction": "Keep exactly the white cat and black cat, their seated poses, relative spacing, ears and tails. Change only the requested rendering style.",
+          "challenges": ["multiple_subjects", "subject_count", "black_white_regions", "tails"],
+          "preserve": ["exactly two cats", "one white and one black", "relative poses", "both tails"]
+        },
+        {"id": "cat_calico", "label": "三花猫", "queries": ["calico cat full body photograph", "calico cat sitting"]},
+        {"id": "cat_siamese", "label": "暹罗猫", "queries": ["Siamese cat full body photograph", "Siamese cat sitting"]},
+        {"id": "cat_maine_coon", "label": "缅因猫", "queries": ["Maine Coon cat full body photograph", "Maine Coon cat sitting"]}
+      ]
+    },
+    {
+      "category": "dog",
+      "community_use": "犬类宠物复刻、品种摆件、纪念模型",
+      "instruction": "Keep the exact dog's pose, breed proportions, face, ears, tail and distinctive coat colors. Change only the requested rendering style.",
+      "challenges": ["fur", "breed_identity", "ears", "tail"],
+      "preserve": ["pose", "breed proportions", "coat pattern", "ear and tail shape"],
+      "cases": [
+        {"id": "dog_golden_retriever", "label": "金毛寻回犬", "queries": ["Golden Retriever standing full body photograph", "Golden Retriever side view"]},
+        {"id": "dog_german_shepherd", "label": "德国牧羊犬", "queries": ["German Shepherd standing full body photograph", "German Shepherd side view"]},
+        {"id": "dog_dachshund", "label": "腊肠犬", "queries": ["Dachshund standing side view photograph", "Dachshund full body"]},
+        {"id": "dog_poodle", "label": "贵宾犬", "queries": ["Poodle standing full body photograph", "standard poodle side view"]},
+        {"id": "dog_husky", "label": "西伯利亚哈士奇", "queries": ["Siberian Husky standing full body photograph", "Husky dog side view"]}
+      ]
+    },
+    {
+      "category": "bird",
+      "community_use": "动物摆件、羽毛纹理、多色展示模型",
+      "instruction": "Keep the exact bird species, pose, beak, legs, wing position, feather pattern and color placement. Change only the requested rendering style.",
+      "challenges": ["feathers", "thin_legs", "beak", "wing_edges"],
+      "preserve": ["species", "pose", "beak shape", "feather colors"],
+      "cases": [
+        {"id": "bird_flamingo", "label": "火烈鸟", "queries": ["flamingo full body side view photograph", "greater flamingo standing"]},
+        {"id": "bird_peacock", "label": "开屏孔雀", "queries": ["peacock displaying tail full body photograph", "Indian peafowl display"]},
+        {"id": "bird_owl", "label": "猫头鹰", "queries": ["owl perched full body photograph", "eagle owl perched"]},
+        {"id": "bird_eagle", "label": "展翅鹰", "queries": ["eagle wings spread full body photograph", "bald eagle wings spread"]},
+        {"id": "bird_toucan", "label": "巨嘴鸟", "queries": ["toucan side view full body photograph", "toco toucan perched"]}
+      ]
+    },
+    {
+      "category": "aquatic_reptile",
+      "community_use": "海洋生物、爬宠、复杂肢体与甲壳摆件",
+      "instruction": "Keep the exact species, pose, limb count, appendages, shell or skin pattern and silhouette. Change only the requested rendering style.",
+      "challenges": ["appendages", "limb_count", "surface_pattern", "irregular_outline"],
+      "preserve": ["species", "pose", "appendage count", "shell or skin pattern"],
+      "cases": [
+        {"id": "animal_sea_turtle", "label": "海龟", "queries": ["sea turtle full body photograph", "green sea turtle side view"]},
+        {"id": "animal_octopus", "label": "章鱼", "queries": ["octopus full body photograph", "common octopus isolated"]},
+        {"id": "animal_seahorse", "label": "海马", "queries": ["seahorse full body side view photograph", "Hippocampus seahorse"]},
+        {"id": "animal_chameleon", "label": "变色龙", "queries": ["chameleon full body side view photograph", "chameleon on branch"]},
+        {
+          "id": "animal_crab", "label": "多只螃蟹", "queries": ["crab full body top view photograph", "shore crab isolated"],
+          "instruction": "Keep every visible crab, the pile arrangement, claws, legs, shell colors and top-down composition. Change only the requested rendering style.",
+          "challenges": ["multiple_subjects", "subject_count", "many_legs", "occlusion"],
+          "preserve": ["crab count", "pile arrangement", "claws and legs", "shell color variation"]
+        }
+      ]
+    },
+    {
+      "category": "electronics",
+      "community_use": "电子产品外壳、相机附件、桌面设备模型",
+      "instruction": "Keep the exact product silhouette, controls, openings, component count, viewing angle and visible materials. Change only the requested rendering style.",
+      "challenges": ["controls", "small_parts", "hard_surface", "openings"],
+      "preserve": ["silhouette", "control layout", "component count", "viewing angle"],
+      "cases": [
+        {"id": "product_vintage_camera", "label": "复古相机", "queries": ["vintage camera front view photograph", "box camera three quarter view"]},
+        {"id": "product_portable_radio", "label": "便携收音机", "queries": ["portable transistor radio photograph", "vintage portable radio front"]},
+        {"id": "product_headphones", "label": "头戴式耳机", "queries": ["over ear headphones photograph", "headphones isolated"]},
+        {"id": "product_microscope", "label": "显微镜", "queries": ["compound microscope side view photograph", "laboratory microscope full object"]},
+        {"id": "product_desk_fan", "label": "桌面风扇", "queries": ["desk fan front view photograph", "table fan full object"]}
+      ]
+    },
+    {
+      "category": "kitchenware",
+      "community_use": "器皿、厨房小物、把手和孔洞结构",
+      "instruction": "Keep the exact vessel or appliance shape, handle, spout, lid, openings, part count and viewing angle. Change only the requested rendering style.",
+      "challenges": ["handles", "openings", "reflective_surface", "part_count"],
+      "preserve": ["silhouette", "handle and spout", "opening count", "lid and controls"],
+      "cases": [
+        {"id": "kitchen_teapot", "label": "带壶嘴茶壶", "queries": ["ceramic teapot side view photograph", "teapot full object"]},
+        {"id": "kitchen_mug", "label": "马克杯", "queries": ["ceramic mug side view photograph", "coffee mug full object"]},
+        {"id": "kitchen_kettle", "label": "水壶", "queries": ["kettle side view photograph", "stovetop kettle full object"]},
+        {"id": "kitchen_stand_mixer", "label": "台式搅拌机", "queries": ["stand mixer side view photograph", "kitchen mixer full object"]},
+        {"id": "kitchen_whisk", "label": "打蛋器", "queries": ["wire whisk full object photograph", "kitchen whisk isolated"]}
+      ]
+    },
+    {
+      "category": "wearable",
+      "community_use": "鞋包、眼镜、表壳、头盔等个性化穿戴",
+      "instruction": "Keep the exact wearable's silhouette, openings, straps, frame, sole or bezel, part count and viewing angle. Change only the requested rendering style.",
+      "challenges": ["thin_parts", "openings", "symmetry", "material_regions"],
+      "preserve": ["silhouette", "openings", "straps or frame", "material boundaries"],
+      "cases": [
+        {"id": "wearable_sneaker", "label": "运动鞋", "queries": ["sneaker side view photograph", "athletic shoe full object"]},
+        {"id": "wearable_handbag", "label": "手提包", "queries": ["handbag front view photograph", "leather handbag full object"]},
+        {"id": "wearable_eyeglasses", "label": "眼镜", "queries": ["eyeglasses front view photograph", "spectacles full object"]},
+        {"id": "wearable_wristwatch", "label": "腕表", "queries": ["wristwatch front view photograph", "analog wristwatch full object"]},
+        {"id": "wearable_bicycle_helmet", "label": "自行车头盔", "queries": ["bicycle helmet side view photograph", "cycling helmet full object"]}
+      ]
+    },
+    {
+      "category": "tools_organizers",
+      "community_use": "维修工具、支架、容器和收纳改进",
+      "instruction": "Keep the exact tool or organizer geometry, grip, jaws, compartments, openings, fasteners and part count. Change only the requested rendering style.",
+      "challenges": ["functional_geometry", "thin_parts", "cavities", "repeated_parts"],
+      "preserve": ["functional silhouette", "opening count", "compartments", "moving parts"],
+      "cases": [
+        {"id": "tool_adjustable_wrench", "label": "活动扳手", "queries": ["adjustable wrench full object photograph", "crescent wrench side view"]},
+        {"id": "tool_cordless_drill", "label": "无绳电钻", "queries": ["cordless drill side view photograph", "power drill full object"]},
+        {"id": "tool_toolbox", "label": "工具箱", "queries": ["toolbox full object photograph", "portable tool box front"]},
+        {"id": "tool_storage_bins", "label": "多格收纳盒", "queries": ["plastic storage organizer compartments photograph", "parts organizer box open"]},
+        {"id": "tool_watering_can", "label": "浇水壶", "queries": ["watering can side view photograph", "garden watering can full object"]}
+      ]
+    },
+    {
+      "category": "two_wheel_vehicle",
+      "community_use": "交通工具模型、细杆件、车轮与镂空测试",
+      "instruction": "Keep the exact vehicle type, side profile, wheel count, frame, fork, handlebars, seat and visible mechanical parts. Change only the requested rendering style.",
+      "challenges": ["thin_frame", "wheels", "negative_space", "spokes"],
+      "preserve": ["wheel count", "frame geometry", "handlebars", "seat and drivetrain"],
+      "cases": [
+        {"id": "vehicle_road_bicycle", "label": "公路自行车", "queries": ["road bicycle side view photograph", "racing bicycle full object"]},
+        {"id": "vehicle_motorcycle", "label": "摩托车", "queries": ["motorcycle side view photograph", "classic motorcycle full object"]},
+        {"id": "vehicle_scooter", "label": "踏板摩托车", "queries": ["motor scooter side view photograph", "scooter full object"]},
+        {
+          "id": "vehicle_unicycle", "label": "独轮车表演者", "queries": ["unicycle side view photograph", "unicycle full object"],
+          "instruction": "Keep the exact adult rider, airborne pose, unicycle, wheel, frame, pedals and their spatial relationship. Change only the requested rendering style.",
+          "challenges": ["person_and_object", "dynamic_pose", "thin_frame", "wheel"],
+          "preserve": ["adult rider", "airborne pose", "one unicycle wheel", "pedals and frame"]
+        },
+        {"id": "vehicle_skateboard", "label": "滑板", "queries": ["skateboard side view photograph", "skateboard full object"]}
+      ]
+    },
+    {
+      "category": "road_construction_vehicle",
+      "community_use": "汽车模型、工程玩具、轮履和驾驶舱结构",
+      "instruction": "Keep the exact vehicle class, body proportions, wheel or track count, cabin, lights, attachments and viewing angle. Change only the requested rendering style.",
+      "challenges": ["hard_surface", "wheels_tracks", "windows", "attachments"],
+      "preserve": ["vehicle class", "wheel or track count", "cabin", "attachments"],
+      "cases": [
+        {"id": "vehicle_classic_car", "label": "经典轿车", "queries": ["classic car side view photograph", "vintage automobile full body"]},
+        {"id": "vehicle_pickup_truck", "label": "皮卡车", "queries": ["pickup truck side view photograph", "pickup truck full vehicle"]},
+        {"id": "vehicle_excavator", "label": "履带式挖掘机", "queries": ["excavator side view photograph", "hydraulic excavator full machine"]},
+        {"id": "vehicle_bulldozer", "label": "推土机玩具", "queries": ["bulldozer side view photograph", "crawler bulldozer full machine"]},
+        {"id": "vehicle_fire_engine", "label": "消防车", "queries": ["fire engine side view photograph", "fire truck full vehicle"]}
+      ]
+    },
+    {
+      "category": "robot_mechanism",
+      "community_use": "机器人、齿轮、发动机和机械教具",
+      "instruction": "Keep the exact mechanism, component count, joints, gears, rods, cylinders, openings and viewing angle. Change only the requested rendering style.",
+      "challenges": ["mechanical_parts", "joints", "repetition", "occlusion"],
+      "preserve": ["component count", "joint layout", "gears and rods", "viewing angle"],
+      "cases": [
+        {"id": "mechanism_industrial_robot", "label": "工业机械臂", "queries": ["industrial robot arm photograph full machine", "robotic arm side view"]},
+        {"id": "mechanism_humanoid_robot", "label": "人形机器人", "queries": ["humanoid robot full body photograph", "biped robot full body"]},
+        {"id": "mechanism_gears", "label": "啮合齿轮组", "queries": ["interlocking gears mechanism photograph", "gear train close up"]},
+        {"id": "mechanism_piston_engine", "label": "活塞发动机", "queries": ["piston engine cutaway photograph", "internal combustion engine full object"]},
+        {"id": "mechanism_clock", "label": "机械钟表机芯", "queries": ["mechanical clock movement photograph", "clockwork mechanism gears"]}
+      ]
+    },
+    {
+      "category": "tower_landmark",
+      "community_use": "地标建筑、桌面纪念模型、细高结构",
+      "instruction": "Keep the exact landmark identity, tier count, openings, structural silhouette, top feature and camera angle. Change only the requested rendering style.",
+      "challenges": ["thin_structure", "repeated_levels", "openings", "symmetry"],
+      "preserve": ["landmark identity", "tier count", "top feature", "silhouette"],
+      "cases": [
+        {"id": "landmark_eiffel_tower", "label": "埃菲尔铁塔", "queries": ["Eiffel Tower full structure photograph", "Eiffel Tower isolated view"]},
+        {"id": "landmark_pagoda", "label": "多层宝塔", "queries": ["pagoda full building photograph", "five story pagoda front view"]},
+        {"id": "landmark_lighthouse", "label": "灯塔", "queries": ["lighthouse full structure photograph", "lighthouse side view"]},
+        {"id": "landmark_windmill", "label": "传统风车", "queries": ["traditional windmill full structure photograph", "Dutch windmill front view"]},
+        {"id": "landmark_water_tower", "label": "水塔", "queries": ["water tower full structure photograph", "elevated water tower side view"]}
+      ]
+    },
+    {
+      "category": "sculpture_monument",
+      "community_use": "名作雕塑、胸像、纪念品复刻",
+      "instruction": "Keep the exact sculpture identity, pose, proportions, missing or present limbs, base and viewing angle. Change only the requested rendering style.",
+      "challenges": ["anatomy", "stone_surface", "pose", "base"],
+      "preserve": ["sculpture identity", "pose", "limb state", "base and angle"],
+      "cases": [
+        {"id": "sculpture_david", "label": "大卫雕像", "queries": ["Michelangelo David full sculpture photograph", "David statue front view"]},
+        {"id": "sculpture_nefertiti", "label": "娜芙蒂蒂胸像", "queries": ["Nefertiti bust photograph", "Bust of Nefertiti front"]},
+        {"id": "sculpture_thinker", "label": "思想者雕塑", "queries": ["The Thinker sculpture full view photograph", "Rodin Thinker statue"]},
+        {"id": "sculpture_moai", "label": "摩艾石像", "queries": ["Moai statue full view photograph", "Easter Island moai front"]},
+        {"id": "sculpture_lion", "label": "石狮雕像", "queries": ["stone lion statue full view photograph", "guardian lion sculpture"]}
+      ]
+    },
+    {
+      "category": "architecture",
+      "community_use": "房屋、城堡、桥梁和建筑纪念模型",
+      "instruction": "Keep the exact building type, roofline, facade, arch and window count, supports and camera angle. Change only the requested rendering style.",
+      "challenges": ["facade", "repeated_windows", "roofline", "depth"],
+      "preserve": ["building type", "roofline", "major openings", "supports and angle"],
+      "cases": [
+        {"id": "architecture_cottage", "label": "乡村小屋", "queries": ["traditional cottage front view photograph", "thatched cottage full building"]},
+        {"id": "architecture_castle", "label": "城堡", "queries": ["castle full building front view photograph", "medieval castle exterior"]},
+        {"id": "architecture_arch_bridge", "label": "拱桥", "queries": ["stone arch bridge side view photograph", "single arch bridge full structure"]},
+        {"id": "architecture_temple", "label": "神庙立面", "queries": ["classical temple facade front view photograph", "Greek temple full building"]},
+        {"id": "architecture_gazebo", "label": "花园凉亭", "queries": ["garden gazebo full structure photograph", "wooden gazebo front view"]}
+      ]
+    },
+    {
+      "category": "articulated_toy",
+      "community_use": "关节玩具、卡片套件、桌面减压玩具",
+      "instruction": "Keep the exact toy identity, articulation points, limb and segment count, accessories, pose and color regions. Change only the requested rendering style.",
+      "challenges": ["joints", "segment_count", "small_parts", "toy_identity"],
+      "preserve": ["joint layout", "segment count", "accessories", "pose"],
+      "cases": [
+        {"id": "toy_wooden_mannequin", "label": "木制关节人偶", "queries": ["wooden articulated mannequin full body photograph", "artist mannequin pose"]},
+        {"id": "toy_teddy_bear", "label": "泰迪熊", "queries": ["teddy bear full toy photograph", "jointed teddy bear sitting"]},
+        {"id": "toy_dinosaur", "label": "恐龙玩具", "queries": ["toy dinosaur full body photograph", "plastic dinosaur toy side view"]},
+        {
+          "id": "toy_robot", "label": "复古机器人玩具组", "queries": ["vintage toy robot full body photograph", "tin robot toy front"],
+          "instruction": "Keep the complete group of toy robots, their count, relative sizes, poses, parts and color regions. Change only the requested rendering style.",
+          "challenges": ["multiple_subjects", "subject_count", "small_parts", "color_regions"],
+          "preserve": ["robot count", "relative arrangement", "limb and antenna count", "individual colors"]
+        },
+        {"id": "toy_spinning_top", "label": "陀螺", "queries": ["spinning top toy full object photograph", "wooden spinning top"]}
+      ]
+    },
+    {
+      "category": "plant_organic",
+      "community_use": "花草装饰、盆栽、分叉与薄叶结构",
+      "instruction": "Keep the exact plant species, flower and leaf count where visible, branching, pot, silhouette and color placement. Change only the requested rendering style.",
+      "challenges": ["thin_leaves", "branching", "repetition", "irregular_outline"],
+      "preserve": ["species", "branching", "major leaf or flower count", "pot and silhouette"],
+      "cases": [
+        {"id": "plant_sunflower", "label": "向日葵", "queries": ["single sunflower full plant photograph", "sunflower stem leaves full view"]},
+        {"id": "plant_monstera", "label": "龟背竹盆栽", "queries": ["potted Monstera full plant photograph", "Monstera deliciosa pot"]},
+        {"id": "plant_cactus", "label": "仙人掌盆栽", "queries": ["potted cactus full plant photograph", "cactus in pot full view"]},
+        {"id": "plant_bonsai", "label": "盆景树", "queries": ["bonsai tree full plant photograph", "bonsai in pot front view"]},
+        {"id": "plant_orchid", "label": "兰花盆栽", "queries": ["potted orchid full plant photograph", "orchid flowers stem pot"]}
+      ]
+    },
+    {
+      "category": "thin_structure",
+      "community_use": "灯具、家具、乐器和伞等细结构对象",
+      "instruction": "Keep the exact object's frame, legs, rods, strings, openings, part count, proportions and viewing angle. Change only the requested rendering style.",
+      "challenges": ["thin_parts", "negative_space", "long_edges", "symmetry"],
+      "preserve": ["frame geometry", "thin-part count", "openings", "viewing angle"],
+      "cases": [
+        {"id": "thin_desk_lamp", "label": "可调桌灯", "queries": ["adjustable desk lamp side view photograph", "architect lamp full object"]},
+        {
+          "id": "thin_dining_chair", "label": "户外桌椅组", "queries": ["dining chair front three quarter photograph", "wooden chair full object"],
+          "instruction": "Keep the outdoor table and every visible chair, their count, frame geometry, legs, slats and arrangement. Change only the requested rendering style.",
+          "challenges": ["multiple_objects", "thin_parts", "repetition", "negative_space"],
+          "preserve": ["table and chair count", "leg count", "slats", "relative arrangement"]
+        },
+        {"id": "thin_acoustic_guitar", "label": "木吉他", "queries": ["acoustic guitar front view photograph", "acoustic guitar full object"]},
+        {"id": "thin_violin", "label": "小提琴", "queries": ["violin front view photograph", "violin full object"]},
+        {
+          "id": "thin_umbrella", "label": "雨伞下的猫", "queries": ["open umbrella full object photograph", "umbrella open front view"],
+          "instruction": "Keep both the open umbrella and the cat beneath it, including canopy panels, shaft, ribs, cat pose, coat markings and overlap. Change only the requested rendering style.",
+          "challenges": ["animal_and_object", "thin_ribs", "occlusion", "coat_markings"],
+          "preserve": ["one open umbrella", "one cat", "canopy and shaft", "cat pose and markings"]
+        }
+      ]
+    }
+  ]
+}

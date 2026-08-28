@@ -356,8 +356,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/AI/Model/VertexColorRegionEditor.hpp
     GUI/AIModelGenerationClient.cpp
     GUI/AIModelGenerationClient.hpp
-    GUI/ModelGenerationPanel.cpp
-    GUI/ModelGenerationPanel.hpp
+    GUI/ModelGenerationPanel.cpp GUI/AI/ModelGeneration/ModelGenerationStatusText.cpp
+    GUI/ModelGenerationPanel.hpp GUI/AI/ModelGeneration/ModelGenerationStatusText.hpp
     GUI/AISidecarClient.cpp
     GUI/AISidecarClient.hpp
     GUI/AIServiceManager.cpp

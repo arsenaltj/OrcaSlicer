@@ -73,6 +73,7 @@ class PrintableSidecarIntegrationTests(unittest.TestCase):
             self.assertTrue(job.metadata_path.is_file())
             self.assertEqual(set(job.mask_paths), {"primary", "structure", "light", "accent"})
             self.assertGreater(job.image_metrics["minimum_feature_px"], 1)
+            self.assertTrue(job.image_metrics["model_input_quality"]["model_input_eligible"])
             self.assertEqual(generate.call_args.args[-3], "blue")
             self.assertEqual(generate.call_args.args[-2], job.palette_roles)
             self.assertEqual(generate.call_args.args[-1], "")
@@ -101,6 +102,7 @@ class PrintableSidecarIntegrationTests(unittest.TestCase):
             raw = job.directory / "style-preview-raw.png"
             synthetic_preview(raw)
             sidecar._apply_printable_image_pipeline(job, raw)
+            sidecar._assess_job_model_reference(job)
             job.state = "awaiting_confirmation"
             sidecar._persist_job(job)
 
@@ -114,6 +116,10 @@ class PrintableSidecarIntegrationTests(unittest.TestCase):
             self.assertTrue(public["image_outputs"]["strict_preview"]["ready"])
             self.assertTrue(public["image_outputs"]["metadata"]["ready"])
             self.assertEqual(public["image_metrics"]["minimum_feature_px"], job.image_metrics["minimum_feature_px"])
+            self.assertEqual(
+                public["image_metrics"]["model_input_quality"],
+                job.image_metrics["model_input_quality"],
+            )
 
     def test_all_documented_output_routes_are_loopback_download_routes(self):
         job_id = "00000000-0000-0000-0000-000000000001"
@@ -125,6 +131,24 @@ class PrintableSidecarIntegrationTests(unittest.TestCase):
                 sidecar.Handler._job_route(f"/v1/orcaslicer/model-jobs/{job_id}/{action}"),
                 (job_id, action),
             )
+
+    def test_preprocess_failure_round_trip_preserves_actionable_category(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job = self.make_job(directory)
+            error = sidecar.OpenAIPreprocessorError(
+                "service unavailable",
+                code="image_service_unavailable",
+                retryable=True,
+                ambiguous=True,
+            )
+            sidecar._fail_preprocess_job(job, error)
+            restored = sidecar._load_job(job.directory)
+            public = sidecar._public_job(restored)
+
+        self.assertEqual(public["state"], "failed")
+        self.assertEqual(public["provider_failure"]["code"], "image_service_unavailable")
+        self.assertTrue(public["provider_failure"]["retryable"])
+        self.assertTrue(public["provider_failure"]["ambiguous"])
 
 
 if __name__ == "__main__":

@@ -332,6 +332,8 @@ private:
     bool m_strict_preview_available { false };
     bool m_heatmap_available { false };
     bool m_palette_quality_ok { true };
+    bool m_model_input_eligible { true };
+    std::string m_model_input_primary_blocker;
     bool m_preview_metrics_available { false };
     bool m_quality_check_busy { false };
     bool m_visual_check_busy { false };

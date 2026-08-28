@@ -64,7 +64,7 @@
       "src/slic3r/GUI/Plater.hpp"
     ],
     "decomposition_line_budgets": {
-      "src/slic3r/GUI/ModelGenerationPanel.cpp": 5367,
+      "src/slic3r/GUI/ModelGenerationPanel.cpp": 5308,
       "tools/ai/orca_ai_sidecar.py": 4884
     },
     "shared_touchpoint_diff_budgets": {
