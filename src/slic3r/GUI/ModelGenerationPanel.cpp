@@ -387,9 +387,9 @@ wxString localized_job_status(const AIModelGenerationClient::JobStatus& status)
     if (status.state == "preprocessing")
         return _L("AI 正在准备提示词和图片预览...");
     if (status.state == "awaiting_confirmation")
-        return status.palette_quality_ok
+        return status.palette_quality_ok && status.model_input_eligible
             ? _L("预览已准备完成，请确认后继续生成 3D 模型。")
-            : _L("预览未通过打印性检查，请按提示调整后重新生成。");
+            : _L("预览未通过 3D 输入检查，请按提示重新生成。");
     if (status.state == "queued")
         return _L("3D 生成任务已排队...");
     if (status.state == "running" && status.phase == "generating")
@@ -404,6 +404,14 @@ wxString localized_job_status(const AIModelGenerationClient::JobStatus& status)
         return _L("正在停止生成任务...");
     if (status.state == "cancelled")
         return _L("生成任务已取消。");
+    if (status.state == "failed" && status.provider_error_code == "image_rate_limited")
+        return _L("图片服务请求较多，请稍后点击“重新生成图片预览”。不会自动重复调用。");
+    if (status.state == "failed" && status.provider_error_code == "image_rejected")
+        return _L("图片服务拒绝了当前内容，请调整图片或描述后重新生成。");
+    if (status.state == "failed" && status.provider_error_code == "image_service_unavailable")
+        return _L("图片服务暂时不可用，本次结果可能不明确。程序不会自动重试，请稍后手动重新生成。");
+    if (status.state == "failed" && status.provider_error_code == "image_connection_failed")
+        return _L("连接图片服务失败，本次结果可能不明确。程序不会自动重试，请检查网络后手动重新生成。");
     if (status.state == "failed" && status.provider_error_ambiguous)
         return _L("模型服务提交结果不明确，远端可能已创建付费任务。为避免重复计费，程序不会自动重试；请先到服务端确认任务状态。");
     if (status.state == "failed" && status.provider_error_code == "provider_rejected")
@@ -456,6 +464,18 @@ wxString visual_quality_code_label(const std::string& code)
     if (code == "visual_color_regions_unclear") return _L("顶点色色块可能过碎或不易辨认。");
     if (code == "visual_review_unavailable") return _L("AI 视觉服务暂不可用，可稍后重试。");
     return _L("检测到需要人工确认的外观问题：") + from_u8(code);
+}
+
+wxString model_input_quality_label(const std::string& code)
+{
+    if (code == "subject_not_detected") return _L("未识别到清晰主体，请换一张主体明确的图片或重新生成。");
+    if (code == "subject_too_small") return _L("主体太小，请放大主体后重新生成图片预览。");
+    if (code == "subject_or_background_fills_frame") return _L("主体或背景铺满画面，请保留清晰留白后重新生成。");
+    if (code == "subject_cropped") return _L("主体贴边且可能被裁切，请让完整轮廓出现在画面内。");
+    if (code == "fragmented_subject") return _L("图片包含多个断开的主体或碎片，请重新生成一个连贯主体。");
+    if (code == "excessive_semitransparency") return _L("主体半透明区域过多，不适合作为 3D 输入，请重新生成。");
+    if (code == "background_not_isolated") return _L("背景过于复杂，请使用透明或纯色背景后重新生成。");
+    return _L("图片未通过 3D 输入检查，请按预览提示重新生成。");
 }
 
 } // namespace
@@ -1166,6 +1186,8 @@ void ModelGenerationPanel::restore_job(AIModelGenerationClient::JobStatus status
     m_job_style = status.style;
     m_job_custom_style = status.custom_style;
     m_palette_quality_ok = status.palette_quality_ok;
+    m_model_input_eligible = status.model_input_eligible;
+    m_model_input_primary_blocker = status.model_input_blockers.empty() ? std::string() : status.model_input_blockers.front();
     m_meaningful_palette_count = status.meaningful_palette_count;
     m_meaningful_subject_color_count = status.meaningful_subject_color_count;
     m_job_print_settings = status.print_settings;
@@ -2838,6 +2860,8 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
     m_preview_changed_pixel_ratio = status.changed_pixel_ratio;
     m_preview_minimum_feature_px = status.minimum_feature_px;
     m_palette_quality_ok = status.palette_quality_ok;
+    m_model_input_eligible = status.model_input_eligible;
+    m_model_input_primary_blocker = status.model_input_blockers.empty() ? std::string() : status.model_input_blockers.front();
     m_meaningful_palette_count = status.meaningful_palette_count;
     m_meaningful_subject_color_count = status.meaningful_subject_color_count;
     if (m_ready) {
@@ -2867,7 +2891,9 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
         m_result_summary->SetLabel(
             _L("AI 推荐配色已准备好。可以替换、删除或补充颜色；确认后再匹配实际耗材。"));
     } else if (m_awaiting_confirmation) {
-        if (status.preview_ready && !status.palette.empty() && !status.palette_quality_ok) {
+        if (status.preview_ready && !status.model_input_eligible) {
+            m_result_summary->SetLabel(model_input_quality_label(m_model_input_primary_blocker));
+        } else if (status.preview_ready && !status.palette.empty() && !status.palette_quality_ok) {
             const int required_colors = std::min<int>(status.palette.size(), 3);
             if (status.meaningful_subject_color_count < required_colors) {
                 m_result_summary->SetLabel(wxString::Format(
@@ -3370,6 +3396,7 @@ void ModelGenerationPanel::refresh_controls()
     const bool show_review = m_awaiting_confirmation && !image_job && !stale_job;
     const bool local_artifact = is_nonempty_obj(m_artifact_path) ||
         (!m_job_id.empty() && is_nonempty_obj(temp_path(m_job_id, "obj")));
+    const bool preview_quality_ok = m_palette_quality_ok && m_model_input_eligible;
 
     m_preprocess->SetLabel(ai_palette_source && m_awaiting_palette_confirmation && !stale_job
                                ? _L("采用配色并生成预览")
@@ -3377,7 +3404,7 @@ void ModelGenerationPanel::refresh_controls()
                                ? _L("AI 推荐配色")
                                : ai_palette_source && m_palette_recommendation_confirmed
                                ? _L("使用当前配色生成预览")
-                               : m_awaiting_confirmation && !m_palette_quality_ok
+                               : m_awaiting_confirmation && !preview_quality_ok
                                ? _L("重新生成图片预览")
                                : image_input && printable_colors ? _L("生成多色图片预览")
                                : image_input ? _L("生成风格图片预览")
@@ -3436,7 +3463,7 @@ void ModelGenerationPanel::refresh_controls()
                          (ai_palette_source || !printable_colors || !m_palette.empty()));
     m_prepared_prompt->Enable(m_service_available && !m_busy && show_review);
     m_generate->Enable(m_service_available && !m_busy && m_awaiting_confirmation && !stale_job &&
-                       m_palette_quality_ok &&
+                       preview_quality_ok &&
                        (!image_job || m_style_preview_ready));
     m_stop->Enable(m_busy && !m_job_id.empty() && (local_model_loading || m_service_available));
     m_retry_service->Enable(!m_service_available && !m_busy && static_cast<bool>(m_service_retry_handler));
@@ -3458,9 +3485,9 @@ void ModelGenerationPanel::refresh_controls()
 
     const bool show_preprocess = m_service_available && !m_busy && (!m_ready || stale_job) &&
         (m_job_id.empty() || stale_job || (!m_awaiting_confirmation && !m_ready) ||
-         (m_awaiting_confirmation && !m_palette_quality_ok));
+         (m_awaiting_confirmation && !preview_quality_ok));
     m_preprocess->Show(show_preprocess);
-    m_generate->Show(!m_busy && m_awaiting_confirmation && !stale_job && m_palette_quality_ok);
+    m_generate->Show(!m_busy && m_awaiting_confirmation && !stale_job && preview_quality_ok);
     m_stop->Show(m_busy);
     m_retry_service->Show(!m_service_available && !m_busy);
     m_import->Show(!m_busy && m_ready && !stale_job);
@@ -3478,9 +3505,9 @@ void ModelGenerationPanel::refresh_controls()
                                        ? _L("输入已变化：重新推荐或确认继续使用当前配色")
                                        : _L("修改或确认 AI 推荐的设计目标色"));
     else if (m_awaiting_confirmation && !stale_job)
-        m_workflow_steps->SetLabel(m_palette_quality_ok
+        m_workflow_steps->SetLabel(preview_quality_ok
                                        ? _L("确认右侧图片效果，并选择 3D 模型精度")
-                                       : _L("当前配色未通过检查，请重新生成图片"));
+                                       : _L("当前图片未通过 3D 输入检查，请重新生成"));
     else if (!m_busy)
         m_workflow_steps->SetLabel(custom_style_selected && !custom_style_ready
                                        ? _L("请补充自定义风格描述")
@@ -4495,6 +4522,8 @@ void ModelGenerationPanel::reset(bool remove_remote)
     m_strict_preview_available = false;
     m_heatmap_available = false;
     m_palette_quality_ok = true;
+    m_model_input_eligible = true;
+    m_model_input_primary_blocker.clear();
     m_meaningful_palette_count = 0;
     m_meaningful_subject_color_count = 0;
     m_generation_progress->SetValue(0);

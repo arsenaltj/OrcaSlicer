@@ -168,6 +168,10 @@ public:
         double      printable_subject_area_ratio { 0.0 };
         double      largest_subject_component_ratio { 0.0 };
         bool        palette_quality_ok { true };
+        double      model_input_score { 0.0 };
+        bool        model_input_eligible { true };
+        std::vector<std::string> model_input_blockers;
+        std::vector<std::string> model_input_warnings;
         std::string provider_error_code;
         std::string provider_error_category;
         bool        provider_error_retryable { false };

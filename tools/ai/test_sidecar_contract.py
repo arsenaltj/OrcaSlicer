@@ -541,6 +541,52 @@ class SidecarHealthContractTests(unittest.TestCase):
                     PRODUCTION._JOBS.clear()
                     PRODUCTION._JOBS.update(previous)
 
+    def test_generate_route_blocks_poor_model_reference_before_paid_submission(self):
+        job_id = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory() as directory:
+            job_directory = Path(directory) / job_id
+            job_directory.mkdir()
+            reference = job_directory / "preview.png"
+            image = Image.new("RGBA", (512, 512), (255, 255, 255, 0))
+            image.paste((200, 60, 40, 255), (246, 246, 266, 266))
+            image.save(reference)
+            job = PRODUCTION.Job(id=job_id, source="image", directory=job_directory)
+            job.state = "awaiting_confirmation"
+            job.phase = "awaiting_confirmation"
+            job.preview_path = reference
+            with PRODUCTION._JOBS_LOCK:
+                previous = dict(PRODUCTION._JOBS)
+                PRODUCTION._JOBS.clear()
+                PRODUCTION._JOBS[job.id] = job
+            gateway = mock.Mock()
+            gateway.model_generation_available.return_value = True
+            try:
+                with (
+                    mock.patch.object(PRODUCTION, "_MODEL_PROVIDER_GATEWAY", gateway),
+                    mock.patch.object(PRODUCTION, "_submit") as submit,
+                    sidecar_server(PRODUCTION.Handler) as port,
+                ):
+                    request = urllib.request.Request(
+                        f"http://127.0.0.1:{port}/v1/orcaslicer/model-jobs/{job.id}/generate",
+                        data=json.dumps(
+                            {"prepared_prompt": "", "palette": [], "generation_profile": "quality"}
+                        ).encode(),
+                        method="POST",
+                        headers={"X-OrcaSlicer-Client": "native", "Content-Type": "application/json"},
+                    )
+                    with self.assertRaises(urllib.error.HTTPError) as error:
+                        urllib.request.urlopen(request, timeout=5)
+                    payload = json.loads(error.exception.read())
+
+                self.assertEqual(error.exception.code, 409)
+                self.assertEqual(payload["error"]["code"], "model_input_quality_failed")
+                submit.assert_not_called()
+                self.assertFalse(job.image_metrics["model_input_quality"]["model_input_eligible"])
+            finally:
+                with PRODUCTION._JOBS_LOCK:
+                    PRODUCTION._JOBS.clear()
+                    PRODUCTION._JOBS.update(previous)
+
     def test_public_job_exposes_persisted_model_quality_report(self):
         job_id = str(uuid.uuid4())
         with tempfile.TemporaryDirectory() as directory:
@@ -946,7 +992,11 @@ class SidecarHealthContractTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn('"model_provider_gateway.py"', package_script)
+        self.assertIn('"model_input_image_quality.py"', package_script)
         self.assertIn('Check-File "tools\\ai\\model_provider_gateway.py"', environment_check)
+        self.assertIn('Check-File "tools\\ai\\model_input_image_quality.py"', environment_check)
+        installer_script = (repository / "scripts" / "package_windows_ai_installer.ps1").read_text(encoding="utf-8")
+        self.assertIn('"tools\\ai\\model_input_image_quality.py"', installer_script)
 
     def test_production_health_contract_with_openai_only(self):
         with temporary_environment(OPENAI_API_KEY="test-openai", TRIPO_API_KEY=None):

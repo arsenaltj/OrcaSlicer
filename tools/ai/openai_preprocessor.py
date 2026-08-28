@@ -32,20 +32,23 @@ STYLE_PROFILES = {
         "sculpture. Preserve the source subject one-for-one: the same identity, face, age, expression, body proportions, pose, "
         "silhouette, crop, clothing, accessories, objects, count, placement, and visible details. Do not redesign, beautify, "
         "exaggerate, add, remove, reveal, or reconstruct anything. Use gentle carved planes and broad connected forms only where "
-        "needed for a printable single-material result."
+        "needed for a printable single-material result. Keep every source-visible opening, handle, wheel, limb, tier, and base; "
+        "monochrome means one material, not fewer components."
     ),
     "realistic": (
         "Create a multi-color realistic collectible while changing as little as possible beyond material and color treatment. "
         "Preserve the source subject one-for-one: the same recognizable identity, face, age, expression, anatomy, proportions, "
         "pose, silhouette, crop, clothing, accessories, objects, count, placement, and visible details. Use believable solid-color "
-        "materials and restrained realistic modeling; do not stylize facial proportions, invent detail, or alter the composition."
+        "materials and restrained realistic modeling; do not stylize facial proportions, invent detail, genericize manufactured "
+        "parts, or alter the composition."
     ),
     "cartoon": (
         "Restyle the same subject as a friendly cute cartoon collectible, especially for portraits that look harsh when rendered "
         "realistically. Preserve recognizable identity, age, expression, hairstyle, pose, clothing, accessories, visible objects, "
         "subject count, crop, and composition. Use rounded connected forms, clean large shapes, and modest playful simplification. "
         "Do not replace the face with a generic doll or anime face, do not enlarge eyes excessively, and do not add or remove "
-        "elements."
+        "elements. Make the result cute through expression, clean curves, and material treatment rather than changing identity, "
+        "age, anatomy, or the subject's distinctive proportions."
     ),
 }
 
@@ -67,6 +70,19 @@ MAX_PALETTE_RECOMMENDATION_REASON_BYTES = 400
 
 class OpenAIPreprocessorError(RuntimeError):
     """An OpenAI-compatible preprocessing request failed safely."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "image_preprocess_failed",
+        retryable: bool = False,
+        ambiguous: bool = False,
+    ):
+        super().__init__(message)
+        self.code = code
+        self.retryable = retryable
+        self.ambiguous = ambiguous
 
 
 @dataclass(frozen=True)
@@ -162,13 +178,29 @@ def _provider_request(path: str, body: bytes, content_type: str) -> dict[str, An
     except urllib.error.HTTPError as exc:
         if exc.code == 429:
             message = "The preprocessing service is rate limiting requests; try again later."
+            code = "image_rate_limited"
+            retryable = True
+            ambiguous = False
         elif 400 <= exc.code < 500:
             message = "The preprocessing service rejected the request."
+            code = "image_rejected"
+            retryable = False
+            ambiguous = False
         else:
             message = "The preprocessing service is temporarily unavailable."
-        raise OpenAIPreprocessorError(message) from None
+            code = "image_service_unavailable"
+            retryable = True
+            ambiguous = True
+        raise OpenAIPreprocessorError(
+            message, code=code, retryable=retryable, ambiguous=ambiguous
+        ) from None
     except (urllib.error.URLError, TimeoutError, OSError):
-        raise OpenAIPreprocessorError("Could not connect to the preprocessing service.") from None
+        raise OpenAIPreprocessorError(
+            "Could not connect to the preprocessing service.",
+            code="image_connection_failed",
+            retryable=True,
+            ambiguous=True,
+        ) from None
 
 
 class _RejectRedirects(urllib.request.HTTPRedirectHandler):
@@ -283,31 +315,57 @@ def _designer_toy_palette_direction(
         + ". The primary color covers the largest subject material; the structure color covers hair, rear surfaces, seams, "
         "and the darkest load-bearing regions; the light color is reserved for enclosed highlights or a face panel; the accent "
         "color marks one secondary semantic part. Ignore any role that is absent from this smaller palette. "
-        "Place the subject on a transparent background. If transparency is unavailable, use one uniform neutral studio background "
-        "with no shadow; that background is not a model material and must not be used on the subject. "
+        "Render identity-defining engraved lines, emblem ridges, grille bars, panel divisions, and part boundaries as a few "
+        "continuous, printer-width structure-colored grooves or bands. Do not express signature details only with highlights, "
+        "shadows, or subtle tone changes that will disappear during exact-palette mapping. "
+        "Place the subject on a transparent background. If transparency is unavailable, use one uniform studio background with no "
+        "shadow whose color is clearly separated from every listed palette color and every subject region. The fallback background "
+        "must not use or resemble a palette color and must not be used on the subject. "
+    )
+
+
+def _portrait_display_base_direction() -> str:
+    return (
+        "Portrait stability rule: when the selected primary subject is a real person or a human character, always add exactly "
+        "one low, simple, integrated display base even when the source portrait has no base. This is the only category-specific "
+        "exception to preserving a source-visible base and to the general prohibition on adding elements. Give the base a flat "
+        "underside, keep it visually subordinate to the person, and fuse it with opaque load-bearing geometry: there must be no "
+        "gap, floating foot, floating torso, or shadow-only contact. For a head-and-shoulders, chest, waist, or other cropped human "
+        "portrait, keep the exact visible anatomical extent, finish the existing lower torso or clothing cleanly, and fuse that "
+        "boundary to a compact round, oval, or softly polygonal bust plinth; do not invent a pelvis, legs, or feet. For a complete, "
+        "standing, seated, or crouched person, preserve the full pose and connect the actual lowest visible contacts such as feet, "
+        "garment, or seat to one low base without moving the limbs. For an explicitly requested pair or group of people, use one "
+        "shared low base while preserving count, identities, left-right order, spacing, poses, and accessories. In multicolor mode, "
+        "make the base one broad printable palette region; in monochrome mode, keep the same single material as the portrait. "
+        "Do not apply this portrait exception to an animal, product, vehicle, machine, building, or other non-human subject. "
     )
 
 
 def _image_to_3d_composition_direction(transparent_background: bool = False) -> str:
     return (
         "Recompose the selected primary subject as a clean product-shot reference for image-to-3D rather than editing the "
-        "photograph in place. Center one readable collectible on "
+        "photograph in place. Center the exact requested subject or explicitly requested subject group as one readable composition on "
         + ("a transparent background" if transparent_background else "a plain bright background")
-        + ", show a coherent complete silhouette, and use a front or gentle three-quarter view. Attach a person, animal, statue, "
-        "character, or otherwise unstable prop to one simple integrated round or softly polygonal display base. If the selected "
-        "subject is an inherently stable manufactured object such as a shoe, camera, cup, vehicle, or appliance, show that product "
-        "alone resting on its own contact surface. Do not add any disc, plinth, stand, platform, presentation base, floor slab, or "
-        "pedestal unless the user explicitly requests one. This manufactured-product exception overrides every general instruction "
-        "about a stable base, base contact, or collectible display. A necessary base for an unstable figure is the only new support "
-        "element permitted. Remove scenery, floor shadows, text, logos, watermarks, camera UI, "
+        + ", show a coherent complete silhouette, and use a front or gentle three-quarter view. Preserve any base, support, floor "
+        "slab, or contact surface that is visibly part of the selected source subject. Except for the mandatory portrait base rule "
+        "below, a non-human standing, seated, crouched, lying, wheeled, naturally stable, or cleanly cropped subject must remain "
+        "base-free when the source is base-free. Do not add a disc, plinth, stand, platform, presentation base, floor slab, or "
+        "pedestal to a non-human subject unless the user explicitly requests one. "
+        + _portrait_display_base_direction()
+        + "If a thin visible part would otherwise become disconnected, use the smallest integrated material bridge or subtle "
+        "thickening needed for continuity rather than adding a display base. Remove scenery, floor shadows, text, logos, watermarks, camera UI, "
         "color cards, and unrelated people, plants, props, or landmarks. Do not combine separate scene elements into one object. "
-        "Choose the subject named by the user when it is visible; otherwise choose the visually dominant foreground subject. "
+        "Choose every subject named by the user when visible. If the user explicitly requests multiple subjects, a pair, a group, "
+        "or a set, preserve the exact requested count, identities, left-right order, relative spacing, poses, and accessories as one "
+        "closed composition; never silently drop, merge, duplicate, or replace a requested member. Otherwise choose the visually "
+        "dominant foreground subject. "
         "Apply these source-dependent framing rules: if the complete person, animal, or object is visible, preserve the complete "
         "head-to-toe or whole-object form and its existing pose. If a person is cropped before the knees or only the upper body is "
         "visible, create a deliberately finished bust or half-body collectible: preserve only the visible head, torso, arms, and "
-        "clothing, end the lower torso with a clean sculpted boundary on the base, and do not invent a pelvis, legs, or feet. If the "
-        "source is a multi-subject scenic photograph, isolate exactly one requested or dominant subject and omit all secondary "
-        "subjects and background scenery. Never duplicate a face, limb, tower, statue, accessory, or architectural element. "
+        "clothing, end the lower torso with a clean sculpted boundary fused to the required compact portrait base, and do not invent "
+        "a pelvis, legs, or feet. If the source is a multi-subject scenic photograph and the user did not explicitly request a "
+        "pair, group, set, or exact subject count, isolate exactly one requested or dominant subject and omit all secondary subjects "
+        "and background scenery. Never duplicate a face, limb, tower, statue, accessory, or architectural element. "
         "Determine this source crop and visible anatomical extent before applying style or palette. Changing palette mode, palette "
         "colors, or print constraints must not change full-body versus bust framing or reveal anatomy outside the source crop. "
     )
@@ -599,36 +657,52 @@ def _download_image(url: str, output_path: Path) -> Path:
     _validate_artifact_url(url)
     request = urllib.request.Request(url, headers={"Accept": "image/*"}, method="GET")
     part = output_path.with_name(output_path.name + ".part")
-    try:
-        with urllib.request.build_opener(_SafeArtifactRedirects()).open(request, timeout=_TIMEOUT_SECONDS) as response:
-            content_length = response.headers.get("Content-Length")
-            if content_length:
-                try:
-                    if int(content_length) > _MAX_IMAGE_BYTES:
-                        raise OpenAIPreprocessorError("The result image exceeds the 20 MB limit.")
-                except ValueError:
-                    pass
-            total = 0
-            with part.open("wb") as stream:
-                while chunk := response.read(min(64 * 1024, _MAX_IMAGE_BYTES + 1 - total)):
-                    total += len(chunk)
-                    if total > _MAX_IMAGE_BYTES:
-                        raise OpenAIPreprocessorError("The result image exceeds the 20 MB limit.")
-                    stream.write(chunk)
-        os.replace(part, output_path)
-        return output_path
-    except OpenAIPreprocessorError:
+    for attempt in range(2):
         try:
-            part.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError):
-        try:
-            part.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise OpenAIPreprocessorError("The result image could not be downloaded.") from None
+            with urllib.request.build_opener(_SafeArtifactRedirects()).open(request, timeout=_TIMEOUT_SECONDS) as response:
+                content_length = response.headers.get("Content-Length")
+                if content_length:
+                    try:
+                        if int(content_length) > _MAX_IMAGE_BYTES:
+                            raise OpenAIPreprocessorError("The result image exceeds the 20 MB limit.")
+                    except ValueError:
+                        pass
+                total = 0
+                with part.open("wb") as stream:
+                    while chunk := response.read(min(64 * 1024, _MAX_IMAGE_BYTES + 1 - total)):
+                        total += len(chunk)
+                        if total > _MAX_IMAGE_BYTES:
+                            raise OpenAIPreprocessorError("The result image exceeds the 20 MB limit.")
+                        stream.write(chunk)
+            os.replace(part, output_path)
+            return output_path
+        except OpenAIPreprocessorError:
+            try:
+                part.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+        except urllib.error.HTTPError as exc:
+            try:
+                part.unlink(missing_ok=True)
+            except OSError:
+                pass
+            if attempt == 0 and (exc.code == 429 or exc.code >= 500):
+                continue
+            break
+        except (urllib.error.URLError, TimeoutError, OSError):
+            try:
+                part.unlink(missing_ok=True)
+            except OSError:
+                pass
+            if attempt == 0:
+                continue
+    raise OpenAIPreprocessorError(
+        "The result image could not be downloaded.",
+        code="image_download_failed",
+        retryable=True,
+        ambiguous=False,
+    )
 
 
 def _style_preview_prompt(
@@ -655,14 +729,24 @@ def _style_preview_prompt(
         + style_profile
         + "\nImage-to-3D composition contract: "
         + _image_to_3d_composition_direction(bool(palette))
+        + "Treat the source as a closed visual inventory. Preserve its exact viewpoint (front, three-quarter, side, or rear), "
+        "facing direction, left-right arrangement, silhouette, component count, negative spaces, and all identity-defining "
+        "asymmetry. Never mirror the subject or substitute a more typical example of its category. "
         + "Preserve the chosen subject's recognizable identity, facial expression, hairstyle, signature clothing or structural "
         "features, and visible pose. Simplify fine hair strands, fingers, jewelry, fabric patterns, foliage-like texture, and shallow "
         "surface noise into a few sturdy, connected, modelable forms. Do not turn the chosen person, animal, statue, building, or "
-        "object into a different subject. For a real adult person, preserve adult age, face aspect ratio, cheekbone placement, chin "
-        "length, jaw contour, and natural facial feature sizes; do not "
+        "object into a different subject. For a person, preserve the exact head angle and gaze direction, adult or child age, face "
+        "aspect ratio, cheekbone placement, chin length, jaw contour, skin-tone relationships, hairline, curls, braids, facial hair, "
+        "eyewear, headwear, visible hands, finger grouping, and hand-to-object contact; do not "
         "enlarge the eyes, shrink the nose or mouth, narrow the jaw, or replace the face with a generic doll face. For an animal, "
-        "preserve its actual coat pattern and markings; do not invent a white muzzle, chest patch, socks, blaze, or spots that are "
-        "absent from the source. Do not invent unseen anatomy; use the explicit bust treatment for cropped people instead. "
+        "preserve its species or breed cues, ear shape and count, muzzle length, eye color, limb count, tail pose, and exact coat, "
+        "feather, shell, or scale markings; do not invent a white muzzle, chest patch, socks, blaze, or spots that are absent from "
+        "the source. For a product, vehicle, machine, or prop, preserve the exact number and relative placement of wheels, handles, "
+        "openings, windows, lenses, dials, buttons, straps, tools, rods, and antennas; do not merge, duplicate, swap, or genericize "
+        "them. For architecture or a statue, preserve tier and opening counts, gestures, symmetry or deliberate asymmetry, and any "
+        "source-visible base; never invent a pedestal when none exists. Keep each meaningful thin support, spoke, cable, rail, branch, "
+        "or antenna connected; if printability requires it, thicken it subtly instead of deleting or duplicating it. Do not invent "
+        "unseen anatomy; use the explicit bust treatment for cropped people instead. "
         + color_direction
         + "Avoid dithering and tiny color speckles. Do not return the unchanged source."
     )
@@ -708,6 +792,7 @@ def _text_image_prompt(
         "simple depth layering, large closed color regions, hard clean boundaries, and only structurally meaningful details. "
         "Treat the user description as a closed component inventory: do not add plausible category features, accessories, handles, "
         "tools, rods, decorations, or secondary objects that were not explicitly requested. Simplify ambiguous details instead of inventing them. "
+        + _portrait_display_base_direction()
         + ("Use a transparent background with no cast shadow. " if palette else "")
         + color_direction
         + ("Use palette colors only as solid semantic material regions, never as lighting highlights, reflections, rim light, or shading bands. " if palette else "")

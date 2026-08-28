@@ -216,6 +216,37 @@ class ImagePathStabilityTests(unittest.TestCase):
                     sidecar._JOBS.clear()
                     sidecar._JOBS.update(previous)
 
+    def test_restore_backfills_quality_for_legacy_awaiting_confirmation_job(self):
+        with tempfile.TemporaryDirectory() as directory, output_root(directory):
+            job = sidecar._new_job("image", style="cartoon")
+            source = job.directory / "input.png"
+            source.write_bytes(image_bytes())
+            preview = job.directory / "preview.png"
+            image = Image.new("RGBA", (512, 512), (255, 255, 255, 0))
+            image.paste((200, 60, 40, 255), (246, 246, 266, 266))
+            image.save(preview)
+            job.input_path = source
+            job.preview_path = preview
+            job.preview_content_type = "image/png"
+            job.state = "awaiting_confirmation"
+            job.phase = "awaiting_confirmation"
+            self.assertNotIn("model_input_quality", job.image_metrics)
+            sidecar._persist_job(job)
+            with sidecar._JOBS_LOCK:
+                previous = dict(sidecar._JOBS)
+                sidecar._JOBS.clear()
+            try:
+                sidecar._restore_jobs()
+                restored = sidecar._JOBS[job.id]
+                quality = restored.image_metrics["model_input_quality"]
+                self.assertEqual(restored.state, "awaiting_confirmation")
+                self.assertFalse(quality["model_input_eligible"])
+                self.assertIn("subject", restored.message.lower())
+            finally:
+                with sidecar._JOBS_LOCK:
+                    sidecar._JOBS.clear()
+                    sidecar._JOBS.update(previous)
+
     def test_every_public_style_prompt_preserves_subject_inventory(self):
         for style in sidecar.STYLE_IDS:
             custom = "木刻大色块" if style == "custom" else ""

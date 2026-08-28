@@ -533,6 +533,19 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
         status.printable_subject_area_ratio = metrics.value("printable_subject_area_ratio", 0.0);
         status.largest_subject_component_ratio = metrics.value("largest_subject_component_ratio", 0.0);
         status.palette_quality_ok = metrics.value("palette_quality_ok", true);
+        if (metrics.contains("model_input_quality") && metrics["model_input_quality"].is_object()) {
+            const auto& input_quality = metrics["model_input_quality"];
+            status.model_input_score = input_quality.value("score", 0.0);
+            status.model_input_eligible = input_quality.value("model_input_eligible", true);
+            const auto read_codes = [&input_quality](const char* name, std::vector<std::string>& output) {
+                if (!input_quality.contains(name) || !input_quality[name].is_array())
+                    return;
+                for (const auto& value : input_quality[name])
+                    if (value.is_string()) output.push_back(value.get<std::string>());
+            };
+            read_codes("blockers", status.model_input_blockers);
+            read_codes("warnings", status.model_input_warnings);
+        }
     }
     if (job.contains("provider_failure") && job["provider_failure"].is_object()) {
         const auto& failure = job["provider_failure"];

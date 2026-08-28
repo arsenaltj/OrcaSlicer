@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 import contextlib
+from io import BytesIO
 import os
 import json
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -62,6 +64,41 @@ class OpenAIBaseUrlTests(unittest.TestCase):
             with self.assertRaises(preprocessor.OpenAIPreprocessorError):
                 preprocessor._image_quality()
 
+    def test_provider_errors_expose_safe_retry_and_ambiguity_semantics(self):
+        cases = (
+            (429, "image_rate_limited", True, False),
+            (400, "image_rejected", False, False),
+            (503, "image_service_unavailable", True, True),
+        )
+        for status, code, retryable, ambiguous in cases:
+            opener = mock.Mock()
+            opener.open.side_effect = urllib.error.HTTPError("https://example.invalid", status, "error", None, None)
+            with (
+                self.subTest(status=status),
+                configured_base_url("https://laotie.dev"),
+                mock.patch.object(preprocessor.urllib.request, "build_opener", return_value=opener),
+                self.assertRaises(preprocessor.OpenAIPreprocessorError) as raised,
+            ):
+                preprocessor._provider_request("/images/generations", b"{}", "application/json")
+            self.assertEqual(raised.exception.code, code)
+            self.assertEqual(raised.exception.retryable, retryable)
+            self.assertEqual(raised.exception.ambiguous, ambiguous)
+
+    def test_connection_failure_is_ambiguous_and_not_retried(self):
+        opener = mock.Mock()
+        opener.open.side_effect = urllib.error.URLError("offline")
+        with (
+            configured_base_url("https://laotie.dev"),
+            mock.patch.object(preprocessor.urllib.request, "build_opener", return_value=opener),
+            self.assertRaises(preprocessor.OpenAIPreprocessorError) as raised,
+        ):
+            preprocessor._provider_request("/images/generations", b"{}", "application/json")
+
+        self.assertEqual(raised.exception.code, "image_connection_failed")
+        self.assertTrue(raised.exception.retryable)
+        self.assertTrue(raised.exception.ambiguous)
+        opener.open.assert_called_once()
+
 
 class StylePreviewPromptTests(unittest.TestCase):
     def test_short_user_instruction_is_wrapped_with_preview_constraints(self):
@@ -75,14 +112,22 @@ class StylePreviewPromptTests(unittest.TestCase):
         self.assertIn("designer-ready style preview", prompt)
         self.assertIn("recognizable identity", prompt)
         self.assertIn("clean product-shot reference for image-to-3D", prompt)
-        self.assertIn("person, animal, statue", prompt)
-        self.assertIn("inherently stable manufactured object", prompt)
-        self.assertIn("Do not add any disc, plinth, stand, platform, presentation base, floor slab, or pedestal", prompt)
-        self.assertIn("manufactured-product exception overrides every general instruction", prompt)
+        self.assertIn("non-human", prompt)
+        self.assertIn("base-free when the source is base-free", prompt)
+        self.assertIn("mandatory portrait base rule", prompt)
+        self.assertIn("always add exactly one low, simple, integrated display base", prompt)
+        self.assertIn("only category-specific exception", prompt)
+        self.assertIn("flat underside", prompt)
+        self.assertIn("shared low base", prompt)
+        self.assertIn("smallest integrated material bridge", prompt)
         self.assertIn("finished bust or half-body collectible", prompt)
+        self.assertIn("fused to the required compact portrait base", prompt)
         self.assertIn("do not invent a pelvis, legs, or feet", prompt)
         self.assertIn("Changing palette mode", prompt)
         self.assertIn("must not change full-body versus bust framing", prompt)
+        self.assertIn("Center the exact requested subject or explicitly requested subject group", prompt)
+        self.assertIn("preserve the exact requested count, identities, left-right order", prompt)
+        self.assertIn("did not explicitly request a pair, group, set, or exact subject count", prompt)
         self.assertIn("isolate exactly one requested or dominant subject", prompt)
         self.assertIn("Remove scenery, floor shadows, text, logos, watermarks, camera UI", prompt)
         self.assertIn("friendly cute cartoon collectible", prompt)
@@ -101,6 +146,9 @@ class StylePreviewPromptTests(unittest.TestCase):
         self.assertIn("Never retain natural flesh tones", prompt)
         self.assertIn("outer silhouette, neck, limbs", prompt)
         self.assertIn("visibly joined by opaque palette-colored geometry", prompt)
+        self.assertIn("clearly separated from every listed palette color", prompt)
+        self.assertIn("identity-defining engraved lines", prompt)
+        self.assertIn("will disappear during exact-palette mapping", prompt)
         self.assertIn("Do not turn the chosen person, animal, statue, building, or object into a different subject", prompt)
         self.assertNotIn("Preserve the exact canvas, aspect ratio, crop, framing", prompt)
         self.assertNotIn("one fused connected object", prompt)
@@ -116,9 +164,17 @@ class StylePreviewPromptTests(unittest.TestCase):
         for prompt in (realistic, cartoon, sculpture):
             self.assertIn("Preserve the chosen subject's recognizable identity", prompt)
             self.assertIn("Do not turn the chosen", prompt)
+            self.assertIn("closed visual inventory", prompt)
+            self.assertIn("exact viewpoint", prompt)
+            self.assertIn("eyewear, headwear, visible hands", prompt)
+            self.assertIn("wheels, handles, openings, windows, lenses, dials, buttons", prompt)
+            self.assertIn("preserve tier and opening counts", prompt)
+            self.assertIn("thicken it subtly instead of deleting or duplicating it", prompt)
         self.assertIn("allowed printable palette", realistic)
         self.assertIn("full-color designer toy", realistic)
         self.assertNotIn("allowed printable palette", sculpture)
+        self.assertIn("monochrome means one material, not fewer components", sculpture)
+        self.assertIn("rather than changing identity", cartoon)
 
     def test_legacy_styles_resolve_to_the_new_four_style_profiles(self):
         self.assertEqual(
@@ -154,6 +210,8 @@ class StylePreviewPromptTests(unittest.TestCase):
         self.assertIn("appearance and shape-language direction", prompt)
         self.assertIn("hard constraints in this request take priority", prompt)
         self.assertIn("allowed printable palette", prompt)
+        self.assertIn("always add exactly one low, simple, integrated display base", prompt)
+        self.assertIn("Do not apply this portrait exception to an animal, product, vehicle", prompt)
 
     def test_custom_style_requires_nonempty_bounded_description(self):
         with self.assertRaisesRegex(preprocessor.OpenAIPreprocessorError, "required"):
@@ -182,6 +240,9 @@ class TextImagePromptTests(unittest.TestCase):
         self.assertIn("Use at least 3 listed colors", prompt)
         self.assertIn("transparent background", prompt)
         self.assertIn("load-bearing connections, base contact", prompt)
+        self.assertIn("always add exactly one low, simple, integrated display base", prompt)
+        self.assertIn("head-and-shoulders, chest, waist, or other cropped human portrait", prompt)
+        self.assertIn("Do not apply this portrait exception to an animal, product, vehicle", prompt)
         self.assertIn("unless that exact shade is one of the listed printable colors", prompt)
         self.assertIn("closed component inventory", prompt)
         self.assertIn("never as lighting highlights", prompt)
@@ -305,6 +366,65 @@ class ExactImageEditTests(unittest.TestCase):
         self.assertIn(b'name="quality"\r\n\r\nhigh', captured["body"])
         self.assertIn(b'name="size"\r\n\r\n1024x1024', captured["body"])
         self.assertNotIn(b"designer-ready style preview", captured["body"])
+
+
+class ImageDownloadTests(unittest.TestCase):
+    class Response(BytesIO):
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.close()
+
+    def test_transient_download_failure_retries_only_the_artifact_get(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "result.png"
+            opener = mock.Mock()
+            opener.open.side_effect = [urllib.error.URLError("temporary"), self.Response(b"png-bytes")]
+            with (
+                mock.patch.object(preprocessor, "_validate_artifact_url"),
+                mock.patch.object(preprocessor.urllib.request, "build_opener", return_value=opener),
+            ):
+                result = preprocessor._download_image("https://cdn.example/result.png", destination)
+
+            self.assertEqual(result, destination)
+            self.assertEqual(destination.read_bytes(), b"png-bytes")
+        self.assertEqual(opener.open.call_count, 2)
+
+    def test_download_failure_is_actionable_after_one_safe_retry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "result.png"
+            opener = mock.Mock()
+            opener.open.side_effect = urllib.error.URLError("offline")
+            with (
+                mock.patch.object(preprocessor, "_validate_artifact_url"),
+                mock.patch.object(preprocessor.urllib.request, "build_opener", return_value=opener),
+                self.assertRaises(preprocessor.OpenAIPreprocessorError) as raised,
+            ):
+                preprocessor._download_image("https://cdn.example/result.png", destination)
+
+        self.assertEqual(raised.exception.code, "image_download_failed")
+        self.assertTrue(raised.exception.retryable)
+        self.assertFalse(raised.exception.ambiguous)
+        self.assertEqual(opener.open.call_count, 2)
+
+    def test_download_does_not_retry_a_permanent_client_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "result.png"
+            opener = mock.Mock()
+            opener.open.side_effect = urllib.error.HTTPError(
+                "https://cdn.example/result.png", 404, "missing", None, None
+            )
+            with (
+                mock.patch.object(preprocessor, "_validate_artifact_url"),
+                mock.patch.object(preprocessor.urllib.request, "build_opener", return_value=opener),
+                self.assertRaises(preprocessor.OpenAIPreprocessorError),
+            ):
+                preprocessor._download_image("https://cdn.example/result.png", destination)
+
+        opener.open.assert_called_once()
 
 
 if __name__ == "__main__":
