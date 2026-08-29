@@ -22,7 +22,7 @@ EXPECTED_UPSTREAM = {
     "remote": "upstream",
     "branch": "main",
     "ref": "upstream/main",
-    "sha": "6fdd4945c19348cc5fc9ed9ae2f26f22a778786b",
+    "sha": "db29f570bd2f77742ab04e0bb8f0aa55237bd70a",
 }
 EXPECTED_FEATURE_SOURCES = {
     "model_generation": {

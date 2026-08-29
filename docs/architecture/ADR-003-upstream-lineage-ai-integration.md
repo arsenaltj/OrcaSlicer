@@ -4,7 +4,7 @@
 **Date:** 2026-08-21
 **Upstream baseline:** `6ef02a67dbb22ae1a019d9f485f46bfc3e1b44aa`
 
-**Current locked upstream (2026-08-28):** `6fdd4945c19348cc5fc9ed9ae2f26f22a778786b`; the original baseline above remains the branch-creation record.
+**Current locked upstream (2026-08-29):** `db29f570bd2f77742ab04e0bb8f0aa55237bd70a`; the original baseline above remains the branch-creation record.
 
 ## Context
 

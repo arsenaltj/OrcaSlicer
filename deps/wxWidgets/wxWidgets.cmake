@@ -21,16 +21,6 @@ else ()
     set(_wx_edge "-DwxUSE_WEBVIEW_EDGE=OFF")
 endif ()
 
-# This patch only changes the generated package layout for Windows Clang-CL.
-# Applying it on macOS/Linux is both unnecessary and fragile when the pinned
-# wx dependency already carries an equivalent non-Windows context.
-set(_wx_patch_command)
-if (WIN32)
-    set(_wx_patch_command
-        PATCH_COMMAND git apply --verbose --ignore-space-change --whitespace=fix
-                      ${CMAKE_CURRENT_LIST_DIR}/0001-Clang-CL-fix.patch)
-endif ()
-
 orcaslicer_add_cmake_project(
     wxWidgets
     GIT_REPOSITORY "https://github.com/SoftFever/Orca-deps-wxWidgets"
@@ -38,7 +28,6 @@ orcaslicer_add_cmake_project(
     GIT_SHALLOW ON
     GIT_SUBMODULES 3rdparty/catch 3rdparty/pcre 3rdparty/libwebp
     DEPENDS ${PNG_PKG} ${ZLIB_PKG} ${EXPAT_PKG} ${JPEG_PKG}
-    ${_wx_patch_command}
     CMAKE_ARGS
         -DwxBUILD_PRECOMP=ON
         ${_wx_toolkit}
