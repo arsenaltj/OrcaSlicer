@@ -1,13 +1,6 @@
 #include "Plater.hpp"
 #include "AIAssistantPanel.hpp"
-#include "AI/Orca/OrcaOfficialSliceGateway.hpp"
-#include "AI/Orca/OrcaParameterProposalAdapter.hpp"
-#include "AI/Orca/OrcaSmartSlicingAdapter.hpp"
-#include "AI/Orca/OrcaTrialSliceExecutor.hpp"
-#include "AI/Orca/OrcaWorkflowRuntimeStore.hpp"
-#include "AI/SmartSlicing/SmartSlicingPanel.hpp"
-#include "AI/SmartSlicing/SmartSlicingPresenter.hpp"
-#include "slic3r/AI/SmartSlicing/Application/SmartSlicingCoordinator.hpp"
+#include "AI/SmartSlicing/SmartSlicingFeatureHost.hpp"
 #include "../Utils/NetworkAgent.hpp"
 #include "../Utils/NetworkAgentFactory.hpp"
 #include "libslic3r/Config.hpp"
@@ -6825,13 +6818,6 @@ struct Plater::priv
     Plater *q;
     Sidebar *  sidebar;
     AIAssistantPanel* ai_assistant_panel { nullptr };
-    std::unique_ptr<OrcaSmartSlicingAdapter> smart_slicing_workspace;
-    std::unique_ptr<OrcaTrialSliceExecutor> smart_slicing_trial_executor;
-    std::unique_ptr<OrcaOfficialSliceGateway> smart_slicing_official_gateway;
-    std::unique_ptr<OrcaWorkflowRuntimeStore> smart_slicing_runtime_store;
-    std::unique_ptr<AI::SmartSlicing::SmartSlicingCoordinator> smart_slicing_coordinator;
-    std::unique_ptr<SmartSlicingPresenter> smart_slicing_presenter;
-    SmartSlicingPanel* smart_slicing_panel { nullptr };
     MainFrame *main_frame;
 
     MenuFactory menus;
@@ -6851,6 +6837,7 @@ struct Plater::priv
 
     // GUI elements
     AuiMgr m_aui_mgr;
+    std::unique_ptr<SmartSlicingFeatureHost> smart_slicing_host;
     wxString m_default_window_layout;
     wxPanel* current_panel{ nullptr };
     std::vector<wxPanel*> panels;
@@ -8290,8 +8277,8 @@ void Plater::priv::reset_window_layout()
     sidebar_layout.is_collapsed = false;
     if (ai_assistant_panel != nullptr)
         m_aui_mgr.GetPane(ai_assistant_panel).Hide();
-    if (smart_slicing_panel != nullptr)
-        m_aui_mgr.GetPane(smart_slicing_panel).Hide();
+    if (smart_slicing_host != nullptr)
+        smart_slicing_host->show(false);
     update_sidebar(true);
 }
 
@@ -12716,9 +12703,9 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
 
     exporting_status = ExportingStatus::NOT_EXPORTING;
 
-    if (is_finished && !ai_internal_restart && smart_slicing_official_gateway != nullptr) {
+    if (is_finished && !ai_internal_restart && smart_slicing_host != nullptr) {
         const bool success = evt.success() && !has_error && !evt.cancelled();
-        smart_slicing_official_gateway->notify_slice_completed(
+        smart_slicing_host->notify_slice_completed(
             success, evt.cancelled() ? "official_slice_canceled" : "official_slice_failed");
     }
 
@@ -17765,193 +17752,18 @@ void Plater::show_ai_assistant(bool show)
     p->m_aui_mgr.Update();
 }
 
-namespace {
-
-struct SmartSlicingTransformTarget
-{
-    size_t object_index { 0 };
-    ModelInstance* instance { nullptr };
-    Transform3d matrix { Transform3d::Identity() };
-};
-
-bool collect_smart_slicing_targets(Plater& plater, const AI::SmartSlicing::SliceCandidate& candidate,
-                                   std::vector<SmartSlicingTransformTarget>& targets, std::string& diagnostic)
-{
-    PartPlate* plate = plater.get_partplate_list().get_curr_plate();
-    if (plate == nullptr) {
-        diagnostic = "current_plate_unavailable";
-        return false;
-    }
-    if (plate->is_locked()) {
-        diagnostic = "current_plate_locked";
-        return false;
-    }
-
-    std::set<uint64_t> seen_instances;
-    targets.reserve(candidate.placement.transforms.size());
-    Model& model = plater.model();
-    for (const AI::SmartSlicing::ObjectTransform& requested : candidate.placement.transforms) {
-        if (!seen_instances.insert(requested.instance_id).second) {
-            diagnostic = "duplicate_transform_target";
-            return false;
-        }
-        Transform3d matrix;
-        for (Eigen::Index row = 0; row < matrix.rows(); ++row)
-            for (Eigen::Index column = 0; column < matrix.cols(); ++column) {
-                const double value = requested.matrix[static_cast<size_t>(row * matrix.cols() + column)];
-                if (!std::isfinite(value)) {
-                    diagnostic = "invalid_transform";
-                    return false;
-                }
-                matrix(row, column) = value;
-            }
-        if (!matrix.matrix().row(3).isApprox(Eigen::RowVector4d(0.0, 0.0, 0.0, 1.0)) ||
-            std::abs(matrix.linear().determinant()) < 1e-12) {
-            diagnostic = "invalid_transform";
-            return false;
-        }
-
-        SmartSlicingTransformTarget target;
-        bool found = false;
-        for (size_t object_index = 0; object_index < model.objects.size() && !found; ++object_index) {
-            ModelObject* object = model.objects[object_index];
-            if (object == nullptr || object->id().id != requested.object_id)
-                continue;
-            for (size_t instance_index = 0; instance_index < object->instances.size(); ++instance_index) {
-                ModelInstance* instance = object->instances[instance_index];
-                if (instance != nullptr && instance->id().id == requested.instance_id) {
-                    if (!plate->contain_instance(static_cast<int>(object_index), static_cast<int>(instance_index))) {
-                        diagnostic = "transform_target_not_on_current_plate";
-                        return false;
-                    }
-                    target = { object_index, instance, matrix };
-                    found = true;
-                    break;
-                }
-            }
-        }
-        if (!found) {
-            diagnostic = "transform_target_missing";
-            return false;
-        }
-        targets.push_back(std::move(target));
-    }
-    return true;
-}
-
-bool prepare_smart_slicing_parameter_patch(Plater& plater, const AI::SmartSlicing::SliceCandidate& candidate,
-                                           DynamicPrintConfig& plate_patch, std::string& diagnostic)
-{
-    if (candidate.parameters.entries.empty())
-        return true;
-    if (wxGetApp().preset_bundle == nullptr) {
-        diagnostic = "current_config_unavailable";
-        return false;
-    }
-    PartPlate* plate = plater.get_partplate_list().get_curr_plate();
-    if (plate == nullptr) {
-        diagnostic = "current_plate_unavailable";
-        return false;
-    }
-
-    DynamicPrintConfig current_config = wxGetApp().preset_bundle->full_config();
-    current_config.apply(*plate->config(), true);
-    DynamicPrintConfig patched_config;
-    const OrcaParameterApplyResult result = OrcaParameterProposalAdapter().validate_and_apply(
-        candidate.parameters, plate->id().id, current_config, patched_config);
-    if (!result.accepted) {
-        diagnostic = result.diagnostic_code;
-        return false;
-    }
-    for (const AI::SmartSlicing::ConfigPatchEntry& entry : candidate.parameters.entries) {
-        const ConfigOption* replacement = patched_config.option(entry.key);
-        if (replacement == nullptr) {
-            diagnostic = "parameter_native_option_unavailable";
-            return false;
-        }
-        plate_patch.set_key_value(entry.key, replacement->clone());
-    }
-    return true;
-}
-
-} // namespace
-
 bool Plater::is_smart_slicing_shown() const
 {
-    return p->smart_slicing_panel != nullptr && p->m_aui_mgr.GetPane(p->smart_slicing_panel).IsShown();
+    return p->smart_slicing_host != nullptr && p->smart_slicing_host->is_shown();
 }
 
 void Plater::enable_smart_slicing()
 {
-    if (p->smart_slicing_panel != nullptr)
+    if (p->smart_slicing_host != nullptr)
         return;
 
-    p->smart_slicing_workspace = std::make_unique<OrcaSmartSlicingAdapter>(this);
-    p->smart_slicing_trial_executor = std::make_unique<OrcaTrialSliceExecutor>([this] {
-        return p->smart_slicing_workspace->capture_trial_slice_input();
-    });
-    p->smart_slicing_official_gateway = std::make_unique<OrcaOfficialSliceGateway>(
-        [this] { return p->smart_slicing_workspace->current_revision(); },
-        [this](const AI::SmartSlicing::SliceCandidate& candidate) {
-            std::vector<SmartSlicingTransformTarget> targets;
-            DynamicPrintConfig parameter_patch;
-            std::string diagnostic;
-            if (!collect_smart_slicing_targets(*this, candidate, targets, diagnostic) ||
-                !prepare_smart_slicing_parameter_patch(*this, candidate, parameter_patch, diagnostic))
-                return diagnostic;
-            return std::string {};
-        },
-        [this](const AI::SmartSlicing::SliceCandidate& candidate) {
-            std::vector<SmartSlicingTransformTarget> targets;
-            DynamicPrintConfig parameter_patch;
-            std::string diagnostic;
-            if (!collect_smart_slicing_targets(*this, candidate, targets, diagnostic) ||
-                !prepare_smart_slicing_parameter_patch(*this, candidate, parameter_patch, diagnostic))
-                return OrcaApplyMutationResult { false, false, std::move(diagnostic) };
-
-            std::vector<SmartSlicingTransformTarget> changed;
-            std::vector<size_t> changed_object_indices;
-            for (const SmartSlicingTransformTarget& target : targets) {
-                if (!target.instance->get_matrix().isApprox(target.matrix)) {
-                    changed.push_back(target);
-                    changed_object_indices.push_back(target.object_index);
-                }
-            }
-            if (changed.empty() && candidate.parameters.entries.empty())
-                return OrcaApplyMutationResult { true, false, {} };
-            std::sort(changed_object_indices.begin(), changed_object_indices.end());
-            changed_object_indices.erase(std::unique(changed_object_indices.begin(), changed_object_indices.end()),
-                                         changed_object_indices.end());
-
-            bool transaction_started = false;
-            try {
-                {
-                    Plater::TakeSnapshot transaction(this, "Apply Smart Slicing Candidate");
-                    transaction_started = true;
-                    for (const SmartSlicingTransformTarget& target : changed)
-                        target.instance->set_transformation(Geometry::Transformation(target.matrix));
-                    PartPlate* plate = get_partplate_list().get_curr_plate();
-                    if (plate == nullptr)
-                        throw std::runtime_error("Current plate disappeared while applying a smart-slicing candidate.");
-                    for (const AI::SmartSlicing::ConfigPatchEntry& entry : candidate.parameters.entries) {
-                        const ConfigOption* replacement = parameter_patch.option(entry.key);
-                        if (replacement == nullptr)
-                            throw std::runtime_error("Validated smart-slicing parameter disappeared before apply.");
-                        plate->config()->set_key_value(entry.key, replacement->clone());
-                    }
-                    if (!changed_object_indices.empty())
-                        changed_objects(changed_object_indices);
-                    if (!candidate.parameters.entries.empty())
-                        plate->update_slice_result_valid_state(false);
-                    update_title_dirty_status();
-                }
-                return OrcaApplyMutationResult { true, true, {} };
-            } catch (...) {
-                if (transaction_started && can_undo())
-                    undo();
-                return OrcaApplyMutationResult { false, false, "candidate_apply_rolled_back" };
-            }
-        },
+    p->smart_slicing_host = std::make_unique<SmartSlicingFeatureHost>(
+        *this, p->m_aui_mgr, *p->sidebar,
         [this] {
             if (printer_technology() != ptFFF ||
                 p->process_completed_with_error == p->partplate_list.get_curr_plate_index())
@@ -17967,101 +17779,13 @@ void Plater::enable_smart_slicing()
             plate->update_slice_result_valid_state(false);
             reslice();
             return p->m_is_slicing;
-        },
-        [this] {
-            select_view_3D("Preview");
-            return is_preview_shown();
-        },
-        [this] {
-            if (!can_undo())
-                return false;
-            undo();
-            return true;
         });
-    p->smart_slicing_coordinator =
-        std::make_unique<AI::SmartSlicing::SmartSlicingCoordinator>(*p->smart_slicing_workspace,
-                                                                    *p->smart_slicing_trial_executor,
-                                                                    *p->smart_slicing_official_gateway);
-    AI::SmartSlicing::WorkflowResourceBudget smart_slicing_budget;
-    p->smart_slicing_trial_executor->set_resource_limits(smart_slicing_budget.maximum_elapsed,
-                                                         smart_slicing_budget.maximum_memory_bytes,
-                                                         smart_slicing_budget.maximum_temporary_disk_bytes);
-    p->smart_slicing_coordinator->set_resource_budget(smart_slicing_budget);
-    p->smart_slicing_runtime_store = std::make_unique<OrcaWorkflowRuntimeStore>(
-        boost::filesystem::temp_directory_path() / "OrcaSlicer-smart-slicing-runtime-v1.json");
-    p->smart_slicing_coordinator->set_runtime_store(*p->smart_slicing_runtime_store);
-    p->smart_slicing_presenter = std::make_unique<SmartSlicingPresenter>(
-        *p->smart_slicing_coordinator, [](std::function<void()> publish) {
-            if (wxIsMainThread())
-                publish();
-            else
-                wxGetApp().CallAfter(std::move(publish));
-        });
-    p->smart_slicing_panel = new SmartSlicingPanel(this, *p->smart_slicing_coordinator, [this] {
-        const auto& snapshot = p->smart_slicing_coordinator->snapshot();
-        if (!snapshot.context)
-            return std::vector<AI::SmartSlicing::SliceCandidate> {};
-        p->smart_slicing_trial_executor->prepare_session_input(
-            p->smart_slicing_workspace->capture_trial_slice_input());
-        return p->smart_slicing_workspace->candidate_proposals(snapshot.context->revision);
-    }, [this] {
-        p->smart_slicing_trial_executor->cancel_trial_slice();
-    });
-    p->smart_slicing_presenter->set_view_changed([this](const SmartSlicingViewModel& view) {
-        if (p->smart_slicing_panel != nullptr)
-            p->smart_slicing_panel->render(view);
-        if (view.summary_key == "official_slice_complete" || view.summary_key == "canceled" ||
-            view.summary_key == "workspace_changed" || view.summary_key == "preflight_failed")
-            p->smart_slicing_trial_executor->clear_session_input();
-
-        if (view.summary_key == "ready_to_start")
-            return;
-        auto to_sidebar_status = [](LegacyAIWorkflowStatus status) {
-            switch (status) {
-            case LegacyAIWorkflowStatus::Running: return Sidebar::AIWorkflowStatus::Running;
-            case LegacyAIWorkflowStatus::Success: return Sidebar::AIWorkflowStatus::Success;
-            case LegacyAIWorkflowStatus::Warning: return Sidebar::AIWorkflowStatus::Warning;
-            case LegacyAIWorkflowStatus::Failed: return Sidebar::AIWorkflowStatus::Failed;
-            case LegacyAIWorkflowStatus::Waiting: return Sidebar::AIWorkflowStatus::Waiting;
-            }
-            return Sidebar::AIWorkflowStatus::Waiting;
-        };
-        const wxString summary = view.is_stale ? _L("工程已变化，需要重新检查") :
-                                 view.summary_key == "preflight_complete" ? _L("可打印性检查完成") :
-                                 view.summary_key == "preflight_complete_with_warnings" ? _L("可打印性检查完成，仍有提示") :
-                                 view.summary_key == "printability_action_required" ? _L("发现需要处理的问题") :
-                                 view.summary_key == "preflight_failed" ? _L("可打印性检查失败") :
-                                 view.summary_key == "canceled" ? _L("可打印性检查已取消") :
-                                 _L("正在执行智能切片预检");
-        p->sidebar->start_ai_workflow(summary);
-        for (size_t index = 0; index < view.legacy_steps.size(); ++index)
-            p->sidebar->update_ai_workflow_step(static_cast<Sidebar::AIWorkflowStep>(index),
-                                                to_sidebar_status(view.legacy_steps[index]));
-        if (view.can_start && !view.can_cancel)
-            p->sidebar->finish_ai_workflow(false, summary);
-    });
-
-    p->m_aui_mgr.AddPane(p->smart_slicing_panel, wxAuiPaneInfo()
-                                                     .Name("smart_slicing")
-                                                     .Caption(_L("智能切片"))
-                                                     .Right()
-                                                     .CloseButton(true)
-                                                     .TopDockable(false)
-                                                     .BottomDockable(false)
-                                                     .BestSize(wxSize(38 * wxGetApp().em_unit(), 70 * wxGetApp().em_unit()))
-                                                     .Hide());
-    p->m_aui_mgr.Update();
 }
 
 void Plater::show_smart_slicing(bool show)
 {
-    if (p->smart_slicing_panel == nullptr)
-        return;
-    auto& pane = p->m_aui_mgr.GetPane(p->smart_slicing_panel);
-    if (!pane.IsOk())
-        return;
-    pane.Show(show);
-    p->m_aui_mgr.Update();
+    if (p->smart_slicing_host != nullptr)
+        p->smart_slicing_host->show(show);
 }
 
 void Plater::reset_window_layout() { p->reset_window_layout(); }

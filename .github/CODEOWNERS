@@ -3,6 +3,7 @@
 
 # Feature-owned modules.
 /src/slic3r/AI/ModelGeneration/ @arsenaltj
+/src/slic3r/GUI/AI/ModelGeneration/ @arsenaltj
 /src/slic3r/GUI/AIModelGenerationClient.* @arsenaltj
 /src/slic3r/GUI/ModelGenerationPanel.* @arsenaltj
 /tools/ai/model_*.py @arsenaltj
@@ -29,6 +30,8 @@
 /.github/ @arsenaltj
 /CMakeLists.txt @arsenaltj
 /build_release_vs.bat @arsenaltj
+/deps/MPFR/MPFR.cmake @arsenaltj
+/deps/wxWidgets/wxWidgets.cmake @arsenaltj
 /docs/architecture/ @arsenaltj
 /scripts/package_internal_fast.ps1 @arsenaltj
 /scripts/verify_ai_integration.py @arsenaltj
@@ -39,6 +42,7 @@
 /src/slic3r/BuildInfo.* @arsenaltj
 /src/slic3r/CMakeLists.txt @arsenaltj
 /src/slic3r/GUI/AboutDialog.cpp @arsenaltj
+/src/slic3r/GUI/AI/AIDesktopFeatureHost.* @arsenaltj
 /src/slic3r/GUI/AI/Orca/ @arsenaltj
 /src/slic3r/GUI/GUI_App.cpp @arsenaltj
 /src/slic3r/GUI/MainFrame.* @arsenaltj

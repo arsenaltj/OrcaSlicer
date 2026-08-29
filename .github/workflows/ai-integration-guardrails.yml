@@ -10,6 +10,8 @@ on:
       - '.github/workflows/**'
       - 'CMakeLists.txt'
       - 'build_release_vs.bat'
+      - 'deps/MPFR/MPFR.cmake'
+      - 'deps/wxWidgets/wxWidgets.cmake'
       - 'docs/architecture/**'
       - 'scripts/package_internal_fast.ps1'
       - 'scripts/verify_ai_integration.py'

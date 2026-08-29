@@ -37,10 +37,7 @@
 #include "I18N.hpp"
 #include "GLCanvas3D.hpp"
 #include "Plater.hpp"
-#include "ModelGenerationPanel.hpp"
-#include "AI/Orca/OrcaWorkspaceAdapter.hpp"
-#include "AIServiceManager.hpp"
-#include "AISidecarClient.hpp"
+#include "AI/AIDesktopFeatureHost.hpp"
 #include "WebViewDialog.hpp"
 #include "../Utils/Process.hpp"
 #include "format.hpp"
@@ -296,6 +293,8 @@ static const wxString ctrl_t = ctrl;
 #endif
 static const wxString shift = _L("Shift+");
 
+MainFrame::~MainFrame() = default;
+
 MainFrame::MainFrame() :
 DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_STYLE, "mainframe")
     , m_printhost_queue_dlg(new PrintHostQueueDialog(this))
@@ -417,10 +416,8 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
         init_menubar_as_editor();
 
     if (wxGetApp().is_editor()) {
-        m_ai_service_manager = std::make_unique<AIServiceManager>(AISidecarClient::default_endpoint());
-        m_ai_service_retry_timer.SetOwner(this);
-        Bind(wxEVT_TIMER, &MainFrame::on_ai_service_retry, this, m_ai_service_retry_timer.GetId());
-        discover_ai_service();
+        if (m_ai_feature_host != nullptr)
+            m_ai_feature_host->start();
     }
 
     // BBS
@@ -1134,11 +1131,8 @@ void MainFrame::shutdown()
 #endif
     // BBS: backup
     Slic3r::set_backup_callback(nullptr);
-    if (m_model_generation != nullptr)
-        m_model_generation->shutdown();
-    m_ai_service_retry_timer.Stop();
-    if (m_ai_service_manager)
-        m_ai_service_manager->shutdown();
+    if (m_ai_feature_host != nullptr)
+        m_ai_feature_host->shutdown();
 #ifdef _WIN32
 	if (m_hDeviceNotify) {
 		::UnregisterDeviceNotification(HDEVNOTIFY(m_hDeviceNotify));
@@ -1327,7 +1321,7 @@ void MainFrame::init_tabpanel() {
 
     wxGetApp().plater_ = m_plater;
 
-    m_ai_orca_workspace = std::make_unique<OrcaWorkspaceAdapter>(m_plater, [this](bool slice) {
+    m_ai_feature_host = std::make_unique<AIDesktopFeatureHost>(m_tabpanel, m_plater, [this](bool slice) {
         m_plater->exit_gizmo();
         m_plater->update(true, true);
         if (slice) {
@@ -1336,19 +1330,11 @@ void MainFrame::init_tabpanel() {
         } else {
             select_tab(TAB_ID_PREPARE);
         }
+    }, [this] {
+        register_ai_assistant();
     });
-    BOOST_LOG_TRIVIAL(info) << "AI model generation startup: creating model generation panel";
-    m_model_generation = new ModelGenerationPanel(
-        m_tabpanel, *m_ai_orca_workspace, *m_ai_orca_workspace);
-    m_model_generation->set_service_retry_handler([this]() {
-        m_ai_service_retry_timer.Stop();
-        m_ai_service_retry_count = 0;
-        discover_ai_service();
-    });
-    BOOST_LOG_TRIVIAL(info) << "AI model generation startup: model generation panel created";
-    m_model_generation->SetBackgroundColour(*wxWHITE);
-    m_tabpanel->AddPage(TAB_ID_GENERATE_3D, m_model_generation, _L("3D 生成"), "tab_generate_3d_active");
-    m_model_generation->Hide();
+    m_tabpanel->AddPage(TAB_ID_GENERATE_3D, m_ai_feature_host->model_generation_panel(), _L("3D 生成"),
+                        "tab_generate_3d_active");
 
     create_preset_tabs();
 
@@ -1399,46 +1385,9 @@ void MainFrame::init_tabpanel() {
     }
 }
 
-void MainFrame::discover_ai_service()
+void MainFrame::register_ai_assistant()
 {
-    if (m_ai_service_discovery_active || !m_ai_service_manager)
-        return;
-    m_ai_service_discovery_active = true;
-    m_ai_service_manager->discover_async(this, [this](AIServiceAvailability availability) {
-        m_ai_service_discovery_active = false;
-        register_ai_features(availability);
-        if (availability.compatible) {
-            m_ai_service_retry_timer.Stop();
-            m_ai_service_retry_count = 0;
-        } else if (availability.transient && m_ai_service_retry_count < 20) {
-            ++m_ai_service_retry_count;
-            m_ai_service_retry_timer.StartOnce(500);
-        }
-    });
-}
-
-void MainFrame::on_ai_service_retry(wxTimerEvent&)
-{
-    discover_ai_service();
-}
-
-void MainFrame::register_ai_features(AIServiceAvailability availability)
-{
-    if (m_model_generation != nullptr) {
-        const std::string message = availability.compatible && !availability.model_generation_available
-            ? "Configure the local AI service to enable 3D generation."
-            : availability.error;
-        m_model_generation->set_service_availability(
-            availability.compatible && availability.model_generation_available, message);
-    }
-
-    if (!availability.compatible) {
-        BOOST_LOG_TRIVIAL(info) << "AI features unavailable: " << availability.error;
-        return;
-    }
-
-    if (availability.config_proposal_available && m_plater != nullptr && m_view_menu != nullptr &&
-        !m_ai_assistant_registered) {
+    if (m_plater != nullptr && m_view_menu != nullptr && !m_ai_assistant_registered) {
         m_plater->enable_ai_assistant();
         append_menu_check_item(
             m_view_menu, wxID_ANY, _L("Show AI Assistant"), _L("Show AI assistant panel."),

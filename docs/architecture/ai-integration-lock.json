@@ -57,8 +57,13 @@
   },
   "architecture_contract": {
     "pattern": "desktop_modular_monolith",
-    "migration_phase": "neutral_contracts",
+    "migration_phase": "gui_feature_hosts",
     "target_contract_root": "src/slic3r/AI/Contracts",
+    "feature_hosts": {
+      "desktop": "src/slic3r/GUI/AI/AIDesktopFeatureHost.hpp",
+      "model_generation": "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationFeatureHost.hpp",
+      "smart_slicing": "src/slic3r/GUI/AI/SmartSlicing/SmartSlicingFeatureHost.hpp"
+    },
     "composition_roots": [
       "CMakeLists.txt",
       "src/CMakeLists.txt",
@@ -69,7 +74,7 @@
       "src/slic3r/GUI/Plater.hpp"
     ],
     "decomposition_line_budgets": {
-      "src/slic3r/GUI/ModelGenerationPanel.cpp": 5308,
+      "src/slic3r/GUI/ModelGenerationPanel.cpp": 4400,
       "tools/ai/orca_ai_sidecar.py": 4884
     },
     "shared_touchpoint_diff_budgets": {
@@ -82,20 +87,20 @@
         "max_net_added_lines": 38
       },
       "src/slic3r/CMakeLists.txt": {
-        "max_added_lines": 70,
-        "max_net_added_lines": 69
+        "max_added_lines": 55,
+        "max_net_added_lines": 50
       },
       "src/slic3r/GUI/MainFrame.cpp": {
-        "max_added_lines": 111,
-        "max_net_added_lines": 107
+        "max_added_lines": 65,
+        "max_net_added_lines": 60
       },
       "src/slic3r/GUI/MainFrame.hpp": {
-        "max_added_lines": 17,
-        "max_net_added_lines": 17
+        "max_added_lines": 10,
+        "max_net_added_lines": 9
       },
       "src/slic3r/GUI/Plater.cpp": {
-        "max_added_lines": 564,
-        "max_net_added_lines": 548
+        "max_added_lines": 300,
+        "max_net_added_lines": 280
       },
       "src/slic3r/GUI/Plater.hpp": {
         "max_added_lines": 47,
@@ -119,6 +124,8 @@
       ".github",
       "CMakeLists.txt",
       "build_release_vs.bat",
+      "deps/MPFR/MPFR.cmake",
+      "deps/wxWidgets/wxWidgets.cmake",
       "docs/architecture",
       "scripts/package_internal_fast.ps1",
       "scripts/verify_ai_integration.py",
@@ -130,6 +137,8 @@
       "src/slic3r/BuildInfo.hpp",
       "src/slic3r/CMakeLists.txt",
       "src/slic3r/GUI/AboutDialog.cpp",
+      "src/slic3r/GUI/AI/AIDesktopFeatureHost.cpp",
+      "src/slic3r/GUI/AI/AIDesktopFeatureHost.hpp",
       "src/slic3r/GUI/AI/Orca",
       "src/slic3r/GUI/GUI_App.cpp",
       "src/slic3r/GUI/MainFrame.cpp",

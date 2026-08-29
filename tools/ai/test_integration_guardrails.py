@@ -32,8 +32,16 @@ class IntegrationGuardrailTests(unittest.TestCase):
         architecture = self.document["architecture_contract"]
 
         self.assertEqual("desktop_modular_monolith", architecture["pattern"])
-        self.assertEqual("neutral_contracts", architecture["migration_phase"])
+        self.assertEqual("gui_feature_hosts", architecture["migration_phase"])
         self.assertEqual("src/slic3r/AI/Contracts", architecture["target_contract_root"])
+        self.assertEqual(
+            {
+                "desktop": "src/slic3r/GUI/AI/AIDesktopFeatureHost.hpp",
+                "model_generation": "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationFeatureHost.hpp",
+                "smart_slicing": "src/slic3r/GUI/AI/SmartSlicing/SmartSlicingFeatureHost.hpp",
+            },
+            architecture["feature_hosts"],
+        )
         self.assertEqual(
             {
                 "src/slic3r/AI/Contracts/GeneratedModelArtifact.hpp",
@@ -85,6 +93,33 @@ class IntegrationGuardrailTests(unittest.TestCase):
 
     def test_repository_ai_build_boundaries_pass(self) -> None:
         self.assertEqual([], GUARDRAILS.validate_ai_build_boundaries(REPO_ROOT))
+
+    def test_repository_gui_feature_boundaries_pass(self) -> None:
+        self.assertEqual([], GUARDRAILS.validate_gui_feature_boundaries(REPO_ROOT))
+
+    def test_gui_feature_boundary_rejects_shared_file_orchestration(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            fixtures = {
+                "src/slic3r/GUI/AI/AIDesktopFeatureHost.hpp": "#pragma once\n",
+                "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationFeatureHost.hpp": "#pragma once\n",
+                "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationPresentation.hpp": "#pragma once\n",
+                "src/slic3r/GUI/AI/ModelGeneration/ModelPreview3D.hpp": "#pragma once\n",
+                "src/slic3r/GUI/AI/SmartSlicing/SmartSlicingFeatureHost.hpp": "#pragma once\n",
+                "src/slic3r/GUI/MainFrame.cpp": '#include "AIServiceManager.hpp"\n',
+                "src/slic3r/GUI/MainFrame.hpp": "std::unique_ptr<AIServiceManager> manager;\n",
+                "src/slic3r/GUI/Plater.cpp": "std::make_unique<AI::SmartSlicing::SmartSlicingCoordinator>();\n",
+            }
+            for relative_path, content in fixtures.items():
+                path = root / relative_path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+
+            errors = GUARDRAILS.validate_gui_feature_boundaries(root)
+
+        codes = {error["code"] for error in errors}
+        self.assertIn("gui.mainframe_boundary", codes)
+        self.assertIn("gui.plater_boundary", codes)
 
     def test_build_boundary_rejects_duplicate_gui_source_ownership(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -145,7 +180,10 @@ class IntegrationGuardrailTests(unittest.TestCase):
         document = copy.deepcopy(self.document)
         document["architecture_contract"]["shared_touchpoint_diff_budgets"][
             "src/slic3r/GUI/MainFrame.cpp"
-        ]["max_added_lines"] = 110
+        ]["max_added_lines"] = 0
+        document["architecture_contract"]["shared_touchpoint_diff_budgets"][
+            "src/slic3r/GUI/MainFrame.cpp"
+        ]["max_net_added_lines"] = 0
 
         errors = GUARDRAILS.validate_architecture_budgets(document, REPO_ROOT)
 

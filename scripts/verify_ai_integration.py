@@ -71,8 +71,13 @@ EXPECTED_DEVELOPMENT_PORTS = {
 }
 EXPECTED_ARCHITECTURE = {
     "pattern": "desktop_modular_monolith",
-    "migration_phase": "neutral_contracts",
+    "migration_phase": "gui_feature_hosts",
     "target_contract_root": "src/slic3r/AI/Contracts",
+}
+EXPECTED_FEATURE_HOSTS = {
+    "desktop": "src/slic3r/GUI/AI/AIDesktopFeatureHost.hpp",
+    "model_generation": "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationFeatureHost.hpp",
+    "smart_slicing": "src/slic3r/GUI/AI/SmartSlicing/SmartSlicingFeatureHost.hpp",
 }
 EXPECTED_COMPOSITION_ROOTS = {
     "CMakeLists.txt",
@@ -104,6 +109,8 @@ REQUIRED_INTEGRATION_PATHS = {
     ".github",
     "CMakeLists.txt",
     "build_release_vs.bat",
+    "deps/MPFR/MPFR.cmake",
+    "deps/wxWidgets/wxWidgets.cmake",
     "docs/architecture",
     "scripts/package_internal_fast.ps1",
     "scripts/verify_ai_integration.py",
@@ -111,6 +118,8 @@ REQUIRED_INTEGRATION_PATHS = {
     "src/slic3r/AI/CMakeLists.txt",
     "src/slic3r/AI/Contracts",
     "src/slic3r/CMakeLists.txt",
+    "src/slic3r/GUI/AI/AIDesktopFeatureHost.cpp",
+    "src/slic3r/GUI/AI/AIDesktopFeatureHost.hpp",
     "src/slic3r/GUI/AI/Orca",
     "src/slic3r/GUI/MainFrame.cpp",
     "src/slic3r/GUI/MainFrame.hpp",
@@ -168,6 +177,17 @@ SMART_SLICING_CORE_SOURCES = (
     "SmartSlicing/Application/PrintabilityInspector.cpp",
     "SmartSlicing/Domain/CandidateComparison.cpp",
     "SmartSlicing/Domain/ParameterProposalValidator.cpp",
+)
+GUI_FEATURE_FILES = (
+    "src/slic3r/GUI/AI/AIDesktopFeatureHost.cpp",
+    "src/slic3r/GUI/AI/AIDesktopFeatureHost.hpp",
+    "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationFeatureHost.cpp",
+    "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationFeatureHost.hpp",
+    "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationPresentation.cpp",
+    "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationPresentation.hpp",
+    "src/slic3r/GUI/AI/ModelGeneration/ModelPreview3D.hpp",
+    "src/slic3r/GUI/AI/SmartSlicing/SmartSlicingFeatureHost.cpp",
+    "src/slic3r/GUI/AI/SmartSlicing/SmartSlicingFeatureHost.hpp",
 )
 SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 FORBIDDEN_TRACKED_SECRET_NAMES = {
@@ -369,6 +389,7 @@ def validate_document(document: Any) -> list[dict[str, str]]:
         (
             *EXPECTED_ARCHITECTURE,
             "composition_roots",
+            "feature_hosts",
             "decomposition_line_budgets",
             "shared_touchpoint_diff_budgets",
             "release_promotion",
@@ -378,6 +399,11 @@ def validate_document(document: Any) -> list[dict[str, str]]:
     )
     for key, expected in EXPECTED_ARCHITECTURE.items():
         _expect_constant(architecture.get(key), expected, f"architecture_contract.{key}", errors)
+
+    feature_hosts = _expect_object(architecture.get("feature_hosts"), "architecture_contract.feature_hosts", errors)
+    _expect_exact_keys(feature_hosts, EXPECTED_FEATURE_HOSTS, "architecture_contract.feature_hosts", errors)
+    for key, expected in EXPECTED_FEATURE_HOSTS.items():
+        _expect_constant(feature_hosts.get(key), expected, f"architecture_contract.feature_hosts.{key}", errors)
 
     composition_roots = _validate_path_list(
         architecture.get("composition_roots"), "architecture_contract.composition_roots", errors
@@ -1182,6 +1208,70 @@ def validate_ai_build_boundaries(repo_root: Path) -> list[dict[str, str]]:
     return errors
 
 
+def validate_gui_feature_boundaries(repo_root: Path) -> list[dict[str, str]]:
+    """Keep Orca shared GUI files as thin composition and event-forwarding roots."""
+    errors: list[dict[str, str]] = []
+    for relative_path in GUI_FEATURE_FILES:
+        if not (repo_root / relative_path).is_file():
+            errors.append(_issue("gui.feature_host", f"required GUI feature unit is missing: {relative_path}"))
+
+    def read(relative_path: str) -> str:
+        try:
+            return (repo_root / relative_path).read_text(encoding="utf-8")
+        except OSError as exc:
+            errors.append(_issue("gui.missing", f"cannot read {relative_path}: {exc}"))
+            return ""
+
+    main_cpp = read("src/slic3r/GUI/MainFrame.cpp")
+    main_hpp = read("src/slic3r/GUI/MainFrame.hpp")
+    plater_cpp = read("src/slic3r/GUI/Plater.cpp")
+    panel_cpp = read("src/slic3r/GUI/ModelGenerationPanel.cpp")
+    gui_cmake = read("src/slic3r/CMakeLists.txt")
+
+    for forbidden in (
+        'ModelGenerationPanel.hpp',
+        'AI/Orca/OrcaWorkspaceAdapter.hpp',
+        'AIServiceManager.hpp',
+        'AISidecarClient.hpp',
+        'm_ai_service_manager',
+        'm_ai_service_retry_timer',
+        'm_ai_orca_workspace',
+    ):
+        if forbidden in main_cpp or forbidden in main_hpp:
+            errors.append(_issue("gui.mainframe_boundary", f"MainFrame directly owns AI implementation detail: {forbidden}"))
+    if 'AI/AIDesktopFeatureHost.hpp' not in main_cpp or 'AIDesktopFeatureHost' not in main_hpp:
+        errors.append(_issue("gui.mainframe_boundary", "MainFrame must compose AIDesktopFeatureHost only"))
+
+    for forbidden in (
+        'AI/Orca/OrcaSmartSlicingAdapter.hpp',
+        'AI/SmartSlicing/SmartSlicingPanel.hpp',
+        'AI/SmartSlicing/SmartSlicingPresenter.hpp',
+        'SmartSlicingCoordinator',
+        'OrcaTrialSliceExecutor',
+        'OrcaOfficialSliceGateway',
+        'OrcaWorkflowRuntimeStore',
+    ):
+        if forbidden in plater_cpp:
+            errors.append(_issue("gui.plater_boundary", f"Plater directly owns smart-slicing implementation detail: {forbidden}"))
+    if 'AI/SmartSlicing/SmartSlicingFeatureHost.hpp' not in plater_cpp:
+        errors.append(_issue("gui.plater_boundary", "Plater must delegate smart-slicing composition to SmartSlicingFeatureHost"))
+
+    if "class ModelPreview3D final" in panel_cpp:
+        errors.append(_issue("gui.model_panel_boundary", "ModelPreview3D must be extracted from ModelGenerationPanel.cpp"))
+    for include in (
+        'AI/ModelGeneration/ModelGenerationPresentation.hpp',
+        'AI/ModelGeneration/ModelPreview3D.hpp',
+    ):
+        if include not in panel_cpp:
+            errors.append(_issue("gui.model_panel_boundary", f"ModelGenerationPanel must use extracted unit: {include}"))
+
+    for relative_path in GUI_FEATURE_FILES:
+        cmake_source = relative_path.removeprefix("src/slic3r/")
+        if cmake_source not in gui_cmake:
+            errors.append(_issue("build.source_ownership", f"libslic3r_gui does not own {cmake_source}"))
+    return errors
+
+
 def _cpp_files(path: Path) -> Iterable[Path]:
     if path.is_file():
         if path.suffix.lower() in {".cc", ".cpp", ".h", ".hpp"}:
@@ -1288,6 +1378,7 @@ def validate(lock_path: Path, repo_root: Path, skip_git: bool = False) -> dict[s
         errors.extend(validate_source_constants(document, repo_root))
         errors.extend(validate_contract_layout(repo_root))
         errors.extend(validate_ai_build_boundaries(repo_root))
+        errors.extend(validate_gui_feature_boundaries(repo_root))
         errors.extend(validate_dependency_boundaries(repo_root))
         errors.extend(validate_architecture_budgets(document, repo_root))
         if not skip_git:

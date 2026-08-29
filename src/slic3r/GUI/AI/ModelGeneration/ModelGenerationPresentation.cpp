@@ -1,0 +1,370 @@
+#include "ModelGenerationPresentation.hpp"
+
+#include "slic3r/GUI/GUI.hpp"
+#include "slic3r/GUI/I18N.hpp"
+
+#include <boost/filesystem.hpp>
+#include <boost/filesystem/fstream.hpp>
+#include <boost/uuid/uuid_generators.hpp>
+#include <boost/uuid/uuid_io.hpp>
+#include <nlohmann/json.hpp>
+#include <wx/font.h>
+#include <wx/image.h>
+#include <wx/stattext.h>
+
+#include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <cstdlib>
+#include <limits>
+#include <map>
+
+namespace Slic3r::GUI::ModelGenerationPresentation {
+namespace {
+
+constexpr size_t MAX_IMAGE_SIZE = 20 * 1024 * 1024;
+constexpr int MIN_SOURCE_IMAGE_EDGE = 64;
+constexpr const char* GENERATED_MODEL_PREFIX = "orcaslicer-ai-";
+
+struct LabColor {
+    double l { 0.0 };
+    double a { 0.0 };
+    double b { 0.0 };
+};
+
+LabColor lab_color(const std::string& color)
+{
+    const wxColour rgb(from_u8(color));
+    const auto linear = [](unsigned char channel) {
+        const double value = channel / 255.0;
+        return value <= 0.04045 ? value / 12.92 : std::pow((value + 0.055) / 1.055, 2.4);
+    };
+    const double red = linear(rgb.Red());
+    const double green = linear(rgb.Green());
+    const double blue = linear(rgb.Blue());
+    const double x = (0.4124564 * red + 0.3575761 * green + 0.1804375 * blue) / 0.95047;
+    const double y = 0.2126729 * red + 0.7151522 * green + 0.0721750 * blue;
+    const double z = (0.0193339 * red + 0.1191920 * green + 0.9503041 * blue) / 1.08883;
+    const auto transform = [](double value) {
+        return value > 0.008856 ? std::cbrt(value) : 7.787 * value + 16.0 / 116.0;
+    };
+    const double fx = transform(x);
+    const double fy = transform(y);
+    const double fz = transform(z);
+    return {116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)};
+}
+
+} // namespace
+
+wxString thin_local_region_metrics(
+    const AIModelGenerationClient::ModelQuality::ThinLocalRegion& region,
+    bool threshold_available,
+    double minimum_wall_thickness_mm)
+{
+    wxString metrics;
+    const auto append = [&metrics](const wxString& item) {
+        if (!metrics.empty())
+            metrics += _L(" · ");
+        metrics += item;
+    };
+    if (std::isfinite(region.minimum_thickness_mm) && region.minimum_thickness_mm > 0.0) {
+        wxString thickness = wxString::Format(_L("最薄 %.3f mm"), region.minimum_thickness_mm);
+        if (threshold_available && std::isfinite(minimum_wall_thickness_mm) &&
+            minimum_wall_thickness_mm > 0.0) {
+            thickness += wxString::Format(_L(" / 建议 ≥ %.3f mm"), minimum_wall_thickness_mm);
+        }
+        append(thickness);
+    }
+    if (region.sample_count > 0) {
+        append(wxString::Format(_L("%llu 个采样"),
+                                static_cast<unsigned long long>(region.sample_count)));
+    }
+    if (std::isfinite(region.sampled_area_mm2) && region.sampled_area_mm2 > 0.0)
+        append(wxString::Format(_L("%.3f mm²"), region.sampled_area_mm2));
+    return metrics;
+}
+
+wxString thin_local_region_status(
+    size_t region_index,
+    size_t region_count,
+    const AIModelGenerationClient::ModelQuality::ThinLocalRegion& region,
+    bool threshold_available,
+    double minimum_wall_thickness_mm)
+{
+    wxString status = wxString::Format(
+        _L("第 %llu/%llu 处薄壁"),
+        static_cast<unsigned long long>(region_index + 1),
+        static_cast<unsigned long long>(region_count));
+    const wxString metrics = thin_local_region_metrics(region, threshold_available, minimum_wall_thickness_mm);
+    if (!metrics.empty())
+        status += _L(" · ") + metrics;
+    status += _L("；仅供复核。");
+    return status;
+}
+
+AIModelGenerationClient::PaletteRoles automatic_palette_roles(const std::vector<std::string>& palette)
+{
+    AIModelGenerationClient::PaletteRoles result;
+    if (palette.empty())
+        return result;
+    std::map<std::string, LabColor> labs;
+    for (const std::string& color : palette)
+        labs.emplace(color, lab_color(color));
+    std::vector<std::string> available = palette;
+    const auto take = [&available, &result](const char* role, const auto& better) {
+        if (available.empty())
+            return;
+        const auto selected = std::max_element(available.begin(), available.end(), better);
+        result.emplace(role, *selected);
+        available.erase(selected);
+    };
+    if (palette.size() >= 2)
+        take("structure", [&labs](const std::string& left, const std::string& right) { return labs[left].l > labs[right].l; });
+    if (palette.size() >= 3)
+        take("light", [&labs](const std::string& left, const std::string& right) { return labs[left].l < labs[right].l; });
+    take("primary", [&labs](const std::string& left, const std::string& right) {
+        return std::hypot(labs[left].a, labs[left].b) < std::hypot(labs[right].a, labs[right].b);
+    });
+    if (!available.empty())
+        result.emplace("accent", available.front());
+    return result;
+}
+
+bool same_palette_color(const std::string& left, const std::string& right)
+{
+    return left.size() == right.size() && std::equal(
+        left.begin(), left.end(), right.begin(), [](unsigned char a, unsigned char b) {
+            return std::toupper(a) == std::toupper(b);
+        });
+}
+
+wxString palette_role_label(const std::string& role)
+{
+    if (role == "primary") return _L("主体");
+    if (role == "structure") return _L("结构");
+    if (role == "light") return _L("浅色");
+    if (role == "accent") return _L("强调");
+    return {};
+}
+
+double minimum_palette_distance(const std::vector<std::string>& palette)
+{
+    double minimum = std::numeric_limits<double>::infinity();
+    for (size_t left = 0; left < palette.size(); ++left) {
+        const LabColor a = lab_color(palette[left]);
+        for (size_t right = left + 1; right < palette.size(); ++right) {
+            const LabColor b = lab_color(palette[right]);
+            minimum = std::min(minimum, std::sqrt(
+                std::pow(a.l - b.l, 2.0) + std::pow(a.a - b.a, 2.0) + std::pow(a.b - b.b, 2.0)));
+        }
+    }
+    return minimum;
+}
+
+int remap_progress(int value, int input_start, int input_end, int output_start, int output_end)
+{
+    value = std::clamp(value, input_start, input_end);
+    return output_start + (value - input_start) * (output_end - output_start) / (input_end - input_start);
+}
+
+int display_progress(const AIModelGenerationClient::JobStatus& status)
+{
+    if (status.state == "recommending_palette")
+        return remap_progress(status.progress, 5, 10, 3, 10);
+    if (status.state == "awaiting_palette_confirmation")
+        return 10;
+    if (status.state == "preprocessing")
+        return remap_progress(status.progress, 5, 15, 10, 25);
+    if (status.state == "awaiting_confirmation")
+        return 35;
+    if (status.phase == "generating")
+        return remap_progress(status.progress, 20, 70, 40, 78);
+    if (status.phase == "converting")
+        return remap_progress(status.progress, 75, 95, 80, 90);
+    if (status.phase == "downloading_artifact")
+        return 92;
+    if (status.state == "ready")
+        return 95;
+    return 0;
+}
+
+std::string new_request_id()
+{
+    return boost::uuids::to_string(boost::uuids::random_generator()());
+}
+
+bool is_supported_image(const boost::filesystem::path& path)
+{
+    if (!boost::filesystem::is_regular_file(path))
+        return false;
+    const auto size = boost::filesystem::file_size(path);
+    if (size == 0 || size > MAX_IMAGE_SIZE)
+        return false;
+    boost::filesystem::ifstream stream(path, std::ios::binary);
+    unsigned char magic[8] {};
+    stream.read(reinterpret_cast<char*>(magic), sizeof(magic));
+    const auto count = stream.gcount();
+    const bool png = count >= 8 && magic[0] == 0x89 && magic[1] == 'P' && magic[2] == 'N' && magic[3] == 'G' &&
+                     magic[4] == 0x0d && magic[5] == 0x0a && magic[6] == 0x1a && magic[7] == 0x0a;
+    const bool jpeg = count >= 3 && magic[0] == 0xff && magic[1] == 0xd8 && magic[2] == 0xff;
+    if (!png && !jpeg)
+        return false;
+    wxImage image(path.wstring());
+    return image.IsOk() && image.GetWidth() >= MIN_SOURCE_IMAGE_EDGE &&
+           image.GetHeight() >= MIN_SOURCE_IMAGE_EDGE;
+}
+
+bool is_nonempty_obj(const boost::filesystem::path& path)
+{
+    boost::system::error_code ec;
+    if (!boost::filesystem::is_regular_file(path, ec) || boost::filesystem::file_size(path, ec) == 0)
+        return false;
+    std::string extension = path.extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return extension == ".obj";
+}
+
+boost::filesystem::path generated_models_root()
+{
+    const char* configured = std::getenv("ORCASLICER_AI_OUTPUT_DIR");
+    return configured != nullptr && configured[0] != '\0'
+        ? boost::filesystem::path(configured)
+        : boost::filesystem::current_path() / "generated_models";
+}
+
+boost::filesystem::path temp_path(const std::string& job_id, const std::string& extension)
+{
+    const boost::filesystem::path root = generated_models_root();
+    const boost::filesystem::path downloads = root / "downloads";
+    boost::system::error_code ec;
+    boost::filesystem::create_directories(downloads, ec);
+    return downloads / (std::string(GENERATED_MODEL_PREFIX) + job_id + "." + extension);
+}
+
+boost::filesystem::path library_metadata_path(const std::string& job_id)
+{
+    return temp_path(job_id, "json");
+}
+
+std::string download_job_id(const boost::filesystem::path& path)
+{
+    const std::string stem = path.stem().string();
+    if (stem.rfind(GENERATED_MODEL_PREFIX, 0) != 0)
+        return {};
+    return stem.substr(std::char_traits<char>::length(GENERATED_MODEL_PREFIX));
+}
+
+nlohmann::json read_json(const boost::filesystem::path& path)
+{
+    boost::filesystem::ifstream stream(path);
+    if (!stream)
+        return {};
+    return nlohmann::json::parse(stream, nullptr, false);
+}
+
+bool write_json(const boost::filesystem::path& path, const nlohmann::json& value)
+{
+    boost::filesystem::ofstream stream(path);
+    if (!stream)
+        return false;
+    stream << value.dump(2);
+    stream.close();
+    return stream.good();
+}
+
+bool path_is_inside(const boost::filesystem::path& root, const boost::filesystem::path& candidate)
+{
+    boost::system::error_code root_ec;
+    boost::system::error_code candidate_ec;
+    const boost::filesystem::path canonical_root = boost::filesystem::canonical(root, root_ec);
+    const boost::filesystem::path canonical_candidate = boost::filesystem::canonical(candidate, candidate_ec);
+    if (root_ec || candidate_ec)
+        return false;
+
+    auto root_part = canonical_root.begin();
+    auto candidate_part = canonical_candidate.begin();
+    for (; root_part != canonical_root.end() && candidate_part != canonical_candidate.end();
+         ++root_part, ++candidate_part) {
+        if (*root_part != *candidate_part)
+            return false;
+    }
+    return root_part == canonical_root.end() && candidate_part != canonical_candidate.end();
+}
+
+wxString model_load_summary(size_t triangle_count, double load_seconds)
+{
+    wxString summary = wxString::Format(_L("本机实测加载 %.2f 秒"), std::max(0.0, load_seconds));
+    if (triangle_count >= 800000)
+        summary += _L(" · 超高面数，旋转、选区和切片可能明显变慢");
+    else if (triangle_count >= 300000)
+        summary += _L(" · 高面数，旋转、选区和切片可能变慢");
+    else
+        summary += _L(" · 当前复杂度未触发高面数提醒");
+    return summary;
+}
+
+wxString style_label(const std::string& style)
+{
+    if (style == "realistic" || style == "low_poly" || style == "enamel_inlay")
+        return _L("多色写实");
+    if (style == "cartoon" || style == "q_cartoon" || style == "cel_shaded")
+        return _L("多色卡通");
+    if (style == "sculpture")
+        return _L("单色雕塑");
+    if (style == "custom")
+        return _L("自定义风格");
+    return _L("单色雕塑");
+}
+
+wxStaticText* section_label(wxWindow* parent, const wxString& text)
+{
+    auto* label = new wxStaticText(parent, wxID_ANY, text);
+    wxFont font = label->GetFont();
+    font.SetWeight(wxFONTWEIGHT_BOLD);
+    label->SetFont(font);
+    label->SetForegroundColour(wxColour(40, 55, 58));
+    return label;
+}
+
+wxString model_quality_code_label(const std::string& code)
+{
+    if (code == "tiny_detached_components") return _L("检测到微小脱离部件，请旋转模型确认是否需要保留。");
+    if (code == "floating_disconnected_components") return _L("检测到未接触热床或主体的悬空分离部件，请检查是否可打印。");
+    if (code == "thin_structural_components") return _L("检测到整体厚度较薄的连通部件，请检查是否需要加厚。");
+    if (code == "thin_local_wall_regions") return _L("检测到附着在主体上的局部薄壁或细连接，请检查是否需要加厚。");
+    if (code == "tiny_printable_color_regions") return _L("检测到过小的耗材色块，打印时可能产生碎片化换色。");
+    if (code == "too_few_meaningful_target_palette_colors") return _L("最终模型中显著目标色不足，请检查四色角色是否在建模后丢失。");
+    if (code == "colors_outside_target_palette") return _L("最终模型包含目标调色板之外的颜色，请重新检查颜色量化结果。");
+    if (code == "weak_bed_contact") return _L("模型与热床接触面积较小，请检查底座稳定性。");
+    if (code == "extreme_aspect_ratio") return _L("模型比例较极端，请检查缩放和摆放方向。");
+    if (code == "high_downward_surface_ratio") return _L("向下表面较多，打印时可能需要更多支撑。");
+    if (code == "localized_overhang_regions") return _L("检测到局部悬垂面，请旋转模型检查是否需要支撑。");
+    if (code == "dense_micro_triangles") return _L("局部三角面非常密集，请检查细小结构。");
+    if (code == "repairable_boundary_edges") return _L("存在少量开放边，将在导入时交给 Orca 修复。");
+    if (code == "repairable_non_manifold_edges") return _L("存在少量非流形边，将在导入时交给 Orca 修复。");
+    if (code == "repairable_inconsistent_winding_edges") return _L("存在少量面绕序异常，将在导入时交给 Orca 修复。");
+    if (code == "boundary_edges") return _L("模型包含开放边，当前不能安全导入切片。");
+    if (code == "non_manifold_edges") return _L("模型包含非流形边，当前不能安全导入切片。");
+    if (code == "inconsistent_winding_edges") return _L("模型面绕序不一致，当前不能安全导入切片。");
+    if (code == "degenerate_faces") return _L("模型包含退化三角面，当前不能安全导入切片。");
+    if (code == "flat_or_empty_axis") return _L("模型至少一个方向没有有效尺寸。");
+    if (code == "too_many_faces") return _L("模型面数超过当前允许上限。");
+    if (code == "missing_geometry") return _L("模型没有可用几何数据。");
+    return _L("检测到需要复核的模型结构问题：") + from_u8(code);
+}
+
+wxString visual_quality_code_label(const std::string& code)
+{
+    if (code == "visual_subject_incomplete") return _L("主体可能缺失或截断，请对照原图确认。");
+    if (code == "visual_semantic_incoherence") return _L("局部形体或部件关系可能不自然。");
+    if (code == "visual_base_relationship") return _L("主体与底座的连接关系需要确认。");
+    if (code == "visual_detached_artifacts") return _L("多视角中疑似存在意外漂浮物。");
+    if (code == "visual_silhouette_unclear") return _L("部分视角轮廓不够清晰。");
+    if (code == "visual_color_regions_unclear") return _L("顶点色色块可能过碎或不易辨认。");
+    if (code == "visual_review_unavailable") return _L("AI 视觉服务暂不可用，可稍后重试。");
+    return _L("检测到需要人工确认的外观问题：") + from_u8(code);
+}
+
+} // namespace Slic3r::GUI::ModelGenerationPresentation

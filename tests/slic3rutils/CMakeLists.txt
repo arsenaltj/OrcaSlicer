@@ -7,6 +7,7 @@ add_executable(${_TEST_NAME}_tests
     test_action_source.cpp
     test_ai_contracts.cpp
     test_ai_sidecar_client.cpp
+    test_model_generation_presentation.cpp
     test_plugin_host_api.cpp
     test_plugin_capability_config.cpp
     test_plugin_config.cpp

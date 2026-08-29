@@ -25,7 +25,6 @@
 #include "Project.hpp"
 #include "CalibrationPanel.hpp"
 #include "UnsavedChangesDialog.hpp"
-#include "AIServiceManager.hpp"
 #include "Widgets/SideButton.hpp"
 #include "Widgets/SideMenuPopup.hpp"
 #include "FilamentGroupPopup.hpp"
@@ -66,8 +65,7 @@ namespace Slic3r {
 namespace GUI
 {
 
-class ModelGenerationPanel;
-class OrcaWorkspaceAdapter;
+class AIDesktopFeatureHost;
 class Tab;
 class PrintHostQueueDialog;
 class Plater;
@@ -232,7 +230,7 @@ protected:
 
 public:
     MainFrame();
-    ~MainFrame() = default;
+    ~MainFrame();
 #ifdef __APPLE__
     bool get_mac_full_screen() { return m_mac_fullscreen; }
 #endif
@@ -282,9 +280,7 @@ public:
 	void        update_title_colour_after_set_title();
     void        show_option(bool show);
     void        init_tabpanel();
-    void        discover_ai_service();
-    void        on_ai_service_retry(wxTimerEvent& event);
-    void        register_ai_features(AIServiceAvailability availability);
+    void        register_ai_assistant();
     void        create_preset_tabs();
     //BBS: GUI refactor
     void        add_created_tab(Tab* panel, const std::string& bmp_name = "");
@@ -390,12 +386,7 @@ public:
     BBLTopbar*            m_topbar{ nullptr };
     PrintHostQueueDialog* printhost_queue_dlg() { return m_printhost_queue_dlg; }
     Plater*               m_plater { nullptr };
-    ModelGenerationPanel* m_model_generation { nullptr };
-    std::unique_ptr<OrcaWorkspaceAdapter> m_ai_orca_workspace;
-    std::unique_ptr<AIServiceManager> m_ai_service_manager;
-    wxTimer                m_ai_service_retry_timer;
-    unsigned               m_ai_service_retry_count { 0 };
-    bool                   m_ai_service_discovery_active { false };
+    std::unique_ptr<AIDesktopFeatureHost> m_ai_feature_host;
     bool                   m_ai_assistant_registered { false };
     //BBS: GUI refactor
     MonitorPanel*         m_monitor{ nullptr };

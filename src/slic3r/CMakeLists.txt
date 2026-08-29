@@ -352,12 +352,16 @@ set(SLIC3R_GUI_SOURCES
     GUI/AI/Orca/OrcaWorkflowRuntimeStore.hpp
     GUI/AI/Orca/OrcaWorkspaceAdapter.cpp
     GUI/AI/Orca/OrcaWorkspaceAdapter.hpp
+    GUI/AI/AIDesktopFeatureHost.cpp
+    GUI/AI/AIDesktopFeatureHost.hpp
+    GUI/AI/SmartSlicing/SmartSlicingFeatureHost.cpp
+    GUI/AI/SmartSlicing/SmartSlicingFeatureHost.hpp
     GUI/AI/Model/VertexColorRegionEditor.cpp
     GUI/AI/Model/VertexColorRegionEditor.hpp
     GUI/AIModelGenerationClient.cpp
     GUI/AIModelGenerationClient.hpp
-    GUI/ModelGenerationPanel.cpp GUI/AI/ModelGeneration/ModelGenerationStatusText.cpp
-    GUI/ModelGenerationPanel.hpp GUI/AI/ModelGeneration/ModelGenerationStatusText.hpp
+    GUI/ModelGenerationPanel.cpp GUI/AI/ModelGeneration/ModelGenerationFeatureHost.cpp GUI/AI/ModelGeneration/ModelGenerationPresentation.cpp GUI/AI/ModelGeneration/ModelGenerationStatusText.cpp
+    GUI/ModelGenerationPanel.hpp GUI/AI/ModelGeneration/ModelGenerationFeatureHost.hpp GUI/AI/ModelGeneration/ModelGenerationPresentation.hpp GUI/AI/ModelGeneration/ModelGenerationStatusText.hpp GUI/AI/ModelGeneration/ModelPreview3D.hpp
     GUI/AISidecarClient.cpp
     GUI/AISidecarClient.hpp
     GUI/AIServiceManager.cpp
