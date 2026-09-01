@@ -62,3 +62,8 @@ orca_ai_internal_defaults.json
 
 # Local model-generation output and unit-test artifacts.
 /generated_models/
+
+# Operator-specific internal release settings. Keep real SSH targets, local
+# paths, and private release metadata out of the public repository.
+/release/config.local.ps1
+/release/*.local.json
