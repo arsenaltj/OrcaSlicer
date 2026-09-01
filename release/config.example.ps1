@@ -12,6 +12,8 @@ $BuildRelease = @{
 
 $UploadRelease = @{
     SshTarget        = '' # Local SSH alias or user@host; never commit the real value.
+    EmployeeId       = '' # Example forms: 12345, 00012345, or s00012345.
+    RestrictedPublisher = $true
     RemoteDownloadDir = '/srv/3dprint-beer/data/downloads'
     RemoteOwner      = 'web'
     RemoteGroup      = 'web'

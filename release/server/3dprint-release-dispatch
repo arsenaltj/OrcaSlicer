@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+employee_id=${1:-}
+[[ "$employee_id" =~ ^[1-9][0-9]*$ ]] || exit 64
+expected_user=$(printf 's%08d' "$employee_id")
+[[ "$(id -un)" == "$expected_user" ]] || exit 77
+
+original_command=${SSH_ORIGINAL_COMMAND:-}
+read -r action claimed_id filename size_bytes sha256 source_commit revision extra <<<"$original_command"
+
+case "$action" in
+  status)
+    [[ -z "${filename:-}" && -z "${extra:-}" && "$claimed_id" == "$employee_id" ]] || exit 64
+    printf 'employee_id=%s\nprotocol=1\npermissions=installer-upload\n' "$employee_id"
+    ;;
+  upload)
+    [[ -z "${extra:-}" && "$claimed_id" == "$employee_id" ]] || exit 64
+    [[ "$filename" =~ ^[0-9A-Za-z._-]+\.exe$ ]] || exit 64
+    [[ "$size_bytes" =~ ^[1-9][0-9]{0,9}$ ]] || exit 64
+    (( size_bytes <= 1073741824 )) || exit 64
+    [[ "$sha256" =~ ^[0-9a-f]{64}$ ]] || exit 64
+    [[ "$source_commit" =~ ^[0-9a-f]{40}$ ]] || exit 64
+    [[ "$revision" =~ ^[0-9A-Za-z._-]+$ ]] || exit 64
+
+    incoming_dir="/var/lib/3dprint-publishers/$employee_id/incoming"
+    [[ -d "$incoming_dir" && -O "$incoming_dir" ]] || exit 77
+    umask 077
+    temporary=$(mktemp "$incoming_dir/.upload-XXXXXXXX")
+    trap 'rm -f -- "$temporary"' EXIT
+    timeout 1800 cat >"$temporary"
+    [[ "$(stat -c %s -- "$temporary")" == "$size_bytes" ]] || exit 65
+    [[ "$(sha256sum -- "$temporary" | cut -d ' ' -f 1)" == "$sha256" ]] || exit 65
+    [[ "$(od -An -tx1 -N2 -- "$temporary" | tr -d ' \n')" == '4d5a' ]] || exit 65
+
+    sudo -n /usr/local/sbin/3dprint-promote-installer \
+      "$employee_id" "$temporary" "$filename" "$size_bytes" "$sha256" "$source_commit" "$revision"
+    trap - EXIT
+    ;;
+  *)
+    exit 64
+    ;;
+esac

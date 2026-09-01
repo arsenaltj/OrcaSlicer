@@ -25,6 +25,7 @@ checks that requirement and records only its SHA-256 hash in validation output.
 | `build_internal.ps1` | Locks the source identity, builds, tests, and validates the installer |
 | `upload_installer.ps1` | Verifies the manifest and uploads the exact installer atomically |
 | `verify_public_release.ps1` | Checks the public page, range download, checksum header, and health endpoint |
+| `server/` | Root-owned forced-command protocol and publisher enrollment template |
 
 ## One-time setup on each Windows computer
 
@@ -45,6 +46,12 @@ Set `InternalDefaultsFile` to an absolute path outside the repository. Set the
 local SSH alias or `user@host` in `SshTarget`; SSH host, port, and key details
 belong in the operator's local OpenSSH config. Set `WebsiteWorktree` to the
 website checkout on that computer. The local config is ignored by Git.
+
+For an enrolled restricted publisher, set `EmployeeId` to the assigned employee
+number and keep `RestrictedPublisher = $true`. Accepted aliases are the exact
+numeric ID, a zero-padded ID, or one `s`/`S` prefix; the client sends only the
+canonical numeric ID. The ID selects authorization but is not a credential—the
+matching private key remains required.
 
 ## Build and upload
 
@@ -73,10 +80,25 @@ the AI integration verifier, and focused model-generation/smart-slicing tests.
 It then checks the manifest identity, SHA-256, optional 7-Zip integrity, and
 Authenticode status.
 
-The upload script verifies the local manifest and installer before using a unique
-remote temporary name. The server checks size and SHA-256 before installing the
-file with the configured owner/group and mode. `-AllowSourceMismatch` exists only
-for `-ValidateOnly` inspection of an older artifact; never use it for upload.
+The preferred restricted mode verifies the server-bound employee identity, then
+streams the installer through a forced SSH command. The unprivileged server
+account checks filename, size, SHA-256, source identity, revision, and the `MZ`
+header; a root-owned helper repeats those checks before an atomic no-overwrite
+installation. The legacy administrator mode still uses SCP and explicitly
+configured owner/group values. `-AllowSourceMismatch` exists only for
+`-ValidateOnly` inspection of an older artifact; never use it for upload.
+
+## Restricted publisher enrollment
+
+The server administrator follows `release/server/README.md`. The employee sends
+only one ED25519 `.pub` line. The key is stored only in that employee's server-side
+`authorized_keys`, with OpenSSH `restrict` and a forced command; neither the key
+nor the real server address belongs in this public repository.
+
+The resulting role is intentionally `installer-upload` only. It cannot open a
+shell, forward ports or agents, edit the website checkout, run the deployment
+script, or change homepage metadata. Those website operations remain an
+administrator step while the separate website worktree contains uncommitted work.
 
 ## Update the website metadata
 

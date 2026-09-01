@@ -6,12 +6,85 @@ param(
     [string] $RemoteDownloadDir = '/srv/3dprint-beer/data/downloads',
     [string] $RemoteOwner = 'web',
     [string] $RemoteGroup = 'web',
+    [string] $EmployeeId,
+    [switch] $RestrictedPublisher,
     [switch] $AllowSourceMismatch,
     [switch] $ValidateOnly
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+function ConvertTo-CanonicalEmployeeId {
+    param([Parameter(Mandatory = $true)][string] $Value)
+
+    $match = [regex]::Match($Value.Trim(), '^(?i:s)?0*([1-9][0-9]*)$')
+    if (-not $match.Success) {
+        throw "EmployeeId must be a complete numeric ID with optional s/S and zero prefix: $Value"
+    }
+    return $match.Groups[1].Value
+}
+
+function Invoke-RestrictedUpload {
+    param(
+        [Parameter(Mandatory = $true)][string] $Target,
+        [Parameter(Mandatory = $true)][string] $CanonicalEmployeeId,
+        [Parameter(Mandatory = $true)][System.IO.FileInfo] $Installer,
+        [Parameter(Mandatory = $true)][string] $Sha256,
+        [Parameter(Mandatory = $true)][string] $SourceCommit,
+        [Parameter(Mandatory = $true)][string] $Revision
+    )
+
+    $sshCommand = Get-Command ssh.exe -ErrorAction SilentlyContinue
+    if (-not $sshCommand) { $sshCommand = Get-Command ssh -ErrorAction SilentlyContinue }
+    if (-not $sshCommand) { throw 'OpenSSH ssh was not found.' }
+
+    $statusLines = @(& $sshCommand.Source -o BatchMode=yes -- $Target "status $CanonicalEmployeeId")
+    if ($LASTEXITCODE -ne 0 -or $statusLines -notcontains "employee_id=$CanonicalEmployeeId" -or
+        $statusLines -notcontains 'protocol=1') {
+        throw 'Restricted publisher identity/protocol check failed.'
+    }
+
+    $arguments = '-o BatchMode=yes -- {0} upload {1} {2} {3} {4} {5} {6}' -f `
+        $Target, $CanonicalEmployeeId, $Installer.Name, $Installer.Length,
+        $Sha256.ToLowerInvariant(), $SourceCommit, $Revision
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $sshCommand.Source
+    $startInfo.Arguments = $arguments
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardInput = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.CreateNoWindow = $true
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+    if (-not $process.Start()) { throw 'Unable to start the restricted SSH upload process.' }
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+    try {
+        $sourceStream = [System.IO.File]::OpenRead($Installer.FullName)
+        try {
+            $sourceStream.CopyTo($process.StandardInput.BaseStream, 1MB)
+        } finally {
+            $sourceStream.Dispose()
+            $process.StandardInput.Close()
+        }
+        $process.WaitForExit()
+        $exitCode = $process.ExitCode
+        $stdout = $stdoutTask.GetAwaiter().GetResult().Trim()
+        $stderr = $stderrTask.GetAwaiter().GetResult().Trim()
+    } finally {
+        $process.Dispose()
+    }
+    if ($exitCode -ne 0) {
+        throw "Restricted upload failed with exit code ${exitCode}: $stderr"
+    }
+    if ($stdout -notmatch '(?m)^uploaded=true$' -or $stdout -notmatch "(?m)^employee_id=$CanonicalEmployeeId$") {
+        throw "Restricted server did not return a valid publication receipt.`n$stdout"
+    }
+    return $stdout
+}
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $resolvedManifest = (Resolve-Path -LiteralPath $ManifestPath).Path
@@ -22,7 +95,8 @@ foreach ($field in @('installer', 'installer_sha256', 'source_commit', 'package_
     }
 }
 if ($manifest.distribution_channel -ne 'internal' -or $manifest.source_commit -notmatch '^[0-9a-f]{40}$' -or
-    $manifest.installer_sha256 -notmatch '^[0-9A-Fa-f]{64}$') {
+    $manifest.installer_sha256 -notmatch '^[0-9A-Fa-f]{64}$' -or
+    $manifest.package_revision -notmatch '^[0-9A-Za-z._-]+$') {
     throw 'Release manifest identity is invalid or is not an internal release.'
 }
 if ($manifest.installer -notmatch '^[0-9A-Za-z._-]+\.exe$') {
@@ -48,6 +122,10 @@ if ($LASTEXITCODE -ne 0) { throw 'Unable to verify the current worktree.' }
 if (-not $AllowSourceMismatch -and ($gitHead -ne $manifest.source_commit -or $gitStatus.Count -gt 0)) {
     throw 'Current clean HEAD must equal manifest source_commit before upload. Rebuild or use -AllowSourceMismatch only for read-only validation of an older artifact.'
 }
+$canonicalEmployeeId = $null
+if ($RestrictedPublisher) {
+    $canonicalEmployeeId = ConvertTo-CanonicalEmployeeId -Value $EmployeeId
+}
 
 $validationResult = [pscustomobject]@{
     Ready          = $true
@@ -58,6 +136,8 @@ $validationResult = [pscustomobject]@{
     SourceCommit   = $manifest.source_commit
     CurrentHead    = $gitHead
     SourceMatches  = ($gitHead -eq $manifest.source_commit)
+    UploadMode     = if ($RestrictedPublisher) { 'restricted' } else { 'administrator' }
+    EmployeeId     = $canonicalEmployeeId
 }
 if ($ValidateOnly) {
     $validationResult
@@ -70,6 +150,22 @@ if ($AllowSourceMismatch) {
 
 if ([string]::IsNullOrWhiteSpace($SshTarget) -or $SshTarget -notmatch '^[0-9A-Za-z_.@:-]+$') {
     throw 'Pass a shell-safe local SSH alias or user@host through -SshTarget.'
+}
+if ($RestrictedPublisher) {
+    $receipt = Invoke-RestrictedUpload -Target $SshTarget -CanonicalEmployeeId $canonicalEmployeeId `
+        -Installer $installerItem -Sha256 $localHash -SourceCommit $manifest.source_commit `
+        -Revision $manifest.package_revision
+    [pscustomobject]@{
+        Uploaded       = $true
+        UploadMode     = 'restricted'
+        EmployeeId     = $canonicalEmployeeId
+        Installer      = $manifest.installer
+        SizeBytes      = $installerItem.Length
+        Sha256         = $localHash
+        SourceCommit   = $manifest.source_commit
+        Receipt        = $receipt
+    }
+    return
 }
 if ($RemoteDownloadDir -notmatch '^/[0-9A-Za-z._/-]+$' -or
     $RemoteOwner -notmatch '^[0-9A-Za-z._-]+$' -or $RemoteGroup -notmatch '^[0-9A-Za-z._-]+$') {
