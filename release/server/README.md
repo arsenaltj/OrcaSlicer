@@ -16,14 +16,22 @@ places the supplied key in a mode-0600 `authorized_keys` file with OpenSSH
 `restrict` and a forced command. The forced command accepts only:
 
 - `status CANONICAL_EMPLOYEE_ID`
-- the private binary-stream `upload` operation emitted by the PowerShell client
+- `begin` with the fixed artifact identity and chunk size
+- `append` with a fixed offset, byte count, and per-chunk SHA-256
+- `commit` with the same fixed artifact identity
 
 It rejects an interactive shell, arbitrary commands, mismatched employee IDs,
 unsafe filenames, files over 1 GiB, non-EXE content, and source/hash/size format
-errors. The unprivileged account can write only its private incoming directory.
-A root-owned promotion helper revalidates the file before atomically placing it
-under `/srv/3dprint-beer/data/downloads` as `web:web:0644` and logging the employee
-ID, source commit, revision, size, and SHA-256 through syslog.
+errors. Upload state is committed only after a complete 1-8 MiB chunk passes its
+checks. `begin` truncates an interrupted partial append back to the last committed
+offset, and the client can safely rerun the same upload to resume. A conflicting
+artifact identity is rejected instead of overwriting partial state. Stable error
+messages include an `error_stage` value for server-side diagnosis.
+
+The unprivileged account can write only its private incoming directory. A
+root-owned promotion helper revalidates the completed file before atomically
+placing it under `/srv/3dprint-beer/data/downloads` as `web:web:0644` and logging
+the employee ID, source commit, revision, size, and SHA-256 through syslog.
 
 The sudo rule grants only the root-owned promotion helper. That helper also
 requires `SUDO_USER` to match the employee-bound account and requires the source

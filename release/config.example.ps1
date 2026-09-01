@@ -14,6 +14,7 @@ $UploadRelease = @{
     SshTarget        = '' # Local SSH alias or user@host; never commit the real value.
     EmployeeId       = '' # Example forms: 12345, 00012345, or s00012345.
     RestrictedPublisher = $true
+    RestrictedChunkSizeBytes = 4MB # Resumable chunks; keep between 1 and 8 MiB.
     RemoteDownloadDir = '/srv/3dprint-beer/data/downloads'
     RemoteOwner      = 'web'
     RemoteGroup      = 'web'

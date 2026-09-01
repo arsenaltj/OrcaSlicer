@@ -5,3 +5,4 @@
 # with CRLF line endings: it fails on the first line. Windows checkouts default
 # to core.autocrlf=true, so keep these LF whatever the platform.
 *.sh text eol=lf
+release/server/* text eol=lf

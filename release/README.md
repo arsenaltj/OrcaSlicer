@@ -81,9 +81,12 @@ It then checks the manifest identity, SHA-256, optional 7-Zip integrity, and
 Authenticode status.
 
 The preferred restricted mode verifies the server-bound employee identity, then
-streams the installer through a forced SSH command. The unprivileged server
-account checks filename, size, SHA-256, source identity, revision, and the `MZ`
-header; a root-owned helper repeats those checks before an atomic no-overwrite
+uploads resumable 4 MiB chunks through separate forced SSH commands. Each chunk
+has its own size, offset, and SHA-256 check. Re-running the same upload resumes at
+the last committed chunk, so a network or terminal timeout does not require
+starting a large installer again. The unprivileged server account also checks the
+final filename, size, SHA-256, source identity, revision, and `MZ` header; a
+root-owned helper repeats the final checks before an atomic no-overwrite
 installation. The legacy administrator mode still uses SCP and explicitly
 configured owner/group values. `-AllowSourceMismatch` exists only for
 `-ValidateOnly` inspection of an older artifact; never use it for upload.

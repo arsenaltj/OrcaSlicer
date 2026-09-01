@@ -19,10 +19,18 @@ bound to the canonical employee ID.
 
 The PowerShell client keeps the existing manifest/source/clean-worktree gates. In
 restricted mode it first requests `status`, compares the server-returned employee
-ID and protocol, and then streams the installer to the forced command over SSH.
-Both the unprivileged dispatcher and root-owned promotion helper independently
-validate the employee, safe filename, 1 GiB limit, exact size, SHA-256, source
-commit, revision, and Windows `MZ` prefix.
+ID and protocol, and then uses `begin`, `append`, and `commit` forced commands.
+Each 1-8 MiB append is a separate SSH session and includes its expected offset,
+byte count, and SHA-256. The server atomically records the committed offset only
+after appending and syncing a verified chunk. A repeated `begin` resumes the same
+artifact and repairs a partial append by truncating it to that committed offset.
+This avoids relying on one long-lived SSH stream for a roughly 200 MiB installer.
+
+At `commit`, both the unprivileged dispatcher and root-owned promotion helper
+independently validate the employee, safe filename, 1 GiB limit, exact size,
+SHA-256, source commit, revision, and Windows `MZ` prefix. Protocol errors expose
+only a bounded `error_stage` and fixed diagnostic detail; they never echo an
+arbitrary forced command or uploaded bytes.
 
 The publisher can write only a mode-0700 incoming directory. The only sudo rule
 targets the immutable root-owned promotion helper. That helper also checks

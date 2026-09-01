@@ -8,6 +8,8 @@ param(
     [string] $RemoteGroup = 'web',
     [string] $EmployeeId,
     [switch] $RestrictedPublisher,
+    [ValidateRange(1048576, 8388608)]
+    [int] $RestrictedChunkSizeBytes = 4MB,
     [switch] $AllowSourceMismatch,
     [switch] $ValidateOnly
 )
@@ -25,32 +27,39 @@ function ConvertTo-CanonicalEmployeeId {
     return $match.Groups[1].Value
 }
 
-function Invoke-RestrictedUpload {
+function ConvertTo-LowerHex {
+    param([Parameter(Mandatory = $true)][byte[]] $Bytes)
+    return (($Bytes | ForEach-Object { $_.ToString('x2') }) -join '')
+}
+
+function Invoke-RestrictedSshText {
     param(
+        [Parameter(Mandatory = $true)][string] $SshExecutable,
         [Parameter(Mandatory = $true)][string] $Target,
-        [Parameter(Mandatory = $true)][string] $CanonicalEmployeeId,
-        [Parameter(Mandatory = $true)][System.IO.FileInfo] $Installer,
-        [Parameter(Mandatory = $true)][string] $Sha256,
-        [Parameter(Mandatory = $true)][string] $SourceCommit,
-        [Parameter(Mandatory = $true)][string] $Revision
+        [Parameter(Mandatory = $true)][string] $RemoteCommand
     )
 
-    $sshCommand = Get-Command ssh.exe -ErrorAction SilentlyContinue
-    if (-not $sshCommand) { $sshCommand = Get-Command ssh -ErrorAction SilentlyContinue }
-    if (-not $sshCommand) { throw 'OpenSSH ssh was not found.' }
-
-    $statusLines = @(& $sshCommand.Source -o BatchMode=yes -- $Target "status $CanonicalEmployeeId")
-    if ($LASTEXITCODE -ne 0 -or $statusLines -notcontains "employee_id=$CanonicalEmployeeId" -or
-        $statusLines -notcontains 'protocol=1') {
-        throw 'Restricted publisher identity/protocol check failed.'
+    $lines = @(& $SshExecutable -o BatchMode=yes -o ConnectTimeout=15 `
+        -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -- $Target $RemoteCommand 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Restricted SSH command failed with exit code ${LASTEXITCODE}: $($lines -join ' ')"
     }
+    return $lines
+}
 
-    $arguments = '-o BatchMode=yes -- {0} upload {1} {2} {3} {4} {5} {6}' -f `
-        $Target, $CanonicalEmployeeId, $Installer.Name, $Installer.Length,
-        $Sha256.ToLowerInvariant(), $SourceCommit, $Revision
+function Invoke-RestrictedSshBytes {
+    param(
+        [Parameter(Mandatory = $true)][string] $SshExecutable,
+        [Parameter(Mandatory = $true)][string] $Target,
+        [Parameter(Mandatory = $true)][string] $RemoteCommand,
+        [Parameter(Mandatory = $true)][byte[]] $Buffer,
+        [Parameter(Mandatory = $true)][int] $Count
+    )
+
     $startInfo = New-Object System.Diagnostics.ProcessStartInfo
-    $startInfo.FileName = $sshCommand.Source
-    $startInfo.Arguments = $arguments
+    $startInfo.FileName = $SshExecutable
+    $startInfo.Arguments = '-o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -- {0} {1}' -f `
+        $Target, $RemoteCommand
     $startInfo.UseShellExecute = $false
     $startInfo.RedirectStandardInput = $true
     $startInfo.RedirectStandardOutput = $true
@@ -59,18 +68,19 @@ function Invoke-RestrictedUpload {
 
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $startInfo
-    if (-not $process.Start()) { throw 'Unable to start the restricted SSH upload process.' }
+    if (-not $process.Start()) { throw 'Unable to start the restricted SSH chunk process.' }
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
     $stderrTask = $process.StandardError.ReadToEndAsync()
     try {
-        $sourceStream = [System.IO.File]::OpenRead($Installer.FullName)
         try {
-            $sourceStream.CopyTo($process.StandardInput.BaseStream, 1MB)
+            $process.StandardInput.BaseStream.Write($Buffer, 0, $Count)
         } finally {
-            $sourceStream.Dispose()
             $process.StandardInput.Close()
         }
-        $process.WaitForExit()
+        if (-not $process.WaitForExit(180000)) {
+            $process.Kill()
+            throw 'Restricted SSH chunk process exceeded 180 seconds.'
+        }
         $exitCode = $process.ExitCode
         $stdout = $stdoutTask.GetAwaiter().GetResult().Trim()
         $stderr = $stderrTask.GetAwaiter().GetResult().Trim()
@@ -78,12 +88,85 @@ function Invoke-RestrictedUpload {
         $process.Dispose()
     }
     if ($exitCode -ne 0) {
-        throw "Restricted upload failed with exit code ${exitCode}: $stderr"
-    }
-    if ($stdout -notmatch '(?m)^uploaded=true$' -or $stdout -notmatch "(?m)^employee_id=$CanonicalEmployeeId$") {
-        throw "Restricted server did not return a valid publication receipt.`n$stdout"
+        throw "Restricted upload chunk failed with exit code ${exitCode}: $stderr"
     }
     return $stdout
+}
+
+function Invoke-RestrictedUpload {
+    param(
+        [Parameter(Mandatory = $true)][string] $Target,
+        [Parameter(Mandatory = $true)][string] $CanonicalEmployeeId,
+        [Parameter(Mandatory = $true)][System.IO.FileInfo] $Installer,
+        [Parameter(Mandatory = $true)][string] $Sha256,
+        [Parameter(Mandatory = $true)][string] $SourceCommit,
+        [Parameter(Mandatory = $true)][string] $Revision,
+        [Parameter(Mandatory = $true)][int] $ChunkSizeBytes
+    )
+
+    $sshCommand = Get-Command ssh.exe -ErrorAction SilentlyContinue
+    if (-not $sshCommand) { $sshCommand = Get-Command ssh -ErrorAction SilentlyContinue }
+    if (-not $sshCommand) { throw 'OpenSSH ssh was not found.' }
+
+    $statusLines = @(Invoke-RestrictedSshText -SshExecutable $sshCommand.Source -Target $Target `
+        -RemoteCommand "status $CanonicalEmployeeId")
+    if ($statusLines -notcontains "employee_id=$CanonicalEmployeeId" -or
+        $statusLines -notcontains 'protocol=2') {
+        throw 'Restricted publisher identity/protocol check failed.'
+    }
+
+    $beginLines = @(Invoke-RestrictedSshText -SshExecutable $sshCommand.Source -Target $Target `
+        -RemoteCommand ('begin {0} {1} {2} {3} {4} {5} {6}' -f $CanonicalEmployeeId,
+            $Installer.Name, $Installer.Length, $Sha256.ToLowerInvariant(), $SourceCommit, $Revision,
+            $ChunkSizeBytes))
+    $offsetLine = $beginLines | Where-Object { $_ -match '^offset=[0-9]+$' } | Select-Object -First 1
+    if (-not $offsetLine) { throw 'Restricted server did not return a resumable offset.' }
+    [long] $offset = ($offsetLine -split '=', 2)[1]
+    if ($offset -lt 0 -or $offset -gt $Installer.Length -or
+        ($offset -ne $Installer.Length -and $offset % $ChunkSizeBytes -ne 0)) {
+        throw "Restricted server returned an invalid offset: $offset"
+    }
+
+    $fileStream = [System.IO.File]::OpenRead($Installer.FullName)
+    try {
+        [void] $fileStream.Seek($offset, [System.IO.SeekOrigin]::Begin)
+        $buffer = New-Object byte[] $ChunkSizeBytes
+        $shaAlgorithm = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            while ($offset -lt $Installer.Length) {
+                $wanted = [int][Math]::Min([long]$ChunkSizeBytes, $Installer.Length - $offset)
+                $count = 0
+                while ($count -lt $wanted) {
+                    $read = $fileStream.Read($buffer, $count, $wanted - $count)
+                    if ($read -eq 0) { throw 'Installer ended before its recorded size.' }
+                    $count += $read
+                }
+                $chunkHash = ConvertTo-LowerHex -Bytes $shaAlgorithm.ComputeHash($buffer, 0, $count)
+                $chunkResult = Invoke-RestrictedSshBytes -SshExecutable $sshCommand.Source -Target $Target `
+                    -RemoteCommand ('append {0} {1} {2} {3} {4}' -f $CanonicalEmployeeId,
+                        $Installer.Name, $offset, $count, $chunkHash) -Buffer $buffer -Count $count
+                $nextOffset = $offset + $count
+                if ($chunkResult -notmatch "(?m)^offset=$nextOffset$") {
+                    throw "Restricted server did not acknowledge chunk offset $nextOffset."
+                }
+                $offset = $nextOffset
+            }
+        } finally {
+            $shaAlgorithm.Dispose()
+        }
+    } finally {
+        $fileStream.Dispose()
+    }
+
+    $commitLines = @(Invoke-RestrictedSshText -SshExecutable $sshCommand.Source -Target $Target `
+        -RemoteCommand ('commit {0} {1} {2} {3} {4} {5}' -f $CanonicalEmployeeId,
+            $Installer.Name, $Installer.Length, $Sha256.ToLowerInvariant(), $SourceCommit, $Revision))
+    $receipt = $commitLines -join "`n"
+    if ($receipt -notmatch '(?m)^uploaded=true$' -or
+        $receipt -notmatch "(?m)^employee_id=$CanonicalEmployeeId$") {
+        throw "Restricted server did not return a valid publication receipt.`n$receipt"
+    }
+    return $receipt
 }
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
@@ -138,6 +221,7 @@ $validationResult = [pscustomobject]@{
     SourceMatches  = ($gitHead -eq $manifest.source_commit)
     UploadMode     = if ($RestrictedPublisher) { 'restricted' } else { 'administrator' }
     EmployeeId     = $canonicalEmployeeId
+    ChunkSizeBytes = if ($RestrictedPublisher) { $RestrictedChunkSizeBytes } else { $null }
 }
 if ($ValidateOnly) {
     $validationResult
@@ -154,7 +238,7 @@ if ([string]::IsNullOrWhiteSpace($SshTarget) -or $SshTarget -notmatch '^[0-9A-Za
 if ($RestrictedPublisher) {
     $receipt = Invoke-RestrictedUpload -Target $SshTarget -CanonicalEmployeeId $canonicalEmployeeId `
         -Installer $installerItem -Sha256 $localHash -SourceCommit $manifest.source_commit `
-        -Revision $manifest.package_revision
+        -Revision $manifest.package_revision -ChunkSizeBytes $RestrictedChunkSizeBytes
     [pscustomobject]@{
         Uploaded       = $true
         UploadMode     = 'restricted'
