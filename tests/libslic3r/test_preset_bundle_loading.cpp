@@ -890,3 +890,114 @@ TEST_CASE("Sizing down to the nozzle count plus mixes is what eats the mixed tai
         CHECK(bundle.project_config.option<ConfigOptionStrings>("filament_mixed_components")->values[5] == "1,2");
     }
 }
+
+TEST_CASE("Fixed multi-tool printers protect hardware filament slots and expose only surplus slots", "[Preset][Bundle][FilamentSlots]")
+{
+    PresetBundle bundle;
+    auto &printer_config = bundle.printers.get_edited_preset().config;
+    printer_config.option<ConfigOptionFloats>("nozzle_diameter", true)->values = { 0.4, 0.4, 0.4, 0.4 };
+    printer_config.option<ConfigOptionBool>("single_extruder_multi_material", true)->value = false;
+
+    SECTION("the four hardware slots cannot be removed") {
+        bundle.set_num_filaments(4u, std::string("#FF0000"));
+
+        CHECK(bundle.fixed_physical_filament_count() == 4);
+        for (size_t i = 0; i < 4; ++i) {
+            CHECK_FALSE(bundle.can_remove_physical_filament(i));
+            CHECK_FALSE(bundle.can_remove_filament(i));
+        }
+        CHECK(bundle.can_add_mixed_filament());
+    }
+
+    SECTION("physical project slots beyond the four hardware slots can be removed") {
+        bundle.set_num_filaments(9u, std::string("#FF0000"));
+
+        for (size_t i = 0; i < 4; ++i)
+            CHECK_FALSE(bundle.can_remove_physical_filament(i));
+        for (size_t i = 4; i < 9; ++i)
+            CHECK(bundle.can_remove_physical_filament(i));
+        CHECK(bundle.can_merge_filament(4, 0));
+        CHECK_FALSE(bundle.can_merge_filament(0, 4));
+    }
+}
+
+TEST_CASE("Mixed slots do not change which physical project slots are removable", "[Preset][Bundle][FilamentSlots][FilamentMixer]")
+{
+    PresetBundle bundle;
+    auto &printer_config = bundle.printers.get_edited_preset().config;
+    printer_config.option<ConfigOptionFloats>("nozzle_diameter", true)->values = { 0.4, 0.4, 0.4, 0.4 };
+    printer_config.option<ConfigOptionBool>("single_extruder_multi_material", true)->value = false;
+    bundle.set_num_filaments(6u, std::string("#FF0000"));
+    bundle.project_config.option<ConfigOptionBools>("filament_is_mixed")->values =
+        { false, false, false, false, false, true };
+    bundle.project_config.option<ConfigOptionStrings>("filament_mixed_components")->values =
+        { "", "", "", "", "", "1,4" };
+
+    CHECK(bundle.can_remove_physical_filament(4));
+    CHECK_FALSE(bundle.can_remove_physical_filament(5));
+    CHECK(bundle.can_remove_filament(4));
+    CHECK(bundle.can_remove_filament(5));
+
+    bundle.update_num_filaments(4);
+
+    REQUIRE(bundle.filament_presets.size() == 5);
+    REQUIRE(bundle.num_physical_filaments() == 4);
+    REQUIRE(bundle.num_mixed_filaments() == 1);
+    for (size_t i = 0; i < 4; ++i)
+        CHECK_FALSE(bundle.can_remove_physical_filament(i));
+    CHECK(bundle.is_mixed_filament(4));
+    CHECK(bundle.can_remove_filament(4));
+    CHECK(bundle.project_config.option<ConfigOptionStrings>("filament_mixed_components")->values[4] == "1,4");
+}
+
+TEST_CASE("SEMM and Bambu printers retain flexible physical filament removal", "[Preset][Bundle][FilamentSlots]")
+{
+    SECTION("SEMM printers can remove any physical slot while more than one remains") {
+        PresetBundle bundle;
+        bundle.set_num_filaments(3u, std::string("#FF0000"));
+        bundle.printers.get_edited_preset().config.option<ConfigOptionBool>("single_extruder_multi_material", true)->value = true;
+
+        for (size_t i = 0; i < 3; ++i)
+            CHECK(bundle.can_remove_physical_filament(i));
+
+        bundle.set_num_filaments(1u, std::string("#FF0000"));
+        CHECK_FALSE(bundle.can_remove_physical_filament(0));
+    }
+
+    SECTION("Bambu printers remain flexible even when SEMM is disabled") {
+        PresetBundle bundle;
+        VendorProfile bbl_vendor;
+        bbl_vendor.id = "BBL";
+        VendorProfile::PrinterModel model;
+        model.name = "Bambu Test";
+        bbl_vendor.models.emplace_back(model);
+        bundle.vendors.emplace("BBL", std::move(bbl_vendor));
+        bundle.printers.get_edited_preset().config.option<ConfigOptionString>("printer_model", true)->value = model.name;
+        bundle.printers.get_edited_preset().config.option<ConfigOptionBool>("single_extruder_multi_material", true)->value = false;
+        bundle.set_num_filaments(3u, std::string("#FF0000"));
+
+        for (size_t i = 0; i < 3; ++i)
+            CHECK(bundle.can_remove_physical_filament(i));
+    }
+}
+
+TEST_CASE("Physical filament removal fails closed for invalid indices and missing hardware slots", "[Preset][Bundle][FilamentSlots]")
+{
+    PresetBundle bundle;
+    bundle.set_num_filaments(3u, std::string("#FF0000"));
+    bundle.project_config.option<ConfigOptionBools>("filament_is_mixed")->values = { false, false, true };
+    bundle.printers.get_edited_preset().config.option<ConfigOptionBool>("single_extruder_multi_material", true)->value = false;
+
+    CHECK_FALSE(bundle.can_remove_physical_filament(2));
+    CHECK_FALSE(bundle.can_remove_physical_filament(99));
+
+    bundle.printers.get_edited_preset().config.erase("nozzle_diameter");
+    CHECK(bundle.fixed_physical_filament_count() == 0);
+    CHECK_FALSE(bundle.can_remove_physical_filament(0));
+    CHECK_FALSE(bundle.can_remove_physical_filament(1));
+
+    bundle.printers.get_edited_preset().config.option<ConfigOptionFloats>("nozzle_diameter", true)->values.clear();
+    CHECK(bundle.fixed_physical_filament_count() == 0);
+    CHECK_FALSE(bundle.can_remove_physical_filament(0));
+    CHECK_FALSE(bundle.can_remove_physical_filament(1));
+}

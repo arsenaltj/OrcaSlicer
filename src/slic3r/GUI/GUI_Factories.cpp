@@ -1669,7 +1669,7 @@ void MenuFactory::create_filament_action_menu(bool init, int active_filament_men
 
     wxMenu* sub_menu = new wxMenu();
     std::vector<wxBitmap*> icons = get_extruder_color_icons(true);
-    int filaments_cnt = Sidebar::should_show_SEMM_buttons() ? icons.size() : 0;
+    int filaments_cnt = int(icons.size());
     for (int i = 0; i < filaments_cnt; i++) {
         if (i == active_filament_menu_id)
             continue;
@@ -1678,11 +1678,18 @@ void MenuFactory::create_filament_action_menu(bool init, int active_filament_men
         wxString item_name = preset ? from_u8(preset->label(false)) : wxString::Format(_L("Filament %d"), i + 1);
 
         append_menu_item(sub_menu, wxID_ANY, item_name, "",
-            [i](wxCommandEvent&) { plater()->sidebar().change_filament(-2, i); }, *icons[i], menu,
-            []() { return true; }, m_parent);
+            [active_filament_menu_id, i](wxCommandEvent&) {
+                plater()->sidebar().change_filament(size_t(active_filament_menu_id), size_t(i));
+            }, *icons[i], menu,
+            [active_filament_menu_id, i]() {
+                return wxGetApp().preset_bundle->can_merge_filament(size_t(active_filament_menu_id), size_t(i));
+            }, m_parent);
     }
     append_submenu(menu, sub_menu, wxID_ANY, _L("Merge with"), "", "",
-        [filaments_cnt]() { return filaments_cnt > 1; }, m_parent);
+        [active_filament_menu_id, filaments_cnt]() {
+            return filaments_cnt > 1
+                && wxGetApp().preset_bundle->can_remove_filament(size_t(active_filament_menu_id));
+        }, m_parent);
 
     // Decompose a target colour into a printable mix of the loaded filaments. Placed before the
     append_menu_item(
@@ -1694,12 +1701,10 @@ void MenuFactory::create_filament_action_menu(bool init, int active_filament_men
 
     // ORCA use delete item on end of menu to prevent accidental clicks. clicking to submenus(merge) already not allowed by OS
     append_menu_item(
-        menu, wxID_ANY, _L("Delete"), _L("Delete this filament"), [](wxCommandEvent&) {
-            plater()->sidebar().delete_filament(-2); }, "", nullptr,
-        []() {
-            return plater()->sidebar().combos_filament().size() > 1
-                // Orca: only show delete filament option for SEMM machines unless is BBL
-                && Sidebar::should_show_SEMM_buttons();
+        menu, wxID_ANY, _L("Delete"), _L("Delete this filament"), [active_filament_menu_id](wxCommandEvent&) {
+            plater()->sidebar().delete_filament(size_t(active_filament_menu_id)); }, "", nullptr,
+        [active_filament_menu_id]() {
+            return wxGetApp().preset_bundle->can_remove_filament(size_t(active_filament_menu_id));
         }, m_parent);
 }
 

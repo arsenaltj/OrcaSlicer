@@ -302,9 +302,9 @@ public:
     std::optional<FilamentBaseInfo> get_filament_by_filament_id(const std::string& filament_id, const std::string& printer_name = std::string()) const;
 
     // Orca: get vendor type
-    VendorType get_current_vendor_type();
+    VendorType get_current_vendor_type() const;
     // Vendor related handy functions
-    bool is_bbl_vendor() { return get_current_vendor_type() == VendorType::Marlin_BBL; }
+    bool is_bbl_vendor() const { return get_current_vendor_type() == VendorType::Marlin_BBL; }
 
     // Whether using bbl network for print upload
     bool use_bbl_network();
@@ -501,6 +501,11 @@ public:
     // Mixed-color filament slots: virtual slots realized from 2-3 physical filaments.
     bool                        is_mixed_filament(size_t idx) const;
     std::vector<size_t>         physical_filament_config_indices() const;
+    size_t                      fixed_physical_filament_count() const;
+    bool                        can_remove_physical_filament(size_t config_index) const;
+    bool                        can_remove_filament(size_t config_index) const;
+    bool                        can_merge_filament(size_t from_index, size_t to_index) const;
+    bool                        can_add_mixed_filament() const;
     // How many slots are mixed. They sit at the tail of the filament list and have no nozzle of
     // their own, so any resize driven by the printer's extruder count has to add this on top.
     size_t                      num_mixed_filaments() const;

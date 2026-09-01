@@ -3482,7 +3482,7 @@ void Sidebar::init_filament_combo(PlaterPresetComboBox **combo, const int filame
 
     PlaterPresetComboBox* combobox = (*combo);
     edit_btn->Bind(wxEVT_BUTTON, [this, edit_btn, combobox, filament_idx](wxCommandEvent) {
-        bool single_or_bbl     = should_show_SEMM_buttons();
+        bool single_or_bbl     = wxGetApp().preset_bundle->can_remove_filament(size_t(filament_idx));
         bool is_multi_material = p->combos_filament.size() > 1;
         if(single_or_bbl && is_multi_material) {
            // MULTI MATERIAL Show menu
@@ -4092,7 +4092,7 @@ void Sidebar::update_mixed_filament_list()
         broken_slots.insert(broken_slots.end(), type_mismatch_slots.begin(), type_mismatch_slots.end());
     }
 
-    bool at_limit = (wxGetApp().preset_bundle->filament_presets.size() >= size_t(EnforcerBlockerType::ExtruderMax));
+    bool at_limit = !wxGetApp().preset_bundle->can_add_mixed_filament();
     p->m_btn_add_mixed_filament->Show(can_mix && !has_mixed && !at_limit);
     p->m_panel_mixed_title->Show(has_mixed);
     p->m_mixed_scroll_area->Show(has_mixed);
@@ -4752,10 +4752,7 @@ static bool create_mixed_filament_from_result(
         return false;
 
     size_t num_physical = sidebar->combos_filament().size();
-    if (num_physical < 2)
-        return false;
-    if (wxGetApp().preset_bundle->filament_presets.size() >= size_t(EnforcerBlockerType::ExtruderMax))
-        return false;
+    if (!wxGetApp().preset_bundle->can_add_mixed_filament()) return false;
 
     auto& project_config = wxGetApp().preset_bundle->project_config;
     size_t total = wxGetApp().preset_bundle->filament_presets.size();
@@ -4865,9 +4862,7 @@ void Sidebar::add_mixed_filament()
     auto* plater = dynamic_cast<Plater*>(GetParent());
     if (!plater) return;
 
-    size_t num_physical = p->combos_filament.size();
-    if (num_physical < 2) return;
-    if (wxGetApp().preset_bundle->filament_presets.size() >= size_t(EnforcerBlockerType::ExtruderMax)) return;
+    if (!wxGetApp().preset_bundle->can_add_mixed_filament()) return;
 
     std::vector<std::string> color_strs, names, types;
     collect_physical_filament_info(color_strs, names, types);
@@ -5514,20 +5509,17 @@ void Sidebar::add_filament() {
 
 void Sidebar::delete_filament(size_t filament_id, int replace_filament_id) {
     if (is_new_project_in_gcode3mf()) { return; }
-    if (p->combos_filament.size() <= 1) return;
+    if (p->combos_filament.empty() || wxGetApp().preset_bundle->filament_presets.size() <= 1) return;
 
     size_t filament_count = p->combos_filament.size() - 1;
     if (filament_id == size_t(-2)) {
         filament_id = p->m_menu_filament_id;
     }
     if (filament_id == size_t(-1)) {
-        filament_id = filament_count;
+        filament_id = size_t(p->combos_filament.back()->get_filament_idx());
     }
 
-    // Mixed (virtual) slots have no combo of their own, so their config index lies past
-    // filament_count; bound explicit ids by the total slot count instead.
-    size_t total_filaments = wxGetApp().preset_bundle->filament_presets.size();
-    if (filament_id > filament_count && filament_id >= total_filaments)
+    if (!wxGetApp().preset_bundle->can_remove_filament(filament_id))
         return;
 
     bool is_mixed = (filament_id >= p->combos_filament.size());
@@ -5575,6 +5567,7 @@ void Sidebar::change_filament(size_t from_id, size_t to_id)
     // Merging a physical filament into a mixed one that lists it as a component would delete
     // the very filament the mix depends on, leaving it broken. Warn before doing so.
     auto& pb = *wxGetApp().preset_bundle;
+    if (!pb.can_merge_filament(from_id, to_id)) return;
     bool from_is_physical = !pb.is_mixed_filament(from_id);
     bool to_is_mixed = pb.is_mixed_filament(to_id);
 
@@ -6202,22 +6195,15 @@ void Sidebar::show_SEMM_buttons()
     
     bool is_multi_material = p->combos_filament.size() > 1;
     bool single_or_bbl     = should_show_SEMM_buttons();
-    bool is_single = single_or_bbl && !is_multi_material; // SINGLE EXTRUDER / BBL WITH 1 MATERIAL
     bool is_multi  = single_or_bbl && is_multi_material;  // MULTI MATERIAL WITH SINGLE EXTRUDER
-    bool is_fixed  = !is_single && !is_multi;             // MULTI EXTRUDER / TOOLCHANGER / IDEX WITH FIXED MATERIAL
+    bool can_remove_last   = wxGetApp().preset_bundle->can_remove_filament(size_t(p->combos_filament.back()->get_filament_idx()));
 
     p->m_bpButton_add_filament->Show(single_or_bbl);
-    p->m_bpButton_del_filament->Show(is_multi);
+    p->m_bpButton_del_filament->Show(can_remove_last);
     p->m_flushing_volume_btn->Show(  is_multi);
 
-    if (is_multi) {
-        for (auto &c : p->combos_filament)
-            c->edit_btn->SetBitmap_("menu_filament");
-    }
-    else if (is_single || is_fixed) {
-        for (auto &c : p->combos_filament)
-            c->edit_btn->SetBitmap_("edit");
-    }
+    for (auto &c : p->combos_filament)
+        c->edit_btn->SetBitmap_(wxGetApp().preset_bundle->can_remove_filament(size_t(c->get_filament_idx())) ? "menu_filament" : "edit");
 
     Layout();
 }

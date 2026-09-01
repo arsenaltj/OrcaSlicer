@@ -679,7 +679,7 @@ Semver PresetBundle::get_vendor_profile_version(std::string vendor_name)
     return result_ver;
 }
 
-VendorType PresetBundle::get_current_vendor_type()
+VendorType PresetBundle::get_current_vendor_type() const
 {
     auto        t      = VendorType::Unknown;
     auto        config = &printers.get_edited_preset().config;
@@ -3370,6 +3370,46 @@ std::vector<size_t> PresetBundle::physical_filament_config_indices() const
         if (!is_mixed_filament(i))
             indices.push_back(i);
     return indices;
+}
+
+size_t PresetBundle::fixed_physical_filament_count() const
+{
+    const auto *nozzle_diameters = printers.get_edited_preset().config.option<ConfigOptionFloats>("nozzle_diameter");
+    return nozzle_diameters == nullptr ? 0 : nozzle_diameters->values.size();
+}
+
+bool PresetBundle::can_remove_physical_filament(size_t config_index) const
+{
+    const std::vector<size_t> physical_indices = physical_filament_config_indices();
+    const auto physical_it = std::find(physical_indices.begin(), physical_indices.end(), config_index);
+    if (physical_it == physical_indices.end() || physical_indices.size() <= 1)
+        return false;
+
+    const auto &printer_config = printers.get_edited_preset().config;
+    if (printer_config.opt_bool("single_extruder_multi_material") || is_bbl_vendor())
+        return true;
+
+    const size_t fixed_count = fixed_physical_filament_count();
+    return fixed_count > 0 && size_t(physical_it - physical_indices.begin()) >= fixed_count;
+}
+
+bool PresetBundle::can_remove_filament(size_t config_index) const
+{
+    if (config_index >= filament_presets.size())
+        return false;
+    return is_mixed_filament(config_index) ? filament_presets.size() > 1
+                                           : can_remove_physical_filament(config_index);
+}
+
+bool PresetBundle::can_merge_filament(size_t from_index, size_t to_index) const
+{
+    return from_index != to_index && to_index < filament_presets.size() && can_remove_filament(from_index);
+}
+
+bool PresetBundle::can_add_mixed_filament() const
+{
+    return num_physical_filaments() >= 2
+        && filament_presets.size() < size_t(EnforcerBlockerType::ExtruderMax);
 }
 
 
