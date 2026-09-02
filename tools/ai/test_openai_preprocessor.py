@@ -510,7 +510,9 @@ class ExactImageEditTests(unittest.TestCase):
                     )
                 return {"data": [{"b64_json": base64.b64encode(source.read_bytes()).decode("ascii")}]}
 
-            with mock.patch.object(preprocessor, "_provider_request", side_effect=request):
+            with configured_base_url("https://laotie.dev"), mock.patch.object(
+                preprocessor, "_provider_request", side_effect=request
+            ):
                 preprocessor.edit_image(
                     source,
                     "KEEP SUBJECT",

@@ -1187,7 +1187,7 @@ def _adopt_legacy_completed_job(job_id: str) -> Job | None:
             return None
     except ValueError:
         return None
-    output_root = _model_output_root()
+    output_root = _model_output_root().resolve()
     try:
         directory = (output_root / job_id).resolve(strict=True)
         directory.relative_to(output_root)
