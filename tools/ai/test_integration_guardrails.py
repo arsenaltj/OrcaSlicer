@@ -94,6 +94,26 @@ class IntegrationGuardrailTests(unittest.TestCase):
     def test_repository_ai_build_boundaries_pass(self) -> None:
         self.assertEqual([], GUARDRAILS.validate_ai_build_boundaries(REPO_ROOT))
 
+    def test_repository_build_info_generation_is_multi_config_safe(self) -> None:
+        self.assertEqual([], GUARDRAILS.validate_build_info_generation(REPO_ROOT))
+
+    def test_build_info_generation_rejects_generated_configure_file_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            path = root / "src/slic3r/CMakeLists.txt"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                "set(ORCA_BUILD_INFO_SOURCE \"${CMAKE_CURRENT_BINARY_DIR}/BuildInfo.cpp\")\n"
+                "configure_file(BuildInfo.cpp.in \"${ORCA_BUILD_INFO_SOURCE}\" @ONLY)\n"
+                "set_source_files_properties(\"${ORCA_BUILD_INFO_SOURCE}\" PROPERTIES GENERATED TRUE)\n"
+                "add_library(libslic3r_gui STATIC ${ORCA_BUILD_INFO_SOURCE})\n",
+                encoding="utf-8",
+            )
+
+            errors = GUARDRAILS.validate_build_info_generation(root)
+
+        self.assertTrue(any(error["code"] == "build.multiconfig_generated_source" for error in errors))
+
     def test_repository_gui_feature_boundaries_pass(self) -> None:
         self.assertEqual([], GUARDRAILS.validate_gui_feature_boundaries(REPO_ROOT))
 

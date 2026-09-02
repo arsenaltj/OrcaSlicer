@@ -866,7 +866,8 @@ set(ORCA_BUILD_INFO_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/BuildInfo.cpp")
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/BuildInfo.cpp.in
                ${ORCA_BUILD_INFO_SOURCE}
                @ONLY)
-set_source_files_properties(${ORCA_BUILD_INFO_SOURCE} PROPERTIES GENERATED TRUE)
+# configure_file creates this source before the build graph is generated. Do not
+# mark it GENERATED: Ninja Multi-Config would add invalid cross-config order rules.
 
 if (WIN32)
     add_library(libslic3r_gui STATIC

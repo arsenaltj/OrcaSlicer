@@ -1129,6 +1129,40 @@ def _cmake_set_body(content: str, variable: str) -> str | None:
     return match.group(1) if match else None
 
 
+def validate_build_info_generation(repo_root: Path) -> list[dict[str, str]]:
+    """Keep the configure-time BuildInfo source safe for multi-config generators."""
+    relative_path = "src/slic3r/CMakeLists.txt"
+    path = repo_root / relative_path
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return [_issue("build.missing", f"cannot read {relative_path}: {exc}")]
+
+    errors: list[dict[str, str]] = []
+    configure_pattern = re.compile(
+        r"configure_file\s*\(\s*\$\{CMAKE_CURRENT_SOURCE_DIR\}/BuildInfo\.cpp\.in"
+        r"\s+\$\{ORCA_BUILD_INFO_SOURCE\}\s+@ONLY\s*\)",
+        flags=re.DOTALL,
+    )
+    if configure_pattern.search(content) is None:
+        errors.append(_issue("build.identity_source", "BuildInfo.cpp must remain a configure-time source"))
+
+    generated_pattern = re.compile(
+        r'set_source_files_properties\s*\(\s*"?\$\{ORCA_BUILD_INFO_SOURCE\}"?\s+PROPERTIES'
+        r"[^)]*\bGENERATED\s+(?:TRUE|ON|1)\b",
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    if generated_pattern.search(content) is not None:
+        errors.append(
+            _issue(
+                "build.multiconfig_generated_source",
+                "configure_file output BuildInfo.cpp must not be marked GENERATED; "
+                "Ninja Multi-Config creates invalid cross-config order dependencies",
+            )
+        )
+    return errors
+
+
 def validate_ai_build_boundaries(repo_root: Path) -> list[dict[str, str]]:
     """Validate explicit targets and exclusive SmartSlicing core source ownership."""
     errors: list[dict[str, str]] = []
@@ -1377,6 +1411,7 @@ def validate(lock_path: Path, repo_root: Path, skip_git: bool = False) -> dict[s
     if not errors:
         errors.extend(validate_source_constants(document, repo_root))
         errors.extend(validate_contract_layout(repo_root))
+        errors.extend(validate_build_info_generation(repo_root))
         errors.extend(validate_ai_build_boundaries(repo_root))
         errors.extend(validate_gui_feature_boundaries(repo_root))
         errors.extend(validate_dependency_boundaries(repo_root))
