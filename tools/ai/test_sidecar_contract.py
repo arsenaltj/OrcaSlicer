@@ -45,6 +45,27 @@ def valid_png_bytes(size: int = 96) -> bytes:
     return output.getvalue()
 
 
+def multipart_image_request(fields: dict[str, str], image: bytes) -> tuple[bytes, str]:
+    boundary = f"orca-{uuid.uuid4().hex}"
+    parts: list[bytes] = []
+    for name, value in fields.items():
+        parts.extend([
+            f"--{boundary}\r\n".encode(),
+            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode(),
+            value.encode("utf-8"),
+            b"\r\n",
+        ])
+    parts.extend([
+        f"--{boundary}\r\n".encode(),
+        b'Content-Disposition: form-data; name="image"; filename="input.png"\r\n',
+        b"Content-Type: image/png\r\n\r\n",
+        image,
+        b"\r\n",
+        f"--{boundary}--\r\n".encode(),
+    ])
+    return b"".join(parts), f"multipart/form-data; boundary={boundary}"
+
+
 @contextlib.contextmanager
 def sidecar_server(handler):
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
@@ -77,6 +98,38 @@ def temporary_environment(**values):
 
 
 class SidecarHealthContractTests(unittest.TestCase):
+    def test_style_recommendation_is_local_and_does_not_require_api_key(self):
+        body, content_type = multipart_image_request(
+            {"instruction": "一张宠物猫照片"}, valid_png_bytes()
+        )
+        with temporary_environment(OPENAI_API_KEY=None):
+            with sidecar_server(PRODUCTION.Handler) as port:
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/v1/orcaslicer/model-style-recommendation",
+                    data=body,
+                    method="POST",
+                    headers={"X-OrcaSlicer-Client": "native", "Content-Type": content_type},
+                )
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    payload = json.loads(response.read())
+
+        recommendation = payload["recommendation"]
+        self.assertEqual(recommendation["primary"], "cartoon")
+        self.assertEqual(recommendation["alternatives"], ["sculpture", "low_poly"])
+        self.assertTrue(recommendation["local_only"])
+
+    def test_production_json_response_ignores_native_client_disconnect(self):
+        handler = object.__new__(PRODUCTION.Handler)
+        handler.send_response = mock.Mock()
+        handler.send_header = mock.Mock()
+        handler.end_headers = mock.Mock()
+        handler.wfile = mock.Mock()
+        handler.wfile.write.side_effect = ConnectionAbortedError(10053, "client cancelled obsolete poll")
+
+        handler.send_json(200, {"job": {"state": "preprocessing"}})
+
+        handler.wfile.write.assert_called_once()
+
     def test_local_journey_event_log_accepts_only_privacy_safe_fields(self):
         job_id = str(uuid.uuid4())
         with tempfile.TemporaryDirectory() as directory, temporary_environment(
@@ -126,6 +179,7 @@ class SidecarHealthContractTests(unittest.TestCase):
 
     def test_design_work_uses_a_separate_executor_from_paid_model_generation(self):
         self.assertIs(PRODUCTION._executor_for(PRODUCTION._generate_job), PRODUCTION._MODEL_EXECUTOR)
+        self.assertIs(PRODUCTION._executor_for(PRODUCTION._retexture_job), PRODUCTION._MODEL_EXECUTOR)
         self.assertIs(PRODUCTION._executor_for(PRODUCTION._recommend_palette_job), PRODUCTION._DESIGN_EXECUTOR)
         self.assertIs(PRODUCTION._executor_for(PRODUCTION._preprocess_image_job), PRODUCTION._DESIGN_EXECUTOR)
         self.assertIsNot(PRODUCTION._MODEL_EXECUTOR, PRODUCTION._DESIGN_EXECUTOR)
@@ -187,6 +241,84 @@ class SidecarHealthContractTests(unittest.TestCase):
             job.attempts.append({"attempt": 3, "status": "rejected", "error": "quality gate"})
             self.assertEqual(PRODUCTION._public_job(job)["provider_failure"], {})
 
+    def test_public_job_exposes_latest_paid_3d_task_ids(self):
+        job_id = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory() as directory:
+            job_directory = Path(directory) / job_id
+            job_directory.mkdir()
+            job = PRODUCTION.Job(id=job_id, source="image", directory=job_directory)
+            job.attempts = [
+                {
+                    "attempt": 1,
+                    "generation_task_id": "older-generation-task",
+                    "conversion_task_id": "older-conversion-task",
+                },
+                {"attempt": 2, "status": "rejected", "error": "local quality gate"},
+                {
+                    "attempt": 3,
+                    "generation_task_id": "final-generation-task",
+                    "conversion_task_id": "final-conversion-task",
+                    "status": "ready",
+                },
+            ]
+
+            public = PRODUCTION._public_job(job)
+
+            self.assertEqual(public["provider_tasks"], {
+                "provider": "tripo",
+                "generation_task_id": "final-generation-task",
+                "conversion_task_id": "final-conversion-task",
+            })
+
+            job.attempts = []
+            self.assertEqual(PRODUCTION._public_job(job)["provider_tasks"], {})
+
+    def test_legacy_ready_job_status_recovers_provider_task_ids(self):
+        job_id = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            job_directory = root / job_id
+            job_directory.mkdir()
+            (job_directory / "model-vertex-color.obj").write_text(
+                "v 0 0 0 1 1 1\nf 1 1 1\n", encoding="ascii"
+            )
+            (job_directory / "attempts.json").write_text(
+                json.dumps({
+                    "attempts": [{
+                        "attempt": 1,
+                        "provider": "tripo",
+                        "generation_task_id": "legacy-generation-task",
+                        "conversion_task_id": "legacy-conversion-task",
+                    }],
+                }),
+                encoding="utf-8",
+            )
+            with PRODUCTION._JOBS_LOCK:
+                previous = dict(PRODUCTION._JOBS)
+                PRODUCTION._JOBS.clear()
+            try:
+                with (
+                    mock.patch.object(PRODUCTION, "_model_output_root", return_value=root),
+                    sidecar_server(PRODUCTION.Handler) as port,
+                ):
+                    request = urllib.request.Request(
+                        f"http://127.0.0.1:{port}/v1/orcaslicer/model-jobs/{job_id}",
+                        headers={"X-OrcaSlicer-Client": "native"},
+                    )
+                    with urllib.request.urlopen(request, timeout=5) as response:
+                        self.assertEqual(response.status, 200)
+                        payload = json.loads(response.read())
+
+                self.assertEqual(payload["job"]["provider_tasks"], {
+                    "provider": "tripo",
+                    "generation_task_id": "legacy-generation-task",
+                    "conversion_task_id": "legacy-conversion-task",
+                })
+            finally:
+                with PRODUCTION._JOBS_LOCK:
+                    PRODUCTION._JOBS.clear()
+                    PRODUCTION._JOBS.update(previous)
+
     def fetch_health(self, handler):
         with sidecar_server(handler) as port:
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=5) as response:
@@ -209,11 +341,15 @@ class SidecarHealthContractTests(unittest.TestCase):
         self.assertEqual(generation["sources"], ["text", "image"])
         self.assertEqual(
             generation["styles"],
-            ["sculpture", "realistic", "cartoon", "custom"],
+            ["sculpture", "realistic", "cartoon", "low_poly", "relief", "diorama", "custom"],
+        )
+        self.assertEqual(
+            generation["style_recommendation"],
+            {"available": True, "local_only": True},
         )
         self.assertEqual(generation["artifact_formats"], ["obj"])
-        self.assertEqual(generation["face_limits"], [300000, 1000000])
-        self.assertEqual(generation["default_face_limit"], 1000000)
+        self.assertEqual(generation["face_limits"], [300000, 2000000])
+        self.assertEqual(generation["default_face_limit"], 2000000)
         self.assertEqual(generation["generation_profiles"], ["quality", "performance"])
         self.assertEqual(generation["default_generation_profile"], "quality")
         self.assertIn("model_reference", generation["printable_image_pipeline"]["outputs"])
@@ -439,6 +575,57 @@ class SidecarHealthContractTests(unittest.TestCase):
                     PRODUCTION._JOBS.clear()
                     PRODUCTION._JOBS.update(previous)
 
+    def test_image_preview_route_persists_confirmed_ai_palette_origin(self):
+        boundary = "----OrcaPreviewPaletteOriginTest"
+        parts = []
+        for name, value in {
+            "request_id": "preview-r1",
+            "instruction": "保留主体",
+            "palette": '["#E8DDD0", "#1A1A1A", "#1F5A45"]',
+            "palette_roles": "{}",
+            "palette_recommendation_confirmed": "true",
+            "style": "realistic",
+            "custom_style": "",
+            "print": "{}",
+        }.items():
+            parts.append(
+                f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n".encode("utf-8")
+            )
+        parts.append(
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"image\"; filename=\"input.png\"\r\n"
+            "Content-Type: image/png\r\n\r\n".encode("ascii")
+            + valid_png_bytes()
+            + b"\r\n"
+        )
+        parts.append(f"--{boundary}--\r\n".encode("ascii"))
+        with tempfile.TemporaryDirectory() as directory, temporary_environment(
+            OPENAI_API_KEY="test-openai", ORCASLICER_AI_OUTPUT_DIR=directory
+        ), mock.patch.object(PRODUCTION, "_preprocess_image_job"):
+            with PRODUCTION._JOBS_LOCK:
+                previous = dict(PRODUCTION._JOBS)
+                PRODUCTION._JOBS.clear()
+            try:
+                with sidecar_server(PRODUCTION.Handler) as port:
+                    request = urllib.request.Request(
+                        f"http://127.0.0.1:{port}/v1/orcaslicer/model-jobs/image",
+                        data=b"".join(parts),
+                        method="POST",
+                        headers={
+                            "X-OrcaSlicer-Client": "native",
+                            "Content-Type": f"multipart/form-data; boundary={boundary}",
+                        },
+                    )
+                    with urllib.request.urlopen(request, timeout=5) as response:
+                        public = json.loads(response.read())["job"]
+                self.assertTrue(public["palette_recommendation_confirmed"])
+                persisted = PRODUCTION._load_job(Path(directory) / public["id"])
+                self.assertIsNotNone(persisted)
+                self.assertTrue(persisted.palette_recommendation_confirmed)
+            finally:
+                with PRODUCTION._JOBS_LOCK:
+                    PRODUCTION._JOBS.clear()
+                    PRODUCTION._JOBS.update(previous)
+
     def test_confirm_palette_rejects_wrong_job_state(self):
         job_id = str(uuid.uuid4())
         with tempfile.TemporaryDirectory() as directory:
@@ -473,6 +660,7 @@ class SidecarHealthContractTests(unittest.TestCase):
             job = PRODUCTION.Job(id=job_id, source="text", directory=job_directory)
             job.state = "awaiting_confirmation"
             job.phase = "awaiting_confirmation"
+            job.user_prompt = "printable object"
             job.prepared_prompt = "printable object"
             with PRODUCTION._JOBS_LOCK:
                 previous = dict(PRODUCTION._JOBS)
@@ -493,6 +681,76 @@ class SidecarHealthContractTests(unittest.TestCase):
                 with PRODUCTION._JOBS_LOCK:
                     PRODUCTION._JOBS.clear()
                     PRODUCTION._JOBS.update(previous)
+
+    def test_latest_job_ignores_newer_prepared_only_internal_text_job(self):
+        restorable_id = str(uuid.uuid4())
+        internal_id = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            restorable_directory = root / restorable_id
+            internal_directory = root / internal_id
+            restorable_directory.mkdir()
+            internal_directory.mkdir()
+            restorable = PRODUCTION.Job(id=restorable_id, source="text", directory=restorable_directory)
+            restorable.state = "awaiting_confirmation"
+            restorable.user_prompt = "用户输入的雕塑"
+            restorable.prepared_prompt = "prepared user prompt"
+            restorable.updated_at = 10.0
+            internal = PRODUCTION.Job(id=internal_id, source="text", directory=internal_directory)
+            internal.state = "awaiting_confirmation"
+            internal.user_prompt = ""
+            internal.prepared_prompt = "internal calibration fixture"
+            internal.updated_at = 20.0
+            with PRODUCTION._JOBS_LOCK:
+                previous = dict(PRODUCTION._JOBS)
+                PRODUCTION._JOBS.clear()
+                PRODUCTION._JOBS[restorable.id] = restorable
+                PRODUCTION._JOBS[internal.id] = internal
+            try:
+                with sidecar_server(PRODUCTION.Handler) as port:
+                    request = urllib.request.Request(
+                        f"http://127.0.0.1:{port}/v1/orcaslicer/model-jobs/latest",
+                        headers={"X-OrcaSlicer-Client": "native"},
+                    )
+                    with urllib.request.urlopen(request, timeout=5) as response:
+                        payload = json.loads(response.read())
+                self.assertEqual(payload["job"]["id"], restorable.id)
+            finally:
+                with PRODUCTION._JOBS_LOCK:
+                    PRODUCTION._JOBS.clear()
+                    PRODUCTION._JOBS.update(previous)
+
+    def test_legacy_realistic_portrait_with_severe_material_islands_is_blocked_on_restore(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job = PRODUCTION.Job(
+                id=str(uuid.uuid4()),
+                source="image",
+                directory=Path(directory),
+                palette=("#F2C7A5", "#1C1A1B", "#F7F6F2", "#4F6B5A"),
+                style="realistic",
+            )
+            job.image_metrics = {
+                "palette_quality_ok": True,
+                "subject_color_component_count": {
+                    "#F2C7A5": 20,
+                    "#1C1A1B": 19,
+                    "#F7F6F2": 661,
+                    "#4F6B5A": 23,
+                },
+                "secondary_subject_color_component_ratio": {
+                    "#F2C7A5": 0.16,
+                    "#1C1A1B": 0.07,
+                    "#F7F6F2": 0.11,
+                    "#4F6B5A": 0.04,
+                },
+                "quality_warnings": ["palette_material_is_fragmented"],
+            }
+
+            PRODUCTION._apply_legacy_material_fragmentation_gate(job)
+
+        self.assertFalse(job.image_metrics["material_fragmentation_ok"])
+        self.assertFalse(job.image_metrics["palette_quality_ok"])
+        self.assertIn("portrait_material_fragmentation_blocks_3d", job.image_metrics["quality_warnings"])
 
     def test_generate_route_passes_one_shot_authorization_after_validation(self):
         job_id = str(uuid.uuid4())
@@ -527,7 +785,7 @@ class SidecarHealthContractTests(unittest.TestCase):
 
                 self.assertEqual(payload["job"]["state"], "queued")
                 self.assertEqual(payload["job"]["generation_profile"], "quality")
-                self.assertEqual(payload["job"]["face_limit"], 1000000)
+                self.assertEqual(payload["job"]["face_limit"], 2000000)
                 submit.assert_called_once()
                 args = submit.call_args.args
                 self.assertIs(args[0], job)
@@ -536,6 +794,94 @@ class SidecarHealthContractTests(unittest.TestCase):
                 authorization = args[4]
                 self.assertEqual(authorization.request_id, f"{job.id}:model:1")
                 self.assertFalse(authorization.consumed)
+            finally:
+                with PRODUCTION._JOBS_LOCK:
+                    PRODUCTION._JOBS.clear()
+                    PRODUCTION._JOBS.update(previous)
+
+    def test_retexture_route_creates_child_job_and_one_scoped_paid_task(self):
+        reference_id = str(uuid.uuid4())
+        geometry_id = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory() as directory, temporary_environment(
+            ORCASLICER_AI_OUTPUT_DIR=directory
+        ):
+            root = Path(directory)
+            reference_directory = root / reference_id
+            geometry_directory = root / geometry_id
+            reference_directory.mkdir()
+            geometry_directory.mkdir()
+            reference_image = reference_directory / "model-reference.png"
+            Image.new("RGB", (512, 512), "white").save(reference_image)
+            geometry_artifact = geometry_directory / "model-vertex-color.obj"
+            geometry_artifact.write_text("v 0 0 0 1 1 1\nf 1 1 1\n", encoding="ascii")
+            reference_job = PRODUCTION.Job(
+                id=reference_id,
+                source="image",
+                directory=reference_directory,
+                palette=("#F4F4F0", "#1F1B1C", "#F2C9AE", "#4E6F5B"),
+                palette_roles={
+                    "primary": "#F4F4F0",
+                    "structure": "#1F1B1C",
+                    "light": "#F2C9AE",
+                    "accent": "#4E6F5B",
+                },
+                style="realistic",
+            )
+            reference_job.state = "awaiting_confirmation"
+            reference_job.phase = "awaiting_confirmation"
+            reference_job.model_reference_path = reference_image
+            reference_job.image_metrics = {"palette_quality_ok": True}
+            geometry_job = PRODUCTION.Job(id=geometry_id, source="image", directory=geometry_directory)
+            geometry_job.state = "ready"
+            geometry_job.phase = "ready"
+            geometry_job.artifact_path = geometry_artifact
+            geometry_job.artifact_format = "obj"
+            geometry_job.face_limit = 1000000
+            geometry_job.generation_profile = "quality"
+            geometry_job.attempts = [{
+                "attempt": 1,
+                "provider": "tripo",
+                "provider_operation": "model_generation",
+                "generation_task_id": "provider-geometry-task",
+                "status": "accepted",
+            }]
+            with PRODUCTION._JOBS_LOCK:
+                previous = dict(PRODUCTION._JOBS)
+                PRODUCTION._JOBS.clear()
+                PRODUCTION._JOBS[reference_id] = reference_job
+                PRODUCTION._JOBS[geometry_id] = geometry_job
+            gateway = mock.Mock()
+            gateway.model_generation_available.return_value = True
+            try:
+                with (
+                    mock.patch.object(PRODUCTION, "_MODEL_PROVIDER_GATEWAY", gateway),
+                    mock.patch.object(PRODUCTION, "_validate_image_file"),
+                    mock.patch.object(PRODUCTION, "_submit") as submit,
+                    sidecar_server(PRODUCTION.Handler) as port,
+                ):
+                    request = urllib.request.Request(
+                        f"http://127.0.0.1:{port}/v1/orcaslicer/model-jobs/{reference_id}/retexture",
+                        data=json.dumps({"geometry_job_id": geometry_id}).encode(),
+                        method="POST",
+                        headers={"X-OrcaSlicer-Client": "native", "Content-Type": "application/json"},
+                    )
+                    with urllib.request.urlopen(request, timeout=5) as response:
+                        self.assertEqual(response.status, 202)
+                        payload = json.loads(response.read())
+
+                child = PRODUCTION._JOBS[payload["job"]["id"]]
+                self.assertEqual(child.state, "queued")
+                self.assertEqual(child.model_reference_path.read_bytes(), reference_image.read_bytes())
+                self.assertEqual(child.face_limit, 1000000)
+                self.assertEqual(child.attempts[0]["source_job_id"], geometry_id)
+                self.assertEqual(child.attempts[0]["source_task_id"], "provider-geometry-task")
+                submit.assert_called_once()
+                args = submit.call_args.args
+                self.assertIs(args[0], child)
+                self.assertIs(args[1], PRODUCTION._retexture_job)
+                self.assertEqual(args[2:5], (geometry_id, "provider-geometry-task", False))
+                self.assertEqual(args[5].operation, "model_texture")
+                self.assertFalse(args[5].consumed)
             finally:
                 with PRODUCTION._JOBS_LOCK:
                     PRODUCTION._JOBS.clear()
@@ -582,6 +928,72 @@ class SidecarHealthContractTests(unittest.TestCase):
                 self.assertEqual(payload["error"]["code"], "model_input_quality_failed")
                 submit.assert_not_called()
                 self.assertFalse(job.image_metrics["model_input_quality"]["model_input_eligible"])
+            finally:
+                with PRODUCTION._JOBS_LOCK:
+                    PRODUCTION._JOBS.clear()
+                    PRODUCTION._JOBS.update(previous)
+
+    def test_generate_route_blocks_fragmented_portrait_palette_before_paid_submission(self):
+        job_id = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory() as directory:
+            job_directory = Path(directory) / job_id
+            job_directory.mkdir()
+            reference = job_directory / "preview.png"
+            Image.new("RGB", (512, 512), (225, 155, 115)).save(reference)
+            job = PRODUCTION.Job(
+                id=job_id,
+                source="image",
+                directory=job_directory,
+                palette=("#F2C7A5", "#1C1A1B", "#F7F6F2", "#4F6B5A"),
+            )
+            job.state = "awaiting_confirmation"
+            job.phase = "awaiting_confirmation"
+            job.preview_path = reference
+            job.raw_preview_path = reference
+            job.model_reference_path = reference
+            job.image_metrics = {
+                "palette_quality_ok": False,
+                "material_fragmentation_ok": False,
+                "printable_subject_area_ratio": 0.5,
+                "largest_subject_component_ratio": 1.0,
+                "largest_detached_subject_diagonal_ratio": 0.0,
+            }
+            with PRODUCTION._JOBS_LOCK:
+                previous = dict(PRODUCTION._JOBS)
+                PRODUCTION._JOBS.clear()
+                PRODUCTION._JOBS[job.id] = job
+            gateway = mock.Mock()
+            gateway.model_generation_available.return_value = True
+            eligible = {"model_input_eligible": True, "blockers": [], "warnings": []}
+            try:
+                with (
+                    mock.patch.object(PRODUCTION, "_MODEL_PROVIDER_GATEWAY", gateway),
+                    mock.patch.object(PRODUCTION, "_validate_image_file"),
+                    mock.patch.object(PRODUCTION, "_assess_job_model_reference", return_value=eligible),
+                    mock.patch.object(PRODUCTION, "_assess_job_generation_reference", return_value=eligible),
+                    mock.patch.object(PRODUCTION, "_submit") as submit,
+                    sidecar_server(PRODUCTION.Handler) as port,
+                ):
+                    request = urllib.request.Request(
+                        f"http://127.0.0.1:{port}/v1/orcaslicer/model-jobs/{job.id}/generate",
+                        data=json.dumps(
+                            {
+                                "prepared_prompt": "",
+                                "palette": list(job.palette),
+                                "generation_profile": "quality",
+                            }
+                        ).encode(),
+                        method="POST",
+                        headers={"X-OrcaSlicer-Client": "native", "Content-Type": "application/json"},
+                    )
+                    with self.assertRaises(urllib.error.HTTPError) as error:
+                        urllib.request.urlopen(request, timeout=5)
+                    payload = json.loads(error.exception.read())
+
+                self.assertEqual(error.exception.code, 409)
+                self.assertEqual(payload["error"]["code"], "printable_preview_quality_failed")
+                self.assertIn("fragmented", payload["error"]["message"])
+                submit.assert_not_called()
             finally:
                 with PRODUCTION._JOBS_LOCK:
                     PRODUCTION._JOBS.clear()

@@ -17,6 +17,7 @@ $requiredPayloadFiles = @(
     "OrcaSlicer\OrcaSlicer.dll",
     "tools\ai\orca_ai_sidecar.py",
     "tools\ai\model_input_image_quality.py",
+    "tools\ai\printable_reference_visual_quality.py",
     "03-start-orcaslicer-ai.bat",
     "setup\ai-config.bat",
     "runtime\python\python.exe"

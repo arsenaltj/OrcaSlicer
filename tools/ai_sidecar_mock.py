@@ -19,11 +19,11 @@ MAX_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_MULTIPART_BYTES = MAX_IMAGE_BYTES + 256 * 1024
 MAX_PROMPT_BYTES = 64 * 1024
 MAX_PALETTE_COLORS = 4
-MODEL_FACE_LIMITS = (100000, 300000, 500000, 1000000)
+MODEL_FACE_LIMITS = (100000, 300000, 500000, 1000000, 2000000)
 DEFAULT_MODEL_FACE_LIMIT = 300000
 GENERATION_PROFILES = ("quality", "performance")
 DEFAULT_GENERATION_PROFILE = "quality"
-GENERATION_PROFILE_FACE_LIMITS = {"quality": 1000000, "performance": 300000}
+GENERATION_PROFILE_FACE_LIMITS = {"quality": 2000000, "performance": 300000}
 MOCK_PALETTE_RECOMMENDATION = {
     "summary": "暖色主体配合深色结构、浅色层次和冷色点缀",
     "colors": [
@@ -186,7 +186,7 @@ def normalize_palette(value):
 
 def normalize_face_limit(value):
     if isinstance(value, bool) or not isinstance(value, int) or value not in MODEL_FACE_LIMITS:
-        raise ValueError("face_limit must be 100000, 300000, 500000, or 1000000 triangles")
+        raise ValueError("face_limit must be 100000, 300000, 500000, 1000000, or 2000000 triangles")
     return value
 
 
@@ -375,7 +375,8 @@ class Handler(BaseHTTPRequestHandler):
                     "model_generation": {
                         "available": True,
                         "sources": ["text", "image"],
-                "styles": ["sculpture", "realistic", "cartoon", "custom"],
+                        "styles": ["sculpture", "realistic", "cartoon", "low_poly", "relief", "diorama", "custom"],
+                        "style_recommendation": {"available": True, "local_only": True},
                         "artifact_formats": ["obj"],
                         "face_limits": sorted(set(GENERATION_PROFILE_FACE_LIMITS.values())),
                         "default_face_limit": GENERATION_PROFILE_FACE_LIMITS[DEFAULT_GENERATION_PROFILE],

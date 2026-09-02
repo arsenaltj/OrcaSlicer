@@ -5,6 +5,7 @@ import binascii
 import ipaddress
 import json
 import os
+import shutil
 import socket
 import ssl
 import urllib.error
@@ -40,7 +41,13 @@ STYLE_PROFILES = {
         "Preserve the source subject one-for-one: the same recognizable identity, face, age, expression, anatomy, proportions, "
         "pose, silhouette, crop, clothing, accessories, objects, count, placement, and visible details. Use believable solid-color "
         "materials and restrained realistic modeling; do not stylize facial proportions, invent detail, genericize manufactured "
-        "parts, or alter the composition."
+        "parts, or alter the composition. When the subject is a real person, use the shape language of a highly faithful "
+        "polychrome portrait sculpture or faithful 3D scan: carry identity in the actual face silhouette and sculpted anatomical "
+        "planes while keeping source-faithful large material colors. Prioritize likeness over idealized attractiveness: retain "
+        "the person's natural adult facial asymmetry and landmark proportions instead of applying a beauty-filter, toy, game-avatar, "
+        "or generic commercial-character face. Mildly groom skin and hair surfaces only; never enlarge the eyes or irises, lift both "
+        "brows into a stock expression, narrow the nose, widen the smile, taper the jaw into a V, or shorten the lower face. Do not "
+        "pursue photographic beauty lighting or painted skin detail at the expense of recognizable three-dimensional facial geometry."
     ),
     "cartoon": (
         "Restyle the same subject as a friendly cute cartoon collectible, especially for portraits that look harsh when rendered "
@@ -50,11 +57,27 @@ STYLE_PROFILES = {
         "elements. Make the result cute through expression, clean curves, and material treatment rather than changing identity, "
         "age, anatomy, or the subject's distinctive proportions."
     ),
+    "low_poly": (
+        "Restyle the same subject as a deliberate low-poly printable model built from broad, clean planar facets. Preserve the "
+        "recognizable silhouette, viewpoint, component count, pose, and identity-defining proportions, but replace fragile surface "
+        "detail, fur, foliage, fabric texture, and shallow ornament with a small number of sturdy geometric planes. Keep every "
+        "load-bearing connection visibly fused and avoid random triangulation noise or razor-thin spikes."
+    ),
+    "relief": (
+        "Convert the source into a printable shallow bas-relief mounted on one simple solid plaque. Preserve the source-facing "
+        "silhouette and recognizable internal contours while expressing depth with a few broad raised levels. Do not reconstruct "
+        "an unseen back side, create undercuts, detach foreground elements, or add a decorative frame unless it is already requested."
+    ),
+    "diorama": (
+        "Restyle the complete visible composition as one compact printable miniature diorama. Preserve the main subjects, their "
+        "relative placement, viewpoint, and scene identity, but merge the ground and supporting elements into one stable base. "
+        "Simplify distant detail into layered masses, keep subject count unchanged, and avoid floating props, loose foliage, thin "
+        "rails, or deep hidden cavities."
+    ),
 }
 
 LEGACY_STYLE_ALIASES = {
     "q_cartoon": "cartoon",
-    "low_poly": "realistic",
     "cel_shaded": "cartoon",
     "enamel_inlay": "realistic",
 }
@@ -275,6 +298,36 @@ def _style_profile(style: str, custom_style: str = "") -> str:
 
 
 def _designer_toy_profile(style: str, custom_style: str = "") -> str:
+    canonical_style = LEGACY_STYLE_ALIASES.get(style, style)
+    if canonical_style == "realistic":
+        return (
+            _style_profile(style, custom_style)
+            + " Render the existing subject as a museum-grade polychrome portrait maquette, faithful full-color scan, or "
+            "anatomically realistic scale collectible made from separate solid-color materials. Preserve real adult facial "
+            "proportions and identity ahead of symmetry, smoothness, youthfulness, beauty, or commercial appeal. This must not "
+            "look like a designer toy, game avatar, animation character, waxy doll, or generic smiling spokesperson. Keep "
+            "source-specific eyelid heights, eye size, nose width, cheek fullness, jaw width, chin length, smile line and small "
+            "asymmetries; mild beautification may clean skin and hair texture but must not move or resize facial landmarks. "
+            "Use intentional printable color blocking without flattening the sculptural planes that carry likeness."
+        )
+    if canonical_style == "low_poly":
+        return (
+            _style_profile(style, custom_style)
+            + " Assign each broad facet or connected facet group one allowed solid material color. Keep color boundaries aligned "
+            "with major planes; do not use gradients, mottling, tiny checker patterns, or photographic texture."
+        )
+    if canonical_style == "relief":
+        return (
+            _style_profile(style, custom_style)
+            + " Use the allowed material colors only for a few large relief levels or semantic regions. Keep the plaque, raised "
+            "subject, and every colored region physically connected as one printable object."
+        )
+    if canonical_style == "diorama":
+        return (
+            _style_profile(style, custom_style)
+            + " Use the allowed material colors as large scene and subject regions. Every figure, prop, and terrain mass must "
+            "connect to the shared base; do not use lighting gradients as material boundaries."
+        )
     return (
         _style_profile(style, custom_style)
         + " Render the existing subject as a premium full-color designer toy made from separate solid-color materials. "
@@ -303,8 +356,10 @@ def _designer_toy_palette_direction(
         "load-bearing connections, base contact, and stacked architectural tiers visibly joined by opaque palette-colored geometry; "
         "never cut structural connections out as background or transparency. Cover at least 65 percent of the visible subject with "
         "the primary and structure materials. Assign the remaining colors to large semantic parts rather than lighting gradients. "
-        "For a person or character, use the light material for the face only when structure-colored hair and a collar visibly "
-        "enclose it. Never retain natural flesh tones. "
+        "For a person or character, use the light material for the face only when a source-faithful hairline and a separate neck "
+        "or collar provide readable boundaries. Preserve source-visible ears and the open jawline. Never extend hair, a collar, "
+        "or a hood around the cheeks or under the chin unless that exact enclosure exists in the source. The collar must connect "
+        "the neck to the torso, not encircle the face. Never retain natural flesh tones unless the exact skin-like shade is listed. "
         "Do not introduce beige, gray, black, off-white, natural skin tones, or dark substitutes unless that exact shade is one of "
         "the listed printable colors; every listed color remains valid regardless of its common color name. Use at least "
         + str(required)
@@ -315,10 +370,30 @@ def _designer_toy_palette_direction(
         + ". The primary color covers the largest subject material; the structure color covers hair, rear surfaces, seams, "
         "and the darkest load-bearing regions; the light color is reserved for enclosed highlights or a face panel; the accent "
         "color marks one secondary semantic part. Ignore any role that is absent from this smaller palette. "
+        "Render every thin load-bearing shaft, rib, spoke, rail, handle, branch, cable, antenna, and support in the structure "
+        "color as one flat opaque material from end to end. Never render such a connector as silver, white, translucent, "
+        "reflective, highlighted, or background-colored, because palette mapping must not break its silhouette. "
+        "For a plant, bonsai, coral, antler, feather fan, or other branching organic subject, merge small leaves or repeated "
+        "tips into fewer overlapping solid clusters. Visibly fuse every cluster through a sturdy branch or stem to the trunk, "
+        "body, or base; never leave an isolated leaf pad, floating frond, or contact-only branch shell. "
+        "Keep each semantic material consistent across its whole visible part, including surfaces turning toward the side; never "
+        "scatter a material into isolated freckles, inferred rear patches, edge highlights, or random speckles. "
+        "A secondary garment assigned to the accent material must stay one continuous accent-colour region: express folds as shallow "
+        "geometry and soft illumination, never as broad structure-colour or skin-colour patches inside that garment. "
+        "Treat each semantic part as one stable base material assignment. Preserve restrained neutral studio illumination and "
+        "broad sculptural light-to-shadow modeling so the nose, eyelids, cheekbones, folds, joints, and silhouette remain legible "
+        "to image-to-3D, but never paint that illumination as a second material, a colored rim, a freckle, or a hard color patch. "
+        "Keep the underlying hue and semantic ownership of each part unambiguous across lit, side-facing, and occluded surfaces; "
+        "the deterministic print-mapping step, not the generated image, will collapse illumination to exact filament colors. "
+        "Once a face material is selected, keep it continuous across the face, ears, neck, and visible hands; never break skin "
+        "with clothing-colored forehead, nose, cheek, chin, ear, neck, or hand highlights. A smile may use one small connected "
+        "teeth band, but not scattered tooth or highlight islands. "
         "Render identity-defining engraved lines, emblem ridges, grille bars, panel divisions, and part boundaries as a few "
         "continuous, printer-width structure-colored grooves or bands. Do not express signature details only with highlights, "
         "shadows, or subtle tone changes that will disappear during exact-palette mapping. "
-        "Place the subject on a transparent background. If transparency is unavailable, use one uniform studio background with no "
+        "Place the subject on a genuinely transparent alpha background. Never draw, paint, or simulate a transparency checkerboard, "
+        "grid, checker pattern, or white-and-gray tiles into the RGB image. If alpha transparency is unavailable, use one uniform "
+        "studio background with no "
         "shadow whose color is clearly separated from every listed palette color and every subject region. The fallback background "
         "must not use or resemble a palette color and must not be used on the subject. "
     )
@@ -341,17 +416,134 @@ def _portrait_display_base_direction() -> str:
     )
 
 
-def _image_to_3d_composition_direction(transparent_background: bool = False) -> str:
+def _portrait_identity_geometry_direction() -> str:
+    return (
+        "Real-person identity geometry rule: preserve adult age, source-visible feminine or masculine presentation, face width "
+        "and length, hair part and sweep, hairline, visible ears, eye spacing and "
+        "shape, eyebrow arc, nose bridge/width/tip, mouth width, smile asymmetry, cheek volume, jaw contour, and chin length. "
+        "Match the source landmark ratios rather than a memorized attractive face: inter-eye distance, visible eye opening, brow-to-eye "
+        "distance, nose width and projection, nose-to-mouth distance, mouth width, upper-to-lower lip balance, cheek width, and the lower "
+        "facial third must stay source-faithful. Preserve small left-right differences in eyelids, brows, smile corners, cheeks, and jaw. "
+        "Encode the eyelids, nose, cheekbones, smile folds, mouth corners, and jaw transition as restrained modelable relief and "
+        "silhouette, not only as gradients, highlights, makeup, or thin painted lines. Keep teeth as one shallow readable smile "
+        "band rather than many tiny separate teeth. Never turn an adult into a big-eyed childlike, game-avatar, beauty-filtered, or generic "
+        "doll face. Do not make both eyes wider or rounder than the source, and do not replace natural facial asymmetry with perfect symmetry. Preserve "
+        "the exact source-visible crossed-arm order, exposed wrist and hand count, jacket lapels, and inner neckline; group fingers "
+        "into sturdy forms, fuse wrists to sleeves and forearms, and never mirror or invent a second hand. A watch may be "
+        "simplified into one solid fitted band. Preserve garment coverage exactly around every clothed arm: if a jacket or sleeve "
+        "covers an elbow, upper arm, forearm, or wrist in the source, continue that same garment as one closed tube around the "
+        "underside, side, and occluded back. Never invent a bare elbow, upper arm, or forearm behind a crossed arm, and never use "
+        "skin color as an inferred shadow on clothing. Skin is allowed only on source-visible face, ears, neck, hands, and exposed "
+        "wrist areas. With crossed arms, preserve every clearly visible hand, but do not turn a thin partially occluded skin sliver "
+        "into a stripe across the jacket: either show it as one compact, anatomically bounded hand/wrist region or keep that ambiguous "
+        "sliver fully tucked beneath the existing sleeve without changing the arm order. Do not age the person up, change their presentation, broaden or narrow the face, "
+        "or replace an asymmetric hairstyle with a generic centered cap of hair. "
+    )
+
+
+def _portrait_monochrome_geometry_prompt(_instruction: str) -> str:
+    """Build the second-pass reference used only for portrait geometry.
+
+    A realistic four-colour render is useful for material ownership, but the
+    strong contrast between skin, a light jacket and a dark inner garment can
+    make an image-to-3D provider explain colour boundaries as face or body
+    shape.  The geometry pass therefore receives the same approved composition
+    as one neutral sculptural material; colour is restored from the separate
+    material reference after the mesh exists.
+    """
+
+    return (
+        "Create a dedicated geometry-only reference from this already prepared adult portrait collectible. "
+        "This is a material replacement, not a colour-preserving edit: recolour every visible part of the person, hair, skin, "
+        "teeth, clothing, watch, and base into the same uniform neutral warm-gray matte clay or plaster. The output must contain "
+        "no skin tone, black hair, white jacket, green clothing, coloured accessory, makeup, or other original colour. Preserve the exact same "
+        "canvas, crop, silhouette, head size and angle, facial identity, adult age, expression, hair volume, visible ears, "
+        "crossed-arm order, watch, jacket shape, inner neckline, lower-torso finish, and low integrated base. Do not redesign, "
+        "beautify, slim, symmetrize, mirror, extend, crop, add, remove, reveal, or reposition anything. Preserve source-specific "
+        "face width and length, eyelid openings, eye spacing, eyebrow arcs, nose bridge/width/tip, mouth corners, tooth exposure, "
+        "cheek volume, jaw and chin as restrained modelable sculptural relief. Use soft broad studio lighting only to reveal real "
+        "planes; do not use skin colour, garment colour, makeup, painted eyebrows, photographic texture, a checkerboard, cast "
+        "shadow, halo, backing plate, rear sheet, support slab, or any extra geometry. Return a genuinely transparent background. "
+        "The person, clothing and base must all remain one coherent opaque sculpture, and the base must stay low and subordinate. "
+        "Previous colour and background instructions do not apply to this geometry-only derivative. "
+        + _portrait_identity_geometry_direction()
+    )
+
+
+def _difficult_structure_direction() -> str:
+    return (
+        "Difficult-structure rule: for a vehicle, machine, tool, or articulated product, keep every wheel, bucket, blade, lens, "
+        "mirror, handle, and moving attachment connected through visibly overlapping solid pin housings, axles, arms, or thick "
+        "opaque rods. Each structural joint must be a positive-volume union: extend every axle, piston rod, hinge pin, arm, and "
+        "brace visibly inside the receiving housing, with generous overlap on both sides. Butt contact, near-touching tips, cast "
+        "shadows, painted lines, and a loose pin beside the machine do not count as a connection. Keep a bucket or blade merged "
+        "to its final arm through one thickened joint block; keep every linkage merged back to the main chassis. Preserve readable "
+        "joint gaps as shallow recessed grooves instead of separating an attachment into another island. If a realistic linkage "
+        "cannot remain fused, simplify it into one solid load-bearing brace while preserving the outer silhouette and function. "
+        "For a fan, feather screen, wing, sail, umbrella canopy, leaf, or other broad thin surface, give the surface visible finite "
+        "thickness and fuse its ribs into a continuous rim, hub, body, or trunk; never use a paper-thin single sheet. For an open "
+        "umbrella, make the central shaft penetrate and fuse into the canopy hub and the lowest support, embed every rib along the "
+        "canopy instead of leaving wire-like struts, and use shallow panel grooves rather than separated fabric panels. For a fan "
+        "tail or feather display, fuse the screen to a broad body or support mass instead of relying on isolated feather tips or "
+        "thin legs alone. "
+        "When an explicitly requested group contains two or more separate people, characters, or animals as one display model, "
+        "place every subject on one shared low integrated base while preserving exact count, spacing, left-right order, pose, and "
+        "individual silhouettes; do not fuse their bodies together merely to obtain connectivity. "
+    )
+
+
+def _style_support_override(style: str) -> str:
+    canonical_style = LEGACY_STYLE_ALIASES.get(style, style)
+    if canonical_style == "relief":
+        return (
+            "RELIEF SUPPORT OVERRIDE — highest priority for this style: the one simple solid backing plaque is mandatory, "
+            "including for people, animals, products, machines, furniture, and complete scenes. This overrides both the portrait "
+            "display-base rule and the non-human base-free rule. Compress the entire visible composition into a shallow front-facing "
+            "relief fused across broad contact areas to that plaque; never return a free-standing figurine, product, or diorama. "
+            "Keep a clean visible plaque margin around the raised subject and do not add a second pedestal, floor, or decorative frame. "
+        )
+    if canonical_style == "diorama":
+        return (
+            "DIORAMA SUPPORT OVERRIDE — highest priority for this style: one shared low terrain or floor base with a flat underside "
+            "is mandatory and overrides the non-human base-free rule. Fuse every requested subject and prop to that one base. Preserve "
+            "only source-visible or explicitly requested scene elements. For an isolated subject, use a minimal plain contact platform "
+            "without inventing rocks, plants, furniture, buildings, signs, or other decorative scenery. Never return a base-free product "
+            "shot or an ordinary display figurine with no scene-level ground relationship. "
+        )
+    return ""
+
+
+def _non_realistic_text_cleanup_direction(style: str) -> str:
+    if LEGACY_STYLE_ALIASES.get(style, style) == "realistic":
+        return ""
+    return (
+        "NON-REALISTIC TEXT CLEANUP — high priority: remove every readable word, brand, logo, serial number, label, watermark, "
+        "and pseudo-letter from the subject as well as the background. Preserve the panel, badge, or engraving footprint only as "
+        "one blank recessed panel, broad unlettered groove, or solid color block. Do not copy source glyphs and do not invent "
+        "plausible substitute spelling. "
+    )
+
+
+def _image_to_3d_composition_direction(transparent_background: bool = False, style: str = "") -> str:
+    support_override = _style_support_override(style)
+    if support_override:
+        support_direction = support_override
+    else:
+        support_direction = (
+            "Except for the mandatory portrait base rule below, a non-human standing, seated, crouched, lying, wheeled, "
+            "naturally stable, or cleanly cropped subject must remain base-free when the source is base-free. Do not add a disc, "
+            "plinth, stand, platform, presentation base, floor slab, or pedestal to a non-human subject unless the user explicitly "
+            "requests one. "
+        )
     return (
         "Recompose the selected primary subject as a clean product-shot reference for image-to-3D rather than editing the "
         "photograph in place. Center the exact requested subject or explicitly requested subject group as one readable composition on "
         + ("a transparent background" if transparent_background else "a plain bright background")
         + ", show a coherent complete silhouette, and use a front or gentle three-quarter view. Preserve any base, support, floor "
-        "slab, or contact surface that is visibly part of the selected source subject. Except for the mandatory portrait base rule "
-        "below, a non-human standing, seated, crouched, lying, wheeled, naturally stable, or cleanly cropped subject must remain "
-        "base-free when the source is base-free. Do not add a disc, plinth, stand, platform, presentation base, floor slab, or "
-        "pedestal to a non-human subject unless the user explicitly requests one. "
+        "slab, or contact surface that is visibly part of the selected source subject. "
+        + support_direction
         + _portrait_display_base_direction()
+        + _difficult_structure_direction()
         + "If a thin visible part would otherwise become disconnected, use the smallest integrated material bridge or subtle "
         "thickening needed for continuity rather than adding a display base. Remove scenery, floor shadows, text, logos, watermarks, camera UI, "
         "color cards, and unrelated people, plants, props, or landmarks. Do not combine separate scene elements into one object. "
@@ -512,7 +704,9 @@ def recommend_printable_palette(
         "overrides any monochrome stone, plaster, clay, metal, or grayscale wording in the selected style; keep the style's shape "
         "language while assigning visibly distinct material colors. Make structure visibly dark, light visibly bright, and keep "
         "primary and accent as medium-value colors from clearly different hue families so no two roles look interchangeable as "
-        "physical materials. Use concise Chinese for summary, "
+        "physical materials. For a real-person portrait, reserve light for the continuous skin material on face, ears, neck and visible "
+        "hands; use primary for the largest garment or base material, structure for hair and deep boundaries, and accent for one secondary "
+        "garment. Never assign skin to primary when a larger garment region is visible. Use concise Chinese for summary, "
         "name, usage and reason. Apply this style direction: "
         + style_direction
     )
@@ -571,7 +765,13 @@ def recommend_printable_palette(
     return PrintablePaletteRecommendation(summary, tuple(records_by_role[role] for role in PALETTE_ROLES))
 
 
-def _multipart_image(path: Path, instruction: str, model: str) -> tuple[bytes, str]:
+def _multipart_image(
+    path: Path,
+    instruction: str,
+    model: str,
+    *,
+    background: str | None = None,
+) -> tuple[bytes, str]:
     mime_type, extension = _image_kind(path)
     try:
         if path.stat().st_size > _MAX_IMAGE_BYTES:
@@ -597,7 +797,17 @@ def _multipart_image(path: Path, instruction: str, model: str) -> tuple[bytes, s
     field("model", model)
     field("prompt", instruction)
     field("quality", _image_quality())
-    field("size", "1024x1024")
+    # Portrait edits are identity-sensitive.  The provider otherwise defaults
+    # to a lower input fidelity and may replace a real face with a cleaner but
+    # generic professional-portrait face even when the prompt explicitly locks
+    # the landmarks.  GPT Image high fidelity spends more effort matching the
+    # supplied image, especially facial features.
+    field("input_fidelity", "high")
+    # Let GPT Image 2 preserve the reference aspect ratio instead of forcing a
+    # square canvas, which can subtly move portrait landmarks and body framing.
+    field("size", "auto")
+    if background is not None:
+        field("background", background)
     chunks.extend(
         [
             f"--{boundary}\r\n".encode("ascii"),
@@ -605,10 +815,203 @@ def _multipart_image(path: Path, instruction: str, model: str) -> tuple[bytes, s
             f"Content-Type: {mime_type}\r\n\r\n".encode("ascii"),
             image,
             b"\r\n",
-            f"--{boundary}--\r\n".encode("ascii"),
         ]
     )
+    chunks.append(f"--{boundary}--\r\n".encode("ascii"))
     return b"".join(chunks), "multipart/form-data; boundary=" + boundary
+
+
+def _portrait_face_lock_mask(source: Path, destination: Path) -> Path | None:
+    """Create a face oval for deterministic post-edit identity restoration."""
+
+    try:
+        from collections import deque
+        from PIL import Image, ImageDraw, ImageFilter
+    except ImportError:
+        return None
+    try:
+        with Image.open(source) as opened:
+            rgb = opened.convert("RGB")
+    except (OSError, ValueError):
+        return None
+    scale = min(1.0, 384.0 / max(rgb.size))
+    analysis = rgb.resize(
+        (max(1, round(rgb.width * scale)), max(1, round(rgb.height * scale))),
+        Image.Resampling.BILINEAR,
+    ).convert("YCbCr")
+    width, height = analysis.size
+    skin = bytearray(width * height)
+    for offset, (luma, blue_difference, red_difference) in enumerate(analysis.getdata()):
+        if luma >= 45 and 76 <= blue_difference <= 135 and 134 <= red_difference <= 180:
+            skin[offset] = 1
+    visited = bytearray(len(skin))
+    components: list[dict[str, float]] = []
+    for seed, enabled in enumerate(skin):
+        if not enabled or visited[seed]:
+            continue
+        visited[seed] = 1
+        pending = deque([seed])
+        area = 0
+        sum_x = sum_y = 0
+        left = right = seed % width
+        top = bottom = seed // width
+        while pending:
+            offset = pending.popleft()
+            area += 1
+            x, y = offset % width, offset // width
+            sum_x += x
+            sum_y += y
+            left, right = min(left, x), max(right, x)
+            top, bottom = min(top, y), max(bottom, y)
+            for neighbor in (
+                offset - 1 if x else -1,
+                offset + 1 if x + 1 < width else -1,
+                offset - width if y else -1,
+                offset + width if y + 1 < height else -1,
+            ):
+                if neighbor >= 0 and skin[neighbor] and not visited[neighbor]:
+                    visited[neighbor] = 1
+                    pending.append(neighbor)
+        component_width = right - left + 1
+        component_height = bottom - top + 1
+        center_x = sum_x / area
+        center_y = sum_y / area
+        if (
+            area >= width * height * 0.002
+            and width * 0.25 <= center_x <= width * 0.75
+            and center_y <= height * 0.42
+            and width * 0.08 <= component_width <= width * 0.50
+            and height * 0.06 <= component_height <= height * 0.58
+        ):
+            components.append({
+                "area": area,
+                "left": left,
+                "right": right,
+                "top": top,
+                "bottom": bottom,
+                "center_y": center_y,
+            })
+    if not components:
+        return None
+    face = max(components, key=lambda value: value["area"] - value["center_y"] * 0.15)
+    inverse_scale = 1.0 / scale
+    left = face["left"] * inverse_scale
+    right = (face["right"] + 1) * inverse_scale
+    top = face["top"] * inverse_scale
+    face_width = max(1.0, right - left)
+    left = max(0, left - face_width * 0.08)
+    right = min(rgb.width, right + face_width * 0.08)
+    top = max(0, top - face_width * 0.06)
+    bottom = min(rgb.height, top + face_width * 1.45)
+    alpha = Image.new("L", rgb.size, 0)
+    ImageDraw.Draw(alpha).ellipse((round(left), round(top), round(right), round(bottom)), fill=255)
+    alpha = alpha.filter(ImageFilter.GaussianBlur(max(3, round(face_width * 0.035))))
+    mask = Image.new("RGBA", rgb.size, (0, 0, 0, 0))
+    mask.putalpha(alpha)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(destination.name + ".part")
+    mask.save(temporary, format="PNG")
+    os.replace(temporary, destination)
+    return destination
+
+
+def _restore_portrait_face_from_source(source: Path, generated: Path, mask_path: Path) -> bool:
+    """Blend the source face back without changing generated body geometry."""
+
+    try:
+        from PIL import Image, ImageDraw, ImageFilter
+        with Image.open(source) as source_image, Image.open(generated) as generated_image, Image.open(mask_path) as mask_image:
+            target = generated_image.convert("RGBA")
+            source_scaled = source_image.convert("RGBA").resize(target.size, Image.Resampling.LANCZOS)
+            detected = mask_image.getchannel("A").resize(target.size, Image.Resampling.LANCZOS)
+            bounds = detected.getbbox()
+            if bounds is None:
+                return False
+            left, top, right, bottom = bounds
+            face_width = right - left
+            face_height = bottom - top
+            if face_width < 16 or face_height < 20:
+                return False
+            # Keep the complete cheek and jaw silhouette.  A narrow facial-core
+            # blend preserves landmarks but still lets the provider replace the
+            # outer cheeks, chin and age cues with a generic younger face.  The
+            # detector envelope is already limited to the upper portrait, so a
+            # small inset is enough to avoid copying the source background while
+            # retaining identity-defining geometry and the visible ear.
+            left += round(face_width * 0.04)
+            right -= round(face_width * 0.04)
+            top += round(face_height * 0.07)
+            bottom -= round(face_height * 0.03)
+            blend = Image.new("L", target.size, 0)
+            ImageDraw.Draw(blend).ellipse((left, top, right, bottom), fill=255)
+            blend = blend.filter(ImageFilter.GaussianBlur(max(4, round(face_width * 0.035))))
+            alpha = target.getchannel("A")
+            restored = Image.composite(source_scaled, target, blend)
+            restored.putalpha(alpha)
+            temporary = generated.with_name(generated.name + ".face-restore.part")
+            restored.save(temporary, format="PNG")
+            os.replace(temporary, generated)
+            return True
+    except (OSError, ValueError):
+        return False
+
+
+def _restore_portrait_face_as_neutral_relief(
+    source: Path, generated: Path, mask_path: Path
+) -> bool:
+    """Keep the locked identity while converting the face to neutral relief.
+
+    A second generative edit is useful for making the body a coherent clay
+    sculpture, but it can silently replace an already-correct real face with a
+    generic one.  This deterministic pass keeps the source landmarks and
+    expression, removes chroma, and compresses them into a warm-gray sculptural
+    value range before blending them back into the generated body.
+    """
+
+    try:
+        from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageOps
+        with Image.open(source) as source_image, Image.open(generated) as generated_image, Image.open(mask_path) as mask_image:
+            target = generated_image.convert("RGBA")
+            source_scaled = source_image.convert("RGBA").resize(target.size, Image.Resampling.LANCZOS)
+            detected = mask_image.getchannel("A").resize(target.size, Image.Resampling.LANCZOS)
+            bounds = detected.getbbox()
+            if bounds is None:
+                return False
+            left, top, right, bottom = bounds
+            face_width = right - left
+            face_height = bottom - top
+            if face_width < 16 or face_height < 20:
+                return False
+
+            left += round(face_width * 0.04)
+            right -= round(face_width * 0.04)
+            top += round(face_height * 0.07)
+            bottom -= round(face_height * 0.03)
+            blend = Image.new("L", target.size, 0)
+            ImageDraw.Draw(blend).ellipse((left, top, right, bottom), fill=255)
+            blend = blend.filter(ImageFilter.GaussianBlur(max(4, round(face_width * 0.035))))
+            visible_subject = ImageChops.multiply(
+                source_scaled.getchannel("A"), target.getchannel("A")
+            )
+            blend = ImageChops.multiply(blend, visible_subject)
+
+            # Retain exact landmark placement while removing skin, makeup and
+            # hair colour. Mild contrast makes eyelids, nose, mouth corners and
+            # jaw planes legible to image-to-3D without creating harsh black or
+            # white painted features.
+            gray = ImageOps.grayscale(source_scaled.convert("RGB"))
+            gray = ImageEnhance.Contrast(gray).enhance(1.10)
+            neutral = ImageOps.colorize(
+                gray, black=(72, 70, 67), white=(215, 212, 206)
+            ).convert("RGBA")
+            restored = Image.composite(neutral, target, blend)
+            restored.putalpha(target.getchannel("A"))
+            temporary = generated.with_name(generated.name + ".neutral-face.part")
+            restored.save(temporary, format="PNG")
+            os.replace(temporary, generated)
+            return True
+    except (OSError, ValueError):
+        return False
 
 
 def _validate_artifact_url(url: str) -> None:
@@ -641,6 +1044,7 @@ def _atomic_write(path: Path, data: bytes) -> Path:
         raise OpenAIPreprocessorError("The result image exceeds the 20 MB limit.")
     part = path.with_name(path.name + ".part")
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
         with part.open("wb") as stream:
             stream.write(data)
         os.replace(part, path)
@@ -713,7 +1117,19 @@ def _style_preview_prompt(
     palette_roles: Mapping[str, str] | None = None,
     custom_style: str = "",
 ) -> str:
+    canonical_style = LEGACY_STYLE_ALIASES.get(style, style)
     style_profile = _designer_toy_profile(style, custom_style) if palette else _style_profile(style, custom_style)
+    realistic_identity_lock = (
+        "REALISTIC PORTRAIT IDENTITY LOCK — highest priority when the source contains a real person: make the smallest "
+        "possible face edit. Treat the source head and face as a locked geometric reference, not inspiration for a newly "
+        "drawn attractive person. Keep the face bounding box relative to the shoulders, head angle, eye centers and eyelid "
+        "openings, brow heights, nose tip and nostril width, mouth corners, tooth exposure, cheek outline, jaw corners, and "
+        "chin endpoint aligned to the source at the same scale. Do not substitute a generic professional portrait, narrow or "
+        "symmetrize the face, enlarge both eyes, or widen the smile. Permitted beautification is limited to subtle skin and "
+        "hair texture cleanup; it must not move, resize, or reshape identity landmarks. Before returning, compare the source "
+        "and result face at equal size and correct any landmark drift. "
+        if canonical_style == "realistic" and palette else ""
+    )
     color_direction = (
         _designer_toy_palette_direction(palette, shadow_color, palette_roles)
         if palette
@@ -723,12 +1139,15 @@ def _style_preview_prompt(
     return (
         "Transform the supplied reference into a polished designer-ready style preview for later image-to-3D. "
         "The supplied source image is the authority for the primary subject's identity and recognizable structure. "
-        "User style and subject direction: "
+        + realistic_identity_lock
+        + "User style and subject direction: "
         + instruction.strip()
         + "\nSelected style profile: "
         + style_profile
+        + " "
+        + _non_realistic_text_cleanup_direction(canonical_style)
         + "\nImage-to-3D composition contract: "
-        + _image_to_3d_composition_direction(bool(palette))
+        + _image_to_3d_composition_direction(bool(palette), canonical_style)
         + "Treat the source as a closed visual inventory. Preserve its exact viewpoint (front, three-quarter, side, or rear), "
         "facing direction, left-right arrangement, silhouette, component count, negative spaces, and all identity-defining "
         "asymmetry. Never mirror the subject or substitute a more typical example of its category. "
@@ -745,10 +1164,16 @@ def _style_preview_prompt(
         "openings, windows, lenses, dials, buttons, straps, tools, rods, and antennas; do not merge, duplicate, swap, or genericize "
         "them. For architecture or a statue, preserve tier and opening counts, gestures, symmetry or deliberate asymmetry, and any "
         "source-visible base; never invent a pedestal when none exists. Keep each meaningful thin support, spoke, cable, rail, branch, "
-        "or antenna connected; if printability requires it, thicken it subtly instead of deleting or duplicating it. Do not invent "
-        "unseen anatomy; use the explicit bust treatment for cropped people instead. "
+        "or antenna connected; if printability requires it, thicken it subtly instead of deleting or duplicating it. "
+        "For a plant, bonsai, coral, antler, feather fan, or other branching organic subject, use fewer overlapping solid clusters "
+        "and visibly fuse every cluster through sturdy branches or stems to the trunk, body, or base; do not leave contact-only "
+        "shells or isolated leaf pads. "
+        "Do not invent unseen anatomy; use the explicit bust treatment for cropped people instead. "
+        + _portrait_identity_geometry_direction()
         + color_direction
-        + "Avoid dithering and tiny color speckles. Do not return the unchanged source."
+        + "Avoid dithering and tiny color speckles. Do not return the unchanged source as a whole; for a realistic person, "
+        "the protected face is allowed and preferred to remain unchanged while the background, base, and material treatment "
+        "outside the face change."
     )
 
 
@@ -778,6 +1203,7 @@ def _text_image_prompt(
 ) -> str:
     if not isinstance(instruction, str) or not instruction.strip():
         raise OpenAIPreprocessorError("An image-generation prompt is required.")
+    canonical_style = LEGACY_STYLE_ALIASES.get(style, style)
     color_direction = (
         _designer_toy_palette_direction(palette, shadow_color, palette_roles)
         if palette
@@ -788,18 +1214,39 @@ def _text_image_prompt(
         + instruction.strip()
         + "\nSelected style profile: "
         + (_designer_toy_profile(style, custom_style) if palette else _style_profile(style, custom_style))
+        + " "
+        + _style_support_override(canonical_style)
+        + _non_realistic_text_cleanup_direction(canonical_style)
         + "\nPrintable composition constraints: Use one clearly readable primary subject, a complete silhouette, a stable pose, "
         "simple depth layering, large closed color regions, hard clean boundaries, and only structurally meaningful details. "
         "Treat the user description as a closed component inventory: do not add plausible category features, accessories, handles, "
         "tools, rods, decorations, or secondary objects that were not explicitly requested. Simplify ambiguous details instead of inventing them. "
         + _portrait_display_base_direction()
-        + ("Use a transparent background with no cast shadow. " if palette else "")
+        + _difficult_structure_direction()
+        + _portrait_identity_geometry_direction()
+        + ("Use a genuine alpha-transparent background with no cast shadow; never paint a checkerboard or grid to imitate transparency. " if palette else "")
         + color_direction
         + ("Use palette colors only as solid semantic material regions, never as lighting highlights, reflections, rim light, or shading bands. " if palette else "")
         + "Do not use gradients, semi-transparent subject materials, soft shadows, photographic reflections, depth of field, blur, dithering, "
         "halftone dots, random noise, tiny isolated regions, dense texture, text, watermark, frame, or decorative clutter. "
         "The deterministic print pipeline will enforce the exact palette, so prioritize shape readability over tonal realism."
     )
+
+
+def build_text_image_prompt(
+    instruction: str,
+    palette: tuple[str, ...],
+    style: str = "cartoon",
+    shadow_color: str = "blue",
+    palette_roles: Mapping[str, str] | None = None,
+    custom_style: str = "",
+) -> str:
+    """Return the exact provider prompt used for text-to-image references.
+
+    Quality benchmarks persist this public prompt boundary so text and image
+    inputs have the same auditable, hash-frozen paid-call semantics.
+    """
+    return _text_image_prompt(instruction, palette, style, shadow_color, palette_roles, custom_style)
 
 
 def _save_provider_image(result: dict[str, Any], destination: Path) -> Path:
@@ -834,7 +1281,9 @@ def generate_image(
     payload = json.dumps(
         {
             "model": model,
-            "prompt": _text_image_prompt(instruction, palette, style, shadow_color, palette_roles, custom_style),
+            "prompt": build_text_image_prompt(
+                instruction, palette, style, shadow_color, palette_roles, custom_style
+            ),
             "size": "1024x1024",
             "quality": _image_quality(),
             "n": 1,
@@ -854,20 +1303,74 @@ def preprocess_image(
     shadow_color: str = "blue",
     palette_roles: Mapping[str, str] | None = None,
     custom_style: str = "",
+    geometry_output_path: str | os.PathLike[str] | None = None,
 ) -> Path:
     if not isinstance(instruction, str) or not instruction.strip():
         raise OpenAIPreprocessorError("An image-edit instruction is required.")
-    return edit_image(
+    canonical_style = LEGACY_STYLE_ALIASES.get(style, style)
+    result = edit_image(
         input_path,
         build_style_preview_prompt(instruction, palette, style, shadow_color, palette_roles, custom_style),
         output_path,
+        # Prompt-only transparency is not reliable: some compatible endpoints
+        # paint a checkerboard into an opaque RGB image, and those tiles can be
+        # mistaken for square holes in shoulders or the base. Request genuine
+        # alpha at the transport layer whenever the printable pipeline needs a
+        # clean subject mask.
+        background="transparent" if palette else None,
     )
+    if canonical_style == "realistic" and palette:
+        mask_path = _portrait_face_lock_mask(
+            Path(input_path), Path(output_path).with_name("portrait-face-restore-mask.png")
+        )
+        # Restore the source-specific face before asking for the sculptural
+        # derivative.  Generating geometry from the pre-restoration colour pass
+        # would faithfully preserve the provider's generic replacement face
+        # instead of the person the user uploaded.
+        if mask_path is not None:
+            _restore_portrait_face_from_source(Path(input_path), result, mask_path)
+        # Keep colour and geometry responsibilities separate for a detected
+        # real-person portrait.  The first result remains the approved colour
+        # and material reference; a second, monochrome edit carries identity and
+        # sculptural planes into image-to-3D without skin/jacket contrast being
+        # mistaken for shape.  If the optional geometry edit is unavailable, the
+        # already valid first result is a safe and recoverable fallback.
+        if geometry_output_path is not None:
+            geometry_output = Path(geometry_output_path)
+            try:
+                geometry_output.parent.mkdir(parents=True, exist_ok=True)
+                if mask_path is not None:
+                    edit_image(
+                        result,
+                        _portrait_monochrome_geometry_prompt(instruction),
+                        geometry_output,
+                        background="transparent",
+                    )
+                    _restore_portrait_face_as_neutral_relief(
+                        result, geometry_output, mask_path
+                    )
+                else:
+                    shutil.copyfile(result, geometry_output)
+            except OpenAIPreprocessorError:
+                try:
+                    shutil.copyfile(result, geometry_output)
+                except OSError:
+                    raise OpenAIPreprocessorError(
+                        "The sculptural portrait reference could not be saved."
+                    ) from None
+            except OSError:
+                raise OpenAIPreprocessorError(
+                    "The sculptural portrait reference could not be saved."
+                ) from None
+    return result
 
 
 def edit_image(
     input_path: str | os.PathLike[str],
     prompt: str,
     output_path: str | os.PathLike[str],
+    *,
+    background: str | None = None,
 ) -> Path:
     """Edit one image with an exact caller-owned prompt.
 
@@ -879,6 +1382,16 @@ def edit_image(
     source = Path(input_path)
     destination = Path(output_path)
     _, _, _, model = _config()
-    body, content_type = _multipart_image(source, prompt.strip(), model)
-    result = _provider_request("/images/edits", body, content_type)
+    body, content_type = _multipart_image(source, prompt.strip(), model, background=background)
+    try:
+        result = _provider_request("/images/edits", body, content_type)
+    except OpenAIPreprocessorError as exc:
+        if background is None or exc.code != "image_rejected":
+            raise
+        # Some OpenAI-compatible Beta gateways have not implemented the
+        # optional multipart `background` field yet and reject the otherwise
+        # valid edit before generation. Retry once without that capability;
+        # the prompt and local alpha/cutout checks still enforce isolation.
+        body, content_type = _multipart_image(source, prompt.strip(), model)
+        result = _provider_request("/images/edits", body, content_type)
     return _save_provider_image(result, destination)

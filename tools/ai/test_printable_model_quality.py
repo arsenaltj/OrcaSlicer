@@ -200,9 +200,18 @@ class PrintableModelQualityTests(unittest.TestCase):
 
         self.assertEqual(report["status"], "review")
         self.assertNotIn("floating_disconnected_components", report["warnings"])
+        self.assertIn("unwelded_structural_components", report["warnings"])
         self.assertIn("localized_overhang_regions", report["warnings"])
         self.assertEqual(report["metrics"]["floating_component_count"], 0)
         self.assertIsNone(report["metrics"]["minimum_floating_clearance_mm"])
+
+    def test_grounded_nontrivial_shells_require_weld_review(self):
+        report = self.analyze(obj_text([box(), box((12.0, 0.0, 0.0))]))
+
+        self.assertEqual(report["status"], "review")
+        self.assertEqual(report["metrics"]["structural_component_count"], 2)
+        self.assertIn("unwelded_structural_components", report["warnings"])
+        self.assertNotIn("floating_disconnected_components", report["warnings"])
 
     def test_weak_contact_requires_review_without_rejecting_topology(self):
         vertices, faces = tetrahedron(scale=(10.0, 10.0, 10.0))
@@ -287,7 +296,7 @@ class PrintableModelQualityTests(unittest.TestCase):
     def test_attached_thin_neck_requires_local_thickness_review(self):
         report = self.analyze(obj_text([attached_thin_neck()]))
 
-        self.assertEqual(report["gate_version"], "structural-v9")
+        self.assertEqual(report["gate_version"], "structural-v11")
         self.assertEqual(report["status"], "review")
         self.assertEqual(report["metrics"]["thin_component_count"], 0)
         self.assertTrue(report["metrics"]["local_thickness_available"])
@@ -376,7 +385,8 @@ class PrintableModelQualityTests(unittest.TestCase):
             ])
         )
 
-        self.assertEqual(report["status"], "pass")
+        self.assertEqual(report["status"], "review")
+        self.assertIn("unwelded_structural_components", report["warnings"])
         self.assertTrue(report["metrics"]["has_complete_vertex_colors"])
         self.assertEqual(report["metrics"]["printable_color_count"], 2)
         self.assertEqual(report["metrics"]["color_region_count"], 2)
@@ -447,7 +457,8 @@ class PrintableModelQualityTests(unittest.TestCase):
             ])
         )
 
-        self.assertEqual(report["status"], "pass")
+        self.assertEqual(report["status"], "review")
+        self.assertIn("unwelded_structural_components", report["warnings"])
         self.assertTrue(report["metrics"]["has_complete_vertex_colors"])
         self.assertEqual(report["metrics"]["printable_color_count"], 2)
 
@@ -464,7 +475,8 @@ class PrintableModelQualityTests(unittest.TestCase):
         for content in cases:
             with self.subTest(content=content):
                 report = self.analyze(content)
-                self.assertEqual(report["status"], "pass")
+                expected = "review" if report["metrics"]["component_count"] > 1 else "pass"
+                self.assertEqual(report["status"], expected)
                 self.assertFalse(report["metrics"]["has_complete_vertex_colors"])
                 self.assertEqual(report["metrics"]["printable_color_count"], 0)
                 self.assertEqual(report["metrics"]["color_region_count"], 0)
@@ -530,11 +542,14 @@ class PrintableModelQualityTests(unittest.TestCase):
         self.assertEqual(report["status"], "reject")
         self.assertEqual(report["errors"], ["too_many_faces"])
 
+    def test_default_face_limit_matches_high_quality_provider_profile(self):
+        self.assertEqual(ModelQualityThresholds().max_faces, 2_000_000)
+
     def test_report_is_written_as_json(self):
         report = self.analyze(obj_text([tetrahedron()]))
         destination = write_model_quality_report(report, self.root / "model-quality.json")
         self.assertTrue(destination.is_file())
-        self.assertIn('"gate_version": "structural-v9"', destination.read_text(encoding="utf-8"))
+        self.assertIn('"gate_version": "structural-v11"', destination.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

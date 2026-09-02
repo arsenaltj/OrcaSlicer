@@ -104,6 +104,10 @@ Windows 本地启动使用：
 .\start_orcaslicer_with_ai.bat
 ```
 
+启动器会先比较 `build/src/Release/OrcaSlicer.dll` 与本地运行树中的 DLL，仅在内容不同时同步，
+然后按 Sidecar v7 契约检查或启动 AI 服务，最后打开 `build/OrcaSlicer/orca-slicer.exe`。
+只检查构建和 AI 运行环境而不打开 App 时，可执行 `.\start_orcaslicer_with_ai.bat --check`。
+
 测试人员配置从 `packaging/windows-ai-test/setup/ai-config.example.bat` 复制或由打包脚本
 生成模板后填写。API Key、模型文件和生成结果始终保留在本机，不提交到仓库。
 

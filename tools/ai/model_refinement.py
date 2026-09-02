@@ -72,6 +72,12 @@ _RULES = (
         "简化不可打印的微细节，保留清楚的大轮廓和尺寸足够的实体特征。",
     ),
     _AdviceRule(
+        "identity",
+        ("visual_identity_mismatch",),
+        "主体身份或人脸相似度不足",
+        "严格对照原图保留身份特征；人像保持脸宽、眼距、眉形、鼻形、嘴形、笑容、下颌、年龄与自然不对称，禁止泛化成玩偶脸。",
+    ),
+    _AdviceRule(
         "semantics",
         (
             "visual_subject_incomplete",
@@ -88,9 +94,10 @@ _RULES = (
             "too_few_meaningful_target_palette_colors",
             "tiny_printable_color_regions",
             "visual_color_regions_unclear",
+            "visual_material_color_mixing",
         ),
         "材料色区需要更清楚",
-        "只使用确认的目标色，并把颜色组织成更大、更连续的实体材料区域，减少斑点和细碎色带。",
+        "只使用确认的目标色，把肤色、衣物、头发和底座限制在各自部位，并组织成更大、更连续的实体材料区域，减少串色、斑点和细碎色带。",
     ),
 )
 

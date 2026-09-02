@@ -40,6 +40,7 @@ $aiRuntimeFiles = @(
     "model_input_image_quality.py",
     "model_refinement.py",
     "printable_image_pipeline.py",
+    "printable_reference_visual_quality.py",
     "printable_model_quality.py",
     "sampled_local_thickness.py",
     "printable_model_views.py",
@@ -136,7 +137,7 @@ $buildInfo = @(
     "OrcaSlicer.dll SHA256: $((Get-FileHash -LiteralPath $dllPath -Algorithm SHA256).Hash)",
     "orca-slicer.exe SHA256: $((Get-FileHash -LiteralPath $exePath -Algorithm SHA256).Hash)",
     "Architecture: Windows x64",
-    "AI sidecar protocol: orcaslicer-ai-sidecar-v5",
+    "AI sidecar protocol: orcaslicer-ai-sidecar-v9",
     "Bundled Python: $PythonVersion",
     "Bundled Pillow: $PillowVersion",
     "API credentials preconfigured: $($PreconfigureApiKeysFromEnvironment.IsPresent)"

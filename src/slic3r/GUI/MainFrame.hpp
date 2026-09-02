@@ -282,6 +282,7 @@ public:
     void        show_option(bool show);
     void        init_tabpanel();
     void        discover_ai_service();
+    bool        start_packaged_ai_service();
     void        on_ai_service_retry(wxTimerEvent& event);
     void        register_ai_features(AIServiceAvailability availability);
     void        create_preset_tabs();

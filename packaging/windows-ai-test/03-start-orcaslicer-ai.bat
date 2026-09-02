@@ -34,7 +34,7 @@ if "%AI_SIDECAR_STATUS%"=="0" goto ai_sidecar_ready
 if "%AI_SIDECAR_STATUS%"=="2" goto ai_sidecar_unavailable
 set /a AI_SIDECAR_ATTEMPT+=1
 if %AI_SIDECAR_ATTEMPT% GEQ 30 goto ai_sidecar_timeout
-timeout /t 1 /nobreak >nul
+ping.exe -n 2 127.0.0.1 >nul
 goto wait_for_ai_sidecar
 
 :ai_sidecar_configuration_changed
@@ -62,5 +62,5 @@ echo AI sidecar did not become ready within 30 seconds.
 exit /b 1
 
 :check_ai_sidecar
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\ai\check_sidecar_capability.ps1" -Endpoint "%ORCASLICER_AI_SIDECAR_URL%" -ExpectedOpenAIBaseUrl "%OPENAI_BASE_URL%" -ExpectedSidecarVersion "orcaslicer-ai-sidecar-v5" >nul 2>nul
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\ai\check_sidecar_capability.ps1" -Endpoint "%ORCASLICER_AI_SIDECAR_URL%" -ExpectedOpenAIBaseUrl "%OPENAI_BASE_URL%" -ExpectedSidecarVersion "orcaslicer-ai-sidecar-v9" >nul 2>nul
 exit /b %ERRORLEVEL%

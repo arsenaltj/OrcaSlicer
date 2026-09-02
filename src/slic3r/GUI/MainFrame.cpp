@@ -9,6 +9,7 @@
 #include <wx/menu.h>
 #include <wx/progdlg.h>
 #include <wx/tooltip.h>
+#include <wx/stdpaths.h>
 //#include <wx/glcanvas.h>
 #include <wx/filename.h>
 #include <wx/debug.h>
@@ -1354,6 +1355,7 @@ void MainFrame::init_tabpanel() {
     m_model_generation->set_service_retry_handler([this]() {
         m_ai_service_retry_timer.Stop();
         m_ai_service_retry_count = 0;
+        start_packaged_ai_service();
         discover_ai_service();
     });
     BOOST_LOG_TRIVIAL(info) << "AI model generation startup: model generation panel created";
@@ -1425,6 +1427,36 @@ void MainFrame::discover_ai_service()
             m_ai_service_retry_timer.StartOnce(500);
         }
     });
+}
+
+bool MainFrame::start_packaged_ai_service()
+{
+#ifdef _WIN32
+    wxFileName executable(wxStandardPaths::Get().GetExecutablePath());
+    wxFileName install_root(executable.GetPath(), wxEmptyString);
+    if (install_root.GetDirCount() == 0)
+        return false;
+    install_root.RemoveLastDir();
+    wxFileName launcher(install_root.GetPath(), "03-start-orcaslicer-ai.bat");
+    launcher.Normalize(wxPATH_NORM_DOTS | wxPATH_NORM_ABSOLUTE);
+    if (!launcher.FileExists())
+        return false;
+
+    // The packaged launcher validates configuration, starts the bundled
+    // sidecar only when necessary, and --check prevents a second OrcaSlicer
+    // window.  Development and non-Windows builds keep the existing probe-only
+    // behavior because the trusted package-relative launcher is absent.
+    const wxString command = wxString::Format("cmd.exe /D /S /C \"\"%s\" --check\"", launcher.GetFullPath());
+    const long process_id = wxExecute(command, wxEXEC_ASYNC | wxEXEC_HIDE_CONSOLE);
+    if (process_id == 0) {
+        BOOST_LOG_TRIVIAL(warning) << "Unable to start the packaged AI service launcher.";
+        return false;
+    }
+    BOOST_LOG_TRIVIAL(info) << "Started packaged AI service recovery launcher.";
+    return true;
+#else
+    return false;
+#endif
 }
 
 void MainFrame::on_ai_service_retry(wxTimerEvent&)
