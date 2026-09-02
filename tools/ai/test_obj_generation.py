@@ -1995,7 +1995,7 @@ class ObjGenerationTests(unittest.TestCase):
         self.assertEqual(stored["score"], 97)
         self.assertTrue(stored["normalization"]["views"]["front"]["source_locked"])
 
-    def test_quality_portrait_multiview_falls_back_to_palette_aware_chroma_key(self):
+    def test_quality_portrait_multiview_rejection_does_not_retry_a_paid_edit(self):
         self.job.source = "image"
         self.job.style = "realistic"
         self.job.generation_profile = "quality"
@@ -2006,23 +2006,18 @@ class ObjGenerationTests(unittest.TestCase):
         sheet = self.job.directory / "multiview-sheet.png"
 
         def edit(_source, prompt, destination, *, background=None):
-            if background == "transparent":
-                raise SIDECAR.OpenAIPreprocessorError(
-                    "unsupported", code="image_rejected", retryable=False
-                )
-            Image.new("RGB", (512, 512), "magenta").save(destination)
-            return destination
+            del prompt, destination
+            self.assertEqual(background, "transparent")
+            raise SIDECAR.OpenAIPreprocessorError(
+                "unsupported", code="image_rejected", retryable=False
+            )
 
-        with mock.patch.object(SIDECAR, "edit_image", side_effect=edit) as image_edit:
+        with mock.patch.object(SIDECAR, "edit_image", side_effect=edit) as image_edit, \
+                self.assertRaises(SIDECAR.OpenAIPreprocessorError):
             SIDECAR._create_portrait_multiview_sheet(self.job, sheet)
 
-        self.assertTrue(sheet.is_file())
-        self.assertEqual(image_edit.call_count, 2)
-        fallback_prompt = image_edit.call_args_list[1].args[1]
-        key = SIDECAR._multiview_chroma_key(self.job.palette)
-        self.assertIn(key, fallback_prompt)
-        self.assertIn("perfectly flat solid chroma-key background", fallback_prompt)
-        self.assertNotIn("background", image_edit.call_args_list[1].kwargs)
+        self.assertFalse(sheet.exists())
+        image_edit.assert_called_once()
 
     def test_generation_persists_provider_intent_before_paid_creation(self):
         artifact = self.job.directory / "model-vertex-color.obj"

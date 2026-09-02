@@ -1349,10 +1349,10 @@ if (WIN32)
         if(NOT ORCA_AI_DISTRIBUTION_CHANNEL MATCHES "^(internal|commercial)$")
             message(FATAL_ERROR "ORCA_AI_DISTRIBUTION_CHANNEL must be internal or commercial")
         endif()
-        if(ORCA_AI_DISTRIBUTION_CHANNEL STREQUAL "commercial" AND ORCA_AI_INTERNAL_DEFAULTS_FILE)
+        if(ORCA_AI_INTERNAL_DEFAULTS_FILE)
             message(FATAL_ERROR
-                "Commercial AI packages must not embed provider credentials. "
-                "Use the company Provider Gateway and short-lived device/account credentials instead.")
+                "AI installer packages must not embed provider credentials. "
+                "Use OPENAI_PRO_API/OPENAI_PRO_URL or legacy provider environment variables at runtime.")
         endif()
 
         set(ORCA_AI_APPLICATION_COMMIT "${ORCA_SOURCE_COMMIT}")
@@ -1402,14 +1402,6 @@ if (WIN32)
             "${ORCA_AI_BUILD_INFO_FILE}"
             "${ORCA_AI_RUNTIME_DEPENDENCIES_FILE}"
             DESTINATION "./resources/tools/ai")
-        if(ORCA_AI_INTERNAL_DEFAULTS_FILE)
-            if(NOT EXISTS "${ORCA_AI_INTERNAL_DEFAULTS_FILE}")
-                message(FATAL_ERROR "ORCA_AI_INTERNAL_DEFAULTS_FILE does not exist")
-            endif()
-            install(FILES "${ORCA_AI_INTERNAL_DEFAULTS_FILE}"
-                DESTINATION "./resources/tools/ai"
-                RENAME "orca_ai_internal_defaults.json")
-        endif()
     endif()
     if(ORCA_BUNDLED_UV_EXECUTABLE)
         install(PROGRAMS "${ORCA_BUNDLED_UV_EXECUTABLE}" DESTINATION "./resources/tools/uv" RENAME "${ORCA_BUNDLED_UV_FILENAME}")

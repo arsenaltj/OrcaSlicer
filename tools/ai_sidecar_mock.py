@@ -382,6 +382,18 @@ class Handler(BaseHTTPRequestHandler):
                         "default_face_limit": GENERATION_PROFILE_FACE_LIMITS[DEFAULT_GENERATION_PROFILE],
                         "generation_profiles": list(GENERATION_PROFILES),
                         "default_generation_profile": DEFAULT_GENERATION_PROFILE,
+                        "source_availability": {"text": True, "image": True},
+                        "image_provider": {
+                            "available": True,
+                            "source": "mock",
+                            "base_url": "https://mock.example/v1",
+                            "endpoints": {
+                                "generations": "https://mock.example/v1/images/generations",
+                                "edits": "https://mock.example/v1/images/edits",
+                            },
+                            "automatic_retry": False,
+                            "max_billable_requests_per_action": 1,
+                        },
                         "palette_recommendation": {"available": True, "max_colors": 4},
                         "printable_image_pipeline": {
                             "available": True,

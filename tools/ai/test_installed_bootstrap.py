@@ -169,6 +169,49 @@ class InstalledBootstrapTests(unittest.TestCase):
             self.assertEqual(captured["run_name"], "__main__")
             self.assertEqual(sidecar_argv, [str(MODULE_PATH.with_name("orca_ai_sidecar.py").resolve())])
 
+    def test_internal_installed_sidecar_preserves_machine_or_user_provider_environment(self) -> None:
+        valid_build_info = {
+            "schema_version": 1,
+            "application_version": "2.5.0-dev",
+            "application_commit": "9" * 40,
+            "package_revision": "internal-environment-test",
+            "distribution_channel": "internal",
+            "sidecar_protocol_version": 2,
+            "sidecar_version": "orcaslicer-ai-sidecar-v9",
+        }
+        captured: dict[str, str | None] = {}
+
+        def fake_run_path(path: str, *, run_name: str) -> None:
+            del path, run_name
+            captured["pro_api"] = os.environ.get("OPENAI_PRO_API")
+            captured["pro_url"] = os.environ.get("OPENAI_PRO_URL")
+            captured["legacy_api"] = os.environ.get("OPENAI_API_KEY")
+
+        with tempfile.TemporaryDirectory() as directory:
+            original_stdout, original_stderr, original_argv = sys.stdout, sys.stderr, sys.argv
+            try:
+                with mock.patch.dict(os.environ, {
+                    "ORCASLICER_AI_PARENT_PID": str(os.getpid()),
+                    "OPENAI_PRO_API": "test-pro",
+                    "OPENAI_PRO_URL": "https://v.3dprint.beer/managed-ai/v1",
+                    "OPENAI_API_KEY": "test-legacy",
+                }, clear=False), mock.patch.object(
+                    BOOTSTRAP, "load_build_info", return_value=valid_build_info
+                ), mock.patch.object(BOOTSTRAP.runpy, "run_path", side_effect=fake_run_path):
+                    BOOTSTRAP.run_installed_sidecar(directory)
+            finally:
+                redirected = sys.stdout
+                sys.stdout, sys.stderr = original_stdout, original_stderr
+                sys.argv = original_argv
+                if redirected is not original_stdout:
+                    redirected.close()
+
+        self.assertEqual(captured, {
+            "pro_api": "test-pro",
+            "pro_url": "https://v.3dprint.beer/managed-ai/v1",
+            "legacy_api": "test-legacy",
+        })
+
     def test_installed_sidecar_requires_valid_build_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory, \
              mock.patch.object(BOOTSTRAP, "load_build_info", return_value={}):
@@ -217,6 +260,7 @@ class InstalledBootstrapTests(unittest.TestCase):
         def fake_run_path(path: str, *, run_name: str) -> None:
             del path, run_name
             captured["openai"] = os.environ.get("OPENAI_API_KEY")
+            captured["openai_pro"] = os.environ.get("OPENAI_PRO_API")
             captured["tripo"] = os.environ.get("TRIPO_API_KEY")
 
         with tempfile.TemporaryDirectory() as directory:
@@ -225,6 +269,7 @@ class InstalledBootstrapTests(unittest.TestCase):
                 with mock.patch.dict(os.environ, {
                      "ORCASLICER_AI_PARENT_PID": str(os.getpid()),
                      "OPENAI_API_KEY": "fake-inherited-openai",
+                     "OPENAI_PRO_API": "fake-inherited-pro",
                      "TRIPO_API_KEY": "fake-inherited-tripo",
                      }, clear=False), \
                      mock.patch.object(BOOTSTRAP, "load_build_info", return_value=valid_build_info), \
@@ -236,7 +281,7 @@ class InstalledBootstrapTests(unittest.TestCase):
                 sys.argv = original_argv
                 if redirected is not original_stdout:
                     redirected.close()
-        self.assertEqual(captured, {"openai": None, "tripo": None})
+        self.assertEqual(captured, {"openai": None, "openai_pro": None, "tripo": None})
 
 
 if __name__ == "__main__":

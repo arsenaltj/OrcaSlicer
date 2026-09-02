@@ -24,7 +24,8 @@ if errorlevel 1 (
 )
 
 echo Starting OrcaSlicer AI sidecar on port %ORCASLICER_AI_SIDECAR_PORT%.
-if "%OPENAI_API_KEY%"=="" echo AI text and image features are not configured.
+if "%OPENAI_API_KEY%"=="" echo AI text and vision features are not configured.
+if "%OPENAI_PRO_API%"=="" if "%OPENAI_API_KEY%"=="" echo AI image features are not configured.
 if "%TRIPO_API_KEY%"=="" echo 3D model generation is not configured.
 if "%ORCASLICER_AI_ALLOW_PREPROCESS_FALLBACK%"=="1" echo Demo fallback enabled: original text will be used if prompt preprocessing is unavailable.
 

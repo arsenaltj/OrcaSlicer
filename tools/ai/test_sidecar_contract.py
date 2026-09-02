@@ -530,6 +530,17 @@ class SidecarHealthContractTests(unittest.TestCase):
         self.assertIn("model_reference", generation["printable_image_pipeline"]["outputs"])
         self.assertIsInstance(generation["palette_recommendation"]["available"], bool)
         self.assertEqual(generation["palette_recommendation"]["max_colors"], 4)
+        self.assertEqual(set(generation["source_availability"]), {"text", "image"})
+        self.assertIsInstance(generation["source_availability"]["text"], bool)
+        self.assertIsInstance(generation["source_availability"]["image"], bool)
+        image_provider = generation["image_provider"]
+        self.assertEqual(
+            set(image_provider),
+            {"available", "source", "base_url", "endpoints", "automatic_retry", "max_billable_requests_per_action"},
+        )
+        self.assertEqual(set(image_provider["endpoints"]), {"generations", "edits"})
+        self.assertFalse(image_provider["automatic_retry"])
+        self.assertEqual(image_provider["max_billable_requests_per_action"], 1)
 
         payload = json.dumps(health)
         for secret in ("OPENAI_API_KEY", "TRIPO_API_KEY", "test-openai", "test-tripo"):
@@ -1557,12 +1568,15 @@ class SidecarHealthContractTests(unittest.TestCase):
                 MOCK._jobs.update(previous)
 
     def test_production_health_contract_without_credentials(self):
-        with temporary_environment(OPENAI_API_KEY=None, TRIPO_API_KEY=None):
+        with temporary_environment(
+            OPENAI_PRO_API=None, OPENAI_PRO_URL=None, OPENAI_API_KEY=None, TRIPO_API_KEY=None
+        ):
             health = self.fetch_health(PRODUCTION.Handler)
         self.assert_contract(health)
         self.assertFalse(health["capabilities"]["config_proposal"]["available"])
         self.assertFalse(health["capabilities"]["model_generation"]["available"])
         self.assertFalse(health["capabilities"]["model_generation"]["palette_recommendation"]["available"])
+        self.assertFalse(health["capabilities"]["model_generation"]["image_provider"]["available"])
 
     def test_production_health_exposes_quality_first_provider_policy(self):
         with temporary_environment(OPENAI_API_KEY=None, TRIPO_API_KEY=None):
@@ -1607,6 +1621,35 @@ class SidecarHealthContractTests(unittest.TestCase):
         self.assertTrue(health["capabilities"]["model_generation"]["available"])
         self.assertTrue(health["capabilities"]["model_generation"]["palette_recommendation"]["available"])
 
+    def test_production_health_uses_pro_for_image2_without_migrating_text_or_vision(self):
+        with temporary_environment(
+            OPENAI_PRO_API="test-pro",
+            OPENAI_PRO_URL="https://v.3dprint.beer/managed-ai/v1",
+            OPENAI_API_KEY=None,
+            OPENAI_BASE_URL=None,
+            TRIPO_API_KEY="test-tripo",
+            ORCASLICER_AI_ALLOW_PREPROCESS_FALLBACK=None,
+        ):
+            health = self.fetch_health(PRODUCTION.Handler)
+
+        generation = health["capabilities"]["model_generation"]
+        self.assertFalse(health["capabilities"]["config_proposal"]["available"])
+        self.assertFalse(generation["palette_recommendation"]["available"])
+        self.assertEqual(generation["source_availability"], {"text": False, "image": True})
+        self.assertTrue(generation["available"])
+        self.assertEqual(generation["image_provider"], {
+            "available": True,
+            "source": "pro",
+            "base_url": "https://v.3dprint.beer/managed-ai/v1",
+            "endpoints": {
+                "generations": "https://v.3dprint.beer/managed-ai/v1/images/generations",
+                "edits": "https://v.3dprint.beer/managed-ai/v1/images/edits",
+            },
+            "automatic_retry": False,
+            "max_billable_requests_per_action": 1,
+        })
+        self.assertNotIn("test-pro", json.dumps(health))
+
     def test_production_health_reports_provider_url_without_credentials(self):
         with temporary_environment(
             OPENAI_BASE_URL="https://openai-user:openai-secret@laotie.dev/v1?token=hidden",
@@ -1639,7 +1682,7 @@ class SidecarHealthContractTests(unittest.TestCase):
             health = self.fetch_health(PRODUCTION.Handler)
 
         network = health["runtime"]["network"]
-        self.assertEqual(set(network), {"openai", "tripo"})
+        self.assertEqual(set(network), {"openai", "image2", "tripo"})
         for provider in network.values():
             self.assertEqual(set(provider), {"source", "schemes", "bypass"})
             self.assertIsInstance(provider["source"], str)

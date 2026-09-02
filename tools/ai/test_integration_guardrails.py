@@ -445,6 +445,23 @@ class IntegrationGuardrailTests(unittest.TestCase):
 
         self.assertTrue(any(error["code"] == "source.forbidden" for error in errors))
 
+    def test_image2_pro_environment_is_allowlisted_without_full_environment_inheritance(self) -> None:
+        service_manager = (REPO_ROOT / "src/slic3r/GUI/AIServiceManager.cpp").read_text(encoding="utf-8")
+
+        self.assertIn('"OPENAI_PRO_API"', service_manager)
+        self.assertIn('"OPENAI_PRO_URL"', service_manager)
+        self.assertNotIn("boost::this_process::environment()", service_manager)
+
+    def test_internal_release_scripts_forbid_packaged_provider_credentials_and_emit_portable_zip(self) -> None:
+        cmake = (REPO_ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        packager = (REPO_ROOT / "scripts/package_internal_fast.ps1").read_text(encoding="utf-8")
+        wrapper = (REPO_ROOT / "release/build_internal.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("AI installer packages must not embed provider credentials", cmake)
+        self.assertIn("Provider credentials must come from machine or user environment variables", packager)
+        self.assertIn("-G ZIP", packager)
+        self.assertNotIn("InternalDefaultsFile", wrapper)
+
     def test_source_contract_rejects_secret_inheritance_in_general_ci(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -493,6 +510,20 @@ class IntegrationGuardrailTests(unittest.TestCase):
         self.assertEqual(1, len(errors))
         self.assertEqual("security.secret_content", errors[0]["code"])
         self.assertIn("unsafe.py:1", errors[0]["message"])
+        self.assertNotIn(secret, errors[0]["message"])
+
+    def test_secret_content_scan_covers_pro_image_provider_key(self) -> None:
+        secret = "provider_pro_0123456789abcdefghijklmnopqrstuvwxyz"
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            (root / "unsafe.ps1").write_text(
+                f'$env:OPENAI_PRO_API = "{secret}"\n', encoding="utf-8"
+            )
+
+            errors = GUARDRAILS.validate_tracked_secret_content(root, ["unsafe.ps1"])
+
+        self.assertEqual(1, len(errors))
+        self.assertEqual("security.secret_content", errors[0]["code"])
         self.assertNotIn(secret, errors[0]["message"])
 
     def test_json_cli_supports_skip_git(self) -> None:

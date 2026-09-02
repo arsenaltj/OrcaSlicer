@@ -120,6 +120,14 @@ class OpenAIPreprocessorError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class ImageProviderConfig:
+    base_url: str
+    api_key: str
+    model: str
+    source: str
+
+
+@dataclass(frozen=True)
 class PrintablePaletteRecommendationColor:
     hex: str
     name: str
@@ -146,11 +154,8 @@ class PrintablePaletteRecommendation:
         return {"summary": self.summary, "colors": [color.as_dict() for color in self.colors]}
 
 
-def _config() -> tuple[str, str, str, str]:
-    key = os.environ.get("OPENAI_API_KEY", "")
-    raw_base = os.environ.get("OPENAI_BASE_URL", _DEFAULT_BASE_URL).strip()
-    if not key:
-        raise OpenAIPreprocessorError("OPENAI_API_KEY is not configured.")
+def _normalized_base_url(raw_base: str, environment_name: str) -> str:
+    raw_base = raw_base.strip()
     parsed = urllib.parse.urlsplit(raw_base)
     if (
         parsed.scheme.lower() != "https"
@@ -160,15 +165,101 @@ def _config() -> tuple[str, str, str, str]:
         or parsed.query
         or parsed.fragment
     ):
-        raise OpenAIPreprocessorError("OPENAI_BASE_URL must be a credential-free HTTPS URL.")
+        raise OpenAIPreprocessorError(
+            f"{environment_name} must be a credential-free HTTPS URL.",
+            code="image_provider_misconfigured" if environment_name == "OPENAI_PRO_URL" else "image_preprocess_failed",
+        )
     path = parsed.path.rstrip("/") or "/v1"
-    base = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+
+
+def _config() -> tuple[str, str, str, str]:
+    """Return the legacy text/vision provider without consulting Image2 PRO settings."""
+    key = os.environ.get("OPENAI_API_KEY", "")
+    raw_base = os.environ.get("OPENAI_BASE_URL", _DEFAULT_BASE_URL).strip()
+    if not key:
+        raise OpenAIPreprocessorError("OPENAI_API_KEY is not configured.")
+    base = _normalized_base_url(raw_base, "OPENAI_BASE_URL")
     return (
         base,
         key,
         os.environ.get("OPENAI_TEXT_MODEL", "gpt-5.4"),
         os.environ.get("OPENAI_IMAGE_MODEL", "gpt-image-2"),
     )
+
+
+def _image_config() -> ImageProviderConfig:
+    """Resolve Image2 once, before a request, without cross-channel retry.
+
+    Any presence of a PRO setting selects the PRO channel and requires the pair
+    to be complete. Legacy settings are consulted only when PRO is completely
+    absent, so a partially deployed PRO configuration cannot silently bill a
+    different provider.
+    """
+    pro_key = os.environ.get("OPENAI_PRO_API", "").strip()
+    pro_url = os.environ.get("OPENAI_PRO_URL", "").strip()
+    if pro_key or pro_url:
+        if not pro_key or not pro_url:
+            raise OpenAIPreprocessorError(
+                "OPENAI_PRO_API and OPENAI_PRO_URL must both be configured for Image2.",
+                code="image_provider_misconfigured",
+            )
+        return ImageProviderConfig(
+            base_url=_normalized_base_url(pro_url, "OPENAI_PRO_URL"),
+            api_key=pro_key,
+            model=os.environ.get("OPENAI_IMAGE_MODEL", "gpt-image-2"),
+            source="pro",
+        )
+
+    legacy_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not legacy_key:
+        raise OpenAIPreprocessorError(
+            "Image2 is not configured. Set OPENAI_PRO_API and OPENAI_PRO_URL.",
+            code="image_provider_not_configured",
+        )
+    legacy_url = os.environ.get("OPENAI_BASE_URL", _DEFAULT_BASE_URL).strip()
+    return ImageProviderConfig(
+        base_url=_normalized_base_url(legacy_url, "OPENAI_BASE_URL"),
+        api_key=legacy_key,
+        model=os.environ.get("OPENAI_IMAGE_MODEL", "gpt-image-2"),
+        source="legacy",
+    )
+
+
+def image_provider_status() -> dict[str, Any]:
+    """Return non-secret Image2 route capability metadata for local health checks."""
+    try:
+        config = _image_config()
+    except OpenAIPreprocessorError:
+        if (
+            os.environ.get("OPENAI_PRO_API", "").strip()
+            or os.environ.get("OPENAI_PRO_URL", "").strip()
+        ):
+            source = "pro"
+        elif os.environ.get("OPENAI_API_KEY", "").strip():
+            source = "legacy"
+        else:
+            source = "missing"
+        return {
+            "available": False,
+            "source": source,
+            "base_url": "",
+            "endpoints": {"generations": "", "edits": ""},
+            "automatic_retry": False,
+            "max_billable_requests_per_action": 1,
+        }
+    base = safe_endpoint(config.base_url).rstrip("/")
+    return {
+        "available": True,
+        "source": config.source,
+        "base_url": base,
+        "endpoints": {
+            "generations": base + "/images/generations",
+            "edits": base + "/images/edits",
+        },
+        "automatic_retry": False,
+        "max_billable_requests_per_action": 1,
+    }
 
 
 def _image_quality() -> str:
@@ -198,8 +289,15 @@ def _read_json_response(response: Any) -> dict[str, Any]:
     return value
 
 
-def _provider_request(path: str, body: bytes, content_type: str) -> dict[str, Any]:
-    base, key, _, _ = _config()
+def _request_with_provider(
+    path: str,
+    body: bytes,
+    content_type: str,
+    *,
+    base: str,
+    key: str,
+    provider_source: str,
+) -> dict[str, Any]:
     endpoint = base + path
     request = urllib.request.Request(endpoint, data=body, method="POST")
     request.add_header("Authorization", "Bearer " + key)
@@ -213,6 +311,7 @@ def _provider_request(path: str, body: bytes, content_type: str) -> dict[str, An
         request_bytes=len(body),
         content_type=content_type,
         timeout_seconds=_TIMEOUT_SECONDS,
+        provider_source=provider_source,
         network=network,
     )
     try:
@@ -233,6 +332,7 @@ def _provider_request(path: str, body: bytes, content_type: str) -> dict[str, An
             endpoint=safe_endpoint(endpoint),
             elapsed_ms=round((time.monotonic() - started) * 1000),
             network=network,
+            provider_source=provider_source,
         )
         raise
     except urllib.error.HTTPError as exc:
@@ -264,6 +364,7 @@ def _provider_request(path: str, body: bytes, content_type: str) -> dict[str, An
             response_headers=safe_headers,
             elapsed_ms=round((time.monotonic() - started) * 1000),
             network=network,
+            provider_source=provider_source,
             exception_chain=exception_details(exc),
         )
         raise OpenAIPreprocessorError(
@@ -276,6 +377,7 @@ def _provider_request(path: str, body: bytes, content_type: str) -> dict[str, An
             endpoint=safe_endpoint(endpoint),
             elapsed_ms=round((time.monotonic() - started) * 1000),
             network=network,
+            provider_source=provider_source,
             failure_kind=classify_connection_error(exc),
             exception_chain=exception_details(exc),
         )
@@ -1220,6 +1322,25 @@ def _download_image(url: str, output_path: Path) -> Path:
     ) from None
 
 
+def _provider_request(path: str, body: bytes, content_type: str) -> dict[str, Any]:
+    base, key, _, _ = _config()
+    return _request_with_provider(
+        path, body, content_type, base=base, key=key, provider_source="legacy_text"
+    )
+
+
+def _image_provider_request(path: str, body: bytes, content_type: str) -> dict[str, Any]:
+    config = _image_config()
+    return _request_with_provider(
+        path,
+        body,
+        content_type,
+        base=config.base_url,
+        key=config.api_key,
+        provider_source=config.source,
+    )
+
+
 def _style_preview_prompt(
     instruction: str,
     palette: tuple[str, ...],
@@ -1388,7 +1509,7 @@ def generate_image(
     custom_style: str = "",
 ) -> Path:
     destination = Path(output_path)
-    _, _, _, model = _config()
+    model = _image_config().model
     payload = json.dumps(
         {
             "model": model,
@@ -1402,7 +1523,9 @@ def generate_image(
         },
         ensure_ascii=False,
     ).encode("utf-8")
-    return _save_provider_image(_provider_request("/images/generations", payload, "application/json"), destination)
+    return _save_provider_image(
+        _image_provider_request("/images/generations", payload, "application/json"), destination
+    )
 
 
 def preprocess_image(
@@ -1440,35 +1563,14 @@ def preprocess_image(
         # instead of the person the user uploaded.
         if mask_path is not None:
             _restore_portrait_face_from_source(Path(input_path), result, mask_path)
-        # Keep colour and geometry responsibilities separate for a detected
-        # real-person portrait.  The first result remains the approved colour
-        # and material reference; a second, monochrome edit carries identity and
-        # sculptural planes into image-to-3D without skin/jacket contrast being
-        # mistaken for shape.  If the optional geometry edit is unavailable, the
-        # already valid first result is a safe and recoverable fallback.
+        # A user-confirmed preview action may issue at most one billed Image2
+        # request. Reuse the accepted, identity-restored result as the geometry
+        # reference instead of silently ordering a second monochrome edit.
         if geometry_output_path is not None:
             geometry_output = Path(geometry_output_path)
             try:
                 geometry_output.parent.mkdir(parents=True, exist_ok=True)
-                if mask_path is not None:
-                    edit_image(
-                        result,
-                        _portrait_monochrome_geometry_prompt(instruction),
-                        geometry_output,
-                        background="transparent",
-                    )
-                    _restore_portrait_face_as_neutral_relief(
-                        result, geometry_output, mask_path
-                    )
-                else:
-                    shutil.copyfile(result, geometry_output)
-            except OpenAIPreprocessorError:
-                try:
-                    shutil.copyfile(result, geometry_output)
-                except OSError:
-                    raise OpenAIPreprocessorError(
-                        "The sculptural portrait reference could not be saved."
-                    ) from None
+                shutil.copyfile(result, geometry_output)
             except OSError:
                 raise OpenAIPreprocessorError(
                     "The sculptural portrait reference could not be saved."
@@ -1492,17 +1594,7 @@ def edit_image(
         raise OpenAIPreprocessorError("An image-edit prompt is required.")
     source = Path(input_path)
     destination = Path(output_path)
-    _, _, _, model = _config()
+    model = _image_config().model
     body, content_type = _multipart_image(source, prompt.strip(), model, background=background)
-    try:
-        result = _provider_request("/images/edits", body, content_type)
-    except OpenAIPreprocessorError as exc:
-        if background is None or exc.code != "image_rejected":
-            raise
-        # Some OpenAI-compatible Beta gateways have not implemented the
-        # optional multipart `background` field yet and reject the otherwise
-        # valid edit before generation. Retry once without that capability;
-        # the prompt and local alpha/cutout checks still enforce isolation.
-        body, content_type = _multipart_image(source, prompt.strip(), model)
-        result = _provider_request("/images/edits", body, content_type)
+    result = _image_provider_request("/images/edits", body, content_type)
     return _save_provider_image(result, destination)

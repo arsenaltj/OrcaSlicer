@@ -4,7 +4,6 @@
 
 $BuildRelease = @{
     BuildDir            = 'build-commercial-review'
-    InternalDefaultsFile = '' # Absolute path outside this Git worktree.
     OutputDir           = 'build\windows-installer'
     CMakeExecutable     = '' # Optional; auto-detected when empty.
     NsisDir             = '' # Optional; auto-detected by the package script.

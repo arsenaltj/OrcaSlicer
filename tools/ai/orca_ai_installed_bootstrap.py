@@ -182,6 +182,8 @@ def run_installed_sidecar(data_directory: str) -> None:
         # A commercial candidate must never silently fall back to long-lived
         # provider credentials inherited from the desktop environment.
         os.environ.pop("OPENAI_API_KEY", None)
+        os.environ.pop("OPENAI_PRO_API", None)
+        os.environ.pop("OPENAI_PRO_URL", None)
         os.environ.pop("TRIPO_API_KEY", None)
     else:
         loaded_defaults = load_internal_defaults(defaults_path)

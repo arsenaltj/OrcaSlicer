@@ -18,8 +18,9 @@ _JOB_ID: ContextVar[str] = ContextVar("orcaslicer_ai_job_id", default="")
 _WRITE_LOCK = threading.Lock()
 _MAX_TEXT = 500
 _SENSITIVE_TEXT_FIELD = (
-    r"[A-Za-z0-9_.-]*(?:api[_-]?key|token|secret|password|passwd|pwd|"
+    r"(?:openai[_-]?pro[_-]?api|[A-Za-z0-9_.-]*(?:api[_-]?key|token|secret|password|passwd|pwd|"
     r"authorization|cookie|credential|private[_-]?key|session[_-]?proof|nonce)"
+    r")"
 )
 _QUOTED_SECRET_PATTERN = re.compile(
     rf"(?P<prefix>[\"']{_SENSITIVE_TEXT_FIELD}[\"']\s*:\s*)"
@@ -39,7 +40,7 @@ _SECRET_PATTERNS = (
     (re.compile(r"(?i)(bearer\s+)[^\s,;]+"), r"\1<redacted>"),
     (
         re.compile(
-            r"(?i)((?:api[_-]?key|token|secret|password|passwd|pwd|cookie|credential|"
+            r"(?i)((?:openai[_-]?pro[_-]?api|api[_-]?key|token|secret|password|passwd|pwd|cookie|credential|"
             r"private[_-]?key|session[_-]?proof|nonce)\s*[:=]\s*)[^\s,;}\]]+"
         ),
         r"\1<redacted>",
@@ -62,6 +63,7 @@ def _is_sensitive_field(value: Any) -> bool:
         return False
     if name in {
         "api_key",
+        "openai_pro_api",
         "token",
         "secret",
         "password",

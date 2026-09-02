@@ -29,6 +29,7 @@ from openai_preprocessor import (  # noqa: E402
     build_style_preview_prompt,
     build_text_image_prompt,
     generate_image,
+    image_provider_status,
     preprocess_image,
 )
 from model_input_image_quality import assess_model_input_image  # noqa: E402
@@ -1108,8 +1109,8 @@ def build_dry_run_report(
         }:
             blocked_ids.append(candidate.candidate_id)
 
-    endpoint = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").strip()
-    endpoint_host = urllib.parse.urlsplit(endpoint).netloc
+    provider = image_provider_status()
+    endpoint_host = urllib.parse.urlsplit(provider["base_url"]).netloc
     return {
         "schema_version": SCHEMA_VERSION,
         "mode": "dry_run",
@@ -1123,9 +1124,10 @@ def build_dry_run_report(
         "blocked_candidate_ids_preview": blocked_ids[:20],
         "frozen_mismatch_fields": frozen_mismatch_fields,
         "ready": {
-            "api_key_present": bool(os.environ.get("OPENAI_API_KEY")),
+            "api_key_present": provider["available"],
+            "provider_source": provider["source"],
             "endpoint_host": endpoint_host,
-            "safe_to_start": not blocked_ids and bool(os.environ.get("OPENAI_API_KEY")),
+            "safe_to_start": not blocked_ids and provider["available"],
         },
     }
 
@@ -1233,7 +1235,7 @@ def main() -> int:
             f"dry-run requires {dry_run['planned_paid_calls']} paid calls, exceeding --max-paid-calls {args.max_paid_calls}"
         )
     if not args.reprocess_local and dry_run["planned_paid_calls"] and not dry_run["ready"]["api_key_present"]:
-        parser.error("OPENAI_API_KEY is required for the planned Image2 calls")
+        parser.error("OPENAI_PRO_API and OPENAI_PRO_URL are required for the planned Image2 calls")
 
     summary_lock = threading.Lock()
     failures = 0

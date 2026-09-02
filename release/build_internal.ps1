@@ -1,8 +1,6 @@
 [CmdletBinding()]
 param(
     [string] $BuildDir = 'build-commercial-review',
-    [Parameter(Mandatory = $true)]
-    [string] $InternalDefaultsFile,
     [string] $OutputDir = 'build\windows-installer',
     [string] $Revision,
     [string] $CMakeExecutable,
@@ -114,15 +112,6 @@ if (-not [string]::Equals($configuredSource, $repoRoot.TrimEnd('\'), [System.Str
     throw "The selected build directory belongs to another checkout: $configuredSource"
 }
 
-$defaultsPath = Resolve-OperatorPath -Path $InternalDefaultsFile -Label 'Internal defaults file' -RequireLeaf
-$repoPrefix = $repoRoot.TrimEnd('\') + '\'
-if ($defaultsPath.StartsWith($repoPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-    throw 'The internal defaults file must remain outside the public Git worktree.'
-}
-if ((Get-Item -LiteralPath $defaultsPath).Length -gt 32768) {
-    throw 'The internal defaults file exceeds the supported 32 KiB limit.'
-}
-
 if ([string]::IsNullOrWhiteSpace($Revision)) {
     $shortHead = Invoke-GitText -Arguments @('rev-parse', '--short=10', $sourceHead)
     $Revision = "$(Get-Date -Format yyyyMMdd)-$shortHead"
@@ -150,7 +139,7 @@ $validationResult = [pscustomobject]@{
     BuildDir             = $buildPath
     OutputDir            = $outputPath
     CMakeExecutable      = $cmakePath
-    InternalDefaultsHash = (Get-FileHash -LiteralPath $defaultsPath -Algorithm SHA256).Hash
+    ProviderConfiguration = 'machine_or_user_environment'
 }
 if ($ValidateOnly) {
     $validationResult
@@ -158,7 +147,7 @@ if ($ValidateOnly) {
 }
 
 $revisionArg = "-DORCA_AI_PACKAGE_REVISION:STRING=$Revision"
-$defaultsArg = "-DORCA_AI_INTERNAL_DEFAULTS_FILE:FILEPATH=$defaultsPath"
+$defaultsArg = '-DORCA_AI_INTERNAL_DEFAULTS_FILE:FILEPATH='
 & $cmakePath -S $repoRoot -B $buildPath $revisionArg $defaultsArg `
     '-DORCA_AI_DISTRIBUTION_CHANNEL:STRING=internal' `
     '-DORCA_AI_WINDOWS_INSTALLER:BOOL=ON'
@@ -228,6 +217,14 @@ $installerHash = (Get-FileHash -LiteralPath $installerPath -Algorithm SHA256).Ha
 if ($installerHash -ne $manifest.installer_sha256) {
     throw 'The final installer hash does not match its manifest.'
 }
+$portablePath = Join-Path $outputPath $manifest.portable
+if (-not (Test-Path -LiteralPath $portablePath -PathType Leaf)) {
+    throw "The manifest portable package is missing: $portablePath"
+}
+$portableHash = (Get-FileHash -LiteralPath $portablePath -Algorithm SHA256).Hash
+if ($portableHash -ne $manifest.portable_sha256) {
+    throw 'The portable package hash does not match its manifest.'
+}
 
 $sevenZipCommand = Get-Command 7z.exe -ErrorAction SilentlyContinue
 $sevenZipPath = if ($sevenZipCommand) {
@@ -245,9 +242,11 @@ if (Test-Path -LiteralPath $sevenZipPath -PathType Leaf) {
 $installerItem = Get-Item -LiteralPath $installerPath
 [pscustomobject]@{
     Installer       = $installerItem.FullName
+    Portable        = $portablePath
     Manifest        = $manifestPath
     SizeBytes       = $installerItem.Length
     Sha256          = $installerHash
+    PortableSha256  = $portableHash
     SourceCommit    = $sourceHead
     Revision        = $Revision
     SignatureStatus = (Get-AuthenticodeSignature -LiteralPath $installerPath).Status

@@ -62,6 +62,7 @@ class AIDiagnosticsTests(unittest.TestCase):
         stream = io.StringIO()
         secrets = {
             "api_key": "api-key-value",
+            "OPENAI_PRO_API": "pro-api-value",
             "accessToken": "access-token-value",
             "client_secret": "client-secret-value",
             "password": "password-value",
@@ -113,6 +114,10 @@ class AIDiagnosticsTests(unittest.TestCase):
         self.assertNotIn("embedded-key", redacted)
         self.assertNotIn("embedded-password", redacted)
         self.assertEqual(redacted.count("<redacted>"), 2)
+
+        pro_assignment = ai_diagnostics.redact_text("OPENAI_PRO_API=pro-assignment-secret")
+        self.assertNotIn("pro-assignment-secret", pro_assignment)
+        self.assertIn("<redacted>", pro_assignment)
 
     def test_exception_details_redacts_json_encoded_credentials(self) -> None:
         error = RuntimeError(

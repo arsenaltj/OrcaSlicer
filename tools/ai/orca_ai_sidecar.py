@@ -38,6 +38,7 @@ from openai_preprocessor import (
     complete_text,
     edit_image,
     generate_image,
+    image_provider_status,
     preprocess_image,
     preprocess_text,
     recommend_printable_palette,
@@ -224,10 +225,15 @@ def _preprocess_fallback_enabled() -> bool:
 
 
 def _runtime_network_metadata() -> dict[str, dict[str, object]]:
+    image_endpoint = (
+        os.environ.get("OPENAI_PRO_URL", "").strip()
+        or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    )
     return {
         "openai": network_diagnostics(
             os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
         ),
+        "image2": network_diagnostics(image_endpoint),
         "tripo": network_diagnostics(
             os.environ.get("TRIPO_API_BASE", "https://openapi.tripo3d.com/v3")
         ),
@@ -3718,36 +3724,18 @@ def _multiview_chroma_key(palette: tuple[str, ...]) -> str:
 
 
 def _create_portrait_multiview_sheet(job: Job, sheet: Path) -> None:
-    """Create a sheet with unambiguous background isolation.
-
-    Official GPT Image endpoints support ``background=transparent``. Some
-    OpenAI-compatible internal proxies do not expose that optional field yet.
-    A rejected transparent request is safe to retry because no usable image was
-    created; the fallback uses a palette-aware solid chroma key instead of a
-    light neutral background that can merge with a white garment.
-    """
+    """Create one isolated sheet with exactly one potentially billed edit."""
     source = _geometry_generation_reference(job) or job.model_reference_path
     if source is None:
         raise PortraitMultiviewPreparationError(
             "The identity-locked portrait front view is unavailable."
         )
-    try:
-        edit_image(
-            source,
-            _portrait_multiview_prompt(),
-            sheet,
-            background="transparent",
-        )
-        return
-    except OpenAIPreprocessorError as exc:
-        if exc.code != "image_rejected":
-            raise
-    key = _multiview_chroma_key(job.palette)
-    fallback = (
-        f"Use exactly one perfectly flat solid chroma-key background {key} in every panel. "
-        f"Never use {key} on the subject. Use no gradient, texture, checkerboard, floor, horizon, cast shadow or contact shadow. "
+    edit_image(
+        source,
+        _portrait_multiview_prompt(),
+        sheet,
+        background="transparent",
     )
-    edit_image(source, _portrait_multiview_prompt(fallback), sheet)
 
 
 def _multiview_paths_from_metrics(job: Job, key: str) -> dict[str, Path] | None:
@@ -8473,7 +8461,9 @@ class Handler(BaseHTTPRequestHandler):
             if not self._require_session():
                 return
             config = os.environ.get("OPENAI_API_KEY", "")
-            generation_preprocessing = bool(config) or _preprocess_fallback_enabled()
+            image_provider = image_provider_status()
+            text_preprocessing = bool(config) or _preprocess_fallback_enabled()
+            generation_preprocessing = text_preprocessing or image_provider["available"]
             policy = provider_policy()
             self.send_json(
                 200,
@@ -8489,6 +8479,8 @@ class Handler(BaseHTTPRequestHandler):
                         "openai_base_url": safe_endpoint(
                             os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
                         ).rstrip("/"),
+                        "image_provider_base_url": image_provider["base_url"],
+                        "image_provider_source": image_provider["source"],
                         "tripo_base_url": safe_endpoint(
                             os.environ.get("TRIPO_API_BASE", "https://openapi.tripo3d.com/v3")
                         ).rstrip("/"),
@@ -8516,6 +8508,11 @@ class Handler(BaseHTTPRequestHandler):
                                 "max_paid_model_tasks_per_confirmation":
                                     policy.max_paid_model_tasks_per_confirmation,
                             },
+                            "source_availability": {
+                                "text": text_preprocessing,
+                                "image": image_provider["available"],
+                            },
+                            "image_provider": image_provider,
                             "palette_recommendation": {
                                 "available": bool(config),
                                 "max_colors": MAX_PALETTE_COLORS,
@@ -8767,7 +8764,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(200, {"recommendation": recommendation})
 
     def _create_image_job(self) -> None:
-        if not os.environ.get("OPENAI_API_KEY", ""):
+        if not image_provider_status()["available"]:
             raise RequestError("feature_unavailable", "AI style preview generation is not configured.", 503)
         fields, image, declared_type = self._read_image_multipart()
         _text_field(fields.get("request_id"), "request_id")
@@ -9327,6 +9324,7 @@ def main() -> int:
             return 2
     if host == "::1":
         LoopbackServer.address_family = socket.AF_INET6
+    image_provider = image_provider_status()
     diagnostic_event(
         "sidecar.starting",
         sidecar_version=SIDECAR_VERSION,
@@ -9338,11 +9336,14 @@ def main() -> int:
         openssl_version=ssl.OPENSSL_VERSION,
         output_directory=str(_model_output_root()),
         openai_configured=bool(os.environ.get("OPENAI_API_KEY", "")),
+        image_provider_configured=image_provider["available"],
+        image_provider_source=image_provider["source"],
         tripo_configured=bool(os.environ.get("TRIPO_API_KEY", "")),
         configuration_mode="internal_locked"
         if os.environ.get("ORCASLICER_AI_CONFIG_MODE") == "internal_locked"
         else "external",
         openai_endpoint=safe_endpoint(os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")),
+        image_provider_endpoint=image_provider["base_url"],
         tripo_endpoint=safe_endpoint(os.environ.get("TRIPO_API_BASE", "https://openapi.tripo3d.com/v3")),
         network=_runtime_network_metadata(),
     )

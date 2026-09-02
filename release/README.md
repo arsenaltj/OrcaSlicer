@@ -10,12 +10,14 @@ This GitHub repository is public. Commit only scripts, examples, and the
 non-secret server directory contract. Never commit:
 
 - a real SSH target, account, port, private key, or password;
-- provider/API keys or the internal defaults payload;
+- provider/API keys or credential-bearing defaults payloads;
 - `release/config.local.ps1` or any `release/*.local.json` file;
 - generated installers, manifests, build directories, or deployment logs.
 
-The internal defaults file must stay outside this Git worktree. The build script
-checks that requirement and records only its SHA-256 hash in validation output.
+Provider credentials are never packaged. Installers read machine/user environment
+variables at runtime: Image2 prefers `OPENAI_PRO_API` plus `OPENAI_PRO_URL`, while
+legacy `OPENAI_API_KEY` plus `OPENAI_BASE_URL` remains a compatibility fallback
+only when both PRO settings are absent.
 
 ## Files
 
@@ -42,8 +44,7 @@ Copy-Item .\release\config.example.ps1 .\release\config.local.ps1
 notepad .\release\config.local.ps1
 ```
 
-Set `InternalDefaultsFile` to an absolute path outside the repository. Set the
-local SSH alias or `user@host` in `SshTarget`; SSH host, port, and key details
+Set the local SSH alias or `user@host` in `SshTarget`; SSH host, port, and key details
 belong in the operator's local OpenSSH config. Set `WebsiteWorktree` to the
 website checkout on that computer. The local config is ignored by Git.
 
@@ -73,12 +74,12 @@ $manifestPath = $buildResult.Manifest
 & .\release\upload_installer.ps1 -ManifestPath $manifestPath @UploadRelease
 ```
 
-The build script rejects the wrong branch, a dirty worktree, a build cache from
+The build script rejects the wrong branch, a dirty worktree, a credential-bearing build cache, and a build cache from
 another checkout, and source changes made during packaging. It runs the existing
 authoritative `scripts/package_internal_fast.ps1`, Python integration guardrails,
 the AI integration verifier, and focused model-generation/smart-slicing tests.
-It then checks the manifest identity, SHA-256, optional 7-Zip integrity, and
-Authenticode status.
+It then checks the installer and portable ZIP identities and SHA-256 values,
+optional 7-Zip integrity, and Authenticode status.
 
 The preferred restricted mode verifies the server-bound employee identity, then
 uploads resumable 4 MiB chunks through separate forced SSH commands. Each chunk

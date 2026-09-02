@@ -17,11 +17,13 @@ from tools.ai import openai_preprocessor as preprocessor
 
 @contextlib.contextmanager
 def configured_base_url(value):
-    names = ("OPENAI_API_KEY", "OPENAI_BASE_URL")
+    names = ("OPENAI_PRO_API", "OPENAI_PRO_URL", "OPENAI_API_KEY", "OPENAI_BASE_URL")
     original = {name: os.environ.get(name) for name in names}
     try:
         os.environ["OPENAI_API_KEY"] = "test-key"
         os.environ["OPENAI_BASE_URL"] = value
+        os.environ.pop("OPENAI_PRO_API", None)
+        os.environ.pop("OPENAI_PRO_URL", None)
         yield
     finally:
         for name, previous in original.items():
@@ -99,6 +101,133 @@ class OpenAIBaseUrlTests(unittest.TestCase):
         self.assertTrue(raised.exception.retryable)
         self.assertTrue(raised.exception.ambiguous)
         opener.open.assert_called_once()
+
+
+class ImageProviderSelectionTests(unittest.TestCase):
+    ENVIRONMENT_NAMES = (
+        "OPENAI_PRO_API",
+        "OPENAI_PRO_URL",
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "OPENAI_IMAGE_MODEL",
+    )
+
+    def image_config(self, **environment):
+        original = {name: os.environ.get(name) for name in self.ENVIRONMENT_NAMES}
+        try:
+            for name in self.ENVIRONMENT_NAMES:
+                os.environ.pop(name, None)
+            os.environ.update(environment)
+            return preprocessor._image_config()
+        finally:
+            for name, value in original.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+
+    def test_pro_image_provider_has_priority_over_legacy_text_provider(self):
+        config = self.image_config(
+            OPENAI_PRO_API="test-pro",
+            OPENAI_PRO_URL="https://v.3dprint.beer/managed-ai/v1/",
+            OPENAI_API_KEY="test-legacy",
+            OPENAI_BASE_URL="https://legacy.example/v1",
+        )
+
+        self.assertEqual(config.base_url, "https://v.3dprint.beer/managed-ai/v1")
+        self.assertEqual(config.api_key, "test-pro")
+        self.assertEqual(config.source, "pro")
+
+    def test_pro_image_settings_do_not_change_text_or_vision_provider(self):
+        names = self.ENVIRONMENT_NAMES
+        original = {name: os.environ.get(name) for name in names}
+        try:
+            for name in names:
+                os.environ.pop(name, None)
+            os.environ.update({
+                "OPENAI_PRO_API": "test-pro",
+                "OPENAI_PRO_URL": "https://v.3dprint.beer/managed-ai/v1",
+                "OPENAI_API_KEY": "test-legacy",
+                "OPENAI_BASE_URL": "https://legacy.example/v1",
+            })
+            base, key, _, _ = preprocessor._config()
+        finally:
+            for name, value in original.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+
+        self.assertEqual(base, "https://legacy.example/v1")
+        self.assertEqual(key, "test-legacy")
+
+    def test_legacy_image_provider_is_used_only_when_pro_is_absent(self):
+        config = self.image_config(
+            OPENAI_API_KEY="test-legacy",
+            OPENAI_BASE_URL="https://legacy.example",
+        )
+
+        self.assertEqual(config.base_url, "https://legacy.example/v1")
+        self.assertEqual(config.api_key, "test-legacy")
+        self.assertEqual(config.source, "legacy")
+
+    def test_partial_pro_configuration_fails_without_legacy_fallback(self):
+        for environment in (
+            {"OPENAI_PRO_API": "test-pro"},
+            {"OPENAI_PRO_URL": "https://v.3dprint.beer/managed-ai/v1"},
+        ):
+            with self.subTest(environment=tuple(environment)):
+                with self.assertRaises(preprocessor.OpenAIPreprocessorError) as raised:
+                    self.image_config(
+                        **environment,
+                        OPENAI_API_KEY="test-legacy",
+                        OPENAI_BASE_URL="https://legacy.example/v1",
+                    )
+                self.assertEqual(raised.exception.code, "image_provider_misconfigured")
+
+    def test_missing_image_configuration_is_actionable(self):
+        with self.assertRaises(preprocessor.OpenAIPreprocessorError) as raised:
+            self.image_config()
+
+        self.assertEqual(raised.exception.code, "image_provider_not_configured")
+
+    def test_pro_request_uses_existing_v1_path_and_never_logs_the_key(self):
+        class Response(BytesIO):
+            headers = {}
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                self.close()
+
+        names = self.ENVIRONMENT_NAMES
+        original = {name: os.environ.get(name) for name in names}
+        opener = mock.Mock()
+        opener.open.return_value = Response(b"{}")
+        events = mock.Mock()
+        try:
+            for name in names:
+                os.environ.pop(name, None)
+            os.environ.update({
+                "OPENAI_PRO_API": "test-pro-secret",
+                "OPENAI_PRO_URL": "https://v.3dprint.beer/managed-ai/v1",
+            })
+            with mock.patch.object(preprocessor, "build_network_opener", return_value=opener), \
+                    mock.patch.object(preprocessor, "diagnostic_event", events):
+                preprocessor._image_provider_request("/images/generations", b"{}", "application/json")
+        finally:
+            for name, value in original.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+
+        request = opener.open.call_args.args[0]
+        self.assertEqual(request.full_url, "https://v.3dprint.beer/managed-ai/v1/images/generations")
+        self.assertEqual(request.get_header("Authorization"), "Bearer test-pro-secret")
+        self.assertNotIn("test-pro-secret", repr(events.call_args_list))
 
 
 class StylePreviewPromptTests(unittest.TestCase):
@@ -440,7 +569,7 @@ class ExactImageEditTests(unittest.TestCase):
                 return {"data": [{"b64_json": encoded}]}
 
             with configured_base_url("https://laotie.dev"), mock.patch.object(
-                preprocessor, "_provider_request", side_effect=provider
+                preprocessor, "_image_provider_request", side_effect=provider
             ):
                 preprocessor.edit_image(source, "UPSCALE ONLY", destination)
 
@@ -458,7 +587,7 @@ class ExactImageEditTests(unittest.TestCase):
                 encoded = __import__("base64").b64encode(source.read_bytes()).decode("ascii")
                 return {"data": [{"b64_json": encoded}]}
 
-            with configured_base_url("https://laotie.dev"), mock.patch.object(preprocessor, "_provider_request", side_effect=provider):
+            with configured_base_url("https://laotie.dev"), mock.patch.object(preprocessor, "_image_provider_request", side_effect=provider):
                 preprocessor.edit_image(source, "EXACT MULTIVIEW PROMPT", destination)
 
             self.assertTrue(destination.is_file())
@@ -484,7 +613,7 @@ class ExactImageEditTests(unittest.TestCase):
                 return {"data": [{"b64_json": encoded}]}
 
             with configured_base_url("https://laotie.dev"), mock.patch.object(
-                preprocessor, "_provider_request", side_effect=provider
+                preprocessor, "_image_provider_request", side_effect=provider
             ):
                 preprocessor.edit_image(
                     source,
@@ -495,7 +624,7 @@ class ExactImageEditTests(unittest.TestCase):
 
         self.assertIn(b'name="background"\r\n\r\ntransparent', captured["body"])
 
-    def test_transparent_edit_falls_back_for_compatible_gateway(self):
+    def test_transparent_edit_rejection_never_issues_a_second_billable_request(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "source.png"
             destination = Path(directory) / "result.png"
@@ -504,25 +633,17 @@ class ExactImageEditTests(unittest.TestCase):
 
             def request(_path, body, _content_type):
                 bodies.append(body)
-                if len(bodies) == 1:
-                    raise preprocessor.OpenAIPreprocessorError(
-                        "rejected", code="image_rejected", retryable=False
-                    )
-                return {"data": [{"b64_json": base64.b64encode(source.read_bytes()).decode("ascii")}]}
-
-            with configured_base_url("https://laotie.dev"), mock.patch.object(
-                preprocessor, "_provider_request", side_effect=request
-            ):
-                preprocessor.edit_image(
-                    source,
-                    "KEEP SUBJECT",
-                    destination,
-                    background="transparent",
+                raise preprocessor.OpenAIPreprocessorError(
+                    "rejected", code="image_rejected", retryable=False
                 )
 
-        self.assertEqual(len(bodies), 2)
+            with configured_base_url("https://laotie.dev"), mock.patch.object(
+                preprocessor, "_image_provider_request", side_effect=request
+            ), self.assertRaises(preprocessor.OpenAIPreprocessorError):
+                preprocessor.edit_image(source, "KEEP SUBJECT", destination, background="transparent")
+
+        self.assertEqual(len(bodies), 1)
         self.assertIn(b'name="background"\r\n\r\ntransparent', bodies[0])
-        self.assertNotIn(b'name="background"', bodies[1])
 
     def test_style_preview_protects_realistic_face(self):
         from PIL import ImageDraw
@@ -551,7 +672,7 @@ class ExactImageEditTests(unittest.TestCase):
         self.assertEqual(restore.call_args.args[0], source)
         self.assertEqual(restore.call_args.args[1], destination)
 
-    def test_realistic_preview_builds_sculptural_geometry_after_face_restore(self):
+    def test_realistic_preview_builds_geometry_reference_without_a_second_paid_edit(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "source.png"
@@ -565,8 +686,7 @@ class ExactImageEditTests(unittest.TestCase):
             def edit(_source, prompt, output, **kwargs):
                 source_pixel = Image.open(_source).convert("RGB").getpixel((10, 10))
                 calls.append((Path(_source), prompt, Path(output), kwargs, source_pixel))
-                color = (35, 95, 145) if len(calls) == 1 else (145, 140, 132)
-                Image.new("RGB", (64, 96), color).save(output)
+                Image.new("RGB", (64, 96), (35, 95, 145)).save(output)
                 return Path(output)
 
             def restore(_source, generated, _mask):
@@ -585,17 +705,12 @@ class ExactImageEditTests(unittest.TestCase):
                     geometry_output_path=geometry,
                 )
 
-            self.assertEqual(Image.open(geometry).getpixel((10, 10)), (145, 140, 132))
+            self.assertEqual(Image.open(geometry).getpixel((10, 10)), (205, 165, 125))
             self.assertEqual(Image.open(destination).getpixel((10, 10)), (205, 165, 125))
-            self.assertEqual(len(calls), 2)
-            self.assertEqual(calls[1][0], destination)
+            self.assertEqual(len(calls), 1)
             self.assertEqual(calls[0][3], {"background": "transparent"})
-            self.assertEqual(calls[1][3], {"background": "transparent"})
-            self.assertEqual(calls[1][4], (205, 165, 125))
-            self.assertIn("same uniform neutral warm-gray", calls[1][1])
-            self.assertIn("no skin tone", calls[1][1])
 
-    def test_realistic_preview_falls_back_when_monochrome_geometry_edit_is_unavailable(self):
+    def test_realistic_preview_geometry_copy_uses_only_the_confirmed_provider_result(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "source.png"
@@ -608,8 +723,6 @@ class ExactImageEditTests(unittest.TestCase):
             def edit(_source, _prompt, output, **_kwargs):
                 nonlocal calls
                 calls += 1
-                if calls == 2:
-                    raise preprocessor.OpenAIPreprocessorError("temporary image service failure")
                 Image.new("RGB", (64, 96), (35, 95, 145)).save(output)
                 return Path(output)
 
@@ -625,7 +738,7 @@ class ExactImageEditTests(unittest.TestCase):
                     geometry_output_path=geometry,
                 )
 
-            self.assertEqual(calls, 2)
+            self.assertEqual(calls, 1)
             self.assertEqual(Image.open(geometry).getpixel((10, 10)), (35, 95, 145))
 
     def test_portrait_face_lock_mask_is_opaque_on_face_and_transparent_outside(self):

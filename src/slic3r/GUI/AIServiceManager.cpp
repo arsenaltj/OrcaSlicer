@@ -126,12 +126,13 @@ void inherit_sidecar_environment(boost::process::environment& destination)
     // Start from an empty block so unrelated desktop/cloud credentials cannot
     // flow into Python. Keep only Windows process essentials, proxy/CA policy,
     // and the provider settings explicitly supported by this Sidecar.
-    static constexpr std::array<const char*, 27> allowed {
+    static constexpr std::array<const char*, 29> allowed {
         "SystemRoot", "WINDIR", "COMSPEC", "PATH", "PATHEXT",
         "TEMP", "TMP", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "PROGRAMDATA",
         "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
         "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE",
-        "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_IMAGE_MODEL", "OPENAI_IMAGE_QUALITY",
+        "OPENAI_PRO_API", "OPENAI_PRO_URL", "OPENAI_API_KEY", "OPENAI_BASE_URL",
+        "OPENAI_IMAGE_MODEL", "OPENAI_IMAGE_QUALITY",
         "OPENAI_TEXT_MODEL", "TRIPO_API_BASE", "TRIPO_API_KEY", "TRIPO_MODEL",
     };
     for (const char* name : allowed) {

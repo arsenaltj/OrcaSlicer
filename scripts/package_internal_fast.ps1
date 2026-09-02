@@ -78,50 +78,8 @@ if (-not $revisionMatch.Success -or $revisionMatch.Groups[1].Value.Trim() -ne $R
 }
 
 $defaultsMatch = [regex]::Match($cacheText, '(?m)^ORCA_AI_INTERNAL_DEFAULTS_FILE:FILEPATH=(.+)$')
-if (-not $defaultsMatch.Success -or [string]::IsNullOrWhiteSpace($defaultsMatch.Groups[1].Value)) {
-    throw 'The selected build directory has no ORCA_AI_INTERNAL_DEFAULTS_FILE configured.'
-}
-$defaultsFile = $defaultsMatch.Groups[1].Value.Trim()
-if (-not (Test-Path -LiteralPath $defaultsFile -PathType Leaf)) {
-    throw "Configured internal defaults payload does not exist: $defaultsFile"
-}
-$resolvedDefaultsFile = (Resolve-Path -LiteralPath $defaultsFile).Path
-$repoPrefix = $repoRoot.TrimEnd('\') + '\'
-if ($resolvedDefaultsFile.StartsWith($repoPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-    throw 'The internal defaults payload must be stored outside the Git worktree.'
-}
-if ((Get-Item -LiteralPath $defaultsFile).Length -gt 32768) {
-    throw 'The configured internal defaults payload exceeds the 32 KiB runtime limit.'
-}
-$allowedDefaultNames = @(
-    'version', 'mode', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_IMAGE_MODEL',
-    'OPENAI_TEXT_MODEL', 'TRIPO_API_BASE', 'TRIPO_API_KEY', 'TRIPO_MODEL'
-)
-try {
-    $defaultsPayload = Get-Content -LiteralPath $defaultsFile -Raw | ConvertFrom-Json
-} catch {
-    throw 'The configured internal defaults payload is not valid JSON.'
-}
-if ($defaultsPayload.version -ne 1 -or $defaultsPayload.mode -ne 'internal_locked') {
-    throw 'The configured internal defaults payload must use schema version 1 and mode internal_locked.'
-}
-$unknownDefaults = @($defaultsPayload.PSObject.Properties.Name | Where-Object { $_ -notin $allowedDefaultNames })
-if ($unknownDefaults.Count -gt 0) {
-    throw "The configured internal defaults payload contains unsupported fields: $($unknownDefaults -join ', ')"
-}
-foreach ($property in $defaultsPayload.PSObject.Properties) {
-    if ($property.Name -in @('version', 'mode')) { continue }
-    $value = $property.Value
-    if ($value -isnot [string] -or [string]::IsNullOrEmpty($value) -or $value.Length -gt 8192 -or
-        $value.Contains("`n") -or $value.Contains("`r") -or $value.IndexOf([char]0) -ge 0) {
-        throw "The configured internal defaults payload has an invalid field: $($property.Name)"
-    }
-}
-foreach ($requiredDefault in @('OPENAI_API_KEY', 'OPENAI_BASE_URL', 'TRIPO_API_KEY')) {
-    $value = $defaultsPayload.$requiredDefault
-    if ($value -isnot [string] -or [string]::IsNullOrWhiteSpace($value) -or $value.Contains("`n") -or $value.Contains("`r")) {
-        throw "The configured internal defaults payload has an invalid required field: $requiredDefault"
-    }
+if ($defaultsMatch.Success -and -not [string]::IsNullOrWhiteSpace($defaultsMatch.Groups[1].Value)) {
+    throw 'Provider credentials must come from machine or user environment variables; internal packages must not embed defaults.'
 }
 
 $buildInfoPath = Join-Path $resolvedBuildDir 'orca_ai_build_info.json'
@@ -252,8 +210,6 @@ if ($runtimeDependencies.schema_version -ne 1 -or $runtimeDependencies.python.ve
     $pillowDependency.sha256 -ne $expectedPillowHash) {
     throw 'Pinned AI runtime dependency metadata does not match the supported Python/Pillow runtime.'
 }
-$defaultsSha256 = (Get-FileHash -LiteralPath $resolvedDefaultsFile -Algorithm SHA256).Hash.ToLowerInvariant()
-
 # A short CPack name keeps the NSIS staging path below the Windows path limit.
 $shortPackageName = "OrcaAI_$Revision`_$architecture"
 & $cpackExecutable --config $cpackConfig -G NSIS -C Release -B $resolvedOutputDir -D "CPACK_PACKAGE_FILE_NAME=$shortPackageName"
@@ -274,6 +230,22 @@ $hash = (Get-FileHash -LiteralPath $finalInstaller -Algorithm SHA256).Hash
 $hashFile = "$finalInstaller.sha256"
 Set-Content -LiteralPath $hashFile -Value "$hash  $finalName" -Encoding ascii
 
+$shortPortableName = "OrcaAIPortable_$Revision`_$architecture"
+& $cpackExecutable --config $cpackConfig -G ZIP -C Release -B $resolvedOutputDir -D "CPACK_PACKAGE_FILE_NAME=$shortPortableName"
+if ($LASTEXITCODE -ne 0) {
+    throw "Portable CPack failed with exit code $LASTEXITCODE."
+}
+$generatedPortable = Join-Path $resolvedOutputDir "$shortPortableName.zip"
+if (-not (Test-Path -LiteralPath $generatedPortable -PathType Leaf)) {
+    throw "Expected portable package was not created: $generatedPortable"
+}
+$portableName = "OrcaSlicer_AI_Internal_Fast_V$version`_$Revision`_$architecture`_portable.zip"
+$portablePackage = Join-Path $resolvedOutputDir $portableName
+Move-Item -LiteralPath $generatedPortable -Destination $portablePackage -Force
+$portableHash = (Get-FileHash -LiteralPath $portablePackage -Algorithm SHA256).Hash
+$portableHashFile = "$portablePackage.sha256"
+Set-Content -LiteralPath $portableHashFile -Value "$portableHash  $portableName" -Encoding ascii
+
 $integrationLockPath = Join-Path $repoRoot 'docs\architecture\ai-integration-lock.json'
 if (-not (Test-Path -LiteralPath $integrationLockPath -PathType Leaf)) {
     throw "AI integration lock is missing: $integrationLockPath"
@@ -281,7 +253,7 @@ if (-not (Test-Path -LiteralPath $integrationLockPath -PathType Leaf)) {
 $integrationLock = Get-Content -LiteralPath $integrationLockPath -Raw | ConvertFrom-Json
 $manifestPath = "$finalInstaller.manifest.json"
 $releaseManifest = [ordered]@{
-    schema_version = 1
+    schema_version = 2
     created_utc = [DateTime]::UtcNow.ToString('o')
     installer = $finalName
     installer_sha256 = $hash
@@ -290,7 +262,14 @@ $releaseManifest = [ordered]@{
     package_revision = $Revision
     distribution_channel = 'internal'
     architecture = $architecture
-    internal_defaults_sha256 = $defaultsSha256
+    provider_configuration = [ordered]@{
+        source = 'machine_or_user_environment'
+        image_primary = @('OPENAI_PRO_API', 'OPENAI_PRO_URL')
+        image_legacy_fallback = @('OPENAI_API_KEY', 'OPENAI_BASE_URL')
+        packaged_credentials = $false
+    }
+    portable = $portableName
+    portable_sha256 = $portableHash
     sidecar_version = $buildInfo.sidecar_version
     sidecar_protocol_version = $buildInfo.sidecar_protocol_version
     runtime_dependencies = $runtimeDependencies
@@ -304,6 +283,9 @@ $releaseManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestP
     Sha256 = $hash
     ChecksumFile = $hashFile
     Manifest = $manifestPath
+    Portable = $portablePackage
+    PortableSha256 = $portableHash
+    PortableChecksumFile = $portableHashFile
     Revision = $Revision
     Architecture = $architecture
     LocalizationCatalogs = $requiredCatalogs.Count
