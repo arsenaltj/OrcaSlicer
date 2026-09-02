@@ -22,12 +22,12 @@ EXPECTED_UPSTREAM = {
     "remote": "upstream",
     "branch": "main",
     "ref": "upstream/main",
-    "sha": "db29f570bd2f77742ab04e0bb8f0aa55237bd70a",
+    "sha": "b6ef6cf1be428b931d669dcc31b7f43ae320be85",
 }
 EXPECTED_FEATURE_SOURCES = {
     "model_generation": {
         "branch": "codex/model-generation",
-        "sha": "5081891766e64a35ad3ff586d722499a80e5e8d6",
+        "sha": "320394e4297583eb8af293e6a9f9d307b02b23f2",
     },
     "smart_slicing": {
         "branch": "codex/smart-slicing",
@@ -36,19 +36,19 @@ EXPECTED_FEATURE_SOURCES = {
 }
 EXPECTED_INTEGRATION_RECEIPTS = {
     "model_generation": {
-        "source_sha": "5081891766e64a35ad3ff586d722499a80e5e8d6",
-        "integration_commit": "3c0cfe33be31cea39a4343f1c3c91ea12484ec39",
+        "source_sha": "320394e4297583eb8af293e6a9f9d307b02b23f2",
+        "integration_commit": "9b81026d580eccd1474841c28d118dfcac1631b6",
         "method": "verified_git_object_subset",
         "verified_git_objects": {
-            "src/slic3r/GUI/AIModelGenerationClient.hpp": "a0e3e8e81ad8abc0b02f6699599d0bd1f39642ac",
-            "tools/ai/collect_commons_benchmark_sources.py": "69ec390aed39ca6d49aaca6273fec4a3c6501217",
-            "tools/ai/image2_quality_benchmark.py": "d19f7a7eed30830014d4569b476d5a47c7015f57",
-            "tools/ai/model_input_image_quality.py": "08e22b389001aa60df33bde6c84e2765c5f79915",
-            "tools/ai/test_collect_commons_benchmark_sources.py": "f8a4291e93e815d0a21233c339a4b8fdb6489a91",
-            "tools/ai/test_image2_quality_benchmark.py": "d4e8a9baab157e3d5c34e33526211db90bef439a",
-            "tools/ai/test_image_path_stability.py": "383e66e53cd5d40e620443ac4986796e8e76ec88",
-            "tools/ai/test_model_input_image_quality.py": "cc9ae4fb564114777a6947e9f4b32b4006f2d62f",
-            "tools/ai/test_printable_sidecar_pipeline.py": "6378b63c6611f511e940a5b591cc365538e153b2",
+            "src/slic3r/GUI/AIModelGenerationClient.hpp": "65bda77f5e98d0e8f3dbb28951839fb15289c60c",
+            "tools/ai/image2_quality_benchmark.py": "178102bfdc99c991625b5157264a472d5def65e7",
+            "tools/ai/model_input_image_quality.py": "bfa3a2f05e58fa5e56b7145ea2a5958aec3e2ffd",
+            "tools/ai/model_provider_gateway.py": "f5cf429f4f0b3ff59b0c6de09149f154f460b7da",
+            "tools/ai/portrait_multiview_cleanup.py": "dce58f808452e73c7a4737fa748e6f49557cc8f9",
+            "tools/ai/printable_image_pipeline.py": "04453961425d7c101bd1b734738c4e02e5c5e68c",
+            "tools/ai/printable_multiview_reference.py": "495a81426280ea80805792e86b86194bae6b5b9b",
+            "tools/ai/printable_reference_visual_quality.py": "4c90d2c4ceed52698b98788414fcbd2ce6633a72",
+            "tools/ai/test_printable_sidecar_pipeline.py": "a06e10704d1173e77633fc85321308dd48d25c17",
         },
     },
     "smart_slicing": {
@@ -62,7 +62,7 @@ EXPECTED_INTEGRATION_RECEIPTS = {
     },
 }
 EXPECTED_PROTOCOL_VERSION = 2
-EXPECTED_SIDECAR_VERSION = "orcaslicer-ai-sidecar-v8"
+EXPECTED_SIDECAR_VERSION = "orcaslicer-ai-sidecar-v9"
 EXPECTED_PRODUCT_PORT = 18764
 EXPECTED_DEVELOPMENT_PORTS = {
     "model_generation": 18765,
