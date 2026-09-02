@@ -167,7 +167,7 @@ class PrintableSidecarIntegrationTests(unittest.TestCase):
             self.assertIsNotNone(restored)
             self.assertEqual(restored.print_settings, job.print_settings)
             self.assertEqual(restored.image_metrics, job.image_metrics)
-            self.assertEqual(restored.geometry_reference_path, raw)
+            self.assertTrue(restored.geometry_reference_path.samefile(raw))
             self.assertEqual(set(restored.mask_paths), set(job.mask_paths))
             public = sidecar._public_job(restored)
             self.assertTrue(public["image_outputs"]["strict_preview"]["ready"])
