@@ -33,10 +33,15 @@ TEST_CASE("model-generation progress maps service phases to stable UI milestones
     REQUIRE(display_progress(status) == 90);
     status.phase = "downloading_artifact";
     REQUIRE(display_progress(status) == 92);
+    status.phase = "checking_model";
+    status.progress = 99;
+    REQUIRE(display_progress(status) == 97);
+    status.phase = "checking_visual";
+    REQUIRE(display_progress(status) == 98);
 
     status.phase.clear();
     status.state = "ready";
-    REQUIRE(display_progress(status) == 95);
+    REQUIRE(display_progress(status) == 100);
 }
 
 TEST_CASE("automatic printable palette roles remain deterministic and distinct",
