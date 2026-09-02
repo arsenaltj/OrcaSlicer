@@ -10,7 +10,7 @@
   "feature_sources": {
     "model_generation": {
       "branch": "codex/model-generation",
-      "sha": "320394e4297583eb8af293e6a9f9d307b02b23f2"
+      "sha": "16f8ac0fb048570edb5fe787bdfdfcde4c9fa4b7"
     },
     "smart_slicing": {
       "branch": "codex/smart-slicing",
@@ -19,8 +19,8 @@
   },
   "integration_receipts": {
     "model_generation": {
-      "source_sha": "320394e4297583eb8af293e6a9f9d307b02b23f2",
-      "integration_commit": "9b81026d580eccd1474841c28d118dfcac1631b6",
+      "source_sha": "16f8ac0fb048570edb5fe787bdfdfcde4c9fa4b7",
+      "integration_commit": "616a063192fb0e1ff52ecaf34d4a4c8ee8fae271",
       "method": "verified_git_object_subset",
       "verified_git_objects": {
         "src/slic3r/GUI/AIModelGenerationClient.hpp": "65bda77f5e98d0e8f3dbb28951839fb15289c60c",
@@ -31,7 +31,7 @@
         "tools/ai/printable_image_pipeline.py": "04453961425d7c101bd1b734738c4e02e5c5e68c",
         "tools/ai/printable_multiview_reference.py": "495a81426280ea80805792e86b86194bae6b5b9b",
         "tools/ai/printable_reference_visual_quality.py": "4c90d2c4ceed52698b98788414fcbd2ce6633a72",
-        "tools/ai/test_printable_sidecar_pipeline.py": "a06e10704d1173e77633fc85321308dd48d25c17"
+        "tools/ai/test_printable_sidecar_pipeline.py": "40e8d7ad7ae13818f761541a9f8367ea1623b005"
       }
     },
     "smart_slicing": {
