@@ -13,6 +13,10 @@ on:
         arch:
           required: false
           type: string
+        compiler:
+          required: false
+          type: string
+          default: msvc
         macos-combine-only:
           required: false
           type: boolean
@@ -151,7 +155,7 @@ jobs:
         env:
           ORCA_TESTS_BUILD_ONLY: ${{ inputs.arch == 'arm64' && '1' || '' }}
         run: |
-          ./build_release_macos.sh -s -n -x ${{ !startsWith(inputs.os, 'orca-') && '-1' || '' }} -a ${{ inputs.arch }} -t 10.15 ${{ inputs.arch == 'arm64' && '-T' || '' }}
+          ./build_release_macos.sh -s -n -x ${{ !startsWith(inputs.os, 'orca-') && '-j 3' || '' }} -a ${{ inputs.arch }} -t 10.15 ${{ inputs.arch == 'arm64' && '-T' || '' }}
 
       - name: Pack unit tests mac
         if: runner.os == 'macOS' && !inputs.macos-combine-only && inputs.arch == 'arm64'
@@ -210,7 +214,7 @@ jobs:
         if: runner.os == 'macOS' && inputs.macos-combine-only
         working-directory: ${{ github.workspace }}
         run: |
-          ./build_release_macos.sh -u -x ${{ !startsWith(inputs.os, 'orca-') && '-1' || '' }} -a universal -t 10.15
+          ./build_release_macos.sh -u -x ${{ !startsWith(inputs.os, 'orca-') && '-j 3' || '' }} -a universal -t 10.15
 
  # Thanks to RaySajuuk, it's working now
       - name: Sign app and notary
@@ -405,7 +409,18 @@ jobs:
           ORCA_AI_PACKAGE_REVISION: ci-${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           $arch = "${{ inputs.arch }}"
-          if ($arch -eq "arm64") { .\build_release_vs.bat slicer arm64 tests } else { .\build_release_vs.bat slicer tests }
+          # -l selects clang-cl and -x Ninja; together they build the slicer with clang.
+          $clang = "${{ inputs.compiler }}" -eq "clang"
+          $flags = if ($clang) { "-l", "-x" } else { @() }
+          if ($clang) {
+            # Build against the same VC toolchain and SDK as the dependencies.
+            $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+            $vs = & $vswhere -latest -property installationPath
+            $devArch = if ($arch -eq "arm64") { "arm64" } else { "amd64" }
+            Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+            Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments "-arch=$devArch"
+          }
+          if ($arch -eq "arm64") { .\build_release_vs.bat slicer arm64 @flags tests } else { .\build_release_vs.bat slicer @flags tests }
         shell: pwsh
 
       - name: Verify commercial AI runtime identity
