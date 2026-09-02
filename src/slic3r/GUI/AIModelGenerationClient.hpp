@@ -91,12 +91,14 @@ public:
     struct VisualQuality
     {
         bool                     available { false };
+        bool                     import_recommended { true };
         std::string              status;
         int                      score { 0 };
         double                   confidence { 0.0 };
         std::string              summary;
         std::vector<std::string> errors;
         std::vector<std::string> warnings;
+        std::vector<std::string> blocking_warnings;
         std::map<std::string, std::string> check_reasons;
     };
 
@@ -133,6 +135,14 @@ public:
         std::vector<PaletteRecommendationColor> colors;
     };
 
+    struct StyleRecommendation
+    {
+        std::string              primary;
+        std::vector<std::string> alternatives;
+        std::string              reason;
+        std::string              confidence;
+    };
+
     struct JobStatus
     {
         std::string id;
@@ -143,7 +153,7 @@ public:
         std::string prepared_prompt;
         std::string user_prompt;
         int         progress { 0 };
-        int         face_limit { 300000 };
+        int         face_limit { 2000000 };
         std::string generation_profile { "quality" };
         std::string style;
         std::string custom_style;
@@ -155,6 +165,7 @@ public:
         bool        preview_ready { false };
         bool        raw_preview_ready { false };
         bool        strict_preview_ready { false };
+        bool        model_reference_ready { false };
         bool        heatmap_ready { false };
         bool        metadata_ready { false };
         double      image_score { 0.0 };
@@ -167,7 +178,9 @@ public:
         int         meaningful_subject_color_count { 0 };
         double      printable_subject_area_ratio { 0.0 };
         double      largest_subject_component_ratio { 0.0 };
+        double      largest_detached_subject_diagonal_ratio { 0.0 };
         bool        palette_quality_ok { true };
+        bool        material_fragmentation_ok { true };
         double      model_input_score { 0.0 };
         bool        model_input_eligible { true };
         std::vector<std::string> model_input_blockers;
@@ -176,6 +189,9 @@ public:
         std::string provider_error_category;
         bool        provider_error_retryable { false };
         bool        provider_error_ambiguous { false };
+        std::string provider_name;
+        std::string provider_task_id;
+        std::string provider_conversion_task_id;
         bool        artifact_ready { false };
         std::string artifact_format;
         std::string artifact_color_encoding;
@@ -191,18 +207,21 @@ public:
     using CompleteFn = std::function<void()>;
     using ErrorFn = std::function<void(std::string)>;
     using LatestFn = std::function<void(std::optional<JobStatus>)>;
+    using StyleRecommendationFn = std::function<void(StyleRecommendation)>;
 
     explicit AIModelGenerationClient(std::string endpoint);
     ~AIModelGenerationClient();
 
     void preprocess_text(const std::string& request_id, const std::string& prompt,
                           const std::vector<std::string>& palette, const PaletteRoles& palette_roles,
+                          bool palette_recommendation_confirmed,
                           const std::string& style, const std::string& custom_style,
                           const ImagePrintSettings& print_settings,
                           StatusFn on_complete, ErrorFn on_error);
     void preprocess_image(const std::string& request_id, const std::string& instruction,
                            const boost::filesystem::path& image_path, const std::vector<std::string>& palette,
-                           const PaletteRoles& palette_roles, const std::string& style, const std::string& custom_style,
+                           const PaletteRoles& palette_roles, bool palette_recommendation_confirmed,
+                           const std::string& style, const std::string& custom_style,
                            const ImagePrintSettings& print_settings,
                            StatusFn on_complete, ErrorFn on_error);
     void recommend_text_palette(const std::string& request_id, const std::string& prompt,
@@ -214,11 +233,16 @@ public:
                                  const std::string& style, const std::string& custom_style,
                                  const ImagePrintSettings& print_settings,
                                  StatusFn on_complete, ErrorFn on_error);
+    void recommend_image_style(const std::string& prompt,
+                               const boost::filesystem::path& image_path,
+                               StyleRecommendationFn on_complete, ErrorFn on_error);
     void confirm_palette(const std::string& job_id, const std::vector<std::string>& palette,
                          const PaletteRoles& palette_roles, StatusFn on_complete, ErrorFn on_error);
     void generate(const std::string& job_id, const std::string& prepared_prompt,
                   const std::vector<std::string>& palette, const std::string& generation_profile,
                   StatusFn on_complete, ErrorFn on_error);
+    void retexture(const std::string& reference_job_id, const std::string& geometry_job_id,
+                   StatusFn on_complete, ErrorFn on_error);
     void get_status(const std::string& job_id, StatusFn on_complete, ErrorFn on_error);
     void get_latest(LatestFn on_complete, ErrorFn on_error);
     void recheck(const std::string& job_id, StatusFn on_complete, ErrorFn on_error);
@@ -240,12 +264,14 @@ private:
     using json = nlohmann::json;
 
     std::string url(const std::string& path) const;
-    void post_json(const std::string& path, const json& body, StatusFn on_complete, ErrorFn on_error);
+    void post_json(const std::string& path, const json& body, StatusFn on_complete, ErrorFn on_error,
+                   long timeout_seconds = 130);
     void parse_status_response(std::string body, StatusFn on_complete, ErrorFn on_error);
     static std::optional<JobStatus> parse_job(const json& job);
     static json serialize_print_settings(const ImagePrintSettings& settings);
     void download(const std::string& path, const boost::filesystem::path& destination, size_t size_limit,
                   PathFn on_complete, ErrorFn on_error);
+    void cancel_active_request();
 
     std::string           m_endpoint;
     std::shared_ptr<Http> m_active_request;

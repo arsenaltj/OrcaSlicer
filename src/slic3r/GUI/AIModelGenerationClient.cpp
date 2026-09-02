@@ -21,6 +21,7 @@ constexpr size_t MAX_REFINEMENT_ISSUES = 6;
 constexpr size_t MAX_REFINEMENT_SUMMARY_SIZE = 1024;
 constexpr size_t MAX_REFINEMENT_PROMPT_SIZE = 1200;
 constexpr size_t MAX_REFINEMENT_FIELD_SIZE = 512;
+constexpr size_t MAX_PROVIDER_TASK_ID_SIZE = 256;
 
 std::string normalize_endpoint(std::string endpoint)
 {
@@ -53,10 +54,26 @@ bool valid_recommendation_text(const std::string& value)
     return !value.empty() && value.size() <= MAX_RECOMMENDATION_TEXT_SIZE;
 }
 
+bool valid_style_id(const std::string& value)
+{
+    static const std::vector<std::string> allowed {
+        "sculpture", "realistic", "cartoon", "low_poly", "relief", "diorama"
+    };
+    return std::find(allowed.begin(), allowed.end(), value) != allowed.end();
+}
+
 bool valid_hex_color(const std::string& value)
 {
     static const std::regex pattern(R"(^#[0-9A-Fa-f]{6}$)");
     return std::regex_match(value, pattern);
+}
+
+bool valid_provider_task_id(const std::string& value)
+{
+    return !value.empty() && value.size() <= MAX_PROVIDER_TASK_ID_SIZE &&
+           std::all_of(value.begin(), value.end(), [](unsigned char character) {
+               return std::isalnum(character) || character == '-' || character == '_';
+           });
 }
 
 bool valid_refinement_text(const std::string& value, size_t maximum_size)
@@ -76,7 +93,8 @@ bool valid_refinement_code(const std::string& value)
         "dense_micro_triangles", "visual_subject_incomplete", "visual_semantic_incoherence",
         "visual_silhouette_unclear", "colors_outside_target_palette",
         "too_few_meaningful_target_palette_colors", "tiny_printable_color_regions",
-        "visual_color_regions_unclear"
+        "visual_color_regions_unclear", "visual_identity_mismatch",
+        "visual_material_color_mixing"
     };
     return std::find(allowed.begin(), allowed.end(), value) != allowed.end();
 }
@@ -84,7 +102,7 @@ bool valid_refinement_code(const std::string& value)
 bool valid_refinement_category(const std::string& value)
 {
     static const std::vector<std::string> allowed {
-        "topology", "attachments", "thickness", "base", "overhang", "detail", "semantics", "color"
+        "topology", "attachments", "thickness", "base", "overhang", "detail", "identity", "semantics", "color"
     };
     return std::find(allowed.begin(), allowed.end(), value) != allowed.end();
 }
@@ -124,6 +142,7 @@ std::string AIModelGenerationClient::url(const std::string& path) const
 void AIModelGenerationClient::preprocess_text(const std::string& request_id, const std::string& prompt,
                                                const std::vector<std::string>& palette,
                                                const PaletteRoles& palette_roles,
+                                               bool palette_recommendation_confirmed,
                                                const std::string& style,
                                                const std::string& custom_style,
                                                const ImagePrintSettings& print_settings,
@@ -132,6 +151,7 @@ void AIModelGenerationClient::preprocess_text(const std::string& request_id, con
     post_json("/v1/orcaslicer/model-jobs/text",
               json::object({ { "request_id", request_id }, { "prompt", prompt }, { "palette", palette },
                              { "palette_roles", palette_roles }, { "style", style },
+                             { "palette_recommendation_confirmed", palette_recommendation_confirmed },
                              { "custom_style", custom_style },
                              { "print", serialize_print_settings(print_settings) } }),
               std::move(on_complete), std::move(on_error));
@@ -141,6 +161,7 @@ void AIModelGenerationClient::preprocess_image(const std::string& request_id, co
                                                 const boost::filesystem::path& image_path,
                                                  const std::vector<std::string>& palette,
                                                  const PaletteRoles& palette_roles,
+                                                 bool palette_recommendation_confirmed,
                                                  const std::string& style,
                                                  const std::string& custom_style,
                                                  const ImagePrintSettings& print_settings,
@@ -162,6 +183,7 @@ void AIModelGenerationClient::preprocess_image(const std::string& request_id, co
         .form_add("instruction", instruction)
         .form_add("palette", json(palette).dump())
         .form_add("palette_roles", json(palette_roles).dump())
+        .form_add("palette_recommendation_confirmed", palette_recommendation_confirmed ? "true" : "false")
         .form_add("style", style)
         .form_add("custom_style", custom_style)
         .form_add("print", serialize_print_settings(print_settings).dump())
@@ -221,6 +243,64 @@ void AIModelGenerationClient::recommend_image_palette(const std::string& request
     m_active_request = http.perform();
 }
 
+void AIModelGenerationClient::recommend_image_style(const std::string& prompt,
+                                                      const boost::filesystem::path& image_path,
+                                                      StyleRecommendationFn on_complete,
+                                                      ErrorFn on_error)
+{
+    cancel_current();
+    if (!is_loopback_endpoint(m_endpoint)) {
+        if (on_error)
+            on_error("Style recommendation requires a loopback AI sidecar endpoint.");
+        return;
+    }
+    auto http = Http::post(url("/v1/orcaslicer/model-style-recommendation"));
+    http.header("X-OrcaSlicer-Client", "native")
+        .timeout_connect(5)
+        .timeout_max(20)
+        .size_limit(64 * 1024)
+        .form_add("instruction", prompt)
+        .form_add_file("image", image_path, image_path.filename().string());
+    http.on_complete([on_complete = std::move(on_complete), on_error](std::string body, unsigned) mutable {
+        auto response = json::parse(body, nullptr, false);
+        if (response.is_discarded() || !response.contains("recommendation") ||
+            !response["recommendation"].is_object()) {
+            if (on_error)
+                on_error("AI sidecar returned an invalid style recommendation.");
+            return;
+        }
+        const auto& value = response["recommendation"];
+        StyleRecommendation recommendation;
+        recommendation.primary = value.value("primary", std::string());
+        recommendation.reason = value.value("reason", std::string());
+        recommendation.confidence = value.value("confidence", std::string());
+        if (value.contains("alternatives") && value["alternatives"].is_array()) {
+            for (const auto& alternative : value["alternatives"])
+                if (alternative.is_string()) recommendation.alternatives.emplace_back(alternative.get<std::string>());
+        }
+        const bool valid = valid_style_id(recommendation.primary) &&
+            recommendation.alternatives.size() == 2 &&
+            valid_style_id(recommendation.alternatives[0]) &&
+            valid_style_id(recommendation.alternatives[1]) &&
+            recommendation.primary != recommendation.alternatives[0] &&
+            recommendation.primary != recommendation.alternatives[1] &&
+            recommendation.alternatives[0] != recommendation.alternatives[1] &&
+            valid_recommendation_text(recommendation.reason);
+        if (!valid) {
+            if (on_error)
+                on_error("AI sidecar returned an invalid style recommendation.");
+            return;
+        }
+        if (on_complete)
+            on_complete(std::move(recommendation));
+    });
+    http.on_error([on_error = std::move(on_error)](std::string body, std::string error, unsigned status) {
+        if (on_error)
+            on_error(error_message(body, error, status));
+    });
+    m_active_request = http.perform();
+}
+
 void AIModelGenerationClient::confirm_palette(const std::string& job_id, const std::vector<std::string>& palette,
                                                 const PaletteRoles& palette_roles,
                                                 StatusFn on_complete, ErrorFn on_error)
@@ -240,9 +320,21 @@ void AIModelGenerationClient::generate(const std::string& job_id, const std::str
               std::move(on_complete), std::move(on_error));
 }
 
+void AIModelGenerationClient::retexture(const std::string& reference_job_id,
+                                        const std::string& geometry_job_id,
+                                        StatusFn on_complete, ErrorFn on_error)
+{
+    post_json("/v1/orcaslicer/model-jobs/" + reference_job_id + "/retexture",
+              json::object({ { "geometry_job_id", geometry_job_id } }),
+              std::move(on_complete), std::move(on_error));
+}
+
 void AIModelGenerationClient::get_status(const std::string& job_id, StatusFn on_complete, ErrorFn on_error)
 {
-    cancel_current();
+    // Status polling must not cancel preview/artifact downloads. Large portrait
+    // references often span more than one polling interval; cancelling them
+    // here made the UI silently keep an older fallback image.
+    cancel_active_request();
     if (!is_loopback_endpoint(m_endpoint)) {
         if (on_error)
             on_error("Model generation requires a loopback AI sidecar endpoint.");
@@ -264,7 +356,7 @@ void AIModelGenerationClient::get_status(const std::string& job_id, StatusFn on_
 
 void AIModelGenerationClient::get_latest(LatestFn on_complete, ErrorFn on_error)
 {
-    cancel_current();
+    cancel_active_request();
     if (!is_loopback_endpoint(m_endpoint)) {
         if (on_error)
             on_error("Model generation requires a loopback AI sidecar endpoint.");
@@ -305,7 +397,7 @@ void AIModelGenerationClient::recheck(const std::string& job_id, StatusFn on_com
 void AIModelGenerationClient::visual_review(const std::string& job_id, StatusFn on_complete, ErrorFn on_error)
 {
     post_json("/v1/orcaslicer/model-jobs/" + job_id + "/visual-review", json::object(),
-              std::move(on_complete), std::move(on_error));
+              std::move(on_complete), std::move(on_error), 420);
 }
 
 void AIModelGenerationClient::stop(const std::string& job_id, StatusFn on_complete, ErrorFn on_error)
@@ -348,7 +440,9 @@ void AIModelGenerationClient::download_image_output(const std::string& job_id, c
                                                       const boost::filesystem::path& path,
                                                       PathFn on_complete, ErrorFn on_error)
 {
-    static const std::vector<std::string> allowed { "raw-preview", "strict-preview", "preview", "heatmap" };
+    static const std::vector<std::string> allowed {
+        "raw-preview", "strict-preview", "preview", "model-reference", "heatmap"
+    };
     if (std::find(allowed.begin(), allowed.end(), output) == allowed.end()) {
         if (on_error)
             on_error("The requested printable image output is not supported.");
@@ -398,7 +492,7 @@ void AIModelGenerationClient::record_journey_event(const std::string& event, con
 }
 
 void AIModelGenerationClient::post_json(const std::string& path, const json& body,
-                                        StatusFn on_complete, ErrorFn on_error)
+                                        StatusFn on_complete, ErrorFn on_error, long timeout_seconds)
 {
     cancel_current();
     if (!is_loopback_endpoint(m_endpoint)) {
@@ -411,7 +505,7 @@ void AIModelGenerationClient::post_json(const std::string& path, const json& bod
     AISidecarClient::configure_native_request(http);
     http.header("Content-Type", "application/json")
         .timeout_connect(5)
-        .timeout_max(130)
+        .timeout_max(timeout_seconds)
         .size_limit(1024 * 1024)
         .set_post_body(body.dump());
     http.on_complete([this, on_complete = std::move(on_complete), on_error](std::string response, unsigned) mutable {
@@ -456,7 +550,7 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
     status.prepared_prompt = job.value("prepared_prompt", std::string());
     status.user_prompt = job.value("user_prompt", std::string());
     status.progress = std::clamp(job.value("progress", 0), 0, 100);
-    status.face_limit = job.value("face_limit", 300000);
+    status.face_limit = job.value("face_limit", 2000000);
     status.generation_profile = job.value("generation_profile", std::string("quality"));
     status.style = job.value("style", std::string());
     status.custom_style = job.value("custom_style", std::string());
@@ -522,6 +616,7 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
         };
         status.raw_preview_ready = ready("raw_preview");
         status.strict_preview_ready = ready("strict_preview");
+        status.model_reference_ready = ready("model_reference");
         status.heatmap_ready = ready("heatmap");
         status.metadata_ready = ready("metadata");
     }
@@ -537,15 +632,26 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
         status.meaningful_subject_color_count = metrics.value("meaningful_subject_color_count", 0);
         status.printable_subject_area_ratio = metrics.value("printable_subject_area_ratio", 0.0);
         status.largest_subject_component_ratio = metrics.value("largest_subject_component_ratio", 0.0);
+        status.largest_detached_subject_diagonal_ratio = metrics.value(
+            "largest_detached_subject_diagonal_ratio", 0.0);
         status.palette_quality_ok = metrics.value("palette_quality_ok", true);
-        if (metrics.contains("model_input_quality") && metrics["model_input_quality"].is_object()) {
-            const auto& input_quality = metrics["model_input_quality"];
-            status.model_input_score = input_quality.value("score", 0.0);
-            status.model_input_eligible = input_quality.value("model_input_eligible", true);
-            const auto read_codes = [&input_quality](const char* name, std::vector<std::string>& output) {
-                if (!input_quality.contains(name) || !input_quality[name].is_array())
+        status.material_fragmentation_ok = metrics.value("material_fragmentation_ok", true);
+        // The generic preview check runs before the portrait-specific geometry
+        // reference is built.  Prefer the later paid-task preflight result when
+        // it is available; otherwise the UI can keep enabling "Generate 3D"
+        // even though the exact image that would be sent to Tripo was rejected.
+        const nlohmann::json* input_quality = nullptr;
+        if (metrics.contains("generation_input_quality") && metrics["generation_input_quality"].is_object())
+            input_quality = &metrics["generation_input_quality"];
+        else if (metrics.contains("model_input_quality") && metrics["model_input_quality"].is_object())
+            input_quality = &metrics["model_input_quality"];
+        if (input_quality != nullptr) {
+            status.model_input_score = input_quality->value("score", 0.0);
+            status.model_input_eligible = input_quality->value("model_input_eligible", true);
+            const auto read_codes = [input_quality](const char* name, std::vector<std::string>& output) {
+                if (!input_quality->contains(name) || !(*input_quality)[name].is_array())
                     return;
-                for (const auto& value : input_quality[name])
+                for (const auto& value : (*input_quality)[name])
                     if (value.is_string()) output.push_back(value.get<std::string>());
             };
             read_codes("blockers", status.model_input_blockers);
@@ -558,6 +664,18 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
         status.provider_error_category = failure.value("category", std::string());
         status.provider_error_retryable = failure.value("retryable", false);
         status.provider_error_ambiguous = failure.value("ambiguous", false);
+    }
+    if (job.contains("provider_tasks") && job["provider_tasks"].is_object()) {
+        const auto& tasks = job["provider_tasks"];
+        const std::string provider = tasks.value("provider", std::string());
+        const std::string generation_task_id = tasks.value("generation_task_id", std::string());
+        const std::string conversion_task_id = tasks.value("conversion_task_id", std::string());
+        if (provider == "tripo" && valid_provider_task_id(generation_task_id)) {
+            status.provider_name = provider;
+            status.provider_task_id = generation_task_id;
+            if (valid_provider_task_id(conversion_task_id))
+                status.provider_conversion_task_id = conversion_task_id;
+        }
     }
     if (job.contains("artifact") && job["artifact"].is_object()) {
         status.artifact_ready = job["artifact"].value("ready", false);
@@ -711,6 +829,7 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
         const auto& quality = job["visual_quality"];
         status.visual_quality.status = quality.value("status", std::string());
         status.visual_quality.available = !status.visual_quality.status.empty();
+        status.visual_quality.import_recommended = quality.value("import_recommended", true);
         status.visual_quality.score = std::clamp(quality.value("score", 0), 0, 100);
         status.visual_quality.confidence = std::clamp(quality.value("confidence", 0.0), 0.0, 1.0);
         status.visual_quality.summary = quality.value("summary", std::string());
@@ -722,6 +841,7 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
         };
         read_codes("errors", status.visual_quality.errors);
         read_codes("warnings", status.visual_quality.warnings);
+        read_codes("blocking_warnings", status.visual_quality.blocking_warnings);
         if (quality.contains("checks") && quality["checks"].is_object()) {
             for (const auto& [name, check] : quality["checks"].items())
                 if (check.is_object() && check.value("status", std::string()) == "review")
@@ -830,15 +950,20 @@ void AIModelGenerationClient::download(const std::string& path, const boost::fil
 
 void AIModelGenerationClient::cancel_current()
 {
-    if (m_active_request) {
-        m_active_request->cancel();
-        m_active_request.reset();
-    }
+    cancel_active_request();
     for (const std::shared_ptr<Http>& request : m_download_requests) {
         if (request)
             request->cancel();
     }
     m_download_requests.clear();
+}
+
+void AIModelGenerationClient::cancel_active_request()
+{
+    if (m_active_request) {
+        m_active_request->cancel();
+        m_active_request.reset();
+    }
 }
 
 } // namespace Slic3r::GUI

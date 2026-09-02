@@ -35,7 +35,7 @@ except ImportError:
 
 
 DEFAULT_FACE_LIMIT = 500000
-FACE_LIMITS = (100000, 300000, 500000, 1000000)
+FACE_LIMITS = (100000, 300000, 500000, 1000000, 2000000)
 PREFLIGHT_FILENAME = "approved-model-preflight.json"
 QUALITY_FILENAME = "final-model-quality.json"
 RESULT_FILENAME = "approved-model-validation.json"

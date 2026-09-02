@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import base64
 import contextlib
 from io import BytesIO
 import os
@@ -144,11 +145,30 @@ class StylePreviewPromptTests(unittest.TestCase):
         self.assertIn("Use at least 2 listed colors", prompt)
         self.assertIn("Cover at least 65 percent of the visible subject", prompt)
         self.assertIn("Never retain natural flesh tones", prompt)
+        self.assertIn("open jawline", prompt)
+        self.assertIn("Never extend hair", prompt)
+        self.assertIn("collar must connect the neck to the torso", prompt)
         self.assertIn("outer silhouette, neck, limbs", prompt)
         self.assertIn("visibly joined by opaque palette-colored geometry", prompt)
         self.assertIn("clearly separated from every listed palette color", prompt)
         self.assertIn("identity-defining engraved lines", prompt)
+        self.assertIn("stable base material assignment", prompt)
+        self.assertIn("restrained neutral studio illumination", prompt)
+        self.assertIn("keep it continuous across the face, ears, neck, and visible hands", prompt)
+        self.assertIn("not scattered tooth or highlight islands", prompt)
         self.assertIn("will disappear during exact-palette mapping", prompt)
+        self.assertIn("Real-person identity geometry rule", prompt)
+        self.assertIn("never mirror or invent a second hand", prompt)
+        self.assertIn("Never invent a bare elbow, upper arm, or forearm", prompt)
+        self.assertIn("shared low integrated base", prompt)
+        self.assertIn("paper-thin single sheet", prompt)
+        self.assertIn("overlapping solid pin housings", prompt)
+        self.assertIn("positive-volume union", prompt)
+        self.assertIn("Butt contact, near-touching tips", prompt)
+        self.assertIn("bucket or blade merged", prompt)
+        self.assertIn("central shaft penetrate and fuse", prompt)
+        self.assertIn("source-visible feminine or masculine presentation", prompt)
+        self.assertIn("Do not age the person up", prompt)
         self.assertIn("Do not turn the chosen person, animal, statue, building, or object into a different subject", prompt)
         self.assertNotIn("Preserve the exact canvas, aspect ratio, crop, framing", prompt)
         self.assertNotIn("one fused connected object", prompt)
@@ -159,6 +179,10 @@ class StylePreviewPromptTests(unittest.TestCase):
         sculpture = preprocessor._style_preview_prompt("preserve pose", (), "sculpture")
 
         self.assertIn("changing as little as possible", realistic)
+        self.assertIn("polychrome portrait sculpture or faithful 3D scan", realistic)
+        self.assertIn("REALISTIC PORTRAIT IDENTITY LOCK", realistic)
+        self.assertIn("compare the source and result face at equal size", realistic)
+        self.assertNotIn("REALISTIC PORTRAIT IDENTITY LOCK", cartoon)
         self.assertIn("friendly cute cartoon collectible", cartoon)
         self.assertIn("one monochrome museum-quality", sculpture)
         for prompt in (realistic, cartoon, sculpture):
@@ -170,21 +194,62 @@ class StylePreviewPromptTests(unittest.TestCase):
             self.assertIn("wheels, handles, openings, windows, lenses, dials, buttons", prompt)
             self.assertIn("preserve tier and opening counts", prompt)
             self.assertIn("thicken it subtly instead of deleting or duplicating it", prompt)
+            self.assertIn("branching organic subject", prompt)
+            self.assertIn("isolated leaf pads", prompt)
         self.assertIn("allowed printable palette", realistic)
-        self.assertIn("full-color designer toy", realistic)
+        self.assertIn("museum-grade polychrome portrait maquette", realistic)
+        self.assertIn("must not look like a designer toy", realistic)
+        self.assertIn("mild beautification may clean skin and hair texture", realistic)
+        self.assertNotIn("premium full-color designer toy", realistic)
         self.assertNotIn("allowed printable palette", sculpture)
         self.assertIn("monochrome means one material, not fewer components", sculpture)
         self.assertIn("rather than changing identity", cartoon)
 
-    def test_legacy_styles_resolve_to_the_new_four_style_profiles(self):
+    def test_relief_and_diorama_support_rules_override_generic_base_rules(self):
+        relief = preprocessor._style_preview_prompt("preserve machine", ("#FFFFFF", "#000000"), "relief")
+        diorama = preprocessor._style_preview_prompt("preserve product", ("#FFFFFF", "#000000"), "diorama")
+        cartoon = preprocessor._style_preview_prompt("preserve product", ("#FFFFFF", "#000000"), "cartoon")
+
+        self.assertIn("RELIEF SUPPORT OVERRIDE", relief)
+        self.assertIn("backing plaque is mandatory", relief)
+        self.assertIn("overrides both the portrait display-base rule and the non-human base-free rule", relief)
+        self.assertNotIn("must remain base-free when the source is base-free", relief)
+        self.assertIn("DIORAMA SUPPORT OVERRIDE", diorama)
+        self.assertIn("shared low terrain or floor base", diorama)
+        self.assertIn("without inventing rocks, plants, furniture, buildings", diorama)
+        self.assertNotIn("must remain base-free when the source is base-free", diorama)
+        self.assertIn("must remain base-free when the source is base-free", cartoon)
+
+    def test_text_generation_receives_the_same_style_support_overrides(self):
+        relief = preprocessor._text_image_prompt("one reading corner", ("#FFFFFF", "#000000"), "relief")
+        diorama = preprocessor._text_image_prompt("one reading corner", ("#FFFFFF", "#000000"), "diorama")
+
+        self.assertIn("RELIEF SUPPORT OVERRIDE", relief)
+        self.assertIn("never return a free-standing figurine", relief)
+        self.assertIn("DIORAMA SUPPORT OVERRIDE", diorama)
+        self.assertIn("Fuse every requested subject and prop to that one base", diorama)
+
+    def test_non_realistic_styles_promote_text_cleanup_without_changing_realistic_contract(self):
+        cartoon = preprocessor._style_preview_prompt("preserve labeled drill", ("#FFFFFF", "#000000"), "cartoon")
+        relief = preprocessor._style_preview_prompt("preserve labeled robot", ("#FFFFFF", "#000000"), "relief")
+        realistic = preprocessor._style_preview_prompt("preserve labeled product", ("#FFFFFF", "#000000"), "realistic")
+
+        for prompt in (cartoon, relief):
+            self.assertIn("NON-REALISTIC TEXT CLEANUP", prompt)
+            self.assertIn("blank recessed panel", prompt)
+            self.assertIn("do not invent plausible substitute spelling", prompt)
+        self.assertNotIn("NON-REALISTIC TEXT CLEANUP", realistic)
+        self.assertNotIn("RELIEF SUPPORT OVERRIDE", realistic)
+        self.assertIn("must remain base-free when the source is base-free", realistic)
+
+    def test_legacy_and_print_specific_style_profiles_resolve(self):
         self.assertEqual(
             preprocessor._style_profile("q_cartoon"),
             preprocessor._style_profile("cartoon"),
         )
-        self.assertEqual(
-            preprocessor._style_profile("low_poly"),
-            preprocessor._style_profile("realistic"),
-        )
+        self.assertIn("broad, clean planar facets", preprocessor._style_profile("low_poly"))
+        self.assertIn("shallow bas-relief", preprocessor._style_profile("relief"))
+        self.assertIn("miniature diorama", preprocessor._style_profile("diorama"))
 
     def test_natural_color_mode_omits_printable_palette_constraint(self):
         prompt = preprocessor._style_preview_prompt("preserve pose", (), "q_cartoon")
@@ -246,11 +311,28 @@ class TextImagePromptTests(unittest.TestCase):
         self.assertIn("unless that exact shade is one of the listed printable colors", prompt)
         self.assertIn("closed component inventory", prompt)
         self.assertIn("never as lighting highlights", prompt)
+        self.assertIn("thin load-bearing shaft, rib, spoke", prompt)
+        self.assertIn("structure color as one flat opaque material from end to end", prompt)
+        self.assertIn("stable base material assignment", prompt)
+        self.assertIn("restrained neutral studio illumination", prompt)
+        self.assertIn("never break skin", prompt)
+        self.assertIn("contact-only branch shell", prompt)
+        self.assertIn("Real-person identity geometry rule", prompt)
+        self.assertIn("Never invent a bare elbow, upper arm, or forearm", prompt)
+        self.assertIn("shared low integrated base", prompt)
+        self.assertIn("paper-thin single sheet", prompt)
 
     def test_text_image_prompt_omits_palette_language_in_natural_mode(self):
         prompt = preprocessor._text_image_prompt("a toy dragon", (), "low_poly")
         self.assertIn("coherent natural colors", prompt)
         self.assertNotIn("physical filament palette", prompt)
+
+    def test_public_text_prompt_matches_generation_contract(self):
+        palette = ("#C95B43", "#253B5E", "#F2E5C4", "#D6A72C")
+        self.assertEqual(
+            preprocessor.build_text_image_prompt("two coworkers", palette, "cartoon"),
+            preprocessor._text_image_prompt("two coworkers", palette, "cartoon"),
+        )
 
 
 class VisionCompletionTests(unittest.TestCase):
@@ -305,6 +387,8 @@ class PrintablePaletteRecommendationTests(unittest.TestCase):
         self.assertIn("different hue family from primary", complete.call_args.args[0])
         self.assertIn("overrides any monochrome", complete.call_args.args[0])
         self.assertIn("structure visibly dark", complete.call_args.args[0])
+        self.assertIn("reserve light for the continuous skin material", complete.call_args.args[0])
+        self.assertIn("Never assign skin to primary", complete.call_args.args[0])
 
     def test_image_recommendation_uses_vision_completion(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -344,6 +428,24 @@ class PrintablePaletteRecommendationTests(unittest.TestCase):
 
 
 class ExactImageEditTests(unittest.TestCase):
+    def test_exact_edit_creates_destination_directory_before_saving(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.png"
+            destination = root / "nested" / "result.png"
+            Image.new("RGB", (8, 8), "red").save(source)
+
+            def provider(_path, _body, _content_type):
+                encoded = __import__("base64").b64encode(source.read_bytes()).decode("ascii")
+                return {"data": [{"b64_json": encoded}]}
+
+            with configured_base_url("https://laotie.dev"), mock.patch.object(
+                preprocessor, "_provider_request", side_effect=provider
+            ):
+                preprocessor.edit_image(source, "UPSCALE ONLY", destination)
+
+            self.assertTrue(destination.is_file())
+
     def test_exact_prompt_is_sent_without_style_wrapper(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "source.png"
@@ -364,8 +466,238 @@ class ExactImageEditTests(unittest.TestCase):
         self.assertEqual(captured["path"], "/images/edits")
         self.assertIn(b"EXACT MULTIVIEW PROMPT", captured["body"])
         self.assertIn(b'name="quality"\r\n\r\nhigh', captured["body"])
-        self.assertIn(b'name="size"\r\n\r\n1024x1024', captured["body"])
+        self.assertIn(b'name="input_fidelity"\r\n\r\nhigh', captured["body"])
+        self.assertIn(b'name="size"\r\n\r\nauto', captured["body"])
+        self.assertNotIn(b'name="background"', captured["body"])
         self.assertNotIn(b"designer-ready style preview", captured["body"])
+
+    def test_exact_edit_can_request_real_transparent_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.png"
+            destination = Path(directory) / "result.png"
+            Image.new("RGB", (8, 8), "red").save(source)
+            captured = {}
+
+            def provider(path, body, content_type):
+                captured.update(path=path, body=body, content_type=content_type)
+                encoded = __import__("base64").b64encode(source.read_bytes()).decode("ascii")
+                return {"data": [{"b64_json": encoded}]}
+
+            with configured_base_url("https://laotie.dev"), mock.patch.object(
+                preprocessor, "_provider_request", side_effect=provider
+            ):
+                preprocessor.edit_image(
+                    source,
+                    "TURN TABLE",
+                    destination,
+                    background="transparent",
+                )
+
+        self.assertIn(b'name="background"\r\n\r\ntransparent', captured["body"])
+
+    def test_transparent_edit_falls_back_for_compatible_gateway(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.png"
+            destination = Path(directory) / "result.png"
+            Image.new("RGB", (32, 32), (120, 130, 140)).save(source)
+            bodies = []
+
+            def request(_path, body, _content_type):
+                bodies.append(body)
+                if len(bodies) == 1:
+                    raise preprocessor.OpenAIPreprocessorError(
+                        "rejected", code="image_rejected", retryable=False
+                    )
+                return {"data": [{"b64_json": base64.b64encode(source.read_bytes()).decode("ascii")}]}
+
+            with mock.patch.object(preprocessor, "_provider_request", side_effect=request):
+                preprocessor.edit_image(
+                    source,
+                    "KEEP SUBJECT",
+                    destination,
+                    background="transparent",
+                )
+
+        self.assertEqual(len(bodies), 2)
+        self.assertIn(b'name="background"\r\n\r\ntransparent', bodies[0])
+        self.assertNotIn(b'name="background"', bodies[1])
+
+    def test_style_preview_protects_realistic_face(self):
+        from PIL import ImageDraw
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.png"
+            destination = Path(directory) / "result.png"
+            image = Image.new("RGB", (240, 360), (185, 190, 195))
+            draw = ImageDraw.Draw(image)
+            draw.ellipse((80, 45, 160, 150), fill=(218, 164, 124))
+            draw.rectangle((45, 150, 195, 350), fill=(242, 240, 235))
+            image.save(source)
+            with mock.patch.object(preprocessor, "edit_image", return_value=destination) as edit, \
+                 mock.patch.object(preprocessor, "_restore_portrait_face_from_source", return_value=True) as restore:
+                result = preprocessor.preprocess_image(
+                    source,
+                    "preserve this person",
+                    destination,
+                    ("#FFFFFF", "#111111", "#F0C8AA", "#315B48"),
+                    "realistic",
+                )
+
+        self.assertEqual(result, destination)
+        self.assertEqual(edit.call_args.kwargs.get("background"), "transparent")
+        self.assertIn("protected face", edit.call_args.args[1])
+        self.assertEqual(restore.call_args.args[0], source)
+        self.assertEqual(restore.call_args.args[1], destination)
+
+    def test_realistic_preview_builds_sculptural_geometry_after_face_restore(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.png"
+            destination = root / "result.png"
+            geometry = root / "geometry.png"
+            mask = root / "mask.png"
+            Image.new("RGB", (64, 96), (180, 150, 120)).save(source)
+
+            calls = []
+
+            def edit(_source, prompt, output, **kwargs):
+                source_pixel = Image.open(_source).convert("RGB").getpixel((10, 10))
+                calls.append((Path(_source), prompt, Path(output), kwargs, source_pixel))
+                color = (35, 95, 145) if len(calls) == 1 else (145, 140, 132)
+                Image.new("RGB", (64, 96), color).save(output)
+                return Path(output)
+
+            def restore(_source, generated, _mask):
+                Image.new("RGB", (64, 96), (205, 165, 125)).save(generated)
+                return True
+
+            with mock.patch.object(preprocessor, "edit_image", side_effect=edit), \
+                 mock.patch.object(preprocessor, "_portrait_face_lock_mask", return_value=mask), \
+                 mock.patch.object(preprocessor, "_restore_portrait_face_from_source", side_effect=restore):
+                preprocessor.preprocess_image(
+                    source,
+                    "preserve this person",
+                    destination,
+                    ("#FFFFFF", "#111111", "#F0C8AA", "#315B48"),
+                    "realistic",
+                    geometry_output_path=geometry,
+                )
+
+            self.assertEqual(Image.open(geometry).getpixel((10, 10)), (145, 140, 132))
+            self.assertEqual(Image.open(destination).getpixel((10, 10)), (205, 165, 125))
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(calls[1][0], destination)
+            self.assertEqual(calls[0][3], {"background": "transparent"})
+            self.assertEqual(calls[1][3], {"background": "transparent"})
+            self.assertEqual(calls[1][4], (205, 165, 125))
+            self.assertIn("same uniform neutral warm-gray", calls[1][1])
+            self.assertIn("no skin tone", calls[1][1])
+
+    def test_realistic_preview_falls_back_when_monochrome_geometry_edit_is_unavailable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.png"
+            destination = root / "result.png"
+            geometry = root / "geometry.png"
+            mask = root / "mask.png"
+            Image.new("RGB", (64, 96), (180, 150, 120)).save(source)
+            calls = 0
+
+            def edit(_source, _prompt, output, **_kwargs):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    raise preprocessor.OpenAIPreprocessorError("temporary image service failure")
+                Image.new("RGB", (64, 96), (35, 95, 145)).save(output)
+                return Path(output)
+
+            with mock.patch.object(preprocessor, "edit_image", side_effect=edit), \
+                 mock.patch.object(preprocessor, "_portrait_face_lock_mask", return_value=mask), \
+                 mock.patch.object(preprocessor, "_restore_portrait_face_from_source", return_value=True):
+                preprocessor.preprocess_image(
+                    source,
+                    "preserve this person",
+                    destination,
+                    ("#FFFFFF", "#111111", "#F0C8AA", "#315B48"),
+                    "realistic",
+                    geometry_output_path=geometry,
+                )
+
+            self.assertEqual(calls, 2)
+            self.assertEqual(Image.open(geometry).getpixel((10, 10)), (35, 95, 145))
+
+    def test_portrait_face_lock_mask_is_opaque_on_face_and_transparent_outside(self):
+        from PIL import ImageDraw
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.png"
+            image = Image.new("RGB", (240, 360), (185, 190, 195))
+            draw = ImageDraw.Draw(image)
+            draw.ellipse((80, 45, 160, 150), fill=(218, 164, 124))
+            draw.rectangle((105, 140, 135, 205), fill=(210, 154, 116))
+            draw.rectangle((45, 150, 195, 350), fill=(242, 240, 235))
+            image.save(source)
+
+            mask = preprocessor._portrait_face_lock_mask(source, root / "mask.png")
+
+            self.assertIsNotNone(mask)
+            with Image.open(mask) as opened:
+                alpha = opened.getchannel("A")
+                self.assertGreater(alpha.getpixel((120, 95)), 240)
+                self.assertLess(alpha.getpixel((20, 300)), 10)
+
+    def test_portrait_face_restore_keeps_the_full_face_but_not_the_body(self):
+        from PIL import ImageDraw
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.png"
+            generated = root / "generated.png"
+            mask = root / "mask.png"
+            Image.new("RGB", (240, 360), (210, 120, 90)).save(source)
+            Image.new("RGBA", (240, 360), (40, 90, 160, 255)).save(generated)
+            mask_image = Image.new("RGBA", (240, 360), (0, 0, 0, 0))
+            ImageDraw.Draw(mask_image).ellipse((70, 40, 170, 180), fill=(0, 0, 0, 255))
+            mask_image.save(mask)
+
+            restored = preprocessor._restore_portrait_face_from_source(source, generated, mask)
+
+            self.assertTrue(restored)
+            with Image.open(generated).convert("RGB") as result:
+                self.assertEqual(result.getpixel((120, 110)), (210, 120, 90))
+                self.assertNotEqual(result.getpixel((82, 110)), (40, 90, 160))
+                self.assertEqual(result.getpixel((20, 300)), (40, 90, 160))
+
+    def test_neutral_relief_restore_keeps_landmark_values_without_source_color(self):
+        from PIL import ImageDraw
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.png"
+            generated = root / "generated.png"
+            mask = root / "mask.png"
+            source_image = Image.new("RGB", (240, 360), (220, 150, 105))
+            draw = ImageDraw.Draw(source_image)
+            draw.ellipse((100, 90, 114, 104), fill=(20, 30, 35))
+            source_image.save(source)
+            Image.new("RGBA", (240, 360), (150, 145, 138, 255)).save(generated)
+            mask_image = Image.new("RGBA", (240, 360), (0, 0, 0, 0))
+            ImageDraw.Draw(mask_image).ellipse((70, 40, 170, 180), fill=(0, 0, 0, 255))
+            mask_image.save(mask)
+
+            restored = preprocessor._restore_portrait_face_as_neutral_relief(
+                source, generated, mask
+            )
+
+            self.assertTrue(restored)
+            with Image.open(generated).convert("RGB") as result:
+                skin = result.getpixel((120, 110))
+                eye = result.getpixel((107, 97))
+                self.assertLess(max(skin) - min(skin), 16)
+                self.assertLess(max(eye) - min(eye), 16)
+                self.assertLess(sum(eye), sum(skin))
+                self.assertEqual(result.getpixel((20, 300)), (150, 145, 138))
 
 
 class ImageDownloadTests(unittest.TestCase):

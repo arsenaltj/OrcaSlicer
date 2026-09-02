@@ -135,7 +135,7 @@ try {
 }
 if ($buildInfo.schema_version -ne 1 -or $buildInfo.application_commit -ne $currentHead -or
     $buildInfo.package_revision -ne $Revision -or $buildInfo.distribution_channel -ne 'internal' -or
-    $buildInfo.sidecar_protocol_version -ne 2 -or $buildInfo.sidecar_version -ne 'orcaslicer-ai-sidecar-v8') {
+    $buildInfo.sidecar_protocol_version -ne 2 -or $buildInfo.sidecar_version -ne 'orcaslicer-ai-sidecar-v9') {
     throw 'AI build identity does not match the current source, package revision, channel, or Sidecar contract. Reconfigure and rebuild.'
 }
 

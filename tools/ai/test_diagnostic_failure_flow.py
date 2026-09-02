@@ -106,7 +106,7 @@ class DiagnosticFailureFlowTests(unittest.TestCase):
                     "package_revision": "diagnostic-test",
                     "distribution_channel": "internal",
                     "sidecar_protocol_version": 2,
-                    "sidecar_version": "orcaslicer-ai-sidecar-v8",
+                    "sidecar_version": "orcaslicer-ai-sidecar-v9",
                 }),
                 encoding="utf-8",
             )
@@ -173,10 +173,11 @@ class DiagnosticFailureFlowTests(unittest.TestCase):
                     if state == "failed":
                         break
                     time.sleep(0.05)
-                self.assertEqual(state, "failed")
+                log_path = data_dir / "log" / "orca-ai-sidecar.log"
+                log_detail = log_path.read_text(encoding="utf-8") if log_path.is_file() else "log missing"
+                self.assertEqual(state, "failed", log_detail)
                 self.assertEqual(job["message"], "Could not connect to the preprocessing service.")
 
-                log_path = data_dir / "log" / "orca-ai-sidecar.log"
                 events = [
                     json.loads(line)
                     for line in log_path.read_text(encoding="utf-8").splitlines()

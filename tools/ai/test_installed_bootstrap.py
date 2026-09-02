@@ -28,7 +28,7 @@ class InstalledBootstrapTests(unittest.TestCase):
                 "package_revision": "commercial-20260827.1",
                 "distribution_channel": "commercial",
                 "sidecar_protocol_version": 2,
-                "sidecar_version": "orcaslicer-ai-sidecar-v8",
+                "sidecar_version": "orcaslicer-ai-sidecar-v9",
             }
             build_info_path.write_text(json.dumps(payload), encoding="utf-8")
             with mock.patch.dict(os.environ, {}, clear=True):
@@ -45,7 +45,7 @@ class InstalledBootstrapTests(unittest.TestCase):
             "package_revision": "test",
             "distribution_channel": "internal",
             "sidecar_protocol_version": 2,
-            "sidecar_version": "orcaslicer-ai-sidecar-v8",
+            "sidecar_version": "orcaslicer-ai-sidecar-v9",
         }
         invalid_payloads = (
             {**valid, "secret": "must-not-be-accepted"},
@@ -151,7 +151,7 @@ class InstalledBootstrapTests(unittest.TestCase):
                     "package_revision": "installed-test",
                     "distribution_channel": "internal",
                     "sidecar_protocol_version": 2,
-                    "sidecar_version": "orcaslicer-ai-sidecar-v8",
+                    "sidecar_version": "orcaslicer-ai-sidecar-v9",
                 }
                 with mock.patch.dict(os.environ, {"ORCASLICER_AI_PARENT_PID": str(os.getpid())}, clear=False), \
                      mock.patch.object(BOOTSTRAP, "load_build_info", return_value=valid_build_info), \
@@ -190,7 +190,7 @@ class InstalledBootstrapTests(unittest.TestCase):
             "package_revision": "installed-test",
             "distribution_channel": "internal",
             "sidecar_protocol_version": 2,
-            "sidecar_version": "orcaslicer-ai-sidecar-v8",
+            "sidecar_version": "orcaslicer-ai-sidecar-v9",
         }
         with tempfile.TemporaryDirectory() as directory, \
              mock.patch.dict(os.environ, {"ORCASLICER_AI_PARENT_PID": "invalid"}, clear=False), \
@@ -210,7 +210,7 @@ class InstalledBootstrapTests(unittest.TestCase):
             "package_revision": "commercial-test",
             "distribution_channel": "commercial",
             "sidecar_protocol_version": 2,
-            "sidecar_version": "orcaslicer-ai-sidecar-v8",
+            "sidecar_version": "orcaslicer-ai-sidecar-v9",
         }
         captured: dict[str, str | None] = {}
 

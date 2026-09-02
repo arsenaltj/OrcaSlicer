@@ -15,12 +15,12 @@ from sampled_local_thickness import sample_local_thickness
 
 
 REPORT_SCHEMA_VERSION = 1
-GATE_VERSION = "structural-v9"
+GATE_VERSION = "structural-v11"
 
 
 @dataclass(frozen=True)
 class ModelQualityThresholds:
-    max_faces: int = 1_000_000
+    max_faces: int = 2_000_000
     ground_band_mm: float = 0.5
     min_contact_span_ratio: float = 0.005
     min_contact_area_ratio: float = 0.002
@@ -493,6 +493,7 @@ def analyze_printable_obj(
             diagonal <= 0.0 or component_diagonal / diagonal <= limits.tiny_component_diagonal_ratio
         ):
             tiny_components += 1
+    structural_component_count = len(component_faces) - tiny_components
 
     component_thickness_available = invalid_edge_count == 0 and degenerate_faces == 0
     thin_components = 0
@@ -804,6 +805,11 @@ def analyze_printable_obj(
         add_error("flat_or_empty_axis", "Model has no measurable extent on at least one axis.")
     if tiny_components:
         add_warning("tiny_detached_components", f"Model contains {tiny_components} very small connected components.")
+    if structural_component_count > 1:
+        add_warning(
+            "unwelded_structural_components",
+            f"Model contains {structural_component_count} non-trivial connected components that are not welded together.",
+        )
     if floating_components:
         add_warning(
             "floating_disconnected_components",
@@ -866,6 +872,7 @@ def analyze_printable_obj(
         "component_count": len(component_faces),
         "largest_component_face_ratio": round(largest_component_faces / face_count, 6),
         "tiny_component_count": tiny_components,
+        "structural_component_count": structural_component_count,
         "floating_component_count": floating_components,
         "minimum_floating_clearance_mm": (
             round(minimum_floating_clearance, 6)

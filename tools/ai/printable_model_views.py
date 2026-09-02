@@ -6,7 +6,7 @@ import math
 import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 try:
     from PIL import Image, ImageDraw, ImageFilter, ImageFont
@@ -14,7 +14,7 @@ except ImportError as exc:  # pragma: no cover - exercised by packaged environme
     raise RuntimeError("Pillow is required to render model quality views.") from exc
 
 
-RENDER_VERSION = "obj-painter-v2"
+RENDER_VERSION = "obj-painter-v6"
 VIEW_SPECS = (
     ("front", (1.0, 0.0, 0.0)),
     ("right", (0.0, 1.0, 0.0)),
@@ -29,7 +29,7 @@ class ModelViewSettings:
     width: int = 448
     height: int = 448
     margin_ratio: float = 0.08
-    max_render_faces: int = 240_000
+    max_render_faces: int = 2_000_000
     background: tuple[int, int, int] = (242, 244, 247)
 
 
@@ -117,22 +117,33 @@ def _sample_faces(faces: list[tuple[int, int, int]], maximum: int) -> Iterable[t
     return (faces[index * len(faces) // maximum] for index in range(maximum))
 
 
-def _shade(color: tuple[int, int, int], normal: tuple[float, float, float]) -> tuple[int, int, int]:
-    light = _normalized((-0.35, -0.45, 1.0))
-    intensity = 0.78 + 0.22 * abs(_dot(normal, light))
+def _shade(
+    color: tuple[int, int, int],
+    normal: tuple[float, float, float],
+    light: tuple[float, float, float],
+) -> tuple[int, int, int]:
+    # A camera-relative key light makes real mesh relief readable from every
+    # review angle. The old absolute-dot lighting illuminated front and back
+    # faces identically and flattened a continuous-skin portrait into a blank
+    # mask, hiding the exact eyes, nose and smile geometry the gate must judge.
+    intensity = 0.66 + 0.34 * max(0.0, _dot(normal, light))
     return tuple(max(0, min(255, round(channel * intensity))) for channel in color)
 
 
-def _render_view(
+def _render_view_layers(
     vertices: list[tuple[float, float, float]],
     colors: list[tuple[int, int, int]],
     faces: list[tuple[int, int, int]],
     direction: tuple[float, float, float],
     settings: ModelViewSettings,
-) -> Image.Image:
+) -> tuple[Image.Image, Image.Image]:
     camera = _normalized(direction)
     right = _normalized(_cross((0.0, 0.0, 1.0), camera))
     up = _normalized(_cross(camera, right))
+    light = _normalized(tuple(
+        camera[index] * 0.72 - right[index] * 0.35 + up[index] * 0.58
+        for index in range(3)
+    ))
     projected = [(_dot(vertex, right), _dot(vertex, up), _dot(vertex, camera)) for vertex in vertices]
     minimum_x = min(value[0] for value in projected)
     maximum_x = max(value[0] for value in projected)
@@ -167,17 +178,31 @@ def _render_view(
         base = tuple(round((colors[first][channel] + colors[second][channel] + colors[third][channel]) / 3.0) for channel in range(3))
         points = tuple((screen[index][0], screen[index][1]) for index in (first, second, third))
         depth = (screen[first][2] + screen[second][2] + screen[third][2]) / 3.0
-        polygons.append((depth, points, _shade(base, normal)))
+        polygons.append((depth, points, _shade(base, normal, light)))
     polygons.sort(key=lambda item: item[0])
     image = Image.new("RGB", (settings.width, settings.height), settings.background)
+    mask = Image.new("L", (settings.width, settings.height), 0)
     draw = ImageDraw.Draw(image)
+    mask_draw = ImageDraw.Draw(mask)
     for _, points, color in polygons:
         draw.polygon(points, fill=color)
+        mask_draw.polygon(points, fill=255)
     if len(faces) > settings.max_render_faces:
         # Sub-pixel triangles omitted by deterministic sampling can leave isolated pinholes.
         # A small median pass closes those holes without inventing geometry beyond the silhouette.
         image = image.filter(ImageFilter.MedianFilter(size=3))
-    return image
+        mask = mask.filter(ImageFilter.MedianFilter(size=3))
+    return image, mask
+
+
+def _render_view(
+    vertices: list[tuple[float, float, float]],
+    colors: list[tuple[int, int, int]],
+    faces: list[tuple[int, int, int]],
+    direction: tuple[float, float, float],
+    settings: ModelViewSettings,
+) -> Image.Image:
+    return _render_view_layers(vertices, colors, faces, direction, settings)[0]
 
 
 def _sha256(path: Path) -> str:
@@ -221,12 +246,46 @@ def _contact_sheet(images: list[tuple[str, Image.Image]], background: tuple[int,
     return sheet
 
 
+def render_model_front_view(
+    obj_path: Path | str,
+    destination: Path | str,
+    settings: ModelViewSettings | None = None,
+) -> dict[str, Any]:
+    """Render one deterministic front view for geometry-aligned material QA."""
+
+    source = Path(obj_path)
+    output = Path(destination)
+    config = settings or ModelViewSettings()
+    if config.width < 128 or config.height < 128 or not (0.0 <= config.margin_ratio < 0.4):
+        raise ModelViewError("The model view settings are invalid.")
+    vertices, colors, faces = _parse_obj(source)
+    image = _render_view(vertices, colors, faces, VIEW_SPECS[0][1], config)
+    try:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        image.save(output, format="PNG", optimize=True)
+    except OSError:
+        raise ModelViewError("The model front view could not be written.") from None
+    return {
+        "render_version": RENDER_VERSION,
+        "obj_sha256": _sha256(source),
+        "width": config.width,
+        "height": config.height,
+        "vertex_count": len(vertices),
+        "face_count": len(faces),
+        "rendered_face_count": min(len(faces), config.max_render_faces),
+        "view": output.name,
+    }
+
+
 def render_model_views(
     obj_path: Path | str,
     job_directory: Path | str,
     settings: ModelViewSettings | None = None,
     *,
     force: bool = False,
+    include_isometric: bool = True,
+    include_masks: bool = False,
+    progress_callback: Callable[[str, int, int], None] | None = None,
 ) -> dict[str, Any]:
     source = Path(obj_path)
     root = Path(job_directory)
@@ -235,11 +294,17 @@ def render_model_views(
         raise ModelViewError("The model view settings are invalid.")
     settings_payload = asdict(config)
     settings_payload["background"] = list(config.background)
+    settings_payload["include_isometric"] = include_isometric
+    settings_payload["include_masks"] = include_masks
+    view_specs = VIEW_SPECS if include_isometric else VIEW_SPECS[:4]
     digest = _sha256(source)
     views_directory = root / "model-views"
+    masks_directory = root / "model-masks"
     manifest_path = views_directory / "manifest.json"
     sheet_path = root / "model-view-sheet.png"
-    expected = [views_directory / f"{name}.png" for name, _ in VIEW_SPECS]
+    expected = [views_directory / f"{name}.png" for name, _ in view_specs]
+    if include_masks:
+        expected.extend(masks_directory / f"{name}.png" for name, _ in view_specs)
     if not force and manifest_path.is_file() and sheet_path.is_file() and all(path.is_file() for path in expected):
         try:
             cached = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -252,17 +317,23 @@ def render_model_views(
     vertices, colors, faces = _parse_obj(source)
     try:
         views_directory.mkdir(parents=True, exist_ok=True)
+        if include_masks:
+            masks_directory.mkdir(parents=True, exist_ok=True)
     except OSError:
         raise ModelViewError("The model view directory could not be created.") from None
     images: list[tuple[str, Image.Image]] = []
-    for name, direction in VIEW_SPECS:
-        image = _render_view(vertices, colors, faces, direction, config)
+    for index, (name, direction) in enumerate(view_specs):
+        image, mask = _render_view_layers(vertices, colors, faces, direction, config)
         destination = views_directory / f"{name}.png"
         try:
             image.save(destination, format="PNG", optimize=True)
+            if include_masks:
+                mask.save(masks_directory / f"{name}.png", format="PNG", optimize=True)
         except OSError:
             raise ModelViewError("A model quality view could not be written.") from None
         images.append((name, image))
+        if progress_callback is not None:
+            progress_callback(name, index + 1, len(view_specs))
     sheet = _contact_sheet(images, config.background)
     try:
         sheet.save(sheet_path, format="PNG", optimize=True)
@@ -275,7 +346,8 @@ def render_model_views(
         "vertex_count": len(vertices),
         "face_count": len(faces),
         "rendered_face_count": min(len(faces), config.max_render_faces),
-        "views": [f"model-views/{name}.png" for name, _ in VIEW_SPECS],
+        "views": [f"model-views/{name}.png" for name, _ in view_specs],
+        "masks": [f"model-masks/{name}.png" for name, _ in view_specs] if include_masks else [],
         "sheet": sheet_path.name,
         "cached": False,
     }

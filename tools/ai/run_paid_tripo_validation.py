@@ -19,7 +19,8 @@ from printable_palette import PrintablePaletteError, normalize_palette
 
 DEFAULT_INPUT = Path("generated_models/paid-image-validation/palette-preview-v2-final.png")
 DEFAULT_OUTPUT_ROOT = Path("generated_models/paid-tripo-validation")
-FACE_LIMITS = (100000, 300000, 500000, 1000000)
+FACE_LIMITS = (100000, 300000, 500000, 1000000, 2000000)
+GENERATION_PROFILES = ("quality", "performance")
 PALETTE = (
     "#FFFFFF",
     "#83B771",
@@ -85,6 +86,7 @@ def _load_state(
     input_info: dict[str, Any],
     face_limit: int,
     palette: tuple[str, ...],
+    generation_profile: str = "quality",
 ) -> dict[str, Any]:
     try:
         state = json.loads(path.read_text(encoding="utf-8"))
@@ -92,7 +94,12 @@ def _load_state(
         raise RuntimeError("The existing paid-validation state is unreadable; refusing to create another task.") from exc
     if state.get("input_sha256") != input_info["sha256"]:
         raise RuntimeError("The existing paid-validation state belongs to another input; refusing to create another task.")
-    if state.get("face_limit") != face_limit or state.get("palette") != list(palette):
+    stored_profile = state.get("generation_profile", "quality")
+    if (
+        state.get("face_limit") != face_limit
+        or state.get("palette") != list(palette)
+        or stored_profile != generation_profile
+    ):
         raise RuntimeError("The existing paid-validation state uses different generation settings; refusing another task.")
     task_id = state.get("generation_task_id")
     if not isinstance(task_id, str) or not task_id:
@@ -114,9 +121,10 @@ def _create_or_resume_generation(
     confirm_paid_call: bool,
     face_limit: int,
     palette: tuple[str, ...],
+    generation_profile: str = "quality",
 ) -> tuple[dict[str, Any], Path]:
     if state_path.exists():
-        state = _load_state(state_path, input_info, face_limit, palette)
+        state = _load_state(state_path, input_info, face_limit, palette, generation_profile)
         task_directory = _task_directory(output_root, state["generation_task_id"])
         task_directory.mkdir(parents=True, exist_ok=True)
         print(f"Resuming Tripo generation task {state['generation_task_id']}", flush=True)
@@ -127,16 +135,27 @@ def _create_or_resume_generation(
 
     file_token = tripo_client.upload_image(input_path)
     print("Input uploaded; creating one paid Tripo image-to-model task.", flush=True)
-    task_id = tripo_client.create_image_task(file_token, face_limit)
     state = {
         "input_sha256": input_info["sha256"],
         "face_limit": face_limit,
+        "generation_profile": generation_profile,
         "palette": list(palette),
-        "generation_task_id": task_id,
-        "generation_status": "submitted",
+        "generation_task_id": None,
+        "generation_status": "creating",
         "conversion_task_id": None,
         "conversion_status": "not_submitted",
     }
+    # Record the paid creation intent before the remote request. If the request
+    # outcome is ambiguous, a later run must not silently create another task.
+    _write_json(state_path, state)
+    try:
+        task_id = tripo_client.create_image_task(file_token, face_limit, generation_profile)
+    except tripo_client.TripoError:
+        state["generation_status"] = "creation_failed_or_ambiguous"
+        _write_json(state_path, state)
+        raise
+    state["generation_task_id"] = task_id
+    state["generation_status"] = "submitted"
     # Persist the paid task ID before non-essential directory/copy work. If the
     # process stops after provider acceptance, the next run can resume instead
     # of accidentally creating a second paid generation.
@@ -331,6 +350,7 @@ def run(
     confirm_paid_call: bool,
     face_limit: int,
     palette: tuple[str, ...],
+    generation_profile: str = "quality",
 ) -> Path:
     input_path = input_path.resolve()
     output_root = output_root.resolve()
@@ -338,17 +358,30 @@ def run(
     input_info = _check_input(input_path, palette)
     _write_json(
         output_root / "input-preflight.json",
-        {**input_info, "palette": list(palette), "face_limit": face_limit},
+        {
+            **input_info,
+            "palette": list(palette),
+            "face_limit": face_limit,
+            "generation_profile": generation_profile,
+        },
     )
     print(
         f"Input preflight passed: {input_info['width']}x{input_info['height']}, "
-        f"{input_info['colors_used']} colors, face limit={face_limit}, SHA256={input_info['sha256']}",
+        f"{input_info['colors_used']} colors, face limit={face_limit}, "
+        f"profile={generation_profile}, SHA256={input_info['sha256']}",
         flush=True,
     )
 
     state_path = output_root / "validation-state.json"
     state, task_directory = _create_or_resume_generation(
-        input_path, input_info, output_root, state_path, confirm_paid_call, face_limit, palette
+        input_path,
+        input_info,
+        output_root,
+        state_path,
+        confirm_paid_call,
+        face_limit,
+        palette,
+        generation_profile,
     )
     return complete_generation(state, state_path, task_directory, face_limit, palette)
 
@@ -360,6 +393,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--preflight-only", action="store_true")
     parser.add_argument("--confirm-paid-call", action="store_true")
     parser.add_argument("--face-limit", type=int, choices=FACE_LIMITS, default=300000)
+    parser.add_argument("--generation-profile", choices=GENERATION_PROFILES, default="quality")
     parser.add_argument("--natural-color", action="store_true")
     parser.add_argument(
         "--palette",
@@ -387,13 +421,25 @@ def main(argv: list[str] | None = None) -> int:
             info = _check_input(args.input.resolve(), palette)
             print(
                 json.dumps(
-                    {**info, "palette": list(palette), "face_limit": args.face_limit},
+                    {
+                        **info,
+                        "palette": list(palette),
+                        "face_limit": args.face_limit,
+                        "generation_profile": args.generation_profile,
+                    },
                     ensure_ascii=False,
                     indent=2,
                 )
             )
             return 0
-        run(args.input, args.output_root, args.confirm_paid_call, args.face_limit, palette)
+        run(
+            args.input,
+            args.output_root,
+            args.confirm_paid_call,
+            args.face_limit,
+            palette,
+            args.generation_profile,
+        )
     except (RuntimeError, tripo_client.TripoError, sidecar.TripoError) as exc:
         print(f"Validation failed: {exc}", file=sys.stderr, flush=True)
         return 1

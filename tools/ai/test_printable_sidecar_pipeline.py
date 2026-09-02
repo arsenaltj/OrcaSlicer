@@ -74,11 +74,13 @@ class PrintableSidecarIntegrationTests(unittest.TestCase):
             self.assertEqual(set(job.mask_paths), {"primary", "structure", "light", "accent"})
             self.assertGreater(job.image_metrics["minimum_feature_px"], 1)
             self.assertTrue(job.image_metrics["model_input_quality"]["model_input_eligible"])
+            self.assertTrue(job.image_metrics["generation_input_quality"]["model_input_eligible"])
+            self.assertEqual(job.image_metrics["generation_reference"], "model_reference")
             self.assertEqual(generate.call_args.args[-3], "blue")
             self.assertEqual(generate.call_args.args[-2], job.palette_roles)
             self.assertEqual(generate.call_args.args[-1], "")
 
-    def test_image_job_preserves_raw_preview_and_uses_clean_preview_for_3d(self):
+    def test_image_job_uses_detail_preserving_model_reference_and_clean_preview_for_review(self):
         with tempfile.TemporaryDirectory() as directory:
             job = self.make_job(directory, "image")
             input_path = Path(directory) / "input.png"
@@ -88,13 +90,65 @@ class PrintableSidecarIntegrationTests(unittest.TestCase):
                 sidecar._preprocess_image_job(job, input_path, "保留主体")
 
             self.assertNotEqual(job.raw_preview_path, job.preview_path)
+            self.assertTrue(job.geometry_reference_path.is_file())
             self.assertEqual(job.preview_path.name, "clean_preview.png")
+            self.assertEqual(sidecar._model_generation_reference(job), job.model_reference_path)
             with Image.open(job.preview_path) as preview:
                 self.assertEqual(preview.mode, "RGBA")
                 self.assertLessEqual(
                     set(preview.convert("RGB").getdata()),
                     {hex_rgb(color) for color in PALETTE},
                 )
+            with Image.open(job.model_reference_path) as reference:
+                self.assertEqual(reference.getpixel((100, 100))[:3], (210, 55, 50))
+
+    def test_quality_portrait_geometry_reference_inherits_validated_alpha(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job = self.make_job(directory, "image")
+            job.style = "realistic"
+            job.generation_profile = "quality"
+            job.image_metrics["portrait_skin_cleanup"] = {"activated": 1}
+
+            original = Path(directory) / "input.png"
+            Image.new("RGB", (512, 768), "white").save(original)
+            job.input_path = original
+
+            geometry = job.directory / "geometry-reference.png"
+            checker = Image.new("RGB", (512, 768), (244, 244, 244))
+            checker.paste((220, 170, 145), (96, 64, 416, 704))
+            checker.save(geometry)
+            job.geometry_reference_path = geometry
+
+            model_reference = job.directory / "model_reference.png"
+            validated = Image.new("RGBA", (512, 768), (240, 240, 235, 0))
+            validated.paste((220, 170, 145, 255), (96, 64, 416, 704))
+            # The user-facing reference keeps a deliberately soft halo; this
+            # must never become rear-plate geometry in the paid model input.
+            validated.putpixel((80, 384), (220, 170, 145, 96))
+            validated.save(model_reference)
+            job.model_reference_path = model_reference
+
+            subject_mask = job.directory / "mask_subject.png"
+            hard_mask = Image.new("L", (512, 768), 0)
+            hard_mask.paste(255, (96, 64, 416, 704))
+            hard_mask.save(subject_mask)
+            job.subject_mask_path = subject_mask
+
+            quality = sidecar._assess_job_generation_reference(job)
+
+            with Image.open(geometry) as repaired:
+                self.assertEqual(repaired.mode, "RGBA")
+                self.assertEqual(repaired.getpixel((0, 0))[3], 0)
+                self.assertEqual(repaired.getpixel((80, 384))[3], 0)
+                self.assertEqual(repaired.getpixel((256, 384))[3], 255)
+            self.assertTrue(quality["model_input_eligible"])
+            self.assertEqual(
+                job.image_metrics["generation_reference"],
+                "identity_sculpted_geometry_reference",
+            )
+            provider = job.directory / sidecar.PORTRAIT_GEOMETRY_PROVIDER_FILENAME
+            with Image.open(provider) as submitted:
+                self.assertEqual(submitted.getpixel((384, 384))[:3], (220, 170, 145))
 
     def test_printable_outputs_round_trip_through_job_state(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -102,7 +156,9 @@ class PrintableSidecarIntegrationTests(unittest.TestCase):
             raw = job.directory / "style-preview-raw.png"
             synthetic_preview(raw)
             sidecar._apply_printable_image_pipeline(job, raw)
+            job.geometry_reference_path = raw
             sidecar._assess_job_model_reference(job)
+            sidecar._assess_job_generation_reference(job)
             job.state = "awaiting_confirmation"
             sidecar._persist_job(job)
 
@@ -111,6 +167,7 @@ class PrintableSidecarIntegrationTests(unittest.TestCase):
             self.assertIsNotNone(restored)
             self.assertEqual(restored.print_settings, job.print_settings)
             self.assertEqual(restored.image_metrics, job.image_metrics)
+            self.assertEqual(restored.geometry_reference_path, raw)
             self.assertEqual(set(restored.mask_paths), set(job.mask_paths))
             public = sidecar._public_job(restored)
             self.assertTrue(public["image_outputs"]["strict_preview"]["ready"])
@@ -120,11 +177,54 @@ class PrintableSidecarIntegrationTests(unittest.TestCase):
                 public["image_metrics"]["model_input_quality"],
                 job.image_metrics["model_input_quality"],
             )
+            self.assertEqual(public["image_metrics"]["generation_reference"], "model_reference")
+
+            restored.source = "image"
+            restored.user_prompt = sidecar.DEFAULT_IMAGE_INSTRUCTION
+            self.assertEqual(sidecar._public_job(restored)["user_prompt"], "")
+
+    def test_portrait_pipeline_persists_recovered_skin_and_garment_roles(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job = self.make_job(directory, "image")
+            job.palette = ("#F4F4F0", "#1F1B1C", "#F2C9AE", "#4E6F5B")
+            job.palette_roles = {
+                "primary": "#F2C9AE",
+                "structure": "#1F1B1C",
+                "light": "#F4F4F0",
+                "accent": "#4E6F5B",
+            }
+            raw = job.directory / "style-preview-raw.png"
+            raw.write_bytes(b"preview")
+            result = mock.Mock(
+                strict_preview=job.directory / "four_color_preview.png",
+                clean_preview=job.directory / "clean_preview.png",
+                model_reference=job.directory / "model_reference.png",
+                heatmap=job.directory / "unprintable_heatmap.png",
+                metadata=job.directory / "metadata.json",
+                background_mask=job.directory / "mask_background.png",
+                subject_mask=job.directory / "mask_subject.png",
+                masks={},
+                palette_usage={},
+                metrics={
+                    "portrait_skin_cleanup": {
+                        "activated": 1,
+                        "garment_color": "#F4F4F0",
+                        "skin_color": "#F2C9AE",
+                    }
+                },
+            )
+
+            with mock.patch.object(sidecar, "process_printable_image", return_value=result):
+                sidecar._apply_printable_image_pipeline(job, raw)
+
+            self.assertEqual(job.palette_roles["primary"], "#F4F4F0")
+            self.assertEqual(job.palette_roles["light"], "#F2C9AE")
+            self.assertEqual(set(job.palette_roles.values()), set(job.palette))
 
     def test_all_documented_output_routes_are_loopback_download_routes(self):
         job_id = "00000000-0000-0000-0000-000000000001"
         for action in (
-            "raw-preview", "strict-preview", "preview", "heatmap", "metadata",
+            "raw-preview", "strict-preview", "preview", "model-reference", "heatmap", "metadata",
             "background-mask", "subject-mask", "mask-red", "mask-white",
         ):
             self.assertEqual(

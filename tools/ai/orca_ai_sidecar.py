@@ -18,6 +18,7 @@ import stat
 import sys
 import threading
 import time
+import traceback
 import uuid
 import zipfile
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -26,37 +27,81 @@ from email import policy
 from email.parser import BytesParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, BinaryIO, Callable
+from typing import Any, BinaryIO, Callable, Mapping
 
 from ai_diagnostics import diagnostic_context, event as diagnostic_event, exception_details, safe_endpoint
 from network_policy import network_diagnostics
 
 from openai_preprocessor import (
     OpenAIPreprocessorError,
+    complete_vision,
     complete_text,
+    edit_image,
     generate_image,
     preprocess_image,
     preprocess_text,
     recommend_printable_palette,
 )
-from printable_image_pipeline import PrintSettings, PrintableImageError, process_printable_image
-from model_input_image_quality import ModelInputImageQualityError
+from printable_image_pipeline import (
+    PrintSettings,
+    PrintableImageError,
+    _portrait_source_subject_mask,
+    process_printable_image,
+)
+from printable_model_views import (
+    ModelViewError,
+    ModelViewSettings,
+    render_model_views,
+)
+from printable_multiview_reference import (
+    HIGH_QUALITY_PORTRAIT_CANVAS_SIZE,
+    MULTIVIEW_NORMALIZATION_VERSION,
+    MultiviewReferenceError,
+    PORTRAIT_MATERIAL_GATE_VERSION,
+    VIEW_ORDER as MULTIVIEW_ORDER,
+    build_multiview_input_sheet,
+    evaluate_multiview_review_acceptance,
+    evaluate_portrait_material_gate,
+    normalize_multiview_inputs,
+    process_multiview_crops,
+    review_multiview_sheet,
+    split_multiview_sheet,
+    write_multiview_manifest,
+)
+from portrait_multiview_cleanup import (
+    PortraitProjectionError,
+    project_front_portrait_materials,
+    project_geometry_aligned_portrait_materials,
+    quantize_geometry_aligned_material_reference,
+)
+from model_input_image_quality import (
+    ModelInputImageQualityError,
+    assess_model_input_image,
+    recommend_printable_style,
+)
 from model_job_support import (
-    assess_job_model_reference as _assess_job_model_reference, file_info as _file_info,
-    generation_prompt as _generation_prompt, image_type as _image_type,
-    model_input_quality_message as _model_input_quality_message, preprocess_failure_payload,
-    printable_preview_message as _printable_preview_message, stored_image_type as _stored_image_type,
+    generation_prompt as _generation_prompt,
+    image_type as _image_type,
+    preprocess_failure_payload,
 )
 from model_provider_gateway import (
     ModelProviderGateway,
     ModelTaskRequest,
     PaidTaskAuthorization,
     ProviderGatewayError,
+    TextureTaskRequest,
     provider_policy,
 )
 from model_refinement import build_model_refinement_advice
-from printable_model_quality import ModelQualityError, analyze_printable_obj, write_model_quality_report
+from printable_model_quality import (
+    GATE_VERSION as MODEL_QUALITY_GATE_VERSION,
+    ModelQualityError,
+    ModelQualityThresholds,
+    analyze_printable_obj,
+    write_model_quality_report,
+)
 from printable_visual_quality import REPORT_FILENAME as VISUAL_QUALITY_FILENAME, review_model_visual_quality
+from printable_reference_visual_quality import review_prepared_reference
 from printable_palette import MAX_PRINTABLE_COLORS, PrintablePaletteError, assign_palette_roles
 from tripo_client import TripoError
 
@@ -64,7 +109,7 @@ _MODEL_PROVIDER_GATEWAY = ModelProviderGateway()
 
 HOST = os.environ.get("ORCASLICER_AI_SIDECAR_HOST", "127.0.0.1")
 PORT = int(os.environ.get("ORCASLICER_AI_SIDECAR_PORT", "18764"))
-SIDECAR_VERSION = "orcaslicer-ai-sidecar-v8"
+SIDECAR_VERSION = "orcaslicer-ai-sidecar-v9"
 SIDECAR_INSTANCE_ID = str(uuid.uuid4())
 SIDECAR_SESSION_NONCE = secrets.token_hex(32)
 MAX_REQUEST_BYTES = 256 * 1024
@@ -80,14 +125,14 @@ MAX_ARCHIVE_FILES = 128
 MAX_UNPACKED_BYTES = 1024 * 1024 * 1024
 MAX_TEXTURE_PIXELS = 64 * 1024 * 1024
 MAX_PALETTE_COLORS = MAX_PRINTABLE_COLORS
-MAX_MODEL_FACES = 1000000
+MAX_MODEL_FACES = 2000000
 MIN_MODEL_FACE_RATIO = 0.90
 MAX_MODEL_FACE_RATIO = 1.25
-MODEL_FACE_LIMITS = (100000, 300000, 500000, 1000000)
+MODEL_FACE_LIMITS = (100000, 300000, 500000, 1000000, 2000000)
 DEFAULT_MODEL_FACE_LIMIT = 300000
 GENERATION_PROFILES = ("quality", "performance")
 DEFAULT_GENERATION_PROFILE = "quality"
-GENERATION_PROFILE_FACE_LIMITS = {"quality": 1000000, "performance": 300000}
+GENERATION_PROFILE_FACE_LIMITS = {"quality": 2000000, "performance": 300000}
 MAX_GENERATION_ATTEMPTS = 1
 JOB_STATE_FILENAME = "job.json"
 JOB_STATE_VERSION = 1
@@ -124,13 +169,34 @@ MAX_COLOR_BOUNDARY_SOURCE_AREA_RATIO = 0.02
 MIN_COLOR_BOUNDARY_SUPPORT_RATIO = 1.25
 MAX_COLOR_BOUNDARY_SOURCE_NEIGHBORS = 1
 MAX_COLOR_BOUNDARY_PASSES = 2
+PORTRAIT_GARMENT_SMOOTHING_PASSES = 4
+PORTRAIT_HAND_BOUNDARY_PASSES = 4
+PORTRAIT_HAND_BOUNDARY_MAX_REMOVAL_RATIO = 0.25
+PORTRAIT_HAND_BOUNDARY_MIN_PRIMARY_SUPPORT = 2
+PORTRAIT_HAND_COMPACT_EXTENT_RATIO = 0.45
+PORTRAIT_HAND_DIFFUSE_SIZE_RATIO = 2.5
+PORTRAIT_HAND_MIN_HEIGHT_RATIO = 0.30
+PORTRAIT_REAR_GARMENT_HEIGHT_RATIO = 0.70
+PORTRAIT_REAR_HAIR_HEIGHT_RATIO = 0.58
+PORTRAIT_FRONT_SURFACE_QUANTILE = 0.50
+PORTRAIT_STRUCTURE_FRONT_QUANTILE = 0.60
+PORTRAIT_FACE_DETAIL_MIN_HEIGHT_RATIO = 0.74
+PORTRAIT_FACE_DETAIL_MAX_HEIGHT_RATIO = 0.94
+PORTRAIT_FACE_DETAIL_HALF_WIDTH_RATIO = 0.23
+PORTRAIT_FACE_DETAIL_SURFACE_TOLERANCE_MM = 0.35
+PORTRAIT_FACE_DETAIL_GRID_SIZE = 256
+PORTRAIT_GEOMETRY_PROVIDER_FILENAME = "geometry-provider-reference.png"
+PORTRAIT_HEAD_PREVIEW_FILENAME = "portrait-head-shoulders-preview.png"
+PORTRAIT_GEOMETRY_MAX_SUBJECT_OCCUPANCY = 0.88
+PORTRAIT_HEAD_GEOMETRY_MAX_SUBJECT_OCCUPANCY = 0.96
+PORTRAIT_REAR_PLATE_MIN_RUN_RATIO = 0.60
+PORTRAIT_REAR_PLATE_MAX_START_RATIO = 0.15
 DEFAULT_MODEL_SIZE_MM = 100.0
 MODEL_ARTIFACT_FORMAT = "obj"
 MODEL_QUALITY_FILENAME = "model-quality.json"
-STYLE_IDS = ("sculpture", "realistic", "cartoon", "custom")
+STYLE_IDS = ("sculpture", "realistic", "cartoon", "low_poly", "relief", "diorama", "custom")
 LEGACY_STYLE_ALIASES = {
     "q_cartoon": "cartoon",
-    "low_poly": "realistic",
     "cel_shaded": "cartoon",
     "enamel_inlay": "realistic",
 }
@@ -140,6 +206,7 @@ DEFAULT_IMAGE_INSTRUCTION = (
 )
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 _JOBS_LOCK = threading.RLock()
+_GEOMETRY_REFERENCE_LOCK = threading.RLock()
 _JOBS: dict[str, "Job"] = {}
 _JOURNEY_EVENT_LOCK = threading.Lock()
 _DESIGN_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="orca-design-job")
@@ -363,6 +430,7 @@ class Job:
     strict_preview_path: Path | None = None
     preview_path: Path | None = None
     model_reference_path: Path | None = None
+    geometry_reference_path: Path | None = None
     preview_content_type: str = ""
     heatmap_path: Path | None = None
     metadata_path: Path | None = None
@@ -397,6 +465,18 @@ class JobStopped(Exception):
 
 class SidecarRestart(Exception):
     """Stops local work while keeping a paid remote task resumable."""
+
+    pass
+
+
+class PortraitMultiviewPreparationError(TripoError):
+    """A recoverable, pre-paid portrait view preparation failure."""
+
+    pass
+
+
+class PortraitGeometryGateError(TripoError):
+    """A paid portrait mesh has visually invalid large-scale geometry."""
 
     pass
 
@@ -536,6 +616,16 @@ def _text_field(value: Any, name: str, *, allow_empty: bool = False) -> str:
     if len(value.encode("utf-8")) > MAX_PROMPT_BYTES:
         raise RequestError("invalid_request", f"{name} exceeds the 2000-byte limit.", 400)
     return value
+
+
+def _boolean_field(value: Any, name: str, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip().lower() in {"true", "false"}:
+        return value.strip().lower() == "true"
+    raise RequestError("invalid_request", f"{name} must be a boolean.", 400)
 
 
 def _normalize_palette(value: Any) -> tuple[str, ...]:
@@ -720,7 +810,7 @@ def _normalize_style(value: Any) -> str:
         value = LEGACY_STYLE_ALIASES.get(value, value)
     if not isinstance(value, str) or value not in STYLE_IDS:
         raise RequestError(
-            "invalid_style", "style must be sculpture, realistic, cartoon, or custom.", 400
+            "invalid_style", "style must be sculpture, realistic, cartoon, low_poly, relief, diorama, or custom.", 400
         )
     return value
 
@@ -746,7 +836,7 @@ def _normalize_face_limit(value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value not in MODEL_FACE_LIMITS:
         raise RequestError(
             "invalid_face_limit",
-            "face_limit must be 100000, 300000, 500000, or 1000000 triangles.",
+            "face_limit must be 100000, 300000, 500000, 1000000, or 2000000 triangles.",
             400,
         )
     return value
@@ -780,12 +870,31 @@ def _legacy_face_error_is_recoverable(message: str, face_limit: int) -> bool:
     return minimum <= face_count <= maximum
 
 
+def _stale_high_quality_face_gate_is_recoverable(message: str, face_limit: int) -> bool:
+    normalized = message.strip().lower()
+    return (
+        face_limit > 1_000_000
+        and face_limit <= MAX_MODEL_FACES
+        and "structural quality gate" in normalized
+        and "too_many_faces" in normalized
+    )
+
+
 def _normalize_image_instruction(value: Any) -> str:
     if value is None:
         return DEFAULT_IMAGE_INSTRUCTION
     if not isinstance(value, str):
         raise RequestError("invalid_request", "instruction must be UTF-8 text.", 400)
     return value.strip() or DEFAULT_IMAGE_INSTRUCTION
+
+
+def _user_image_instruction(value: Any) -> str:
+    """Return only text the user actually entered; keep internal defaults private."""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise RequestError("invalid_request", "instruction must be UTF-8 text.", 400)
+    return value.strip()
 
 
 def _normalize_print_settings(value: Any) -> dict[str, Any]:
@@ -893,6 +1002,26 @@ def _job_file(job: Job, value: Any) -> Path | None:
     return candidate
 
 
+def _copy_job_file(source: Path | None, job: Job, name: str) -> Path | None:
+    if source is None:
+        return None
+    try:
+        resolved = source.resolve(strict=True)
+        if not resolved.is_file():
+            return None
+        suffix = resolved.suffix.lower()
+        destination = job.directory / f"{name}{suffix}"
+        shutil.copy2(resolved, destination)
+        return destination
+    except OSError:
+        raise RequestError(
+            "service_unavailable",
+            "The reference files could not be copied for texture generation.",
+            503,
+            True,
+        ) from None
+
+
 def _persist_job(job: Job, *, touch: bool = True) -> None:
     if touch:
         job.updated_at = time.time()
@@ -911,13 +1040,14 @@ def _persist_job(job: Job, *, touch: bool = True) -> None:
         "custom_style": job.custom_style,
         "face_limit": job.face_limit,
         "generation_profile": job.generation_profile,
-        "user_prompt": job.user_prompt,
+        "user_prompt": "" if job.source == "image" and job.user_prompt == DEFAULT_IMAGE_INSTRUCTION else job.user_prompt,
         "prepared_prompt": job.prepared_prompt,
         "input_path": _job_path_value(job, job.input_path),
         "raw_preview_path": _job_path_value(job, job.raw_preview_path),
         "strict_preview_path": _job_path_value(job, job.strict_preview_path),
         "preview_path": _job_path_value(job, job.preview_path),
         "model_reference_path": _job_path_value(job, job.model_reference_path),
+        "geometry_reference_path": _job_path_value(job, job.geometry_reference_path),
         "preview_content_type": job.preview_content_type,
         "heatmap_path": _job_path_value(job, job.heatmap_path),
         "metadata_path": _job_path_value(job, job.metadata_path),
@@ -1001,6 +1131,7 @@ def _load_job(directory: Path) -> Job | None:
     job.strict_preview_path = _job_file(job, payload.get("strict_preview_path"))
     job.preview_path = _job_file(job, payload.get("preview_path"))
     job.model_reference_path = _job_file(job, payload.get("model_reference_path"))
+    job.geometry_reference_path = _job_file(job, payload.get("geometry_reference_path"))
     job.preview_content_type = str(payload.get("preview_content_type", ""))
     job.heatmap_path = _job_file(job, payload.get("heatmap_path"))
     job.metadata_path = _job_file(job, payload.get("metadata_path"))
@@ -1014,6 +1145,7 @@ def _load_job(directory: Path) -> Job | None:
         }
     raw_metrics = payload.get("image_metrics", {})
     job.image_metrics = raw_metrics if isinstance(raw_metrics, dict) else {}
+    _apply_legacy_material_fragmentation_gate(job)
     raw_preprocess_failure = payload.get("preprocess_failure", {})
     job.preprocess_failure = raw_preprocess_failure if isinstance(raw_preprocess_failure, dict) else {}
     job.artifact_path = _job_file(job, payload.get("artifact_path"))
@@ -1026,6 +1158,48 @@ def _load_job(directory: Path) -> Job | None:
     except (TypeError, ValueError, OSError):
         job.updated_at = time.time()
     return job
+
+
+def _apply_legacy_material_fragmentation_gate(job: Job) -> None:
+    """Conservatively block severe pre-gate portrait previews after an upgrade."""
+
+    metrics = job.image_metrics
+    if "material_fragmentation_ok" in metrics:
+        return
+    metrics["material_fragmentation_ok"] = True
+    if job.style != "realistic" or len(job.palette) < 3:
+        return
+    palette_rgb = [tuple(int(color[index:index + 2], 16) for index in (1, 3, 5)) for color in job.palette]
+    has_bright_neutral = any(
+        max(color) - min(color) <= 32 and sum(color) / 3 >= 180 for color in palette_rgb
+    )
+    has_warm_skin = any(
+        red > green >= blue
+        and 12 <= red - green <= 82
+        and 28 <= red - blue <= 118
+        and green >= 70
+        and blue >= 45
+        for red, green, blue in palette_rgb
+    )
+    counts = metrics.get("subject_color_component_count", {})
+    ratios = metrics.get("secondary_subject_color_component_ratio", {})
+    if not has_bright_neutral or not has_warm_skin or not isinstance(counts, dict) or not isinstance(ratios, dict):
+        return
+    severe_colors = [
+        color for color in job.palette
+        if int(counts.get(color, 0)) >= 12 and float(ratios.get(color, 0.0)) >= 0.025
+    ]
+    if not severe_colors:
+        return
+    metrics["material_fragmentation_ok"] = False
+    metrics["palette_quality_ok"] = False
+    metrics["severe_fragmented_palette_colors"] = severe_colors
+    warnings = metrics.get("quality_warnings", [])
+    if not isinstance(warnings, list):
+        warnings = []
+    if "portrait_material_fragmentation_blocks_3d" not in warnings:
+        warnings.append("portrait_material_fragmentation_blocks_3d")
+    metrics["quality_warnings"] = warnings
 
 
 def _restore_jobs(*, resume_jobs: bool = True) -> list[Job]:
@@ -1044,7 +1218,10 @@ def _restore_jobs(*, resume_jobs: bool = True) -> list[Job]:
                 _validate_image_file(job.input_path, minimum_edge=MIN_SOURCE_IMAGE_EDGE)
             except ValueError:
                 job.input_path = None
-        for attribute in ("raw_preview_path", "strict_preview_path", "preview_path", "model_reference_path"):
+        for attribute in (
+            "raw_preview_path", "strict_preview_path", "preview_path", "model_reference_path",
+            "geometry_reference_path",
+        ):
             path = getattr(job, attribute)
             if path is None:
                 continue
@@ -1059,7 +1236,17 @@ def _restore_jobs(*, resume_jobs: bool = True) -> list[Job]:
         if job.state == "awaiting_confirmation" and (job.model_reference_path or job.preview_path) is not None:
             try:
                 quality = _assess_job_model_reference(job)
-                if not bool(quality.get("model_input_eligible", False)):
+                generation_quality = _assess_job_generation_reference(job)
+                cached_visual_quality = job.image_metrics.get("preview_visual_quality")
+                if isinstance(cached_visual_quality, dict):
+                    _apply_preview_visual_quality_gate(job, cached_visual_quality)
+                    quality = job.image_metrics.get("model_input_quality", quality)
+                    generation_quality = job.image_metrics.get(
+                        "generation_input_quality", generation_quality
+                    )
+                if not bool(generation_quality.get("model_input_eligible", False)):
+                    job.message = _model_input_quality_message(generation_quality)
+                elif not bool(quality.get("model_input_eligible", False)):
                     job.message = _model_input_quality_message(quality)
             except ModelInputImageQualityError:
                 job.state = "failed"
@@ -1081,6 +1268,34 @@ def _restore_jobs(*, resume_jobs: bool = True) -> list[Job]:
             job.message = "The saved image preview is missing or damaged. Generate the preview again."
             job.progress = 0
         latest_attempt = job.attempts[-1] if job.attempts else {}
+        has_paid_model_task = any(
+            isinstance(attempt.get("generation_task_id"), str) and bool(attempt.get("generation_task_id"))
+            for attempt in job.attempts
+        )
+        recoverable_multiview_failure = (
+            job.state == "failed"
+            and not has_paid_model_task
+            and not job.attempts
+            and job.source == "image"
+            and job.style == "realistic"
+            and job.generation_profile == "quality"
+            and not _identity_preserving_portrait_geometry_enabled(job)
+            and job.model_reference_path is not None
+            and job.progress >= 10
+        )
+        if recoverable_multiview_failure:
+            job.state = "awaiting_confirmation"
+            job.phase = "multiview_retry"
+            job.message = (
+                "Four-view portrait preparation stopped before any paid Tripo task was created. "
+                "The approved preview is preserved and can be retried."
+            )
+            job.progress = max(17, job.progress)
+            job.image_metrics["multiview_retry"] = {
+                "required": True,
+                "reason": "legacy_prepaid_multiview_failure",
+                "paid_task_created": False,
+            }
         recoverable_error = str(latest_attempt.get("error", "")).lower()
         can_retry_download = (
             job.state == "failed"
@@ -1096,7 +1311,8 @@ def _restore_jobs(*, resume_jobs: bool = True) -> list[Job]:
                 "temporarily unavailable",
                 "rate limiting",
                 "deadline expired",
-            )) or _legacy_face_error_is_recoverable(recoverable_error, job.face_limit))
+            )) or _legacy_face_error_is_recoverable(recoverable_error, job.face_limit)
+                or _stale_high_quality_face_gate_is_recoverable(recoverable_error, job.face_limit))
         )
         if can_retry_download:
             job.state = "queued"
@@ -1108,7 +1324,17 @@ def _restore_jobs(*, resume_jobs: bool = True) -> list[Job]:
             job.phase = "failed"
             job.message = "The sidecar restarted during a local AI step. Start that step again manually."
             job.progress = 0
-        if job.state in {"queued", "running", "stopping"}:
+        # ``stopping`` is written only for an explicit user stop.  Treat it as
+        # durable intent: after a crash or forced app exit, never resurrect the
+        # already-paid task and surprise the user with more local processing.
+        if job.state == "stopping":
+            job.state = "stopped"
+            job.phase = "stopped"
+            job.message = "Model generation stopped."
+            job.progress = 0
+            job.artifact_path = None
+            job.artifact_format = ""
+        elif job.state in {"queued", "running"}:
             generation_id = next(
                 (attempt.get("generation_task_id") for attempt in reversed(job.attempts)
                  if isinstance(attempt.get("generation_task_id"), str) and attempt.get("generation_task_id")),
@@ -1137,7 +1363,16 @@ def _restore_jobs(*, resume_jobs: bool = True) -> list[Job]:
 def _resume_restored_jobs(restored: list[Job]) -> None:
     for job in restored:
         if job.state == "queued" and job.phase == "resuming":
-            _submit(job, _generate_job, job.prepared_prompt, True)
+            latest_attempt = job.attempts[-1] if job.attempts else {}
+            if latest_attempt.get("provider_operation") == "model_texture":
+                source_job_id = str(latest_attempt.get("source_job_id", ""))
+                source_task_id = str(latest_attempt.get("source_task_id", ""))
+                if source_job_id and source_task_id:
+                    _submit(job, _retexture_job, source_job_id, source_task_id, True)
+                else:
+                    _fail_job(job, "The preserved geometry reference is unavailable; start a new task manually.")
+            else:
+                _submit(job, _generate_job, job.prepared_prompt, True)
 
 
 def _adopt_legacy_completed_job(job_id: str) -> Job | None:
@@ -1168,6 +1403,15 @@ def _adopt_legacy_completed_job(job_id: str) -> Job | None:
     job.progress = 100
     job.artifact_path = artifact
     job.artifact_format = MODEL_ARTIFACT_FORMAT
+    attempts_path = directory / "attempts.json"
+    try:
+        if attempts_path.is_file() and attempts_path.stat().st_size <= MAX_JOB_STATE_BYTES:
+            attempts_payload = json.loads(attempts_path.read_text(encoding="utf-8"))
+            attempts = attempts_payload.get("attempts", []) if isinstance(attempts_payload, dict) else []
+            if isinstance(attempts, list) and all(isinstance(attempt, dict) for attempt in attempts):
+                job.attempts = attempts
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        pass
     preview = directory / "preview.png"
     try:
         resolved_preview = preview.resolve(strict=True)
@@ -1190,6 +1434,46 @@ def _adopt_legacy_completed_job(job_id: str) -> Job | None:
     return job
 
 
+def _file_info(path: Path | None) -> tuple[bool, int]:
+    if path is None:
+        return False, 0
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return False, 0
+    return size > 0, size
+
+
+def _latest_job_is_restorable(job: Job) -> bool:
+    """Return whether the native UI can reconstruct a useful journey state.
+
+    Prepared-only text fixtures and abandoned internal jobs have no user input
+    that the panel can display.  Letting one of those win `/latest` clears a
+    newer user's recoverable image journey after restart.
+    """
+
+    if job.state not in {
+        "recommending_palette", "awaiting_palette_confirmation", "preprocessing",
+        "awaiting_confirmation", "queued", "running", "stopping", "ready",
+    }:
+        return False
+    if job.state == "ready":
+        return _file_info(job.artifact_path)[0]
+    if job.source == "image":
+        return _file_info(job.input_path)[0]
+    return bool(job.user_prompt.strip())
+
+
+def _stored_image_type(path: Path | None) -> str:
+    if path is None:
+        return ""
+    try:
+        with path.open("rb") as stream:
+            return _image_type(stream.read(16)) or ""
+    except OSError:
+        return ""
+
+
 def _read_job_report(job: Job, filename: str) -> dict[str, Any]:
     path = job.directory / filename
     try:
@@ -1207,7 +1491,9 @@ def _public_job(job: Job) -> dict[str, Any]:
     preview_ready, preview_size = _file_info(job.preview_path)
     raw_preview_ready, raw_preview_size = _file_info(job.raw_preview_path)
     strict_preview_ready, strict_preview_size = _file_info(job.strict_preview_path)
-    model_reference_ready, model_reference_size = _file_info(job.model_reference_path)
+    submitted_reference = _geometry_generation_reference(job)
+    model_reference_ready, model_reference_size = _file_info(submitted_reference)
+    geometry_reference_ready, geometry_reference_size = _file_info(job.geometry_reference_path)
     heatmap_ready, heatmap_size = _file_info(job.heatmap_path)
     metadata_ready, metadata_size = _file_info(job.metadata_path)
     artifact_ready, artifact_size = _file_info(job.artifact_path)
@@ -1220,6 +1506,19 @@ def _public_job(job: Job) -> dict[str, Any]:
         artifact_filename = f"orcaslicer-model-{job.id}.{job.artifact_format}"
     provider_failure: dict[str, Any] = {}
     latest_attempt = job.attempts[-1] if job.attempts else {}
+    provider_attempt = next(
+        (
+            attempt for attempt in reversed(job.attempts)
+            if isinstance(attempt.get("generation_task_id"), str)
+            and bool(attempt.get("generation_task_id"))
+        ),
+        {},
+    )
+    provider_tasks = {
+        "provider": "tripo",
+        "generation_task_id": str(provider_attempt.get("generation_task_id", "")),
+        "conversion_task_id": str(provider_attempt.get("conversion_task_id", "")),
+    } if provider_attempt else {}
     code = latest_attempt.get("provider_error_code")
     if isinstance(code, str) and code:
         category = latest_attempt.get("provider_error_category")
@@ -1250,7 +1549,7 @@ def _public_job(job: Job) -> dict[str, Any]:
         "attempt": len(job.attempts),
         "max_attempts": MAX_GENERATION_ATTEMPTS,
         "prepared_prompt": job.prepared_prompt if job.source == "text" else "",
-        "user_prompt": job.user_prompt,
+        "user_prompt": "" if job.source == "image" and job.user_prompt == DEFAULT_IMAGE_INSTRUCTION else job.user_prompt,
         "palette": list(job.palette),
         "palette_roles": job.palette_roles,
         "palette_recommendation": job.palette_recommendation,
@@ -1261,6 +1560,7 @@ def _public_job(job: Job) -> dict[str, Any]:
         "visual_quality": visual_quality,
         "refinement": refinement,
         "provider_failure": provider_failure,
+        "provider_tasks": provider_tasks,
         "model_views": {
             "ready": model_view_sheet_ready,
             "size_bytes": model_view_sheet_size if model_view_sheet_ready else 0,
@@ -1281,6 +1581,10 @@ def _public_job(job: Job) -> dict[str, Any]:
             "strict_preview": {"ready": strict_preview_ready, "size_bytes": strict_preview_size},
             "clean_preview": {"ready": preview_ready, "size_bytes": preview_size},
             "model_reference": {"ready": model_reference_ready, "size_bytes": model_reference_size},
+            "geometry_reference": {
+                "ready": geometry_reference_ready,
+                "size_bytes": geometry_reference_size,
+            },
             "heatmap": {"ready": heatmap_ready, "size_bytes": heatmap_size},
             "metadata": {"ready": metadata_ready, "size_bytes": metadata_size},
             "masks": sorted(job.mask_paths),
@@ -1349,6 +1653,30 @@ def _fail_job(job: Job, message: str) -> None:
             job.state = "failed"
             job.phase = "failed"
             job.message = message
+        job.artifact_path = None
+        job.artifact_format = ""
+        _persist_job(job)
+
+
+def _return_to_portrait_multiview_retry(job: Job, message: str) -> None:
+    """Keep the approved preview retryable when local four-view checks fail."""
+
+    with _JOBS_LOCK:
+        if job.stop_event.is_set():
+            job.state = "stopped"
+            job.phase = "stopped"
+            job.message = "Model generation stopped."
+            job.progress = 0
+        else:
+            job.state = "awaiting_confirmation"
+            job.phase = "multiview_retry"
+            job.message = message
+            job.progress = max(17, job.progress)
+            job.image_metrics["multiview_retry"] = {
+                "required": True,
+                "reason": message,
+                "paid_task_created": False,
+            }
         job.artifact_path = None
         job.artifact_format = ""
         _persist_job(job)
@@ -1637,7 +1965,12 @@ def _quantize_image_to_palette(
 def _apply_printable_image_pipeline(job: Job, raw_preview: Path) -> dict[str, int]:
     try:
         result = process_printable_image(
-            raw_preview, job.directory, job.palette, job.print_settings, palette_roles=job.palette_roles
+            raw_preview,
+            job.directory,
+            job.palette,
+            job.print_settings,
+            palette_roles=job.palette_roles,
+            subject_reference_path=job.input_path if job.source == "image" else None,
         )
     except PrintableImageError as exc:
         raise OpenAIPreprocessorError(str(exc)) from None
@@ -1651,7 +1984,2058 @@ def _apply_printable_image_pipeline(job: Job, raw_preview: Path) -> dict[str, in
     job.subject_mask_path = result.subject_mask
     job.mask_paths = result.masks
     job.image_metrics = result.metrics
+    portrait_cleanup = result.metrics.get("portrait_skin_cleanup", {})
+    if isinstance(portrait_cleanup, dict) and portrait_cleanup.get("activated") == 1:
+        garment_color = str(portrait_cleanup.get("garment_color", "")).upper()
+        skin_color = str(portrait_cleanup.get("skin_color", "")).upper()
+        if garment_color in job.palette and skin_color in job.palette and garment_color != skin_color:
+            # Persist the semantic recovery so a restarted native client does
+            # not re-submit an inverted skin/garment mapping on the next image.
+            job.palette_roles = assign_palette_roles(
+                job.palette,
+                {"primary": garment_color, "light": skin_color},
+            ).color_by_role
     return result.palette_usage
+
+
+def _assess_job_model_reference(job: Job) -> dict[str, Any]:
+    reference = job.model_reference_path or job.preview_path
+    if reference is None:
+        raise ModelInputImageQualityError("The model reference image is unavailable.")
+    quality = assess_model_input_image(reference)
+    job.image_metrics["model_input_quality"] = quality
+    return quality
+
+
+def _model_generation_reference(job: Job) -> Path | None:
+    """Use the detail-rich, silhouette-clean reference for geometry.
+
+    The exact-palette clean preview remains the user-facing material gate. The
+    pipeline's model reference keeps provider detail (especially face landmarks)
+    while replacing its alpha with the validated printable silhouette. Older jobs
+    without that hybrid output fall back to the raw provider image. OBJ
+    post-processing still enforces the confirmed filament palette.
+    """
+    if job.model_reference_path is not None:
+        return job.model_reference_path
+    if job.palette and job.raw_preview_path is not None:
+        return job.raw_preview_path
+    return job.preview_path
+
+
+def _identity_preserving_portrait_geometry_enabled(job: Job) -> bool:
+    cleanup = job.image_metrics.get("portrait_skin_cleanup", {})
+    return (
+        job.source == "image"
+        and job.style == "realistic"
+        and job.generation_profile == "quality"
+        and len(job.palette) == 4
+        and isinstance(cleanup, dict)
+        and cleanup.get("activated") == 1
+        and job.input_path is not None
+        and job.input_path.is_file()
+    )
+
+
+def _geometry_generation_reference(job: Job) -> Path | None:
+    """Choose geometry evidence independently from the approved material preview.
+
+    A generated four-view portrait can average one real face with three
+    hallucinated faces or even create a second face on the back. Keep the
+    identity-locked sculptural Image2 reference as the only geometry input: it
+    retains the source face while presenting a closed bust, crossed limbs and an
+    integrated base in image-to-3D-friendly form. After Tripo returns one
+    coherent mesh, its real turntable owns the side/back geometry and Image2 is
+    used only for material labels. The exact-palette preview still owns printable
+    materials.
+    """
+
+    if _identity_preserving_portrait_geometry_enabled(job):
+        # The chooser is used concurrently by paid submission, public status,
+        # preview download and restart recovery. Serialize the small atomic
+        # image rewrite so those routes cannot replace one another's temporary
+        # files while a request is being confirmed.
+        with _GEOMETRY_REFERENCE_LOCK:
+            # Repair here—not only during initial preprocessing—so every route
+            # receives the same validated provider image.
+            _synchronize_geometry_reference_alpha(job)
+            # The provider's pre-restoration render keeps source-constrained
+            # facial landmarks while expressing them as real sculptural planes.
+            # The hybrid model reference remains useful for a pixel-accurate 2D
+            # review, but its pasted photograph is weaker geometry evidence.
+            if job.geometry_reference_path is not None and job.geometry_reference_path.is_file():
+                return _prepare_portrait_geometry_provider_reference(job)
+        return _model_generation_reference(job) or job.input_path
+    return _model_generation_reference(job)
+
+
+def _refine_portrait_head_silhouette(
+    geometry: Any,
+    alpha: Any,
+    source_alpha: Any | None = None,
+) -> tuple[Any, dict[str, Any]]:
+    """Remove attached light backdrop halos around a portrait head.
+
+    Image generators sometimes draw a checkerboard or soft white oval instead
+    of emitting true transparency.  Generic connected-component cleanup cannot
+    remove it because the oval touches the hair and shoulders.  In the upper
+    portrait region, however, real hair/skin supplies a strong non-neutral
+    span on every row.  Trim only light-neutral pixels outside that span, stop
+    when the silhouette widens into the shoulders, and leave the white jacket
+    and the rest of the bust completely untouched.
+    """
+
+    subject_bbox = alpha.getbbox()
+    report: dict[str, Any] = {
+        "version": "portrait-silhouette-v6",
+        "status": "not_needed",
+        "removed_pixels": 0,
+        "removed_detached_pixels": 0,
+        "source_head_backdrop_removed_pixels": 0,
+        "source_head_backdrop_component_count": 0,
+        "light_backdrop_removed_pixels": 0,
+        "light_backdrop_component_count": 0,
+        "source_neck_removed_pixels": 0,
+    }
+    if subject_bbox is None:
+        return alpha, report
+    left, top, right, bottom = subject_bbox
+    subject_width = right - left
+    subject_height = bottom - top
+    if subject_width < 32 or subject_height < 64:
+        return alpha, report
+
+    alpha_pixels = alpha.load()
+    geometry_pixels = geometry.load()
+    row_bounds: dict[int, tuple[int, int, int]] = {}
+    for y in range(top, bottom):
+        row = [x for x in range(left, right) if alpha_pixels[x, y] >= 128]
+        if row:
+            row_bounds[y] = (row[0], row[-1], len(row))
+    subject_area = max(1, sum(item[2] for item in row_bounds.values()))
+
+    shoulder_threshold = max(24, int(round(subject_width * 0.55)))
+    search_start = top + int(round(subject_height * 0.22))
+    search_end = min(bottom, top + int(round(subject_height * 0.58)))
+    shoulder_y: int | None = None
+    for y in range(search_start, search_end):
+        current = row_bounds.get(y)
+        if current is None or current[2] < shoulder_threshold:
+            continue
+        preceding = [
+            row_bounds[row][2]
+            for row in range(max(top, y - 36), max(top, y - 6))
+            if row in row_bounds
+        ]
+        following = [
+            row_bounds[row][2]
+            for row in range(y, min(bottom, y + 8))
+            if row in row_bounds
+        ]
+        if (
+            preceding
+            and following
+            and min(following) >= shoulder_threshold
+            and current[2] >= min(preceding) * 1.18
+        ):
+            shoulder_y = y
+            break
+    if shoulder_y is None:
+        report["reason"] = "shoulder_transition_not_detected"
+        return alpha, report
+
+    refined = alpha.copy()
+    refined_pixels = refined.load()
+    margin = max(1, int(round(subject_width * 0.002)))
+    removed_pixels = 0
+    cleaned_rows = 0
+    source_mask_used = False
+    source_removed_pixels = 0
+    source_head_backdrop_removed_pixels = 0
+    source_head_backdrop_component_count = 0
+    light_backdrop_removed_pixels = 0
+    light_backdrop_component_count = 0
+    light_backdrop_end = 0
+    source_neck_removed_pixels = 0
+    source_neck_margin = 0
+    source_neck_end = 0
+    source_torso_removed_pixels = 0
+    source_torso_margin = 0
+    source_torso_end = 0
+    source_head_end = max(top, shoulder_y - max(8, round(subject_height * 0.04)))
+    if source_alpha is not None and getattr(source_alpha, "size", None) == alpha.size:
+        source_pixels = source_alpha.load()
+        source_count = 0
+        overlap = 0
+        for y in range(top, source_head_end):
+            for x in range(left, right):
+                if source_pixels[x, y] >= 128:
+                    source_count += 1
+                    overlap += alpha_pixels[x, y] >= 128
+        if source_count >= 32 and overlap >= source_count * 0.70:
+            from PIL import ImageFilter
+
+            source_mask_used = True
+            for y in range(top, source_head_end):
+                for x in range(left, right):
+                    if refined_pixels[x, y] >= 128 and source_pixels[x, y] < 128:
+                        refined_pixels[x, y] = 0
+                        source_removed_pixels += 1
+            removed_pixels += source_removed_pixels
+
+            # The aligned source mask is intentionally expanded by a few pixels
+            # so it cannot shave real hair. That safety rim can also retain a
+            # narrow opaque checkerboard crescent beside dark hair. Detect only
+            # large light-neutral components that touch the refined head edge
+            # and live mostly outside an eroded source core. Real white or gray
+            # hair extends well into that core and is therefore preserved.
+            source_core_kernel = max(
+                3,
+                min(9, (round(min(alpha.width, alpha.height) * 0.008) | 1)),
+            )
+            source_core = source_alpha.filter(ImageFilter.MinFilter(source_core_kernel))
+            source_core_pixels = source_core.load()
+            head_candidates = bytearray(alpha.width * alpha.height)
+            for y in range(top, source_head_end):
+                row = y * alpha.width
+                for x in range(left, right):
+                    if refined_pixels[x, y] < 128:
+                        continue
+                    red, green, blue = geometry_pixels[x, y][:3]
+                    if min(red, green, blue) >= 200 and max(red, green, blue) - min(red, green, blue) <= 32:
+                        head_candidates[row + x] = 1
+
+            visited_head = bytearray(len(head_candidates))
+            removable_head_components: list[list[int]] = []
+            minimum_head_component = max(48, round(subject_area * 0.0001))
+            for seed, is_candidate in enumerate(head_candidates):
+                if not is_candidate or visited_head[seed]:
+                    continue
+                visited_head[seed] = 1
+                pending: deque[int] = deque([seed])
+                component: list[int] = []
+                outside_core_count = 0
+                touches_alpha_edge = False
+                while pending:
+                    offset = pending.popleft()
+                    component.append(offset)
+                    x = offset % alpha.width
+                    y = offset // alpha.width
+                    outside_core_count += source_core_pixels[x, y] < 128
+                    for neighbor in (
+                        offset - 1 if x else -1,
+                        offset + 1 if x + 1 < alpha.width else -1,
+                        offset - alpha.width if y else -1,
+                        offset + alpha.width if y + 1 < alpha.height else -1,
+                    ):
+                        if neighbor < 0:
+                            touches_alpha_edge = True
+                            continue
+                        neighbor_x = neighbor % alpha.width
+                        neighbor_y = neighbor // alpha.width
+                        if refined_pixels[neighbor_x, neighbor_y] < 128:
+                            touches_alpha_edge = True
+                        elif head_candidates[neighbor] and not visited_head[neighbor]:
+                            visited_head[neighbor] = 1
+                            pending.append(neighbor)
+                area = len(component)
+                if (
+                    area >= minimum_head_component
+                    and outside_core_count >= round(area * 0.55)
+                    and touches_alpha_edge
+                ):
+                    removable_head_components.append(component)
+            head_removal = sum(len(component) for component in removable_head_components)
+            if head_removal <= round(subject_area * 0.005):
+                for component in removable_head_components:
+                    for offset in component:
+                        refined_pixels[offset % alpha.width, offset // alpha.width] = 0
+                source_head_backdrop_removed_pixels = head_removal
+                source_head_backdrop_component_count = len(removable_head_components)
+                removed_pixels += head_removal
+
+            # The source-locked head removes the large hair halo, but white
+            # checkerboard patches can remain attached to shoulders and crossed
+            # arms. Tripo turns those neutral patches into small connected
+            # plates. Real sculptural skin and garments in this reference are
+            # warm gray; use large, boundary-connected neutral-white components
+            # as seeds and require that each component visibly escapes the
+            # source silhouette. This keeps a white jacket and the generated
+            # base while removing the backdrop before a paid submission.
+            source_bbox = source_alpha.getbbox()
+            if source_bbox is not None:
+                light_backdrop_end = min(
+                    bottom,
+                    round(alpha.height * 0.76),
+                    source_bbox[3] + max(12, round(subject_height * 0.05)),
+                )
+                candidates = bytearray(alpha.width * alpha.height)
+                seeds = bytearray(alpha.width * alpha.height)
+                for y in range(source_head_end, light_backdrop_end):
+                    row = y * alpha.width
+                    for x in range(left, right):
+                        if refined_pixels[x, y] < 128:
+                            continue
+                        red, green, blue = geometry_pixels[x, y][:3]
+                        minimum = min(red, green, blue)
+                        spread = max(red, green, blue) - minimum
+                        offset = row + x
+                        if minimum >= 225 and spread <= 10:
+                            candidates[offset] = 1
+                        if minimum >= 235 and spread <= 6:
+                            seeds[offset] = 1
+
+                visited = bytearray(len(candidates))
+                removable_components: list[list[int]] = []
+                minimum_component_area = max(128, round(subject_area * 0.0005))
+                for seed, is_candidate in enumerate(candidates):
+                    if not is_candidate or visited[seed]:
+                        continue
+                    visited[seed] = 1
+                    pending: deque[int] = deque([seed])
+                    component: list[int] = []
+                    seed_count = 0
+                    outside_source_count = 0
+                    touches_alpha_edge = False
+                    while pending:
+                        offset = pending.popleft()
+                        component.append(offset)
+                        x = offset % alpha.width
+                        y = offset // alpha.width
+                        seed_count += bool(seeds[offset])
+                        outside_source_count += source_pixels[x, y] < 128
+                        for neighbor in (
+                            offset - 1 if x else -1,
+                            offset + 1 if x + 1 < alpha.width else -1,
+                            offset - alpha.width if y else -1,
+                            offset + alpha.width if y + 1 < alpha.height else -1,
+                        ):
+                            if neighbor < 0:
+                                touches_alpha_edge = True
+                                continue
+                            neighbor_x = neighbor % alpha.width
+                            neighbor_y = neighbor // alpha.width
+                            if alpha_pixels[neighbor_x, neighbor_y] < 128:
+                                touches_alpha_edge = True
+                            elif candidates[neighbor] and not visited[neighbor]:
+                                visited[neighbor] = 1
+                                pending.append(neighbor)
+                    area = len(component)
+                    if (
+                        area >= minimum_component_area
+                        and seed_count >= max(32, round(area * 0.15))
+                        and outside_source_count >= max(24, round(area * 0.03))
+                        and touches_alpha_edge
+                    ):
+                        removable_components.append(component)
+
+                candidate_removal = sum(len(component) for component in removable_components)
+                if candidate_removal <= round(subject_area * 0.06):
+                    for component in removable_components:
+                        for offset in component:
+                            refined_pixels[offset % alpha.width, offset // alpha.width] = 0
+                    light_backdrop_removed_pixels = candidate_removal
+                    light_backdrop_component_count = len(removable_components)
+                    removed_pixels += candidate_removal
+
+                # Neutral-component cleanup deliberately ignores warm-gray
+                # pixels, but a studio-shadow fringe at the neck can share that
+                # warmer tone and remain attached to the generated shoulders.
+                # On a single-view image-to-3D request even a small triangle in
+                # this narrow transition becomes a vertical plate behind the
+                # collar.  The edit is composition-locked to the user's photo,
+                # so constrain only this short neck-to-shoulder band to the
+                # aligned source silhouette.  A modest row-wise margin avoids
+                # clipping hair or lapels; the operation stops before the main
+                # jacket and crossed arms, and a hard area cap rejects a badly
+                # aligned source mask.
+                source_neck_margin = max(4, min(12, round(subject_width * 0.015)))
+                source_neck_end = min(
+                    light_backdrop_end,
+                    shoulder_y + max(16, round(subject_height * 0.024)),
+                )
+                neck_offsets: list[int] = []
+                for y in range(source_head_end, source_neck_end):
+                    source_row = [
+                        x for x in range(left, right) if source_pixels[x, y] >= 128
+                    ]
+                    if not source_row:
+                        continue
+                    keep_left = max(left, source_row[0] - source_neck_margin)
+                    keep_right = min(right - 1, source_row[-1] + source_neck_margin)
+                    row = y * alpha.width
+                    for x in range(left, keep_left):
+                        if refined_pixels[x, y] >= 128:
+                            neck_offsets.append(row + x)
+                    for x in range(keep_right + 1, right):
+                        if refined_pixels[x, y] >= 128:
+                            neck_offsets.append(row + x)
+                if len(neck_offsets) <= round(subject_area * 0.01):
+                    for offset in neck_offsets:
+                        refined_pixels[offset % alpha.width, offset // alpha.width] = 0
+                    source_neck_removed_pixels = len(neck_offsets)
+                    removed_pixels += source_neck_removed_pixels
+
+                # A neutral plate can carry warm-gray shadows along the neck,
+                # so the color seed intentionally leaves a small triangular
+                # remainder.  In only the shared shoulder/upper-torso band,
+                # apply a generously dilated source silhouette as a second
+                # guard. The margin scales with the portrait and the operation
+                # stops well before the generated bust finish or base.
+                source_torso_margin = max(8, min(24, round(subject_width * 0.03)))
+                source_torso_end = min(
+                    light_backdrop_end,
+                    max(source_head_end, source_bbox[3] - source_torso_margin * 2),
+                )
+                source_torso_alpha = source_alpha.filter(
+                    ImageFilter.MaxFilter(source_torso_margin * 2 + 1)
+                )
+                source_torso_pixels = source_torso_alpha.load()
+                torso_offsets: list[int] = []
+                for y in range(source_head_end, source_torso_end):
+                    row = y * alpha.width
+                    for x in range(left, right):
+                        if refined_pixels[x, y] >= 128 and source_torso_pixels[x, y] < 128:
+                            torso_offsets.append(row + x)
+                if len(torso_offsets) <= round(subject_area * 0.015):
+                    for offset in torso_offsets:
+                        refined_pixels[offset % alpha.width, offset // alpha.width] = 0
+                    source_torso_removed_pixels = len(torso_offsets)
+                    removed_pixels += source_torso_removed_pixels
+
+    # The aligned source silhouette is more reliable than color thresholds and
+    # preserves white/gray hair. Use the row-wise neutral-halo fallback only
+    # when a trustworthy source mask could not be recovered.
+    for y in (() if source_mask_used else range(top, shoulder_y)):
+        bounds = row_bounds.get(y)
+        if bounds is None:
+            continue
+        row_left, row_right, row_count = bounds
+        content: list[int] = []
+        for x in range(row_left, row_right + 1):
+            if alpha_pixels[x, y] < 128:
+                continue
+            red, green, blue = geometry_pixels[x, y][:3]
+            # The endpoint often paints a soft studio shadow around an opaque
+            # checkerboard.  Its inner edge can be medium gray (roughly 170),
+            # not merely near-white.  Treat the smooth neutral ramp as empty
+            # until real hair/skin chroma or darker sculptural detail begins.
+            # Cleanup is still limited to rows above the detected shoulders,
+            # so a cream or white jacket is never trimmed by this threshold.
+            light_neutral_background = (
+                min(red, green, blue) >= 170
+                and max(red, green, blue) - min(red, green, blue) <= 32
+            )
+            if not light_neutral_background:
+                content.append(x)
+        if len(content) < max(8, int(round(row_count * 0.25))):
+            continue
+        keep_left = max(row_left, content[0] - margin)
+        keep_right = min(row_right, content[-1] + margin)
+        if keep_left <= row_left and keep_right >= row_right:
+            continue
+        for x in range(row_left, keep_left):
+            if refined_pixels[x, y] >= 128:
+                refined_pixels[x, y] = 0
+                removed_pixels += 1
+        for x in range(keep_right + 1, row_right + 1):
+            if refined_pixels[x, y] >= 128:
+                refined_pixels[x, y] = 0
+                removed_pixels += 1
+        cleaned_rows += 1
+
+    # A single opaque checkerboard dash is enough for image-to-3D to create a
+    # thin spike beside the base. Portrait geometry is expected to be one
+    # connected bust/base silhouette, so retain only the largest 4-connected
+    # alpha component after the halo trim. Use two bounded flood-fill passes to
+    # avoid retaining a large per-component pixel list for megapixel images.
+    foreground = bytes(value >= 128 for value in refined.tobytes())
+    visited = bytearray(len(foreground))
+    largest_seed = -1
+    largest_area = 0
+    for seed, is_foreground in enumerate(foreground):
+        if not is_foreground or visited[seed]:
+            continue
+        visited[seed] = 1
+        pending: deque[int] = deque([seed])
+        area = 0
+        while pending:
+            offset = pending.popleft()
+            area += 1
+            x = offset % refined.width
+            for neighbor in (
+                offset - 1 if x else -1,
+                offset + 1 if x + 1 < refined.width else -1,
+                offset - refined.width if offset >= refined.width else -1,
+                offset + refined.width if offset + refined.width < len(foreground) else -1,
+            ):
+                if neighbor >= 0 and foreground[neighbor] and not visited[neighbor]:
+                    visited[neighbor] = 1
+                    pending.append(neighbor)
+        if area > largest_area:
+            largest_seed = seed
+            largest_area = area
+
+    detached_pixels = 0
+    if largest_seed >= 0 and largest_area:
+        keep = bytearray(len(foreground))
+        keep[largest_seed] = 1
+        pending = deque([largest_seed])
+        while pending:
+            offset = pending.popleft()
+            x = offset % refined.width
+            for neighbor in (
+                offset - 1 if x else -1,
+                offset + 1 if x + 1 < refined.width else -1,
+                offset - refined.width if offset >= refined.width else -1,
+                offset + refined.width if offset + refined.width < len(foreground) else -1,
+            ):
+                if neighbor >= 0 and foreground[neighbor] and not keep[neighbor]:
+                    keep[neighbor] = 1
+                    pending.append(neighbor)
+        for offset, is_foreground in enumerate(foreground):
+            if is_foreground and not keep[offset]:
+                refined_pixels[offset % refined.width, offset // refined.width] = 0
+                detached_pixels += 1
+        removed_pixels += detached_pixels
+
+    report.update({
+        "status": "refined" if removed_pixels else "not_needed",
+        "shoulder_y": shoulder_y,
+        "cleaned_rows": cleaned_rows,
+        "margin_px": margin,
+        "removed_pixels": removed_pixels,
+        "removed_detached_pixels": detached_pixels,
+        "source_mask_used": source_mask_used,
+        "source_removed_pixels": source_removed_pixels,
+        "source_head_backdrop_removed_pixels": source_head_backdrop_removed_pixels,
+        "source_head_backdrop_component_count": source_head_backdrop_component_count,
+        "source_head_end": source_head_end,
+        "light_backdrop_removed_pixels": light_backdrop_removed_pixels,
+        "light_backdrop_component_count": light_backdrop_component_count,
+        "light_backdrop_end": light_backdrop_end,
+        "source_neck_removed_pixels": source_neck_removed_pixels,
+        "source_neck_margin": source_neck_margin,
+        "source_neck_end": source_neck_end,
+        "source_torso_removed_pixels": source_torso_removed_pixels,
+        "source_torso_margin": source_torso_margin,
+        "source_torso_end": source_torso_end,
+        "removed_subject_ratio": round(
+            removed_pixels / subject_area, 6
+        ),
+    })
+    return refined, report
+
+
+def _synchronize_geometry_reference_alpha(job: Job) -> None:
+    """Give the sculptural RGB reference the pipeline's hard subject silhouette.
+
+    Some OpenAI-compatible image endpoints render a checkerboard into an opaque
+    RGB result even when transparent output was requested.  The printable-image
+    pipeline already recovers a clean, connected binary subject mask.  Prefer
+    that mask over ``model_reference.png`` alpha: the latter can intentionally
+    retain a soft portrait shadow which single-view image-to-3D may extrude into
+    a person-shaped rear plate.  Reusing only the hard silhouette preserves the
+    provider's sculptural face planes while preventing checkerboards, shadows or
+    tiny detached fragments from reaching image-to-3D.
+
+    This runs during assessment as well as initial preprocessing so restored
+    Beta jobs created by an older sidecar are repaired before a paid task can be
+    submitted.
+    """
+
+    geometry_reference = job.geometry_reference_path
+    model_reference = job.model_reference_path
+    subject_mask = job.subject_mask_path
+    if (
+        not _identity_preserving_portrait_geometry_enabled(job)
+        or geometry_reference is None
+        or model_reference is None
+        or not geometry_reference.is_file()
+        or not model_reference.is_file()
+    ):
+        return
+    previous_cleanup = job.image_metrics.get("geometry_silhouette_cleanup", {})
+    if (
+        isinstance(previous_cleanup, Mapping)
+        and previous_cleanup.get("version") == "portrait-silhouette-v6"
+        and previous_cleanup.get("alpha_synced") is True
+    ):
+        cached_cleanup = dict(previous_cleanup)
+        cached_cleanup["revalidated"] = True
+        job.image_metrics["geometry_silhouette_cleanup"] = cached_cleanup
+        return
+    try:
+        from PIL import Image, ImageChops, UnidentifiedImageError
+    except ImportError:
+        raise ModelInputImageQualityError(
+            "Pillow is required to prepare the portrait geometry reference."
+        ) from None
+
+    temporary = geometry_reference.with_name(
+        f"{geometry_reference.name}.{uuid.uuid4().hex}.alpha.tmp"
+    )
+    try:
+        mask_path = (
+            subject_mask
+            if subject_mask is not None and subject_mask.is_file()
+            else model_reference
+        )
+        with Image.open(geometry_reference) as geometry_opened, Image.open(mask_path) as mask_opened:
+            if geometry_opened.size != mask_opened.size:
+                raise ModelInputImageQualityError(
+                    "The portrait geometry reference and validated silhouette have different sizes."
+                )
+            validated_alpha = (
+                mask_opened.convert("L")
+                if mask_path == subject_mask
+                else mask_opened.getchannel("A")
+                if "A" in mask_opened.getbands()
+                else None
+            )
+            if validated_alpha is None:
+                return
+            # A hard edge is intentional here. Semi-transparent antialiasing or
+            # a portrait drop shadow is useful for 2D preview, but is ambiguous
+            # geometry evidence and can become a printable vertical sheet.
+            geometry = geometry_opened.convert("RGBA")
+            validated_alpha = validated_alpha.point(lambda value: 255 if value >= 128 else 0)
+            # Never re-open pixels removed by an earlier cleanup. Restored jobs
+            # can be assessed repeatedly (startup, UI download, paid submit),
+            # and replacing alpha with the original broad mask would otherwise
+            # turn the sanitized transparent-black halo back into opaque black
+            # geometry on the next pass.
+            current_alpha = geometry.getchannel("A").point(
+                lambda value: 255 if value >= 128 else 0
+            )
+            validated_alpha = ImageChops.darker(validated_alpha, current_alpha)
+            already_refined = (
+                isinstance(previous_cleanup, Mapping)
+                and previous_cleanup.get("version") == "portrait-silhouette-v6"
+                and previous_cleanup.get("status") in {"refined", "not_needed"}
+            )
+            if already_refined:
+                silhouette_report = dict(previous_cleanup)
+                silhouette_report["revalidated"] = True
+            else:
+                source_alpha = None
+                if job.input_path is not None and job.input_path.is_file():
+                    source_mask_data = _portrait_source_subject_mask(
+                        geometry.width,
+                        geometry.height,
+                        job.input_path,
+                    )
+                    if source_mask_data:
+                        source_alpha = Image.frombytes("L", geometry.size, source_mask_data)
+                validated_alpha, silhouette_report = _refine_portrait_head_silhouette(
+                    geometry,
+                    validated_alpha,
+                    source_alpha,
+                )
+            geometry.putalpha(validated_alpha)
+
+            # Alpha alone is not sufficient for provider interoperability.
+            # Some upload/conversion paths flatten PNGs after discarding alpha,
+            # exposing the checkerboard or white RGB values that were hidden in
+            # transparent pixels. Image-to-3D can then extrude that hidden image
+            # into a large rear plate. Keep the complete subject unchanged, but
+            # make every non-subject pixel transparent black so both alpha-aware
+            # and RGB-only decoders see an unambiguous empty background.
+            sanitized = Image.new("RGBA", geometry.size, (0, 0, 0, 0))
+            sanitized.paste(geometry, (0, 0), validated_alpha)
+            if geometry_opened.convert("RGBA").tobytes() == sanitized.tobytes():
+                silhouette_report["alpha_synced"] = True
+                job.image_metrics["geometry_silhouette_cleanup"] = silhouette_report
+                return
+            sanitized.save(temporary, format="PNG")
+        os.replace(temporary, geometry_reference)
+        silhouette_report["alpha_synced"] = True
+        job.image_metrics["geometry_silhouette_cleanup"] = silhouette_report
+    except ModelInputImageQualityError:
+        raise
+    except (OSError, UnidentifiedImageError, Image.DecompressionBombError):
+        raise ModelInputImageQualityError(
+            "The sculptural portrait reference could not inherit the validated subject silhouette."
+        ) from None
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _copy_portrait_into_continuous_silhouette(
+    portrait: Any,
+    current_alpha: Any,
+    target_alpha: Any,
+) -> Any:
+    """Keep valid portrait pixels exact and synthesize only repaired mask gaps.
+
+    A paid image-to-3D request must never expose transparent holes or the RGB
+    checkerboard hidden behind them.  Pixels already belonging to the validated
+    subject are copied byte-for-byte (apart from hardening alpha).  A newly
+    filled gap inherits the nearest valid pixel on the same scanline, which is
+    deliberately less imaginative than inpainting and cannot alter the face.
+    """
+
+    from bisect import bisect_left
+    from PIL import Image
+
+    if portrait.size != current_alpha.size or portrait.size != target_alpha.size:
+        raise ModelInputImageQualityError(
+            "The portrait silhouette repair images have different sizes."
+        )
+    source = portrait.convert("RGBA")
+    current = current_alpha.point(lambda value: 255 if value >= 128 else 0)
+    target = target_alpha.point(lambda value: 255 if value >= 128 else 0)
+    source_pixels = source.load()
+    current_pixels = current.load()
+    target_pixels = target.load()
+    repaired = Image.new("RGBA", source.size, (0, 0, 0, 0))
+    repaired_pixels = repaired.load()
+    interior_offset = max(2, min(6, round(source.width * 0.008)))
+    for y in range(source.height):
+        valid = [
+            x
+            for x in range(source.width)
+            if current_pixels[x, y] >= 128 and target_pixels[x, y] >= 128
+        ]
+        if not valid:
+            continue
+        for x in range(source.width):
+            if target_pixels[x, y] < 128:
+                continue
+            if current_pixels[x, y] >= 128:
+                red, green, blue, _ = source_pixels[x, y]
+            else:
+                insertion = bisect_left(valid, x)
+                if insertion == 0:
+                    sample_index = min(len(valid) - 1, interior_offset)
+                elif insertion == len(valid):
+                    sample_index = max(0, len(valid) - 1 - interior_offset)
+                else:
+                    left_index = insertion - 1
+                    right_index = insertion
+                    if x - valid[left_index] <= valid[right_index] - x:
+                        sample_index = max(0, left_index - interior_offset)
+                    else:
+                        sample_index = min(
+                            len(valid) - 1, right_index + interior_offset
+                        )
+                red, green, blue, _ = source_pixels[valid[sample_index], y]
+            repaired_pixels[x, y] = (red, green, blue, 255)
+    return repaired
+
+
+def _repair_portrait_head_shoulders_silhouette(
+    portrait: Any,
+    portrait_alpha: Any,
+    source_alpha: Any | None,
+    *,
+    protected_bounds: tuple[int, int, int, int] | None = None,
+) -> tuple[Any, Any, dict[str, Any]]:
+    """Remove exterior checkerboard remnants and close shoulder/neck notches.
+
+    The compact portrait is intentionally a single frontal bust silhouette.
+    This lets us use three independent pieces of evidence before a paid task:
+    the generated hard alpha, the composition-locked source-photo silhouette,
+    and real sculptural texture (as opposed to near-white checkerboard RGB).
+    Each accepted scanline is made continuous only between its trusted left and
+    right edges.  Thus exterior ghosts disappear, interior square cutouts close,
+    and every already-valid identity RGB pixel remains untouched.
+    """
+
+    try:
+        from PIL import Image, ImageChops, ImageFilter
+    except ImportError:
+        raise ModelInputImageQualityError(
+            "Pillow is required to repair the portrait shoulder silhouette."
+        ) from None
+
+    report: dict[str, Any] = {
+        "version": "portrait-head-shoulders-silhouette-v1",
+        "status": "unverified",
+        "source_mask_used": False,
+        "removed_external_pixels": 0,
+        "removed_light_edge_pixels": 0,
+        "filled_notch_pixels": 0,
+        "remaining_row_gap_pixels": 0,
+        "protected_pixels_removed": 0,
+        "protected_removed_ratio": 0.0,
+        "central_identity_pixels_removed": 0,
+        "identity_rgb_pixels_changed": 0,
+    }
+    current = portrait_alpha.point(lambda value: 255 if value >= 128 else 0)
+    current_area = sum(value >= 128 for value in current.tobytes())
+    if current_area <= 0:
+        report["reason"] = "empty_portrait_silhouette"
+        return portrait, current, report
+    if source_alpha is None or source_alpha.size != portrait.size:
+        report["reason"] = "source_portrait_silhouette_unavailable"
+        return portrait, current, report
+
+    source = source_alpha.point(lambda value: 255 if value >= 128 else 0)
+    # Allow a few pixels of generator/source alignment drift while still using
+    # the source to reject large attached remnants. MaxFilter requires an odd
+    # kernel and is bounded so it cannot turn the source into a broad halo.
+    alignment_margin = max(3, min(11, round(min(portrait.size) * 0.008) | 1))
+    source = source.filter(ImageFilter.MaxFilter(alignment_margin))
+    bounded = ImageChops.darker(current, source)
+    bounded_pixels = bounded.load()
+    portrait_pixels = portrait.convert("RGBA").load()
+    target = Image.new("L", portrait.size, 0)
+    target_pixels = target.load()
+    trusted_rows = 0
+    fallback_rows = 0
+    removed_light_edge_pixels = 0
+    edge_margin = max(1, round(min(portrait.size) * 0.003))
+    proposed_bounds: dict[int, tuple[int, int]] = {}
+    for y in range(portrait.height):
+        candidate = [x for x in range(portrait.width) if bounded_pixels[x, y] >= 128]
+        if not candidate:
+            continue
+        textured: list[int] = []
+        for x in candidate:
+            red, green, blue, _ = portrait_pixels[x, y]
+            # Generated checkerboards and their white matte are nearly neutral
+            # and much brighter than even the light jacket's shaded edge.
+            light_neutral_matte = (
+                min(red, green, blue) >= 242
+                and max(red, green, blue) - min(red, green, blue) <= 12
+            )
+            if not light_neutral_matte:
+                textured.append(x)
+        if textured:
+            left = max(candidate[0], textured[0] - edge_margin)
+            right = min(candidate[-1], textured[-1] + edge_margin)
+            removed_light_edge_pixels += sum(
+                x < left or x > right for x in candidate
+            )
+            trusted_rows += 1
+        else:
+            # Keep a very bright hair/highlight scanline when both independent
+            # masks agree; adjacent textured rows still constrain its extent.
+            left, right = candidate[0], candidate[-1]
+            fallback_rows += 1
+        proposed_bounds[y] = (left, right)
+
+    # Below the narrowest neck row, a frontal bust must widen smoothly toward
+    # the shoulders. Collar/background fragments can otherwise create a sudden
+    # square inward step even when each scanline is individually continuous.
+    neck_search_top = round(portrait.height * 0.38)
+    neck_search_bottom = round(portrait.height * 0.62)
+    neck_candidates = [
+        y for y in proposed_bounds if neck_search_top <= y < neck_search_bottom
+    ]
+    neck_row = (
+        min(
+            neck_candidates,
+            key=lambda y: proposed_bounds[y][1] - proposed_bounds[y][0],
+        )
+        if neck_candidates
+        else None
+    )
+    maximum_expansion = max(2, round(portrait.width * 0.006))
+    boundary_adjustment_pixels = 0
+    if neck_row is not None:
+        previous_left, previous_right = proposed_bounds[neck_row]
+        for y in range(neck_row + 1, portrait.height):
+            if y not in proposed_bounds:
+                continue
+            raw_left, raw_right = proposed_bounds[y]
+            left = max(
+                min(raw_left, previous_left),
+                previous_left - maximum_expansion,
+            )
+            right = min(
+                max(raw_right, previous_right),
+                previous_right + maximum_expansion,
+            )
+            boundary_adjustment_pixels += abs(left - raw_left) + abs(right - raw_right)
+            proposed_bounds[y] = (left, right)
+            previous_left, previous_right = left, right
+    for y, (left, right) in proposed_bounds.items():
+        for x in range(left, right + 1):
+            target_pixels[x, y] = 255
+
+    target_area = sum(value >= 128 for value in target.tobytes())
+    current_pixels = current.load()
+    removed_external = 0
+    filled_notches = 0
+    remaining_gaps = 0
+    for y in range(portrait.height):
+        row = [x for x in range(portrait.width) if target_pixels[x, y] >= 128]
+        if row:
+            remaining_gaps += sum(
+                target_pixels[x, y] < 128 for x in range(row[0], row[-1] + 1)
+            )
+        for x in range(portrait.width):
+            was_subject = current_pixels[x, y] >= 128
+            is_subject = target_pixels[x, y] >= 128
+            removed_external += int(was_subject and not is_subject)
+            filled_notches += int(is_subject and not was_subject)
+
+    protected_count = 0
+    protected_removed = 0
+    central_identity_removed = 0
+    central_removed_left = portrait.width
+    central_removed_top = portrait.height
+    central_removed_right = -1
+    central_removed_bottom = -1
+    if protected_bounds is not None:
+        left, top, right, bottom = protected_bounds
+        left = max(0, min(portrait.width, left))
+        right = max(left, min(portrait.width, right))
+        top = max(0, min(portrait.height, top))
+        bottom = max(top, min(portrait.height, bottom))
+        protected_width = right - left
+        protected_height = bottom - top
+        central_left = left + round(protected_width * 0.12)
+        central_right = right - round(protected_width * 0.12)
+        central_top = top + round(protected_height * 0.08)
+        # Protect the eyes/nose/mouth interior absolutely. The lower part of the
+        # detector's broad warm-skin box includes neck and collar pixels, where
+        # source-aligned trimming is precisely what removes the square tabs.
+        central_bottom = top + round(protected_height * 0.58)
+        for y in range(top, bottom):
+            for x in range(left, right):
+                if current_pixels[x, y] >= 128:
+                    protected_count += 1
+                    protected_removed += int(target_pixels[x, y] < 128)
+                    if (
+                        central_left <= x < central_right
+                        and central_top <= y < central_bottom
+                        and target_pixels[x, y] < 128
+                    ):
+                        central_identity_removed += 1
+                        central_removed_left = min(central_removed_left, x)
+                        central_removed_top = min(central_removed_top, y)
+                        central_removed_right = max(central_removed_right, x)
+                        central_removed_bottom = max(central_removed_bottom, y)
+
+    area_ratio = target_area / max(1, current_area)
+    protected_removed_ratio = protected_removed / max(1, protected_count)
+    verified = (
+        trusted_rows >= max(16, round(portrait.height * 0.45))
+        and fallback_rows <= round(portrait.height * 0.20)
+        and 0.72 <= area_ratio <= 1.10
+        and removed_external <= current_area * 0.22
+        and filled_notches <= current_area * 0.12
+        and protected_removed_ratio <= 0.04
+        and central_identity_removed == 0
+        and remaining_gaps == 0
+    )
+    report.update({
+        "status": "pass" if verified else "unverified",
+        "reason": "continuous_source_aligned_silhouette" if verified else "unsafe_repair_extent",
+        "source_mask_used": True,
+        "source_alignment_margin_px": alignment_margin,
+        "trusted_rows": trusted_rows,
+        "fallback_rows": fallback_rows,
+        "neck_row": neck_row,
+        "maximum_shoulder_expansion_px": maximum_expansion,
+        "shoulder_boundary_adjustment_pixels": boundary_adjustment_pixels,
+        "current_area": current_area,
+        "target_area": target_area,
+        "target_to_current_ratio": round(area_ratio, 6),
+        "removed_external_pixels": removed_external,
+        "removed_light_edge_pixels": removed_light_edge_pixels,
+        "filled_notch_pixels": filled_notches,
+        "remaining_row_gap_pixels": remaining_gaps,
+        "protected_pixels_removed": protected_removed,
+        "protected_removed_ratio": round(protected_removed_ratio, 6),
+        "central_identity_pixels_removed": central_identity_removed,
+        "central_identity_removed_bounds": (
+            [
+                central_removed_left,
+                central_removed_top,
+                central_removed_right + 1,
+                central_removed_bottom + 1,
+            ]
+            if central_identity_removed
+            else None
+        ),
+    })
+    if not verified:
+        return portrait, current, report
+    repaired = _copy_portrait_into_continuous_silhouette(
+        portrait, current, target
+    )
+    return repaired, target, report
+
+
+def _prepare_portrait_geometry_provider_reference(job: Job) -> Path:
+    """Build an identity-preserving sculptural portrait on a safe square canvas.
+
+    The portrait Image2 endpoint returns a 2:3 image.  In real Tripo runs that
+    tall transparent canvas repeatedly produced a thin loop behind the head and
+    a full-height rear plate, even after every hidden transparent RGB pixel was
+    cleared. A subsequent 1.89M-face real run proved that a colour-photo-like
+    half-body input can still collapse a faithful 2D face into a generic 3D one.
+    Geometry therefore follows the relief-rich sculptural reference; the natural
+    colour reference remains the authority for post-generation materials.
+
+    When reliable face and base bounds are available, crop at the shoulders,
+    preserve every remaining portrait pixel at native resolution, and draw one
+    solid overlapping plinth. This raises the head's share of the actual square
+    provider input above one half and removes the copied white transition that
+    created a second base ring. Center the result on transparent black so no
+    portrait frame can be interpreted as geometry.
+
+    The original ``geometry-reference.png`` remains untouched after alpha
+    sanitization.  Keeping the provider-specific derivative separate makes the
+    operation idempotent and lets restored jobs rebuild it safely.
+    """
+
+    source = job.geometry_reference_path
+    if source is None or not source.is_file():
+        raise ModelInputImageQualityError("The sculptural portrait reference is unavailable.")
+    try:
+        from PIL import Image, ImageDraw, UnidentifiedImageError
+    except ImportError:
+        raise ModelInputImageQualityError(
+            "Pillow is required to prepare the portrait geometry provider image."
+        ) from None
+
+    destination = job.directory / PORTRAIT_GEOMETRY_PROVIDER_FILENAME
+    temporary = destination.with_name(
+        f"{destination.name}.{uuid.uuid4().hex}.tmp"
+    )
+    previous_canvas = job.image_metrics.get("geometry_provider_canvas", {})
+    # A provider image is part of a paid request's immutable evidence.  Status
+    # polling and restart recovery call this chooser again, so a newer layout
+    # strategy must never rewrite the image that an existing Tripo task saw.
+    if job.attempts and destination.is_file() and isinstance(previous_canvas, Mapping):
+        frozen_size = previous_canvas.get("output_size")
+        if (
+            isinstance(frozen_size, list)
+            and len(frozen_size) == 2
+            and all(isinstance(value, int) and value > 0 for value in frozen_size)
+        ):
+            try:
+                with Image.open(destination) as frozen:
+                    if frozen.size == tuple(frozen_size) and "A" in frozen.getbands():
+                        return destination
+            except (OSError, UnidentifiedImageError, Image.DecompressionBombError):
+                pass
+    try:
+        with Image.open(source) as opened:
+            sculptural_geometry = opened.convert("RGBA")
+        alpha = sculptural_geometry.getchannel("A")
+        geometry = sculptural_geometry
+        appearance_source = "sculptural_geometry_reference"
+        appearance_path = source
+        original_size = list(geometry.size)
+        compaction: dict[str, Any] = {
+            "applied": False,
+            "reason": "not_eligible",
+            "original_size": original_size,
+        }
+        cleanup = job.image_metrics.get("portrait_skin_cleanup", {})
+        face_bounds = cleanup.get("face_bounds") if isinstance(cleanup, Mapping) else None
+        base_bounds = cleanup.get("base_bounds") if isinstance(cleanup, Mapping) else None
+        if isinstance(face_bounds, Mapping) and isinstance(base_bounds, Mapping):
+            try:
+                face_left = int(face_bounds["left"])
+                face_right = int(face_bounds["right"])
+                face_top = int(face_bounds["top"])
+                face_bottom = int(face_bounds["bottom"])
+                base_top = int(base_bounds["top"])
+            except (KeyError, TypeError, ValueError, OverflowError):
+                face_left = face_right = face_top = face_bottom = base_top = -1
+            width, height = geometry.size
+            face_width = face_right - face_left
+            skin_component_height = face_bottom - face_top
+            subject_bbox = alpha.getbbox()
+            # A connected warm component can extend through the neck. Face
+            # width is the more stable scale cue, so cap the estimated head at
+            # a conservative real-portrait aspect before choosing a shoulder
+            # cut. No source portrait pixel is resampled.
+            head_height = min(skin_component_height, round(face_width * 1.55))
+            if (
+                subject_bbox is not None
+                and face_width >= round(width * 0.16)
+                and head_height >= round(height * 0.22)
+                and 0 <= face_left < face_right <= width
+                and 0 <= face_top < face_bottom <= base_top <= height
+            ):
+                center_x = (face_left + face_right) // 2
+                crop_top = max(
+                    subject_bbox[1],
+                    face_top - round(head_height * 0.14),
+                )
+                head_bottom = min(face_bottom, face_top + head_height)
+                crop_bottom = min(
+                    base_top,
+                    head_bottom + round(head_height * 0.50),
+                )
+                crop_width = min(
+                    width,
+                    max(face_width * 2, round(head_height * 1.66)),
+                )
+                crop_left = max(0, min(width - crop_width, center_x - crop_width // 2))
+                crop_right = crop_left + crop_width
+                if crop_bottom <= crop_top + head_height:
+                    compaction["reason"] = "portrait_shoulders_not_available"
+                else:
+                    portrait = geometry.crop((crop_left, crop_top, crop_right, crop_bottom))
+                    portrait_source_alpha = portrait.getchannel("A").point(
+                        lambda value: 255 if value >= 128 else 0
+                    )
+                    source_portrait_alpha = None
+                    if job.input_path is not None and job.input_path.is_file():
+                        source_mask_data = _portrait_source_subject_mask(
+                            width, height, job.input_path
+                        )
+                        if source_mask_data:
+                            source_portrait_alpha = Image.frombytes(
+                                "L", (width, height), source_mask_data
+                            ).crop((crop_left, crop_top, crop_right, crop_bottom))
+                    portrait, portrait_alpha, shoulder_silhouette = (
+                        _repair_portrait_head_shoulders_silhouette(
+                            portrait,
+                            portrait_source_alpha,
+                            source_portrait_alpha,
+                            protected_bounds=(
+                                face_left - crop_left,
+                                face_top - crop_top,
+                                face_right - crop_left,
+                                face_bottom - crop_top,
+                            ),
+                        )
+                    )
+                    lower_start = round(portrait.height * 0.72)
+                    lower_bbox = portrait_alpha.crop(
+                        (0, lower_start, portrait.width, portrait.height)
+                    ).getbbox()
+                    lower_width = (
+                        lower_bbox[2] - lower_bbox[0]
+                        if lower_bbox is not None
+                        else face_width * 2
+                    )
+                    base_height = max(28, round(head_height * 0.13))
+                    overlap = max(5, round(head_height * 0.025))
+                    bottom_margin = max(4, round(head_height * 0.015))
+                    prepared_height = portrait.height + base_height - overlap + bottom_margin
+                    prepared = Image.new(
+                        "RGBA", (portrait.width, prepared_height), (0, 0, 0, 0)
+                    )
+                    base_width = min(
+                        portrait.width - bottom_margin * 2,
+                        max(round(head_height * 1.60), round(lower_width * 1.12)),
+                    )
+                    relative_center_x = center_x - crop_left
+                    base_left = max(
+                        bottom_margin,
+                        min(
+                            portrait.width - bottom_margin - base_width,
+                            relative_center_x - base_width // 2,
+                        ),
+                    )
+                    base_right = base_left + base_width
+                    base_destination_top = portrait.height - overlap
+                    structure = str(job.palette_roles.get("structure", "#555555")).strip()
+                    if re.fullmatch(r"#[0-9A-Fa-f]{6}", structure):
+                        plinth_rgb = tuple(
+                            int(structure[index:index + 2], 16) for index in (1, 3, 5)
+                        )
+                    else:
+                        plinth_rgb = (85, 85, 85)
+                    prepared.paste(portrait, (0, 0), portrait_alpha)
+                    draw = ImageDraw.Draw(prepared)
+                    ellipse_height = max(8, round(base_height * 0.36))
+                    draw.ellipse(
+                        (
+                            base_left,
+                            base_destination_top,
+                            base_right - 1,
+                            base_destination_top + ellipse_height,
+                        ),
+                        fill=(*plinth_rgb, 255),
+                    )
+                    draw.rectangle(
+                        (
+                            base_left,
+                            base_destination_top + ellipse_height // 2,
+                            base_right - 1,
+                            base_destination_top + base_height - ellipse_height // 2,
+                        ),
+                        fill=(*plinth_rgb, 255),
+                    )
+                    draw.ellipse(
+                        (
+                            base_left,
+                            base_destination_top + base_height - ellipse_height,
+                            base_right - 1,
+                            base_destination_top + base_height,
+                        ),
+                        fill=(*plinth_rgb, 255),
+                    )
+                    # The one-piece plinth overlaps the native shoulder cut.
+                    # This hides antialiased garment fringe and prevents a
+                    # second white transition ring; the face remains untouched.
+                    geometry = prepared
+                    alpha = geometry.getchannel("A")
+                    compaction = {
+                        "applied": True,
+                        "reason": "portrait_head_shoulders_identity",
+                        "original_size": original_size,
+                        "prepared_size": list(geometry.size),
+                        "crop_bounds": [crop_left, crop_top, crop_right, crop_bottom],
+                        "removed_original_base": True,
+                        "head_height": head_height,
+                        "head_bounds": [face_left, crop_top, face_right, head_bottom],
+                        "base_source": "single_solid_structure_plinth",
+                        "base_bounds": [
+                            base_left,
+                            base_destination_top,
+                            base_right,
+                            base_destination_top + base_height,
+                        ],
+                        "base_overlap": overlap,
+                        "base_ellipse_height": ellipse_height,
+                        "base_color": "#{:02X}{:02X}{:02X}".format(*plinth_rgb),
+                        "shoulder_silhouette": shoulder_silhouette,
+                        "face_canvas_ratio_before": round(
+                            head_height / max(1, height), 6
+                        ),
+                        "face_prepared_ratio": round(
+                            head_height / max(1, geometry.height), 6
+                        ),
+                        "identity_pixels_resampled": False,
+                    }
+            else:
+                compaction["reason"] = "portrait_not_safely_head_croppable"
+        subject_bbox = alpha.getbbox()
+        if subject_bbox is None:
+            raise ModelInputImageQualityError(
+                "The sculptural portrait reference has no visible subject."
+            )
+        subject_width = subject_bbox[2] - subject_bbox[0]
+        subject_height = subject_bbox[3] - subject_bbox[1]
+        width, height = geometry.size
+        maximum_occupancy = (
+            PORTRAIT_HEAD_GEOMETRY_MAX_SUBJECT_OCCUPANCY
+            if compaction["applied"]
+            else PORTRAIT_GEOMETRY_MAX_SUBJECT_OCCUPANCY
+        )
+        target_side = max(
+            width,
+            height,
+            int(math.ceil(subject_width / maximum_occupancy)),
+            int(math.ceil(subject_height / maximum_occupancy)),
+        )
+        offset_x = (target_side - width) // 2
+        offset_y = (target_side - height) // 2
+        canvas_version = (
+            "square-transparent-black-head-shoulders-v9"
+            if compaction["applied"]
+            else "square-transparent-black-v2"
+        )
+        if compaction["applied"]:
+            compaction["face_provider_ratio"] = round(
+                int(compaction["head_height"]) / max(1, target_side), 6
+            )
+        job.image_metrics["geometry_provider_canvas"] = {
+            "version": canvas_version,
+            "source_size": original_size,
+            "prepared_size": [width, height],
+            "output_size": [target_side, target_side],
+            "subject_bbox": list(subject_bbox),
+            "subject_occupancy": round(
+                max(subject_width, subject_height) / max(1, target_side), 6
+            ),
+            "offset": [offset_x, offset_y],
+            "appearance_source": appearance_source,
+            "portrait_compaction": compaction,
+        }
+        if compaction["applied"] and job.preview_path is not None:
+            printable_destination = job.directory / PORTRAIT_HEAD_PREVIEW_FILENAME
+            preview_source = job.preview_path
+            previous_provider_preview = job.image_metrics.get(
+                "portrait_provider_preview", {}
+            )
+            if preview_source.resolve() == printable_destination.resolve():
+                # A restored older job points preview_path at the already-cropped
+                # derivative. Rebuild v6 from the pipeline's lossless full-size
+                # clean preview instead of trying to crop the crop or silently
+                # leaving its old shoulder defect in place.
+                for candidate in (
+                    job.directory / "clean_preview.png",
+                    job.strict_preview_path,
+                ):
+                    if candidate is None or not candidate.is_file():
+                        continue
+                    try:
+                        with Image.open(candidate) as candidate_opened:
+                            if candidate_opened.size == tuple(original_size):
+                                preview_source = candidate
+                                break
+                    except (OSError, UnidentifiedImageError, Image.DecompressionBombError):
+                        continue
+            if preview_source.resolve() != printable_destination.resolve():
+                with Image.open(preview_source) as preview_opened:
+                    printable = preview_opened.convert("RGBA")
+                if printable.size != tuple(original_size):
+                    raise ModelInputImageQualityError(
+                        "The printable portrait preview does not match the sculptural reference."
+                    )
+                crop_left, crop_top, crop_right, crop_bottom = (
+                    int(value) for value in compaction["crop_bounds"]
+                )
+                printable_portrait = printable.crop(
+                    (crop_left, crop_top, crop_right, crop_bottom)
+                )
+                # Geometry alpha remains the silhouette authority. The exact
+                # printable colors are clipped to that silhouette so the image
+                # users approve describes the same head-and-shoulders object.
+                printable_portrait = _copy_portrait_into_continuous_silhouette(
+                    printable_portrait,
+                    portrait_source_alpha,
+                    portrait_alpha,
+                )
+                printable_prepared = Image.new(
+                    "RGBA", (width, height), (0, 0, 0, 0)
+                )
+                printable_prepared.paste(
+                    printable_portrait,
+                    (0, 0),
+                    printable_portrait.getchannel("A"),
+                )
+                base_left, base_top, base_right, base_bottom = (
+                    int(value) for value in compaction["base_bounds"]
+                )
+                base_color = str(compaction["base_color"])
+                base_rgb = tuple(
+                    int(base_color[index:index + 2], 16) for index in (1, 3, 5)
+                )
+                ellipse_height = int(compaction["base_ellipse_height"])
+                preview_draw = ImageDraw.Draw(printable_prepared)
+                preview_draw.ellipse(
+                    (base_left, base_top, base_right - 1, base_top + ellipse_height),
+                    fill=(*base_rgb, 255),
+                )
+                preview_draw.rectangle(
+                    (
+                        base_left,
+                        base_top + ellipse_height // 2,
+                        base_right - 1,
+                        base_bottom - ellipse_height // 2,
+                    ),
+                    fill=(*base_rgb, 255),
+                )
+                preview_draw.ellipse(
+                    (
+                        base_left,
+                        base_bottom - ellipse_height,
+                        base_right - 1,
+                        base_bottom,
+                    ),
+                    fill=(*base_rgb, 255),
+                )
+                printable_canvas = Image.new(
+                    "RGBA", (target_side, target_side), (0, 0, 0, 0)
+                )
+                printable_canvas.paste(
+                    printable_prepared,
+                    (offset_x, offset_y),
+                    printable_prepared.getchannel("A"),
+                )
+                printable_temporary = printable_destination.with_name(
+                    f"{printable_destination.name}.{uuid.uuid4().hex}.tmp"
+                )
+                try:
+                    printable_canvas.save(printable_temporary, format="PNG")
+                    os.replace(printable_temporary, printable_destination)
+                finally:
+                    printable_temporary.unlink(missing_ok=True)
+            elif (
+                not printable_destination.is_file()
+                or not isinstance(previous_provider_preview, Mapping)
+                or previous_provider_preview.get("version")
+                != "portrait-head-shoulders-preview-v6"
+            ):
+                raise ModelInputImageQualityError(
+                    "The prepared portrait preview is unavailable."
+                )
+            job.preview_path = printable_destination
+            job.image_metrics["portrait_provider_preview"] = {
+                "version": "portrait-head-shoulders-preview-v6",
+                "path": printable_destination.name,
+                "output_size": [target_side, target_side],
+                "matches_geometry_crop": True,
+                "single_material_base": True,
+                "continuous_silhouette": bool(
+                    isinstance(compaction.get("shoulder_silhouette"), Mapping)
+                    and compaction["shoulder_silhouette"].get("status") == "pass"
+                ),
+            }
+        if (
+            width == target_side
+            and height == target_side
+            and appearance_source == "sculptural_geometry_reference"
+        ):
+            destination.unlink(missing_ok=True)
+            return source
+
+        # Public status is polled every few seconds during a long remote job.
+        # Re-encoding the unchanged 1–2K portrait on every GET adds avoidable
+        # CPU, disk churn and file-lock exposure.  A provider derivative newer
+        # than its immutable sanitized source and with the expected canvas is
+        # already authoritative for this job.
+        if destination.is_file():
+            try:
+                source_revision = max(
+                    source.stat().st_mtime_ns,
+                    appearance_path.stat().st_mtime_ns,
+                )
+                cache_matches = (
+                    isinstance(previous_canvas, Mapping)
+                    and previous_canvas.get("version") == canvas_version
+                    and previous_canvas.get("appearance_source") == appearance_source
+                )
+                if cache_matches and destination.stat().st_mtime_ns >= source_revision:
+                    with Image.open(destination) as cached:
+                        if cached.size == (target_side, target_side) and "A" in cached.getbands():
+                            return destination
+            except (OSError, UnidentifiedImageError, Image.DecompressionBombError):
+                pass
+
+        canvas = Image.new("RGBA", (target_side, target_side), (0, 0, 0, 0))
+        canvas.paste(geometry, (offset_x, offset_y), geometry.getchannel("A"))
+        canvas.save(temporary, format="PNG")
+        os.replace(temporary, destination)
+        return destination
+    except ModelInputImageQualityError:
+        raise
+    except (OSError, UnidentifiedImageError, Image.DecompressionBombError):
+        raise ModelInputImageQualityError(
+            "The sculptural portrait reference could not be normalized for image-to-3D."
+        ) from None
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _assess_job_generation_reference(job: Job) -> dict[str, Any]:
+    reference = _geometry_generation_reference(job)
+    if reference is None:
+        raise ModelInputImageQualityError("The model generation image is unavailable.")
+    quality = assess_model_input_image(
+        reference,
+        reject_rectangular_cutouts=_identity_preserving_portrait_geometry_enabled(job),
+    )
+    if _identity_preserving_portrait_geometry_enabled(job):
+        provider_reference = job.directory / PORTRAIT_GEOMETRY_PROVIDER_FILENAME
+        provider_canvas = job.image_metrics.get("geometry_provider_canvas", {})
+        color_provider = (
+            reference == provider_reference
+            and isinstance(provider_canvas, Mapping)
+            and provider_canvas.get("appearance_source")
+            == "identity_color_model_reference"
+        )
+        strategy = (
+            "identity_color_geometry_reference"
+            if color_provider
+            else "identity_sculpted_geometry_reference"
+            if reference == job.geometry_reference_path or reference == provider_reference
+            else "identity_locked_model_reference"
+            if reference != job.input_path
+            else "original_identity_image"
+        )
+    elif reference == job.raw_preview_path and bool(job.palette):
+        strategy = "raw_preview"
+    else:
+        strategy = "model_reference"
+    # Generic cutout analysis downscales the reference and detects enclosed
+    # rectangles well, but an exterior shoulder notch is open to the background
+    # and can disappear at that resolution. The portrait-specific native-size
+    # repair is therefore an independent, paid-task hard gate. Existing paid
+    # attempts keep their immutable evidence and are not retroactively rejected.
+    if identity_locked := strategy in {
+        "identity_color_geometry_reference",
+        "identity_sculpted_geometry_reference",
+        "identity_locked_model_reference",
+        "original_identity_image",
+    }:
+        provider_canvas = job.image_metrics.get("geometry_provider_canvas", {})
+        compaction = (
+            provider_canvas.get("portrait_compaction", {})
+            if isinstance(provider_canvas, Mapping)
+            else {}
+        )
+        shoulder_silhouette = (
+            compaction.get("shoulder_silhouette", {})
+            if isinstance(compaction, Mapping)
+            else {}
+        )
+        compact_portrait = bool(
+            isinstance(compaction, Mapping) and compaction.get("applied") is True
+        )
+        silhouette_verified = bool(
+            isinstance(shoulder_silhouette, Mapping)
+            and shoulder_silhouette.get("status") == "pass"
+            and shoulder_silhouette.get("source_mask_used") is True
+            and int(shoulder_silhouette.get("remaining_row_gap_pixels", -1)) == 0
+        )
+        if compact_portrait and not job.attempts and not silhouette_verified:
+            existing = quality.get("blockers", [])
+            blocker_codes = (
+                [str(code) for code in existing]
+                if isinstance(existing, list)
+                else []
+            )
+            quality["blockers"] = list(dict.fromkeys(
+                ["portrait_shoulder_silhouette_unverified"] + blocker_codes
+            ))
+            quality["model_input_eligible"] = False
+            quality["score"] = min(float(quality.get("score", 100)), 60.0)
+    job.image_metrics["generation_input_quality"] = quality
+    job.image_metrics["generation_reference"] = strategy
+    job.image_metrics["geometry_strategy"] = {
+        "version": (
+            "portrait-sculpted-head-shoulders-front-v15"
+            if strategy == "identity_sculpted_geometry_reference"
+            and isinstance(job.image_metrics.get("geometry_provider_canvas"), Mapping)
+            and job.image_metrics["geometry_provider_canvas"].get("version")
+            == "square-transparent-black-head-shoulders-v9"
+            else "portrait-identity-color-front-v8"
+            if strategy == "identity_color_geometry_reference"
+            else
+            "portrait-identity-sculpted-front-v7"
+            if strategy == "identity_sculpted_geometry_reference"
+            else "portrait-identity-front-v4"
+            if identity_locked
+            else "default-v1"
+        ),
+        "reference": strategy,
+        "multiview_geometry": False if identity_locked else None,
+        "post_generation_material_turntable": True if identity_locked else None,
+        "identity_review_reference": strategy if identity_locked else None,
+        "provider_autofix": False if identity_locked else None,
+    }
+    return quality
+
+
+def _apply_preview_visual_quality_gate(job: Job, report: Mapping[str, Any]) -> list[str]:
+    """Merge a live or persisted visual decision into both paid-input gates."""
+
+    blockers = [str(code) for code in report.get("blocking_warnings", [])]
+    if bool(report.get("model_generation_recommended", True)) or not blockers:
+        return []
+    priority = (
+        "preview_identity_mismatch",
+        "preview_face_geometry_drift",
+        "preview_age_expression_drift",
+        "preview_material_mixing",
+        "preview_base_mixing",
+        "preview_pose_clothing_drift",
+        "preview_modeling_reference_unclear",
+    )
+    ordered = [code for code in priority if code in blockers]
+    ordered.extend(code for code in blockers if code not in ordered)
+    for key in ("model_input_quality", "generation_input_quality"):
+        quality = job.image_metrics.get(key)
+        if not isinstance(quality, dict):
+            continue
+        existing = quality.get("blockers", [])
+        existing_codes = [str(code) for code in existing] if isinstance(existing, list) else []
+        quality["blockers"] = list(dict.fromkeys(ordered + existing_codes))
+        quality["model_input_eligible"] = False
+        quality["score"] = min(float(quality.get("score", 100)), float(report.get("score", 0)))
+    return ordered
+
+
+def _assess_job_preview_visual_quality(job: Job, original: Path) -> dict[str, Any] | None:
+    """Gate high-quality realistic portrait previews before paid 3D submission."""
+
+    if (
+        job.source != "image"
+        or job.style != "realistic"
+        or job.generation_profile != "quality"
+        or job.model_reference_path is None
+        or job.preview_path is None
+        or not os.environ.get("OPENAI_API_KEY", "")
+    ):
+        return None
+    with _JOBS_LOCK:
+        job.phase = "checking_image"
+        job.message = "Comparing the prepared face and material ownership with the original image."
+        job.progress = 14
+        _persist_job(job)
+    # Gate the exact image that will be submitted for geometry. The restored
+    # face preview can look nearly pixel-identical while hiding an identity
+    # drift in the sculptural Image2 output that Tripo actually receives.
+    submitted_reference = _geometry_generation_reference(job) or job.model_reference_path
+    report = review_prepared_reference(
+        original,
+        submitted_reference,
+        job.preview_path,
+        job.directory / "preview-visual-review",
+    )
+    job.image_metrics["preview_visual_quality"] = report
+    _apply_preview_visual_quality_gate(job, report)
+    return report
+
+
+def _quality_portrait_multiview_enabled(job: Job) -> bool:
+    cleanup = job.image_metrics.get("portrait_skin_cleanup", {})
+    return (
+        job.source == "image"
+        and job.style == "realistic"
+        and job.generation_profile == "quality"
+        and len(job.palette) == 4
+        and isinstance(cleanup, dict)
+        and cleanup.get("activated") == 1
+        and job.model_reference_path is not None
+    )
+
+
+def _portrait_multiview_prompt(background_instruction: str | None = None) -> str:
+    # Keep this below conservative image-edit prompt limits. The supplied image
+    # owns identity, materials, pose and base; the prompt owns only view layout.
+    background_direction = background_instruction or (
+        "Use a genuine alpha-transparent background in every panel; do not paint a gray, white, checkerboard, studio or gradient "
+        "background and do not add shadows. "
+    )
+    return (
+        "Create one 2x2 orthographic turntable sheet of this exact finished portrait bust. "
+        "Panels must be top-left front, top-right subject-left, bottom-left back, bottom-right subject-right. "
+        "Render one unchanged sculpture at yaw 0, 90, 180 and 270 degrees, same scale, zero pitch and roll, full object visible. "
+        "Preserve the exact real-person identity, adult age, head and face proportions, eyes, nose, cheeks, smile, lips, jaw, hair, "
+        "pose, hands, clothing, accessories, material boundaries and integrated base. Never substitute a generic, doll, anime or "
+        "caricature face. The front head must remain level with both eyes and the complete source smile readable; keep facial relief "
+        "and natural asymmetry consistent across the side views. Reconstruct genuine rounded depth for the skull, hair, shoulders, "
+        "jacket and torso in side and back views. No flat backing board, person-shaped wall, silhouette plate, photo cutout, rear sheet "
+        "or straight vertical panel may exist behind the portrait; the back must be the actual curved back of the same bust. Keep broad "
+        "clean printable color regions with no skin color on "
+        "clothing and no black shadow patches inside a colored blouse. A partially hidden hand must be either one compact bounded "
+        "skin region or fully tucked under the existing sleeve, never a skin stripe on the jacket. "
+        + background_direction
+        +
+        "No labels, borders, extra views, perspective, added objects or changed geometry."
+    )
+
+
+def _portrait_geometry_material_prompt(palette_roles: Mapping[str, str]) -> str:
+    try:
+        primary = str(palette_roles["primary"]).strip().upper()
+        structure = str(palette_roles["structure"]).strip().upper()
+        skin = str(palette_roles["light"]).strip().upper()
+        accent = str(palette_roles["accent"]).strip().upper()
+    except KeyError:
+        raise PortraitProjectionError("The portrait material roles are incomplete.") from None
+    if any(not re.fullmatch(r"#[0-9A-F]{6}", color) for color in (primary, structure, skin, accent)):
+        raise PortraitProjectionError("The portrait material roles contain an invalid color.")
+    return (
+        "Repaint this exact 2x2 orthographic turntable sheet as a material-ID reference for a four-filament 3D print. "
+        "Preserve every panel, camera, silhouette, geometry, proportions, face landmarks, expression, crossed-arm order, "
+        "clothing edge, base, scale and panel placement pixel-for-pixel as closely as possible. Change color only; do not "
+        "redraw, beautify, reshape, smooth, move, crop, add, remove or relight the model. Use flat solid semantic materials "
+        "with hard clean boundaries and no gradients, shading, texture, highlights, reflections, speckles, color fringes or "
+        f"cast shadows. All blazer, jacket, lapels, sleeves, cuffs, pockets and rear outer clothing are {primary}. Only the "
+        f"actual face, ears, neck, hands and genuinely exposed wrist skin are {skin}. In the back panel, the narrow exposed nape "
+        f"immediately below the dark hairline remains {skin}; only the outward collar below it is {primary}. Hair, watch and the entire pedestal are "
+        f"{structure}. The inner blouse only is {accent}. Treat the realistic face like a finely sculpted portrait: the face, "
+        f"ears, nose, cheeks, lips and mouth interior stay in the same continuous {skin} material. Preserve only thin, connected, "
+        f"source-faithful eyebrows, pupils and upper eyelids in {structure}; never make black eye sockets, eye whites, eyeliner wings, "
+        f"a black mouth cavity or dark cheek seams. Preserve the visible teeth as one compact {primary} band bounded strictly inside "
+        f"the original smile; never enlarge it into a white mouth block or place white on lips, cheeks or eyes. Never use {accent} on "
+        f"any face, lips, teeth, skin, hand or neck. Never put skin on clothing, especially shoulder, "
+        "upper arm, elbow, forearm, cuff, jacket back, collar or lapel. Never put accent or dark shading inside outer clothing. "
+        "Keep the background one uniform very light neutral color, distinct from the subject, with no floor or shadow. Return "
+        "exactly the same 2x2 layout and nothing else."
+    )
+
+
+def _prepare_portrait_geometry_material_views(
+    natural_turntable: Path,
+    output_directory: Path,
+    palette_roles: Mapping[str, str],
+) -> tuple[dict[str, Path], dict[str, Any]]:
+    views_directory = natural_turntable / "model-views"
+    masks_directory = natural_turntable / "model-masks"
+    source_views = {
+        view: views_directory / f"{view}.png"
+        for view in MULTIVIEW_ORDER
+    }
+    if any(not path.is_file() for path in source_views.values()) or any(
+        not (masks_directory / f"{view}.png").is_file() for view in MULTIVIEW_ORDER
+    ):
+        raise PortraitProjectionError("The exact portrait turntable or its masks are incomplete.")
+    output_directory.mkdir(parents=True, exist_ok=True)
+    source_sheet = build_multiview_input_sheet(
+        source_views, output_directory / "natural-turntable-sheet.png"
+    )
+    semantic_sheet = output_directory / "image2-material-sheet.png"
+    edit_image(
+        source_sheet,
+        _portrait_geometry_material_prompt(palette_roles),
+        semantic_sheet,
+    )
+    crops = split_multiview_sheet(semantic_sheet, output_directory / "image2-crops")
+    prepared: dict[str, Path] = {}
+    view_reports: dict[str, Any] = {}
+    for view in MULTIVIEW_ORDER:
+        view_directory = output_directory / "views" / view
+        view_reports[view] = quantize_geometry_aligned_material_reference(
+            crops[view],
+            masks_directory / f"{view}.png",
+            view_directory,
+            palette_roles,
+            view_name=view,
+        )
+        prepared[view] = view_directory
+    report = {
+        "status": "prepared",
+        "version": "image2-semantic-material-v1",
+        "source_sheet": str(source_sheet.name),
+        "semantic_sheet": str(semantic_sheet.name),
+        "views": view_reports,
+    }
+    _write_mesh_repair_report(output_directory / "semantic-material-report.json", report)
+    return prepared, report
+
+
+def _multiview_chroma_key(palette: tuple[str, ...]) -> str:
+    """Choose a fallback background maximally separated from all materials."""
+    candidates = ("#FF00FF", "#00FFFF", "#FFFF00", "#0000FF", "#FF3000")
+
+    def rgb(color: str) -> tuple[int, int, int]:
+        value = color.lstrip("#")
+        return tuple(int(value[index:index + 2], 16) for index in (0, 2, 4))  # type: ignore[return-value]
+
+    material_rgb = tuple(rgb(color) for color in palette)
+    return max(
+        candidates,
+        key=lambda candidate: min(
+            sum((left - right) ** 2 for left, right in zip(rgb(candidate), material))
+            for material in material_rgb
+        ),
+    )
+
+
+def _create_portrait_multiview_sheet(job: Job, sheet: Path) -> None:
+    """Create a sheet with unambiguous background isolation.
+
+    Official GPT Image endpoints support ``background=transparent``. Some
+    OpenAI-compatible internal proxies do not expose that optional field yet.
+    A rejected transparent request is safe to retry because no usable image was
+    created; the fallback uses a palette-aware solid chroma key instead of a
+    light neutral background that can merge with a white garment.
+    """
+    source = _geometry_generation_reference(job) or job.model_reference_path
+    if source is None:
+        raise PortraitMultiviewPreparationError(
+            "The identity-locked portrait front view is unavailable."
+        )
+    try:
+        edit_image(
+            source,
+            _portrait_multiview_prompt(),
+            sheet,
+            background="transparent",
+        )
+        return
+    except OpenAIPreprocessorError as exc:
+        if exc.code != "image_rejected":
+            raise
+    key = _multiview_chroma_key(job.palette)
+    fallback = (
+        f"Use exactly one perfectly flat solid chroma-key background {key} in every panel. "
+        f"Never use {key} on the subject. Use no gradient, texture, checkerboard, floor, horizon, cast shadow or contact shadow. "
+    )
+    edit_image(source, _portrait_multiview_prompt(fallback), sheet)
+
+
+def _multiview_paths_from_metrics(job: Job, key: str) -> dict[str, Path] | None:
+    value = job.image_metrics.get("multiview_reference", {})
+    stored = value.get(key) if isinstance(value, dict) else None
+    if not isinstance(stored, dict) or set(stored) != set(MULTIVIEW_ORDER):
+        return None
+    result: dict[str, Path] = {}
+    root = job.directory.resolve()
+    for view in MULTIVIEW_ORDER:
+        relative = stored.get(view)
+        if not isinstance(relative, str) or not relative:
+            return None
+        try:
+            candidate = (job.directory / relative).resolve()
+            candidate.relative_to(root)
+        except (OSError, ValueError):
+            return None
+        if not candidate.is_file():
+            return None
+        result[view] = candidate
+    return result
+
+
+def _multiview_sheet_fingerprint(sheet: Path) -> str:
+    try:
+        stat_result = sheet.stat()
+    except OSError:
+        return ""
+    return f"{stat_result.st_size}:{stat_result.st_mtime_ns}"
+
+
+def _mark_multiview_candidate_rejected(job: Job, sheet: Path, reason: str) -> None:
+    with _JOBS_LOCK:
+        job.image_metrics["multiview_candidate_rejected"] = {
+            "fingerprint": _multiview_sheet_fingerprint(sheet),
+            "reason": reason,
+            "material_gate_version": PORTRAIT_MATERIAL_GATE_VERSION,
+        }
+        _persist_job(job)
+
+
+def _can_reuse_multiview_candidate(job: Job, sheet: Path) -> bool:
+    if not sheet.is_file() or job.model_reference_path is None:
+        return False
+    source = _geometry_generation_reference(job) or job.model_reference_path
+    try:
+        if sheet.stat().st_mtime_ns < source.stat().st_mtime_ns:
+            return False
+    except OSError:
+        return False
+    rejected = job.image_metrics.get("multiview_candidate_rejected")
+    if isinstance(rejected, Mapping) and rejected.get("fingerprint") == _multiview_sheet_fingerprint(sheet):
+        rejected_reason = str(rejected.get("reason", ""))
+        if rejected_reason.startswith("portrait_material_gate:"):
+            # Re-evaluate an older candidate exactly once after material-gate
+            # rules improve.  A candidate rejected by this version is still
+            # regenerated on the next user retry.
+            return rejected.get("material_gate_version") != PORTRAIT_MATERIAL_GATE_VERSION
+        if rejected_reason != "identity_consistency_gate":
+            return False
+        stored_review = job.image_metrics.get("multiview_candidate_review")
+        # Old jobs did not persist the review details. Recheck that exact sheet
+        # once under the newer acceptance rules, then persist the result.
+        if not isinstance(stored_review, Mapping):
+            return True
+        return evaluate_multiview_review_acceptance(stored_review).get("status") == "pass"
+    return True
+
+
+def _ensure_portrait_multiview(job: Job) -> dict[str, Path] | None:
+    if not _quality_portrait_multiview_enabled(job):
+        return None
+    cached = _multiview_paths_from_metrics(job, "generation_views")
+    stored_reference = job.image_metrics.get("multiview_reference", {})
+    stored_normalization = (
+        stored_reference.get("normalization", {})
+        if isinstance(stored_reference, Mapping)
+        else {}
+    )
+    cache_has_quality_resolution = (
+        isinstance(stored_normalization, Mapping)
+        and stored_normalization.get("version") == MULTIVIEW_NORMALIZATION_VERSION
+        and stored_normalization.get("canvas_size") == list(HIGH_QUALITY_PORTRAIT_CANVAS_SIZE)
+    )
+    if cached is not None and cache_has_quality_resolution:
+        return cached
+    assert job.model_reference_path is not None
+    locked_front = _geometry_generation_reference(job) or job.model_reference_path
+    output = job.directory / "multiview"
+    output.mkdir(parents=True, exist_ok=True)
+    sheet = output / "multiview-sheet.png"
+    _stop_boundary(job)
+    with _JOBS_LOCK:
+        job.phase = "preparing_multiview"
+        job.message = "Preparing identity-preserving portrait views."
+        job.progress = 12
+        _persist_job(job)
+    try:
+        reuse_candidate = _can_reuse_multiview_candidate(job, sheet)
+        if not reuse_candidate:
+            # A neutral painted background is not sufficient for light-clothed
+            # portraits: its border gradient can overlap the jacket colour and
+            # make deterministic subject extraction punch holes through the
+            # torso. Prefer real alpha and fall back to a palette-aware chroma
+            # key when an OpenAI-compatible proxy lacks transparent edits.
+            _create_portrait_multiview_sheet(job, sheet)
+            with _JOBS_LOCK:
+                job.image_metrics.pop("multiview_candidate_rejected", None)
+                _persist_job(job)
+        _validate_image_file(sheet, minimum_edge=512, require_visual_detail=True)
+        crops = split_multiview_sheet(sheet, output / "crops")
+        references, generation_references, metrics = process_multiview_crops(
+            crops,
+            output / "views",
+            job.palette,
+            job.print_settings,
+            palette_roles=job.palette_roles,
+        )
+        normalization = normalize_multiview_inputs(
+            references,
+            generation_references,
+            locked_front_material=job.preview_path,
+            # Lock only the central facial identity pixels. Normalization keeps
+            # the reviewed turntable front's complete silhouette and fills any
+            # white-garment holes from it, so the source face cannot introduce
+            # the checkerboard gaps that previously disabled identity locking.
+            locked_front_generation=locked_front,
+            target_canvas_size=HIGH_QUALITY_PORTRAIT_CANVAS_SIZE,
+        )
+        review_sheet = build_multiview_input_sheet(
+            generation_references, output / "multiview-input-sheet.png"
+        )
+        rejected_views: list[str] = []
+        material_review_views: list[str] = []
+        for view in MULTIVIEW_ORDER:
+            gate = evaluate_portrait_material_gate(
+                metrics[view], job.palette_roles, view_name=view,
+            )
+            metrics[view]["multiview_material_gate"] = gate
+            if gate.get("status") != "pass":
+                if gate.get("status") == "review":
+                    material_review_views.append(view)
+                else:
+                    rejected_views.append(view)
+        if rejected_views:
+            _mark_multiview_candidate_rejected(
+                job, sheet, "portrait_material_gate:" + ",".join(rejected_views)
+            )
+            raise PortraitMultiviewPreparationError(
+                "One or more portrait views still contain unsafe skin, garment, or detached material regions."
+            )
+        for view in MULTIVIEW_ORDER:
+            quality = assess_model_input_image(generation_references[view])
+            if not bool(quality.get("model_input_eligible", False)):
+                _mark_multiview_candidate_rejected(job, sheet, f"model_input_gate:{view}")
+                raise PortraitMultiviewPreparationError(
+                    f"The {view} portrait view is not suitable for 3D generation."
+                )
+        _stop_boundary(job)
+        with _JOBS_LOCK:
+            job.message = "Checking portrait identity across four views."
+            job.progress = 17
+            _persist_job(job)
+        stored_review = job.image_metrics.get("multiview_candidate_review")
+        if (
+            reuse_candidate
+            and isinstance(stored_review, Mapping)
+            and evaluate_multiview_review_acceptance(stored_review).get("status") == "pass"
+        ):
+            review = dict(stored_review)
+        else:
+            review_description = (
+                "The exact approved real-person portrait bust, with unchanged identity, pose, clothing, "
+                "accessories and base."
+            )
+            if material_review_views:
+                review_description += (
+                    " Give extra scrutiny to skin-versus-garment ownership and detached colour fragments in "
+                    + ", ".join(material_review_views)
+                    + " profile view(s), whose frontal face cleanup was intentionally deferred."
+                )
+            review = review_multiview_sheet(
+                review_sheet,
+                review_description,
+                source_path=locked_front,
+                completion=complete_vision,
+            )
+        review["material_review_views"] = material_review_views
+        review_acceptance = evaluate_multiview_review_acceptance(review)
+        review["acceptance"] = review_acceptance
+        with _JOBS_LOCK:
+            job.image_metrics["multiview_candidate_review"] = review
+            _persist_job(job)
+        if review_acceptance.get("status") != "pass":
+            _mark_multiview_candidate_rejected(job, sheet, "identity_consistency_gate")
+            raise PortraitMultiviewPreparationError(
+                "The generated portrait views did not preserve identity consistently."
+            )
+        manifest = write_multiview_manifest(
+            output,
+            sheet=review_sheet,
+            references=references,
+            generation_references=generation_references,
+            metrics=metrics,
+            review=review,
+            palette=job.palette,
+            settings=PrintSettings.from_mapping(job.print_settings),
+        )
+    except (
+        OpenAIPreprocessorError,
+        PrintableImageError,
+        ModelInputImageQualityError,
+        MultiviewReferenceError,
+        ValueError,
+    ) as exc:
+        _mark_multiview_candidate_rejected(job, sheet, "view_preparation_error")
+        raise PortraitMultiviewPreparationError(
+            f"The high-quality portrait views could not be prepared: {exc}"
+        ) from None
+
+    def relative_paths(paths: Mapping[str, Path]) -> dict[str, str]:
+        return {view: paths[view].resolve().relative_to(job.directory.resolve()).as_posix() for view in MULTIVIEW_ORDER}
+
+    with _JOBS_LOCK:
+        job.image_metrics.pop("multiview_candidate_rejected", None)
+        job.image_metrics.pop("multiview_candidate_review", None)
+        job.image_metrics.pop("multiview_retry", None)
+        job.image_metrics["multiview_reference"] = {
+            "status": "pass",
+            "score": int(review.get("score", 0)),
+            "sheet": review_sheet.resolve().relative_to(job.directory.resolve()).as_posix(),
+            "provider_sheet": sheet.resolve().relative_to(job.directory.resolve()).as_posix(),
+            "normalization": normalization,
+            "manifest": manifest.resolve().relative_to(job.directory.resolve()).as_posix(),
+            "generation_views": relative_paths(generation_references),
+            "material_views": relative_paths(references),
+        }
+        _persist_job(job)
+    return dict(generation_references)
+
+
+def _model_input_quality_message(quality: dict[str, Any]) -> str:
+    blockers = quality.get("blockers", [])
+    primary = str(blockers[0]) if blockers else ""
+    return {
+        "subject_not_detected": "No clear subject was found; use a clearer image or regenerate the preview.",
+        "subject_too_small": "The subject is too small; enlarge it and regenerate the preview.",
+        "subject_or_background_fills_frame": "The subject or background fills the frame; regenerate with clear margins.",
+        "subject_cropped": "The subject touches the frame and may be cropped; regenerate with the complete silhouette visible.",
+        "fragmented_subject": "The reference contains disconnected subjects or fragments; regenerate with one connected subject.",
+        "excessive_semitransparency": "The subject contains too much transparency for reliable 3D generation.",
+        "background_not_isolated": "The background is too complex; regenerate on a transparent or plain background.",
+        "subject_has_rectangular_cutout": "The portrait contains a large square cutout or missing body region; regenerate the preview before paying for 3D generation.",
+        "portrait_shoulder_silhouette_unverified": "The portrait shoulder silhouette still contains an unverified gap or background remnant; regenerate the preview before paying for 3D generation.",
+        "preview_identity_mismatch": "The prepared face differs too much from the original; regenerate the portrait preview.",
+        "preview_face_geometry_drift": "The prepared face shape or landmarks drifted; regenerate the portrait preview.",
+        "preview_age_expression_drift": "The prepared age or expression changed; regenerate the portrait preview.",
+        "preview_material_mixing": "Skin, clothing, hair, or base colors are mixed; regenerate the portrait preview.",
+        "preview_base_mixing": "The pedestal contains another material color; regenerate the portrait preview.",
+        "preview_pose_clothing_drift": "The prepared pose or clothing differs from the original; regenerate the portrait preview.",
+        "preview_modeling_reference_unclear": "The portrait is not a reliable 3D reference; regenerate the preview.",
+    }.get(primary, "The preview does not meet the image-to-3D input requirements; regenerate it.")
+
+
+def _printable_preview_message(job: Job, fallback: str) -> str:
+    model_input_quality = job.image_metrics.get("model_input_quality", {})
+    if isinstance(model_input_quality, dict) and not bool(model_input_quality.get("model_input_eligible", True)):
+        return _model_input_quality_message(model_input_quality)
+    generation_input_quality = job.image_metrics.get("generation_input_quality", {})
+    if isinstance(generation_input_quality, dict) and not bool(
+        generation_input_quality.get("model_input_eligible", True)
+    ):
+        return _model_input_quality_message(generation_input_quality)
+    if job.palette and not bool(job.image_metrics.get("palette_quality_ok", True)):
+        subject_ratio = float(job.image_metrics.get("printable_subject_area_ratio", 0.0))
+        continuity = float(job.image_metrics.get("largest_subject_component_ratio", 0.0))
+        detached_span = float(job.image_metrics.get("largest_detached_subject_diagonal_ratio", 0.0))
+        if subject_ratio < 0.18:
+            return "The printable subject is too small in the preview; regenerate with a larger subject."
+        if continuity < 0.90:
+            return "The printable subject is disconnected; regenerate with one connected subject."
+        if detached_span >= 0.08:
+            return "A long thin structure is detached from the subject; reconnect handles, branches, or supports and regenerate."
+        if not bool(job.image_metrics.get("material_fragmentation_ok", True)):
+            return "Skin or garment colors are fragmented into incorrect patches; regenerate the portrait preview before 3D."
+        return "The printable preview failed its geometry quality check; regenerate the preview."
+    return fallback
 
 
 def _recommend_palette_job(job: Job) -> None:
@@ -1663,8 +4047,9 @@ def _recommend_palette_job(job: Job) -> None:
             job.message = "AI is recommending four printable design colors."
             job.progress = 6
             _persist_job(job)
+        effective_prompt = _normalize_image_instruction(job.user_prompt) if job.source == "image" else job.user_prompt
         recommendation = recommend_printable_palette(
-            job.user_prompt,
+            effective_prompt,
             job.style,
             job.custom_style,
             image_path=job.input_path,
@@ -1731,6 +4116,7 @@ def _preprocess_text_job(job: Job, prompt: str) -> None:
             require_visual_detail=True,
         )
         _assess_job_model_reference(job)
+        _assess_job_generation_reference(job)
         (job.directory / "preview-colors.json").write_text(
             json.dumps(
                 {
@@ -1781,9 +4167,15 @@ def _preprocess_text_job(job: Job, prompt: str) -> None:
 
 def _preprocess_image_job(job: Job, input_path: Path, instruction: str) -> None:
     raw_preview = job.directory / "style-preview-raw.png"
+    geometry_reference = job.directory / "geometry-reference.png"
     preview = job.directory / "preview.png"
     try:
         _stop_boundary(job)
+        with _JOBS_LOCK:
+            job.phase = "image_generation"
+            job.message = "The image service is preparing the printable portrait; this usually takes one to three minutes."
+            job.progress = 11
+            _persist_job(job)
         preprocess_image(
             input_path,
             instruction,
@@ -1793,14 +4185,31 @@ def _preprocess_image_job(job: Job, input_path: Path, instruction: str) -> None:
             str(job.print_settings.get("shadow_color", "blue")),
             job.palette_roles,
             job.custom_style,
+            geometry_reference,
         )
+        # Test adapters and older compatible preprocessors may not implement
+        # the optional sculptural snapshot yet. Preserve the previous behavior
+        # instead of failing the whole image journey.
+        if not geometry_reference.is_file():
+            shutil.copyfile(raw_preview, geometry_reference)
+        with _JOBS_LOCK:
+            job.phase = "checking_image"
+            job.message = "The generated portrait is being checked for identity, framing, and usable detail."
+            job.progress = 12
+            _persist_job(job)
         _validate_image_file(
             raw_preview,
             minimum_edge=MIN_MODEL_REFERENCE_EDGE,
             require_visual_detail=True,
         )
         job.raw_preview_path = raw_preview
+        job.geometry_reference_path = geometry_reference
         if job.palette:
+            with _JOBS_LOCK:
+                job.phase = "printability_check"
+                job.message = "Skin, clothing, accent, and structure colors are being separated into printable regions."
+                job.progress = 13
+                _persist_job(job)
             color_usage = _apply_printable_image_pipeline(job, raw_preview)
             preview = job.preview_path or preview
         else:
@@ -1814,6 +4223,14 @@ def _preprocess_image_job(job: Job, input_path: Path, instruction: str) -> None:
             require_visual_detail=True,
         )
         _assess_job_model_reference(job)
+        _assess_job_generation_reference(job)
+        preview = job.preview_path or preview
+        validated = _validate_image_file(
+            preview,
+            minimum_edge=MIN_MODEL_REFERENCE_EDGE,
+            require_visual_detail=True,
+        )
+        _assess_job_preview_visual_quality(job, input_path)
         (job.directory / "preview-colors.json").write_text(
             json.dumps(
                 {
@@ -1847,7 +4264,15 @@ def _preprocess_image_job(job: Job, input_path: Path, instruction: str) -> None:
     except OpenAIPreprocessorError as exc:
         _fail_preprocess_job(job, exc)
     except Exception:
-        _fail_job(job, "Image preprocessing failed.")
+        traceback.print_exc()
+        _fail_preprocess_job(
+            job,
+            OpenAIPreprocessorError(
+                "The image was generated, but the local printable-color check failed.",
+                code="local_image_processing_failed",
+                retryable=True,
+            ),
+        )
     finally:
         _finish_deleted(job)
 
@@ -1864,6 +4289,41 @@ def _progress_callback(job: Job, start: int, end: int) -> Callable[[int | float 
                 _persist_job(job)
 
     return update
+
+
+def _automatic_visual_review(job: Job, artifact: Path) -> dict[str, Any] | None:
+    """Run the quality-profile image-to-model delivery gate before exposing import."""
+
+    if (
+        job.source != "image"
+        or job.generation_profile != "quality"
+        or not os.environ.get("OPENAI_API_KEY", "").strip()
+    ):
+        return None
+    reference = job.input_path if job.input_path is not None and job.input_path.is_file() else None
+    modeling_reference = _geometry_generation_reference(job)
+    if modeling_reference == reference:
+        modeling_reference = None
+    description = job.user_prompt
+    if _identity_preserving_portrait_geometry_enabled(job):
+        framing = (
+            "已确认交付构图：独立头肩胸像与单一底座；交叉手臂、手表及下半身按设计排除，"
+            "不得把这些有意排除的部分判为主体缺失。"
+        )
+        description = f"{description.strip()}\n{framing}" if description.strip() else framing
+    with _JOBS_LOCK:
+        job.phase = "checking_visual"
+        job.message = "Comparing the final model with the source image for identity and material mixing."
+        job.progress = 99
+        _persist_job(job)
+    return review_model_visual_quality(
+        artifact,
+        job.directory,
+        description=description,
+        style=job.style,
+        reference_path=reference,
+        modeling_reference_path=modeling_reference,
+    )
 
 
 def _safe_package_path(root: Path, name: str) -> Path:
@@ -2097,11 +4557,124 @@ def _nearest_palette_index(
     return index
 
 
+def _portrait_material_palette_indices(
+    palette: tuple[str, ...],
+    palette_roles: Mapping[str, str] | None,
+    portrait_materials: bool,
+) -> tuple[int, int] | None:
+    """Return the neutral garment and skin indices for an explicitly detected portrait.
+
+    This deliberately requires both upstream portrait evidence and a very specific
+    material palette. It must never change generic nearest-colour behaviour for
+    non-portrait jobs or palettes where white and warm skin are not unambiguous.
+    """
+    if not portrait_materials or not palette or not palette_roles:
+        return None
+    try:
+        primary = str(palette_roles["primary"]).strip().upper()
+        skin = str(palette_roles["light"]).strip().upper()
+        primary_index = palette.index(primary)
+        skin_index = palette.index(skin)
+    except (KeyError, ValueError):
+        return None
+    if primary_index == skin_index:
+        return None
+    _, labs = _palette_data(palette)
+    primary_lab = labs[primary_index]
+    skin_lab = labs[skin_index]
+    primary_chroma = math.hypot(primary_lab[1], primary_lab[2])
+    skin_chroma = math.hypot(skin_lab[1], skin_lab[2])
+    if primary_lab[0] < 82.0 or primary_chroma > 12.0:
+        return None
+    if skin_lab[1] < 5.0 or skin_lab[2] < 8.0 or skin_chroma < 16.0:
+        return None
+    return primary_index, skin_index
+
+
+def _portrait_material_role_indices(
+    palette: tuple[str, ...],
+    palette_roles: Mapping[str, str] | None,
+    portrait_materials: bool,
+) -> dict[str, int] | None:
+    if _portrait_material_palette_indices(palette, palette_roles, portrait_materials) is None:
+        return None
+    try:
+        result = {
+            role: palette.index(str((palette_roles or {})[role]).strip().upper())
+            for role in ("primary", "structure", "light", "accent")
+        }
+    except (KeyError, ValueError):
+        return None
+    return result if len(set(result.values())) == 4 else None
+
+
+def _semantic_palette_index(
+    color: tuple[int, int, int],
+    palette_lab: list[tuple[float, float, float]],
+    cache: dict[tuple[int, int, int], int],
+    portrait_indices: tuple[int, int] | None,
+    portrait_role_indices: Mapping[str, int] | None = None,
+) -> int:
+    nearest = _nearest_palette_index(color, palette_lab, cache)
+    if portrait_indices is None:
+        return nearest
+    if portrait_role_indices is not None and nearest == portrait_role_indices.get("structure"):
+        accent_index = portrait_role_indices.get("accent")
+        if accent_index is not None:
+            lab = _srgb_to_lab(color)
+            accent_lab = palette_lab[accent_index]
+            source_chroma = math.hypot(lab[1], lab[2])
+            accent_chroma = math.hypot(accent_lab[1], accent_lab[2])
+            hue_similarity = (
+                (lab[1] * accent_lab[1] + lab[2] * accent_lab[2])
+                / (source_chroma * accent_chroma)
+                if source_chroma > 1e-9 and accent_chroma > 1e-9
+                else -1.0
+            )
+            # Deep folds of a green blouse can be perceptually nearer to black
+            # than to the available green filament. Keep genuinely neutral hair,
+            # base and watch pixels black, but preserve a chromatic sample whose
+            # hue and channel dominance clearly match the accent material.
+            if (
+                lab[0] >= 8.0
+                and source_chroma >= 4.0
+                and accent_chroma >= 8.0
+                and hue_similarity >= 0.90
+                and color[1] >= color[0] + 3
+                and color[1] >= color[2] + 3
+            ):
+                return accent_index
+    primary_index, skin_index = portrait_indices
+    if nearest != skin_index:
+        return nearest
+    lab = _srgb_to_lab(color)
+    primary_distance = math.sqrt(
+        sum((lab[channel] - palette_lab[primary_index][channel]) ** 2 for channel in range(3))
+    )
+    skin_distance = math.sqrt(
+        sum((lab[channel] - palette_lab[skin_index][channel]) ** 2 for channel in range(3))
+    )
+    # Warm-white cloth shadows sit very close to the neutral/skin Voronoi
+    # boundary. Bias only those low-chroma ambiguous samples back to the garment;
+    # clearly saturated skin remains mapped to skin.
+    if (
+        lab[0] >= 35.0
+        and max(color) - min(color) <= 36
+        and math.hypot(lab[1], lab[2]) <= 18.0
+        and primary_distance <= max(1e-9, skin_distance) * 1.35
+    ):
+        return primary_index
+    return nearest
+
+
 def _bake_obj_texture_to_vertex_colors(
     obj_path: Path,
     package_dir: Path,
     destination: Path,
     palette: tuple[str, ...],
+    palette_roles: Mapping[str, str] | None = None,
+    portrait_materials: bool = False,
+    natural_destination: Path | None = None,
 ) -> None:
     try:
         from PIL import Image, UnidentifiedImageError
@@ -2112,6 +4685,12 @@ def _bake_obj_texture_to_vertex_colors(
     texture_paths = _read_material_textures(obj_path, package_dir, material_references)
     palette_rgb, palette_lab = _vertex_color_data(palette)
     nearest_cache: dict[tuple[int, int, int], int] = {}
+    portrait_indices = _portrait_material_palette_indices(
+        palette, palette_roles, portrait_materials
+    )
+    portrait_role_indices = _portrait_material_role_indices(
+        palette, palette_roles, portrait_materials
+    )
     images: dict[str, Any] = {}
     try:
         for material, texture_path in texture_paths.items():
@@ -2189,9 +4768,15 @@ def _bake_obj_texture_to_vertex_colors(
                     y = min(image.height - 1, max(0, round((1.0 - v) * (image.height - 1))))
                     sampled = tuple(pixels[x, y])
                     if palette_rgb:
-                        palette_index = _nearest_palette_index(sampled, palette_lab, nearest_cache)
+                        palette_index = _semantic_palette_index(
+                            sampled,
+                            palette_lab,
+                            nearest_cache,
+                            portrait_indices,
+                            portrait_role_indices,
+                        )
                         output_color_counts[output_index - 1][palette_index] += 1
-                    else:
+                    if not palette_rgb or natural_destination is not None:
                         color_offset = (output_index - 1) * 3
                         for channel in range(3):
                             output_color_sums[color_offset + channel] += sampled[channel]
@@ -2254,13 +4839,13 @@ def _bake_obj_texture_to_vertex_colors(
                 raise TripoError(
                     f"The printable vertex-color pass left {remaining_three_color_faces} three-color triangles."
                 )
-        try:
-            with destination.open("w", encoding="ascii", newline="\n") as output:
+        def write_output(output_path: Path, *, use_palette: bool) -> None:
+            with output_path.open("w", encoding="ascii", newline="\n") as output:
                 output.write("# OrcaSlicer AI vertex-color OBJ\n")
                 output.write(f"# Source package: {obj_path.name}\n")
                 for output_index, source_index in enumerate(output_sources):
                     offset = source_index * 3
-                    if palette_rgb:
+                    if use_palette:
                         palette_index = output_palette_indices[output_index]
                         red, green, blue = palette_rgb[palette_index]
                     else:
@@ -2279,6 +4864,13 @@ def _bake_obj_texture_to_vertex_colors(
                     )
                 with face_path.open("r", encoding="ascii") as faces:
                     shutil.copyfileobj(faces, output, length=1024 * 1024)
+
+        try:
+            write_output(destination, use_palette=bool(palette_rgb))
+            if natural_destination is not None:
+                if natural_destination == destination:
+                    raise TripoError("The natural portrait reference path must be separate from the printable model.")
+                write_output(natural_destination, use_palette=False)
         except OSError:
             raise TripoError("The vertex-color OBJ could not be saved.") from None
         finally:
@@ -2291,7 +4883,13 @@ def _bake_obj_texture_to_vertex_colors(
             image.close()
 
 
-def _quantize_vertex_color_obj(source: Path, destination: Path, palette: tuple[str, ...]) -> None:
+def _quantize_vertex_color_obj(
+    source: Path,
+    destination: Path,
+    palette: tuple[str, ...],
+    palette_roles: Mapping[str, str] | None = None,
+    portrait_materials: bool = False,
+) -> None:
     if not palette:
         try:
             shutil.copyfile(source, destination)
@@ -2300,6 +4898,12 @@ def _quantize_vertex_color_obj(source: Path, destination: Path, palette: tuple[s
         return
     palette_rgb, palette_lab = _vertex_color_data(palette)
     nearest_cache: dict[tuple[int, int, int], int] = {}
+    portrait_indices = _portrait_material_palette_indices(
+        palette, palette_roles, portrait_materials
+    )
+    portrait_role_indices = _portrait_material_role_indices(
+        palette, palette_roles, portrait_materials
+    )
     try:
         with source.open("r", encoding="utf-8", errors="strict") as input_stream, destination.open(
             "w", encoding="ascii", newline="\n"
@@ -2322,7 +4926,14 @@ def _quantize_vertex_color_obj(source: Path, destination: Path, palette: tuple[s
                     except ValueError:
                         raise TripoError("The generated OBJ has an invalid vertex.") from None
                     sampled = tuple(round(max(0.0, min(1.0, value)) * 255) for value in values[3:6])
-                    red, green, blue = palette_rgb[_nearest_palette_index(sampled, palette_lab, nearest_cache)]
+                    palette_index = _semantic_palette_index(
+                        sampled,
+                        palette_lab,
+                        nearest_cache,
+                        portrait_indices,
+                        portrait_role_indices,
+                    )
+                    red, green, blue = palette_rgb[palette_index]
                     output.write(
                         "v {:.9g} {:.9g} {:.9g} {:.6f} {:.6f} {:.6f}\n".format(
                             values[0], values[1], values[2], red / 255.0, green / 255.0, blue / 255.0
@@ -2393,36 +5004,1417 @@ def _normalize_obj_for_orca(path: Path, target_size_mm: float = DEFAULT_MODEL_SI
             pass
 
 
-def _prepare_obj_artifact(raw_download: Path, job_directory: Path, palette: tuple[str, ...]) -> Path:
+def _stabilize_portrait_obj_materials(
+    path: Path,
+    report_path: Path,
+    palette: tuple[str, ...],
+    palette_roles: Mapping[str, str] | None,
+    enabled: bool,
+) -> dict[str, Any]:
+    """Lock a detected portrait bust's bottom base to its semantic material.
+
+    Tripo can paint a source-invisible base with garment, skin, or accent colours.
+    This pass is intentionally narrower than generic colour cleanup: it requires
+    upstream portrait evidence, an explicit neutral-garment/skin palette, and a
+    substantial bottom band that is already predominantly the dark structure colour.
+    """
+    portrait_indices = _portrait_material_palette_indices(palette, palette_roles, enabled)
+    if portrait_indices is None or not palette_roles:
+        return {"status": "not_applicable", "recolored_vertices": 0}
+    try:
+        primary_hex = str(palette_roles["primary"]).strip().upper()
+        structure_hex = str(palette_roles["structure"]).strip().upper()
+        primary = tuple(int(primary_hex[index:index + 2], 16) for index in (1, 3, 5))
+        structure = tuple(int(structure_hex[index:index + 2], 16) for index in (1, 3, 5))
+    except (KeyError, ValueError):
+        return {"status": "not_applicable", "recolored_vertices": 0}
+
+    positions: list[tuple[float, float, float]] = []
+    colors: list[tuple[int, int, int]] = []
+    try:
+        with path.open("r", encoding="utf-8", errors="strict") as stream:
+            for line in stream:
+                fields = line.strip().split()
+                if not fields or fields[0].lower() != "v":
+                    continue
+                if len(fields) not in {7, 8}:
+                    raise TripoError("The generated OBJ does not provide valid vertex colors.")
+                position = tuple(float(value) for value in fields[1:4])
+                color = tuple(round(float(value) * 255) for value in fields[4:7])
+                if not all(math.isfinite(value) for value in position) or not all(
+                    0 <= value <= 255 for value in color
+                ):
+                    raise TripoError("The generated OBJ has an invalid colored vertex.")
+                positions.append(position)
+                colors.append(color)
+    except (OSError, UnicodeDecodeError, ValueError):
+        raise TripoError("The generated OBJ could not be read for portrait material cleanup.") from None
+    if not positions:
+        raise TripoError("The generated OBJ has no vertices for portrait material cleanup.")
+
+    minimum_z = min(position[2] for position in positions)
+    maximum_z = max(position[2] for position in positions)
+    span_z = maximum_z - minimum_z
+    if span_z <= 1e-9:
+        raise TripoError("The generated portrait has invalid dimensions for material cleanup.")
+    base_top = minimum_z + span_z * 0.065
+    base_indices = [index for index, position in enumerate(positions) if position[2] <= base_top]
+    base_structure_ratio = (
+        sum(colors[index] == structure for index in base_indices) / len(base_indices)
+        if base_indices else 0.0
+    )
+    primary_ratio = sum(color == primary for color in colors) / len(colors)
+    activated = (
+        len(base_indices) / len(positions) >= 0.02
+        and base_structure_ratio >= 0.65
+        and primary_ratio >= 0.25
+    )
+    report: dict[str, Any] = {
+        "status": "not_applicable",
+        "activated": activated,
+        "vertex_count": len(positions),
+        "primary_vertex_ratio": round(primary_ratio, 6),
+        "base_vertex_ratio": round(len(base_indices) / len(positions), 6),
+        "base_structure_ratio": round(base_structure_ratio, 6),
+        "base_height_ratio": 0.065,
+        "recolored_vertices": 0,
+        "recolored_by_rule": {"base": 0},
+        "recolored_by_source": {},
+    }
+    if not activated:
+        _write_mesh_repair_report(report_path, report)
+        return report
+
+    changed_by_rule: Counter[str] = Counter()
+    changed_by_source: Counter[tuple[int, int, int]] = Counter()
+    updated = list(colors)
+    for index, (position, source) in enumerate(zip(positions, colors)):
+        target = source
+        rule = ""
+        if position[2] <= base_top:
+            target = structure
+            rule = "base"
+        if target != source:
+            updated[index] = target
+            changed_by_rule[rule] += 1
+            changed_by_source[source] += 1
+
+    if changed_by_rule:
+        temporary = path.with_name(path.name + ".portrait-materials")
+        vertex_index = 0
+        try:
+            with path.open("r", encoding="utf-8", errors="strict") as source, temporary.open(
+                "w", encoding="ascii", newline="\n"
+            ) as output:
+                for line in source:
+                    fields = line.strip().split()
+                    if fields and fields[0].lower() == "v":
+                        red, green, blue = updated[vertex_index]
+                        fields[4:7] = [f"{channel / 255.0:.6f}" for channel in (red, green, blue)]
+                        output.write(" ".join(fields) + "\n")
+                        vertex_index += 1
+                    else:
+                        output.write(line if line.endswith("\n") else line + "\n")
+            os.replace(temporary, path)
+        except (OSError, UnicodeDecodeError):
+            raise TripoError("Portrait materials could not be stabilized safely.") from None
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    report["status"] = "stabilized" if changed_by_rule else "not_needed"
+    report["recolored_vertices"] = sum(changed_by_rule.values())
+    report["recolored_by_rule"] = {
+        "base": changed_by_rule["base"],
+    }
+    report["recolored_by_source"] = {
+        "#{:02X}{:02X}{:02X}".format(*color): count
+        for color, count in sorted(changed_by_source.items())
+    }
+    _write_mesh_repair_report(report_path, report)
+    return report
+
+
+def _stabilize_portrait_obj_garment_regions(
+    path: Path,
+    report_path: Path,
+    palette: tuple[str, ...],
+    palette_roles: Mapping[str, str] | None,
+    enabled: bool,
+) -> dict[str, Any]:
+    """Remove sparse Tripo material noise from a detected portrait bust.
+
+    The generic colour-island pass intentionally has a small global budget and
+    cannot clean thin colour tendrils that remain connected through shared
+    vertices. A portrait bust gives us stronger evidence: below the head, its
+    source-invisible rear surface belongs to the dominant garment, while real
+    hands and the front accent garment form locally coherent regions. This pass
+    erodes only non-garment vertices that are surrounded by garment vertices and
+    cleans weakly supported rear projections. It stays disabled for every model
+    without the upstream portrait and dark-base evidence.
+    """
+    portrait_indices = _portrait_material_palette_indices(palette, palette_roles, enabled)
+    if portrait_indices is None or not palette_roles:
+        return {"status": "not_applicable", "activated": False, "recolored_vertices": 0}
+    try:
+        role_colors = {
+            role: tuple(
+                int(str(palette_roles[role]).strip().upper()[index:index + 2], 16)
+                for index in (1, 3, 5)
+            )
+            for role in ("primary", "structure", "light", "accent")
+        }
+    except (KeyError, ValueError):
+        return {"status": "not_applicable", "activated": False, "recolored_vertices": 0}
+    if len(set(role_colors.values())) != 4:
+        return {"status": "not_applicable", "activated": False, "recolored_vertices": 0}
+
+    positions: list[tuple[float, float, float]] = []
+    colors: list[tuple[int, int, int]] = []
+    faces: list[tuple[int, int, int]] = []
+    try:
+        with path.open("r", encoding="utf-8", errors="strict") as stream:
+            for line in stream:
+                fields = line.strip().split()
+                if not fields or fields[0].startswith("#"):
+                    continue
+                keyword = fields[0].lower()
+                if keyword == "v":
+                    if len(fields) not in {7, 8}:
+                        raise TripoError("The generated OBJ does not provide valid vertex colors.")
+                    position = tuple(float(value) for value in fields[1:4])
+                    color = tuple(round(float(value) * 255) for value in fields[4:7])
+                    if not all(math.isfinite(value) for value in position) or not all(
+                        0 <= value <= 255 for value in color
+                    ):
+                        raise TripoError("The generated OBJ has an invalid colored vertex.")
+                    positions.append(position)
+                    colors.append(color)
+                elif keyword == "f":
+                    if len(fields) != 4:
+                        raise TripoError("The generated OBJ must contain only triangular faces.")
+                    faces.append(tuple(_resolve_obj_index(value, len(positions), "vertex") for value in fields[1:]))
+    except (OSError, UnicodeDecodeError, ValueError):
+        raise TripoError("The generated OBJ could not be read for portrait garment cleanup.") from None
+    if not positions or not faces:
+        raise TripoError("The generated OBJ has no usable geometry for portrait garment cleanup.")
+
+    minimum_x = min(position[0] for position in positions)
+    maximum_x = max(position[0] for position in positions)
+    minimum_z = min(position[2] for position in positions)
+    maximum_z = max(position[2] for position in positions)
+    span_x = maximum_x - minimum_x
+    span_z = maximum_z - minimum_z
+    if span_x <= 1e-9 or span_z <= 1e-9:
+        raise TripoError("The generated portrait has invalid dimensions for garment cleanup.")
+
+    primary = role_colors["primary"]
+    structure = role_colors["structure"]
+    base_top = minimum_z + span_z * 0.065
+    base_indices = [index for index, position in enumerate(positions) if position[2] <= base_top]
+    base_structure_ratio = (
+        sum(colors[index] == structure for index in base_indices) / len(base_indices)
+        if base_indices else 0.0
+    )
+    primary_ratio = sum(color == primary for color in colors) / len(colors)
+    activated = (
+        len(base_indices) / len(positions) >= 0.02
+        and base_structure_ratio >= 0.65
+        and primary_ratio >= 0.25
+    )
+    report: dict[str, Any] = {
+        "status": "not_applicable",
+        "activated": activated,
+        "vertex_count": len(positions),
+        "face_count": len(faces),
+        "primary_vertex_ratio": round(primary_ratio, 6),
+        "base_structure_ratio": round(base_structure_ratio, 6),
+        "rear_garment_height_ratio": PORTRAIT_REAR_GARMENT_HEIGHT_RATIO,
+        "passes": [],
+        "recolored_vertices": 0,
+        "recolored_by_source": {},
+    }
+    if not activated:
+        _write_mesh_repair_report(report_path, report)
+        return report
+
+    body_x = sorted(
+        position[0]
+        for position in positions
+        if base_top < position[2] < minimum_z + span_z * PORTRAIT_REAR_GARMENT_HEIGHT_RATIO
+    )
+    rear_threshold = (
+        body_x[round((len(body_x) - 1) * PORTRAIT_FRONT_SURFACE_QUANTILE)]
+        if body_x else minimum_x + span_x * PORTRAIT_FRONT_SURFACE_QUANTILE
+    )
+    body_y = [
+        position[1]
+        for position in positions
+        if base_top < position[2] < minimum_z + span_z * PORTRAIT_REAR_GARMENT_HEIGHT_RATIO
+    ]
+    minimum_body_y = min(body_y) if body_y else min(position[1] for position in positions)
+    maximum_body_y = max(body_y) if body_y else max(position[1] for position in positions)
+    body_y_center = (minimum_body_y + maximum_body_y) * 0.5
+    body_y_span = max(maximum_body_y - minimum_body_y, 1e-9)
+    changed_by_source: Counter[tuple[int, int, int]] = Counter()
+    changed_by_rule: Counter[str] = Counter()
+    pass_reports: list[dict[str, Any]] = []
+    for pass_index in range(PORTRAIT_GARMENT_SMOOTHING_PASSES):
+        same_support = array("I", [0]) * len(positions)
+        primary_support = array("I", [0]) * len(positions)
+        for face in faces:
+            for left, right in ((face[0], face[1]), (face[1], face[2]), (face[2], face[0])):
+                left_color, right_color = colors[left], colors[right]
+                if left_color == right_color:
+                    same_support[left] += 1
+                    same_support[right] += 1
+                if right_color == primary:
+                    primary_support[left] += 1
+                if left_color == primary:
+                    primary_support[right] += 1
+
+        changed_indices: list[int] = []
+        rear_changes = 0
+        support_changes = 0
+        for index, (position, source) in enumerate(zip(positions, colors)):
+            if source == primary or position[2] <= base_top:
+                continue
+            height_ratio = (position[2] - minimum_z) / span_z
+            if height_ratio >= PORTRAIT_REAR_GARMENT_HEIGHT_RATIO:
+                continue
+            rear = position[0] < rear_threshold
+            front_accent_region = (
+                source == role_colors["accent"]
+                and position[0] >= rear_threshold - span_x * 0.05
+                and abs(position[1] - body_y_center) <= body_y_span * 0.22
+                and 0.18 <= height_ratio < PORTRAIT_REAR_GARMENT_HEIGHT_RATIO
+            )
+            weak_rear_projection = (
+                source != role_colors["light"]
+                and rear
+                and (
+                    source == role_colors["accent"]
+                    or height_ratio < PORTRAIT_REAR_HAIR_HEIGHT_RATIO
+                    or same_support[index] < 4
+                )
+            )
+            surrounded_by_garment = (
+                source != role_colors["light"]
+                and not front_accent_region
+                and primary_support[index] >= 4
+                and primary_support[index] >= same_support[index] + 2
+                and primary_support[index] * 2 >= same_support[index] * 3
+            )
+            if not weak_rear_projection and not surrounded_by_garment:
+                continue
+            changed_indices.append(index)
+            rear_changes += int(weak_rear_projection)
+            support_changes += int(not weak_rear_projection and surrounded_by_garment)
+
+        for index in changed_indices:
+            changed_by_source[colors[index]] += 1
+            colors[index] = primary
+        changed_by_rule["rear_or_sparse_garment"] += len(changed_indices)
+        pass_reports.append({
+            "pass": pass_index + 1,
+            "recolored_vertices": len(changed_indices),
+            "rear_garment_vertices": rear_changes,
+            "surrounded_vertices": support_changes,
+        })
+        if not changed_indices:
+            break
+
+    parent = list(range(len(positions)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def unite(left: int, right: int) -> None:
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    for face in faces:
+        for left, right in ((face[0], face[1]), (face[1], face[2]), (face[2], face[0])):
+            if colors[left] == colors[right]:
+                unite(left, right)
+
+    component_vertices: Counter[int] = Counter()
+    component_color: dict[int, tuple[int, int, int]] = {}
+    component_minimum_y: dict[int, float] = {}
+    component_maximum_y: dict[int, float] = {}
+    component_minimum_z: dict[int, float] = {}
+    component_maximum_z: dict[int, float] = {}
+    component_sum_x: Counter[int] = Counter()
+    component_sum_y: Counter[int] = Counter()
+    component_sum_z: Counter[int] = Counter()
+    for index, (position, color) in enumerate(zip(positions, colors)):
+        root = find(index)
+        component_vertices[root] += 1
+        component_color[root] = color
+        component_minimum_y[root] = min(component_minimum_y.get(root, position[1]), position[1])
+        component_maximum_y[root] = max(component_maximum_y.get(root, position[1]), position[1])
+        component_minimum_z[root] = min(component_minimum_z.get(root, position[2]), position[2])
+        component_maximum_z[root] = max(component_maximum_z.get(root, position[2]), position[2])
+        component_sum_x[root] += position[0]
+        component_sum_y[root] += position[1]
+        component_sum_z[root] += position[2]
+
+    skin = role_colors["light"]
+    skin_components = sorted(
+        (root for root, color in component_color.items() if color == skin),
+        key=lambda root: (-component_vertices[root], root),
+    )
+    protected_skin_roots: set[int] = set()
+    face_skin_root: int | None = None
+    for root in skin_components:
+        maximum_height = (component_maximum_z[root] - minimum_z) / span_z
+        if maximum_height >= 0.65:
+            protected_skin_roots.add(root)
+            face_skin_root = root
+            break
+    minimum_hand_vertices = max(8, int(len(positions) * 0.001))
+    for root in skin_components:
+        if root in protected_skin_roots or len(protected_skin_roots) >= 3:
+            continue
+        minimum_height = (component_minimum_z[root] - minimum_z) / span_z
+        maximum_height = (component_maximum_z[root] - minimum_z) / span_z
+        centroid_x = component_sum_x[root] / component_vertices[root]
+        if (
+            component_vertices[root] >= minimum_hand_vertices
+            and minimum_height >= PORTRAIT_HAND_MIN_HEIGHT_RATIO
+            and maximum_height <= 0.65
+            and centroid_x >= rear_threshold
+        ):
+            protected_skin_roots.add(root)
+
+    protected_hand_roots = set(protected_skin_roots)
+    if face_skin_root is not None:
+        protected_hand_roots.discard(face_skin_root)
+    compact_hand_roots = {
+        root for root in protected_hand_roots
+        if component_vertices[root] >= minimum_hand_vertices
+        and (
+            (component_maximum_y[root] - component_minimum_y[root]) / body_y_span
+            + (component_maximum_z[root] - component_minimum_z[root]) / span_z
+        ) <= PORTRAIT_HAND_COMPACT_EXTENT_RATIO
+    }
+    largest_compact_hand = max(
+        (component_vertices[root] for root in compact_hand_roots),
+        default=0,
+    )
+    discarded_diffuse_skin_roots = {
+        root for root in protected_hand_roots
+        if largest_compact_hand > 0
+        and root not in compact_hand_roots
+        and component_vertices[root] >= largest_compact_hand * PORTRAIT_HAND_DIFFUSE_SIZE_RATIO
+        and (
+            (component_maximum_y[root] - component_minimum_y[root]) / body_y_span
+            + (component_maximum_z[root] - component_minimum_z[root]) / span_z
+        ) > PORTRAIT_HAND_COMPACT_EXTENT_RATIO
+    }
+    protected_hand_roots.difference_update(discarded_diffuse_skin_roots)
+    protected_skin_roots.difference_update(discarded_diffuse_skin_roots)
+    structure_front_threshold = (
+        body_x[round((len(body_x) - 1) * PORTRAIT_STRUCTURE_FRONT_QUANTILE)]
+        if body_x else rear_threshold
+    )
+    accent = role_colors["accent"]
+    accent_candidates: list[tuple[int, int, float]] = []
+    # Tripo frequently splits one coherent scarf or shirt panel across UV seams.
+    # Keep small front-centre fragments long enough to be grouped semantically;
+    # off-centre and rear accent speckles are still removed below.
+    minimum_accent_vertices = max(4, int(len(positions) * 0.00001))
+    for root, color in component_color.items():
+        if color != accent:
+            continue
+        count = component_vertices[root]
+        centroid_x = component_sum_x[root] / count
+        centroid_y = component_sum_y[root] / count
+        centroid_z_ratio = (component_sum_z[root] / count - minimum_z) / span_z
+        if (
+            centroid_x >= rear_threshold - span_x * 0.05
+            and abs(centroid_y - body_y_center) <= body_y_span * 0.22
+            and 0.18 <= centroid_z_ratio < PORTRAIT_REAR_GARMENT_HEIGHT_RATIO
+            and count >= minimum_accent_vertices
+        ):
+            accent_candidates.append((root, count, centroid_z_ratio))
+    protected_accent_roots: set[int] = set()
+    accent_anchor_height_ratio = 0.0
+    if accent_candidates:
+        anchor_root, anchor_count, _ = max(accent_candidates, key=lambda item: (item[1], -item[0]))
+        accent_anchor_height_ratio = (component_minimum_z[anchor_root] - minimum_z) / span_z
+        minimum_related_height = max(0.18, accent_anchor_height_ratio - 0.07)
+        protected_accent_roots = {
+            root
+            for root, count, centroid_z_ratio in accent_candidates
+            if root == anchor_root
+            or centroid_z_ratio >= minimum_related_height
+            or count >= anchor_count * 0.75
+        }
+    component_neighbor_colors: dict[int, Counter[tuple[int, int, int]]] = {}
+    for face in faces:
+        for left, right in ((face[0], face[1]), (face[1], face[2]), (face[2], face[0])):
+            left_root, right_root = find(left), find(right)
+            if left_root == right_root:
+                continue
+            component_neighbor_colors.setdefault(left_root, Counter())[colors[right]] += 1
+            component_neighbor_colors.setdefault(right_root, Counter())[colors[left]] += 1
+    maximum_accent_shadow_vertices = max(24, int(len(positions) * 0.003))
+    enclosed_accent_shadow_roots: set[int] = set()
+    for root, color in component_color.items():
+        if color != structure:
+            continue
+        count = component_vertices[root]
+        centroid_x = component_sum_x[root] / count
+        centroid_y = component_sum_y[root] / count
+        centroid_z_ratio = (component_sum_z[root] / count - minimum_z) / span_z
+        accent_boundary = component_neighbor_colors.get(root, Counter())[accent]
+        required_boundary = max(4, min(16, round(math.sqrt(count))))
+        if (
+            count <= maximum_accent_shadow_vertices
+            and accent_boundary >= required_boundary
+            and centroid_x >= structure_front_threshold
+            and abs(centroid_y - body_y_center) <= body_y_span * 0.18
+            and 0.24 <= centroid_z_ratio < PORTRAIT_REAR_GARMENT_HEIGHT_RATIO
+            and (component_maximum_y[root] - component_minimum_y[root]) <= body_y_span * 0.16
+            and (component_maximum_z[root] - component_minimum_z[root]) <= span_z * 0.12
+        ):
+            enclosed_accent_shadow_roots.add(root)
+    semantic_updated = list(colors)
+    for index, (position, source) in enumerate(zip(positions, colors)):
+        if source == primary or position[2] <= base_top:
+            continue
+        height_ratio = (position[2] - minimum_z) / span_z
+        front_centered = (
+            position[0] >= structure_front_threshold
+            and abs(position[1] - body_y_center) <= body_y_span * 0.22
+        )
+        keep = True
+        if source == skin:
+            root = find(index)
+            keep = root in protected_skin_roots
+        elif source == accent:
+            keep = find(index) in protected_accent_roots
+        elif source == structure:
+            if find(index) in enclosed_accent_shadow_roots:
+                semantic_updated[index] = accent
+                changed_by_source[source] += 1
+                changed_by_rule["enclosed_accent_shadow"] += 1
+                continue
+            keep = (
+                height_ratio >= PORTRAIT_REAR_GARMENT_HEIGHT_RATIO
+                or (
+                    front_centered
+                    and 0.26 <= height_ratio < PORTRAIT_REAR_GARMENT_HEIGHT_RATIO
+                )
+            )
+        if not keep:
+            semantic_updated[index] = primary
+            changed_by_source[source] += 1
+            changed_by_rule[
+                "diffuse_skin_component" if source == skin and root in discarded_diffuse_skin_roots
+                else "skin_component" if source == skin
+                else "accent_ownership" if source == accent
+                else "structure_ownership"
+            ] += 1
+    hand_component_sizes = Counter(
+        find(index)
+        for index, source in enumerate(semantic_updated)
+        if source == skin and find(index) in protected_hand_roots
+    )
+    hand_trimmed_by_root: Counter[int] = Counter()
+    hand_pass_reports: list[dict[str, Any]] = []
+    for pass_index in range(PORTRAIT_HAND_BOUNDARY_PASSES):
+        hand_same_support = array("I", [0]) * len(positions)
+        hand_primary_support = array("I", [0]) * len(positions)
+        for face in faces:
+            for left, right in ((face[0], face[1]), (face[1], face[2]), (face[2], face[0])):
+                left_color, right_color = semantic_updated[left], semantic_updated[right]
+                if left_color == right_color:
+                    hand_same_support[left] += 1
+                    hand_same_support[right] += 1
+                if right_color == primary:
+                    hand_primary_support[left] += 1
+                if left_color == primary:
+                    hand_primary_support[right] += 1
+
+        candidates_by_root: dict[int, list[int]] = {}
+        for index, source in enumerate(semantic_updated):
+            if source != skin:
+                continue
+            root = find(index)
+            if root not in protected_hand_roots:
+                continue
+            primary_neighbors = hand_primary_support[index]
+            same_neighbors = hand_same_support[index]
+            if (
+                primary_neighbors >= PORTRAIT_HAND_BOUNDARY_MIN_PRIMARY_SUPPORT
+                and primary_neighbors > same_neighbors
+            ):
+                candidates_by_root.setdefault(root, []).append(index)
+
+        changed_this_pass = 0
+        for root, candidates in candidates_by_root.items():
+            maximum_trim = max(
+                1,
+                int(hand_component_sizes[root] * PORTRAIT_HAND_BOUNDARY_MAX_REMOVAL_RATIO),
+            )
+            remaining_budget = maximum_trim - hand_trimmed_by_root[root]
+            if remaining_budget <= 0:
+                continue
+            candidates.sort(
+                key=lambda index: (
+                    hand_primary_support[index] - hand_same_support[index],
+                    hand_primary_support[index],
+                    -hand_same_support[index],
+                    -index,
+                ),
+                reverse=True,
+            )
+            selected = candidates[:remaining_budget]
+            for index in selected:
+                semantic_updated[index] = primary
+                changed_by_source[skin] += 1
+            hand_trimmed_by_root[root] += len(selected)
+            changed_this_pass += len(selected)
+        hand_pass_reports.append({
+            "pass": pass_index + 1,
+            "candidate_vertices": sum(len(items) for items in candidates_by_root.values()),
+            "recolored_vertices": changed_this_pass,
+        })
+        changed_by_rule["hand_boundary"] += changed_this_pass
+        if not changed_this_pass:
+            break
+
+    minimum_face_detail_vertices = max(4, int(len(positions) * 0.0001))
+    maximum_face_detail_vertices = max(16, int(len(positions) * 0.002))
+    face_primary_roots = []
+    for root, color in component_color.items():
+        if color != primary:
+            continue
+        count = component_vertices[root]
+        if not minimum_face_detail_vertices <= count <= maximum_face_detail_vertices:
+            continue
+        centroid_x = component_sum_x[root] / count
+        centroid_y = component_sum_y[root] / count
+        minimum_height = (component_minimum_z[root] - minimum_z) / span_z
+        maximum_height = (component_maximum_z[root] - minimum_z) / span_z
+        if (
+            centroid_x >= structure_front_threshold
+            and abs(centroid_y - body_y_center) <= body_y_span * 0.25
+            and minimum_height >= 0.78
+        ):
+            face_primary_roots.append((root, centroid_y, minimum_height, maximum_height))
+
+    forehead_highlight_roots = {
+        root for root, _, minimum_height, _ in face_primary_roots
+        if minimum_height >= 0.86
+    }
+    eye_candidates = [
+        item for item in face_primary_roots
+        if 0.78 <= item[2] and item[3] <= 0.86
+    ]
+    left_eyes = [item for item in eye_candidates if item[1] < body_y_center]
+    right_eyes = [item for item in eye_candidates if item[1] > body_y_center]
+    paired_eye_roots: set[int] = set()
+    if left_eyes and right_eyes:
+        pair = min(
+            ((left, right) for left in left_eyes for right in right_eyes),
+            key=lambda items: (
+                abs((items[0][2] + items[0][3]) - (items[1][2] + items[1][3])),
+                abs(math.log(max(1, component_vertices[items[0][0]]) / max(1, component_vertices[items[1][0]]))),
+            ),
+        )
+        left_root, right_root = pair[0][0], pair[1][0]
+        size_ratio = max(component_vertices[left_root], component_vertices[right_root]) / max(
+            1, min(component_vertices[left_root], component_vertices[right_root])
+        )
+        if size_ratio <= 3.0:
+            paired_eye_roots.update((left_root, right_root))
+
+    eye_upper_cuts = {
+        root: component_minimum_z[root]
+        + (component_maximum_z[root] - component_minimum_z[root]) * 0.45
+        for root in paired_eye_roots
+    }
+    face_highlight_changes = 0
+    eye_upper_changes = 0
+    for index, (position, source) in enumerate(zip(positions, semantic_updated)):
+        if source != primary:
+            continue
+        root = find(index)
+        if root in forehead_highlight_roots:
+            semantic_updated[index] = skin
+            changed_by_source[primary] += 1
+            changed_by_rule["face_highlight"] += 1
+            face_highlight_changes += 1
+        elif root in paired_eye_roots and position[2] > eye_upper_cuts[root]:
+            semantic_updated[index] = skin
+            changed_by_source[primary] += 1
+            changed_by_rule["eye_upper_white"] += 1
+            eye_upper_changes += 1
+    colors = semantic_updated
+
+    recolored_vertices = sum(changed_by_source.values())
+    if recolored_vertices:
+        temporary = path.with_name(path.name + ".portrait-garment")
+        vertex_index = 0
+        try:
+            with path.open("r", encoding="utf-8", errors="strict") as source, temporary.open(
+                "w", encoding="ascii", newline="\n"
+            ) as output:
+                for line in source:
+                    fields = line.strip().split()
+                    if fields and fields[0].lower() == "v":
+                        red, green, blue = colors[vertex_index]
+                        fields[4:7] = [f"{channel / 255.0:.6f}" for channel in (red, green, blue)]
+                        output.write(" ".join(fields) + "\n")
+                        vertex_index += 1
+                    else:
+                        output.write(line if line.endswith("\n") else line + "\n")
+            os.replace(temporary, path)
+        except (OSError, UnicodeDecodeError):
+            raise TripoError("Portrait garment regions could not be stabilized safely.") from None
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    report["status"] = "stabilized" if recolored_vertices else "not_needed"
+    report["passes"] = pass_reports
+    report["rear_threshold_x"] = round(rear_threshold, 6)
+    report["structure_front_threshold_x"] = round(structure_front_threshold, 6)
+    report["protected_skin_components"] = len(protected_skin_roots)
+    report["protected_hand_components"] = len(protected_hand_roots)
+    report["discarded_diffuse_skin_components"] = len(discarded_diffuse_skin_roots)
+    report["discarded_diffuse_skin_vertices"] = sum(
+        component_vertices[root] for root in discarded_diffuse_skin_roots
+    )
+    report["hand_compact_extent_ratio"] = PORTRAIT_HAND_COMPACT_EXTENT_RATIO
+    report["hand_diffuse_size_ratio"] = PORTRAIT_HAND_DIFFUSE_SIZE_RATIO
+    report["hand_minimum_height_ratio"] = PORTRAIT_HAND_MIN_HEIGHT_RATIO
+    report["hand_boundary_passes"] = hand_pass_reports
+    report["hand_boundary_max_removal_ratio"] = PORTRAIT_HAND_BOUNDARY_MAX_REMOVAL_RATIO
+    report["forehead_highlight_components"] = len(forehead_highlight_roots)
+    report["paired_eye_white_components"] = len(paired_eye_roots)
+    report["face_highlight_recolored_vertices"] = face_highlight_changes
+    report["eye_upper_recolored_vertices"] = eye_upper_changes
+    report["protected_accent_components"] = len(protected_accent_roots)
+    report["accent_candidate_components"] = len(accent_candidates)
+    report["accent_anchor_height_ratio"] = round(accent_anchor_height_ratio, 6)
+    report["minimum_accent_vertices"] = minimum_accent_vertices
+    report["enclosed_accent_shadow_components"] = len(enclosed_accent_shadow_roots)
+    report["maximum_accent_shadow_vertices"] = maximum_accent_shadow_vertices
+    report["enclosed_accent_shadow_recolored_vertices"] = changed_by_rule["enclosed_accent_shadow"]
+    report["recolored_vertices"] = recolored_vertices
+    report["recolored_by_rule"] = dict(sorted(changed_by_rule.items()))
+    report["recolored_by_source"] = {
+        "#{:02X}{:02X}{:02X}".format(*color): count
+        for color, count in sorted(changed_by_source.items())
+    }
+    _write_mesh_repair_report(report_path, report)
+    return report
+
+
+def _capture_portrait_front_face_details(
+    path: Path,
+    palette_roles: Mapping[str, str] | None,
+) -> tuple[dict[int, tuple[int, int, int]], dict[str, Any]]:
+    """Remember trusted textured details on the actually visible front face.
+
+    The provider texture already aligns eyes, brows, mouth and teeth with the
+    generated geometry. Generic printable-colour cleanup can erase those tiny
+    but meaningful regions. Capturing the original vertex labels after mesh
+    repair lets us restore the same vertices later without projecting a flat
+    image through the sides of a three-dimensional head.
+    """
+
+    try:
+        role_colors = {
+            role: tuple(
+                int(str((palette_roles or {})[role]).strip().upper()[index:index + 2], 16)
+                for index in (1, 3, 5)
+            )
+            for role in ("primary", "structure", "light", "accent")
+        }
+    except (KeyError, ValueError):
+        return {}, {"status": "not_applicable", "reason": "palette_roles_missing"}
+    if len(set(role_colors.values())) != 4:
+        return {}, {"status": "not_applicable", "reason": "palette_roles_ambiguous"}
+
+    positions: list[tuple[float, float, float]] = []
+    colors: list[tuple[int, int, int]] = []
+    try:
+        with path.open("r", encoding="utf-8", errors="strict") as stream:
+            for line in stream:
+                fields = line.strip().split()
+                if not fields or fields[0].lower() != "v":
+                    continue
+                if len(fields) not in {7, 8}:
+                    raise TripoError("The generated OBJ does not provide valid vertex colors.")
+                position = tuple(float(value) for value in fields[1:4])
+                color = tuple(round(float(value) * 255) for value in fields[4:7])
+                if not all(math.isfinite(value) for value in position) or not all(
+                    0 <= value <= 255 for value in color
+                ):
+                    raise TripoError("The generated OBJ has an invalid colored vertex.")
+                positions.append(position)
+                colors.append(color)
+    except (OSError, UnicodeDecodeError, ValueError):
+        raise TripoError("The portrait face details could not be captured safely.") from None
+    if not positions:
+        raise TripoError("The generated OBJ has no vertices for portrait face-detail capture.")
+
+    minimum_y = min(position[1] for position in positions)
+    maximum_y = max(position[1] for position in positions)
+    minimum_z = min(position[2] for position in positions)
+    maximum_z = max(position[2] for position in positions)
+    span_y = maximum_y - minimum_y
+    span_z = maximum_z - minimum_z
+    if span_y <= 1e-9 or span_z <= 1e-9:
+        raise TripoError("The generated portrait has invalid dimensions for face-detail capture.")
+    center_y = (minimum_y + maximum_y) * 0.5
+
+    def face_cell(position: tuple[float, float, float]) -> tuple[int, int]:
+        horizontal = round(
+            (position[1] - minimum_y) / span_y * (PORTRAIT_FACE_DETAIL_GRID_SIZE - 1)
+        )
+        vertical = round(
+            (position[2] - minimum_z) / span_z * (PORTRAIT_FACE_DETAIL_GRID_SIZE - 1)
+        )
+        return (
+            max(0, min(PORTRAIT_FACE_DETAIL_GRID_SIZE - 1, horizontal)),
+            max(0, min(PORTRAIT_FACE_DETAIL_GRID_SIZE - 1, vertical)),
+        )
+
+    front_surface: dict[tuple[int, int], float] = {}
+    for position in positions:
+        height_ratio = (position[2] - minimum_z) / span_z
+        if (
+            not PORTRAIT_FACE_DETAIL_MIN_HEIGHT_RATIO <= height_ratio < PORTRAIT_FACE_DETAIL_MAX_HEIGHT_RATIO
+            or abs(position[1] - center_y) > span_y * PORTRAIT_FACE_DETAIL_HALF_WIDTH_RATIO
+        ):
+            continue
+        cell = face_cell(position)
+        front_surface[cell] = max(front_surface.get(cell, -math.inf), position[0])
+
+    captured: dict[int, tuple[int, int, int]] = {}
+    captured_by_target: Counter[tuple[int, int, int]] = Counter()
+    for index, (position, color) in enumerate(zip(positions, colors)):
+        if color not in {role_colors["structure"], role_colors["primary"]}:
+            continue
+        height_ratio = (position[2] - minimum_z) / span_z
+        minimum_height = (
+            PORTRAIT_FACE_DETAIL_MIN_HEIGHT_RATIO + 0.015
+            if color == role_colors["structure"]
+            else PORTRAIT_FACE_DETAIL_MIN_HEIGHT_RATIO
+        )
+        if (
+            not minimum_height <= height_ratio < PORTRAIT_FACE_DETAIL_MAX_HEIGHT_RATIO
+            or abs(position[1] - center_y) > span_y * PORTRAIT_FACE_DETAIL_HALF_WIDTH_RATIO
+        ):
+            continue
+        maximum_front_x = front_surface.get(face_cell(position))
+        if (
+            maximum_front_x is None
+            or position[0] < maximum_front_x - PORTRAIT_FACE_DETAIL_SURFACE_TOLERANCE_MM
+        ):
+            continue
+        captured[index] = color
+        captured_by_target[color] += 1
+
+    report = {
+        "status": "captured" if captured else "not_needed",
+        "vertex_count": len(positions),
+        "captured_vertices": len(captured),
+        "captured_by_target": {
+            "#{:02X}{:02X}{:02X}".format(*color): count
+            for color, count in sorted(captured_by_target.items())
+        },
+        "minimum_height_ratio": PORTRAIT_FACE_DETAIL_MIN_HEIGHT_RATIO,
+        "structure_minimum_height_ratio": PORTRAIT_FACE_DETAIL_MIN_HEIGHT_RATIO + 0.015,
+        "maximum_height_ratio": PORTRAIT_FACE_DETAIL_MAX_HEIGHT_RATIO,
+        "half_width_ratio": PORTRAIT_FACE_DETAIL_HALF_WIDTH_RATIO,
+        "surface_tolerance_mm": PORTRAIT_FACE_DETAIL_SURFACE_TOLERANCE_MM,
+        "surface_grid_size": PORTRAIT_FACE_DETAIL_GRID_SIZE,
+    }
+    return captured, report
+
+
+def _restore_portrait_front_face_details(
+    path: Path,
+    report_path: Path,
+    captured: Mapping[int, tuple[int, int, int]],
+    capture_report: Mapping[str, Any],
+    *,
+    allowed_targets: set[tuple[int, int, int]] | None = None,
+) -> dict[str, Any]:
+    report = dict(capture_report)
+    report["allowed_targets"] = (
+        ["#{:02X}{:02X}{:02X}".format(*color) for color in sorted(allowed_targets)]
+        if allowed_targets is not None else "all"
+    )
+    if not captured:
+        report["recolored_vertices"] = 0
+        _write_mesh_repair_report(report_path, report)
+        return report
+
+    changed_by_source: Counter[tuple[int, int, int]] = Counter()
+    changed_by_target: Counter[tuple[int, int, int]] = Counter()
+    vertex_index = 0
+    temporary = path.with_name(path.name + ".face-details")
+    try:
+        with path.open("r", encoding="utf-8", errors="strict") as source, temporary.open(
+            "w", encoding="ascii", newline="\n"
+        ) as output:
+            for line in source:
+                fields = line.strip().split()
+                if fields and fields[0].lower() == "v":
+                    target = captured.get(vertex_index)
+                    if target is not None and (
+                        allowed_targets is None or target in allowed_targets
+                    ):
+                        current = tuple(round(float(value) * 255) for value in fields[4:7])
+                        if current != target:
+                            fields[4:7] = [f"{channel / 255.0:.6f}" for channel in target]
+                            changed_by_source[current] += 1
+                            changed_by_target[target] += 1
+                        output.write(" ".join(fields) + "\n")
+                    else:
+                        output.write(line if line.endswith("\n") else line + "\n")
+                    vertex_index += 1
+                else:
+                    output.write(line if line.endswith("\n") else line + "\n")
+        if vertex_index != int(capture_report.get("vertex_count", -1)):
+            raise TripoError("Portrait face details no longer match the repaired mesh.")
+        os.replace(temporary, path)
+    except (OSError, UnicodeDecodeError, ValueError):
+        raise TripoError("The portrait face details could not be restored safely.") from None
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    recolored_vertices = sum(changed_by_target.values())
+    report["status"] = "restored" if recolored_vertices else "not_needed"
+    report["recolored_vertices"] = recolored_vertices
+    report["recolored_by_source"] = {
+        "#{:02X}{:02X}{:02X}".format(*color): count
+        for color, count in sorted(changed_by_source.items())
+    }
+    report["recolored_by_target"] = {
+        "#{:02X}{:02X}{:02X}".format(*color): count
+        for color, count in sorted(changed_by_target.items())
+    }
+    _write_mesh_repair_report(report_path, report)
+    return report
+
+
+def _review_portrait_rear_plate_masks(mask_directory: Path) -> dict[str, Any]:
+    """Reject the long near-vertical silhouette left by an extruded backdrop."""
+
+    try:
+        from PIL import Image, UnidentifiedImageError
+    except ImportError:
+        raise PortraitGeometryGateError(
+            "Pillow is required to inspect portrait geometry silhouettes."
+        ) from None
+
+    report: dict[str, Any] = {
+        "version": "portrait-rear-plate-v1",
+        "status": "pass",
+        "views": {},
+        "warnings": [],
+    }
+    try:
+        for view in ("right", "left"):
+            with Image.open(mask_directory / f"{view}.png") as opened:
+                mask = opened.convert("L")
+            bbox = mask.getbbox()
+            if bbox is None:
+                raise PortraitGeometryGateError(
+                    f"The {view} portrait silhouette is empty."
+                )
+            left, top, right, bottom = bbox
+            object_height = bottom - top
+            analysis_bottom = min(bottom, top + int(round(object_height * 0.88)))
+            tolerance = max(3, int(round(mask.width * 0.01)))
+            rows: list[tuple[int, int, int]] = []
+            pixels = mask.load()
+            for y in range(top, analysis_bottom):
+                occupied = [x for x in range(left, right) if pixels[x, y] >= 128]
+                if occupied:
+                    rows.append((y, occupied[0], occupied[-1]))
+
+            view_report: dict[str, Any] = {
+                "bbox": list(bbox),
+                "tolerance_px": tolerance,
+                "edges": {},
+            }
+            for edge_name, field_index in (("left", 1), ("right", 2)):
+                best_run = 0
+                best_center = 0
+                best_start = top
+                best_end = top
+                centers = sorted({row[field_index] for row in rows})
+                for center in centers:
+                    run = 0
+                    run_start = top
+                    previous_y: int | None = None
+                    for row in rows:
+                        y = row[0]
+                        matches = abs(row[field_index] - center) <= tolerance
+                        if matches and (previous_y is None or y == previous_y + 1):
+                            if run == 0:
+                                run_start = y
+                            run += 1
+                        elif matches:
+                            run = 1
+                            run_start = y
+                        else:
+                            run = 0
+                        previous_y = y
+                        if run > best_run:
+                            best_run = run
+                            best_center = center
+                            best_start = run_start
+                            best_end = y
+                run_ratio = best_run / max(1, object_height)
+                start_ratio = (best_start - top) / max(1, object_height)
+                suspicious = (
+                    run_ratio >= PORTRAIT_REAR_PLATE_MIN_RUN_RATIO
+                    and start_ratio <= PORTRAIT_REAR_PLATE_MAX_START_RATIO
+                )
+                view_report["edges"][edge_name] = {
+                    "x": best_center,
+                    "start_y": best_start,
+                    "end_y": best_end,
+                    "run_px": best_run,
+                    "run_ratio": round(run_ratio, 6),
+                    "start_ratio": round(start_ratio, 6),
+                    "suspicious": suspicious,
+                }
+                if suspicious:
+                    report["warnings"].append(f"{view}_{edge_name}_rear_plate")
+            report["views"][view] = view_report
+    except PortraitGeometryGateError:
+        raise
+    except (OSError, UnidentifiedImageError, Image.DecompressionBombError):
+        raise PortraitGeometryGateError(
+            "The portrait side silhouettes could not be inspected."
+        ) from None
+    if report["warnings"]:
+        report["status"] = "reject"
+    return report
+
+
+def _prepare_obj_artifact(
+    raw_download: Path,
+    job_directory: Path,
+    palette: tuple[str, ...],
+    palette_roles: Mapping[str, str] | None = None,
+    portrait_materials: bool = False,
+    front_material_reference: Path | None = None,
+    status_callback: Callable[[str, int], None] | None = None,
+    build_aligned_portrait_reference: bool = False,
+) -> Path:
+    def report_status(message: str, progress: int) -> None:
+        if status_callback is not None:
+            status_callback(message, progress)
+
     try:
         with raw_download.open("rb") as stream:
             signature = stream.read(4)
     except OSError:
         raise TripoError("The generated artifact could not be read.") from None
     destination = job_directory / "model-vertex-color.obj"
+    natural_portrait_obj = (
+        job_directory / "portrait-natural-reference.tmp.obj"
+        if build_aligned_portrait_reference and palette and portrait_materials
+        else None
+    )
+    report_status("Converting textures into printable colors.", 96)
     if signature.startswith(b"PK\x03\x04"):
         archive = job_directory / "artifact-raw.zip"
         raw_download.replace(archive)
         obj_path = _extract_obj_package(archive, job_directory / "package")
-        _bake_obj_texture_to_vertex_colors(obj_path, job_directory / "package", destination, palette)
+        _bake_obj_texture_to_vertex_colors(
+            obj_path,
+            job_directory / "package",
+            destination,
+            palette,
+            palette_roles,
+            portrait_materials,
+            natural_portrait_obj,
+        )
     else:
         raw_obj = job_directory / "artifact-raw.obj"
         raw_download.replace(raw_obj)
         _validate_obj_vertex_colors(raw_obj)
-        _quantize_vertex_color_obj(raw_obj, destination, palette)
+        _quantize_vertex_color_obj(
+            raw_obj, destination, palette, palette_roles, portrait_materials
+        )
     _normalize_obj_for_orca(destination)
+    effective_front_reference = front_material_reference
+    geometry_aligned_reference = False
+    geometry_aligned_view_directories: dict[str, Path] = {}
+    if natural_portrait_obj is not None:
+        aligned_report_path = job_directory / "portrait-aligned-reference.json"
+        try:
+            _normalize_obj_for_orca(natural_portrait_obj)
+            aligned_directory = job_directory / "portrait-aligned-reference"
+            natural_turntable = aligned_directory / "natural-turntable"
+            # Rendering every triangle in four directions is intentionally
+            # expensive for the quality profile.  Persist the stage before the
+            # render starts so the desktop UI does not appear frozen on the
+            # earlier texture-conversion message for several minutes.
+            report_status("Rendering exact portrait material reference views.", 97)
+            render_report = render_model_views(
+                natural_portrait_obj,
+                natural_turntable,
+                ModelViewSettings(
+                    width=768,
+                    height=768,
+                    margin_ratio=0.06,
+                    # Material ownership must see every generated triangle.
+                    # QA views may be sampled, but a sampled semantic pass left
+                    # visible skin/garment pinholes on high-detail portraits.
+                    max_render_faces=MAX_MODEL_FACES,
+                ),
+                force=True,
+                include_isometric=False,
+                include_masks=True,
+                progress_callback=lambda _view, completed, total: report_status(
+                    f"Rendering exact portrait material reference views ({completed}/{total}).",
+                    97,
+                ),
+            )
+            rear_plate_report = _review_portrait_rear_plate_masks(
+                natural_turntable / "model-masks"
+            )
+            _write_mesh_repair_report(
+                aligned_directory / "rear-plate-gate.json", rear_plate_report
+            )
+            if rear_plate_report.get("status") == "reject":
+                raise PortraitGeometryGateError(
+                    "The generated portrait contains a rear plate or halo. "
+                    "Generate a new preview before importing it."
+                )
+            natural_front = aligned_directory / "natural-front.png"
+            shutil.copyfile(natural_turntable / "model-views" / "front.png", natural_front)
+            semantic_error = ""
+            try:
+                report_status("Classifying skin and garment ownership in four views.", 97)
+                geometry_aligned_view_directories, semantic_report = (
+                    _prepare_portrait_geometry_material_views(
+                        natural_turntable,
+                        aligned_directory / "semantic-materials",
+                        palette_roles or {},
+                    )
+                )
+                effective_front_reference = (
+                    geometry_aligned_view_directories["front"] / "aligned_reference.png"
+                )
+                accepted = True
+                report = {
+                    "status": "used",
+                    "reason": "image2_semantic_material_gate_passed",
+                    "render": render_report,
+                    "semantic_materials": semantic_report,
+                    "reference": str(effective_front_reference.relative_to(job_directory)),
+                    "views": {
+                        view: {
+                            "reference": str(
+                                (directory / "aligned_reference.png").relative_to(job_directory)
+                            ),
+                            "mask": str(
+                                (directory / "mask_subject.png").relative_to(job_directory)
+                            ),
+                        }
+                        for view, directory in geometry_aligned_view_directories.items()
+                    },
+                }
+            except (OpenAIPreprocessorError, PortraitProjectionError, MultiviewReferenceError, OSError) as exc:
+                # A paid geometry result remains recoverable if Image2 is
+                # temporarily unavailable. Keep the deterministic path as a
+                # fallback; the final visual gate still blocks mixed materials.
+                semantic_error = str(exc)
+                processed_views: dict[str, Any] = {}
+                geometry_aligned_view_directories = {}
+                for view in ("front", "right", "back", "left"):
+                    view_directory = aligned_directory / "processed" / view
+                    processed_views[view] = process_printable_image(
+                        natural_turntable / "model-views" / f"{view}.png",
+                        view_directory,
+                        palette,
+                        None,
+                        palette_roles=palette_roles,
+                    )
+                    geometry_aligned_view_directories[view] = view_directory
+                processed = processed_views["front"]
+                accepted = bool(
+                    processed.metrics.get("palette_quality_ok")
+                    and processed.metrics.get("material_fragmentation_ok", True)
+                )
+                report = {
+                    "status": "fallback" if accepted else "rejected",
+                    "reason": (
+                        "deterministic_material_fallback"
+                        if accepted else "printable_reference_quality_gate_failed"
+                    ),
+                    "semantic_material_error": semantic_error,
+                    "render": render_report,
+                    "palette_quality_ok": bool(processed.metrics.get("palette_quality_ok")),
+                    "material_fragmentation_ok": bool(
+                        processed.metrics.get("material_fragmentation_ok", True)
+                    ),
+                    "quality_warnings": list(processed.metrics.get("quality_warnings", [])),
+                    "reference": str(processed.clean_preview.relative_to(job_directory)),
+                    "views": {
+                        view: {
+                            "reference": str(result.clean_preview.relative_to(job_directory)),
+                            "portrait_skin_cleanup": result.metrics.get("portrait_skin_cleanup", {}),
+                        }
+                        for view, result in processed_views.items()
+                    },
+                }
+                if accepted:
+                    effective_front_reference = processed.clean_preview
+            _write_mesh_repair_report(aligned_report_path, report)
+            if accepted:
+                geometry_aligned_reference = True
+            else:
+                geometry_aligned_view_directories = {}
+        except PortraitGeometryGateError:
+            raise
+        except (ModelViewError, PrintableImageError, TripoError, OSError) as exc:
+            _write_mesh_repair_report(
+                aligned_report_path,
+                {
+                    "status": "fallback",
+                    "reason": str(exc),
+                    "reference": (
+                        str(front_material_reference.relative_to(job_directory))
+                        if front_material_reference is not None
+                        and front_material_reference.is_relative_to(job_directory)
+                        else ""
+                    ),
+                },
+            )
+        finally:
+            try:
+                natural_portrait_obj.unlink(missing_ok=True)
+            except OSError:
+                pass
+    report_status("Separating portrait skin and garment materials.", 97)
+    if palette and portrait_materials and effective_front_reference is not None:
+        try:
+            project_front_portrait_materials(
+                destination,
+                effective_front_reference,
+                job_directory / "front-material-projection.json",
+                palette_roles or {},
+            )
+        except PortraitProjectionError as exc:
+            raise TripoError(str(exc)) from None
+    if palette and portrait_materials:
+        _stabilize_portrait_obj_materials(
+            destination,
+            job_directory / "portrait-material-cleanup.json",
+            palette,
+            palette_roles,
+            True,
+        )
     repair_report = _remove_small_detached_obj_components(destination, job_directory / "mesh-repair.json")
     _repair_small_obj_topology_defects(destination, job_directory / "mesh-repair.json", repair_report)
+    captured_face_details: dict[int, tuple[int, int, int]] = {}
+    face_detail_capture_report: dict[str, Any] = {"status": "not_applicable"}
+    if palette and portrait_materials and effective_front_reference is None:
+        captured_face_details, face_detail_capture_report = _capture_portrait_front_face_details(
+            destination, palette_roles
+        )
+    report_status("Cleaning printable color regions.", 98)
     if palette:
+        report_status("Merging tiny printable color islands.", 98)
         _consolidate_tiny_obj_color_components(destination, job_directory / "vertex-color-cleanup.json")
+        report_status("Smoothing printable material boundaries.", 98)
         _regularize_obj_color_boundaries(destination, job_directory / "color-boundary-cleanup.json")
+        if portrait_materials:
+            report_status("Keeping skin, sleeves and garments in their own materials.", 98)
+            _stabilize_portrait_obj_garment_regions(
+                destination,
+                job_directory / "portrait-garment-cleanup.json",
+                palette,
+                palette_roles,
+                True,
+            )
+        # Restore only dark vertices in the strict front-centre garment region.
+        # This recovers a real scarf or shirt that generic cleanup mapped to hair
+        # colour without allowing the reference to repaint skin, white sleeves,
+        # the head, the back, or the base.
+        if portrait_materials and effective_front_reference is not None:
+            report_status("Restoring the approved front garment material.", 98)
+            try:
+                project_front_portrait_materials(
+                    destination,
+                    effective_front_reference,
+                    job_directory / "front-accent-projection.json",
+                    palette_roles or {},
+                    repair_skin=False,
+                    restore_accent=True,
+                )
+            except PortraitProjectionError as exc:
+                raise TripoError(str(exc)) from None
+            _consolidate_tiny_obj_color_components(
+                destination,
+                job_directory / "front-material-color-cleanup.json",
+            )
+            _regularize_obj_color_boundaries(
+                destination,
+                job_directory / "front-material-boundary-cleanup.json",
+            )
+            # A front projection can reconnect real blouse panels, but it may
+            # also recreate dark lighting folds. Re-run the semantic ownership
+            # pass before touching the face so the final garment is continuous.
+            report_status("Removing remaining portrait material cross-colour.", 98)
+            _stabilize_portrait_obj_garment_regions(
+                destination,
+                job_directory / "portrait-final-cleanup.json",
+                palette,
+                palette_roles,
+                True,
+            )
+            # The semantic pass above intentionally removes suspicious accent
+            # islands, but on crossed-arm portraits it can also reopen a thin
+            # white seam through a real continuous blouse. Re-apply only the
+            # high-confidence front-centre accent label from the approved
+            # reference, then clean its boundary before touching the face.
+            try:
+                report_status("Finalizing the approved front garment boundary.", 98)
+                project_front_portrait_materials(
+                    destination,
+                    effective_front_reference,
+                    job_directory / "front-final-accent-projection.json",
+                    palette_roles or {},
+                    repair_skin=False,
+                    restore_accent=True,
+                )
+            except PortraitProjectionError as exc:
+                raise TripoError(str(exc)) from None
+            _consolidate_tiny_obj_color_components(
+                destination,
+                job_directory / "front-final-accent-color-cleanup.json",
+            )
+            _regularize_obj_color_boundaries(
+                destination,
+                job_directory / "front-final-accent-boundary-cleanup.json",
+            )
+            # Normalize only the actually visible central face from the exact,
+            # same-source material reference. This removes false eye/skin
+            # islands, restores high-confidence dark linework, and permits only
+            # geometry-aligned lower-face tooth evidence (never white eye patches).
+            try:
+                report_status("Restoring source-faithful facial material details.", 98)
+                normalization_options: dict[str, Any] = {
+                    "repair_skin": False,
+                    "normalize_face_details": True,
+                }
+                if geometry_aligned_reference:
+                    normalization_options["reference_is_geometry_aligned"] = True
+                project_front_portrait_materials(
+                    destination,
+                    effective_front_reference,
+                    job_directory / "front-face-normalization.json",
+                    palette_roles or {},
+                    **normalization_options,
+                )
+            except PortraitProjectionError as exc:
+                raise TripoError(str(exc)) from None
+            # The face projection deliberately adds a small amount of dark
+            # printable linework. Consolidate it once more so isolated pixels
+            # cannot survive as freckles, eyeliner fragments, or cheek seams;
+            # coherent brows and pupils remain protected by component area.
+            _consolidate_tiny_obj_color_components(
+                destination,
+                job_directory / "front-face-color-cleanup.json",
+            )
+            _regularize_obj_color_boundaries(
+                destination,
+                job_directory / "front-face-boundary-cleanup.json",
+            )
+        elif portrait_materials:
+            # Older and single-view jobs have no exact material reference. Keep
+            # their provider-aligned face labels on the original visible mesh
+            # vertices rather than projecting an unrelated image through the
+            # cheeks or rear of the head.
+            _restore_portrait_front_face_details(
+                destination,
+                job_directory / "front-face-detail-restoration.json",
+                captured_face_details,
+                face_detail_capture_report,
+            )
+        if portrait_materials and len(geometry_aligned_view_directories) >= 2:
+            try:
+                report_status("Applying four-view skin and garment ownership.", 98)
+                project_geometry_aligned_portrait_materials(
+                    destination,
+                    geometry_aligned_view_directories,
+                    job_directory / "geometry-material-projection.json",
+                    palette_roles or {},
+                    margin_ratio=0.06,
+                )
+            except PortraitProjectionError as exc:
+                raise TripoError(str(exc)) from None
+            # The semantic projection is the final source of material truth.
+            # Clean after—not before—it, otherwise a late projection can
+            # recreate the exact freckles and wrist/base leakage we removed.
+            _consolidate_tiny_obj_color_components(
+                destination,
+                job_directory / "geometry-material-color-cleanup.json",
+            )
+            _regularize_obj_color_boundaries(
+                destination,
+                job_directory / "geometry-material-boundary-cleanup.json",
+            )
+            # Do not run the legacy connected-component garment heuristic after
+            # exact-mesh four-view projection. On crossed-arm portraits it
+            # classified both correctly projected hands as jacket noise and
+            # erased them. Accent and base ownership are already guarded by the
+            # geometry projection itself.
+            # The four-view projection already resolved visibility against the
+            # actual mesh and is therefore the authoritative source for pupils,
+            # brows, teeth and garment ownership.  A former planar face pass
+            # ran after this cleanup and erased the correctly projected eyes on
+            # a real head/shoulder beta model because its fixed vertical bands
+            # were calibrated for a different bust proportion.  Finish with
+            # conservative component and boundary cleanup instead: it removes
+            # isolated freckles while retaining coherent, mesh-visible facial
+            # features from the four-view result.
+            _consolidate_tiny_obj_color_components(
+                destination,
+                job_directory / "geometry-face-color-cleanup.json",
+            )
+            _regularize_obj_color_boundaries(
+                destination,
+                job_directory / "geometry-face-boundary-cleanup.json",
+            )
         _validate_obj_palette(destination, palette)
     else:
         _validate_obj_vertex_colors(destination)
     _write_obj_vertex_color_metrics(destination, job_directory / "vertex-color-metrics.json")
     _validate_artifact(destination, "obj", allow_repairable_obj=True)
+    report_status("Checking the high-detail mesh for printing.", 99)
     quality = analyze_printable_obj(
         destination,
+        ModelQualityThresholds(max_faces=MAX_MODEL_FACES),
         allow_repairable_topology=True,
         target_palette=palette,
     )
@@ -2449,6 +6441,34 @@ def _persist_attempts(job: Job) -> None:
             pass
 
 
+def _promote_attempt_artifact(candidate: Path, artifact: Path) -> None:
+    """Publish an accepted attempt together with its local quality evidence.
+
+    Conversion and structural analysis run inside ``attempt-XX`` (or a recovery
+    directory), while the public job contract reads reports next to the final
+    artifact.  Moving only the OBJ made the completed UI say "not checked" even
+    though the gate had just finished.  Copy the small reports atomically before
+    the job becomes ready so restart recovery and the live result card agree.
+    """
+
+    try:
+        if candidate.resolve() != artifact.resolve():
+            shutil.copyfile(candidate, artifact)
+        for filename in (MODEL_QUALITY_FILENAME, "vertex-color-metrics.json"):
+            source = candidate.parent / filename
+            destination = artifact.parent / filename
+            if not source.is_file() or source.resolve() == destination.resolve():
+                continue
+            temporary = destination.with_name(destination.name + ".part")
+            try:
+                shutil.copyfile(source, temporary)
+                os.replace(temporary, destination)
+            finally:
+                temporary.unlink(missing_ok=True)
+    except OSError:
+        raise TripoError("The accepted model and its quality report could not be published.") from None
+
+
 def _record_attempt(job: Job, attempt_number: int, **updates: Any) -> None:
     with _JOBS_LOCK:
         while len(job.attempts) < attempt_number:
@@ -2456,6 +6476,43 @@ def _record_attempt(job: Job, attempt_number: int, **updates: Any) -> None:
         job.attempts[attempt_number - 1].update(updates)
         _persist_attempts(job)
         _persist_job(job)
+
+
+def _refresh_stale_face_limit_report(path: Path, palette: tuple[str, ...]) -> None:
+    """Recheck an already-processed high-detail OBJ rejected by the old 1M gate."""
+
+    report_path = path.parent / MODEL_QUALITY_FILENAME
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return
+    if not isinstance(report, Mapping):
+        return
+    errors = report.get("errors", [])
+    thresholds = report.get("thresholds", {})
+    previous_limit = thresholds.get("max_faces", 0) if isinstance(thresholds, Mapping) else 0
+    if not isinstance(errors, list) or "too_many_faces" not in errors:
+        return
+    try:
+        previous_limit = int(previous_limit)
+    except (TypeError, ValueError):
+        previous_limit = 0
+    if previous_limit >= MAX_MODEL_FACES and report.get("gate_version") == MODEL_QUALITY_GATE_VERSION:
+        return
+
+    quality = analyze_printable_obj(
+        path,
+        ModelQualityThresholds(max_faces=MAX_MODEL_FACES),
+        allow_repairable_topology=True,
+        target_palette=palette,
+    )
+    try:
+        write_model_quality_report(quality, report_path)
+    except ModelQualityError as exc:
+        raise TripoError(str(exc)) from None
+    if quality.get("status") == "reject":
+        quality_errors = ", ".join(str(code) for code in quality.get("errors", [])) or "unknown structural error"
+        raise TripoError(f"The generated OBJ failed the structural quality gate: {quality_errors}.")
 
 
 def _download_conversion(
@@ -2486,6 +6543,7 @@ def _download_conversion(
             try:
                 candidate.resolve().relative_to(attempt_directory.resolve())
                 _validate_artifact(candidate, "obj", allow_repairable_obj=True)
+                _refresh_stale_face_limit_report(candidate, job.palette)
             except (OSError, TripoError, ValueError):
                 continue
             return candidate
@@ -2512,7 +6570,58 @@ def _download_conversion(
     _MODEL_PROVIDER_GATEWAY.download_artifact(result, destination, MAX_ARTIFACT_BYTES)
     _stop_boundary(job)
     if format_name == "obj":
-        return _prepare_obj_artifact(destination, work_directory, job.palette)
+        portrait_cleanup = job.image_metrics.get("portrait_skin_cleanup", {})
+        portrait_materials = (
+            job.style == "realistic"
+            and isinstance(portrait_cleanup, dict)
+            and portrait_cleanup.get("activated") == 1
+        )
+        effective_palette_roles = dict(job.palette_roles)
+        if portrait_materials:
+            garment_color = str(portrait_cleanup.get("garment_color", "")).strip().upper()
+            skin_color = str(portrait_cleanup.get("skin_color", "")).strip().upper()
+            if garment_color in job.palette and skin_color in job.palette and garment_color != skin_color:
+                effective_palette_roles["primary"] = garment_color
+                effective_palette_roles["light"] = skin_color
+        material_views = _multiview_paths_from_metrics(job, "material_views")
+        build_aligned_reference = bool(
+            portrait_materials
+            and job.generation_profile == "quality"
+            and job.palette
+        )
+        def artifact_status(message: str, progress: int) -> None:
+            _stop_boundary(job)
+            with _JOBS_LOCK:
+                job.phase = "checking_model"
+                job.message = message
+                job.progress = progress
+                _persist_job(job)
+            _stop_boundary(job)
+
+        prepare_options: dict[str, Any] = {}
+        if build_aligned_reference:
+            prepare_options["build_aligned_portrait_reference"] = True
+        if material_views is not None:
+            return _prepare_obj_artifact(
+                destination,
+                work_directory,
+                job.palette,
+                effective_palette_roles,
+                portrait_materials,
+                material_views["front"],
+                artifact_status,
+                **prepare_options,
+            )
+        return _prepare_obj_artifact(
+            destination,
+            work_directory,
+            job.palette,
+            effective_palette_roles,
+            portrait_materials,
+            None,
+            artifact_status,
+            **prepare_options,
+        )
     _validate_artifact(destination, format_name)
     return destination
 
@@ -3748,8 +7857,24 @@ def _generate_job(
                 generation_id = ""
             if resume and not generation_id:
                 raise TripoError("The paid model task reference is unavailable; start a new generation manually.")
-            preview = job.model_reference_path or job.preview_path
-            request_source = "text" if job.source == "text" and preview is None else "image"
+            identity_geometry = _identity_preserving_portrait_geometry_enabled(job)
+            preview = _geometry_generation_reference(job)
+            # Four generated portrait views can be individually attractive yet
+            # geometrically inconsistent. In real Tripo validation this produced
+            # a Janus mesh with a second face on the back. The source-faithful,
+            # hard-alpha front preserved identity and yielded one coherent head.
+            # Build the material turntable only after geometry exists, when every
+            # view is rendered from that exact mesh and therefore cannot disagree.
+            multiview_paths = None if identity_geometry else (
+                _multiview_paths_from_metrics(job, "generation_views")
+                if generation_id
+                else _ensure_portrait_multiview(job)
+            )
+            request_source = (
+                "multiview" if multiview_paths is not None
+                else "text" if job.source == "text" and preview is None
+                else "image"
+            )
             if request_source == "image":
                 try:
                     _validate_image_file(
@@ -3765,6 +7890,19 @@ def _generate_job(
                         provider="tripo",
                         operation="model_generation",
                     ) from None
+            with _JOBS_LOCK:
+                job.phase = "generating"
+                job.message = (
+                    f"Generating the high-quality portrait from four views (attempt {attempt_number} of "
+                    f"{MAX_GENERATION_ATTEMPTS})."
+                    if request_source == "multiview"
+                    else f"Generating identity-first portrait geometry from the approved front view (attempt {attempt_number} of "
+                    f"{MAX_GENERATION_ATTEMPTS})."
+                    if identity_geometry
+                    else f"Generating printable model (attempt {attempt_number} of {MAX_GENERATION_ATTEMPTS})."
+                )
+                job.progress = 20
+                _persist_job(job)
             if not generation_id:
                 if authorization is None:
                     raise ProviderGatewayError(
@@ -3788,6 +7926,7 @@ def _generate_job(
                     source=request_source,
                     prompt=prepared_prompt,
                     image_path=preview,
+                    image_paths=multiview_paths,
                     face_limit=job.face_limit,
                     generation_profile=job.generation_profile,
                 ),
@@ -3810,8 +7949,7 @@ def _generate_job(
                 face_count, _, _ = _validate_obj_topology(candidate, allow_repairable=True)
                 _validate_face_target(face_count, job.face_limit)
                 artifact = job.directory / "model-vertex-color.obj"
-                if candidate.resolve() != artifact.resolve():
-                    shutil.copyfile(candidate, artifact)
+                _promote_attempt_artifact(candidate, artifact)
                 _record_attempt(job, attempt_number, status="accepted", artifact=str(candidate.name), error="")
                 break
             except (TripoError, ProviderGatewayError) as exc:
@@ -3837,6 +7975,7 @@ def _generate_job(
         if artifact is None:
             raise last_quality_error or TripoError("No printable model passed validation.")
 
+        visual_quality = _automatic_visual_review(job, artifact)
         with _JOBS_LOCK:
             if job.stop_event.is_set():
                 raise JobStopped()
@@ -3844,7 +7983,11 @@ def _generate_job(
             job.artifact_format = MODEL_ARTIFACT_FORMAT
             job.state = "ready"
             job.phase = "ready"
-            job.message = "Generated model is ready."
+            job.message = (
+                "Generated model is ready, but visual review found identity or material risks."
+                if visual_quality is not None and not visual_quality.get("import_recommended", True)
+                else "Generated model is ready and passed the available quality checks."
+            )
             job.progress = 100
             _persist_job(job)
     except SidecarRestart:
@@ -3855,25 +7998,33 @@ def _generate_job(
             _persist_job(job)
     except JobStopped:
         _mark_stopped(job)
+    except PortraitMultiviewPreparationError as exc:
+        _return_to_portrait_multiview_retry(job, str(exc))
     except ProviderGatewayError as exc:
-        if active_attempt:
-            _record_attempt(
-                job,
-                active_attempt,
-                status="rejected",
-                error=str(exc),
-                provider_error_code=exc.code,
-                provider_error_category=exc.category,
-                provider_error_retryable=exc.retryable,
-                provider_error_ambiguous=exc.ambiguous,
-            )
         if _SHUT_DOWN:
+            # ``wait_for_task`` uses the job stop event to interrupt its local
+            # polling loop during shutdown.  That interruption does not cancel
+            # the already-paid remote task, so do not persist it as a provider
+            # rejection.  A restarted sidecar must see the attempt as running
+            # and resume the same task id instead of presenting a contradictory
+            # "rejected" attempt beside a live progress bar.
             with _JOBS_LOCK:
                 job.state = "queued"
                 job.phase = "resuming"
                 job.message = "The existing paid model task will resume when the sidecar restarts."
                 _persist_job(job)
         else:
+            if active_attempt:
+                _record_attempt(
+                    job,
+                    active_attempt,
+                    status="rejected",
+                    error=str(exc),
+                    provider_error_code=exc.code,
+                    provider_error_category=exc.category,
+                    provider_error_retryable=exc.retryable,
+                    provider_error_ambiguous=exc.ambiguous,
+                )
             _fail_job(job, str(exc))
     except TripoError as exc:
         if _SHUT_DOWN:
@@ -3884,8 +8035,167 @@ def _generate_job(
                 _persist_job(job)
         else:
             _fail_job(job, str(exc))
+    except Exception as exc:
+        print(
+            f"[orca-ai] unexpected model-generation error for job {job.id}: "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+        traceback.print_exc()
+        if (
+            not job.attempts
+            and _quality_portrait_multiview_enabled(job)
+            and not _identity_preserving_portrait_geometry_enabled(job)
+            and job.model_reference_path is not None
+        ):
+            _return_to_portrait_multiview_retry(
+                job,
+                "Four-view portrait preparation hit a local error before any paid Tripo task was created. Retry generation.",
+            )
+        else:
+            _fail_job(job, "Model generation failed.")
+    finally:
+        _finish_deleted(job)
+
+
+def _retexture_job(
+    job: Job,
+    source_job_id: str,
+    source_task_id: str,
+    resume: bool = False,
+    authorization: PaidTaskAuthorization | None = None,
+) -> None:
+    try:
+        _stop_boundary(job)
+        with _JOBS_LOCK:
+            job.state = "running"
+            job.phase = "texturing"
+            job.message = "Preserving the selected geometry and applying the current portrait colors."
+            job.progress = 20
+            _persist_job(job)
+        existing = job.attempts[0] if resume and job.attempts else {}
+        generation_id = existing.get("generation_task_id", "")
+        if not isinstance(generation_id, str):
+            generation_id = ""
+        if resume and not generation_id:
+            raise TripoError("The paid texture task reference is unavailable; start a new task manually.")
+        reference = _model_generation_reference(job)
+        try:
+            _validate_image_file(
+                reference,
+                minimum_edge=MIN_MODEL_REFERENCE_EDGE,
+                require_visual_detail=True,
+            )
+        except ValueError as exc:
+            raise ProviderGatewayError(
+                f"The texture reference image is not suitable: {exc}",
+                code="invalid_texture_request",
+                category="validation",
+                provider="tripo",
+                operation="model_texture",
+            ) from None
+        if not generation_id:
+            if authorization is None:
+                raise ProviderGatewayError(
+                    "Explicit confirmation is required before creating a paid texture task.",
+                    code="authorization_required",
+                    category="authorization",
+                    provider="tripo",
+                    operation="model_texture",
+                )
+            _record_attempt(
+                job,
+                1,
+                provider="tripo",
+                provider_operation="model_texture",
+                provider_request_id=authorization.request_id,
+                source_job_id=source_job_id,
+                source_task_id=source_task_id,
+                status="creating",
+                error="",
+            )
+        task_ref = _MODEL_PROVIDER_GATEWAY.start_or_reuse_texture_task(
+            TextureTaskRequest(
+                source_task_id=source_task_id,
+                image_path=reference,
+                texture_alignment="geometry",
+                texture_quality="extreme" if job.generation_profile == "quality" else "standard",
+            ),
+            existing_task_id=generation_id,
+            authorization=authorization,
+        )
+        generation_id = task_ref.task_id
+        if not task_ref.reused:
+            _record_attempt(job, 1, generation_task_id=generation_id, status="running")
+        _stop_boundary(job)
+        _MODEL_PROVIDER_GATEWAY.wait_for_task(
+            generation_id,
+            stop_event=job.stop_event,
+            progress=_progress_callback(job, 20, 70),
+        )
+        _stop_boundary(job)
+        candidate = _download_conversion(job, generation_id, MODEL_ARTIFACT_FORMAT, 1, resume)
+        face_count, _, _ = _validate_obj_topology(candidate, allow_repairable=True)
+        _validate_face_target(face_count, job.face_limit)
+        artifact = job.directory / "model-vertex-color.obj"
+        _promote_attempt_artifact(candidate, artifact)
+        _record_attempt(job, 1, status="accepted", artifact=str(candidate.name), error="")
+        visual_quality = _automatic_visual_review(job, artifact)
+        with _JOBS_LOCK:
+            if job.stop_event.is_set():
+                raise JobStopped()
+            job.artifact_path = artifact
+            job.artifact_format = MODEL_ARTIFACT_FORMAT
+            job.state = "ready"
+            job.phase = "ready"
+            job.message = (
+                "The preserved-geometry portrait is ready, but visual review found identity or material risks."
+                if visual_quality is not None and not visual_quality.get("import_recommended", True)
+                else "The preserved-geometry portrait model is ready."
+            )
+            job.progress = 100
+            _persist_job(job)
+    except SidecarRestart:
+        with _JOBS_LOCK:
+            job.state = "queued"
+            job.phase = "resuming"
+            job.message = "The existing paid texture task will resume when the sidecar restarts."
+            _persist_job(job)
+    except JobStopped:
+        _mark_stopped(job)
+    except ProviderGatewayError as exc:
+        _record_attempt(
+            job,
+            1,
+            status="rejected",
+            error=str(exc),
+            provider_error_code=exc.code,
+            provider_error_category=exc.category,
+            provider_error_retryable=exc.retryable,
+            provider_error_ambiguous=exc.ambiguous,
+        )
+        if _SHUT_DOWN:
+            with _JOBS_LOCK:
+                job.state = "queued"
+                job.phase = "resuming"
+                job.message = "The existing paid texture task will resume when the sidecar restarts."
+                _persist_job(job)
+        else:
+            _fail_job(job, str(exc))
+    except TripoError as exc:
+        if _SHUT_DOWN:
+            with _JOBS_LOCK:
+                job.state = "queued"
+                job.phase = "resuming"
+                job.message = "The existing paid texture task will resume when the sidecar restarts."
+                _persist_job(job)
+        else:
+            _record_attempt(job, 1, status="rejected", error=str(exc))
+            _fail_job(job, str(exc))
     except Exception:
-        _fail_job(job, "Model generation failed.")
+        _record_attempt(job, 1, status="rejected", error="Texture generation failed.")
+        _fail_job(job, "Texture generation failed.")
     finally:
         _finish_deleted(job)
 
@@ -3918,7 +8228,7 @@ def _run_worker_with_diagnostics(job: Job, worker: Callable[..., None], args: tu
 def _executor_for(worker: Callable[..., None]) -> ThreadPoolExecutor:
     # Provider geometry is intentionally serialized in its own lane so a long
     # paid task cannot starve palette recommendation or Image2 preprocessing.
-    return _MODEL_EXECUTOR if worker is _generate_job else _DESIGN_EXECUTOR
+    return _MODEL_EXECUTOR if worker in {_generate_job, _retexture_job} else _DESIGN_EXECUTOR
 
 
 def _submit(job: Job, worker: Callable[..., None], *args: Any) -> None:
@@ -3961,7 +8271,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
-        self.wfile.write(encoded)
+        try:
+            self.wfile.write(encoded)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            # The native client may cancel an obsolete poll while a newer one is
+            # already in flight.  A closed response socket is not a job failure
+            # and must not surface as an alarming server-side traceback.
+            pass
 
     def send_bytes(
         self,
@@ -3981,7 +8297,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             while chunk := stream.read(64 * 1024):
                 self.wfile.write(chunk)
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
             pass
 
     def read_json(self) -> dict[str, Any]:
@@ -4046,7 +8362,10 @@ class Handler(BaseHTTPRequestHandler):
             if part.is_multipart() or part.get_content_disposition() != "form-data":
                 raise RequestError("invalid_multipart", "Nested or invalid multipart data is not supported.", 400)
             name = part.get_param("name", header="content-disposition")
-            if name not in {"request_id", "instruction", "palette", "palette_roles", "style", "custom_style", "print", "image"} or name in seen:
+            if name not in {
+                "request_id", "instruction", "palette", "palette_roles", "palette_recommendation_confirmed",
+                "style", "custom_style", "print", "image",
+            } or name in seen:
                 raise RequestError("invalid_multipart", "Multipart fields are unexpected or duplicated.", 400)
             seen.add(name)
             payload = part.get_payload(decode=True) or b""
@@ -4105,8 +8424,8 @@ class Handler(BaseHTTPRequestHandler):
             action = "status"
         elif len(parts) == 2 and parts[0] and (
             parts[1] in {
-                "input", "raw-preview", "strict-preview", "preview", "heatmap", "metadata",
-                "background-mask", "subject-mask", "generate", "stop", "artifact",
+                "input", "raw-preview", "strict-preview", "preview", "model-reference", "heatmap", "metadata",
+                "background-mask", "subject-mask", "generate", "retexture", "stop", "artifact",
                 "recheck", "visual-review", "model-view-sheet", "confirm-palette",
             }
             or re.fullmatch(r"mask-[a-z0-9_]+", parts[1])
@@ -4201,6 +8520,10 @@ class Handler(BaseHTTPRequestHandler):
                                 "available": bool(config),
                                 "max_colors": MAX_PALETTE_COLORS,
                             },
+                            "style_recommendation": {
+                                "available": True,
+                                "local_only": True,
+                            },
                             "printable_image_pipeline": {
                                 "available": True,
                                 "print_modes": ["solid_regions"],
@@ -4223,25 +8546,25 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/v1/orcaslicer/model-jobs/latest":
             with _JOBS_LOCK:
-                candidates = [
-                    job for job in _JOBS.values()
-                    if job.state in {
-                        "recommending_palette", "awaiting_palette_confirmation", "preprocessing",
-                        "awaiting_confirmation", "queued", "running", "stopping", "ready",
-                    }
-                ]
+                candidates = [job for job in _JOBS.values() if _latest_job_is_restorable(job)]
                 response = _public_job(max(candidates, key=lambda item: item.updated_at)) if candidates else None
             self.send_json(200, {"job": response})
             return
         job_id, action = self._job_route(self.path)
         downloadable = {
-            "status", "input", "raw-preview", "strict-preview", "preview", "heatmap", "metadata",
+            "status", "input", "raw-preview", "strict-preview", "preview", "model-reference", "heatmap", "metadata",
             "background-mask", "subject-mask", "artifact", "model-view-sheet",
         }
         if not job_id or (action not in downloadable and not (action or "").startswith("mask-")):
             self._model_error(404, "not_found", "Model job route not found.")
             return
         job = self._get_job(job_id)
+        if job is None and action == "status":
+            # Model-library entries created before durable job manifests still
+            # retain their bounded provider attempt log.  Adopt them lazily so
+            # the native history UI can backfill the real 3D provider task ID
+            # without scanning or reviving every legacy model at startup.
+            job = _adopt_legacy_completed_job(job_id)
         if job is None:
             self._model_error(404, "job_not_found", "Model job not found.")
             return
@@ -4292,6 +8615,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._model_error(exc.status, exc.code, exc.message, exc.retryable)
             return
 
+        if self.path == "/v1/orcaslicer/model-style-recommendation":
+            if not self._require_native_client():
+                return
+            try:
+                self._recommend_model_style()
+            except RequestError as exc:
+                self._model_error(exc.status, exc.code, exc.message, exc.retryable)
+            return
+
         if not self.path.startswith("/v1/orcaslicer/model-jobs"):
             self.send_json(404, {"error": "not found"})
             return
@@ -4311,11 +8643,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._create_image_palette_recommendation()
                 return
             job_id, action = self._job_route(self.path)
-            if not job_id or action not in {"generate", "stop", "recheck", "visual-review", "confirm-palette"}:
+            if not job_id or action not in {
+                "generate", "retexture", "stop", "recheck", "visual-review", "confirm-palette"
+            }:
                 self._model_error(404, "not_found", "Model job route not found.")
                 return
             if action == "generate":
                 self._generate(job_id)
+            elif action == "retexture":
+                self._retexture(job_id)
             elif action == "confirm-palette":
                 self._confirm_palette(job_id)
             elif action == "recheck":
@@ -4366,6 +8702,9 @@ class Handler(BaseHTTPRequestHandler):
         custom_style = _normalize_custom_style(request.get("custom_style"), style)
         print_settings = _normalize_print_settings(request.get("print"))
         job = _new_job("text", palette, palette_roles, style, custom_style, print_settings)
+        job.palette_recommendation_confirmed = _boolean_field(
+            request.get("palette_recommendation_confirmed"), "palette_recommendation_confirmed"
+        )
         job.user_prompt = prompt
         _persist_job(job)
         with _JOBS_LOCK:
@@ -4410,16 +8749,37 @@ class Handler(BaseHTTPRequestHandler):
             response = _public_job(job)
         self.send_json(202, {"job": response})
 
+    def _recommend_model_style(self) -> None:
+        fields, image, declared_type = self._read_image_multipart()
+        prompt = fields.get("instruction", "").strip()
+        if len(image) > MAX_IMAGE_BYTES:
+            raise RequestError("image_too_large", "Image exceeds the 20 MB limit.", 413)
+        detected_type = _image_type(image)
+        if detected_type is None:
+            raise RequestError("unsupported_image", "Image must be PNG or JPEG.", 415)
+        if declared_type not in {"application/octet-stream", detected_type}:
+            raise RequestError("unsupported_image", "Image Content-Type does not match its data.", 415)
+        try:
+            _validate_image_data(image, minimum_edge=MIN_SOURCE_IMAGE_EDGE)
+            recommendation = recommend_printable_style(image, prompt=prompt)
+        except (ValueError, ModelInputImageQualityError) as exc:
+            raise RequestError("invalid_image", str(exc), 415) from None
+        self.send_json(200, {"recommendation": recommendation})
+
     def _create_image_job(self) -> None:
         if not os.environ.get("OPENAI_API_KEY", ""):
             raise RequestError("feature_unavailable", "AI style preview generation is not configured.", 503)
         fields, image, declared_type = self._read_image_multipart()
         _text_field(fields.get("request_id"), "request_id")
-        instruction = _normalize_image_instruction(fields.get("instruction"))
+        user_instruction = _user_image_instruction(fields.get("instruction"))
+        instruction = _normalize_image_instruction(user_instruction)
         palette = _multipart_palette(fields.get("palette"))
         palette_roles = _multipart_palette_roles(fields.get("palette_roles"), palette)
         style = _normalize_style(fields.get("style"))
         custom_style = _normalize_custom_style(fields.get("custom_style"), style)
+        palette_recommendation_confirmed = _boolean_field(
+            fields.get("palette_recommendation_confirmed"), "palette_recommendation_confirmed"
+        )
         try:
             print_payload = json.loads(fields.get("print", "{}"))
         except json.JSONDecodeError:
@@ -4437,7 +8797,8 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as exc:
             raise RequestError("invalid_image", str(exc), 415) from None
         job = _new_job("image", palette, palette_roles, style, custom_style, print_settings)
-        job.user_prompt = instruction
+        job.palette_recommendation_confirmed = palette_recommendation_confirmed
+        job.user_prompt = user_instruction
         suffix = ".png" if detected_type == "image/png" else ".jpg"
         input_path = job.directory / f"input-{uuid.uuid4().hex}{suffix}"
         try:
@@ -4465,7 +8826,7 @@ class Handler(BaseHTTPRequestHandler):
             raise RequestError("feature_unavailable", "AI printable color recommendation is not configured.", 503)
         fields, image, declared_type = self._read_image_multipart()
         _text_field(fields.get("request_id"), "request_id")
-        instruction = _normalize_image_instruction(fields.get("instruction"))
+        user_instruction = _user_image_instruction(fields.get("instruction"))
         style = _normalize_style(fields.get("style"))
         custom_style = _normalize_custom_style(fields.get("custom_style"), style)
         try:
@@ -4485,7 +8846,7 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as exc:
             raise RequestError("invalid_image", str(exc), 415) from None
         job = _new_job("image", (), {}, style, custom_style, print_settings)
-        job.user_prompt = instruction
+        job.user_prompt = user_instruction
         suffix = ".png" if detected_type == "image/png" else ".jpg"
         input_path = job.directory / f"input-{uuid.uuid4().hex}{suffix}"
         try:
@@ -4536,7 +8897,7 @@ class Handler(BaseHTTPRequestHandler):
             if job.source == "text":
                 _submit(job, _preprocess_text_job, job.user_prompt)
             elif job.input_path is not None:
-                _submit(job, _preprocess_image_job, job.input_path, job.user_prompt)
+                _submit(job, _preprocess_image_job, job.input_path, _normalize_image_instruction(job.user_prompt))
             else:
                 raise RequestError("input_unavailable", "The stored reference image is unavailable.", 409)
         except RequestError:
@@ -4581,7 +8942,7 @@ class Handler(BaseHTTPRequestHandler):
                     409,
                 )
             prepared_prompt = raw_prompt.strip()
-            reference = job.model_reference_path or job.preview_path
+            reference = _model_generation_reference(job)
             if job.source == "text" and reference is None and not prepared_prompt:
                 raise RequestError("invalid_request", "prepared_prompt is required for text generation.", 400)
             if job.source == "image" or reference is not None:
@@ -4605,6 +8966,22 @@ class Handler(BaseHTTPRequestHandler):
                     raise RequestError(
                         "model_input_quality_failed",
                         _model_input_quality_message(model_input_quality),
+                        409,
+                    )
+                try:
+                    generation_input_quality = _assess_job_generation_reference(job)
+                except ModelInputImageQualityError as exc:
+                    raise RequestError("invalid_model_reference", str(exc), 409) from None
+                if not bool(generation_input_quality.get("model_input_eligible", False)):
+                    raise RequestError(
+                        "model_input_quality_failed",
+                        _model_input_quality_message(generation_input_quality),
+                        409,
+                    )
+                if job.palette and not bool(job.image_metrics.get("palette_quality_ok", True)):
+                    raise RequestError(
+                        "printable_preview_quality_failed",
+                        _printable_preview_message(job, "The printable preview failed its quality gate."),
                         409,
                     )
             if not _MODEL_PROVIDER_GATEWAY.model_generation_available():
@@ -4633,6 +9010,141 @@ class Handler(BaseHTTPRequestHandler):
         with _JOBS_LOCK:
             response = _public_job(job)
         self.send_json(200, {"job": response})
+
+    def _retexture(self, reference_job_id: str) -> None:
+        request = self._read_model_json()
+        if set(request) != {"geometry_job_id"}:
+            raise RequestError(
+                "invalid_request",
+                "Retexture requests require only geometry_job_id.",
+                400,
+            )
+        geometry_job_id = request.get("geometry_job_id")
+        if not isinstance(geometry_job_id, str):
+            raise RequestError("invalid_request", "geometry_job_id must be a UUID string.", 400)
+        try:
+            parsed_geometry_id = uuid.UUID(geometry_job_id)
+        except ValueError:
+            raise RequestError("invalid_request", "geometry_job_id must be a UUID string.", 400) from None
+        if str(parsed_geometry_id) != geometry_job_id.lower():
+            raise RequestError("invalid_request", "geometry_job_id must be a canonical UUID string.", 400)
+        geometry_job_id = geometry_job_id.lower()
+
+        reference_job = self._get_job(reference_job_id)
+        geometry_job = self._get_job(geometry_job_id)
+        if geometry_job is None:
+            geometry_job = _adopt_legacy_completed_job(geometry_job_id)
+        if reference_job is None or geometry_job is None:
+            raise RequestError("job_not_found", "The reference or geometry model job was not found.", 404)
+        with _JOBS_LOCK:
+            if reference_job.state not in {"awaiting_confirmation", "ready"}:
+                raise RequestError(
+                    "invalid_job_state",
+                    "The current image reference is not ready for preserved-geometry texturing.",
+                    409,
+                )
+            if geometry_job.state != "ready" or not _file_info(geometry_job.artifact_path)[0]:
+                raise RequestError(
+                    "geometry_not_ready",
+                    "The selected historical model geometry is not ready.",
+                    409,
+                )
+            reference = _model_generation_reference(reference_job)
+            try:
+                _validate_image_file(
+                    reference,
+                    minimum_edge=MIN_MODEL_REFERENCE_EDGE,
+                    require_visual_detail=True,
+                )
+            except ValueError as exc:
+                raise RequestError("invalid_model_reference", str(exc), 409) from None
+            if reference_job.palette and not bool(reference_job.image_metrics.get("palette_quality_ok", True)):
+                raise RequestError(
+                    "printable_preview_quality_failed",
+                    _printable_preview_message(reference_job, "The printable preview failed its quality gate."),
+                    409,
+                )
+            source_attempt = next(
+                (
+                    attempt for attempt in reversed(geometry_job.attempts)
+                    if isinstance(attempt.get("generation_task_id"), str)
+                    and attempt.get("generation_task_id")
+                    and attempt.get("status") in {"accepted", "running"}
+                ),
+                None,
+            )
+            source_task_id = str(source_attempt.get("generation_task_id", "")) if source_attempt else ""
+            if not source_task_id:
+                raise RequestError(
+                    "geometry_source_unavailable",
+                    "The selected historical model has no reusable provider geometry reference.",
+                    409,
+                )
+            if not _MODEL_PROVIDER_GATEWAY.model_generation_available():
+                raise RequestError("feature_unavailable", "Model texturing is not configured.", 503)
+
+        child = _new_job(
+            reference_job.source,
+            reference_job.palette,
+            reference_job.palette_roles,
+            reference_job.style,
+            reference_job.custom_style,
+            reference_job.print_settings,
+        )
+        try:
+            child.user_prompt = reference_job.user_prompt
+            child.prepared_prompt = reference_job.prepared_prompt
+            child.face_limit = geometry_job.face_limit
+            child.generation_profile = geometry_job.generation_profile
+            child.palette_recommendation = json.loads(json.dumps(reference_job.palette_recommendation))
+            child.palette_recommendation_confirmed = reference_job.palette_recommendation_confirmed
+            child.image_metrics = json.loads(json.dumps(reference_job.image_metrics))
+            child.preview_content_type = reference_job.preview_content_type
+            child.input_path = _copy_job_file(reference_job.input_path, child, "input")
+            child.raw_preview_path = _copy_job_file(reference_job.raw_preview_path, child, "style-preview-raw")
+            child.strict_preview_path = _copy_job_file(reference_job.strict_preview_path, child, "four-color-preview")
+            child.preview_path = _copy_job_file(reference_job.preview_path, child, "clean-preview")
+            child.model_reference_path = _copy_job_file(reference, child, "model-reference")
+            child.geometry_reference_path = _copy_job_file(
+                reference_job.geometry_reference_path, child, "geometry-reference"
+            )
+            child.heatmap_path = _copy_job_file(reference_job.heatmap_path, child, "unprintable-heatmap")
+            child.metadata_path = _copy_job_file(reference_job.metadata_path, child, "metadata")
+            child.background_mask_path = _copy_job_file(reference_job.background_mask_path, child, "mask-background")
+            child.subject_mask_path = _copy_job_file(reference_job.subject_mask_path, child, "mask-subject")
+            child.mask_paths = {
+                role: copied
+                for role, path in reference_job.mask_paths.items()
+                if (copied := _copy_job_file(path, child, f"mask-{role}")) is not None
+            }
+            child.state = "queued"
+            child.phase = "texturing"
+            child.message = "Preserved-geometry texture generation queued."
+            child.progress = 20
+            _record_attempt(
+                child,
+                1,
+                provider="tripo",
+                provider_operation="model_texture",
+                provider_request_id=f"{child.id}:texture:1",
+                source_job_id=geometry_job.id,
+                source_task_id=source_task_id,
+                status="creating",
+                error="",
+            )
+            with _JOBS_LOCK:
+                _JOBS[child.id] = child
+                _persist_job(child)
+            authorization = PaidTaskAuthorization.confirmed_texture(f"{child.id}:texture:1")
+            _submit(child, _retexture_job, geometry_job.id, source_task_id, False, authorization)
+        except RequestError:
+            with _JOBS_LOCK:
+                _JOBS.pop(child.id, None)
+            _remove_job_state(child)
+            raise
+        with _JOBS_LOCK:
+            response = _public_job(child)
+        self.send_json(202, {"job": response})
 
     def _stop(self, job_id: str) -> None:
         self._read_model_json()
@@ -4745,7 +9257,10 @@ class Handler(BaseHTTPRequestHandler):
                 "raw-preview": job.raw_preview_path,
                 "strict-preview": job.strict_preview_path,
                 "preview": job.preview_path,
-                "model-reference": job.model_reference_path,
+                # The UI labels this as the actual 3D-service input. Keep that
+                # promise by serving the sculptural geometry reference when the
+                # quality portrait strategy selects it.
+                "model-reference": _geometry_generation_reference(job),
                 "heatmap": job.heatmap_path,
                 "metadata": job.metadata_path,
                 "background-mask": job.background_mask_path,

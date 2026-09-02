@@ -10,6 +10,7 @@ from tools.ai.model_provider_gateway import (
     ModelTaskRequest,
     PaidTaskAuthorization,
     ProviderGatewayError,
+    TextureTaskRequest,
     provider_policy,
 )
 from tools.ai.tripo_client import TripoError
@@ -69,6 +70,8 @@ class ModelTaskGatewayTests(unittest.TestCase):
             "create_text_task": mock.Mock(return_value="text-task"),
             "upload_image": mock.Mock(return_value="image-token"),
             "create_image_task": mock.Mock(return_value="image-task"),
+            "create_multiview_task": mock.Mock(return_value="multiview-task"),
+            "create_texture_task": mock.Mock(return_value="texture-task"),
             "create_conversion": mock.Mock(return_value="conversion-task"),
             "wait_for_task": mock.Mock(return_value={"status": "success"}),
             "download_task_artifact": mock.Mock(return_value=Path("artifact.obj")),
@@ -80,7 +83,7 @@ class ModelTaskGatewayTests(unittest.TestCase):
         gateway, dependencies = self.gateway()
 
         result = gateway.start_or_reuse_model_task(
-            ModelTaskRequest(source="text", prompt="printable radio", face_limit=1000000),
+            ModelTaskRequest(source="text", prompt="printable radio", face_limit=2000000),
             existing_task_id="existing-task",
         )
 
@@ -162,18 +165,18 @@ class ModelTaskGatewayTests(unittest.TestCase):
         authorization = PaidTaskAuthorization.confirmed("job-1:model:1")
 
         result = gateway.start_or_reuse_model_task(
-            ModelTaskRequest(source="text", prompt="printable radio", face_limit=1000000),
+            ModelTaskRequest(source="text", prompt="printable radio", face_limit=2000000),
             authorization=authorization,
         )
 
         self.assertEqual(result.task_id, "text-task")
         self.assertFalse(result.reused)
-        dependencies["create_text_task"].assert_called_once_with("printable radio", 1000000, "quality")
+        dependencies["create_text_task"].assert_called_once_with("printable radio", 2000000, "quality")
         dependencies["upload_image"].assert_not_called()
         dependencies["create_image_task"].assert_not_called()
         with self.assertRaises(ProviderGatewayError) as raised:
             gateway.start_or_reuse_model_task(
-                ModelTaskRequest(source="text", prompt="second task", face_limit=1000000),
+                ModelTaskRequest(source="text", prompt="second task", face_limit=2000000),
                 authorization=authorization,
             )
         self.assertEqual(raised.exception.code, "authorization_consumed")
@@ -201,12 +204,89 @@ class ModelTaskGatewayTests(unittest.TestCase):
         dependencies["create_image_task"].assert_called_once_with("image-token", 300000, "performance")
         dependencies["create_text_task"].assert_not_called()
 
+    def test_multiview_task_uploads_four_named_references_then_creates_one_task(self):
+        tokens = iter(("front-token", "left-token", "back-token", "right-token"))
+        gateway, dependencies = self.gateway(upload_image=mock.Mock(side_effect=tokens))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            references = {}
+            for view in ("front", "left", "back", "right"):
+                references[view] = root / f"{view}.png"
+                references[view].write_bytes(b"preview")
+
+            result = gateway.start_or_reuse_model_task(
+                ModelTaskRequest(
+                    source="multiview",
+                    image_paths=references,
+                    face_limit=2000000,
+                    generation_profile="quality",
+                ),
+                authorization=PaidTaskAuthorization.confirmed("job-multiview:model:1"),
+            )
+
+        self.assertEqual(result.task_id, "multiview-task")
+        self.assertEqual(
+            dependencies["upload_image"].call_args_list,
+            [mock.call(references[view]) for view in ("front", "left", "back", "right")],
+        )
+        dependencies["create_multiview_task"].assert_called_once_with(
+            {
+                "front": "front-token", "left": "left-token",
+                "back": "back-token", "right": "right-token",
+            },
+            2000000,
+            "quality",
+        )
+        dependencies["create_image_task"].assert_not_called()
+
+    def test_texture_task_preserves_source_geometry_and_requires_scoped_authorization(self):
+        gateway, dependencies = self.gateway()
+        with tempfile.TemporaryDirectory() as directory:
+            reference = Path(directory) / "portrait.png"
+            reference.write_bytes(b"preview")
+
+            result = gateway.start_or_reuse_texture_task(
+                TextureTaskRequest(
+                    source_task_id="source-geometry-task",
+                    image_path=reference,
+                    texture_alignment="geometry",
+                    texture_quality="detailed",
+                ),
+                authorization=PaidTaskAuthorization.confirmed_texture("job-3:texture:1"),
+            )
+
+        self.assertEqual(result.task_id, "texture-task")
+        self.assertFalse(result.reused)
+        dependencies["upload_image"].assert_called_once_with(reference)
+        dependencies["create_texture_task"].assert_called_once_with(
+            "source-geometry-task",
+            "image-token",
+            texture_alignment="geometry",
+            texture_quality="detailed",
+        )
+        dependencies["create_image_task"].assert_not_called()
+
+    def test_texture_task_rejects_model_generation_authorization_before_upload(self):
+        gateway, dependencies = self.gateway()
+        with tempfile.TemporaryDirectory() as directory:
+            reference = Path(directory) / "portrait.png"
+            reference.write_bytes(b"preview")
+            with self.assertRaises(ProviderGatewayError) as raised:
+                gateway.start_or_reuse_texture_task(
+                    TextureTaskRequest("source-task", reference),
+                    authorization=PaidTaskAuthorization.confirmed("job-4:model:1"),
+                )
+
+        self.assertEqual(raised.exception.code, "authorization_scope_mismatch")
+        dependencies["upload_image"].assert_not_called()
+        dependencies["create_texture_task"].assert_not_called()
+
     def test_missing_authorization_performs_no_provider_call(self):
         gateway, dependencies = self.gateway()
 
         with self.assertRaises(ProviderGatewayError) as raised:
             gateway.start_or_reuse_model_task(
-                ModelTaskRequest(source="text", prompt="printable radio", face_limit=1000000)
+                ModelTaskRequest(source="text", prompt="printable radio", face_limit=2000000)
             )
 
         self.assertEqual(raised.exception.code, "authorization_required")
@@ -255,7 +335,7 @@ class ModelTaskGatewayTests(unittest.TestCase):
 
         with self.assertRaises(ProviderGatewayError) as raised:
             gateway.start_or_reuse_model_task(
-                ModelTaskRequest(source="text", prompt="printable radio", face_limit=1000000),
+                ModelTaskRequest(source="text", prompt="printable radio", face_limit=2000000),
                 authorization=PaidTaskAuthorization.confirmed("job-3:model:1"),
             )
 
@@ -263,7 +343,7 @@ class ModelTaskGatewayTests(unittest.TestCase):
         self.assertEqual(raised.exception.category, "availability")
         self.assertTrue(raised.exception.retryable)
         self.assertTrue(raised.exception.ambiguous)
-        create_text.assert_called_once_with("printable radio", 1000000, "quality")
+        create_text.assert_called_once_with("printable radio", 2000000, "quality")
         dependencies["upload_image"].assert_not_called()
         dependencies["create_image_task"].assert_not_called()
 

@@ -61,6 +61,7 @@ private:
     void on_palette_role_changed(size_t role_index);
     void on_preprocess(wxCommandEvent& event);
     void on_generate(wxCommandEvent& event);
+    void on_retexture_from_library(const std::string& geometry_job_id, const wxString& title);
     void on_stop(wxCommandEvent& event);
     void on_import(wxCommandEvent& event);
     void on_recheck_model(wxCommandEvent& event);
@@ -73,6 +74,7 @@ private:
 
     void handle_status(AIModelGenerationClient::JobStatus status, uint64_t sequence);
     void handle_error(const std::string& error, uint64_t sequence);
+    void handle_poll_error(const std::string& error, uint64_t sequence);
     void schedule_poll();
     void restore_latest_job();
     void restore_job(AIModelGenerationClient::JobStatus status, uint64_t sequence);
@@ -88,6 +90,9 @@ private:
     void refresh_palette_roles(const std::vector<std::string>& palette);
     void refresh_palette_recommendation();
     void replace_recommended_color(size_t index);
+    void request_style_recommendation();
+    void select_style(const std::string& style, bool user_selected);
+    void refresh_style_recommendation();
     bool use_printable_colors() const;
     std::string current_style() const;
     std::string current_custom_style() const;
@@ -127,11 +132,15 @@ private:
     void save_library_entry(size_t artifact_size, size_t triangle_count, double width, double depth,
                             double height, size_t color_count, double load_seconds);
     void load_library_entry(const boost::filesystem::path& model_path,
-                            const std::vector<std::string>& palette,
+                             const boost::filesystem::path& reference_image_path,
+                             const boost::filesystem::path& ai_image_path,
+                             const std::vector<std::string>& palette,
                             const AIModelGenerationClient::PaletteRoles& palette_roles,
                             bool use_printable_colors,
                             const std::string& job_id, const wxString& title);
     void delete_library_entry(const GeneratedModelEntry& entry);
+    void update_library_provider_tasks(const std::string& job_id,
+                                       const AIModelGenerationClient::JobStatus& status);
     void update_library_import_status(const std::string& job_id, bool auto_slice_requested);
     void record_library_print_feedback(const std::string& job_id, const std::string& feedback);
     void refresh_library();
@@ -142,9 +151,14 @@ private:
         wxString details;
         boost::filesystem::path model_path;
         boost::filesystem::path preview_path;
+        boost::filesystem::path reference_image_path;
+        boost::filesystem::path ai_image_path;
         std::vector<std::string> palette;
         AIModelGenerationClient::PaletteRoles palette_roles;
         std::string job_id;
+        std::string provider_name;
+        std::string provider_task_id;
+        std::string provider_conversion_task_id;
         std::time_t generated_at { 0 };
         std::time_t imported_at { 0 };
         std::time_t slice_requested_at { 0 };
@@ -162,6 +176,11 @@ private:
     wxStaticText*   m_prompt_label { nullptr };
     wxTextCtrl*     m_prompt { nullptr };
     wxChoice*       m_style { nullptr };
+    wxPanel*        m_style_recommendation_panel { nullptr };
+    wxStaticText*   m_style_recommendation_title { nullptr };
+    wxStaticText*   m_style_recommendation_reason { nullptr };
+    wxStaticText*   m_style_recommendation_alternative_label { nullptr };
+    std::array<wxButton*, 2> m_style_recommendation_alternatives { nullptr, nullptr };
     wxPanel*        m_custom_style_panel { nullptr };
     wxTextCtrl*     m_custom_style { nullptr };
     wxChoice*       m_quality { nullptr };
@@ -221,6 +240,7 @@ private:
     ModelPreview3D* m_model_preview { nullptr };
     wxStaticText*   m_model_preview_message { nullptr };
     wxStaticText*   m_model_stats { nullptr };
+    wxButton*       m_front_model_view { nullptr };
     wxButton*       m_reset_model_view { nullptr };
     wxPanel*        m_local_recolor_panel { nullptr };
     wxToggleButton* m_local_recolor_toggle { nullptr };
@@ -274,10 +294,13 @@ private:
     boost::filesystem::path m_selected_image_path;
     boost::filesystem::path m_job_image_path;
     boost::filesystem::path m_preview_path;
+    boost::filesystem::path m_reference_image_path;
+    boost::filesystem::path m_raw_preview_path;
     boost::filesystem::path m_artifact_path;
     boost::filesystem::path m_displayed_model_path;
     wxImage m_reference_image;
     wxImage m_raw_preview_image;
+    wxImage m_model_reference_image;
     wxImage m_strict_preview_image;
     wxImage m_clean_preview_image;
     wxImage m_heatmap_image;
@@ -297,19 +320,25 @@ private:
     std::vector<std::string> m_displayed_model_palette;
     AIModelGenerationClient::PaletteRoles m_displayed_model_palette_roles;
     AIModelGenerationClient::PaletteRecommendation m_palette_recommendation;
+    AIModelGenerationClient::StyleRecommendation m_style_recommendation;
     std::vector<std::string> m_user_adjusted_palette_colors;
     std::string m_palette_recommendation_job_id;
     wxString m_job_prompt;
     std::string m_job_style;
     std::string m_job_custom_style;
     AIModelGenerationClient::ImagePrintSettings m_job_print_settings;
-    int m_job_face_limit { 300000 };
+    int m_job_face_limit { 2000000 };
     std::string m_job_generation_profile { "quality" };
     std::string m_job_id;
+    std::string m_job_phase;
+    std::string m_job_provider_name;
+    std::string m_job_provider_task_id;
+    std::string m_job_provider_conversion_task_id;
     std::string m_displayed_model_job_id;
     std::string m_artifact_format;
     std::string m_artifact_color_encoding;
     uint64_t m_sequence { 0 };
+    uint64_t m_style_recommendation_sequence { 0 };
     bool m_busy { false };
     bool m_awaiting_confirmation { false };
     bool m_awaiting_palette_confirmation { false };
@@ -324,20 +353,26 @@ private:
     bool m_shutdown { false };
     bool m_updating_preview { false };
     bool m_style_preview_ready { false };
+    bool m_style_recommendation_loading { false };
+    bool m_style_recommendation_available { false };
+    bool m_style_user_selected { false };
     bool m_job_preview_expected { false };
     bool m_palette_is_custom { false };
     bool m_advanced_options_expanded { false };
     bool m_job_use_printable_colors { false };
     bool m_raw_preview_available { false };
+    bool m_model_reference_available { false };
     bool m_strict_preview_available { false };
     bool m_heatmap_available { false };
     bool m_palette_quality_ok { true };
+    bool m_material_fragmentation_ok { true };
     bool m_model_input_eligible { true };
     std::string m_model_input_primary_blocker;
     bool m_preview_metrics_available { false };
     bool m_quality_check_busy { false };
     bool m_visual_check_busy { false };
     bool m_journey_model_submitted { false };
+    int m_poll_connection_failures { 0 };
     int m_meaningful_palette_count { 0 };
     int m_meaningful_subject_color_count { 0 };
     double m_preview_zoom_factor { 1.0 };

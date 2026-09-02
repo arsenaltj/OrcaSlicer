@@ -10,6 +10,8 @@ try:
         TripoError,
         create_conversion,
         create_image_task,
+        create_multiview_task,
+        create_texture_task,
         create_text_task,
         download_task_artifact,
         upload_image,
@@ -20,6 +22,8 @@ except ImportError:
         TripoError,
         create_conversion,
         create_image_task,
+        create_multiview_task,
+        create_texture_task,
         create_text_task,
         download_task_artifact,
         upload_image,
@@ -27,8 +31,8 @@ except ImportError:
     )
 
 
-_MODEL_FACE_LIMITS = (100000, 300000, 500000, 1000000)
-_GENERATION_PROFILE_FACE_LIMITS = {"quality": 1000000, "performance": 300000}
+_MODEL_FACE_LIMITS = (100000, 300000, 500000, 1000000, 2000000)
+_GENERATION_PROFILE_FACE_LIMITS = {"quality": 2000000, "performance": 300000}
 
 
 @dataclass(frozen=True)
@@ -48,8 +52,17 @@ class ModelTaskRequest:
     source: str
     prompt: str = ""
     image_path: Path | None = None
-    face_limit: int = 1000000
+    image_paths: Mapping[str, Path] | None = None
+    face_limit: int = 2000000
     generation_profile: str = "quality"
+
+
+@dataclass(frozen=True)
+class TextureTaskRequest:
+    source_task_id: str
+    image_path: Path
+    texture_alignment: str = "geometry"
+    texture_quality: str = "detailed"
 
 
 @dataclass(frozen=True)
@@ -97,6 +110,17 @@ class PaidTaskAuthorization:
                 category="authorization",
             )
         return cls(normalized, "tripo", "model_generation")
+
+    @classmethod
+    def confirmed_texture(cls, request_id: str) -> PaidTaskAuthorization:
+        normalized = request_id.strip() if isinstance(request_id, str) else ""
+        if not normalized:
+            raise ProviderGatewayError(
+                "A paid task authorization requires a request ID.",
+                code="invalid_authorization",
+                category="authorization",
+            )
+        return cls(normalized, "tripo", "model_texture")
 
     @property
     def consumed(self) -> bool:
@@ -170,6 +194,8 @@ class ModelProviderGateway:
         create_text_task: Callable[[str, int, str], str] = create_text_task,
         upload_image: Callable[[str | os.PathLike[str]], str] = upload_image,
         create_image_task: Callable[[str, int, str], str] = create_image_task,
+        create_multiview_task: Callable[[Mapping[str, str], int, str], str] = create_multiview_task,
+        create_texture_task: Callable[..., str] = create_texture_task,
         create_conversion: Callable[[str, str], str] = create_conversion,
         wait_for_task: Callable[..., dict[str, Any]] = wait_for_task,
         download_task_artifact: Callable[[Mapping[str, Any], str | os.PathLike[str], int], Path] =
@@ -178,6 +204,8 @@ class ModelProviderGateway:
         self._create_text_task = create_text_task
         self._upload_image = upload_image
         self._create_image_task = create_image_task
+        self._create_multiview_task = create_multiview_task
+        self._create_texture_task = create_texture_task
         self._create_conversion = create_conversion
         self._wait_for_task = wait_for_task
         self._download_task_artifact = download_task_artifact
@@ -207,7 +235,7 @@ class ModelProviderGateway:
         source = request.source.strip().lower() if isinstance(request.source, str) else ""
         if request.face_limit not in _MODEL_FACE_LIMITS:
             raise ProviderGatewayError(
-                "The model face target must be 100000, 300000, 500000, or 1000000 triangles.",
+                "The model face target must be 100000, 300000, 500000, 1000000, or 2000000 triangles.",
                 code="invalid_model_request",
                 category="validation",
                 provider="tripo",
@@ -231,6 +259,7 @@ class ModelProviderGateway:
             )
         prompt = request.prompt.strip() if isinstance(request.prompt, str) else ""
         image_path = Path(request.image_path) if request.image_path is not None else None
+        image_paths = dict(request.image_paths) if isinstance(request.image_paths, Mapping) else {}
         if source == "text" and not prompt:
             raise ProviderGatewayError(
                 "A text prompt is required.",
@@ -247,7 +276,18 @@ class ModelProviderGateway:
                 provider="tripo",
                 operation="model_generation",
             )
-        if source not in {"text", "image"}:
+        if source == "multiview":
+            if set(image_paths) != {"front", "left", "back", "right"} or any(
+                not isinstance(path, Path) or not path.is_file() for path in image_paths.values()
+            ):
+                raise ProviderGatewayError(
+                    "Four readable front, left, back, and right model references are required.",
+                    code="invalid_model_request",
+                    category="validation",
+                    provider="tripo",
+                    operation="model_generation",
+                )
+        if source not in {"text", "image", "multiview"}:
             raise ProviderGatewayError(
                 "The model request source is unsupported.",
                 code="invalid_model_request",
@@ -267,10 +307,18 @@ class ModelProviderGateway:
         try:
             if source == "text":
                 task_id = self._create_text_task(prompt, request.face_limit, request.generation_profile)
-            else:
+            elif source == "image":
                 assert image_path is not None
                 token = self._upload_image(image_path)
                 task_id = self._create_image_task(token, request.face_limit, request.generation_profile)
+            else:
+                tokens = {
+                    view: self._upload_image(image_paths[view])
+                    for view in ("front", "left", "back", "right")
+                }
+                task_id = self._create_multiview_task(
+                    tokens, request.face_limit, request.generation_profile
+                )
         except TripoError as error:
             raise _classify_tripo_error(error, "model_generation", creation_ambiguous=True) from None
         if not isinstance(task_id, str) or not task_id.strip():
@@ -280,6 +328,82 @@ class ModelProviderGateway:
                 category="validation",
                 provider="tripo",
                 operation="model_generation",
+                ambiguous=True,
+            )
+        return ProviderTaskRef(provider="tripo", task_id=task_id.strip(), reused=False)
+
+    def start_or_reuse_texture_task(
+        self,
+        request: TextureTaskRequest,
+        *,
+        existing_task_id: str = "",
+        authorization: PaidTaskAuthorization | None = None,
+    ) -> ProviderTaskRef:
+        existing = existing_task_id.strip() if isinstance(existing_task_id, str) else ""
+        if existing:
+            return ProviderTaskRef(provider="tripo", task_id=existing, reused=True)
+
+        source_task_id = request.source_task_id.strip() if isinstance(request.source_task_id, str) else ""
+        image_path = Path(request.image_path)
+        if not source_task_id or any(character not in "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_"
+                                     for character in source_task_id):
+            raise ProviderGatewayError(
+                "A valid source geometry task is required for texturing.",
+                code="invalid_texture_request",
+                category="validation",
+                provider="tripo",
+                operation="model_texture",
+            )
+        if not image_path.is_file():
+            raise ProviderGatewayError(
+                "A readable texture reference image is required.",
+                code="invalid_texture_request",
+                category="validation",
+                provider="tripo",
+                operation="model_texture",
+            )
+        if request.texture_alignment not in {"original_image", "geometry"}:
+            raise ProviderGatewayError(
+                "The texture alignment must be original_image or geometry.",
+                code="invalid_texture_request",
+                category="validation",
+                provider="tripo",
+                operation="model_texture",
+            )
+        if request.texture_quality not in {"standard", "detailed", "extreme"}:
+            raise ProviderGatewayError(
+                "The texture quality must be standard, detailed, or extreme.",
+                code="invalid_texture_request",
+                category="validation",
+                provider="tripo",
+                operation="model_texture",
+            )
+        if authorization is None:
+            raise ProviderGatewayError(
+                "Explicit confirmation is required before creating a paid texture task.",
+                code="authorization_required",
+                category="authorization",
+                provider="tripo",
+                operation="model_texture",
+            )
+        authorization.consume("tripo", "model_texture")
+        try:
+            token = self._upload_image(image_path)
+            task_id = self._create_texture_task(
+                source_task_id,
+                token,
+                texture_alignment=request.texture_alignment,
+                texture_quality=request.texture_quality,
+            )
+        except TripoError as error:
+            raise _classify_tripo_error(error, "model_texture", creation_ambiguous=True) from None
+        if not isinstance(task_id, str) or not task_id.strip():
+            raise ProviderGatewayError(
+                "The model provider returned an invalid texture task reference.",
+                code="invalid_provider_result",
+                category="validation",
+                provider="tripo",
+                operation="model_texture",
                 ambiguous=True,
             )
         return ProviderTaskRef(provider="tripo", task_id=task_id.strip(), reused=False)

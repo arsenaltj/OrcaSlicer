@@ -22,9 +22,19 @@ class PaidMultiviewValidationTests(unittest.TestCase):
             "prompt": "one robot",
             "style": "q_cartoon",
             "palette": ["#FF0000", "#00FF00", "#0000FF", "#FFFFFF"],
+            "palette_roles": {
+                "primary": "#FFFFFF", "structure": "#0000FF",
+                "light": "#FF0000", "accent": "#00FF00",
+            },
             "artifacts": {"model_reference": str(reference)},
         }), encoding="utf-8")
         return case
+
+    def test_baseline_preserves_validated_palette_roles(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            baseline = runner.load_baseline(self._baseline(Path(directory)))
+            self.assertEqual(baseline["palette_roles"]["primary"], "#FFFFFF")
+            self.assertEqual(baseline["palette_roles"]["light"], "#FF0000")
 
     def test_baseline_reference_must_stay_inside_case(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -53,6 +63,12 @@ class PaidMultiviewValidationTests(unittest.TestCase):
                 Image.new("RGB", (8, 8)).save(path)
                 views[view] = str(path)
             state["views"] = views
+            generation_views = {}
+            for view in ("front", "left", "back", "right"):
+                path = output / f"{view}-generation.png"
+                Image.new("RGB", (8, 8), "red").save(path)
+                generation_views[view] = str(path)
+            state["generation_views"] = generation_views
             runner._write_json(output / "multiview-state.json", state)
 
             def creator(tokens, face_limit):
@@ -70,6 +86,10 @@ class PaidMultiviewValidationTests(unittest.TestCase):
             self.assertEqual(saved["generation_task_id"], "paid-multiview-task")
             self.assertEqual(persisted["generation_task_id"], "paid-multiview-task")
             self.assertTrue((task_directory / "input-front.png").is_file())
+            self.assertEqual(
+                Image.open(task_directory / "input-front.png").convert("RGB").getpixel((0, 0)),
+                (255, 0, 0),
+            )
 
     def test_generation_requires_explicit_confirmation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

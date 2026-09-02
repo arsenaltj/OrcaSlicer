@@ -111,11 +111,24 @@ def load_baseline(case_directory: Path | str) -> dict[str, Any]:
         raise MultiviewValidationError(str(exc)) from None
     if len(palette) != 4:
         raise MultiviewValidationError("The baseline case must use exactly four printable colors.")
+    palette_roles_value = state.get("palette_roles")
+    palette_roles: dict[str, str] = {}
+    if palette_roles_value is not None:
+        if not isinstance(palette_roles_value, dict):
+            raise MultiviewValidationError("The baseline palette roles must be an object.")
+        for role, color in palette_roles_value.items():
+            if not isinstance(role, str) or not isinstance(color, str):
+                raise MultiviewValidationError("The baseline palette roles must map strings to colors.")
+            normalized = normalize_palette((color,))[0]
+            if normalized not in palette:
+                raise MultiviewValidationError("Every baseline palette role must reference a palette color.")
+            palette_roles[role] = normalized
     return {
         "case_id": str(state.get("case_id", directory.name)),
         "prompt": prompt.strip(),
         "style": str(state.get("style", "")),
         "palette": palette,
+        "palette_roles": palette_roles,
         "reference": reference,
         "reference_sha256": _sha256(reference),
     }
@@ -126,6 +139,7 @@ def _fingerprint(baseline: Mapping[str, Any], face_limit: int) -> str:
         "case_id": baseline["case_id"],
         "prompt": baseline["prompt"],
         "palette": list(baseline["palette"]),
+        "palette_roles": dict(baseline.get("palette_roles", {})),
         "reference_sha256": baseline["reference_sha256"],
         "face_limit": face_limit,
     }
@@ -147,6 +161,7 @@ def load_or_create_state(output_root: Path, baseline: Mapping[str, Any], face_li
         "case_id": baseline["case_id"],
         "prompt": baseline["prompt"],
         "palette": list(baseline["palette"]),
+        "palette_roles": dict(baseline.get("palette_roles", {})),
         "reference": str(baseline["reference"]),
         "reference_sha256": baseline["reference_sha256"],
         "face_limit": face_limit,
@@ -231,9 +246,18 @@ def prepare_multiview(
 
     crops = split_multiview_sheet(sheet, output / "crops")
     settings = PrintSettings()
-    references, metrics = process_multiview_crops(crops, output / "views", baseline["palette"], settings)
+    references, generation_references, metrics = process_multiview_crops(
+        crops,
+        output / "views",
+        baseline["palette"],
+        settings,
+        palette_roles=baseline.get("palette_roles"),
+    )
     local_ok = all(bool(metrics[view].get("palette_quality_ok", False)) for view in VIEW_ORDER)
     state["views"] = {view: str(references[view].resolve()) for view in VIEW_ORDER}
+    state["generation_views"] = {
+        view: str(generation_references[view].resolve()) for view in VIEW_ORDER
+    }
     state["view_metrics"] = metrics
     if not local_ok:
         state["prepare_status"] = "review"
@@ -271,6 +295,7 @@ def prepare_multiview(
         output,
         sheet=sheet,
         references=references,
+        generation_references=generation_references,
         metrics=metrics,
         review=review,
         palette=baseline["palette"],
@@ -297,7 +322,7 @@ def create_or_resume_generation(
         return state, task_directory
     if not confirm_paid_call:
         raise MultiviewValidationError("--confirm-tripo-call is required to create one paid multiview 3D task.")
-    views = state.get("views")
+    views = state.get("generation_views") or state.get("views")
     if not isinstance(views, dict) or set(views) != set(VIEW_ORDER):
         raise MultiviewValidationError("Prepared multiview references are unavailable.")
     tokens = {view: uploader(Path(views[view])) for view in VIEW_ORDER}

@@ -32,9 +32,11 @@
 #include <wx/button.h>
 #include <wx/checkbox.h>
 #include <wx/choice.h>
+#include <wx/clipbrd.h>
 #include <wx/collpane.h>
 #include <wx/colordlg.h>
 #include <wx/clrpicker.h>
+#include <wx/dataobj.h>
 #include <wx/dcbuffer.h>
 #include <wx/dcclient.h>
 #include <wx/datetime.h>
@@ -46,6 +48,7 @@
 #include <wx/scrolwin.h>
 #include <wx/sizer.h>
 #include <wx/spinctrl.h>
+#include <wx/stdpaths.h>
 #include <wx/statbmp.h>
 #include <wx/statbox.h>
 #include <wx/stattext.h>
@@ -64,6 +67,7 @@
 #include <map>
 #include <memory>
 #include <regex>
+#include <set>
 #include <sstream>
 #include <utility>
 
@@ -130,9 +134,10 @@ void ModelGenerationPanel::set_service_availability(bool available, const std::s
             restore_latest_job();
         }
     } else if (!m_busy) {
-        m_status->SetLabel(message.empty() ? _L("请配置并启动本地 AI 服务后再生成 3D 模型。")
-                                           : _L("本地 AI 服务不可用：") + wxString::FromUTF8(message));
-        m_result_summary->SetLabel(_L("3D 生成功能当前不可用。"));
+        if (!message.empty())
+            BOOST_LOG_TRIVIAL(warning) << "AI model generation service unavailable: " << message;
+        m_status->SetLabel(_L("本地生成服务未启动。点击“重新检测服务”即可恢复。"));
+        m_result_summary->SetLabel(_L("服务恢复后会自动载入最近任务，当前本地模型不会丢失。"));
     }
     refresh_controls();
 }
@@ -170,13 +175,21 @@ void ModelGenerationPanel::restore_job(AIModelGenerationClient::JobStatus status
     m_job_palette_roles = status.palette_roles.empty() ? automatic_palette_roles(status.palette) : status.palette_roles;
     m_palette_roles = m_job_palette_roles;
     m_palette_roles_source = status.palette;
+    if (status.palette_recommendation.confirmed && !status.palette.empty()) {
+        m_palette_recommendation_confirmed = true;
+        m_custom_palette = status.palette;
+        if (m_palette_source != nullptr)
+            m_palette_source->SetSelection(2);
+    }
     m_job_use_printable_colors = !status.palette.empty() || status.palette_recommendation.available;
     m_job_preview_expected = status.source == "image" || status.preview_ready || status.raw_preview_ready ||
+                             status.model_reference_ready ||
                              !status.palette.empty();
     m_palette = status.palette;
     m_job_style = status.style;
     m_job_custom_style = status.custom_style;
     m_palette_quality_ok = status.palette_quality_ok;
+    m_material_fragmentation_ok = status.material_fragmentation_ok;
     m_model_input_eligible = status.model_input_eligible;
     m_model_input_primary_blocker = status.model_input_blockers.empty() ? std::string() : status.model_input_blockers.front();
     m_meaningful_palette_count = status.meaningful_palette_count;
@@ -190,12 +203,8 @@ void ModelGenerationPanel::restore_job(AIModelGenerationClient::JobStatus status
     if (m_use_printable_colors != nullptr)
         m_use_printable_colors->SetValue(m_job_use_printable_colors);
     if (m_style != nullptr) {
-        const int selection = status.style == "realistic" || status.style == "low_poly" ||
-                                      status.style == "enamel_inlay" ? 1 :
-                              status.style == "cartoon" || status.style == "q_cartoon" ||
-                                      status.style == "cel_shaded" ? 2 :
-                              status.style == "custom" ? 3 : 0;
-        m_style->SetSelection(selection);
+        m_style->SetSelection(style_selection(status.style));
+        m_style_user_selected = true;
     }
     if (m_custom_style != nullptr)
         m_custom_style->SetValue(wxString::FromUTF8(status.custom_style));
@@ -218,8 +227,22 @@ void ModelGenerationPanel::restore_job(AIModelGenerationClient::JobStatus status
         m_selected_image_path = m_job_image_path;
         m_restoring_input = true;
     }
+    // Widget setters may clamp or normalize restored values (notably spin controls).
+    // Rebase the comparison snapshot on the values the user actually sees so opening
+    // a completed preview cannot immediately mark that same preview as stale.
+    m_job_prompt = m_prompt->GetValue();
+    m_job_style = current_style();
+    m_job_custom_style = current_custom_style();
+    m_job_use_printable_colors = use_printable_colors();
+    m_job_palette = current_palette();
+    m_job_print_settings = current_print_settings();
     m_status->SetLabel(_L("正在恢复上次模型生成任务..."));
     handle_status(std::move(status), sequence);
+    // The persisted job owns the confirmed semantic material mapping. Widget
+    // refreshes may infer generic light/chroma defaults while restore is still
+    // asynchronous; never let that overwrite skin-versus-garment ownership.
+    m_palette_roles = m_job_palette_roles;
+    m_palette_roles_source = m_job_palette;
     if (m_restoring_input)
         download_restored_input(sequence);
 }
@@ -238,9 +261,22 @@ void ModelGenerationPanel::download_restored_input(uint64_t sequence)
                 if (!weak || weak->m_shutdown || sequence != weak->m_sequence) return;
                 weak->m_selected_image_path = restored;
                 weak->m_job_image_path = restored;
+                weak->m_reference_image_path = restored;
                 weak->m_restoring_input = false;
                 weak->m_selected_image->SetLabel(_L("已恢复上次参考图"));
                 weak->show_selected_image_preview();
+                // The restore is now fully materialized. Capture the effective UI
+                // values once more after loading the image so asynchronous restore
+                // order cannot turn the just-restored job into a stale job.
+                weak->m_job_prompt = weak->m_prompt->GetValue();
+                weak->m_job_style = weak->current_style();
+                weak->m_job_custom_style = weak->current_custom_style();
+                weak->m_job_use_printable_colors = weak->use_printable_colors();
+                weak->m_job_palette = weak->current_palette();
+                weak->m_palette_roles = weak->m_job_palette_roles;
+                weak->m_palette_roles_source = weak->m_job_palette;
+                weak->m_job_print_settings = weak->current_print_settings();
+                weak->request_style_recommendation();
                 if (!weak->m_awaiting_palette_confirmation && weak->m_preview_path.empty() && !weak->m_style_preview_ready)
                     weak->download_preview(sequence);
                 weak->refresh_controls();
@@ -324,6 +360,7 @@ wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
 
     m_workflow_steps = new wxStaticText(journey, wxID_ANY, _L("输入文字、图片，或同时使用两者"));
     m_workflow_steps->SetForegroundColour(wxColour(91, 104, 107));
+    m_workflow_steps->Wrap(FromDIP(330));
     journey_sizer->Add(m_workflow_steps, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(8));
     auto* progress_header = new wxBoxSizer(wxHORIZONTAL);
     m_workflow_phase = new wxStaticText(journey, wxID_ANY, _L("检查本地服务"));
@@ -366,9 +403,12 @@ wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
     auto* style_row = new wxBoxSizer(wxHORIZONTAL);
     auto* style_label = new wxStaticText(scroll, wxID_ANY, _L("风格"));
     wxArrayString styles;
-    styles.Add(_L("单色雕塑（最大程度保留原图）"));
-    styles.Add(_L("多色写实（最大程度保留原图）"));
-    styles.Add(_L("多色卡通（人像推荐）"));
+    styles.Add(_L("单色雕塑"));
+    styles.Add(_L("写实微缩"));
+    styles.Add(_L("手办"));
+    styles.Add(_L("低多边形"));
+    styles.Add(_L("浮雕"));
+    styles.Add(_L("微缩场景"));
     styles.Add(_L("自定义风格"));
     m_style = new wxChoice(scroll, wxID_ANY, wxDefaultPosition, wxDefaultSize, styles);
     m_style->SetSelection(0);
@@ -402,6 +442,35 @@ wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
     image_row->Add(m_clear_image, 0, wxRIGHT, FromDIP(8));
     image_row->Add(m_selected_image, 1, wxALIGN_CENTER_VERTICAL);
     sizer->Add(image_row, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
+
+    m_style_recommendation_panel = new wxPanel(scroll, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_SIMPLE);
+    m_style_recommendation_panel->SetBackgroundColour(wxColour(239, 248, 246));
+    auto* style_recommendation_sizer = new wxBoxSizer(wxVERTICAL);
+    m_style_recommendation_title = new wxStaticText(m_style_recommendation_panel, wxID_ANY, _L("正在推荐风格..."));
+    wxFont recommendation_font = m_style_recommendation_title->GetFont();
+    recommendation_font.SetWeight(wxFONTWEIGHT_BOLD);
+    m_style_recommendation_title->SetFont(recommendation_font);
+    m_style_recommendation_title->SetForegroundColour(wxColour(31, 97, 90));
+    style_recommendation_sizer->Add(m_style_recommendation_title, 0, wxEXPAND | wxALL, FromDIP(8));
+    m_style_recommendation_reason = new wxStaticText(m_style_recommendation_panel, wxID_ANY, wxEmptyString);
+    m_style_recommendation_reason->SetForegroundColour(wxColour(75, 91, 94));
+    m_style_recommendation_reason->Wrap(FromDIP(290));
+    style_recommendation_sizer->Add(m_style_recommendation_reason, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(8));
+    auto* style_alternatives = new wxBoxSizer(wxHORIZONTAL);
+    m_style_recommendation_alternative_label = new wxStaticText(
+        m_style_recommendation_panel, wxID_ANY, _L("也可以："));
+    style_alternatives->Add(m_style_recommendation_alternative_label, 0,
+                            wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(6));
+    for (wxButton*& button : m_style_recommendation_alternatives) {
+        button = new wxButton(m_style_recommendation_panel, wxID_ANY, wxEmptyString,
+                              wxDefaultPosition, wxDefaultSize, wxBU_EXACTFIT);
+        style_alternatives->Add(button, 0, wxRIGHT, FromDIP(6));
+    }
+    style_recommendation_sizer->Add(style_alternatives, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(8));
+    m_style_recommendation_panel->SetSizer(style_recommendation_sizer);
+    m_style_recommendation_panel->Hide();
+    sizer->AddSpacer(FromDIP(6));
+    sizer->Add(m_style_recommendation_panel, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
 
     m_upload_notice = new wxStaticText(scroll, wxID_ANY, _L("仅会将选中的图片和文字描述发送给 AI。"));
     m_upload_notice->Wrap(FromDIP(310));
@@ -581,7 +650,7 @@ wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
     m_quality = new wxChoice(m_model_settings_panel, wxID_ANY, wxDefaultPosition, wxDefaultSize, quality_levels);
     m_quality->SetSelection(0);
     m_quality->SetToolTip(
-        _L("高质量使用 Tripo Ultra 几何和高清纹理；高性能保留纹理与 PBR，并优先缩短生成和处理时间。"));
+        _L("高质量：超详细几何、200 万面目标和最高精度纹理；写实人像会自动改为头肩胸像，用单色雕塑参考保住脸型和五官，并省略交叉手臂及下半身。高性能：30 万面目标，优先保留原构图并缩短生成与处理时间。"));
     quality_row->Add(quality_label, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(10));
     quality_row->Add(m_quality, 1, wxALIGN_CENTER_VERTICAL);
     model_settings_sizer->Add(quality_row, 0, wxEXPAND);
@@ -631,6 +700,8 @@ wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
     auto* status_row = new wxBoxSizer(wxHORIZONTAL);
     m_status = new wxStaticText(action_panel, wxID_ANY, _L("空闲"));
     m_status->Wrap(FromDIP(310));
+    m_workflow_steps->Wrap(FromDIP(330));
+    m_workflow_steps->InvalidateBestSize();
     m_status->SetForegroundColour(wxColour(60, 75, 78));
     auto* open_diagnostics = new wxButton(action_panel, wxID_ANY, _L("打开诊断日志"));
     open_diagnostics->SetToolTip(_L("打开 AI 后台日志目录；反馈问题时请发送 orca-ai-sidecar.log 和诊断 ID"));
@@ -663,14 +734,14 @@ wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
 
     m_prompt->Bind(wxEVT_TEXT, [this](wxCommandEvent&) { refresh_controls(); });
     m_style->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) {
-        const bool multicolor = current_style() != "sculpture";
-        if (m_use_printable_colors != nullptr)
-            m_use_printable_colors->SetValue(multicolor);
-        if (m_import_color_mode != nullptr)
-            m_import_color_mode->SetSelection(multicolor ? 0 : 2);
-        refresh_palette();
-        refresh_controls();
+        select_style(current_style(), true);
     });
+    for (size_t index = 0; index < m_style_recommendation_alternatives.size(); ++index) {
+        m_style_recommendation_alternatives[index]->Bind(wxEVT_BUTTON, [this, index](wxCommandEvent&) {
+            if (index < m_style_recommendation.alternatives.size())
+                select_style(m_style_recommendation.alternatives[index], true);
+        });
+    }
     m_custom_style->Bind(wxEVT_TEXT, [this](wxCommandEvent&) { refresh_controls(); });
     m_quality->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) { refresh_controls(); });
     m_choose_image->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_choose_image, this);
@@ -720,17 +791,18 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     auto* sizer = new wxBoxSizer(wxVERTICAL);
     auto* header = new wxBoxSizer(wxHORIZONTAL);
     header->Add(section_label(panel, _L("预览结果")), 1, wxALIGN_CENTER_VERTICAL);
-    m_preview_kind = new wxStaticText(panel, wxID_ANY, _L("暂无预览"));
+    m_preview_kind = new wxStaticText(panel, wxID_ANY, _L("结果对照"));
     m_preview_kind->SetForegroundColour(wxColour(91, 104, 107));
     m_preview_details_pane = new wxCollapsiblePane(panel, wxID_ANY, _L("查看处理过程"));
     wxWindow* preview_details_parent = m_preview_details_pane->GetPane();
     wxArrayString preview_stages;
-    preview_stages.Add(_L("AI 设计图"));
+    preview_stages.Add(_L("AI 生成图"));
+    preview_stages.Add(_L("3D 建模参考（推荐）"));
     preview_stages.Add(_L("使用耗材色"));
-    preview_stages.Add(_L("适合打印（推荐）"));
+    preview_stages.Add(_L("适合打印"));
     preview_stages.Add(_L("查看修改位置"));
     m_preview_stage = new wxChoice(preview_details_parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, preview_stages);
-    m_preview_stage->SetSelection(2);
+    m_preview_stage->SetSelection(0);
     m_preview_stage_hint = new wxStaticText(
         panel, wxID_ANY, _L("生成后可在这里确认图片效果。"));
     m_preview_stage_hint->SetForegroundColour(wxColour(91, 104, 107));
@@ -760,18 +832,31 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     auto* preview_details_sizer = new wxBoxSizer(wxVERTICAL);
     preview_details_sizer->Add(preview_stage_row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(8));
     preview_details_sizer->Add(m_preview_technical_details, 0, wxEXPAND | wxALL, FromDIP(8));
-    preview_details_parent->SetSizer(preview_details_sizer);
+    preview_details_parent->SetSizerAndFit(preview_details_sizer);
     m_preview_details_pane->Collapse(true);
-    m_preview_details_pane->Bind(wxEVT_COLLAPSIBLEPANE_CHANGED, [panel](wxCollapsiblePaneEvent&) {
+    m_preview_details_pane->Bind(wxEVT_COLLAPSIBLEPANE_CHANGED, [panel, preview_details_parent](wxCollapsiblePaneEvent& event) {
+        preview_details_parent->Layout();
         panel->Layout();
+        if (panel->GetParent() != nullptr)
+            panel->GetParent()->Layout();
+        event.Skip();
     });
     sizer->Add(m_preview_details_pane, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(18));
 
     m_preview_book = new wxNotebook(panel, wxID_ANY);
-    m_preview_area = new wxScrolledWindow(m_preview_book, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxHSCROLL | wxVSCROLL);
+    auto* model_page = new wxScrolledWindow(
+        m_preview_book, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxHSCROLL | wxVSCROLL);
+    model_page->SetBackgroundColour(wxColour(241, 244, 245));
+    model_page->SetScrollRate(FromDIP(12), FromDIP(12));
+    auto* model_sizer = new wxBoxSizer(wxVERTICAL);
+    auto* comparison_panel = new wxPanel(model_page);
+    comparison_panel->SetBackgroundColour(wxColour(241, 244, 245));
+    auto* comparison_sizer = new wxBoxSizer(wxHORIZONTAL);
+    m_preview_area = new wxScrolledWindow(
+        comparison_panel, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxHSCROLL | wxVSCROLL);
     m_preview_area->SetBackgroundColour(wxColour(241, 244, 245));
     m_preview_area->SetBackgroundStyle(wxBG_STYLE_PAINT);
-    m_preview_area->SetMinSize(wxSize(FromDIP(360), FromDIP(300)));
+    m_preview_area->SetMinSize(wxSize(FromDIP(420), FromDIP(320)));
     m_preview_area->SetScrollRate(FromDIP(12), FromDIP(12));
     m_preview_area->Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
         wxAutoBufferedPaintDC dc(m_preview_area);
@@ -839,31 +924,41 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
             }
         };
 
-        const wxString reference_label = m_reference_image.IsOk() ? _L("参考图") : _L("AI 原图");
-        draw_pane(m_reference_preview_pane, reference_label, m_reference_bitmap, wxEmptyString, false);
+        const wxString reference_placeholder = m_library_model_loaded
+            ? _L("该历史记录未保存原图")
+            : _L("文字生成，无原图");
+        draw_pane(m_reference_preview_pane, _L("原图"), m_reference_bitmap, reference_placeholder, false);
         const wxString result_label = m_preview_stage != nullptr && m_preview_stage->GetSelection() != wxNOT_FOUND
-            ? m_preview_stage->GetStringSelection() : _L("AI 处理图");
+            ? m_preview_stage->GetStringSelection() : _L("AI 生成图");
         draw_pane(m_style_preview_pane, result_label, m_style_preview_bitmap, m_style_preview_placeholder, true);
     });
     m_preview_area->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
         update_preview_view();
         event.Skip();
     });
-    m_preview_book->AddPage(m_preview_area, _L("图片确认"), true);
-
-    auto* model_page = new wxPanel(m_preview_book);
-    model_page->SetBackgroundColour(wxColour(241, 244, 245));
-    auto* model_sizer = new wxBoxSizer(wxVERTICAL);
+    auto* model_card = new wxPanel(comparison_panel, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_SIMPLE);
+    model_card->SetBackgroundColour(*wxWHITE);
+    model_card->SetMinSize(wxSize(FromDIP(440), FromDIP(320)));
+    auto* model_card_sizer = new wxBoxSizer(wxVERTICAL);
     auto* model_toolbar = new wxBoxSizer(wxHORIZONTAL);
-    m_model_stats = new wxStaticText(model_page, wxID_ANY, _L("模型生成后将在这里显示"));
+    m_model_stats = new wxStaticText(model_card, wxID_ANY, _L("3D 模型 · 生成后将在这里显示"));
     m_model_stats->SetForegroundColour(wxColour(91, 104, 107));
-    m_reset_model_view = new wxButton(model_page, wxID_ANY, _L("重置视角"));
-    m_reset_model_view->SetToolTip(_L("恢复模型的默认视角和缩放"));
+    m_front_model_view = new wxButton(model_card, wxID_ANY, _L("摆正模型"));
+    m_front_model_view->SetToolTip(_L("恢复规范正面并自动适应画布大小"));
+    m_reset_model_view = new wxButton(model_card, wxID_ANY, _L("三维视角"));
+    m_reset_model_view->SetToolTip(_L("恢复便于检查侧面和底座的三维观察角度"));
     model_toolbar->Add(m_model_stats, 1, wxALIGN_CENTER_VERTICAL);
-    model_toolbar->Add(m_reset_model_view, 0, wxLEFT, FromDIP(12));
-    model_sizer->Add(model_toolbar, 0, wxEXPAND | wxALL, FromDIP(12));
-    m_model_preview = new ModelPreview3D(model_page);
-    model_sizer->Add(m_model_preview, 1, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
+    model_toolbar->Add(m_front_model_view, 0, wxLEFT, FromDIP(8));
+    model_toolbar->Add(m_reset_model_view, 0, wxLEFT, FromDIP(6));
+    model_card_sizer->Add(model_toolbar, 0, wxEXPAND | wxALL, FromDIP(10));
+    m_model_preview = new ModelPreview3D(model_card);
+    m_model_preview->SetMinSize(wxSize(FromDIP(420), FromDIP(280)));
+    model_card_sizer->Add(m_model_preview, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
+    model_card->SetSizer(model_card_sizer);
+    comparison_sizer->Add(model_card, 5, wxEXPAND | wxRIGHT, FromDIP(10));
+    comparison_sizer->Add(m_preview_area, 4, wxEXPAND);
+    comparison_panel->SetSizer(comparison_sizer);
+    model_sizer->Add(comparison_panel, 1, wxEXPAND | wxALL, FromDIP(12));
 
     m_model_decision_panel = new wxPanel(
         model_page, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_SIMPLE);
@@ -880,7 +975,7 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     m_model_decision_panel->SetSizer(decision_sizer);
     model_sizer->Add(m_model_decision_panel, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
 
-    m_model_advanced_pane = new wxCollapsiblePane(model_page, wxID_ANY, _L("高级检查与编辑"));
+    m_model_advanced_pane = new wxCollapsiblePane(model_page, wxID_ANY, _L("检查与编辑（可选）"));
     wxWindow* model_advanced_parent = m_model_advanced_pane->GetPane();
     auto* model_advanced_sizer = new wxBoxSizer(wxVERTICAL);
     m_local_recolor_panel = new wxPanel(
@@ -888,42 +983,44 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     m_local_recolor_panel->SetBackgroundColour(*wxWHITE);
     auto* recolor_sizer = new wxBoxSizer(wxVERTICAL);
     auto* recolor_header = new wxBoxSizer(wxHORIZONTAL);
+    auto* recolor_title = new wxStaticText(m_local_recolor_panel, wxID_ANY, _L("局部改色"));
+    wxFont recolor_title_font = recolor_title->GetFont();
+    recolor_title_font.SetWeight(wxFONTWEIGHT_BOLD);
+    recolor_title->SetFont(recolor_title_font);
     m_local_recolor_toggle = new wxToggleButton(
-        m_local_recolor_panel, wxID_ANY, _L("编辑局部颜色"));
-    m_local_recolor_toggle->SetMinSize(wxSize(FromDIP(150), FromDIP(38)));
+        m_local_recolor_panel, wxID_ANY, _L("开始改色"));
+    m_local_recolor_toggle->SetMinSize(wxSize(FromDIP(118), FromDIP(34)));
     m_local_recolor_toggle->SetToolTip(_L("打开局部改色工具，在模型上直接选择需要换色的部位"));
     auto* recolor_intro = new wxStaticText(
-        m_local_recolor_panel, wxID_ANY, _L("在模型上选择部位，并换成当前打印机耗材颜色"));
+        m_local_recolor_panel, wxID_ANY, _L("按区域选择，再换成当前打印机的耗材色"));
     recolor_intro->SetForegroundColour(wxColour(91, 104, 107));
-    recolor_header->Add(m_local_recolor_toggle, 0, wxALIGN_CENTER_VERTICAL);
-    recolor_header->Add(recolor_intro, 1, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(12));
+    recolor_header->Add(recolor_title, 0, wxALIGN_CENTER_VERTICAL);
+    recolor_header->Add(recolor_intro, 1, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(10));
+    recolor_header->Add(m_local_recolor_toggle, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(10));
     recolor_sizer->Add(recolor_header, 0, wxEXPAND | wxALL, FromDIP(10));
 
     m_local_recolor_controls = new wxPanel(m_local_recolor_panel);
     m_local_recolor_controls->SetBackgroundColour(*wxWHITE);
     auto* controls_sizer = new wxBoxSizer(wxVERTICAL);
     auto* material_row = new wxBoxSizer(wxHORIZONTAL);
-    material_row->Add(new wxStaticText(m_local_recolor_controls, wxID_ANY, _L("智能区域")), 0,
+    material_row->Add(new wxStaticText(m_local_recolor_controls, wxID_ANY, _L("1  选同类区域")), 0,
                       wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
     for (size_t index = 0; index < m_region_material_buttons.size(); ++index) {
         m_region_material_buttons[index] = new wxButton(
             m_local_recolor_controls, wxID_ANY,
             wxString::Format(_L("材料 %llu"), static_cast<unsigned long long>(index + 1)));
-        m_region_material_buttons[index]->SetMinSize(wxSize(FromDIP(112), FromDIP(42)));
+        m_region_material_buttons[index]->SetMinSize(wxSize(FromDIP(96), FromDIP(36)));
         material_row->Add(m_region_material_buttons[index], 0,
                           wxALIGN_CENTER_VERTICAL | (index == 0 ? 0 : wxLEFT), FromDIP(6));
     }
-    auto* material_hint = new wxStaticText(
-        m_local_recolor_controls, wxID_ANY, _L("按 AI 色彩角色选中全部同类材料面，可再手动增减"));
-    material_hint->SetForegroundColour(wxColour(91, 104, 107));
-    material_row->Add(material_hint, 1, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(12));
+    material_row->AddStretchSpacer();
     controls_sizer->Add(material_row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(10));
 
     auto* selection_row = new wxBoxSizer(wxHORIZONTAL);
-    selection_row->Add(new wxStaticText(m_local_recolor_controls, wxID_ANY, _L("选择部位")), 0,
+    selection_row->Add(new wxStaticText(m_local_recolor_controls, wxID_ANY, _L("2  手动修正")), 0,
                        wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
     const std::array<wxString, 3> operation_labels {
-        _L("自动识别"), _L("添加区域"), _L("减去区域")
+        _L("智能选择"), _L("补选"), _L("擦除")
     };
     const std::array<wxString, 3> operation_tips {
         _L("点击一个部位，自动识别相邻的同色连续区域"),
@@ -933,7 +1030,7 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     for (size_t index = 0; index < m_region_operation_buttons.size(); ++index) {
         m_region_operation_buttons[index] = new wxToggleButton(
             m_local_recolor_controls, wxID_ANY, operation_labels[index]);
-        m_region_operation_buttons[index]->SetMinSize(wxSize(FromDIP(94), FromDIP(36)));
+        m_region_operation_buttons[index]->SetMinSize(wxSize(FromDIP(82), FromDIP(34)));
         m_region_operation_buttons[index]->SetToolTip(operation_tips[index]);
         selection_row->Add(m_region_operation_buttons[index], 0,
                            wxALIGN_CENTER_VERTICAL | (index == 0 ? 0 : wxLEFT), FromDIP(4));
@@ -948,38 +1045,42 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     selection_row->Add(new wxStaticText(m_local_recolor_controls, wxID_ANY, _L("识别范围")), 0,
                        wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, FromDIP(12));
     selection_row->Add(m_region_range, 0, wxALIGN_CENTER_VERTICAL);
-    m_region_selection_summary = new wxStaticText(
-        m_local_recolor_controls, wxID_ANY, _L("点击模型选择要改色的部位"));
-    m_region_selection_summary->SetForegroundColour(wxColour(91, 104, 107));
-    selection_row->Add(m_region_selection_summary, 1, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(12));
     m_undo_region_selection = new wxButton(m_local_recolor_controls, wxID_ANY, _L("撤销"));
     m_undo_region_selection->SetToolTip(_L("撤销最近一次选区变化（Ctrl+Z）"));
     m_clear_region_selection = new wxButton(m_local_recolor_controls, wxID_ANY, _L("清空"));
     m_clear_region_selection->SetToolTip(_L("清空当前选区（Esc）"));
-    selection_row->Add(m_undo_region_selection, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(6));
-    selection_row->Add(m_clear_region_selection, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(6));
+    selection_row->AddStretchSpacer();
     controls_sizer->Add(selection_row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(10));
 
+    auto* selection_status_row = new wxBoxSizer(wxHORIZONTAL);
+    m_region_selection_summary = new wxStaticText(
+        m_local_recolor_controls, wxID_ANY, _L("点击模型选择要改色的部位"));
+    m_region_selection_summary->SetForegroundColour(wxColour(91, 104, 107));
+    selection_status_row->Add(m_region_selection_summary, 1, wxALIGN_CENTER_VERTICAL);
+    selection_status_row->Add(m_undo_region_selection, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(6));
+    selection_status_row->Add(m_clear_region_selection, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(6));
+    controls_sizer->Add(selection_status_row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(8));
+
     auto* color_row = new wxBoxSizer(wxHORIZONTAL);
-    color_row->Add(new wxStaticText(m_local_recolor_controls, wxID_ANY, _L("改成")), 0,
+    color_row->Add(new wxStaticText(m_local_recolor_controls, wxID_ANY, _L("3  应用耗材色")), 0,
                    wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
     for (size_t index = 0; index < m_region_color_buttons.size(); ++index) {
         m_region_color_buttons[index] = new wxToggleButton(
             m_local_recolor_controls, wxID_ANY,
             wxString::Format(_L("耗材 %llu"), static_cast<unsigned long long>(index + 1)));
-        m_region_color_buttons[index]->SetMinSize(wxSize(FromDIP(96), FromDIP(46)));
+        m_region_color_buttons[index]->SetMinSize(wxSize(FromDIP(88), FromDIP(40)));
         color_row->Add(m_region_color_buttons[index], 0,
                        wxALIGN_CENTER_VERTICAL | (index == 0 ? 0 : wxLEFT), FromDIP(6));
     }
     color_row->AddStretchSpacer();
     m_apply_region_color = new wxButton(
         m_local_recolor_controls, wxID_ANY, _L("选择部位后应用"));
-    m_apply_region_color->SetMinSize(wxSize(FromDIP(150), FromDIP(42)));
+    m_apply_region_color->SetMinSize(wxSize(FromDIP(140), FromDIP(40)));
     color_row->Add(m_apply_region_color, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(12));
     controls_sizer->Add(color_row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(10));
     auto* recolor_hint = new wxStaticText(
         m_local_recolor_controls, wxID_ANY,
-        _L("短按选择 · 拖动旋转 · 滚轮缩放 · Esc 清空 · Ctrl+Z 撤销"));
+        _L("模型操作：短按选择 · 拖动旋转 · 滚轮缩放"));
     recolor_hint->SetForegroundColour(wxColour(91, 104, 107));
     controls_sizer->Add(recolor_hint, 0, wxEXPAND | wxALL, FromDIP(10));
     m_local_recolor_controls->SetSizer(controls_sizer);
@@ -1021,6 +1122,7 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     m_model_quality_details_pane->Bind(wxEVT_COLLAPSIBLEPANE_CHANGED, [this, model_page](wxCollapsiblePaneEvent& event) {
         m_model_quality_panel->Layout();
         model_page->Layout();
+        model_page->FitInside();
         if (m_model_preview != nullptr)
             m_model_preview->refresh();
         event.Skip();
@@ -1031,7 +1133,7 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     visual_font.SetWeight(wxFONTWEIGHT_BOLD);
     m_visual_quality_status->SetFont(visual_font);
     m_visual_review_model = new wxButton(m_model_quality_panel, wxID_ANY, _L("AI 视觉复核"));
-    m_visual_review_model->SetToolTip(_L("生成最终 OBJ 的五视图并调用付费 AI 检查外观；结果仅供复核，不会阻断导入"));
+    m_visual_review_model->SetToolTip(_L("生成最终 OBJ 五视图，对照原图检查人脸、主体和材料串色；未通过时默认阻止导入，仍可在明确警告后强制导入"));
     visual_header->Add(m_visual_quality_status, 1, wxALIGN_CENTER_VERTICAL);
     visual_header->Add(m_visual_review_model, 0, wxLEFT, FromDIP(12));
     quality_sizer->Add(visual_header, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(10));
@@ -1068,16 +1170,19 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     m_model_advanced_pane->Collapse(true);
     m_model_advanced_pane->Bind(wxEVT_COLLAPSIBLEPANE_CHANGED, [this, model_page](wxCollapsiblePaneEvent& event) {
         model_page->Layout();
+        model_page->FitInside();
         if (m_model_preview != nullptr)
             m_model_preview->refresh();
         event.Skip();
     });
     model_sizer->Add(m_model_advanced_pane, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
-    m_model_preview_message = new wxStaticText(model_page, wxID_ANY, _L("生成完成后可拖动旋转模型，并使用滚轮缩放。"));
+    m_model_preview_message = new wxStaticText(
+        model_page, wxID_ANY, _L("模型会自动摆正；拖动旋转、滚轮缩放，随时可点击“摆正模型”。"));
     m_model_preview_message->SetForegroundColour(wxColour(91, 104, 107));
     model_sizer->Add(m_model_preview_message, 0, wxEXPAND | wxALL, FromDIP(12));
     model_page->SetSizer(model_sizer);
-    m_preview_book->AddPage(model_page, _L("3D 预览"), false);
+    model_page->FitInside();
+    m_preview_book->AddPage(model_page, _L("结果对照"), true);
     m_preview_book->AddPage(build_model_library(m_preview_book), _L("历史模型"), false);
     sizer->Add(m_preview_book, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(18));
 
@@ -1097,6 +1202,10 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     m_reset_model_view->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         if (m_model_preview != nullptr)
             m_model_preview->reset_view();
+    });
+    m_front_model_view->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        if (m_model_preview != nullptr)
+            m_model_preview->front_view();
     });
     m_recheck_model->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_recheck_model, this);
     m_locate_thin_regions->Bind(wxEVT_BUTTON, [this, model_page](wxCommandEvent&) {
@@ -1122,8 +1231,7 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
         m_local_recolor_toggle->SetValue(true);
         refresh_local_recolor_controls();
         model_page->Layout();
-        if (m_preview_area != nullptr)
-            m_preview_area->FitInside();
+        model_page->FitInside();
         if (has_ranked_region) {
             const size_t region_count = std::max(
                 m_model_quality.thin_local_region_count, m_model_quality.thin_local_regions.size());
@@ -1166,8 +1274,7 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
         m_local_recolor_toggle->SetValue(true);
         refresh_local_recolor_controls();
         model_page->Layout();
-        if (m_preview_area != nullptr)
-            m_preview_area->FitInside();
+        model_page->FitInside();
         m_model_preview_message->SetLabel(wxString::Format(
             _L("已高亮 %llu 个悬垂三角面；可旋转检查，或在局部区域工具中手动增减。"),
             static_cast<unsigned long long>(localized)));
@@ -1178,6 +1285,7 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     m_local_recolor_toggle->Bind(wxEVT_TOGGLEBUTTON, [this, model_page](wxCommandEvent&) {
         refresh_local_recolor_controls();
         model_page->Layout();
+        model_page->FitInside();
     });
     const auto update_region_mode = [this]() {
         if (m_model_preview == nullptr)
@@ -1273,15 +1381,15 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     update_region_mode();
     m_preview_book->Bind(wxEVT_NOTEBOOK_PAGE_CHANGED, [this, panel](wxBookCtrlEvent& event) {
         const int selection = event.GetSelection();
-        const bool image_page = selection == 0;
-        m_zoom_out->Show(image_page);
-        m_zoom_fit->Show(image_page);
-        m_zoom_in->Show(image_page);
-        m_preview_zoom->Show(image_page);
-        m_preview_details_pane->Show(image_page && m_style_preview_ready);
-        m_preview_kind->SetLabel(selection == 0 ? _L("图片对照") : selection == 1 ? _L("3D 模型") : _L("模型库"));
+        const bool result_page = selection == 0;
+        m_zoom_out->Show(result_page);
+        m_zoom_fit->Show(result_page);
+        m_zoom_in->Show(result_page);
+        m_preview_zoom->Show(result_page);
+        m_preview_details_pane->Show(result_page && m_style_preview_ready);
+        m_preview_kind->SetLabel(result_page ? _L("结果对照") : _L("历史模型"));
         panel->Layout();
-        if (selection == 1 && m_model_preview != nullptr)
+        if (selection == 0 && m_model_preview != nullptr)
             m_model_preview->refresh();
         event.Skip();
     });
@@ -1313,7 +1421,30 @@ wxWindow* ModelGenerationPanel::build_model_library(wxWindow* parent)
 
 void ModelGenerationPanel::on_choose_image(wxCommandEvent&)
 {
-    wxFileDialog dialog(this, _L("选择参考图"), wxEmptyString, wxEmptyString,
+    wxString initial_directory;
+    const boost::filesystem::path generated_root = generated_models_root();
+    const auto is_user_image_directory = [&generated_root](const boost::filesystem::path& directory) {
+        if (!boost::filesystem::is_directory(directory))
+            return false;
+        boost::system::error_code root_ec;
+        boost::system::error_code directory_ec;
+        const boost::filesystem::path canonical_root = boost::filesystem::canonical(generated_root, root_ec);
+        const boost::filesystem::path canonical_directory = boost::filesystem::canonical(directory, directory_ec);
+        return root_ec || directory_ec ||
+               (canonical_directory != canonical_root && !path_is_inside(canonical_root, canonical_directory));
+    };
+    const boost::filesystem::path selected_directory = m_selected_image_path.parent_path();
+    if (is_user_image_directory(selected_directory))
+        initial_directory = wxString::FromUTF8(selected_directory.string());
+    if (wxGetApp().app_config != nullptr) {
+        const std::string saved = wxGetApp().app_config->get("model_generation_image_directory");
+        if (initial_directory.empty() && !saved.empty() &&
+            is_user_image_directory(boost::filesystem::path(saved)))
+            initial_directory = wxString::FromUTF8(saved);
+    }
+    if (initial_directory.empty())
+        initial_directory = wxStandardPaths::Get().GetUserDir(wxStandardPaths::Dir_Pictures);
+    wxFileDialog dialog(this, _L("选择参考图"), initial_directory, wxEmptyString,
                         _L("PNG 和 JPEG 图片 (*.png;*.jpg;*.jpeg)|*.png;*.jpg;*.jpeg"), wxFD_OPEN | wxFD_FILE_MUST_EXIST);
     if (dialog.ShowModal() != wxID_OK)
         return;
@@ -1327,14 +1458,21 @@ void ModelGenerationPanel::on_choose_image(wxCommandEvent&)
     if (!m_job_id.empty() && !m_awaiting_palette_confirmation)
         reset(true);
     m_selected_image_path = std::move(path);
+    m_style_user_selected = false;
+    m_style_recommendation_available = false;
+    if (wxGetApp().app_config != nullptr)
+        wxGetApp().app_config->set(
+            "model_generation_image_directory", m_selected_image_path.parent_path().string());
     m_style_preview_ready = false;
     m_raw_preview_available = false;
+    m_model_reference_available = false;
     m_strict_preview_available = false;
     m_heatmap_available = false;
     const size_t bytes = boost::filesystem::file_size(m_selected_image_path);
     m_selected_image->SetLabel(wxString::FromUTF8(m_selected_image_path.filename().string()) +
                                wxString::Format(" (%llu KB)", static_cast<unsigned long long>((bytes + 1023) / 1024)));
     show_selected_image_preview();
+    request_style_recommendation();
     refresh_controls();
 }
 
@@ -1343,6 +1481,10 @@ void ModelGenerationPanel::on_clear_image(wxCommandEvent&)
     if (!m_job_id.empty() && !m_awaiting_palette_confirmation)
         reset(true);
     m_selected_image_path.clear();
+    ++m_style_recommendation_sequence;
+    m_style_recommendation_loading = false;
+    m_style_recommendation_available = false;
+    m_style_recommendation = {};
     m_selected_image->SetLabel(_L("未选择图片"));
     set_preview_empty(_L("请输入描述、选择参考图，或同时提供两者。"));
     refresh_controls();
@@ -1464,13 +1606,9 @@ void ModelGenerationPanel::on_confirm_recommended_palette(wxCommandEvent& event)
         on_preprocess(event);
         return;
     }
-    MessageDialog confirm(
-        this,
-        _L("确认使用当前目标色生成可打印图片预览吗？\n\n目标色不会自动绑定耗材槽；此操作可能消耗 API 额度。"),
-        _L("确认推荐配色"), wxYES_NO | wxICON_QUESTION);
-    if (confirm.ShowModal() != wxID_YES)
-        return;
-
+    // Requesting the recommendation already required one quota confirmation,
+    // and this handler runs only after the explicit "use palette and generate"
+    // click. A second modal repeated the same decision on the happy path.
     m_job_palette = current_palette();
     m_job_palette_roles = current_palette_roles();
     m_palette_recommendation_confirmed = true;
@@ -1526,6 +1664,7 @@ void ModelGenerationPanel::on_preprocess(wxCommandEvent& event)
     }
     const std::string prompt = entered_prompt;
     const std::vector<std::string> palette = current_palette();
+    const AIModelGenerationClient::PaletteRoles palette_roles = current_palette_roles();
     if (use_printable_colors() && palette.empty()) {
         MessageDialog dlg(this, _L("生成可打印模型前，请至少配置一种有效耗材颜色。"), wxEmptyString, wxOK | wxICON_INFORMATION);
         dlg.ShowModal();
@@ -1537,6 +1676,7 @@ void ModelGenerationPanel::on_preprocess(wxCommandEvent& event)
         dlg.ShowModal();
         return;
     }
+    const bool regenerating_preview = m_style_preview_ready || m_awaiting_confirmation;
     if (image_mode) {
         static const std::regex absolute_path(R"(^\s*(?:[A-Za-z]:[\\/]|/).*)");
         if (!entered_prompt.empty() && std::regex_match(entered_prompt, absolute_path)) {
@@ -1545,10 +1685,19 @@ void ModelGenerationPanel::on_preprocess(wxCommandEvent& event)
             return;
         }
         wxString message;
-        message << _L("要使用这张图片生成 AI 风格预览吗？\n\n")
-                << wxString::FromUTF8(m_selected_image_path.filename().string()) << "\n"
-                << _L("仅会发送这张图片和文字描述，此操作可能消耗 API 额度。 ");
-        MessageDialog confirm(this, message, _L("生成风格预览"), wxYES_NO | wxICON_QUESTION);
+        if (regenerating_preview) {
+            message << _L("使用当前风格和配色重新生成图片预览吗？\n\n")
+                    << _L("会重新生成并检查图片，不会创建 3D 任务；此操作可能消耗图片生成额度。");
+        } else {
+            message << _L("要使用这张图片生成 AI 风格预览吗？\n\n")
+                    << wxString::FromUTF8(m_selected_image_path.filename().string()) << "\n"
+                    << _L("仅会发送这张图片和文字描述，此操作可能消耗 API 额度。 ");
+        }
+        if (current_style() == "realistic" && use_printable_colors())
+            message << _L("\n若识别到真人，还会同时生成一张单色雕塑建模参考，彩色预览只负责最终材质。 ");
+        MessageDialog confirm(this, message,
+                              regenerating_preview ? _L("重新生成图片预览") : _L("生成风格预览"),
+                              wxYES_NO | wxICON_QUESTION);
         if (confirm.ShowModal() != wxID_YES)
             return;
     } else {
@@ -1561,14 +1710,20 @@ void ModelGenerationPanel::on_preprocess(wxCommandEvent& event)
             return;
     }
 
-    const bool regenerating_preview = m_style_preview_ready || m_awaiting_confirmation;
     const std::string previous_job_id = m_job_id;
+    const bool palette_was_ai_recommended = ai_palette_source && m_palette_recommendation_confirmed;
     if (regenerating_preview)
         m_client.record_journey_event("preview_regenerated", previous_job_id);
     reset(true);
     m_client.record_journey_event("preview_requested");
     m_job_palette = palette;
-    m_job_palette_roles = current_palette_roles();
+    // reset() refreshes the controls and may rebuild inferred role defaults.
+    // Preserve the explicit semantic mapping that was visible at confirmation;
+    // swapping portrait skin and garment roles here causes exactly the kind of
+    // skin-on-sleeve material bleed the preview gate is meant to prevent.
+    m_palette_roles = palette_roles;
+    m_palette_roles_source = palette;
+    m_job_palette_roles = palette_roles;
     m_job_use_printable_colors = use_printable_colors();
     m_job_prompt = m_prompt->GetValue();
     m_job_style = current_style();
@@ -1578,15 +1733,14 @@ void ModelGenerationPanel::on_preprocess(wxCommandEvent& event)
     m_job_print_settings = current_print_settings();
     m_job_image_path = m_selected_image_path;
     m_job_preview_expected = true;
-    m_palette_recommendation_confirmed = m_palette_source->GetSelection() == 2 &&
-                                         m_palette_recommendation.available;
+    m_palette_recommendation_confirmed = palette_was_ai_recommended;
     m_busy = true;
     const bool preview_mode = true;
     if (preview_mode) {
         m_style_preview_placeholder = _L("正在生成...");
         if (m_reference_image.IsOk()) {
             m_preview_message->SetLabel(
-                wxString::Format(_L("参考图 %d × %d px  ·  正在生成 AI 处理图"),
+                wxString::Format(_L("原图 %d × %d px  ·  正在生成 AI 图"),
                                  m_reference_image.GetWidth(), m_reference_image.GetHeight()));
         }
         update_preview_view();
@@ -1619,11 +1773,12 @@ void ModelGenerationPanel::on_preprocess(wxCommandEvent& event)
     };
     if (image_mode)
         m_client.preprocess_image(new_request_id(), prompt, m_selected_image_path, m_job_palette, m_job_palette_roles,
-                                  m_job_style, m_job_custom_style,
+                                  m_palette_recommendation_confirmed, m_job_style, m_job_custom_style,
                                   m_job_print_settings,
                                   std::move(success), std::move(failure));
     else
-        m_client.preprocess_text(new_request_id(), prompt, m_job_palette, m_job_palette_roles, m_job_style, m_job_custom_style,
+        m_client.preprocess_text(new_request_id(), prompt, m_job_palette, m_job_palette_roles,
+                                 m_palette_recommendation_confirmed, m_job_style, m_job_custom_style,
                                  m_job_print_settings,
                                  std::move(success), std::move(failure));
 }
@@ -1644,12 +1799,16 @@ void ModelGenerationPanel::on_generate(wxCommandEvent&)
         ? _L("要根据这张 AI 风格预览创建 1 个付费 3D 生成任务吗？")
         : _L("要根据已确认的提示词创建 1 个付费 3D 生成任务吗？");
     message += _L("\n\n生成策略：") + current_generation_profile_label();
-    message += m_job_generation_profile == "quality"
-        ? _L("\n质量说明：Tripo Ultra 几何、高清纹理和 PBR；预计更慢，并可能消耗更多服务额度。")
-        : _L("\n性能说明：保留纹理和 PBR，使用标准几何与纹理，优先缩短生成和处理时间。");
-    message += _L("\n费用：由当前模型服务商账户按其套餐或额度结算；OrcaSlicer 无法读取或保证具体金额。"
-                  "\n预计耗时：通常 3–10 分钟；高质量或服务繁忙时可能更久。"
-                  "\n停止说明：停止按钮会终止本地等待；远端任务若已提交，可能继续运行并计费。");
+    if (m_job_generation_profile == "quality") {
+        message += _L("\n质量：超详细几何、200 万面目标、最高精度纹理和 PBR。");
+        if (image_mode && m_job_style == "realistic")
+            message += _L("\n写实人像：以人脸相似度优先，自动裁成头肩胸像；交叉手臂、手表和下半身不会进入 3D。几何使用当前单色雕塑参考，颜色在模型完成后按已确认的四色重新分配；本次只创建 1 个 Tripo 模型任务。");
+    } else {
+        message += _L("\n性能：30 万面目标、标准几何与纹理，保留 PBR。");
+    }
+    message += _L("\n预计：通常 3–10 分钟；高质量写实人像通常 15–35 分钟。"
+                  "\n费用：由模型服务商账户按套餐或额度结算。"
+                  "\n停止：只停止本地等待；已提交的远端任务可能继续运行并计费。");
     MessageDialog confirm(this, message, _L("确认生成 3D 模型"), wxYES_NO | wxICON_QUESTION);
     if (confirm.ShowModal() != wxID_YES)
         return;
@@ -1677,6 +1836,93 @@ void ModelGenerationPanel::on_generate(wxCommandEvent&)
     const std::string prepared = image_mode ? std::string() : m_prepared_prompt->GetValue().ToUTF8().data();
     wxWeakRef<ModelGenerationPanel> weak(this);
     m_client.generate(m_job_id, prepared, m_job_palette, m_job_generation_profile,
+        [weak, sequence](AIModelGenerationClient::JobStatus status) mutable {
+            if (!weak) return;
+            wxGetApp().CallAfter([weak, sequence, status = std::move(status)]() mutable {
+                if (weak) weak->handle_status(std::move(status), sequence);
+            });
+        },
+        [weak, sequence](std::string error) mutable {
+            if (!weak) return;
+            wxGetApp().CallAfter([weak, sequence, error = std::move(error)]() {
+                if (!weak)
+                    return;
+                // A transient failure here is ambiguous: the sidecar may have
+                // accepted and persisted the paid task before its HTTP response
+                // was interrupted.  Keep polling the same job id so users do not
+                // submit a duplicate paid task just to recover the UI.
+                if (is_transient_sidecar_poll_error(error) && !weak->m_job_id.empty()) {
+                    weak->m_status->SetLabel(_L("提交响应中断，正在查询已保存的任务..."));
+                    weak->m_result_summary->SetLabel(
+                        _L("不会重复提交；将使用同一任务编号恢复生成进度。"));
+                    weak->m_poll_connection_failures = 0;
+                    weak->m_poll_timer.StartOnce(500);
+                    weak->refresh_controls();
+                    return;
+                }
+                weak->handle_error(error, sequence);
+                // Validation can reject the exact geometry reference before a
+                // paid task is created. Reload the persisted job so the panel
+                // keeps the approved source/palette, exposes "Change image",
+                // and disables 3D submission until a clean reroll exists.
+                if (!weak || weak->m_shutdown || sequence != weak->m_sequence || weak->m_job_id.empty())
+                    return;
+                const std::string job_id = weak->m_job_id;
+                weak->m_client.get_status(job_id,
+                    [weak, sequence](AIModelGenerationClient::JobStatus status) mutable {
+                        if (!weak)
+                            return;
+                        wxGetApp().CallAfter([weak, sequence, status = std::move(status)]() mutable {
+                            if (weak)
+                                weak->handle_status(std::move(status), sequence);
+                        });
+                    },
+                    [](std::string) {});
+            });
+        });
+}
+
+void ModelGenerationPanel::on_retexture_from_library(const std::string& geometry_job_id,
+                                                      const wxString& title)
+{
+    if (m_busy || !m_service_available || m_job_id.empty() || geometry_job_id.empty() ||
+        geometry_job_id == m_job_id || !m_job_preview_expected || (!m_ready && !m_awaiting_confirmation))
+        return;
+    wxString message = _L("要保留历史模型“") + title + _L("”的脸部和整体造型，只使用当前确认图片重新生成颜色吗？");
+    message += _L("\n\n将创建 1 个付费 Tripo 纹理任务，不会重建网格；因此能保留已经满意的脸和姿态，"
+                  "但也不会修复历史模型原有的形状问题。"
+                  "\n费用：由当前模型服务商账户按其套餐或额度结算；OrcaSlicer 无法读取具体金额。"
+                  "\n预计耗时：通常 3–10 分钟。"
+                  "\n停止说明：停止按钮只终止本地等待；已经提交的远端任务可能继续运行并计费。");
+    MessageDialog confirm(this, message, _L("确认复用造型并重新上色"), wxYES_NO | wxICON_QUESTION);
+    if (confirm.ShowModal() != wxID_YES)
+        return;
+
+    const std::string reference_job_id = m_job_id;
+    m_client.record_journey_event("model_submitted", reference_job_id);
+    m_journey_model_submitted = true;
+    m_busy = true;
+    m_awaiting_confirmation = false;
+    m_ready = false;
+    m_artifact_download_started = false;
+    m_model_preview_ready = false;
+    m_library_model_loaded = false;
+    m_artifact_path.clear();
+    m_displayed_model_path.clear();
+    m_displayed_model_job_id.clear();
+    m_displayed_model_palette.clear();
+    m_displayed_model_palette_roles.clear();
+    clear_model_quality();
+    if (m_model_preview != nullptr)
+        m_model_preview->clear();
+    const uint64_t sequence = m_sequence;
+    update_progress(40, 3, _L("保留造型并上色"));
+    m_workflow_phase->SetLabel(_L("保留造型并上色"));
+    m_status->SetLabel(_L("正在提交保留造型的纹理任务..."));
+    refresh_controls();
+
+    wxWeakRef<ModelGenerationPanel> weak(this);
+    m_client.retexture(reference_job_id, geometry_job_id,
         [weak, sequence](AIModelGenerationClient::JobStatus status) mutable {
             if (!weak) return;
             wxGetApp().CallAfter([weak, sequence, status = std::move(status)]() mutable {
@@ -1721,7 +1967,7 @@ void ModelGenerationPanel::on_stop(wxCommandEvent&)
         [weak, sequence](std::string error) mutable {
             if (!weak) return;
             wxGetApp().CallAfter([weak, sequence, error = std::move(error)]() {
-                if (weak) weak->handle_error(error, sequence);
+                if (weak) weak->handle_poll_error(error, sequence);
             });
         });
 }
@@ -1743,9 +1989,36 @@ void ModelGenerationPanel::on_import(wxCommandEvent&)
         download_model_preview(m_sequence);
         return;
     }
+    if (m_model_preview_ready && m_visual_quality.available && !m_visual_quality.import_recommended) {
+        wxString risks;
+        const size_t visible = std::min<size_t>(3, m_visual_quality.blocking_warnings.size());
+        for (size_t index = 0; index < visible; ++index)
+            risks += _L("\n• ") + visual_quality_code_label(m_visual_quality.blocking_warnings[index]);
+        MessageDialog confirm(
+            this,
+            _L("AI 外观门禁发现当前模型与原图不够像，或仍有明显材料串色。") + risks +
+                _L("\n\n建议重新优化；如果你已经旋转模型确认可以接受，仍可继续导入。"),
+            _L("当前模型有外观风险"), wxYES_NO | wxNO_DEFAULT | wxICON_WARNING);
+        if (confirm.ShowModal() != wxID_YES)
+            return;
+    }
     download_and_import();
 }
-void ModelGenerationPanel::on_discard(wxCommandEvent&) { reset(true); }
+void ModelGenerationPanel::on_discard(wxCommandEvent&)
+{
+    // A completed model is a user artifact and must remain restart-recoverable.
+    // "Start over" only clears the current panel so another job can begin; the
+    // completed entry stays available in history and after an app restart.
+    const bool reuse_recommended_palette =
+        m_palette_source->GetSelection() == 2 && !current_palette().empty();
+    reset(!m_ready);
+    // Starting another model from a completed result intentionally keeps the
+    // visible source image and target colours.  Treat that palette as already
+    // accepted so the primary action advances to image preview instead of
+    // suggesting a duplicate paid recommendation request.
+    m_palette_recommendation_confirmed = reuse_recommended_palette;
+    refresh_controls();
+}
 void ModelGenerationPanel::on_poll(wxTimerEvent&) { schedule_poll(); }
 
 void ModelGenerationPanel::handle_error(const std::string& error, uint64_t sequence)
@@ -1760,9 +2033,27 @@ void ModelGenerationPanel::handle_error(const std::string& error, uint64_t seque
     }
     m_poll_timer.Stop();
     m_busy = false;
-    m_awaiting_confirmation = false;
-    m_awaiting_palette_confirmation = false;
-    m_palette_recommendation_confirmed = false;
+    const bool paid_preflight_rejected =
+        error.find("large square cutout") != std::string::npos ||
+        error.find("missing body region") != std::string::npos ||
+        error.find("shoulder silhouette") != std::string::npos ||
+        error.find("background remnant") != std::string::npos ||
+        error.find("not suitable for 3D input") != std::string::npos ||
+        error.find("before paying for 3D generation") != std::string::npos;
+    m_awaiting_confirmation = paid_preflight_rejected;
+    if (!paid_preflight_rejected) {
+        m_awaiting_palette_confirmation = false;
+        m_palette_recommendation_confirmed = false;
+    } else {
+        // The preview itself remains a useful user artifact, but it may not be
+        // resubmitted until a regenerated geometry reference passes preflight.
+        m_model_input_eligible = false;
+        m_model_input_primary_blocker =
+            error.find("shoulder silhouette") != std::string::npos ||
+            error.find("background remnant") != std::string::npos
+                ? "portrait_shoulder_silhouette_unverified"
+                : "subject_has_rectangular_cutout";
+    }
     m_ready = false;
     m_artifact_download_started = false;
     m_model_preview_ready = false;
@@ -1786,12 +2077,44 @@ void ModelGenerationPanel::handle_error(const std::string& error, uint64_t seque
     refresh_controls();
 }
 
+void ModelGenerationPanel::handle_poll_error(const std::string& error, uint64_t sequence)
+{
+    if (m_shutdown || sequence != m_sequence)
+        return;
+    if (!is_transient_sidecar_poll_error(error)) {
+        handle_error(error, sequence);
+        return;
+    }
+
+    ++m_poll_connection_failures;
+    const int delay_ms = std::min(10000, 1000 << std::min(m_poll_connection_failures - 1, 3));
+    m_status->SetLabel(wxString::Format(
+        _L("本地 AI 服务暂时断开，%d 秒后自动重连..."),
+        std::max(1, delay_ms / 1000)));
+    m_result_summary->SetLabel(
+        _L("远端任务编号和当前进度已保存；重连只恢复查询，不会重复提交或重复计费。"));
+    m_poll_timer.StartOnce(delay_ms);
+    refresh_controls();
+}
+
 void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus status, uint64_t sequence)
 {
     if (m_shutdown || sequence != m_sequence)
         return;
+    m_poll_connection_failures = 0;
     const bool became_model_ready = !m_ready && status.state == "ready" && status.artifact_ready;
+    if (status.id != m_job_id) {
+        m_job_provider_name.clear();
+        m_job_provider_task_id.clear();
+        m_job_provider_conversion_task_id.clear();
+    }
     m_job_id = status.id;
+    m_job_phase = status.phase;
+    if (!status.provider_task_id.empty()) {
+        m_job_provider_name = status.provider_name;
+        m_job_provider_task_id = status.provider_task_id;
+        m_job_provider_conversion_task_id = status.provider_conversion_task_id;
+    }
     if (status.palette_recommendation.available) {
         const bool new_recommendation = m_palette_recommendation_job_id != status.id;
         m_palette_recommendation = status.palette_recommendation;
@@ -1833,6 +2156,12 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
     m_awaiting_palette_confirmation = status.state == "awaiting_palette_confirmation";
     m_awaiting_confirmation = status.state == "awaiting_confirmation";
     m_ready = status.state == "ready" && status.artifact_ready;
+    if (m_journey_model_submitted &&
+        (status.state == "failed" ||
+         (status.state == "awaiting_confirmation" && status.phase == "multiview_retry"))) {
+        m_client.record_journey_event("model_failed", status.id);
+        m_journey_model_submitted = false;
+    }
     if (became_model_ready) {
         m_client.record_journey_event("model_ready", status.id);
         m_journey_model_submitted = false;
@@ -1840,9 +2169,10 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
     m_artifact_format = status.artifact_format;
     m_artifact_color_encoding = status.artifact_color_encoding;
     m_raw_preview_available = status.raw_preview_ready;
+    m_model_reference_available = status.model_reference_ready;
     m_strict_preview_available = status.strict_preview_ready;
     m_heatmap_available = status.heatmap_ready;
-    if (status.preview_ready || status.raw_preview_ready || status.strict_preview_ready)
+    if (status.preview_ready || status.raw_preview_ready || status.model_reference_ready || status.strict_preview_ready)
         m_job_preview_expected = true;
     else if (status.state == "awaiting_confirmation" && status.source == "text" && status.palette.empty())
         m_job_preview_expected = false;
@@ -1850,6 +2180,7 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
     m_preview_changed_pixel_ratio = status.changed_pixel_ratio;
     m_preview_minimum_feature_px = status.minimum_feature_px;
     m_palette_quality_ok = status.palette_quality_ok;
+    m_material_fragmentation_ok = status.material_fragmentation_ok;
     m_model_input_eligible = status.model_input_eligible;
     m_model_input_primary_blocker = status.model_input_blockers.empty() ? std::string() : status.model_input_blockers.front();
     m_meaningful_palette_count = status.meaningful_palette_count;
@@ -1866,7 +2197,7 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
         m_prepared_prompt->SetValue(wxString::FromUTF8(status.prepared_prompt));
     if (status.preview_ready && m_preview_path.empty() && !m_restoring_input) {
         m_status->SetLabel(_L("正在加载 AI 风格预览..."));
-        m_style_preview_placeholder = _L("正在加载 AI 处理图...");
+        m_style_preview_placeholder = _L("正在加载 AI 生成图...");
         update_preview_view();
         download_preview(sequence);
     }
@@ -1876,10 +2207,15 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
                 << _L(" · ") << wxString::FromUTF8(m_artifact_format);
         if (status.artifact_size > 0)
             summary << wxString::Format(_L(" · %.1f MB"), double(status.artifact_size) / (1024.0 * 1024.0));
+        if (status.visual_quality.available && !status.visual_quality.import_recommended)
+            summary << _L(" · AI 外观门禁未通过，不建议直接导入");
         m_result_summary->SetLabel(summary);
     } else if (m_awaiting_palette_confirmation) {
         m_result_summary->SetLabel(
             _L("AI 推荐配色已准备好。可以替换、删除或补充颜色；确认后再匹配实际耗材。"));
+    } else if (m_awaiting_confirmation && status.phase == "multiview_retry") {
+        m_result_summary->SetLabel(
+            _L("四视图在付费前检查阶段停止，当前预览和配色均已保留；可重试，或先换一张图片。"));
     } else if (m_awaiting_confirmation) {
         if (status.preview_ready && !status.model_input_eligible) {
             m_result_summary->SetLabel(model_input_quality_label(m_model_input_primary_blocker));
@@ -1893,11 +2229,18 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
                 m_result_summary->SetLabel(_L("主体占画面比例过小，请放大主体后重新生成预览。"));
             } else if (status.largest_subject_component_ratio < 0.90) {
                 m_result_summary->SetLabel(_L("主体被背景分成多个不相连区域，请调整构图后重新生成预览。"));
+            } else if (status.largest_detached_subject_diagonal_ratio >= 0.08) {
+                m_result_summary->SetLabel(_L("检测到细长部件与主体分离，请重新生成并确认把手、枝条或支撑已连接。"));
+            } else if (!status.material_fragmentation_ok) {
+                m_result_summary->SetLabel(_L("检测到肤色或衣服颜色形成错误杂色块，请重新生成图片预览后再生成 3D。"));
             } else {
                 m_result_summary->SetLabel(_L("预览未通过打印性检查，请调整构图或配色后重新生成。"));
             }
         } else if (status.preview_ready && !status.palette.empty()) {
-            m_result_summary->SetLabel(_L("图片预览已准备好，请确认主体和配色是否符合预期。"));
+            m_result_summary->SetLabel(
+                m_job_style == "realistic" && m_job_generation_profile == "quality"
+                    ? _L("头肩建模参考与四色预览已准备好；请确认脸型、五官、肩部裁切和单层底座。")
+                    : _L("图片预览已准备好，请确认主体和配色是否符合预期。"));
         } else {
             m_result_summary->SetLabel(m_job_preview_expected
                 ? _L("AI 风格预览加载完成后即可生成 3D 模型。")
@@ -1907,6 +2250,22 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
         m_result_summary->SetLabel(localized_job_status(status));
     }
     update_workflow(&status);
+    const bool palette_recommendation_fallback =
+        status.state == "failed" && !m_custom_palette.empty() &&
+        status.message.find("palette recommendation") != std::string::npos;
+    if (palette_recommendation_fallback) {
+        m_palette_source->SetSelection(1);
+        m_palette_recommendation_confirmed = false;
+        m_awaiting_palette_confirmation = false;
+        m_job_palette.clear();
+        m_job_palette_roles.clear();
+        m_job_use_printable_colors = true;
+        refresh_palette();
+        update_progress(0, 1, _L("输入"));
+        m_workflow_steps->SetLabel(_L("AI 推荐未通过对比度检查，已保留当前颜色，可直接生成图片预览"));
+        m_status->SetLabel(_L("AI 推荐颜色过于接近，已自动保留当前有效配色。"));
+        m_result_summary->SetLabel(_L("当前 1–4 种颜色仍可编辑，也可直接生成图片预览。"));
+    }
     if (m_busy)
         m_poll_timer.StartOnce(1500);
     refresh_controls();
@@ -1932,7 +2291,27 @@ void ModelGenerationPanel::schedule_poll()
         [weak, sequence](std::string error) mutable {
             if (!weak) return;
             wxGetApp().CallAfter([weak, sequence, error = std::move(error)]() {
-                if (weak) weak->handle_error(error, sequence);
+                if (!weak)
+                    return;
+                weak->handle_error(error, sequence);
+                // A paid-task preflight can reject the request without changing
+                // the persisted preview job (for example when its subject mask
+                // needs local repair).  Reload that authoritative state so the
+                // user can retry the same approved preview instead of being left
+                // on a false "generating" step with only "start over" available.
+                if (!weak || weak->m_shutdown || sequence != weak->m_sequence || weak->m_job_id.empty())
+                    return;
+                const std::string job_id = weak->m_job_id;
+                weak->m_client.get_status(job_id,
+                    [weak, sequence](AIModelGenerationClient::JobStatus status) mutable {
+                        if (!weak)
+                            return;
+                        wxGetApp().CallAfter([weak, sequence, status = std::move(status)]() mutable {
+                            if (weak)
+                                weak->handle_status(std::move(status), sequence);
+                        });
+                    },
+                    [](std::string) {});
             });
         });
 }
@@ -1964,16 +2343,16 @@ void ModelGenerationPanel::download_preview(uint64_t sequence)
                 weak->m_style_preview_ready = true;
                 weak->m_client.record_journey_event("preview_ready", weak->m_job_id);
                 weak->m_style_preview_placeholder.clear();
-                weak->m_preview_kind->SetLabel(_L("图片对照"));
+                weak->m_preview_kind->SetLabel(_L("结果对照"));
                 weak->apply_preview_stage();
                 if (weak->m_reference_image.IsOk()) {
                     weak->m_preview_message->SetLabel(
-                        wxString::Format(_L("参考图 %d × %d px  ·  AI 处理图 %d × %d px"),
+                        wxString::Format(_L("原图 %d × %d px  ·  AI 生成图 %d × %d px"),
                                          weak->m_reference_image.GetWidth(), weak->m_reference_image.GetHeight(),
                                          image.GetWidth(), image.GetHeight()));
                 } else {
                     weak->m_preview_message->SetLabel(
-                        wxString::Format(_L("AI 处理图 · %d × %d px"), image.GetWidth(), image.GetHeight()));
+                        wxString::Format(_L("AI 生成图 · %d × %d px"), image.GetWidth(), image.GetHeight()));
                 }
                 weak->m_status->SetLabel(_L("风格预览已生成，请确认后继续生成 3D 模型。"));
                 weak->update_preview_view(true);
@@ -2001,11 +2380,13 @@ void ModelGenerationPanel::download_preview(uint64_t sequence)
 
 void ModelGenerationPanel::download_auxiliary_previews(uint64_t sequence, int stage)
 {
-    if (m_shutdown || sequence != m_sequence || m_job_id.empty() || stage >= 3)
+    if (m_shutdown || sequence != m_sequence || m_job_id.empty() || stage >= 4)
         return;
-    const bool available[] = {m_raw_preview_available, m_strict_preview_available, m_heatmap_available};
-    const char* routes[] = {"raw-preview", "strict-preview", "heatmap"};
-    const char* suffixes[] = {"raw", "strict", "heatmap"};
+    const bool available[] = {
+        m_raw_preview_available, m_model_reference_available, m_strict_preview_available, m_heatmap_available
+    };
+    const char* routes[] = {"raw-preview", "model-reference", "strict-preview", "heatmap"};
+    const char* suffixes[] = {"raw", "model-reference", "strict", "heatmap"};
     if (!available[stage]) {
         download_auxiliary_previews(sequence, stage + 1);
         return;
@@ -2019,8 +2400,12 @@ void ModelGenerationPanel::download_auxiliary_previews(uint64_t sequence, int st
                 if (!weak || weak->m_shutdown || sequence != weak->m_sequence) return;
                 wxImage image(downloaded.wstring());
                 if (image.IsOk()) {
-                    if (stage == 0) weak->m_raw_preview_image = image;
-                    else if (stage == 1) weak->m_strict_preview_image = image;
+                    if (stage == 0) {
+                        weak->m_raw_preview_image = image;
+                        weak->m_raw_preview_path = downloaded;
+                    }
+                    else if (stage == 1) weak->m_model_reference_image = image;
+                    else if (stage == 2) weak->m_strict_preview_image = image;
                     else weak->m_heatmap_image = image;
                     weak->apply_preview_stage();
                 }
@@ -2100,20 +2485,29 @@ void ModelGenerationPanel::download_model_preview(uint64_t sequence)
                 weak->m_busy = false;
                 weak->m_model_preview_ready = true;
                 weak->m_library_model_loaded = false;
-                weak->update_progress(95, 4, _L("检查 3D 模型"));
-                weak->m_status->SetLabel(_L("3D 模型已生成，请确认外观后再生成 G-code。"));
+                weak->update_progress(100, 4, _L("检查并导入"));
+                const bool visual_gate_blocked =
+                    weak->m_visual_quality.available && !weak->m_visual_quality.import_recommended;
+                weak->m_status->SetLabel(
+                    visual_gate_blocked
+                        ? _L("模型已生成，但人脸相似度或材料归属未通过；建议重新优化。")
+                        : _L("3D 模型已生成，请确认外观后再生成 G-code。"));
                 weak->m_model_stats->SetLabel(wxString::Format(
                     _L("%llu 个三角面 · %llu 种颜色\n%.1f × %.1f × %.1f mm\n%s"),
                     static_cast<unsigned long long>(triangle_count), static_cast<unsigned long long>(color_count),
                     dimensions.x(), dimensions.y(), dimensions.z(),
                     model_load_summary(triangle_count, load_seconds).c_str()));
-                weak->m_model_preview_message->SetLabel(_L("拖动可旋转，滚轮可缩放；确认无误后点击“确认并生成 G-code”。"));
-                weak->m_result_summary->SetLabel(_L("模型已下载并通过 OBJ 解析，可继续导入和切片。"));
+                weak->m_model_preview_message->SetLabel(
+                    _L("模型已自动摆正；拖动旋转、滚轮缩放，随时可点击“摆正模型”。"));
+                weak->m_result_summary->SetLabel(
+                    visual_gate_blocked
+                        ? _L("模型文件与结构可用，但外观门禁未通过；强制导入前会再次确认。")
+                        : _L("模型已下载并通过 OBJ 解析，可继续导入和切片。"));
                 const size_t artifact_size = boost::filesystem::file_size(path);
                 weak->save_library_entry(artifact_size, triangle_count, dimensions.x(), dimensions.y(),
                                          dimensions.z(), color_count, load_seconds);
                 if (weak->m_preview_book != nullptr)
-                    weak->m_preview_book->SetSelection(1);
+                    weak->m_preview_book->SetSelection(0);
                 wxGetApp().CallAfter([weak]() {
                     if (weak && weak->m_model_preview != nullptr)
                         weak->m_model_preview->refresh();
@@ -2380,15 +2774,19 @@ void ModelGenerationPanel::refresh_controls()
     const bool ai_palette_source = printable_colors && m_palette_source->GetSelection() == 2;
     const bool palette_matches = m_awaiting_palette_confirmation || m_job_id.empty() ||
         (printable_colors == m_job_use_printable_colors && (!printable_colors || m_palette == m_job_palette));
-    const bool stale_job = !m_job_id.empty() && (!job_inputs_match() || !palette_matches);
+    const bool stale_job = !m_restoring_input && !m_job_id.empty() &&
+                           (!job_inputs_match() || !palette_matches);
     const bool auto_slice_after_import = m_auto_slice_after_import == nullptr ||
                                          m_auto_slice_after_import->GetValue();
     const bool show_review = m_awaiting_confirmation && !image_job && !stale_job;
     const bool local_artifact = is_nonempty_obj(m_artifact_path) ||
         (!m_job_id.empty() && is_nonempty_obj(temp_path(m_job_id, "obj")));
     const bool preview_quality_ok = m_palette_quality_ok && m_model_input_eligible;
+    const bool multiview_retry = m_job_phase == "multiview_retry";
 
-    m_preprocess->SetLabel(ai_palette_source && m_awaiting_palette_confirmation && !stale_job
+    m_preprocess->SetLabel(m_awaiting_confirmation && image_job && !stale_job
+                               ? _L("换一张")
+                               : ai_palette_source && m_awaiting_palette_confirmation && !stale_job
                                ? _L("采用配色并生成预览")
                                : ai_palette_source && !m_palette_recommendation_confirmed
                                ? _L("AI 推荐配色")
@@ -2399,8 +2797,12 @@ void ModelGenerationPanel::refresh_controls()
                                : image_input && printable_colors ? _L("生成多色图片预览")
                                : image_input ? _L("生成风格图片预览")
                                : printable_colors ? _L("生成图片预览") : _L("准备 3D 提示词"));
-    m_generate->SetLabel(image_job
-                             ? _L("确认图片并生成 3D") : _L("确认提示词并生成 3D"));
+    m_generate->SetLabel(multiview_retry ? _L("重试生成 3D")
+                                         : image_job ? _L("生成 3D") : _L("确认提示词并生成 3D"));
+    m_generate->SetToolTip(multiview_retry
+                               ? _L("重新准备四视图；通过检查后才会创建 1 个付费 3D 任务")
+                               : image_job ? _L("确认当前图片并创建 1 个付费 3D 任务")
+                               : _L("确认当前提示词并创建 1 个付费 3D 任务"));
     const bool local_model_loading = m_ready && m_artifact_download_started && !m_model_preview_ready;
     m_stop->SetLabel(local_model_loading ? _L("取消加载") : _L("停止生成"));
     m_stop->SetToolTip(local_model_loading
@@ -2411,13 +2813,18 @@ void ModelGenerationPanel::refresh_controls()
                            : auto_slice_after_import
                                ? _L("导入并自动切片")
                                : _L("导入到准备页"));
+    if (m_model_preview_ready && m_visual_quality.available && !m_visual_quality.import_recommended)
+        m_import->SetLabel(auto_slice_after_import ? _L("仍要导入并切片") : _L("仍要导入"));
+    m_import->SetToolTip(m_visual_quality.available && !m_visual_quality.import_recommended
+                             ? _L("当前模型未通过人脸相似度或材料串色门禁；点击后会再次确认")
+                             : wxEmptyString);
     if (m_library_model_loaded) {
         m_model_preview_message->SetLabel(auto_slice_after_import
-                                              ? _L("已从模型库加载。确认外观后点击“导入并切片”。")
-                                              : _L("已从模型库加载。确认外观后点击“导入到准备页”。"));
+                                              ? _L("历史模型已自动摆正；对照原图和 AI 图后可导入并切片。")
+                                              : _L("历史模型已自动摆正；对照图片后可导入到准备页。"));
         m_result_summary->SetLabel(auto_slice_after_import
-                                       ? _L("历史模型已加载到当前 3D 预览，可继续导入准备页并切片。")
-                                       : _L("历史模型已加载到当前 3D 预览，将导入准备页等待手动切片。"));
+                                       ? _L("历史模型和关联图片已加载到结果对照，可继续导入准备页并切片。")
+                                       : _L("历史模型和关联图片已加载到结果对照，将导入准备页等待手动切片。"));
     }
     m_discard->SetLabel(_L("重新开始"));
     m_clear_image->Show(image_input);
@@ -2436,6 +2843,7 @@ void ModelGenerationPanel::refresh_controls()
     m_style->Enable(!m_busy);
     m_custom_style_panel->Show(custom_style_selected);
     m_custom_style->Enable(!m_busy && custom_style_selected);
+    refresh_style_recommendation();
     m_quality->Enable(!m_busy);
     m_choose_image->Enable(!m_busy);
     m_clear_image->Enable(!m_busy);
@@ -2465,6 +2873,7 @@ void ModelGenerationPanel::refresh_controls()
                             m_model_preview_ready && !m_displayed_model_job_id.empty());
     m_visual_review_model->Enable(m_service_available && !m_busy && !m_quality_check_busy && !m_visual_check_busy &&
                                   m_model_preview_ready && !m_displayed_model_job_id.empty());
+    m_visual_review_model->SetLabel(m_reference_image.IsOk() ? _L("AI 对照原图") : _L("AI 视觉复核"));
     const wxString refinement_suffix = from_u8(m_model_refinement.prompt_suffix);
     const bool refinement_already_applied = !refinement_suffix.empty() &&
         m_prompt->GetValue().Find(refinement_suffix) != wxNOT_FOUND;
@@ -2473,9 +2882,9 @@ void ModelGenerationPanel::refresh_controls()
                                      !refinement_already_applied);
     m_discard->Enable(!m_busy && (!m_job_id.empty() || m_ready));
 
-    const bool show_preprocess = m_service_available && !m_busy && (!m_ready || stale_job) &&
+    const bool show_preprocess = !m_busy && (!m_ready || stale_job) &&
         (m_job_id.empty() || stale_job || (!m_awaiting_confirmation && !m_ready) ||
-         (m_awaiting_confirmation && !preview_quality_ok));
+         (m_awaiting_confirmation && image_job));
     m_preprocess->Show(show_preprocess);
     m_generate->Show(!m_busy && m_awaiting_confirmation && !stale_job && preview_quality_ok);
     m_stop->Show(m_busy);
@@ -2488,14 +2897,35 @@ void ModelGenerationPanel::refresh_controls()
         m_status->SetLabel(m_awaiting_palette_confirmation
                                ? _L("输入已变化；可重新推荐，或继续使用当前配色。")
                                : _L("输入或颜色已变化，请重新生成图片预览。"));
-    if (m_ready && !stale_job)
-        m_workflow_steps->SetLabel(_L("检查右侧 3D 模型，然后选择导入方式"));
+    if (m_ready && !stale_job) {
+        wxString ready_guidance = _L("检查右侧 3D 模型，然后选择导入方式");
+        if (m_visual_quality.available && !m_visual_quality.import_recommended) {
+            const bool identity_risk = std::find(
+                m_visual_quality.blocking_warnings.begin(), m_visual_quality.blocking_warnings.end(),
+                "visual_identity_mismatch") != m_visual_quality.blocking_warnings.end();
+            const bool material_risk = std::find(
+                m_visual_quality.blocking_warnings.begin(), m_visual_quality.blocking_warnings.end(),
+                "visual_material_color_mixing") != m_visual_quality.blocking_warnings.end();
+            ready_guidance = identity_risk && material_risk
+                ? _L("人脸和材料边界需复核，建议重新优化")
+                : identity_risk
+                ? _L("人脸相似度需复核，建议对照原图检查")
+                : material_risk
+                ? _L("材料边界需复核，请检查手臂、衣物和底座")
+                : _L("外观检查未通过，请展开风险项复核");
+        }
+        m_workflow_steps->SetLabel(ready_guidance);
+        m_workflow_steps->Wrap(FromDIP(330));
+        m_workflow_steps->InvalidateBestSize();
+    }
     else if (m_awaiting_palette_confirmation)
         m_workflow_steps->SetLabel(stale_job
                                        ? _L("输入已变化：重新推荐或确认继续使用当前配色")
                                        : _L("修改或确认 AI 推荐的设计目标色"));
     else if (m_awaiting_confirmation && !stale_job)
-        m_workflow_steps->SetLabel(preview_quality_ok
+        m_workflow_steps->SetLabel(multiview_retry
+                                       ? _L("付费前四视图检查未通过，可直接重试")
+                                       : preview_quality_ok
                                        ? _L("确认右侧图片效果，并选择 3D 模型精度")
                                        : _L("当前图片未通过 3D 输入检查，请重新生成"));
     else if (!m_busy)
@@ -2503,6 +2933,8 @@ void ModelGenerationPanel::refresh_controls()
                                        ? _L("请补充自定义风格描述")
                                        : valid_input ? _L("下一步：生成图片预览")
                                                      : _L("输入文字、图片，或同时使用两者"));
+    m_workflow_steps->Wrap(FromDIP(330));
+    m_workflow_steps->InvalidateBestSize();
     if (stale_job && (m_awaiting_confirmation || m_ready))
         m_result_summary->SetLabel(_L("输入内容或颜色模式发生变化，请重新生成预览后继续。"));
 
@@ -2514,9 +2946,19 @@ void ModelGenerationPanel::refresh_controls()
         m_model_decision_panel->Show(m_model_preview_ready);
     if (m_model_advanced_pane != nullptr)
         m_model_advanced_pane->Show(m_model_preview_ready);
+    if (m_model_decision_panel != nullptr) {
+        if (auto* model_page = dynamic_cast<wxScrolledWindow*>(m_model_decision_panel->GetParent())) {
+            // These sections are hidden until a model is ready. Refit the
+            // scrolled page when they appear so they are placed below the
+            // comparison row instead of painting over the image panes.
+            model_page->Layout();
+            model_page->FitInside();
+        }
+    }
     m_zoom_out->Enable(has_preview && m_preview_zoom_factor > MIN_PREVIEW_ZOOM);
     m_zoom_fit->Enable(has_preview && std::abs(m_preview_zoom_factor - 1.0) > 0.001);
     m_zoom_in->Enable(has_preview && m_preview_zoom_factor < MAX_PREVIEW_ZOOM);
+    m_front_model_view->Enable(m_model_preview_ready);
     m_reset_model_view->Enable(m_model_preview_ready);
     refresh_local_recolor_controls();
     if (m_model_preview != nullptr && m_model_preview->GetParent() != nullptr)
@@ -2689,34 +3131,56 @@ void ModelGenerationPanel::refresh_model_quality_card()
 
     wxString visual_status = _L("AI 视觉复核：未运行");
     wxString visual_summary = m_model_preview_ready
-        ? _L("点击“AI 视觉复核”后，将生成五视图并检查外观；会调用付费 AI，但不会阻断导入。")
+        ? _L("质量档会自动生成五视图并检查主体、人脸和材料串色；也可点击上方按钮重新复核。")
         : _L("模型准备好后可按需生成五视图并进行 AI 外观复核。");
     wxColour visual_foreground(91, 104, 107);
     if (m_visual_check_busy) {
         visual_status = _L("AI 视觉复核中...");
-        visual_summary = _L("正在本地生成前后左右和等轴视图，然后检查主体、底座、轮廓和色块，请稍候。");
+        visual_summary = _L("正在生成前后左右和等轴视图，并对照原图检查主体、人脸、底座和材料色区，请稍候。");
         visual_foreground = wxColour(31, 122, 116);
     } else if (m_visual_quality.available) {
         if (m_visual_quality.status == "pass") {
             visual_status = wxString::Format(_L("AI 视觉复核通过 · %d 分"), m_visual_quality.score);
             visual_foreground = wxColour(31, 122, 90);
         } else if (m_visual_quality.status == "review") {
-            visual_status = wxString::Format(_L("AI 建议人工复核 · %d 分"), m_visual_quality.score);
-            visual_foreground = wxColour(174, 112, 22);
+            visual_status = wxString::Format(
+                m_visual_quality.import_recommended
+                    ? _L("AI 建议人工复核 · %d 分")
+                    : _L("AI 外观门禁未通过 · %d 分"),
+                m_visual_quality.score);
+            visual_foreground = m_visual_quality.import_recommended
+                ? wxColour(174, 112, 22) : wxColour(181, 62, 55);
         } else {
             visual_status = _L("AI 视觉复核暂不可用");
             visual_foreground = wxColour(174, 112, 22);
         }
         visual_summary = from_u8(m_visual_quality.summary);
         const auto& codes = m_visual_quality.status == "unavailable"
-            ? m_visual_quality.errors : m_visual_quality.warnings;
-        const size_t visible = std::min<size_t>(2, codes.size());
+            ? m_visual_quality.errors
+            : !m_visual_quality.import_recommended && !m_visual_quality.blocking_warnings.empty()
+                ? m_visual_quality.blocking_warnings : m_visual_quality.warnings;
+        const size_t visible = std::min<size_t>(3, codes.size());
         for (size_t index = 0; index < visible; ++index)
             visual_summary += _L("\n• ") + visual_quality_code_label(codes[index]);
     }
     m_visual_quality_status->SetLabel(visual_status);
     m_visual_quality_status->SetForegroundColour(visual_foreground);
     m_visual_quality_summary->SetLabel(visual_summary);
+    // The compact decision card is the only quality summary visible without
+    // expanding advanced details.  A blocking identity/material result must
+    // therefore outrank non-blocking structural review warnings; otherwise a
+    // bad portrait can appear to need only support or thin-wall inspection.
+    if (m_model_decision_panel != nullptr &&
+        !(m_model_quality.available && m_model_quality.status == "reject") &&
+        m_visual_quality.available && !m_visual_quality.import_recommended) {
+        m_model_decision_status->SetLabel(wxString::Format(
+            _L("外观门禁未通过 · %d 分"), m_visual_quality.score));
+        m_model_decision_status->SetForegroundColour(wxColour(181, 62, 55));
+        m_model_decision_summary->SetLabel(visual_summary);
+        m_model_decision_summary->Wrap(FromDIP(620));
+        m_model_decision_summary->InvalidateBestSize();
+        m_model_decision_panel->SetBackgroundColour(wxColour(253, 235, 233));
+    }
     if (m_model_refinement.available && !m_model_refinement.prompt_suffix.empty()) {
         wxString refinement_summary = from_u8(m_model_refinement.summary);
         const size_t visible = std::min<size_t>(3, m_model_refinement.issues.size());
@@ -2788,8 +3252,9 @@ void ModelGenerationPanel::on_visual_review_model(wxCommandEvent&)
         return;
     MessageDialog confirm(
         this,
-        _L("要生成当前模型的五视图并调用 AI 检查外观吗？\n\n"
-           "五视图会发送给 AI 服务，此操作可能消耗 API 额度；复核结果只作建议，不会阻断导入。"),
+        _L("要生成当前模型的五视图并调用 AI 对照检查吗？\n\n"
+           "会重点检查主体/人脸与原图的相似度，以及肤色、衣物、头发和底座是否串色。\n"
+           "五视图会发送给 AI 服务，此操作可能消耗 API 额度；严重的人脸偏差或材料串色会提示不建议导入，但仍可手动确认继续。"),
         _L("确认 AI 视觉复核"), wxYES_NO | wxICON_QUESTION);
     if (confirm.ShowModal() != wxID_YES)
         return;
@@ -2813,7 +3278,9 @@ void ModelGenerationPanel::on_visual_review_model(wxCommandEvent&)
                 weak->m_status->SetLabel(status.visual_quality.status == "pass"
                     ? _L("AI 视觉复核完成，未发现明显外观风险。")
                     : status.visual_quality.status == "review"
-                    ? _L("AI 视觉复核完成，建议人工确认提示项。")
+                    ? status.visual_quality.import_recommended
+                        ? _L("AI 视觉复核完成，建议人工确认提示项。")
+                        : _L("AI 外观门禁未通过，不建议直接导入；请查看人脸和串色风险。")
                     : _L("AI 视觉复核暂不可用，可稍后重试。"));
                 weak->refresh_controls();
             });
@@ -2887,7 +3354,7 @@ void ModelGenerationPanel::refresh_local_recolor_controls()
     m_local_recolor_controls->Show(editing);
     const bool repair_color_regions = has_tiny_color_regions();
     m_local_recolor_toggle->SetLabel(
-        editing ? _L("收起改色工具") : repair_color_regions ? _L("修复杂色色块") : _L("编辑局部颜色"));
+        editing ? _L("收起改色") : repair_color_regions ? _L("修复杂色块") : _L("开始改色"));
     m_local_recolor_toggle->SetToolTip(repair_color_regions
         ? _L("检查已识别的过小耗材色块，在模型上选择区域并合并到合适的目标色")
         : _L("打开局部改色工具，在模型上直接选择需要换色的部位"));
@@ -3089,10 +3556,11 @@ void ModelGenerationPanel::on_apply_local_recolor(wxCommandEvent&)
     m_status->SetLabel(_L("局部改色完成，原始 OBJ 已保留。"));
     m_result_summary->SetLabel(_L("已生成新的顶点色 OBJ，可继续预览、改色或导入切片。"));
 
+    const boost::filesystem::path history_root = generated_models_root();
     nlohmann::json metadata {
-        {"schema_version", 3},
+        {"schema_version", 4},
         {"job_id", edit_id},
-        {"model_path", destination.lexically_relative(generated_models_root()).generic_string()},
+        {"model_path", destination.lexically_relative(history_root).generic_string()},
         {"source", "local_recolor"},
         {"prompt", "局部改色模型"},
         {"palette", display_palette},
@@ -3105,8 +3573,12 @@ void ModelGenerationPanel::on_apply_local_recolor(wxCommandEvent&)
         {"triangle_count", triangle_count},
         {"color_count", color_count},
         {"dimensions", {dimensions.x(), dimensions.y(), dimensions.z()}},
-        {"source_model", source.lexically_relative(generated_models_root()).generic_string()}
+        {"source_model", source.lexically_relative(history_root).generic_string()}
     };
+    if (!m_reference_image_path.empty() && path_is_inside(history_root, m_reference_image_path))
+        metadata["reference_image_path"] = m_reference_image_path.lexically_relative(history_root).generic_string();
+    if (!m_raw_preview_path.empty() && path_is_inside(history_root, m_raw_preview_path))
+        metadata["ai_image_path"] = m_raw_preview_path.lexically_relative(history_root).generic_string();
     boost::filesystem::ofstream metadata_stream(library_metadata_path(edit_id));
     if (metadata_stream) {
         metadata_stream << metadata.dump(2);
@@ -3145,7 +3617,21 @@ std::vector<std::string> ModelGenerationPanel::current_palette() const
 
 AIModelGenerationClient::PaletteRoles ModelGenerationPanel::current_palette_roles() const
 {
-    return use_printable_colors() ? m_palette_roles : AIModelGenerationClient::PaletteRoles {};
+    if (!use_printable_colors())
+        return {};
+    const std::vector<std::string> palette = current_palette();
+    if (palette.empty())
+        return {};
+    const size_t expected_roles = std::min(palette.size(), PALETTE_ROLE_IDS.size());
+    std::set<std::string> assigned_colors;
+    for (size_t index = 0; index < expected_roles; ++index) {
+        const auto role = m_palette_roles.find(PALETTE_ROLE_IDS[index]);
+        if (role == m_palette_roles.end()
+            || std::find(palette.begin(), palette.end(), role->second) == palette.end()
+            || !assigned_colors.insert(role->second).second)
+            return automatic_palette_roles(palette);
+    }
+    return m_palette_roles;
 }
 
 void ModelGenerationPanel::refresh_palette_roles(const std::vector<std::string>& palette)
@@ -3198,6 +3684,105 @@ void ModelGenerationPanel::on_palette_role_changed(size_t role_index)
     refresh_controls();
 }
 
+void ModelGenerationPanel::request_style_recommendation()
+{
+    if (m_shutdown || m_selected_image_path.empty())
+        return;
+    const uint64_t sequence = ++m_style_recommendation_sequence;
+    const boost::filesystem::path image_path = m_selected_image_path;
+    m_style_recommendation_loading = m_service_available;
+    m_style_recommendation_available = false;
+    m_style_recommendation = {};
+    refresh_style_recommendation();
+    if (!m_service_available) {
+        refresh_controls();
+        return;
+    }
+
+    wxWeakRef<ModelGenerationPanel> weak(this);
+    m_client.recommend_image_style(
+        m_prompt->GetValue().ToUTF8().data(), image_path,
+        [weak, sequence, image_path](AIModelGenerationClient::StyleRecommendation recommendation) mutable {
+            if (!weak) return;
+            wxGetApp().CallAfter([weak, sequence, image_path, recommendation = std::move(recommendation)]() mutable {
+                if (!weak || weak->m_shutdown || sequence != weak->m_style_recommendation_sequence ||
+                    image_path != weak->m_selected_image_path)
+                    return;
+                weak->m_style_recommendation_loading = false;
+                weak->m_style_recommendation_available = true;
+                weak->m_style_recommendation = std::move(recommendation);
+                if (!weak->m_style_user_selected)
+                    weak->select_style(weak->m_style_recommendation.primary, false);
+                else
+                    weak->refresh_controls();
+            });
+        },
+        [weak, sequence, image_path](std::string error) {
+            if (!weak) return;
+            BOOST_LOG_TRIVIAL(warning) << "Local model style recommendation failed: " << error;
+            wxGetApp().CallAfter([weak, sequence, image_path]() {
+                if (!weak || weak->m_shutdown || sequence != weak->m_style_recommendation_sequence ||
+                    image_path != weak->m_selected_image_path)
+                    return;
+                weak->m_style_recommendation_loading = false;
+                weak->m_style_recommendation_available = false;
+                weak->refresh_controls();
+            });
+        });
+}
+
+void ModelGenerationPanel::select_style(const std::string& style, bool user_selected)
+{
+    if (m_style == nullptr)
+        return;
+    m_style->SetSelection(style_selection(style));
+    if (user_selected)
+        m_style_user_selected = true;
+    const bool multicolor = style_uses_printable_colors(current_style());
+    if (m_use_printable_colors != nullptr)
+        m_use_printable_colors->SetValue(multicolor);
+    if (m_import_color_mode != nullptr)
+        m_import_color_mode->SetSelection(multicolor ? 0 : 2);
+    refresh_palette();
+    refresh_controls();
+}
+
+void ModelGenerationPanel::refresh_style_recommendation()
+{
+    if (m_style_recommendation_panel == nullptr)
+        return;
+    const bool show = has_image_input() &&
+        (m_style_recommendation_loading || m_style_recommendation_available);
+    m_style_recommendation_panel->Show(show);
+    if (!show)
+        return;
+
+    const bool alternatives_visible = m_style_recommendation_available &&
+        m_style_recommendation.alternatives.size() == m_style_recommendation_alternatives.size();
+    if (m_style_recommendation_loading) {
+        m_style_recommendation_title->SetLabel(_L("正在推荐风格..."));
+        m_style_recommendation_reason->SetLabel(_L("只在本机分析，不会调用付费服务。"));
+    } else if (m_style_recommendation_available) {
+        m_style_recommendation_title->SetLabel(
+            _L("推荐：") + style_label(m_style_recommendation.primary));
+        m_style_recommendation_reason->SetLabel(
+            style_recommendation_reason(m_style_recommendation.reason));
+    } else {
+        m_style_recommendation_title->SetLabel(_L("风格推荐暂不可用"));
+        m_style_recommendation_reason->SetLabel(_L("可直接使用上方风格选择，不影响继续生成。"));
+    }
+    m_style_recommendation_reason->Wrap(FromDIP(290));
+    m_style_recommendation_alternative_label->Show(alternatives_visible);
+    for (size_t index = 0; index < m_style_recommendation_alternatives.size(); ++index) {
+        wxButton* button = m_style_recommendation_alternatives[index];
+        button->Show(alternatives_visible);
+        if (alternatives_visible)
+            button->SetLabel(style_label(m_style_recommendation.alternatives[index]));
+        button->Enable(alternatives_visible && !m_busy);
+    }
+    m_style_recommendation_panel->Layout();
+}
+
 bool ModelGenerationPanel::use_printable_colors() const
 {
     return m_use_printable_colors == nullptr || m_use_printable_colors->GetValue();
@@ -3209,7 +3794,10 @@ std::string ModelGenerationPanel::current_style() const
     case 0: return "sculpture";
     case 1: return "realistic";
     case 2: return "cartoon";
-    case 3: return "custom";
+    case 3: return "low_poly";
+    case 4: return "relief";
+    case 5: return "diorama";
+    case 6: return "custom";
     default: return "sculpture";
     }
 }
@@ -3232,7 +3820,7 @@ wxString ModelGenerationPanel::current_style_label() const
 
 int ModelGenerationPanel::current_face_limit() const
 {
-    return current_generation_profile() == "performance" ? 300000 : 1000000;
+    return current_generation_profile() == "performance" ? 300000 : 2000000;
 }
 
 std::string ModelGenerationPanel::current_generation_profile() const
@@ -3340,9 +3928,19 @@ void ModelGenerationPanel::refresh_palette_recommendation()
     if (!ai_source)
         return;
 
-    const bool stale = !m_job_id.empty() && !job_base_inputs_match();
-    if (m_busy && !m_awaiting_confirmation)
-        m_palette_recommendation_summary->SetLabel(_L("AI 正在推荐易区分、适合打印的配色..."));
+    const bool stale = !m_restoring_input && !m_job_id.empty() && !job_base_inputs_match();
+    if (m_busy && !m_awaiting_confirmation) {
+        const bool generating_model =
+            m_job_phase == "preparing_multiview" || m_job_phase == "generating" ||
+            m_job_phase == "texturing" || m_job_phase == "converting" ||
+            m_job_phase == "downloading_artifact" || m_job_phase == "checking_model";
+        m_palette_recommendation_summary->SetLabel(
+            !m_palette_recommendation_confirmed
+                ? _L("AI 正在推荐易区分、适合打印的配色...")
+                : generating_model
+                ? _L("已采用当前配色；正在生成并检查 3D 模型...")
+                : _L("正在生成并检查图片预览..."));
+    }
     else if (m_palette_recommendation.available) {
         wxString text = _L("推荐配色已显示在上方色块中，可点击色块删除或添加新颜色。");
         if (stale)
@@ -3352,7 +3950,9 @@ void ModelGenerationPanel::refresh_palette_recommendation()
         m_palette_recommendation_summary->SetLabel(text);
     } else {
         m_palette_recommendation_summary->SetLabel(
-            _L("AI 会推荐理想目标色；确认后再由你匹配实际耗材。"));
+            m_palette_recommendation_confirmed
+                ? _L("已恢复上次 AI 配色；可继续换图或生成 3D。")
+                : _L("AI 会推荐理想目标色；确认后再由你匹配实际耗材。"));
     }
     m_palette_recommendation_summary->Wrap(FromDIP(300));
 
@@ -3474,19 +4074,24 @@ void ModelGenerationPanel::reset(bool remove_remote)
     ++m_sequence;
     cleanup_files();
     m_job_id.clear();
+    m_job_phase.clear();
+    m_job_provider_name.clear();
+    m_job_provider_task_id.clear();
+    m_job_provider_conversion_task_id.clear();
     m_job_palette.clear();
     m_job_palette_roles.clear();
     m_job_use_printable_colors = false;
     m_job_prompt.clear();
     m_job_style.clear();
     m_job_custom_style.clear();
-    m_job_face_limit = 300000;
+    m_job_face_limit = 2000000;
     m_job_generation_profile = "quality";
     m_job_image_path.clear();
     m_job_preview_expected = false;
     m_artifact_format.clear();
     m_artifact_color_encoding.clear();
     m_busy = false;
+    m_poll_connection_failures = 0;
     m_awaiting_confirmation = false;
     m_awaiting_palette_confirmation = false;
     m_palette_recommendation_confirmed = false;
@@ -3509,9 +4114,11 @@ void ModelGenerationPanel::reset(bool remove_remote)
         m_model_preview_message->SetLabel(_L("生成完成后可拖动旋转模型，并使用滚轮缩放。"));
     m_style_preview_ready = false;
     m_raw_preview_available = false;
+    m_model_reference_available = false;
     m_strict_preview_available = false;
     m_heatmap_available = false;
     m_palette_quality_ok = true;
+    m_material_fragmentation_ok = true;
     m_model_input_eligible = true;
     m_model_input_primary_blocker.clear();
     m_meaningful_palette_count = 0;
@@ -3532,6 +4139,8 @@ void ModelGenerationPanel::reset(bool remove_remote)
 void ModelGenerationPanel::cleanup_files()
 {
     m_preview_path.clear();
+    m_reference_image_path.clear();
+    m_raw_preview_path.clear();
     m_artifact_path.clear();
 }
 
@@ -3593,7 +4202,19 @@ void ModelGenerationPanel::load_library_entries()
             entry.auto_slice_requested = metadata.value("auto_slice_requested", false);
             entry.print_feedback = metadata.value("print_feedback", std::string());
             entry.use_printable_colors = metadata.value("use_printable_colors", false);
-            const std::string prompt = metadata.value("prompt", std::string());
+            const std::string provider = metadata.value("provider", std::string());
+            const std::string provider_task_id = metadata.value("provider_task_id", std::string());
+            const std::string provider_conversion_task_id =
+                metadata.value("provider_conversion_task_id", std::string());
+            if (provider == "tripo" && valid_provider_task_id(provider_task_id)) {
+                entry.provider_name = provider;
+                entry.provider_task_id = provider_task_id;
+                if (valid_provider_task_id(provider_conversion_task_id))
+                    entry.provider_conversion_task_id = provider_conversion_task_id;
+            }
+            std::string prompt = metadata.value("prompt", std::string());
+            if (prompt == INTERNAL_DEFAULT_IMAGE_INSTRUCTION)
+                prompt.clear();
             if (!prompt.empty()) {
                 entry.title = wxString::FromUTF8(prompt);
                 if (entry.title.length() > 32)
@@ -3614,6 +4235,8 @@ void ModelGenerationPanel::load_library_entries()
                         entry.palette_roles.emplace(role, color->get<std::string>());
                 }
             }
+            entry.reference_image_path = library_image_path(metadata, "reference_image_path", root);
+            entry.ai_image_path = library_image_path(metadata, "ai_image_path", root);
         }
 
         const boost::filesystem::path job_preview = root / job_id / "preview.png";
@@ -3625,6 +4248,18 @@ void ModelGenerationPanel::load_library_entries()
             entry_ec.clear();
             if (boost::filesystem::is_regular_file(download_preview, entry_ec))
                 entry.preview_path = download_preview;
+        }
+        if (entry.reference_image_path.empty()) {
+            const boost::filesystem::path legacy_input = temp_path(job_id + "-input", "png");
+            if (is_supported_image(legacy_input) && path_is_inside(root, legacy_input))
+                entry.reference_image_path = legacy_input;
+        }
+        if (entry.ai_image_path.empty()) {
+            const boost::filesystem::path legacy_raw = temp_path(job_id + "-raw", "png");
+            if (is_supported_image(legacy_raw) && path_is_inside(root, legacy_raw))
+                entry.ai_image_path = legacy_raw;
+            else if (is_supported_image(entry.preview_path) && path_is_inside(root, entry.preview_path))
+                entry.ai_image_path = entry.preview_path;
         }
 
         if (entry.palette.empty()) {
@@ -3669,6 +4304,10 @@ void ModelGenerationPanel::load_library_entries()
                 _L(" · %.1f 万面"), static_cast<double>(entry.triangle_count) / 10000.0);
         if (entry.load_seconds > 0.0)
             entry.details += wxString::Format(_L(" · 上次加载 %.2f 秒"), entry.load_seconds);
+        entry.details += _L("\n素材：");
+        entry.details += entry.reference_image_path.empty() ? _L("原图未保存") : _L("原图 ✓");
+        entry.details += _L(" · ");
+        entry.details += entry.ai_image_path.empty() ? _L("AI 图未保存") : _L("AI 图 ✓");
         if (entry.imported_at > 0) {
             entry.details += entry.auto_slice_requested
                 ? _L("\n已导入 · 已请求自动切片（完成状态请在 G-code/设备页确认）")
@@ -3700,8 +4339,18 @@ void ModelGenerationPanel::save_library_entry(size_t artifact_size, size_t trian
     if (m_job_id.empty() || m_displayed_model_path.empty())
         return;
     const boost::filesystem::path root = generated_models_root();
+    const boost::filesystem::path reference_image = archive_library_image(
+        !m_reference_image_path.empty() ? m_reference_image_path : m_job_image_path,
+        m_job_id, "reference");
+    const boost::filesystem::path ai_image = archive_library_image(
+        !m_raw_preview_path.empty() ? m_raw_preview_path : m_preview_path,
+        m_job_id, "ai");
+    if (!reference_image.empty())
+        m_reference_image_path = reference_image;
+    if (!ai_image.empty())
+        m_raw_preview_path = ai_image;
     nlohmann::json metadata {
-        {"schema_version", 3},
+        {"schema_version", 5},
         {"job_id", m_job_id},
         {"model_path", m_displayed_model_path.lexically_relative(root).generic_string()},
         {"source", job_uses_image() ? (m_job_prompt.empty() ? "image" : "text_image") : "text"},
@@ -3720,8 +4369,18 @@ void ModelGenerationPanel::save_library_entry(size_t artifact_size, size_t trian
         {"load_seconds", load_seconds},
         {"dimensions", {width, depth, height}}
     };
+    if (!m_job_provider_task_id.empty()) {
+        metadata["provider"] = m_job_provider_name;
+        metadata["provider_task_id"] = m_job_provider_task_id;
+        if (!m_job_provider_conversion_task_id.empty())
+            metadata["provider_conversion_task_id"] = m_job_provider_conversion_task_id;
+    }
     if (!m_preview_path.empty())
         metadata["preview_path"] = m_preview_path.lexically_relative(root).generic_string();
+    if (!reference_image.empty())
+        metadata["reference_image_path"] = reference_image.lexically_relative(root).generic_string();
+    if (!ai_image.empty())
+        metadata["ai_image_path"] = ai_image.lexically_relative(root).generic_string();
 
     boost::filesystem::ofstream stream(library_metadata_path(m_job_id));
     if (!stream) {
@@ -3734,6 +4393,8 @@ void ModelGenerationPanel::save_library_entry(size_t artifact_size, size_t trian
 }
 
 void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& model_path,
+                                               const boost::filesystem::path& reference_image_path,
+                                               const boost::filesystem::path& ai_image_path,
                                                const std::vector<std::string>& palette,
                                                const AIModelGenerationClient::PaletteRoles& palette_roles,
                                                bool use_printable_colors,
@@ -3741,6 +4402,10 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
 {
     if (m_busy || m_model_preview == nullptr)
         return;
+    // Clicking a history entry is an explicit context switch.  Detach the
+    // current preview below, but do not delete its remote job or source input.
+    // This keeps history loading to one action even when a restored image
+    // preview is still waiting for its paid-generation decision.
     boost::system::error_code ec;
     if (!boost::filesystem::is_regular_file(model_path, ec)) {
         m_status->SetLabel(_L("历史模型文件已不存在。"));
@@ -3770,9 +4435,11 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
     }
     const double load_seconds = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - load_started).count();
+    const wxImage reference_image = reference_image_path.empty() ? wxImage() : wxImage(reference_image_path.wstring());
+    const wxImage ai_image = ai_image_path.empty() ? wxImage() : wxImage(ai_image_path.wstring());
     nlohmann::json metadata = read_json(library_metadata_path(job_id));
     if (metadata.is_object()) {
-        metadata["schema_version"] = 3;
+        metadata["schema_version"] = std::max(4, metadata.value("schema_version", 0));
         metadata["triangle_count"] = triangle_count;
         metadata["color_count"] = color_count;
         metadata["load_seconds"] = load_seconds;
@@ -3792,6 +4459,24 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
     m_job_style.clear();
     m_job_custom_style.clear();
     m_job_image_path.clear();
+    m_reference_image_path = reference_image.IsOk() ? reference_image_path : boost::filesystem::path();
+    m_raw_preview_path = ai_image.IsOk() ? ai_image_path : boost::filesystem::path();
+    m_reference_image = reference_image.IsOk() ? reference_image.Copy() : wxImage();
+    m_raw_preview_image = ai_image.IsOk() ? ai_image.Copy() : wxImage();
+    m_model_reference_image = wxImage();
+    m_strict_preview_image = wxImage();
+    m_clean_preview_image = ai_image.IsOk() ? ai_image.Copy() : wxImage();
+    m_heatmap_image = wxImage();
+    m_raw_preview_available = ai_image.IsOk();
+    m_model_reference_available = false;
+    m_strict_preview_available = false;
+    m_heatmap_available = false;
+    m_style_preview_ready = ai_image.IsOk();
+    m_style_preview_placeholder = ai_image.IsOk()
+        ? wxString()
+        : _L("该历史记录未保存 AI 生成图");
+    if (m_preview_stage != nullptr)
+        m_preview_stage->SetSelection(0);
     m_artifact_path = model_path;
     m_artifact_format = "obj";
     m_artifact_color_encoding = "vertex_colors";
@@ -3808,17 +4493,25 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
     m_model_preview_ready = true;
     m_library_model_loaded = true;
     clear_model_quality();
-    update_progress(95, 4, _L("检查 3D 模型"));
+    update_progress(100, 4, _L("检查并导入"));
     m_model_stats->SetLabel(wxString::Format(
         _L("%llu 个三角面 · %llu 种颜色\n%.1f × %.1f × %.1f mm\n%s"),
         static_cast<unsigned long long>(triangle_count), static_cast<unsigned long long>(color_count),
         dimensions.x(), dimensions.y(), dimensions.z(),
         model_load_summary(triangle_count, load_seconds).c_str()));
-    m_model_preview_message->SetLabel(_L("已从模型库加载。确认外观后点击“导入并切片”。"));
+    m_model_preview_message->SetLabel(_L("历史模型已自动摆正；可同时对照原图和 AI 图后再导入。"));
     m_status->SetLabel(_L("已加载历史模型：") + title);
-    m_result_summary->SetLabel(_L("历史模型已加载到当前 3D 预览，可继续导入准备页并切片。"));
+    m_result_summary->SetLabel(_L("历史模型已加载到结果对照，可继续检查图片并导入切片。"));
+    m_preview_message->SetLabel(reference_image.IsOk() && ai_image.IsOk()
+        ? _L("历史素材已恢复：原图与 AI 生成图可同屏对照。")
+        : reference_image.IsOk()
+            ? _L("已恢复原图；该历史记录未保存 AI 生成图。")
+            : ai_image.IsOk()
+                ? _L("已恢复 AI 生成图；该任务没有可用原图。")
+                : _L("旧历史记录未保存关联图片，3D 模型仍可正常预览。"));
     if (m_preview_book != nullptr)
-        m_preview_book->SetSelection(1);
+        m_preview_book->SetSelection(0);
+    apply_preview_stage(true);
     m_model_preview->refresh();
     refresh_controls();
     const uint64_t sequence = m_sequence;
@@ -3834,6 +4527,7 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
                     weak->m_job_palette_roles = status.palette_roles;
                     weak->m_displayed_model_palette_roles = status.palette_roles;
                 }
+                weak->update_library_provider_tasks(job_id, status);
                 weak->apply_model_quality(status.model_quality);
                 weak->apply_visual_quality(status.visual_quality);
                 weak->apply_model_refinement(status.refinement);
@@ -3852,6 +4546,34 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
         });
 }
 
+void ModelGenerationPanel::update_library_provider_tasks(
+    const std::string& job_id, const AIModelGenerationClient::JobStatus& status)
+{
+    if (job_id.empty() || status.provider_name != "tripo" ||
+        !valid_provider_task_id(status.provider_task_id))
+        return;
+    const boost::filesystem::path metadata_path = library_metadata_path(job_id);
+    nlohmann::json metadata = read_json(metadata_path);
+    if (!metadata.is_object())
+        metadata = nlohmann::json::object();
+    const bool unchanged = metadata.value("provider", std::string()) == status.provider_name &&
+        metadata.value("provider_task_id", std::string()) == status.provider_task_id &&
+        metadata.value("provider_conversion_task_id", std::string()) == status.provider_conversion_task_id;
+    if (unchanged)
+        return;
+    metadata["schema_version"] = std::max(5, metadata.value("schema_version", 0));
+    metadata["job_id"] = job_id;
+    metadata["provider"] = status.provider_name;
+    metadata["provider_task_id"] = status.provider_task_id;
+    if (!status.provider_conversion_task_id.empty())
+        metadata["provider_conversion_task_id"] = status.provider_conversion_task_id;
+    if (!write_json(metadata_path, metadata)) {
+        BOOST_LOG_TRIVIAL(warning) << "Unable to backfill provider task id for " << job_id;
+        return;
+    }
+    load_library_entries();
+}
+
 void ModelGenerationPanel::update_library_import_status(const std::string& job_id,
                                                          bool auto_slice_requested)
 {
@@ -3862,7 +4584,7 @@ void ModelGenerationPanel::update_library_import_status(const std::string& job_i
     if (!metadata.is_object())
         metadata = nlohmann::json::object();
     const std::time_t now = std::time(nullptr);
-    metadata["schema_version"] = 3;
+    metadata["schema_version"] = std::max(4, metadata.value("schema_version", 0));
     metadata["job_id"] = job_id;
     metadata["imported_at"] = now;
     metadata["auto_slice_requested"] = auto_slice_requested;
@@ -3880,7 +4602,7 @@ void ModelGenerationPanel::record_library_print_feedback(const std::string& job_
     nlohmann::json metadata = read_json(metadata_path);
     if (!metadata.is_object())
         return;
-    metadata["schema_version"] = 3;
+    metadata["schema_version"] = std::max(4, metadata.value("schema_version", 0));
     metadata["print_feedback"] = feedback;
     metadata["print_feedback_at"] = std::time(nullptr);
     if (!write_json(metadata_path, metadata)) {
@@ -3930,7 +4652,7 @@ void ModelGenerationPanel::delete_library_entry(const GeneratedModelEntry& entry
         ec.clear();
         removed_count = boost::filesystem::remove_all(model_parent, ec);
     }
-    const std::array<boost::filesystem::path, 8> targets {
+    std::vector<boost::filesystem::path> targets {
         entry.model_path,
         library_metadata_path(entry.job_id),
         temp_path(entry.job_id, "png"),
@@ -3940,6 +4662,10 @@ void ModelGenerationPanel::delete_library_entry(const GeneratedModelEntry& entry
         temp_path(entry.job_id + "-heatmap", "png"),
         temp_path(entry.job_id + "-input", "png")
     };
+    for (const boost::filesystem::path& image_path : {entry.reference_image_path, entry.ai_image_path}) {
+        if (is_archived_library_image(image_path, entry.job_id))
+            targets.push_back(image_path);
+    }
     for (const boost::filesystem::path& target : targets) {
         boost::system::error_code target_ec;
         if (!boost::filesystem::exists(target, target_ec))
@@ -3969,6 +4695,13 @@ void ModelGenerationPanel::delete_library_entry(const GeneratedModelEntry& entry
         m_displayed_model_palette.clear();
         m_displayed_model_palette_roles.clear();
         m_artifact_path.clear();
+        m_reference_image_path.clear();
+        m_raw_preview_path.clear();
+        m_reference_image = wxImage();
+        m_raw_preview_image = wxImage();
+        m_clean_preview_image = wxImage();
+        m_style_preview_image = wxImage();
+        m_style_preview_ready = false;
         m_model_preview_ready = false;
         m_library_model_loaded = false;
         if (m_job_id.empty())
@@ -4004,16 +4737,52 @@ void ModelGenerationPanel::refresh_library()
         auto* details = new wxStaticText(card, wxID_ANY, entry.details);
         details->SetForegroundColour(wxColour(91, 104, 107));
         text->Add(details, 0);
+        if (!entry.provider_task_id.empty()) {
+            auto* task_row = new wxBoxSizer(wxHORIZONTAL);
+            auto* task_id = new wxStaticText(
+                card, wxID_ANY, _L("3D Task ID：") + wxString::FromUTF8(entry.provider_task_id));
+            task_id->SetForegroundColour(wxColour(31, 122, 116));
+            task_id->SetToolTip(wxString::FromUTF8(entry.provider_task_id));
+            auto* copy_task_id = new wxButton(
+                card, wxID_ANY, _L("复制"), wxDefaultPosition, wxSize(FromDIP(58), FromDIP(26)));
+            copy_task_id->SetToolTip(_L("复制完整的 Tripo 3D Task ID"));
+            copy_task_id->Bind(wxEVT_BUTTON, [this, provider_task_id = entry.provider_task_id](wxCommandEvent&) {
+                bool copied = false;
+                if (wxTheClipboard->Open()) {
+                    copied = wxTheClipboard->SetData(
+                        new wxTextDataObject(wxString::FromUTF8(provider_task_id)));
+                    wxTheClipboard->Close();
+                }
+                m_status->SetLabel(copied ? _L("3D Task ID 已复制到剪贴板。")
+                                          : _L("无法访问剪贴板，请稍后重试。"));
+            });
+            task_row->Add(task_id, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
+            task_row->Add(copy_task_id, 0, wxALIGN_CENTER_VERTICAL);
+            text->Add(task_row, 0, wxTOP, FromDIP(4));
+        }
         row->Add(text, 1, wxALIGN_CENTER_VERTICAL | wxTOP | wxRIGHT | wxBOTTOM, FromDIP(8));
         auto* actions = new wxBoxSizer(wxVERTICAL);
         auto* load = new wxButton(card, wxID_ANY, _L("加载"), wxDefaultPosition, wxSize(FromDIP(104), -1));
         load->Bind(wxEVT_BUTTON,
             [this, model_path = entry.model_path, palette = entry.palette,
-             palette_roles = entry.palette_roles, use_printable_colors = entry.use_printable_colors,
-             job_id = entry.job_id, title_text = entry.title](wxCommandEvent&) {
-                load_library_entry(model_path, palette, palette_roles, use_printable_colors, job_id, title_text);
+              palette_roles = entry.palette_roles, use_printable_colors = entry.use_printable_colors,
+              reference_image_path = entry.reference_image_path, ai_image_path = entry.ai_image_path,
+              job_id = entry.job_id, title_text = entry.title](wxCommandEvent&) {
+                load_library_entry(model_path, reference_image_path, ai_image_path, palette, palette_roles,
+                                   use_printable_colors, job_id, title_text);
             });
         actions->Add(load, 0, wxEXPAND | wxBOTTOM, FromDIP(4));
+        auto* reuse_geometry = new wxButton(
+            card, wxID_ANY, _L("复用造型"), wxDefaultPosition, wxSize(FromDIP(104), -1));
+        reuse_geometry->SetToolTip(
+            _L("保留这个历史模型的网格与脸部造型，使用当前确认图片重新生成颜色"));
+        reuse_geometry->Enable(
+            m_service_available && !m_busy && !m_job_id.empty() && m_job_preview_expected &&
+            (m_ready || m_awaiting_confirmation) && entry.job_id != m_job_id);
+        reuse_geometry->Bind(wxEVT_BUTTON, [this, job_id = entry.job_id, title_text = entry.title](wxCommandEvent&) {
+            on_retexture_from_library(job_id, title_text);
+        });
+        actions->Add(reuse_geometry, 0, wxEXPAND | wxBOTTOM, FromDIP(4));
         auto* remove = new wxButton(card, wxID_ANY, _L("删除本地"), wxDefaultPosition, wxSize(FromDIP(104), -1));
         remove->Bind(wxEVT_BUTTON, [this, entry](wxCommandEvent&) {
             delete_library_entry(entry);
@@ -4044,15 +4813,19 @@ void ModelGenerationPanel::refresh_library()
         row->Add(actions, 0, wxALIGN_CENTER_VERTICAL | wxTOP | wxRIGHT | wxBOTTOM, FromDIP(8));
         card->SetSizer(row);
         const auto bind_load = [this, model_path = entry.model_path, palette = entry.palette,
-                                palette_roles = entry.palette_roles,
-                                use_printable_colors = entry.use_printable_colors,
-                                job_id = entry.job_id,
+                                 palette_roles = entry.palette_roles,
+                                 use_printable_colors = entry.use_printable_colors,
+                                 reference_image_path = entry.reference_image_path,
+                                 ai_image_path = entry.ai_image_path,
+                                 job_id = entry.job_id,
                                 title_text = entry.title](wxWindow* window) {
             window->SetCursor(wxCursor(wxCURSOR_HAND));
             window->SetToolTip(_L("也可双击加载到 3D 模型预览"));
-            window->Bind(wxEVT_LEFT_DCLICK, [this, model_path, palette, palette_roles, use_printable_colors, job_id,
+            window->Bind(wxEVT_LEFT_DCLICK, [this, model_path, reference_image_path, ai_image_path,
+                                             palette, palette_roles, use_printable_colors, job_id,
                                              title_text](wxMouseEvent&) {
-                load_library_entry(model_path, palette, palette_roles, use_printable_colors, job_id, title_text);
+                load_library_entry(model_path, reference_image_path, ai_image_path, palette, palette_roles,
+                                   use_printable_colors, job_id, title_text);
             });
         };
         bind_load(card);
@@ -4073,49 +4846,74 @@ void ModelGenerationPanel::show_selected_image_preview()
     if (!image.IsOk())
         return;
     m_reference_image = image;
+    m_reference_image_path = m_selected_image_path;
+    m_raw_preview_path.clear();
     m_raw_preview_image = wxImage();
+    m_model_reference_image = wxImage();
     m_strict_preview_image = wxImage();
     m_clean_preview_image = wxImage();
     m_heatmap_image = wxImage();
     m_style_preview_image = wxImage();
     m_style_preview_bitmap = wxNullBitmap;
     m_preview_zoom_factor = 1.0;
-    m_style_preview_placeholder = _L("等待生成 AI 处理图");
+    m_style_preview_placeholder = _L("等待生成 AI 图");
     if (m_preview_stage != nullptr)
-        m_preview_stage->SetSelection(2);
-    m_preview_kind->SetLabel(_L("图片对照"));
+        m_preview_stage->SetSelection(0);
+    m_preview_kind->SetLabel(_L("结果对照"));
     m_preview_message->SetLabel(
-        wxString::Format(_L("参考图 %d × %d px  ·  等待生成 AI 处理图"), image.GetWidth(), image.GetHeight()));
+        wxString::Format(_L("原图 %d × %d px  ·  等待生成 AI 图"), image.GetWidth(), image.GetHeight()));
     update_preview_view(true);
 }
 
 void ModelGenerationPanel::apply_preview_stage(bool center)
 {
-    const int selection = m_preview_stage == nullptr ? 2 : m_preview_stage->GetSelection();
+    const int selection = m_preview_stage == nullptr ? 0 : m_preview_stage->GetSelection();
     const wxImage* selected = nullptr;
-    if (selection == 0 && m_raw_preview_image.IsOk()) selected = &m_raw_preview_image;
-    else if (selection == 1 && m_strict_preview_image.IsOk()) selected = &m_strict_preview_image;
-    else if (selection == 2 && m_clean_preview_image.IsOk()) selected = &m_clean_preview_image;
-    else if (selection == 3 && m_heatmap_image.IsOk()) selected = &m_heatmap_image;
-    else if (m_clean_preview_image.IsOk()) selected = &m_clean_preview_image;
-    else if (m_raw_preview_image.IsOk()) selected = &m_raw_preview_image;
+    const bool selected_stage_loading =
+        (selection == 0 && m_raw_preview_available && !m_raw_preview_image.IsOk()) ||
+        (selection == 1 && m_model_reference_available && !m_model_reference_image.IsOk()) ||
+        (selection == 2 && m_strict_preview_available && !m_strict_preview_image.IsOk()) ||
+        (selection == 4 && m_heatmap_available && !m_heatmap_image.IsOk());
+    if (!selected_stage_loading) {
+        if (selection == 0 && m_raw_preview_image.IsOk()) selected = &m_raw_preview_image;
+        else if (selection == 1 && m_model_reference_image.IsOk()) selected = &m_model_reference_image;
+        else if (selection == 2 && m_strict_preview_image.IsOk()) selected = &m_strict_preview_image;
+        else if (selection == 3 && m_clean_preview_image.IsOk()) selected = &m_clean_preview_image;
+        else if (selection == 4 && m_heatmap_image.IsOk()) selected = &m_heatmap_image;
+        else if (m_model_reference_image.IsOk()) selected = &m_model_reference_image;
+        else if (m_clean_preview_image.IsOk()) selected = &m_clean_preview_image;
+        else if (m_raw_preview_image.IsOk()) selected = &m_raw_preview_image;
+    }
     m_style_preview_image = selected == nullptr ? wxImage() : selected->Copy();
     m_style_preview_bitmap = wxNullBitmap;
+    if (selected_stage_loading) {
+        m_style_preview_placeholder = selection == 1
+            ? _L("正在加载实际 3D 建模参考...")
+            : _L("正在加载所选处理阶段...");
+    } else if (selected != nullptr) {
+        m_style_preview_placeholder.clear();
+    }
     if (m_preview_stage != nullptr)
-        m_preview_stage->Enable(m_raw_preview_available || m_strict_preview_available || m_heatmap_available);
+        m_preview_stage->Enable(
+            m_raw_preview_available || m_model_reference_available || m_strict_preview_available || m_heatmap_available);
     if (m_preview_stage_hint != nullptr) {
         wxString hint;
-        if (!m_raw_preview_image.IsOk() && !m_strict_preview_image.IsOk() && !m_clean_preview_image.IsOk() &&
+        if (!m_raw_preview_image.IsOk() && !m_model_reference_image.IsOk() && !m_strict_preview_image.IsOk() &&
+            !m_clean_preview_image.IsOk() &&
             !m_heatmap_image.IsOk()) {
             hint = _L("生成后可在这里确认图片效果。");
         } else if (selection == 0) {
             hint = _L("查看 AI 生成的设计效果；此图还没有限制为实际耗材颜色。");
         } else if (selection == 1) {
+            hint = current_style() == "realistic" && current_generation_profile() == "quality"
+                ? _L("这是实际提交给 3D 服务的单色雕塑参考；已裁成头肩胸像以放大人脸，交叉手臂和下半身不会进入模型。")
+                : _L("这是实际提交给 3D 服务的图片；请重点确认主体、姿态与底座。");
+        } else if (selection == 2) {
             hint = _L("检查设计在所选耗材颜色下是否仍然清楚。");
-        } else if (selection == 3) {
+        } else if (selection == 4) {
             hint = _L("红色位置表示系统为提高可打印性而调整过的区域。");
         } else {
-            hint = _L("推荐结果：已合并过小色块，更适合继续生成和打印。");
+            hint = _L("已合并过小色块，用于检查最终耗材分区。");
         }
         m_preview_stage_hint->SetLabel(hint);
         m_preview_stage_hint->Wrap(FromDIP(760));
@@ -4125,8 +4923,12 @@ void ModelGenerationPanel::apply_preview_stage(bool center)
         if (selection == 0)
             details = _L("阶段：供应商原始输出。颜色数量和小色块尚未受打印约束。");
         else if (selection == 1)
+            details = current_style() == "realistic" && current_generation_profile() == "quality"
+                ? _L("阶段：实际 3D 几何输入。人脸像素未缩放或重绘；旧底座已移除，并换成与肩部重叠的单层底座。")
+                : _L("阶段：3D 建模参考。保留主体细节，并使用清理后的单一连通主体轮廓。");
+        else if (selection == 2)
             details = _L("阶段：严格色板映射。可见像素已映射到目标耗材色板，不改变主体构图和可见范围。");
-        else if (selection == 3)
+        else if (selection == 4)
             details = _L("阶段：差异热力图。红色表示可打印清理阶段修改的像素。");
         else
             details = _L("阶段：可打印清理。系统会合并小于最小特征的碎小色块。");
@@ -4150,7 +4952,7 @@ void ModelGenerationPanel::update_preview_view(bool center)
     if (m_preview_area == nullptr || m_updating_preview)
         return;
     m_updating_preview = true;
-    if (!m_reference_image.IsOk() && !m_style_preview_image.IsOk()) {
+    if (!m_reference_image.IsOk() && !m_style_preview_image.IsOk() && !m_model_preview_ready) {
         m_reference_bitmap = wxNullBitmap;
         m_style_preview_bitmap = wxNullBitmap;
         m_reference_preview_pane = wxRect();
@@ -4165,14 +4967,8 @@ void ModelGenerationPanel::update_preview_view(bool center)
     const int padding = FromDIP(16);
     const int gap = FromDIP(16);
     const int label_height = FromDIP(32);
-    const int stage = m_preview_stage == nullptr ? 2 : m_preview_stage->GetSelection();
-    const wxImage* comparison_image = nullptr;
-    if (m_reference_image.IsOk())
-        comparison_image = &m_reference_image;
-    else if (stage != 0 && m_raw_preview_image.IsOk())
-        comparison_image = &m_raw_preview_image;
-    const bool comparison = comparison_image != nullptr &&
-                            (m_reference_image.IsOk() || m_style_preview_image.IsOk());
+    const wxImage* comparison_image = m_reference_image.IsOk() ? &m_reference_image : nullptr;
+    const bool comparison = m_reference_image.IsOk() || m_style_preview_image.IsOk() || m_model_preview_ready;
     const int base_pane_width = comparison
         ? std::max(1, (client.GetWidth() - 2 * padding - gap) / 2)
         : std::max(1, client.GetWidth() - 2 * padding);
@@ -4295,6 +5091,14 @@ void ModelGenerationPanel::update_workflow(const AIModelGenerationClient::JobSta
             phase = image_mode ? _L("生成可打印预览") : _L("准备提示词");
             guidance = image_mode ? _L("AI 正在生成并检查图片，请稍候") : _L("AI 正在整理 3D 提示词");
             step = 2;
+        } else if (status->phase == "preparing_multiview") {
+            phase = _L("准备写实四视图");
+            guidance = _L("正在核对人脸、姿态和材料边界；通过后才会提交付费任务");
+            step = 3;
+        } else if (status->state == "awaiting_confirmation" && status->phase == "multiview_retry") {
+            phase = _L("四视图需重试");
+            guidance = _L("当前预览已保留，可直接重试；尚未创建付费 Tripo 任务");
+            step = 3;
         } else if (status->state == "awaiting_confirmation") {
             phase = image_mode ? _L("确认可打印预览") : _L("确认提示词");
             guidance = image_mode ? _L("确认右侧图片效果，并选择 3D 模型精度") : _L("确认提示词并选择 3D 模型精度");
@@ -4303,10 +5107,22 @@ void ModelGenerationPanel::update_workflow(const AIModelGenerationClient::JobSta
             phase = _L("生成模型");
             guidance = _L("正在生成 3D 模型，可在这里查看进度");
             step = 3;
+        } else if (status->phase == "texturing") {
+            phase = _L("保留造型并上色");
+            guidance = _L("正在保留历史模型的脸和姿态，并应用当前确认颜色");
+            step = 3;
         } else if (status->phase == "converting" || status->phase == "downloading_artifact") {
             phase = _L("优化模型");
             guidance = _L("正在优化并下载 3D 模型");
             step = 3;
+        } else if (status->phase == "checking_model") {
+            phase = _L("修复材料并检查结构");
+            guidance = _L("正在清理串色和杂色，并检查拓扑、底座与薄壁");
+            step = 4;
+        } else if (status->phase == "checking_visual") {
+            phase = _L("对照原图检查外观");
+            guidance = _L("正在核对人脸相似度、主体完整性和材料归属");
+            step = 4;
         } else if (status->state == "ready") {
             phase = _L("检查并导入");
             guidance = _L("检查右侧 3D 模型，然后选择导入方式");
@@ -4315,6 +5131,10 @@ void ModelGenerationPanel::update_workflow(const AIModelGenerationClient::JobSta
             phase = _L("停止生成");
             guidance = _L("正在安全停止当前生成任务");
             step = 3;
+        } else if (status->state == "failed") {
+            phase = status->progress >= 10 ? _L("生成未完成") : _L("预览未完成");
+            guidance = _L("请查看失败原因后重试；已确认的图片不会自动丢失");
+            step = status->progress >= 10 ? 3 : 2;
         }
     }
     m_workflow_phase->SetLabel(phase);
@@ -4324,8 +5144,11 @@ void ModelGenerationPanel::update_workflow(const AIModelGenerationClient::JobSta
 
 void ModelGenerationPanel::set_preview_empty(const wxString& message)
 {
+    m_reference_image_path.clear();
+    m_raw_preview_path.clear();
     m_reference_image = wxImage();
     m_raw_preview_image = wxImage();
+    m_model_reference_image = wxImage();
     m_strict_preview_image = wxImage();
     m_clean_preview_image = wxImage();
     m_heatmap_image = wxImage();
@@ -4336,7 +5159,7 @@ void ModelGenerationPanel::set_preview_empty(const wxString& message)
     m_style_preview_pane = wxRect();
     m_style_preview_placeholder.clear();
     if (m_preview_stage != nullptr)
-        m_preview_stage->SetSelection(2);
+        m_preview_stage->SetSelection(0);
     m_preview_metrics_available = false;
     m_preview_changed_pixel_ratio = 0.0;
     m_preview_minimum_feature_px = 0;

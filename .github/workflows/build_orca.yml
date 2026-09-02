@@ -446,7 +446,7 @@ jobs:
               $buildInfo.application_commit -ne $expectedCommit -or
               $buildInfo.distribution_channel -ne 'commercial' -or
               $buildInfo.sidecar_protocol_version -ne 2 -or
-              $buildInfo.sidecar_version -ne 'orcaslicer-ai-sidecar-v8') {
+              $buildInfo.sidecar_version -ne 'orcaslicer-ai-sidecar-v9') {
             throw 'Commercial AI build identity does not match the checked-out source and runtime contract.'
           }
           foreach ($required in @(

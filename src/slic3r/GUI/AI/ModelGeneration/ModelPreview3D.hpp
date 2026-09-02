@@ -75,7 +75,9 @@ public:
             if (!m_drag_moved)
                 return;
             m_yaw += (current.x - m_last_mouse.x) * 0.012;
-            m_pitch = std::clamp(m_pitch + (current.y - m_last_mouse.y) * 0.012, -1.45, 1.45);
+            m_pitch = std::clamp(
+                m_pitch + (current.y - m_last_mouse.y) * 0.012,
+                -1.5707963267948966, -0.15);
             m_last_mouse = current;
             m_canvas->Refresh(false);
         });
@@ -240,7 +242,7 @@ public:
         m_has_model = true;
         m_paint_diagnostics_logged = false;
         m_render_diagnostics_logged = false;
-        reset_view();
+        front_view();
         notify_selection_changed();
         return true;
     }
@@ -262,7 +264,19 @@ public:
     void reset_view()
     {
         m_yaw = -0.65;
-        m_pitch = 0.35;
+        m_pitch = -1.05;
+        m_zoom = 1.0;
+        if (m_canvas != nullptr)
+            m_canvas->Refresh(false);
+    }
+
+    void front_view()
+    {
+        // Generated portrait OBJ files are Z-up and face +X. Rotate +X toward
+        // the orthographic camera so identity can be compared without asking
+        // the user to find a precise angle by dragging a two-million-face mesh.
+        m_yaw = -1.5707963267948966;
+        m_pitch = -1.5707963267948966;
         m_zoom = 1.0;
         if (m_canvas != nullptr)
             m_canvas->Refresh(false);
@@ -450,14 +464,14 @@ private:
             return;
         const Vec3d size = m_bounds.size().cast<double>();
         const double radius = std::max(0.001, 0.5 * size.norm());
-        const double half_height = radius * 1.12 / m_zoom;
+        const double half_height = fitted_half_height(width, height);
         const double half_width = half_height * double(width) / double(height);
         const double screen_x = 2.0 * double(point.x) / double(width) - 1.0;
         const double screen_y = 1.0 - 2.0 * double(point.y) / double(height);
         const Vec3d center = m_bounds.center().cast<double>();
         const Transform3d view_model =
             Geometry::translation_transform(Vec3d(0.0, 0.0, -3.0 * radius)) *
-            Geometry::rotation_transform(Vec3d(m_pitch, m_yaw, 0.0)) *
+            view_rotation() *
             Geometry::translation_transform(-center);
         const Transform3d inverse = view_model.inverse();
         const Vec3d origin = inverse * Vec3d(screen_x * half_width, screen_y * half_height, 0.0);
@@ -560,7 +574,7 @@ private:
                 const Vec3d size = m_bounds.size().cast<double>();
                 const double radius = std::max(0.001, 0.5 * size.norm());
                 const double aspect = double(width) / double(height);
-                const double half_height = radius * 1.12 / m_zoom;
+                const double half_height = fitted_half_height(width, height);
                 const double half_width = half_height * aspect;
                 const double near_z = 0.01 * radius;
                 const double far_z = 8.0 * radius;
@@ -575,7 +589,7 @@ private:
                 const Vec3d center = m_bounds.center().cast<double>();
                 const Transform3d view_model =
                     Geometry::translation_transform(Vec3d(0.0, 0.0, -3.0 * radius)) *
-                    Geometry::rotation_transform(Vec3d(m_pitch, m_yaw, 0.0)) *
+                    view_rotation() *
                     Geometry::translation_transform(-center);
                 const Matrix3d normal_matrix = view_model.matrix().block(0, 0, 3, 3).inverse().transpose();
                 shader->set_uniform("view_model_matrix", view_model);
@@ -621,8 +635,26 @@ private:
     AI::RegionSelectionSettings m_selection_settings;
     AI::RegionSelectionOperation m_selection_operation {AI::RegionSelectionOperation::Replace};
     ColorRGBA m_selection_preview_color {1.0f, 0.55f, 0.0f, 1.0f};
+    Transform3d view_rotation() const
+    {
+        // Generated and imported OBJ files use OrcaSlicer's Z-up convention.
+        // Orbit around Z first, then tilt the camera so the build plate stays
+        // horizontal instead of presenting portrait bases sideways.
+        return Geometry::rotation_transform(m_pitch * Vec3d::UnitX()) *
+               Geometry::rotation_transform(m_yaw * Vec3d::UnitZ());
+    }
+
+    double fitted_half_height(int width, int height) const
+    {
+        const double aspect = double(std::max(1, width)) / double(std::max(1, height));
+        const Vec3d half_extents = 0.5 * m_bounds.size().cast<double>();
+        const Vec3d view_extents = view_rotation().linear().cwiseAbs() * half_extents;
+        constexpr double fit_margin = 1.08;
+        return std::max(0.001, std::max(view_extents.y(), view_extents.x() / aspect) * fit_margin / m_zoom);
+    }
+
     double m_yaw {-0.65};
-    double m_pitch {0.35};
+    double m_pitch {-1.05};
     double m_zoom {1.0};
     bool m_dragging {false};
     bool m_drag_moved {false};

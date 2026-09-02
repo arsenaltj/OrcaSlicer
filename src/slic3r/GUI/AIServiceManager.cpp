@@ -33,7 +33,7 @@ struct AIServiceManager::SidecarProcess
 namespace {
 
 constexpr const char* DEFAULT_LOCAL_ENDPOINT = "http://127.0.0.1:18764";
-constexpr const char* EXPECTED_SIDECAR_VERSION = "orcaslicer-ai-sidecar-v8";
+constexpr const char* EXPECTED_SIDECAR_VERSION = "orcaslicer-ai-sidecar-v9";
 constexpr int EXPECTED_PROTOCOL_VERSION = 2;
 
 bool environment_flag(const char* name)

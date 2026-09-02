@@ -5,6 +5,7 @@
 
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
+#include <boost/log/trivial.hpp>
 #include <boost/uuid/uuid_generators.hpp>
 #include <boost/uuid/uuid_io.hpp>
 #include <nlohmann/json.hpp>
@@ -175,17 +176,34 @@ int display_progress(const AIModelGenerationClient::JobStatus& status)
         return 10;
     if (status.state == "preprocessing")
         return remap_progress(status.progress, 5, 15, 10, 25);
+    if (status.phase == "preparing_multiview")
+        return remap_progress(status.progress, 10, 20, 36, 42);
+    if (status.phase == "multiview_retry")
+        return 40;
     if (status.state == "awaiting_confirmation")
         return 35;
-    if (status.phase == "generating")
+    if (status.phase == "generating" || status.phase == "texturing")
         return remap_progress(status.progress, 20, 70, 40, 78);
     if (status.phase == "converting")
         return remap_progress(status.progress, 75, 95, 80, 90);
     if (status.phase == "downloading_artifact")
         return 92;
+    if (status.phase == "checking_model")
+        return remap_progress(status.progress, 96, 99, 93, 97);
+    if (status.phase == "checking_visual")
+        return 98;
     if (status.state == "ready")
-        return 95;
+        return 100;
+    if (status.state == "failed" && status.progress >= 10)
+        return 40;
     return 0;
+}
+
+bool is_transient_sidecar_poll_error(const std::string& error)
+{
+    return error.find("AI sidecar is not reachable") != std::string::npos ||
+           error.find("AI sidecar request timed out") != std::string::npos ||
+           error.find("AI sidecar request failed") != std::string::npos;
 }
 
 std::string new_request_id()
@@ -256,6 +274,14 @@ std::string download_job_id(const boost::filesystem::path& path)
     return stem.substr(std::char_traits<char>::length(GENERATED_MODEL_PREFIX));
 }
 
+bool valid_provider_task_id(const std::string& value)
+{
+    return !value.empty() && value.size() <= MAX_PROVIDER_TASK_ID_SIZE &&
+           std::all_of(value.begin(), value.end(), [](unsigned char character) {
+               return std::isalnum(character) || character == '-' || character == '_';
+           });
+}
+
 nlohmann::json read_json(const boost::filesystem::path& path)
 {
     boost::filesystem::ifstream stream(path);
@@ -293,6 +319,50 @@ bool path_is_inside(const boost::filesystem::path& root, const boost::filesystem
     return root_part == canonical_root.end() && candidate_part != canonical_candidate.end();
 }
 
+boost::filesystem::path archive_library_image(const boost::filesystem::path& source,
+                                              const std::string& job_id,
+                                              const std::string& role)
+{
+    if (source.empty() || job_id.empty() || !is_supported_image(source))
+        return {};
+    const boost::filesystem::path root = generated_models_root();
+    if (path_is_inside(root, source))
+        return source;
+
+    std::string extension = source.extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    if (extension != ".png" && extension != ".jpg" && extension != ".jpeg")
+        extension = ".png";
+    const boost::filesystem::path destination = temp_path(job_id + "-" + role, extension.substr(1));
+    boost::system::error_code ec;
+    boost::filesystem::copy_file(source, destination, boost::filesystem::copy_options::overwrite_existing, ec);
+    if (ec || !is_supported_image(destination)) {
+        BOOST_LOG_TRIVIAL(warning) << "Unable to archive generated-model " << role
+                                   << " image: " << ec.message();
+        return {};
+    }
+    return destination;
+}
+
+bool is_archived_library_image(const boost::filesystem::path& path, const std::string& job_id)
+{
+    const std::string prefix = std::string(GENERATED_MODEL_PREFIX) + job_id + "-";
+    return !path.empty() && path.filename().string().rfind(prefix, 0) == 0;
+}
+
+boost::filesystem::path library_image_path(const nlohmann::json& metadata,
+                                           const char* key,
+                                           const boost::filesystem::path& root)
+{
+    if (!metadata.contains(key) || !metadata[key].is_string())
+        return {};
+    const boost::filesystem::path candidate = root / metadata[key].get<std::string>();
+    return path_is_inside(root, candidate) && is_supported_image(candidate) ? candidate
+                                                                            : boost::filesystem::path();
+}
+
 wxString model_load_summary(size_t triangle_count, double load_seconds)
 {
     wxString summary = wxString::Format(_L("本机实测加载 %.2f 秒"), std::max(0.0, load_seconds));
@@ -307,15 +377,53 @@ wxString model_load_summary(size_t triangle_count, double load_seconds)
 
 wxString style_label(const std::string& style)
 {
-    if (style == "realistic" || style == "low_poly" || style == "enamel_inlay")
-        return _L("多色写实");
+    if (style == "realistic" || style == "enamel_inlay")
+        return _L("写实微缩");
     if (style == "cartoon" || style == "q_cartoon" || style == "cel_shaded")
-        return _L("多色卡通");
+        return _L("手办");
     if (style == "sculpture")
         return _L("单色雕塑");
+    if (style == "low_poly")
+        return _L("低多边形");
+    if (style == "relief")
+        return _L("浮雕");
+    if (style == "diorama")
+        return _L("微缩场景");
     if (style == "custom")
         return _L("自定义风格");
     return _L("单色雕塑");
+}
+
+int style_selection(const std::string& style)
+{
+    if (style == "realistic" || style == "enamel_inlay") return 1;
+    if (style == "cartoon" || style == "q_cartoon" || style == "cel_shaded") return 2;
+    if (style == "low_poly") return 3;
+    if (style == "relief") return 4;
+    if (style == "diorama") return 5;
+    if (style == "custom") return 6;
+    return 0;
+}
+
+bool style_uses_printable_colors(const std::string& style)
+{
+    return style != "sculpture" && style != "relief";
+}
+
+wxString style_recommendation_reason(const std::string& reason)
+{
+    if (reason == "portrait") return _L("人像优先手办化，保留辨识度并减少恐怖谷感。");
+    if (reason == "animal") return _L("宠物适合简化毛发为稳固体块，同时保留轮廓。");
+    if (reason == "flat_graphic") return _L("平面图形用浮雕更稳，不必猜测背面。");
+    if (reason == "effects") return _L("透明和光影难成实体，浮雕更容易打印。");
+    if (reason == "architecture") return _L("建筑轮廓清晰，适合保留比例和结构细节。");
+    if (reason == "hard_surface" || reason == "structured_subject")
+        return _L("硬表面结构清楚，写实微缩更能保留部件。");
+    if (reason == "organic") return _L("植物和食物适度简化后，更容易形成稳固体块。");
+    if (reason == "scene" || reason == "multiple_subjects")
+        return _L("多个主体用微缩场景更容易保留空间关系。");
+    if (reason == "limited_reference") return _L("原图立体信息有限，低多边形更稳、更易打印。");
+    return _L("主体类别不明确，先用兼容性较好的手办风格。");
 }
 
 wxStaticText* section_label(wxWindow* parent, const wxString& text)
@@ -331,6 +439,7 @@ wxStaticText* section_label(wxWindow* parent, const wxString& text)
 wxString model_quality_code_label(const std::string& code)
 {
     if (code == "tiny_detached_components") return _L("检测到微小脱离部件，请旋转模型确认是否需要保留。");
+    if (code == "unwelded_structural_components") return _L("模型由多个未焊接的主要部件组成，请确认接触处不会在打印后分离。");
     if (code == "floating_disconnected_components") return _L("检测到未接触热床或主体的悬空分离部件，请检查是否可打印。");
     if (code == "thin_structural_components") return _L("检测到整体厚度较薄的连通部件，请检查是否需要加厚。");
     if (code == "thin_local_wall_regions") return _L("检测到附着在主体上的局部薄壁或细连接，请检查是否需要加厚。");
@@ -363,6 +472,8 @@ wxString visual_quality_code_label(const std::string& code)
     if (code == "visual_detached_artifacts") return _L("多视角中疑似存在意外漂浮物。");
     if (code == "visual_silhouette_unclear") return _L("部分视角轮廓不够清晰。");
     if (code == "visual_color_regions_unclear") return _L("顶点色色块可能过碎或不易辨认。");
+    if (code == "visual_identity_mismatch") return _L("主体身份或人脸与原图差异较大，请重点对照五官和脸型。");
+    if (code == "visual_material_color_mixing") return _L("肤色、衣物、头发或底座可能存在明显串色。");
     if (code == "visual_review_unavailable") return _L("AI 视觉服务暂不可用，可稍后重试。");
     return _L("检测到需要人工确认的外观问题：") + from_u8(code);
 }

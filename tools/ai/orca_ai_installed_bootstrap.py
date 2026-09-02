@@ -65,7 +65,7 @@ def load_build_info(build_info_path: Path | None = None) -> dict[str, str | int]
         return {}
     if payload["distribution_channel"] not in {"internal", "commercial"}:
         return {}
-    if payload["sidecar_version"] != "orcaslicer-ai-sidecar-v8":
+    if payload["sidecar_version"] != "orcaslicer-ai-sidecar-v9":
         return {}
 
     for field, environment_name in BUILD_INFO_ENVIRONMENT.items():

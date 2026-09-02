@@ -12,7 +12,7 @@ import urllib.request
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 try:
     from .ai_diagnostics import classify_connection_error, event as diagnostic_event, exception_details, safe_endpoint
@@ -242,13 +242,15 @@ def _task_id(data: Mapping[str, Any]) -> str:
     return task_id
 
 
-_ALLOWED_FACE_LIMITS = (100000, 300000, 500000, 1000000)
+_ALLOWED_FACE_LIMITS = (100000, 300000, 500000, 1000000, 2000000)
 _GENERATION_PROFILES = ("quality", "performance")
 
 
 def _generation_payload(model: str, face_limit: int, generation_profile: str) -> dict[str, Any]:
     if face_limit not in _ALLOWED_FACE_LIMITS:
-        raise TripoError("The model face target must be 100000, 300000, 500000, or 1000000 triangles.")
+        raise TripoError(
+            "The model face target must be 100000, 300000, 500000, 1000000, or 2000000 triangles."
+        )
     if generation_profile not in _GENERATION_PROFILES:
         raise TripoError("The generation profile must be quality or performance.")
     high_quality = generation_profile == "quality"
@@ -258,14 +260,14 @@ def _generation_payload(model: str, face_limit: int, generation_profile: str) ->
         "face_limit": face_limit,
         "texture": True,
         "pbr": True,
-        "texture_quality": "detailed" if high_quality else "standard",
+        "texture_quality": "extreme" if high_quality else "standard",
         "geometry_quality": "detailed" if high_quality else "standard",
         "quad": False,
         "export_uv": high_quality,
     }
 
 
-def create_text_task(prompt: str, face_limit: int = 1000000, generation_profile: str = "quality") -> str:
+def create_text_task(prompt: str, face_limit: int = 2000000, generation_profile: str = "quality") -> str:
     if not isinstance(prompt, str) or not prompt.strip():
         raise TripoError("A text prompt is required.")
     _, _, model = _config()
@@ -316,12 +318,19 @@ def upload_image(path: str | os.PathLike[str]) -> str:
     return token
 
 
-def create_image_task(file_token: str, face_limit: int = 1000000, generation_profile: str = "quality") -> str:
+def create_image_task(file_token: str, face_limit: int = 2000000, generation_profile: str = "quality") -> str:
     if not isinstance(file_token, str) or not file_token:
         raise TripoError("An uploaded image reference is required.")
     _, _, model = _config()
     payload = _generation_payload(model, face_limit, generation_profile)
-    payload.update({"input": file_token, "texture_alignment": "original_image"})
+    payload.update({
+        "input": file_token,
+        "texture_alignment": "original_image",
+        # Inputs have already passed Orca's identity, silhouette and material
+        # gates. Provider autofix changed a real face in validation, while the
+        # same v3.1 detailed request with autofix disabled preserved it.
+        "enable_image_autofix": False,
+    })
     return _task_id(_post_json("/generation/image-to-model", payload))
 
 
@@ -330,7 +339,7 @@ _MULTIVIEW_ORDER = ("front", "left", "back", "right")
 
 def create_multiview_task(
     view_tokens: Mapping[str, str],
-    face_limit: int = 1000000,
+    face_limit: int = 2000000,
     generation_profile: str = "quality",
 ) -> str:
     if not isinstance(view_tokens, Mapping):
@@ -348,7 +357,64 @@ def create_multiview_task(
     _, _, model = _config()
     payload = _generation_payload(model, face_limit, generation_profile)
     payload["inputs"] = [{view: normalized[view]} for view in _MULTIVIEW_ORDER if view in normalized]
+    payload["texture_alignment"] = "original_image"
+    payload["orientation"] = "align_image"
+    payload["enable_image_autofix"] = False
     return _task_id(_post_json("/generation/multiview-to-model", payload))
+
+
+_TEXTURE_ALIGNMENTS = ("original_image", "geometry")
+_TEXTURE_QUALITIES = ("standard", "detailed", "extreme")
+
+
+def create_texture_task(
+    source_task_id: str,
+    image_token: str | Sequence[str],
+    *,
+    texture_alignment: str = "original_image",
+    texture_quality: str = "detailed",
+    texture_seed: int | None = None,
+) -> str:
+    """Regenerate only the texture of an existing Tripo geometry task."""
+
+    if not isinstance(source_task_id, str) or not source_task_id.strip():
+        raise TripoError("A source model task reference is required.")
+    if isinstance(image_token, str):
+        if not image_token.strip():
+            raise TripoError("An uploaded texture image reference is required.")
+        texture_prompt = {"image": image_token.strip()}
+    elif isinstance(image_token, Sequence):
+        if len(image_token) != 4:
+            raise TripoError("Multiview texturing requires exactly four image references.")
+        normalized_tokens = []
+        for token in image_token:
+            if not isinstance(token, str) or not token.strip():
+                raise TripoError("Each multiview texture image reference is required.")
+            normalized_tokens.append(token.strip())
+        # Tripo's texture API defines this positional order explicitly.
+        texture_prompt = {"images": normalized_tokens}
+    else:
+        raise TripoError("An uploaded texture image reference is required.")
+    if texture_alignment not in _TEXTURE_ALIGNMENTS:
+        raise TripoError("Texture alignment must be original_image or geometry.")
+    if texture_quality not in _TEXTURE_QUALITIES:
+        raise TripoError("Texture quality must be standard, detailed, or extreme.")
+    if texture_seed is not None and (isinstance(texture_seed, bool) or not isinstance(texture_seed, int)):
+        raise TripoError("Texture seed must be an integer.")
+    payload: dict[str, Any] = {
+        "input": source_task_id.strip(),
+        # Tripo recommends its v3.0 texture model for geometry generated by
+        # either v3.0 or v3.1.
+        "model": "v3.0-20250812",
+        "texture_prompt": texture_prompt,
+        "pbr": True,
+        "texture_alignment": texture_alignment,
+        "texture_quality": texture_quality,
+        "bake": True,
+    }
+    if texture_seed is not None:
+        payload["texture_seed"] = texture_seed
+    return _task_id(_post_json("/models/texture", payload))
 
 
 def get_task(task_id: str) -> dict[str, Any]:

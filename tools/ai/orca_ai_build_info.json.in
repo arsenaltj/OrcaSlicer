@@ -5,5 +5,5 @@
   "package_revision": "@ORCA_AI_PACKAGE_REVISION@",
   "distribution_channel": "@ORCA_AI_DISTRIBUTION_CHANNEL@",
   "sidecar_protocol_version": 2,
-  "sidecar_version": "orcaslicer-ai-sidecar-v8"
+  "sidecar_version": "orcaslicer-ai-sidecar-v9"
 }

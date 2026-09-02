@@ -27,6 +27,8 @@ if str(TOOLS_AI) not in sys.path:
 
 from openai_preprocessor import (  # noqa: E402
     build_style_preview_prompt,
+    build_text_image_prompt,
+    generate_image,
     preprocess_image,
 )
 from model_input_image_quality import assess_model_input_image  # noqa: E402
@@ -35,7 +37,16 @@ from printable_palette import assign_palette_roles, normalize_palette  # noqa: E
 
 
 SCHEMA_VERSION = 1
-PUBLIC_STYLES = ("sculpture", "realistic", "cartoon", "custom")
+PUBLIC_STYLES = ("sculpture", "realistic", "cartoon", "low_poly", "relief", "diorama", "custom")
+STYLE_LABELS = {
+    "sculpture": "单色雕塑",
+    "realistic": "多色写实",
+    "cartoon": "手办/卡通",
+    "low_poly": "低多边形",
+    "relief": "浮雕",
+    "diorama": "微缩场景",
+    "custom": "自定义",
+}
 STATE_FILENAME = "state.json"
 OUTPUT_FILENAME = "image2-output.png"
 MINIMUM_EDGE = 256
@@ -49,8 +60,9 @@ class Image2QualityBenchmarkError(RuntimeError):
 @dataclass(frozen=True)
 class BenchmarkCase:
     case_id: str
-    source: Path
+    source: Path | None
     instruction: str
+    input_mode: str = "image"
     label: str = ""
     category: str = "unspecified"
     challenges: tuple[str, ...] = ()
@@ -68,6 +80,7 @@ class BenchmarkCandidate:
     style: str
     palette_id: str
     palette: tuple[str, ...]
+    palette_roles: Mapping[str, str]
     repetition: int
     custom_style: str
 
@@ -78,10 +91,20 @@ class BenchmarkCandidate:
 
 
 def _read_json(path: Path) -> dict[str, Any]:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise Image2QualityBenchmarkError(f"Cannot read benchmark JSON: {path}") from exc
+    value: object | None = None
+    for attempt in range(7):
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+            break
+        except PermissionError as exc:
+            # Windows indexers and concurrent local summary refreshes can hold
+            # a just-replaced state file briefly. This is a read-only retry and
+            # never repeats a provider call.
+            if attempt == 6:
+                raise Image2QualityBenchmarkError(f"Cannot read benchmark JSON: {path}") from exc
+            time.sleep(0.05 * (2**attempt))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise Image2QualityBenchmarkError(f"Cannot read benchmark JSON: {path}") from exc
     if not isinstance(value, dict):
         raise Image2QualityBenchmarkError(f"Benchmark JSON must be an object: {path}")
     return value
@@ -208,6 +231,24 @@ def load_candidates(
         palettes[palette_id] = normalize_palette(colors)
         assign_palette_roles(palettes[palette_id])
 
+    raw_palette_roles = manifest.get("palette_roles", {})
+    if not isinstance(raw_palette_roles, dict):
+        raise Image2QualityBenchmarkError("palette_roles must be an object keyed by palette ID.")
+    unknown_role_palettes = set(raw_palette_roles) - set(palettes)
+    if unknown_role_palettes:
+        raise Image2QualityBenchmarkError(
+            "palette_roles contains unknown palettes: " + ", ".join(sorted(unknown_role_palettes))
+        )
+    palette_roles: dict[str, dict[str, str]] = {}
+    for palette_id, palette in palettes.items():
+        overrides = raw_palette_roles.get(palette_id, {})
+        if not isinstance(overrides, dict):
+            raise Image2QualityBenchmarkError(f"Palette roles for {palette_id} must be an object.")
+        try:
+            palette_roles[palette_id] = assign_palette_roles(palette, overrides).color_by_role
+        except ValueError as exc:
+            raise Image2QualityBenchmarkError(f"Invalid palette roles for {palette_id}: {exc}") from exc
+
     raw_runs = manifest.get("style_runs")
     if not isinstance(raw_runs, dict) or not raw_runs:
         raise Image2QualityBenchmarkError("style_runs must define at least one public style.")
@@ -269,10 +310,17 @@ def load_candidates(
         if not isinstance(label, str) or not label.strip() or len(label.strip().encode("utf-8")) > 120:
             raise Image2QualityBenchmarkError(f"Case {case_id} label must be a non-empty string up to 120 bytes.")
         seen_cases.add(case_id)
+        input_mode = entry.get("input_mode", "image")
+        if input_mode not in {"image", "text"}:
+            raise Image2QualityBenchmarkError(f"Case {case_id} input_mode must be image or text.")
+        if input_mode == "text" and entry.get("source") is not None:
+            raise Image2QualityBenchmarkError(f"Text case {case_id} must not define a source image.")
+        source = _safe_source(root, entry.get("source")) if input_mode == "image" else None
         cases.append(BenchmarkCase(
             case_id,
-            _safe_source(root, entry.get("source")),
+            source,
             instruction.strip(),
+            input_mode,
             label.strip(),
             category.strip(),
             _case_string_list(case_id, "challenges", entry.get("challenges")),
@@ -294,6 +342,7 @@ def load_candidates(
                         style=style,
                         palette_id=palette_id,
                         palette=palettes.get(palette_id, ()),
+                        palette_roles=palette_roles.get(palette_id, {}),
                         repetition=repetition,
                         custom_style=custom_style.strip() if style == "custom" else "",
                     ))
@@ -301,6 +350,17 @@ def load_candidates(
     if len(identifiers) != len(set(identifiers)):
         raise Image2QualityBenchmarkError("The benchmark expands to duplicate candidate IDs.")
     return candidates
+
+
+def _provider_prompt(candidate: BenchmarkCandidate, roles: Mapping[str, str]) -> str:
+    builder = build_text_image_prompt if candidate.case.input_mode == "text" else build_style_preview_prompt
+    return builder(
+        candidate.case.instruction,
+        candidate.palette,
+        candidate.style,
+        palette_roles=roles,
+        custom_style=candidate.custom_style,
+    )
 
 
 def _new_state(candidate: BenchmarkCandidate, provider_prompt: str) -> dict[str, Any]:
@@ -311,10 +371,12 @@ def _new_state(candidate: BenchmarkCandidate, provider_prompt: str) -> dict[str,
         "style": candidate.style,
         "palette_id": candidate.palette_id,
         "palette": list(candidate.palette),
+        "palette_roles": dict(candidate.palette_roles),
         "repetition": candidate.repetition,
         "custom_style": candidate.custom_style,
-        "source": str(candidate.case.source),
-        "source_sha256": _sha256(candidate.case.source),
+        "input_mode": candidate.case.input_mode,
+        "source": str(candidate.case.source) if candidate.case.source else "",
+        "source_sha256": _sha256(candidate.case.source) if candidate.case.source else "",
         "instruction": candidate.case.instruction,
         "label": candidate.case.label or candidate.case.case_id,
         "category": candidate.case.category,
@@ -371,9 +433,17 @@ def _set_model_input_quality(directory: Path, state: dict[str, Any]) -> None:
         return
     blockers = list(selected.get("blockers", []))
     warnings = list(selected.get("warnings", []))
+    printable_metrics = printable.get("metrics", {}) if isinstance(printable, dict) else {}
+    if isinstance(printable_metrics, dict):
+        for warning in printable_metrics.get("quality_warnings", []):
+            if warning not in warnings:
+                warnings.append(warning)
+    eligible = bool(selected.get("model_input_eligible", False))
+    if isinstance(printable_metrics, dict) and not bool(printable_metrics.get("palette_quality_ok", True)):
+        eligible = False
     state["quality"] = {
-        "score": selected.get("score", 0.0),
-        "model_input_eligible": bool(selected.get("model_input_eligible", False)),
+        "score": max(0.0, float(selected.get("score", 0.0)) - 8.0 * len(warnings)),
+        "model_input_eligible": eligible,
         "blockers": blockers,
         "warnings": warnings,
         "flags": blockers + warnings,
@@ -386,19 +456,15 @@ def run_candidate(
     output_root: Path,
     *,
     image_runner: Callable[..., Path] = preprocess_image,
+    text_image_runner: Callable[..., Path] = generate_image,
+    reprocess_local: bool = False,
 ) -> dict[str, Any]:
     directory = output_root / "candidates" / candidate.candidate_id
     directory.mkdir(parents=True, exist_ok=True)
     state_path = directory / STATE_FILENAME
     output_path = directory / OUTPUT_FILENAME
-    roles = assign_palette_roles(candidate.palette).color_by_role if candidate.palette else {}
-    provider_prompt = build_style_preview_prompt(
-        candidate.case.instruction,
-        candidate.palette,
-        candidate.style,
-        palette_roles=roles,
-        custom_style=candidate.custom_style,
-    )
+    roles = candidate.palette_roles
+    provider_prompt = _provider_prompt(candidate, roles)
     expected = _new_state(candidate, provider_prompt)
     (directory / "provider-prompt.txt").write_text(provider_prompt, encoding="utf-8")
 
@@ -408,7 +474,11 @@ def run_candidate(
             raise Image2QualityBenchmarkError(f"Frozen candidate changed: {candidate.candidate_id}")
         if output_path.is_file():
             output = _validate_image(output_path)
-            if state.get("status") == "complete" and state.get("output", {}).get("sha256") == output["sha256"]:
+            if (
+                not reprocess_local
+                and state.get("status") == "complete"
+                and state.get("output", {}).get("sha256") == output["sha256"]
+            ):
                 state["output"] = output
                 _set_model_input_quality(directory, state)
                 state["resumed"] = True
@@ -438,15 +508,25 @@ def run_candidate(
         state["updated_at"] = time.time()
         _atomic_json(state_path, state)
         try:
-            image_runner(
-                candidate.case.source,
-                candidate.case.instruction,
-                output_path,
-                candidate.palette,
-                candidate.style,
-                palette_roles=roles,
-                custom_style=candidate.custom_style,
-            )
+            if candidate.case.input_mode == "text":
+                text_image_runner(
+                    candidate.case.instruction,
+                    output_path,
+                    candidate.palette,
+                    candidate.style,
+                    palette_roles=roles,
+                    custom_style=candidate.custom_style,
+                )
+            else:
+                image_runner(
+                    candidate.case.source,
+                    candidate.case.instruction,
+                    output_path,
+                    candidate.palette,
+                    candidate.style,
+                    palette_roles=roles,
+                    custom_style=candidate.custom_style,
+                )
             state["output"] = _validate_image(output_path)
             state["status"] = "image_ready"
             state["updated_at"] = time.time()
@@ -683,6 +763,7 @@ def write_validation_catalog(output_root: Path, candidates: Iterable[BenchmarkCa
         "case_count": len(cases),
         "cases": [{
             "id": case.case_id,
+            "input_mode": case.input_mode,
             "label": case.label or case.case_id,
             "category": case.category,
             "challenges": list(case.challenges),
@@ -695,11 +776,10 @@ def write_validation_catalog(output_root: Path, candidates: Iterable[BenchmarkCa
         } for case in cases],
     }
     _atomic_json(output_root / "validation-catalog.json", payload)
-    style_labels = {"sculpture": "单色写实雕塑", "realistic": "多色写实", "cartoon": "多色卡通", "custom": "自定义"}
     lines = [
         "# Image2 风格质量验证清单",
         "",
-        "风格：" + "、".join(style_labels.get(style, style) for style in styles),
+        "风格：" + "、".join(STYLE_LABELS.get(style, style) for style in styles),
         "",
         f"共 {len(cases)} 个案例、{len(candidate_list)} 个候选。每张先检查主体与必保留元素，再检查 3D 输入门禁。",
         "",
@@ -718,10 +798,13 @@ def write_validation_catalog(output_root: Path, candidates: Iterable[BenchmarkCa
         "",
         "## 通用判定",
         "",
-        "- 单色写实雕塑：只能改变材质和表面表现，不能借单色之名删减部件。",
+        "- 单色雕塑：只能改变材质和表面表现，不能借单色之名删减部件。",
         "- 多色写实：保持主体身份、结构、比例、视角和颜色角色，不泛化成同类商品或人物。",
-        "- 多色卡通：可通过圆润线条和表情变可爱，但不能换成通用娃娃脸或改变标志性比例。",
-        "- 三种风格：人物/人像必须使用一个低矮一体底座；半身像不补造腿脚，全身像不改变姿势，多人像共用一个底座。非人物不得凭空添加底座/配饰/零件。",
+        "- 手办/卡通：可通过圆润线条和表情变可爱，但不能换成通用娃娃脸或改变标志性比例。",
+        "- 低多边形：用少量清晰大平面替代细碎纹理，保留轮廓、部件数量和承重连接，避免随机三角噪声与尖刺。",
+        "- 浮雕：只表达正面可见轮廓与少量宽阔高度层级；必须连接到一块简单实心底板，不能补造背面或产生倒扣。",
+        "- 微缩场景：保留主体数量、相对位置和场景身份；地面与支撑合并为一体底座，不能有漂浮道具或松散薄片。",
+        "- 所有风格：人物/人像必须使用一个低矮一体底座；半身像不补造腿脚，全身像不改变姿势，多人像共用一个底座。非人物不得凭空添加底座/配饰/零件。",
         "- 人像底座必须有平整底面，并通过脚、衣摆、座椅或半身下缘与主体形成清晰实体连接，不能仅靠阴影接触或出现悬浮。",
     ])
     (output_root / "validation-catalog.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -767,8 +850,9 @@ def create_contact_sheets(output_root: Path, candidates: Iterable[BenchmarkCandi
                     complete.append((candidate, state))
         if not complete:
             continue
-        raw_tiles = [_sheet_tile(group[0].case.source, "SOURCE")]
-        model_tiles = [_sheet_tile(group[0].case.source, "SOURCE")]
+        source = group[0].case.source
+        raw_tiles = [_sheet_tile(source, "SOURCE") if source else _blank_sheet_tile("TEXT INPUT", 300)]
+        model_tiles = [_sheet_tile(source, "SOURCE") if source else _blank_sheet_tile("TEXT INPUT", 300)]
         for candidate, state in complete:
             directory = output_root / "candidates" / candidate.candidate_id
             label = f"{candidate.palette_id or 'natural'} r{candidate.repetition}"
@@ -792,7 +876,13 @@ def _blank_sheet_tile(label: str, tile_size: int = 240) -> Image.Image:
     tile = Image.new("RGB", (tile_size, tile_size + 30), (238, 240, 243))
     draw = ImageDraw.Draw(tile)
     draw.rectangle((12, 12, tile_size - 13, tile_size - 13), outline=(180, 184, 190), width=2)
-    draw.text((tile_size // 2 - 24, tile_size // 2 - 6), "PENDING", fill=(110, 114, 120))
+    status = "TEXT INPUT" if label.startswith("TEXT INPUT") else "PENDING"
+    left, top, right, bottom = draw.textbbox((0, 0), status)
+    draw.text(
+        ((tile_size - (right - left)) // 2, (tile_size - (bottom - top)) // 2),
+        status,
+        fill=(110, 114, 120),
+    )
     draw.text((8, tile_size + 8), label[:44], fill="black")
     return tile
 
@@ -876,6 +966,32 @@ def create_journey_summary_sheets(
             grouped[candidate.case.case_id] = []
             cases.append(candidate.case)
         grouped[candidate.case.case_id].append(candidate)
+    active_styles = [
+        style for style in PUBLIC_STYLES
+        if any(candidate.style == style for candidate in candidates)
+    ]
+    extended_styles = [style for style in active_styles if style in {"low_poly", "relief", "diorama"}]
+    if extended_styles:
+        rows: list[list[tuple[Path | None, str]]] = []
+        for case in cases:
+            source_label = case.case_id if case.source else f"TEXT INPUT · {case.case_id}"
+            row: list[tuple[Path | None, str]] = [(case.source, source_label)]
+            group = grouped[case.case_id]
+            for style in active_styles:
+                candidate = _preferred_candidate(group, style, "warm")
+                raw, reference = _candidate_artifacts(output_root, candidate)
+                row.append((reference or raw, STYLE_LABELS.get(style, style)))
+            rows.append(row)
+        return {
+            "primary": _write_overview_pages(
+                output_root / "overview-sheets" / "primary",
+                ["Source", *(STYLE_LABELS.get(style, style) for style in active_styles)],
+                rows,
+                cases_per_page,
+            ),
+            "palette": 0,
+        }
+
     primary_rows: list[list[tuple[Path | None, str]]] = []
     palette_rows: list[list[tuple[Path | None, str]]] = []
     for case in cases:
@@ -890,8 +1006,9 @@ def create_journey_summary_sheets(
         realistic_cool_raw, realistic_cool_reference = _candidate_artifacts(output_root, realistic_cool)
         cartoon_warm_raw, cartoon_warm_reference = _candidate_artifacts(output_root, cartoon_warm)
         cartoon_cool_raw, cartoon_cool_reference = _candidate_artifacts(output_root, cartoon_cool)
+        source_label = case.case_id if case.source else f"TEXT INPUT · {case.case_id}"
         primary_rows.append([
-            (case.source, case.case_id),
+            (case.source, source_label),
             (sculpture_reference or sculpture_raw, "natural"),
             (realistic_warm_raw, "warm"),
             (realistic_warm_reference, "warm"),
@@ -899,7 +1016,7 @@ def create_journey_summary_sheets(
             (cartoon_warm_reference, "warm"),
         ])
         palette_rows.append([
-            (case.source, case.case_id),
+            (case.source, source_label),
             (realistic_warm_reference, "realistic warm"),
             (realistic_cool_reference, "realistic cool"),
             (cartoon_warm_reference, "cartoon warm"),
@@ -964,14 +1081,8 @@ def build_dry_run_report(
         state = _read_json(state_path) if state_path.is_file() else None
         classification = "planned_paid_call"
         if state is not None:
-            roles = assign_palette_roles(candidate.palette).color_by_role if candidate.palette else {}
-            prompt = build_style_preview_prompt(
-                candidate.case.instruction,
-                candidate.palette,
-                candidate.style,
-                palette_roles=roles,
-                custom_style=candidate.custom_style,
-            )
+            roles = candidate.palette_roles
+            prompt = _provider_prompt(candidate, roles)
             expected = _new_state(candidate, prompt)
             if not _compatible_state(state, expected):
                 classification = "frozen_candidate_changed"
@@ -1049,6 +1160,11 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--report-only", action="store_true")
     parser.add_argument(
+        "--reprocess-local",
+        action="store_true",
+        help="Rebuild deterministic printable references from saved provider images without paid calls.",
+    )
+    parser.add_argument(
         "--skip-blocked",
         action="store_true",
         help="Explicitly omit prior paid/uncertain or incompatible states instead of retrying them.",
@@ -1064,6 +1180,8 @@ def main() -> int:
         parser.error("--max-paid-calls must not be negative")
     if args.dry_run and args.confirm_image2_calls:
         parser.error("--dry-run cannot be combined with --confirm-image2-calls")
+    if args.reprocess_local and args.confirm_image2_calls:
+        parser.error("--reprocess-local cannot be combined with --confirm-image2-calls")
     candidates = load_candidates(args.manifest)
     selected = _select_candidates(candidates, args.candidate, args.limit)
     if args.list:
@@ -1098,7 +1216,7 @@ def main() -> int:
         selected, skipped_blocked = skip_blocked_candidates(output, candidates, selected)
         if not selected:
             parser.error("--skip-blocked removed every selected candidate")
-    if not args.confirm_image2_calls:
+    if not args.confirm_image2_calls and not args.reprocess_local:
         report = build_dry_run_report(output, candidates, selected)
         report["skipped_blocked_count"] = len(skipped_blocked)
         report["skipped_blocked_ids"] = skipped_blocked
@@ -1108,19 +1226,22 @@ def main() -> int:
     dry_run = build_dry_run_report(output, candidates, selected)
     if dry_run["blocked_candidate_count"]:
         parser.error("selected candidates contain blocked or incompatible prior state; inspect the dry-run report")
-    if args.max_paid_calls is None:
+    if not args.reprocess_local and args.max_paid_calls is None:
         parser.error("--max-paid-calls is required with --confirm-image2-calls")
-    if dry_run["planned_paid_calls"] > args.max_paid_calls:
+    if not args.reprocess_local and dry_run["planned_paid_calls"] > args.max_paid_calls:
         parser.error(
             f"dry-run requires {dry_run['planned_paid_calls']} paid calls, exceeding --max-paid-calls {args.max_paid_calls}"
         )
-    if dry_run["planned_paid_calls"] and not dry_run["ready"]["api_key_present"]:
+    if not args.reprocess_local and dry_run["planned_paid_calls"] and not dry_run["ready"]["api_key_present"]:
         parser.error("OPENAI_API_KEY is required for the planned Image2 calls")
 
     summary_lock = threading.Lock()
     failures = 0
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        futures = {pool.submit(run_candidate, candidate, output): candidate for candidate in selected}
+        futures = {
+            pool.submit(run_candidate, candidate, output, reprocess_local=args.reprocess_local): candidate
+            for candidate in selected
+        }
         for future in as_completed(futures):
             candidate = futures[future]
             try:
