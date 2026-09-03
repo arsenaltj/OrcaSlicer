@@ -529,7 +529,9 @@ class SidecarHealthContractTests(unittest.TestCase):
         self.assertEqual(generation["default_generation_profile"], "quality")
         self.assertIn("model_reference", generation["printable_image_pipeline"]["outputs"])
         self.assertIsInstance(generation["palette_recommendation"]["available"], bool)
-        self.assertEqual(generation["palette_recommendation"]["max_colors"], 4)
+        self.assertEqual(generation["palette_recommendation"]["min_colors"], 1)
+        self.assertEqual(generation["palette_recommendation"]["max_colors"], 6)
+        self.assertEqual(generation["palette_recommendation"]["default_colors"], 4)
         self.assertEqual(set(generation["source_availability"]), {"text", "image"})
         self.assertIsInstance(generation["source_availability"]["text"], bool)
         self.assertIsInstance(generation["source_availability"]["image"], bool)
@@ -564,6 +566,20 @@ class SidecarHealthContractTests(unittest.TestCase):
         with self.assertRaisesRegex(PRODUCTION.RequestError, "quality or performance"):
             PRODUCTION._normalize_generation_profile("turbo")
 
+    def test_palette_policy_accepts_one_through_six_and_keeps_legacy_default(self):
+        colors = [f"#{index:06X}" for index in range(1, 8)]
+        for count in range(1, 7):
+            with self.subTest(count=count):
+                self.assertEqual(PRODUCTION._normalize_palette(colors[:count]), tuple(colors[:count]))
+                self.assertEqual(PRODUCTION._normalize_palette_color_count(count), count)
+                self.assertEqual(PRODUCTION._normalize_palette_color_count(str(count)), count)
+        self.assertEqual(PRODUCTION._normalize_palette_color_count(None), 4)
+        for invalid in (0, 7, True, "1.5"):
+            with self.subTest(invalid=invalid), self.assertRaises(PRODUCTION.RequestError):
+                PRODUCTION._normalize_palette_color_count(invalid)
+        with self.assertRaises(PRODUCTION.RequestError):
+            PRODUCTION._normalize_palette(colors)
+
     def test_custom_style_is_persisted_and_exposed_for_task_recovery(self):
         job_id = str(uuid.uuid4())
         with tempfile.TemporaryDirectory() as directory:
@@ -580,6 +596,7 @@ class SidecarHealthContractTests(unittest.TestCase):
             restored = PRODUCTION._load_job(job_directory)
             self.assertIsNotNone(restored)
             self.assertEqual(restored.custom_style, "复古木刻版画")
+            self.assertEqual(restored.palette_color_count, 4)
             self.assertEqual(PRODUCTION._public_job(restored)["custom_style"], "复古木刻版画")
 
     def test_palette_recommendation_is_persisted_and_exposed_for_task_recovery(self):
@@ -599,12 +616,18 @@ class SidecarHealthContractTests(unittest.TestCase):
             job = PRODUCTION.Job(id=job_id, source="text", directory=job_directory)
             job.state = "awaiting_palette_confirmation"
             job.phase = "awaiting_palette_confirmation"
+            job.palette = ("#D96B43", "#2B2422", "#F2D7B5")
             job.palette_recommendation = recommendation
             PRODUCTION._persist_job(job)
+            state_path = job_directory / PRODUCTION.JOB_STATE_FILENAME
+            persisted = json.loads(state_path.read_text(encoding="utf-8"))
+            persisted.pop("palette_color_count")
+            state_path.write_text(json.dumps(persisted), encoding="utf-8")
 
             restored = PRODUCTION._load_job(job_directory)
 
             self.assertIsNotNone(restored)
+            self.assertEqual(restored.palette_color_count, 4)
             self.assertEqual(restored.palette_recommendation, recommendation)
             public = PRODUCTION._public_job(restored)
             self.assertEqual(public["palette_recommendation"], recommendation)
@@ -617,7 +640,13 @@ class SidecarHealthContractTests(unittest.TestCase):
             job_directory.mkdir()
             image_path = job_directory / "input.png"
             image_path.write_bytes(b"\x89PNG\r\n\x1a\nexample")
-            job = PRODUCTION.Job(id=job_id, source="image", directory=job_directory, user_prompt="保留主体")
+            job = PRODUCTION.Job(
+                id=job_id,
+                source="image",
+                directory=job_directory,
+                user_prompt="保留主体",
+                palette_color_count=6,
+            )
             job.input_path = image_path
             result = mock.Mock()
             result.as_dict.return_value = {
@@ -627,6 +656,8 @@ class SidecarHealthContractTests(unittest.TestCase):
                     {"hex": "#2B2422", "name": "b", "role": "structure", "usage": "u", "reason": "r"},
                     {"hex": "#F2D7B5", "name": "c", "role": "light", "usage": "u", "reason": "r"},
                     {"hex": "#2F6B5F", "name": "d", "role": "accent", "usage": "u", "reason": "r"},
+                    {"hex": "#3267A8", "name": "e", "role": "secondary", "usage": "u", "reason": "r"},
+                    {"hex": "#9B3F77", "name": "f", "role": "detail", "usage": "u", "reason": "r"},
                 ],
             }
             with mock.patch.object(PRODUCTION, "recommend_printable_palette", return_value=result) as recommend:
@@ -634,6 +665,8 @@ class SidecarHealthContractTests(unittest.TestCase):
 
             self.assertEqual(job.state, "awaiting_palette_confirmation")
             self.assertEqual(recommend.call_args.kwargs["image_path"], image_path)
+            self.assertEqual(recommend.call_args.kwargs["color_count"], 6)
+            self.assertEqual(len(job.palette_recommendation["colors"]), 6)
 
     def test_text_recommendation_confirmation_continues_the_same_job(self):
         result = mock.Mock()
@@ -644,6 +677,8 @@ class SidecarHealthContractTests(unittest.TestCase):
                 {"hex": "#2B2422", "name": "b", "role": "structure", "usage": "u", "reason": "r"},
                 {"hex": "#F2D7B5", "name": "c", "role": "light", "usage": "u", "reason": "r"},
                 {"hex": "#2F6B5F", "name": "d", "role": "accent", "usage": "u", "reason": "r"},
+                {"hex": "#3267A8", "name": "e", "role": "secondary", "usage": "u", "reason": "r"},
+                {"hex": "#9B3F77", "name": "f", "role": "detail", "usage": "u", "reason": "r"},
             ],
         }
         with tempfile.TemporaryDirectory() as directory, temporary_environment(
@@ -658,7 +693,13 @@ class SidecarHealthContractTests(unittest.TestCase):
                 with sidecar_server(PRODUCTION.Handler) as port:
                     create = urllib.request.Request(
                         f"http://127.0.0.1:{port}/v1/orcaslicer/model-jobs/recommend-text-palette",
-                        data=json.dumps({"request_id": "r1", "prompt": "一只机械麒麟", "style": "q_cartoon", "print": {}}).encode(),
+                        data=json.dumps({
+                            "request_id": "r1",
+                            "prompt": "一只机械麒麟",
+                            "style": "q_cartoon",
+                            "palette_color_count": 6,
+                            "print": {},
+                        }).encode(),
                         method="POST",
                         headers={"X-OrcaSlicer-Client": "native", "Content-Type": "application/json"},
                     )
@@ -676,8 +717,15 @@ class SidecarHealthContractTests(unittest.TestCase):
                     confirm = urllib.request.Request(
                         f"http://127.0.0.1:{port}/v1/orcaslicer/model-jobs/{job_id}/confirm-palette",
                         data=json.dumps({
-                            "palette": ["#D96B43", "#2B2422", "#F2D7B5", "#2F6B5F"],
-                            "palette_roles": {"primary": "#D96B43", "structure": "#2B2422", "light": "#F2D7B5", "accent": "#2F6B5F"},
+                            "palette": ["#D96B43", "#2B2422", "#F2D7B5", "#2F6B5F", "#3267A8", "#9B3F77"],
+                            "palette_roles": {
+                                "primary": "#D96B43",
+                                "structure": "#2B2422",
+                                "light": "#F2D7B5",
+                                "accent": "#2F6B5F",
+                                "secondary": "#3267A8",
+                                "detail": "#9B3F77",
+                            },
                         }).encode(),
                         method="POST",
                         headers={"X-OrcaSlicer-Client": "native", "Content-Type": "application/json"},
@@ -688,6 +736,8 @@ class SidecarHealthContractTests(unittest.TestCase):
                 self.assertEqual(payload["job"]["id"], job_id)
                 self.assertTrue(payload["job"]["palette_recommendation_confirmed"])
                 self.assertEqual(payload["job"]["palette"][0], "#D96B43")
+                self.assertEqual(payload["job"]["palette_color_count"], 6)
+                self.assertEqual(len(payload["job"]["palette"]), 6)
                 deadline = time.time() + 2
                 while preprocess.call_count == 0 and time.time() < deadline:
                     time.sleep(0.01)
@@ -706,6 +756,7 @@ class SidecarHealthContractTests(unittest.TestCase):
                 {"hex": "#2B2422", "name": "b", "role": "structure", "usage": "u", "reason": "r"},
                 {"hex": "#F2D7B5", "name": "c", "role": "light", "usage": "u", "reason": "r"},
                 {"hex": "#2F6B5F", "name": "d", "role": "accent", "usage": "u", "reason": "r"},
+                {"hex": "#3267A8", "name": "e", "role": "secondary", "usage": "u", "reason": "r"},
             ],
         }
         boundary = "----OrcaPaletteTest"
@@ -715,6 +766,7 @@ class SidecarHealthContractTests(unittest.TestCase):
             "instruction": "保留主体",
             "style": "cartoon",
             "custom_style": "",
+            "palette_color_count": "5",
             "print": "{}",
         }.items():
             parts.append(
@@ -758,7 +810,9 @@ class SidecarHealthContractTests(unittest.TestCase):
 
                 self.assertEqual(state, "awaiting_palette_confirmation")
                 self.assertTrue(job.input_path.is_file())
+                self.assertEqual(job.palette_color_count, 5)
                 self.assertEqual(recommend.call_args.kwargs["image_path"], job.input_path)
+                self.assertEqual(recommend.call_args.kwargs["color_count"], 5)
             finally:
                 with PRODUCTION._JOBS_LOCK:
                     PRODUCTION._JOBS.clear()
@@ -1015,6 +1069,7 @@ class SidecarHealthContractTests(unittest.TestCase):
                     "accent": "#4E6F5B",
                 },
                 style="realistic",
+                palette_color_count=6,
             )
             reference_job.state = "awaiting_confirmation"
             reference_job.phase = "awaiting_confirmation"
@@ -1062,6 +1117,7 @@ class SidecarHealthContractTests(unittest.TestCase):
                 self.assertEqual(child.state, "queued")
                 self.assertEqual(child.model_reference_path.read_bytes(), reference_image.read_bytes())
                 self.assertEqual(child.face_limit, 1000000)
+                self.assertEqual(child.palette_color_count, 6)
                 self.assertEqual(child.attempts[0]["source_job_id"], geometry_id)
                 self.assertEqual(child.attempts[0]["source_task_id"], "provider-geometry-task")
                 submit.assert_called_once()

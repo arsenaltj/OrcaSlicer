@@ -415,6 +415,20 @@ class StylePreviewPromptTests(unittest.TestCase):
 
 
 class TextImagePromptTests(unittest.TestCase):
+    def test_palette_direction_describes_extended_roles_and_degrades_for_one_color(self):
+        six = preprocessor._designer_toy_palette_direction(
+            ("#D93632", "#252525", "#F2F1EA", "#315CA8", "#3B8C54", "#9B3F77")
+        )
+        self.assertIn("secondary=", six)
+        self.assertIn("detail=", six)
+        self.assertIn("secondary color covers another broad semantic part", six)
+        self.assertIn("detail color marks a bounded, printable identifying feature", six)
+
+        one = preprocessor._designer_toy_palette_direction(("#D93632",))
+        self.assertIn("primary material", one)
+        self.assertIn("primary color as one flat opaque material", one)
+        self.assertNotIn("structure color as one flat opaque material", one)
+
     def test_printable_text_image_prompt_uses_large_regions_and_rejects_dithering(self):
         prompt = preprocessor._text_image_prompt(
             "一只正在奔跑的机械麒麟",
@@ -530,6 +544,30 @@ class PrintablePaletteRecommendationTests(unittest.TestCase):
 
         self.assertEqual(len(result.colors), 4)
         self.assertEqual(complete.call_args.args[2], (image_path,))
+
+    def test_recommendation_supports_requested_cardinalities_one_through_six(self):
+        value = json.loads(self.recommendation_json())
+        value["colors"].extend([
+            {"hex": "#3267A8", "name": "钴蓝", "role": "secondary", "usage": "次要大色区", "reason": "补充分区"},
+            {"hex": "#9B3F77", "name": "莓紫", "role": "detail", "usage": "可打印细节", "reason": "强化识别"},
+        ])
+        roles = ("primary", "structure", "light", "accent", "secondary", "detail")
+        for count in range(1, 7):
+            payload = {**value, "colors": value["colors"][:count]}
+            with self.subTest(count=count), mock.patch.object(
+                preprocessor, "complete_text", return_value=json.dumps(payload, ensure_ascii=False)
+            ) as complete:
+                result = preprocessor.recommend_printable_palette("一只机械麒麟", "q_cartoon", color_count=count)
+                self.assertEqual(len(result.colors), count)
+                self.assertEqual(tuple(color.role for color in result.colors), roles[:count])
+                self.assertIn(f"Return exactly {count} color records", complete.call_args.args[0])
+
+    def test_recommendation_rejects_unsupported_requested_cardinality_before_provider_call(self):
+        with mock.patch.object(preprocessor, "complete_text") as complete:
+            for count in (0, 7, True):
+                with self.subTest(count=count), self.assertRaises(preprocessor.OpenAIPreprocessorError):
+                    preprocessor.recommend_printable_palette("a toy", "low_poly", color_count=count)
+        complete.assert_not_called()
 
     def test_rejects_invalid_provider_responses(self):
         valid = json.loads(self.recommendation_json())

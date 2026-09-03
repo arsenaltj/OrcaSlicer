@@ -1,4 +1,4 @@
-"""Advisory GPT vision review for printable four-color reference images."""
+"""Advisory GPT vision review for cardinality-dynamic printable references."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ except ImportError:
 
 
 REPORT_SCHEMA_VERSION = 1
-REVIEW_VERSION = "palette-visual-v1"
+REVIEW_VERSION = "palette-visual-v2"
 REPORT_FILENAME = "palette-visual-quality.json"
 CHECK_IDS = (
     "semantic_palette_fit",
@@ -51,18 +51,19 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _system_prompt(has_reference: bool) -> str:
+def _system_prompt(has_reference: bool, color_count: int) -> str:
+    palette_label = f"{color_count}-color" if color_count > 0 else "printable-color"
     comparison = (
-        "The first image is the user reference and the second is the strict four-color preview. "
+        f"The first image is the user reference and the second is the strict {palette_label} preview. "
         if has_reference
-        else "The supplied image is the strict four-color preview for a text-described subject. "
+        else f"The supplied image is the strict {palette_label} preview for a text-described subject. "
     )
     checks = ",".join(
         f'"{check}":{{"status":"pass|review","score":0,"reason":"Chinese sentence"}}'
         for check in CHECK_IDS
     )
     return (
-        "You are a conservative design reviewer for a four-filament 3D-printable collectible. "
+        f"You are a conservative design reviewer for a {palette_label} 3D-printable collectible. "
         + comparison
         + "Judge semantic suitability and visible reference-image quality only. Do not claim exact wall thickness, topology, "
         "support requirements, printer compatibility, or physical filament color matching. Broad solid material regions are good; "
@@ -89,7 +90,7 @@ def _user_prompt(prompt: str, style: str, recommendation: Mapping[str, Any]) -> 
         f"用户描述：{prompt.strip() or '未记录'}\n"
         f"目标风格：{style or '未记录'}\n"
         f"推荐摘要：{str(recommendation.get('summary', '')).strip()}\n"
-        "推荐四色：\n- " + "\n- ".join(palette_lines) + "\n"
+        f"推荐{len(palette_lines)}色：\n- " + "\n- ".join(palette_lines) + "\n"
         "请检查配色语义、角色使用、主体忠实度、轮廓、大色块和作为后续图生 3D 参考的适合程度。"
     )
 
@@ -176,7 +177,7 @@ def _unavailable(message: str, strict_sha: str = "", reference_sha: str = "") ->
         "status": "unavailable",
         "score": 0,
         "confidence": 0.0,
-        "summary": "四色视觉复核暂不可用；本地门禁结果不受影响。",
+        "summary": "打印配色视觉复核暂不可用；本地门禁结果不受影响。",
         "warnings": [],
         "errors": ["visual_review_unavailable"],
         "checks": {},
@@ -243,8 +244,10 @@ def review_printable_palette_visual_quality(
             except (OSError, UnicodeError, json.JSONDecodeError):
                 pass
         images = (reference, strict) if reference is not None else (strict,)
+        raw_colors = recommendation.get("colors")
+        color_count = len(raw_colors) if isinstance(raw_colors, list) else 0
         response = completion(
-            _system_prompt(reference is not None),
+            _system_prompt(reference is not None, color_count),
             _user_prompt(prompt, style, recommendation),
             images,
         )

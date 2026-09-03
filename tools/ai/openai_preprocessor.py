@@ -28,9 +28,21 @@ except ImportError:
     from network_policy import build_opener as build_network_opener, network_diagnostics
 
 try:
-    from .printable_palette import PALETTE_ROLES, PrintablePaletteError, assign_palette_roles, normalize_palette
+    from .printable_palette import (
+        LEGACY_DEFAULT_PRINTABLE_COLORS,
+        PrintablePaletteError,
+        active_palette_roles,
+        assign_palette_roles,
+        normalize_palette,
+    )
 except ImportError:
-    from printable_palette import PALETTE_ROLES, PrintablePaletteError, assign_palette_roles, normalize_palette
+    from printable_palette import (
+        LEGACY_DEFAULT_PRINTABLE_COLORS,
+        PrintablePaletteError,
+        active_palette_roles,
+        assign_palette_roles,
+        normalize_palette,
+    )
 
 _DEFAULT_BASE_URL = "https://api.openai.com/v1"
 _MAX_JSON_BYTES = 32 * 1024 * 1024
@@ -512,15 +524,51 @@ def _designer_toy_palette_direction(
         raise OpenAIPreprocessorError(str(exc)) from None
     required = min(3, len(palette))
     role_text = ", ".join(f"{role}={color}" for role, color in assignment.color_by_role.items())
+    active_roles = set(assignment.color_by_role)
+    coverage_roles = "primary and structure materials" if "structure" in active_roles else "primary material"
+    connector_role = "structure" if "structure" in active_roles else "primary"
+    role_descriptions = {
+        "primary": "the primary color covers the largest subject material",
+        "structure": "the structure color covers rear surfaces, seams, boundaries, and load-bearing regions",
+        "light": "the light color is reserved for enclosed highlights or a face panel",
+        "accent": "the accent color marks one secondary semantic part",
+        "secondary": "the secondary color covers another broad semantic part",
+        "detail": "the detail color marks a bounded, printable identifying feature",
+    }
+    role_usage = "; ".join(role_descriptions[role] for role in assignment.color_by_role) + ". "
+    face_direction = (
+        "For a person or character, use the light material for the face only when a source-faithful hairline and a separate neck "
+        "or collar provide readable boundaries. "
+        if "light" in active_roles else ""
+    )
+    accent_direction = (
+        "A secondary garment assigned to the accent material must stay one continuous accent-colour region: express folds as "
+        "shallow geometry and soft illumination, never as broad structure-colour or skin-colour patches inside that garment. "
+        if "accent" in active_roles else ""
+    )
+    connector_direction = (
+        "Render every thin load-bearing shaft, rib, spoke, rail, handle, branch, cable, antenna, and support in the "
+        + connector_role
+        + " color as one flat opaque material from end to end. Never render such a connector as silver, white, translucent, "
+        + "reflective, highlighted, or background-colored, because palette mapping must not break its silhouette. "
+    )
+    signature_direction = (
+        "Render identity-defining engraved lines, emblem ridges, grille bars, panel divisions, and part boundaries as a few "
+        "continuous, printer-width "
+        + connector_role
+        + "-colored grooves or bands. Do not express signature details only with highlights, shadows, or subtle tone changes "
+        + "that will disappear during exact-palette mapping. "
+    )
     return (
         "Treat these colors as the allowed printable palette: "
         + ", ".join(palette)
         + ". Every visible subject surface must use one of these material colors. Keep the outer silhouette, neck, limbs, "
         "load-bearing connections, base contact, and stacked architectural tiers visibly joined by opaque palette-colored geometry; "
         "never cut structural connections out as background or transparency. Cover at least 65 percent of the visible subject with "
-        "the primary and structure materials. Assign the remaining colors to large semantic parts rather than lighting gradients. "
-        "For a person or character, use the light material for the face only when a source-faithful hairline and a separate neck "
-        "or collar provide readable boundaries. Preserve source-visible ears and the open jawline. Never extend hair, a collar, "
+        + coverage_roles
+        + ". Assign the remaining colors to large semantic parts rather than lighting gradients. "
+        + face_direction
+        + "Preserve source-visible ears and the open jawline. Never extend hair, a collar, "
         "or a hood around the cheeks or under the chin unless that exact enclosure exists in the source. The collar must connect "
         "the neck to the torso, not encircle the face. Never retain natural flesh tones unless the exact skin-like shade is listed. "
         "Do not introduce beige, gray, black, off-white, natural skin tones, or dark substitutes unless that exact shade is one of "
@@ -530,20 +578,16 @@ def _designer_toy_palette_direction(
         "Use broad contiguous regions with hard readable boundaries. A deterministic print-mapping step will convert the "
         "result to exact filament colors. Use these perceptual material roles derived from the actual loaded filaments: "
         + role_text
-        + ". The primary color covers the largest subject material; the structure color covers hair, rear surfaces, seams, "
-        "and the darkest load-bearing regions; the light color is reserved for enclosed highlights or a face panel; the accent "
-        "color marks one secondary semantic part. Ignore any role that is absent from this smaller palette. "
-        "Render every thin load-bearing shaft, rib, spoke, rail, handle, branch, cable, antenna, and support in the structure "
-        "color as one flat opaque material from end to end. Never render such a connector as silver, white, translucent, "
-        "reflective, highlighted, or background-colored, because palette mapping must not break its silhouette. "
-        "For a plant, bonsai, coral, antler, feather fan, or other branching organic subject, merge small leaves or repeated "
+        + ". "
+        + role_usage
+        + connector_direction
+        + "For a plant, bonsai, coral, antler, feather fan, or other branching organic subject, merge small leaves or repeated "
         "tips into fewer overlapping solid clusters. Visibly fuse every cluster through a sturdy branch or stem to the trunk, "
         "body, or base; never leave an isolated leaf pad, floating frond, or contact-only branch shell. "
         "Keep each semantic material consistent across its whole visible part, including surfaces turning toward the side; never "
         "scatter a material into isolated freckles, inferred rear patches, edge highlights, or random speckles. "
-        "A secondary garment assigned to the accent material must stay one continuous accent-colour region: express folds as shallow "
-        "geometry and soft illumination, never as broad structure-colour or skin-colour patches inside that garment. "
-        "Treat each semantic part as one stable base material assignment. Preserve restrained neutral studio illumination and "
+        + accent_direction
+        + "Treat each semantic part as one stable base material assignment. Preserve restrained neutral studio illumination and "
         "broad sculptural light-to-shadow modeling so the nose, eyelids, cheekbones, folds, joints, and silhouette remain legible "
         "to image-to-3D, but never paint that illumination as a second material, a colored rim, a freckle, or a hard color patch. "
         "Keep the underlying hue and semantic ownership of each part unambiguous across lit, side-facing, and occluded surfaces; "
@@ -551,10 +595,8 @@ def _designer_toy_palette_direction(
         "Once a face material is selected, keep it continuous across the face, ears, neck, and visible hands; never break skin "
         "with clothing-colored forehead, nose, cheek, chin, ear, neck, or hand highlights. A smile may use one small connected "
         "teeth band, but not scattered tooth or highlight islands. "
-        "Render identity-defining engraved lines, emblem ridges, grille bars, panel divisions, and part boundaries as a few "
-        "continuous, printer-width structure-colored grooves or bands. Do not express signature details only with highlights, "
-        "shadows, or subtle tone changes that will disappear during exact-palette mapping. "
-        "Place the subject on a genuinely transparent alpha background. Never draw, paint, or simulate a transparency checkerboard, "
+        + signature_direction
+        + "Place the subject on a genuinely transparent alpha background. Never draw, paint, or simulate a transparency checkerboard, "
         "grid, checker pattern, or white-and-gray tiles into the RGB image. If alpha transparency is unavailable, use one uniform "
         "studio background with no "
         "shadow whose color is clearly separated from every listed palette color and every subject region. The fallback background "
@@ -845,31 +887,62 @@ def recommend_printable_palette(
     style: str,
     custom_style: str = "",
     image_path: Path | None = None,
+    color_count: int = LEGACY_DEFAULT_PRINTABLE_COLORS,
 ) -> PrintablePaletteRecommendation:
-    """Recommend four provider-neutral design colors without binding Orca filament slots."""
+    """Recommend a provider-neutral palette without binding Orca filament slots."""
 
     prompt = instruction.strip() if isinstance(instruction, str) else ""
     if not prompt and image_path is None:
         raise OpenAIPreprocessorError("A text instruction or reference image is required.")
+    try:
+        roles = active_palette_roles(color_count)
+    except PrintablePaletteError as exc:
+        raise OpenAIPreprocessorError(str(exc)) from None
     style_direction = _style_profile(style, custom_style)
+    palette_label = "four-color" if color_count == LEGACY_DEFAULT_PRINTABLE_COLORS else f"{color_count}-color"
+    role_schema = "|".join(f'"{role}"' for role in roles)
+    role_directions = {
+        "primary": "primary should cover the largest semantic region",
+        "structure": "structure should support silhouette and boundaries",
+        "light": "light should provide a readable light material",
+        "accent": "accent should distinguish one secondary semantic part",
+        "secondary": "secondary should cover another broad semantic region",
+        "detail": "detail should mark a small but still printable identifying region",
+    }
+    role_guidance = "; ".join(role_directions[role] for role in roles) + ". "
+    contrast_guidance = (
+        "The accent should normally use a clearly different hue family from primary, not a lighter or darker substitute for "
+        "the same material; only keep related hues when the subject semantics make that distinction unmistakable. "
+        if "accent" in roles else ""
+    )
+    value_guidance = (
+        "Make structure visibly dark, light visibly bright, and keep primary and accent as medium-value colors from clearly "
+        "different hue families so no two roles look interchangeable as physical materials. "
+        if {"structure", "light", "accent"}.issubset(roles) else ""
+    )
+    portrait_guidance = (
+        "For a real-person portrait, reserve light for the continuous skin material on face, ears, neck and visible hands; use "
+        "primary for the largest garment or base material, structure for hair and deep boundaries, and accent for one secondary "
+        "garment. Never assign skin to primary when a larger garment region is visible. "
+        if {"structure", "light", "accent"}.issubset(roles) else ""
+    )
     system_prompt = (
         "You are a color designer for printable 3D collectibles. Return exactly one JSON object and no markdown. "
-        "Recommend exactly one four-color palette for the primary subject. The colors are ideal design targets, not known "
+        f"Recommend exactly one {palette_label} palette for the primary subject. Return exactly {color_count} color records. "
+        "The colors are ideal design targets, not known "
         "physical filaments. Use this schema: "
         '{"summary":string,"colors":[{"hex":"#RRGGBB","name":string,'
-        '"role":"primary"|"structure"|"light"|"accent","usage":string,"reason":string}]}. '
-        "Return every role exactly once. Choose broad solid material regions with strong perceptual separation; avoid gradients, "
-        "near-duplicate shades, tiny accents, transparency, metallic effects and colors that only work as lighting. The primary "
-        "color should cover the largest semantic region, structure should support silhouette and boundaries, light should provide "
-        "a readable light material, and accent should distinguish one secondary semantic part. The accent should normally use a "
-        "clearly different hue family from primary, not a lighter or darker substitute for the same material; only keep related "
-        "hues when the subject semantics make that distinction unmistakable. This full-color printable palette requirement "
+        f'"role":{role_schema},"usage":string,"reason":string}}]}}. '
+        "Return every listed role exactly once. Choose broad solid material regions with strong perceptual separation; avoid "
+        "gradients, near-duplicate shades, tiny accents, transparency, metallic effects and colors that only work as lighting. "
+        + role_guidance
+        + contrast_guidance
+        + "This full-color printable palette requirement "
         "overrides any monochrome stone, plaster, clay, metal, or grayscale wording in the selected style; keep the style's shape "
-        "language while assigning visibly distinct material colors. Make structure visibly dark, light visibly bright, and keep "
-        "primary and accent as medium-value colors from clearly different hue families so no two roles look interchangeable as "
-        "physical materials. For a real-person portrait, reserve light for the continuous skin material on face, ears, neck and visible "
-        "hands; use primary for the largest garment or base material, structure for hair and deep boundaries, and accent for one secondary "
-        "garment. Never assign skin to primary when a larger garment region is visible. Use concise Chinese for summary, "
+        "language while assigning visibly distinct material colors. "
+        + value_guidance
+        + portrait_guidance
+        + "Use concise Chinese for summary, "
         "name, usage and reason. Apply this style direction: "
         + style_direction
     )
@@ -884,8 +957,10 @@ def recommend_printable_palette(
         payload.get("summary"), "summary", MAX_PALETTE_RECOMMENDATION_SUMMARY_BYTES
     )
     raw_colors = payload.get("colors")
-    if not isinstance(raw_colors, list) or len(raw_colors) != len(PALETTE_ROLES):
-        raise OpenAIPreprocessorError("The palette recommendation must contain exactly four colors.")
+    if not isinstance(raw_colors, list) or len(raw_colors) != color_count:
+        raise OpenAIPreprocessorError(
+            f"The palette recommendation must contain exactly {color_count} colors."
+        )
 
     records_by_role: dict[str, PrintablePaletteRecommendationColor] = {}
     raw_hex: list[str] = []
@@ -893,7 +968,7 @@ def recommend_printable_palette(
         if not isinstance(value, dict):
             raise OpenAIPreprocessorError("Each palette recommendation color must be an object.")
         role = value.get("role")
-        if not isinstance(role, str) or role not in PALETTE_ROLES or role in records_by_role:
+        if not isinstance(role, str) or role not in roles or role in records_by_role:
             raise OpenAIPreprocessorError("The palette recommendation roles must be unique and complete.")
         raw_color = value.get("hex")
         if not isinstance(raw_color, str):
@@ -918,14 +993,14 @@ def recommend_printable_palette(
         )
     try:
         palette = normalize_palette(raw_hex)
-        assignment = assign_palette_roles(palette, {role: records_by_role[role].hex for role in PALETTE_ROLES})
+        assignment = assign_palette_roles(palette, {role: records_by_role[role].hex for role in roles})
     except PrintablePaletteError as exc:
         raise OpenAIPreprocessorError(str(exc)) from None
-    if len(palette) != len(PALETTE_ROLES):
+    if len(palette) != color_count:
         raise OpenAIPreprocessorError("The palette recommendation colors must be unique.")
     if assignment.low_contrast:
         raise OpenAIPreprocessorError("The palette recommendation does not provide enough color contrast.")
-    return PrintablePaletteRecommendation(summary, tuple(records_by_role[role] for role in PALETTE_ROLES))
+    return PrintablePaletteRecommendation(summary, tuple(records_by_role[role] for role in roles))
 
 
 def _multipart_image(
