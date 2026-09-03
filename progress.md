@@ -35,6 +35,16 @@
 - `python scripts/verify_ai_integration.py`：通过，Git/回执检查基于 `35c5e1b647`。
 - `git diff --check`：通过，仅有 Windows CRLF 提示。
 
+### 1～6 色类型化契约基础
+- **状态：** complete
+- 先扩展 `[AIContracts]` 测试，直接编译按预期因 `ColorIntent.hpp` 尚不存在而失败。
+- 新增无 wx/provider 依赖的颜色输出模式、物理耗材通道、叠色分量/配方和颜色意图清单引用。
+- 固定物理通道数 `[1, 6]`、唯一槽位、RGB 十六进制颜色，以及叠色配方 1～3 个唯一正权重且总和归一化的约束。
+- `PrintablePaletteSnapshot` 保留原字段顺序以兼容旧聚合初始化，同时新增类型化能力和显式旧字段投影方法。
+- `GeneratedModelArtifact` 以空 `std::optional` 增加清单引用；旧制品默认构造和无清单导入语义不变。
+- MSVC 直接编译扩展后的 `test_ai_contracts.cpp`：通过。
+- Python 架构守卫 41 项及集成守卫（跳过 Git）继续通过，`git diff --check` 通过。
+
 ### 分支基线迁移
 - **状态：** complete
 - 从 `codex/orca-integration-v2@808efe4401` 创建并切换到 `codex/model-generation-v2`。
