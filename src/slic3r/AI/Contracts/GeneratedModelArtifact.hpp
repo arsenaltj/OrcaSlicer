@@ -1,7 +1,10 @@
 #pragma once
 
+#include "slic3r/AI/Contracts/ColorIntent.hpp"
+
 #include <boost/filesystem/path.hpp>
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -17,6 +20,7 @@ struct GeneratedModelArtifact
     std::string             color_encoding;
     std::vector<std::string> generation_palette;
     bool                    used_printable_colors { false };
+    std::optional<ColorIntentManifestRef> color_intent_manifest;
 };
 
 } // namespace Slic3r::AI
