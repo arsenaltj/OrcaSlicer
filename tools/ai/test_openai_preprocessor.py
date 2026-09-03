@@ -231,6 +231,31 @@ class ImageProviderSelectionTests(unittest.TestCase):
 
 
 class StylePreviewPromptTests(unittest.TestCase):
+    def test_geometry_reference_keeps_continuous_tone_without_selected_filament_colors(self):
+        prompt = preprocessor.build_geometry_reference_prompt(
+            "preserve this person's identity",
+            "realistic",
+        )
+
+        self.assertIn("continuous tonal modeling", prompt)
+        self.assertIn("soft broad diffuse", prompt)
+        self.assertIn("geometry reference", prompt)
+        self.assertIn("selected filament palette is applied later", prompt)
+        self.assertNotIn("allowed printable palette", prompt)
+        self.assertNotIn("Do not use gradients", prompt)
+
+    def test_text_geometry_reference_uses_natural_material_groups_without_palette_language(self):
+        prompt = preprocessor.build_text_geometry_reference_prompt(
+            "一只正在奔跑的机械麒麟",
+            "cartoon",
+        )
+
+        self.assertIn("一只正在奔跑的机械麒麟", prompt)
+        self.assertIn("continuous tonal modeling", prompt)
+        self.assertIn("broad natural material groups", prompt)
+        self.assertNotIn("physical filament palette", prompt)
+        self.assertNotIn("flat opaque material", prompt)
+
     def test_short_user_instruction_is_wrapped_with_preview_constraints(self):
         prompt = preprocessor._style_preview_prompt(
             "  make it cartoon style  ",
@@ -707,6 +732,9 @@ class ExactImageEditTests(unittest.TestCase):
         self.assertEqual(result, destination)
         self.assertEqual(edit.call_args.kwargs.get("background"), "transparent")
         self.assertIn("protected face", edit.call_args.args[1])
+        self.assertIn("continuous tonal modeling", edit.call_args.args[1])
+        for color in ("#FFFFFF", "#111111", "#F0C8AA", "#315B48"):
+            self.assertNotIn(color, edit.call_args.args[1])
         self.assertEqual(restore.call_args.args[0], source)
         self.assertEqual(restore.call_args.args[1], destination)
 

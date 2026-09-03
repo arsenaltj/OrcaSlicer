@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import importlib.util
+import hashlib
 import io
 import json
 import math
@@ -546,6 +547,37 @@ class ObjGenerationTests(unittest.TestCase):
         self.job.palette = ()
         self.assertEqual(SIDECAR._model_generation_reference(self.job), exact)
 
+    def test_identity_first_portrait_geometry_supports_one_through_six_colors(self):
+        self.job.source = "image"
+        self.job.style = "realistic"
+        self.job.generation_profile = "quality"
+        self.job.image_metrics = {
+            "portrait_geometry": {"detected": True, "evidence": "source_face_lock"}
+        }
+        original = self.job.directory / "original.png"
+        original.write_bytes(b"image")
+        self.job.input_path = original
+        colors = ("#111111", "#333333", "#555555", "#777777", "#999999", "#BBBBBB")
+
+        for count in range(1, 7):
+            with self.subTest(count=count):
+                self.job.palette = colors[:count]
+                self.assertTrue(SIDECAR._identity_preserving_portrait_geometry_enabled(self.job))
+
+    def test_identity_first_portrait_geometry_requires_independent_portrait_evidence(self):
+        self.job.source = "image"
+        self.job.style = "realistic"
+        self.job.generation_profile = "quality"
+        original = self.job.directory / "original.png"
+        original.write_bytes(b"image")
+        self.job.input_path = original
+        self.job.image_metrics = {"portrait_geometry": {"detected": False}}
+
+        self.assertFalse(SIDECAR._identity_preserving_portrait_geometry_enabled(self.job))
+        self.job.image_metrics["portrait_geometry"]["detected"] = True
+        self.job.palette = tuple(f"#{index:06X}" for index in range(7))
+        self.assertFalse(SIDECAR._identity_preserving_portrait_geometry_enabled(self.job))
+
     def _write_package(self, archive, *, obj=None, mtl=None, texture=True, extra=None):
         obj = obj or (
             "mtllib model.mtl\n"
@@ -1048,6 +1080,38 @@ class ObjGenerationTests(unittest.TestCase):
         self.assertEqual(self.job.state, "ready")
         self.assertEqual(self.job.artifact_format, "obj")
         self.assertEqual(self.job.artifact_path, artifact)
+
+    def test_generation_publishes_color_intent_bound_to_final_obj(self):
+        raw = self.job.directory / "style-preview-raw.png"
+        material = self.job.directory / "preview.png"
+        source = Image.new("RGB", (512, 512), (210, 180, 160))
+        source.paste((55, 70, 95), (64, 64, 448, 448))
+        source.save(raw)
+        mapped = Image.new("RGB", (512, 512), self.palette[0])
+        for index, color in enumerate(self.palette):
+            mapped.paste(color, (index * 128, 0, (index + 1) * 128, 512))
+        mapped.save(material)
+        self.job.raw_preview_path = raw
+        self.job.model_reference_path = raw
+        self.job.preview_path = material
+        artifact = self.job.directory / "model-vertex-color.obj"
+        artifact.write_text("v 0 0 0 1 0 0\nf 1 1 1\n", encoding="utf-8")
+        gateway = self._provider_gateway()
+
+        with (
+            mock.patch.object(SIDECAR, "_MODEL_PROVIDER_GATEWAY", gateway),
+            mock.patch.object(SIDECAR, "_download_conversion", return_value=artifact),
+            mock.patch.object(SIDECAR, "_validate_obj_topology", return_value=(300000, 2, 0)),
+            mock.patch.object(SIDECAR, "_automatic_visual_review", return_value=None),
+        ):
+            SIDECAR._generate_job(self.job, "printable object", False, self._paid_authorization())
+
+        self.assertEqual(self.job.state, "ready")
+        self.assertTrue(self.job.color_intent_path.is_file())
+        manifest = json.loads(self.job.color_intent_path.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["schema"], SIDECAR.COLOR_INTENT_SCHEMA)
+        self.assertEqual(manifest["artifact"]["sha256"], hashlib.sha256(artifact.read_bytes()).hexdigest())
+        self.assertEqual(len(manifest["targets"]), 4)
 
     def test_accepted_attempt_publishes_structural_report_with_final_artifact(self):
         attempt = self.job.directory / "attempt-01"

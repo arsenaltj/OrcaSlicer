@@ -110,6 +110,7 @@ private:
     void reset(bool remove_remote);
     void download_preview(uint64_t sequence);
     void download_model_preview(uint64_t sequence);
+    void finish_model_preview_download(const boost::filesystem::path& path, uint64_t sequence);
     void download_and_import();
     void import_local_artifact(const boost::filesystem::path& path, uint64_t sequence);
     void cleanup_files();
@@ -136,9 +137,12 @@ private:
                              const boost::filesystem::path& reference_image_path,
                              const boost::filesystem::path& ai_image_path,
                              const std::vector<std::string>& palette,
-                            const AIModelGenerationClient::PaletteRoles& palette_roles,
-                            bool use_printable_colors,
-                            const std::string& job_id, const wxString& title);
+                             const AIModelGenerationClient::PaletteRoles& palette_roles,
+                             bool use_printable_colors,
+                             const boost::filesystem::path& color_intent_path,
+                             const std::string& color_intent_schema,
+                             const std::string& color_intent_sha256,
+                             const std::string& job_id, const wxString& title);
     void delete_library_entry(const GeneratedModelEntry& entry);
     void update_library_provider_tasks(const std::string& job_id,
                                        const AIModelGenerationClient::JobStatus& status);
@@ -154,8 +158,11 @@ private:
         boost::filesystem::path preview_path;
         boost::filesystem::path reference_image_path;
         boost::filesystem::path ai_image_path;
+        boost::filesystem::path color_intent_path;
         std::vector<std::string> palette;
         AIModelGenerationClient::PaletteRoles palette_roles;
+        std::string color_intent_schema;
+        std::string color_intent_sha256;
         std::string job_id;
         std::string provider_name;
         std::string provider_task_id;
@@ -296,6 +303,7 @@ private:
     boost::filesystem::path m_reference_image_path;
     boost::filesystem::path m_raw_preview_path;
     boost::filesystem::path m_artifact_path;
+    boost::filesystem::path m_color_intent_path;
     boost::filesystem::path m_displayed_model_path;
     wxImage m_reference_image;
     wxImage m_raw_preview_image;
@@ -337,6 +345,8 @@ private:
     std::string m_displayed_model_job_id;
     std::string m_artifact_format;
     std::string m_artifact_color_encoding;
+    std::string m_color_intent_schema;
+    std::string m_color_intent_sha256;
     uint64_t m_sequence { 0 };
     uint64_t m_style_recommendation_sequence { 0 };
     bool m_busy { false };

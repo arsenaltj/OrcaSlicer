@@ -77,6 +77,18 @@ class PreprocessFallbackTests(unittest.TestCase):
         self.assertIn("#FF0000, #00FF00", job.prepared_prompt)
         self.assertIn("original prompt", job.message)
 
+    def test_image_backed_generation_prompt_defers_exact_palette(self):
+        prompt = SIDECAR._generation_prompt(
+            "one faithful portrait sculpture",
+            ("#FF0000", "#00FF00"),
+            max_prompt_bytes=SIDECAR.MAX_PROMPT_BYTES,
+            constrain_palette=False,
+        )
+
+        self.assertIn("coherent natural material relationships", prompt)
+        self.assertNotIn("#FF0000", prompt)
+        self.assertNotIn("#00FF00", prompt)
+
     def test_image_preprocessing_never_uses_original_as_style_preview(self):
         job = self.new_job("image")
         image = b"\xff\xd8\xff\xe0original-jpeg"

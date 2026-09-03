@@ -49,6 +49,7 @@ _MAX_JSON_BYTES = 32 * 1024 * 1024
 _MAX_IMAGE_BYTES = 20 * 1024 * 1024
 _TIMEOUT_SECONDS = 120
 _IMAGE_QUALITY_VALUES = {"low", "medium", "high", "auto"}
+PORTRAIT_FACE_LOCK_FILENAME = "portrait-face-restore-mask.png"
 
 STYLE_PROFILES = {
     "sculpture": (
@@ -1423,9 +1424,14 @@ def _style_preview_prompt(
     shadow_color: str = "blue",
     palette_roles: Mapping[str, str] | None = None,
     custom_style: str = "",
+    geometry_reference: bool = False,
 ) -> str:
     canonical_style = LEGACY_STYLE_ALIASES.get(style, style)
-    style_profile = _designer_toy_profile(style, custom_style) if palette else _style_profile(style, custom_style)
+    style_profile = (
+        _style_profile(style, custom_style)
+        if geometry_reference
+        else _designer_toy_profile(style, custom_style) if palette else _style_profile(style, custom_style)
+    )
     realistic_identity_lock = (
         "REALISTIC PORTRAIT IDENTITY LOCK — highest priority when the source contains a real person: make the smallest "
         "possible face edit. Treat the source head and face as a locked geometric reference, not inspiration for a newly "
@@ -1435,7 +1441,7 @@ def _style_preview_prompt(
         "symmetrize the face, enlarge both eyes, or widen the smile. Permitted beautification is limited to subtle skin and "
         "hair texture cleanup; it must not move, resize, or reshape identity landmarks. Before returning, compare the source "
         "and result face at equal size and correct any landmark drift. "
-        if canonical_style == "realistic" and palette else ""
+        if canonical_style == "realistic" and (palette or geometry_reference) else ""
     )
     color_direction = (
         _designer_toy_palette_direction(palette, shadow_color, palette_roles)
@@ -1454,7 +1460,7 @@ def _style_preview_prompt(
         + " "
         + _non_realistic_text_cleanup_direction(canonical_style)
         + "\nImage-to-3D composition contract: "
-        + _image_to_3d_composition_direction(bool(palette), canonical_style)
+        + _image_to_3d_composition_direction(bool(palette) or geometry_reference, canonical_style)
         + "Treat the source as a closed visual inventory. Preserve its exact viewpoint (front, three-quarter, side, or rear), "
         "facing direction, left-right arrangement, silhouette, component count, negative spaces, and all identity-defining "
         "asymmetry. Never mirror the subject or substitute a more typical example of its category. "
@@ -1478,6 +1484,13 @@ def _style_preview_prompt(
         "Do not invent unseen anatomy; use the explicit bust treatment for cropped people instead. "
         + _portrait_identity_geometry_direction()
         + color_direction
+        + (
+            "This is the geometry reference, not the final color preview. Preserve continuous tonal modeling and soft broad diffuse "
+            "lighting so silhouette, facial landmarks, joints, folds, and sculptural planes remain legible. Keep broad natural "
+            "material groups, but do not bake cast shadows, specular highlights, colored rim light, makeup, photographic skin detail, "
+            "fabric weave, or tiny markings into geometry or material boundaries. The selected filament palette is applied later. "
+            if geometry_reference else ""
+        )
         + "Avoid dithering and tiny color speckles. Do not return the unchanged source as a whole; for a realistic person, "
         "the protected face is allowed and preferred to remain unchanged while the background, base, and material treatment "
         "outside the face change."
@@ -1500,6 +1513,22 @@ def build_style_preview_prompt(
     return _style_preview_prompt(instruction, palette, style, shadow_color, palette_roles, custom_style)
 
 
+def build_geometry_reference_prompt(
+    instruction: str,
+    style: str = "sculpture",
+    custom_style: str = "",
+) -> str:
+    """Return a print-aware continuous-tone prompt used only for geometry."""
+
+    return _style_preview_prompt(
+        instruction,
+        (),
+        style,
+        custom_style=custom_style,
+        geometry_reference=True,
+    )
+
+
 def _text_image_prompt(
     instruction: str,
     palette: tuple[str, ...],
@@ -1507,6 +1536,7 @@ def _text_image_prompt(
     shadow_color: str = "blue",
     palette_roles: Mapping[str, str] | None = None,
     custom_style: str = "",
+    geometry_reference: bool = False,
 ) -> str:
     if not isinstance(instruction, str) or not instruction.strip():
         raise OpenAIPreprocessorError("An image-generation prompt is required.")
@@ -1520,7 +1550,11 @@ def _text_image_prompt(
         "Create one polished reference image for later image-to-3D generation. Subject: "
         + instruction.strip()
         + "\nSelected style profile: "
-        + (_designer_toy_profile(style, custom_style) if palette else _style_profile(style, custom_style))
+        + (
+            _style_profile(style, custom_style)
+            if geometry_reference
+            else _designer_toy_profile(style, custom_style) if palette else _style_profile(style, custom_style)
+        )
         + " "
         + _style_support_override(canonical_style)
         + _non_realistic_text_cleanup_direction(canonical_style)
@@ -1531,12 +1565,19 @@ def _text_image_prompt(
         + _portrait_display_base_direction()
         + _difficult_structure_direction()
         + _portrait_identity_geometry_direction()
-        + ("Use a genuine alpha-transparent background with no cast shadow; never paint a checkerboard or grid to imitate transparency. " if palette else "")
+        + ("Use a genuine alpha-transparent background with no cast shadow; never paint a checkerboard or grid to imitate transparency. " if palette or geometry_reference else "")
         + color_direction
         + ("Use palette colors only as solid semantic material regions, never as lighting highlights, reflections, rim light, or shading bands. " if palette else "")
-        + "Do not use gradients, semi-transparent subject materials, soft shadows, photographic reflections, depth of field, blur, dithering, "
-        "halftone dots, random noise, tiny isolated regions, dense texture, text, watermark, frame, or decorative clutter. "
-        "The deterministic print pipeline will enforce the exact palette, so prioritize shape readability over tonal realism."
+        + (
+            "Preserve continuous tonal modeling with soft broad diffuse lighting. Use broad natural material groups while keeping their "
+            "ownership clear across lit and shaded surfaces. Do not use cast shadows, specular highlights, colored rim light, photographic "
+            "reflections, depth of field, blur, dithering, halftone dots, random noise, tiny isolated regions, dense texture, text, watermark, "
+            "frame, or decorative clutter. This is a geometry reference; the selected filament palette is applied later."
+            if geometry_reference
+            else "Do not use gradients, semi-transparent subject materials, soft shadows, photographic reflections, depth of field, blur, dithering, "
+            "halftone dots, random noise, tiny isolated regions, dense texture, text, watermark, frame, or decorative clutter. "
+            "The deterministic print pipeline will enforce the exact palette, so prioritize shape readability over tonal realism."
+        )
     )
 
 
@@ -1554,6 +1595,22 @@ def build_text_image_prompt(
     inputs have the same auditable, hash-frozen paid-call semantics.
     """
     return _text_image_prompt(instruction, palette, style, shadow_color, palette_roles, custom_style)
+
+
+def build_text_geometry_reference_prompt(
+    instruction: str,
+    style: str = "cartoon",
+    custom_style: str = "",
+) -> str:
+    """Return a text-to-image prompt that preserves shape evidence before palette mapping."""
+
+    return _text_image_prompt(
+        instruction,
+        (),
+        style,
+        custom_style=custom_style,
+        geometry_reference=True,
+    )
 
 
 def _save_provider_image(result: dict[str, Any], destination: Path) -> Path:
@@ -1603,6 +1660,29 @@ def generate_image(
     )
 
 
+def generate_geometry_reference_image(
+    instruction: str,
+    output_path: str | os.PathLike[str],
+    style: str = "cartoon",
+    custom_style: str = "",
+) -> Path:
+    destination = Path(output_path)
+    payload = json.dumps(
+        {
+            "model": _image_config().model,
+            "prompt": build_text_geometry_reference_prompt(instruction, style, custom_style),
+            "size": "1024x1024",
+            "quality": _image_quality(),
+            "n": 1,
+            "response_format": "b64_json",
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return _save_provider_image(
+        _image_provider_request("/images/generations", payload, "application/json"), destination
+    )
+
+
 def preprocess_image(
     input_path: str | os.PathLike[str],
     instruction: str,
@@ -1619,7 +1699,9 @@ def preprocess_image(
     canonical_style = LEGACY_STYLE_ALIASES.get(style, style)
     result = edit_image(
         input_path,
-        build_style_preview_prompt(instruction, palette, style, shadow_color, palette_roles, custom_style),
+        build_geometry_reference_prompt(instruction, style, custom_style)
+        if palette
+        else build_style_preview_prompt(instruction, palette, style, shadow_color, palette_roles, custom_style),
         output_path,
         # Prompt-only transparency is not reliable: some compatible endpoints
         # paint a checkerboard into an opaque RGB image, and those tiles can be
@@ -1630,7 +1712,7 @@ def preprocess_image(
     )
     if canonical_style == "realistic" and palette:
         mask_path = _portrait_face_lock_mask(
-            Path(input_path), Path(output_path).with_name("portrait-face-restore-mask.png")
+            Path(input_path), Path(output_path).with_name(PORTRAIT_FACE_LOCK_FILENAME)
         )
         # Restore the source-specific face before asking for the sculptural
         # derivative.  Generating geometry from the pre-restoration colour pass
