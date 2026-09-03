@@ -103,7 +103,15 @@ from printable_model_quality import (
 )
 from printable_visual_quality import REPORT_FILENAME as VISUAL_QUALITY_FILENAME, review_model_visual_quality
 from printable_reference_visual_quality import review_prepared_reference
-from printable_palette import MAX_PRINTABLE_COLORS, PrintablePaletteError, assign_palette_roles
+from printable_palette import (
+    LEGACY_DEFAULT_PRINTABLE_COLORS,
+    MAX_PRINTABLE_COLORS,
+    MIN_PRINTABLE_COLORS,
+    PrintablePaletteError,
+    active_palette_roles,
+    assign_palette_roles,
+    normalize_palette_color_count,
+)
 from tripo_client import TripoError
 
 _MODEL_PROVIDER_GATEWAY = ModelProviderGateway()
@@ -126,6 +134,8 @@ MAX_ARCHIVE_FILES = 128
 MAX_UNPACKED_BYTES = 1024 * 1024 * 1024
 MAX_TEXTURE_PIXELS = 64 * 1024 * 1024
 MAX_PALETTE_COLORS = MAX_PRINTABLE_COLORS
+MIN_PALETTE_COLORS = MIN_PRINTABLE_COLORS
+DEFAULT_PALETTE_COLORS = LEGACY_DEFAULT_PRINTABLE_COLORS
 MAX_MODEL_FACES = 2000000
 MIN_MODEL_FACE_RATIO = 0.90
 MAX_MODEL_FACE_RATIO = 1.25
@@ -424,6 +434,7 @@ class Job:
     progress: int = 5
     palette: tuple[str, ...] = field(default_factory=tuple)
     palette_roles: dict[str, str] = field(default_factory=dict)
+    palette_color_count: int = DEFAULT_PALETTE_COLORS
     print_settings: dict[str, Any] = field(default_factory=lambda: asdict(PrintSettings()))
     style: str = "sculpture"
     custom_style: str = ""
@@ -653,6 +664,13 @@ def _normalize_palette(value: Any) -> tuple[str, ...]:
     return tuple(normalized)
 
 
+def _normalize_palette_color_count(value: Any) -> int:
+    try:
+        return normalize_palette_color_count(value)
+    except PrintablePaletteError as exc:
+        raise RequestError("invalid_palette_color_count", str(exc), 400) from None
+
+
 def _multipart_palette(value: Any) -> tuple[str, ...]:
     if not isinstance(value, str):
         raise RequestError("invalid_palette", "palette is required.", 400)
@@ -678,18 +696,23 @@ def _normalize_palette_roles(value: Any, palette: tuple[str, ...]) -> dict[str, 
         raise RequestError("invalid_palette_roles", str(exc), 400) from None
 
 
-def _normalize_palette_recommendation(value: Any) -> dict[str, Any]:
+def _normalize_palette_recommendation(value: Any, expected_color_count: int = DEFAULT_PALETTE_COLORS) -> dict[str, Any]:
     if value in (None, {}):
         return {}
+    expected_color_count = _normalize_palette_color_count(expected_color_count)
     if not isinstance(value, dict):
         raise RequestError("invalid_palette_recommendation", "palette recommendation must be an object.", 400)
     summary = value.get("summary")
     colors = value.get("colors")
     if not isinstance(summary, str) or not summary.strip() or len(summary.strip().encode("utf-8")) > 400:
         raise RequestError("invalid_palette_recommendation", "palette recommendation summary is invalid.", 400)
-    if not isinstance(colors, list) or len(colors) != MAX_PALETTE_COLORS:
-        raise RequestError("invalid_palette_recommendation", "palette recommendation must contain four colors.", 400)
-    roles = ("primary", "structure", "light", "accent")
+    if not isinstance(colors, list) or len(colors) != expected_color_count:
+        raise RequestError(
+            "invalid_palette_recommendation",
+            f"palette recommendation must contain {expected_color_count} colors.",
+            400,
+        )
+    roles = active_palette_roles(expected_color_count)
     by_role: dict[str, dict[str, str]] = {}
     palette_values: list[str] = []
     limits = {"name": 80, "usage": 160, "reason": 400}
@@ -710,7 +733,7 @@ def _normalize_palette_recommendation(value: Any) -> dict[str, Any]:
         by_role[role] = fields
         palette_values.append(palette[0])
     palette = _normalize_palette(palette_values)
-    if len(palette) != MAX_PALETTE_COLORS or set(by_role) != set(roles):
+    if len(palette) != expected_color_count or set(by_role) != set(roles):
         raise RequestError("invalid_palette_recommendation", "palette recommendation colors and roles must be unique.", 400)
     try:
         assignment = assign_palette_roles(palette, {role: by_role[role]["hex"] for role in roles})
@@ -966,6 +989,7 @@ def _new_job(
     style: str = "sculpture",
     custom_style: str = "",
     print_settings: dict[str, Any] | None = None,
+    palette_color_count: int | None = None,
 ) -> Job:
     job_id = str(uuid.uuid4())
     output_root = _model_output_root()
@@ -980,6 +1004,9 @@ def _new_job(
         directory=directory,
         palette=palette,
         palette_roles=dict(palette_roles or {}),
+        palette_color_count=_normalize_palette_color_count(
+            palette_color_count if palette_color_count is not None else (len(palette) or None)
+        ),
         style=style,
         custom_style=custom_style,
         print_settings=print_settings or asdict(PrintSettings()),
@@ -1041,6 +1068,7 @@ def _persist_job(job: Job, *, touch: bool = True) -> None:
         "progress": job.progress,
         "palette": list(job.palette),
         "palette_roles": job.palette_roles,
+        "palette_color_count": job.palette_color_count,
         "print_settings": job.print_settings,
         "style": job.style,
         "custom_style": job.custom_style,
@@ -1101,6 +1129,7 @@ def _load_job(directory: Path) -> Job | None:
     try:
         palette = _normalize_palette(payload.get("palette", []))
         palette_roles = _normalize_palette_roles(payload.get("palette_roles"), palette)
+        palette_color_count = _normalize_palette_color_count(payload.get("palette_color_count"))
         style = _normalize_style(payload.get("style"))
         custom_style = _normalize_custom_style(payload.get("custom_style"), style)
         face_limit = _normalize_face_limit(payload.get("face_limit", DEFAULT_MODEL_FACE_LIMIT))
@@ -1108,7 +1137,9 @@ def _load_job(directory: Path) -> Job | None:
         generation_profile = _normalize_generation_profile(raw_generation_profile) if raw_generation_profile is not None else \
             ("quality" if face_limit >= 500000 else "performance")
         print_settings = _normalize_print_settings(payload.get("print_settings"))
-        palette_recommendation = _normalize_palette_recommendation(payload.get("palette_recommendation"))
+        palette_recommendation = _normalize_palette_recommendation(
+            payload.get("palette_recommendation"), palette_color_count
+        )
     except RequestError:
         return None
     attempts = payload.get("attempts", [])
@@ -1120,6 +1151,7 @@ def _load_job(directory: Path) -> Job | None:
         directory=directory,
         palette=palette,
         palette_roles=palette_roles,
+        palette_color_count=palette_color_count,
         style=style,
         custom_style=custom_style,
         face_limit=face_limit,
@@ -1558,6 +1590,7 @@ def _public_job(job: Job) -> dict[str, Any]:
         "user_prompt": "" if job.source == "image" and job.user_prompt == DEFAULT_IMAGE_INSTRUCTION else job.user_prompt,
         "palette": list(job.palette),
         "palette_roles": job.palette_roles,
+        "palette_color_count": job.palette_color_count,
         "palette_recommendation": job.palette_recommendation,
         "palette_recommendation_confirmed": job.palette_recommendation_confirmed,
         "print": job.print_settings,
@@ -4032,7 +4065,7 @@ def _recommend_palette_job(job: Job) -> None:
         with _JOBS_LOCK:
             job.state = "recommending_palette"
             job.phase = "recommending_palette"
-            job.message = "AI is recommending four printable design colors."
+            job.message = f"AI is recommending {job.palette_color_count} printable design colors."
             job.progress = 6
             _persist_job(job)
         effective_prompt = _normalize_image_instruction(job.user_prompt) if job.source == "image" else job.user_prompt
@@ -4041,9 +4074,12 @@ def _recommend_palette_job(job: Job) -> None:
             job.style,
             job.custom_style,
             image_path=job.input_path,
+            color_count=job.palette_color_count,
         )
         _stop_boundary(job)
-        normalized = _normalize_palette_recommendation(recommendation.as_dict())
+        normalized = _normalize_palette_recommendation(
+            recommendation.as_dict(), job.palette_color_count
+        )
         with _JOBS_LOCK:
             job.palette_recommendation = normalized
             job.palette_recommendation_confirmed = False
@@ -8352,7 +8388,7 @@ class Handler(BaseHTTPRequestHandler):
             name = part.get_param("name", header="content-disposition")
             if name not in {
                 "request_id", "instruction", "palette", "palette_roles", "palette_recommendation_confirmed",
-                "style", "custom_style", "print", "image",
+                "palette_color_count", "style", "custom_style", "print", "image",
             } or name in seen:
                 raise RequestError("invalid_multipart", "Multipart fields are unexpected or duplicated.", 400)
             seen.add(name)
@@ -8515,7 +8551,9 @@ class Handler(BaseHTTPRequestHandler):
                             "image_provider": image_provider,
                             "palette_recommendation": {
                                 "available": bool(config),
+                                "min_colors": MIN_PALETTE_COLORS,
                                 "max_colors": MAX_PALETTE_COLORS,
+                                "default_colors": DEFAULT_PALETTE_COLORS,
                             },
                             "style_recommendation": {
                                 "available": True,
@@ -8726,7 +8764,11 @@ class Handler(BaseHTTPRequestHandler):
         style = _normalize_style(request.get("style"))
         custom_style = _normalize_custom_style(request.get("custom_style"), style)
         print_settings = _normalize_print_settings(request.get("print"))
-        job = _new_job("text", (), {}, style, custom_style, print_settings)
+        palette_color_count = _normalize_palette_color_count(request.get("palette_color_count"))
+        job = _new_job(
+            "text", (), {}, style, custom_style, print_settings,
+            palette_color_count=palette_color_count,
+        )
         job.user_prompt = prompt
         job.state = "recommending_palette"
         job.phase = "recommending_palette"
@@ -8826,6 +8868,7 @@ class Handler(BaseHTTPRequestHandler):
         user_instruction = _user_image_instruction(fields.get("instruction"))
         style = _normalize_style(fields.get("style"))
         custom_style = _normalize_custom_style(fields.get("custom_style"), style)
+        palette_color_count = _normalize_palette_color_count(fields.get("palette_color_count"))
         try:
             print_payload = json.loads(fields.get("print", "{}"))
         except json.JSONDecodeError:
@@ -8842,7 +8885,10 @@ class Handler(BaseHTTPRequestHandler):
             _validate_image_data(image, minimum_edge=MIN_SOURCE_IMAGE_EDGE)
         except ValueError as exc:
             raise RequestError("invalid_image", str(exc), 415) from None
-        job = _new_job("image", (), {}, style, custom_style, print_settings)
+        job = _new_job(
+            "image", (), {}, style, custom_style, print_settings,
+            palette_color_count=palette_color_count,
+        )
         job.user_prompt = user_instruction
         suffix = ".png" if detected_type == "image/png" else ".jpg"
         input_path = job.directory / f"input-{uuid.uuid4().hex}{suffix}"
@@ -9087,6 +9133,7 @@ class Handler(BaseHTTPRequestHandler):
             reference_job.style,
             reference_job.custom_style,
             reference_job.print_settings,
+            palette_color_count=reference_job.palette_color_count,
         )
         try:
             child.user_prompt = reference_job.user_prompt

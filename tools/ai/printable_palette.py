@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Provider-agnostic printable palette roles for four-filament workflows."""
+"""Provider-agnostic printable palette policy for one to six color channels."""
 
 from __future__ import annotations
 
@@ -9,14 +9,34 @@ import re
 from typing import Iterable, Mapping
 
 
-MAX_PRINTABLE_COLORS = 4
+MIN_PRINTABLE_COLORS = 1
+MAX_PRINTABLE_COLORS = 6
+LEGACY_DEFAULT_PRINTABLE_COLORS = 4
 LEGACY_MAX_PRINTABLE_COLORS = 16
-PALETTE_ROLES = ("primary", "structure", "light", "accent")
+PALETTE_ROLES = ("primary", "structure", "light", "accent", "secondary", "detail")
 _HEX_COLOR = re.compile(r"^#[0-9A-F]{6}$")
 
 
 class PrintablePaletteError(ValueError):
     pass
+
+
+def active_palette_roles(color_count: int) -> tuple[str, ...]:
+    if isinstance(color_count, bool) or not isinstance(color_count, int):
+        raise PrintablePaletteError("palette color count must be an integer")
+    if not MIN_PRINTABLE_COLORS <= color_count <= MAX_PRINTABLE_COLORS:
+        raise PrintablePaletteError(
+            f"palette color count must be between {MIN_PRINTABLE_COLORS} and {MAX_PRINTABLE_COLORS}"
+        )
+    return PALETTE_ROLES[:color_count]
+
+
+def normalize_palette_color_count(value: object = None) -> int:
+    if value is None:
+        return LEGACY_DEFAULT_PRINTABLE_COLORS
+    if isinstance(value, str) and re.fullmatch(r"[0-9]+", value.strip()):
+        value = int(value.strip())
+    return len(active_palette_roles(value))  # type: ignore[arg-type]
 
 
 @dataclass(frozen=True)
@@ -77,22 +97,12 @@ def _distance(left: tuple[float, float, float], right: tuple[float, float, float
     return math.sqrt(sum((left[index] - right[index]) ** 2 for index in range(3)))
 
 
-def _active_roles(color_count: int) -> tuple[str, ...]:
-    if color_count == 1:
-        return ("primary",)
-    if color_count == 2:
-        return ("primary", "structure")
-    if color_count == 3:
-        return ("primary", "structure", "light")
-    return PALETTE_ROLES
-
-
 def assign_palette_roles(
     colors: Iterable[str], overrides: Mapping[str, str] | None = None
 ) -> PaletteRoleAssignment:
     palette = normalize_palette(colors)
     labs = {color: _lab(color) for color in palette}
-    roles = _active_roles(len(palette))
+    roles = active_palette_roles(len(palette))
     assigned: dict[str, str] = {}
     used: set[str] = set()
 
@@ -117,14 +127,17 @@ def assign_palette_roles(
     # Structural regions need the darkest available material; highlights need the lightest.
     choose("structure", lambda color: (-labs[color][0], -palette.index(color)))
     choose("light", lambda color: (labs[color][0], -palette.index(color)))
-    # The most chromatic remaining color becomes the main material. The final color is the accent.
+    # Assign the remaining semantic materials by chroma, with stable source-order tie breaking.
     choose(
         "primary",
         lambda color: (math.hypot(labs[color][1], labs[color][2]), -abs(labs[color][0] - 58.0), -palette.index(color)),
     )
     choose("accent", lambda color: (math.hypot(labs[color][1], labs[color][2]), -palette.index(color)))
+    choose("secondary", lambda color: (math.hypot(labs[color][1], labs[color][2]), -palette.index(color)))
+    choose("detail", lambda color: (math.hypot(labs[color][1], labs[color][2]), -palette.index(color)))
 
-    role_by_color = {color: role for role, color in assigned.items()}
+    color_by_role = {role: assigned[role] for role in roles}
+    role_by_color = {color: role for role, color in color_by_role.items()}
     distances = [
         _distance(labs[palette[left]], labs[palette[right]])
         for left in range(len(palette))
@@ -134,7 +147,7 @@ def assign_palette_roles(
     return PaletteRoleAssignment(
         palette=palette,
         role_by_color=role_by_color,
-        color_by_role=assigned,
+        color_by_role=color_by_role,
         minimum_distance=minimum_distance,
         low_contrast=minimum_distance < 12.0,
     )

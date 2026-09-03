@@ -73,6 +73,7 @@ class PrintableImagePipelineTests(unittest.TestCase):
         self.assertTrue(result.background_mask.is_file())
         self.assertTrue(result.subject_mask.is_file())
         self.assertTrue(result.heatmap.is_file())
+
         self.assertTrue(result.model_reference.is_file())
         with Image.open(result.model_reference) as reference:
             self.assertEqual(reference.mode, "RGBA")
@@ -81,6 +82,32 @@ class PrintableImagePipelineTests(unittest.TestCase):
         with Image.open(result.clean_preview) as clean:
             self.assertEqual(clean.mode, "RGBA")
             self.assertEqual(clean.getpixel((0, 0))[3], 0)
+
+    def test_pipeline_preserves_five_and_six_color_role_metadata(self):
+        colors = ("#D93632", "#252525", "#F2F1EA", "#315CA8", "#3B8C54", "#9B3F77")
+        role_order = ("primary", "structure", "light", "accent", "secondary", "detail")
+        for count in (5, 6):
+            with self.subTest(count=count), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                image = Image.new("RGBA", (180, 120), (0, 0, 0, 0))
+                band_width = 140 // count
+                for index, color in enumerate(colors[:count]):
+                    left = 20 + index * band_width
+                    right = 160 if index == count - 1 else left + band_width
+                    image.paste(pipeline._hex_rgb(color) + (255,), (left, 20, right, 100))
+                source = root / "source.png"
+                image.save(source)
+
+                result = pipeline.process_printable_image(source, root / "result", colors[:count])
+                metadata = json.loads(result.metadata.read_text(encoding="utf-8"))
+
+                self.assertEqual(len(metadata["palette"]), count)
+                self.assertEqual(tuple(metadata["palette_roles"]["color_by_role"]), role_order[:count])
+                self.assertEqual(set(result.masks), set(role_order[:count]))
+                with Image.open(result.clean_preview).convert("RGBA") as clean:
+                    opaque = {pixel[:3] for pixel in clean.getdata() if pixel[3] == 255}
+                self.assertLessEqual(opaque, {pipeline._hex_rgb(color) for color in colors[:count]})
+                self.assertTrue(result.model_reference.is_file())
 
     def test_minimum_feature_merges_tiny_island_into_neighbor(self):
         image = Image.new("RGB", (100, 100), pipeline._hex_rgb(RGBW[3]))

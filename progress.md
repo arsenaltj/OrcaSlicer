@@ -56,6 +56,19 @@
 - `OrcaWorkspaceAdapter.cpp` 使用生产 PCH/include/宏组合由 MSVC 独立编译通过。
 - 完整集成守卫通过，HEAD 检查基于 `69eda995fa`；完整工程重新配置仍受缺失的捆绑 Python 开发运行时限制。
 
+### Python 1～6 色动态化
+- **状态：** complete
+- 先将调色板、推荐和 sidecar 契约测试参数化到 1～6 色；旧实现按预期因固定四色常量、角色和响应数量而失败。
+- 新增共享颜色数量策略：允许 1～6，默认 4；稳定角色序列扩展 `secondary` 和 `detail`，旧四色角色与顺序不变。
+- 文本和图片推荐接口接受可选 `palette_color_count`，任务状态、公有响应与健康能力同步发布；旧请求和缺字段的旧持久化任务继续回退四色。
+- 图像处理元数据、遮罩角色以及两类视觉质检提示改为按实际颜色数工作，并增加 5/6 色端到端图像测试。
+- 通用代码中的固定四色路径已完成盘点；仅保留受 `len(job.palette) == 4` 门控的人像四视图专用优化、历史基准和兼容文件名。
+- 首轮 `tools/ai` 全量 609 项测试有两项因 `orca_ai_sidecar.py` 超出 9450 行架构预算而失败；抽取共享归一化并补齐旧任务恢复边界后 sidecar 收敛到 9447 行，相关守卫通过。
+- 最终 `python -m unittest discover -s tools/ai -p 'test_*.py' -q`：610 项全部通过。
+- `python -m unittest tools.ai.test_printable_image_pipeline -q`：37 项通过。
+- 两类视觉质检测试：9 项通过。
+- Python 语法编译与 `git diff --check`：通过，仅有 Windows CRLF 提示。
+
 ### 分支基线迁移
 - **状态：** complete
 - 从 `codex/orca-integration-v2@808efe4401` 创建并切换到 `codex/model-generation-v2`。
@@ -92,6 +105,8 @@
 | 手工编译完整 GUI 源文件未复现工程 PCH 的本地化宏注入顺序 | 2 | 将其记录为构建环境限制；不修改生产头文件来迎合临时命令 |
 | 适配器独立编译的强制包含路径和源码编码参数不完整 | 2 | 使用绝对 PCH 路径及 `/utf-8` 后通过 |
 | 独立 Catch2 链接先遇到 Boost 自动链接名和 `cl` 包装入口问题 | 2 | 对齐工程的禁用自动链接宏并直接调用 `link.exe`，测试随后通过 |
+| 新增图像链路测试首次把旧测试尾部断言移出其方法作用域 | 1 | 按原契约恢复旧断言位置，并把 5/6 色断言留在各自临时目录作用域内 |
+| Python 全量测试触发 sidecar 行数预算及连带 JSON CLI 失败 | 1 | 复用共享颜色数量归一化，将 sidecar 收敛到 9450 行并复测守卫 |
 
 ## 五问重启检查
 

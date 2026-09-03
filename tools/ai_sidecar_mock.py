@@ -18,7 +18,9 @@ MAX_JSON_BYTES = 1024 * 1024
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_MULTIPART_BYTES = MAX_IMAGE_BYTES + 256 * 1024
 MAX_PROMPT_BYTES = 64 * 1024
-MAX_PALETTE_COLORS = 4
+MIN_PALETTE_COLORS = 1
+MAX_PALETTE_COLORS = 6
+DEFAULT_PALETTE_COLORS = 4
 MODEL_FACE_LIMITS = (100000, 300000, 500000, 1000000, 2000000)
 DEFAULT_MODEL_FACE_LIMIT = 300000
 GENERATION_PROFILES = ("quality", "performance")
@@ -31,6 +33,8 @@ MOCK_PALETTE_RECOMMENDATION = {
         {"hex": "#2B2422", "name": "深棕", "role": "structure", "usage": "轮廓与承力结构", "reason": "增强边界可读性"},
         {"hex": "#F2D7B5", "name": "暖白", "role": "light", "usage": "面部与浅色区域", "reason": "保持清晰明暗层次"},
         {"hex": "#2F6B5F", "name": "墨绿", "role": "accent", "usage": "配件与底座点缀", "reason": "提供冷暖对比"},
+        {"hex": "#3267A8", "name": "钴蓝", "role": "secondary", "usage": "次要大色区", "reason": "补充清晰分区"},
+        {"hex": "#9B3F77", "name": "莓紫", "role": "detail", "usage": "可打印识别细节", "reason": "强化主体特征"},
     ],
 }
 
@@ -173,7 +177,7 @@ def empty_artifact():
 
 def normalize_palette(value):
     if not isinstance(value, list) or len(value) > MAX_PALETTE_COLORS:
-        raise ValueError("palette must contain between 0 and 4 colors")
+        raise ValueError("palette must contain between 0 and %d colors" % MAX_PALETTE_COLORS)
     normalized = []
     for color in value:
         if not isinstance(color, str) or re.fullmatch(r"#[0-9A-Fa-f]{6}", color) is None:
@@ -182,6 +186,30 @@ def normalize_palette(value):
         if color not in normalized:
             normalized.append(color)
     return normalized
+
+
+def normalize_palette_color_count(value):
+    if value is None:
+        return DEFAULT_PALETTE_COLORS
+    if isinstance(value, bool):
+        parsed = -1
+    elif isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str) and re.fullmatch(r"[0-9]+", value.strip()):
+        parsed = int(value.strip())
+    else:
+        parsed = -1
+    if not MIN_PALETTE_COLORS <= parsed <= MAX_PALETTE_COLORS:
+        raise ValueError(
+            "palette_color_count must be between %d and %d" % (MIN_PALETTE_COLORS, MAX_PALETTE_COLORS)
+        )
+    return parsed
+
+
+def mock_palette_recommendation(color_count):
+    result = json.loads(json.dumps(MOCK_PALETTE_RECOMMENDATION))
+    result["colors"] = result["colors"][:normalize_palette_color_count(color_count)]
+    return result
 
 
 def normalize_face_limit(value):
@@ -205,7 +233,7 @@ def multipart_palette(value):
         raise ValueError("palette must be a JSON color array") from exc
 
 
-def new_job(source, prepared_prompt, palette):
+def new_job(source, prepared_prompt, palette, palette_color_count=None):
     job_id = str(uuid.uuid4())
     job = {
         "id": job_id,
@@ -222,6 +250,9 @@ def new_job(source, prepared_prompt, palette):
         "generation_profile": DEFAULT_GENERATION_PROFILE,
         "palette": list(palette),
         "palette_roles": {},
+        "palette_color_count": normalize_palette_color_count(
+            palette_color_count if palette_color_count is not None else (len(palette) or None)
+        ),
         "palette_recommendation": {},
         "palette_recommendation_confirmed": False,
         "_palette": palette,
@@ -296,6 +327,7 @@ def public_job(job):
         "generation_profile": job["generation_profile"],
         "palette": list(job["palette"]),
         "palette_roles": dict(job["palette_roles"]),
+        "palette_color_count": job["palette_color_count"],
         "palette_recommendation": dict(job["palette_recommendation"]),
         "palette_recommendation_confirmed": job["palette_recommendation_confirmed"],
         "preview": dict(job["preview"]),
@@ -394,7 +426,12 @@ class Handler(BaseHTTPRequestHandler):
                             "automatic_retry": False,
                             "max_billable_requests_per_action": 1,
                         },
-                        "palette_recommendation": {"available": True, "max_colors": 4},
+                        "palette_recommendation": {
+                            "available": True,
+                            "min_colors": MIN_PALETTE_COLORS,
+                            "max_colors": MAX_PALETTE_COLORS,
+                            "default_colors": DEFAULT_PALETTE_COLORS,
+                        },
                         "printable_image_pipeline": {
                             "available": True,
                             "print_modes": ["solid_regions"],
@@ -523,11 +560,17 @@ class Handler(BaseHTTPRequestHandler):
             request = self.read_json()
             text_field(request.get("request_id"), "request_id")
             prompt = text_field(request.get("prompt"), "prompt")
+            palette_color_count = normalize_palette_color_count(request.get("palette_color_count"))
         except Exception as exc:
             self.model_error("invalid_request", str(exc), 400)
             return
         with _jobs_lock:
-            job = new_job("text", "Create a printable 3D model from this description: %s" % prompt, [])
+            job = new_job(
+                "text",
+                "Create a printable 3D model from this description: %s" % prompt,
+                [],
+                palette_color_count,
+            )
             job.update(
                 state="awaiting_palette_confirmation",
                 phase="awaiting_palette_confirmation",
@@ -536,7 +579,7 @@ class Handler(BaseHTTPRequestHandler):
                 user_prompt=prompt,
                 style=request.get("style", "sculpture"),
                 custom_style=request.get("custom_style", ""),
-                palette_recommendation=json.loads(json.dumps(MOCK_PALETTE_RECOMMENDATION)),
+                palette_recommendation=mock_palette_recommendation(palette_color_count),
             )
             response = public_job(job)
         self.send_json({"job": response}, 202)
@@ -546,6 +589,7 @@ class Handler(BaseHTTPRequestHandler):
             fields, image, image_type = self.read_image_multipart()
             text_field(fields.get("request_id"), "request_id")
             instruction = text_field(fields.get("instruction"), "instruction")
+            palette_color_count = normalize_palette_color_count(fields.get("palette_color_count"))
             detected = self.detect_image_type(image)
             if detected is None or image_type not in ("application/octet-stream", detected):
                 raise RequestError("unsupported_image", "Image must be PNG or JPEG.", 415)
@@ -556,7 +600,12 @@ class Handler(BaseHTTPRequestHandler):
             self.model_error("invalid_request", str(exc), 400)
             return
         with _jobs_lock:
-            job = new_job("image", "Create a printable 3D model based on the uploaded image. Instruction: %s" % instruction, [])
+            job = new_job(
+                "image",
+                "Create a printable 3D model based on the uploaded image. Instruction: %s" % instruction,
+                [],
+                palette_color_count,
+            )
             job.update(
                 state="awaiting_palette_confirmation",
                 phase="awaiting_palette_confirmation",
@@ -565,7 +614,7 @@ class Handler(BaseHTTPRequestHandler):
                 user_prompt=instruction,
                 style=fields.get("style", "sculpture"),
                 custom_style=fields.get("custom_style", ""),
-                palette_recommendation=json.loads(json.dumps(MOCK_PALETTE_RECOMMENDATION)),
+                palette_recommendation=mock_palette_recommendation(palette_color_count),
             )
             response = public_job(job)
         self.send_json({"job": response}, 202)
@@ -748,7 +797,10 @@ class Handler(BaseHTTPRequestHandler):
             if part.is_multipart():
                 raise RequestError("invalid_multipart", "Nested multipart data is not supported.", 400)
             name = part.get_param("name", header="content-disposition")
-            if name not in ("request_id", "instruction", "palette", "palette_roles", "style", "custom_style", "print", "image") or name in fields or (name == "image" and image is not None):
+            if name not in (
+                "request_id", "instruction", "palette", "palette_roles", "palette_color_count",
+                "style", "custom_style", "print", "image",
+            ) or name in fields or (name == "image" and image is not None):
                 raise RequestError("invalid_multipart", "Unexpected or duplicate multipart field.", 400)
             payload = part.get_payload(decode=True) or b""
             if name == "image":

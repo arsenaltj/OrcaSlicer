@@ -326,7 +326,7 @@ def review_prepared_reference(
         sheet = _contact_sheet(original, natural, printable, output / "reference-review-sheet.png")
         response = completion(
             _system_prompt(),
-            "请严格比较原图、自然 3D 参考图和四色打印图；相似但变年轻、变窄或更标准化也应判为需要复核。",
+            "请严格比较原图、自然 3D 参考图和打印配色图；相似但变年轻、变窄或更标准化也应判为需要复核。",
             (original, sheet),
         )
         raw = _json_object(response)

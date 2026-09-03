@@ -44,6 +44,35 @@ def _response(*, score: int = 88, review_check: str = "") -> str:
 
 
 class PrintablePaletteVisualQualityTests(unittest.TestCase):
+    def test_review_prompt_uses_the_actual_dynamic_palette_count(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            preview = root / "strict.png"
+            preview.write_bytes(b"strict-preview")
+            recommendation = _recommendation()
+            recommendation["colors"].extend([
+                {"hex": "#3267A8", "name": "钴蓝", "role": "secondary", "usage": "次要区域", "reason": "分区"},
+                {"hex": "#9B3F77", "name": "莓紫", "role": "detail", "usage": "识别细节", "reason": "识别"},
+            ])
+            prompts: list[str] = []
+
+            def complete(system: str, user: str, _images: tuple[Path, ...]) -> str:
+                prompts.extend((system, user))
+                return _response()
+
+            report = review_printable_palette_visual_quality(
+                preview,
+                root,
+                prompt="一个玩具机器人",
+                style="q_cartoon",
+                recommendation=recommendation,
+                completion=complete,
+            )
+
+            self.assertEqual(report["status"], "pass")
+            self.assertIn("6-color", prompts[0])
+            self.assertIn("推荐6色", prompts[1])
+
     def test_valid_fenced_json_is_normalized(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
