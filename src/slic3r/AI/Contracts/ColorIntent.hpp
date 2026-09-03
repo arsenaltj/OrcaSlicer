@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <optional>
@@ -11,6 +12,12 @@ namespace Slic3r::AI {
 inline constexpr size_t kMinPhysicalColorChannels = 1;
 inline constexpr size_t kMaxPhysicalColorChannels = 6;
 inline constexpr size_t kMaxMixedColorComponents  = 3;
+inline constexpr size_t kMinTargetPaletteColors = 1;
+inline constexpr size_t kMaxTargetPaletteColors = 6;
+inline constexpr size_t kLegacyDefaultTargetPaletteColors = 4;
+inline constexpr std::array<const char*, kMaxTargetPaletteColors> kPaletteRoleIds {
+    "primary", "structure", "light", "accent", "secondary", "detail"
+};
 
 enum class ColorOutputMode
 {
@@ -51,6 +58,22 @@ struct ColorIntentManifestRef
 constexpr bool is_supported_physical_channel_count(size_t count) noexcept
 {
     return count >= kMinPhysicalColorChannels && count <= kMaxPhysicalColorChannels;
+}
+
+constexpr bool is_supported_target_palette_color_count(size_t count) noexcept
+{
+    return count >= kMinTargetPaletteColors && count <= kMaxTargetPaletteColors;
+}
+
+inline bool is_active_palette_role(const std::string& role, size_t color_count) noexcept
+{
+    if (!is_supported_target_palette_color_count(color_count))
+        return false;
+    for (size_t index = 0; index < color_count; ++index) {
+        if (role == kPaletteRoleIds[index])
+            return true;
+    }
+    return false;
 }
 
 inline bool is_rgb_hex_color(const std::string& color) noexcept

@@ -92,6 +92,27 @@ TEST_CASE("physical color capability accepts one through six unique channels", "
     CHECK_FALSE(is_valid_physical_channel_set(channels));
 }
 
+TEST_CASE("printable palette roles use a stable one-to-six prefix", "[AIContracts][ColorIntent]")
+{
+    CHECK(kMinTargetPaletteColors == 1);
+    CHECK(kMaxTargetPaletteColors == 6);
+    CHECK(kLegacyDefaultTargetPaletteColors == 4);
+    REQUIRE(kPaletteRoleIds.size() == kMaxTargetPaletteColors);
+    CHECK(std::string(kPaletteRoleIds[0]) == "primary");
+    CHECK(std::string(kPaletteRoleIds[3]) == "accent");
+    CHECK(std::string(kPaletteRoleIds[4]) == "secondary");
+    CHECK(std::string(kPaletteRoleIds[5]) == "detail");
+
+    for (size_t count = kMinTargetPaletteColors; count <= kMaxTargetPaletteColors; ++count) {
+        DYNAMIC_SECTION(count << " printable colors activate the same number of roles") {
+            for (size_t index = 0; index < kPaletteRoleIds.size(); ++index)
+                CHECK(is_active_palette_role(kPaletteRoleIds[index], count) == (index < count));
+        }
+    }
+    CHECK_FALSE(is_supported_target_palette_color_count(0));
+    CHECK_FALSE(is_supported_target_palette_color_count(7));
+}
+
 TEST_CASE("process mix recipes require one to three normalized unique components", "[AIContracts][ColorIntent]")
 {
     MixedColorRecipe recipe {

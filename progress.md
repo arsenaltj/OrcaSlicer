@@ -69,6 +69,17 @@
 - 两类视觉质检测试：9 项通过。
 - Python 语法编译与 `git diff --check`：通过，仅有 Windows CRLF 提示。
 
+### C++ / wxWidgets 1～6 色动态化
+- **状态：** complete_with_gui_environment_limitation
+- 新增独立的目标色数量策略、旧版默认颜色数 4 和六角色前缀；它与物理通道数量分别校验。C++ 自动角色分配覆盖 1～6 色，并保持旧四色的结构/浅色/主体/强调映射不变。
+- 文本与图片推荐客户端均提交 `palette_color_count`；任务解析、恢复、输入失效判断和动态状态文案同步支持该字段，缺字段时按四色兼容。
+- 模型生成面板增加 1～6 色推荐数量选择，推荐卡、角色选择、材料定位和局部改色控件扩展到六通道；局部改色采用三列布局以适配缩放。
+- 为保持架构预算，将无 wx 的角色分配和进度映射迁入 `ModelGenerationPresentationCore.cpp`；面板最终为 5200 行，没有放宽预算。
+- 独立 Catch2 契约测试：133 个断言、5 个测试用例全部通过；presentation 测试：141 个断言、2 个测试用例全部通过。
+- 使用主构建树生产 PCH、编译宏/include 和现有 wx inspector 测试桩直接编译客户端、presentation、状态文案与 `ModelGenerationPanel.cpp`：全部通过。
+- `python -m unittest discover -s tools/ai -p 'test_*.py'`：611 项全部通过；四项关键边界守卫和 `verify_ai_integration.py --json --skip-git` 均通过。
+- 完整 Windows Release 和真实 GUI 的 1/4/5/6 色截图仍受不完整的捆绑 Python 3.12.13 构建运行时限制，留在最终交付矩阵补验；本批源码级验证没有发现回归。
+
 ### 分支基线迁移
 - **状态：** complete
 - 从 `codex/orca-integration-v2@808efe4401` 创建并切换到 `codex/model-generation-v2`。
@@ -107,6 +118,9 @@
 | 独立 Catch2 链接先遇到 Boost 自动链接名和 `cl` 包装入口问题 | 2 | 对齐工程的禁用自动链接宏并直接调用 `link.exe`，测试随后通过 |
 | 新增图像链路测试首次把旧测试尾部断言移出其方法作用域 | 1 | 按原契约恢复旧断言位置，并把 5/6 色断言留在各自临时目录作用域内 |
 | Python 全量测试触发 sidecar 行数预算及连带 JSON CLI 失败 | 1 | 复用共享颜色数量归一化，将 sidecar 收敛到 9450 行并复测守卫 |
+| 面板扩展后比 5200 行预算多 3 行 | 1 | 收紧本次新增控件构造代码，不修改预算；四项关键守卫随后通过 |
+| 对两个 Catch2 可执行文件使用了不存在的标签过滤器 | 1 | 去掉过滤器执行各自完整小型可执行文件，两组测试全部通过 |
+| 对旧 `build-ai-tests` 直接运行 `ClCompile` 导致全 GUI 重编并报缺少 `wx/inspector/inspector.h` | 1 | 中止该目标；加入仓库已有测试桩后，用主构建树 PCH 和原始编译命令只编译 `ModelGenerationPanel.cpp`，通过 |
 
 ## 五问重启检查
 

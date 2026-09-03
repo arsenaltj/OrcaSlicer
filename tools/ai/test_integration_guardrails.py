@@ -120,6 +120,33 @@ class IntegrationGuardrailTests(unittest.TestCase):
     def test_repository_model_generation_import_does_not_own_slicing(self) -> None:
         self.assertEqual([], GUARDRAILS.validate_model_generation_import_boundary(REPO_ROOT))
 
+    def test_model_generation_gui_uses_shared_one_to_six_color_contract(self) -> None:
+        panel_header = (REPO_ROOT / "src/slic3r/GUI/ModelGenerationPanel.hpp").read_text(encoding="utf-8")
+        panel_source = (REPO_ROOT / "src/slic3r/GUI/ModelGenerationPanel.cpp").read_text(encoding="utf-8")
+        client_source = (REPO_ROOT / "src/slic3r/GUI/AIModelGenerationClient.cpp").read_text(encoding="utf-8")
+
+        for member in (
+            "m_palette_recommendation_cards",
+            "m_palette_recommendation_swatches",
+            "m_palette_recommendation_details",
+            "m_palette_recommendation_replace",
+            "m_palette_recommendation_remove",
+            "m_palette_role_choices",
+            "m_region_material_buttons",
+        ):
+            declaration = next(line for line in panel_header.splitlines() if member in line)
+            self.assertIn("Slic3r::AI::kMaxTargetPaletteColors", declaration)
+
+        region_colors = next(line for line in panel_header.splitlines() if "m_region_color_buttons" in line)
+        self.assertIn("Slic3r::AI::kMaxPhysicalColorChannels", region_colors)
+
+        self.assertIn('palette_sources.Add(_L("自定义 1–6 种颜色"))', panel_source)
+        self.assertIn("它不等同于物理进料通道数", panel_source)
+        self.assertIn('"palette_color_count", palette_color_count', client_source)
+        self.assertIn('.form_add("palette_color_count", std::to_string(palette_color_count))', client_source)
+        self.assertNotIn("1–4", panel_source)
+        self.assertNotIn("四色", panel_source)
+
     def test_model_generation_import_boundary_rejects_auto_slice_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

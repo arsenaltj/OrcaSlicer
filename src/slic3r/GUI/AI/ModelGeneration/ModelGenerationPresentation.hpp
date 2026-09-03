@@ -1,5 +1,6 @@
 #pragma once
 
+#include "slic3r/AI/Contracts/ColorIntent.hpp"
 #include "slic3r/GUI/AIModelGenerationClient.hpp"
 
 #include <boost/filesystem/path.hpp>
@@ -25,7 +26,7 @@ inline constexpr size_t MAX_PROVIDER_TASK_ID_SIZE = 256;
 inline constexpr const char* INTERNAL_DEFAULT_IMAGE_INSTRUCTION =
     "Stylize only the content already visible in the reference image. Preserve the exact crop, framing, visible regions, "
     "occlusions, subjects, objects, and background; do not add, remove, reveal, reconstruct, or extend anything.";
-inline constexpr std::array<const char*, 4> PALETTE_ROLE_IDS {"primary", "structure", "light", "accent"};
+inline constexpr const auto& PALETTE_ROLE_IDS = Slic3r::AI::kPaletteRoleIds;
 
 wxString thin_local_region_metrics(
     const AIModelGenerationClient::ModelQuality::ThinLocalRegion& region,

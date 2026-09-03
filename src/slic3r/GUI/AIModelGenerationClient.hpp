@@ -1,5 +1,6 @@
 #pragma once
 
+#include "slic3r/AI/Contracts/ColorIntent.hpp"
 #include "slic3r/Utils/Http.hpp"
 
 #include <boost/filesystem/path.hpp>
@@ -157,6 +158,7 @@ public:
         std::string generation_profile { "quality" };
         std::string style;
         std::string custom_style;
+        size_t      palette_color_count { Slic3r::AI::kLegacyDefaultTargetPaletteColors };
         std::vector<std::string> palette;
         PaletteRoles palette_roles;
         ImagePrintSettings print_settings;
@@ -226,11 +228,13 @@ public:
                            StatusFn on_complete, ErrorFn on_error);
     void recommend_text_palette(const std::string& request_id, const std::string& prompt,
                                 const std::string& style, const std::string& custom_style,
+                                size_t palette_color_count,
                                 const ImagePrintSettings& print_settings,
                                 StatusFn on_complete, ErrorFn on_error);
     void recommend_image_palette(const std::string& request_id, const std::string& instruction,
                                  const boost::filesystem::path& image_path,
                                  const std::string& style, const std::string& custom_style,
+                                 size_t palette_color_count,
                                  const ImagePrintSettings& print_settings,
                                  StatusFn on_complete, ErrorFn on_error);
     void recommend_image_style(const std::string& prompt,
