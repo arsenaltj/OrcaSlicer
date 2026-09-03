@@ -2,6 +2,28 @@
 
 ## 会话：2026-09-03
 
+### 六通道模型生成启动
+- **状态：** architecture_complete
+- 用户确认删除“导入后自动切片”，模型生成只负责生成、颜色意图和制品校验。
+- 复核当前分支为 `codex/model-generation-v2@51c82be6b4`，没有修改或清理用户未跟踪产物。
+- 识别出自动切片的契约、UI、适配器配置写入、导航回调和测试调用链。
+- 选择“类型化颜色契约 + 复用 Orca 原生混色引擎”的渐进式方案。
+- 找到现有 native 契约测试、Python 架构守卫和可复用 Windows 构建树。
+- 写入六通道设计、ADR-006 和逐任务实施计划。
+- `python -m unittest tools.ai.test_integration_guardrails -v`：39 项通过。
+- `git diff --check`：通过，仅有 Windows CRLF 提示。
+- 创建/修改的文件：
+  - `task_plan.md`
+  - `findings.md`
+  - `progress.md`
+  - `docs/plans/2026-09-03-six-channel-model-generation-design.md`
+  - `docs/plans/2026-09-03-six-channel-model-generation-implementation-plan.md`
+  - `docs/architecture/ADR-006-six-channel-model-color-intent.md`
+
+### 移除模型生成自动切片
+- **状态：** in_progress
+- 下一步先增加架构回归约束，再删除契约、UI、适配器和 MainFrame 触发路径。
+
 ### 分支基线迁移
 - **状态：** complete
 - 从 `codex/orca-integration-v2@808efe4401` 创建并切换到 `codex/model-generation-v2`。
@@ -30,6 +52,8 @@
 |------|---------|---------|
 | 目标路径存在两份看似未跟踪的质量报告 | 1 | 发现为 Windows 大小写路径映射；确认当前 Git 已跟踪等价内容 |
 | 批量移动脚本变量拼写错误导致提前退出 | 1 | 未重复原命令；检查状态后补移三份未完成 ADR |
+| 首次追加六通道计划的补丁上下文不匹配 | 1 | 检查实际结构后拆分应用；第一次补丁未写入任何文件 |
+| PowerShell 下向 `rg` 传递 `MainFrame.*`/`Plater.*` 路径时报 Windows 通配符错误 | 1 | 改为传入四个明确文件路径，后续查询成功 |
 
 ## 五问重启检查
 
