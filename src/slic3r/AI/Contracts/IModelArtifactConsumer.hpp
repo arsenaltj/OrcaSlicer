@@ -18,7 +18,6 @@ struct ModelImportRequest
 {
     GeneratedModelArtifact artifact;
     ImportColorMode         color_mode { ImportColorMode::ManualMatch };
-    bool                    auto_slice_after_import { true };
 };
 
 enum class ModelImportOutcome
@@ -33,7 +32,6 @@ struct ModelImportResult
 {
     ModelImportOutcome outcome { ModelImportOutcome::ImportFailed };
     ImportColorMode    color_mode { ImportColorMode::ManualMatch };
-    bool               slice_after_import { false };
     bool               colors_applied { false };
     bool               color_mapping_collapsed { false };
     bool               manual_coloring_required { false };

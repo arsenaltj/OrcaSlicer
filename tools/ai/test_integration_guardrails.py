@@ -117,6 +117,42 @@ class IntegrationGuardrailTests(unittest.TestCase):
     def test_repository_gui_feature_boundaries_pass(self) -> None:
         self.assertEqual([], GUARDRAILS.validate_gui_feature_boundaries(REPO_ROOT))
 
+    def test_repository_model_generation_import_does_not_own_slicing(self) -> None:
+        self.assertEqual([], GUARDRAILS.validate_model_generation_import_boundary(REPO_ROOT))
+
+    def test_model_generation_import_boundary_rejects_auto_slice_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            fixtures = {
+                "src/slic3r/AI/Contracts/IModelArtifactConsumer.hpp": (
+                    "bool auto_slice_after_import { true };\nbool slice_after_import { false };\n"
+                ),
+                "src/slic3r/GUI/ModelGenerationPanel.cpp": 'const auto label = "导入后自动切片";\n',
+                "src/slic3r/GUI/AI/Orca/OrcaWorkspaceAdapter.cpp": (
+                    'config.option("enable_prime_tower");\n'
+                ),
+                "src/slic3r/GUI/MainFrame.cpp": (
+                    "m_ai_feature_host = std::make_unique<AIDesktopFeatureHost>([] {\n"
+                    "    wxPostEvent(m_plater, SimpleEvent(EVT_GLTOOLBAR_SLICE_PLATE));\n"
+                    "    select_tab(TAB_ID_PREVIEW);\n"
+                    "});\n"
+                    "m_tabpanel->AddPage(TAB_ID_GENERATE_3D, nullptr);\n"
+                ),
+            }
+            for relative_path, content in fixtures.items():
+                path = root / relative_path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+
+            errors = GUARDRAILS.validate_model_generation_import_boundary(root)
+
+        self.assertTrue(errors)
+        self.assertTrue(all(error["code"] == "model_generation.auto_slice" for error in errors))
+        messages = "\n".join(error["message"] for error in errors)
+        self.assertIn("auto_slice_after_import", messages)
+        self.assertIn("enable_prime_tower", messages)
+        self.assertIn("EVT_GLTOOLBAR_SLICE_PLATE", messages)
+
     def test_gui_feature_boundary_rejects_shared_file_orchestration(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

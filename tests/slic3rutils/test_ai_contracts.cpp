@@ -8,10 +8,19 @@
 #include "slic3r/AI/SmartSlicing/IModelArtifactConsumer.hpp"
 
 #include <type_traits>
+#include <utility>
 
 using namespace Slic3r::AI;
 
 namespace {
+
+template<class T, class = void> struct HasAutoSliceAfterImport : std::false_type {};
+template<class T>
+struct HasAutoSliceAfterImport<T, std::void_t<decltype(std::declval<T>().auto_slice_after_import)>> : std::true_type {};
+
+template<class T, class = void> struct HasSliceAfterImport : std::false_type {};
+template<class T>
+struct HasSliceAfterImport<T, std::void_t<decltype(std::declval<T>().slice_after_import)>> : std::true_type {};
 
 class RecordingConsumer final : public IModelArtifactConsumer
 {
@@ -23,8 +32,7 @@ public:
             result.outcome = ModelImportOutcome::InvalidArtifact;
         else
             result.outcome = ModelImportOutcome::Imported;
-        result.color_mode         = request.color_mode;
-        result.slice_after_import = request.auto_slice_after_import;
+        result.color_mode = request.color_mode;
         return result;
     }
 };
@@ -44,10 +52,11 @@ TEST_CASE("neutral AI contracts preserve accepted defaults and legacy includes",
 {
     static_assert(std::is_abstract_v<IModelArtifactConsumer>);
     static_assert(std::is_abstract_v<IPrintablePaletteProvider>);
+    static_assert(!HasAutoSliceAfterImport<ModelImportRequest>::value);
+    static_assert(!HasSliceAfterImport<ModelImportResult>::value);
 
     ModelImportRequest request;
     CHECK(request.color_mode == ImportColorMode::ManualMatch);
-    CHECK(request.auto_slice_after_import);
     CHECK_FALSE(request.artifact.used_printable_colors);
 
     request.artifact.job_id = "accepted-job";
@@ -56,7 +65,6 @@ TEST_CASE("neutral AI contracts preserve accepted defaults and legacy includes",
     const ModelImportResult result = consumer.import_artifact(request);
     CHECK(result.imported());
     CHECK(result.color_mode == ImportColorMode::AutoMap);
-    CHECK(result.slice_after_import);
 
     const PrintablePaletteSnapshot palette = FixedPaletteProvider().printable_palette();
     REQUIRE(palette.compatible_colors.size() == 1);
