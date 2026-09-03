@@ -27,6 +27,7 @@
 
 **Files:**
 - Modify: `CMakeLists.txt`
+- Modify: `src/CMakeLists.txt`
 - Modify: `tools/ai/test_integration_guardrails.py`
 - Modify: `scripts/verify_ai_integration.py`
 

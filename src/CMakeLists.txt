@@ -395,9 +395,8 @@ if (WIN32)
     install(FILES ${output_dlls_${build_type}} DESTINATION ".")
     install(DIRECTORY "${CMAKE_PREFIX_PATH}/libpython/" DESTINATION "python")
     if(ORCA_AI_WINDOWS_INSTALLER)
-        # These rules intentionally follow the base runtime install above. CPack
-        # executes them while staging the NSIS payload, so a package cannot be
-        # produced unless its own isolated Python can import the pinned Pillow.
+        # These rules follow the base runtime; CPack cannot produce a package
+        # unless its isolated Python can import the pinned Pillow.
         install(DIRECTORY "${ORCA_AI_PILLOW_STAGE_DIR}/" DESTINATION "python/Lib/site-packages")
         install(CODE "
             set(_orca_ai_installed_python \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/python/python.exe\")
@@ -417,6 +416,7 @@ if (WIN32)
                 message(FATAL_ERROR
                     \"Bundled Pillow ${ORCA_AI_PILLOW_VERSION} failed the isolated install-tree import check\")
             endif()
+            include(\"${CMAKE_SOURCE_DIR}/cmake/VerifyAIInstall.cmake\")
         ")
     endif()
 else ()

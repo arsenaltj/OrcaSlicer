@@ -1408,7 +1408,6 @@ if (WIN32)
                 DESTINATION "./resources/tools/ai"
                 RENAME "orca_ai_internal_defaults.json")
         endif()
-        install(SCRIPT "${CMAKE_SOURCE_DIR}/cmake/VerifyAIInstall.cmake")
     endif()
     if(ORCA_BUNDLED_UV_EXECUTABLE)
         install(PROGRAMS "${ORCA_BUNDLED_UV_EXECUTABLE}" DESTINATION "./resources/tools/uv" RENAME "${ORCA_BUNDLED_UV_FILENAME}")

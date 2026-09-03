@@ -454,12 +454,17 @@ class IntegrationGuardrailTests(unittest.TestCase):
 
     def test_internal_release_requires_locked_credentials_but_commercial_still_forbids_them(self) -> None:
         cmake = (REPO_ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        source_cmake = (REPO_ROOT / "src/CMakeLists.txt").read_text(encoding="utf-8")
         packager = (REPO_ROOT / "scripts/package_internal_fast.ps1").read_text(encoding="utf-8")
         wrapper = (REPO_ROOT / "release/build_internal.ps1").read_text(encoding="utf-8")
 
         self.assertIn("Commercial AI installer packages must not embed provider credentials", cmake)
         self.assertIn('ORCA_AI_DISTRIBUTION_CHANNEL STREQUAL "internal"', cmake)
         self.assertIn('RENAME "orca_ai_internal_defaults.json"', cmake)
+        self.assertNotIn("cmake/VerifyAIInstall.cmake", cmake)
+        verify_runtime = source_cmake.index("verify_bundled_runtime.py")
+        verify_configuration = source_cmake.index("cmake/VerifyAIInstall.cmake")
+        self.assertGreater(verify_configuration, verify_runtime)
         self.assertIn("internal package defaults payload", packager)
         self.assertIn("package_internal_locked", packager)
         self.assertIn("-G ZIP", packager)
