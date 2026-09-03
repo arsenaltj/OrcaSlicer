@@ -147,6 +147,35 @@ class IntegrationGuardrailTests(unittest.TestCase):
         self.assertNotIn("1–4", panel_source)
         self.assertNotIn("四色", panel_source)
 
+    def test_model_generation_gui_distinguishes_shape_and_material_references(self) -> None:
+        panel_source = (REPO_ROOT / "src/slic3r/GUI/ModelGenerationPanel.cpp").read_text(encoding="utf-8")
+
+        self.assertIn('preview_stages.Add(_L("造型参考（决定形体）"))', panel_source)
+        self.assertIn('preview_stages.Add(_L("打印配色草图（决定材质）"))', panel_source)
+        self.assertIn("连续色调造型参考", panel_source)
+        self.assertIn("调用 1 次图片服务", panel_source)
+        self.assertNotIn("单色雕塑建模参考", panel_source)
+        self.assertNotIn("几何使用当前单色雕塑参考", panel_source)
+
+    def test_color_intent_manifest_handoff_is_hash_bound_and_optional(self) -> None:
+        client_header = (REPO_ROOT / "src/slic3r/GUI/AIModelGenerationClient.hpp").read_text(encoding="utf-8")
+        client_source = (REPO_ROOT / "src/slic3r/GUI/AIModelGenerationClient.cpp").read_text(encoding="utf-8")
+        panel_header = (REPO_ROOT / "src/slic3r/GUI/ModelGenerationPanel.hpp").read_text(encoding="utf-8")
+        panel_sources = (REPO_ROOT / "src/slic3r/GUI/ModelGenerationPanel.cpp").read_text(encoding="utf-8")
+        artifact_flow = REPO_ROOT / "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationArtifactFlow.cpp"
+        if artifact_flow.is_file():
+            panel_sources += artifact_flow.read_text(encoding="utf-8")
+
+        self.assertIn("color_intent_ready", client_header)
+        self.assertIn("download_color_intent", client_header)
+        self.assertIn("MAX_COLOR_INTENT_SIZE", client_source)
+        self.assertIn('"/color-intent"', client_source)
+        self.assertIn("validate_color_intent_manifest_file", client_source)
+        self.assertIn("m_color_intent_path", panel_header)
+        self.assertIn("request.artifact.color_intent_manifest", panel_sources)
+        self.assertIn('metadata["color_intent_sha256"]', panel_sources)
+        self.assertNotIn("ColorDecomposeRecipe", panel_sources)
+
     def test_model_generation_import_boundary_rejects_auto_slice_tokens(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

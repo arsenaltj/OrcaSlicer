@@ -198,6 +198,10 @@ public:
         std::string artifact_format;
         std::string artifact_color_encoding;
         size_t      artifact_size { 0 };
+        bool        color_intent_ready { false };
+        std::string color_intent_schema;
+        std::string color_intent_sha256;
+        size_t      color_intent_size { 0 };
         ModelQuality model_quality;
         VisualQuality visual_quality;
         ModelRefinementAdvice refinement;
@@ -259,13 +263,20 @@ public:
     void download_input(const std::string& job_id, const boost::filesystem::path& path, PathFn on_complete, ErrorFn on_error);
     void download_artifact(const std::string& job_id, const std::string& format,
                            const boost::filesystem::path& path, PathFn on_complete, ErrorFn on_error);
+    void download_color_intent(const std::string& job_id, const std::string& schema,
+                               const std::string& sha256, const boost::filesystem::path& artifact_path,
+                               const boost::filesystem::path& path, PathFn on_complete, ErrorFn on_error);
     void record_journey_event(const std::string& event, const std::string& job_id = {});
     void cancel_current();
 
     static bool is_loopback_endpoint(const std::string& endpoint);
+    static bool validate_color_intent_manifest_file(const boost::filesystem::path& manifest_path,
+                                                    const std::string& schema, const std::string& sha256,
+                                                    const boost::filesystem::path& artifact_path);
 
 private:
     using json = nlohmann::json;
+    using DownloadValidator = std::function<std::optional<std::string>(const std::string&)>;
 
     std::string url(const std::string& path) const;
     void post_json(const std::string& path, const json& body, StatusFn on_complete, ErrorFn on_error,
@@ -274,7 +285,7 @@ private:
     static std::optional<JobStatus> parse_job(const json& job);
     static json serialize_print_settings(const ImagePrintSettings& settings);
     void download(const std::string& path, const boost::filesystem::path& destination, size_t size_limit,
-                  PathFn on_complete, ErrorFn on_error);
+                  PathFn on_complete, ErrorFn on_error, DownloadValidator validator = {});
     void cancel_active_request();
 
     std::string           m_endpoint;

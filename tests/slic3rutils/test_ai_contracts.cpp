@@ -164,7 +164,13 @@ TEST_CASE("typed printable palette rebuilds the legacy flat projection", "[AICon
     artifact.color_intent_manifest = ColorIntentManifestRef {
         "color-intent.v1.json",
         "orcaslicer.color-intent.v1",
-        "0123456789abcdef",
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
     };
     CHECK(artifact.color_intent_manifest->schema == "orcaslicer.color-intent.v1");
+    CHECK(is_valid_color_intent_manifest_ref(*artifact.color_intent_manifest));
+    artifact.color_intent_manifest->schema = "orcaslicer.color-intent.v2";
+    CHECK_FALSE(is_valid_color_intent_manifest_ref(*artifact.color_intent_manifest));
+    artifact.color_intent_manifest->schema = kColorIntentSchemaV1;
+    artifact.color_intent_manifest->sha256[0] = 'A';
+    CHECK_FALSE(is_valid_color_intent_manifest_ref(*artifact.color_intent_manifest));
 }

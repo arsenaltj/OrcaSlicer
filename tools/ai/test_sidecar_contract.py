@@ -599,6 +599,89 @@ class SidecarHealthContractTests(unittest.TestCase):
             self.assertEqual(restored.palette_color_count, 4)
             self.assertEqual(PRODUCTION._public_job(restored)["custom_style"], "复古木刻版画")
 
+    def test_color_intent_is_persisted_exposed_and_downloadable(self):
+        job_id = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory() as directory:
+            job_directory = Path(directory) / job_id
+            job_directory.mkdir()
+            artifact = job_directory / "model-vertex-color.obj"
+            artifact.write_text("v 0 0 0 1 0 0\nf 1 1 1\n", encoding="ascii")
+            appearance = job_directory / "style-preview-raw.png"
+            material = job_directory / "preview.png"
+            geometry = job_directory / "geometry-reference.png"
+            Image.new("RGB", (16, 16), "indianred").save(appearance)
+            Image.new("RGB", (16, 16), "#E8DDD0").save(material)
+            Image.new("RGB", (16, 16), "gray").save(geometry)
+            job = PRODUCTION.Job(
+                id=job_id,
+                source="image",
+                directory=job_directory,
+                palette=("#E8DDD0",),
+                palette_roles={"primary": "#E8DDD0"},
+            )
+            job.raw_preview_path = appearance
+            job.preview_path = material
+            job.model_reference_path = geometry
+            job.artifact_path = artifact
+            job.artifact_format = "obj"
+            job.state = "ready"
+            job.phase = "ready"
+
+            PRODUCTION._write_job_color_intent(job, artifact)
+            PRODUCTION._persist_job(job)
+            restored = PRODUCTION._load_job(job_directory)
+
+            self.assertIsNotNone(restored)
+            self.assertTrue(restored.color_intent_path.is_file())
+            public = PRODUCTION._public_job(restored)
+            color_intent = public["artifact"]["color_intent"]
+            self.assertTrue(color_intent["ready"])
+            self.assertEqual(color_intent["schema"], PRODUCTION.COLOR_INTENT_SCHEMA)
+            self.assertRegex(color_intent["sha256"], r"^[0-9a-f]{64}$")
+            with PRODUCTION._JOBS_LOCK:
+                previous = dict(PRODUCTION._JOBS)
+                PRODUCTION._JOBS.clear()
+                PRODUCTION._JOBS[job.id] = restored
+            try:
+                with sidecar_server(PRODUCTION.Handler) as port:
+                    request = urllib.request.Request(
+                        f"http://127.0.0.1:{port}/v1/orcaslicer/model-jobs/{job.id}/color-intent",
+                        headers={"X-OrcaSlicer-Client": "native"},
+                    )
+                    with urllib.request.urlopen(request, timeout=5) as response:
+                        downloaded = response.read()
+                        self.assertEqual(response.headers.get_content_type(), "application/json")
+                self.assertEqual(downloaded, restored.color_intent_path.read_bytes())
+            finally:
+                with PRODUCTION._JOBS_LOCK:
+                    PRODUCTION._JOBS.clear()
+                    PRODUCTION._JOBS.update(previous)
+
+    def test_corrupt_color_intent_is_ignored_without_hiding_legacy_artifact(self):
+        job_id = str(uuid.uuid4())
+        with tempfile.TemporaryDirectory() as directory:
+            job_directory = Path(directory) / job_id
+            job_directory.mkdir()
+            artifact = job_directory / "model-vertex-color.obj"
+            artifact.write_text("v 0 0 0 1 0 0\nf 1 1 1\n", encoding="ascii")
+            manifest = job_directory / "color-intent.v1.json"
+            manifest.write_text('{"schema":"corrupt"}', encoding="utf-8")
+            job = PRODUCTION.Job(id=job_id, source="text", directory=job_directory)
+            job.state = "ready"
+            job.artifact_path = artifact
+            job.artifact_format = "obj"
+            job.color_intent_path = manifest
+            job.color_intent_schema = PRODUCTION.COLOR_INTENT_SCHEMA
+            job.color_intent_sha256 = "0" * 64
+            PRODUCTION._persist_job(job)
+
+            restored = PRODUCTION._load_job(job_directory)
+
+        self.assertIsNotNone(restored)
+        self.assertIsNotNone(restored.artifact_path)
+        self.assertIsNone(restored.color_intent_path)
+        self.assertFalse(PRODUCTION._public_job(restored)["artifact"]["color_intent"]["ready"])
+
     def test_palette_recommendation_is_persisted_and_exposed_for_task_recovery(self):
         job_id = str(uuid.uuid4())
         recommendation = {

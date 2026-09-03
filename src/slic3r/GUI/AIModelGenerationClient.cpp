@@ -5,10 +5,16 @@
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
 
+#include <openssl/evp.h>
+
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
+#include <iterator>
+#include <memory>
 #include <regex>
+#include <set>
 #include <utility>
 
 namespace Slic3r::GUI {
@@ -16,6 +22,7 @@ namespace {
 
 constexpr size_t MAX_PREVIEW_SIZE = 10 * 1024 * 1024;
 constexpr size_t MAX_ARTIFACT_SIZE = 768 * 1024 * 1024;
+constexpr size_t MAX_COLOR_INTENT_SIZE = 64 * 1024;
 constexpr size_t MAX_RECOMMENDATION_TEXT_SIZE = 2048;
 constexpr size_t MAX_REFINEMENT_ISSUES = 6;
 constexpr size_t MAX_REFINEMENT_SUMMARY_SIZE = 1024;
@@ -105,6 +112,151 @@ bool valid_refinement_category(const std::string& value)
         "topology", "attachments", "thickness", "base", "overhang", "detail", "identity", "semantics", "color"
     };
     return std::find(allowed.begin(), allowed.end(), value) != allowed.end();
+}
+
+struct EvpContextDeleter
+{
+    void operator()(EVP_MD_CTX* context) const noexcept { EVP_MD_CTX_free(context); }
+};
+
+using EvpContext = std::unique_ptr<EVP_MD_CTX, EvpContextDeleter>;
+
+std::optional<std::string> finish_sha256(EVP_MD_CTX* context)
+{
+    std::array<unsigned char, EVP_MAX_MD_SIZE> digest {};
+    unsigned int length = 0;
+    if (context == nullptr || EVP_DigestFinal_ex(context, digest.data(), &length) != 1)
+        return std::nullopt;
+    static constexpr char HEX[] = "0123456789abcdef";
+    std::string result(length * 2, '0');
+    for (unsigned int index = 0; index < length; ++index) {
+        result[index * 2] = HEX[digest[index] >> 4];
+        result[index * 2 + 1] = HEX[digest[index] & 0x0f];
+    }
+    return result;
+}
+
+std::optional<std::string> sha256_bytes(const std::string& value)
+{
+    EvpContext context(EVP_MD_CTX_new());
+    if (!context || EVP_DigestInit_ex(context.get(), EVP_sha256(), nullptr) != 1 ||
+        EVP_DigestUpdate(context.get(), value.data(), value.size()) != 1)
+        return std::nullopt;
+    return finish_sha256(context.get());
+}
+
+std::optional<std::string> sha256_file(const boost::filesystem::path& path)
+{
+    boost::filesystem::ifstream stream(path, std::ios::binary);
+    EvpContext context(EVP_MD_CTX_new());
+    if (!stream || !context || EVP_DigestInit_ex(context.get(), EVP_sha256(), nullptr) != 1)
+        return std::nullopt;
+    std::array<char, 64 * 1024> buffer {};
+    while (stream) {
+        stream.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        const std::streamsize count = stream.gcount();
+        if (count > 0 && EVP_DigestUpdate(context.get(), buffer.data(), static_cast<size_t>(count)) != 1)
+            return std::nullopt;
+    }
+    if (!stream.eof())
+        return std::nullopt;
+    return finish_sha256(context.get());
+}
+
+bool is_uppercase_rgb_hex(const std::string& value)
+{
+    if (value.size() != 7 || value.front() != '#')
+        return false;
+    return std::all_of(value.begin() + 1, value.end(), [](char ch) {
+        return (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'F');
+    });
+}
+
+bool valid_manifest_filename(const nlohmann::json& value)
+{
+    if (!value.is_string())
+        return false;
+    const std::string filename = value.get<std::string>();
+    return !filename.empty() && filename.size() <= 255 &&
+           boost::filesystem::path(filename).filename().string() == filename;
+}
+
+bool valid_manifest_file_reference(const nlohmann::json& reference)
+{
+    return reference.is_object() && reference.size() == 2 && reference.contains("filename") &&
+           valid_manifest_filename(reference["filename"]) && reference.contains("sha256") &&
+           reference["sha256"].is_string() &&
+           Slic3r::AI::is_lowercase_sha256(reference["sha256"].get<std::string>());
+}
+
+std::optional<std::string> validate_color_intent_body(
+    const std::string& body, const std::string& schema, const std::string& expected_sha256,
+    const boost::filesystem::path& artifact_path)
+{
+    const Slic3r::AI::ColorIntentManifestRef identity {"downloaded-color-intent.json", schema, expected_sha256};
+    if (!Slic3r::AI::is_valid_color_intent_manifest_ref(identity))
+        return "The color-intent identity is unsupported.";
+    if (body.empty() || body.size() > MAX_COLOR_INTENT_SIZE)
+        return "The color-intent manifest has an invalid size.";
+    const auto body_sha256 = sha256_bytes(body);
+    if (!body_sha256 || *body_sha256 != expected_sha256)
+        return "The color-intent manifest checksum does not match its job status.";
+
+    const auto document = nlohmann::json::parse(body, nullptr, false);
+    if (document.is_discarded() || !document.is_object() || document.size() != 5 ||
+        !document.contains("schema") || !document["schema"].is_string() ||
+        document["schema"].get<std::string>() != schema ||
+        !document.contains("mode") || !document["mode"].is_string() ||
+        document["mode"].get<std::string>() != "discrete_filament" ||
+        !document.contains("artifact") || !document["artifact"].is_object() ||
+        !document.contains("references") || !document["references"].is_object() ||
+        !document.contains("targets") || !document["targets"].is_array())
+        return "The color-intent manifest structure or schema is invalid.";
+
+    const auto& artifact = document["artifact"];
+    if (artifact.size() != 3 || !artifact.contains("filename") || !valid_manifest_filename(artifact["filename"]) ||
+        !artifact.contains("color_encoding") || !artifact["color_encoding"].is_string() ||
+        artifact["color_encoding"].get<std::string>() != "vertex_colors" ||
+        !artifact.contains("sha256") || !artifact["sha256"].is_string() ||
+        !Slic3r::AI::is_lowercase_sha256(artifact["sha256"].get<std::string>()))
+        return "The color-intent artifact reference is invalid.";
+
+    const auto& references = document["references"];
+    if (references.size() < 2 || references.size() > 3 ||
+        !references.contains("appearance_source") ||
+        !valid_manifest_file_reference(references["appearance_source"]) ||
+        !references.contains("material_preview") ||
+        !valid_manifest_file_reference(references["material_preview"]) ||
+        (references.contains("geometry") && !valid_manifest_file_reference(references["geometry"])))
+        return "The color-intent image references are invalid.";
+    for (const auto& [name, reference] : references.items())
+        if (name != "appearance_source" && name != "material_preview" && name != "geometry")
+            return "The color-intent manifest contains an unknown image reference.";
+
+    const auto& targets = document["targets"];
+    if (!Slic3r::AI::is_supported_target_palette_color_count(targets.size()))
+        return "The color-intent target count is unsupported.";
+    std::set<std::string> roles;
+    std::set<std::string> fallback_colors;
+    for (const auto& target : targets) {
+        if (!target.is_object() || target.size() != 4 || !target.contains("role") || !target["role"].is_string() ||
+            !target.contains("fallback_color") || !target["fallback_color"].is_string() ||
+            !target.contains("desired_color") || !target["desired_color"].is_string() ||
+            !target.contains("sample_count") || !target["sample_count"].is_number_unsigned())
+            return "A color-intent target is invalid.";
+        const std::string role = target["role"].get<std::string>();
+        const std::string fallback = target["fallback_color"].get<std::string>();
+        const std::string desired = target["desired_color"].get<std::string>();
+        if (!Slic3r::AI::is_active_palette_role(role, targets.size()) || !roles.emplace(role).second ||
+            !is_uppercase_rgb_hex(fallback) || !fallback_colors.emplace(fallback).second ||
+            !is_uppercase_rgb_hex(desired))
+            return "The color-intent target roles or colors are invalid.";
+    }
+
+    const auto artifact_sha256 = sha256_file(artifact_path);
+    if (!artifact_sha256 || *artifact_sha256 != artifact["sha256"].get<std::string>())
+        return "The color-intent manifest does not match the downloaded OBJ artifact.";
+    return std::nullopt;
 }
 
 } // namespace
@@ -476,6 +628,35 @@ void AIModelGenerationClient::download_artifact(const std::string& job_id, const
              std::move(on_complete), std::move(on_error));
 }
 
+void AIModelGenerationClient::download_color_intent(
+    const std::string& job_id, const std::string& schema, const std::string& sha256,
+    const boost::filesystem::path& artifact_path, const boost::filesystem::path& path,
+    PathFn on_complete, ErrorFn on_error)
+{
+    download("/v1/orcaslicer/model-jobs/" + job_id + "/color-intent", path, MAX_COLOR_INTENT_SIZE,
+             std::move(on_complete), std::move(on_error),
+             [schema, sha256, artifact_path](const std::string& body) {
+                 return validate_color_intent_body(body, schema, sha256, artifact_path);
+             });
+}
+
+bool AIModelGenerationClient::validate_color_intent_manifest_file(
+    const boost::filesystem::path& manifest_path, const std::string& schema, const std::string& sha256,
+    const boost::filesystem::path& artifact_path)
+{
+    boost::system::error_code ec;
+    if (!boost::filesystem::is_regular_file(manifest_path, ec) || ec)
+        return false;
+    const uintmax_t size = boost::filesystem::file_size(manifest_path, ec);
+    if (ec || size == 0 || size > MAX_COLOR_INTENT_SIZE)
+        return false;
+    boost::filesystem::ifstream stream(manifest_path, std::ios::binary);
+    if (!stream)
+        return false;
+    const std::string body((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    return !stream.bad() && !validate_color_intent_body(body, schema, sha256, artifact_path).has_value();
+}
+
 void AIModelGenerationClient::record_journey_event(const std::string& event, const std::string& job_id)
 {
     if (!is_loopback_endpoint(m_endpoint))
@@ -691,10 +872,34 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
         }
     }
     if (job.contains("artifact") && job["artifact"].is_object()) {
-        status.artifact_ready = job["artifact"].value("ready", false);
-        status.artifact_format = job["artifact"].value("format", std::string());
-        status.artifact_color_encoding = job["artifact"].value("color_encoding", std::string());
-        status.artifact_size = job["artifact"].value("size_bytes", size_t(0));
+        const auto& artifact = job["artifact"];
+        status.artifact_ready = artifact.value("ready", false);
+        status.artifact_format = artifact.value("format", std::string());
+        status.artifact_color_encoding = artifact.value("color_encoding", std::string());
+        status.artifact_size = artifact.value("size_bytes", size_t(0));
+        if (artifact.contains("color_intent")) {
+            if (!artifact["color_intent"].is_object() ||
+                !artifact["color_intent"].contains("ready") ||
+                !artifact["color_intent"]["ready"].is_boolean())
+                return std::nullopt;
+            const auto& color_intent = artifact["color_intent"];
+            status.color_intent_ready = color_intent["ready"].get<bool>();
+            if (status.color_intent_ready) {
+                if (!color_intent.contains("schema") || !color_intent["schema"].is_string() ||
+                    !color_intent.contains("sha256") || !color_intent["sha256"].is_string() ||
+                    !color_intent.contains("size_bytes") || !color_intent["size_bytes"].is_number_unsigned())
+                    return std::nullopt;
+                status.color_intent_schema = color_intent["schema"].get<std::string>();
+                status.color_intent_sha256 = color_intent["sha256"].get<std::string>();
+                status.color_intent_size = color_intent["size_bytes"].get<size_t>();
+                const Slic3r::AI::ColorIntentManifestRef identity {
+                    "status-color-intent.json", status.color_intent_schema, status.color_intent_sha256
+                };
+                if (!Slic3r::AI::is_valid_color_intent_manifest_ref(identity) ||
+                    status.color_intent_size == 0 || status.color_intent_size > MAX_COLOR_INTENT_SIZE)
+                    return std::nullopt;
+            }
+        }
     }
     if (job.contains("model_quality") && job["model_quality"].is_object()) {
         const auto& quality = job["model_quality"];
@@ -918,7 +1123,8 @@ AIModelGenerationClient::json AIModelGenerationClient::serialize_print_settings(
 }
 
 void AIModelGenerationClient::download(const std::string& path, const boost::filesystem::path& destination,
-                                       size_t size_limit, PathFn on_complete, ErrorFn on_error)
+                                       size_t size_limit, PathFn on_complete, ErrorFn on_error,
+                                       DownloadValidator validator)
 {
     if (!is_loopback_endpoint(m_endpoint)) {
         if (on_error)
@@ -930,9 +1136,18 @@ void AIModelGenerationClient::download(const std::string& path, const boost::fil
     auto http = Http::get(url(path));
     AISidecarClient::configure_native_request(http);
     http.timeout_connect(5).timeout_max(180).size_limit(size_limit);
-    http.on_complete([partial, destination, on_complete = std::move(on_complete), on_error](std::string body, unsigned) {
+    http.on_complete([partial, destination, on_complete = std::move(on_complete), on_error,
+                      validator = std::move(validator)](std::string body, unsigned) {
         boost::system::error_code ec;
         boost::filesystem::remove(partial, ec);
+        if (validator) {
+            const std::optional<std::string> validation_error = validator(body);
+            if (validation_error) {
+                if (on_error)
+                    on_error(*validation_error);
+                return;
+            }
+        }
         boost::filesystem::ofstream stream(partial, std::ios::binary | std::ios::trunc);
         stream.write(body.data(), static_cast<std::streamsize>(body.size()));
         stream.close();

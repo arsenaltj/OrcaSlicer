@@ -60,7 +60,7 @@ class PrintableSidecarIntegrationTests(unittest.TestCase):
             with mock.patch.object(sidecar, "preprocess_text", return_value="one printable mechanical qilin"), \
                  mock.patch.object(
                      sidecar,
-                     "generate_image",
+                     "generate_geometry_reference_image",
                      side_effect=lambda _instruction, output, *_args: synthetic_preview(output),
                  ) as generate:
                 sidecar._preprocess_text_job(job, job.user_prompt)
@@ -76,8 +76,8 @@ class PrintableSidecarIntegrationTests(unittest.TestCase):
             self.assertTrue(job.image_metrics["model_input_quality"]["model_input_eligible"])
             self.assertTrue(job.image_metrics["generation_input_quality"]["model_input_eligible"])
             self.assertEqual(job.image_metrics["generation_reference"], "model_reference")
-            self.assertEqual(generate.call_args.args[-3], "blue")
-            self.assertEqual(generate.call_args.args[-2], job.palette_roles)
+            self.assertEqual(generate.call_args.args[0], job.user_prompt)
+            self.assertEqual(generate.call_args.args[-2], job.style)
             self.assertEqual(generate.call_args.args[-1], "")
 
     def test_image_job_uses_detail_preserving_model_reference_and_clean_preview_for_review(self):

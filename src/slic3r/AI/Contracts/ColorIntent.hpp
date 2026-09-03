@@ -15,6 +15,7 @@ inline constexpr size_t kMaxMixedColorComponents  = 3;
 inline constexpr size_t kMinTargetPaletteColors = 1;
 inline constexpr size_t kMaxTargetPaletteColors = 6;
 inline constexpr size_t kLegacyDefaultTargetPaletteColors = 4;
+inline constexpr const char* kColorIntentSchemaV1 = "orcaslicer.color-intent.v1";
 inline constexpr std::array<const char*, kMaxTargetPaletteColors> kPaletteRoleIds {
     "primary", "structure", "light", "accent", "secondary", "detail"
 };
@@ -54,6 +55,22 @@ struct ColorIntentManifestRef
     std::string schema;
     std::string sha256;
 };
+
+inline bool is_lowercase_sha256(const std::string& value) noexcept
+{
+    if (value.size() != 64)
+        return false;
+    for (const char ch : value)
+        if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')))
+            return false;
+    return true;
+}
+
+inline bool is_valid_color_intent_manifest_ref(const ColorIntentManifestRef& reference) noexcept
+{
+    return !reference.local_path.empty() && reference.schema == kColorIntentSchemaV1 &&
+           is_lowercase_sha256(reference.sha256);
+}
 
 constexpr bool is_supported_physical_channel_count(size_t count) noexcept
 {

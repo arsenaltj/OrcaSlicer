@@ -30,6 +30,14 @@ from pathlib import Path
 from typing import Any, BinaryIO, Callable, Mapping
 
 from ai_diagnostics import diagnostic_context, event as diagnostic_event, exception_details, safe_endpoint
+from color_intent import (
+    COLOR_INTENT_FILENAME,
+    MAX_MANIFEST_BYTES as MAX_COLOR_INTENT_BYTES,
+    SCHEMA_ID as COLOR_INTENT_SCHEMA,
+    ColorIntentError,
+    verify_color_intent_manifest_file,
+    write_color_intent_manifest,
+)
 from network_policy import network_diagnostics
 
 from openai_preprocessor import (
@@ -37,8 +45,9 @@ from openai_preprocessor import (
     complete_vision,
     complete_text,
     edit_image,
-    generate_image,
+    generate_geometry_reference_image,
     image_provider_status,
+    PORTRAIT_FACE_LOCK_FILENAME,
     preprocess_image,
     preprocess_text,
     recommend_printable_palette,
@@ -81,9 +90,15 @@ from model_input_image_quality import (
     recommend_printable_style,
 )
 from model_job_support import (
+    apply_legacy_material_fragmentation_gate as _apply_legacy_material_fragmentation_gate,
+    assess_job_model_reference as _assess_job_model_reference,
+    file_info as _file_info,
     generation_prompt as _generation_prompt,
     image_type as _image_type,
+    model_input_quality_message as _model_input_quality_message,
     preprocess_failure_payload,
+    printable_preview_message as _printable_preview_message,
+    stored_image_type as _stored_image_type,
 )
 from model_provider_gateway import (
     ModelProviderGateway,
@@ -458,6 +473,9 @@ class Job:
     preprocess_failure: dict[str, Any] = field(default_factory=dict)
     artifact_path: Path | None = None
     artifact_format: str = ""
+    color_intent_path: Path | None = None
+    color_intent_schema: str = ""
+    color_intent_sha256: str = ""
     palette_recommendation: dict[str, Any] = field(default_factory=dict)
     palette_recommendation_confirmed: bool = False
     attempts: list[dict[str, Any]] = field(default_factory=list)
@@ -1092,6 +1110,9 @@ def _persist_job(job: Job, *, touch: bool = True) -> None:
         "preprocess_failure": job.preprocess_failure,
         "artifact_path": _job_path_value(job, job.artifact_path),
         "artifact_format": job.artifact_format,
+        "color_intent_path": _job_path_value(job, job.color_intent_path),
+        "color_intent_schema": job.color_intent_schema,
+        "color_intent_sha256": job.color_intent_sha256,
         "palette_recommendation": job.palette_recommendation,
         "palette_recommendation_confirmed": job.palette_recommendation_confirmed,
         "attempts": job.attempts,
@@ -1188,6 +1209,20 @@ def _load_job(directory: Path) -> Job | None:
     job.preprocess_failure = raw_preprocess_failure if isinstance(raw_preprocess_failure, dict) else {}
     job.artifact_path = _job_file(job, payload.get("artifact_path"))
     job.artifact_format = str(payload.get("artifact_format", ""))
+    job.color_intent_path = _job_file(job, payload.get("color_intent_path"))
+    job.color_intent_schema = str(payload.get("color_intent_schema", ""))
+    job.color_intent_sha256 = str(payload.get("color_intent_sha256", ""))
+    if job.color_intent_path is not None:
+        try:
+            verified = verify_color_intent_manifest_file(
+                job.color_intent_path, job.artifact_path,
+                expected_schema=job.color_intent_schema, expected_sha256=job.color_intent_sha256,
+            )
+            job.color_intent_schema, job.color_intent_sha256 = verified.schema, verified.sha256
+        except ColorIntentError:
+            job.color_intent_path, job.color_intent_schema, job.color_intent_sha256 = None, "", ""
+    else:
+        job.color_intent_schema, job.color_intent_sha256 = "", ""
     job.palette_recommendation = palette_recommendation
     job.palette_recommendation_confirmed = bool(payload.get("palette_recommendation_confirmed", False))
     job.attempts = attempts
@@ -1196,48 +1231,6 @@ def _load_job(directory: Path) -> Job | None:
     except (TypeError, ValueError, OSError):
         job.updated_at = time.time()
     return job
-
-
-def _apply_legacy_material_fragmentation_gate(job: Job) -> None:
-    """Conservatively block severe pre-gate portrait previews after an upgrade."""
-
-    metrics = job.image_metrics
-    if "material_fragmentation_ok" in metrics:
-        return
-    metrics["material_fragmentation_ok"] = True
-    if job.style != "realistic" or len(job.palette) < 3:
-        return
-    palette_rgb = [tuple(int(color[index:index + 2], 16) for index in (1, 3, 5)) for color in job.palette]
-    has_bright_neutral = any(
-        max(color) - min(color) <= 32 and sum(color) / 3 >= 180 for color in palette_rgb
-    )
-    has_warm_skin = any(
-        red > green >= blue
-        and 12 <= red - green <= 82
-        and 28 <= red - blue <= 118
-        and green >= 70
-        and blue >= 45
-        for red, green, blue in palette_rgb
-    )
-    counts = metrics.get("subject_color_component_count", {})
-    ratios = metrics.get("secondary_subject_color_component_ratio", {})
-    if not has_bright_neutral or not has_warm_skin or not isinstance(counts, dict) or not isinstance(ratios, dict):
-        return
-    severe_colors = [
-        color for color in job.palette
-        if int(counts.get(color, 0)) >= 12 and float(ratios.get(color, 0.0)) >= 0.025
-    ]
-    if not severe_colors:
-        return
-    metrics["material_fragmentation_ok"] = False
-    metrics["palette_quality_ok"] = False
-    metrics["severe_fragmented_palette_colors"] = severe_colors
-    warnings = metrics.get("quality_warnings", [])
-    if not isinstance(warnings, list):
-        warnings = []
-    if "portrait_material_fragmentation_blocks_3d" not in warnings:
-        warnings.append("portrait_material_fragmentation_blocks_3d")
-    metrics["quality_warnings"] = warnings
 
 
 def _restore_jobs(*, resume_jobs: bool = True) -> list[Job]:
@@ -1370,8 +1363,7 @@ def _restore_jobs(*, resume_jobs: bool = True) -> list[Job]:
             job.phase = "stopped"
             job.message = "Model generation stopped."
             job.progress = 0
-            job.artifact_path = None
-            job.artifact_format = ""
+            _clear_job_artifact(job)
         elif job.state in {"queued", "running"}:
             generation_id = next(
                 (attempt.get("generation_task_id") for attempt in reversed(job.attempts)
@@ -1472,16 +1464,6 @@ def _adopt_legacy_completed_job(job_id: str) -> Job | None:
     return job
 
 
-def _file_info(path: Path | None) -> tuple[bool, int]:
-    if path is None:
-        return False, 0
-    try:
-        size = path.stat().st_size
-    except OSError:
-        return False, 0
-    return size > 0, size
-
-
 def _latest_job_is_restorable(job: Job) -> bool:
     """Return whether the native UI can reconstruct a useful journey state.
 
@@ -1500,16 +1482,6 @@ def _latest_job_is_restorable(job: Job) -> bool:
     if job.source == "image":
         return _file_info(job.input_path)[0]
     return bool(job.user_prompt.strip())
-
-
-def _stored_image_type(path: Path | None) -> str:
-    if path is None:
-        return ""
-    try:
-        with path.open("rb") as stream:
-            return _image_type(stream.read(16)) or ""
-    except OSError:
-        return ""
 
 
 def _read_job_report(job: Job, filename: str) -> dict[str, Any]:
@@ -1535,6 +1507,7 @@ def _public_job(job: Job) -> dict[str, Any]:
     heatmap_ready, heatmap_size = _file_info(job.heatmap_path)
     metadata_ready, metadata_size = _file_info(job.metadata_path)
     artifact_ready, artifact_size = _file_info(job.artifact_path)
+    color_intent_ready, color_intent_size = _file_info(job.color_intent_path)
     model_quality = _read_job_report(job, MODEL_QUALITY_FILENAME)
     visual_quality = _read_job_report(job, VISUAL_QUALITY_FILENAME)
     refinement = build_model_refinement_advice(model_quality, visual_quality)
@@ -1634,6 +1607,13 @@ def _public_job(job: Job) -> dict[str, Any]:
             "color_encoding": "vertex_colors" if artifact_ready and job.artifact_format == "obj" else "",
             "filename": artifact_filename,
             "size_bytes": artifact_size if artifact_ready else 0,
+            "color_intent": {
+                "ready": color_intent_ready,
+                "schema": job.color_intent_schema if color_intent_ready else "",
+                "sha256": job.color_intent_sha256 if color_intent_ready else "",
+                "filename": f"orcaslicer-color-intent-{job.id}.json" if color_intent_ready else "",
+                "size_bytes": color_intent_size if color_intent_ready else 0,
+            },
         },
     }
 
@@ -1661,14 +1641,18 @@ def _finish_deleted(job: Job) -> None:
             _persist_job(job)
 
 
+def _clear_job_artifact(job: Job) -> None:
+    job.artifact_path, job.artifact_format = None, ""
+    job.color_intent_path, job.color_intent_schema, job.color_intent_sha256 = None, "", ""
+
+
 def _mark_stopped(job: Job) -> None:
     with _JOBS_LOCK:
         job.state = "stopped"
         job.phase = "stopped"
         job.message = "Model generation stopped."
         job.progress = 0
-        job.artifact_path = None
-        job.artifact_format = ""
+        _clear_job_artifact(job)
         _persist_job(job)
 
 
@@ -1692,8 +1676,7 @@ def _fail_job(job: Job, message: str) -> None:
             job.state = "failed"
             job.phase = "failed"
             job.message = message
-        job.artifact_path = None
-        job.artifact_format = ""
+        _clear_job_artifact(job)
         _persist_job(job)
 
 
@@ -1716,8 +1699,7 @@ def _return_to_portrait_multiview_retry(job: Job, message: str) -> None:
                 "reason": message,
                 "paid_task_created": False,
             }
-        job.artifact_path = None
-        job.artifact_format = ""
+        _clear_job_artifact(job)
         _persist_job(job)
 
 
@@ -2037,13 +2019,28 @@ def _apply_printable_image_pipeline(job: Job, raw_preview: Path) -> dict[str, in
     return result.palette_usage
 
 
-def _assess_job_model_reference(job: Job) -> dict[str, Any]:
-    reference = job.model_reference_path or job.preview_path
-    if reference is None:
-        raise ModelInputImageQualityError("The model reference image is unavailable.")
-    quality = assess_model_input_image(reference)
-    job.image_metrics["model_input_quality"] = quality
-    return quality
+def _write_job_color_intent(job: Job, artifact: Path) -> None:
+    if not job.palette:
+        job.color_intent_path, job.color_intent_schema, job.color_intent_sha256 = None, "", ""
+        return
+    appearance = job.raw_preview_path or job.model_reference_path
+    material = job.preview_path or job.strict_preview_path
+    if appearance is None or material is None:
+        job.color_intent_path, job.color_intent_schema, job.color_intent_sha256 = None, "", ""
+        return
+    if not job.palette_roles:
+        job.palette_roles = assign_palette_roles(job.palette).color_by_role
+    try:
+        result = write_color_intent_manifest(
+            job.directory / COLOR_INTENT_FILENAME, artifact, appearance, material,
+            job.palette, job.palette_roles,
+            geometry_reference_path=_geometry_generation_reference(job),
+        )
+    except ColorIntentError as exc:
+        raise TripoError(f"The color-intent manifest could not be published: {exc}") from None
+    job.color_intent_path, job.color_intent_schema, job.color_intent_sha256 = (
+        result.path, result.schema, result.sha256
+    )
 
 
 def _model_generation_reference(job: Job) -> Path | None:
@@ -2064,13 +2061,20 @@ def _model_generation_reference(job: Job) -> Path | None:
 
 def _identity_preserving_portrait_geometry_enabled(job: Job) -> bool:
     cleanup = job.image_metrics.get("portrait_skin_cleanup", {})
+    portrait_geometry = job.image_metrics.get("portrait_geometry", {})
+    portrait_detected = (
+        isinstance(portrait_geometry, dict)
+        and portrait_geometry.get("detected") is True
+    ) or (
+        isinstance(cleanup, dict)
+        and cleanup.get("activated") == 1
+    )
     return (
         job.source == "image"
         and job.style == "realistic"
         and job.generation_profile == "quality"
-        and len(job.palette) == 4
-        and isinstance(cleanup, dict)
-        and cleanup.get("activated") == 1
+        and MIN_PRINTABLE_COLORS <= len(job.palette) <= MAX_PRINTABLE_COLORS
+        and portrait_detected
         and job.input_path is not None
         and job.input_path.is_file()
     )
@@ -4011,54 +4015,6 @@ def _ensure_portrait_multiview(job: Job) -> dict[str, Path] | None:
     return dict(generation_references)
 
 
-def _model_input_quality_message(quality: dict[str, Any]) -> str:
-    blockers = quality.get("blockers", [])
-    primary = str(blockers[0]) if blockers else ""
-    return {
-        "subject_not_detected": "No clear subject was found; use a clearer image or regenerate the preview.",
-        "subject_too_small": "The subject is too small; enlarge it and regenerate the preview.",
-        "subject_or_background_fills_frame": "The subject or background fills the frame; regenerate with clear margins.",
-        "subject_cropped": "The subject touches the frame and may be cropped; regenerate with the complete silhouette visible.",
-        "fragmented_subject": "The reference contains disconnected subjects or fragments; regenerate with one connected subject.",
-        "excessive_semitransparency": "The subject contains too much transparency for reliable 3D generation.",
-        "background_not_isolated": "The background is too complex; regenerate on a transparent or plain background.",
-        "subject_has_rectangular_cutout": "The portrait contains a large square cutout or missing body region; regenerate the preview before paying for 3D generation.",
-        "portrait_shoulder_silhouette_unverified": "The portrait shoulder silhouette still contains an unverified gap or background remnant; regenerate the preview before paying for 3D generation.",
-        "preview_identity_mismatch": "The prepared face differs too much from the original; regenerate the portrait preview.",
-        "preview_face_geometry_drift": "The prepared face shape or landmarks drifted; regenerate the portrait preview.",
-        "preview_age_expression_drift": "The prepared age or expression changed; regenerate the portrait preview.",
-        "preview_material_mixing": "Skin, clothing, hair, or base colors are mixed; regenerate the portrait preview.",
-        "preview_base_mixing": "The pedestal contains another material color; regenerate the portrait preview.",
-        "preview_pose_clothing_drift": "The prepared pose or clothing differs from the original; regenerate the portrait preview.",
-        "preview_modeling_reference_unclear": "The portrait is not a reliable 3D reference; regenerate the preview.",
-    }.get(primary, "The preview does not meet the image-to-3D input requirements; regenerate it.")
-
-
-def _printable_preview_message(job: Job, fallback: str) -> str:
-    model_input_quality = job.image_metrics.get("model_input_quality", {})
-    if isinstance(model_input_quality, dict) and not bool(model_input_quality.get("model_input_eligible", True)):
-        return _model_input_quality_message(model_input_quality)
-    generation_input_quality = job.image_metrics.get("generation_input_quality", {})
-    if isinstance(generation_input_quality, dict) and not bool(
-        generation_input_quality.get("model_input_eligible", True)
-    ):
-        return _model_input_quality_message(generation_input_quality)
-    if job.palette and not bool(job.image_metrics.get("palette_quality_ok", True)):
-        subject_ratio = float(job.image_metrics.get("printable_subject_area_ratio", 0.0))
-        continuity = float(job.image_metrics.get("largest_subject_component_ratio", 0.0))
-        detached_span = float(job.image_metrics.get("largest_detached_subject_diagonal_ratio", 0.0))
-        if subject_ratio < 0.18:
-            return "The printable subject is too small in the preview; regenerate with a larger subject."
-        if continuity < 0.90:
-            return "The printable subject is disconnected; regenerate with one connected subject."
-        if detached_span >= 0.08:
-            return "A long thin structure is detached from the subject; reconnect handles, branches, or supports and regenerate."
-        if not bool(job.image_metrics.get("material_fragmentation_ok", True)):
-            return "Skin or garment colors are fragmented into incorrect patches; regenerate the portrait preview before 3D."
-        return "The printable preview failed its geometry quality check; regenerate the preview."
-    return fallback
-
-
 def _recommend_palette_job(job: Job) -> None:
     try:
         _stop_boundary(job)
@@ -4105,16 +4061,16 @@ def _preprocess_text_job(job: Job, prompt: str) -> None:
     try:
         _stop_boundary(job)
         prepared = _generation_prompt(
-            preprocess_text(prompt, job.palette, job.style, job.custom_style),
+            preprocess_text(prompt, (), job.style, job.custom_style),
             job.palette,
             max_prompt_bytes=MAX_PROMPT_BYTES,
+            constrain_palette=False,
         )
         if not prepared or len(prepared.encode("utf-8")) > MAX_PROMPT_BYTES:
             raise OpenAIPreprocessorError("The prepared prompt is empty or exceeds the 2000-byte limit.")
         raw_preview = job.directory / "style-preview-raw.png"
-        generate_image(
-            prompt, raw_preview, job.palette, job.style,
-            str(job.print_settings.get("shadow_color", "blue")), job.palette_roles, job.custom_style,
+        generate_geometry_reference_image(
+            prompt, raw_preview, job.style, job.custom_style,
         )
         _validate_image_file(
             raw_preview,
@@ -4134,6 +4090,10 @@ def _preprocess_text_job(job: Job, prompt: str) -> None:
             shutil.copyfile(raw_preview, preview)
             job.preview_path = preview
             color_usage = {}
+        job.image_metrics["portrait_geometry"] = {
+            "detected": False,
+            "evidence": "not_applicable",
+        }
         validated = _validate_image_file(
             job.model_reference_path or job.preview_path,
             minimum_edge=MIN_MODEL_REFERENCE_EDGE,
@@ -4240,6 +4200,15 @@ def _preprocess_image_job(job: Job, input_path: Path, instruction: str) -> None:
             shutil.copyfile(raw_preview, preview)
             job.preview_path = preview
             color_usage = {}
+        face_lock = job.directory / PORTRAIT_FACE_LOCK_FILENAME
+        legacy_cleanup = job.image_metrics.get("portrait_skin_cleanup", {})
+        portrait_detected = face_lock.is_file() or (
+            isinstance(legacy_cleanup, dict) and legacy_cleanup.get("activated") == 1
+        )
+        job.image_metrics["portrait_geometry"] = {
+            "detected": portrait_detected,
+            "evidence": "source_face_lock" if face_lock.is_file() else "legacy_material_cleanup" if portrait_detected else "none",
+        }
         reference = job.model_reference_path or job.preview_path
         validated = _validate_image_file(
             reference,
@@ -8000,6 +7969,7 @@ def _generate_job(
             raise last_quality_error or TripoError("No printable model passed validation.")
 
         visual_quality = _automatic_visual_review(job, artifact)
+        _write_job_color_intent(job, artifact)
         with _JOBS_LOCK:
             if job.stop_event.is_set():
                 raise JobStopped()
@@ -8166,6 +8136,7 @@ def _retexture_job(
         _promote_attempt_artifact(candidate, artifact)
         _record_attempt(job, 1, status="accepted", artifact=str(candidate.name), error="")
         visual_quality = _automatic_visual_review(job, artifact)
+        _write_job_color_intent(job, artifact)
         with _JOBS_LOCK:
             if job.stop_event.is_set():
                 raise JobStopped()
@@ -8449,7 +8420,7 @@ class Handler(BaseHTTPRequestHandler):
         elif len(parts) == 2 and parts[0] and (
             parts[1] in {
                 "input", "raw-preview", "strict-preview", "preview", "model-reference", "heatmap", "metadata",
-                "background-mask", "subject-mask", "generate", "retexture", "stop", "artifact",
+                "background-mask", "subject-mask", "generate", "retexture", "stop", "artifact", "color-intent",
                 "recheck", "visual-review", "model-view-sheet", "confirm-palette",
             }
             or re.fullmatch(r"mask-[a-z0-9_]+", parts[1])
@@ -8588,7 +8559,7 @@ class Handler(BaseHTTPRequestHandler):
         job_id, action = self._job_route(self.path)
         downloadable = {
             "status", "input", "raw-preview", "strict-preview", "preview", "model-reference", "heatmap", "metadata",
-            "background-mask", "subject-mask", "artifact", "model-view-sheet",
+            "background-mask", "subject-mask", "artifact", "color-intent", "model-view-sheet",
         }
         if not job_id or (action not in downloadable and not (action or "").startswith("mask-")):
             self._model_error(404, "not_found", "Model job route not found.")
@@ -9037,8 +9008,7 @@ class Handler(BaseHTTPRequestHandler):
             job.phase = "generating"
             job.message = "Generation queued."
             job.progress = 20
-            job.artifact_path = None
-            job.artifact_format = ""
+            _clear_job_artifact(job)
             _persist_job(job)
         try:
             _submit(job, _generate_job, prepared_prompt, False, authorization)
@@ -9310,6 +9280,7 @@ class Handler(BaseHTTPRequestHandler):
                 "background-mask": job.background_mask_path,
                 "subject-mask": job.subject_mask_path,
                 "artifact": job.artifact_path,
+                "color-intent": job.color_intent_path,
                 "model-view-sheet": job.directory / "model-view-sheet.png",
             }
             path = job.mask_paths.get(kind[5:]) if kind.startswith("mask-") else fixed_paths.get(kind)
@@ -9317,17 +9288,21 @@ class Handler(BaseHTTPRequestHandler):
             if not ready or path is None:
                 self._model_error(409, f"{kind}_not_ready", f"Model job {kind} is not ready.", True)
                 return
+            if kind == "color-intent" and size > MAX_COLOR_INTENT_BYTES:
+                self._model_error(409, "color_intent_invalid", "The color-intent manifest exceeds its size limit.")
+                return
             image_kinds = {
                 "input", "raw-preview", "strict-preview", "preview", "model-reference", "heatmap",
                 "background-mask", "subject-mask", "model-view-sheet",
             }
             content_type = _stored_image_type(path) if kind in image_kinds or kind.startswith("mask-") else \
-                "application/json; charset=utf-8" if kind == "metadata" else {
+                "application/json; charset=utf-8" if kind in {"metadata", "color-intent"} else {
                 "obj": "model/obj",
                 "3mf": "application/vnd.ms-package.3dmanufacturing-3dmodel+xml",
                 "stl": "model/stl",
             }.get(job.artifact_format, "application/octet-stream")
-            filename = f"orcaslicer-model-{job.id}.{job.artifact_format}" if kind == "artifact" else None
+            filename = f"orcaslicer-model-{job.id}.{job.artifact_format}" if kind == "artifact" else \
+                f"orcaslicer-color-intent-{job.id}.json" if kind == "color-intent" else None
             try:
                 stream = path.open("rb")
             except OSError:
