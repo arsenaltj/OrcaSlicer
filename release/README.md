@@ -19,6 +19,13 @@ variables at runtime: Image2 prefers `OPENAI_PRO_API` plus `OPENAI_PRO_URL`, whi
 legacy `OPENAI_API_KEY` plus `OPENAI_BASE_URL` remains a compatibility fallback
 only when both PRO settings are absent.
 
+For controlled internal testing, `create_ai_provisioner.ps1` can generate a
+separate credential-bearing configuration ZIP from the operator's effective
+Windows environment. That ZIP is ignored by Git, must not be uploaded to the
+public download site, and is intentionally extractable by its recipients. It
+writes only current-user environment variables and does not modify the OrcaSlicer
+installer.
+
 ## Files
 
 | File | Purpose |
@@ -27,7 +34,27 @@ only when both PRO settings are absent.
 | `build_internal.ps1` | Locks the source identity, builds, tests, and validates the installer |
 | `upload_installer.ps1` | Verifies the manifest and uploads the exact installer atomically |
 | `verify_public_release.ps1` | Checks the public page, range download, checksum header, and health endpoint |
+| `create_ai_provisioner.ps1` | Creates the separately distributed one-click internal PRO configuration ZIP |
 | `server/` | Root-owned forced-command protocol and publisher enrollment template |
+
+## Create the internal AI configuration ZIP
+
+Run this only on an authorized release computer where `OPENAI_PRO_API` and
+`OPENAI_PRO_URL` resolve to the verified internal provider configuration:
+
+```powershell
+& .\release\create_ai_provisioner.ps1
+```
+
+The command writes a ZIP and SHA-256 file under
+`build\internal-ai-provisioner`. Send that ZIP through the approved internal
+channel. The recipient extracts it and double-clicks
+`Install-OrcaAIConfig.cmd`, then fully closes and restarts OrcaSlicer. The
+matching removal command deletes only the two current-user PRO variables.
+
+The provisioner never calls a generation endpoint. Its network check is limited
+to DNS and TCP connectivity, and its log at
+`%LOCALAPPDATA%\OrcaSlicer\logs\ai-config-install.log` contains no credential.
 
 ## One-time setup on each Windows computer
 

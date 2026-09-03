@@ -68,3 +68,6 @@ orca_ai_internal_defaults.json
 # paths, and private release metadata out of the public repository.
 /release/config.local.ps1
 /release/*.local.json
+*.orca-ai-provisioner.json
+OrcaSlicer_AI_PRO_Config_*.zip
+OrcaSlicer_AI_PRO_Config_*.zip.sha256
