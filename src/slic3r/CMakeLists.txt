@@ -352,6 +352,7 @@ set(SLIC3R_GUI_SOURCES
     GUI/AI/Orca/OrcaTrialSliceExecutor.hpp
     GUI/AI/Orca/OrcaWorkflowRuntimeStore.cpp
     GUI/AI/Orca/OrcaWorkflowRuntimeStore.hpp
+    GUI/AI/Orca/OrcaPaletteSnapshotBuilder.hpp
     GUI/AI/Orca/OrcaWorkspaceAdapter.cpp
     GUI/AI/Orca/OrcaWorkspaceAdapter.hpp
     GUI/AI/AIDesktopFeatureHost.cpp

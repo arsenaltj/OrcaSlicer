@@ -1,4 +1,5 @@
 #include "OrcaWorkspaceAdapter.hpp"
+#include "OrcaPaletteSnapshotBuilder.hpp"
 
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/GUI_Utils.hpp"
@@ -7,6 +8,7 @@
 #include "slic3r/GUI/Plater.hpp"
 #include "slic3r/GUI/Widgets/ProgressDialog.hpp"
 #include "libslic3r/Format/OBJ.hpp"
+#include "libslic3r/FilamentMixer.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/Print.hpp"
@@ -19,7 +21,6 @@
 #include <algorithm>
 #include <cctype>
 #include <limits>
-#include <regex>
 #include <utility>
 
 namespace Slic3r::GUI {
@@ -122,97 +123,115 @@ OrcaWorkspaceAdapter::OrcaWorkspaceAdapter(Plater* plater, ImportSucceededFn on_
 
 AI::PrintablePaletteSnapshot OrcaWorkspaceAdapter::printable_palette() const
 {
-    AI::PrintablePaletteSnapshot snapshot;
     if (m_plater == nullptr)
-        return snapshot;
+        return {};
 
-    snapshot.project_colors = m_plater->get_extruder_colors_from_plater_config();
-    static const std::regex color_pattern(R"(^#[0-9A-Fa-f]{6}$)");
-    for (size_t slot = 0; slot < snapshot.project_colors.size() && snapshot.valid_slots.size() < 16; ++slot) {
-        if (std::regex_match(snapshot.project_colors[slot], color_pattern))
-            snapshot.valid_slots.push_back(slot);
-    }
-    snapshot.compatible_slots = snapshot.valid_slots;
+    std::vector<std::string> project_colors = m_plater->get_extruder_colors_from_plater_config();
+    const PresetBundle* bundle = wxGetApp().preset_bundle;
+    const auto* mixed_flags = bundle == nullptr
+        ? nullptr : bundle->project_config.option<ConfigOptionBools>("filament_is_mixed");
+    const auto* mixed_components = bundle == nullptr
+        ? nullptr : bundle->project_config.option<ConfigOptionStrings>("filament_mixed_components");
+    const auto* mixed_ratios = bundle == nullptr
+        ? nullptr : bundle->project_config.option<ConfigOptionStrings>("filament_mixed_sublayer_ratios");
 
-    if (snapshot.valid_slots.size() >= 2 && wxGetApp().preset_bundle != nullptr) {
-        const PresetBundle& bundle = *wxGetApp().preset_bundle;
-        struct SlotTemperature {
-            std::string type;
-            int         temperature;
-            int         range_low;
-            int         range_high;
-        };
-        std::vector<SlotTemperature> slot_temperatures;
-        slot_temperatures.reserve(snapshot.valid_slots.size());
-        bool complete = true;
-        for (const size_t slot : snapshot.valid_slots) {
-            if (slot >= bundle.filament_presets.size()) {
-                complete = false;
-                break;
-            }
-            const Preset* preset = bundle.filaments.find_preset(bundle.filament_presets[slot]);
-            if (preset == nullptr) {
-                complete = false;
-                break;
-            }
-            const auto* types = preset->config.option<ConfigOptionStrings>("filament_type");
-            const auto* temperatures = preset->config.option<ConfigOptionInts>("nozzle_temperature");
-            const auto* range_lows = preset->config.option<ConfigOptionInts>("nozzle_temperature_range_low");
-            const auto* range_highs = preset->config.option<ConfigOptionInts>("nozzle_temperature_range_high");
-            if (types == nullptr || types->values.empty() || temperatures == nullptr || temperatures->values.empty() ||
-                range_lows == nullptr || range_lows->values.empty() || range_highs == nullptr || range_highs->values.empty()) {
-                complete = false;
-                break;
-            }
-            slot_temperatures.push_back(
-                {types->get_at(0), temperatures->get_at(0), range_lows->get_at(0), range_highs->get_at(0)});
-        }
-
-        if (complete) {
-            std::vector<size_t> best {snapshot.valid_slots.front()};
-            const uint32_t subset_count = uint32_t(1) << snapshot.valid_slots.size();
-            for (uint32_t mask = 1; mask < subset_count; ++mask) {
-                std::vector<size_t> slots;
-                std::vector<std::string> selected_types;
-                std::vector<int> selected_temperatures;
-                std::vector<int> selected_lows;
-                std::vector<int> selected_highs;
-                for (size_t bit = 0; bit < snapshot.valid_slots.size(); ++bit) {
-                    if ((mask & (uint32_t(1) << bit)) == 0)
-                        continue;
-                    slots.push_back(snapshot.valid_slots[bit]);
-                    selected_types.push_back(slot_temperatures[bit].type);
-                    selected_temperatures.push_back(slot_temperatures[bit].temperature);
-                    selected_lows.push_back(slot_temperatures[bit].range_low);
-                    selected_highs.push_back(slot_temperatures[bit].range_high);
-                }
-                if (slots.size() <= best.size())
-                    continue;
-                if (Print::check_multi_filaments_compatibility(
-                        selected_types, selected_temperatures, selected_lows, selected_highs) ==
-                    FilamentCompatibilityType::Compatible)
-                    best = std::move(slots);
-            }
-            snapshot.compatible_slots = std::move(best);
-        }
-    }
-
-    // The printable AI workflow targets four-filament printers. Keep physical slot order stable so generated colors can be
-    // mapped back to the same project, while leaving valid_slots untouched for diagnostics and manual import.
-    if (snapshot.compatible_slots.size() > 4)
-        snapshot.compatible_slots.resize(4);
-
-    for (const size_t slot : snapshot.compatible_slots) {
-        if (slot >= snapshot.project_colors.size())
-            continue;
-        std::string color = snapshot.project_colors[slot];
+    std::vector<OrcaPaletteSlotCapability> capabilities;
+    capabilities.reserve(project_colors.size());
+    for (size_t slot = 0; slot < project_colors.size(); ++slot) {
+        std::string color = project_colors[slot];
         std::transform(color.begin(), color.end(), color.begin(), [](unsigned char ch) {
             return static_cast<char>(std::toupper(ch));
         });
-        if (std::find(snapshot.compatible_colors.begin(), snapshot.compatible_colors.end(), color) ==
-            snapshot.compatible_colors.end())
-            snapshot.compatible_colors.emplace_back(std::move(color));
+        const bool is_mixed = mixed_flags != nullptr && slot < mixed_flags->values.size() &&
+                              mixed_flags->values[slot];
+        OrcaPaletteSlotCapability capability {slot, color, {}, is_mixed, true, {}};
+        if (is_mixed && mixed_components != nullptr && slot < mixed_components->values.size()) {
+            const std::vector<unsigned int> component_ids = parse_mixed_components(mixed_components->values[slot]);
+            const std::vector<double> ratios = parse_mixed_ratios(
+                mixed_ratios != nullptr && slot < mixed_ratios->values.size() ? mixed_ratios->values[slot] : "",
+                component_ids.size());
+            for (size_t index = 0; index < component_ids.size() && index < ratios.size(); ++index) {
+                if (component_ids[index] == 0) {
+                    capability.mixed_components.clear();
+                    break;
+                }
+                capability.mixed_components.push_back({component_ids[index] - 1, ratios[index]});
+            }
+        }
+        capabilities.push_back(std::move(capability));
     }
+
+    const std::vector<size_t> physical_slots = select_model_generation_physical_slots(capabilities);
+    struct SlotTemperature {
+        std::string type;
+        int         temperature { 0 };
+        int         range_low { 0 };
+        int         range_high { 0 };
+    };
+    std::vector<SlotTemperature> slot_temperatures(physical_slots.size());
+    bool metadata_complete = bundle != nullptr;
+    for (size_t index = 0; index < physical_slots.size(); ++index) {
+        const size_t slot = physical_slots[index];
+        const Preset* preset = bundle != nullptr && slot < bundle->filament_presets.size()
+            ? bundle->filaments.find_preset(bundle->filament_presets[slot]) : nullptr;
+        if (preset == nullptr) {
+            metadata_complete = false;
+            continue;
+        }
+        const auto* types = preset->config.option<ConfigOptionStrings>("filament_type");
+        const auto* temperatures = preset->config.option<ConfigOptionInts>("nozzle_temperature");
+        const auto* range_lows = preset->config.option<ConfigOptionInts>("nozzle_temperature_range_low");
+        const auto* range_highs = preset->config.option<ConfigOptionInts>("nozzle_temperature_range_high");
+        auto capability = std::find_if(capabilities.begin(), capabilities.end(), [slot](const auto& candidate) {
+            return !candidate.is_mixed && candidate.slot == slot;
+        });
+        if (types != nullptr && !types->values.empty() && capability != capabilities.end())
+            capability->material_type = types->get_at(0);
+        if (types == nullptr || types->values.empty() || temperatures == nullptr || temperatures->values.empty() ||
+            range_lows == nullptr || range_lows->values.empty() || range_highs == nullptr || range_highs->values.empty()) {
+            metadata_complete = false;
+            continue;
+        }
+        slot_temperatures[index] =
+            {types->get_at(0), temperatures->get_at(0), range_lows->get_at(0), range_highs->get_at(0)};
+    }
+
+    std::vector<size_t> compatible_slots = physical_slots;
+    if (physical_slots.size() >= 2 && metadata_complete) {
+        std::vector<size_t> best {physical_slots.front()};
+        const uint32_t subset_count = uint32_t(1) << physical_slots.size();
+        for (uint32_t mask = 1; mask < subset_count; ++mask) {
+            std::vector<size_t> slots;
+            std::vector<std::string> selected_types;
+            std::vector<int> selected_temperatures;
+            std::vector<int> selected_lows;
+            std::vector<int> selected_highs;
+            for (size_t bit = 0; bit < physical_slots.size(); ++bit) {
+                if ((mask & (uint32_t(1) << bit)) == 0)
+                    continue;
+                slots.push_back(physical_slots[bit]);
+                selected_types.push_back(slot_temperatures[bit].type);
+                selected_temperatures.push_back(slot_temperatures[bit].temperature);
+                selected_lows.push_back(slot_temperatures[bit].range_low);
+                selected_highs.push_back(slot_temperatures[bit].range_high);
+            }
+            if (slots.size() > best.size() &&
+                Print::check_multi_filaments_compatibility(selected_types, selected_temperatures, selected_lows,
+                                                           selected_highs) == FilamentCompatibilityType::Compatible)
+                best = std::move(slots);
+        }
+        compatible_slots = std::move(best);
+    }
+
+    for (OrcaPaletteSlotCapability& capability : capabilities) {
+        if (!capability.is_mixed)
+            capability.compatible = std::find(compatible_slots.begin(), compatible_slots.end(), capability.slot) !=
+                                    compatible_slots.end();
+    }
+    AI::PrintablePaletteSnapshot snapshot = build_orca_palette_snapshot(capabilities, metadata_complete);
+    // Preserve the raw all-slot projection for the legacy manual matcher. Typed
+    // consumers use physical_channels and mixed_recipes, which remain separated.
+    snapshot.project_colors = std::move(project_colors);
     return snapshot;
 }
 

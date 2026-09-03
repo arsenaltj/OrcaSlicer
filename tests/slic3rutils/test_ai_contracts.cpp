@@ -141,7 +141,7 @@ TEST_CASE("typed printable palette rebuilds the legacy flat projection", "[AICon
     GeneratedModelArtifact artifact;
     CHECK_FALSE(artifact.color_intent_manifest.has_value());
     artifact.color_intent_manifest = ColorIntentManifestRef {
-        boost::filesystem::path("color-intent.v1.json"),
+        "color-intent.v1.json",
         "orcaslicer.color-intent.v1",
         "0123456789abcdef",
     };
