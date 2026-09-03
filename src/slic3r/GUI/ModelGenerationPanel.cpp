@@ -410,9 +410,11 @@ wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
     wxArrayString styles;
     styles.Add(_L("单色雕塑"));
     styles.Add(_L("写实微缩"));
+    styles.Add(_L("肖像速写"));
     styles.Add(_L("手办"));
     styles.Add(_L("低多边形"));
     styles.Add(_L("浮雕"));
+    styles.Add(_L("水墨版画浮雕"));
     styles.Add(_L("微缩场景"));
     styles.Add(_L("自定义风格"));
     m_style = new wxChoice(scroll, wxID_ANY, wxDefaultPosition, wxDefaultSize, styles);
@@ -1717,7 +1719,7 @@ void ModelGenerationPanel::on_preprocess(wxCommandEvent& event)
                     << wxString::FromUTF8(m_selected_image_path.filename().string()) << "\n"
                     << _L("仅发送这张图片和文字描述，调用 1 次图片服务生成连续色调造型参考；配色草图随后在本地生成。 ");
         }
-        if (current_style() == "realistic" && use_printable_colors())
+        if ((current_style() == "realistic" || current_style() == "portrait_sketch") && use_printable_colors())
             message << _L("\n若识别到真人，造型参考会优先保留脸型和五官；打印配色草图只决定后续材质。 ");
         MessageDialog confirm(this, message,
                               regenerating_preview ? _L("重新生成图片预览") : _L("生成风格预览"),
@@ -1826,8 +1828,8 @@ void ModelGenerationPanel::on_generate(wxCommandEvent&)
     message += _L("\n\n生成策略：") + current_generation_profile_label();
     if (m_job_generation_profile == "quality") {
         message += _L("\n质量：超详细几何、200 万面目标、最高精度纹理和 PBR。");
-        if (image_mode && m_job_style == "realistic")
-            message += _L("\n写实人像：以人脸相似度优先，自动裁成头肩胸像；交叉手臂、手表和下半身不会进入 3D。几何使用当前连续色调造型参考，颜色在模型完成后按已确认的打印配色重新分配；本次只创建 1 个 Tripo 模型任务。");
+        if (image_mode && (m_job_style == "realistic" || m_job_style == "portrait_sketch"))
+            message += _L("\n身份优先人像：以人脸相似度优先，自动裁成头肩胸像；交叉手臂、手表和下半身不会进入 3D。几何使用当前连续色调造型参考，颜色在模型完成后按已确认的打印配色重新分配；本次只创建 1 个 Tripo 模型任务。");
     } else {
         message += _L("\n性能：30 万面目标、标准几何与纹理，保留 PBR。");
     }
@@ -2288,7 +2290,7 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
             }
         } else if (status.preview_ready && !status.palette.empty()) {
             m_result_summary->SetLabel(
-                m_job_style == "realistic" && m_job_generation_profile == "quality"
+                (m_job_style == "realistic" || m_job_style == "portrait_sketch") && m_job_generation_profile == "quality"
                     ? _L("头肩造型参考与打印配色草图已准备好；请分别确认脸型、五官、肩部裁切、底座和材质分区。")
                     : _L("造型参考与打印配色草图已准备好，请分别确认主体形体和材质分区。"));
         } else {
@@ -3743,11 +3745,13 @@ std::string ModelGenerationPanel::current_style() const
     switch (m_style == nullptr ? wxNOT_FOUND : m_style->GetSelection()) {
     case 0: return "sculpture";
     case 1: return "realistic";
-    case 2: return "cartoon";
-    case 3: return "low_poly";
-    case 4: return "relief";
-    case 5: return "diorama";
-    case 6: return "custom";
+    case 2: return "portrait_sketch";
+    case 3: return "cartoon";
+    case 4: return "low_poly";
+    case 5: return "relief";
+    case 6: return "ink_relief";
+    case 7: return "diorama";
+    case 8: return "custom";
     default: return "sculpture";
     }
 }
@@ -4897,7 +4901,7 @@ void ModelGenerationPanel::apply_preview_stage(bool center)
         } else if (selection == 0) {
             hint = _L("查看图片服务返回的连续色调造型图；它保留形体线索，尚未限制为实际耗材颜色。");
         } else if (selection == 1) {
-            hint = current_style() == "realistic" && current_generation_profile() == "quality"
+            hint = (current_style() == "realistic" || current_style() == "portrait_sketch") && current_generation_profile() == "quality"
                 ? _L("这是实际提交给 3D 服务的连续色调造型参考；已裁成头肩胸像以放大人脸，交叉手臂和下半身不会进入模型。")
                 : _L("这是实际提交给 3D 服务的造型参考；请重点确认主体、姿态、轮廓与底座。");
         } else if (selection == 2) {
@@ -4915,7 +4919,7 @@ void ModelGenerationPanel::apply_preview_stage(bool center)
         if (selection == 0)
             details = _L("阶段：供应商原始造型输出。保留连续明暗和结构细节，颜色数量尚未受打印约束。");
         else if (selection == 1)
-            details = current_style() == "realistic" && current_generation_profile() == "quality"
+            details = (current_style() == "realistic" || current_style() == "portrait_sketch") && current_generation_profile() == "quality"
                 ? _L("阶段：实际 3D 几何输入。人脸像素未缩放或重绘；旧底座已移除，并换成与肩部重叠的单层底座。")
                 : _L("阶段：3D 造型参考。保留连续色调和主体细节，并使用清理后的单一连通主体轮廓。");
         else if (selection == 2)

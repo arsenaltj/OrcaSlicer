@@ -73,6 +73,15 @@ STYLE_PROFILES = {
         "brows into a stock expression, narrow the nose, widen the smile, taper the jaw into a V, or shorten the lower face. Do not "
         "pursue photographic beauty lighting or painted skin detail at the expense of recognizable three-dimensional facial geometry."
     ),
+    "portrait_sketch": (
+        "Restyle the same real person as an identity-first portrait sketch sculpture. Preserve the exact recognizable identity, "
+        "adult age, expression, facial silhouette, landmark spacing, asymmetry, hairstyle, pose, crop, clothing, and accessories. "
+        "Use restrained exaggeration only to clarify an already-present brow, cheek, smile fold, jaw transition, or gesture; never "
+        "replace the person with a generic caricature, idealized celebrity, doll, anime face, or stock street-artist template. Translate "
+        "tone into two to five broad material or relief masses with continuous sculptural modeling inside each mass. Prefer a few confident, "
+        "printer-width contour grooves and connected planes over drawn texture. Use only semantically truthful masses, and do not force every "
+        "selected color to appear when that would create a tiny or false region."
+    ),
     "cartoon": (
         "Restyle the same subject as a friendly cute cartoon collectible, especially for portraits that look harsh when rendered "
         "realistically. Preserve recognizable identity, age, expression, hairstyle, pose, clothing, accessories, visible objects, "
@@ -92,6 +101,14 @@ STYLE_PROFILES = {
         "silhouette and recognizable internal contours while expressing depth with a few broad raised levels. Do not reconstruct "
         "an unseen back side, create undercuts, detach foreground elements, or add a decorative frame unless it is already requested."
     ),
+    "ink_relief": (
+        "Convert the complete visible composition into one printmaking- and woodcut-inspired ink relief on a simple solid backing plaque. "
+        "Preserve subject identity, viewpoint, count, silhouette, and recognizable internal contours. Organize positive and negative space "
+        "into two to four broad value masses, and turn only the most important brush or cut marks into connected, printer-width embossed or "
+        "engraved strokes. Use shallow stepped depth and solid opaque regions; forbid translucent washes, wet-on-wet gradients, gray mist, "
+        "micro-halftone dots, stippling, hairline hatching, and floating ink flecks. Use only semantically truthful masses, and do not force "
+        "every selected color to appear when that would create a tiny or false region."
+    ),
     "diorama": (
         "Restyle the complete visible composition as one compact printable miniature diorama. Preserve the main subjects, their "
         "relative placement, viewpoint, and scene identity, but merge the ground and supporting elements into one stable base. "
@@ -106,6 +123,8 @@ LEGACY_STYLE_ALIASES = {
     "enamel_inlay": "realistic",
 }
 STYLE_PROFILES.update({legacy: STYLE_PROFILES[canonical] for legacy, canonical in LEGACY_STYLE_ALIASES.items()})
+IDENTITY_FIRST_PORTRAIT_STYLES = frozenset({"realistic", "portrait_sketch"})
+PRINT_NATIVE_ARTISTIC_STYLES = frozenset({"portrait_sketch", "ink_relief"})
 
 CUSTOM_STYLE_ID = "custom"
 MAX_CUSTOM_STYLE_BYTES = 1000
@@ -486,13 +505,19 @@ def _designer_toy_profile(style: str, custom_style: str = "") -> str:
             "asymmetries; mild beautification may clean skin and hair texture but must not move or resize facial landmarks. "
             "Use intentional printable color blocking without flattening the sculptural planes that carry likeness."
         )
+    if canonical_style == "portrait_sketch":
+        return (
+            _style_profile(style, custom_style)
+            + " Treat the broad values as solid printable material families, not painted lighting. Preserve continuous form evidence "
+            "for the face and use a selected color only where it owns a meaningful connected portrait region."
+        )
     if canonical_style == "low_poly":
         return (
             _style_profile(style, custom_style)
             + " Assign each broad facet or connected facet group one allowed solid material color. Keep color boundaries aligned "
             "with major planes; do not use gradients, mottling, tiny checker patterns, or photographic texture."
         )
-    if canonical_style == "relief":
+    if canonical_style in {"relief", "ink_relief"}:
         return (
             _style_profile(style, custom_style)
             + " Use the allowed material colors only for a few large relief levels or semantic regions. Keep the plaque, raised "
@@ -517,6 +542,8 @@ def _designer_toy_palette_direction(
     palette: tuple[str, ...],
     shadow_color: str = "",
     palette_roles: Mapping[str, str] | None = None,
+    *,
+    allow_meaningful_subset: bool = False,
 ) -> str:
     del shadow_color  # Accepted for backward-compatible callers; roles are now based on actual filament colors.
     try:
@@ -537,6 +564,14 @@ def _designer_toy_palette_direction(
         "detail": "the detail color marks a bounded, printable identifying feature",
     }
     role_usage = "; ".join(role_descriptions[role] for role in assignment.color_by_role) + ". "
+    coverage_direction = (
+        "Use only listed colors that own clear, meaningful subject regions. It is acceptable to use a meaningful subset of "
+        "the selected palette; never invent a false region, speckle, or tiny accent merely to consume another color. "
+        if allow_meaningful_subset
+        else "Use at least "
+        + str(required)
+        + " listed colors in clearly visible, meaningful regions; do not hide required colors in speckles or tiny accents. "
+    )
     face_direction = (
         "For a person or character, use the light material for the face only when a source-faithful hairline and a separate neck "
         "or collar provide readable boundaries. "
@@ -573,10 +608,9 @@ def _designer_toy_palette_direction(
         "or a hood around the cheeks or under the chin unless that exact enclosure exists in the source. The collar must connect "
         "the neck to the torso, not encircle the face. Never retain natural flesh tones unless the exact skin-like shade is listed. "
         "Do not introduce beige, gray, black, off-white, natural skin tones, or dark substitutes unless that exact shade is one of "
-        "the listed printable colors; every listed color remains valid regardless of its common color name. Use at least "
-        + str(required)
-        + " listed colors in clearly visible, meaningful regions; do not hide required colors in speckles or tiny accents. "
-        "Use broad contiguous regions with hard readable boundaries. A deterministic print-mapping step will convert the "
+        "the listed printable colors; every listed color remains valid regardless of its common color name. "
+        + coverage_direction
+        + "Use broad contiguous regions with hard readable boundaries. A deterministic print-mapping step will convert the "
         "result to exact filament colors. Use these perceptual material roles derived from the actual loaded filaments: "
         + role_text
         + ". "
@@ -700,7 +734,7 @@ def _difficult_structure_direction() -> str:
 
 def _style_support_override(style: str) -> str:
     canonical_style = LEGACY_STYLE_ALIASES.get(style, style)
-    if canonical_style == "relief":
+    if canonical_style in {"relief", "ink_relief"}:
         return (
             "RELIEF SUPPORT OVERRIDE — highest priority for this style: the one simple solid backing plaque is mandatory, "
             "including for people, animals, products, machines, furniture, and complete scenes. This overrides both the portrait "
@@ -1433,7 +1467,7 @@ def _style_preview_prompt(
         else _designer_toy_profile(style, custom_style) if palette else _style_profile(style, custom_style)
     )
     realistic_identity_lock = (
-        "REALISTIC PORTRAIT IDENTITY LOCK — highest priority when the source contains a real person: make the smallest "
+        "IDENTITY-FIRST PORTRAIT LOCK — highest priority when the source contains a real person: make the smallest "
         "possible face edit. Treat the source head and face as a locked geometric reference, not inspiration for a newly "
         "drawn attractive person. Keep the face bounding box relative to the shoulders, head angle, eye centers and eyelid "
         "openings, brow heights, nose tip and nostril width, mouth corners, tooth exposure, cheek outline, jaw corners, and "
@@ -1441,10 +1475,15 @@ def _style_preview_prompt(
         "symmetrize the face, enlarge both eyes, or widen the smile. Permitted beautification is limited to subtle skin and "
         "hair texture cleanup; it must not move, resize, or reshape identity landmarks. Before returning, compare the source "
         "and result face at equal size and correct any landmark drift. "
-        if canonical_style == "realistic" and (palette or geometry_reference) else ""
+        if canonical_style in IDENTITY_FIRST_PORTRAIT_STYLES and (palette or geometry_reference) else ""
     )
     color_direction = (
-        _designer_toy_palette_direction(palette, shadow_color, palette_roles)
+        _designer_toy_palette_direction(
+            palette,
+            shadow_color,
+            palette_roles,
+            allow_meaningful_subset=canonical_style in PRINT_NATIVE_ARTISTIC_STYLES,
+        )
         if palette
         else "Use coherent natural colors that fit the subject and selected style. Preserve useful tonal modeling with broad, "
         "contiguous color regions for shape readability. "
@@ -1542,7 +1581,12 @@ def _text_image_prompt(
         raise OpenAIPreprocessorError("An image-generation prompt is required.")
     canonical_style = LEGACY_STYLE_ALIASES.get(style, style)
     color_direction = (
-        _designer_toy_palette_direction(palette, shadow_color, palette_roles)
+        _designer_toy_palette_direction(
+            palette,
+            shadow_color,
+            palette_roles,
+            allow_meaningful_subset=canonical_style in PRINT_NATIVE_ARTISTIC_STYLES,
+        )
         if palette
         else "Use coherent natural colors with broad, clean material regions. "
     )
@@ -1710,7 +1754,7 @@ def preprocess_image(
         # clean subject mask.
         background="transparent" if palette else None,
     )
-    if canonical_style == "realistic" and palette:
+    if canonical_style in IDENTITY_FIRST_PORTRAIT_STYLES and palette:
         mask_path = _portrait_face_lock_mask(
             Path(input_path), Path(output_path).with_name(PORTRAIT_FACE_LOCK_FILENAME)
         )

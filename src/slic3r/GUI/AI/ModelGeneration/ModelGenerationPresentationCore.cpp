@@ -155,4 +155,22 @@ int display_progress(const AIModelGenerationClient::JobStatus& status)
     return 0;
 }
 
+int style_selection(const std::string& style)
+{
+    if (style == "realistic" || style == "enamel_inlay") return 1;
+    if (style == "portrait_sketch") return 2;
+    if (style == "cartoon" || style == "q_cartoon" || style == "cel_shaded") return 3;
+    if (style == "low_poly") return 4;
+    if (style == "relief") return 5;
+    if (style == "ink_relief") return 6;
+    if (style == "diorama") return 7;
+    if (style == "custom") return 8;
+    return 0;
+}
+
+bool style_uses_printable_colors(const std::string& style)
+{
+    return style != "sculpture" && style != "relief";
+}
+
 } // namespace Slic3r::GUI::ModelGenerationPresentation

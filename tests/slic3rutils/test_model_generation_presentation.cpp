@@ -84,3 +84,12 @@ TEST_CASE("automatic printable palette roles remain deterministic and distinct",
     CHECK(automatic_palette_roles({"#000000", "invalid"}).empty());
     CHECK(automatic_palette_roles({"#000000", "#000000"}).empty());
 }
+
+TEST_CASE("print-native artistic style mappings remain stable",
+          "[ModelGenerationPresentation]")
+{
+    CHECK(style_selection("portrait_sketch") == 2);
+    CHECK(style_selection("ink_relief") == 6);
+    CHECK(style_uses_printable_colors("portrait_sketch"));
+    CHECK(style_uses_printable_colors("ink_relief"));
+}

@@ -100,7 +100,7 @@ class Image2QualityBenchmarkTests(unittest.TestCase):
         self.assertEqual(candidates[0].case.community_use, "桌面收纳和实用配件")
         self.assertEqual(candidates[0].case.license, "CC BY-SA 4.0")
 
-    def test_manifest_supports_every_non_realistic_product_style(self):
+    def test_manifest_supports_every_print_native_non_realistic_style(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             manifest_path = self.manifest(root)
@@ -108,9 +108,11 @@ class Image2QualityBenchmarkTests(unittest.TestCase):
             manifest.pop("custom_style")
             manifest["style_runs"] = {
                 "sculpture": [{"palette": None, "repetitions": 1}],
+                "portrait_sketch": [{"palette": "warm", "repetitions": 1}],
                 "cartoon": [{"palette": "warm", "repetitions": 1}],
                 "low_poly": [{"palette": "warm", "repetitions": 1}],
                 "relief": [{"palette": "warm", "repetitions": 1}],
+                "ink_relief": [{"palette": "warm", "repetitions": 1}],
                 "diorama": [{"palette": "warm", "repetitions": 1}],
             }
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
@@ -121,11 +123,13 @@ class Image2QualityBenchmarkTests(unittest.TestCase):
 
         self.assertEqual(
             [candidate.style for candidate in candidates],
-            ["sculpture", "cartoon", "low_poly", "relief", "diorama"],
+            ["sculpture", "portrait_sketch", "cartoon", "low_poly", "relief", "ink_relief", "diorama"],
         )
         self.assertNotIn("realistic", catalog["styles"])
         self.assertIn("低多边形", markdown)
         self.assertIn("浮雕", markdown)
+        self.assertIn("肖像速写", markdown)
+        self.assertIn("水墨版画浮雕", markdown)
         self.assertIn("微缩场景", markdown)
 
     def test_manifest_accepts_explicit_palette_role_overrides(self):

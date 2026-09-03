@@ -81,11 +81,12 @@ class ModelInputImageQualityTests(unittest.TestCase):
         image.save(output, format="PNG")
         return output.getvalue()
 
-    def test_portrait_and_pet_recommend_figurine_without_remote_service(self):
+    def test_portrait_recommends_identity_sketch_and_pet_recommends_figurine_without_remote_service(self):
         portrait = recommend_printable_style(self.image_bytes(), prompt="一张清晰的人像照片")
         pet = recommend_printable_style(self.image_bytes(), prompt="我的宠物猫")
 
-        self.assertEqual(portrait["primary"], "cartoon")
+        self.assertEqual(portrait["primary"], "portrait_sketch")
+        self.assertEqual(portrait["alternatives"], ["realistic", "cartoon"])
         self.assertEqual(portrait["reason"], "portrait")
         self.assertEqual(pet["primary"], "cartoon")
         self.assertEqual(pet["reason"], "animal")
@@ -104,7 +105,7 @@ class ModelInputImageQualityTests(unittest.TestCase):
         result = recommend_printable_style(output.getvalue())
 
         self.assertEqual(result["subject"], "portrait")
-        self.assertEqual(result["primary"], "cartoon")
+        self.assertEqual(result["primary"], "portrait_sketch")
         self.assertEqual(result["reason"], "portrait")
 
     def test_large_tan_product_shape_is_not_mistaken_for_portrait(self):
@@ -122,12 +123,12 @@ class ModelInputImageQualityTests(unittest.TestCase):
     def test_non_portrait_categories_have_distinct_recommendations(self):
         image = self.image_bytes()
         cases = {
-            "公司 Logo": "relief",
+            "公司 Logo": "ink_relief",
             "一辆复古汽车": "realistic",
             "一座古塔建筑": "realistic",
             "多人街景场景": "diorama",
             "一盆开花植物": "cartoon",
-            "透明玻璃和水花": "relief",
+            "透明玻璃和水花": "ink_relief",
         }
 
         for prompt, expected in cases.items():

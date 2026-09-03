@@ -64,7 +64,7 @@ bool valid_recommendation_text(const std::string& value)
 bool valid_style_id(const std::string& value)
 {
     static const std::vector<std::string> allowed {
-        "sculpture", "realistic", "cartoon", "low_poly", "relief", "diorama"
+        "sculpture", "realistic", "portrait_sketch", "cartoon", "low_poly", "relief", "ink_relief", "diorama"
     };
     return std::find(allowed.begin(), allowed.end(), value) != allowed.end();
 }
