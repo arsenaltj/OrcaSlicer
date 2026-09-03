@@ -972,6 +972,16 @@ def _source_requirements(document: dict[str, Any]) -> tuple[tuple[str, str, str]
             "commercial package source identity fail-closed gate",
         ),
         (
+            "CMakeLists.txt",
+            r'Commercial AI installer packages must not embed provider credentials',
+            "commercial package credential exclusion gate",
+        ),
+        (
+            "cmake/VerifyAIInstall.cmake",
+            r'--verify-install',
+            "packaged Sidecar configuration verification",
+        ),
+        (
             "src/slic3r/BuildInfo.cpp.in",
             r'return\s+"@ORCA_SOURCE_COMMIT@"',
             "isolated exact build identity",

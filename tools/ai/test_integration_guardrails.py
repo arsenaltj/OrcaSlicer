@@ -452,15 +452,19 @@ class IntegrationGuardrailTests(unittest.TestCase):
         self.assertIn('"OPENAI_PRO_URL"', service_manager)
         self.assertNotIn("boost::this_process::environment()", service_manager)
 
-    def test_internal_release_scripts_forbid_packaged_provider_credentials_and_emit_portable_zip(self) -> None:
+    def test_internal_release_requires_locked_credentials_but_commercial_still_forbids_them(self) -> None:
         cmake = (REPO_ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
         packager = (REPO_ROOT / "scripts/package_internal_fast.ps1").read_text(encoding="utf-8")
         wrapper = (REPO_ROOT / "release/build_internal.ps1").read_text(encoding="utf-8")
 
-        self.assertIn("AI installer packages must not embed provider credentials", cmake)
-        self.assertIn("Provider credentials must come from machine or user environment variables", packager)
+        self.assertIn("Commercial AI installer packages must not embed provider credentials", cmake)
+        self.assertIn('ORCA_AI_DISTRIBUTION_CHANNEL STREQUAL "internal"', cmake)
+        self.assertIn('RENAME "orca_ai_internal_defaults.json"', cmake)
+        self.assertIn("internal package defaults payload", packager)
+        self.assertIn("package_internal_locked", packager)
         self.assertIn("-G ZIP", packager)
-        self.assertNotIn("InternalDefaultsFile", wrapper)
+        self.assertIn("create_internal_defaults.py", wrapper)
+        self.assertIn("ORCA_AI_INTERNAL_DEFAULTS_FILE:FILEPATH", wrapper)
 
     def test_source_contract_rejects_secret_inheritance_in_general_ci(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

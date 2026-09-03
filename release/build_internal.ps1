@@ -82,6 +82,35 @@ function Resolve-CMakeExecutable {
     throw 'CMake was not found. Pass -CMakeExecutable or install CMake/Visual Studio CMake tools.'
 }
 
+function Import-InternalProviderEnvironment {
+    $names = @(
+        'OPENAI_PRO_API', 'OPENAI_PRO_URL',
+        'OPENAI_API_KEY', 'OPENAI_BASE_URL',
+        'OPENAI_IMAGE_MODEL', 'OPENAI_IMAGE_QUALITY', 'OPENAI_TEXT_MODEL',
+        'TRIPO_API_KEY', 'TRIPO_API_BASE', 'TRIPO_MODEL'
+    )
+    foreach ($name in $names) {
+        $value = [Environment]::GetEnvironmentVariable($name, 'Process')
+        if ([string]::IsNullOrWhiteSpace($value)) {
+            $value = [Environment]::GetEnvironmentVariable($name, 'User')
+        }
+        if ([string]::IsNullOrWhiteSpace($value)) {
+            $value = [Environment]::GetEnvironmentVariable($name, 'Machine')
+        }
+        if (-not [string]::IsNullOrWhiteSpace($value)) {
+            [Environment]::SetEnvironmentVariable($name, $value, 'Process')
+        }
+    }
+
+    $required = @('OPENAI_PRO_API', 'OPENAI_PRO_URL', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'TRIPO_API_KEY')
+    $missing = @($required | Where-Object {
+        [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_, 'Process'))
+    })
+    if ($missing.Count -gt 0) {
+        throw "Internal locked package is missing provider setting(s): $($missing -join ', ')"
+    }
+}
+
 $branch = Invoke-GitText -Arguments @('branch', '--show-current')
 if ($branch -ne 'codex/orca-integration-v2') {
     throw "Internal releases must use codex/orca-integration-v2, not '$branch'."
@@ -111,6 +140,12 @@ $configuredSource = [System.IO.Path]::GetFullPath($sourceMatch.Groups[1].Value.T
 if (-not [string]::Equals($configuredSource, $repoRoot.TrimEnd('\'), [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "The selected build directory belongs to another checkout: $configuredSource"
 }
+$pythonMatch = [regex]::Match($cacheText, '(?m)^Python3_EXECUTABLE:FILEPATH=(.+)$')
+if (-not $pythonMatch.Success -or -not (Test-Path -LiteralPath $pythonMatch.Groups[1].Value.Trim() -PathType Leaf)) {
+    throw 'The bundled Python interpreter is missing from the CMake cache.'
+}
+$pythonPath = $pythonMatch.Groups[1].Value.Trim()
+Import-InternalProviderEnvironment
 
 if ([string]::IsNullOrWhiteSpace($Revision)) {
     $shortHead = Invoke-GitText -Arguments @('rev-parse', '--short=10', $sourceHead)
@@ -139,7 +174,7 @@ $validationResult = [pscustomobject]@{
     BuildDir             = $buildPath
     OutputDir            = $outputPath
     CMakeExecutable      = $cmakePath
-    ProviderConfiguration = 'machine_or_user_environment'
+    ProviderConfiguration = 'package_internal_locked'
 }
 if ($ValidateOnly) {
     $validationResult
@@ -147,7 +182,12 @@ if ($ValidateOnly) {
 }
 
 $revisionArg = "-DORCA_AI_PACKAGE_REVISION:STRING=$Revision"
-$defaultsArg = '-DORCA_AI_INTERNAL_DEFAULTS_FILE:FILEPATH='
+$defaultsPath = Join-Path $buildPath 'orca_ai_internal_defaults.json'
+& $pythonPath -I (Join-Path $repoRoot 'tools\ai\create_internal_defaults.py') $defaultsPath | Out-Null
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $defaultsPath -PathType Leaf)) {
+    throw 'Unable to generate the package-only internal provider configuration.'
+}
+$defaultsArg = "-DORCA_AI_INTERNAL_DEFAULTS_FILE:FILEPATH=$defaultsPath"
 & $cmakePath -S $repoRoot -B $buildPath $revisionArg $defaultsArg `
     '-DORCA_AI_DISTRIBUTION_CHANNEL:STRING=internal' `
     '-DORCA_AI_WINDOWS_INSTALLER:BOOL=ON'
@@ -170,11 +210,6 @@ if ($LASTEXITCODE -ne 0) {
 
 if (-not $SkipTargetedTests) {
     $updatedCacheText = Get-Content -LiteralPath $cachePath -Raw
-    $pythonMatch = [regex]::Match($updatedCacheText, '(?m)^Python3_EXECUTABLE:FILEPATH=(.+)$')
-    if (-not $pythonMatch.Success -or -not (Test-Path -LiteralPath $pythonMatch.Groups[1].Value.Trim() -PathType Leaf)) {
-        throw 'The bundled Python interpreter is missing from the CMake cache.'
-    }
-    $pythonPath = $pythonMatch.Groups[1].Value.Trim()
     & $pythonPath -I (Join-Path $repoRoot 'tools\ai\test_integration_guardrails.py')
     if ($LASTEXITCODE -ne 0) { throw 'Python integration guardrail tests failed.' }
     & $pythonPath -I (Join-Path $repoRoot 'scripts\verify_ai_integration.py')

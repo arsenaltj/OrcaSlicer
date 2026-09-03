@@ -7,6 +7,7 @@ import re
 import runpy
 import sys
 from typing import TextIO
+from urllib.parse import urlsplit
 
 
 MAX_LOG_BYTES = 5 * 1024 * 1024
@@ -17,9 +18,12 @@ MAX_INTERNAL_DEFAULTS_BYTES = 32 * 1024
 MAX_BUILD_INFO_BYTES = 16 * 1024
 INTERNAL_CONFIG_MODE = "internal_locked"
 INTERNAL_DEFAULT_NAMES = frozenset({
+    "OPENAI_PRO_API",
+    "OPENAI_PRO_URL",
     "OPENAI_API_KEY",
     "OPENAI_BASE_URL",
     "OPENAI_IMAGE_MODEL",
+    "OPENAI_IMAGE_QUALITY",
     "OPENAI_TEXT_MODEL",
     "TRIPO_API_BASE",
     "TRIPO_API_KEY",
@@ -106,9 +110,26 @@ def load_internal_defaults(defaults_path: Path | None = None) -> tuple[str, ...]
             return ()
         defaults[name] = value
 
-    required_names = {"OPENAI_API_KEY", "OPENAI_BASE_URL", "TRIPO_API_KEY"}
+    required_names = {
+        "OPENAI_PRO_API", "OPENAI_PRO_URL",
+        "OPENAI_API_KEY", "OPENAI_BASE_URL", "TRIPO_API_KEY",
+    }
     if not required_names.issubset(defaults):
         return ()
+    for name in ("OPENAI_PRO_URL", "OPENAI_BASE_URL", "TRIPO_API_BASE"):
+        value = defaults.get(name)
+        if value is None:
+            continue
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            return ()
 
     for name, value in defaults.items():
         os.environ[name] = value
@@ -164,6 +185,34 @@ def log_bootstrap_failure(log_path: Path, code: str) -> None:
         return
 
 
+def verify_installed_configuration(
+    build_info_path: Path | None = None,
+    defaults_path: Path | None = None,
+) -> dict[str, str | int]:
+    """Validate package identity and provider payload without starting a service."""
+    build_info = load_build_info(build_info_path)
+    if not build_info:
+        raise RuntimeError("Installed AI Sidecar build identity is missing or invalid.")
+    path = defaults_path or Path(__file__).with_name(INTERNAL_DEFAULTS_FILENAME)
+    channel = str(build_info["distribution_channel"])
+    if channel == "internal":
+        loaded = load_internal_defaults(path)
+        if not loaded:
+            raise RuntimeError("Internal package is missing a complete locked provider configuration.")
+        return {
+            "distribution_channel": channel,
+            "configuration_mode": INTERNAL_CONFIG_MODE,
+            "configured_count": len(loaded),
+        }
+    if path.exists():
+        raise RuntimeError("Commercial package contains a provider configuration payload.")
+    return {
+        "distribution_channel": channel,
+        "configuration_mode": "commercial_gateway",
+        "configured_count": 0,
+    }
+
+
 def run_installed_sidecar(data_directory: str) -> None:
     _, log_path = configure_runtime(data_directory)
     build_info = load_build_info()
@@ -206,6 +255,18 @@ def run_installed_sidecar(data_directory: str) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments == ["--verify-install"]:
+        try:
+            report = verify_installed_configuration()
+        except RuntimeError as exc:
+            print(f"Installed AI Sidecar verification failed: {exc}", file=sys.stderr)
+            return 1
+        print(
+            "Installed AI Sidecar configuration: PASS "
+            f"(channel={report['distribution_channel']}, mode={report['configuration_mode']}, "
+            f"configured={report['configured_count']})"
+        )
+        return 0
     if len(arguments) != 1 or not arguments[0].strip():
         print("Usage: orca_ai_installed_bootstrap.py <orcaslicer-data-directory>", file=sys.stderr)
         return 2

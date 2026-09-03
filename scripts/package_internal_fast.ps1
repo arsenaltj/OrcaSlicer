@@ -78,8 +78,29 @@ if (-not $revisionMatch.Success -or $revisionMatch.Groups[1].Value.Trim() -ne $R
 }
 
 $defaultsMatch = [regex]::Match($cacheText, '(?m)^ORCA_AI_INTERNAL_DEFAULTS_FILE:FILEPATH=(.+)$')
-if ($defaultsMatch.Success -and -not [string]::IsNullOrWhiteSpace($defaultsMatch.Groups[1].Value)) {
-    throw 'Provider credentials must come from machine or user environment variables; internal packages must not embed defaults.'
+if (-not $defaultsMatch.Success -or [string]::IsNullOrWhiteSpace($defaultsMatch.Groups[1].Value)) {
+    throw 'The internal package defaults payload is not configured.'
+}
+$resolvedDefaultsFile = [System.IO.Path]::GetFullPath($defaultsMatch.Groups[1].Value.Trim())
+if (-not (Test-Path -LiteralPath $resolvedDefaultsFile -PathType Leaf)) {
+    throw "The internal package defaults payload does not exist: $resolvedDefaultsFile"
+}
+if ((Get-Item -LiteralPath $resolvedDefaultsFile).Length -gt 32KB) {
+    throw 'The internal package defaults payload exceeds 32 KiB.'
+}
+try {
+    $internalDefaults = Get-Content -LiteralPath $resolvedDefaultsFile -Raw -Encoding utf8 | ConvertFrom-Json
+} catch {
+    throw 'The internal package defaults payload is not valid JSON.'
+}
+$requiredProviderNames = @('OPENAI_PRO_API', 'OPENAI_PRO_URL', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'TRIPO_API_KEY')
+$missingProviderNames = @($requiredProviderNames | Where-Object {
+    -not ($internalDefaults.PSObject.Properties.Name -contains $_) -or
+    [string]::IsNullOrWhiteSpace([string] $internalDefaults.$_)
+})
+if ($internalDefaults.version -ne 1 -or $internalDefaults.mode -ne 'internal_locked' -or
+    $missingProviderNames.Count -gt 0) {
+    throw "The internal package defaults payload is incomplete: $($missingProviderNames -join ', ')"
 }
 
 $buildInfoPath = Join-Path $resolvedBuildDir 'orca_ai_build_info.json'
@@ -263,10 +284,11 @@ $releaseManifest = [ordered]@{
     distribution_channel = 'internal'
     architecture = $architecture
     provider_configuration = [ordered]@{
-        source = 'machine_or_user_environment'
+        source = 'package_internal_locked'
         image_primary = @('OPENAI_PRO_API', 'OPENAI_PRO_URL')
-        image_legacy_fallback = @('OPENAI_API_KEY', 'OPENAI_BASE_URL')
-        packaged_credentials = $false
+        text_vision = @('OPENAI_API_KEY', 'OPENAI_BASE_URL')
+        model_generation = @('TRIPO_API_KEY', 'TRIPO_API_BASE')
+        packaged_credentials = $true
     }
     portable = $portableName
     portable_sha256 = $portableHash

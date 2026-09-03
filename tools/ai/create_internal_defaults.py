@@ -6,12 +6,16 @@ import os
 from pathlib import Path
 import tempfile
 from typing import Mapping, Sequence
+from urllib.parse import urlsplit
 
 
 DEFAULT_NAMES = (
+    "OPENAI_PRO_API",
+    "OPENAI_PRO_URL",
     "OPENAI_API_KEY",
     "OPENAI_BASE_URL",
     "OPENAI_IMAGE_MODEL",
+    "OPENAI_IMAGE_QUALITY",
     "OPENAI_TEXT_MODEL",
     "TRIPO_API_BASE",
     "TRIPO_API_KEY",
@@ -19,7 +23,27 @@ DEFAULT_NAMES = (
 )
 DEFAULT_TRIPO_API_BASE = "https://openapi.tripo3d.com/v3"
 INTERNAL_CONFIG_MODE = "internal_locked"
-REQUIRED_NAMES = ("OPENAI_API_KEY", "OPENAI_BASE_URL", "TRIPO_API_KEY")
+REQUIRED_NAMES = (
+    "OPENAI_PRO_API",
+    "OPENAI_PRO_URL",
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "TRIPO_API_KEY",
+)
+URL_NAMES = ("OPENAI_PRO_URL", "OPENAI_BASE_URL", "TRIPO_API_BASE")
+
+
+def validate_base_url(name: str, value: str) -> None:
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError(f"{name} must be an absolute HTTPS URL without credentials, query, or fragment")
 
 
 def build_payload(environ: Mapping[str, str]) -> dict[str, object]:
@@ -34,6 +58,8 @@ def build_payload(environ: Mapping[str, str]) -> dict[str, object]:
     if missing_names:
         raise ValueError(f"Missing required internal setting(s): {', '.join(missing_names)}")
     payload.setdefault("TRIPO_API_BASE", DEFAULT_TRIPO_API_BASE)
+    for name in URL_NAMES:
+        validate_base_url(name, str(payload[name]))
     return payload
 
 

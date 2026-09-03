@@ -14,17 +14,15 @@ non-secret server directory contract. Never commit:
 - `release/config.local.ps1` or any `release/*.local.json` file;
 - generated installers, manifests, build directories, or deployment logs.
 
-Provider credentials are never packaged. Installers read machine/user environment
-variables at runtime: Image2 prefers `OPENAI_PRO_API` plus `OPENAI_PRO_URL`, while
-legacy `OPENAI_API_KEY` plus `OPENAI_BASE_URL` remains a compatibility fallback
-only when both PRO settings are absent.
+The controlled internal installer contains the release computer's verified
+Image2, text/vision, and Tripo provider configuration. The payload is generated
+under the ignored build directory and is never committed, printed, or copied to
+the public/commercial channel. Recipients do not configure environment variables
+or run a second setup script.
 
-For controlled internal testing, `create_ai_provisioner.ps1` can generate a
-separate credential-bearing configuration ZIP from the operator's effective
-Windows environment. That ZIP is ignored by Git, must not be uploaded to the
-public download site, and is intentionally extractable by its recipients. It
-writes only current-user environment variables and does not modify the OrcaSlicer
-installer.
+`create_ai_provisioner.ps1` remains an emergency repair tool for an already
+installed older build. New internal releases must use the single credential-bearing
+installer produced by `build_internal.ps1`.
 
 ## Files
 
@@ -101,8 +99,9 @@ $manifestPath = $buildResult.Manifest
 & .\release\upload_installer.ps1 -ManifestPath $manifestPath @UploadRelease
 ```
 
-The build script rejects the wrong branch, a dirty worktree, a credential-bearing build cache, and a build cache from
-another checkout, and source changes made during packaging. It runs the existing
+The build script rejects the wrong branch, a dirty worktree, an incomplete
+provider configuration, a build cache from another checkout, and source changes
+made during packaging. It generates the locked payload locally, runs the existing
 authoritative `scripts/package_internal_fast.ps1`, Python integration guardrails,
 the AI integration verifier, and focused model-generation/smart-slicing tests.
 It then checks the installer and portable ZIP identities and SHA-256 values,

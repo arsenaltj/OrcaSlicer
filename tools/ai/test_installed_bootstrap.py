@@ -69,20 +69,29 @@ class InstalledBootstrapTests(unittest.TestCase):
             defaults_path.write_text(json.dumps({
                 "version": 1,
                 "mode": "internal_locked",
+                "OPENAI_PRO_API": "packaged-pro",
+                "OPENAI_PRO_URL": "https://image.example/v1",
                 "OPENAI_API_KEY": "packaged-openai",
                 "OPENAI_BASE_URL": "https://internal.example/v1",
                 "TRIPO_API_KEY": "packaged-tripo",
             }), encoding="utf-8")
             environment = {
+                "OPENAI_PRO_API": "explicit-pro",
+                "OPENAI_PRO_URL": "https://stale.example/v1",
                 "OPENAI_API_KEY": "explicit-openai",
             }
             with mock.patch.dict(os.environ, environment, clear=True):
                 loaded = BOOTSTRAP.load_internal_defaults(defaults_path)
+                self.assertEqual(os.environ["OPENAI_PRO_API"], "packaged-pro")
+                self.assertEqual(os.environ["OPENAI_PRO_URL"], "https://image.example/v1")
                 self.assertEqual(os.environ["OPENAI_API_KEY"], "packaged-openai")
                 self.assertEqual(os.environ["OPENAI_BASE_URL"], "https://internal.example/v1")
                 self.assertEqual(os.environ["TRIPO_API_KEY"], "packaged-tripo")
                 self.assertEqual(os.environ["ORCASLICER_AI_CONFIG_MODE"], "internal_locked")
-                self.assertEqual(loaded, ("OPENAI_API_KEY", "OPENAI_BASE_URL", "TRIPO_API_KEY"))
+                self.assertEqual(loaded, (
+                    "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_PRO_API",
+                    "OPENAI_PRO_URL", "TRIPO_API_KEY",
+                ))
 
     def test_internal_defaults_reject_unknown_malformed_and_oversized_payloads(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -95,6 +104,15 @@ class InstalledBootstrapTests(unittest.TestCase):
                 json.dumps({"version": 1, "mode": "internal_locked", "OPENAI_API_KEY": "secret", "UNEXPECTED": "value"}),
                 json.dumps({"version": 1, "mode": "internal_locked", "OPENAI_API_KEY": "secret\nvalue"}),
                 json.dumps({"version": 1, "mode": "internal_locked", "OPENAI_API_KEY": "secret"}),
+                json.dumps({
+                    "version": 1,
+                    "mode": "internal_locked",
+                    "OPENAI_PRO_API": "pro-secret",
+                    "OPENAI_PRO_URL": "http://image.example/v1",
+                    "OPENAI_API_KEY": "openai-secret",
+                    "OPENAI_BASE_URL": "https://text.example/v1",
+                    "TRIPO_API_KEY": "tripo-secret",
+                }),
                 " " * (BOOTSTRAP.MAX_INTERNAL_DEFAULTS_BYTES + 1),
             )
             for payload in invalid_payloads:
@@ -119,6 +137,41 @@ class InstalledBootstrapTests(unittest.TestCase):
 
     def test_main_rejects_missing_data_directory(self) -> None:
         self.assertEqual(BOOTSTRAP.main([]), 2)
+
+    def test_offline_install_verification_requires_locked_internal_defaults(self) -> None:
+        build_info = {
+            "schema_version": 1,
+            "application_version": "2.5.0-dev",
+            "application_commit": "a" * 40,
+            "package_revision": "internal-test",
+            "distribution_channel": "internal",
+            "sidecar_protocol_version": 2,
+            "sidecar_version": "orcaslicer-ai-sidecar-v9",
+        }
+        defaults = {
+            "version": 1,
+            "mode": "internal_locked",
+            "OPENAI_PRO_API": "packaged-pro",
+            "OPENAI_PRO_URL": "https://image.example/v1",
+            "OPENAI_API_KEY": "packaged-openai",
+            "OPENAI_BASE_URL": "https://text.example/v1",
+            "TRIPO_API_KEY": "packaged-tripo",
+            "TRIPO_API_BASE": "https://tripo.example/v3",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            build_info_path = Path(directory) / "build-info.json"
+            defaults_path = Path(directory) / "defaults.json"
+            build_info_path.write_text(json.dumps(build_info), encoding="utf-8")
+            defaults_path.write_text(json.dumps(defaults), encoding="utf-8")
+            with mock.patch.dict(os.environ, {}, clear=True):
+                report = BOOTSTRAP.verify_installed_configuration(build_info_path, defaults_path)
+            self.assertEqual(report["distribution_channel"], "internal")
+            self.assertEqual(report["configuration_mode"], "internal_locked")
+            self.assertEqual(report["configured_count"], 6)
+
+            defaults_path.unlink()
+            with self.assertRaisesRegex(RuntimeError, "locked provider configuration"):
+                BOOTSTRAP.verify_installed_configuration(build_info_path, defaults_path)
 
     def test_rotate_log_keeps_three_bounded_backups(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
