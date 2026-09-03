@@ -1,7 +1,5 @@
 #pragma once
 
-#include <boost/filesystem/path.hpp>
-
 #include <cmath>
 #include <cstddef>
 #include <optional>
@@ -45,9 +43,9 @@ struct MixedColorRecipe
 
 struct ColorIntentManifestRef
 {
-    boost::filesystem::path local_path;
-    std::string             schema;
-    std::string             sha256;
+    std::string local_path;
+    std::string schema;
+    std::string sha256;
 };
 
 constexpr bool is_supported_physical_channel_count(size_t count) noexcept

@@ -45,6 +45,17 @@
 - MSVC 直接编译扩展后的 `test_ai_contracts.cpp`：通过。
 - Python 架构守卫 41 项及集成守卫（跳过 Git）继续通过，`git diff --check` 通过。
 
+### Orca 类型化色板能力接入
+- **状态：** complete
+- 先新增纯逻辑测试并确认因快照构建器不存在而红测失败。
+- 新增无 wx 依赖的 Orca 槽位快照构建器：筛选 1～6 个物理槽，虚拟混色槽不计入通道数，并只发布引用已选兼容物理槽的有效配方。
+- 覆盖 1、2、3、4、5、6 通道、七通道截断、虚拟配方、无效/不兼容分量及未经材料元数据确认时不开放新叠色求解。
+- `OrcaWorkspaceAdapter` 读取 `filament_is_mixed`、`filament_mixed_components`、`filament_mixed_sublayer_ratios`，复用 Orca 现有解析器，并保留温度/材料兼容子集算法。
+- 旧 `project_colors` 继续保留完整项目槽位供手动匹配；`valid_slots`、`compatible_slots` 与 `compatible_colors` 则由最多六个类型化物理通道投影。
+- 独立 Catch2 可执行文件：35 个断言、3 个测试用例全部通过。
+- `OrcaWorkspaceAdapter.cpp` 使用生产 PCH/include/宏组合由 MSVC 独立编译通过。
+- 完整集成守卫通过，HEAD 检查基于 `69eda995fa`；完整工程重新配置仍受缺失的捆绑 Python 开发运行时限制。
+
 ### 分支基线迁移
 - **状态：** complete
 - 从 `codex/orca-integration-v2@808efe4401` 创建并切换到 `codex/model-generation-v2`。
@@ -79,6 +90,8 @@
 | CMake/VS Build 重新配置时找不到完整的捆绑 Python 3.12.13 开发环境 | 2 | 不再调用会触发 CustomBuild 的 Build；改用 MSBuild 编译/链接内部目标，依赖修复留到完整构建验证阶段 |
 | 旧 `build-ai-tests` 工程缺少 `wx/inspector/inspector.h` 并触发全 GUI 编译 | 1 | 停止该构建；检查主构建树和实际依赖路径后仅编译本次改动单元 |
 | 手工编译完整 GUI 源文件未复现工程 PCH 的本地化宏注入顺序 | 2 | 将其记录为构建环境限制；不修改生产头文件来迎合临时命令 |
+| 适配器独立编译的强制包含路径和源码编码参数不完整 | 2 | 使用绝对 PCH 路径及 `/utf-8` 后通过 |
+| 独立 Catch2 链接先遇到 Boost 自动链接名和 `cl` 包装入口问题 | 2 | 对齐工程的禁用自动链接宏并直接调用 `link.exe`，测试随后通过 |
 
 ## 五问重启检查
 

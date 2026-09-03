@@ -6,6 +6,7 @@ add_executable(${_TEST_NAME}_tests
     test_network_versions.cpp
     test_action_source.cpp
     test_ai_contracts.cpp
+    test_orca_palette_snapshot_builder.cpp
     test_ai_sidecar_client.cpp
     test_model_generation_presentation.cpp
     test_plugin_host_api.cpp
