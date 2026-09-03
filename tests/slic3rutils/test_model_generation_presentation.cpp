@@ -2,6 +2,9 @@
 
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationPresentation.hpp"
 
+#include <algorithm>
+#include <set>
+
 using Slic3r::GUI::AIModelGenerationClient;
 using namespace Slic3r::GUI::ModelGenerationPresentation;
 
@@ -9,6 +12,7 @@ TEST_CASE("model-generation progress maps service phases to stable UI milestones
           "[ModelGenerationPresentation]")
 {
     AIModelGenerationClient::JobStatus status;
+    REQUIRE(status.palette_color_count == Slic3r::AI::kLegacyDefaultTargetPaletteColors);
 
     status.state = "recommending_palette";
     status.progress = 5;
@@ -47,15 +51,36 @@ TEST_CASE("model-generation progress maps service phases to stable UI milestones
 TEST_CASE("automatic printable palette roles remain deterministic and distinct",
           "[ModelGenerationPresentation]")
 {
-    const std::vector<std::string> palette {"#000000", "#FFFFFF", "#FF0000", "#00FF00"};
-    const AIModelGenerationClient::PaletteRoles roles = automatic_palette_roles(palette);
+    const std::vector<std::string> palette {
+        "#000000", "#FFFFFF", "#FF0000", "#00FF00", "#0066FF", "#9933CC"
+    };
+    for (size_t count = 1; count <= palette.size(); ++count) {
+        DYNAMIC_SECTION(count << " colors receive a complete stable role prefix") {
+            const std::vector<std::string> active(palette.begin(), palette.begin() + count);
+            const AIModelGenerationClient::PaletteRoles roles = automatic_palette_roles(active);
+            REQUIRE(roles.size() == count);
+            for (size_t index = 0; index < PALETTE_ROLE_IDS.size(); ++index)
+                CHECK(roles.count(PALETTE_ROLE_IDS[index]) == (index < count ? 1 : 0));
+            std::set<std::string> assigned;
+            for (const auto& [role, color] : roles) {
+                CHECK(std::find(active.begin(), active.end(), color) != active.end());
+                assigned.insert(color);
+            }
+            CHECK(assigned.size() == count);
+            CHECK(automatic_palette_roles(active) == roles);
+        }
+    }
 
-    REQUIRE(roles.size() == 4);
+    const std::vector<std::string> legacy_palette(palette.begin(), palette.begin() + 4);
+    const AIModelGenerationClient::PaletteRoles roles = automatic_palette_roles(legacy_palette);
     REQUIRE(roles.at("structure") == "#000000");
     REQUIRE(roles.at("light") == "#FFFFFF");
     REQUIRE(roles.at("primary") == "#00FF00");
     REQUIRE(roles.at("accent") == "#FF0000");
-    REQUIRE(automatic_palette_roles(palette) == roles);
     REQUIRE(same_palette_color("#aBc123", "#AbC123"));
     REQUIRE_FALSE(same_palette_color("#ABC123", "#ABC124"));
+    CHECK(automatic_palette_roles({"#000000", "#FFFFFF", "#FF0000", "#00FF00",
+                                   "#0066FF", "#9933CC", "#00FFFF"}).empty());
+    CHECK(automatic_palette_roles({"#000000", "invalid"}).empty());
+    CHECK(automatic_palette_roles({"#000000", "#000000"}).empty());
 }

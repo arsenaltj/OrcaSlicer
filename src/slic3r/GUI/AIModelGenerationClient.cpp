@@ -200,12 +200,14 @@ void AIModelGenerationClient::preprocess_image(const std::string& request_id, co
 
 void AIModelGenerationClient::recommend_text_palette(const std::string& request_id, const std::string& prompt,
                                                        const std::string& style, const std::string& custom_style,
+                                                       size_t palette_color_count,
                                                        const ImagePrintSettings& print_settings,
                                                        StatusFn on_complete, ErrorFn on_error)
 {
     post_json("/v1/orcaslicer/model-jobs/recommend-text-palette",
               json::object({ { "request_id", request_id }, { "prompt", prompt }, { "style", style },
                              { "custom_style", custom_style },
+                             { "palette_color_count", palette_color_count },
                              { "print", serialize_print_settings(print_settings) } }),
               std::move(on_complete), std::move(on_error));
 }
@@ -213,6 +215,7 @@ void AIModelGenerationClient::recommend_text_palette(const std::string& request_
 void AIModelGenerationClient::recommend_image_palette(const std::string& request_id, const std::string& instruction,
                                                         const boost::filesystem::path& image_path,
                                                         const std::string& style, const std::string& custom_style,
+                                                        size_t palette_color_count,
                                                         const ImagePrintSettings& print_settings,
                                                         StatusFn on_complete, ErrorFn on_error)
 {
@@ -231,6 +234,7 @@ void AIModelGenerationClient::recommend_image_palette(const std::string& request
         .form_add("instruction", instruction)
         .form_add("style", style)
         .form_add("custom_style", custom_style)
+        .form_add("palette_color_count", std::to_string(palette_color_count))
         .form_add("print", serialize_print_settings(print_settings).dump())
         .form_add_file("image", image_path, image_path.filename().string());
     http.on_complete([this, on_complete = std::move(on_complete), on_error](std::string body, unsigned) mutable {
@@ -555,13 +559,23 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
     status.style = job.value("style", std::string());
     status.custom_style = job.value("custom_style", std::string());
     status.updated_at = job.value("updated_at", 0.0);
+    if (job.contains("palette_color_count") && job["palette_color_count"].is_number_unsigned()) {
+        const size_t color_count = job["palette_color_count"].get<size_t>();
+        if (Slic3r::AI::is_supported_target_palette_color_count(color_count))
+            status.palette_color_count = color_count;
+    }
     if (job.contains("palette") && job["palette"].is_array()) {
         for (const auto& color : job["palette"])
             if (color.is_string()) status.palette.emplace_back(color.get<std::string>());
     }
     if (job.contains("palette_roles") && job["palette_roles"].is_object()) {
-        for (const auto& [role, color] : job["palette_roles"].items())
-            if (color.is_string()) status.palette_roles.emplace(role, color.get<std::string>());
+        for (const auto& [role, color] : job["palette_roles"].items()) {
+            if (!color.is_string() || !Slic3r::AI::is_active_palette_role(role, status.palette_color_count))
+                continue;
+            const std::string value = color.get<std::string>();
+            if (valid_hex_color(value))
+                status.palette_roles.emplace(role, value);
+        }
     }
     status.palette_recommendation.confirmed = job.value("palette_recommendation_confirmed", false);
     if (job.contains("palette_recommendation") && job["palette_recommendation"].is_object()) {
@@ -569,7 +583,6 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
         const std::string summary = recommendation.value("summary", std::string());
         std::vector<PaletteRecommendationColor> colors;
         std::vector<std::string> roles;
-        const std::vector<std::string> allowed_roles { "primary", "structure", "light", "accent" };
         if (valid_recommendation_text(summary) && recommendation.contains("colors") && recommendation["colors"].is_array()) {
             for (const auto& value : recommendation["colors"]) {
                 if (!value.is_object())
@@ -582,14 +595,14 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
                 color.reason = value.value("reason", std::string());
                 if (!valid_hex_color(color.hex) || !valid_recommendation_text(color.name) ||
                     !valid_recommendation_text(color.usage) || !valid_recommendation_text(color.reason) ||
-                    std::find(allowed_roles.begin(), allowed_roles.end(), color.role) == allowed_roles.end() ||
+                    !Slic3r::AI::is_active_palette_role(color.role, status.palette_color_count) ||
                     std::find(roles.begin(), roles.end(), color.role) != roles.end())
                     continue;
                 roles.emplace_back(color.role);
                 colors.emplace_back(std::move(color));
             }
         }
-        if (colors.size() == allowed_roles.size()) {
+        if (colors.size() == status.palette_color_count) {
             status.palette_recommendation.available = true;
             status.palette_recommendation.summary = summary;
             status.palette_recommendation.colors = std::move(colors);
@@ -808,7 +821,8 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
             if (evidence.contains("target_palette_surface_usage") &&
                 evidence["target_palette_surface_usage"].is_array()) {
                 for (const auto& item : evidence["target_palette_surface_usage"]) {
-                    if (!item.is_object() || status.model_quality.target_palette_surface_usage.size() >= 4)
+                    if (!item.is_object() || status.model_quality.target_palette_surface_usage.size() >=
+                                             Slic3r::AI::kMaxTargetPaletteColors)
                         continue;
                     AIModelGenerationClient::ModelQuality::TargetPaletteUsage usage;
                     usage.color = item.value("color", std::string());

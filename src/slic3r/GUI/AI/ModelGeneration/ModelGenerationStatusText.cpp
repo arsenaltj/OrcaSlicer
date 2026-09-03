@@ -34,7 +34,9 @@ wxString localized_service_error(const std::string& error)
 wxString localized_job_status(const AIModelGenerationClient::JobStatus& status)
 {
     if (status.state == "recommending_palette")
-        return _L("AI 正在分析主体并推荐四种目标色...");
+        return wxString::Format(
+            _L("AI 正在分析主体并推荐 %llu 种目标色..."),
+            static_cast<unsigned long long>(status.palette_color_count));
     if (status.state == "awaiting_palette_confirmation")
         return _L("AI 配色已准备好，请修改或确认后生成图片预览。");
     if (status.state == "preprocessing" && status.phase == "image_generation")
