@@ -516,7 +516,10 @@ class SidecarHealthContractTests(unittest.TestCase):
         self.assertEqual(generation["sources"], ["text", "image"])
         self.assertEqual(
             generation["styles"],
-            ["sculpture", "realistic", "cartoon", "low_poly", "relief", "diorama", "custom"],
+            [
+                "sculpture", "realistic", "portrait_sketch", "cartoon", "low_poly",
+                "relief", "ink_relief", "diorama", "custom",
+            ],
         )
         self.assertEqual(
             generation["style_recommendation"],

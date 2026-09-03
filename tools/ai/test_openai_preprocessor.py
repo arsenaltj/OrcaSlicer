@@ -334,9 +334,9 @@ class StylePreviewPromptTests(unittest.TestCase):
 
         self.assertIn("changing as little as possible", realistic)
         self.assertIn("polychrome portrait sculpture or faithful 3D scan", realistic)
-        self.assertIn("REALISTIC PORTRAIT IDENTITY LOCK", realistic)
+        self.assertIn("IDENTITY-FIRST PORTRAIT LOCK", realistic)
         self.assertIn("compare the source and result face at equal size", realistic)
-        self.assertNotIn("REALISTIC PORTRAIT IDENTITY LOCK", cartoon)
+        self.assertNotIn("IDENTITY-FIRST PORTRAIT LOCK", cartoon)
         self.assertIn("friendly cute cartoon collectible", cartoon)
         self.assertIn("one monochrome museum-quality", sculpture)
         for prompt in (realistic, cartoon, sculpture):
@@ -404,6 +404,55 @@ class StylePreviewPromptTests(unittest.TestCase):
         self.assertIn("broad, clean planar facets", preprocessor._style_profile("low_poly"))
         self.assertIn("shallow bas-relief", preprocessor._style_profile("relief"))
         self.assertIn("miniature diorama", preprocessor._style_profile("diorama"))
+
+    def test_print_native_artistic_profiles_use_modelable_abstraction(self):
+        portrait = preprocessor._style_preview_prompt(
+            "preserve this person", ("#F0C7A6", "#1A1A1A", "#F4F1E8", "#315B48", "#A64B3C", "#6A5B8E"),
+            "portrait_sketch",
+        )
+        ink = preprocessor._style_preview_prompt(
+            "preserve this landscape", ("#111111", "#F4F1E8", "#69736A", "#9A3E34", "#315B48", "#6A5B8E"),
+            "ink_relief",
+        )
+
+        self.assertIn("identity-first portrait sketch sculpture", portrait)
+        self.assertIn("restrained exaggeration", portrait)
+        self.assertIn("two to five broad material or relief masses", portrait)
+        self.assertIn("generic caricature", portrait)
+        self.assertIn("do not force every selected color", portrait)
+        self.assertIn("IDENTITY-FIRST PORTRAIT LOCK", portrait)
+        self.assertIn("acceptable to use a meaningful subset", portrait)
+        self.assertNotIn("Use at least 3 listed colors", portrait)
+        self.assertIn("printmaking- and woodcut-inspired ink relief", ink)
+        self.assertIn("negative space", ink)
+        self.assertIn("two to four broad value masses", ink)
+        self.assertIn("embossed or engraved strokes", ink)
+        self.assertIn("translucent washes", ink)
+        self.assertIn("micro-halftone dots", ink)
+        self.assertIn("do not force every selected color", ink)
+        self.assertIn("RELIEF SUPPORT OVERRIDE", ink)
+        self.assertIn("acceptable to use a meaningful subset", ink)
+        self.assertNotIn("Use at least 3 listed colors", ink)
+
+    def test_print_native_artistic_material_prompts_accept_one_through_six_colors(self):
+        colors = ("#111111", "#F4F1E8", "#69736A", "#9A3E34", "#315B48", "#6A5B8E")
+        for style in ("portrait_sketch", "ink_relief"):
+            for count in range(1, 7):
+                with self.subTest(style=style, count=count):
+                    prompt = preprocessor._text_image_prompt("preserve the subject", colors[:count], style)
+                    self.assertIn("acceptable to use a meaningful subset", prompt)
+                    self.assertNotIn(f"Use at least {min(3, count)} listed colors", prompt)
+                    for color in colors[:count]:
+                        self.assertIn(color, prompt)
+
+    def test_artistic_geometry_prompts_keep_continuous_tone_and_defer_exact_colors(self):
+        for style in ("portrait_sketch", "ink_relief"):
+            with self.subTest(style=style):
+                prompt = preprocessor.build_geometry_reference_prompt("preserve the subject", style)
+                self.assertIn("continuous tonal modeling", prompt)
+                self.assertIn("selected filament palette is applied later", prompt)
+                self.assertNotIn("#F0C7A6", prompt)
+                self.assertNotIn("Use at least 3 listed colors", prompt)
 
     def test_natural_color_mode_omits_printable_palette_constraint(self):
         prompt = preprocessor._style_preview_prompt("preserve pose", (), "q_cartoon")
@@ -806,6 +855,29 @@ class ExactImageEditTests(unittest.TestCase):
 
             self.assertEqual(calls, 1)
             self.assertEqual(Image.open(geometry).getpixel((10, 10)), (35, 95, 145))
+
+    def test_portrait_sketch_preview_uses_the_source_face_lock_without_a_second_edit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, destination, geometry = root / "source.png", root / "result.png", root / "geometry.png"
+            Image.new("RGB", (64, 96), (180, 150, 120)).save(source)
+
+            def edit(_source, _prompt, output, **_kwargs):
+                Image.new("RGB", (64, 96), (35, 95, 145)).save(output)
+                return Path(output)
+
+            with mock.patch.object(preprocessor, "edit_image", side_effect=edit) as image_edit, \
+                 mock.patch.object(preprocessor, "_portrait_face_lock_mask", return_value=root / "mask.png"), \
+                 mock.patch.object(preprocessor, "_restore_portrait_face_from_source", return_value=True) as restore:
+                preprocessor.preprocess_image(
+                    source, "preserve this person", destination,
+                    ("#FFFFFF", "#111111", "#F0C8AA"), "portrait_sketch",
+                    geometry_output_path=geometry,
+                )
+
+            self.assertEqual(image_edit.call_count, 1)
+            restore.assert_called_once()
+            self.assertTrue(geometry.is_file())
 
     def test_portrait_face_lock_mask_is_opaque_on_face_and_transparent_outside(self):
         from PIL import ImageDraw

@@ -407,7 +407,10 @@ class Handler(BaseHTTPRequestHandler):
                     "model_generation": {
                         "available": True,
                         "sources": ["text", "image"],
-                        "styles": ["sculpture", "realistic", "cartoon", "low_poly", "relief", "diorama", "custom"],
+                        "styles": [
+                            "sculpture", "realistic", "portrait_sketch", "cartoon", "low_poly",
+                            "relief", "ink_relief", "diorama", "custom",
+                        ],
                         "style_recommendation": {"available": True, "local_only": True},
                         "artifact_formats": ["obj"],
                         "face_limits": sorted(set(GENERATION_PROFILE_FACE_LIMITS.values())),

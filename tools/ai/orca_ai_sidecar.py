@@ -41,6 +41,7 @@ from color_intent import (
 from network_policy import network_diagnostics
 
 from openai_preprocessor import (
+    IDENTITY_FIRST_PORTRAIT_STYLES,
     OpenAIPreprocessorError,
     complete_vision,
     complete_text,
@@ -220,7 +221,9 @@ PORTRAIT_REAR_PLATE_MAX_START_RATIO = 0.15
 DEFAULT_MODEL_SIZE_MM = 100.0
 MODEL_ARTIFACT_FORMAT = "obj"
 MODEL_QUALITY_FILENAME = "model-quality.json"
-STYLE_IDS = ("sculpture", "realistic", "cartoon", "low_poly", "relief", "diorama", "custom")
+STYLE_IDS = (
+    "sculpture", "realistic", "portrait_sketch", "cartoon", "low_poly", "relief", "ink_relief", "diorama", "custom",
+)
 LEGACY_STYLE_ALIASES = {
     "q_cartoon": "cartoon",
     "cel_shaded": "cartoon",
@@ -857,7 +860,9 @@ def _normalize_style(value: Any) -> str:
         value = LEGACY_STYLE_ALIASES.get(value, value)
     if not isinstance(value, str) or value not in STYLE_IDS:
         raise RequestError(
-            "invalid_style", "style must be sculpture, realistic, cartoon, low_poly, relief, diorama, or custom.", 400
+            "invalid_style",
+            "style must be sculpture, realistic, portrait_sketch, cartoon, low_poly, relief, ink_relief, diorama, or custom.",
+            400,
         )
     return value
 
@@ -2071,7 +2076,7 @@ def _identity_preserving_portrait_geometry_enabled(job: Job) -> bool:
     )
     return (
         job.source == "image"
-        and job.style == "realistic"
+        and job.style in IDENTITY_FIRST_PORTRAIT_STYLES
         and job.generation_profile == "quality"
         and MIN_PRINTABLE_COLORS <= len(job.palette) <= MAX_PRINTABLE_COLORS
         and portrait_detected
@@ -3596,7 +3601,7 @@ def _assess_job_preview_visual_quality(job: Job, original: Path) -> dict[str, An
 
     if (
         job.source != "image"
-        or job.style != "realistic"
+        or job.style not in IDENTITY_FIRST_PORTRAIT_STYLES
         or job.generation_profile != "quality"
         or job.model_reference_path is None
         or job.preview_path is None

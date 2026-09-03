@@ -38,13 +38,17 @@ from printable_palette import assign_palette_roles, normalize_palette  # noqa: E
 
 
 SCHEMA_VERSION = 1
-PUBLIC_STYLES = ("sculpture", "realistic", "cartoon", "low_poly", "relief", "diorama", "custom")
+PUBLIC_STYLES = (
+    "sculpture", "realistic", "portrait_sketch", "cartoon", "low_poly", "relief", "ink_relief", "diorama", "custom",
+)
 STYLE_LABELS = {
     "sculpture": "单色雕塑",
     "realistic": "多色写实",
+    "portrait_sketch": "肖像速写",
     "cartoon": "手办/卡通",
     "low_poly": "低多边形",
     "relief": "浮雕",
+    "ink_relief": "水墨版画浮雕",
     "diorama": "微缩场景",
     "custom": "自定义",
 }
@@ -971,7 +975,7 @@ def create_journey_summary_sheets(
         style for style in PUBLIC_STYLES
         if any(candidate.style == style for candidate in candidates)
     ]
-    extended_styles = [style for style in active_styles if style in {"low_poly", "relief", "diorama"}]
+    extended_styles = [style for style in active_styles if style in {"low_poly", "relief", "ink_relief", "diorama"}]
     if extended_styles:
         rows: list[list[tuple[Path | None, str]]] = []
         for case in cases:

@@ -19,7 +19,9 @@ from PIL import Image, ImageFilter
 QUALITY_SCHEMA_VERSION = 1
 ANALYSIS_EDGE = 192
 STYLE_RECOMMENDATION_SCHEMA_VERSION = 1
-RECOMMENDABLE_STYLES = ("cartoon", "sculpture", "low_poly", "relief", "realistic", "diorama")
+RECOMMENDABLE_STYLES = (
+    "portrait_sketch", "ink_relief", "cartoon", "sculpture", "low_poly", "relief", "realistic", "diorama",
+)
 
 _SUBJECT_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("scene", ("场景", "群像", "多人", "多物体", "街景", "风景", "scene", "group", "landscape")),
@@ -415,10 +417,10 @@ def recommend_printable_style(
         category = "portrait"
 
     mapping: dict[str, tuple[str, tuple[str, str], str]] = {
-        "portrait": ("cartoon", ("sculpture", "low_poly"), "portrait"),
+        "portrait": ("portrait_sketch", ("realistic", "cartoon"), "portrait"),
         "animal": ("cartoon", ("sculpture", "low_poly"), "animal"),
-        "flat_graphic": ("relief", ("low_poly", "sculpture"), "flat_graphic"),
-        "effects": ("relief", ("sculpture", "low_poly"), "effects"),
+        "flat_graphic": ("ink_relief", ("relief", "low_poly"), "flat_graphic"),
+        "effects": ("ink_relief", ("relief", "sculpture"), "effects"),
         "architecture": ("realistic", ("low_poly", "relief"), "architecture"),
         "hard_surface": ("realistic", ("low_poly", "sculpture"), "hard_surface"),
         "organic": ("cartoon", ("relief", "sculpture"), "organic"),
@@ -436,7 +438,7 @@ def recommend_printable_style(
         elif metrics["meaningful_component_count"] >= 4:
             primary, alternatives, reason = "diorama", ("low_poly", "relief"), "multiple_subjects"
         elif image_metrics["meaningful_color_count"] <= 6 and image_metrics["edge_density"] <= 0.16:
-            primary, alternatives, reason = "relief", ("low_poly", "sculpture"), "flat_graphic"
+            primary, alternatives, reason = "ink_relief", ("relief", "low_poly"), "flat_graphic"
         elif image_metrics["edge_density"] >= 0.27:
             primary, alternatives, reason = "realistic", ("low_poly", "sculpture"), "structured_subject"
         else:

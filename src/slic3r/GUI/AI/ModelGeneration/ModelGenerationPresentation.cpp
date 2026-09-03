@@ -264,6 +264,8 @@ wxString style_label(const std::string& style)
 {
     if (style == "realistic" || style == "enamel_inlay")
         return _L("写实微缩");
+    if (style == "portrait_sketch")
+        return _L("肖像速写");
     if (style == "cartoon" || style == "q_cartoon" || style == "cel_shaded")
         return _L("手办");
     if (style == "sculpture")
@@ -272,6 +274,8 @@ wxString style_label(const std::string& style)
         return _L("低多边形");
     if (style == "relief")
         return _L("浮雕");
+    if (style == "ink_relief")
+        return _L("水墨版画浮雕");
     if (style == "diorama")
         return _L("微缩场景");
     if (style == "custom")
@@ -279,28 +283,12 @@ wxString style_label(const std::string& style)
     return _L("单色雕塑");
 }
 
-int style_selection(const std::string& style)
-{
-    if (style == "realistic" || style == "enamel_inlay") return 1;
-    if (style == "cartoon" || style == "q_cartoon" || style == "cel_shaded") return 2;
-    if (style == "low_poly") return 3;
-    if (style == "relief") return 4;
-    if (style == "diorama") return 5;
-    if (style == "custom") return 6;
-    return 0;
-}
-
-bool style_uses_printable_colors(const std::string& style)
-{
-    return style != "sculpture" && style != "relief";
-}
-
 wxString style_recommendation_reason(const std::string& reason)
 {
-    if (reason == "portrait") return _L("人像优先手办化，保留辨识度并减少恐怖谷感。");
+    if (reason == "portrait") return _L("肖像速写用少量体块概括明暗，同时把脸型和五官辨识度放在首位。");
     if (reason == "animal") return _L("宠物适合简化毛发为稳固体块，同时保留轮廓。");
-    if (reason == "flat_graphic") return _L("平面图形用浮雕更稳，不必猜测背面。");
-    if (reason == "effects") return _L("透明和光影难成实体，浮雕更容易打印。");
+    if (reason == "flat_graphic") return _L("平面图形适合转成留白清楚、线条可建模的水墨版画浮雕。");
+    if (reason == "effects") return _L("透明和光影不能直接打印，水墨版画浮雕可把它们收敛为实体层次。");
     if (reason == "architecture") return _L("建筑轮廓清晰，适合保留比例和结构细节。");
     if (reason == "hard_surface" || reason == "structured_subject")
         return _L("硬表面结构清楚，写实微缩更能保留部件。");

@@ -549,7 +549,6 @@ class ObjGenerationTests(unittest.TestCase):
 
     def test_identity_first_portrait_geometry_supports_one_through_six_colors(self):
         self.job.source = "image"
-        self.job.style = "realistic"
         self.job.generation_profile = "quality"
         self.job.image_metrics = {
             "portrait_geometry": {"detected": True, "evidence": "source_face_lock"}
@@ -559,10 +558,12 @@ class ObjGenerationTests(unittest.TestCase):
         self.job.input_path = original
         colors = ("#111111", "#333333", "#555555", "#777777", "#999999", "#BBBBBB")
 
-        for count in range(1, 7):
-            with self.subTest(count=count):
-                self.job.palette = colors[:count]
-                self.assertTrue(SIDECAR._identity_preserving_portrait_geometry_enabled(self.job))
+        for style in ("realistic", "portrait_sketch"):
+            for count in range(1, 7):
+                with self.subTest(style=style, count=count):
+                    self.job.style = style
+                    self.job.palette = colors[:count]
+                    self.assertTrue(SIDECAR._identity_preserving_portrait_geometry_enabled(self.job))
 
     def test_identity_first_portrait_geometry_requires_independent_portrait_evidence(self):
         self.job.source = "image"
