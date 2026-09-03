@@ -1321,15 +1321,10 @@ void MainFrame::init_tabpanel() {
 
     wxGetApp().plater_ = m_plater;
 
-    m_ai_feature_host = std::make_unique<AIDesktopFeatureHost>(m_tabpanel, m_plater, [this](bool slice) {
+    m_ai_feature_host = std::make_unique<AIDesktopFeatureHost>(m_tabpanel, m_plater, [this] {
         m_plater->exit_gizmo();
         m_plater->update(true, true);
-        if (slice) {
-            wxPostEvent(m_plater, SimpleEvent(EVT_GLTOOLBAR_SLICE_PLATE));
-            select_tab(TAB_ID_PREVIEW);
-        } else {
-            select_tab(TAB_ID_PREPARE);
-        }
+        select_tab(TAB_ID_PREPARE);
     }, [this] {
         register_ai_assistant();
     });

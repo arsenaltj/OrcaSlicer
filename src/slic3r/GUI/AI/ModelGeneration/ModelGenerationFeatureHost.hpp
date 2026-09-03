@@ -14,7 +14,7 @@ class Plater;
 class ModelGenerationFeatureHost final
 {
 public:
-    using NavigateAfterImportFn = std::function<void(bool slice)>;
+    using NavigateAfterImportFn = std::function<void()>;
     using RetryServiceFn = std::function<void()>;
 
     ModelGenerationFeatureHost(wxWindow* parent, Plater* plater, NavigateAfterImportFn navigate_after_import,

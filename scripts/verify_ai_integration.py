@@ -1306,6 +1306,68 @@ def validate_gui_feature_boundaries(repo_root: Path) -> list[dict[str, str]]:
     return errors
 
 
+def validate_model_generation_import_boundary(repo_root: Path) -> list[dict[str, str]]:
+    """Ensure model generation imports into Prepare without owning slicing policy or execution."""
+    errors: list[dict[str, str]] = []
+    forbidden_by_path = {
+        "src/slic3r/AI/Contracts/IModelArtifactConsumer.hpp": (
+            "auto_slice_after_import",
+            "slice_after_import",
+        ),
+        "src/slic3r/GUI/ModelGenerationPanel.cpp": (
+            "auto_slice_after_import",
+            "slice_after_import",
+            "导入后自动切片",
+        ),
+        "src/slic3r/GUI/ModelGenerationPanel.hpp": ("m_auto_slice_after_import",),
+        "src/slic3r/GUI/AI/Orca/OrcaWorkspaceAdapter.cpp": (
+            "auto_slice_after_import",
+            "slice_after_import",
+            "independent_support_layer_height",
+            "enable_prime_tower",
+        ),
+        "src/slic3r/GUI/AI/Orca/OrcaWorkspaceAdapter.hpp": (
+            "std::function<void(bool)>",
+        ),
+        "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationFeatureHost.hpp": (
+            "std::function<void(bool slice)>",
+        ),
+        "src/slic3r/GUI/AI/AIDesktopFeatureHost.hpp": (
+            "std::function<void(bool slice)>",
+        ),
+    }
+    for relative_path, forbidden_tokens in forbidden_by_path.items():
+        path = repo_root / relative_path
+        if not path.is_file():
+            continue
+        content = path.read_text(encoding="utf-8", errors="replace")
+        for token in forbidden_tokens:
+            if token in content:
+                errors.append(
+                    _issue(
+                        "model_generation.auto_slice",
+                        f"{relative_path} still owns automatic slicing token: {token}",
+                    )
+                )
+
+    main_path = repo_root / "src/slic3r/GUI/MainFrame.cpp"
+    if main_path.is_file():
+        main_cpp = main_path.read_text(encoding="utf-8", errors="replace")
+        start = main_cpp.find("m_ai_feature_host = std::make_unique<AIDesktopFeatureHost>")
+        end = main_cpp.find("m_tabpanel->AddPage(TAB_ID_GENERATE_3D", start)
+        if start >= 0 and end > start:
+            import_callback = main_cpp[start:end]
+            for token in ("EVT_GLTOOLBAR_SLICE_PLATE", "TAB_ID_PREVIEW"):
+                if token in import_callback:
+                    errors.append(
+                        _issue(
+                            "model_generation.auto_slice",
+                            f"MainFrame model-generation import callback still triggers slicing: {token}",
+                        )
+                    )
+    return errors
+
+
 def _cpp_files(path: Path) -> Iterable[Path]:
     if path.is_file():
         if path.suffix.lower() in {".cc", ".cpp", ".h", ".hpp"}:
@@ -1414,6 +1476,7 @@ def validate(lock_path: Path, repo_root: Path, skip_git: bool = False) -> dict[s
         errors.extend(validate_build_info_generation(repo_root))
         errors.extend(validate_ai_build_boundaries(repo_root))
         errors.extend(validate_gui_feature_boundaries(repo_root))
+        errors.extend(validate_model_generation_import_boundary(repo_root))
         errors.extend(validate_dependency_boundaries(repo_root))
         errors.extend(validate_architecture_budgets(document, repo_root))
         if not skip_git:

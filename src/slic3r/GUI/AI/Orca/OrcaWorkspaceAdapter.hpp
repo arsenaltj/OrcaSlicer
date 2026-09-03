@@ -14,7 +14,7 @@ class Plater;
 class OrcaWorkspaceAdapter final : public AI::IPrintablePaletteProvider, public AI::IModelArtifactConsumer
 {
 public:
-    using ImportSucceededFn = std::function<void(bool)>;
+    using ImportSucceededFn = std::function<void()>;
 
     OrcaWorkspaceAdapter(Plater* plater, ImportSucceededFn on_import_succeeded);
 

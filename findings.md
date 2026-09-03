@@ -57,3 +57,11 @@
 - Sidebar 仍可显示导入、网格检查、颜色处理和摆放结果；切片/G-code 步骤统一保持等待，不从模型生成域启动。
 - 原生契约回归位于 `tests/slic3rutils/test_ai_contracts.cpp`，可先用编译失败/测试变化驱动字段删除；架构预算由 `tools/ai/test_integration_guardrails.py` 和 `scripts/verify_ai_integration.py` 守护。
 - 当前仓库已有可复用的 Visual Studio 构建树 `build/` 和 `build-ai-tests/`；实现阶段优先构建 `slic3rutils_tests`，再执行架构守卫和完整 Release 验证。
+
+## 2026-09-03：自动切片移除结果
+
+- 生产调用链已不再包含 `auto_slice_after_import`、`slice_after_import` 或“导入后自动切片”控件；导入完成回调只有更新工作区和进入 Prepare 两项职责。
+- 模型生成导入不再修改 `independent_support_layer_height`、`enable_prime_tower` 等打印预设，也不再发出切片事件或写入 `slice_requested` 旅程事件。
+- 旧模型库 JSON 中的自动切片键不会阻断加载；新代码忽略它们，并在模型再次导入时删除这些过期键。这保持了读取兼容，同时停止继续发布错误状态。
+- 架构守卫新增仓库正例和包含旧字段、预设写入、切片事件的反例 fixture；全套 41 项 Python 守卫通过。
+- 本机现有构建树缺少完整的捆绑 Python 3.12.13 开发运行时，无法可靠重新配置或链接完整原生测试；独立 MSVC 编译契约测试源成功，GUI 全量验证需在恢复标准构建环境后补做。

@@ -288,7 +288,7 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
         result.error = "OBJ import failed.";
         workflow.update_ai_workflow_step(Sidebar::AIImportModel, Sidebar::AIWorkflowStatus::Failed,
                                          _L("OBJ 导入失败"));
-        workflow.finish_ai_workflow(false, _L("模型导入失败，未开始切片"));
+        workflow.finish_ai_workflow(false, _L("模型导入失败"));
         return result;
     }
 
@@ -321,7 +321,6 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
                                          _L("需要手动上色"));
     }
 
-    result.slice_after_import = request.auto_slice_after_import && !result.manual_coloring_required;
     bool requires_repair = false;
     for (size_t object_index : loaded) {
         if (object_index < m_plater->model().objects.size()) {
@@ -358,17 +357,16 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
             m_plater->undo();
             RichMessageDialog fallback(
                 m_plater,
-                _L("自动网格修复失败，模型不会自动切片。\n\n"
+                _L("自动网格修复失败。\n\n"
                    "可以将原始 OBJ 手动导入准备页，再使用准备页中的修复工具处理。"),
                 _L("自动修复失败"), wxYES_NO | wxICON_WARNING);
             fallback.SetYesNoLabels(_L("手动导入"), _L("取消"));
             if (fallback.ShowModal() != wxID_YES) {
                 result.outcome = AI::ModelImportOutcome::RepairFailed;
                 result.error = std::move(repair_error);
-                result.slice_after_import = false;
                 workflow.update_ai_workflow_step(Sidebar::AICheckMesh, Sidebar::AIWorkflowStatus::Failed,
                                                  _L("自动修复失败"));
-                workflow.finish_ai_workflow(false, _L("网格修复失败，未开始切片"));
+                workflow.finish_ai_workflow(false, _L("网格修复失败"));
                 return result;
             }
 
@@ -386,10 +384,9 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
                 result.error = "Manual OBJ import failed after automatic repair.";
                 workflow.update_ai_workflow_step(Sidebar::AIImportModel, Sidebar::AIWorkflowStatus::Failed,
                                                  _L("手动导入失败"));
-                workflow.finish_ai_workflow(false, _L("模型导入失败，未开始切片"));
+                workflow.finish_ai_workflow(false, _L("模型导入失败"));
                 return result;
             }
-            result.slice_after_import = false;
             result.manual_repair_required = true;
             workflow.update_ai_workflow_step(Sidebar::AICheckMesh, Sidebar::AIWorkflowStatus::Warning,
                                              _L("需要手动修复"));
@@ -404,62 +401,31 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
 
     workflow.update_ai_workflow_step(Sidebar::AIArrange, Sidebar::AIWorkflowStatus::Running,
                                      _L("正在放置到打印板"));
-    // Keep the established import-and-slice compatibility path until smart slicing
-    // owns this entry point and can present an explicit transactional decision.
-    // Removing these writes before that migration would change the existing AI
-    // import behavior even when the smart-slicing workbench is never opened.
-    if (result.slice_after_import && wxGetApp().preset_bundle != nullptr) {
-        PresetBundle* preset_bundle = wxGetApp().preset_bundle;
-        DynamicPrintConfig& print_config = preset_bundle->prints.get_edited_preset().config;
-        bool config_changed = false;
-        const ConfigOptionBool* independent_support =
-            print_config.option<ConfigOptionBool>("independent_support_layer_height");
-        if (independent_support != nullptr && independent_support->value) {
-            print_config.set_key_value("independent_support_layer_height", new ConfigOptionBool(false));
-            config_changed = true;
-        }
-        const ConfigOptionBool* prime_tower = print_config.option<ConfigOptionBool>("enable_prime_tower");
-        if (prime_tower != nullptr && prime_tower->value) {
-            print_config.set_key_value("enable_prime_tower", new ConfigOptionBool(false));
-            config_changed = true;
-        }
-        if (config_changed) {
-            preset_bundle->prints.update_dirty();
-            m_plater->update_project_dirty_from_presets();
-            m_plater->on_config_change(preset_bundle->full_config());
-        }
-    }
-
     result.outcome = AI::ModelImportOutcome::Imported;
     if (!m_on_import_succeeded) {
         result.error = "The Orca workspace navigation callback is unavailable.";
         workflow.update_ai_workflow_step(Sidebar::AIArrange, Sidebar::AIWorkflowStatus::Failed,
-                                         _L("无法切换工作区"));
-        workflow.finish_ai_workflow(false, _L("模型已导入，但无法继续自动流程"));
+                                          _L("无法切换工作区"));
+        workflow.finish_ai_workflow(false, _L("模型已导入，但无法切换到准备页"));
         return result;
     }
 
-    m_on_import_succeeded(result.slice_after_import);
+    m_on_import_succeeded();
     workflow.update_ai_workflow_step(Sidebar::AIArrange, Sidebar::AIWorkflowStatus::Success,
                                      _L("已放置到打印板"));
-    if (result.slice_after_import) {
-        workflow.update_ai_workflow_step(Sidebar::AISlice, Sidebar::AIWorkflowStatus::Running);
-        workflow.update_ai_workflow_step(Sidebar::AIGCode, Sidebar::AIWorkflowStatus::Waiting);
-    } else if (result.manual_repair_required) {
-        workflow.update_ai_workflow_step(Sidebar::AISlice, Sidebar::AIWorkflowStatus::Warning,
-                                         _L("等待手动修复"));
-        workflow.finish_ai_workflow(false, _L("模型已导入，请手动修复后切片"));
-    } else if (result.manual_coloring_required) {
-        workflow.update_ai_workflow_step(Sidebar::AISlice, Sidebar::AIWorkflowStatus::Warning,
-                                         _L("等待手动上色"));
-        workflow.finish_ai_workflow(false, _L("模型已导入，请手动上色后切片"));
-    } else {
-        workflow.update_ai_workflow_step(Sidebar::AISlice, Sidebar::AIWorkflowStatus::Waiting,
-                                         _L("等待手动切片"));
-        workflow.update_ai_workflow_step(Sidebar::AIGCode, Sidebar::AIWorkflowStatus::Waiting,
-                                         _L("手动切片后生成"));
-        workflow.finish_ai_workflow(true, _L("模型已导入准备页，可手动调整并切片"));
-    }
+    workflow.update_ai_workflow_step(Sidebar::AISlice, Sidebar::AIWorkflowStatus::Waiting,
+                                     result.manual_repair_required
+                                         ? _L("修复模型后手动切片")
+                                         : result.manual_coloring_required ? _L("完成上色后手动切片")
+                                                                           : _L("等待手动切片"));
+    workflow.update_ai_workflow_step(Sidebar::AIGCode, Sidebar::AIWorkflowStatus::Waiting,
+                                     _L("手动切片后生成"));
+    workflow.finish_ai_workflow(true,
+                                result.manual_repair_required
+                                    ? _L("模型已导入准备页，请先手动修复")
+                                    : result.manual_coloring_required
+                                        ? _L("模型已导入准备页，请先完成上色")
+                                        : _L("模型已导入准备页，可手动调整并切片"));
     return result;
 }
 

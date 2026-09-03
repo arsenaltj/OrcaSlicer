@@ -12,7 +12,7 @@ class Plater;
 class AIDesktopFeatureHost final
 {
 public:
-    using NavigateAfterImportFn = std::function<void(bool slice)>;
+    using NavigateAfterImportFn = std::function<void()>;
     using SmartSlicingAvailableFn = std::function<void()>;
 
     AIDesktopFeatureHost(wxWindow* parent, Plater* plater, NavigateAfterImportFn navigate_after_import,

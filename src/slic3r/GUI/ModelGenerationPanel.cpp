@@ -660,7 +660,7 @@ wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
     m_import_settings_panel = new wxPanel(scroll);
     m_import_settings_panel->SetBackgroundColour(wxColour(250, 251, 251));
     auto* import_settings_sizer = new wxBoxSizer(wxVERTICAL);
-    import_settings_sizer->Add(section_label(m_import_settings_panel, _L("导入与切片")), 0, wxEXPAND | wxBOTTOM, FromDIP(6));
+    import_settings_sizer->Add(section_label(m_import_settings_panel, _L("导入设置")), 0, wxEXPAND | wxBOTTOM, FromDIP(6));
     auto* import_color_row = new wxBoxSizer(wxHORIZONTAL);
     auto* import_color_label = new wxStaticText(m_import_settings_panel, wxID_ANY, _L("颜色处理"));
     wxArrayString import_color_modes;
@@ -675,11 +675,6 @@ wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
     import_color_row->Add(m_import_color_mode, 1, wxALIGN_CENTER_VERTICAL);
     import_settings_sizer->Add(import_color_row, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
 
-    m_auto_slice_after_import = new wxCheckBox(m_import_settings_panel, wxID_ANY, _L("导入后自动切片"));
-    m_auto_slice_after_import->SetValue(true);
-    m_auto_slice_after_import->SetToolTip(
-        _L("关闭后仍会导入颜色、检查模型并自动摆放，但会停在准备页等待手动切片。"));
-    import_settings_sizer->Add(m_auto_slice_after_import, 0, wxEXPAND);
     m_import_settings_panel->SetSizer(import_settings_sizer);
     sizer->Insert(0, m_import_settings_panel, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
 
@@ -749,7 +744,6 @@ wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
     m_use_printable_colors->Bind(wxEVT_CHECKBOX, &ModelGenerationPanel::on_printable_colors_toggled, this);
     m_palette_source->Bind(wxEVT_CHOICE, &ModelGenerationPanel::on_palette_source_changed, this);
     m_import_color_mode->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) { refresh_controls(); });
-    m_auto_slice_after_import->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) { refresh_controls(); });
     m_add_custom_color->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_add_custom_color, this);
     m_recommend_palette->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_recommend_palette, this);
     m_confirm_recommended_palette->Bind(
@@ -2491,7 +2485,7 @@ void ModelGenerationPanel::download_model_preview(uint64_t sequence)
                 weak->m_status->SetLabel(
                     visual_gate_blocked
                         ? _L("模型已生成，但人脸相似度或材料归属未通过；建议重新优化。")
-                        : _L("3D 模型已生成，请确认外观后再生成 G-code。"));
+                        : _L("3D 模型已生成，请确认外观后再导入准备页。"));
                 weak->m_model_stats->SetLabel(wxString::Format(
                     _L("%llu 个三角面 · %llu 种颜色\n%.1f × %.1f × %.1f mm\n%s"),
                     static_cast<unsigned long long>(triangle_count), static_cast<unsigned long long>(color_count),
@@ -2502,7 +2496,7 @@ void ModelGenerationPanel::download_model_preview(uint64_t sequence)
                 weak->m_result_summary->SetLabel(
                     visual_gate_blocked
                         ? _L("模型文件与结构可用，但外观门禁未通过；强制导入前会再次确认。")
-                        : _L("模型已下载并通过 OBJ 解析，可继续导入和切片。"));
+                        : _L("模型已下载并通过 OBJ 解析，可继续导入准备页。"));
                 const size_t artifact_size = boost::filesystem::file_size(path);
                 weak->save_library_entry(artifact_size, triangle_count, dimensions.x(), dimensions.y(),
                                          dimensions.z(), color_count, load_seconds);
@@ -2557,14 +2551,14 @@ void ModelGenerationPanel::download_and_import()
 
     if (local_path.empty() && m_job_id.empty()) {
         m_status->SetLabel(_L("本地 OBJ 模型已不存在。"));
-        m_result_summary->SetLabel(_L("请从模型库重新加载有效模型后再生成 G-code。"));
+        m_result_summary->SetLabel(_L("请从模型库重新加载有效模型后再导入准备页。"));
         refresh_controls();
         return;
     }
 
     m_busy = true;
-    update_progress(96, 5, _L("导入并生成 G-code"));
-    m_workflow_phase->SetLabel(_L("导入并生成 G-code"));
+    update_progress(96, 5, _L("导入准备页"));
+    m_workflow_phase->SetLabel(_L("导入准备页"));
     const uint64_t sequence = m_sequence;
     m_status->SetLabel(local_path.empty() ? _L("正在从本地服务读取生成的模型...")
                                          : _L("正在读取本地 OBJ 模型..."));
@@ -2602,18 +2596,14 @@ void ModelGenerationPanel::import_local_artifact(const boost::filesystem::path& 
     if (!is_nonempty_obj(path)) {
         m_busy = false;
         m_status->SetLabel(_L("本地 OBJ 模型无效或已不存在。"));
-        m_result_summary->SetLabel(_L("请从模型库重新加载有效模型后再生成 G-code。"));
+        m_result_summary->SetLabel(_L("请从模型库重新加载有效模型后再导入准备页。"));
         refresh_controls();
         return;
     }
 
     m_artifact_path = path;
-    const bool auto_slice_after_import = m_auto_slice_after_import == nullptr ||
-                                         m_auto_slice_after_import->GetValue();
     update_progress(98, 5, _L("导入模型"));
-    m_status->SetLabel(auto_slice_after_import
-                           ? _L("正在导入颜色、自动摆放模型并准备 G-code...")
-                           : _L("正在导入颜色、检查模型并自动摆放..."));
+    m_status->SetLabel(_L("正在导入颜色、检查模型并自动摆放..."));
     refresh_controls();
 
     const int color_selection = m_import_color_mode != nullptr ? m_import_color_mode->GetSelection() : 0;
@@ -2628,16 +2618,14 @@ void ModelGenerationPanel::import_local_artifact(const boost::filesystem::path& 
     request.color_mode = color_selection == 2
         ? AI::ImportColorMode::SingleColor
         : color_selection == 1 ? AI::ImportColorMode::AutoMap : AI::ImportColorMode::ManualMatch;
-    request.auto_slice_after_import = auto_slice_after_import;
-
     const AI::ModelImportResult result = m_artifact_consumer.import_artifact(request);
     if (!result.imported()) {
         m_busy = false;
         if (result.outcome == AI::ModelImportOutcome::InvalidArtifact) {
             m_status->SetLabel(_L("本地 OBJ 模型无效或已不存在。"));
-            m_result_summary->SetLabel(_L("请从模型库重新加载有效模型后再生成 G-code。"));
+            m_result_summary->SetLabel(_L("请从模型库重新加载有效模型后再导入准备页。"));
         } else if (result.outcome == AI::ModelImportOutcome::RepairFailed) {
-            m_status->SetLabel(_L("自动网格修复失败，未导入也未开始切片。"));
+            m_status->SetLabel(_L("自动网格修复失败，模型未导入。"));
             m_result_summary->SetLabel(
                 _L("原始 OBJ 和修复诊断已保留在 generated_models。") + from_u8(result.error));
         } else {
@@ -2651,10 +2639,8 @@ void ModelGenerationPanel::import_local_artifact(const boost::filesystem::path& 
     const std::string job_id = m_job_id;
     const std::string library_job_id = !m_displayed_model_job_id.empty()
         ? m_displayed_model_job_id : job_id;
-    update_library_import_status(library_job_id, result.slice_after_import);
+    update_library_import_status(library_job_id);
     m_client.record_journey_event("model_imported", library_job_id);
-    if (result.slice_after_import)
-        m_client.record_journey_event("slice_requested", library_job_id);
     cleanup_files();
     if (!job_id.empty())
         m_client.remove(job_id, [] {}, [](std::string) {});
@@ -2678,45 +2664,38 @@ void ModelGenerationPanel::import_local_artifact(const boost::filesystem::path& 
     m_artifact_download_started = false;
     m_library_model_loaded = false;
 
-    m_workflow_phase->SetLabel(result.slice_after_import
-                                   ? _L("已请求切片")
-                                   : result.manual_repair_required
-                                       ? _L("手动修复")
-                                       : result.manual_coloring_required ? _L("手动上色") : _L("等待手动切片"));
-    update_progress(100, 5, result.slice_after_import ? _L("已导入并请求切片") : _L("已导入准备页"));
+    m_workflow_phase->SetLabel(result.manual_repair_required
+                                   ? _L("手动修复")
+                                   : result.manual_coloring_required ? _L("手动上色") : _L("已导入准备页"));
+    update_progress(100, 5, _L("已导入准备页"));
     m_prepared_prompt->Clear();
 
     if (!result.error.empty()) {
-        m_status->SetLabel(_L("模型已导入，但无法继续自动流程。"));
+        m_status->SetLabel(_L("模型已导入，但无法切换到准备页。"));
         m_result_summary->SetLabel(from_u8(result.error));
-    } else if (result.slice_after_import) {
-        if (result.color_mode == AI::ImportColorMode::SingleColor) {
-            m_status->SetLabel(_L("模型已按单色导入，正在切片当前打印板..."));
-            m_result_summary->SetLabel(_L("模型已忽略原有颜色，并已请求按当前耗材切片；请在 G-code 预览确认结果。"));
-        } else if (result.color_mode == AI::ImportColorMode::AutoMap) {
-            m_status->SetLabel(_L("模型已自动匹配耗材颜色，正在切片当前打印板..."));
-            m_result_summary->SetLabel(_L("可打印模型已自动摆放并请求切片；请在 G-code 预览确认是否完成。"));
-        } else {
-            m_status->SetLabel(_L("颜色匹配已确认，正在切片当前打印板..."));
-            m_result_summary->SetLabel(_L("模型颜色已匹配到当前打印机耗材槽并请求切片；请在 G-code 预览确认结果。"));
-        }
     } else if (result.manual_repair_required) {
         m_status->SetLabel(_L("模型已导入准备页，请手动修复后再切片。"));
-        m_result_summary->SetLabel(_L("未自动生成 G-code；原始 OBJ 和修复诊断仍保留在 generated_models。"));
+        m_result_summary->SetLabel(_L("原始 OBJ 和修复诊断仍保留在 generated_models。"));
     } else if (result.manual_coloring_required) {
         if (result.color_mapping_collapsed) {
             m_status->SetLabel(_L("多种模型颜色只匹配到一个耗材槽，模型已导入准备页。"));
             m_result_summary->SetLabel(_L("请重新匹配至少两个耗材槽，或在准备页手动上色后再切片。"));
         } else if (result.color_mode == AI::ImportColorMode::ManualMatch) {
             m_status->SetLabel(_L("颜色匹配未完成，模型已导入准备页。"));
-            m_result_summary->SetLabel(_L("未自动生成 G-code；请完成颜色匹配或手动上色后再切片。"));
+            m_result_summary->SetLabel(_L("请完成颜色匹配或手动上色后再切片。"));
         } else {
             m_status->SetLabel(_L("自动匹配当前耗材失败，模型已导入准备页。"));
-            m_result_summary->SetLabel(_L("未自动生成 G-code；请改用手动匹配或在准备页手动上色。"));
+            m_result_summary->SetLabel(_L("请改用手动匹配或在准备页手动上色。"));
         }
+    } else if (result.color_mode == AI::ImportColorMode::SingleColor) {
+        m_status->SetLabel(_L("模型已按单色导入并自动摆放，已进入准备页。"));
+        m_result_summary->SetLabel(_L("模型已忽略原有颜色；可在准备页调整模型、耗材或后续切片设置。"));
+    } else if (result.color_mode == AI::ImportColorMode::AutoMap) {
+        m_status->SetLabel(_L("模型已自动匹配耗材颜色并进入准备页。"));
+        m_result_summary->SetLabel(_L("可打印模型已自动摆放；请在准备页确认颜色和模型状态。"));
     } else {
-        m_status->SetLabel(_L("模型已导入并自动摆放，正在进入准备页。"));
-        m_result_summary->SetLabel(_L("已按你的选择跳过自动切片，可调整模型或颜色后手动切片。"));
+        m_status->SetLabel(_L("颜色匹配已确认，模型已进入准备页。"));
+        m_result_summary->SetLabel(_L("模型颜色已匹配到当前打印机耗材槽；请在准备页确认结果。"));
     }
     load_library_entries();
     refresh_controls();
@@ -2776,8 +2755,6 @@ void ModelGenerationPanel::refresh_controls()
         (printable_colors == m_job_use_printable_colors && (!printable_colors || m_palette == m_job_palette));
     const bool stale_job = !m_restoring_input && !m_job_id.empty() &&
                            (!job_inputs_match() || !palette_matches);
-    const bool auto_slice_after_import = m_auto_slice_after_import == nullptr ||
-                                         m_auto_slice_after_import->GetValue();
     const bool show_review = m_awaiting_confirmation && !image_job && !stale_job;
     const bool local_artifact = is_nonempty_obj(m_artifact_path) ||
         (!m_job_id.empty() && is_nonempty_obj(temp_path(m_job_id, "obj")));
@@ -2810,21 +2787,15 @@ void ModelGenerationPanel::refresh_controls()
                            : _L("停止本地任务；已经提交给远端的生成任务可能仍会继续运行并计费"));
     m_import->SetLabel(!m_model_preview_ready
                            ? _L("重新加载 3D 模型")
-                           : auto_slice_after_import
-                               ? _L("导入并自动切片")
-                               : _L("导入到准备页"));
+                           : _L("导入到准备页"));
     if (m_model_preview_ready && m_visual_quality.available && !m_visual_quality.import_recommended)
-        m_import->SetLabel(auto_slice_after_import ? _L("仍要导入并切片") : _L("仍要导入"));
+        m_import->SetLabel(_L("仍要导入"));
     m_import->SetToolTip(m_visual_quality.available && !m_visual_quality.import_recommended
                              ? _L("当前模型未通过人脸相似度或材料串色门禁；点击后会再次确认")
                              : wxEmptyString);
     if (m_library_model_loaded) {
-        m_model_preview_message->SetLabel(auto_slice_after_import
-                                              ? _L("历史模型已自动摆正；对照原图和 AI 图后可导入并切片。")
-                                              : _L("历史模型已自动摆正；对照图片后可导入到准备页。"));
-        m_result_summary->SetLabel(auto_slice_after_import
-                                       ? _L("历史模型和关联图片已加载到结果对照，可继续导入准备页并切片。")
-                                       : _L("历史模型和关联图片已加载到结果对照，将导入准备页等待手动切片。"));
+        m_model_preview_message->SetLabel(_L("历史模型已自动摆正；对照图片后可导入到准备页。"));
+        m_result_summary->SetLabel(_L("历史模型和关联图片已加载到结果对照，可继续导入准备页。"));
     }
     m_discard->SetLabel(_L("重新开始"));
     m_clear_image->Show(image_input);
@@ -2850,7 +2821,6 @@ void ModelGenerationPanel::refresh_controls()
     m_use_printable_colors->Enable(!m_busy);
     m_palette_source->Enable(!m_busy && printable_colors);
     m_import_color_mode->Enable(!m_busy);
-    m_auto_slice_after_import->Enable(!m_busy);
     m_custom_color->Enable(!m_busy && printable_colors && m_palette_source->GetSelection() != 0);
     m_add_custom_color->Enable(!m_busy && printable_colors && m_palette_source->GetSelection() != 0 && m_custom_palette.size() < 4);
     for (wxSpinCtrlDouble* control : {m_print_width, m_nozzle_size, m_line_width, m_minimum_feature})
@@ -3554,7 +3524,7 @@ void ModelGenerationPanel::on_apply_local_recolor(wxCommandEvent&)
         dimensions.x(), dimensions.y(), dimensions.z()));
     m_model_preview_message->SetLabel(_L("局部改色已保存；可继续选择其他区域，或导入准备页。"));
     m_status->SetLabel(_L("局部改色完成，原始 OBJ 已保留。"));
-    m_result_summary->SetLabel(_L("已生成新的顶点色 OBJ，可继续预览、改色或导入切片。"));
+    m_result_summary->SetLabel(_L("已生成新的顶点色 OBJ，可继续预览、改色或导入准备页。"));
 
     const boost::filesystem::path history_root = generated_models_root();
     nlohmann::json metadata {
@@ -4196,10 +4166,8 @@ void ModelGenerationPanel::load_library_entries()
         if (metadata.is_object()) {
             entry.generated_at = metadata.value("generated_at", entry.generated_at);
             entry.imported_at = metadata.value("imported_at", std::time_t {0});
-            entry.slice_requested_at = metadata.value("slice_requested_at", std::time_t {0});
             entry.triangle_count = metadata.value("triangle_count", size_t {0});
             entry.load_seconds = metadata.value("load_seconds", 0.0);
-            entry.auto_slice_requested = metadata.value("auto_slice_requested", false);
             entry.print_feedback = metadata.value("print_feedback", std::string());
             entry.use_printable_colors = metadata.value("use_printable_colors", false);
             const std::string provider = metadata.value("provider", std::string());
@@ -4309,9 +4277,7 @@ void ModelGenerationPanel::load_library_entries()
         entry.details += _L(" · ");
         entry.details += entry.ai_image_path.empty() ? _L("AI 图未保存") : _L("AI 图 ✓");
         if (entry.imported_at > 0) {
-            entry.details += entry.auto_slice_requested
-                ? _L("\n已导入 · 已请求自动切片（完成状态请在 G-code/设备页确认）")
-                : _L("\n已导入 · 未请求自动切片");
+            entry.details += _L("\n已导入准备页");
             if (entry.print_feedback == "success")
                 entry.details += _L(" · 打印反馈：成功");
             else if (entry.print_feedback == "issue")
@@ -4501,7 +4467,7 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
         model_load_summary(triangle_count, load_seconds).c_str()));
     m_model_preview_message->SetLabel(_L("历史模型已自动摆正；可同时对照原图和 AI 图后再导入。"));
     m_status->SetLabel(_L("已加载历史模型：") + title);
-    m_result_summary->SetLabel(_L("历史模型已加载到结果对照，可继续检查图片并导入切片。"));
+    m_result_summary->SetLabel(_L("历史模型已加载到结果对照，可继续检查图片并导入准备页。"));
     m_preview_message->SetLabel(reference_image.IsOk() && ai_image.IsOk()
         ? _L("历史素材已恢复：原图与 AI 生成图可同屏对照。")
         : reference_image.IsOk()
@@ -4574,8 +4540,7 @@ void ModelGenerationPanel::update_library_provider_tasks(
     load_library_entries();
 }
 
-void ModelGenerationPanel::update_library_import_status(const std::string& job_id,
-                                                         bool auto_slice_requested)
+void ModelGenerationPanel::update_library_import_status(const std::string& job_id)
 {
     if (job_id.empty())
         return;
@@ -4587,8 +4552,8 @@ void ModelGenerationPanel::update_library_import_status(const std::string& job_i
     metadata["schema_version"] = std::max(4, metadata.value("schema_version", 0));
     metadata["job_id"] = job_id;
     metadata["imported_at"] = now;
-    metadata["auto_slice_requested"] = auto_slice_requested;
-    metadata["slice_requested_at"] = auto_slice_requested ? now : std::time_t {0};
+    metadata.erase("auto_slice_requested");
+    metadata.erase("slice_requested_at");
     if (!write_json(metadata_path, metadata))
         BOOST_LOG_TRIVIAL(warning) << "Unable to update generated model import status for " << job_id;
 }

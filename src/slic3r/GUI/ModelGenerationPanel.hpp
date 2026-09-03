@@ -141,7 +141,7 @@ private:
     void delete_library_entry(const GeneratedModelEntry& entry);
     void update_library_provider_tasks(const std::string& job_id,
                                        const AIModelGenerationClient::JobStatus& status);
-    void update_library_import_status(const std::string& job_id, bool auto_slice_requested);
+    void update_library_import_status(const std::string& job_id);
     void record_library_print_feedback(const std::string& job_id, const std::string& feedback);
     void refresh_library();
 
@@ -161,12 +161,10 @@ private:
         std::string provider_conversion_task_id;
         std::time_t generated_at { 0 };
         std::time_t imported_at { 0 };
-        std::time_t slice_requested_at { 0 };
         size_t triangle_count { 0 };
         double load_seconds { 0.0 };
         std::string print_feedback;
         bool use_printable_colors { false };
-        bool auto_slice_requested { false };
     };
 
     AI::IModelArtifactConsumer&    m_artifact_consumer;
@@ -194,7 +192,6 @@ private:
     wxCheckBox*     m_use_printable_colors { nullptr };
     wxChoice*       m_palette_source { nullptr };
     wxChoice*       m_import_color_mode { nullptr };
-    wxCheckBox*     m_auto_slice_after_import { nullptr };
     wxColourPickerCtrl* m_custom_color { nullptr };
     wxButton*       m_add_custom_color { nullptr };
     wxStaticText*   m_palette_summary { nullptr };

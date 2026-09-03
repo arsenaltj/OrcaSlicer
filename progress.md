@@ -21,8 +21,19 @@
   - `docs/architecture/ADR-006-six-channel-model-color-intent.md`
 
 ### 移除模型生成自动切片
-- **状态：** in_progress
-- 下一步先增加架构回归约束，再删除契约、UI、适配器和 MainFrame 触发路径。
+- **状态：** complete_with_build_environment_limitation
+- 已删除契约字段、面板复选框/状态、适配器打印预设写入、切片事件和 Preview 导航；导入成功后统一进入准备页。
+- Sidebar 的切片与 G-code 步骤保持 Waiting；需修复或手动上色属于成功导入后的交接提示，不再把它记为切片失败。
+- 历史模型库元数据仍可读取；再次导入时会清除旧的 `auto_slice_requested` 与 `slice_requested_at` 声明。
+- 新增无自动切片架构守卫及 fixture 测试；针对当前代码的红测按预期失败并报告 15 处残留。
+- 在 Catch2 契约测试中增加成员检测静态断言，使旧字段存在时无法通过编译。
+- 已从 `build/CMakeCache.txt` 找到 Visual Studio 自带 CMake；调用后因构建树重新配置发现捆绑 Python 3.12.13 的解释器/头文件/导入库不完整，尚未进入 C++ 编译。
+- `build-ai-tests` 的 `ClCompile` 可绕过 CMake，但该旧工程缺少当前 `wx/inspector/inspector.h` 依赖并试图重编全部 GUI；确认不是本次源码诊断后已停止。
+- 直接使用 MSVC 编译 `tests/slic3rutils/test_ai_contracts.cpp` 成功；完整 Catch2 链接受旧工程源文件清单限制。
+- `python -m unittest tools.ai.test_integration_guardrails -v`：41 项通过。
+- `python scripts/verify_ai_integration.py --skip-git`：通过。
+- `python scripts/verify_ai_integration.py`：通过，Git/回执检查基于 `35c5e1b647`。
+- `git diff --check`：通过，仅有 Windows CRLF 提示。
 
 ### 分支基线迁移
 - **状态：** complete
@@ -54,6 +65,10 @@
 | 批量移动脚本变量拼写错误导致提前退出 | 1 | 未重复原命令；检查状态后补移三份未完成 ADR |
 | 首次追加六通道计划的补丁上下文不匹配 | 1 | 检查实际结构后拆分应用；第一次补丁未写入任何文件 |
 | PowerShell 下向 `rg` 传递 `MainFrame.*`/`Plater.*` 路径时报 Windows 通配符错误 | 1 | 改为传入四个明确文件路径，后续查询成功 |
+| `cmake` 不在当前 PowerShell PATH，原生红测未启动 | 1 | 从已有构建缓存或 Visual Studio 安装目录解析 CMake 绝对路径后重试 |
+| CMake/VS Build 重新配置时找不到完整的捆绑 Python 3.12.13 开发环境 | 2 | 不再调用会触发 CustomBuild 的 Build；改用 MSBuild 编译/链接内部目标，依赖修复留到完整构建验证阶段 |
+| 旧 `build-ai-tests` 工程缺少 `wx/inspector/inspector.h` 并触发全 GUI 编译 | 1 | 停止该构建；检查主构建树和实际依赖路径后仅编译本次改动单元 |
+| 手工编译完整 GUI 源文件未复现工程 PCH 的本地化宏注入顺序 | 2 | 将其记录为构建环境限制；不修改生产头文件来迎合临时命令 |
 
 ## 五问重启检查
 
