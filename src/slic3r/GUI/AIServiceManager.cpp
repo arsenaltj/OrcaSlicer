@@ -19,7 +19,6 @@
 #include <chrono>
 #include <cstdlib>
 #include <system_error>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -120,6 +119,29 @@ std::string shutdown_url(const std::string& endpoint)
         return endpoint.substr(0, endpoint.size() - 1) + "/v1/orcaslicer/shutdown";
     return endpoint + "/v1/orcaslicer/shutdown";
 }
+
+#ifdef _WIN32
+bool wait_for_process_exit(boost::process::child& child, std::chrono::milliseconds timeout, std::error_code& ec)
+{
+    ec.clear();
+    const DWORD result = ::WaitForSingleObject(child.native_handle(), static_cast<DWORD>(timeout.count()));
+    if (result == WAIT_OBJECT_0)
+        return true;
+    if (result == WAIT_FAILED)
+        ec = std::error_code(static_cast<int>(::GetLastError()), std::system_category());
+    return false;
+}
+
+void log_process_error(const char* operation, const std::error_code& ec)
+{
+    if (ec) {
+        BOOST_LOG_TRIVIAL(warning) << "AI sidecar process operation failed, operation=" << operation
+                                   << ", error=" << ec.value()
+                                   << ", category=" << ec.category().name()
+                                   << ", message=" << ec.message();
+    }
+}
+#endif
 
 void inherit_sidecar_environment(boost::process::environment& destination)
 {
@@ -395,27 +417,60 @@ void AIServiceManager::stop_owned_sidecar()
     if (!m_sidecar_process || !m_sidecar_process->child)
         return;
 
+    const auto stop_started = std::chrono::steady_clock::now();
+    auto& child = *m_sidecar_process->child;
     std::error_code ec;
-    if (m_sidecar_process->child->running(ec)) {
+    bool exited = wait_for_process_exit(child, std::chrono::milliseconds(0), ec);
+    log_process_error("initial_wait", ec);
+    if (!exited) {
         bool graceful_requested = false;
         auto http = Http::post(shutdown_url(m_endpoint));
         AISidecarClient::configure_native_request(http);
-        http.timeout_connect(1).timeout_max(2).size_limit(8 * 1024);
+        http.header("Content-Type", "application/json")
+            .set_post_body(std::string("{}"))
+            .timeout_connect(1)
+            .timeout_max(2)
+            .size_limit(8 * 1024);
         http.on_complete([&graceful_requested](std::string, unsigned) { graceful_requested = true; });
         http.on_error([](std::string, std::string, unsigned) {});
+        const auto request_started = std::chrono::steady_clock::now();
         http.perform_sync();
+        BOOST_LOG_TRIVIAL(info) << "AI sidecar shutdown request elapsed_ms="
+                                << std::chrono::duration_cast<std::chrono::milliseconds>(
+                                       std::chrono::steady_clock::now() - request_started).count()
+                                << ", accepted=" << graceful_requested;
 
         if (graceful_requested) {
-            for (int attempt = 0; attempt < 40 && m_sidecar_process->child->running(ec); ++attempt)
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            exited = wait_for_process_exit(child, std::chrono::seconds(2), ec);
+            log_process_error("graceful_wait", ec);
         }
-        if (m_sidecar_process->child->running(ec)) {
+        if (!exited) {
             BOOST_LOG_TRIVIAL(warning) << "AI sidecar did not stop gracefully; terminating owned process.";
-            m_sidecar_process->child->terminate(ec);
+            ec.clear();
+            if (!::TerminateProcess(child.native_handle(), EXIT_FAILURE)) {
+                const std::error_code terminate_error(
+                    static_cast<int>(::GetLastError()), std::system_category());
+                exited = wait_for_process_exit(child, std::chrono::milliseconds(0), ec);
+                log_process_error("post_terminate_query", ec);
+                if (!exited)
+                    log_process_error("terminate", terminate_error);
+            } else {
+                exited = wait_for_process_exit(child, std::chrono::seconds(1), ec);
+                log_process_error("termination_wait", ec);
+            }
         }
     }
-    m_sidecar_process->child->wait(ec);
+    if (exited) {
+        ec.clear();
+        child.wait(ec);
+        log_process_error("collect", ec);
+    } else {
+        BOOST_LOG_TRIVIAL(warning) << "AI sidecar process did not report exit after termination timeout.";
+    }
     m_sidecar_process.reset();
+    BOOST_LOG_TRIVIAL(info) << "AI sidecar shutdown total elapsed_ms="
+                            << std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   std::chrono::steady_clock::now() - stop_started).count();
 #endif
 }
 

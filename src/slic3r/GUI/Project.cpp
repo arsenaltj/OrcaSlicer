@@ -31,6 +31,15 @@
 
 namespace Slic3r { namespace GUI {
 
+namespace {
+
+bool reload_cancelled(const std::shared_ptr<std::atomic<bool>>& cancel_token)
+{
+    return cancel_token && cancel_token->load(std::memory_order_acquire);
+}
+
+} // namespace
+
 wxDEFINE_EVENT(EVT_PROJECT_RELOAD, wxCommandEvent);
 
 const std::vector<std::string> license_list = {
@@ -179,7 +188,7 @@ void ProjectPanel::on_reload(wxCommandEvent& evt)
         // file info
         std::string file_path = encode_path(wxGetApp().plater()->model().get_auxiliary_file_temp_path().c_str());
         if (!file_path.empty()) {
-            files = Reload(file_path);
+            files = Reload(file_path, cancel_token);
             if (cancel_token->load(std::memory_order_acquire) || wxTheApp == nullptr || wxGetApp().is_closing())
                 return;
 
@@ -359,7 +368,8 @@ void ProjectPanel::clear_model_info()
     });
 }
 
-std::map<std::string, std::vector<json>> ProjectPanel::Reload(wxString aux_path)
+std::map<std::string, std::vector<json>> ProjectPanel::Reload(
+    wxString aux_path, const std::shared_ptr<std::atomic<bool>>& cancel_token)
 {
     std::vector<fs::path>                           dir_cache;
     fs::directory_iterator                          iter_end;
@@ -377,6 +387,8 @@ std::map<std::string, std::vector<json>> ProjectPanel::Reload(wxString aux_path)
     for (auto folder : s_default_folders)
         m_paths_list[folder.ToStdString()] = std::vector<json>{};
 
+    if (reload_cancelled(cancel_token))
+        return m_paths_list;
 
     fs::path new_aux_path(aux_path.ToStdWstring());
 
@@ -387,6 +399,8 @@ std::map<std::string, std::vector<json>> ProjectPanel::Reload(wxString aux_path)
 
     // Create default folders if they are not loaded
     for (auto folder : s_default_folders) {
+        if (reload_cancelled(cancel_token))
+            return m_paths_list;
         wxString folder_path = aux_path + "/" + folder;
         if (fs::exists(folder_path.ToStdWstring())) continue;
         fs::create_directory(folder_path.ToStdWstring());
@@ -394,13 +408,18 @@ std::map<std::string, std::vector<json>> ProjectPanel::Reload(wxString aux_path)
 
     // Load from new path
     for (fs::directory_iterator iter(new_aux_path); iter != iter_end; iter++) {
-        wxString path = iter->path().generic_wstring();
+        if (reload_cancelled(cancel_token))
+            return m_paths_list;
         dir_cache.push_back(iter->path());
     }
 
 
     for (auto dir : dir_cache) {
+        if (reload_cancelled(cancel_token))
+            return m_paths_list;
         for (fs::directory_iterator iter(dir); iter != iter_end; iter++) {
+            if (reload_cancelled(cancel_token))
+                return m_paths_list;
             if (fs::is_directory(iter->path())) continue;
 
             json pfile_obj;
@@ -435,7 +454,9 @@ std::map<std::string, std::vector<json>> ProjectPanel::Reload(wxString aux_path)
                         file_extension == ".bmp")
                     {
 
-                        wxString base64_str = to_base64(file_path);
+                        wxString base64_str = to_base64(file_path, cancel_token);
+                        if (reload_cancelled(cancel_token))
+                            return m_paths_list;
                         pfile_obj["filepath"] = base64_str.ToStdString();
                         m_paths_list[folder.ToStdString()].push_back(pfile_obj);
                         break;
@@ -459,8 +480,12 @@ std::string ProjectPanel::formatBytes(unsigned long bytes)
     return wxString::Format("%.2fMB", dValidData).ToStdString();
 }
 
-wxString ProjectPanel::to_base64(std::string file_path) 
+wxString ProjectPanel::to_base64(
+    std::string file_path, const std::shared_ptr<std::atomic<bool>>& cancel_token)
 {
+
+    if (reload_cancelled(cancel_token))
+        return wxEmptyString;
 
     std::ifstream imageFile(encode_path(file_path.c_str()), std::ios::binary);
     if (!imageFile) {
@@ -468,9 +493,18 @@ wxString ProjectPanel::to_base64(std::string file_path)
     }
 
     std::ostringstream imageStream;
-    imageStream << imageFile.rdbuf();
+    std::array<char, 64 * 1024> buffer;
+    while (imageFile) {
+        if (reload_cancelled(cancel_token))
+            return wxEmptyString;
+        imageFile.read(buffer.data(), buffer.size());
+        imageStream.write(buffer.data(), imageFile.gcount());
+    }
 
     std::string binaryImageData = imageStream.str();
+
+    if (reload_cancelled(cancel_token))
+        return wxEmptyString;
 
     std::string extension;
     size_t last_dot = file_path.find_last_of(".");

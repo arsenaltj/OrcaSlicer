@@ -96,9 +96,11 @@ public:
     void OnScriptMessage(wxWebViewEvent& evt);
     void RunScript(std::string content);
 
-    std::map<std::string, std::vector<json>> Reload(wxString aux_path);
+    std::map<std::string, std::vector<json>> Reload(
+        wxString aux_path, const std::shared_ptr<std::atomic<bool>>& cancel_token = {});
     std::string formatBytes(unsigned long bytes);
-    wxString to_base64(std::string path);
+    wxString to_base64(
+        std::string path, const std::shared_ptr<std::atomic<bool>>& cancel_token = {});
 };
 
 wxDECLARE_EVENT(EVT_PROJECT_RELOAD, wxCommandEvent);

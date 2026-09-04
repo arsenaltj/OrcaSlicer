@@ -51,6 +51,7 @@
 #include "../Utils/PrintHost.hpp"
 
 #include <fstream>
+#include <chrono>
 #include <string_view>
 
 #include "GUI_App.hpp"
@@ -631,7 +632,14 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
         // Prevent queued selection/UI refresh work from running as normal during reset.
         wxGetApp().set_closing(true);
 
+        // Closing has already passed every veto/save check. Hide the frame before teardown so
+        // synchronous cleanup cannot leave a visibly frozen window on screen.
+        this->Show(false);
+        const auto reset_started = std::chrono::steady_clock::now();
         m_plater->reset();
+        BOOST_LOG_TRIVIAL(info) << "MainFrame close stage plater_reset elapsed_ms="
+                                << std::chrono::duration_cast<std::chrono::milliseconds>(
+                                       std::chrono::steady_clock::now() - reset_started).count();
         this->shutdown();
         // propagate event
 
@@ -1120,9 +1128,23 @@ void MainFrame::update_edge_panels()
 void MainFrame::shutdown()
 {
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << "MainFrame::shutdown enter";
+    const auto shutdown_started = std::chrono::steady_clock::now();
+    auto stage_started = shutdown_started;
+    auto log_stage = [&](const char* stage) {
+        const auto now = std::chrono::steady_clock::now();
+        BOOST_LOG_TRIVIAL(info) << "MainFrame::shutdown stage=" << stage
+                                << " elapsed_ms="
+                                << std::chrono::duration_cast<std::chrono::milliseconds>(now - stage_started).count()
+                                << " total_ms="
+                                << std::chrono::duration_cast<std::chrono::milliseconds>(now - shutdown_started).count();
+        stage_started = now;
+    };
+
     if (m_project != nullptr)
         m_project->shutdown();
+    log_stage("project");
     m_plugin_pages.shutdown();
+    log_stage("plugin_pages");
 #ifdef __WXGTK__
     // Edge panels are child windows — wxWidgets destroys them automatically.
     m_edge_bottom = nullptr;
@@ -1133,6 +1155,7 @@ void MainFrame::shutdown()
     Slic3r::set_backup_callback(nullptr);
     if (m_ai_feature_host != nullptr)
         m_ai_feature_host->shutdown();
+    log_stage("ai_features");
 #ifdef _WIN32
 	if (m_hDeviceNotify) {
 		::UnregisterDeviceNotification(HDEVNOTIFY(m_hDeviceNotify));
@@ -1161,6 +1184,7 @@ void MainFrame::shutdown()
     // Also the application closes much faster without these unnecessary screen refreshes.
     // In addition, there were some crashes due to the Paint events sent to already destructed windows.
     this->Show(false);
+    log_stage("canvas_and_window");
 
     if (m_settings_dialog.IsShown())
         // call Close() to trigger call to lambda defined into GUI_App::persist_window_geometry()
@@ -1173,6 +1197,7 @@ void MainFrame::shutdown()
         // Store the device parameter database back to appconfig.
         m_plater->get_mouse3d_controller().save_config(*wxGetApp().app_config);
     }
+    log_stage("dialogs_and_mouse3d");
 
     // stop agent
     NetworkAgent* agent = wxGetApp().getAgent();
@@ -1183,10 +1208,12 @@ void MainFrame::shutdown()
     //wxGetApp().removable_drive_manager()->shutdown();
 	//stop listening for messages from other instances
 	wxGetApp().other_instance_message_handler()->shutdown(this);
+    log_stage("network_and_instance_listener");
     // Save the slic3r.ini.Usually the ini file is saved from "on idle" callback,
     // but in rare cases it may not have been called yet.
     if(wxGetApp().app_config->dirty())
         wxGetApp().app_config->save();
+    log_stage("app_config");
 //         if (m_plater)
 //             m_plater->print = undef;
 //         Slic3r::GUI::deregister_on_request_update_callback();
@@ -1196,10 +1223,13 @@ void MainFrame::shutdown()
     wxGetApp().tabs_list.clear();
     wxGetApp().model_tabs_list.clear();
     wxGetApp().shutdown();
+    log_stage("app_shutdown");
     // BBS: why clear ?
     //wxGetApp().plater_ = nullptr;
 
-    BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << "MainFrame::shutdown exit";
+    BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << "MainFrame::shutdown exit total_ms="
+                            << std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   std::chrono::steady_clock::now() - shutdown_started).count();
 }
 
 void MainFrame::update_filament_tab_ui()
