@@ -66,6 +66,8 @@ boost::filesystem::path library_image_path(const nlohmann::json& metadata,
 wxString model_load_summary(size_t triangle_count, double load_seconds);
 wxString style_label(const std::string& style);
 int style_selection(const std::string& style);
+int stylized_style_selection(const std::string& style);
+std::string selected_style(int family, int stylized);
 bool style_uses_printable_colors(const std::string& style);
 wxString style_recommendation_reason(const std::string& reason);
 wxStaticText* section_label(wxWindow* parent, const wxString& text);

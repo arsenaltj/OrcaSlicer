@@ -85,11 +85,20 @@ TEST_CASE("automatic printable palette roles remain deterministic and distinct",
     CHECK(automatic_palette_roles({"#000000", "#000000"}).empty());
 }
 
-TEST_CASE("print-native artistic style mappings remain stable",
+TEST_CASE("style families retain legacy styles in a compact secondary choice",
           "[ModelGenerationPresentation]")
 {
     CHECK(style_selection("portrait_sketch") == 2);
-    CHECK(style_selection("ink_relief") == 6);
+    CHECK(style_selection("ink_relief") == 2);
+    CHECK(style_selection("sculpture") == 0);
+    CHECK(style_selection("realistic") == 1);
+    for (const std::string style : {"portrait_sketch", "cartoon", "low_poly", "relief", "ink_relief", "diorama", "custom"}) {
+        CHECK(style_selection(style) == 2);
+        CHECK(selected_style(2, stylized_style_selection(style)) == style);
+    }
+    CHECK(selected_style(0, 5) == "sculpture");
+    CHECK(selected_style(1, 5) == "realistic");
+    CHECK(selected_style(2, -1) == "cartoon");
     CHECK(style_uses_printable_colors("portrait_sketch"));
     CHECK(style_uses_printable_colors("ink_relief"));
 }
