@@ -103,7 +103,7 @@ class DiagnosticFailureFlowTests(unittest.TestCase):
             "OPENAI_API_KEY": "unused-test-key",
             "OPENAI_PRO_API": "unused-pro-key",
             "OPENAI_PRO_URL": "https://provider.invalid/v1",
-            "TRIPO_API_KEY": "unused-tripo-key",
+            "TRIPO_API_KEY": "test-tripo-key",
             "TRIPO_API_BASE": "https://provider.invalid/v3",
             "ORCASLICER_AI_CONFIG_MODE": "internal_locked",
             "SYSTEMROOT": "test-system-root",

@@ -9,8 +9,8 @@
   },
   "feature_sources": {
     "model_generation": {
-      "branch": "codex/model-generation",
-      "sha": "16f8ac0fb048570edb5fe787bdfdfcde4c9fa4b7"
+      "branch": "codex/model-generation-release-20260904",
+      "sha": "6e536c6ebd30cf3af70046c8f60a8159f79b4f9b"
     },
     "smart_slicing": {
       "branch": "codex/smart-slicing",
@@ -19,19 +19,19 @@
   },
   "integration_receipts": {
     "model_generation": {
-      "source_sha": "16f8ac0fb048570edb5fe787bdfdfcde4c9fa4b7",
-      "integration_commit": "616a063192fb0e1ff52ecaf34d4a4c8ee8fae271",
+      "source_sha": "6e536c6ebd30cf3af70046c8f60a8159f79b4f9b",
+      "integration_commit": "8eb099420b0294a74b56c400242b8ea05a1eb528",
       "method": "verified_git_object_subset",
       "verified_git_objects": {
-        "src/slic3r/GUI/AIModelGenerationClient.hpp": "65bda77f5e98d0e8f3dbb28951839fb15289c60c",
-        "tools/ai/image2_quality_benchmark.py": "178102bfdc99c991625b5157264a472d5def65e7",
-        "tools/ai/model_input_image_quality.py": "bfa3a2f05e58fa5e56b7145ea2a5958aec3e2ffd",
+        "src/slic3r/GUI/AIModelGenerationClient.hpp": "539cf0126ab633ce863950333ad13787f94d4f36",
+        "tools/ai/image2_quality_benchmark.py": "cf59fae15836eb3d491398d34edbc4dd3131f223",
+        "tools/ai/model_input_image_quality.py": "52e88b076732dc757ea88674f5cc6d8e482fc81d",
         "tools/ai/model_provider_gateway.py": "f5cf429f4f0b3ff59b0c6de09149f154f460b7da",
         "tools/ai/portrait_multiview_cleanup.py": "dce58f808452e73c7a4737fa748e6f49557cc8f9",
         "tools/ai/printable_image_pipeline.py": "04453961425d7c101bd1b734738c4e02e5c5e68c",
         "tools/ai/printable_multiview_reference.py": "495a81426280ea80805792e86b86194bae6b5b9b",
-        "tools/ai/printable_reference_visual_quality.py": "4c90d2c4ceed52698b98788414fcbd2ce6633a72",
-        "tools/ai/test_printable_sidecar_pipeline.py": "40e8d7ad7ae13818f761541a9f8367ea1623b005"
+        "tools/ai/printable_reference_visual_quality.py": "edc95f7222942465cbd95a15e9b9d433f21d9f7d",
+        "tools/ai/test_printable_sidecar_pipeline.py": "0fa02d006e7b3ecc1f02aa72c41f086d7fd8de47"
       }
     },
     "smart_slicing": {
