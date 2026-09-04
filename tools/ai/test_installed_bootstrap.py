@@ -170,7 +170,10 @@ class InstalledBootstrapTests(unittest.TestCase):
             self.assertEqual(report["configured_count"], 6)
 
             defaults_path.unlink()
-            with self.assertRaisesRegex(RuntimeError, "locked provider configuration"):
+            # Even a rejected payload loads build identity into os.environ.
+            # Do not leave an internal channel behind for later HTTP tests.
+            with mock.patch.dict(os.environ, {}, clear=True), \
+                 self.assertRaisesRegex(RuntimeError, "locked provider configuration"):
                 BOOTSTRAP.verify_installed_configuration(build_info_path, defaults_path)
 
     def test_rotate_log_keeps_three_bounded_backups(self) -> None:
