@@ -25,7 +25,8 @@ enum class ModelImportOutcome
     Imported,
     InvalidArtifact,
     ImportFailed,
-    RepairFailed
+    RepairFailed,
+    Cancelled
 };
 
 struct ModelImportResult

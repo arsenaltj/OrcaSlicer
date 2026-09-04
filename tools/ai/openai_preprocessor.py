@@ -49,6 +49,8 @@ _MAX_JSON_BYTES = 32 * 1024 * 1024
 _MAX_IMAGE_BYTES = 20 * 1024 * 1024
 _TIMEOUT_SECONDS = 120
 _IMAGE_QUALITY_VALUES = {"low", "medium", "high", "auto"}
+# Keep the historical filename for portrait detection/crop consumers. This mask
+# is evidence only; it must never be used to paste source pixels into a preview.
 PORTRAIT_FACE_LOCK_FILENAME = "portrait-face-restore-mask.png"
 
 STYLE_PROFILES = {
@@ -1095,7 +1097,7 @@ def _multipart_image(
 
 
 def _portrait_face_lock_mask(source: Path, destination: Path) -> Path | None:
-    """Create a face oval for deterministic post-edit identity restoration."""
+    """Locate a source face for portrait routing and quality-review crops."""
 
     try:
         from collections import deque
@@ -1186,105 +1188,6 @@ def _portrait_face_lock_mask(source: Path, destination: Path) -> Path | None:
     mask.save(temporary, format="PNG")
     os.replace(temporary, destination)
     return destination
-
-
-def _restore_portrait_face_from_source(source: Path, generated: Path, mask_path: Path) -> bool:
-    """Blend the source face back without changing generated body geometry."""
-
-    try:
-        from PIL import Image, ImageDraw, ImageFilter
-        with Image.open(source) as source_image, Image.open(generated) as generated_image, Image.open(mask_path) as mask_image:
-            target = generated_image.convert("RGBA")
-            source_scaled = source_image.convert("RGBA").resize(target.size, Image.Resampling.LANCZOS)
-            detected = mask_image.getchannel("A").resize(target.size, Image.Resampling.LANCZOS)
-            bounds = detected.getbbox()
-            if bounds is None:
-                return False
-            left, top, right, bottom = bounds
-            face_width = right - left
-            face_height = bottom - top
-            if face_width < 16 or face_height < 20:
-                return False
-            # Keep the complete cheek and jaw silhouette.  A narrow facial-core
-            # blend preserves landmarks but still lets the provider replace the
-            # outer cheeks, chin and age cues with a generic younger face.  The
-            # detector envelope is already limited to the upper portrait, so a
-            # small inset is enough to avoid copying the source background while
-            # retaining identity-defining geometry and the visible ear.
-            left += round(face_width * 0.04)
-            right -= round(face_width * 0.04)
-            top += round(face_height * 0.07)
-            bottom -= round(face_height * 0.03)
-            blend = Image.new("L", target.size, 0)
-            ImageDraw.Draw(blend).ellipse((left, top, right, bottom), fill=255)
-            blend = blend.filter(ImageFilter.GaussianBlur(max(4, round(face_width * 0.035))))
-            alpha = target.getchannel("A")
-            restored = Image.composite(source_scaled, target, blend)
-            restored.putalpha(alpha)
-            temporary = generated.with_name(generated.name + ".face-restore.part")
-            restored.save(temporary, format="PNG")
-            os.replace(temporary, generated)
-            return True
-    except (OSError, ValueError):
-        return False
-
-
-def _restore_portrait_face_as_neutral_relief(
-    source: Path, generated: Path, mask_path: Path
-) -> bool:
-    """Keep the locked identity while converting the face to neutral relief.
-
-    A second generative edit is useful for making the body a coherent clay
-    sculpture, but it can silently replace an already-correct real face with a
-    generic one.  This deterministic pass keeps the source landmarks and
-    expression, removes chroma, and compresses them into a warm-gray sculptural
-    value range before blending them back into the generated body.
-    """
-
-    try:
-        from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageOps
-        with Image.open(source) as source_image, Image.open(generated) as generated_image, Image.open(mask_path) as mask_image:
-            target = generated_image.convert("RGBA")
-            source_scaled = source_image.convert("RGBA").resize(target.size, Image.Resampling.LANCZOS)
-            detected = mask_image.getchannel("A").resize(target.size, Image.Resampling.LANCZOS)
-            bounds = detected.getbbox()
-            if bounds is None:
-                return False
-            left, top, right, bottom = bounds
-            face_width = right - left
-            face_height = bottom - top
-            if face_width < 16 or face_height < 20:
-                return False
-
-            left += round(face_width * 0.04)
-            right -= round(face_width * 0.04)
-            top += round(face_height * 0.07)
-            bottom -= round(face_height * 0.03)
-            blend = Image.new("L", target.size, 0)
-            ImageDraw.Draw(blend).ellipse((left, top, right, bottom), fill=255)
-            blend = blend.filter(ImageFilter.GaussianBlur(max(4, round(face_width * 0.035))))
-            visible_subject = ImageChops.multiply(
-                source_scaled.getchannel("A"), target.getchannel("A")
-            )
-            blend = ImageChops.multiply(blend, visible_subject)
-
-            # Retain exact landmark placement while removing skin, makeup and
-            # hair colour. Mild contrast makes eyelids, nose, mouth corners and
-            # jaw planes legible to image-to-3D without creating harsh black or
-            # white painted features.
-            gray = ImageOps.grayscale(source_scaled.convert("RGB"))
-            gray = ImageEnhance.Contrast(gray).enhance(1.10)
-            neutral = ImageOps.colorize(
-                gray, black=(72, 70, 67), white=(215, 212, 206)
-            ).convert("RGBA")
-            restored = Image.composite(neutral, target, blend)
-            restored.putalpha(target.getchannel("A"))
-            temporary = generated.with_name(generated.name + ".neutral-face.part")
-            restored.save(temporary, format="PNG")
-            os.replace(temporary, generated)
-            return True
-    except (OSError, ValueError):
-        return False
 
 
 def _validate_artifact_url(url: str) -> None:
@@ -1472,8 +1375,9 @@ def _style_preview_prompt(
         "drawn attractive person. Keep the face bounding box relative to the shoulders, head angle, eye centers and eyelid "
         "openings, brow heights, nose tip and nostril width, mouth corners, tooth exposure, cheek outline, jaw corners, and "
         "chin endpoint aligned to the source at the same scale. Do not substitute a generic professional portrait, narrow or "
-        "symmetrize the face, enlarge both eyes, or widen the smile. Permitted beautification is limited to subtle skin and "
-        "hair texture cleanup; it must not move, resize, or reshape identity landmarks. Before returning, compare the source "
+        "symmetrize the face, enlarge both eyes, or widen the smile. Preserve identity through modelable facial planes and "
+        "relief, not a photographic face overlay. Render the face in the same coherent sculptural material and lighting as "
+        "the head and body; surface simplification must not move, resize, or reshape identity landmarks. Before returning, compare the source "
         "and result face at equal size and correct any landmark drift. "
         if canonical_style in IDENTITY_FIRST_PORTRAIT_STYLES and (palette or geometry_reference) else ""
     )
@@ -1530,9 +1434,9 @@ def _style_preview_prompt(
             "fabric weave, or tiny markings into geometry or material boundaries. The selected filament palette is applied later. "
             if geometry_reference else ""
         )
-        + "Avoid dithering and tiny color speckles. Do not return the unchanged source as a whole; for a realistic person, "
-        "the protected face is allowed and preferred to remain unchanged while the background, base, and material treatment "
-        "outside the face change."
+        + "Avoid dithering and tiny color speckles. Do not return the unchanged source as a whole. Preserve a person's "
+        "identity in the generated shape, not by pasting original photo pixels onto the face. Do not copy source-background "
+        "shadows, gray halos, or photographic texture around the head into the generated reference."
     )
 
 
@@ -1704,17 +1608,38 @@ def generate_image(
     )
 
 
+def _design_material_direction(palette: tuple[str, ...], palette_roles: Mapping[str, str] | None) -> str:
+    if not palette:
+        return ""
+    try:
+        roles = assign_palette_roles(palette, palette_roles).color_by_role
+    except PrintablePaletteError as exc:
+        raise OpenAIPreprocessorError(str(exc)) from None
+    return (
+        "\nDesign material colors: " + ", ".join(palette) + ". Semantic material roles: "
+        + ", ".join(f"{role}: {color}" for role, color in roles.items())
+        + ". Use these hues for broad, coherent material regions while preserving the selected style and clear shape. "
+        "These are material colors, not an exact pixel palette: preserve continuous diffuse shading and geometric detail. "
+        "Never posterize, flatten the relief, or add color swatches, labels, palette grids, or a checkerboard. "
+        "With one color, render the entire subject in that single material."
+    )
+
+
 def generate_geometry_reference_image(
     instruction: str,
     output_path: str | os.PathLike[str],
     style: str = "cartoon",
     custom_style: str = "",
+    *,
+    palette: tuple[str, ...] = (),
+    palette_roles: Mapping[str, str] | None = None,
 ) -> Path:
     destination = Path(output_path)
     payload = json.dumps(
         {
             "model": _image_config().model,
-            "prompt": build_text_geometry_reference_prompt(instruction, style, custom_style),
+            "prompt": build_text_geometry_reference_prompt(instruction, style, custom_style)
+            + _design_material_direction(palette, palette_roles),
             "size": "1024x1024",
             "quality": _image_quality(),
             "n": 1,
@@ -1744,29 +1669,25 @@ def preprocess_image(
     result = edit_image(
         input_path,
         build_geometry_reference_prompt(instruction, style, custom_style)
-        if palette
-        else build_style_preview_prompt(instruction, palette, style, shadow_color, palette_roles, custom_style),
+        + _design_material_direction(palette, palette_roles),
         output_path,
         # Prompt-only transparency is not reliable: some compatible endpoints
         # paint a checkerboard into an opaque RGB image, and those tiles can be
         # mistaken for square holes in shoulders or the base. Request genuine
         # alpha at the transport layer whenever the printable pipeline needs a
         # clean subject mask.
-        background="transparent" if palette else None,
+        background="transparent",
     )
     if canonical_style in IDENTITY_FIRST_PORTRAIT_STYLES and palette:
-        mask_path = _portrait_face_lock_mask(
+        # Retain detection evidence for portrait routing/crops, not compositing.
+        # A source-space oval cannot align a newly generated head and can copy
+        # photographic background into the geometry reference as a gray halo.
+        _portrait_face_lock_mask(
             Path(input_path), Path(output_path).with_name(PORTRAIT_FACE_LOCK_FILENAME)
         )
-        # Restore the source-specific face before asking for the sculptural
-        # derivative.  Generating geometry from the pre-restoration colour pass
-        # would faithfully preserve the provider's generic replacement face
-        # instead of the person the user uploaded.
-        if mask_path is not None:
-            _restore_portrait_face_from_source(Path(input_path), result, mask_path)
         # A user-confirmed preview action may issue at most one billed Image2
-        # request. Reuse the accepted, identity-restored result as the geometry
-        # reference instead of silently ordering a second monochrome edit.
+        # request. Keep its pixels intact and reuse that result for geometry;
+        # source likeness belongs in generated shape, not a photo overlay.
         if geometry_output_path is not None:
             geometry_output = Path(geometry_output_path)
             try:
