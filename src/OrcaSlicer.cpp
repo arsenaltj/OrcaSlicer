@@ -1339,6 +1339,7 @@ int CLI::run(int argc, char **argv)
 
     m_extra_config.apply(m_config, true);
     m_extra_config.normalize_fdm();
+    BOOST_LOG_TRIVIAL(info) << "Application startup configuration is ready.";
 
     PrinterTechnology printer_technology = get_printer_technology(m_config);
 
