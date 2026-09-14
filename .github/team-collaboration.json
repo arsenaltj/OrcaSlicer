@@ -13,7 +13,11 @@
     "maintenance": "codex/team/maintenance",
     "integration": "codex/team/integration"
   },
-  "required_checks": ["AI integration checks", "Team integration candidate"],
+  "required_checks": [
+    "AI integration checks",
+    "windows_build / Build Deps / Build OrcaSlicer / Build OrcaSlicer",
+    "windows_tests / Unit Tests"
+  ],
   "automation": {"mode": "notify_and_preview", "auto_merge": false},
   "bootstrap": {"baseline_sha": null},
   "feishu": {"chat_id": null, "users": {}}

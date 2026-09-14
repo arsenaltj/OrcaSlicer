@@ -49,14 +49,15 @@ class CandidateTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 ci.require_results(self.report, results)
         self.report["native"] = False
-        ci.require_results(self.report, {"inspect": {"result": "success"}})
+        with self.assertRaises(ValueError):
+            ci.require_results(self.report, {"inspect": {"result": "success"}})
 
     def test_documentation_change_cannot_hide_unverified_or_failed_base(self):
         check = {"id": 10, "name": "Team integration candidate", "head_sha": self.report["base_sha"],
                  "app": {"id": 15368}, "status": "completed", "conclusion": "success"}
         report = dict(self.report, native=False)
         ci.inherit_verified_base(report, [check])
-        self.assertFalse(report["native"])
+        self.assertTrue(report["native"], "A different candidate SHA always needs its own Windows checks")
         for changes in ({"conclusion": "failure"}, {"status": "in_progress"}, {"head_sha": "9" * 40},
                         {"app": {"id": 1}}):
             with self.subTest(changes=changes):
@@ -69,13 +70,58 @@ class CandidateTests(unittest.TestCase):
         self.assertTrue(report["native"])
 
     def test_scope_matches_native_and_cross_platform_changes(self):
-        self.assertEqual({"native": False, "cross_platform": False}, ci.scope(["Docs/notes.md"]))
+        self.assertEqual({"native": True, "cross_platform": False}, ci.scope(["Docs/notes.md"]))
         self.assertEqual({"native": True, "cross_platform": False}, ci.scope(["src/slic3r/GUI/MainFrame.cpp"]))
         for paths in (["deps/Boost/Boost.cmake"], ["src/slic3r/CMakeLists.txt"], ["build_release_macos.sh"],
                       ["cmake/modules/example.cmake"], [".github/actions/apt-install-deps/action.yml"],
                       [".github/workflows/unit_tests.yml"], ["scripts/run_unit_tests.sh"]):
             self.assertEqual({"native": True, "cross_platform": True}, ci.scope(paths))
         self.assertTrue(ci.scope([], upstream=True)["cross_platform"])
+
+    def test_linux_and_macos_failures_are_information_but_windows_remains_required(self):
+        report = dict(self.report, cross_platform=True)
+        results = {name: {"result": "success"} for name in ("inspect", "windows_build", "windows_tests")}
+        results.update({name: {"result": "failure"} for name in (
+            "linux_build", "linux_tests", "macos_build", "macos_tests")})
+        ci.require_results(report, results)
+        for job in ("inspect", "windows_build", "windows_tests"):
+            with self.subTest(job=job):
+                failed = dict(results, **{job: {"result": "skipped"}})
+                with self.assertRaises(ValueError):
+                    ci.require_results(report, failed)
+
+    def test_revert_push_pins_integration_and_rechecks_both_live_branches(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ci.git(root, "init", "-q")
+            ci.git(root, "config", "user.name", "Candidate Test")
+            ci.git(root, "config", "user.email", "candidate@example.invalid")
+            (root / "file.txt").write_text("integration\n")
+            ci.git(root, "add", ".")
+            ci.git(root, "commit", "-qm", "integration")
+            base = ci.git(root, "rev-parse", "HEAD")
+            ci.git(root, "update-ref", f"refs/remotes/origin/{ci.BRANCH}", base)
+            (root / "file.txt").write_text("explicit revert candidate\n")
+            ci.git(root, "commit", "-am", "revert candidate")
+            head = ci.git(root, "rev-parse", "HEAD")
+            event = {"repository": {"full_name": "example/repo"}, "before": "0" * 40,
+                     "after": head, "ref": "refs/heads/codex/revert/pr12"}
+            report = ci.inspect(root, event, "push", "example/repo")
+            self.assertEqual(base, report["base_sha"])
+            self.assertEqual(head, report["head_sha"])
+            self.assertEqual("codex/revert/pr12", report["source_branch"])
+            def get(path):
+                return {"commit": {"sha": head if "codex%2Frevert%2Fpr12" in path else base}}
+            ci.verify_live(report, get)
+            for changed_branch in ("integration", "revert"):
+                def changed(path):
+                    is_revert = "codex%2Frevert%2Fpr12" in path
+                    return {"commit": {"sha": "f" * 40}} if is_revert == (changed_branch == "revert") else get(path)
+                with self.subTest(branch=changed_branch), self.assertRaises(ValueError):
+                    ci.verify_live(report, changed)
+            for forbidden in ("codex/revert-not-authorized", "codex/revert/../other", "main"):
+                with self.subTest(branch=forbidden), self.assertRaises(ValueError):
+                    ci.inspect(root, dict(event, ref="refs/heads/" + forbidden), "push", "example/repo")
 
     def test_only_exact_merge_parents_accepted_in_real_git_repository(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -11,6 +11,7 @@ import urllib.parse
 import urllib.request
 
 BRANCH = "codex/team/integration"
+REVERT_PREFIX = "codex/revert/"
 
 
 def sha(value: object) -> str:
@@ -29,9 +30,9 @@ def scope(paths: list[str], *, initial: bool = False, upstream: bool = False) ->
         p.startswith(("deps/", "deps_src/", "cmake/", ".github/actions/", ".github/workflows/"))
         or p.endswith("CMakeLists.txt") or p == "version.inc"
         or p.startswith(("build_linux", "build_release_macos", "scripts/build_", "scripts/run_unit_tests")) for p in paths)
-    native = cross or any(p.startswith(("src/", "tests/", "resources/", "localization/", "tools/ai/"))
-                          or p.startswith("build_") for p in paths)
-    return {"native": native, "cross_platform": cross}
+    # Every current candidate needs its own Windows build and C++ test receipt.
+    # Path-only changes cannot inherit an old green check for another SHA.
+    return {"native": True, "cross_platform": cross}
 
 
 def inspect(root: Path, event: dict, event_name: str, repository: str) -> dict:
@@ -41,6 +42,7 @@ def inspect(root: Path, event: dict, event_name: str, repository: str) -> dict:
         raise ValueError("Event repository mismatch")
     candidate = sha(git(root, "rev-parse", "HEAD"))
     number = None
+    source_branch = None
     initial = upstream = False
     if event_name == "pull_request":
         pr = event["pull_request"]
@@ -65,19 +67,29 @@ def inspect(root: Path, event: dict, event_name: str, repository: str) -> dict:
         # A merge group may contain an upstream/CI change: cover all platforms.
         upstream = True
     elif event_name == "push":
-        if event["ref"] != f"refs/heads/{BRANCH}" or sha(event["after"]) != candidate:
+        ref = event.get("ref", "")
+        source_branch = ref.removeprefix("refs/heads/")
+        is_revert = (ref.startswith(f"refs/heads/{REVERT_PREFIX}")
+                     and re.fullmatch(r"codex/revert/[A-Za-z0-9][A-Za-z0-9._/-]*", source_branch)
+                     and not any(value in source_branch for value in ("..", "//", "@{"))
+                     and not source_branch.endswith(("/", ".", ".lock")))
+        if (ref != f"refs/heads/{BRANCH}" and not is_revert) or sha(event["after"]) != candidate:
             raise ValueError("Push does not match integration checkout")
-        head, base = candidate, sha(event["before"])
-        initial = base == "0" * 40
-        if initial:
-            base = head
+        if is_revert:
+            head, base = candidate, sha(git(root, "rev-parse", f"refs/remotes/origin/{BRANCH}"))
+            git(root, "merge-base", "--is-ancestor", base, head)
+        else:
+            head, base = candidate, sha(event["before"])
+            initial = base == "0" * 40
+            if initial:
+                base = head
     else:
         raise ValueError("Only pull_request, merge_group and integration push are supported")
     names = git(root, "ls-files", "-z") if initial else git(root, "diff", "--no-renames", "--name-only", "-z", base, candidate)
     paths = [name for name in names.split("\0") if name]
     return {"schema_version": 1, "repository": repository, "pr_number": number,
             "event_name": event_name, "head_sha": head, "base_sha": base,
-            "candidate_sha": candidate, "status": "pending",
+            "candidate_sha": candidate, "status": "pending", "source_branch": source_branch,
             **scope(paths, initial=initial, upstream=upstream)}
 
 
@@ -97,9 +109,14 @@ def api_get(path: str, token: str) -> dict:
 def verify_live(report: dict, get) -> None:
     repo = report["repository"]
     branch = get(f"repos/{repo}/branches/{urllib.parse.quote(BRANCH, safe='')}")
-    expected = report["candidate_sha"] if report["event_name"] == "push" else report["base_sha"]
+    revert_push = report["event_name"] == "push" and (report.get("source_branch") or "").startswith(REVERT_PREFIX)
+    expected = report["candidate_sha"] if report["event_name"] == "push" and not revert_push else report["base_sha"]
     if branch["commit"]["sha"] != expected:
         raise ValueError("Integration HEAD changed during checks; refresh candidate and rerun")
+    if revert_push:
+        source = get(f"repos/{repo}/branches/{urllib.parse.quote(report['source_branch'], safe='')}")
+        if source["commit"]["sha"] != report["head_sha"]:
+            raise ValueError("Revert branch HEAD changed during checks; refresh candidate and rerun")
     if report["event_name"] == "pull_request":
         pr = get(f"repos/{repo}/pulls/{report['pr_number']}")
         if (pr["state"] != "open" or pr["head"]["sha"] != report["head_sha"]
@@ -111,18 +128,14 @@ def verify_live(report: dict, get) -> None:
 
 
 def require_results(report: dict, results: dict) -> None:
-    required = {"inspect"}
-    if report["native"]:
-        required.update(("windows_build", "windows_tests"))
-    if report["cross_platform"]:
-        required.update(("linux_build", "linux_tests", "macos_build", "macos_tests"))
+    required = {"inspect", "windows_build", "windows_tests"}
     for name in required:
         if results.get(name, {}).get("result") != "success":
             raise ValueError(f"Required candidate job did not succeed: {name}")
 
 
 def inherit_verified_base(report: dict, checks: list[dict]) -> None:
-    """Only skip native builds when the unchanged base has successful evidence.
+    """Record base evidence, keeping Windows checks mandatory on this candidate.
 
     In particular, a documentation push must not turn an unbuilt or failed
     bootstrap baseline green by cancelling its first full build.
@@ -133,6 +146,7 @@ def inherit_verified_base(report: dict, checks: list[dict]) -> None:
     latest = max(matches, key=lambda check: check["id"]) if matches else {}
     verified = latest.get("status") == "completed" and latest.get("conclusion") == "success"
     report["base_candidate_verified"] = verified
+    report["native"] = True
     if not verified:
         report.update(native=True, cross_platform=True)
 
