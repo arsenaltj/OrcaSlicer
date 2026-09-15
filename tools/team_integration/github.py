@@ -139,7 +139,25 @@ class GitHub:
         if not runs:
             return None
         run = max(runs, key=lambda r: (r["id"], r.get("run_attempt", 1)))
-        if run.get("status") != "completed" or run.get("conclusion") != "success":
+        if run.get("status") != "completed":
+            return None
+        # Linux/macOS jobs are intentionally informational.  GitHub marks the
+        # whole workflow failed when one of those reference jobs fails, so the
+        # workflow conclusion cannot be used as the merge gate.  Verify the
+        # required jobs directly and keep the candidate receipt bound to this
+        # exact run/attempt.
+        jobs = self.pages(f"/actions/runs/{number(run['id'])}/jobs", "jobs")
+        required = {
+            "Inspect exact candidate and collaboration tests",
+            "windows_build / Build Deps / Build OrcaSlicer / Build OrcaSlicer",
+            "windows_tests / Unit Tests",
+            "Team integration candidate",
+        }
+        successful = {
+            job.get("name") for job in jobs
+            if job.get("status") == "completed" and job.get("conclusion") == "success"
+        }
+        if not required <= successful:
             return None
         artifacts = self.pages(f"/actions/runs/{number(run['id'])}/artifacts", "artifacts")
         artifacts = [a for a in artifacts if a.get("name") == self.config["candidate_artifact"] and not a.get("expired")]
