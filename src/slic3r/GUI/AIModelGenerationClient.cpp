@@ -11,7 +11,9 @@
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <cstdint>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <regex>
 #include <set>
@@ -767,8 +769,23 @@ AIModelGenerationClient::GenerationOptions AIModelGenerationClient::restore_gene
         return options;
     if (saved.contains("provider") && saved["provider"].is_string())
         options.provider = saved["provider"].get<std::string>();
-    if (saved.contains("face_limit") && saved["face_limit"].is_number_integer())
-        options.face_limit = saved["face_limit"].get<int>();
+    if (saved.contains("face_limit")) {
+        const auto& face_limit = saved["face_limit"];
+        // JSON integers may be stored as either signed or unsigned values.
+        // Check the full source range before narrowing to int so malformed
+        // history cannot wrap into a different face target.
+        // nlohmann::json considers unsigned integers to be integer numbers as
+        // well, so test the unsigned representation first.
+        if (face_limit.is_number_unsigned()) {
+            const auto value = face_limit.get<std::uint64_t>();
+            if (value <= static_cast<std::uint64_t>(std::numeric_limits<int>::max()))
+                options.face_limit = static_cast<int>(value);
+        } else if (face_limit.is_number_integer()) {
+            const auto value = face_limit.get<std::int64_t>();
+            if (value >= std::numeric_limits<int>::min() && value <= std::numeric_limits<int>::max())
+                options.face_limit = static_cast<int>(value);
+        }
+    }
     const bool legacy_geometry = !saved.contains("geometry_quality") || saved["geometry_quality"].is_null();
     if (saved.contains("geometry_quality") && saved["geometry_quality"].is_string())
         options.geometry_quality = saved["geometry_quality"].get<std::string>();
