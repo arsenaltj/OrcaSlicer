@@ -4408,6 +4408,13 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
     m_poll_timer.Stop();
     m_client.cancel_current();
     ++m_sequence;
+    // The old download callbacks are invalidated above. Clear their busy and
+    // output state only after the historical model has loaded successfully.
+    m_preview_download_in_flight = false;
+    m_preview_download_cancelled = false;
+    m_preview_output_available = false;
+    m_preview_output = "preview";
+    m_preview_path.clear();
     m_job_id.clear();
     m_job_palette = palette;
     m_job_palette_roles = palette_roles.empty() ? automatic_palette_roles(palette) : palette_roles;

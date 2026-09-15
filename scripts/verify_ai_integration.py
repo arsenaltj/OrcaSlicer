@@ -37,6 +37,7 @@ EXPECTED_CI_CONTRACT = {
     "candidate_workflow": ".github/workflows/team-integration-candidate.yml",
     "required_checks": [
         "AI integration checks",
+        "Team integration candidate",
         "windows_build / Build Deps / Build OrcaSlicer / Build OrcaSlicer",
         "windows_tests / Unit Tests",
     ],

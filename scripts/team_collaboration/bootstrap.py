@@ -20,6 +20,7 @@ BRANCHES = {
 }
 CHECKS = [
     "AI integration checks",
+    "Team integration candidate",
     "windows_build / Build Deps / Build OrcaSlicer / Build OrcaSlicer",
     "windows_tests / Unit Tests",
 ]
@@ -67,7 +68,7 @@ def validate_config(config):
     require(len({handle.lower() for handle in handles}) == len(handles), "The three developer accounts must be distinct")
     require(config["branches"] == BRANCHES, "branches must match the four ADR-007 long-lived branches")
     require(config["integration_branch"] == BRANCHES["integration"], "integration_branch must be codex/team/integration")
-    require(config["required_checks"] == CHECKS, "required_checks must match AI integration, Windows build and Windows unit tests")
+    require(config["required_checks"] == CHECKS, "required_checks must match AI integration, candidate, Windows build and Windows unit tests")
     require(config["automation"] == {"mode": "notify_and_preview", "auto_merge": False}
             and config["automation"]["auto_merge"] is False,
             "Phase one requires notify_and_preview and auto_merge=false")
