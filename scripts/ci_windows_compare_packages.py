@@ -2,7 +2,8 @@
 
 Compare the actual NSIS/MSIX/PDB inventories made from the same install tree.
 Timestamps and compressed sizes may differ, but paths, sizes and available CRCs
-must match. Archives with entries lacking CRCs are extracted and SHA-256 hashed.
+must match. Archives with entries lacking sizes or CRCs are extracted, measured
+and SHA-256 hashed; declared sizes must match the extracted files.
 7-Zip also tests archive integrity. This does not install/run the app.
 """
 from __future__ import annotations
@@ -22,9 +23,11 @@ def inventory(text: str) -> list[dict]:
         fields = dict(line.split(' = ', 1) for line in block.splitlines() if ' = ' in line)
         if 'Path' not in fields or fields.get('Folder') == '+' or fields.get('Attributes', '').startswith('D'):
             continue
-        if 'Size' not in fields:
-            continue
-        result.append({'path': fields['Path'].replace('\\', '/'), 'size_bytes': int(fields['Size']), 'crc': fields.get('CRC', '')})
+        size_text = fields.get('Size', '').strip()
+        size_bytes = int(size_text) if size_text else None
+        if size_bytes is not None and size_bytes < 0:
+            raise ValueError('Negative archive entry size')
+        result.append({'path': fields['Path'].replace('\\', '/'), 'size_bytes': size_bytes, 'crc': fields.get('CRC', '')})
     if not result or len({entry['path'] for entry in result}) != len(result):
         raise ValueError('Empty or duplicate archive inventory')
     return sorted(result, key=lambda entry: entry['path'])
@@ -62,12 +65,12 @@ def compare(directory: Path, seven_zip: str) -> dict:
                 if operation == 'l':
                     entries = inventory(process.stdout)
                     inventories[name][kind] = {'entries': entries, 'extracted_sha256': None}
-                    if any(not entry['crc'] for entry in entries):
-                        # NSIS listings may omit CRCs. File names/sizes alone do
-                        # not prove preservation; compare the extracted bytes.
+                    if any(entry['size_bytes'] is None or not entry['crc'] for entry in entries):
+                        # NSIS listings may omit sizes and CRCs. Retain those
+                        # entries and verify their actual lengths and bytes.
                         for entry in entries:
                             relative = Path(entry['path'])
-                            if relative.is_absolute() or '..' in relative.parts or ':' in entry['path']:
+                            if relative.is_absolute() or relative.root or '..' in relative.parts or ':' in entry['path']:
                                 raise ValueError('Unsafe archive inventory path')
                         with tempfile.TemporaryDirectory(prefix='orca-package-compare-') as temporary:
                             expanded = Path(temporary).resolve()
@@ -75,15 +78,22 @@ def compare(directory: Path, seven_zip: str) -> dict:
                             (directory / f'archive-{name}-{kind}-x.log').write_text(extraction.stdout + extraction.stderr, encoding='utf-8')
                             if extraction.returncode:
                                 raise ValueError(f'{name}/{kind} archive extraction failed')
-                            hashes = {}
+                            hashes, sizes = {}, {}
                             for file in sorted(expanded.rglob('*')):
                                 if file.is_symlink() or not file.resolve().is_relative_to(expanded):
                                     raise ValueError('Extracted archive path escapes temporary directory')
                                 if file.is_file():
+                                    relative = file.relative_to(expanded).as_posix()
                                     with file.open('rb') as stream:
-                                        hashes[file.relative_to(expanded).as_posix()] = hashlib.file_digest(stream, 'sha256').hexdigest()
+                                        hashes[relative] = hashlib.file_digest(stream, 'sha256').hexdigest()
+                                    sizes[relative] = file.stat().st_size
                             if not hashes or set(hashes) != {entry['path'] for entry in entries}:
                                 raise ValueError('Extraction does not match the archive file inventory')
+                            for entry in entries:
+                                size_bytes = sizes[entry['path']]
+                                if entry['size_bytes'] is not None and entry['size_bytes'] != size_bytes:
+                                    raise ValueError(f"Extracted file length differs from archive inventory: {entry['path']}")
+                                entry['size_bytes'] = size_bytes
                             inventories[name][kind]['extracted_sha256'] = hashes
     if inventories['baseline'] != inventories['optimized']:
         (directory / 'package-inventories.json').write_text(json.dumps(inventories, indent=2), encoding='utf-8')

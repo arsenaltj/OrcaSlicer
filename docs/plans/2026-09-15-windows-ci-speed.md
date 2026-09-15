@@ -80,4 +80,73 @@ protected PR merge. Rollback uses an ordinary follow-up commit or revert PR.
 No force push, reset, reopening PR #7, old bot acceptance, local full application
 build or desktop test is part of this task. Desktop flows remain unverified.
 
-Results and the final generator decision are pending real hosted CI runs.
+## First run and generator decision
+
+[Run 34935451971, attempt 1](https://github.com/arsenaltj/OrcaSlicer/actions/runs/34935451971)
+used experiment SHA `e4ce1d416d0c96972a11526198a4cb06509acc0a` and restored the
+dependency cache. The MSBuild source build succeeded. Both packaging profiles
+finished with unchanged, equal input manifests and equal MSIX staging manifests.
+The package comparison then failed before it could establish payload equality:
+the 7-Zip NSIS listing contained empty `Size` values, which the validator tried
+to parse as integers. Windows unit tests and normal package uploads were skipped.
+
+The generator experiment is **stopped after this first failure**, as required by
+the protocol. There are zero valid generator samples. The other three trial
+refs will not be started and the failed sample will not be rerun or replaced.
+MSBuild remains the automatic Windows MSVC generator; no Ninja speedup or adoption
+is claimed. The original experiment commit and failed run remain the record of
+this attempt. The explicit Ninja selector is experimental and has no successful
+hosted sample from this experiment.
+
+These measurements are diagnostic observations from the failed run, not accepted
+optimization results:
+
+| Measurement | Seconds |
+| --- | ---: |
+| MSBuild build/link phase | 6262.287 |
+| Baseline packaging | 654.727 |
+| Optimized packaging | 436.459 |
+
+The apparent 33.34% packaging-time reduction cannot justify delivery until
+complete archive equality is verified. The optimized PDB archive was also larger
+(209,418,503 bytes versus 167,734,359 bytes); that tradeoff must be retained in the
+final result. These numbers do not measure artifact upload savings or an overall
+CI speedup. Baseline packaging ran first, so order effects are not excluded.
+
+Repair the validator by retaining unknown-size entries and extracting them to
+measure real lengths and SHA-256 hashes. Do not skip entries, assume zero length,
+or substitute compressed size. Preserve integrity, input identity, declared-size,
+file-set and content checks. Validate the repair with the observed NSIS format
+and negative cases for changed bytes, missing files and incorrect declared sizes.
+
+Packaging preservation and benefit still require fresh hosted validation and
+successful Windows unit tests before the optimization PR can merge. This
+validation must use the same installed input for the two packaging profiles;
+it does not restart the terminated generator experiment. Fresh normal PR checks
+and the actual integration push remain required for final delivery. Desktop and
+installer execution remain unverified.
+
+## Packaging validation in normal PR CI
+
+The final optimization PR uses its normal Team integration Windows build. A
+shared path predicate schedules native CI and selects paired packaging when the
+PR changes the Windows packaging scripts, MSIX scripts, relevant workflows,
+root CMake configuration or `cmake/` definitions. The selector checks the event's
+repository, PR merge ref, checked-out candidate SHA and exact ordered base/head
+parents before comparing paths. Unknown or inconsistent applicable PR identity
+fails the job. The Team caller retains its four original inputs.
+
+Both packaging profiles reuse that one completed MSBuild installation. Their
+input and staging manifests, archive integrity, extracted file sets, lengths
+and content evidence must pass before the normal installer, portable, MSIX and
+PDB artifacts qualify. Baseline packages and measurements are retained for
+inspection. A failed packaging attempt retains diagnostics and any available
+packages under an explicitly failed artifact name, while the job remains failed.
+The existing Windows unit-test job still depends on a successful build job.
+
+Unrelated PRs, integration pushes, other repositories and other workflow callers
+keep ordinary packaging. Linux/macOS scheduling rules and protection remain
+unchanged. The additional paired packaging, comparison and baseline-upload time
+is validation overhead on packaging changes; it is not part of the optimized
+ordinary-PR packaging path. Any reported benefit must identify the actual passing
+run and its scope. One passing pair does not establish cross-run medians.
