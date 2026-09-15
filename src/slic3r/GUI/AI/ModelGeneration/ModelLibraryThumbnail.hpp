@@ -100,8 +100,11 @@ inline wxImage load_library_thumbnail(const boost::filesystem::path& path, int e
                                   : static_cast<wxImageHandler&>(jpeg_handler);
     if (!stream.IsOk() || !handler.LoadFile(&image, stream, false) || !image.IsOk() || cancelled) return {};
     const double scale = double(edge) / std::max(image.GetWidth(), image.GetHeight());
+    // Thumbnails are small and displayed at a fixed size. Bilinear scaling
+    // avoids the long UI-visible CPU spike caused by high quality resampling
+    // when a page contains many historical assets.
     return image.Scale(std::max(1, int(image.GetWidth() * scale)),
-                       std::max(1, int(image.GetHeight() * scale)), wxIMAGE_QUALITY_HIGH);
+                       std::max(1, int(image.GetHeight() * scale)), wxIMAGE_QUALITY_BILINEAR);
 }
 
 class ModelLibraryThumbnailCache

@@ -544,7 +544,18 @@ void ModelGenerationPanel::on_library_timer(wxTimerEvent&)
             refresh_library();
         }
     }
+    // Applying decoded pixels creates wxImage/wxBitmap objects on the UI
+    // thread. Keep each timer tick bounded so opening the history page stays
+    // interactive while the worker continues decoding the rest of the page.
+    constexpr size_t max_thumbnails_per_tick = 2;
+    size_t applied = 0;
     for (const auto& thumbnail : thumbnails) {
+        if (applied++ >= max_thumbnails_per_tick) {
+            std::lock_guard<std::mutex> lock(m_library_load_state->mutex);
+            m_library_load_state->thumbnails.insert(m_library_load_state->thumbnails.begin(),
+                thumbnail);
+            continue;
+        }
         if (thumbnail.revision != m_library_revision || thumbnail.index >= m_library_thumbnails.size()) continue;
         wxImage image;
         if (!thumbnail.rgb.empty()) {
@@ -563,6 +574,17 @@ void ModelGenerationPanel::on_library_timer(wxTimerEvent&)
     if (!m_library_refresh_pending &&
         (m_library_thumbnail_edge != int(FromDIP(96) * GetContentScaleFactor()) ||
          m_library_layout_width != m_library_scroller->GetClientSize().x)) refresh_library();
+
+    // The timer is only a bridge for worker results. Stop polling once the
+    // worker has no queued or active work; it will be restarted by the next
+    // refresh or page change.
+    bool loading = false;
+    {
+        std::lock_guard<std::mutex> lock(m_library_load_state->mutex);
+        loading = m_library_load_state->active || m_library_load_state->pending ||
+                  m_library_load_state->snapshot.has_value() || !m_library_load_state->thumbnails.empty();
+    }
+    if (!loading && !m_library_refresh_pending) m_library_timer.Stop();
 }
 
 void ModelGenerationPanel::request_library_thumbnails()
