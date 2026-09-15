@@ -13,7 +13,17 @@ Rules for writing tests under `tests/`. [CATCH2.md](CATCH2.md) is the Catch2 ref
 
 ## Building and running
 
-Tests are off by default, so the build has to be told to include them.
+For routine changes, reuse the current checkout's configured build directory with tests enabled. Check `CMAKE_HOME_DIRECTORY` identifies this checkout before writing it; never share a build directory between worktrees or run concurrent builds against it. Build only the affected suite, then filter by its Catch2 tag (CTest label) or test name. For example, with the existing Windows directory:
+
+```powershell
+./dev.ps1 Check
+cmake --build build-validation --config Release --target slic3rutils_tests --parallel 2
+ctest --test-dir build-validation/tests -C Release -L ModelPreviewPalette --output-on-failure --no-tests=error
+```
+
+Use the CMake/CTest installed tool paths if they are not on PATH. Choose the actual affected suite and label; a no-match run is not a pass. Keep full output in a local log and report a summary. These commands incrementally build and run source-matched tests; they do not establish GUI acceptance. Reuse prior results only while relevant source, configuration, dependencies and test conditions remain unchanged.
+
+The following platform scripts are for initial test setup or explicitly requested broad runs, not a prerequisite for each test edit. Tests are off by default, so an unconfigured build has to be told to include them.
 
 - Windows: `build_release_vs.bat tests`, then `ctest --test-dir build/tests -C Release`
 - macOS: `./build_release_macos.sh -s -a arm64 -T`, which builds and runs them

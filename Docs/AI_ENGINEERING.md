@@ -14,8 +14,7 @@
 - 架构决策：[模块边界与 lineage](../docs/architecture/ADR-003-upstream-lineage-ai-integration.md)、[渐进拆分](../docs/architecture/ADR-005-guarded-incremental-ai-decomposition.md)、[颜色交接](architecture/ADR-006-six-channel-model-color-intent.md)、[智能切片事务](../docs/architecture/ADR-002-smart-slicing-transactional-workbench.md)。Accepted 表示接受的设计，实际完成度仍需代码和验收证据。
 - 硬件/颜色术语及检验限度：[打印与颜色边界](domain/printing-color-boundaries.md)。
 - 本次资产盘点和未解决问题：[2026-09-07 审计](audits/2026-09-07-ai-engineering-asset-audit.md)。这是日期快照，不是新的实时任务表。
-- 开发方式与交接：[GPT-6 复评](coordination/symphony/AUDIT.md)、[日常用法](coordination/symphony/README.md)、[可选交接模板](coordination/symphony/HANDOFF.md)。默认在 Codex 内完成工程任务；Chat/ChatGPT Work 只在具体问题需要时加入。
-- 工作区与会话选择、已执行归档及剩余阻塞：[2026-09-07 整理记录](coordination/symphony/runs/TASK-20260907-ORGANIZE/RESULT.md)。Codex 的“3D打印 · 当前”集中主入口，“3D打印 · 专项”保留专项任务；这是核对快照，不替代实时任务状态，未核实的分支和目录不能据此删除。
+- 日常开发：[最短开发入口](coordination/quick-development.md)。默认单 Agent 修改、相关检查和 diff 复核；明确要求独立验收时才读[交接流程](coordination/validation-handoff.md)。
 
 ## 文件收纳与工作区选择
 
@@ -25,7 +24,6 @@
 | 验证与交付工具 | `tests/`、`scripts/`、`release/`、`.github/workflows/` | 分别维护测试、构建/检查、打包与 CI；清理前确认调用者和历史产物依赖。 |
 | 稳定规则与当前导航 | 根/局部 AGENTS、本文、`docs/architecture/`、`.agents/skills/` | 保留稳定约束；具体数值从集成锁读取。 |
 | 任务与历史证据 | `Docs/coordination/`、`Docs/history/`、`Docs/plans/`、`Docs/audits/` | state 是实时任务记录；报告/计划按日期理解，不复制成第二份当前状态。 |
-| 网站 | `website/` | 单独职责和局部 AGENTS；不能因主桌面构建不使用就认定无用。 |
 | 依赖、构建和运行产物 | `deps/`、`build/` 及各 worktree 的构建目录 | 可重建性、运行占用和具体保留版本核实后，才能进入清理批次。 |
 | 本机实验与生成资料 | `.planning/`、`output/`、`generated_models/`、`.tmp/`、`tmp/`、`projects/` | 可能含唯一源文件、模型或验收证据；忽略/未跟踪不等于可删除，不整目录清空。 |
 
@@ -45,10 +43,9 @@ Codex 项目名、任务记录的 cwd、registry 提示与实际 Git worktree �
 | 桌面组合/运行时 | [AIDesktopFeatureHost](../src/slic3r/GUI/AI/AIDesktopFeatureHost.cpp)、集成锁的 ownership | MainFrame/Plater、AIServiceManager/AISidecarClient、network_policy；共享入口需遵守既有集成所有权 |
 | 原生切片/配方 | [Print](../src/libslic3r/Print.cpp)、[ColorDecomposeRecipe](../src/libslic3r/ColorDecomposeRecipe.hpp) | PrintConfig、GCode、ToolOrdering、Format；先与锁定基线对照，区分继承与本地增量 |
 | 已有模型质量复评 | [model-generation-evaluation Skill](../.agents/skills/model-generation-evaluation/SKILL.md) | 按 SOP 读取已有模型、报告和对应测试 |
-| 工程任务记录/恢复 | [Symphony Skill](../.agents/skills/symphony/SKILL.md)、[当前能力](coordination/symphony/README.md) | 有关任务的 state/合同/结果；计划中的 helper 不等于可执行命令 |
-| 模型生成团队协作 | [团队入口](coordination/model-generation/README.md) | 以协调者工作树 registry 为准；只在团队任务中加载 |
+| 模型生成团队协作 | [团队 SOP](coordination/team-integration-sop.md) | 只在明确请求团队提交或集成时加载 |
 | 打包/发布 | [release runbook](../release/README.md)、根 AGENTS 发布条款 | 当前操作涉及的准确产物、授权记录、检查脚本和 CI；导航不是授权来源 |
-| 网站/翻译 | [website 规则](../website/AGENTS.md)、[localization 规则](../localization/AGENTS.md) | 仅加载涉及的子项目资料 |
+| 翻译 | [localization 规则](../localization/AGENTS.md) | 仅加载涉及的子项目资料 |
 
 ## 选择验证范围
 
@@ -57,8 +54,8 @@ Codex 项目名、任务记录的 cwd、registry 提示与实际 Git worktree �
 | 改动 | 验证入口 |
 |---|---|
 | AI 架构/契约/运行版本 | `python scripts/verify_ai_integration.py --json`，保留 Git 检查；缺历史对象应报告，不能把 skip-git 的结果称为完整验证 |
-| 单个 Python 模块 | `python -m unittest discover -s tools/ai -p 'test_<对应模块>.py' -q` |
-| AI 集成 Python 回归 | CI 的 `python -m unittest discover -s tools/ai -p 'test_*.py' -q`；真实生成脚本不属于该命令的替代品 |
+| 单个 Python 模块 | `./dev.ps1 Test -TestPattern test_<对应模块>.py`，或 `python scripts/run_ai_offline_tests.py --pattern test_<对应模块>.py`；确认测试已 mock 提供商 |
+| AI 集成 Python 回归（影响集成时） | `python scripts/run_ai_offline_tests.py`；保留离线防护，真实生成脚本不属于该命令的替代品 |
 | C++ AI DTO/面板/智能切片 | `slic3rutils_tests`；按 [tests/AGENTS.md](../tests/AGENTS.md) 配置、构建和运行，Windows 需 `-C Release` |
 | 网格/格式/颜色数据 | `libslic3r_tests` 中对应测试；产生切片/G-code 的行为用 `fff_print_tests` |
 | GUI/导入/组合流程 | 使用确定的可执行文件、datadir、端口和模型 SHA；核实导入无隐式切片/配置改变，以及 AI 关闭/离线时普通 Orca 流程 |
