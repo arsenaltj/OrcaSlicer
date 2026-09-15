@@ -15,7 +15,6 @@ import importlib.resources
 import io
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import sys
@@ -24,7 +23,7 @@ import tempfile
 import textwrap
 import unittest
 import zipfile
-
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 STAGES = ["deps-configure", "deps-build", "configure", "build", "gettext", "install"]
@@ -102,7 +101,7 @@ class WindowsBuildFixture(unittest.TestCase):
             archive = io.BytesIO()
             with zipfile.ZipFile(archive, "w") as bundle:
                 bundle.writestr("__main__.py", f"FAKE_TOOL = {tool!r}\n" + textwrap.dedent(FAKE_TOOL_SCRIPT))
-            shebang = f'#!"{sys.executable}"\n'.encode("utf-8")
+            shebang = f'#!"{sys.executable}"\n'.encode()
             (self.tools / f"{tool}.exe").write_bytes(launcher + shebang + archive.getvalue())
         (self.work / "scripts" / "run_gettext.bat").write_bytes(
             b'@echo off\r\ngettext.exe\r\nexit /b %errorlevel%\r\n'
@@ -120,7 +119,7 @@ class WindowsBuildFixture(unittest.TestCase):
         })
 
     def execute(self, command: list[str], env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-        result = subprocess.run(command, cwd=self.work, env=env or self.env, capture_output=True, timeout=180)
+        result = subprocess.run(command, cwd=self.work, env=env or self.env, capture_output=True, timeout=180, check=False)
         return subprocess.CompletedProcess(command, result.returncode, result.stdout.decode("utf-8", errors="replace"), result.stderr.decode("utf-8", errors="replace"))
 
     def run_build(self, *args: str, metrics: bool = False, build_logs: bool = False, fail_stage: str = "", code: int = 37, break_metrics_stage: str = "") -> subprocess.CompletedProcess[str]:
