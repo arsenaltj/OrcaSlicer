@@ -19,6 +19,16 @@ on:
       force-build:
         required: false
         type: boolean
+      slicer-generator:
+        description: Source build generator (auto, msbuild, ninja-multi); dependencies are unchanged
+        required: false
+        type: string
+        default: auto
+      windows-benchmark:
+        description: Compare packaging profiles and capture hosted Windows benchmark evidence
+        required: false
+        type: boolean
+        default: false
       ai-commercial-package:
         required: false
         type: boolean
@@ -59,6 +69,7 @@ jobs:
           path: ${{ steps.set_outputs.outputs.cache-path }}
           key: ${{ steps.set_outputs.outputs.cache-key }}
           lookup-only: true
+          fail-on-cache-miss: ${{ inputs.windows-benchmark }}
         
   build_deps: # call next step
     name: Build Deps
@@ -74,3 +85,5 @@ jobs:
       build-deps-only: ${{ inputs.build-deps-only }}
       force-build: ${{ inputs.force-build }}
       ai-commercial-package: ${{ inputs.ai-commercial-package }}
+      slicer-generator: ${{ inputs.slicer-generator }}
+      windows-benchmark: ${{ inputs.windows-benchmark }}

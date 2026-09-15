@@ -26,6 +26,16 @@ on:
       force-build:
         required: false
         type: boolean
+      slicer-generator:
+        description: Source build generator (auto, msbuild, ninja-multi); dependencies are unchanged
+        required: false
+        type: string
+        default: auto
+      windows-benchmark:
+        description: Compare packaging profiles and capture hosted Windows benchmark evidence
+        required: false
+        type: boolean
+        default: false
       ai-commercial-package:
         required: false
         type: boolean
@@ -224,4 +234,6 @@ jobs:
       os: ${{ inputs.os }}
       arch: ${{ inputs.arch }}
       ai-commercial-package: ${{ inputs.ai-commercial-package }}
+      slicer-generator: ${{ inputs.slicer-generator }}
+      windows-benchmark: ${{ inputs.windows-benchmark }}
       compiler: ${{ inputs.compiler }}

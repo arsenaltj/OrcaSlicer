@@ -1,0 +1,53 @@
+name: Windows CI benchmark
+
+# One immutable experiment commit, pushed to these refs one at a time by the
+# operator. Distinct runs prevent the unchanged test artifact names colliding.
+# This workflow never supplies integration merge evidence or publishes releases.
+on:
+  push:
+    branches:
+      - codex/ci-speed-20260915-1-msbuild
+      - codex/ci-speed-20260915-2-ninja
+      - codex/ci-speed-20260915-3-ninja
+      - codex/ci-speed-20260915-4-msbuild
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: windows-ci-speed-20260915
+  cancel-in-progress: false
+
+jobs:
+  identify:
+    runs-on: ubuntu-latest
+    outputs:
+      generator: ${{ steps.generator.outputs.generator }}
+    steps:
+      - id: generator
+        env:
+          BENCHMARK_REF: ${{ github.ref_name }}
+        run: |
+          case "$BENCHMARK_REF" in
+            codex/ci-speed-20260915-1-msbuild|codex/ci-speed-20260915-4-msbuild) echo 'generator=msbuild' >> "$GITHUB_OUTPUT" ;;
+            codex/ci-speed-20260915-2-ninja|codex/ci-speed-20260915-3-ninja) echo 'generator=ninja-multi' >> "$GITHUB_OUTPUT" ;;
+            *) exit 1 ;;
+          esac
+  windows_build:
+    needs: identify
+    uses: ./.github/workflows/build_check_cache.yml
+    with:
+      os: windows-latest
+      arch: x64
+      compiler: msvc
+      ai-commercial-package: false
+      slicer-generator: ${{ needs.identify.outputs.generator }}
+      windows-benchmark: true
+  windows_tests:
+    needs: windows_build
+    uses: ./.github/workflows/unit_tests.yml
+    with:
+      os: windows-latest
+      artifact: ${{ github.sha }}-tests-windows-x64
+      retain-artifact: true

@@ -154,6 +154,12 @@ exit /b 1
 
 :ai_flags_done
 
+@REM Metrics are opt-in and never contain CMake arguments or environment dumps.
+set "ORCA_CI_METRICS_GENERATOR=%CMAKE_GENERATOR:"=%"
+set "ORCA_CI_METRICS_CONFIGURATION=%build_type%"
+set "ORCA_CI_METRICS_ARCHITECTURE=%arch%"
+set "ORCA_CI_MSBUILD_LOG_FLAG="
+
 if "%1"=="slicer" (
     GOTO :slicer
 )
@@ -163,42 +169,76 @@ if defined CLANG_ARG if "%USE_NINJA%"=="0" echo Note: -l needs -x for the depend
 echo on
 REM Set minimum CMake policy to avoid <3.5 errors
 set CMAKE_POLICY_VERSION_MINIMUM=3.5
+@call :ci_stage_start deps-configure
+@if not "%errorlevel%"=="0" goto :build_failed
 if "%USE_NINJA%"=="1" (
     cmake ../ -G %CMAKE_GENERATOR% %CLANG_ARG% -DCMAKE_BUILD_TYPE=%build_type%
-    cmake --build . --config %build_type% --target deps
 ) else (
     cmake ../ -G %CMAKE_GENERATOR% -A %arch% -DCMAKE_BUILD_TYPE=%build_type%
-    cmake --build . --config %build_type% --target deps -- -m
 )
+@call :ci_stage_end deps-configure %errorlevel%
+@if not "%errorlevel%"=="0" goto :build_failed
+@call :ci_stage_start deps-build
+@if not "%errorlevel%"=="0" goto :build_failed
+if "%USE_NINJA%"=="1" (
+    cmake --build . --config %build_type% --target deps
+) else (
+    cmake --build . --config %build_type% --target deps -- -m %ORCA_CI_MSBUILD_LOG_FLAG%
+)
+@call :ci_stage_end deps-build %errorlevel%
+@if not "%errorlevel%"=="0" goto :build_failed
 @echo off
 
 if "%1"=="deps" goto :done
 
 :slicer
 echo "building Orca Slicer..."
-cd %WP%
+cd /d "%WP%"
 mkdir %build_dir%
 cd %build_dir%
 
 echo on
 set CMAKE_POLICY_VERSION_MINIMUM=3.5
+@call :ci_stage_start configure
+@if not "%errorlevel%"=="0" goto :build_failed
 if "%USE_NINJA%"=="1" (
     cmake .. -G %CMAKE_GENERATOR% %CLANG_ARG% -DORCA_TOOLS=ON %SIG_FLAG% %AI_FLAGS% "%AI_DEFAULTS_FLAG%" -DBUILD_TESTS=%BUILD_TESTS% -DCMAKE_BUILD_TYPE=%build_type%
-    cmake --build . --config %build_type% --target all
 ) else (
     cmake .. -G %CMAKE_GENERATOR% -A %arch% %TOOLSET_ARG% -DORCA_TOOLS=ON %SIG_FLAG% %AI_FLAGS% "%AI_DEFAULTS_FLAG%" -DBUILD_TESTS=%BUILD_TESTS% -DCMAKE_BUILD_TYPE=%build_type%
-    cmake --build . --config %build_type% --target ALL_BUILD -- -m
 )
+@call :ci_stage_end configure %errorlevel%
+@if not "%errorlevel%"=="0" goto :build_failed
+@call :ci_stage_start build
+@if not "%errorlevel%"=="0" goto :build_failed
+if "%USE_NINJA%"=="1" (
+    cmake --build . --config %build_type% --target all
+) else (
+    cmake --build . --config %build_type% --target ALL_BUILD -- -m %ORCA_CI_MSBUILD_LOG_FLAG%
+)
+@call :ci_stage_end build %errorlevel%
+@if not "%errorlevel%"=="0" goto :build_failed
 @echo off
 cd ..
+call :ci_stage_start gettext
+if not "%errorlevel%"=="0" goto :build_failed
 call scripts/run_gettext.bat
+call :ci_stage_end gettext %errorlevel%
+if not "%errorlevel%"=="0" goto :build_failed
 cd %build_dir%
-cmake --build . --target install --config %build_type%
+call :ci_stage_start install
+if not "%errorlevel%"=="0" goto :build_failed
+if defined ORCA_CI_MSBUILD_LOG_FLAG (
+    cmake --build . --target install --config %build_type% -- %ORCA_CI_MSBUILD_LOG_FLAG%
+) else (
+    cmake --build . --target install --config %build_type%
+)
+call :ci_stage_end install %errorlevel%
+if not "%errorlevel%"=="0" goto :build_failed
 
 :done
 @echo off
-for /f "tokens=1-3 delims=:.," %%a in ("%_START_TIME: =0%") do set /a "_start_s=%%a*3600+%%b*60+%%c"
-for /f "tokens=1-3 delims=:.," %%a in ("%TIME: =0%") do set /a "_end_s=%%a*3600+%%b*60+%%c"
+for /f "tokens=1-3 delims=:.," %%a in ("%_START_TIME: =0%") do set /a "_start_s=(1%%a-100)*3600+(1%%b-100)*60+1%%c-100"
+for /f "tokens=1-3 delims=:.," %%a in ("%TIME: =0%") do set /a "_end_s=(1%%a-100)*3600+(1%%b-100)*60+1%%c-100"
 set /a "_elapsed=_end_s - _start_s"
 if %_elapsed% lss 0 set /a "_elapsed+=86400"
 set /a "_hours=_elapsed / 3600"
@@ -207,3 +247,40 @@ set /a "_mins=_remainder / 60"
 set /a "_secs=_remainder - _mins * 60"
 echo.
 echo Build completed in %_hours%h %_mins%m %_secs%s
+exit /b 0
+
+:build_failed
+set "_ORCA_BUILD_EXIT=%errorlevel%"
+@echo off
+echo Build failed with exit code %_ORCA_BUILD_EXIT%.
+exit /b %_ORCA_BUILD_EXIT%
+
+:ci_stage_start
+set "ORCA_CI_MSBUILD_LOG_FLAG="
+if not defined ORCA_CI_METRICS_PATH exit /b 0
+set "ORCA_CI_METRICS_BUILD_DIR=%CD%"
+set "ORCA_CI_METRICS_BUILD_LOG="
+set "ORCA_CI_METRICS_BUILD_LOG_KIND="
+if "%~1"=="deps-configure" goto :ci_stage_start_record
+if "%~1"=="configure" goto :ci_stage_start_record
+if "%~1"=="gettext" goto :ci_stage_start_record
+if "%USE_NINJA%"=="1" (
+    set "ORCA_CI_METRICS_BUILD_LOG=%CD%\.ninja_log"
+    set "ORCA_CI_METRICS_BUILD_LOG_KIND=ninja_log"
+    goto :ci_stage_start_record
+)
+if not "%ORCA_CI_BUILD_LOGS%"=="1" goto :ci_stage_start_record
+for %%I in ("%ORCA_CI_METRICS_PATH%") do set "ORCA_CI_METRICS_BUILD_LOG=%%~dpI%~1.binlog"
+set "ORCA_CI_METRICS_BUILD_LOG_KIND=msbuild_binlog"
+set ORCA_CI_MSBUILD_LOG_FLAG=/bl:"%ORCA_CI_METRICS_BUILD_LOG%";ProjectImports=None
+:ci_stage_start_record
+powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%WP%\scripts\ci_windows_build_metrics.ps1" -Action Start -Stage "%~1"
+exit /b %errorlevel%
+
+:ci_stage_end
+set "_ORCA_NATIVE_EXIT=%~2"
+if not defined ORCA_CI_METRICS_PATH exit /b %_ORCA_NATIVE_EXIT%
+powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%WP%\scripts\ci_windows_build_metrics.ps1" -Action Complete -Stage "%~1" -ExitCode %_ORCA_NATIVE_EXIT%
+set "_ORCA_METRICS_EXIT=%errorlevel%"
+if not "%_ORCA_NATIVE_EXIT%"=="0" exit /b %_ORCA_NATIVE_EXIT%
+exit /b %_ORCA_METRICS_EXIT%
