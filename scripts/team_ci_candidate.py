@@ -4,11 +4,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from pathlib import Path
 import re
 import subprocess
 import urllib.parse
 import urllib.request
+from pathlib import Path
+
+from ci_windows_packaging_scope import packaging_paths
 
 BRANCH = "codex/team/integration"
 
@@ -29,7 +31,7 @@ def scope(paths: list[str], *, initial: bool = False, upstream: bool = False) ->
         p.startswith(("deps/", "deps_src/", "cmake/", ".github/actions/", ".github/workflows/"))
         or p.endswith("CMakeLists.txt") or p == "version.inc"
         or p.startswith(("build_linux", "build_release_macos", "scripts/build_", "scripts/run_unit_tests")) for p in paths)
-    native = cross or any(p.startswith(("src/", "tests/", "resources/", "localization/", "tools/ai/"))
+    native = cross or bool(packaging_paths(paths)) or any(p.startswith(("src/", "tests/", "resources/", "localization/", "tools/ai/"))
                           or p.startswith("build_") for p in paths)
     return {"native": native, "cross_platform": cross}
 

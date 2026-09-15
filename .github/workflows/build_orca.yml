@@ -21,6 +21,16 @@ on:
           required: false
           type: boolean
           default: false
+        slicer-generator:
+          description: Source build generator (auto, msbuild, ninja-multi); dependencies are unchanged
+          required: false
+          type: string
+          default: auto
+        windows-benchmark:
+          description: Compare packaging profiles and capture hosted Windows benchmark evidence
+          required: false
+          type: boolean
+          default: false
         ai-commercial-package:
           required: false
           type: boolean
@@ -43,8 +53,18 @@ jobs:
         uses: actions/checkout@v7
         with:
           lfs: 'false'
+          ref: ${{ github.sha }}
+          fetch-depth: ${{ runner.os == 'Windows' && inputs.arch == 'x64' && inputs.compiler == 'msvc' && 2 || 1 }}
+
+      - name: Select Windows packaging validation
+        id: windows_packaging_scope
+        if: runner.os == 'Windows' && inputs.arch == 'x64' && inputs.compiler == 'msvc' && !startsWith(inputs.os, 'orca-')
+        shell: pwsh
+        run: |
+          python scripts/ci_windows_packaging_scope.py --report "$env:RUNNER_TEMP/orca-ci-windows-${{ inputs.arch }}-${{ inputs.compiler }}/packaging-scope.json"
 
       - name: load cached deps
+        id: source_deps_cache
         if: ${{ !(runner.os == 'macOS' && inputs.macos-combine-only) }}
         uses: actions/cache@v6
         with:
@@ -268,6 +288,32 @@ jobs:
             "ARCH_SUFFIX=_x64"       | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
           }
 
+      - name: Select Windows source generator
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          REQUESTED_GENERATOR: ${{ inputs.slicer-generator }}
+          BUILD_COMPILER: ${{ inputs.compiler }}
+          BUILD_ARCH: ${{ inputs.arch }}
+          BENCHMARK: ${{ inputs.windows-benchmark }}
+          BUILD_RUNNER: ${{ inputs.os }}
+        run: |
+          $generator = $env:REQUESTED_GENERATOR
+          if ($generator -notin @('auto', 'msbuild', 'ninja-multi')) { throw 'Unsupported source generator' }
+          if ($generator -ne 'auto' -and ($env:BUILD_COMPILER -ne 'msvc' -or $env:BUILD_ARCH -ne 'x64')) {
+            throw 'Explicit source generator selection requires Windows x64/MSVC'
+          }
+          # Keep automatic MSVC builds on MSBuild until paired CI evidence supports adoption.
+          if ($generator -eq 'auto') { $generator = if ($env:BUILD_COMPILER -eq 'clang') { 'ninja-multi' } else { 'msbuild' } }
+          if ($env:BENCHMARK -eq 'true') {
+            if ($env:BUILD_COMPILER -ne 'msvc' -or $env:BUILD_ARCH -ne 'x64' -or $env:BUILD_RUNNER -ne 'windows-latest') {
+              throw 'Benchmark requires the hosted Windows x64/MSVC runner'
+            }
+            if (Test-Path -LiteralPath (Join-Path $env:GITHUB_WORKSPACE $env:BUILD_DIR)) { throw 'Benchmark source build directory must be fresh' }
+          }
+          "SLICER_GENERATOR=$generator" >> $env:GITHUB_ENV
+          "ORCA_CI_METRICS_PATH=$env:RUNNER_TEMP/orca-ci-windows-${{ inputs.arch }}-${{ inputs.compiler }}/build-phases.jsonl" >> $env:GITHUB_ENV
+
       - name: setup MSVC
         if: runner.os == 'Windows'
         uses: microsoft/setup-msbuild@v3
@@ -294,8 +340,8 @@ jobs:
           $arch = "${{ inputs.arch }}"
           # -l selects clang-cl and -x Ninja; together they build the slicer with clang.
           $clang = "${{ inputs.compiler }}" -eq "clang"
-          $flags = if ($clang) { "-l", "-x" } else { @() }
-          if ($clang) {
+          $flags = if ($clang) { "-l", "-x" } elseif ($env:SLICER_GENERATOR -eq 'ninja-multi') { @('-x') } else { @() }
+          if ($clang -or $env:SLICER_GENERATOR -eq 'ninja-multi' -or '${{ inputs.windows-benchmark }}' -eq 'true') {
             # Build against the same VC toolchain and SDK as the dependencies.
             $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
             $vs = & $vswhere -latest -property installationPath
@@ -303,7 +349,19 @@ jobs:
             Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
             Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments "-arch=$devArch"
           }
+          if (-not $clang -and $env:SLICER_GENERATOR -eq 'ninja-multi') {
+            $env:CC = 'cl.exe'
+            $env:CXX = 'cl.exe'
+          }
+          if ('${{ inputs.windows-benchmark }}' -eq 'true') {
+            ./scripts/ci_windows_environment.ps1 -Phase before -BuildDir "$env:GITHUB_WORKSPACE/$env:BUILD_DIR" -MetricsPath "$env:RUNNER_TEMP/orca-ci-windows-${{ inputs.arch }}-${{ inputs.compiler }}/environment.json" -CacheKey '${{ inputs.cache-key }}' -CacheHit '${{ steps.source_deps_cache.outputs.cache-hit }}' -Generator $env:SLICER_GENERATOR
+          }
           if ($arch -eq "arm64") { .\build_release_vs.bat slicer arm64 @flags tests } else { .\build_release_vs.bat slicer @flags tests }
+          $buildExit = $LASTEXITCODE
+          if ('${{ inputs.windows-benchmark }}' -eq 'true') {
+            ./scripts/ci_windows_environment.ps1 -Phase after -BuildDir "$env:GITHUB_WORKSPACE/$env:BUILD_DIR" -MetricsPath "$env:RUNNER_TEMP/orca-ci-windows-${{ inputs.arch }}-${{ inputs.compiler }}/environment.json" -CacheKey '${{ inputs.cache-key }}' -CacheHit '${{ steps.source_deps_cache.outputs.cache-hit }}' -Generator $env:SLICER_GENERATOR
+          }
+          if ($buildExit -ne 0) { exit $buildExit }
         shell: pwsh
 
       - name: Verify commercial AI runtime identity
@@ -423,25 +481,108 @@ jobs:
           retention-days: 5
           if-no-files-found: error
 
-      # NSIS is x86-only; it runs (and the installer it emits runs) under ARM64's
-      # x86 emulation, packaging the native arm64 payload from build-arm64.
-      - name: Create installer Win
-        if: runner.os == 'Windows' && !startsWith(inputs.os, 'orca-')
-        working-directory: ${{ github.workspace }}/${{ env.BUILD_DIR }}
+      - name: Compare Windows packaging profiles
+        id: paired_packaging
+        if: runner.os == 'Windows' && (inputs.windows-benchmark || steps.windows_packaging_scope.outputs.paired == 'true')
+        shell: pwsh
+        env:
+          MSIX_IDENTITY: ${{ vars.ORCA_MSIX_IDENTITY_NAME || 'OrcaSlicer.OrcaSlicer' }}
+          MSIX_PUBLISHER: ${{ vars.ORCA_MSIX_PUBLISHER || 'CN=38F7EA55-C73B-4072-B3B2-C8E0EA15BB82' }}
+          MSIX_DISPLAY: ${{ vars.ORCA_MSIX_PUBLISHER_DISPLAY_NAME || 'OrcaSlicer' }}
+          BENCHMARK_REF: ${{ github.ref_name }}
         run: |
-          cpack -G NSIS
+          $ErrorActionPreference = 'Stop'
+          # Normal PRs compare baseline then optimized on one completed build.
+          # Preserve the order of explicitly requested historical benchmarks.
+          $profiles = if ($env:BENCHMARK_REF -in @('codex/ci-speed-20260915-2-ninja', 'codex/ci-speed-20260915-4-msbuild')) {
+            @('optimized', 'baseline')
+          } else { @('baseline', 'optimized') }
+          $execution = [ordered]@{
+            schema_version = 1; status = 'running'; current_profile = $null
+            profiles = $profiles; completed_profiles = @(); error = $null
+            candidate_sha = $env:GITHUB_SHA; run_id = $env:GITHUB_RUN_ID; run_attempt = $env:GITHUB_RUN_ATTEMPT
+          }
+          try {
+            foreach ($profile in $profiles) {
+              $execution.current_profile = $profile
+              $packageOptions = @{
+                BuildDir = "$env:GITHUB_WORKSPACE/$env:BUILD_DIR"; Version = $env:ver
+                Architecture = '${{ inputs.arch }}'; Profile = $profile
+                MetricsPath = "$env:RUNNER_TEMP/orca-ci-windows-${{ inputs.arch }}-${{ inputs.compiler }}/packaging-$profile.json"
+                IdentityName = $env:MSIX_IDENTITY; Publisher = $env:MSIX_PUBLISHER; PublisherDisplayName = $env:MSIX_DISPLAY
+              }
+              if ($profile -eq 'baseline') { $packageOptions.OutputDirectory = "$env:RUNNER_TEMP/orca-packaging-baseline" }
+              ./scripts/ci_windows_packaging.ps1 @packageOptions
+              $execution.completed_profiles += $profile
+            }
+            $execution.status = 'succeeded'
+          } catch {
+            $execution.status = 'failed'
+            $execution.error = $_.Exception.Message
+            throw
+          } finally {
+            $reportDirectory = "$env:RUNNER_TEMP/orca-ci-windows-${{ inputs.arch }}-${{ inputs.compiler }}"
+            New-Item -ItemType Directory -Force -Path $reportDirectory | Out-Null
+            $execution | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath "$reportDirectory/packaging-execution.json" -Encoding utf8
+          }
 
-      - name: Pack app
-        if: runner.os == 'Windows'
+      # NSIS still uses x86 emulation for ARM64; that payload continues to omit PDB.
+      - name: Package Windows artifacts
+        id: optimized_packaging
+        if: runner.os == 'Windows' && !startsWith(inputs.os, 'orca-') && !inputs.windows-benchmark && steps.windows_packaging_scope.outputs.paired != 'true'
+        shell: pwsh
+        env:
+          MSIX_IDENTITY: ${{ vars.ORCA_MSIX_IDENTITY_NAME || 'OrcaSlicer.OrcaSlicer' }}
+          MSIX_PUBLISHER: ${{ vars.ORCA_MSIX_PUBLISHER || 'CN=38F7EA55-C73B-4072-B3B2-C8E0EA15BB82' }}
+          MSIX_DISPLAY: ${{ vars.ORCA_MSIX_PUBLISHER_DISPLAY_NAME || 'OrcaSlicer' }}
+        run: |
+          ./scripts/ci_windows_packaging.ps1 -BuildDir "$env:GITHUB_WORKSPACE/$env:BUILD_DIR" -Version $env:ver -Architecture '${{ inputs.arch || 'x64' }}' -Profile optimized -MetricsPath "$env:RUNNER_TEMP/orca-ci-windows-${{ inputs.arch }}-${{ inputs.compiler }}/packaging-optimized.json" -IdentityName $env:MSIX_IDENTITY -Publisher $env:MSIX_PUBLISHER -PublisherDisplayName $env:MSIX_DISPLAY
+
+      - name: Validate packaging comparison
+        id: packaging_comparison
+        if: runner.os == 'Windows' && (inputs.windows-benchmark || steps.windows_packaging_scope.outputs.paired == 'true')
+        shell: pwsh
+        run: |
+          python scripts/ci_windows_compare_packages.py "$env:RUNNER_TEMP/orca-ci-windows-${{ inputs.arch }}-${{ inputs.compiler }}"
+
+      # Diagnostic uploads do not qualify packages for distribution. Preserve
+      # completed and partial outputs before the hosted runner is discarded.
+      - name: Preserve failed Windows packaging evidence
+        if: failure() && runner.os == 'Windows' && (steps.paired_packaging.outcome == 'failure' || steps.optimized_packaging.outcome == 'failure' || steps.packaging_comparison.outcome == 'failure')
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-packaging-failed-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.arch }}-${{ inputs.compiler }}
+          path: |
+            ${{ runner.temp }}/orca-ci-windows-${{ inputs.arch }}-${{ inputs.compiler }}/
+            ${{ runner.temp }}/orca-packaging-baseline/
+            ${{ github.workspace }}/${{ env.BUILD_DIR }}/.ci-windows-packaging/**/*.log
+            ${{ github.workspace }}/${{ env.BUILD_DIR }}/.ci-windows-packaging/**/*.exe
+            ${{ github.workspace }}/${{ env.BUILD_DIR }}/.ci-windows-packaging/**/*.msix
+            ${{ github.workspace }}/${{ env.BUILD_DIR }}/.ci-windows-packaging/**/*.7z
+            ${{ github.workspace }}/${{ env.BUILD_DIR }}/.ci-windows-packaging/**/*.zip
+            ${{ github.workspace }}/${{ env.BUILD_DIR }}/OrcaSlicer*.exe
+            ${{ github.workspace }}/${{ env.BUILD_DIR }}/OrcaSlicer*.msix
+            ${{ github.workspace }}/${{ env.BUILD_DIR }}/src/Release/Debug_PDB*.7z
+          include-hidden-files: true
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Preserve baseline Windows packages
+        if: runner.os == 'Windows' && (inputs.windows-benchmark || steps.windows_packaging_scope.outputs.paired == 'true')
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-packaging-baseline-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.arch }}-${{ inputs.compiler }}
+          path: ${{ runner.temp }}/orca-packaging-baseline/
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Pack app on custom Windows runner
+        if: runner.os == 'Windows' && startsWith(inputs.os, 'orca-')
         working-directory: ${{ github.workspace }}/${{ env.BUILD_DIR }}
         shell: cmd
         run: '"C:/Program Files/7-Zip/7z.exe" a -tzip OrcaSlicer_Windows_${{ env.ver }}${{ env.ARCH_SUFFIX }}_portable.zip ${{ github.workspace }}/${{ env.BUILD_DIR }}/OrcaSlicer'
-
-      - name: Pack PDB
-        if: runner.os == 'Windows' && inputs.arch != 'arm64' && !startsWith(inputs.os, 'orca-')
-        working-directory: ${{ github.workspace }}/${{ env.BUILD_DIR }}/src/Release
-        shell: cmd
-        run: '"C:/Program Files/7-Zip/7z.exe" a -m0=lzma2 -mx9 Debug_PDB_${{ env.ver }}_for_developers_only.7z  *.pdb'
 
       - name: Upload artifacts Win zip
         if: runner.os == 'Windows'
@@ -454,6 +595,8 @@ jobs:
         if: runner.os == 'Windows' && !startsWith(inputs.os, 'orca-')
         uses: actions/upload-artifact@v7
         with:
+          compression-level: 0
+          if-no-files-found: error
           name: OrcaSlicer_Windows_${{ env.ver }}${{ env.ARCH_SUFFIX }}
           path: ${{ github.workspace }}/${{ env.BUILD_DIR }}/OrcaSlicer*.exe
 
@@ -461,6 +604,8 @@ jobs:
         if: runner.os == 'Windows' && inputs.arch != 'arm64' && !startsWith(inputs.os, 'orca-')
         uses: actions/upload-artifact@v7
         with:
+          compression-level: 0
+          if-no-files-found: error
           name: PDB
           path: ${{ github.workspace }}/build/src/Release/Debug_PDB_${{ env.ver }}_for_developers_only.7z
 
@@ -471,25 +616,27 @@ jobs:
           name: OrcaSlicer_profile_validator_Windows_${{ env.ver }}
           path: ${{ github.workspace }}/build/src/Release/OrcaSlicer_profile_validator.exe
 
-      - name: Build MSIX Store package Win
-        if: runner.os == 'Windows' && !startsWith(inputs.os, 'orca-')
-        working-directory: ${{ github.workspace }}
-        shell: pwsh
-        run: |
-          ./scripts/msix/build_msix.ps1 `
-            -InstallDir "${{ github.workspace }}/${{ env.BUILD_DIR }}/OrcaSlicer" `
-            -OutputPath "${{ github.workspace }}/${{ env.BUILD_DIR }}/OrcaSlicer_Windows_MSIX_${{ env.ver }}${{ env.ARCH_SUFFIX }}.msix" `
-            -Architecture "${{ inputs.arch }}" `
-            -IdentityName "${{ vars.ORCA_MSIX_IDENTITY_NAME || 'OrcaSlicer.OrcaSlicer' }}" `
-            -Publisher "${{ vars.ORCA_MSIX_PUBLISHER || 'CN=38F7EA55-C73B-4072-B3B2-C8E0EA15BB82' }}" `
-            -PublisherDisplayName "${{ vars.ORCA_MSIX_PUBLISHER_DISPLAY_NAME || 'OrcaSlicer' }}"
-
       - name: Upload artifacts Win MSIX
         if: runner.os == 'Windows' && !startsWith(inputs.os, 'orca-')
         uses: actions/upload-artifact@v7
         with:
+          compression-level: 0
+          if-no-files-found: error
           name: OrcaSlicer_Windows_MSIX_${{ env.ver }}${{ env.ARCH_SUFFIX }}
           path: ${{ github.workspace }}/${{ env.BUILD_DIR }}/OrcaSlicer_Windows_MSIX_${{ env.ver }}${{ env.ARCH_SUFFIX }}.msix
+
+      - name: Upload Windows build measurements
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-ci-measurements-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.arch }}-${{ inputs.compiler }}
+          path: |
+            ${{ runner.temp }}/orca-ci-windows-${{ inputs.arch }}-${{ inputs.compiler }}/
+            ${{ github.workspace }}/${{ env.BUILD_DIR }}/.ci-windows-packaging/**/*.log
+            ${{ github.workspace }}/${{ env.BUILD_DIR }}/.ninja_log
+          include-hidden-files: true
+          retention-days: 14
+          if-no-files-found: warn
 
 # Ubuntu
       - name: Apt-Install Dependencies
