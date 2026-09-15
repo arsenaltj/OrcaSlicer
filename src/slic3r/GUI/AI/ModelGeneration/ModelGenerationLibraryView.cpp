@@ -53,9 +53,26 @@ std::vector<ModelGenerationPanel::GeneratedModelEntry> ModelGenerationPanel::rea
     const auto read_json = [](const boost::filesystem::path& path) {
         boost::system::error_code error;
         const auto bytes = boost::filesystem::file_size(path, error);
-        if (error || bytes > 1024 * 1024)
+        // Finishing records can contain a face-selection snapshot with millions
+        // of entries.  Keep a bounded metadata file size for malformed input,
+        // but discard that optional array while parsing so valid identity,
+        // paths, and shared-directory references remain available to the list.
+        if (error || bytes > 32 * 1024 * 1024)
             return nlohmann::json();
-        nlohmann::json value = ModelGenerationPresentation::read_json(path);
+        boost::filesystem::ifstream stream(path);
+        if (!stream)
+            return nlohmann::json();
+        const auto callback = [](int, nlohmann::json::parse_event_t event, nlohmann::json& parsed) {
+            if (event == nlohmann::json::parse_event_t::key && parsed.is_string()) {
+                // These snapshots are only needed when opening the finishing
+                // workbench; the history list never consumes them.
+                const std::string& key = parsed.get_ref<const std::string&>();
+                if (key == "selected_faces" || key == "protected_faces")
+                    return false;
+            }
+            return true;
+        };
+        nlohmann::json value = nlohmann::json::parse(stream, callback, false);
         if (!value.is_object())
             return value;
 

@@ -422,6 +422,13 @@ class CandidateTests(unittest.TestCase):
                          "base_sha": BASE, "candidate_sha": CANDIDATE, "status": "success", "run_id": 9999999999, "run_attempt": 2}
         self.run = {"id": 9999999999, "run_attempt": 2, "path": self.config["candidate_workflow"], "head_sha": HEAD,
                     "event": "pull_request", "status": "completed", "conclusion": "success", "check_suite_id": 7}
+        self.jobs = [
+            {"name": "Inspect exact candidate and collaboration tests", "status": "completed", "conclusion": "success"},
+            {"name": "windows_build / Build Deps / Build OrcaSlicer / Build OrcaSlicer", "status": "completed", "conclusion": "success"},
+            {"name": "windows_tests / Unit Tests", "status": "completed", "conclusion": "success"},
+            {"name": "Team integration candidate", "status": "completed", "conclusion": "success"},
+            {"name": "linux_build / Build", "status": "completed", "conclusion": "failure"},
+        ]
         self.parents = [BASE, HEAD]
         self.archive_name = "candidate.json"
         self.requests = []
@@ -434,6 +441,8 @@ class CandidateTests(unittest.TestCase):
         if "/actions/workflows/" in path:
             return {"workflow_runs": [self.run]}
         if "/actions/runs/" in path:
+            if path.endswith("/jobs?per_page=100&page=1"):
+                return {"jobs": self.jobs}
             return {"artifacts": [{"id": 88, "name": "team-integration-candidate", "expired": False}]}
         if archive:
             buffer = io.BytesIO()
@@ -456,12 +465,26 @@ class CandidateTests(unittest.TestCase):
             self.evidence[field] = original
 
     def test_workflow_or_event_mismatch_is_rejected(self):
-        for field, value in [("path", ".github/workflows/forged.yml"), ("event", "push"), ("conclusion", "failure")]:
+        for field, value in [("path", ".github/workflows/forged.yml"), ("event", "push")]:
             original = self.run[field]
             self.run[field] = value
             with self.subTest(field=field):
                 self.assertIsNone(self.github.candidate_evidence(1, BASE, HEAD, CANDIDATE))
             self.run[field] = original
+
+    def test_reference_platform_failure_does_not_reject_required_candidate(self):
+        self.run["conclusion"] = "failure"
+        self.assertIsNotNone(self.github.candidate_evidence(1, BASE, HEAD, CANDIDATE))
+
+    def test_missing_or_failed_required_job_is_rejected(self):
+        for name in ["Inspect exact candidate and collaboration tests", "windows_build / Build Deps / Build OrcaSlicer / Build OrcaSlicer",
+                     "windows_tests / Unit Tests", "Team integration candidate"]:
+            original = self.jobs[:]
+            self.jobs = [dict(job) for job in original]
+            next(job for job in self.jobs if job["name"] == name)["conclusion"] = "failure"
+            with self.subTest(name=name):
+                self.assertIsNone(self.github.candidate_evidence(1, BASE, HEAD, CANDIDATE))
+            self.jobs = original
 
     def test_wrong_merge_parents_never_use_ci(self):
         self.parents = [NEW, HEAD]

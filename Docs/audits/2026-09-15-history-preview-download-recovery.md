@@ -39,4 +39,13 @@
 
 `.github/team-collaboration.json` 原来只保留 AI 架构检查、Windows 构建和 Windows 单元测试，但旧服务配置校验仍强制要求 `Team integration candidate`。恢复该检查，并同步 bootstrap 示例/校验常量和架构锁/验证器，保留已有 Windows 两项检查。跨组件测试确认真实配置一致，删除候选检查会被拒绝，生成的保护规则可由旧服务与扩展四检查服务读取，缺检查或 App ID 不符仍然拒绝。
 
-本轮只修改仓库配置和校验代码，没有修改 GitHub 线上保护、机器人自动修复权限或生产服务私有配置。候选 job 只依赖 inspect 和 Windows 两项；但旧服务 `candidate_evidence()` 仍检查整个 workflow 的成功状态，不能据此宣称旧服务已完全忽略 Linux/macOS 结果。新提交须重新运行 CI 和非作者复核，本报告不是审核通过凭证。
+本轮只修改仓库配置和校验代码，没有修改 GitHub 线上保护、机器人自动修复权限或生产服务私有配置。候选 job 只依赖 inspect 和 Windows 两项；本轮同步更新 `tools/team_integration/github.py`，读取 workflow run 的 jobs，要求 inspect、Windows build、Windows tests 和 candidate 四个必需作业完成且成功，允许 Linux/macOS 参考作业失败而不放宽提交、PR、artifact、运行尝试号和保护规则校验。
+
+## PR #10 审查回归修复（2026-09-15）
+
+- F001：历史库 metadata 扫描将异常文件上限调整为 32 MiB，并通过 JSON parse callback 丢弃 `selected_faces`、`protected_faces` 等仅供修整工作台使用的大数组，保留任务身份、时间、模型路径、原图路径和共享目录引用，避免拒绝应用自身保存的有效记录。
+- F002：接受或重做本地修整版本时递增序号、取消旧预览请求并清理下载中、路径和输出状态，迟到的图片回调不能重新置忙或覆盖新任务。
+- F003：恢复历史 failed 图像任务时，通用预览失败提示不再覆盖服务端终态诊断；恢复参考图失败的提示追加到已有摘要中，原始失败原因继续可见。
+- F004：候选证据消费改为按必需 job 结果判定，Linux/macOS 继续作为参考检查；缺少或失败的 inspect、Windows build、Windows tests、candidate 任一作业仍拒绝。
+
+新增/更新后的本地验证：team integration service 54 项、team collaboration 18 项、candidate 10 项、AI guardrails 51 项均通过；`verify_ai_integration.py --json` 和 `git diff --check` 通过；Release 主程序与 `slic3rutils_tests` 构建成功；`[ModelGenerationPresentation],[ModelPreviewState]` 通过 23 个用例、381 个断言。此前记录的 mock sidecar GUI 场景已验证历史切换、迟到回调、失败恢复、准备页导入和重新开始；本轮未重新执行完整 3MF 往返、基本切片、跨平台 GUI 或真实收费服务生成。新提交仍需 GitHub CI 和非作者复核，本报告不代表审核已通过。

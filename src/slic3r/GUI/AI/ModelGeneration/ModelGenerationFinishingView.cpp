@@ -616,7 +616,22 @@ bool ModelGenerationPanel::show_finishing_version(const boost::filesystem::path&
 
 void ModelGenerationPanel::select_local_finishing_version(const boost::filesystem::path& path, const std::string& id)
 {
+    // Selecting a local finishing version is a context switch.  A preview
+    // download from the previous remote job may still be completing after the
+    // 3D artifact became available.  Invalidate that callback and release the
+    // busy state before exposing the accepted local version; otherwise a late
+    // image response can leave the panel stuck in "loading" forever.
+    const bool preview_download_was_active = m_preview_download_in_flight;
     ++m_sequence;
+    if (preview_download_was_active)
+        m_client.cancel_current();
+    m_preview_download_in_flight = false;
+    if (preview_download_was_active) {
+        m_preview_download_cancelled = true;
+        m_preview_path.clear();
+        m_style_preview_ready = false;
+        m_preview_output_available = false;
+    }
     m_poll_timer.Stop();
     m_job_id.clear(); m_job_palette.clear(); m_job_palette_roles.clear();
     m_job_use_printable_colors = false;

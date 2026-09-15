@@ -388,11 +388,17 @@ void ModelGenerationPanel::download_restored_input(uint64_t sequence)
                     (previous_status.empty() ? wxString() : wxString("\n") + previous_status));
                 if (preview_available) {
                     weak->m_preview_message->SetLabel(_L("历史参考图恢复失败，正在加载已保存的 AI 设计图。"));
-                    weak->m_result_summary->SetLabel(_L("原始任务原因已保留；AI 设计图仍可查看，恢复参考图后可继续操作。"));
+                    const wxString terminal_summary = weak->m_result_summary->GetLabel();
+                    const wxString recovery_hint = _L("原始任务原因已保留；AI 设计图仍可查看，恢复参考图后可继续操作。");
+                    weak->m_result_summary->SetLabel(terminal_summary.empty()
+                        ? recovery_hint : terminal_summary + _L("\n") + recovery_hint);
                     weak->download_preview(sequence);
                 } else {
                     weak->m_style_preview_placeholder = _L("预览不可用");
-                    weak->m_result_summary->SetLabel(_L("历史任务和原始失败原因已保留；请重新选择图片后再试。"));
+                    const wxString terminal_summary = weak->m_result_summary->GetLabel();
+                    const wxString recovery_hint = _L("历史任务和原始失败原因已保留；请重新选择图片后再试。");
+                    weak->m_result_summary->SetLabel(terminal_summary.empty()
+                        ? recovery_hint : terminal_summary + _L("\n") + recovery_hint);
                 }
                 weak->refresh_controls();
             });
@@ -2470,7 +2476,8 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
         m_result_summary->SetLabel(m_result_summary->GetLabel() +
             _L("\nAI 视觉复核暂不可用，请自行对照原图检查脸型、姿态和配色。"));
     if ((status.state == "failed" || status.state == "stopped" || status.state == "cancelled") &&
-        m_job_preview_expected && !m_style_preview_ready && m_preview_path.empty())
+        m_job_preview_expected && !m_style_preview_ready && m_preview_path.empty() &&
+        !m_restoring_input && !m_preview_output_available)
         show_preview_failure(status.state == "failed"
             ? _L("图片预览未完成，请查看失败原因后重试。")
             : _L("图片预览已停止，输入已保留。"));
