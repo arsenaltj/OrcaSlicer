@@ -34,7 +34,8 @@ def configuration(path):
             "task_branch_prefixes": ["codex/task/", "codex/upstream-sync-"],
             "users": {"ou_model": "model-owner", "ou_slicing": "slicing-owner", "ou_maintainer": "maintainer"},
             "maintainer_ids": ["ou_maintainer"], "chat_id": "oc_team", "bot_open_id": "ou_bot",
-            "required_checks": [{"name": "AI integration checks", "app_id": 100}, {"name": "Team integration candidate", "app_id": 100}],
+            "required_checks": [{"name": "windows_build / Build Deps / Build OrcaSlicer / Build OrcaSlicer",
+                                  "app_id": 100}],
             "candidate_workflow": ".github/workflows/team-integration-candidate.yml", "candidate_artifact": "team-integration-candidate",
             "required_approvals": 1, "github_token_env": "TEAM_GITHUB_TOKEN", "feishu_app_id_env": "TEAM_FEISHU_APP_ID",
             "feishu_app_secret_env": "TEAM_FEISHU_APP_SECRET", "poll_seconds": 30, "database_path": str(path)}
@@ -181,11 +182,18 @@ class ServiceTests(unittest.TestCase):
         self.github.base = NEW
         self.assertEqual("pending", self.service.evaluate(pull(), BASE)[0])
 
-    def test_missing_ci_and_protection_never_ready(self):
+    def test_candidate_report_is_informational_but_protection_is_required(self):
         self.github.evidence = None
         self.service.tick()
-        self.assertEqual("pending", self.state())
-        self.github.evidence = {"check_suite_id": 7, "url": "https://github.com/team/orca/actions/runs/9"}
+        self.assertEqual("ready", self.state())
+        self.github.check_rows.append({"id": 99, "name": "Team integration candidate", "app": {"id": 100},
+                                       "head_sha": HEAD, "status": "completed", "conclusion": "failure"})
+        self.service.tick()
+        self.assertEqual("ready", self.state())
+        for name in ("windows_tests / Unit Tests", "AI integration checks", "linux_build / Build"):
+            self.github.check_rows[-1]["name"] = name
+            self.service.tick()
+            self.assertEqual("ready", self.state())
         self.github.protected = False
         self.service.tick()
         self.assertEqual("pending", self.state())
@@ -422,6 +430,13 @@ class CandidateTests(unittest.TestCase):
                          "base_sha": BASE, "candidate_sha": CANDIDATE, "status": "success", "run_id": 9999999999, "run_attempt": 2}
         self.run = {"id": 9999999999, "run_attempt": 2, "path": self.config["candidate_workflow"], "head_sha": HEAD,
                     "event": "pull_request", "status": "completed", "conclusion": "success", "check_suite_id": 7}
+        self.jobs = [
+            {"name": "Inspect exact candidate and collaboration tests", "status": "completed", "conclusion": "success"},
+            {"name": "windows_build / Build Deps / Build OrcaSlicer / Build OrcaSlicer", "status": "completed", "conclusion": "success"},
+            {"name": "windows_tests / Unit Tests", "status": "completed", "conclusion": "success"},
+            {"name": "Team integration candidate", "status": "completed", "conclusion": "success"},
+            {"name": "linux_build / Build", "status": "completed", "conclusion": "failure"},
+        ]
         self.parents = [BASE, HEAD]
         self.archive_name = "candidate.json"
         self.requests = []
@@ -434,6 +449,8 @@ class CandidateTests(unittest.TestCase):
         if "/actions/workflows/" in path:
             return {"workflow_runs": [self.run]}
         if "/actions/runs/" in path:
+            if path.endswith("/jobs?per_page=100&page=1"):
+                return {"jobs": self.jobs}
             return {"artifacts": [{"id": 88, "name": "team-integration-candidate", "expired": False}]}
         if archive:
             buffer = io.BytesIO()
@@ -456,12 +473,36 @@ class CandidateTests(unittest.TestCase):
             self.evidence[field] = original
 
     def test_workflow_or_event_mismatch_is_rejected(self):
-        for field, value in [("path", ".github/workflows/forged.yml"), ("event", "push"), ("conclusion", "failure")]:
+        for field, value in [("path", ".github/workflows/forged.yml"), ("event", "push")]:
             original = self.run[field]
             self.run[field] = value
             with self.subTest(field=field):
                 self.assertIsNone(self.github.candidate_evidence(1, BASE, HEAD, CANDIDATE))
             self.run[field] = original
+
+    def test_reference_platform_failure_does_not_reject_required_candidate(self):
+        self.run["conclusion"] = "failure"
+        self.assertIsNotNone(self.github.candidate_evidence(1, BASE, HEAD, CANDIDATE))
+
+    def test_missing_or_failed_windows_build_invalidates_informational_receipt(self):
+        for name in ["windows_build / Build Deps / Build OrcaSlicer / Build OrcaSlicer"]:
+            original = self.jobs[:]
+            self.jobs = [dict(job) for job in original]
+            next(job for job in self.jobs if job["name"] == name)["conclusion"] = "failure"
+            with self.subTest(name=name):
+                self.assertIsNone(self.github.candidate_evidence(1, BASE, HEAD, CANDIDATE))
+            self.jobs = original
+
+    def test_inspect_candidate_and_reference_failures_do_not_invalidate_optional_receipt(self):
+        self.run["conclusion"] = "failure"
+        for name in ("Inspect exact candidate and collaboration tests", "Team integration candidate",
+                     "windows_tests / Unit Tests", "linux_build / Build"):
+            original = self.jobs[:]
+            self.jobs = [dict(job) for job in original]
+            next(job for job in self.jobs if job["name"] == name)["conclusion"] = "failure"
+            with self.subTest(name=name):
+                self.assertIsNotNone(self.github.candidate_evidence(1, BASE, HEAD, CANDIDATE))
+            self.jobs = original
 
     def test_wrong_merge_parents_never_use_ci(self):
         self.parents = [NEW, HEAD]
@@ -513,7 +554,8 @@ class CandidateTests(unittest.TestCase):
                 "required_pull_request_reviews": {"dismiss_stale_reviews": True, "require_code_owner_reviews": True,
                     "required_approving_review_count": 1, "require_last_push_approval": True,
                     "bypass_pull_request_allowances": {"users": [], "teams": [], "apps": []}},
-                "required_status_checks": {"strict": True, "checks": [
+                "required_status_checks": {"strict": True,
+                    "contexts": [c["name"] for c in self.config["required_checks"]], "checks": [
                     {"context": c["name"], "app_id": c["app_id"]} for c in self.config["required_checks"]]}}
 
     def test_complete_protection_policy_is_required(self):

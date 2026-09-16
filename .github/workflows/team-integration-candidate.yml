@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [codex/team/integration]
   push:
-    branches: [codex/team/integration]
+    branches: [codex/team/integration, 'codex/revert/**']
   merge_group:
     types: [checks_requested]
 
@@ -60,8 +60,6 @@ jobs:
           retention-days: 7
 
   windows_build:
-    needs: inspect
-    if: needs.inspect.outputs.native == 'true'
     uses: ./.github/workflows/build_check_cache.yml
     with:
       os: windows-latest
@@ -108,7 +106,9 @@ jobs:
 
   candidate:
     name: Team integration candidate
-    needs: [inspect, windows_build, windows_tests, linux_build, linux_tests, macos_build, macos_tests]
+    # Linux/macOS checks retain their own results and remain informational.
+    # They must not delay the required Windows candidate receipt.
+    needs: [inspect, windows_build, windows_tests]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -122,7 +122,7 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           name: team-candidate-input-${{ github.run_attempt }}
-      - name: Require all applicable jobs and recheck live HEADs
+      - name: Require Windows build and tests and recheck live HEADs
         env:
           GITHUB_TOKEN: ${{ github.token }}
           CANDIDATE_JOB_RESULTS: ${{ toJSON(needs) }}

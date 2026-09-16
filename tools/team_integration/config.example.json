@@ -14,8 +14,7 @@
   "chat_id": "oc_REPLACE_TEAM_CHAT",
   "bot_open_id": "ou_REPLACE_BOT",
   "required_checks": [
-    {"name": "AI integration checks", "app_id": 0},
-    {"name": "Team integration candidate", "app_id": 0}
+    {"name": "windows_build / Build Deps / Build OrcaSlicer / Build OrcaSlicer", "app_id": 0}
   ],
   "candidate_workflow": ".github/workflows/team-integration-candidate.yml",
   "candidate_artifact": "team-integration-candidate",

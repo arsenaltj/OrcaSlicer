@@ -10,12 +10,21 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import bootstrap
 
 
 EXAMPLE = Path(__file__).with_name("team-collaboration.example.json")
+REPOSITORY = Path(__file__).resolve().parents[2]
+FIXTURE_APP_ID = 100
+
+
+def repository_module(name, relative_path):
+    spec = importlib.util.spec_from_file_location(name, REPOSITORY / relative_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def complete_config():
@@ -26,17 +35,101 @@ def complete_config():
     return config
 
 
+def service_config(required_checks=None):
+    config = bootstrap.read_json(REPOSITORY / "tools/team_integration/config.example.json")
+    config.update(
+        repository="example-org/fixture-project",
+        users={"ou_" + role: login for role, login in complete_config()["developers"].items()},
+        maintainer_ids=["ou_maintenance"], chat_id="oc_fixture", bot_open_id="ou_fixture_bot",
+        database_path=str(Path(tempfile.gettempdir()) / "team-bootstrap-fixture.sqlite3"),
+    )
+    names = required_checks if required_checks is not None else [check["name"] for check in config["required_checks"]]
+    config["required_checks"] = [{"name": name, "app_id": FIXTURE_APP_ID} for name in names]
+    return config
+
+
 class ConfigTests(unittest.TestCase):
     def test_unconfigured_example_is_valid(self):
         bootstrap.validate_config(bootstrap.read_json(EXAMPLE))
 
+    def test_required_checks_agree_across_repository_bootstrap_lock_and_service(self):
+        repository_config = bootstrap.read_json(REPOSITORY / ".github/team-collaboration.json")
+        example_config = bootstrap.read_json(EXAMPLE)
+        lock = bootstrap.read_json(REPOSITORY / "docs/architecture/ai-integration-lock.json")
+        verifier = repository_module("team_bootstrap_integration_verifier", "scripts/verify_ai_integration.py")
+        service = repository_module("team_bootstrap_service_config", "tools/team_integration/config.py")
+        required = repository_config["required_checks"]
+        self.assertEqual(set(required), {
+            "windows_build / Build Deps / Build OrcaSlicer / Build OrcaSlicer",
+        })
+        self.assertEqual(required, bootstrap.CHECKS)
+        self.assertEqual(required, example_config["required_checks"])
+        self.assertEqual(required, lock["ci_contract"]["required_checks"])
+        self.assertEqual(lock["ci_contract"], verifier.EXPECTED_CI_CONTRACT)
+        bootstrap.validate_config(repository_config)
+        bootstrap.validate_config(example_config)
+        service.validate_config(service_config())
+        service.validate_config(service_config(required))
+
+    def test_extra_check_or_missing_windows_build_is_rejected(self):
+        config = complete_config()
+        config["required_checks"].append("Team integration candidate")
+        with self.assertRaisesRegex(bootstrap.PreparationError, "required_checks"):
+            bootstrap.validate_config(config)
+        service = repository_module("team_bootstrap_service_config", "tools/team_integration/config.py")
+        with self.assertRaisesRegex(ValueError, "only the Windows build"):
+            service.validate_config(service_config(config["required_checks"]))
+        config["required_checks"].remove("Team integration candidate")
+        config["required_checks"].remove("windows_build / Build Deps / Build OrcaSlicer / Build OrcaSlicer")
+        with self.assertRaises(bootstrap.PreparationError):
+            bootstrap.validate_config(config)
+        with self.assertRaises(ValueError):
+            service.validate_config(service_config(config["required_checks"]))
+
+    def test_generated_protection_matches_exactly_windows_build(self):
+        adapter = repository_module("team_bootstrap_github", "tools/team_integration/github.py")
+        for source in (EXAMPLE, REPOSITORY / ".github/team-collaboration.json"):
+            config = bootstrap.read_json(source)
+            protection = bootstrap.branch_protection(config)
+            # The generator emits a PUT body. GitHub's GET response wraps
+            # booleans and reports the resolved check App IDs; use offline IDs.
+            for key in ("enforce_admins", "allow_force_pushes", "allow_deletions", "required_conversation_resolution"):
+                protection[key] = {"enabled": protection[key]}
+            for check in protection["required_status_checks"]["checks"]:
+                check["app_id"] = FIXTURE_APP_ID
+            protection["required_status_checks"]["contexts"] = config["required_checks"][:]
+            for service in (service_config(), service_config(config["required_checks"])):
+                with self.subTest(source=source, required=service["required_checks"]):
+                    transport = Mock(spec=["get"])
+                    transport.get.return_value = protection
+                    github = adapter.GitHub(service, transport)
+                    self.assertTrue(github.protection_ready())
+                    transport.get.assert_called_once_with(
+                        "/repos/example-org/fixture-project/branches/codex%2Fteam%2Fintegration/protection")
+                    for required in service["required_checks"]:
+                        incomplete = copy.deepcopy(protection)
+                        incomplete["required_status_checks"]["checks"] = [
+                            check for check in incomplete["required_status_checks"]["checks"]
+                            if check["context"] != required["name"]]
+                        transport.get.return_value = incomplete
+                        with self.subTest(missing=required["name"]):
+                            self.assertFalse(github.protection_ready())
+                    untrusted = copy.deepcopy(protection)
+                    for check in untrusted["required_status_checks"]["checks"]:
+                        check["app_id"] = FIXTURE_APP_ID + 1
+                    transport.get.return_value = untrusted
+                    self.assertFalse(github.protection_ready())
+                    extra = copy.deepcopy(protection)
+                    extra["required_status_checks"]["checks"].append(
+                        {"context": "Team integration candidate", "app_id": FIXTURE_APP_ID})
+                    extra["required_status_checks"]["contexts"].append("Team integration candidate")
+                    transport.get.return_value = extra
+                    self.assertFalse(github.protection_ready())
+
     def test_generated_codeowners_satisfy_actual_integration_verifier(self):
-        repository = Path(__file__).resolve().parents[2]
+        repository = REPOSITORY
         lock = bootstrap.read_json(repository / "docs/architecture/ai-integration-lock.json")
-        verifier_path = repository / "scripts/verify_ai_integration.py"
-        spec = importlib.util.spec_from_file_location("team_bootstrap_integration_verifier", verifier_path)
-        verifier = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(verifier)
+        verifier = repository_module("team_bootstrap_integration_verifier", "scripts/verify_ai_integration.py")
         generated = bootstrap.codeowners(repository, complete_config(), lock)
         for filename in ("ModelColorCleanup.hpp", "ModelObjText.hpp"):
             self.assertIn(f"/src/slic3r/GUI/AI/Model/{filename} @fixture-model @fixture-maintenance", generated)
@@ -62,7 +155,7 @@ class ConfigTests(unittest.TestCase):
             ("repository", "owner/../../repo"), ("repository", "owner/repo\nmalicious"),
             ("repository", "https://github.com/owner/repo"), ("repository", "owner/repo.git"),
             ("integration_branch", "main"), ("required_checks", []),
-            ("required_checks", ["AI integration checks"]),
+            ("required_checks", ["windows_tests / Unit Tests"]),
             ("automation", {"mode": "notify_and_preview", "auto_merge": True}),
             ("automation", {"mode": "notify_and_preview", "auto_merge": 0}),
             ("bootstrap", {"baseline_sha": "HEAD"}),

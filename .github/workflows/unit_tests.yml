@@ -74,7 +74,7 @@ jobs:
           name: test-results-${{ inputs.artifact }}
           path: ctest_results.xml
           retention-days: 5
-          if-no-files-found: warn
+          if-no-files-found: error
       - name: Delete Test Artifact
         if: success() && !inputs.retain-artifact
         uses: geekyeggo/delete-artifact@v6
