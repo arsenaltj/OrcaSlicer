@@ -8,6 +8,7 @@ loopback ports. No credentials are needed for this suite.
 from __future__ import annotations
 
 import ipaddress
+import argparse
 import os
 from pathlib import Path
 import sys
@@ -35,14 +36,21 @@ def network_guard(event: str, args: tuple) -> None:
         raise RuntimeError("Offline AI tests attempted external networking; mock the provider transport")
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--pattern', default='test_*.py', help='Select one test file or filename glob')
+    args = parser.parse_args(argv)
+    if not args.pattern.startswith('test_') or not args.pattern.endswith('.py') or any(c in args.pattern for c in '/\\:'):
+        parser.error('--pattern must be a test_*.py filename or glob, not a path')
     for key in list(os.environ):
-        if key.upper().startswith(("OPENAI_", "TRIPO_", "TRIPO3D_", "ORCASLICER_AI_")):
+        if key.upper().startswith(("OPENAI_", "TRIPO_", "TRIPO3D_", "ORCASLICER_AI_", "HUNYUAN3D_")) or key.upper() == 'HY3D_API':
             del os.environ[key]
     sys.addaudithook(network_guard)
     root = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(root))
-    suite = unittest.defaultTestLoader.discover(str(root / "tools" / "ai"), pattern="test_*.py")
+    suite = unittest.defaultTestLoader.discover(str(root / "tools" / "ai"), pattern=args.pattern)
+    if not suite.countTestCases():
+        parser.error('No tests matched --pattern')
     return 0 if unittest.TextTestRunner(verbosity=1).run(suite).wasSuccessful() else 1
 
 
