@@ -60,9 +60,7 @@ class ConfigTests(unittest.TestCase):
         service = repository_module("team_bootstrap_service_config", "tools/team_integration/config.py")
         required = repository_config["required_checks"]
         self.assertEqual(set(required), {
-            "AI integration checks", "Team integration candidate",
             "windows_build / Build Deps / Build OrcaSlicer / Build OrcaSlicer",
-            "windows_tests / Unit Tests",
         })
         self.assertEqual(required, bootstrap.CHECKS)
         self.assertEqual(required, example_config["required_checks"])
@@ -70,23 +68,25 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(lock["ci_contract"], verifier.EXPECTED_CI_CONTRACT)
         bootstrap.validate_config(repository_config)
         bootstrap.validate_config(example_config)
-        # An existing service keeps its candidate requirement; expanding to the
-        # Windows checks must also remain valid under that service's schema.
-        legacy_service = service_config()
-        self.assertTrue({check["name"] for check in legacy_service["required_checks"]} <= set(required))
-        service.validate_config(legacy_service)
+        service.validate_config(service_config())
         service.validate_config(service_config(required))
 
-    def test_removing_candidate_is_rejected_by_bootstrap_and_service(self):
+    def test_extra_check_or_missing_windows_build_is_rejected(self):
         config = complete_config()
-        config["required_checks"].remove("Team integration candidate")
-        with self.assertRaisesRegex(bootstrap.PreparationError, "candidate"):
+        config["required_checks"].append("Team integration candidate")
+        with self.assertRaisesRegex(bootstrap.PreparationError, "required_checks"):
             bootstrap.validate_config(config)
         service = repository_module("team_bootstrap_service_config", "tools/team_integration/config.py")
-        with self.assertRaisesRegex(ValueError, "candidate"):
+        with self.assertRaisesRegex(ValueError, "only the Windows build"):
+            service.validate_config(service_config(config["required_checks"]))
+        config["required_checks"].remove("Team integration candidate")
+        config["required_checks"].remove("windows_build / Build Deps / Build OrcaSlicer / Build OrcaSlicer")
+        with self.assertRaises(bootstrap.PreparationError):
+            bootstrap.validate_config(config)
+        with self.assertRaises(ValueError):
             service.validate_config(service_config(config["required_checks"]))
 
-    def test_generated_protection_is_accepted_by_existing_and_expanded_service(self):
+    def test_generated_protection_matches_exactly_windows_build(self):
         adapter = repository_module("team_bootstrap_github", "tools/team_integration/github.py")
         for source in (EXAMPLE, REPOSITORY / ".github/team-collaboration.json"):
             config = bootstrap.read_json(source)
@@ -97,6 +97,7 @@ class ConfigTests(unittest.TestCase):
                 protection[key] = {"enabled": protection[key]}
             for check in protection["required_status_checks"]["checks"]:
                 check["app_id"] = FIXTURE_APP_ID
+            protection["required_status_checks"]["contexts"] = config["required_checks"][:]
             for service in (service_config(), service_config(config["required_checks"])):
                 with self.subTest(source=source, required=service["required_checks"]):
                     transport = Mock(spec=["get"])
@@ -117,6 +118,12 @@ class ConfigTests(unittest.TestCase):
                     for check in untrusted["required_status_checks"]["checks"]:
                         check["app_id"] = FIXTURE_APP_ID + 1
                     transport.get.return_value = untrusted
+                    self.assertFalse(github.protection_ready())
+                    extra = copy.deepcopy(protection)
+                    extra["required_status_checks"]["checks"].append(
+                        {"context": "Team integration candidate", "app_id": FIXTURE_APP_ID})
+                    extra["required_status_checks"]["contexts"].append("Team integration candidate")
+                    transport.get.return_value = extra
                     self.assertFalse(github.protection_ready())
 
     def test_generated_codeowners_satisfy_actual_integration_verifier(self):
@@ -148,7 +155,7 @@ class ConfigTests(unittest.TestCase):
             ("repository", "owner/../../repo"), ("repository", "owner/repo\nmalicious"),
             ("repository", "https://github.com/owner/repo"), ("repository", "owner/repo.git"),
             ("integration_branch", "main"), ("required_checks", []),
-            ("required_checks", ["AI integration checks"]),
+            ("required_checks", ["windows_tests / Unit Tests"]),
             ("automation", {"mode": "notify_and_preview", "auto_merge": True}),
             ("automation", {"mode": "notify_and_preview", "auto_merge": 0}),
             ("bootstrap", {"baseline_sha": "HEAD"}),

@@ -60,7 +60,6 @@ jobs:
           retention-days: 7
 
   windows_build:
-    needs: inspect
     uses: ./.github/workflows/build_check_cache.yml
     with:
       os: windows-latest

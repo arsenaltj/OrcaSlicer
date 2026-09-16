@@ -56,8 +56,8 @@ def validate_config(c):
                 check["name"] in names):
             raise ValueError("required checks need distinct names and trusted positive app_id values")
         names.add(check["name"])
-    if not {"AI integration checks", "Team integration candidate"} <= names:
-        raise ValueError("both ADR-007 integration and candidate checks are mandatory")
+    if names != {"windows_build / Build Deps / Build OrcaSlicer / Build OrcaSlicer"}:
+        raise ValueError("only the Windows build job is mandatory")
     if not re.fullmatch(r"\.github/workflows/[A-Za-z0-9_-]+\.ya?ml", c["candidate_workflow"]):
         raise ValueError("candidate_workflow must identify a repository workflow")
     if not re.fullmatch(r"[A-Za-z0-9_-]+", c["candidate_artifact"]):
