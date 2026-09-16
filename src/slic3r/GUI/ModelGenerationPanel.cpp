@@ -4669,7 +4669,7 @@ void ModelGenerationPanel::delete_library_entry(const GeneratedModelEntry& entry
         m_status->SetLabel(_L("删除已阻止：模型路径不在 generated_models 中。"));
         return;
     }
-    if (entry.design_only && !read_design_history_entry(root, entry.job_id)) {
+    if (entry.design_only && !read_design_history_entry(root, entry.job_id, false)) {
         m_status->SetLabel(_L("设计记录已变化，请刷新历史后重试。"));
         return;
     }

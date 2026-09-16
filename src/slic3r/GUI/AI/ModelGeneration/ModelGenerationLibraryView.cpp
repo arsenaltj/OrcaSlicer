@@ -550,6 +550,7 @@ void ModelGenerationPanel::on_library_timer(wxTimerEvent&)
             m_library_next->Enable((m_library_page + 1) * m_library_page_size < m_library_entries.size());
             for (auto* thumbnail : m_library_thumbnails)
                 static_cast<LibraryThumbnail*>(thumbnail)->finish_pending();
+            m_library_refresh_pending = false;
         } else {
             const size_t anchor_index = m_library_page * m_library_page_size;
             const std::string anchor = anchor_index < m_library_entries.size() ? m_library_entries[anchor_index].job_id : std::string();
