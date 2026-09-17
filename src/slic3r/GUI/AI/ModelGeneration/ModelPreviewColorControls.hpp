@@ -51,6 +51,20 @@ public:
         auto* reset = new wxButton(this, wxID_ANY, _L("重置试色"));
         options->Add(reset, 0);
         box->Add(options, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(6));
+        auto* semantic_row = new wxBoxSizer(wxHORIZONTAL);
+        m_semantic = new wxCheckBox(this, wxID_ANY, _L("人像区域优化"));
+        m_semantic->SetValue(true);
+        m_semantic->SetToolTip(_L("在本机识别皮肤、衣服和嘴唇后分别匹配颜色；识别不明确的区域沿用原有配色。"));
+        semantic_row->Add(m_semantic, 1, wxALIGN_CENTER_VERTICAL);
+        m_semantic_cancel = new wxButton(this, wxID_ANY, _L("取消识别"));
+        semantic_row->Add(m_semantic_cancel, 0);
+        m_semantic_cancel->Hide();
+        box->Add(semantic_row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(6));
+        m_semantic_status = new wxStaticText(this, wxID_ANY, wxEmptyString);
+        box->Add(m_semantic_status, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(6));
+        m_semantic_status->Hide();
+        m_semantic->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) { changed(); });
+        m_semantic_cancel->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { m_semantic->SetValue(false); changed(); });
         auto* pack_button = new wxButton(this, wxID_ANY, _L("应用 / 保存耗材包…"));
         box->Add(pack_button, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(6));
         pack_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
@@ -104,6 +118,7 @@ public:
         m_lighting->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) { changed(); });
         reset->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
             m_source->SetSelection(0); m_count->SetValue(6); m_fidelity->SetValue(true);
+            m_semantic->SetValue(true);
             m_lighting->SetValue(false);
             for (auto* lock : m_locks) lock->SetValue(false);
             m_notice.clear(); recompute();
@@ -125,6 +140,8 @@ public:
     }
     void load(std::shared_ptr<const PreviewPalette::Histogram> histogram, std::vector<Color> colors) {
         m_histogram = std::move(histogram); m_colors = std::move(colors); m_mapping_colors = m_colors;
+        m_semantic_colors.clear(); m_semantic_mapping.clear(); m_semantic_card.clear(); m_semantic->SetValue(true);
+        set_semantic_status(wxEmptyString, false);
         m_enabled = false; m_source->SetSelection(0); m_count->SetValue(6); m_fidelity->SetValue(true);
         m_lighting->SetValue(false);
         m_notice.clear();
@@ -136,6 +153,16 @@ public:
     const std::vector<Color>& mapping_colors() const { return m_mapping_colors; }
     bool enabled() const { return m_enabled; }
     bool lighting() const { return m_lighting->GetValue(); }
+    bool semantic_optimization() const { return m_semantic->GetValue(); }
+    const std::vector<Color>& semantic_palette() const { return m_semantic_colors.empty() ? m_colors : m_semantic_colors; }
+    const std::vector<Color>& semantic_mapping_palette() const { return m_semantic_mapping.empty() ? semantic_palette() : m_semantic_mapping; }
+    const std::vector<Color>& semantic_portrait_card() const { return m_semantic_card; }
+    void set_semantic_status(const wxString& message, bool busy) {
+        if (m_semantic_status->GetLabel() == message && m_semantic_cancel->IsShown() == busy) return;
+        m_semantic_status->SetLabel(message); m_semantic_status->Show(!message.empty());
+        m_semantic_status->Wrap(std::max(FromDIP(220), GetClientSize().x - FromDIP(12)));
+        m_semantic_cancel->Show(busy); Layout(); GetParent()->Layout();
+    }
     struct State : AI::ColorTrialPersistence::State {
         wxString project_signature, notice;
     };
@@ -146,6 +173,9 @@ public:
         saved.source = m_source->GetSelection(); saved.count = m_count->GetValue();
         saved.enabled = m_enabled; saved.fidelity = m_fidelity->GetValue(); saved.lighting = lighting();
         saved.project_signature = m_project_signature; saved.notice = m_notice;
+        saved.semantic_optimization = semantic_optimization();
+        saved.semantic_palette = semantic_palette(); saved.semantic_mapping_palette = semantic_mapping_palette();
+        saved.semantic_portrait_card = m_semantic_card;
         return saved;
     }
     // Same-workpiece comparison/editing keeps the user's assignments. A new
@@ -156,6 +186,9 @@ public:
         m_source->SetSelection(saved.source); m_count->SetValue(saved.count);
         m_fidelity->SetValue(saved.fidelity); m_lighting->SetValue(saved.lighting);
         m_colors = saved.colors; m_mapping_colors = saved.mapping_colors;
+        m_semantic_colors = saved.semantic_palette; m_semantic_mapping = saved.semantic_mapping_palette;
+        m_semantic_card = saved.semantic_portrait_card;
+        m_semantic->SetValue(saved.semantic_optimization);
         m_enabled = saved.enabled; m_notice = saved.notice;
         for (size_t i = 0; i < 6; ++i) m_locks[i]->SetValue(saved.locks[i]);
         if (saved.source == 1) {
@@ -209,6 +242,8 @@ private:
         for (size_t i = 0; i < m_colors.size(); ++i) if (m_locks[i]->GetValue()) locked.push_back(m_colors[i]);
         if (source == 1) {
             m_colors = m_project_colors;
+            m_semantic_colors = m_colors; m_semantic_mapping = m_colors; m_semantic_card.clear();
+            if (is_portrait_card(m_colors)) m_semantic_card = m_colors;
             m_mapping_colors = m_colors;
             if (is_portrait_card(m_colors)) apply_portrait_mapping();
             if (!m_colors.empty()) m_count->SetValue(int(m_colors.size()));
@@ -219,6 +254,8 @@ private:
                 m_colors.push_back({color.Red()/255.f, color.Green()/255.f, color.Blue()/255.f});
             }
             m_mapping_colors = m_colors; m_count->SetValue(int(m_colors.size()));
+            m_semantic_colors = m_colors; m_semantic_mapping = m_colors; m_semantic_card.clear();
+            if (m_packs[source - 3].name == young_portrait_color_pack().name) m_semantic_card = m_colors;
             m_notice = _L("色卡仅用于试色；点击“应用 / 保存耗材包”可切换工程耗材。");
             if (m_packs[source - 3].name == young_portrait_color_pack().name) apply_portrait_mapping();
         } else if (source == 0) {
@@ -228,6 +265,7 @@ private:
             }
             m_colors = m_histogram->palette(size_t(m_count->GetValue()), locked, m_fidelity->GetValue());
             m_mapping_colors = m_colors;
+            m_semantic_colors = m_colors; m_semantic_mapping = m_colors; m_semantic_card.clear();
             for (size_t i = 0; i < 6; ++i) m_locks[i]->SetValue(i < m_colors.size() &&
                 std::find(locked.begin(), locked.end(), m_colors[i]) != locked.end());
         } else {
@@ -238,6 +276,15 @@ private:
             }
             m_colors.resize(size_t(m_count->GetValue()));
             m_mapping_colors.resize(m_colors.size());
+            if (m_semantic_colors.size() != m_colors.size()) {
+                const auto original_mapping = semantic_mapping_palette();
+                const size_t previous_size = m_semantic_colors.size();
+                m_semantic_colors.resize(m_colors.size()); m_semantic_mapping = original_mapping;
+                m_semantic_mapping.resize(m_colors.size());
+                for (size_t i = previous_size; i < m_colors.size(); ++i)
+                    m_semantic_colors[i] = m_semantic_mapping[i] = m_colors[i];
+                m_semantic_card.clear();
+            }
         }
         m_enabled = enable && !m_colors.empty(); changed();
         BOOST_LOG_TRIVIAL(info) << "AI protected color palette: source=" << source << ", colors=" << m_colors.size()
@@ -245,13 +292,31 @@ private:
                 std::chrono::steady_clock::now() - started).count();
     }
     void edit_color(size_t i) {
+        if (semantic_optimization() && i < semantic_palette().size()) {
+            const auto original = semantic_palette();
+            wxColourData data; data.SetColour(wx_color(original[i])); data.SetChooseFull(true);
+            wxColourDialog dialog(this, &data); dialog.SetTitle(_L("修改区域试色颜色（不改工程耗材）"));
+            if (dialog.ShowModal() != wxID_OK) return;
+            const wxColour color = dialog.GetColourData().GetColour();
+            const Color replacement {color.Red()/255.f, color.Green()/255.f, color.Blue()/255.f};
+            m_semantic_mapping = semantic_mapping_palette();
+            m_semantic_colors = original; m_semantic_colors[i] = replacement;
+            for (auto& target : m_colors) if (target == original[i]) target = replacement;
+            m_source->SetSelection(2); m_notice = _L("已保留区域对应关系；工程耗材未修改。");
+            m_enabled = true;
+            changed(); return;
+        }
         if (i >= m_colors.size()) return;
         wxColourData data; data.SetColour(wx_color(m_colors[i])); data.SetChooseFull(true);
         wxColourDialog dialog(this, &data);
         dialog.SetTitle(_L("修改试色颜色（不改工程耗材）"));
         if (dialog.ShowModal() != wxID_OK) return;
         const wxColour color = dialog.GetColourData().GetColour();
+        const Color previous = m_colors[i];
+        if (m_semantic_colors.empty()) m_semantic_colors = m_colors;
+        m_semantic_mapping = semantic_mapping_palette();
         m_colors[i] = {color.Red()/255.f, color.Green()/255.f, color.Blue()/255.f};
+        for (auto& candidate : m_semantic_colors) if (candidate == previous) candidate = m_colors[i];
         // Preserve the source assignment when a target color is edited. Editing
         // green to blue must recolor that group, not make the blue target unused.
         m_source->SetSelection(2);
@@ -271,28 +336,29 @@ private:
         if (!mapping.enabled) return;
         m_mapping_colors = mapping.mapping_colors; m_colors = mapping.target_colors;
         m_count->SetValue(int(m_colors.size()));
-        m_notice = _L("人物包按原颜色组建议换色，可点色块调整。不是人脸或衣物识别；局部修改请到 3D 美颜。");
+        m_notice = _L("已按人物色卡建议配色，可通过人像区域优化进一步调整；局部修改请到 3D 美颜。");
     }
     void wrap_status() { m_status->Wrap(std::max(FromDIP(220), GetClientSize().x - FromDIP(12))); }
     void update() {
         const int source = m_source->GetSelection();
+        const auto& displayed_colors = semantic_optimization() ? semantic_palette() : m_colors;
         Show(bool(m_histogram));
         m_toggle->Enable(!m_colors.empty());
         m_toggle->SetLabel(m_enabled ? _L("查看原色") : wxString::Format(_L("预览 %u 色"), unsigned(m_colors.size())));
         m_count->Enable(source == 0 || source == 2); m_fidelity->Enable(source == 0);
         m_lighting->Enable(m_enabled);
         for (size_t i = 0; i < 6; ++i) {
-            const bool visible = i < m_colors.size();
+            const bool visible = i < displayed_colors.size();
             m_swatches[i]->Show(visible); m_locks[i]->Show(visible && source == 0);
             if (!visible) continue;
-            const wxColour color = wx_color(m_colors[i]);
+            const wxColour color = wx_color(displayed_colors[i]);
             const wxString hex = color.GetAsString(wxC2S_HTML_SYNTAX);
             m_swatches[i]->SetLabel(hex); m_swatches[i]->SetBackgroundColour(color);
             m_swatches[i]->SetForegroundColour((color.Red()*299 + color.Green()*587 + color.Blue()*114 > 145000) ? *wxBLACK : *wxWHITE);
-            const auto project_color = std::find(m_project_colors.begin(), m_project_colors.end(), m_colors[i]);
+            const auto project_color = std::find(m_project_colors.begin(), m_project_colors.end(), displayed_colors[i]);
             const size_t project_index = size_t(std::distance(m_project_colors.begin(), project_color));
             m_swatches[i]->SetToolTip((source == 1 && project_index < m_project_names.size() ? m_project_names[project_index] + " · " : "") +
-                (source != 0 ? wx_color(m_mapping_colors[i]).GetAsString(wxC2S_HTML_SYNTAX) + " → " : "") + hex + _L(" · 点击改为试色颜色"));
+                (semantic_optimization() ? _L("区域配色候选 · ") : source != 0 && i < m_mapping_colors.size() ? wx_color(m_mapping_colors[i]).GetAsString(wxC2S_HTML_SYNTAX) + " → " : "") + hex + _L(" · 点击改为试色颜色"));
             m_locks[i]->SetToolTip(_L("固定此颜色，重新推荐时不被其他颜色合并。") + hex);
         }
         wxString text = m_enabled ? (lighting()
@@ -315,6 +381,10 @@ private:
     wxSpinCtrl* m_count;
     wxCheckBox* m_fidelity;
     wxCheckBox* m_lighting;
+    wxCheckBox* m_semantic;
+    wxButton* m_semantic_cancel;
+    wxStaticText* m_semantic_status;
+    std::vector<Color> m_semantic_colors, m_semantic_mapping, m_semantic_card;
     wxStaticText* m_status;
     std::array<wxButton*, 6> m_swatches {};
     std::array<wxCheckBox*, 6> m_locks {};

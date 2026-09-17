@@ -32,7 +32,60 @@ void require_same(const trial::State& a, const trial::State& b)
     REQUIRE(a.enabled == b.enabled);
     REQUIRE(a.fidelity == b.fidelity);
     REQUIRE(a.lighting == b.lighting);
+    REQUIRE(a.semantic_optimization == b.semantic_optimization);
+    REQUIRE(a.semantic_palette == b.semantic_palette);
+    REQUIRE(a.semantic_mapping_palette == b.semantic_mapping_palette);
+    REQUIRE(a.semantic_portrait_card == b.semantic_portrait_card);
 }
+}
+
+TEST_CASE("Semantic trial saves the full candidate palette separately from repeated global targets", "[ColorTrialState][SemanticColoring]")
+{
+    auto saved = saved_trial();
+    saved.colors = {{1.f, 1.f, 1.f}, {1.f, 1.f, 1.f}, {.9f, .7f, .6f}};
+    saved.semantic_palette = {{1.f, 1.f, 1.f}, {.5f, .5f, .5f}, {.9f, .7f, .6f}, {.1f, .1f, .1f}};
+    saved.semantic_mapping_palette = {{.8f, .8f, .8f}, {.2f, .5f, .1f}, {.9f, .7f, .6f}, {.1f, .1f, .1f}};
+    saved.semantic_optimization = false;
+    trial::State restored; std::string error;
+    REQUIRE(trial::decode(trial::encode(saved, 20, geometry_id), 20, geometry_id, restored, error));
+    require_same(saved, restored);
+    REQUIRE(restored.semantic_palette.size() == 4);
+    REQUIRE(restored.colors[0] == restored.colors[1]);
+}
+
+TEST_CASE("Legacy trials keep their existing assignments until semantic optimization is enabled", "[ColorTrialState][SemanticColoring]")
+{
+    auto doc = trial::encode(saved_trial(), 20, geometry_id);
+    doc.erase("semantic_optimization"); doc.erase("semantic_palette"); doc.erase("semantic_portrait_card");
+    doc.erase("semantic_mapping_palette");
+    trial::State restored; std::string error;
+    REQUIRE(trial::decode(doc, 20, geometry_id, restored, error));
+    REQUIRE_FALSE(restored.semantic_optimization);
+    REQUIRE(restored.colors == saved_trial().colors);
+}
+
+TEST_CASE("Invalid semantic candidates cannot partially replace a saved trial", "[ColorTrialState][SemanticColoring]")
+{
+    const auto saved = saved_trial();
+    auto doc = trial::encode(saved, 20, geometry_id);
+    doc["semantic_palette"] = {{1.01, .3, .2}};
+    auto restored = saved; std::string error;
+    REQUIRE_FALSE(trial::decode(doc, 20, geometry_id, restored, error));
+    require_same(restored, saved);
+}
+
+TEST_CASE("Semantic target edits restore their original candidate assignments and reject partial pairs", "[ColorTrialState][SemanticColoring]")
+{
+    auto saved = saved_trial();
+    saved.semantic_mapping_palette = {{0.f, .5f, 0.f}, {.4f, .4f, .4f}};
+    saved.semantic_palette = {{0.f, 0.f, 1.f}, {.4f, .4f, .4f}};
+    auto doc = trial::encode(saved, 20, geometry_id);
+    auto restored = saved; std::string error;
+    REQUIRE(trial::decode(doc, 20, geometry_id, restored, error));
+    require_same(restored, saved);
+    doc["semantic_mapping_palette"].erase(0);
+    REQUIRE_FALSE(trial::decode(doc, 20, geometry_id, restored, error));
+    require_same(restored, saved);
 }
 
 TEST_CASE("Saved trial colors preserve original group centers separately from edited targets", "[ColorTrialState]")
