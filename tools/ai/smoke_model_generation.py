@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-import argparse
+"""Legacy client retained for isolated offline tests; use Orca for real generation."""
 import json
-import sys
 import time
 import urllib.error
 import urllib.request
@@ -349,73 +348,5 @@ class ModelGenerationSmokeClient:
         return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
 
 
-def status_line(status):
-    state = str(status.get("state") or "unknown")
-    phase = str(status.get("phase") or "unknown")
-    progress = int(status.get("progress") or 0)
-    print(f"state={state} phase={phase} progress={progress}%", flush=True)
-
-
-def parse_args(argv):
-    parser = argparse.ArgumentParser(description="Run an explicit OrcaSlicer model-generation smoke test.")
-    parser.add_argument("--endpoint", default="http://127.0.0.1:18764")
-    parser.add_argument("--source", choices=("text", "image"), required=True)
-    parser.add_argument("--prompt", required=True, help="Text prompt or image instruction.")
-    parser.add_argument("--image", type=Path, help="PNG/JPEG reference for image source.")
-    parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--timeout", type=float, default=900)
-    parser.add_argument("--poll-interval", type=float, default=2)
-    parser.add_argument("--confirm-paid-call", action="store_true")
-    return parser.parse_args(argv)
-
-
-def main(argv=None):
-    args = parse_args(argv)
-    if not args.confirm_paid_call:
-        print("Refusing to create a paid model job without --confirm-paid-call.", file=sys.stderr)
-        return 2
-    if args.source == "image" and args.image is None:
-        print("--image is required when --source=image.", file=sys.stderr)
-        return 2
-    client = ModelGenerationSmokeClient(
-        args.endpoint,
-        poll_interval=args.poll_interval,
-        timeout=args.timeout,
-        on_status=status_line,
-    )
-    try:
-        if args.source == "text":
-            result = client.run_text(
-                args.prompt,
-                args.output_dir,
-                confirm_paid_call=True,
-            )
-        else:
-            result = client.run_image(
-                args.image,
-                args.prompt,
-                args.output_dir,
-                confirm_paid_call=True,
-            )
-    except SmokeError as exc:
-        print(f"Smoke failed: {exc}", file=sys.stderr)
-        return 1
-    print(
-        json.dumps(
-            {
-                "source": result.source,
-                "job_id": result.job_id,
-                "artifact_format": result.artifact_format,
-                "artifact_path": str(result.artifact_path),
-                "artifact_size": result.artifact_path.stat().st_size,
-                "duration_seconds": round(result.duration_seconds, 1),
-                "states": result.states,
-            },
-            ensure_ascii=True,
-        )
-    )
-    return 0
-
-
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit("This command-line entry is retired. Use the Orca main window for real generation.")

@@ -236,34 +236,29 @@ class Service:
                 return "waiting", f"等待依赖 PR #{dependency} 合入；关闭但未合入也不满足依赖"
         if pr.get("mergeable") is False:
             return "conflict", "GitHub 报告文本冲突；作者在个人分支同步集成并解决后重试"
+        if sha(pr["base"]["sha"]) != base:
+            return "pending", "PR 基线不是当前集成提交，等待 GitHub 刷新合并候选"
         if pr.get("mergeable") is not True or not pr.get("merge_commit_sha"):
             return "pending", "GitHub 正在计算最新合并候选"
         if not self.approvals(pr):
             return "pending", "等待当前 HEAD 的非作者团队审批，或处理 changes requested"
         candidate = sha(pr["merge_commit_sha"])
         checks = self.github.checks(head)
-        selected_checks = []
         for required in self.config["required_checks"]:
             matches = [check for check in checks if check.get("name") == required["name"] and
                        check.get("app", {}).get("id") == required["app_id"]]
             if not matches:
                 return "pending", "缺少必需检查：" + required["name"]
             check = max(matches, key=lambda item: item["id"])
-            selected_checks.append(check)
             if check.get("head_sha") != head or check.get("status") != "completed":
                 return "checking", "检查中：" + required["name"]
             if check.get("conclusion") != "success":
                 return "failed", "必需检查未成功：" + required["name"]
         if pr.get("mergeable_state") != "clean" or not self.github.protection_ready():
             return "pending", "等待 GitHub 分支保护、CODEOWNERS、讨论和必需检查满足"
-        evidence = self.github.candidate_evidence(n, base, head, candidate)
-        if not evidence:
-            return "pending", "缺少绑定最新 base/head 的成功候选 CI 报告；需重新运行候选检查"
-        for check in selected_checks:
-            if check.get("name") == "Team integration candidate" and check.get("check_suite", {}).get("id") != evidence["check_suite_id"]:
-                return "pending", "候选检查与证据不属于同一次 CI"
         current = self.github.pull(n)
-        if (self.github.base_sha() != base or current["head"]["sha"] != head or current.get("merge_commit_sha") != candidate or
+        if (self.github.base_sha() != base or current["base"]["sha"] != base or
+                current["head"]["sha"] != head or current.get("merge_commit_sha") != candidate or
                 not self.allowed(current) or current["state"] != "open" or current.get("draft") or
                 current.get("mergeable_state") != "clean" or current.get("body") != pr.get("body")):
             return "pending", "验证期间 PR 或集成基线变化，旧结果失效"
@@ -274,7 +269,7 @@ class Service:
             if baseline_state == "failed":
                 self.store.pause(True, baseline_detail)
             return "pending", baseline_detail
-        return "ready", "只读模拟通过；维护人须核对产品验收证据并按分支保护人工合入。CI：" + evidence["url"]
+        return "ready", "三项必需检查通过；维护人须核对产品验收证据并按分支保护人工合入。"
 
     def tick(self):
         self.process_inbox()

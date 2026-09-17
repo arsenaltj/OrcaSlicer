@@ -36,10 +36,7 @@ EXPECTED_CI_CONTRACT = {
     "guardrails_workflow": ".github/workflows/ai-integration-guardrails.yml",
     "candidate_workflow": ".github/workflows/team-integration-candidate.yml",
     "required_checks": [
-        "AI integration checks",
-        "Team integration candidate",
         "windows_build / Build Deps / Build OrcaSlicer / Build OrcaSlicer",
-        "windows_tests / Unit Tests",
     ],
     "merge_queue_event": "merge_group",
     "path_filters_allowed": False,

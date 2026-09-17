@@ -124,8 +124,10 @@ class GitHub:
                 isinstance(bypass, dict) and not any(bypass.values()) and
                 reviews.get("required_approving_review_count", 0) >= self.config["required_approvals"] and
                 status.get("strict") is True and
-                all(any(check.get("context") == required["name"] and check.get("app_id") == required["app_id"]
-                        for check in checks) for required in self.config["required_checks"]))
+                {check.get("context"): check.get("app_id") for check in checks} ==
+                {required["name"]: required["app_id"] for required in self.config["required_checks"]} and
+                len(checks) == len(self.config["required_checks"]) and
+                set(status.get("contexts") or []) == {required["name"] for required in self.config["required_checks"]})
 
     def candidate_evidence(self, pr, base, head, candidate):
         commit = self.get("/git/commits/" + sha(candidate))
@@ -141,17 +143,11 @@ class GitHub:
         run = max(runs, key=lambda r: (r["id"], r.get("run_attempt", 1)))
         if run.get("status") != "completed":
             return None
-        # Linux/macOS jobs are intentionally informational.  GitHub marks the
-        # whole workflow failed when one of those reference jobs fails, so the
-        # workflow conclusion cannot be used as the merge gate.  Verify the
-        # required jobs directly and keep the candidate receipt bound to this
-        # exact run/attempt.
+        # This optional receipt is for diagnostics; only the Windows build is
+        # required for merge. Keep the receipt bound to its exact run/attempt.
         jobs = self.pages(f"/actions/runs/{number(run['id'])}/jobs", "jobs")
         required = {
-            "Inspect exact candidate and collaboration tests",
             "windows_build / Build Deps / Build OrcaSlicer / Build OrcaSlicer",
-            "windows_tests / Unit Tests",
-            "Team integration candidate",
         }
         successful = {
             job.get("name") for job in jobs

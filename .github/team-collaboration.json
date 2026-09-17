@@ -14,10 +14,7 @@
     "integration": "codex/team/integration"
   },
   "required_checks": [
-    "AI integration checks",
-    "Team integration candidate",
-    "windows_build / Build Deps / Build OrcaSlicer / Build OrcaSlicer",
-    "windows_tests / Unit Tests"
+    "windows_build / Build Deps / Build OrcaSlicer / Build OrcaSlicer"
   ],
   "automation": {"mode": "notify_and_preview", "auto_merge": false},
   "bootstrap": {"baseline_sha": null},

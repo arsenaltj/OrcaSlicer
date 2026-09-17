@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 import contextlib
 import importlib.util
+import runpy
 import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
@@ -47,6 +49,17 @@ def mock_sidecar():
 
 
 class ModelGenerationSmokeTests(unittest.TestCase):
+    def test_retired_cli_cannot_submit_even_with_legacy_confirmation(self):
+        args = [str(TOOLS_AI / "smoke_model_generation.py"), "--source", "text",
+                "--prompt", "fixture", "--output-dir", "unused", "--confirm-paid-call"]
+        with mock.patch.object(sys, "argv", args), \
+                mock.patch("urllib.request.urlopen", side_effect=AssertionError("No network allowed")) as transport:
+            with self.assertRaises(SystemExit) as stopped:
+                runpy.run_path(args[0], run_name="__main__")
+            self.assertIsInstance(stopped.exception.code, str)
+            self.assertIn("retired", stopped.exception.code)
+            transport.assert_not_called()
+
     def client(self, endpoint):
         return ModelGenerationSmokeClient(endpoint, poll_interval=0.01, timeout=5)
 
