@@ -3,6 +3,7 @@
 #include "slic3r/AI/Contracts/GeneratedModelArtifact.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <array>
 #include <cmath>
 #include <string>
@@ -37,6 +38,14 @@ struct ModelColorTrial
     }
 };
 
+struct ModelSubfaceColorOverride
+{
+    size_t face_id {0};
+    uint8_t depth {0};
+    uint8_t path {0};
+    std::array<float, 3> color {};
+};
+
 struct ModelImportRequest
 {
     GeneratedModelArtifact artifact;
@@ -46,6 +55,9 @@ struct ModelImportRequest
     // adapter validates the geometry identity before forwarding native matching.
     // Later entries replace earlier entries for the same face.
     std::vector<std::pair<size_t, std::array<float, 3>>> face_color_overrides;
+    // Sparse midpoint leaves on the unchanged source topology. Unspecified
+    // leaves inherit the corresponding whole-face assignment above.
+    std::vector<ModelSubfaceColorOverride> subface_color_overrides;
     std::string face_color_geometry_id;
 };
 
@@ -68,6 +80,8 @@ struct ModelImportResult
     bool               manual_repair_required { false };
     size_t             source_color_count { 0 };
     size_t             mapped_color_count { 0 };
+    size_t             subface_color_count { 0 };
+    bool               subface_colors_applied { false };
     std::string        error;
 
     bool imported() const { return outcome == ModelImportOutcome::Imported; }

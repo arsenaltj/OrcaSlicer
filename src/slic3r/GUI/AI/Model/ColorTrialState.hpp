@@ -23,6 +23,8 @@ struct State {
     std::array<bool, 6> locks {};
     int source {0}, count {6};
     bool enabled {false}, fidelity {true}, lighting {false};
+    bool semantic_optimization {true};
+    std::vector<GUI::PreviewPalette::Color> semantic_palette, semantic_mapping_palette, semantic_portrait_card;
 };
 
 namespace detail {
@@ -35,10 +37,13 @@ inline bool valid_fingerprint(const std::string& value)
 
 inline bool valid_state(const State& state)
 {
+    if (state.semantic_palette.size() > 6 ||
+        (!state.semantic_mapping_palette.empty() && state.semantic_mapping_palette.size() != state.semantic_palette.size()) ||
+        (!state.semantic_portrait_card.empty() && state.semantic_portrait_card.size() != 6)) return false;
     if (state.source < 0 || state.source > 2 || state.count < 1 || state.count > 6 ||
         state.colors.size() > size_t(state.count) || state.colors.size() != state.mapping_colors.size() ||
         (state.enabled && state.colors.empty())) return false;
-    for (const auto* palette : {&state.colors, &state.mapping_colors})
+    for (const auto* palette : {&state.colors, &state.mapping_colors, &state.semantic_palette, &state.semantic_mapping_palette, &state.semantic_portrait_card})
         for (const auto& color : *palette)
             for (float channel : color)
                 if (!std::isfinite(channel) || channel < 0.0f || channel > 1.0f) return false;
@@ -78,7 +83,10 @@ inline nlohmann::json encode(const State& state, size_t actual_face_count, const
     return {{"schema", "orca.color-trial/v1"}, {"geometry_sha256", fingerprint}, {"face_count", actual_face_count},
             {"colors", state.colors}, {"mapping_colors", state.mapping_colors}, {"locks", state.locks},
             {"source", state.source}, {"count", state.count}, {"enabled", state.enabled},
-            {"fidelity", state.fidelity}, {"lighting", state.lighting}};
+            {"fidelity", state.fidelity}, {"lighting", state.lighting},
+            {"semantic_optimization", state.semantic_optimization},
+            {"semantic_palette", state.semantic_palette}, {"semantic_mapping_palette", state.semantic_mapping_palette},
+            {"semantic_portrait_card", state.semantic_portrait_card}};
 }
 
 // Reject mismatched geometry or malformed fields before returning any state.
@@ -118,6 +126,21 @@ inline bool decode(const nlohmann::json& doc, size_t actual_face_count, const st
     restored.enabled = doc["enabled"].get<bool>();
     restored.fidelity = doc["fidelity"].get<bool>();
     restored.lighting = doc["lighting"].get<bool>();
+    // Existing saved manual trials predate semantic suggestions. Restoring
+    // them must not silently reinterpret the user's original group assignments.
+    restored.semantic_optimization = false;
+    if (doc.contains("semantic_optimization")) {
+        if (!doc["semantic_optimization"].is_boolean()) return fail("Invalid semantic color option.");
+        restored.semantic_optimization = doc["semantic_optimization"].get<bool>();
+    }
+    if (doc.contains("semantic_palette") && !detail::read_palette(doc["semantic_palette"], restored.semantic_palette))
+        return fail("Invalid semantic palette.");
+    if (doc.contains("semantic_mapping_palette") && !detail::read_palette(doc["semantic_mapping_palette"], restored.semantic_mapping_palette))
+        return fail("Invalid semantic candidate assignments.");
+    if (doc.contains("semantic_portrait_card") && !detail::read_palette(doc["semantic_portrait_card"], restored.semantic_portrait_card))
+        return fail("Invalid semantic portrait card.");
+    if (!restored.semantic_portrait_card.empty() && restored.semantic_portrait_card.size() != 6)
+        return fail("A semantic portrait card requires six roles.");
     if (!detail::valid_state(restored)) return fail("Trial color centers and targets must form valid pairs.");
     output = std::move(restored);
     return true;
