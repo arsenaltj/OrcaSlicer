@@ -1,0 +1,129 @@
+name: Publish architecture previews
+
+on:
+  workflow_run:
+    workflows: [PR architecture impact]
+    types: [completed]
+
+# This workflow runs from the default branch, never from PR-controlled code.
+permissions:
+  contents: read
+concurrency:
+  group: architecture-pages
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    permissions:
+      actions: read
+      contents: write
+      pages: write
+      pull-requests: write
+    steps:
+      - name: Verify same-repository PR, current source and Pages destination
+        id: source
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const {owner, repo} = context.repo;
+            const repository = `${owner}/${repo}`;
+            if (run.head_repository?.full_name !== repository || run.path !== '.github/workflows/architecture-impact.yml') {
+              core.notice('Not an authorized same-repository architecture report'); return;
+            }
+            if (run.pull_requests.length !== 1) throw new Error('Expected exactly one PR');
+            const pr = (await github.rest.pulls.get({owner, repo, pull_number: run.pull_requests[0].number})).data;
+            if (pr.head.repo.full_name !== repository || pr.base.repo.full_name !== repository || pr.head.sha !== run.head_sha) {
+              core.notice('PR advanced or repository mismatch; no stale preview published'); return;
+            }
+            const pages = (await github.rest.repos.getPages({owner, repo})).data;
+            if (pages.build_type !== 'legacy' || pages.source?.branch !== 'codex/architecture-pages' || pages.source.path !== '/')
+              throw new Error('Pages must use the dedicated codex/architecture-pages branch; do not overwrite another site');
+            core.setOutput('pr', pr.number); core.setOutput('head', pr.head.sha);
+            core.setOutput('base', pr.base.sha); core.setOutput('title', pr.title);
+            core.setOutput('site_url', pages.html_url.replace(/\/$/, ''));
+            core.setOutput('allowed', 'true');
+      - name: Checkout trusted publishing helper
+        if: steps.source.outputs.allowed == 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: trusted
+          persist-credentials: false
+      - name: Checkout static report archive
+        if: steps.source.outputs.allowed == 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: codex/architecture-pages
+          path: site
+      - name: Download only the successful run's report
+        if: steps.source.outputs.allowed == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          name: architecture-impact
+          path: report
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - name: Assemble immutable version and update history
+        if: steps.source.outputs.allowed == 'true'
+        env:
+          PR_NUMBER: ${{ steps.source.outputs.pr }}
+          REPORT_HEAD: ${{ steps.source.outputs.head }}
+          REPORT_BASE: ${{ steps.source.outputs.base }}
+          REPORT_TITLE: ${{ steps.source.outputs.title }}
+          REPORT_RUN: ${{ github.event.workflow_run.id }}
+        run: >-
+          python3 trusted/scripts/architecture_site.py --report report --site site
+          --pr "$PR_NUMBER" --run "$REPORT_RUN" --head "$REPORT_HEAD"
+          --base "$REPORT_BASE" --repository "$GITHUB_REPOSITORY" --title "$REPORT_TITLE"
+      - name: Commit static reports only
+        if: steps.source.outputs.allowed == 'true'
+        id: archive
+        run: |
+          git -C site config user.name 'github-actions[bot]'
+          git -C site config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C site add -- index.html history.json README.md .nojekyll pr
+          if ! git -C site diff --cached --quiet; then
+            git -C site commit -m 'Update architecture preview archive'
+            git -C site push origin HEAD:refs/heads/codex/architecture-pages
+          fi
+          echo "sha=$(git -C site rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Build Pages and publish verified online link
+        if: steps.source.outputs.allowed == 'true'
+        uses: actions/github-script@v9
+        env:
+          PAGES_SHA: ${{ steps.archive.outputs.sha }}
+          PR_NUMBER: ${{ steps.source.outputs.pr }}
+          REPORT_HEAD: ${{ steps.source.outputs.head }}
+          REPORT_BASE: ${{ steps.source.outputs.base }}
+          SITE_URL: ${{ steps.source.outputs.site_url }}
+          REPORT_RUN: ${{ github.event.workflow_run.id }}
+        with:
+          script: |
+            const {owner, repo} = context.repo;
+            // GITHUB_TOKEN pushes do not implicitly start a Pages build.
+            await github.rest.repos.requestPagesBuild({owner, repo});
+            let built = false;
+            for (let attempt = 0; attempt < 24; attempt++) {
+              await new Promise(resolve => setTimeout(resolve, 10000));
+              const result = (await github.rest.repos.getLatestPagesBuild({owner, repo})).data;
+              if (result.commit !== process.env.PAGES_SHA) continue;
+              if (result.status === 'errored') throw new Error('Pages build failed');
+              if (result.status === 'built') { built = true; break; }
+            }
+            if (!built) throw new Error('Pages build did not complete for the expected archive version');
+            const issue_number = Number(process.env.PR_NUMBER);
+            const pr = (await github.rest.pulls.get({owner, repo, pull_number: issue_number})).data;
+            if (pr.head.sha !== process.env.REPORT_HEAD || pr.base.sha !== process.env.REPORT_BASE) {
+              core.notice('Preview archived, but PR advanced; no stale latest comment'); return;
+            }
+            const marker = '<!-- orca-architecture-online -->';
+            const url = `${process.env.SITE_URL}/pr/${issue_number}/${process.env.REPORT_HEAD}/${process.env.REPORT_RUN}/`;
+            const body = `${marker}\n### 在线交互架构图\n\n[直接打开，无需下载](${url}) · [全部更新记录](${process.env.SITE_URL}/)\n\n版本：\`${process.env.REPORT_HEAD}\`。图表示源码影响，不代表业务验收。`;
+            const comments = await github.paginate(github.rest.issues.listComments, {owner, repo, issue_number, per_page: 100});
+            const old = comments.find(c => c.user.type === 'Bot' && c.body?.startsWith(marker));
+            if (old) await github.rest.issues.updateComment({owner, repo, comment_id: old.id, body});
+            else await github.rest.issues.createComment({owner, repo, issue_number, body});

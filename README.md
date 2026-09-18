@@ -3,7 +3,14 @@
 
 [团队使用说明](Docs/coordination/architecture-review.md) · [PR 架构报告](https://github.com/arsenaltj/OrcaSlicer/actions/workflows/architecture-impact.yml?query=event%3Apull_request) · [开放 PR](https://github.com/arsenaltj/OrcaSlicer/pulls)
 
-每次 PR 自动生成改动高亮图：在 PR 的机器人评论查看摘要，或在 Actions 下载 `architecture-impact`，解压打开 `index.html`，同页展开业务 → 状态 → 代码。
+每次 PR 自动生成改动高亮图；在线页同页展开业务 → 状态 → 代码，无需下载。
+
+| 架构更新记录 | 在线入口 |
+| --- | --- |
+| 全部 PR / 提交版本 | [打开更新记录表](https://arsenaltj.github.io/OrcaSlicer/) |
+| 首次接入：PR #14 | [直接打开交互图](https://arsenaltj.github.io/OrcaSlicer/pr/14/) |
+
+在线表格由发布流程自动追加。页面注明实际提交；新报告发布前，PR 入口仍显示上一份成功版本。
 
 下图是本分支维护的业务主线，不是实时状态或验收结果；箭头表示业务衔接，执行仍受用户确认与状态约束。
 
@@ -62,7 +69,7 @@ flowchart TB
 
 来源：`Docs/architecture/review-map.json`。业务/状态/边界改变时维护映射，运行 `python scripts/architecture_review.py --readme update` 更新此区域（仅需 Python 标准库）；Windows 的 `./dev.ps1 Review` 也会同步更新。CI 检查是否过期。
 
-README 展示当前分支的架构，合并后目标分支同步更新；仓库首页取决于 GitHub 默认分支。每个 PR 的差异属于各自报告，橙/黄色为直接改动，蓝色为潜在关联，未做不算验证通过。GitHub README 只展示静态图，交互 HTML 在制品内，制品保留 14 天。
+README 展示当前分支的架构，合并后目标分支同步更新；仓库首页取决于 GitHub 默认分支。每个 PR 的差异属于各自报告，橙/黄色为直接改动，蓝色为潜在关联，未做不算验证通过。GitHub README 只展示静态图；在线交互图和版本记录由 GitHub Pages 承载。Actions 下载制品保留 14 天，在线归档单独保存。
 <!-- architecture-overview:end -->
 
 <div align="center">

@@ -35,7 +35,7 @@ jobs:
         run: |
           python -m pip install --only-binary=:all: -r scripts/architecture-review-requirements.txt
       - name: Check impact reporting regressions
-        run: python -m unittest discover -s scripts -p test_architecture_review.py -q
+        run: python -m unittest discover -s scripts -p 'test_architecture_*.py' -q
       - name: Prepare checksum-pinned Archify renderer
         run: python scripts/architecture_review.py --setup-archify
       - name: Generate exact PR impact and interactive HTML

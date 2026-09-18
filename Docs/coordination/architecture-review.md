@@ -29,6 +29,7 @@
 
 | 文件 | 用途 |
 | --- | --- |
+| `.github/workflows/architecture-pages.yml`、`scripts/architecture_site.py`、`scripts/test_architecture_site.py` | 成功报告的独立在线发布、版本归档与检查 |
 | `.github/workflows/architecture-impact.yml` | 每个 PR 自动分析、上传交互制品并更新同仓 PR 评论 |
 | `scripts/architecture_review.py` | Git 差异、code-review-graph、Archify 与 README 的统一生成入口 |
 | `scripts/architecture-review-requirements.txt` | 固定解析工具版本 |
@@ -60,7 +61,7 @@ python scripts/architecture_review.py --readme check
 
 PR 分支的 README 在该分支可见；合并后目标分支的 README 更新。GitHub 仓库首页显示默认分支，因此只合入 integration 而尚未合入默认分支时，默认首页不会提前显示这些改动。本流程不切换默认分支，不替代审核合并。
 
-GitHub README 展示 Mermaid 静态主线和未做目标，无法执行交互 HTML；每 PR 的 HTML 制品保存 14 天，过期后可以在对应提交重新生成。永久保存的是映射、生成器和 README，不依赖另一台电脑的 `localhost` 地址。
+GitHub README 展示 Mermaid 静态主线、未做目标及在线更新记录入口。交互图由 GitHub Pages 承载，无需下载；Actions 制品仍保存 14 天。在线归档在独立发布分支保存，不能把制品保留期误认为网页有效期。
 
 ## 本地环境与命令
 
@@ -127,3 +128,17 @@ Archify 节点用文字标明直接修改及潜在关联数量，颜色不表示
 不安装全局 Skill/MCP 配置、Git hook、守护进程或 embeddings，不把代码发给模型服务。Archify 使用固定布局和分析数据自动生成，每次 PR 不需要 AI 重新绘图。新增模块或更改总览布局时，更新并实际校验 `archify_spec`；不能静默隐藏新模块来通过检查。
 
 回归入口：`python -m unittest discover -s scripts -p test_architecture_review.py -q`。覆盖暂存/未暂存/删除差异、旧消费者、依赖方向、路径/HTML 安全及真实 C++/Python 解析。
+
+## 直接在线查看与版本记录
+
+入口：<https://arsenaltj.github.io/OrcaSlicer/>；每个 PR 的最新成功报告在 `pr/<number>/`，每份报告的固定地址为 `pr/<number>/<head-sha>/<run-id>/`。页面显示版本，更新记录保留旧提交。README 提供固定表格入口，在线记录随成功发布自动追加，不产生自动回写源码分支的提交。
+
+Pages 使用 `codex/architecture-pages` 的根目录，分支只保存已公开的报告产物与索引，不是业务开发分支。首次由有权限的维护者启用该 Pages 来源。不要替换已有网站或更改默认分支。源码与新增发布 workflow 仍通过团队 PR 审核。
+
+`architecture-pages.yml` 使用 `workflow_run` 接收成功的 `PR architecture impact`，因此须先合入默认分支才会自动触发。首次试用可由当前操作者使用同一 `architecture_site.py` 发布已经成功且来源对应的报告，并明确记录这次人工初始化；不能把初始化写成自动流程已验收。
+
+发布任务固定检出默认分支的 workflow SHA，仅下载匹配 run 的 artifact，不检出/执行 PR 源码。校验同仓 PR、当前 head/base、报告身份、固定文件白名单和大小限制后，写入独立网页分支；Fork、失败或过期报告不作为当前预览发布。PR HTML 作为静态文件保存，在不授予同源和顶层跳转权限的 iframe 内显示，不在带凭据的 CI 中运行。
+
+发布使用独立任务的 `contents: write`、`pages: write`、`pull-requests: write`，无需 PAT 或额外云服务。写入网页分支后显式请求 Pages build，等待对应归档提交构建完成才发布在线评论；失败时保留下载入口并报错。并发发布串行执行；GitHub 原生 concurrency 不保证待执行事件队列完整，必要时重跑被取消报告的分析。已有版本不覆盖，不自动清理归档；报告数量增大时再制定保留策略。
+
+在线图只描述已提交源码与静态影响，不暴露本机未提交代码、配置、密钥或模型资产，也不证明业务验收通过。GitHub Pages 可用性以实际访问结果为准。
