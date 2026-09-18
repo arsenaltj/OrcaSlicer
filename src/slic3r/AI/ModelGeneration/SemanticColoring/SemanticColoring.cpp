@@ -1301,7 +1301,9 @@ FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, con
             const bool source_is_red = red_accent(source_color);
             const bool facial = label == Label::EyeSclera || label == Label::Iris ||
                 label == Label::Eyebrow || label == Label::FaceSkin || label == Label::BodySkin;
-            const bool neutral_garment = label == Label::Clothes && neutral_clothing(source_color);
+            const bool neutral_garment = neutral_clothing(source_color) &&
+                (label == Label::Clothes || label == Label::FaceSkin || label == Label::BodySkin ||
+                 label == Label::Unknown);
             const bool block_red = facial || neutral_garment ||
                 ((label == Label::Clothes || label == Label::Hair || label == Label::Accessories) &&
                  !source_is_red);
@@ -1330,6 +1332,27 @@ FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, con
             const size_t replacement = legal_target(face_lab(source, id), label, it->second);
             if (replacement >= palette.size()) it = assignments.erase(it);
             else { it->second = replacement; ++it; }
+        }
+        // A reliable eye face can be rejected earlier when its baked source
+        // color is a warm/red outlier. If a legal non-red slot exists, cover
+        // that face instead of letting the geometry builder expose the red
+        // source pixel. With no legal slot, the existing original-color
+        // fallback remains unchanged.
+        for (size_t id = 0; id < count; ++id) {
+            const Label label = analysis.face_labels[id];
+            if (analysis.face_confidence[id] < minimum_confidence ||
+                (label != Label::EyeSclera && label != Label::Iris && label != Label::Eyebrow) ||
+                assignments.find(id) != assignments.end()) continue;
+            size_t selected = palette.size();
+            float best = std::numeric_limits<float>::max();
+            const Color source_color = face_lab(source, id);
+            for (size_t slot = 0; slot < palette.size(); ++slot) {
+                if (red_accent(palette_labs[slot])) continue;
+                if (label == Label::EyeSclera && (chroma(palette_labs[slot]) >= .055f || palette_labs[slot][0] < .45f)) continue;
+                const float score = distance(source_color, palette_labs[slot]);
+                if (score < best) { best = score; selected = slot; }
+            }
+            if (selected < palette.size()) assignments[id] = selected;
         }
 
         // A connected lip surface is one material at four colors. Union only
@@ -1663,7 +1686,8 @@ bool map_subface_palette(const MeshSnapshot& source, const Analysis& analysis, c
         }
     for (size_t evidence_index = 0; evidence_index < analysis.subface_labels.size(); ++evidence_index) {
         const SubfaceLabelEvidence& evidence = analysis.subface_labels[evidence_index];
-        if (palette.size() <= 4 && (evidence.label == Label::EyeSclera ||
+        if (palette.size() <= 4 && (evidence.label == Label::Lips ||
+                                    evidence.label == Label::EyeSclera ||
                                     evidence.label == Label::Iris ||
                                     evidence.label == Label::Eyebrow))
             continue;

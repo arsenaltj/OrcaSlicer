@@ -6,6 +6,7 @@
 #include <atomic>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <fstream>
 #include <map>
 #include <thread>
@@ -13,6 +14,25 @@
 namespace Slic3r::GUI {
 namespace SC = AI::SemanticColoring;
 namespace {
+bool red_preview_color(const SC::Color& color)
+{
+    SC::Color linear = color;
+    for (float& channel : linear)
+        channel = channel <= .04045f ? channel / 12.92f : std::pow((channel + .055f) / 1.055f, 2.4f);
+    const float l = std::cbrt(.4122214708f*linear[0] + .5363325363f*linear[1] + .0514459929f*linear[2]);
+    const float m = std::cbrt(.2119034982f*linear[0] + .6806995451f*linear[1] + .1073969566f*linear[2]);
+    const float s = std::cbrt(.0883024619f*linear[0] + .2817188376f*linear[1] + .6299787005f*linear[2]);
+    const float a = 1.9779984951f*l - 2.428592205f*m + .4505937099f*s;
+    const float b = .0259040371f*l + .7827717662f*m - .808675766f*s;
+    return std::hypot(a, b) >= .055f && a >= .045f && a > b * 1.25f + .01f;
+}
+bool neutral_preview_color(const SC::Color& color)
+{
+    const float maximum = std::max({color[0], color[1], color[2]});
+    const float minimum = std::min({color[0], color[1], color[2]});
+    return maximum - minimum < .10f &&
+        (color[0] + color[1] + color[2]) / 3.f >= .42f;
+}
 // Freeze provider selection with the request, so edits to the configuration
 // cannot be read by a stale worker after the user has selected another model.
 std::string provider_configuration(const std::filesystem::path& runtime)
@@ -192,6 +212,59 @@ struct ModelSemanticColoring::Impl {
                             source, *analysis, task->request.palette, task->request.portrait);
                         result->automatic = SC::remap_palette_targets(source_automatic,
                             task->request.palette, task->request.targets);
+                        if (task->request.palette.size() <= 4) {
+                            // Slot remapping happens after semantic mapping. A
+                            // safe source slot can therefore become red in the
+                            // displayed target palette; enforce the same rule
+                            // once more on the actual output colors.
+                            std::map<size_t, SC::Color> source_by_face;
+                            for (const auto& item : source_automatic) source_by_face[item.first] = item.second;
+                            std::map<size_t, SC::Color> safe;
+                            for (const auto& item : result->automatic) {
+                                const auto source_found = source_by_face.find(item.first);
+                                const size_t proposed = [&]() {
+                                    if (source_found == source_by_face.end()) return task->request.targets.size();
+                                    const auto slot = std::find(task->request.palette.begin(), task->request.palette.end(), source_found->second);
+                                    return slot == task->request.palette.end() ? task->request.targets.size() :
+                                        size_t(slot - task->request.palette.begin());
+                                }();
+                                const auto label = item.first < analysis->face_labels.size()
+                                    ? analysis->face_labels[item.first] : SC::Label::Unknown;
+                                const bool facial = label == SC::Label::EyeSclera || label == SC::Label::Iris ||
+                                    label == SC::Label::Eyebrow || label == SC::Label::FaceSkin || label == SC::Label::BodySkin;
+                                const bool neutral_garment = label == SC::Label::Clothes && source_found != source_by_face.end() &&
+                                    neutral_preview_color(source_found->second);
+                                const bool source_red = source_found != source_by_face.end() && red_preview_color(source_found->second);
+                                const bool block_red = facial || neutral_garment ||
+                                    ((label == SC::Label::Clothes || label == SC::Label::Hair || label == SC::Label::Accessories) && !source_red);
+                                const auto acceptable = [&](size_t slot) {
+                                    if (slot >= task->request.targets.size()) return false;
+                                    if (block_red && red_preview_color(task->request.targets[slot])) return false;
+                                    if (neutral_garment && (!neutral_preview_color(task->request.targets[slot]) ||
+                                                             task->request.targets[slot][0] < .35f)) return false;
+                                    return true;
+                                };
+                                size_t selected = proposed;
+                                if (!acceptable(selected)) {
+                                    selected = task->request.targets.size();
+                                    float best = std::numeric_limits<float>::max();
+                                    for (size_t slot = 0; slot < task->request.targets.size(); ++slot) {
+                                        if (!acceptable(slot)) continue;
+                                        const auto& source_color = source_found != source_by_face.end()
+                                            ? source_found->second : item.second;
+                                        const float score = (source_color[0] - task->request.targets[slot][0]) *
+                                            (source_color[0] - task->request.targets[slot][0]) +
+                                            (source_color[1] - task->request.targets[slot][1]) *
+                                            (source_color[1] - task->request.targets[slot][1]) +
+                                            (source_color[2] - task->request.targets[slot][2]) *
+                                            (source_color[2] - task->request.targets[slot][2]);
+                                        if (score < best) { best = score; selected = slot; }
+                                    }
+                                }
+                                if (selected < task->request.targets.size()) safe[item.first] = task->request.targets[selected];
+                            }
+                            result->automatic.assign(safe.begin(), safe.end());
+                        }
                         SC::SubfaceBudgetResult source_subfaces;
                         std::string subface_error;
                         if (!SC::map_subface_palette(source, *analysis, source_automatic, task->request.palette,
@@ -207,14 +280,16 @@ struct ModelSemanticColoring::Impl {
                                 source_subfaces.accepted.begin(), source_subfaces.accepted.end(),
                                 [&analysis = *analysis](const SC::SubfaceColor& item) {
                                     if (item.face_id >= analysis.face_labels.size()) return false;
-                                    if (analysis.face_labels[item.face_id] == SC::Label::EyeSclera ||
+                                    if (analysis.face_labels[item.face_id] == SC::Label::Lips ||
+                                        analysis.face_labels[item.face_id] == SC::Label::EyeSclera ||
                                         analysis.face_labels[item.face_id] == SC::Label::Iris ||
                                         analysis.face_labels[item.face_id] == SC::Label::Eyebrow)
                                         return true;
                                     return std::any_of(analysis.subface_labels.begin(), analysis.subface_labels.end(),
                                         [&item](const SC::SubfaceLabelEvidence& evidence) {
                                             return evidence.face_id == item.face_id && evidence.path == item.path &&
-                                                (evidence.label == SC::Label::EyeSclera ||
+                                                (evidence.label == SC::Label::Lips ||
+                                                 evidence.label == SC::Label::EyeSclera ||
                                                  evidence.label == SC::Label::Iris ||
                                                  evidence.label == SC::Label::Eyebrow);
                                         });
