@@ -1,0 +1,110 @@
+name: PR architecture impact
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: architecture-impact-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Architecture map and change impact
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check versioned README architecture overview
+        run: python scripts/architecture_review.py --readme check
+      - name: Install pinned graph parser
+        run: |
+          python -m pip install --only-binary=:all: -r scripts/architecture-review-requirements.txt
+      - name: Check impact reporting regressions
+        run: python -m unittest discover -s scripts -p test_architecture_review.py -q
+      - name: Prepare checksum-pinned Archify renderer
+        run: python scripts/architecture_review.py --setup-archify
+      - name: Generate exact PR impact and interactive HTML
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || 'origin/codex/team/integration' }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python scripts/architecture_review.py --base "$BASE_SHA" --head "$HEAD_SHA"
+      - name: Upload interactive map and machine-readable report
+        uses: actions/upload-artifact@v7
+        with:
+          name: architecture-impact
+          # The explicit allowlist below lives under the hidden .tmp directory.
+          include-hidden-files: true
+          path: |
+            .tmp/architecture-review/report/index.html
+            .tmp/architecture-review/report/details.html
+            .tmp/architecture-review/report/l0-context.html
+            .tmp/architecture-review/report/l0-context.json
+            .tmp/architecture-review/report/l1-modules.html
+            .tmp/architecture-review/report/l1-modules.json
+            .tmp/architecture-review/report/l2-generation.html
+            .tmp/architecture-review/report/l2-generation.json
+            .tmp/architecture-review/report/l2-slicing.html
+            .tmp/architecture-review/report/l2-slicing.json
+            .tmp/architecture-review/report/archify-receipts.json
+            .tmp/architecture-review/report/report.json
+            .tmp/architecture-review/report/summary.md
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Show architecture diagram in PR
+    needs: analyze
+    # Fork PRs retain the read-only check/HTML artifact; never use pull_request_target
+    # to execute fork code with a write token.
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      pull-requests: write
+    steps:
+      # This fresh job does not check out or execute PR code or graph dependencies.
+      - uses: actions/download-artifact@v8
+        with:
+          name: architecture-impact
+          path: report
+      - uses: actions/github-script@v9
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_BASE: ${{ github.event.pull_request.base.sha }}
+        with:
+          script: |
+            const fs = require('fs');
+            const report = JSON.parse(fs.readFileSync('report/report.json', 'utf8'));
+            const summary = fs.readFileSync('report/summary.md', 'utf8');
+            if (report.schema !== 1 || report.head !== process.env.EXPECTED_HEAD || report.base_tip !== process.env.EXPECTED_BASE)
+              throw new Error('Artifact identity does not match this PR event');
+            if (!summary.startsWith('<!-- orca-architecture-impact -->') || summary.length > 45000)
+              throw new Error('Unexpected architecture summary');
+            const {owner, repo} = context.repo;
+            const issue_number = context.issue.number;
+            const current = await github.rest.pulls.get({owner, repo, pull_number: issue_number});
+            if (current.data.head.sha !== report.head || current.data.base.sha !== report.base_tip) {
+              core.notice('PR advanced: this diagram remains available as a versioned artifact; no stale comment published.');
+              return;
+            }
+            const url = `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
+            const body = summary + `\n[打开本次检查并下载交互架构图](${url})\n`;
+            const comments = await github.paginate(github.rest.issues.listComments, {owner, repo, issue_number, per_page: 100});
+            const existing = comments.find(c => c.user.type === 'Bot' && c.body.startsWith('<!-- orca-architecture-impact -->'));
+            if (existing) await github.rest.issues.updateComment({owner, repo, comment_id: existing.id, body});
+            else await github.rest.issues.createComment({owner, repo, issue_number, body});

@@ -12,12 +12,15 @@ Build and open a local Orca trial without a commit, handoff or package.
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Position = 0)][ValidateSet('Run', 'Build', 'Sidecar', 'Check', 'Test')][string]$Action = 'Run',
+    [Parameter(Position = 0)][ValidateSet('Run', 'Build', 'Sidecar', 'Check', 'Test', 'Review')][string]$Action = 'Run',
     [string]$BuildDir = 'build-validation',
     [ValidateRange(1, 32)][int]$Jobs = 2,
     [string[]]$TestPattern = @(),
     [switch]$Configure,
-    [switch]$NoLaunch
+    [switch]$NoLaunch,
+    [string]$BaseRef = 'origin/codex/team/integration',
+    [string]$HeadRef = 'HEAD',
+    [switch]$Committed
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -25,6 +28,30 @@ if ($env:OS -ne 'Windows_NT') { throw 'dev.ps1 currently supports the Windows in
 if ($Action -eq 'Test' -and -not $TestPattern.Count) { throw 'Test requires -TestPattern test_<module>.py; select the affected offline tests explicitly.' }
 if ($Configure -and $Action -in @('Sidecar', 'Test')) { throw 'Use Run -Configure for native configuration changes.' }
 $root = $PSScriptRoot
+if ($Action -eq 'Review') {
+    $reviewPython = Join-Path $root '.tmp/architecture-review/tool-env/Scripts/python.exe'
+    if (-not (Test-Path -LiteralPath $reviewPython -PathType Leaf)) {
+        throw 'Architecture review environment missing. See Docs/coordination/architecture-review.md for one-time setup with a full Python installation.'
+    }
+    $reviewArgs = @((Join-Path $root 'scripts/architecture_review.py'), '--root', $root, '--base', $BaseRef, '--head', $HeadRef)
+    if (-not $Committed) { $reviewArgs += '--worktree' }
+    $reviewLog = Join-Path $root '.tmp/architecture-review/latest.log'
+    # Update only the deterministic README block before snapshotting the worktree.
+    # Committed review must not edit a checkout or mix in uncommitted documentation.
+    if (-not $Committed) {
+        & $reviewPython (Join-Path $root 'scripts/architecture_review.py') --root $root --readme update *> $reviewLog
+        if ($LASTEXITCODE -ne 0) { throw "README architecture update failed; see $reviewLog." }
+    } else {
+        Set-Content -LiteralPath $reviewLog -Value ''
+    }
+    & $reviewPython @reviewArgs *>> $reviewLog
+    if ($LASTEXITCODE -ne 0) {
+        Get-Content -LiteralPath $reviewLog -Tail 12 | Write-Host
+        throw "Architecture review failed; see $reviewLog. An older report is not evidence for this attempt."
+    }
+    Get-Content -LiteralPath $reviewLog -Tail 1 | Write-Host
+    return
+}
 $build = if ([IO.Path]::IsPathRooted($BuildDir)) { [IO.Path]::GetFullPath($BuildDir) } else { Join-Path $root $BuildDir }
 $cachePath = Join-Path $build 'CMakeCache.txt'
 if (-not (Test-Path -LiteralPath $cachePath -PathType Leaf)) {

@@ -4,6 +4,7 @@
 
 ## 事实与决策入口
 
+- 多人 Review 与架构影响可视化：[架构影响入口](coordination/architecture-review.md)。PR 自动生成版本对应的模块图、交互 HTML 与 JSON；只需定位少量代码时仍直接阅读源码，不强制先查图。
 - 三人开发、集成与飞书协作：[ADR-007](architecture/ADR-007-three-developer-feishu-integration.md)、[日常同步、合入与版本存档](coordination/team-integration-sop.md)、[落地和接入状态](audits/2026-09-09-team-feishu-integration.md)、[分支准备工具](../scripts/team_collaboration/README.md)、[飞书服务](../tools/team_integration/README.md)。采用四条新的 `codex/team/*` 分支，旧角色分支停止用于新工作；先通知和候选检查，人工合入。
 
 - 当前实现：工作树代码和对应测试；报告须说明使用 HEAD 还是含未提交修改的工作树。
