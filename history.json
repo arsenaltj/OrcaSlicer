@@ -1,0 +1,22 @@
+[
+  {
+    "pr": 14,
+    "run": 35315362503,
+    "head": "d8bdb2f19b7e77454d73e8b83ec3a90d5a80bb8e",
+    "base": "5c193ab321c2a40a789cc9f07ea590689967fa8c",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "增加在线交互图与架构更新记录",
+    "path": "pr/14/d8bdb2f19b7e77454d73e8b83ec3a90d5a80bb8e/35315362503",
+    "created": "2026-09-18T06:35:04+00:00"
+  },
+  {
+    "pr": 14,
+    "run": 35309846636,
+    "head": "97a6a5e07029102c2d49246f93c2cad3478f9f48",
+    "base": "5c193ab321c2a40a789cc9f07ea590689967fa8c",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "PR 架构影响工作流首次接入",
+    "path": "pr/14/97a6a5e07029102c2d49246f93c2cad3478f9f48/35309846636",
+    "created": "2026-09-18T06:33:56+00:00"
+  }
+]

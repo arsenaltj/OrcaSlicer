@@ -1,0 +1,25 @@
+{
+  "pr": 14,
+  "run": 35309846636,
+  "head": "97a6a5e07029102c2d49246f93c2cad3478f9f48",
+  "base": "5c193ab321c2a40a789cc9f07ea590689967fa8c",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "PR 架构影响工作流首次接入",
+  "path": "pr/14/97a6a5e07029102c2d49246f93c2cad3478f9f48/35309846636",
+  "created": "2026-09-18T06:33:56+00:00",
+  "files": {
+    "index.html": "e996d950c554941695325d38ddf97d9178d2c668db83c5e492ff2a15c0cc74f6",
+    "details.html": "0af46c6298f6c8d0870590883c0b632edc10d48741a0b623ce129bef08dc774e",
+    "report.json": "d999e7d344f7bc69a12c6eb0d5d00bf60055e428860ccf29936bd5a3fcdf3c04",
+    "summary.md": "10a7cf787754ce04aecedcf5cb99525d549bb922ed7d25c8e80d95735eda32e8",
+    "archify-receipts.json": "174439d235876d6ea1837047aebd645a521a19a63b91ace75b7a34a6cac5eb30",
+    "l0-context.html": "1d742e505e138b9657d732bb8bac4fc47020a3410322ebce835625cfb7695435",
+    "l0-context.json": "0242951b01e35ecae376d9334116e4de3b3e7c498ae8968d8f845bde7e4d8953",
+    "l1-modules.html": "463db05d5d8e98a0c2b92b4b67c1fd084cf22bbd7da9ec49d3683dc6222d9707",
+    "l1-modules.json": "149550b9a5cdeeae4d2192fdabe378472d38aa69314c91c64534d4f54a165e55",
+    "l2-generation.html": "f101802e002c795e22d556cff74d4e7e799048939932abd411f4bdbfcbb3cdb2",
+    "l2-generation.json": "22841df17bdd3edd92088ee1fee4594a28035678b0ca9359a3ab1b7cc160d872",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}

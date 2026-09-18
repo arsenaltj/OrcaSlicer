@@ -1,0 +1,137 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "L0 · 产品全貌与边界",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "legend": {
+      "mode": "hidden"
+    }
+  },
+  "components": [
+    {
+      "id": "user",
+      "type": "external",
+      "label": "使用者",
+      "sublabel": "文字、图片或已有模型",
+      "pos": [
+        60,
+        260
+      ],
+      "size": [
+        230,
+        86
+      ]
+    },
+    {
+      "id": "product",
+      "type": "frontend",
+      "label": "Orca 桌面产品",
+      "sublabel": "生成、编辑、切片与预览",
+      "pos": [
+        470,
+        260
+      ],
+      "size": [
+        230,
+        86
+      ]
+    },
+    {
+      "id": "provider",
+      "type": "cloud",
+      "label": "外部 AI 服务",
+      "sublabel": "经本地 sidecar 与提供商适配",
+      "pos": [
+        880,
+        260
+      ],
+      "size": [
+        230,
+        86
+      ]
+    },
+    {
+      "id": "assets",
+      "type": "database",
+      "label": "本地项目与资产",
+      "sublabel": "工程、模型与历史记录",
+      "pos": [
+        470,
+        60
+      ],
+      "size": [
+        230,
+        86
+      ]
+    },
+    {
+      "id": "output",
+      "type": "backend",
+      "label": "打印文件",
+      "sublabel": "G-code；不代表打印完成",
+      "pos": [
+        470,
+        460
+      ],
+      "size": [
+        230,
+        86
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "user-product",
+      "from": "user",
+      "to": "product",
+      "label": "输入与确认"
+    },
+    {
+      "id": "product-provider",
+      "from": "product",
+      "to": "provider",
+      "label": "确认后外部调用"
+    },
+    {
+      "id": "product-assets",
+      "from": "product",
+      "to": "assets",
+      "label": "保存与恢复"
+    },
+    {
+      "id": "product-output",
+      "from": "product",
+      "to": "output",
+      "label": "原生切片与导出",
+      "labelDy": 24
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "一个桌面产品",
+      "items": [
+        "模型生成与智能切片在同一 Orca 主窗口中",
+        "原生工程、模型、配置与切片由 Orca 管理"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "确认与边界",
+      "items": [
+        "付费生成在用户确认后发起",
+        "导入模型不等于正式切片或完成打印"
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "图的依据",
+      "items": [
+        "人工维护的产品上下文，附当前源码锚点",
+        "1 个锚点缺失；源码状态不等于运行验证"
+      ]
+    }
+  ]
+}
