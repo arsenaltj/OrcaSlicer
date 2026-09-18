@@ -983,6 +983,45 @@ TEST_CASE("Regional source colors preserve red hair and gray clothing without fo
     CHECK(output[3].second == black);
 }
 
+TEST_CASE("Four-color final safety keeps protected faces off red and preserves explicit red garments",
+          "[SemanticColoring][Regression][FourColor]")
+{
+    const Color red {.85f,.08f,.05f}, white {.97f,.97f,.97f};
+    const auto source = triangles({
+        {.78f,.60f,.52f}, {.82f,.80f,.78f}, {.95f,.95f,.95f}, red});
+    const auto analysis = labeled(source,
+        {Label::FaceSkin, Label::Eyebrow, Label::Clothes, Label::Clothes});
+    const std::vector<Color> palette {{.10f,.10f,.10f}, white, {.82f,.66f,.57f}, red};
+    const auto output = map_palette(source, analysis, palette);
+    std::map<size_t, Color> colors(output.begin(), output.end());
+    REQUIRE(colors.size() == 4);
+    CHECK(colors.at(0) != red);
+    CHECK(colors.at(1) != red);
+    CHECK(colors.at(2) == white);
+    CHECK(colors.at(3) == red);
+}
+
+TEST_CASE("Four-color protected faces retain original color when every palette slot is red",
+          "[SemanticColoring][Regression][FourColor]")
+{
+    const auto source = triangles({{.76f,.56f,.47f}});
+    const auto analysis = labeled(source, {Label::FaceSkin});
+    const std::vector<Color> palette {{.85f,.08f,.05f}, {.75f,.04f,.02f}};
+    CHECK(map_palette(source, analysis, palette).empty());
+}
+
+TEST_CASE("Four-color connected lips use one dominant automatic material",
+          "[SemanticColoring][Regression][FourColor]")
+{
+    const Color red {.86f,.08f,.06f}, pink {.82f,.48f,.45f};
+    const auto source = surface_strip({red, red, pink, red});
+    const auto analysis = labeled(source, std::vector<Label>(4, Label::Lips));
+    const std::vector<Color> palette {{.08f,.08f,.08f}, {.97f,.97f,.97f}, pink, red};
+    const auto output = map_palette(source, analysis, palette);
+    REQUIRE(output.size() == 4);
+    for (const auto& assignment : output) CHECK(assignment.second == red);
+}
+
 TEST_CASE("Named portrait cards do not turn gray lips pink or gray clothes white", "[SemanticColoring][Regression]")
 {
     const auto source = triangles({{.48f,.48f,.48f}, {.48f,.48f,.48f}, {.13f,.11f,.10f}});

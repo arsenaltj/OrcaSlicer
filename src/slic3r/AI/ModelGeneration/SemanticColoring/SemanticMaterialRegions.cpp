@@ -80,7 +80,9 @@ struct Region {
 };
 void fill_supported_skin_gaps(const Analysis& analysis, const std::vector<Face>& faces,
                              const std::vector<std::pair<uint32_t,uint32_t>>& edges,
-                             float maximum_surface_distance, std::vector<int>& refined)
+                             float maximum_surface_distance,
+                             const std::vector<uint8_t>& protected_faces,
+                             std::vector<int>& refined)
 {
     constexpr uint8_t unconditional_hops = 6;
     constexpr uint8_t maximum_hops = 16;
@@ -95,7 +97,8 @@ void fill_supported_skin_gaps(const Analysis& analysis, const std::vector<Face>&
         if (label==Label::FaceSkin && analysis.face_confidence[id]>=minimum_confidence &&
             faces[id].assigned>=0) {
             owner[id]=id;hops[id]=0;have_seed=true;
-        } else if (faces[id].assigned<0 && (label==Label::FaceSkin || label==Label::Unknown)) {
+        } else if (faces[id].assigned<0 && (label==Label::FaceSkin || label==Label::Unknown) &&
+                   !protected_faces[id]) {
             eligible[id]=1;have_gap=true;
         }
     }
@@ -156,6 +159,7 @@ void fill_supported_skin_gaps(const Analysis& analysis, const std::vector<Face>&
 
 void fill_isolated_assigned_skin_holes(const Analysis& analysis, const std::vector<Face>& faces,
                                        const std::vector<std::pair<uint32_t,uint32_t>>& edges,
+                                       const std::vector<uint8_t>& protected_faces,
                                        std::vector<int>& refined)
 {
     const size_t count = faces.size();
@@ -174,6 +178,7 @@ void fill_isolated_assigned_skin_holes(const Analysis& analysis, const std::vect
     std::vector<std::array<uint8_t, 6>> votes(count);
     const auto visit = [&](uint32_t id, uint32_t neighbor) {
         if (analysis.face_labels[id] != Label::Unknown || faces[id].assigned < 0 ||
+            protected_faces[id] ||
             !warm_skin_appearance(faces[id].color)) return;
         ++neighbors[id];
         const Label label = analysis.face_labels[neighbor];
@@ -198,6 +203,7 @@ void fill_reliable_skin_shadow_holes(const Analysis& analysis, const std::vector
                                      const std::vector<std::pair<uint32_t,uint32_t>>& edges,
                                      const std::vector<std::pair<uint32_t,uint32_t>>& surface_edges,
                                      const std::vector<uint8_t>& point_detail_barrier,
+                                     const std::vector<uint8_t>& protected_faces,
                                      float detail_radius,
                                      std::vector<int>& refined)
 {
@@ -219,6 +225,7 @@ void fill_reliable_skin_shadow_holes(const Analysis& analysis, const std::vector
     for (uint32_t id = 0; id < count; ++id) {
         shadow_candidate[id] = analysis.face_labels[id] == Label::FaceSkin &&
             analysis.face_confidence[id] >= minimum_ear_fold_confidence && faces[id].assigned < 0 &&
+            !protected_faces[id] &&
             faces[id].color[0] <= .62f && chroma(faces[id].color) <= .14f;
         eligible[id] = shadow_candidate[id] && analysis.face_confidence[id] >= minimum_confidence;
     }
@@ -651,7 +658,8 @@ void refine_material_patches(const MeshSnapshot& source, const Analysis& analysi
     for (uint32_t id = 0; id < count; ++id) {
         if (analysis.face_confidence[id] < minimum_confidence ||
             (analysis.face_labels[id] != Label::FaceSkin &&
-             !face_detail_label(analysis.face_labels[id]))) continue;
+             !face_detail_label(analysis.face_labels[id]) &&
+             !(palette.size() <= 4 && analysis.face_labels[id] == Label::Hair))) continue;
         for (uint32_t vertex : triangles[id]) vertex_faces.push_back({vertex, id});
     }
     std::sort(vertex_faces.begin(), vertex_faces.end(), [](const VertexFace& lhs, const VertexFace& rhs) {
@@ -701,12 +709,72 @@ void refine_material_patches(const MeshSnapshot& source, const Analysis& analysi
     }
     std::sort(skin_neighbors.begin(), skin_neighbors.end());
     skin_neighbors.erase(std::unique(skin_neighbors.begin(), skin_neighbors.end()), skin_neighbors.end());
+    // Four-color previews need a local eye/brow collar before any skin-hole
+    // fill runs. The collar is deliberately restricted to reliable eye detail
+    // and its immediate surface/point neighborhood, so distant hair and ear
+    // boundary repairs keep their existing behavior.
+    std::vector<uint8_t> protected_eye_faces(count, 0);
+    if (palette.size() <= 4) {
+        std::vector<uint8_t> detail_touch(count, 0), hair_touch(count, 0);
+        const auto eye_detail = [](Label label) {
+            return label == Label::EyeSclera || label == Label::Iris || label == Label::Eyebrow;
+        };
+        for (uint32_t id = 0; id < count; ++id) {
+            if (analysis.face_confidence[id] < minimum_confidence || !eye_detail(analysis.face_labels[id])) continue;
+            protected_eye_faces[id] = 1;
+        }
+        for (const auto& edge : neighbors) {
+            const auto mark_side = [&](uint32_t detail, uint32_t other) {
+                if (!eye_detail(analysis.face_labels[detail]) ||
+                    analysis.face_confidence[detail] < minimum_confidence) return;
+                detail_touch[other] = 1;
+                if (analysis.face_labels[other] == Label::FaceSkin ||
+                    analysis.face_labels[other] == Label::Unknown)
+                    protected_eye_faces[other] = 1;
+            };
+            mark_side(edge.first, edge.second);
+            mark_side(edge.second, edge.first);
+            if (analysis.face_labels[edge.first] == Label::Hair &&
+                analysis.face_confidence[edge.first] >= minimum_confidence) hair_touch[edge.second] = 1;
+            if (analysis.face_labels[edge.second] == Label::Hair &&
+                analysis.face_confidence[edge.second] >= minimum_confidence) hair_touch[edge.first] = 1;
+        }
+        // Reuse the sorted exact-vertex incidence list for point contacts.
+        // It is already bounded and validated above for the skin seam pass.
+        for (size_t first = 0; first < vertex_faces.size();) {
+            size_t end = first + 1;
+            while (end < vertex_faces.size() && vertex_faces[end].vertex == vertex_faces[first].vertex) ++end;
+            bool has_detail = false, has_hair = false;
+            for (size_t index = first; index < end; ++index) {
+                const Label label = analysis.face_labels[vertex_faces[index].face];
+                has_detail |= eye_detail(label);
+                has_hair |= label == Label::Hair;
+            }
+            if (has_detail || has_hair) for (size_t index = first; index < end; ++index) {
+                const uint32_t face = vertex_faces[index].face;
+                if (has_detail) detail_touch[face] = 1;
+                if (has_hair) hair_touch[face] = 1;
+                if (has_detail && (analysis.face_labels[face] == Label::FaceSkin ||
+                                   analysis.face_labels[face] == Label::Unknown))
+                    protected_eye_faces[face] = 1;
+            }
+            first = end;
+        }
+        // A face that touches both an eye/brow detail and hair is the common
+        // source of the eye-to-hair bridge. Never let a donor traverse it.
+        for (uint32_t id = 0; id < count; ++id)
+            if (detail_touch[id] && hair_touch[id] &&
+                (analysis.face_labels[id] == Label::FaceSkin ||
+                 analysis.face_labels[id] == Label::Unknown))
+                protected_eye_faces[id] = 1;
+    }
     std::vector<VertexFace>().swap(vertex_faces);
     std::vector<int> refined(count,-1);
     if (have_skin) {
-        fill_supported_skin_gaps(analysis,faces,neighbors,diagonal*.012f,refined);
-        fill_isolated_assigned_skin_holes(analysis,faces,neighbors,refined);
+        fill_supported_skin_gaps(analysis,faces,neighbors,diagonal*.012f,protected_eye_faces,refined);
+        fill_isolated_assigned_skin_holes(analysis,faces,neighbors,protected_eye_faces,refined);
         fill_reliable_skin_shadow_holes(analysis,faces,skin_neighbors,neighbors,point_detail_barrier,
+                                        protected_eye_faces,
                                         diagonal*.012f,refined);
     }
     protect_uncertain_contours(analysis,diagonal*.005f,neighbors,faces);

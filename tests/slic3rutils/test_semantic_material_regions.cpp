@@ -99,6 +99,26 @@ TEST_CASE("A disconnected skin colored patch has no material donor", "[SemanticM
     CHECK(fixture.paint==previous);
 }
 
+TEST_CASE("Four-color eyebrow collar blocks an adjacent skin-hole fill",
+          "[SemanticMaterialRegions][Regression][FourColor]")
+{
+    const Color skin {.76f,.55f,.41f};
+    Fixture fixture(8,skin,Label::FaceSkin,gray);
+    const size_t brow=fixture.cell(4,4),gap=brow+1;
+    fixture.set(brow,dark,Label::Eyebrow,.95f,dark);
+    fixture.set(gap,skin,Label::Unknown,.50f,gray);
+    fixture.paint.erase(std::remove_if(fixture.paint.begin(),fixture.paint.end(),[&](const auto& entry) {
+        return entry.first==gap;
+    }),fixture.paint.end());
+    fixture.refine();
+    CHECK(std::none_of(fixture.paint.begin(),fixture.paint.end(),[&](const auto& entry) {
+        return entry.first==gap;
+    }));
+    CHECK(std::any_of(fixture.paint.begin(),fixture.paint.end(),[&](const auto& entry) {
+        return entry.first==brow && entry.second==dark;
+    }));
+}
+
 TEST_CASE("A skin colored gap beside a reliable lip is not painted over", "[SemanticMaterialRegions][Regression]")
 {
     const Color skin {.80f,.59f,.48f}, shadow {.78f,.57f,.46f};

@@ -84,6 +84,10 @@ bool red_accent(const Color& color)
     return chroma(color) >= .055f && color[1] >= .045f &&
         color[1] > color[2] * 1.25f + .01f;
 }
+bool neutral_clothing(const Color& color)
+{
+    return color[0] >= .62f && chroma(color) < .055f;
+}
 bool compatible_skin(const Color& source, const Color& center, Label label)
 {
     // Body segmentation includes eyebrows, eyes, teeth and sometimes lips in
@@ -1283,6 +1287,116 @@ FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, con
     }
     extend_hair_edges(source, analysis, hair_seeds, palette, output);
     refine_material_patches(source, analysis, palette, portrait_card, output);
+    if (palette.size() <= 4) {
+        // The material-region pass can legitimately replace an earlier target.
+        // Make one final, local safety pass so no later donor or hole fill can
+        // reintroduce red into an eye/skin/neutral-garment face.
+        std::map<size_t, size_t> assignments;
+        for (const auto& item : output) {
+            const auto found = std::find(palette.begin(), palette.end(), item.second);
+            if (item.first < count && found != palette.end())
+                assignments[item.first] = size_t(found - palette.begin());
+        }
+        const auto legal_target = [&](const Color& source_color, Label label, size_t proposed) {
+            const bool source_is_red = red_accent(source_color);
+            const bool facial = label == Label::EyeSclera || label == Label::Iris ||
+                label == Label::Eyebrow || label == Label::FaceSkin || label == Label::BodySkin;
+            const bool neutral_garment = label == Label::Clothes && neutral_clothing(source_color);
+            const bool block_red = facial || neutral_garment ||
+                ((label == Label::Clothes || label == Label::Hair || label == Label::Accessories) &&
+                 !source_is_red);
+            const auto acceptable = [&](size_t slot) {
+                if (slot >= palette.size()) return false;
+                if (block_red && red_accent(palette_labs[slot])) return false;
+                if (neutral_garment && (chroma(palette_labs[slot]) >= .055f ||
+                                        palette_labs[slot][0] < .45f)) return false;
+                return true;
+            };
+            if (acceptable(proposed)) return proposed;
+            size_t best_slot = palette.size();
+            float best = std::numeric_limits<float>::max();
+            for (size_t slot = 0; slot < palette.size(); ++slot) {
+                if (!acceptable(slot)) continue;
+                const float score = distance(source_color, palette_labs[slot]);
+                if (score < best || (score == best && slot < best_slot)) {
+                    best = score; best_slot = slot;
+                }
+            }
+            return best_slot;
+        };
+        for (auto it = assignments.begin(); it != assignments.end();) {
+            const size_t id = it->first;
+            const Label label = analysis.face_labels[id];
+            const size_t replacement = legal_target(face_lab(source, id), label, it->second);
+            if (replacement >= palette.size()) it = assignments.erase(it);
+            else { it->second = replacement; ++it; }
+        }
+
+        // A connected lip surface is one material at four colors. Union only
+        // reliable Lips faces across real mesh edges; mouth/skin faces cannot
+        // enter these components, so their boundaries remain untouched.
+        std::vector<size_t> lip_faces;
+        std::vector<size_t> lip_parent(count);
+        std::iota(lip_parent.begin(), lip_parent.end(), 0);
+        const auto lip_root = [&lip_parent](size_t id) {
+            while (lip_parent[id] != id) {
+                lip_parent[id] = lip_parent[lip_parent[id]];
+                id = lip_parent[id];
+            }
+            return id;
+        };
+        const auto lip_join = [&lip_parent, &lip_root](size_t lhs, size_t rhs) {
+            lhs = lip_root(lhs); rhs = lip_root(rhs);
+            if (lhs != rhs) lip_parent[rhs] = lhs;
+        };
+        std::map<uint64_t, std::vector<size_t>> lip_edges;
+        for (size_t id = 0; id < count; ++id) {
+            if (analysis.face_labels[id] != Label::Lips ||
+                analysis.face_confidence[id] < minimum_confidence) continue;
+            lip_faces.push_back(id);
+            const auto& triangle = source.mesh.indices[id];
+            for (int corner = 0; corner < 3; ++corner) {
+                const size_t a = size_t(triangle[corner]);
+                const size_t b = size_t(triangle[(corner + 1) % 3]);
+                lip_edges[(uint64_t(std::min(a, b)) << 32) | uint64_t(std::max(a, b))].push_back(id);
+            }
+        }
+        for (const auto& edge : lip_edges)
+            if (edge.second.size() == 2) lip_join(edge.second[0], edge.second[1]);
+        std::map<size_t, std::vector<size_t>> lip_components;
+        for (const size_t id : lip_faces) lip_components[lip_root(id)].push_back(id);
+        for (const auto& component : lip_components) {
+            std::map<size_t, double> votes;
+            double total_area = 0.;
+            float chroma_sum = 0.f;
+            for (const size_t id : component.second) {
+                chroma_sum += chroma(face_lab(source, id)) * float(area(source, id));
+                total_area += area(source, id);
+                const auto found = assignments.find(id);
+                if (found != assignments.end()) votes[found->second] += area(source, id);
+            }
+            if (votes.empty() || total_area <= 0.) continue;
+            const bool low_chroma = chroma_sum / float(total_area) < .035f;
+            size_t dominant = palette.size();
+            double dominant_area = -1.;
+            for (const auto& vote : votes) {
+                if (low_chroma && red_accent(palette_labs[vote.first])) continue;
+                if (vote.second > dominant_area ||
+                    (vote.second == dominant_area && vote.first < dominant)) {
+                    dominant = vote.first; dominant_area = vote.second;
+                }
+            }
+            if (dominant >= palette.size()) {
+                for (const size_t id : component.second) assignments.erase(id);
+                continue;
+            }
+            for (const size_t id : component.second)
+                if (assignments.find(id) != assignments.end()) assignments[id] = dominant;
+        }
+        output.clear();
+        output.reserve(assignments.size());
+        for (const auto& item : assignments) output.emplace_back(item.first, palette[item.second]);
+    }
     std::sort(output.begin(), output.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
     return output;
 }
@@ -1549,6 +1663,10 @@ bool map_subface_palette(const MeshSnapshot& source, const Analysis& analysis, c
         }
     for (size_t evidence_index = 0; evidence_index < analysis.subface_labels.size(); ++evidence_index) {
         const SubfaceLabelEvidence& evidence = analysis.subface_labels[evidence_index];
+        if (palette.size() <= 4 && (evidence.label == Label::EyeSclera ||
+                                    evidence.label == Label::Iris ||
+                                    evidence.label == Label::Eyebrow))
+            continue;
         Color source_color;
         if (!appearance(evidence, source_color)) continue;
         size_t target = palette.size();
