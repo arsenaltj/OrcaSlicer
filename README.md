@@ -1,3 +1,77 @@
+<!-- architecture-overview:start -->
+## AI 产品架构与 PR 变动
+
+[团队使用说明](Docs/coordination/architecture-review.md) · [PR 架构报告](https://github.com/arsenaltj/OrcaSlicer/actions/workflows/architecture-impact.yml?query=event%3Apull_request) · [开放 PR](https://github.com/arsenaltj/OrcaSlicer/pulls)
+
+每次 PR 自动生成改动高亮图；在线页同页展开业务 → 状态 → 代码，无需下载。
+
+| 架构更新记录 | 在线入口 |
+| --- | --- |
+| 全部 PR / 提交版本 | [打开更新记录表](https://arsenaltj.github.io/OrcaSlicer/) |
+| 首次接入：PR #14 | [直接打开交互图](https://arsenaltj.github.io/OrcaSlicer/pr/14/) |
+
+在线表格由发布流程自动追加。页面注明实际提交；新报告发布前，PR 入口仍显示上一份成功版本。
+
+下图是本分支维护的业务主线，不是实时状态或验收结果；箭头表示业务衔接，执行仍受用户确认与状态约束。
+
+```mermaid
+flowchart TB
+  subgraph j0["模型生成"]
+    j0p0["设计准备"]
+    j0p1["等待确认"]
+    j0p2["排队与生成"]
+    j0p3["结果可用"]
+    j0p4["用户导入"]
+    j0p0 --> j0p1 --> j0p2 --> j0p3 --> j0p4
+  end
+  subgraph j1["智能切片"]
+    j1p0["采集与预检"]
+    j1p1["规划候选"]
+    j1p2["试切与比较"]
+    j1p3["等待用户应用"]
+    j1p4["正式切片完成"]
+    j1p0 --> j1p1 --> j1p2 --> j1p3 --> j1p4
+  end
+  subgraph native["Orca 原生能力"]
+    n0["模型与项目导入"]
+    n1["模型准备与编辑"]
+    n2["切片与路径规划"]
+    n3["结果与 G-code"]
+    n4["设备管理与打印"]
+    n0 --> n1 --> n2 --> n3 --> n4
+  end
+  j0p4 -->|用户确认导入| n0
+  n1 -->|工作区与约束| j1p0
+  j1p3 -->|明确应用后正式切片| n2
+  n2 -->|完成回传| j1p4
+```
+
+业务关系（含规划）：
+
+| 输入 / 来源 | 输出 / 目标 | 衔接与条件 |
+| --- | --- | --- |
+| 3D 生成服务 | 模型生成 | 用户确认后经 sidecar 提交提供商任务，模型产物进入结果和历史。 |
+| 通用大模型 → YOYOClaw | 模型生成 / 智能切片 | 未做：目标链路：通用模型提供推理与规划，YOYOClaw 调度对应业务能力。 |
+| 模型生成 | Orca · 模型与项目导入 | 生成结果由用户显式导入准备页；导入不会自动切片或修改预设。 |
+| Orca · 模型准备与编辑 | 智能切片 | 采集工作区和版本，检查风险；版本失效后必须重新采集。 |
+| 智能切片 | Orca · 切片与路径规划 | 使用原生能力试切候选，明确选择并应用后才执行正式切片；撤销有状态条件。 |
+| 模型导入 → 准备编辑 → 切片规划 | 结果与 G-code → 设备与打印 | 箭头表示输入输出衔接，步骤由用户操作和状态控制，不意味着后台自动连续执行。 |
+| 交互、契约、运行环境 | 模型生成 / 智能切片 / Orca | 现有主窗口、接口和适配器支撑两条主线；新增 Copilot 和账号积分平台按未做占位。 |
+
+目标能力占位（完整目标尚未完成；已有部分实现见交互报告）：
+
+| 分区 | 未做 |
+| --- | --- |
+| 服务与编排 | YOYOClaw 能力与积分体系（未做）、通用大模型接入（未做） |
+| 智能切片 | 自动上色（未做）、自动摆盘（未做）、自动修复（未做）、参数智能调优（未做）、切片结果优化（未做） |
+| 模型生成 | 风格化滤镜（未做）、可打印性保障（未做） |
+| 平台底座 | 对话式 Copilot（未做）、账号、计费与安全平台（未做） |
+
+来源：`Docs/architecture/review-map.json`。业务/状态/边界改变时维护映射，运行 `python scripts/architecture_review.py --readme update` 更新此区域（仅需 Python 标准库）；Windows 的 `./dev.ps1 Review` 也会同步更新。CI 检查是否过期。
+
+README 展示当前分支的架构，合并后目标分支同步更新；仓库首页取决于 GitHub 默认分支。每个 PR 的差异属于各自报告，橙/黄色为直接改动，蓝色为潜在关联，未做不算验证通过。GitHub README 只展示静态图；在线交互图和版本记录由 GitHub Pages 承载。Actions 下载制品保留 14 天，在线归档单独保存。
+<!-- architecture-overview:end -->
+
 <div align="center">
 
 <picture>

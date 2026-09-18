@@ -19,6 +19,9 @@
 
 ## 影响与复核
 
+- 架构变动：查看本 PR 的 `PR architecture impact` 检查／机器人评论（交互报告在该次 Actions 的 `architecture-impact` 制品）。
+- 业务阶段／状态／模块归属／能力目标改变时：同步 `review-map.json`，运行 `python scripts/architecture_review.py --readme update` 并提交 README 差异；映射仍准确则无需改写。不能把“未做”或静态分析标记当成验收通过。
+
 - 涉及的模块与负责人：
 - 共享文件、Contracts、运行时、依赖、CI 或权限变动：
 - 所需非作者复核人：

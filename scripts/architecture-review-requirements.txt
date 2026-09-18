@@ -1,0 +1,6 @@
+# Local parser/graph APIs only: no server, hooks, embeddings or model calls.
+code-review-graph==2.3.8
+tree-sitter==0.26.0
+tree-sitter-language-pack==0.13.0
+networkx==3.6.1
+PyYAML==6.0.3
