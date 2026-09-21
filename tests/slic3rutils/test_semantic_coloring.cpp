@@ -128,6 +128,32 @@ public:
         return prediction;
     }
 };
+class PoseFixture final : public IPoseRegionRecognizer {
+public:
+    size_t calls {0};
+    bool fail {false};
+    bool absent {false};
+    std::string identity() const override { return "pose-fixture-v1"; }
+    PosePrediction predict(const RGBImage&, const Cancel&) override {
+        ++calls;
+        PosePrediction result;
+        if (fail) { result.error = "Pose resource missing"; return result; }
+        if (absent) return result;
+        PosePerson person;
+        person.landmarks.resize(33);
+        for (auto& landmark : person.landmarks) landmark = {.5f, .5f, 0.f, .95f, .95f, true, true};
+        person.landmarks[0].y = .40f;
+        person.landmarks[11].x = .35f;
+        person.landmarks[12].x = .65f;
+        person.landmarks[13] = {.28f, .72f, 0.f, .95f, .95f, true, true};
+        person.landmarks[14] = {.72f, .72f, 0.f, .95f, .95f, true, true};
+        person.landmarks[15] = {.22f, .90f, 0.f, .95f, .95f, true, true};
+        person.landmarks[16] = {.78f, .90f, 0.f, .95f, .95f, true, true};
+        result.persons.push_back(std::move(person));
+        result.person_detected = true;
+        return result;
+    }
+};
 class BoundaryBodyFixture final : public IBodyRegionRecognizer {
 public:
     size_t calls {0};
@@ -1659,7 +1685,7 @@ TEST_CASE("Body skin accepts warm neck shadows while rejecting red clothing and 
     CHECK(map_palette(red, labeled(red, {Label::BodySkin}), card, card).empty());
 }
 
-TEST_CASE("Supported low-confidence skin and background gaps inherit one local skin material", "[SemanticColoring][Regression][SkinBoundary]")
+TEST_CASE("Skin gaps require a confirmed macro owner before inheriting a local skin material", "[SemanticColoring][Regression][SkinBoundary]")
 {
     const Color skin {.847451f,.569326f,.425459f};
     const Color shadow {.509356f,.327569f,.233013f};
@@ -1674,10 +1700,17 @@ TEST_CASE("Supported low-confidence skin and background gaps inherit one local s
         auto analysis = labeled(source, {Label::BodySkin, Label::BodySkin, gap_label, Label::BodySkin,
                                          Label::Background});
         analysis.face_confidence[2] = .55f;
+        analysis.face_macro_regions.assign(5, Analysis::MacroRegion::Neck);
+        analysis.face_person_instances.assign(5, 7);
+        analysis.face_macro_confidence.assign(5, .9f);
+        if (gap_label == Label::Unknown || gap_label == Label::Background) {
+            analysis.face_macro_regions[2] = Analysis::MacroRegion::Unknown;
+            analysis.face_person_instances[2] = UINT32_MAX;
+        }
         const auto output = map_palette(source, analysis, card, card);
         const auto gap = std::find_if(output.begin(), output.end(), [](const auto& item) { return item.first == 2; });
-        REQUIRE(gap != output.end());
-        CHECK(gap->second == card[0]);
+        if (gap_label == Label::Unknown || gap_label == Label::Background) CHECK(gap == output.end());
+        else { REQUIRE(gap != output.end()); CHECK(gap->second == card[0]); }
     }
 }
 
@@ -1806,6 +1839,53 @@ TEST_CASE("A body mask alone cannot give an animal human skin colors", "[Semanti
     CHECK_FALSE(result.person_detected);
     const auto card = portrait_card();
     CHECK(map_palette(source, result, card, card).empty());
+}
+
+TEST_CASE("Pose ownership is cached independently and failure falls back without retaining a stale owner",
+          "[SemanticColoring][MacroRegion]")
+{
+    const auto source = triangles({{.8f,.5f,.3f}});
+    BodyFixture body; FaceFixture face; PoseFixture pose;
+    const auto result = analyze(source, body, face, nullptr, &pose, {}, {}, {});
+    REQUIRE(result.error.empty());
+    REQUIRE(result.face_macro_regions.size() == 1);
+    CHECK(result.face_macro_regions[0] == Analysis::MacroRegion::Face);
+    CHECK(result.face_person_instances[0] == 0);
+    CHECK(pose.calls == 8);
+    const auto cache = encode_analysis(result);
+    Analysis restored; std::string error;
+    REQUIRE(decode_analysis(cache, source, body.identity(), face.identity(), "none", pose.identity(), restored, error));
+    CHECK(restored.face_macro_regions == result.face_macro_regions);
+    CHECK(restored.face_person_instances == result.face_person_instances);
+    CHECK_FALSE(decode_analysis(cache, source, body.identity(), face.identity(), "none", "pose-fixture-v2", restored, error));
+
+    pose.fail = true;
+    const auto fallback = analyze(source, body, face, nullptr, &pose, {}, {}, {});
+    CHECK(fallback.error.empty());
+    CHECK(fallback.pose_error == "Pose resource missing");
+    CHECK(fallback.face_macro_regions.empty());
+    CHECK(fallback.pose_identity == "none");
+    CHECK(fallback.signature == analysis_cache_key(source, body.identity(), face.identity(), "none"));
+
+    pose.fail = false;
+    pose.absent = true;
+    const auto undetected = analyze(source, body, face, nullptr, &pose, {}, {}, {});
+    CHECK(undetected.error.empty());
+    CHECK(undetected.face_macro_regions.empty());
+    CHECK(undetected.face_person_instances.empty());
+}
+
+TEST_CASE("Off-frame pose landmarks do not invalidate a visible upper body", "[SemanticColoring][MacroRegion]")
+{
+    RGBImage image; image.width = 2; image.height = 2; image.pixels.assign(12, 128);
+    PosePrediction prediction;
+    PosePerson person; person.landmarks.resize(33);
+    person.landmarks[32].y = 2.8f;
+    prediction.persons.push_back(person);
+    prediction.person_detected = true;
+    CHECK(prediction.valid_for(image));
+    prediction.persons[0].landmarks[11].x = std::numeric_limits<float>::quiet_NaN();
+    CHECK_FALSE(prediction.valid_for(image));
 }
 
 TEST_CASE("Disagreeing semantic views keep uncertain faces on the existing color matching path", "[SemanticColoring]")

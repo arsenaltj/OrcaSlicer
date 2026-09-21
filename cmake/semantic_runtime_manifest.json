@@ -27,6 +27,13 @@
       "filename": "face_landmarker.task",
       "sha256": "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff",
       "bytes": 3758596
+    },
+    {
+      "key": "pose",
+      "url": "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+      "filename": "pose_landmarker_lite.task",
+      "sha256": "59929e1d1ee95287735ddd833b19cf4ac46d29bc7afddbbf6753c459690d574a",
+      "bytes": 5777746
     }
   ],
   "wheel_entries": [
@@ -55,6 +62,7 @@
   "default_providers": {
     "body_provider": "mediapipe.cpu.v1",
     "face_provider": "mediapipe.cpu.v1",
+    "pose_provider": "mediapipe.cpu.v1",
     "boundary_provider": "none"
   }
 }

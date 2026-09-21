@@ -953,14 +953,32 @@ void refine_material_patches(const MeshSnapshot& source, const Analysis& analysi
     std::sort(skin_neighbors.begin(), skin_neighbors.end());
     skin_neighbors.erase(std::unique(skin_neighbors.begin(), skin_neighbors.end()), skin_neighbors.end());
     std::vector<VertexFace>().swap(vertex_faces);
+    const bool have_macro = analysis.face_macro_regions.size() == count &&
+        analysis.face_person_instances.size() == count;
+    const auto same_owner = [&](uint32_t a, uint32_t b) {
+        if (!have_macro) return true;
+        if (analysis.face_person_instances[a] == UINT32_MAX ||
+            analysis.face_person_instances[b] == UINT32_MAX)
+            return true;
+        return analysis.face_macro_regions[a] == analysis.face_macro_regions[b] &&
+            analysis.face_person_instances[a] == analysis.face_person_instances[b];
+    };
+    std::vector<std::pair<uint32_t,uint32_t>> owner_neighbors = neighbors;
+    if (have_macro) {
+        const auto crossing = [&](const auto& edge) {
+            return !same_owner(edge.first, edge.second) ||
+                analysis.face_person_instances[edge.first] == UINT32_MAX;
+        };
+        owner_neighbors.erase(std::remove_if(owner_neighbors.begin(), owner_neighbors.end(), crossing), owner_neighbors.end());
+        skin_neighbors.erase(std::remove_if(skin_neighbors.begin(), skin_neighbors.end(), crossing), skin_neighbors.end());
+    }
     std::vector<int> refined(count,-1);
     if (have_skin) {
-        fill_supported_skin_gaps(analysis,faces,neighbors,diagonal*.012f,refined);
-        fill_isolated_assigned_skin_holes(analysis,faces,neighbors,refined);
-        fill_reliable_skin_shadow_holes(analysis,faces,skin_neighbors,neighbors,point_detail_barrier,
+        fill_supported_skin_gaps(analysis,faces,owner_neighbors,diagonal*.012f,refined);
+        fill_isolated_assigned_skin_holes(analysis,faces,owner_neighbors,refined);
+        fill_reliable_skin_shadow_holes(analysis,faces,skin_neighbors,owner_neighbors,point_detail_barrier,
                                         diagonal*.012f,refined);
-        merge_isolated_skin_material_fragments(analysis,faces,palette_labs,neighbors,point_detail_barrier,refined);
-        fill_spatially_supported_unknown_skin(analysis,faces,palette_labs,diagonal*.0015f,refined);
+        merge_isolated_skin_material_fragments(analysis,faces,palette_labs,owner_neighbors,point_detail_barrier,refined);
     }
     protect_uncertain_contours(analysis,diagonal*.005f,neighbors,faces);
     std::vector<uint8_t> protected_edge(count, 0);
@@ -971,7 +989,8 @@ void refine_material_patches(const MeshSnapshot& source, const Analysis& analysi
             protected_edge[side.first] = 1;
     }
     neighbors.erase(std::remove_if(neighbors.begin(),neighbors.end(),[&](const auto& edge) {
-        return !faces[edge.first].allowed || !faces[edge.second].allowed;
+        return !faces[edge.first].allowed || !faces[edge.second].allowed ||
+            !same_owner(edge.first, edge.second);
     }),neighbors.end());
     const SurfaceGraph graph(faces,neighbors);
     if (have_clothes)

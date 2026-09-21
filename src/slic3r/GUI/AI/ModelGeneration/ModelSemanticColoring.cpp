@@ -265,14 +265,15 @@ struct ModelSemanticColoring::Impl {
                     compose_materials();
                 }
                 else {
-                if (!providers.body || !providers.face || !providers.boundary_error.empty() ||
+                if (!providers.body || !providers.face || !providers.pose || !providers.boundary_error.empty() ||
                     providers_configuration != task->request.configuration) {
-                    std::string body_id = "mediapipe.cpu.v1", face_id = body_id, boundary_id = "none";
+                    std::string body_id = "mediapipe.cpu.v1", face_id = body_id, pose_id = body_id, boundary_id = "none";
                     const auto doc = nlohmann::json::parse(task->request.configuration);
                     body_id = doc.value("body_provider", body_id);
                     face_id = doc.value("face_provider", face_id);
+                    pose_id = doc.value("pose_provider", pose_id);
                     boundary_id = doc.value("boundary_provider", boundary_id);
-                    providers = SC::create_region_recognizers(body_id, face_id, boundary_id, runtime);
+                    providers = SC::create_region_recognizers(body_id, face_id, pose_id, boundary_id, runtime);
                     providers_configuration = task->request.configuration;
                     cached_analysis.reset();
                 }
@@ -283,8 +284,9 @@ struct ModelSemanticColoring::Impl {
                 result->boundary_fallback = providers.boundary_error;
                 const auto& source = *task->request.source;
                 const std::string boundary_identity = providers.boundary ? providers.boundary->identity() : "none";
+                const std::string pose_identity = providers.pose && providers.pose_error.empty() ? providers.pose->identity() : "none";
                 const auto key = SC::analysis_cache_key(source, providers.body->identity(),
-                                                        providers.face->identity(), boundary_identity);
+                                                        providers.face->identity(), boundary_identity, pose_identity);
                 auto analysis = std::make_shared<SC::Analysis>();
                 const auto cache_file = cache / (key + ".json");
                 if (cached_analysis && cached_analysis->signature == key) {
@@ -298,18 +300,19 @@ struct ModelSemanticColoring::Impl {
                         const auto doc = nlohmann::json::parse(input, nullptr, false);
                         std::string error;
                         result->cache_hit = SC::decode_analysis(doc, source, providers.body->identity(),
-                            providers.face->identity(), boundary_identity, *analysis, error);
+                            providers.face->identity(), boundary_identity, pose_identity, *analysis, error);
                     }
                 }
                 if (result->cache_hit) task->progress.store(80);
                 if (!result->cache_hit && !cancel()) {
                     *analysis = SC::analyze(source, *providers.body, *providers.face,
-                        providers.boundary.get(), cancel,
-                        [task](int value, const std::string&) { task->progress.store(2 + std::clamp(value, 0, 100) * 78 / 100); });
+                        providers.boundary.get(), providers.pose_error.empty() ? providers.pose.get() : nullptr, cancel,
+                        [task](int value, const std::string&) { task->progress.store(2 + std::clamp(value, 0, 100) * 78 / 100); }, {});
                     const bool transient_boundary_error = !providers.boundary_error.empty() ||
                         std::any_of(analysis->boundary_runs.begin(), analysis->boundary_runs.end(),
                             [](const auto& run) { return run.status == "error" || run.status == "canceled"; });
-                    if (!analysis->canceled && analysis->error.empty() && !cancel() && !transient_boundary_error) {
+                    if (!analysis->canceled && analysis->error.empty() && analysis->signature == key &&
+                        !cancel() && !transient_boundary_error) {
                         std::error_code ec;
                         std::filesystem::create_directories(cache, ec);
                         if (!ec) {

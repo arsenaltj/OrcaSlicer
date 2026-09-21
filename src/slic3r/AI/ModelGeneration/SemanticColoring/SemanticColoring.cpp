@@ -905,6 +905,21 @@ bool locate_subface(const Barycentric& input, uint8_t depth, SubfacePath& output
     output = {depth, path};
     return true;
 }
+bool PosePrediction::valid_for(const RGBImage& image) const
+{
+    if (!image.valid() || canceled || !error.empty() || person_detected != !persons.empty()) return false;
+    for (const auto& person : persons) {
+        if (person.landmarks.size() < 33) return false;
+        for (const auto& point : person.landmarks) {
+            // A cropped bust can legitimately place hips and ankles far outside
+            // the image. Each macro-region seed checks its own visibility/bounds.
+            if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z)) return false;
+            if ((point.has_visibility && (!std::isfinite(point.visibility) || point.visibility < 0.f || point.visibility > 1.f)) ||
+                (point.has_presence && (!std::isfinite(point.presence) || point.presence < 0.f || point.presence > 1.f))) return false;
+        }
+    }
+    return true;
+}
 
 std::vector<std::pair<uint32_t, SubfacePath>> project_boundary_sample(
     const RenderedView& view, float image_x, float image_y)
@@ -999,9 +1014,15 @@ std::string analysis_cache_key(const MeshSnapshot& source, const std::string& bo
 std::string analysis_cache_key(const MeshSnapshot& source, const std::string& body, const std::string& face,
                                const std::string& boundary)
 {
-    if (source.geometry_id.empty() || source.content_id.empty() || body.empty() || face.empty() || boundary.empty()) return {};
+    return analysis_cache_key(source, body, face, boundary, "none");
+}
+
+std::string analysis_cache_key(const MeshSnapshot& source, const std::string& body, const std::string& face,
+                               const std::string& boundary, const std::string& pose)
+{
+    if (source.geometry_id.empty() || source.content_id.empty() || body.empty() || face.empty() || boundary.empty() || pose.empty()) return {};
     return sha256(nlohmann::json::array({pipeline_version, source.geometry_id, source.content_id,
-        source.mesh.indices.size(), body, face, boundary,
+        source.mesh.indices.size(), body, face, boundary, pose,
         "cpu-zbuffer-8x512-face-roi512-visible-source-samples-v2-joint-boundary-v2"}).dump());
 }
 
@@ -1021,18 +1042,117 @@ Analysis analyze(const MeshSnapshot& source, IBodyRegionRecognizer& body, IFaceR
                  IBoundaryRefiner* boundary, const Cancel& cancel, const Progress& progress,
                  const RenderObserver& observe)
 {
+    return analyze(source, body, face, boundary, nullptr, cancel, progress, observe);
+}
+
+namespace {
+using MacroRegion = Analysis::MacroRegion;
+constexpr size_t macro_region_count = 8;
+struct MacroPixel {
+    MacroRegion region {MacroRegion::Unknown};
+    uint32_t person {0};
+    float confidence {0.f};
+};
+float segment_distance(float x, float y, float ax, float ay, float bx, float by)
+{
+    const float dx = bx - ax, dy = by - ay;
+    const float length = dx * dx + dy * dy;
+    const float t = length > 1e-6f ? std::clamp(((x - ax) * dx + (y - ay) * dy) / length, 0.f, 1.f) : 0.f;
+    return std::hypot(x - (ax + t * dx), y - (ay + t * dy));
+}
+MacroPixel macro_pixel(float x, float y, int width, int height, Label body_label,
+                       float body_confidence, const PosePrediction* pose)
+{
+    const auto coarse_region = body_label == Label::Hair ? MacroRegion::Hair :
+        body_label == Label::Clothes ? MacroRegion::TorsoClothes :
+        body_label == Label::Accessories ? MacroRegion::Accessory :
+        body_label == Label::FaceSkin ? MacroRegion::Face : MacroRegion::Unknown;
+    if (body_label != Label::BodySkin && coarse_region == MacroRegion::Unknown) return {};
+    if (!pose || pose->persons.empty()) return {};
+    MacroPixel best;
+    best.person = UINT32_MAX;
+    float runner_score = 0.f;
+    for (size_t person = 0; person < pose->persons.size(); ++person) {
+        const auto& points = pose->persons[person].landmarks;
+        if (points.size() < 25) continue;
+        const auto valid = [&](size_t id) {
+            return id < points.size() && std::isfinite(points[id].x) && std::isfinite(points[id].y) &&
+                points[id].x >= 0.f && points[id].x <= 1.f && points[id].y >= 0.f && points[id].y <= 1.f &&
+                (!points[id].has_visibility || points[id].visibility >= .35f);
+        };
+        if (!valid(0) || !valid(11) || !valid(12)) continue;
+        const float shoulder = std::max(20.f, std::hypot((points[11].x - points[12].x) * width,
+                                                         (points[11].y - points[12].y) * height));
+        const float nose_x = points[0].x * width, nose_y = points[0].y * height;
+        const float shoulder_x = (points[11].x + points[12].x) * width * .5f;
+        const float shoulder_y = (points[11].y + points[12].y) * height * .5f;
+        const float px = x, py = y;
+        const float face_dx = (px - nose_x) / (shoulder * .30f);
+        const float face_dy = (py - nose_y) / (shoulder * .43f);
+        float score = 0.f; MacroRegion region = MacroRegion::Unknown;
+        if (face_dx * face_dx + face_dy * face_dy <= 1.f) {
+            region = MacroRegion::Face; score = .92f;
+        }
+        const float neck_x = shoulder_x, neck_y = nose_y + (shoulder_y - nose_y) * .50f;
+        const float neck_dx = (px - neck_x) / (shoulder * .18f);
+        const float neck_dy = (py - neck_y) / (shoulder * .32f);
+        if (neck_dx * neck_dx + neck_dy * neck_dy <= 1.f && score < .88f) {
+            region = MacroRegion::Neck; score = .88f;
+        }
+        const auto arm = [&](size_t a, size_t b, MacroRegion candidate) {
+            if (!valid(a) || !valid(b)) return;
+            const float distance = segment_distance(px, py, points[a].x * width, points[a].y * height,
+                                                    points[b].x * width, points[b].y * height);
+            const float radius = std::max(8.f, shoulder * .13f);
+            if (distance <= radius && score < .82f) { region = candidate; score = .82f; }
+        };
+        arm(11, 13, MacroRegion::LeftArm); arm(13, 15, MacroRegion::LeftArm);
+        arm(12, 14, MacroRegion::RightArm); arm(14, 16, MacroRegion::RightArm);
+        if (coarse_region != MacroRegion::Unknown) {
+            const float torso_dx = (px - shoulder_x) / (shoulder * .95f);
+            const float torso_dy = (py - shoulder_y) / (shoulder * 1.9f);
+            const float head_dx = (px - nose_x) / (shoulder * .72f);
+            const float head_dy = (py - nose_y) / (shoulder * .85f);
+            const float support = coarse_region == MacroRegion::Hair || coarse_region == MacroRegion::Face ?
+                head_dx * head_dx + head_dy * head_dy : torso_dx * torso_dx + torso_dy * torso_dy;
+            if (support <= 1.f) { region = coarse_region; score = std::max(.70f, 1.f - support * .15f); }
+            else score = 0.f;
+        }
+        if (score > best.confidence) {
+            runner_score = best.confidence;
+            best = {region, uint32_t(person), score};
+        } else runner_score = std::max(runner_score, score);
+    }
+    if (runner_score > 0.f && best.confidence - runner_score < .08f) return {};
+    best.confidence = best.confidence > 0.f ? std::min(best.confidence, body_confidence) : 0.f;
+    return best;
+}
+}
+
+Analysis analyze(const MeshSnapshot& source, IBodyRegionRecognizer& body, IFaceRegionRecognizer& face,
+                 IBoundaryRefiner* boundary, IPoseRegionRecognizer* pose, const Cancel& cancel,
+                 const Progress& progress, const RenderObserver& observe)
+{
     Analysis result;
     result.geometry_id = source.geometry_id; result.content_id = source.content_id;
     try {
         result.body_identity = body.identity(); result.face_identity = face.identity();
+        result.pose_identity = pose ? pose->identity() : "none";
         result.boundary_identity = boundary ? boundary->identity() : "none";
         result.signature = analysis_cache_key(source, result.body_identity, result.face_identity,
-                                              result.boundary_identity);
+                                              result.boundary_identity, result.pose_identity);
         result.error = validate_snapshot(source);
         if (!result.error.empty()) return result;
         if (result.signature.empty()) { result.error = "Semantic analysis requires complete model and recognizer identities."; return result; }
         const size_t count = source.mesh.indices.size();
         std::vector<std::array<float, label_count>> votes(count);
+        std::vector<std::array<float, macro_region_count>> macro_votes(count);
+        std::vector<std::array<uint8_t, 4>> macro_person_ids(count);
+        std::vector<std::array<float, 4>> macro_person_votes(count);
+        std::vector<float> macro_weights(count, 0.f);
+        for (auto& ids : macro_person_ids) ids.fill(UINT8_MAX);
+        std::array<std::set<uint32_t>, 32> pose_face_support;
+        bool pose_failed = false;
         std::vector<float> weights(count, 0.f), detail_weights(count, 0.f);
         std::vector<std::array<float, face_detail_labels.size()>> detail_votes(count);
         std::vector<std::array<float, face_detail_labels.size()>> peak_detail_confidence(count);
@@ -1072,10 +1192,40 @@ Analysis analyze(const MeshSnapshot& source, IBodyRegionRecognizer& body, IFaceR
             if (!refine_dark_hair_mask(view.image, prediction, cancel)) {
                 result.canceled = true; return result;
             }
+            PosePrediction pose_prediction;
+            const PosePrediction* pose_view = nullptr;
+            if (pose && !pose_failed) {
+                pose_prediction = pose->predict(view.image, cancel);
+                if (pose_prediction.canceled || stopped(cancel)) { result.canceled = true; return result; }
+                if (pose_prediction.valid_for(view.image)) pose_view = &pose_prediction;
+                else {
+                    pose_failed = true;
+                    result.pose_error = pose_prediction.error.empty() ? "Invalid pose landmark result." : pose_prediction.error;
+                }
+            }
             for (size_t pixel = 0; pixel < view.face_ids.size(); ++pixel) {
                 const uint32_t id = view.face_ids[pixel]; if (id == no_face) continue;
                 const float weight = view.facing[id]; weights[id] += weight;
                 votes[id][size_t(prediction.labels[pixel])] += weight * prediction.confidence[pixel];
+                const MacroPixel macro = macro_pixel(float(pixel % size_t(view.image.width)) + .5f,
+                                                     float(pixel / size_t(view.image.width)) + .5f,
+                                                     view.image.width, view.image.height,
+                                                     prediction.labels[pixel], prediction.confidence[pixel], pose_view);
+                if (macro.region != MacroRegion::Unknown && macro.confidence > 0.f) {
+                    const float support = weight * macro.confidence;
+                    macro_votes[id][size_t(macro.region)] += support;
+                    macro_weights[id] += weight;
+                    if (macro.person < 4) {
+                        const uint8_t local_id = uint8_t(view_index * 4 + macro.person);
+                        auto& ids = macro_person_ids[id];
+                        const auto found = std::find(ids.begin(), ids.end(), local_id);
+                        const auto empty = std::find(ids.begin(), ids.end(), UINT8_MAX);
+                        const size_t position = size_t((found != ids.end() ? found : empty) - ids.begin());
+                        if (position < ids.size()) { ids[position] = local_id; macro_person_votes[id][position] += support; }
+                        if (macro.region == MacroRegion::Face && prediction.labels[pixel] == Label::FaceSkin &&
+                            macro.confidence >= .7f) pose_face_support[local_id].insert(id);
+                    }
+                }
             }
             for (size_t id = 0; id < count; ++id) {
                 const float confidence = supported_surface_sample(view, prediction, id, original);
@@ -1238,7 +1388,49 @@ Analysis analyze(const MeshSnapshot& source, IBodyRegionRecognizer& body, IFaceR
             }
         }
         if (stopped(cancel)) { result.canceled = true; return result; }
+        if (pose_failed) {
+            for (auto& votes : macro_votes) votes = {};
+            std::fill(macro_weights.begin(), macro_weights.end(), 0.f);
+            result.pose_identity = "none";
+            result.signature = analysis_cache_key(source, result.body_identity, result.face_identity,
+                                                  result.boundary_identity, result.pose_identity);
+        }
+        std::array<uint8_t, 32> pose_parent, pose_view_mask;
+        for (uint8_t index = 0; index < pose_parent.size(); ++index) {
+            pose_parent[index] = index;
+            pose_view_mask[index] = uint8_t(1u << (index / 4));
+        }
+        const auto root = [&pose_parent](uint8_t index) {
+            while (pose_parent[index] != index) { pose_parent[index] = pose_parent[pose_parent[index]]; index = pose_parent[index]; }
+            return index;
+        };
+        for (uint8_t first = 0; first < pose_face_support.size(); ++first) {
+            if (pose_face_support[first].size() < 3) continue;
+            for (uint8_t second = uint8_t(first + 1); second < pose_face_support.size(); ++second) {
+                if (pose_face_support[second].size() < 3 || first / 4 == second / 4) continue;
+                const uint8_t a = root(first), b = root(second);
+                if (a == b || (pose_view_mask[a] & pose_view_mask[b])) continue;
+                size_t shared = 0;
+                auto lhs = pose_face_support[first].begin(), rhs = pose_face_support[second].begin();
+                while (lhs != pose_face_support[first].end() && rhs != pose_face_support[second].end()) {
+                    if (*lhs < *rhs) ++lhs;
+                    else if (*rhs < *lhs) ++rhs;
+                    else { ++shared; ++lhs; ++rhs; }
+                }
+                const size_t smaller = std::min(pose_face_support[first].size(), pose_face_support[second].size());
+                if (shared < 3 || shared * 50 < smaller) continue;
+                pose_parent[b] = a; pose_view_mask[a] |= pose_view_mask[b];
+            }
+        }
+        std::array<uint32_t, 32> pose_canonical;
+        pose_canonical.fill(UINT32_MAX);
+        for (uint8_t index = 0; index < pose_face_support.size(); ++index)
+            if (!pose_face_support[index].empty())
+                pose_canonical[root(index)] = std::min(pose_canonical[root(index)], *pose_face_support[index].begin());
         result.face_labels.assign(count, Label::Unknown); result.face_confidence.assign(count, 0.f);
+        result.face_macro_regions.assign(count, MacroRegion::Unknown);
+        result.face_person_instances.assign(count, std::numeric_limits<uint32_t>::max());
+        result.face_macro_confidence.assign(count, 0.f);
         for (size_t id = 0; id < count; ++id) {
             if (weights[id] <= 0 && detail_weights[id] <= 0) continue;
             ++result.observed_faces;
@@ -1269,6 +1461,30 @@ Analysis analyze(const MeshSnapshot& source, IBodyRegionRecognizer& body, IFaceR
                 }
             }
             if (paintable(result.face_labels[id]) && result.face_confidence[id] >= minimum_confidence) ++result.reliable_faces;
+            if (macro_weights[id] > 0.f) {
+                const size_t chosen = size_t(std::max_element(macro_votes[id].begin(), macro_votes[id].end()) -
+                                             macro_votes[id].begin());
+                const float confidence = std::clamp(macro_votes[id][chosen] / macro_weights[id], 0.f, 1.f);
+                if (chosen != size_t(MacroRegion::Unknown) && confidence >= .55f) {
+                    result.face_macro_regions[id] = MacroRegion(chosen);
+                    result.face_macro_confidence[id] = confidence;
+                    std::map<uint32_t, float> owners;
+                    for (size_t candidate = 0; candidate < macro_person_ids[id].size(); ++candidate) {
+                        const uint8_t local = macro_person_ids[id][candidate];
+                        if (local == UINT8_MAX) continue;
+                        const uint32_t canonical = pose_canonical[root(local)];
+                        if (canonical != UINT32_MAX) owners[canonical] += macro_person_votes[id][candidate];
+                    }
+                    if (!owners.empty()) {
+                        const auto best = std::max_element(owners.begin(), owners.end(), [](const auto& a, const auto& b) {
+                            return a.second < b.second;
+                        });
+                        float competing = 0.f;
+                        for (const auto& owner : owners) if (owner.first != best->first) competing += owner.second;
+                        if (competing < best->second * .25f) result.face_person_instances[id] = best->first;
+                    }
+                }
+            }
         }
         result.subface_labels.reserve(std::min(leaf_votes.size() + boundary_leaf_votes.size(),
                                                 maximum_subface_evidence));
@@ -1364,6 +1580,28 @@ Analysis analyze(const MeshSnapshot& source, IBodyRegionRecognizer& body, IFaceR
             return lhs.face_id != rhs.face_id ? lhs.face_id < rhs.face_id : lhs.path < rhs.path;
         });
         if (!boundary) result.baseline_subface_labels.clear();
+        const bool has_owned_region = std::any_of(result.face_person_instances.begin(),
+            result.face_person_instances.end(), [](uint32_t owner) { return owner != UINT32_MAX; });
+        if (!pose || pose_failed || !result.person_detected || !has_owned_region) {
+            result.face_macro_regions.clear();
+            result.face_person_instances.clear();
+            result.face_macro_confidence.clear();
+        } else {
+            result.subface_macro_regions.reserve(result.subface_labels.size());
+            for (const auto& leaf : result.subface_labels) {
+                if (leaf.face_id >= count) continue;
+                const uint32_t owner = result.face_person_instances[leaf.face_id];
+                MacroRegion region = result.face_macro_regions[leaf.face_id];
+                if (owner != UINT32_MAX && region != MacroRegion::Unknown) {
+                    if (leaf.label == Label::Hair) region = MacroRegion::Hair;
+                    else if (leaf.label == Label::FaceSkin || leaf.label == Label::EyeSclera ||
+                             leaf.label == Label::Iris || leaf.label == Label::Eyebrow)
+                        region = MacroRegion::Face;
+                }
+                result.subface_macro_regions.push_back({leaf.face_id, leaf.path, region, owner,
+                    std::min(leaf.confidence, result.face_macro_confidence[leaf.face_id])});
+            }
+        }
         if (progress) progress(100, "Model region recognition complete");
     } catch (const std::exception& error) { result.error = error.what(); result.face_labels.clear(); result.face_confidence.clear(); }
     return result;
@@ -1675,6 +1913,16 @@ void assign_spatially_supported_skin_materials(const MeshSnapshot& source, const
                                                MaterialDiscovery& discovery)
 {
     const size_t count = source.mesh.indices.size();
+    if (analysis.face_macro_regions.size() != count ||
+        analysis.face_person_instances.size() != count) return;
+    const auto same_skin_owner = [&](size_t first, size_t second) {
+        const MacroRegion region = analysis.face_macro_regions[first];
+        return region == analysis.face_macro_regions[second] &&
+            (region == MacroRegion::Face || region == MacroRegion::Neck ||
+             region == MacroRegion::LeftArm || region == MacroRegion::RightArm) &&
+            analysis.face_person_instances[first] != UINT32_MAX &&
+            analysis.face_person_instances[first] == analysis.face_person_instances[second];
+    };
     if (count == 0 || source.mesh.vertices.empty() || discovery.entries.empty()) return;
 
     Vec3f lower = source.mesh.vertices.front(), upper = lower;
@@ -1722,6 +1970,7 @@ void assign_spatially_supported_skin_materials(const MeshSnapshot& source, const
         if (material_id < discovery.entries.size()) {
             const Label label = discovery.entries[material_id].label;
             if ((label == Label::FaceSkin || label == Label::BodySkin) &&
+                analysis.face_person_instances[face_id] != UINT32_MAX &&
                 skin_appearance(appearances[face_id]) && normals[face_id].squaredNorm() > 0.f)
                 donor_cells[cell(centers[face_id])].push_back(face_id);
         }
@@ -1744,6 +1993,7 @@ void assign_spatially_supported_skin_materials(const MeshSnapshot& source, const
             if (discovery.face_material[face_id] < discovery.entries.size() ||
                 normals[face_id].squaredNorm() <= 0.f) continue;
             const Label label = effective_labels[face_id];
+            if (analysis.face_person_instances[face_id] == UINT32_MAX) continue;
             const bool semantic_skin = label == Label::FaceSkin || label == Label::BodySkin;
             const bool reliable_skin = semantic_skin && analysis.face_confidence[face_id] >= minimum_confidence;
             // Multi-view voting commonly leaves narrow neck and ear strips below
@@ -1791,6 +2041,7 @@ void assign_spatially_supported_skin_materials(const MeshSnapshot& source, const
                 const size_t material_id = discovery.face_material[neighbor];
                 if (material_id >= discovery.entries.size() || normals[face_id].dot(normals[neighbor]) < .50f)
                     continue;
+                if (!same_skin_owner(face_id, neighbor)) continue;
                 const Label donor_label = discovery.entries[material_id].label;
                 if (donor_label != Label::FaceSkin && donor_label != Label::BodySkin) continue;
                 if (reliable_skin && donor_label != label) continue;
@@ -1827,6 +2078,7 @@ void assign_spatially_supported_skin_materials(const MeshSnapshot& source, const
                             const auto found = donor_cells.find({origin[0] + x, origin[1] + y, origin[2] + z});
                             if (found == donor_cells.end()) continue;
                             for (size_t donor : found->second) {
+                                if (!same_skin_owner(face_id, donor)) continue;
                                 const size_t material_id = discovery.face_material[donor];
                                 if (material_id >= discovery.entries.size() ||
                                     normals[face_id].dot(normals[donor]) < .50f ||
@@ -2040,6 +2292,16 @@ std::shared_ptr<const MaterialDiscovery> discover_materials(const MeshSnapshot& 
     const auto topology_label = [](Label label) {
         return label == Label::Eyebrow ? Label::FaceSkin : label;
     };
+    const bool have_macro = analysis.face_macro_regions.size() == count &&
+        analysis.face_person_instances.size() == count;
+    const auto same_macro_owner = [&](size_t first_face, size_t second_face) {
+        if (!have_macro) return true;
+        if (analysis.face_person_instances[first_face] == UINT32_MAX ||
+            analysis.face_person_instances[second_face] == UINT32_MAX)
+            return true; // Unknown surfaces keep their C1 connected material center.
+        return analysis.face_macro_regions[first_face] == analysis.face_macro_regions[second_face] &&
+            analysis.face_person_instances[first_face] == analysis.face_person_instances[second_face];
+    };
     // Connected semantic regions share prototypes, but never share centers with
     // a different material label. Reuse of one physical filament is permitted.
     std::vector<size_t> parent(count); std::iota(parent.begin(), parent.end(), 0);
@@ -2053,8 +2315,13 @@ std::shared_ptr<const MaterialDiscovery> discover_materials(const MeshSnapshot& 
             if (size_t(topology_label(effective_labels[id])) != label || analysis.face_confidence[id] < minimum_confidence) continue;
             for (int corner = 0; corner < 3; ++corner) {
                 const int vertex = source.mesh.indices[id][corner];
-                if (first[vertex] == count) first[vertex] = id;
-                else { const size_t a = root(first[vertex]), b = root(id); if (a != b) parent[b] = a; }
+                for (size_t neighbor : semantic_faces_at_vertex[vertex]) {
+                    if (neighbor >= id || size_t(topology_label(effective_labels[neighbor])) != label ||
+                        analysis.face_confidence[neighbor] < minimum_confidence ||
+                        !same_macro_owner(neighbor, id)) continue;
+                    const size_t a = root(neighbor), b = root(id);
+                    if (a != b) parent[std::max(a, b)] = std::min(a, b);
+                }
             }
         }
     }
@@ -2080,7 +2347,13 @@ std::shared_ptr<const MaterialDiscovery> discover_materials(const MeshSnapshot& 
         }
         auto centers = prototypes(samples, skin || eye || eyebrow || label == Label::Lips || label == Label::MouthInterior ? 1 : 6);
         const size_t ordinary_center_count = centers.size();
-        if (skin) {
+        const bool owned_skin_region = have_macro &&
+            (analysis.face_macro_regions[region.second.front()] == MacroRegion::Face ||
+             analysis.face_macro_regions[region.second.front()] == MacroRegion::Neck ||
+             analysis.face_macro_regions[region.second.front()] == MacroRegion::LeftArm ||
+             analysis.face_macro_regions[region.second.front()] == MacroRegion::RightArm) &&
+            analysis.face_person_instances[region.second.front()] != UINT32_MAX;
+        if (skin && !owned_skin_region) {
             // Preserve genuinely neutral teeth/cloth accidentally included in
             // the coarse skin mask, using stable supported neutral centers.
             std::vector<Sample> neutral_samples;
@@ -2126,7 +2399,13 @@ std::shared_ptr<const MaterialDiscovery> discover_materials(const MeshSnapshot& 
                 nearest = ordinary_center_count;
                 for (size_t center = ordinary_center_count + 1; center < centers.size(); ++center)
                     if (distance(original, centers[center]) < distance(original, centers[nearest])) nearest = center;
-            } else if (skin && !compatible_skin(original, centers.front(), label)) continue;
+            } else if (skin && !compatible_skin(original, centers.front(), label)) {
+                const bool neutral_shade = owned_skin_region && original[0] >= centers.front()[0] - .25f &&
+                    original[0] <= centers.front()[0] + .08f && chroma(original) <= .045f &&
+                    std::hypot(original[1] - centers.front()[1], original[2] - centers.front()[2]) <= .055f;
+                if (!neutral_shade) continue;
+                nearest = 0;
+            }
             assign_material(region.second[i], nearest);
         }
     }
@@ -2370,7 +2649,8 @@ static FaceColors map_palette_impl(const MeshSnapshot& source, const Analysis& a
     if (!analysis.person_detected || analysis.canceled || !analysis.error.empty() || palette.empty() || palette.size() > 6 ||
         analysis.geometry_id != source.geometry_id || analysis.content_id != source.content_id ||
         analysis.signature != analysis_cache_key(source, analysis.body_identity, analysis.face_identity,
-                                                  analysis.boundary_identity) ||
+                                                 analysis.boundary_identity,
+                                                 analysis.pose_identity.empty() ? "none" : analysis.pose_identity) ||
         analysis.face_labels.size() != count || analysis.face_confidence.size() != count || !validate_snapshot(source).empty()) return {};
     for (const auto& color : palette) if (!valid_color(color)) return {};
     for (size_t id = 0; id < count; ++id)
@@ -2652,7 +2932,8 @@ bool map_subface_palette(const MeshSnapshot& source, const Analysis& analysis, c
     if (!analysis.person_detected || analysis.canceled || !analysis.error.empty() ||
         analysis.geometry_id != source.geometry_id || analysis.content_id != source.content_id ||
         analysis.signature != analysis_cache_key(source, analysis.body_identity, analysis.face_identity,
-                                                  analysis.boundary_identity) ||
+                                                 analysis.boundary_identity,
+                                                 analysis.pose_identity.empty() ? "none" : analysis.pose_identity) ||
         analysis.face_labels.size() != count || analysis.face_confidence.size() != count ||
         palette.empty() || palette.size() > 6 || !validate_snapshot(source).empty()) {
         error = "Semantic subface mapping requires current model recognition evidence.";
@@ -3397,11 +3678,51 @@ nlohmann::json encode_analysis(const Analysis& analysis)
     nlohmann::json document = {{"schema", pipeline_version}, {"signature", analysis.signature},
         {"geometry_id", analysis.geometry_id}, {"content_id", analysis.content_id},
         {"body_identity", analysis.body_identity}, {"face_identity", analysis.face_identity},
+        {"pose_identity", analysis.pose_identity.empty() ? "none" : analysis.pose_identity},
         {"boundary_identity", analysis.boundary_identity},
         {"face_count", analysis.face_labels.size()}, {"labels", labels}, {"confidence_f32", confidence},
         {"subfaces", std::move(subfaces)},
         {"person_detected", analysis.person_detected}, {"rendered_views", analysis.rendered_views},
         {"face_views", analysis.face_views}, {"observed_faces", analysis.observed_faces}};
+    if (!analysis.face_macro_regions.empty() || !analysis.face_person_instances.empty() ||
+        !analysis.face_macro_confidence.empty()) {
+        const size_t count = analysis.face_labels.size();
+        if (analysis.face_macro_regions.size() != count || analysis.face_person_instances.size() != count ||
+            analysis.face_macro_confidence.size() != count)
+            throw std::invalid_argument("Incomplete macro region ownership.");
+        std::string regions, owners, strengths;
+        regions.reserve(count); owners.reserve(count * 8); strengths.reserve(count * 8);
+        const auto append_u32 = [&](std::string& output, uint32_t value) {
+            for (int nibble = 0; nibble < 8; ++nibble) output += hex[(value >> (nibble * 4)) & 15];
+        };
+        for (size_t id = 0; id < count; ++id) {
+            const float strength = analysis.face_macro_confidence[id];
+            if (size_t(analysis.face_macro_regions[id]) >= macro_region_count ||
+                !std::isfinite(strength) || strength < 0.f || strength > 1.f)
+                throw std::invalid_argument("Invalid macro region ownership.");
+            regions += hex[size_t(analysis.face_macro_regions[id])];
+            append_u32(owners, analysis.face_person_instances[id]);
+            uint32_t bits; std::memcpy(&bits, &strength, sizeof(bits));
+            append_u32(strengths, bits);
+        }
+        document["macro_regions"] = std::move(regions);
+        document["macro_owners_u32"] = std::move(owners);
+        document["macro_confidence_f32"] = std::move(strengths);
+        if (analysis.subface_macro_regions.size() != analysis.subface_labels.size())
+            throw std::invalid_argument("Incomplete subface macro ownership.");
+        nlohmann::json leaves = nlohmann::json::array();
+        for (size_t index = 0; index < analysis.subface_macro_regions.size(); ++index) {
+            const auto& item = analysis.subface_macro_regions[index];
+            const auto& label = analysis.subface_labels[index];
+            if (item.face_id != label.face_id || !(item.path == label.path) ||
+                size_t(item.region) >= macro_region_count ||
+                !std::isfinite(item.confidence) || item.confidence < 0.f || item.confidence > 1.f)
+                throw std::invalid_argument("Invalid subface macro ownership.");
+            leaves.push_back({item.face_id, item.path.depth, item.path.value, size_t(item.region),
+                              item.person_instance, item.confidence});
+        }
+        document["subface_macro_regions"] = std::move(leaves);
+    }
     document["boundary_runs"] = nlohmann::json::array();
     for (const auto& run : analysis.boundary_runs) {
         if (run.view_id < 0 || run.view_id >= 8 || size_t(run.part) > size_t(BoundaryPart::ClothesSkin) ||
@@ -3417,6 +3738,14 @@ nlohmann::json encode_analysis(const Analysis& analysis)
     if (!analysis.baseline_subface_labels.empty() || !analysis.baseline_face_labels.empty()) {
         Analysis baseline = analysis;
         baseline.subface_labels = analysis.baseline_subface_labels;
+        baseline.subface_macro_regions.clear();
+        if (!baseline.face_macro_regions.empty()) {
+            for (const auto& leaf : baseline.subface_labels) {
+                const size_t id = leaf.face_id;
+                baseline.subface_macro_regions.push_back({id, leaf.path, baseline.face_macro_regions[id],
+                    baseline.face_person_instances[id], baseline.face_macro_confidence[id]});
+            }
+        }
         baseline.baseline_subface_labels.clear();
         baseline.baseline_face_labels.clear(); baseline.baseline_face_confidence.clear();
         if (!analysis.baseline_face_labels.empty()) {
@@ -3428,6 +3757,8 @@ nlohmann::json encode_analysis(const Analysis& analysis)
         }
         const auto encoded=encode_analysis(baseline);
         document["baseline_subfaces"] = encoded.at("subfaces");
+        if (encoded.contains("subface_macro_regions"))
+            document["baseline_subface_macro_regions"] = encoded.at("subface_macro_regions");
         if (!analysis.baseline_face_labels.empty()) {
             document["baseline_labels"] = encoded.at("labels");
             document["baseline_confidence_f32"] = encoded.at("confidence_f32");
@@ -3446,14 +3777,22 @@ bool decode_analysis(const nlohmann::json& doc, const MeshSnapshot& source, cons
                      const std::string& face, const std::string& boundary,
                      Analysis& output, std::string& error)
 {
+    return decode_analysis(doc, source, body, face, boundary, "none", output, error);
+}
+
+bool decode_analysis(const nlohmann::json& doc, const MeshSnapshot& source, const std::string& body,
+                     const std::string& face, const std::string& boundary, const std::string& pose,
+                     Analysis& output, std::string& error)
+{
     error.clear();
     try {
         const size_t count = source.mesh.indices.size();
-        const auto signature = analysis_cache_key(source, body, face, boundary);
+        const auto signature = analysis_cache_key(source, body, face, boundary, pose);
         if (signature.empty() || count == 0 || count > maximum_faces || !doc.is_object() ||
             doc.at("schema") != pipeline_version || doc.at("signature") != signature ||
             doc.at("geometry_id") != source.geometry_id || doc.at("content_id") != source.content_id ||
             doc.at("body_identity") != body || doc.at("face_identity") != face ||
+            doc.value("pose_identity", std::string("none")) != pose ||
             doc.at("boundary_identity") != boundary ||
             !doc.at("face_count").is_number_unsigned() || doc.at("face_count").get<size_t>() != count)
             throw std::invalid_argument("The cached semantic analysis belongs to another model or recognizer version.");
@@ -3464,6 +3803,7 @@ bool decode_analysis(const nlohmann::json& doc, const MeshSnapshot& source, cons
         Analysis restored;
         restored.geometry_id = source.geometry_id; restored.content_id = source.content_id;
         restored.body_identity = body; restored.face_identity = face; restored.boundary_identity = boundary;
+        restored.pose_identity = pose;
         restored.signature = signature;
         restored.person_detected = doc.at("person_detected").get<bool>();
         restored.rendered_views = doc.at("rendered_views").get<size_t>();
@@ -3515,6 +3855,39 @@ bool decode_analysis(const nlohmann::json& doc, const MeshSnapshot& source, cons
             restored.face_confidence.push_back(value);
             if (paintable(Label(label)) && restored.face_confidence.back() >= minimum_confidence) ++restored.reliable_faces;
         }
+        if (doc.contains("macro_regions")) {
+            const auto& regions = doc.at("macro_regions").get_ref<const std::string&>();
+            const auto& owners = doc.at("macro_owners_u32").get_ref<const std::string&>();
+            const auto& strengths = doc.at("macro_confidence_f32").get_ref<const std::string&>();
+            if (regions.size() != count || owners.size() != count * 8 || strengths.size() != count * 8)
+                throw std::invalid_argument("The cached macro region size is invalid.");
+            const auto read_u32 = [&](const std::string& data, size_t index) {
+                uint32_t bits = 0;
+                for (int nibble = 0; nibble < 8; ++nibble) {
+                    const int digit = unhex(data[index * 8 + nibble]);
+                    if (digit < 0) throw std::invalid_argument("Invalid cached macro region value.");
+                    bits |= uint32_t(digit) << (nibble * 4);
+                }
+                return bits;
+            };
+            restored.face_macro_regions.reserve(count);
+            restored.face_person_instances.reserve(count);
+            restored.face_macro_confidence.reserve(count);
+            for (size_t id = 0; id < count; ++id) {
+                const int label = unhex(regions[id]);
+                const uint32_t owner = read_u32(owners, id);
+                const uint32_t bits = read_u32(strengths, id);
+                float strength; std::memcpy(&strength, &bits, sizeof(strength));
+                if (label < 0 || label >= int(macro_region_count) || !std::isfinite(strength) ||
+                    strength < 0.f || strength > 1.f || (label == 0 && owner != UINT32_MAX))
+                    throw std::invalid_argument("Invalid cached macro region ownership.");
+                restored.face_macro_regions.push_back(MacroRegion(label));
+                restored.face_person_instances.push_back(owner);
+                restored.face_macro_confidence.push_back(strength);
+            }
+        } else if (pose != "none" && restored.person_detected) {
+            throw std::invalid_argument("The cached pose region ownership is missing.");
+        }
         const auto& subfaces = doc.at("subfaces");
         if (!subfaces.is_array() || subfaces.size() > maximum_subface_evidence)
             throw std::invalid_argument("The cached semantic subface evidence is invalid.");
@@ -3555,19 +3928,41 @@ bool decode_analysis(const nlohmann::json& doc, const MeshSnapshot& source, cons
             previous_key = key;
             has_previous = true;
         }
+        if (!restored.face_macro_regions.empty()) {
+            const auto& leaves = doc.at("subface_macro_regions");
+            if (!leaves.is_array() || leaves.size() != restored.subface_labels.size())
+                throw std::invalid_argument("The cached subface macro ownership size is invalid.");
+            restored.subface_macro_regions.reserve(leaves.size());
+            for (size_t index = 0; index < leaves.size(); ++index) {
+                const auto& entry = leaves[index];
+                const auto& label = restored.subface_labels[index];
+                if (!entry.is_array() || entry.size() != 6 || entry[0].get<size_t>() != label.face_id ||
+                    entry[1].get<size_t>() != label.path.depth || entry[2].get<size_t>() != label.path.value ||
+                    entry[3].get<size_t>() >= macro_region_count)
+                    throw std::invalid_argument("Invalid cached subface macro ownership.");
+                const float confidence = entry[5].get<float>();
+                if (!std::isfinite(confidence) || confidence < 0.f || confidence > 1.f)
+                    throw std::invalid_argument("Invalid cached subface macro confidence.");
+                restored.subface_macro_regions.push_back({label.face_id, label.path,
+                    MacroRegion(entry[3].get<size_t>()), entry[4].get<uint32_t>(), confidence});
+            }
+        }
         if (doc.contains("baseline_subfaces") || doc.contains("baseline_labels") || doc.contains("baseline_confidence_f32")) {
             auto baseline_document = doc;
             baseline_document["subfaces"] = doc.value("baseline_subfaces", nlohmann::json::array());
+            if (doc.contains("baseline_subface_macro_regions"))
+                baseline_document["subface_macro_regions"] = doc.at("baseline_subface_macro_regions");
             if (doc.contains("baseline_labels") || doc.contains("baseline_confidence_f32")) {
                 baseline_document["labels"] = doc.at("baseline_labels");
                 baseline_document["confidence_f32"] = doc.at("baseline_confidence_f32");
             }
             baseline_document.erase("baseline_subfaces");
+            baseline_document.erase("baseline_subface_macro_regions");
             baseline_document.erase("baseline_labels");
             baseline_document.erase("baseline_confidence_f32");
             Analysis baseline;
             std::string baseline_error;
-            if (!decode_analysis(baseline_document, source, body, face, boundary, baseline, baseline_error))
+            if (!decode_analysis(baseline_document, source, body, face, boundary, pose, baseline, baseline_error))
                 throw std::invalid_argument("Invalid baseline semantic evidence: " + baseline_error);
             restored.baseline_subface_labels=std::move(baseline.subface_labels);
             if (doc.contains("baseline_labels")) {

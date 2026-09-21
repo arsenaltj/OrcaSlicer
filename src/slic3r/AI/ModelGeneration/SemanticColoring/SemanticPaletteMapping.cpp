@@ -252,7 +252,9 @@ bool map_palette_slots(const MeshSnapshot& source, const Analysis& analysis, con
     if (!enabled_slots(slots, active, error)) return false;
     if (analysis.canceled || !analysis.error.empty() || analysis.geometry_id != source.geometry_id ||
         analysis.content_id != source.content_id || analysis.signature != analysis_cache_key(source,
-            analysis.body_identity, analysis.face_identity, analysis.boundary_identity) ||
+            analysis.body_identity, analysis.face_identity,
+            analysis.boundary_identity.empty() ? "none" : analysis.boundary_identity,
+            analysis.pose_identity.empty() ? "none" : analysis.pose_identity) ||
         analysis.face_labels.size() != source.mesh.indices.size() ||
         analysis.face_confidence.size() != source.mesh.indices.size()) {
         error = "Palette mapping requires current recognition evidence."; return false;
@@ -336,18 +338,20 @@ bool map_palette_slots(const MeshSnapshot& source, const Analysis& analysis, con
             return label == Label::EyeSclera || label == Label::Iris || label == Label::Eyebrow ||
                    label == Label::Lips || label == Label::MouthInterior;
         };
+        FaceColors missing_roots;
         for (size_t face_id = 0; face_id < baseline.face_labels.size(); ++face_id) {
             const Label label = baseline.face_labels[face_id];
             if (!protected_detail(label)) continue;
             const auto decision = decide_region_palette(face_oklab(source, face_id), label, palette, card);
             const size_t selected = decision.selected_index;
             if (selected == palette.size()) continue;
-            const auto current = std::find_if(mapped.faces.begin(), mapped.faces.end(),
-                [&](const auto& item) { return item.first == face_id; });
+            const auto current = std::lower_bound(mapped.faces.begin(), mapped.faces.end(), face_id,
+                [](const auto& item, size_t id) { return item.first < id; });
             const std::pair<size_t, Color> safe {face_id, palette[selected]};
-            if (current == mapped.faces.end()) mapped.faces.push_back(safe);
+            if (current == mapped.faces.end() || current->first != face_id) missing_roots.push_back(safe);
             else current->second = safe.second;
         }
+        mapped.faces.insert(mapped.faces.end(), missing_roots.begin(), missing_roots.end());
         std::sort(mapped.faces.begin(), mapped.faces.end(),
                   [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
     }
@@ -387,10 +391,9 @@ bool map_palette_slots(const MeshSnapshot& source, const Analysis& analysis, con
             const FaceColors safe_roots = map_palette(source, baseline, palette, card);
             for (auto& face : mapped.faces) {
                 if (!rejected_upgrade_faces.count(face.first)) continue;
-                const auto safe = std::find_if(safe_roots.begin(), safe_roots.end(), [&](const auto& item) {
-                    return item.first == face.first;
-                });
-                if (safe != safe_roots.end()) face.second = safe->second;
+                const auto safe = std::lower_bound(safe_roots.begin(), safe_roots.end(), face.first,
+                    [](const auto& item, size_t id) { return item.first < id; });
+                if (safe != safe_roots.end() && safe->first == face.first) face.second = safe->second;
             }
         }
         mapped.boundary_budget_fallback = true;
@@ -437,15 +440,17 @@ bool map_palette_slots(const MeshSnapshot& source, const Analysis& analysis, con
     }
     std::set<std::string> described_regions;
     for (const auto& resolved : mapped.resolved_regions) described_regions.insert(resolved.region_id);
+    std::map<std::string, size_t> first_face_by_region;
+    for (size_t index = 0; index < mapped.face_slots.size(); ++index)
+        first_face_by_region.emplace(mapped.face_slots[index].region_id, index);
     for (const auto& center : mapped.material_centers) {
         if (center.region_id.empty() || described_regions.count(center.region_id)) continue;
-        const auto assignment = std::find_if(mapped.face_slots.begin(), mapped.face_slots.end(), [&](const auto& face) {
-            return face.region_id == center.region_id;
-        });
-        if (assignment == mapped.face_slots.end()) continue;
+        const auto assignment = first_face_by_region.find(center.region_id);
+        if (assignment == first_face_by_region.end()) continue;
+        const auto& face = mapped.face_slots[assignment->second];
         const auto decision = decide_region_palette(center.original_oklab, center.label, palette, card);
-        mapped.resolved_regions.push_back({center.region_id, assignment->intended_slot_id, assignment->slot_id,
-            assignment->intended_color, decision.ambiguous ? RegionResolutionStatus::Ambiguous :
+        mapped.resolved_regions.push_back({center.region_id, face.intended_slot_id, face.slot_id,
+            face.intended_color, decision.ambiguous ? RegionResolutionStatus::Ambiguous :
                                                             RegionResolutionStatus::Automatic});
         described_regions.insert(center.region_id);
     }

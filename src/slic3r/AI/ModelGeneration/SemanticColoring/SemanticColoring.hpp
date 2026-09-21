@@ -65,7 +65,7 @@ enum class Label : uint8_t {
 inline constexpr size_t label_count = 12;
 inline constexpr float minimum_confidence = .70f;
 // Version of stored recognition evidence; palette-mapping edits do not invalidate it.
-inline constexpr const char* pipeline_version = "orca.semantic-coloring/v24-cross-face-contour-projection";
+inline constexpr const char* pipeline_version = "orca.semantic-coloring/v26-macro-owned-fallback";
 
 struct SubfaceLabelEvidence {
     size_t face_id {0};
@@ -113,6 +113,21 @@ struct Prediction {
     std::vector<FaceRegionHint> regions;
     bool valid_for(const RGBImage& image) const;
 };
+struct PoseLandmark {
+    float x {-1.f}, y {-1.f}, z {0.f};
+    float visibility {0.f}, presence {0.f};
+    bool has_visibility {false}, has_presence {false};
+};
+struct PosePerson {
+    std::vector<PoseLandmark> landmarks;
+};
+struct PosePrediction {
+    std::vector<PosePerson> persons;
+    bool person_detected {false};
+    bool canceled {false};
+    std::string error;
+    bool valid_for(const RGBImage&) const;
+};
 class IBodyRegionRecognizer {
 public:
     virtual ~IBodyRegionRecognizer() = default;
@@ -125,6 +140,12 @@ public:
     virtual ~IFaceRegionRecognizer() = default;
     virtual std::string identity() const = 0;
     virtual Prediction predict(const RGBImage&, const Cancel&) = 0;
+};
+class IPoseRegionRecognizer {
+public:
+    virtual ~IPoseRegionRecognizer() = default;
+    virtual std::string identity() const = 0;
+    virtual PosePrediction predict(const RGBImage&, const Cancel&) = 0;
 };
 
 struct BoundaryRegion {
@@ -201,7 +222,7 @@ struct MeshSnapshot {
 std::string content_fingerprint(const MeshSnapshot&);
 
 struct Analysis {
-    std::string geometry_id, content_id, body_identity, face_identity, boundary_identity {"none"}, signature;
+    std::string geometry_id, content_id, body_identity, face_identity, pose_identity, boundary_identity {"none"}, signature;
     std::vector<Label> face_labels;
     std::vector<float> face_confidence;
     std::vector<Label> baseline_face_labels;
@@ -210,10 +231,23 @@ struct Analysis {
     // Frozen depth-two evidence before optional boundary refinement. Budget
     // failures must retain this verified tree instead of evicting safe leaves.
     std::vector<SubfaceLabelEvidence> baseline_subface_labels;
+    enum class MacroRegion : uint8_t { Unknown, Face, Neck, LeftArm, RightArm, TorsoClothes, Hair, Accessory };
+    struct SubfaceMacroEvidence {
+        size_t face_id {0};
+        SubfacePath path;
+        MacroRegion region {MacroRegion::Unknown};
+        uint32_t person_instance {UINT32_MAX};
+        float confidence {0.f};
+    };
+    std::vector<MacroRegion> face_macro_regions;
+    std::vector<uint32_t> face_person_instances;
+    std::vector<float> face_macro_confidence;
+    std::vector<SubfaceMacroEvidence> subface_macro_regions;
     bool person_detected {false};
     bool canceled {false};
     size_t rendered_views {0}, face_views {0}, observed_faces {0}, reliable_faces {0};
     std::string error;
+    std::string pose_error;
     std::vector<BoundaryRunDiagnostic> boundary_runs;
 };
 
@@ -257,6 +291,8 @@ using RenderObserver = std::function<void(const RenderedView&, int view_index,
                                          const ViewRegion&, bool face_crop)>;
 Analysis analyze(const MeshSnapshot&, IBodyRegionRecognizer&, IFaceRegionRecognizer&,
                  IBoundaryRefiner*, const Cancel&, const Progress&, const RenderObserver&);
+Analysis analyze(const MeshSnapshot&, IBodyRegionRecognizer&, IFaceRegionRecognizer&,
+                 IBoundaryRefiner*, IPoseRegionRecognizer*, const Cancel&, const Progress&, const RenderObserver&);
 
 // portrait_card, when present, is ordered skin/dark/light/lips/cool/mid. Its
 // role colors must exist in palette. All outputs are exact members of palette;
@@ -353,11 +389,17 @@ std::string analysis_cache_key(const MeshSnapshot&, const std::string& body_iden
                                const std::string& face_identity);
 std::string analysis_cache_key(const MeshSnapshot&, const std::string& body_identity,
                                const std::string& face_identity, const std::string& boundary_identity);
+std::string analysis_cache_key(const MeshSnapshot&, const std::string& body_identity,
+                               const std::string& face_identity, const std::string& boundary_identity,
+                               const std::string& pose_identity);
 nlohmann::json encode_analysis(const Analysis&);
 bool decode_analysis(const nlohmann::json&, const MeshSnapshot&, const std::string& body_identity,
                      const std::string& face_identity, Analysis&, std::string& error);
 bool decode_analysis(const nlohmann::json&, const MeshSnapshot&, const std::string& body_identity,
                      const std::string& face_identity, const std::string& boundary_identity,
                      Analysis&, std::string& error);
+bool decode_analysis(const nlohmann::json&, const MeshSnapshot&, const std::string& body_identity,
+                     const std::string& face_identity, const std::string& boundary_identity,
+                     const std::string& pose_identity, Analysis&, std::string& error);
 
 } // namespace Slic3r::AI::SemanticColoring

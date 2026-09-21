@@ -38,6 +38,7 @@ function Assert-SemanticRuntime([string]$Path) {
     $semanticProviders = Get-Content -LiteralPath (Join-Path $Path 'providers.json') -Raw | ConvertFrom-Json
     if ([string]::IsNullOrWhiteSpace($semanticProviders.body_provider) -or
         [string]::IsNullOrWhiteSpace($semanticProviders.face_provider) -or
+        [string]::IsNullOrWhiteSpace($semanticProviders.pose_provider) -or
         [string]::IsNullOrWhiteSpace($semanticProviders.boundary_provider)) {
         throw 'Body, face, and boundary provider ids are required'
     }

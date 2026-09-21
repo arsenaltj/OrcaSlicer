@@ -416,7 +416,7 @@ TEST_CASE("A skin-colored component at a strong clothing boundary keeps its assi
     CHECK(fixture.paint==before);
 }
 
-TEST_CASE("A disconnected unknown skin fragment needs two nearby compatible skin donors",
+TEST_CASE("Disconnected unknown skin is not claimed by nearby donors without anatomical ownership",
           "[SemanticMaterialRegions][Regression][FaceSkin]")
 {
     const Color skin {.7373f,.4824f,.4065f}, shadow {.60f,.34f,.27f};
@@ -437,12 +437,12 @@ TEST_CASE("A disconnected unknown skin fragment needs two nearby compatible skin
             if (donor_count==2) place_near(donor_b,0.f,.001f);
             else fixture.set(donor_b,skin,Label::Unknown,0.f,gray);
             refine_material_patches(fixture.source,fixture.analysis,{dark,white,gray,red,skin},{},fixture.paint);
-            CHECK(fixture.paint[fragment].second==(donor_count==2?skin:gray));
+            CHECK(fixture.paint[fragment].second==gray);
         }
     }
 }
 
-TEST_CASE("Nearby clothing and opposing surfaces veto spatial unknown-skin recovery",
+TEST_CASE("Nearby clothing and opposing surfaces cannot authorize spatial unknown-skin recovery",
           "[SemanticMaterialRegions][Regression][FaceSkin]")
 {
     const Color skin {.7373f,.4824f,.4065f}, shadow {.60f,.34f,.27f};
@@ -467,7 +467,7 @@ TEST_CASE("Nearby clothing and opposing surfaces veto spatial unknown-skin recov
                 for (size_t donor : {donor_a,donor_b})
                     std::swap(fixture.source.mesh.indices[donor][0],fixture.source.mesh.indices[donor][1]);
             refine_material_patches(fixture.source,fixture.analysis,{dark,white,gray,red,skin},{},fixture.paint);
-            CHECK(fixture.paint[fragment].second==((clothing||opposed)?gray:skin));
+            CHECK(fixture.paint[fragment].second==gray);
         }
     }
 }

@@ -23,6 +23,7 @@
 #define MP_EXPORT
 #include "mediapipe/tasks/c/vision/image_segmenter/image_segmenter.h"
 #include "mediapipe/tasks/c/vision/face_landmarker/face_landmarker.h"
+#include "mediapipe/tasks/c/vision/pose_landmarker/pose_landmarker.h"
 #undef MP_EXPORT
 #endif
 
@@ -32,6 +33,7 @@ constexpr const char* provider_id = "mediapipe.cpu.v1";
 constexpr const char* dll_hash = "a8970c645c8c87c25ec9965cb5c898e803c6c42f7192b7de9a0541c62ae48cef";
 constexpr const char* body_hash = "c6748b1253a99067ef71f7e26ca71096cd449baefa8f101900ea23016507e0e0";
 constexpr const char* face_hash = "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff";
+constexpr const char* pose_hash = "59929e1d1ee95287735ddd833b19cf4ac46d29bc7afddbbf6753c459690d574a";
 bool canceled(const Cancel& cancel) { return cancel && cancel(); }
 Prediction empty_prediction(const RGBImage& image)
 {
@@ -50,6 +52,15 @@ public:
     std::string identity() const override { return m_id + "/unavailable"; }
     Prediction predict(const RGBImage& image, const Cancel& cancel) override {
         auto out = empty_prediction(image); out.error = m_error; out.canceled = canceled(cancel); return out;
+    }
+};
+class UnavailablePose final : public IPoseRegionRecognizer {
+    std::string m_id, m_error;
+public:
+    UnavailablePose(std::string id, std::string error) : m_id(std::move(id)), m_error(std::move(error)) {}
+    std::string identity() const override { return m_id + "/unavailable"; }
+    PosePrediction predict(const RGBImage&, const Cancel& cancel) override {
+        PosePrediction out; out.error = m_error; out.canceled = canceled(cancel); return out;
     }
 };
 struct Point { float x, y; };
@@ -126,7 +137,8 @@ std::vector<char> verified_file(const std::filesystem::path& path, const char* e
     X(MpErrorFree) X(MpImageCreateFromUint8Data) X(MpImageFree) X(MpImageGetWidth) X(MpImageGetHeight) \
     X(MpImageDataFloat32) X(MpImageSegmenterCreate) X(MpImageSegmenterSegmentImage) \
     X(MpImageSegmenterCloseResult) X(MpImageSegmenterClose) X(MpFaceLandmarkerCreate) \
-    X(MpFaceLandmarkerDetectImage) X(MpFaceLandmarkerCloseResult) X(MpFaceLandmarkerClose)
+    X(MpFaceLandmarkerDetectImage) X(MpFaceLandmarkerCloseResult) X(MpFaceLandmarkerClose) \
+    X(MpPoseLandmarkerCreate) X(MpPoseLandmarkerDetectImage) X(MpPoseLandmarkerCloseResult) X(MpPoseLandmarkerClose)
 class NativeApi {
     HMODULE m_dll = nullptr;
 public:
@@ -279,21 +291,95 @@ public:
         return out;
     }
 };
+
+class PoseRecognizer final : public IPoseRegionRecognizer {
+    std::filesystem::path m_root;
+    std::shared_ptr<NativeApi> m_api;
+    std::vector<char> m_model;
+    MpPoseLandmarkerPtr m_task = nullptr;
+    std::mutex m_mutex;
+public:
+    explicit PoseRecognizer(std::filesystem::path root) : m_root(std::move(root)) {}
+    ~PoseRecognizer() {
+        if (m_task) { char* error = nullptr; m_api->MpPoseLandmarkerClose(m_task, &error); m_api->discard_error(error); }
+    }
+    std::string identity() const override {
+        return std::string(provider_id) + "/1.0.0/" + dll_hash + "/" + pose_hash + "/pose-lite-v1/rgb8-image-v1";
+    }
+    PosePrediction predict(const RGBImage& image, const Cancel& cancel) override {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        PosePrediction out;
+        if (!image.valid()) { out.error = "Invalid pose recognition image."; return out; }
+        if (canceled(cancel)) { out.canceled = true; return out; }
+        try {
+            if (!m_task) {
+                m_api = native_api(m_root);
+                m_model = verified_file(m_root / "pose_landmarker_lite.task", pose_hash);
+                MpPoseLandmarkerOptions options {};
+                options.base_options = base_options(m_model);
+                options.running_mode = MP_RUNNING_MODE_IMAGE;
+                options.num_poses = 4;
+                options.min_pose_detection_confidence = .55f;
+                options.min_pose_presence_confidence = .55f;
+                options.min_tracking_confidence = .50f;
+                options.output_segmentation_masks = false;
+                options.result_callback = nullptr;
+                char* error = nullptr;
+                const auto status = m_api->MpPoseLandmarkerCreate(&options, &m_task, &error);
+                m_api->check(status, error);
+            }
+            if (canceled(cancel)) { out.canceled = true; return out; }
+            MpImagePtr input = nullptr; char* error = nullptr;
+            auto status = m_api->MpImageCreateFromUint8Data(kMpImageFormatSrgb, image.width, image.height,
+                                                            image.pixels.data(), int(image.pixels.size()), &input, &error);
+            m_api->check(status, error);
+            ScopeExit close_image {[&] { m_api->MpImageFree(input); }};
+            MpPoseLandmarkerResult result {};
+            ScopeExit close_result {[&] { m_api->MpPoseLandmarkerCloseResult(&result); }};
+            error = nullptr;
+            status = m_api->MpPoseLandmarkerDetectImage(m_task, input, nullptr, &result, &error);
+            m_api->check(status, error);
+            if (result.pose_landmarks_count > 4 ||
+                (result.pose_landmarks_count && !result.pose_landmarks))
+                throw std::runtime_error("Unexpected pose landmark result count.");
+            out.persons.reserve(result.pose_landmarks_count);
+            for (uint32_t person = 0; person < result.pose_landmarks_count; ++person) {
+                const auto& source = result.pose_landmarks[person];
+                if (!source.landmarks || source.landmarks_count < 33)
+                    throw std::runtime_error("Unexpected pose landmark layout.");
+                auto& target = out.persons.emplace_back();
+                target.landmarks.reserve(source.landmarks_count);
+                for (uint32_t index = 0; index < source.landmarks_count; ++index) {
+                    const auto& point = source.landmarks[index];
+                    target.landmarks.push_back({point.x, point.y, point.z, point.visibility, point.presence,
+                                                point.has_visibility, point.has_presence});
+                }
+            }
+            out.person_detected = !out.persons.empty();
+        } catch (const std::exception& error) {
+            out = {}; out.error = error.what();
+        }
+        return out;
+    }
+};
 #endif
 
 struct Registry {
     std::mutex mutex;
     std::map<std::string, BodyRecognizerFactory> bodies;
     std::map<std::string, FaceRecognizerFactory> faces;
+    std::map<std::string, PoseRecognizerFactory> poses;
     std::map<std::string, BoundaryRefinerFactory> boundaries;
     Registry() {
         boundaries[mobile_sam_provider_id] = [](const std::filesystem::path& root) { return create_mobile_sam_refiner(root); };
 #if defined(_WIN32) && defined(ORCA_ENABLE_MEDIAPIPE_NATIVE)
         bodies[provider_id] = [](const std::filesystem::path& root) { return std::make_unique<BodyRecognizer>(root); };
         faces[provider_id] = [](const std::filesystem::path& root) { return std::make_unique<FaceRecognizer>(root); };
+        poses[provider_id] = [](const std::filesystem::path& root) { return std::make_unique<PoseRecognizer>(root); };
 #else
         bodies[provider_id] = [](const std::filesystem::path&) { return std::make_unique<Unavailable<IBodyRegionRecognizer>>(provider_id, "Native semantic recognition is not enabled in this build."); };
         faces[provider_id] = [](const std::filesystem::path&) { return std::make_unique<Unavailable<IFaceRegionRecognizer>>(provider_id, "Native semantic recognition is not enabled in this build."); };
+        poses[provider_id] = [](const std::filesystem::path&) { return std::make_unique<UnavailablePose>(provider_id, "Native pose recognition is not enabled in this build."); };
 #endif
     }
 };
@@ -592,6 +678,12 @@ bool register_face_recognizer_factory(const std::string& id, FaceRecognizerFacto
     auto& r = registry(); std::lock_guard<std::mutex> lock(r.mutex);
     return r.faces.emplace(id, std::move(factory)).second;
 }
+bool register_pose_recognizer_factory(const std::string& id, PoseRecognizerFactory factory)
+{
+    if (id.empty() || !factory) return false;
+    auto& r = registry(); std::lock_guard<std::mutex> lock(r.mutex);
+    return r.poses.emplace(id, std::move(factory)).second;
+}
 bool register_boundary_refiner_factory(const std::string& id, BoundaryRefinerFactory factory)
 {
     if (id.empty() || id == "none" || !factory) return false;
@@ -599,13 +691,14 @@ bool register_boundary_refiner_factory(const std::string& id, BoundaryRefinerFac
     return r.boundaries.emplace(id, std::move(factory)).second;
 }
 RegionRecognizers create_region_recognizers(const std::string& body_provider, const std::string& face_provider,
-                                           const std::string& boundary_provider,
+                                           const std::string& pose_provider, const std::string& boundary_provider,
                                            const std::filesystem::path& root)
 {
-    BodyRecognizerFactory body; FaceRecognizerFactory face; BoundaryRefinerFactory boundary;
+    BodyRecognizerFactory body; FaceRecognizerFactory face; PoseRecognizerFactory pose; BoundaryRefinerFactory boundary;
     { auto& r = registry(); std::lock_guard<std::mutex> lock(r.mutex);
       auto b = r.bodies.find(body_provider); if (b != r.bodies.end()) body = b->second;
       auto f = r.faces.find(face_provider); if (f != r.faces.end()) face = f->second;
+      auto p = r.poses.find(pose_provider); if (p != r.poses.end()) pose = p->second;
       auto x = r.boundaries.find(boundary_provider); if (x != r.boundaries.end()) boundary = x->second; }
     RegionRecognizers result;
     // Failure or replacement of one port must not disable the other port.
@@ -626,6 +719,14 @@ RegionRecognizers create_region_recognizers(const std::string& body_provider, co
         result.error += error.what();
         result.face = std::make_unique<Unavailable<IFaceRegionRecognizer>>(face_provider, error.what());
     }
+    try {
+        if (!pose) throw std::runtime_error("Unknown pose recognition provider.");
+        result.pose = pose(root);
+        if (!result.pose) throw std::runtime_error("Pose recognition factory returned no provider.");
+    } catch (const std::exception& error) {
+        result.pose_error = error.what();
+        result.pose = std::make_unique<UnavailablePose>(pose_provider, error.what());
+    }
     if (!boundary_provider.empty() && boundary_provider != "none") try {
         if (!boundary) throw std::runtime_error("Unknown boundary refinement provider.");
         result.boundary = boundary(root);
@@ -638,6 +739,9 @@ RegionRecognizers create_region_recognizers(const std::string& body_provider, co
     }
     return result;
 }
+RegionRecognizers create_region_recognizers(const std::string& body_provider, const std::string& face_provider,
+                                           const std::string& boundary_provider, const std::filesystem::path& root)
+{ return create_region_recognizers(body_provider, face_provider, body_provider, boundary_provider, root); }
 RegionRecognizers create_region_recognizers(const std::string& body_provider, const std::string& face_provider,
                                            const std::filesystem::path& root)
 { return create_region_recognizers(body_provider, face_provider, "none", root); }

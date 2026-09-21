@@ -7,6 +7,7 @@ set(_orca_semantic_runtime_files
     libmediapipe.dll
     selfie_multiclass_256x256.tflite
     face_landmarker.task
+    pose_landmarker_lite.task
     LICENSE
     NOTICE
     runtime-manifest.json
@@ -16,6 +17,7 @@ set(_orca_semantic_runtime_hashes
     a8970c645c8c87c25ec9965cb5c898e803c6c42f7192b7de9a0541c62ae48cef
     c6748b1253a99067ef71f7e26ca71096cd449baefa8f101900ea23016507e0e0
     64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff
+    59929e1d1ee95287735ddd833b19cf4ac46d29bc7afddbbf6753c459690d574a
     8707eef0533987efc5b155d64761eeb6e20793f50b9bd1a68dad1cf4719d0ed8
     d3b4a80a24a01fd445d4b70a610fd836ec3547c3a62eb835a1041956c38d9f56)
 set(_semantic_index 0)

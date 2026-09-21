@@ -170,7 +170,7 @@ TEST_CASE("Missing face skin labels never turns the unknown face into lips", "[S
     REQUIRE(mapped.faces.front().second == portrait()[3]);
 }
 
-TEST_CASE("Disconnected warm skin evidence joins one stable material region",
+TEST_CASE("Disconnected warm skin evidence cannot claim an unknown region without macro ownership",
           "[SemanticPaletteMapping][SpatialSkin]")
 {
     const auto source = layered_skin_fixture();
@@ -182,15 +182,49 @@ TEST_CASE("Disconnected warm skin evidence joins one stable material region",
     const auto seam = std::find_if(mapped.face_slots.begin(), mapped.face_slots.end(),
                                    [](const auto& face) { return face.face_id == 2; });
     REQUIRE(donor != mapped.face_slots.end());
-    REQUIRE(seam != mapped.face_slots.end());
-    CHECK(seam->material_center_id == donor->material_center_id);
-    CHECK(seam->region_id == donor->region_id);
-    CHECK(seam->slot_id == donor->slot_id);
+    CHECK(seam == mapped.face_slots.end());
     const auto recommendations = recommend_region_slots(mapped, slots(portrait()));
     const auto recommendation = std::find_if(recommendations.begin(), recommendations.end(),
-        [&](const auto& item) { return item.region_id == seam->region_id; });
+        [&](const auto& item) { return item.region_id == donor->region_id; });
     REQUIRE(recommendation != recommendations.end());
-    CHECK(recommendation->recommended_slot_id == seam->slot_id);
+    CHECK(recommendation->recommended_slot_id == donor->slot_id);
+}
+
+TEST_CASE("Pose identity is accepted by production palette mapping and stale pose evidence is rejected",
+          "[SemanticPaletteMapping][MacroRegion]")
+{
+    const auto source = strip({{.76f,.55f,.41f}});
+    auto analysis = evidence(source, {Label::FaceSkin});
+    analysis.pose_identity = "pose-fixture-v1";
+    analysis.signature = analysis_cache_key(source, analysis.body_identity, analysis.face_identity,
+                                            "none", analysis.pose_identity);
+    analysis.face_macro_regions = {Analysis::MacroRegion::Face};
+    analysis.face_person_instances = {0};
+    analysis.face_macro_confidence = {.95f};
+    SlotMappingResult mapped; std::string error;
+    REQUIRE(map_palette_slots(source, analysis, slots(portrait()), portrait(), {}, mapped, error));
+    CHECK(mapped.analysis_signature == analysis.signature);
+    analysis.pose_identity = "pose-fixture-v2";
+    CHECK_FALSE(map_palette_slots(source, analysis, slots(portrait()), portrait(), {}, mapped, error));
+    CHECK(error == "Palette mapping requires current recognition evidence.");
+}
+
+TEST_CASE("Unowned connected surfaces retain their C1 material components", "[SemanticPaletteMapping][MacroRegion]")
+{
+    const auto source = strip({{.12f,.11f,.10f}, {.14f,.12f,.11f}, {.13f,.12f,.10f}});
+    auto baseline = evidence(source, {Label::Hair, Label::Hair, Label::Hair});
+    auto macro = baseline;
+    macro.pose_identity = "pose-fixture-v1";
+    macro.signature = analysis_cache_key(source, macro.body_identity, macro.face_identity, "none", macro.pose_identity);
+    macro.face_macro_regions.assign(3, Analysis::MacroRegion::Unknown);
+    macro.face_person_instances.assign(3, UINT32_MAX);
+    macro.face_macro_confidence.assign(3, 0.f);
+    SlotMappingResult before, after; std::string error;
+    const auto palette = slots(portrait());
+    REQUIRE(map_palette_slots(source, baseline, palette, portrait(), {}, before, error));
+    REQUIRE(map_palette_slots(source, macro, palette, portrait(), {}, after, error));
+    CHECK(after.faces == before.faces);
+    CHECK(after.material_centers.size() == before.material_centers.size());
 }
 
 TEST_CASE("Spatial skin discovery rejects protected and ambiguous seams",

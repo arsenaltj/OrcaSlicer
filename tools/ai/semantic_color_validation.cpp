@@ -373,6 +373,24 @@ SC::RGBImage paint_view(const SC::RenderedView& view, const SC::SlotMappingResul
     }
     return image;
 }
+SC::RGBImage macro_view(const SC::RenderedView& view, const SC::Analysis& analysis)
+{
+    SC::RGBImage image = view.image;
+    const std::array<std::array<uint8_t, 3>, 8> colors {{{96,96,96}, {227,158,132}, {234,210,95},
+        {94,174,135}, {68,147,116}, {84,145,205}, {112,83,133}, {195,113,55}}};
+    for (size_t pixel = 0; pixel < view.face_ids.size(); ++pixel) {
+        const size_t id = view.face_ids[pixel];
+        if (id == UINT32_MAX) continue;
+        const bool owned = id < analysis.face_person_instances.size() &&
+            analysis.face_person_instances[id] != UINT32_MAX;
+        const size_t region = owned && id < analysis.face_macro_regions.size() ?
+            size_t(analysis.face_macro_regions[id]) : 0;
+        const auto color = colors[std::min(region, colors.size() - 1)];
+        for (int channel = 0; channel < 3; ++channel)
+            image.pixels[pixel * 3 + channel] = color[channel];
+    }
+    return image;
+}
 void views(const validation_fs::path& output, const SC::MeshSnapshot& mesh, const SC::SlotMappingResult& baseline,
            const SC::SlotMappingResult& candidate, const PP::ColorTrialMapping& fallback, int size,
            const SC::Analysis& baseline_analysis, const SC::Analysis& candidate_analysis)
@@ -394,6 +412,7 @@ void views(const validation_fs::path& output, const SC::MeshSnapshot& mesh, cons
         write_ppm(output / (std::string(camera.name) + "-original.ppm"), view.image);
         write_ppm(output / (std::string(camera.name) + "-baseline.ppm"), paint_view(view, baseline, fallback));
         write_ppm(output / (std::string(camera.name) + "-candidate.ppm"), paint_view(view, candidate, fallback));
+        write_ppm(output / (std::string(camera.name) + "-macro.ppm"), macro_view(view, candidate_analysis));
         // Diagnostic face/depth maps are lossless and independent of lighting.
         std::ofstream ids(output / (std::string(camera.name) + "-faces.u32"), std::ios::binary);
         ids.write(reinterpret_cast<const char*>(view.face_ids.data()), std::streamsize(view.face_ids.size()*sizeof(uint32_t)));
@@ -444,11 +463,13 @@ SC::Analysis analyze(const SC::MeshSnapshot& mesh, SC::RegionRecognizers& provid
 {
     SC::Analysis result;
     const std::string boundary_id = boundary && providers.boundary ? providers.boundary->identity() : "none";
+    const std::string pose_id = boundary && providers.pose && providers.pose_error.empty() ?
+        providers.pose->identity() : "none";
     if (reuse && validation_fs::is_regular_file(cache)) {
         std::ifstream input(cache);
         std::string error;
         if (SC::decode_analysis(Json::parse(input), mesh, providers.body->identity(), providers.face->identity(),
-                boundary_id, result, error)) { elapsed = 0; return result; }
+                boundary_id, pose_id, result, error)) { elapsed = 0; return result; }
     }
     const auto start = Clock::now();
     const auto progress = [](int progress, const std::string& stage) { std::cerr << progress << "% " << stage << '\n'; };
@@ -460,7 +481,8 @@ SC::Analysis analyze(const SC::MeshSnapshot& mesh, SC::RegionRecognizers& provid
         if (providers.boundary) refiner = std::make_unique<SC::RecordingBoundaryRefiner>(*providers.boundary, recorder);
         const SC::RenderObserver observer = [recorder](const SC::RenderedView& view, int index,
             const SC::ViewRegion& region, bool face_crop) { recorder->rendered(view, index, region, face_crop); };
-        result = SC::analyze(mesh, body, face, refiner.get(), {}, progress, observer);
+        result = SC::analyze(mesh, body, face, refiner.get(), providers.pose_error.empty() ? providers.pose.get() : nullptr,
+                             {}, progress, observer);
     } else result = SC::analyze(mesh, *providers.body, *providers.face, nullptr, {}, progress);
     elapsed = seconds(start);
     if (!result.error.empty() || result.canceled) throw std::runtime_error(result.error.empty() ? "Analysis canceled" : result.error);
@@ -540,6 +562,18 @@ int main(int argc, char** argv)
                 record["person_detected"] = candidate.person_detected;
                 record["reliable_faces"] = candidate.reliable_faces;
                 record["face_views"] = candidate.face_views;
+                record["pose_identity"] = candidate.pose_identity;
+                record["pose_error"] = candidate.pose_error;
+                record["macro_region_faces"] = Json::array();
+                for (size_t region = 0; region < 8; ++region) {
+                    size_t faces = 0, owned = 0;
+                    for (size_t id = 0; id < candidate.face_macro_regions.size(); ++id) {
+                        if (size_t(candidate.face_macro_regions[id]) != region) continue;
+                        ++faces;
+                        if (candidate.face_person_instances[id] != UINT32_MAX) ++owned;
+                    }
+                    record["macro_region_faces"].push_back({{"region", region}, {"faces", faces}, {"owned", owned}});
+                }
                 record["roi_runs"] = Json::array();
                 for (const auto& roi : candidate.boundary_runs) record["roi_runs"].push_back({
                     {"person", roi.person_id}, {"part", unsigned(roi.part)}, {"side", unsigned(roi.side)},
