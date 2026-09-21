@@ -1,0 +1,36 @@
+{
+  "schema": "orcaslicer.semantic-boundary-model-sources/v1",
+  "status": "source-and-artifact-identity-audited-for-internal-evaluation",
+  "models": [
+    {
+      "id": "mobile-sam",
+      "source_repository": "https://github.com/ChaoningZhang/MobileSAM",
+      "source_revision": "f706ad9c4eb7f219c00d9050e46328518ffb65d2",
+      "software_license": "Apache-2.0",
+      "license": {"path": "LICENSE", "bytes": 11558, "sha256": "1eb85fc97224598dad1852b5d6483bbcf0aa8608790dcc657a5a2a761ae9c8c6"},
+      "artifacts": [
+        {"role": "pytorch-checkpoint", "path": "weights/mobile_sam.pt", "bytes": 40728226, "sha256": "6dbb90523a35330fedd7f1d3dfc66f995213d81b29a5ca8108dbcdd4e37d6c2f"},
+        {"role": "derived-encoder", "path": "weights/mobile_sam_encoder.onnx", "bytes": 27969730, "sha256": "83398d336e1e95140df654a7be83ddb35b4c78221dd984f4f62d2a78d95ace32", "derivation": "tools/ai/export_mobile_sam_encoder.py; torch 2.5.1+cpu; onnx 1.17.0; opset 17"},
+        {"role": "derived-decoder", "path": "weights/mobile_sam_decoder.onnx", "bytes": 16496933, "sha256": "43c7655a81b62c0f2b0e31d2bc91d3811b48d7f736ecf93b3a4a1254318241cf", "derivation": "upstream scripts/export_onnx_model.py; torch 2.5.1+cpu; onnx 1.17.0; opset 17"}
+      ],
+      "evaluation_status": "allowed-internal-ab-with-derived-onnx",
+      "product_status": "blocked",
+      "audit": "The upstream export script produces the prompt encoder and mask decoder only. The image encoder is reproducibly derived from the fixed checkpoint by the recorded local export script. Internal A/B is allowed; redistribution and product integration remain blocked pending training-data/license-chain and transitive-notice review."
+    },
+    {
+      "id": "efficient-sam-tiny",
+      "source_repository": "https://github.com/yformer/EfficientSAM",
+      "source_revision": "d525f622e6f640acf5a0fc37c7ca1f243da5bde0",
+      "software_license": "Apache-2.0",
+      "license": {"path": "LICENSE", "bytes": 11558, "sha256": "1eb85fc97224598dad1852b5d6483bbcf0aa8608790dcc657a5a2a761ae9c8c6"},
+      "artifacts": [
+        {"role": "combined", "path": "weights/efficient_sam_vitt.onnx", "url": "https://github.com/yformer/EfficientSAM/raw/d525f622e6f640acf5a0fc37c7ca1f243da5bde0/weights/efficient_sam_vitt.onnx", "bytes": 41365520, "sha256": "143c3198a7b2a15f23c21cdb723432fb3fbcdbabbdad3483cf3babd8b95c1397"},
+        {"role": "encoder", "path": "weights/efficient_sam_vitt_encoder.onnx", "url": "https://github.com/yformer/EfficientSAM/raw/d525f622e6f640acf5a0fc37c7ca1f243da5bde0/weights/efficient_sam_vitt_encoder.onnx", "bytes": 24799761, "sha256": "84ed466ffcc5c1f8d08409bc34a23bb364ab2c15e402cb12d4335a42be0e0951"},
+        {"role": "decoder", "path": "weights/efficient_sam_vitt_decoder.onnx", "url": "https://github.com/yformer/EfficientSAM/raw/d525f622e6f640acf5a0fc37c7ca1f243da5bde0/weights/efficient_sam_vitt_decoder.onnx", "bytes": 16565728, "sha256": "a62f8fa5ea080447c0689418d69e58f1e83e0b7adf9c142e2bd9bcc8045c0b11"}
+      ],
+      "evaluation_status": "allowed-internal-ab-only",
+      "product_status": "blocked-pending-training-data-and-transitive-notice-audit",
+      "audit": "Source revision, repository license, and official ONNX identities are fixed. Internal offline A/B is allowed; redistribution and product integration remain blocked until the training-data/license chain and transitive notices are recorded."
+    }
+  ]
+}

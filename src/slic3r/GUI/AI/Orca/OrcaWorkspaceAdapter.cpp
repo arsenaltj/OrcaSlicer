@@ -258,6 +258,8 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
     result.subface_color_count = request.subface_color_overrides.size();
     TriangleMesh semantic_source_mesh;
     bool has_semantic_source_mesh = false;
+    const bool explicit_materials = !request.material_slots.empty() || !request.face_slot_overrides.empty();
+    TriangleSelector::TriangleSplittingData explicit_painting;
     if (m_plater == nullptr || !AI::is_model_artifact(request.artifact.local_path)) {
         result.outcome = AI::ModelImportOutcome::InvalidArtifact;
         result.error = "The generated OBJ/GLB is missing or invalid.";
@@ -265,8 +267,13 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
     }
 
     boost::filesystem::path path = request.artifact.local_path;
+    if (explicit_materials && request.color_mode != AI::ImportColorMode::NativeMatch) {
+        result.outcome = AI::ModelImportOutcome::InvalidArtifact;
+        result.error = "Explicit material slots require native import.";
+        return result;
+    }
     if (request.color_mode == AI::ImportColorMode::NativeMatch &&
-        (!request.face_color_overrides.empty() || !request.subface_color_overrides.empty())) {
+        (!request.face_color_overrides.empty() || !request.subface_color_overrides.empty() || explicit_materials)) {
         ObjInfo source_colors;
         if (!AI::load_model_artifact(path, semantic_source_mesh, source_colors, result.error)) {
             result.outcome = AI::ModelImportOutcome::InvalidArtifact;
@@ -291,13 +298,51 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
         }
         for (const auto& override : request.subface_color_overrides) {
             if (override.face_id >= semantic_source_mesh.its.indices.size() || override.depth == 0 ||
-                override.depth > 2 || unsigned(override.path) >= (1u << (2u * override.depth)) ||
+                override.depth > 3 || unsigned(override.path) >= (1u << (2u * override.depth)) ||
                 std::any_of(override.color.begin(), override.color.end(), [](float channel) {
                     return !std::isfinite(channel) || channel < 0.f || channel > 1.f;
                 })) {
                 result.outcome = AI::ModelImportOutcome::InvalidArtifact;
                 result.error = "The locally edited surface contains an invalid subface or color. Reload the model before importing.";
                 return result;
+            }
+        }
+        if (explicit_materials) {
+            const auto project_palette = printable_palette();
+            for (const auto& slot : request.material_slots) {
+                const wxColour color(slot.project_slot < project_palette.project_colors.size()
+                    ? project_palette.project_colors[slot.project_slot] : "");
+                if (!color.IsOk() || std::abs(float(color.Red()) / 255.f - slot.color[0]) > .5f / 255.f ||
+                    std::abs(float(color.Green()) / 255.f - slot.color[1]) > .5f / 255.f ||
+                    std::abs(float(color.Blue()) / 255.f - slot.color[2]) > .5f / 255.f) {
+                    result.outcome = AI::ModelImportOutcome::InvalidArtifact;
+                    result.error = "A selected project filament changed. Refresh the palette before importing.";
+                    return result;
+                }
+            }
+            if (!apply_subface_color_overrides(semantic_source_mesh.its, semantic_source_mesh.its,
+                    explicit_painting, request.face_color_overrides, request.subface_color_overrides, result.error,
+                    request.material_slots, request.face_slot_overrides)) {
+                result.outcome = AI::ModelImportOutcome::InvalidArtifact;
+                return result;
+            }
+            // A vertex-colored copy always enters the explicit OBJ callback,
+            // including UV-only sources. Nine-digit float output round-trips
+            // original vertices and preserves every source triangle ordinal.
+            const auto hash = AI::model_artifact_sha256(path);
+            const boost::filesystem::path cache_root = Slic3r::temporary_dir();
+            if (hash.empty() || cache_root.empty()) {
+                result.outcome = AI::ModelImportOutcome::InvalidArtifact;
+                result.error = "The source identity or temporary import directory is unavailable.";
+                return result;
+            }
+            path = cache_root / "ai-import" / ("orcaslicer-ai-materials-" + hash + ".obj");
+            if (!AI::is_model_artifact(path)) {
+                std::vector<RGBA> colors(semantic_source_mesh.its.vertices.size(), {1.f, 1.f, 1.f, 1.f});
+                if (!AI::write_model_artifact(path, semantic_source_mesh.its, colors, result.error)) {
+                    result.outcome = AI::ModelImportOutcome::InvalidArtifact;
+                    return result;
+                }
             }
         }
     }
@@ -334,9 +379,43 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
     workflow.update_ai_workflow_step(Sidebar::AIImportModel, Sidebar::AIWorkflowStatus::Running, _L("读取模型"));
 
     bool import_cancelled = false;
-    auto load_model = [this, &path, &import_cancelled, &request](const char* snapshot_name, AI::ImportColorMode color_mode, bool& colors_applied,
+    auto load_model = [this, &path, &import_cancelled, &request, &semantic_source_mesh, &explicit_painting,
+                       explicit_materials, &result](const char* snapshot_name, AI::ImportColorMode color_mode, bool& colors_applied,
                                     size_t& source_color_count, size_t& mapped_color_count) {
         import_cancelled = false;
+        if (explicit_materials) {
+            ObjImportColorFn color_mapper = [&](ObjDialogInOut& input) {
+                if (input.model == nullptr || input.model->objects.size() != 1 ||
+                    input.model->objects.front()->volumes.size() != 1 ||
+                    !matches_source_topology(semantic_source_mesh.its, *input.model->objects.front()->volumes.front())) {
+                    result.error = "The import changed the source topology. Recompute coloring before importing.";
+                    input.cancelled = true;
+                    return;
+                }
+                auto* object = input.model->objects.front();
+                auto* volume = object->volumes.front();
+                auto painting = explicit_painting;
+                volume->mmu_segmentation_facets.set_data(std::move(painting));
+                const int first_slot = int(request.material_slots.front().project_slot + 1);
+                object->config.set("extruder", first_slot);
+                volume->config.set("extruder", first_slot);
+                std::map<std::string, size_t> slots;
+                for (const auto& slot : request.material_slots) slots.emplace(slot.slot_id, slot.project_slot);
+                std::set<size_t> used;
+                for (const auto& face : request.face_slot_overrides) used.insert(slots.at(face.slot_id));
+                for (const auto& leaf : request.subface_color_overrides) used.insert(slots.at(leaf.slot_id));
+                // Explicit assignments are intentional, including reuse of
+                // one slot across several semantics. Do not flag unused
+                // candidates as an accidental collapse during native matching.
+                source_color_count = used.size();
+                mapped_color_count = used.size();
+                colors_applied = true;
+                result.subface_colors_applied = !request.subface_color_overrides.empty();
+                input.preserve_input_colors = true;
+            };
+            Plater::TakeSnapshot snapshot(m_plater, snapshot_name);
+            return m_plater->load_files({path}, LoadStrategy::LoadModel, false, std::move(color_mapper));
+        }
         if (color_mode == AI::ImportColorMode::NativeMatch) {
             // An OBJ callback bypasses the native texture matcher for vertex and
             // face colors. Leave it unset so AI imports use the same preview,
@@ -427,7 +506,7 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
         if (!loaded.empty() && m_plater->model().objects.size() > before)
             m_plater->undo();
         result.outcome = import_cancelled ? AI::ModelImportOutcome::Cancelled : AI::ModelImportOutcome::ImportFailed;
-        result.error = import_cancelled ? "OBJ import cancelled." : "OBJ import failed.";
+        if (result.error.empty()) result.error = import_cancelled ? "OBJ import cancelled." : "OBJ import failed.";
         workflow.update_ai_workflow_step(Sidebar::AIImportModel,
             import_cancelled ? Sidebar::AIWorkflowStatus::Warning : Sidebar::AIWorkflowStatus::Failed,
             import_cancelled ? _L("已取消导入。") : _L("OBJ 导入失败"));
@@ -436,7 +515,7 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
     }
 
     bool subface_import_incomplete = false;
-    if (!request.subface_color_overrides.empty()) {
+    if (!request.subface_color_overrides.empty() && !explicit_materials) {
         std::string subface_error;
         ModelVolume* volume = nullptr;
         if (!has_semantic_source_mesh || loaded.size() != 1 || loaded.front() >= m_plater->model().objects.size()) {
@@ -453,7 +532,12 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
         }
         if (volume != nullptr) {
             auto painting = volume->mmu_segmentation_facets.get_data();
-            if (apply_subface_color_overrides(semantic_source_mesh.its, volume->mesh().its, painting,
+            TriangleMesh centered_source = semantic_source_mesh;
+            centered_source.translate(-volume->source.mesh_offset.cast<float>());
+            const bool topology_matches = matches_source_topology(semantic_source_mesh.its, *volume);
+            if (!topology_matches) subface_error = "The imported topology changed before semantic subfaces were applied.";
+            if (topology_matches &&
+                apply_subface_color_overrides(centered_source.its, volume->mesh().its, painting,
                     request.face_color_overrides, request.subface_color_overrides, subface_error)) {
                 volume->mmu_segmentation_facets.set_data(std::move(painting));
                 result.subface_colors_applied = true;

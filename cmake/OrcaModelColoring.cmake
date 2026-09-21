@@ -5,7 +5,11 @@ target_sources(libslic3r_gui PRIVATE
     GUI/AI/ModelGeneration/ModelGenerationFinishingView.cpp
     GUI/AI/ModelGeneration/ModelSemanticColoring.cpp
     GUI/AI/ModelGeneration/ModelPreviewSemantics.cpp
+    GUI/AI/ModelGeneration/LocalSemanticValidation.cpp
     AI/ModelGeneration/SemanticColoring/SemanticColoring.cpp
+    AI/ModelGeneration/SemanticColoring/SemanticBoundaryRefinement.cpp
+    AI/ModelGeneration/SemanticColoring/NativeMobileSamBoundaryRefiner.cpp
+    AI/ModelGeneration/SemanticColoring/SemanticPaletteMapping.cpp
     AI/ModelGeneration/SemanticColoring/SemanticMaskRefinement.cpp
     AI/ModelGeneration/SemanticColoring/SemanticMaterialRegions.cpp
     AI/ModelGeneration/SemanticColoring/MediaPipeRegionRecognizers.cpp

@@ -43,6 +43,7 @@ public:
 private:
     struct Impl;
     std::unique_ptr<Impl> m_impl;
+    wxWindow* m_validation_panel {nullptr};
 };
 
 } // namespace Slic3r::GUI

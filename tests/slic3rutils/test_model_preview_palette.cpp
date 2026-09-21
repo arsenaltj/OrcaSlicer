@@ -481,3 +481,30 @@ TEST_CASE("Preview color protection handles empty data invalid locks and small c
         }
     }
 }
+
+
+TEST_CASE("Reordered physical portrait slots preserve canonical material roles", "[FilamentColorPack][Regression]")
+{
+    const std::vector<Color> card {{247.f/255,226.f/255,218.f/255}, {40.f/255,38.f/255,41.f/255},
+        {246.f/255,247.f/255,249.f/255}, {234.f/255,154.f/255,146.f/255},
+        {102.f/255,140.f/255,182.f/255}, {149.f/255,139.f/255,134.f/255}};
+    std::array<size_t, 6> order {0,1,2,3,4,5};
+    size_t permutations = 0;
+    do {
+        std::vector<Color> physical;
+        for (size_t role : order) physical.push_back(card[role]);
+        const auto unchanged = physical;
+        REQUIRE(matches_portrait_card_set(physical, card));
+        const auto mapped = portrait_pack_mapping({{.76f,.55f,.41f}, {.68f,.26f,.24f}}, card);
+        REQUIRE(mapped.target_colors == std::vector<Color>{card[0], card[3]});
+        REQUIRE(physical == unchanged);
+        ++permutations;
+    } while (std::next_permutation(order.begin(), order.end()));
+    CHECK(permutations == 720);
+    auto missing = card; missing.pop_back();
+    CHECK_FALSE(matches_portrait_card_set(missing, card));
+    auto duplicate = card; duplicate[3] = duplicate[0];
+    CHECK_FALSE(matches_portrait_card_set(duplicate, card));
+    auto unrelated = card; unrelated[2] = {1.f,0.f,1.f};
+    CHECK_FALSE(matches_portrait_card_set(unrelated, card));
+}

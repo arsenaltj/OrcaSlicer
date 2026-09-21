@@ -1024,7 +1024,7 @@ bool TriangleSelector::set_facet_midpoint_subfaces(
 
     std::vector<MidpointSubfaceState> ordered = leaves;
     for (const MidpointSubfaceState& leaf : ordered) {
-        if (leaf.depth == 0 || leaf.depth > 2 || !valid_state(leaf.state))
+        if (leaf.depth == 0 || leaf.depth > 3 || !valid_state(leaf.state))
             return false;
         const unsigned path_limit = 1u << (2u * leaf.depth);
         if (unsigned(leaf.path) >= path_limit)

@@ -9,15 +9,23 @@ namespace Slic3r::AI::SemanticColoring {
 struct RegionRecognizers {
     std::unique_ptr<IBodyRegionRecognizer> body;
     std::unique_ptr<IFaceRegionRecognizer> face;
+    std::unique_ptr<IBoundaryRefiner> boundary;
     std::string error;
+    std::string boundary_error;
 };
 using BodyRecognizerFactory = std::function<std::unique_ptr<IBodyRegionRecognizer>(const std::filesystem::path&)>;
 using FaceRecognizerFactory = std::function<std::unique_ptr<IFaceRegionRecognizer>(const std::filesystem::path&)>;
+using BoundaryRefinerFactory = std::function<std::unique_ptr<IBoundaryRefiner>(const std::filesystem::path&)>;
 
 // Register at application composition time. Factories are copied under a lock,
 // then invoked outside it. Body and face implementations can be replaced alone.
 bool register_body_recognizer_factory(const std::string& id, BodyRecognizerFactory);
 bool register_face_recognizer_factory(const std::string& id, FaceRecognizerFactory);
+bool register_boundary_refiner_factory(const std::string& id, BoundaryRefinerFactory);
+RegionRecognizers create_region_recognizers(const std::string& body_provider,
+                                           const std::string& face_provider,
+                                           const std::string& boundary_provider,
+                                           const std::filesystem::path& runtime_dir);
 RegionRecognizers create_region_recognizers(const std::string& body_provider,
                                            const std::string& face_provider,
                                            const std::filesystem::path& runtime_dir);

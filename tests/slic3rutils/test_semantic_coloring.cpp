@@ -128,6 +128,67 @@ public:
         return prediction;
     }
 };
+class BoundaryBodyFixture final : public IBodyRegionRecognizer {
+public:
+    size_t calls {0};
+    std::string identity() const override { return "boundary-body-fixture-v1"; }
+    Prediction predict(const RGBImage& image, const Cancel&) override {
+        ++calls;
+        Prediction prediction;
+        prediction.labels.assign(size_t(image.width) * image.height, Label::Hair);
+        prediction.confidence.assign(prediction.labels.size(), .96f);
+        prediction.person_detected = true;
+        // The full-view call supplies a conservative face island so analysis
+        // creates a crop. The following crop call deliberately keeps Hair.
+        if ((calls & 1u) != 0)
+            for (int y = image.height / 3; y < image.height * 2 / 3; ++y)
+                for (int x = image.width / 3; x < image.width * 2 / 3; ++x)
+                    prediction.labels[size_t(y) * image.width + x] = Label::FaceSkin;
+        return prediction;
+    }
+};
+class BoundaryFaceFixture final : public IFaceRegionRecognizer {
+public:
+    std::string identity() const override { return "boundary-face-fixture-v1"; }
+    Prediction predict(const RGBImage& image, const Cancel&) override {
+        Prediction prediction;
+        prediction.labels.assign(size_t(image.width) * image.height, Label::Unknown);
+        prediction.confidence.assign(prediction.labels.size(), .96f);
+        prediction.face_detected = true;
+        for (int y = image.height / 2; y < image.height * 2 / 3; ++y)
+            for (int x = image.width / 3; x < image.width * 5 / 12; ++x)
+                prediction.labels[size_t(y) * image.width + x] = Label::FaceSkin;
+        prediction.regions.push_back({0,BoundaryPart::Ear,BoundarySide::Left,
+            {image.width/4,image.height/3,image.width*3/4,image.height*3/4},{}});
+        return prediction;
+    }
+};
+class BoundaryRefinerFixture final : public IBoundaryRefiner {
+public:
+    std::string identity() const override { return "boundary-refiner-fixture-v1"; }
+    BoundaryRefinement refine(const RGBImage& image, const Prediction&,
+                              const BoundaryRefinementRequest& request, const Cancel&) override {
+        BoundaryRefinement result;
+        result.width = image.width;
+        result.height = image.height;
+        result.foreground_probability.assign(size_t(image.width) * image.height,
+            std::numeric_limits<float>::quiet_NaN());
+        result.confidence.assign(result.foreground_probability.size(), 0.f);
+        for (const BoundaryRegion& region : request.regions)
+            for (int y = region.top; y < region.bottom; ++y)
+                for (int x = region.left; x < region.right; ++x) {
+                    const size_t pixel = size_t(y) * image.width + x;
+                    // A genuine continuous boundary between the two prompts,
+                    // rather than an all-foreground ROI with no 0.5 contour.
+                    const auto& positive=request.prompts.front();const auto& negative=request.prompts.back();
+                    const float dp=float((x-positive.x)*(x-positive.x)+(y-positive.y)*(y-positive.y));
+                    const float dn=float((x-negative.x)*(x-negative.x)+(y-negative.y)*(y-negative.y));
+                    result.foreground_probability[pixel] = dp<=dn ? .99f : .01f;
+                    result.confidence[pixel] = .99f;
+                }
+        return result;
+    }
+};
 }
 
 TEST_CASE("Canonical semantic rendering resolves the closest original face without averaging occlusion", "[SemanticColoring]")
@@ -184,6 +245,23 @@ TEST_CASE("Raster barycentric coordinates address the same sixteen midpoint leav
                 centroid[channel] += vertex[channel] / 3.f;
         SubfacePath located;
         REQUIRE(locate_subface(centroid, 2, located));
+        CHECK(located == expected);
+    }
+}
+
+TEST_CASE("Third-level midpoint leaves round-trip through barycentric lookup",
+          "[SemanticColoring][SubfaceColor]")
+{
+    for (uint8_t value = 0; value < 64; ++value) {
+        const SubfacePath expected {3, value};
+        std::array<Barycentric, 3> vertices;
+        REQUIRE(subface_vertices(expected, vertices));
+        Barycentric centroid {};
+        for (const auto& vertex : vertices)
+            for (size_t channel = 0; channel < 3; ++channel)
+                centroid[channel] += vertex[channel] / 3.f;
+        SubfacePath located;
+        REQUIRE(locate_subface(centroid, 3, located));
         CHECK(located == expected);
     }
 }
@@ -324,6 +402,104 @@ TEST_CASE("A supported eye-white region keeps a warm shadow without whitening da
     CHECK(std::none_of(mapped.begin(), mapped.end(), [](const auto& entry) { return entry.first == 3; }));
 }
 
+TEST_CASE("Boundary samples preserve same-face interpolation and project cross-face raster corners independently",
+          "[SemanticColoring][SemanticBoundaryRefinement][SubfaceColor]")
+{
+    RenderedView view;
+    view.image.width = view.image.height = 2;
+    view.image.pixels.assign(12, 0);
+    view.face_ids.assign(4, 7);
+    view.depth.assign(4, 1.f);
+    view.barycentric = {{{.8f,.1f,.1f}}, {{.1f,.8f,.1f}},
+                        {{.8f,.1f,.1f}}, {{.1f,.8f,.1f}}};
+
+    const auto interpolated = project_boundary_sample(view, 1.f, 1.f);
+    REQUIRE(interpolated.size() == 1);
+    CHECK(interpolated.front().first == 7);
+
+    view.face_ids = {7, 8, 9, UINT32_MAX};
+    view.barycentric[0] = {.8f,.1f,.1f};
+    view.barycentric[1] = {.1f,.8f,.1f};
+    view.barycentric[2] = {.1f,.1f,.8f};
+    view.depth[3] = std::numeric_limits<float>::quiet_NaN();
+    const auto split = project_boundary_sample(view, 1.f, 1.f);
+    REQUIRE(split.size() == 3);
+    CHECK(split[0].first == 7);
+    CHECK(split[1].first == 8);
+    CHECK(split[2].first == 9);
+    CHECK(std::all_of(split.begin(), split.end(), [](const auto& projection) {
+        return projection.second.depth == 2;
+    }));
+
+    view.depth[0] = std::numeric_limits<float>::quiet_NaN();
+    view.barycentric[1] = {2.f,0.f,0.f};
+    const auto filtered = project_boundary_sample(view, 1.f, 1.f);
+    REQUIRE(filtered.size() == 1);
+    CHECK(filtered.front().first == 9);
+}
+
+TEST_CASE("Eye edge guard removes lip red from adjacent mislabeled skin but preserves lips",
+          "[SemanticColoring][Regression][EyeColor][BoundaryColor]")
+{
+    const Color red {.90f, .10f, .10f};
+    const Color white {.96f, .97f, .98f};
+    const Color black {.08f, .07f, .07f};
+    const auto source = connected_triangles({white, white, red, red});
+    const auto analysis = labeled(source,
+        {Label::EyeSclera, Label::EyeSclera, Label::FaceSkin, Label::Lips});
+    const auto mapped = map_palette(source, analysis, {red, black, white});
+    std::map<size_t, Color> colors;
+    for (const auto& item : mapped) colors[item.first] = item.second;
+    REQUIRE(colors.count(2) == 1);
+    REQUIRE(colors.count(3) == 1);
+    CHECK(colors.at(2) != red);
+    CHECK(colors.at(3) == red);
+}
+
+TEST_CASE("Dark face fallback beside an eye remains an eyebrow tone",
+          "[SemanticColoring][Regression][EyebrowColor]")
+{
+    const auto card = portrait_card();
+    const auto source = connected_triangles({
+        {.86f, .86f, .84f}, {.82f, .82f, .80f}, {.35f, .27f, .25f}, {.74f, .57f, .47f}});
+    const auto mapped = map_palette(source, labeled(source,
+        {Label::EyeSclera, Label::EyeSclera, Label::FaceSkin, Label::FaceSkin}), card, card);
+    std::map<size_t, Color> colors;
+    for (const auto& item : mapped) colors[item.first] = item.second;
+    REQUIRE(colors.count(2) == 1);
+    CHECK(colors.at(2) == card[5]);
+}
+
+TEST_CASE("Dark hair edge does not borrow the skin slot from a coarse body mask",
+          "[SemanticColoring][Regression][HairColor][BoundaryColor]")
+{
+    const auto card = portrait_card();
+    const auto source = connected_triangles({
+        {.12f, .10f, .09f}, {.16f, .12f, .10f}, {.40f, .30f, .27f}});
+    const auto mapped = map_palette(source, labeled(source,
+        {Label::Hair, Label::BodySkin, Label::BodySkin}), card, card);
+    std::map<size_t, Color> colors;
+    for (const auto& item : mapped) colors[item.first] = item.second;
+    REQUIRE(colors.count(1) == 1);
+    CHECK(colors.at(1) == card[1]);
+}
+
+TEST_CASE("Lip slot is local and cannot become a distant face fallback",
+          "[SemanticColoring][Regression][LipsColor][BoundaryColor]")
+{
+    const auto card = portrait_card();
+    const Color red = card[3];
+    const auto source = triangles({red, {.68f, .26f, .24f}});
+    const auto mapped = map_palette(source,
+        labeled(source, {Label::FaceSkin, Label::Lips}), {red, card[1], card[2]}, card);
+    std::map<size_t, Color> colors;
+    for (const auto& item : mapped) colors[item.first] = item.second;
+    REQUIRE(colors.count(0) == 1);
+    REQUIRE(colors.count(1) == 1);
+    CHECK(colors.at(0) != red);
+    CHECK(colors.at(1) == red);
+}
+
 TEST_CASE("Bright eye-white support keeps a darker warm sclera edge", "[SemanticColoring][Regression][EyeColor]")
 {
     const auto card = portrait_card();
@@ -368,6 +544,62 @@ TEST_CASE("A colored iris uses its material center instead of baked white highli
     const auto mapped = map_palette(source, analysis, palette);
     REQUIRE(mapped.size() == 4);
     for (const auto& entry : mapped) CHECK(entry.second == blue);
+}
+
+TEST_CASE("A neutral dark iris is not forced into the portrait card blue role", "[SemanticColoring][Regression][EyeColor][ReverseColorConstraint]")
+{
+    const auto card = portrait_card();
+    const Color dark {.075f, .072f, .070f};
+    const auto source = connected_triangles({dark, dark, {.98f, .98f, .98f}});
+    const auto analysis = labeled(source, {Label::Iris, Label::Iris, Label::EyeSclera});
+    const auto mapped = map_palette(source, analysis, card, card);
+    REQUIRE(mapped.size() == 3);
+    CHECK(mapped[0].second == card[1]);
+    CHECK(mapped[1].second == card[1]);
+    CHECK(mapped[2].second == card[2]);
+    CHECK(mapped[0].second != card[4]);
+}
+
+TEST_CASE("R2 palette candidate score preserves the conservative evidence weights", "[SemanticColoring][PaletteScore]")
+{
+    PaletteCandidateEvidence evidence;
+    evidence.source_distance = .09f;
+    evidence.semantic_compatibility = 1.f;
+    evidence.multi_view_support = 1.f;
+    evidence.geometry_support = 1.f;
+    evidence.continuity_support = 1.f;
+    const auto source_only = score_palette_candidate(evidence);
+    CHECK(source_only.accepted);
+    CHECK(source_only.source_component == 1.f);
+    CHECK_THAT(source_only.total, WithinAbs(.35f, 1e-6f));
+
+    evidence.source_distance = 0.f;
+    evidence.semantic_compatibility = .5f;
+    evidence.multi_view_support = .8f;
+    evidence.geometry_support = .7f;
+    evidence.continuity_support = .9f;
+    evidence.role_bonus = .25f; // implementation caps this preference at .10
+    const auto mixed = score_palette_candidate(evidence);
+    CHECK_THAT(mixed.role_component, WithinAbs(.10f, 1e-6f));
+    CHECK_THAT(mixed.total, WithinAbs(.12f, 1e-6f));
+
+    evidence.hard_rejected = true;
+    const auto rejected = score_palette_candidate(evidence);
+    CHECK_FALSE(rejected.accepted);
+    CHECK(std::isinf(rejected.total));
+}
+
+TEST_CASE("A saturated blue iris may still use the portrait card blue role", "[SemanticColoring][Regression][EyeColor][ReverseColorConstraint]")
+{
+    const auto card = portrait_card();
+    const Color blue {.16f, .38f, .72f};
+    const auto source = connected_triangles({blue, blue, {.98f, .98f, .98f}});
+    const auto analysis = labeled(source, {Label::Iris, Label::Iris, Label::EyeSclera});
+    const auto mapped = map_palette(source, analysis, card, card);
+    REQUIRE(mapped.size() == 3);
+    CHECK(mapped[0].second == card[4]);
+    CHECK(mapped[1].second == card[4]);
+    CHECK(mapped[2].second == card[2]);
 }
 
 
@@ -422,6 +654,46 @@ TEST_CASE("Semantic subface budgeting counts unique midpoint split nodes and kee
     CHECK(result.accepted.front().face_id == 2);
     CHECK((result.accepted.front().path == SubfacePath {2, 6}));
     CHECK(result.accepted.front().color == white);
+}
+
+TEST_CASE("A continuous ear boundary splits only crossed parents while preserving the safe hair root",
+          "[SemanticColoring][SemanticBoundaryRefinement][SubfaceColor]")
+{
+    const auto source = triangles({{.22f,.14f,.10f}});
+    BoundaryBodyFixture body;
+    BoundaryFaceFixture face;
+    BoundaryRefinerFixture boundary;
+    const auto analysis = analyze(source, body, face, &boundary);
+    REQUIRE(analysis.error.empty());
+    REQUIRE(analysis.person_detected);
+    REQUIRE(analysis.face_labels.size() == 1);
+    CHECK(analysis.face_labels.front() == Label::Hair);
+    CHECK(analysis.boundary_identity == boundary.identity());
+    // One view with no source-color or geometry discontinuity is deliberately
+    // insufficient for a depth-3 replacement. Keep the safe coarse result
+    // until independent boundary evidence exists.
+    REQUIRE(analysis.subface_labels.empty());
+    REQUIRE(analysis.baseline_face_labels.size()==1);
+    CHECK(analysis.baseline_face_labels.front()==Label::Hair);
+}
+
+TEST_CASE("Third-level subface budgeting charges every unique ancestor split",
+          "[SemanticColoring][SubfaceColor]")
+{
+    const Color skin {.8f,.5f,.3f};
+    const SubfaceColors candidates {
+        {0, {3, 0}, skin, .99f}, // root, child 0, grandchild 0: nine triangles
+        {0, {3, 1}, skin, .98f}, // shares every split node
+        {0, {3, 4}, skin, .97f}, // adds the depth-2 child 1 split: three triangles
+    };
+    SubfaceBudget budget;
+    budget.maximum_added_ratio = .12f;
+    SubfaceBudgetResult result;
+    std::string error;
+    REQUIRE(enforce_subface_budget(candidates, 100, budget, result, error));
+    CHECK(error.empty());
+    CHECK(result.added_triangles == 12);
+    CHECK(result.accepted.size() == 3);
 }
 
 TEST_CASE("Subface palette remapping is independent of recognition and manual whole-face paint wins",
@@ -591,9 +863,20 @@ TEST_CASE("A mature local sclera component admits supported direct neutral shado
         set_vertex(vertex, bright);
     set_vertex(3, {.35f,.35f,.35f});
     set_vertex(7, {.45f,.34f,.28f});
+    // Each tested eye patch needs its own independent bright support. A
+    // remote eye at face 10 must not supply the missing second anchor.
+    const auto add_anchor = [&](size_t shared_vertex) {
+        const int added = int(source.mesh.vertices.size());
+        source.mesh.vertices.push_back(source.mesh.vertices[shared_vertex] + Vec3f(0.f,1.f,0.f));
+        source.mesh.vertices.push_back(source.mesh.vertices[shared_vertex] + Vec3f(1.f,1.f,0.f));
+        source.vertex_colors.push_back({bright[0],bright[1],bright[2],1.f});
+        source.vertex_colors.push_back({bright[0],bright[1],bright[2],1.f});
+        source.mesh.indices.emplace_back(int(shared_vertex), added, added + 1);
+    };
+    add_anchor(0); add_anchor(4);
     source.content_id = content_fingerprint(source);
-    std::vector<Label> labels(200, Label::FaceSkin);
-    labels[0] = labels[4] = labels[10] = Label::EyeSclera;
+    std::vector<Label> labels(source.mesh.indices.size(), Label::FaceSkin);
+    labels[0] = labels[4] = labels[10] = labels[200] = labels[201] = Label::EyeSclera;
     auto analysis = labeled(source, labels);
     for (size_t face_id : {size_t(1), size_t(5)})
         for (uint8_t path : {uint8_t(0), uint8_t(2), uint8_t(3)})
@@ -625,7 +908,7 @@ TEST_CASE("Reliable skin leaves cut back an eye-white root only at a supported e
     std::vector<Label> labels(colors.size(), Label::FaceSkin);
     labels[0] = labels[1] = labels[2] = Label::EyeSclera;
     auto analysis = labeled(source, labels);
-    analysis.subface_labels = {{2, {2, 7}, Label::FaceSkin, .88f, 2}};
+    analysis.subface_labels = {{2, {3, 30}, Label::FaceSkin, .88f, 2}};
     Analysis restored;
     std::string cache_error;
     REQUIRE(decode_analysis(encode_analysis(analysis), source,
@@ -638,7 +921,7 @@ TEST_CASE("Reliable skin leaves cut back an eye-white root only at a supported e
     REQUIRE(error.empty());
     REQUIRE_FALSE(result.accepted.empty());
     const auto direct = std::find_if(result.accepted.begin(), result.accepted.end(), [](const auto& leaf) {
-        return leaf.face_id == 2 && leaf.path == SubfacePath {2, 7};
+        return leaf.face_id == 2 && leaf.path == SubfacePath {3, 30};
     });
     REQUIRE(direct != result.accepted.end());
     CHECK(direct->confidence == .88f);
@@ -648,10 +931,7 @@ TEST_CASE("Reliable skin leaves cut back an eye-white root only at a supported e
 
     analysis.subface_labels.clear();
     REQUIRE(map_subface_palette(source, analysis, whole, card, card, {}, result, error));
-    REQUIRE_FALSE(result.accepted.empty());
-    CHECK(std::all_of(result.accepted.begin(), result.accepted.end(), [&](const auto& leaf) {
-        return leaf.face_id == 2 && leaf.color == card[0];
-    }));
+    CHECK(result.accepted.empty());
 
     auto isolated = triangles(colors);
     analysis = labeled(isolated, labels);
@@ -841,7 +1121,7 @@ TEST_CASE("Malformed subface evidence is rejected transactionally", "[SemanticCo
     result.accepted.push_back({0, {1, 0}, {.1f,.2f,.3f}, .9f});
     result.added_triangles = 3;
     std::string error;
-    REQUIRE_FALSE(enforce_subface_budget({{0, {3, 0}, {.1f,.2f,.3f}, .9f}}, 10, {}, result, error));
+    REQUIRE_FALSE(enforce_subface_budget({{0, {4, 0}, {.1f,.2f,.3f}, .9f}}, 10, {}, result, error));
     CHECK_FALSE(error.empty());
     CHECK(result.accepted.empty());
     CHECK(result.added_triangles == 0);
@@ -1379,6 +1659,70 @@ TEST_CASE("Body skin accepts warm neck shadows while rejecting red clothing and 
     CHECK(map_palette(red, labeled(red, {Label::BodySkin}), card, card).empty());
 }
 
+TEST_CASE("Supported low-confidence skin and background gaps inherit one local skin material", "[SemanticColoring][Regression][SkinBoundary]")
+{
+    const Color skin {.847451f,.569326f,.425459f};
+    const Color shadow {.509356f,.327569f,.233013f};
+    const auto card = portrait_card();
+
+    for (const Label gap_label : {Label::BodySkin, Label::FaceSkin, Label::Unknown, Label::Background}) {
+        INFO("gap label " << size_t(gap_label));
+        // FaceSkin keeps its tighter facial-detail tolerance; body/unknown/
+        // background gaps exercise the wider neck-shadow range.
+        const Color gap_color = gap_label == Label::FaceSkin ? Color{.70f,.45f,.32f} : shadow;
+        auto source = hair_edge_strip({skin, skin, gap_color, skin});
+        auto analysis = labeled(source, {Label::BodySkin, Label::BodySkin, gap_label, Label::BodySkin,
+                                         Label::Background});
+        analysis.face_confidence[2] = .55f;
+        const auto output = map_palette(source, analysis, card, card);
+        const auto gap = std::find_if(output.begin(), output.end(), [](const auto& item) { return item.first == 2; });
+        REQUIRE(gap != output.end());
+        CHECK(gap->second == card[0]);
+    }
+}
+
+TEST_CASE("Supported skin gap recovery rejects protected labels incompatible colors and conflicting owners", "[SemanticColoring][Regression][SkinBoundary]")
+{
+    const Color skin {.847451f,.569326f,.425459f};
+    const Color shadow {.509356f,.327569f,.233013f};
+    const Color red {.946937f,.175030f,.158082f};
+    const auto card = portrait_card();
+
+    SECTION("Hair and clothes are never converted into skin") {
+        for (const Label protected_label : {Label::Hair, Label::Clothes}) {
+            auto source = hair_edge_strip({skin, skin, shadow, skin});
+            auto analysis = labeled(source, {Label::BodySkin, Label::BodySkin, protected_label,
+                                             Label::BodySkin, Label::Background});
+            analysis.face_confidence[2] = .55f;
+            const auto output = map_palette(source, analysis, card, card);
+            CHECK(std::none_of(output.begin(), output.end(), [](const auto& item) {
+                return item.first == 2 && item.second == portrait_card()[0];
+            }));
+        }
+    }
+    SECTION("Saturated red background is not interpreted as a skin gap") {
+        auto source = hair_edge_strip({skin, skin, red, skin});
+        auto analysis = labeled(source, {Label::BodySkin, Label::BodySkin, Label::Background,
+                                         Label::BodySkin, Label::Background});
+        analysis.face_confidence[2] = .55f;
+        const auto output = map_palette(source, analysis, card, card);
+        CHECK(std::none_of(output.begin(), output.end(), [](const auto& item) {
+            return item.first == 2 && item.second == portrait_card()[0];
+        }));
+    }
+    SECTION("Two distinct skin owners do not claim the same background gap") {
+        const Color compatible_with_face_and_body {.70f,.45f,.32f};
+        auto source = hair_edge_strip({skin, skin, compatible_with_face_and_body, skin});
+        auto analysis = labeled(source, {Label::FaceSkin, Label::FaceSkin, Label::Background,
+                                         Label::BodySkin, Label::Background});
+        analysis.face_confidence[2] = .55f;
+        const auto output = map_palette(source, analysis, card, card);
+        CHECK(std::none_of(output.begin(), output.end(), [](const auto& item) {
+            return item.first == 2 && item.second == portrait_card()[0];
+        }));
+    }
+}
+
 TEST_CASE("Automatic semantic paint falls back for uncertain or nonhuman surfaces and never invents a filament", "[SemanticColoring]")
 {
     const auto source = triangles({{.8f,.5f,.3f}, {.1f,.1f,.1f}, {.9f,.1f,.2f}});
@@ -1431,9 +1775,19 @@ TEST_CASE("Eight semantic views and face crops recognize a person while preservi
 {
     const auto source = triangles({{.8f,.5f,.3f}});
     BodyFixture body; FaceFixture face;
-    const auto result = analyze(source, body, face);
+    size_t observed_full=0,observed_crops=0;
+    const auto observer=[&](const RenderedView& view,int view_index,const ViewRegion& region,bool crop){
+        CHECK(view_index>=0);CHECK(view_index<8);CHECK(view.image.width==512);CHECK(view.image.height==512);
+        CHECK(view.face_ids.size()==view.depth.size());CHECK(view.face_ids.size()==view.barycentric.size());
+        CHECK(view.face_ids.size()==size_t(view.image.width)*view.image.height);
+        CHECK(std::all_of(view.face_ids.begin(),view.face_ids.end(),[&](uint32_t id){return id==UINT32_MAX || id<source.mesh.indices.size();}));
+        if(crop){CHECK(face.calls==observed_crops);++observed_crops;CHECK(region.width>0.f);CHECK(region.height>0.f);}
+        else{CHECK(body.calls==observed_full);++observed_full;CHECK(region.left==0.f);CHECK(region.width==1.f);}
+    };
+    const auto result = analyze(source, body, face, nullptr, {}, {}, observer);
     REQUIRE(result.error.empty());
     CHECK_FALSE(result.canceled);
+    CHECK(observed_full==8);CHECK(observed_crops==face.calls);CHECK(observed_crops>0);
     CHECK(result.rendered_views == 8);
     CHECK(body.calls == 8);
     CHECK(face.calls > 0);
@@ -1509,10 +1863,15 @@ TEST_CASE("Semantic cache preserves confidence decisions and invalidates either 
     auto result = labeled(source, {Label::Clothes, Label::Hair});
     result.face_confidence[0] = minimum_confidence;
     result.face_confidence[1] = std::nextafter(minimum_confidence, 0.f);
+    result.boundary_runs.push_back({3, BoundaryPart::Ear, BoundarySide::Left,
+        {4,5,20,30}, "accepted", "", 1.25, 2.5, 3.75, .92f, 41, 2, "2:0", "NONE"});
     const auto doc = encode_analysis(result);
     Analysis restored; std::string error;
     REQUIRE(decode_analysis(doc, source, result.body_identity, result.face_identity, restored, error));
     CHECK(restored.face_labels == result.face_labels);
+    REQUIRE(restored.boundary_runs.size() == 1);
+    CHECK(restored.boundary_runs.front().changed_pixels == 41);
+    CHECK(restored.boundary_runs.front().crop_id == "2:0");
     CHECK_THAT(restored.face_confidence[0], WithinAbs(result.face_confidence[0], 0));
     CHECK(map_palette(source, restored, portrait_card()) == map_palette(source, result, portrait_card()));
     const auto old_signature = restored.signature;
@@ -1538,4 +1897,60 @@ TEST_CASE("Malformed semantic caches leave the current analysis intact", "[Seman
     CHECK(current.face_labels == std::vector<Label>{Label::Hair});
     doc = encode_analysis(current); doc["face_count"] = std::numeric_limits<uint64_t>::max();
     CHECK_FALSE(decode_analysis(doc, source, current.body_identity, current.face_identity, current, error));
+}
+
+
+TEST_CASE("Sclera leaf acceptance uses its own eye appearance instead of brighter remote eyes",
+          "[SemanticColoring][SubfaceColor][EyeColor][Regression]")
+{
+    std::vector<Color> colors(200, {.80f,.63f,.54f});
+    colors[0] = colors[1] = {.62f,.62f,.62f};
+    colors[2] = {.43f,.43f,.43f};
+    for (size_t face = 100; face < 160; ++face) colors[face] = {.98f,.98f,.98f};
+    const auto source = surface_strip(colors);
+    std::vector<Label> labels(colors.size(), Label::FaceSkin);
+    labels[0] = labels[1] = Label::EyeSclera;
+    auto analysis = labeled(source, labels);
+    analysis.subface_labels = {{2,{3,0},Label::EyeSclera,.96f,3}};
+    const auto card = portrait_card();
+    // Freeze safe roots to isolate the child acceptance contract. Otherwise
+    // the 60 remote neutral faces dominate the coarse skin-neutral prototype
+    // and already map face 2 white, correctly eliminating a redundant leaf.
+    const FaceColors safe_roots {{0,card[2]}, {1,card[2]}, {2,card[5]}};
+    SubfaceBudgetResult local, with_other_eyes;
+    std::string error;
+    REQUIRE(map_subface_palette(source, analysis, safe_roots,
+                               card, card, {}, local, error));
+    REQUIRE(std::any_of(local.accepted.begin(),local.accepted.end(),[&](const auto& leaf) {
+        return leaf.face_id == 2 && leaf.path == SubfacePath{3,0} && leaf.color == card[2];
+    }));
+    for (size_t face = 100; face < 160; ++face) analysis.face_labels[face] = Label::EyeSclera;
+    REQUIRE(map_subface_palette(source, analysis, safe_roots,
+                               card, card, {}, with_other_eyes, error));
+    REQUIRE(with_other_eyes.accepted.size() == local.accepted.size());
+    for (size_t index = 0; index < local.accepted.size(); ++index) {
+        CHECK(with_other_eyes.accepted[index].face_id == local.accepted[index].face_id);
+        CHECK(with_other_eyes.accepted[index].path == local.accepted[index].path);
+        CHECK(with_other_eyes.accepted[index].color == local.accepted[index].color);
+    }
+}
+
+TEST_CASE("An isolated eye-white anchor cannot borrow remote eyes to whiten adjacent skin",
+          "[SemanticColoring][SubfaceColor][EyeColor][Regression]")
+{
+    std::vector<Color> colors(200, {.82f,.74f,.70f});
+    colors[0] = colors[100] = colors[101] = {.90f,.91f,.92f};
+    const auto source = surface_strip(colors);
+    std::vector<Label> labels(colors.size(), Label::FaceSkin);
+    labels[0] = labels[100] = labels[101] = Label::EyeSclera;
+    auto analysis = labeled(source, labels);
+    analysis.subface_labels = {{1,{3,0},Label::EyeSclera,.95f,3}};
+    const auto card = portrait_card();
+    SubfaceBudgetResult result;
+    std::string error;
+    REQUIRE(map_subface_palette(source, analysis, map_palette(source,analysis,card,card),
+                               card, card, {}, result, error));
+    CHECK(std::none_of(result.accepted.begin(),result.accepted.end(),[&](const auto& leaf) {
+        return leaf.face_id == 1 && leaf.color == card[2];
+    }));
 }

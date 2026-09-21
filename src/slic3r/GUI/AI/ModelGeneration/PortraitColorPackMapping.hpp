@@ -2,6 +2,30 @@
 #include "ModelPreviewPalette.hpp"
 
 namespace Slic3r::GUI::PreviewPalette {
+// Identify the full named role card independently of physical filament order.
+// Each expected role must have its own matching slot; a repeated RGB must not
+// hide a missing role. Never reorder the caller's physical slots or slot IDs.
+inline bool matches_portrait_card_set(const std::vector<Color>& colors,
+                                      const std::vector<Color>& canonical_card)
+{
+    if (canonical_card.size() != 6 || colors.size() != canonical_card.size()) return false;
+    std::array<bool, 6> used {};
+    for (const Color& color : colors) {
+        size_t match = canonical_card.size();
+        for (size_t role = 0; role < canonical_card.size(); ++role) {
+            if (used[role]) continue;
+            bool same = true;
+            for (size_t channel = 0; channel < 3; ++channel)
+                same = same && std::isfinite(color[channel]) && std::isfinite(canonical_card[role][channel]) &&
+                    std::abs(color[channel] - canonical_card[role][channel]) <= .5f / 255.f;
+            if (same) { match = role; break; }
+        }
+        if (match == canonical_card.size()) return false;
+        used[match] = true;
+    }
+    return true;
+}
+
 // The portrait card is an intentional recoloring preset. Match source groups
 // to its roles before replacing colors; nearest-to-pastel quantization can turn
 // all skin into lip pink and merge dark clothing with hair. This uses color

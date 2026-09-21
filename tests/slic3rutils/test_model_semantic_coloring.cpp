@@ -229,16 +229,47 @@ TEST_CASE("Cancelled semantic work cannot return when optimization is enabled ag
     const auto mesh = source("cancel-and-reenable");
     REQUIRE(coordinator.request(mesh, palette, palette, {}, {}));
     REQUIRE(wait_until([&] { return provider.calls->body_entered.load(); }));
+    CHECK(coordinator.progress() > 0);
     coordinator.cancel();
     CHECK_FALSE(coordinator.busy());
     CHECK_FALSE(coordinator.poll());
     provider.calls->hold_body = false;
     REQUIRE(coordinator.request(mesh, palette, {blue, gray}, {}, {}));
+    CHECK(coordinator.progress() == -1);
     auto result = await_result(coordinator);
     REQUIRE(result);
     REQUIRE(result->error.empty());
     REQUIRE(result->automatic.size() == 1);
     check_color(result->automatic.front().second, blue);
+    CHECK_FALSE(coordinator.poll());
+    CHECK_FALSE(coordinator.busy());
+}
+
+TEST_CASE("Repeated optimization changes report the pending request instead of canceled progress",
+          "[ModelSemanticColoring][Regression]")
+{
+    Fixture fixture;
+    auto provider = fixture.add_providers("-rapid-toggle");
+    fixture.configure(provider.body, provider.face);
+    provider.calls->hold_body = true;
+    Coordinator coordinator(fixture.runtime, fixture.cache);
+    const auto mesh = source("rapid-toggle");
+    REQUIRE(coordinator.request(mesh, palette, palette, {}, {}));
+    REQUIRE(wait_until([&] { return provider.calls->body_entered.load(); }));
+    CHECK(coordinator.progress() > 0);
+
+    REQUIRE(coordinator.request(mesh, palette, {blue, gray}, {}, {}, {}, {}, {}, false));
+    CHECK(coordinator.progress() == -1);
+    REQUIRE(coordinator.request(mesh, palette, palette, {}, {}));
+    CHECK(coordinator.progress() == -1);
+
+    provider.calls->hold_body = false;
+    auto result = await_result(coordinator);
+    REQUIRE(result);
+    REQUIRE(result->error.empty());
+    REQUIRE(result->analysis);
+    REQUIRE(result->automatic.size() == 1);
+    check_color(result->automatic.front().second, skin);
     CHECK_FALSE(coordinator.poll());
     CHECK_FALSE(coordinator.busy());
 }
@@ -251,12 +282,13 @@ TEST_CASE("Semantic preview emits the same sparse midpoint leaves used by MMU pe
     const SC::SubfaceColors leaves {
         {0, {1, 0}, gray, .95f},
         {0, {2, uint8_t((1u << 2) | 3u)}, blue, .90f},
+        {0, {3, uint8_t((1u << 4) | (3u << 2) | 2u)}, gray, .92f},
     };
     const auto geometry = Slic3r::GUI::build_semantic_colored_geometry(*mesh, roots, leaves);
     // Root child 1 is split again: three first-level leaves plus four
-    // second-level leaves give seven rendered triangles.
-    REQUIRE(geometry.vertices_count() == 21);
-    REQUIRE(geometry.indices_count() == 21);
+    // second-level leaves, with one of those split once more, give ten triangles.
+    REQUIRE(geometry.vertices_count() == 30);
+    REQUIRE(geometry.indices_count() == 30);
     double area = 0.0;
     for (size_t triangle = 0; triangle < geometry.indices_count() / 3; ++triangle) {
         const Vec3f a = geometry.extract_position_3(triangle * 3);
@@ -270,4 +302,40 @@ TEST_CASE("Semantic preview emits the same sparse midpoint leaves used by MMU pe
     const auto overridden = Slic3r::GUI::build_semantic_colored_geometry(
         *mesh, SC::compose(roots, manual, true), SC::compose_subfaces(leaves, manual, true));
     CHECK(overridden.indices_count() == 3);
+}
+
+TEST_CASE("Manual slot identity survives duplicate RGB, disabling and restoration", "[ModelSemanticColoring][Regression]")
+{
+    Fixture fixture;
+    auto provider=fixture.add_providers("-manual-slots"); fixture.configure(provider.body,provider.face);
+    Coordinator coordinator(fixture.runtime,fixture.cache);
+    const auto mesh=source("manual-duplicate-rgb");
+    std::vector<SC::PaletteSlot> slots {{"first",skin,true},{"second",skin,true},{"blue",blue,true}};
+    std::vector<SC::FaceSlotAssignment> manual {{0,"second","second",skin}};
+    REQUIRE(coordinator.request(mesh,{skin,skin,blue},{skin,skin,blue},{},{{0,skin}},slots,slots,manual));
+    auto first=await_result(coordinator); REQUIRE(first); REQUIRE(first->error.empty());
+    REQUIRE(first->effective_manual_slots.size()==1); CHECK(first->effective_manual_slots[0].slot_id=="second");
+    const auto calls=provider.calls->body.load();
+    slots[1].enabled=false;
+    REQUIRE(coordinator.request(mesh,{skin,skin,blue},{skin,skin,blue},{},{{0,skin}},slots,slots,manual));
+    auto disabled=await_result(coordinator); REQUIRE(disabled); REQUIRE(disabled->error.empty());
+    REQUIRE(disabled->effective_manual_slots.size()==1);
+    CHECK(disabled->effective_manual_slots[0].slot_id=="first"); CHECK(disabled->substituted_manual_slots==1);
+    slots[1].enabled=true; slots[1].color=gray;
+    REQUIRE(coordinator.request(mesh,{skin,skin,blue},{skin,gray,blue},{},{{0,skin}},slots,slots,manual));
+    auto restored=await_result(coordinator); REQUIRE(restored); REQUIRE(restored->error.empty());
+    CHECK(restored->effective_manual_slots[0].slot_id=="second"); check_color(restored->effective_manual[0].second,gray);
+    CHECK(restored->substituted_manual_slots==0); CHECK(provider.calls->body.load()==calls);
+}
+
+TEST_CASE("Disabled semantic optimization maps the complete baseline without model resources", "[ModelSemanticColoring][Regression]")
+{
+    Fixture fixture; Coordinator coordinator(fixture.runtime,fixture.cache);
+    auto mesh=source("no-model-ordinary-materials");
+    std::vector<SC::PaletteSlot> slots {{"skin",skin,true},{"dark",gray,true}};
+    REQUIRE(coordinator.request(mesh,palette,palette,{},{{0,gray}},slots,slots,{{0,"dark","dark",gray}},false));
+    auto result=await_result(coordinator); REQUIRE(result); REQUIRE(result->error.empty());
+    CHECK_FALSE(result->analysis); CHECK(result->automatic.empty()); CHECK(result->automatic_subfaces.empty());
+    REQUIRE(result->slots.face_slots.size()==1); CHECK_FALSE(result->geometry.is_empty());
+    REQUIRE(result->effective_manual_slots.size()==1); CHECK(result->effective_manual_slots[0].slot_id=="dark");
 }

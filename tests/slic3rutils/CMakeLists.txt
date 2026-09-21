@@ -31,6 +31,8 @@ add_executable(${_TEST_NAME}_tests
     test_surface_selection_state.cpp
     test_color_trial_state.cpp
     test_semantic_coloring.cpp
+    test_semantic_palette_mapping.cpp
+    test_semantic_boundary_refinement.cpp
     test_semantic_mask_refinement.cpp
     test_semantic_material_regions.cpp
     test_mediapipe_face_masks.cpp
@@ -52,6 +54,11 @@ if (MSVC)
 endif ()
 
 target_link_libraries(${_TEST_NAME}_tests test_common libslic3r_gui libslic3r OrcaSlicer::AIContracts OrcaSlicer::SmartSlicing pybind11::embed Catch2::Catch2WithMain)
+add_executable(semantic_color_validation ${CMAKE_SOURCE_DIR}/tools/ai/semantic_color_validation.cpp)
+target_link_libraries(semantic_color_validation libslic3r_gui libslic3r OrcaSlicer::AIContracts)
+if(WIN32)
+    target_link_libraries(semantic_color_validation psapi)
+endif()
 set_property(TARGET ${_TEST_NAME}_tests PROPERTY FOLDER "tests")
 
 orcaslicer_copy_test_dlls()

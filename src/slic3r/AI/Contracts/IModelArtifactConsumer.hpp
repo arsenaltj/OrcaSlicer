@@ -44,6 +44,22 @@ struct ModelSubfaceColorOverride
     uint8_t depth {0};
     uint8_t path {0};
     std::array<float, 3> color {};
+    // Stable palette identity. Empty retains legacy RGB matching.
+    std::string slot_id;
+};
+
+struct ModelPaletteSlot
+{
+    std::string slot_id;
+    std::array<float, 3> color {};
+    // Zero-based project filament index, independent of RGB and palette order.
+    size_t project_slot {0};
+};
+
+struct ModelFaceSlotOverride
+{
+    size_t face_id {0};
+    std::string slot_id;
 };
 
 struct ModelImportRequest
@@ -59,6 +75,12 @@ struct ModelImportRequest
     // leaves inherit the corresponding whole-face assignment above.
     std::vector<ModelSubfaceColorOverride> subface_color_overrides;
     std::string face_color_geometry_id;
+    // Explicit import bypasses color clustering and preserves the original
+    // topology. Include every candidate, even materials used only by subfaces.
+    // face_slot_overrides must cover every source face exactly once, composing
+    // the safe baseline, enabled automatic suggestions and manual overrides.
+    std::vector<ModelPaletteSlot> material_slots;
+    std::vector<ModelFaceSlotOverride> face_slot_overrides;
 };
 
 enum class ModelImportOutcome

@@ -38,11 +38,35 @@ with no accepted semantic labels, allowing the caller to retain ordinary color
 matching. Cancellation is checked before/after native calls and during mask
 processing; an in-progress native image call itself is synchronous.
 
-The prepared `providers.json` contains `body_provider` and `face_provider`.
+The prepared `providers.json` contains `body_provider`, `face_provider`, and
+`boundary_provider`. The boundary provider defaults to `none`; a missing,
+damaged, or unknown optional boundary provider falls back to the body/face result.
 Register a replacement factory under a new id, then select that id independently.
 Changing a model whose output layout differs requires its own adapter: overwriting
 a pinned model file is intentionally rejected by SHA256 verification. Provider
 identity includes model hashes and interpretation-policy versions for cache keys.
+
+## Offline boundary-model A/B
+
+`tools/ai/semantic_boundary_ab.py` compares MobileSAM and EfficientSAM-Tiny with
+the same RGB ROI and positive-skin/negative-hair prompts. It saves the unrounded
+soft mask, overlay, changed-pixel count, optional contour error against a frozen
+reference, model SHA256 values, CPU timings, and peak process memory. The tool is
+evaluation-only and requires Python ONNX Runtime; Orca does not load Python.
+
+EfficientSAM accepts either its combined model or the official split encoder and
+decoder; split mode records encoding and decoding separately. MobileSAM's upstream
+export script covers only the prompt encoder and mask decoder, so the evaluation
+encoder is derived from the fixed TinyViT checkpoint with
+`tools/ai/export_mobile_sam_encoder.py`. Run providers in separate processes when
+comparing peak working-set values because the operating-system counter is a
+process-lifetime peak.
+
+The source/weight audit state is recorded in
+`tools/ai/semantic_boundary_models.json`. Entries with a missing revision, URL,
+size, digest, LICENSE, or NOTICE remain blocked from packaging. No ONNX boundary
+provider is registered in the application until a candidate passes the four-model
+visual and performance gates.
 
 ## Interpretation limits and network behavior
 

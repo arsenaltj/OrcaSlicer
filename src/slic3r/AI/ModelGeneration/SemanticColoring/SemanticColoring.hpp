@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -64,7 +65,7 @@ enum class Label : uint8_t {
 inline constexpr size_t label_count = 12;
 inline constexpr float minimum_confidence = .70f;
 // Version of stored recognition evidence; palette-mapping edits do not invalidate it.
-inline constexpr const char* pipeline_version = "orca.semantic-coloring/v16";
+inline constexpr const char* pipeline_version = "orca.semantic-coloring/v24-cross-face-contour-projection";
 
 struct SubfaceLabelEvidence {
     size_t face_id {0};
@@ -92,6 +93,16 @@ struct RGBImage {
 
 // Providers return masks at exactly the input dimensions. A face provider owns
 // its model-specific landmark topology; only these semantic masks cross the port.
+enum class BoundaryPart : uint8_t { Ear, Eye, Eyebrow, Hairline, ClothesSkin };
+enum class BoundarySide : uint8_t { Unspecified, Left, Right };
+// Adapter-owned anatomical support. person_id is local to this input view.
+struct FaceRegionHint {
+    uint32_t person_id {0};
+    BoundaryPart part {BoundaryPart::Ear};
+    BoundarySide side {BoundarySide::Unspecified};
+    std::array<int, 4> box {};
+    std::vector<std::array<float, 2>> support_polygon;
+};
 struct Prediction {
     std::vector<Label> labels;
     std::vector<float> confidence;
@@ -99,6 +110,7 @@ struct Prediction {
     bool face_detected {false};
     bool canceled {false};
     std::string error;
+    std::vector<FaceRegionHint> regions;
     bool valid_for(const RGBImage& image) const;
 };
 class IBodyRegionRecognizer {
@@ -115,6 +127,66 @@ public:
     virtual Prediction predict(const RGBImage&, const Cancel&) = 0;
 };
 
+struct BoundaryRegion {
+    int left {0}, top {0}, right {0}, bottom {0};
+    bool valid_for(const RGBImage&) const;
+};
+struct BoundaryPrompt {
+    int x {0}, y {0};
+    bool positive {false};
+};
+struct BoundaryTarget {
+    uint32_t person_id {0};
+    BoundaryPart part {BoundaryPart::Ear};
+    BoundarySide side {BoundarySide::Unspecified};
+    BoundaryRegion region;
+    Label foreground {Label::FaceSkin}, background {Label::Hair};
+    std::vector<BoundaryPrompt> prompts;
+    std::vector<std::array<float, 2>> support_polygon;
+};
+struct BoundaryRefinementRequest {
+    Label foreground {Label::FaceSkin};
+    Label background {Label::Hair};
+    std::vector<BoundaryRegion> regions;
+    std::vector<BoundaryPrompt> prompts;
+    std::vector<BoundaryTarget> targets;
+};
+struct BoundaryRunDiagnostic {
+    uint32_t person_id {0};
+    BoundaryPart part {BoundaryPart::Ear};
+    BoundarySide side {BoundarySide::Unspecified};
+    BoundaryRegion region;
+    std::string status, reason;
+    double loading_ms {0}, encoding_ms {0}, decoding_ms {0};
+    float model_score {0};
+    size_t changed_pixels {0};
+    int view_id {-1};
+    std::string crop_id;
+    std::string reason_code;
+};
+struct BoundaryRefinement {
+    int width {0}, height {0};
+    // NaN outside a processed ROI. Probabilities and confidence are normalized.
+    std::vector<float> foreground_probability;
+    std::vector<float> confidence;
+    bool canceled {false};
+    // Successful inference may decline an inconsistent prompt/mask. This is a
+    // safe policy fallback, distinct from runtime or resource failure.
+    bool rejected {false};
+    std::string rejection_reason;
+    std::string error;
+    float model_score {0.f};
+    double loading_ms {0}, encoding_ms {0}, decoding_ms {0};
+    bool valid_for(const RGBImage&) const;
+};
+class IBoundaryRefiner {
+public:
+    virtual ~IBoundaryRefiner() = default;
+    virtual std::string identity() const = 0;
+    virtual BoundaryRefinement refine(const RGBImage&, const Prediction& coarse,
+                                      const BoundaryRefinementRequest&, const Cancel&) = 0;
+};
+
 // Immutable during analysis. Geometry is the exact preview/import canonical
 // Z-up millimetre mesh; colors are original sampled sRGB, before any trial/paint.
 struct MeshSnapshot {
@@ -129,14 +201,20 @@ struct MeshSnapshot {
 std::string content_fingerprint(const MeshSnapshot&);
 
 struct Analysis {
-    std::string geometry_id, content_id, body_identity, face_identity, signature;
+    std::string geometry_id, content_id, body_identity, face_identity, boundary_identity {"none"}, signature;
     std::vector<Label> face_labels;
     std::vector<float> face_confidence;
+    std::vector<Label> baseline_face_labels;
+    std::vector<float> baseline_face_confidence;
     std::vector<SubfaceLabelEvidence> subface_labels;
+    // Frozen depth-two evidence before optional boundary refinement. Budget
+    // failures must retain this verified tree instead of evicting safe leaves.
+    std::vector<SubfaceLabelEvidence> baseline_subface_labels;
     bool person_detected {false};
     bool canceled {false};
     size_t rendered_views {0}, face_views {0}, observed_faces {0}, reliable_faces {0};
     std::string error;
+    std::vector<BoundaryRunDiagnostic> boundary_runs;
 };
 
 // CPU z-buffer. A pixel refers to an original mesh face, never a sampled mesh.
@@ -162,14 +240,91 @@ RenderedView render_view(const MeshSnapshot&, float yaw_degrees, int image_size 
                          const Cancel& = {});
 RenderedView render_region(const MeshSnapshot&, float yaw_degrees, const ViewRegion&,
                            int image_size = 512, const Cancel& = {});
+
+// Project one continuous image-space contour sample to the depth-two leaves
+// visible around it. Barycentric coordinates are interpolated only when the
+// complete 2x2 raster cell belongs to one original face. At a face boundary,
+// each visible corner is projected through its own face instead.
+std::vector<std::pair<uint32_t, SubfacePath>> project_boundary_sample(
+    const RenderedView&, float image_x, float image_y);
 Analysis analyze(const MeshSnapshot&, IBodyRegionRecognizer&, IFaceRegionRecognizer&,
                  const Cancel& = {}, const Progress& = {});
+Analysis analyze(const MeshSnapshot&, IBodyRegionRecognizer&, IFaceRegionRecognizer&,
+                 IBoundaryRefiner*, const Cancel& = {}, const Progress& = {});
+// Optional developer evidence hook. Keeps render geometry out of model APIs;
+// ordinary analysis has no observer and performs no diagnostic disk writes.
+using RenderObserver = std::function<void(const RenderedView&, int view_index,
+                                         const ViewRegion&, bool face_crop)>;
+Analysis analyze(const MeshSnapshot&, IBodyRegionRecognizer&, IFaceRegionRecognizer&,
+                 IBoundaryRefiner*, const Cancel&, const Progress&, const RenderObserver&);
 
 // portrait_card, when present, is ordered skin/dark/light/lips/cool/mid. Its
 // role colors must exist in palette. All outputs are exact members of palette;
 // many regions may reuse one color. An invalid/stale analysis returns no paint.
 FaceColors map_palette(const MeshSnapshot&, const Analysis&, const std::vector<Color>& palette,
                        const std::vector<Color>& portrait_card = {});
+
+// Candidate scoring used by palette mapping. Scores are costs (lower is
+// better) and each evidence value is normalized to [0, 1]. Keeping this
+// small value object public makes the weighting auditable without exposing
+// any model-specific labels or geometry types to the palette chooser.
+struct PaletteCandidateEvidence {
+    float source_distance {0.f};
+    float semantic_compatibility {1.f};
+    float multi_view_support {1.f};
+    float geometry_support {1.f};
+    float continuity_support {1.f};
+    // A portrait-card role may provide a small preference after compatibility
+    // checks. It is deliberately capped by the implementation at 0.10.
+    float role_bonus {0.f};
+    bool hard_rejected {false};
+};
+struct PaletteCandidateScore {
+    float source_component {0.f};
+    float semantic_component {0.f};
+    float multi_view_component {0.f};
+    float geometry_component {0.f};
+    float continuity_component {0.f};
+    float role_component {0.f};
+    float total {0.f};
+    bool accepted {true};
+};
+PaletteCandidateScore score_palette_candidate(const PaletteCandidateEvidence&);
+
+enum class PaletteDecisionReason : uint8_t {
+    None,
+    SourceColorIncompatible,
+    ProtectedRegionConflict,
+    PaletteAmbiguous
+};
+const char* palette_decision_reason_name(PaletteDecisionReason);
+
+struct RegionPaletteCandidateDecision {
+    size_t palette_index {0};
+    float source_cost {0.f};
+    float semantic_cost {0.f};
+    float role_bonus {0.f};
+    float total_cost {0.f};
+    bool accepted {true};
+    PaletteDecisionReason reason {PaletteDecisionReason::None};
+};
+
+struct RegionPaletteDecision {
+    size_t selected_index {0};
+    float best_cost {0.f};
+    float second_cost {std::numeric_limits<float>::infinity()};
+    float score_margin {std::numeric_limits<float>::infinity()};
+    bool ambiguous {false};
+    std::vector<RegionPaletteCandidateDecision> candidates;
+};
+
+// One decision path for production mapping, recommendations and diagnostics.
+// original_oklab is the immutable source-region representative, while palette
+// and portrait_card contain normalized sRGB colors.
+RegionPaletteDecision decide_region_palette(const Color& original_oklab, Label,
+                                            const std::vector<Color>& palette,
+                                            const std::vector<Color>& portrait_card = {});
+
 // Edit an established material assignment by slot; do not run recognition or
 // nearest-color competition again. Invalid/ambiguous palettes return no auto layer.
 FaceColors remap_palette_targets(const FaceColors& suggestions, const std::vector<Color>& original_candidates,
@@ -184,7 +339,7 @@ bool enforce_subface_budget(const SubfaceColors& candidates, size_t original_fac
                             const SubfaceBudget&, SubfaceBudgetResult&, std::string& error);
 bool map_subface_palette(const MeshSnapshot&, const Analysis&, const FaceColors& whole_face,
                          const std::vector<Color>& palette, const std::vector<Color>& portrait_card,
-                         const SubfaceBudget&, SubfaceBudgetResult&, std::string& error);
+                         const SubfaceBudget&, SubfaceBudgetResult&, std::string& error, const Cancel& cancel = {});
 SubfaceColors remap_subface_palette_targets(const SubfaceColors& suggestions,
                                             const std::vector<Color>& original_candidates,
                                             const std::vector<Color>& target_candidates);
@@ -196,8 +351,13 @@ SubfaceColors compose_subfaces(const SubfaceColors& automatic, const FaceColors&
 // Decode is transactional and validates all identities before allocating masks.
 std::string analysis_cache_key(const MeshSnapshot&, const std::string& body_identity,
                                const std::string& face_identity);
+std::string analysis_cache_key(const MeshSnapshot&, const std::string& body_identity,
+                               const std::string& face_identity, const std::string& boundary_identity);
 nlohmann::json encode_analysis(const Analysis&);
 bool decode_analysis(const nlohmann::json&, const MeshSnapshot&, const std::string& body_identity,
                      const std::string& face_identity, Analysis&, std::string& error);
+bool decode_analysis(const nlohmann::json&, const MeshSnapshot&, const std::string& body_identity,
+                     const std::string& face_identity, const std::string& boundary_identity,
+                     Analysis&, std::string& error);
 
 } // namespace Slic3r::AI::SemanticColoring

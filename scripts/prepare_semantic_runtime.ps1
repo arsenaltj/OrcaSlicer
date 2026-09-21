@@ -36,8 +36,10 @@ function Assert-SemanticRuntime([string]$Path) {
         throw 'Unexpected semantic runtime manifest version'
     }
     $semanticProviders = Get-Content -LiteralPath (Join-Path $Path 'providers.json') -Raw | ConvertFrom-Json
-    if ([string]::IsNullOrWhiteSpace($semanticProviders.body_provider) -or [string]::IsNullOrWhiteSpace($semanticProviders.face_provider)) {
-        throw 'Both independent semantic provider ids are required'
+    if ([string]::IsNullOrWhiteSpace($semanticProviders.body_provider) -or
+        [string]::IsNullOrWhiteSpace($semanticProviders.face_provider) -or
+        [string]::IsNullOrWhiteSpace($semanticProviders.boundary_provider)) {
+        throw 'Body, face, and boundary provider ids are required'
     }
 }
 

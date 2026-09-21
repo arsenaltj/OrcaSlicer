@@ -40,6 +40,7 @@
 #include <exception>
 #include <functional>
 #include <memory>
+#include <map>
 #include <optional>
 #include <string>
 #include <thread>
@@ -234,6 +235,7 @@ public:
         std::shared_ptr<const PreviewPalette::Histogram> trial_histogram;
         std::string geometry_id;
         FaceColorOverrides face_color_overrides;
+        std::vector<AI::SemanticColoring::FaceSlotAssignment> manual_slot_intents;
         std::optional<SelectionState> selection;
         std::optional<ModelPreviewColorControls::State> color_trial;
         std::shared_ptr<const AI::SemanticColoring::MeshSnapshot> semantic_source;
@@ -395,6 +397,7 @@ public:
         m_pending_vertex_colors = std::move(prepared.vertex_colors);
         m_geometry_id = std::move(prepared.geometry_id);
         m_face_color_overrides = std::move(prepared.face_color_overrides);
+        m_manual_slot_intents = std::move(prepared.manual_slot_intents);
         m_semantic_source = std::move(prepared.semantic_source);
         m_pending_selection = std::move(prepared.selection);
         m_model_path = std::move(prepared.path);
@@ -432,6 +435,7 @@ public:
         m_pending_vertex_colors = std::move(cached->vertex_colors);
         m_geometry_id = std::move(cached->geometry_id);
         m_face_color_overrides = std::move(cached->face_color_overrides);
+        m_manual_slot_intents = std::move(cached->manual_slot_intents);
         m_semantic_source = std::move(cached->semantic_source);
         m_pending_selection = std::move(cached->selection);
         m_model_path = std::move(cached->path);
@@ -485,6 +489,10 @@ private:
         if (m_semantic_controller) m_semantic_controller->cancel();
         m_semantic_source.reset(); m_automatic_face_colors.clear(); m_automatic_subface_colors.clear();
         m_semantic_analysis.reset(); m_semantic_ready = false;
+        m_semantic_slot_result = {}; m_validation_diagnostics = nlohmann::json::object();
+        m_manual_slot_intents.clear(); m_effective_manual_slots.clear(); m_effective_manual_colors.clear();
+        m_region_color_intents.clear();
+        m_pending_mapping = nlohmann::json(); m_pending_mapping_signature.clear();
         m_protected_faces.clear();
         m_foreground_faces.clear(); m_selection_domain.clear();
         m_pending_selection.reset(); m_geometry_id.clear(); m_face_color_overrides.clear();
@@ -522,6 +530,63 @@ private:
     }
 
 public:
+    void set_validation_provider(const std::string& provider);
+    bool semantic_busy() const { return m_semantic_controller && m_semantic_controller->busy(); }
+    bool material_mapping_ready() const { return m_semantic_ready && m_color_trial_enabled; }
+    bool semantic_ready() const { return material_mapping_ready() && m_color_trial->semantic_optimization(); }
+    std::shared_ptr<const AI::SemanticColoring::MeshSnapshot> semantic_source() const { return m_semantic_source; }
+    const AI::SemanticColoring::SlotMappingResult& semantic_slots_result() const { return m_semantic_slot_result; }
+    std::vector<AI::SemanticColoring::PaletteSlot> active_slot_palette() const { return m_color_trial->semantic_slots(); }
+    nlohmann::json validation_diagnostics() const;
+    bool capture_validation_image(const std::filesystem::path&, int width, int height, int& samples, std::string& error);
+    struct ManualColorState {
+        FaceColorOverrides colors;
+        std::vector<AI::SemanticColoring::FaceSlotAssignment> slots;
+    };
+    ManualColorState manual_color_state() const { return {m_face_color_overrides, m_manual_slot_intents}; }
+    const std::vector<AI::SemanticColoring::FaceSlotAssignment>& effective_manual_slots() const { return m_effective_manual_slots; }
+    const std::vector<AI::SemanticColoring::RegionColorOverride>& region_color_intents() const { return m_region_color_intents; }
+    void set_region_color_intents(std::vector<AI::SemanticColoring::RegionColorOverride> intents) {
+        m_region_color_intents = std::move(intents); update_semantic_coloring();
+    }
+    std::string source_slot_signature() const {
+        auto entries=nlohmann::json::array();
+        for (const auto& slot:m_color_trial->semantic_slots(true)) entries.push_back({slot.id,slot.color,slot.enabled});
+        return entries.dump();
+    }
+    void restore_semantic_snapshot(nlohmann::json mapping, std::string signature) {
+        m_pending_mapping = std::move(mapping); m_pending_mapping_signature = std::move(signature);
+        m_pending_mapping_slots_key = source_slot_signature();
+    }
+    void set_manual_state(ManualColorState state) {
+        m_manual_slot_intents = std::move(state.slots);
+        m_face_color_overrides = std::move(state.colors);
+        // Original-mode display includes manual edits while the immutable input
+        // remains available for recognition and subsequent increases in colors.
+        if (m_semantic_source && m_context && m_canvas->SetCurrent(*m_context)) {
+            auto geometry = build_semantic_colored_geometry(*m_semantic_source, m_face_color_overrides, {});
+            auto model = std::make_unique<GLModel>(); model->init_from(std::move(geometry));
+            m_models.clear(); m_models.emplace_back(std::move(model));
+        }
+        update_semantic_coloring(); refresh();
+    }
+    void set_manual_colors(FaceColorOverrides colors) { set_manual_state({std::move(colors), {}}); }
+    bool paint_selected_slot(const AI::SemanticColoring::PaletteSlot& slot) {
+        if (!m_region_editor->ready()) return false;
+        std::map<size_t, AI::SemanticColoring::Color> changes(m_face_color_overrides.begin(), m_face_color_overrides.end());
+        std::map<size_t, AI::SemanticColoring::FaceSlotAssignment> intents;
+        for (const auto& item : m_manual_slot_intents) intents[item.face_id] = item;
+        const auto& selected = m_region_editor->selected_faces();
+        bool changed = false;
+        for (size_t i = 0; i < selected.size(); ++i) if (selected[i]) {
+            changes[i] = slot.color; intents[i] = {i,slot.id,slot.id,slot.color}; changed = true;
+        }
+        if (!changed) return false;
+        ManualColorState state; state.colors.assign(changes.begin(),changes.end());
+        for (const auto& item : intents) state.slots.push_back(item.second);
+        set_manual_state(std::move(state)); return true;
+    }
+
     void reset_view()
     {
         m_pan_x = m_pan_y = 0.0;
@@ -581,7 +646,8 @@ public:
     const std::string& geometry_id() const { return m_geometry_id; }
     const FaceColorOverrides& face_color_overrides() const { return m_face_color_overrides; }
     FaceColorOverrides import_face_color_overrides(bool use_current_trial = true) const {
-        return AI::SemanticColoring::compose(m_automatic_face_colors, m_face_color_overrides,
+        return AI::SemanticColoring::compose(m_automatic_face_colors,
+            use_current_trial && m_semantic_ready ? m_effective_manual_colors : m_face_color_overrides,
             use_current_trial && m_color_trial_enabled && m_color_trial->semantic_optimization() && m_semantic_ready);
     }
     SubfaceColorOverrides import_subface_color_overrides(bool use_current_trial = true) const {
@@ -592,7 +658,7 @@ public:
         if (!m_semantic_analysis) return nlohmann::json::object();
         return {{"schema", "orca.semantic-color-provenance/v1"}, {"signature", m_semantic_analysis->signature},
             {"content_sha256", m_semantic_analysis->content_id}, {"body", m_semantic_analysis->body_identity},
-            {"face", m_semantic_analysis->face_identity}};
+            {"face", m_semantic_analysis->face_identity}, {"boundary", m_semantic_analysis->boundary_identity}};
     }
     nlohmann::json selection_metadata() const {
         return AI::SurfaceSelectionPersistence::encode(selection_state(), m_triangle_count, m_geometry_id);
@@ -889,6 +955,7 @@ private:
         std::shared_ptr<const PreviewPalette::Histogram> trial_histogram;
         std::string geometry_id;
         FaceColorOverrides face_color_overrides;
+        std::vector<AI::SemanticColoring::FaceSlotAssignment> manual_slot_intents;
         std::optional<SelectionState> selection;
         std::optional<ModelPreviewColorControls::State> color_trial;
         std::shared_ptr<const AI::SemanticColoring::MeshSnapshot> semantic_source;
@@ -934,6 +1001,7 @@ private:
         m_cached_preview = std::make_unique<CachedPreview>();
         m_cached_preview->geometry_id = m_geometry_id;
         m_cached_preview->face_color_overrides = m_face_color_overrides;
+        m_cached_preview->manual_slot_intents = m_manual_slot_intents;
         m_cached_preview->semantic_source = m_semantic_source;
         m_cached_preview->selection = selection_state();
         m_cached_preview->color_trial = m_color_trial->state();
@@ -1355,8 +1423,20 @@ private:
         width = std::max(1, width);
         height = std::max(1, height);
 #endif
+        render_preview(width, height, 0);
+        m_canvas->SwapBuffers();
+        if (m_trial_toggle_started) {
+            BOOST_LOG_TRIVIAL(info) << "AI color trial frame submitted: enabled=" << m_color_trial_enabled
+                << ", elapsed_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - *m_trial_toggle_started).count();
+            m_trial_toggle_started.reset();
+        }
+    }
+
+    void render_preview(int width, int height, unsigned framebuffer)
+    {
         while (::glGetError() != GL_NO_ERROR) {}
-        glsafe(::glBindFramebuffer(GL_FRAMEBUFFER, 0));
+        glsafe(::glBindFramebuffer(GL_FRAMEBUFFER, framebuffer));
         glsafe(::glDisable(GL_SCISSOR_TEST));
         glsafe(::glDisable(GL_BLEND));
         glsafe(::glDisable(GL_STENCIL_TEST));
@@ -1411,26 +1491,38 @@ private:
                 shader->set_uniform("gray_view", m_gray_view);
                 shader->set_uniform("preview_lighting", m_color_trial->lighting());
                 shader->set_uniform("preview_lightness_weight", PreviewPalette::lightness_weight);
-                shader->set_uniform("preview_color_count", m_color_trial_enabled && !m_gray_view ? int(m_trial_palette.size()) : 0);
+                const bool awaiting_semantic = m_color_trial_enabled && m_color_trial->semantic_optimization() &&
+                    !m_semantic_ready && m_semantic_controller && m_semantic_controller->busy();
+                shader->set_uniform("preview_color_count", m_color_trial_enabled && !m_gray_view && !awaiting_semantic ?
+                    int(m_trial_palette.size()) : 0);
                 if (m_color_trial_enabled) for (size_t i = 0; i < m_trial_palette.size(); ++i) {
                     shader->set_uniform(("preview_rgb[" + std::to_string(i) + "]").c_str(), m_trial_palette[i]);
                     shader->set_uniform(("preview_lab[" + std::to_string(i) + "]").c_str(), PreviewPalette::to_lab(m_color_trial->mapping_colors()[i]));
                 }
-                // Pure separation must not introduce intermediate colors at
-                // multisample edges or through framebuffer dithering. Restore
-                // both states immediately after drawing the trial surface.
-                const bool pure_separation = m_color_trial_enabled && !m_gray_view && !m_color_trial->lighting();
-                const bool multisample = pure_separation && ::glIsEnabled(GL_MULTISAMPLE);
+                // Semantic material boundaries use the canvas' default 4x MSAA
+                // for display only. The saved/printed boundary remains the
+                // subface tree. Dithering stays disabled so stable interiors do
+                // not acquire colors outside the selected filament palette.
+                const bool pure_separation = m_color_trial_enabled && !m_gray_view && !m_color_trial->lighting() && !awaiting_semantic;
+                const bool semantic_preview = m_semantic_ready && m_semantic_model &&
+                    m_color_trial_enabled && !m_gray_view;
+                const bool multisample_was_enabled = ::glIsEnabled(GL_MULTISAMPLE);
                 const bool dither = pure_separation && ::glIsEnabled(GL_DITHER);
                 if (pure_separation) {
-                    glsafe(::glDisable(GL_MULTISAMPLE));
+                    if (semantic_preview)
+                        glsafe(::glEnable(GL_MULTISAMPLE));
+                    else
+                        glsafe(::glDisable(GL_MULTISAMPLE));
                     glsafe(::glDisable(GL_DITHER));
                 }
-                if (m_semantic_ready && m_semantic_model && m_color_trial_enabled && m_color_trial->semantic_optimization() && !m_gray_view)
+                if (semantic_preview)
                     m_semantic_model->render(shader);
                 else for (const std::unique_ptr<GLModel>& model : m_models)
                     model->render(shader);
-                if (multisample) glsafe(::glEnable(GL_MULTISAMPLE));
+                if (pure_separation && multisample_was_enabled != bool(::glIsEnabled(GL_MULTISAMPLE))) {
+                    if (multisample_was_enabled) glsafe(::glEnable(GL_MULTISAMPLE));
+                    else glsafe(::glDisable(GL_MULTISAMPLE));
+                }
                 if (dither) glsafe(::glEnable(GL_DITHER));
                 if ((m_selection_model || m_protection_model) && m_selection_enabled && m_selection_overlay_visible) {
                     shader->set_uniform("gray_view", false);
@@ -1490,13 +1582,6 @@ private:
                 m_render_diagnostics_logged = true;
             }
         }
-        m_canvas->SwapBuffers();
-        if (m_trial_toggle_started) {
-            BOOST_LOG_TRIVIAL(info) << "AI color trial frame submitted: enabled=" << m_color_trial_enabled
-                << ", elapsed_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now() - *m_trial_toggle_started).count();
-            m_trial_toggle_started.reset();
-        }
     }
 
     wxGLCanvas* m_canvas {nullptr};
@@ -1508,6 +1593,14 @@ private:
     std::shared_ptr<const AI::SemanticColoring::Analysis> m_semantic_analysis;
     std::unique_ptr<GLModel> m_semantic_model;
     bool m_semantic_ready {false};
+    std::string m_validation_provider;
+    nlohmann::json m_validation_diagnostics;
+    AI::SemanticColoring::SlotMappingResult m_semantic_slot_result;
+    std::vector<AI::SemanticColoring::FaceSlotAssignment> m_manual_slot_intents, m_effective_manual_slots;
+    std::vector<AI::SemanticColoring::RegionColorOverride> m_region_color_intents;
+    FaceColorOverrides m_effective_manual_colors;
+    nlohmann::json m_pending_mapping;
+    std::string m_pending_mapping_signature, m_pending_mapping_slots_key;
     FaceColorOverrides m_automatic_face_colors;
     SubfaceColorOverrides m_automatic_subface_colors;
     ModelPreviewColorControls* m_color_trial {nullptr};

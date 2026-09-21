@@ -88,6 +88,98 @@ TEST_CASE("Semantic midpoint import rejects changed topology transactionally", "
     CHECK(painting == before);
 }
 
+TEST_CASE("Explicit slots preserve a third-level-only material even when its RGB duplicates another slot",
+          "[ModelColorUpdate][SubfaceColor][PaletteSlots]")
+{
+    const auto mesh = its_make_cube(20, 30, 40);
+    const std::array<float, 3> color {.7f, .5f, .4f};
+    const std::vector<AI::ModelPaletteSlot> slots {{"skin", color, 0}, {"detail", color, 5}};
+    std::vector<AI::ModelFaceSlotOverride> faces;
+    for (size_t id = 0; id < mesh.indices.size(); ++id) faces.push_back({id, "skin"});
+    TriangleSelector::TriangleSplittingData painting;
+    std::string error;
+    REQUIRE(apply_subface_color_overrides(mesh, mesh, painting, {},
+        {{0, 3, 63, color, "detail"}}, error, slots, faces));
+    TriangleMesh triangle_mesh(mesh);
+    TriangleSelector restored(triangle_mesh);
+    restored.deserialize(painting);
+    CHECK(restored.num_facets(EnforcerBlockerType::Extruder6) == 1);
+    CHECK(restored.num_facets(EnforcerBlockerType::Extruder1) == int(mesh.indices.size()) + 8);
+    const auto before = painting;
+    REQUIRE_FALSE(apply_subface_color_overrides(mesh, mesh, painting, {},
+        {{0, 3, 63, color, "missing"}}, error, slots, faces));
+    CHECK(painting == before);
+    faces.pop_back();
+    REQUIRE_FALSE(apply_subface_color_overrides(mesh, mesh, painting, {}, {}, error, slots, faces));
+    CHECK(painting == before);
+}
+
+TEST_CASE("Source topology accepts only the recorded import translation and original face ordinals",
+          "[ModelColorUpdate][SubfaceColor]")
+{
+    const auto mesh = its_make_cube(20, 30, 40);
+    Model model;
+    auto* volume = model.add_object("source", "source.obj", TriangleMesh(mesh))->volumes.front();
+    REQUIRE(matches_source_topology(mesh, *volume));
+    auto reordered = mesh;
+    std::swap(reordered.indices[0], reordered.indices[1]);
+    CHECK_FALSE(matches_source_topology(reordered, *volume));
+    auto changed = mesh;
+    changed.vertices[0].x() += .001f;
+    CHECK_FALSE(matches_source_topology(changed, *volume));
+    volume->source.mesh_offset.x() += 1.;
+    CHECK_FALSE(matches_source_topology(mesh, *volume));
+}
+
+TEST_CASE("Explicit third-level material trees retain duplicate-color slot identity through a 3MF",
+          "[ModelColorUpdate][SubfaceColor][PaletteSlots][3mf]")
+{
+    Model model;
+    auto* object = model.add_object("semantic", "source.obj", TriangleMesh(its_make_cube(20, 30, 40)));
+    object->add_instance();
+    auto* volume = object->volumes.front();
+    const auto& mesh = volume->mesh().its;
+    const std::array<float, 3> color {.7f, .5f, .4f};
+    std::vector<AI::ModelFaceSlotOverride> faces;
+    for (size_t id = 0; id < mesh.indices.size(); ++id) faces.push_back({id, "skin"});
+    TriangleSelector::TriangleSplittingData painting;
+    std::string error;
+    REQUIRE(apply_subface_color_overrides(mesh, mesh, painting, {},
+        {{0, 3, 63, color, "eye-only"}}, error, {{"skin", color, 0}, {"eye-only", color, 5}}, faces));
+    const auto expected = painting;
+    volume->mmu_segmentation_facets.set_data(std::move(painting));
+    ScopedTemporaryDir backup("semantic-depth-three-source");
+    model.set_backup_path(backup.string());
+    ScopedTemporaryFile file(".3mf");
+    const std::string path = file.string();
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.set_num_filaments(6);
+    config.set_key_value("filament_colour", new ConfigOptionStrings(std::vector<std::string>(6, "#B38066")));
+    PlateData plate;
+    plate.plate_index = 0;
+    StoreParams params;
+    params.path = path.c_str();
+    params.model = &model;
+    params.config = &config;
+    params.strategy = SaveStrategy::Zip64 | SaveStrategy::Silence;
+    params.plate_data_list.push_back(&plate);
+    REQUIRE(store_bbs_3mf(params));
+    DynamicPrintConfig restored_config;
+    ConfigSubstitutionContext substitutions {ForwardCompatibilitySubstitutionRule::Enable};
+    PlateDataPtrs plates;
+    std::vector<Preset*> presets;
+    Model restored = Model::read_from_file(path, &restored_config, &substitutions,
+        LoadStrategy::LoadModel | LoadStrategy::LoadConfig, &plates, &presets);
+    release_PlateData_list(plates);
+    for (auto* preset : presets) delete preset;
+    REQUIRE(restored.objects.size() == 1);
+    REQUIRE(restored.objects.front()->volumes.size() == 1);
+    const auto* result = restored.objects.front()->volumes.front();
+    CHECK(result->mmu_segmentation_facets.get_data() == expected);
+    CHECK(result->mmu_segmentation_facets.has_facets(*result, EnforcerBlockerType::Extruder6));
+    CHECK(result->mesh().its.indices == mesh.indices);
+}
+
 TEST_CASE("Native preparation preserves source and targets total world height", "[ai][OrcaModelPreparation]")
 {
     Model model;

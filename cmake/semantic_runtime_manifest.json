@@ -54,6 +54,7 @@
   "minimum_confidence": 0.7,
   "default_providers": {
     "body_provider": "mediapipe.cpu.v1",
-    "face_provider": "mediapipe.cpu.v1"
+    "face_provider": "mediapipe.cpu.v1",
+    "boundary_provider": "none"
   }
 }

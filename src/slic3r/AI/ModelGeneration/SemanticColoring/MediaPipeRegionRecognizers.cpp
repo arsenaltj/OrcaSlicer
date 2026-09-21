@@ -1,4 +1,5 @@
 #include "MediaPipeRegionRecognizers.hpp"
+#include "NativeMobileSamBoundaryRefiner.hpp"
 #include <algorithm>
 #include <cmath>
 #include <fstream>
@@ -51,7 +52,6 @@ public:
         auto out = empty_prediction(image); out.error = m_error; out.canceled = canceled(cancel); return out;
     }
 };
-
 struct Point { float x, y; };
 bool inside_polygon(float x, float y, const std::vector<Point>& points)
 {
@@ -241,7 +241,7 @@ public:
     ~FaceRecognizer() {
         if (m_task) { char* error = nullptr; m_api->MpFaceLandmarkerClose(m_task, &error); m_api->discard_error(error); }
     }
-    std::string identity() const override { return std::string(provider_id) + "/1.0.0/" + dll_hash + "/" + face_hash + "/face-details-v4/iris-ellipse-v1/eyebrow-contour-v1/ear-skin-v2/multiface4/edge-abstain-v2/rgb8-image-v1"; }
+    std::string identity() const override { return std::string(provider_id) + "/1.0.0/" + dll_hash + "/" + face_hash + "/face-details-v4/iris-ellipse-v1/eyebrow-contour-v1/ear-skin-v2/multiface4/anatomic-regions-v1/edge-abstain-v2/rgb8-image-v1"; }
     Prediction predict(const RGBImage& image, const Cancel& cancel) override {
         std::lock_guard<std::mutex> lock(m_mutex); auto out = empty_prediction(image);
         if (!out.error.empty()) return out;
@@ -285,7 +285,9 @@ struct Registry {
     std::mutex mutex;
     std::map<std::string, BodyRecognizerFactory> bodies;
     std::map<std::string, FaceRecognizerFactory> faces;
+    std::map<std::string, BoundaryRefinerFactory> boundaries;
     Registry() {
+        boundaries[mobile_sam_provider_id] = [](const std::filesystem::path& root) { return create_mobile_sam_refiner(root); };
 #if defined(_WIN32) && defined(ORCA_ENABLE_MEDIAPIPE_NATIVE)
         bodies[provider_id] = [](const std::filesystem::path& root) { return std::make_unique<BodyRecognizer>(root); };
         faces[provider_id] = [](const std::filesystem::path& root) { return std::make_unique<FaceRecognizer>(root); };
@@ -337,7 +339,11 @@ Prediction MediaPipeFaceMasks::from_landmarks(const RGBImage& image,
     constexpr int skin_samples[] = {50,101,205,280,330,425};
     constexpr int right_ear[] = {127,234,132};
     constexpr int left_ear[] = {356,454,361};
-    for (const auto& face : faces) {
+    // A conservative forehead band. It does not claim the hairline itself;
+    // body Hair and face-skin masks must still provide independent SAM seeds.
+    constexpr int hairline_support[] = {103,67,109,10,338,297,332,300,293,70,63};
+    for (size_t person = 0; person < faces.size(); ++person) {
+        const auto& face = faces[person];
         if (canceled(cancel)) { out.canceled = true; return out; }
         const auto contour = [&](const auto& ids, std::vector<Point>& points) {
             points.clear();
@@ -347,6 +353,22 @@ Prediction MediaPipeFaceMasks::from_landmarks(const RGBImage& image,
                 points.push_back({p.x * image.width, p.y * image.height});
             }
             return true;
+        };
+        const auto region_hint = [&](BoundaryPart part, BoundarySide side, const std::vector<Point>& polygon, float expansion) {
+            if (polygon.size() < 3) return;
+            FaceRegionHint hint; hint.person_id = uint32_t(person); hint.part = part; hint.side = side;
+            Point center {}; for (const auto& p : polygon) { center.x += p.x; center.y += p.y; }
+            center.x /= float(polygon.size()); center.y /= float(polygon.size());
+            std::vector<Point> support;
+            for (const auto& p : polygon) {
+                Point q {center.x + (p.x - center.x) * expansion, center.y + (p.y - center.y) * expansion};
+                support.push_back(q); hint.support_polygon.push_back({q.x, q.y});
+            }
+            const auto box = bounds(support);
+            const int pad = std::max(4, (box[2] - box[0]) / 3);
+            hint.box = {std::max(0, box[0] - pad), std::max(0, box[1] - pad),
+                std::min(image.width, box[2] + pad + 1), std::min(image.height, box[3] + pad + 1)};
+            if (hint.box[2] > hint.box[0] && hint.box[3] > hint.box[1]) out.regions.push_back(std::move(hint));
         };
         std::vector<Point> outer, inner;
         if (contour(outer_lips, outer) && contour(inner_lips, inner)) {
@@ -361,7 +383,7 @@ Prediction MediaPipeFaceMasks::from_landmarks(const RGBImage& image,
                 }
             }
         }
-        const auto eye_mask = [&](const auto& aperture_ids, const auto& iris_ids) {
+        const auto eye_mask = [&](const auto& aperture_ids, const auto& iris_ids, BoundarySide side) {
             std::vector<Point> aperture, rim;
             if (!contour(aperture_ids, aperture) || !contour(iris_ids, rim)) return;
             float twice_area = 0.f, span_squared = 0.f;
@@ -389,6 +411,7 @@ Prediction MediaPipeFaceMasks::from_landmarks(const RGBImage& image,
                 std::hypot(horizontal_mid.x - vertical_mid.x, horizontal_mid.y - vertical_mid.y) > maximum_radius * .45f ||
                 !inside_polygon(center.x, center.y, aperture)) return;
             out.face_detected = true; out.person_detected = true;
+            region_hint(BoundaryPart::Eye, side, aperture, 1.f);
             const auto box = bounds(aperture);
             for (int y = box[1]; y <= box[3]; ++y) {
                 if (canceled(cancel)) { out.canceled = true; return; }
@@ -406,11 +429,11 @@ Prediction MediaPipeFaceMasks::from_landmarks(const RGBImage& image,
                 }
             }
         };
-        eye_mask(right_eye, right_iris);
+        eye_mask(right_eye, right_iris, BoundarySide::Right);
         if (out.canceled) return out;
-        eye_mask(left_eye, left_iris);
+        eye_mask(left_eye, left_iris, BoundarySide::Left);
         if (out.canceled) return out;
-        const auto eyebrow_mask = [&](const auto& eyebrow_ids) {
+        const auto eyebrow_mask = [&](const auto& eyebrow_ids, BoundarySide side) {
             std::vector<Point> eyebrow;
             if (!contour(eyebrow_ids, eyebrow)) return;
             float twice_area = 0.f, span_squared = 0.f;
@@ -425,6 +448,7 @@ Prediction MediaPipeFaceMasks::from_landmarks(const RGBImage& image,
             // forehead skin at the rendered resolution.
             if (span < 5.f || std::abs(twice_area) * .5f < span * .65f) return;
             out.face_detected = true; out.person_detected = true;
+            region_hint(BoundaryPart::Eyebrow, side, eyebrow, 1.35f);
             const auto box = bounds(eyebrow);
             for (int y = box[1]; y <= box[3]; ++y) {
                 if (canceled(cancel)) { out.canceled = true; return; }
@@ -434,10 +458,14 @@ Prediction MediaPipeFaceMasks::from_landmarks(const RGBImage& image,
                 }
             }
         };
-        eyebrow_mask(right_eyebrow);
+        eyebrow_mask(right_eyebrow, BoundarySide::Right);
         if (out.canceled) return out;
-        eyebrow_mask(left_eyebrow);
+        eyebrow_mask(left_eyebrow, BoundarySide::Left);
         if (out.canceled) return out;
+
+        std::vector<Point> hairline;
+        if (contour(hairline_support, hairline))
+            region_hint(BoundaryPart::Hairline, BoundarySide::Unspecified, hairline, 1.12f);
 
         // The multiclass body model has no ear class and may merge an exposed
         // ear into adjacent hair. Keep this evidence inside the face adapter:
@@ -466,7 +494,7 @@ Prediction MediaPipeFaceMasks::from_landmarks(const RGBImage& image,
         }
         const float skin_chroma = std::hypot(skin[1], skin[2]);
         if (skin_chroma < .015f || skin[1] <= 0.f || skin[2] <= 0.f) continue;
-        const auto ear_mask = [&](const int (&ids)[3], int opposite_mid) {
+        const auto ear_mask = [&](const int (&ids)[3], int opposite_mid, BoundarySide side) {
             std::array<Point, 3> points;
             for (size_t i = 0; i < points.size(); ++i) {
                 const auto& landmark = face[size_t(ids[i])];
@@ -496,6 +524,13 @@ Prediction MediaPipeFaceMasks::from_landmarks(const RGBImage& image,
             const float ry = vertical_span * .62f;
             const Point center {points[1].x + hx * rx * .30f, points[1].y + hy * rx * .30f};
             const Point anchor {points[1].x - hx * rx * .60f, points[1].y - hy * rx * .60f};
+            std::vector<Point> ear_support;
+            for (int i = 0; i < 32; ++i) {
+                const float angle = float(i) * 6.28318530718f / 32.f;
+                ear_support.push_back({center.x + hx * rx * std::cos(angle) + vx * ry * std::sin(angle),
+                                       center.y + hy * rx * std::cos(angle) + vy * ry * std::sin(angle)});
+            }
+            region_hint(BoundaryPart::Ear, side, ear_support, 1.15f);
             const int left = std::max(0, int(std::floor(center.x - rx - ry * std::abs(vx))));
             const int right = std::min(image.width - 1, int(std::ceil(center.x + rx + ry * std::abs(vx))));
             const int top = std::max(0, int(std::floor(center.y - rx - ry * std::abs(vy))));
@@ -539,8 +574,8 @@ Prediction MediaPipeFaceMasks::from_landmarks(const RGBImage& image,
             for (size_t pixel : pending) if (out.labels[pixel] == Label::Unknown)
                 paint(int(pixel % image.width), int(pixel / image.width), Label::FaceSkin, .88f);
         };
-        ear_mask(right_ear, left_ear[1]);
-        ear_mask(left_ear, right_ear[1]);
+        ear_mask(right_ear, left_ear[1], BoundarySide::Right);
+        ear_mask(left_ear, right_ear[1], BoundarySide::Left);
     }
     return out;
 }
@@ -557,13 +592,21 @@ bool register_face_recognizer_factory(const std::string& id, FaceRecognizerFacto
     auto& r = registry(); std::lock_guard<std::mutex> lock(r.mutex);
     return r.faces.emplace(id, std::move(factory)).second;
 }
+bool register_boundary_refiner_factory(const std::string& id, BoundaryRefinerFactory factory)
+{
+    if (id.empty() || id == "none" || !factory) return false;
+    auto& r = registry(); std::lock_guard<std::mutex> lock(r.mutex);
+    return r.boundaries.emplace(id, std::move(factory)).second;
+}
 RegionRecognizers create_region_recognizers(const std::string& body_provider, const std::string& face_provider,
+                                           const std::string& boundary_provider,
                                            const std::filesystem::path& root)
 {
-    BodyRecognizerFactory body; FaceRecognizerFactory face;
+    BodyRecognizerFactory body; FaceRecognizerFactory face; BoundaryRefinerFactory boundary;
     { auto& r = registry(); std::lock_guard<std::mutex> lock(r.mutex);
       auto b = r.bodies.find(body_provider); if (b != r.bodies.end()) body = b->second;
-      auto f = r.faces.find(face_provider); if (f != r.faces.end()) face = f->second; }
+      auto f = r.faces.find(face_provider); if (f != r.faces.end()) face = f->second;
+      auto x = r.boundaries.find(boundary_provider); if (x != r.boundaries.end()) boundary = x->second; }
     RegionRecognizers result;
     // Failure or replacement of one port must not disable the other port.
     try {
@@ -583,8 +626,21 @@ RegionRecognizers create_region_recognizers(const std::string& body_provider, co
         result.error += error.what();
         result.face = std::make_unique<Unavailable<IFaceRegionRecognizer>>(face_provider, error.what());
     }
+    if (!boundary_provider.empty() && boundary_provider != "none") try {
+        if (!boundary) throw std::runtime_error("Unknown boundary refinement provider.");
+        result.boundary = boundary(root);
+        if (!result.boundary) throw std::runtime_error("Boundary refinement factory returned no provider.");
+    } catch (const std::exception& error) {
+        // Boundary refinement is optional. A bad model or configuration must
+        // retain the established body/face result instead of disabling it.
+        result.boundary_error = error.what();
+        result.boundary.reset();
+    }
     return result;
 }
+RegionRecognizers create_region_recognizers(const std::string& body_provider, const std::string& face_provider,
+                                           const std::filesystem::path& root)
+{ return create_region_recognizers(body_provider, face_provider, "none", root); }
 RegionRecognizers create_region_recognizers(const std::string& provider, const std::filesystem::path& root)
 { return create_region_recognizers(provider, provider, root); }
 RegionRecognizers create_mediapipe_recognizers(const std::filesystem::path& root)

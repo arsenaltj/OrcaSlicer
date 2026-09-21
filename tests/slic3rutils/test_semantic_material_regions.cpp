@@ -99,6 +99,41 @@ TEST_CASE("A disconnected skin colored patch has no material donor", "[SemanticM
     CHECK(fixture.paint==previous);
 }
 
+TEST_CASE("An uncertain background ear face needs a shared reliable skin edge", "[SemanticMaterialRegions][Regression]")
+{
+    const Color skin {.7373f,.4824f,.4065f}, shadow {.70f,.45f,.37f};
+    for (bool connected : {true,false}) {
+        Fixture fixture(12,skin,Label::FaceSkin,skin);
+        const size_t ear=fixture.cell(5,5)+1;
+        fixture.set(ear,shadow,Label::Background,.4f,red);
+        fixture.paint.erase(fixture.paint.begin()+ear);
+        if (!connected) fixture.split_vertices(.00001f);
+        refine_material_patches(fixture.source,fixture.analysis,{dark,white,gray,red,skin},{},fixture.paint);
+        const auto found=std::find_if(fixture.paint.begin(),fixture.paint.end(),[&](const auto& item) {
+            return item.first==ear;
+        });
+        CHECK((found!=fixture.paint.end())==connected);
+        if (connected) CHECK(found->second==skin);
+    }
+}
+
+TEST_CASE("Reliable lip and hair edges veto uncertain background skin filling", "[SemanticMaterialRegions][Regression]")
+{
+    const Color skin {.7373f,.4824f,.4065f}, shadow {.70f,.45f,.37f};
+    for (Label detail : {Label::Lips,Label::Hair}) {
+        Fixture fixture(12,skin,Label::FaceSkin,skin);
+        const size_t ear=fixture.cell(5,5)+1;
+        fixture.set(ear,shadow,Label::Background,.4f,red);
+        fixture.paint.erase(fixture.paint.begin()+ear);
+        const size_t neighbor=fixture.cell(5,6);
+        fixture.set(neighbor,detail==Label::Lips?red:dark,detail,.95f,detail==Label::Lips?red:dark);
+        refine_material_patches(fixture.source,fixture.analysis,{dark,white,gray,red,skin},{},fixture.paint);
+        CHECK(std::none_of(fixture.paint.begin(),fixture.paint.end(),[&](const auto& item) {
+            return item.first==ear;
+        }));
+    }
+}
+
 TEST_CASE("A skin colored gap beside a reliable lip is not painted over", "[SemanticMaterialRegions][Regression]")
 {
     const Color skin {.80f,.59f,.48f}, shadow {.78f,.57f,.46f};
@@ -318,6 +353,125 @@ TEST_CASE("A face-detail collar blocks a chain of dark face-skin predictions",
     })!=fixture.paint.end());
 }
 
+TEST_CASE("A small assigned skin fragment inherits its local skin filament on face and body skin",
+          "[SemanticMaterialRegions][Regression][FaceSkin]")
+{
+    const Color skin {.7373f,.4824f,.4065f}, neutral {.48f,.47f,.46f}, shadow {.60f,.34f,.27f};
+    for (Label label : {Label::FaceSkin, Label::BodySkin, Label::Unknown}) {
+        DYNAMIC_SECTION("skin label " << int(label)) {
+            Fixture fixture(20,skin,label==Label::Unknown?Label::FaceSkin:label,skin);
+            if (label == Label::Unknown) {
+                fixture.set(fixture.cell(10,10),shadow,Label::Unknown,0.f,gray);
+                fixture.set(fixture.cell(10,10)+1,shadow,Label::Unknown,0.f,gray);
+            } else fixture.island(10,10,neutral,label,.95f);
+            refine_material_patches(fixture.source,fixture.analysis,{dark,white,gray,red,skin},{},fixture.paint);
+            CHECK(fixture.paint[fixture.cell(10,10)].second==skin);
+            CHECK(fixture.paint[fixture.cell(10,10)+1].second==skin);
+        }
+    }
+}
+
+TEST_CASE("Skin fragment repair follows the surrounding local skin slot instead of a global role",
+          "[SemanticMaterialRegions][Regression][FaceSkin]")
+{
+    const Color light_skin {.82f,.62f,.51f}, dark_skin {.55f,.34f,.27f}, neutral {.40f,.39f,.38f};
+    Fixture fixture(20,dark_skin,Label::FaceSkin,dark_skin);
+    fixture.set(fixture.cell(1,1),light_skin,Label::FaceSkin,.95f,light_skin);
+    fixture.island(10,10,neutral,Label::FaceSkin,.95f);
+    refine_material_patches(fixture.source,fixture.analysis,{dark,white,gray,red,light_skin,dark_skin},{},fixture.paint);
+    CHECK(fixture.paint[fixture.cell(10,10)].second==dark_skin);
+    CHECK(fixture.paint[fixture.cell(1,1)].second==light_skin);
+}
+
+TEST_CASE("Facial details and large skin material regions are not flattened as fragments",
+          "[SemanticMaterialRegions][Regression][FaceSkin]")
+{
+    const Color skin {.7373f,.4824f,.4065f}, neutral {.48f,.47f,.46f};
+    Fixture detail(20,skin,Label::FaceSkin,skin);
+    detail.island(10,10,neutral,Label::FaceSkin,.95f);
+    detail.set(detail.cell(10,9),dark,Label::Eyebrow,.95f,dark);
+    const auto detail_before=detail.paint;
+    refine_material_patches(detail.source,detail.analysis,{dark,white,gray,red,skin},{},detail.paint);
+    CHECK(detail.paint==detail_before);
+
+    Fixture large(20,skin,Label::FaceSkin,skin);
+    for (int y=6;y<14;++y) for (int x=6;x<14;++x)
+        large.island(x,y,neutral,Label::FaceSkin,.95f);
+    const auto large_before=large.paint;
+    refine_material_patches(large.source,large.analysis,{dark,white,gray,red,skin},{},large.paint);
+    CHECK(large.paint==large_before);
+}
+
+TEST_CASE("A skin-colored component at a strong clothing boundary keeps its assigned material",
+          "[SemanticMaterialRegions][Regression][FaceSkin]")
+{
+    const Color skin {.7373f,.4824f,.4065f}, neutral {.48f,.47f,.46f};
+    Fixture fixture(20,skin,Label::FaceSkin,skin);
+    fixture.island(10,10,neutral,Label::FaceSkin,.95f);
+    fixture.set(fixture.cell(9,10),white,Label::Clothes,.95f,white);
+    fixture.set(fixture.cell(10,9),white,Label::Clothes,.95f,white);
+    fixture.set(fixture.cell(11,10),white,Label::Clothes,.95f,white);
+    const auto before=fixture.paint;
+    refine_material_patches(fixture.source,fixture.analysis,{dark,white,gray,red,skin},{},fixture.paint);
+    CHECK(fixture.paint==before);
+}
+
+TEST_CASE("A disconnected unknown skin fragment needs two nearby compatible skin donors",
+          "[SemanticMaterialRegions][Regression][FaceSkin]")
+{
+    const Color skin {.7373f,.4824f,.4065f}, shadow {.60f,.34f,.27f};
+    for (int donor_count : {1,2}) {
+        DYNAMIC_SECTION("donors " << donor_count) {
+            Fixture fixture(8,skin,Label::FaceSkin,skin);
+            const size_t fragment=fixture.cell(4,4), donor_a=fixture.cell(0,0), donor_b=fixture.cell(0,1);
+            fixture.set(fragment,shadow,Label::Unknown,0.f,gray);
+            fixture.split_vertices(.00001f);
+            for (int corner=0;corner<3;++corner)
+                fixture.source.mesh.vertices[fixture.source.mesh.indices[fragment][corner]] += Vec3f(100.f,100.f,0.f);
+            const auto place_near=[&](size_t face,float x,float y) {
+                for (int corner=0;corner<3;++corner)
+                    fixture.source.mesh.vertices[fixture.source.mesh.indices[face][corner]] =
+                        fixture.source.mesh.vertices[fixture.source.mesh.indices[fragment][corner]] + Vec3f(x,y,0.f);
+            };
+            place_near(donor_a,.001f,0.f);
+            if (donor_count==2) place_near(donor_b,0.f,.001f);
+            else fixture.set(donor_b,skin,Label::Unknown,0.f,gray);
+            refine_material_patches(fixture.source,fixture.analysis,{dark,white,gray,red,skin},{},fixture.paint);
+            CHECK(fixture.paint[fragment].second==(donor_count==2?skin:gray));
+        }
+    }
+}
+
+TEST_CASE("Nearby clothing and opposing surfaces veto spatial unknown-skin recovery",
+          "[SemanticMaterialRegions][Regression][FaceSkin]")
+{
+    const Color skin {.7373f,.4824f,.4065f}, shadow {.60f,.34f,.27f};
+    for (bool clothing : {false,true}) for (bool opposed : {false,true}) {
+        DYNAMIC_SECTION("clothing " << clothing << " opposed " << opposed) {
+            Fixture fixture(8,skin,Label::FaceSkin,skin);
+            const size_t fragment=fixture.cell(4,4), donor_a=fixture.cell(0,0), donor_b=fixture.cell(0,1),
+                         barrier=fixture.cell(0,2);
+            fixture.set(fragment,shadow,Label::Unknown,0.f,gray);
+            if (clothing) fixture.set(barrier,white,Label::Clothes,.95f,white);
+            fixture.split_vertices(.00001f);
+            for (int corner=0;corner<3;++corner)
+                fixture.source.mesh.vertices[fixture.source.mesh.indices[fragment][corner]] += Vec3f(100.f,100.f,0.f);
+            const auto place_near=[&](size_t face,float x,float y) {
+                for (int corner=0;corner<3;++corner)
+                    fixture.source.mesh.vertices[fixture.source.mesh.indices[face][corner]] =
+                        fixture.source.mesh.vertices[fixture.source.mesh.indices[fragment][corner]] + Vec3f(x,y,0.f);
+            };
+            place_near(donor_a,.001f,0.f); place_near(donor_b,0.f,.001f);
+            if (clothing) place_near(barrier,-.001f,0.f);
+            if (opposed)
+                for (size_t donor : {donor_a,donor_b})
+                    std::swap(fixture.source.mesh.indices[donor][0],fixture.source.mesh.indices[donor][1]);
+            refine_material_patches(fixture.source,fixture.analysis,{dark,white,gray,red,skin},{},fixture.paint);
+            CHECK(fixture.paint[fragment].second==((clothing||opposed)?gray:skin));
+        }
+    }
+}
+
 TEST_CASE("A small neutral hair highlight inherits the surrounding assigned material across exact vertex seams", "[SemanticMaterialRegions][Regression]")
 {
     Fixture fixture;fixture.island(20,20);fixture.split_vertices();
@@ -474,6 +628,24 @@ TEST_CASE("Warm white garment shadows without local hair evidence remain white",
     fixture.refine();
     CHECK(fixture.paint[fixture.cell(20,20)].second==white);
     CHECK(fixture.paint[fixture.cell(24,24)].second==white);
+}
+
+TEST_CASE("Warm uncertain fabric inherits local white without painting adjacent skin or real dye",
+          "[SemanticMaterialRegions][Regression]")
+{
+    const Color skin {.85f,.68f,.61f};
+    Fixture fixture(40,{.96f,.96f,.96f},Label::Clothes,white);
+    for (int y = 15; y < 25; ++y) for (int x = 15; x < 25; ++x)
+        for (size_t id : {fixture.cell(x,y),fixture.cell(x,y)+1})
+            fixture.set(id,{.84f,.74f,.70f},Label::Unknown,.2f,skin);
+    for (size_t id : {fixture.cell(25,20),fixture.cell(25,20)+1})
+        fixture.set(id,skin,Label::BodySkin,.95f,skin);
+    for (size_t id : {fixture.cell(5,5),fixture.cell(5,5)+1})
+        fixture.set(id,{.45f,.59f,.42f},Label::Clothes,.95f,gray);
+    refine_material_patches(fixture.source,fixture.analysis,{dark,white,gray,red,skin},{},fixture.paint);
+    CHECK(fixture.paint[fixture.cell(18,20)].second==white);
+    CHECK(fixture.paint[fixture.cell(25,20)].second==skin);
+    CHECK(fixture.paint[fixture.cell(5,5)].second==gray);
 }
 
 TEST_CASE("Neutral white garment gaps survive weak hair labels and unsupported sharp shadows", "[SemanticMaterialRegions][Regression]")

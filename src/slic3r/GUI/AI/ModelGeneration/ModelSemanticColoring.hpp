@@ -1,6 +1,7 @@
 #pragma once
 
 #include "slic3r/AI/ModelGeneration/SemanticColoring/SemanticColoring.hpp"
+#include "slic3r/AI/ModelGeneration/SemanticColoring/SemanticPaletteMapping.hpp"
 #include "slic3r/GUI/GLModel.hpp"
 #include <filesystem>
 #include <memory>
@@ -21,6 +22,9 @@ public:
     struct Result {
         GLModel::Geometry geometry;
         FaceColors automatic;
+        FaceColors effective_manual;
+        std::vector<AI::SemanticColoring::FaceSlotAssignment> effective_manual_slots;
+        size_t substituted_manual_slots {0};
         AI::SemanticColoring::SubfaceColors automatic_subfaces;
         std::shared_ptr<const AI::SemanticColoring::Analysis> analysis;
         std::string error;
@@ -29,13 +33,21 @@ public:
         size_t subface_added_triangles {0};
         size_t subface_rejected_candidates {0};
         double elapsed_ms {0};
+        AI::SemanticColoring::SlotMappingResult slots;
+        std::string requested_boundary, actual_boundary, boundary_fallback;
     };
     ModelSemanticColoring(std::filesystem::path runtime, std::filesystem::path cache);
     ~ModelSemanticColoring();
     ModelSemanticColoring(const ModelSemanticColoring&) = delete;
     ModelSemanticColoring& operator=(const ModelSemanticColoring&) = delete;
     bool request(std::shared_ptr<const Snapshot>, std::vector<Color> mapping_palette, std::vector<Color> target_palette,
-                 std::vector<Color> portrait_card, FaceColors manual);
+                 std::vector<Color> portrait_card, FaceColors manual,
+                 std::vector<AI::SemanticColoring::PaletteSlot> source_slots = {},
+                 std::vector<AI::SemanticColoring::PaletteSlot> target_slots = {},
+                 std::vector<AI::SemanticColoring::FaceSlotAssignment> manual_slots = {},
+                 bool semantic_optimization = true,
+                 std::vector<AI::SemanticColoring::RegionColorOverride> region_overrides = {});
+    void set_boundary_provider(std::string provider);
     void cancel();
     std::unique_ptr<Result> poll();
     bool busy() const;

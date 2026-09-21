@@ -1,6 +1,8 @@
 #include "SemanticColoring.hpp"
+#include "SemanticBoundaryRefinement.hpp"
 #include "SemanticMaskRefinement.hpp"
 #include "SemanticMaterialRegions.hpp"
+#include "SemanticPaletteMapping.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -8,15 +10,62 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <numeric>
 #include <optional>
 #include <set>
 #include <stdexcept>
+#include <tuple>
 #include <unordered_map>
 #include <nlohmann/json.hpp>
 #include <openssl/evp.h>
 
 namespace Slic3r::AI::SemanticColoring {
+
+PaletteCandidateScore score_palette_candidate(const PaletteCandidateEvidence& evidence)
+{
+    const auto unit = [](float value) {
+        return std::isfinite(value) ? std::clamp(value, 0.f, 1.f) : 0.f;
+    };
+    PaletteCandidateScore result;
+    result.accepted = !evidence.hard_rejected;
+    if (!result.accepted) {
+        result.source_component = result.semantic_component = result.multi_view_component =
+            result.geometry_component = result.continuity_component = result.role_component = 0.f;
+        result.total = std::numeric_limits<float>::infinity();
+        return result;
+    }
+
+    // Existing color matching works in a squared Oklab distance. Normalize
+    // that distance to a conservative perceptual range before combining it
+    // with the other evidence terms. Values above this range are all treated
+    // as materially incompatible and are then separated by the semantic and
+    // geometry terms.
+    result.source_component = unit(evidence.source_distance / .09f);
+    result.semantic_component = 1.f - unit(evidence.semantic_compatibility);
+    result.multi_view_component = 1.f - unit(evidence.multi_view_support);
+    result.geometry_component = 1.f - unit(evidence.geometry_support);
+    result.continuity_component = 1.f - unit(evidence.continuity_support);
+    result.role_component = std::min(.10f, unit(evidence.role_bonus));
+    result.total = .35f * result.source_component +
+        .30f * result.semantic_component +
+        .15f * result.multi_view_component +
+        .10f * result.geometry_component +
+        .10f * result.continuity_component - result.role_component;
+    return result;
+}
+
+const char* palette_decision_reason_name(PaletteDecisionReason reason)
+{
+    switch (reason) {
+    case PaletteDecisionReason::None: return "NONE";
+    case PaletteDecisionReason::SourceColorIncompatible: return "SOURCE_COLOR_INCOMPATIBLE";
+    case PaletteDecisionReason::ProtectedRegionConflict: return "PROTECTED_REGION_CONFLICT";
+    case PaletteDecisionReason::PaletteAmbiguous: return "PALETTE_AMBIGUOUS";
+    }
+    return "NONE";
+}
+
 namespace {
 constexpr uint32_t no_face = std::numeric_limits<uint32_t>::max();
 constexpr size_t maximum_faces = 2000000, maximum_vertices = 6000000;
@@ -28,8 +77,23 @@ bool valid_color(const Color& c)
 }
 bool valid_label(Label label) { return size_t(label) < label_count; }
 bool paintable(Label label) { return valid_label(label) && label != Label::Unknown && label != Label::Background; }
-constexpr std::array<Label, 6> face_detail_labels {{
-    Label::Lips, Label::MouthInterior, Label::EyeSclera, Label::Iris, Label::Eyebrow, Label::FaceSkin
+// Face details are small, high-value regions. A coarse boundary result may
+// refine one of these regions only when it remains in the same anatomical
+// family; otherwise the previously accepted detail is the safer material.
+bool protected_face_detail(Label label)
+{
+    return label == Label::EyeSclera || label == Label::Iris || label == Label::Eyebrow ||
+           label == Label::Lips || label == Label::MouthInterior;
+}
+bool compatible_boundary_detail(Label baseline, Label refined)
+{
+    if (!protected_face_detail(baseline)) return true;
+    if (baseline == Label::EyeSclera || baseline == Label::Iris)
+        return refined == Label::EyeSclera || refined == Label::Iris;
+    return refined == baseline;
+}
+constexpr std::array<Label, 7> face_detail_labels {{
+    Label::Lips, Label::MouthInterior, Label::EyeSclera, Label::Iris, Label::Eyebrow, Label::FaceSkin, Label::Hair
 }};
 size_t face_detail_index(Label label)
 {
@@ -87,9 +151,9 @@ bool compatible_skin(const Color& source, const Color& center, Label label)
         // Neck and hand shadows do not contain the facial details protected
         // below. Accept supported warm shadows, while rejecting saturated red
         // clothing even when the body mask incorrectly calls it skin.
-        return source[0] >= center[0] - .28f && source[0] <= center[0] + .24f &&
+        return source[0] >= center[0] - .55f && source[0] <= center[0] + .24f &&
             hue_alignment >= .80f && source[1] <= source[2] * 1.6f &&
-            source_chroma <= std::min(.16f, center_chroma * 2.f + .02f);
+            source_chroma <= std::min(.16f, center_chroma * 2.4f + .02f);
     }
     if (source[0] < center[0] - .16f || source[0] > center[0] + .20f) return false;
     if (hue_alignment < .90f) return false;
@@ -122,6 +186,256 @@ bool natural_dark_hair(const Color& color)
         (saturation >= .008f || color[0] < .40f) &&
         color[1] >= -.012f && color[2] >= -.012f &&
         color[1] <= color[2] * 1.15f + .018f;
+}
+float candidate_semantic_compatibility(const Color& source, const Color& candidate, Label label,
+                                       bool boundary_supported = false)
+{
+    const float source_chroma = chroma(source), candidate_chroma = chroma(candidate);
+    // These are soft penalties. Existing label-specific guards remain the
+    // hard protection; this term only ranks otherwise valid palette choices.
+    if (label == Label::EyeSclera) {
+        if (candidate_chroma > .055f || candidate[0] < .40f) return .05f;
+        // Eye-white shadows are lighting evidence, not separate printable
+        // materials. Prefer the brighter compatible neutral while retaining a
+        // gray fallback when a small palette contains no white slot.
+        return std::clamp((candidate[0] - .35f) / .50f, .10f, 1.f);
+    }
+    if (label == Label::MouthInterior) {
+        if (candidate_chroma > std::max(.08f, source_chroma + .035f)) return .10f;
+        return std::clamp((.78f - candidate[0]) / .58f, .10f, 1.f);
+    }
+    if (label == Label::Iris)
+        return candidate_chroma <= source_chroma + .035f && candidate[0] <= .72f ? 1.f : .20f;
+    if (label == Label::Eyebrow)
+        return candidate[0] <= .72f ? 1.f : .25f;
+    if (label == Label::Lips)
+        return candidate_chroma >= .025f && candidate[1] >= candidate[2] - .015f ? 1.f : .45f;
+    if (label == Label::FaceSkin || label == Label::BodySkin) {
+        if (label == Label::BodySkin && source[0] < .32f) return .05f;
+        const Label compatibility_label = boundary_supported && label == Label::FaceSkin ? Label::BodySkin : label;
+        return compatible_skin(source, candidate, compatibility_label) ? 1.f : .05f;
+    }
+    if (label == Label::Hair && candidate_chroma > source_chroma + .025f)
+        return .35f;
+    if (label == Label::Hair && source_chroma >= .12f && candidate_chroma < source_chroma * .35f)
+        return .30f;
+    return 1.f;
+}
+Color face_lab(const MeshSnapshot& source, size_t face);
+bool facial_eye_detail(Label label)
+{
+    return label == Label::EyeSclera || label == Label::Iris || label == Label::Eyebrow;
+}
+bool lip_like_material(const Color& rgb, const std::vector<Color>& portrait_card, const std::vector<Color>& palette,
+                      size_t& lip_slot)
+{
+    lip_slot = palette.size();
+    if (portrait_card.size() == 6) {
+        for (size_t index = 0; index < palette.size(); ++index)
+            if (palette[index] == portrait_card[3]) { lip_slot = index; break; }
+    }
+    if (lip_slot < palette.size() && rgb == palette[lip_slot]) return true;
+    if (lip_slot < palette.size()) return false;
+    const Color color = lab(rgb);
+    // Warm red pigments have a clear positive-a-over-b bias in Oklab. Brown
+    // irises and hair usually have b >= a and must remain available.
+    const bool heuristic_lip = chroma(color) >= .04f && color[1] > .02f &&
+        color[1] > color[2] + .01f && color[2] > -.03f;
+    if (heuristic_lip)
+        for (size_t index = 0; index < palette.size(); ++index)
+            if (palette[index] == rgb) { lip_slot = index; break; }
+    return heuristic_lip;
+}
+size_t eye_safe_target(const MeshSnapshot& source, size_t face_id, Label label,
+                       const std::vector<Color>& palette, const std::vector<Color>& palette_labs,
+                       size_t lip_slot)
+{
+    if (palette.empty()) return 0;
+    if (label == Label::EyeSclera) {
+        size_t selected = palette.size();
+        float best = -std::numeric_limits<float>::max();
+        for (size_t index = 0; index < palette.size(); ++index) {
+            if (index == lip_slot) continue;
+            const float c = chroma(palette_labs[index]);
+            if (c >= .055f) continue;
+            if (palette_labs[index][0] > best) { best = palette_labs[index][0]; selected = index; }
+        }
+        if (selected < palette.size()) return selected;
+    }
+    const Color source_color = face_lab(source, face_id);
+    size_t selected = 0;
+    float best = std::numeric_limits<float>::max();
+    for (size_t index = 0; index < palette.size(); ++index) {
+        if (index == lip_slot) continue;
+        const float candidate_chroma = chroma(palette_labs[index]);
+        const float source_chroma = chroma(source_color);
+        if (candidate_chroma > source_chroma + .035f) continue;
+        if (label == Label::Eyebrow && palette_labs[index][0] > .72f) continue;
+        const float score = distance(source_color, palette_labs[index]) +
+            (label == Label::Iris && candidate_chroma < .02f ? .015f : 0.f);
+        if (score < best) { best = score; selected = index; }
+    }
+    return selected;
+}
+void sanitize_eye_edge_targets(const MeshSnapshot& source, const Analysis& analysis,
+                               const std::vector<Color>& palette, const std::vector<Color>& portrait_card,
+                               FaceColors& output)
+{
+    if (output.empty() || palette.empty() || analysis.face_labels.size() != source.mesh.indices.size()) return;
+    std::vector<Color> palette_labs; palette_labs.reserve(palette.size());
+    for (const auto& color : palette) palette_labs.push_back(lab(color));
+    std::vector<std::vector<size_t>> adjacent(source.mesh.vertices.size());
+    for (size_t face_id = 0; face_id < source.mesh.indices.size(); ++face_id)
+        for (int corner = 0; corner < 3; ++corner)
+            adjacent[source.mesh.indices[face_id][corner]].push_back(face_id);
+    const auto label_for = [&](size_t face_id) {
+        Label label = analysis.face_labels[face_id];
+        if (face_id < analysis.baseline_face_labels.size() &&
+            facial_eye_detail(analysis.baseline_face_labels[face_id]))
+            label = analysis.baseline_face_labels[face_id];
+        return label;
+    };
+    std::vector<uint8_t> eye_face(source.mesh.indices.size(), 0);
+    for (size_t face_id = 0; face_id < source.mesh.indices.size(); ++face_id)
+        eye_face[face_id] = facial_eye_detail(label_for(face_id)) ? 1 : 0;
+    for (auto& assignment : output) {
+        if (assignment.first >= eye_face.size()) continue;
+        const Label label = label_for(assignment.first);
+        bool adjacent_to_eye = eye_face[assignment.first] != 0;
+        if (!adjacent_to_eye) {
+            for (int corner = 0; corner < 3 && !adjacent_to_eye; ++corner)
+                for (const size_t neighbor : adjacent[source.mesh.indices[assignment.first][corner]])
+                    if (neighbor < eye_face.size() && eye_face[neighbor]) { adjacent_to_eye = true; break; }
+        }
+        if (!adjacent_to_eye) continue;
+        if (label == Label::Lips || label == Label::MouthInterior) continue;
+        size_t lip_slot = palette.size();
+        const bool is_lip = lip_like_material(assignment.second, portrait_card, palette, lip_slot);
+        const Color source_color = face_lab(source, assignment.first);
+        const bool eyebrow_like = (label == Label::FaceSkin || label == Label::BodySkin || label == Label::Unknown) &&
+            source_color[0] < .43f && chroma(source_color) < .10f &&
+            source_color[1] >= -.02f && source_color[2] >= -.02f;
+        if (!is_lip && !eyebrow_like) continue;
+        size_t replacement = palette.size();
+        if (eyebrow_like && portrait_card.size() == 6)
+            for (size_t index = 0; index < palette.size(); ++index)
+                if (palette[index] == portrait_card[5]) { replacement = index; break; }
+        if (replacement == palette.size())
+            replacement = eye_safe_target(source, assignment.first,
+                eyebrow_like ? Label::Eyebrow : label, palette, palette_labs, lip_slot);
+        if (replacement < palette.size()) assignment.second = palette[replacement];
+    }
+}
+void sanitize_hair_edge_targets(const MeshSnapshot& source, const Analysis& analysis,
+                                const std::vector<Color>& palette, const std::vector<Color>& portrait_card,
+                                FaceColors& output)
+{
+    if (output.empty() || palette.empty() || analysis.face_labels.size() != source.mesh.indices.size()) return;
+    std::vector<Color> palette_labs; palette_labs.reserve(palette.size());
+    for (const auto& color : palette) palette_labs.push_back(lab(color));
+    std::vector<std::vector<size_t>> adjacent(source.mesh.vertices.size());
+    for (size_t face_id = 0; face_id < source.mesh.indices.size(); ++face_id)
+        for (int corner = 0; corner < 3; ++corner)
+            adjacent[source.mesh.indices[face_id][corner]].push_back(face_id);
+    const auto label_for = [&](size_t face_id) {
+        Label label = analysis.face_labels[face_id];
+        if (face_id < analysis.baseline_face_labels.size() && analysis.baseline_face_labels[face_id] == Label::Hair)
+            label = Label::Hair;
+        return label;
+    };
+    size_t skin_slot = palette.size(), hair_slot = palette.size();
+    if (portrait_card.size() == 6) {
+        for (size_t index = 0; index < palette.size(); ++index) {
+            if (palette[index] == portrait_card[0]) skin_slot = index;
+            if (palette[index] == portrait_card[1]) hair_slot = index;
+        }
+    }
+    for (auto& assignment : output) {
+        if (assignment.first >= source.mesh.indices.size()) continue;
+        const Label label = label_for(assignment.first);
+        if (label == Label::FaceSkin || label == Label::Hair || label == Label::Lips || label == Label::MouthInterior ||
+            label == Label::EyeSclera || label == Label::Iris || label == Label::Eyebrow) continue;
+        bool next_to_hair = false;
+        for (int corner = 0; corner < 3 && !next_to_hair; ++corner)
+            for (const size_t neighbor : adjacent[source.mesh.indices[assignment.first][corner]])
+                if (neighbor < source.mesh.indices.size() && label_for(neighbor) == Label::Hair) { next_to_hair = true; break; }
+        if (!next_to_hair) continue;
+        const Color source_color = face_lab(source, assignment.first);
+        const bool hair_like = natural_dark_hair(source_color) ||
+            (source_color[0] < .50f && chroma(source_color) < .11f && source_color[1] >= -.02f && source_color[2] >= -.02f);
+        if (!hair_like) continue;
+        size_t lip_slot = palette.size();
+        const bool lip_target = lip_like_material(assignment.second, portrait_card, palette, lip_slot);
+        const bool skin_target = skin_slot < palette.size() && assignment.second == palette[skin_slot];
+        if (!lip_target && !skin_target) continue;
+        size_t replacement = hair_slot;
+        if (replacement >= palette.size()) {
+            replacement = palette.size(); float best = std::numeric_limits<float>::max();
+            for (size_t index = 0; index < palette.size(); ++index) {
+                if (index == skin_slot || index == lip_slot) continue;
+                const float candidate_chroma = chroma(palette_labs[index]);
+                if (candidate_chroma > chroma(source_color) + .035f || palette_labs[index][0] > source_color[0] + .18f) continue;
+                const float score = distance(source_color, palette_labs[index]);
+                if (score < best) { best = score; replacement = index; }
+            }
+        }
+        if (replacement < palette.size()) assignment.second = palette[replacement];
+    }
+}
+void sanitize_lip_leak_targets(const MeshSnapshot& source, const Analysis& analysis,
+                               const std::vector<Color>& palette, const std::vector<Color>& portrait_card,
+                               FaceColors& output)
+{
+    if (output.empty() || palette.empty() || analysis.face_labels.size() != source.mesh.indices.size()) return;
+    size_t lip_slot = palette.size(), skin_slot = palette.size();
+    if (portrait_card.size() == 6) {
+        for (size_t index = 0; index < palette.size(); ++index) {
+            if (palette[index] == portrait_card[3]) lip_slot = index;
+            if (palette[index] == portrait_card[0]) skin_slot = index;
+        }
+    }
+    if (lip_slot >= palette.size()) return;
+    std::vector<std::vector<size_t>> adjacent(source.mesh.vertices.size());
+    for (size_t face_id = 0; face_id < source.mesh.indices.size(); ++face_id)
+        for (int corner = 0; corner < 3; ++corner)
+            adjacent[source.mesh.indices[face_id][corner]].push_back(face_id);
+    const auto label_for = [&](size_t face_id) {
+        Label label = analysis.face_labels[face_id];
+        if (face_id < analysis.baseline_face_labels.size() &&
+            (analysis.baseline_face_labels[face_id] == Label::Lips ||
+             analysis.baseline_face_labels[face_id] == Label::MouthInterior))
+            label = analysis.baseline_face_labels[face_id];
+        return label;
+    };
+    std::vector<uint8_t> lip_face(source.mesh.indices.size(), 0);
+    for (size_t face_id = 0; face_id < lip_face.size(); ++face_id)
+        lip_face[face_id] = label_for(face_id) == Label::Lips || label_for(face_id) == Label::MouthInterior;
+    std::vector<Color> palette_labs; palette_labs.reserve(palette.size());
+    for (const auto& color : palette) palette_labs.push_back(lab(color));
+    for (auto& assignment : output) {
+        if (assignment.first >= lip_face.size() || assignment.second != palette[lip_slot]) continue;
+        const Label label = label_for(assignment.first);
+        if (label == Label::Lips || label == Label::MouthInterior || label == Label::Hair || label == Label::Clothes)
+            continue;
+        bool near_lips = lip_face[assignment.first] != 0;
+        if (!near_lips)
+            for (int corner = 0; corner < 3 && !near_lips; ++corner)
+                for (const size_t neighbor : adjacent[source.mesh.indices[assignment.first][corner]])
+                    if (neighbor < lip_face.size() && lip_face[neighbor]) { near_lips = true; break; }
+        if (near_lips) continue;
+        if (skin_slot < palette.size() && (label == Label::FaceSkin || label == Label::BodySkin || label == Label::Unknown)) {
+            assignment.second = palette[skin_slot];
+            continue;
+        }
+        const Color source_color = face_lab(source, assignment.first);
+        size_t replacement = palette.size(); float best = std::numeric_limits<float>::max();
+        for (size_t index = 0; index < palette.size(); ++index) {
+            if (index == lip_slot) continue;
+            const float score = distance(source_color, palette_labs[index]);
+            if (score < best) { best = score; replacement = index; }
+        }
+        if (replacement < palette.size()) assignment.second = palette[replacement];
+    }
 }
 bool same_hair_material(const Color& source, const Color& center)
 {
@@ -564,7 +878,7 @@ RenderedView render_region(const MeshSnapshot& source, float yaw_degrees, const 
 
 bool locate_subface(const Barycentric& input, uint8_t depth, SubfacePath& output)
 {
-    if (depth == 0 || depth > 2 || !std::all_of(input.begin(), input.end(), [](float value) {
+    if (depth == 0 || depth > 3 || !std::all_of(input.begin(), input.end(), [](float value) {
             return std::isfinite(value) && value >= -1e-5f && value <= 1.00001f;
         }) || std::abs(input[0] + input[1] + input[2] - 1.f) > 1e-4f)
         return false;
@@ -592,9 +906,58 @@ bool locate_subface(const Barycentric& input, uint8_t depth, SubfacePath& output
     return true;
 }
 
+std::vector<std::pair<uint32_t, SubfacePath>> project_boundary_sample(
+    const RenderedView& view, float image_x, float image_y)
+{
+    std::vector<std::pair<uint32_t, SubfacePath>> result;
+    if (!view.image.valid() || view.image.width < 2 || view.image.height < 2 ||
+        !std::isfinite(image_x) || !std::isfinite(image_y)) return result;
+    const size_t pixel_count = size_t(view.image.width) * size_t(view.image.height);
+    if (view.face_ids.size() != pixel_count || view.depth.size() != pixel_count ||
+        view.barycentric.size() != pixel_count) return result;
+
+    const float px = image_x - .5f, py = image_y - .5f;
+    const int x = std::clamp(int(std::floor(px)), 0, view.image.width - 2);
+    const int y = std::clamp(int(std::floor(py)), 0, view.image.height - 2);
+    const size_t p0 = size_t(y) * size_t(view.image.width) + size_t(x);
+    const std::array<size_t, 4> pixels {
+        p0, p0 + 1, p0 + size_t(view.image.width), p0 + size_t(view.image.width) + 1
+    };
+    const uint32_t face_id = view.face_ids[p0];
+    const bool one_face = face_id != no_face && std::all_of(pixels.begin(), pixels.end(), [&](size_t pixel) {
+        return view.face_ids[pixel] == face_id && std::isfinite(view.depth[pixel]);
+    });
+    if (one_face) {
+        const float u = std::clamp(px - x, 0.f, 1.f), v = std::clamp(py - y, 0.f, 1.f);
+        const std::array<float, 4> factors {(1-u)*(1-v), u*(1-v), (1-u)*v, u*v};
+        Barycentric bary {};
+        for (size_t corner = 0; corner < pixels.size(); ++corner)
+            for (size_t axis = 0; axis < bary.size(); ++axis)
+                bary[axis] += view.barycentric[pixels[corner]][axis] * factors[corner];
+        SubfacePath parent;
+        if (locate_subface(bary, 2, parent)) result.emplace_back(face_id, parent);
+        if (!result.empty()) return result;
+    }
+
+    // Dense meshes commonly place each corner of a contour cell on a distinct
+    // triangle. Interpolating those unrelated barycentric frames is invalid,
+    // but discarding the complete cell removes nearly every usable boundary.
+    // Project the visible corner samples independently and deduplicate them.
+    for (size_t pixel : pixels) {
+        const uint32_t corner_face = view.face_ids[pixel];
+        if (corner_face == no_face || !std::isfinite(view.depth[pixel])) continue;
+        SubfacePath parent;
+        if (!locate_subface(view.barycentric[pixel], 2, parent)) continue;
+        const auto projection = std::make_pair(corner_face, parent);
+        if (std::find(result.begin(), result.end(), projection) == result.end())
+            result.push_back(projection);
+    }
+    return result;
+}
+
 bool subface_vertices(const SubfacePath& path, std::array<Barycentric, 3>& output)
 {
-    if (path.depth == 0 || path.depth > 2 || unsigned(path.value) >= (1u << (2u * path.depth)))
+    if (path.depth == 0 || path.depth > 3 || unsigned(path.value) >= (1u << (2u * path.depth)))
         return false;
     std::array<Barycentric, 3> vertices {{{1.f,0.f,0.f}, {0.f,1.f,0.f}, {0.f,0.f,1.f}}};
     const auto midpoint = [](const Barycentric& lhs, const Barycentric& rhs) {
@@ -630,19 +993,41 @@ static bool subfaces_share_edge(const SubfacePath& lhs, const SubfacePath& rhs)
 
 std::string analysis_cache_key(const MeshSnapshot& source, const std::string& body, const std::string& face)
 {
-    if (source.geometry_id.empty() || source.content_id.empty() || body.empty() || face.empty()) return {};
+    return analysis_cache_key(source, body, face, "none");
+}
+
+std::string analysis_cache_key(const MeshSnapshot& source, const std::string& body, const std::string& face,
+                               const std::string& boundary)
+{
+    if (source.geometry_id.empty() || source.content_id.empty() || body.empty() || face.empty() || boundary.empty()) return {};
     return sha256(nlohmann::json::array({pipeline_version, source.geometry_id, source.content_id,
-        source.mesh.indices.size(), body, face, "cpu-zbuffer-8x512-face-roi512-visible-source-samples-v2"}).dump());
+        source.mesh.indices.size(), body, face, boundary,
+        "cpu-zbuffer-8x512-face-roi512-visible-source-samples-v2-joint-boundary-v2"}).dump());
 }
 
 Analysis analyze(const MeshSnapshot& source, IBodyRegionRecognizer& body, IFaceRegionRecognizer& face,
                  const Cancel& cancel, const Progress& progress)
 {
+    return analyze(source, body, face, nullptr, cancel, progress);
+}
+
+Analysis analyze(const MeshSnapshot& source, IBodyRegionRecognizer& body, IFaceRegionRecognizer& face,
+                 IBoundaryRefiner* boundary, const Cancel& cancel, const Progress& progress)
+{
+    return analyze(source, body, face, boundary, cancel, progress, {});
+}
+
+Analysis analyze(const MeshSnapshot& source, IBodyRegionRecognizer& body, IFaceRegionRecognizer& face,
+                 IBoundaryRefiner* boundary, const Cancel& cancel, const Progress& progress,
+                 const RenderObserver& observe)
+{
     Analysis result;
     result.geometry_id = source.geometry_id; result.content_id = source.content_id;
     try {
         result.body_identity = body.identity(); result.face_identity = face.identity();
-        result.signature = analysis_cache_key(source, result.body_identity, result.face_identity);
+        result.boundary_identity = boundary ? boundary->identity() : "none";
+        result.signature = analysis_cache_key(source, result.body_identity, result.face_identity,
+                                              result.boundary_identity);
         result.error = validate_snapshot(source);
         if (!result.error.empty()) return result;
         if (result.signature.empty()) { result.error = "Semantic analysis requires complete model and recognizer identities."; return result; }
@@ -661,6 +1046,14 @@ Analysis analyze(const MeshSnapshot& source, IBodyRegionRecognizer& body, IFaceR
             uint32_t samples {0};
         };
         std::unordered_map<uint64_t, LeafVotes> leaf_votes;
+        struct BoundaryLeafVotes {
+            float weight {0.f};
+            std::array<float, label_count> votes {};
+            uint32_t samples {0};
+            uint16_t view_mask {0};
+        };
+        std::unordered_map<uint64_t, BoundaryLeafVotes> boundary_leaf_votes;
+        std::unordered_map<size_t, BoundaryLeafVotes> boundary_root_votes;
         std::vector<Color> original; original.reserve(count);
         for (size_t id = 0; id < count; ++id) original.push_back(face_lab(source, id));
         for (int view_index = 0; view_index < 8; ++view_index) {
@@ -670,6 +1063,7 @@ Analysis analyze(const MeshSnapshot& source, IBodyRegionRecognizer& body, IFaceR
             if (view.canceled) { result.canceled = true; return result; }
             if (!view.error.empty()) { result.error = view.error; return result; }
             ++result.rendered_views;
+            if (observe) observe(view, view_index, {0.f,0.f,1.f,1.f}, false);
             auto prediction = body.predict(view.image, cancel);
             if (prediction.canceled || stopped(cancel)) { result.canceled = true; return result; }
             if (!prediction.valid_for(view.image)) {
@@ -693,14 +1087,93 @@ Analysis analyze(const MeshSnapshot& source, IBodyRegionRecognizer& body, IFaceR
             const auto regions = face_regions(view, prediction);
             if (regions.empty()) continue;
             ++result.face_views;
-            for (const ViewRegion& region : regions) {
+            for (size_t crop_index = 0; crop_index < regions.size(); ++crop_index) {
+                const ViewRegion& region = regions[crop_index];
                 auto crop = render_region(source, view_index * 45.f, region, 512, cancel);
                 if (crop.canceled) { result.canceled = true; return result; }
                 if (!crop.error.empty()) { result.error = crop.error; return result; }
+                if (observe) observe(crop, view_index, region, true);
                 auto details = face.predict(crop.image, cancel);
                 if (details.canceled || stopped(cancel)) { result.canceled = true; return result; }
                 if (!details.valid_for(crop.image)) {
                     result.error = details.error.empty() ? "The face recognizer returned an invalid mask." : details.error; return result;
+                }
+                const Prediction coarse_details = details;
+                EarHairBoundaryResult boundary_result;
+                if (boundary && details.face_detected) {
+                    auto crop_body = body.predict(crop.image, cancel);
+                    if (crop_body.canceled || stopped(cancel)) { result.canceled = true; return result; }
+                    if (crop_body.valid_for(crop.image)) {
+                        boundary_result = apply_facial_boundaries(crop.image, crop_body, details, *boundary, cancel);
+                        if (boundary_result.prediction.canceled) { result.canceled = true; return result; }
+                        for (auto& diagnostic : boundary_result.diagnostics) {
+                            diagnostic.view_id = view_index;
+                            diagnostic.crop_id = std::to_string(view_index) + ":" + std::to_string(crop_index);
+                            if (diagnostic.reason_code.empty()) diagnostic.reason_code = diagnostic.status == "rejected" ?
+                                "SEMANTIC_LOW_CONFIDENCE" : diagnostic.status == "error" ?
+                                "GEOMETRY_REPROJECT_MISSING" : "NONE";
+                            result.boundary_runs.push_back(std::move(diagnostic));
+                        }
+                        if (boundary_result.refinement.valid_for(crop.image) &&
+                            boundary_result.accepted.size() == crop.face_ids.size()) {
+                            for (size_t pixel = 0; pixel < crop.face_ids.size(); ++pixel) {
+                                const uint32_t id=crop.face_ids[pixel]; if(id==no_face)continue;
+                                auto& root=boundary_root_votes[id];const float weight=crop.facing[id];root.weight+=weight;
+                                if(!boundary_result.accepted[pixel])continue;
+                                const auto label=boundary_result.prediction.labels[pixel];
+                                root.votes[size_t(label)]+=weight*boundary_result.prediction.confidence[pixel];
+                                if(root.samples!=std::numeric_limits<uint32_t>::max())++root.samples;
+                            }
+                            // Continuous probability contours identify only the depth-2
+                            // parents which actually need a third split. At a face edge
+                            // stop interpolation instead of crossing an occlusion.
+                            std::set<uint64_t> crossing_parents;
+                            for (const auto& segment : boundary_result.contours) {
+                                const float length = std::hypot(segment.b[0]-segment.a[0], segment.b[1]-segment.a[1]);
+                                const int steps = std::max(1, int(std::ceil(length * 4.f)));
+                                for (int step = 0; step <= steps; ++step) {
+                                    const float t = float(step) / steps;
+                                    const float px = segment.a[0] + t * (segment.b[0]-segment.a[0]);
+                                    const float py = segment.a[1] + t * (segment.b[1]-segment.a[1]);
+                                    for (const auto& projection : project_boundary_sample(crop, px, py))
+                                        crossing_parents.insert(uint64_t(projection.first)*16u+projection.second.value);
+                                }
+                            }
+                            for (size_t pixel = 0; pixel < crop.face_ids.size(); ++pixel) {
+                                const uint32_t id = crop.face_ids[pixel];
+                                if (id == no_face || !boundary_result.accepted[pixel]) continue;
+                                SubfacePath path;
+                                if (!locate_subface(crop.barycentric[pixel], 3, path) ||
+                                    crossing_parents.count(uint64_t(id)*16u+(path.value>>2))==0) continue;
+                                const Label label=boundary_result.prediction.labels[pixel];
+                                if(label!=Label::FaceSkin&&label!=Label::Hair&&label!=Label::EyeSclera&&label!=Label::Iris&&label!=Label::Eyebrow)continue;
+                                BoundaryLeafVotes& leaf=boundary_leaf_votes[uint64_t(id)*64u+path.value];
+                                float color_support=0.f,geometry_support=0.f;
+                                const int x=int(pixel%size_t(crop.image.width)),y=int(pixel/size_t(crop.image.width));
+                                const std::array<std::array<int,2>,4> offsets {{{-1,0},{1,0},{0,-1},{0,1}}};
+                                for(const auto& offset:offsets){const int nx=x+offset[0],ny=y+offset[1];
+                                    if(nx<0||ny<0||nx>=crop.image.width||ny>=crop.image.height)continue;
+                                    const size_t neighbor=size_t(ny)*crop.image.width+nx;
+                                    if(!boundary_result.accepted[neighbor]||boundary_result.prediction.labels[neighbor]==label)continue;
+                                    float rgb_delta=0.f;for(int channel=0;channel<3;++channel){
+                                        const float delta=float(crop.image.pixels[pixel*3+channel])-float(crop.image.pixels[neighbor*3+channel]);
+                                        rgb_delta+=delta*delta;}
+                                    color_support=std::max(color_support,std::clamp(std::sqrt(rgb_delta)/(255.f*.35f),0.f,1.f));
+                                    if(crop.face_ids[neighbor]!=id)geometry_support=1.f;
+                                    else if(std::isfinite(crop.depth[pixel])&&std::isfinite(crop.depth[neighbor])){
+                                        const float scale=std::max(1e-4f,std::abs(crop.depth[pixel])*.02f);
+                                        geometry_support=std::max(geometry_support,std::clamp(std::abs(crop.depth[pixel]-crop.depth[neighbor])/scale,0.f,1.f));}
+                                }
+                                const float semantic_support=boundary_result.prediction.confidence[pixel];
+                                const float joint_support=.45f*semantic_support+.25f*color_support+.10f*geometry_support;
+                                const float weight=crop.facing[id]; leaf.weight+=weight;
+                                leaf.votes[size_t(label)]+=weight*joint_support;
+                                leaf.view_mask|=uint16_t(1u<<unsigned(view_index));
+                                if(leaf.samples!=std::numeric_limits<uint32_t>::max())++leaf.samples;
+                            }
+                        }
+                    }
+                    if (details.canceled || stopped(cancel)) { result.canceled = true; return result; }
                 }
                 // A segmentation mask alone is not proof that a rendered animal
                 // or object is a person. Require the independent face detector.
@@ -724,8 +1197,9 @@ Analysis analyze(const MeshSnapshot& source, IBodyRegionRecognizer& body, IFaceR
                         LeafVotes& leaf = view_leaf_votes[uint64_t(id) * 16u + path.value];
                         leaf.weight += weight;
                         if (leaf.samples != std::numeric_limits<uint32_t>::max()) ++leaf.samples;
-                        if (detail < face_detail_labels.size())
-                            leaf.votes[detail] += weight * details.confidence[pixel];
+                        const size_t safe_detail = face_detail_index(coarse_details.labels[pixel]);
+                        if (safe_detail < face_detail_labels.size())
+                            leaf.votes[safe_detail] += weight * coarse_details.confidence[pixel];
                     }
                 }
                 for (const auto& item : view_leaf_votes) {
@@ -796,7 +1270,8 @@ Analysis analyze(const MeshSnapshot& source, IBodyRegionRecognizer& body, IFaceR
             }
             if (paintable(result.face_labels[id]) && result.face_confidence[id] >= minimum_confidence) ++result.reliable_faces;
         }
-        result.subface_labels.reserve(std::min(leaf_votes.size(), maximum_subface_evidence));
+        result.subface_labels.reserve(std::min(leaf_votes.size() + boundary_leaf_votes.size(),
+                                                maximum_subface_evidence));
         for (const auto& item : leaf_votes) {
             if (item.second.weight <= 0.f || item.second.samples == 0) continue;
             const size_t detail = size_t(std::max_element(item.second.votes.begin(), item.second.votes.end()) -
@@ -834,26 +1309,77 @@ Analysis analyze(const MeshSnapshot& source, IBodyRegionRecognizer& body, IFaceR
         std::sort(result.subface_labels.begin(), result.subface_labels.end(), [](const auto& lhs, const auto& rhs) {
             return lhs.face_id != rhs.face_id ? lhs.face_id < rhs.face_id : lhs.path < rhs.path;
         });
+        result.baseline_subface_labels = result.subface_labels;
+        if(boundary){
+            result.baseline_face_labels=result.face_labels;
+            result.baseline_face_confidence=result.face_confidence;
+            for(const auto& item:boundary_root_votes){
+                if(item.second.weight<=0.f||item.second.samples==0)continue;
+                const size_t chosen=size_t(std::max_element(item.second.votes.begin(),item.second.votes.end())-item.second.votes.begin());
+                const float confidence=std::clamp(item.second.votes[chosen]/item.second.weight,0.f,1.f);
+                if(confidence>=minimum_confidence && item.first < result.baseline_face_labels.size() &&
+                   compatible_boundary_detail(result.baseline_face_labels[item.first], Label(chosen))) {
+                    result.face_labels[item.first]=Label(chosen);result.face_confidence[item.first]=confidence;
+                }
+            }
+            result.reliable_faces=0;
+            for(size_t id=0;id<count;++id)if(paintable(result.face_labels[id])&&result.face_confidence[id]>=minimum_confidence)++result.reliable_faces;
+        }
+        std::map<std::pair<size_t,uint8_t>,SubfaceLabelEvidence> refined;
+        for(const auto& item:boundary_leaf_votes){
+            if(item.second.weight<=0.f||item.second.samples==0)continue;
+            const size_t face_id=size_t(item.first/64u);if(face_id>=count)continue;
+            const size_t chosen=size_t(std::max_element(item.second.votes.begin(),item.second.votes.end())-item.second.votes.begin());
+            unsigned views=0;for(uint16_t bits=item.second.view_mask;bits;bits>>=1)views+=bits&1u;
+            const float multi_view_support=std::min(1.f,float(views)/2.f);
+            const float confidence=std::clamp(item.second.votes[chosen]/item.second.weight+
+                                              .20f*multi_view_support,0.f,1.f);
+            if(confidence<.70f)continue;
+            const uint8_t path=uint8_t(item.first%64u);
+            const Label refined_label = Label(chosen);
+            if (face_id < result.baseline_face_labels.size() &&
+                !compatible_boundary_detail(result.baseline_face_labels[face_id], refined_label)) continue;
+            refined.emplace(std::make_pair(face_id,path),SubfaceLabelEvidence{face_id,{3,path},refined_label,confidence,item.second.samples});
+        }
+        // Expand only a replaced parent. Its omitted children inherit verified
+        // depth-2 evidence, keeping an unambiguous tree and a rollback layer.
+        for (const auto& safe : result.baseline_subface_labels) {
+            if (!protected_face_detail(safe.label)) continue;
+            for (int child = 0; child < 4; ++child) {
+                const auto key = std::make_pair(safe.face_id, uint8_t(safe.path.value * 4 + child));
+                const auto found = refined.find(key);
+                if (found != refined.end() && !compatible_boundary_detail(safe.label, found->second.label))
+                    refined.erase(found);
+            }
+        }
+        result.subface_labels.clear();
+        for(const auto& safe:result.baseline_subface_labels){
+            bool split=false;for(int child=0;child<4;++child)split|=refined.count({safe.face_id,uint8_t(safe.path.value*4+child)})!=0;
+            if(!split){result.subface_labels.push_back(safe);continue;}
+            for(int child=0;child<4;++child){const uint8_t path=uint8_t(safe.path.value*4+child);if(refined.count({safe.face_id,path})==0){auto inherited=safe;inherited.path={3,path};result.subface_labels.push_back(inherited);}}
+        }
+        for(const auto& item:refined)result.subface_labels.push_back(item.second);
+        if(result.subface_labels.size()>maximum_subface_evidence){result.subface_labels=result.baseline_subface_labels;}
+        std::sort(result.subface_labels.begin(), result.subface_labels.end(), [](const auto& lhs, const auto& rhs) {
+            return lhs.face_id != rhs.face_id ? lhs.face_id < rhs.face_id : lhs.path < rhs.path;
+        });
+        if (!boundary) result.baseline_subface_labels.clear();
         if (progress) progress(100, "Model region recognition complete");
     } catch (const std::exception& error) { result.error = error.what(); result.face_labels.clear(); result.face_confidence.clear(); }
     return result;
 }
 
-FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, const std::vector<Color>& palette,
-                       const std::vector<Color>& portrait_card)
-{
-    const size_t count = source.mesh.indices.size();
-    if (!analysis.person_detected || analysis.canceled || !analysis.error.empty() || palette.empty() || palette.size() > 6 ||
-        analysis.geometry_id != source.geometry_id || analysis.content_id != source.content_id ||
-        analysis.signature != analysis_cache_key(source, analysis.body_identity, analysis.face_identity) ||
-        analysis.face_labels.size() != count || analysis.face_confidence.size() != count || !validate_snapshot(source).empty()) return {};
-    for (const auto& color : palette) if (!valid_color(color)) return {};
-    for (size_t id = 0; id < count; ++id)
-        if (!valid_label(analysis.face_labels[id]) || !std::isfinite(analysis.face_confidence[id]) ||
-            analysis.face_confidence[id] < 0 || analysis.face_confidence[id] > 1) return {};
-    std::vector<Color> palette_labs; for (const auto& color : palette) palette_labs.push_back(lab(color));
-    std::array<size_t, 6> role_slots {}; role_slots.fill(palette.size());
-    bool has_card = portrait_card.size() == 6;
+namespace {
+struct PalettePolicy {
+    const std::vector<Color>& palette;
+    std::vector<Color> palette_labs;
+    std::array<size_t, 6> role_slots {};
+    bool has_card {false};
+    PalettePolicy(const std::vector<Color>& colors, const std::vector<Color>& portrait_card) : palette(colors) {
+        for (const auto& color : palette) palette_labs.push_back(lab(color));
+
+        role_slots.fill(palette.size());
+        has_card = portrait_card.size() == 6;
     if (has_card) for (size_t role = 0; role < 6; ++role) {
         for (size_t slot = 0; slot < palette.size(); ++slot) {
             bool same = true;
@@ -861,7 +1387,30 @@ FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, con
                 same = same && std::abs(palette[slot][channel] - portrait_card[role][channel]) <= .5f / 255.f;
             if (same) { role_slots[role] = slot; break; }
         }
-        if (role_slots[role] == palette.size()) has_card = false;
+    }
+    }
+    bool role_available(size_t role) const { return has_card && role_slots[role] < palette.size(); }
+    bool source_supports_role(const Color& center, Label label, size_t role) const {
+        if (!has_card || role >= anchors.size()) return false;
+        const float source_chroma = chroma(center);
+        const float anchor_chroma = chroma(anchors[role]);
+        // A role binding is a suggestion, not permission to overwrite a
+        // materially incompatible source. In particular, a dark neutral iris
+        // must not become the portrait card's blue iris slot merely because
+        // its Oklab b channel is slightly negative after lighting removal.
+        if (label == Label::Iris && role == 4) {
+            if (source_chroma < .04f || anchor_chroma < .04f) return false;
+            const float dot = center[1] * anchors[role][1] + center[2] * anchors[role][2];
+            if (dot <= 0.f) return false;
+            const float source_norm = std::sqrt(center[1] * center[1] + center[2] * center[2]);
+            const float anchor_norm = std::sqrt(anchors[role][1] * anchors[role][1] + anchors[role][2] * anchors[role][2]);
+            // Hue agreement is deliberately loose for small printed palettes,
+            // while still rejecting neutral/brown material as blue.
+            if (source_norm <= 0.f || anchor_norm <= 0.f || dot / (source_norm * anchor_norm) < .25f) return false;
+        }
+        // The other portrait roles already have label-specific guards below;
+        // only the blue-iris override needs this additional source check.
+        return label != Label::Iris || role != 4 || distance(center, anchors[role]) <= .09f;
     }
     // These are appearance anchors from the existing portrait-card mapping,
     // not output colors. Comparing source colors with pastel print colors would
@@ -870,71 +1419,621 @@ FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, con
         lab({.76f,.55f,.41f}), lab({.12f,.11f,.12f}), lab({.94f,.94f,.94f}),
         lab({.68f,.26f,.24f}), lab({.24f,.39f,.38f}), lab({.40f,.39f,.38f})
     }};
-    const auto choose_target = [&](const Color& center, Label label) {
+    RegionPaletteDecision decide(const Color& center, Label label, bool boundary_supported = false) const {
+        RegionPaletteDecision result;
+        result.selected_index = palette.size();
         const float source_chroma = chroma(center);
-        if (label == Label::Eyebrow && has_card && center[0] < .72f && source_chroma < .12f &&
-            center[1] >= -.012f && center[2] >= -.012f) {
-            // Eyebrow pigment is a facial material, not a baked highlight.
-            // Preserve genuinely light or dyed brows by leaving them to the
-            // regional matcher. The portrait card uses its neutral midtone for
-            // natural black/brown brows so they remain distinct from skin
-            // without becoming as heavy as hair, iris, or eyeliner.
-            return role_slots[5];
+        const bool has_neutral = std::any_of(palette_labs.begin(), palette_labs.end(),
+            [](const Color& color) { return chroma(color) < .035f; });
+        const bool has_dark_natural = std::any_of(palette_labs.begin(), palette_labs.end(),
+            [&](const Color& color) { return color[0] <= center[0] + .10f && natural_dark_hair(color); });
+        const bool has_detail_dark = std::any_of(palette_labs.begin(), palette_labs.end(),
+            [](const Color& color) { return color[0] <= .72f; });
+        const bool has_bright_neutral = std::any_of(palette_labs.begin(), palette_labs.end(),
+            [](const Color& color) { return chroma(color) <= .055f && color[0] >= .78f; });
+        const bool has_dark_neutral = std::any_of(palette_labs.begin(), palette_labs.end(),
+            [](const Color& color) { return chroma(color) <= .08f && color[0] <= .42f; });
+        float brightest_neutral_l = 0.f;
+        for (const Color& color : palette_labs)
+            if (chroma(color) <= .055f) brightest_neutral_l = std::max(brightest_neutral_l, color[0]);
+        const bool has_iris_compatible = std::any_of(palette_labs.begin(), palette_labs.end(),
+            [&](const Color& color) { return chroma(color) <= source_chroma + .035f; });
+
+        size_t nearest_anchor = anchors.size();
+        if (has_card) {
+            float best = std::numeric_limits<float>::max();
+            for (size_t role = 0; role < anchors.size(); ++role) {
+                const float candidate = distance(center, anchors[role]);
+                if (candidate < best) { best = candidate; nearest_anchor = role; }
+            }
         }
-        if (label == Label::EyeSclera && source_chroma < .10f) {
-            // The eye mask identifies the sclera material. Baked gray shadows
-            // and a warm skin reflection must not become gray/skin filaments.
-            if (has_card) return role_slots[2];
-            size_t lightest = palette.size(); float lightness = -1.f;
-            for (size_t slot = 0; slot < palette.size(); ++slot) {
-                const auto& target = palette_labs[slot];
-                if (chroma(target) < .035f && target[0] > lightness) {
-                    lightness = target[0]; lightest = slot;
+
+        for (size_t slot = 0; slot < palette.size(); ++slot) {
+            const Color& target = palette_labs[slot];
+            const float target_chroma = chroma(target);
+            RegionPaletteCandidateDecision candidate;
+            candidate.palette_index = slot;
+            if (label == Label::EyeSclera && has_neutral &&
+                (target_chroma > .06f || target[0] < .35f ||
+                 (has_bright_neutral && target[0] < brightest_neutral_l - .03f))) {
+                candidate.accepted = false;
+                candidate.reason = PaletteDecisionReason::ProtectedRegionConflict;
+            } else if (label == Label::MouthInterior && has_dark_neutral &&
+                       (target_chroma > .08f || target[0] > .55f)) {
+                candidate.accepted = false;
+                candidate.reason = PaletteDecisionReason::ProtectedRegionConflict;
+            } else if (label == Label::Iris && has_iris_compatible &&
+                       (target_chroma > source_chroma + .035f || (has_detail_dark && target[0] > .72f) ||
+                        (has_dark_neutral && center[1] >= -.04f && center[2] >= -.015f && target[0] > .58f))) {
+                candidate.accepted = false;
+                candidate.reason = PaletteDecisionReason::SourceColorIncompatible;
+            } else if (label == Label::Eyebrow && has_detail_dark && target[0] > .72f) {
+                candidate.accepted = false;
+                candidate.reason = PaletteDecisionReason::ProtectedRegionConflict;
+            } else if ((label == Label::Hair || label == Label::Iris) &&
+                       natural_dark_hair(center) && has_dark_natural &&
+                       (target[0] > center[0] + .10f || !natural_dark_hair(target))) {
+                candidate.accepted = false;
+                candidate.reason = PaletteDecisionReason::SourceColorIncompatible;
+            } else if (label == Label::Hair && center[2] > center[1] + .05f &&
+                       target[1] > target[2] + .02f && role_available(3) && slot == role_slots[3]) {
+                candidate.accepted = false;
+                candidate.reason = PaletteDecisionReason::ProtectedRegionConflict;
+            } else if (label == Label::Hair && source_chroma > .10f && target_chroma > .04f &&
+                       center[1] * target[1] + center[2] * target[2] < 0.f) {
+                candidate.accepted = false;
+                candidate.reason = PaletteDecisionReason::SourceColorIncompatible;
+            } else if (source_chroma < .015f && has_neutral && target_chroma >= .035f) {
+                candidate.accepted = false;
+                candidate.reason = PaletteDecisionReason::SourceColorIncompatible;
+            } else if ((label == Label::FaceSkin || label == Label::BodySkin) && role_available(3) &&
+                       slot == role_slots[3] && role_available(0) &&
+                       !compatible_skin(center, target, label)) {
+                candidate.accepted = false;
+                candidate.reason = PaletteDecisionReason::ProtectedRegionConflict;
+            } else if ((label == Label::FaceSkin || label == Label::BodySkin) &&
+                       target_chroma > .08f && target[1] > target[2] + .025f && has_neutral) {
+                candidate.accepted = false;
+                candidate.reason = PaletteDecisionReason::ProtectedRegionConflict;
+            }
+
+            float role_bonus = 0.f;
+            const bool skin = label == Label::FaceSkin || label == Label::BodySkin;
+            if (skin && role_available(0) && slot == role_slots[0] && source_chroma >= .015f &&
+                center[1] >= 0.f && center[2] > 0.f) role_bonus = .10f;
+            else if (label == Label::Lips && role_available(3) && slot == role_slots[3] &&
+                     source_chroma >= .04f && center[1] > .02f && center[2] > -.03f) role_bonus = .10f;
+            else if ((label == Label::EyeSclera || label == Label::MouthInterior) &&
+                     role_available(2) && slot == role_slots[2]) role_bonus = .10f;
+            else if (label == Label::Eyebrow && role_available(5) && slot == role_slots[5] &&
+                     center[0] < .72f && source_chroma < .12f) role_bonus = .10f;
+            else if (label == Label::Iris) {
+                const size_t role = center[2] < -.015f || center[1] < -.04f ? 4 : 1;
+                if (role_available(role) && slot == role_slots[role] && source_supports_role(center, label, role))
+                    role_bonus = .10f;
+            } else if (label == Label::Hair && role_available(1) && slot == role_slots[1] &&
+                       natural_dark_hair(center)) role_bonus = .08f;
+            else if (label == Label::Unknown && has_card && nearest_anchor < anchors.size() && role_available(nearest_anchor) &&
+                     slot == role_slots[nearest_anchor]) role_bonus = .06f;
+
+            float semantic_compatibility = candidate_semantic_compatibility(center, target, label, boundary_supported);
+            if (label == Label::Clothes && role_available(0) && slot == role_slots[0]) {
+                float alternative = std::numeric_limits<float>::max();
+                for (size_t other = 0; other < palette_labs.size(); ++other)
+                    if (other != role_slots[0]) alternative = std::min(alternative, distance(center, palette_labs[other]));
+                if (alternative <= distance(center, target) + .02f)
+                    semantic_compatibility = std::min(semantic_compatibility, .35f);
+            }
+            if (role_bonus > 0.f) semantic_compatibility = 1.f;
+            // A known portrait role is still semantic evidence, but it enters
+            // the same auditable candidate calculation instead of bypassing it.
+            // Only source appearances compatible with the role may penalize an
+            // alternative, so dyed hair/irises and scarce palettes remain free.
+            if (skin && role_available(0) && distance(center, anchors[0]) < .035f && slot != role_slots[0])
+                semantic_compatibility = std::min(semantic_compatibility, .35f);
+            else if (label == Label::Lips && role_available(3) && distance(center, anchors[3]) < .04f && slot != role_slots[3])
+                semantic_compatibility = std::min(semantic_compatibility, .40f);
+            else if ((label == Label::EyeSclera || label == Label::MouthInterior) && role_available(2) &&
+                     source_chroma < .10f && slot != role_slots[2])
+                semantic_compatibility = std::min(semantic_compatibility, .45f);
+            else if (label == Label::Eyebrow && role_available(5) && center[0] < .72f &&
+                     source_chroma < .12f && slot != role_slots[5])
+                semantic_compatibility = std::min(semantic_compatibility, .05f);
+            const auto scored = score_palette_candidate({distance(center, target),
+                semantic_compatibility, 1.f, 1.f, 1.f, 0.f, false});
+            candidate.source_cost = scored.source_component;
+            candidate.semantic_cost = scored.semantic_component;
+            candidate.role_bonus = role_bonus;
+            const float excess = std::max(0.f, target_chroma - source_chroma - .025f);
+            candidate.total_cost = (.35f * candidate.source_cost + .30f * candidate.semantic_cost) / .65f
+                                 - role_bonus + 2.f * excess * excess;
+            result.candidates.push_back(candidate);
+        }
+
+        std::vector<const RegionPaletteCandidateDecision*> accepted;
+        for (const auto& candidate : result.candidates) if (candidate.accepted) accepted.push_back(&candidate);
+        if (accepted.empty()) for (const auto& candidate : result.candidates) accepted.push_back(&candidate);
+        std::stable_sort(accepted.begin(), accepted.end(), [](const auto* lhs, const auto* rhs) {
+            return lhs->total_cost != rhs->total_cost ? lhs->total_cost < rhs->total_cost :
+                   lhs->palette_index < rhs->palette_index;
+        });
+        if (!accepted.empty()) {
+            result.selected_index = accepted.front()->palette_index;
+            result.best_cost = accepted.front()->total_cost;
+            if (accepted.size() > 1) {
+                result.second_cost = accepted[1]->total_cost;
+                result.score_margin = result.second_cost - result.best_cost;
+                result.ambiguous = result.score_margin < .03f &&
+                    std::sqrt(distance(palette_labs[accepted[0]->palette_index],
+                                       palette_labs[accepted[1]->palette_index])) > .04f;
+            }
+        }
+        return result;
+    }
+    size_t choose(const Color& center, Label label, bool boundary_supported = false) const {
+        return decide(center, label, boundary_supported).selected_index;
+    }
+};
+
+struct DiscoveredMaterial {
+    Label label;
+    Color center;
+    std::vector<size_t> faces;
+    double surface_area {0.0};
+};
+// No palette, target color or slot identity is stored in this immutable cache.
+struct MaterialDiscovery {
+    std::vector<DiscoveredMaterial> entries;
+    std::vector<size_t> face_material;
+    std::vector<uint8_t> hair_seed_faces;
+    std::set<std::pair<size_t,size_t>> contrast_pairs;
+    std::map<std::pair<size_t,Label>,size_t> leaf_component_at_face;
+    std::map<size_t,std::vector<Color>> leaf_centers;
+    std::map<size_t,Color> sclera_centers;
+    std::vector<size_t> sclera_support_component;
+    std::vector<uint8_t> eyebrow_supported_faces;
+};
+struct MappedMaterial { Label label; Color center; size_t target; };
+struct MappedMaterials {
+    std::vector<MappedMaterial> entries;
+    std::shared_ptr<const MaterialDiscovery> discovery;
+};
+struct DiscoveryCache {
+    struct Entry { std::string key; std::shared_ptr<const MaterialDiscovery> value; uint64_t used {0}; };
+    std::mutex mutex;
+    std::array<Entry,2> entries;
+    MaterialDiscoveryCacheStats stats;
+    uint64_t clock {0};
+};
+DiscoveryCache& discovery_cache() { static DiscoveryCache cache; return cache; }
+
+std::string discovery_key(const MeshSnapshot& source, const Analysis& analysis, const Cancel& cancel)
+{
+    if (stopped(cancel) || analysis.canceled || !analysis.error.empty() || !analysis.person_detected) return {};
+    std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> ctx(EVP_MD_CTX_new(), EVP_MD_CTX_free);
+    if (!ctx || EVP_DigestInit_ex(ctx.get(),EVP_sha256(),nullptr)!=1) return {};
+    bool okay=true;
+    const auto bytes = [&](const void* data,size_t count) {
+        if (okay && count) okay=EVP_DigestUpdate(ctx.get(),data,count)==1;
+    };
+    const auto number = [&](uint64_t value) { bytes(&value,sizeof(value)); };
+    const auto string = [&](const std::string& value) { number(value.size()); bytes(value.data(),value.size()); };
+    string("orca.material-discovery/v3-supported-skin-gaps"); string(source.geometry_id); string(source.content_id); string(analysis.signature);
+    number(source.mesh.indices.size()); number(source.mesh.vertices.size());
+    // These are exact in-process evidence arrays, not a JSON re-encoding or
+    // the recognition signature alone. Tests and callers can replace masks
+    // under the same model identity, and confidence changes are meaningful.
+    for (const auto* labels : {&analysis.face_labels,&analysis.baseline_face_labels}) {
+        number(labels->size()); bytes(labels->data(),labels->size()*sizeof(Label));
+    }
+    for (const auto* confidence : {&analysis.face_confidence,&analysis.baseline_face_confidence}) {
+        number(confidence->size()); bytes(confidence->data(),confidence->size()*sizeof(float));
+    }
+    std::array<uint64_t,3*1024> block {};
+    for (const auto* leaves : {&analysis.subface_labels,&analysis.baseline_subface_labels}) {
+        number(leaves->size()); size_t used=0;
+        for (const auto& leaf : *leaves) {
+            uint32_t confidence; std::memcpy(&confidence,&leaf.confidence,sizeof(confidence));
+            block[used++]=uint64_t(leaf.face_id);
+            block[used++]=uint64_t(leaf.path.depth) | (uint64_t(leaf.path.value)<<8) |
+                (uint64_t(leaf.label)<<16) | (uint64_t(leaf.samples)<<24);
+            block[used++]=confidence;
+            if (used==block.size()) {
+                bytes(block.data(),used*sizeof(uint64_t)); used=0;
+                if (stopped(cancel)) return {};
+            }
+        }
+        bytes(block.data(),used*sizeof(uint64_t));
+    }
+    std::array<unsigned char,32> digest {}; unsigned size=0;
+    if (!okay || stopped(cancel) || EVP_DigestFinal_ex(ctx.get(),digest.data(),&size)!=1 || size!=32) return {};
+    std::string key; key.reserve(64); constexpr char hex[]="0123456789abcdef";
+    for (unsigned char byte : digest) { key+=hex[byte>>4]; key+=hex[byte&15]; }
+    return key;
+}
+
+bool subface_appearance(const MeshSnapshot& source, const SubfaceLabelEvidence& evidence, Color& output_color) {
+        std::array<Barycentric, 3> vertices;
+        if (evidence.face_id >= source.mesh.indices.size() || !subface_vertices(evidence.path, vertices)) return false;
+        Barycentric centroid {};
+        for (const Barycentric& vertex : vertices)
+            for (size_t channel = 0; channel < 3; ++channel)
+                centroid[channel] += vertex[channel] / 3.f;
+        Color rgb {};
+        for (size_t corner = 0; corner < 3; ++corner) {
+            const Color color = corner_color(source, evidence.face_id, int(corner));
+            for (size_t channel = 0; channel < 3; ++channel)
+                rgb[channel] += centroid[corner] * color[channel];
+        }
+        output_color = lab(rgb);
+        return true;
+    }
+
+void assign_spatially_supported_skin_materials(const MeshSnapshot& source, const Analysis& analysis,
+                                               const std::vector<Label>& effective_labels,
+                                               const std::vector<std::vector<size_t>>& faces_at_vertex,
+                                               MaterialDiscovery& discovery)
+{
+    const size_t count = source.mesh.indices.size();
+    if (count == 0 || source.mesh.vertices.empty() || discovery.entries.empty()) return;
+
+    Vec3f lower = source.mesh.vertices.front(), upper = lower;
+    for (const Vec3f& vertex : source.mesh.vertices) {
+        lower = lower.cwiseMin(vertex);
+        upper = upper.cwiseMax(vertex);
+    }
+    const float radius = (upper - lower).norm() * .012f;
+    if (!(radius > 0.f) || !std::isfinite(radius)) return;
+
+    using Cell = std::array<long long, 3>;
+    const auto cell = [radius](const Vec3f& point) {
+        Cell result {};
+        for (int axis = 0; axis < 3; ++axis)
+            result[axis] = static_cast<long long>(std::floor(point[axis] / radius));
+        return result;
+    };
+    const auto skin_appearance = [](const Color& color) {
+        const float source_chroma = chroma(color);
+        return color[0] >= .32f && color[0] <= .90f && source_chroma >= .018f &&
+            source_chroma <= .16f && color[1] > .005f && color[2] > .005f &&
+            color[1] <= color[2] * 1.8f;
+    };
+    const auto detail = [](Label label) {
+        return label == Label::Lips || label == Label::MouthInterior || label == Label::EyeSclera ||
+            label == Label::Iris || label == Label::Eyebrow;
+    };
+
+    std::vector<Vec3f> centers(count, Vec3f::Zero()), normals(count, Vec3f::Zero());
+    std::vector<Color> appearances(count);
+    for (size_t face_id = 0; face_id < count; ++face_id) {
+        const auto& triangle = source.mesh.indices[face_id];
+        centers[face_id] = (source.mesh.vertices[triangle[0]] + source.mesh.vertices[triangle[1]] +
+                            source.mesh.vertices[triangle[2]]) / 3.f;
+        normals[face_id] = (source.mesh.vertices[triangle[1]] - source.mesh.vertices[triangle[0]])
+            .cross(source.mesh.vertices[triangle[2]] - source.mesh.vertices[triangle[0]]);
+        const float length = normals[face_id].norm();
+        if (length > 1e-9f) normals[face_id] /= length;
+        appearances[face_id] = face_lab(source, face_id);
+    }
+
+    std::map<Cell, std::vector<size_t>> donor_cells, protected_cells;
+    for (size_t face_id = 0; face_id < count; ++face_id) {
+        const size_t material_id = discovery.face_material[face_id];
+        if (material_id < discovery.entries.size()) {
+            const Label label = discovery.entries[material_id].label;
+            if ((label == Label::FaceSkin || label == Label::BodySkin) &&
+                skin_appearance(appearances[face_id]) && normals[face_id].squaredNorm() > 0.f)
+                donor_cells[cell(centers[face_id])].push_back(face_id);
+        }
+        const Label label = analysis.face_labels[face_id];
+        if (analysis.face_confidence[face_id] >= minimum_confidence &&
+            (label == Label::Hair || label == Label::Clothes || label == Label::Accessories || detail(label)))
+            protected_cells[cell(centers[face_id])].push_back(face_id);
+    }
+    if (donor_cells.empty()) return;
+
+    const float radius_squared = radius * radius;
+    // A low-confidence skin band may sit between a reliable seed and a small
+    // background hole. Resolve at most three simultaneous rings so each new
+    // ring can support the next one without making face traversal order affect
+    // the result. Every ring still has to pass the original color, normal,
+    // protection and single-owner checks.
+    for (int pass = 0; pass < 3; ++pass) {
+        std::vector<std::pair<size_t, size_t>> accepted;
+        for (size_t face_id = 0; face_id < count; ++face_id) {
+            if (discovery.face_material[face_id] < discovery.entries.size() ||
+                normals[face_id].squaredNorm() <= 0.f) continue;
+            const Label label = effective_labels[face_id];
+            const bool semantic_skin = label == Label::FaceSkin || label == Label::BodySkin;
+            const bool reliable_skin = semantic_skin && analysis.face_confidence[face_id] >= minimum_confidence;
+            // Multi-view voting commonly leaves narrow neck and ear strips below
+            // the whole-face confidence threshold, or labels an occluded strip as
+            // background. They are still valid skin candidates when their source
+            // appearance and surrounding surface independently agree. Hair and
+            // clothes remain ineligible even at low confidence.
+            const bool uncertain_skin =
+                (label == Label::Unknown || label == Label::Background ||
+                 (semantic_skin && analysis.face_confidence[face_id] < minimum_confidence)) &&
+                skin_appearance(appearances[face_id]);
+            if (!reliable_skin && !uncertain_skin) continue;
+
+            const Cell origin = cell(centers[face_id]);
+            std::map<size_t, size_t> edge_votes;
+            bool protected_edge = false;
+            const auto& triangle = source.mesh.indices[face_id];
+            for (int edge = 0; edge < 3; ++edge) {
+                const int first_vertex = triangle[edge];
+                const int second_vertex = triangle[(edge + 1) % 3];
+                size_t neighbor = count;
+                bool manifold = true;
+                for (size_t candidate : faces_at_vertex[first_vertex]) {
+                    if (candidate == face_id) continue;
+                    const auto& candidate_triangle = source.mesh.indices[candidate];
+                    if (candidate_triangle[0] != second_vertex && candidate_triangle[1] != second_vertex &&
+                        candidate_triangle[2] != second_vertex) continue;
+                    if (neighbor != count) { manifold = false; break; }
+                    neighbor = candidate;
+                }
+                if (!manifold || neighbor == count) continue;
+                const Label neighbor_label = analysis.face_labels[neighbor];
+                if (analysis.face_confidence[neighbor] >= minimum_confidence &&
+                    (neighbor_label == Label::Hair || neighbor_label == Label::Clothes ||
+                     neighbor_label == Label::Accessories || detail(neighbor_label))) {
+                    protected_edge = true;
+                    continue;
+                }
+                // A recovered background/unknown face is a terminal repair,
+                // never a semantic skin seed. Otherwise a valid repair at the
+                // wrist or neckline can walk across warm-tinted white cloth.
+                if (analysis.face_confidence[neighbor] < minimum_confidence ||
+                    (neighbor_label != Label::FaceSkin && neighbor_label != Label::BodySkin))
+                    continue;
+                const size_t material_id = discovery.face_material[neighbor];
+                if (material_id >= discovery.entries.size() || normals[face_id].dot(normals[neighbor]) < .50f)
+                    continue;
+                const Label donor_label = discovery.entries[material_id].label;
+                if (donor_label != Label::FaceSkin && donor_label != Label::BodySkin) continue;
+                if (reliable_skin && donor_label != label) continue;
+                const Label compatibility_label = donor_label == Label::BodySkin
+                    ? Label::BodySkin : Label::FaceSkin;
+                if (compatible_skin(appearances[face_id], discovery.entries[material_id].center,
+                                    compatibility_label))
+                    ++edge_votes[material_id];
+            }
+            const bool edge_owned_skin = !reliable_skin && !protected_edge && edge_votes.size() == 1;
+            bool protected_neighbor = false;
+            if (!edge_owned_skin)
+                for (int z = -1; z <= 1 && !protected_neighbor; ++z)
+                    for (int y = -1; y <= 1 && !protected_neighbor; ++y)
+                        for (int x = -1; x <= 1 && !protected_neighbor; ++x) {
+                            const auto found = protected_cells.find({origin[0] + x, origin[1] + y, origin[2] + z});
+                            if (found == protected_cells.end()) continue;
+                            for (size_t other : found->second) {
+                                const Label protected_label = analysis.face_labels[other];
+                                if (reliable_skin && label == Label::BodySkin && !detail(protected_label)) continue;
+                                if (normals[face_id].dot(normals[other]) < .35f ||
+                                    (centers[face_id] - centers[other]).squaredNorm() > radius_squared) continue;
+                                protected_neighbor = true;
+                                break;
+                            }
+                        }
+            if (protected_neighbor) continue;
+
+            std::map<size_t, size_t> votes = edge_owned_skin ? edge_votes : std::map<size_t, size_t>{};
+            if (!edge_owned_skin)
+                for (int z = -1; z <= 1; ++z)
+                    for (int y = -1; y <= 1; ++y)
+                        for (int x = -1; x <= 1; ++x) {
+                            const auto found = donor_cells.find({origin[0] + x, origin[1] + y, origin[2] + z});
+                            if (found == donor_cells.end()) continue;
+                            for (size_t donor : found->second) {
+                                const size_t material_id = discovery.face_material[donor];
+                                if (material_id >= discovery.entries.size() ||
+                                    normals[face_id].dot(normals[donor]) < .50f ||
+                                    (centers[face_id] - centers[donor]).squaredNorm() > radius_squared) continue;
+                                const Label donor_label = discovery.entries[material_id].label;
+                                if (reliable_skin && donor_label != label) continue;
+                                // Uncertain/background gaps inherit the donor's detail
+                                // policy: neck/body donors may absorb broad lighting
+                                // shadows, while face donors keep the tighter eye/lip
+                                // protection range.
+                                const Label compatibility_label = donor_label == Label::BodySkin
+                                    ? Label::BodySkin : Label::FaceSkin;
+                                if (!compatible_skin(appearances[face_id], discovery.entries[material_id].center,
+                                                     compatibility_label)) continue;
+                                ++votes[material_id];
+                            }
+                        }
+            // Conflicting nearby skin regions can represent two people or two
+            // touching body parts. Do not infer ownership without instance data.
+            if (votes.size() != 1 || (!edge_owned_skin && votes.begin()->second < 2)) continue;
+            accepted.emplace_back(face_id, votes.begin()->first);
+        }
+        if (accepted.empty()) break;
+        for (const auto& item : accepted) {
+            discovery.face_material[item.first] = item.second;
+            discovery.entries[item.second].faces.push_back(item.first);
+            const Label accepted_label = effective_labels[item.first];
+            if (accepted_label == Label::FaceSkin || accepted_label == Label::BodySkin)
+                donor_cells[cell(centers[item.first])].push_back(item.first);
+        }
+    }
+}
+
+void constrain_eyebrow_material_regions(const MeshSnapshot& source, const Analysis& analysis,
+                                        const std::vector<std::vector<size_t>>& faces_at_vertex,
+                                        std::vector<Label>& effective_labels,
+                                        std::vector<uint8_t>& supported_faces)
+{
+    const size_t count = source.mesh.indices.size();
+    supported_faces.assign(count, 0);
+    std::vector<size_t> eye_faces;
+    for (size_t face_id = 0; face_id < count; ++face_id)
+        if ((analysis.face_labels[face_id] == Label::EyeSclera || analysis.face_labels[face_id] == Label::Iris) &&
+            analysis.face_confidence[face_id] >= minimum_confidence)
+            eye_faces.push_back(face_id);
+    // A recognizer without eye evidence keeps its conservative brow fallback.
+    // Once eyes are present, they provide the anatomical bound that prevents a
+    // high-confidence hair texture from becoming a remote eyebrow component.
+    if (eye_faces.empty()) {
+        for (size_t face_id = 0; face_id < count; ++face_id)
+            supported_faces[face_id] = effective_labels[face_id] == Label::Eyebrow;
+        for (const auto& evidence : analysis.subface_labels)
+            if (evidence.face_id < count && evidence.label == Label::Eyebrow)
+                supported_faces[evidence.face_id] = 1;
+        return;
+    }
+
+    Vec3f lower = source.mesh.vertices.front(), upper = lower;
+    for (const Vec3f& vertex : source.mesh.vertices) {
+        lower = lower.cwiseMin(vertex);
+        upper = upper.cwiseMax(vertex);
+    }
+    const float maximum_distance = (upper - lower).norm() * .030f;
+    const float maximum_distance_squared = maximum_distance * maximum_distance;
+    const auto center = [&](size_t face_id) {
+        const auto& triangle = source.mesh.indices[face_id];
+        return (source.mesh.vertices[triangle[0]] + source.mesh.vertices[triangle[1]] +
+                source.mesh.vertices[triangle[2]]) / 3.f;
+    };
+    std::vector<Vec3f> eye_centers;
+    eye_centers.reserve(eye_faces.size());
+    for (size_t face_id : eye_faces) eye_centers.push_back(center(face_id));
+
+    std::vector<size_t> parent(count); std::iota(parent.begin(), parent.end(), 0);
+    const auto root = [&parent](size_t id) {
+        while (parent[id] != id) { parent[id] = parent[parent[id]]; id = parent[id]; }
+        return id;
+    };
+    for (size_t face_id = 0; face_id < count; ++face_id) {
+        if (effective_labels[face_id] != Label::Eyebrow ||
+            analysis.face_confidence[face_id] < minimum_confidence) continue;
+        for (int corner = 0; corner < 3; ++corner)
+            for (size_t neighbor : faces_at_vertex[source.mesh.indices[face_id][corner]]) {
+                if (effective_labels[neighbor] != Label::Eyebrow ||
+                    analysis.face_confidence[neighbor] < minimum_confidence) continue;
+                const size_t a = root(face_id), b = root(neighbor);
+                if (a != b) parent[std::max(a, b)] = std::min(a, b);
+            }
+    }
+    std::map<size_t, std::vector<size_t>> components;
+    for (size_t face_id = 0; face_id < count; ++face_id)
+        if (effective_labels[face_id] == Label::Eyebrow &&
+            analysis.face_confidence[face_id] >= minimum_confidence)
+            components[root(face_id)].push_back(face_id);
+
+    for (const auto& component : components) {
+        bool near_eye = true;
+        size_t skin_boundary = 0;
+        for (size_t face_id : component.second) {
+            const Vec3f face_center = center(face_id);
+            const bool face_near_eye = std::any_of(eye_centers.begin(), eye_centers.end(), [&](const Vec3f& eye) {
+                return (face_center - eye).squaredNorm() <= maximum_distance_squared;
+            });
+            near_eye &= face_near_eye;
+            for (int corner = 0; corner < 3; ++corner)
+                for (size_t neighbor : faces_at_vertex[source.mesh.indices[face_id][corner]])
+                    if ((analysis.face_labels[neighbor] == Label::FaceSkin ||
+                         analysis.face_labels[neighbor] == Label::BodySkin) &&
+                        analysis.face_confidence[neighbor] >= minimum_confidence)
+                        ++skin_boundary;
+        }
+        if (near_eye && skin_boundary > 0) {
+            for (size_t face_id : component.second) supported_faces[face_id] = 1;
+            continue;
+        }
+
+        for (size_t face_id : component.second) {
+            std::vector<Sample> local_skin;
+            size_t hair_support = 0;
+            for (int corner = 0; corner < 3; ++corner)
+                for (size_t neighbor : faces_at_vertex[source.mesh.indices[face_id][corner]]) {
+                    if (analysis.face_confidence[neighbor] < minimum_confidence) continue;
+                    const Label label = analysis.face_labels[neighbor];
+                    if (label == Label::Hair) ++hair_support;
+                    else if (label == Label::FaceSkin || label == Label::BodySkin)
+                        local_skin.push_back({face_lab(source, neighbor), area(source, neighbor)});
+                }
+            const Color original = face_lab(source, face_id);
+            const auto skin_centers = prototypes(local_skin, 1);
+            if (hair_support > local_skin.size() && natural_dark_hair(original))
+                effective_labels[face_id] = Label::Hair;
+            else if (!skin_centers.empty() && compatible_skin(original, skin_centers.front(), Label::BodySkin))
+                effective_labels[face_id] = Label::FaceSkin;
+            else
+                effective_labels[face_id] = Label::Unknown;
+        }
+    }
+
+    // A brow may be represented only by a child leaf on a FaceSkin root. It
+    // has no whole-face eyebrow component above, so validate the containing
+    // face directly against the same anatomical eye bound. Reliable skin at
+    // the root supplies the required face-side support.
+    for (const auto& evidence : analysis.subface_labels) {
+        if (evidence.face_id >= count || evidence.label != Label::Eyebrow ||
+            evidence.confidence < minimum_confidence) continue;
+        const size_t face_id = evidence.face_id;
+        const bool near_eye = std::any_of(eye_centers.begin(), eye_centers.end(), [&](const Vec3f& eye) {
+            return (center(face_id) - eye).squaredNorm() <= maximum_distance_squared;
+        });
+        const bool skin_root = (analysis.face_labels[face_id] == Label::FaceSkin ||
+                                analysis.face_labels[face_id] == Label::BodySkin) &&
+                               analysis.face_confidence[face_id] >= minimum_confidence;
+        if (near_eye && skin_root) supported_faces[face_id] = 1;
+    }
+}
+
+std::shared_ptr<const MaterialDiscovery> discover_materials(const MeshSnapshot& source,
+                                                           const Analysis& analysis, const Cancel& cancel)
+{
+    const size_t count=source.mesh.indices.size();
+    auto discovery=std::make_shared<MaterialDiscovery>();
+    { // Release whole-region topology before collecting child evidence.
+    discovery->face_material.assign(count, std::numeric_limits<size_t>::max());
+    std::vector<Label> effective_labels = analysis.face_labels;
+    std::vector<std::vector<size_t>> semantic_faces_at_vertex(source.mesh.vertices.size());
+    for (size_t face_id = 0; face_id < count; ++face_id)
+        for (int corner = 0; corner < 3; ++corner)
+            semantic_faces_at_vertex[source.mesh.indices[face_id][corner]].push_back(face_id);
+    // A coarse face mask can include a dark brow strip in FaceSkin. Promote it
+    // to an explicit material region only when it touches reliable eye evidence;
+    // this keeps the correction visible to mapping, overrides and diagnostics.
+    for (size_t face_id = 0; face_id < count; ++face_id) {
+        if (effective_labels[face_id] != Label::FaceSkin ||
+            analysis.face_confidence[face_id] < minimum_confidence) continue;
+        const Color original = face_lab(source, face_id);
+        if (original[0] >= .50f || chroma(original) >= .10f ||
+            original[1] < -.02f || original[2] < -.02f) continue;
+        bool touches_eye = false;
+        for (int corner = 0; corner < 3 && !touches_eye; ++corner)
+            for (size_t neighbor : semantic_faces_at_vertex[source.mesh.indices[face_id][corner]]) {
+                const Label label = analysis.face_labels[neighbor];
+                if (analysis.face_confidence[neighbor] >= minimum_confidence &&
+                    (label == Label::EyeSclera || label == Label::Iris || label == Label::Eyebrow)) {
+                    touches_eye = true;
+                    break;
                 }
             }
-            if (lightest != palette.size()) return lightest;
-        }
-        if ((label == Label::Hair || label == Label::Iris || label == Label::Eyebrow) && natural_dark_hair(center)) {
-            // Preserve the material's darkness when the limited palette lacks
-            // brown. A pastel skin/lip role is not a brown-hair highlight.
-            // Real brown filaments still compete by their actual appearance.
-            size_t selected = palette.size(); float best = std::numeric_limits<float>::max();
-            for (size_t slot = 0; slot < palette.size(); ++slot) {
-                const auto& target = palette_labs[slot];
-                if (has_card && slot != role_slots[1] && slot != role_slots[5]) continue;
-                if (target[0] > center[0] + .10f || !natural_dark_hair(target)) continue;
-                const float score = distance(center, target);
-                if (score < best) { best = score; selected = slot; }
+        if (touches_eye) effective_labels[face_id] = Label::Eyebrow;
+    }
+    for (size_t face_id = 0; face_id < count; ++face_id) {
+        if (effective_labels[face_id] != Label::BodySkin ||
+            analysis.face_confidence[face_id] < minimum_confidence) continue;
+        const Color original = face_lab(source, face_id);
+        bool matches_neighbor_hair = false;
+        for (int corner = 0; corner < 3 && !matches_neighbor_hair; ++corner)
+            for (size_t neighbor : semantic_faces_at_vertex[source.mesh.indices[face_id][corner]]) {
+                if (analysis.face_labels[neighbor] != Label::Hair ||
+                    analysis.face_confidence[neighbor] < minimum_confidence) continue;
+                if (same_hair_material(original, face_lab(source, neighbor))) {
+                    matches_neighbor_hair = true;
+                    break;
+                }
             }
-            if (selected != palette.size()) return selected;
-        }
-        if (has_card) {
-            const bool neutral = source_chroma < .015f;
-            const bool muted_cloth = label == Label::Clothes && (source_chroma < .035f ||
-                (source_chroma < .05f && center[1] >= 0.f && center[2] >= 0.f));
-            const bool skin = label == Label::FaceSkin || label == Label::BodySkin;
-            if (skin && !neutral && center[1] >= 0.f && center[2] > 0.f) return role_slots[0];
-            if (label == Label::Lips && source_chroma >= .04f && center[1] > .02f && center[2] > -.03f) return role_slots[3];
-            size_t role = 1; float best = std::numeric_limits<float>::max();
-            for (size_t candidate = 0; candidate < anchors.size(); ++candidate) {
-                if ((neutral || muted_cloth) && candidate != 1 && candidate != 2 && candidate != 5) continue;
-                const float score = distance(center, anchors[candidate]);
-                if (score < best) { best = score; role = candidate; }
-            }
-            return role_slots[role];
-        }
-        const bool has_neutral = std::any_of(palette_labs.begin(), palette_labs.end(),
-            [](const Color& c) { return chroma(c) < .035f; });
-        size_t selected = 0; float best = std::numeric_limits<float>::max();
-        for (size_t slot = 0; slot < palette.size(); ++slot) {
-            const auto& target = palette_labs[slot];
-            if (source_chroma < .015f && has_neutral && chroma(target) >= .035f) continue;
-            const float excess = std::max(0.f, chroma(target) - source_chroma - .025f);
-            const float score = distance(center, target) + 2.f * excess * excess;
-            if (score < best) { best = score; selected = slot; }
-        }
-        return selected;
-    };
+        if (matches_neighbor_hair) effective_labels[face_id] = Label::Hair;
+    }
+    constrain_eyebrow_material_regions(source, analysis, semantic_faces_at_vertex, effective_labels,
+                                       discovery->eyebrow_supported_faces);
     // Eyebrows are a detail overlay on the face. Treat them as face skin only
     // while building the underlying material topology, so removing a thin brow
     // strip cannot split the forehead into different skin prototypes.
@@ -951,7 +2050,7 @@ FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, con
     for (size_t label = 2; label < label_count; ++label) {
         std::fill(first.begin(), first.end(), count);
         for (size_t id = 0; id < count; ++id) {
-            if (size_t(topology_label(analysis.face_labels[id])) != label || analysis.face_confidence[id] < minimum_confidence) continue;
+            if (size_t(topology_label(effective_labels[id])) != label || analysis.face_confidence[id] < minimum_confidence) continue;
             for (int corner = 0; corner < 3; ++corner) {
                 const int vertex = source.mesh.indices[id][corner];
                 if (first[vertex] == count) first[vertex] = id;
@@ -961,11 +2060,11 @@ FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, con
     }
     std::map<size_t, std::vector<size_t>> regions;
     for (size_t id = 0; id < count; ++id)
-        if (paintable(analysis.face_labels[id]) && analysis.face_confidence[id] >= minimum_confidence) regions[root(id)].push_back(id);
-    FaceColors output; output.reserve(analysis.reliable_faces);
-    std::vector<HairSeed> hair_seeds(count);
+        if (paintable(effective_labels[id]) && analysis.face_confidence[id] >= minimum_confidence) regions[root(id)].push_back(id);
+    discovery->hair_seed_faces.assign(count,0);
     for (const auto& region : regions) {
-        const Label label = topology_label(analysis.face_labels[region.second.front()]);
+        if (stopped(cancel)) return {};
+        const Label label = topology_label(effective_labels[region.second.front()]);
         const bool skin = label == Label::FaceSkin || label == Label::BodySkin;
         const bool eye = label == Label::EyeSclera || label == Label::Iris;
         const bool eyebrow = label == Label::Eyebrow;
@@ -976,10 +2075,19 @@ FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, con
             appearances.push_back(appearance);
             // The brow is only a topological bridge in this pass. Its dark
             // pigment belongs to the detail overlay below, not the skin center.
-            if (analysis.face_labels[id] != Label::Eyebrow)
+            if (effective_labels[id] != Label::Eyebrow)
                 samples.push_back({appearance, area(source, id)});
         }
-        const auto centers = prototypes(samples, skin || eye || eyebrow ? 1 : std::min(size_t(3), palette.size()));
+        auto centers = prototypes(samples, skin || eye || eyebrow || label == Label::Lips || label == Label::MouthInterior ? 1 : 6);
+        const size_t ordinary_center_count = centers.size();
+        if (skin) {
+            // Preserve genuinely neutral teeth/cloth accidentally included in
+            // the coarse skin mask, using stable supported neutral centers.
+            std::vector<Sample> neutral_samples;
+            for (const auto& sample : samples) if (chroma(sample.color) < .015f) neutral_samples.push_back(sample);
+            const auto neutral_centers = prototypes(neutral_samples, 6);
+            centers.insert(centers.end(), neutral_centers.begin(), neutral_centers.end());
+        }
         if (centers.empty()) continue;
         size_t sclera_seeds = 0;
         bool bright_sclera = false;
@@ -989,10 +2097,15 @@ FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, con
             bright_sclera |= sample.color[0] >= .68f && source_chroma <= .035f;
         }
         const bool supported_sclera = label != Label::EyeSclera || sclera_seeds >= 2 || bright_sclera;
-        std::vector<size_t> targets;
-        for (const auto& center : centers) targets.push_back(choose_target(center, label));
+        const size_t first_material = discovery->entries.size();
+        for (const auto& center : centers)
+            discovery->entries.push_back({label, center, {}});
+        const auto assign_material = [&](size_t face_id, size_t center_index) {
+            discovery->face_material[face_id] = first_material + center_index;
+            discovery->entries[first_material + center_index].faces.push_back(face_id);
+        };
         for (size_t i = 0; i < region.second.size(); ++i) {
-            if (analysis.face_labels[region.second[i]] == Label::Eyebrow) continue;
+            if (effective_labels[region.second[i]] == Label::Eyebrow) continue;
             const auto& original = appearances[i];
             const bool supported_shadow = bright_sclera && original[0] >= .55f &&
                 original[0] >= centers.front()[0] - .235f && chroma(original) <= .055f;
@@ -1005,23 +2118,16 @@ FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, con
                 if (d < best) { best = d; nearest = center; }
             }
             if (label == Label::Hair && same_hair_material(original, centers.front())) {
-                output.emplace_back(region.second[i], palette[targets.front()]);
-                if (natural_dark_hair(palette_labs[targets.front()]))
-                    hair_seeds[region.second[i]] = {centers.front(), int(targets.front())};
+                assign_material(region.second[i], 0);
+                discovery->hair_seed_faces[region.second[i]]=1;
                 continue;
             }
-            // Hair uses area-supported material centers: isolated baked white
-            // highlights must not create extra filament colors. Teeth and real
-            // cloth stripes retain the finer neutral protection below.
-            // Coherent low-chroma cloth keeps its local material across this
-            // cutoff instead of alternating black/gray on nearly equal faces.
-            if (label != Label::Hair && !eye && chroma(original) < .015f &&
-                !(label == Label::Clothes && same_muted_cloth(original, centers[nearest]))) {
-                output.emplace_back(region.second[i], palette[choose_target(original, label)]);
-                continue;
-            }
-            if (skin && !compatible_skin(original, centers.front(), label)) continue;
-            output.emplace_back(region.second[i], palette[targets[nearest]]);
+            if (skin && chroma(original) < .015f && centers.size() > ordinary_center_count) {
+                nearest = ordinary_center_count;
+                for (size_t center = ordinary_center_count + 1; center < centers.size(); ++center)
+                    if (distance(original, centers[center]) < distance(original, centers[nearest])) nearest = center;
+            } else if (skin && !compatible_skin(original, centers.front(), label)) continue;
+            assign_material(region.second[i], nearest);
         }
     }
     // Map each connected brow from its own stable material center after the
@@ -1038,7 +2144,7 @@ FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, con
     };
     std::fill(first.begin(), first.end(), count);
     for (size_t id = 0; id < count; ++id) {
-        if (analysis.face_labels[id] != Label::Eyebrow || analysis.face_confidence[id] < minimum_confidence) continue;
+        if (effective_labels[id] != Label::Eyebrow || analysis.face_confidence[id] < minimum_confidence) continue;
         for (int corner = 0; corner < 3; ++corner) {
             const int vertex = source.mesh.indices[id][corner];
             if (first[vertex] == count) first[vertex] = id;
@@ -1050,19 +2156,361 @@ FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, con
     }
     std::map<size_t, std::vector<size_t>> eyebrow_regions;
     for (size_t id = 0; id < count; ++id)
-        if (analysis.face_labels[id] == Label::Eyebrow && analysis.face_confidence[id] >= minimum_confidence)
+        if (effective_labels[id] == Label::Eyebrow && analysis.face_confidence[id] >= minimum_confidence)
             eyebrow_regions[eyebrow_root(id)].push_back(id);
     for (const auto& region : eyebrow_regions) {
+        if (stopped(cancel)) return {};
         std::vector<Sample> samples; samples.reserve(region.second.size());
         for (size_t id : region.second) samples.push_back({face_lab(source, id), area(source, id)});
         const auto centers = prototypes(samples, 1);
         if (centers.empty()) continue;
-        const size_t target = choose_target(centers.front(), Label::Eyebrow);
-        for (size_t id : region.second) output.emplace_back(id, palette[target]);
+        const size_t material_id = discovery->entries.size();
+        discovery->entries.push_back({Label::Eyebrow, centers.front(), region.second});
+        for (size_t id : region.second) {
+            discovery->face_material[id] = material_id;
+        }
+    }
+    assign_spatially_supported_skin_materials(source, analysis, effective_labels,
+                                              semantic_faces_at_vertex, *discovery);
+    const auto contrast_pair = [](Label a, Label b) {
+        if (a > b) std::swap(a, b);
+        return (a == Label::FaceSkin && (b == Label::Lips || b == Label::Eyebrow)) ||
+               (a == Label::EyeSclera && b == Label::Iris);
+    };
+    std::vector<std::vector<size_t>> at_vertex(source.mesh.vertices.size());
+    for (size_t face_id = 0; face_id < count; ++face_id) {
+        const size_t material_id = discovery->face_material[face_id];
+        if (material_id >= discovery->entries.size()) continue;
+        for (int corner = 0; corner < 3; ++corner)
+            at_vertex[source.mesh.indices[face_id][corner]].push_back(material_id);
+    }
+    auto& pairs=discovery->contrast_pairs;
+    for (auto& entries : at_vertex) {
+        std::sort(entries.begin(), entries.end());
+        entries.erase(std::unique(entries.begin(), entries.end()), entries.end());
+        for (size_t a = 0; a < entries.size(); ++a)
+            for (size_t b = a + 1; b < entries.size(); ++b)
+                if (contrast_pair(discovery->entries[entries[a]].label, discovery->entries[entries[b]].label))
+                    pairs.emplace(entries[a], entries[b]);
+    }
+    }
+    for (auto& material:discovery->entries)
+        for (size_t face_id:material.faces) material.surface_area+=area(source,face_id);
+    if (stopped(cancel)) return {};
+    std::vector<std::vector<size_t>> faces_at_vertex(source.mesh.vertices.size());
+    for (size_t face_id = 0; face_id < count; ++face_id)
+        for (int corner = 0; corner < 3; ++corner)
+            faces_at_vertex[source.mesh.indices[face_id][corner]].push_back(face_id);
+
+    // All leaves in a material use the exact center/target of its whole-face
+    // region. Regions represented only by leaves have their own palette-
+    // independent center; no individual leaf competes against the palette.
+    std::vector<size_t> leaf_parent(analysis.subface_labels.size());
+    std::iota(leaf_parent.begin(), leaf_parent.end(), 0);
+    const auto leaf_root = [&leaf_parent](size_t id) {
+        while (leaf_parent[id] != id) { leaf_parent[id] = leaf_parent[leaf_parent[id]]; id = leaf_parent[id]; }
+        return id;
+    };
+    std::map<std::pair<size_t, Label>, size_t> leaf_at_vertex;
+    for (size_t id = 0; id < analysis.subface_labels.size(); ++id) {
+        const auto& evidence = analysis.subface_labels[id];
+        if (evidence.face_id >= count || evidence.confidence < minimum_confidence) continue;
+        for (int corner = 0; corner < 3; ++corner) {
+            const auto key = std::make_pair(size_t(source.mesh.indices[evidence.face_id][corner]), evidence.label);
+            const auto found = leaf_at_vertex.emplace(key, id);
+            if (!found.second) {
+                const size_t a = leaf_root(id), b = leaf_root(found.first->second);
+                if (a != b) leaf_parent[std::max(a, b)] = std::min(a, b);
+            }
+        }
+    }
+    std::map<size_t, std::vector<Sample>> leaf_samples;
+    auto& leaf_component_at_face=discovery->leaf_component_at_face;
+    for (size_t id = 0; id < analysis.subface_labels.size(); ++id) {
+        const auto& evidence = analysis.subface_labels[id];
+        Color original;
+        if (evidence.confidence < minimum_confidence || !subface_appearance(source,evidence,original)) continue;
+        const size_t component = leaf_root(id);
+        leaf_samples[component].push_back({original, area(source, evidence.face_id) /
+                                                    double(1u << (2u * evidence.path.depth))});
+        leaf_component_at_face[{evidence.face_id, evidence.label}] = component;
+    }
+    auto& leaf_centers=discovery->leaf_centers;
+    for (const auto& item : leaf_samples) {
+        const auto label = analysis.subface_labels[item.first].label;
+        leaf_centers.emplace(item.first, prototypes(item.second, label == Label::Hair ? 6 : 1));
+    }
+    if (stopped(cancel)) return {};
+    // Eye-white appearance support is local to a connected reliable eye patch.
+    // A brighter other eye (or another person's eye) cannot set this patch's
+    // lightness floor, and an isolated anchor cannot borrow remote support.
+    std::vector<size_t> sclera_parent(count);
+    std::iota(sclera_parent.begin(), sclera_parent.end(), 0);
+    const auto sclera_root = [&sclera_parent](size_t id) {
+        while (sclera_parent[id] != id) {
+            sclera_parent[id] = sclera_parent[sclera_parent[id]];
+            id = sclera_parent[id];
+        }
+        return id;
+    };
+    std::vector<uint8_t> sclera_anchor_candidate(count, 0);
+    for (size_t face_id = 0; face_id < count; ++face_id) {
+        if (analysis.face_labels[face_id] != Label::EyeSclera ||
+            analysis.face_confidence[face_id] < minimum_confidence) continue;
+        const Color source_color = face_lab(source, face_id);
+        if (source_color[0] >= .40f && chroma(source_color) <= .055f)
+            sclera_anchor_candidate[face_id] = 1;
+    }
+    for (size_t face_id = 0; face_id < count; ++face_id) {
+        if (!sclera_anchor_candidate[face_id]) continue;
+        for (int corner = 0; corner < 3; ++corner)
+            for (size_t neighbor : faces_at_vertex[source.mesh.indices[face_id][corner]]) {
+                if (!sclera_anchor_candidate[neighbor]) continue;
+                const size_t a = sclera_root(face_id), b = sclera_root(neighbor);
+                if (a != b) sclera_parent[std::max(a, b)] = std::min(a, b);
+            }
+    }
+    std::map<size_t, std::vector<Sample>> sclera_samples;
+    for (size_t face_id = 0; face_id < count; ++face_id) {
+        if (!sclera_anchor_candidate[face_id]) continue;
+        const Color source_color = face_lab(source, face_id);
+        if (source_color[0] >= .68f && chroma(source_color) <= .035f)
+            sclera_samples[sclera_root(face_id)].push_back({source_color, area(source, face_id)});
+    }
+    auto& sclera_centers=discovery->sclera_centers;
+    for (const auto& component : sclera_samples) {
+        if (component.second.size() < 2) continue;
+        const auto centers = prototypes(component.second, 1);
+        if (!centers.empty()) sclera_centers.emplace(component.first, centers.front());
+    }
+    // count is unsupported, count+1 is conflicting support. One immutable
+    // anchor ring is used: newly supported boundary faces cannot spread again.
+    auto& sclera_support_component=discovery->sclera_support_component;
+    sclera_support_component.assign(count,count);
+    for (size_t face_id = 0; face_id < count; ++face_id) {
+        if (!sclera_anchor_candidate[face_id]) continue;
+        const auto center = sclera_centers.find(sclera_root(face_id));
+        if (center != sclera_centers.end() && compatible_sclera(face_lab(source, face_id), center->second))
+            sclera_support_component[face_id] = center->first;
+    }
+    const auto anchors = sclera_support_component;
+    for (size_t face_id = 0; face_id < count; ++face_id) {
+        if (anchors[face_id] < count) continue;
+        size_t component = count;
+        for (int corner = 0; corner < 3; ++corner)
+            for (size_t neighbor : faces_at_vertex[source.mesh.indices[face_id][corner]]) {
+                if (anchors[neighbor] >= count) continue;
+                if (component == count) component = anchors[neighbor];
+                else if (component != anchors[neighbor]) component = count + 1;
+            }
+        sclera_support_component[face_id] = component;
+    }
+    if (stopped(cancel)) return {};
+    return discovery;
+}
+
+std::shared_ptr<const MaterialDiscovery> get_material_discovery(const MeshSnapshot& source,
+                                                               const Analysis& analysis, const Cancel& cancel)
+{
+    const std::string key=discovery_key(source,analysis,cancel);
+    if (key.empty()) return {};
+    // A failed boundary view can still use its safe recognition fallback, but
+    // it must not populate a successful reusable evidence cache.
+    if (std::any_of(analysis.boundary_runs.begin(),analysis.boundary_runs.end(),[](const auto& run) {
+            return run.status=="error" || run.status=="canceled";
+        })) return discover_materials(source,analysis,cancel);
+    auto& cache=discovery_cache();
+    {
+        std::lock_guard<std::mutex> lock(cache.mutex);
+        for (auto& entry:cache.entries) if (entry.key==key && entry.value) {
+            entry.used=++cache.clock; ++cache.stats.hits; return entry.value;
+        }
+    }
+    auto value=discover_materials(source,analysis,cancel);
+    if (!value || stopped(cancel)) return {};
+    std::lock_guard<std::mutex> lock(cache.mutex);
+    if (stopped(cancel)) return {};
+    // Concurrent callers may have completed the same discovery while the
+    // expensive work ran outside the lock. Keep the first immutable result.
+    for (auto& entry:cache.entries) if (entry.key==key && entry.value) {
+        entry.used=++cache.clock; ++cache.stats.hits; return entry.value;
+    }
+    auto selected=std::min_element(cache.entries.begin(),cache.entries.end(),
+        [](const auto& a,const auto& b) { return a.used<b.used; });
+    *selected={key,value,++cache.clock}; ++cache.stats.builds;
+    return value;
+}
+
+} // namespace
+
+RegionPaletteDecision decide_region_palette(const Color& original_oklab, Label label,
+                                            const std::vector<Color>& palette,
+                                            const std::vector<Color>& portrait_card)
+{
+    if (palette.empty() || palette.size() > 6 ||
+        std::any_of(palette.begin(), palette.end(), [](const Color& color) { return !valid_color(color); }))
+        return {};
+    return PalettePolicy(palette, portrait_card).decide(original_oklab, label);
+}
+
+MaterialDiscoveryCacheStats material_discovery_cache_stats()
+{
+    auto& cache=discovery_cache(); std::lock_guard<std::mutex> lock(cache.mutex); return cache.stats;
+}
+void clear_material_discovery_cache()
+{
+    auto& cache=discovery_cache(); std::lock_guard<std::mutex> lock(cache.mutex);
+    cache.entries={}; cache.stats={}; cache.clock=0;
+}
+
+static FaceColors map_palette_impl(const MeshSnapshot& source, const Analysis& analysis, const std::vector<Color>& palette,
+                       const std::vector<Color>& portrait_card, MappedMaterials* materials, const Cancel& cancel = {}, bool whole_output = true)
+{
+    const size_t count = source.mesh.indices.size();
+    if (!analysis.person_detected || analysis.canceled || !analysis.error.empty() || palette.empty() || palette.size() > 6 ||
+        analysis.geometry_id != source.geometry_id || analysis.content_id != source.content_id ||
+        analysis.signature != analysis_cache_key(source, analysis.body_identity, analysis.face_identity,
+                                                  analysis.boundary_identity) ||
+        analysis.face_labels.size() != count || analysis.face_confidence.size() != count || !validate_snapshot(source).empty()) return {};
+    for (const auto& color : palette) if (!valid_color(color)) return {};
+    for (size_t id = 0; id < count; ++id)
+        if (!valid_label(analysis.face_labels[id]) || !std::isfinite(analysis.face_confidence[id]) ||
+            analysis.face_confidence[id] < 0 || analysis.face_confidence[id] > 1) return {};
+    const PalettePolicy policy(palette, portrait_card);
+    const auto& palette_labs = policy.palette_labs;
+    const auto choose_target = [&](const Color& center, Label label) { return policy.choose(center, label); };
+    MappedMaterials local_materials;
+    if (!materials) materials = &local_materials;
+    materials->entries.clear();
+    materials->discovery=get_material_discovery(source,analysis,cancel);
+    if (!materials->discovery) return {};
+    const auto& discovery=*materials->discovery;
+    materials->entries.reserve(discovery.entries.size());
+    for (const auto& material:discovery.entries)
+        materials->entries.push_back({material.label,material.center,choose_target(material.center,material.label)});
+    std::vector<HairSeed> hair_seeds(whole_output ? count : 0);
+    for (size_t id=0;whole_output && id<count;++id) {
+        const size_t material_id=discovery.face_material[id];
+        if (material_id>=materials->entries.size() || !discovery.hair_seed_faces[id]) continue;
+        const auto& material=materials->entries[material_id];
+        if (natural_dark_hair(palette_labs[material.target]))
+            hair_seeds[id]={material.center,int(material.target)};
+    }
+    FaceColors output; if (whole_output) output.reserve(analysis.reliable_faces);
+    for (size_t id=0;whole_output && id<count;++id) {
+        const size_t material=discovery.face_material[id];
+        if (material<materials->entries.size()) output.emplace_back(id,palette[materials->entries[material].target]);
+    }
+    // Preserve a real neighboring feature only when an equally plausible
+    // candidate exists. Limited palettes may legitimately reuse a slot.
+    const auto norm = [](const Color& a, const Color& b) {
+        float total = 0.f;
+        for (size_t channel = 0; channel < 3; ++channel) {
+            const float delta = a[channel] - b[channel]; total += delta * delta;
+        }
+        return std::sqrt(total);
+    };
+    const auto& pairs=discovery.contrast_pairs;
+    for (const auto& pair : pairs) {
+        auto& left = materials->entries[pair.first];
+        auto& right = materials->entries[pair.second];
+        if (palette[left.target] != palette[right.target] || norm(left.center, right.center) < .04f) continue;
+        MappedMaterial* selected = nullptr;
+        size_t replacement = palette.size();
+        float best_cost = std::numeric_limits<float>::max();
+        for (MappedMaterial* material : {&left, &right}) {
+            const size_t role = material->label == Label::FaceSkin ? 0 : material->label == Label::Lips ? 3 :
+                material->label == Label::EyeSclera ? 2 : material->label == Label::Eyebrow ? 5 : 1;
+            if (policy.role_available(role)) continue; // Explicit role bindings win.
+            const float base_cost = norm(material->center, palette_labs[material->target]);
+            for (size_t slot = 0; slot < palette.size(); ++slot) {
+                const auto& candidate = palette_labs[slot];
+                if (palette[slot] == palette[material->target]) continue;
+                const float candidate_chroma = chroma(candidate), source_chroma = chroma(material->center);
+                if (candidate_chroma > source_chroma + .025f ||
+                    (source_chroma < .015f && candidate_chroma >= .035f)) continue;
+                if (source_chroma > .025f && candidate_chroma > .025f &&
+                    material->center[1] * candidate[1] + material->center[2] * candidate[2] <
+                        source_chroma * candidate_chroma * .5f) continue;
+                const float cost = norm(material->center, candidate);
+                if (cost > base_cost + .03f || cost >= best_cost) continue;
+                selected = material; replacement = slot; best_cost = cost;
+            }
+        }
+        if (selected) selected->target = replacement;
+    }
+    // Child matching needs only common region targets, not a second whole
+    // surface extension/material-patch pass with the same palette.
+    if (!whole_output) return {};
+    for (auto& assignment : output) {
+        const size_t material = discovery.face_material[assignment.first];
+        if (material < materials->entries.size()) assignment.second = palette[materials->entries[material].target];
     }
     extend_hair_edges(source, analysis, hair_seeds, palette, output);
     refine_material_patches(source, analysis, palette, portrait_card, output);
+    // Facial edge pixels can remain coarse FaceSkin/BodySkin/Unknown faces
+    // after recognition fallback. Keep a lip-colored slot from leaking into
+    // an eye or its immediate ring, while leaving real lips untouched.
+    sanitize_eye_edge_targets(source, analysis, palette, portrait_card, output);
+    // Keep dark hair-edge faces from borrowing the skin/lip slot when a
+    // coarse body mask reaches across the ear or hairline.
+    sanitize_hair_edge_targets(source, analysis, palette, portrait_card, output);
+    // The lip role is a local facial detail. Do not let its slot become a
+    // fallback color for distant ear, neck, or cheek faces.
+    sanitize_lip_leak_targets(source, analysis, palette, portrait_card, output);
+    // Post-processors may repair low-confidence gaps, but a discovered source
+    // material has already passed semantic and source-color filtering. Reassert
+    // that single region decision so legacy patch rules cannot silently choose
+    // a different slot than recommendations and diagnostics report.
+    for (auto& assignment : output) {
+        const size_t material = discovery.face_material[assignment.first];
+        if (material < materials->entries.size()) assignment.second = palette[materials->entries[material].target];
+    }
     std::sort(output.begin(), output.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    return output;
+}
+
+FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, const std::vector<Color>& palette,
+                       const std::vector<Color>& portrait_card)
+{
+    return map_palette_impl(source, analysis, palette, portrait_card, nullptr);
+}
+
+FaceColors map_palette_materials(const MeshSnapshot& source, const Analysis& analysis,
+                                const std::vector<Color>& palette, const std::vector<Color>& portrait_card,
+                                std::vector<MaterialCenter>& centers, const Cancel& cancel)
+{
+    std::vector<size_t> ignored_face_material_ids;
+    return map_palette_materials(source, analysis, palette, portrait_card, centers,
+                                 ignored_face_material_ids, cancel);
+}
+
+FaceColors map_palette_materials(const MeshSnapshot& source, const Analysis& analysis,
+                                const std::vector<Color>& palette, const std::vector<Color>& portrait_card,
+                                std::vector<MaterialCenter>& centers, std::vector<size_t>& face_material_ids,
+                                const Cancel& cancel)
+{
+    centers.clear();
+    face_material_ids.clear();
+    MappedMaterials materials;
+    auto output = map_palette_impl(source, analysis, palette, portrait_card, &materials, cancel);
+    if (materials.discovery) face_material_ids = materials.discovery->face_material;
+    for (size_t id = 0; id < materials.entries.size(); ++id) {
+        const auto& material = materials.entries[id];
+        const auto& color = material.center;
+        const float l = std::pow(color[0] + .3963377774f * color[1] + .2158037573f * color[2], 3.f);
+        const float m = std::pow(color[0] - .1055613458f * color[1] - .0638541728f * color[2], 3.f);
+        const float s = std::pow(color[0] - .0894841775f * color[1] - 1.2914855480f * color[2], 3.f);
+        Color rgb {4.0767416621f*l - 3.3077115913f*m + .2309699292f*s,
+                  -1.2684380046f*l + 2.6097574011f*m - .3413193965f*s,
+                  -.0041960863f*l - .7034186147f*m + 1.7076147010f*s};
+        for (float& channel : rgb) {
+            channel = std::clamp(channel, 0.f, 1.f);
+            channel = channel <= .0031308f ? channel * 12.92f : 1.055f * std::pow(channel, 1.f/2.4f) - .055f;
+        }
+        const auto& original=materials.discovery->entries[id];
+        centers.push_back({id, material.label, rgb, color, original.faces.size(), original.surface_area});
+    }
     return output;
 }
 
@@ -1110,7 +2558,7 @@ bool enforce_subface_budget(const SubfaceColors& candidates, size_t original_fac
 
     std::map<std::pair<size_t, SubfacePath>, SubfaceColor> unique;
     for (const SubfaceColor& candidate : candidates) {
-        if (candidate.face_id >= original_face_count || candidate.path.depth == 0 || candidate.path.depth > 2 ||
+        if (candidate.face_id >= original_face_count || candidate.path.depth == 0 || candidate.path.depth > 3 ||
             !valid_color(candidate.color) ||
             !std::isfinite(candidate.confidence) || candidate.confidence < 0.f || candidate.confidence > 1.f)
             return fail("Invalid semantic subface candidate.");
@@ -1122,6 +2570,29 @@ bool enforce_subface_budget(const SubfaceColors& candidates, size_t original_fac
         if (found == unique.end() || candidate.confidence > found->second.confidence)
             unique[key] = candidate;
     }
+
+    // Canonicalize ancestor/descendant assignments into disjoint leaves.
+    // A more specific observation overrides only its child; sibling materials
+    // inherit the old safe parent rather than being discarded.
+    decltype(unique) normalized;
+    for (const auto& item : unique) {
+        const auto& candidate = item.second;
+        for (uint8_t depth = 1; depth < candidate.path.depth; ++depth) {
+            const unsigned shift = 2u * unsigned(candidate.path.depth - depth);
+            const SubfacePath ancestor {depth, uint8_t(candidate.path.value >> shift)};
+            auto found = normalized.find({candidate.face_id, ancestor});
+            if (found == normalized.end()) continue;
+            const auto inherited = found->second;
+            normalized.erase(found);
+            for (uint8_t child = 0; child < 4; ++child) {
+                auto sibling = inherited;
+                sibling.path = {uint8_t(depth + 1), uint8_t(ancestor.value * 4 + child)};
+                normalized[{candidate.face_id, sibling.path}] = sibling;
+            }
+        }
+        normalized[item.first] = candidate;
+    }
+    unique.swap(normalized);
 
     SubfaceColors ordered;
     ordered.reserve(unique.size());
@@ -1137,19 +2608,22 @@ bool enforce_subface_budget(const SubfaceColors& candidates, size_t original_fac
         double(std::numeric_limits<float>::epsilon()) * 2.0;
     const size_t ratio_limit = size_t(std::floor(ratio_product + ratio_epsilon));
     const size_t triangle_limit = std::min(budget.maximum_added_triangles, ratio_limit);
-    // Node zero is the original face's root split. Nodes one through four are
-    // its first-level children, each of which may be split for a depth-2 path.
-    std::set<std::pair<size_t, uint8_t>> split_nodes;
+    // Every accepted leaf requires each ancestor on its midpoint path to be
+    // split. One node adds three triangles regardless of tree depth.
+    using SplitNode = std::tuple<size_t, uint8_t, uint8_t>;
+    std::set<SplitNode> split_nodes;
     for (const SubfaceColor& candidate : ordered) {
         if (candidate.confidence < budget.minimum_confidence) {
             ++output.rejected_candidates;
             continue;
         }
-        std::array<std::pair<size_t, uint8_t>, 2> required {{
-            {candidate.face_id, 0},
-            {candidate.face_id, uint8_t(1 + (candidate.path.value >> 2))}
-        }};
-        const size_t required_count = candidate.path.depth == 1 ? 1 : 2;
+        std::array<SplitNode, 3> required {};
+        const size_t required_count = candidate.path.depth;
+        for (uint8_t ancestor_depth = 0; ancestor_depth < candidate.path.depth; ++ancestor_depth) {
+            const unsigned shift = 2u * unsigned(candidate.path.depth - ancestor_depth);
+            const uint8_t prefix = ancestor_depth == 0 ? 0 : uint8_t(candidate.path.value >> shift);
+            required[ancestor_depth] = {candidate.face_id, ancestor_depth, prefix};
+        }
         size_t additional_nodes = 0;
         for (size_t i = 0; i < required_count; ++i)
             additional_nodes += split_nodes.count(required[i]) == 0;
@@ -1170,14 +2644,15 @@ bool enforce_subface_budget(const SubfaceColors& candidates, size_t original_fac
 
 bool map_subface_palette(const MeshSnapshot& source, const Analysis& analysis, const FaceColors& whole_face,
                          const std::vector<Color>& palette, const std::vector<Color>& portrait_card,
-                         const SubfaceBudget& budget, SubfaceBudgetResult& output, std::string& error)
+                         const SubfaceBudget& budget, SubfaceBudgetResult& output, std::string& error, const Cancel& cancel)
 {
     output = {};
     error.clear();
     const size_t count = source.mesh.indices.size();
     if (!analysis.person_detected || analysis.canceled || !analysis.error.empty() ||
         analysis.geometry_id != source.geometry_id || analysis.content_id != source.content_id ||
-        analysis.signature != analysis_cache_key(source, analysis.body_identity, analysis.face_identity) ||
+        analysis.signature != analysis_cache_key(source, analysis.body_identity, analysis.face_identity,
+                                                  analysis.boundary_identity) ||
         analysis.face_labels.size() != count || analysis.face_confidence.size() != count ||
         palette.empty() || palette.size() > 6 || !validate_snapshot(source).empty()) {
         error = "Semantic subface mapping requires current model recognition evidence.";
@@ -1188,37 +2663,14 @@ bool map_subface_palette(const MeshSnapshot& source, const Analysis& analysis, c
         return false;
     }
 
-    std::array<size_t, 6> role_slots {};
-    role_slots.fill(palette.size());
-    bool has_card = portrait_card.size() == 6;
-    if (has_card) for (size_t role = 0; role < role_slots.size(); ++role) {
-        for (size_t slot = 0; slot < palette.size(); ++slot) {
-            bool same = true;
-            for (size_t channel = 0; channel < 3; ++channel)
-                same = same && std::abs(palette[slot][channel] - portrait_card[role][channel]) <= .5f / 255.f;
-            if (same) { role_slots[role] = slot; break; }
-        }
-        if (role_slots[role] == palette.size()) has_card = false;
-    }
-    std::vector<Color> palette_labs;
-    palette_labs.reserve(palette.size());
-    for (const Color& color : palette) palette_labs.push_back(lab(color));
+    const PalettePolicy policy(palette, portrait_card);
+    MappedMaterials shared_materials;
+    map_palette_impl(source, analysis, palette, portrait_card, &shared_materials, cancel, false);
+    if (!shared_materials.discovery) { error="Material discovery unavailable or canceled."; return false; }
+    const auto& discovery=*shared_materials.discovery;
 
-    const auto appearance = [&source](const SubfaceLabelEvidence& evidence, Color& output_color) {
-        std::array<Barycentric, 3> vertices;
-        if (evidence.face_id >= source.mesh.indices.size() || !subface_vertices(evidence.path, vertices)) return false;
-        Barycentric centroid {};
-        for (const Barycentric& vertex : vertices)
-            for (size_t channel = 0; channel < 3; ++channel)
-                centroid[channel] += vertex[channel] / 3.f;
-        Color rgb {};
-        for (size_t corner = 0; corner < 3; ++corner) {
-            const Color color = corner_color(source, evidence.face_id, int(corner));
-            for (size_t channel = 0; channel < 3; ++channel)
-                rgb[channel] += centroid[corner] * color[channel];
-        }
-        output_color = lab(rgb);
-        return true;
+    const auto appearance = [&source](const SubfaceLabelEvidence& evidence,Color& color) {
+        return subface_appearance(source,evidence,color);
     };
 
     std::vector<std::vector<size_t>> faces_at_vertex(source.mesh.vertices.size());
@@ -1226,48 +2678,60 @@ bool map_subface_palette(const MeshSnapshot& source, const Analysis& analysis, c
         for (int corner = 0; corner < 3; ++corner)
             faces_at_vertex[source.mesh.indices[face_id][corner]].push_back(face_id);
 
-    // A geometric eye mask can extend onto pale skin in an oblique view. Build
-    // one robust material center from reliable whole-face sclera, then allow
-    // subface recovery only on that supported surface or its direct boundary.
-    std::vector<Sample> sclera_samples;
-    std::vector<uint8_t> sclera_anchor_candidate(count, 0);
-    std::vector<uint8_t> adjacent_sclera_support(count, 0);
-    for (size_t face_id = 0; face_id < count; ++face_id) {
-        if (analysis.face_labels[face_id] != Label::EyeSclera ||
-            analysis.face_confidence[face_id] < minimum_confidence) continue;
-        const Color source_color = face_lab(source, face_id);
-        const float source_chroma = chroma(source_color);
-        if (source_color[0] < .40f || source_chroma > .055f) continue;
-        sclera_anchor_candidate[face_id] = 1;
-        if (source_color[0] >= .68f && source_chroma <= .035f)
-            sclera_samples.push_back({source_color, area(source, face_id)});
-    }
-    const auto sclera_centers = prototypes(sclera_samples, 1);
-    const bool have_sclera_center = sclera_samples.size() >= 2 && !sclera_centers.empty();
-    if (have_sclera_center) {
-        for (size_t face_id = 0; face_id < count; ++face_id)
-            if (sclera_anchor_candidate[face_id] &&
-                compatible_sclera(face_lab(source, face_id), sclera_centers.front()))
-                adjacent_sclera_support[face_id] = 1;
-        const auto anchors = adjacent_sclera_support;
-        for (size_t face_id = 0; face_id < count; ++face_id) {
-            if (anchors[face_id]) continue;
-            for (int corner = 0; corner < 3 && !adjacent_sclera_support[face_id]; ++corner)
-                for (size_t neighbor : faces_at_vertex[source.mesh.indices[face_id][corner]])
-                    if (anchors[neighbor]) { adjacent_sclera_support[face_id] = 1; break; }
+    const auto& leaf_component_at_face=discovery.leaf_component_at_face;
+    const auto& leaf_centers=discovery.leaf_centers;
+    const auto shared_target = [&](size_t face_id, Label label, const Color& original,
+                                   Color* selected_center = nullptr) {
+        const MappedMaterial* selected = nullptr;
+        float best = std::numeric_limits<float>::max();
+        const auto consider = [&](size_t neighbor) {
+            if (neighbor >= discovery.face_material.size()) return;
+            const size_t material_id = discovery.face_material[neighbor];
+            if (material_id >= shared_materials.entries.size()) return;
+            const auto& material = shared_materials.entries[material_id];
+            if (material.label != label && !(label == Label::FaceSkin && material.label == Label::BodySkin)) return;
+            const float score = distance(original, material.center);
+            if (score < best) { selected = &material; best = score; }
+        };
+        consider(face_id);
+        // A reliable same-label root already owns its entire child tree.
+        if (!selected && face_id < count) for (int corner = 0; corner < 3; ++corner)
+            for (size_t neighbor : faces_at_vertex[source.mesh.indices[face_id][corner]]) consider(neighbor);
+        if (selected) {
+            if (selected_center) *selected_center = selected->center;
+            return selected->target;
         }
-    } else {
-        std::fill(adjacent_sclera_support.begin(), adjacent_sclera_support.end(), 0);
-    }
+        const auto component = leaf_component_at_face.find({face_id, label});
+        if (component == leaf_component_at_face.end()) return palette.size();
+        const auto found = leaf_centers.find(component->second);
+        if (found == leaf_centers.end() || found->second.empty()) return palette.size();
+        const Color* center = &found->second.front();
+        for (const auto& candidate : found->second)
+            if (distance(original, candidate) < distance(original, *center)) center = &candidate;
+        if (selected_center) *selected_center = *center;
+        return policy.choose(*center, label, true);
+    };
+
+    const auto& sclera_centers=discovery.sclera_centers;
+    const auto& sclera_support_component=discovery.sclera_support_component;
+    const auto local_sclera_center = [&](size_t face_id) -> const Color* {
+        if (face_id >= count) return nullptr;
+        const auto found = sclera_centers.find(sclera_support_component[face_id]);
+        return found == sclera_centers.end() ? nullptr : &found->second;
+    };
+    const auto compatible_local_sclera = [&](size_t face_id, const Color& color) {
+        const Color* center = local_sclera_center(face_id);
+        return center && compatible_sclera(color, *center);
+    };
 
     std::vector<uint8_t> compatible_sclera_leaf(analysis.subface_labels.size(), 0);
     for (size_t index = 0; index < analysis.subface_labels.size(); ++index) {
         const auto& evidence = analysis.subface_labels[index];
         if (evidence.label != Label::EyeSclera || evidence.confidence < minimum_confidence ||
             evidence.face_id >= count ||
-            !adjacent_sclera_support[evidence.face_id]) continue;
+            !local_sclera_center(evidence.face_id)) continue;
         Color source_color;
-        if (!appearance(evidence, source_color) || !compatible_sclera(source_color, sclera_centers.front())) continue;
+        if (!appearance(evidence, source_color) || !compatible_local_sclera(evidence.face_id, source_color)) continue;
         const float source_chroma = chroma(source_color);
         // A single direct raster sample is useful on a dense mesh, but a dark,
         // warm singleton at the eye contour is more likely adjacent skin. More
@@ -1294,12 +2758,17 @@ bool map_subface_palette(const MeshSnapshot& source, const Analysis& analysis, c
         Color target;
         float confidence;
     };
+    std::set<size_t> refined_boundary_faces;
+    for (const auto& evidence : analysis.subface_labels)
+        if (evidence.path.depth == 3 && evidence.confidence >= minimum_confidence)
+            refined_boundary_faces.insert(evidence.face_id);
     std::vector<SkinBoundarySeed> skin_boundary_seeds;
     std::vector<ScleraBoundarySeed> sclera_boundary_seeds;
     std::set<std::pair<size_t, SubfacePath>> protected_detail_leaves;
     std::set<std::pair<size_t, SubfacePath>> non_sclera_detail_leaves;
     std::set<std::pair<size_t, SubfacePath>> iris_detail_leaves;
     std::set<size_t> iris_detail_faces;
+    std::set<size_t> direct_skin_detail_faces;
     for (const SubfaceLabelEvidence& evidence : analysis.subface_labels)
         if (evidence.confidence >= minimum_confidence) {
             if (evidence.label != Label::FaceSkin)
@@ -1310,22 +2779,32 @@ bool map_subface_palette(const MeshSnapshot& source, const Analysis& analysis, c
                 iris_detail_leaves.emplace(evidence.face_id, evidence.path);
                 iris_detail_faces.insert(evidence.face_id);
             }
+            if (evidence.label == Label::FaceSkin)
+                direct_skin_detail_faces.insert(evidence.face_id);
         }
+    const auto baseline_subface_allows = [&](const SubfaceLabelEvidence& evidence) {
+        if (evidence.face_id < analysis.baseline_face_labels.size() &&
+            !compatible_boundary_detail(analysis.baseline_face_labels[evidence.face_id], evidence.label))
+            return false;
+        for (const auto& baseline : analysis.baseline_subface_labels) {
+            if (baseline.face_id != evidence.face_id || !protected_face_detail(baseline.label)) continue;
+            const bool same_or_descendant = baseline.path.depth == evidence.path.depth
+                ? baseline.path.value == evidence.path.value
+                : baseline.path.depth < evidence.path.depth &&
+                  (evidence.path.value >> (2u * (evidence.path.depth - baseline.path.depth))) == baseline.path.value;
+            if (same_or_descendant && !compatible_boundary_detail(baseline.label, evidence.label)) return false;
+        }
+        return true;
+    };
     for (size_t evidence_index = 0; evidence_index < analysis.subface_labels.size(); ++evidence_index) {
         const SubfaceLabelEvidence& evidence = analysis.subface_labels[evidence_index];
+        if (!baseline_subface_allows(evidence)) continue;
         Color source_color;
-        if (!appearance(evidence, source_color)) continue;
+        if (evidence.confidence < minimum_confidence || !appearance(evidence, source_color)) continue;
         size_t target = palette.size();
         if (evidence.label == Label::EyeSclera) {
             if (!compatible_sclera_leaf[evidence_index]) continue;
-            if (has_card) target = role_slots[2];
-            else {
-                float lightness = -1.f;
-                for (size_t slot = 0; slot < palette.size(); ++slot)
-                    if (chroma(palette_labs[slot]) <= .055f && palette_labs[slot][0] > lightness) {
-                        lightness = palette_labs[slot][0]; target = slot;
-                    }
-            }
+            target = shared_target(evidence.face_id, evidence.label, source_color);
         } else if (evidence.label == Label::FaceSkin) {
             const auto root = roots.find(evidence.face_id);
             const Label root_label = analysis.face_labels[evidence.face_id];
@@ -1349,36 +2828,44 @@ bool map_subface_palette(const MeshSnapshot& source, const Analysis& analysis, c
             // leaves touching reliable skin; detached brown hair cannot prove
             // itself to be an ear from its own color.
             if (root_label == Label::Hair && root == roots.end()) continue;
-            if (has_card) {
-                const float source_chroma = chroma(source_color);
-                if (source_chroma < .015f || source_color[1] < 0.f || source_color[2] <= 0.f) continue;
-                target = role_slots[0];
-            } else {
-                float best = std::numeric_limits<float>::max();
-                for (size_t slot = 0; slot < palette.size(); ++slot) {
-                    if (root != roots.end() && palette[slot] == root->second) continue;
-                    const float score = distance(centers.front(), palette_labs[slot]);
-                    if (score < best) { best = score; target = slot; }
-                }
-            }
+            target = shared_target(evidence.face_id, Label::FaceSkin, source_color);
         } else if (evidence.label == Label::Iris || evidence.label == Label::Eyebrow) {
-            if (evidence.label == Label::Eyebrow && !natural_dark_hair(source_color)) continue;
-            if (has_card && evidence.label == Label::Iris) {
-                // A portrait card has no dedicated brown-eye slot. Preserve a
-                // clearly blue/green iris with the cool role; all other irises
-                // use the dark role. Skin and lip roles are never iris colors.
-                target = source_color[2] < -.015f || source_color[1] < -.04f ? role_slots[4] : role_slots[1];
-            } else if (has_card && evidence.label == Label::Eyebrow) target = role_slots[5];
-            else {
-                float best = std::numeric_limits<float>::max();
-                for (size_t slot = 0; slot < palette.size(); ++slot) {
-                    const float score = distance(source_color, palette_labs[slot]);
-                    if (score < best) { best = score; target = slot; }
-                }
-            }
+            if (evidence.label == Label::Eyebrow &&
+                (!natural_dark_hair(source_color) || evidence.face_id >= discovery.eyebrow_supported_faces.size() ||
+                 !discovery.eyebrow_supported_faces[evidence.face_id])) continue;
+            target = shared_target(evidence.face_id, evidence.label, source_color);
+        } else if (evidence.label == Label::Hair) {
+            const Label root_label = analysis.face_labels[evidence.face_id];
+            if (root_label != Label::FaceSkin && root_label != Label::Unknown && root_label != Label::Hair) continue;
+            bool reliable_hair_neighbor = root_label == Label::Hair &&
+                analysis.face_confidence[evidence.face_id] >= minimum_confidence;
+            for (int corner = 0; corner < 3; ++corner)
+                for (size_t neighbor : faces_at_vertex[source.mesh.indices[evidence.face_id][corner]])
+                    reliable_hair_neighbor |= analysis.face_labels[neighbor] == Label::Hair &&
+                        analysis.face_confidence[neighbor] >= minimum_confidence;
+            Color center;
+            target = shared_target(evidence.face_id, Label::Hair, source_color, &center);
+            if (!reliable_hair_neighbor || target >= palette.size() ||
+                (!same_hair_material(source_color, center) && distance(source_color, center) > .0064f)) continue;
         }
         if (target >= palette.size()) continue;
         const auto root = roots.find(evidence.face_id);
+        if (root != roots.end() && root->second == palette[target] &&
+            (evidence.label == Label::Eyebrow || evidence.label == Label::Iris ||
+             evidence.label == Label::EyeSclera)) {
+            const auto decision = policy.decide(source_color, evidence.label);
+            size_t alternative = palette.size();
+            float best = std::numeric_limits<float>::max();
+            for (const auto& candidate : decision.candidates) {
+                if (!candidate.accepted || candidate.palette_index >= palette.size() ||
+                    palette[candidate.palette_index] == root->second ||
+                    candidate.total_cost > decision.best_cost + .40f) continue;
+                if (evidence.label == Label::Eyebrow &&
+                    policy.palette_labs[candidate.palette_index][0] > source_color[0] + .45f) continue;
+                if (candidate.total_cost < best) { best = candidate.total_cost; alternative = candidate.palette_index; }
+            }
+            if (alternative < palette.size()) target = alternative;
+        }
         if (root != roots.end() && root->second == palette[target]) continue;
         candidates.push_back({evidence.face_id, evidence.path, palette[target], evidence.confidence});
         if (evidence.label == Label::EyeSclera)
@@ -1408,6 +2895,7 @@ bool map_subface_palette(const MeshSnapshot& source, const Analysis& analysis, c
     for (uint8_t ring = 0; ring < 2 && !sclera_frontier.empty(); ++ring) {
         std::vector<ScleraBoundarySeed> next_frontier;
         for (const ScleraBoundarySeed& seed : sclera_frontier) {
+            if (refined_boundary_faces.count(seed.face_id) != 0) continue;
             for (uint8_t value = 0; value < 16; ++value) {
                 const SubfacePath path {2, value};
                 const auto key = std::make_pair(seed.face_id, path);
@@ -1418,7 +2906,7 @@ bool map_subface_palette(const MeshSnapshot& source, const Analysis& analysis, c
                                                       seed.confidence, 0};
                 Color neighbor_color;
                 if (!appearance(neighbor, neighbor_color) ||
-                    !compatible_sclera(neighbor_color, sclera_centers.front()) ||
+                    !compatible_local_sclera(seed.face_id, neighbor_color) ||
                     distance(neighbor_color, seed.appearance) > .0064f) continue;
                 accepted_sclera_leaves.insert(key);
                 const float confidence = std::min(seed.confidence, .80f);
@@ -1459,6 +2947,7 @@ bool map_subface_palette(const MeshSnapshot& source, const Analysis& analysis, c
     }
     std::map<BoundaryKey, std::vector<BoundaryLeaf>> boundary_leaves;
     for (size_t face_id : boundary_faces) for (uint8_t value = 0; value < 16; ++value) {
+        if (refined_boundary_faces.count(face_id) != 0) continue;
         const SubfacePath path {2, value};
         std::array<Barycentric, 3> leaf_vertices;
         if (!subface_vertices(path, leaf_vertices)) continue;
@@ -1489,7 +2978,8 @@ bool map_subface_palette(const MeshSnapshot& source, const Analysis& analysis, c
         const auto seed = accepted_sclera_evidence.find({from.face_id, from.path});
         const auto key = std::make_pair(to.face_id, to.path);
         if (seed == accepted_sclera_evidence.end() || accepted_sclera_leaves.count(key) != 0 ||
-            non_sclera_detail_leaves.count(key) != 0 || to.face_id >= count) return;
+            non_sclera_detail_leaves.count(key) != 0 || to.face_id >= count ||
+            sclera_support_component[from.face_id] != sclera_support_component[to.face_id]) return;
         const auto root = roots.find(to.face_id);
         if (root != roots.end() && root->second == seed->second.target) return;
         const Label root_label = analysis.face_labels[to.face_id];
@@ -1499,7 +2989,7 @@ bool map_subface_palette(const MeshSnapshot& source, const Analysis& analysis, c
                                               seed->second.confidence, 0};
         Color neighbor_color;
         if (!appearance(neighbor, neighbor_color) ||
-            !compatible_sclera(neighbor_color, sclera_centers.front()) ||
+            !compatible_local_sclera(to.face_id, neighbor_color) ||
             distance(neighbor_color, seed->second.appearance) > .0064f) return;
         const float confidence = std::min(seed->second.confidence, .78f);
         cross_face_proposals.emplace(key, ScleraBoundarySeed {
@@ -1546,7 +3036,7 @@ bool map_subface_palette(const MeshSnapshot& source, const Analysis& analysis, c
                                                   proposal.second.confidence, 0};
             Color neighbor_color;
             if (!appearance(neighbor, neighbor_color) ||
-                !compatible_sclera(neighbor_color, sclera_centers.front()) ||
+                !compatible_local_sclera(proposal.second.face_id, neighbor_color) ||
                 distance(neighbor_color, proposal.second.appearance) > .0001f) continue;
             candidates.push_back({proposal.second.face_id, path, proposal.second.target,
                                   std::min(proposal.second.confidence, .76f)});
@@ -1561,7 +3051,8 @@ bool map_subface_palette(const MeshSnapshot& source, const Analysis& analysis, c
     // a warm dark singleton remains blocked at the eye/skin boundary.
     for (const SubfaceLabelEvidence& evidence : analysis.subface_labels) {
         if (evidence.label != Label::EyeSclera || evidence.confidence < minimum_confidence ||
-            evidence.face_id >= count || final_sclera_support_count[evidence.face_id] < 3) continue;
+            evidence.face_id >= count || final_sclera_support_count[evidence.face_id] < 3 ||
+            refined_boundary_faces.count(evidence.face_id) != 0) continue;
         const auto key = std::make_pair(evidence.face_id, evidence.path);
         if (final_sclera_support.count(key) != 0 ||
             non_sclera_detail_leaves.count(key) != 0) continue;
@@ -1569,7 +3060,8 @@ bool map_subface_palette(const MeshSnapshot& source, const Analysis& analysis, c
         if (root_label != Label::EyeSclera && root_label != Label::FaceSkin &&
             root_label != Label::Unknown) continue;
         Color source_color;
-        if (!appearance(evidence, source_color)) continue;
+        const Color* supported_center = local_sclera_center(evidence.face_id);
+        if (!supported_center || !appearance(evidence, source_color)) continue;
         const float source_chroma = chroma(source_color);
         size_t shared_sclera_support = 0;
         for (const auto& support : final_sclera_support)
@@ -1586,21 +3078,13 @@ bool map_subface_palette(const MeshSnapshot& source, const Analysis& analysis, c
         const bool supported_singleton_gap = evidence.samples == 1 &&
             root_label == Label::Unknown && iris_detail_faces.count(evidence.face_id) == 0 &&
             shared_sclera_support > 0 && source_color[0] >= .40f &&
-            source_color[0] >= sclera_centers.front()[0] - .19f && source_chroma <= .035f &&
+            source_color[0] >= (*supported_center)[0] - .19f && source_chroma <= .035f &&
             !(source_chroma > .03f && source_color[0] < .60f);
         const bool supported_deep_iris_edge = evidence.samples >= 2 &&
             root_label == Label::FaceSkin && adjacent_iris && source_color[0] >= .40f &&
-            source_color[0] >= sclera_centers.front()[0] - .27f && source_chroma <= .01f;
+            source_color[0] >= (*supported_center)[0] - .27f && source_chroma <= .01f;
         if (!supported_singleton_gap && !supported_deep_iris_edge) continue;
-        size_t target = palette.size();
-        if (has_card) target = role_slots[2];
-        else {
-            float lightness = -1.f;
-            for (size_t slot = 0; slot < palette.size(); ++slot)
-                if (chroma(palette_labs[slot]) <= .055f && palette_labs[slot][0] > lightness) {
-                    lightness = palette_labs[slot][0]; target = slot;
-                }
-        }
+        const size_t target = shared_target(evidence.face_id, Label::EyeSclera, source_color);
         if (target >= palette.size()) continue;
         const auto root = roots.find(evidence.face_id);
         if (root != roots.end() && root->second == palette[target]) continue;
@@ -1616,6 +3100,7 @@ bool map_subface_palette(const MeshSnapshot& source, const Analysis& analysis, c
     // retain the same intrinsic skin appearance, and explicit eye/brow detail
     // evidence always blocks the fill.
     for (const SkinBoundarySeed& seed : skin_boundary_seeds) {
+        if (refined_boundary_faces.count(seed.face_id) != 0) continue;
         for (uint8_t value = 0; value < 16; ++value) {
             const SubfacePath path {2, value};
             if (!subfaces_share_edge(seed.path, path) ||
@@ -1676,6 +3161,7 @@ bool map_subface_palette(const MeshSnapshot& source, const Analysis& analysis, c
             std::vector<SpatialSkinSeed> spatial_seeds;
             std::map<Cell, std::vector<size_t>> seed_cells;
             for (const SkinBoundarySeed& seed : skin_boundary_seeds) {
+                if (refined_boundary_faces.count(seed.face_id) != 0) continue;
                 Vec3f center;
                 if (!leaf_center(seed.face_id, seed.path, center)) continue;
                 const Vec3f normal = face_normal(seed.face_id);
@@ -1687,6 +3173,7 @@ bool map_subface_palette(const MeshSnapshot& source, const Analysis& analysis, c
             for (size_t face_id = 0; face_id < count; ++face_id) {
                 const auto root = roots.find(face_id);
                 if (analysis.face_labels[face_id] != Label::Hair ||
+                    refined_boundary_faces.count(face_id) != 0 ||
                     analysis.face_confidence[face_id] < minimum_confidence || root == roots.end()) continue;
                 const Vec3f normal = face_normal(face_id);
                 if (normal.squaredNorm() <= 0.f) continue;
@@ -1734,7 +3221,9 @@ bool map_subface_palette(const MeshSnapshot& source, const Analysis& analysis, c
         // sclera material test. Such a face still needs a skin child override
         // if reliable skin touches it; absence from roots is evidence of
         // rejection, not evidence that the existing material is correct.
-        if (!have_sclera_center || face_id >= count || analysis.face_labels[face_id] != Label::EyeSclera ||
+        if (!local_sclera_center(face_id) ||
+            (root != roots.end() && direct_skin_detail_faces.count(face_id) == 0) ||
+            face_id >= count || refined_boundary_faces.count(face_id) != 0 || analysis.face_labels[face_id] != Label::EyeSclera ||
             analysis.face_confidence[face_id] < minimum_confidence) continue;
         std::set<size_t> visited;
         std::vector<Sample> local_skin;
@@ -1750,16 +3239,7 @@ bool map_subface_palette(const MeshSnapshot& source, const Analysis& analysis, c
         if (local_skin.empty()) continue;
         const auto skin_centers = prototypes(local_skin, 1);
         if (skin_centers.empty()) continue;
-        size_t skin_target = palette.size();
-        if (has_card) skin_target = role_slots[0];
-        else {
-            float best = std::numeric_limits<float>::max();
-            for (size_t slot = 0; slot < palette.size(); ++slot) {
-                if (root != roots.end() && palette[slot] == root->second) continue;
-                const float score = distance(skin_centers.front(), palette_labs[slot]);
-                if (score < best) { best = score; skin_target = slot; }
-            }
-        }
+        const size_t skin_target = shared_target(face_id, Label::FaceSkin, skin_centers.front());
         if (skin_target >= palette.size() ||
             (root != roots.end() && palette[skin_target] == root->second)) continue;
         const Color face_color = face_lab(source, face_id);
@@ -1773,7 +3253,61 @@ bool map_subface_palette(const MeshSnapshot& source, const Analysis& analysis, c
         for (uint8_t value = 0; value < 16; ++value)
             candidates.push_back({face_id, {2, value}, palette[skin_target], .85f});
     }
-    return enforce_subface_budget(candidates, count, budget, output, error);
+    if (stopped(cancel)) { error="Material mapping canceled."; return false; }
+    if (analysis.baseline_subface_labels.empty())
+        return enforce_subface_budget(candidates, count, budget, output, error);
+    Analysis baseline = analysis;
+    baseline.subface_labels = analysis.baseline_subface_labels;
+    baseline.baseline_subface_labels.clear();
+    if (!analysis.baseline_face_labels.empty()) {
+        baseline.face_labels = analysis.baseline_face_labels;
+        baseline.face_confidence = analysis.baseline_face_confidence;
+    }
+    baseline.baseline_face_labels.clear(); baseline.baseline_face_confidence.clear();
+    const auto safe_whole = map_palette_impl(source, baseline, palette, portrait_card, nullptr, cancel);
+    SubfaceBudgetResult safe;
+    if (!map_subface_palette(source, baseline, safe_whole, palette, portrait_card, budget, safe, error, cancel)) return false;
+    std::map<size_t, SubfaceColors> upgrades;
+    for (const auto& candidate : candidates)
+        if (refined_boundary_faces.count(candidate.face_id) != 0 && candidate.confidence >= budget.minimum_confidence)
+            upgrades[candidate.face_id].push_back(candidate);
+    size_t rejected = safe.rejected_candidates;
+    std::map<size_t, SubfaceColors> accepted_faces;
+    for (const auto& leaf : safe.accepted) accepted_faces[leaf.face_id].push_back(leaf);
+    const auto cost = [](const SubfaceColors& leaves) {
+        std::set<std::pair<uint8_t, uint8_t>> nodes;
+        for (const auto& leaf : leaves) for (uint8_t depth = 0; depth < leaf.path.depth; ++depth)
+            nodes.emplace(depth, depth == 0 ? 0 : uint8_t(leaf.path.value >> (2u * (leaf.path.depth - depth))));
+        return nodes.size() * 3;
+    };
+    const double ratio = double(count) * double(budget.maximum_added_ratio);
+    const size_t limit = std::min(budget.maximum_added_triangles,
+        size_t(std::floor(ratio + std::max(1.0, ratio) * double(std::numeric_limits<float>::epsilon()) * 2.0)));
+    size_t used = safe.added_triangles;
+    struct RankedUpgrade { size_t face_id; const SubfaceColors* leaves; float benefit; };
+    std::vector<RankedUpgrade> ranked_upgrades;
+    for(const auto& upgrade:upgrades){float benefit=0.f;for(const auto& leaf:upgrade.second)benefit=std::max(benefit,leaf.confidence);
+        ranked_upgrades.push_back({upgrade.first,&upgrade.second,benefit});}
+    std::sort(ranked_upgrades.begin(),ranked_upgrades.end(),[](const auto& lhs,const auto& rhs){
+        return lhs.benefit!=rhs.benefit?lhs.benefit>rhs.benefit:lhs.face_id<rhs.face_id;});
+    for (const auto& upgrade : ranked_upgrades) {
+        SubfaceBudgetResult checked;
+        if (!enforce_subface_budget(*upgrade.leaves, count, budget, checked, error)) return false;
+        const auto previous = accepted_faces.find(upgrade.face_id);
+        const size_t old_cost = previous == accepted_faces.end() ? 0 : cost(previous->second);
+        if (checked.rejected_candidates != 0 || used - old_cost + checked.added_triangles > limit) {
+            rejected += upgrade.leaves->size(); continue;
+        }
+        used = used - old_cost + checked.added_triangles;
+        accepted_faces[upgrade.face_id] = std::move(checked.accepted);
+    }
+    safe.accepted.clear();
+    for (const auto& face : accepted_faces)
+        safe.accepted.insert(safe.accepted.end(), face.second.begin(), face.second.end());
+    safe.added_triangles = used;
+    safe.rejected_candidates = rejected;
+    output = std::move(safe);
+    return true;
 }
 
 SubfaceColors remap_subface_palette_targets(const SubfaceColors& suggestions,
@@ -1817,6 +3351,7 @@ nlohmann::json encode_analysis(const Analysis& analysis)
 {
     if (analysis.canceled || !analysis.error.empty() || analysis.signature.empty() ||
         analysis.geometry_id.empty() || analysis.content_id.empty() || analysis.body_identity.empty() || analysis.face_identity.empty() ||
+        analysis.boundary_identity.empty() ||
         analysis.rendered_views != 8 || analysis.face_views > 8 || analysis.face_labels.empty() ||
         analysis.observed_faces > analysis.face_labels.size() || (analysis.person_detected && analysis.face_views == 0) ||
         analysis.face_labels.size() != analysis.face_confidence.size() || analysis.face_labels.size() > maximum_faces)
@@ -1840,13 +3375,13 @@ nlohmann::json encode_analysis(const Analysis& analysis)
     std::pair<size_t, SubfacePath> previous_key {0, {0, 0}};
     bool has_previous = false;
     for (const SubfaceLabelEvidence& evidence : analysis.subface_labels) {
-        const unsigned path_limit = evidence.path.depth > 0 && evidence.path.depth <= 2
+        const unsigned path_limit = evidence.path.depth > 0 && evidence.path.depth <= 3
             ? 1u << (2u * evidence.path.depth) : 0u;
         const auto key = std::make_pair(evidence.face_id, evidence.path);
         if (evidence.face_id >= analysis.face_labels.size() || path_limit == 0 ||
             unsigned(evidence.path.value) >= path_limit ||
             (evidence.label != Label::EyeSclera && evidence.label != Label::Iris &&
-             evidence.label != Label::Eyebrow && evidence.label != Label::FaceSkin) ||
+             evidence.label != Label::Eyebrow && evidence.label != Label::FaceSkin && evidence.label != Label::Hair) ||
             !std::isfinite(evidence.confidence) || evidence.confidence < minimum_confidence ||
             evidence.confidence > 1.f || evidence.samples == 0 || (has_previous && !(previous_key < key)))
             throw std::invalid_argument("Invalid semantic subface evidence.");
@@ -1859,26 +3394,67 @@ nlohmann::json encode_analysis(const Analysis& analysis)
         previous_key = key;
         has_previous = true;
     }
-    return {{"schema", pipeline_version}, {"signature", analysis.signature},
+    nlohmann::json document = {{"schema", pipeline_version}, {"signature", analysis.signature},
         {"geometry_id", analysis.geometry_id}, {"content_id", analysis.content_id},
         {"body_identity", analysis.body_identity}, {"face_identity", analysis.face_identity},
+        {"boundary_identity", analysis.boundary_identity},
         {"face_count", analysis.face_labels.size()}, {"labels", labels}, {"confidence_f32", confidence},
         {"subfaces", std::move(subfaces)},
         {"person_detected", analysis.person_detected}, {"rendered_views", analysis.rendered_views},
         {"face_views", analysis.face_views}, {"observed_faces", analysis.observed_faces}};
+    document["boundary_runs"] = nlohmann::json::array();
+    for (const auto& run : analysis.boundary_runs) {
+        if (run.view_id < 0 || run.view_id >= 8 || size_t(run.part) > size_t(BoundaryPart::ClothesSkin) ||
+            size_t(run.side) > size_t(BoundarySide::Right) ||
+            !std::isfinite(run.model_score) || !std::isfinite(run.loading_ms) ||
+            !std::isfinite(run.encoding_ms) || !std::isfinite(run.decoding_ms))
+            throw std::invalid_argument("Invalid semantic boundary diagnostic.");
+        document["boundary_runs"].push_back({run.person_id, size_t(run.part), size_t(run.side),
+            run.region.left, run.region.top, run.region.right, run.region.bottom,
+            run.status, run.reason, run.loading_ms, run.encoding_ms, run.decoding_ms,
+            run.model_score, run.changed_pixels, run.view_id, run.crop_id, run.reason_code});
+    }
+    if (!analysis.baseline_subface_labels.empty() || !analysis.baseline_face_labels.empty()) {
+        Analysis baseline = analysis;
+        baseline.subface_labels = analysis.baseline_subface_labels;
+        baseline.baseline_subface_labels.clear();
+        baseline.baseline_face_labels.clear(); baseline.baseline_face_confidence.clear();
+        if (!analysis.baseline_face_labels.empty()) {
+            if (analysis.baseline_face_labels.size()!=analysis.face_labels.size() ||
+                analysis.baseline_face_confidence.size()!=analysis.face_labels.size())
+                throw std::invalid_argument("Invalid baseline semantic face evidence.");
+            baseline.face_labels=analysis.baseline_face_labels;
+            baseline.face_confidence=analysis.baseline_face_confidence;
+        }
+        const auto encoded=encode_analysis(baseline);
+        document["baseline_subfaces"] = encoded.at("subfaces");
+        if (!analysis.baseline_face_labels.empty()) {
+            document["baseline_labels"] = encoded.at("labels");
+            document["baseline_confidence_f32"] = encoded.at("confidence_f32");
+        }
+    }
+    return document;
 }
 
 bool decode_analysis(const nlohmann::json& doc, const MeshSnapshot& source, const std::string& body,
                      const std::string& face, Analysis& output, std::string& error)
 {
+    return decode_analysis(doc, source, body, face, "none", output, error);
+}
+
+bool decode_analysis(const nlohmann::json& doc, const MeshSnapshot& source, const std::string& body,
+                     const std::string& face, const std::string& boundary,
+                     Analysis& output, std::string& error)
+{
     error.clear();
     try {
         const size_t count = source.mesh.indices.size();
-        const auto signature = analysis_cache_key(source, body, face);
+        const auto signature = analysis_cache_key(source, body, face, boundary);
         if (signature.empty() || count == 0 || count > maximum_faces || !doc.is_object() ||
             doc.at("schema") != pipeline_version || doc.at("signature") != signature ||
             doc.at("geometry_id") != source.geometry_id || doc.at("content_id") != source.content_id ||
             doc.at("body_identity") != body || doc.at("face_identity") != face ||
+            doc.at("boundary_identity") != boundary ||
             !doc.at("face_count").is_number_unsigned() || doc.at("face_count").get<size_t>() != count)
             throw std::invalid_argument("The cached semantic analysis belongs to another model or recognizer version.");
         const auto& labels = doc.at("labels").get_ref<const std::string&>();
@@ -1887,7 +3463,8 @@ bool decode_analysis(const nlohmann::json& doc, const MeshSnapshot& source, cons
             throw std::invalid_argument("The cached semantic mask size is invalid.");
         Analysis restored;
         restored.geometry_id = source.geometry_id; restored.content_id = source.content_id;
-        restored.body_identity = body; restored.face_identity = face; restored.signature = signature;
+        restored.body_identity = body; restored.face_identity = face; restored.boundary_identity = boundary;
+        restored.signature = signature;
         restored.person_detected = doc.at("person_detected").get<bool>();
         restored.rendered_views = doc.at("rendered_views").get<size_t>();
         restored.face_views = doc.at("face_views").get<size_t>();
@@ -1895,6 +3472,32 @@ bool decode_analysis(const nlohmann::json& doc, const MeshSnapshot& source, cons
         if (restored.rendered_views != 8 || restored.face_views > 8 || restored.observed_faces > count ||
             (restored.person_detected && restored.face_views == 0))
             throw std::invalid_argument("The cached semantic analysis is incomplete.");
+        if (doc.contains("boundary_runs")) {
+            const auto& runs = doc.at("boundary_runs");
+            if (!runs.is_array() || runs.size() > 4096)
+                throw std::invalid_argument("The cached boundary diagnostics are invalid.");
+            for (const auto& entry : runs) {
+                if (!entry.is_array() || entry.size() != 17 ||
+                    entry[1].get<size_t>() > size_t(BoundaryPart::ClothesSkin) ||
+                    entry[2].get<size_t>() > size_t(BoundarySide::Right))
+                    throw std::invalid_argument("The cached boundary diagnostic is malformed.");
+                BoundaryRunDiagnostic run;
+                run.person_id = entry[0].get<uint32_t>();
+                run.part = BoundaryPart(entry[1].get<size_t>());
+                run.side = BoundarySide(entry[2].get<size_t>());
+                run.region = {entry[3].get<int>(), entry[4].get<int>(), entry[5].get<int>(), entry[6].get<int>()};
+                run.status = entry[7].get<std::string>(); run.reason = entry[8].get<std::string>();
+                run.loading_ms = entry[9].get<double>(); run.encoding_ms = entry[10].get<double>();
+                run.decoding_ms = entry[11].get<double>(); run.model_score = entry[12].get<float>();
+                run.changed_pixels = entry[13].get<size_t>(); run.view_id = entry[14].get<int>();
+                run.crop_id = entry[15].get<std::string>(); run.reason_code = entry[16].get<std::string>();
+                if (run.view_id < 0 || run.view_id >= 8 || !std::isfinite(run.model_score) ||
+                    !std::isfinite(run.loading_ms) || !std::isfinite(run.encoding_ms) ||
+                    !std::isfinite(run.decoding_ms))
+                    throw std::invalid_argument("The cached boundary diagnostic is out of range.");
+                restored.boundary_runs.push_back(std::move(run));
+            }
+        }
         restored.face_labels.reserve(count); restored.face_confidence.reserve(count);
         for (size_t i = 0; i < count; ++i) {
             const int label = unhex(labels[i]);
@@ -1929,9 +3532,10 @@ bool decode_analysis(const nlohmann::json& doc, const MeshSnapshot& source, cons
             const size_t label_value = entry[3].get<size_t>();
             const uint32_t samples = entry[5].get<uint32_t>();
             const auto& confidence_hex = entry[4].get_ref<const std::string&>();
-            if (face_id >= count || depth == 0 || depth > 2 || path_value >= (size_t(1) << (2 * depth)) ||
+            if (face_id >= count || depth == 0 || depth > 3 || path_value >= (size_t(1) << (2 * depth)) ||
                 (label_value != size_t(Label::EyeSclera) && label_value != size_t(Label::Iris) &&
-                 label_value != size_t(Label::Eyebrow) && label_value != size_t(Label::FaceSkin)) ||
+                 label_value != size_t(Label::Eyebrow) && label_value != size_t(Label::FaceSkin) &&
+                 label_value != size_t(Label::Hair)) ||
                 samples == 0 || confidence_hex.size() != 8)
                 throw std::invalid_argument("The cached semantic subface entry is out of range.");
             uint32_t bits = 0;
@@ -1950,6 +3554,26 @@ bool decode_analysis(const nlohmann::json& doc, const MeshSnapshot& source, cons
             restored.subface_labels.push_back({face_id, path, Label(label_value), value, samples});
             previous_key = key;
             has_previous = true;
+        }
+        if (doc.contains("baseline_subfaces") || doc.contains("baseline_labels") || doc.contains("baseline_confidence_f32")) {
+            auto baseline_document = doc;
+            baseline_document["subfaces"] = doc.value("baseline_subfaces", nlohmann::json::array());
+            if (doc.contains("baseline_labels") || doc.contains("baseline_confidence_f32")) {
+                baseline_document["labels"] = doc.at("baseline_labels");
+                baseline_document["confidence_f32"] = doc.at("baseline_confidence_f32");
+            }
+            baseline_document.erase("baseline_subfaces");
+            baseline_document.erase("baseline_labels");
+            baseline_document.erase("baseline_confidence_f32");
+            Analysis baseline;
+            std::string baseline_error;
+            if (!decode_analysis(baseline_document, source, body, face, boundary, baseline, baseline_error))
+                throw std::invalid_argument("Invalid baseline semantic evidence: " + baseline_error);
+            restored.baseline_subface_labels=std::move(baseline.subface_labels);
+            if (doc.contains("baseline_labels")) {
+                restored.baseline_face_labels=std::move(baseline.face_labels);
+                restored.baseline_face_confidence=std::move(baseline.face_confidence);
+            }
         }
         output = std::move(restored); return true;
     } catch (const std::exception& failure) { error = failure.what(); return false; }

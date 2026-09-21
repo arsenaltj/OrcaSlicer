@@ -1,0 +1,15 @@
+{
+  "schema": "orcaslicer.semantic-boundary-prompts/v1",
+  "case_id": "portrait-left-ear-view",
+  "regions": [
+    {
+      "id": "left-ear",
+      "box": [48, 96, 208, 320],
+      "positive": [[126, 188], [132, 232]],
+      "negative": [[84, 164], [92, 252]],
+      "coarse_mask": "left-ear-coarse.png",
+      "reference_mask": "left-ear-reference.png",
+      "uncertain_mask": "left-ear-uncertain.png"
+    }
+  ]
+}

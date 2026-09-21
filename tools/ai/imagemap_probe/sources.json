@@ -1,0 +1,73 @@
+{
+  "schema": "orca.imagemap-probe-sources/v1",
+  "repository": "https://github.com/sentientstardust-dev/OrcaSlicer-ImageMap",
+  "commit": "92548381056dbf72836b0a1bdc455f238218dbfb",
+  "files": [
+    {
+      "path": "deps_src/colorsolver/ColorSolver.cpp",
+      "source_path": "deps_src/colorsolver/ColorSolver.cpp",
+      "sha256": "9c366aa2846a7309777dd230bc39f112a1979e06738840d91cf55e1cb6bfafa0",
+      "bytes": 99811
+    },
+    {
+      "path": "deps_src/colorsolver/ColorSolver.hpp",
+      "source_path": "deps_src/colorsolver/ColorSolver.hpp",
+      "sha256": "26bdde4bc1ee4516c1615b347b3b1b0f49038179cf2c3943c166535970536578",
+      "bytes": 13034
+    },
+    {
+      "path": "deps_src/pigment-painter/COPYING",
+      "source_path": "deps_src/pigment-painter/COPYING",
+      "sha256": "8b1ba204bb69a0ade2bfcf65ef294a920f6bb361b317dba43c7ef29d96332b9b",
+      "bytes": 35148
+    },
+    {
+      "path": "deps_src/pigment-painter/lut_wide.png.c",
+      "source_path": "deps_src/pigment-painter/lut_wide.png.c",
+      "sha256": "567e5ef4344539856d28d6cf7e997ada48123ce1015426f25f8a1ae1f3b50beb",
+      "bytes": 38094965
+    },
+    {
+      "path": "deps_src/pigment-painter/pigment_painter_mixer.cpp",
+      "source_path": "deps_src/pigment-painter/pigment_painter_mixer.cpp",
+      "sha256": "1e4b56c8b83b1b9216594bd79c7d9d50163bf8917c9ee6bcfb916849f4720a1e",
+      "bytes": 11528
+    },
+    {
+      "path": "deps_src/pigment-painter/pigment_painter_mixer.hpp",
+      "source_path": "deps_src/pigment-painter/pigment_painter_mixer.hpp",
+      "sha256": "ab7408a932b09798a35c82993a12b559531c73d9492d8db8e1fa6bfcf8917b0e",
+      "bytes": 495
+    },
+    {
+      "path": "deps_src/prusa-fdm-mixer/LICENSE",
+      "source_path": "deps_src/prusa-fdm-mixer/LICENSE",
+      "sha256": "c3c8cc77e133dcf568bf8d6bd0213a54e805166705084aeb3363cd65645a550a",
+      "bytes": 1111
+    },
+    {
+      "path": "deps_src/prusa-fdm-mixer/prusa_fdm_mixer.cpp",
+      "source_path": "deps_src/prusa-fdm-mixer/prusa_fdm_mixer.cpp",
+      "sha256": "ff732e14dbd27c52b935ac098aae06a5fb1a412a49044d90d9e608b53753b635",
+      "bytes": 12694
+    },
+    {
+      "path": "deps_src/prusa-fdm-mixer/prusa_fdm_mixer.hpp",
+      "source_path": "deps_src/prusa-fdm-mixer/prusa_fdm_mixer.hpp",
+      "sha256": "0f54653da77f04d8c104a5c11b201a1dac6b5c2b03fc2cbaf7cfc2cc2590dd5d",
+      "bytes": 3048
+    },
+    {
+      "path": "LICENSE.txt",
+      "source_path": "LICENSE.txt",
+      "sha256": "57c8ff33c9c0cfc3ef00e650a1cc910d7ee479a8bc509f6c9209a7c2a11399d6",
+      "bytes": 34520
+    },
+    {
+      "path": "TextureMapping.hpp",
+      "source_path": "src/libslic3r/TextureMapping.hpp",
+      "sha256": "f6966773edda3e0b877239c5700ef6cb607ba7a1b40472d04dc104fc8b6a96f6",
+      "bytes": 61819
+    }
+  ]
+}

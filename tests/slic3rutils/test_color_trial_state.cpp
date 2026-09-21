@@ -36,7 +36,89 @@ void require_same(const trial::State& a, const trial::State& b)
     REQUIRE(a.semantic_palette == b.semantic_palette);
     REQUIRE(a.semantic_mapping_palette == b.semantic_mapping_palette);
     REQUIRE(a.semantic_portrait_card == b.semantic_portrait_card);
+    REQUIRE(a.slot_ids == b.slot_ids);
+    REQUIRE(a.slot_enabled == b.slot_enabled);
+    REQUIRE(a.legacy_slot_ids == b.legacy_slot_ids);
+    REQUIRE(a.dormant_slots.size() == b.dormant_slots.size());
+    for (size_t index = 0; index < a.dormant_slots.size(); ++index) {
+        REQUIRE(a.dormant_slots[index].id == b.dormant_slots[index].id);
+        REQUIRE(a.dormant_slots[index].color == b.dormant_slots[index].color);
+        REQUIRE(a.dormant_slots[index].mapping_color == b.dormant_slots[index].mapping_color);
+        REQUIRE(a.dormant_slots[index].enabled == b.dormant_slots[index].enabled);
+    }
 }
+}
+
+TEST_CASE("Editing a duplicate color changes only the selected stable trial slot", "[ColorTrialState]")
+{
+    auto saved = saved_trial(); saved.colors[1] = saved.colors[0];
+    saved.slot_ids = {"project-filament-0", "project-filament-2", "project-filament-3"};
+    saved.semantic_palette = saved.colors; saved.semantic_mapping_palette = saved.mapping_colors;
+    const auto original = saved;
+    const GUI::PreviewPalette::Color blue {.2f,.3f,.8f};
+    REQUIRE(trial::edit_slot_color(saved, "project-filament-2", blue));
+    REQUIRE(saved.colors[0] == original.colors[0]);
+    REQUIRE(saved.colors[1] == blue);
+    REQUIRE(saved.semantic_palette[0] == original.semantic_palette[0]);
+    REQUIRE(saved.semantic_palette[1] == blue);
+    REQUIRE(saved.mapping_colors == original.mapping_colors);
+    REQUIRE(saved.semantic_mapping_palette == original.semantic_mapping_palette);
+    trial::State restored; std::string error;
+    REQUIRE(trial::decode(trial::encode(saved,20,geometry_id),20,geometry_id,restored,error));
+    require_same(saved,restored);
+}
+
+TEST_CASE("Manual six to one to six restoration retains hidden colors and physical identities", "[ColorTrialState]")
+{
+    auto saved = saved_trial();
+    REQUIRE(trial::resize_manual_slots(saved,6,{{.4f,.3f,.2f},{.8f,.7f,.6f}}));
+    saved.slot_enabled[4] = false;
+    saved.slot_ids[4] = "project-filament-9";
+    const auto original_colors = saved.semantic_palette;
+    const auto original_mapping = saved.semantic_mapping_palette;
+    const auto original_ids = saved.slot_ids;
+    REQUIRE(trial::resize_manual_slots(saved,1,{}));
+    REQUIRE(saved.semantic_palette.size() == 1);
+    REQUIRE(saved.dormant_slots.size() == 6);
+    trial::State restored; std::string error;
+    REQUIRE(trial::decode(trial::encode(saved,20,geometry_id),20,geometry_id,restored,error));
+    REQUIRE(trial::resize_manual_slots(restored,6,{{0.f,1.f,0.f}}));
+    REQUIRE(restored.semantic_palette == original_colors);
+    REQUIRE(restored.semantic_mapping_palette == original_mapping);
+    REQUIRE(restored.slot_ids == original_ids);
+    REQUIRE_FALSE(restored.slot_enabled[4]);
+}
+
+TEST_CASE("Stable external slot identities ignore display order and color edits", "[ColorTrialState]")
+{
+    const auto first = trial::stable_slot_uid("project-filament", "PLA Basic", 0);
+    const auto second = trial::stable_slot_uid("project-filament", "PETG", 0);
+    CHECK(first == trial::stable_slot_uid("project-filament", "PLA Basic", 0));
+    CHECK(second == trial::stable_slot_uid("project-filament", "PETG", 0));
+    CHECK(first != second);
+    CHECK(first != trial::stable_slot_uid("project-filament", "PLA Basic", 1));
+
+    trial::State saved = saved_trial();
+    REQUIRE(trial::resize_manual_slots(saved, 2, {{.2f,.3f,.4f}}));
+    const auto identities = saved.slot_ids;
+    REQUIRE(trial::edit_slot_color(saved, identities.front(), {.8f,.1f,.2f}));
+    CHECK(saved.slot_ids == identities);
+
+    trial::State recreated = saved_trial();
+    REQUIRE(trial::resize_manual_slots(recreated, 2, {{.2f,.3f,.4f}}));
+    CHECK(recreated.slot_ids.front() != identities.front());
+}
+
+TEST_CASE("Malformed dormant manual colors cannot replace an existing trial", "[ColorTrialState]")
+{
+    auto saved = saved_trial();
+    REQUIRE(trial::resize_manual_slots(saved,6,{}));
+    REQUIRE(trial::resize_manual_slots(saved,1,{}));
+    auto doc = trial::encode(saved,20,geometry_id);
+    doc["dormant_slots"][4][1][0] = 2.0;
+    auto restored = saved; std::string error;
+    REQUIRE_FALSE(trial::decode(doc,20,geometry_id,restored,error));
+    require_same(saved,restored);
 }
 
 TEST_CASE("Semantic trial saves the full candidate palette separately from repeated global targets", "[ColorTrialState][SemanticColoring]")
@@ -62,6 +144,31 @@ TEST_CASE("Legacy trials keep their existing assignments until semantic optimiza
     REQUIRE(trial::decode(doc, 20, geometry_id, restored, error));
     REQUIRE_FALSE(restored.semantic_optimization);
     REQUIRE(restored.colors == saved_trial().colors);
+}
+
+TEST_CASE("Disabled and duplicate-color slots retain distinct identities across session reload", "[ColorTrialState]")
+{
+    auto saved = saved_trial();
+    saved.colors[1] = saved.colors[0];
+    saved.slot_ids = {"skin", "lip", "hair"};
+    saved.slot_enabled = {true, false, true};
+    trial::State restored; std::string error;
+    REQUIRE(trial::decode(trial::encode(saved, 20, geometry_id), 20, geometry_id, restored, error));
+    CHECK(restored.slot_ids == saved.slot_ids);
+    CHECK(restored.slot_enabled == saved.slot_enabled);
+    CHECK(restored.colors == saved.colors);
+}
+
+TEST_CASE("Duplicate or incomplete slot identities cannot replace a saved trial", "[ColorTrialState]")
+{
+    const auto saved = saved_trial();
+    auto doc = trial::encode(saved, 20, geometry_id);
+    doc["slot_ids"] = {"same", "same", "hair"};
+    auto restored = saved; std::string error;
+    CHECK_FALSE(trial::decode(doc, 20, geometry_id, restored, error));
+    CHECK(restored.colors == saved.colors);
+    doc["slot_ids"] = {"only-one"};
+    CHECK_FALSE(trial::decode(doc, 20, geometry_id, restored, error));
 }
 
 TEST_CASE("Invalid semantic candidates cannot partially replace a saved trial", "[ColorTrialState][SemanticColoring]")

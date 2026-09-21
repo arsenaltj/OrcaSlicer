@@ -1,4 +1,6 @@
 #include "AIDesktopFeatureHost.hpp"
+#include "ModelGeneration/LocalSemanticValidation.hpp"
+#include <wx/panel.h>
 
 #include "ModelGeneration/ModelGenerationFeatureHost.hpp"
 #include "slic3r/GUI/AISidecarClient.hpp"
@@ -143,25 +145,27 @@ struct AIDesktopFeatureHost::Impl final : wxEvtHandler
 AIDesktopFeatureHost::AIDesktopFeatureHost(wxWindow* parent, Plater* plater,
                                            NavigateAfterImportFn navigate_after_import,
                                            SmartSlicingAvailableFn smart_slicing_available)
-    : m_impl(std::make_unique<Impl>(parent, plater, std::move(navigate_after_import),
-                                    std::move(smart_slicing_available)))
-{}
+{
+    if (local_semantic_validation_requested())
+        m_validation_panel = create_local_semantic_validation(parent, plater, std::move(navigate_after_import));
+    else m_impl = std::make_unique<Impl>(parent, plater, std::move(navigate_after_import), std::move(smart_slicing_available));
+}
 
 AIDesktopFeatureHost::~AIDesktopFeatureHost() = default;
 
 wxWindow* AIDesktopFeatureHost::model_generation_panel() const
 {
-    return m_impl->model_generation.panel();
+    return m_validation_panel ? m_validation_panel : m_impl->model_generation.panel();
 }
 
 void AIDesktopFeatureHost::start()
 {
-    m_impl->start();
+    if (m_impl) m_impl->start();
 }
 
 void AIDesktopFeatureHost::shutdown()
 {
-    m_impl->shutdown();
+    if (m_impl) m_impl->shutdown();
 }
 
 } // namespace Slic3r::GUI

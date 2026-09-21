@@ -44,6 +44,12 @@ bool warm_skin_appearance(const Color& color)
     return color[0] >= .40f && color[0] <= .85f && saturation >= .025f && saturation <= .16f &&
         color[1] > .005f && color[2] > .005f && color[1] <= color[2] * 1.6f;
 }
+bool warm_skin_palette_color(const Color& color)
+{
+    const float saturation = chroma(color);
+    return color[0] >= .40f && color[0] <= .96f && saturation >= .018f && saturation <= .16f &&
+        color[1] > .005f && color[2] > .005f && color[1] <= color[2] * 1.8f;
+}
 bool material_label(Label label)
 {
     // The exclusion is unconditional: even uncertain eyes, skin and accessories
@@ -88,6 +94,17 @@ void fill_supported_skin_gaps(const Analysis& analysis, const std::vector<Face>&
     std::vector<uint32_t> owner(count,absent), proposed(count,absent);
     std::vector<uint8_t> hops(count,255), eligible(count,0), blocked(count,0);
     std::vector<float> cost(count,0.f), surface_distance(count,0.f), proposed_cost(count), proposed_distance(count);
+    std::vector<uint8_t> supported_background(count,0);
+    for (const auto& edge : edges) for (const auto& side : {edge,std::make_pair(edge.second,edge.first)}) {
+        const uint32_t id=side.first, donor=side.second;
+        if (analysis.face_labels[id] == Label::Background &&
+            analysis.face_confidence[id] < minimum_confidence && faces[id].assigned < 0 &&
+            analysis.face_labels[donor] == Label::FaceSkin &&
+            analysis.face_confidence[donor] >= minimum_confidence && faces[donor].assigned >= 0 &&
+            warm_skin_appearance(faces[id].color) && warm_skin_appearance(faces[donor].color) &&
+            appearance_distance(faces[id].color,faces[donor].color) <= .0009f)
+            supported_background[id]=1;
+    }
     bool have_seed=false,have_gap=false;
     for (uint32_t id=0;id<count;++id) {
         const auto label=analysis.face_labels[id];
@@ -95,7 +112,8 @@ void fill_supported_skin_gaps(const Analysis& analysis, const std::vector<Face>&
         if (label==Label::FaceSkin && analysis.face_confidence[id]>=minimum_confidence &&
             faces[id].assigned>=0) {
             owner[id]=id;hops[id]=0;have_seed=true;
-        } else if (faces[id].assigned<0 && (label==Label::FaceSkin || label==Label::Unknown)) {
+        } else if (faces[id].assigned<0 &&
+                   (label==Label::FaceSkin || label==Label::Unknown || supported_background[id])) {
             eligible[id]=1;have_gap=true;
         }
     }
@@ -192,6 +210,181 @@ void fill_isolated_assigned_skin_holes(const Analysis& analysis, const std::vect
         const auto best = std::max_element(votes[id].begin(), votes[id].end());
         if (*best >= 2 && *best * 2 >= neighbors[id]) refined[id] = int(best - votes[id].begin());
     }
+}
+
+void merge_isolated_skin_material_fragments(const Analysis& analysis, const std::vector<Face>& faces,
+                                            const std::vector<Color>& palette,
+                                            const std::vector<std::pair<uint32_t,uint32_t>>& edges,
+                                            const std::vector<uint8_t>& point_detail_barrier,
+                                            std::vector<int>& refined)
+{
+    const size_t count = faces.size();
+    std::vector<uint8_t> skin_palette(palette.size(), 0), candidate(count, 0), blocked(count, 0);
+    for (size_t slot = 0; slot < palette.size(); ++slot)
+        skin_palette[slot] = warm_skin_palette_color(palette[slot]);
+
+    double skin_area = 0.;
+    bool have_candidate = false;
+    for (uint32_t id = 0; id < count; ++id) {
+        const Label label = analysis.face_labels[id];
+        const bool reliable_skin = (label == Label::FaceSkin || label == Label::BodySkin) &&
+            analysis.face_confidence[id] >= minimum_confidence;
+        const bool unknown_skin = label == Label::Unknown && warm_skin_appearance(faces[id].color);
+        if ((!reliable_skin && !unknown_skin) || faces[id].area <= 0.) continue;
+        if (reliable_skin) skin_area += faces[id].area;
+        const int slot = refined[id] >= 0 ? refined[id] : faces[id].assigned;
+        if (slot < 0 || size_t(slot) >= skin_palette.size() || skin_palette[size_t(slot)] ||
+            faces[id].color[0] < .14f || faces[id].color[0] > .88f || chroma(faces[id].color) > .18f) continue;
+        candidate[id] = 1;
+        have_candidate = true;
+    }
+    if (!have_candidate || skin_area <= 0.) return;
+
+    // A reliable facial feature protects its immediate skin contour. This
+    // keeps an eye line, eyebrow or lip rim even when its outermost triangles
+    // were projected as FaceSkin and already received a dark palette slot.
+    for (uint32_t id = 0; id < count; ++id)
+        if (id < point_detail_barrier.size() && point_detail_barrier[id]) blocked[id] = 1;
+    for (const auto& edge : edges) for (const auto& side : {edge, std::make_pair(edge.second, edge.first)}) {
+        if (!candidate[side.first] || analysis.face_confidence[side.second] < minimum_confidence) continue;
+        if (face_detail_label(analysis.face_labels[side.second])) blocked[side.first] = 1;
+    }
+    for (uint8_t step = 0; step < 2; ++step) {
+        std::vector<uint8_t> next = blocked;
+        for (const auto& edge : edges) {
+            if (blocked[edge.first] && candidate[edge.second]) next[edge.second] = 1;
+            if (blocked[edge.second] && candidate[edge.first]) next[edge.first] = 1;
+        }
+        blocked.swap(next);
+    }
+
+    DisjointSet components(count);
+    for (const auto& edge : edges) {
+        if (!candidate[edge.first] || !candidate[edge.second] || blocked[edge.first] || blocked[edge.second]) continue;
+        const int lhs = refined[edge.first] >= 0 ? refined[edge.first] : faces[edge.first].assigned;
+        const int rhs = refined[edge.second] >= 0 ? refined[edge.second] : faces[edge.second].assigned;
+        if (lhs == rhs) components.join(edge.first, edge.second);
+    }
+
+    std::vector<double> area(count, 0.);
+    std::vector<uint32_t> face_count(count, 0), foreign_boundary(count, 0);
+    std::map<uint32_t, std::vector<double>> votes;
+    for (uint32_t id = 0; id < count; ++id) if (candidate[id] && !blocked[id]) {
+        const uint32_t root = components.root(id);
+        area[root] += faces[id].area;
+        ++face_count[root];
+    }
+    for (const auto& edge : edges) for (const auto& side : {edge, std::make_pair(edge.second, edge.first)}) {
+        const uint32_t id = side.first, neighbor = side.second;
+        if (!candidate[id] || blocked[id] || candidate[neighbor]) continue;
+        const uint32_t root = components.root(id);
+        const Label label = analysis.face_labels[neighbor];
+        const int slot = refined[neighbor] >= 0 ? refined[neighbor] : faces[neighbor].assigned;
+        if ((label == Label::FaceSkin || label == Label::BodySkin) &&
+            analysis.face_confidence[neighbor] >= minimum_confidence && slot >= 0 &&
+            size_t(slot) < skin_palette.size() && skin_palette[size_t(slot)] &&
+            (analysis.face_labels[id] != Label::Unknown ||
+             appearance_distance(faces[id].color, faces[neighbor].color) <= .006f)) {
+            const double support = std::max(1e-12, std::min(faces[id].area, faces[neighbor].area));
+            auto& tally = votes[root];
+            if (tally.empty()) tally.resize(palette.size(), 0.);
+            tally[size_t(slot)] += support;
+        } else if (analysis.face_confidence[neighbor] >= minimum_confidence &&
+                   label != Label::Unknown && label != Label::Background) {
+            ++foreign_boundary[root];
+        }
+    }
+
+    const double maximum_fragment_area = skin_area * .003;
+    std::vector<int> replacement(count, -1);
+    for (uint32_t root = 0; root < count; ++root) {
+        if (face_count[root] == 0 || area[root] > maximum_fragment_area) continue;
+        const auto found = votes.find(root);
+        if (found == votes.end()) continue;
+        const auto& tally = found->second;
+        const auto best = std::max_element(tally.begin(), tally.end());
+        const double best_support = *best;
+        const double all_support = std::accumulate(tally.begin(), tally.end(), 0.);
+        if (best_support <= 0. || best_support * 4. < all_support * 3. ||
+            foreign_boundary[root] != 0) continue;
+        replacement[root] = int(best - tally.begin());
+    }
+    for (uint32_t id = 0; id < count; ++id)
+        if (candidate[id] && !blocked[id] && replacement[components.root(id)] >= 0)
+            refined[id] = replacement[components.root(id)];
+}
+
+void fill_spatially_supported_unknown_skin(const Analysis& analysis, const std::vector<Face>& faces,
+                                          const std::vector<Color>& palette, float radius,
+                                          std::vector<int>& refined)
+{
+    if (!(radius > 0.f) || !std::isfinite(radius)) return;
+    using Cell = std::array<long long, 3>;
+    const auto cell = [&](const Vec3f& center) {
+        Cell result {};
+        for (int axis = 0; axis < 3; ++axis)
+            result[axis] = static_cast<long long>(std::floor(center[axis] / radius));
+        return result;
+    };
+    std::vector<uint8_t> skin_palette(palette.size(), 0);
+    for (size_t slot = 0; slot < palette.size(); ++slot)
+        skin_palette[slot] = warm_skin_palette_color(palette[slot]);
+    std::map<Cell, std::vector<uint32_t>> donor_cells, protected_cells;
+    for (uint32_t id = 0; id < faces.size(); ++id) {
+        const Label label = analysis.face_labels[id];
+        const int slot = refined[id] >= 0 ? refined[id] : faces[id].assigned;
+        if ((label == Label::FaceSkin || label == Label::BodySkin) &&
+            analysis.face_confidence[id] >= minimum_confidence && slot >= 0 &&
+            size_t(slot) < skin_palette.size() && skin_palette[size_t(slot)] &&
+            warm_skin_appearance(faces[id].color))
+            donor_cells[cell(faces[id].center)].push_back(id);
+        else if (analysis.face_confidence[id] >= minimum_confidence &&
+                 (label == Label::Clothes || label == Label::Hair || face_detail_label(label)))
+            protected_cells[cell(faces[id].center)].push_back(id);
+    }
+    if (donor_cells.empty()) return;
+    const float radius_squared = radius * radius;
+    std::vector<std::pair<uint32_t, int>> proposed;
+    for (uint32_t id = 0; id < faces.size(); ++id) {
+        const int current = refined[id] >= 0 ? refined[id] : faces[id].assigned;
+        if (analysis.face_labels[id] != Label::Unknown || current < 0 ||
+            size_t(current) >= skin_palette.size() || skin_palette[size_t(current)] ||
+            faces[id].area <= 0. || !warm_skin_appearance(faces[id].color)) continue;
+        const Cell origin = cell(faces[id].center);
+        bool protected_neighbor = false;
+        for (int z = -1; z <= 1 && !protected_neighbor; ++z)
+            for (int y = -1; y <= 1 && !protected_neighbor; ++y)
+                for (int x = -1; x <= 1 && !protected_neighbor; ++x) {
+                    const auto found = protected_cells.find({origin[0] + x, origin[1] + y, origin[2] + z});
+                    if (found == protected_cells.end()) continue;
+                    for (uint32_t other : found->second) {
+                        if (faces[id].normal.dot(faces[other].normal) < .35f) continue;
+                        if ((faces[id].center - faces[other].center).squaredNorm() <= radius_squared) {
+                            protected_neighbor = true;
+                            break;
+                        }
+                    }
+                }
+        if (protected_neighbor) continue;
+        std::array<uint8_t, 6> votes {};
+        for (int z = -1; z <= 1; ++z) for (int y = -1; y <= 1; ++y) for (int x = -1; x <= 1; ++x) {
+            const auto found = donor_cells.find({origin[0] + x, origin[1] + y, origin[2] + z});
+            if (found == donor_cells.end()) continue;
+            for (uint32_t donor : found->second) {
+                if (faces[id].normal.dot(faces[donor].normal) < .35f ||
+                    (faces[id].center - faces[donor].center).squaredNorm() > radius_squared ||
+                    appearance_distance(faces[id].color, faces[donor].color) > .006f) continue;
+                const int slot = refined[donor] >= 0 ? refined[donor] : faces[donor].assigned;
+                if (slot >= 0 && size_t(slot) < votes.size() && votes[size_t(slot)] < 255)
+                    ++votes[size_t(slot)];
+            }
+        }
+        const auto best = std::max_element(votes.begin(), votes.end());
+        const unsigned total = std::accumulate(votes.begin(), votes.end(), 0u);
+        if (*best >= 2 && unsigned(*best) * 4 >= total * 3)
+            proposed.emplace_back(id, int(best - votes.begin()));
+    }
+    for (const auto& item : proposed) refined[item.first] = item.second;
 }
 
 void fill_reliable_skin_shadow_holes(const Analysis& analysis, const std::vector<Face>& faces,
@@ -418,6 +611,62 @@ struct SurfaceGraph {
         }
     }
 };
+void fill_supported_clothing_shadows(const Analysis& analysis, const std::vector<Face>& faces,
+                                     const std::vector<Color>& palette,
+                                     const SurfaceGraph& graph,
+                                     const std::vector<uint8_t>& protected_edge,
+                                     float radius, std::vector<int>& refined)
+{
+    struct Visit { float distance; uint32_t source, face; };
+    const auto later = [](const Visit& a, const Visit& b) {
+        return std::tie(a.distance, a.source, a.face) > std::tie(b.distance, b.source, b.face);
+    };
+    std::priority_queue<Visit, std::vector<Visit>, decltype(later)> pending(later);
+    std::vector<float> distance(faces.size(), std::numeric_limits<float>::infinity());
+    std::vector<uint32_t> source(faces.size(), absent);
+    const auto candidate = [&](uint32_t id) {
+        const Label label = analysis.face_labels[id];
+        if ((label != Label::Unknown && label != Label::Background) ||
+            protected_edge[id] || refined[id] >= 0 || faces[id].area <= 0 ||
+            faces[id].color[0] < .62f || chroma(faces[id].color) > .07f) return false;
+        const int assigned = faces[id].assigned;
+        return assigned < 0 || palette[size_t(assigned)][0] >= .65f;
+    };
+    const auto advance = [&](uint32_t from, uint32_t to, uint32_t donor, float length, float traveled) {
+        if (!candidate(to) ||
+            std::abs(faces[from].color[0] - faces[to].color[0]) > .12f ||
+            std::hypot(faces[from].color[1] - faces[to].color[1],
+                       faces[from].color[2] - faces[to].color[2]) > .025f ||
+            std::hypot(faces[donor].color[1] - faces[to].color[1],
+                       faces[donor].color[2] - faces[to].color[2]) > .055f) return;
+        const float next = traveled + length;
+        if (next > radius || next > distance[to] ||
+            (next == distance[to] && donor >= source[to])) return;
+        distance[to] = next; source[to] = donor; pending.push({next, donor, to});
+    };
+    for (uint32_t id = 0; id < faces.size(); ++id) {
+        const Face& face = faces[id];
+        if (analysis.face_labels[id] != Label::Clothes ||
+            analysis.face_confidence[id] < minimum_confidence || face.assigned < 0 ||
+            face.color[0] < .78f || chroma(face.color) > .04f ||
+            palette[size_t(face.assigned)][0] < .8f ||
+            chroma(palette[size_t(face.assigned)]) > .04f) continue;
+        for (size_t edge = graph.begin[id]; edge < graph.begin[id + 1]; ++edge) {
+            const auto& neighbor = graph.neighbors[edge];
+            advance(id, neighbor.face, id, neighbor.length, 0.f);
+        }
+    }
+    while (!pending.empty()) {
+        const Visit visit = pending.top(); pending.pop();
+        if (visit.distance != distance[visit.face] || visit.source != source[visit.face]) continue;
+        for (size_t edge = graph.begin[visit.face]; edge < graph.begin[visit.face + 1]; ++edge) {
+            const auto& neighbor = graph.neighbors[edge];
+            advance(visit.face, neighbor.face, visit.source, neighbor.length, visit.distance);
+        }
+    }
+    for (uint32_t id = 0; id < faces.size(); ++id)
+        if (source[id] != absent) refined[id] = faces[source[id]].assigned;
+}
 struct SurfaceReference {
     float distance {std::numeric_limits<float>::infinity()};
     uint32_t face {absent};
@@ -596,7 +845,9 @@ void refine_material_patches(const MeshSnapshot& source, const Analysis& analysi
         const bool assigned = face.assigned >= 0 && confidence >= minimum_confidence;
         have_hair |= assigned && face.dark && analysis.face_labels[id] == Label::Hair;
         have_clothes |= assigned && face.bright && analysis.face_labels[id] == Label::Clothes && face.color[0] >= .78f;
-        have_skin |= assigned && analysis.face_labels[id] == Label::FaceSkin && warm_skin_appearance(face.color);
+        have_skin |= assigned &&
+            (analysis.face_labels[id] == Label::FaceSkin || analysis.face_labels[id] == Label::BodySkin) &&
+            warm_skin_appearance(face.color);
     }
     if (total_area <= 0 || (!have_hair && !have_clothes && !have_skin)) return;
 
@@ -708,12 +959,23 @@ void refine_material_patches(const MeshSnapshot& source, const Analysis& analysi
         fill_isolated_assigned_skin_holes(analysis,faces,neighbors,refined);
         fill_reliable_skin_shadow_holes(analysis,faces,skin_neighbors,neighbors,point_detail_barrier,
                                         diagonal*.012f,refined);
+        merge_isolated_skin_material_fragments(analysis,faces,palette_labs,neighbors,point_detail_barrier,refined);
+        fill_spatially_supported_unknown_skin(analysis,faces,palette_labs,diagonal*.0015f,refined);
     }
     protect_uncertain_contours(analysis,diagonal*.005f,neighbors,faces);
+    std::vector<uint8_t> protected_edge(count, 0);
+    for (const auto& edge : neighbors) for (const auto& side : {edge, std::make_pair(edge.second, edge.first)}) {
+        const Label label = analysis.face_labels[side.second];
+        if (analysis.face_confidence[side.second] >= minimum_confidence &&
+            (label == Label::FaceSkin || label == Label::BodySkin || label == Label::Hair || face_detail_label(label)))
+            protected_edge[side.first] = 1;
+    }
     neighbors.erase(std::remove_if(neighbors.begin(),neighbors.end(),[&](const auto& edge) {
         return !faces[edge.first].allowed || !faces[edge.second].allowed;
     }),neighbors.end());
     const SurfaceGraph graph(faces,neighbors);
+    if (have_clothes)
+        fill_supported_clothing_shadows(analysis,faces,palette_labs,graph,protected_edge,diagonal*.15f,refined);
     const auto local_hair=nearby_material_sources(analysis,faces,palette_labs,graph,Label::Hair,diagonal*.005f);
     const auto local_white=nearby_material_sources(analysis,faces,palette_labs,graph,Label::Clothes,diagonal*.005f);
     // Material borrowing cannot cross reliable clothing. Junction risk must

@@ -132,11 +132,14 @@ TEST_CASE("Deterministic midpoint subfaces survive MMU serialization", "[Triangl
         {1, 0, EnforcerBlockerType::Extruder2},
         // First child 1, then centre child 3.
         {2, uint8_t((1u << 2) | 3u), EnforcerBlockerType::Extruder3},
+        // Continue that branch into child 2 at the third level.
+        {3, uint8_t((1u << 4) | (3u << 2) | 2u), EnforcerBlockerType::Extruder4},
     };
     REQUIRE(selector.set_facet_midpoint_subfaces(0, EnforcerBlockerType::Extruder1, leaves));
     CHECK(selector.num_facets(EnforcerBlockerType::Extruder1) == 5);
     CHECK(selector.num_facets(EnforcerBlockerType::Extruder2) == 1);
-    CHECK(selector.num_facets(EnforcerBlockerType::Extruder3) == 1);
+    CHECK(selector.num_facets(EnforcerBlockerType::Extruder3) == 3);
+    CHECK(selector.num_facets(EnforcerBlockerType::Extruder4) == 1);
 
     const auto encoded = selector.serialize();
     TriangleSelector restored(mesh);
@@ -144,7 +147,8 @@ TEST_CASE("Deterministic midpoint subfaces survive MMU serialization", "[Triangl
     CHECK(restored.serialize() == encoded);
     CHECK(restored.num_facets(EnforcerBlockerType::Extruder1) == 5);
     CHECK(restored.num_facets(EnforcerBlockerType::Extruder2) == 1);
-    CHECK(restored.num_facets(EnforcerBlockerType::Extruder3) == 1);
+    CHECK(restored.num_facets(EnforcerBlockerType::Extruder3) == 3);
+    CHECK(restored.num_facets(EnforcerBlockerType::Extruder4) == 1);
 }
 
 TEST_CASE("Invalid midpoint subface input leaves the original facet unchanged", "[TriangleSelector][SubfaceColor]")
