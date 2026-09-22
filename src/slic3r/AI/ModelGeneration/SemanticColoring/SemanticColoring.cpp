@@ -1295,9 +1295,30 @@ FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, con
     std::vector<std::vector<size_t>> faces_at_vertex;
     if (six_color_portrait_context || (palette.size() <= 4 && count >= 256)) {
         faces_at_vertex.resize(source.mesh.vertices.size());
+        // Generated GLB meshes frequently duplicate vertex indices at UV/color
+        // seams. Merge exact positions before building semantic adjacency, or
+        // an eyelid face can appear disconnected from the eye region.
+        std::vector<size_t> vertex_order(source.mesh.vertices.size()), canonical(source.mesh.vertices.size());
+        std::iota(vertex_order.begin(), vertex_order.end(), 0);
+        std::sort(vertex_order.begin(), vertex_order.end(), [&](size_t lhs, size_t rhs) {
+            for (int axis = 0; axis < 3; ++axis) {
+                if (source.mesh.vertices[lhs][axis] < source.mesh.vertices[rhs][axis]) return true;
+                if (source.mesh.vertices[lhs][axis] > source.mesh.vertices[rhs][axis]) return false;
+            }
+            return lhs < rhs;
+        });
+        size_t previous = vertex_order.front(), canonical_id = previous;
+        for (size_t vertex : vertex_order) {
+            if (source.mesh.vertices[vertex] != source.mesh.vertices[previous]) canonical_id = vertex;
+            canonical[vertex] = canonical_id;
+            previous = vertex;
+        }
+        std::vector<std::vector<size_t>> canonical_faces(source.mesh.vertices.size());
         for (size_t id = 0; id < count; ++id)
             for (int corner = 0; corner < 3; ++corner)
-                faces_at_vertex[size_t(source.mesh.indices[id][corner])].push_back(id);
+                canonical_faces[canonical[size_t(source.mesh.indices[id][corner])]].push_back(id);
+        for (size_t vertex = 0; vertex < source.mesh.vertices.size(); ++vertex)
+            faces_at_vertex[vertex] = canonical_faces[canonical[vertex]];
     }
     for (const auto& region : eyebrow_regions) {
         std::vector<Sample> samples; samples.reserve(region.second.size());
