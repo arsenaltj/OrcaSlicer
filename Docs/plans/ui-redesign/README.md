@@ -99,6 +99,10 @@
 - 已新增 `RedesignFeatureFlags`、`RedesignCommandRegistry`、`RedesignStateStore` 和 `RedesignShell` 的最小基础层。
 - Feature Flag 默认关闭，当前未接管 `MainFrame` 或任何旧页面。
 - 已将基础层加入 `libslic3r_gui` 构建，并为命令注册表和状态快照增加 `[UiRedesign]` 自动测试。
-- Release 增量编译通过；`slic3rutils_tests.exe [UiRedesign]` 通过 3 个用例、16 个断言。
+- Release 增量编译通过；`slic3rutils_tests.exe [UiRedesign]` 通过 4 个用例、24 个断言。
 - 运行时 GUI 验收尚未执行；本轮没有启动主窗口，也没有改变旧 UI 的默认路径。
-- 下一步是补充 `OrcaBusinessAdapter`，然后在不改变旧路径的前提下接入一个可回退的 Shell 入口。
+- 已新增 `OrcaBusinessAdapter`，将项目、导入、保存、删除、撤销重做、重新切片和 G-code 导出映射到现有 `Plater` 公共 API。
+- 适配器不会注册打印机/材料/工艺选择、发送打印或后台切片取消，直到这些操作具备与旧 UI 等价的校验和生命周期语义。
+- 已完成 Windows x64 Release 增量构建；`OrcaSlicer.dll` 和 `slic3rutils_tests.exe` 已生成，构建同时通过了隔离 AI runtime 的 Pillow 校验。
+- 本轮验证源代码基线为提交 `7016255522` 及当前未提交适配器改动；主程序目标构建成功，但尚未启动主窗口，未执行 GUI 验收。
+- 下一步是在不改变旧路径的前提下接入一个可回退的 Shell 入口。

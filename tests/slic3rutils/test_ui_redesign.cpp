@@ -1,4 +1,5 @@
 #include "slic3r/GUI/Redesign/RedesignCommand.hpp"
+#include "slic3r/GUI/Redesign/OrcaBusinessAdapter.hpp"
 #include "slic3r/GUI/Redesign/RedesignState.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -63,4 +64,22 @@ TEST_CASE("Redesign state store publishes monotonic snapshots", "[UiRedesign]")
     CHECK(store.snapshot().revision == 2);
     CHECK(store.snapshot().slice_status == RedesignSliceStatus::Slicing);
     CHECK(notifications == 2);
+}
+
+TEST_CASE("Orca business adapter stays inert before it is attached", "[UiRedesign]")
+{
+    OrcaBusinessAdapter adapter;
+    RedesignCommandRegistry registry;
+
+    CHECK_FALSE(adapter.attached());
+    adapter.register_commands(registry);
+    CHECK(registry.size() == 0);
+
+    const RedesignStateSnapshot state = adapter.snapshot();
+    CHECK_FALSE(state.project_open);
+    CHECK_FALSE(state.project_dirty);
+    CHECK_FALSE(state.has_selection);
+    CHECK_FALSE(state.can_undo);
+    CHECK_FALSE(state.can_redo);
+    CHECK(state.slice_status == RedesignSliceStatus::Idle);
 }

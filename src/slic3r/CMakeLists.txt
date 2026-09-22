@@ -365,6 +365,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/Redesign/RedesignCommand.hpp
     GUI/Redesign/RedesignFeatureFlags.cpp
     GUI/Redesign/RedesignFeatureFlags.hpp
+    GUI/Redesign/OrcaBusinessAdapter.cpp
+    GUI/Redesign/OrcaBusinessAdapter.hpp
     GUI/Redesign/RedesignShell.cpp
     GUI/Redesign/RedesignShell.hpp
     GUI/Redesign/RedesignState.cpp
