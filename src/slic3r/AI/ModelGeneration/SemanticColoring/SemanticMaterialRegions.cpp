@@ -952,6 +952,8 @@ void refine_material_patches(const MeshSnapshot& source, const Analysis& analysi
     if (six_color_portrait_context) {
         six_color_base = refine_six_color_base(source, analysis, faces, topology_neighbors,
                                                 palette_labs, lower, upper, total_area, refined);
+    }
+    if (six_color_portrait_context || (palette.size() <= 4 && count >= 256)) {
         refine_six_color_dark_hair(analysis, faces, topology_neighbors, palette_labs,
                                    six_color_base, refined);
     }

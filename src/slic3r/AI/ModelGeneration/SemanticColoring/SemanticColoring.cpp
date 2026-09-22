@@ -1293,7 +1293,7 @@ FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, con
         if (analysis.face_labels[id] == Label::Eyebrow && analysis.face_confidence[id] >= minimum_confidence)
             eyebrow_regions[eyebrow_root(id)].push_back(id);
     std::vector<std::vector<size_t>> faces_at_vertex;
-    if (six_color_portrait_context) {
+    if (six_color_portrait_context || (palette.size() <= 4 && count >= 256)) {
         faces_at_vertex.resize(source.mesh.vertices.size());
         for (size_t id = 0; id < count; ++id)
             for (int corner = 0; corner < 3; ++corner)
@@ -1561,6 +1561,38 @@ FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, con
             }
             return best_slot;
         };
+        // Four-color views can carry the same oblique eye-mask leak as the
+        // six-color path. Correct a dark eye-labeled face only when warm skin
+        // is the stronger 3-D neighborhood, leaving real iris faces intact.
+        if (count >= 256) for (size_t id = 0; id < count; ++id) {
+            const Label label = analysis.face_labels[id];
+            if (analysis.face_confidence[id] < minimum_confidence ||
+                (label != Label::EyeSclera && label != Label::Iris)) continue;
+            const Color original = face_lab(source, id);
+            if (original[0] > .38f || chroma(original) > .12f) continue;
+            size_t skin_support = 0, eye_support = 0;
+            std::map<size_t, size_t> skin_votes;
+            bool hard_boundary = false;
+            for (int corner = 0; corner < 3; ++corner)
+                for (size_t neighbor : faces_at_vertex[size_t(source.mesh.indices[id][corner])]) {
+                    if (neighbor == id || analysis.face_confidence[neighbor] < minimum_confidence) continue;
+                    const Label neighbor_label = analysis.face_labels[neighbor];
+                    if (neighbor_label == Label::EyeSclera || neighbor_label == Label::Iris) {
+                        ++eye_support;
+                        continue;
+                    }
+                    hard_boundary |= neighbor_label == Label::Hair || neighbor_label == Label::Eyebrow ||
+                        neighbor_label == Label::Lips || neighbor_label == Label::MouthInterior;
+                    if ((neighbor_label != Label::FaceSkin && neighbor_label != Label::BodySkin) ||
+                        !warm_skin_appearance(face_lab(source, neighbor))) continue;
+                    const size_t target = choose_target(face_lab(source, neighbor), Label::FaceSkin);
+                    if (target < palette.size()) { ++skin_votes[target]; ++skin_support; }
+                }
+            if (hard_boundary || skin_support < 2 || skin_support <= eye_support || skin_votes.empty()) continue;
+            const auto best = std::max_element(skin_votes.begin(), skin_votes.end(),
+                [](const auto& lhs, const auto& rhs) { return lhs.second < rhs.second; });
+            if (best->second * 2 >= skin_support) assignments[id] = best->first;
+        }
         for (auto it = assignments.begin(); it != assignments.end();) {
             const size_t id = it->first;
             const Label label = analysis.face_labels[id];
