@@ -775,8 +775,11 @@ void refine_material_patches(const MeshSnapshot& source, const Analysis& analysi
     }
     if (total_area <= 0 || (!have_hair && !have_clothes && !have_skin)) return;
 
-    // Canonical IDs unify only exactly equal finite positions. No tolerance or
-    // spatial bridge joins overlapping layers.
+    // Generated portrait meshes frequently duplicate vertices at UV/color
+    // seams with tiny floating-point drift. Canonicalize near-identical
+    // positions at model scale so material boundaries remain connected across
+    // generators, while the normal and edge checks below still reject
+    // opposing sheets and non-manifold point contacts.
     std::vector<uint32_t> order(vertex_count), canonical(vertex_count);
     std::iota(order.begin(), order.end(), 0);
     const auto less_position = [&](uint32_t a, uint32_t b) {
@@ -787,10 +790,13 @@ void refine_material_patches(const MeshSnapshot& source, const Analysis& analysi
         return a < b;
     };
     std::sort(order.begin(), order.end(), less_position);
-    uint32_t previous = order.front(), canonical_id = previous;
+    const float seam_tolerance = std::max(diagonal * 1e-7f, 1e-6f);
+    const float seam_tolerance_squared = seam_tolerance * seam_tolerance;
+    uint32_t canonical_id = order.front();
     for (uint32_t vertex : order) {
-        if (source.mesh.vertices[vertex] != source.mesh.vertices[previous]) canonical_id = vertex;
-        canonical[vertex] = canonical_id; previous = vertex;
+        const Vec3f delta = source.mesh.vertices[vertex] - source.mesh.vertices[canonical_id];
+        if (delta.squaredNorm() > seam_tolerance_squared) canonical_id = vertex;
+        canonical[vertex] = canonical_id;
     }
     std::vector<Edge> edges; edges.reserve(count*3);
     std::vector<std::array<uint32_t,3>> triangles(count);

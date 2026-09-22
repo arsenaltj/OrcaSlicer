@@ -9,6 +9,7 @@
 #include <cmath>
 #include <fstream>
 #include <map>
+#include <numeric>
 #include <thread>
 
 namespace Slic3r::GUI {
@@ -218,6 +219,32 @@ struct ModelSemanticColoring::Impl {
                             // displayed target palette; enforce the same rule
                             // once more on the actual output colors.
                             std::vector<uint8_t> eye_vertices(source.mesh.vertices.size(), 0);
+                            std::vector<size_t> eye_canonical(source.mesh.vertices.size());
+                            std::iota(eye_canonical.begin(), eye_canonical.end(), 0);
+                            if (!source.mesh.vertices.empty()) {
+                                Vec3f lower = source.mesh.vertices.front(), upper = lower;
+                                for (const auto& vertex : source.mesh.vertices) {
+                                    lower = lower.cwiseMin(vertex);
+                                    upper = upper.cwiseMax(vertex);
+                                }
+                                const float seam_tolerance = std::max((upper - lower).norm() * 1e-7f, 1e-6f);
+                                const float seam_tolerance_squared = seam_tolerance * seam_tolerance;
+                                std::vector<size_t> vertex_order(source.mesh.vertices.size());
+                                std::iota(vertex_order.begin(), vertex_order.end(), 0);
+                                std::sort(vertex_order.begin(), vertex_order.end(), [&](size_t lhs, size_t rhs) {
+                                    for (int axis = 0; axis < 3; ++axis) {
+                                        if (source.mesh.vertices[lhs][axis] < source.mesh.vertices[rhs][axis]) return true;
+                                        if (source.mesh.vertices[lhs][axis] > source.mesh.vertices[rhs][axis]) return false;
+                                    }
+                                    return lhs < rhs;
+                                });
+                                size_t canonical_id = vertex_order.front();
+                                for (size_t vertex : vertex_order) {
+                                    const Vec3f delta = source.mesh.vertices[vertex] - source.mesh.vertices[canonical_id];
+                                    if (delta.squaredNorm() > seam_tolerance_squared) canonical_id = vertex;
+                                    eye_canonical[vertex] = canonical_id;
+                                }
+                            }
                             for (size_t face_id = 0; face_id < analysis->face_labels.size(); ++face_id) {
                                 const auto label = analysis->face_labels[face_id];
                                 if (label != SC::Label::EyeSclera && label != SC::Label::Iris &&
@@ -225,7 +252,7 @@ struct ModelSemanticColoring::Impl {
                                 if (face_id >= source.mesh.indices.size()) continue;
                                 for (int corner = 0; corner < 3; ++corner) {
                                     const int vertex = source.mesh.indices[face_id][corner];
-                                    if (vertex >= 0 && size_t(vertex) < eye_vertices.size()) eye_vertices[size_t(vertex)] = 1;
+                                    if (vertex >= 0 && size_t(vertex) < eye_vertices.size()) eye_vertices[eye_canonical[size_t(vertex)]] = 1;
                                 }
                             }
                             const auto eye_zone_face = [&](size_t face_id) {
@@ -237,7 +264,7 @@ struct ModelSemanticColoring::Impl {
                                     label == SC::Label::Lips) return false;
                                 for (int corner = 0; corner < 3; ++corner) {
                                     const int vertex = source.mesh.indices[face_id][corner];
-                                    if (vertex >= 0 && size_t(vertex) < eye_vertices.size() && eye_vertices[size_t(vertex)]) return true;
+                                    if (vertex >= 0 && size_t(vertex) < eye_vertices.size() && eye_vertices[eye_canonical[size_t(vertex)]]) return true;
                                 }
                                 return false;
                             };

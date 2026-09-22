@@ -1179,6 +1179,35 @@ FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, con
     const auto topology_label = [](Label label) {
         return label == Label::Eyebrow ? Label::FaceSkin : label;
     };
+    const bool build_seam_adjacency = six_color_portrait_context || (palette.size() <= 4 && count >= 256);
+    std::vector<size_t> canonical_vertex;
+    if (build_seam_adjacency) {
+        canonical_vertex.resize(source.mesh.vertices.size());
+        std::vector<size_t> vertex_order(source.mesh.vertices.size());
+        std::iota(vertex_order.begin(), vertex_order.end(), 0);
+        Vec3f lower = source.mesh.vertices.front(), upper = lower;
+        for (const auto& vertex : source.mesh.vertices) {
+            lower = lower.cwiseMin(vertex);
+            upper = upper.cwiseMax(vertex);
+        }
+        // Keep the collar below the smallest deliberate shell gap used by
+        // generated meshes; this still absorbs normal float32 seam drift.
+        const float seam_tolerance = std::max((upper - lower).norm() * 1e-7f, 1e-6f);
+        const float seam_tolerance_squared = seam_tolerance * seam_tolerance;
+        std::sort(vertex_order.begin(), vertex_order.end(), [&](size_t lhs, size_t rhs) {
+            for (int axis = 0; axis < 3; ++axis) {
+                if (source.mesh.vertices[lhs][axis] < source.mesh.vertices[rhs][axis]) return true;
+                if (source.mesh.vertices[lhs][axis] > source.mesh.vertices[rhs][axis]) return false;
+            }
+            return lhs < rhs;
+        });
+        size_t canonical_id = vertex_order.front();
+        for (size_t vertex : vertex_order) {
+            const Vec3f delta = source.mesh.vertices[vertex] - source.mesh.vertices[canonical_id];
+            if (delta.squaredNorm() > seam_tolerance_squared) canonical_id = vertex;
+            canonical_vertex[vertex] = canonical_id;
+        }
+    }
     // Connected semantic regions share prototypes, but never share centers with
     // a different material label. Reuse of one physical filament is permitted.
     std::vector<size_t> parent(count); std::iota(parent.begin(), parent.end(), 0);
@@ -1192,8 +1221,9 @@ FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, con
             if (size_t(topology_label(analysis.face_labels[id])) != label || analysis.face_confidence[id] < minimum_confidence) continue;
             for (int corner = 0; corner < 3; ++corner) {
                 const int vertex = source.mesh.indices[id][corner];
-                if (first[vertex] == count) first[vertex] = id;
-                else { const size_t a = root(first[vertex]), b = root(id); if (a != b) parent[b] = a; }
+                const size_t adjacency_vertex = canonical_vertex.empty() ? size_t(vertex) : canonical_vertex[size_t(vertex)];
+                if (first[adjacency_vertex] == count) first[adjacency_vertex] = id;
+                else { const size_t a = root(first[adjacency_vertex]), b = root(id); if (a != b) parent[b] = a; }
             }
         }
     }
@@ -1281,9 +1311,10 @@ FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, con
         if (analysis.face_labels[id] != Label::Eyebrow || analysis.face_confidence[id] < minimum_confidence) continue;
         for (int corner = 0; corner < 3; ++corner) {
             const int vertex = source.mesh.indices[id][corner];
-            if (first[vertex] == count) first[vertex] = id;
+            const size_t adjacency_vertex = canonical_vertex.empty() ? size_t(vertex) : canonical_vertex[size_t(vertex)];
+            if (first[adjacency_vertex] == count) first[adjacency_vertex] = id;
             else {
-                const size_t a = eyebrow_root(first[vertex]), b = eyebrow_root(id);
+                const size_t a = eyebrow_root(first[adjacency_vertex]), b = eyebrow_root(id);
                 if (a != b) eyebrow_parent[b] = a;
             }
         }
@@ -1293,32 +1324,18 @@ FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, con
         if (analysis.face_labels[id] == Label::Eyebrow && analysis.face_confidence[id] >= minimum_confidence)
             eyebrow_regions[eyebrow_root(id)].push_back(id);
     std::vector<std::vector<size_t>> faces_at_vertex;
-    if (six_color_portrait_context || (palette.size() <= 4 && count >= 256)) {
+    if (build_seam_adjacency) {
         faces_at_vertex.resize(source.mesh.vertices.size());
         // Generated GLB meshes frequently duplicate vertex indices at UV/color
-        // seams. Merge exact positions before building semantic adjacency, or
-        // an eyelid face can appear disconnected from the eye region.
-        std::vector<size_t> vertex_order(source.mesh.vertices.size()), canonical(source.mesh.vertices.size());
-        std::iota(vertex_order.begin(), vertex_order.end(), 0);
-        std::sort(vertex_order.begin(), vertex_order.end(), [&](size_t lhs, size_t rhs) {
-            for (int axis = 0; axis < 3; ++axis) {
-                if (source.mesh.vertices[lhs][axis] < source.mesh.vertices[rhs][axis]) return true;
-                if (source.mesh.vertices[lhs][axis] > source.mesh.vertices[rhs][axis]) return false;
-            }
-            return lhs < rhs;
-        });
-        size_t previous = vertex_order.front(), canonical_id = previous;
-        for (size_t vertex : vertex_order) {
-            if (source.mesh.vertices[vertex] != source.mesh.vertices[previous]) canonical_id = vertex;
-            canonical[vertex] = canonical_id;
-            previous = vertex;
-        }
+        // seams. Merge near-identical positions before building semantic
+        // adjacency, or an eyelid face can appear disconnected from the eye
+        // region when a different generator introduces tiny float drift.
         std::vector<std::vector<size_t>> canonical_faces(source.mesh.vertices.size());
         for (size_t id = 0; id < count; ++id)
             for (int corner = 0; corner < 3; ++corner)
-                canonical_faces[canonical[size_t(source.mesh.indices[id][corner])]].push_back(id);
+                canonical_faces[canonical_vertex[size_t(source.mesh.indices[id][corner])]].push_back(id);
         for (size_t vertex = 0; vertex < source.mesh.vertices.size(); ++vertex)
-            faces_at_vertex[vertex] = canonical_faces[canonical[vertex]];
+            faces_at_vertex[vertex] = canonical_faces[canonical_vertex[vertex]];
     }
     for (const auto& region : eyebrow_regions) {
         std::vector<Sample> samples; samples.reserve(region.second.size());
