@@ -1327,6 +1327,15 @@ FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, con
         const bool supported_brow = skin_support >= 2 && skin_support >= hair_support && !skin_centers.empty();
         const size_t skin_target = supported_brow ? choose_target(skin_centers.front(), Label::FaceSkin) : palette.size();
         for (size_t id : region.second) {
+            size_t local_skin = 0, local_hair = 0;
+            for (int corner = 0; corner < 3; ++corner)
+                for (size_t neighbor : faces_at_vertex[size_t(source.mesh.indices[id][corner])]) {
+                    if (neighbor == id || analysis.face_confidence[neighbor] < minimum_confidence) continue;
+                    if (analysis.face_labels[neighbor] == Label::FaceSkin ||
+                        analysis.face_labels[neighbor] == Label::BodySkin) ++local_skin;
+                    else if (analysis.face_labels[neighbor] == Label::Hair) ++local_hair;
+                }
+            if (local_hair > 0 && local_skin <= local_hair) continue;
             const Color original = face_lab(source, id);
             if (supported_brow && natural_dark_hair(original)) output.emplace_back(id, palette[target]);
             else if (supported_brow && skin_target < palette.size() &&
@@ -1337,6 +1346,20 @@ FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, con
     extend_hair_edges(source, analysis, hair_seeds, palette, output);
     refine_material_patches(source, analysis, palette, portrait_card, output);
     if (six_color_portrait_context) {
+        const auto brow_boundary_supported = [&](size_t face_id) {
+            size_t skin_neighbors = 0, hair_neighbors = 0;
+            for (int corner = 0; corner < 3; ++corner)
+                for (size_t neighbor : faces_at_vertex[size_t(source.mesh.indices[face_id][corner])]) {
+                    if (neighbor == face_id || analysis.face_confidence[neighbor] < minimum_confidence) continue;
+                    if (analysis.face_labels[neighbor] == Label::FaceSkin ||
+                        analysis.face_labels[neighbor] == Label::BodySkin) ++skin_neighbors;
+                    else if (analysis.face_labels[neighbor] == Label::Hair) ++hair_neighbors;
+                }
+            // The outer brow edge may share a vertex with the hair mask. Keep
+            // only faces with stronger local skin support; this trims the
+            // hair-connected tail without removing the supported brow core.
+            return hair_neighbors == 0 || skin_neighbors > hair_neighbors;
+        };
         std::map<size_t, size_t> assignments;
         for (const auto& item : output) {
             const auto found = std::find(palette.begin(), palette.end(), item.second);
@@ -1350,6 +1373,11 @@ FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, con
             if (!facial || !red_accent(palette_labs[item.second])) continue;
             const size_t replacement = choose_target(face_lab(source, item.first), label);
             if (replacement < palette.size()) item.second = replacement;
+        }
+        for (auto item = assignments.begin(); item != assignments.end();) {
+            if (analysis.face_labels[item->first] == Label::Eyebrow && !brow_boundary_supported(item->first))
+                item = assignments.erase(item);
+            else ++item;
         }
         for (size_t id = 0; id < count; ++id) {
             if (analysis.face_confidence[id] < minimum_confidence || assignments.count(id) != 0) continue;
@@ -1374,6 +1402,39 @@ FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, con
             if (!touches_eye || !warm_skin_appearance(original)) continue;
             const size_t target = choose_target(original, Label::FaceSkin);
             if (target < palette.size()) assignments[id] = target;
+        }
+        // A dark nose-root island can be classified as Unknown or can already
+        // carry the dark filament assignment before material refinement. Recover
+        // it only with a majority of adjacent, reliable warm skin donors and
+        // never across hair or eye-detail boundaries.
+        for (size_t id = 0; id < count; ++id) {
+            const Label label = analysis.face_labels[id];
+            if (analysis.face_confidence[id] < minimum_confidence ||
+                (label != Label::FaceSkin && label != Label::BodySkin && label != Label::Unknown) ||
+                !brow_boundary_supported(id)) continue;
+            const Color original = face_lab(source, id);
+            if (original[0] > .38f || chroma(original) > .12f) continue;
+            std::map<size_t, size_t> skin_votes;
+            size_t skin_support = 0;
+            bool detail_boundary = false;
+            for (int corner = 0; corner < 3; ++corner)
+                for (size_t neighbor : faces_at_vertex[size_t(source.mesh.indices[id][corner])]) {
+                    const Label neighbor_label = analysis.face_labels[neighbor];
+                    if (neighbor_label == Label::Hair || neighbor_label == Label::EyeSclera ||
+                        neighbor_label == Label::Iris || neighbor_label == Label::Eyebrow ||
+                        neighbor_label == Label::Lips || neighbor_label == Label::MouthInterior)
+                        detail_boundary = true;
+                    if (analysis.face_confidence[neighbor] < minimum_confidence ||
+                        (neighbor_label != Label::FaceSkin && neighbor_label != Label::BodySkin) ||
+                        !warm_skin_appearance(face_lab(source, neighbor))) continue;
+                    const size_t target = choose_target(face_lab(source, neighbor), Label::FaceSkin);
+                    if (target < palette.size()) { ++skin_votes[target]; ++skin_support; }
+                }
+            if (detail_boundary || skin_support < 3 || skin_votes.empty()) continue;
+            const auto best = std::max_element(skin_votes.begin(), skin_votes.end(),
+                [](const auto& lhs, const auto& rhs) { return lhs.second < rhs.second; });
+            if (best->second * 2 < skin_support) continue;
+            assignments[id] = best->first;
         }
         output.clear();
         output.reserve(assignments.size());
@@ -1693,7 +1754,18 @@ bool map_subface_palette(const MeshSnapshot& source, const Analysis& analysis, c
     std::vector<std::vector<size_t>> faces_at_vertex(source.mesh.vertices.size());
     for (size_t face_id = 0; face_id < count; ++face_id)
         for (int corner = 0; corner < 3; ++corner)
-            faces_at_vertex[source.mesh.indices[face_id][corner]].push_back(face_id);
+                faces_at_vertex[source.mesh.indices[face_id][corner]].push_back(face_id);
+    const auto eyebrow_leaf_boundary_supported = [&](size_t face_id) {
+        size_t skin_neighbors = 0, hair_neighbors = 0;
+        for (int corner = 0; corner < 3; ++corner)
+            for (size_t neighbor : faces_at_vertex[source.mesh.indices[face_id][corner]]) {
+                if (neighbor == face_id || analysis.face_confidence[neighbor] < minimum_confidence) continue;
+                if (analysis.face_labels[neighbor] == Label::FaceSkin ||
+                    analysis.face_labels[neighbor] == Label::BodySkin) ++skin_neighbors;
+                else if (analysis.face_labels[neighbor] == Label::Hair) ++hair_neighbors;
+            }
+        return hair_neighbors == 0 || skin_neighbors > hair_neighbors;
+    };
 
     // A geometric eye mask can extend onto pale skin in an oblique view. Build
     // one robust material center from reliable whole-face sclera, then allow
@@ -1837,7 +1909,8 @@ bool map_subface_palette(const MeshSnapshot& source, const Analysis& analysis, c
             }
         } else if (evidence.label == Label::Iris || evidence.label == Label::Eyebrow) {
             if (six_color_portrait_context && evidence.label == Label::Eyebrow &&
-                analysis.face_labels[evidence.face_id] == Label::Hair) continue;
+                (analysis.face_labels[evidence.face_id] == Label::Hair ||
+                 !eyebrow_leaf_boundary_supported(evidence.face_id))) continue;
             if (evidence.label == Label::Eyebrow && !natural_dark_hair(source_color)) continue;
             if (has_card && evidence.label == Label::Iris) {
                 // A portrait card has no dedicated brown-eye slot. Preserve a

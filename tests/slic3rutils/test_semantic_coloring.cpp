@@ -1046,6 +1046,42 @@ TEST_CASE("Full-size six-color portraits keep eye materials off the lip slot whi
     CHECK(std::find(six.begin(),six.end(),six_assignments.at(0))!=six.end());
 }
 
+TEST_CASE("Six-color portrait restores a dark nose-root island from a majority of adjacent skin",
+          "[SemanticColoring][Regression][SixColor][FaceSkin]")
+{
+    std::vector<Color> colors(256,{.46f,.46f,.46f});
+    colors[0]={.12f,.11f,.11f};
+    for (size_t id=1; id<9; ++id) colors[id]={.74f,.50f,.42f};
+    const auto source=connected_triangles(colors);
+    std::vector<Label> labels(256,Label::Background);
+    labels[0]=Label::Unknown;
+    for (size_t id=1; id<9; ++id) labels[id]=Label::FaceSkin;
+    const auto analysis=labeled(source,labels);
+    const auto card=portrait_card();
+    const auto output=map_palette(source,analysis,card,card);
+    const auto found=std::find_if(output.begin(),output.end(),[](const auto& item) { return item.first==0; });
+    REQUIRE(found!=output.end());
+    CHECK(found->second==card[0]);
+}
+
+TEST_CASE("Six-color portrait drops a brow tail whose local support is dominated by hair",
+          "[SemanticColoring][Regression][SixColor][EyebrowColor]")
+{
+    std::vector<Color> colors(256,{.46f,.46f,.46f});
+    colors[0]={.18f,.17f,.17f};
+    for (size_t id=1; id<3; ++id) colors[id]={.74f,.50f,.42f};
+    for (size_t id=3; id<6; ++id) colors[id]={.12f,.11f,.12f};
+    const auto source=connected_triangles(colors);
+    std::vector<Label> labels(256,Label::Background);
+    labels[0]=Label::Eyebrow;
+    labels[1]=labels[2]=Label::FaceSkin;
+    labels[3]=labels[4]=labels[5]=Label::Hair;
+    const auto analysis=labeled(source,labels);
+    const auto card=portrait_card();
+    const auto output=map_palette(source,analysis,card,card);
+    CHECK(std::none_of(output.begin(),output.end(),[](const auto& item) { return item.first==0; }));
+}
+
 TEST_CASE("Named portrait cards do not turn gray lips pink or gray clothes white", "[SemanticColoring][Regression]")
 {
     const auto source = triangles({{.48f,.48f,.48f}, {.48f,.48f,.48f}, {.13f,.11f,.10f}});
