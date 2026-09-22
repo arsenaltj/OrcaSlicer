@@ -361,6 +361,14 @@ set(SLIC3R_GUI_SOURCES
     GUI/AI/AIDesktopFeatureHost.hpp
     GUI/AI/SmartSlicing/SmartSlicingFeatureHost.cpp
     GUI/AI/SmartSlicing/SmartSlicingFeatureHost.hpp
+    GUI/Redesign/RedesignCommand.cpp
+    GUI/Redesign/RedesignCommand.hpp
+    GUI/Redesign/RedesignFeatureFlags.cpp
+    GUI/Redesign/RedesignFeatureFlags.hpp
+    GUI/Redesign/RedesignShell.cpp
+    GUI/Redesign/RedesignShell.hpp
+    GUI/Redesign/RedesignState.cpp
+    GUI/Redesign/RedesignState.hpp
     GUI/AI/Model/VertexColorRegionEditor.hpp GUI/AI/Model/ModelArtifact.cpp GUI/AI/Model/ModelArtifact.hpp GUI/AI/Model/GlbGeometryEditing.cpp
     GUI/AIModelGenerationClient.cpp
     GUI/AIModelGenerationClient.hpp
