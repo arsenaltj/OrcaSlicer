@@ -1,6 +1,7 @@
 #include "slic3r/GUI/ModelGenerationPanel.hpp"
 #include "ModelGenerationPresentation.hpp"
 #include "ModelPreview3D.hpp"
+#include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/GUI_Utils.hpp"
 #include "slic3r/GUI/I18N.hpp"
@@ -429,10 +430,10 @@ void ModelGenerationPanel::preview_model_finishing()
     AI::ModelFinishingOptions options {!cleanup && !recolor && m_finishing_smooth->GetValue(), !local && m_finishing_repair->GetValue(), m_finishing_strength->GetValue() / 100.0};
     options.clean_color_spots = cleanup;
     options.recolor_selected = recolor;
-    if (AI::model_artifact_format(source) == "glb" && (options.repair_mesh || cleanup)) {
+    if (AI::model_artifact_format(source) == "glb" && cleanup) {
         m_finishing_status->SetLabel(cleanup
             ? _L("GLB 的保真保存暂不支持清理杂点。可圈选后统一这块颜色，并保留原版用于对照。")
-            : _L("为保留 GLB 原始贴图，请在这里选择表面柔化。需要修复网格时，可先导入准备页，再使用修复功能。"));
+            : _L("为保留 GLB 原始贴图，清理杂点请在准备页使用局部改色。"));
         wrap_workbench_text(m_finishing_status, FromDIP(260));
         m_finishing_panel->Layout();
         return;
@@ -508,7 +509,9 @@ void ModelGenerationPanel::preview_model_finishing()
         m_model_preview->restore_color_trial(color_state);
     };
     m_finishing_id = "finish-" + new_request_id();
-    const auto destination = source.parent_path() / temp_path(m_finishing_id, AI::model_artifact_format(source)).filename();
+    const bool repair_glb_as_obj = options.repair_mesh && AI::model_artifact_format(source) == "glb";
+    const auto destination = source.parent_path() / temp_path(
+        m_finishing_id, repair_glb_as_obj ? "obj" : AI::model_artifact_format(source)).filename();
     m_finishing_canceled = std::make_shared<std::atomic<bool>>(false);
     const auto canceled = m_finishing_canceled;
     m_finishing_running = true; m_busy = true;
@@ -518,8 +521,29 @@ void ModelGenerationPanel::preview_model_finishing()
     wxWeakRef<ModelGenerationPanel> weak(this);
     const uint64_t sequence = m_sequence;
     try {
-      m_finishing_worker = std::thread([weak, source, destination, options, canceled, sequence, color_state, intent_changed, face_overrides = std::move(face_overrides)] {
-        const auto result = AI::finish_model_artifact(source, destination, options, [canceled] { return canceled->load(); });
+      m_finishing_worker = std::thread([weak, source, destination, options, canceled, sequence, color_state, intent_changed,
+                                        repair_glb_as_obj, face_overrides = std::move(face_overrides)] {
+        boost::filesystem::path repair_source;
+        AI::ModelFinishingResult result;
+        try {
+            const auto canceled_fn = [canceled] { return canceled->load(); };
+            const boost::filesystem::path actual_source = [&]() {
+                if (!repair_glb_as_obj) return source;
+                repair_source = source.parent_path() / (".repair-source-" + new_request_id() + ".obj");
+                TriangleMesh mesh; ObjInfo colors; std::string error;
+                if (!AI::load_model_artifact(source, mesh, colors, error) ||
+                    !AI::write_model_artifact(repair_source, mesh.its, colors.vertex_colors, error))
+                    throw std::runtime_error(error.empty() ? "Unable to prepare the GLB repair source." : error);
+                return repair_source;
+            }();
+            result = AI::finish_model_artifact(actual_source, destination, options, canceled_fn);
+        } catch (const std::exception& error) {
+            result.error = error.what();
+        }
+        if (!repair_source.empty()) {
+            boost::system::error_code ignored;
+            boost::filesystem::remove(repair_source, ignored);
+        }
         auto prepared = std::make_shared<ModelPreview3D::PreparedModel>();
         std::string preview_error;
         if (result.success && (result.changed() || intent_changed) && !canceled->load()) {

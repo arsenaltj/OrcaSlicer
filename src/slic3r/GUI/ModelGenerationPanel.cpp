@@ -876,6 +876,9 @@ wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
                                    wxDefaultPosition, wxSize(-1, FromDIP(38)));
     m_import = new wxButton(action_panel, wxID_ANY, _L("导入到准备页"),
                             wxDefaultPosition, wxSize(-1, FromDIP(38)));
+    m_import_for_repair = new wxButton(action_panel, wxID_ANY, _L("先修复网格"),
+                                       wxDefaultPosition, wxSize(-1, FromDIP(38)));
+    m_import_for_repair->SetToolTip(_L("留在当前 3D 页面生成修复候选；接受后继续试色和上色，最后再导入准备页。"));
     m_discard = new wxButton(action_panel, wxID_ANY, _L("重新开始"),
                              wxDefaultPosition, wxSize(-1, FromDIP(38)));
     action_buttons->Add(m_preprocess, 1, wxRIGHT, FromDIP(8));
@@ -883,6 +886,7 @@ wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
     action_buttons->Add(m_stop, 1, wxRIGHT, FromDIP(8));
     action_buttons->Add(m_retry_service, 1, wxRIGHT, FromDIP(8));
     action_buttons->Add(m_import, 1, wxRIGHT, FromDIP(8));
+    action_buttons->Add(m_import_for_repair, 1, wxRIGHT, FromDIP(8));
     action_buttons->Add(m_discard, 0);
     action_panel_sizer->Add(action_buttons, 0, wxEXPAND | wxALL, FromDIP(12));
     auto* back_to_prepare = new wxButton(action_panel, wxID_ANY, _L("返回当前工程 · 准备页"));
@@ -939,6 +943,7 @@ wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
     m_stop->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_stop, this);
     m_retry_service->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_retry_service, this);
     m_import->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_import, this);
+    m_import_for_repair->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_import_for_repair, this);
     m_discard->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_discard, this);
     open_diagnostics->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         const boost::filesystem::path log_directory = boost::filesystem::path(Slic3r::data_dir()) / "log";
@@ -1110,9 +1115,12 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     m_front_model_view->SetToolTip(_L("恢复规范正面并自动适应画布大小"));
     m_reset_model_view = new wxButton(model_card, wxID_ANY, _L("三维视角"));
     m_reset_model_view->SetToolTip(_L("恢复便于检查侧面和底座的三维观察角度"));
+    m_model_repair_entry = new wxButton(model_card, wxID_ANY, _L("先修复网格"));
+    m_model_repair_entry->SetToolTip(_L("先修复网格，再进行区域配色；不会修改当前原始模型。"));
     model_toolbar->Add(m_model_stats, 1, wxALIGN_CENTER_VERTICAL);
     model_toolbar->Add(m_front_model_view, 0, wxLEFT, FromDIP(8));
     model_toolbar->Add(m_reset_model_view, 0, wxLEFT, FromDIP(6));
+    model_toolbar->Add(m_model_repair_entry, 0, wxLEFT, FromDIP(6));
     model_card_sizer->Add(model_toolbar, 0, wxEXPAND | wxALL, FromDIP(10));
     m_finishing_compare_model = new wxButton(model_card, wxID_ANY, _L("查看处理前"));
     m_finishing_compare_model->Hide();
@@ -1120,6 +1128,7 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     m_model_preview = new ModelPreview3D(model_card);
     m_model_preview->SetMinSize(wxSize(FromDIP(420), FromDIP(280)));
     model_card_sizer->Add(m_model_preview, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
+    m_model_repair_entry->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_import_for_repair, this);
     model_card->SetSizer(model_card_sizer);
     comparison_sizer->Add(model_card, 5, wxEXPAND | wxRIGHT, FromDIP(10));
     comparison_sizer->Add(m_preview_area, 4, wxEXPAND);
@@ -2189,6 +2198,21 @@ void ModelGenerationPanel::on_import(wxCommandEvent&)
     }
     download_and_import();
 }
+
+void ModelGenerationPanel::on_import_for_repair(wxCommandEvent&)
+{
+    if (m_finishing_running || !m_finishing_candidate.empty() || m_busy || !m_model_preview_ready)
+        return;
+    // Repair is a local candidate operation. Keep the generated model on this
+    // page so the user can inspect it and apply color before importing.
+    m_finishing_tool->SetSelection(3);
+    m_finishing_smooth->SetValue(false);
+    m_finishing_repair->SetValue(true);
+    set_finishing_workbench(true);
+    m_finishing_status->SetLabel(_L("已进入网格修复工作台；点击“预览处理效果”生成候选，接受后可继续试色并最终导入准备页。"));
+    m_status->SetLabel(m_finishing_status->GetLabel());
+    refresh_controls();
+}
 void ModelGenerationPanel::on_poll(wxTimerEvent&) { schedule_poll(); }
 
 void ModelGenerationPanel::handle_error(const std::string& error, uint64_t sequence)
@@ -2976,6 +3000,10 @@ void ModelGenerationPanel::refresh_controls()
     m_import->SetToolTip(m_visual_quality.available && !m_visual_quality.import_recommended
                              ? _L("外观检查仅供参考，可继续导入；请对照原图确认效果。")
                              : wxString());
+    m_import_for_repair->SetLabel(_L("先修复网格"));
+    m_import_for_repair->SetToolTip(_L("留在当前 3D 页面生成修复候选；接受后继续试色，最后再导入准备页。"));
+    m_model_repair_entry->SetLabel(_L("先修复网格"));
+    m_model_repair_entry->SetToolTip(_L("留在当前 3D 页面生成修复候选；接受后继续试色，最后再导入准备页。"));
     m_discard->SetLabel(_L("重新开始"));
     m_clear_image->Show(image_input);
     m_upload_notice->Show(image_input);
@@ -3029,6 +3057,10 @@ void ModelGenerationPanel::refresh_controls()
     m_import->Enable((local_artifact || m_service_available) && !busy &&
                      m_ready && !stale_job &&
                      (m_model_preview_ready || !m_artifact_download_started));
+    m_import_for_repair->Enable(!busy && !stale_job &&
+                                m_model_preview_ready);
+    m_model_repair_entry->Enable(!busy && !stale_job &&
+                                 m_model_preview_ready);
     m_recheck_model->Enable(m_service_available && !busy && !m_quality_check_busy && !m_visual_check_busy &&
                             m_model_preview_ready && !m_displayed_model_job_id.empty());
     m_visual_review_model->Enable(m_service_available && !busy && !m_quality_check_busy && !m_visual_check_busy &&
@@ -3051,6 +3083,10 @@ void ModelGenerationPanel::refresh_controls()
     m_stop->Show(busy && !m_saving_generation_options);
     m_retry_service->Show(!m_service_available && !busy);
     m_import->Show(!busy && m_ready && !stale_job);
+    m_import_for_repair->Show(!busy && !stale_job &&
+                              m_model_preview_ready && !m_finishing_workbench);
+    m_model_repair_entry->Show(!busy && !stale_job &&
+                               m_model_preview_ready && !m_finishing_workbench);
     m_discard->Show(!busy && has_restartable_work);
     if (!busy && ((m_job_id.empty() && !m_ready) || stale_job))
         update_progress(0, 1, _L("输入"));

@@ -77,6 +77,7 @@ private:
     void on_retexture_from_library(const std::string& geometry_job_id, const wxString& title);
     void on_stop(wxCommandEvent& event);
     void on_import(wxCommandEvent& event);
+    void on_import_for_repair(wxCommandEvent& event);
     void on_recheck_model(wxCommandEvent& event);
     void on_visual_review_model(wxCommandEvent& event);
     void on_retry_service(wxCommandEvent& event);
@@ -385,6 +386,8 @@ private:
     wxGauge*        m_generation_progress { nullptr };
     wxStaticText*   m_status { nullptr };
     wxButton*       m_import { nullptr };
+    wxButton*       m_import_for_repair { nullptr };
+    wxButton*       m_model_repair_entry { nullptr };
     wxButton*       m_discard { nullptr };
     wxScrolledWindow* m_preview_area { nullptr };
     wxScrolledWindow* m_library_scroller { nullptr };
