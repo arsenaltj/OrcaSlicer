@@ -1547,8 +1547,9 @@ FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, con
                 assignments[item.first] = size_t(found - palette.begin());
         }
         for (size_t id = 0; id < count; ++id) {
-            if (assignments.count(id) != 0 || analysis.face_confidence[id] < minimum_confidence) continue;
+            if (assignments.count(id) != 0) continue;
             const Label label = analysis.face_labels[id];
+            if (analysis.face_confidence[id] < minimum_confidence && label != Label::Unknown) continue;
             if (label == Label::Lips || label == Label::Hair || label == Label::Clothes ||
                 label == Label::Accessories || !red_accent(face_lab(source, id))) continue;
             bool eye_zone = label == Label::EyeSclera || label == Label::Iris || label == Label::Eyebrow;
@@ -1659,8 +1660,9 @@ FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, con
         // baked red source color. Cover only red, non-lip faces in the eye
         // neighborhood; this is the missing path for thin eyelid fragments.
         if (count >= 256) for (size_t id = 0; id < count; ++id) {
-            if (assignments.count(id) != 0 || analysis.face_confidence[id] < minimum_confidence) continue;
+            if (assignments.count(id) != 0) continue;
             const Label label = analysis.face_labels[id];
+            if (analysis.face_confidence[id] < minimum_confidence && label != Label::Unknown) continue;
             if (label == Label::Lips || label == Label::Hair || label == Label::Clothes ||
                 label == Label::Accessories || !red_accent(face_lab(source, id))) continue;
             bool eye_zone = label == Label::EyeSclera || label == Label::Iris || label == Label::Eyebrow;
