@@ -589,7 +589,12 @@ RenderedView render_region(const MeshSnapshot& source, float yaw_degrees, const 
         const Vec3f normal = (source.mesh.vertices[f[1]] - source.mesh.vertices[f[0]])
             .cross(source.mesh.vertices[f[2]] - source.mesh.vertices[f[0]]);
         if (normal.squaredNorm() <= 1e-18f) continue;
-        result.facing[face] = std::max(.05f, std::abs(normal.normalized().dot(direction)));
+        // Grazing triangles are unstable under the raster projection: a tiny
+        // camera move can make an edge face win the z-buffer and import the
+        // color mask from a neighboring material. Keep the actual geometric
+        // facing value (rather than a .05 floor) so analysis can reject these
+        // samples consistently and let surface expansion handle the gap.
+        result.facing[face] = std::abs(normal.normalized().dot(direction));
         const int left = std::max(0, int(std::floor(std::min({a.x(), b.x(), c.x()}))));
         const int right_pixel = std::min(image_size - 1, int(std::ceil(std::max({a.x(), b.x(), c.x()}))));
         const int top = std::max(0, int(std::floor(std::min({a.y(), b.y(), c.y()}))));
@@ -788,6 +793,7 @@ Analysis analyze_with_face_roi_size(const MeshSnapshot& source, IBodyRegionRecog
             }
             for (size_t pixel = 0; pixel < view.face_ids.size(); ++pixel) {
                 const uint32_t id = view.face_ids[pixel]; if (id == no_face) continue;
+                if (view.facing[id] < .15f) continue;
                 const float weight = view.facing[id]; weights[id] += weight;
                 votes[id][size_t(prediction.labels[pixel])] += weight * prediction.confidence[pixel];
             }
@@ -821,6 +827,7 @@ Analysis analyze_with_face_roi_size(const MeshSnapshot& source, IBodyRegionRecog
                 std::unordered_map<uint64_t, LeafVotes> view_leaf_votes;
                 for (size_t pixel = 0; pixel < crop.face_ids.size(); ++pixel) {
                     const uint32_t id = crop.face_ids[pixel]; if (id == no_face) continue;
+                    if (crop.facing[id] < .15f) continue;
                     const float weight = crop.facing[id];
                     if (view_detail_weights[id] == 0.f) view_detail_faces.push_back(id);
                     view_detail_weights[id] += weight; detail_weights[id] += weight;
