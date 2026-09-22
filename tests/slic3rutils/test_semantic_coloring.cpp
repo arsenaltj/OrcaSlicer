@@ -1022,6 +1022,30 @@ TEST_CASE("Four-color connected lips use one dominant automatic material",
     for (const auto& assignment : output) CHECK(assignment.second == red);
 }
 
+TEST_CASE("Full-size six-color portraits keep eye materials off the lip slot while five-color stays baseline",
+          "[SemanticColoring][Regression][SixColor]")
+{
+    const Color red {.86f,.08f,.06f}, dark {.08f,.08f,.09f}, white {.97f,.97f,.98f};
+    std::vector<Color> source_colors(256,{.46f,.46f,.46f});
+    source_colors.front()={.72f,.22f,.20f};
+    const auto source=triangles(source_colors);
+    std::vector<Label> labels(256,Label::Background);
+    labels.front()=Label::EyeSclera;
+    const auto analysis=labeled(source,labels);
+    const std::vector<Color> five {dark,white,{.55f,.55f,.54f},{.72f,.58f,.50f},red};
+    auto five_output=map_palette(source,analysis,five);
+    std::map<size_t,Color> five_assignments(five_output.begin(),five_output.end());
+    CHECK(five_assignments.count(0)==0);
+
+    auto six=five;
+    six.push_back({.35f,.48f,.66f});
+    auto six_output=map_palette(source,analysis,six);
+    std::map<size_t,Color> six_assignments(six_output.begin(),six_output.end());
+    REQUIRE(six_assignments.count(0)==1);
+    CHECK(six_assignments.at(0)!=red);
+    CHECK(std::find(six.begin(),six.end(),six_assignments.at(0))!=six.end());
+}
+
 TEST_CASE("Named portrait cards do not turn gray lips pink or gray clothes white", "[SemanticColoring][Regression]")
 {
     const auto source = triangles({{.48f,.48f,.48f}, {.48f,.48f,.48f}, {.13f,.11f,.10f}});

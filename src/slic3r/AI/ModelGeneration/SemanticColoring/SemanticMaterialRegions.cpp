@@ -204,6 +204,7 @@ void fill_reliable_skin_shadow_holes(const Analysis& analysis, const std::vector
                                      const std::vector<std::pair<uint32_t,uint32_t>>& surface_edges,
                                      const std::vector<uint8_t>& point_detail_barrier,
                                      const std::vector<uint8_t>& protected_faces,
+                                     bool replace_assigned_non_skin,
                                      float detail_radius,
                                      std::vector<int>& refined)
 {
@@ -223,8 +224,11 @@ void fill_reliable_skin_shadow_holes(const Analysis& analysis, const std::vector
 
     std::vector<uint8_t> shadow_candidate(count, 0), eligible(count, 0), blocked(count, 0);
     for (uint32_t id = 0; id < count; ++id) {
+        const bool assigned_non_skin = faces[id].assigned >= 0 &&
+            (size_t(faces[id].assigned) >= skin_slots.size() || !skin_slots[size_t(faces[id].assigned)]);
         shadow_candidate[id] = analysis.face_labels[id] == Label::FaceSkin &&
-            analysis.face_confidence[id] >= minimum_ear_fold_confidence && faces[id].assigned < 0 &&
+            analysis.face_confidence[id] >= minimum_ear_fold_confidence &&
+            (faces[id].assigned < 0 || (replace_assigned_non_skin && assigned_non_skin)) &&
             !protected_faces[id] &&
             faces[id].color[0] <= .62f && chroma(faces[id].color) <= .14f;
         eligible[id] = shadow_candidate[id] && analysis.face_confidence[id] >= minimum_confidence;
@@ -545,6 +549,136 @@ float narrow_width(const Region& region, const std::vector<Face>& faces)
     std::sort(extent.begin(), extent.end());
     return float(extent[1]);
 }
+
+std::vector<uint8_t> refine_six_color_base(
+    const MeshSnapshot& source, const Analysis& analysis, const std::vector<Face>& faces,
+    const std::vector<std::pair<uint32_t,uint32_t>>& topology_edges,
+    const std::vector<Color>& palette_labs, const Vec3f& lower, const Vec3f& upper,
+    double total_area, std::vector<int>& refined)
+{
+    const size_t count = faces.size();
+    std::vector<uint8_t> base(count, 0), candidate(count, 0), seed(count, 0);
+    const float height = upper.z() - lower.z();
+    const float diagonal = (upper - lower).norm();
+    if (height <= 0.f || diagonal <= 0.f || total_area <= 0.) return base;
+    const float floor_tolerance = std::max(height * .004f, diagonal * .0015f);
+    const float maximum_height = lower.z() + height * .16f;
+    for (uint32_t id = 0; id < count; ++id) {
+        const Label label = analysis.face_labels[id];
+        const bool reliable_character_material = analysis.face_confidence[id] >= minimum_confidence &&
+            label != Label::Unknown && label != Label::Background;
+        if (faces[id].area <= 0. || faces[id].center.z() > maximum_height ||
+            chroma(faces[id].color) > .045f || faces[id].color[0] > .72f ||
+            face_detail_label(label) || reliable_character_material) continue;
+        candidate[id] = 1;
+        const auto& triangle = source.mesh.indices[id];
+        const float maximum_vertex_z = std::max({source.mesh.vertices[triangle[0]].z(),
+            source.mesh.vertices[triangle[1]].z(), source.mesh.vertices[triangle[2]].z()});
+        seed[id] = maximum_vertex_z <= lower.z() + floor_tolerance;
+    }
+    std::vector<std::vector<uint32_t>> adjacency(count);
+    for (const auto& edge : topology_edges) {
+        adjacency[edge.first].push_back(edge.second);
+        adjacency[edge.second].push_back(edge.first);
+    }
+    std::vector<uint8_t> visited(count, 0);
+    for (uint32_t first = 0; first < count; ++first) {
+        if (!seed[first] || visited[first]) continue;
+        std::vector<uint32_t> component {first};
+        visited[first] = 1;
+        for (size_t cursor = 0; cursor < component.size(); ++cursor) {
+            const uint32_t id = component[cursor];
+            for (uint32_t neighbor : adjacency[id]) {
+                if (!candidate[neighbor] || visited[neighbor] ||
+                    appearance_distance(faces[id].color, faces[neighbor].color) > .0025f) continue;
+                visited[neighbor] = 1;
+                component.push_back(neighbor);
+            }
+        }
+        double component_area = 0.;
+        Vec3f component_lower = Vec3f::Constant(std::numeric_limits<float>::infinity());
+        Vec3f component_upper = -component_lower;
+        std::vector<double> votes(palette_labs.size(), 0.);
+        Color mean {};
+        for (uint32_t id : component) {
+            component_area += faces[id].area;
+            component_lower = component_lower.cwiseMin(faces[id].center);
+            component_upper = component_upper.cwiseMax(faces[id].center);
+            for (size_t channel = 0; channel < mean.size(); ++channel)
+                mean[channel] += faces[id].color[channel] * float(faces[id].area);
+            if (faces[id].assigned >= 0) votes[size_t(faces[id].assigned)] += faces[id].area;
+        }
+        const Vec3f model_span = upper - lower;
+        const Vec3f component_span = component_upper - component_lower;
+        if (component_area < total_area * .003 ||
+            component_span.x() < model_span.x() * .10f ||
+            component_span.y() < model_span.y() * .10f) continue;
+        for (float& channel : mean) channel /= float(component_area);
+        size_t slot = palette_labs.size();
+        double supported = 0.;
+        for (size_t candidate_slot = 0; candidate_slot < votes.size(); ++candidate_slot) {
+            if (chroma(palette_labs[candidate_slot]) > .055f) continue;
+            if (votes[candidate_slot] > supported) { supported = votes[candidate_slot]; slot = candidate_slot; }
+        }
+        if (slot == palette_labs.size() || supported < component_area * .55) {
+            float best = std::numeric_limits<float>::max();
+            for (size_t candidate_slot = 0; candidate_slot < palette_labs.size(); ++candidate_slot) {
+                if (chroma(palette_labs[candidate_slot]) > .055f) continue;
+                const float score = appearance_distance(mean, palette_labs[candidate_slot]);
+                if (score < best) { best = score; slot = candidate_slot; }
+            }
+        }
+        if (slot >= palette_labs.size()) continue;
+        for (uint32_t id : component) { base[id] = 1; refined[id] = int(slot); }
+    }
+    return base;
+}
+
+void refine_six_color_dark_hair(const Analysis& analysis, const std::vector<Face>& faces,
+                                const std::vector<std::pair<uint32_t,uint32_t>>& surface_edges,
+                                const std::vector<Color>& palette_labs,
+                                const std::vector<uint8_t>& base_faces,
+                                std::vector<int>& refined)
+{
+    const size_t count = faces.size();
+    std::vector<std::vector<uint32_t>> adjacency(count);
+    for (const auto& edge : surface_edges) {
+        adjacency[edge.first].push_back(edge.second);
+        adjacency[edge.second].push_back(edge.first);
+    }
+    std::vector<uint32_t> owner(count, absent), queue;
+    const auto source_dark = [&](uint32_t id) {
+        return faces[id].color[0] <= .38f && chroma(faces[id].color) <= .085f;
+    };
+    const auto eligible = [&](uint32_t id) {
+        if (base_faces[id] || !source_dark(id)) return false;
+        const Label label = analysis.face_labels[id];
+        if (label == Label::Hair || label == Label::Unknown || label == Label::Background)
+            return true;
+        return label == Label::Clothes && analysis.face_confidence[id] < minimum_confidence;
+    };
+    for (uint32_t id = 0; id < count; ++id) {
+        if (analysis.face_labels[id] != Label::Hair || analysis.face_confidence[id] < minimum_confidence ||
+            faces[id].assigned < 0 || !source_dark(id)) continue;
+        const size_t slot = size_t(faces[id].assigned);
+        if (palette_labs[slot][0] > .50f || chroma(palette_labs[slot]) > .08f) continue;
+        owner[id] = id;
+        queue.push_back(id);
+    }
+    for (size_t cursor = 0; cursor < queue.size(); ++cursor) {
+        const uint32_t id = queue[cursor], seed = owner[id];
+        for (uint32_t neighbor : adjacency[id]) {
+            if (owner[neighbor] != absent || !eligible(neighbor) ||
+                appearance_distance(faces[id].color, faces[neighbor].color) > .0016f ||
+                appearance_distance(faces[seed].color, faces[neighbor].color) > .0036f) continue;
+            owner[neighbor] = seed;
+            queue.push_back(neighbor);
+        }
+    }
+    for (uint32_t id = 0; id < count; ++id)
+        if (owner[id] != absent && owner[id] != id)
+            refined[id] = faces[owner[id]].assigned;
+}
 } // namespace
 
 void refine_material_patches(const MeshSnapshot& source, const Analysis& analysis,
@@ -557,6 +691,9 @@ void refine_material_patches(const MeshSnapshot& source, const Analysis& analysi
         count == 0 || count > 2000000 || vertex_count == 0 || vertex_count > 6000000 ||
         palette.empty() || palette.size() > 6 || analysis.face_labels.size() != count ||
         analysis.face_confidence.size() != count) return;
+    // Keep the six-color material repairs isolated from compact test meshes
+    // and non-portrait semantic previews.
+    const bool six_color_portrait_context = palette.size() == 6 && count >= 256;
     const bool vertex_colors = source.vertex_colors.size() == vertex_count;
     if (!vertex_colors && source.face_colors.size() != count) return;
     std::vector<Color> palette_labs;
@@ -636,13 +773,15 @@ void refine_material_patches(const MeshSnapshot& source, const Analysis& analysi
         }
     }
     std::sort(edges.begin(), edges.end(), [](const Edge& a,const Edge& b) { return a.key < b.key; });
-    std::vector<std::pair<uint32_t,uint32_t>> neighbors;
+    std::vector<std::pair<uint32_t,uint32_t>> topology_neighbors, neighbors;
     for (size_t first = 0; first < edges.size();) {
         size_t end = first+1; while (end < edges.size() && edges[end].key == edges[first].key) ++end;
         if (end-first == 2) {
             const uint32_t a = edges[first].face,b = edges[first+1].face;
-            if (a != b && triangles[a] != triangles[b] &&
-                faces[a].normal.dot(faces[b].normal) >= .75f) neighbors.emplace_back(a,b);
+            if (a != b && triangles[a] != triangles[b]) {
+                topology_neighbors.emplace_back(a,b);
+                if (faces[a].normal.dot(faces[b].normal) >= .75f) neighbors.emplace_back(a,b);
+            }
         }
         first = end;
     }
@@ -775,7 +914,15 @@ void refine_material_patches(const MeshSnapshot& source, const Analysis& analysi
         fill_isolated_assigned_skin_holes(analysis,faces,neighbors,protected_eye_faces,refined);
         fill_reliable_skin_shadow_holes(analysis,faces,skin_neighbors,neighbors,point_detail_barrier,
                                         protected_eye_faces,
+                                        six_color_portrait_context,
                                         diagonal*.012f,refined);
+    }
+    std::vector<uint8_t> six_color_base(count, 0);
+    if (six_color_portrait_context) {
+        six_color_base = refine_six_color_base(source, analysis, faces, topology_neighbors,
+                                                palette_labs, lower, upper, total_area, refined);
+        refine_six_color_dark_hair(analysis, faces, neighbors, palette_labs,
+                                   six_color_base, refined);
     }
     protect_uncertain_contours(analysis,diagonal*.005f,neighbors,faces);
     neighbors.erase(std::remove_if(neighbors.begin(),neighbors.end(),[&](const auto& edge) {

@@ -402,6 +402,72 @@ TEST_CASE("A local hair correction inherits the actual assigned filament even wh
     CHECK(fixture.paint[fixture.cell(20,20)].second==alternative);
 }
 
+TEST_CASE("Six-color portrait repairs an assigned dark skin island without changing five-color behavior",
+          "[SemanticMaterialRegions][Regression][SixColor]")
+{
+    const Color skin {.7373f,.4824f,.4065f}, shadow {.18f,.16f,.15f}, cool {.35f,.48f,.66f};
+    for (const bool six_color : {false, true}) {
+        DYNAMIC_SECTION("six color " << six_color) {
+            Fixture fixture(12,skin,Label::FaceSkin,skin);
+            const size_t nose_root=fixture.cell(5,5);
+            fixture.set(nose_root,shadow,Label::FaceSkin,.95f,dark);
+            std::vector<Color> colors {dark,white,gray,red,skin};
+            if (six_color) colors.push_back(cool);
+            refine_material_patches(fixture.source,fixture.analysis,colors,{},fixture.paint);
+            const auto assigned=std::find_if(fixture.paint.begin(),fixture.paint.end(),[&](const auto& entry) {
+                return entry.first==nose_root;
+            });
+            REQUIRE(assigned!=fixture.paint.end());
+            CHECK(assigned->second==(six_color?skin:dark));
+        }
+    }
+}
+
+TEST_CASE("Six-color portrait restores a large continuous black hair patch but preserves real brown hair",
+          "[SemanticMaterialRegions][Regression][SixColor]")
+{
+    const Color cool {.35f,.48f,.66f}, brown_source {.42f,.25f,.15f}, brown_target {.38f,.25f,.18f};
+    const std::vector<Color> six_colors {dark,white,gray,red,cool,brown_target};
+    Fixture fixture(12,{.16f,.15f,.15f},Label::Hair,dark);
+    for (int y=3;y<9;++y) for (int x=3;x<9;++x) {
+        fixture.set(fixture.cell(x,y),{.18f,.16f,.15f},Label::Hair,.95f,gray);
+        fixture.set(fixture.cell(x,y)+1,{.18f,.16f,.15f},Label::Hair,.95f,gray);
+    }
+    const size_t brown=fixture.cell(10,10);
+    fixture.set(brown,brown_source,Label::Hair,.95f,brown_target);
+    fixture.set(brown+1,brown_source,Label::Hair,.95f,brown_target);
+    refine_material_patches(fixture.source,fixture.analysis,six_colors,{},fixture.paint);
+    CHECK(fixture.paint[fixture.cell(6,6)].second==dark);
+    CHECK(fixture.paint[fixture.cell(6,6)+1].second==dark);
+    CHECK(fixture.paint[brown].second==brown_target);
+    CHECK(fixture.paint[brown+1].second==brown_target);
+}
+
+TEST_CASE("Six-color portrait base uses one supported neutral material at the build plate",
+          "[SemanticMaterialRegions][Regression][SixColor]")
+{
+    const Color cool {.35f,.48f,.66f}, skin {.7373f,.4824f,.4065f};
+    const std::vector<Color> six_colors {dark,white,gray,red,skin,cool};
+    Fixture fixture(12,{.18f,.18f,.18f},Label::Background,dark);
+    const size_t portrait_skin=fixture.cell(1,1);
+    fixture.set(portrait_skin,skin,Label::FaceSkin,.95f,skin);
+    const size_t portrait_hair=fixture.cell(10,10);
+    fixture.set(portrait_hair,{.18f,.18f,.18f},Label::Hair,.95f,gray);
+    // Give the model nonzero height without connecting a person surface to the
+    // bottom platform. The base component itself remains flat at z=0.
+    fixture.source.mesh.vertices.emplace_back(0.f,0.f,100.f);
+    for (int y=4;y<8;++y) for (int x=4;x<8;++x) {
+        fixture.paint[fixture.cell(x,y)].second=gray;
+        fixture.paint[fixture.cell(x,y)+1].second=gray;
+    }
+    refine_material_patches(fixture.source,fixture.analysis,six_colors,{},fixture.paint);
+    for (const auto& assignment:fixture.paint) {
+        const Color expected=assignment.first==portrait_skin?skin:
+            assignment.first==portrait_hair?gray:dark;
+        CHECK(assignment.second==expected);
+    }
+}
+
 TEST_CASE("All face skin eye lip and accessory labels remain protected even at low confidence", "[SemanticMaterialRegions]")
 {
     for (Label label : {Label::FaceSkin,Label::BodySkin,Label::Accessories,Label::Lips,Label::MouthInterior,Label::EyeSclera,Label::Iris,Label::Eyebrow}) {
