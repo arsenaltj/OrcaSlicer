@@ -1307,7 +1307,20 @@ FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, con
         const size_t target = choose_target(centers.front(), Label::Eyebrow);
         if (target >= palette.size()) continue;
         if (!six_color_portrait_context) {
-            for (size_t id : region.second) output.emplace_back(id, palette[target]);
+            if (palette.size() <= 4 && count >= 256) {
+                for (size_t id : region.second) {
+                    size_t skin_neighbors = 0, hair_neighbors = 0;
+                    for (int corner = 0; corner < 3; ++corner)
+                        for (size_t neighbor : faces_at_vertex[size_t(source.mesh.indices[id][corner])]) {
+                            if (neighbor == id || analysis.face_confidence[neighbor] < minimum_confidence) continue;
+                            if (analysis.face_labels[neighbor] == Label::FaceSkin ||
+                                analysis.face_labels[neighbor] == Label::BodySkin) ++skin_neighbors;
+                            else if (analysis.face_labels[neighbor] == Label::Hair) ++hair_neighbors;
+                        }
+                    if (hair_neighbors > 0 && skin_neighbors <= hair_neighbors) continue;
+                    output.emplace_back(id, palette[target]);
+                }
+            } else for (size_t id : region.second) output.emplace_back(id, palette[target]);
             continue;
         }
         std::set<size_t> boundary;
@@ -1599,6 +1612,47 @@ FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, con
             const size_t replacement = legal_target(face_lab(source, id), label, it->second);
             if (replacement >= palette.size()) it = assignments.erase(it);
             else { it->second = replacement; ++it; }
+        }
+        // Keep four-color sclera on one clean, light neutral slot. This also
+        // removes pale red/gray fragments left by a coarse eye mask without
+        // changing iris or lip materials.
+        if (count >= 256) {
+            size_t clean_sclera = palette.size();
+            float brightest = -.1f;
+            for (size_t slot = 0; slot < palette.size(); ++slot) {
+                if (red_accent(palette_labs[slot]) || chroma(palette_labs[slot]) >= .055f ||
+                    palette_labs[slot][0] < .45f) continue;
+                if (palette_labs[slot][0] > brightest) {
+                    brightest = palette_labs[slot][0];
+                    clean_sclera = slot;
+                }
+            }
+            for (auto& item : assignments)
+                if (clean_sclera < palette.size() && analysis.face_labels[item.first] == Label::EyeSclera)
+                    item.second = clean_sclera;
+
+            // A red assignment on an immediate eye-neighborhood face is a
+            // leaked eye-mask color, unless the source face is explicitly red.
+            for (auto& item : assignments) {
+                const size_t id = item.first;
+                const Label label = analysis.face_labels[id];
+                if (!red_accent(palette_labs[item.second]) || red_accent(face_lab(source, id)) ||
+                    label == Label::Lips) continue;
+                bool eye_zone = label == Label::EyeSclera || label == Label::Iris ||
+                    label == Label::Eyebrow || label == Label::FaceSkin || label == Label::BodySkin;
+                for (int corner = 0; corner < 3 && !eye_zone; ++corner)
+                    for (size_t neighbor : faces_at_vertex[size_t(source.mesh.indices[id][corner])]) {
+                        const Label neighbor_label = analysis.face_labels[neighbor];
+                        if (neighbor_label == Label::EyeSclera || neighbor_label == Label::Iris) {
+                            eye_zone = true;
+                            break;
+                        }
+                    }
+                if (eye_zone) {
+                    const size_t replacement = legal_target(face_lab(source, id), Label::FaceSkin, item.second);
+                    if (replacement < palette.size()) item.second = replacement;
+                }
+            }
         }
         // A reliable eye face can be rejected earlier when its baked source
         // color is a warm/red outlier. If a legal non-red slot exists, cover
