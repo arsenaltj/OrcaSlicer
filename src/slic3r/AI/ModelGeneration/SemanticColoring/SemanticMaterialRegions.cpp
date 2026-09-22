@@ -635,14 +635,17 @@ std::vector<uint8_t> refine_six_color_base(
 }
 
 void refine_six_color_dark_hair(const Analysis& analysis, const std::vector<Face>& faces,
-                                const std::vector<std::pair<uint32_t,uint32_t>>& surface_edges,
+                                const std::vector<std::pair<uint32_t,uint32_t>>& topology_edges,
                                 const std::vector<Color>& palette_labs,
                                 const std::vector<uint8_t>& base_faces,
                                 std::vector<int>& refined)
 {
     const size_t count = faces.size();
     std::vector<std::vector<uint32_t>> adjacency(count);
-    for (const auto& edge : surface_edges) {
+    for (const auto& edge : topology_edges) {
+        // Keep only a genuine two-face edge; a moderate fold is still a valid
+        // hair surface, while opposing shells remain blocked.
+        if (faces[edge.first].normal.dot(faces[edge.second].normal) < .35f) continue;
         adjacency[edge.first].push_back(edge.second);
         adjacency[edge.second].push_back(edge.first);
     }
@@ -921,7 +924,7 @@ void refine_material_patches(const MeshSnapshot& source, const Analysis& analysi
     if (six_color_portrait_context) {
         six_color_base = refine_six_color_base(source, analysis, faces, topology_neighbors,
                                                 palette_labs, lower, upper, total_area, refined);
-        refine_six_color_dark_hair(analysis, faces, neighbors, palette_labs,
+        refine_six_color_dark_hair(analysis, faces, topology_neighbors, palette_labs,
                                    six_color_base, refined);
     }
     protect_uncertain_contours(analysis,diagonal*.005f,neighbors,faces);

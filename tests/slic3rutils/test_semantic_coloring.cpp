@@ -1054,8 +1054,9 @@ TEST_CASE("Six-color portrait restores a dark nose-root island from a majority o
     for (size_t id=1; id<9; ++id) colors[id]={.74f,.50f,.42f};
     const auto source=connected_triangles(colors);
     std::vector<Label> labels(256,Label::Background);
-    labels[0]=Label::Unknown;
+    labels[0]=Label::FaceSkin;
     for (size_t id=1; id<9; ++id) labels[id]=Label::FaceSkin;
+    labels[9]=Label::EyeSclera;
     const auto analysis=labeled(source,labels);
     const auto card=portrait_card();
     const auto output=map_palette(source,analysis,card,card);

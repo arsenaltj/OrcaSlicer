@@ -1420,9 +1420,10 @@ FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, con
             for (int corner = 0; corner < 3; ++corner)
                 for (size_t neighbor : faces_at_vertex[size_t(source.mesh.indices[id][corner])]) {
                     const Label neighbor_label = analysis.face_labels[neighbor];
-                    if (neighbor_label == Label::Hair || neighbor_label == Label::EyeSclera ||
-                        neighbor_label == Label::Iris || neighbor_label == Label::Eyebrow ||
-                        neighbor_label == Label::Lips || neighbor_label == Label::MouthInterior)
+                    const bool eye_detail = neighbor_label == Label::EyeSclera || neighbor_label == Label::Iris;
+                    const bool hard_detail = neighbor_label == Label::Hair || neighbor_label == Label::Eyebrow ||
+                        neighbor_label == Label::Lips || neighbor_label == Label::MouthInterior;
+                    if (hard_detail || (eye_detail && label == Label::Unknown))
                         detail_boundary = true;
                     if (analysis.face_confidence[neighbor] < minimum_confidence ||
                         (neighbor_label != Label::FaceSkin && neighbor_label != Label::BodySkin) ||
