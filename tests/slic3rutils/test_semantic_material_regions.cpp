@@ -84,6 +84,24 @@ TEST_CASE("Supported skin gaps inherit a neighboring skin material without chang
     CHECK(assigned(fixture.cell(2,2))==dark);
 }
 
+TEST_CASE("Unrecognized facial faces inherit a recognized skin slot instead of their baked matcher color",
+          "[SemanticMaterialRegions][Regression][FaceExpansion]")
+{
+    const Color skin {.7373f,.4824f,.4065f};
+    Fixture fixture(20, skin, Label::FaceSkin, skin);
+    const size_t unknown = fixture.cell(10, 10);
+    fixture.set(unknown, red, Label::Unknown, 0.f, red);
+    fixture.paint.erase(std::remove_if(fixture.paint.begin(), fixture.paint.end(), [&](const auto& entry) {
+        return entry.first == unknown;
+    }), fixture.paint.end());
+    refine_material_patches(fixture.source, fixture.analysis, {dark, white, red, skin}, {}, fixture.paint);
+    const auto assigned = std::find_if(fixture.paint.begin(), fixture.paint.end(), [&](const auto& entry) {
+        return entry.first == unknown;
+    });
+    REQUIRE(assigned != fixture.paint.end());
+    CHECK(assigned->second == skin);
+}
+
 TEST_CASE("A disconnected skin colored patch has no material donor", "[SemanticMaterialRegions][Regression]")
 {
     const Color skin {.80f,.59f,.48f};
