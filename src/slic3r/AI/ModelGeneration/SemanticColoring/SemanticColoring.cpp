@@ -1535,6 +1535,48 @@ FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, con
         output.reserve(assignments.size());
         for (const auto& item : assignments) output.emplace_back(item.first, palette[item.second]);
     }
+    if (palette.size() == 6 && count >= 256) {
+        // Six-color portraits can also leave a thin eye-contour face without
+        // an automatic assignment. Do not expose its baked red source color;
+        // recover it only when it is in the eye neighborhood and is not a
+        // deliberate lip/hair/clothing face.
+        std::map<size_t, size_t> assignments;
+        for (const auto& item : output) {
+            const auto found = std::find(palette.begin(), palette.end(), item.second);
+            if (item.first < count && found != palette.end())
+                assignments[item.first] = size_t(found - palette.begin());
+        }
+        for (size_t id = 0; id < count; ++id) {
+            if (assignments.count(id) != 0 || analysis.face_confidence[id] < minimum_confidence) continue;
+            const Label label = analysis.face_labels[id];
+            if (label == Label::Lips || label == Label::Hair || label == Label::Clothes ||
+                label == Label::Accessories || !red_accent(face_lab(source, id))) continue;
+            bool eye_zone = label == Label::EyeSclera || label == Label::Iris || label == Label::Eyebrow;
+            for (int corner = 0; corner < 3 && !eye_zone; ++corner)
+                for (size_t neighbor : faces_at_vertex[size_t(source.mesh.indices[id][corner])]) {
+                    const Label neighbor_label = analysis.face_labels[neighbor];
+                    if (neighbor_label == Label::EyeSclera || neighbor_label == Label::Iris) {
+                        eye_zone = true;
+                        break;
+                    }
+                }
+            if (!eye_zone) continue;
+            size_t target = choose_target(face_lab(source, id), Label::FaceSkin);
+            if (label == Label::EyeSclera) {
+                float brightest = -.1f;
+                for (size_t slot = 0; slot < palette.size(); ++slot)
+                    if (!red_accent(palette_labs[slot]) && chroma(palette_labs[slot]) < .055f &&
+                        palette_labs[slot][0] > brightest) {
+                        brightest = palette_labs[slot][0];
+                        target = slot;
+                    }
+            }
+            if (target < palette.size()) assignments[id] = target;
+        }
+        output.clear();
+        output.reserve(assignments.size());
+        for (const auto& item : assignments) output.emplace_back(item.first, palette[item.second]);
+    }
     if (palette.size() <= 4) {
         // The material-region pass can legitimately replace an earlier target.
         // Make one final, local safety pass so no later donor or hole fill can
@@ -1612,6 +1654,36 @@ FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, con
             const size_t replacement = legal_target(face_lab(source, id), label, it->second);
             if (replacement >= palette.size()) it = assignments.erase(it);
             else { it->second = replacement; ++it; }
+        }
+        // Faces with no prior assignment would otherwise fall back to their
+        // baked red source color. Cover only red, non-lip faces in the eye
+        // neighborhood; this is the missing path for thin eyelid fragments.
+        if (count >= 256) for (size_t id = 0; id < count; ++id) {
+            if (assignments.count(id) != 0 || analysis.face_confidence[id] < minimum_confidence) continue;
+            const Label label = analysis.face_labels[id];
+            if (label == Label::Lips || label == Label::Hair || label == Label::Clothes ||
+                label == Label::Accessories || !red_accent(face_lab(source, id))) continue;
+            bool eye_zone = label == Label::EyeSclera || label == Label::Iris || label == Label::Eyebrow;
+            for (int corner = 0; corner < 3 && !eye_zone; ++corner)
+                for (size_t neighbor : faces_at_vertex[size_t(source.mesh.indices[id][corner])]) {
+                    const Label neighbor_label = analysis.face_labels[neighbor];
+                    if (neighbor_label == Label::EyeSclera || neighbor_label == Label::Iris) {
+                        eye_zone = true;
+                        break;
+                    }
+                }
+            if (!eye_zone) continue;
+            size_t target = palette.size();
+            if (label == Label::EyeSclera) {
+                float brightest = -.1f;
+                for (size_t slot = 0; slot < palette.size(); ++slot)
+                    if (!red_accent(palette_labs[slot]) && chroma(palette_labs[slot]) < .055f &&
+                        palette_labs[slot][0] > brightest) {
+                        brightest = palette_labs[slot][0];
+                        target = slot;
+                    }
+            } else target = legal_target(face_lab(source, id), Label::FaceSkin, palette.size());
+            if (target < palette.size()) assignments[id] = target;
         }
         // Keep four-color sclera on one clean, light neutral slot. This also
         // removes pale red/gray fragments left by a coarse eye mask without

@@ -217,6 +217,30 @@ struct ModelSemanticColoring::Impl {
                             // safe source slot can therefore become red in the
                             // displayed target palette; enforce the same rule
                             // once more on the actual output colors.
+                            std::vector<uint8_t> eye_vertices(source.mesh.vertices.size(), 0);
+                            for (size_t face_id = 0; face_id < analysis->face_labels.size(); ++face_id) {
+                                const auto label = analysis->face_labels[face_id];
+                                if (label != SC::Label::EyeSclera && label != SC::Label::Iris &&
+                                    label != SC::Label::Eyebrow) continue;
+                                if (face_id >= source.mesh.indices.size()) continue;
+                                for (int corner = 0; corner < 3; ++corner) {
+                                    const int vertex = source.mesh.indices[face_id][corner];
+                                    if (vertex >= 0 && size_t(vertex) < eye_vertices.size()) eye_vertices[size_t(vertex)] = 1;
+                                }
+                            }
+                            const auto eye_zone_face = [&](size_t face_id) {
+                                if (face_id >= source.mesh.indices.size() || face_id >= analysis->face_labels.size()) return false;
+                                const auto label = analysis->face_labels[face_id];
+                                if (label == SC::Label::EyeSclera || label == SC::Label::Iris || label == SC::Label::Eyebrow)
+                                    return true;
+                                if (label == SC::Label::Hair || label == SC::Label::Clothes || label == SC::Label::Accessories ||
+                                    label == SC::Label::Lips) return false;
+                                for (int corner = 0; corner < 3; ++corner) {
+                                    const int vertex = source.mesh.indices[face_id][corner];
+                                    if (vertex >= 0 && size_t(vertex) < eye_vertices.size() && eye_vertices[size_t(vertex)]) return true;
+                                }
+                                return false;
+                            };
                             std::map<size_t, SC::Color> source_by_face;
                             for (const auto& item : source_automatic) source_by_face[item.first] = item.second;
                             std::map<size_t, SC::Color> safe;
@@ -232,10 +256,11 @@ struct ModelSemanticColoring::Impl {
                                     ? analysis->face_labels[item.first] : SC::Label::Unknown;
                                 const bool facial = label == SC::Label::EyeSclera || label == SC::Label::Iris ||
                                     label == SC::Label::Eyebrow || label == SC::Label::FaceSkin || label == SC::Label::BodySkin;
+                                const bool eye_zone = eye_zone_face(item.first);
                                 const bool neutral_garment = label == SC::Label::Clothes && source_found != source_by_face.end() &&
                                     neutral_preview_color(source_found->second);
                                 const bool source_red = source_found != source_by_face.end() && red_preview_color(source_found->second);
-                                const bool block_red = facial || neutral_garment ||
+                                const bool block_red = facial || eye_zone || neutral_garment ||
                                     ((label == SC::Label::Clothes || label == SC::Label::Hair || label == SC::Label::Accessories) && !source_red);
                                 const auto acceptable = [&](size_t slot) {
                                     if (slot >= task->request.targets.size()) return false;
