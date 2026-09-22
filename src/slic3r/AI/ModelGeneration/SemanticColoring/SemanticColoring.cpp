@@ -1851,6 +1851,58 @@ FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, con
         output.reserve(assignments.size());
         for (const auto& item : assignments) output.emplace_back(item.first, palette[item.second]);
     }
+    if ((palette.size() == 4 || palette.size() == 6) && count >= 256 && !faces_at_vertex.empty()) {
+        // A face missed by the raster recognizer has no automatic color and
+        // build_semantic_colored_geometry() deliberately falls back to its
+        // baked vertex color. On generated portraits that fallback can be a
+        // red projection/compositing fragment. Extend a reliable neighboring
+        // skin slot across only Unknown/low-confidence skin faces; explicit
+        // lip, hair, clothing and accessory labels remain untouched.
+        std::map<size_t, size_t> assignments;
+        for (const auto& item : output) {
+            const auto found = std::find(palette.begin(), palette.end(), item.second);
+            if (item.first < count && found != palette.end())
+                assignments[item.first] = size_t(found - palette.begin());
+        }
+        for (size_t id = 0; id < count; ++id) {
+            const Label label = analysis.face_labels[id];
+            if (label == Label::Lips || label == Label::Hair || label == Label::Clothes ||
+                label == Label::Accessories || !red_accent(face_lab(source, id))) continue;
+            if (label != Label::Unknown && label != Label::FaceSkin && label != Label::BodySkin) continue;
+            std::map<size_t, size_t> skin_votes;
+            size_t skin_support = 0, hard_support = 0;
+            for (int corner = 0; corner < 3; ++corner) {
+                const size_t vertex = size_t(source.mesh.indices[id][corner]);
+                for (size_t neighbor : faces_at_vertex[vertex]) {
+                    if (neighbor == id || analysis.face_confidence[neighbor] < minimum_confidence) continue;
+                    const Label neighbor_label = analysis.face_labels[neighbor];
+                    if (neighbor_label == Label::Hair || neighbor_label == Label::Clothes ||
+                        neighbor_label == Label::Accessories || neighbor_label == Label::Lips ||
+                        neighbor_label == Label::MouthInterior || neighbor_label == Label::EyeSclera ||
+                        neighbor_label == Label::Iris || neighbor_label == Label::Eyebrow) {
+                        ++hard_support;
+                        continue;
+                    }
+                    if (neighbor_label != Label::FaceSkin && neighbor_label != Label::BodySkin) continue;
+                    const auto found = assignments.find(neighbor);
+                    if (found != assignments.end()) {
+                        ++skin_votes[found->second];
+                        ++skin_support;
+                    }
+                }
+            }
+            if (skin_support < 2 || skin_support < hard_support || skin_votes.empty()) continue;
+            const auto best = std::max_element(skin_votes.begin(), skin_votes.end(),
+                [](const auto& lhs, const auto& rhs) {
+                    return lhs.second != rhs.second ? lhs.second < rhs.second : lhs.first > rhs.first;
+                });
+            if (best->second * 2 < skin_support) continue;
+            assignments[id] = best->first;
+        }
+        output.clear();
+        output.reserve(assignments.size());
+        for (const auto& item : assignments) output.emplace_back(item.first, palette[item.second]);
+    }
     std::sort(output.begin(), output.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
     return output;
 }
