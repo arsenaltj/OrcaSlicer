@@ -693,7 +693,7 @@ void refine_six_color_dark_hair(const Analysis& analysis, const std::vector<Face
         }
     }
     if (dark_slot < palette_labs.size()) for (uint32_t id = 0; id < count; ++id) {
-        if (analysis.face_labels[id] != Label::Hair ||
+        if ((analysis.face_labels[id] != Label::Hair && analysis.face_labels[id] != Label::Unknown) ||
             analysis.face_confidence[id] < minimum_confidence || faces[id].assigned < 0 ||
             size_t(faces[id].assigned) == dark_slot || faces[id].color[0] > .40f ||
             chroma(faces[id].color) > .12f) continue;

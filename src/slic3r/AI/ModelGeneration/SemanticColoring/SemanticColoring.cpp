@@ -1366,6 +1366,39 @@ FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, con
             if (item.first < count && found != palette.end())
                 assignments[item.first] = size_t(found - palette.begin());
         }
+        // A side-view face crop can label a dark, skin-surrounded nose-root
+        // triangle as Iris/EyeSclera. It passed the 2-D mask but is not an eye
+        // surface in the mesh. Let the surrounding warm skin evidence win;
+        // genuine iris faces have stronger eye-detail support and are kept.
+        for (size_t id = 0; id < count; ++id) {
+            const Label label = analysis.face_labels[id];
+            if (analysis.face_confidence[id] < minimum_confidence ||
+                (label != Label::EyeSclera && label != Label::Iris)) continue;
+            const Color original = face_lab(source, id);
+            if (original[0] > .38f || chroma(original) > .12f) continue;
+            size_t skin_support = 0, eye_support = 0;
+            std::map<size_t, size_t> skin_votes;
+            bool hard_boundary = false;
+            for (int corner = 0; corner < 3; ++corner)
+                for (size_t neighbor : faces_at_vertex[size_t(source.mesh.indices[id][corner])]) {
+                    if (neighbor == id || analysis.face_confidence[neighbor] < minimum_confidence) continue;
+                    const Label neighbor_label = analysis.face_labels[neighbor];
+                    if (neighbor_label == Label::EyeSclera || neighbor_label == Label::Iris) {
+                        ++eye_support;
+                        continue;
+                    }
+                    hard_boundary |= neighbor_label == Label::Hair || neighbor_label == Label::Eyebrow ||
+                        neighbor_label == Label::Lips || neighbor_label == Label::MouthInterior;
+                    if ((neighbor_label != Label::FaceSkin && neighbor_label != Label::BodySkin) ||
+                        !warm_skin_appearance(face_lab(source, neighbor))) continue;
+                    const size_t target = choose_target(face_lab(source, neighbor), Label::FaceSkin);
+                    if (target < palette.size()) { ++skin_votes[target]; ++skin_support; }
+                }
+            if (hard_boundary || skin_support < 2 || skin_support <= eye_support || skin_votes.empty()) continue;
+            const auto best = std::max_element(skin_votes.begin(), skin_votes.end(),
+                [](const auto& lhs, const auto& rhs) { return lhs.second < rhs.second; });
+            if (best->second * 2 >= skin_support) assignments[id] = best->first;
+        }
         for (auto& item : assignments) {
             const Label label = analysis.face_labels[item.first];
             const bool facial = label == Label::FaceSkin || label == Label::BodySkin ||
@@ -1816,6 +1849,31 @@ bool map_subface_palette(const MeshSnapshot& source, const Analysis& analysis, c
         return hair_neighbors == 0 || skin_neighbors > hair_neighbors;
     };
 
+    std::vector<uint8_t> nose_root_face(count, 0);
+    if (six_color_portrait_context) for (size_t face_id = 0; face_id < count; ++face_id) {
+        const Label label = analysis.face_labels[face_id];
+        if (analysis.face_confidence[face_id] < minimum_confidence ||
+            (label != Label::EyeSclera && label != Label::Iris)) continue;
+        const Color source_color = face_lab(source, face_id);
+        if (source_color[0] > .38f || chroma(source_color) > .12f) continue;
+        size_t skin_support = 0, eye_support = 0;
+        bool hard_boundary = false;
+        for (int corner = 0; corner < 3; ++corner)
+            for (size_t neighbor : faces_at_vertex[source.mesh.indices[face_id][corner]]) {
+                if (neighbor == face_id || analysis.face_confidence[neighbor] < minimum_confidence) continue;
+                const Label neighbor_label = analysis.face_labels[neighbor];
+                if (neighbor_label == Label::EyeSclera || neighbor_label == Label::Iris) {
+                    ++eye_support;
+                    continue;
+                }
+                hard_boundary |= neighbor_label == Label::Hair || neighbor_label == Label::Eyebrow ||
+                    neighbor_label == Label::Lips || neighbor_label == Label::MouthInterior;
+                if ((neighbor_label == Label::FaceSkin || neighbor_label == Label::BodySkin) &&
+                    warm_skin_appearance(face_lab(source, neighbor))) ++skin_support;
+            }
+        nose_root_face[face_id] = !hard_boundary && skin_support >= 2 && skin_support > eye_support;
+    }
+
     // A geometric eye mask can extend onto pale skin in an oblique view. Build
     // one robust material center from reliable whole-face sclera, then allow
     // subface recovery only on that supported surface or its direct boundary.
@@ -1903,6 +1961,9 @@ bool map_subface_palette(const MeshSnapshot& source, const Analysis& analysis, c
         }
     for (size_t evidence_index = 0; evidence_index < analysis.subface_labels.size(); ++evidence_index) {
         const SubfaceLabelEvidence& evidence = analysis.subface_labels[evidence_index];
+        if (six_color_portrait_context && evidence.face_id < count && nose_root_face[evidence.face_id] &&
+            (evidence.label == Label::EyeSclera || evidence.label == Label::Iris))
+            continue;
         if (palette.size() <= 4 && (evidence.label == Label::Lips ||
                                     evidence.label == Label::EyeSclera ||
                                     evidence.label == Label::Iris ||
