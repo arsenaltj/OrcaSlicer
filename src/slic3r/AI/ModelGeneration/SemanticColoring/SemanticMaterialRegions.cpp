@@ -678,6 +678,34 @@ void refine_six_color_dark_hair(const Analysis& analysis, const std::vector<Face
             queue.push_back(neighbor);
         }
     }
+    // A baked highlight can be warm enough to miss source_dark even inside a
+    // black hair component. If reliable hair on both sides already resolves to
+    // the darkest available hair slot, repair the isolated interior face from
+    // that local material evidence. Standalone brown/gray hair has no such
+    // black neighborhood and remains unchanged.
+    size_t dark_slot = palette_labs.size();
+    float darkest = std::numeric_limits<float>::max();
+    for (size_t slot = 0; slot < palette_labs.size(); ++slot) {
+        if (palette_labs[slot][0] > .50f || chroma(palette_labs[slot]) > .08f) continue;
+        if (palette_labs[slot][0] < darkest) {
+            darkest = palette_labs[slot][0];
+            dark_slot = slot;
+        }
+    }
+    if (dark_slot < palette_labs.size()) for (uint32_t id = 0; id < count; ++id) {
+        if (analysis.face_labels[id] != Label::Hair ||
+            analysis.face_confidence[id] < minimum_confidence || faces[id].assigned < 0 ||
+            size_t(faces[id].assigned) == dark_slot || faces[id].color[0] > .40f ||
+            chroma(faces[id].color) > .12f) continue;
+        size_t dark_neighbors = 0;
+        for (uint32_t neighbor : adjacency[id]) {
+            if (analysis.face_labels[neighbor] != Label::Hair ||
+                analysis.face_confidence[neighbor] < minimum_confidence) continue;
+            const int target = refined[neighbor] >= 0 ? refined[neighbor] : faces[neighbor].assigned;
+            if (target == int(dark_slot)) ++dark_neighbors;
+        }
+        if (dark_neighbors >= 2) refined[id] = int(dark_slot);
+    }
     for (uint32_t id = 0; id < count; ++id)
         if (owner[id] != absent && owner[id] != id)
             refined[id] = faces[owner[id]].assigned;

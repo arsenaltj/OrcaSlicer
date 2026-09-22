@@ -1437,6 +1437,54 @@ FaceColors map_palette(const MeshSnapshot& source, const Analysis& analysis, con
             if (best->second * 2 < skin_support) continue;
             assignments[id] = best->first;
         }
+        // The nose root is often split into a small connected island. Its
+        // interior faces may have no direct skin donor even though the island
+        // as a whole is enclosed by skin and touches the eye area. Recover the
+        // component from its boundary instead of requiring every face to have
+        // three individual donors.
+        std::vector<uint8_t> nose_candidate(count, 0), nose_seen(count, 0);
+        for (size_t id = 0; id < count; ++id) {
+            const Label label = analysis.face_labels[id];
+            if (analysis.face_confidence[id] < minimum_confidence ||
+                (label != Label::FaceSkin && label != Label::BodySkin)) continue;
+            const Color original = face_lab(source, id);
+            nose_candidate[id] = original[0] <= .38f && chroma(original) <= .12f;
+        }
+        for (size_t first = 0; first < count; ++first) {
+            if (!nose_candidate[first] || nose_seen[first]) continue;
+            std::vector<size_t> component {first};
+            nose_seen[first] = 1;
+            for (size_t cursor = 0; cursor < component.size(); ++cursor) {
+                const size_t id = component[cursor];
+                for (int corner = 0; corner < 3; ++corner)
+                    for (size_t neighbor : faces_at_vertex[size_t(source.mesh.indices[id][corner])])
+                        if (nose_candidate[neighbor] && !nose_seen[neighbor]) {
+                            nose_seen[neighbor] = 1;
+                            component.push_back(neighbor);
+                        }
+            }
+            std::map<size_t, size_t> boundary_votes;
+            size_t skin_support = 0;
+            bool touches_eye = false, hard_boundary = false;
+            for (size_t id : component) for (int corner = 0; corner < 3; ++corner)
+                for (size_t neighbor : faces_at_vertex[size_t(source.mesh.indices[id][corner])]) {
+                    if (nose_candidate[neighbor] ||
+                        analysis.face_confidence[neighbor] < minimum_confidence) continue;
+                    const Label neighbor_label = analysis.face_labels[neighbor];
+                    touches_eye |= neighbor_label == Label::EyeSclera || neighbor_label == Label::Iris;
+                    hard_boundary |= neighbor_label == Label::Hair || neighbor_label == Label::Eyebrow ||
+                        neighbor_label == Label::Lips || neighbor_label == Label::MouthInterior;
+                    if ((neighbor_label != Label::FaceSkin && neighbor_label != Label::BodySkin) ||
+                        !warm_skin_appearance(face_lab(source, neighbor))) continue;
+                    const size_t target = choose_target(face_lab(source, neighbor), Label::FaceSkin);
+                    if (target < palette.size()) { ++boundary_votes[target]; ++skin_support; }
+                }
+            if (!touches_eye || hard_boundary || skin_support < 2 || boundary_votes.empty()) continue;
+            const auto best = std::max_element(boundary_votes.begin(), boundary_votes.end(),
+                [](const auto& lhs, const auto& rhs) { return lhs.second < rhs.second; });
+            if (best->second * 2 < skin_support) continue;
+            for (size_t id : component) assignments[id] = best->first;
+        }
         output.clear();
         output.reserve(assignments.size());
         for (const auto& item : assignments) output.emplace_back(item.first, palette[item.second]);
