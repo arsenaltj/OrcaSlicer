@@ -25,7 +25,8 @@ inline std::vector<Vec3f> corner_normals(const indexed_triangle_set& mesh, float
         const auto& f = mesh.indices[face];
         const Vec3f cross = (mesh.vertices[f[1]] - mesh.vertices[f[0]]).cross(
             mesh.vertices[f[2]] - mesh.vertices[f[0]]);
-        weighted[face] = cross.allFinite() ? cross : Vec3f::Zero().eval();
+        if (cross.allFinite()) weighted[face] = cross;
+        else weighted[face].setZero();
         for (uint8_t side = 0; side < 3; ++side) {
             const uint32_t a = uint32_t(f[side]), b = uint32_t(f[(side + 1) % 3]);
             if (a != b) edges.push_back({(uint64_t(std::min(a, b)) << 32) | std::max(a, b), uint32_t(face), side});
