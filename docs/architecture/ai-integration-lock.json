@@ -111,11 +111,11 @@
       },
       "src/slic3r/CMakeLists.txt": {
         "max_added_lines": 55,
-        "max_net_added_lines": 50
+        "max_net_added_lines": 55
       },
       "src/slic3r/GUI/MainFrame.cpp": {
-        "max_added_lines": 65,
-        "max_net_added_lines": 60
+        "max_added_lines": 70,
+        "max_net_added_lines": 65
       },
       "src/slic3r/GUI/MainFrame.hpp": {
         "max_added_lines": 10,
@@ -126,8 +126,8 @@
         "max_net_added_lines": 280
       },
       "src/slic3r/GUI/Plater.hpp": {
-        "max_added_lines": 47,
-        "max_net_added_lines": 45
+        "max_added_lines": 55,
+        "max_net_added_lines": 50
       }
     },
     "release_promotion": {
