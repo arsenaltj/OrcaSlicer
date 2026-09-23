@@ -1,5 +1,15 @@
 [
   {
+    "pr": 15,
+    "run": 35859357758,
+    "head": "1a485c32b4b7592a148bddec385b41b29978b8d7",
+    "base": "decf64fab128422f3666e71fe034fc411566bd6a",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "feat(ai): integrate beauty workbench, post-generation bases and print color",
+    "path": "pr/15/1a485c32b4b7592a148bddec385b41b29978b8d7/35859357758",
+    "created": "2026-09-23T12:17:47+00:00"
+  },
+  {
     "pr": 14,
     "run": 35315362503,
     "head": "d8bdb2f19b7e77454d73e8b83ec3a90d5a80bb8e",
