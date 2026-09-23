@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../ModelGeneration/ModelPreviewPalette.hpp"
+#include "slic3r/AI/ModelGeneration/SemanticColoring/SemanticColoring.hpp"
 #include <nlohmann/json.hpp>
 
 #include <array>
@@ -25,6 +26,7 @@ struct State {
     bool enabled {false}, fidelity {true}, lighting {false};
     bool semantic_optimization {true};
     std::vector<GUI::PreviewPalette::Color> semantic_palette, semantic_mapping_palette, semantic_portrait_card;
+    SemanticColoring::SemanticRegionSlotBindings semantic_region_slots = SemanticColoring::default_semantic_region_slot_bindings;
 };
 
 namespace detail {
@@ -44,6 +46,9 @@ inline bool valid_state(const State& state)
         state.count > int(GUI::PreviewPalette::max_preview_colors) ||
         state.colors.size() > size_t(state.count) || state.colors.size() != state.mapping_colors.size() ||
         (state.enabled && state.colors.empty())) return false;
+    for (const int slot : state.semantic_region_slots)
+        if (slot < -1 || slot >= int(GUI::PreviewPalette::max_preview_colors) ||
+            (slot >= 0 && size_t(slot) >= state.colors.size())) return false;
     for (const auto* palette : {&state.colors, &state.mapping_colors, &state.semantic_palette, &state.semantic_mapping_palette, &state.semantic_portrait_card})
         for (const auto& color : *palette)
             for (float channel : color)
@@ -76,19 +81,45 @@ inline bool read_palette(const nlohmann::json& value, std::vector<GUI::PreviewPa
     }
     return true;
 }
+
+inline bool read_region_slots(const nlohmann::json& value,
+                              SemanticColoring::SemanticRegionSlotBindings& slots)
+{
+    if (!value.is_object()) return false;
+    const std::array<const char*, SemanticColoring::semantic_region_slot_count> names {{
+        "eye_sclera", "iris", "eyebrow", "lips"
+    }};
+    SemanticColoring::SemanticRegionSlotBindings parsed = SemanticColoring::default_semantic_region_slot_bindings;
+    for (size_t i = 0; i < names.size(); ++i) {
+        if (!value.contains(names[i])) return false;
+        const auto& entry = value[names[i]];
+        if (!entry.is_number_integer()) return false;
+        const int64_t slot = entry.get<int64_t>();
+        if (slot < -1 || slot >= int64_t(GUI::PreviewPalette::max_preview_colors)) return false;
+        parsed[i] = int(slot);
+    }
+    slots = parsed;
+    return true;
+}
 } // namespace detail
 
 inline nlohmann::json encode(const State& state, size_t actual_face_count, const std::string& fingerprint)
 {
     if (!detail::valid_fingerprint(fingerprint)) throw std::invalid_argument("Invalid trial color geometry fingerprint.");
     if (!detail::valid_state(state)) throw std::invalid_argument("Invalid trial color state.");
-    return {{"schema", "orca.color-trial/v1"}, {"geometry_sha256", fingerprint}, {"face_count", actual_face_count},
+    return {{"schema", "orca.color-trial/v2"}, {"geometry_sha256", fingerprint}, {"face_count", actual_face_count},
             {"colors", state.colors}, {"mapping_colors", state.mapping_colors}, {"locks", state.locks},
             {"source", state.source}, {"count", state.count}, {"enabled", state.enabled},
             {"fidelity", state.fidelity}, {"lighting", state.lighting},
             {"semantic_optimization", state.semantic_optimization},
             {"semantic_palette", state.semantic_palette}, {"semantic_mapping_palette", state.semantic_mapping_palette},
-            {"semantic_portrait_card", state.semantic_portrait_card}};
+            {"semantic_portrait_card", state.semantic_portrait_card},
+            {"semantic_region_slots", {
+                {"eye_sclera", state.semantic_region_slots[0]},
+                {"iris", state.semantic_region_slots[1]},
+                {"eyebrow", state.semantic_region_slots[2]},
+                {"lips", state.semantic_region_slots[3]}
+            }}};
 }
 
 // Reject mismatched geometry or malformed fields before returning any state.
@@ -99,7 +130,8 @@ inline bool decode(const nlohmann::json& doc, size_t actual_face_count, const st
 {
     error.clear();
     auto fail = [&](const char* message) { error = message; return false; };
-    if (!doc.is_object() || !doc.contains("schema") || doc["schema"] != "orca.color-trial/v1")
+    if (!doc.is_object() || !doc.contains("schema") ||
+        (doc["schema"] != "orca.color-trial/v1" && doc["schema"] != "orca.color-trial/v2"))
         return fail("Unsupported trial color schema.");
     if (!detail::valid_fingerprint(fingerprint) || !doc.contains("geometry_sha256") ||
         !doc["geometry_sha256"].is_string() || doc["geometry_sha256"].get_ref<const std::string&>() != fingerprint)
@@ -145,6 +177,9 @@ inline bool decode(const nlohmann::json& doc, size_t actual_face_count, const st
         return fail("Invalid semantic portrait card.");
     if (!restored.semantic_portrait_card.empty() && restored.semantic_portrait_card.size() != 6)
         return fail("A semantic portrait card requires six roles.");
+    if (doc.contains("semantic_region_slots") &&
+        !detail::read_region_slots(doc["semantic_region_slots"], restored.semantic_region_slots))
+        return fail("Invalid semantic region slot bindings.");
     if (!detail::valid_state(restored)) return fail("Trial color centers and targets must form valid pairs.");
     output = std::move(restored);
     return true;

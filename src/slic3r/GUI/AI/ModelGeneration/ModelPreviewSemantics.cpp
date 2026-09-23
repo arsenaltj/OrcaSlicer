@@ -7,6 +7,7 @@ void ModelPreview3D::update_semantic_coloring()
 {
     if (!m_has_model || !m_semantic_source || !m_color_trial_enabled || !m_color_trial->semantic_optimization()) {
         if (m_semantic_controller) m_semantic_controller->cancel();
+        m_color_trial->set_semantic_region_availability({});
         m_color_trial->set_semantic_status(wxEmptyString, false);
         return;
     }
@@ -19,12 +20,32 @@ void ModelPreview3D::update_semantic_coloring()
                                       m_color_trial->semantic_portrait_card(), m_face_color_overrides)) {
         m_semantic_ready = false;
         m_semantic_analysis.reset();
+        m_color_trial->set_semantic_region_availability({});
         if (m_context && m_canvas->SetCurrent(*m_context)) m_semantic_model.reset();
         m_automatic_face_colors.clear();
         m_automatic_subface_colors.clear();
         m_color_trial->set_semantic_status(_L("正在本机识别人像区域，可旋转模型或取消……"), true);
         m_semantic_timer.Start(100);
     }
+}
+
+void ModelPreview3D::rebuild_semantic_preview_from_cached_result()
+{
+    if (!m_semantic_ready || !m_semantic_source || !m_semantic_analysis || !m_context ||
+        !m_canvas->SetCurrent(*m_context)) return;
+    const auto regional_faces = AI::SemanticColoring::apply_semantic_region_slot_overrides(
+        m_automatic_face_colors, *m_semantic_analysis, m_color_trial->semantic_region_slots(),
+        m_color_trial->semantic_palette());
+    const auto regional_subfaces = AI::SemanticColoring::apply_semantic_region_slot_overrides(
+        m_automatic_subface_colors, *m_semantic_analysis, m_color_trial->semantic_region_slots(),
+        m_color_trial->semantic_palette());
+    const auto faces = AI::SemanticColoring::compose(regional_faces, m_face_color_overrides, true);
+    const auto subfaces = AI::SemanticColoring::compose_subfaces(regional_subfaces, m_face_color_overrides, true);
+    auto geometry = build_semantic_colored_geometry(*m_semantic_source, faces, subfaces);
+    if (geometry.is_empty()) return;
+    auto model = std::make_unique<GLModel>();
+    model->init_from(std::move(geometry));
+    m_semantic_model = std::move(model);
 }
 
 void ModelPreview3D::finish_semantic_coloring()
@@ -44,6 +65,12 @@ void ModelPreview3D::finish_semantic_coloring()
             m_automatic_face_colors = std::move(result->automatic);
             m_automatic_subface_colors = std::move(result->automatic_subfaces);
             m_semantic_ready = true;
+            m_color_trial->set_semantic_region_availability(
+                AI::SemanticColoring::semantic_region_availability(*m_semantic_analysis));
+            const bool has_region_override = std::any_of(
+                m_color_trial->semantic_region_slots().begin(), m_color_trial->semantic_region_slots().end(),
+                [](int slot) { return slot >= 0; });
+            if (has_region_override) rebuild_semantic_preview_from_cached_result();
             m_color_trial->set_semantic_status(_L("已按人像区域优化；不明确的区域沿用原配色，可在局部改色中修正。"), false);
         } else {
             // The CPU result was consumed, but could not be adopted by the
@@ -54,6 +81,7 @@ void ModelPreview3D::finish_semantic_coloring()
             m_semantic_analysis.reset();
             m_automatic_face_colors.clear();
             m_automatic_subface_colors.clear();
+            m_color_trial->set_semantic_region_availability({});
             m_color_trial->set_semantic_status(_L("人像区域预览暂不可用，已沿用原有配色。切换试色后可重试。"), false);
         }
         BOOST_LOG_TRIVIAL(info) << "Local semantic coloring completed: ms=" << result->elapsed_ms

@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string] $Endpoint = 'http://127.0.0.1:18764',
-    [string] $Python = 'python',
+    [string] $Python = '',
     [string] $Orca = ''
 )
 
@@ -12,6 +12,14 @@ $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 if ([string]::IsNullOrWhiteSpace($Orca)) {
     $Orca = Join-Path $repoRoot 'build-semantic\src\Release\orca-slicer.exe'
 }
+if ([string]::IsNullOrWhiteSpace($Python)) {
+    $bundledPython = Join-Path $repoRoot 'build-semantic\src\Release\python\python.exe'
+    if (Test-Path -LiteralPath $bundledPython -PathType Leaf) {
+        $Python = $bundledPython
+    } else {
+        $Python = 'python'
+    }
+}
 if (-not (Test-Path -LiteralPath $Orca -PathType Leaf)) {
     throw "OrcaSlicer executable was not found: $Orca"
 }
@@ -20,7 +28,9 @@ if (-not (Test-Path -LiteralPath (Join-Path $repoRoot 'tools\ai\orca_ai_sidecar.
 }
 
 $tokenBytes = [byte[]]::new(32)
-[System.Security.Cryptography.RandomNumberGenerator]::Fill($tokenBytes)
+$random = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+$random.GetBytes($tokenBytes)
+$random.Dispose()
 $token = ([System.BitConverter]::ToString($tokenBytes) -replace '-', '').ToLowerInvariant()
 
 $orcaInfo = [System.Diagnostics.ProcessStartInfo]::new()
@@ -35,7 +45,7 @@ if ($null -eq $orcaProcess) { throw 'Failed to start OrcaSlicer.' }
 
 $sidecarInfo = [System.Diagnostics.ProcessStartInfo]::new()
 $sidecarInfo.FileName = $Python
-$sidecarInfo.Arguments = ('-I "{0}"' -f (Join-Path $repoRoot 'tools\ai\orca_ai_sidecar.py'))
+$sidecarInfo.Arguments = ('"{0}"' -f (Join-Path $repoRoot 'tools\ai\orca_ai_sidecar.py'))
 $sidecarInfo.WorkingDirectory = $repoRoot
 $sidecarInfo.UseShellExecute = $false
 $sidecarInfo.Environment['ORCASLICER_AI_SIDECAR_URL'] = $Endpoint

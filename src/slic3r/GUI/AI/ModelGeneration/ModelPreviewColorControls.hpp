@@ -12,6 +12,7 @@
 #include <wx/choice.h>
 #include <wx/colordlg.h>
 #include <wx/panel.h>
+#include <wx/scrolwin.h>
 #include <wx/spinctrl.h>
 #include <wx/stattext.h>
 #include <wx/wrapsizer.h>
@@ -21,6 +22,7 @@
 #include <boost/log/trivial.hpp>
 
 namespace Slic3r::GUI {
+namespace SemanticColoring = AI::SemanticColoring;
 // Trial colors do not modify the project. The separate color-pack action
 // explicitly applies a physical-slot card through the Orca adapter.
 class ModelPreviewColorControls final : public wxPanel {
@@ -99,6 +101,37 @@ public:
             m_locks[i]->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) { recompute(); });
         }
         box->Add(swatches, 0, wxEXPAND | wxALL, FromDIP(6));
+        auto* region_header = new wxBoxSizer(wxHORIZONTAL);
+        region_header->Add(new wxStaticText(this, wxID_ANY, _L("语义区域槽位")), 1, wxALIGN_CENTER_VERTICAL);
+        m_region_reset = new wxButton(this, wxID_ANY, _L("恢复自动区域颜色"));
+        region_header->Add(m_region_reset, 0);
+        box->Add(region_header, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(6));
+        const std::array<wxString, SemanticColoring::semantic_region_slot_count> region_names {{
+            _L("眼白"), _L("虹膜"), _L("眉毛"), _L("嘴唇")
+        }};
+        auto* region_rows = new wxWrapSizer(wxHORIZONTAL);
+        for (size_t i = 0; i < region_names.size(); ++i) {
+            auto* region_row = new wxBoxSizer(wxVERTICAL);
+            region_row->Add(new wxStaticText(this, wxID_ANY, region_names[i]), 0,
+                wxALIGN_CENTER_HORIZONTAL | wxBOTTOM, FromDIP(2));
+            m_region_slots[i] = new wxChoice(this, wxID_ANY);
+            m_region_slots[i]->SetName("ai_semantic_region_slot");
+            m_region_slots[i]->SetMinSize(wxSize(FromDIP(138), -1));
+            region_row->Add(m_region_slots[i], 0, wxEXPAND);
+            region_rows->Add(region_row, 0, wxRIGHT | wxBOTTOM, FromDIP(5));
+            m_region_slots[i]->Bind(wxEVT_CHOICE, [this, i](wxCommandEvent&) {
+                m_semantic_region_slots[i] = m_region_slots[i]->GetSelection() > 0
+                    ? m_region_slots[i]->GetSelection() - 1 : -1;
+                m_notice = _L("区域颜色已固定；修改区域槽位不会重新识别人像区域。");
+                region_changed();
+            });
+        }
+        box->Add(region_rows, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(3));
+        m_region_reset->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+            m_semantic_region_slots = SemanticColoring::default_semantic_region_slot_bindings;
+            m_notice = _L("已恢复自动区域颜色；识别结果保持不变。");
+            region_changed();
+        });
         m_status = new wxStaticText(this, wxID_ANY, "");
         box->Add(m_status, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(6));
         SetSizer(box);
@@ -125,6 +158,7 @@ public:
             m_source->SetSelection(0); m_count->SetValue(m_initial_count); m_fidelity->SetValue(true);
             m_semantic->SetValue(true);
             m_lighting->SetValue(false);
+            m_semantic_region_slots = SemanticColoring::default_semantic_region_slot_bindings;
             for (auto* lock : m_locks) lock->SetValue(false);
             m_notice.clear(); recompute();
         });
@@ -152,7 +186,10 @@ public:
             m_colors = m_histogram->palette(size_t(m_initial_count), {}, true);
             m_mapping_colors = m_colors;
         }
-        m_semantic_colors.clear(); m_semantic_mapping.clear(); m_semantic_card.clear(); m_semantic->SetValue(true);
+        m_semantic_colors.clear(); m_semantic_mapping.clear(); m_semantic_card.clear();
+        m_semantic_region_slots = SemanticColoring::default_semantic_region_slot_bindings;
+        m_region_available = {};
+        m_semantic->SetValue(true);
         sync_active_palette_state();
         set_semantic_status(wxEmptyString, false);
         m_enabled = false; m_source->SetSelection(0); m_count->SetValue(m_initial_count); m_fidelity->SetValue(true);
@@ -164,6 +201,8 @@ public:
     void clear() {
         m_histogram.reset(); m_colors.clear(); m_mapping_colors.clear();
         m_semantic_colors.clear(); m_semantic_mapping.clear(); m_semantic_card.clear();
+        m_semantic_region_slots = SemanticColoring::default_semantic_region_slot_bindings;
+        m_region_available = {};
         m_enabled = false; Hide();
     }
     const std::vector<Color>& colors() const { return m_colors; }
@@ -174,11 +213,21 @@ public:
     const std::vector<Color>& semantic_palette() const { return m_semantic_colors.empty() ? m_colors : m_semantic_colors; }
     const std::vector<Color>& semantic_mapping_palette() const { return m_semantic_mapping.empty() ? semantic_palette() : m_semantic_mapping; }
     const std::vector<Color>& semantic_portrait_card() const { return m_semantic_card; }
+    const SemanticColoring::SemanticRegionSlotBindings& semantic_region_slots() const { return m_semantic_region_slots; }
+    void set_semantic_region_availability(std::array<bool, SemanticColoring::semantic_region_slot_count> available) {
+        m_region_available = available; update();
+    }
     void set_semantic_status(const wxString& message, bool busy) {
         if (m_semantic_status->GetLabel() == message && m_semantic_cancel->IsShown() == busy) return;
         m_semantic_status->SetLabel(message); m_semantic_status->Show(!message.empty());
         m_semantic_status->Wrap(std::max(FromDIP(220), GetClientSize().x - FromDIP(12)));
-        m_semantic_cancel->Show(busy); Layout(); GetParent()->Layout();
+        m_semantic_cancel->Show(busy); Layout();
+        if (auto* parent = GetParent()) {
+            parent->Layout();
+            if (auto* scroll = dynamic_cast<wxScrolledWindow*>(parent))
+                scroll->FitInside();
+            if (auto* grandparent = parent->GetParent()) grandparent->Layout();
+        }
     }
     struct State : AI::ColorTrialPersistence::State {
         wxString project_signature, notice;
@@ -191,6 +240,7 @@ public:
         saved.enabled = m_enabled; saved.fidelity = m_fidelity->GetValue(); saved.lighting = lighting();
         saved.project_signature = m_project_signature; saved.notice = m_notice;
         saved.semantic_optimization = m_semantic->GetValue();
+        saved.semantic_region_slots = m_semantic_region_slots;
         if (m_colors.size() <= 6) {
             saved.semantic_palette = semantic_palette(); saved.semantic_mapping_palette = semantic_mapping_palette();
             if (saved.semantic_palette.size() == m_colors.size() &&
@@ -212,6 +262,7 @@ public:
         m_colors = saved.colors; m_mapping_colors = saved.mapping_colors;
         m_semantic_colors = saved.semantic_palette; m_semantic_mapping = saved.semantic_mapping_palette;
         m_semantic_card = saved.semantic_portrait_card;
+        m_semantic_region_slots = saved.semantic_region_slots;
         sync_active_palette_state();
         m_semantic->SetValue(saved.semantic_optimization);
         m_enabled = saved.enabled; m_notice = saved.notice;
@@ -226,6 +277,7 @@ public:
         changed();
     }
     std::function<void()> on_changed;
+    std::function<void()> on_region_changed;
 private:
     static wxColour wx_color(Color c) {
         return wxColour(int(std::lround(c[0]*255)), int(std::lround(c[1]*255)), int(std::lround(c[2]*255)));
@@ -356,6 +408,7 @@ private:
         m_locks[i]->SetValue(true); recompute();
     }
     void changed() { update(); if (on_changed) on_changed(); }
+    void region_changed() { update(); if (on_region_changed) on_region_changed(); }
     static bool is_portrait_card(const std::vector<Color>& colors) {
         const auto card = young_portrait_color_pack();
         if (colors.size() != card.colors.size()) return false;
@@ -379,6 +432,8 @@ private:
         if (m_colors.size() != 6 ||
             (!m_semantic_card.empty() && (m_semantic_card.size() != 6 || !is_portrait_card(m_semantic_card))))
             m_semantic_card.clear();
+        for (int& slot : m_semantic_region_slots)
+            if (slot < -1 || size_t(slot) >= m_colors.size()) slot = -1;
     }
     void apply_portrait_mapping() {
         const auto mapping = PreviewPalette::portrait_pack_mapping(m_histogram->palette(6, {}, true), m_colors);
@@ -392,6 +447,7 @@ private:
     void update() {
         const int source = m_source->GetSelection();
         const auto& displayed_colors = semantic_optimization() ? semantic_palette() : m_colors;
+        const auto& region_palette = semantic_optimization() ? semantic_palette() : m_colors;
         Show(bool(m_histogram));
         m_toggle->Enable(!m_colors.empty());
         m_toggle->SetLabel(m_enabled ? _L("查看原色") : wxString::Format(_L("预览 %u 色"), unsigned(m_colors.size())));
@@ -401,6 +457,29 @@ private:
             ? _L("在本机识别皮肤、衣服和嘴唇后分别匹配颜色；识别不明确的区域沿用原有配色。")
             : _L("人像区域优化支持 1 至 6 色；将结果对照调回此范围后恢复。"));
         m_lighting->Enable(m_enabled);
+        const std::array<wxString, SemanticColoring::semantic_region_slot_count> region_names {{
+            _L("眼白"), _L("虹膜"), _L("眉毛"), _L("嘴唇")
+        }};
+        const bool regions_enabled = semantic_optimization() && m_enabled;
+        m_region_reset->Enable(regions_enabled && std::any_of(m_semantic_region_slots.begin(),
+            m_semantic_region_slots.end(), [](int slot) { return slot >= 0; }));
+        for (size_t region = 0; region < region_names.size(); ++region) {
+            auto* choice = m_region_slots[region];
+            choice->Clear();
+            if (!m_region_available[region]) {
+                choice->Append(_L("未识别"));
+                choice->SetSelection(0);
+                choice->Enable(false);
+                continue;
+            }
+            choice->Append(_L("自动区域颜色"));
+            for (size_t slot = 0; slot < region_palette.size(); ++slot)
+                choice->Append(wxString::Format(_L("槽位 %u · %s"), unsigned(slot + 1),
+                    wx_color(region_palette[slot]).GetAsString(wxC2S_HTML_SYNTAX)));
+            const int selected = m_semantic_region_slots[region];
+            choice->SetSelection(selected >= 0 && size_t(selected) < region_palette.size() ? selected + 1 : 0);
+            choice->Enable(regions_enabled);
+        }
         for (size_t i = 0; i < PreviewPalette::max_preview_colors; ++i) {
             const bool visible = i < displayed_colors.size();
             m_swatches[i]->Show(visible); m_locks[i]->Show(visible && source == 0);
@@ -426,8 +505,13 @@ private:
         if (!m_notice.empty()) text += "\n" + m_notice;
         m_status->SetLabel(text); wrap_status(); Layout();
         // Controls must not consume the model viewport's existing minimum height.
-        GetParent()->SetMinSize(wxSize(FromDIP(420), FromDIP(300) + GetSizer()->CalcMin().y));
-        GetParent()->Layout();
+        SetMinSize(wxSize(FromDIP(420), GetSizer()->CalcMin().y));
+        if (auto* parent = GetParent()) {
+            parent->Layout();
+            if (auto* scroll = dynamic_cast<wxScrolledWindow*>(parent))
+                scroll->FitInside();
+            if (auto* grandparent = parent->GetParent()) grandparent->Layout();
+        }
     }
     std::vector<FilamentColorPack> m_packs;
     wxButton* m_toggle;
@@ -438,6 +522,10 @@ private:
     wxCheckBox* m_semantic;
     wxButton* m_semantic_cancel;
     wxStaticText* m_semantic_status;
+    wxButton* m_region_reset;
+    std::array<wxChoice*, SemanticColoring::semantic_region_slot_count> m_region_slots {};
+    std::array<bool, SemanticColoring::semantic_region_slot_count> m_region_available {};
+    SemanticColoring::SemanticRegionSlotBindings m_semantic_region_slots = SemanticColoring::default_semantic_region_slot_bindings;
     std::vector<Color> m_semantic_colors, m_semantic_mapping, m_semantic_card;
     wxStaticText* m_status;
     std::array<wxButton*, PreviewPalette::max_preview_colors> m_swatches {};

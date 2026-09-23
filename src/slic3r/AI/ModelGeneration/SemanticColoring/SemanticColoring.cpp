@@ -1940,6 +1940,57 @@ FaceColors compose(const FaceColors& automatic, const FaceColors& manual, bool a
     return {colors.begin(), colors.end()};
 }
 
+namespace {
+std::optional<size_t> semantic_region_index(Label label)
+{
+    switch (label) {
+    case Label::EyeSclera: return size_t(SemanticRegionSlot::EyeSclera);
+    case Label::Iris: return size_t(SemanticRegionSlot::Iris);
+    case Label::Eyebrow: return size_t(SemanticRegionSlot::Eyebrow);
+    case Label::Lips: return size_t(SemanticRegionSlot::Lips);
+    default: return std::nullopt;
+    }
+}
+
+std::optional<size_t> valid_region_target(const SemanticRegionSlotBindings& bindings, Label label,
+                                          const std::vector<Color>& palette)
+{
+    const auto region = semantic_region_index(label);
+    if (!region || *region >= bindings.size()) return std::nullopt;
+    const int slot = bindings[*region];
+    if (slot < 0 || size_t(slot) >= palette.size() || !valid_color(palette[size_t(slot)])) return std::nullopt;
+    return size_t(slot);
+}
+}
+
+std::array<bool, semantic_region_slot_count> semantic_region_availability(const Analysis& analysis)
+{
+    std::array<bool, semantic_region_slot_count> available {};
+    for (size_t face = 0; face < analysis.face_labels.size() && face < analysis.face_confidence.size(); ++face) {
+        if (analysis.face_confidence[face] < minimum_confidence) continue;
+        if (const auto region = semantic_region_index(analysis.face_labels[face])) available[*region] = true;
+    }
+    for (const auto& evidence : analysis.subface_labels) {
+        if (evidence.confidence < minimum_confidence) continue;
+        if (const auto region = semantic_region_index(evidence.label)) available[*region] = true;
+    }
+    return available;
+}
+
+FaceColors apply_semantic_region_slot_overrides(const FaceColors& automatic, const Analysis& analysis,
+                                                const SemanticRegionSlotBindings& bindings,
+                                                const std::vector<Color>& target_palette)
+{
+    FaceColors result = automatic;
+    for (auto& item : result) {
+        if (item.first >= analysis.face_labels.size() || item.first >= analysis.face_confidence.size() ||
+            analysis.face_confidence[item.first] < minimum_confidence) continue;
+        const auto slot = valid_region_target(bindings, analysis.face_labels[item.first], target_palette);
+        if (slot) item.second = target_palette[*slot];
+    }
+    return result;
+}
+
 bool enforce_subface_budget(const SubfaceColors& candidates, size_t original_face_count,
                             const SubfaceBudget& budget, SubfaceBudgetResult& output, std::string& error)
 {
@@ -2713,6 +2764,29 @@ SubfaceColors remap_subface_palette_targets(const SubfaceColors& suggestions,
         SubfaceColor mapped = suggestion;
         mapped.color = target_candidates[size_t(found - original_candidates.begin())];
         result.push_back(mapped);
+    }
+    return result;
+}
+
+SubfaceColors apply_semantic_region_slot_overrides(const SubfaceColors& automatic, const Analysis& analysis,
+                                                   const SemanticRegionSlotBindings& bindings,
+                                                   const std::vector<Color>& target_palette)
+{
+    SubfaceColors result = automatic;
+    for (auto& item : result) {
+        std::optional<size_t> slot;
+        if (item.face_id < analysis.face_labels.size() && item.face_id < analysis.face_confidence.size() &&
+            analysis.face_confidence[item.face_id] >= minimum_confidence)
+            slot = valid_region_target(bindings, analysis.face_labels[item.face_id], target_palette);
+        if (!slot) {
+            for (const auto& evidence : analysis.subface_labels) {
+                if (evidence.face_id != item.face_id || !(evidence.path == item.path) ||
+                    evidence.confidence < minimum_confidence) continue;
+                slot = valid_region_target(bindings, evidence.label, target_palette);
+                break;
+            }
+        }
+        if (slot) item.color = target_palette[*slot];
     }
     return result;
 }

@@ -6,6 +6,7 @@
 
 using namespace Slic3r;
 namespace trial = Slic3r::AI::ColorTrialPersistence;
+namespace semantic = Slic3r::AI::SemanticColoring;
 
 namespace {
 const std::string geometry_id = "0537362e094bab981ceddf4d6341b427c97c1412526c38eccc3bfd18724af2ab";
@@ -36,6 +37,7 @@ void require_same(const trial::State& a, const trial::State& b)
     REQUIRE(a.semantic_palette == b.semantic_palette);
     REQUIRE(a.semantic_mapping_palette == b.semantic_mapping_palette);
     REQUIRE(a.semantic_portrait_card == b.semantic_portrait_card);
+    REQUIRE(a.semantic_region_slots == b.semantic_region_slots);
 }
 }
 
@@ -86,6 +88,47 @@ TEST_CASE("Semantic target edits restore their original candidate assignments an
     doc["semantic_mapping_palette"].erase(0);
     REQUIRE_FALSE(trial::decode(doc, 20, geometry_id, restored, error));
     require_same(restored, saved);
+}
+
+TEST_CASE("Semantic region slot bindings round-trip and preserve physical slot order",
+          "[ColorTrialState][SemanticColoring][RegionSlots]")
+{
+    auto saved = saved_trial();
+    saved.semantic_region_slots = {{1, 2, 2, 0}};
+    trial::State restored; std::string error;
+    const auto doc = trial::encode(saved, 20, geometry_id);
+    REQUIRE(doc["schema"] == "orca.color-trial/v2");
+    REQUIRE(doc["semantic_region_slots"]["iris"] == 2);
+    REQUIRE(trial::decode(doc, 20, geometry_id, restored, error));
+    require_same(restored, saved);
+}
+
+TEST_CASE("Legacy semantic trial states default region slots to automatic colors",
+          "[ColorTrialState][SemanticColoring][RegionSlots]")
+{
+    auto doc = trial::encode(saved_trial(), 20, geometry_id);
+    doc["schema"] = "orca.color-trial/v1";
+    doc.erase("semantic_region_slots");
+    trial::State restored; std::string error;
+    REQUIRE(trial::decode(doc, 20, geometry_id, restored, error));
+    REQUIRE(restored.semantic_region_slots == semantic::default_semantic_region_slot_bindings);
+}
+
+TEST_CASE("Malformed semantic region slot bindings are rejected atomically",
+          "[ColorTrialState][SemanticColoring][RegionSlots]")
+{
+    const auto saved = saved_trial();
+    for (const auto& bad : {
+        nlohmann::json::object({{"eye_sclera", 0}, {"iris", 1}, {"eyebrow", 2}}),
+        nlohmann::json::object({{"eye_sclera", -2}, {"iris", 1}, {"eyebrow", 2}, {"lips", 3}}),
+        nlohmann::json::object({{"eye_sclera", "0"}, {"iris", 1}, {"eyebrow", 2}, {"lips", 3}})
+    }) {
+        auto doc = trial::encode(saved, 20, geometry_id);
+        doc["semantic_region_slots"] = bad;
+        trial::State restored = saved; std::string error;
+        REQUIRE_FALSE(trial::decode(doc, 20, geometry_id, restored, error));
+        require_same(restored, saved);
+    }
 }
 
 TEST_CASE("Saved trial colors preserve original group centers separately from edited targets", "[ColorTrialState]")
@@ -258,7 +301,7 @@ TEST_CASE("Trial source count and paired palette sizes stay inside their support
     const std::vector<std::pair<std::string, nlohmann::json>> invalid {
         {"source", -1}, {"source", 3}, {"source", 1.0}, {"source", "2"},
         {"count", 0}, {"count", 33}, {"count", 1.5}, {"count", 2},
-        {"schema", "orca.color-trial/v2"}, {"geometry_sha256", 123},
+        {"schema", "orca.color-trial/v3"}, {"geometry_sha256", 123},
         {"mapping_colors", nlohmann::json::array()},
         {"colors", nlohmann::json::array({{0, 0, 0}})}
     };

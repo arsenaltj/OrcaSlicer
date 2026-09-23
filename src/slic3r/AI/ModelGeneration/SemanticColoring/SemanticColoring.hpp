@@ -63,6 +63,15 @@ enum class Label : uint8_t {
 };
 inline constexpr size_t label_count = 12;
 inline constexpr float minimum_confidence = .70f;
+enum class SemanticRegionSlot : uint8_t {
+    EyeSclera,
+    Iris,
+    Eyebrow,
+    Lips
+};
+inline constexpr size_t semantic_region_slot_count = 4;
+using SemanticRegionSlotBindings = std::array<int, semantic_region_slot_count>;
+inline constexpr SemanticRegionSlotBindings default_semantic_region_slot_bindings {{-1, -1, -1, -1}};
 // Version of stored recognition evidence; palette-mapping edits do not invalidate it.
 inline constexpr const char* pipeline_version = "orca.semantic-coloring/v17";
 
@@ -203,6 +212,10 @@ FaceColors map_palette(const MeshSnapshot&, const Analysis&, const std::vector<C
 FaceColors remap_palette_targets(const FaceColors& suggestions, const std::vector<Color>& original_candidates,
                                 const std::vector<Color>& target_candidates);
 FaceColors compose(const FaceColors& automatic, const FaceColors& manual, bool automatic_enabled);
+std::array<bool, semantic_region_slot_count> semantic_region_availability(const Analysis&);
+FaceColors apply_semantic_region_slot_overrides(const FaceColors&, const Analysis&,
+                                                const SemanticRegionSlotBindings&,
+                                                const std::vector<Color>& target_palette);
 
 // Budgeting is transactional: malformed input produces no accepted leaves.
 // Candidates are considered by confidence, then stable face/path order. Each
@@ -216,6 +229,9 @@ bool map_subface_palette(const MeshSnapshot&, const Analysis&, const FaceColors&
 SubfaceColors remap_subface_palette_targets(const SubfaceColors& suggestions,
                                             const std::vector<Color>& original_candidates,
                                             const std::vector<Color>& target_candidates);
+SubfaceColors apply_semantic_region_slot_overrides(const SubfaceColors&, const Analysis&,
+                                                   const SemanticRegionSlotBindings&,
+                                                   const std::vector<Color>& target_palette);
 // Manual whole-face paint suppresses every automatic child of that face.
 SubfaceColors compose_subfaces(const SubfaceColors& automatic, const FaceColors& manual,
                                bool automatic_enabled);

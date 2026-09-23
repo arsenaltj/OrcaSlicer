@@ -30,7 +30,7 @@ struct FilamentColorPack {
 
 inline FilamentColorPack young_portrait_color_pack() {
     return {u8"人物基础 · 年轻向六色",
-        {"#F7E2DA", "#282629", "#F6F7F9", "#EA9A92", "#668CB6", "#958B86"},
+        {"#ECC3B2", "#282629", "#F6F7F9", "#EA9A92", "#668CB6", "#958B86"},
         {u8"清透浅嫩肤色", u8"柔炭黑", u8"冷调奶白", u8"蜜桃浅橘红", u8"雾感浅牛仔蓝", u8"柔灰棕"}};
 }
 

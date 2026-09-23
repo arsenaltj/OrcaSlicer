@@ -20,7 +20,7 @@ TEST_CASE("Initial trial count follows usable project filaments and bounds the f
 
 TEST_CASE("Portrait card keeps skin and lips separate and recolors cool clothing", "[FilamentColorPack]")
 {
-    const std::vector<Color> card {{247.f/255,226.f/255,218.f/255}, {40.f/255,38.f/255,41.f/255},
+    const std::vector<Color> card {{236.f/255,195.f/255,178.f/255}, {40.f/255,38.f/255,41.f/255},
         {246.f/255,247.f/255,249.f/255}, {234.f/255,154.f/255,146.f/255},
         {102.f/255,140.f/255,182.f/255}, {149.f/255,139.f/255,134.f/255}};
     const std::vector<Color> source {{46.f/255,46.f/255,49.f/255}, {57.f/255,67.f/255,59.f/255},
@@ -40,7 +40,7 @@ TEST_CASE("Portrait card keeps skin and lips separate and recolors cool clothing
 
 TEST_CASE("Portrait matching preserves locally painted filament colors on repeated application", "[FilamentColorPack]")
 {
-    const std::vector<Color> card {{247.f/255,226.f/255,218.f/255}, {40.f/255,38.f/255,41.f/255},
+    const std::vector<Color> card {{236.f/255,195.f/255,178.f/255}, {40.f/255,38.f/255,41.f/255},
         {246.f/255,247.f/255,249.f/255}, {234.f/255,154.f/255,146.f/255},
         {102.f/255,140.f/255,182.f/255}, {149.f/255,139.f/255,134.f/255}};
     const std::vector<Color> edited {{.2f,.2f,.2f}, {92.f/255,91.f/255,94.f/255},
@@ -57,7 +57,7 @@ TEST_CASE("Portrait matching preserves locally painted filament colors on repeat
 
 TEST_CASE("Portrait matching leaves pink unused for six neutral and golden source groups", "[FilamentColorPack][Regression]")
 {
-    const std::vector<Color> card {{247.f/255,226.f/255,218.f/255}, {40.f/255,38.f/255,41.f/255},
+    const std::vector<Color> card {{236.f/255,195.f/255,178.f/255}, {40.f/255,38.f/255,41.f/255},
         {246.f/255,247.f/255,249.f/255}, {234.f/255,154.f/255,146.f/255},
         {102.f/255,140.f/255,182.f/255}, {149.f/255,139.f/255,134.f/255}};
     // Dark features, blue clothing and three golden fur shades contain no red accent.
@@ -76,7 +76,7 @@ TEST_CASE("Portrait matching leaves pink unused for six neutral and golden sourc
 
 TEST_CASE("Portrait source groups retain their material when other groups use the same role", "[FilamentColorPack][Regression]")
 {
-    const std::vector<Color> card {{247.f/255,226.f/255,218.f/255}, {40.f/255,38.f/255,41.f/255},
+    const std::vector<Color> card {{236.f/255,195.f/255,178.f/255}, {40.f/255,38.f/255,41.f/255},
         {246.f/255,247.f/255,249.f/255}, {234.f/255,154.f/255,146.f/255},
         {102.f/255,140.f/255,182.f/255}, {149.f/255,139.f/255,134.f/255}};
     const Color skin {204.f/255,148.f/255,112.f/255};
@@ -94,7 +94,7 @@ TEST_CASE("Portrait source groups retain their material when other groups use th
 
 TEST_CASE("Portrait matching separates muted skin boundaries from red lips", "[FilamentColorPack][Regression]")
 {
-    const std::vector<Color> card {{247.f/255,226.f/255,218.f/255}, {40.f/255,38.f/255,41.f/255},
+    const std::vector<Color> card {{236.f/255,195.f/255,178.f/255}, {40.f/255,38.f/255,41.f/255},
         {246.f/255,247.f/255,249.f/255}, {234.f/255,154.f/255,146.f/255},
         {102.f/255,140.f/255,182.f/255}, {149.f/255,139.f/255,134.f/255}};
     // Rounded area-weighted centers from a real portrait. The muted boundary
@@ -111,7 +111,7 @@ TEST_CASE("Portrait matching separates muted skin boundaries from red lips", "[F
 
 TEST_CASE("Portrait matching retains red accents across lightness variations", "[FilamentColorPack][Regression]")
 {
-    const std::vector<Color> card {{247.f/255,226.f/255,218.f/255}, {40.f/255,38.f/255,41.f/255},
+    const std::vector<Color> card {{236.f/255,195.f/255,178.f/255}, {40.f/255,38.f/255,41.f/255},
         {246.f/255,247.f/255,249.f/255}, {234.f/255,154.f/255,146.f/255},
         {102.f/255,140.f/255,182.f/255}, {149.f/255,139.f/255,134.f/255}};
     const std::vector<Color> reds {{175.f/255,91.f/255,80.f/255}, {190.f/255,105.f/255,97.f/255}};
@@ -120,7 +120,7 @@ TEST_CASE("Portrait matching retains red accents across lightness variations", "
 
 TEST_CASE("Portrait matching keeps gray and near-neutral ramps neutral and ordered", "[FilamentColorPack][Regression]")
 {
-    const std::vector<Color> card {{247.f/255,226.f/255,218.f/255}, {40.f/255,38.f/255,41.f/255},
+    const std::vector<Color> card {{236.f/255,195.f/255,178.f/255}, {40.f/255,38.f/255,41.f/255},
         {246.f/255,247.f/255,249.f/255}, {234.f/255,154.f/255,146.f/255},
         {102.f/255,140.f/255,182.f/255}, {149.f/255,139.f/255,134.f/255}};
     const std::vector<Color> neutral_targets {card[1], card[5], card[2]};
@@ -148,7 +148,7 @@ TEST_CASE("The portrait color pack preserves the supplied physical slot order", 
 {
     const auto pack = Slic3r::GUI::young_portrait_color_pack();
     REQUIRE(pack.valid());
-    REQUIRE(pack.colors == std::vector<std::string>{"#F7E2DA", "#282629", "#F6F7F9", "#EA9A92", "#668CB6", "#958B86"});
+    REQUIRE(pack.colors == std::vector<std::string>{"#ECC3B2", "#282629", "#F6F7F9", "#EA9A92", "#668CB6", "#958B86"});
     REQUIRE(pack.labels.size() == pack.colors.size());
 }
 
@@ -393,7 +393,7 @@ TEST_CASE("Supported middle gray retains a source group in a chromatic palette",
     REQUIRE(group < colors.size());
     CHECK_THAT(distance(centers[group], to_lab(gray)), Catch::Matchers::WithinAbs(0, 1e-8));
 
-    const std::vector<Color> card {{247.f/255,226.f/255,218.f/255}, {40.f/255,38.f/255,41.f/255},
+    const std::vector<Color> card {{236.f/255,195.f/255,178.f/255}, {40.f/255,38.f/255,41.f/255},
         {246.f/255,247.f/255,249.f/255}, {234.f/255,154.f/255,146.f/255},
         {102.f/255,140.f/255,182.f/255}, {149.f/255,139.f/255,134.f/255}};
     const auto mapped = portrait_pack_mapping(colors, card);

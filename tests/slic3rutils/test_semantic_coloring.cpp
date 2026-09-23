@@ -270,6 +270,39 @@ TEST_CASE("Portrait eyebrows use one neutral midtone without coloring adjacent s
     CHECK(mapped[2].second == card[0]);
 }
 
+TEST_CASE("Semantic region slot overrides recolor only reliable facial regions", "[SemanticColoring][RegionSlots]")
+{
+    const auto source = triangles({{.85f, .85f, .85f}, {.20f, .18f, .16f}, {.16f, .10f, .08f}, {.75f, .45f, .42f}, {.70f, .55f, .45f}});
+    const auto analysis = labeled(source, {Label::EyeSclera, Label::Iris, Label::Eyebrow, Label::Lips, Label::FaceSkin});
+    const std::vector<Color> palette {{.9f, .9f, .9f}, {.1f, .1f, .1f}, {.3f, .4f, .8f}, {.8f, .1f, .2f}};
+    FaceColors automatic {{0, palette[0]}, {1, palette[1]}, {2, palette[1]}, {3, palette[3]}, {4, palette[0]}};
+    const SemanticRegionSlotBindings bindings {{2, 1, 1, 3}};
+    const auto result = apply_semantic_region_slot_overrides(automatic, analysis, bindings, palette);
+    REQUIRE(result.size() == automatic.size());
+    CHECK(result[0].second == palette[2]);
+    CHECK(result[1].second == palette[1]);
+    CHECK(result[2].second == palette[1]);
+    CHECK(result[3].second == palette[3]);
+    CHECK(result[4].second == palette[0]);
+}
+
+TEST_CASE("Semantic region slot overrides preserve subface evidence and reject invalid slots",
+          "[SemanticColoring][RegionSlots]")
+{
+    const auto source = triangles({{.85f, .85f, .85f}});
+    auto analysis = labeled(source, {Label::FaceSkin});
+    analysis.subface_labels.push_back({0, {2, 3}, Label::Lips, .95f, 4});
+    const std::vector<Color> palette {{.8f, .6f, .5f}, {.8f, .1f, .2f}};
+    const SemanticRegionSlotBindings bindings {{-1, -1, -1, 1}};
+    const SubfaceColors automatic {{0, {2, 3}, palette[0], .9f}};
+    const auto result = apply_semantic_region_slot_overrides(automatic, analysis, bindings, palette);
+    REQUIRE(result.size() == 1);
+    CHECK(result.front().color == palette[1]);
+
+    const SemanticRegionSlotBindings invalid {{-1, -1, -1, 5}};
+    CHECK(apply_semantic_region_slot_overrides(automatic, analysis, invalid, palette).front().color == palette[0]);
+}
+
 TEST_CASE("Eyebrow overlays preserve the surrounding face-skin material topology", "[SemanticColoring][Regression][EyebrowColor]")
 {
     const auto source = connected_triangles({

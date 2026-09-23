@@ -29,6 +29,8 @@
 #include <wx/glcanvas.h>
 #include <wx/panel.h>
 #include <wx/button.h>
+#include <wx/scrolwin.h>
+#include <wx/splitter.h>
 #include <wx/stattext.h>
 #include <wx/timer.h>
 
@@ -59,9 +61,29 @@ public:
     {
         SetBackgroundColour(wxGetApp().get_window_default_clr());
         auto* sizer = new wxBoxSizer(wxVERTICAL);
-        m_canvas = OpenGLManager::create_wxglcanvas(*this);
-        m_canvas->SetMinSize(wxSize(FromDIP(360), FromDIP(300)));
-        sizer->Add(m_canvas, 1, wxEXPAND);
+        m_splitter = new wxSplitterWindow(this, wxID_ANY, wxDefaultPosition, wxDefaultSize,
+            wxSP_LIVE_UPDATE | wxSP_3DSASH);
+        m_splitter->SetMinimumPaneSize(FromDIP(170));
+        m_saved_splitter_sash = FromDIP(360);
+        m_preview_host = new wxPanel(m_splitter);
+        auto* preview_sizer = new wxBoxSizer(wxVERTICAL);
+        m_canvas = OpenGLManager::create_wxglcanvas(*m_preview_host);
+        m_canvas->SetMinSize(wxSize(FromDIP(360), FromDIP(260)));
+        preview_sizer->Add(m_canvas, 1, wxEXPAND);
+        m_preview_host->SetSizer(preview_sizer);
+        m_controls_scroll = new wxScrolledWindow(m_splitter, wxID_ANY, wxDefaultPosition, wxDefaultSize,
+            wxVSCROLL | wxBORDER_NONE);
+        m_controls_scroll->SetScrollRate(0, FromDIP(12));
+        auto* controls_sizer = new wxBoxSizer(wxVERTICAL);
+        m_color_trial = new ModelPreviewColorControls(m_controls_scroll);
+        controls_sizer->Add(m_color_trial, 0, wxEXPAND);
+        m_controls_scroll->SetSizer(controls_sizer);
+        m_splitter->SplitHorizontally(m_preview_host, m_controls_scroll, FromDIP(360));
+        m_splitter->Bind(wxEVT_SPLITTER_SASH_POS_CHANGED, [this](wxSplitterEvent& event) {
+            m_saved_splitter_sash = event.GetSashPosition();
+            event.Skip();
+        });
+        sizer->Add(m_splitter, 1, wxEXPAND);
         m_region_prepare_status = new wxStaticText(this, wxID_ANY, wxEmptyString);
         sizer->Add(m_region_prepare_status, 0, wxEXPAND | wxALL, FromDIP(6));
         m_region_prepare_status->Hide();
@@ -71,9 +93,8 @@ public:
         Bind(wxEVT_TIMER, [this](wxTimerEvent&) { finish_surface_selection(); }, m_surface_timer.GetId());
         m_semantic_timer.SetOwner(this);
         Bind(wxEVT_TIMER, [this](wxTimerEvent&) { finish_semantic_coloring(); }, m_semantic_timer.GetId());
-        m_color_trial = new ModelPreviewColorControls(this);
-        sizer->Add(m_color_trial, 0, wxEXPAND);
         m_color_trial->Hide();
+        m_controls_scroll->Hide();
         m_color_trial->on_changed = [this] {
             m_trial_toggle_started = std::chrono::steady_clock::now();
             m_color_trial_enabled = m_color_trial->enabled();
@@ -82,6 +103,10 @@ public:
             m_canvas->Refresh(false);
             BOOST_LOG_TRIVIAL(info) << "AI color trial toggled: enabled=" << m_color_trial_enabled
                 << ", palette=" << m_trial_palette.size() << ", geometry_reloaded=false";
+        };
+        m_color_trial->on_region_changed = [this] {
+            rebuild_semantic_preview_from_cached_result();
+            m_canvas->Refresh(false);
         };
         SetSizer(sizer);
 
@@ -582,12 +607,22 @@ public:
     const std::string& geometry_id() const { return m_geometry_id; }
     const FaceColorOverrides& face_color_overrides() const { return m_face_color_overrides; }
     FaceColorOverrides import_face_color_overrides(bool use_current_trial = true) const {
-        return AI::SemanticColoring::compose(m_automatic_face_colors, m_face_color_overrides,
-            use_current_trial && m_color_trial_enabled && m_color_trial->semantic_optimization() && m_semantic_ready);
+        const bool semantic = use_current_trial && m_color_trial_enabled &&
+            m_color_trial->semantic_optimization() && m_semantic_ready && m_semantic_analysis;
+        const auto automatic = semantic
+            ? AI::SemanticColoring::apply_semantic_region_slot_overrides(m_automatic_face_colors, *m_semantic_analysis,
+                m_color_trial->semantic_region_slots(), m_color_trial->semantic_palette())
+            : m_automatic_face_colors;
+        return AI::SemanticColoring::compose(automatic, m_face_color_overrides, semantic);
     }
     SubfaceColorOverrides import_subface_color_overrides(bool use_current_trial = true) const {
-        return AI::SemanticColoring::compose_subfaces(m_automatic_subface_colors, m_face_color_overrides,
-            use_current_trial && m_color_trial_enabled && m_color_trial->semantic_optimization() && m_semantic_ready);
+        const bool semantic = use_current_trial && m_color_trial_enabled &&
+            m_color_trial->semantic_optimization() && m_semantic_ready && m_semantic_analysis;
+        const auto automatic = semantic
+            ? AI::SemanticColoring::apply_semantic_region_slot_overrides(m_automatic_subface_colors, *m_semantic_analysis,
+                m_color_trial->semantic_region_slots(), m_color_trial->semantic_palette())
+            : m_automatic_subface_colors;
+        return AI::SemanticColoring::compose_subfaces(automatic, m_face_color_overrides, semantic);
     }
     nlohmann::json semantic_color_metadata() const {
         if (!m_semantic_analysis) return nlohmann::json::object();
@@ -731,7 +766,16 @@ public:
         return AI::ColorTrialPersistence::encode(saved, m_triangle_count, m_geometry_id);
     }
     void restore_color_trial(const ModelPreviewColorControls::State& state) { m_color_trial->restore(state); }
-    void set_color_controls_visible(bool visible) { m_color_trial->Show(visible && m_has_model); Layout(); }
+    void set_color_controls_visible(bool visible) {
+        const bool show = visible && m_has_model;
+        m_color_trial->Show(show);
+        m_controls_scroll->Show(show);
+        if (show && !m_splitter->IsSplit())
+            m_splitter->SplitHorizontally(m_preview_host, m_controls_scroll, m_saved_splitter_sash);
+        else if (!show && m_splitter->IsSplit())
+            m_splitter->Unsplit(m_controls_scroll);
+        Layout();
+    }
     // Capture on the UI thread; callers own the copy and cannot mutate preview
     // controls, project slots or the source mesh through this snapshot.
     PreviewPalette::ColorTrialMapping color_trial_mapping() const {
@@ -1503,8 +1547,13 @@ private:
     }
 
     wxGLCanvas* m_canvas {nullptr};
+    wxSplitterWindow* m_splitter {nullptr};
+    wxPanel* m_preview_host {nullptr};
+    wxScrolledWindow* m_controls_scroll {nullptr};
+    int m_saved_splitter_sash {360};
     void update_semantic_coloring();
     void finish_semantic_coloring();
+    void rebuild_semantic_preview_from_cached_result();
     wxTimer m_semantic_timer;
     std::unique_ptr<ModelSemanticColoring> m_semantic_controller;
     std::shared_ptr<const AI::SemanticColoring::MeshSnapshot> m_semantic_source;
