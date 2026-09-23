@@ -342,7 +342,8 @@ private:
     void update() {
         const int source = m_source->GetSelection();
         const auto& displayed_colors = semantic_optimization() ? semantic_palette() : m_colors;
-        Show(bool(m_histogram));
+        // Visibility belongs to ModelPreview3D's host (shared color page or
+        // legacy trial panel). Loading/updating data must not reveal controls.
         m_toggle->Enable(!m_colors.empty());
         m_toggle->SetLabel(m_enabled ? _L("查看原色") : wxString::Format(_L("预览 %u 色"), unsigned(m_colors.size())));
         m_count->Enable(source == 0 || source == 2); m_fidelity->Enable(source == 0);
@@ -371,8 +372,9 @@ private:
         if (source == 1 && !m_project_error.empty()) text += "\n" + m_project_error;
         if (!m_notice.empty()) text += "\n" + m_notice;
         m_status->SetLabel(text); wrap_status(); Layout();
-        // Controls must not consume the model viewport's existing minimum height.
-        GetParent()->SetMinSize(wxSize(FromDIP(420), FromDIP(300) + GetSizer()->CalcMin().y));
+        // The parent's sizer includes these controls only while visible. Do not
+        // persist their height as a parent minimum: loading a model also updates
+        // this hidden panel and would keep the comparison viewport too tall.
         GetParent()->Layout();
     }
     std::vector<FilamentColorPack> m_packs;

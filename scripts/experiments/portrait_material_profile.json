@@ -1,0 +1,16 @@
+{
+  "sample": "3f554ec4-1781-4843-b6c3-db0d895587d3, centered Z-up 100 mm, front +X",
+  "glb_sha256": "638b727f03066900c3e96e56aedd106e76893dada94510c6484253585d482d8d",
+  "method": "Manual feature windows + texture chroma; reviewed sample only",
+  "material_palette_choice": {"skin": 0, "hair_and_blouse": 1, "coat_and_teeth": 2, "lips": 3, "base_and_watch": 5},
+  "base_top_z_mm": -41.7,
+  "features": [
+    {"name":"left_brow","kind":"brow","min_x_mm":6,"dark_threshold":155,"polygon_yz_mm":[[-9.2,34.5],[-8.6,36.3],[-5.0,36.9],[-3.0,36.4],[-3.0,35.5],[-7.4,35.3]]},
+    {"name":"right_brow","kind":"brow","min_x_mm":6,"dark_threshold":155,"polygon_yz_mm":[[-0.2,36.0],[0.3,37.0],[3.9,37.9],[6.3,36.7],[5.9,36.2],[3.1,36.7]]},
+    {"name":"left_eye","kind":"eye","min_x_mm":8,"dark_threshold":100,"polygon_yz_mm":[[-8.6,32.1],[-8.0,34.1],[-5.3,34.7],[-3.0,33.1],[-4.6,32.0]]},
+    {"name":"right_eye","kind":"eye","min_x_mm":8,"dark_threshold":100,"polygon_yz_mm":[[0.1,33.1],[0.3,34.6],[2.6,35.6],[5.0,35.1],[6.1,33.7]]},
+    {"name":"mouth","kind":"mouth","min_x_mm":10,"polygon_yz_mm":[[-4.6,26.6],[-1.7,27.7],[1.6,27.6],[3.9,27.0],[4.0,25.8],[1.0,22.8],[-2.1,22.8],[-4.6,25.0]]},
+    {"name":"nose","kind":"nostrils","min_x_mm":13,"polygon_yz_mm":[[-3.3,28.0],[-3.3,30.8],[2.1,31.2],[3.2,29.0]]},
+    {"name":"watch","kind":"watch","min_x_mm":12,"polygon_yz_mm":[[-16.0,-13.4],[-12.1,-9.2],[-8.7,-10.5],[-11.8,-15.1]]}
+  ]
+}

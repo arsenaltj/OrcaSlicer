@@ -1939,6 +1939,11 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                     continue;
                 }
 
+                if (name.rfind("Metadata/ImageMap/", 0) == 0) {
+                    add_error("This project uses the removed ImageMap experimental mode. Reimport the original GLB/OBJ and match filament colors before slicing.");
+                    return false;
+                }
+
                 if (boost::algorithm::iequals(name, BBS_LAYER_HEIGHTS_PROFILE_FILE)) {
                     // extract slic3r layer heights profile file
                     _extract_layer_heights_profile_config_from_archive(archive, stat);
@@ -5223,6 +5228,10 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             for (const Metadata& metadata : volume_data->metadata) {
                 if (metadata.key == NAME_KEY)
                     volume->name = metadata.value;
+                else if (metadata.key == "image_map_asset") {
+                    add_error("This project requires the removed ImageMap experimental mode. Reimport the original textured model.");
+                    return false;
+                }
                 //else if ((metadata.key == MODIFIER_KEY) && (metadata.value == "1"))
 				//	volume->set_type(ModelVolumeType::PARAMETER_MODIFIER);
 				//for old format

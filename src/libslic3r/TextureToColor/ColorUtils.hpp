@@ -72,6 +72,10 @@ double calc_rgb_color_difference_by_squared_rgb_double(const ColorDouble& c1, co
  */
 double calc_rgb_color_difference_by_ciede2000(const RGB& rgb1, const RGB& rgb2);
 
+// CIELAB values with a common reference white, kL = kC = kH = 1.
+// Exposed independently of RGB conversion for reference-data validation.
+double calc_lab_color_difference_by_ciede2000(const ColorDouble& lab1, const ColorDouble& lab2);
+
 /**
  * @brief Compute the CIEDE2000 color difference between two sRGB colors (double precision, non-linear channels in [0,1]).
  *

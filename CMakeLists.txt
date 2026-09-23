@@ -1379,10 +1379,13 @@ if (WIN32)
                 endif()
             endforeach()
         ]])
+        include("${CMAKE_SOURCE_DIR}/tools/ai/local_semantic_runtime_files.cmake")
+        include("${CMAKE_SOURCE_DIR}/cmake/OrcaBeautyRuntime.cmake")
         set(ORCA_AI_SIDECAR_RUNTIME_FILES
             "${CMAKE_SOURCE_DIR}/tools/ai/ai_diagnostics.py"
             "${CMAKE_SOURCE_DIR}/tools/ai/color_intent.py"
             "${CMAKE_SOURCE_DIR}/tools/ai/glb_artifact.py"
+            ${ORCA_LOCAL_SEMANTIC_RUNTIME_FILES}
             "${CMAKE_SOURCE_DIR}/tools/ai/model_input_image_quality.py" "${CMAKE_SOURCE_DIR}/tools/ai/model_job_support.py" "${CMAKE_SOURCE_DIR}/tools/ai/model_provider_gateway.py"
             "${CMAKE_SOURCE_DIR}/tools/ai/model_refinement.py"
             "${CMAKE_SOURCE_DIR}/tools/ai/network_policy.py"

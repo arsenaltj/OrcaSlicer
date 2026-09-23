@@ -50,7 +50,8 @@ def generation_prompt(
     constrain_palette: bool = True,
 ) -> str:
     suffix = (
-        " Generate a watertight printable model with a stable flat base. Preserve meaningful separate parts "
+        " Generate a watertight printable model with a stable contact surface only when it is visible in the source. "
+        "Keep a base-free subject base-free; an optional display base is added later in Orca after generation. Preserve meaningful separate parts "
         "and material regions in their original relative positions; do not create unintended floating debris, "
         "internal shells, holes, or non-manifold geometry."
     )

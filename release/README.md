@@ -79,3 +79,25 @@ Tripo configuration is separate. Do not commit real configuration files or keys.
 Remote source submission, if separately requested, follows the
 [team SOP](../Docs/coordination/team-integration-sop.md). Building an internal
 package does not authorize sending it, pushing code or contacting testers.
+
+## Offline beauty runtime for the Windows internal candidate
+
+Use `scripts/stage_beauty_runtime.py` with explicitly supplied Python, package
+and pinned-weight directories; set `ORCA_BEAUTY_RUNTIME_ROOT` to that prepared
+folder before configuring the internal build. The runtime manifest retains
+package versions and file hashes; runtime libraries, model weights and licenses
+travel under `resources/beauty-runtime`. Developer static libraries and Python
+bytecode caches are excluded. No user configuration or provider credentials are
+included. A user `local_semantic_runtime.json` overrides automatic bundled
+runtime discovery, including explicit opt-out.
+
+Content inspection supports bounded ZIP/TAR/gzip/bzip2/xz containers and the
+646 MB pinned parsing model. Public examples in audited dependency files are
+classified only for exact file hashes, paths and literals; other assignments,
+changed files and token patterns remain subject to the normal checks.
+
+Pass `-SevenZipExecutable <absolute-path-to-7z.exe>` when 7-Zip is not installed
+in a standard location. Both preflights verify this path without executing it;
+the content scanner receives it explicitly. Internal NSIS packages use zlib
+compression to keep large offline-model builds practical, while the final
+artifact names and manifests retain the full snapshot revision.

@@ -69,6 +69,7 @@ namespace UndoRedo {
 }
 
 namespace GUI {
+namespace LocalPrintColorCommit { struct Prepared; }
 struct ModelColorImportResult;
 struct TextureImportOptions;
 class SyncAmsInfoDialog;
@@ -287,7 +288,7 @@ public:
     void                                 udpate_combos_filament_badge();
 
     // Mixed-color filament sidebar section
-    void add_mixed_filament();
+    void add_mixed_filament(const std::string& target_color = {});
     void edit_mixed_filament(size_t idx);
     void delete_mixed_filament_at(size_t idx);
     void decompose_filament_color(int filament_idx);
@@ -585,7 +586,6 @@ public:
 
     void clear_before_change_mesh(int obj_idx);
     void changed_mesh(int obj_idx);
-
     void changed_object(ModelObject &object);
     void changed_object(int obj_idx);
     void changed_objects(const std::vector<size_t>& object_idxs);
@@ -615,6 +615,7 @@ public:
     void take_snapshot(const std::string &snapshot_name, UndoRedo::SnapshotType snapshot_type);
     //void take_snapshot(const wxString &snapshot_name, UndoRedo::SnapshotType snapshot_type);
 
+#include "PlaterColorTransactions.ipp"
     void undo();
     void redo();
     void undo_to(int selection);
@@ -695,7 +696,11 @@ public:
     GLCanvas3D* get_assmeble_canvas3D();
     wxWindow* get_select_machine_dialog();
 
-    void arrange();
+    bool arrange();
+    // Queue an arrange job for an AI import and keep the workflow status
+    // pending until the UI worker has finalized the job.
+    bool arrange_for_ai_workflow();
+    void notify_ai_arrange_finished(bool success);
     void orient();
     void find_new_position(const ModelInstancePtrs  &instances);
     //BBS: add job state related functions
@@ -1023,6 +1028,7 @@ public:
         return m_arrange_running.compare_exchange_strong(prevRunning, true);
     };
     std::atomic<bool> m_arrange_running{false};
+    std::atomic<bool> m_ai_arrange_pending{false};
     void              reset_check_status() { m_check_status = 0; }
 
     bool is_loading_project() const { return m_loading_project; }

@@ -9,6 +9,7 @@
 
 #include <libslic3r/ObjectID.hpp>
 #include <libslic3r/Config.hpp>
+#include "ProjectConfigUndo.hpp"
 
 typedef double                          coordf_t;
 typedef std::pair<coordf_t, coordf_t>   t_layer_height_range;
@@ -78,6 +79,7 @@ struct Snapshot
 	size_t 				timestamp;
 	size_t 				model_id;
 	SnapshotData  		snapshot_data;
+	std::shared_ptr<const ProjectConfigUndo::Change> project_config_change;
 
 	bool		operator< (const Snapshot &rhs) const { return this->timestamp < rhs.timestamp; }
 	bool		operator==(const Snapshot &rhs) const { return this->timestamp == rhs.timestamp; }
@@ -100,6 +102,17 @@ inline bool snapshot_modifies_project(SnapshotType type)
 inline bool snapshot_modifies_project(const Snapshot &snapshot)
 {
 	return snapshot_modifies_project(snapshot.snapshot_data.snapshot_type) && (snapshot.name.empty() || snapshot.name.back() != '!');
+}
+
+inline bool record_project_config_change(std::vector<Snapshot>& history,size_t active_time,
+    std::shared_ptr<const ProjectConfigUndo::Change> change)
+{
+    if(!change || history.size()<2 || history.back().timestamp!=active_time ||
+       !history.back().is_topmost() || history.back().is_topmost_captured()) return false;
+    auto& action=history[history.size()-2];
+    if(action.snapshot_data.snapshot_type!=SnapshotType::Action || !snapshot_modifies_project(action) || action.project_config_change) return false;
+    action.project_config_change=std::move(change);
+    return true;
 }
 
 // Excerpt of Slic3r::GUI::Selection for serialization onto the Undo / Redo stack.
@@ -141,6 +154,12 @@ public:
     // To be called just after take_snapshot() when leaving a gizmo, inside which small edits like support point add / remove events or paiting actions were allowed.
     // Remove all but the last edit between the gizmo enter / leave snapshots.
     void reduce_noisy_snapshots(const std::string& new_name);
+
+    // Attach only to the immediately preceding ordinary Action. Other native
+    // snapshots remain unchanged; history truncation releases the payload.
+    bool record_project_config_change(std::shared_ptr<const ProjectConfigUndo::Change> change);
+    bool prepare_project_config_jump(size_t time_to_load,const DynamicPrintConfig& config,
+        const std::vector<std::string>& filament_presets,ProjectConfigUndo::Prepared& destination,std::string& error) const;
 
 	// To be queried to enable / disable the Undo / Redo buttons at the UI.
 	bool has_undo_snapshot() const;

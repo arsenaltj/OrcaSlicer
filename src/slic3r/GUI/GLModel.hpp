@@ -169,6 +169,9 @@ namespace GUI {
         const Geometry& get_geometry() const { return m_render_data.geometry; }
 
         void init_from(Geometry&& data);
+        // Replace same-layout vertex attributes without replacing topology or
+        // allocating a new index buffer. The caller retains unchanged positions.
+        bool update_vertex_attributes(const std::vector<float>& vertices);
         void init_from(const TriangleMesh& mesh);
         void init_from(const indexed_triangle_set& its);
         void init_from(const Polygons& polygons, float z);

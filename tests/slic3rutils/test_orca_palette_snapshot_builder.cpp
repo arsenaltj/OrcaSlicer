@@ -1,9 +1,100 @@
 #include <catch2/catch_all.hpp>
 
 #include "slic3r/GUI/AI/Orca/OrcaPaletteSnapshotBuilder.hpp"
+#include "slic3r/GUI/AI/Orca/OrcaPrintPaletteSnapshot.hpp"
+#include "slic3r/GUI/AI/Orca/LocalPrintRecipeApplication.hpp"
 
 using namespace Slic3r;
 using namespace Slic3r::GUI;
+
+TEST_CASE("capturing a staged native palette leaves the live bundle and physical identities unchanged",
+          "[OrcaPaletteCapture]")
+{
+    PresetBundle live;live.set_num_filaments(3);
+    live.project_config.option<ConfigOptionStrings>("filament_colour")->values={"#000000","#FFFFFF","#FF0000"};
+    const auto identity=LocalPrintRecipeApplication::identity(live);
+    const auto before=OrcaPrintPaletteSnapshot::capture(live);
+    REQUIRE(before.physical_channels.size()==3);
+    CHECK(before.project_colors==live.project_config.option<ConfigOptionStrings>("filament_colour")->values);
+    PresetBundle staged(live);staged.set_num_filaments(4,"#808080");
+    staged.project_config.option<ConfigOptionBools>("filament_is_mixed")->values[3]=true;
+    staged.project_config.option<ConfigOptionStrings>("filament_mixed_components")->values[3]="1,3";
+    staged.project_config.option<ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values[3]="0.3,0.7";
+    const auto after=OrcaPrintPaletteSnapshot::capture(staged);
+    REQUIRE(after.mixed_recipes.size()==1);
+    CHECK(after.mixed_recipes.front().uniform_color);
+    staged.project_config.option<ConfigOptionBools>("filament_mixed_gradient")->values[3]=true;
+    const auto gradient=OrcaPrintPaletteSnapshot::capture(staged);
+    REQUIRE(gradient.mixed_recipes.size()==1);
+    CHECK_FALSE(gradient.mixed_recipes.front().uniform_color);
+    CHECK(gradient.mixed_recipes.front().existing_virtual_slot==after.mixed_recipes.front().existing_virtual_slot);
+    REQUIRE(after.physical_channels.size()==before.physical_channels.size());
+    REQUIRE(after.sublayer_materials.size()==before.sublayer_materials.size());
+    for(size_t i=0;i<before.physical_channels.size();++i) {
+        CHECK(after.physical_channels[i].slot==before.physical_channels[i].slot);
+        CHECK(after.physical_channels[i].display_color==before.physical_channels[i].display_color);
+        CHECK(after.physical_channels[i].compatible==before.physical_channels[i].compatible);
+        CHECK(after.sublayer_materials[i].identity==before.sublayer_materials[i].identity);
+    }
+    CHECK(after.project_colors.size()==4);
+    CHECK(after.material_fingerprint!=before.material_fingerprint);
+    CHECK(after.process_fingerprint!=before.process_fingerprint);
+    CHECK(after.sublayer_process.material_fingerprint==after.material_fingerprint);
+    CHECK(after.sublayer_process.process_fingerprint==after.process_fingerprint);
+    CHECK(LocalPrintRecipeApplication::identity(live)==identity);
+    const auto repeated=OrcaPrintPaletteSnapshot::capture(live);
+    CHECK(repeated.material_fingerprint==before.material_fingerprint);
+    CHECK(repeated.process_fingerprint==before.process_fingerprint);
+    CHECK(after.sublayer_process.z_resolution_mm==0.);
+    CHECK(after.sublayer_process.surface_condition.empty());
+    CHECK(after.sublayer_process.measurement_condition.empty());
+}
+
+TEST_CASE("native palette fingerprints track physical colors process edits and actual multi-nozzle routing",
+          "[OrcaPaletteCapture]")
+{
+    PresetBundle bundle;bundle.set_num_filaments(3);
+    SECTION("physical color changes only the material fingerprint") {
+        const auto before=OrcaPrintPaletteSnapshot::capture(bundle);
+        bundle.project_config.option<ConfigOptionStrings>("filament_colour")->values[0]="#123456";
+        const auto after=OrcaPrintPaletteSnapshot::capture(bundle);
+        CHECK(after.material_fingerprint!=before.material_fingerprint);
+        CHECK(after.process_fingerprint==before.process_fingerprint);
+    }
+    SECTION("process edit invalidates the process fingerprint") {
+        const auto before=OrcaPrintPaletteSnapshot::capture(bundle);
+        bundle.prints.get_edited_preset().config.set_key_value("layer_height",new ConfigOptionFloat(.25));
+        const auto after=OrcaPrintPaletteSnapshot::capture(bundle);
+        CHECK(after.material_fingerprint==before.material_fingerprint);
+        CHECK(after.process_fingerprint!=before.process_fingerprint);
+        REQUIRE(after.sublayer_process.layer_heights_mm.size()==1);
+        CHECK_THAT(after.sublayer_process.layer_heights_mm[0],Catch::Matchers::WithinAbs(.25,1e-12));
+    }
+    SECTION("multi-nozzle routing is part of the process fingerprint") {
+        auto& printer=bundle.printers.get_edited_preset().config;
+        printer.set_key_value("nozzle_diameter",new ConfigOptionFloats({.4,.6}));
+        PrintColorNozzleRouting routing;routing.mode=fmmManual;routing.filament_maps={1,1,1};
+        const auto before=OrcaPrintPaletteSnapshot::capture(bundle,routing);
+        routing.filament_maps[0]=2;
+        const auto after=OrcaPrintPaletteSnapshot::capture(bundle,routing);
+        CHECK(after.material_fingerprint==before.material_fingerprint);
+        CHECK(after.process_fingerprint!=before.process_fingerprint);
+    }
+}
+
+TEST_CASE("explicit live display colors retain their fingerprint semantics without fabricating material data",
+          "[OrcaPaletteCapture]")
+{
+    const std::vector<std::string> colors={"#ff0000","#00ff00"};
+    const auto snapshot=OrcaPrintPaletteSnapshot::capture(nullptr,colors);
+    CHECK(snapshot.project_colors==colors);
+    REQUIRE(snapshot.physical_channels.size()==2);
+    CHECK(snapshot.physical_channels[0].display_color=="#FF0000");
+    CHECK_FALSE(snapshot.material_metadata_complete);
+    CHECK(snapshot.sublayer_materials.empty());
+    CHECK(snapshot.material_fingerprint.size()==64);
+    CHECK(snapshot.process_fingerprint.size()==64);
+}
 
 TEST_CASE("Orca palette snapshot preserves every supported physical cardinality",
           "[ModelGeneration][ColorIntent]")

@@ -478,6 +478,10 @@ void Preset::normalize(DynamicPrintConfig &config)
 
     if (config.option("filament_diameter") != nullptr) {
         // This config contains single or multiple filament presets.
+        // Material slots are independent of nozzle count (including virtual
+        // mixed slots). set_num_extruders above normalizes printer options;
+        // it must not truncate the saved material identities or properties.
+        n = config.option<ConfigOptionFloats>("filament_diameter")->values.size();
         // Ensure that the filament preset vector options contain the correct number of values.
         const auto &defaults = FullPrintConfig::defaults();
         for (const std::string &key : Preset::filament_options()) {

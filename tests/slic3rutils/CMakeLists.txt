@@ -1,5 +1,6 @@
 get_filename_component(_TEST_NAME ${CMAKE_CURRENT_LIST_DIR} NAME)
 add_executable(${_TEST_NAME}_tests
+	../local_print_recipe_fixture.hpp
     ${_TEST_NAME}_tests_main.cpp
     test_dev_mapping.cpp
     test_filament_bitmap_utils.cpp
@@ -12,7 +13,20 @@ add_executable(${_TEST_NAME}_tests
     test_model_generation_client.cpp
     test_model_preview_palette.cpp
     test_model_preview_normals.cpp
+    test_model_library_metadata.cpp
+    test_model_generation_submission_state.cpp
+    test_local_print_color_matching.cpp
+    test_local_print_color_recipes.cpp
+    test_local_print_color_boundary.cpp
+    test_local_print_color_restore.cpp
+    test_local_semantic_evidence.cpp
+    test_local_semantic_draft.cpp
+    test_local_semantic_geometry.cpp
+    test_local_print_color_experiment.cpp
+    test_local_print_color_application.cpp
+    test_project_config_undo.cpp
     test_model_preview_state.cpp
+    test_local_semantic_worker_client.cpp
     test_model_color_import.cpp
     test_plugin_host_api.cpp
     test_plugin_capability_config.cpp
@@ -36,6 +50,12 @@ add_executable(${_TEST_NAME}_tests
     test_mediapipe_face_masks.cpp
     test_model_semantic_coloring.cpp
     test_model_finishing.cpp
+    test_beauty_appearance.cpp
+    test_beauty_surface.cpp
+    test_beauty_puzzle.cpp
+    test_beauty_edit_regions.cpp
+    test_beauty_boundary_drag.cpp
+    test_beauty_boundary_contours.cpp
     test_model_artifact.cpp
     test_orca_model_preparation.cpp
     test_smart_slicing_candidates.cpp
@@ -52,6 +72,7 @@ if (MSVC)
 endif ()
 
 target_link_libraries(${_TEST_NAME}_tests test_common libslic3r_gui libslic3r OrcaSlicer::AIContracts OrcaSlicer::SmartSlicing pybind11::embed Catch2::Catch2WithMain)
+target_include_directories(${_TEST_NAME}_tests PRIVATE ${PROJECT_SOURCE_DIR}/src/libslic3r)
 set_property(TARGET ${_TEST_NAME}_tests PROPERTY FOLDER "tests")
 
 orcaslicer_copy_test_dlls()

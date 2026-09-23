@@ -570,7 +570,9 @@ static double ciede2000(const std::array<double, 3>& lab1, const std::array<doub
 
     // Compute dh'
     double dh_prime;
-    if (std::abs(h1_prime - h2_prime) <= M_PI) {
+    if (C1_prime * C2_prime == 0.0) {
+        dh_prime = 0.0;
+    } else if (std::abs(h1_prime - h2_prime) <= M_PI) {
         dh_prime = h2_prime - h1_prime;
     } else if (h2_prime <= h1_prime) {
         dh_prime = h2_prime - h1_prime + 2 * M_PI;
@@ -589,15 +591,18 @@ static double ciede2000(const std::array<double, 3>& lab1, const std::array<doub
 
     // Compute h_prime_avg
     double h_prime_avg;
-    if (std::abs(h1_prime - h2_prime) > M_PI) {
-        h_prime_avg = (h1_prime + h2_prime + 2 * M_PI) / 2.0;
+    if (C1_prime * C2_prime == 0.0) {
+        h_prime_avg = h1_prime + h2_prime;
+    } else if (std::abs(h1_prime - h2_prime) > M_PI) {
+        const double sum = h1_prime + h2_prime;
+        h_prime_avg = (sum + (sum < 2 * M_PI ? 2 * M_PI : -2 * M_PI)) / 2.0;
     } else {
         h_prime_avg = (h1_prime + h2_prime) / 2.0;
     }
 
     // Compute T
     double T = 1.0 - 0.17 * std::cos(h_prime_avg - M_PI / 6.0) + 0.24 * std::cos(2.0 * h_prime_avg) + 0.32 * std::cos(3.0 * h_prime_avg + M_PI / 30.0) -
-               0.20 * std::cos(4.0 * h_prime_avg - 3.0 * M_PI / 6.0);
+               0.20 * std::cos(4.0 * h_prime_avg - 63.0 * M_PI / 180.0);
 
     // Compute rotation term R_T = -R_C * sin(2*delta_theta), where delta_theta = 30 * exp(-((h_bar'-275)/25)^2)
     // h_prime_avg is in radians; convert to degrees for delta_theta; 2*delta_theta = 60 * exp(...), convert back to radians for sin
@@ -616,6 +621,10 @@ static double ciede2000(const std::array<double, 3>& lab1, const std::array<doub
     double deltaE = std::sqrt(std::pow(dL_prime / SL, 2) + std::pow(dC_prime / SC, 2) + std::pow(dH_prime / SH, 2) + R * (dC_prime / SC) * (dH_prime / SH));
 
     return deltaE;
+}
+
+double calc_lab_color_difference_by_ciede2000(const ColorDouble& lab1, const ColorDouble& lab2) {
+    return ciede2000(lab1, lab2);
 }
 
 double calc_rgb_color_difference_by_ciede2000(const RGB& rgb1, const RGB& rgb2) {

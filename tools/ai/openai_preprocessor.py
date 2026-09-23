@@ -651,18 +651,12 @@ def _designer_toy_palette_direction(
 
 def _portrait_display_base_direction() -> str:
     return (
-        "Portrait stability rule: when the selected primary subject is a real person or a human character, always add exactly "
-        "one low, simple, integrated display base even when the source portrait has no base. This is the only category-specific "
-        "exception to preserving a source-visible base and to the general prohibition on adding elements. Give the base a flat "
-        "underside, keep it visually subordinate to the person, and fuse it with opaque load-bearing geometry: there must be no "
-        "gap, floating foot, floating torso, or shadow-only contact. For a head-and-shoulders, chest, waist, or other cropped human "
-        "portrait, keep the exact visible anatomical extent, finish the existing lower torso or clothing cleanly, and fuse that "
-        "boundary to a compact round, oval, or softly polygonal bust plinth; do not invent a pelvis, legs, or feet. For a complete, "
-        "standing, seated, or crouched person, preserve the full pose and connect the actual lowest visible contacts such as feet, "
-        "garment, or seat to one low base without moving the limbs. For an explicitly requested pair or group of people, use one "
-        "shared low base while preserving count, identities, left-right order, spacing, poses, and accessories. In multicolor mode, "
-        "make the base one broad printable palette region; in monochrome mode, keep the same single material as the portrait. "
-        "Do not apply this portrait exception to an animal, product, vehicle, machine, building, or other non-human subject. "
+        "Portrait base policy: every generated portrait must be free of a separate display base. Do not preserve, recreate, or invent "
+        "a source-visible base, seat, floor contact, support, plinth, disc, pedestal, or shared display platform. Preserve actual "
+        "source-visible anatomy, including a person's pelvis, legs, or feet, as part of the subject itself. Always keep the generated portrait "
+        "base-free and finish the visible lower torso or clothing with a clean printable boundary. "
+        "Do not use a shadow-only contact or a floating fragment to imply a base. Orca may add a selectable round, oval, or rectangular "
+        "display base after generation, once the user has completed geometry and colour editing. "
     )
 
 
@@ -762,7 +756,7 @@ def _image_to_3d_composition_direction(transparent_background: bool = False, sty
         support_direction = support_override
     else:
         support_direction = (
-            "Except for the mandatory portrait base rule below, a non-human standing, seated, crouched, lying, wheeled, "
+            "Except for an explicitly source-visible support, a non-human standing, seated, crouched, lying, wheeled, "
             "naturally stable, or cleanly cropped subject must remain base-free when the source is base-free. Do not add a disc, "
             "plinth, stand, platform, presentation base, floor slab, or pedestal to a non-human subject unless the user explicitly "
             "requests one. "
@@ -771,8 +765,9 @@ def _image_to_3d_composition_direction(transparent_background: bool = False, sty
         "Recompose the selected primary subject as a clean product-shot reference for image-to-3D rather than editing the "
         "photograph in place. Center the exact requested subject or explicitly requested subject group as one readable composition on "
         + ("a transparent background" if transparent_background else "a uniform opaque solid-color background")
-        + ", show a coherent complete silhouette, and use a front or gentle three-quarter view. Preserve any base, support, floor "
-        "slab, or contact surface that is visibly part of the selected source subject. "
+        + ", show a coherent complete silhouette, and use a front or gentle three-quarter view. Do not add or preserve a presentation "
+        "base, support, floor slab, or contact surface; a source-visible functional part may remain only when it is part of the "
+        "subject itself. "
         + support_direction
         + _portrait_display_base_direction()
         + _difficult_structure_direction()
@@ -786,7 +781,7 @@ def _image_to_3d_composition_direction(transparent_background: bool = False, sty
         "Apply these source-dependent framing rules: if the complete person, animal, or object is visible, preserve the complete "
         "head-to-toe or whole-object form and its existing pose. If a person is cropped before the knees or only the upper body is "
         "visible, create a deliberately finished bust or half-body collectible: preserve only the visible head, torso, arms, and "
-        "clothing, end the lower torso with a clean sculpted boundary fused to the required compact portrait base, and do not invent "
+        "clothing, end the lower torso with a clean printable boundary and do not invent "
         "a pelvis, legs, or feet. If the source is a multi-subject scenic photograph and the user did not explicitly request a "
         "pair, group, set, or exact subject count, isolate exactly one requested or dominant subject and omit all secondary subjects "
         "and background scenery. Never duplicate a face, limb, tower, statue, accessory, or architectural element. "

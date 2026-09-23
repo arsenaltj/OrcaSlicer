@@ -9,6 +9,7 @@
 #include "libslic3r/Preset.hpp"
 #include "libslic3r/MultiNozzleUtils.hpp"
 #include "libslic3r/ProjectTask.hpp"
+#include <miniz.h>
 
 #include "test_utils.hpp"
 
@@ -68,6 +69,28 @@ namespace Catch {
 #include <catch2/catch_all.hpp>
 
 using namespace Slic3r;
+
+TEST_CASE("Removed continuous-color projects cannot silently use ordinary slicing", "[3mf][LegacyImageMap]")
+{
+    Model model;
+    REQUIRE(load_stl((std::string(TEST_DATA_DIR)+"/test_3mf/Prusa.stl").c_str(), &model));
+    model.add_default_instances();
+    ScopedTemporaryDir backup("removed_mode"); model.set_backup_path(backup.string());
+    ScopedTemporaryFile file(".3mf"); const auto path=file.string();
+    DynamicPrintConfig config=DynamicPrintConfig::full_print_config();
+    PlateData plate;plate.plate_index=0;
+    StoreParams params;params.path=path.c_str();params.model=&model;params.config=&config;
+    params.strategy=SaveStrategy::Zip64|SaveStrategy::Silence;params.plate_data_list.push_back(&plate);
+    REQUIRE(store_bbs_3mf(params));
+    REQUIRE(mz_zip_add_mem_to_archive_file_in_place(path.c_str(),"Metadata/ImageMap/legacy.bin","x",1,nullptr,0,MZ_DEFAULT_COMPRESSION));
+    Model restored;ScopedTemporaryDir restored_backup("removed_mode_restore");restored.set_backup_path(restored_backup.string());
+    ConfigSubstitutionContext substitutions{ForwardCompatibilitySubstitutionRule::Enable};
+    PlateDataPtrs plates;std::vector<Preset*> presets;bool bbl=false,orca=false;Semver version;
+    const bool loaded=load_bbs_3mf(path.c_str(),&config,&substitutions,&restored,&plates,&presets,&bbl,&orca,&version,nullptr,
+        LoadStrategy::LoadModel|LoadStrategy::LoadConfig);
+    release_PlateData_list(plates);for(auto* preset:presets)delete preset;
+    CHECK_FALSE(loaded);
+}
 
 
 SCENARIO("Reading 3mf file", "[3mf]") {

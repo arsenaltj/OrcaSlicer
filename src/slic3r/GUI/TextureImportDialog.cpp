@@ -25,6 +25,7 @@
 #include <wx/msgdlg.h>
 #include <wx/utils.h>
 #include <wx/valtext.h>
+#include <wx/wrapsizer.h>
 
 #include <algorithm>
 #include <cctype>
@@ -523,7 +524,8 @@ public:
                         std::function<bool()>                    can_add_filament,
                         std::function<bool()>                    can_decompose_color,
                         std::function<void(bool)>                on_close,
-                        std::vector<int>                         display_numbers)
+                        std::vector<int>                         display_numbers,
+                        bool show_advanced)
         : PopupWindow(parent, wxBORDER_NONE | wxPU_CONTAINS_CONTROLS)
         , m_entries(entries)
         , m_colors_rgba(colors_rgba)
@@ -665,6 +667,9 @@ public:
         sep_line2->SetLineColour(wxColour(SEPARATOR_COLOUR_KEY));
         top_sizer->Add(sep_line2, 0, wxEXPAND | wxLEFT | wxRIGHT, pad);
         top_sizer->Add(add_label, 0, wxALIGN_CENTER_HORIZONTAL | wxLEFT | wxRIGHT | wxTOP | wxBOTTOM, pad);
+        for (wxWindow* action : {static_cast<wxWindow*>(sep_line), static_cast<wxWindow*>(sep_line2),
+                                 static_cast<wxWindow*>(decompose_label), static_cast<wxWindow*>(add_label)})
+            action->Show(show_advanced);
         SetSizerAndFit(top_sizer);
 
         SetSize(pop_w, top_sizer->GetMinSize().y);
@@ -1696,9 +1701,9 @@ void TexturePreviewCanvas::render_mesh()
     const bool has_smooth = !use_painted
                             && (m_vertex_normals.size() == m_vertices.size());
 
-    // The target palette is an exact face-color view. Lighting and raster
-    // blending would introduce intermediate shades that look like extra colors.
-    const bool flat_colors = m_mode == RenderMode::MultiColor;
+    // Compare assigned filament RGB values directly with the Prepare swatches.
+    // Lighting would turn one spool into many apparent colors.
+    const bool flat_colors = m_mode != RenderMode::Original;
     if (flat_colors) {
         glPushAttrib(GL_ENABLE_BIT);
         glDisable(GL_LIGHTING);
@@ -1821,7 +1826,10 @@ TextureImportDialog::TextureImportDialog(
     // Pre-computed face colors (OBJ vertex colors / MTL face colors):
     // use them directly as the Original preview, skip texture decode.
     if (!m_textured_mesh.precomputed_face_colors.empty()) {
-        m_preview_canvas->set_original_face_colors(m_textured_mesh.precomputed_face_colors);
+        auto colors = m_textured_mesh.precomputed_face_colors;
+        for (const auto& override : m_options.face_color_overrides)
+            if (override.first < colors.size()) colors[override.first] = override.second;
+        m_preview_canvas->set_original_face_colors(colors);
     } else if (!m_textured_mesh.textures.empty()) {
         std::vector<std::vector<unsigned char>> tex_pixels_rgb;
         std::vector<int> tex_widths, tex_heights;
@@ -1885,13 +1893,18 @@ TextureImportDialog::TextureImportDialog(
                 face_tex_ids[fi] = -1;
         }
 
+        for (const auto& override : m_options.face_color_overrides)
+            if (override.first < face_tex_ids.size()) face_tex_ids[override.first] = -1;
         m_preview_canvas->set_texture_render_data(
             tex_pixels_rgb, tex_widths, tex_heights, face_uvs, face_tex_ids);
 
         // Still sample per-face colors as fallback
         std::vector<std::array<std::size_t, 3>> orig_colors;
-        if (Slic3r::sample_original_face_colors(m_textured_mesh, orig_colors))
+        if (Slic3r::sample_original_face_colors(m_textured_mesh, orig_colors)) {
+            for (const auto& override : m_options.face_color_overrides)
+                if (override.first < orig_colors.size()) orig_colors[override.first] = override.second;
             m_preview_canvas->set_original_face_colors(orig_colors);
+        }
     }
 
     set_state(TextureImportState::Idle);
@@ -1954,8 +1967,32 @@ void TextureImportDialog::build_ui()
     main_sizer->Add(left_sizer, 3, wxEXPAND | wxALL, FromDIP(8));
 
     wxBoxSizer* right_sizer = new wxBoxSizer(wxVERTICAL);
-    build_params_panel(this, right_sizer);
-    build_mapping_panel(this, right_sizer);
+    auto* advanced_toggle = new Button(this, texture_import_label("Advanced settings", "高级设置"));
+    right_sizer->Add(advanced_toggle, 0, wxALIGN_RIGHT | wxBOTTOM, FromDIP(8));
+    auto* params = new wxPanel(this);
+    auto* params_sizer = new wxBoxSizer(wxVERTICAL);
+    build_params_panel(params, params_sizer);
+    params->SetSizer(params_sizer);
+    params->Hide();
+    right_sizer->Add(params, 0, wxEXPAND);
+    advanced_toggle->Bind(wxEVT_BUTTON, [this, params, advanced_toggle](wxCommandEvent&) {
+        dismiss_filament_popup();
+        dismiss_auto_mix_popup();
+        m_show_advanced = !m_show_advanced;
+        params->Show(m_show_advanced);
+        m_btn_auto_mix->Show(m_show_advanced);
+        m_btn_mix_reset->Show(m_show_advanced && m_auto_mix_applied);
+        m_auto_merge_cb->Show(m_show_advanced);
+        advanced_toggle->SetLabel(m_show_advanced ? texture_import_label("Hide advanced settings", "收起高级设置") :
+                                                  texture_import_label("Advanced settings", "高级设置"));
+        update_mapping_summary();
+        Layout();
+    });
+    auto* mapping_panel = new wxPanel(this);
+    auto* mapping_sizer = new wxBoxSizer(wxVERTICAL);
+    build_mapping_panel(mapping_panel, mapping_sizer);
+    mapping_panel->SetSizer(mapping_sizer);
+    right_sizer->Add(mapping_panel, 1, wxEXPAND);
     build_bottom_buttons(right_sizer);
     main_sizer->Add(right_sizer, 2, wxEXPAND | wxALL, FromDIP(8));
 
@@ -2018,34 +2055,26 @@ void TextureImportDialog::build_preview_panel(wxWindow* parent, wxSizer* sizer)
     m_tab_panel = new wxPanel(preview_container, wxID_ANY);
     m_tab_panel->SetBackgroundColour(preview_bg);
 
-    m_btn_view_original   = new Button(m_tab_panel, texture_import_label("Original", "原始颜色"));
+    m_btn_view_original   = new Button(m_tab_panel, texture_import_label("Original model", "原始模型"));
     m_btn_view_original->SetId(ID_VIEW_ORIGINAL);
-    m_btn_view_multicolor = new Button(m_tab_panel, texture_import_label("Target colors", "目标分色"));
-    m_btn_view_multicolor->SetId(ID_VIEW_MULTICOLOR);
-    m_btn_view_filaments = new Button(m_tab_panel, texture_import_label("Filaments (lit)", "耗材·光照"));
+    m_btn_view_filaments = new Button(m_tab_panel, texture_import_label("Filament colors", "耗材配色"));
 
     const int view_button_height = FromDIP(27);
     m_btn_view_original->SetCornerRadius(view_button_height / 2);
     m_btn_view_original->SetMinSize(wxSize(FromDIP(57), view_button_height));
     m_btn_view_original->SetFont(m_btn_view_original->GetFont().Bold());
     m_btn_view_original->SetToolTip(_L("Your input texture model"));
-    m_btn_view_multicolor->SetCornerRadius(view_button_height / 2);
-    m_btn_view_multicolor->SetMinSize(wxSize(FromDIP(57), view_button_height));
-    m_btn_view_multicolor->SetFont(m_btn_view_multicolor->GetFont().Bold());
-    m_btn_view_multicolor->SetToolTip(texture_import_label("Exact target face colors without lighting, dithering or antialiasing", "按面显示目标纯色，关闭光照、抖动和抗锯齿"));
     m_btn_view_filaments->SetCornerRadius(view_button_height / 2);
     m_btn_view_filaments->SetMinSize(wxSize(FromDIP(57), view_button_height));
     m_btn_view_filaments->SetFont(m_btn_view_filaments->GetFont().Bold());
-    m_btn_view_filaments->SetToolTip(texture_import_label("Selected filament mapping with lighting; not a calibrated print prediction", "所选耗材的光照示意；不代表标定后的实物打印色彩"));
+    m_btn_view_filaments->SetToolTip(texture_import_label("Assigned filament colors without lighting; compare with the Prepare palette", "直接显示所选耗材颜色，不加光照；可与准备页色块核对"));
 
     wxBoxSizer* tab_sizer = new wxBoxSizer(wxHORIZONTAL);
     tab_sizer->Add(m_btn_view_original,   0, wxRIGHT, FromDIP(2));
-    tab_sizer->Add(m_btn_view_multicolor, 0, wxRIGHT, FromDIP(2));
     tab_sizer->Add(m_btn_view_filaments, 0);
     m_tab_panel->SetSizer(tab_sizer);
     m_tab_panel->Fit();
 
-    m_btn_view_multicolor->Hide();
     m_btn_view_filaments->Hide();
 
     auto preview_original = [this](wxCommandEvent&) {
@@ -2054,21 +2083,14 @@ void TextureImportDialog::build_preview_panel(wxWindow* parent, wxSizer* sizer)
             highlight_view_button(0);
         }
     };
-    auto preview_multicolor = [this](wxCommandEvent&) {
-        if (m_preview_canvas) {
-            m_preview_canvas->set_render_mode(TexturePreviewCanvas::RenderMode::MultiColor);
-            highlight_view_button(1);
-        }
-    };
     auto preview_filaments = [this](wxCommandEvent&) {
         if (m_preview_canvas && m_state == TextureImportState::Ready) {
             m_preview_canvas->set_render_mode(TexturePreviewCanvas::RenderMode::FilamentMap);
-            highlight_view_button(2);
+            highlight_view_button(1);
         }
     };
 
     m_btn_view_original->Bind(wxEVT_BUTTON, preview_original);
-    m_btn_view_multicolor->Bind(wxEVT_BUTTON, preview_multicolor);
     m_btn_view_filaments->Bind(wxEVT_BUTTON, preview_filaments);
 
     auto update_preview_overlay_buttons = [this]() {
@@ -2244,7 +2266,7 @@ void TextureImportDialog::build_mapping_panel(wxWindow* parent, wxSizer* sizer)
 
     wxBoxSizer* header_sizer = new wxBoxSizer(wxHORIZONTAL);
 
-    wxStaticText* lbl_mapping = new wxStaticText(parent, wxID_ANY, texture_import_label("Map colors to filaments", "目标色 → 打印耗材"));
+    wxStaticText* lbl_mapping = new wxStaticText(parent, wxID_ANY, texture_import_label("Choose filament colors", "给模型选耗材颜色"));
     lbl_mapping->SetForegroundColour(secondary_fg);
     lbl_mapping->SetFont(texture_import_section_title_font(parent));
     m_auto_mix_font_point_size = lbl_mapping->GetFont().GetPointSize();
@@ -2292,9 +2314,31 @@ void TextureImportDialog::build_mapping_panel(wxWindow* parent, wxSizer* sizer)
     }
     m_btn_auto_mix->SetToolTip(_L("Choose the one-click auto-mix mode for texture color import"));
     m_btn_auto_mix->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { show_auto_mix_popup(); });
+    m_btn_auto_mix->Hide();
     header_sizer->Add(m_btn_auto_mix, 0, wxALIGN_CENTER_VERTICAL);
 
     sizer->Add(header_sizer, 0, wxEXPAND | wxBOTTOM, FromDIP(4));
+
+    // Show the complete input palette, including spools not used by this model.
+    // These are the same project entries used by matching and the selector.
+    auto* palette = new wxWrapSizer(wxHORIZONTAL);
+    palette->Add(new wxStaticText(parent, wxID_ANY, texture_import_label("Available filaments:", "当前耗材：")),
+                 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(4));
+    for (const auto& entry : m_filament_entries) {
+        auto* chip = new wxPanel(parent, wxID_ANY);
+        auto* row = new wxBoxSizer(wxHORIZONTAL);
+        auto* swatch = new wxPanel(chip, wxID_ANY, wxDefaultPosition, FromDIP(wxSize(20, 20)), wxBORDER_SIMPLE);
+        swatch->SetBackgroundColour(wxColour(wxString::FromUTF8(entry.color_hex)));
+        row->Add(swatch, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(3));
+        row->Add(new wxStaticText(chip, wxID_ANY, wxString::Format("%d", int(entry.project_config_index + 1))),
+                 0, wxALIGN_CENTER_VERTICAL);
+        chip->SetSizer(row);
+        const wxString tip = wxString::FromUTF8(entry.color_hex + " · " + entry.name);
+        chip->SetToolTip(tip);
+        swatch->SetToolTip(tip);
+        palette->Add(chip, 0, wxRIGHT | wxBOTTOM, FromDIP(8));
+    }
+    sizer->Add(palette, 0, wxEXPAND | wxBOTTOM, FromDIP(4));
 
     wxBoxSizer* merge_sizer = new wxBoxSizer(wxHORIZONTAL);
     m_auto_merge_cb = new wxCheckBox(parent, wxID_ANY, texture_import_label("Reuse close project filaments", "优先复用接近的工程耗材"));
@@ -2302,10 +2346,11 @@ void TextureImportDialog::build_mapping_panel(wxWindow* parent, wxSizer* sizer)
     m_auto_merge_cb->SetForegroundColour(secondary_fg);
     m_auto_merge_cb->SetValue(true);
     if (m_options.preserve_existing_filaments) {
-        m_auto_merge_cb->SetLabel(texture_import_label("Use project filaments only", "仅匹配工程已有耗材"));
+        m_auto_merge_cb->SetLabel(texture_import_label("Use Prepare filaments only", "仅使用当前准备页耗材"));
         m_auto_merge_cb->SetToolTip(texture_import_label("Does not automatically add physical filaments", "不会因色差自动新增实体耗材"));
     }
     m_auto_merge_cb->Bind(wxEVT_CHECKBOX, &TextureImportDialog::on_auto_merge_toggled, this);
+    m_auto_merge_cb->Hide();
     merge_sizer->Add(m_auto_merge_cb, 0, wxALIGN_CENTER_VERTICAL);
 
     sizer->Add(merge_sizer, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
@@ -2342,7 +2387,7 @@ void TextureImportDialog::build_bottom_buttons(wxSizer* sizer)
     m_btn_skip->SetId(ID_BTN_SKIP);
     m_btn_skip->SetToolTip(_L("Skip filament mapping and import as a single-color model"));
     m_btn_skip->SetCornerRadius(FromDIP(20));
-    m_btn_skip->SetMinSize(wxSize(FromDIP(136), FromDIP(40)));
+    m_btn_skip->SetMinSize(wxSize(FromDIP(110), FromDIP(40)));
     {
         StateColor skip_bg(
             std::pair<wxColour, int>(wxColour("#CECECE"), StateColor::Pressed),
@@ -2355,12 +2400,15 @@ void TextureImportDialog::build_bottom_buttons(wxSizer* sizer)
         m_btn_skip->SetTextColor(skip_text);
     }
 
-    m_btn_ok = new Button(this, texture_import_label("Apply and import", "应用配色并导入"));
+    m_btn_ok = new Button(this, texture_import_label("Confirm and import", "确认配色并导入"));
     m_btn_ok->SetId(wxID_OK);
     m_btn_ok->SetCornerRadius(FromDIP(20));
-    m_btn_ok->SetMinSize(wxSize(FromDIP(156), FromDIP(40)));
+    m_btn_ok->SetMinSize(wxSize(FromDIP(140), FromDIP(40)));
     apply_accent_button_colours(m_btn_ok);
 
+    auto* cancel = new Button(this, texture_import_label("Back", "返回"));
+    cancel->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { EndModal(wxID_CANCEL); });
+    btn_sizer->Add(cancel, 0, wxRIGHT, FromDIP(8));
     btn_sizer->AddStretchSpacer();
     btn_sizer->Add(m_btn_skip, 0, wxRIGHT, FromDIP(16));
     btn_sizer->Add(m_btn_ok, 0);
@@ -2407,7 +2455,6 @@ void TextureImportDialog::update_ui_for_state()
     m_auto_merge_cb->Enable(!computing && !m_options.preserve_existing_filaments);
 
     m_preview_canvas->set_computing_overlay(computing);
-    m_btn_view_multicolor->Enable(!computing && valid);
     m_btn_view_filaments->Enable(ready && valid);
 
     if (ready && valid)
@@ -2619,7 +2666,6 @@ void TextureImportDialog::on_computation_complete(wxCommandEvent&)
     update_drop_warning_visibility();
     update_auto_mix_reset_visibility();
 
-    m_btn_view_multicolor->Show();
     m_btn_view_filaments->Show();
     if (m_tab_panel) {
         m_tab_panel->GetSizer()->Layout();
@@ -2629,7 +2675,7 @@ void TextureImportDialog::on_computation_complete(wxCommandEvent&)
     GetSizer()->Layout();
 
     m_preview_canvas->set_render_mode(TexturePreviewCanvas::RenderMode::FilamentMap);
-    highlight_view_button(2);
+    highlight_view_button(1);
 
     if (initial) {
         m_initial_computation_pending = false;
@@ -2836,7 +2882,11 @@ void TextureImportDialog::update_mapping_summary()
             note += wxString::Format(texture_import_label("\nProject has %d physical filaments (budget %d); existing configuration retained", "\n工程已有 %d 个实体耗材，超过计划 %d 色；保留现有配置"),
                 (int)configured_physical, (int)m_options.physical_filament_limit);
     }
-    m_mapping_summary->SetLabel(m_mapping_summary->GetLabel() + note);
+    const wxString details = m_mapping_summary->GetLabel() + note;
+    wxString summary = texture_import_label("Colors are matched. Change a filament below if needed.\nModel color  →  Filament to use", "已自动配色，不满意可点右侧耗材更换。\n模型颜色  →  使用耗材（同色区域一起更换）");
+    if (!added.empty())
+        summary += wxString::Format(texture_import_label("\nImport will add %d filaments", "\n导入将新增 %d 个耗材"), int(added.size()));
+    m_mapping_summary->SetLabel(m_show_advanced ? details : summary);
     m_mapping_summary->GetParent()->Layout();
 }
 
@@ -3466,7 +3516,7 @@ void TextureImportDialog::update_auto_mix_reset_visibility()
 {
     if (!m_btn_mix_reset)
         return;
-    if (m_btn_mix_reset->Show(m_auto_mix_applied)) {
+    if (m_btn_mix_reset->Show(m_show_advanced && m_auto_mix_applied)) {
         if (wxWindow* parent = m_btn_mix_reset->GetParent())
             parent->Layout();
     }
@@ -3632,7 +3682,7 @@ void TextureImportDialog::show_filament_popup(size_t row_index)
             m_mapping_rows[row_index].target_panel->Refresh();
         }
         m_preview_canvas->set_render_mode(TexturePreviewCanvas::RenderMode::FilamentMap);
-        highlight_view_button(2);
+        highlight_view_button(1);
         update_filament_color_map();
     };
 
@@ -3692,7 +3742,7 @@ void TextureImportDialog::show_filament_popup(size_t row_index)
                  }) >= 2);
         },
         on_close,
-        display_numbers);
+        display_numbers, m_show_advanced);
 
     wxPoint pos = tp->ClientToScreen(wxPoint(0, tp->GetSize().y));
     wxRect display_rect;
@@ -3921,6 +3971,7 @@ void TextureImportDialog::rebuild_mapping_rows()
                                        wxTAB_TRAVERSAL | wxFULL_REPAINT_ON_RESIZE);
         row.source_panel->SetMinSize(wxSize(src_w, row_h));
         row.source_panel->SetMaxSize(wxSize(src_w, row_h));
+        row.source_panel->SetToolTip(wxString::FromUTF8(row.source_hex));
         row.source_panel->SetBackgroundStyle(wxBG_STYLE_PAINT);
 
         row.source_panel->Bind(wxEVT_PAINT, [this, ci, src_wx_color, dash_clr, hex_fg](wxPaintEvent& e) {
@@ -3952,7 +4003,7 @@ void TextureImportDialog::rebuild_mapping_rows()
                 hex_font.SetPointSize(9);
                 dc.SetFont(hex_font);
                 dc.SetTextForeground(hex_fg);
-                wxString hex_str = wxString::Format("# %s", m_mapping_rows[ci].source_hex.substr(1));
+                wxString hex_str = wxString::Format(texture_import_label("Color %d", "颜色 %d"), int(ci + 1));
                 wxSize tsz = dc.GetTextExtent(hex_str);
                 dc.DrawText(hex_str, cx + cd + p->FromDIP(6), (sz.y - tsz.y) / 2);
             }
@@ -4315,7 +4366,7 @@ void TextureImportDialog::on_auto_merge_toggled(wxCommandEvent&)
 
 void TextureImportDialog::highlight_view_button(int view_index)
 {
-    Button* btns[] = { m_btn_view_original, m_btn_view_multicolor, m_btn_view_filaments };
+    Button* btns[] = { m_btn_view_original, m_btn_view_filaments };
 
     // The inactive pill lies on m_tab_panel, which is preview_bg (#EEEEEE -> #4C4C55), and has to
     // read as raised above that strip in both themes — so its fill steps away from the strip in
@@ -4329,7 +4380,7 @@ void TextureImportDialog::highlight_view_button(int view_index)
     const wxColour inactive_bd = dark_pill ? wxColour(0x54, 0x54, 0x5B) : *wxWHITE;
     const wxColour inactive_text = wxColour("#6B6B6A");
 
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 2; ++i) {
         if (!btns[i]) continue;
         if (i == view_index) {
             apply_accent_button_colours(btns[i]);
@@ -4463,7 +4514,7 @@ void TextureImportDialog::on_dpi_changed(const wxRect&)
     SetMinSize(wxSize(FromDIP(800), FromDIP(500)));
 
     const int view_button_height = FromDIP(27);
-    for (Button* btn : {m_btn_view_original, m_btn_view_multicolor, m_btn_view_filaments}) {
+    for (Button* btn : {m_btn_view_original, m_btn_view_filaments}) {
         if (btn) {
             btn->SetCornerRadius(view_button_height / 2);
             btn->SetMinSize(wxSize(FromDIP(57), view_button_height));
@@ -4504,11 +4555,11 @@ void TextureImportDialog::on_dpi_changed(const wxRect&)
 
     if (m_btn_skip) {
         m_btn_skip->SetCornerRadius(FromDIP(20));
-        m_btn_skip->SetMinSize(wxSize(FromDIP(136), FromDIP(40)));
+        m_btn_skip->SetMinSize(wxSize(FromDIP(110), FromDIP(40)));
     }
     if (m_btn_ok) {
         m_btn_ok->SetCornerRadius(FromDIP(20));
-        m_btn_ok->SetMinSize(wxSize(FromDIP(156), FromDIP(40)));
+        m_btn_ok->SetMinSize(wxSize(FromDIP(140), FromDIP(40)));
     }
 
     // Mapping rows store their panel sizes (source/target/arrow/row height)

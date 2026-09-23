@@ -9,6 +9,8 @@ param(
 
     [string] $NsisDir,
 
+    [string] $SevenZipExecutable,
+
     [string] $SourceManifest,
 
     [switch] $ValidateOnly
@@ -18,6 +20,10 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+if ($SevenZipExecutable) {
+    if (-not (Test-Path -LiteralPath $SevenZipExecutable -PathType Leaf)) { throw '7-Zip executable does not exist.' }
+    $SevenZipExecutable = (Resolve-Path -LiteralPath $SevenZipExecutable).Path
+}
 $resolvedBuildDir = (Resolve-Path -LiteralPath $BuildDir).Path
 $cpackConfig = Join-Path $resolvedBuildDir 'CPackConfig.cmake'
 $cmakeCache = Join-Path $resolvedBuildDir 'CMakeCache.txt'
@@ -229,8 +235,8 @@ if ($runtimeDependencies.schema_version -ne 1 -or $runtimeDependencies.python.ve
     throw 'Pinned AI runtime dependency metadata does not match the supported Python/Pillow runtime.'
 }
 # A short CPack name keeps the NSIS staging path below the Windows path limit.
-$shortPackageName = "OrcaAI_$Revision`_$architecture"
-& $cpackExecutable --config $cpackConfig -G NSIS -C Release -B $resolvedOutputDir -D "CPACK_PACKAGE_FILE_NAME=$shortPackageName"
+$shortPackageName = "OrcaAI_$architecture"
+& $cpackExecutable --config $cpackConfig -G NSIS -C Release -B $resolvedOutputDir -D "CPACK_PACKAGE_FILE_NAME=$shortPackageName" -D 'CPACK_NSIS_COMPRESSOR=zlib'
 if ($LASTEXITCODE -ne 0) {
     throw "CPack failed with exit code $LASTEXITCODE."
 }
@@ -248,7 +254,7 @@ $hash = (Get-FileHash -LiteralPath $finalInstaller -Algorithm SHA256).Hash
 $hashFile = "$finalInstaller.sha256"
 Set-Content -LiteralPath $hashFile -Value "$hash  $finalName" -Encoding ascii
 
-$shortPortableName = "OrcaAIPortable_$Revision`_$architecture"
+$shortPortableName = "OrcaAI_$architecture"
 & $cpackExecutable --config $cpackConfig -G ZIP -C Release -B $resolvedOutputDir -D "CPACK_PACKAGE_FILE_NAME=$shortPortableName"
 if ($LASTEXITCODE -ne 0) {
     throw "Portable CPack failed with exit code $LASTEXITCODE."
@@ -266,7 +272,9 @@ Set-Content -LiteralPath $portableHashFile -Value "$portableHash  $portableName"
 
 # Inspect each completed artifact; source/defaults checks do not establish payload contents.
 foreach ($artifact in @($finalInstaller, $portablePackage)) {
-    & $bundledPython -I (Join-Path $repoRoot 'release\verify_package_contents.py') $artifact --report "$artifact.contents.json"
+    $inspectionArguments = @('-I', (Join-Path $repoRoot 'release\verify_package_contents.py'), $artifact, '--report', "$artifact.contents.json")
+    if ($SevenZipExecutable) { $inspectionArguments += @('--seven-zip', $SevenZipExecutable) }
+    & $bundledPython @inspectionArguments
     if ($LASTEXITCODE -ne 0) {
         throw "Internal delivery blocked: actual package inspection found credentials or could not complete. Review $artifact.contents.json."
     }

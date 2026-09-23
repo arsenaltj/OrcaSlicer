@@ -2596,6 +2596,17 @@ void ToolOrdering::resolve_mixed_filaments(const PrintConfig &config)
                     }
                 }
 
+                auto owners = m_mixed_object_layers.find(ext);
+                if (owners != m_mixed_object_layers.end()) {
+                    for (const auto& [object, used_layers] : owners->second) {
+                        const auto& layers = object->layers();
+                        auto layer = std::lower_bound(layers.begin(), layers.end(), lt.print_z - EPSILON,
+                            [](const Layer* value, double z) { return value->print_z < z; });
+                        if (layer != layers.end() && std::abs((*layer)->print_z - lt.print_z) <= EPSILON)
+                            grp.object_layers.emplace(object, grp.for_layer((*layer)->print_z, (*layer)->height));
+                    }
+                }
+
                 for (unsigned int comp : grp.components_0based)
                     new_extruders.push_back(comp);
                 lt.mixed_sub_layer_groups.push_back(std::move(grp));

@@ -45,7 +45,8 @@ public:
     MixedFilamentDialog(wxWindow* parent,
                         const std::vector<std::string>& physical_colors,
                         const std::vector<std::string>& physical_names,
-                        const std::vector<std::string>& physical_types = {});
+                        const std::vector<std::string>& physical_types = {},
+                        const std::string& target_color = {});
 
     MixedFilamentDialog(wxWindow* parent,
                         const MixedFilamentResult& existing,

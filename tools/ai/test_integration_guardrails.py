@@ -47,6 +47,7 @@ class IntegrationGuardrailTests(unittest.TestCase):
                 "src/slic3r/AI/Contracts/GeneratedModelArtifact.hpp",
                 "src/slic3r/AI/Contracts/IModelArtifactConsumer.hpp",
                 "src/slic3r/AI/Contracts/IPrintablePaletteProvider.hpp",
+                "src/slic3r/AI/Contracts/LocalPrintColorResult.hpp",
                 "src/slic3r/GUI/AI/Orca/OrcaWorkspaceAdapter.hpp",
             },
             set(self.document["boundaries"]["allowed_cross_feature_contracts"]),

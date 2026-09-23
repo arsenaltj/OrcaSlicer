@@ -1,6 +1,8 @@
 #include "BoundingBox.hpp"
+#include "AABBTreeLines.hpp"
 #include "ClipperUtils.hpp"
 #include "EdgeGrid.hpp"
+#include "PaintedLineProcessing.hpp"
 #include "Layer.hpp"
 #include "Print.hpp"
 #include "Geometry/VoronoiVisualUtils.hpp"
@@ -9,7 +11,14 @@
 #include "format.hpp"
 
 #include <utility>
+#include <tuple>
 #include <unordered_set>
+#include <atomic>
+#include <cstdlib>
+#include <fstream>
+#include <locale>
+#include <map>
+#include <boost/polygon/voronoi.hpp>
 
 #include <boost/log/trivial.hpp>
 #include <tbb/parallel_for.h>
@@ -511,13 +520,9 @@ static bool project_line_on_line(const Line &projection_l, const Line &projected
     return true;
 }
 
-struct PaintedLine
-{
-    size_t contour_idx;
-    size_t line_idx;
-    Line   projected_line;
-    int    color;
-};
+using SegmentationDetail::PaintedLine;
+using SegmentationDetail::post_process_painted_lines;
+using SegmentationDetail::colorize_contours;
 
 struct PaintedLineVisitor
 {
@@ -683,20 +688,32 @@ static std::vector<PaintedLine> filter_painted_lines(const Line &line_to_process
     return filtered_lines;
 }
 
-static std::vector<std::vector<PaintedLine>> post_process_painted_lines(const std::vector<EdgeGrid::Contour> &contours, std::vector<PaintedLine> &&painted_lines)
+std::vector<std::vector<PaintedLine>> SegmentationDetail::post_process_painted_lines(const std::vector<EdgeGrid::Contour> &contours, std::vector<PaintedLine> &&painted_lines)
 {
     if (painted_lines.empty())
         return {};
 
     auto comp = [&contours](const PaintedLine &first, const PaintedLine &second) {
-        Point first_start_p = contours[first.contour_idx].segment_start(first.line_idx);
-        return first.contour_idx < second.contour_idx ||
-               (first.contour_idx == second.contour_idx &&
-                (first.line_idx < second.line_idx ||
-                 (first.line_idx == second.line_idx &&
-                  ((first.projected_line.a - first_start_p).cast<double>().squaredNorm() < (second.projected_line.a - first_start_p).cast<double>().squaredNorm() ||
-                   ((first.projected_line.a - first_start_p).cast<double>().squaredNorm() == (second.projected_line.a - first_start_p).cast<double>().squaredNorm() &&
-                    (first.projected_line.b - first.projected_line.a).cast<double>().squaredNorm() < (second.projected_line.b - second.projected_line.a).cast<double>().squaredNorm())))));
+        if (first.contour_idx != second.contour_idx)
+            return first.contour_idx < second.contour_idx;
+        if (first.line_idx != second.line_idx)
+            return first.line_idx < second.line_idx;
+        const Point &start = contours[first.contour_idx].segment_start(first.line_idx);
+        const double first_distance = (first.projected_line.a - start).cast<double>().squaredNorm();
+        const double second_distance = (second.projected_line.a - start).cast<double>().squaredNorm();
+        if (first_distance != second_distance)
+            return first_distance < second_distance;
+        const double first_length = (first.projected_line.b - first.projected_line.a).cast<double>().squaredNorm();
+        const double second_length = (second.projected_line.b - second.projected_line.a).cast<double>().squaredNorm();
+        if (first_length != second_length)
+            return first_length < second_length;
+        // Parallel projection insertion order is unspecified. Resolve geometric ties
+        // before overlap filtering keeps the first color; stable_sort alone cannot
+        // make that choice independent of worker scheduling.
+        return std::make_tuple(first.projected_line.a.x(), first.projected_line.a.y(),
+                               first.projected_line.b.x(), first.projected_line.b.y(), first.color) <
+               std::make_tuple(second.projected_line.a.x(), second.projected_line.a.y(),
+                               second.projected_line.b.x(), second.projected_line.b.y(), second.color);
     };
     std::sort(painted_lines.begin(), painted_lines.end(), comp);
 
@@ -931,14 +948,13 @@ static ColoredLines colorize_contour(const EdgeGrid::Contour &contour, const std
     return filter_colorized_polygon(std::move(colorized_contour));
 }
 
-static std::vector<ColoredLines> colorize_contours(const std::vector<EdgeGrid::Contour> &contours, const std::vector<std::vector<PaintedLine>> &painted_contours)
+std::vector<ColoredLines> SegmentationDetail::colorize_contours(const std::vector<EdgeGrid::Contour> &contours, const std::vector<std::vector<PaintedLine>> &painted_contours)
 {
-    assert(contours.size() == painted_contours.size());
+    assert(painted_contours.empty() || contours.size() == painted_contours.size());
+    const std::vector<PaintedLine> empty;
     std::vector<ColoredLines> colorized_contours(contours.size());
-    for (const std::vector<PaintedLine> &painted_contour : painted_contours) {
-        size_t contour_idx              = &painted_contour - &painted_contours.front();
-        colorized_contours[contour_idx] = colorize_contour(contours[contour_idx], painted_contours[contour_idx]);
-    }
+    for (size_t contour_idx=0;contour_idx<contours.size();++contour_idx)
+        colorized_contours[contour_idx] = colorize_contour(contours[contour_idx],painted_contours.empty()?empty:painted_contours[contour_idx]);
 
     size_t poly_idx = 0;
     for (ColoredLines &color_lines : colorized_contours) {
@@ -1189,12 +1205,106 @@ double resolve_outer_wall_line_width(const PrintRegionConfig &region_config, con
     return width.get_abs_value(nozzle_diameter);
 }
 
+// Opt-in local diagnostics preserve integer coordinates and traversal order;
+// SVG rounding can conceal the small differences being investigated here.
+class SegmentationExactTrace
+{
+public:
+    SegmentationExactTrace()
+    {
+        const char *value = std::getenv("ORCA_COLOR_SLICE_TRACE");
+        enabled = value != nullptr && std::string(value) == "1";
+        if (enabled) {
+            static std::atomic<unsigned> next_run{0};
+            run = next_run.fetch_add(1);
+        }
+    }
+
+    void regions(const char *stage, size_t layer, const std::vector<ExPolygons> &groups) const
+    {
+        if (!enabled) return;
+        auto out = open(stage, layer);
+        for (size_t group = 0; group < groups.size(); ++group) {
+            out << "G " << group << '\n';
+            for (const ExPolygon &polygon : groups[group]) {
+                ring(out, 'C', polygon.contour);
+                for (const Polygon &hole : polygon.holes) ring(out, 'H', hole);
+                out << "E\n";
+            }
+        }
+        out.flush();
+        if (!out) throw std::runtime_error("Failed to write exact segmentation trace");
+    }
+
+    // Projection polygons have winding, but no assigned outer/hole structure yet.
+    void projections(const char *stage, size_t layer, const std::vector<std::vector<Polygons>> &colors) const
+    {
+        if (!enabled) return;
+        auto out = open(stage, layer);
+        for (size_t color = 0; color < colors.size(); ++color) {
+            out << "G " << color << '\n';
+            if (!colors[color].empty())
+                for (const Polygon &polygon : colors[color][layer]) ring(out, 'P', polygon);
+        }
+        out.flush();
+        if (!out) throw std::runtime_error("Failed to write exact segmentation trace");
+    }
+
+    // Flatten the two propagation buffers as group = color * 2 + buffer.
+    // A zero stride records one buffer, as used by the completed top/bottom result.
+    void color_regions(const char *stage, size_t layer, const std::vector<std::vector<ExPolygons>> &colors,
+                       size_t buffer_stride = 0) const
+    {
+        if (!enabled) return;
+        std::vector<ExPolygons> groups;
+        groups.reserve(colors.size() * (buffer_stride > 0 ? 2 : 1));
+        for (const auto &color : colors) {
+            groups.push_back(color[layer]);
+            if (buffer_stride > 0) groups.push_back(color[layer + buffer_stride]);
+        }
+        regions(stage, layer, groups);
+    }
+
+    void colors(size_t layer, const std::vector<ColoredLines> &contours, const char *stage = "colors") const
+    {
+        if (!enabled) return;
+        auto out = open(stage, layer);
+        for (const ColoredLines &contour : contours) {
+            out << "C\n";
+            for (const ColoredLine &line : contour)
+                out << line.color << ' ' << line.line.a.x() << ' ' << line.line.a.y()
+                    << ' ' << line.line.b.x() << ' ' << line.line.b.y() << '\n';
+        }
+        out.flush();
+        if (!out) throw std::runtime_error("Failed to write exact segmentation trace");
+    }
+
+    bool enabled{false};
+
+private:
+    unsigned run{0};
+    std::ofstream open(const char *stage, size_t layer) const
+    {
+        std::ofstream out(debug_out_path("mm-exact-%u-%s-%zu.txt", run, stage, layer));
+        out.imbue(std::locale::classic());
+        if (!out) throw std::runtime_error("Failed to open exact segmentation trace");
+        return out;
+    }
+    static void ring(std::ostream &out, char kind, const Polygon &polygon)
+    {
+        out << kind;
+        for (const Point &point : polygon.points) out << ' ' << point.x() << ' ' << point.y();
+        out << '\n';
+    }
+};
+
 // Returns segmentation of top and bottom layers based on painting in segmentation gizmos.
 static inline std::vector<std::vector<ExPolygons>> segmentation_top_and_bottom_layers(const PrintObject                                               &print_object,
                                                                                       const std::vector<ExPolygons>                                   &input_expolygons,
                                                                                       const std::function<ModelVolumeFacetsInfo(const ModelVolume &)> &extract_facets_info,
                                                                                       const size_t                                                     num_facets_states,
-                                                                                      const std::function<void()>                                     &throw_on_cancel_callback)
+                                                                                      const std::function<void()>                                     &throw_on_cancel_callback,
+                                                                                      const SegmentationExactTrace                                    &trace)
 {
     BOOST_LOG_TRIVIAL(debug) << "Print object segmentation - Segmentation of top and bottom layers in parallel - Begin";
     const size_t num_layers    = input_expolygons.size();
@@ -1275,6 +1385,13 @@ static inline std::vector<std::vector<ExPolygons>> segmentation_top_and_bottom_l
             }
     }
 
+    if (trace.enabled)
+        for (size_t layer_idx = 0; layer_idx < num_layers; ++layer_idx) {
+            throw_on_cancel_callback();
+            trace.projections("topraw", layer_idx, top_raw);
+            trace.projections("bottomraw", layer_idx, bottom_raw);
+        }
+
     auto filter_out_small_polygons = [&num_facets_states, &num_layers](std::vector<std::vector<Polygons>> &raw_surfaces, double min_area) -> void {
         for (size_t extruder_idx = 0; extruder_idx < num_facets_states; ++extruder_idx)
             if (!raw_surfaces[extruder_idx].empty())
@@ -1324,6 +1441,13 @@ static inline std::vector<std::vector<ExPolygons>> segmentation_top_and_bottom_l
             }
         }
     }
+
+    if (trace.enabled)
+        for (size_t layer_idx = 0; layer_idx < num_layers; ++layer_idx) {
+            throw_on_cancel_callback();
+            trace.projections("topvisible", layer_idx, top_raw);
+            trace.projections("bottomvisible", layer_idx, bottom_raw);
+        }
 
     std::vector<std::vector<ExPolygons>> triangles_by_color_bottom(num_facets_states);
     std::vector<std::vector<ExPolygons>> triangles_by_color_top(num_facets_states);
@@ -1378,12 +1502,10 @@ static inline std::vector<std::vector<ExPolygons>> segmentation_top_and_bottom_l
         return out;
     };
 
-    tbb::parallel_for(tbb::blocked_range<size_t>(0, num_layers, granularity), [&granularity, &num_layers, &num_facets_states, &layer_color_stat, &top_raw, &triangles_by_color_top,
+    SegmentationDetail::for_each_painting_layer_group(num_layers, size_t(granularity), [&num_layers, &num_facets_states, &layer_color_stat, &top_raw, &triangles_by_color_top,
                                                                                &throw_on_cancel_callback, &input_expolygons, &bottom_raw, &triangles_by_color_bottom,
-                                                                               &shell_triangles_by_color_top, &shell_triangles_by_color_bottom](const tbb::blocked_range<size_t> &range) {
-        size_t group_idx   = range.begin() / granularity;
-        size_t layer_idx_offset = (group_idx & 1) * num_layers;
-        for (size_t layer_idx = range.begin(); layer_idx < range.end(); ++ layer_idx) {
+                                                                               &shell_triangles_by_color_top, &shell_triangles_by_color_bottom](size_t begin, size_t end, size_t layer_idx_offset) {
+        for (size_t layer_idx = begin; layer_idx < end; ++ layer_idx) {
             for (size_t color_idx = 0; color_idx < num_facets_states; ++color_idx) {
                 throw_on_cancel_callback();
                 LayerColorStat stat = layer_color_stat(layer_idx, color_idx);
@@ -1430,6 +1552,15 @@ static inline std::vector<std::vector<ExPolygons>> segmentation_top_and_bottom_l
             }
         }
     });
+
+    if (trace.enabled)
+        for (size_t layer_idx = 0; layer_idx < num_layers; ++layer_idx) {
+            throw_on_cancel_callback();
+            trace.color_regions("topown", layer_idx, triangles_by_color_top, num_layers);
+            trace.color_regions("bottomown", layer_idx, triangles_by_color_bottom, num_layers);
+            trace.color_regions("topshell", layer_idx, shell_triangles_by_color_top, num_layers);
+            trace.color_regions("bottomshell", layer_idx, shell_triangles_by_color_bottom, num_layers);
+        }
 
     std::vector<std::vector<ExPolygons>> triangles_by_color_merged(num_facets_states);
     triangles_by_color_merged.assign(num_facets_states, std::vector<ExPolygons>(num_layers));
@@ -1478,6 +1609,11 @@ static inline std::vector<std::vector<ExPolygons>> segmentation_top_and_bottom_l
     });
     BOOST_LOG_TRIVIAL(debug) << "Print object segmentation - Segmentation of top and bottom layers in parallel - End";
 
+    if (trace.enabled)
+        for (size_t layer_idx = 0; layer_idx < num_layers; ++layer_idx) {
+            throw_on_cancel_callback();
+            trace.color_regions("topbottom", layer_idx, triangles_by_color_merged);
+        }
     return triangles_by_color_merged;
 }
 
@@ -1833,6 +1969,325 @@ static void remove_multiple_edges_in_vertices(MMU_Graph &graph, const std::vecto
     }
 }
 
+void SegmentationDetail::repair_nested_colored_regions(std::vector<ExPolygons> &regions, const std::vector<ColoredLines> &contours)
+{
+    std::vector<Polylines> source_lines(regions.size());
+    for (const auto &contour : contours) for (const auto &line : contour)
+        source_lines.at(size_t(line.color)).emplace_back(line.line.a, line.line.b);
+    std::vector<ExPolygons> removals(regions.size());
+    std::vector<std::vector<BoundingBox>> bounds(regions.size());
+    for (size_t color = 0; color < regions.size(); ++color)
+        for (const auto &region : regions[color]) bounds[color].push_back(get_extents(region.contour));
+
+    for (size_t inner_color = 0; inner_color < regions.size(); ++inner_color) {
+        for (const ExPolygon &inner : regions[inner_color]) {
+            const double inner_area = inner.area();
+            if (inner_area <= 0.) continue;
+            const BoundingBox inner_bounds = get_extents(inner.contour);
+            std::vector<size_t> enclosing_colors;
+            for (size_t outer_color = 0; outer_color < regions.size(); ++outer_color) {
+                if (outer_color == inner_color) continue;
+                for (size_t index = 0; index < regions[outer_color].size(); ++index) {
+                    const ExPolygon &outer = regions[outer_color][index];
+                    if (inner_area < outer.area() && bounds[outer_color][index].contains(inner_bounds) &&
+                        diff_ex(ExPolygons{inner}, ExPolygons{outer}).empty()) {
+                        enclosing_colors.push_back(outer_color);
+                        break;
+                    }
+                }
+            }
+            if (enclosing_colors.empty()) continue;
+            // Include the source contour itself in the witness query. The
+            // offset is only a geometric epsilon, not an extrusion-width band.
+            const ExPolygons witness = offset_ex(ExPolygons{inner}, float(SCALED_EPSILON));
+            const auto has_source_boundary = [&](size_t color) {
+                const Polylines clipped = intersection_pl(source_lines[color], witness);
+                return std::any_of(clipped.begin(), clipped.end(), [](const Polyline &line) { return line.length() > SCALED_EPSILON; });
+            };
+            if (!has_source_boundary(inner_color)) continue;
+            for (size_t outer_color : enclosing_colors)
+                if (!has_source_boundary(outer_color)) removals[outer_color].push_back(inner);
+        }
+    }
+    // Collect decisions before changing any region so color numbering and
+    // iteration order cannot decide which nested region owns the overlap.
+    // Clip the complete color group together. Normalizing individual weakly
+    // simple contours can change cancellation between contours of that color.
+    for (size_t color = 0; color < regions.size(); ++color)
+        if (!removals[color].empty()) regions[color] = diff_ex(regions[color], union_ex(removals[color]));
+}
+
+void SegmentationDetail::repair_boundary_owned_overlaps(std::vector<ExPolygons> &regions, const std::vector<ColoredLines> &contours)
+{
+    // Normalize whole color groups, not their individual weakly simple rings.
+    // Otherwise opposite winding in two rings can create artificial coverage.
+    std::vector<ExPolygons> canonical(regions.size()), removals(regions.size());
+    std::vector<Polylines> source_lines(regions.size());
+    for (size_t color = 0; color < regions.size(); ++color)
+        canonical[color] = union_ex(regions[color]);
+    for (const auto &contour : contours) for (const auto &line : contour)
+        source_lines.at(size_t(line.color)).emplace_back(line.line.a, line.line.b);
+
+    for (size_t a = 0; a < regions.size(); ++a) {
+        if (canonical[a].empty()) continue;
+        for (size_t b = a + 1; b < regions.size(); ++b) {
+            if (canonical[b].empty()) continue;
+            ExPolygons overlap = intersection_ex(canonical[a], canonical[b]);
+            if (overlap.empty()) continue;
+            ExPolygons other_colors;
+            for (size_t color = 0; color < regions.size(); ++color)
+                if (color != a && color != b) append(other_colors, canonical[color]);
+            // Only regions covered by exactly these two colors are eligible.
+            // This prevents cyclic pairwise decisions from erasing all owners.
+            overlap = diff_ex(overlap, other_colors);
+            for (const ExPolygon &component : overlap) {
+                if (component.area() <= 0.) continue;
+                const ExPolygons witness = offset_ex(ExPolygons{component}, float(SCALED_EPSILON));
+                size_t owner = regions.size();
+                bool conflicting = false;
+                for (size_t color = 0; color < source_lines.size(); ++color) {
+                    const Polylines clipped = intersection_pl(source_lines[color], witness);
+                    if (std::none_of(clipped.begin(), clipped.end(), [](const Polyline &line) { return line.length() > SCALED_EPSILON; }))
+                        continue;
+                    if (owner != regions.size()) { conflicting = true; break; }
+                    owner = color;
+                }
+                if (!conflicting && (owner == a || owner == b))
+                    removals[owner == a ? b : a].push_back(component);
+            }
+        }
+    }
+    // Decisions refer to the same initial groups and cannot depend on slot order.
+    for (size_t color = 0; color < regions.size(); ++color)
+        if (!removals[color].empty()) regions[color] = diff_ex(regions[color], union_ex(removals[color]));
+}
+
+void SegmentationDetail::repair_invalid_colored_partition(std::vector<ExPolygons> &regions, const std::vector<ColoredLines> &contours)
+{
+    const ExPolygons shape = union_ex(colored_points_to_polygon(contours));
+    if (shape.empty()) return;
+    std::vector<ExPolygons> canonical(regions.size());
+    ExPolygons all;
+    for (size_t color = 0; color < regions.size(); ++color) {
+        canonical[color] = union_ex(regions[color]);
+        append(all, canonical[color]);
+    }
+    const auto area_mm2 = [](const ExPolygons &polys) {
+        double area = 0.; for (const auto &poly : polys) area += poly.area();
+        return area * SCALING_FACTOR * SCALING_FACTOR;
+    };
+    bool invalid = area_mm2(diff_ex(shape, all)) > 1e-6 || area_mm2(diff_ex(all, shape)) > 1e-6;
+    for (size_t a = 0; !invalid && a < regions.size(); ++a)
+        for (size_t b = a + 1; !invalid && b < regions.size(); ++b)
+            invalid = area_mm2(intersection_ex(canonical[a], canonical[b])) > 1e-6;
+    if (!invalid) return;
+
+    // Broken segment-Voronoi graph closures can put a boundary's own color
+    // outside the object. A bounded point-site partition avoids those graph
+    // closures. This is used only for geometrically invalid side partitions.
+    // Sample segment interiors, including short segments; never invent an owner
+    // at a duplicate site with conflicting colors.
+    constexpr double spacing_mm = 0.05;
+    std::map<std::pair<coord_t, coord_t>, int> site_colors;
+    for (const auto &contour : contours) for (const auto &line : contour) {
+        const Vec2d a = line.line.a.cast<double>(), b = line.line.b.cast<double>();
+        const size_t count = std::max(size_t(1), size_t(std::ceil((b-a).norm() * SCALING_FACTOR / spacing_mm)));
+        for (size_t i = 0; i < count; ++i) {
+            const Point p = mk_point(Vec2d(a + (b-a) * ((i+0.5)/count)));
+            const auto key = std::make_pair(p.x(), p.y());
+            auto [found, inserted] = site_colors.emplace(key, line.color);
+            if (!inserted && found->second != line.color) return;
+        }
+    }
+    if (site_colors.size() < 2) return;
+    using Site = boost::polygon::point_data<coord_t>;
+    std::vector<Site> sites;
+    std::vector<int> colors;
+    for (const auto &[point, color] : site_colors) {
+        sites.emplace_back(point.first, point.second);
+        colors.push_back(color);
+    }
+    voronoi_diagram<double> diagram;
+    boost::polygon::construct_voronoi(sites.begin(), sites.end(), &diagram);
+    const BoundingBox bounds = get_extents(shape);
+    const double pad = scale_(1.);
+    const std::vector<Vec2d> box{{bounds.min.x()-pad, bounds.min.y()-pad}, {bounds.max.x()+pad, bounds.min.y()-pad},
+                                {bounds.max.x()+pad, bounds.max.y()+pad}, {bounds.min.x()-pad, bounds.max.y()+pad}};
+    const auto clip_halfplane = [](const std::vector<Vec2d> &poly, const Vec2d &a, const Vec2d &b) {
+        std::vector<Vec2d> out;
+        if (poly.empty()) return out;
+        const Vec2d mid = (a+b)*0.5, normal = b-a;
+        Vec2d previous = poly.back();
+        double previous_distance = (previous-mid).dot(normal);
+        for (const Vec2d &current : poly) {
+            const double distance = (current-mid).dot(normal);
+            if ((distance <= 0.) != (previous_distance <= 0.))
+                out.push_back(previous + (current-previous)*(previous_distance/(previous_distance-distance)));
+            if (distance <= 0.) out.push_back(current);
+            previous = current; previous_distance = distance;
+        }
+        return out;
+    };
+    std::vector<ExPolygons> candidate(regions.size());
+    for (const auto &cell : diagram.cells()) {
+        const auto index = cell.source_index();
+        const Vec2d a(sites[index].x(), sites[index].y());
+        std::vector<Vec2d> poly = box;
+        const auto *start = cell.incident_edge(), *edge = start;
+        if (edge == nullptr) return;
+        do {
+            const auto other = edge->twin()->cell()->source_index();
+            poly = clip_halfplane(poly, a, Vec2d(sites[other].x(), sites[other].y()));
+            edge = edge->next();
+        } while (edge != start && !poly.empty());
+        Points points;
+        for (const Vec2d &point : poly) points.push_back(mk_point(point));
+        if (points.size() < 3) continue;
+        Polygon polygon(std::move(points));
+        polygon.make_counter_clockwise();
+        candidate.at(size_t(colors[index])).emplace_back(std::move(polygon));
+    }
+    for (auto &group : candidate) group = intersection_ex(union_ex(group), shape);
+
+    // A default projected contour supplies no new explicit paint. Preserve
+    // existing explicit colors there, including unresolved overlaps, rather
+    // than erasing them or choosing an owner by slot number.
+    ExPolygons inherited;
+    for (size_t color = 1; color < candidate.size(); ++color) {
+        ExPolygons keep = intersection_ex(canonical[color], candidate[0]);
+        append(inherited, keep);
+        append(candidate[color], std::move(keep));
+        candidate[color] = union_ex(candidate[color]);
+    }
+    candidate[0] = diff_ex(candidate[0], union_ex(inherited));
+    regions = std::move(candidate);
+}
+
+bool SegmentationDetail::restore_missing_contour_colors(std::vector<ColoredLines> &contours,
+                                                        const ColoredLines &source_cuts,
+                                                        const std::function<void()> &throw_on_cancel)
+{
+    if (source_cuts.empty()) return false;
+    bool has_default = false;
+    for (const auto &contour : contours) for (const auto &line : contour) has_default |= line.color == 0;
+    if (!has_default) return false;
+    // Canonical input order keeps equal-distance source witnesses independent
+    // of the parallel facet collection order and source-line direction.
+    ColoredLines ordered;
+    for (auto source : source_cuts) {
+        if (source.color < 0) return false;
+        if (source.line.a == source.line.b) continue;
+        if (std::make_pair(source.line.b.x(), source.line.b.y()) < std::make_pair(source.line.a.x(), source.line.a.y()))
+            std::swap(source.line.a, source.line.b);
+        ordered.push_back(source);
+    }
+    if (ordered.empty()) return false;
+    std::sort(ordered.begin(), ordered.end(), [](const ColoredLine &a, const ColoredLine &b) {
+        return std::make_tuple(a.color,a.line.a.x(),a.line.a.y(),a.line.b.x(),a.line.b.y()) <
+               std::make_tuple(b.color,b.line.a.x(),b.line.a.y(),b.line.b.x(),b.line.b.y());
+    });
+    std::vector<Linef> lines; lines.reserve(ordered.size());
+    for (const auto &line : ordered) lines.emplace_back(line.line.a.cast<double>(),line.line.b.cast<double>());
+    const auto tree = AABBTreeLines::build_aabb_tree_over_indexed_lines(lines);
+    const double maximum_distance = scale_(0.005), margin = scale_(0.005), step = scale_(0.0025);
+    std::vector<ColoredLines> result(contours.size()); bool changed = false; size_t probes = 0;
+    for (size_t ci = 0; ci < contours.size(); ++ci) {
+        for (const ColoredLine &original : contours[ci]) {
+            if (original.color != 0) { result[ci].push_back(original); continue; }
+            const Vec2d a = original.line.a.cast<double>(), delta = original.line.b.cast<double>() - a;
+            const size_t count = std::max(size_t(1), size_t(std::ceil(delta.norm() / step)));
+            const size_t begin = result[ci].size();
+            for (size_t part = 0; part < count; ++part) {
+                if ((probes++ & 255) == 0) throw_on_cancel();
+                const Point start = mk_point(Vec2d(a + delta * (double(part) / count)));
+                const Point end = mk_point(Vec2d(a + delta * (double(part + 1) / count)));
+                if (start == end) continue;
+                const Vec2d direction = end.cast<double>() - start.cast<double>();
+                const Vec2d midpoint = (start.cast<double>() + end.cast<double>()) * 0.5;
+                // Distance to a source segment/union is 1-Lipschitz. Include
+                // rounding clearance before accepting the whole interval.
+                const double half = direction.norm() * 0.5 + 2.;
+                const double radius = maximum_distance + margin + 2. * half;
+                auto nearby = AABBTreeLines::all_lines_in_radius(lines, tree, midpoint, radius * radius);
+                std::sort(nearby.begin(),nearby.end());
+                double best = std::numeric_limits<double>::infinity(); size_t nearest = 0;
+                std::vector<std::pair<size_t,double>> distances; distances.reserve(nearby.size());
+                for (size_t index : nearby) {
+                    const Vec2d v = lines[index].b - lines[index].a;
+                    const double t = std::clamp((midpoint-lines[index].a).dot(v)/v.squaredNorm(),0.,1.);
+                    const double distance = (midpoint-lines[index].a-t*v).norm();
+                    distances.emplace_back(index,distance);
+                    if (distance < best) { best = distance; nearest = index; }
+                }
+                int color = 0;
+                if (best + half <= maximum_distance && ordered[nearest].color != 0) {
+                    double competing = std::numeric_limits<double>::infinity();
+                    for (const auto &entry : distances) if (ordered[entry.first].color != ordered[nearest].color)
+                        competing = std::min(competing,entry.second);
+                    const Vec2d source_direction = lines[nearest].b - lines[nearest].a;
+                    const double cosine = std::abs(direction.dot(source_direction))/(direction.norm()*source_direction.norm());
+                    if (competing-best > margin+2.*half && cosine > std::cos(PI/6)) color = ordered[nearest].color;
+                }
+                changed |= color != 0;
+                if (result[ci].size() > begin && result[ci].back().color == color)
+                    result[ci].back().line.b = end;
+                else result[ci].push_back({Line(start,end),color,int(ci),int(result[ci].size())});
+            }
+        }
+    }
+    if (changed) {
+        for (size_t ci=0;ci<result.size();++ci) for(size_t li=0;li<result[ci].size();++li) {
+            result[ci][li].poly_idx=int(ci);result[ci][li].local_line_idx=int(li);
+        }
+        contours=std::move(result);
+    }
+    return changed;
+}
+
+bool SegmentationDetail::transfer_default_color_regions(std::vector<ExPolygons> &regions,
+                                                        const std::vector<ExPolygons> &candidate)
+{
+    if (regions.size()!=candidate.size() || regions.empty() || regions[0].empty()) return false;
+    const auto area_mm2=[](const ExPolygons &polys){double sum=0.;for(const auto &p:polys)sum+=p.area()*SCALING_FACTOR*SCALING_FACTOR;return sum;};
+    const auto joined=[](const std::vector<ExPolygons> &groups,size_t start,size_t except){
+        ExPolygons joined;for(size_t c=start;c<groups.size();++c)if(c!=except)append(joined,groups[c]);return union_ex(joined);
+    };
+    const size_t none=regions.size();
+    const ExPolygons domain=diff_ex(regions[0],joined(regions,1,none));
+    if(domain.empty())return false;
+    std::vector<ExPolygons> additions(regions.size());
+    for(size_t color=1;color<regions.size();++color)
+        additions[color]=intersection_ex(domain,diff_ex(candidate[color],joined(candidate,0,color)));
+    const ExPolygons added=joined(additions,1,none);
+    if(added.empty())return false;
+    std::vector<ExPolygons> result=regions;result[0]=diff_ex(regions[0],added);
+    for(size_t color=1;color<regions.size();++color) {
+        append(result[color],additions[color]);result[color]=union_ex(result[color]);
+        if(area_mm2(diff_ex(regions[color],result[color]))>1e-6)return false;
+    }
+    // Boolean rounding must not create a new gap, overlap, or excursion outside
+    // the old coverage. Existing invalid partitions remain separately visible.
+    const ExPolygons before=joined(regions,0,none),after=joined(result,0,none);
+    if(area_mm2(diff_ex(before,after))>1e-6 || area_mm2(diff_ex(after,before))>1e-6 || area_mm2(diff_ex(added,domain))>1e-6)return false;
+    double overlap_growth=0.;
+    for(size_t a=0;a<regions.size();++a)for(size_t b=a+1;b<regions.size();++b)
+        overlap_growth+=area_mm2(intersection_ex(result[a],result[b]))-area_mm2(intersection_ex(regions[a],regions[b]));
+    if(overlap_growth>1e-6)return false;
+    regions=std::move(result);return true;
+}
+
+std::vector<ExPolygons> SegmentationDetail::segment_colored_contours(const std::vector<ColoredLines> &contours, size_t num_states, size_t layer_idx)
+{
+    MMU_Graph graph = build_graph(layer_idx, contours);
+    remove_multiple_edges_in_vertices(graph, contours);
+    graph.remove_nodes_with_one_arc();
+    auto regions = extract_colored_segments(graph, num_states);
+    repair_nested_colored_regions(regions, contours);
+    repair_boundary_owned_overlaps(regions, contours);
+    repair_invalid_colored_partition(regions, contours);
+    return regions;
+}
+
 static std::vector<std::vector<ExPolygons>> merge_segmented_layers(const std::vector<std::vector<ExPolygons>> &segmented_regions,
                                                                    std::vector<std::vector<ExPolygons>>      &&top_and_bottom_layers,
                                                                    const size_t                                num_facets_states,
@@ -1976,10 +2431,25 @@ std::vector<std::vector<ExPolygons>> segmentation_by_painting(const PrintObject 
     std::vector<std::vector<ExPolygons>>  segmented_regions(num_layers);
     segmented_regions.assign(num_layers, std::vector<ExPolygons>(num_facets_states));
     std::vector<std::vector<PaintedLine>> painted_lines(num_layers);
+    std::vector<ColoredLines>             source_cuts(num_layers);
     std::array<std::mutex, 64>            painted_lines_mutex;
     std::vector<EdgeGrid::Grid>           edge_grids(num_layers);
     const ConstLayerPtrsAdaptor           layers = print_object.layers();
     std::vector<ExPolygons>               input_expolygons(num_layers);
+
+    const SegmentationExactTrace trace;
+    if (trace.enabled) {
+        for (size_t layer_idx = 0; layer_idx < num_layers; ++layer_idx) {
+            throw_on_cancel_callback();
+            std::vector<ExPolygons> regions;
+            for (LayerRegion *region : layers[layer_idx]->regions()) {
+                regions.emplace_back();
+                for (const Surface &surface : region->slices.surfaces)
+                    regions.back().push_back(surface.expolygon);
+            }
+            trace.regions("raw", layer_idx, regions);
+        }
+    }
 
     throw_on_cancel_callback();
 
@@ -2016,6 +2486,9 @@ std::vector<std::vector<ExPolygons>> segmentation_by_painting(const PrintObject 
         }
     }); // end of parallel_for
     BOOST_LOG_TRIVIAL(debug) << "Print object segmentation - Slices preprocessing in parallel - End";
+    if (trace.enabled)
+        for (size_t layer_idx = 0; layer_idx < num_layers; ++layer_idx)
+            trace.regions("processed", layer_idx, {input_expolygons[layer_idx]});
 
     std::vector<BoundingBox> layer_bboxes(num_layers);
     for (size_t layer_idx = 0; layer_idx < num_layers; ++layer_idx) {
@@ -2041,7 +2514,7 @@ std::vector<std::vector<ExPolygons>> segmentation_by_painting(const PrintObject 
     BOOST_LOG_TRIVIAL(debug) << "Print object segmentation - Projection of painted triangles - Begin";
     for (const ModelVolume *mv : print_object.model_object()->volumes) {
         const ModelVolumeFacetsInfo facets_info = extract_facets_info(*mv);
-        tbb::parallel_for(tbb::blocked_range<size_t>(1, num_facets_states), [&mv, &print_object, &facets_info, &layers, &edge_grids, &painted_lines, &painted_lines_mutex, &input_expolygons, &throw_on_cancel_callback](const tbb::blocked_range<size_t> &range) {
+        tbb::parallel_for(tbb::blocked_range<size_t>(0, num_facets_states), [&mv, &print_object, &facets_info, &layers, &edge_grids, &painted_lines, &source_cuts, &painted_lines_mutex, &input_expolygons, &throw_on_cancel_callback](const tbb::blocked_range<size_t> &range) {
             for (size_t extruder_idx = range.begin(); extruder_idx < range.end(); ++extruder_idx) {
                 throw_on_cancel_callback();
                 const indexed_triangle_set custom_facets = facets_info.facets_annotation.get_facets(*mv, EnforcerBlockerType(extruder_idx));
@@ -2049,8 +2522,9 @@ std::vector<std::vector<ExPolygons>> segmentation_by_painting(const PrintObject 
                     continue;
 
                 const Transform3f tr = print_object.trafo().cast<float>() * mv->get_matrix().cast<float>();
-                tbb::parallel_for(tbb::blocked_range<size_t>(0, custom_facets.indices.size()), [&tr, &custom_facets, &print_object, &layers, &edge_grids, &input_expolygons, &painted_lines, &painted_lines_mutex, &extruder_idx](const tbb::blocked_range<size_t> &range) {
+                tbb::parallel_for(tbb::blocked_range<size_t>(0, custom_facets.indices.size()), [&tr, &custom_facets, &print_object, &layers, &edge_grids, &input_expolygons, &painted_lines, &source_cuts, &painted_lines_mutex, &extruder_idx, &throw_on_cancel_callback](const tbb::blocked_range<size_t> &range) {
                     for (size_t facet_idx = range.begin(); facet_idx < range.end(); ++facet_idx) {
+                        if ((facet_idx & 255) == 0) throw_on_cancel_callback();
                         float min_z = std::numeric_limits<float>::max();
                         float max_z = std::numeric_limits<float>::lowest();
 
@@ -2103,6 +2577,13 @@ std::vector<std::vector<ExPolygons>> segmentation_by_painting(const PrintObject 
                             Line line_to_test(Point(scale_(line_start_f.x()), scale_(line_start_f.y())),
                                               Point(scale_(line_end_f.x()), scale_(line_end_f.y())));
                             line_to_test.translate(-print_object.center_offset());
+                            if (line_to_test.a != line_to_test.b) {
+                                std::lock_guard<std::mutex> lock(painted_lines_mutex[layer_idx & 0x3F]);
+                                source_cuts[layer_idx].push_back({line_to_test,int(extruder_idx)});
+                            }
+                            // Unpainted facets compete with possible repairs but
+                            // must not become explicit painted projections.
+                            if (extruder_idx == 0) continue;
 
                             // BoundingBoxes for EdgeGrids are computed from printable regions. It is possible that the painted line (line_to_test) could
                             // be outside EdgeGrid's BoundingBox, for example, when the negative volume is used on the painted area (GH #7618).
@@ -2135,10 +2616,10 @@ std::vector<std::vector<ExPolygons>> segmentation_by_painting(const PrintObject 
                              << std::count_if(painted_lines.begin(), painted_lines.end(), [](const std::vector<PaintedLine> &pl) { return !pl.empty(); });
 
     BOOST_LOG_TRIVIAL(debug) << "Print object segmentation - layers segmentation in parallel - begin";
-    tbb::parallel_for(tbb::blocked_range<size_t>(0, num_layers), [&edge_grids, &input_expolygons, &painted_lines, &segmented_regions, &num_facets_states, &throw_on_cancel_callback](const tbb::blocked_range<size_t> &range) {
+    tbb::parallel_for(tbb::blocked_range<size_t>(0, num_layers), [&edge_grids, &input_expolygons, &painted_lines, &source_cuts, &segmented_regions, &num_facets_states, &throw_on_cancel_callback, &trace](const tbb::blocked_range<size_t> &range) {
         for (size_t layer_idx = range.begin(); layer_idx < range.end(); ++layer_idx) {
             throw_on_cancel_callback();
-            if (!painted_lines[layer_idx].empty()) {
+            if (!painted_lines[layer_idx].empty() || !source_cuts[layer_idx].empty()) {
 #ifdef MM_SEGMENTATION_DEBUG_PAINTED_LINES
                 export_painted_lines_to_svg(debug_out_path("0-mm-painted-lines-%d-%d.svg", layer_idx, iRun), {painted_lines[layer_idx]}, input_expolygons[layer_idx]);
 #endif // MM_SEGMENTATION_DEBUG_PAINTED_LINES
@@ -2150,6 +2631,7 @@ std::vector<std::vector<ExPolygons>> segmentation_by_painting(const PrintObject 
 #endif // MM_SEGMENTATION_DEBUG_PAINTED_LINES
 
                 std::vector<ColoredLines> color_poly = colorize_contours(edge_grids[layer_idx].contours(), post_processed_painted_lines);
+                trace.colors(layer_idx, color_poly);
 
 #ifdef MM_SEGMENTATION_DEBUG_COLORIZED_POLYGONS
                 export_colorized_polygons_to_svg(debug_out_path("2-mm-colorized_polygons-%d-%d.svg", layer_idx, iRun), color_poly, input_expolygons[layer_idx]);
@@ -2161,11 +2643,18 @@ std::vector<std::vector<ExPolygons>> segmentation_by_painting(const PrintObject 
                     // If the whole layer is painted using the same color, it is not needed to construct a Voronoi diagram for the segmentation of this layer.
                     segmented_regions[layer_idx][size_t(color_poly.front().front().color)] = input_expolygons[layer_idx];
                 } else {
-                    MMU_Graph graph = build_graph(layer_idx, color_poly);
-                    remove_multiple_edges_in_vertices(graph, color_poly);
-                    graph.remove_nodes_with_one_arc();
-                    segmented_regions[layer_idx] = extract_colored_segments(graph, num_facets_states);
+                    segmented_regions[layer_idx] = SegmentationDetail::segment_colored_contours(color_poly, num_facets_states, layer_idx);
                     //segmented_regions[layer_idx] = extract_colored_segments(color_poly, num_extruders, layer_idx);
+                }
+
+                trace.regions("unrestored-sides",layer_idx,segmented_regions[layer_idx]);
+                if(trace.enabled)trace.colors(layer_idx,{source_cuts[layer_idx]},"source-cuts");
+                auto restored_contours=color_poly;
+                if(SegmentationDetail::restore_missing_contour_colors(restored_contours,source_cuts[layer_idx],throw_on_cancel_callback)) {
+                    trace.colors(layer_idx,restored_contours,"restored-colors");
+                    const auto proposed=SegmentationDetail::segment_colored_contours(restored_contours,num_facets_states,layer_idx);
+                    trace.regions("restored-proposal",layer_idx,proposed);
+                    SegmentationDetail::transfer_default_color_regions(segmented_regions[layer_idx],proposed);
                 }
 
 #ifdef MM_SEGMENTATION_DEBUG_REGIONS
@@ -2175,6 +2664,9 @@ std::vector<std::vector<ExPolygons>> segmentation_by_painting(const PrintObject 
         }
     }); // end of parallel_for
     BOOST_LOG_TRIVIAL(debug) << "Print object segmentation - layers segmentation in parallel - end";
+    if (trace.enabled)
+        for (size_t layer_idx = 0; layer_idx < num_layers; ++layer_idx)
+            trace.regions("sides", layer_idx, segmented_regions[layer_idx]);
     throw_on_cancel_callback();
 
     if ((segmentation_max_width > 0.f || segmentation_interlocking_depth > 0.f) && !segmentation_interlocking_beam) {
@@ -2185,11 +2677,14 @@ std::vector<std::vector<ExPolygons>> segmentation_by_painting(const PrintObject 
     // The first index is extruder number (includes default extruder), and the second one is layer number
     std::vector<std::vector<ExPolygons>> top_and_bottom_layers;
     if (include_top_and_bottom_layers == IncludeTopAndBottomLayers::Yes) {
-        top_and_bottom_layers = segmentation_top_and_bottom_layers(print_object, input_expolygons, extract_facets_info, num_facets_states, throw_on_cancel_callback);
+        top_and_bottom_layers = segmentation_top_and_bottom_layers(print_object, input_expolygons, extract_facets_info, num_facets_states, throw_on_cancel_callback, trace);
         throw_on_cancel_callback();
     }
 
     std::vector<std::vector<ExPolygons>> segmented_regions_merged = merge_segmented_layers(segmented_regions, std::move(top_and_bottom_layers), num_facets_states, throw_on_cancel_callback);
+    if (trace.enabled)
+        for (size_t layer_idx = 0; layer_idx < num_layers; ++layer_idx)
+            trace.regions("merged", layer_idx, segmented_regions_merged[layer_idx]);
     throw_on_cancel_callback();
 
 #ifdef MM_SEGMENTATION_DEBUG_REGIONS

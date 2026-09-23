@@ -4,6 +4,10 @@ Exit 0: no finding within the recorded scope; 2: findings or incomplete inspecti
 This is a publication gate, not proof of absence, validity testing or authorization.
 """
 import argparse
+import bz2
+import gzip
+import lzma
+import tarfile
 import hashlib
 import io
 import json
@@ -21,7 +25,8 @@ SECRET_FIELD = re.compile(r"(?:api[_-]?key|api[_-]?token|access[_-]?token|auth[_
 PLACEHOLDER = re.compile(r"(?:your[_ -].*|<[^>]+>|\$\{[^}]+\}|placeholder|changeme|dummy|example|test|x+|\*+)", re.I)
 ASSIGNMENT = re.compile(r'''(?<![\w.-])["']?([\w.-]{0,128}(?:api_key|api_token|access_token|auth_token|secret|password|OPENAI_PRO_API))["']?\s*[:=]\s*["']([^"'\r\n]*)["']''', re.I)
 TOKEN = re.compile(rb"(?:\bsk-[A-Za-z0-9_-]{20,}|\btsk_[A-Za-z0-9_-]{20,}|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----)")
-MAX_FILE = 256 * 1024 * 1024
+# Bounded support for the pinned 646 MB offline face parsing model.
+MAX_FILE = 768 * 1024 * 1024
 MAX_TOTAL = 4 * 1024 * 1024 * 1024
 MAX_ENTRIES = 100000
 
@@ -30,6 +35,23 @@ MAX_ENTRIES = 100000
 # edits (including appended credentials) invalidate this classification. Keep the
 # candidate in config_fields and continue every other scan of the same file.
 TOOLTIP_EMOJI_BUNDLE_SHA256 = "a4040f542802a7c939c6823986b239a334fffd4eadbb41961f051052e7ccdfdf"
+
+
+# Exact audited dependency bytes and specific public example literals only.
+# New versions or appended data invalidate the classification. Token scans and
+# all other assignments in the file remain active.
+PUBLIC_DEPENDENCY_LITERALS = json.loads(
+    Path(__file__).with_name("public_dependency_literals.json").read_text(encoding="utf-8"))
+
+
+def public_dependency_literal(member, data, key, value):
+    normalized = member.replace("\\", "/")
+    for entry in PUBLIC_DEPENDENCY_LITERALS:
+        if (normalized.endswith("resources/beauty-runtime/" + entry["path"])
+                and [key, value] in entry["literals"]
+                and hashlib.sha256(data).hexdigest() == entry["sha256"]):
+            return True
+    return False
 
 
 def category(value):
@@ -77,7 +99,49 @@ class Inspection:
             except (OSError, ValueError, RuntimeError, zipfile.BadZipFile, NotImplementedError):
                 self.gap(member, "nested_zip_unreadable")
             return
-        if member.lower().endswith((".7z", ".rar", ".gz", ".xz", ".tar", ".bz2")):
+        lower = member.lower()
+        compression = next(((suffix, opener) for suffix, opener in
+                            ((".gz", gzip.open), (".bz2", bz2.open), (".xz", lzma.open))
+                            if lower.endswith(suffix)), None)
+        if compression or lower.endswith(".tar"):
+            if depth >= 3:
+                self.gap(member, "nested_archive_depth_limit")
+                return
+            try:
+                if compression:
+                    suffix, opener = compression
+                    with opener(io.BytesIO(data), "rb") as stream:
+                        expanded = stream.read(min(MAX_FILE, MAX_TOTAL - self.bytes) + 1)
+                    self.scan(member[:-len(suffix)], expanded, depth + 1)
+                else:
+                    with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as archive:
+                        regular_members = {}
+                        for index, info in enumerate(archive):
+                            name = member + "!" + info.name
+                            if index >= MAX_ENTRIES:
+                                raise ValueError("entry_limit")
+                            if info.islnk() and safe_member(info.name) and safe_member(info.linkname):
+                                # Resolve only a regular member in this archive;
+                                # never follow filesystem links or link chains.
+                                info = regular_members.get(info.linkname)
+                                if info is None:
+                                    self.gap(name, "unsafe_archive_member")
+                                    continue
+                            if not safe_member(info.name) or not (info.isfile() or info.isdir()):
+                                self.gap(name, "unsafe_archive_member")
+                                continue
+                            if info.isdir():
+                                continue
+                            regular_members[info.name] = info
+                            if info.size > MAX_FILE or self.bytes + info.size > MAX_TOTAL:
+                                self.gap(name, "inspection_size_limit")
+                                continue
+                            with archive.extractfile(info) as stream:
+                                self.scan(name, stream.read(info.size + 1), depth + 1)
+            except (OSError, ValueError, KeyError, EOFError, tarfile.TarError, lzma.LZMAError):
+                self.gap(member, "nested_archive_unreadable_or_limit")
+            return
+        if lower.endswith((".7z", ".rar")):
             self.gap(member, "unsupported_nested_archive")
         # Scan binary byte strings too; UTF-16 configs are decoded separately.
         if TOKEN.search(data) or TOKEN.search(data.replace(b"\x00", b"")):
@@ -115,6 +179,11 @@ class Inspection:
                                                "category": "PUBLIC_EMOJI_NAME_MAPPING",
                                                "evidence": "exact_audited_tooltip_bundle_sha256"})
                     continue
+                if public_dependency_literal(member, data, match[1], match[2]):
+                    self.config_fields.append({"member": member, "field": match[1],
+                                               "category": "PUBLIC_DEPENDENCY_EXAMPLE_OR_PROTOCOL_LITERAL",
+                                               "evidence": "exact_audited_dependency_sha256_and_literal"})
+                    continue
                 self.field(member, match[1], match[2])
 
     def zip(self, archive, prefix="", depth=0):
@@ -145,7 +214,7 @@ def inspect(path, seven_zip=None):
     path = Path(path)
     check = Inspection()
     report = {"schema_version": 1, "artifact": path.name, "sha256": None,
-              "scope": "All readable payload members and nested ZIPs to depth 3. Selected token/private-key byte patterns in all files; credential fields/literal assignments in JSON, env, ini, cfg, conf, txt, ps1, bat, cmd, py, js, ts, yml, yaml, xml, toml and properties files. No endpoint calls.",
+              "scope": "All readable payload members and nested ZIP, TAR, gzip, bzip2 and xz streams to depth 3. Selected token/private-key byte patterns in all files; credential fields/literal assignments in JSON, env, ini, cfg, conf, txt, ps1, bat, cmd, py, js, ts, yml, yaml, xml, toml and properties files. No endpoint calls.",
               "limitations": "Heuristic scan: encoded, encrypted, obfuscated or unrecognized secrets may escape detection. Credential validity/revocation and authorization are not inferred."}
     try:
         with path.open("rb") as stream:

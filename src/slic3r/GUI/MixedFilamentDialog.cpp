@@ -1,4 +1,5 @@
 #include "MixedFilamentDialog.hpp"
+#include "NativeMixedFilamentSuggestion.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -123,7 +124,8 @@ static wxColour blend_colors(const wxColour& a, const wxColour& b, double ratio_
 MixedFilamentDialog::MixedFilamentDialog(wxWindow* parent,
                                          const std::vector<std::string>& physical_colors,
                                          const std::vector<std::string>& physical_names,
-                                         const std::vector<std::string>& physical_types)
+                                         const std::vector<std::string>& physical_types,
+                                         const std::string& target_color)
     : DPIDialog(parent, wxID_ANY, _L("Add Mixed Filament"), wxDefaultPosition,
                 wxDefaultSize, wxCAPTION | wxCLOSE_BOX)
     , m_edit_mode(false)
@@ -133,6 +135,13 @@ MixedFilamentDialog::MixedFilamentDialog(wxWindow* parent,
 {
     m_result.components = {1, (physical_colors.size() >= 2) ? 2u : 1u};
     m_result.ratios     = {50, 50};
+    const auto suggestion=suggest_native_mixed_filament(target_color,physical_colors,physical_names,physical_types);
+    if(suggestion.valid) {
+        m_result.components.clear();m_result.ratios.clear();
+        for(const auto& c:suggestion.components){m_result.components.push_back(c.filament_index);m_result.ratios.push_back(c.ratio);}
+        sync_triangle_weights_from_ratios();
+        SetTitle(_L("Add Mixed Filament") + " - " + _L("已按原始颜色推荐"));
+    }
     build_ui();
     wxGetApp().UpdateDlgDarkUI(this);
 }

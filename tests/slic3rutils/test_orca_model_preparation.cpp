@@ -144,6 +144,39 @@ TEST_CASE("Native preparation preserves source and targets total world height", 
     CHECK_NOTHROW(prepare_model(*based, {130, false, 3}));
 }
 
+TEST_CASE("Display base templates use bounded footprint dimensions", "[ai][OrcaModelPreparation]")
+{
+    Model model;
+    auto* object = model.add_object("wide figurine", "original.obj", TriangleMesh(its_make_cube(20, 60, 40)));
+    object->add_instance();
+
+    const auto dimensions = [](const ModelPreparation& proposal) {
+        REQUIRE(proposal.base);
+        REQUIRE(proposal.base->objects.size() == 1);
+        REQUIRE(proposal.base->objects.front()->volumes.size() == 1);
+        return proposal.base->objects.front()->volumes.front()->mesh().bounding_box().size();
+    };
+    const auto round = prepare_model(*object, {120, true, 3.0, ModelBaseTemplate::Round});
+    const auto oval = prepare_model(*object, {120, true, 3.0, ModelBaseTemplate::Oval});
+    const auto rectangle = prepare_model(*object, {120, true, 3.0, ModelBaseTemplate::Rectangle});
+    const Vec3d round_size = dimensions(round);
+    const Vec3d oval_size = dimensions(oval);
+    const Vec3d rectangle_size = dimensions(rectangle);
+
+    // The round template follows the shorter projected dimension, avoiding
+    // the old diagonal-radius behaviour for a wide pose.
+    CHECK_THAT(round_size.x(), Catch::Matchers::WithinAbs(round_size.y(), 0.001));
+    CHECK(round_size.x() < oval_size.y() * 0.6);
+    CHECK_THAT(std::min(oval_size.x(), oval_size.y()),
+        Catch::Matchers::WithinAbs(std::min(rectangle_size.x(), rectangle_size.y()), 0.001));
+    CHECK_THAT(std::max(oval_size.x(), oval_size.y()),
+        Catch::Matchers::WithinAbs(std::max(rectangle_size.x(), rectangle_size.y()), 0.001));
+    CHECK(std::max(oval_size.x(), oval_size.y()) > std::min(oval_size.x(), oval_size.y()) * 2.0);
+    CHECK_THAT(round_size.z(), Catch::Matchers::WithinAbs(3.0, 0.001));
+    CHECK_THAT(oval_size.z(), Catch::Matchers::WithinAbs(3.0, 0.001));
+    CHECK_THAT(rectangle_size.z(), Catch::Matchers::WithinAbs(3.0, 0.001));
+}
+
 TEST_CASE("Generated artifact recognition survives portable 3MF source paths", "[ai][ModelColorUpdate]")
 {
     const std::string name = "orcaslicer-ai-428a0fe0-8183-4afd-9322-e16be8e77df4.obj";
@@ -154,6 +187,11 @@ TEST_CASE("Generated artifact recognition survives portable 3MF source paths", "
     CHECK_FALSE(same_generated_artifact_name(name, "orcaslicer-ai-428a0fe0-8183-4afd-9322-e16be8e77df5.obj"));
     const std::string finish = "orcaslicer-ai-finish-8cf12cbe-5f0b-4145-8347-8f6f3d3ebd9b.obj";
     CHECK(same_generated_artifact_name(finish, "/new/" + finish));
+    for (const auto& obj : {name, finish}) {
+        const auto textured = obj.substr(0, obj.size() - 4) + ".glb";
+        CHECK(same_generated_artifact_name(textured, "/new/" + textured));
+        CHECK_FALSE(same_generated_artifact_name(obj, "/new/" + textured));
+    }
     const std::string hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
     const std::string glb = "orcaslicer-ai-glb-" + hash + ".obj";
     CHECK(same_generated_artifact_name(glb, "/new/ai-import/" + glb));

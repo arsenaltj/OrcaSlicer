@@ -2,6 +2,7 @@
 
 #include <string>
 #include <vector>
+#include <fstream>
 
 #include "libslic3r/BoundingBox.hpp"
 #include "libslic3r/ClipperUtils.hpp"
@@ -10,9 +11,57 @@
 #include "libslic3r/PrintConfig.hpp"
 
 #include "test_helpers.hpp"
+#include "test_utils.hpp"
 
 using namespace Slic3r;
 using namespace Slic3r::Test;
+
+TEST_CASE("Tower consumption remains assigned to the depositing filament across tool changes", "[WipeTower][Regression]")
+{
+    const bool change_inside_tower = GENERATE(false, true);
+    FullPrintConfig config;
+    config.gcode_flavor.value = gcfMarlinFirmware;
+    config.filament_diameter.values = {1.75, 2.85};
+    config.filament_density.values = {1.24, 1.05};
+    config.filament_map.values = {1, 1};
+    config.machine_load_filament_time.value = 0;
+    config.machine_unload_filament_time.value = 0;
+    config.machine_tool_change_time.value = 0;
+
+    GCodeProcessor processor;
+    processor.apply_config(config);
+    const auto tag = [](GCodeProcessor::ETags value) {
+        return ";" + GCodeProcessor::reserved_tag(value) + "\n";
+    };
+    std::string gcode = "G90\nM83\nT0\nG1 X0 Y0 Z0.2 F1200\n";
+    gcode += tag(GCodeProcessor::ETags::Wipe_Tower_Start);
+    // Role tags include their payload; do not depend on the producer's tag table.
+    gcode += ";" + GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Role) + "Prime tower\n";
+    gcode += "G1 X10 E2\n";
+    if (!change_inside_tower) gcode += tag(GCodeProcessor::ETags::Wipe_Tower_End);
+    gcode += "T1\n";
+    if (!change_inside_tower) gcode += tag(GCodeProcessor::ETags::Wipe_Tower_Start);
+    gcode += "G1 X20 E3\n";
+    gcode += tag(GCodeProcessor::ETags::Wipe_Tower_End);
+    gcode += "M400\n";
+    ScopedTemporaryFile file(".gcode");
+    { std::ofstream stream(file.string()); stream << gcode; }
+    processor.process_file(file.string());
+    const auto& stats = processor.get_result().print_statistics;
+    REQUIRE(stats.wipe_tower_volumes_per_extruder.size() == 2);
+    REQUIRE(stats.total_volumes_per_extruder.size() == 2);
+    const double lengths[] = {2., 3.};
+    double expected_weight = 0.;
+    for (size_t id = 0; id < 2; ++id) {
+        const double volume = lengths[id] * PI * std::pow(config.filament_diameter.values[id] / 2., 2);
+        REQUIRE_THAT(stats.wipe_tower_volumes_per_extruder.at(id), Catch::Matchers::WithinAbs(volume, 1e-5));
+        REQUIRE_THAT(stats.total_volumes_per_extruder.at(id), Catch::Matchers::WithinAbs(volume, 1e-5));
+        expected_weight += volume * config.filament_density.values[id] * .001;
+    }
+    const auto role = stats.used_filaments_per_role.at(erWipeTower);
+    REQUIRE_THAT(role.first, Catch::Matchers::WithinAbs(.005, 1e-8));
+    REQUIRE_THAT(role.second, Catch::Matchers::WithinAbs(expected_weight, 1e-7));
+}
 
 // Taken from the config enum map rather than hand-listed, so a flavor added to GCodeFlavor later
 // is covered here without editing this file.

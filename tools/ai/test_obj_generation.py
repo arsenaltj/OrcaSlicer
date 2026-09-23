@@ -1249,7 +1249,7 @@ class ObjGenerationTests(unittest.TestCase):
         self.assertEqual(alpha.getpixel((130, 108)), 255)
         self.assertEqual(repaired.getpixel((90, 50)), portrait.getpixel((90, 50)))
 
-    def test_quality_portrait_uses_native_sculpted_head_and_one_clean_plinth(self):
+    def test_quality_portrait_uses_native_sculpted_head_without_generated_base(self):
         self.job.source = "image"
         self.job.style = "realistic"
         self.job.generation_profile = "quality"
@@ -1291,12 +1291,15 @@ class ObjGenerationTests(unittest.TestCase):
         SIDECAR._assess_job_generation_reference(self.job)
 
         canvas = self.job.image_metrics["geometry_provider_canvas"]
-        self.assertEqual(canvas["version"], "square-transparent-black-head-shoulders-v9")
+        self.assertEqual(canvas["version"], "square-transparent-black-head-shoulders-v10")
         self.assertEqual(canvas["source_size"], [512, 768])
         compaction = canvas["portrait_compaction"]
         self.assertEqual(compaction["crop_bounds"], [50, 80, 462, 452])
-        self.assertEqual(compaction["base_source"], "single_solid_structure_plinth")
+        self.assertEqual(compaction["base_source"], "none")
+        self.assertFalse(compaction["generated_display_base"])
+        self.assertNotIn("base_bounds", compaction)
         self.assertTrue(compaction["removed_original_base"])
+        self.assertEqual(compaction["prepared_size"], [412, 372])
         self.assertFalse(compaction["identity_pixels_resampled"])
         self.assertGreaterEqual(compaction["face_provider_ratio"], 0.55)
         self.assertEqual(compaction["shoulder_silhouette"]["status"], "pass")
@@ -1305,7 +1308,7 @@ class ObjGenerationTests(unittest.TestCase):
         )
         self.assertEqual(
             self.job.image_metrics["geometry_strategy"]["version"],
-            "portrait-sculpted-head-shoulders-front-v15",
+            "portrait-sculpted-head-shoulders-front-v16",
         )
         self.assertEqual(canvas["appearance_source"], "sculptural_geometry_reference")
         provider_path = self.job.directory / SIDECAR.PORTRAIT_GEOMETRY_PROVIDER_FILENAME
@@ -1326,12 +1329,8 @@ class ObjGenerationTests(unittest.TestCase):
         )
         with Image.open(self.job.preview_path) as printable_preview:
             self.assertEqual(printable_preview.size, provider.size)
-            base_left, base_top, base_right, _ = compaction["base_bounds"]
-            base_point = (
-                canvas["offset"][0] + (base_left + base_right) // 2,
-                canvas["offset"][1] + base_top + 2,
-            )
-            self.assertEqual(printable_preview.getpixel(base_point), (0, 255, 0, 255))
+            self.assertFalse(self.job.image_metrics["portrait_provider_preview"]["generated_display_base"])
+            self.assertFalse(self.job.image_metrics["portrait_provider_preview"]["single_material_base"])
 
     def test_paid_portrait_attempt_freezes_the_exact_existing_provider_canvas(self):
         self.job.source = "image"

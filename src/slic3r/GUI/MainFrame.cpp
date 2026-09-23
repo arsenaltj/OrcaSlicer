@@ -1326,9 +1326,12 @@ void MainFrame::init_tabpanel() {
         m_plater->exit_gizmo();
         m_plater->update(true, true);
         select_tab(TAB_ID_PREPARE);
-    }, [this] {
-        register_ai_assistant();
-    });
+        // AI imports and color matching return to the native prepare page.
+        // Keep the post-generation preparation controls visible so the user
+        // can add a detached base immediately, without discovering the
+        // Smart Slicing pane through the View menu first.
+        m_plater->show_smart_slicing(true);
+    }, [this] { register_ai_assistant(); });
     m_tabpanel->AddPage(TAB_ID_GENERATE_3D, m_ai_feature_host->model_generation_panel(), _L("3D 生成"),
                         "tab_generate_3d_active");
 

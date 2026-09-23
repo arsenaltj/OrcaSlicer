@@ -6,6 +6,7 @@
 #include "libslic3r.h"
 #include "I18N.hpp"
 #include "GCode.hpp"
+#include "FilamentMixer.hpp"
 #include "Exception.hpp"
 #include "ExtrusionEntity.hpp"
 #include "EdgeGrid.hpp"
@@ -6609,19 +6610,6 @@ LayerResult GCode::process_layer(
             if (mixed_instances_it == filament_to_print_instances.end() || mixed_instances_it->second.first.empty())
                 continue;
 
-            double lh = grp.layer_height > 0. ? grp.layer_height : static_cast<double>(height);
-            double cumulative_h = 0.0;
-            for (int i = 0; i < sub_idx; ++i)
-                cumulative_h += grp.sub_heights[i];
-            double default_sub_h = grp.sub_heights[sub_idx];
-            double default_sub_z = print_z - lh + cumulative_h + default_sub_h;
-
-            m_sub_layer_flow_ratio = default_sub_h / lh;
-            m_sub_layer_height     = default_sub_h;
-            m_nominal_z            = default_sub_z;
-
-            gcode += this->set_extruder(extruder_id, default_sub_z);
-
             for (InstanceToPrint &instance_to_print : mixed_instances_it->second.first) {
                 const bool use_per_volume = grp.is_gradient
                     && !grp.per_volume_gradient.empty()
@@ -6630,6 +6618,25 @@ LayerResult GCode::process_layer(
 
                 // --- Shared instance preamble (mirrors Orca's main instance loop) ---
                 const LayerToPrint &layer_to_print = layers[instance_to_print.layer_id];
+                // Resolve thickness from this object's actual sliced layer, not
+                // from other objects' interleaved appearances of the mixed slot.
+                // Support-only entries use their own Layer for the same reason.
+                const Layer* actual_layer = layer_to_print.layer();
+                auto layer_plan = grp.object_layers.find(&instance_to_print.print_object);
+                const auto object_layer = layer_to_print.object_layer && layer_plan != grp.object_layers.end()
+                    ? layer_plan->second : grp.for_layer(actual_layer->print_z, actual_layer->height);
+                const double lh = object_layer.layer_height;
+                const double object_print_z = object_layer.print_z;
+                double cumulative_h = 0.0;
+                for (int i = 0; i < sub_idx; ++i)
+                    cumulative_h += object_layer.sub_heights[i];
+                const double default_sub_h = object_layer.sub_heights[sub_idx];
+                const double default_sub_z = object_layer.bottom_z() + cumulative_h + default_sub_h;
+
+                m_sub_layer_flow_ratio = default_sub_h / lh;
+                m_sub_layer_height = default_sub_h;
+                m_nominal_z = default_sub_z;
+                gcode += this->set_extruder(extruder_id, default_sub_z);
                 const auto &inst = instance_to_print.print_object.instances()[instance_to_print.instance_id];
 
                 bool object_layer_over_raft = layer_to_print.object_layer && layer_to_print.object_layer->id() > 0 &&
@@ -6692,7 +6699,7 @@ LayerResult GCode::process_layer(
                     for (int ci = 0; ci < sub_idx; ++ci)
                         cum += sub_heights_local[ci];
                     out_sub_h = sub_heights_local[sub_idx];
-                    out_sub_z = print_z - lh + cum + out_sub_h;
+                    out_sub_z = object_layer.bottom_z() + cum + out_sub_h;
                 };
 
                 auto gradient_ratios = [](const auto &g) -> std::pair<double, double> {
@@ -6768,7 +6775,7 @@ LayerResult GCode::process_layer(
                         double vol_sub_z = default_sub_z;
                         if (vol_no_split) {
                             vol_sub_h = lh;
-                            vol_sub_z = print_z;
+                            vol_sub_z = object_print_z;
                         } else {
                             compute_sub_zh(r1, r2, vol_sub_h, vol_sub_z);
                         }

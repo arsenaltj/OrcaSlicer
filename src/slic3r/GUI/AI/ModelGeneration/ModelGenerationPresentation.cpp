@@ -185,7 +185,9 @@ bool write_json(const boost::filesystem::path& path, const nlohmann::json& value
     boost::filesystem::ofstream stream(path);
     if (!stream)
         return false;
-    stream << value.dump(2);
+    // Large face-run records must stay below the workbench's bounded reader.
+    // Whitespace indentation can multiply a valid puzzle draft severalfold.
+    stream << value.dump();
     stream.close();
     return stream.good();
 }
