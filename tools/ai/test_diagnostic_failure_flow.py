@@ -219,6 +219,17 @@ class DiagnosticFailureFlowTests(unittest.TestCase):
                 if process.poll() is None:
                     process.terminate()
                 process.wait(timeout=10)
+                # Windows may retain the redirected log briefly after the child exits.
+                # Release it before TemporaryDirectory removes the installed runtime.
+                log_path = data_dir / "log" / "orca-ai-sidecar.log"
+                for attempt in range(20):
+                    try:
+                        log_path.unlink(missing_ok=True)
+                        break
+                    except PermissionError:
+                        if attempt == 19:
+                            raise
+                        time.sleep(0.05)
 
 
 if __name__ == "__main__":
