@@ -76,6 +76,27 @@ TEST_CASE("History cache detects edits deletion and recreation while preserving 
     CHECK(cache.read(path).at("prompt") == "new");
 }
 
+TEST_CASE("History summary reads edited portraits larger than 32 MiB", "[ModelLibraryMetadata]")
+{
+    ScopedTemporaryDir temporary("orca-history-summary-large");
+    const auto path = temporary.path() / "finish-large.json";
+    {
+        boost::filesystem::ofstream output(path, std::ios::binary);
+        output << R"({"source":"local_finishing","job_id":"finish-large","prompt":"Saved portrait","beauty_workbench":)";
+        // Editing-only content can be tens of megabytes; it must not hide the saved model.
+        const std::string padding(1024 * 1024, ' ');
+        for (int i = 0; i < 33; ++i) output << padding;
+        output << "{} }";
+    }
+    REQUIRE(boost::filesystem::file_size(path) > 32ULL * 1024 * 1024);
+    ModelLibraryMetadata cache;
+    const auto summary = cache.read(path);
+    REQUIRE(summary.is_object());
+    CHECK(summary.at("job_id") == "finish-large");
+    CHECK(summary.at("prompt") == "Saved portrait");
+    CHECK_FALSE(summary.contains("beauty_workbench"));
+}
+
 TEST_CASE("History summary cache survives a restart and rejects stale or corrupt entries", "[ModelLibraryMetadata]")
 {
     ScopedTemporaryDir temporary("orca-history-summary-persistent");

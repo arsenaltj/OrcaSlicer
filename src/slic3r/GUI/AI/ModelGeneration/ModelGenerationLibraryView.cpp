@@ -52,12 +52,6 @@ std::vector<ModelGenerationPanel::GeneratedModelEntry> ModelGenerationPanel::rea
     };
     thread_local ModelLibraryMetadata summaries;
     const auto read_json = [](const boost::filesystem::path& path) {
-        boost::system::error_code error;
-        const auto bytes = boost::filesystem::file_size(path, error);
-        // Keep history scans bounded. ModelLibraryMetadata::parse already
-        // discards editing-only arrays and validates typed summary fields.
-        if (error || bytes > 32 * 1024 * 1024)
-            return nlohmann::json();
         return summaries.read(path);
     };
     boost::system::error_code ec;

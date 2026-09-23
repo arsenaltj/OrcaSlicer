@@ -81,6 +81,11 @@ public:
         const auto key = path.generic_string();
         Stamp before;
         if (!stamp(path, before)) { m_entries.erase(key); m_persistent.erase(key); m_persistent_dirty=true; return {}; }
+        // Skip pathological documents, but allow real edited portrait history
+        // whose disposable per-face arrays exceed the former 32 MiB limit.
+        if (before.size > max_summary_document_bytes) {
+            m_entries.erase(key); m_persistent.erase(key); m_persistent_dirty=true; return {};
+        }
         const auto found = m_entries.find(key);
         if (found != m_entries.end() && found->second.stamp == before)
             return found->second.summary;
@@ -110,6 +115,7 @@ private:
         bool operator==(const Stamp& other) const { return modified == other.modified && size == other.size; }
     };
     struct Entry { Stamp stamp; nlohmann::json summary; };
+    static constexpr uintmax_t max_summary_document_bytes = 128ULL * 1024 * 1024;
     static constexpr const char* cache_name = "library-summary-cache-v1.json";
     static int64_t stamp_ticks(const Stamp& value)
     {
