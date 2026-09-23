@@ -1,0 +1,25 @@
+{
+  "pr": 15,
+  "run": 35865106283,
+  "head": "1f7d6fda92496422dac5b3ecf4fc4836c97ae597",
+  "base": "decf64fab128422f3666e71fe034fc411566bd6a",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "feat(ai): integrate beauty workbench, post-generation bases and print color",
+  "path": "pr/15/1f7d6fda92496422dac5b3ecf4fc4836c97ae597/35865106283",
+  "created": "2026-09-23T13:11:30+00:00",
+  "files": {
+    "index.html": "49d51d90dff1bf3b017eb2f88925530245e860cb4d349f5359842684153e28bf",
+    "details.html": "1b260e0104382784a138b4976a5babfbddffc5712097ad2a7f7dfc1846805755",
+    "report.json": "129fb0acfe7673184c607baea5a47381544e0c280f6339a4bcc850d9b2a050af",
+    "summary.md": "16f6e3cfa857af0bf05992d5ab5f6e44b889336cf9879d9896204b0f578b8de4",
+    "archify-receipts.json": "ca1d751dd636355cd5c03a21689ca135f44ff58bc63d58614f10890b653dec28",
+    "l0-context.html": "b40651a699aa26cdcc642dfa7985a7e7ed388cf8cea416c2ba2ea4dc66d73ba8",
+    "l0-context.json": "b32626c8af75db55a5e8f281596c8e8148bf097e31761caeb0267871b2444776",
+    "l1-modules.html": "ab9e47e312df765ae31179451ac3a72ce5e2da750858bde2951f997f3799129e",
+    "l1-modules.json": "d019d0ae8acf99faa548e2ca49b0ab5031097a0122f0c9df78fcf0013f680e87",
+    "l2-generation.html": "5acbda288166f273c4137cf06a8ac7d2386d95f696589621ca5b3ca4e845c7fc",
+    "l2-generation.json": "e38c2d3e962b690d22bf3a3e61c5fb208d5a8b2b4c2ab96c683e2a85305f7d05",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}
