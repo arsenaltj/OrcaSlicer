@@ -20,6 +20,8 @@ class wxWindow;
 
 namespace Slic3r::GUI {
 
+class UploadThumbnail;
+
 class RedesignShell final : public wxPanel
 {
 public:
@@ -53,8 +55,7 @@ private:
     wxStaticText* m_upload_hint { nullptr };
     wxStaticText* m_upload_status { nullptr };
     wxStaticText* m_upload_filename { nullptr };
-    wxStaticBitmap* m_upload_thumbnail { nullptr };
-    wxButton* m_remove_image { nullptr };
+    UploadThumbnail* m_upload_thumbnail { nullptr };
     wxTextCtrl* m_prompt { nullptr };
     wxPanel* m_guide_panel { nullptr };
     wxPanel* m_preview_host { nullptr };

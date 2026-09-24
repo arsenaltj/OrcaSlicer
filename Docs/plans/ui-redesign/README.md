@@ -188,3 +188,10 @@
 - 按用户最新要求，确认旧候选未运行、原 DLL 与上轮记录哈希一致后，仅用新构建 DLL 覆盖 `.tmp/ui-redesign-visual-20260924/run/OrcaSlicer.dll`；EXE 和资源保持原样。新 DLL SHA256 `B6EBCB793A32CD34DEBA3E6F9365F7F32919DE8F9887D2D70D712B20DBE4511F`。新一轮输入／产物哈希见 `.tmp/ui-redesign-visual-20260924/source-snapshot-prompt-hint.json`，旧 `source-snapshot.json` 保留为覆盖前基线，不能当作当前运行目录的哈希。
 - 未启动真实窗口，也未宣称视觉验收通过；用户自行检查提示、首次输入、失焦再聚焦、清空后再输入的颜色。保留上轮 DLL 哈希 `3866FF9E290F6BF4D1473631517EAF913F503A9F4B78734FF068D9AEB416993B` 作为回退身份，旧 DLL 实体未另行备份。
 - 2026-09-24 用户反馈：描述框文字颜色测试效果 OK，**文字颜色验收通过**。这一反馈仅覆盖文字颜色，不推断其他页面或交互已验收。
+
+### 2026-09-24 上传缩略图布局与关闭标记（待用户验收）
+
+- 用户截图：选图后缩略图被挤到下方，上方保留空态灰色方块；关闭控件呈矩形且与图片相互遮挡。原因是原先只隐藏加号文字、没有移除 68 DIP 的空态 tile；另用原生矩形按钮在布局后手动移动、叠加在独立的静态位图上。
+- 已上传状态隐藏整个空态 tile；缩略图使用固定 150 DIP 居中画布、最大 134 DIP 的圆角图片，并在同一画布内绘制圆形 × 标记。关闭命中区域清空图片，其他图片区域仍可重选；保留拖拽入口和原有校验。空态恢复原 tile。
+- HEAD `5bb5f06b11` 加当前两文件未提交修改，Windows x64 Release 增量 `OrcaSlicer_app_gui` 通过，记录 `.tmp/dev/logs/20260924-121927-351/result.json`；定向 `[UiRedesign],[ImageSelection]` 通过 7 例／43 断言，日志 `build/ui-redesign-upload-tests-20260924.log`。
+- 用户要求继续使用旧候选路径。覆盖前确认其 EXE 未运行且 DLL 与先前记录匹配，仅将新构建 DLL 覆盖 `.tmp/ui-redesign-visual-20260924/run/OrcaSlicer.dll`；SHA256 `2F06269843DAE780A4FCD59563499232E0C32CABAADBD60CCC29A8FDBF788EC5`，EXE、资源和 Python 未改变。候选未由 Codex 启动，图片居中、角部、关闭/重选/拖入及清空后恢复等待用户真实窗口验收。

@@ -90,6 +90,26 @@ wxBitmap scaled_bitmap(const wxImage& image, const wxSize& bounds)
                                 std::max(1, int(std::round(image.GetHeight() * scale))), wxIMAGE_QUALITY_HIGH));
 }
 
+// Alpha-mask just the thumbnail corners; the upload surface itself remains a separate rounded panel.
+wxBitmap rounded_thumbnail(const wxImage& source, const wxSize& bounds, int radius)
+{
+    wxBitmap scaled = scaled_bitmap(source, bounds);
+    if (!scaled.IsOk()) return wxNullBitmap;
+    wxImage image = scaled.ConvertToImage();
+    if (!image.HasAlpha()) image.InitAlpha();
+    const double r = std::min<double>(radius, std::min(image.GetWidth(), image.GetHeight()) / 2.0);
+    for (int y = 0; y < image.GetHeight(); ++y) {
+        for (int x = 0; x < image.GetWidth(); ++x) {
+            const double px = x + 0.5, py = y + 0.5;
+            const double dx = px - std::clamp(px, r, image.GetWidth() - r);
+            const double dy = py - std::clamp(py, r, image.GetHeight() - r);
+            const double coverage = std::clamp(r + 0.5 - std::hypot(dx, dy), 0.0, 1.0);
+            image.SetAlpha(x, y, static_cast<unsigned char>(std::round(image.GetAlpha(x, y) * coverage)));
+        }
+    }
+    return wxBitmap(image);
+}
+
 wxBitmap resource_bitmap(const char* name, const wxSize& bounds)
 {
     return scaled_bitmap(wxImage(wxString::FromUTF8((Slic3r::resources_dir() + "/images/" + name).c_str())), bounds);
@@ -148,6 +168,61 @@ wxStaticText* label(wxWindow* parent, const char* value, int size, bool bold = f
 }
 
 }
+
+// Draw image and badge in one control, avoiding native sibling overlap and square button chrome.
+class UploadThumbnail final : public wxPanel
+{
+public:
+    UploadThumbnail(wxWindow* parent, std::function<void()> remove, std::function<void()> choose)
+        : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(parent->FromDIP(150), parent->FromDIP(150)))
+        , m_remove(std::move(remove)), m_choose(std::move(choose))
+    {
+        SetMinSize(wxSize(FromDIP(150), FromDIP(150)));
+        SetBackgroundStyle(wxBG_STYLE_PAINT);
+        Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
+            wxAutoBufferedPaintDC dc(this);
+            dc.SetBackground(wxBrush(control_colour()));
+            dc.Clear();
+            if (!m_bitmap.IsOk()) return;
+            auto gc = std::unique_ptr<wxGraphicsContext>(wxGraphicsContext::Create(dc));
+            if (!gc) return;
+            const wxRect rect = image_rect();
+            gc->DrawBitmap(m_bitmap, rect.x, rect.y, rect.width, rect.height);
+            const wxPoint centre = close_centre(rect);
+            const int radius = FromDIP(7);
+            gc->SetPen(*wxTRANSPARENT_PEN);
+            gc->SetBrush(wxBrush(wxColour(139, 139, 142)));
+            gc->DrawEllipse(centre.x - radius, centre.y - radius, 2 * radius, 2 * radius);
+            gc->SetPen(wxPen(*wxWHITE, std::max(1, FromDIP(1))));
+            const int arm = std::max(1, FromDIP(2));
+            gc->StrokeLine(centre.x - arm, centre.y - arm, centre.x + arm, centre.y + arm);
+            gc->StrokeLine(centre.x + arm, centre.y - arm, centre.x - arm, centre.y + arm);
+        });
+        Bind(wxEVT_LEFT_UP, [this](wxMouseEvent& event) {
+            const wxPoint centre = close_centre(image_rect());
+            const int radius = FromDIP(11);
+            const int dx = event.GetX() - centre.x, dy = event.GetY() - centre.y;
+            if (dx * dx + dy * dy <= radius * radius) m_remove();
+            else m_choose();
+        });
+    }
+
+    void SetBitmap(const wxBitmap& bitmap) { m_bitmap = bitmap; Refresh(); }
+
+private:
+    wxRect image_rect() const
+    {
+        const wxSize size = GetClientSize(), bitmap_size = m_bitmap.GetSize();
+        return wxRect((size.x - bitmap_size.x) / 2, (size.y - bitmap_size.y) / 2,
+                      bitmap_size.x, bitmap_size.y);
+    }
+    wxPoint close_centre(const wxRect& rect) const
+    {
+        return wxPoint(rect.GetRight() - FromDIP(3), rect.GetTop() + FromDIP(4));
+    }
+    wxBitmap m_bitmap;
+    std::function<void()> m_remove, m_choose;
+};
 
 RedesignShell::RedesignShell(wxWindow* parent)
     : wxPanel(parent)
@@ -244,13 +319,9 @@ void RedesignShell::build_image_workspace()
     style_text(m_upload_icon, primary_text_colour(), 26);
     upload_tile_sizer->Add(m_upload_icon, 1, wxALIGN_CENTER | wxALL, FromDIP(8));
     upload_sizer->Add(upload_tile, 0, wxALIGN_CENTER);
-    m_upload_thumbnail = new wxStaticBitmap(m_upload_surface, wxID_ANY, wxNullBitmap);
+    m_upload_thumbnail = new UploadThumbnail(m_upload_surface, [this] { clear_image(); },
+                                             [this] { choose_image(); });
     upload_sizer->Add(m_upload_thumbnail, 0, wxALIGN_CENTER);
-    m_remove_image = new wxButton(m_upload_surface, wxID_ANY, text("×"), wxDefaultPosition,
-                                  wxSize(FromDIP(28), FromDIP(24)), wxBORDER_NONE);
-    m_remove_image->SetBackgroundColour(wxColour(75, 75, 78));
-    style_text(m_remove_image, primary_text_colour(), 12);
-    m_remove_image->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { clear_image(); });
     m_upload_status = label(m_upload_surface, "点击、拖拽选择图片", 10);
     upload_sizer->Add(m_upload_status, 0, wxALIGN_CENTER | wxTOP, FromDIP(7));
     m_upload_filename = label(m_upload_surface, "", 9);
@@ -265,7 +336,7 @@ void RedesignShell::build_image_workspace()
                                                       m_upload_hint, m_upload_filename, m_upload_thumbnail};
     for (wxWindow* target : upload_targets) {
         target->SetDropTarget(new ImageDropTarget([this](const wxString& path) { accept_image(path); }));
-        bind_upload_click(target);
+        if (target != m_upload_thumbnail) bind_upload_click(target);
     }
 
     auto* prompt_label = new wxStaticText(settings_panel, wxID_ANY, text("描述"));
@@ -620,9 +691,8 @@ void RedesignShell::update_image_state()
 {
     const bool ready = m_image_state == ImageState::Ready;
     const bool loading = m_image_state == ImageState::Loading;
-    m_upload_icon->Show(!ready);
+    m_upload_icon->GetParent()->Show(!ready);
     m_upload_thumbnail->Show(ready);
-    m_remove_image->Show(ready);
     m_upload_status->Show(!ready);
     m_upload_filename->Show(false);
     m_upload_hint->Show(!ready);
@@ -640,20 +710,13 @@ void RedesignShell::update_image_state()
         m_upload_hint->SetLabel(text("支持：PNG、JPG、JPEG，最大 20MB"));
     }
     if (ready) {
-        const wxBitmap thumbnail = scaled_bitmap(m_selected_image, wxSize(FromDIP(134), FromDIP(134)));
+        const wxBitmap thumbnail = rounded_thumbnail(m_selected_image, wxSize(FromDIP(134), FromDIP(134)), FromDIP(8));
         m_upload_thumbnail->SetBitmap(thumbnail);
         m_upload_thumbnail->SetToolTip(wxString(m_selected_image_path.filename().wstring()));
     }
     m_guide_panel->Show(!ready);
     m_preview_host->Show(ready);
     m_upload_surface->Layout();
-    if (ready) {
-        const wxPoint thumbnail_position = m_upload_thumbnail->GetPosition();
-        const wxSize thumbnail_size = m_upload_thumbnail->GetSize();
-        m_remove_image->Move(thumbnail_position.x + thumbnail_size.x - FromDIP(12),
-                             thumbnail_position.y - FromDIP(6));
-        m_remove_image->Raise();
-    }
     m_upload_surface->GetParent()->Layout();
     m_image_page->Layout();
     if (ready) {
