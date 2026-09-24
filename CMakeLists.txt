@@ -1403,6 +1403,9 @@ if (WIN32)
             "${CMAKE_SOURCE_DIR}/tools/ai/hunyuan_provider_gateway.py"
             "${CMAKE_SOURCE_DIR}/tools/ai/verify_bundled_runtime.py")
         install(FILES ${ORCA_AI_SIDECAR_RUNTIME_FILES} DESTINATION "./resources/tools/ai")
+        include("${CMAKE_SOURCE_DIR}/tools/ai/local_semantic_runtime_files.cmake")
+        install(FILES ${ORCA_LOCAL_SEMANTIC_RUNTIME_FILES}
+            DESTINATION "./resources/tools/ai/beauty_semantics")
         install(FILES
             "${ORCA_AI_BUILD_INFO_FILE}"
             "${ORCA_AI_RUNTIME_DEPENDENCIES_FILE}"

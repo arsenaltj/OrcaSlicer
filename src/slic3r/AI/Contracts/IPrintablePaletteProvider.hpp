@@ -9,6 +9,24 @@
 
 namespace Slic3r::AI {
 
+// Optional process/material evidence used by isolated local color workers.
+// Existing palette callers may leave these fields empty.
+struct PrintSublayerMaterial {
+    PhysicalFilamentChannel channel;
+    std::string identity;
+    double min_layer_mm {0}, max_layer_mm {0}, line_width_mm {0};
+    double temperature_c {0}, min_temperature_c {0}, max_temperature_c {0};
+};
+struct PrintSublayerProcess {
+    std::string material_fingerprint, process_fingerprint;
+    std::string surface_condition, measurement_condition;
+    bool sublayers_enabled {false};
+    bool first_layer_unsplit {true};
+    std::vector<double> layer_heights_mm;
+    double z_resolution_mm {0};
+    double region_width_mm {0}, region_height_mm {0};
+};
+
 struct PrintablePaletteSnapshot
 {
     std::vector<std::string> project_colors;
