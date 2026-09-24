@@ -162,6 +162,21 @@ class GenerationOptionsRecoveryTests(unittest.TestCase):
                 with self.assertRaises(sidecar.RequestError):
                     sidecar._new_job("text", provider=options.get("provider", "tripo"), generation_options=options)
 
+    def test_display_base_policy_defaults_to_legacy_and_round_trips_optional(self):
+        self.assertEqual(self.job.display_base_policy, "legacy_generated")
+        self.job.display_base_policy = "post_generation_optional"
+        sidecar._persist_job(self.job)
+        restored = sidecar._load_job(self.job.directory)
+        self.assertEqual(restored.display_base_policy, "post_generation_optional")
+        public = sidecar._public_job(restored)
+        self.assertEqual(public["display_base_policy"], "post_generation_optional")
+
+    def test_unknown_display_base_policy_falls_back_to_legacy(self):
+        self.assertEqual(
+            sidecar._display_base_policy({"display_base_policy": "future-policy"}),
+            "legacy_generated",
+        )
+
     def test_invalid_saved_design_can_be_corrected_before_any_paid_submission(self):
         self.job.geometry_quality = "standard"
         self.job.face_limit = 2000000

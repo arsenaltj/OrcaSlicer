@@ -285,6 +285,8 @@ void ModelGenerationPanel::restore_job(AIModelGenerationClient::JobStatus status
     if (m_texture_quality) m_texture_quality->SetSelection(m_texture_quality->GetCount() == 1 ? 0 : status.generation_options.texture_quality == "extreme" ? 2 :
                                                          status.generation_options.texture_quality == "detailed" ? 1 : 0);
     if (m_output_format) m_output_format->SetSelection(status.generation_options.output_format == "obj" ? 1 : 0);
+    if (m_post_generation_optional_base)
+        m_post_generation_optional_base->SetValue(status.generation_options.display_base_policy == "post_generation_optional");
     if (m_print_width != nullptr) m_print_width->SetValue(status.print_settings.width_mm);
     if (m_nozzle_size != nullptr) m_nozzle_size->SetValue(status.print_settings.nozzle_mm);
     if (m_line_width != nullptr) m_line_width->SetValue(status.print_settings.line_width_mm);
@@ -822,6 +824,11 @@ wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
     m_geometry_quality = add_option(_L("几何"), {_L("标准（+0 积分）"), _L("精细（+20 积分）")});
     m_texture_quality = add_option(_L("纹理"), {_L("标准（+0 积分）"), _L("高清（+10 积分）"), _L("8K（+20 积分）")});
     m_output_format = add_option(_L("格式"), {_L("GLB（+0 积分）"), _L("OBJ（转换 +5 积分）")});
+    m_post_generation_optional_base = new wxCheckBox(m_model_settings_panel, wxID_ANY,
+                                                     _L("生成后再选择底座"));
+    m_post_generation_optional_base->SetToolTip(
+        _L("勾选后人像生成输入不包含展示底座，生成完成后可在准备页单独添加。"));
+    model_settings_sizer->Add(m_post_generation_optional_base, 0, wxEXPAND | wxTOP, FromDIP(6));
     m_generation_cost = new wxStaticText(m_model_settings_panel, wxID_ANY, wxEmptyString,
                                          wxDefaultPosition, wxDefaultSize, wxST_NO_AUTORESIZE);
     m_generation_cost->SetMinSize(wxSize(1, -1));
@@ -907,6 +914,11 @@ wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
             refresh_provider_options();
             persist_generation_options();
         });
+    m_post_generation_optional_base->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) {
+        m_legacy_generation_defaults = false;
+        persist_generation_options();
+        refresh_controls();
+    });
     m_choose_image->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_choose_image, this);
     m_clear_image->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_clear_image, this);
     m_use_printable_colors->Bind(wxEVT_CHECKBOX, &ModelGenerationPanel::on_printable_colors_toggled, this);
@@ -2995,6 +3007,7 @@ void ModelGenerationPanel::refresh_controls()
     m_geometry_quality->Enable(!busy && !hunyuan);
     m_texture_quality->Enable(!busy && !hunyuan);
     m_output_format->Enable(!busy);
+    if (m_post_generation_optional_base) m_post_generation_optional_base->Enable(!busy);
     m_generation_cost->SetLabel(generation_options_summary(m_job_id.empty() || m_job_preview_expected));
     if (m_legacy_generation_defaults)
         m_generation_cost->SetLabel(m_generation_cost->GetLabel() + _L("\n旧记录未指定几何档位，重新生成沿用标准几何的 100 万面上限；历史模型不变。"));
@@ -3858,6 +3871,8 @@ AIModelGenerationClient::GenerationOptions ModelGenerationPanel::current_generat
     const int texture = options.provider == "tripo" && m_texture_quality ? m_texture_quality->GetSelection() : 0;
     options.texture_quality = texture == 2 ? "extreme" : texture == 1 ? "detailed" : "standard";
     options.output_format = m_output_format && m_output_format->GetSelection() == 1 ? "obj" : "glb";
+    options.display_base_policy = m_post_generation_optional_base &&
+        m_post_generation_optional_base->GetValue() ? "post_generation_optional" : "legacy_generated";
     return options;
 }
 
@@ -4187,6 +4202,7 @@ void ModelGenerationPanel::reset(bool remove_remote)
     m_job_face_limit = 1000000;
     m_job_generation_profile = "quality";
     m_job_generation_options = {};
+    if (m_post_generation_optional_base) m_post_generation_optional_base->SetValue(false);
     m_job_image_path.clear();
     m_job_preview_expected = false;
     m_artifact_format.clear();
@@ -4302,6 +4318,7 @@ void ModelGenerationPanel::save_library_entry(size_t artifact_size, size_t trian
         {"generation_profile", m_job_generation_profile},
         {"face_limit", m_job_face_limit},
         {"provider", m_job_generation_options.provider},
+        {"display_base_policy", m_job_generation_options.display_base_policy},
         {"geometry_quality", m_job_generation_options.geometry_quality},
         {"texture_quality", m_job_generation_options.texture_quality},
         {"output_format", m_job_generation_options.output_format},

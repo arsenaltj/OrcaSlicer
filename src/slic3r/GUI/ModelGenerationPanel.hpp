@@ -290,6 +290,7 @@ private:
     wxChoice*       m_geometry_quality { nullptr };
     wxChoice*       m_texture_quality { nullptr };
     wxChoice*       m_output_format { nullptr };
+    wxCheckBox*     m_post_generation_optional_base { nullptr };
     wxStaticText*   m_generation_cost { nullptr };
     wxButton*       m_choose_image { nullptr };
     wxButton*       m_clear_image { nullptr };

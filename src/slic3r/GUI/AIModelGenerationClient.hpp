@@ -146,6 +146,7 @@ public:
 
     struct GenerationOptions
     {
+        std::string display_base_policy { "legacy_generated" };
         std::string provider { "tripo" };
         int face_limit { 1000000 };
         std::string geometry_quality { "standard" };

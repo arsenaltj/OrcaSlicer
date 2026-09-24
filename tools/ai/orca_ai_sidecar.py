@@ -169,6 +169,8 @@ GENERATION_PROFILE_FACE_LIMITS = {"quality": 1000000, "performance": 300000}
 MAX_GENERATION_ATTEMPTS = 1
 JOB_STATE_FILENAME = "job.json"
 JOB_STATE_VERSION = 1
+DISPLAY_BASE_POLICIES = ("legacy_generated", "post_generation_optional")
+DEFAULT_DISPLAY_BASE_POLICY = "legacy_generated"
 MAX_JOB_STATE_BYTES = 64 * 1024
 JOURNEY_EVENT_FILENAME = "journey-events.jsonl"
 MAX_JOURNEY_EVENT_FILE_BYTES = 5 * 1024 * 1024
@@ -467,6 +469,7 @@ class Job:
     geometry_quality: str | None = None
     texture_quality: str = "standard"
     output_format: str = "glb"
+    display_base_policy: str = DEFAULT_DISPLAY_BASE_POLICY
     provider: str = "tripo"
     user_prompt: str = ""
     prepared_prompt: str = ""
@@ -933,6 +936,13 @@ def _generation_provider(payload: dict[str, Any]) -> str:
     return provider
 
 
+def _display_base_policy(payload: Mapping[str, Any]) -> str:
+    value = payload.get("display_base_policy", DEFAULT_DISPLAY_BASE_POLICY)
+    if isinstance(value, str) and value in DISPLAY_BASE_POLICIES:
+        return value
+    return DEFAULT_DISPLAY_BASE_POLICY
+
+
 def _validate_face_target(face_count: int, face_limit: int) -> str:
     maximum = min(MAX_MODEL_FACES, math.ceil(face_limit * MAX_MODEL_FACE_RATIO))
     if face_count > maximum:
@@ -1079,6 +1089,7 @@ def _new_job(
         geometry_quality=geometry,
         texture_quality=texture,
         output_format=output,
+        display_base_policy=_display_base_policy(options),
     )
     _persist_job(job)
     return job
@@ -1146,6 +1157,7 @@ def _persist_job(job: Job, *, touch: bool = True, required: bool = False) -> Non
         "geometry_quality": job.geometry_quality,
         "texture_quality": job.texture_quality,
         "output_format": job.output_format,
+        "display_base_policy": job.display_base_policy,
         "provider": job.provider,
         "user_prompt": "" if job.source == "image" and job.user_prompt == DEFAULT_IMAGE_INSTRUCTION else job.user_prompt,
         "prepared_prompt": job.prepared_prompt,
@@ -1242,6 +1254,7 @@ def _load_job(directory: Path) -> Job | None:
         geometry_quality=geometry_quality,
         texture_quality=texture_quality,
         output_format=output_format,
+        display_base_policy=_display_base_policy(payload),
         provider=_generation_provider(payload),
         print_settings=print_settings,
     )
@@ -1639,6 +1652,7 @@ def _public_job(job: Job) -> dict[str, Any]:
         "geometry_quality": job.geometry_quality,
         "texture_quality": job.texture_quality,
         "output_format": job.output_format,
+        "display_base_policy": job.display_base_policy,
         "provider": job.provider,
         "state": job.state,
         "phase": job.phase,
@@ -2954,14 +2968,11 @@ def _prepare_portrait_geometry_provider_reference(job: Job) -> Path:
                     overlap = max(5, round(head_height * 0.025))
                     bottom_margin = max(4, round(head_height * 0.015))
                     prepared_height = portrait.height + base_height - overlap + bottom_margin
-                    prepared = Image.new(
-                        "RGBA", (portrait.width, prepared_height), (0, 0, 0, 0)
-                    )
+                    relative_center_x = center_x - crop_left
                     base_width = min(
                         portrait.width - bottom_margin * 2,
                         max(round(head_height * 1.60), round(lower_width * 1.12)),
                     )
-                    relative_center_x = center_x - crop_left
                     base_left = max(
                         bottom_margin,
                         min(
@@ -2971,49 +2982,51 @@ def _prepare_portrait_geometry_provider_reference(job: Job) -> Path:
                     )
                     base_right = base_left + base_width
                     base_destination_top = portrait.height - overlap
-                    structure = str(job.palette_roles.get("structure", "#555555")).strip()
-                    if re.fullmatch(r"#[0-9A-Fa-f]{6}", structure):
-                        plinth_rgb = tuple(
-                            int(structure[index:index + 2], 16) for index in (1, 3, 5)
-                        )
+                    if job.display_base_policy == "post_generation_optional":
+                        # Keep the detected base bounds as evidence, but do not
+                        # paint a synthetic plinth into the paid provider input.
+                        geometry = portrait
+                        alpha = portrait_alpha
+                        compaction = {
+                            "applied": True,
+                            "reason": "portrait_head_shoulders_base_free",
+                            "original_size": original_size,
+                            "prepared_size": list(geometry.size),
+                            "crop_bounds": [crop_left, crop_top, crop_right, crop_bottom],
+                            "removed_original_base": True,
+                            "head_height": head_height,
+                            "head_bounds": [face_left, crop_top, face_right, head_bottom],
+                            "base_source": "none",
+                            "generated_display_base": False,
+                            "base_bounds": [base_left, base_destination_top, base_right, base_destination_top + base_height],
+                            "shoulder_silhouette": shoulder_silhouette,
+                        }
                     else:
-                        plinth_rgb = (85, 85, 85)
-                    prepared.paste(portrait, (0, 0), portrait_alpha)
-                    draw = ImageDraw.Draw(prepared)
-                    ellipse_height = max(8, round(base_height * 0.36))
-                    draw.ellipse(
-                        (
-                            base_left,
-                            base_destination_top,
-                            base_right - 1,
-                            base_destination_top + ellipse_height,
-                        ),
-                        fill=(*plinth_rgb, 255),
-                    )
-                    draw.rectangle(
-                        (
-                            base_left,
-                            base_destination_top + ellipse_height // 2,
-                            base_right - 1,
-                            base_destination_top + base_height - ellipse_height // 2,
-                        ),
-                        fill=(*plinth_rgb, 255),
-                    )
-                    draw.ellipse(
-                        (
-                            base_left,
-                            base_destination_top + base_height - ellipse_height,
-                            base_right - 1,
-                            base_destination_top + base_height,
-                        ),
-                        fill=(*plinth_rgb, 255),
-                    )
+                        prepared = Image.new(
+                            "RGBA", (portrait.width, prepared_height), (0, 0, 0, 0)
+                        )
+                        structure = str(job.palette_roles.get("structure", "#555555")).strip()
+                        if re.fullmatch(r"#[0-9A-Fa-f]{6}", structure):
+                            plinth_rgb = tuple(int(structure[index:index + 2], 16) for index in (1, 3, 5))
+                        else:
+                            plinth_rgb = (85, 85, 85)
+                        prepared.paste(portrait, (0, 0), portrait_alpha)
+                        draw = ImageDraw.Draw(prepared)
+                        ellipse_height = max(8, round(base_height * 0.36))
+                        draw.ellipse((base_left, base_destination_top, base_right - 1,
+                                      base_destination_top + ellipse_height), fill=(*plinth_rgb, 255))
+                        draw.rectangle((base_left, base_destination_top + ellipse_height // 2,
+                                        base_right - 1, base_destination_top + base_height - ellipse_height // 2),
+                                       fill=(*plinth_rgb, 255))
+                        draw.ellipse((base_left, base_destination_top + base_height - ellipse_height,
+                                      base_right - 1, base_destination_top + base_height), fill=(*plinth_rgb, 255))
+                        geometry = prepared
+                        alpha = geometry.getchannel("A")
                     # The one-piece plinth overlaps the native shoulder cut.
                     # This hides antialiased garment fringe and prevents a
                     # second white transition ring; the face remains untouched.
-                    geometry = prepared
-                    alpha = geometry.getchannel("A")
-                    compaction = {
+                    if job.display_base_policy != "post_generation_optional":
+                        compaction = {
                         "applied": True,
                         "reason": "portrait_head_shoulders_identity",
                         "original_size": original_size,
@@ -3040,7 +3053,7 @@ def _prepare_portrait_geometry_provider_reference(job: Job) -> Path:
                             head_height / max(1, geometry.height), 6
                         ),
                         "identity_pixels_resampled": False,
-                    }
+                        }
             else:
                 compaction["reason"] = "portrait_not_safely_head_croppable"
         subject_bbox = alpha.getbbox()
@@ -3065,7 +3078,9 @@ def _prepare_portrait_geometry_provider_reference(job: Job) -> Path:
         offset_x = (target_side - width) // 2
         offset_y = (target_side - height) // 2
         canvas_version = (
-            "square-transparent-black-head-shoulders-v9"
+            "square-transparent-black-head-shoulders-v10"
+            if compaction["applied"] and job.display_base_policy == "post_generation_optional"
+            else "square-transparent-black-head-shoulders-v9"
             if compaction["applied"]
             else "square-transparent-black-v2"
         )
@@ -3139,37 +3154,21 @@ def _prepare_portrait_geometry_provider_reference(job: Job) -> Path:
                     (0, 0),
                     printable_portrait.getchannel("A"),
                 )
-                base_left, base_top, base_right, base_bottom = (
-                    int(value) for value in compaction["base_bounds"]
-                )
-                base_color = str(compaction["base_color"])
-                base_rgb = tuple(
-                    int(base_color[index:index + 2], 16) for index in (1, 3, 5)
-                )
-                ellipse_height = int(compaction["base_ellipse_height"])
-                preview_draw = ImageDraw.Draw(printable_prepared)
-                preview_draw.ellipse(
-                    (base_left, base_top, base_right - 1, base_top + ellipse_height),
-                    fill=(*base_rgb, 255),
-                )
-                preview_draw.rectangle(
-                    (
-                        base_left,
-                        base_top + ellipse_height // 2,
-                        base_right - 1,
-                        base_bottom - ellipse_height // 2,
-                    ),
-                    fill=(*base_rgb, 255),
-                )
-                preview_draw.ellipse(
-                    (
-                        base_left,
-                        base_bottom - ellipse_height,
-                        base_right - 1,
-                        base_bottom,
-                    ),
-                    fill=(*base_rgb, 255),
-                )
+                if job.display_base_policy != "post_generation_optional":
+                    base_left, base_top, base_right, base_bottom = (
+                        int(value) for value in compaction["base_bounds"]
+                    )
+                    base_color = str(compaction["base_color"])
+                    base_rgb = tuple(int(base_color[index:index + 2], 16) for index in (1, 3, 5))
+                    ellipse_height = int(compaction["base_ellipse_height"])
+                    preview_draw = ImageDraw.Draw(printable_prepared)
+                    preview_draw.ellipse((base_left, base_top, base_right - 1,
+                                          base_top + ellipse_height), fill=(*base_rgb, 255))
+                    preview_draw.rectangle((base_left, base_top + ellipse_height // 2,
+                                            base_right - 1, base_bottom - ellipse_height // 2),
+                                           fill=(*base_rgb, 255))
+                    preview_draw.ellipse((base_left, base_bottom - ellipse_height,
+                                          base_right - 1, base_bottom), fill=(*base_rgb, 255))
                 printable_canvas = Image.new(
                     "RGBA", (target_side, target_side), (0, 0, 0, 0)
                 )
@@ -3190,18 +3189,25 @@ def _prepare_portrait_geometry_provider_reference(job: Job) -> Path:
                 not printable_destination.is_file()
                 or not isinstance(previous_provider_preview, Mapping)
                 or previous_provider_preview.get("version")
-                != "portrait-head-shoulders-preview-v6"
+                not in {
+                    "portrait-head-shoulders-preview-v6",
+                    "portrait-head-shoulders-preview-v7",
+                }
             ):
                 raise ModelInputImageQualityError(
                     "The prepared portrait preview is unavailable."
                 )
             job.preview_path = printable_destination
             job.image_metrics["portrait_provider_preview"] = {
-                "version": "portrait-head-shoulders-preview-v6",
+                "version": (
+                    "portrait-head-shoulders-preview-v7"
+                    if job.display_base_policy == "post_generation_optional"
+                    else "portrait-head-shoulders-preview-v6"
+                ),
                 "path": printable_destination.name,
                 "output_size": [target_side, target_side],
                 "matches_geometry_crop": True,
-                "single_material_base": True,
+                "single_material_base": job.display_base_policy != "post_generation_optional",
                 "continuous_silhouette": bool(
                     isinstance(compaction.get("shoulder_silhouette"), Mapping)
                     and compaction["shoulder_silhouette"].get("status") == "pass"
@@ -7736,6 +7742,14 @@ def _generate_job(
                 else "text" if job.source == "text" and preview is None
                 else "image"
             )
+            effective_prompt = prepared_prompt
+            if job.display_base_policy == "post_generation_optional":
+                effective_prompt = (
+                    prepared_prompt.rstrip()
+                    + " Portrait base policy: keep the generated human portrait base-free. "
+                    "Do not create a plinth, pedestal, stand, platform, floor slab, or display base; "
+                    "Orca may add a separate optional base after generation."
+                )
             if request_source == "image":
                 try:
                     _validate_image_file(
@@ -7787,7 +7801,7 @@ def _generate_job(
             task_ref = gateway.start_or_reuse_model_task(
                 ModelTaskRequest(
                     source=request_source,
-                    prompt=prepared_prompt,
+                    prompt=effective_prompt,
                     image_path=preview,
                     image_paths=multiview_paths,
                     face_limit=job.face_limit,
@@ -8728,7 +8742,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _set_generation_options(self, job_id: str) -> None:
         request = self._read_model_json()
-        if set(request) != {"provider", "face_limit", "geometry_quality", "texture_quality", "output_format"}:
+        allowed = {"provider", "face_limit", "geometry_quality", "texture_quality", "output_format", "display_base_policy"}
+        if not set(request).issubset(allowed) or not {"provider", "face_limit", "geometry_quality", "texture_quality", "output_format"}.issubset(request):
             raise RequestError("invalid_request", "Complete generation options are required.", 400)
         provider = _generation_provider(request)
         face_limit = _normalize_face_limit(request["face_limit"])
@@ -8744,14 +8759,17 @@ class Handler(BaseHTTPRequestHandler):
                 raise RequestError("invalid_request", "A rejected Hunyuan design must keep its provider for retry.", 409)
             names = ("provider", "face_limit", "generation_profile", "geometry_quality", "texture_quality", "output_format")
             previous = tuple(getattr(job, name) for name in names)
+            previous_policy = job.display_base_policy
             values = (provider, face_limit, "quality" if face_limit >= 500000 else "performance", geometry, texture, output)
             for name, value in zip(names, values):
                 setattr(job, name, value)
+            job.display_base_policy = _display_base_policy(request)
             try:
                 _persist_job(job, required=True)
             except TripoError:
                 for name, value in zip(names, previous):
                     setattr(job, name, value)
+                job.display_base_policy = previous_policy
                 raise RequestError("state_save_failed", "Generation options could not be saved.", 503, True) from None
             response = _public_job(job)
         self.send_json(200, {"job": response})
@@ -8776,6 +8794,7 @@ class Handler(BaseHTTPRequestHandler):
             generation_profile = "quality" if face_limit >= 500000 else "performance"
         geometry_quality, texture_quality, output_format = _generation_options(request, face_limit)
         provider = _generation_provider(request)
+        display_base_policy = _display_base_policy(request)
         with _JOBS_LOCK:
             manual_retry = _can_manually_retry_hunyuan(job)
             if job.state != "awaiting_confirmation" and not manual_retry:
@@ -8812,6 +8831,7 @@ class Handler(BaseHTTPRequestHandler):
             job.geometry_quality = geometry_quality
             job.texture_quality = texture_quality
             job.output_format = output_format
+            job.display_base_policy = display_base_policy
             job.state = "queued"
             job.phase = "generating"
             job.message = "Generation queued."

@@ -304,6 +304,7 @@ void AIModelGenerationClient::preprocess_text(const std::string& request_id, con
 {
     post_json("/v1/orcaslicer/model-jobs/text",
               json::object({ { "request_id", request_id }, { "prompt", prompt }, { "palette", palette },
+                             { "display_base_policy", options.display_base_policy },
                              { "provider", options.provider }, { "face_limit", options.face_limit },
                              { "geometry_quality", options.geometry_quality }, { "texture_quality", options.texture_quality },
                              { "output_format", options.output_format },
@@ -337,6 +338,7 @@ void AIModelGenerationClient::preprocess_image(const std::string& request_id, co
         .timeout_max(130)
         .size_limit(1024 * 1024)
         .form_add("request_id", request_id)
+        .form_add("display_base_policy", options.display_base_policy)
         .form_add("provider", options.provider)
         .form_add("face_limit", std::to_string(options.face_limit))
         .form_add("geometry_quality", options.geometry_quality)
@@ -369,6 +371,7 @@ void AIModelGenerationClient::recommend_text_palette(const std::string& request_
 {
     post_json("/v1/orcaslicer/model-jobs/recommend-text-palette",
               json::object({ { "request_id", request_id }, { "prompt", prompt }, { "style", style },
+                             { "display_base_policy", options.display_base_policy },
                              { "provider", options.provider }, { "face_limit", options.face_limit },
                              { "geometry_quality", options.geometry_quality }, { "texture_quality", options.texture_quality },
                              { "output_format", options.output_format },
@@ -399,6 +402,7 @@ void AIModelGenerationClient::recommend_image_palette(const std::string& request
         .timeout_max(130)
         .size_limit(1024 * 1024)
         .form_add("request_id", request_id)
+        .form_add("display_base_policy", options.display_base_policy)
         .form_add("provider", options.provider)
         .form_add("face_limit", std::to_string(options.face_limit))
         .form_add("geometry_quality", options.geometry_quality)
@@ -494,6 +498,7 @@ void AIModelGenerationClient::generate(const std::string& job_id, const std::str
 {
     post_json("/v1/orcaslicer/model-jobs/" + job_id + "/generate",
               json::object({ { "prepared_prompt", prepared_prompt }, { "palette", palette },
+                             { "display_base_policy", options.display_base_policy },
                              { "provider", options.provider },
                              { "face_limit", options.face_limit },
                              { "geometry_quality", options.geometry_quality },
@@ -506,7 +511,8 @@ void AIModelGenerationClient::update_generation_options(const std::string& job_i
                                                         StatusFn on_complete, ErrorFn on_error)
 {
     post_json("/v1/orcaslicer/model-jobs/" + job_id + "/generation-options",
-              json::object({ { "provider", options.provider }, { "face_limit", options.face_limit },
+              json::object({ { "display_base_policy", options.display_base_policy },
+                             { "provider", options.provider }, { "face_limit", options.face_limit },
                              { "geometry_quality", options.geometry_quality },
                              { "texture_quality", options.texture_quality },
                              { "output_format", options.output_format } }),
@@ -765,6 +771,9 @@ AIModelGenerationClient::GenerationOptions AIModelGenerationClient::restore_gene
     GenerationOptions options;
     if (!saved.is_object())
         return options;
+    if (saved.contains("display_base_policy") && saved["display_base_policy"].is_string() &&
+        saved["display_base_policy"].get<std::string>() == "post_generation_optional")
+        options.display_base_policy = "post_generation_optional";
     if (saved.contains("provider") && saved["provider"].is_string())
         options.provider = saved["provider"].get<std::string>();
     if (saved.contains("face_limit") && saved["face_limit"].is_number_integer())
