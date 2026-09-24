@@ -6,7 +6,6 @@ include(PrecompiledHeader)
 add_subdirectory(AI)
 
 set(SLIC3R_GUI_SOURCES
-    BuildInfo.hpp
     GUI/Widgets/AnimaController.hpp
     GUI/Widgets/AnimaController.cpp
     Config/Snapshot.cpp
