@@ -40,6 +40,8 @@ add_executable(${_TEST_NAME}_tests
     test_beauty_boundary_drag.cpp
     test_beauty_boundary_contours.cpp
     test_beauty_document.cpp
+    test_beauty_partition_bridge.cpp
+    test_beauty_transaction_controller.cpp
     # LocalSemanticEvidence/Draft/Geometry and texture-backed Beauty tests are
     # retained in the PR snapshot but are registered only with their shared
     # contract/finishing adapters in later migration stages.
@@ -59,6 +61,7 @@ if (MSVC)
 endif ()
 
 target_link_libraries(${_TEST_NAME}_tests test_common libslic3r_gui libslic3r OrcaSlicer::AIContracts OrcaSlicer::SmartSlicing pybind11::embed Catch2::Catch2WithMain)
+target_include_directories(${_TEST_NAME}_tests PRIVATE ${CMAKE_SOURCE_DIR}/src/libslic3r)
 set_property(TARGET ${_TEST_NAME}_tests PROPERTY FOLDER "tests")
 
 orcaslicer_copy_test_dlls()

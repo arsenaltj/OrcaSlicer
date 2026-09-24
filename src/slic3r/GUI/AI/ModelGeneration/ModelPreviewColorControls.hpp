@@ -209,6 +209,12 @@ public:
     const std::vector<Color>& mapping_colors() const { return m_mapping_colors; }
     bool enabled() const { return m_enabled; }
     bool lighting() const { return m_lighting->GetValue(); }
+    void activate_for_beauty_semantics() {
+        if (m_colors.empty() || m_colors.size() > 6) return;
+        m_enabled = true;
+        m_semantic->SetValue(true);
+        update();
+    }
     bool semantic_optimization() const { return m_semantic->GetValue() && m_colors.size() <= 6; }
     const std::vector<Color>& semantic_palette() const { return m_semantic_colors.empty() ? m_colors : m_semantic_colors; }
     const std::vector<Color>& semantic_mapping_palette() const { return m_semantic_mapping.empty() ? semantic_palette() : m_semantic_mapping; }

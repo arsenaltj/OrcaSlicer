@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -47,6 +48,8 @@ struct MixedColorRecipe
     std::string                      target_color;
     std::vector<MixedColorComponent> components;
     std::optional<size_t>            existing_virtual_slot;
+    std::string                      native_settings_fingerprint;
+    bool                             uniform_color { false };
 };
 
 struct ColorIntentManifestRef
@@ -143,6 +146,44 @@ inline bool has_valid_mixed_components(const MixedColorRecipe& recipe, double to
 inline bool is_valid_mixed_color_recipe(const MixedColorRecipe& recipe, double tolerance = 1e-6) noexcept
 {
     return is_rgb_hex_color(recipe.target_color) && has_valid_mixed_components(recipe, tolerance);
+}
+
+inline bool same_native_mixed_recipe(const MixedColorRecipe& a, const MixedColorRecipe& b)
+{
+    if (a.target_color != b.target_color || a.existing_virtual_slot != b.existing_virtual_slot ||
+        a.native_settings_fingerprint != b.native_settings_fingerprint || a.components.size() != b.components.size()) return false;
+    for (size_t i = 0; i < a.components.size(); ++i)
+        if (a.components[i].slot != b.components[i].slot || std::abs(a.components[i].ratio - b.components[i].ratio) > 1e-6) return false;
+    return true;
+}
+
+inline bool valid_native_mixed_palette(const std::vector<PhysicalFilamentChannel>& physical,
+                                       const std::vector<MixedColorRecipe>& recipes)
+{
+    if (recipes.size() > 254) return false;
+    std::vector<size_t> slots;
+    for (const auto& channel : physical) slots.push_back(channel.slot);
+    for (const auto& recipe : recipes) {
+        if (!is_valid_mixed_color_recipe(recipe) || !recipe.existing_virtual_slot || *recipe.existing_virtual_slot >= 255 ||
+            (!recipe.native_settings_fingerprint.empty() && !is_lowercase_sha256(recipe.native_settings_fingerprint)) ||
+            std::find(slots.begin(), slots.end(), *recipe.existing_virtual_slot) != slots.end()) return false;
+        for (const auto& component : recipe.components)
+            if (std::none_of(physical.begin(), physical.end(), [&](const auto& channel) {
+                    return channel.compatible && channel.slot == component.slot;
+                })) return false;
+        slots.push_back(*recipe.existing_virtual_slot);
+    }
+    return true;
+}
+
+inline bool native_palette_has_slot(const std::vector<PhysicalFilamentChannel>& physical,
+                                    const std::vector<MixedColorRecipe>& recipes, size_t slot)
+{
+    return slot < 255 && (std::any_of(physical.begin(), physical.end(), [&](const auto& channel) {
+        return channel.compatible && channel.slot == slot;
+    }) || std::any_of(recipes.begin(), recipes.end(), [&](const auto& recipe) {
+        return recipe.existing_virtual_slot == slot;
+    }));
 }
 
 } // namespace Slic3r::AI

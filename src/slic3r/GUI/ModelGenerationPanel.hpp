@@ -5,6 +5,9 @@
 #include "slic3r/AI/Contracts/IPrintablePaletteProvider.hpp"
 #include "slic3r/GUI/AI/Model/ModelFinishing.hpp"
 #include "slic3r/GUI/AI/Model/SurfaceSelectionState.hpp"
+#include "slic3r/AI/ModelGeneration/SemanticColoring/SemanticColoring.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/ModelPreviewColorControls.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchTransactionController.hpp"
 
 #include <boost/filesystem/path.hpp>
 #include <wx/image.h>
@@ -41,6 +44,7 @@ namespace Slic3r::GUI {
 
 class ModelPreview3D;
 class BeautyWorkbenchControls;
+class BeautyWorkbenchTransactionController;
 
 class ModelGenerationPanel : public wxPanel
 {
@@ -159,6 +163,7 @@ private:
     void update_finishing_selection();
     void redo_model_finishing();
     void preview_model_finishing();
+    void export_semantic_candidate();
     bool show_finishing_version(const boost::filesystem::path& path);
     void accept_model_finishing();
     void discard_model_finishing();
@@ -228,6 +233,7 @@ private:
 
     wxPanel* m_finishing_panel {nullptr};
     BeautyWorkbenchControls* m_beauty_controls {nullptr};
+    std::unique_ptr<BeautyWorkbenchTransactionController> m_beauty_transactions;
     wxWindow* m_workflow_panel {nullptr};
     wxPanel* m_comparison_panel {nullptr};
     wxScrolledWindow* m_model_page {nullptr};
@@ -273,8 +279,35 @@ private:
     std::function<void()> m_finishing_restore_selection;
     AI::SurfaceSelectionPersistence::SelectionState m_finishing_selection_state;
     std::vector<std::pair<size_t, std::array<float, 3>>> m_finishing_candidate_face_overrides;
+    AI::SemanticColoring::FaceColors m_finishing_candidate_semantic_faces;
+    AI::SemanticColoring::SubfaceColors m_finishing_candidate_semantic_subfaces;
+    nlohmann::json m_finishing_candidate_semantic_provenance;
     std::vector<std::string> m_finishing_color_palette;
     std::function<void()> m_finishing_redo_preview;
+    struct BeautyCandidateSnapshot {
+        boost::filesystem::path source;
+        boost::filesystem::path candidate;
+        std::string model_sha256;
+        std::string id;
+        AI::ModelFinishingResult result;
+        AI::ModelFinishingOptions options;
+        AI::SurfaceSelectionPersistence::SelectionState selection;
+        ModelPreviewColorControls::State color_trial;
+        std::vector<std::pair<size_t, std::array<float, 3>>> face_overrides;
+        AI::SemanticColoring::FaceColors semantic_faces;
+        AI::SemanticColoring::SubfaceColors semantic_subfaces;
+        nlohmann::json semantic_provenance;
+    };
+    BeautyCandidateSnapshot capture_beauty_candidate() const;
+    bool restore_beauty_candidate(const BeautyCandidateSnapshot& snapshot);
+    void record_beauty_candidate(BeautyWorkbenchTransactionController::OperationKind kind,
+                                 std::shared_ptr<BeautyCandidateSnapshot> before);
+    void clear_unaccepted_beauty_candidates(size_t start = 0);
+    std::vector<boost::filesystem::path> m_beauty_candidate_files;
+    std::vector<boost::filesystem::path> m_beauty_accepted_files;
+    std::shared_ptr<BeautyCandidateSnapshot> m_beauty_session_source;
+    size_t m_beauty_session_undo_base {0};
+    size_t m_beauty_session_file_base {0};
 
     wxStaticText*   m_prompt_label { nullptr };
     wxTextCtrl*     m_prompt { nullptr };

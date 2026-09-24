@@ -630,6 +630,10 @@ double calc_rgb_color_difference_by_ciede2000_srgb01(const ColorDouble& rgb1, co
     return ciede2000(lab1, lab2);
 }
 
+double calc_lab_color_difference_by_ciede2000(const ColorDouble& lab1, const ColorDouble& lab2) {
+    return ciede2000(lab1, lab2);
+}
+
 // Working-space distance function type: inputs are two colors in the same space (RGB-double or Lab)
 using WorkingDistFunc = double (*)(const ColorDouble&, const ColorDouble&);
 

@@ -83,6 +83,7 @@ double calc_rgb_color_difference_by_ciede2000(const RGB& rgb1, const RGB& rgb2);
  * @param[in] rgb1 rgb2  sRGB non-linear channel values, recommended range [0,1].
  */
 double calc_rgb_color_difference_by_ciede2000_srgb01(const ColorDouble& rgb1, const ColorDouble& rgb2);
+double calc_lab_color_difference_by_ciede2000(const ColorDouble& lab1, const ColorDouble& lab2);
 
 /**
  * @brief K-Means clustering algorithm that minimizes the sum of squared errors.

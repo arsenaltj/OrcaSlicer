@@ -6,6 +6,7 @@
 #include "AI/ModelGeneration/ModelGenerationPresentation.hpp"
 #include "AI/ModelGeneration/ModelPreview3D.hpp"
 #include "AI/ModelGeneration/BeautyWorkbenchControls.hpp"
+#include "AI/ModelGeneration/BeautyWorkbenchTransactionController.hpp"
 #include "AI/ModelGeneration/ModelImageDisplayCopy.hpp"
 #include "AI/ModelGeneration/ModelGenerationStatusText.hpp"
 #include "AISidecarClient.hpp"
@@ -105,6 +106,7 @@ ModelGenerationPanel::ModelGenerationPanel(wxWindow* parent, AI::IModelArtifactC
     , m_client(AISidecarClient::default_endpoint())
     , m_poll_timer(this, POLL_TIMER_ID)
 {
+    m_beauty_transactions = std::make_unique<BeautyWorkbenchTransactionController>();
     SetBackgroundColour(*wxWHITE);
     Bind(wxEVT_TIMER, &ModelGenerationPanel::on_poll, this, POLL_TIMER_ID);
     // A tab may be selected before the frame is shown. Idle covers that first
@@ -408,6 +410,10 @@ void ModelGenerationPanel::shutdown()
         return;
     m_shutdown = true;
     stop_library_loading();
+    if (m_model_preview) {
+        m_model_preview->set_semantic_completion_callback({});
+        m_model_preview->cancel_semantic_request();
+    }
     stop_model_finishing();
     if (m_preview_worker.joinable()) m_preview_worker.join();
     ++m_sequence;
@@ -1431,9 +1437,17 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
         });
     }
     m_apply_region_color->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_apply_local_recolor, this);
+    m_model_preview->set_selection_commit_callback([this](const AI::SurfaceSelectionPersistence::SelectionState& before,
+                                                          const AI::SurfaceSelectionPersistence::SelectionState& after) {
+        if (!m_finishing_workbench || !m_beauty_transactions || m_beauty_transactions->processing()) return;
+        m_beauty_transactions->record({BeautyWorkbenchTransactionController::OperationKind::Selection,
+            "manual Beauty selection",
+            [this, before] { if (m_model_preview) m_model_preview->restore_selection_state(before); },
+            [this, after] { if (m_model_preview) m_model_preview->restore_selection_state(after); }});
+    });
     m_model_preview->set_selection_changed_callback([this](size_t selected_faces) {
-        if (m_beauty_controls)
-            m_beauty_controls->set_dirty(selected_faces > 0);
+        if (m_beauty_controls && selected_faces > 0)
+            m_beauty_controls->set_dirty(true);
         if (m_finishing_workbench && (m_finishing_tool->GetSelection() == 1 || m_finishing_tool->GetSelection() == 4 || m_finishing_tool->GetSelection() == 5)) {
             if (m_busy || !m_finishing_candidate.empty()) selected_faces = m_finishing_options.selected_faces.size();
             m_finishing_selection_status->SetLabel(wxString::Format(_L("已选 %llu 个面 · 保护 %llu 个面"),
@@ -3540,7 +3554,7 @@ void ModelGenerationPanel::refresh_local_recolor_controls()
     if (!ready)
         m_local_recolor_toggle->SetValue(false);
     const bool recolor_tool = m_finishing_workbench && m_finishing_tool->GetSelection() == 4;
-    const bool editing = ready && recolor_tool && m_finishing_candidate.empty();
+    const bool editing = ready && recolor_tool && (m_finishing_candidate.empty() || m_finishing_workbench);
     if (editing) update_region_mode();
     m_local_recolor_toggle->SetValue(editing);
     m_local_recolor_toggle->Hide();
@@ -3550,7 +3564,7 @@ void ModelGenerationPanel::refresh_local_recolor_controls()
         };
         return contains(m_model_quality.warnings) || contains(m_model_quality.errors);
     };
-    m_local_recolor_panel->Show(ready && recolor_tool);
+    m_local_recolor_panel->Show(ready && recolor_tool && !m_finishing_workbench);
     m_local_recolor_controls->Show(editing);
     const bool repair_color_regions = has_tiny_color_regions();
     m_local_recolor_toggle->SetLabel(
@@ -3569,7 +3583,9 @@ void ModelGenerationPanel::refresh_local_recolor_controls()
             ready && !m_busy && !m_model_quality.thin_local_face_indices.empty());
     }
     if (m_model_preview != nullptr)
-        m_model_preview->set_selection_enabled(editing || (m_finishing_workbench && (m_finishing_tool->GetSelection() == 1 || m_finishing_tool->GetSelection() == 5) && !m_busy && m_finishing_candidate.empty()));
+        m_model_preview->set_selection_enabled(editing || (m_finishing_workbench &&
+            (m_finishing_tool->GetSelection() == 1 || m_finishing_tool->GetSelection() == 5) &&
+            !m_busy));
 
     const std::vector<std::string> palette = local_recolor_palette();
     if (palette != m_region_palette) {
@@ -4389,6 +4405,10 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
                                                const std::string& color_intent_sha256,
                                                const std::string& job_id, const wxString& title)
 {
+    if (m_beauty_transactions && m_beauty_transactions->processing()) {
+        m_status->SetLabel(_L("Beauty 正在处理或划分区域，完成或取消后才能切换模型。"));
+        return;
+    }
     if (m_busy || m_model_preview == nullptr)
         return;
     if (model_path.empty()) {
@@ -4417,6 +4437,9 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
         if (m_finishing_candidate != model_path) boost::filesystem::remove(m_finishing_candidate, ignored);
         m_finishing_candidate.clear();
     }
+    clear_unaccepted_beauty_candidates();
+    m_beauty_session_source.reset();
+    if (m_beauty_transactions) m_beauty_transactions->reset();
     m_finishing_options.selected_faces.clear();
     m_finishing_before = false;
     m_finishing_undo_path.clear(); m_finishing_redo_path.clear();

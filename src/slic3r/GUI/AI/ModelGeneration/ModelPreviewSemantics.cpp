@@ -9,6 +9,10 @@ void ModelPreview3D::update_semantic_coloring()
         if (m_semantic_controller) m_semantic_controller->cancel();
         m_color_trial->set_semantic_region_availability({});
         m_color_trial->set_semantic_status(wxEmptyString, false);
+        if (m_semantic_completion) {
+            auto callback = std::move(m_semantic_completion);
+            callback(false);
+        }
         return;
     }
     if (!m_semantic_controller) {
@@ -26,6 +30,9 @@ void ModelPreview3D::update_semantic_coloring()
         m_automatic_subface_colors.clear();
         m_color_trial->set_semantic_status(_L("正在本机识别人像区域，可旋转模型或取消……"), true);
         m_semantic_timer.Start(100);
+    } else if (m_semantic_completion) {
+        auto callback = std::move(m_semantic_completion);
+        callback(false);
     }
 }
 
@@ -53,12 +60,16 @@ void ModelPreview3D::finish_semantic_coloring()
     if (!m_semantic_controller) { m_semantic_timer.Stop(); return; }
     if (auto result = m_semantic_controller->poll()) {
         m_semantic_analysis = std::move(result->analysis);
+        bool completed = false;
         if (!result->error.empty()) {
+            m_semantic_error = wxString::FromUTF8(result->error.c_str());
             BOOST_LOG_TRIVIAL(warning) << "Local semantic coloring unavailable: " << result->error;
             m_color_trial->set_semantic_status(_L("人像区域优化暂不可用，已沿用原有配色。"), false);
         } else if (result->geometry.is_empty()) {
+            m_semantic_error = _L("未找到足够可靠的人像区域。");
             m_color_trial->set_semantic_status(_L("未找到足够可靠的人像区域，已沿用原有配色。"), false);
         } else if (m_context && m_canvas->SetCurrent(*m_context)) {
+            m_semantic_error.clear();
             auto model = std::make_unique<GLModel>();
             model->init_from(std::move(result->geometry));
             m_semantic_model = std::move(model);
@@ -72,7 +83,9 @@ void ModelPreview3D::finish_semantic_coloring()
                 [](int slot) { return slot >= 0; });
             if (has_region_override) rebuild_semantic_preview_from_cached_result();
             m_color_trial->set_semantic_status(_L("已按人像区域优化；不明确的区域沿用原配色，可在局部改色中修正。"), false);
+            completed = true;
         } else {
+            m_semantic_error = _L("OpenGL 预览无法加载识别结果。");
             // The CPU result was consumed, but could not be adopted by the
             // preview. Invalidate the request so a later user action can retry;
             // do not keep the timer alive or reuse an older semantic surface.
@@ -91,6 +104,10 @@ void ModelPreview3D::finish_semantic_coloring()
             << ", rejected_subfaces=" << result->subface_rejected_candidates
             << ", person=" << result->person_detected;
         m_canvas->Refresh(false);
+        if (m_semantic_completion) {
+            auto callback = std::move(m_semantic_completion);
+            callback(completed);
+        }
     }
     if (!m_semantic_controller->busy()) m_semantic_timer.Stop();
     else m_color_trial->set_semantic_status(wxString::Format(_L("正在本机识别人像区域 · %d%%"), m_semantic_controller->progress()), true);

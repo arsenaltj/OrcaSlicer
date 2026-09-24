@@ -48,6 +48,7 @@ void main() {
                 : "varying vec4 shaded_color; varying vec3 source_rgb; varying float light_intensity; varying float local_color_lock;\n") + R"(
 uniform int preview_color_count;
 uniform bool preview_lighting;
+uniform bool beauty_unlit;
 uniform float preview_lightness_weight;
 uniform bool gray_view;
 uniform vec3 preview_rgb[32];
@@ -64,6 +65,7 @@ vec3 to_oklab(vec3 rgb) {
 }
 void main() {
     vec4 result = shaded_color;
+    if (beauty_unlit) result = vec4(source_rgb, shaded_color.a);
     if (gray_view) result = vec4(vec3(0.78) * light_intensity, shaded_color.a);
     if (preview_color_count > 0) {
         vec3 lab = to_oklab(source_rgb);

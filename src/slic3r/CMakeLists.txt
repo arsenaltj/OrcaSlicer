@@ -360,7 +360,7 @@ set(SLIC3R_GUI_SOURCES
     GUI/AI/AIDesktopFeatureHost.hpp
     GUI/AI/SmartSlicing/SmartSlicingFeatureHost.cpp
     GUI/AI/SmartSlicing/SmartSlicingFeatureHost.hpp
-    GUI/AI/Model/VertexColorRegionEditor.cpp GUI/AI/Model/VertexColorRegionEditor.hpp GUI/AI/Model/ModelFinishing.cpp GUI/AI/Model/BeautyAppearance.cpp GUI/AI/Model/BeautySurface.cpp GUI/AI/Model/BeautyFinishing.cpp GUI/AI/ModelGeneration/BeautyWorkbenchControls.cpp GUI/AI/Model/ModelArtifact.cpp GUI/AI/Model/ModelArtifact.hpp GUI/AI/Model/GlbGeometryEditing.cpp
+    GUI/AI/Model/VertexColorRegionEditor.cpp GUI/AI/Model/VertexColorRegionEditor.hpp GUI/AI/Model/ModelFinishing.cpp GUI/AI/Model/BeautyAppearance.cpp GUI/AI/Model/BeautySurface.cpp GUI/AI/Model/BeautyFinishing.cpp GUI/AI/ModelGeneration/BeautyWorkbenchControls.cpp GUI/AI/ModelGeneration/BeautyWorkbenchTransactionController.hpp GUI/AI/Model/ModelArtifact.cpp GUI/AI/Model/ModelArtifact.hpp GUI/AI/Model/GlbGeometryEditing.cpp
     GUI/AI/ModelGeneration/LocalSemanticWorkerClient.cpp
     GUI/AIModelGenerationClient.cpp
     GUI/AIModelGenerationClient.hpp
@@ -883,7 +883,7 @@ if (WIN32)
 else ()
     add_library(libslic3r_gui STATIC ${SLIC3R_GUI_SOURCES} ${ORCA_BUILD_INFO_SOURCE})
 endif ()
-target_include_directories(libslic3r_gui PRIVATE Utils ${CMAKE_CURRENT_BINARY_DIR})
+target_include_directories(libslic3r_gui PRIVATE Utils ${CMAKE_CURRENT_BINARY_DIR} ${CMAKE_SOURCE_DIR}/src/libslic3r)
 include("${CMAKE_SOURCE_DIR}/cmake/OrcaModelColoring.cmake")
 
 if (WIN32)
