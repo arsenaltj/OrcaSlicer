@@ -11,6 +11,7 @@
 #include "libslic3r/Format/bbs_3mf.hpp"
 #include <wx/button.h>
 #include <wx/checkbox.h>
+#include <wx/choice.h>
 #include <wx/sizer.h>
 #include <wx/scrolwin.h>
 #include <wx/stattext.h>
@@ -35,6 +36,11 @@ OrcaModelPreparationPanel::OrcaModelPreparationPanel(wxWindow* parent, Plater& p
     m_base = new wxCheckBox(this, wxID_ANY, _L("添加 3 mm 圆底座"));
     m_base->SetToolTip(_L("圆底座覆盖模型投影并留出 2 mm 边缘，与模型重叠 0.2 mm。请在原生预览中检查连接与支撑。"));
     root->Add(m_base, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
+    m_base_template = new wxChoice(this, wxID_ANY, wxDefaultPosition, wxDefaultSize,
+                                   {_L("圆形"), _L("椭圆"), _L("矩形")});
+    m_base_template->SetSelection(0);
+    m_base_template->SetToolTip(_L("底座作为独立部件添加，不参与人像语义上色。"));
+    root->Add(m_base_template, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
     m_apply = new wxButton(this, wxID_ANY, _L("应用尺寸与底座"));
     root->Add(m_apply, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
     m_feedback = new wxStaticText(this, wxID_ANY, _L("编辑保存在当前工程，可使用 Orca 撤销。生成原件保留在模型库。"));
@@ -134,7 +140,11 @@ void OrcaModelPreparationPanel::apply()
         bool transaction_started = false;
         try {
             auto* object = m_plater.model().objects[index];
-            auto proposal = prepare_model(*object, {height, m_base->GetValue(), 3.0});
+            const auto template_kind = m_base->GetValue() ?
+                (m_base_template->GetSelection() == 1 ? ModelBaseTemplate::Oval :
+                 m_base_template->GetSelection() == 2 ? ModelBaseTemplate::Rectangle : ModelBaseTemplate::Round) :
+                ModelBaseTemplate::None;
+            auto proposal = prepare_model(*object, {height, m_base->GetValue(), 3.0, template_kind});
             {
                 Plater::TakeSnapshot snapshot(&m_plater, _u8L("调整模型尺寸与底座"));
                 transaction_started = true;

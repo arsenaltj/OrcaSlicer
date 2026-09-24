@@ -10,8 +10,9 @@ ModelPreparation prepare_model(const ModelObject& source, const ModelPreparation
 {
     const double height = options.total_height_mm;
     const double base_height = options.base_height_mm;
+    const bool add_base = options.add_round_base || options.base_template != ModelBaseTemplate::None;
     if (!std::isfinite(height) || height < 1.0 || height > 1000.0 ||
-        (options.add_round_base && (!std::isfinite(base_height) || base_height < 0.5 || base_height >= height)))
+        (add_base && (!std::isfinite(base_height) || base_height < 0.5 || base_height >= height)))
         throw std::invalid_argument("invalid_dimensions");
     if (source.instances.size() != 1 || source.is_cut())
         throw std::invalid_argument("requires_single_uncut_instance");
@@ -19,7 +20,7 @@ ModelPreparation prepare_model(const ModelObject& source, const ModelPreparation
     for (const auto* volume : source.volumes) {
         if (volume->is_model_part() && first_part == nullptr)
             first_part = volume;
-        if (options.add_round_base && volume->name == "AI round base")
+        if (add_base && (volume->name == "AI round base" || volume->name == "AI oval base" || volume->name == "AI rectangle base"))
             throw std::invalid_argument("base_already_exists");
     }
     if (first_part == nullptr)
@@ -33,8 +34,8 @@ ModelPreparation prepare_model(const ModelObject& source, const ModelPreparation
         throw std::invalid_argument("empty_model");
     const Vec3d original_center = bounds.center();
 
-    const double overlap = options.add_round_base ? std::min(0.2, base_height / 2.0) : 0.0;
-    const double body_height = height - (options.add_round_base ? base_height - overlap : 0.0);
+    const double overlap = add_base ? std::min(0.2, base_height / 2.0) : 0.0;
+    const double body_height = height - (add_base ? base_height - overlap : 0.0);
     matrix.linear() *= body_height / bounds.size().z();
     bounds = BoundingBoxf3();
     for (const auto* volume : source.volumes)
@@ -42,19 +43,33 @@ ModelPreparation prepare_model(const ModelObject& source, const ModelPreparation
             bounds.merge(volume->mesh().transformed_bounding_box(matrix * volume->get_matrix()));
     matrix.translation() += Vec3d(
         original_center.x() - bounds.center().x(), original_center.y() - bounds.center().y(),
-        (options.add_round_base ? base_height - overlap : 0.0) - bounds.min.z());
+        (add_base ? base_height - overlap : 0.0) - bounds.min.z());
 
     ModelPreparation result;
     result.instance = Geometry::Transformation(matrix);
 
-    if (options.add_round_base) {
+    if (add_base) {
         // Cover the complete XY footprint, with a 2 mm radial margin. The small
         // overlap joins the base to the body during native multipart slicing.
-        const double radius = std::hypot(bounds.size().x(), bounds.size().y()) / 2.0 + 2.0;
-        TriangleMesh mesh(its_make_cylinder(radius, base_height));
+        const double width = bounds.size().x() + 4.0;
+        const double depth = bounds.size().y() + 4.0;
+        indexed_triangle_set base_mesh;
+        if (options.base_template == ModelBaseTemplate::Rectangle) {
+            base_mesh = its_make_cube(width, depth, base_height);
+        } else {
+            const double radius = std::max(width, depth) / 2.0;
+            base_mesh = its_make_cylinder(radius, base_height);
+            if (options.base_template == ModelBaseTemplate::Oval) {
+                const double scale = std::max(width, depth) > 1e-9 ? std::min(width, depth) / std::max(width, depth) : 1.0;
+                for (auto& vertex : base_mesh.vertices)
+                    vertex.y() *= (width >= depth ? scale : 1.0), vertex.x() *= (width < depth ? scale : 1.0);
+            }
+        }
+        TriangleMesh mesh(std::move(base_mesh));
         result.base = std::make_unique<Model>();
         auto* base = result.base->add_object()->add_volume(std::move(mesh), ModelVolumeType::MODEL_PART, false);
-        base->name = "AI round base";
+        base->name = options.base_template == ModelBaseTemplate::Oval ? "AI oval base" :
+                     options.base_template == ModelBaseTemplate::Rectangle ? "AI rectangle base" : "AI round base";
         base->config.set_key_value("extruder", new ConfigOptionInt(std::max(1, first_part->extruder_id())));
         Transform3d world = Transform3d::Identity();
         world.translation() = Vec3d(original_center.x(), original_center.y(), 0.0);

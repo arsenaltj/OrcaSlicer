@@ -7,6 +7,7 @@
 
 class wxButton;
 class wxCheckBox;
+class wxChoice;
 class wxStaticText;
 class wxTextCtrl;
 
@@ -30,6 +31,7 @@ private:
     wxStaticText* m_feedback;
     wxTextCtrl* m_height;
     wxCheckBox* m_base;
+    wxChoice* m_base_template;
     wxButton* m_apply;
     uint64_t m_displayed_object_id {0};
     wxString m_feedback_text;
