@@ -20,6 +20,7 @@ struct BeautyGroup {
 // colors. Face ordinals always refer to the exact geometry_id in this record.
 struct BeautyDocument {
     std::string geometry_id;
+    std::string source_sha256;
     size_t face_count {0};
     uint32_t next_group_id {1};
     std::vector<uint32_t> face_patch;
@@ -79,11 +80,12 @@ struct BeautyDocument {
         Json saved_groups=Json::array();
         for(const auto& g:groups)saved_groups.push_back({{"id",g.id},{"name",g.name},{"faces",g.faces},
             {"locked",g.locked},{"preserve_color",g.preserve_color}});
-        return {{"schema","orca.beauty-workbench/v1"},{"geometry_id",geometry_id},{"face_count",face_count},
+        return {{"schema","orca.beauty-workbench/v1"},{"geometry_id",geometry_id},{"source_sha256",source_sha256},{"face_count",face_count},
             {"patch_algorithm",BeautySurface::algorithm_version},{"patch_runs",std::move(runs)},
             {"next_group_id",next_group_id},{"groups",std::move(saved_groups)},{"edits",edits}};
     }
-    static BeautyDocument decode(const nlohmann::json& json,const std::string& geometry,size_t faces) {
+    static BeautyDocument decode(const nlohmann::json& json,const std::string& geometry,size_t faces,
+                                 const std::string& source = {}) {
         auto require=[](bool v,const char* m){if(!v)throw std::runtime_error(m);};
         auto integer=[&](const nlohmann::json& v,size_t limit) {
             require(v.is_number_unsigned() || (v.is_number_integer() && v.get<int64_t>()>=0),"Invalid beauty record integer.");
@@ -91,8 +93,14 @@ struct BeautyDocument {
         };
         require(json.is_object() && json.value("schema","")=="orca.beauty-workbench/v1","Unsupported beauty record.");
         require(json.at("geometry_id")==geometry && integer(json.at("face_count"),2000000)==faces,"Beauty record belongs to different geometry.");
+        const auto saved_source=json.value("source_sha256",std::string());
+        if (!saved_source.empty()) {
+            require(saved_source.size()==64 && saved_source.find_first_not_of("0123456789abcdef")==std::string::npos,
+                "Beauty record has an invalid source identity.");
+        }
+        require(source.empty() || saved_source==source,"Beauty record belongs to a different source model.");
         require(integer(json.at("patch_algorithm"),100)==BeautySurface::algorithm_version,"Unsupported beauty patch version.");
-        BeautyDocument result;result.geometry_id=geometry;result.face_count=faces;
+        BeautyDocument result;result.geometry_id=geometry;result.source_sha256=saved_source;result.face_count=faces;
         const auto& runs=json.at("patch_runs");require(runs.is_array() && runs.size()<=faces,"Invalid patch cache.");
         for(const auto& run:runs) {
             require(run.is_array() && run.size()==2,"Invalid patch run.");

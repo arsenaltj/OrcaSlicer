@@ -38,6 +38,7 @@ add_executable(${_TEST_NAME}_tests
     test_model_finishing.cpp
     test_beauty_boundary_drag.cpp
     test_beauty_boundary_contours.cpp
+    test_beauty_document.cpp
     # LocalSemanticEvidence/Draft/Geometry and texture-backed Beauty tests are
     # retained in the PR snapshot but are registered only with their shared
     # contract/finishing adapters in later migration stages.

@@ -1,6 +1,7 @@
 #include "slic3r/GUI/ModelGenerationPanel.hpp"
 #include "ModelGenerationPresentation.hpp"
 #include "ModelPreview3D.hpp"
+#include "slic3r/GUI/AI/Model/BeautyDocument.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/GUI_Utils.hpp"
 #include "slic3r/GUI/I18N.hpp"
@@ -669,6 +670,12 @@ void ModelGenerationPanel::accept_model_finishing()
     metadata["face_color_intent"] = m_model_preview->face_color_metadata();
     metadata["color_trial"] = m_model_preview->color_trial_metadata();
     metadata["semantic_color_state"] = m_model_preview->semantic_color_metadata();
+    AI::BeautyDocument beauty;
+    beauty.geometry_id = m_model_preview->geometry_id();
+    beauty.source_sha256 = m_finishing_result.source_sha256;
+    beauty.face_count = m_finishing_result.faces_after;
+    beauty.face_patch.assign(beauty.face_count, 0);
+    metadata["beauty_workbench"] = beauty.encode();
     if (!m_finishing_options.repair_mesh && m_finishing_selection_state.selected.size() == m_finishing_result.faces_after)
         metadata["local_selection"] = AI::SurfaceSelectionPersistence::encode(m_finishing_selection_state,
             m_finishing_result.faces_after, m_model_preview->geometry_id());
