@@ -5,6 +5,7 @@
 #include "AI/AIWindowAppearance.hpp"
 #include "AI/ModelGeneration/ModelGenerationPresentation.hpp"
 #include "AI/ModelGeneration/ModelPreview3D.hpp"
+#include "AI/ModelGeneration/BeautyWorkbenchControls.hpp"
 #include "AI/ModelGeneration/ModelImageDisplayCopy.hpp"
 #include "AI/ModelGeneration/ModelGenerationStatusText.hpp"
 #include "AISidecarClient.hpp"
@@ -1431,11 +1432,18 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     }
     m_apply_region_color->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_apply_local_recolor, this);
     m_model_preview->set_selection_changed_callback([this](size_t selected_faces) {
+        if (m_beauty_controls)
+            m_beauty_controls->set_dirty(selected_faces > 0);
         if (m_finishing_workbench && (m_finishing_tool->GetSelection() == 1 || m_finishing_tool->GetSelection() == 4 || m_finishing_tool->GetSelection() == 5)) {
             if (m_busy || !m_finishing_candidate.empty()) selected_faces = m_finishing_options.selected_faces.size();
             m_finishing_selection_status->SetLabel(wxString::Format(_L("已选 %llu 个面 · 保护 %llu 个面"),
                 static_cast<unsigned long long>(selected_faces), static_cast<unsigned long long>(m_model_preview->protected_face_count())));
             refresh_local_recolor_controls();
+            // Region preparation completes asynchronously. Re-sync the Beauty
+            // adapter here so its semantic controls become available as soon
+            // as the immutable surface editor is ready.
+            if (m_beauty_controls)
+                refresh_model_finishing();
             return;
         }
         bool matched_region = false;

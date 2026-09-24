@@ -605,6 +605,56 @@ public:
         return {m_region_editor->selected_faces(), m_protected_faces, m_foreground_faces, m_selection_domain};
     }
     const std::string& geometry_id() const { return m_geometry_id; }
+    // Beauty adapters consume the already prepared immutable surface editor;
+    // they never mutate the preview mesh or trigger semantic recognition.
+    std::shared_ptr<const AI::VertexColorRegionEditor> beauty_editor() const {
+        return m_region_editor->ready() ? m_region_editor : nullptr;
+    }
+    bool semantic_regions_ready() const {
+        return m_semantic_ready && bool(m_semantic_analysis) && m_color_trial_enabled &&
+            m_color_trial && m_color_trial->semantic_optimization();
+    }
+    bool semantic_optimization_enabled() const {
+        return m_color_trial_enabled && m_color_trial && m_color_trial->semantic_optimization();
+    }
+    // Select an already recognized material region for Beauty editing. This
+    // only consumes the cached analysis; it never starts recognition. Existing
+    // protected faces remain protected so the user can add or subtract detail
+    // with the normal brush tools afterward.
+    size_t select_semantic_region(const std::string& region)
+    {
+        if (!semantic_regions_ready() || !region_editing_ready()) return 0;
+        auto state = selection_state();
+        if (state.selected.empty() || m_semantic_analysis->face_labels.size() != state.selected.size()) return 0;
+        std::fill(state.selected.begin(), state.selected.end(), uint8_t(0));
+        if (state.foreground.size() != state.selected.size()) state.foreground.assign(state.selected.size(), uint8_t(0));
+        if (state.domain.size() != state.selected.size()) state.domain.assign(state.selected.size(), uint8_t(0));
+        std::fill(state.foreground.begin(), state.foreground.end(), uint8_t(0));
+        std::fill(state.domain.begin(), state.domain.end(), uint8_t(0));
+        const auto matches = [&](AI::SemanticColoring::Label label) {
+            using L = AI::SemanticColoring::Label;
+            if (region == "hair") return label == L::Hair;
+            if (region == "skin") return label == L::FaceSkin || label == L::BodySkin;
+            if (region == "eyes") return label == L::EyeSclera || label == L::Iris || label == L::Eyebrow;
+            if (region == "lips") return label == L::Lips;
+            if (region == "clothes") return label == L::Clothes;
+            return false;
+        };
+        size_t selected = 0;
+        for (size_t face = 0; face < state.selected.size(); ++face) {
+            if (face >= m_semantic_analysis->face_confidence.size() ||
+                m_semantic_analysis->face_confidence[face] < AI::SemanticColoring::minimum_confidence ||
+                (face < state.protected_faces.size() && state.protected_faces[face])) continue;
+            if (!matches(m_semantic_analysis->face_labels[face])) continue;
+            state.selected[face] = state.foreground[face] = state.domain[face] = uint8_t(1);
+            ++selected;
+        }
+        if (selected == 0) return 0;
+        restore_selection_state(std::move(state));
+        return selected;
+    }
+    // Re-run the existing semantic request only after an explicit user action.
+    void request_semantic_reoptimization() { update_semantic_coloring(); }
     const FaceColorOverrides& face_color_overrides() const { return m_face_color_overrides; }
     FaceColorOverrides import_face_color_overrides(bool use_current_trial = true) const {
         const bool semantic = use_current_trial && m_color_trial_enabled &&

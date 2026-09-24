@@ -624,6 +624,8 @@ ModelFinishingResult finish_model_artifact(const boost::filesystem::path& source
     const boost::filesystem::path& destination, const ModelFinishingOptions& options,
     const std::function<bool()>& canceled)
 {
+    if (options.beauty_appearance || options.beauty_deform || options.beauty_puzzle)
+        return finish_beauty_artifact(source, destination, options, canceled);
     if (options.recolor_selected)
         return finish_recolored_artifact(source, destination, options, canceled);
     if (model_artifact_format(source) == "obj" && model_artifact_format(destination) == "obj")

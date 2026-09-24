@@ -6,8 +6,13 @@
 #include <functional>
 #include <string>
 #include <vector>
+#include <memory>
+#include <cstdint>
+#include "BeautyAppearance.hpp"
+#include <nlohmann/json.hpp>
 
 namespace Slic3r::AI {
+struct BeautySurface;
 
 struct ModelFinishingOptions {
     bool smooth_surface {true};
@@ -25,6 +30,19 @@ struct ModelFinishingOptions {
     // cleanup. It assigns exact corner colors without moving source geometry.
     bool recolor_selected {false};
     std::array<float, 4> target_color {};
+    // Beauty edits are opt-in and are kept separate from the legacy finishing
+    // operations above. They preserve the source geometry and operate on a
+    // validated local surface/appearance document.
+    bool beauty_appearance {false};
+    bool beauty_deform {false};
+    BeautyAppearanceOptions appearance;
+    double beauty_displacement_mm {0};
+    double beauty_falloff_mm {1};
+    std::vector<uint8_t> beauty_protected_faces;
+    nlohmann::json beauty_document;
+    std::shared_ptr<const BeautySurface> beauty_surface;
+    double beauty_feather_mm {0};
+    bool beauty_puzzle {false};
 };
 
 struct ModelFinishingResult {
@@ -51,8 +69,10 @@ struct ModelFinishingResult {
     double max_displacement {0.0};
     double displacement_limit {0.0};
     size_t recolored_faces {0};
+    size_t changed_texture_pixels {0};
+    bool changed_edit_record {false};
     bool changed() const {
-        return moved_vertices || removed_degenerate_faces || removed_duplicate_faces || reversed_faces || recolored_vertices || recolored_faces;
+        return moved_vertices || removed_degenerate_faces || removed_duplicate_faces || reversed_faces || recolored_vertices || recolored_faces || changed_texture_pixels || changed_edit_record;
     }
 };
 
@@ -73,6 +93,12 @@ ModelFinishingResult finish_model_obj(
 // in a separate GLB version. Unsupported geometry structures and topology edits
 // fail explicitly. Explicit recoloring remains a separate vertex-color export.
 ModelFinishingResult finish_model_artifact(
+    const boost::filesystem::path& source,
+    const boost::filesystem::path& destination,
+    const ModelFinishingOptions& options,
+    const std::function<bool()>& canceled = {});
+
+ModelFinishingResult finish_beauty_artifact(
     const boost::filesystem::path& source,
     const boost::filesystem::path& destination,
     const ModelFinishingOptions& options,

@@ -1,7 +1,10 @@
 #include "slic3r/GUI/ModelGenerationPanel.hpp"
 #include "ModelGenerationPresentation.hpp"
 #include "ModelPreview3D.hpp"
+#include "BeautyWorkbenchControls.hpp"
 #include "slic3r/GUI/AI/Model/BeautyDocument.hpp"
+#include "slic3r/GUI/AI/Model/BeautySurface.hpp"
+#include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/GUI_Utils.hpp"
 #include "slic3r/GUI/I18N.hpp"
@@ -200,6 +203,30 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
     m_finishing_status = new wxStaticText(m_finishing_panel, wxID_ANY, _L("轻柔处理小凹凸，保留人物特征。松开强度滑块后预览；处理可取消。"));
     wrap_workbench_text(m_finishing_status, FromDIP(260));
     sizer->Add(m_finishing_status, 0, wxEXPAND | wxALL, FromDIP(10));
+    m_beauty_controls = new BeautyWorkbenchControls(m_finishing_panel, m_model_preview, m_palette_provider,
+        [this] { if (m_finishing_panel) { m_finishing_panel->Layout(); static_cast<wxScrolledWindow*>(m_finishing_panel)->FitInside(); } });
+    m_beauty_controls->on_boundary_adjust = [this] { if (m_model_preview) m_model_preview->refine_selection_boundary(); };
+    m_beauty_controls->on_undo = [this] { if (m_model_preview) m_model_preview->undo_selection(); };
+    m_beauty_controls->on_redo = [this] { if (m_model_preview) m_model_preview->redo_selection(); };
+    m_beauty_controls->on_auto_match = [this](const std::string& region) {
+        return m_model_preview ? m_model_preview->select_semantic_region(region) : size_t(0);
+    };
+    m_beauty_controls->on_reoptimize = [this] {
+        if (!m_model_preview) return;
+        m_model_preview->request_semantic_reoptimization();
+        refresh_model_finishing();
+    };
+    m_beauty_controls->on_save = [this] {
+        if (!m_finishing_candidate.empty()) { accept_model_finishing(); return; }
+        // The adapter's save action is explicitly a local Beauty appearance
+        // save; select the existing local recolor tool so no global semantic
+        // recognition or geometry operation is started by this button.
+        m_finishing_tool->SetSelection(4);
+        refresh_local_recolor_controls();
+        refresh_model_finishing();
+        preview_model_finishing();
+    };
+    sizer->Add(m_beauty_controls, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
     m_finishing_panel->SetSizer(sizer);
     m_finishing_preview->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { preview_model_finishing(); });
     m_finishing_accept->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { accept_model_finishing(); });
@@ -338,6 +365,8 @@ void ModelGenerationPanel::refresh_model_finishing()
     const bool pending = !m_finishing_candidate.empty();
     const bool ready = m_model_preview_ready && is_nonempty_model(m_displayed_model_path);
     m_finishing_panel->Show(m_finishing_workbench && (ready || m_finishing_running || pending));
+    if (m_beauty_controls)
+        m_beauty_controls->synchronize(m_displayed_model_path, ready && !m_busy && !pending, m_finishing_workbench);
     const bool editable = ready && !m_busy;
     const int tool = m_finishing_tool->GetSelection();
     const bool cleanup = tool == 5;
@@ -427,7 +456,14 @@ void ModelGenerationPanel::preview_model_finishing()
     if (!is_nonempty_model(source)) {
         m_finishing_status->SetLabel(_L("模型文件已不存在，请从模型库重新加载。")); return;
     }
+    if (m_finishing_candidate.empty()) {
+        m_finishing_selection_state = m_model_preview->selection_state();
+        m_finishing_restore_selection = [this, selection_state = m_finishing_selection_state] {
+            m_model_preview->restore_selection_state(selection_state);
+        };
+    }
     AI::ModelFinishingOptions options {!cleanup && !recolor && m_finishing_smooth->GetValue(), !local && m_finishing_repair->GetValue(), m_finishing_strength->GetValue() / 100.0};
+    options.selected_faces = selected_faces;
     options.clean_color_spots = cleanup;
     options.recolor_selected = recolor;
     if (AI::model_artifact_format(source) == "glb" && (options.repair_mesh || cleanup)) {
@@ -446,17 +482,45 @@ void ModelGenerationPanel::preview_model_finishing()
         const wxColour target(from_u8(m_finishing_color_palette[m_region_color_index]));
         if (!target.IsOk()) return;
         options.target_color = {target.Red()/255.0f, target.Green()/255.0f, target.Blue()/255.0f, 1.0f};
+        // Embedded-texture GLBs use the Beauty appearance path so local color
+        // edits do not collapse the source texture into vertex colors. The
+        // existing face overrides are still composed by ModelPreview3D after
+        // the Beauty artifact is loaded.
+        if (AI::model_artifact_format(source) == "glb") {
+            const auto editor = m_model_preview->beauty_editor();
+            if (!editor) {
+                m_finishing_status->SetLabel(_L("正在准备局部 Beauty 编辑数据，请稍后重试。"));
+                return;
+            }
+            auto surface = AI::BeautySurface::build(editor->mesh(), editor->vertex_colors());
+            AI::BeautyDocument document;
+            document.geometry_id = m_model_preview->geometry_id();
+            document.face_count = editor->mesh().indices.size();
+            document.face_patch = surface->face_patch;
+            options.beauty_appearance = true;
+            options.recolor_selected = false;
+            options.smooth_surface = false;
+            options.repair_mesh = false;
+            options.beauty_surface = std::move(surface);
+            options.beauty_document = document.encode();
+            options.appearance.face_weights.assign(document.face_count, 0.f);
+            options.appearance.face_target_colors.resize(document.face_count);
+            for (size_t face : options.selected_faces)
+                if (face < options.appearance.face_weights.size() &&
+                    (face >= m_finishing_selection_state.protected_faces.size() ||
+                     !m_finishing_selection_state.protected_faces[face])) {
+                    options.appearance.face_weights[face] = 1.f;
+                    options.appearance.face_target_colors[face] = {
+                        options.target_color[0], options.target_color[1], options.target_color[2]};
+                }
+            options.beauty_protected_faces = m_finishing_selection_state.protected_faces;
+        }
     }
     if (cleanup) options.cleanup_palette = m_finishing_candidate.empty()
         ? m_model_preview->color_trial_mapping().mapping_colors : m_finishing_options.cleanup_palette;
     options.selected_faces = std::move(selected_faces);
     if (!options.smooth_surface && !options.repair_mesh && !options.clean_color_spots && !recolor) {
         m_finishing_status->SetLabel(_L("请至少选择表面美化或网格修复。")); return;
-    }
-    if (m_finishing_candidate.empty()) {
-        const auto selection_state = m_model_preview->selection_state();
-        m_finishing_selection_state = selection_state;
-        m_finishing_restore_selection = [this, selection_state] { m_model_preview->restore_selection_state(selection_state); };
     }
     if (!m_finishing_candidate.empty()) {
         if (!m_finishing_before && !show_finishing_version(m_finishing_source)) return;
@@ -670,12 +734,17 @@ void ModelGenerationPanel::accept_model_finishing()
     metadata["face_color_intent"] = m_model_preview->face_color_metadata();
     metadata["color_trial"] = m_model_preview->color_trial_metadata();
     metadata["semantic_color_state"] = m_model_preview->semantic_color_metadata();
-    AI::BeautyDocument beauty;
-    beauty.geometry_id = m_model_preview->geometry_id();
-    beauty.source_sha256 = m_finishing_result.source_sha256;
-    beauty.face_count = m_finishing_result.faces_after;
-    beauty.face_patch.assign(beauty.face_count, 0);
-    metadata["beauty_workbench"] = beauty.encode();
+    if (m_finishing_options.beauty_appearance || m_finishing_options.beauty_deform || m_finishing_options.beauty_puzzle) {
+        metadata["beauty_workbench"] = BeautyWorkbenchControls::accepted_document(
+            m_finishing_options, m_model_preview->geometry_id());
+    } else {
+        AI::BeautyDocument beauty;
+        beauty.geometry_id = m_model_preview->geometry_id();
+        beauty.source_sha256 = m_finishing_result.source_sha256;
+        beauty.face_count = m_finishing_result.faces_after;
+        beauty.face_patch.assign(beauty.face_count, 0);
+        metadata["beauty_workbench"] = beauty.encode();
+    }
     if (!m_finishing_options.repair_mesh && m_finishing_selection_state.selected.size() == m_finishing_result.faces_after)
         metadata["local_selection"] = AI::SurfaceSelectionPersistence::encode(m_finishing_selection_state,
             m_finishing_result.faces_after, m_model_preview->geometry_id());
@@ -691,6 +760,7 @@ void ModelGenerationPanel::accept_model_finishing()
     m_finishing_accepted_path = m_finishing_candidate;
     select_local_finishing_version(m_finishing_candidate, m_finishing_id);
     m_finishing_candidate.clear();
+    if (m_beauty_controls) m_beauty_controls->mark_saved();
     update_finishing_selection();
     m_finishing_status->SetLabel(_L("新版本已保存到模型库。可返回上个版本，或导入准备页重新检查打印条件。"));
     m_status->SetLabel(_L("美颜新版本已保存，可继续导入。"));

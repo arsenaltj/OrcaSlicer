@@ -40,6 +40,7 @@ class wxToggleButton;
 namespace Slic3r::GUI {
 
 class ModelPreview3D;
+class BeautyWorkbenchControls;
 
 class ModelGenerationPanel : public wxPanel
 {
@@ -226,6 +227,7 @@ private:
     AIModelGenerationClient m_client;
 
     wxPanel* m_finishing_panel {nullptr};
+    BeautyWorkbenchControls* m_beauty_controls {nullptr};
     wxWindow* m_workflow_panel {nullptr};
     wxPanel* m_comparison_panel {nullptr};
     wxScrolledWindow* m_model_page {nullptr};
