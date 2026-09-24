@@ -1,6 +1,7 @@
 # Explicit local-semantic component installation; no dependency or weight fetch.
 # glb_artifact.py is already installed by the shared AI artifact component.
 set(ORCA_LOCAL_SEMANTIC_RUNTIME_FILES
+    "${CMAKE_SOURCE_DIR}/tools/ai/beauty_runtime_manifest.json"
     "${CMAKE_SOURCE_DIR}/tools/ai/glb_artifact.py"
     "${CMAKE_SOURCE_DIR}/tools/ai/local_semantic_worker.py"
     "${CMAKE_SOURCE_DIR}/tools/ai/local_semantic_geometry.py"

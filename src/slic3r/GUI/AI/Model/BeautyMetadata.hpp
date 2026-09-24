@@ -4,6 +4,16 @@
 
 namespace Slic3r::AI {
 
+inline boost::filesystem::path beauty_runtime_path(const boost::filesystem::path& application_root)
+{
+    return application_root / "ai" / "beauty_semantics";
+}
+
+inline boost::filesystem::path beauty_cache_path(const boost::filesystem::path& data_root)
+{
+    return data_root / "cache" / "beauty_semantics";
+}
+
 // Finishing versions retain the original model's directory so their base
 // texture reference remains local. Their authoritative history record lives
 // in downloads; generated originals and external models use adjacent drafts.
