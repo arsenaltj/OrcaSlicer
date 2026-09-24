@@ -2097,8 +2097,8 @@ def _refine_portrait_head_silhouette(
             # plates. Real sculptural skin and garments in this reference are
             # warm gray; use large, boundary-connected neutral-white components
             # as seeds and require that each component visibly escapes the
-            # source silhouette. This keeps a white jacket and the generated
-            # base while removing the backdrop before a paid submission.
+            # source silhouette. This keeps a white jacket and the cropped
+            # bust while removing the backdrop before a paid submission.
             source_bbox = source_alpha.getbbox()
             if source_bbox is not None:
                 light_backdrop_end = min(
@@ -2218,7 +2218,7 @@ def _refine_portrait_head_silhouette(
                 # remainder.  In only the shared shoulder/upper-torso band,
                 # apply a generously dilated source silhouette as a second
                 # guard. The margin scales with the portrait and the operation
-                # stops well before the generated bust finish or base.
+                # stops well before the generated bust finish.
                 source_torso_margin = max(8, min(24, round(subject_width * 0.03)))
                 source_torso_end = min(
                     light_backdrop_end,
@@ -2282,8 +2282,8 @@ def _refine_portrait_head_silhouette(
         cleaned_rows += 1
 
     # A single opaque checkerboard dash is enough for image-to-3D to create a
-    # thin spike beside the base. Portrait geometry is expected to be one
-    # connected bust/base silhouette, so retain only the largest 4-connected
+    # thin spike beside the bust. Portrait geometry is expected to be one
+    # connected bust silhouette, so retain only the largest 4-connected
     # alpha component after the halo trim. Use two bounded flood-fill passes to
     # avoid retaining a large per-component pixel list for megapixel images.
     foreground = bytes(value >= 128 for value in refined.tobytes())
@@ -2812,12 +2812,12 @@ def _prepare_portrait_geometry_provider_reference(job: Job) -> Path:
     Geometry therefore follows the relief-rich sculptural reference; the natural
     colour reference remains the authority for post-generation materials.
 
-    When reliable face and base bounds are available, crop at the shoulders,
-    preserve every remaining portrait pixel at native resolution, and draw one
-    solid overlapping plinth. This raises the head's share of the actual square
-    provider input above one half and removes the copied white transition that
-    created a second base ring. Center the result on transparent black so no
-    portrait frame can be interpreted as geometry.
+    When reliable face and base bounds are available, crop at the shoulders and
+    preserve every remaining portrait pixel at native resolution. The provider
+    input deliberately contains no generated display base: a base can be added
+    later in Orca's prepare workflow from the user's selected presets. Center
+    the result on transparent black so no portrait frame can be interpreted as
+    geometry.
 
     The original ``geometry-reference.png`` remains untouched after alpha
     sanitization.  Keeping the provider-specific derivative separate makes the
@@ -2828,7 +2828,7 @@ def _prepare_portrait_geometry_provider_reference(job: Job) -> Path:
     if source is None or not source.is_file():
         raise ModelInputImageQualityError("The sculptural portrait reference is unavailable.")
     try:
-        from PIL import Image, ImageDraw, UnidentifiedImageError
+        from PIL import Image, UnidentifiedImageError
     except ImportError:
         raise ModelInputImageQualityError(
             "Pillow is required to prepare the portrait geometry provider image."
@@ -2941,77 +2941,12 @@ def _prepare_portrait_geometry_provider_reference(job: Job) -> Path:
                             ),
                         )
                     )
-                    lower_start = round(portrait.height * 0.72)
-                    lower_bbox = portrait_alpha.crop(
-                        (0, lower_start, portrait.width, portrait.height)
-                    ).getbbox()
-                    lower_width = (
-                        lower_bbox[2] - lower_bbox[0]
-                        if lower_bbox is not None
-                        else face_width * 2
-                    )
-                    base_height = max(28, round(head_height * 0.13))
-                    overlap = max(5, round(head_height * 0.025))
-                    bottom_margin = max(4, round(head_height * 0.015))
-                    prepared_height = portrait.height + base_height - overlap + bottom_margin
-                    prepared = Image.new(
-                        "RGBA", (portrait.width, prepared_height), (0, 0, 0, 0)
-                    )
-                    base_width = min(
-                        portrait.width - bottom_margin * 2,
-                        max(round(head_height * 1.60), round(lower_width * 1.12)),
-                    )
-                    relative_center_x = center_x - crop_left
-                    base_left = max(
-                        bottom_margin,
-                        min(
-                            portrait.width - bottom_margin - base_width,
-                            relative_center_x - base_width // 2,
-                        ),
-                    )
-                    base_right = base_left + base_width
-                    base_destination_top = portrait.height - overlap
-                    structure = str(job.palette_roles.get("structure", "#555555")).strip()
-                    if re.fullmatch(r"#[0-9A-Fa-f]{6}", structure):
-                        plinth_rgb = tuple(
-                            int(structure[index:index + 2], 16) for index in (1, 3, 5)
-                        )
-                    else:
-                        plinth_rgb = (85, 85, 85)
-                    prepared.paste(portrait, (0, 0), portrait_alpha)
-                    draw = ImageDraw.Draw(prepared)
-                    ellipse_height = max(8, round(base_height * 0.36))
-                    draw.ellipse(
-                        (
-                            base_left,
-                            base_destination_top,
-                            base_right - 1,
-                            base_destination_top + ellipse_height,
-                        ),
-                        fill=(*plinth_rgb, 255),
-                    )
-                    draw.rectangle(
-                        (
-                            base_left,
-                            base_destination_top + ellipse_height // 2,
-                            base_right - 1,
-                            base_destination_top + base_height - ellipse_height // 2,
-                        ),
-                        fill=(*plinth_rgb, 255),
-                    )
-                    draw.ellipse(
-                        (
-                            base_left,
-                            base_destination_top + base_height - ellipse_height,
-                            base_right - 1,
-                            base_destination_top + base_height,
-                        ),
-                        fill=(*plinth_rgb, 255),
-                    )
-                    # The one-piece plinth overlaps the native shoulder cut.
-                    # This hides antialiased garment fringe and prevents a
-                    # second white transition ring; the face remains untouched.
-                    geometry = prepared
+                    # Keep the repaired head-and-shoulders silhouette exactly
+                    # at its cropped native size. A display base belongs to the
+                    # later Orca prepare flow and must not be baked into a paid
+                    # image-to-3D request.
+                    geometry = portrait.copy()
+                    geometry.putalpha(portrait_alpha)
                     alpha = geometry.getchannel("A")
                     compaction = {
                         "applied": True,
@@ -3022,16 +2957,8 @@ def _prepare_portrait_geometry_provider_reference(job: Job) -> Path:
                         "removed_original_base": True,
                         "head_height": head_height,
                         "head_bounds": [face_left, crop_top, face_right, head_bottom],
-                        "base_source": "single_solid_structure_plinth",
-                        "base_bounds": [
-                            base_left,
-                            base_destination_top,
-                            base_right,
-                            base_destination_top + base_height,
-                        ],
-                        "base_overlap": overlap,
-                        "base_ellipse_height": ellipse_height,
-                        "base_color": "#{:02X}{:02X}{:02X}".format(*plinth_rgb),
+                        "base_source": "none",
+                        "generated_display_base": False,
                         "shoulder_silhouette": shoulder_silhouette,
                         "face_canvas_ratio_before": round(
                             head_height / max(1, height), 6
@@ -3065,7 +2992,7 @@ def _prepare_portrait_geometry_provider_reference(job: Job) -> Path:
         offset_x = (target_side - width) // 2
         offset_y = (target_side - height) // 2
         canvas_version = (
-            "square-transparent-black-head-shoulders-v9"
+            "square-transparent-black-head-shoulders-v10"
             if compaction["applied"]
             else "square-transparent-black-v2"
         )
@@ -3139,37 +3066,6 @@ def _prepare_portrait_geometry_provider_reference(job: Job) -> Path:
                     (0, 0),
                     printable_portrait.getchannel("A"),
                 )
-                base_left, base_top, base_right, base_bottom = (
-                    int(value) for value in compaction["base_bounds"]
-                )
-                base_color = str(compaction["base_color"])
-                base_rgb = tuple(
-                    int(base_color[index:index + 2], 16) for index in (1, 3, 5)
-                )
-                ellipse_height = int(compaction["base_ellipse_height"])
-                preview_draw = ImageDraw.Draw(printable_prepared)
-                preview_draw.ellipse(
-                    (base_left, base_top, base_right - 1, base_top + ellipse_height),
-                    fill=(*base_rgb, 255),
-                )
-                preview_draw.rectangle(
-                    (
-                        base_left,
-                        base_top + ellipse_height // 2,
-                        base_right - 1,
-                        base_bottom - ellipse_height // 2,
-                    ),
-                    fill=(*base_rgb, 255),
-                )
-                preview_draw.ellipse(
-                    (
-                        base_left,
-                        base_bottom - ellipse_height,
-                        base_right - 1,
-                        base_bottom,
-                    ),
-                    fill=(*base_rgb, 255),
-                )
                 printable_canvas = Image.new(
                     "RGBA", (target_side, target_side), (0, 0, 0, 0)
                 )
@@ -3190,18 +3086,19 @@ def _prepare_portrait_geometry_provider_reference(job: Job) -> Path:
                 not printable_destination.is_file()
                 or not isinstance(previous_provider_preview, Mapping)
                 or previous_provider_preview.get("version")
-                != "portrait-head-shoulders-preview-v6"
+                != "portrait-head-shoulders-preview-v7"
             ):
                 raise ModelInputImageQualityError(
                     "The prepared portrait preview is unavailable."
                 )
             job.preview_path = printable_destination
             job.image_metrics["portrait_provider_preview"] = {
-                "version": "portrait-head-shoulders-preview-v6",
+                "version": "portrait-head-shoulders-preview-v7",
                 "path": printable_destination.name,
                 "output_size": [target_side, target_side],
                 "matches_geometry_crop": True,
-                "single_material_base": True,
+                "single_material_base": False,
+                "generated_display_base": False,
                 "continuous_silhouette": bool(
                     isinstance(compaction.get("shoulder_silhouette"), Mapping)
                     and compaction["shoulder_silhouette"].get("status") == "pass"
@@ -3360,11 +3257,11 @@ def _assess_job_generation_reference(job: Job) -> dict[str, Any]:
     job.image_metrics["generation_reference"] = strategy
     job.image_metrics["geometry_strategy"] = {
         "version": (
-            "portrait-sculpted-head-shoulders-front-v15"
+            "portrait-sculpted-head-shoulders-front-v16"
             if strategy == "identity_sculpted_geometry_reference"
             and isinstance(job.image_metrics.get("geometry_provider_canvas"), Mapping)
             and job.image_metrics["geometry_provider_canvas"].get("version")
-            == "square-transparent-black-head-shoulders-v9"
+            == "square-transparent-black-head-shoulders-v10"
             else "portrait-identity-color-front-v8"
             if strategy == "identity_color_geometry_reference"
             else
@@ -4765,9 +4662,9 @@ def _stabilize_portrait_obj_materials(
     palette_roles: Mapping[str, str] | None,
     enabled: bool,
 ) -> dict[str, Any]:
-    """Lock a detected portrait bust's bottom base to its semantic material.
+    """Lock a detected portrait bust's lowest band to its semantic material.
 
-    Tripo can paint a source-invisible base with garment, skin, or accent colours.
+    Tripo can paint a source-invisible lower transition with garment, skin, or accent colours.
     This pass is intentionally narrower than generic colour cleanup: it requires
     upstream portrait evidence, an explicit neutral-garment/skin palette, and a
     substantial bottom band that is already predominantly the dark structure colour.
@@ -4907,7 +4804,7 @@ def _stabilize_portrait_obj_garment_regions(
     hands and the front accent garment form locally coherent regions. This pass
     erodes only non-garment vertices that are surrounded by garment vertices and
     cleans weakly supported rear projections. It stays disabled for every model
-    without the upstream portrait and dark-base evidence.
+    without the upstream portrait and low-band evidence.
     """
     portrait_indices = _portrait_material_palette_indices(palette, palette_roles, enabled)
     if portrait_indices is None or not palette_roles:

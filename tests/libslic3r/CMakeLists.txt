@@ -12,6 +12,7 @@ add_executable(${_TEST_NAME}_tests
     test_clipper_offset.cpp
     test_clipper_utils.cpp
     test_config.cpp
+    test_color_difference.cpp
     test_config_variant_expansion.cpp
     test_toolordering_nozzle_group.cpp
     test_preset_bundle_loading.cpp
@@ -20,6 +21,7 @@ add_executable(${_TEST_NAME}_tests
     test_vendor_cache.cpp
     test_elephant_foot_compensation.cpp
     test_fill_corner_smoothing.cpp
+    test_fill_base.cpp
     test_filament_mixer.cpp
     test_filament_mixer_model.cpp
     test_mesh_seam_repair.cpp
@@ -34,6 +36,7 @@ add_executable(${_TEST_NAME}_tests
     test_step.cpp
     test_stl.cpp
     test_triangle_selector.cpp
+    test_trianglemesh_slicer.cpp
     test_meshboolean.cpp
     test_model_vertex_colors.cpp
     test_marchingsquares.cpp

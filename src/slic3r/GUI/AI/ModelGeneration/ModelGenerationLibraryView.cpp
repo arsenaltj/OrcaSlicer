@@ -50,60 +50,9 @@ std::vector<ModelGenerationPanel::GeneratedModelEntry> ModelGenerationPanel::rea
         const auto path = base / value->get<std::string>();
         return path_is_inside(base, path) && is_supported_image(path) ? path : boost::filesystem::path();
     };
+    thread_local ModelLibraryMetadata summaries;
     const auto read_json = [](const boost::filesystem::path& path) {
-        boost::system::error_code error;
-        const auto bytes = boost::filesystem::file_size(path, error);
-        // Finishing records can contain a face-selection snapshot with millions
-        // of entries.  Keep a bounded metadata file size for malformed input,
-        // but discard that optional array while parsing so valid identity,
-        // paths, and shared-directory references remain available to the list.
-        if (error || bytes > 32 * 1024 * 1024)
-            return nlohmann::json();
-        boost::filesystem::ifstream stream(path);
-        if (!stream)
-            return nlohmann::json();
-        const auto callback = [](int, nlohmann::json::parse_event_t event, nlohmann::json& parsed) {
-            if (event == nlohmann::json::parse_event_t::key && parsed.is_string()) {
-                // These snapshots are only needed when opening the finishing
-                // workbench; the history list never consumes them.
-                const std::string& key = parsed.get_ref<const std::string&>();
-                if (key == "selected_faces" || key == "protected_faces")
-                    return false;
-            }
-            return true;
-        };
-        nlohmann::json value = nlohmann::json::parse(stream, callback, false);
-        if (!value.is_object())
-            return value;
-
-        // A single hand-edited or partially-written metadata file must not
-        // abort the complete history scan.  The model path remains useful even
-        // when optional metadata has the wrong JSON type; remove only fields
-        // whose typed access below would otherwise throw.
-        const auto erase_unless = [&value](const char* key, const auto& predicate) {
-            const auto it = value.find(key);
-            if (it != value.end() && !predicate(*it))
-                value.erase(it);
-        };
-        erase_unless("generated_at", [](const nlohmann::json& item) {
-            return item.is_number_integer() || item.is_number_unsigned();
-        });
-        erase_unless("imported_at", [](const nlohmann::json& item) {
-            return item.is_number_integer() || item.is_number_unsigned();
-        });
-        erase_unless("triangle_count", [](const nlohmann::json& item) {
-            return item.is_number_integer() || item.is_number_unsigned();
-        });
-        erase_unless("load_seconds", [](const nlohmann::json& item) { return item.is_number(); });
-        for (const char* key : {"print_feedback", "provider", "provider_task_id",
-                                "provider_conversion_task_id", "prompt", "reference_image_path",
-                                "ai_image_path", "color_intent_path", "color_intent_schema",
-                                "color_intent_sha256", "job_id", "model_path", "source"}) {
-            erase_unless(key, [](const nlohmann::json& item) { return item.is_string(); });
-        }
-        erase_unless("use_printable_colors", [](const nlohmann::json& item) { return item.is_boolean(); });
-        erase_unless("palette_constrained", [](const nlohmann::json& item) { return item.is_boolean(); });
-        return value;
+        return summaries.read(path);
     };
     boost::system::error_code ec;
     if (cancelled || !boost::filesystem::is_directory(root, ec)) return {};
@@ -147,6 +96,10 @@ std::vector<ModelGenerationPanel::GeneratedModelEntry> ModelGenerationPanel::rea
         for (boost::filesystem::directory_iterator it(records, ec), end; !ec && it != end; it.increment(ec)) {
             if (cancelled) return {};
             if (it->path().extension() != ".json") continue;
+            // The summary index lives beside history metadata. It is an
+            // implementation detail, never a model-library record; skipping
+            // it also avoids recursively parsing our own cache on every scan.
+            if (it->path().filename() == "library-summary-cache-v1.json") continue;
             const auto data = read_json(it->path());
             if (!data.is_object() || data.value("source", std::string()) != "local_finishing") continue;
             const auto id = data.value("job_id", std::string());

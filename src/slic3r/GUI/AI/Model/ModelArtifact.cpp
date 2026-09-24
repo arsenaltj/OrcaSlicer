@@ -278,4 +278,99 @@ bool write_model_artifact(const boost::filesystem::path& path, const indexed_tri
         error = e.what(); return false;
     }
 }
+bool archive_local_model(const boost::filesystem::path& source,const boost::filesystem::path& destination,std::string& error) {
+    const auto staged=destination.parent_path()/boost::filesystem::unique_path("local-model-%%%%-%%%%.glb");
+    bool owned=false;
+    try {
+        if(!is_model_artifact(source) || model_artifact_format(destination)!="glb" || boost::filesystem::exists(destination))
+            throw std::runtime_error("请选择有效的 GLB 或 OBJ 模型；原文件不会被覆盖。");
+        boost::filesystem::create_directories(destination.parent_path());
+        if(model_artifact_format(source)=="glb") {boost::filesystem::copy_file(source,staged);owned=true;}
+        else {
+            TexturedMesh mesh;std::vector<RGBA> colors;
+            if(!load_assimp_textured_model(source.string(),mesh,&error,&colors))throw std::runtime_error(error);
+            if(mesh.indices.empty() || mesh.indices.size()>2000000 || mesh.vertices.size()>6000000 || colors.size()!=mesh.vertices.size())
+                throw std::runtime_error("模型超过当前工作台支持的 200 万三角面。");
+            using Json=nlohmann::json;
+            Json doc={{"asset",{{"version","2.0"},{"generator","Orca local model import"}}},
+                {"scene",0},{"scenes",{{{"nodes",{0}}}}},{"nodes",{{{"mesh",0}}}},
+                {"bufferViews",Json::array()},{"accessors",Json::array()},{"materials",Json::array()},
+                {"images",Json::array()},{"textures",Json::array()}};
+            std::vector<unsigned char> bytes;
+            auto view=[&](size_t offset) {
+                const auto id=doc["bufferViews"].size();doc["bufferViews"].push_back({{"buffer",0},{"byteOffset",offset},{"byteLength",bytes.size()-offset}});
+                while(bytes.size()%4)bytes.push_back(0);
+                if(bytes.size()>max_bytes)throw std::runtime_error("本地模型和贴图合计超过 512 MB。");return id;
+            };
+            auto accessor=[&](size_t offset,size_t count,const char* type,int component=5126) {
+                const auto id=doc["accessors"].size();doc["accessors"].push_back({{"bufferView",view(offset)},{"componentType",component},{"count",count},{"type",type}});return id;
+            };
+            std::array<float,3> minimum{INFINITY,INFINITY,INFINITY},maximum{-INFINITY,-INFINITY,-INFINITY};
+            for(const auto& v:mesh.vertices) {
+                const std::array<float,3> p{v[0]*.001f,v[2]*.001f,-v[1]*.001f};
+                for(size_t c=0;c<3;++c) {
+                    if(!std::isfinite(p[c]))throw std::runtime_error("模型含无效坐标。");
+                    append_float(bytes,p[c]);minimum[c]=std::min(minimum[c],p[c]);maximum[c]=std::max(maximum[c],p[c]);
+                }
+            }
+            const size_t position=accessor(0,mesh.vertices.size(),"VEC3");doc["accessors"][position]["min"]=minimum;doc["accessors"][position]["max"]=maximum;
+            size_t offset=bytes.size();
+            for(const auto& c:colors)for(size_t k=0;k<4;++k) {
+                if(!std::isfinite(c[k]) || c[k]<0 || c[k]>1)throw std::runtime_error("模型含无效颜色。");
+                append_float(bytes,k==3?c[k]:linear(c[k]));
+            }
+            const size_t color=accessor(offset,colors.size(),"VEC4");offset=bytes.size();
+            if(mesh.uvs.size()!=mesh.vertices.size())throw std::runtime_error("OBJ 贴图坐标不完整。");
+            for(const auto& uv:mesh.uvs) {
+                if(!std::isfinite(uv[0]) || !std::isfinite(uv[1]))throw std::runtime_error("OBJ 贴图坐标无效。");
+                append_float(bytes,uv[0]);append_float(bytes,1.f-uv[1]);
+            }
+            const size_t uv=accessor(offset,mesh.uvs.size(),"VEC2");
+            for(const auto& image:mesh.textures) {
+                const auto& data=image.data;
+                const bool png=data.size()>8 && data[0]==137 && data[1]==80 && data[2]==78 && data[3]==71;
+                const bool jpeg=data.size()>2 && data[0]==255 && data[1]==216;
+                if((!png && !jpeg) || data.size()>max_bytes-bytes.size())throw std::runtime_error("OBJ 请使用 PNG 或 JPEG 贴图，且总大小不超过 512 MB。");
+                offset=bytes.size();bytes.insert(bytes.end(),data.begin(),data.end());
+                const size_t image_id=doc["images"].size();
+                doc["images"].push_back({{"bufferView",view(offset)},{"mimeType",png?"image/png":"image/jpeg"}});
+                doc["textures"].push_back({{"source",image_id}});
+            }
+            for(size_t m=0;m<mesh.material_colors.size();++m) {
+                auto factor=mesh.material_colors[m];for(size_t c=0;c<3;++c)factor[c]=linear(std::clamp(factor[c],0.f,1.f));
+                Json pbr={{"baseColorFactor",factor},{"metallicFactor",0},{"roughnessFactor",1}};
+                if(m<mesh.material_texture_map.size() && mesh.material_texture_map[m]>=0)
+                    pbr["baseColorTexture"]={{"index",mesh.material_texture_map[m]}};
+                doc["materials"].push_back({{"doubleSided",true},{"pbrMetallicRoughness",std::move(pbr)}});
+            }
+            std::map<int,std::vector<std::array<int,3>>> groups;
+            for(size_t f=0;f<mesh.indices.size();++f)groups[f<mesh.material_ids.size()?mesh.material_ids[f]:-1].push_back(mesh.indices[f]);
+            Json primitives=Json::array();
+            for(const auto& group:groups) {
+                offset=bytes.size();
+                for(const auto& face:group.second)for(int v:face) {
+                    if(v<0 || size_t(v)>=mesh.vertices.size())throw std::runtime_error("模型含无效三角面。");append_u32(bytes,uint32_t(v));
+                }
+                Json primitive={{"attributes",{{"POSITION",position},{"COLOR_0",color},{"TEXCOORD_0",uv}}},
+                    {"indices",accessor(offset,group.second.size()*3,"SCALAR",5125)},{"mode",4}};
+                if(group.first>=0 && size_t(group.first)<mesh.material_colors.size())primitive["material"]=group.first;
+                primitives.push_back(std::move(primitive));
+            }
+            doc["meshes"]={{{"primitives",std::move(primitives)}}};doc["buffers"]={{{"byteLength",bytes.size()}}};
+            std::string json=doc.dump();while(json.size()%4)json+=' ';
+            const size_t size=28+json.size()+bytes.size();if(size>max_bytes)throw std::runtime_error("模型超过 512 MB。");
+            boost::filesystem::ofstream out(staged,std::ios::binary);owned=true;
+            write_u32(out,0x46546c67);write_u32(out,2);write_u32(out,uint32_t(size));
+            write_u32(out,uint32_t(json.size()));write_u32(out,0x4e4f534a);out.write(json.data(),json.size());
+            write_u32(out,uint32_t(bytes.size()));write_u32(out,0x004e4942);out.write(reinterpret_cast<const char*>(bytes.data()),bytes.size());out.close();
+            if(!out)throw std::runtime_error("无法写入本地模型，请检查磁盘空间。");
+        }
+        TriangleMesh verified;ObjInfo sampled;
+        if(!load_model_artifact(staged,verified,sampled,error))throw std::runtime_error(error);
+        // Publish without replacement; a failed validation leaves no history asset.
+        boost::filesystem::create_hard_link(staged,destination);boost::filesystem::remove(staged);return true;
+    }catch(const std::exception& e) {
+        if(owned){boost::system::error_code ignored;boost::filesystem::remove(staged,ignored);}error=e.what();return false;
+    }
+}
 } // namespace Slic3r::AI

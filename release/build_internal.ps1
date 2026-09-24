@@ -5,6 +5,7 @@ param(
     [string] $Revision,
     [string] $CMakeExecutable,
     [string] $NsisDir,
+    [string] $SevenZipExecutable,
     [string] $SourceManifest,
     [switch] $SkipTargetedTests,
     [switch] $ValidateOnly
@@ -129,6 +130,10 @@ if (-not [string]::IsNullOrWhiteSpace($NsisDir)) {
     }
 }
 
+if ($SevenZipExecutable) {
+    $SevenZipExecutable = Resolve-OperatorPath -Path $SevenZipExecutable -Label '7-Zip executable' -RequireLeaf
+}
+
 $validationResult = [pscustomobject]@{
     Ready                = $true
     Repository           = $repoRoot
@@ -163,6 +168,9 @@ $packageArguments = @{
 }
 if ($nsisPath) {
     $packageArguments.NsisDir = $nsisPath
+}
+if ($SevenZipExecutable) {
+    $packageArguments.SevenZipExecutable = $SevenZipExecutable
 }
 if ($SourceManifest) {
     $packageArguments.SourceManifest = $SourceManifest
@@ -230,7 +238,9 @@ if ($portableHash -ne $manifest.portable_sha256) {
 }
 
 $sevenZipCommand = Get-Command 7z.exe -ErrorAction SilentlyContinue
-$sevenZipPath = if ($sevenZipCommand) {
+$sevenZipPath = if ($SevenZipExecutable) {
+    $SevenZipExecutable
+} elseif ($sevenZipCommand) {
     $sevenZipCommand.Source
 } else {
     Join-Path $env:ProgramFiles '7-Zip\7z.exe'

@@ -1,4 +1,5 @@
 #include "ModelGenerationStatusText.hpp"
+#include "ModelGenerationSubmissionState.hpp"
 
 #include "slic3r/GUI/AIModelGenerationClient.hpp"
 #include "slic3r/GUI/GUI.hpp"
@@ -10,6 +11,8 @@ namespace Slic3r::GUI::ModelGenerationStatusText {
 
 wxString localized_service_error(const std::string& error)
 {
+    if (ModelGenerationPresentation::is_model_provider_not_configured(error))
+        return _L("所选模型服务尚未配置，本次未创建 3D 任务。设计图已保留，请配置服务后手动重试，或选择已配置的服务。");
     wxString message = from_u8(error);
     if (message.Contains("2-million-face target requires detailed geometry"))
         return _L("200 万面需要精细几何。请在 3D 设置中选择精细几何，或改为 100 万面后重试。");

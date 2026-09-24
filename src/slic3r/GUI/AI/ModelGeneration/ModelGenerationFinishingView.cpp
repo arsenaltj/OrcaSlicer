@@ -1,6 +1,7 @@
 #include "slic3r/GUI/ModelGenerationPanel.hpp"
 #include "ModelGenerationPresentation.hpp"
 #include "ModelPreview3D.hpp"
+#include "BeautyWorkbenchControls.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/GUI_Utils.hpp"
 #include "slic3r/GUI/I18N.hpp"
@@ -195,6 +196,21 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
     button(m_finishing_undo, _L("返回上个版本"));
     button(m_finishing_redo, _L("重做已保存修整"));
     button(m_finishing_cancel, _L("取消处理"));
+    button(m_finishing_color_match, _L("下一步：匹配打印颜色"));
+    m_finishing_color_match->SetToolTip(_L("在当前美颜模型上匹配耗材；确认后才会应用到准备页。"));
+    m_finishing_color_match->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        if (!m_color_matching || m_busy || m_finishing_running) return;
+        const auto& path = m_finishing_candidate.empty() ? m_displayed_model_path : m_finishing_candidate;
+        if (!is_nonempty_model(path)) return;
+        AI::GeneratedModelArtifact artifact;
+        artifact.local_path = path;
+        artifact.job_id = m_displayed_model_job_id;
+        artifact.format = AI::model_artifact_format(path);
+        artifact.color_encoding = m_artifact_color_encoding;
+        artifact.generation_palette = m_displayed_model_palette;
+        artifact.used_printable_colors = m_job_use_printable_colors;
+        m_color_matching(artifact);
+    });
     sizer->Add(actions, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(10));
     m_finishing_status = new wxStaticText(m_finishing_panel, wxID_ANY, _L("轻柔处理小凹凸，保留人物特征。松开强度滑块后预览；处理可取消。"));
     wrap_workbench_text(m_finishing_status, FromDIP(260));
@@ -363,6 +379,7 @@ void ModelGenerationPanel::refresh_model_finishing()
     m_finishing_compare_model->Enable(editable);
     m_finishing_compare_model->SetLabel(m_finishing_before ? _L("当前为处理前") : _L("按住查看处理前"));
     m_finishing_compare_model->GetParent()->Layout();
+    m_finishing_color_match->Enable(editable && !m_finishing_running);
     m_finishing_preview->Enable(editable);
     m_finishing_preview->SetLabel(pending ? _L("按当前强度重新预览") : cleanup ? _L("预览去杂效果") : _L("预览处理效果"));
     m_finishing_preset->Enable(editable);
@@ -684,6 +701,8 @@ void ModelGenerationPanel::accept_model_finishing()
     metadata["face_color_intent"] = m_model_preview->face_color_metadata();
     metadata["color_trial"] = m_model_preview->color_trial_metadata();
     metadata["semantic_color_state"] = m_model_preview->semantic_color_metadata();
+    if (m_finishing_options.beauty_appearance || m_finishing_options.beauty_deform || m_finishing_options.beauty_puzzle)
+        metadata["beauty_workbench"] = BeautyWorkbenchControls::accepted_document(m_finishing_options, m_model_preview->geometry_id());
     if (!m_finishing_options.repair_mesh && m_finishing_selection_state.selected.size() == m_finishing_result.faces_after)
         metadata["local_selection"] = AI::SurfaceSelectionPersistence::encode(m_finishing_selection_state,
             m_finishing_result.faces_after, m_model_preview->geometry_id());

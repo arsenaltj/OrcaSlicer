@@ -1,0 +1,69 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>全身区域合色 · 跨样本实验</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f5f6f8;color:#202a36;font:14px "Microsoft YaHei",sans-serif;display:flex;flex-direction:column;height:100vh}
+header{padding:18px 24px 10px}h1{font-size:22px;margin:0 0 7px}p{margin:0;color:#637080}
+nav{display:flex;align-items:center;gap:7px;flex-wrap:wrap;padding:0 24px 10px}button,select{border:1px solid #ccd4dd;background:white;border-radius:7px;padding:7px 10px;font:inherit;cursor:pointer}button.active{background:#007e76;color:white;border-color:#007e76}button:disabled,select:disabled{opacity:.45}
+.titles{display:grid;grid-template-columns:1fr 1fr;text-align:center;font-size:17px;font-weight:bold;padding:9px}small{font-size:12px;color:#687685;font-weight:normal;margin-left:8px}canvas{display:block;width:100%;flex:1;min-height:280px;touch-action:none}footer{padding:10px 24px;color:#5b6673;font-size:12px}.pill{margin-left:auto;font-size:12px;color:#546372}#error{color:#b22}
+</style>
+<header><h1>全身区域合色 · 同参数验证</h1><p>根据源色、表面相邻关系和自动五官范围处理；没有手填身体坐标。拖动可同步旋转。</p></header>
+<nav>
+<label>左侧 <select id="reference" aria-label="左侧对照"><option value="1">上一版</option><option value="0">直接匹配六耗材</option><option value="2">原贴图</option></select></label>
+
+<button id="front">正面</button><button id="side">左侧面</button><button id="right">右侧面</button><button id="back">背面</button><button id="head">脸部</button><button id="full">全身</button>
+<button id="light" class="active">光照</button><button id="changes">修改范围</button><span class="pill" id="stats">读取模型中…</span>
+</nav>
+<div class="titles"><div id="leftTitle">逐面直接匹配六耗材</div><div>区域合色候选</div></div>
+<canvas id="canvas"></canvas><footer>两样本共用同一算法参数；左侧不是原生 12 组默认算法。仍为实验，未接入默认流程或打印验证。<span id="error"></span></footer>
+<script>
+(async()=>{
+const controls=document.querySelectorAll('button,select');controls.forEach(b=>b.disabled=true);
+const response=await fetch('result.json');if(!response.ok)throw Error('读取实验记录失败');
+const report=await response.json(),r=report.statistics;
+const previousTitle=report.previous_reference?'第四版 · 上一版效果':'逐面直接匹配六耗材';
+document.querySelector('#leftTitle').textContent=previousTitle;
+document.querySelector('#reference option[value="1"]').textContent=previousTitle;
+if(report.vertex_stride!==12)throw Error('不兼容的模型数据');
+const canvas=document.querySelector('canvas'),gl=canvas.getContext('webgl2',{antialias:true,preserveDrawingBuffer:true});
+if(!gl)throw Error('需要 WebGL 2');
+const vs=`#version 300 es
+in vec3 position;in vec3 normal;in vec3 labels;in vec3 sourceRgb;
+uniform mat3 basis;uniform vec3 center;uniform float extent;uniform float aspect;
+out vec3 n;flat out vec3 ids;flat out vec3 texRgb;
+void main(){vec3 p=basis*(position-center)/extent;gl_Position=vec4(p.x/aspect,p.y,-p.z/4.,1.);n=basis*normal;ids=labels;texRgb=sourceRgb;}`;
+const fs=`#version 300 es
+precision highp float;in vec3 n;flat in vec3 ids;flat in vec3 texRgb;
+uniform vec3 palette[6];uniform int variant;uniform int reference;uniform bool remap;uniform bool lit;uniform bool changes;out vec4 color;
+int convertLabel(int id){return id;}
+void main(){int previous=reference==0?int(ids.x):convertLabel(int(ids.y));int updated=convertLabel(int(ids.z));int label=variant==0?previous:updated;
+vec3 rgb=variant==0&&reference==2?texRgb:palette[label];
+if(lit){float d=max(dot(normalize(n),normalize(vec3(-.35,.55,1.))),0.);rgb*=.43+.57*d;}
+if(changes&&variant==1&&previous!=updated)rgb=vec3(1.,.05,.25);color=vec4(rgb,1.);}`;
+function shader(type,source){const obj=gl.createShader(type);gl.shaderSource(obj,source);gl.compileShader(obj);if(!gl.getShaderParameter(obj,gl.COMPILE_STATUS))throw Error(gl.getShaderInfoLog(obj));return obj;}
+const program=gl.createProgram();gl.attachShader(program,shader(gl.VERTEX_SHADER,vs));gl.attachShader(program,shader(gl.FRAGMENT_SHADER,fs));gl.linkProgram(program);if(!gl.getProgramParameter(program,gl.LINK_STATUS))throw Error(gl.getProgramInfoLog(program));gl.useProgram(program);
+const mesh=await fetch('mesh.bin');if(!mesh.ok)throw Error('读取网格失败');const bytes=await mesh.arrayBuffer();
+if(bytes.byteLength!==report.faces*3*48)throw Error('网格数据不完整');
+const buffer=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buffer);gl.bufferData(gl.ARRAY_BUFFER,bytes,gl.STATIC_DRAW);
+for(const [name,size,offset]of [['position',3,0],['normal',3,12],['labels',3,24],['sourceRgb',3,36]]){const at=gl.getAttribLocation(program,name);gl.enableVertexAttribArray(at);gl.vertexAttribPointer(at,size,gl.FLOAT,false,48,offset);}
+const u={};for(const name of ['basis','center','extent','aspect','variant','reference','lit','changes','palette','remap'])u[name]=gl.getUniformLocation(program,name);
+gl.uniform3fv(u.palette,new Float32Array(report.palette.flatMap(hex=>[1,3,5].map(i=>parseInt(hex.slice(i,i+2),16)/255))));
+const frontYaw=report.view.front_yaw,faceCenter=report.view.face_center,faceExtent=report.view.face_extent;let yaw=frontYaw,pitch=.04,extent=report.view.full_extent,center=report.view.full_center,lit=true,changes=false,reference=1,remap=true;
+function draw(){
+const scale=Math.min(devicePixelRatio,1.5);canvas.width=Math.round(canvas.clientWidth*scale);canvas.height=Math.round(canvas.clientHeight*scale);
+gl.enable(gl.DEPTH_TEST);gl.disable(gl.CULL_FACE);gl.clearColor(.94,.95,.96,1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+const c=Math.cos(yaw),s=Math.sin(yaw),cp=Math.cos(pitch),sp=Math.sin(pitch);
+gl.uniformMatrix3fv(u.basis,false,new Float32Array([c,-s*sp,s*cp,s,c*sp,-c*cp,0,cp,sp]));gl.uniform3fv(u.center,center);
+gl.uniform1i(u.lit,lit);gl.uniform1i(u.changes,changes);gl.uniform1i(u.reference,reference);gl.uniform1i(u.remap,remap);
+const width=Math.floor(canvas.width/2);gl.uniform1f(u.aspect,width/canvas.height);
+gl.uniform1f(u.extent,extent*Math.max(1,(center===faceCenter?.78:.54)/(width/canvas.height)));
+for(let i=0;i<2;i++){gl.viewport(i*width,0,width,canvas.height);gl.uniform1i(u.variant,i);gl.drawArrays(gl.TRIANGLES,0,bytes.byteLength/48);}
+window.comparisonReady=true;
+}
+document.querySelector('#reference').onchange=e=>{reference=Number(e.target.value);document.querySelector('#leftTitle').textContent=['逐面直接匹配六耗材',previousTitle,'原模型贴图'][reference];document.querySelector('#changes').disabled=reference===2;if(reference===2){changes=false;document.querySelector('#changes').classList.remove('active');}draw();};
+for(const [id,fn]of Object.entries({front:()=>{yaw=frontYaw;pitch=.04},side:()=>{yaw=frontYaw+Math.PI/3;pitch=.04},right:()=>{yaw=frontYaw-Math.PI/3;pitch=.04},back:()=>{yaw=frontYaw+Math.PI;pitch=.04},head:()=>{center=faceCenter;extent=faceExtent},full:()=>{center=report.view.full_center;extent=report.view.full_extent},light:()=>{lit=!lit;document.querySelector('#light').classList.toggle('active',lit)},changes:()=>{changes=!changes;document.querySelector('#changes').classList.toggle('active',changes)}}))document.getElementById(id).onclick=()=>{fn();draw();};
+let drag=null;canvas.onpointerdown=e=>{drag=[e.clientX,e.clientY];canvas.setPointerCapture(e.pointerId);};canvas.onpointerup=canvas.onpointercancel=()=>drag=null;
+canvas.onpointermove=e=>{if(!drag)return;yaw+=(e.clientX-drag[0])*.008;pitch=Math.max(-1,Math.min(1,pitch+(e.clientY-drag[1])*.008));drag=[e.clientX,e.clientY];draw();};
+canvas.onwheel=e=>{e.preventDefault();extent=Math.max(6,Math.min(100,extent*Math.exp(e.deltaY*.001)));draw();};
+new ResizeObserver(draw).observe(canvas);draw();controls.forEach(b=>b.disabled=false);
+document.querySelector('#stats').textContent=`小色岛 ${r.before.unprotected_islands_below_0_8_mm2} → ${r.after.unprotected_islands_below_0_8_mm2} · 处理 ${report.seconds.toFixed(1)} 秒`;
+})().catch(e=>{document.querySelector('#error').textContent=e.message;console.error(e);});
+</script></html>

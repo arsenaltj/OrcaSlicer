@@ -14,6 +14,7 @@
 #include "CgalUtils.hpp"
 #include "ColorUtils.hpp"
 #include "libslic3r/TriangleMesh.hpp"
+#include "libslic3r/MeshSeamRepair.hpp"
 #include <filesystem>
 #include <fstream>
 #include "Repair.hpp"
@@ -763,6 +764,13 @@ static bool repair_cluster_smooth(
 
     if (settings.face_color_overrides.empty()) {
         TriangleMesh stats_mesh(static_cast<const indexed_triangle_set&>(mesh));
+        // The texture/UV loader duplicates exact vertices at material seams.
+        // Join those seams before asking about mesh repair; triangle order and
+        // sampled face colors are unchanged, so painting keeps its face IDs.
+        if (stats_mesh.stats().open_edges != 0 && stitch_exact_mesh_seams(stats_mesh)) {
+            mesh = TriMesh(std::move(stats_mesh.its));
+            BOOST_LOG_TRIVIAL(info) << log_prefix << ": closed exact texture seams before matching colors.";
+        }
         const auto& stats = stats_mesh.stats();
         // Orca's TriangleMeshStats only counts open edges: manifold() is open_edges == 0, and
         // there are no separate non-manifold edge/vertex counters to test or log here.

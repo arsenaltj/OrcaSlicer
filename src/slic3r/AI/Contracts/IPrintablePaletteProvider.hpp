@@ -9,12 +9,37 @@
 
 namespace Slic3r::AI {
 
+// Values are captured from the current workspace, not inferred from a color.
+// Zero/empty means unknown. Configured heights alone do not prove the layer
+// schedule or the minimum dimensions of a particular colored surface region.
+struct PrintSublayerMaterial {
+    PhysicalFilamentChannel channel;
+    std::string identity;
+    double min_layer_mm {0}, max_layer_mm {0}, line_width_mm {0};
+    double temperature_c {0}, min_temperature_c {0}, max_temperature_c {0};
+};
+struct PrintSublayerProcess {
+    std::string material_fingerprint, process_fingerprint;
+    std::string surface_condition, measurement_condition;
+    bool sublayers_enabled {false};
+    bool first_layer_unsplit {true};
+    std::vector<double> layer_heights_mm;
+    double z_resolution_mm {0};
+    double region_width_mm {0}, region_height_mm {0};
+};
+
 struct PrintablePaletteSnapshot
 {
     std::vector<std::string> project_colors;
     std::vector<size_t>      valid_slots;
     std::vector<size_t>      compatible_slots;
     std::vector<std::string> compatible_colors;
+    // Native matching revalidates these snapshots before applying a draft.
+    std::string material_fingerprint;
+    std::string process_fingerprint;
+    bool material_metadata_complete {false};
+    std::vector<PrintSublayerMaterial> sublayer_materials;
+    PrintSublayerProcess sublayer_process;
 
     // Typed capability source. The flat fields above remain as a temporary
     // compatibility projection for existing model-generation callers.

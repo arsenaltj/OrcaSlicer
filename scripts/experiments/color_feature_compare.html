@@ -1,0 +1,77 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>第三版 · 五官细化对照</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f5f6f8;color:#202a36;font:14px "Microsoft YaHei",sans-serif;display:flex;flex-direction:column;height:100vh}
+header{padding:18px 24px 10px}h1{font-size:22px;margin:0 0 7px}p{margin:0;color:#637080}
+nav{display:flex;align-items:center;gap:7px;flex-wrap:wrap;padding:0 24px 10px}button,select{border:1px solid #ccd4dd;background:white;border-radius:7px;padding:7px 10px;font:inherit;cursor:pointer}button.active{background:#007e76;color:white;border-color:#007e76}button:disabled,select:disabled{opacity:.45}
+.titles{display:grid;grid-template-columns:1fr 1fr;text-align:center;font-size:17px;font-weight:bold;padding:9px}small{font-size:12px;color:#687685;font-weight:normal;margin-left:8px}canvas{display:block;width:100%;flex:1;min-height:280px;touch-action:none}footer{padding:10px 24px;color:#5b6673;font-size:12px}.pill{margin-left:auto;font-size:12px;color:#546372}#error{color:#b22}
+</style>
+<header><h1>第三版：眉眼与唇线细化</h1><p>灰色眉毛减轻浓描感，眼白和牙齿取自原贴图。拖动可同步旋转；几何和六种耗材保持不变。</p></header>
+<nav>
+<label>左侧 <select id="reference" aria-label="左侧对照"><option value="1">上一版</option><option value="0">最初默认</option><option value="2">原贴图</option></select></label>
+<select id="paletteMode" aria-label="肤色与外套配色"><option value="0">沿用原主色</option><option value="1">浅肤色 / 白外套</option></select>
+<button id="front">正面</button><button id="side">左侧面</button><button id="right">右侧面</button><button id="back">背面</button><button id="head">脸部</button><button id="full">全身</button>
+<button id="light" class="active">光照</button><button id="changes">修改范围</button><span class="pill" id="stats">读取模型中…</span>
+</nav>
+<div class="titles"><div id="leftTitle">上一版 · 材质合色</div><div>第三版 · 五官细化</div></div>
+<canvas id="canvas"></canvas><footer>固定样本实验，仍使用人工五官范围；未接入 Orca 默认流程，未验证实物打印。<span id="error"></span></footer>
+<script>
+(async()=>{
+const controls=document.querySelectorAll('button,select');controls.forEach(b=>b.disabled=true);
+const response=await fetch('result.json');if(!response.ok)throw Error('读取实验记录失败');
+const report=await response.json(),r=report.refinement;
+const automatic=!!report.automatic;
+if(automatic){
+document.title='第四版 · 自动五官定位';
+document.querySelector('h1').textContent='第四版：自动定位五官';
+document.querySelector('header p').textContent='本地解析原贴图，替代手画眉眼和嘴部范围。当前只验证五官定位的复用，身体材质规则仍针对该样本。';
+document.querySelector('.titles').children[0].textContent='第三版 · 手画范围';
+document.querySelector('.titles').children[1].textContent='第四版 · 自动范围';
+document.querySelector('footer').firstChild.textContent='自动范围按源模型与网格校验；不能据此宣称全流程通用，尚未验证实物打印。';
+const evidence=document.createElement('a');evidence.href='../auto-regions-v1/gallery.html';evidence.textContent=' 查看两个样本的自动识别';evidence.style.color='#007e76';document.querySelector('footer').appendChild(evidence);
+}
+if(report.vertex_stride!==12)throw Error('不兼容的模型数据');
+const canvas=document.querySelector('canvas'),gl=canvas.getContext('webgl2',{antialias:true,preserveDrawingBuffer:true});
+if(!gl)throw Error('需要 WebGL 2');
+const vs=`#version 300 es
+in vec3 position;in vec3 normal;in vec3 labels;in vec3 sourceRgb;
+uniform mat3 basis;uniform vec3 center;uniform float extent;uniform float aspect;
+out vec3 n;flat out vec3 ids;flat out vec3 texRgb;
+void main(){vec3 p=basis*(position-center)/extent;gl_Position=vec4(p.x/aspect,p.y,-p.z/4.,1.);n=basis*normal;ids=labels;texRgb=sourceRgb;}`;
+const fs=`#version 300 es
+precision highp float;in vec3 n;flat in vec3 ids;flat in vec3 texRgb;
+uniform vec3 palette[6];uniform int variant;uniform int reference;uniform bool remap;uniform bool lit;uniform bool changes;out vec4 color;
+int convertLabel(int id){return remap?id:(id==0?3:id==2?0:id);}
+void main(){int previous=reference==0?int(ids.x):convertLabel(int(ids.y));int updated=convertLabel(int(ids.z));int label=variant==0?previous:updated;
+vec3 rgb=variant==0&&reference==2?texRgb:palette[label];
+if(lit){float d=max(dot(normalize(n),normalize(vec3(-.35,.55,1.))),0.);rgb*=.43+.57*d;}
+if(changes&&variant==1&&previous!=updated)rgb=vec3(1.,.05,.25);color=vec4(rgb,1.);}`;
+function shader(type,source){const obj=gl.createShader(type);gl.shaderSource(obj,source);gl.compileShader(obj);if(!gl.getShaderParameter(obj,gl.COMPILE_STATUS))throw Error(gl.getShaderInfoLog(obj));return obj;}
+const program=gl.createProgram();gl.attachShader(program,shader(gl.VERTEX_SHADER,vs));gl.attachShader(program,shader(gl.FRAGMENT_SHADER,fs));gl.linkProgram(program);if(!gl.getProgramParameter(program,gl.LINK_STATUS))throw Error(gl.getProgramInfoLog(program));gl.useProgram(program);
+const mesh=await fetch('mesh.bin');if(!mesh.ok)throw Error('读取网格失败');const bytes=await mesh.arrayBuffer();
+if(bytes.byteLength!==report.faces*3*48)throw Error('网格数据不完整');
+const buffer=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buffer);gl.bufferData(gl.ARRAY_BUFFER,bytes,gl.STATIC_DRAW);
+for(const [name,size,offset]of [['position',3,0],['normal',3,12],['labels',3,24],['sourceRgb',3,36]]){const at=gl.getAttribLocation(program,name);gl.enableVertexAttribArray(at);gl.vertexAttribPointer(at,size,gl.FLOAT,false,48,offset);}
+const u={};for(const name of ['basis','center','extent','aspect','variant','reference','lit','changes','palette','remap'])u[name]=gl.getUniformLocation(program,name);
+gl.uniform3fv(u.palette,new Float32Array(report.palette.flatMap(hex=>[1,3,5].map(i=>parseInt(hex.slice(i,i+2),16)/255))));
+let yaw=Math.PI/2,pitch=.04,extent=20,center=[0,0,31],lit=true,changes=false,reference=1,remap=false;
+function draw(){
+const scale=Math.min(devicePixelRatio,1.5);canvas.width=Math.round(canvas.clientWidth*scale);canvas.height=Math.round(canvas.clientHeight*scale);
+gl.enable(gl.DEPTH_TEST);gl.disable(gl.CULL_FACE);gl.clearColor(.94,.95,.96,1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+const c=Math.cos(yaw),s=Math.sin(yaw),cp=Math.cos(pitch),sp=Math.sin(pitch);
+gl.uniformMatrix3fv(u.basis,false,new Float32Array([c,-s*sp,s*cp,s,c*sp,-c*cp,0,cp,sp]));gl.uniform3fv(u.center,center);
+gl.uniform1i(u.lit,lit);gl.uniform1i(u.changes,changes);gl.uniform1i(u.reference,reference);gl.uniform1i(u.remap,remap);
+const width=Math.floor(canvas.width/2);gl.uniform1f(u.aspect,width/canvas.height);
+gl.uniform1f(u.extent,extent*Math.max(1,(center[2]===31?.78:.54)/(width/canvas.height)));
+for(let i=0;i<2;i++){gl.viewport(i*width,0,width,canvas.height);gl.uniform1i(u.variant,i);gl.drawArrays(gl.TRIANGLES,0,bytes.byteLength/48);}
+window.comparisonReady=true;
+}
+document.querySelector('#reference').onchange=e=>{reference=Number(e.target.value);document.querySelector('#leftTitle').textContent=['最初默认配色',automatic?'第三版 · 手画范围':'上一版 · 材质合色','原模型贴图'][reference];document.querySelector('#changes').disabled=reference===2;if(reference===2){changes=false;document.querySelector('#changes').classList.remove('active');}draw();};
+document.querySelector('#paletteMode').onchange=e=>{remap=e.target.value==='1';draw();};
+for(const [id,fn]of Object.entries({front:()=>{yaw=Math.PI/2;pitch=.04},side:()=>{yaw=Math.PI/2+Math.PI/3;pitch=.04},right:()=>{yaw=Math.PI/2-Math.PI/3;pitch=.04},back:()=>{yaw=-Math.PI/2;pitch=.04},head:()=>{center=[0,0,31];extent=20},full:()=>{center=[0,0,0];extent=57},light:()=>{lit=!lit;document.querySelector('#light').classList.toggle('active',lit)},changes:()=>{changes=!changes;document.querySelector('#changes').classList.toggle('active',changes)}}))document.getElementById(id).onclick=()=>{fn();draw();};
+let drag=null;canvas.onpointerdown=e=>{drag=[e.clientX,e.clientY];canvas.setPointerCapture(e.pointerId);};canvas.onpointerup=canvas.onpointercancel=()=>drag=null;
+canvas.onpointermove=e=>{if(!drag)return;yaw+=(e.clientX-drag[0])*.008;pitch=Math.max(-1,Math.min(1,pitch+(e.clientY-drag[1])*.008));drag=[e.clientX,e.clientY];draw();};
+canvas.onwheel=e=>{e.preventDefault();extent=Math.max(6,Math.min(100,extent*Math.exp(e.deltaY*.001)));draw();};
+new ResizeObserver(draw).observe(canvas);draw();controls.forEach(b=>b.disabled=false);
+document.querySelector('#stats').textContent=automatic?`自动识别：双眼、双眉、嘴部 · 与上一版差异 ${r.changed_area_mm2.toFixed(1)} mm²`:`相对上一版仅改 ${r.changed_area_mm2.toFixed(1)} mm² · 衣服与脸颈保持`;
+})().catch(e=>{document.querySelector('#error').textContent=e.message;console.error(e);});
+</script></html>

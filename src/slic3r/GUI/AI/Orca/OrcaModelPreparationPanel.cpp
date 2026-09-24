@@ -11,6 +11,7 @@
 #include "libslic3r/Format/bbs_3mf.hpp"
 #include <wx/button.h>
 #include <wx/checkbox.h>
+#include <wx/choice.h>
 #include <wx/sizer.h>
 #include <wx/scrolwin.h>
 #include <wx/stattext.h>
@@ -32,9 +33,16 @@ OrcaModelPreparationPanel::OrcaModelPreparationPanel(wxWindow* parent, Plater& p
     root->Add(new wxStaticText(this, wxID_ANY, _L("总高度（mm，含底座）")), 0, wxBOTTOM, FromDIP(4));
     m_height = new wxTextCtrl(this, wxID_ANY, "120");
     root->Add(m_height, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
-    m_base = new wxCheckBox(this, wxID_ANY, _L("添加 3 mm 圆底座"));
-    m_base->SetToolTip(_L("圆底座覆盖模型投影并留出 2 mm 边缘，与模型重叠 0.2 mm。请在原生预览中检查连接与支撑。"));
+    m_base = new wxCheckBox(this, wxID_ANY, _L("生成后添加预制底座"));
+    m_base->SetToolTip(_L("底座在模型生成后作为独立部件加入，可撤销、替换并随 3MF 保存。请在原生预览中检查连接与支撑。"));
     root->Add(m_base, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
+    m_base_template = new wxChoice(this, wxID_ANY);
+    m_base_template->Append(_L("圆形底座"));
+    m_base_template->Append(_L("椭圆底座"));
+    m_base_template->Append(_L("矩形底座"));
+    m_base_template->SetSelection(0);
+    m_base_template->Enable(false);
+    root->Add(m_base_template, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
     m_apply = new wxButton(this, wxID_ANY, _L("应用尺寸与底座"));
     root->Add(m_apply, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
     m_feedback = new wxStaticText(this, wxID_ANY, _L("编辑保存在当前工程，可使用 Orca 撤销。生成原件保留在模型库。"));
@@ -42,6 +50,9 @@ OrcaModelPreparationPanel::OrcaModelPreparationPanel(wxWindow* parent, Plater& p
     root->Add(m_feedback, 0, wxEXPAND);
     SetSizer(root);
     m_apply->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { apply(); });
+    m_base->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) {
+        m_base_template->Enable(m_base->GetValue());
+    });
     Bind(wxEVT_TIMER, [this](wxTimerEvent&) { if (IsShownOnScreen()) refresh(); }, m_timer.GetId());
     Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
         const int width = std::max(1, GetClientSize().x);
@@ -134,7 +145,11 @@ void OrcaModelPreparationPanel::apply()
         bool transaction_started = false;
         try {
             auto* object = m_plater.model().objects[index];
-            auto proposal = prepare_model(*object, {height, m_base->GetValue(), 3.0});
+            const ModelBaseTemplate base_template =
+                m_base_template->GetSelection() == 1 ? ModelBaseTemplate::Oval :
+                m_base_template->GetSelection() == 2 ? ModelBaseTemplate::Rectangle :
+                ModelBaseTemplate::Round;
+            auto proposal = prepare_model(*object, {height, m_base->GetValue(), 3.0, base_template});
             {
                 Plater::TakeSnapshot snapshot(&m_plater, _u8L("调整模型尺寸与底座"));
                 transaction_started = true;
@@ -153,6 +168,7 @@ void OrcaModelPreparationPanel::apply()
                 m_plater.update_title_dirty_status();
             }
             m_base->SetValue(false);
+            m_base_template->Enable(false);
             show_feedback(_L("已更新当前模型。请重新检查打印适配；可在 Orca 撤销，或保存 3MF 保留编辑版本。"));
             if (m_changed) m_changed();
         } catch (const std::exception& error) {

@@ -26,6 +26,11 @@ struct ColoredLine
 
 using ColoredLines = std::vector<ColoredLine>;
 
+namespace SegmentationDetail {
+// Native side-wall partition, before top/bottom propagation.
+std::vector<ExPolygons> segment_colored_contours(const std::vector<ColoredLines> &contours, size_t num_states, size_t layer_idx = 0);
+}
+
 enum class IncludeTopAndBottomLayers {
     Yes,
     No

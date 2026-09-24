@@ -193,6 +193,27 @@ public:
         bool                      is_gradient = false;
         int                       gradient_first_sorted_idx = 0; // index of "first" config component after sorting
 
+        // A virtual slot can occur on several objects with different layer
+        // heights, including at the same print_z. Its interleaved Z history
+        // does not describe the thickness of any individual object's layer.
+        struct ObjectLayer {
+            double print_z = 0.;
+            double layer_height = 0.;
+            std::vector<double> sub_heights;
+            double bottom_z() const { return print_z - layer_height; }
+        };
+        std::map<const PrintObject*, ObjectLayer> object_layers;
+
+        ObjectLayer for_layer(double actual_print_z, double actual_height) const {
+            ObjectLayer result;
+            result.print_z = actual_print_z;
+            result.layer_height = actual_height;
+            result.sub_heights.reserve(sub_heights.size());
+            for (double h : sub_heights)
+                result.sub_heights.push_back(h * (actual_height / layer_height));
+            return result;
+        }
+
         struct ObjectGradient {
             size_t        total_layers;
             size_t        current_idx;

@@ -5,11 +5,19 @@
 
 namespace Slic3r::GUI {
 
+enum class ModelBaseTemplate : unsigned char
+{
+    Round,
+    Oval,
+    Rectangle,
+};
+
 struct ModelPreparationOptions
 {
     double total_height_mm {120.0};
     bool add_round_base {false};
     double base_height_mm {3.0};
+    ModelBaseTemplate base_template {ModelBaseTemplate::Round};
 };
 
 struct ModelPreparation

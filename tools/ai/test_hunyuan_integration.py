@@ -156,6 +156,36 @@ class HunyuanIntegrationTests(unittest.TestCase):
             self.assertIsNone(hy.start_or_reuse_model_task.call_args.kwargs['authorization'])
             tripo.start_or_reuse_model_task.assert_not_called()
 
+    def test_unconfigured_provider_preserves_preview_without_authorizing_or_submitting(self):
+        self.job.state = self.job.phase = 'awaiting_confirmation'
+        self.job.progress = 15
+        sidecar._persist_job(self.job)
+        original = (self.job.directory / 'job.json').read_bytes()
+        handler = object.__new__(sidecar.Handler)
+        handler._read_model_json = mock.Mock(return_value={
+            'prepared_prompt': 'test object', 'provider': 'hunyuan', 'face_limit': 300000,
+            'geometry_quality': 'standard', 'texture_quality': 'standard', 'output_format': 'glb'})
+        handler._get_job = mock.Mock(return_value=self.job)
+        handler.send_json = mock.Mock()
+        with mock.patch.object(sidecar, '_HUNYUAN_PROVIDER_GATEWAY') as hy, \
+             mock.patch.object(sidecar, '_MODEL_PROVIDER_GATEWAY') as tripo, \
+             mock.patch.object(sidecar.PaidTaskAuthorization, 'confirmed') as authorize, \
+             mock.patch.object(sidecar, '_submit') as submit:
+            hy.model_generation_available.return_value = False
+            with self.assertRaises(sidecar.RequestError) as rejected:
+                handler._generate(self.job.id)
+            self.assertEqual(rejected.exception.status, 503)
+            self.assertEqual(rejected.exception.code, 'feature_unavailable')
+            self.assertEqual(self.job.state, 'awaiting_confirmation')
+            self.assertEqual(self.job.progress, 15)
+            self.assertEqual(self.job.attempts, [])
+            self.assertEqual((self.job.directory / 'job.json').read_bytes(), original)
+            authorize.assert_not_called()
+            submit.assert_not_called()
+            hy.start_or_reuse_model_task.assert_not_called()
+            tripo.start_or_reuse_model_task.assert_not_called()
+            tripo.model_generation_available.assert_not_called()
+
     def test_obj_download_never_submits_tripo_conversion(self):
         self.job.provider, self.job.output_format = 'hunyuan', 'obj'
         def download(_result, path, _limit, **options):

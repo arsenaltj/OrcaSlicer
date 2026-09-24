@@ -803,6 +803,19 @@ void GLModel::render_instanced(unsigned int instances_vbo, unsigned int instance
 #endif // !SLIC3R_OPENGL_ES
 }
 
+bool GLModel::update_vertex_attributes(const std::vector<float>& vertices)
+{
+    if (vertices.empty() || vertices.size() != vertices_size_floats()) return false;
+    if (m_render_data.vbo_id == 0) {
+        m_render_data.geometry.vertices = vertices;
+        return true;
+    }
+    glsafe(::glBindBuffer(GL_ARRAY_BUFFER, m_render_data.vbo_id));
+    glsafe(::glBufferSubData(GL_ARRAY_BUFFER, 0, vertices.size() * sizeof(float), vertices.data()));
+    glsafe(::glBindBuffer(GL_ARRAY_BUFFER, 0));
+    return true;
+}
+
 bool GLModel::send_to_gpu()
 {
     if (m_render_data.vbo_id > 0 || m_render_data.ibo_id > 0) {

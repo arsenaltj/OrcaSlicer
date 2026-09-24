@@ -1,0 +1,113 @@
+[
+  {
+    "path": "python/Lib/site-packages/fsspec/spec.py",
+    "sha256": "dcb4da45d02139320f09eb703c24bd1c2e8c47556571d7cb54187899616b5e7b",
+    "literals": [
+      [
+        "password",
+        "password"
+      ]
+    ],
+    "evidence": "Bundled dependency documentation examples or protocol header name; manually reviewed 2026-09-20."
+  },
+  {
+    "path": "python/Lib/site-packages/fsspec/utils.py",
+    "sha256": "4fac7b252faa1c6759ea130fad3d6d1faff8d651c5c3cf20dd6c6034822d60f7",
+    "literals": [
+      [
+        "password",
+        "pwd"
+      ]
+    ],
+    "evidence": "Bundled dependency documentation examples or protocol header name; manually reviewed 2026-09-20."
+  },
+  {
+    "path": "python/Lib/site-packages/httpx/_urls.py",
+    "sha256": "757f7d551d4348e1e9828f40abb3f360ee0529dc6a2a3c32369f20adff1d1cdd",
+    "literals": [
+      [
+        "password",
+        "a secret"
+      ]
+    ],
+    "evidence": "Bundled dependency documentation examples or protocol header name; manually reviewed 2026-09-20."
+  },
+  {
+    "path": "python/Lib/site-packages/huggingface_hub/_oidc.py",
+    "sha256": "de47022dabd64391503b08b350fccb6816f57edd85209a346d25cbdb84b7af85",
+    "literals": [
+      [
+        "access_token",
+        "hf_jwt_\u2026"
+      ]
+    ],
+    "evidence": "Bundled dependency documentation examples or protocol header name; manually reviewed 2026-09-20."
+  },
+  {
+    "path": "python/Lib/site-packages/huggingface_hub/_webhooks_server.py",
+    "sha256": "5573a4dc51e46c8736f2987192725f685cb907f12828e2a286808ac8e6966509",
+    "literals": [
+      [
+        "webhook_secret",
+        "my_secret"
+      ],
+      [
+        "webhook_secret",
+        "my_secret_key"
+      ]
+    ],
+    "evidence": "Bundled dependency documentation examples or protocol header name; manually reviewed 2026-09-20."
+  },
+  {
+    "path": "python/Lib/site-packages/huggingface_hub/constants.py",
+    "sha256": "5e80ca5549b652e8907e3f101782af7874f2f7b22430f99abed7049e1b4aeb75",
+    "literals": [
+      [
+        "HUGGINGFACE_HEADER_X_XET_ACCESS_TOKEN",
+        "X-Xet-Access-Token"
+      ]
+    ],
+    "evidence": "Bundled dependency documentation examples or protocol header name; manually reviewed 2026-09-20."
+  },
+  {
+    "path": "python/Lib/site-packages/huggingface_hub/hf_api.py",
+    "sha256": "3ae499e496710fcae09e2091f4091db1eae088915e5ddc0323734ccc0c283c36",
+    "literals": [
+      [
+        "secret",
+        "my-secret"
+      ]
+    ],
+    "evidence": "Bundled dependency documentation examples or protocol header name; manually reviewed 2026-09-20."
+  },
+  {
+    "path": "python/Lib/site-packages/huggingface_hub/inference/_client.py",
+    "sha256": "8f448e78221b53edc56fcf2c5a947675e5b3e4cdf60822f73c00ff6184fb958a",
+    "literals": [
+      [
+        "api_key",
+        "fal-ai-api-key"
+      ],
+      [
+        "api_key",
+        "hf_..."
+      ]
+    ],
+    "evidence": "Bundled dependency documentation examples or protocol header name; manually reviewed 2026-09-20."
+  },
+  {
+    "path": "python/Lib/site-packages/huggingface_hub/inference/_generated/_async_client.py",
+    "sha256": "5a723509371adfb6f6d08d6194a57105c8b7af165bf74a3c018cf01f379e43d2",
+    "literals": [
+      [
+        "api_key",
+        "fal-ai-api-key"
+      ],
+      [
+        "api_key",
+        "hf_..."
+      ]
+    ],
+    "evidence": "Bundled dependency documentation examples or protocol header name; manually reviewed 2026-09-20."
+  }
+]

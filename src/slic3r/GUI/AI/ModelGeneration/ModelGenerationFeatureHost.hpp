@@ -3,6 +3,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include "slic3r/AI/Contracts/GeneratedModelArtifact.hpp"
 
 class wxWindow;
 

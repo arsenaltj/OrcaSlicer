@@ -36,8 +36,8 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - name: Install test dependency
-        run: python -m pip install --disable-pip-version-check Pillow==12.2.0
+      - name: Install test dependencies
+        run: python -m pip install --disable-pip-version-check Pillow==12.2.0 numpy==2.5.2 scipy==1.17.0 opencv-python-headless==4.11.0.86
       - name: Validate pinned integration contract
         run: python scripts/fetch_ai_provenance.py
       - name: Check fixed history, boundaries and runtime pins

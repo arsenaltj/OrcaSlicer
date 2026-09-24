@@ -7429,6 +7429,10 @@ void GCodeProcessor::process_filaments(CustomGCode::Type code)
     if (code == CustomGCode::ToolChange) {
         m_used_filaments.process_model_cache(this);
         m_used_filaments.process_support_cache(this);
+        // A tower section may span a tool change. Commit its pending extrusion
+        // while the depositing filament (and its diameter/density) is still active.
+        m_used_filaments.process_wipe_tower_cache(this);
+        m_used_filaments.process_role_cache(this);
         m_used_filaments.process_total_volume_cache(this);
         //BBS: reset remaining filament
         size_t last_extruder_id = get_extruder_id();

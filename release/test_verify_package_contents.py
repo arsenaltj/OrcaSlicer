@@ -77,5 +77,71 @@ class PackageInspectionTests(unittest.TestCase):
                 self.assertEqual(self.check(members)["status"], "BLOCKED_FINDINGS")
 
 
+import bz2
+import gzip
+import hashlib
+import lzma
+import tarfile
+from unittest.mock import patch
+import verify_package_contents as inspector
+
+
+class RuntimeArchiveInspectionTests(unittest.TestCase):
+    package = PackageInspectionTests.package
+    check = PackageInspectionTests.check
+    def test_compressed_streams_retain_credential_detection(self):
+        raw = b'{"api_key":"fixture-opaque-value"}'
+        for suffix, compress in (("gz", gzip.compress), ("bz2", bz2.compress), ("xz", lzma.compress)):
+            with self.subTest(suffix=suffix):
+                self.assertEqual(self.check({"config.json."+suffix: compress(raw)})["status"], "BLOCKED_FINDINGS")
+
+    def test_tar_members_are_scanned_without_extracting(self):
+        content=io.BytesIO()
+        with tarfile.open(fileobj=content, mode='w') as tar:
+            data=b'{"password":"fixture-opaque-value"}'
+            entry=tarfile.TarInfo('config.json'); entry.size=len(data)
+            tar.addfile(entry, io.BytesIO(data))
+        self.assertEqual(self.check({'data.tar.gz':gzip.compress(content.getvalue())})['status'], 'BLOCKED_FINDINGS')
+
+    def test_compression_bombs_and_unsafe_tar_members_fail_closed(self):
+        with patch.object(inspector, 'MAX_FILE', 1024):
+            self.assertEqual(self.check({'data.txt.gz':gzip.compress(b'x'*2048)})['status'], 'UNKNOWN')
+        content=io.BytesIO()
+        with tarfile.open(fileobj=content, mode='w') as tar:
+            entry=tarfile.TarInfo('../bad'); entry.size=1; tar.addfile(entry, io.BytesIO(b'x'))
+            entry=tarfile.TarInfo('link'); entry.type=tarfile.SYMTYPE; entry.linkname='outside'; tar.addfile(entry)
+        self.assertEqual(self.check({'data.tar':content.getvalue()})['status'],'UNKNOWN')
+
+    def test_public_dependency_classification_requires_path_hash_and_literal(self):
+        original=b'password="public documentation example"\n'
+        member='resources/beauty-runtime/python/Lib/site-packages/example.py'
+        entry={'path':'python/Lib/site-packages/example.py', 'sha256':hashlib.sha256(original).hexdigest(),
+               'literals':[['password','public documentation example']]}
+        with patch.object(inspector, 'PUBLIC_DEPENDENCY_LITERALS', [entry]):
+            self.assertEqual(self.check({member:original})['status'],'NOT_DETECTED_WITHIN_SCOPE')
+            for path, data in ((member, original+b'api_key="fixture-opaque-value"'),
+                               ('config.py',original), (member,original.replace(b'example',b'changed'))):
+                self.assertEqual(self.check({path:data})['status'],'BLOCKED_FINDINGS')
+            self.assertEqual(self.check({member:original,'provider.json':'{"password":"fixture-opaque-value"}'})['status'],'BLOCKED_FINDINGS')
+
+    def test_public_dependency_still_checks_token_bytes(self):
+        data=b'password="public documentation example"\n' + b'sk-' + b'A' * 24
+        member='resources/beauty-runtime/example.py'
+        entry={'path':'example.py','sha256':hashlib.sha256(data).hexdigest(),
+               'literals':[['password','public documentation example']]}
+        with patch.object(inspector,'PUBLIC_DEPENDENCY_LITERALS',[entry]):
+            self.assertEqual(self.check({member:data})['status'],'BLOCKED_FINDINGS')
+
+    def test_tar_hardlink_reads_only_regular_in_archive_target(self):
+        content=io.BytesIO()
+        with tarfile.open(fileobj=content, mode='w') as tar:
+            data=b'{"password":"fixture-opaque-value"}'
+            entry=tarfile.TarInfo('config.json'); entry.size=len(data); tar.addfile(entry,io.BytesIO(data))
+            entry=tarfile.TarInfo('linked.json'); entry.type=tarfile.LNKTYPE; entry.linkname='config.json'; tar.addfile(entry)
+        report=self.check({'data.tar':content.getvalue()})
+        self.assertEqual(report['status'],'BLOCKED_FINDINGS')
+        self.assertEqual(len(report['findings']),2)
+
+
 if __name__ == "__main__":
     unittest.main()

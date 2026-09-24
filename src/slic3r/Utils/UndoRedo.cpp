@@ -9,6 +9,7 @@
 #include <cstddef>
 
 #include <cereal/types/polymorphic.hpp>
+#include <cereal/types/array.hpp>
 #include <cereal/types/map.hpp>
 #include <cereal/types/string.hpp>
 #include <cereal/types/utility.hpp>
@@ -573,6 +574,8 @@ public:
 		size_t memsize = 0;
 		for (const auto &object : m_objects)
 			memsize += object.second->memsize();
+		for (const auto &snapshot : m_snapshots)
+			if (snapshot.project_config_change) memsize += snapshot.project_config_change->memsize();
 		return memsize;
 	}
 
@@ -580,6 +583,9 @@ public:
 	void take_snapshot(const std::string& snapshot_name, const Slic3r::Model& model, const Slic3r::GUI::Selection& selection, const Slic3r::GUI::GLGizmosManager& gizmos, const Slic3r::GUI::PartPlateList& plate_list, const SnapshotData& snapshot_data);
     void take_snapshot(const std::string& snapshot_name, const Slic3r::Model& model, const Slic3r::GUI::Selection& selection, const Slic3r::GUI::GLGizmosManager& gizmos, const SnapshotData &snapshot_data);
     void reduce_noisy_snapshots(const std::string& new_name);
+    bool record_project_config_change(std::shared_ptr<const ProjectConfigUndo::Change> change) {
+        return UndoRedo::record_project_config_change(m_snapshots,m_active_snapshot_time,std::move(change));
+    }
     void load_snapshot(size_t timestamp, Slic3r::Model& model, Slic3r::GUI::GLGizmosManager& gizmos, Slic3r::GUI::PartPlateList& plate_list);
 
 	bool has_undo_snapshot() const;
@@ -1271,6 +1277,8 @@ void StackImpl::release_least_recently_used()
 			//FIXME update the "saved" snapshot time. DONE
             if (m_snapshots.front().timestamp == m_saved_snapshot_time)
 				m_saved_snapshot_time = size_t(-1);
+			if (m_snapshots.front().project_config_change)
+				mem_released += m_snapshots.front().project_config_change->memsize();
 			m_snapshots.erase(m_snapshots.begin());
 		}
 		assert(current_memsize >= mem_released);
@@ -1368,6 +1376,11 @@ void Stack::take_snapshot(const std::string& snapshot_name, const Slic3r::Model&
 void Stack::take_snapshot(const std::string& snapshot_name, const Slic3r::Model& model, const Slic3r::GUI::Selection& selection, const Slic3r::GUI::GLGizmosManager& gizmos, const Slic3r::GUI::PartPlateList& plate_list, const SnapshotData& snapshot_data)
 	{ pimpl->take_snapshot(snapshot_name, model, selection, gizmos, plate_list, snapshot_data); }
 void Stack::reduce_noisy_snapshots(const std::string& new_name) { pimpl->reduce_noisy_snapshots(new_name); }
+bool Stack::record_project_config_change(std::shared_ptr<const ProjectConfigUndo::Change> change)
+    { return pimpl->record_project_config_change(std::move(change)); }
+bool Stack::prepare_project_config_jump(size_t time_to_load,const DynamicPrintConfig& config,
+    const std::vector<std::string>& filament_presets,ProjectConfigUndo::Prepared& destination,std::string& error) const
+    { return ProjectConfigUndo::prepare_jump(pimpl->snapshots(),pimpl->active_snapshot_time(),time_to_load,config,filament_presets,destination,error); }
 bool Stack::has_undo_snapshot() const { return pimpl->has_undo_snapshot(); }
 bool Stack::has_undo_snapshot(size_t time_to_load) const { return pimpl->has_undo_snapshot(time_to_load); }
 bool Stack::has_redo_snapshot() const { return pimpl->has_redo_snapshot(); }

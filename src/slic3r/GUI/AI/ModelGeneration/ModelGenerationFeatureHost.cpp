@@ -20,6 +20,9 @@ struct ModelGenerationFeatureHost::Impl
         model_generation = new ModelGenerationPanel(parent, *workspace, *workspace);
         model_generation->set_service_retry_handler(std::move(retry_service));
         model_generation->set_prepare_navigation_handler(std::move(navigate_after_import));
+        model_generation->set_color_matching_handler([this, plater](const AI::GeneratedModelArtifact& artifact) {
+            model_generation->show_workbench_color_matching(artifact, plater);
+        });
         model_generation->Hide();
         BOOST_LOG_TRIVIAL(info) << "AI model generation startup: model generation panel created";
     }
@@ -32,6 +35,7 @@ struct ModelGenerationFeatureHost::Impl
         if (model_generation != nullptr) {
             model_generation->set_service_retry_handler({});
             model_generation->set_prepare_navigation_handler({});
+            model_generation->set_color_matching_handler({});
             model_generation->shutdown();
         }
     }

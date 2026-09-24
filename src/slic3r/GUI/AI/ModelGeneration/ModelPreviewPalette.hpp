@@ -199,7 +199,20 @@ public:
     // exact duplicates are ignored. Automatic protection is intentionally opt-in.
     std::vector<Color> palette(size_t limit = 6, const std::vector<Color>& locked = {}, bool preserve_hues = false) const
     {
-        limit = std::min(size_t(6), limit);
+        return palette_impl(std::min(size_t(6), limit), locked, preserve_hues);
+    }
+
+    // Local printing has a separate target budget. Existing provider and color
+    // trial callers retain their six-color contract through palette().
+    std::vector<Color> print_palette(size_t limit, const std::vector<Color>& locked = {}) const
+    {
+        if (limit < 1 || limit > 32) return {};
+        return palette_impl(limit, locked, false);
+    }
+
+private:
+    std::vector<Color> palette_impl(size_t limit, const std::vector<Color>& locked, bool preserve_hues) const
+    {
         if (limit == 0) return {};
         std::vector<Color> locked_rgb, centers;
         for (const auto& color : locked) {
@@ -283,7 +296,7 @@ public:
             centers.push_back(candidate);
         }
         for (int iteration = 0; iteration < 20; ++iteration) {
-            std::array<Bin, 6> totals {};
+            std::vector<Bin> totals(centers.size());
             for (const auto& sample : source_samples) {
                 const size_t nearest = nearest_lab_index(sample.lab, centers);
                 totals[nearest].weight += sample.weight;

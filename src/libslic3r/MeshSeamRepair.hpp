@@ -2,6 +2,7 @@
 #define slic3r_MeshSeamRepair_hpp_
 
 #include "TriangleMesh.hpp"
+#include <algorithm>
 
 namespace Slic3r {
 
@@ -12,7 +13,10 @@ namespace Slic3r {
 inline bool stitch_exact_mesh_seams(TriangleMesh& mesh)
 {
     indexed_triangle_set stitched = mesh.its;
-    if (its_merge_vertices(stitched) == 0 || its_num_open_edges(stitched) != 0)
+    if (its_merge_vertices(stitched) == 0 ||
+        std::any_of(stitched.indices.begin(), stitched.indices.end(), [](const auto& face) {
+            return face[0] == face[1] || face[1] == face[2] || face[2] == face[0];
+        }) || its_num_open_edges(stitched) != 0)
         return false;
 
     TriangleMesh repaired(std::move(stitched));

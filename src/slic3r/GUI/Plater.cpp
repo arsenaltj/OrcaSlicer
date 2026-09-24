@@ -1,5 +1,6 @@
 #include "AI/Orca/FilamentColorPack.hpp"
 #include "Plater.hpp"
+#include "AI/Orca/LocalPrintModelImport.hpp"
 #include "AIAssistantPanel.hpp"
 #include "AI/SmartSlicing/SmartSlicingFeatureHost.hpp"
 #include "../Utils/NetworkAgent.hpp"
@@ -174,6 +175,7 @@
 #include "WipeTowerDialog.hpp"
 #include "MixedFilamentDialog.hpp"
 #include "TextureImportDialog.hpp"
+#include "TextureImportModel.hpp"
 #include "ModelColorImportResult.hpp"
 #include "libslic3r/TexturePainting.hpp"
 #include "ColorDecomposeSupport.hpp"
@@ -4724,123 +4726,10 @@ static std::string serialize_mixed_gradient_curve_if_custom(const MixedFilamentR
     return Slic3r::serialize_gradient_curve(gc);
 }
 
-static bool create_mixed_filament_from_result(
-    Sidebar* sidebar,
-    const MixedFilamentResult& result,
-    const std::vector<std::string>& color_strs)
-{
-    if (!sidebar || result.components.size() < 2 || result.ratios.size() < 2)
-        return false;
-    if (!dynamic_cast<Plater*>(sidebar->GetParent()))
-        return false;
+#include "SidebarMixedFilamentCreation.ipp"
+#include "PlaterTextureUnits.ipp"
 
-    size_t num_physical = sidebar->combos_filament().size();
-    if (!wxGetApp().preset_bundle->can_add_mixed_filament()) return false;
-
-    auto& project_config = wxGetApp().preset_bundle->project_config;
-    size_t total = wxGetApp().preset_bundle->filament_presets.size();
-    size_t new_idx = total;
-
-    std::string mixed_color = blend_mixed_color(result.components, result.ratios, color_strs);
-    wxGetApp().preset_bundle->set_num_filaments(total + 1, mixed_color);
-
-    auto* multi_colour_opt = project_config.option<ConfigOptionStrings>("filament_multi_colour");
-    if (multi_colour_opt) {
-        while (multi_colour_opt->values.size() <= new_idx) multi_colour_opt->values.push_back("");
-        multi_colour_opt->values[new_idx] = mixed_color;
-    }
-
-    // set_num_filaments() above already grows these parallel arrays; the writes are still
-    // size-guarded so a sizing bug degrades into a no-op rather than a heap overwrite.
-    {
-        auto* is_mixed_opt = project_config.option<ConfigOptionBools>("filament_is_mixed");
-        while (is_mixed_opt->values.size() <= new_idx) is_mixed_opt->values.push_back(false);
-        is_mixed_opt->values[new_idx] = true;
-    }
-
-    std::string comp_str;
-    for (size_t i = 0; i < result.components.size(); ++i) {
-        if (i > 0) comp_str += ",";
-        comp_str += std::to_string(result.components[i]);
-    }
-    {
-        auto* comp_opt = project_config.option<ConfigOptionStrings>("filament_mixed_components");
-        while (comp_opt->values.size() <= new_idx) comp_opt->values.push_back(std::string{});
-        comp_opt->values[new_idx] = comp_str;
-    }
-
-    int ratio_sum = 0;
-    for (int r : result.ratios) ratio_sum += r;
-    if (ratio_sum <= 0) ratio_sum = 100;
-
-    std::string ratio_str;
-    {
-        CNumericLocalesSetter c_locale_setter;
-        for (size_t i = 0; i < result.ratios.size(); ++i) {
-            if (i > 0) ratio_str += ",";
-            char buf[32];
-            std::snprintf(buf, sizeof(buf), "%.4f", (float)result.ratios[i] / ratio_sum);
-            ratio_str += buf;
-        }
-    }
-    {
-        auto* ratios_opt = project_config.option<ConfigOptionStrings>("filament_mixed_sublayer_ratios");
-        while (ratios_opt->values.size() <= new_idx) ratios_opt->values.push_back(std::string{});
-        ratios_opt->values[new_idx] = ratio_str;
-    }
-
-    if (!project_config.option("filament_mixed_gradient"))
-        project_config.set_key_value("filament_mixed_gradient", new ConfigOptionBools({false}));
-    if (!project_config.option("filament_mixed_gradient_range"))
-        project_config.set_key_value("filament_mixed_gradient_range", new ConfigOptionStrings({""}) );
-    if (!project_config.option("filament_mixed_gradient_curve"))
-        project_config.set_key_value("filament_mixed_gradient_curve", new ConfigOptionStrings({""}) );
-    if (!project_config.option("filament_mixed_gradient_per_part"))
-        project_config.set_key_value("filament_mixed_gradient_per_part", new ConfigOptionBools({false}));
-
-    {
-        auto* grad_opt = project_config.option<ConfigOptionBools>("filament_mixed_gradient");
-        while (grad_opt->values.size() <= new_idx) grad_opt->values.push_back(false);
-        grad_opt->values[new_idx] = result.gradient_enabled;
-    }
-    {
-        auto* grad_range_opt = project_config.option<ConfigOptionStrings>("filament_mixed_gradient_range");
-        while (grad_range_opt->values.size() <= new_idx) grad_range_opt->values.push_back("");
-        if (result.gradient_enabled && result.components.size() == 2) {
-            const char* fmt = (result.gradient_direction == 0) ? "0.9000,0.1000" : "0.1000,0.9000";
-            grad_range_opt->values[new_idx] = fmt;
-        } else {
-            grad_range_opt->values[new_idx] = "";
-        }
-    }
-    {
-        auto* grad_curve_opt = project_config.option<ConfigOptionStrings>("filament_mixed_gradient_curve");
-        while (grad_curve_opt->values.size() <= new_idx) grad_curve_opt->values.push_back("");
-        grad_curve_opt->values[new_idx] = serialize_mixed_gradient_curve_if_custom(result);
-    }
-    {
-        auto* per_part_opt = project_config.option<ConfigOptionBools>("filament_mixed_gradient_per_part");
-        while (per_part_opt->values.size() <= new_idx) per_part_opt->values.push_back(false);
-        per_part_opt->values[new_idx] = result.gradient_enabled && result.per_part_gradient;
-    }
-
-    auto& presets = wxGetApp().preset_bundle->filament_presets;
-    if (result.components[0] >= 1 && result.components[0] <= num_physical && presets.size() > new_idx)
-        presets[new_idx] = presets[result.components[0] - 1];
-
-    size_t filament_count = wxGetApp().preset_bundle->filament_presets.size();
-    wxGetApp().plater()->get_partplate_list().on_filament_added(filament_count);
-    wxGetApp().plater()->on_filament_count_change(filament_count);
-    wxGetApp().get_tab(Preset::TYPE_PRINT)->update();
-    wxGetApp().preset_bundle->export_selections(*wxGetApp().app_config);
-
-    sidebar->update_mixed_filament_list();
-    wxGetApp().plater()->update_project_dirty_from_presets();
-    wxPostEvent(sidebar, SimpleEvent(EVT_SCHEDULE_BACKGROUND_PROCESS, sidebar));
-    return true;
-}
-
-void Sidebar::add_mixed_filament()
+void Sidebar::add_mixed_filament(const std::string& target_color)
 {
     auto* plater = dynamic_cast<Plater*>(GetParent());
     if (!plater) return;
@@ -4850,10 +4739,10 @@ void Sidebar::add_mixed_filament()
     std::vector<std::string> color_strs, names, types;
     collect_physical_filament_info(color_strs, names, types);
 
-    MixedFilamentDialog dlg(this, color_strs, names, types);
+    MixedFilamentDialog dlg(this, color_strs, names, types, target_color);
     if (dlg.ShowModal() == wxID_OK) {
         auto result = dlg.get_result();
-        create_mixed_filament_from_result(this, result, color_strs);
+        create_mixed_filament_from_result(this, result, color_strs, true);
     }
 }
 
@@ -7032,6 +6921,7 @@ struct Plater::priv
     // Texture-to-color import: a mesh loaded with UVs + a texture map gets its faces clustered
     // into printable colours, which are then matched against (or added to) the filament list.
     struct TextureImportResult {
+        bool matched_colors = false;
         Slic3r::PaintedMesh                  painted;
         std::vector<Slic3r::FilamentMatch>   matches;
         std::vector<std::array<float, 4>>    new_filament_colors;
@@ -7328,6 +7218,7 @@ struct Plater::priv
     //BBS store machine_sn and 3mf_path for PrintJob
     PrintPrepareData            m_print_job_data;
     bool                        inside_snapshot_capture() { return m_prevent_snapshots != 0; }
+    bool can_begin_project_config_change() const;
     int                         process_completed_with_error { -1 }; //-1 means no error
 
     //BBS: project
@@ -9217,33 +9108,13 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
 
         if (load_model) {
             // The model should now be initialized
-            auto convert_from_imperial_units = [](Model &model, bool only_small_volumes) { model.convert_from_imperial_units(only_small_volumes); };
 
             // BBS: add load_old_project logic
             if ((!is_project_file) && (!load_old_project)) {
+                prepare_texture_import_units(model, texture_options, imperial_units, q, filename);
                 // if (!is_project_file) {
                 if (int deleted_objects = model.removed_objects_with_zero_volume(); deleted_objects > 0) {
                     MessageDialog(q, _L("Objects with zero volume removed"), _L("The volume of the object is zero"), wxICON_INFORMATION | wxOK).ShowModal();
-                }
-                if (imperial_units)
-                    // Convert even if the object is big.
-                    convert_from_imperial_units(model, false);
-                else if (model.looks_like_saved_in_meters()) {
-                    // BBS do not handle look like in meters
-                    MessageDialog dlg(q,
-                                      format_wxstr(_L("The object from file %s is too small, and may be in meters or inches.\n Do you want to scale to millimeters\?"),
-                                                   from_path(filename)),
-                                      _L("Object too small"), wxICON_QUESTION | wxYES_NO);
-                    int           answer = dlg.ShowModal();
-                    if (answer == wxID_YES) model.convert_from_meters(true);
-                } else if (model.looks_like_imperial_units()) {
-                    // BBS do not handle look like in meters
-                    MessageDialog dlg(q,
-                                      format_wxstr(_L("The object from file %s is too small, and may be in meters or inches.\n Do you want to scale to millimeters\?"),
-                                                   from_path(filename)),
-                                      _L("Object too small"), wxICON_QUESTION | wxYES_NO);
-                    int           answer = dlg.ShowModal();
-                    if (answer == wxID_YES) convert_from_imperial_units(model, true);
                 }
                 // else if (model.looks_like_imperial_units()) {
                 // BBS do not handle look like in imperial
@@ -9355,7 +9226,7 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
                                   _L("Texture Import Warning"),
                                   wxOK | wxICON_WARNING).ShowModal();
                 }
-                if (!texture_import_result.painted.face_colors.empty()) {
+                if (texture_import_result.matched_colors || !texture_import_result.painted.face_colors.empty()) {
                     std::vector<size_t> texture_object_idxs(model.objects.size());
                     std::iota(texture_object_idxs.begin(), texture_object_idxs.end(), 0);
                     auto apply_progress_cb = [&dlg](int percent, const wxString& msg) {
@@ -14486,146 +14357,7 @@ bool Plater::priv::up_to_date(bool saved, bool backup)
     }
 }
 
-void Plater::priv::undo_redo_to(std::vector<UndoRedo::Snapshot>::const_iterator it_snapshot)
-{
-    // Make sure that no updating function calls take_snapshot until we are done.
-    SuppressSnapshots snapshot_supressor(q);
-
-    bool 				temp_snapshot_was_taken 	= this->undo_redo_stack().temp_snapshot_active();
-    PrinterTechnology 	new_printer_technology 		= it_snapshot->snapshot_data.printer_technology;
-    bool 				printer_technology_changed 	= this->printer_technology != new_printer_technology;
-    if (printer_technology_changed) {
-        //BBS do not support SLA
-    }
-    // Save the last active preset name of a particular printer technology.
-    ((this->printer_technology == ptFFF) ? m_last_fff_printer_profile_name : m_last_sla_printer_profile_name) = wxGetApp().preset_bundle->printers.get_selected_preset_name();
-    //FIXME updating the Wipe tower config values at the ModelWipeTower from the Print config.
-    // This is a workaround until we refactor the Wipe Tower position / orientation to live solely inside the Model, not in the Print config.
-    // BBS: add partplate logic
-    if (this->printer_technology == ptFFF) {
-        const DynamicPrintConfig& config = wxGetApp().preset_bundle->prints.get_edited_preset().config;
-        const DynamicPrintConfig& proj_cfg = wxGetApp().preset_bundle->project_config;
-        const ConfigOptionFloats* tower_x_opt = proj_cfg.option<ConfigOptionFloats>("wipe_tower_x");
-        const ConfigOptionFloats* tower_y_opt = proj_cfg.option<ConfigOptionFloats>("wipe_tower_y");
-        assert(tower_x_opt->values.size() == tower_y_opt->values.size());
-        model.wipe_tower.positions.clear();
-        model.wipe_tower.positions.resize(tower_x_opt->values.size());
-        for (int plate_idx = 0; plate_idx < tower_x_opt->values.size(); plate_idx++) {
-            ModelWipeTower& tower = model.wipe_tower;
-
-            tower.positions[plate_idx] = Vec2d(tower_x_opt->get_at(plate_idx), tower_y_opt->get_at(plate_idx));
-            tower.rotation = config.opt_float("wipe_tower_rotation_angle");
-        }
-    }
-    const int layer_range_idx = it_snapshot->snapshot_data.layer_range_idx;
-    // Flags made of Snapshot::Flags enum values.
-    unsigned int new_flags = it_snapshot->snapshot_data.flags;
-    UndoRedo::SnapshotData top_snapshot_data;
-    top_snapshot_data.printer_technology = this->printer_technology;
-    if (this->view3D->is_layers_editing_enabled())
-        top_snapshot_data.flags |= UndoRedo::SnapshotData::VARIABLE_LAYER_EDITING_ACTIVE;
-    if (this->sidebar->obj_list()->is_selected(itSettings)) {
-        top_snapshot_data.flags |= UndoRedo::SnapshotData::SELECTED_SETTINGS_ON_SIDEBAR;
-        top_snapshot_data.layer_range_idx = this->sidebar->obj_list()->get_selected_layers_range_idx();
-    }
-    else if (this->sidebar->obj_list()->is_selected(itLayer)) {
-        top_snapshot_data.flags |= UndoRedo::SnapshotData::SELECTED_LAYER_ON_SIDEBAR;
-        top_snapshot_data.layer_range_idx = this->sidebar->obj_list()->get_selected_layers_range_idx();
-    }
-    else if (this->sidebar->obj_list()->is_selected(itLayerRoot))
-        top_snapshot_data.flags |= UndoRedo::SnapshotData::SELECTED_LAYERROOT_ON_SIDEBAR;
-    bool   		 new_variable_layer_editing_active = (new_flags & UndoRedo::SnapshotData::VARIABLE_LAYER_EDITING_ACTIVE) != 0;
-    bool         new_selected_settings_on_sidebar  = (new_flags & UndoRedo::SnapshotData::SELECTED_SETTINGS_ON_SIDEBAR) != 0;
-    bool         new_selected_layer_on_sidebar     = (new_flags & UndoRedo::SnapshotData::SELECTED_LAYER_ON_SIDEBAR) != 0;
-    bool         new_selected_layerroot_on_sidebar = (new_flags & UndoRedo::SnapshotData::SELECTED_LAYERROOT_ON_SIDEBAR) != 0;
-
-    if (this->view3D->get_canvas3d()->get_gizmos_manager().wants_reslice_supports_on_undo())
-        top_snapshot_data.flags |= UndoRedo::SnapshotData::RECALCULATE_SLA_SUPPORTS;
-
-    // Disable layer editing before the Undo / Redo jump.
-    if (!new_variable_layer_editing_active && view3D->is_layers_editing_enabled())
-        view3D->get_canvas3d()->force_main_toolbar_left_action(view3D->get_canvas3d()->get_main_toolbar_item_id("layersediting"));
-
-    // Make a copy of the snapshot, undo/redo could invalidate the iterator
-    const UndoRedo::Snapshot snapshot_copy = *it_snapshot;
-    // Do the jump in time.
-    if (it_snapshot->timestamp < this->undo_redo_stack().active_snapshot_time() ?
-        this->undo_redo_stack().undo(model, get_current_canvas3D()->get_canvas_type() == GLCanvas3D::CanvasAssembleView ? assemble_view->get_canvas3d()->get_selection() : this->view3D->get_canvas3d()->get_selection(), get_current_canvas3D()->get_canvas_type() == GLCanvas3D::CanvasAssembleView ? assemble_view->get_canvas3d()->get_gizmos_manager() : this->view3D->get_canvas3d()->get_gizmos_manager(), this->partplate_list, top_snapshot_data, it_snapshot->timestamp) :
-        this->undo_redo_stack().redo(model, get_current_canvas3D()->get_canvas_type() == GLCanvas3D::CanvasAssembleView ? assemble_view->get_canvas3d()->get_gizmos_manager() : this->view3D->get_canvas3d()->get_gizmos_manager(), this->partplate_list, it_snapshot->timestamp)) {
-        if (printer_technology_changed) {
-            // Switch to the other printer technology. Switch to the last printer active for that particular technology.
-            AppConfig *app_config = wxGetApp().app_config;
-            app_config->set("presets", PRESET_PRINTER_NAME, (new_printer_technology == ptFFF) ? m_last_fff_printer_profile_name : m_last_sla_printer_profile_name);
-            //FIXME Why are we reloading the whole preset bundle here? Please document. This is fishy and it is unnecessarily expensive.
-            // Anyways, don't report any config value substitutions, they have been already reported to the user at application start up.
-            wxGetApp().preset_bundle->load_presets(*app_config, ForwardCompatibilitySubstitutionRule::EnableSilent);
-            // load_current_presets() calls Tab::load_current_preset() -> TabPrint::update() -> Object_list::update_and_show_object_settings_item(),
-            // but the Object list still keeps pointer to the old Model. Avoid a crash by removing selection first.
-            this->sidebar->obj_list()->unselect_objects();
-            // Load the currently selected preset into the GUI, update the preset selection box.
-            // This also switches the printer technology based on the printer technology of the active printer profile.
-            wxGetApp().load_current_presets();
-        }
-        //FIXME updating the Print config from the Wipe tower config values at the ModelWipeTower.
-        // This is a workaround until we refactor the Wipe Tower position / orientation to live solely inside the Model, not in the Print config.
-        // BBS: add partplate logic
-        if (this->printer_technology == ptFFF) {
-            const DynamicPrintConfig& config = wxGetApp().preset_bundle->prints.get_edited_preset().config;
-            const DynamicPrintConfig& proj_cfg = wxGetApp().preset_bundle->project_config;
-            ConfigOptionFloats* tower_x_opt = const_cast<ConfigOptionFloats*>(proj_cfg.option<ConfigOptionFloats>("wipe_tower_x"));
-            ConfigOptionFloats* tower_y_opt = const_cast<ConfigOptionFloats*>(proj_cfg.option<ConfigOptionFloats>("wipe_tower_y"));
-            // BBS: don't support wipe tower rotation
-            //double current_rotation = proj_cfg.opt_float("wipe_tower_rotation_angle");
-            bool need_update = false;
-            if (tower_x_opt->values.size() != model.wipe_tower.positions.size()) {
-                tower_x_opt->clear();
-                ConfigOptionFloat default_tower_x(40.f);
-                tower_x_opt->resize(model.wipe_tower.positions.size(), &default_tower_x);
-                need_update = true;
-            }
-
-            if (tower_y_opt->values.size() != model.wipe_tower.positions.size()) {
-                tower_y_opt->clear();
-                ConfigOptionFloat default_tower_y(200.f);
-                tower_y_opt->resize(model.wipe_tower.positions.size(), &default_tower_y);
-                need_update = true;
-            }
-
-            for (int plate_idx = 0; plate_idx < model.wipe_tower.positions.size(); plate_idx++) {
-                if (Vec2d(tower_x_opt->get_at(plate_idx), tower_y_opt->get_at(plate_idx)) != model.wipe_tower.positions[plate_idx]) {
-                    ConfigOptionFloat tower_x_new(model.wipe_tower.positions[plate_idx].x());
-                    ConfigOptionFloat tower_y_new(model.wipe_tower.positions[plate_idx].y());
-                    tower_x_opt->set_at(&tower_x_new, plate_idx, 0);
-                    tower_y_opt->set_at(&tower_y_new, plate_idx, 0);
-                    need_update = true;
-                    break;
-                }
-            }
-
-            if (need_update) {
-                // update print to current plate (preview->m_process)
-                this->partplate_list.update_slice_context_to_current_plate(this->background_process);
-                this->preview->update_gcode_result(this->partplate_list.get_current_slice_result());
-                this->update();
-            }
-        }
-        // set selection mode for ObjectList on sidebar
-        this->sidebar->obj_list()->set_selection_mode(new_selected_settings_on_sidebar  ? ObjectList::SELECTION_MODE::smSettings :
-                                                      new_selected_layer_on_sidebar     ? ObjectList::SELECTION_MODE::smLayer :
-                                                      new_selected_layerroot_on_sidebar ? ObjectList::SELECTION_MODE::smLayerRoot :
-                                                                                          ObjectList::SELECTION_MODE::smUndef);
-        if (new_selected_settings_on_sidebar || new_selected_layer_on_sidebar)
-            this->sidebar->obj_list()->set_selected_layers_range_idx(layer_range_idx);
-
-        this->update_after_undo_redo(snapshot_copy, temp_snapshot_was_taken);
-        // Enable layer editing after the Undo / Redo jump.
-        if (!view3D->is_layers_editing_enabled() && this->layers_height_allowed() && new_variable_layer_editing_active)
-            view3D->get_canvas3d()->force_main_toolbar_left_action(view3D->get_canvas3d()->get_main_toolbar_item_id("layersediting"));
-    }
-
-    dirty_state.update_from_undo_redo_stack(m_undo_redo_stack_main.project_modified());
-    update_title_dirty_status();
-}
+#include "PlaterUndoRedo.ipp"
 
 void Plater::priv::update_after_undo_redo(const UndoRedo::Snapshot& snapshot, bool /* temp_snapshot_was_taken */)
 {
@@ -14777,325 +14509,7 @@ std::vector<size_t> Plater::physical_filament_config_indices() const
     return indices;
 }
 
-bool Plater::priv::run_textured_mesh_import_dialog(Slic3r::Model& loaded_model, TextureImportResult& result,
-                                                   std::function<bool()> cancel_callback,
-                                                   std::function<bool(int)> progress_callback,
-                                                   const TextureImportOptions* texture_options)
-{
-    if (!loaded_model.texture_mesh || !has_importable_texture(*loaded_model.texture_mesh)) return false;
-
-    // Defense in depth: if all geometry got dropped earlier (e.g. by a future
-    // regression of the zero-volume cleanup) but the textured mesh is still
-    // alive, there is nothing for the dialog to paint onto. Skip the dialog
-    // gracefully so load_files() can fall through to its "no geometry"
-    // message instead of making the user round-trip a meaningless matcher.
-    if (loaded_model.objects.empty()) {
-        BOOST_LOG_TRIVIAL(warning) << "handle_textured_mesh_import: skipping dialog because the loaded model has no geometry objects";
-        loaded_model.texture_mesh.reset();
-        result.skipped = true;
-        return true;
-    }
-
-    const wxString fallback_warning = _L("Texture import failed. The model appears to contain texture data, but the texture import process could not be completed. The model will be imported as geometry only.");
-
-    BOOST_LOG_TRIVIAL(info) << "handle_textured_mesh_import: opening texture import dialog";
-
-    std::vector<TextureFilamentEntry> filament_entries;
-    {
-        auto& preset_bundle = *wxGetApp().preset_bundle;
-        auto& project_config = preset_bundle.project_config;
-        auto* colours_opt = project_config.option<ConfigOptionStrings>("filament_colour");
-        auto* is_mixed_opt = project_config.option<ConfigOptionBools>("filament_is_mixed");
-        auto* type_opt = project_config.option<ConfigOptionStrings>("filament_type");
-        auto* components_opt = project_config.option<ConfigOptionStrings>("filament_mixed_components");
-        auto* ratios_opt = project_config.option<ConfigOptionStrings>("filament_mixed_sublayer_ratios");
-        const size_t total = preset_bundle.filament_presets.size();
-        filament_entries.reserve(total);
-        for (size_t i = 0; i < total; ++i) {
-            TextureFilamentEntry entry;
-            entry.kind = (is_mixed_opt && i < is_mixed_opt->values.size() && is_mixed_opt->values[i]) ?
-                TextureFilamentKind::ExistingMixed : TextureFilamentKind::ExistingPhysical;
-            entry.dialog_index = (int)filament_entries.size();
-            entry.project_config_index = i;
-            entry.color_hex = (colours_opt && i < colours_opt->values.size()) ? colours_opt->values[i] : "#808080";
-            entry.type = (type_opt && i < type_opt->values.size()) ? type_opt->values[i] : "";
-
-            std::string name;
-            if (i < preset_bundle.filament_presets.size()) {
-                auto* preset = preset_bundle.filaments.find_preset(preset_bundle.filament_presets[i]);
-                if (preset)
-                    name = preset->label(false);
-            }
-            if (name.empty())
-                name = "Filament " + std::to_string(i + 1);
-            entry.name = name;
-
-            if (entry.kind == TextureFilamentKind::ExistingMixed) {
-                if (components_opt && i < components_opt->values.size())
-                    entry.mixed_components = Slic3r::parse_mixed_components(components_opt->values[i]);
-                std::vector<double> ratios = Slic3r::parse_mixed_ratios(
-                    ratios_opt && i < ratios_opt->values.size() ? ratios_opt->values[i] : "",
-                    entry.mixed_components.size());
-                entry.mixed_ratios.reserve(ratios.size());
-                for (double ratio : ratios)
-                    entry.mixed_ratios.push_back((int)std::lround(ratio * 100.0));
-            }
-            filament_entries.push_back(std::move(entry));
-        }
-    }
-
-    TextureImportDialog dlg(q, *loaded_model.texture_mesh, filament_entries,
-                            std::move(cancel_callback), std::move(progress_callback),
-                            texture_options ? *texture_options : TextureImportOptions{});
-    if (dlg.ShowModal() != wxID_OK) {
-        if (dlg.was_skipped()) {
-            BOOST_LOG_TRIVIAL(info) << "handle_textured_mesh_import: user skipped texture matching";
-            result.skipped = true;
-            loaded_model.texture_mesh.reset();
-            return true;
-        }
-        if (dlg.fallback_to_geometry_only()) {
-            BOOST_LOG_TRIVIAL(warning) << "handle_textured_mesh_import: texture import failed, falling back to geometry-only import";
-            result.fallback_to_geometry_only = true;
-            result.fallback_warning = fallback_warning;
-            loaded_model.texture_mesh.reset();
-            return true;
-        }
-        BOOST_LOG_TRIVIAL(info) << "handle_textured_mesh_import: user cancelled";
-        loaded_model.texture_mesh.reset();
-        return false;
-    }
-
-    auto painted = dlg.get_painted_mesh();
-    auto final_matches = dlg.get_matches();
-
-    if (painted.face_colors.empty() || final_matches.empty()) {
-        BOOST_LOG_TRIVIAL(warning) << "handle_textured_mesh_import: no painting result";
-        result.fallback_to_geometry_only = true;
-        result.fallback_warning = fallback_warning;
-        loaded_model.texture_mesh.reset();
-        return true;
-    }
-
-    BOOST_LOG_TRIVIAL(info) << "handle_textured_mesh_import: got " << painted.cluster_colors.size()
-                            << " clusters, skipped=" << dlg.was_skipped();
-
-    result.painted = std::move(painted);
-    result.matches = std::move(final_matches);
-    result.new_filament_colors = dlg.get_new_filament_colors();
-    result.new_filament_preset_names = dlg.get_new_filament_preset_names();
-    result.new_mixed_filaments = dlg.get_new_mixed_filaments();
-    result.filament_entries = dlg.get_filament_entries();
-    result.existing_filament_count = dlg.get_existing_filament_count();
-    result.skipped = dlg.was_skipped();
-    return true;
-}
-
-void Plater::priv::apply_textured_mesh_import_result(Slic3r::Model& loaded_model, const std::vector<size_t>& obj_idxs,
-                                                     const TextureImportResult& result,
-                                                     LoadProgressCallback progress_callback, bool update_scene)
-{
-    auto update_apply_progress = [&progress_callback](int percent, const wxString& message) {
-        return !progress_callback || progress_callback(std::clamp(percent, 0, 100), message);
-    };
-
-    const auto& painted = result.painted;
-    const auto& final_matches = result.matches;
-
-    if (painted.face_colors.empty() || final_matches.empty()) {
-        BOOST_LOG_TRIVIAL(warning) << "handle_textured_mesh_import: no painting result";
-        loaded_model.texture_mesh.reset();
-        return;
-    }
-
-    BOOST_LOG_TRIVIAL(info) << "handle_textured_mesh_import: got " << painted.cluster_colors.size()
-                            << " clusters, skipped=" << result.skipped;
-    if (!update_apply_progress(0, _L("Applying texture colors...")))
-        return;
-
-    auto collect_physical_color_strs = []() {
-        std::vector<std::string> colors;
-        auto& project_config = wxGetApp().preset_bundle->project_config;
-        auto* colours_opt = project_config.option<ConfigOptionStrings>("filament_colour");
-        auto* is_mixed_opt = project_config.option<ConfigOptionBools>("filament_is_mixed");
-        const size_t total = wxGetApp().preset_bundle->filament_presets.size();
-        for (size_t i = 0; i < total; ++i) {
-            const bool is_mixed = is_mixed_opt && i < is_mixed_opt->values.size() && is_mixed_opt->values[i];
-            if (!is_mixed)
-                colors.push_back(colours_opt && i < colours_opt->values.size() ? colours_opt->values[i] : "#808080");
-        }
-        return colors;
-    };
-
-    const auto& entries = result.filament_entries;
-    std::vector<int> filament_index_remap(entries.size(), -1);
-    size_t existing_physical_count = 0;
-    size_t new_physical_count = 0;
-    for (const auto& entry : entries) {
-        if (entry.kind == TextureFilamentKind::ExistingPhysical)
-            ++existing_physical_count;
-        else if (entry.kind == TextureFilamentKind::NewPhysical)
-            ++new_physical_count;
-    }
-
-    for (const auto& entry : entries) {
-        if (entry.dialog_index < 0 || entry.dialog_index >= (int)filament_index_remap.size())
-            continue;
-        if (entry.kind == TextureFilamentKind::ExistingPhysical) {
-            filament_index_remap[entry.dialog_index] = (int)entry.project_config_index;
-        } else if (entry.kind == TextureFilamentKind::ExistingMixed) {
-            filament_index_remap[entry.dialog_index] = (int)(entry.project_config_index + new_physical_count);
-        }
-    }
-
-    size_t new_physical_order = 0;
-    for (const auto& entry : entries) {
-        if (entry.kind != TextureFilamentKind::NewPhysical)
-            continue;
-        wxColour new_col(entry.color_hex);
-        const size_t final_idx = existing_physical_count + new_physical_order;
-        sidebar->add_custom_filament(new_col, entry.preset_name);
-        if (entry.dialog_index >= 0 && entry.dialog_index < (int)filament_index_remap.size())
-            filament_index_remap[entry.dialog_index] = (int)final_idx;
-        BOOST_LOG_TRIVIAL(info) << "handle_textured_mesh_import: created pending physical filament dialog="
-                                << entry.dialog_index << " final=" << final_idx
-                                << " color=" << entry.color_hex
-                                << " preset=" << entry.preset_name;
-        ++new_physical_order;
-    }
-
-    std::vector<std::string> physical_colors_for_mixing = collect_physical_color_strs();
-    for (const auto& mixed : result.new_mixed_filaments) {
-        MixedFilamentResult mixed_result;
-        mixed_result.ratios = mixed.ratios;
-        mixed_result.components.reserve(mixed.component_dialog_indices.size());
-        bool valid_components = true;
-        for (int component_dialog_idx : mixed.component_dialog_indices) {
-            if (component_dialog_idx < 0 || component_dialog_idx >= (int)filament_index_remap.size() ||
-                filament_index_remap[component_dialog_idx] < 0) {
-                valid_components = false;
-                break;
-            }
-            mixed_result.components.push_back((unsigned int)(filament_index_remap[component_dialog_idx] + 1));
-        }
-        if (!valid_components || mixed_result.components.size() < 2 ||
-            mixed_result.components.size() != mixed_result.ratios.size()) {
-            BOOST_LOG_TRIVIAL(warning) << "handle_textured_mesh_import: invalid pending mixed filament dialog="
-                                       << mixed.dialog_index;
-            continue;
-        }
-
-        const int final_idx = (int)wxGetApp().preset_bundle->filament_presets.size();
-        if (create_mixed_filament_from_result(sidebar, mixed_result, physical_colors_for_mixing)) {
-            if (mixed.dialog_index >= 0 && mixed.dialog_index < (int)filament_index_remap.size())
-                filament_index_remap[mixed.dialog_index] = final_idx;
-            physical_colors_for_mixing = collect_physical_color_strs();
-            BOOST_LOG_TRIVIAL(info) << "handle_textured_mesh_import: created pending mixed filament dialog="
-                                    << mixed.dialog_index << " final=" << final_idx;
-        }
-    }
-
-    std::vector<Slic3r::FilamentMatch> remapped_matches = final_matches;
-    for (auto& m : remapped_matches) {
-        if (m.filament_index < 0)
-            continue;
-        if (m.filament_index < (int)filament_index_remap.size() && filament_index_remap[m.filament_index] >= 0) {
-            m.filament_index = filament_index_remap[m.filament_index];
-        } else {
-            BOOST_LOG_TRIVIAL(warning) << "handle_textured_mesh_import: invalid filament index "
-                                       << m.filament_index << " in texture mapping";
-            m.filament_index = -1;
-        }
-    }
-
-    int min_used_filament_1based = -1;
-    {
-        std::map<std::array<std::size_t, 3>, int> color_to_filament;
-        for (const auto& m : remapped_matches) {
-            if (m.cluster_index >= 0 && m.cluster_index < (int)painted.cluster_colors.size() && m.filament_index >= 0)
-                color_to_filament[painted.cluster_colors[m.cluster_index]] = m.filament_index + 1;
-        }
-        for (const auto& face_color : painted.face_colors) {
-            auto it = color_to_filament.find(face_color);
-            if (it == color_to_filament.end())
-                continue;
-            if (min_used_filament_1based < 0 || it->second < min_used_filament_1based)
-                min_used_filament_1based = it->second;
-        }
-    }
-    if (min_used_filament_1based < 0)
-        BOOST_LOG_TRIVIAL(warning) << "handle_textured_mesh_import: cannot determine base filament from painted faces";
-
-    if (!update_apply_progress(25, _L("Applying texture colors...")))
-        return;
-
-    for (size_t obj_order = 0; obj_order < obj_idxs.size(); ++obj_order) {
-        size_t idx = obj_idxs[obj_order];
-        if (idx >= loaded_model.objects.size()) continue;
-        ModelObject* obj = loaded_model.objects[idx];
-        if (!obj) continue;
-
-        // painted is derived from the whole textured mesh and is meaningful
-        // only against a single MODEL_PART volume. Applying it to every
-        // volume of a multi-part / modifier object would overwrite each
-        // volume with the same painted geometry. Restrict to the first
-        // model_part and warn when the object holds more than one.
-        ModelVolume* target = nullptr;
-        int part_count = 0;
-        for (ModelVolume* vol : obj->volumes) {
-            if (vol && vol->is_model_part()) {
-                ++part_count;
-                if (!target) target = vol;
-            }
-        }
-        if (!target) continue;
-        if (part_count > 1) {
-            BOOST_LOG_TRIVIAL(warning)
-                << "handle_textured_mesh_import: object has " << part_count
-                << " model parts; painting only applied to the first part.";
-        }
-        if (Slic3r::apply_painted_mesh_to_volume(painted, remapped_matches, *target)
-            && min_used_filament_1based > 0) {
-            target->config.set("extruder", min_used_filament_1based);
-            obj->config.set("extruder", min_used_filament_1based);
-            if (update_scene) {
-                if (auto* obj_list = wxGetApp().obj_list()) {
-                    obj_list->update_objects_list_filament_column(std::max<size_t>(
-                        wxGetApp().filaments_cnt(), (size_t)min_used_filament_1based));
-                    obj_list->update_info_items(idx);
-                }
-            }
-            BOOST_LOG_TRIVIAL(info) << "handle_textured_mesh_import: set base filament to "
-                                    << min_used_filament_1based << " for object index " << idx
-                                    << ", object extruder=" << obj->config.extruder()
-                                    << ", volume extruder=" << target->config.extruder();
-        }
-        // bbox invalidation is performed inside apply_painted_mesh_to_volume.
-        obj->ensure_on_bed();
-        const int object_percent = 25 + (int)(60 * (obj_order + 1) / std::max<size_t>(obj_idxs.size(), 1));
-        if (!update_apply_progress(object_percent, _L("Applying texture colors...")))
-            return;
-    }
-
-    BOOST_LOG_TRIVIAL(info) << "handle_textured_mesh_import: painting applied to model volumes";
-    loaded_model.texture_mesh.reset();
-    if (update_scene) {
-        if (!update_apply_progress(90, _L("Updating 3D view...")))
-            return;
-        update();
-    }
-    update_apply_progress(100, _L("Texture colors applied."));
-}
-
-void Plater::priv::handle_textured_mesh_import(Slic3r::Model& loaded_model, const std::vector<size_t>& obj_idxs,
-                                               std::function<bool()> cancel_callback)
-{
-    TextureImportResult result;
-    if (!run_textured_mesh_import_dialog(loaded_model, result, std::move(cancel_callback)))
-        return;
-    if (!result.painted.face_colors.empty())
-        apply_textured_mesh_import_result(loaded_model, obj_idxs, result);
-}
+#include "PlaterTextureImport.ipp"
 
 Sidebar&        Plater::sidebar()           { return *p->sidebar; }
 const Model&    Plater::model() const       { return p->model; }
@@ -16932,19 +16346,6 @@ void Plater::force_update_all_plate_thumbnails()
     }
 }
 
-// BBS: backup
-std::vector<size_t> Plater::load_files(const std::vector<fs::path>& input_files,
-                                       LoadStrategy strategy,
-                                       bool ask_multi,
-                                       ObjImportColorFn obj_color_fn, ModelColorImportResult* color_result,
-                                             const TextureImportOptions* texture_options) {
-    //BBS: wish to reset state when load a new file
-    p->m_slice_all_only_has_gcode = false;
-    //BBS: wish to reset all plates stats item selected state when load a new file
-    p->preview->get_canvas3d()->reset_select_plate_toolbar_selection();
-    return p->load_files(input_files, strategy, ask_multi, std::move(obj_color_fn), color_result, texture_options);
-}
-
 // To be called when providing a list of files to the GUI slic3r on command line.
 std::vector<size_t> Plater::load_files(const std::vector<std::string>& input_files,
                                        LoadStrategy strategy,
@@ -18064,6 +17465,7 @@ void Plater::apply_cut_object_to_model(size_t obj_idx, const ModelObjectPtrs& ne
     // arrange(w, true);
     // w.wait_for_idle();
 }
+
 
 void Plater::export_gcode(bool prefer_removable)
 {
@@ -19679,6 +19081,7 @@ void Plater::single_snapshots_leave(SingleSnapshot *single)
 {
     p->single_snapshots_leave(single);
 }
+
 void Plater::undo() { p->undo(); }
 void Plater::redo() { p->redo(); }
 void Plater::undo_to(int selection)
@@ -20442,14 +19845,7 @@ GLCanvas3D* Plater::get_current_canvas3D(bool exclude_preview)
     return p->get_current_canvas3D(exclude_preview);
 }
 
-void Plater::arrange()
-{
-    auto &w = get_ui_job_worker();
-    if (w.is_idle()) {
-        p->take_snapshot(_u8L("Arrange"));
-        replace_job(w, std::make_unique<ArrangeJob>());
-    }
-}
+#include "PlaterAIArrange.ipp"
 
 void Plater::set_current_canvas_as_dirty()
 {

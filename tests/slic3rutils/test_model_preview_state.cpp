@@ -137,3 +137,36 @@ TEST_CASE("A missing chosen history record does not borrow another adjacent snap
     CHECK_FALSE(prepared.color_trial.has_value());
     CHECK(prepared.face_color_overrides.empty());
 }
+
+TEST_CASE("original color matching ignores saved trial edits and preserves native mesh connectivity", "[ModelPreviewState]")
+{
+    SavedPreview saved;
+    saved.write(saved.adjacent, saved.metadata(saved.original.geometry_id));
+    ModelPreview3D::PreparedModel prepared;
+    std::string error;
+    REQUIRE(ModelPreview3D::prepare_model(saved.model, prepared, error, {}, {}, false));
+    CHECK_FALSE(prepared.selection.has_value());
+    CHECK_FALSE(prepared.color_trial.has_value());
+    CHECK(prepared.face_color_overrides.empty());
+    CHECK(prepared.geometry.vertices == saved.original.geometry.vertices);
+    CHECK(prepared.mesh.vertices == saved.original.mesh.vertices);
+    CHECK(prepared.mesh.indices == saved.original.mesh.indices);
+}
+
+TEST_CASE("original preparation retains indexed geometry even without vertex colors", "[ModelPreviewState]")
+{
+    ScopedTemporaryDir directory {"orca-color-native-mesh"};
+    const auto path = directory.path() / "plain.obj";
+    {
+        boost::filesystem::ofstream file(path);
+        file << "v 0 0 0\nv 20 0 0\nv 0 20 0\nv 0 0 20\n"
+                "f 1 3 2\nf 1 2 4\nf 1 4 3\nf 2 3 4\n";
+    }
+    ModelPreview3D::PreparedModel prepared;
+    std::string error;
+    REQUIRE(ModelPreview3D::prepare_model(path, prepared, error, {}, {}, false));
+    CHECK(prepared.mesh.vertices.size() == 4);
+    CHECK(prepared.mesh.indices.size() == 4);
+    CHECK(prepared.geometry.vertices_count() == 12);
+    CHECK(selection::geometry_fingerprint(prepared.mesh) == prepared.geometry_id);
+}

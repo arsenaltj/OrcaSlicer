@@ -2,6 +2,8 @@
 #include "slic3r/GUI/AI/Model/ModelFinishing.hpp"
 #include "slic3r/GUI/AI/Model/GlbGeometryEditing.hpp"
 #include "slic3r/GUI/AI/Model/VertexColorRegionEditor.hpp"
+#include "slic3r/GUI/TextureImportModel.hpp"
+#include "slic3r/GUI/AI/Orca/OrcaWorkspaceAdapter.hpp"
 #include "libslic3r/Format/AssimpImport.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/TexturePainting.hpp"
@@ -24,6 +26,7 @@
 using namespace Slic3r;
 using namespace Slic3r::AI;
 using Catch::Matchers::WithinAbs;
+using namespace Slic3r::GUI;
 namespace {
 struct Fixture {
     boost::filesystem::path directory = boost::filesystem::temp_directory_path() / boost::filesystem::unique_path("orca-glb-%%%%-%%%%-%%%%");
@@ -61,6 +64,47 @@ void require_closed_painted_mesh(const PaintedMesh& painted)
         REQUIRE(edge.second.second == 0);
     }
 }
+}
+
+TEST_CASE("Local history import preserves GLB bytes and refuses to overwrite an existing asset", "[ModelArtifact][LocalModelImport]") {
+    Fixture f;std::string error;const auto source=samples/"textured.glb",destination=f.directory/"archived.glb";
+    const auto hash=model_artifact_sha256(source);
+    REQUIRE(archive_local_model(source,destination,error));CHECK(model_artifact_sha256(destination)==hash);
+    CHECK_FALSE(archive_local_model(source,destination,error));CHECK(model_artifact_sha256(destination)==hash);
+    const auto malformed=f.directory/"broken.glb";{boost::filesystem::ofstream out(malformed);out<<"broken";}
+    CHECK_FALSE(archive_local_model(malformed,f.directory/"rejected.glb",error));
+    CHECK_FALSE(boost::filesystem::exists(f.directory/"rejected.glb"));CHECK(model_artifact_sha256(source)==hash);
+}
+
+TEST_CASE("Local OBJ import embeds texture bytes and retains printable size and UV orientation", "[ModelArtifact][LocalModelImport]") {
+    Fixture f;std::string error;TexturedMesh reference;
+    REQUIRE(load_assimp_textured_model((samples/"textured.glb").string(),reference,&error));
+    REQUIRE_FALSE(reference.textures.empty());
+    {boost::filesystem::ofstream out(f.directory/"color.png",std::ios::binary);const auto& data=reference.textures.front().data;out.write(reinterpret_cast<const char*>(data.data()),data.size());}
+    {boost::filesystem::ofstream out(f.directory/"model.mtl");out<<"newmtl surface\nKd 1 1 1\nmap_Kd color.png\n";}
+    {boost::filesystem::ofstream out(f.directory/"model.obj");out<<"mtllib model.mtl\nv 0 0 0\nv 20 0 0\nv 0 20 0\nvt 0.2 0.2\nvt 0.8 0.2\nvt 0.2 0.8\nusemtl surface\nf 1/1 2/2 3/3\n";}
+    const auto destination=f.directory/"archived.glb";
+    REQUIRE(archive_local_model(f.directory/"model.obj",destination,error));
+    TexturedMesh obj,glb;REQUIRE(load_assimp_textured_model((f.directory/"model.obj").string(),obj,&error));
+    REQUIRE(load_assimp_textured_model(destination.string(),glb,&error));
+    REQUIRE(glb.textures.size()==1);CHECK(glb.textures.front().data==reference.textures.front().data);
+    REQUIRE(glb.uvs.size()==obj.uvs.size());
+    // The native OBJ loader flips bottom-origin OBJ UVs into the same
+    // top-origin sampling convention as GLB. Raw Assimp OBJ UVs do not.
+    for(size_t i=0;i<obj.uvs.size();++i) {
+        CHECK_THAT(glb.uvs[i][0],WithinAbs(obj.uvs[i][0],1e-6));
+        CHECK_THAT(glb.uvs[i][1],WithinAbs(1.f-obj.uvs[i][1],1e-6));
+    }
+    TriangleMesh native;ObjInfo obj_info;ObjParser::MtlData materials;TexturedMesh native_texture;
+    REQUIRE(load_obj((f.directory/"model.obj").string().c_str(),&native,obj_info,error,&materials));
+    REQUIRE(obj_to_textured_mesh(obj_info,native.its,materials,f.directory.string(),native_texture));
+    std::vector<std::array<size_t,3>> native_colors,converted_colors;
+    REQUIRE(sample_original_face_colors(native_texture,native_colors));REQUIRE(sample_original_face_colors(glb,converted_colors));
+    CHECK(native_colors==converted_colors);
+    TriangleMesh mesh;ObjInfo colors;REQUIRE(load_model_artifact(destination,mesh,colors,error));
+    CHECK(mesh.its.indices.size()==1);CHECK_THAT(mesh.bounding_box().size().x(),WithinAbs(20.,.001));
+    boost::filesystem::remove(f.directory/"color.png");boost::filesystem::remove(f.directory/"model.mtl");
+    REQUIRE(load_model_artifact(destination,mesh,colors,error));
 }
 
 TEST_CASE("GLB textures and transformed scenes match the local analysis colors and print coordinates", "[ModelArtifact]") {
@@ -112,6 +156,79 @@ TEST_CASE("GLB textures and transformed scenes match the local analysis colors a
         }
     }
 }
+
+TEST_CASE("Workbench GLB handoff retains texture pixels and print dimensions", "[WorkbenchTextureImport]") {
+    for (const std::string name : {"textured", "transformed", "multi-material", "jpeg-textured"}) {
+        DYNAMIC_SECTION(name) {
+            const auto path = samples / (name + ".glb");
+            const auto hash = model_artifact_sha256(path);
+            ModelImportRequest request;
+            request.artifact.local_path = path;
+            const auto options = model_import_color_options(request);
+            REQUIRE(options.source_units_in_meters);
+            Model imported = Model::read_from_file(path.string());
+            REQUIRE(apply_texture_import_units(imported, &options));
+            REQUIRE(imported.texture_mesh);
+            REQUIRE(imported.objects.size() == 1);
+            const auto* volume = imported.objects.front()->volumes.front();
+            TriangleMesh preview; ObjInfo colors; std::string error;
+            REQUIRE(load_model_artifact(path, preview, colors, error));
+            REQUIRE(volume->mesh().bounding_box().size().isApprox(preview.bounding_box().size(), 1e-5f));
+            REQUIRE(model_artifact_sha256(path) == hash);
+            ModelMatchedColors matched;
+            matched.source_sha256=hash;
+            matched.geometry_id=SurfaceSelectionPersistence::geometry_fingerprint(preview.its);
+            matched.palette={{0,"#F7E2DA","PLA",true},{1,"#282629","PLA",true}};
+            for(size_t face=0;face<preview.its.indices.size();++face)matched.face_slots.push_back(face%2);
+            request.matched_colors=matched;
+            auto saved_options=model_import_color_options(request);
+            saved_options.matched_source=std::make_shared<indexed_triangle_set>(preview.its);
+            imported.objects.front()->center_around_origin(false);
+            REQUIRE_NOTHROW(apply_matched_texture_colors(imported,saved_options,saved_options.matched_filaments));
+            TriangleSelector expected(volume->mesh());
+            for(size_t face=0;face<matched.face_slots.size();++face)
+                expected.set_facet(int(face),EnforcerBlockerType(int(EnforcerBlockerType::Extruder1)+int(matched.face_slots[face])));
+            REQUIRE(volume->mmu_segmentation_facets.get_data()==expected.serialize());
+        }
+    }
+    TextureImportOptions ordinary;
+    Model millimetres;
+    auto* object = millimetres.add_object("tiny model", "", make_cube(0.1,0.2,0.3));
+    const auto bounds = object->volumes.front()->mesh().bounding_box().size();
+    CHECK_FALSE(apply_texture_import_units(millimetres, &ordinary));
+    CHECK(object->volumes.front()->mesh().bounding_box().size().isApprox(bounds));
+}
+
+TEST_CASE("An explicit local portrait retains face correspondence through native import", "[.][PortraitImportProbe]") {
+    const auto path=std::getenv("ORCA_PORTRAIT_SOURCE");
+    if(!path || !*path)SKIP("Explicit local portrait required.");
+    TriangleMesh preview;ObjInfo colors;std::string error;
+    REQUIRE(load_model_artifact(path,preview,colors,error));
+    ModelImportRequest request;request.artifact.local_path=path;
+    auto options=model_import_color_options(request);
+    Model imported=Model::read_from_file(path);
+    REQUIRE(apply_texture_import_units(imported,&options));
+    REQUIRE(imported.objects.size()==1);
+    auto normalized=preview.its;its_merge_vertices(normalized);its_compactify_vertices(normalized);
+    const auto& target=imported.objects.front()->volumes.front()->mesh().its;
+    WARN("source faces="<<preview.its.indices.size()<<" vertices="<<preview.its.vertices.size()
+        <<" normalized vertices="<<normalized.vertices.size()<<" native faces="<<target.indices.size()<<" vertices="<<target.vertices.size());
+    if(preview.its.indices.size()==target.indices.size()) {
+        double max_delta=0;
+        for(size_t f=0;f<target.indices.size();++f)for(int c=0;c<3;++c)
+            max_delta=std::max(max_delta,double((preview.its.vertices[preview.its.indices[f][c]]-target.vertices[target.indices[f][c]]).cwiseAbs().maxCoeff()));
+        WARN("ordered corner max delta before centering="<<max_delta);
+    }
+    ModelMatchedColors matched;matched.source_sha256=model_artifact_sha256(path);
+    matched.geometry_id=SurfaceSelectionPersistence::geometry_fingerprint(preview.its);
+    matched.palette={{0,"#FFFFFF","PLA",true},{1,"#000000","PLA",true}};
+    for(size_t f=0;f<preview.its.indices.size();++f)matched.face_slots.push_back(f%2);
+    request.matched_colors=matched;options=model_import_color_options(request);
+    options.matched_source=std::make_shared<indexed_triangle_set>(preview.its);
+    imported.objects.front()->center_around_origin(false);
+    REQUIRE_NOTHROW(apply_matched_texture_colors(imported,options,options.matched_filaments));
+}
+
 
 TEST_CASE("Embedded JPEG textures retain their dimensions and projected colors", "[ModelArtifact][JPEG]") {
     const auto source = samples / "jpeg-textured.glb";
@@ -505,7 +622,7 @@ TEST_CASE("GLB geometry edits retain embedded appearance through accessor remapp
     }
 }
 
-TEST_CASE("GLB local smoothing retains texture bytes and outside normals while moving selected geometry", "[ModelArtifact][GlbGeometry]") {
+TEST_CASE("GLB local smoothing retains texture bytes and outside normals while moving selected geometry", "[ModelArtifact][GlbGeometry][WorkbenchTextureImport]") {
     Fixture f;
     const auto input = f.directory / "source.glb", output = f.directory / "smoothed.glb";
     const auto original = noisy_glb_grid();
@@ -521,6 +638,12 @@ TEST_CASE("GLB local smoothing retains texture bytes and outside normals while m
     REQUIRE(result.success);
     REQUIRE(result.moved_vertices > 0);
     REQUIRE(result.faces_before == result.faces_after);
+    ModelImportRequest request;
+    request.artifact.local_path = output;
+    const auto import_options = model_import_color_options(request);
+    Model imported = Model::read_from_file(output.string());
+    REQUIRE(apply_texture_import_units(imported, &import_options));
+    REQUIRE(imported.texture_mesh);
     const auto edited = read_glb_fixture(output);
     require_glb_appearance_retained(original, edited);
     const auto before = glb_vectors(original, "POSITION"), after = glb_vectors(edited, "POSITION");

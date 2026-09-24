@@ -15,6 +15,7 @@ This is the continuation repository for the OrcaSlicer AI project. It preserves 
 
 Use the current request to choose the necessary context:
 
+- Read `Docs/coordination/current-development.md` for the short current handoff; historical round reports are evidence, not a queue to resume automatically.
 - Read `CONTINUATION.md` when taking over the project or when current scope, provenance or completion status is unclear. Its dated corrections supersede older product descriptions.
 - Use `Docs/AI_ENGINEERING.md` to locate an affected module and its verification commands.
 - Consult the relevant sections of `Docs/plans/2026-09-07-ai-product-rebuild-execution-prompt.md` only when a product/UX decision is unresolved by current code and requirements, including its latest dated corrections.
@@ -37,6 +38,17 @@ Root `task_plan.md`, `findings.md`, `progress.md`, dated reports, and `archive/*
 - Finish when the requested behavior is implemented, relevant checks pass, the diff is reviewed and no new failure evidence remains. Briefly note unrelated findings without extending the repair scope. A real blocker leaves a specific unverified item, not an invitation to retry indefinitely.
 
 ## Work model
+
+### Fast Windows iteration (user direction, 2026-09-16)
+
+- Windows is the current local development/acceptance platform. Do not add Linux/macOS runs to routine iterations. Preserve portable code conventions; this does not change remote branch protection or team merge gates.
+- Agree from the request on one observable result, a fixed sample and the affected verification scope. Implement it, run relevant checks, incrementally build and inspect the actual changed UI when applicable, then show the result for feedback. Do not expand a visual experiment into an indefinite "best possible" quality campaign or unrelated architecture work. Complete any explicitly requested broader scope.
+- Use two stages: fast experiment first, then stabilization of the accepted direction. Import, project persistence, undo/redo and slicing changes still require their affected regression checks before claiming those behaviors work. Team delivery adds frozen source identity, independent review and packaging only when requested.
+- Default to one agent. For substantial independent work, use at most one additional agent initially, with an explicit output and file ownership. Prefer read-only review or fixed-log analysis alongside implementation. Do not concurrently edit shared contracts/Plater/Preset, write the same build directory, or operate the same GUI. Do not retry an unavailable fixed validation task each round; retain NOT_RUN and revisit when independent acceptance is actually needed and availability changes.
+- Recommended model policy: Astra medium for routine implementation, low for unambiguous small edits, high for geometry/slicing/state diagnosis, xhigh temporarily for a hard unresolved problem. Do not default to max/ultra or repeated model switching. These are selection recommendations, not a claim that markdown changes the active task's model. Use the client model selector when needed; preserve user overrides.
+- Reuse this checkout's `.tmp/dev/build`, `.tmp/dev/run`, and `.tmp/dev/data` via `dev.ps1`; machine tool paths live only in ignored `.tmp/dev/settings.json`. Preserve the R101 evidence/runtime as a known reference. Never copy another worktree's CMake cache or objects into this build. A first build is necessarily cold; subsequent builds are incremental.
+- Maintain one short current-state entry, with links to evidence. Do not prepend another full round summary to every historical goal/plan file or create a new full runtime/snapshot every routine iteration. Record per-step timings in dev logs; optimize time to first usable result and rework, not token speed alone.
+- Save coherent local Git checkpoints after useful milestones when the included files are understood. Do not sweep unrelated dirty files into commits or require commit/push/PR before trying an idea. Remote submission remains separately scoped.
 
 - Work on one bounded change at a time with one agent by default. Delegate only when explicitly requested or a substantial independent subtask justifies it; routine location, edits, tests and diff review stay with the principal agent. Do not create new sidebar tasks as a development convention.
 - ADR-007 is accepted. The new team branches are `codex/team/model-generation`, `codex/team/smart-slicing`, `codex/team/maintenance`, and `codex/team/integration`. The common source snapshot has been prepared; `codex/continue` remains a provenance reference. New work uses the new team branches; old branches must not be force-updated or deleted during migration.

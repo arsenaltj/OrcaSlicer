@@ -48,7 +48,7 @@ struct AIDesktopFeatureHost::Impl final : wxEvtHandler
 {
     Impl(wxWindow* parent, Plater* plater, NavigateAfterImportFn navigate_after_import,
          SmartSlicingAvailableFn smart_slicing_available)
-        : model_generation(parent, plater, std::move(navigate_after_import), [this] { retry_now(); })
+        : model_generation(parent, plater, navigate_after_import, [this] { retry_now(); })
         , service_manager(AISidecarClient::default_endpoint())
         , retry_timer(this)
         , on_smart_slicing_available(std::move(smart_slicing_available))

@@ -23,13 +23,16 @@ inline bool initialize_model_color_shader(GLShaderProgram& shader)
     const std::string version = modern ? "#version 140\n" : "#version 110\n";
     GLShaderProgram::ShaderSources sources;
     sources[size_t(GLShaderProgram::EShaderType::Vertex)] = version +
-        (modern ? "in vec3 v_position; in vec3 v_normal; in vec2 v_tex_coord; out vec4 shaded_color; out vec3 source_rgb; out float light_intensity; out float local_color_lock;\n"
-                : "attribute vec3 v_position; attribute vec3 v_normal; attribute vec2 v_tex_coord; varying vec4 shaded_color; varying vec3 source_rgb; varying float light_intensity; varying float local_color_lock;\n") + R"(
+        (modern ? "in vec3 v_position; in vec3 v_normal; in vec2 v_tex_coord; out vec4 shaded_color; out vec3 source_rgb; out float light_intensity; out float local_color_lock; out float stroke_side;\n"
+                : "attribute vec3 v_position; attribute vec3 v_normal; attribute vec2 v_tex_coord; varying vec4 shaded_color; varying vec3 source_rgb; varying float light_intensity; varying float local_color_lock; varying float stroke_side;\n") + R"(
 uniform mat4 view_model_matrix;
 uniform mat4 projection_matrix;
 uniform mat3 view_normal_matrix;
 uniform vec4 uniform_color;
 uniform bool use_uniform_color;
+uniform bool preview_boundary_stroke;
+uniform vec2 preview_viewport;
+uniform float preview_stroke_width;
 void main() {
     float encoded_rgb = floor(v_tex_coord.x);
     vec3 rgb = vec3(floor(encoded_rgb / 65536.0), mod(floor(encoded_rgb / 256.0), 256.0), mod(encoded_rgb, 256.0)) / 255.0;
@@ -42,14 +45,29 @@ void main() {
     source_rgb = color.rgb;
     light_intensity = intensity;
     gl_Position = projection_matrix * view_model_matrix * vec4(v_position, 1.0);
+    // The opposite endpoint reverses the tangent; preserve a common signed
+    // side across both triangles so coverage has no diagonal seams.
+    stroke_side = v_tex_coord.x * v_tex_coord.y;
+    if (preview_boundary_stroke) {
+        vec4 other = projection_matrix * view_model_matrix * vec4(v_normal, 1.0);
+        vec2 delta = (other.xy / other.w - gl_Position.xy / gl_Position.w) * preview_viewport;
+        vec2 tangent = delta / max(length(delta), 0.00001);
+        vec2 offset = vec2(-tangent.y, tangent.x) * v_tex_coord.x * preview_stroke_width * 0.5 - tangent * 0.5;
+        gl_Position.xy += 2.0 * offset / preview_viewport * gl_Position.w;
+        gl_Position.z -= 0.00015 * gl_Position.w;
+    }
 })";
     sources[size_t(GLShaderProgram::EShaderType::Fragment)] = version +
-        (modern ? "in vec4 shaded_color; in vec3 source_rgb; in float light_intensity; in float local_color_lock; out vec4 out_color;\n"
-                : "varying vec4 shaded_color; varying vec3 source_rgb; varying float light_intensity; varying float local_color_lock;\n") + R"(
+        (modern ? "in vec4 shaded_color; in vec3 source_rgb; in float light_intensity; in float local_color_lock; in float stroke_side; out vec4 out_color;\n"
+                : "varying vec4 shaded_color; varying vec3 source_rgb; varying float light_intensity; varying float local_color_lock; varying float stroke_side;\n") + R"(
 uniform int preview_color_count;
 uniform bool preview_lighting;
 uniform float preview_lightness_weight;
 uniform bool gray_view;
+uniform bool exact_surface_colors;
+uniform bool preview_unlit_overlay;
+uniform bool preview_boundary_stroke;
+uniform float preview_stroke_width;
 uniform vec3 preview_rgb[6];
 uniform vec3 preview_lab[6];
 vec3 to_oklab(vec3 rgb) {
@@ -64,8 +82,10 @@ vec3 to_oklab(vec3 rgb) {
 }
 void main() {
     vec4 result = shaded_color;
-    if (gray_view) result = vec4(vec3(0.78) * light_intensity, shaded_color.a);
-    if (preview_color_count > 0) {
+    if (preview_unlit_overlay) result = vec4(source_rgb, shaded_color.a);
+    else if (gray_view) result = vec4(vec3(0.78) * light_intensity, shaded_color.a);
+    if (exact_surface_colors && local_color_lock > 0.5) result = vec4(source_rgb, 1.0);
+    else if (preview_color_count > 0) {
         vec3 lab = to_oklab(source_rgb);
         vec3 selected = source_rgb;
         float best = 100.0;
@@ -81,6 +101,7 @@ void main() {
         // palette entries, never an interpolated or shaded target color.
         result = vec4(preview_lighting ? selected * light_intensity : selected, 1.0);
     }
+    if (preview_boundary_stroke) result.a *= clamp((1.0 - abs(stroke_side)) * preview_stroke_width * 0.5, 0.0, 1.0);
 )" + (modern ? "out_color = result; }" : "gl_FragColor = result; }");
     return shader.init_from_texts("ai_model_vertex_color", sources);
 }

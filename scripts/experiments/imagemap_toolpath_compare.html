@@ -1,0 +1,64 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>ImageMap · 细层高对照</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f5f7f8;color:#23313b;font:14px "Microsoft YaHei",sans-serif;display:flex;flex-direction:column;height:100vh}header{padding:18px 24px 10px}h1{font-size:22px;margin:0 0 7px}p{margin:0;line-height:1.7;color:#65737b}nav{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:0 24px 10px}button{font:inherit;cursor:pointer;border:1px solid #ccd5da;background:white;border-radius:7px;padding:7px 14px}button:disabled{opacity:.45}.labels{display:grid;grid-template-columns:1fr 1fr;text-align:center;gap:16px;padding:8px 24px;background:white}.labels strong{font-size:18px}.labels p{font-size:12px}canvas{display:block;width:100%;flex:1;min-height:280px;touch-action:none}footer{padding:10px 24px;font-size:12px;line-height:1.6;color:#65737b}a{color:#087d74}#status{margin-left:auto;color:#63727b;font-size:12px}#error{color:#b22}
+</style>
+<header><h1>ImageMap：把颜色层纹做细</h1><p>同一原贴图、六色、模型尺寸和线宽，仅改变层高。拖动同步旋转，滚轮缩放。</p></header>
+<nav><button id="front">正面</button><button id="oblique">斜视</button><button id="side">侧面</button><button id="back">背面</button><button id="head">脸部细节</button><button id="full">全身</button><span id="status">读取实际切片路径…</span></nav>
+<div class="labels"><div><strong>上一轮 · 0.20 mm</strong><p id="leftStats"></p></div><div><strong>本轮 · 0.12 mm</strong><p id="rightStats"></p></div></div>
+<canvas id="canvas"></canvas>
+<footer>真实 G-code 的模型表面路径，以近似矩形线段显示；线宽由挤出量或路径标记恢复。未模拟熔融下垂、材料透光和实物混色。<br>首层保持 0.20 mm，顶部纹理打印未开启。实际六色工具映射与实物验证待完成。 <a href="native-012.png" target="_blank">本轮原生切片截图</a> · <a href="../cross-material-final/">上一轮汇总</a> <span id="error"></span></footer>
+<script>
+(async()=>{
+const buttons=document.querySelectorAll('button');buttons.forEach(b=>b.disabled=true);
+const response=await fetch('result.json');if(!response.ok)throw Error('实验记录读取失败');
+const report=await response.json();if(report.stride!==9)throw Error('不兼容的路径格式');
+const canvas=document.querySelector('canvas'),gl=canvas.getContext('webgl2',{antialias:true,preserveDrawingBuffer:true});if(!gl)throw Error('需要 WebGL 2');
+const vs=`#version 300 es
+precision highp float;
+in vec3 startPoint;in vec3 endPoint;in vec3 bead;
+uniform mat3 basis;uniform vec3 center;uniform float extent;uniform float aspect;
+flat out int filament;out vec3 normal;
+const vec2 corners[4]=vec2[4](vec2(-1.,-1.),vec2(1.,-1.),vec2(1.,1.),vec2(-1.,1.));
+const int order[6]=int[6](0,1,2,0,2,3);
+void main(){
+int edge=gl_VertexID/6;int q=order[gl_VertexID%6];bool next=q>=2;float t=(q==1||q==2)?1.:0.;
+vec2 a=corners[edge],b=corners[(edge+1)%4],crossPoint=next?b:a;
+vec3 direction=normalize(endPoint-startPoint),across=vec3(-direction.y,direction.x,0.);
+vec3 p=mix(startPoint,endPoint,t)+across*(crossPoint.x*bead.x*.5)+vec3(0.,0.,(crossPoint.y-1.)*bead.y*.5);
+vec2 delta=b-a;vec3 n=normalize(across*(delta.y*bead.y)+vec3(0.,0.,-delta.x*bead.x));
+normal=basis*n;filament=int(bead.z+.1);p=basis*(p-center)/extent;
+gl_Position=vec4(p.x/aspect,p.y,-p.z/4.,1.);
+}`;
+const fs=`#version 300 es
+precision highp float;flat in int filament;in vec3 normal;uniform vec3 palette[6];out vec4 color;
+void main(){float d=max(dot(normalize(normal),normalize(vec3(-.3,.5,1.))),0.);color=vec4(palette[filament]*(.56+.44*d),1.);}`;
+function shader(kind,source){const s=gl.createShader(kind);gl.shaderSource(s,source);gl.compileShader(s);if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw Error(gl.getShaderInfoLog(s));return s;}
+const program=gl.createProgram();gl.attachShader(program,shader(gl.VERTEX_SHADER,vs));gl.attachShader(program,shader(gl.FRAGMENT_SHADER,fs));gl.linkProgram(program);if(!gl.getProgramParameter(program,gl.LINK_STATUS))throw Error(gl.getProgramInfoLog(program));gl.useProgram(program);
+const uniforms={};for(const name of ['basis','center','extent','aspect','palette'])uniforms[name]=gl.getUniformLocation(program,name);
+gl.uniform3fv(uniforms.palette,new Float32Array(report.palette.flatMap(hex=>[1,3,5].map(i=>parseInt(hex.slice(i,i+2),16)/255))));
+const meshes=await Promise.all(report.variants.map(async r=>{
+const fetched=await fetch(r.name+'.bin');if(!fetched.ok)throw Error('路径读取失败');const data=await fetched.arrayBuffer();if(data.byteLength!==r.segments*36)throw Error('路径长度不符');
+const vao=gl.createVertexArray();gl.bindVertexArray(vao);const buffer=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buffer);gl.bufferData(gl.ARRAY_BUFFER,data,gl.STATIC_DRAW);
+for(const [name,offset]of [['startPoint',0],['endPoint',12],['bead',24]]){const at=gl.getAttribLocation(program,name);gl.enableVertexAttribArray(at);gl.vertexAttribPointer(at,3,gl.FLOAT,false,36,offset);gl.vertexAttribDivisor(at,1);}return {vao,count:r.segments};
+}));
+const bounds=report.variants[0].bounds,mid=bounds[0].map((v,i)=>(v+bounds[1][i])/2),height=bounds[1][2]-bounds[0][2];
+// Camera framing only; never used for segmentation or generating paths.
+const faceCenter=[mid[0]+height*.03,mid[1],bounds[0][2]+height*.86];
+let yaw=Math.PI/2-.6,pitch=.6,focus=false,zoom=1,scheduled=false;
+function draw(){scheduled=false;const dpr=Math.min(devicePixelRatio,1.25);const w=Math.round(canvas.clientWidth*dpr),h=Math.round(canvas.clientHeight*dpr);if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;}
+gl.enable(gl.DEPTH_TEST);gl.disable(gl.CULL_FACE);gl.clearColor(.93,.95,.96,1.);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);gl.useProgram(program);
+const c=Math.cos(yaw),s=Math.sin(yaw),cp=Math.cos(pitch),sp=Math.sin(pitch);gl.uniformMatrix3fv(uniforms.basis,false,new Float32Array([c,-s*sp,s*cp,s,c*sp,-c*cp,0,cp,sp]));
+gl.uniform3fv(uniforms.center,focus?faceCenter:mid);const width=Math.floor(w/2),aspect=width/h;gl.uniform1f(uniforms.aspect,aspect);
+gl.uniform1f(uniforms.extent,(focus?height*.19:height*.56)*zoom*Math.max(1,.60/aspect));
+for(let i=0;i<2;i++){gl.viewport(i*width,0,width,h);gl.bindVertexArray(meshes[i].vao);gl.drawArraysInstanced(gl.TRIANGLES,0,24,meshes[i].count);}
+}
+function schedule(){if(!scheduled){scheduled=true;requestAnimationFrame(draw);}}
+for(const [id,fn]of Object.entries({front:()=>{yaw=Math.PI/2;pitch=.10},oblique:()=>{yaw=Math.PI/2-.6;pitch=.6},side:()=>{yaw=Math.PI/2+Math.PI/3;pitch=.10},back:()=>{yaw=Math.PI*1.5;pitch=.10},head:()=>{focus=true;zoom=1},full:()=>{focus=false;zoom=1}}))document.getElementById(id).onclick=()=>{fn();schedule();};
+let drag=null;canvas.onpointerdown=e=>{drag=[e.clientX,e.clientY];canvas.setPointerCapture(e.pointerId);};canvas.onpointerup=canvas.onpointercancel=()=>drag=null;
+canvas.onpointermove=e=>{if(!drag)return;yaw+=(e.clientX-drag[0])*.008;pitch=Math.max(-1.3,Math.min(1.3,pitch+(e.clientY-drag[1])*.008));drag=[e.clientX,e.clientY];schedule();};
+canvas.onwheel=e=>{e.preventDefault();zoom=Math.max(.3,Math.min(3,zoom*Math.exp(e.deltaY*.001)));schedule();};
+for(let i=0;i<2;i++){const r=report.variants[i],m=r.metadata;document.getElementById(i?'rightStats':'leftStats').textContent=`${r.layer_markers} 层 · ${r.tool_changes} 次换工具 · 预估 ${m['estimated printing time (normal mode)']} / ${m['total filament used [g]']} g`;}
+document.querySelector('#status').textContent=`六色轮换高度：${report.variants.map(r=>r.color_cycle_median_mm.toFixed(2)+' mm').join(' → ')}`;
+new ResizeObserver(schedule).observe(canvas);buttons.forEach(b=>b.disabled=false);schedule();
+})().catch(e=>{document.querySelector('#error').textContent=e.message;console.error(e);});
+</script></html>

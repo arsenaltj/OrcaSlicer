@@ -619,8 +619,11 @@ void ArrangeJob::finalize(bool canceled, std::exception_ptr &eptr) {
         eptr = std::current_exception();
     }
 
-    if (canceled || eptr)
+    if (canceled || eptr) {
+        m_plater->m_arrange_running.store(false);
+        m_plater->notify_ai_arrange_finished(false);
         return;
+    }
 
     // Unprintable items go to the last virtual bed
     int beds = 0;
@@ -734,6 +737,7 @@ void ArrangeJob::finalize(bool canceled, std::exception_ptr &eptr) {
     m_plater->update();
 
     m_plater->m_arrange_running.store(false);
+    m_plater->notify_ai_arrange_finished(true);
 }
 
 std::optional<arrangement::ArrangePolygon>

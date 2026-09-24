@@ -2,6 +2,8 @@
 #include "OrcaWorkspaceAdapter.hpp"
 #include "ModelColorUpdate.hpp"
 #include "OrcaPaletteSnapshotBuilder.hpp"
+#include "OrcaPrintPaletteSnapshot.hpp"
+#include "AIImportSeamRepair.hpp"
 
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/GUI_ObjectList.hpp"
@@ -28,9 +30,12 @@
 #include <limits>
 #include <set>
 #include <utility>
+#include <openssl/evp.h>
+#include <nlohmann/json.hpp>
 
 namespace Slic3r::GUI {
 namespace {
+
 
 bool is_nonempty_obj(const boost::filesystem::path& path)
 {
@@ -118,111 +123,14 @@ AI::PrintablePaletteSnapshot OrcaWorkspaceAdapter::printable_palette() const
 
     std::vector<std::string> project_colors = m_plater->get_extruder_colors_from_plater_config();
     const PresetBundle* bundle = wxGetApp().preset_bundle;
-    const auto* mixed_flags = bundle == nullptr
-        ? nullptr : bundle->project_config.option<ConfigOptionBools>("filament_is_mixed");
-    const auto* mixed_components = bundle == nullptr
-        ? nullptr : bundle->project_config.option<ConfigOptionStrings>("filament_mixed_components");
-    const auto* mixed_ratios = bundle == nullptr
-        ? nullptr : bundle->project_config.option<ConfigOptionStrings>("filament_mixed_sublayer_ratios");
-
-    std::vector<OrcaPaletteSlotCapability> capabilities;
-    capabilities.reserve(project_colors.size());
-    for (size_t slot = 0; slot < project_colors.size(); ++slot) {
-        std::string color = project_colors[slot];
-        std::transform(color.begin(), color.end(), color.begin(), [](unsigned char ch) {
-            return static_cast<char>(std::toupper(ch));
-        });
-        const bool is_mixed = mixed_flags != nullptr && slot < mixed_flags->values.size() &&
-                              mixed_flags->values[slot];
-        OrcaPaletteSlotCapability capability {slot, color, {}, is_mixed, true, {}};
-        if (is_mixed && mixed_components != nullptr && slot < mixed_components->values.size()) {
-            const std::vector<unsigned int> component_ids = parse_mixed_components(mixed_components->values[slot]);
-            const std::vector<double> ratios = parse_mixed_ratios(
-                mixed_ratios != nullptr && slot < mixed_ratios->values.size() ? mixed_ratios->values[slot] : "",
-                component_ids.size());
-            for (size_t index = 0; index < component_ids.size() && index < ratios.size(); ++index) {
-                if (component_ids[index] == 0) {
-                    capability.mixed_components.clear();
-                    break;
-                }
-                capability.mixed_components.push_back({component_ids[index] - 1, ratios[index]});
-            }
+    PrintColorNozzleRouting nozzle_routing;
+    if (bundle) {
+        if (const auto* plate = m_plater->get_partplate_list().get_curr_plate()) {
+            nozzle_routing.mode = plate->get_real_filament_map_mode(bundle->project_config);
+            nozzle_routing.filament_maps = plate->get_real_filament_maps(bundle->project_config);
         }
-        capabilities.push_back(std::move(capability));
     }
-
-    const std::vector<size_t> physical_slots = select_model_generation_physical_slots(capabilities);
-    struct SlotTemperature {
-        std::string type;
-        int         temperature { 0 };
-        int         range_low { 0 };
-        int         range_high { 0 };
-    };
-    std::vector<SlotTemperature> slot_temperatures(physical_slots.size());
-    bool metadata_complete = bundle != nullptr;
-    for (size_t index = 0; index < physical_slots.size(); ++index) {
-        const size_t slot = physical_slots[index];
-        const Preset* preset = bundle != nullptr && slot < bundle->filament_presets.size()
-            ? bundle->filaments.find_preset(bundle->filament_presets[slot]) : nullptr;
-        if (preset == nullptr) {
-            metadata_complete = false;
-            continue;
-        }
-        const auto* types = preset->config.option<ConfigOptionStrings>("filament_type");
-        const auto* temperatures = preset->config.option<ConfigOptionInts>("nozzle_temperature");
-        const auto* range_lows = preset->config.option<ConfigOptionInts>("nozzle_temperature_range_low");
-        const auto* range_highs = preset->config.option<ConfigOptionInts>("nozzle_temperature_range_high");
-        auto capability = std::find_if(capabilities.begin(), capabilities.end(), [slot](const auto& candidate) {
-            return !candidate.is_mixed && candidate.slot == slot;
-        });
-        if (types != nullptr && !types->values.empty() && capability != capabilities.end())
-            capability->material_type = types->get_at(0);
-        if (types == nullptr || types->values.empty() || temperatures == nullptr || temperatures->values.empty() ||
-            range_lows == nullptr || range_lows->values.empty() || range_highs == nullptr || range_highs->values.empty()) {
-            metadata_complete = false;
-            continue;
-        }
-        slot_temperatures[index] =
-            {types->get_at(0), temperatures->get_at(0), range_lows->get_at(0), range_highs->get_at(0)};
-    }
-
-    std::vector<size_t> compatible_slots = physical_slots;
-    if (physical_slots.size() >= 2 && metadata_complete) {
-        std::vector<size_t> best {physical_slots.front()};
-        const uint32_t subset_count = uint32_t(1) << physical_slots.size();
-        for (uint32_t mask = 1; mask < subset_count; ++mask) {
-            std::vector<size_t> slots;
-            std::vector<std::string> selected_types;
-            std::vector<int> selected_temperatures;
-            std::vector<int> selected_lows;
-            std::vector<int> selected_highs;
-            for (size_t bit = 0; bit < physical_slots.size(); ++bit) {
-                if ((mask & (uint32_t(1) << bit)) == 0)
-                    continue;
-                slots.push_back(physical_slots[bit]);
-                selected_types.push_back(slot_temperatures[bit].type);
-                selected_temperatures.push_back(slot_temperatures[bit].temperature);
-                selected_lows.push_back(slot_temperatures[bit].range_low);
-                selected_highs.push_back(slot_temperatures[bit].range_high);
-            }
-            if (slots.size() > best.size() &&
-                Print::check_multi_filaments_compatibility(selected_types, selected_temperatures, selected_lows,
-                                                           selected_highs) == FilamentCompatibilityType::Compatible)
-                best = std::move(slots);
-        }
-        compatible_slots = std::move(best);
-    }
-
-    for (OrcaPaletteSlotCapability& capability : capabilities) {
-        if (!capability.is_mixed)
-            capability.compatible = std::find(compatible_slots.begin(), compatible_slots.end(), capability.slot) !=
-                                    compatible_slots.end();
-    }
-    AI::PrintablePaletteSnapshot snapshot = build_orca_palette_snapshot(capabilities, metadata_complete);
-    // Preserve the raw all-slot projection for the legacy manual matcher. Typed
-    // consumers use physical_channels and mixed_recipes, which remain separated.
-    snapshot.project_colors = std::move(project_colors);
-    return snapshot;
+    return OrcaPrintPaletteSnapshot::capture(bundle,std::move(project_colors),nozzle_routing);
 }
 
 TextureImportOptions model_import_color_options(const AI::ModelImportRequest& request)
@@ -235,6 +143,7 @@ TextureImportOptions model_import_color_options(const AI::ModelImportRequest& re
     options.physical_filament_limit = 6;
     options.preserve_existing_filaments = true;
     options.z_up = true;
+    options.source_units_in_meters = AI::model_artifact_format(request.artifact.local_path) == "glb";
     const auto to_rgb = [](const auto& color) {
         return std::array<size_t, 3> {size_t(std::lround(color[0] * 255.f)),
                                      size_t(std::lround(color[1] * 255.f)),
@@ -247,6 +156,23 @@ TextureImportOptions model_import_color_options(const AI::ModelImportRequest& re
             options.fixed_mapping_palette.push_back(to_rgb(color));
         for (const auto& color : request.color_trial->target_colors)
             options.fixed_palette.push_back(to_rgb(color));
+    }
+    if(request.matched_colors) {
+        options.matched_face_slots=request.matched_colors->face_slots;
+        for(const auto& channel:request.matched_colors->palette) {
+            TextureFilamentEntry entry;
+            entry.kind=TextureFilamentKind::ExistingPhysical;entry.project_config_index=channel.slot;
+            entry.color_hex=channel.display_color;entry.type=channel.material_type;
+            options.matched_filaments.push_back(std::move(entry));
+        }
+        for(const auto& recipe:request.matched_colors->mixed_recipes) {
+            TextureFilamentEntry entry;entry.kind=TextureFilamentKind::ExistingMixed;
+            entry.project_config_index=*recipe.existing_virtual_slot;entry.color_hex=recipe.target_color;
+            for(const auto& c:recipe.components) {
+                entry.mixed_components.push_back(unsigned(c.slot+1));entry.mixed_ratios.push_back(int(std::lround(c.ratio*100)));
+            }
+            options.matched_filaments.push_back(std::move(entry));
+        }
     }
     return options;
 }
@@ -265,6 +191,29 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
     }
 
     boost::filesystem::path path = request.artifact.local_path;
+    std::shared_ptr<const indexed_triangle_set> matched_source;
+    if(request.matched_colors && request.color_mode==AI::ImportColorMode::NativeMatch) {
+        const auto& matched=*request.matched_colors;
+        const auto current=printable_palette();
+        bool palette_matches=matched.palette.size()==current.physical_channels.size();
+        for(const auto& saved:matched.palette) {
+            const auto found=std::find_if(current.physical_channels.begin(),current.physical_channels.end(),[&](const auto& c){
+                return c.slot==saved.slot && c.display_color==saved.display_color && c.material_type==saved.material_type && c.compatible==saved.compatible;
+            });
+            palette_matches=palette_matches && found!=current.physical_channels.end();
+        }
+        for(const auto& recipe:matched.mixed_recipes)
+            palette_matches=palette_matches && std::any_of(current.mixed_recipes.begin(),current.mixed_recipes.end(),
+                [&](const auto& r){return AI::same_native_mixed_recipe(r,recipe);});
+        TriangleMesh mesh;ObjInfo colors;
+        if(!matched.valid() || !palette_matches || AI::model_artifact_sha256(path)!=matched.source_sha256 ||
+           !AI::load_model_artifact(path,mesh,colors,result.error) || mesh.its.indices.size()!=matched.face_slots.size() ||
+           AI::SurfaceSelectionPersistence::geometry_fingerprint(mesh.its)!=matched.geometry_id) {
+            result.outcome=AI::ModelImportOutcome::InvalidArtifact;
+            result.error="模型或准备页耗材已变化，请回美颜工作台重新匹配并保存后导入。";return result;
+        }
+        matched_source=std::make_shared<indexed_triangle_set>(std::move(mesh.its));
+    }
     if (request.color_mode == AI::ImportColorMode::NativeMatch &&
         (!request.face_color_overrides.empty() || !request.subface_color_overrides.empty())) {
         ObjInfo source_colors;
@@ -301,7 +250,7 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
             }
         }
     }
-    if (AI::model_artifact_format(path) == "glb") {
+    if (AI::model_artifact_format(path) == "glb" && request.color_mode != AI::ImportColorMode::NativeMatch) {
         // Feed the same Z-up millimetres and sampled sRGB colors as the AI
         // preview into Orca's existing color matching and undo transaction.
         // Keep the textured GLB and an immutable, local import copy separately.
@@ -334,16 +283,16 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
     workflow.update_ai_workflow_step(Sidebar::AIImportModel, Sidebar::AIWorkflowStatus::Running, _L("读取模型"));
 
     bool import_cancelled = false;
-    auto load_model = [this, &path, &import_cancelled, &request](const char* snapshot_name, AI::ImportColorMode color_mode, bool& colors_applied,
+    auto load_model = [this, &path, &import_cancelled, &request,&matched_source](const char* snapshot_name, AI::ImportColorMode color_mode, bool& colors_applied,
                                     size_t& source_color_count, size_t& mapped_color_count) {
         import_cancelled = false;
         if (color_mode == AI::ImportColorMode::NativeMatch) {
-            // An OBJ callback bypasses the native texture matcher for vertex and
-            // face colors. Leave it unset so AI imports use the same preview,
-            // mixed-filament recipes and undo transaction as regular OBJ imports.
+            // Pass the actual selected GLB version through with its UVs and
+            // embedded textures. An OBJ conversion would discard that detail.
             Plater::TakeSnapshot snapshot(m_plater, snapshot_name);
             ModelColorImportResult color_result;
             TextureImportOptions options = model_import_color_options(request);
+            options.matched_source=matched_source;
             auto loaded = m_plater->load_files({path}, LoadStrategy::LoadModel, false, nullptr, &color_result, &options);
             import_cancelled = color_result.cancelled;
             colors_applied = color_result.colors_applied;
@@ -501,11 +450,17 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
     update_color_status();
 
     bool requires_repair = false;
+    size_t stitched_volumes = 0;
     for (size_t object_index : loaded) {
-        if (object_index < m_plater->model().objects.size()) {
-            const ModelObject* object = m_plater->model().objects[object_index];
-            requires_repair |= object != nullptr && has_open_mesh_edges(*object);
+        if (object_index >= m_plater->model().objects.size()) continue;
+        ModelObject* object = m_plater->model().objects[object_index];
+        if (!object) continue;
+        const size_t stitched = stitch_ai_import_seams(*object);
+        if (stitched) {
+            stitched_volumes += stitched;
+            m_plater->changed_mesh(int(object_index));
         }
+        requires_repair |= has_open_mesh_edges(*object);
     }
     if (requires_repair) {
         // CGAL repair has no interruptible per-mesh operation. Do not make it
@@ -515,7 +470,8 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
         workflow.update_ai_workflow_step(Sidebar::AICheckMesh, Sidebar::AIWorkflowStatus::Warning,
             _L("模型存在开放边；已保留几何与颜色，请在准备页检查并按需修复"));
     } else {
-        workflow.update_ai_workflow_step(Sidebar::AICheckMesh, Sidebar::AIWorkflowStatus::Success, _L("封闭网格"));
+        workflow.update_ai_workflow_step(Sidebar::AICheckMesh, Sidebar::AIWorkflowStatus::Success,
+            stitched_volumes ? _L("已闭合纹理接缝，保留已选颜色") : _L("封闭网格"));
     }
 
     if (update_existing != size_t(-1) && (loaded.size() != 1 || result.manual_repair_required)) {
@@ -550,9 +506,21 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
     }
 
     m_on_import_succeeded();
-    if (arrange_copy) m_plater->arrange();
+    if (arrange_copy) {
+        // ArrangeJob runs on the UI worker. Keep the workflow active until its
+        // finalize() callback applies the transforms, otherwise the panel
+        // reports success while the imported copy can still overlap the
+        // existing model.
+        if (!m_plater->arrange_for_ai_workflow())
+            return result;
+        return result;
+    }
     workflow.update_ai_workflow_step(Sidebar::AIArrange, Sidebar::AIWorkflowStatus::Success,
                                      _L("已放置到打印板"));
+    // Keep the workflow active while the user performs the manual repair,
+    // colour assignment and slice. Plater's process-completed event owns the
+    // final Slice/G-code states; finishing here would make those later events
+    // invisible to the workflow panel.
     workflow.update_ai_workflow_step(Sidebar::AISlice, Sidebar::AIWorkflowStatus::Waiting,
                                      result.manual_repair_required
                                          ? _L("修复模型后手动切片")
@@ -560,12 +528,6 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
                                                                            : _L("等待手动切片"));
     workflow.update_ai_workflow_step(Sidebar::AIGCode, Sidebar::AIWorkflowStatus::Waiting,
                                      _L("手动切片后生成"));
-    workflow.finish_ai_workflow(true,
-                                result.manual_repair_required
-                                    ? _L("模型已导入准备页，请先手动修复")
-                                    : result.manual_coloring_required
-                                        ? _L("模型已导入准备页，请先完成上色")
-                                        : _L("模型已导入准备页，可手动调整并切片"));
     return result;
 }
 

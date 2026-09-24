@@ -18,5 +18,8 @@ bool write_model_artifact(const boost::filesystem::path& path, const indexed_tri
 bool is_model_artifact(const boost::filesystem::path& path);
 std::string model_artifact_format(const boost::filesystem::path& path);
 std::string model_artifact_sha256(const boost::filesystem::path& path);
+// Archive a local model as a self-contained GLB. Existing GLBs are copied
+// exactly; OBJ positions use Orca's Z-up millimetres, with embedded PNG/JPEGs.
+bool archive_local_model(const boost::filesystem::path& source,const boost::filesystem::path& destination,std::string& error);
 
 } // namespace Slic3r::AI

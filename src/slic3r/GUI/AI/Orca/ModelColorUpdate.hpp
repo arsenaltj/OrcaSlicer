@@ -22,7 +22,7 @@ inline bool same_generated_artifact_name(const std::string& saved, const std::st
     }
     const std::string prefix = name.rfind("orcaslicer-ai-finish-", 0) == 0 ? "orcaslicer-ai-finish-" : "orcaslicer-ai-";
     if (name.rfind(prefix, 0) != 0 || name.size() != prefix.size() + 40 ||
-        name.substr(name.size() - 4) != ".obj" || basename(saved) != name) return false;
+        (name.substr(name.size() - 4) != ".obj" && name.substr(name.size() - 4) != ".glb") || basename(saved) != name) return false;
     for (size_t i = 0; i < 36; ++i) {
         const char c = name[prefix.size() + i];
         if (i == 8 || i == 13 || i == 18 || i == 23) { if (c != '-') return false; }
@@ -45,8 +45,13 @@ inline bool update_compatible_model_colors(ModelObject& target, const ModelObjec
         !std::equal(a.vertices.begin(), a.vertices.end(), b.vertices.begin(), [](const auto& x, const auto& y) { return (x.array() == y.array()).all(); }) ||
         !std::equal(a.indices.begin(), a.indices.end(), b.indices.begin(), [](const auto& x, const auto& y) { return (x.array() == y.array()).all(); })) return false;
     destination.mmu_segmentation_facets.assign(incoming.mmu_segmentation_facets);
-    destination.config.set("extruder", incoming.config.extruder());
-    target.config.set("extruder", source.config.extruder());
+    // A sparse model config may inherit the default slot instead of storing
+    // an explicit extruder option; opt_int() is not safe for an absent key.
+    for (auto pair : {std::pair<ModelConfigObject*, const ModelConfigObject*>{&target.config, &source.config},
+                      {&destination.config, &incoming.config}}) {
+        if (const auto* value = pair.second->option("extruder")) pair.first->set_key_value("extruder", value->clone());
+        else pair.first->erase("extruder");
+    }
     return true;
 }
 

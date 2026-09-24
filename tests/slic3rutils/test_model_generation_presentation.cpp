@@ -362,7 +362,8 @@ TEST_CASE("AI model output remains fixed after working directory and environment
     ScopedWorkingDirectory working_directory(parent_start);
     ScopedEnvironmentValue environment("ORCASLICER_AI_OUTPUT_DIR", "relative output/../model assets");
     const Slic3r::GUI::AIModelOutputDirectory directory(temporary.path() / "user data");
-    const fs::path expected = parent_start / "model assets";
+    // current_path() reflects platform path aliases (for example /var -> /private/var on macOS).
+    const fs::path expected = fs::current_path() / "model assets";
     REQUIRE(directory.root().is_absolute());
     REQUIRE(directory.root() == expected);
 

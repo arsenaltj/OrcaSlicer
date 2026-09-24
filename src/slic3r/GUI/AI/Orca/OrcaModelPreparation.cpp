@@ -6,6 +6,13 @@
 
 namespace Slic3r::GUI {
 
+namespace {
+bool is_generated_base_name(const std::string& name)
+{
+    return name == "AI round base" || name == "AI oval base" || name == "AI rectangle base";
+}
+}
+
 ModelPreparation prepare_model(const ModelObject& source, const ModelPreparationOptions& options)
 {
     const double height = options.total_height_mm;
@@ -19,7 +26,7 @@ ModelPreparation prepare_model(const ModelObject& source, const ModelPreparation
     for (const auto* volume : source.volumes) {
         if (volume->is_model_part() && first_part == nullptr)
             first_part = volume;
-        if (options.add_round_base && volume->name == "AI round base")
+        if (options.add_round_base && is_generated_base_name(volume->name))
             throw std::invalid_argument("base_already_exists");
     }
     if (first_part == nullptr)
@@ -48,13 +55,42 @@ ModelPreparation prepare_model(const ModelObject& source, const ModelPreparation
     result.instance = Geometry::Transformation(matrix);
 
     if (options.add_round_base) {
-        // Cover the complete XY footprint, with a 2 mm radial margin. The small
+        // Cover the complete XY footprint, with a 2 mm margin. The small
         // overlap joins the base to the body during native multipart slicing.
-        const double radius = std::hypot(bounds.size().x(), bounds.size().y()) / 2.0 + 2.0;
-        TriangleMesh mesh(its_make_cylinder(radius, base_height));
+        const double width = std::max(8.0, double(bounds.size().x()) + 4.0);
+        const double depth = std::max(8.0, double(bounds.size().y()) + 4.0);
+        TriangleMesh mesh;
+        switch (options.base_template) {
+        case ModelBaseTemplate::Oval: {
+            const double radius = std::max(width, depth) / 2.0;
+            mesh = TriangleMesh(its_make_cylinder(radius, base_height));
+            Transform3d oval_scale = Transform3d::Identity();
+            oval_scale.linear()(0, 0) = width / (2.0 * radius);
+            oval_scale.linear()(1, 1) = depth / (2.0 * radius);
+            // Use the mesh transform API so cached statistics and bounds are
+            // refreshed along with the vertex coordinates.
+            mesh.transform(oval_scale);
+            break;
+        }
+        case ModelBaseTemplate::Rectangle:
+            mesh = TriangleMesh(its_make_cube(width, depth, base_height));
+            mesh.translate(float(-width / 2.0), float(-depth / 2.0), 0.0f);
+            break;
+        case ModelBaseTemplate::Round:
+        default:
+            // A round display base should stay compact under a portrait or
+            // figurine.  Using the XY diagonal here makes a wide pose (for
+            // example, outstretched arms) produce an unnecessarily huge
+            // plinth.  The short footprint dimension is a stable support
+            // diameter and leaves the oval/rectangle templates available
+            // when full footprint coverage is required.
+            mesh = TriangleMesh(its_make_cylinder(std::max(4.0, std::min(width, depth) / 2.0), base_height));
+            break;
+        }
         result.base = std::make_unique<Model>();
         auto* base = result.base->add_object()->add_volume(std::move(mesh), ModelVolumeType::MODEL_PART, false);
-        base->name = "AI round base";
+        base->name = options.base_template == ModelBaseTemplate::Oval ? "AI oval base" :
+            options.base_template == ModelBaseTemplate::Rectangle ? "AI rectangle base" : "AI round base";
         base->config.set_key_value("extruder", new ConfigOptionInt(std::max(1, first_part->extruder_id())));
         Transform3d world = Transform3d::Identity();
         world.translation() = Vec3d(original_center.x(), original_center.y(), 0.0);

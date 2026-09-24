@@ -13,6 +13,7 @@
 #include <queue>
 #include <mutex>
 #include <utility>
+#include <tuple>
 
 #include <boost/log/trivial.hpp>
 
@@ -1139,6 +1140,18 @@ struct OpenPolyline {
 static void chain_lines_by_triangle_connectivity(IntersectionLines &lines, const CoplanarEdges &coplanar_edges,
                                                  Polygons &loops, std::vector<OpenPolyline> &open_polylines)
 {
+    // Both ordinary slices and slab projections append intersections in parallel.
+    // Greedy seeds and downstream clipping must not follow worker arrival order.
+    std::sort(lines.begin(), lines.end(), [](const IntersectionLine &a, const IntersectionLine &b) {
+        if (a.skip() != b.skip())
+            return !a.skip();
+        if (a.skip())
+            return false; // Skipped lines need not have meaningful endpoints.
+        return std::make_tuple(a.a.x(), a.a.y(), a.b.x(), a.b.y(), a.a_id, a.b_id,
+                               a.edge_a_id, a.edge_b_id, a.edge_type, a.flags) <
+               std::make_tuple(b.a.x(), b.a.y(), b.b.x(), b.b.y(), b.a_id, b.b_id,
+                               b.edge_a_id, b.edge_b_id, b.edge_type, b.flags);
+    });
     // Build a map of lines by edge_a_id and a_id.
     std::vector<IntersectionLine*> by_edge_a_id;
     std::vector<IntersectionLine*> by_a_id;

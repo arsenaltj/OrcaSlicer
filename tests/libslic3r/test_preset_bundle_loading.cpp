@@ -10,6 +10,37 @@
 
 using namespace Slic3r;
 
+TEST_CASE("Normalizing a project preserves material slots independently of nozzle count", "[Preset][MaterialSlotNormalization]")
+{
+    const size_t nozzle_count = GENERATE(size_t(1), size_t(2), size_t(4));
+    const size_t material_count = GENERATE(size_t(1), size_t(4), size_t(6), size_t(8));
+    const bool single_extruder_multi_material = GENERATE(false, true);
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.set_key_value("single_extruder_multi_material", new ConfigOptionBool(single_extruder_multi_material));
+    config.set_num_extruders(unsigned(nozzle_count));
+    config.set_num_filaments(unsigned(material_count));
+    // Native project serialization emits one diameter per material here;
+    // set_num_filaments does not expand variant-bearing options itself.
+    config.set_key_value("filament_diameter", new ConfigOptionFloats(std::vector<double>(material_count, 1.75)));
+    std::vector<std::string> names, colors;
+    for (size_t i = 0; i < material_count; ++i) {
+        names.push_back("Distinct material " + std::to_string(i + 1));
+        colors.push_back(i % 2 ? "#E53935" : "#26A69A");
+    }
+    config.set_key_value("filament_settings_id", new ConfigOptionStrings(names));
+    config.set_key_value("filament_colour", new ConfigOptionStrings(colors));
+
+    Preset::normalize(config);
+
+    CHECK(config.option<ConfigOptionStrings>("filament_settings_id")->values == names);
+    CHECK(config.option<ConfigOptionStrings>("filament_colour")->values == colors);
+    CHECK(config.option<ConfigOptionFloats>("filament_diameter")->values.size() == material_count);
+    CHECK(config.option<ConfigOptionFloats>("nozzle_diameter")->values.size() == nozzle_count);
+    const auto normalized = config;
+    Preset::normalize(config);
+    CHECK(config.diff(normalized).empty());
+}
+
 namespace {
 
 namespace fs = boost::filesystem;

@@ -178,10 +178,17 @@ class SourceIdentityTests(unittest.TestCase):
             with self.subTest(script=script):
                 output = self.root / ".tmp" / "output"
                 args = [powershell, "-NoProfile", "-File", str(self.root / script), "-BuildDir", str(build),
-                        "-OutputDir", str(output), "-Revision", "fixture", "-SourceManifest", str(self.manifest_path), "-ValidateOnly"]
+                        "-OutputDir", str(output), "-Revision", "fixture", "-SourceManifest", str(self.manifest_path),
+                        "-SevenZipExecutable", str(placeholder), "-ValidateOnly"]
                 result = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=40)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertRegex(result.stdout, "True")
+                self.assertFalse(output.exists())
+                invalid_tool = list(args)
+                invalid_tool[invalid_tool.index("-SevenZipExecutable") + 1] = str(self.root / "absent-7z.exe")
+                rejected_tool = subprocess.run(invalid_tool, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=40)
+                self.assertNotEqual(rejected_tool.returncode, 0)
+                self.assertIn("7-Zip executable", rejected_tool.stderr)
                 self.assertFalse(output.exists())
                 # Both entry points must reject a stale snapshot before invoking any build command.
                 self.write("new.txt", "drift")
