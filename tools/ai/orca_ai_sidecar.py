@@ -8929,6 +8929,7 @@ class Handler(BaseHTTPRequestHandler):
             reference_job.custom_style,
             reference_job.print_settings,
             palette_color_count=reference_job.palette_color_count,
+            generation_options={"display_base_policy": reference_job.display_base_policy},
         )
         try:
             child.user_prompt = reference_job.user_prompt
@@ -8938,6 +8939,7 @@ class Handler(BaseHTTPRequestHandler):
             child.geometry_quality = geometry_job.geometry_quality
             child.texture_quality = geometry_job.texture_quality
             child.output_format = geometry_job.output_format
+            child.display_base_policy = geometry_job.display_base_policy
             child.palette_recommendation = json.loads(json.dumps(reference_job.palette_recommendation))
             child.palette_recommendation_confirmed = reference_job.palette_recommendation_confirmed
             child.image_metrics = json.loads(json.dumps(reference_job.image_metrics))
