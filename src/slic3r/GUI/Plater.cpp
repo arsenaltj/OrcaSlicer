@@ -3649,7 +3649,10 @@ void Sidebar::update_all_preset_comboboxes()
     }
 
     p_mainframe->show_device(use_native_device_tab);
-    p_mainframe->m_tabpanel->SetSelection(p_mainframe->m_tabpanel->GetSelection());
+    // Re-emit the current workspace request through MainFrame. The old
+    // notebook selection was previously used as an event trigger here; that
+    // would bypass RedesignShell after the new UI became active.
+    p_mainframe->select_tab(p_mainframe->selected_tab_id());
 }
 
 void Sidebar::update_presets(Preset::Type preset_type)
@@ -12914,6 +12917,14 @@ void Plater::priv::on_action_print_plate_from_sdcard(SimpleEvent&)
 
 void Plater::priv::on_tab_selection_changing(wxBookCtrlEvent& e)
 {
+    // The redesign shell is the one-way navigation boundary. The legacy
+    // notebook can still exist during migration, but it must not process
+    // page-changing events once the new surface owns the main frame.
+    if (main_frame != nullptr && main_frame->is_redesign_shell_active()) {
+        e.Skip();
+        return;
+    }
+
     // Ignore event raised by child controls
     if (!(main_frame->m_tabpanel && e.GetId() == main_frame->m_tabpanel->GetId())) {
         e.Skip();
@@ -13819,7 +13830,7 @@ bool Plater::priv::check_ams_status_impl(bool is_slice_all)
                         wxPostEvent(q, SimpleEvent(EVT_GLTOOLBAR_SLICE_ALL));
                     else
                         wxPostEvent(q, SimpleEvent(EVT_GLTOOLBAR_SLICE_PLATE));
-                    wxGetApp().mainframe->m_tabpanel->SelectPageByName(TAB_ID_PREVIEW);
+                    wxGetApp().mainframe->select_tab(TAB_ID_PREVIEW);
                 }
                 return false;
             }
@@ -19595,15 +19606,8 @@ int Plater::export_config_3mf(int plate_idx, Export3mfProgressFn proFn)
 //BBS
 void Plater::send_calibration_job_finished(wxCommandEvent & evt)
 {
-    p->main_frame->request_select_tab(TAB_ID_CALIBRATION);
-    auto calibration_panel = p->main_frame->m_calibration;
-    if (calibration_panel) {
-        auto curr_wizard = static_cast<CalibrationWizard*>(calibration_panel->get_tabpanel()->GetPage(evt.GetInt()));
-        wxCommandEvent event(EVT_CALIBRATION_JOB_FINISHED);
-        event.SetString(evt.GetString());
-        event.SetEventObject(curr_wizard);
-        wxPostEvent(curr_wizard, event);
-    }
+    if (p->main_frame != nullptr)
+        p->main_frame->notify_calibration_job_finished(evt.GetInt(), evt.GetString());
     evt.Skip();
 }
 
@@ -19626,12 +19630,8 @@ void Plater::print_job_finished(wxCommandEvent &evt)
     Slic3r::DeviceManager* dev = Slic3r::GUI::wxGetApp().getDeviceManager();
     if (!dev) return;
 
-    dev->set_selected_machine(evt.GetString().ToStdString());
-    p->main_frame->request_select_tab(TAB_ID_MONITOR);
-    //jump to monitor and select device status panel
-    MonitorPanel* curr_monitor = p->main_frame->m_monitor;
-    if(curr_monitor)
-       curr_monitor->get_tabpanel()->ChangeSelection(MonitorPanel::PrinterTab::PT_STATUS);
+    if (p->main_frame != nullptr)
+        p->main_frame->select_monitor_status(evt.GetString().ToStdString());
 }
 
 void Plater::send_job_finished(wxCommandEvent& evt)
@@ -20369,8 +20369,8 @@ void Plater::update_print_error_info(int code, std::string msg, std::string extr
     if (p->m_send_to_sdcard_dlg) {
         p->m_send_to_sdcard_dlg->update_print_error_info(code, msg, extra);
     }
-    if (p->main_frame->m_calibration)
-        p->main_frame->m_calibration->update_print_error_info(code, msg, extra);
+    if (p->main_frame != nullptr)
+        p->main_frame->update_print_error_info(code, msg, extra);
 }
 
 wxString Plater::get_project_filename(const wxString& extension) const
@@ -20641,7 +20641,7 @@ void Plater::pop_warning_and_go_to_device_page(wxString printer_name, PrinterWar
 {
     printer_name.Replace("Bambu Lab", "", false);
     wxString content;
-    bool device_page = (wxGetApp().mainframe == nullptr) && (wxGetApp().mainframe->m_monitor->IsShown());
+    bool device_page = wxGetApp().mainframe != nullptr && wxGetApp().mainframe->is_printer_view();
     if (type == PrinterWarningType::NOT_CONNECTED) {
         if (device_page) {
             content = wxString::Format(_L("Printer not connected. Please go to the device page to connect %s before syncing."),

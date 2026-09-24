@@ -120,9 +120,8 @@ HMSNotifyItem::HMSNotifyItem(const std::string& dev_id, wxWindow *parent, DevHMS
         }
         });
     m_hms_content->Bind(wxEVT_LEFT_UP, [this](wxMouseEvent& e) {
-            wxCommandEvent evt(EVT_ALREADY_READ_HMS);
-            evt.SetString(long_error_code);
-            wxPostEvent(wxGetApp().mainframe->m_monitor, evt);
+            if (wxGetApp().mainframe != nullptr)
+                wxGetApp().mainframe->notify_hms_read(long_error_code);
 
             if (!m_url.empty()) wxLaunchDefaultBrowser(m_url);
         });

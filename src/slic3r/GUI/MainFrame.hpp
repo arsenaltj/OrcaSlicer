@@ -66,6 +66,7 @@ namespace GUI
 {
 
 class AIDesktopFeatureHost;
+class RedesignShell;
 class Tab;
 class PrintHostQueueDialog;
 class Plater;
@@ -163,6 +164,10 @@ class MainFrame : public DPIFrame
     bool can_delete() const;
     bool can_delete_all() const;
     bool can_reslice() const;
+    // During migration, legacy commands must not operate hidden Plater or
+    // notebook controls after the redesign shell becomes the visible owner.
+    bool route_legacy_command_to_redesign(const char *command,
+                                          const wxString &tab_id = wxString());
     void bind_diff_dialog();
 
     // BBS
@@ -260,6 +265,12 @@ public:
     };
 
     void update_layout();
+    bool is_redesign_shell_active() const { return m_redesign_shell_active; }
+    void show_redesign_shell(bool show);
+    wxString selected_tab_id() const;
+    // Focus the active navigation surface without exposing the legacy notebook.
+    void focus_workspace_navigation();
+    void set_workspace_enabled(bool enabled);
 
 	// Called when closing the application and when switching the application language.
 	void 		shutdown();
@@ -327,6 +338,20 @@ public:
     void        load_config(const DynamicPrintConfig& config);
     //BBS: jump to monitor
     void        jump_to_monitor(std::string dev_id = "");
+    void        jump_to_monitor_hms();
+    void        jump_to_monitor_upgrade();
+    void        jump_to_monitor_live_view();
+    void        jump_to_monitor_rack();
+    void        jump_to_monitor_playback(const std::string& dev_id);
+    void        select_monitor_status(const std::string& dev_id);
+    void        jump_to_monitor_media();
+    void        notify_hms_read(const wxString& error_code);
+    void        refresh_device_surface();
+    void        select_device(const std::string& dev_id);
+    void        update_monitor_error(MachineObject* obj);
+    void        layout_device_surface();
+    void        notify_calibration_job_finished(int tab_index, const wxString& payload);
+    void        update_print_error_info(int code, const std::string& message, const std::string& extra);
     void        jump_to_multipage();
     //BBS: hint when jump to 3Deditor under preview only mode
     bool        preview_only_hint();
@@ -387,6 +412,9 @@ public:
     PrintHostQueueDialog* printhost_queue_dlg() { return m_printhost_queue_dlg; }
     Plater*               m_plater { nullptr };
     std::unique_ptr<AIDesktopFeatureHost> m_ai_feature_host;
+    RedesignShell*        m_redesign_shell { nullptr };
+    bool                  m_redesign_shell_requested { true };
+    bool                  m_redesign_shell_active { false };
     bool                   m_ai_assistant_registered { false };
     //BBS: GUI refactor
     MonitorPanel*         m_monitor{ nullptr };

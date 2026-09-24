@@ -337,7 +337,7 @@ void Field::PostInitialize()
 				}
 				if (tab_id > 0)
 					// tab panel should be focused for correct navigation between tabs
-				    wxGetApp().tab_panel()->SetFocus();
+				    wxGetApp().mainframe->focus_workspace_navigation();
 		    }
 
 		    evt.Skip();

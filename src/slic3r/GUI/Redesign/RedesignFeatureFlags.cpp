@@ -16,12 +16,6 @@ bool is_enabled_value(const char* value)
            normalized == "on" || normalized == "ON" || normalized == "yes" || normalized == "YES";
 }
 
-bool surface_value(std::string_view surface)
-{
-    const std::string variable = "ORCASLICER_UI_REDESIGN_" + std::string(surface);
-    return is_enabled_value(std::getenv(variable.c_str()));
-}
-
 }
 
 bool RedesignFeatureFlags::enabled()
@@ -31,7 +25,18 @@ bool RedesignFeatureFlags::enabled()
 
 bool RedesignFeatureFlags::surface_enabled(std::string_view surface)
 {
-    return enabled() || surface_value(surface);
+    const std::string variable = "ORCASLICER_UI_REDESIGN_" + std::string(surface);
+    if (const char* value = std::getenv(variable.c_str()))
+        return is_enabled_value(value);
+    if (const char* value = std::getenv("ORCASLICER_UI_REDESIGN"))
+        return is_enabled_value(value);
+    return surface == "IMAGE_HOME";
+}
+
+bool RedesignFeatureFlags::image_home_on_startup(bool shell_active, bool has_input_files,
+                                                  bool default_prepare, bool restore_available)
+{
+    return shell_active && !has_input_files && !default_prepare && !restore_available;
 }
 
 }

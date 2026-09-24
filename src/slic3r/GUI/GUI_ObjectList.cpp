@@ -2172,7 +2172,7 @@ void ObjectList::load_subobject(ModelVolumeType type, bool from_galery/* = false
             dlg.get_input_files(input_files);
     }
     else*/
-        wxGetApp().import_model(wxGetApp().tab_panel()->GetPage(0), input_files);
+        wxGetApp().import_model(wxGetApp().mainframe, input_files);
 
     if (input_files.IsEmpty())
         return;
@@ -2214,7 +2214,7 @@ void ObjectList::load_part(ModelObject& model_object, std::vector<ModelVolume*>&
     if (type != ModelVolumeType::MODEL_PART)
         return;
 
-    wxWindow* parent = wxGetApp().tab_panel()->GetPage(0);
+    wxWindow* parent = wxGetApp().mainframe;
 
     wxArrayString input_files;
 
@@ -2275,7 +2275,7 @@ void ObjectList::load_modifier(const wxArrayString& input_files, ModelObject& mo
     //if (type == ModelVolumeType::MODEL_PART)
     //    return;
 
-    wxWindow* parent = wxGetApp().tab_panel()->GetPage(0);
+    wxWindow* parent = wxGetApp().mainframe;
 
     ProgressDialog dlg(_L("Loading") + dots, "", 100, wxGetApp().mainframe, wxPD_AUTO_HIDE);
 

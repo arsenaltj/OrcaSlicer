@@ -1219,7 +1219,7 @@ void SyncAmsInfoDialog::sync_ams_mapping_result(std::vector<FilamentInfo> &resul
             iter++;
         }
     }
-    wxString tab_name = wxGetApp().tab_panel()->GetSelectedPageName();
+    wxString tab_name = wxGetApp().mainframe->selected_tab_id();
     if (tab_name == TAB_ID_PREPARE || tab_name == TAB_ID_PREVIEW) {
         updata_thumbnail_data_after_connected_printer();
     }

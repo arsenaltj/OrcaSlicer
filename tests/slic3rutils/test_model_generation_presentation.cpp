@@ -95,6 +95,41 @@ nlohmann::json write_design_fixture(const boost::filesystem::path& directory)
 
 } // namespace
 
+TEST_CASE("Local image selection accepts decodable PNG and JPEG within the existing limits",
+          "[ModelGenerationPresentation][ImageSelection]")
+{
+    ScopedTemporaryDir temporary("orca-image-selection");
+    if (wxImage::FindHandler(wxBITMAP_TYPE_PNG) == nullptr) wxImage::AddHandler(new wxPNGHandler());
+    if (wxImage::FindHandler(wxBITMAP_TYPE_JPEG) == nullptr) wxImage::AddHandler(new wxJPEGHandler());
+
+    const auto png = temporary.path() / "reference.png";
+    const auto jpeg = temporary.path() / "reference.jpeg";
+    const auto small = temporary.path() / "small.png";
+    const auto truncated = temporary.path() / "truncated.png";
+    const auto oversized = temporary.path() / "oversized.png";
+    wxImage image(64, 64);
+    image.SetRGB(wxRect(0, 0, 64, 64), 24, 128, 200);
+    REQUIRE(image.SaveFile(png.wstring(), wxBITMAP_TYPE_PNG));
+    REQUIRE(image.SaveFile(jpeg.wstring(), wxBITMAP_TYPE_JPEG));
+    image.Rescale(63, 64);
+    REQUIRE(image.SaveFile(small.wstring(), wxBITMAP_TYPE_PNG));
+    const unsigned char signature[] = {0x89, 'P', 'N', 'G', 13, 10, 26, 10};
+    {
+        boost::filesystem::ofstream stream(truncated, std::ios::binary);
+        stream.write(reinterpret_cast<const char*>(signature), sizeof(signature));
+    }
+    boost::filesystem::copy_file(png, oversized);
+    boost::filesystem::resize_file(oversized, 20 * 1024 * 1024 + 1);
+
+    CHECK(is_supported_image(png));
+    CHECK(is_supported_image(jpeg));
+    CHECK_FALSE(is_supported_image(small));
+    wxLogNull quiet;
+    CHECK_FALSE(is_supported_image(truncated));
+    CHECK_FALSE(is_supported_image(oversized));
+    CHECK_FALSE(is_supported_image(temporary.path() / "missing.png"));
+}
+
 TEST_CASE("History listing defers decoding without weakening design recovery validation",
           "[ModelGenerationPresentation][DesignHistory]")
 {
