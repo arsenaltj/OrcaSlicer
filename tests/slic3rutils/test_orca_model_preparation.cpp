@@ -144,6 +144,25 @@ TEST_CASE("Native preparation preserves source and targets total world height", 
     CHECK_NOTHROW(prepare_model(*based, {130, false, 3}));
 }
 
+TEST_CASE("Post-generation base templates remain detached and use stable names", "[ai][OrcaModelPreparation]")
+{
+    for (const auto [kind, name] : std::vector<std::pair<ModelBaseTemplate, std::string>>{
+             {ModelBaseTemplate::Round, "AI round base"},
+             {ModelBaseTemplate::Oval, "AI oval base"},
+             {ModelBaseTemplate::Rectangle, "AI rectangle base"}}) {
+        Model model;
+        auto* object = model.add_object("portrait", "portrait.glb", TriangleMesh(its_make_cube(20, 30, 40)));
+        object->add_instance();
+        auto proposal = prepare_model(*object, {120, true, 3.0, kind});
+        REQUIRE(proposal.base != nullptr);
+        REQUIRE(proposal.base->objects.size() == 1);
+        REQUIRE(proposal.base->objects.front()->volumes.size() == 1);
+        CHECK(proposal.base->objects.front()->volumes.front()->name == name);
+        CHECK(proposal.base->objects.front()->volumes.front()->mesh().its.vertices.size() > 0);
+        CHECK(object->volumes.size() == 1);
+    }
+}
+
 TEST_CASE("Generated artifact recognition survives portable 3MF source paths", "[ai][ModelColorUpdate]")
 {
     const std::string name = "orcaslicer-ai-428a0fe0-8183-4afd-9322-e16be8e77df4.obj";
