@@ -36,6 +36,7 @@ add_executable(${_TEST_NAME}_tests
     test_mediapipe_face_masks.cpp
     test_model_semantic_coloring.cpp
     test_model_finishing.cpp
+    test_local_print_color_state.cpp
     test_beauty_boundary_drag.cpp
     test_beauty_boundary_contours.cpp
     test_beauty_document.cpp
