@@ -52,16 +52,32 @@ BeautyWorkbenchControls::BeautyWorkbenchControls(wxWindow* parent, ModelPreview3
         const int index = m_auto_region->GetSelection();
         const std::string region = index >= 0 && index < 5 ? keys[index] : std::string {};
         const size_t count = on_auto_match(region);
-        if (count == 0) m_status->SetLabel(_L("当前识别结果没有足够可靠的该区域；可继续手动补选。"));
-        else m_status->SetLabel(wxString::Format(_L("已自动匹配 %llu 个面，可继续补选或涂抹保护。"),
-            static_cast<unsigned long long>(count)));
         m_dirty = count > 0;
         update_text();
+        if (count == 0) {
+            if (!m_preview || !m_preview->semantic_regions_ready())
+                m_status->SetLabel(_L("当前没有可用的语义识别缓存；请先开启人像区域优化并完成识别。"));
+            else if (!m_preview->beauty_editor())
+                m_status->SetLabel(_L("正在准备模型选区数据，请稍后再次点击自动匹配区域。"));
+            else
+                m_status->SetLabel(_L("当前识别结果没有足够可靠的该区域；可继续手动补选。"));
+        } else {
+            m_status->SetLabel(wxString::Format(_L("已自动匹配 %llu 个面，可继续补选或涂抹保护；改色和保存已接入。"),
+                static_cast<unsigned long long>(count)));
+        }
+        m_status->Wrap(FromDIP(250));
+        Layout();
     });
     m_reoptimize->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-        if (on_reoptimize) on_reoptimize();
-        m_status->SetLabel(_L("已请求重新优化；Beauty 选区和手动保护保持不变。"));
         update_text();
+        if (!m_preview || !m_preview->semantic_optimization_enabled())
+            m_status->SetLabel(_L("当前未开启人像区域优化，未重新识别；请先启用后再试。"));
+        else {
+            if (on_reoptimize) on_reoptimize();
+            m_status->SetLabel(_L("已请求重新优化；Beauty 选区和手动保护保持不变。"));
+        }
+        m_status->Wrap(FromDIP(250));
+        Layout();
     });
     Hide();
 }
@@ -80,9 +96,10 @@ void BeautyWorkbenchControls::synchronize(const boost::filesystem::path& source,
         m_document = AI::BeautyDocument {};
         m_dirty = false;
     }
-    m_ready = m_preview && !m_geometry_id.empty() && m_preview->region_editing_ready();
+    const bool region_available = m_preview && !m_geometry_id.empty() && m_preview->region_editing_ready();
+    const auto editor = m_preview ? m_preview->beauty_editor() : nullptr;
+    m_ready = region_available && bool(editor);
     if (m_ready && !m_surface) {
-        const auto editor = m_preview->beauty_editor();
         if (editor) {
             try {
                 m_surface = AI::BeautySurface::build(editor->mesh(), editor->vertex_colors());
@@ -95,7 +112,7 @@ void BeautyWorkbenchControls::synchronize(const boost::filesystem::path& source,
             }
         }
     }
-    Show(visible && m_ready);
+    Show(visible && region_available);
     update_text();
 }
 
@@ -111,8 +128,11 @@ void BeautyWorkbenchControls::update_text()
     m_redo->Enable(m_editable && m_ready);
     m_save->Enable(m_editable && m_ready && m_dirty);
     const bool semantic = m_preview && m_preview->semantic_regions_ready();
-    m_auto_region->Enable(m_editable && m_ready && semantic);
-    m_auto_match->Enable(m_editable && m_ready && semantic);
+    m_auto_region->Enable(m_editable && m_ready);
+    m_auto_match->Enable(m_editable && m_ready);
+    m_auto_match->SetToolTip(semantic
+        ? _L("按当前已缓存的人像语义结果选择区域，不会重新识别。")
+        : _L("暂无语义缓存；先在人像区域优化中完成识别，之后可自动匹配。"));
     m_reoptimize->Enable(m_editable && m_ready && m_preview && m_preview->semantic_optimization_enabled());
     Layout();
     if (m_layout_changed) m_layout_changed();

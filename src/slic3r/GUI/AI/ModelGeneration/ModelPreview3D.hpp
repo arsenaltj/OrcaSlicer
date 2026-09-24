@@ -626,6 +626,9 @@ public:
         if (!semantic_regions_ready() || !region_editing_ready()) return 0;
         auto state = selection_state();
         if (state.selected.empty() || m_semantic_analysis->face_labels.size() != state.selected.size()) return 0;
+        // Treat an automatic region match like a user selection so the normal
+        // Beauty undo/redo and subsequent recolor/save flow can consume it.
+        push_selection_history(state.selected);
         std::fill(state.selected.begin(), state.selected.end(), uint8_t(0));
         if (state.foreground.size() != state.selected.size()) state.foreground.assign(state.selected.size(), uint8_t(0));
         if (state.domain.size() != state.selected.size()) state.domain.assign(state.selected.size(), uint8_t(0));
