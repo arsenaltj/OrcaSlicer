@@ -90,6 +90,20 @@ class OpenAIBaseUrlTests(unittest.TestCase):
             self.assertEqual(raised.exception.retryable, retryable)
             self.assertEqual(raised.exception.ambiguous, ambiguous)
 
+    def test_image_rejection_distinguishes_copyright_and_content_policy(self):
+        cases = (
+            (b'{"error":{"code":"copyright_violation","message":"copyright restriction"}}',
+             "image_copyright_restricted"),
+            (b'{"error":{"type":"content_policy","message":"safety policy"}}',
+             "image_content_policy_restricted"),
+            (b'{"error":{"code":"invalid_prompt"}}', "image_rejected"),
+        )
+        for body, expected in cases:
+            response = mock.Mock()
+            response.read.return_value = body
+            with self.subTest(expected=expected):
+                self.assertEqual(preprocessor._classify_image_rejection(response), expected)
+
     def test_connection_failure_is_ambiguous_and_not_retried(self):
         opener = mock.Mock()
         opener.open.side_effect = urllib.error.URLError("offline")

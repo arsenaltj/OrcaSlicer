@@ -105,6 +105,10 @@ wxString localized_job_status(const AIModelGenerationClient::JobStatus& status)
             message = _L("图片服务请求较多，请稍后点击“重新生成图片预览”。不会自动重复调用。");
         else if (status.provider_error_code == "image_auth_failed")
             message = _L("图片服务认证或模型权限异常，请检查服务配置后重试。");
+        else if (status.provider_error_code == "image_copyright_restricted")
+            message = _L("图片服务因版权、知识产权或肖像权限制拒绝了本次生成。请更换图片或改写描述；这不是网络或程序故障。");
+        else if (status.provider_error_code == "image_content_policy_restricted")
+            message = _L("图片服务因内容安全策略拒绝了本次生成。请调整图片或描述后重试；这不是网络或程序故障。");
         else if (status.provider_error_code == "image_rejected")
             message = _L("图片服务拒绝了请求，请检查图片格式、描述和模型参数；详细原因见诊断日志。");
         else if (status.provider_error_code == "image_download_failed")

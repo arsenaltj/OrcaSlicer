@@ -326,6 +326,48 @@ def _read_json_response(response: Any) -> dict[str, Any]:
     return value
 
 
+def _classify_image_rejection(response: Any) -> str:
+    """Classify a provider's bounded 4xx body without exposing submitted content."""
+    try:
+        raw = response.read(64 * 1024)
+    except (AttributeError, OSError, ValueError):
+        return "image_rejected"
+    try:
+        value = json.loads(raw.decode("utf-8", errors="replace"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        value = raw.decode("utf-8", errors="replace")
+
+    fragments: list[str] = []
+    def collect(item: Any, depth: int = 0) -> None:
+        if depth > 3:
+            return
+        if isinstance(item, str):
+            fragments.append(item[:512])
+        elif isinstance(item, dict):
+            for key in ("code", "type", "category", "reason", "message", "error"):
+                if key in item:
+                    collect(item[key], depth + 1)
+        elif isinstance(item, list):
+            for entry in item[:8]:
+                collect(entry, depth + 1)
+    collect(value)
+    text = " ".join(fragments).lower()
+    copyright_markers = (
+        "copyright", "copyrighted", "intellectual property", "trademark",
+        "likeness rights", "著作权", "版权", "知识产权", "肖像权",
+    )
+    if any(marker in text for marker in copyright_markers):
+        return "image_copyright_restricted"
+    policy_markers = (
+        "content policy", "safety policy", "safety system", "moderation",
+        "disallowed content", "policy violation", "内容政策", "安全策略",
+        "违规内容",
+    )
+    if any(marker in text for marker in policy_markers):
+        return "image_content_policy_restricted"
+    return "image_rejected"
+
+
 def _request_with_provider(
     path: str,
     body: bytes,
@@ -385,7 +427,7 @@ def _request_with_provider(
             ambiguous = False
         elif 400 <= exc.code < 500:
             message = "The preprocessing service rejected the request."
-            code = "image_rejected"
+            code = _classify_image_rejection(exc)
             retryable = False
             ambiguous = False
         else:
