@@ -119,6 +119,10 @@ public:
             event.Skip();
         });
         m_canvas->Bind(wxEVT_LEFT_DOWN, [this](wxMouseEvent& event) {
+            if (m_selection_enabled && !selection_busy() && !event.AltDown() &&
+                m_selection_gesture != SelectionGesture::Orbit &&
+                m_selection_gesture != SelectionGesture::Similar)
+                set_selection_preview_suppressed(false);
             m_dragging = true;
             m_drag_moved = false;
             m_drag_start = event.GetPosition();
@@ -139,8 +143,10 @@ public:
                 m_stroke.emplace_back(event.GetX(), event.GetY());
                 submit_surface_selection();
             } else if (m_selection_enabled && !m_drag_moved && !event.AltDown() &&
-                       m_selection_gesture == SelectionGesture::Similar)
+                       m_selection_gesture == SelectionGesture::Similar) {
+                set_selection_preview_suppressed(false);
                 select_at(event.GetPosition());
+            }
             finish_drag();
         });
         m_canvas->Bind(wxEVT_LEAVE_WINDOW, [this](wxMouseEvent&) {
@@ -990,6 +996,11 @@ public:
     }
     void set_gray_view(bool enabled) { m_gray_view = enabled; m_canvas->Refresh(false); }
     void set_selection_overlay_visible(bool visible) { m_selection_overlay_visible = visible; m_canvas->Refresh(false); }
+    void set_selection_preview_suppressed(bool suppressed) {
+        if (m_selection_preview_suppressed == suppressed) return;
+        m_selection_preview_suppressed = suppressed;
+        m_canvas->Refresh(false);
+    }
     bool focus_selection() {
         if (!m_region_editor->ready() || !m_region_editor->selected_face_count()) return false;
         const auto& mesh = m_region_editor->mesh();
@@ -1758,7 +1769,8 @@ private:
                     model->render(shader);
                 if (multisample) glsafe(::glEnable(GL_MULTISAMPLE));
                 if (dither) glsafe(::glEnable(GL_DITHER));
-                if ((m_selection_model || m_protection_model) && m_selection_enabled && m_selection_overlay_visible) {
+                if ((m_selection_model || m_protection_model) && m_selection_enabled &&
+                    m_selection_overlay_visible && !m_selection_preview_suppressed) {
                     shader->set_uniform("gray_view", false);
                     shader->set_uniform("use_uniform_color", true);
                     shader->set_uniform("preview_color_count", 0);
@@ -1768,7 +1780,7 @@ private:
                     if (m_protection_model) m_protection_model->render(shader);
                     glsafe(::glDisable(GL_POLYGON_OFFSET_FILL));
                 }
-                if (m_beauty_view && m_partition_model) {
+                if (m_beauty_view && m_partition_model && !m_selection_preview_suppressed) {
                     shader->set_uniform("gray_view", false);
                     shader->set_uniform("use_uniform_color", true);
                     shader->set_uniform("preview_color_count", 0);
@@ -1933,6 +1945,7 @@ private:
     bool m_drag_moved {false};
     bool m_selection_enabled {false};
     bool m_selection_overlay_visible {true};
+    bool m_selection_preview_suppressed {false};
     bool m_has_model {false};
     bool m_paint_diagnostics_logged {false};
     bool m_render_diagnostics_logged {false};

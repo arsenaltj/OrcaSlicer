@@ -155,6 +155,7 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
         }
     });
     show_selection->Bind(wxEVT_CHECKBOX, [this, show_selection](wxCommandEvent&) {
+        m_model_preview->set_selection_preview_suppressed(false);
         m_model_preview->set_selection_overlay_visible(show_selection->GetValue());
     });
     m_finishing_selection_controls->SetSizer(selection);
@@ -209,6 +210,7 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
     m_beauty_controls = new BeautyWorkbenchControls(m_finishing_panel, m_model_preview, m_palette_provider,
         [this] { if (m_finishing_panel) { m_finishing_panel->Layout(); static_cast<wxScrolledWindow*>(m_finishing_panel)->FitInside(); } });
     m_beauty_controls->on_boundary_adjust = [this] {
+        if (m_model_preview) m_model_preview->set_selection_preview_suppressed(false);
         if (m_model_preview) m_model_preview->refine_selection_boundary();
         if (m_beauty_controls) m_beauty_controls->set_dirty(true);
         update_finishing_selection();
@@ -248,6 +250,7 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
         // controller owns the operation-level history entry.
         const bool deferred = !m_model_preview->beauty_editor();
         const size_t count = m_model_preview->select_semantic_region(region, deferred);
+        if (count) m_model_preview->set_selection_preview_suppressed(false);
         if (count && m_beauty_transactions) {
             const auto after = m_model_preview->selection_state();
             m_beauty_transactions->record({
@@ -329,6 +332,7 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
         refresh_model_finishing();
     };
     m_beauty_controls->on_pick_mode = [this] {
+        m_model_preview->set_selection_preview_suppressed(false);
         m_finishing_selection_operation->SetSelection(3);
         update_region_mode();
         m_model_preview->set_selection_enabled(true);
@@ -439,6 +443,9 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
 void ModelGenerationPanel::set_finishing_workbench(bool enabled)
 {
     m_finishing_workbench = enabled;
+    m_model_preview->set_selection_preview_suppressed(enabled &&
+        ((!m_finishing_candidate.empty() && !m_finishing_before) || (!m_finishing_accepted_path.empty() &&
+         m_displayed_model_path == m_finishing_accepted_path)));
     m_model_preview->set_beauty_view(enabled);
     // Switching views is not a model transaction. Keep the current Beauty
     // timeline so returning to the workbench can still undo its edits.
@@ -502,6 +509,7 @@ void ModelGenerationPanel::refresh_model_finishing()
         m_beauty_session_source.reset();
         if (m_beauty_transactions) m_beauty_transactions->reset();
         m_finishing_candidate.clear(); m_finishing_source.clear(); m_finishing_undo_path.clear();
+        m_model_preview->set_selection_preview_suppressed(false);
     }
     const bool pending = !m_finishing_candidate.empty();
     const bool ready = m_model_preview_ready && is_nonempty_model(m_displayed_model_path);
@@ -942,6 +950,8 @@ void ModelGenerationPanel::preview_model_finishing()
                     static_cast<unsigned long long>(triangles), static_cast<unsigned long long>(colors),
                     dimensions.x(), dimensions.y(), dimensions.z()));
                 self->m_finishing_candidate = destination; self->m_finishing_before = false;
+                if (self->m_finishing_workbench)
+                    self->m_model_preview->set_selection_preview_suppressed(true);
                 if (self->m_beauty_transactions) self->m_beauty_transactions->finish(true, true);
                 if (before) {
                     if (before->selection.selected.size() == self->m_model_preview->triangle_count())
@@ -1111,6 +1121,7 @@ void ModelGenerationPanel::export_semantic_candidate()
                         }
                         self->m_finishing_candidate = destination;
                         self->m_finishing_before = false;
+                        self->m_model_preview->set_selection_preview_suppressed(true);
                         self->m_finishing_compare->SetLabel(_L("查看处理前"));
                         if (self->m_beauty_transactions) self->m_beauty_transactions->finish(true, true);
                         if (before->selection.selected.size() == self->m_model_preview->triangle_count())
@@ -1164,6 +1175,8 @@ bool ModelGenerationPanel::show_finishing_version(const boost::filesystem::path&
         m_model_preview->restore_color_trial_without_recognition(color_state);
     else m_model_preview->restore_color_trial(color_state);
     m_model_preview->set_color_controls_visible(!m_finishing_workbench || m_finishing_tool->GetSelection() == 2);
+    m_model_preview->set_selection_preview_suppressed(
+        m_finishing_workbench && !m_finishing_candidate.empty() && path == m_finishing_candidate);
     m_model_preview_ready = true;
     m_model_stats->SetLabel(wxString::Format(_L("%llu 个三角面 · %llu 个原始色值\n%.1f × %.1f × %.1f mm"),
         static_cast<unsigned long long>(triangles), static_cast<unsigned long long>(colors),
@@ -1269,6 +1282,7 @@ void ModelGenerationPanel::accept_model_finishing()
     if (m_finishing_workbench) m_beauty_accepted_files.push_back(m_finishing_candidate);
     select_local_finishing_version(m_finishing_candidate, m_finishing_id);
     m_finishing_candidate.clear();
+    if (m_finishing_workbench) m_model_preview->set_selection_preview_suppressed(true);
     if (m_finishing_workbench) {
         m_finishing_source.clear();
         m_beauty_session_source.reset();
@@ -1309,6 +1323,7 @@ void ModelGenerationPanel::discard_model_finishing()
     }
     m_beauty_session_source.reset();
     m_finishing_candidate.clear();
+    m_model_preview->set_selection_preview_suppressed(false);
     m_finishing_status->SetLabel(_L("已放弃预览，恢复处理前模型。"));
     m_status->SetLabel(m_finishing_status->GetLabel());
     m_model_preview_message->SetLabel(_L("当前显示：处理前模型。"));
@@ -1345,6 +1360,7 @@ void ModelGenerationPanel::redo_model_finishing()
     m_finishing_undo_path = m_finishing_redo_source;
     m_finishing_accepted_path = m_finishing_redo_path;
     select_local_finishing_version(m_finishing_redo_path, m_finishing_redo_id);
+    if (m_finishing_workbench) m_model_preview->set_selection_preview_suppressed(true);
     if (m_finishing_redo_preview) m_finishing_redo_preview();
     m_finishing_redo_path.clear();
     m_finishing_status->SetLabel(_L("已重做修整，恢复已保存版本。"));
