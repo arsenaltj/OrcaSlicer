@@ -14,6 +14,7 @@
 #include <optional>
 #include <mutex>
 #include <condition_variable>
+#include <deque>
 
 class wxChoice; class wxCheckBox; class wxSlider; class wxStaticText; class wxButton;
 namespace Slic3r::GUI {
@@ -76,11 +77,13 @@ private:
         uint64_t generation=0;
         bool remove=false;
         bool clear_legacy=false;
+        bool durable_cleanup=false;
     };
     std::thread draft_worker;
     std::mutex draft_mutex;
     std::condition_variable draft_cv;
     std::optional<DraftRequest> draft_pending;
+    std::deque<DraftRequest> draft_cleanup_pending;
     std::atomic<bool> draft_cancel{false};
     std::atomic<uint64_t> draft_generation{0};
     std::shared_ptr<Preparation> task;

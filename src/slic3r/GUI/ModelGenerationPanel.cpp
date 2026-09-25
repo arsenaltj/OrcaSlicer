@@ -1172,57 +1172,6 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     m_model_decision_panel->SetSizer(decision_sizer);
     m_model_decision_panel->Hide();
     wxWindow* model_advanced_parent = model_page;
-    m_local_recolor_panel = new wxPanel(
-        m_finishing_panel, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
-    m_local_recolor_panel->SetMaxSize(wxSize(FromDIP(280), -1));
-    m_local_recolor_panel->SetBackgroundColour(*wxWHITE);
-    auto* recolor_sizer = new wxBoxSizer(wxVERTICAL);
-    auto* recolor_header = new wxBoxSizer(wxVERTICAL);
-    auto* recolor_title = new wxStaticText(m_local_recolor_panel, wxID_ANY, _L("局部改色"));
-    wxFont recolor_title_font = recolor_title->GetFont();
-    recolor_title_font.SetWeight(wxFONTWEIGHT_BOLD);
-    recolor_title->SetFont(recolor_title_font);
-    m_local_recolor_toggle = new wxToggleButton(
-        m_local_recolor_panel, wxID_ANY, _L("开始改色"));
-    m_local_recolor_toggle->SetMinSize(wxSize(FromDIP(118), FromDIP(34)));
-    m_local_recolor_toggle->SetToolTip(_L("打开局部改色工具，在模型上直接选择需要换色的部位"));
-    auto* recolor_intro = new wxStaticText(
-        m_local_recolor_panel, wxID_ANY, _L("范围确定后，整片改成指定耗材色"));
-    recolor_intro->SetForegroundColour(wxColour(91, 104, 107));
-    recolor_header->Add(recolor_title, 0, wxEXPAND);
-    recolor_header->Add(recolor_intro, 0, wxEXPAND | wxTOP, FromDIP(6));
-    recolor_header->Add(m_local_recolor_toggle, 0, wxEXPAND);
-    recolor_sizer->Add(recolor_header, 0, wxEXPAND | wxALL, FromDIP(10));
-
-    m_local_recolor_controls = new wxPanel(m_local_recolor_panel);
-    m_local_recolor_controls->SetBackgroundColour(*wxWHITE);
-    auto* controls_sizer = new wxBoxSizer(wxVERTICAL);
-    controls_sizer->Add(new wxStaticText(m_local_recolor_controls, wxID_ANY, _L("选择目标耗材色")), 0,
-                        wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(10));
-    auto* color_grid = new wxGridSizer(2, FromDIP(6), FromDIP(6));
-    for (size_t index = 0; index < m_region_color_buttons.size(); ++index) {
-        m_region_color_buttons[index] = new wxToggleButton(
-            m_local_recolor_controls, wxID_ANY,
-            wxString::Format(_L("耗材 %llu"), static_cast<unsigned long long>(index + 1)));
-        m_region_color_buttons[index]->SetMinSize(wxSize(FromDIP(88), FromDIP(40)));
-        color_grid->Add(m_region_color_buttons[index], 1, wxEXPAND);
-    }
-    controls_sizer->Add(color_grid, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(10));
-    m_apply_region_color = new wxButton(
-        m_local_recolor_controls, wxID_ANY, _L("选择部位后应用"));
-    m_apply_region_color->SetMinSize(wxSize(FromDIP(140), FromDIP(40)));
-    controls_sizer->Add(m_apply_region_color, 0, wxALIGN_RIGHT | wxLEFT | wxRIGHT | wxTOP, FromDIP(10));
-    auto* recolor_hint = new wxStaticText(
-        m_local_recolor_controls, wxID_ANY,
-        _L("短按选择 · 拖动旋转\n滚轮缩放"));
-    recolor_hint->SetForegroundColour(wxColour(91, 104, 107));
-    controls_sizer->Add(recolor_hint, 0, wxEXPAND | wxALL, FromDIP(10));
-    m_local_recolor_controls->SetSizer(controls_sizer);
-    m_local_recolor_controls->Hide();
-    recolor_sizer->Add(m_local_recolor_controls, 0, wxEXPAND);
-    m_local_recolor_panel->SetSizer(recolor_sizer);
-    m_finishing_panel->GetSizer()->Add(m_local_recolor_panel, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(8));
-    m_local_recolor_panel->Hide();
     m_model_quality_panel = new wxPanel(
         model_advanced_parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_SIMPLE);
     auto* quality_sizer = new wxBoxSizer(wxVERTICAL);
@@ -1350,7 +1299,6 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
         const size_t localized = m_model_preview->select_face_evidence(*evidence);
         if (localized == 0) {
             if (m_model_preview->region_selection_preparing()) {
-                m_local_recolor_toggle->SetValue(true); refresh_local_recolor_controls();
                 m_status->SetLabel(_L("正在准备局部选择，完成后自动定位。")); return;
             }
             m_status->SetLabel(_L("当前质量报告没有可定位的局部薄壁证据。"));
@@ -1358,8 +1306,6 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
         }
         m_thin_region_navigation_active = has_ranked_region;
         m_thin_region_navigation_index = region_index;
-        m_local_recolor_toggle->SetValue(true);
-        refresh_local_recolor_controls();
         model_page->Layout();
         model_page->FitInside();
         if (has_ranked_region) {
@@ -1399,14 +1345,11 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
         const size_t localized = m_model_preview->select_elevated_overhang_regions();
         if (localized == 0) {
             if (m_model_preview->region_selection_preparing()) {
-                m_local_recolor_toggle->SetValue(true); refresh_local_recolor_controls();
                 m_status->SetLabel(_L("正在准备局部选择，完成后自动定位。")); return;
             }
             m_status->SetLabel(_L("当前模型没有达到显著阈值的离床悬垂区域。"));
             return;
         }
-        m_local_recolor_toggle->SetValue(true);
-        refresh_local_recolor_controls();
         model_page->Layout();
         model_page->FitInside();
         m_model_preview_message->SetLabel(wxString::Format(
@@ -1416,26 +1359,8 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     });
     m_visual_review_model->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_visual_review_model, this);
     m_apply_model_refinement->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_apply_model_refinement, this);
-    m_local_recolor_toggle->Bind(wxEVT_TOGGLEBUTTON, [this, model_page](wxCommandEvent&) {
-        refresh_local_recolor_controls();
-        model_page->Layout();
-        model_page->FitInside();
-    });
-    for (size_t index = 0; index < m_region_color_buttons.size(); ++index) {
-        m_region_color_buttons[index]->Bind(wxEVT_TOGGLEBUTTON, [this, index](wxCommandEvent&) {
-            m_region_color_index = static_cast<int>(index);
-            refresh_local_recolor_controls();
-        });
-    }
-    m_apply_region_color->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_apply_local_recolor, this);
     m_model_preview->set_selection_changed_callback([this](size_t selected_faces) {
-        if (m_finishing_workbench && (m_finishing_tool->GetSelection() == 1 || m_finishing_tool->GetSelection() == 4 || m_finishing_tool->GetSelection() == 5 || m_finishing_tool->GetSelection() >= 6)) {
-            if (m_busy || !m_finishing_candidate.empty()) selected_faces = m_finishing_options.selected_faces.size();
-            m_finishing_selection_status->SetLabel(wxString::Format(_L("已选 %llu 个面 · 保护 %llu 个面"),
-                static_cast<unsigned long long>(selected_faces), static_cast<unsigned long long>(m_model_preview->protected_face_count())));
-            refresh_local_recolor_controls();
-            return;
-        }
+        if (m_finishing_workbench) return;
         bool matched_region = false;
         size_t matched_region_index = 0;
         if (m_model_preview != nullptr) {
@@ -1476,7 +1401,6 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
         }
         refresh_local_recolor_controls();
     });
-    update_region_mode();
     m_preview_book->Bind(wxEVT_NOTEBOOK_PAGE_CHANGED, [this, panel, expand_images](wxBookCtrlEvent& event) {
         const int selection = event.GetSelection();
         const bool result_page = selection == 0;
@@ -3055,110 +2979,20 @@ void ModelGenerationPanel::on_apply_model_refinement(wxCommandEvent&)
     m_result_summary->SetLabel(_L("当前模型和质量报告仍保留，可与下一次生成结果对比。"));
 }
 
-std::vector<std::string> ModelGenerationPanel::local_recolor_palette() const
-{
-    std::vector<std::string> palette = project_palette();
-    if (palette.empty())
-        palette = !m_displayed_model_palette.empty() ? m_displayed_model_palette : m_job_palette;
-    if (palette.size() > Slic3r::AI::kMaxPhysicalColorChannels)
-        palette.resize(Slic3r::AI::kMaxPhysicalColorChannels);
-    return palette;
-}
-
-void ModelGenerationPanel::update_region_mode()
-{
-    if (!m_model_preview || !m_finishing_selection_operation) return;
-    const auto gesture = static_cast<ModelPreview3D::SelectionGesture>(m_finishing_selection_operation->GetSelection());
-    m_model_preview->set_selection_gesture(gesture, FromDIP(m_finishing_radius->GetValue() * 4));
-    m_model_preview->set_selection_operation(AI::RegionSelectionOperation::AddSimilar);
-    m_model_preview->set_selection_settings(AI::RegionSelectionSettings {});
-    m_model_preview->set_selection_preview_color(ColorRGBA(1.0f, 0.55f, 0.0f, 1.0f));
-}
-
 void ModelGenerationPanel::refresh_local_recolor_controls()
 {
-    if (m_local_recolor_panel == nullptr || m_local_recolor_toggle == nullptr ||
-        m_local_recolor_controls == nullptr)
-        return;
-    const bool ready = m_model_preview_ready && m_model_preview != nullptr &&
-                       m_model_preview->region_editing_ready();
-    if (!ready)
-        m_local_recolor_toggle->SetValue(false);
-    const bool recolor_tool = m_finishing_workbench && m_finishing_tool->GetSelection() == 4;
-    const bool editing = ready && recolor_tool && m_finishing_candidate.empty();
-    if (editing) update_region_mode();
-    m_local_recolor_toggle->SetValue(editing);
-    m_local_recolor_toggle->Hide();
-    const auto has_tiny_color_regions = [this]() {
-        const auto contains = [](const std::vector<std::string>& codes) {
-            return std::find(codes.begin(), codes.end(), "tiny_printable_color_regions") != codes.end();
-        };
-        return contains(m_model_quality.warnings) || contains(m_model_quality.errors);
-    };
-    m_local_recolor_panel->Show(ready && recolor_tool);
-    m_local_recolor_controls->Show(editing);
-    const bool repair_color_regions = has_tiny_color_regions();
-    m_local_recolor_toggle->SetLabel(
-        editing ? _L("收起改色") : repair_color_regions ? _L("修复杂色块") : _L("开始改色"));
-    m_local_recolor_toggle->SetToolTip(repair_color_regions
-        ? _L("检查已识别的过小耗材色块，在模型上选择区域并合并到合适的目标色")
-        : _L("打开局部改色工具，在模型上直接选择需要换色的部位"));
-    m_local_recolor_toggle->Enable(ready && !m_busy);
     if (m_locate_overhang_regions != nullptr)
-        m_locate_overhang_regions->Enable(ready && !m_busy);
+        m_locate_overhang_regions->Enable(m_model_preview_ready && !m_busy);
     if (m_locate_thin_regions != nullptr) {
         m_locate_thin_regions->SetLabel(
             m_thin_region_navigation_active && m_model_quality.thin_local_regions.size() > 1
                 ? _L("下一处薄壁") : _L("定位薄壁"));
         m_locate_thin_regions->Enable(
-            ready && !m_busy && !m_model_quality.thin_local_face_indices.empty());
+            m_model_preview_ready && !m_busy && !m_model_quality.thin_local_face_indices.empty());
     }
     if (m_model_preview != nullptr)
-        m_model_preview->set_selection_enabled(editing || (m_finishing_workbench && (m_finishing_tool->GetSelection() == 1 || m_finishing_tool->GetSelection() == 5 || m_finishing_tool->GetSelection() >= 6) && !m_busy && m_finishing_candidate.empty()));
-
-    const std::vector<std::string> palette = local_recolor_palette();
-    if (palette != m_region_palette) {
-        m_region_palette = palette;
-        m_region_color_index = palette.empty()
-            ? 0 : std::clamp(m_region_color_index, 0, int(palette.size()) - 1);
-    }
-    const bool has_selection = m_model_preview != nullptr && m_model_preview->selected_face_count() > 0;
-    for (size_t index = 0; index < m_region_color_buttons.size(); ++index) {
-        wxToggleButton* button = m_region_color_buttons[index];
-        const bool visible = index < palette.size();
-        button->Show(visible);
-        if (!visible)
-            continue;
-        const wxColour color(from_u8(palette[index]));
-        const bool selected = int(index) == m_region_color_index;
-        button->SetValue(selected);
-        button->SetLabel(wxString::Format(
-            selected ? _L("耗材 %llu（已选）\n") : _L("耗材 %llu\n"),
-            static_cast<unsigned long long>(index + 1)) + from_u8(palette[index]));
-        button->SetToolTip(wxString::Format(
-            _L("将选中区域改为耗材 %llu："), static_cast<unsigned long long>(index + 1)) +
-            from_u8(palette[index]));
-        if (color.IsOk()) {
-            button->SetName("ai_content_color");
-            button->SetBackgroundColour(color);
-            const double luminance = 0.299 * color.Red() + 0.587 * color.Green() + 0.114 * color.Blue();
-            button->SetForegroundColour(luminance >= 150.0 ? *wxBLACK : *wxWHITE);
-        }
-        button->Enable(editing && !m_busy);
-    }
-
-    m_apply_region_color->SetLabel(palette.empty()
-        ? _L("没有可用耗材颜色")
-        : wxString::Format(_L("预览耗材 %d 的效果"), m_region_color_index + 1));
-    m_apply_region_color->Enable(editing && !m_busy && has_selection && !palette.empty());
-    m_local_recolor_panel->Layout();
-    if (m_local_recolor_panel->GetParent() != nullptr)
-        m_local_recolor_panel->GetParent()->Layout();
-}
-
-void ModelGenerationPanel::on_apply_local_recolor(wxCommandEvent&)
-{
-    preview_model_finishing();
+        m_model_preview->set_selection_enabled(m_finishing_workbench && m_beauty_controls &&
+            m_model_preview_ready && !m_busy && m_finishing_candidate.empty());
 }
 
 std::vector<size_t> ModelGenerationPanel::valid_project_slots() const
@@ -3960,7 +3794,6 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
     }
     m_finishing_options.selected_faces.clear();
     m_finishing_before = false;
-    m_finishing_undo_path.clear(); m_finishing_redo_path.clear();
     const wxImage reference_image = reference_image_path.empty() ? wxImage() : wxImage(reference_image_path.wstring());
     const wxImage ai_image = ai_image_path.empty() ? wxImage() : wxImage(ai_image_path.wstring());
     m_history_display_image = load_model_image_display_copy(ai_image_path);
