@@ -1,0 +1,98 @@
+{
+  "l0-context": {
+    "schemaVersion": 1,
+    "ok": true,
+    "command": "deliver",
+    "type": "architecture",
+    "input": "/home/runner/work/OrcaSlicer/OrcaSlicer/.tmp/architecture-review/report/l0-context.json",
+    "output": "/home/runner/work/OrcaSlicer/OrcaSlicer/.tmp/architecture-review/report/l0-context.html",
+    "specification": {
+      "sha256": "b32626c8af75db55a5e8f281596c8e8148bf097e31761caeb0267871b2444776",
+      "bytes": 2564
+    },
+    "artifact": {
+      "sha256": "b40651a699aa26cdcc642dfa7985a7e7ed388cf8cea416c2ba2ea4dc66d73ba8",
+      "bytes": 702525
+    },
+    "validation": {
+      "checksPassed": 9,
+      "checkCount": 9,
+      "compositionProfile": "showcase",
+      "compositionStatus": "pass",
+      "errors": 0,
+      "warnings": 0
+    }
+  },
+  "l1-modules": {
+    "schemaVersion": 1,
+    "ok": true,
+    "command": "deliver",
+    "type": "architecture",
+    "input": "/home/runner/work/OrcaSlicer/OrcaSlicer/.tmp/architecture-review/report/l1-modules.json",
+    "output": "/home/runner/work/OrcaSlicer/OrcaSlicer/.tmp/architecture-review/report/l1-modules.html",
+    "specification": {
+      "sha256": "a1ac1a5ac233639e5e81d74e3969a7cfbdd85f52cbf0a71db665d9378887ab6b",
+      "bytes": 4475
+    },
+    "artifact": {
+      "sha256": "bdd7fd274ccd95cd223a206759c65778cbbaa6c23635fa98b44a921c35c9ba77",
+      "bytes": 710707
+    },
+    "validation": {
+      "checksPassed": 9,
+      "checkCount": 9,
+      "compositionProfile": "showcase",
+      "compositionStatus": "pass",
+      "errors": 0,
+      "warnings": 0
+    }
+  },
+  "l2-generation": {
+    "schemaVersion": 1,
+    "ok": true,
+    "command": "deliver",
+    "type": "lifecycle",
+    "input": "/home/runner/work/OrcaSlicer/OrcaSlicer/.tmp/architecture-review/report/l2-generation.json",
+    "output": "/home/runner/work/OrcaSlicer/OrcaSlicer/.tmp/architecture-review/report/l2-generation.html",
+    "specification": {
+      "sha256": "e38c2d3e962b690d22bf3a3e61c5fb208d5a8b2b4c2ab96c683e2a85305f7d05",
+      "bytes": 2926
+    },
+    "artifact": {
+      "sha256": "5acbda288166f273c4137cf06a8ac7d2386d95f696589621ca5b3ca4e845c7fc",
+      "bytes": 708997
+    },
+    "validation": {
+      "checksPassed": 9,
+      "checkCount": 9,
+      "compositionProfile": "showcase",
+      "compositionStatus": "pass",
+      "errors": 0,
+      "warnings": 0
+    }
+  },
+  "l2-slicing": {
+    "schemaVersion": 1,
+    "ok": true,
+    "command": "deliver",
+    "type": "lifecycle",
+    "input": "/home/runner/work/OrcaSlicer/OrcaSlicer/.tmp/architecture-review/report/l2-slicing.json",
+    "output": "/home/runner/work/OrcaSlicer/OrcaSlicer/.tmp/architecture-review/report/l2-slicing.html",
+    "specification": {
+      "sha256": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32",
+      "bytes": 3266
+    },
+    "artifact": {
+      "sha256": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+      "bytes": 711586
+    },
+    "validation": {
+      "checksPassed": 9,
+      "checkCount": 9,
+      "compositionProfile": "showcase",
+      "compositionStatus": "pass",
+      "errors": 0,
+      "warnings": 0
+    }
+  }
+}

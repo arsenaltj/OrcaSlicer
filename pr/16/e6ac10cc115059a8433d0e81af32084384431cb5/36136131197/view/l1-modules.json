@@ -1,0 +1,229 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "L1 · 模块职责与本次改动",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "legend": {
+      "mode": "hidden"
+    }
+  },
+  "components": [
+    {
+      "id": "desktop",
+      "type": "frontend",
+      "label": "桌面与运行时",
+      "sublabel": "修改 0 · 潜在关联 0",
+      "tag": "无直接修改",
+      "pos": [
+        60,
+        60
+      ],
+      "size": [
+        230,
+        86
+      ]
+    },
+    {
+      "id": "generation",
+      "type": "backend",
+      "label": "模型生成",
+      "sublabel": "修改 7 · 潜在关联 1",
+      "tag": "直接修改",
+      "pos": [
+        60,
+        260
+      ],
+      "size": [
+        230,
+        86
+      ]
+    },
+    {
+      "id": "slicing",
+      "type": "backend",
+      "label": "智能切片",
+      "sublabel": "修改 0 · 潜在关联 0",
+      "tag": "无直接修改",
+      "pos": [
+        880,
+        260
+      ],
+      "size": [
+        230,
+        86
+      ]
+    },
+    {
+      "id": "contracts",
+      "type": "backend",
+      "label": "共享契约",
+      "sublabel": "修改 0 · 潜在关联 0",
+      "tag": "无直接修改",
+      "pos": [
+        470,
+        260
+      ],
+      "size": [
+        230,
+        86
+      ]
+    },
+    {
+      "id": "adapter",
+      "type": "backend",
+      "label": "Orca 适配",
+      "sublabel": "修改 0 · 潜在关联 0",
+      "tag": "无直接修改",
+      "pos": [
+        470,
+        60
+      ],
+      "size": [
+        230,
+        86
+      ]
+    },
+    {
+      "id": "core",
+      "type": "backend",
+      "label": "Orca 核心",
+      "sublabel": "修改 0 · 潜在关联 0",
+      "tag": "无直接修改",
+      "pos": [
+        880,
+        60
+      ],
+      "size": [
+        230,
+        86
+      ]
+    },
+    {
+      "id": "tests",
+      "type": "backend",
+      "label": "测试",
+      "sublabel": "修改 0 · 潜在关联 0",
+      "tag": "无直接修改",
+      "pos": [
+        470,
+        460
+      ],
+      "size": [
+        230,
+        86
+      ]
+    },
+    {
+      "id": "engineering",
+      "type": "backend",
+      "label": "开发与协作",
+      "sublabel": "修改 1 · 潜在关联 0",
+      "tag": "直接修改",
+      "pos": [
+        60,
+        460
+      ],
+      "size": [
+        230,
+        86
+      ]
+    },
+    {
+      "id": "assets",
+      "type": "backend",
+      "label": "资源与依赖",
+      "sublabel": "修改 0 · 潜在关联 0",
+      "tag": "无直接修改",
+      "pos": [
+        880,
+        460
+      ],
+      "size": [
+        230,
+        86
+      ]
+    },
+    {
+      "id": "unknown",
+      "type": "backend",
+      "label": "待归属",
+      "sublabel": "修改 1 · 潜在关联 0",
+      "tag": "直接修改",
+      "pos": [
+        60,
+        660
+      ],
+      "size": [
+        230,
+        86
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "adapter-contracts",
+      "from": "adapter",
+      "to": "contracts",
+      "label": "静态依赖",
+      "variant": "default",
+      "labelDy": 24
+    },
+    {
+      "id": "desktop-generation",
+      "from": "desktop",
+      "to": "generation",
+      "label": "静态依赖",
+      "variant": "default",
+      "labelDy": 24
+    },
+    {
+      "id": "generation-contracts",
+      "from": "generation",
+      "to": "contracts",
+      "label": "静态依赖",
+      "variant": "default"
+    },
+    {
+      "id": "slicing-contracts",
+      "from": "slicing",
+      "to": "contracts",
+      "label": "静态依赖",
+      "variant": "default"
+    },
+    {
+      "id": "tests-contracts",
+      "from": "tests",
+      "to": "contracts",
+      "label": "静态依赖",
+      "variant": "default"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "amber",
+      "title": "修改范围",
+      "items": [
+        "9 个直接修改文件；1 个潜在关联",
+        "PR 提交 · 005d1ce9 → e6ac10cc"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "静态依赖总览",
+      "items": [
+        "展示 5 条主干；其余 13 条见 details.html",
+        "全部关系：新增 0 · 移除 0；依据 code-review-graph"
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "判断边界",
+      "items": [
+        "4 个改动文件未解析；完整明细见 details.html / report.json",
+        "仅 AI 范围的静态依赖；动态调用可能遗漏；图不代表测试通过"
+      ]
+    }
+  ]
+}
