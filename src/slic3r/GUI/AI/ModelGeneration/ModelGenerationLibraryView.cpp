@@ -680,8 +680,6 @@ void ModelGenerationPanel::load_design_library_entry(const std::string& job_id)
                 }
                 weak->m_finishing_options.selected_faces.clear();
                 weak->m_finishing_before = false;
-                weak->m_finishing_undo_path.clear();
-                weak->m_finishing_redo_path.clear();
                 weak->m_selected_image_path.clear();
                 weak->reset(false);
                 ++weak->m_style_recommendation_sequence;

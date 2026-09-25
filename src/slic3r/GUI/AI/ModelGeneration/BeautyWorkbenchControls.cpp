@@ -105,8 +105,9 @@ void write_draft_metadata(const boost::filesystem::path& model, const nlohmann::
 void remove_draft_metadata(const boost::filesystem::path& model)
 {
     const auto metadata=AI::beauty_metadata_path(model,boost::filesystem::path(data_dir())/"generated_models");
-    boost::system::error_code ignored;
-    boost::filesystem::remove(draft_metadata_path(metadata),ignored);
+    boost::system::error_code error;
+    boost::filesystem::remove(draft_metadata_path(metadata),error);
+    if (error) throw std::runtime_error("Cannot remove the beauty draft: " + error.message());
 }
 }
 BeautyWorkbenchControls::BeautyWorkbenchControls(wxWindow* parent,ModelPreview3D* model,AI::IPrintablePaletteProvider& palette,std::function<void()> layout_changed)
@@ -198,15 +199,24 @@ BeautyWorkbenchControls::BeautyWorkbenchControls(wxWindow* parent,ModelPreview3D
             DraftRequest request;
             {
                 std::unique_lock<std::mutex> lock(draft_mutex);
-                draft_cv.wait(lock,[this] { return draft_cancel.load() || draft_pending.has_value(); });
-                if (draft_cancel.load()) return;
-                request=std::move(*draft_pending);
-                draft_pending.reset();
+                draft_cv.wait(lock,[this] {
+                    return draft_cancel.load() || !draft_cleanup_pending.empty() || draft_pending.has_value();
+                });
+                if (!draft_cleanup_pending.empty()) {
+                    request=std::move(draft_cleanup_pending.front());
+                    draft_cleanup_pending.pop_front();
+                } else {
+                    if (draft_cancel.load()) return;
+                    request=std::move(*draft_pending);
+                    draft_pending.reset();
+                }
             }
-            if (draft_cancel.load() || request.generation!=draft_generation.load()) continue;
+            if (!request.durable_cleanup &&
+                (draft_cancel.load() || request.generation!=draft_generation.load())) continue;
             try {
                 const auto current = [this, &request] {
-                    return !draft_cancel.load() && request.generation == draft_generation.load();
+                    return request.durable_cleanup ||
+                        (!draft_cancel.load() && request.generation == draft_generation.load());
                 };
                 if (!current()) continue;
                 if (request.remove) {
@@ -221,7 +231,8 @@ BeautyWorkbenchControls::BeautyWorkbenchControls(wxWindow* parent,ModelPreview3D
                                          &draft_generation,request.generation);
                 }
             } catch (const std::exception& error) {
-                if (!draft_cancel.load() && request.generation == draft_generation.load())
+                if (request.durable_cleanup ||
+                    (!draft_cancel.load() && request.generation == draft_generation.load()))
                     BOOST_LOG_TRIVIAL(warning)<<"Cannot persist beauty draft asynchronously: "<<error.what();
             }
         }
@@ -794,8 +805,8 @@ void BeautyWorkbenchControls::render(bool repaint) {
 }
 void BeautyWorkbenchControls::mark_saved() {
     try {invalidate_draft_queue();
-        DraftRequest request;request.model=source;request.generation=draft_generation.load();request.remove=true;request.clear_legacy=true;
-        { std::lock_guard<std::mutex> lock(draft_mutex); draft_pending=std::move(request); }
+        DraftRequest request;request.model=source;request.remove=true;request.clear_legacy=true;request.durable_cleanup=true;
+        { std::lock_guard<std::mutex> lock(draft_mutex); draft_cleanup_pending.push_back(std::move(request)); }
         draft_cv.notify_one();
         dirty=false;saved_puzzle=puzzle;saved_edit_regions=edit_regions;}
     catch(const std::exception& e){message(_L("新版本已保存，但旧草稿清理失败：")+wxString::FromUTF8(e.what()));}
