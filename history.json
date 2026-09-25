@@ -1,6 +1,16 @@
 [
   {
     "pr": 16,
+    "run": 36136654253,
+    "head": "668a031c9ea46f7de48be40cc49992678fd848a2",
+    "base": "005d1ce9794b82cfacefb0f1d67fa8cad2a965bf",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "fix(ai): activate puzzle beauty workbench and remove legacy view",
+    "path": "pr/16/668a031c9ea46f7de48be40cc49992678fd848a2/36136654253",
+    "created": "2026-09-25T12:46:27+00:00"
+  },
+  {
+    "pr": 16,
     "run": 36136131197,
     "head": "e6ac10cc115059a8433d0e81af32084384431cb5",
     "base": "005d1ce9794b82cfacefb0f1d67fa8cad2a965bf",

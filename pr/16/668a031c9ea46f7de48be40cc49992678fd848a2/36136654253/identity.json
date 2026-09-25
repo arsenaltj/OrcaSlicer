@@ -1,0 +1,25 @@
+{
+  "pr": 16,
+  "run": 36136654253,
+  "head": "668a031c9ea46f7de48be40cc49992678fd848a2",
+  "base": "005d1ce9794b82cfacefb0f1d67fa8cad2a965bf",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "fix(ai): activate puzzle beauty workbench and remove legacy view",
+  "path": "pr/16/668a031c9ea46f7de48be40cc49992678fd848a2/36136654253",
+  "created": "2026-09-25T12:46:27+00:00",
+  "files": {
+    "index.html": "78b91a6433285537a08255c75abf8370b3c0d4874d658a387714ae196866f063",
+    "details.html": "995bcc99b43fff0e612e9b4df8b0887eda780d992294a7cb8cc64feaab223fc3",
+    "report.json": "98f3bdbf641381fb773d85f347efbba0edcfdbc2ce6af4c1a4f9e5c9873bfa27",
+    "summary.md": "57b5fce902599347db0ea1f284ca7368a556fc2654df2a31403b5f2b214d47f5",
+    "archify-receipts.json": "c43995bce410c5fbf6af16eed8e794a2d50736ca80347a277a9d02afcc9032d6",
+    "l0-context.html": "b40651a699aa26cdcc642dfa7985a7e7ed388cf8cea416c2ba2ea4dc66d73ba8",
+    "l0-context.json": "b32626c8af75db55a5e8f281596c8e8148bf097e31761caeb0267871b2444776",
+    "l1-modules.html": "de5ca134889bb7d5a1a03fd7fb34bb8e0271426a37da14c3533f551d8c76d778",
+    "l1-modules.json": "9cefebbf710edc603c7a9b54158d3d6fefa640c2efe5083de9a0e8393b109ecc",
+    "l2-generation.html": "5acbda288166f273c4137cf06a8ac7d2386d95f696589621ca5b3ca4e845c7fc",
+    "l2-generation.json": "e38c2d3e962b690d22bf3a3e61c5fb208d5a8b2b4c2ab96c683e2a85305f7d05",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}
