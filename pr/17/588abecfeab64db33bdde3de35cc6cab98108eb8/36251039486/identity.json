@@ -1,0 +1,25 @@
+{
+  "pr": 17,
+  "run": 36251039486,
+  "head": "588abecfeab64db33bdde3de35cc6cab98108eb8",
+  "base": "005d1ce9794b82cfacefb0f1d67fa8cad2a965bf",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "fix(ai): 保留美颜目标色与草稿，精简工程规则并建立模型回归",
+  "path": "pr/17/588abecfeab64db33bdde3de35cc6cab98108eb8/36251039486",
+  "created": "2026-09-26T15:12:51+00:00",
+  "files": {
+    "index.html": "a05e71845209ad69a2b50afb1a0eed67120f21cb3fa6e3e96250a2ec63a0c348",
+    "details.html": "546406fa76ff4448e6a84a38ac8d00517750af6063c55831f5c4a50acebdad2a",
+    "report.json": "c7f3ca99312979b7601b52ecdb3d5e82c0734539d5fd1265668da2885574172c",
+    "summary.md": "b111afc0f5ba9e2ca803e47cbeef32a77ef3038f53729630df674f547876462c",
+    "archify-receipts.json": "68ebf7cc37655c503b56f7de8e974fa1fd33ff6573f7230953bfd012eb88559b",
+    "l0-context.html": "b40651a699aa26cdcc642dfa7985a7e7ed388cf8cea416c2ba2ea4dc66d73ba8",
+    "l0-context.json": "b32626c8af75db55a5e8f281596c8e8148bf097e31761caeb0267871b2444776",
+    "l1-modules.html": "b3c45181e442dd93781637bf9a0a363645ddcf8ed5623a78cc58e7c47a1bb78c",
+    "l1-modules.json": "719982c381991d5d8057f5966d2f5c0d33632f3172c719befb4ec08c5c136ea4",
+    "l2-generation.html": "5acbda288166f273c4137cf06a8ac7d2386d95f696589621ca5b3ca4e845c7fc",
+    "l2-generation.json": "e38c2d3e962b690d22bf3a3e61c5fb208d5a8b2b4c2ab96c683e2a85305f7d05",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}
