@@ -11,6 +11,7 @@
 #include <map>
 #include <numeric>
 #include <thread>
+#include <boost/dll/runtime_symbol_info.hpp>
 
 namespace Slic3r::GUI {
 namespace SC = AI::SemanticColoring;
@@ -48,6 +49,56 @@ std::string provider_configuration(const std::filesystem::path& runtime)
     return std::string(std::istreambuf_iterator<char>(input), {});
 }
 
+}
+
+std::filesystem::path semantic_region_runtime_directory()
+{
+    boost::system::error_code error;
+    const auto executable = boost::dll::program_location(error);
+    return error ? std::filesystem::path {} : std::filesystem::path(executable.native()).parent_path() / "ai" / "portrait_semantics";
+}
+
+std::string semantic_region_runtime_identity(const std::filesystem::path& runtime)
+{
+    if (runtime.empty()) return {};
+    std::string identity = std::string(SC::pipeline_version) + provider_configuration(runtime);
+    for (const char* name : {"runtime-manifest.json", "libmediapipe.dll", "face_landmarker.task",
+                             "selfie_multiclass_256x256.tflite"}) {
+        const auto hash = AI::model_artifact_sha256(boost::filesystem::path((runtime / name).native()));
+        if (hash.empty()) return {};
+        identity += std::string(name) + hash;
+    }
+    unsigned char bytes[EVP_MAX_MD_SIZE];
+    unsigned int length = 0;
+    if (EVP_Digest(identity.data(), identity.size(), bytes, &length, EVP_sha256(), nullptr) != 1 || length != 32) return {};
+    constexpr char hex[] = "0123456789abcdef";
+    std::string result;
+    for (unsigned int i = 0; i < length; ++i) { result += hex[bytes[i] >> 4]; result += hex[bytes[i] & 15]; }
+    return result;
+}
+
+std::shared_ptr<const SemanticRegionEvidence> load_legacy_semantic_region_evidence(
+    const SC::MeshSnapshot& source, const std::filesystem::path& runtime, const std::filesystem::path& cache,
+    const std::string& runtime_identity, std::string& error)
+{
+    try {
+        if (runtime_identity.empty() || !std::filesystem::is_directory(cache) || std::filesystem::is_empty(cache)) return {};
+        const auto configuration = nlohmann::json::parse(provider_configuration(runtime));
+        // Reading identities and decoding an existing file never calls predict/analyze.
+        auto providers = SC::create_region_recognizers(configuration.value("body_provider", "mediapipe.cpu.v1"),
+            configuration.value("face_provider", "mediapipe.cpu.v1"), runtime);
+        if (!providers.error.empty() || !providers.body || !providers.face) return {};
+        const auto file = cache / (SC::analysis_cache_key(source, providers.body->identity(), providers.face->identity()) + ".json");
+        std::error_code ec;
+        const auto bytes = std::filesystem::file_size(file, ec);
+        if (ec) return {};
+        if (bytes > SemanticRegionEvidenceCache::maximum_bytes) throw std::runtime_error("Legacy analysis cache too large");
+        std::ifstream input(file, std::ios::binary);
+        SC::Analysis analysis;
+        if (!SC::decode_analysis(nlohmann::json::parse(input, nullptr, false), source,
+            providers.body->identity(), providers.face->identity(), analysis, error)) return {};
+        return SemanticRegionEvidence::from_analysis(analysis, runtime_identity);
+    } catch (const std::exception& e) { error = e.what(); return {}; }
 }
 
 GLModel::Geometry build_semantic_colored_geometry(const SC::MeshSnapshot& source, const SC::FaceColors& paint,
@@ -161,6 +212,7 @@ struct ModelSemanticColoring::Impl {
             auto result = std::make_unique<Result>();
             const SC::Cancel cancel = [task] { return task->canceled.load(); };
             try {
+                result->region_runtime_identity = semantic_region_runtime_identity(runtime);
                 if (!providers.body || !providers.face || providers_configuration != task->request.configuration) {
                     std::string body_id = "mediapipe.cpu.v1", face_id = body_id;
                     const auto doc = nlohmann::json::parse(task->request.configuration);

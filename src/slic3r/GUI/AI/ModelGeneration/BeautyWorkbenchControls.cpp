@@ -134,14 +134,18 @@ BeautyWorkbenchControls::BeautyWorkbenchControls(wxWindow* parent, ModelPreview3
         update_text();
         if (count == 0) {
             if (!m_preview || !m_preview->semantic_regions_ready())
-                m_status->SetLabel(_L("当前没有可用的语义识别缓存；请先开启人像区域优化并完成识别。"));
+                m_status->SetLabel(m_preview ? m_preview->semantic_region_status() : _L("当前没有已加载模型。"));
             else if (!m_preview->beauty_editor())
                 m_status->SetLabel(_L("正在准备模型选区数据，请稍后再次点击自动匹配区域。"));
             else
-                m_status->SetLabel(_L("当前识别结果没有足够可靠的该区域；可继续手动补选。"));
+                m_status->SetLabel(wxString::Format(_L("该区域未匹配到可选面；保护排除 %llu 面，低置信度排除 %llu 面。原选区保留，可继续手动补选。"),
+                    static_cast<unsigned long long>(m_preview->semantic_selection_protected_count()),
+                    static_cast<unsigned long long>(m_preview->semantic_selection_low_confidence_count())));
         } else {
-            m_status->SetLabel(wxString::Format(_L("已自动匹配 %llu 个面，可继续补选或涂抹保护；改色和保存已接入。"),
-                static_cast<unsigned long long>(count)));
+            m_status->SetLabel(wxString::Format(_L("已自动匹配 %llu 个面；保护排除 %llu 面，低置信度排除 %llu 面。可继续补选、保护或编辑。"),
+                static_cast<unsigned long long>(count),
+                static_cast<unsigned long long>(m_preview->semantic_selection_protected_count()),
+                static_cast<unsigned long long>(m_preview->semantic_selection_low_confidence_count())));
         }
         m_status->Wrap(FromDIP(250));
         Layout();
@@ -251,7 +255,7 @@ void BeautyWorkbenchControls::update_text()
     m_operation->Enable(active);
     m_auto_match->SetToolTip(semantic
         ? _L("按当前已缓存的人像语义结果选择区域，不会重新识别。")
-        : _L("暂无语义缓存；先在人像区域优化中完成识别，之后可自动匹配。"));
+        : m_preview ? m_preview->semantic_region_status() : _L("当前没有已加载模型。"));
     m_reoptimize->Enable(active && m_preview && m_preview->semantic_reoptimization_available());
     m_reoptimize->SetToolTip(m_preview && !m_preview->semantic_reoptimization_available()
         ? m_preview->semantic_reoptimization_reason()

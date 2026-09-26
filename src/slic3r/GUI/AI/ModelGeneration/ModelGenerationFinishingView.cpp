@@ -270,17 +270,22 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
             refresh_model_finishing();
             return false;
         }
+        m_beauty_reoptimization_before = std::make_shared<BeautyCandidateSnapshot>(capture_beauty_candidate());
         m_model_preview->set_semantic_completion_callback([this](bool success) {
             if (!success) {
+                const auto error = m_model_preview->semantic_error();
+                if (auto before = std::move(m_beauty_reoptimization_before)) restore_beauty_candidate(*before);
                 if (m_beauty_transactions) m_beauty_transactions->finish(false, false, "semantic optimization failed");
                 if (m_finishing_status) m_finishing_status->SetLabel(
-                    _L("人像区域优化未完成，当前模型和选区保持不变：") + m_model_preview->semantic_error());
+                    _L("人像区域优化未完成，当前模型和选区保持不变：") + error);
                 refresh_model_finishing();
                 return;
             }
             export_semantic_candidate();
         });
         if (!m_model_preview->request_semantic_reoptimization()) {
+            m_model_preview->set_semantic_completion_callback({});
+            if (auto before = std::move(m_beauty_reoptimization_before)) restore_beauty_candidate(*before);
             if (m_beauty_transactions) m_beauty_transactions->finish(false, false, "semantic request unavailable");
             m_finishing_status->SetLabel(_L("未重新识别人像区域：") + m_model_preview->semantic_reoptimization_reason());
             refresh_model_finishing();
@@ -507,6 +512,8 @@ void ModelGenerationPanel::refresh_model_finishing()
             boost::filesystem::remove(m_finishing_candidate, ignored);
         clear_unaccepted_beauty_candidates();
         m_beauty_session_source.reset();
+        m_beauty_reoptimization_before.reset();
+        m_finishing_candidate_region_evidence.reset();
         if (m_beauty_transactions) m_beauty_transactions->reset();
         m_finishing_candidate.clear(); m_finishing_source.clear(); m_finishing_undo_path.clear();
         m_model_preview->set_selection_preview_suppressed(false);
@@ -600,6 +607,7 @@ ModelGenerationPanel::BeautyCandidateSnapshot ModelGenerationPanel::capture_beau
         : (!m_finishing_result.output_sha256.empty() ? m_finishing_result.output_sha256
             : AI::model_artifact_sha256(snapshot.candidate));
     snapshot.id = m_finishing_id;
+    snapshot.geometry_id = m_model_preview->geometry_id();
     snapshot.result = m_finishing_result;
     snapshot.options = m_finishing_options;
     snapshot.selection = m_model_preview->selection_state();
@@ -611,6 +619,8 @@ ModelGenerationPanel::BeautyCandidateSnapshot ModelGenerationPanel::capture_beau
     snapshot.semantic_subfaces = m_finishing_candidate.empty() && m_model_preview->semantic_result_active()
         ? m_model_preview->import_subface_color_overrides(true) : m_finishing_candidate_semantic_subfaces;
     snapshot.semantic_provenance = m_finishing_candidate_semantic_provenance;
+    snapshot.region_evidence = m_model_preview->semantic_region_evidence();
+    snapshot.region_evidence_error = m_model_preview->semantic_region_evidence_error();
     return snapshot;
 }
 
@@ -628,11 +638,15 @@ bool ModelGenerationPanel::restore_beauty_candidate(const BeautyCandidateSnapsho
     m_finishing_candidate_semantic_faces = snapshot.semantic_faces;
     m_finishing_candidate_semantic_subfaces = snapshot.semantic_subfaces;
     m_finishing_candidate_semantic_provenance = snapshot.semantic_provenance;
+    m_finishing_candidate_region_evidence = snapshot.region_evidence;
+    m_finishing_candidate_region_error = snapshot.region_evidence_error;
     if (!show_finishing_version(path)) return false;
+    m_model_preview->restore_semantic_region_evidence(snapshot.region_evidence, snapshot.region_evidence_error);
     m_model_preview->restore_color_trial_without_recognition(snapshot.color_trial);
     if (!snapshot.semantic_faces.empty() || !snapshot.semantic_subfaces.empty())
         m_model_preview->set_saved_semantic_result(snapshot.semantic_faces, snapshot.semantic_subfaces);
-    if (snapshot.selection.selected.size() == m_model_preview->triangle_count())
+    if (snapshot.geometry_id == m_model_preview->geometry_id() &&
+        snapshot.selection.selected.size() == m_model_preview->triangle_count())
         m_model_preview->restore_selection_state(snapshot.selection);
     m_finishing_selection_state = snapshot.selection;
     m_finishing_before = false;
@@ -867,7 +881,8 @@ void ModelGenerationPanel::preview_model_finishing()
         m_model_quality = quality; m_visual_quality = visual; m_model_refinement = refinement;
         m_library_model_loaded = library; m_ready = true; m_artifact_download_started = true;
         m_model_preview_ready = true;
-        m_model_preview->restore_color_trial(color_state);
+        if (m_finishing_workbench) m_model_preview->restore_color_trial_without_recognition(color_state);
+        else m_model_preview->restore_color_trial(color_state);
     };
     }
     m_finishing_id = "finish-" + new_request_id();
@@ -930,6 +945,9 @@ void ModelGenerationPanel::preview_model_finishing()
                     self->refresh_controls(); return;
                 }
                 self->m_model_preview->restore_view(view);
+                if (before) self->m_model_preview->restore_semantic_region_evidence(before->region_evidence, before->region_evidence_error);
+                self->m_finishing_candidate_region_evidence = self->m_model_preview->semantic_region_evidence();
+                self->m_finishing_candidate_region_error = self->m_model_preview->semantic_region_evidence_error();
                 if (self->m_finishing_workbench &&
                     (!self->m_finishing_candidate_semantic_faces.empty() ||
                      !self->m_finishing_candidate_semantic_subfaces.empty())) {
@@ -943,7 +961,9 @@ void ModelGenerationPanel::preview_model_finishing()
                         self->m_finishing_status->SetLabel(_L("语义预览无法加载，已保留处理前版本。"));
                         self->refresh_controls(); return;
                     }
-                } else self->m_model_preview->restore_color_trial(color_state);
+                } else if (self->m_finishing_workbench)
+                    self->m_model_preview->restore_color_trial_without_recognition(color_state);
+                else self->m_model_preview->restore_color_trial(color_state);
                 // Match the before-view summary before exposing comparison:
                 // a stale loading row changes the viewport height on first compare.
                 self->m_model_stats->SetLabel(wxString::Format(_L("%llu 个三角面 · %llu 个原始色值\n%.1f × %.1f × %.1f mm"),
@@ -954,7 +974,8 @@ void ModelGenerationPanel::preview_model_finishing()
                     self->m_model_preview->set_selection_preview_suppressed(true);
                 if (self->m_beauty_transactions) self->m_beauty_transactions->finish(true, true);
                 if (before) {
-                    if (before->selection.selected.size() == self->m_model_preview->triangle_count())
+                    if (before->geometry_id == self->m_model_preview->geometry_id() &&
+                        before->selection.selected.size() == self->m_model_preview->triangle_count())
                         self->m_model_preview->restore_selection_state(before->selection);
                     self->record_beauty_candidate(kind, before);
                 }
@@ -992,6 +1013,7 @@ void ModelGenerationPanel::export_semantic_candidate()
 {
     if (!m_model_preview || !m_model_preview->semantic_regions_ready() ||
         !is_nonempty_model(m_finishing_candidate.empty() ? m_displayed_model_path : m_finishing_candidate)) {
+        if (auto before = std::move(m_beauty_reoptimization_before)) restore_beauty_candidate(*before);
         if (m_beauty_transactions) m_beauty_transactions->finish(false, false, "semantic candidate source unavailable");
         if (m_finishing_status) m_finishing_status->SetLabel(_L("人像区域结果没有可用的模型源，当前版本保持不变。"));
         refresh_model_finishing();
@@ -999,7 +1021,9 @@ void ModelGenerationPanel::export_semantic_candidate()
     }
     if (m_finishing_worker.joinable()) m_finishing_worker.join();
     const auto source = m_finishing_candidate.empty() ? m_displayed_model_path : m_finishing_candidate;
-    auto before = std::make_shared<BeautyCandidateSnapshot>(capture_beauty_candidate());
+    const auto region_evidence = m_model_preview->semantic_region_evidence();
+    auto before = m_beauty_reoptimization_before ? std::move(m_beauty_reoptimization_before)
+        : std::make_shared<BeautyCandidateSnapshot>(capture_beauty_candidate());
     if (m_finishing_candidate.empty() && !m_beauty_session_source) {
         m_beauty_session_source = before;
         m_beauty_session_undo_base = m_beauty_transactions ? m_beauty_transactions->undo_count() : 0;
@@ -1015,6 +1039,7 @@ void ModelGenerationPanel::export_semantic_candidate()
     // the user's manual edits.
     const auto manual_overrides = m_model_preview->face_color_overrides();
     if (faces == 0 || overrides.empty()) {
+        restore_beauty_candidate(*before);
         if (m_beauty_transactions) m_beauty_transactions->finish(false, false, "semantic result has no face colors");
         m_finishing_status->SetLabel(_L("人像区域没有产生可靠的面级颜色，当前模型保持不变。"));
         refresh_model_finishing();
@@ -1035,6 +1060,7 @@ void ModelGenerationPanel::export_semantic_candidate()
         options.appearance.face_target_colors[item.first] = item.second;
     }
     if (options.selected_faces.empty()) {
+        restore_beauty_candidate(*before);
         if (m_beauty_transactions) m_beauty_transactions->finish(false, false, "semantic face colors are out of range");
         m_finishing_status->SetLabel(_L("人像区域颜色与当前模型面数不一致，已保留原模型。"));
         refresh_model_finishing();
@@ -1066,7 +1092,7 @@ void ModelGenerationPanel::export_semantic_candidate()
     wxWeakRef<ModelGenerationPanel> weak(this);
     const uint64_t sequence = m_sequence;
     try {
-        m_finishing_worker = std::thread([weak, source, destination, options, canceled, sequence, manual_overrides, color_state, before] {
+        m_finishing_worker = std::thread([weak, source, destination, options, canceled, sequence, manual_overrides, color_state, before, region_evidence] {
             const auto result = AI::finish_model_artifact(source, destination, options,
                 [canceled] { return canceled->load(); });
             auto prepared = std::make_shared<ModelPreview3D::PreparedModel>();
@@ -1075,7 +1101,7 @@ void ModelGenerationPanel::export_semantic_candidate()
                 try { ModelPreview3D::prepare_model(destination, *prepared, preview_error, manual_overrides); }
                 catch (const std::exception& e) { preview_error = e.what(); }
             }
-            wxGetApp().CallAfter([weak, source, destination, result, sequence, canceled, prepared, preview_error, color_state, before] {
+            wxGetApp().CallAfter([weak, source, destination, result, sequence, canceled, prepared, preview_error, color_state, before, region_evidence] {
                 if (!weak || weak->m_shutdown || sequence != weak->m_sequence) {
                     if (result.success) { boost::system::error_code ignored; boost::filesystem::remove(destination, ignored); }
                     return;
@@ -1106,6 +1132,9 @@ void ModelGenerationPanel::export_semantic_candidate()
                         if (self->m_beauty_transactions) self->m_beauty_transactions->finish(false, false, error);
                         self->m_finishing_status->SetLabel(_L("语义 GLB 预览加载失败，当前模型保持不变：") + from_u8(error));
                     } else {
+                        self->m_model_preview->restore_semantic_region_evidence(region_evidence);
+                        self->m_finishing_candidate_region_evidence = self->m_model_preview->semantic_region_evidence();
+                        self->m_finishing_candidate_region_error = self->m_model_preview->semantic_region_evidence_error();
                         self->m_model_preview->restore_color_trial_without_recognition(color_state);
                         if (!self->m_model_preview->set_saved_semantic_result(
                                 self->m_finishing_candidate_semantic_faces,
@@ -1124,7 +1153,8 @@ void ModelGenerationPanel::export_semantic_candidate()
                         self->m_model_preview->set_selection_preview_suppressed(true);
                         self->m_finishing_compare->SetLabel(_L("查看处理前"));
                         if (self->m_beauty_transactions) self->m_beauty_transactions->finish(true, true);
-                        if (before->selection.selected.size() == self->m_model_preview->triangle_count())
+                        if (before->geometry_id == self->m_model_preview->geometry_id() &&
+                            before->selection.selected.size() == self->m_model_preview->triangle_count())
                             self->m_model_preview->restore_selection_state(before->selection);
                         self->record_beauty_candidate(
                             BeautyWorkbenchTransactionController::OperationKind::SemanticReoptimization, before);
@@ -1140,6 +1170,7 @@ void ModelGenerationPanel::export_semantic_candidate()
     } catch (const std::exception& e) {
         m_finishing_running = false;
         m_busy = false;
+        restore_beauty_candidate(*before);
         if (m_beauty_transactions) m_beauty_transactions->finish(false, false, e.what());
         m_finishing_status->SetLabel(_L("无法启动语义 GLB 写出，当前模型保持不变：") + from_u8(e.what()));
         refresh_controls();
@@ -1161,6 +1192,10 @@ bool ModelGenerationPanel::show_finishing_version(const boost::filesystem::path&
         return false;
     }
     m_model_preview->restore_view(view);
+    if (path == m_finishing_candidate)
+        m_model_preview->restore_semantic_region_evidence(m_finishing_candidate_region_evidence, m_finishing_candidate_region_error);
+    else if (session_source)
+        m_model_preview->restore_semantic_region_evidence(m_beauty_session_source->region_evidence, m_beauty_session_source->region_evidence_error);
     if (path == m_finishing_candidate &&
         (!m_finishing_candidate_semantic_faces.empty() || !m_finishing_candidate_semantic_subfaces.empty())) {
         m_model_preview->restore_color_trial_without_recognition(color_state);
@@ -1251,6 +1286,9 @@ void ModelGenerationPanel::accept_model_finishing()
         ? m_finishing_candidate_semantic_provenance : provenance;
     const auto semantic_result = m_model_preview->semantic_result_metadata();
     if (!semantic_result.empty()) metadata["semantic_result"] = semantic_result;
+    const auto region_reference = m_model_preview->semantic_region_evidence_metadata();
+    const bool region_cache_unsaved = m_model_preview->semantic_regions_ready() && region_reference.empty();
+    if (!region_reference.empty()) metadata["semantic_region_evidence"] = region_reference;
     if (m_finishing_options.beauty_appearance || m_finishing_options.beauty_deform || m_finishing_options.beauty_puzzle) {
         metadata["beauty_workbench"] = BeautyWorkbenchControls::accepted_document(
             m_finishing_options, m_model_preview->geometry_id());
@@ -1290,6 +1328,8 @@ void ModelGenerationPanel::accept_model_finishing()
     if (m_beauty_controls) m_beauty_controls->mark_saved();
     update_finishing_selection();
     m_finishing_status->SetLabel(_L("新版本已保存到模型库。可返回上个版本，或导入准备页重新检查打印条件。"));
+    if (region_cache_unsaved) m_finishing_status->SetLabel(m_finishing_status->GetLabel() +
+        _L("区域标签缓存保存失败；本次仍可编辑，重新打开后需要重新识别。"));
     m_status->SetLabel(_L("美颜新版本已保存，可继续导入。"));
     m_model_preview_message->SetLabel(_L("当前显示：已接受的三维处理版本。"));
     if (m_beauty_transactions) {

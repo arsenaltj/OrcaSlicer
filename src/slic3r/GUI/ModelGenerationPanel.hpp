@@ -45,6 +45,7 @@ namespace Slic3r::GUI {
 class ModelPreview3D;
 class BeautyWorkbenchControls;
 class BeautyWorkbenchTransactionController;
+struct SemanticRegionEvidence;
 
 class ModelGenerationPanel : public wxPanel
 {
@@ -282,12 +283,15 @@ private:
     AI::SemanticColoring::FaceColors m_finishing_candidate_semantic_faces;
     AI::SemanticColoring::SubfaceColors m_finishing_candidate_semantic_subfaces;
     nlohmann::json m_finishing_candidate_semantic_provenance;
+    std::shared_ptr<const SemanticRegionEvidence> m_finishing_candidate_region_evidence;
+    std::string m_finishing_candidate_region_error;
     std::vector<std::string> m_finishing_color_palette;
     std::function<void()> m_finishing_redo_preview;
     struct BeautyCandidateSnapshot {
         boost::filesystem::path source;
         boost::filesystem::path candidate;
         std::string model_sha256;
+        std::string geometry_id;
         std::string id;
         AI::ModelFinishingResult result;
         AI::ModelFinishingOptions options;
@@ -297,6 +301,8 @@ private:
         AI::SemanticColoring::FaceColors semantic_faces;
         AI::SemanticColoring::SubfaceColors semantic_subfaces;
         nlohmann::json semantic_provenance;
+        std::shared_ptr<const SemanticRegionEvidence> region_evidence;
+        std::string region_evidence_error;
     };
     BeautyCandidateSnapshot capture_beauty_candidate() const;
     bool restore_beauty_candidate(const BeautyCandidateSnapshot& snapshot);
@@ -306,6 +312,7 @@ private:
     std::vector<boost::filesystem::path> m_beauty_candidate_files;
     std::vector<boost::filesystem::path> m_beauty_accepted_files;
     std::shared_ptr<BeautyCandidateSnapshot> m_beauty_session_source;
+    std::shared_ptr<BeautyCandidateSnapshot> m_beauty_reoptimization_before;
     size_t m_beauty_session_undo_base {0};
     size_t m_beauty_session_file_base {0};
 

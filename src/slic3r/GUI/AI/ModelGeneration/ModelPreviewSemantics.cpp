@@ -60,6 +60,11 @@ void ModelPreview3D::finish_semantic_coloring()
     if (!m_semantic_controller) { m_semantic_timer.Stop(); return; }
     if (auto result = m_semantic_controller->poll()) {
         m_semantic_analysis = std::move(result->analysis);
+        m_region_runtime_identity = std::move(result->region_runtime_identity);
+        if (m_semantic_analysis && result->error.empty()) {
+            auto evidence = SemanticRegionEvidence::from_analysis(*m_semantic_analysis, m_region_runtime_identity);
+            if (evidence) restore_semantic_region_evidence(std::move(evidence));
+        }
         bool completed = false;
         if (!result->error.empty()) {
             m_semantic_error = wxString::FromUTF8(result->error.c_str());

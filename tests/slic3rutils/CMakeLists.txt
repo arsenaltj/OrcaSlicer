@@ -35,6 +35,7 @@ add_executable(${_TEST_NAME}_tests
     test_semantic_material_regions.cpp
     test_mediapipe_face_masks.cpp
     test_model_semantic_coloring.cpp
+    test_semantic_region_evidence.cpp
     test_model_finishing.cpp
     test_local_print_color_state.cpp
     test_beauty_boundary_drag.cpp
