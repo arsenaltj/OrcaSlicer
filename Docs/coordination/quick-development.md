@@ -50,8 +50,14 @@ C++ 逻辑修改增量构建对应 `<suite>_tests`，再按 CTest 标签或名�
 
 ## 每轮只解决一个可见问题
 
-从[当前状态](current-development.md)恢复上下文，指定一个固定样本、预期效果和相关验证范围。默认单 Agent / Astra medium，明确的小改用 low，几何/切片/状态排错用 high；不默认 max/ultra。模型选择由客户端控制，项目文字不会切换活动模型。
+从[当前状态](../../docs/coordination/current-development.md)恢复上下文，指定一个固定样本、预期效果和相关验证范围。默认单 Agent / Astra medium，明确的小改用 low，几何/切片/状态排错用 high；不默认 max/ultra。模型选择由客户端控制，项目文字不会切换活动模型。
 
 先交付可判断效果的试验，方向确认后补齐受影响的稳定性收尾。导入、保存、撤销、切片变化仍验证对应行为；Windows 之外的平台不进入当前本地迭代。独立 Agent 只用于可并行的审查或明确独立子任务，不同时写同一构建目录或操作同一窗口。只在阶段交付时冻结新快照；保留 R101 对照资产，不每轮复制完整运行环境。
 
 每次运行的 `result.json` 自动记录步骤耗时和退出码；比较从提出想法到可见效果的时间、失败/返工次数。当前状态只保留目标、版本、结果、缺口、证据路径；历史大报告不再重复追加当前摘要。已确认的阶段成果可形成明确范围的本地提交，不自动推送。
+
+## 已有 3D 模型离线回归（B.1）
+
+`python scripts/run_beauty_model_regression.py --manifest <私有清单.json> --executable <slic3rutils_tests.exe> --output <全新结果目录>`。清单格式见脚本说明；仅支持 GLB 与自包含顶点色 OBJ，模型路径和真实资产留在忽略目录。记录程序指纹，不自动认证源码版本；固定色板来自原生 BeautyTargetModelProbe，清单条件是证据说明而非修改算法参数。失败、缺报告、哈希不符均非通过，已有目录不覆盖。
+
+脚本回归：`python -m unittest discover -s scripts -p test_beauty_model_regression.py -v`。真实模型结果只证明两条配色路径一致，不证明未见泛化、视觉或实物颜色；任务状态只更新主计划 B.1。

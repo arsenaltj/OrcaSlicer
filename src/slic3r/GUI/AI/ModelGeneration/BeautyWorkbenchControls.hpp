@@ -12,8 +12,7 @@
 #include <thread>
 #include <atomic>
 #include <optional>
-#include <mutex>
-#include <condition_variable>
+#include "BeautyDraftQueue.hpp"
 
 class wxChoice; class wxCheckBox; class wxSlider; class wxStaticText; class wxButton;
 namespace Slic3r::GUI {
@@ -70,19 +69,7 @@ private:
     wxButton* focus_button;
     wxTimer timer;
     std::thread worker;
-    struct DraftRequest {
-        boost::filesystem::path model;
-        nlohmann::json record;
-        uint64_t generation=0;
-        bool remove=false;
-        bool clear_legacy=false;
-    };
-    std::thread draft_worker;
-    std::mutex draft_mutex;
-    std::condition_variable draft_cv;
-    std::optional<DraftRequest> draft_pending;
-    std::atomic<bool> draft_cancel{false};
-    std::atomic<uint64_t> draft_generation{0};
+    std::unique_ptr<BeautyDraftQueue> draft_queue;
     std::shared_ptr<Preparation> task;
     std::shared_ptr<const AI::BeautySurface> surface;
     std::shared_ptr<const AI::BeautySurface> cached_surface;
@@ -121,7 +108,7 @@ private:
     void restore(bool forward);
     void render(bool repaint);
     void save_draft(const AI::BeautyPuzzle&,const std::optional<AI::BeautyEditRegions>&);
-    void invalidate_draft_queue();
+    void flush_drafts();
     nlohmann::json record(const AI::BeautyPuzzle&,const std::optional<AI::BeautyEditRegions>&) const;
     bool layers_equal(const AI::BeautyPuzzle&,const std::optional<AI::BeautyEditRegions>&,
                       const AI::BeautyPuzzle&,const std::optional<AI::BeautyEditRegions>&) const;
