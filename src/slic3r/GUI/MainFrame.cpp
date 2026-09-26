@@ -1125,9 +1125,9 @@ void MainFrame::update_layout()
         if (m_redesign_shell == nullptr) {
             m_redesign_shell = new RedesignShell(this);
             if (m_ai_feature_host != nullptr)
-                m_ai_feature_host->set_service_status_handler([this](bool compatible, bool model_generation_available) {
+                m_ai_feature_host->set_service_status_handler([this](AIServiceStatus status) {
                     if (m_redesign_shell != nullptr)
-                        m_redesign_shell->set_service_status(compatible, model_generation_available);
+                        m_redesign_shell->set_service_status(status);
                 });
         }
         m_redesign_shell_active = true;

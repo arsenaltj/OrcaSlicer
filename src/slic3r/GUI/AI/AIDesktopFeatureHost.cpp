@@ -78,14 +78,24 @@ struct AIDesktopFeatureHost::Impl final : wxEvtHandler
             return;
         retry_timer.Stop();
         retry_count = 0;
+        set_service_status(ever_connected ? AIServiceStatus::Reconnecting : AIServiceStatus::Checking);
         discover();
     }
 
     void set_service_status_handler(ServiceStatusFn handler)
     {
         service_status_handler = std::move(handler);
-        if (service_status_handler && service_status_known)
-            service_status_handler(service_compatible, model_generation_available);
+        if (service_status_handler)
+            service_status_handler(service_status);
+    }
+
+    void set_service_status(AIServiceStatus status)
+    {
+        if (service_status == status)
+            return;
+        service_status = status;
+        if (service_status_handler)
+            service_status_handler(status);
     }
 
     void discover()
@@ -95,24 +105,29 @@ struct AIDesktopFeatureHost::Impl final : wxEvtHandler
         discovery_active = true;
         service_manager.discover_async(model_generation.panel(), [this](AIServiceAvailability availability) {
             discovery_active = false;
-            apply_availability(availability);
+            const bool retry_pending = !availability.compatible && availability.transient && retry_count < 20;
+            apply_availability(availability, retry_pending);
             if (availability.compatible) {
                 retry_timer.Stop();
                 retry_count = 0;
-            } else if (availability.transient && retry_count < 20) {
+            } else if (retry_pending) {
                 ++retry_count;
                 retry_timer.StartOnce(500);
             }
         });
     }
 
-    void apply_availability(const AIServiceAvailability& availability)
+    void apply_availability(const AIServiceAvailability& availability, bool retry_pending)
     {
-        service_status_known = true;
-        service_compatible = availability.compatible;
-        model_generation_available = availability.model_generation_available;
-        if (service_status_handler)
-            service_status_handler(service_compatible, model_generation_available);
+        if (availability.compatible) {
+            ever_connected = true;
+            set_service_status(availability.model_generation_available ? AIServiceStatus::Connected
+                                                                       : AIServiceStatus::GenerationUnavailable);
+        } else {
+            set_service_status(retry_pending ? (ever_connected ? AIServiceStatus::Reconnecting
+                                                               : AIServiceStatus::Checking)
+                                             : AIServiceStatus::Unavailable);
+        }
         const std::string message = availability.compatible && !availability.model_generation_available
             ? "Configure the local AI service to enable 3D generation."
             : availability.error;
@@ -146,9 +161,8 @@ struct AIDesktopFeatureHost::Impl final : wxEvtHandler
     SmartSlicingAvailableFn on_smart_slicing_available;
     ServiceStatusFn service_status_handler;
     Plater* plater { nullptr };
-    bool service_status_known { false };
-    bool service_compatible { false };
-    bool model_generation_available { false };
+    AIServiceStatus service_status { AIServiceStatus::Checking };
+    bool ever_connected { false };
     unsigned retry_count { 0 };
     bool discovery_active { false };
     bool smart_slicing_announced { false };

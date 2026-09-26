@@ -20,6 +20,15 @@ enum class AIWorkflowStatus
     Failed
 };
 
+enum class AIServiceStatus
+{
+    Checking,
+    Reconnecting,
+    Unavailable,
+    Connected,
+    GenerationUnavailable
+};
+
 // Shared desktop presentation for import, preparation and slicing progress.
 void describe_ai_workflow_status(AIWorkflowStatus status, wxString& label, wxColour& colour);
 
@@ -28,7 +37,7 @@ class AIDesktopFeatureHost final
 public:
     using NavigateAfterImportFn = std::function<void()>;
     using SmartSlicingAvailableFn = std::function<void()>;
-    using ServiceStatusFn = std::function<void(bool compatible, bool model_generation_available)>;
+    using ServiceStatusFn = std::function<void(AIServiceStatus)>;
 
     AIDesktopFeatureHost(wxWindow* parent, Plater* plater, NavigateAfterImportFn navigate_after_import,
                          SmartSlicingAvailableFn smart_slicing_available);

@@ -1,6 +1,7 @@
 #include "RedesignShell.hpp"
 #include "../MainFrame.hpp"
 #include "../GUI_App.hpp"
+#include "../AI/AIDesktopFeatureHost.hpp"
 #include "../AI/ModelGeneration/ModelGenerationPresentation.hpp"
 
 #include <array>
@@ -662,19 +663,31 @@ RedesignShell::RedesignShell(wxWindow* parent)
     build_image_workspace();
 }
 
-void RedesignShell::set_service_status(bool compatible, bool model_generation_available)
+void RedesignShell::set_service_status(AIServiceStatus status)
 {
     if (!m_sidecar_status)
         return;
-    if (!compatible) {
+    switch (status) {
+    case AIServiceStatus::Checking:
+        m_sidecar_status->SetLabel(text("AI 服务：检测中"));
+        m_sidecar_status->SetForegroundColour(secondary_text_colour());
+        break;
+    case AIServiceStatus::Reconnecting:
+        m_sidecar_status->SetLabel(text("AI 服务：重新连接中"));
+        m_sidecar_status->SetForegroundColour(secondary_text_colour());
+        break;
+    case AIServiceStatus::Unavailable:
         m_sidecar_status->SetLabel(text("AI 服务：不可用"));
         m_sidecar_status->SetForegroundColour(wxColour(221, 165, 109));
-    } else if (!model_generation_available) {
+        break;
+    case AIServiceStatus::GenerationUnavailable:
         m_sidecar_status->SetLabel(text("AI 服务：已连接，生成功能不可用"));
         m_sidecar_status->SetForegroundColour(wxColour(221, 165, 109));
-    } else {
+        break;
+    case AIServiceStatus::Connected:
         m_sidecar_status->SetLabel(text("AI 服务：已连接"));
         m_sidecar_status->SetForegroundColour(wxColour(122, 205, 153));
+        break;
     }
     m_sidecar_status->GetParent()->Layout();
 }

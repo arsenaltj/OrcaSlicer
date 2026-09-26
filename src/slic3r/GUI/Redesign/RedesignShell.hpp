@@ -21,6 +21,7 @@ class wxWindow;
 
 namespace Slic3r::GUI {
 
+enum class AIServiceStatus;
 class UploadThumbnail;
 class ImagePreview;
 
@@ -34,7 +35,7 @@ public:
     bool navigate_to(Page page);
     bool navigate_to_tab(const wxString& id);
     wxString active_tab_id() const;
-    void set_service_status(bool compatible, bool model_generation_available);
+    void set_service_status(AIServiceStatus status);
 
 private:
     enum class ImageState { Empty, Loading, Ready, Failed };
