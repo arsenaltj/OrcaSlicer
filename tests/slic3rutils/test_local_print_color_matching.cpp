@@ -3,6 +3,8 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include "slic3r/GUI/AI/ModelGeneration/LocalPrintColorMatching.hpp"
 #include "slic3r/GUI/AI/Model/LocalPrintColorState.hpp"
+#include "slic3r/GUI/AI/Model/BeautyPrintColorHandoff.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/LocalPrintColorBoundaryRefinement.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/LocalPrintColorQuality.hpp"
 
 using namespace Slic3r;
@@ -23,6 +25,98 @@ static Matching::Input matching_input(size_t count = 6)
     }
     input.identity.face_count = input.faces.size();
     return input;
+}
+
+static AI::ModelMatchedColors saved_beauty(const Matching::Input& input)
+{
+    AI::ModelMatchedColors saved;
+    saved.source_sha256=input.identity.source_sha256;
+    saved.geometry_id=input.identity.geometry_id;
+    saved.palette=input.identity.physical_channels;
+    for(size_t f=0;f<input.faces.size();++f)saved.face_slots.push_back(f%saved.palette.size());
+    return saved;
+}
+
+TEST_CASE("Beauty handoff preserves physical assignments through matching and persistence", "[LocalPrintColorMatching][BeautyHandoff]")
+{
+    const auto channels=GENERATE(1u,2u,3u,4u,5u,6u);
+    auto input=matching_input();input.identity.geometry_id=std::string(64,'b');
+    input.identity.physical_channels.resize(channels);
+    // Duplicate RGB must not erase material identity; face samples can differ
+    // from those outputs because of texture sampling or explicit user choice.
+    for(auto& channel:input.identity.physical_channels)channel.display_color="#FFFFFF";
+    auto saved=saved_beauty(input);REQUIRE(saved.valid());
+    GUI::BeautyPrintColorHandoff::seed(saved,input.identity);
+    const auto matched=Matching::compute(input);REQUIRE(matched.ok());
+    for(size_t f=0;f<saved.face_slots.size();++f)
+        CHECK(matched.result.targets.at(matched.result.face_targets.at(f)).physical_slot==saved.face_slots[f]);
+    auto accepted=matched.result;accepted.confirmed=true;
+    const auto json=GUI::LocalPrintColorState::encode(accepted);
+    AI::LocalPrintColorResult restored;std::string error;
+    REQUIRE(GUI::LocalPrintColorState::decode(json,accepted.source_sha256,accepted.geometry_id,
+        accepted.material_fingerprint,accepted.process_fingerprint,restored,error));
+    CHECK(restored.face_targets==accepted.face_targets);
+    CHECK(restored.regions.size()==channels);
+}
+
+TEST_CASE("Stale beauty handoff leaves an existing draft unchanged", "[LocalPrintColorMatching][BeautyHandoff]")
+{
+    auto input=matching_input();input.identity.geometry_id=std::string(64,'b');
+    auto saved=saved_beauty(input);
+    SECTION("different source") {saved.source_sha256=std::string(64,'c');}
+    SECTION("different geometry") {saved.geometry_id=std::string(64,'c');}
+    SECTION("different face count") {saved.face_slots.pop_back();}
+    SECTION("different material") {input.identity.physical_channels[0].material_type="PETG";}
+    SECTION("different color") {input.identity.physical_channels[0].display_color="#808080";}
+    SECTION("incompatible material") {input.identity.physical_channels[0].compatible=false;}
+    SECTION("existing edits") {input.identity.user_overrides={{0,{1.f,0.f,0.f}}};}
+    REQUIRE_THROWS(GUI::BeautyPrintColorHandoff::seed(saved,input.identity));
+    CHECK(input.identity.regions.empty());
+}
+
+TEST_CASE("Explicit recolor releases only selected inherited material locks", "[LocalPrintColorMatching][BeautyHandoff]")
+{
+    auto input=matching_input();input.identity.geometry_id=std::string(64,'b');
+    const auto saved=saved_beauty(input);
+    GUI::BeautyPrintColorHandoff::seed(saved,input.identity);
+    const auto before=input.identity;
+    GUI::BeautyPrintColorHandoff::unlock_faces(input.identity.regions,{0});
+    input.identity.user_overrides={{0,{1.f,1.f,1.f}}};
+    const auto matched=Matching::compute(input);REQUIRE(matched.ok());
+    CHECK(matched.result.targets.at(matched.result.face_targets[0]).physical_slot==1);
+    for(size_t f=1;f<input.faces.size();++f)
+        CHECK(matched.result.targets.at(matched.result.face_targets[f]).physical_slot==saved.face_slots[f]);
+    // Undo restores the original handoff without rerunning recognition.
+    input.identity=before;
+    const auto undone=Matching::compute(input);REQUIRE(undone.ok());
+    CHECK(undone.result.targets.at(undone.result.face_targets[0]).physical_slot==0);
+}
+
+TEST_CASE("Beauty assignments survive the production boundary refinement pipeline", "[LocalPrintColorMatching][BeautyHandoff]")
+{
+    const auto mesh=its_make_cube(10,10,10);
+    auto input=matching_input();
+    input.identity.geometry_id=AI::SurfaceSelectionPersistence::geometry_fingerprint(mesh);
+    input.faces.assign(mesh.indices.size(),{{1.f,1.f,1.f},1});
+    input.identity.face_count=input.faces.size();
+    for(auto& channel:input.identity.physical_channels)channel.display_color="#FFFFFF";
+    const auto saved=saved_beauty(input);
+    GUI::BeautyPrintColorHandoff::seed(saved,input.identity);
+    const auto matched=GUI::LocalPrintColorBoundaryRefinement::compute_guarded(input,mesh);
+    REQUIRE(matched.ok());
+    for(size_t f=0;f<saved.face_slots.size();++f)
+        CHECK(matched.result.targets.at(matched.result.face_targets[f]).physical_slot==saved.face_slots[f]);
+}
+
+TEST_CASE("Native mixed beauty assignments are not silently flattened by physical handoff", "[LocalPrintColorMatching][BeautyHandoff]")
+{
+    auto input=matching_input();input.identity.geometry_id=std::string(64,'b');
+    auto saved=saved_beauty(input);
+    saved.mixed_recipes.push_back({"#808080",{{0,.5},{1,.5}},6,std::string(64,'a'),true});
+    saved.face_slots[0]=6;REQUIRE(saved.valid());
+    REQUIRE_THROWS_WITH(GUI::BeautyPrintColorHandoff::seed(saved,input.identity),
+        "This beauty version uses native mixed filaments. Import it directly from the beauty workbench.");
+    CHECK(input.identity.regions.empty());
 }
 
 TEST_CASE("unsaved beauty draft completes the cold color matching path and reloads its selection", "[LocalPrintColorMatching][ColdPath]")

@@ -246,7 +246,7 @@ SAM 3 系列仅作为备用候选：在 SAM2 路线有明确能力缺口且环�
 | 表面块与简化 | `Model/BeautySurface.hpp`、`Model/BeautyPuzzle.hpp`、`Model/BeautyRecognition.hpp` | 连通/互斥/覆盖，保留真边界和五官，不跨壳，不变更原拓扑 |
 | 工作台与原生交接 | `ModelGeneration/BeautyWorkbenchControls.cpp` 及现有交接消费者 | 改色/拖边界/撤销重做/恢复，耗材变更，准备页与3MF |
 
-上表 C++ 相对目录为 `src/slic3r/GUI/AI/`。遵循 [架构约束](../../docs/architecture/ai-integration-lock.json)、[快速开发](../coordination/quick-development.md) 和 [测试规则](../../tests/AGENTS.md)。复用现有离线测试与原生探针；新测试针对观察到的失败行为，不堆叠镜像实现的断言。算法变化后只重跑受影响检查；GUI/文件交接变化必须实测相应行为。
+上表 C++ 相对目录为 `src/slic3r/GUI/AI/`。遵循 [架构约束](../../docs/architecture/ai-integration-lock.json)、[快速开发](../../Docs/coordination/quick-development.md) 和 [测试规则](../../tests/AGENTS.md)。复用现有离线测试与原生探针；新测试针对观察到的失败行为，不堆叠镜像实现的断言。算法变化后只重跑受影响检查；GUI/文件交接变化必须实测相应行为。
 
 ## 7. 交付节奏、记录和下一次执行
 
@@ -273,7 +273,7 @@ SAM 3 系列仅作为备用候选：在 SAM2 路线有明确能力缺口且环�
 - [SAMPro3D 作者项目](https://mutianxu.github.io/sampro3d/)：利用三维提示保持视角间一致性；其场景实例分割目标与本项目不同，仅借鉴证据整合思想。
 - [SAM 3 官方实现](https://github.com/facebookresearch/sam3)：通用概念与交互分割的备用候选，实际 Windows 运行成本和细五官效果需本机验证。
 - [MediaPipe Image Segmenter](https://ai.google.dev/edge/mediapipe/solutions/vision/image_segmenter)、[Face Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker)：固定人体类别与人脸关键点的能力边界。
-- [打印与颜色边界](../domain/printing-color-boundaries.md)：屏幕颜色、耗材编号、原生配方、切片和实际打印分层验证。
+- [打印与颜色边界](../../Docs/domain/printing-color-boundaries.md)：屏幕颜色、耗材编号、原生配方、切片和实际打印分层验证。
 - [现有美颜工作台方案](2026-09-17-3d-beauty-workbench-v2.md)：沿用编辑与几何基础；其中 ImageMap 等历史内容以当前开发状态和本计划范围为准。
 
 外部资料已在本次方向讨论中查阅，执行 P2 时固定实际使用的仓库版本和权重身份；不能用随时变化的 main 分支作为可复现版本。
