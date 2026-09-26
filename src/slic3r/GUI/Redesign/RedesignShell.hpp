@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstdint>
+#include <string>
 
 #include <wx/image.h>
 
@@ -21,6 +22,7 @@ class wxWindow;
 namespace Slic3r::GUI {
 
 class UploadThumbnail;
+class ImagePreview;
 
 class RedesignShell final : public wxPanel
 {
@@ -32,6 +34,7 @@ public:
     bool navigate_to(Page page);
     bool navigate_to_tab(const wxString& id);
     wxString active_tab_id() const;
+    void set_service_status(bool compatible, bool model_generation_available);
 
 private:
     enum class ImageState { Empty, Loading, Ready, Failed };
@@ -52,6 +55,9 @@ private:
     wxPanel* m_upload_surface { nullptr };
     wxStaticText* m_upload_icon { nullptr };
     wxButton* m_generate_button { nullptr };
+    wxStaticText* m_sidecar_status { nullptr };
+    wxPanel* m_style_choice { nullptr };
+    std::string m_selected_style_id { "sculpture" };
     wxStaticText* m_upload_hint { nullptr };
     wxStaticText* m_upload_status { nullptr };
     wxStaticText* m_upload_filename { nullptr };
@@ -59,7 +65,7 @@ private:
     wxTextCtrl* m_prompt { nullptr };
     wxPanel* m_guide_panel { nullptr };
     wxPanel* m_preview_host { nullptr };
-    wxStaticBitmap* m_preview { nullptr };
+    ImagePreview* m_preview { nullptr };
     std::array<wxPanel*, 4> m_nav_markers { nullptr, nullptr, nullptr, nullptr };
     std::array<wxStaticText*, 4> m_nav_labels { nullptr, nullptr, nullptr, nullptr };
     std::array<wxPanel*, 4> m_pages { nullptr, nullptr, nullptr, nullptr };

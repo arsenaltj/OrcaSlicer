@@ -1122,8 +1122,14 @@ void MainFrame::update_layout()
     if (m_redesign_shell_requested && wxGetApp().is_editor()) {
         if (m_layout != ESettingsLayout::Unknown)
             restore_to_creation();
-        if (m_redesign_shell == nullptr)
+        if (m_redesign_shell == nullptr) {
             m_redesign_shell = new RedesignShell(this);
+            if (m_ai_feature_host != nullptr)
+                m_ai_feature_host->set_service_status_handler([this](bool compatible, bool model_generation_available) {
+                    if (m_redesign_shell != nullptr)
+                        m_redesign_shell->set_service_status(compatible, model_generation_available);
+                });
+        }
         m_redesign_shell_active = true;
         m_redesign_shell->Show();
         m_tabpanel->Hide();

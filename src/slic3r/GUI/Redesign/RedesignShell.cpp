@@ -22,6 +22,7 @@
 #include <wx/image.h>
 #include <wx/msgdlg.h>
 #include <wx/panel.h>
+#include <wx/popupwin.h>
 #include <wx/sizer.h>
 #include <wx/statbmp.h>
 #include <wx/stattext.h>
@@ -29,6 +30,9 @@
 #include <wx/textctrl.h>
 #include <wx/tglbtn.h>
 #include <wx/window.h>
+#ifdef __WXMSW__
+#include <wx/msw/wrapwin.h>
+#endif
 
 #include "libslic3r/Utils.hpp"
 
@@ -115,6 +119,11 @@ wxBitmap resource_bitmap(const char* name, const wxSize& bounds)
     return scaled_bitmap(wxImage(wxString::FromUTF8((Slic3r::resources_dir() + "/images/" + name).c_str())), bounds);
 }
 
+wxImage resource_image(const char* name)
+{
+    return wxImage(wxString::FromUTF8((Slic3r::resources_dir() + "/images/" + name).c_str()));
+}
+
 // Paint the surrounding colour in the corners; native wxPanels are square.
 class RoundedPanel final : public wxPanel {
 public:
@@ -166,6 +175,397 @@ wxStaticText* label(wxWindow* parent, const char* value, int size, bool bold = f
     style_text(result, primary_text_colour(), size, bold);
     return result;
 }
+
+class PromptTextCtrl final : public wxTextCtrl
+{
+public:
+    PromptTextCtrl(wxWindow* parent, const wxSize& size)
+    {
+        Create(parent, wxID_ANY, wxEmptyString, wxDefaultPosition, size,
+               wxTE_MULTILINE | wxTE_NO_VSCROLL | wxBORDER_NONE);
+#ifdef __WXMSW__
+        Bind(wxEVT_MOUSEWHEEL, [this](wxMouseEvent& event) {
+            if (event.GetWheelAxis() != wxMOUSE_WHEEL_VERTICAL || event.GetWheelDelta() <= 0) {
+                event.Skip();
+                return;
+            }
+
+            m_wheel_rotation += event.GetWheelRotation();
+            const int steps = m_wheel_rotation / event.GetWheelDelta();
+            m_wheel_rotation %= event.GetWheelDelta();
+            if (event.IsPageScroll()) {
+                for (int i = 0; i < std::abs(steps); ++i)
+                    ::SendMessageW(GetHandle(), EM_SCROLL, steps > 0 ? SB_PAGEUP : SB_PAGEDOWN, 0);
+            } else if (steps != 0) {
+                ::SendMessageW(GetHandle(), EM_LINESCROLL, 0, -steps * event.GetLinesPerAction());
+            }
+        });
+#endif
+    }
+
+#ifdef __WXMSW__
+    WXDWORD MSWGetStyle(long style, WXDWORD* exstyle) const override
+    {
+        // wxTE_NO_VSCROLL also removes automatic scrolling on MSW.
+        return wxTextCtrl::MSWGetStyle(style, exstyle) | ES_AUTOVSCROLL;
+    }
+
+private:
+    int m_wheel_rotation { 0 };
+#endif
+};
+
+class StylePickerPopup;
+
+class StylePicker final : public wxPanel {
+public:
+    using SelectionChanged = std::function<void(int)>;
+
+    StylePicker(wxWindow* parent, wxArrayString choices, SelectionChanged on_selection)
+        : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(-1, parent->FromDIP(56)))
+        , m_choices(std::move(choices))
+        , m_on_selection(std::move(on_selection))
+    {
+        SetMinSize(wxSize(-1, FromDIP(56)));
+        SetBackgroundStyle(wxBG_STYLE_PAINT);
+        SetBackgroundColour(panel_colour());
+        style_text(this, primary_text_colour(), 10);
+        SetCanFocus(true);
+        Bind(wxEVT_PAINT, [this](wxPaintEvent&) { paint(); });
+        Bind(wxEVT_LEFT_UP, [this](wxMouseEvent&) {
+            SetFocus();
+            toggle_popup();
+        });
+        Bind(wxEVT_KEY_DOWN, [this](wxKeyEvent& event) {
+            switch (event.GetKeyCode()) {
+            case WXK_UP:
+                set_selection(std::max(0, m_selection - 1));
+                break;
+            case WXK_DOWN:
+                set_selection(std::min(static_cast<int>(m_choices.size()) - 1, m_selection + 1));
+                break;
+            case WXK_RETURN:
+            case WXK_SPACE:
+                toggle_popup();
+                break;
+            case WXK_ESCAPE:
+                dismiss_popup();
+                break;
+            default:
+                event.Skip();
+                break;
+            }
+        });
+    }
+
+    int selection() const { return m_selection; }
+
+    void set_selection(int selection)
+    {
+        if (selection < 0 || selection >= static_cast<int>(m_choices.size()))
+            return;
+        m_selection = selection;
+        Refresh();
+        if (m_on_selection)
+            m_on_selection(m_selection);
+    }
+
+private:
+    void paint()
+    {
+        wxAutoBufferedPaintDC dc(this);
+        dc.SetBackground(wxBrush(panel_colour()));
+        dc.Clear();
+        const wxSize size = GetClientSize();
+        if (size.x <= 0 || size.y <= 0)
+            return;
+
+        auto gc = std::unique_ptr<wxGraphicsContext>(wxGraphicsContext::Create(dc));
+        if (!gc)
+            return;
+        gc->SetPen(*wxTRANSPARENT_PEN);
+        gc->SetBrush(wxBrush(control_colour()));
+        gc->DrawRoundedRectangle(0, 0, size.x, size.y, FromDIP(12));
+        gc->SetBrush(wxBrush(wxColour(255, 255, 255, 38)));
+        const wxRect icon_tile(FromDIP(6), FromDIP(6), FromDIP(45), FromDIP(45));
+        gc->DrawRoundedRectangle(icon_tile.x, icon_tile.y, icon_tile.width, icon_tile.height, FromDIP(10));
+
+        const wxImage icon_image = resource_image("redesign_skill_emoji.png");
+        if (icon_image.IsOk()) {
+            const int icon_size = FromDIP(24);
+            const wxBitmap icon(icon_image.Scale(icon_size, icon_size, wxIMAGE_QUALITY_HIGH));
+            dc.DrawBitmap(icon, icon_tile.x + (icon_tile.width - icon.GetWidth()) / 2,
+                          icon_tile.y + (icon_tile.height - icon.GetHeight()) / 2, true);
+        }
+
+        dc.SetFont(GetFont());
+        dc.SetTextForeground(primary_text_colour());
+        if (m_selection >= 0 && m_selection < static_cast<int>(m_choices.size())) {
+            const wxSize extent = dc.GetTextExtent(m_choices[m_selection]);
+            dc.DrawText(m_choices[m_selection], FromDIP(62), (size.y - extent.y) / 2);
+        }
+
+        const int arrow_x = size.x - FromDIP(20);
+        const int centre_y = size.y / 2;
+        dc.SetPen(wxPen(secondary_text_colour(), std::max(1, FromDIP(1))));
+        dc.DrawLine(arrow_x - FromDIP(4), centre_y - FromDIP(3), arrow_x, centre_y - FromDIP(7));
+        dc.DrawLine(arrow_x, centre_y - FromDIP(7), arrow_x + FromDIP(4), centre_y - FromDIP(3));
+        dc.DrawLine(arrow_x - FromDIP(4), centre_y + FromDIP(3), arrow_x, centre_y + FromDIP(7));
+        dc.DrawLine(arrow_x, centre_y + FromDIP(7), arrow_x + FromDIP(4), centre_y + FromDIP(3));
+    }
+
+    void toggle_popup();
+    void dismiss_popup();
+    void select_from_popup(int selection);
+
+    wxArrayString m_choices;
+    SelectionChanged m_on_selection;
+    int m_selection { 0 };
+    StylePickerPopup* m_popup { nullptr };
+
+    friend class StylePickerPopup;
+};
+
+class StylePickerPopup final : public wxPopupTransientWindow {
+public:
+    StylePickerPopup(StylePicker* owner, const wxArrayString& choices)
+        : wxPopupTransientWindow(owner, wxBORDER_NONE)
+        , m_owner(owner)
+    {
+        SetBackgroundStyle(wxBG_STYLE_PAINT);
+        SetBackgroundColour(wxColour(38, 38, 38));
+        auto* content = new wxBoxSizer(wxVERTICAL);
+        content->AddSpacer(owner->FromDIP(10));
+        for (std::size_t index = 0; index < choices.size(); ++index) {
+            auto* row = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxSize(-1, owner->FromDIP(41)));
+            row->SetMinSize(wxSize(-1, owner->FromDIP(41)));
+            row->SetBackgroundColour(wxColour(38, 38, 38));
+            auto* row_sizer = new wxBoxSizer(wxHORIZONTAL);
+            auto* row_label = new wxStaticText(row, wxID_ANY, choices[index], wxDefaultPosition, wxDefaultSize,
+                                               wxALIGN_CENTER_VERTICAL);
+            style_text(row_label, primary_text_colour(), 10);
+            row_sizer->Add(row_label, 1, wxALIGN_CENTER_VERTICAL | wxLEFT, owner->FromDIP(16));
+            row->SetSizer(row_sizer);
+            const int selection = static_cast<int>(index);
+            row->Bind(wxEVT_LEFT_UP, [this, selection](wxMouseEvent&) { choose(selection); });
+            row_label->Bind(wxEVT_LEFT_UP, [this, selection](wxMouseEvent&) { choose(selection); });
+            content->Add(row, 0, wxEXPAND);
+        }
+        content->AddSpacer(owner->FromDIP(10));
+        SetSizer(content);
+        SetSize(wxSize(owner->GetSize().x, owner->FromDIP(143)));
+        Bind(wxEVT_PAINT, [this, owner](wxPaintEvent&) {
+            wxAutoBufferedPaintDC dc(this);
+            dc.SetBackground(wxBrush(wxColour(38, 38, 38)));
+            dc.Clear();
+            auto gc = std::unique_ptr<wxGraphicsContext>(wxGraphicsContext::Create(dc));
+            if (!gc)
+                return;
+            gc->SetPen(*wxTRANSPARENT_PEN);
+            gc->SetBrush(wxBrush(wxColour(38, 38, 38)));
+            const wxSize size = GetClientSize();
+            gc->DrawRoundedRectangle(0, 0, size.x, size.y, owner->FromDIP(12));
+        });
+    }
+
+private:
+    void choose(int selection)
+    {
+        m_owner->select_from_popup(selection);
+        Dismiss();
+    }
+
+    StylePicker* m_owner;
+};
+
+void StylePicker::toggle_popup()
+{
+    if (m_popup != nullptr) {
+        if (m_popup->IsShown()) {
+            m_popup->Dismiss();
+            return;
+        }
+        const wxPoint position = ClientToScreen(wxPoint(0, GetClientSize().y + FromDIP(12)));
+        m_popup->SetSize(wxSize(GetSize().x, FromDIP(143)));
+        m_popup->SetPosition(position);
+        m_popup->Popup(this);
+        return;
+    }
+
+    m_popup = new StylePickerPopup(this, m_choices);
+    const wxPoint position = ClientToScreen(wxPoint(0, GetClientSize().y + FromDIP(12)));
+    m_popup->SetPosition(position);
+    m_popup->Popup(this);
+}
+
+void StylePicker::select_from_popup(int selection)
+{
+    set_selection(selection);
+}
+
+void StylePicker::dismiss_popup()
+{
+    if (m_popup != nullptr && m_popup->IsShown())
+        m_popup->Dismiss();
+}
+
+class FlowArrow final : public wxPanel {
+public:
+    FlowArrow(wxWindow* parent, int centre_y)
+        : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(parent->FromDIP(72), parent->FromDIP(255)))
+        , m_centre_y(centre_y)
+    {
+        SetMinSize(wxSize(FromDIP(72), FromDIP(255)));
+        SetMaxSize(wxSize(FromDIP(72), FromDIP(255)));
+        SetBackgroundStyle(wxBG_STYLE_PAINT);
+        SetBackgroundColour(background_colour());
+        Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
+            wxAutoBufferedPaintDC dc(this);
+            dc.SetBackground(wxBrush(background_colour()));
+            dc.Clear();
+            const wxSize size = GetClientSize();
+            const double y = FromDIP(m_centre_y);
+            const int left = FromDIP(5);
+            const int right = size.x - FromDIP(5);
+            const int head = FromDIP(22);
+            const int shaft_end = right - head;
+
+            // Layered strokes approximate the Figma glow and tapered trail without a native image asset.
+            dc.SetPen(wxPen(wxColour(73, 143, 216), FromDIP(10)));
+            dc.DrawLine(left, static_cast<int>(y), shaft_end, static_cast<int>(y));
+            dc.SetPen(wxPen(wxColour(129, 207, 255), FromDIP(5)));
+            dc.DrawLine(left, static_cast<int>(y), shaft_end, static_cast<int>(y));
+
+            wxPoint tail[] = {
+                { left, static_cast<int>(y - FromDIP(12)) },
+                { left + FromDIP(25), static_cast<int>(y - FromDIP(5)) },
+                { shaft_end, static_cast<int>(y - FromDIP(5)) },
+                { shaft_end, static_cast<int>(y + FromDIP(5)) },
+                { left + FromDIP(25), static_cast<int>(y + FromDIP(5)) },
+                { left, static_cast<int>(y + FromDIP(12)) }
+            };
+            dc.SetPen(*wxTRANSPARENT_PEN);
+            dc.SetBrush(wxBrush(wxColour(91, 177, 242)));
+            dc.DrawPolygon(static_cast<int>(std::size(tail)), tail);
+
+            wxPoint arrow[] = {
+                { shaft_end - FromDIP(2), static_cast<int>(y - FromDIP(6)) },
+                { shaft_end - FromDIP(2), static_cast<int>(y - FromDIP(15)) },
+                { right, static_cast<int>(y) },
+                { shaft_end - FromDIP(2), static_cast<int>(y + FromDIP(15)) },
+                { shaft_end - FromDIP(2), static_cast<int>(y + FromDIP(6)) },
+                { shaft_end - FromDIP(12), static_cast<int>(y) }
+            };
+            dc.SetPen(wxPen(wxColour(99, 184, 245), FromDIP(2)));
+            dc.SetBrush(wxBrush(wxColour(116, 198, 255)));
+            dc.DrawPolygon(static_cast<int>(std::size(arrow)), arrow);
+        });
+    }
+
+private:
+    int m_centre_y;
+};
+
+class FlowPromptCard final : public wxPanel {
+public:
+    explicit FlowPromptCard(wxWindow* parent)
+        : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(parent->FromDIP(250), parent->FromDIP(160)))
+    {
+        SetMinSize(wxSize(FromDIP(250), FromDIP(160)));
+        SetMaxSize(wxSize(FromDIP(276), FromDIP(160)));
+        SetBackgroundStyle(wxBG_STYLE_PAINT);
+        SetBackgroundColour(wxColour(38, 38, 41));
+
+        auto* content = new wxBoxSizer(wxVERTICAL);
+        SetSizer(content);
+        auto* sample = label(this, "生成一只可爱的小怪兽手办。", 9);
+        style_text(sample, secondary_text_colour(), 9);
+        content->Add(sample, 0, wxALL, FromDIP(10));
+        content->AddStretchSpacer(1);
+        auto* count = label(this, "13/800", 9);
+        style_text(count, secondary_text_colour(), 9);
+        content->Add(count, 0, wxALIGN_RIGHT | wxRIGHT | wxBOTTOM, FromDIP(10));
+
+        Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
+            wxAutoBufferedPaintDC dc(this);
+            dc.SetBackground(wxBrush(wxColour(38, 38, 41)));
+            dc.Clear();
+            dc.SetPen(wxPen(wxColour(92, 92, 101), FromDIP(1), wxPENSTYLE_SHORT_DASH));
+            dc.SetBrush(*wxTRANSPARENT_BRUSH);
+            const wxSize size = GetClientSize();
+            dc.DrawRoundedRectangle(0, 0, size.x - 1, size.y - 1, FromDIP(8));
+        });
+    }
+};
+
+class FlowCardImage final : public wxPanel {
+public:
+    FlowCardImage(wxWindow* parent, wxImage image, const wxSize& size)
+        : wxPanel(parent, wxID_ANY, wxDefaultPosition, size)
+        , m_image(std::move(image))
+    {
+        SetMinSize(size);
+        SetMaxSize(size);
+        SetBackgroundStyle(wxBG_STYLE_PAINT);
+        SetBackgroundColour(background_colour());
+        Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
+            wxAutoBufferedPaintDC dc(this);
+            dc.SetBackground(wxBrush(background_colour()));
+            dc.Clear();
+            const wxSize size = GetClientSize();
+            if (!m_image.IsOk() || size.x <= 0 || size.y <= 0)
+                return;
+            dc.SetBrush(wxBrush(wxColour(175, 218, 247)));
+            dc.SetPen(*wxTRANSPARENT_PEN);
+            dc.DrawRoundedRectangle(0, 0, size.x, size.y, FromDIP(18));
+
+            const int image_height = std::min(size.y - FromDIP(12), FromDIP(150));
+            const double scale = double(image_height) / m_image.GetHeight();
+            const int image_width = std::max(1, int(std::round(m_image.GetWidth() * scale)));
+            const wxImage scaled = m_image.Scale(image_width, image_height, wxIMAGE_QUALITY_HIGH);
+            dc.DrawBitmap(wxBitmap(scaled), (size.x - image_width) / 2, size.y - image_height - FromDIP(4), true);
+        });
+    }
+
+private:
+    wxImage m_image;
+};
+
+class FlowCompositeImage final : public wxPanel {
+public:
+    FlowCompositeImage(wxWindow* parent, wxImage rear, wxImage front, const wxSize& size)
+        : wxPanel(parent, wxID_ANY, wxDefaultPosition, size)
+        , m_rear(std::move(rear)), m_front(std::move(front))
+    {
+        SetMinSize(size);
+        SetMaxSize(size);
+        SetBackgroundStyle(wxBG_STYLE_PAINT);
+        SetBackgroundColour(background_colour());
+        Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
+            wxAutoBufferedPaintDC dc(this);
+            dc.SetBackground(wxBrush(background_colour()));
+            dc.Clear();
+            const wxSize size = GetClientSize();
+            if (!m_rear.IsOk() || !m_front.IsOk() || size.x <= 0 || size.y <= 0)
+                return;
+
+            const int image_height = std::min(size.y - FromDIP(8), FromDIP(162));
+            const double scale = double(image_height) / m_rear.GetHeight();
+            const int image_width = std::max(1, int(std::round(m_rear.GetWidth() * scale)));
+            const wxImage rear = m_rear.Scale(image_width, image_height, wxIMAGE_QUALITY_HIGH);
+            const wxImage front = m_front.Scale(image_width, image_height, wxIMAGE_QUALITY_HIGH);
+            const int overlap = FromDIP(66);
+            const int x_rear = 0;
+            const int x_front = std::max(0, image_width - overlap);
+            const int y = size.y - image_height;
+            dc.DrawBitmap(wxBitmap(rear), x_rear, y, true);
+            dc.DrawBitmap(wxBitmap(front), x_front, y, true);
+        });
+    }
+
+private:
+    wxImage m_rear, m_front;
+};
 
 }
 
@@ -224,6 +624,33 @@ private:
     std::function<void()> m_remove, m_choose;
 };
 
+class ImagePreview final : public wxPanel
+{
+public:
+    explicit ImagePreview(wxWindow* parent) : wxPanel(parent, wxID_ANY)
+    {
+        SetBackgroundStyle(wxBG_STYLE_PAINT);
+        SetBackgroundColour(background_colour());
+        Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
+            wxAutoBufferedPaintDC dc(this);
+            dc.SetBackground(wxBrush(background_colour()));
+            dc.Clear();
+            if (!m_bitmap.IsOk()) return;
+            auto gc = std::unique_ptr<wxGraphicsContext>(wxGraphicsContext::Create(dc));
+            if (!gc) return;
+            const wxSize size = GetClientSize();
+            gc->DrawBitmap(m_bitmap, (size.x - m_bitmap.GetWidth()) / 2,
+                           (size.y - m_bitmap.GetHeight()) / 2,
+                           m_bitmap.GetWidth(), m_bitmap.GetHeight());
+        });
+    }
+
+    void SetBitmap(const wxBitmap& bitmap) { m_bitmap = bitmap; Refresh(); }
+
+private:
+    wxBitmap m_bitmap;
+};
+
 RedesignShell::RedesignShell(wxWindow* parent)
     : wxPanel(parent)
     , m_sizer(new wxBoxSizer(wxVERTICAL))
@@ -233,6 +660,23 @@ RedesignShell::RedesignShell(wxWindow* parent)
     SetSizer(m_sizer);
     Bind(wxEVT_TIMER, [this](wxTimerEvent&) { update_preview_bitmap(); }, m_preview_resize_timer.GetId());
     build_image_workspace();
+}
+
+void RedesignShell::set_service_status(bool compatible, bool model_generation_available)
+{
+    if (!m_sidecar_status)
+        return;
+    if (!compatible) {
+        m_sidecar_status->SetLabel(text("AI 服务：不可用"));
+        m_sidecar_status->SetForegroundColour(wxColour(221, 165, 109));
+    } else if (!model_generation_available) {
+        m_sidecar_status->SetLabel(text("AI 服务：已连接，生成功能不可用"));
+        m_sidecar_status->SetForegroundColour(wxColour(221, 165, 109));
+    } else {
+        m_sidecar_status->SetLabel(text("AI 服务：已连接"));
+        m_sidecar_status->SetForegroundColour(wxColour(122, 205, 153));
+    }
+    m_sidecar_status->GetParent()->Layout();
 }
 
 void RedesignShell::build_image_workspace()
@@ -346,8 +790,7 @@ void RedesignShell::build_image_workspace()
     prompt_surface->SetBackgroundColour(control_colour());
     auto* prompt_sizer = new wxBoxSizer(wxVERTICAL);
     prompt_surface->SetSizer(prompt_sizer);
-    m_prompt = new wxTextCtrl(prompt_surface, wxID_ANY, wxEmptyString, wxDefaultPosition,
-                              wxSize(-1, FromDIP(118)), wxTE_MULTILINE | wxBORDER_NONE);
+    m_prompt = new PromptTextCtrl(prompt_surface, wxSize(-1, FromDIP(118)));
     m_prompt->SetBackgroundColour(control_colour());
     m_prompt->SetMaxLength(800);
     style_text(m_prompt, wxColour(230, 230, 233), 10);
@@ -363,45 +806,24 @@ void RedesignShell::build_image_workspace()
     });
     settings_sizer->Add(prompt_surface, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
 
-    auto* model_label = new wxStaticText(settings_panel, wxID_ANY, text("模型选择"));
-    style_text(model_label, primary_text_colour(), 13, true);
-    settings_sizer->Add(model_label, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
-    auto* model_surface = new RoundedPanel(settings_panel, wxSize(-1, FromDIP(56)), control_colour(), panel_colour(), 8);
-    model_surface->SetBackgroundColour(control_colour());
-    auto* model_sizer = new wxBoxSizer(wxHORIZONTAL);
-    model_surface->SetSizer(model_sizer);
-    auto* model_icon = new wxStaticBitmap(model_surface, wxID_ANY,
-                                          resource_bitmap("redesign_gpt_image.png", wxSize(FromDIP(45), FromDIP(45))));
-    model_sizer->Add(model_icon, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(6));
-    model_sizer->Add(label(model_surface, "GPT image", 10), 1, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(12));
-    auto* model_arrow = label(model_surface, "⌄", 14);
-    model_sizer->Add(model_arrow, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(12));
-    settings_sizer->Add(model_surface, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
-
-    auto* skills_label = new wxStaticText(settings_panel, wxID_ANY, text("技能"));
-    style_text(skills_label, primary_text_colour(), 13, true);
-    settings_sizer->Add(skills_label, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
-    auto* skills_grid = new wxGridSizer(2, FromDIP(14), FromDIP(12));
-    for (const char* skill : {"动漫手办", "建筑物模型", "Q版手办", "小组件", "能力5", "能力6"}) {
-        auto* skill_card = new RoundedPanel(settings_panel, wxSize(-1, FromDIP(56)), control_colour(), panel_colour(), 8);
-        skill_card->SetBackgroundColour(control_colour());
-        auto* skill_sizer = new wxBoxSizer(wxHORIZONTAL);
-        skill_card->SetSizer(skill_sizer);
-        auto* skill_tile = new RoundedPanel(skill_card, wxSize(FromDIP(44), FromDIP(44)),
-                                            background_colour(), control_colour(), 6);
-        skill_tile->SetMinSize(wxSize(FromDIP(44), FromDIP(44)));
-        auto* skill_tile_sizer = new wxBoxSizer(wxVERTICAL);
-        skill_tile->SetSizer(skill_tile_sizer);
-        auto* skill_icon = new wxStaticBitmap(skill_tile, wxID_ANY,
-                                              resource_bitmap("redesign_skill_emoji.png", wxSize(FromDIP(24), FromDIP(24))));
-        skill_tile_sizer->Add(skill_icon, 1, wxALIGN_CENTER | wxALL, FromDIP(10));
-        skill_sizer->Add(skill_tile, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(6));
-        skill_sizer->Add(label(skill_card, skill, 9), 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(12));
-        skills_grid->Add(skill_card, 1, wxEXPAND);
-    }
-    settings_sizer->Add(skills_grid, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
+    auto* style_label_control = new wxStaticText(settings_panel, wxID_ANY, text("风格"));
+    style_text(style_label_control, primary_text_colour(), 13, true);
+    settings_sizer->Add(style_label_control, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
+    const wxArrayString style_choices { text("雕塑"), text("多色写实"), text("多色风格化") };
+    auto* style_picker = new StylePicker(settings_panel, style_choices, [this](int selection) {
+        static constexpr const char* style_ids[] = { "sculpture", "realistic", "cartoon" };
+        if (selection >= 0 && selection < static_cast<int>(std::size(style_ids)))
+            m_selected_style_id = style_ids[selection];
+    });
+    m_style_choice = style_picker;
+    settings_sizer->Add(style_picker, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
     settings_sizer->AddStretchSpacer(1);
 
+    m_sidecar_status = new wxStaticText(settings_panel, wxID_ANY, text("AI 服务：检测中"));
+    style_text(m_sidecar_status, secondary_text_colour(), 9);
+    m_sidecar_status->SetMinSize(wxSize(-1, FromDIP(20)));
+    settings_sizer->Add(m_sidecar_status, 0, wxLEFT | wxRIGHT, FromDIP(21));
+    settings_sizer->AddSpacer(FromDIP(8));
     m_generate_button = new wxButton(settings_panel, wxID_ANY, text("生成 2D 设计图"),
                                      wxDefaultPosition, wxSize(-1, FromDIP(48)), wxBORDER_NONE);
     m_generate_button->SetBackgroundColour(wxColour(254, 212, 69));
@@ -430,41 +852,70 @@ void RedesignShell::build_image_workspace()
     guide_sizer->Add(title, 0, wxALIGN_CENTER | wxBOTTOM, FromDIP(76));
 
     auto* flow = new wxBoxSizer(wxHORIZONTAL);
-    auto add_step = [this, flow](const char* image_name, const char* heading_text, const char* subtitle_text) {
+    auto add_step = [this, flow](const char* image_name, const char* heading_text, const char* subtitle_text,
+                                 int step_width, int picture_width, const char* overlay_image_name) {
+        constexpr int visual_height = 195;
+        constexpr int heading_height = 36;
+        constexpr int subtitle_height = 24;
+        auto* step_panel = new wxPanel(m_guide_panel, wxID_ANY, wxDefaultPosition,
+                                       wxSize(FromDIP(step_width), FromDIP(visual_height + heading_height + subtitle_height)));
+        const int minimum_width = image_name != nullptr ? 148 : 250;
+        step_panel->SetMinSize(wxSize(FromDIP(minimum_width),
+                                      FromDIP(visual_height + heading_height + subtitle_height)));
+        step_panel->SetMaxSize(wxSize(FromDIP(step_width),
+                                      FromDIP(visual_height + heading_height + subtitle_height)));
+        step_panel->SetBackgroundColour(background_colour());
         auto* step = new wxBoxSizer(wxVERTICAL);
+        step_panel->SetSizer(step);
+
+        auto* visual = new wxPanel(step_panel, wxID_ANY, wxDefaultPosition,
+                                   wxSize(FromDIP(step_width), FromDIP(visual_height)));
+        visual->SetMinSize(wxSize(FromDIP(step_width), FromDIP(visual_height)));
+        visual->SetMaxSize(wxSize(FromDIP(step_width), FromDIP(visual_height)));
+        visual->SetBackgroundColour(background_colour());
+        auto* visual_sizer = new wxBoxSizer(wxVERTICAL);
+        visual->SetSizer(visual_sizer);
+        visual_sizer->AddStretchSpacer(1);
         if (image_name != nullptr) {
-            auto* picture = new wxStaticBitmap(m_guide_panel, wxID_ANY,
-                                               resource_bitmap(image_name, wxSize(FromDIP(138), FromDIP(168))));
-            step->Add(picture, 0, wxALIGN_CENTER | wxBOTTOM, FromDIP(18));
+            wxWindow* picture = nullptr;
+            if (overlay_image_name != nullptr) {
+                picture = new FlowCompositeImage(visual, resource_image(image_name), resource_image(overlay_image_name),
+                                                 wxSize(FromDIP(216), FromDIP(177)));
+            } else {
+                picture = new FlowCardImage(visual, resource_image(image_name),
+                                            wxSize(FromDIP(138), FromDIP(177)));
+            }
+            visual_sizer->Add(picture, 0, wxALIGN_CENTER);
         } else {
-            auto* prompt_card = new RoundedPanel(m_guide_panel, wxSize(FromDIP(250), FromDIP(160)),
-                                                 wxColour(38, 38, 41), background_colour(), 8);
-            prompt_card->SetMinSize(wxSize(FromDIP(250), FromDIP(160)));
-            prompt_card->SetBackgroundColour(wxColour(38, 38, 41));
-            auto* prompt_sizer = new wxBoxSizer(wxVERTICAL);
-            prompt_card->SetSizer(prompt_sizer);
-            auto* sample = label(prompt_card, "生成一只可爱的小怪兽手办。", 9);
-            style_text(sample, secondary_text_colour(), 9);
-            prompt_sizer->Add(sample, 0, wxALL, FromDIP(10));
-            step->Add(prompt_card, 0, wxALIGN_CENTER | wxBOTTOM, FromDIP(18));
+            visual_sizer->Add(new FlowPromptCard(visual), 0, wxALIGN_CENTER);
         }
-        auto* heading = label(m_guide_panel, heading_text, 11);
-        step->Add(heading, 0, wxALIGN_CENTER | wxBOTTOM, FromDIP(4));
-        auto* subtitle = label(m_guide_panel, subtitle_text, 9);
+        visual_sizer->AddStretchSpacer(1);
+        step->Add(visual, 0, wxEXPAND);
+
+        auto* heading = new wxStaticText(step_panel, wxID_ANY, text(heading_text), wxDefaultPosition,
+                                         wxDefaultSize, wxALIGN_CENTER_HORIZONTAL);
+        style_text(heading, primary_text_colour(), 11);
+        heading->Wrap(FromDIP(picture_width));
+        heading->SetMinSize(wxSize(FromDIP(picture_width), FromDIP(heading_height)));
+        heading->SetMaxSize(wxSize(FromDIP(picture_width), FromDIP(heading_height)));
+        step->Add(heading, 0, wxALIGN_CENTER);
+        auto* subtitle = new wxStaticText(step_panel, wxID_ANY, text(subtitle_text), wxDefaultPosition,
+                                          wxDefaultSize, wxALIGN_CENTER_HORIZONTAL);
         style_text(subtitle, secondary_text_colour(), 9);
+        subtitle->Wrap(FromDIP(picture_width));
+        subtitle->SetMinSize(wxSize(FromDIP(picture_width), FromDIP(subtitle_height)));
+        subtitle->SetMaxSize(wxSize(FromDIP(picture_width), FromDIP(subtitle_height)));
         step->Add(subtitle, 0, wxALIGN_CENTER);
-        flow->Add(step, 0, wxALIGN_CENTER);
+        flow->Add(step_panel, 1, wxEXPAND);
     };
     auto add_arrow = [this, flow] {
-        auto* arrow = label(m_guide_panel, "➜", 30);
-        style_text(arrow, wxColour(116, 198, 255), 30, true);
-        flow->Add(arrow, 0, wxALIGN_CENTER | wxLEFT | wxRIGHT, FromDIP(28));
+        flow->Add(new FlowArrow(m_guide_panel, 98), 0, wxALIGN_CENTER | wxLEFT | wxRIGHT, FromDIP(8));
     };
-    add_step(nullptr, "上传图片或输入提示词生成图片", "描述想创作的图片");
+    add_step(nullptr, "上传图片或输入提示词生成图片", "描述想创作的图片", 276, 250, nullptr);
     add_arrow();
-    add_step("redesign_model_blue.png", "生成图片", "生成图片并完善");
+    add_step("redesign_model_blue.png", "生成图片", "生成图片并完善", 256, 138, nullptr);
     add_arrow();
-    add_step("redesign_model_mono.png", "转为 3D", "获得可打印的专属 3D 模型");
+    add_step("redesign_model_mono.png", "转为 3D", "获得可打印的专属 3D 模型", 256, 216, "redesign_model_blue.png");
     guide_sizer->Add(flow, 0, wxALIGN_CENTER);
     guide_sizer->AddStretchSpacer(1);
     content_sizer->Add(m_guide_panel, 1, wxEXPAND);
@@ -474,7 +925,7 @@ void RedesignShell::build_image_workspace()
     auto* preview_sizer = new wxBoxSizer(wxVERTICAL);
     m_preview_host->SetSizer(preview_sizer);
     preview_sizer->AddStretchSpacer(1);
-    m_preview = new wxStaticBitmap(m_preview_host, wxID_ANY, wxNullBitmap);
+    m_preview = new ImagePreview(m_preview_host);
     preview_sizer->Add(m_preview, 0, wxALIGN_CENTER);
     preview_sizer->AddStretchSpacer(1);
     content_sizer->Add(m_preview_host, 1, wxEXPAND);
@@ -676,14 +1127,19 @@ void RedesignShell::update_preview_bitmap()
     if (m_image_state != ImageState::Ready || !m_selected_image.IsOk() || !m_preview)
         return;
     const wxSize available = m_preview->GetParent()->GetClientSize();
-    const wxSize bounds(std::min(FromDIP(500), std::max(1, available.x - FromDIP(80))),
-                        std::min(FromDIP(670), std::max(1, available.y - FromDIP(80))));
+    const wxSize bounds(std::min(FromDIP(503), std::max(1, available.x - FromDIP(80))),
+                        std::min(FromDIP(671), std::max(1, available.y - FromDIP(80))));
     if (bounds == m_last_preview_bounds)
         return;
     m_last_preview_bounds = bounds;
-    const wxBitmap bitmap = scaled_bitmap(m_selected_image, bounds);
+    const double scale = std::min(double(bounds.x) / m_selected_image.GetWidth(),
+                                  double(bounds.y) / m_selected_image.GetHeight());
+    const wxSize image_size(std::min(bounds.x, std::max(1, int(std::round(m_selected_image.GetWidth() * scale)))),
+                            std::min(bounds.y, std::max(1, int(std::round(m_selected_image.GetHeight() * scale)))));
+    const wxBitmap bitmap(m_selected_image.Scale(image_size.x, image_size.y, wxIMAGE_QUALITY_HIGH));
+    m_preview->SetMinSize(bounds);
+    m_preview->SetMaxSize(bounds);
     m_preview->SetBitmap(bitmap);
-    m_preview->SetMinSize(bitmap.GetSize());
     m_preview->GetParent()->Layout();
 }
 

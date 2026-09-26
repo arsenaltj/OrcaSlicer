@@ -81,6 +81,13 @@ struct AIDesktopFeatureHost::Impl final : wxEvtHandler
         discover();
     }
 
+    void set_service_status_handler(ServiceStatusFn handler)
+    {
+        service_status_handler = std::move(handler);
+        if (service_status_handler && service_status_known)
+            service_status_handler(service_compatible, model_generation_available);
+    }
+
     void discover()
     {
         if (discovery_active || shutdown_requested)
@@ -101,6 +108,11 @@ struct AIDesktopFeatureHost::Impl final : wxEvtHandler
 
     void apply_availability(const AIServiceAvailability& availability)
     {
+        service_status_known = true;
+        service_compatible = availability.compatible;
+        model_generation_available = availability.model_generation_available;
+        if (service_status_handler)
+            service_status_handler(service_compatible, model_generation_available);
         const std::string message = availability.compatible && !availability.model_generation_available
             ? "Configure the local AI service to enable 3D generation."
             : availability.error;
@@ -132,7 +144,11 @@ struct AIDesktopFeatureHost::Impl final : wxEvtHandler
     AIServiceManager service_manager;
     wxTimer retry_timer;
     SmartSlicingAvailableFn on_smart_slicing_available;
+    ServiceStatusFn service_status_handler;
     Plater* plater { nullptr };
+    bool service_status_known { false };
+    bool service_compatible { false };
+    bool model_generation_available { false };
     unsigned retry_count { 0 };
     bool discovery_active { false };
     bool smart_slicing_announced { false };
@@ -152,6 +168,11 @@ AIDesktopFeatureHost::~AIDesktopFeatureHost() = default;
 wxWindow* AIDesktopFeatureHost::model_generation_panel() const
 {
     return m_impl->model_generation.panel();
+}
+
+void AIDesktopFeatureHost::set_service_status_handler(ServiceStatusFn handler)
+{
+    m_impl->set_service_status_handler(std::move(handler));
 }
 
 void AIDesktopFeatureHost::start()
