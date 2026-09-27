@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AIModelGenerationClient.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/ModelGenerationHost.hpp"
 #include "slic3r/AI/Contracts/IModelArtifactConsumer.hpp"
 #include "slic3r/AI/Contracts/IPrintablePaletteProvider.hpp"
 #include "slic3r/GUI/AI/Model/ModelFinishing.hpp"
@@ -49,6 +50,20 @@ public:
     ~ModelGenerationPanel() override;
 
     void shutdown();
+    void initialize_for_shell_host();
+    void set_ui_state_listener(ModelGenerationUIStateListener listener);
+    ModelGenerationUIState ui_state_snapshot() const { return m_ui_state; }
+    bool synchronize_ui_input(const ModelGenerationUIInput& input);
+    bool synchronize_ui_options(const ModelGenerationUIOptions& options);
+    bool request_generate_design();
+    bool request_generate_model();
+    bool request_stop();
+    bool request_retry_service();
+    bool request_restore_latest();
+    bool request_restart();
+    bool request_import();
+    bool request_refresh_history();
+    bool request_open_history(const std::string& job_id);
     void set_service_availability(bool available, const std::string& message = {});
     void set_service_retry_handler(std::function<void()> handler);
     void set_prepare_navigation_handler(std::function<void()> handler) { m_prepare_navigation = std::move(handler); }
@@ -56,7 +71,10 @@ public:
 private:
     std::function<void()> m_prepare_navigation;
     void show_input_hint(const wxString& message, wxWindow* focus = nullptr);
-    void initialize_page();
+    bool set_selected_image(const boost::filesystem::path& path, bool request_recommendation);
+    void clear_selected_image();
+    void publish_ui_state();
+    void initialize_page(bool require_visible);
     void on_first_visible_idle(wxIdleEvent& event);
     void build_page();
     wxWindow* build_workflow_panel(wxWindow* parent);
@@ -89,7 +107,7 @@ private:
     void handle_error(const std::string& error, uint64_t sequence);
     void handle_poll_error(const std::string& error, uint64_t sequence);
     void schedule_poll();
-    void restore_latest_job();
+    void restore_latest_job(bool require_visible = true);
     void restore_job(AIModelGenerationClient::JobStatus status, uint64_t sequence);
     void download_restored_input(uint64_t sequence);
     void update_adaptive_text_height(wxTextCtrl* control, int minimum_lines, int maximum_lines);
@@ -166,14 +184,14 @@ private:
     void select_local_finishing_version(const boost::filesystem::path& path, const std::string& id);
     std::vector<std::string> local_recolor_palette() const;
     struct GeneratedModelEntry;
-    void load_library_entries();
+    void load_library_entries(bool for_shell = false);
     static std::vector<GeneratedModelEntry> read_library_entries(
         const boost::filesystem::path& root, const std::atomic<bool>& cancelled);
     void start_library_worker();
     void cancel_library_loading();
     void stop_library_loading();
     void on_library_timer(wxTimerEvent& event);
-    void request_library_thumbnails();
+    void request_library_thumbnails(bool for_shell = false);
     wxWindow* create_library_card(const GeneratedModelEntry& entry);
     void load_design_library_entry(const std::string& job_id);
     void save_library_entry(size_t artifact_size, size_t triangle_count, double width, double depth,
@@ -224,6 +242,8 @@ private:
     AI::IModelArtifactConsumer&    m_artifact_consumer;
     AI::IPrintablePaletteProvider& m_palette_provider;
     AIModelGenerationClient m_client;
+    ModelGenerationUIStateListener m_ui_state_listener;
+    ModelGenerationUIState m_ui_state;
 
     wxPanel* m_finishing_panel {nullptr};
     wxWindow* m_workflow_panel {nullptr};
@@ -432,6 +452,7 @@ private:
     wxRect m_style_preview_pane;
     wxString m_style_preview_placeholder;
     std::vector<GeneratedModelEntry> m_library_entries;
+    std::vector<ModelGenerationUIHistoryEntry> m_ui_history_entries;
     std::vector<std::string> m_palette;
     std::vector<std::string> m_custom_palette;
     std::vector<std::string> m_job_palette;
@@ -481,6 +502,12 @@ private:
     bool m_service_availability_known { false };
     bool m_page_initialized { false };
     bool m_library_refresh_pending { true };
+    bool m_library_requested_by_shell { false };
+    bool m_ui_history_loading { false };
+    bool m_ui_model_generation_context { false };
+    bool m_ui_stopping { false };
+    std::string m_ui_history_error;
+    size_t m_ui_history_thumbnails_pending { 0 };
     bool m_restore_checked { false };
     bool m_restoring_input { false };
     bool m_shutdown { false };

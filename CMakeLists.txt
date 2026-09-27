@@ -924,7 +924,11 @@ find_package(NLopt 1.4 REQUIRED)
 set(_bundled_python_version "3.12.13")
 set(_bundled_python_abi "312")
 string(REGEX REPLACE "^([0-9]+\\.[0-9]+)\\..*$" "\\1" _bundled_python_version_short "${_bundled_python_version}")
+# Keep paths embedded in generated CMake install scripts in CMake's portable
+# slash form. Native Windows backslashes would be parsed as escape sequences
+# (for example, `\O`) when the install script is later evaluated.
 set(_bundled_python_root "${CMAKE_PREFIX_PATH}/libpython")
+file(TO_CMAKE_PATH "${_bundled_python_root}" _bundled_python_root)
 set(Python3_ROOT_DIR "${_bundled_python_root}" CACHE PATH "Root directory for bundled Python" FORCE)
 set(Python3_USE_STATIC_LIBS OFF)
 set(Python3_FIND_STRATEGY LOCATION)

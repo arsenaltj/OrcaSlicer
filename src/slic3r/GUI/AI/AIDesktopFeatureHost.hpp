@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ModelGeneration/ModelGenerationFeatureHost.hpp"
+
 #include <functional>
 #include <memory>
 
@@ -47,6 +49,8 @@ public:
     AIDesktopFeatureHost& operator=(const AIDesktopFeatureHost&) = delete;
 
     wxWindow* model_generation_panel() const;
+    void initialize_model_generation_for_shell();
+    ModelGenerationFeatureHost* model_generation_host() const;
     void set_service_status_handler(ServiceStatusFn handler);
     void start();
     void shutdown();

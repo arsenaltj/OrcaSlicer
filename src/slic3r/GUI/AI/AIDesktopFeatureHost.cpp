@@ -184,6 +184,16 @@ wxWindow* AIDesktopFeatureHost::model_generation_panel() const
     return m_impl->model_generation.panel();
 }
 
+void AIDesktopFeatureHost::initialize_model_generation_for_shell()
+{
+    m_impl->model_generation.initialize_for_shell();
+}
+
+ModelGenerationFeatureHost* AIDesktopFeatureHost::model_generation_host() const
+{
+    return &m_impl->model_generation;
+}
+
 void AIDesktopFeatureHost::set_service_status_handler(ServiceStatusFn handler)
 {
     m_impl->set_service_status_handler(std::move(handler));

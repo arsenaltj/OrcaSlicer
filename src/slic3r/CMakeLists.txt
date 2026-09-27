@@ -375,7 +375,7 @@ set(SLIC3R_GUI_SOURCES
     GUI/AIModelGenerationClient.cpp
     GUI/AIModelGenerationClient.hpp
     GUI/ModelGenerationPanel.cpp GUI/AI/ModelGeneration/ModelGenerationLibraryView.cpp GUI/AI/ModelGeneration/ModelGenerationArtifactFlow.cpp GUI/AI/ModelGeneration/ModelGenerationFeatureHost.cpp GUI/AI/ModelGeneration/ModelGenerationPresentation.cpp GUI/AI/ModelGeneration/ModelGenerationPresentationCore.cpp GUI/AI/ModelGeneration/ModelGenerationStatusText.cpp
-    GUI/ModelGenerationPanel.hpp GUI/AI/ModelGeneration/ModelGenerationFeatureHost.hpp GUI/AI/ModelGeneration/ModelGenerationPresentation.hpp GUI/AI/ModelGeneration/ModelGenerationStatusText.hpp GUI/AI/ModelGeneration/ModelPreview3D.hpp
+    GUI/ModelGenerationPanel.hpp GUI/AI/ModelGeneration/ModelGenerationFeatureHost.hpp GUI/AI/ModelGeneration/ModelGenerationHost.hpp GUI/AI/ModelGeneration/ModelGenerationPresentation.hpp GUI/AI/ModelGeneration/ModelGenerationStatusText.hpp GUI/AI/ModelGeneration/ModelPreview3D.hpp
     GUI/AISidecarClient.cpp
     GUI/AISidecarClient.hpp
     GUI/AIServiceManager.cpp

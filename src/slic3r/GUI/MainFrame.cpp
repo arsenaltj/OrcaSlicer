@@ -1122,8 +1122,11 @@ void MainFrame::update_layout()
     if (m_redesign_shell_requested && wxGetApp().is_editor()) {
         if (m_layout != ESettingsLayout::Unknown)
             restore_to_creation();
+        if (m_ai_feature_host != nullptr)
+            m_ai_feature_host->initialize_model_generation_for_shell();
         if (m_redesign_shell == nullptr) {
-            m_redesign_shell = new RedesignShell(this);
+            m_redesign_shell = new RedesignShell(
+                this, m_ai_feature_host != nullptr ? m_ai_feature_host->model_generation_host() : nullptr);
             if (m_ai_feature_host != nullptr)
                 m_ai_feature_host->set_service_status_handler([this](AIServiceStatus status) {
                     if (m_redesign_shell != nullptr)

@@ -3,10 +3,12 @@
 #include "../GUI_App.hpp"
 #include "../AI/AIDesktopFeatureHost.hpp"
 #include "../AI/ModelGeneration/ModelGenerationPresentation.hpp"
+#include "../AI/ModelGeneration/ModelPreview3D.hpp"
 
 #include <array>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <functional>
 #include <memory>
 #include <wx/dcbuffer.h>
@@ -20,16 +22,19 @@
 #include <wx/colour.h>
 #include <wx/font.h>
 #include <wx/fontenum.h>
+#include <wx/gauge.h>
 #include <wx/image.h>
 #include <wx/msgdlg.h>
 #include <wx/panel.h>
 #include <wx/popupwin.h>
+#include <wx/scrolwin.h>
 #include <wx/sizer.h>
 #include <wx/statbmp.h>
 #include <wx/stattext.h>
 #include <wx/stdpaths.h>
 #include <wx/textctrl.h>
 #include <wx/tglbtn.h>
+#include <wx/weakref.h>
 #include <wx/window.h>
 #ifdef __WXMSW__
 #include <wx/msw/wrapwin.h>
@@ -65,6 +70,16 @@ wxColour secondary_text_colour()
     return wxColour(255, 255, 255, 150);
 }
 
+wxColour accent_colour()
+{
+    return wxColour(255, 194, 39);
+}
+
+wxColour divider_colour()
+{
+    return wxColour(255, 255, 255, 28);
+}
+
 wxString text(const char* value)
 {
     return wxString::FromUTF8(value);
@@ -96,9 +111,20 @@ wxBitmap scaled_bitmap(const wxImage& image, const wxSize& bounds)
 }
 
 // Alpha-mask just the thumbnail corners; the upload surface itself remains a separate rounded panel.
-wxBitmap rounded_thumbnail(const wxImage& source, const wxSize& bounds, int radius)
+wxBitmap rounded_thumbnail(const wxImage& source, const wxSize& bounds, int radius,
+                           bool allow_upscale = false)
 {
-    wxBitmap scaled = scaled_bitmap(source, bounds);
+    wxBitmap scaled;
+    if (allow_upscale && source.IsOk() && bounds.x > 0 && bounds.y > 0) {
+        const double scale = std::min(double(bounds.x) / source.GetWidth(),
+                                      double(bounds.y) / source.GetHeight());
+        const int width = std::min(bounds.x, std::max(1, int(std::floor(source.GetWidth() * scale))));
+        const int height = std::min(bounds.y, std::max(1, int(std::floor(source.GetHeight() * scale))));
+        scaled = wxBitmap(source.Scale(width, height,
+                                       wxIMAGE_QUALITY_HIGH));
+    } else {
+        scaled = scaled_bitmap(source, bounds);
+    }
     if (!scaled.IsOk()) return wxNullBitmap;
     wxImage image = scaled.ConvertToImage();
     if (!image.HasAlpha()) image.InitAlpha();
@@ -222,22 +248,54 @@ class StylePicker final : public wxPanel {
 public:
     using SelectionChanged = std::function<void(int)>;
 
-    StylePicker(wxWindow* parent, wxArrayString choices, SelectionChanged on_selection)
-        : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(-1, parent->FromDIP(56)))
+    StylePicker(wxWindow* parent, wxArrayString choices, SelectionChanged on_selection,
+                bool show_icon = false, int height = 48)
+        : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(-1, parent->FromDIP(height)))
         , m_choices(std::move(choices))
         , m_on_selection(std::move(on_selection))
+        , m_show_icon(show_icon)
+        , m_height(height)
     {
-        SetMinSize(wxSize(-1, FromDIP(56)));
+        SetMinSize(wxSize(-1, FromDIP(m_height)));
         SetBackgroundStyle(wxBG_STYLE_PAINT);
         SetBackgroundColour(panel_colour());
         style_text(this, primary_text_colour(), 10);
         SetCanFocus(true);
         Bind(wxEVT_PAINT, [this](wxPaintEvent&) { paint(); });
-        Bind(wxEVT_LEFT_UP, [this](wxMouseEvent&) {
+        Bind(wxEVT_ENTER_WINDOW, [this](wxMouseEvent& event) {
+            m_hovered = true;
+            Refresh();
+            event.Skip();
+        });
+        Bind(wxEVT_LEAVE_WINDOW, [this](wxMouseEvent& event) {
+            m_hovered = false;
+            m_pressed = false;
+            Refresh();
+            event.Skip();
+        });
+        Bind(wxEVT_LEFT_DOWN, [this](wxMouseEvent& event) {
+            if (!IsEnabled() || !m_interactive)
+                return;
+            m_pressed = true;
             SetFocus();
+            Refresh();
+            event.Skip();
+        });
+        Bind(wxEVT_LEFT_UP, [this](wxMouseEvent&) {
+            if (!IsEnabled() || !m_interactive)
+                return;
+            m_pressed = false;
+            SetFocus();
+            Refresh();
             toggle_popup();
         });
+        Bind(wxEVT_SET_FOCUS, [this](wxFocusEvent& event) { Refresh(); event.Skip(); });
+        Bind(wxEVT_KILL_FOCUS, [this](wxFocusEvent& event) { Refresh(); event.Skip(); });
         Bind(wxEVT_KEY_DOWN, [this](wxKeyEvent& event) {
+            if (!IsEnabled() || !m_interactive) {
+                event.Skip();
+                return;
+            }
             switch (event.GetKeyCode()) {
             case WXK_UP:
                 set_selection(std::max(0, m_selection - 1));
@@ -260,10 +318,21 @@ public:
     }
 
     int selection() const { return m_selection; }
+    int choice_count() const { return static_cast<int>(m_choices.size()); }
+
+    void set_choices(wxArrayString choices, int selection);
+
+    void set_interactive(bool interactive)
+    {
+        m_interactive = interactive;
+        Refresh();
+    }
 
     void set_selection(int selection)
     {
         if (selection < 0 || selection >= static_cast<int>(m_choices.size()))
+            return;
+        if (m_selection == selection)
             return;
         m_selection = selection;
         Refresh();
@@ -284,35 +353,44 @@ private:
         auto gc = std::unique_ptr<wxGraphicsContext>(wxGraphicsContext::Create(dc));
         if (!gc)
             return;
-        gc->SetPen(*wxTRANSPARENT_PEN);
-        gc->SetBrush(wxBrush(control_colour()));
-        gc->DrawRoundedRectangle(0, 0, size.x, size.y, FromDIP(12));
-        gc->SetBrush(wxBrush(wxColour(255, 255, 255, 38)));
-        const wxRect icon_tile(FromDIP(6), FromDIP(6), FromDIP(45), FromDIP(45));
-        gc->DrawRoundedRectangle(icon_tile.x, icon_tile.y, icon_tile.width, icon_tile.height, FromDIP(10));
+        const bool active = IsEnabled() && m_interactive;
+        const wxColour face = !active ? wxColour(40, 40, 43) :
+                              m_pressed ? wxColour(47, 47, 51) :
+                              m_hovered ? wxColour(35, 35, 39) : control_colour();
+        gc->SetPen(FindFocus() == this ? wxPen(accent_colour(), std::max(1, FromDIP(1))) : *wxTRANSPARENT_PEN);
+        gc->SetBrush(wxBrush(face));
+        gc->DrawRoundedRectangle(FromDIP(1), FromDIP(1), size.x - FromDIP(2), size.y - FromDIP(2), FromDIP(10));
 
-        const wxImage icon_image = resource_image("redesign_skill_emoji.png");
-        if (icon_image.IsOk()) {
-            const int icon_size = FromDIP(24);
-            const wxBitmap icon(icon_image.Scale(icon_size, icon_size, wxIMAGE_QUALITY_HIGH));
-            dc.DrawBitmap(icon, icon_tile.x + (icon_tile.width - icon.GetWidth()) / 2,
-                          icon_tile.y + (icon_tile.height - icon.GetHeight()) / 2, true);
+        int text_x = FromDIP(16);
+        if (m_show_icon) {
+            gc->SetPen(*wxTRANSPARENT_PEN);
+            gc->SetBrush(wxBrush(wxColour(255, 255, 255, 38)));
+            const int tile_size = std::min(FromDIP(44), size.y - FromDIP(10));
+            const wxRect icon_tile(FromDIP(6), (size.y - tile_size) / 2, tile_size, tile_size);
+            gc->DrawRoundedRectangle(icon_tile.x, icon_tile.y, icon_tile.width, icon_tile.height, FromDIP(9));
+            const wxImage icon_image = resource_image("redesign_skill_emoji.png");
+            if (icon_image.IsOk()) {
+                const int icon_size = FromDIP(24);
+                const wxBitmap icon(icon_image.Scale(icon_size, icon_size, wxIMAGE_QUALITY_HIGH));
+                dc.DrawBitmap(icon, icon_tile.x + (icon_tile.width - icon.GetWidth()) / 2,
+                              icon_tile.y + (icon_tile.height - icon.GetHeight()) / 2, true);
+            }
+            text_x = icon_tile.GetRight() + FromDIP(12);
         }
 
         dc.SetFont(GetFont());
-        dc.SetTextForeground(primary_text_colour());
+        dc.SetTextForeground(active ? primary_text_colour() : wxColour(255, 255, 255, 82));
         if (m_selection >= 0 && m_selection < static_cast<int>(m_choices.size())) {
             const wxSize extent = dc.GetTextExtent(m_choices[m_selection]);
-            dc.DrawText(m_choices[m_selection], FromDIP(62), (size.y - extent.y) / 2);
+            dc.DrawText(m_choices[m_selection], text_x, (size.y - extent.y) / 2);
         }
 
         const int arrow_x = size.x - FromDIP(20);
         const int centre_y = size.y / 2;
-        dc.SetPen(wxPen(secondary_text_colour(), std::max(1, FromDIP(1))));
-        dc.DrawLine(arrow_x - FromDIP(4), centre_y - FromDIP(3), arrow_x, centre_y - FromDIP(7));
-        dc.DrawLine(arrow_x, centre_y - FromDIP(7), arrow_x + FromDIP(4), centre_y - FromDIP(3));
-        dc.DrawLine(arrow_x - FromDIP(4), centre_y + FromDIP(3), arrow_x, centre_y + FromDIP(7));
-        dc.DrawLine(arrow_x, centre_y + FromDIP(7), arrow_x + FromDIP(4), centre_y + FromDIP(3));
+        dc.SetPen(wxPen(active ? secondary_text_colour() : wxColour(255, 255, 255, 70),
+                        std::max(1, FromDIP(1))));
+        dc.DrawLine(arrow_x - FromDIP(4), centre_y - FromDIP(2), arrow_x, centre_y + FromDIP(2));
+        dc.DrawLine(arrow_x, centre_y + FromDIP(2), arrow_x + FromDIP(4), centre_y - FromDIP(2));
     }
 
     void toggle_popup();
@@ -323,6 +401,11 @@ private:
     SelectionChanged m_on_selection;
     int m_selection { 0 };
     StylePickerPopup* m_popup { nullptr };
+    bool m_show_icon { false };
+    bool m_interactive { true };
+    bool m_hovered { false };
+    bool m_pressed { false };
+    int m_height { 48 };
 
     friend class StylePickerPopup;
 };
@@ -340,21 +423,37 @@ public:
         for (std::size_t index = 0; index < choices.size(); ++index) {
             auto* row = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxSize(-1, owner->FromDIP(41)));
             row->SetMinSize(wxSize(-1, owner->FromDIP(41)));
-            row->SetBackgroundColour(wxColour(38, 38, 38));
+            const bool selected = static_cast<int>(index) == m_owner->selection();
+            const wxColour row_face = selected ? wxColour(56, 52, 39) : wxColour(38, 38, 38);
+            row->SetBackgroundColour(row_face);
             auto* row_sizer = new wxBoxSizer(wxHORIZONTAL);
             auto* row_label = new wxStaticText(row, wxID_ANY, choices[index], wxDefaultPosition, wxDefaultSize,
                                                wxALIGN_CENTER_VERTICAL);
-            style_text(row_label, primary_text_colour(), 10);
+            row_label->SetBackgroundColour(row_face);
+            style_text(row_label, selected ? accent_colour() : primary_text_colour(), 10);
             row_sizer->Add(row_label, 1, wxALIGN_CENTER_VERTICAL | wxLEFT, owner->FromDIP(16));
             row->SetSizer(row_sizer);
             const int selection = static_cast<int>(index);
             row->Bind(wxEVT_LEFT_UP, [this, selection](wxMouseEvent&) { choose(selection); });
             row_label->Bind(wxEVT_LEFT_UP, [this, selection](wxMouseEvent&) { choose(selection); });
+            auto set_hover = [row, row_label, selected](bool hover) {
+                const wxColour face = hover ? wxColour(53, 53, 57) :
+                                      selected ? wxColour(56, 52, 39) : wxColour(38, 38, 38);
+                row->SetBackgroundColour(face);
+                row_label->SetBackgroundColour(face);
+                row->Refresh();
+                row_label->Refresh();
+            };
+            row->Bind(wxEVT_ENTER_WINDOW, [set_hover](wxMouseEvent& event) { set_hover(true); event.Skip(); });
+            row->Bind(wxEVT_LEAVE_WINDOW, [set_hover](wxMouseEvent& event) { set_hover(false); event.Skip(); });
+            row_label->Bind(wxEVT_ENTER_WINDOW, [set_hover](wxMouseEvent& event) { set_hover(true); event.Skip(); });
+            row_label->Bind(wxEVT_LEAVE_WINDOW, [set_hover](wxMouseEvent& event) { set_hover(false); event.Skip(); });
             content->Add(row, 0, wxEXPAND);
         }
         content->AddSpacer(owner->FromDIP(10));
         SetSizer(content);
-        SetSize(wxSize(owner->GetSize().x, owner->FromDIP(143)));
+        SetSize(wxSize(owner->GetSize().x,
+                       owner->FromDIP(20 + static_cast<int>(choices.size()) * 41)));
         Bind(wxEVT_PAINT, [this, owner](wxPaintEvent&) {
             wxAutoBufferedPaintDC dc(this);
             dc.SetBackground(wxBrush(wxColour(38, 38, 38)));
@@ -386,22 +485,33 @@ void StylePicker::toggle_popup()
             m_popup->Dismiss();
             return;
         }
-        const wxPoint position = ClientToScreen(wxPoint(0, GetClientSize().y + FromDIP(12)));
-        m_popup->SetSize(wxSize(GetSize().x, FromDIP(143)));
-        m_popup->SetPosition(position);
-        m_popup->Popup(this);
-        return;
+        m_popup->Destroy();
+        m_popup = nullptr;
     }
 
     m_popup = new StylePickerPopup(this, m_choices);
     const wxPoint position = ClientToScreen(wxPoint(0, GetClientSize().y + FromDIP(12)));
-    m_popup->SetPosition(position);
+    m_popup->Position(position, wxSize(0, 0));
     m_popup->Popup(this);
 }
 
 void StylePicker::select_from_popup(int selection)
 {
     set_selection(selection);
+}
+
+void StylePicker::set_choices(wxArrayString choices, int selection)
+{
+    if (m_popup != nullptr) {
+        m_popup->Destroy();
+        m_popup = nullptr;
+    }
+    m_choices = std::move(choices);
+    if (m_choices.empty())
+        m_selection = -1;
+    else
+        m_selection = std::clamp(selection, 0, static_cast<int>(m_choices.size()) - 1);
+    Refresh();
 }
 
 void StylePicker::dismiss_popup()
@@ -568,6 +678,100 @@ private:
     wxImage m_rear, m_front;
 };
 
+class RoundedActionButton final : public wxPanel {
+public:
+    RoundedActionButton(wxWindow* parent, const wxString& caption, bool primary, int height)
+        : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(-1, parent->FromDIP(height)))
+        , m_primary(primary)
+    {
+        SetLabel(caption);
+        SetMinSize(wxSize(-1, FromDIP(height)));
+        SetBackgroundStyle(wxBG_STYLE_PAINT);
+        SetBackgroundColour(panel_colour());
+        SetCanFocus(true);
+        style_text(this, primary ? wxColour(20, 20, 20) : primary_text_colour(), 11, primary);
+        Bind(wxEVT_PAINT, [this](wxPaintEvent&) { paint(); });
+        Bind(wxEVT_ENTER_WINDOW, [this](wxMouseEvent& event) {
+            m_hovered = true;
+            Refresh();
+            event.Skip();
+        });
+        Bind(wxEVT_LEAVE_WINDOW, [this](wxMouseEvent& event) {
+            m_hovered = false;
+            m_pressed = false;
+            Refresh();
+            event.Skip();
+        });
+        Bind(wxEVT_LEFT_DOWN, [this](wxMouseEvent& event) {
+            if (!IsEnabled())
+                return;
+            m_pressed = true;
+            SetFocus();
+            Refresh();
+            event.Skip();
+        });
+        Bind(wxEVT_LEFT_UP, [this](wxMouseEvent&) {
+            if (!IsEnabled() || !m_pressed)
+                return;
+            m_pressed = false;
+            Refresh();
+            wxCommandEvent command(wxEVT_BUTTON, GetId());
+            command.SetEventObject(this);
+            ProcessWindowEvent(command);
+        });
+        Bind(wxEVT_KEY_DOWN, [this](wxKeyEvent& event) {
+            if (IsEnabled() && (event.GetKeyCode() == WXK_RETURN || event.GetKeyCode() == WXK_SPACE)) {
+                wxCommandEvent command(wxEVT_BUTTON, GetId());
+                command.SetEventObject(this);
+                ProcessWindowEvent(command);
+                return;
+            }
+            event.Skip();
+        });
+        Bind(wxEVT_SET_FOCUS, [this](wxFocusEvent& event) { Refresh(); event.Skip(); });
+        Bind(wxEVT_KILL_FOCUS, [this](wxFocusEvent& event) { Refresh(); event.Skip(); });
+    }
+
+private:
+    void paint()
+    {
+        wxAutoBufferedPaintDC dc(this);
+        dc.SetBackground(wxBrush(panel_colour()));
+        dc.Clear();
+        const wxSize size = GetClientSize();
+        if (size.x <= 0 || size.y <= 0)
+            return;
+        auto gc = std::unique_ptr<wxGraphicsContext>(wxGraphicsContext::Create(dc));
+        if (!gc)
+            return;
+
+        wxColour face;
+        wxColour foreground;
+        if (!IsEnabled()) {
+            face = m_primary ? wxColour(91, 80, 43) : wxColour(43, 43, 47);
+            foreground = m_primary ? wxColour(25, 25, 25, 150) : wxColour(255, 255, 255, 78);
+        } else if (m_primary) {
+            face = m_pressed ? wxColour(231, 168, 20) : m_hovered ? wxColour(255, 207, 76) : accent_colour();
+            foreground = wxColour(20, 20, 20);
+        } else {
+            face = m_pressed ? wxColour(52, 52, 56) : m_hovered ? wxColour(47, 47, 51) : control_colour();
+            foreground = primary_text_colour();
+        }
+
+        gc->SetBrush(wxBrush(face));
+        gc->SetPen(FindFocus() == this ? wxPen(accent_colour(), std::max(1, FromDIP(1))) : *wxTRANSPARENT_PEN);
+        gc->DrawRoundedRectangle(FromDIP(1), FromDIP(1), size.x - FromDIP(2), size.y - FromDIP(2), FromDIP(10));
+        dc.SetFont(GetFont());
+        dc.SetTextForeground(foreground);
+        const wxSize extent = dc.GetTextExtent(GetLabel());
+        dc.DrawText(GetLabel(), (size.x - extent.x) / 2, (size.y - extent.y) / 2);
+    }
+
+    bool m_primary { false };
+    bool m_hovered { false };
+    bool m_pressed { false };
+};
+
 }
 
 // Draw image and badge in one control, avoiding native sibling overlap and square button chrome.
@@ -628,39 +832,118 @@ private:
 class ImagePreview final : public wxPanel
 {
 public:
-    explicit ImagePreview(wxWindow* parent) : wxPanel(parent, wxID_ANY)
+    enum class PlaceholderMode { Idle, Generating, Error, Stopped };
+
+    ImagePreview(wxWindow* parent, const wxString& placeholder)
+        : wxPanel(parent, wxID_ANY)
+        , m_placeholder(placeholder)
+        , m_animation_timer(this)
     {
         SetBackgroundStyle(wxBG_STYLE_PAINT);
         SetBackgroundColour(background_colour());
+        Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
+            m_spinner_frame = (m_spinner_frame + 1) % 12;
+            Refresh(false);
+        }, m_animation_timer.GetId());
         Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
             wxAutoBufferedPaintDC dc(this);
             dc.SetBackground(wxBrush(background_colour()));
             dc.Clear();
-            if (!m_bitmap.IsOk()) return;
             auto gc = std::unique_ptr<wxGraphicsContext>(wxGraphicsContext::Create(dc));
             if (!gc) return;
             const wxSize size = GetClientSize();
-            gc->DrawBitmap(m_bitmap, (size.x - m_bitmap.GetWidth()) / 2,
-                           (size.y - m_bitmap.GetHeight()) / 2,
-                           m_bitmap.GetWidth(), m_bitmap.GetHeight());
+            if (size.x <= 0 || size.y <= 0)
+                return;
+            const bool generating = m_placeholder_mode == PlaceholderMode::Generating;
+            const wxColour face = generating ? wxColour(217, 217, 217) :
+                                  m_placeholder_mode == PlaceholderMode::Error ? wxColour(48, 34, 36) :
+                                  m_placeholder_mode == PlaceholderMode::Stopped ? wxColour(43, 43, 47) :
+                                  control_colour();
+            const wxColour foreground = generating ? wxColour(68, 68, 72) :
+                                        m_placeholder_mode == PlaceholderMode::Error ? wxColour(237, 174, 176) :
+                                        secondary_text_colour();
+            gc->SetBrush(wxBrush(face));
+            gc->SetPen(wxPen(generating ? wxColour(0, 0, 0, 24) : wxColour(255, 255, 255, 32),
+                             std::max(1, FromDIP(1))));
+            gc->DrawRoundedRectangle(FromDIP(1), FromDIP(1), size.x - FromDIP(2), size.y - FromDIP(2), FromDIP(11));
+            if (m_bitmap.IsOk()) {
+                gc->DrawBitmap(m_bitmap, (size.x - m_bitmap.GetWidth()) / 2,
+                               (size.y - m_bitmap.GetHeight()) / 2,
+                               m_bitmap.GetWidth(), m_bitmap.GetHeight());
+                return;
+            }
+            dc.SetFont(GetFont());
+            dc.SetTextForeground(foreground);
+            const wxSize extent = dc.GetTextExtent(m_placeholder);
+            int text_y = (size.y - extent.y) / 2;
+            if (generating) {
+                const double pi = std::acos(-1.0);
+                const int radius = FromDIP(20);
+                const double start = (m_spinner_frame * 30.0 - 90.0) * pi / 180.0;
+                auto path = gc->CreatePath();
+                path.AddArc(size.x / 2.0, size.y / 2.0 - FromDIP(28), radius,
+                            start, start + pi * 1.45, false);
+                gc->SetPen(wxPen(wxColour(92, 92, 96), std::max(2, FromDIP(3))));
+                gc->StrokePath(path);
+                text_y += FromDIP(28);
+            }
+            dc.DrawText(m_placeholder, std::max(FromDIP(12), (size.x - extent.x) / 2),
+                        text_y);
         });
+        style_text(this, secondary_text_colour(), 10);
     }
 
-    void SetBitmap(const wxBitmap& bitmap) { m_bitmap = bitmap; Refresh(); }
+    void SetBitmap(const wxBitmap& bitmap)
+    {
+        m_animation_timer.Stop();
+        m_bitmap = bitmap;
+        m_placeholder_mode = PlaceholderMode::Idle;
+        Refresh();
+    }
+
+    void SetPlaceholder(const wxString& placeholder, PlaceholderMode mode)
+    {
+        m_bitmap = wxNullBitmap;
+        m_placeholder = placeholder;
+        m_placeholder_mode = mode;
+        if (mode == PlaceholderMode::Generating) {
+            if (!m_animation_timer.IsRunning())
+                m_animation_timer.Start(90);
+        } else {
+            m_animation_timer.Stop();
+            m_spinner_frame = 0;
+        }
+        Refresh();
+    }
 
 private:
     wxBitmap m_bitmap;
+    wxString m_placeholder;
+    wxTimer m_animation_timer;
+    PlaceholderMode m_placeholder_mode { PlaceholderMode::Idle };
+    int m_spinner_frame { 0 };
 };
 
-RedesignShell::RedesignShell(wxWindow* parent)
+RedesignShell::RedesignShell(wxWindow* parent, ModelGenerationFeatureHost* model_generation_host)
     : wxPanel(parent)
     , m_sizer(new wxBoxSizer(wxVERTICAL))
     , m_preview_resize_timer(this)
+    , m_model_generation_host(model_generation_host)
 {
     SetBackgroundColour(background_colour());
     SetSizer(m_sizer);
     Bind(wxEVT_TIMER, [this](wxTimerEvent&) { update_preview_bitmap(); }, m_preview_resize_timer.GetId());
     build_image_workspace();
+    connect_model_generation_host();
+}
+
+RedesignShell::~RedesignShell()
+{
+    if (m_model_generation_host != nullptr)
+        m_model_generation_host->set_state_listener({});
+    ++m_model_preview_request_generation;
+    if (m_model_preview_worker.joinable())
+        m_model_preview_worker.join();
 }
 
 void RedesignShell::set_service_status(AIServiceStatus status)
@@ -755,11 +1038,23 @@ void RedesignShell::build_image_workspace()
     settings_panel->SetSizer(settings_sizer);
     workspace->Add(settings_panel, 0, wxEXPAND | wxRIGHT, FromDIP(16));
 
-    auto* heading = new wxStaticText(settings_panel, wxID_ANY, text("上传图片"));
-    style_text(heading, primary_text_colour(), 13, true);
-    settings_sizer->Add(heading, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
+    m_image_settings_scroll = new wxScrolledWindow(settings_panel, wxID_ANY, wxDefaultPosition, wxDefaultSize,
+                                                    wxVSCROLL | wxBORDER_NONE);
+    auto* settings_scroll = m_image_settings_scroll;
+    settings_scroll->SetBackgroundColour(panel_colour());
+    settings_scroll->SetScrollRate(0, FromDIP(12));
+    settings_scroll->ShowScrollbars(wxSHOW_SB_NEVER, wxSHOW_SB_NEVER);
+    auto* settings_content_host = new wxPanel(settings_scroll, wxID_ANY);
+    settings_content_host->SetBackgroundColour(panel_colour());
+    auto* settings_content = new wxBoxSizer(wxVERTICAL);
+    settings_content_host->SetSizer(settings_content);
+    settings_sizer->Add(settings_scroll, 1, wxEXPAND);
 
-    m_upload_surface = new RoundedPanel(settings_panel, wxSize(-1, FromDIP(160)), control_colour(), panel_colour(), 8);
+    auto* heading = new wxStaticText(settings_content_host, wxID_ANY, text("上传图片"));
+    style_text(heading, primary_text_colour(), 13, true);
+    settings_content->Add(heading, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
+
+    m_upload_surface = new RoundedPanel(settings_content_host, wxSize(-1, FromDIP(160)), control_colour(), panel_colour(), 8);
     m_upload_surface->SetMinSize(wxSize(-1, FromDIP(160)));
     m_upload_surface->SetBackgroundColour(control_colour());
     auto* upload_sizer = new wxBoxSizer(wxVERTICAL);
@@ -788,7 +1083,7 @@ void RedesignShell::build_image_workspace()
     style_text(m_upload_hint, secondary_text_colour(), 8);
     upload_sizer->Add(m_upload_hint, 0, wxALIGN_CENTER | wxBOTTOM | wxTOP, FromDIP(2));
     upload_sizer->AddStretchSpacer(1);
-    settings_sizer->Add(m_upload_surface, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
+    settings_content->Add(m_upload_surface, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
     const std::array<wxWindow*, 7> upload_targets = {m_upload_surface, upload_tile, m_upload_icon, m_upload_status,
                                                       m_upload_hint, m_upload_filename, m_upload_thumbnail};
     for (wxWindow* target : upload_targets) {
@@ -796,10 +1091,10 @@ void RedesignShell::build_image_workspace()
         if (target != m_upload_thumbnail) bind_upload_click(target);
     }
 
-    auto* prompt_label = new wxStaticText(settings_panel, wxID_ANY, text("描述"));
+    auto* prompt_label = new wxStaticText(settings_content_host, wxID_ANY, text("描述"));
     style_text(prompt_label, primary_text_colour(), 13, true);
-    settings_sizer->Add(prompt_label, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
-    auto* prompt_surface = new RoundedPanel(settings_panel, wxDefaultSize, control_colour(), panel_colour(), 8);
+    settings_content->Add(prompt_label, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
+    auto* prompt_surface = new RoundedPanel(settings_content_host, wxDefaultSize, control_colour(), panel_colour(), 8);
     prompt_surface->SetBackgroundColour(control_colour());
     auto* prompt_sizer = new wxBoxSizer(wxVERTICAL);
     prompt_surface->SetSizer(prompt_sizer);
@@ -815,34 +1110,74 @@ void RedesignShell::build_image_workspace()
     prompt_sizer->Add(prompt_count, 0, wxALIGN_RIGHT | wxRIGHT | wxBOTTOM, FromDIP(12));
     m_prompt->Bind(wxEVT_TEXT, [this, prompt_count](wxCommandEvent& event) {
         prompt_count->SetLabel(wxString::Format("%lu/800", static_cast<unsigned long>(m_prompt->GetValue().length())));
+        if (!m_applying_model_generation_state)
+            synchronize_generation_input();
         event.Skip();
     });
-    settings_sizer->Add(prompt_surface, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
+    settings_content->Add(prompt_surface, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
 
-    auto* style_label_control = new wxStaticText(settings_panel, wxID_ANY, text("风格"));
+    m_provider_label = new wxStaticText(settings_content_host, wxID_ANY, text("3D模型选择"));
+    style_text(m_provider_label, primary_text_colour(), 13, true);
+    settings_content->Add(m_provider_label, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
+    const wxArrayString provider_choices {text("Tripo"), text("腾讯混元3D")};
+    auto* provider_picker = new StylePicker(settings_content_host, provider_choices, [this](int) {
+                                                if (!m_applying_model_generation_state)
+                                                    on_generation_option_changed();
+                                            });
+    provider_picker->SetName("model-provider-choice");
+    m_provider_choice = provider_picker;
+    settings_content->Add(provider_picker, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
+
+    auto* style_label_control = new wxStaticText(settings_content_host, wxID_ANY, text("风格"));
     style_text(style_label_control, primary_text_colour(), 13, true);
-    settings_sizer->Add(style_label_control, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
+    settings_content->Add(style_label_control, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
     const wxArrayString style_choices { text("雕塑"), text("多色写实"), text("多色风格化") };
-    auto* style_picker = new StylePicker(settings_panel, style_choices, [this](int selection) {
+    auto* style_picker = new StylePicker(settings_content_host, style_choices, [this](int selection) {
         static constexpr const char* style_ids[] = { "sculpture", "realistic", "cartoon" };
-        if (selection >= 0 && selection < static_cast<int>(std::size(style_ids)))
+        if (selection >= 0 && selection < static_cast<int>(std::size(style_ids))) {
             m_selected_style_id = style_ids[selection];
-    });
+            if (!m_applying_model_generation_state)
+                synchronize_generation_input();
+        }
+    }, true, 56);
+    style_picker->SetName("image-style-choice");
     m_style_choice = style_picker;
-    settings_sizer->Add(style_picker, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
-    settings_sizer->AddStretchSpacer(1);
+    settings_content->Add(style_picker, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
 
-    m_sidecar_status = new wxStaticText(settings_panel, wxID_ANY, text("AI 服务：检测中"));
+    auto resize_settings_content = [settings_scroll, settings_content_host, settings_content] {
+        const int width = std::max(settings_scroll->FromDIP(330), settings_scroll->GetClientSize().x);
+        const int height = std::max(settings_scroll->GetClientSize().y, settings_content->CalcMin().y);
+        settings_content_host->SetSize(0, 0, width, height);
+        settings_content_host->Layout();
+        settings_scroll->SetVirtualSize(width, height);
+    };
+    settings_scroll->Bind(wxEVT_SIZE, [resize_settings_content](wxSizeEvent& event) {
+        resize_settings_content();
+        event.Skip();
+    });
+    resize_settings_content();
+
+    auto* action_panel = new wxPanel(settings_panel, wxID_ANY);
+    action_panel->SetBackgroundColour(panel_colour());
+    auto* action_sizer = new wxBoxSizer(wxVERTICAL);
+    action_panel->SetSizer(action_sizer);
+    m_sidecar_status = new wxStaticText(action_panel, wxID_ANY, text("AI 服务：检测中"));
     style_text(m_sidecar_status, secondary_text_colour(), 9);
     m_sidecar_status->SetMinSize(wxSize(-1, FromDIP(20)));
-    settings_sizer->Add(m_sidecar_status, 0, wxLEFT | wxRIGHT, FromDIP(21));
-    settings_sizer->AddSpacer(FromDIP(8));
-    m_generate_button = new wxButton(settings_panel, wxID_ANY, text("生成 2D 设计图"),
-                                     wxDefaultPosition, wxSize(-1, FromDIP(48)), wxBORDER_NONE);
-    m_generate_button->SetBackgroundColour(wxColour(254, 212, 69));
-    style_text(m_generate_button, wxColour(20, 20, 20), 11, true);
+    action_sizer->Add(m_sidecar_status, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
+    action_sizer->AddSpacer(FromDIP(8));
+    m_generate_button = new RoundedActionButton(action_panel, text("生成 2D 设计图"), true, 48);
+    m_generate_button->SetName("generate-2d-design");
     m_generate_button->Enable(false);
-    settings_sizer->Add(m_generate_button, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(16));
+    m_generate_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { request_primary_action(); });
+    action_sizer->Add(m_generate_button, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(21));
+    m_secondary_action_button = new RoundedActionButton(action_panel, wxEmptyString, false, 40);
+    m_secondary_action_button->SetName("generation-secondary-action");
+    m_secondary_action_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { request_secondary_action(); });
+    m_secondary_action_button->Hide();
+    action_sizer->Add(m_secondary_action_button, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP | wxBOTTOM,
+                      FromDIP(21));
+    settings_sizer->Add(action_panel, 0, wxEXPAND);
 
     m_content_host = new wxPanel(this, wxID_ANY);
     m_content_host->SetBackgroundColour(background_colour());
@@ -938,8 +1273,27 @@ void RedesignShell::build_image_workspace()
     auto* preview_sizer = new wxBoxSizer(wxVERTICAL);
     m_preview_host->SetSizer(preview_sizer);
     preview_sizer->AddStretchSpacer(1);
-    m_preview = new ImagePreview(m_preview_host);
-    preview_sizer->Add(m_preview, 0, wxALIGN_CENTER);
+    auto* preview_row = new wxBoxSizer(wxHORIZONTAL);
+    auto create_preview_card = [this, preview_row](const char* title_text, const char* placeholder,
+                                                    wxPanel** card_out, ImagePreview** preview_out) {
+        auto* card = new wxPanel(m_preview_host, wxID_ANY);
+        card->SetBackgroundColour(background_colour());
+        auto* card_sizer = new wxBoxSizer(wxVERTICAL);
+        card->SetSizer(card_sizer);
+        auto* title = new wxStaticText(card, wxID_ANY, text(title_text), wxDefaultPosition,
+                                       wxDefaultSize, wxALIGN_CENTER_HORIZONTAL);
+        style_text(title, primary_text_colour(), 12, true);
+        card_sizer->Add(title, 0, wxALIGN_CENTER | wxBOTTOM, FromDIP(12));
+        auto* preview = new ImagePreview(card, text(placeholder));
+        card_sizer->Add(preview, 0, wxALIGN_CENTER);
+        preview_row->Add(card, 0, wxALIGN_CENTER_VERTICAL);
+        *card_out = card;
+        *preview_out = preview;
+    };
+    create_preview_card("平面图", "等待图片", &m_source_preview_card, &m_preview);
+    preview_row->AddSpacer(FromDIP(16));
+    create_preview_card("2D 设计图", "等待生成", &m_result_preview_card, &m_result_preview);
+    preview_sizer->Add(preview_row, 0, wxALIGN_CENTER);
     preview_sizer->AddStretchSpacer(1);
     content_sizer->Add(m_preview_host, 1, wxEXPAND);
     m_preview_host->Hide();
@@ -953,11 +1307,912 @@ void RedesignShell::build_image_workspace()
     m_pages[static_cast<std::size_t>(Page::Assets)] =
         create_placeholder_page(text("资产中心"), text("新界面资产中心正在建设中。此页面不会跳回旧版工作区。"));
     m_pages[static_cast<std::size_t>(Page::Image)] = m_image_page;
-    m_pages[static_cast<std::size_t>(Page::Model)] =
-        create_placeholder_page(text("3D 模型"), text("新界面 3D 模型工作区正在建设中。现有模型业务状态将通过统一命令接入。"));
+    m_pages[static_cast<std::size_t>(Page::Model)] = build_model_workspace();
     m_pages[static_cast<std::size_t>(Page::Print)] =
         create_placeholder_page(text("准备与打印"), text("新界面准备与打印工作区正在建设中。旧版 Prepare/Preview 请求已在此界面内承接。"));
     navigate_to(Page::Image);
+}
+
+wxPanel* RedesignShell::build_model_workspace()
+{
+    m_model_page = new wxPanel(m_content_host, wxID_ANY);
+    m_model_page->SetBackgroundColour(background_colour());
+    auto* outer = new wxBoxSizer(wxVERTICAL);
+    m_model_page->SetSizer(outer);
+
+    m_model_stage_title = new wxStaticText(m_model_page, wxID_ANY, text("3D 模型"));
+    style_text(m_model_stage_title, primary_text_colour(), 24, true);
+    outer->Add(m_model_stage_title, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(42));
+    m_model_stage_status = new wxStaticText(m_model_page, wxID_ANY, text("完成 2D 设计后可开始生成 3D 模型"));
+    style_text(m_model_stage_status, secondary_text_colour(), 11);
+    m_model_stage_status->Wrap(FromDIP(760));
+    outer->Add(m_model_stage_status, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(42));
+
+    auto* body = new wxBoxSizer(wxHORIZONTAL);
+    m_model_visual_host = new wxPanel(m_model_page, wxID_ANY);
+    m_model_visual_host->SetBackgroundColour(background_colour());
+    auto* visual_sizer = new wxBoxSizer(wxVERTICAL);
+    m_model_visual_host->SetSizer(visual_sizer);
+    m_model_stage_visual = new ImagePreview(m_model_visual_host, text("等待 3D 生成"));
+    m_model_stage_visual->SetMinSize(wxSize(FromDIP(420), FromDIP(480)));
+    visual_sizer->Add(m_model_stage_visual, 1, wxEXPAND);
+    m_model_preview_3d = new ModelPreview3D(m_model_visual_host);
+    m_model_preview_3d->SetBackgroundColour(background_colour());
+    m_model_preview_3d->set_selection_enabled(false);
+    m_model_preview_3d->set_color_controls_visible(false);
+    m_model_preview_3d->Hide();
+    visual_sizer->Add(m_model_preview_3d, 1, wxEXPAND);
+    body->Add(m_model_visual_host, 1, wxEXPAND | wxRIGHT, FromDIP(34));
+
+    auto* status_column = new wxPanel(m_model_page, wxID_ANY, wxDefaultPosition,
+                                      wxSize(FromDIP(340), -1));
+    status_column->SetMinSize(wxSize(FromDIP(300), -1));
+    status_column->SetMaxSize(wxSize(FromDIP(380), -1));
+    status_column->SetBackgroundColour(background_colour());
+    auto* status_sizer = new wxBoxSizer(wxVERTICAL);
+    status_column->SetSizer(status_sizer);
+    auto* progress_heading = new wxStaticText(status_column, wxID_ANY, text("任务状态"));
+    style_text(progress_heading, primary_text_colour(), 12, true);
+    status_sizer->Add(progress_heading, 0, wxBOTTOM, FromDIP(12));
+    m_model_progress_label = new wxStaticText(status_column, wxID_ANY, text("尚未开始"));
+    style_text(m_model_progress_label, primary_text_colour(), 11);
+    status_sizer->Add(m_model_progress_label, 0, wxEXPAND | wxBOTTOM, FromDIP(10));
+    auto* gauge = new wxGauge(status_column, wxID_ANY, 100, wxDefaultPosition,
+                              wxSize(-1, FromDIP(7)), wxGA_HORIZONTAL | wxBORDER_NONE);
+    gauge->SetValue(0);
+    m_model_progress = gauge;
+    status_sizer->Add(gauge, 0, wxEXPAND | wxBOTTOM, FromDIP(20));
+    m_model_stage_summary = new wxStaticText(status_column, wxID_ANY, wxEmptyString);
+    style_text(m_model_stage_summary, secondary_text_colour(), 10);
+    m_model_stage_summary->Wrap(FromDIP(330));
+    status_sizer->Add(m_model_stage_summary, 0, wxEXPAND);
+    m_model_preview_details = new wxStaticText(status_column, wxID_ANY, wxEmptyString);
+    style_text(m_model_preview_details, secondary_text_colour(), 9);
+    m_model_preview_details->Wrap(FromDIP(330));
+    m_model_preview_details->Hide();
+    status_sizer->Add(m_model_preview_details, 0, wxEXPAND | wxTOP, FromDIP(14));
+    m_model_view_controls = new wxPanel(status_column, wxID_ANY);
+    m_model_view_controls->SetBackgroundColour(background_colour());
+    auto* view_controls_sizer = new wxBoxSizer(wxHORIZONTAL);
+    m_model_view_controls->SetSizer(view_controls_sizer);
+    auto* front_view = new RoundedActionButton(m_model_view_controls, text("正视图"), false, 34);
+    front_view->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        if (m_model_preview_3d != nullptr)
+            m_model_preview_3d->front_view();
+    });
+    view_controls_sizer->Add(front_view, 1, wxRIGHT, FromDIP(8));
+    auto* reset_view = new RoundedActionButton(m_model_view_controls, text("重置视角"), false, 34);
+    reset_view->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        if (m_model_preview_3d != nullptr)
+            m_model_preview_3d->reset_view();
+    });
+    view_controls_sizer->Add(reset_view, 1);
+    m_model_view_controls->Hide();
+    status_sizer->Add(m_model_view_controls, 0, wxEXPAND | wxTOP, FromDIP(14));
+    status_sizer->AddStretchSpacer(1);
+    m_model_action_button = new RoundedActionButton(status_column, wxEmptyString, true, 46);
+    m_model_action_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { request_model_page_action(); });
+    m_model_action_button->Hide();
+    status_sizer->Add(m_model_action_button, 0, wxEXPAND | wxTOP, FromDIP(14));
+    m_model_stop_button = new RoundedActionButton(status_column, text("停止生成"), false, 40);
+    m_model_stop_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        if (m_model_generation_host != nullptr && m_model_generation_host->request_stop())
+            apply_model_generation_state(m_model_generation_host->snapshot());
+    });
+    m_model_stop_button->Hide();
+    status_sizer->Add(m_model_stop_button, 0, wxEXPAND | wxTOP, FromDIP(10));
+    body->Add(status_column, 0, wxEXPAND);
+    outer->Add(body, 1, wxEXPAND | wxLEFT | wxRIGHT | wxTOP | wxBOTTOM, FromDIP(42));
+
+    m_content_host->GetSizer()->Add(m_model_page, 1, wxEXPAND);
+    m_model_page->Hide();
+    return m_model_page;
+}
+
+void RedesignShell::connect_model_generation_host()
+{
+    if (m_model_generation_host == nullptr) {
+        apply_model_generation_state({});
+        return;
+    }
+
+    apply_model_generation_state(m_model_generation_host->snapshot());
+    wxWeakRef<RedesignShell> weak(this);
+    m_model_generation_host->set_state_listener([weak](const ModelGenerationUIState& state) {
+        if (!weak)
+            return;
+        weak->CallAfter([weak, state] {
+            if (!weak || state.revision < weak->m_model_generation_state.revision)
+                return;
+            weak->apply_model_generation_state(state);
+        });
+    });
+}
+
+void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& state)
+{
+    if (state.revision < m_model_generation_state.revision)
+        return;
+    const bool entering_model_flow = state.model_generation_context &&
+        !m_model_generation_state.model_generation_context;
+    m_model_generation_state = state;
+    if (state.busy)
+        m_submit_in_progress = false;
+
+    m_applying_model_generation_state = true;
+    if (m_prompt != nullptr && m_prompt->GetValue().ToStdString(wxConvUTF8) != state.input.prompt)
+        m_prompt->ChangeValue(wxString::FromUTF8(state.input.prompt.c_str()));
+    if (m_style_choice != nullptr) {
+        const int style_selection = state.input.style == "realistic" ? 1 : state.input.style == "cartoon" ? 2 : 0;
+        static_cast<StylePicker*>(m_style_choice)->set_selection(style_selection);
+        m_selected_style_id = style_selection == 1 ? "realistic" : style_selection == 2 ? "cartoon" : "sculpture";
+    }
+    apply_generation_options(state.options);
+    m_applying_model_generation_state = false;
+    m_input_sync_ok = m_model_generation_host != nullptr && current_generation_input() == state.input;
+    m_option_sync_ok = m_model_generation_host != nullptr && current_generation_options() == state.options;
+    if (state.design_ready && !state.design_image_path.empty())
+        ensure_design_image(state.design_image_path);
+    else
+        clear_design_image();
+
+    const bool editable = generation_input_editable();
+    if (m_upload_surface != nullptr)
+        m_upload_surface->Enable(editable);
+    if (m_prompt != nullptr)
+        m_prompt->Enable(editable);
+    if (m_style_choice != nullptr) {
+        auto* picker = static_cast<StylePicker*>(m_style_choice);
+        picker->Enable(editable);
+        picker->set_interactive(editable);
+    }
+    const bool provider_visible = true;
+    if (m_provider_label != nullptr)
+        m_provider_label->Show(provider_visible);
+    const bool options_editable = editable && state.stage != ModelGenerationUIStage::GeneratingDesign &&
+                                  state.stage != ModelGenerationUIStage::Saving3DOptions &&
+                                  state.stage != ModelGenerationUIStage::Stopping;
+    if (m_provider_choice != nullptr) {
+        auto* picker = static_cast<StylePicker*>(m_provider_choice);
+        picker->Show(provider_visible);
+        picker->Enable(options_editable);
+        picker->set_interactive(options_editable);
+    }
+
+    wxString primary_label = text("生成 2D 设计图");
+    bool primary_enabled = m_input_sync_ok && m_image_state == ImageState::Ready &&
+                           state.can_generate_design && editable;
+    m_secondary_action = SecondaryAction::None;
+    wxString secondary_label;
+    wxString placeholder = text("等待生成");
+    ImagePreview::PlaceholderMode placeholder_mode = ImagePreview::PlaceholderMode::Idle;
+    bool show_design_bitmap = false;
+    const auto update_design_preview = [&]() {
+        if (state.design_image_path.empty() || m_design_image_state == ImageState::Failed) {
+            placeholder = text("2D 设计图无法显示");
+            placeholder_mode = ImagePreview::PlaceholderMode::Error;
+        } else if (m_design_image_state == ImageState::Loading) {
+            placeholder = text("正在加载 2D 设计图");
+            placeholder_mode = ImagePreview::PlaceholderMode::Generating;
+        } else {
+            placeholder = text("2D 设计图已生成");
+            show_design_bitmap = m_design_image_state == ImageState::Ready;
+        }
+    };
+
+    switch (state.stage) {
+    case ModelGenerationUIStage::Saving3DOptions:
+        primary_enabled = false;
+        update_design_preview();
+        break;
+    case ModelGenerationUIStage::GeneratingDesign:
+        primary_label = text("生成中...");
+        primary_enabled = false;
+        placeholder = text("正在生成 2D 设计图");
+        placeholder_mode = ImagePreview::PlaceholderMode::Generating;
+        if (state.can_stop) {
+            m_secondary_action = SecondaryAction::Stop;
+            secondary_label = text("停止生成");
+        }
+        break;
+    case ModelGenerationUIStage::Stopping:
+        primary_label = text("正在停止");
+        primary_enabled = false;
+        placeholder = text("正在停止");
+        placeholder_mode = ImagePreview::PlaceholderMode::Stopped;
+        break;
+    case ModelGenerationUIStage::Failed:
+        if (state.model_generation_context)
+            update_design_preview();
+        else {
+            placeholder = text("2D 设计图生成失败");
+            placeholder_mode = ImagePreview::PlaceholderMode::Error;
+        }
+        if (state.can_retry_service) {
+            m_secondary_action = SecondaryAction::RetryService;
+            secondary_label = text("重新检测服务");
+        } else if (state.can_restore_latest) {
+            m_secondary_action = SecondaryAction::RestoreLatest;
+            secondary_label = text("恢复上次任务");
+        }
+        break;
+    case ModelGenerationUIStage::Stopped:
+        if (state.model_generation_context)
+            update_design_preview();
+        else {
+            primary_label = text("重新生成 2D 设计图");
+            primary_enabled = m_input_sync_ok && m_image_state == ImageState::Ready &&
+                              state.can_generate_design && editable;
+            placeholder = text("生成已停止");
+            placeholder_mode = ImagePreview::PlaceholderMode::Stopped;
+        }
+        if (state.can_restore_latest) {
+            m_secondary_action = SecondaryAction::RestoreLatest;
+            secondary_label = text("恢复上次任务");
+        }
+        break;
+    case ModelGenerationUIStage::DesignReady:
+        if (!state.inputs_match_job) {
+            primary_label = text("重新生成 2D 设计图");
+            update_design_preview();
+        } else {
+            primary_label = text("生成 3D 模型");
+            primary_enabled = m_option_sync_ok && state.can_generate_model &&
+                              m_design_image_state == ImageState::Ready && editable;
+            update_design_preview();
+            if (state.can_restart) {
+                m_secondary_action = SecondaryAction::Restart;
+                secondary_label = text("重新开始");
+            }
+        }
+        break;
+    case ModelGenerationUIStage::GeneratingModel:
+        primary_label = text("3D 模型生成中...");
+        primary_enabled = false;
+        update_design_preview();
+        if (state.can_stop) {
+            m_secondary_action = SecondaryAction::Stop;
+            secondary_label = text("停止生成");
+        }
+        break;
+    case ModelGenerationUIStage::ModelReady:
+        primary_label = text("重新生成 2D 设计图");
+        primary_enabled = m_input_sync_ok && m_image_state == ImageState::Ready &&
+                          state.can_generate_design && editable;
+        update_design_preview();
+        break;
+    case ModelGenerationUIStage::Input:
+        break;
+    }
+
+    if (show_design_bitmap)
+        update_preview_bitmap();
+    else if (m_result_preview != nullptr)
+        m_result_preview->SetPlaceholder(placeholder, placeholder_mode);
+    if (m_generate_button != nullptr) {
+        m_generate_button->SetLabel(primary_label);
+        m_generate_button->Enable(primary_enabled);
+        m_generate_button->Refresh();
+    }
+    if (m_secondary_action_button != nullptr) {
+        m_secondary_action_button->SetLabel(secondary_label);
+        m_secondary_action_button->Enable(m_secondary_action != SecondaryAction::None);
+        m_secondary_action_button->Show(m_secondary_action != SecondaryAction::None);
+        m_secondary_action_button->Refresh();
+    }
+
+    if (m_sidecar_status != nullptr && state.service_availability_known) {
+        m_sidecar_status->SetLabel(state.service_available ? text("AI 服务：已连接") : text("AI 服务：不可用"));
+        m_sidecar_status->SetForegroundColour(state.service_available ? wxColour(122, 205, 153)
+                                                                      : wxColour(221, 165, 109));
+    }
+    if (m_library_toggle != nullptr)
+        m_library_toggle->Enable(m_model_generation_host != nullptr);
+    if (m_history_expanded)
+        rebuild_history_panel();
+    update_model_page(state);
+    if (entering_model_flow)
+        navigate_to(Page::Model);
+    if (m_image_settings_panel != nullptr)
+        m_image_settings_panel->Layout();
+    if (m_image_settings_scroll != nullptr)
+        m_image_settings_scroll->FitInside();
+}
+
+ModelGenerationUIInput RedesignShell::current_generation_input() const
+{
+    ModelGenerationUIInput input;
+    if (!m_selected_image_path.empty()) {
+        const wxScopedCharBuffer encoded = wxString(m_selected_image_path.wstring()).ToUTF8();
+        if (encoded)
+            input.image_path.assign(encoded.data(), encoded.length());
+    }
+    if (m_prompt != nullptr) {
+        const wxScopedCharBuffer encoded = m_prompt->GetValue().ToUTF8();
+        if (encoded)
+            input.prompt.assign(encoded.data(), encoded.length());
+    }
+    input.style = m_selected_style_id;
+    return input;
+}
+
+ModelGenerationUIOptions RedesignShell::current_generation_options() const
+{
+    ModelGenerationUIOptions options = m_generation_options;
+    if (m_provider_choice != nullptr) {
+        const int provider = static_cast<StylePicker*>(m_provider_choice)->selection();
+        options.provider = provider == 1 ? "hunyuan" : "tripo";
+    }
+    if (options.provider == "hunyuan") {
+        options.face_limit = std::min(options.face_limit, 1000000);
+        options.geometry_quality = "standard";
+        options.texture_quality = "standard";
+    }
+    return options;
+}
+
+void RedesignShell::apply_generation_options(const ModelGenerationUIOptions& options)
+{
+    m_generation_options = options;
+    if (m_provider_choice != nullptr)
+        static_cast<StylePicker*>(m_provider_choice)->set_selection(options.provider == "hunyuan" ? 1 : 0);
+}
+
+void RedesignShell::on_generation_option_changed()
+{
+    if (m_model_generation_host == nullptr || m_applying_model_generation_state || m_provider_choice == nullptr)
+        return;
+    const auto options = current_generation_options();
+    m_generation_options = options;
+    const bool valid = options.face_limit != 2000000 || options.geometry_quality == "detailed";
+    if (!valid) {
+        m_option_sync_ok = false;
+        if (m_generate_button != nullptr &&
+            m_model_generation_state.stage == ModelGenerationUIStage::DesignReady)
+            m_generate_button->Enable(false);
+        return;
+    }
+    synchronize_generation_options();
+}
+
+bool RedesignShell::synchronize_generation_input()
+{
+    if (m_model_generation_host == nullptr || m_applying_model_generation_state)
+        return false;
+    m_input_sync_ok = m_model_generation_host->synchronize_input(current_generation_input());
+    apply_model_generation_state(m_model_generation_host->snapshot());
+    return m_input_sync_ok;
+}
+
+bool RedesignShell::synchronize_generation_options()
+{
+    if (m_model_generation_host == nullptr || m_applying_model_generation_state)
+        return false;
+    m_option_sync_ok = m_model_generation_host->synchronize_options(current_generation_options());
+    if (m_option_sync_ok)
+        apply_model_generation_state(m_model_generation_host->snapshot());
+    return m_option_sync_ok;
+}
+
+bool RedesignShell::generation_input_editable() const
+{
+    return m_image_state != ImageState::Loading && !m_submit_in_progress && !m_model_generation_state.busy &&
+           m_model_generation_state.stage != ModelGenerationUIStage::GeneratingDesign &&
+           m_model_generation_state.stage != ModelGenerationUIStage::GeneratingModel;
+}
+
+void RedesignShell::set_history_expanded(bool expanded)
+{
+    if (m_library_panel == nullptr || m_library_toggle == nullptr)
+        return;
+    m_history_expanded = expanded;
+    m_library_panel->Show(expanded);
+    m_library_toggle->SetLabel(expanded ? text("我的图片  ⌄") : text("我的图片  ›"));
+    m_library_toggle->SetName(expanded ? "my-images-expanded" : "my-images-collapsed");
+    if (expanded) {
+        rebuild_history_panel();
+        if ((m_model_generation_host == nullptr || !m_model_generation_host->request_refresh_history()) && m_library_status != nullptr)
+            m_library_status->SetLabel(text("历史记录暂不可用"));
+    }
+    m_library_toggle->Refresh();
+    if (m_library_panel->GetParent() != nullptr) {
+        m_library_panel->GetParent()->Layout();
+        if (m_library_panel->GetParent()->GetParent() != nullptr)
+            m_library_panel->GetParent()->GetParent()->Layout();
+    }
+}
+
+void RedesignShell::rebuild_history_panel()
+{
+    if (!m_history_expanded || m_library_sizer == nullptr || m_library_scroller == nullptr ||
+        m_library_status == nullptr)
+        return;
+    if (m_rendered_history_entries == m_model_generation_state.history_entries &&
+        m_rendered_history_loading == m_model_generation_state.history_loading &&
+        m_rendered_history_error == m_model_generation_state.history_error &&
+        m_rendered_history_busy == m_model_generation_state.busy)
+        return;
+
+    m_rendered_history_entries = m_model_generation_state.history_entries;
+    m_rendered_history_loading = m_model_generation_state.history_loading;
+    m_rendered_history_error = m_model_generation_state.history_error;
+    m_rendered_history_busy = m_model_generation_state.busy;
+    m_library_sizer->Clear(true);
+
+    if (!m_model_generation_state.history_error.empty()) {
+        m_library_status->SetLabel(wxString::FromUTF8(m_model_generation_state.history_error.c_str()));
+        m_library_status->SetForegroundColour(wxColour(237, 174, 176));
+    } else if (m_model_generation_state.history_loading) {
+        m_library_status->SetLabel(text("正在读取历史图片..."));
+        m_library_status->SetForegroundColour(secondary_text_colour());
+    } else if (m_model_generation_state.history_entries.empty()) {
+        m_library_status->SetLabel(text("还没有保存的设计图或模型"));
+        m_library_status->SetForegroundColour(secondary_text_colour());
+    } else {
+        m_library_status->SetLabel(wxString::Format(text("最近 %llu 条记录"),
+            static_cast<unsigned long long>(m_model_generation_state.history_entries.size())));
+        m_library_status->SetForegroundColour(secondary_text_colour());
+    }
+
+    for (const auto& entry : m_model_generation_state.history_entries) {
+        auto* card = new wxPanel(m_library_scroller, wxID_ANY, wxDefaultPosition,
+                                 wxSize(-1, FromDIP(92)));
+        card->SetMinSize(wxSize(-1, FromDIP(92)));
+        card->SetBackgroundColour(panel_colour());
+        auto* row = new wxBoxSizer(wxHORIZONTAL);
+        card->SetSizer(row);
+
+        auto* thumbnail_host = new RoundedPanel(card, wxSize(FromDIP(68), FromDIP(68)),
+                                                control_colour(), panel_colour(), 7);
+        thumbnail_host->SetMinSize(wxSize(FromDIP(68), FromDIP(68)));
+        thumbnail_host->SetMaxSize(wxSize(FromDIP(68), FromDIP(68)));
+        auto* thumbnail_sizer = new wxBoxSizer(wxVERTICAL);
+        thumbnail_host->SetSizer(thumbnail_sizer);
+        wxImage thumbnail;
+        const size_t pixels = size_t(std::max(0, entry.thumbnail_width)) *
+                              size_t(std::max(0, entry.thumbnail_height));
+        if (entry.thumbnail_width > 0 && entry.thumbnail_height > 0 &&
+            entry.thumbnail_rgb.size() == pixels * 3 &&
+            thumbnail.Create(entry.thumbnail_width, entry.thumbnail_height)) {
+            std::memcpy(thumbnail.GetData(), entry.thumbnail_rgb.data(), entry.thumbnail_rgb.size());
+            if (entry.thumbnail_alpha.size() == pixels) {
+                thumbnail.InitAlpha();
+                std::memcpy(thumbnail.GetAlpha(), entry.thumbnail_alpha.data(), entry.thumbnail_alpha.size());
+            }
+        }
+        if (thumbnail.IsOk()) {
+            auto* bitmap = new wxStaticBitmap(thumbnail_host, wxID_ANY,
+                rounded_thumbnail(thumbnail, wxSize(FromDIP(60), FromDIP(60)), FromDIP(6)));
+            thumbnail_sizer->Add(bitmap, 1, wxALIGN_CENTER | wxALL, FromDIP(4));
+        } else {
+            auto* missing = new wxStaticText(thumbnail_host, wxID_ANY, text("无缩略图"),
+                                             wxDefaultPosition, wxDefaultSize, wxALIGN_CENTER);
+            style_text(missing, secondary_text_colour(), 8);
+            thumbnail_sizer->AddStretchSpacer(1);
+            thumbnail_sizer->Add(missing, 0, wxALIGN_CENTER);
+            thumbnail_sizer->AddStretchSpacer(1);
+        }
+        row->Add(thumbnail_host, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(10));
+
+        auto* copy = new wxBoxSizer(wxVERTICAL);
+        auto* title = new wxStaticText(card, wxID_ANY, wxString::FromUTF8(entry.title.c_str()));
+        style_text(title, primary_text_colour(), 9, true);
+        title->SetMaxSize(wxSize(FromDIP(155), -1));
+        title->Wrap(FromDIP(155));
+        copy->Add(title, 0, wxEXPAND | wxBOTTOM, FromDIP(4));
+        wxString details = wxString::FromUTF8(entry.details.c_str());
+        const int newline = details.Find('\n');
+        if (newline != wxNOT_FOUND)
+            details = details.Left(newline);
+        auto* detail = new wxStaticText(card, wxID_ANY, details);
+        style_text(detail, secondary_text_colour(), 8);
+        detail->SetMaxSize(wxSize(FromDIP(155), -1));
+        detail->Wrap(FromDIP(155));
+        copy->Add(detail, 0, wxEXPAND);
+        row->Add(copy, 1, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
+
+        auto* open = new RoundedActionButton(card, entry.design_only ? text("打开") : text("加载"), false, 32);
+        open->SetMinSize(wxSize(FromDIP(56), FromDIP(32)));
+        open->SetMaxSize(wxSize(FromDIP(64), FromDIP(32)));
+        open->Enable(!m_model_generation_state.busy);
+        open->Bind(wxEVT_BUTTON, [this, job_id = entry.job_id](wxCommandEvent&) {
+            request_open_history(job_id);
+        });
+        row->Add(open, 0, wxALIGN_CENTER_VERTICAL);
+        m_library_sizer->Add(card, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(4));
+        auto* divider = new wxPanel(m_library_scroller, wxID_ANY, wxDefaultPosition,
+                                    wxSize(-1, FromDIP(1)));
+        divider->SetMinSize(wxSize(-1, FromDIP(1)));
+        divider->SetBackgroundColour(divider_colour());
+        m_library_sizer->Add(divider, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(5));
+    }
+    m_library_scroller->Layout();
+    m_library_scroller->FitInside();
+    m_library_scroller->Scroll(0, 0);
+    m_library_panel->Layout();
+}
+
+void RedesignShell::request_open_history(const std::string& job_id)
+{
+    if (m_model_generation_state.busy || job_id.empty())
+        return;
+    if (m_model_generation_host != nullptr && m_model_generation_host->request_open_history(job_id))
+        set_history_expanded(false);
+}
+
+void RedesignShell::request_generate_design()
+{
+    if (m_submit_in_progress || !generation_input_editable())
+        return;
+    m_submit_in_progress = true;
+    apply_model_generation_state(m_model_generation_state);
+    if (!synchronize_generation_input()) {
+        m_submit_in_progress = false;
+        apply_model_generation_state(m_model_generation_host->snapshot());
+        return;
+    }
+    if (m_model_generation_host == nullptr || !m_model_generation_host->request_generate_design()) {
+        m_submit_in_progress = false;
+        apply_model_generation_state(m_model_generation_host != nullptr ? m_model_generation_host->snapshot() : ModelGenerationUIState());
+        return;
+    }
+    m_submit_in_progress = false;
+    apply_model_generation_state(m_model_generation_host->snapshot());
+}
+
+void RedesignShell::request_generate_model()
+{
+    if (m_submit_in_progress || m_model_generation_state.stage != ModelGenerationUIStage::DesignReady ||
+        !m_model_generation_state.inputs_match_job || m_design_image_state != ImageState::Ready)
+        return;
+    m_submit_in_progress = true;
+    apply_model_generation_state(m_model_generation_state);
+    if (!synchronize_generation_options()) {
+        m_submit_in_progress = false;
+        apply_model_generation_state(m_model_generation_state);
+        return;
+    }
+    if (m_model_generation_host == nullptr || !m_model_generation_host->request_generate_model()) {
+        m_submit_in_progress = false;
+        apply_model_generation_state(m_model_generation_host != nullptr ? m_model_generation_host->snapshot() : ModelGenerationUIState());
+        return;
+    }
+    m_submit_in_progress = false;
+    apply_model_generation_state(m_model_generation_host->snapshot());
+}
+
+void RedesignShell::request_primary_action()
+{
+    if (m_model_generation_state.stage == ModelGenerationUIStage::DesignReady &&
+        m_model_generation_state.inputs_match_job)
+        request_generate_model();
+    else
+        request_generate_design();
+}
+
+void RedesignShell::request_secondary_action()
+{
+    bool handled = false;
+    switch (m_secondary_action) {
+    case SecondaryAction::Stop:
+        handled = m_model_generation_host != nullptr && m_model_generation_host->request_stop();
+        break;
+    case SecondaryAction::RetryService:
+        handled = m_model_generation_host != nullptr && m_model_generation_host->request_retry_service();
+        break;
+    case SecondaryAction::RestoreLatest:
+        handled = m_model_generation_host != nullptr && m_model_generation_host->request_restore_latest();
+        break;
+    case SecondaryAction::Restart:
+        handled = m_model_generation_host != nullptr && m_model_generation_host->request_restart();
+        break;
+    case SecondaryAction::None:
+        return;
+    }
+    if (handled)
+        apply_model_generation_state(m_model_generation_host->snapshot());
+}
+
+void RedesignShell::request_model_page_action()
+{
+    bool handled = false;
+    switch (m_model_page_action) {
+    case ModelPageAction::RetryService:
+        handled = m_model_generation_host != nullptr && m_model_generation_host->request_retry_service();
+        break;
+    case ModelPageAction::RestoreLatest:
+        handled = m_model_generation_host != nullptr && m_model_generation_host->request_restore_latest();
+        break;
+    case ModelPageAction::BackToDesign:
+        navigate_to(Page::Image);
+        return;
+    case ModelPageAction::ReloadPreview:
+        m_model_preview_failed = false;
+        m_model_preview_error.clear();
+        m_loaded_model_path.clear();
+        ensure_model_preview(m_model_generation_state);
+        update_model_page(m_model_generation_state);
+        return;
+    case ModelPageAction::Import:
+        handled = m_model_generation_host != nullptr && m_model_generation_host->request_import();
+        break;
+    case ModelPageAction::None:
+        return;
+    }
+    if (handled)
+        apply_model_generation_state(m_model_generation_host->snapshot());
+}
+
+void RedesignShell::update_model_page(const ModelGenerationUIState& state)
+{
+    if (m_model_page == nullptr || m_model_stage_visual == nullptr)
+        return;
+    m_model_page_action = ModelPageAction::None;
+    wxString title = text("3D 模型");
+    wxString status = text("完成 2D 设计后可开始生成 3D 模型");
+    wxString progress_label = text("尚未开始");
+    wxString summary;
+    wxString action_label;
+    wxString visual_label = text("等待 3D 生成");
+    ImagePreview::PlaceholderMode visual_mode = ImagePreview::PlaceholderMode::Idle;
+    bool show_progress = false;
+    int progress = 0;
+    bool show_stop = false;
+
+    if (state.stage == ModelGenerationUIStage::GeneratingModel) {
+        title = text("正在生成 3D 模型");
+        status = !state.status_text.empty() ? wxString::FromUTF8(state.status_text.c_str())
+                                            : text("任务已提交，正在等待现有生成流程完成");
+        visual_label = text("正在生成 3D 模型");
+        visual_mode = ImagePreview::PlaceholderMode::Generating;
+        if (state.progress > 0 && state.progress < 100) {
+            show_progress = true;
+            progress = state.progress;
+            progress_label = wxString::Format(text("当前进度  %d%%"), state.progress);
+        } else {
+            progress_label = text("处理中");
+        }
+        summary = !state.workflow_guidance.empty() ? wxString::FromUTF8(state.workflow_guidance.c_str())
+                                                   : text("页面切换不会取消任务。停止只终止本地等待，远端任务可能继续运行并计费。");
+        show_stop = state.can_stop;
+    } else if (state.stage == ModelGenerationUIStage::Failed && state.model_generation_context) {
+        title = text("3D 模型生成未完成");
+        status = !state.status_text.empty() ? wxString::FromUTF8(state.status_text.c_str())
+                                            : text("现有生成流程返回错误");
+        progress_label = text("生成失败");
+        visual_label = text("3D 模型生成失败");
+        visual_mode = ImagePreview::PlaceholderMode::Error;
+        summary = !state.summary_text.empty() ? wxString::FromUTF8(state.summary_text.c_str())
+                                              : text("当前任务和输入已保留，请按现有恢复入口继续。");
+        if (state.can_retry_service) {
+            m_model_page_action = ModelPageAction::RetryService;
+            action_label = text("重新检测服务");
+        } else if (state.can_restore_latest) {
+            m_model_page_action = ModelPageAction::RestoreLatest;
+            action_label = text("恢复上次任务");
+        } else {
+            m_model_page_action = ModelPageAction::BackToDesign;
+            action_label = text("返回 2D 设计");
+        }
+    } else if (state.stage == ModelGenerationUIStage::Stopped && state.model_generation_context) {
+        title = text("3D 模型生成已停止");
+        status = !state.status_text.empty() ? wxString::FromUTF8(state.status_text.c_str())
+                                            : text("已停止本地等待");
+        progress_label = text("已停止");
+        visual_label = text("生成已停止");
+        visual_mode = ImagePreview::PlaceholderMode::Stopped;
+        summary = text("远端任务可能仍继续运行并计费；恢复操作会继续查询同一任务。");
+        if (state.can_restore_latest) {
+            m_model_page_action = ModelPageAction::RestoreLatest;
+            action_label = text("恢复上次任务");
+        } else {
+            m_model_page_action = ModelPageAction::BackToDesign;
+            action_label = text("返回 2D 设计");
+        }
+    } else if (state.stage == ModelGenerationUIStage::ModelReady) {
+        title = text("3D 模型已生成");
+        status = !state.status_text.empty() ? wxString::FromUTF8(state.status_text.c_str())
+                                            : text("生成结果已就绪");
+        progress_label = text("完成  100%");
+        show_progress = true;
+        progress = 100;
+        visual_label = text("正在加载 3D 模型预览");
+        visual_mode = ImagePreview::PlaceholderMode::Generating;
+        summary = !state.summary_text.empty() ? wxString::FromUTF8(state.summary_text.c_str()) : wxString();
+        ensure_model_preview(state);
+        if (m_model_preview_failed) {
+            visual_label = text("3D 模型预览加载失败");
+            visual_mode = ImagePreview::PlaceholderMode::Error;
+            progress_label = text("预览不可用");
+            summary = m_model_preview_error.empty() ? text("模型文件缺失或无法解析。")
+                                                    : wxString::FromUTF8(m_model_preview_error.c_str());
+            m_model_page_action = ModelPageAction::ReloadPreview;
+            action_label = text("重新加载预览");
+        } else if (!m_loaded_model_path.empty()) {
+            visual_label.clear();
+            visual_mode = ImagePreview::PlaceholderMode::Idle;
+            if (state.can_import) {
+                m_model_page_action = ModelPageAction::Import;
+                action_label = text("导入到准备页");
+            }
+        }
+    } else if (!state.model_generation_context) {
+        clear_model_preview();
+    }
+
+    m_model_stage_title->SetLabel(title);
+    m_model_stage_status->SetLabel(status);
+    m_model_stage_status->Wrap(FromDIP(760));
+    m_model_progress_label->SetLabel(progress_label);
+    static_cast<wxGauge*>(m_model_progress)->SetValue(progress);
+    m_model_progress->Show(show_progress);
+    m_model_stage_summary->SetLabel(summary);
+    m_model_stage_summary->Wrap(FromDIP(330));
+    const bool show_model_preview = state.stage == ModelGenerationUIStage::ModelReady &&
+                                    !m_loaded_model_path.empty() && !m_model_preview_failed;
+    m_model_stage_visual->Show(!show_model_preview);
+    m_model_preview_3d->Show(show_model_preview);
+    if (!show_model_preview)
+        m_model_stage_visual->SetPlaceholder(visual_label, visual_mode);
+    if (m_model_preview_details != nullptr)
+        m_model_preview_details->Show(show_model_preview);
+    if (m_model_view_controls != nullptr)
+        m_model_view_controls->Show(show_model_preview);
+    m_model_action_button->SetLabel(action_label);
+    m_model_action_button->Show(m_model_page_action != ModelPageAction::None);
+    m_model_action_button->Enable(m_model_page_action != ModelPageAction::None && !state.busy);
+    m_model_stop_button->Show(show_stop);
+    m_model_stop_button->Enable(show_stop);
+    m_model_page->Layout();
+    if (m_model_visual_host != nullptr)
+        m_model_visual_host->Layout();
+}
+
+void RedesignShell::ensure_model_preview(const ModelGenerationUIState& state)
+{
+    if (m_model_preview_3d == nullptr || !state.model_ready || state.busy || !state.can_import ||
+        state.model_path.empty())
+        return;
+    const wxString decoded = wxString::FromUTF8(state.model_path.c_str());
+    if (decoded.empty()) {
+        m_model_preview_failed = true;
+        m_model_preview_error = "模型路径无法读取。";
+        return;
+    }
+    const boost::filesystem::path path(decoded.ToStdWstring());
+    if (path == m_loaded_model_path || (m_model_preview_loading && path == m_loading_model_path))
+        return;
+    if (!ModelGenerationPresentation::is_nonempty_model(path)) {
+        m_model_preview_failed = true;
+        m_model_preview_error = "模型文件缺失或为空。";
+        return;
+    }
+    if (m_model_preview_worker.joinable())
+        m_model_preview_worker.join();
+
+    const std::uint64_t generation = ++m_model_preview_request_generation;
+    m_model_preview_loading = true;
+    m_model_preview_failed = false;
+    m_model_preview_error.clear();
+    m_loading_model_path = path;
+    const boost::filesystem::path metadata_path = state.job_id.empty()
+        ? boost::filesystem::path()
+        : ModelGenerationPresentation::library_metadata_path(state.job_id);
+    auto prepared = std::make_shared<ModelPreview3D::PreparedModel>();
+    wxWeakRef<RedesignShell> weak(this);
+    try {
+        m_model_preview_worker = std::thread([weak, generation, path, metadata_path, prepared] {
+            std::string error;
+            try {
+                ModelPreview3D::prepare_model(path, *prepared, error, {}, metadata_path);
+            } catch (const std::exception& exception) {
+                error = exception.what();
+            }
+            wxGetApp().CallAfter([weak, generation, path, prepared, error = std::move(error)]() mutable {
+                if (!weak)
+                    return;
+                auto* self = weak.get();
+                if (self->m_model_preview_worker.joinable())
+                    self->m_model_preview_worker.join();
+                if (generation != self->m_model_preview_request_generation)
+                    return;
+                self->m_model_preview_loading = false;
+                self->m_loading_model_path.clear();
+                size_t triangles = 0;
+                size_t colors = 0;
+                Vec3d dimensions;
+                std::string load_error = error;
+                if (!load_error.empty() || !self->m_model_preview_3d->load_prepared_model(
+                        std::move(*prepared), {}, triangles, dimensions, colors, load_error)) {
+                    self->m_model_preview_failed = true;
+                    self->m_model_preview_error = load_error.empty() ? "模型预览无法加载。" : load_error;
+                    self->m_loaded_model_path.clear();
+                } else {
+                    self->m_model_preview_failed = false;
+                    self->m_model_preview_error.clear();
+                    self->m_loaded_model_path = path;
+                    self->m_model_preview_3d->set_selection_enabled(false);
+                    self->m_model_preview_3d->set_color_controls_visible(false);
+                    self->m_model_preview_details->SetLabel(wxString::Format(
+                        text("%llu 个三角面 · %.1f × %.1f × %.1f mm · %llu 种模型颜色"),
+                        static_cast<unsigned long long>(triangles), dimensions.x(), dimensions.y(), dimensions.z(),
+                        static_cast<unsigned long long>(colors)));
+                    self->m_model_preview_details->Wrap(self->FromDIP(330));
+                }
+                self->update_model_page(self->m_model_generation_state);
+            });
+        });
+    } catch (const std::exception& exception) {
+        m_model_preview_loading = false;
+        m_loading_model_path.clear();
+        m_model_preview_failed = true;
+        m_model_preview_error = exception.what();
+    }
+}
+
+void RedesignShell::clear_model_preview()
+{
+    if (!m_model_preview_loading && !m_model_preview_failed && m_loading_model_path.empty() &&
+        m_loaded_model_path.empty())
+        return;
+    ++m_model_preview_request_generation;
+    m_model_preview_loading = false;
+    m_model_preview_failed = false;
+    m_model_preview_error.clear();
+    m_loading_model_path.clear();
+    m_loaded_model_path.clear();
+    if (m_model_preview_3d != nullptr)
+        m_model_preview_3d->clear();
+    if (m_model_preview_details != nullptr) {
+        m_model_preview_details->SetLabel(wxEmptyString);
+        m_model_preview_details->Hide();
+    }
+}
+
+void RedesignShell::ensure_design_image(const std::string& path)
+{
+    const wxString decoded = wxString::FromUTF8(path.c_str());
+    if (decoded.empty()) {
+        clear_design_image();
+        m_design_image_state = ImageState::Failed;
+        return;
+    }
+    const boost::filesystem::path requested(decoded.ToStdWstring());
+    if (requested == m_design_image_path && m_design_image_state != ImageState::Empty)
+        return;
+
+    const std::uint64_t generation = ++m_design_image_request_generation;
+    m_design_image_path = requested;
+    m_design_image = wxImage();
+    m_design_image_state = ImageState::Loading;
+    CallAfter([this, requested, generation] {
+        if (generation != m_design_image_request_generation)
+            return;
+        wxImage image;
+        try {
+            image.LoadFile(wxString(requested.wstring()));
+        } catch (const boost::filesystem::filesystem_error&) {
+        }
+        if (!image.IsOk()) {
+            m_design_image_state = ImageState::Failed;
+            apply_model_generation_state(m_model_generation_state);
+            return;
+        }
+        m_design_image = std::move(image);
+        m_design_image_state = ImageState::Ready;
+        m_last_preview_bounds = wxDefaultSize;
+        apply_model_generation_state(m_model_generation_state);
+    });
+}
+
+void RedesignShell::clear_design_image()
+{
+    if (m_design_image_state == ImageState::Empty && m_design_image_path.empty())
+        return;
+    ++m_design_image_request_generation;
+    m_design_image = wxImage();
+    m_design_image_path.clear();
+    m_design_image_state = ImageState::Empty;
 }
 
 wxPanel* RedesignShell::create_placeholder_page(const wxString& title, const wxString& body)
@@ -987,6 +2242,8 @@ bool RedesignShell::navigate_to(Page page)
     if (index >= m_pages.size() || m_pages[index] == nullptr)
         return false;
 
+    if (page != Page::Image || m_active_page != Page::Image)
+        set_history_expanded(false);
     m_active_page = page;
     switch (page) {
     case Page::Assets:
@@ -1064,13 +2321,15 @@ wxString RedesignShell::active_tab_id() const
 void RedesignShell::bind_upload_click(wxWindow* window)
 {
     window->Bind(wxEVT_LEFT_UP, [this](wxMouseEvent&) {
-        if (m_image_state != ImageState::Loading)
+        if (m_image_state != ImageState::Loading && generation_input_editable())
             choose_image();
     });
 }
 
 void RedesignShell::choose_image()
 {
+    if (!generation_input_editable())
+        return;
     wxString directory = wxStandardPaths::Get().GetUserDir(wxStandardPaths::Dir_Pictures);
     if (!m_selected_image_path.empty())
         directory = wxString(m_selected_image_path.parent_path().wstring());
@@ -1088,12 +2347,13 @@ void RedesignShell::choose_image()
 
 void RedesignShell::accept_image(const wxString& path)
 {
-    if (m_image_state == ImageState::Loading)
+    if (m_image_state == ImageState::Loading || !generation_input_editable())
         return;
     const ImageState previous_state = m_image_state;
     const std::uint64_t generation = ++m_image_request_generation;
     m_image_state = ImageState::Loading;
     update_image_state();
+    apply_model_generation_state(m_model_generation_state);
     CallAfter([this, path, generation, previous_state] {
         if (generation != m_image_request_generation)
             return;
@@ -1110,6 +2370,7 @@ void RedesignShell::accept_image(const wxString& path)
         if (!valid || !image.IsOk()) {
             m_image_state = previous_state == ImageState::Ready ? ImageState::Ready : ImageState::Failed;
             update_image_state();
+            apply_model_generation_state(m_model_generation_state);
             wxMessageBox(text("请选择可完整打开、宽高至少 64 px 且不超过 20 MB 的 PNG 或 JPEG 图片。"),
                          text("图片不可用"), wxOK | wxICON_ERROR, this);
             return;
@@ -1121,11 +2382,14 @@ void RedesignShell::accept_image(const wxString& path)
         m_image_state = ImageState::Ready;
         m_last_preview_bounds = wxDefaultSize;
         update_image_state();
+        synchronize_generation_input();
     });
 }
 
 void RedesignShell::clear_image()
 {
+    if (!generation_input_editable())
+        return;
     ++m_image_request_generation;
     m_preview_resize_timer.Stop();
     m_selected_image = wxImage();
@@ -1133,27 +2397,50 @@ void RedesignShell::clear_image()
     m_image_state = ImageState::Empty;
     m_last_preview_bounds = wxDefaultSize;
     update_image_state();
+    synchronize_generation_input();
 }
 
 void RedesignShell::update_preview_bitmap()
 {
-    if (m_image_state != ImageState::Ready || !m_selected_image.IsOk() || !m_preview)
+    if (m_image_state != ImageState::Ready || !m_selected_image.IsOk() || !m_preview ||
+        !m_result_preview || !m_source_preview_card || !m_result_preview_card)
         return;
-    const wxSize available = m_preview->GetParent()->GetClientSize();
-    const wxSize bounds(std::min(FromDIP(503), std::max(1, available.x - FromDIP(80))),
-                        std::min(FromDIP(671), std::max(1, available.y - FromDIP(80))));
-    if (bounds == m_last_preview_bounds)
+    const wxSize available = m_preview_host->GetClientSize();
+    if (available.x < FromDIP(240) || available.y < FromDIP(240))
         return;
+
+    const int gap = FromDIP(16);
+    const int maximum_width = std::max(FromDIP(96), (available.x - FromDIP(48) - gap) / 2);
+    const int maximum_height = std::max(FromDIP(128), available.y - FromDIP(92));
+    const double aspect = 503.0 / 671.0;
+    int width = std::min(FromDIP(503), maximum_width);
+    int height = static_cast<int>(std::round(width / aspect));
+    if (height > std::min(FromDIP(671), maximum_height)) {
+        height = std::min(FromDIP(671), maximum_height);
+        width = static_cast<int>(std::round(height * aspect));
+    }
+    const wxSize bounds(std::max(FromDIP(96), width), std::max(FromDIP(128), height));
+    const bool bounds_changed = bounds != m_last_preview_bounds;
     m_last_preview_bounds = bounds;
-    const double scale = std::min(double(bounds.x) / m_selected_image.GetWidth(),
-                                  double(bounds.y) / m_selected_image.GetHeight());
-    const wxSize image_size(std::min(bounds.x, std::max(1, int(std::round(m_selected_image.GetWidth() * scale)))),
-                            std::min(bounds.y, std::max(1, int(std::round(m_selected_image.GetHeight() * scale)))));
-    const wxBitmap bitmap(m_selected_image.Scale(image_size.x, image_size.y, wxIMAGE_QUALITY_HIGH));
-    m_preview->SetMinSize(bounds);
-    m_preview->SetMaxSize(bounds);
+    const wxSize image_bounds(std::max(1, bounds.x - FromDIP(4)), std::max(1, bounds.y - FromDIP(4)));
+    const wxBitmap bitmap = rounded_thumbnail(m_selected_image, image_bounds, FromDIP(10), true);
+    if (bounds_changed) {
+        m_preview->SetMinSize(bounds);
+        m_preview->SetMaxSize(bounds);
+        m_result_preview->SetMinSize(bounds);
+        m_result_preview->SetMaxSize(bounds);
+        const wxSize card_size(bounds.x, bounds.y + FromDIP(36));
+        m_source_preview_card->SetMinSize(card_size);
+        m_source_preview_card->SetMaxSize(card_size);
+        m_result_preview_card->SetMinSize(card_size);
+        m_result_preview_card->SetMaxSize(card_size);
+    }
     m_preview->SetBitmap(bitmap);
-    m_preview->GetParent()->Layout();
+    if (m_design_image_state == ImageState::Ready && m_design_image.IsOk()) {
+        m_result_preview->SetBitmap(
+            rounded_thumbnail(m_design_image, image_bounds, FromDIP(10), true));
+    }
+    m_preview_host->Layout();
 }
 
 void RedesignShell::update_image_state()
