@@ -84,7 +84,9 @@ inline size_t beauty_match_feature_filaments(BeautyPuzzle& puzzle,const BeautySu
         if(slot==puzzle.filament_slots.at(id))continue;
         const auto mix=std::find_if(mixtures.begin(),mixtures.end(),[&](const auto& m){return m.existing_virtual_slot==slot &&
             std::none_of(puzzle.palette.begin(),puzzle.palette.end(),[&](const auto& c){return c.slot==slot;});});
+        const auto target=puzzle.target_colors.at(id);
         if(mix!=mixtures.end())puzzle.paint_mixed(id,*mix);else puzzle.paint_filament(id,slot);
+        puzzle.target_colors[id]=target;
         ++changed;
     }
     return changed;
@@ -134,7 +136,7 @@ inline size_t beauty_coalesce_matched_specks(BeautyPuzzle& puzzle,const BeautySu
         auto& target=parts[best->first];
         for(size_t f:part.faces){puzzle.face_piece[f]=best->first;target.faces.push_back(f);}
         target.area+=part.area;part.faces.clear();part.area=0;
-        puzzle.colors.erase(id);puzzle.filament_slots.erase(id);++removed;
+        puzzle.colors.erase(id);puzzle.filament_slots.erase(id);puzzle.target_colors.erase(id);++removed;
     }
     return removed;
 }
@@ -192,7 +194,7 @@ inline size_t beauty_coalesce_body_regions(BeautyPuzzle& puzzle,const BeautySurf
             if(!similar)continue;
             if(a>b)std::swap(a,b);
             parent[b]=a;parts[a].names=std::move(names);members[a].insert(members[a].end(),members[b].begin(),members[b].end());members[b].clear();
-            puzzle.colors.erase(b);puzzle.filament_slots.erase(b);++removed;changed=true;
+            puzzle.colors.erase(b);puzzle.filament_slots.erase(b);puzzle.target_colors.erase(b);++removed;changed=true;
         }
     }
     for(auto& id:puzzle.face_piece)id=root(id);

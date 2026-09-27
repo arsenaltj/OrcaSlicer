@@ -1,5 +1,7 @@
 # R4-c9f 后的定序收敛计划
 
+> 历史记录/可选格式，不是本机执行要求。当前状态、范围与验收以[有效主计划](../2026-09-25-product-convergence-and-lightweight-plan.md)为准；保留下面原文用于追溯，不恢复旧排期或候选。
+
 ## 当前基线
 
 - 分支：`codex/feat/local-semantic-coloring`

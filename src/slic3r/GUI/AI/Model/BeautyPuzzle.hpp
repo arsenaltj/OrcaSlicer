@@ -27,6 +27,9 @@ struct BeautyPuzzle {
     std::string geometry_id;
     std::vector<uint32_t> face_piece;
     std::map<uint32_t, std::array<float, 4>> colors;
+    // Desired appearance before quantization. Missing on legacy records and
+    // explicit material paint: keep their saved appearance as the fallback.
+    std::map<uint32_t, std::array<float, 4>> target_colors;
     // Palette identity and physical assignments survive equal-RGB filaments.
     // Empty retains the legacy full-color document and its custom paint.
     std::vector<PhysicalFilamentChannel> palette;
@@ -52,7 +55,7 @@ struct BeautyPuzzle {
         return true;
     }
     bool same_edit(const BeautyPuzzle& other) const {
-        return face_piece==other.face_piece && colors==other.colors && filament_slots==other.filament_slots && same_palette(other.palette) && same_mixed_palette(other.mixed_recipes);
+        return face_piece==other.face_piece && colors==other.colors && target_colors==other.target_colors && filament_slots==other.filament_slots && same_palette(other.palette) && same_mixed_palette(other.mixed_recipes);
     }
     bool same_mixed_palette(const std::vector<MixedColorRecipe>& other) const {
         return mixed_recipes.size()==other.size() && std::equal(mixed_recipes.begin(),mixed_recipes.end(),other.begin(),same_native_mixed_recipe);
@@ -88,6 +91,7 @@ struct BeautyPuzzle {
             colors[id]=filament_color({slot,recipe->target_color,{},true});
         }
         filament_slots[id]=slot;
+        target_colors.erase(id);
     }
     void paint_mixed(uint32_t id,const MixedColorRecipe& recipe) {
         require(valid_native_mixed_palette(palette,{recipe}),"The selected native mixed filament is unavailable.");
@@ -104,12 +108,24 @@ struct BeautyPuzzle {
         require(source_faces.empty() || source_faces.size()==face_piece.size(),"Source colors belong to different geometry.");
         if(!is_valid_physical_channel_set(channels) || std::none_of(channels.begin(),channels.end(),[](const auto& c){return c.compatible;}))return;
         const bool unchanged=same_palette(channels);
+        const bool previously_matched=!palette.empty();
         // Keep only used recipes with an identical native definition. A changed
         // or removed project slot must never silently acquire another recipe.
         mixed_recipes.erase(std::remove_if(mixed_recipes.begin(),mixed_recipes.end(),[&](const auto& recipe){
             return !unchanged || std::none_of(available_mixed.begin(),available_mixed.end(),[&](const auto& r){return same_native_mixed_recipe(r,recipe);});
         }),mixed_recipes.end());
-        if(!unchanged)filament_slots.clear();
+        if(!unchanged) {
+            for(auto it=filament_slots.begin();it!=filament_slots.end();) {
+                // Explicit physical paint survives unrelated palette changes,
+                // even when another material has identical RGB. Automatic and
+                // custom RGB targets are rematched against the new palette.
+                const auto old=std::find_if(palette.begin(),palette.end(),[&](const auto& c){return c.slot==it->second;});
+                const bool retain=!target_colors.count(it->first) && old!=palette.end() &&
+                    std::any_of(channels.begin(),channels.end(),[&](const auto& c){return c.slot==old->slot &&
+                        c.display_color==old->display_color && c.material_type==old->material_type && c.compatible;});
+                if(retain)++it;else it=filament_slots.erase(it);
+            }
+        }
         for(auto it=filament_slots.begin();it!=filament_slots.end();)
             if(!native_palette_has_slot(channels,mixed_recipes,it->second))it=filament_slots.erase(it);else ++it;
         palette=channels;
@@ -126,7 +142,9 @@ struct BeautyPuzzle {
         for(const auto& entry:means) {
             if(unchanged && filament_slots.count(entry.first))continue;
             const auto painted=colors.find(entry.first);const auto& mean=entry.second;
-            const auto color=painted==colors.end()?std::array<float,4>{float(mean.rgb[0]/mean.area),float(mean.rgb[1]/mean.area),float(mean.rgb[2]/mean.area),1}:painted->second;
+            const auto target=target_colors.find(entry.first);
+            const bool retain_target=target!=target_colors.end() || painted==colors.end() || !previously_matched;
+            const auto color=target!=target_colors.end()?target->second:painted==colors.end()?std::array<float,4>{float(mean.rgb[0]/mean.area),float(mean.rgb[1]/mean.area),float(mean.rgb[2]/mean.area),1}:painted->second;
             // Saved/manual paint (including a removed recipe) is never rebound
             // to a newly changed virtual slot. New automatic pieces may reuse
             // the project's native mixtures and save their exact definitions.
@@ -135,12 +153,13 @@ struct BeautyPuzzle {
                 std::none_of(palette.begin(),palette.end(),[&](const auto& c){return c.slot==slot;});});
             if(recipe!=available_mixed.end())paint_mixed(entry.first,*recipe);
             else paint_filament(entry.first,slot);
+            if(retain_target)target_colors[entry.first]=color;
         }
     }
     void restore_source_color(uint32_t id,const BeautySurface& surface) {
-        auto original=*this;original.colors.erase(id);original.filament_slots.erase(id);
+        auto original=*this;original.clear_color(id);
         const auto color=original.representative_color(id,surface);
-        if(palette.empty())clear_color(id);else paint_filament(id,nearest_filament(color));
+        if(palette.empty())clear_color(id);else {paint_filament(id,nearest_filament(color));target_colors[id]=color;}
     }
 
     static BeautyPuzzle create(const BeautySurface& surface, size_t target_count = 180,
@@ -481,7 +500,7 @@ struct BeautyPuzzle {
         check_state();
         require_piece(id);
         check_color(color);
-        if(!palette.empty())paint_filament(id,nearest_filament(color));
+        if(!palette.empty()){paint_filament(id,nearest_filament(color));target_colors[id]=color;}
         else colors[id] = color;
     }
 
@@ -489,6 +508,7 @@ struct BeautyPuzzle {
         require_piece(id);
         colors.erase(id);
         filament_slots.erase(id);
+        target_colors.erase(id);
     }
 
     // Visible strokes can contain isolated silhouette samples. A boundary drag
@@ -726,6 +746,7 @@ struct BeautyPuzzle {
         require(candidate.connected(target, surface), "The merged piece must be connected.");
         candidate.colors.erase(other);
         candidate.filament_slots.erase(other);
+        candidate.target_colors.erase(other);
         *this = std::move(candidate);
     }
 
@@ -742,6 +763,7 @@ struct BeautyPuzzle {
         const auto color = colors.find(id);
         if (color != colors.end()) candidate.colors[created] = color->second;
         if(filament_slots.count(id))candidate.filament_slots[created]=filament_slots.at(id);
+        if(target_colors.count(id))candidate.target_colors[created]=target_colors.at(id);
         for (size_t f : indices) if (face_piece[f] == id) candidate.face_piece[f] = created;
         candidate.split_islands({id, created}, surface);
         *this = std::move(candidate);
@@ -765,6 +787,16 @@ struct BeautyPuzzle {
         require(palette.empty(), "Use a filament for a matched puzzle.");
         check_color(color);
         paint_faces(selected, surface, std::nullopt, color);
+    }
+
+    void paint_faces_target(const std::vector<size_t>& selected, const BeautySurface& surface,
+                            const std::array<float,4>& color) {
+        check_color(color);
+        if(palette.empty()){paint_faces_color(selected,surface,color);return;}
+        auto candidate=*this;
+        candidate.paint_faces_filament(selected,surface,nearest_filament(color));
+        for(size_t f:selected)candidate.target_colors[candidate.face_piece[f]]=color;
+        *this=std::move(candidate);
     }
 
     void paint_faces(const std::vector<size_t>& selected, const BeautySurface& surface,
@@ -810,6 +842,7 @@ struct BeautyPuzzle {
                 if (color != colors.end()) candidate.colors[component.id] = color->second;
                 const auto filament = filament_slots.find(component.owner);
                 if (filament != filament_slots.end()) candidate.filament_slots[component.id] = filament->second;
+                if(target_colors.count(component.owner))candidate.target_colors[component.id]=target_colors.at(component.owner);
             }
         }
         for (size_t f = 0; f < face_piece.size(); ++f)
@@ -895,7 +928,7 @@ struct BeautyPuzzle {
             start = end;
         }
         for (const auto& item : colors) saved_colors.push_back({{"id", item.first}, {"rgba", item.second}});
-        Json result={{"schema", palette.empty()?"orca.beauty-puzzle/v1":mixed_recipes.empty()?"orca.beauty-puzzle/v2":"orca.beauty-puzzle/v3"}, {"geometry_id", geometry_id},
+        Json result={{"schema", !target_colors.empty()?"orca.beauty-puzzle/v4":palette.empty()?"orca.beauty-puzzle/v1":mixed_recipes.empty()?"orca.beauty-puzzle/v2":"orca.beauty-puzzle/v3"}, {"geometry_id", geometry_id},
                 {"face_count", face_piece.size()}, {"next_id", next_id},
                 {"piece_runs", std::move(runs)}, {"colors", std::move(saved_colors)}};
         if(!palette.empty()) {
@@ -903,13 +936,17 @@ struct BeautyPuzzle {
             for(const auto& channel:palette)result["palette"].push_back({{"slot",channel.slot},{"color",channel.display_color},{"material",channel.material_type},{"compatible",channel.compatible}});
             for(const auto& item:filament_slots)result["filament_slots"].push_back({item.first,item.second});
         }
-        if(!mixed_recipes.empty()) {
+        if(!mixed_recipes.empty() || !target_colors.empty()) {
             result["mixed_recipes"]=Json::array();
             for(const auto& recipe:mixed_recipes) {
                 Json components=Json::array();for(const auto& c:recipe.components)components.push_back({c.slot,c.ratio});
                 result["mixed_recipes"].push_back({{"slot",*recipe.existing_virtual_slot},{"color",recipe.target_color},
                     {"components",std::move(components)},{"settings",recipe.native_settings_fingerprint}});
             }
+        }
+        if(!target_colors.empty()) {
+            result["target_colors"]=Json::array();
+            for(const auto& item:target_colors)result["target_colors"].push_back({{"id",item.first},{"rgba",item.second}});
         }
         return result;
     }
@@ -918,8 +955,9 @@ struct BeautyPuzzle {
         require(face_count > 0 && face_count <= max_faces && !geometry.empty() && geometry.size() <= 256,
                 "Invalid puzzle surface identity.");
         const auto schema=json.is_object()?json.value("schema",std::string{}):std::string{};
-        const bool mixed=schema=="orca.beauty-puzzle/v3",matched=mixed || schema=="orca.beauty-puzzle/v2";
-        require(json.is_object() && ((json.size()==6 && schema=="orca.beauty-puzzle/v1") || (matched && json.size()==(mixed?9:8))),
+        const bool targets=schema=="orca.beauty-puzzle/v4";
+        const bool mixed=targets || schema=="orca.beauty-puzzle/v3",matched=mixed || schema=="orca.beauty-puzzle/v2";
+        require(json.is_object() && ((json.size()==6 && schema=="orca.beauty-puzzle/v1") || (matched && json.size()==(targets?10:mixed?9:8))),
                 "Unsupported puzzle record.");
         require(json.at("geometry_id") == geometry && integer(json.at("face_count"), max_faces) == face_count,
                 "Puzzle record belongs to different geometry.");
@@ -979,6 +1017,24 @@ struct BeautyPuzzle {
                     recipe.components.push_back({size_t(integer(c[0],254)),c[1].get<double>()});
                 }
                 result.mixed_recipes.push_back(std::move(recipe));
+            }
+        }
+        if(targets) {
+            const auto& items=json.at("target_colors");
+            require(items.is_array() && !items.empty() && items.size()<=face_count,"Invalid puzzle targets.");
+            for(const auto& item:items) {
+                require(item.is_object() && item.size()==2,"Invalid puzzle target record.");
+                const auto id=uint32_t(integer(item.at("id"),max_id-1));
+                const auto& rgba=item.at("rgba");
+                require(rgba.is_array() && rgba.size()==4,"Invalid puzzle target channels.");
+                std::array<float,4> color;
+                for(size_t ch=0;ch<4;++ch) {
+                    require(rgba[ch].is_number(),"Invalid puzzle target value.");
+                    const double value=rgba[ch].get<double>();
+                    require(std::isfinite(value) && value>=0. && value<=1.,"Puzzle target must be between zero and one.");
+                    color[ch]=float(value);
+                }
+                require(result.target_colors.emplace(id,color).second,"Repeated puzzle target identity.");
             }
         }
         result.check_state();
@@ -1632,6 +1688,10 @@ private:
             require(ids.count(item.first) != 0, "Puzzle color refers to a missing piece.");
             check_color(item.second);
         }
+        for(const auto& item:target_colors) {
+            require(colors.count(item.first) && filament_slots.count(item.first),"Puzzle target refers to an unmatched piece.");
+            check_color(item.second);
+        }
         require(palette.empty()?filament_slots.empty():is_valid_physical_channel_set(palette),"Invalid puzzle palette state.");
         require(valid_native_mixed_palette(palette,mixed_recipes),"Invalid native mixed palette.");
         for(const auto& item:filament_slots) {
@@ -1704,6 +1764,7 @@ private:
                 const uint32_t created = allocate_id();
                 if (original_color != colors.end()) colors[created] = original_color->second;
                 if(filament_slots.count(item.first))filament_slots[created]=filament_slots.at(item.first);
+                if(target_colors.count(item.first))target_colors[created]=target_colors.at(item.first);
                 for (size_t f : part->faces) face_piece[f] = created;
             }
         }
@@ -1716,6 +1777,9 @@ private:
         }
         for(auto slot=filament_slots.begin();slot!=filament_slots.end();) {
             if(!ids.count(slot->first))slot=filament_slots.erase(slot);else ++slot;
+        }
+        for(auto target=target_colors.begin();target!=target_colors.end();) {
+            if(!ids.count(target->first))target=target_colors.erase(target);else ++target;
         }
     }
 };

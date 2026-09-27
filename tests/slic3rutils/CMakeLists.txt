@@ -53,6 +53,7 @@ add_executable(${_TEST_NAME}_tests
     test_beauty_appearance.cpp
     test_beauty_surface.cpp
     test_beauty_puzzle.cpp
+    test_beauty_persistence.cpp
     test_beauty_edit_regions.cpp
     test_beauty_boundary_drag.cpp
     test_beauty_boundary_contours.cpp

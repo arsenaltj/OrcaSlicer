@@ -18,6 +18,104 @@
 using namespace Slic3r;
 using namespace Slic3r::AI;
 
+TEST_CASE("Palette changes match the original target instead of the previous approximation", "[BeautyTarget]") {
+    const auto surface=BeautySurface::build(its_make_cube(10,10,10),{});
+    auto p=BeautyPuzzle::create(*surface,1);
+    const std::vector<RGBA> source(surface->areas.size(),RGBA{1,0,0,1});
+    p.match_filaments(*surface,{{0,"#808080","PLA",true}}, {},source);
+    auto restored=BeautyPuzzle::decode(p.encode(),p.geometry_id,p.face_piece.size());
+    restored.match_filaments(*surface,{{0,"#808080","PLA",true},{1,"#FF0000","PLA",true}}, {},source);
+    for(const auto& slot:restored.filament_slots)CHECK(slot.second==1);
+}
+
+TEST_CASE("Custom targets survive edits and reject corrupt persisted records", "[BeautyTarget]") {
+    const auto surface=BeautySurface::build(its_make_cube(10,10,10),{});
+    auto p=BeautyPuzzle::create(*surface,1);const auto id=p.face_piece.front();
+    p.match_filaments(*surface,{{0,"#808080","PLA",true}});
+    p.paint(id,{1,0,0,1});
+    const auto snapshot=p;const auto saved=p.encode();
+    REQUIRE(saved.at("schema")=="orca.beauty-puzzle/v4");
+    auto restored=BeautyPuzzle::decode(saved,p.geometry_id,p.face_piece.size());
+    CHECK(restored.same_edit(p));
+    const auto split=restored.split(id,{0},*surface);
+    CHECK(restored.target_colors.at(split)==p.target_colors.at(id));
+    restored.match_filaments(*surface,{{0,"#808080","PLA",true},{1,"#FF0000","PLA",true}});
+    CHECK(restored.filament_slots.at(split)==1);
+    restored.paint_filament(split,0);CHECK_FALSE(restored.target_colors.count(split));
+    const auto explicit_paint=restored;
+    restored.match_filaments(*surface,restored.palette);CHECK(restored.same_edit(explicit_paint));
+    restored.clear_color(split);CHECK_FALSE(restored.target_colors.count(split));
+    restored=snapshot;CHECK(restored.same_edit(p)); // Undo restores both intent and output.
+    restored.merge(id,restored.split(id,{0},*surface),*surface);
+    CHECK(restored.target_colors.size()==1);REQUIRE_NOTHROW(restored.validate(*surface));
+    auto invalid=saved;invalid["target_colors"][0]["id"]=999;
+    CHECK_THROWS(BeautyPuzzle::decode(invalid,p.geometry_id,p.face_piece.size()));
+    invalid=saved;invalid["target_colors"][0]["rgba"][0]=1.1;
+    CHECK_THROWS(BeautyPuzzle::decode(invalid,p.geometry_id,p.face_piece.size()));
+    invalid=saved;invalid["target_colors"].push_back(invalid["target_colors"][0]);
+    CHECK_THROWS(BeautyPuzzle::decode(invalid,p.geometry_id,p.face_piece.size()));
+    invalid=saved;invalid.erase("target_colors");
+    CHECK_THROWS(BeautyPuzzle::decode(invalid,p.geometry_id,p.face_piece.size()));
+    auto legacy=saved;legacy["schema"]="orca.beauty-puzzle/v2";legacy.erase("target_colors");legacy.erase("mixed_recipes");
+    restored=BeautyPuzzle::decode(legacy,p.geometry_id,p.face_piece.size());
+    CHECK(restored.target_colors.empty());
+    restored.match_filaments(*surface,{{0,"#808080","PLA",true},{1,"#FF0000","PLA",true}});
+    CHECK(restored.filament_slots.at(id)==0); // Old gray paint has no recoverable red intent.
+}
+
+TEST_CASE("Explicit same color material slots survive unrelated palette changes", "[BeautyTarget]") {
+    const auto surface=BeautySurface::build(its_make_cube(10,10,10),{});
+    auto p=BeautyPuzzle::create(*surface,1);const auto id=p.face_piece.front();
+    p.match_filaments(*surface,{{0,"#808080","PLA",true},{1,"#808080","PLA",true}});
+    p.paint_filament(id,1);
+    p=BeautyPuzzle::decode(p.encode(),p.geometry_id,p.face_piece.size());
+    p.match_filaments(*surface,{{0,"#808080","PLA",true},{1,"#808080","PLA",true},{2,"#FF0000","PLA",true}});
+    CHECK(p.filament_slots.at(id)==1);
+    p.match_filaments(*surface,{{0,"#808080","PLA",true},{1,"#808080","PLA",false},{2,"#FF0000","PLA",true}});
+    CHECK(p.filament_slots.at(id)==0);
+}
+
+TEST_CASE("A selected custom target survives reload without repainting other faces", "[BeautyTarget]") {
+    const auto surface=BeautySurface::build(its_make_cube(10,10,10),{});
+    auto p=BeautyPuzzle::create(*surface,1);
+    p.match_filaments(*surface,{{0,"#808080","PLA",true}});
+    p.paint_faces_target({0},*surface,{1,0,0,1});
+    p=BeautyPuzzle::decode(p.encode(),p.geometry_id,p.face_piece.size());
+    p.match_filaments(*surface,{{0,"#808080","PLA",true},{1,"#FF0000","PLA",true}});
+    for(size_t f=0;f<p.face_piece.size();++f)CHECK(p.filament_slots.at(p.face_piece[f])==(f==0?1:0));
+    const auto before=p;
+    CHECK_THROWS(p.paint_faces_target({999},*surface,{1,0,0,1}));CHECK(p.same_edit(before));
+    CHECK_THROWS(p.paint_faces_target({0},*surface,{2,0,0,1}));CHECK(p.same_edit(before));
+}
+
+// Explicit, read-only replay on user supplied model copies. Not GUI acceptance.
+TEST_CASE("Historical models retain direct matching after a restrictive palette round trip", "[.][BeautyTargetModelProbe]") {
+    const auto env=[](const char* key){const auto p=boost::nowide::getenv(key);return p?std::string(p):std::string{};};
+    const auto source=env("ORCA_TARGET_SOURCE"),output=env("ORCA_TARGET_OUTPUT");
+    if(source.empty() || output.empty())SKIP("Explicit model copy and fresh output required.");
+    REQUIRE_FALSE(boost::filesystem::exists(output));
+    const auto hash=model_artifact_sha256(source);
+    TriangleMesh mesh;ObjInfo colors;std::string error;
+    const bool loaded=load_model_artifact(source,mesh,colors,error);INFO(error);REQUIRE(loaded);
+    const auto surface=BeautySurface::build(mesh.its,colors.vertex_colors);
+    const auto faces=beauty_source_face_colors(mesh.its,colors.vertex_colors);
+    auto original=BeautyPuzzle::create(*surface,180);
+    const std::vector<PhysicalFilamentChannel> palette{{0,"#F7E2DA","PLA",true},{1,"#282629","PLA",true},
+        {2,"#F6F7F9","PLA",true},{3,"#EA9A92","PLA",true},{4,"#668CB6","PLA",true},{5,"#958B86","PLA",true}};
+    auto direct=original;direct.match_filaments(*surface,palette,{},faces);
+    auto roundtrip=original;roundtrip.match_filaments(*surface,{{0,"#808080","PLA",true}}, {},faces);
+    roundtrip=BeautyPuzzle::decode(roundtrip.encode(),roundtrip.geometry_id,roundtrip.face_piece.size());
+    roundtrip.match_filaments(*surface,palette,{},faces);
+    size_t changed=0;for(size_t f=0;f<faces.size();++f)
+        changed+=direct.filament_slots.at(direct.face_piece[f])!=roundtrip.filament_slots.at(roundtrip.face_piece[f]);
+    REQUIRE(model_artifact_sha256(source)==hash);
+    boost::filesystem::ofstream result(output);
+    result<<nlohmann::json{{"source",source},{"sha256",hash},{"faces",faces.size()},
+        {"pieces",original.piece_count()},{"changed_faces",changed},{"source_unchanged",true}}.dump(2);
+    REQUIRE(result.good());
+    CHECK(changed==0);
+}
+
 TEST_CASE("Region mix targets use area weighted original faces regardless of saved paint", "[BeautyPuzzle]") {
     const auto mesh=its_make_cube(10,10,10);const auto surface=BeautySurface::build(mesh,{});
     BeautyPuzzle p;p.geometry_id=surface->geometry_id;p.next_id=3;p.face_piece.assign(mesh.indices.size(),1);p.face_piece[0]=p.face_piece[1]=2;
@@ -104,7 +202,7 @@ TEST_CASE("Only unchanged automatic partitions and exact filament assignments qu
     const auto surface=BeautySurface::build(its_make_cube(10,10,10),{});
     auto automatic=BeautyPuzzle::create(*surface,4);
     automatic.match_filaments(*surface,{{0,"#FFFFFF","PLA",true},{1,"#000000","PLA",true}});
-    auto saved=automatic;saved.colors.clear();saved.filament_slots.clear();
+    auto saved=automatic;saved.colors.clear();saved.filament_slots.clear();saved.target_colors.clear();
     for(auto& id:saved.face_piece)id+=100;
     for(const auto& c:automatic.colors)saved.colors[c.first+100]=c.second;
     for(const auto& s:automatic.filament_slots)saved.filament_slots[s.first+100]=s.second;
@@ -300,6 +398,7 @@ TEST_CASE("Native mixed puzzle assignments survive reopen and decline changed re
     puzzle.match_filaments(*surface,palette,{mix});
     const auto id=puzzle.face_piece.front();const auto partition=puzzle.face_piece;
     puzzle.paint_mixed(id,mix);
+    puzzle.target_colors.clear(); // Exercise the pre-target v3 format too.
     const auto saved=puzzle.encode();REQUIRE(saved["schema"]=="orca.beauty-puzzle/v3");
     auto restored=BeautyPuzzle::decode(saved,puzzle.geometry_id,partition.size());
     restored.match_filaments(*surface,palette,{mix});
@@ -364,6 +463,7 @@ TEST_CASE("Matched puzzle colors preserve separate regions and exact physical sl
     REQUIRE(puzzle.filament_slots.size()==puzzle.piece_count());
     const uint32_t id=puzzle.face_piece.front();
     puzzle.paint_filament(id,4);
+    puzzle.target_colors.clear(); // Exercise the pre-target v2 format too.
     const auto saved=puzzle.encode();
     REQUIRE(saved["schema"]=="orca.beauty-puzzle/v2");
     auto restored=BeautyPuzzle::decode(saved,puzzle.geometry_id,partition.size());
@@ -1377,7 +1477,7 @@ static size_t probe_coalesce_mask_regions(BeautyPuzzle& puzzle,const BeautySurfa
         if(a>b)std::swap(a,b);
         parent[b]=a;parts[a].names=std::move(names);
         members[a].insert(members[a].end(),members[b].begin(),members[b].end());members[b].clear();
-        puzzle.colors.erase(b);puzzle.filament_slots.erase(b);++merged;
+        puzzle.colors.erase(b);puzzle.filament_slots.erase(b);puzzle.target_colors.erase(b);++merged;
     }
     for(auto& id:puzzle.face_piece)id=root(id);
     return merged;
