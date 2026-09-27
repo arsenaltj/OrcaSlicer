@@ -1,6 +1,6 @@
-# 当前开发状态（2026-09-26）
+# 当前开发状态（2026-09-27）
 
-- **当前焦点**：当前整理共享 PR（分支 `codex/task/beauty-continuity-20260926`，目标 `codex/team/integration`，依赖尚未合并的 PR16）。B.1 已建立六模型离线回归入口，详见[唯一主计划](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md)。新增普通物品与动物，保留三份人像；生产/UX 代码未修改。
+- **当前焦点**：按用户要求将共享 PR 改为从 `codex/team/model-generation` 提交到 `codex/team/integration`；PR16 已合并，PR17 由长期分支的新 PR 替代。B.1 已建立六模型离线回归入口，详见[唯一主计划](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md)。新增普通物品与动物，保留三份人像；生产/UX 代码未修改。
 - **返回点**：继续 B.1 补独立未见样本、复杂配饰人像、实际色卡及固定视角/光照条件，再进入 B.2 四组质量对照；A.2–A.5 未结保留。
 - **关键阻塞/边界**：另一台 UX 分支/提交/范围仍未同步。本轮调用既有测试 EXE，以结果中的哈希为准，不认定其与当前变化中的源码一致；六模型均为回归样本，不宣称 holdout 或视觉/实物通过。
 - **下一步**：复用本机清单与新运行目录执行 scripts/run_beauty_model_regression.py；补条件时优先查已有记录，不新生成。证据在 `.tmp/model-regression-20260926/`，仅本机可取得，模型/私有清单不随 PR 上传；合并仍由同事评审后决定。
