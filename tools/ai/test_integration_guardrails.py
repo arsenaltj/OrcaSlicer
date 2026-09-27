@@ -176,6 +176,9 @@ class IntegrationGuardrailTests(unittest.TestCase):
         panel_header = (REPO_ROOT / "src/slic3r/GUI/ModelGenerationPanel.hpp").read_text(encoding="utf-8")
         panel_source = (REPO_ROOT / "src/slic3r/GUI/ModelGenerationPanel.cpp").read_text(encoding="utf-8")
         client_source = (REPO_ROOT / "src/slic3r/GUI/AIModelGenerationClient.cpp").read_text(encoding="utf-8")
+        color_contract = (REPO_ROOT / "src/slic3r/AI/Contracts/ColorIntent.hpp").read_text(encoding="utf-8")
+        beauty_view = (REPO_ROOT / "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationBeautyView.cpp").read_text(encoding="utf-8")
+        beauty_controls = (REPO_ROOT / "src/slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchControls.cpp").read_text(encoding="utf-8")
 
         for member in (
             "m_palette_recommendation_cards",
@@ -190,12 +193,12 @@ class IntegrationGuardrailTests(unittest.TestCase):
                 rf"std::array<[^,\n]+,\s*Slic3r::AI::kMaxTargetPaletteColors>\s+{member}\s*\{{",
             )
 
-        # The current finishing controls select physical material channels;
-        # the removed m_region_material_buttons is not a design-palette array.
-        self.assertRegex(
-            panel_header,
-            r"std::array<[^,\n]+,\s*Slic3r::AI::kMaxPhysicalColorChannels>\s+m_region_color_buttons\s*\{",
-        )
+        self.assertIn("kMinPhysicalColorChannels = 1;", color_contract)
+        self.assertIn("kMaxPhysicalColorChannels = 6;", color_contract)
+        self.assertIn("BeautyWorkbenchControls* m_beauty_controls", panel_header)
+        self.assertIn("new BeautyWorkbenchControls(scroll, m_model_preview, m_palette_provider", beauty_view)
+        self.assertIn("for(const auto& channel:palette.physical_channels)", beauty_controls)
+        self.assertIn("AI::is_valid_physical_channel_set(palette.physical_channels)", beauty_controls)
 
         self.assertIn('palette_sources.Add(_L("不限制颜色"))', panel_source)
         self.assertIn('palette_sources.Add(_L("读取耗材颜色"))', panel_source)
