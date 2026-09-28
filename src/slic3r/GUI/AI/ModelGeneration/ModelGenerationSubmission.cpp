@@ -5,7 +5,7 @@
 #include "slic3r/GUI/GUI.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/I18N.hpp"
-#include "slic3r/GUI/MsgDialog.hpp"
+#include "slic3r/GUI/Redesign/RedesignMessageDialog.hpp"
 
 #include <wx/stattext.h>
 #include <wx/textctrl.h>
@@ -41,7 +41,7 @@ void ModelGenerationPanel::on_generate(wxCommandEvent&)
     if (m_job_generation_options.provider == "tripo" && m_job_generation_options.output_format == "obj")
         message += _L("\n本次还将创建 1 个 OBJ 基础转换任务（已计入估算）。");
     message += _L("\n停止：只停止本地等待；已提交的远端任务可能继续运行并计费。");
-    MessageDialog confirm(this, message, _L("确认生成 3D 模型"), wxYES_NO | wxICON_QUESTION);
+    RedesignMessageDialog confirm(this, message, _L("确认生成 3D 模型"), wxYES_NO | wxICON_QUESTION);
     if (confirm.ShowModal() != wxID_YES)
         return;
     if (image_mode)
@@ -229,6 +229,8 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
     m_job_id = status.id;
     m_job_state = status.state;
     m_job_phase = status.phase;
+    if (status.state == "stopped" || status.state == "cancelled" || status.state == "failed")
+        m_ui_stopping = false;
     m_job_palette_color_count = status.palette_color_count;
     if (m_palette_color_count != nullptr &&
         (job_changed || palette_count_unchanged)) {

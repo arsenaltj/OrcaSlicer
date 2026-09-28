@@ -1026,7 +1026,10 @@ void AuxiliaryPanel::Reload(wxString aux_path, std::map<std::string, std::vector
     update_all_panel();
     update_all_cover();
     m_designer_panel->update_info();
-    m_tabpanel->SetSelection(0);
+    if (wxGetApp().mainframe != nullptr && wxGetApp().mainframe->is_redesign_shell_active())
+        wxGetApp().mainframe->select_tab(TAB_ID_PROJECT);
+    else if (m_tabpanel != nullptr)
+        m_tabpanel->SetSelection(0);
 }
 
 void AuxiliaryPanel::update_all_panel()

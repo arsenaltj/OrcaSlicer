@@ -11,6 +11,45 @@
 
 namespace Slic3r::GUI {
 
+bool ModelGenerationUIInput::operator==(const ModelGenerationUIInput& other) const
+{
+    return image_path == other.image_path && prompt == other.prompt && style == other.style;
+}
+
+bool ModelGenerationUIOptions::operator==(const ModelGenerationUIOptions& other) const
+{
+    return provider == other.provider && face_limit == other.face_limit &&
+           geometry_quality == other.geometry_quality && texture_quality == other.texture_quality &&
+           output_format == other.output_format;
+}
+
+bool ModelGenerationUIHistoryEntry::operator==(const ModelGenerationUIHistoryEntry& other) const
+{
+    return job_id == other.job_id && title == other.title && details == other.details &&
+           design_only == other.design_only && thumbnail_width == other.thumbnail_width &&
+           thumbnail_height == other.thumbnail_height && thumbnail_rgb == other.thumbnail_rgb &&
+           thumbnail_alpha == other.thumbnail_alpha;
+}
+
+bool ModelGenerationUIState::same_content(const ModelGenerationUIState& other) const
+{
+    return stage == other.stage && input == other.input && options == other.options &&
+           service_available == other.service_available &&
+           service_availability_known == other.service_availability_known && busy == other.busy &&
+           can_generate_design == other.can_generate_design && can_generate_model == other.can_generate_model &&
+           can_stop == other.can_stop && can_retry_service == other.can_retry_service &&
+           can_restore_latest == other.can_restore_latest && can_import == other.can_import &&
+           can_restart == other.can_restart && design_ready == other.design_ready && model_ready == other.model_ready &&
+           model_generation_context == other.model_generation_context && inputs_match_job == other.inputs_match_job &&
+           progress == other.progress && job_id == other.job_id && job_state == other.job_state &&
+           job_phase == other.job_phase && status_text == other.status_text && summary_text == other.summary_text &&
+           workflow_phase == other.workflow_phase && workflow_guidance == other.workflow_guidance &&
+           cost_summary == other.cost_summary && original_image_path == other.original_image_path &&
+           design_image_path == other.design_image_path && model_path == other.model_path &&
+           history_entries == other.history_entries && history_loading == other.history_loading &&
+           history_error == other.history_error;
+}
+
 struct ModelGenerationFeatureHost::Impl
 {
     Impl(wxWindow* parent, Plater* plater, NavigateAfterImportFn navigate_after_import, RetryServiceFn retry_service)
@@ -18,6 +57,11 @@ struct ModelGenerationFeatureHost::Impl
     {
         BOOST_LOG_TRIVIAL(info) << "AI model generation startup: creating model generation panel";
         model_generation = new ModelGenerationPanel(parent, *workspace, *workspace);
+        model_generation->set_ui_state_listener([this](const ModelGenerationUIState& state) {
+            latest_state = state;
+            if (state_listener)
+                state_listener(latest_state);
+        });
         model_generation->set_service_retry_handler(std::move(retry_service));
         model_generation->set_prepare_navigation_handler(std::move(navigate_after_import));
         model_generation->set_color_matching_handler([this, plater](const AI::GeneratedModelArtifact& artifact) {
@@ -33,12 +77,16 @@ struct ModelGenerationFeatureHost::Impl
             return;
         shutdown_requested = true;
         if (model_generation != nullptr) {
+            model_generation->set_ui_state_listener({});
             model_generation->set_service_retry_handler({});
             model_generation->set_prepare_navigation_handler({});
             model_generation->set_color_matching_handler({});
             model_generation->shutdown();
         }
     }
+
+    ModelGenerationUIState latest_state;
+    ModelGenerationUIStateListener state_listener;
 
     std::unique_ptr<OrcaWorkspaceAdapter> workspace;
     ModelGenerationPanel* model_generation { nullptr };
@@ -59,6 +107,79 @@ ModelGenerationFeatureHost::~ModelGenerationFeatureHost()
 wxWindow* ModelGenerationFeatureHost::panel() const
 {
     return m_impl->model_generation;
+}
+
+void ModelGenerationFeatureHost::initialize_for_shell()
+{
+    if (m_impl->model_generation != nullptr)
+        m_impl->model_generation->initialize_for_shell_host();
+}
+
+ModelGenerationUIState ModelGenerationFeatureHost::snapshot() const
+{
+    return m_impl->latest_state;
+}
+
+void ModelGenerationFeatureHost::set_state_listener(ModelGenerationUIStateListener listener)
+{
+    m_impl->state_listener = std::move(listener);
+    if (m_impl->state_listener)
+        m_impl->state_listener(m_impl->latest_state);
+}
+
+bool ModelGenerationFeatureHost::synchronize_input(const ModelGenerationUIInput& input)
+{
+    return m_impl->model_generation != nullptr && m_impl->model_generation->synchronize_ui_input(input);
+}
+
+bool ModelGenerationFeatureHost::synchronize_options(const ModelGenerationUIOptions& options)
+{
+    return m_impl->model_generation != nullptr && m_impl->model_generation->synchronize_ui_options(options);
+}
+
+bool ModelGenerationFeatureHost::request_generate_design()
+{
+    return m_impl->model_generation != nullptr && m_impl->model_generation->request_generate_design();
+}
+
+bool ModelGenerationFeatureHost::request_generate_model()
+{
+    return m_impl->model_generation != nullptr && m_impl->model_generation->request_generate_model();
+}
+
+bool ModelGenerationFeatureHost::request_stop()
+{
+    return m_impl->model_generation != nullptr && m_impl->model_generation->request_stop();
+}
+
+bool ModelGenerationFeatureHost::request_retry_service()
+{
+    return m_impl->model_generation != nullptr && m_impl->model_generation->request_retry_service();
+}
+
+bool ModelGenerationFeatureHost::request_restore_latest()
+{
+    return m_impl->model_generation != nullptr && m_impl->model_generation->request_restore_latest();
+}
+
+bool ModelGenerationFeatureHost::request_restart()
+{
+    return m_impl->model_generation != nullptr && m_impl->model_generation->request_restart();
+}
+
+bool ModelGenerationFeatureHost::request_import()
+{
+    return m_impl->model_generation != nullptr && m_impl->model_generation->request_import();
+}
+
+bool ModelGenerationFeatureHost::request_refresh_history()
+{
+    return m_impl->model_generation != nullptr && m_impl->model_generation->request_refresh_history();
+}
+
+bool ModelGenerationFeatureHost::request_open_history(const std::string& job_id)
+{
+    return m_impl->model_generation != nullptr && m_impl->model_generation->request_open_history(job_id);
 }
 
 void ModelGenerationFeatureHost::set_service_availability(bool available, const std::string& message)

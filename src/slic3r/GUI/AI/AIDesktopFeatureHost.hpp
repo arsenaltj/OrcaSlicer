@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ModelGeneration/ModelGenerationFeatureHost.hpp"
+
 #include <functional>
 #include <memory>
 
@@ -20,6 +22,15 @@ enum class AIWorkflowStatus
     Failed
 };
 
+enum class AIServiceStatus
+{
+    Checking,
+    Reconnecting,
+    Unavailable,
+    Connected,
+    GenerationUnavailable
+};
+
 // Shared desktop presentation for import, preparation and slicing progress.
 void describe_ai_workflow_status(AIWorkflowStatus status, wxString& label, wxColour& colour);
 
@@ -28,6 +39,7 @@ class AIDesktopFeatureHost final
 public:
     using NavigateAfterImportFn = std::function<void()>;
     using SmartSlicingAvailableFn = std::function<void()>;
+    using ServiceStatusFn = std::function<void(AIServiceStatus)>;
 
     AIDesktopFeatureHost(wxWindow* parent, Plater* plater, NavigateAfterImportFn navigate_after_import,
                          SmartSlicingAvailableFn smart_slicing_available);
@@ -37,6 +49,9 @@ public:
     AIDesktopFeatureHost& operator=(const AIDesktopFeatureHost&) = delete;
 
     wxWindow* model_generation_panel() const;
+    void initialize_model_generation_for_shell();
+    ModelGenerationFeatureHost* model_generation_host() const;
+    void set_service_status_handler(ServiceStatusFn handler);
     void start();
     void shutdown();
 

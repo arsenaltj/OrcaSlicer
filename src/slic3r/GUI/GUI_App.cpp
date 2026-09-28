@@ -91,6 +91,7 @@
 #include "GUI_Utils.hpp"
 #include "3DScene.hpp"
 #include "MainFrame.hpp"
+#include "Redesign/RedesignFeatureFlags.hpp"
 #include "Plater.hpp"
 #include "GLCanvas3D.hpp"
 #include "EncodedFilament.hpp"
@@ -915,6 +916,29 @@ void GUI_App::fail_startup()
     log_startup_timing("failed");
 }
 
+bool GUI_App::should_start_with_redesign_shell() const
+{
+    if (!is_editor() || !RedesignFeatureFlags::surface_enabled("IMAGE_HOME"))
+        return false;
+
+    const bool has_input_files = init_params != nullptr && !init_params->input_files.empty();
+    const bool default_prepare = app_config->get("default_page") == "1";
+    bool restore_available = false;
+    if (!has_input_files && !default_prepare) {
+        std::string restore_path = app_config->get_last_backup_dir();
+        std::string origin_file;
+        restore_available = Slic3r::has_restore_data(restore_path, origin_file);
+    }
+    const bool image_home = RedesignFeatureFlags::image_home_on_startup(
+        true, has_input_files, default_prepare, restore_available);
+    BOOST_LOG_TRIVIAL(info) << "[UiRedesign] initial surface="
+                             << (image_home ? "image_home" : "legacy")
+                             << " input_files=" << has_input_files
+                             << " default_prepare=" << default_prepare
+                             << " restore_available=" << restore_available;
+    return image_home;
+}
+
 void GUI_App::post_init()
 {
     assert(initialized());
@@ -958,6 +982,23 @@ void GUI_App::advance_startup(wxTimerEvent&)
 #endif
             if (is_closing() || !m_startup_frame)
                 return;
+            {
+                bool restore_available = false;
+                if (mainframe->is_redesign_shell_active()) {
+                    std::string restore_path = app_config->get_last_backup_dir();
+                    std::string origin_file;
+                    restore_available = Slic3r::has_restore_data(restore_path, origin_file);
+                }
+                if (RedesignFeatureFlags::image_home_on_startup(
+                        mainframe->is_redesign_shell_active(), init_params->input_files.size() != 0,
+                        app_config->get("default_page") == "1", restore_available)) {
+                    log_stage("runtime_redesign_image_home");
+                    schedule_startup(StartupStage::Finish, _L("Opening the workspace..."));
+                    break;
+                }
+            }
+            // The initial surface was selected before MainFrame was shown. Do not
+            // switch a live redesign shell back to the legacy notebook here.
             canvas->enable_render(false);
             mainframe->select_tab(TAB_ID_PREPARE);
             plater_->select_view_3D("3D");
@@ -1026,12 +1067,12 @@ void GUI_App::advance_startup(wxTimerEvent&)
             finish_post_init();
             if (is_closing() || !m_startup_frame || m_startup_frame.get() != mainframe)
                 return;
-            canvas->enable_render(true);
+            canvas->enable_render(!mainframe->is_redesign_shell_active());
             log_stage("workspace");
             schedule_startup(StartupStage::Reveal, _L("Opening the workspace..."));
             break;
         case StartupStage::Reveal:
-            if (mainframe->is_prepare_or_preview_tab()) {
+            if (!mainframe->is_redesign_shell_active() && mainframe->is_prepare_or_preview_tab()) {
                 // Loading G-code can select Preview. Verify a new frame of the
                 // selected canvas, not the earlier empty Prepare warmup frame.
                 auto* selected_canvas = plater_->get_current_canvas3D();
@@ -1048,7 +1089,7 @@ void GUI_App::advance_startup(wxTimerEvent&)
                 log_stage("selected_page_frame");
             }
             m_startup_stage = StartupStage::Ready;
-            mainframe->m_tabpanel->Enable();
+            mainframe->set_workspace_enabled(true);
             if (m_startup_loading) {
                 m_startup_loading->Hide();
                 m_startup_loading->Destroy();
@@ -2068,10 +2109,10 @@ bool GUI_App::hot_reload_network_plugin()
     wxWindowDisabler disabler;
 
     if (mainframe) {
-        wxString current_tab = mainframe->m_tabpanel->GetSelectedPageName();
+        wxString current_tab = mainframe->selected_tab_id();
         if (current_tab == TAB_ID_MONITOR) {
             BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": navigating away from Monitor tab before unload";
-            mainframe->m_tabpanel->SelectPageByName(TAB_ID_PREPARE);
+            mainframe->select_tab(TAB_ID_PREPARE);
         }
     }
 
@@ -2152,10 +2193,9 @@ bool GUI_App::hot_reload_network_plugin()
         m_device_manager->add_user_subscribe();
     }
 
-    if (mainframe && mainframe->m_monitor) {
-        mainframe->m_monitor->update_network_version_footer();
-        mainframe->m_monitor->set_default();
-        BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": reset monitor panel";
+    if (mainframe) {
+        mainframe->refresh_device_surface();
+        BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": reset device surface";
     }
 
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": hot reload " << (success ? "successful" : "failed");
@@ -3641,7 +3681,7 @@ bool GUI_App::on_init_inner()
     m_startup_frame = mainframe;
     plater_->canvas3D()->enable_render(false);
     m_startup_loading = new StartupLoadingPanel(mainframe);
-    mainframe->m_tabpanel->Disable();
+    mainframe->set_workspace_enabled(false);
     m_startup_timer.SetOwner(this);
     Bind(wxEVT_TIMER, &GUI_App::advance_startup, this, m_startup_timer.GetId());
     mainframe->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
@@ -4393,13 +4433,12 @@ void GUI_App::select_machine(const std::string& agent_id)
     }
     existing->local_use_ssl = boost::istarts_with(print_host, "https://");
 
-    // Use MonitorPanel::select_machine() to trigger full selection flow
-    // This reuses existing logic for machine switching (UI updates, callbacks, etc.)
-    if (mainframe && mainframe->m_monitor) {
-        mainframe->m_monitor->select_machine(dev_id);
-        BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": triggered select_machine for dev_id=" << dev_id;
+    // Route device selection through MainFrame so the redesign shell never
+    // drives the hidden legacy MonitorPanel directly.
+    if (mainframe) {
+        mainframe->select_device(dev_id);
+        BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": routed device selection for dev_id=" << dev_id;
     } else {
-        // Fallback if MonitorPanel not available
         m_device_manager->set_selected_machine(dev_id);
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": fallback set_selected_machine dev_id=" << dev_id;
     }
@@ -8540,7 +8579,7 @@ void GUI_App::update_mode()
     mainframe->m_webview->update_mode();
 
 #ifdef _MSW_DARK_MODE
-    if (!wxGetApp().tabs_as_menu())
+    if (!wxGetApp().tabs_as_menu() && !mainframe->is_redesign_shell_active())
         dynamic_cast<Notebook*>(mainframe->m_tabpanel)->UpdateMode();
 #endif
 

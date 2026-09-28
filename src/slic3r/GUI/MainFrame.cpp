@@ -39,6 +39,7 @@
 #include "Plater.hpp"
 #include "AI/AIDesktopFeatureHost.hpp"
 #include "AI/AIWindowAppearance.hpp"
+#include "Redesign/RedesignShell.hpp"
 #include "WebViewDialog.hpp"
 #include "../Utils/Process.hpp"
 #include "format.hpp"
@@ -53,6 +54,8 @@
 
 #include <fstream>
 #include <string_view>
+#include <chrono>
+#include <cstdlib>
 
 #include "GUI_App.hpp"
 #include "UnsavedChangesDialog.hpp"
@@ -294,6 +297,38 @@ static const wxString ctrl_t = ctrl;
 #endif
 static const wxString shift = _L("Shift+");
 
+namespace {
+
+bool ui_redesign_drag_trace_enabled()
+{
+    static const bool enabled = [] {
+        const char *value = std::getenv("ORCASLICER_UI_REDESIGN_DRAG_TRACE");
+        return value != nullptr && (*value == '1' || *value == 'y' || *value == 'Y' ||
+                                    *value == 't' || *value == 'T');
+    }();
+    return enabled;
+}
+
+const char* ui_redesign_win32_message_name(WXUINT message)
+{
+#ifdef _WIN32
+    switch (message) {
+    case WM_NCLBUTTONDOWN: return "WM_NCLBUTTONDOWN";
+    case WM_ENTERSIZEMOVE: return "WM_ENTERSIZEMOVE";
+    case WM_EXITSIZEMOVE: return "WM_EXITSIZEMOVE";
+    case WM_WINDOWPOSCHANGING: return "WM_WINDOWPOSCHANGING";
+    case WM_WINDOWPOSCHANGED: return "WM_WINDOWPOSCHANGED";
+    case WM_NCHITTEST: return "WM_NCHITTEST";
+    default: return nullptr;
+    }
+#else
+    (void)message;
+    return nullptr;
+#endif
+}
+
+}
+
 MainFrame::~MainFrame() = default;
 
 MainFrame::MainFrame() :
@@ -409,6 +444,11 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
     // Load the icon either from the exe, or from the ico file.
     SetIcon(main_frame_icon(wxGetApp().get_app_mode()));
 
+    // Decide the initial surface before the first layout. Once the redesign
+    // shell is shown it becomes a one-way navigation boundary; legacy pages
+    // remain available only as hidden migration hosts.
+    m_redesign_shell_requested = wxGetApp().should_start_with_redesign_shell();
+
     // initialize tabpanel and menubar
     init_tabpanel();
     if (wxGetApp().is_gcode_viewer())
@@ -458,10 +498,10 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
     //Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_plater->new_project(); }, wxID_HIGHEST + wxID_NEW);
     //Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_plater->load_project(); }, wxID_HIGHEST + wxID_OPEN);
     //// BBS: close save project
-    //Bind(wxEVT_MENU, [this](wxCommandEvent&) { if (m_plater) m_plater->save_project(); }, wxID_HIGHEST + wxID_SAVE);
-    //Bind(wxEVT_MENU, [this](wxCommandEvent&) { if (m_plater) m_plater->save_project(true); }, wxID_HIGHEST + wxID_SAVEAS);
+    //Bind(wxEVT_MENU, [this](wxCommandEvent&) { if (route_legacy_command_to_redesign("Save Project", TAB_ID_PROJECT)) return; if (m_plater) m_plater->save_project(); }, wxID_HIGHEST + wxID_SAVE);
+    //Bind(wxEVT_MENU, [this](wxCommandEvent&) { if (route_legacy_command_to_redesign("Save Project as", TAB_ID_PROJECT)) return; if (m_plater) m_plater->save_project(true); }, wxID_HIGHEST + wxID_SAVEAS);
     ////Bind(wxEVT_MENU, [this](wxCommandEvent&) { if (m_plater) m_plater->add_model(); }, wxID_HIGHEST + wxID_ADD);
-    ////Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_plater->remove_selected(); }, wxID_HIGHEST + wxID_DELETE);
+    ////Bind(wxEVT_MENU, [this](wxCommandEvent&) { if (route_legacy_command_to_redesign("Delete Selected", TAB_ID_PROJECT)) return; m_plater->remove_selected(); }, wxID_HIGHEST + wxID_DELETE);
     //Bind(wxEVT_MENU, [this](wxCommandEvent&) {
     //        if (!can_add_models())
     //            return;
@@ -479,8 +519,8 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
     //    if (m_plater->is_view3D_shown())
     //        m_plater->redo();
     //    }, wxID_HIGHEST + wxID_REDO);
-    //Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_plater->copy_selection_to_clipboard(); }, wxID_HIGHEST + wxID_COPY);
-    //Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_plater->paste_from_clipboard(); }, wxID_HIGHEST + wxID_PASTE);
+    //Bind(wxEVT_MENU, [this](wxCommandEvent&) { if (route_legacy_command_to_redesign("Copy", TAB_ID_PROJECT)) return; m_plater->copy_selection_to_clipboard(); }, wxID_HIGHEST + wxID_COPY);
+    //Bind(wxEVT_MENU, [this](wxCommandEvent&) { if (route_legacy_command_to_redesign("Paste", TAB_ID_PROJECT)) return; m_plater->paste_from_clipboard(); }, wxID_HIGHEST + wxID_PASTE);
     //Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_plater->cut_selection_to_clipboard(); }, wxID_HIGHEST + wxID_CUT);
     Bind(wxEVT_SIZE, [this](wxSizeEvent&) {
             BOOST_LOG_TRIVIAL(trace) << "mainframe: size changed, is maximized = " << this->IsMaximized();
@@ -496,14 +536,16 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
 #ifdef __WXGTK__
         update_edge_panels();
 #endif
-        wxQueueEvent(wxGetApp().plater(), new SimpleEvent(EVT_NOTICE_CHILDE_SIZE_CHANGED));
+        if (!m_redesign_shell_active && wxGetApp().plater() != nullptr)
+            wxQueueEvent(wxGetApp().plater(), new SimpleEvent(EVT_NOTICE_CHILDE_SIZE_CHANGED));
 
-        fit_tab_labels(); // ORCA on resize
+        if (!m_redesign_shell_active)
+            fit_tab_labels(); // ORCA on resize
     });
 
     //BBS
     Bind(EVT_SELECT_TAB, [this](wxCommandEvent& evt) {
-        m_tabpanel->SelectPageByName(evt.GetString());
+        select_tab(evt.GetString());
     });
 
     Bind(EVT_SYNC_CLOUD_PRESET, &MainFrame::on_select_default_preset, this);
@@ -710,8 +752,24 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
             }
             return;}
 #endif
-        if (evt.CmdDown() && evt.GetKeyCode() == 'R') { if (m_slice_enable) { wxGetApp().plater()->update(true, true); wxPostEvent(m_plater, SimpleEvent(EVT_GLTOOLBAR_SLICE_PLATE)); this->m_tabpanel->SelectPageByName(TAB_ID_PREVIEW); } return; }
+        if (evt.CmdDown() && evt.GetKeyCode() == 'R') {
+            if (m_slice_enable) {
+                if (m_redesign_shell_active) {
+                    // Preview is currently a migration host. Keep the shortcut in
+                    // the new shell instead of invoking the hidden legacy Plater.
+                    BOOST_LOG_TRIVIAL(warning) << "[UiRedesign] Ctrl+R ignored legacy slice event while redesign shell is active";
+                    select_tab(TAB_ID_PREVIEW);
+                } else {
+                    wxGetApp().plater()->update(true, true);
+                    wxPostEvent(m_plater, SimpleEvent(EVT_GLTOOLBAR_SLICE_PLATE));
+                    m_tabpanel->SelectPageByName(TAB_ID_PREVIEW);
+                }
+            }
+            return;
+        }
         if (evt.CmdDown() && evt.ShiftDown() && evt.GetKeyCode() == 'G') {
+            if (route_legacy_command_to_redesign("Ctrl+Shift+G", TAB_ID_PREVIEW))
+                return;
             m_plater->apply_background_progress();
             m_print_enable = get_enable_print_status();
             m_print_btn->Enable(m_print_enable);
@@ -724,13 +782,47 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
             evt.Skip();
             return;
         }
-        else if (evt.CmdDown() && evt.GetKeyCode() == 'G') { if (can_export_gcode()) { wxPostEvent(m_plater, SimpleEvent(EVT_GLTOOLBAR_EXPORT_SLICED_FILE)); } evt.Skip(); return; }
-        if (evt.CmdDown() && evt.GetKeyCode() == 'J') { m_printhost_queue_dlg->Show(); return; }
-        if (evt.CmdDown() && evt.GetKeyCode() == 'N') { m_plater->new_project(); return;}
-        if (evt.CmdDown() && evt.GetKeyCode() == 'O') { m_plater->load_project(); return;}
-        if (evt.CmdDown() && evt.ShiftDown() && evt.GetKeyCode() == 'S') { if (can_save_as()) m_plater->save_project(true); return;}
-        else if (evt.CmdDown() && evt.GetKeyCode() == 'S') { if (can_save()) m_plater->save_project(); return;}
+        else if (evt.CmdDown() && evt.GetKeyCode() == 'G') {
+            if (route_legacy_command_to_redesign("Ctrl+G", TAB_ID_PREVIEW))
+                return;
+            if (can_export_gcode())
+                wxPostEvent(m_plater, SimpleEvent(EVT_GLTOOLBAR_EXPORT_SLICED_FILE));
+            evt.Skip();
+            return;
+        }
+        if (evt.CmdDown() && evt.GetKeyCode() == 'J') {
+            if (route_legacy_command_to_redesign("Ctrl+J", TAB_ID_MONITOR))
+                return;
+            m_printhost_queue_dlg->Show();
+            return;
+        }
+        if (evt.CmdDown() && evt.GetKeyCode() == 'N') {
+            if (route_legacy_command_to_redesign("Ctrl+N", TAB_ID_PROJECT))
+                return;
+            m_plater->new_project();
+            return;
+        }
+        if (evt.CmdDown() && evt.GetKeyCode() == 'O') {
+            if (route_legacy_command_to_redesign("Ctrl+O", TAB_ID_PROJECT))
+                return;
+            m_plater->load_project();
+            return;
+        }
+        if (evt.CmdDown() && evt.ShiftDown() && evt.GetKeyCode() == 'S') {
+            if (route_legacy_command_to_redesign("Ctrl+Shift+S", TAB_ID_PROJECT))
+                return;
+            if (can_save_as()) m_plater->save_project(true);
+            return;
+        }
+        else if (evt.CmdDown() && evt.GetKeyCode() == 'S') {
+            if (route_legacy_command_to_redesign("Ctrl+S", TAB_ID_PROJECT))
+                return;
+            if (can_save()) m_plater->save_project();
+            return;
+        }
         if (evt.CmdDown() && evt.GetKeyCode() == 'F') {
+            if (route_legacy_command_to_redesign("Ctrl+F", TAB_ID_PROJECT))
+                return;
             if (m_plater && is_prepare_or_preview_tab()) {
                 m_plater->sidebar().can_search();
             }
@@ -741,6 +833,8 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
         if (evt.CmdDown() && evt.GetKeyCode() == 'P')
 #endif
         {
+            if (route_legacy_command_to_redesign("Ctrl+P"))
+                return;
             // Orca: Use GUI_App::open_preferences instead of direct call so windows associations are updated on exit
             wxGetApp().open_preferences();
             plater()->get_current_canvas3D()->force_set_focus();
@@ -748,6 +842,8 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
         }
 
         if (evt.CmdDown() && evt.GetKeyCode() == 'I' && !evt.ShiftDown()) {
+            if (route_legacy_command_to_redesign("Ctrl+I", TAB_ID_PROJECT))
+                return;
             if (!can_add_models()) return;
             if (m_plater) { m_plater->add_file(); }
             return;
@@ -909,33 +1005,57 @@ WXLRESULT MainFrame::MSWWindowProc(WXUINT nMsg, WXWPARAM wParam, WXLPARAM lParam
         }
         break;
 
+    case WM_NCLBUTTONDOWN:
+    case WM_ENTERSIZEMOVE:
+    case WM_EXITSIZEMOVE:
+    case WM_WINDOWPOSCHANGING:
+    case WM_WINDOWPOSCHANGED:
+        if (ui_redesign_drag_trace_enabled()) {
+            BOOST_LOG_TRIVIAL(info) << "[UiRedesignDrag][MainFrame] "
+                                     << ui_redesign_win32_message_name(nMsg)
+                                     << " wParam=" << static_cast<unsigned long long>(wParam)
+                                     << " lParam=" << static_cast<long long>(lParam);
+        }
+        break;
+
     case WM_NCHITTEST: {
+        const auto begin = std::chrono::steady_clock::now();
+        const int screen_x = static_cast<int>(static_cast<short>(LOWORD(lParam)));
+        const int screen_y = static_cast<int>(static_cast<short>(HIWORD(lParam)));
+        WXLRESULT result = 0;
         if (IsMaximized()) {
-            // When maximized, no resize border
-            return HTCAPTION;
-        }
-
-        // Allow resizing from top of the title bar
-        wxPoint mouse_pos = ::wxGetMousePosition();
-        if (m_topbar->GetScreenRect().GetBottom() >= mouse_pos.y) {
-            RECT borderThickness;
-            SetRectEmpty(&borderThickness);
-            AdjustWindowRectEx(&borderThickness, GetWindowLongPtr(hWnd, GWL_STYLE) & ~WS_CAPTION, FALSE, NULL);
-            borderThickness.left *= -1;
-            borderThickness.top *= -1;
-            wxPoint client_pos = this->ScreenToClient(mouse_pos);
-
-            bool on_top_border = client_pos.y <= borderThickness.top;
-
-            // And to allow diagonally resizing, we check if mouse is at window corner
-            if (client_pos.x <= borderThickness.left) {
-                return on_top_border ? HTTOPLEFT : HTLEFT;
-            } else if (client_pos.x >= GetClientSize().x - borderThickness.right) {
-                return on_top_border ? HTTOPRIGHT : HTRIGHT;
+            result = HTCAPTION;
+        } else if (m_topbar != nullptr) {
+            // Use the coordinates supplied by Windows. Calling wxGetMousePosition()
+            // here can synchronously query the desktop input state while Windows is
+            // beginning a move, which makes this path a suspect for drag latency.
+            const wxPoint mouse_pos(screen_x, screen_y);
+            if (m_topbar->GetScreenRect().GetBottom() >= mouse_pos.y) {
+                RECT borderThickness;
+                SetRectEmpty(&borderThickness);
+                AdjustWindowRectEx(&borderThickness, GetWindowLongPtr(hWnd, GWL_STYLE) & ~WS_CAPTION, FALSE, NULL);
+                borderThickness.left *= -1;
+                borderThickness.top *= -1;
+                const wxPoint client_pos = this->ScreenToClient(mouse_pos);
+                const bool on_top_border = client_pos.y <= borderThickness.top;
+                if (client_pos.x <= borderThickness.left)
+                    result = on_top_border ? HTTOPLEFT : HTLEFT;
+                else if (client_pos.x >= GetClientSize().x - borderThickness.right)
+                    result = on_top_border ? HTTOPRIGHT : HTRIGHT;
+                else
+                    result = on_top_border ? HTTOP : HTCAPTION;
             }
-
-            return on_top_border ? HTTOP : HTCAPTION;
         }
+        if (ui_redesign_drag_trace_enabled()) {
+            const auto elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - begin).count();
+            BOOST_LOG_TRIVIAL(info) << "[UiRedesignDrag][MainFrame] WM_NCHITTEST"
+                                     << " screen=" << screen_x << "," << screen_y
+                                     << " result=" << static_cast<long long>(result)
+                                     << " elapsed_us=" << elapsed_us;
+        }
+        if (result != 0)
+            return result;
         break;
     }
 
@@ -995,6 +1115,32 @@ void MainFrame::update_layout()
 
         Layout();
     };
+
+    // The redesign shell owns the visible workspace once selected. Keep the
+    // legacy notebook and Plater alive as migration hosts, but do not expose
+    // them or allow a layout refresh to switch back to them.
+    if (m_redesign_shell_requested && wxGetApp().is_editor()) {
+        if (m_layout != ESettingsLayout::Unknown)
+            restore_to_creation();
+        if (m_ai_feature_host != nullptr)
+            m_ai_feature_host->initialize_model_generation_for_shell();
+        if (m_redesign_shell == nullptr) {
+            m_redesign_shell = new RedesignShell(
+                this, m_ai_feature_host != nullptr ? m_ai_feature_host->model_generation_host() : nullptr);
+            if (m_ai_feature_host != nullptr)
+                m_ai_feature_host->set_service_status_handler([this](AIServiceStatus status) {
+                    if (m_redesign_shell != nullptr)
+                        m_redesign_shell->set_service_status(status);
+                });
+        }
+        m_redesign_shell_active = true;
+        m_redesign_shell->Show();
+        m_tabpanel->Hide();
+        m_plater->Hide();
+        m_main_sizer->Add(m_redesign_shell, 1, wxEXPAND);
+        Layout();
+        return;
+    }
 
     //BBS GUI refactor: remove unused layout new/dlg
     //ESettingsLayout layout = wxGetApp().is_gcode_viewer() ? ESettingsLayout::GCodeViewer : ESettingsLayout::Old;
@@ -1092,6 +1238,202 @@ void MainFrame::update_layout()
 
     Layout();
     Thaw();
+}
+
+bool MainFrame::is_active_and_shown_tab(wxPanel* panel)
+{
+    if (m_redesign_shell_active)
+        return panel == m_redesign_shell && m_redesign_shell->IsShown();
+    if (panel == m_param_panel)
+        panel = m_plater;
+    else
+        return m_param_dialog->IsShown();
+
+    if (m_tabpanel->GetCurrentPage() != panel)
+        return false;
+    return true;
+}
+
+void MainFrame::show_redesign_shell(bool show)
+{
+    if (!show && m_redesign_shell_active) {
+        BOOST_LOG_TRIVIAL(warning) << "[UiRedesign] refusing request to return from the redesign shell to the legacy workspace";
+        return;
+    }
+
+    m_redesign_shell_requested = show;
+    if (m_loaded)
+        update_layout();
+}
+
+wxString MainFrame::selected_tab_id() const
+{
+    if (m_redesign_shell_active && m_redesign_shell != nullptr)
+        return m_redesign_shell->active_tab_id();
+    if (m_tabpanel != nullptr)
+        return m_tabpanel->GetSelectedPageName();
+    return wxString();
+}
+
+void MainFrame::focus_workspace_navigation()
+{
+    if (m_redesign_shell_active && m_redesign_shell != nullptr) {
+        m_redesign_shell->SetFocus();
+        return;
+    }
+    if (m_tabpanel != nullptr)
+        m_tabpanel->SetFocus();
+}
+
+void MainFrame::set_workspace_enabled(bool enabled)
+{
+    if (m_redesign_shell_active && m_redesign_shell != nullptr)
+        m_redesign_shell->Enable(enabled);
+    else if (m_tabpanel != nullptr)
+        m_tabpanel->Enable(enabled);
+}
+
+void MainFrame::jump_to_monitor(std::string dev_id)
+{
+    if (m_redesign_shell_active) {
+        if (!dev_id.empty())
+            select_device(dev_id);
+        select_tab(TAB_ID_MONITOR);
+        return;
+    }
+    if (!m_monitor)
+        return;
+    m_tabpanel->SelectPageByName(TAB_ID_MONITOR);
+    if (!dev_id.empty())
+        m_monitor->select_machine(dev_id);
+}
+
+void MainFrame::jump_to_monitor_hms()
+{
+    if (m_redesign_shell_active) { select_tab(TAB_ID_MONITOR); return; }
+    jump_to_monitor();
+    if (m_monitor) m_monitor->jump_to_HMS();
+}
+
+void MainFrame::jump_to_monitor_upgrade()
+{
+    if (m_redesign_shell_active) { select_tab(TAB_ID_MONITOR); return; }
+    jump_to_monitor();
+    if (m_monitor) m_monitor->jump_to_Upgrade();
+}
+
+void MainFrame::jump_to_monitor_live_view()
+{
+    if (m_redesign_shell_active) { select_tab(TAB_ID_MONITOR); return; }
+    jump_to_monitor();
+    if (m_monitor) m_monitor->jump_to_LiveView();
+}
+
+void MainFrame::jump_to_monitor_rack()
+{
+    if (m_redesign_shell_active) { select_tab(TAB_ID_MONITOR); return; }
+    jump_to_monitor();
+    if (m_monitor) m_monitor->jump_to_Rack();
+}
+
+void MainFrame::jump_to_monitor_playback(const std::string& dev_id)
+{
+    jump_to_monitor(dev_id);
+    if (!m_redesign_shell_active && m_monitor)
+        m_monitor->jump_to_LiveView();
+}
+
+void MainFrame::select_monitor_status(const std::string& dev_id)
+{
+    select_device(dev_id);
+    select_tab(TAB_ID_MONITOR);
+    if (!m_redesign_shell_active && m_monitor != nullptr)
+        m_monitor->get_tabpanel()->ChangeSelection(MonitorPanel::PT_STATUS);
+}
+
+void MainFrame::jump_to_monitor_media()
+{
+    if (m_redesign_shell_active) { select_tab(TAB_ID_MONITOR); return; }
+    jump_to_monitor();
+    if (m_monitor) m_monitor->get_tabpanel()->ChangeSelection(MonitorPanel::PT_MEDIA);
+}
+
+void MainFrame::notify_hms_read(const wxString& error_code)
+{
+    if (m_redesign_shell_active || m_monitor == nullptr)
+        return;
+    wxCommandEvent event(EVT_ALREADY_READ_HMS);
+    event.SetString(error_code);
+    wxPostEvent(m_monitor, event);
+}
+
+void MainFrame::refresh_device_surface()
+{
+    if (m_redesign_shell_active) {
+        if (m_redesign_shell != nullptr) m_redesign_shell->Layout();
+        return;
+    }
+    if (m_monitor != nullptr) {
+        m_monitor->update_network_version_footer();
+        m_monitor->set_default();
+    }
+}
+
+void MainFrame::select_device(const std::string& dev_id)
+{
+    if (dev_id.empty())
+        return;
+    if (m_redesign_shell_active) {
+        if (auto* manager = wxGetApp().getDeviceManager())
+            manager->set_selected_machine(dev_id);
+        return;
+    }
+    if (m_monitor != nullptr)
+        m_monitor->select_machine(dev_id);
+    else if (auto* manager = wxGetApp().getDeviceManager())
+        manager->set_selected_machine(dev_id);
+}
+
+void MainFrame::update_monitor_error(MachineObject* obj)
+{
+    if (m_redesign_shell_active || m_monitor == nullptr)
+        return;
+    StatusPanel* status_panel = m_monitor->get_status_panel();
+    if (status_panel != nullptr) {
+        status_panel->obj = obj;
+        status_panel->update_error_message();
+    }
+}
+
+void MainFrame::layout_device_surface()
+{
+    if (m_redesign_shell_active) {
+        if (m_redesign_shell != nullptr) m_redesign_shell->Layout();
+        return;
+    }
+    if (m_monitor != nullptr)
+        m_monitor->Layout();
+}
+
+void MainFrame::notify_calibration_job_finished(int tab_index, const wxString& payload)
+{
+    select_tab(TAB_ID_CALIBRATION);
+    if (m_redesign_shell_active || m_calibration == nullptr)
+        return;
+    auto* page = static_cast<CalibrationWizard*>(m_calibration->get_tabpanel()->GetPage(tab_index));
+    if (page == nullptr)
+        return;
+    wxCommandEvent event(EVT_CALIBRATION_JOB_FINISHED);
+    event.SetString(payload);
+    event.SetEventObject(page);
+    wxPostEvent(page, event);
+}
+
+void MainFrame::update_print_error_info(int code, const std::string& message, const std::string& extra)
+{
+    if (m_redesign_shell_active || m_calibration == nullptr)
+        return;
+    m_calibration->update_print_error_info(code, message, extra);
 }
 
 #ifdef __WXGTK__
@@ -1568,7 +1910,9 @@ void MainFrame::show_device(bool should_use_native) {
 
 bool MainFrame::is_prepare_or_preview_tab() const
 {
-    const wxString tab = m_tabpanel->GetSelectedPageName();
+    const wxString tab = selected_tab_id();
+    if (m_redesign_shell_active)
+        return false;
     return tab == TAB_ID_PREPARE || tab == TAB_ID_PREVIEW;
 }
 
@@ -1601,7 +1945,7 @@ void MainFrame::fit_tab_labels()
 bool MainFrame::preview_only_hint()
 {
     if (m_plater && (m_plater->only_gcode_mode() || (m_plater->using_exported_file()))) {
-        BOOST_LOG_TRIVIAL(info) << boost::format("skipped tab switch from %1% to %2% in preview mode")%m_tabpanel->GetSelectedPageName() %wxString(TAB_ID_PREPARE);
+        BOOST_LOG_TRIVIAL(info) << boost::format("skipped tab switch from %1% to %2% in preview mode")%selected_tab_id() %wxString(TAB_ID_PREPARE);
 
         ConfirmBeforeSendDialog confirm_dlg(this, wxID_ANY, _L("Warning"));
         confirm_dlg.Bind(EVT_SECONDARY_CHECK_CONFIRM, [this](wxCommandEvent& e) {
@@ -1719,21 +2063,11 @@ void MainFrame::add_created_tab(Tab* panel,  const std::string& bmp_name /*= ""*
     }
 }
 
-bool MainFrame::is_active_and_shown_tab(wxPanel* panel)
-{
-    if (panel == m_param_panel)
-        panel = m_plater;
-    else
-        return m_param_dialog->IsShown();
-
-    if (m_tabpanel->GetCurrentPage() != panel)
-        return false;
-    return true;
-}
-
 bool MainFrame::can_start_new_project() const
 {
-    /*return m_plater && (!m_plater->get_project_filename(".3mf").IsEmpty() ||
+        if (m_redesign_shell_active)
+        return false;
+/*return m_plater && (!m_plater->get_project_filename(".3mf").IsEmpty() ||
                         GetTitle().StartsWith('*')||
                         wxGetApp().has_current_preset_changes() ||
                         !m_plater->model().objects.empty());*/
@@ -1742,24 +2076,32 @@ bool MainFrame::can_start_new_project() const
 
 bool MainFrame::can_open_project() const
 {
-    return (m_plater && !m_plater->is_background_process_slicing());
+        if (m_redesign_shell_active)
+        return false;
+return (m_plater && !m_plater->is_background_process_slicing());
 }
 
 bool  MainFrame::can_add_models() const
 {
-    return (m_plater && !m_plater->is_background_process_slicing() && !m_plater->only_gcode_mode() && !m_plater->using_exported_file());
+        if (m_redesign_shell_active)
+        return false;
+return (m_plater && !m_plater->is_background_process_slicing() && !m_plater->only_gcode_mode() && !m_plater->using_exported_file());
 }
 
 bool MainFrame::can_save() const
 {
-    return (m_plater != nullptr) &&
+        if (m_redesign_shell_active)
+        return false;
+return (m_plater != nullptr) &&
         !m_plater->get_view3D_canvas3D()->get_gizmos_manager().is_in_editing_mode(false) &&
         m_plater->is_project_dirty() && !m_plater->using_exported_file() && !m_plater->only_gcode_mode();
 }
 
 bool MainFrame::can_save_as() const
 {
-    return (m_plater != nullptr) &&
+        if (m_redesign_shell_active)
+        return false;
+return (m_plater != nullptr) &&
         !m_plater->get_view3D_canvas3D()->get_gizmos_manager().is_in_editing_mode(false) && !m_plater->using_exported_file() && !m_plater->only_gcode_mode();
 }
 
@@ -1785,17 +2127,23 @@ bool MainFrame::can_upload() const
 
 bool MainFrame::can_export_model() const
 {
-    return (m_plater != nullptr) && !m_plater->model().objects.empty();
+        if (m_redesign_shell_active)
+        return false;
+return (m_plater != nullptr) && !m_plater->model().objects.empty();
 }
 
 bool MainFrame::can_export_toolpaths() const
 {
-    return (m_plater != nullptr) && (m_plater->printer_technology() == ptFFF) && m_plater->is_preview_shown() && m_plater->is_preview_loaded() && m_plater->has_toolpaths_to_export();
+        if (m_redesign_shell_active)
+        return false;
+return (m_plater != nullptr) && (m_plater->printer_technology() == ptFFF) && m_plater->is_preview_shown() && m_plater->is_preview_loaded() && m_plater->has_toolpaths_to_export();
 }
 
 bool MainFrame::can_export_supports() const
 {
-    if ((m_plater == nullptr) || (m_plater->printer_technology() != ptSLA) || m_plater->model().objects.empty())
+        if (m_redesign_shell_active)
+        return false;
+if ((m_plater == nullptr) || (m_plater->printer_technology() != ptSLA) || m_plater->model().objects.empty())
         return false;
 
     bool can_export = false;
@@ -1813,7 +2161,9 @@ bool MainFrame::can_export_supports() const
 
 bool MainFrame::can_export_gcode() const
 {
-    if (m_plater == nullptr)
+        if (m_redesign_shell_active)
+        return false;
+if (m_plater == nullptr)
         return false;
 
     if (m_plater->model().objects.empty())
@@ -1833,7 +2183,9 @@ bool MainFrame::can_export_gcode() const
 
 bool MainFrame::can_export_all_gcode() const
 {
-    if (m_plater == nullptr)
+        if (m_redesign_shell_active)
+        return false;
+if (m_plater == nullptr)
         return false;
 
     if (m_plater->model().objects.empty())
@@ -1849,7 +2201,9 @@ bool MainFrame::can_export_all_gcode() const
 
 bool MainFrame::can_print_3mf() const
 {
-    if (m_plater && !m_plater->model().objects.empty()) {
+        if (m_redesign_shell_active)
+        return false;
+if (m_plater && !m_plater->model().objects.empty()) {
         //
     }
     return true;
@@ -1857,7 +2211,9 @@ bool MainFrame::can_print_3mf() const
 
 bool MainFrame::can_send_gcode() const
 {
-    if (m_plater && !m_plater->model().objects.empty())
+        if (m_redesign_shell_active)
+        return false;
+if (m_plater && !m_plater->model().objects.empty())
     {
         auto cfg = wxGetApp().preset_bundle->printers.get_edited_preset().config;
 
@@ -1891,6 +2247,8 @@ bool MainFrame::can_eject() const
 
 bool MainFrame::can_slice() const
 {
+    if (m_redesign_shell_active)
+        return false;
 #ifdef SUPPORT_BACKGROUND_PROCESSING
     bool bg_proc = wxGetApp().app_config->get("background_processing") == "1";
     return (m_plater != nullptr) ? !m_plater->model().objects.empty() && !bg_proc : false;
@@ -1901,6 +2259,8 @@ bool MainFrame::can_slice() const
 
 bool MainFrame::can_change_view() const
 {
+    if (m_redesign_shell_active)
+        return false;
     switch (m_layout)
     {
     default:                   { return false; }
@@ -1919,27 +2279,37 @@ bool MainFrame::can_clone() const {
 
 bool MainFrame::can_select() const
 {
-    return (m_plater != nullptr) && (m_tabpanel->GetSelectedPageName() == TAB_ID_PREPARE) && !m_plater->model().objects.empty();
+    return !m_redesign_shell_active && (m_plater != nullptr) && (selected_tab_id() == TAB_ID_PREPARE) && !m_plater->model().objects.empty();
 }
 
 bool MainFrame::can_deselect() const
 {
-    return (m_plater != nullptr) && (m_tabpanel->GetSelectedPageName() == TAB_ID_PREPARE) && !m_plater->is_selection_empty();
+    return !m_redesign_shell_active && (m_plater != nullptr) && (selected_tab_id() == TAB_ID_PREPARE) && !m_plater->is_selection_empty();
 }
 
 bool MainFrame::can_delete() const
 {
-    return (m_plater != nullptr) && (m_tabpanel->GetSelectedPageName() == TAB_ID_PREPARE) && !m_plater->is_selection_empty();
+    return !m_redesign_shell_active && (m_plater != nullptr) && (selected_tab_id() == TAB_ID_PREPARE) && !m_plater->is_selection_empty();
 }
 
 bool MainFrame::can_delete_all() const
 {
-    return (m_plater != nullptr) && (m_tabpanel->GetSelectedPageName() == TAB_ID_PREPARE) && !m_plater->model().objects.empty();
+    return !m_redesign_shell_active && (m_plater != nullptr) && (selected_tab_id() == TAB_ID_PREPARE) && !m_plater->model().objects.empty();
 }
 
 bool MainFrame::can_reslice() const
 {
-    return (m_plater != nullptr) && !m_plater->model().objects.empty();
+    return !m_redesign_shell_active && (m_plater != nullptr) && !m_plater->model().objects.empty();
+}
+
+bool MainFrame::route_legacy_command_to_redesign(const char *command, const wxString &tab_id)
+{
+    if (!m_redesign_shell_active)
+        return false;
+
+    BOOST_LOG_TRIVIAL(warning) << "[UiRedesign] routed legacy command to redesign shell: " << command;
+    select_tab(tab_id.empty() ? TAB_ID_PROJECT : tab_id);
+    return true;
 }
 
 wxBoxSizer* MainFrame::create_side_tools()
@@ -2022,6 +2392,8 @@ wxBoxSizer* MainFrame::create_side_tools()
 
     m_slice_btn->Bind(wxEVT_BUTTON, [this](wxCommandEvent& event)
         {
+            if (route_legacy_command_to_redesign("Slice button", TAB_ID_PREVIEW))
+                return;
 
             //this->m_plater->select_view_3D("Preview");
             m_plater->exit_gizmo();
@@ -2047,12 +2419,15 @@ wxBoxSizer* MainFrame::create_side_tools()
                     wxPostEvent(m_plater, SimpleEvent(EVT_GLTOOLBAR_SLICE_ALL));
                 else
                     wxPostEvent(m_plater, SimpleEvent(EVT_GLTOOLBAR_SLICE_PLATE));
-                this->m_tabpanel->SelectPageByName(TAB_ID_PREVIEW);
+                select_tab(TAB_ID_PREVIEW);
             }
         });
 
     m_print_btn->Bind(wxEVT_BUTTON, [this](wxCommandEvent& event)
         {
+            if (route_legacy_command_to_redesign("Print button", TAB_ID_PREVIEW))
+                return;
+
             //this->m_plater->select_view_3D("Preview");
             if (m_print_select == ePrintAll || m_print_select == ePrintPlate || m_print_select == ePrintMultiMachine)
             {
@@ -2824,13 +3199,13 @@ void MainFrame::init_menubar_as_editor()
 #endif
         // New Project
         append_menu_item(fileMenu, wxID_ANY, _L("New Project") + "\t" + ctrl + "N", _L("Start a new project"),
-            [this](wxCommandEvent&) { if (m_plater) m_plater->new_project(); }, "", nullptr,
+            [this](wxCommandEvent&) { if (route_legacy_command_to_redesign("New Project", TAB_ID_PROJECT)) return; if (m_plater) m_plater->new_project(); }, "", nullptr,
             [this](){return can_start_new_project(); }, this);
         // Open Project
 
 #ifndef __APPLE__
         append_menu_item(fileMenu, wxID_ANY, _L("Open Project") + dots + "\t" + ctrl + "O", _L("Open a project file"),
-            [this](wxCommandEvent&) { if (m_plater) m_plater->load_project(); }, "menu_open", nullptr,
+            [this](wxCommandEvent&) { if (route_legacy_command_to_redesign("Open Project", TAB_ID_PROJECT)) return; if (m_plater) m_plater->load_project(); }, "menu_open", nullptr,
             [this](){return can_open_project(); }, this);
 #else
         append_menu_item(fileMenu, wxID_ANY, _L("Open Project") + dots + "\t" + ctrl + "O", _L("Open a project file"),
@@ -2886,17 +3261,17 @@ void MainFrame::init_menubar_as_editor()
         wxMenu *import_menu = new wxMenu();
 #ifndef __APPLE__
         append_menu_item(import_menu, wxID_ANY, _L("Import 3MF/STL/STEP/SVG/OBJ/AMF") + dots + "\t" + ctrl + "I", _L("Load a model"),
-            [this](wxCommandEvent&) { if (m_plater) {
+            [this](wxCommandEvent&) { if (route_legacy_command_to_redesign("Import model", TAB_ID_PROJECT)) return; if (m_plater) {
             m_plater->add_file();
         } }, "menu_import", nullptr,
             [this](){return can_add_models(); }, this);
 #else
         append_menu_item(import_menu, wxID_ANY, _L("Import 3MF/STL/STEP/SVG/OBJ/AMF") + dots + "\t" + ctrl + "I", _L("Load a model"),
-            [this](wxCommandEvent&) { if (m_plater) { m_plater->add_model(); } }, "", nullptr,
+            [this](wxCommandEvent&) { if (route_legacy_command_to_redesign("Import model", TAB_ID_PROJECT)) return; if (m_plater) { m_plater->add_model(); } }, "", nullptr,
             [this](){return can_add_models(); }, this);
 #endif
         append_menu_item(import_menu, wxID_ANY, _L("Import Zip Archive") + dots, _L("Load models contained within a zip archive"),
-            [this](wxCommandEvent&) { if (m_plater) m_plater->import_zip_archive(); }, "menu_import", nullptr,
+            [this](wxCommandEvent&) { if (route_legacy_command_to_redesign("Import Zip Archive", TAB_ID_PROJECT)) return; if (m_plater) m_plater->import_zip_archive(); }, "menu_import", nullptr,
             [this]() { return can_add_models(); });
         append_menu_item(import_menu, wxID_ANY, _L("Import Configs") + dots /*+ "\t" + ctrl + "I"*/, _L("Load configs"),
             [this](wxCommandEvent&) { load_config_file(); }, "menu_import", nullptr,
@@ -2908,35 +3283,35 @@ void MainFrame::init_menubar_as_editor()
         wxMenu* export_menu = new wxMenu();
         // BBS export as STL
         append_menu_item(export_menu, wxID_ANY, _L("Export all objects as one STL") + dots, _L("Export all objects as one STL"),
-            [this](wxCommandEvent&) { if (m_plater) m_plater->export_stl(); }, "menu_export_stl", nullptr,
+            [this](wxCommandEvent&) { if (route_legacy_command_to_redesign("Export STL", TAB_ID_PROJECT)) return; if (m_plater) m_plater->export_stl(); }, "menu_export_stl", nullptr,
             [this](){return can_export_model(); }, this);
         append_menu_item(export_menu, wxID_ANY, _L("Export all objects as STLs") + dots, _L("Export all objects as STLs"),
-            [this](wxCommandEvent&) { if (m_plater) m_plater->export_stl(false, false, true); }, "menu_export_stl", nullptr,
+            [this](wxCommandEvent&) { if (route_legacy_command_to_redesign("Export STLs", TAB_ID_PROJECT)) return; if (m_plater) m_plater->export_stl(false, false, true); }, "menu_export_stl", nullptr,
             [this](){return can_export_model(); }, this);
         append_menu_item(export_menu, wxID_ANY, _L("Export all objects as one DRC") + dots, _L("Export all objects as one DRC"),
-            [this](wxCommandEvent&) { if (m_plater) m_plater->export_stl(false, false, false, FT_DRC); }, "menu_export_stl", nullptr,
+            [this](wxCommandEvent&) { if (route_legacy_command_to_redesign("Export DRC", TAB_ID_PROJECT)) return; if (m_plater) m_plater->export_stl(false, false, false, FT_DRC); }, "menu_export_stl", nullptr,
             [this](){return can_export_model(); }, this);
         append_menu_item(export_menu, wxID_ANY, _L("Export all objects as DRCs") + dots, _L("Export all objects as DRCs"),
-            [this](wxCommandEvent&) { if (m_plater) m_plater->export_stl(false, false, true, FT_DRC); }, "menu_export_stl", nullptr,
+            [this](wxCommandEvent&) { if (route_legacy_command_to_redesign("Export DRCs", TAB_ID_PROJECT)) return; if (m_plater) m_plater->export_stl(false, false, true, FT_DRC); }, "menu_export_stl", nullptr,
             [this](){return can_export_model(); }, this);
         append_menu_item(export_menu, wxID_ANY, _L("Export Generic 3MF") + dots/* + "\t" + ctrl + "G"*/, _L("Export 3MF file without using some 3mf-extensions"),
-            [this](wxCommandEvent&) { if (m_plater) m_plater->export_core_3mf(); }, "menu_export_sliced_file", nullptr,
+            [this](wxCommandEvent&) { if (route_legacy_command_to_redesign("Export Generic 3MF", TAB_ID_PROJECT)) return; if (m_plater) m_plater->export_core_3mf(); }, "menu_export_sliced_file", nullptr,
             [this](){return can_export_model(); }, this);
         // BBS export .gcode.3mf
         append_menu_item(export_menu, wxID_ANY, _L("Export plate sliced file") + dots + "\t" + ctrl + "G", _L("Export current sliced file"),
-            [this](wxCommandEvent&) { if (m_plater) wxPostEvent(m_plater, SimpleEvent(EVT_GLTOOLBAR_EXPORT_SLICED_FILE)); }, "menu_export_sliced_file", nullptr,
+            [this](wxCommandEvent&) { if (route_legacy_command_to_redesign("Export sliced file", TAB_ID_PREVIEW)) return; if (m_plater) wxPostEvent(m_plater, SimpleEvent(EVT_GLTOOLBAR_EXPORT_SLICED_FILE)); }, "menu_export_sliced_file", nullptr,
             [this](){return can_export_gcode(); }, this);
 
         append_menu_item(export_menu, wxID_ANY, _L("Export all plate sliced file") + dots/* + "\t" + ctrl + "G"*/, _L("Export all plate sliced file"),
-            [this](wxCommandEvent&) { if (m_plater) wxPostEvent(m_plater, SimpleEvent(EVT_GLTOOLBAR_EXPORT_ALL_SLICED_FILE)); }, "menu_export_sliced_file", nullptr,
+            [this](wxCommandEvent&) { if (route_legacy_command_to_redesign("Export all sliced files", TAB_ID_PREVIEW)) return; if (m_plater) wxPostEvent(m_plater, SimpleEvent(EVT_GLTOOLBAR_EXPORT_ALL_SLICED_FILE)); }, "menu_export_sliced_file", nullptr,
             [this]() {return can_export_all_gcode(); }, this);
 
         append_menu_item(export_menu, wxID_ANY, _L("Export G-code") + dots/* + "\t" + ctrl + "G"*/, _L("Export current plate as G-code"),
-            [this](wxCommandEvent&) { if (m_plater) m_plater->export_gcode(false); }, "menu_export_gcode", nullptr,
+            [this](wxCommandEvent&) { if (route_legacy_command_to_redesign("Export G-code", TAB_ID_PREVIEW)) return; if (m_plater) m_plater->export_gcode(false); }, "menu_export_gcode", nullptr,
             [this]() {return can_export_gcode(); }, this);
 
         append_menu_item(export_menu, wxID_ANY, _L("Export toolpaths as OBJ") + dots, _L("Export toolpaths as OBJ"),
-            [this](wxCommandEvent&) { if (m_plater != nullptr) m_plater->export_toolpaths_to_obj(); }, "menu_export_toolpaths", nullptr,
+            [this](wxCommandEvent&) { if (route_legacy_command_to_redesign("Export toolpaths", TAB_ID_PREVIEW)) return; if (m_plater != nullptr) m_plater->export_toolpaths_to_obj(); }, "menu_export_toolpaths", nullptr,
             [this]() {return can_export_toolpaths(); }, this);
 
         append_menu_item(
@@ -2960,7 +3335,7 @@ void MainFrame::init_menubar_as_editor()
 
     // Edit menu
     wxMenu* editMenu = nullptr;
-    if (m_plater != nullptr)
+    if (m_plater != nullptr && !m_redesign_shell_requested)
     {
         editMenu = new wxMenu();
 
@@ -2974,16 +3349,16 @@ void MainFrame::init_menubar_as_editor()
 #ifndef __APPLE__
         // BBS undo
         append_menu_item(editMenu, wxID_ANY, _L("Undo") + "\t" + ctrl + "Z",
-            _L("Undo"), [this](wxCommandEvent&) { m_plater->undo(); },
+            _L("Undo"), [this](wxCommandEvent&) { if (route_legacy_command_to_redesign("Undo", TAB_ID_PROJECT)) return; m_plater->undo(); },
             "menu_undo", nullptr, [this](){return m_plater->can_undo(); }, this);
         // BBS redo
         append_menu_item(editMenu, wxID_ANY, _L("Redo") + "\t" + ctrl + "Y",
-            _L("Redo"), [this](wxCommandEvent&) { m_plater->redo(); },
+            _L("Redo"), [this](wxCommandEvent&) { if (route_legacy_command_to_redesign("Redo", TAB_ID_PROJECT)) return; m_plater->redo(); },
             "menu_redo", nullptr, [this](){return m_plater->can_redo(); }, this);
         editMenu->AppendSeparator();
         // BBS Cut TODO
         append_menu_item(editMenu, wxID_ANY, _L("Cut") + "\t" + ctrl + "X",
-            _L("Cut selection to clipboard"), [this](wxCommandEvent&) {m_plater->cut_selection_to_clipboard(); },
+            _L("Cut selection to clipboard"), [this](wxCommandEvent&) { if (route_legacy_command_to_redesign("Cut", TAB_ID_PROJECT)) return; m_plater->cut_selection_to_clipboard(); },
             "menu_cut", nullptr, [this]() {return m_plater->can_copy_to_clipboard(); }, this);
         // BBS Copy
         append_menu_item(editMenu, wxID_ANY, _L("Copy") + "\t" + ctrl + "C",
@@ -2999,19 +3374,21 @@ void MainFrame::init_menubar_as_editor()
             "menu_remove", nullptr, [this](){return can_delete(); }, this);
         //BBS: delete all
         append_menu_item(editMenu, wxID_ANY, _L("Delete All") + "\t" + ctrl + "D",
-            _L("Deletes all objects"),[this](wxCommandEvent&) { m_plater->delete_all_objects_from_model(); },
+            _L("Deletes all objects"),[this](wxCommandEvent&) { if (route_legacy_command_to_redesign("Delete All", TAB_ID_PROJECT)) return; m_plater->delete_all_objects_from_model(); },
             "menu_remove", nullptr, [this](){return can_delete_all(); }, this);
         editMenu->AppendSeparator();
         // BBS Clone Selected
         append_menu_item(editMenu, wxID_ANY, _L("Clone Selected") /*+ "\t" + ctrl + "M"*/,
             _L("Clone copies of selections"),[this](wxCommandEvent&) {
-                m_plater->clone_selection();
+                if (route_legacy_command_to_redesign("Clone Selected", TAB_ID_PROJECT)) return;
+                 m_plater->clone_selection();
             },
             "menu_remove", nullptr, [this](){return can_clone(); }, this);
         editMenu->AppendSeparator();
         append_menu_item(editMenu, wxID_ANY, _L("Duplicate Current Plate"),
             _L("Duplicate the current plate"),[this](wxCommandEvent&) {
-                m_plater->duplicate_plate();
+                if (route_legacy_command_to_redesign("Duplicate Current Plate", TAB_ID_PROJECT)) return;
+                 m_plater->duplicate_plate();
             },
             "menu_remove", nullptr, [this](){return true;}, this);
         editMenu->AppendSeparator();
@@ -3219,7 +3596,7 @@ void MainFrame::init_menubar_as_editor()
                 wxGetApp().toggle_show_gcode_window();
                 m_plater->get_current_canvas3D()->post_event(SimpleEvent(wxEVT_PAINT));
             },
-            this, [this]() { return m_tabpanel->GetSelectedPageName() == TAB_ID_PREVIEW; },
+            this, [this]() { return !m_redesign_shell_active && selected_tab_id() == TAB_ID_PREVIEW; },
             [this]() { return wxGetApp().show_gcode_window(); }, this);
 
         append_menu_check_item(
@@ -3265,7 +3642,7 @@ void MainFrame::init_menubar_as_editor()
                 wxGetApp().toggle_show_outline();
                 m_plater->get_current_canvas3D()->post_event(SimpleEvent(wxEVT_PAINT));
             },
-            this, [this]() { return m_tabpanel->GetSelectedPageName() == TAB_ID_PREPARE; },
+            this, [this]() { return !m_redesign_shell_active && selected_tab_id() == TAB_ID_PREPARE; },
             [this]() { return wxGetApp().show_outline(); }, this);
 
         /*viewMenu->AppendSeparator();
@@ -4067,6 +4444,29 @@ void MainFrame::select_tab(wxPanel* panel)
 {
     if (!panel)
         return;
+
+    if (m_redesign_shell_active) {
+        // Legacy callers still pass panel pointers. Resolve them to semantic
+        // routes without looking them up in the hidden legacy notebook.
+        wxString route;
+        if (panel == m_param_panel || panel == m_plater)
+            route = selected_tab_id() == TAB_ID_PREVIEW ? TAB_ID_PREVIEW : TAB_ID_PREPARE;
+        else if (panel == m_monitor || panel == m_printer_view)
+            route = TAB_ID_MONITOR;
+        else if (panel == m_multi_machine)
+            route = TAB_ID_MULTI_DEVICE;
+        else if (panel == m_calibration)
+            route = TAB_ID_CALIBRATION;
+        else if (panel == m_project)
+            route = TAB_ID_PROJECT;
+
+        if (!route.empty())
+            select_tab(route);
+        else
+            BOOST_LOG_TRIVIAL(warning) << "[UiRedesign] ignored legacy panel route while redesign shell is active";
+        return;
+    }
+
     if (panel == m_param_panel) {
         panel = m_plater;
     } else if (dynamic_cast<ParamsPanel*>(panel)) {
@@ -4085,19 +4485,12 @@ void MainFrame::select_tab(wxPanel* panel)
     select_tab(page_name);
 }
 
-//BBS
-void MainFrame::jump_to_monitor(std::string dev_id)
-{
-    if(!m_monitor)
-        return;
-    m_tabpanel->SelectPageByName(TAB_ID_MONITOR);
-    if (!dev_id.empty()) {
-        ((MonitorPanel*)m_monitor)->select_machine(dev_id);
-    }
-}
-
 void MainFrame::jump_to_multipage()
 {
+    if (m_redesign_shell_active) {
+        select_tab(TAB_ID_MULTI_DEVICE);
+        return;
+    }
     if(!m_multi_machine)
         return;
     m_tabpanel->SelectPageByName(TAB_ID_MULTI_DEVICE);
@@ -4108,6 +4501,13 @@ void MainFrame::jump_to_multipage()
 //BBS GUI refactor: remove unused layout new/dlg
 void MainFrame::select_tab(const wxString& id/* = wxString()*/)
 {
+    if (m_redesign_shell_active && m_redesign_shell != nullptr) {
+        const wxString requested = id.empty() ? m_redesign_shell->active_tab_id() : id;
+        if (!m_redesign_shell->navigate_to_tab(requested))
+            BOOST_LOG_TRIVIAL(warning) << "[UiRedesign] failed to navigate to tab " << requested;
+        return;
+    }
+
     //bool tabpanel_was_hidden = false;
 
     // Controls on page are created on active page of active tab now.
@@ -4437,7 +4837,7 @@ void MainFrame::load_printer_url()
     }
 }
 
-bool MainFrame::is_printer_view() const { return m_tabpanel->GetSelectedPageName() == TAB_ID_MONITOR; }
+bool MainFrame::is_printer_view() const { return selected_tab_id() == TAB_ID_MONITOR; }
 
 
 void MainFrame::refresh_plugin_tips()

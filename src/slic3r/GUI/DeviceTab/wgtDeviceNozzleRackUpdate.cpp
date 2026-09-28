@@ -344,7 +344,7 @@ void wgtDeviceNozzleRackHotendUpdate::OnStatusIconClick(wxMouseEvent& event)
 
             if (dlg.ShowModal() == wxID_OK) 
             {
-                wxGetApp().mainframe->m_monitor->jump_to_Upgrade();
+                wxGetApp().mainframe->jump_to_monitor_upgrade();
 
                 wxCommandEvent evt(wxEVT_NOZZLE_JUMP_UPGRADE, GetId());
                 evt.SetEventObject(this);

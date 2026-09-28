@@ -39,6 +39,7 @@ add_executable(${_TEST_NAME}_tests
     test_plugin_sort.cpp
     test_plugin_cloud_metadata.cpp
     test_plugin_audit.cpp
+    test_ui_redesign.cpp
     test_vertex_color_region_editor.cpp
     test_surface_selection.cpp
     test_surface_selection_refinement.cpp

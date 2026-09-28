@@ -351,6 +351,7 @@ struct ModelGenerationPanel::LibraryLoadState
     struct Request {
         uint64_t revision {0};
         bool scan {false};
+        bool for_shell {false};
         boost::filesystem::path root;
         std::vector<GeneratedModelEntry> entries;
         int edge {96};
@@ -360,12 +361,14 @@ struct ModelGenerationPanel::LibraryLoadState
         uint64_t revision;
         std::vector<GeneratedModelEntry> entries;
         bool failed {false};
+        bool for_shell {false};
     };
     // Only plain pixels cross the worker/UI boundary. wxImage reference data
     // is not atomic in every supported wx build.
     struct Thumbnail {
         uint64_t revision;
         size_t index;
+        bool for_shell {false};
         int width {0}, height {0};
         std::vector<unsigned char> rgb, alpha;
     };
@@ -393,7 +396,7 @@ void ModelGenerationPanel::start_library_worker()
                 state->active = request;
             }
             if (request->scan) {
-                LibraryLoadState::Snapshot snapshot {request->revision, {}};
+                LibraryLoadState::Snapshot snapshot {request->revision, {}, false, request->for_shell};
                 try { snapshot.entries = read_library_entries(request->root, request->cancelled); }
                 catch (...) { snapshot.failed = true; }
                 std::lock_guard<std::mutex> lock(state->mutex);
@@ -404,7 +407,7 @@ void ModelGenerationPanel::start_library_worker()
                     wxImage image;
                     try { image = cache.load(entry.ai_image_path, entry.reference_image_path, request->edge, request->cancelled); }
                     catch (...) { /* An unavailable thumbnail never removes an asset. */ }
-                    LibraryLoadState::Thumbnail thumbnail {request->revision, index};
+                    LibraryLoadState::Thumbnail thumbnail {request->revision, index, request->for_shell};
                     if (image.IsOk() && !request->cancelled) {
                         thumbnail.width = image.GetWidth();
                         thumbnail.height = image.GetHeight();
@@ -454,28 +457,38 @@ void ModelGenerationPanel::stop_library_loading()
     m_library_load_state.reset();
 }
 
-void ModelGenerationPanel::load_library_entries()
+void ModelGenerationPanel::load_library_entries(bool for_shell)
 {
     if (m_shutdown) return;
-    if (!m_page_initialized || !m_library_scroller || !m_library_scroller->IsShownOnScreen()) {
+    const bool legacy_visible = m_library_scroller != nullptr && m_library_scroller->IsShownOnScreen();
+    if (!m_page_initialized || (!for_shell && !legacy_visible)) {
         cancel_library_loading();
         return;
     }
     cancel_library_loading();
+    m_library_requested_by_shell = for_shell;
+    if (for_shell) {
+        m_ui_history_loading = true;
+        m_ui_history_error.clear();
+        publish_ui_state();
+    }
     start_library_worker();
     auto request = std::make_shared<LibraryLoadState::Request>();
     request->revision = m_library_revision;
     request->scan = true;
+    request->for_shell = for_shell;
     request->root = ModelGenerationPresentation::generated_models_root();
     {
         std::lock_guard<std::mutex> lock(m_library_load_state->mutex);
         m_library_load_state->pending = std::move(request);
     }
-    m_library_empty->SetLabel(_L("正在读取历史资产…"));
-    m_library_empty->Show();
-    m_library_previous->Disable();
-    m_library_next->Disable();
-    m_library_scroller->GetParent()->Layout();
+    if (legacy_visible) {
+        m_library_empty->SetLabel(_L("正在读取历史资产…"));
+        m_library_empty->Show();
+        m_library_previous->Disable();
+        m_library_next->Disable();
+        m_library_scroller->GetParent()->Layout();
+    }
     m_library_load_state->wake.notify_one();
     m_library_timer.Start(50);
 }
@@ -483,7 +496,8 @@ void ModelGenerationPanel::load_library_entries()
 void ModelGenerationPanel::on_library_timer(wxTimerEvent&)
 {
     if (m_shutdown || !m_library_load_state) return;
-    if (!m_library_scroller->IsShownOnScreen()) {
+    const bool legacy_visible = m_library_scroller != nullptr && m_library_scroller->IsShownOnScreen();
+    if (!legacy_visible && !m_library_requested_by_shell) {
         cancel_library_loading();
         return;
     }
@@ -497,12 +511,20 @@ void ModelGenerationPanel::on_library_timer(wxTimerEvent&)
     }
     if (snapshot && snapshot->revision == m_library_revision) {
         if (snapshot->failed) {
-            m_library_empty->SetLabel(_L("历史资产读取失败，已保留当前列表。请点击刷新重试。"));
-            m_library_empty->Show();
-            m_library_previous->Enable(m_library_page > 0);
-            m_library_next->Enable((m_library_page + 1) * m_library_page_size < m_library_entries.size());
-            for (auto* thumbnail : m_library_thumbnails)
-                static_cast<LibraryThumbnail*>(thumbnail)->finish_pending();
+            if (snapshot->for_shell) {
+                m_ui_history_loading = false;
+                m_ui_history_error = "历史资产读取失败，已保留当前列表。";
+                m_library_requested_by_shell = false;
+                publish_ui_state();
+            }
+            if (legacy_visible) {
+                m_library_empty->SetLabel(_L("历史资产读取失败，已保留当前列表。请点击刷新重试。"));
+                m_library_empty->Show();
+                m_library_previous->Enable(m_library_page > 0);
+                m_library_next->Enable((m_library_page + 1) * m_library_page_size < m_library_entries.size());
+                for (auto* thumbnail : m_library_thumbnails)
+                    static_cast<LibraryThumbnail*>(thumbnail)->finish_pending();
+            }
             m_library_refresh_pending = false;
         } else {
             const size_t anchor_index = m_library_page * m_library_page_size;
@@ -512,7 +534,37 @@ void ModelGenerationPanel::on_library_timer(wxTimerEvent&)
             if (!anchor.empty() && position != snapshot->entries.end())
                 m_library_page = size_t(position - snapshot->entries.begin()) / m_library_page_size;
             m_library_entries = std::move(snapshot->entries);
-            refresh_library();
+            if (snapshot->for_shell) {
+                const auto text_to_utf8 = [](const wxString& value) {
+                    const wxScopedCharBuffer encoded = value.ToUTF8();
+                    return encoded ? std::string(encoded.data(), encoded.length()) : std::string();
+                };
+                m_ui_history_entries.clear();
+                const size_t count = std::min(m_library_page_size, m_library_entries.size());
+                m_ui_history_entries.reserve(count);
+                for (size_t index = 0; index < count; ++index) {
+                    const auto& source = m_library_entries[index];
+                    ModelGenerationUIHistoryEntry target;
+                    target.job_id = source.job_id;
+                    target.title = text_to_utf8(source.title);
+                    target.details = text_to_utf8(source.details);
+                    target.design_only = source.design_only;
+                    m_ui_history_entries.emplace_back(std::move(target));
+                }
+                m_ui_history_error.clear();
+                m_ui_history_thumbnails_pending = m_ui_history_entries.size();
+                if (m_ui_history_entries.empty()) {
+                    m_ui_history_loading = false;
+                    m_library_requested_by_shell = false;
+                    m_library_refresh_pending = false;
+                    publish_ui_state();
+                } else {
+                    publish_ui_state();
+                    request_library_thumbnails(true);
+                }
+            } else if (legacy_visible) {
+                refresh_library();
+            }
         }
     }
     // Applying decoded pixels creates wxImage/wxBitmap objects on the UI
@@ -527,7 +579,26 @@ void ModelGenerationPanel::on_library_timer(wxTimerEvent&)
                 thumbnail);
             continue;
         }
-        if (thumbnail.revision != m_library_revision || thumbnail.index >= m_library_thumbnails.size()) continue;
+        if (thumbnail.revision != m_library_revision)
+            continue;
+        if (thumbnail.for_shell) {
+            if (thumbnail.index >= m_ui_history_entries.size())
+                continue;
+            auto& target = m_ui_history_entries[thumbnail.index];
+            target.thumbnail_width = thumbnail.width;
+            target.thumbnail_height = thumbnail.height;
+            target.thumbnail_rgb = thumbnail.rgb;
+            target.thumbnail_alpha = thumbnail.alpha;
+            if (m_ui_history_thumbnails_pending > 0)
+                --m_ui_history_thumbnails_pending;
+            if (m_ui_history_thumbnails_pending == 0) {
+                m_ui_history_loading = false;
+                m_library_requested_by_shell = false;
+            }
+            publish_ui_state();
+            continue;
+        }
+        if (thumbnail.index >= m_library_thumbnails.size()) continue;
         wxImage image;
         if (!thumbnail.rgb.empty()) {
             if (image.Create(thumbnail.width, thumbnail.height)) {
@@ -542,7 +613,7 @@ void ModelGenerationPanel::on_library_timer(wxTimerEvent&)
     }
     // DPI changes invalidate only the visible page; the worker cache keys
     // include pixel size, and themes repaint via the normal AI appearance path.
-    if (!m_library_refresh_pending &&
+    if (legacy_visible && !m_library_refresh_pending &&
         (m_library_thumbnail_edge != int(FromDIP(96) * GetContentScaleFactor()) ||
          m_library_layout_width != m_library_scroller->GetClientSize().x)) refresh_library();
 
@@ -558,16 +629,19 @@ void ModelGenerationPanel::on_library_timer(wxTimerEvent&)
     if (!loading && !m_library_refresh_pending) m_library_timer.Stop();
 }
 
-void ModelGenerationPanel::request_library_thumbnails()
+void ModelGenerationPanel::request_library_thumbnails(bool for_shell)
 {
     cancel_library_loading();
     start_library_worker();
+    m_library_requested_by_shell = for_shell;
     m_library_refresh_pending = false;
     auto request = std::make_shared<LibraryLoadState::Request>();
     request->revision = m_library_revision;
-    request->edge = m_library_thumbnail_edge;
-    const auto begin = std::min(m_library_page * m_library_page_size, m_library_entries.size());
-    const auto end = std::min(begin + m_library_page_size, m_library_entries.size());
+    request->for_shell = for_shell;
+    request->edge = for_shell ? FromDIP(72) : m_library_thumbnail_edge;
+    const auto begin = for_shell ? size_t(0) : std::min(m_library_page * m_library_page_size, m_library_entries.size());
+    const auto end = for_shell ? std::min(m_ui_history_entries.size(), m_library_entries.size())
+                               : std::min(begin + m_library_page_size, m_library_entries.size());
     request->entries.assign(m_library_entries.begin() + begin, m_library_entries.begin() + end);
     {
         std::lock_guard<std::mutex> lock(m_library_load_state->mutex);
@@ -688,6 +762,7 @@ void ModelGenerationPanel::load_design_library_entry(const std::string& job_id)
                 weak->m_style_recommendation = {};
                 weak->m_history_display_image = wxImage();
                 weak->m_history_display_source.clear();
+                weak->m_ui_model_generation_context = false;
                 weak->set_finishing_workbench(false);
                 weak->restore_job(std::move(status), weak->m_sequence);
                 if (weak->m_preview_book) weak->m_preview_book->SetSelection(0);

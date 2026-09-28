@@ -18,6 +18,7 @@
 #include "GuiColor.hpp"
 #include "MsgDialog.hpp"
 #include "OpenGLManager.hpp"
+#include "Redesign/RedesignMessageDialog.hpp"
 #include "Widgets/Label.hpp"
 #include "libslic3r/Format/OBJ.hpp"
 #include "libslic3r/Geometry.hpp"
@@ -98,6 +99,292 @@ public:
 
 } // namespace
 
+void ModelGenerationPanel::set_ui_state_listener(ModelGenerationUIStateListener listener)
+{
+    m_ui_state_listener = std::move(listener);
+    if (m_ui_state_listener && m_page_initialized)
+        m_ui_state_listener(m_ui_state);
+}
+
+bool ModelGenerationPanel::request_generate_design()
+{
+    if (m_shutdown || !m_page_initialized || m_preprocess == nullptr || !m_preprocess->IsEnabled())
+        return false;
+    wxCommandEvent event;
+    on_preprocess(event);
+    return true;
+}
+
+bool ModelGenerationPanel::request_generate_model()
+{
+    if (m_shutdown || !m_page_initialized || m_generate == nullptr || !m_generate->IsEnabled())
+        return false;
+    wxCommandEvent event;
+    on_generate(event);
+    if (m_journey_model_submitted) {
+        m_ui_model_generation_context = true;
+        publish_ui_state();
+    }
+    return true;
+}
+
+bool ModelGenerationPanel::request_stop()
+{
+    if (m_shutdown || !m_page_initialized || m_stop == nullptr || !m_stop->IsEnabled())
+        return false;
+    wxCommandEvent event;
+    on_stop(event);
+    return true;
+}
+
+bool ModelGenerationPanel::request_retry_service()
+{
+    if (m_shutdown || !m_page_initialized || m_retry_service == nullptr || !m_retry_service->IsEnabled())
+        return false;
+    wxCommandEvent event;
+    on_retry_service(event);
+    return true;
+}
+
+bool ModelGenerationPanel::request_restore_latest()
+{
+    if (m_shutdown || !m_page_initialized || !m_service_available || m_busy || !m_job_id.empty())
+        return false;
+    m_restore_checked = false;
+    restore_latest_job(false);
+    return true;
+}
+
+bool ModelGenerationPanel::request_restart()
+{
+    if (m_shutdown || !m_page_initialized || m_discard == nullptr || !m_discard->IsEnabled())
+        return false;
+    wxCommandEvent event;
+    on_discard(event);
+    return true;
+}
+
+bool ModelGenerationPanel::request_import()
+{
+    if (m_shutdown || !m_page_initialized || m_import == nullptr || !m_import->IsEnabled())
+        return false;
+    wxCommandEvent event;
+    on_import(event);
+    return true;
+}
+
+bool ModelGenerationPanel::request_refresh_history()
+{
+    if (m_shutdown || !m_page_initialized)
+        return false;
+    load_library_entries(true);
+    return true;
+}
+
+bool ModelGenerationPanel::request_open_history(const std::string& job_id)
+{
+    if (m_shutdown || !m_page_initialized || m_busy || job_id.empty())
+        return false;
+    const auto entry = std::find_if(m_library_entries.begin(), m_library_entries.end(),
+        [&job_id](const GeneratedModelEntry& candidate) { return candidate.job_id == job_id; });
+    if (entry == m_library_entries.end()) {
+        m_status->SetLabel(_L("历史记录已变化，请刷新后重试。"));
+        refresh_controls();
+        return false;
+    }
+    load_library_entry(entry->model_path, entry->reference_image_path, entry->ai_image_path,
+                       entry->palette, entry->palette_roles, entry->use_printable_colors,
+                       entry->color_intent_path, entry->color_intent_schema,
+                       entry->color_intent_sha256, entry->job_id, entry->title);
+    return true;
+}
+
+bool ModelGenerationPanel::synchronize_ui_input(const ModelGenerationUIInput& input)
+{
+    if (m_shutdown || !m_page_initialized || m_busy || m_preview_download_in_flight ||
+        m_finishing_running || m_design_history_loading || m_saving_generation_options)
+        return false;
+    if (input.style != "sculpture" && input.style != "realistic" && input.style != "cartoon")
+        return false;
+
+    const wxString prompt = wxString::FromUTF8(input.prompt);
+    if (!input.prompt.empty() && prompt.empty())
+        return false;
+
+    boost::filesystem::path image_path;
+    if (!input.image_path.empty()) {
+        const wxString path = wxString::FromUTF8(input.image_path);
+        if (path.empty())
+            return false;
+        image_path = boost::filesystem::path(path.ToStdWstring());
+        if (!is_supported_image(image_path))
+            return false;
+    }
+
+    if (image_path.empty()) {
+        if (!m_selected_image_path.empty())
+            clear_selected_image();
+    } else if (image_path != m_selected_image_path && !set_selected_image(image_path, false)) {
+        return false;
+    }
+    m_prompt->ChangeValue(prompt);
+    select_style(input.style, true);
+    refresh_controls();
+    return true;
+}
+
+bool ModelGenerationPanel::synchronize_ui_options(const ModelGenerationUIOptions& options)
+{
+    if (m_shutdown || !m_page_initialized || m_busy || m_preview_download_in_flight ||
+        m_finishing_running || m_design_history_loading || m_saving_generation_options)
+        return false;
+    const bool tripo = options.provider == "tripo";
+    const bool hunyuan = options.provider == "hunyuan";
+    const bool valid_face_limit = options.face_limit == 300000 || options.face_limit == 1000000 ||
+                                  (tripo && options.face_limit == 2000000);
+    const bool valid_geometry = options.geometry_quality == "standard" ||
+                                (tripo && options.geometry_quality == "detailed");
+    const bool valid_texture = options.texture_quality == "standard" ||
+                               (tripo && (options.texture_quality == "detailed" ||
+                                          options.texture_quality == "extreme"));
+    const bool valid_format = options.output_format == "glb" || options.output_format == "obj";
+    if ((!tripo && !hunyuan) || !valid_face_limit || !valid_geometry || !valid_texture || !valid_format ||
+        (options.face_limit == 2000000 && options.geometry_quality != "detailed"))
+        return false;
+
+    const auto previous = current_generation_options();
+    if (previous.provider == options.provider && previous.face_limit == options.face_limit &&
+        previous.geometry_quality == options.geometry_quality &&
+        previous.texture_quality == options.texture_quality && previous.output_format == options.output_format) {
+        refresh_controls();
+        return true;
+    }
+    const auto apply = [this](const ModelGenerationUIOptions& value) {
+        m_provider->SetSelection(value.provider == "hunyuan" ? 1 : 0);
+        refresh_provider_options();
+        m_quality->SetSelection(value.face_limit == 300000 ? 0 :
+            value.face_limit == 2000000 && m_quality->GetCount() == 3 ? 2 : 1);
+        m_geometry_quality->SetSelection(
+            m_geometry_quality->GetCount() > 1 && value.geometry_quality == "detailed" ? 1 : 0);
+        m_texture_quality->SetSelection(m_texture_quality->GetCount() == 1 ? 0 :
+            value.texture_quality == "extreme" ? 2 : value.texture_quality == "detailed" ? 1 : 0);
+        m_output_format->SetSelection(value.output_format == "obj" ? 1 : 0);
+    };
+    apply(options);
+    const auto applied = current_generation_options();
+    if (!generation_options_valid() || applied.provider != options.provider ||
+        applied.face_limit != options.face_limit || applied.geometry_quality != options.geometry_quality ||
+        applied.texture_quality != options.texture_quality || applied.output_format != options.output_format) {
+        ModelGenerationUIOptions restore;
+        restore.provider = previous.provider;
+        restore.face_limit = previous.face_limit;
+        restore.geometry_quality = previous.geometry_quality;
+        restore.texture_quality = previous.texture_quality;
+        restore.output_format = previous.output_format;
+        apply(restore);
+        refresh_controls();
+        return false;
+    }
+
+    m_legacy_generation_defaults = false;
+    persist_generation_options();
+    return true;
+}
+
+void ModelGenerationPanel::publish_ui_state()
+{
+    if (m_shutdown || !m_page_initialized)
+        return;
+
+    const auto path_to_utf8 = [](const boost::filesystem::path& path) {
+        if (path.empty())
+            return std::string();
+        const wxScopedCharBuffer encoded = wxString(path.wstring()).ToUTF8();
+        return encoded ? std::string(encoded.data(), encoded.length()) : std::string();
+    };
+    const auto text_to_utf8 = [](const wxString& value) {
+        const wxScopedCharBuffer encoded = value.ToUTF8();
+        return encoded ? std::string(encoded.data(), encoded.length()) : std::string();
+    };
+    const auto wrapped_text_to_utf8 = [&text_to_utf8](wxString value) {
+        value.Replace("\r", "");
+        value.Replace("\n", "");
+        return text_to_utf8(value);
+    };
+
+    ModelGenerationUIState state;
+    state.input.image_path = path_to_utf8(m_selected_image_path);
+    state.input.prompt = text_to_utf8(m_prompt->GetValue());
+    const int style_family = style_selection(current_style());
+    state.input.style = style_family == 0 ? "sculpture" : style_family == 1 ? "realistic" : "cartoon";
+    const auto options = current_generation_options();
+    state.options.provider = options.provider;
+    state.options.face_limit = options.face_limit;
+    state.options.geometry_quality = options.geometry_quality;
+    state.options.texture_quality = options.texture_quality;
+    state.options.output_format = options.output_format;
+    state.service_available = m_service_available;
+    state.service_availability_known = m_service_availability_known;
+    state.busy = m_busy || m_preview_download_in_flight || m_saving_generation_options;
+    state.can_generate_design = m_preprocess->IsEnabled();
+    state.can_generate_model = m_generate->IsEnabled();
+    state.can_stop = m_stop->IsEnabled();
+    state.can_retry_service = m_retry_service->IsEnabled();
+    state.can_restore_latest = m_service_available && !state.busy && m_job_id.empty();
+    state.can_import = m_import->IsEnabled();
+    state.can_restart = m_discard->IsEnabled();
+    state.design_ready = m_style_preview_ready;
+    state.model_ready = m_ready;
+    state.inputs_match_job = m_job_id.empty() || job_inputs_match();
+    state.progress = m_generation_progress->GetValue();
+    state.job_id = m_job_id;
+    state.job_state = m_job_state;
+    state.job_phase = m_job_phase;
+    state.status_text = wrapped_text_to_utf8(m_status->GetLabel());
+    state.summary_text = text_to_utf8(m_result_summary->GetLabel());
+    state.workflow_phase = text_to_utf8(m_workflow_phase->GetLabel());
+    state.workflow_guidance = wrapped_text_to_utf8(m_workflow_steps->GetLabel());
+    state.cost_summary = text_to_utf8(m_generation_cost->GetLabel());
+    state.original_image_path = path_to_utf8(!m_reference_image_path.empty() ? m_reference_image_path : m_selected_image_path);
+    state.design_image_path = path_to_utf8(!m_preview_path.empty() ? m_preview_path : m_raw_preview_path);
+    state.model_path = path_to_utf8(!m_displayed_model_path.empty() ? m_displayed_model_path : m_artifact_path);
+    state.history_entries = m_ui_history_entries;
+    state.history_loading = m_ui_history_loading;
+    state.history_error = m_ui_history_error;
+
+    const bool failed = m_job_state == "failed";
+    const bool stopped = m_job_state == "stopped" || m_job_state == "cancelled";
+    const bool generating_model = m_journey_model_submitted || m_job_phase == "preparing_multiview" ||
+        m_job_phase == "generating" || m_job_phase == "texturing" || m_job_phase == "converting" ||
+        m_job_phase == "downloading_artifact" || m_job_phase == "checking_model" ||
+        m_job_phase == "checking_visual";
+    state.model_generation_context = m_ui_model_generation_context || generating_model || state.model_ready ||
+        m_job_phase == "multiview_retry" || !state.model_path.empty();
+    if (m_ui_stopping)
+        state.stage = ModelGenerationUIStage::Stopping;
+    else if (m_saving_generation_options)
+        state.stage = ModelGenerationUIStage::Saving3DOptions;
+    else if (state.model_ready)
+        state.stage = ModelGenerationUIStage::ModelReady;
+    else if (failed)
+        state.stage = ModelGenerationUIStage::Failed;
+    else if (stopped)
+        state.stage = ModelGenerationUIStage::Stopped;
+    else if (state.busy)
+        state.stage = generating_model ? ModelGenerationUIStage::GeneratingModel : ModelGenerationUIStage::GeneratingDesign;
+    else if (m_awaiting_confirmation && state.design_ready)
+        state.stage = ModelGenerationUIStage::DesignReady;
+    else
+        state.stage = ModelGenerationUIStage::Input;
+
+    if (!state.same_content(m_ui_state)) {
+        state.revision = m_ui_state.revision + 1;
+        m_ui_state = state;
+        if (m_ui_state_listener)
+            m_ui_state_listener(m_ui_state);
+    }
+}
+
 ModelGenerationPanel::ModelGenerationPanel(wxWindow* parent, AI::IModelArtifactConsumer& artifact_consumer,
                                            AI::IPrintablePaletteProvider& palette_provider)
     : wxPanel(parent)
@@ -117,7 +404,7 @@ ModelGenerationPanel::ModelGenerationPanel(wxWindow* parent, AI::IModelArtifactC
             wxGetApp().CallAfter([weak] {
                 if (!weak || weak->m_shutdown || !weak->IsShownOnScreen()) return;
                 if (!weak->m_page_initialized) {
-                    weak->initialize_page();
+                    weak->initialize_page(true);
                     return;
                 }
                 weak->refresh_controls();
@@ -134,14 +421,20 @@ ModelGenerationPanel::ModelGenerationPanel(wxWindow* parent, AI::IModelArtifactC
 
 void ModelGenerationPanel::on_first_visible_idle(wxIdleEvent& event)
 {
-    initialize_page();
+    initialize_page(true);
     event.Skip();
 }
 
-void ModelGenerationPanel::initialize_page()
+void ModelGenerationPanel::initialize_for_shell_host()
 {
-    if (m_shutdown || m_page_initialized || !IsShownOnScreen()) return;
-    BOOST_LOG_TRIVIAL(info) << "AI model generation panel: build visible page";
+    initialize_page(false);
+}
+
+void ModelGenerationPanel::initialize_page(bool require_visible)
+{
+    if (m_shutdown || m_page_initialized || (require_visible && !IsShownOnScreen())) return;
+    BOOST_LOG_TRIVIAL(info) << "AI model generation panel: build page"
+                            << (require_visible ? " for legacy host" : " for redesign shell host");
     build_page();
     m_page_initialized = true;
     Unbind(wxEVT_IDLE, &ModelGenerationPanel::on_first_visible_idle, this);
@@ -153,7 +446,7 @@ void ModelGenerationPanel::initialize_page()
         refresh_controls();
     refresh_ai_appearance(this);
     Layout();
-    BOOST_LOG_TRIVIAL(info) << "AI model generation panel: visible page initialized";
+    BOOST_LOG_TRIVIAL(info) << "AI model generation panel: page initialized";
 }
 
 ModelGenerationPanel::~ModelGenerationPanel()
@@ -192,12 +485,13 @@ void ModelGenerationPanel::show_input_hint(const wxString& message, wxWindow* fo
 {
     m_status->SetLabel(message);
     m_status->GetParent()->Layout();
+    publish_ui_state();
     if (focus != nullptr) focus->SetFocus();
 }
 
-void ModelGenerationPanel::restore_latest_job()
+void ModelGenerationPanel::restore_latest_job(bool require_visible)
 {
-    if (m_shutdown || !m_page_initialized || !IsShownOnScreen() ||
+    if (m_shutdown || !m_page_initialized || (require_visible && !IsShownOnScreen()) ||
         !m_service_available || m_restore_checked || !m_job_id.empty())
         return;
     m_restore_checked = true;
@@ -413,6 +707,7 @@ void ModelGenerationPanel::shutdown()
         return;
     m_shutdown = true;
     if (m_workbench_color_matching) m_workbench_color_matching->shutdown();
+    m_ui_state_listener = {};
     stop_library_loading();
     stop_model_finishing();
     if (m_preview_worker.joinable()) m_preview_worker.join();
@@ -1530,14 +1825,27 @@ void ModelGenerationPanel::on_choose_image(wxCommandEvent&)
         error.ShowModal();
         return;
     }
+    set_selected_image(path, true);
+}
+
+bool ModelGenerationPanel::set_selected_image(const boost::filesystem::path& path, bool request_recommendation)
+{
+    if (m_shutdown || path.empty() || !is_supported_image(path))
+        return false;
+
     if (!m_job_id.empty() && !m_awaiting_palette_confirmation)
         reset(true);
-    m_selected_image_path = std::move(path);
+
+    m_selected_image_path = path;
     m_style_user_selected = false;
     m_style_recommendation_available = false;
+    m_style_recommendation_loading = false;
+    m_style_recommendation = {};
+    ++m_style_recommendation_sequence;
     if (wxGetApp().app_config != nullptr)
         wxGetApp().app_config->set(
             "model_generation_image_directory", m_selected_image_path.parent_path().string());
+
     m_style_preview_ready = false;
     m_preview_download_in_flight = false;
     m_preview_download_cancelled = false;
@@ -1547,16 +1855,23 @@ void ModelGenerationPanel::on_choose_image(wxCommandEvent&)
     m_strict_preview_available = false;
     m_model_views_available = false;
     m_heatmap_available = false;
-    const size_t bytes = boost::filesystem::file_size(m_selected_image_path);
-    m_selected_image->SetLabel(wxString::FromUTF8(m_selected_image_path.filename().string()) +
-                               wxString::Format(" (%llu KB)", static_cast<unsigned long long>((bytes + 1023) / 1024)));
+    boost::system::error_code file_error;
+    const std::uintmax_t bytes = boost::filesystem::file_size(m_selected_image_path, file_error);
+    m_selected_image->SetLabel(
+        wxString::FromUTF8(m_selected_image_path.filename().string()) +
+        (file_error ? wxString() : wxString::Format(" (%llu KB)",
+            static_cast<unsigned long long>((bytes + 1023) / 1024))));
     show_selected_image_preview();
-    request_style_recommendation();
+    if (request_recommendation)
+        request_style_recommendation();
     refresh_controls();
+    return true;
 }
 
-void ModelGenerationPanel::on_clear_image(wxCommandEvent&)
+void ModelGenerationPanel::clear_selected_image()
 {
+    if (m_shutdown)
+        return;
     if (!m_job_id.empty() && !m_awaiting_palette_confirmation)
         reset(true);
     m_selected_image_path.clear();
@@ -1567,6 +1882,11 @@ void ModelGenerationPanel::on_clear_image(wxCommandEvent&)
     m_selected_image->SetLabel(_L("未选择图片"));
     set_preview_empty(_L("请输入描述、选择参考图，或同时提供两者。"));
     refresh_controls();
+}
+
+void ModelGenerationPanel::on_clear_image(wxCommandEvent&)
+{
+    clear_selected_image();
 }
 
 void ModelGenerationPanel::on_palette_source_changed(wxCommandEvent&)
@@ -1774,13 +2094,13 @@ void ModelGenerationPanel::on_preprocess(wxCommandEvent& event)
         }
         if ((current_style() == "realistic" || current_style() == "portrait_sketch") && use_printable_colors())
             message << _L("\n若识别到真人，优先保留脸型、五官和姿态。");
-        MessageDialog confirm(this, message,
-                              regenerating_preview ? _L("重新生成图片预览") : _L("生成风格预览"),
-                              wxYES_NO | wxICON_QUESTION);
+        RedesignMessageDialog confirm(this, message,
+                                      regenerating_preview ? _L("重新生成图片预览") : _L("生成风格预览"),
+                                      wxYES_NO | wxICON_QUESTION);
         if (confirm.ShowModal() != wxID_YES)
             return;
     } else {
-        MessageDialog confirm(this,
+        RedesignMessageDialog confirm(this,
             use_printable_colors()
                 ? _L("要根据文字生成 AI 设计图吗？\n\n会生成适合 3D 建模的高质量设计图，并保留所选配色供后续模型使用。此操作消耗 API 额度。")
                 : _L("要根据文字生成 AI 设计图吗？\n\n会先生成并检查图片，再用于后续 3D 生成；此操作可能消耗 API 额度。"),
@@ -1793,7 +2113,10 @@ void ModelGenerationPanel::on_preprocess(wxCommandEvent& event)
     const bool palette_was_ai_recommended = ai_palette_source && m_palette_recommendation_confirmed;
     if (regenerating_preview)
         m_client.record_journey_event("preview_regenerated", previous_job_id);
-    reset(true);
+    // A completed 3D result must remain available in history when the user
+    // starts a new 2D design from the redesign shell. Reset the active UI
+    // workflow, but do not remove the completed remote job.
+    reset(!m_ready);
     m_client.record_journey_event("preview_requested");
     m_job_palette = palette;
     m_job_palette_color_count = current_palette_color_count();
@@ -1977,7 +2300,11 @@ void ModelGenerationPanel::on_stop(wxCommandEvent&)
         refresh_controls();
         return;
     }
+    m_ui_stopping = true;
     m_status->SetLabel(_L("正在停止本地任务；已提交的远端任务可能仍会继续运行并计费。"));
+    m_result_summary->SetLabel(_L("正在停止"));
+    refresh_controls();
+    publish_ui_state();
     const uint64_t sequence = m_sequence;
     wxWeakRef<ModelGenerationPanel> weak(this);
     m_client.stop(m_job_id,
@@ -2494,7 +2821,9 @@ void ModelGenerationPanel::refresh_controls()
     m_prepared_prompt->Enable(m_service_available && !busy && show_review);
     m_generate->Enable(generation_options_valid() && m_service_available && !busy && m_awaiting_confirmation && !stale_job &&
                        (!image_job || m_style_preview_ready));
-    m_stop->Enable(!m_saving_generation_options && (m_design_history_loading || (busy && !m_job_id.empty() && (local_model_loading || m_preview_download_in_flight || m_service_available))));
+    m_stop->Enable(!m_saving_generation_options && !m_ui_stopping &&
+        (m_design_history_loading || (busy && !m_job_id.empty() &&
+        (local_model_loading || m_preview_download_in_flight || m_service_available))));
     m_retry_service->Enable(!m_service_available && !busy && static_cast<bool>(m_service_retry_handler));
     m_import->Enable((local_artifact || m_service_available) && !busy &&
                      m_ready && !stale_job &&
@@ -2518,7 +2847,7 @@ void ModelGenerationPanel::refresh_controls()
          (m_awaiting_confirmation && image_job));
     m_preprocess->Show(m_service_available && show_preprocess);
     m_generate->Show(m_service_available && !busy && m_awaiting_confirmation);
-    m_stop->Show(busy && !m_saving_generation_options);
+    m_stop->Show(busy && !m_saving_generation_options && !m_ui_stopping);
     m_retry_service->Show(!m_service_available && !busy);
     m_import->Show(!busy && m_ready && !stale_job);
     m_discard->Show(!busy && has_restartable_work);
@@ -2625,6 +2954,7 @@ void ModelGenerationPanel::refresh_controls()
     }
     if (wxGetApp().dark_mode()) refresh_ai_appearance(this, false);
     Layout();
+    publish_ui_state();
 }
 
 void ModelGenerationPanel::apply_model_quality(const AIModelGenerationClient::ModelQuality& quality)
@@ -3561,6 +3891,8 @@ void ModelGenerationPanel::refresh_palette()
 
 void ModelGenerationPanel::reset(bool remove_remote)
 {
+    m_ui_model_generation_context = false;
+    m_ui_stopping = false;
     m_saving_generation_options = false;
     ++m_design_history_sequence;
     m_design_history_loading = false;
@@ -3798,6 +4130,7 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
     const wxImage ai_image = ai_image_path.empty() ? wxImage() : wxImage(ai_image_path.wstring());
     m_history_display_image = load_model_image_display_copy(ai_image_path);
     m_history_display_source = ai_image_path;
+    m_ui_model_generation_context = true;
     nlohmann::json metadata = read_json(library_metadata_path(job_id));
     if (metadata.is_object()) {
         metadata["schema_version"] = std::max(4, metadata.value("schema_version", 0));
