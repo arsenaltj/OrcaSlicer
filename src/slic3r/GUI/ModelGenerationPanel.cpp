@@ -16,6 +16,7 @@
 #include "GuiColor.hpp"
 #include "MsgDialog.hpp"
 #include "OpenGLManager.hpp"
+#include "Redesign/RedesignMessageDialog.hpp"
 #include "Widgets/Label.hpp"
 #include "libslic3r/Format/OBJ.hpp"
 #include "libslic3r/Geometry.hpp"
@@ -2170,13 +2171,13 @@ void ModelGenerationPanel::on_preprocess(wxCommandEvent& event)
         }
         if ((current_style() == "realistic" || current_style() == "portrait_sketch") && use_printable_colors())
             message << _L("\n若识别到真人，优先保留脸型、五官和姿态。");
-        MessageDialog confirm(this, message,
-                              regenerating_preview ? _L("重新生成图片预览") : _L("生成风格预览"),
-                              wxYES_NO | wxICON_QUESTION);
+        RedesignMessageDialog confirm(this, message,
+                                      regenerating_preview ? _L("重新生成图片预览") : _L("生成风格预览"),
+                                      wxYES_NO | wxICON_QUESTION);
         if (confirm.ShowModal() != wxID_YES)
             return;
     } else {
-        MessageDialog confirm(this,
+        RedesignMessageDialog confirm(this,
             use_printable_colors()
                 ? _L("要根据文字生成 AI 设计图吗？\n\n会生成适合 3D 建模的高质量设计图，并保留所选配色供后续模型使用。此操作消耗 API 额度。")
                 : _L("要根据文字生成 AI 设计图吗？\n\n会先生成并检查图片，再用于后续 3D 生成；此操作可能消耗 API 额度。"),
@@ -2288,7 +2289,7 @@ void ModelGenerationPanel::on_generate(wxCommandEvent&)
     if (m_job_generation_options.provider == "tripo" && m_job_generation_options.output_format == "obj")
         message += _L("\n本次还将创建 1 个 OBJ 基础转换任务（已计入估算）。");
     message += _L("\n停止：只停止本地等待；已提交的远端任务可能继续运行并计费。");
-    MessageDialog confirm(this, message, _L("确认生成 3D 模型"), wxYES_NO | wxICON_QUESTION);
+    RedesignMessageDialog confirm(this, message, _L("确认生成 3D 模型"), wxYES_NO | wxICON_QUESTION);
     if (confirm.ShowModal() != wxID_YES)
         return;
     if (image_mode)

@@ -367,10 +367,13 @@ set(SLIC3R_GUI_SOURCES
     GUI/Redesign/RedesignFeatureFlags.hpp
     GUI/Redesign/OrcaBusinessAdapter.cpp
     GUI/Redesign/OrcaBusinessAdapter.hpp
+    GUI/Redesign/RedesignMessageDialog.cpp
+    GUI/Redesign/RedesignMessageDialog.hpp
     GUI/Redesign/RedesignShell.cpp
     GUI/Redesign/RedesignShell.hpp
     GUI/Redesign/RedesignState.cpp
     GUI/Redesign/RedesignState.hpp
+    GUI/Redesign/RedesignTheme.hpp
     GUI/AI/Model/VertexColorRegionEditor.hpp GUI/AI/Model/ModelArtifact.cpp GUI/AI/Model/ModelArtifact.hpp GUI/AI/Model/GlbGeometryEditing.cpp
     GUI/AIModelGenerationClient.cpp
     GUI/AIModelGenerationClient.hpp

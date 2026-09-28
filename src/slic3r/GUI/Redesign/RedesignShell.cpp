@@ -1,4 +1,5 @@
 #include "RedesignShell.hpp"
+#include "RedesignTheme.hpp"
 #include "../MainFrame.hpp"
 #include "../GUI_App.hpp"
 #include "../AI/AIDesktopFeatureHost.hpp"
@@ -47,44 +48,44 @@ namespace {
 
 wxColour background_colour()
 {
-    return wxColour(49, 49, 53);
+    return RedesignTheme::background_colour();
 }
 
 // The guide artwork uses the Figma canvas token (#313136), which is one blue
 // channel lighter than the rest of the redesign shell background.
 wxColour flow_background_colour()
 {
-    return wxColour(49, 49, 54);
+    return RedesignTheme::flow_background_colour();
 }
 
 wxColour panel_colour()
 {
-    return wxColour(35, 35, 38);
+    return RedesignTheme::panel_colour();
 }
 
 wxColour control_colour()
 {
-    return wxColour(25, 25, 27);
+    return RedesignTheme::control_colour();
 }
 
 wxColour primary_text_colour()
 {
-    return wxColour(255, 255, 255, 220);
+    return RedesignTheme::primary_text_colour();
 }
 
 wxColour secondary_text_colour()
 {
-    return wxColour(255, 255, 255, 150);
+    return RedesignTheme::secondary_text_colour();
 }
 
 wxColour accent_colour()
 {
-    return wxColour(255, 194, 39);
+    return RedesignTheme::accent_colour();
 }
 
 wxColour divider_colour()
 {
-    return wxColour(255, 255, 255, 28);
+    return RedesignTheme::divider_colour();
 }
 
 wxString text(const char* value)
@@ -96,24 +97,12 @@ constexpr const char* kRedesignAssetsTabId = "REDESIGN_ASSETS";
 
 void style_text(wxWindow* window, const wxColour& colour, int point_size, bool bold = false)
 {
-    window->SetForegroundColour(colour);
-    const wxString family = wxFontEnumerator::IsValidFacename("HONOR Sans Design") ? "HONOR Sans Design" :
-                            wxFontEnumerator::IsValidFacename("HarmonyOS Sans SC") ? "HarmonyOS Sans SC" :
-                            wxFontEnumerator::IsValidFacename("Microsoft YaHei UI") ? "Microsoft YaHei UI" :
-                            wxString();
-    wxFontInfo font(point_size);
-    font.Family(wxFONTFAMILY_SWISS).Bold(bold);
-    if (!family.empty())
-        font.FaceName(family);
-    window->SetFont(wxFont(font));
+    RedesignTheme::style_text(window, colour, point_size, bold);
 }
 
 void style_medium_text(wxWindow* window, const wxColour& colour, int point_size)
 {
-    style_text(window, colour, point_size);
-    wxFont font = window->GetFont();
-    font.SetWeight(wxFONTWEIGHT_MEDIUM);
-    window->SetFont(font);
+    RedesignTheme::style_medium_text(window, colour, point_size);
 }
 
 wxBitmap scaled_bitmap(const wxImage& image, const wxSize& bounds, bool allow_upscale = false)
