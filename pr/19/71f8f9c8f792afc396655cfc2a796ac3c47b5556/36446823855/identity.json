@@ -1,0 +1,25 @@
+{
+  "pr": 19,
+  "run": 36446823855,
+  "head": "71f8f9c8f792afc396655cfc2a796ac3c47b5556",
+  "base": "19a0b7f05e96c304b0a1e333a61d67643cb2e21b",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "docs: add AI 3D printing UX product documentation",
+  "path": "pr/19/71f8f9c8f792afc396655cfc2a796ac3c47b5556/36446823855",
+  "created": "2026-09-28T15:54:52+00:00",
+  "files": {
+    "index.html": "a8cab7c139ef444309f291834ef9b2699897c813cd679ab49e302534b9333bb2",
+    "details.html": "824066a05fb8509c6e8afae85832d3d5ee7475e8176f59b4c7f15d30c408c791",
+    "report.json": "2a9000237b85baf67ab69f914a73409e0ecac2468b0c2c3b6093d50d7a1784e1",
+    "summary.md": "80a6e43ae01fc6bb7e40e08df1fd15caa5172239b48917f0cbbff06c020a16cc",
+    "archify-receipts.json": "e4968fee01eba030dc40ffcab48b6799a82b8213ebd1d230e57aef5f60079b3d",
+    "l0-context.html": "b40651a699aa26cdcc642dfa7985a7e7ed388cf8cea416c2ba2ea4dc66d73ba8",
+    "l0-context.json": "b32626c8af75db55a5e8f281596c8e8148bf097e31761caeb0267871b2444776",
+    "l1-modules.html": "163a165af5b7b844c9b71f27875019f2f50c69a34739aeb0218224d35b008890",
+    "l1-modules.json": "4a8ee0d92d912af1d85a535e704cc31fe0c23472b19966c58639a549632041e3",
+    "l2-generation.html": "5acbda288166f273c4137cf06a8ac7d2386d95f696589621ca5b3ca4e845c7fc",
+    "l2-generation.json": "e38c2d3e962b690d22bf3a3e61c5fb208d5a8b2b4c2ab96c683e2a85305f7d05",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}
