@@ -50,6 +50,13 @@ wxColour background_colour()
     return wxColour(49, 49, 53);
 }
 
+// The guide artwork uses the Figma canvas token (#313136), which is one blue
+// channel lighter than the rest of the redesign shell background.
+wxColour flow_background_colour()
+{
+    return wxColour(49, 49, 54);
+}
+
 wxColour panel_colour()
 {
     return wxColour(35, 35, 38);
@@ -101,11 +108,21 @@ void style_text(wxWindow* window, const wxColour& colour, int point_size, bool b
     window->SetFont(wxFont(font));
 }
 
-wxBitmap scaled_bitmap(const wxImage& image, const wxSize& bounds)
+void style_medium_text(wxWindow* window, const wxColour& colour, int point_size)
+{
+    style_text(window, colour, point_size);
+    wxFont font = window->GetFont();
+    font.SetWeight(wxFONTWEIGHT_MEDIUM);
+    window->SetFont(font);
+}
+
+wxBitmap scaled_bitmap(const wxImage& image, const wxSize& bounds, bool allow_upscale = false)
 {
     if (!image.IsOk() || bounds.x <= 0 || bounds.y <= 0)
         return wxNullBitmap;
-    const double scale = std::min(1.0, std::min(double(bounds.x) / image.GetWidth(), double(bounds.y) / image.GetHeight()));
+    const double scale = allow_upscale ?
+        std::min(double(bounds.x) / image.GetWidth(), double(bounds.y) / image.GetHeight()) :
+        std::min(1.0, std::min(double(bounds.x) / image.GetWidth(), double(bounds.y) / image.GetHeight()));
     return wxBitmap(image.Scale(std::max(1, int(std::round(image.GetWidth() * scale))),
                                 std::max(1, int(std::round(image.GetHeight() * scale))), wxIMAGE_QUALITY_HIGH));
 }
@@ -141,9 +158,18 @@ wxBitmap rounded_thumbnail(const wxImage& source, const wxSize& bounds, int radi
     return wxBitmap(image);
 }
 
-wxBitmap resource_bitmap(const char* name, const wxSize& bounds)
+wxBitmap resource_bitmap(wxWindow* window, const char* name, const wxSize& logical_bounds)
 {
-    return scaled_bitmap(wxImage(wxString::FromUTF8((Slic3r::resources_dir() + "/images/" + name).c_str())), bounds);
+    if (window == nullptr || logical_bounds.x <= 0 || logical_bounds.y <= 0)
+        return wxNullBitmap;
+
+    const wxSize pixel_bounds(window->FromDIP(logical_bounds.x), window->FromDIP(logical_bounds.y));
+    wxBitmap bitmap = scaled_bitmap(
+        wxImage(wxString::FromUTF8((Slic3r::resources_dir() + "/images/" + name).c_str())),
+        pixel_bounds, true);
+    if (bitmap.IsOk())
+        bitmap.SetScaleFactor(window->GetDPIScaleFactor());
+    return bitmap;
 }
 
 wxImage resource_image(const char* name)
@@ -522,160 +548,302 @@ void StylePicker::dismiss_popup()
 
 class FlowArrow final : public wxPanel {
 public:
-    FlowArrow(wxWindow* parent, int centre_y)
-        : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(parent->FromDIP(72), parent->FromDIP(255)))
-        , m_centre_y(centre_y)
+    explicit FlowArrow(wxWindow* parent)
+        : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(parent->FromDIP(93), parent->FromDIP(259)))
+        , m_bitmap(resource_bitmap(parent, "redesign_flow_arrow_right.png", wxSize(93, 93)))
     {
-        SetMinSize(wxSize(FromDIP(72), FromDIP(255)));
-        SetMaxSize(wxSize(FromDIP(72), FromDIP(255)));
+        SetMinSize(wxSize(FromDIP(93), FromDIP(259)));
+        SetMaxSize(wxSize(FromDIP(93), FromDIP(259)));
         SetBackgroundStyle(wxBG_STYLE_PAINT);
-        SetBackgroundColour(background_colour());
+        SetBackgroundColour(flow_background_colour());
         Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
             wxAutoBufferedPaintDC dc(this);
-            dc.SetBackground(wxBrush(background_colour()));
+            dc.SetBackground(wxBrush(flow_background_colour()));
             dc.Clear();
-            const wxSize size = GetClientSize();
-            const double y = FromDIP(m_centre_y);
-            const int left = FromDIP(5);
-            const int right = size.x - FromDIP(5);
-            const int head = FromDIP(22);
-            const int shaft_end = right - head;
-
-            // Layered strokes approximate the Figma glow and tapered trail without a native image asset.
-            dc.SetPen(wxPen(wxColour(73, 143, 216), FromDIP(10)));
-            dc.DrawLine(left, static_cast<int>(y), shaft_end, static_cast<int>(y));
-            dc.SetPen(wxPen(wxColour(129, 207, 255), FromDIP(5)));
-            dc.DrawLine(left, static_cast<int>(y), shaft_end, static_cast<int>(y));
-
-            wxPoint tail[] = {
-                { left, static_cast<int>(y - FromDIP(12)) },
-                { left + FromDIP(25), static_cast<int>(y - FromDIP(5)) },
-                { shaft_end, static_cast<int>(y - FromDIP(5)) },
-                { shaft_end, static_cast<int>(y + FromDIP(5)) },
-                { left + FromDIP(25), static_cast<int>(y + FromDIP(5)) },
-                { left, static_cast<int>(y + FromDIP(12)) }
-            };
-            dc.SetPen(*wxTRANSPARENT_PEN);
-            dc.SetBrush(wxBrush(wxColour(91, 177, 242)));
-            dc.DrawPolygon(static_cast<int>(std::size(tail)), tail);
-
-            wxPoint arrow[] = {
-                { shaft_end - FromDIP(2), static_cast<int>(y - FromDIP(6)) },
-                { shaft_end - FromDIP(2), static_cast<int>(y - FromDIP(15)) },
-                { right, static_cast<int>(y) },
-                { shaft_end - FromDIP(2), static_cast<int>(y + FromDIP(15)) },
-                { shaft_end - FromDIP(2), static_cast<int>(y + FromDIP(6)) },
-                { shaft_end - FromDIP(12), static_cast<int>(y) }
-            };
-            dc.SetPen(wxPen(wxColour(99, 184, 245), FromDIP(2)));
-            dc.SetBrush(wxBrush(wxColour(116, 198, 255)));
-            dc.DrawPolygon(static_cast<int>(std::size(arrow)), arrow);
+            if (m_bitmap.IsOk())
+                dc.DrawBitmap(m_bitmap, (GetClientSize().x - m_bitmap.GetLogicalWidth()) / 2,
+                              FromDIP(56), true);
         });
     }
 
 private:
-    int m_centre_y;
+    wxBitmap m_bitmap;
 };
 
 class FlowPromptCard final : public wxPanel {
 public:
     explicit FlowPromptCard(wxWindow* parent)
-        : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(parent->FromDIP(250), parent->FromDIP(160)))
+        : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(parent->FromDIP(276), parent->FromDIP(160)))
     {
-        SetMinSize(wxSize(FromDIP(250), FromDIP(160)));
+        SetMinSize(wxSize(FromDIP(276), FromDIP(160)));
         SetMaxSize(wxSize(FromDIP(276), FromDIP(160)));
         SetBackgroundStyle(wxBG_STYLE_PAINT);
-        SetBackgroundColour(wxColour(38, 38, 41));
+        SetBackgroundColour(wxColour(32, 32, 35));
 
         auto* content = new wxBoxSizer(wxVERTICAL);
         SetSizer(content);
-        auto* sample = label(this, "生成一只可爱的小怪兽手办。", 9);
-        style_text(sample, secondary_text_colour(), 9);
-        content->Add(sample, 0, wxALL, FromDIP(10));
+        auto* sample = label(this, "生成一只可爱的小怪兽手办。", 11);
+        style_text(sample, wxColour(166, 166, 167), 11);
+        content->Add(sample, 0, wxALL, FromDIP(12));
         content->AddStretchSpacer(1);
-        auto* count = label(this, "13/800", 9);
-        style_text(count, secondary_text_colour(), 9);
-        content->Add(count, 0, wxALIGN_RIGHT | wxRIGHT | wxBOTTOM, FromDIP(10));
+        auto* count = label(this, "13/800", 11);
+        style_text(count, wxColour(166, 166, 167), 11);
+        content->Add(count, 0, wxALIGN_RIGHT | wxRIGHT | wxBOTTOM, FromDIP(12));
 
         Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
             wxAutoBufferedPaintDC dc(this);
-            dc.SetBackground(wxBrush(wxColour(38, 38, 41)));
+            dc.SetBackground(wxBrush(wxColour(32, 32, 35)));
             dc.Clear();
-            dc.SetPen(wxPen(wxColour(92, 92, 101), FromDIP(1), wxPENSTYLE_SHORT_DASH));
+            dc.SetPen(wxPen(wxColour(98, 98, 101), FromDIP(1), wxPENSTYLE_SHORT_DASH));
             dc.SetBrush(*wxTRANSPARENT_BRUSH);
             const wxSize size = GetClientSize();
-            dc.DrawRoundedRectangle(0, 0, size.x - 1, size.y - 1, FromDIP(8));
+            dc.DrawRoundedRectangle(0, 0, size.x - 1, size.y - 1, FromDIP(12));
         });
     }
 };
 
 class FlowCardImage final : public wxPanel {
 public:
-    FlowCardImage(wxWindow* parent, wxImage image, const wxSize& size)
-        : wxPanel(parent, wxID_ANY, wxDefaultPosition, size)
-        , m_image(std::move(image))
+    FlowCardImage(wxWindow* parent, wxImage image, double rotation_degrees = 0.0,
+                  double scale_x = 1.0, double scale_y = 1.0)
+        : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(parent->FromDIP(139), parent->FromDIP(177)))
+        , m_image(std::move(image)), m_rotation_degrees(rotation_degrees)
+        , m_scale_x(scale_x), m_scale_y(scale_y)
     {
+        const wxSize size(FromDIP(139), FromDIP(177));
         SetMinSize(size);
         SetMaxSize(size);
         SetBackgroundStyle(wxBG_STYLE_PAINT);
-        SetBackgroundColour(background_colour());
+        SetBackgroundColour(flow_background_colour());
         Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
             wxAutoBufferedPaintDC dc(this);
-            dc.SetBackground(wxBrush(background_colour()));
+            dc.SetBackground(wxBrush(flow_background_colour()));
             dc.Clear();
             const wxSize size = GetClientSize();
             if (!m_image.IsOk() || size.x <= 0 || size.y <= 0)
                 return;
-            dc.SetBrush(wxBrush(wxColour(175, 218, 247)));
-            dc.SetPen(*wxTRANSPARENT_PEN);
-            dc.DrawRoundedRectangle(0, 0, size.x, size.y, FromDIP(18));
+            const wxSize bitmap_size(
+                std::max(1, static_cast<int>(std::round(size.x * m_scale_x))),
+                std::max(1, static_cast<int>(std::round(size.y * m_scale_y))));
+            const wxImage scaled = m_image.Scale(bitmap_size.x, bitmap_size.y, wxIMAGE_QUALITY_HIGH);
+            const wxBitmap bitmap(scaled);
+            if (std::abs(m_rotation_degrees) < 0.001) {
+                dc.DrawBitmap(bitmap, 0, 0, true);
+                return;
+            }
 
-            const int image_height = std::min(size.y - FromDIP(12), FromDIP(150));
-            const double scale = double(image_height) / m_image.GetHeight();
-            const int image_width = std::max(1, int(std::round(m_image.GetWidth() * scale)));
-            const wxImage scaled = m_image.Scale(image_width, image_height, wxIMAGE_QUALITY_HIGH);
-            dc.DrawBitmap(wxBitmap(scaled), (size.x - image_width) / 2, size.y - image_height - FromDIP(4), true);
+            auto gc = std::unique_ptr<wxGraphicsContext>(wxGraphicsContext::Create(dc));
+            if (!gc) {
+                dc.DrawBitmap(bitmap, 0, 0, true);
+                return;
+            }
+            gc->Translate(size.x / 2.0, size.y / 2.0);
+            gc->Rotate(m_rotation_degrees * M_PI / 180.0);
+            gc->DrawBitmap(bitmap, -bitmap_size.x / 2.0, -bitmap_size.y / 2.0,
+                           bitmap_size.x, bitmap_size.y);
         });
     }
 
 private:
     wxImage m_image;
+    double m_rotation_degrees { 0.0 };
+    double m_scale_x { 1.0 };
+    double m_scale_y { 1.0 };
 };
 
 class FlowCompositeImage final : public wxPanel {
 public:
-    FlowCompositeImage(wxWindow* parent, wxImage rear, wxImage front, const wxSize& size)
-        : wxPanel(parent, wxID_ANY, wxDefaultPosition, size)
+    FlowCompositeImage(wxWindow* parent, wxImage rear, wxImage front)
+        : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(parent->FromDIP(208), parent->FromDIP(167)))
         , m_rear(std::move(rear)), m_front(std::move(front))
     {
+        const wxSize size(FromDIP(208), FromDIP(167));
         SetMinSize(size);
         SetMaxSize(size);
         SetBackgroundStyle(wxBG_STYLE_PAINT);
-        SetBackgroundColour(background_colour());
+        SetBackgroundColour(flow_background_colour());
         Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
             wxAutoBufferedPaintDC dc(this);
-            dc.SetBackground(wxBrush(background_colour()));
+            dc.SetBackground(wxBrush(flow_background_colour()));
             dc.Clear();
             const wxSize size = GetClientSize();
             if (!m_rear.IsOk() || !m_front.IsOk() || size.x <= 0 || size.y <= 0)
                 return;
 
-            const int image_height = std::min(size.y - FromDIP(8), FromDIP(162));
-            const double scale = double(image_height) / m_rear.GetHeight();
-            const int image_width = std::max(1, int(std::round(m_rear.GetWidth() * scale)));
-            const wxImage rear = m_rear.Scale(image_width, image_height, wxIMAGE_QUALITY_HIGH);
-            const wxImage front = m_front.Scale(image_width, image_height, wxIMAGE_QUALITY_HIGH);
-            const int overlap = FromDIP(66);
-            const int x_rear = 0;
-            const int x_front = std::max(0, image_width - overlap);
-            const int y = size.y - image_height;
-            dc.DrawBitmap(wxBitmap(rear), x_rear, y, true);
-            dc.DrawBitmap(wxBitmap(front), x_front, y, true);
+            const wxImage rear = m_rear.Scale(FromDIP(126), FromDIP(145), wxIMAGE_QUALITY_HIGH);
+            const wxImage front = m_front.Scale(FromDIP(146), FromDIP(167), wxIMAGE_QUALITY_HIGH);
+            dc.DrawBitmap(wxBitmap(rear), 0, FromDIP(11), true);
+            dc.DrawBitmap(wxBitmap(front), FromDIP(62), 0, true);
         });
     }
 
 private:
     wxImage m_rear, m_front;
+};
+
+// The guide is authored at the 1920px Figma canvas size.  Paint the complete
+// composition in one responsive surface so the shell can shrink it as a unit
+// when the main window is narrower than that reference canvas.
+class FlowGuideCanvas final : public wxPanel {
+public:
+    explicit FlowGuideCanvas(wxWindow* parent)
+        : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(-1, parent->FromDIP(259)))
+        , m_design(resource_image("redesign_flow_design.png"))
+        , m_model_rear(resource_image("redesign_flow_model_mono.png"))
+        , m_model_front(resource_image("redesign_flow_model_blue.png"))
+        , m_arrow(resource_image("redesign_flow_arrow_right.png"))
+    {
+        SetMinSize(wxSize(-1, FromDIP(259)));
+        SetBackgroundStyle(wxBG_STYLE_PAINT);
+        SetBackgroundColour(flow_background_colour());
+        Bind(wxEVT_PAINT, [this](wxPaintEvent&) { paint(); });
+    }
+
+private:
+    static wxFont flow_font(int point_size, bool medium, double scale = 1.0)
+    {
+        const wxString family = wxFontEnumerator::IsValidFacename("HONOR Sans Design") ? "HONOR Sans Design" :
+                                wxFontEnumerator::IsValidFacename("HarmonyOS Sans SC") ? "HarmonyOS Sans SC" :
+                                wxFontEnumerator::IsValidFacename("Microsoft YaHei UI") ? "Microsoft YaHei UI" :
+                                wxString();
+        wxFontInfo info(std::max(1, static_cast<int>(std::round(point_size * scale))));
+        info.Family(wxFONTFAMILY_SWISS);
+        info.Weight(medium ? wxFONTWEIGHT_MEDIUM : wxFONTWEIGHT_NORMAL);
+        if (!family.empty())
+            info.FaceName(family);
+        return wxFont(info);
+    }
+
+    static void draw_centered_text(wxDC& dc, const wxString& value, const wxFont& font,
+                                   const wxColour& colour, int centre_x, int top_y)
+    {
+        dc.SetFont(font);
+        dc.SetTextForeground(colour);
+        wxCoord text_width = 0, text_height = 0;
+        dc.GetTextExtent(value, &text_width, &text_height);
+        const int x = centre_x - static_cast<int>(text_width) / 2;
+        dc.DrawText(value, x, top_y);
+    }
+
+    static wxBitmap scaled_bitmap(const wxImage& image, int width, int height)
+    {
+        if (!image.IsOk() || width <= 0 || height <= 0)
+            return wxNullBitmap;
+        return wxBitmap(image.Scale(width, height, wxIMAGE_QUALITY_HIGH));
+    }
+
+    void draw_card(wxDC& dc, int x, int y, int width, int height, double scale)
+    {
+        dc.SetPen(wxPen(wxColour(98, 98, 101), std::max(1, FromDIP(scale)), wxPENSTYLE_SHORT_DASH));
+        dc.SetBrush(wxBrush(wxColour(32, 32, 35)));
+        dc.DrawRoundedRectangle(x, y, width, height, FromDIP(12 * scale));
+        dc.SetFont(flow_font(11, false, scale));
+        dc.SetTextForeground(wxColour(166, 166, 167));
+        dc.DrawText(text("生成一只可爱的小怪兽手办。"), x + FromDIP(12 * scale),
+                    y + FromDIP(12 * scale));
+        wxCoord count_width = 0, count_height = 0;
+        dc.GetTextExtent(text("13/800"), &count_width, &count_height);
+        dc.DrawText(text("13/800"), x + width - FromDIP(12 * scale) - count_width,
+                    y + height - FromDIP(12 * scale) - count_height);
+    }
+
+    void draw_rotated_design(wxAutoBufferedPaintDC& dc, int x, int y, int width, int height)
+    {
+        // The exported PNG contains a 264x344 opaque card inside transparent
+        // shadow padding. Match that card to Figma's rotated 132x172 inner
+        // frame so its 2.3-degree bounds fit the existing 139x177 slot.
+        constexpr double source_width = 328.0;
+        constexpr double source_height = 392.0;
+        constexpr double card_x = 0.0;
+        constexpr double card_y = 20.0;
+        constexpr double card_width = 264.0;
+        constexpr double card_height = 344.0;
+        constexpr double figma_slot_width = 138.736;
+        constexpr double figma_slot_height = 176.896;
+        constexpr double figma_card_width = 131.95;
+        constexpr double figma_card_height = 171.739;
+        const double target_card_width = width * figma_card_width / figma_slot_width;
+        const double target_card_height = height * figma_card_height / figma_slot_height;
+        const int image_width = std::max(1, static_cast<int>(std::floor(
+            target_card_width * source_width / card_width)));
+        const int image_height = std::max(1, static_cast<int>(std::floor(
+            target_card_height * source_height / card_height)));
+        const wxBitmap bitmap = scaled_bitmap(m_design, image_width, image_height);
+        if (!bitmap.IsOk())
+            return;
+        const double card_centre_x = (card_x + card_width / 2.0) * image_width / source_width;
+        const double card_centre_y = (card_y + card_height / 2.0) * image_height / source_height;
+        dc.SetClippingRegion(x, y, width, height);
+        auto gc = std::unique_ptr<wxGraphicsContext>(wxGraphicsContext::Create(dc));
+        if (gc) {
+            gc->Translate(x + width / 2.0, y + height / 2.0);
+            gc->Rotate(2.3 * M_PI / 180.0);
+            gc->DrawBitmap(bitmap, -card_centre_x, -card_centre_y, image_width, image_height);
+        }
+        dc.DestroyClippingRegion();
+    }
+
+    void paint()
+    {
+        wxAutoBufferedPaintDC dc(this);
+        dc.SetBackground(wxBrush(flow_background_colour()));
+        dc.Clear();
+        const wxSize client = GetClientSize();
+        if (client.x <= 0 || client.y <= 0)
+            return;
+
+        // The Figma pane containing this surface is 1427px wide.  Scale the
+        // 1067px guide composition against that pane, then center it locally.
+        const double scale = std::min(1.0, double(client.x) / double(FromDIP(1427)));
+        const int flow_width = FromDIP(1067 * scale);
+        const int flow_height = FromDIP(259 * scale);
+        const int left = (client.x - flow_width) / 2;
+        const int top = std::max(0, (client.y - flow_height) / 2);
+        const auto dip = [this, scale](double value) { return FromDIP(value * scale); };
+
+        const int prompt_x = left + dip(11), prompt_y = top + dip(7);
+        const int prompt_w = dip(276), prompt_h = dip(160);
+        draw_card(dc, prompt_x, prompt_y, prompt_w, prompt_h, scale);
+
+        const int arrow_size = dip(93);
+        const wxBitmap arrow = scaled_bitmap(m_arrow, arrow_size, arrow_size);
+        if (arrow.IsOk()) {
+            dc.DrawBitmap(arrow, left + dip(328), top + dip(56), true);
+            dc.DrawBitmap(arrow, left + dip(697), top + dip(56), true);
+        }
+
+        const int design_x = left + dip(493), design_y = top;
+        draw_rotated_design(dc, design_x, design_y, dip(139), dip(177));
+
+        const int model_x = left + dip(840), model_y = top;
+        const wxBitmap rear = scaled_bitmap(m_model_rear, dip(126), dip(145));
+        const wxBitmap front = scaled_bitmap(m_model_front, dip(146), dip(167));
+        if (rear.IsOk()) dc.DrawBitmap(rear, model_x, model_y + dip(11), true);
+        if (front.IsOk()) dc.DrawBitmap(front, model_x + dip(62), model_y, true);
+
+        const wxColour heading_colour(226, 226, 227);
+        const wxColour subtitle_colour(162, 162, 164);
+        const wxFont heading_font = flow_font(14, true, scale);
+        const wxFont subtitle_font = flow_font(12, false, scale);
+        draw_centered_text(dc, text("上传图片或输入提示词生成图片"), heading_font, heading_colour,
+                           left + dip(150), top + dip(207));
+        draw_centered_text(dc, text("生成图片"), heading_font, heading_colour,
+                           left + dip(563), top + dip(207));
+        draw_centered_text(dc, text("转为3D"), heading_font, heading_colour,
+                           left + dip(939), top + dip(207));
+        constexpr double subtitle_top = 234.0;
+        draw_centered_text(dc, text("描述想创作的图片"), subtitle_font, subtitle_colour,
+                           left + dip(150), top + dip(subtitle_top));
+        draw_centered_text(dc, text("生成图片并完善"), subtitle_font, subtitle_colour,
+                           left + dip(563), top + dip(subtitle_top));
+        draw_centered_text(dc, text("获得可打印的专属 3D模型"), subtitle_font, subtitle_colour,
+                           left + dip(939), top + dip(subtitle_top));
+    }
+
+    wxImage m_design;
+    wxImage m_model_rear;
+    wxImage m_model_front;
+    wxImage m_arrow;
 };
 
 class RoundedActionButton final : public wxPanel {
@@ -987,7 +1155,7 @@ void RedesignShell::build_image_workspace()
     workspace->Add(navigation, 0, wxEXPAND | wxRIGHT, FromDIP(12));
 
     auto* logo = new wxStaticBitmap(navigation, wxID_ANY,
-                                    resource_bitmap("redesign_logo.png", wxSize(FromDIP(48), FromDIP(48))));
+                                    resource_bitmap(navigation, "redesign_logo.png", wxSize(48, 48)));
     navigation_sizer->Add(logo, 0, wxALIGN_CENTER | wxTOP, FromDIP(16));
     navigation_sizer->AddSpacer(FromDIP(78));
 
@@ -1008,7 +1176,7 @@ void RedesignShell::build_image_workspace()
         m_nav_labels[index] = new wxStaticText(item, wxID_ANY, text(navigation_items[index]),
                                                wxDefaultPosition, wxDefaultSize, wxALIGN_CENTER);
         auto* item_icon = new wxStaticBitmap(item, wxID_ANY,
-                                             resource_bitmap(navigation_icons[index], wxSize(FromDIP(24), FromDIP(24))));
+                                             resource_bitmap(item, navigation_icons[index], wxSize(24, 24)));
         item_sizer->Add(item_icon, 0, wxALIGN_CENTER | wxTOP, FromDIP(12));
         style_text(m_nav_labels[index], secondary_text_colour(), 9);
         item_sizer->Add(m_nav_labels[index], 0, wxALIGN_CENTER | wxTOP, FromDIP(4));
@@ -1024,10 +1192,18 @@ void RedesignShell::build_image_workspace()
     navigation_sizer->AddStretchSpacer(1);
     const std::array<const char*, 4> footer_icons = {"redesign_avatar.png", "redesign_nav_notification.png",
                                                       "redesign_nav_settings.png", "redesign_nav_help.png"};
+    const std::array<wxSize, 4> footer_sizes = {
+        wxSize(32, 32),
+        wxSize(29, 29),
+        wxSize(31, 31),
+        wxSize(31, 31)};
     for (std::size_t index = 0; index < footer_icons.size(); ++index) {
         auto* item = new wxStaticBitmap(navigation, wxID_ANY,
-                                        resource_bitmap(footer_icons[index], wxSize(FromDIP(32), FromDIP(32))));
-        navigation_sizer->Add(item, 0, wxALIGN_CENTER | wxBOTTOM, FromDIP(index == 3 ? 16 : 38));
+                                        resource_bitmap(navigation, footer_icons[index], footer_sizes[index]));
+        // RoundedPanel paints its face separately from its inherited surrounding colour.
+        // Match the child background to the face so transparent icon assets do not show a square.
+        item->SetBackgroundColour(wxColour(33, 33, 35));
+        navigation_sizer->Add(item, 0, wxALIGN_CENTER | wxBOTTOM, FromDIP(index == 3 ? 21 : 40));
     }
 
     m_image_settings_panel = new RoundedPanel(this, wxDefaultSize, panel_colour(), background_colour(), 12);
@@ -1192,79 +1368,15 @@ void RedesignShell::build_image_workspace()
     content_host_sizer->Add(m_image_page, 1, wxEXPAND);
 
     m_guide_panel = new wxPanel(m_image_page, wxID_ANY);
-    m_guide_panel->SetBackgroundColour(background_colour());
+    m_guide_panel->SetBackgroundColour(flow_background_colour());
     auto* guide_sizer = new wxBoxSizer(wxVERTICAL);
     m_guide_panel->SetSizer(guide_sizer);
-    auto* title = label(m_guide_panel, "上传图片创建你的专属模型吧！", 24);
+    auto* title = label(m_guide_panel, "上传图片创建你的专属模型吧！", 28);
     guide_sizer->AddStretchSpacer(1);
     guide_sizer->Add(title, 0, wxALIGN_CENTER | wxBOTTOM, FromDIP(76));
 
-    auto* flow = new wxBoxSizer(wxHORIZONTAL);
-    auto add_step = [this, flow](const char* image_name, const char* heading_text, const char* subtitle_text,
-                                 int step_width, int picture_width, const char* overlay_image_name) {
-        constexpr int visual_height = 195;
-        constexpr int heading_height = 36;
-        constexpr int subtitle_height = 24;
-        auto* step_panel = new wxPanel(m_guide_panel, wxID_ANY, wxDefaultPosition,
-                                       wxSize(FromDIP(step_width), FromDIP(visual_height + heading_height + subtitle_height)));
-        const int minimum_width = image_name != nullptr ? 148 : 250;
-        step_panel->SetMinSize(wxSize(FromDIP(minimum_width),
-                                      FromDIP(visual_height + heading_height + subtitle_height)));
-        step_panel->SetMaxSize(wxSize(FromDIP(step_width),
-                                      FromDIP(visual_height + heading_height + subtitle_height)));
-        step_panel->SetBackgroundColour(background_colour());
-        auto* step = new wxBoxSizer(wxVERTICAL);
-        step_panel->SetSizer(step);
-
-        auto* visual = new wxPanel(step_panel, wxID_ANY, wxDefaultPosition,
-                                   wxSize(FromDIP(step_width), FromDIP(visual_height)));
-        visual->SetMinSize(wxSize(FromDIP(step_width), FromDIP(visual_height)));
-        visual->SetMaxSize(wxSize(FromDIP(step_width), FromDIP(visual_height)));
-        visual->SetBackgroundColour(background_colour());
-        auto* visual_sizer = new wxBoxSizer(wxVERTICAL);
-        visual->SetSizer(visual_sizer);
-        visual_sizer->AddStretchSpacer(1);
-        if (image_name != nullptr) {
-            wxWindow* picture = nullptr;
-            if (overlay_image_name != nullptr) {
-                picture = new FlowCompositeImage(visual, resource_image(image_name), resource_image(overlay_image_name),
-                                                 wxSize(FromDIP(216), FromDIP(177)));
-            } else {
-                picture = new FlowCardImage(visual, resource_image(image_name),
-                                            wxSize(FromDIP(138), FromDIP(177)));
-            }
-            visual_sizer->Add(picture, 0, wxALIGN_CENTER);
-        } else {
-            visual_sizer->Add(new FlowPromptCard(visual), 0, wxALIGN_CENTER);
-        }
-        visual_sizer->AddStretchSpacer(1);
-        step->Add(visual, 0, wxEXPAND);
-
-        auto* heading = new wxStaticText(step_panel, wxID_ANY, text(heading_text), wxDefaultPosition,
-                                         wxDefaultSize, wxALIGN_CENTER_HORIZONTAL);
-        style_text(heading, primary_text_colour(), 11);
-        heading->Wrap(FromDIP(picture_width));
-        heading->SetMinSize(wxSize(FromDIP(picture_width), FromDIP(heading_height)));
-        heading->SetMaxSize(wxSize(FromDIP(picture_width), FromDIP(heading_height)));
-        step->Add(heading, 0, wxALIGN_CENTER);
-        auto* subtitle = new wxStaticText(step_panel, wxID_ANY, text(subtitle_text), wxDefaultPosition,
-                                          wxDefaultSize, wxALIGN_CENTER_HORIZONTAL);
-        style_text(subtitle, secondary_text_colour(), 9);
-        subtitle->Wrap(FromDIP(picture_width));
-        subtitle->SetMinSize(wxSize(FromDIP(picture_width), FromDIP(subtitle_height)));
-        subtitle->SetMaxSize(wxSize(FromDIP(picture_width), FromDIP(subtitle_height)));
-        step->Add(subtitle, 0, wxALIGN_CENTER);
-        flow->Add(step_panel, 1, wxEXPAND);
-    };
-    auto add_arrow = [this, flow] {
-        flow->Add(new FlowArrow(m_guide_panel, 98), 0, wxALIGN_CENTER | wxLEFT | wxRIGHT, FromDIP(8));
-    };
-    add_step(nullptr, "上传图片或输入提示词生成图片", "描述想创作的图片", 276, 250, nullptr);
-    add_arrow();
-    add_step("redesign_model_blue.png", "生成图片", "生成图片并完善", 256, 138, nullptr);
-    add_arrow();
-    add_step("redesign_model_mono.png", "转为 3D", "获得可打印的专属 3D 模型", 256, 216, "redesign_model_blue.png");
-    guide_sizer->Add(flow, 0, wxALIGN_CENTER);
+    auto* flow_canvas = new FlowGuideCanvas(m_guide_panel);
+    guide_sizer->Add(flow_canvas, 0, wxEXPAND);
     guide_sizer->AddStretchSpacer(1);
     content_sizer->Add(m_guide_panel, 1, wxEXPAND);
 
