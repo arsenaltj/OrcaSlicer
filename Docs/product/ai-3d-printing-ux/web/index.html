@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="OrcaSlicer AI 3D Printing UX 产品文档与架构入口">
+  <title>OrcaSlicer AI 3D Printing UX · 文档入口</title>
+  <style>
+    :root{color-scheme:dark;--bg:#101619;--panel:#1c282c;--line:#43545a;--text:#f3f3e9;--muted:#aab9b5;--accent:#f6c746}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.7 "Microsoft YaHei","PingFang SC",sans-serif}
+    a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline;text-underline-offset:4px}a:focus-visible{outline:3px solid var(--accent);outline-offset:4px}
+    .shell{max-width:1160px;margin:auto;padding:28px clamp(18px,4vw,48px) 70px}.top{display:flex;align-items:center;justify-content:space-between;gap:20px;border-bottom:1px solid var(--line);padding-bottom:20px}.brand{font-weight:700;letter-spacing:.1em;color:var(--text)}.brand span{color:var(--accent)}
+    .eyebrow{font:700 12px Consolas,monospace;letter-spacing:.18em;color:var(--accent);margin:72px 0 14px}h1{font-size:clamp(35px,6vw,65px);line-height:1.12;letter-spacing:-.04em;max-width:900px;margin:0}h1 em{font-style:normal;color:var(--accent)}.lead{max-width:740px;color:var(--muted);font-size:19px;margin:24px 0 52px}.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.card{display:block;border:1px solid var(--line);background:var(--panel);padding:24px;min-height:154px;color:var(--text)}.card:hover{border-color:var(--accent);text-decoration:none}.card strong{display:block;font-size:21px;margin-bottom:12px}.card span{color:var(--muted);font-size:14px}h2{margin:68px 0 20px;font-size:29px}figure{margin:20px 0 32px;border:1px solid var(--line);background:#151e22;padding:12px}figure img{width:100%;height:auto;display:block}figcaption{color:var(--muted);font-size:14px;padding:8px 10px}footer{border-top:1px solid var(--line);padding-top:20px;color:var(--muted);font-size:13px;margin-top:70px}@media(max-width:720px){.grid{grid-template-columns:1fr}.card{min-height:0}figure{padding:3px}}
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header class="top"><a class="brand" href="../README.md">⬡ <span>ORCA</span> / PRODUCT DOCS</a><a href="https://arsenaltj.github.io/creative-hub/projects/orca-prd/">展示页 ↗</a></header>
+    <main>
+      <p class="eyebrow">AI 3D PRINTING UX / DOCUMENTATION</p>
+      <h1>从一个想法，<br>到一件<em>真实存在</em>的作品。</h1>
+      <p class="lead">产品规格、用户旅程与工程边界的统一入口。图示表达目标流程；当前代码能力与未验证项请以 PRD 和需求证据为准。</p>
+      <div class="grid" aria-label="文档入口">
+        <a class="card" href="../PRD.md"><strong>01 / PRD ↗</strong><span>定位、功能状态、异常、验收与后续方向</span></a>
+        <a class="card" href="../User-Journey.md"><strong>02 / User Journey ↗</strong><span>照片创作、已有模型、历史继续三条路径</span></a>
+        <a class="card" href="../Requirements-Evidence.md"><strong>03 / Evidence ↗</strong><span>需求、Figma 节点、代码模块与测试关注点</span></a>
+      </div>
+      <section id="architecture" aria-labelledby="architecture-title"><h2 id="architecture-title">可维护的 SVG 架构图</h2>
+        <figure><img src="../architecture-overview.svg" alt="产品架构：输入、设计、模型、美颜、颜色、准备、切片和打印"><figcaption><a href="../architecture-overview.svg">打开产品架构图 ↗</a></figcaption></figure>
+        <figure><img src="../user-journey-overview.svg" alt="用户旅程：正常路径、不满意返回和失败恢复"><figcaption><a href="../user-journey-overview.svg">打开用户旅程图 ↗</a></figcaption></figure>
+        <figure><img src="../technical-architecture.svg" alt="技术架构：设计、UI、契约、Orca 工程、切片与设备的状态"><figcaption><a href="../technical-architecture.svg">打开技术架构图 ↗</a></figcaption></figure>
+      </section>
+    </main>
+    <footer>集成分支静态文档 · Figma 是设计依据，设备与实物能力须另行验证。</footer>
+  </div>
+</body>
+</html>

@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 840" role="img" aria-labelledby="title desc">
+  <title id="title">OrcaSlicer AI 3D Printing UX 产品架构</title>
+  <desc id="desc">目标旅程从用户需求到 AI 创作入口、2D 设计确认、3D 模型生成、美颜、颜色匹配、Orca Prepare、智能切片和打印机。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M1 1 L10 6 L1 11" fill="none" stroke="#f8c844" stroke-width="2"/></marker>
+    <style>
+      .bg{fill:#101619}.grid{stroke:#344045;stroke-width:1;opacity:.34}.card{fill:#1a2428;stroke:#45535a;stroke-width:1.5}.native{fill:#1d2f2c;stroke:#78ba9b}.accent{fill:#f8c844}.mint{fill:#87d7b3}.white{fill:#f4f4e9}.muted{fill:#a8b8b5}.line{fill:none;stroke:#f8c844;stroke-width:3;marker-end:url(#arrow)}.tag{font:600 14px 'Segoe UI','Microsoft YaHei',sans-serif;letter-spacing:2px}.title{font:700 36px 'Segoe UI','Microsoft YaHei',sans-serif}.sub{font:16px 'Segoe UI','Microsoft YaHei',sans-serif}.step{font:700 24px 'Segoe UI','Microsoft YaHei',sans-serif}.detail{font:15px 'Segoe UI','Microsoft YaHei',sans-serif}.num{font:700 14px Consolas,monospace}
+    </style>
+  </defs>
+  <rect class="bg" width="1200" height="840"/>
+  <path class="grid" d="M0 110H1200M0 750H1200M400 110V750M800 110V750"/>
+  <text x="52" y="48" class="accent tag">PRODUCT SYSTEM / 01</text>
+  <text x="52" y="93" class="white title">从想法到可打印的作品</text>
+  <text x="52" y="785" class="muted sub">连线为目标流程；各能力当前状态见 PRD 与技术架构图。打印动作须真实设备确认。</text>
+  <path class="line" d="M368 208H430"/><path class="line" d="M768 208H830"/>
+  <path class="line" d="M1000 274V350"/>
+  <path class="line" d="M830 418H768"/><path class="line" d="M430 418H368"/>
+  <path class="line" d="M198 484V560"/>
+  <path class="line" d="M368 628H430"/><path class="line" d="M768 628H830"/>
+  <g>
+    <rect class="card" x="28" y="142" width="340" height="132" rx="16"/><text x="52" y="174" class="accent num">01 / NEED</text><text x="52" y="212" class="white step">用户需求</text><text x="52" y="242" class="muted detail">照片、文字想法或已有模型</text>
+    <rect class="card" x="430" y="142" width="338" height="132" rx="16"/><text x="454" y="174" class="accent num">02 / CREATE</text><text x="454" y="212" class="white step">AI 创作入口</text><text x="454" y="242" class="muted detail">图片输入 / 文字描述</text>
+    <rect class="card" x="830" y="142" width="340" height="132" rx="16"/><text x="854" y="174" class="accent num">03 / DECIDE</text><text x="854" y="212" class="white step">2D 设计确认</text><text x="854" y="242" class="muted detail">满意继续；不满意返回修改</text>
+    <rect class="card" x="830" y="350" width="340" height="134" rx="16"/><text x="854" y="382" class="accent num">04 / GENERATE</text><text x="854" y="420" class="white step">3D 模型生成</text><text x="854" y="452" class="muted detail">真实模型与产物身份</text>
+    <rect class="card" x="430" y="350" width="338" height="134" rx="16"/><text x="454" y="382" class="accent num">05 / REFINE</text><text x="454" y="420" class="white step">3D 美颜工作台</text><text x="454" y="452" class="muted detail">可选编辑、预览与版本保存</text>
+    <rect class="card" x="28" y="350" width="340" height="134" rx="16"/><text x="52" y="382" class="accent num">06 / MATERIAL</text><text x="52" y="420" class="white step">颜色匹配</text><text x="52" y="452" class="muted detail">目标外观 → 可用耗材近似</text>
+    <rect class="native" x="28" y="560" width="340" height="134" rx="16"/><text x="52" y="592" class="mint num">07 / NATIVE ORCA</text><text x="52" y="630" class="white step">Orca Prepare</text><text x="52" y="662" class="muted detail">工程、尺寸、摆放、预设</text>
+    <rect class="native" x="430" y="560" width="338" height="134" rx="16"/><text x="454" y="592" class="mint num">08 / DECISION</text><text x="454" y="630" class="white step">Smart Slicing</text><text x="454" y="662" class="muted detail">候选比较 → 显式应用 → 切片</text>
+    <rect class="native" x="830" y="560" width="340" height="134" rx="16"/><text x="854" y="592" class="mint num">09 / PHYSICAL</text><text x="854" y="630" class="white step">Printer</text><text x="854" y="662" class="muted detail">明确启动、状态与实体成品</text>
+  </g>
+</svg>

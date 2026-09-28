@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 1140" role="img" aria-labelledby="title desc">
+  <title id="title">OrcaSlicer AI 3D Printing UX 技术架构与能力状态</title>
+  <desc id="desc">从 Figma UX 设计目标到 Workspace UI、ModelGenerationPanel、GeneratedModelArtifact、BeautyWorkbench、ColorIntent、Orca Prepare、SmartSlicing 和 Printer。节点区分已有、部分实现和待验证。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M1 1L8 5L1 9" fill="none" stroke="#f6c746" stroke-width="1.8"/></marker>
+    <style>.bg{fill:#101619}.lane{fill:#162126;stroke:#30434b}.line{fill:none;stroke:#f6c746;stroke-width:2.5;marker-end:url(#arrow)}.card{fill:#1d2a2f;stroke:#4b6269;stroke-width:1.5}.existing{stroke:#7bd1aa}.partial{stroke:#f6c746}.pending{stroke:#b994a2;stroke-dasharray:6 4}.white{fill:#f3f3e9}.muted{fill:#a6b9b6}.yellow{fill:#f6c746}.green{fill:#7bd1aa}.rose{fill:#d6abb8}.title{font:700 36px 'Segoe UI','Microsoft YaHei',sans-serif}.label{font:700 21px 'Segoe UI','Microsoft YaHei',sans-serif}.small{font:14px 'Segoe UI','Microsoft YaHei',sans-serif}.mono{font:13px Consolas,monospace}.tag{font:700 13px Consolas,monospace;letter-spacing:2px}</style>
+  </defs>
+  <rect class="bg" width="1280" height="1140"/>
+  <text x="46" y="47" class="yellow tag">TECHNICAL ARCHITECTURE / 03</text><text x="46" y="94" class="white title">一份模型产物，接入 Orca 原生工程</text>
+  <text x="46" y="124" class="muted small">代码基线：codex/team/integration · 19a0b7f05；状态表示源码范围和验收边界，不代表实物通过。</text>
+  <rect class="lane" x="350" y="153" width="580" height="900" rx="20"/>
+  <path class="line" d="M640 240V261M640 345V366M640 450V471M640 555V576M640 660V681M640 765V786M640 870V891M640 975V996"/>
+  <g>
+    <rect class="card pending" x="375" y="166" width="530" height="74" rx="12"/><text x="395" y="193" class="white label">Figma UX</text><text x="395" y="220" class="muted mono">设计目标 · 不是运行代码</text><text x="840" y="196" text-anchor="end" class="rose small">规划</text>
+    <rect class="card partial" x="375" y="271" width="530" height="74" rx="12"/><text x="395" y="298" class="white label">Workspace UI</text><text x="395" y="325" class="muted mono">GUI/AI feature hosts + MainFrame</text><text x="840" y="301" text-anchor="end" class="yellow small">部分实现</text>
+    <rect class="card existing" x="375" y="376" width="530" height="74" rx="12"/><text x="395" y="403" class="white label">ModelGenerationPanel</text><text x="395" y="430" class="muted mono">图像/文字任务 · 付费确认 · 恢复</text><text x="840" y="406" text-anchor="end" class="green small">已有能力</text>
+    <rect class="card existing" x="375" y="481" width="530" height="74" rx="12"/><text x="395" y="508" class="white label">GeneratedModelArtifact</text><text x="395" y="535" class="muted mono">不可变模型、job、格式、颜色意图引用</text><text x="840" y="511" text-anchor="end" class="green small">已有契约</text>
+    <rect class="card partial" x="375" y="586" width="530" height="74" rx="12"/><text x="395" y="613" class="white label">BeautyWorkbench</text><text x="395" y="640" class="muted mono">真实 3D · 草稿 · 预览 · 保存</text><text x="840" y="616" text-anchor="end" class="yellow small">部分验收</text>
+    <rect class="card partial" x="375" y="691" width="530" height="74" rx="12"/><text x="395" y="718" class="white label">ColorIntent + Matching</text><text x="395" y="745" class="muted mono">目标外观 → 物理耗材/工艺近似</text><text x="840" y="721" text-anchor="end" class="yellow small">部分验收</text>
+    <rect class="card existing" x="375" y="796" width="530" height="74" rx="12"/><text x="395" y="823" class="white label">Orca Prepare</text><text x="395" y="850" class="muted mono">模型 · 3MF · 预设 · 摆放 · Preview</text><text x="840" y="826" text-anchor="end" class="green small">已有能力</text>
+    <rect class="card partial" x="375" y="901" width="530" height="74" rx="12"/><text x="395" y="928" class="white label">SmartSlicing</text><text x="395" y="955" class="muted mono">候选 → revision 校验 → 应用/撤销</text><text x="840" y="931" text-anchor="end" class="yellow small">部分验收</text>
+    <rect class="card pending" x="375" y="1006" width="530" height="74" rx="12"/><text x="395" y="1033" class="white label">Printer</text><text x="395" y="1060" class="muted mono">具体设备 · 真实作业 · 实体成品</text><text x="840" y="1036" text-anchor="end" class="rose small">待验证</text>
+  </g>
+  <path d="M350 410H276" fill="none" stroke="#607b81" stroke-width="1.5"/><text x="40" y="394" class="muted small">Python sidecar / Provider</text><text x="40" y="415" class="muted small">外部任务与费用边界</text>
+  <path d="M930 520H1010" fill="none" stroke="#607b81" stroke-width="1.5"/><text x="1018" y="502" class="muted small">不拥有 3MF/预设</text><text x="1018" y="523" class="muted small">只传递可校验产物</text>
+  <path d="M350 830H276" fill="none" stroke="#607b81" stroke-width="1.5"/><text x="40" y="816" class="muted small">Orca 原生工程真值</text><text x="40" y="837" class="muted small">导入不隐式切片</text>
+  <path d="M930 936H1010" fill="none" stroke="#607b81" stroke-width="1.5"/><text x="1018" y="918" class="muted small">建议需显式应用</text><text x="1018" y="939" class="muted small">正式切片仍归 Orca</text>
+  <text x="46" y="1114" class="muted small">绿色：源码已有范围　黄色：局部实现/待组合验收　玫瑰虚线：设计目标或设备实证待验证</text>
+</svg>
