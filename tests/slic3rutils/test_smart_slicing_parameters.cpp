@@ -59,16 +59,18 @@ TEST_CASE("typed parameter proposals enforce scope ownership forbidden keys and 
     CHECK(first_rejection(wrong_owner) == ParameterRejectionCode::OwnerNotAllowed);
 
     ParameterProposal hardware;
-    hardware.entries.push_back(change("nozzle_diameter", 0.40, 0.60));
+    hardware.entries.push_back(change("nozzle_diameter", 0.40, 0.60, 0,
+                                      ConfigScope::Plate, PresetOwner::Printer));
     CHECK(first_rejection(hardware) == ParameterRejectionCode::ForbiddenKey);
 
     ParameterProposal unsafe_flush;
-    unsafe_flush.entries.push_back(change("flush_multiplier", 1.0, 0.8));
-    CHECK(first_rejection(unsafe_flush) == ParameterRejectionCode::ForbiddenKey);
+    unsafe_flush.entries.push_back(change("flush_multiplier", 1.0, 0.8, 0,
+                                          ConfigScope::Plate, PresetOwner::Project));
+    CHECK(first_rejection(unsafe_flush) == ParameterRejectionCode::EffectiveBoundsUnavailable);
 
     ParameterProposal unsafe_tower;
     unsafe_tower.entries.push_back(change("enable_prime_tower", true, false));
-    CHECK(first_rejection(unsafe_tower) == ParameterRejectionCode::ForbiddenKey);
+    CHECK(first_rejection(unsafe_tower) == ParameterRejectionCode::UnknownKey);
 
     ParameterProposal excessive_delta;
     excessive_delta.entries.push_back(change("brim_width", 0.0, 20.0));
@@ -87,30 +89,54 @@ TEST_CASE("typed parameter proposals enforce scope ownership forbidden keys and 
         change("enable_support", false, true),
         change("brim_width", 0.0, 5.0),
     };
-    CHECK(first_rejection(too_many) == ParameterRejectionCode::TooManyChanges);
+    CHECK(ParameterProposalValidator().validate(too_many).accepted());
 }
 
 TEST_CASE("Orca parameter adapter applies only to a matching config clone", "[AI][SmartSlicing][Parameters][Orca]")
 {
     DynamicPrintConfig base = DynamicPrintConfig::full_print_config();
-    base.set("layer_height", 0.20);
+    base.set("brim_width", 0.0);
     ParameterProposal proposal;
-    proposal.entries.push_back(change("layer_height", 0.20, 0.16, 3));
+    proposal.entries.push_back(change("brim_width", 0.0, 5.0, 3));
 
     DynamicPrintConfig patched;
+    const auto legacy = Slic3r::GUI::OrcaParameterProposalAdapter().validate_and_apply(
+        proposal, 3, base, patched);
+    CHECK_FALSE(legacy.accepted);
+    CHECK(legacy.diagnostic_code == "parameter_validation_context_required");
     const Slic3r::GUI::OrcaParameterApplyResult accepted =
-        Slic3r::GUI::OrcaParameterProposalAdapter().validate_and_apply(proposal, 3, base, patched);
+        Slic3r::GUI::OrcaParameterProposalAdapter().validate_and_apply(proposal, 3, base, {}, {}, patched);
     REQUIRE(accepted.accepted);
-    CHECK(patched.opt_float("layer_height") == Catch::Approx(0.16));
-    CHECK(base.opt_float("layer_height") == Catch::Approx(0.20));
+    CHECK(patched.opt_float("brim_width") == Catch::Approx(5.0));
+    CHECK(base.opt_float("brim_width") == Catch::Approx(0.0));
 
     DynamicPrintConfig ignored;
-    const auto wrong_plate = Slic3r::GUI::OrcaParameterProposalAdapter().validate_and_apply(proposal, 2, base, ignored);
+    const auto wrong_plate = Slic3r::GUI::OrcaParameterProposalAdapter().validate_and_apply(
+        proposal, 2, base, {}, {}, ignored);
     CHECK_FALSE(wrong_plate.accepted);
     CHECK(wrong_plate.diagnostic_code == "parameter_target_mismatch");
 
-    proposal.entries.front().expected_value = 0.24;
-    const auto stale_value = Slic3r::GUI::OrcaParameterProposalAdapter().validate_and_apply(proposal, 3, base, ignored);
+    proposal.entries.front().expected_value = 1.0;
+    const auto stale_value = Slic3r::GUI::OrcaParameterProposalAdapter().validate_and_apply(
+        proposal, 3, base, {}, {}, ignored);
     CHECK_FALSE(stale_value.accepted);
     CHECK(stale_value.diagnostic_code == "parameter_expected_value_changed");
+
+    base.set("layer_height", 0.20);
+    ParameterProposal profiled;
+    profiled.entries.push_back(change("layer_height", 0.20, 0.16, 3));
+    const auto missing_profile_bound = Slic3r::GUI::OrcaParameterProposalAdapter().validate_and_apply(
+        profiled, 3, base, {}, {}, ignored);
+    CHECK_FALSE(missing_profile_bound.accepted);
+    CHECK(missing_profile_bound.diagnostic_code == "parameter_effective_bounds_unavailable");
+
+    const std::vector<ParameterBoundEvidence> process_bounds{{
+        ConfigScope::Plate, PresetOwner::Process, 3, "layer_height",
+        BoundEvidenceSource::ProcessProfile, true, 0.12, 0.28, {},
+        "fixture-process-profile/v1"}};
+    const auto bounded = Slic3r::GUI::OrcaParameterProposalAdapter().validate_and_apply(
+        profiled, 3, base, {}, process_bounds, patched);
+    REQUIRE(bounded.accepted);
+    CHECK(patched.opt_float("layer_height") == Catch::Approx(0.16));
+    CHECK(base.opt_float("layer_height") == Catch::Approx(0.20));
 }

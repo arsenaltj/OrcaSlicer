@@ -12,6 +12,7 @@
 #include <map>
 #include <limits>
 #include <numeric>
+#include <set>
 #include <stdexcept>
 #include <thread>
 #include <utility>
@@ -54,18 +55,36 @@ private:
     boost::filesystem::path m_actual_path;
 };
 
-class ScopedTrialDeadline
+class ScopedTrialCancellation
 {
 public:
-    ScopedTrialDeadline(std::chrono::seconds duration, std::function<void()> expired)
-        : m_thread([this, duration, expired = std::move(expired)] {
+    ScopedTrialCancellation(
+        std::chrono::steady_clock::time_point deadline,
+        std::shared_ptr<const RecommendationCancellationToken> cancellation_token,
+        std::function<void()> expired,
+        std::function<void()> canceled)
+        : m_thread([this, deadline, cancellation_token = std::move(cancellation_token),
+                    expired = std::move(expired), canceled = std::move(canceled)] {
               std::unique_lock<std::mutex> lock(m_mutex);
-              if (!m_condition.wait_for(lock, duration, [this] { return m_finished; }))
-                  expired();
+              while (!m_finished) {
+                  if (cancellation_token && cancellation_token->cancellation_requested()) {
+                      lock.unlock();
+                      canceled();
+                      return;
+                  }
+                  const auto now = std::chrono::steady_clock::now();
+                  if (now >= deadline) {
+                      lock.unlock();
+                      expired();
+                      return;
+                  }
+                  m_condition.wait_until(lock, std::min(deadline, now + std::chrono::milliseconds(25)),
+                                         [this] { return m_finished; });
+              }
           })
     {}
 
-    ~ScopedTrialDeadline()
+    ~ScopedTrialCancellation()
     {
         {
             std::lock_guard<std::mutex> lock(m_mutex);
@@ -89,7 +108,101 @@ double sum_values(const std::map<size_t, double>& values)
                            [](double total, const auto& entry) { return total + entry.second; });
 }
 
+const char* scope_name(ConfigScope scope)
+{
+    switch (scope) {
+    case ConfigScope::Plate: return "plate";
+    case ConfigScope::Object: return "object";
+    case ConfigScope::Material: return "material";
+    case ConfigScope::Workspace: return "workspace";
+    }
+    return "unknown";
+}
+
+struct PlacementIntentCheck
+{
+    bool conflict{false};
+    MetricValue<bool> preserved;
+};
+
+PlacementIntentCheck check_placement_intent(
+    const PlacementCandidate& placement,
+    const IntentConstraintSnapshot& constraints)
+{
+    PlacementIntentCheck result;
+    if (placement.transforms.empty()) {
+        result.preserved = MetricValue<bool>::known(true, {"no_candidate_placement_change"});
+        return result;
+    }
+
+    bool evidence_unknown = false;
+    bool plate_evidence = false;
+    for (const IntentConstraintRecord& record : constraints.records) {
+        if (record.type != IntentConstraintType::PlatePlacementLock)
+            continue;
+        plate_evidence = true;
+        if (record.state == IntentConstraintState::Active)
+            result.conflict = true;
+        else if (record.state == IntentConstraintState::Unknown)
+            evidence_unknown = true;
+    }
+    if (!plate_evidence)
+        evidence_unknown = true;
+
+    for (const ObjectTransform& transform : placement.transforms) {
+        bool target_evidence = false;
+        for (const IntentConstraintRecord& record : constraints.records) {
+            const bool object_lock = record.type == IntentConstraintType::ObjectPlacementLock &&
+                                     record.object_id == transform.object_id;
+            const bool instance_lock = record.type == IntentConstraintType::InstancePlacementLock &&
+                                       record.object_id == transform.object_id &&
+                                       (record.instance_id == 0 || record.instance_id == transform.instance_id);
+            if (!object_lock && !instance_lock)
+                continue;
+            target_evidence = true;
+            if (record.state == IntentConstraintState::Active)
+                result.conflict = true;
+            else if (record.state == IntentConstraintState::Unknown)
+                evidence_unknown = true;
+        }
+        if (!target_evidence)
+            evidence_unknown = true;
+    }
+
+    if (result.conflict)
+        result.preserved = MetricValue<bool>::known(false, {"orca_placement_lock_conflict"});
+    else if (evidence_unknown)
+        result.preserved = MetricValue<bool>::unknown({"placement_lock_evidence_unavailable"});
+    else
+        result.preserved = MetricValue<bool>::known(true, {"orca_placement_intent_constraints"});
+    return result;
+}
+
 } // namespace
+
+MetricValue<std::vector<LayerToolSequence>> extract_orca_layer_tool_sequences(
+    const GCodeProcessorResult& result)
+{
+    std::map<size_t, std::vector<size_t>> sequences_by_layer;
+    for (const GCodeProcessorResult::MoveVertex& move : result.moves) {
+        if (move.type != EMoveType::Extrude)
+            continue;
+        std::vector<size_t>& sequence = sequences_by_layer[static_cast<size_t>(move.layer_id)];
+        const size_t tool_id = static_cast<size_t>(move.extruder_id);
+        if (sequence.empty() || sequence.back() != tool_id)
+            sequence.push_back(tool_id);
+    }
+    if (sequences_by_layer.empty())
+        return MetricValue<std::vector<LayerToolSequence>>::unknown(
+            {"orca_gcode_extrusion_moves_unavailable"});
+
+    std::vector<LayerToolSequence> sequences;
+    sequences.reserve(sequences_by_layer.size());
+    for (auto& [layer_index, tool_ids] : sequences_by_layer)
+        sequences.push_back({layer_index, std::move(tool_ids)});
+    return MetricValue<std::vector<LayerToolSequence>>::known(
+        std::move(sequences), {"orca_gcode_extrusion_move_sequence"});
+}
 
 class OrcaTrialSliceExecutor::ActivePrintGuard
 {
@@ -210,26 +323,153 @@ SlicingMetrics OrcaTrialSliceExecutor::extract_metrics(const GCodeProcessorResul
     return metrics;
 }
 
+TrialMetrics OrcaTrialSliceExecutor::extract_trial_metrics(
+    const GCodeProcessorResult& result,
+    const DynamicPrintConfig& effective_config,
+    const Model& effective_model,
+    const ParameterProposal& parameters,
+    const std::vector<int>& expected_filament_mapping,
+    bool prime_tower_enabled)
+{
+    const PrintEstimatedStatistics& statistics = result.print_statistics;
+    TrialMetrics metrics;
+    metrics.estimated_time_seconds = MetricValue<double>::known(
+        statistics.modes[static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Normal)].time,
+        {"orca_gcode_time_estimator"});
+    const double model_volume = sum_values(statistics.model_volumes_per_extruder);
+    const double support_volume = sum_values(statistics.support_volumes_per_extruder);
+    const double flush_volume = sum_values(statistics.flush_per_filament);
+    const double wipe_tower_volume = sum_values(statistics.wipe_tower_volumes_per_extruder);
+    metrics.model_material_volume_mm3 = MetricValue<double>::known(model_volume, {"orca_model_volume"});
+    metrics.support_material_volume_mm3 = MetricValue<double>::known(support_volume, {"orca_support_volume"});
+    metrics.flush_material_volume_mm3 = MetricValue<double>::known(flush_volume, {"orca_flush_volume"});
+    metrics.wipe_tower_material_volume_mm3 =
+        MetricValue<double>::known(wipe_tower_volume, {"orca_wipe_tower_volume"});
+    metrics.total_material_volume_mm3 = MetricValue<double>::known(
+        model_volume + support_volume + flush_volume + wipe_tower_volume,
+        {"computed_from_orca_material_components"});
+    metrics.tool_change_count = MetricValue<size_t>::known(
+        statistics.total_filament_changes, {"orca_filament_change_count"});
+    metrics.tool_change_time_seconds = MetricValue<double>::known(
+        statistics.total_tool_change_time, {"orca_tool_change_time"});
+
+    std::set<size_t> used_tools;
+    for (const auto& layer_entry : result.layer_filaments) {
+        for (const unsigned int filament : layer_entry.first)
+            used_tools.insert(static_cast<size_t>(filament));
+    }
+    for (const GCodeProcessorResult::MoveVertex& move : result.moves) {
+        if (move.type != EMoveType::Extrude)
+            continue;
+        used_tools.insert(static_cast<size_t>(move.extruder_id));
+    }
+    metrics.layer_tool_sequences = extract_orca_layer_tool_sequences(result);
+
+    if (used_tools.size() <= 1) {
+        metrics.physical_slots_compatible = MetricValue<bool>::not_applicable({"single_material"});
+        metrics.color_mapping_degraded = MetricValue<bool>::not_applicable({"single_material"});
+    } else {
+        metrics.physical_slots_compatible = MetricValue<bool>::unknown({"physical_slot_evidence_unavailable"});
+        if (!result.filament_maps.empty() && !expected_filament_mapping.empty())
+            metrics.color_mapping_degraded = MetricValue<bool>::known(
+                result.filament_maps != expected_filament_mapping, {"orca_filament_mapping"});
+        else
+            metrics.color_mapping_degraded = MetricValue<bool>::unknown({"filament_mapping_unavailable"});
+    }
+    metrics.materials_compatible = MetricValue<bool>::unknown({"material_compatibility_evidence_unavailable"});
+    metrics.wipe_tower_enabled = MetricValue<bool>::known(prime_tower_enabled, {"orca_effective_config"});
+
+    metrics.native_diagnostics.reserve(result.warnings.size());
+    for (const GCodeProcessorResult::SliceWarning& warning : result.warnings) {
+        NativeDiagnostic diagnostic;
+        diagnostic.severity = warning.level >= 2 ? NativeDiagnosticSeverity::Error : NativeDiagnosticSeverity::Warning;
+        diagnostic.code = warning.error_code.empty() ? "gcode_warning" : warning.error_code;
+        diagnostic.message = warning.msg;
+        metrics.native_diagnostics.push_back(std::move(diagnostic));
+    }
+
+    metrics.effective_parameters.reserve(parameters.entries.size());
+    for (const ConfigPatchEntry& entry : parameters.entries) {
+        if (effective_config.option(entry.key) == nullptr)
+            continue;
+        metrics.effective_parameters.push_back({
+            std::string(scope_name(entry.scope)) + ":" + std::to_string(entry.target_id),
+            entry.key,
+            effective_config.opt_serialize(entry.key),
+            "orca_effective_config"});
+    }
+
+    for (const ModelObject* object : effective_model.objects) {
+        if (object == nullptr)
+            continue;
+        for (const ModelInstance* instance : object->instances) {
+            if (instance == nullptr)
+                continue;
+            ObjectTransformSummary summary;
+            summary.object_id = object->id().id;
+            summary.instance_id = instance->id().id;
+            const Transform3d& matrix = instance->get_matrix();
+            for (Eigen::Index row = 0; row < matrix.rows(); ++row)
+                for (Eigen::Index column = 0; column < matrix.cols(); ++column)
+                    summary.transform[static_cast<size_t>(row * matrix.cols() + column)] = matrix(row, column);
+            metrics.object_transforms.push_back(std::move(summary));
+        }
+    }
+    return metrics;
+}
+
 TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice(const SliceCandidate& candidate)
+{
+    return execute_trial_slice_impl(candidate, nullptr, {}, nullptr, nullptr);
+}
+
+TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice_impl(
+    const SliceCandidate& candidate,
+    const TrialSliceTask* versioned_task,
+    const std::shared_ptr<const RecommendationCancellationToken>& cancellation_token,
+    TrialMetrics* trial_metrics,
+    TrialEvaluationFacts* evaluation_facts)
 {
     TrialSliceResult result;
     result.candidate_id  = candidate.id;
     result.base_revision = candidate.base_revision;
     try {
         OrcaTrialSliceInput input;
-        bool prepared_session = false;
-        {
+        if (versioned_task != nullptr) {
             std::lock_guard<std::mutex> lock(m_session_mutex);
-            if (m_session_input) {
-                input = *m_session_input;
-                prepared_session = true;
+            if (!m_session_input) {
+                result.diagnostic_code = "versioned_trial_session_input_unavailable";
+                return result;
             }
-        }
-        if (!prepared_session) {
+            input = *m_session_input;
+        } else {
             m_cancel_requested.store(false, std::memory_order_release);
-            m_timed_out.store(false, std::memory_order_release);
             input = m_input_provider();
         }
+        m_timed_out.store(false, std::memory_order_release);
+        const auto local_deadline = std::chrono::steady_clock::now() + m_maximum_duration;
+        const auto effective_deadline = versioned_task != nullptr ?
+                                            std::min(local_deadline, versioned_task->deadline) :
+                                            local_deadline;
+        if ((cancellation_token && cancellation_token->cancellation_requested()) ||
+            m_cancel_requested.load(std::memory_order_acquire)) {
+            result.status = TrialSliceStatus::Canceled;
+            result.diagnostic_code = "trial_slice_canceled";
+            return result;
+        }
+        if (std::chrono::steady_clock::now() >= effective_deadline) {
+            m_timed_out.store(true, std::memory_order_release);
+            result.status = TrialSliceStatus::Canceled;
+            result.diagnostic_code = "workflow_timeout";
+            return result;
+        }
+        ScopedTrialCancellation cancellation(
+            effective_deadline, cancellation_token,
+            [this] {
+                m_timed_out.store(true, std::memory_order_release);
+                cancel_trial_slice();
+            },
+            [this] { cancel_trial_slice(); });
         uint64_t estimated_model_bytes = 0;
         for (const ModelObject* object : input.model.objects) {
             if (object == nullptr)
@@ -252,10 +492,6 @@ TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice(const SliceCandidat
             result.diagnostic_code = "workflow_memory_budget_exceeded";
             return result;
         }
-        ScopedTrialDeadline deadline(m_maximum_duration, [this] {
-            m_timed_out.store(true, std::memory_order_release);
-            cancel_trial_slice();
-        });
         if (m_cancel_requested.load(std::memory_order_acquire)) {
             result.status          = TrialSliceStatus::Canceled;
             result.diagnostic_code = m_timed_out.load(std::memory_order_acquire) ? "workflow_timeout" : "trial_slice_canceled";
@@ -264,17 +500,37 @@ TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice(const SliceCandidat
         if (!candidate.parameters.entries.empty()) {
             DynamicPrintConfig patched_config;
             const OrcaParameterApplyResult parameter_result = OrcaParameterProposalAdapter().validate_and_apply(
-                candidate.parameters, input.plate_id, input.config, patched_config);
+                candidate.parameters, input.plate_id, input.config, input.intent_constraints,
+                input.profile_bounds, patched_config);
             if (!parameter_result.accepted) {
                 result.diagnostic_code = parameter_result.diagnostic_code;
                 return result;
             }
             input.config = std::move(patched_config);
         }
+        const PlacementIntentCheck placement_intent =
+            check_placement_intent(candidate.placement, input.intent_constraints);
+        if (placement_intent.conflict) {
+            result.diagnostic_code = "placement_intent_conflict";
+            return result;
+        }
         if (!apply_placement(input.model, candidate.placement)) {
             result.diagnostic_code = "invalid_candidate_placement";
             return result;
         }
+
+        if (evaluation_facts != nullptr) {
+            evaluation_facts->manual_intent_preserved = placement_intent.preserved;
+            if (const auto* wall_loops = input.config.option<ConfigOptionInt>("wall_loops"))
+                evaluation_facts->effective_wall_loops =
+                    MetricValue<int>::known(wall_loops->value, {"orca_effective_config"});
+            if (const auto* infill = input.config.option<ConfigOptionPercent>("sparse_infill_density"))
+                evaluation_facts->effective_infill_percent =
+                    MetricValue<double>::known(infill->value, {"orca_effective_config"});
+            evaluation_facts->critical_surface_significantly_improved =
+                MetricValue<bool>::unknown({"critical_surface_risk_evidence_unavailable"});
+        }
+        const DynamicPrintConfig effective_config = input.config;
 
         Print trial_print;
         ActivePrintGuard active_print(*this, trial_print);
@@ -309,6 +565,20 @@ TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice(const SliceCandidat
         result.metrics = extract_metrics(gcode_result, expected_filament_mapping, prime_tower_enabled);
         result.metrics->warning_codes.insert(result.metrics->warning_codes.end(), validation_warnings.size(),
                                              "native_validation_warning");
+        if (trial_metrics != nullptr) {
+            *trial_metrics = extract_trial_metrics(gcode_result, effective_config, input.model,
+                                                   candidate.parameters, expected_filament_mapping,
+                                                   prime_tower_enabled);
+            if (versioned_task != nullptr && input.evidence_revision.valid() &&
+                input.evidence_revision == versioned_task->identity.workspace_revision) {
+                trial_metrics->physical_slots_compatible = input.physical_slots_compatible;
+                trial_metrics->materials_compatible = input.materials_compatible;
+                trial_metrics->color_mapping_degraded = input.color_mapping_degraded;
+            }
+            for (const StringObjectException& warning : validation_warnings)
+                trial_metrics->native_diagnostics.push_back(
+                    {NativeDiagnosticSeverity::Warning, "native_validation_warning", warning.string});
+        }
         result.status = TrialSliceStatus::Succeeded;
         return result;
     } catch (const CanceledException&) {
@@ -318,6 +588,38 @@ TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice(const SliceCandidat
         result.status          = TrialSliceStatus::Failed;
         result.diagnostic_code = "trial_slice_exception";
     }
+    return result;
+}
+
+VersionedTrialSliceResult OrcaTrialSliceExecutor::execute_versioned_trial_slice(
+    const TrialSliceTask& task,
+    const std::shared_ptr<const RecommendationCancellationToken>& cancellation_token)
+{
+    VersionedTrialSliceResult result;
+    result.identity = task.identity;
+    if (!cancellation_token || task.identity.candidate_id.empty() ||
+        !task.identity.workspace_revision.valid()) {
+        result.diagnostic_codes.emplace_back("versioned_trial_input_invalid");
+        return result;
+    }
+
+    SliceCandidate candidate;
+    candidate.id = task.identity.candidate_id;
+    candidate.base_revision = task.identity.workspace_revision;
+    candidate.placement = task.placement;
+    candidate.parameters = task.parameters;
+    TrialMetrics metrics;
+    TrialEvaluationFacts facts;
+    const TrialSliceResult legacy = execute_trial_slice_impl(
+        candidate, &task, cancellation_token, &metrics, &facts);
+    result.status = legacy.status;
+    result.evaluation_facts = std::move(facts);
+    if (legacy.status == TrialSliceStatus::Succeeded) {
+        result.metrics = std::move(metrics);
+        result.risks = RiskAssessment{};
+    }
+    if (!legacy.diagnostic_code.empty())
+        result.diagnostic_codes.push_back(legacy.diagnostic_code);
     return result;
 }
 

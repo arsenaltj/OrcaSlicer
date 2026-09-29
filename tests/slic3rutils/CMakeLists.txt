@@ -60,11 +60,28 @@ add_executable(${_TEST_NAME}_tests
     test_model_artifact.cpp
     test_orca_model_preparation.cpp
     test_smart_slicing_candidates.cpp
+    test_smart_slicing_candidate_evaluation.cpp
+    test_smart_slicing_candidate_selection.cpp
+    test_smart_slicing_candidate_search.cpp
+    test_smart_slicing_trial_scheduler.cpp
+    test_smart_slicing_candidate_capture.cpp
+    test_smart_slicing_capabilities.cpp
     test_smart_slicing_coordinator.cpp
+    test_smart_slicing_dispatch.cpp
+    test_smart_slicing_model_features.cpp
+    test_smart_slicing_orca_model_features.cpp
+    test_smart_slicing_protected_regions.cpp
+    test_beauty_protected_regions.cpp
     test_smart_slicing_apply_guard.cpp
+    test_smart_slicing_apply_service.cpp
+    test_smart_slicing_risk_confirmation.cpp
     test_smart_slicing_parameters.cpp
+    test_smart_slicing_parameter_policy.cpp
     test_smart_slicing_runtime.cpp
+    test_smart_slicing_session.cpp
     test_smart_slicing_workflow.cpp
+    test_smart_slicing_performance_acceptance.cpp
+    test_smart_slicing_six_nozzle_validation.cpp
     ../fff_print/test_helpers.cpp
     )
 

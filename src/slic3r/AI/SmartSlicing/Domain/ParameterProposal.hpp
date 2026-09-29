@@ -1,11 +1,15 @@
 #pragma once
 
+#include "RecommendationTypes.hpp"
+
 #include <cstdint>
 #include <string>
 #include <variant>
 #include <vector>
 
 namespace Slic3r::AI::SmartSlicing {
+
+inline constexpr const char* PARAMETER_POLICY_VERSION = "smart-slicing-parameter-policy/v1";
 
 using ConfigValue = std::variant<bool, int64_t, double, std::string>;
 
@@ -27,6 +31,8 @@ struct ParameterProposal
 {
     std::vector<ConfigPatchEntry> entries;
     std::vector<std::string> explanation_codes;
+    std::string policy_version{PARAMETER_POLICY_VERSION};
+    RecommendationGoal goal{RecommendationGoal::Balanced};
 };
 
 } // namespace Slic3r::AI::SmartSlicing

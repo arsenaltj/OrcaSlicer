@@ -2,6 +2,8 @@
 
 #include "libslic3r/Model.hpp"
 #include "libslic3r/PrintConfig.hpp"
+#include "slic3r/AI/SmartSlicing/Application/TrialSliceScheduler.hpp"
+#include "slic3r/AI/SmartSlicing/Domain/IntentConstraintSnapshot.hpp"
 #include "slic3r/AI/SmartSlicing/Ports/ITrialSliceExecutor.hpp"
 
 #include <atomic>
@@ -27,7 +29,16 @@ struct OrcaTrialSliceInput
     int64_t plate_id{-1};
     std::string plate_name;
     std::vector<std::vector<DynamicPrintConfig>> extruder_filament_info;
+    AI::SmartSlicing::IntentConstraintSnapshot intent_constraints;
+    std::vector<AI::SmartSlicing::ParameterBoundEvidence> profile_bounds;
+    AI::SmartSlicing::WorkspaceRevision evidence_revision;
+    AI::SmartSlicing::MetricValue<bool> physical_slots_compatible;
+    AI::SmartSlicing::MetricValue<bool> materials_compatible;
+    AI::SmartSlicing::MetricValue<bool> color_mapping_degraded;
 };
+
+AI::SmartSlicing::MetricValue<std::vector<AI::SmartSlicing::LayerToolSequence>>
+extract_orca_layer_tool_sequences(const GCodeProcessorResult& result);
 
 class OrcaTrialSliceExecutor final : public AI::SmartSlicing::ITrialSliceExecutor
 {
@@ -43,15 +54,31 @@ public:
                              uint64_t maximum_temporary_disk_bytes);
 
     AI::SmartSlicing::TrialSliceResult execute_trial_slice(const AI::SmartSlicing::SliceCandidate& candidate) override;
+    AI::SmartSlicing::VersionedTrialSliceResult execute_versioned_trial_slice(
+        const AI::SmartSlicing::TrialSliceTask& task,
+        const std::shared_ptr<const AI::SmartSlicing::RecommendationCancellationToken>& cancellation_token);
     void cancel_trial_slice() override;
 
 private:
     class ActivePrintGuard;
 
     bool apply_placement(Model& model, const AI::SmartSlicing::PlacementCandidate& placement) const;
+    AI::SmartSlicing::TrialSliceResult execute_trial_slice_impl(
+        const AI::SmartSlicing::SliceCandidate& candidate,
+        const AI::SmartSlicing::TrialSliceTask* versioned_task,
+        const std::shared_ptr<const AI::SmartSlicing::RecommendationCancellationToken>& cancellation_token,
+        AI::SmartSlicing::TrialMetrics* trial_metrics,
+        AI::SmartSlicing::TrialEvaluationFacts* evaluation_facts);
     static AI::SmartSlicing::SlicingMetrics extract_metrics(const GCodeProcessorResult& result,
                                                              const std::vector<int>& expected_filament_mapping,
                                                              bool prime_tower_enabled);
+    static AI::SmartSlicing::TrialMetrics extract_trial_metrics(
+        const GCodeProcessorResult& result,
+        const DynamicPrintConfig& effective_config,
+        const Model& effective_model,
+        const AI::SmartSlicing::ParameterProposal& parameters,
+        const std::vector<int>& expected_filament_mapping,
+        bool prime_tower_enabled);
 
     InputProvider m_input_provider;
     std::atomic<bool> m_cancel_requested{false};

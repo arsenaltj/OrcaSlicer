@@ -6994,7 +6994,7 @@ struct Plater::priv
 
     void undo();
     void redo();
-    void undo_redo_to(size_t time_to_load);
+    bool undo_redo_to(size_t time_to_load);
 
     // BBS: backup
     bool up_to_date(bool saved, bool backup);
@@ -7240,7 +7240,7 @@ private:
     void update_fff_scene();
     void update_sla_scene();
 
-    void undo_redo_to(std::vector<UndoRedo::Snapshot>::const_iterator it_snapshot);
+    bool undo_redo_to(std::vector<UndoRedo::Snapshot>::const_iterator it_snapshot);
     void update_after_undo_redo(const UndoRedo::Snapshot& snapshot, bool temp_snapshot_was_taken = false);
     void on_action_export_to_sdcard(SimpleEvent&);
     void on_action_export_to_sdcard_all(SimpleEvent&);
@@ -14345,12 +14345,13 @@ void Plater::priv::redo()
     }
 }
 
-void Plater::priv::undo_redo_to(size_t time_to_load)
+bool Plater::priv::undo_redo_to(size_t time_to_load)
 {
     const std::vector<UndoRedo::Snapshot> &snapshots = this->undo_redo_stack().snapshots();
     auto it_current = std::lower_bound(snapshots.begin(), snapshots.end(), UndoRedo::Snapshot(time_to_load));
-    assert(it_current != snapshots.end());
-    this->undo_redo_to(it_current);
+    if (it_current == snapshots.end() || it_current->timestamp != time_to_load)
+        return false;
+    return this->undo_redo_to(it_current);
 }
 
 // BBS: check need save or backup
@@ -19103,6 +19104,110 @@ void Plater::redo_to(int selection)
 
     const int idx = p->get_active_snapshot_index() + selection + 1;
     p->undo_redo_to(p->undo_redo_stack().snapshots()[idx].timestamp);
+}
+
+bool Plater::latest_main_snapshot_identity(const std::string& action_name,
+                                           UndoRedo::ActionSnapshotIdentity& identity) const
+{
+    const UndoRedo::Stack& stack = p->undo_redo_stack_main();
+    const std::vector<UndoRedo::Snapshot>& snapshots = stack.snapshots();
+    const size_t active_time = stack.active_snapshot_time();
+    const auto active = std::lower_bound(snapshots.begin(), snapshots.end(), UndoRedo::Snapshot(active_time));
+    if (active == snapshots.end() || active->timestamp != active_time || active == snapshots.begin())
+        return false;
+    const auto action = std::prev(active);
+    if (action->name != action_name || !UndoRedo::snapshot_modifies_project(*action))
+        return false;
+    identity = {action->timestamp, active->timestamp, action->name};
+    return identity.valid();
+}
+
+bool Plater::main_snapshot_identity_is_current(
+    const UndoRedo::ActionSnapshotIdentity& identity)
+{
+    if (!identity.valid() || inside_snapshot_capture() ||
+        get_view3D_canvas3D()->get_gizmos_manager().is_running())
+        return false;
+    const UndoRedo::Stack& stack = p->undo_redo_stack_main();
+    const std::vector<UndoRedo::Snapshot>& snapshots = stack.snapshots();
+    if (stack.active_snapshot_time() != identity.active_snapshot_time ||
+        stack.has_redo_snapshot())
+        return false;
+    const auto action = std::lower_bound(
+        snapshots.begin(), snapshots.end(), UndoRedo::Snapshot(identity.action_snapshot_time));
+    const auto active = std::lower_bound(
+        snapshots.begin(), snapshots.end(), UndoRedo::Snapshot(identity.active_snapshot_time));
+    return action != snapshots.end() && action->timestamp == identity.action_snapshot_time &&
+           active != snapshots.end() && active->timestamp == identity.active_snapshot_time &&
+           std::next(action) == active && action->name == identity.action_name &&
+           UndoRedo::snapshot_modifies_project(*action) && active->is_topmost() &&
+           !active->is_topmost_captured();
+}
+
+bool Plater::undo_main_snapshot_exact(const UndoRedo::ActionSnapshotIdentity& identity,
+                                      std::string& diagnostic)
+{
+    diagnostic.clear();
+    if (!main_snapshot_identity_is_current(identity)) {
+        diagnostic = "snapshot_history_identity_changed";
+        return false;
+    }
+    if (!p->undo_redo_to(identity.action_snapshot_time)) {
+        diagnostic = "snapshot_exact_undo_failed";
+        return false;
+    }
+    if (p->undo_redo_stack_main().active_snapshot_time() != identity.action_snapshot_time) {
+        diagnostic = "snapshot_exact_undo_unverified";
+        return false;
+    }
+    return true;
+}
+
+bool Plater::rollback_main_snapshot_exact(const UndoRedo::ActionSnapshotIdentity& identity,
+                                          std::string& diagnostic)
+{
+    diagnostic.clear();
+    if (!identity.valid()) {
+        diagnostic = "snapshot_identity_invalid";
+        return false;
+    }
+    const UndoRedo::Stack& stack = p->undo_redo_stack_main();
+    const std::vector<UndoRedo::Snapshot>& snapshots = stack.snapshots();
+    if (stack.active_snapshot_time() != identity.active_snapshot_time) {
+        diagnostic = "snapshot_active_identity_changed";
+        return false;
+    }
+    const auto action = std::lower_bound(
+        snapshots.begin(), snapshots.end(), UndoRedo::Snapshot(identity.action_snapshot_time));
+    const auto active = std::lower_bound(
+        snapshots.begin(), snapshots.end(), UndoRedo::Snapshot(identity.active_snapshot_time));
+    if (action == snapshots.end() || action->timestamp != identity.action_snapshot_time ||
+        active == snapshots.end() || active->timestamp != identity.active_snapshot_time ||
+        std::next(action) != active || action->name != identity.action_name ||
+        !UndoRedo::snapshot_modifies_project(*action)) {
+        diagnostic = "snapshot_history_identity_changed";
+        return false;
+    }
+    if (!p->undo_redo_to(identity.action_snapshot_time)) {
+        diagnostic = "snapshot_exact_rollback_failed";
+        return false;
+    }
+    if (p->undo_redo_stack_main().active_snapshot_time() != identity.action_snapshot_time) {
+        diagnostic = "snapshot_exact_rollback_unverified";
+        return false;
+    }
+    if (!p->undo_redo_stack_main().abort_top_action(identity)) {
+        diagnostic = "snapshot_exact_abort_failed";
+        return false;
+    }
+    const std::vector<UndoRedo::Snapshot>& restored = p->undo_redo_stack_main().snapshots();
+    if (restored.empty() || restored.back().timestamp != identity.action_snapshot_time ||
+        !restored.back().is_topmost() || restored.back().is_topmost_captured() ||
+        p->undo_redo_stack_main().has_redo_snapshot()) {
+        diagnostic = "snapshot_exact_abort_unverified";
+        return false;
+    }
+    return true;
 }
 bool Plater::undo_redo_string_getter(const bool is_undo, int idx, const char** out_text)
 {

@@ -70,7 +70,7 @@ bool Plater::apply_local_print_colors(ModelVolume& volume, LocalPrintColorCommit
     return true;
 }
 
-void Plater::priv::undo_redo_to(std::vector<UndoRedo::Snapshot>::const_iterator it_snapshot)
+bool Plater::priv::undo_redo_to(std::vector<UndoRedo::Snapshot>::const_iterator it_snapshot)
 {
     UndoRedo::ProjectConfigUndo::Prepared restored_config;
     std::string config_error;
@@ -79,11 +79,11 @@ void Plater::priv::undo_redo_to(std::vector<UndoRedo::Snapshot>::const_iterator 
             bundle.filament_presets, restored_config, config_error) ||
         (restored_config.changed && !ProjectConfigRestore::validate(restored_config.config, restored_config.filament_presets, bundle, config_error))) {
         GUI::show_error(q, wxString::FromUTF8(config_error.c_str()));
-        return;
+        return false;
     }
     if (restored_config.changed && printer_technology != it_snapshot->snapshot_data.printer_technology) {
         GUI::show_error(q, _L("Cannot restore material settings across printer technologies."));
-        return;
+        return false;
     }
     auto restored_cache = restored_config.changed ? ProjectConfigRestore::prepare_cache(restored_config.filament_presets.size(), bundle) : ProjectConfigRestore::ColorCache{};
     // Make sure that no updating function calls take_snapshot until we are done.
@@ -147,9 +147,10 @@ void Plater::priv::undo_redo_to(std::vector<UndoRedo::Snapshot>::const_iterator 
     // Make a copy of the snapshot, undo/redo could invalidate the iterator
     const UndoRedo::Snapshot snapshot_copy = *it_snapshot;
     // Do the jump in time.
-    if (it_snapshot->timestamp < this->undo_redo_stack().active_snapshot_time() ?
+    const bool jumped = it_snapshot->timestamp < this->undo_redo_stack().active_snapshot_time() ?
         this->undo_redo_stack().undo(model, get_current_canvas3D()->get_canvas_type() == GLCanvas3D::CanvasAssembleView ? assemble_view->get_canvas3d()->get_selection() : this->view3D->get_canvas3d()->get_selection(), get_current_canvas3D()->get_canvas_type() == GLCanvas3D::CanvasAssembleView ? assemble_view->get_canvas3d()->get_gizmos_manager() : this->view3D->get_canvas3d()->get_gizmos_manager(), this->partplate_list, top_snapshot_data, it_snapshot->timestamp) :
-        this->undo_redo_stack().redo(model, get_current_canvas3D()->get_canvas_type() == GLCanvas3D::CanvasAssembleView ? assemble_view->get_canvas3d()->get_gizmos_manager() : this->view3D->get_canvas3d()->get_gizmos_manager(), this->partplate_list, it_snapshot->timestamp)) {
+        this->undo_redo_stack().redo(model, get_current_canvas3D()->get_canvas_type() == GLCanvas3D::CanvasAssembleView ? assemble_view->get_canvas3d()->get_gizmos_manager() : this->view3D->get_canvas3d()->get_gizmos_manager(), this->partplate_list, it_snapshot->timestamp);
+    if (jumped) {
         const bool materials_restored = restored_config.changed;
         ProjectConfigRestore::commit(restored_config, restored_cache, bundle);
         if (materials_restored) {
@@ -233,6 +234,7 @@ void Plater::priv::undo_redo_to(std::vector<UndoRedo::Snapshot>::const_iterator 
 
     dirty_state.update_from_undo_redo_stack(m_undo_redo_stack_main.project_modified());
     update_title_dirty_status();
+    return jumped;
 }
 
 

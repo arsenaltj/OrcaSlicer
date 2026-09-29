@@ -54,7 +54,7 @@
       "paths": [
         "src/slic3r/AI/Contracts"
       ],
-      "purpose": "生成产物、导入和颜色等共享接口"
+      "purpose": "生成产物、导入、颜色和中立重点区域等共享接口"
     },
     {
       "id": "adapter",
@@ -173,6 +173,26 @@
       "id": "slicing_states",
       "path": "src/slic3r/AI/SmartSlicing/Domain/WorkflowState.hpp",
       "needle": "enum class WorkflowState"
+    },
+    {
+      "id": "protected_region_manifest",
+      "path": "src/slic3r/AI/Contracts/ProtectedRegionManifest.hpp",
+      "needle": "class ProtectedRegionManifest final"
+    },
+    {
+      "id": "protected_region_binding",
+      "path": "src/slic3r/AI/SmartSlicing/Application/ProtectedRegionBinder.cpp",
+      "needle": "ProtectedRegionBindingResult ProtectedRegionBinder::bind"
+    },
+    {
+      "id": "model_feature_capture",
+      "path": "src/slic3r/GUI/AI/Orca/OrcaModelFeatureAnalyzer.cpp",
+      "needle": "OrcaModelFeatureCaptureResult OrcaModelFeatureAnalyzer::capture_current_plate"
+    },
+    {
+      "id": "beauty_protected_region_conversion",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/BeautyGuidanceProtectedRegions.cpp",
+      "needle": "BeautyGuidanceConversionResult beauty_guidance_to_protected_regions"
     },
     {
       "id": "slicing_start",

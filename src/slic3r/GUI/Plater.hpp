@@ -66,6 +66,7 @@ namespace UndoRedo {
     class Stack;
     enum class SnapshotType : unsigned char;
     struct Snapshot;
+    struct ActionSnapshotIdentity;
 }
 
 namespace GUI {
@@ -620,6 +621,10 @@ public:
     void redo();
     void undo_to(int selection);
     void redo_to(int selection);
+    bool latest_main_snapshot_identity(const std::string&, UndoRedo::ActionSnapshotIdentity&) const;
+    bool main_snapshot_identity_is_current(const UndoRedo::ActionSnapshotIdentity&);
+    bool undo_main_snapshot_exact(const UndoRedo::ActionSnapshotIdentity&, std::string&);
+    bool rollback_main_snapshot_exact(const UndoRedo::ActionSnapshotIdentity&, std::string&);
     bool undo_redo_string_getter(const bool is_undo, int idx, const char** out_text);
     void undo_redo_topmost_string_getter(const bool is_undo, std::string& out_text);
     int update_print_required_data(Slic3r::DynamicPrintConfig config, Slic3r::Model model, Slic3r::PlateDataPtrs plate_data_list, std::string file_name, std::string file_path);

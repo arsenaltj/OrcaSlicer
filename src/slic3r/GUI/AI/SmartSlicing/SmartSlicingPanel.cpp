@@ -4,12 +4,14 @@
 
 #include "slic3r/AI/SmartSlicing/Application/SmartSlicingCoordinator.hpp"
 #include "slic3r/GUI/GUI.hpp"
+#include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/I18N.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <utility>
 #include <wx/button.h>
+#include <wx/choice.h>
 #include <wx/collpane.h>
 #include <wx/radiobut.h>
 #include <wx/settings.h>
@@ -208,13 +210,27 @@ wxString issue_action(const std::string& code)
 
 SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSlicingCoordinator& coordinator,
                                      PlanCandidatesFn plan_candidates, CancelTrialFn cancel_trial,
-                                     std::function<void()> add_model, Plater* plater)
+                                     std::function<void()> add_model, Plater* plater,
+                                     ExecuteTrialFn execute_trial, OwnerDispatchFn owner_dispatch,
+                                     ModeChangedFn mode_changed, PurposeChangedFn purpose_changed)
     : wxScrolledWindow(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVSCROLL | wxTAB_TRAVERSAL)
     , m_coordinator(coordinator)
     , m_plan_candidates(std::move(plan_candidates))
     , m_cancel_trial(std::move(cancel_trial))
+    , m_execute_trial(std::move(execute_trial))
+    , m_owner_dispatch(std::move(owner_dispatch))
+    , m_mode_changed(std::move(mode_changed))
+    , m_purpose_changed(std::move(purpose_changed))
     , m_revision_timer(this)
 {
+    if (!m_owner_dispatch) {
+        m_owner_dispatch = [](std::function<void()> callback) {
+            if (wxIsMainThread())
+                callback();
+            else
+                wxGetApp().CallAfter(std::move(callback));
+        };
+    }
     SetScrollRate(0, FromDIP(12));
     SetBackgroundColour(wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOW));
     auto* root        = new wxBoxSizer(wxVERTICAL);
@@ -224,6 +240,50 @@ SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSl
     title_font.SetPointSize(title_font.GetPointSize() + 2);
     title->SetFont(title_font);
     root->Add(title, 0, wxEXPAND | wxALL, FromDIP(16));
+
+    auto* selector_sizer = new wxFlexGridSizer(2, 2, FromDIP(8), FromDIP(8));
+    selector_sizer->Add(new wxStaticText(this, wxID_ANY, _L("模式")), 0, wxALIGN_CENTER_VERTICAL);
+    m_mode_choice = new wxChoice(this, wxID_ANY);
+    m_mode_choice->Append(_L("AI 智能切片"));
+    m_mode_choice->Append(_L("Orca 原生"));
+    m_mode_choice->SetSelection(0);
+    selector_sizer->Add(m_mode_choice, 1, wxEXPAND);
+    selector_sizer->Add(new wxStaticText(this, wxID_ANY, _L("用途")), 0, wxALIGN_CENTER_VERTICAL);
+    m_purpose_choice = new wxChoice(this, wxID_ANY);
+    m_purpose_choice->Append(_L("装饰"));
+    m_purpose_choice->Append(_L("通用"));
+    m_purpose_choice->Append(_L("功能"));
+    m_purpose_choice->SetSelection(1);
+    selector_sizer->Add(m_purpose_choice, 1, wxEXPAND);
+    selector_sizer->AddGrowableCol(1, 1);
+    root->Add(selector_sizer, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(16));
+
+    m_mode_label = new wxStaticText(this, wxID_ANY, _L("模式：AI 智能切片"));
+    m_purpose_label = new wxStaticText(this, wxID_ANY, _L("用途：通用"));
+    m_baseline_label = new wxStaticText(this, wxID_ANY, _L("Orca 原生基线：尚未捕获"));
+    for (wxStaticText* label : {m_mode_label, m_purpose_label, m_baseline_label}) {
+        label->Wrap(FromDIP(330));
+        root->Add(label, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(8));
+    }
+    for (size_t index = 0; index < m_goal_cards.size(); ++index) {
+        m_goal_cards[index] = new wxStaticText(this, wxID_ANY, _L("目标分析中"));
+        m_goal_cards[index]->Wrap(FromDIP(330));
+        root->Add(m_goal_cards[index], 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(8));
+    }
+    m_mode_choice->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) {
+        if (m_mode_changed)
+            m_mode_changed(m_mode_choice->GetSelection() == 1 ? SmartSlicingMode::Orca : SmartSlicingMode::AI);
+    });
+    m_purpose_choice->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) {
+        if (!m_purpose_changed)
+            return;
+        switch (m_purpose_choice->GetSelection()) {
+        case 0: m_purpose_changed(SmartSlicingPurpose::Decoration); break;
+        case 2: m_purpose_changed(SmartSlicingPurpose::Functional); break;
+        case 1: m_purpose_changed(SmartSlicingPurpose::General); break;
+        default: m_purpose_changed(SmartSlicingPurpose::General); break;
+        }
+    });
 
     if (plater != nullptr)
         root->Add(new OrcaModelPreparationPanel(this, *plater,
@@ -288,10 +348,9 @@ SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSl
                 m_coordinator.select_candidate(m_candidate_ids[index]);
         });
         controls.retry->Bind(wxEVT_BUTTON, [this, index](wxCommandEvent&) {
-            if (!m_candidate_ids[index].empty())
-                run_in_background([this, candidate_id = m_candidate_ids[index]] {
-                    m_coordinator.retry_candidate(candidate_id, true);
-                });
+            if (!m_candidate_ids[index].empty() &&
+                !run_trial_task(m_coordinator.begin_candidate_retry(m_candidate_ids[index])))
+                m_coordinator.cancel();
         });
     }
     auto* candidate_actions = new wxBoxSizer(wxVERTICAL);
@@ -326,10 +385,9 @@ SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSl
             } catch (...) {
                 candidates.clear();
             }
-            run_in_background([this, candidates = std::move(candidates)]() mutable {
-                m_coordinator.plan_and_slice_candidates(std::move(candidates),
-                                                        AI::SmartSlicing::CandidateGoal::Stability, true);
-            });
+            if (!run_trial_task(m_coordinator.begin_candidate_trials(
+                    std::move(candidates), AI::SmartSlicing::CandidateGoal::Stability)))
+                m_coordinator.cancel();
         } else {
             if (m_can_recheck) m_coordinator.cancel();
             m_coordinator.start();
@@ -338,12 +396,14 @@ SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSl
     m_cancel->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         if (m_cancel_trial)
             m_cancel_trial();
-        if (!m_worker_running.load(std::memory_order_acquire))
-            m_coordinator.cancel();
+        m_coordinator.cancel();
     });
     Bind(wxEVT_SHOW, [this](wxShowEvent& event) {
-        if (!event.IsShown() && m_worker_running.load(std::memory_order_acquire) && m_cancel_trial)
-            m_cancel_trial();
+        if (!event.IsShown() && m_worker_running.load(std::memory_order_acquire)) {
+            if (m_cancel_trial)
+                m_cancel_trial();
+            m_coordinator.cancel();
+        }
         event.Skip();
     });
     Bind(wxEVT_TIMER, &SmartSlicingPanel::on_revision_timer, this, m_revision_timer.GetId());
@@ -352,33 +412,146 @@ SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSl
 
 SmartSlicingPanel::~SmartSlicingPanel()
 {
+    shutdown_async();
+}
+
+wxString mode_text(SmartSlicingMode mode)
+{
+    return mode == SmartSlicingMode::Orca ? _L("Orca 原生") : _L("AI 智能切片");
+}
+
+wxString purpose_text(SmartSlicingPurpose purpose)
+{
+    switch (purpose) {
+    case SmartSlicingPurpose::Decoration: return _L("装饰");
+    case SmartSlicingPurpose::Functional: return _L("功能");
+    case SmartSlicingPurpose::General: return _L("通用");
+    }
+    return _L("通用");
+}
+
+wxString goal_state_text(SmartSlicingGoalState state)
+{
+    switch (state) {
+    case SmartSlicingGoalState::Analyzing: return _L("分析中");
+    case SmartSlicingGoalState::Ready: return _L("可比较");
+    case SmartSlicingGoalState::Unavailable: return _L("不可用");
+    case SmartSlicingGoalState::Failed: return _L("失败");
+    case SmartSlicingGoalState::Stale: return _L("已过期");
+    case SmartSlicingGoalState::Applied: return _L("已应用");
+    case SmartSlicingGoalState::OfficialSlicing: return _L("正式切片中");
+    case SmartSlicingGoalState::ApplyFailed: return _L("应用失败");
+    }
+    return _L("分析中");
+}
+
+wxString goal_title(const std::string& goal_id)
+{
+    if (goal_id == "speed") return _L("Speed · 速度");
+    if (goal_id == "quality") return _L("Quality · 质量");
+    return _L("Balanced · 平衡");
+}
+
+void SmartSlicingPanel::shutdown_async()
+{
+    m_callback_gate.assert_owner_thread();
+    if (m_shutdown)
+        return;
+    m_shutdown = true;
+    m_callback_gate.close();
     m_revision_timer.Stop();
     if (m_worker_running.load(std::memory_order_acquire) && m_cancel_trial)
         m_cancel_trial();
+    m_coordinator.cancel();
     if (m_worker.joinable())
         m_worker.join();
+    m_worker_running.store(false, std::memory_order_release);
 }
 
-bool SmartSlicingPanel::run_in_background(std::function<void()> work)
+bool SmartSlicingPanel::run_trial_task(std::optional<AI::SmartSlicing::CandidateTrialTask> task)
 {
-    if (!work || m_worker_running.exchange(true, std::memory_order_acq_rel))
+    m_callback_gate.assert_owner_thread();
+    if (m_shutdown || !task || !m_execute_trial ||
+        m_worker_running.exchange(true, std::memory_order_acq_rel))
         return false;
     if (m_worker.joinable())
         m_worker.join();
-    m_worker = std::thread([this, work = std::move(work)] {
+
+    auto result = std::make_shared<std::optional<AI::SmartSlicing::TrialSliceResult>>();
+    std::function<void()> completion = m_callback_gate.guard(
+        [this, task = *task, result] () mutable {
+            if (!*result)
+                return;
+            complete_trial_task(std::move(task), std::move(**result));
+        });
+    ExecuteTrialFn execute_trial = m_execute_trial;
+    OwnerDispatchFn owner_dispatch = m_owner_dispatch;
+    m_worker = std::thread([task = std::move(*task), result, execute_trial = std::move(execute_trial),
+                            owner_dispatch = std::move(owner_dispatch), completion = std::move(completion)]() mutable {
         try {
-            work();
+            *result = execute_trial(task.candidate);
+        } catch (const std::exception& error) {
+            *result = AI::SmartSlicing::TrialSliceResult{task.candidate.id, task.candidate.base_revision,
+                AI::SmartSlicing::TrialSliceStatus::Failed, std::nullopt, error.what()};
         } catch (...) {
-            m_coordinator.cancel();
+            *result = AI::SmartSlicing::TrialSliceResult{task.candidate.id, task.candidate.base_revision,
+                AI::SmartSlicing::TrialSliceStatus::Failed, std::nullopt, "unknown_trial_error"};
         }
-        m_worker_running.store(false, std::memory_order_release);
+        owner_dispatch(std::move(completion));
     });
     return true;
+}
+
+void SmartSlicingPanel::complete_trial_task(AI::SmartSlicing::CandidateTrialTask task,
+                                            AI::SmartSlicing::TrialSliceResult result)
+{
+    m_callback_gate.assert_owner_thread();
+    m_worker_running.store(false, std::memory_order_release);
+    if (m_shutdown)
+        return;
+    AI::SmartSlicing::CandidateTrialAcceptance acceptance =
+        m_coordinator.accept_candidate_trial_result(std::move(task), std::move(result));
+    if (acceptance.next_task && !run_trial_task(std::move(acceptance.next_task)))
+        m_coordinator.cancel();
 }
 
 void SmartSlicingPanel::render(const SmartSlicingViewModel& view_model)
 {
     static const std::array<wxString, 4> names{_L("1. 模型与材料"), _L("2. 健康与准备"), _L("3. 优化方案"), _L("4. 检查并切片")};
+    m_mode_choice->SetSelection(view_model.mode == SmartSlicingMode::Orca ? 1 : 0);
+    switch (view_model.purpose) {
+    case SmartSlicingPurpose::Decoration: m_purpose_choice->SetSelection(0); break;
+    case SmartSlicingPurpose::Functional: m_purpose_choice->SetSelection(2); break;
+    case SmartSlicingPurpose::General: m_purpose_choice->SetSelection(1); break;
+    }
+    const bool ai_mode = view_model.mode == SmartSlicingMode::AI;
+    m_purpose_choice->Enable(ai_mode);
+    for (wxStaticText* card : m_goal_cards)
+        card->Enable(ai_mode);
+    m_mode_label->SetLabel(_L("模式：") + mode_text(view_model.mode));
+    m_purpose_label->SetLabel(_L("用途：") + purpose_text(view_model.purpose));
+    if (!view_model.native_baseline_available) {
+        m_baseline_label->SetLabel(_L("Orca 原生基线：尚未捕获"));
+    } else {
+        wxString baseline = _L("Orca 原生基线：已捕获");
+        if (view_model.baseline.estimated_time_seconds)
+            baseline += _L(" · 时间 ") + format_duration(view_model.baseline.estimated_time_seconds);
+        if (view_model.baseline.filament_volume_mm3)
+            baseline += _L(" · 材料 ") + format_volume(view_model.baseline.filament_volume_mm3);
+        m_baseline_label->SetLabel(baseline);
+    }
+    for (size_t index = 0; index < view_model.goal_results.size(); ++index) {
+        const SmartSlicingGoalView& goal = view_model.goal_results[index];
+        wxString card = goal_title(goal.goal_id) + _L("：") + goal_state_text(goal.state);
+        if (!goal.diagnostic_codes.empty())
+            card += _L(" · ") + from_u8(goal.diagnostic_codes.front());
+        else if (goal.actions.can_apply)
+            card += _L(" · 可应用");
+        else if (goal.actions.can_retry_slice)
+            card += _L(" · 可重试正式切片");
+        m_goal_cards[index]->SetLabel(card);
+        m_goal_cards[index]->Wrap(FromDIP(330));
+    }
     m_summary->SetLabel(summary_text(view_model.summary_key));
     m_summary->Wrap(FromDIP(330));
     for (size_t index = 0; index < m_stage_labels.size(); ++index)
@@ -486,8 +659,7 @@ void SmartSlicingPanel::render(const SmartSlicingViewModel& view_model)
 
 void SmartSlicingPanel::on_revision_timer(wxTimerEvent&)
 {
-    if (!m_worker_running.load(std::memory_order_acquire))
-        m_coordinator.refresh_revision();
+    m_coordinator.refresh_revision();
 }
 
 } // namespace Slic3r::GUI

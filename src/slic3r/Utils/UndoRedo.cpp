@@ -54,6 +54,31 @@ bool Snapshot::is_topmost() const
 	return this->name == topmost_snapshot_name;
 }
 
+bool detail::abort_top_action_history(std::vector<Snapshot>& history, size_t& active_time,
+                                      const ActionSnapshotIdentity& identity)
+{
+    if (!identity.valid() || history.size() < 3 ||
+        active_time != identity.action_snapshot_time)
+        return false;
+    auto action = std::lower_bound(
+        history.begin(), history.end(), Snapshot(identity.action_snapshot_time));
+    if (action == history.end() || action->timestamp != identity.action_snapshot_time ||
+        action != history.end() - 2 || action->name != identity.action_name ||
+        !snapshot_modifies_project(*action) ||
+        action->project_config_change)
+        return false;
+    const auto captured_top = std::next(action);
+    if (captured_top->timestamp != identity.active_snapshot_time || !captured_top->is_topmost() ||
+        !captured_top->is_topmost_captured() || captured_top->project_config_change)
+        return false;
+
+    const SnapshotData restored_data = action->snapshot_data;
+    history.erase(action, history.end());
+    history.emplace_back(topmost_snapshot_name, identity.action_snapshot_time, 0, restored_data);
+    active_time = identity.action_snapshot_time;
+    return true;
+}
+
 // Time interval, start is closed, end is open.
 struct Interval
 {
@@ -593,6 +618,16 @@ public:
 	bool has_redo_snapshot() const;
     bool undo(Slic3r::Model &model, const Slic3r::GUI::Selection &selection, Slic3r::GUI::GLGizmosManager &gizmos, Slic3r::GUI::PartPlateList& plate_list, const SnapshotData &snapshot_data, size_t jump_to_time);
     bool redo(Slic3r::Model &model, Slic3r::GUI::GLGizmosManager &gizmos, Slic3r::GUI::PartPlateList& plate_list, size_t jump_to_time);
+    bool abort_top_action(const ActionSnapshotIdentity& identity)
+    {
+        if (!detail::abort_top_action_history(m_snapshots, m_active_snapshot_time, identity))
+            return false;
+        for (auto& item : m_objects)
+            item.second->release_after_timestamp(identity.action_snapshot_time);
+        this->collect_garbage();
+        assert(this->valid());
+        return true;
+    }
 	void release_least_recently_used();
 
 	// Snapshot history (names with timestamps).
@@ -1387,6 +1422,8 @@ bool Stack::has_redo_snapshot() const { return pimpl->has_redo_snapshot(); }
 bool Stack::undo(Slic3r::Model& model, const Slic3r::GUI::Selection& selection, Slic3r::GUI::GLGizmosManager& gizmos, Slic3r::GUI::PartPlateList& plate_list, const SnapshotData &snapshot_data, size_t time_to_load)
 	{ return pimpl->undo(model, selection, gizmos, plate_list, snapshot_data, time_to_load); }
 bool Stack::redo(Slic3r::Model& model, Slic3r::GUI::GLGizmosManager& gizmos, Slic3r::GUI::PartPlateList& plate_list, size_t time_to_load) { return pimpl->redo(model, gizmos, plate_list, time_to_load); }
+bool Stack::abort_top_action(const ActionSnapshotIdentity& identity)
+    { return pimpl->abort_top_action(identity); }
 const Selection& Stack::selection_deserialized() const { return pimpl->selection_deserialized(); }
 
 const std::vector<Snapshot>& Stack::snapshots() const { return pimpl->snapshots(); }

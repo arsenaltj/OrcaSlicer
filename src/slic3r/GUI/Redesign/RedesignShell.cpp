@@ -2134,7 +2134,7 @@ void RedesignShell::update_model_page(const ModelGenerationUIState& state)
             visual_mode = ImagePreview::PlaceholderMode::Idle;
             if (state.can_import) {
                 m_model_page_action = ModelPageAction::Import;
-                action_label = text("导入到准备页");
+                action_label = text("导入");
             }
         }
     } else if (!state.model_generation_context) {

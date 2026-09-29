@@ -27,6 +27,11 @@ WorkspaceContext printable_context(std::string fingerprint = "revision-a")
     context.process_preset_id = "process";
     context.materials.push_back({"material", "#FFFFFF"});
     context.objects.push_back({42, "cube", 1, 12, 0, false});
+    context.machine_capability.registry_version = "test-machine-registry";
+    context.machine_capability.support_status = MachineSupportStatus::Enabled;
+    context.material_compatibility.registry_version = "test-material-registry";
+    context.material_compatibility.combination_status = MaterialCombinationStatus::Compatible;
+    context.material_compatibility.common_family = MaterialFamily::PLA;
     context.native_validation_available = true;
     return context;
 }
@@ -513,13 +518,13 @@ TEST_CASE("Orca trial slicing owns model config print and gcode copies", "[AI][S
     instance->set_offset(Vec3d(50.0, 50.0, 0.0));
     object->ensure_on_bed();
     DynamicPrintConfig formal_config = DynamicPrintConfig::full_print_config();
-    formal_config.set("layer_height", 0.25);
+    formal_config.set("brim_width", 0.0);
     formal_config.set("layer_change_gcode", std::string("G92 E0\n"));
 
     const ObjectID object_id = object->id();
     const ObjectID instance_id = instance->id();
     const Transform3d original_transform = instance->get_matrix();
-    const std::string original_layer_height = formal_config.opt_serialize("layer_height");
+    const std::string original_brim_width = formal_config.opt_serialize("brim_width");
     Slic3r::GUI::OrcaTrialSliceExecutor executor([&formal_model, &formal_config] {
         Slic3r::GUI::OrcaTrialSliceInput input;
         input.model       = formal_model;
@@ -542,8 +547,8 @@ TEST_CASE("Orca trial slicing owns model config print and gcode copies", "[AI][S
             cloned_transform.matrix[static_cast<size_t>(row * candidate_transform.cols() + column)] =
                 candidate_transform(row, column);
     candidate.placement.transforms.push_back(cloned_transform);
-    candidate.parameters.entries.push_back({ConfigScope::Plate, PresetOwner::Process, 7, "layer_height",
-                                            0.25, 0.20, "improve_surface_detail"});
+    candidate.parameters.entries.push_back({ConfigScope::Plate, PresetOwner::Process, 7, "brim_width",
+                                            0.0, 5.0, "improve_bed_adhesion"});
 
     const TrialSliceResult result = executor.execute_trial_slice(candidate);
 
@@ -557,7 +562,7 @@ TEST_CASE("Orca trial slicing owns model config print and gcode copies", "[AI][S
     REQUIRE(formal_model.objects.front()->instances.size() == 1);
     CHECK(formal_model.objects.front()->instances.front()->id() == instance_id);
     CHECK(formal_model.objects.front()->instances.front()->get_matrix().isApprox(original_transform));
-    CHECK(formal_config.opt_serialize("layer_height") == original_layer_height);
+    CHECK(formal_config.opt_serialize("brim_width") == original_brim_width);
 }
 
 TEST_CASE("Completed and failed slice results become stale after a later workspace edit", "[AI][SmartSlicing][Apply]")
@@ -663,17 +668,18 @@ TEST_CASE("Native trial slicing checks device height for a prepared 120 mm model
 TEST_CASE("Orca trial slicing rejects forbidden patches and observes early cancellation", "[AI][SmartSlicing][Workflow][OrcaTrial]")
 {
     SliceCandidate candidate = proposal("candidate", WorkspaceRevision{1, 2, 3, "revision-a"});
-    candidate.parameters.entries.push_back({ConfigScope::Plate, PresetOwner::Process, 0, "nozzle_diameter",
+    candidate.parameters.entries.push_back({ConfigScope::Plate, PresetOwner::Printer, 0, "nozzle_diameter",
                                             0.4, 0.6, "unsafe_hardware_change"});
     Slic3r::GUI::OrcaTrialSliceExecutor rejected_executor([] {
         Slic3r::GUI::OrcaTrialSliceInput input;
         input.plate_id = 0;
+        input.config = DynamicPrintConfig::full_print_config();
         return input;
     });
 
     const TrialSliceResult rejected = rejected_executor.execute_trial_slice(candidate);
     CHECK(rejected.status == TrialSliceStatus::Failed);
-    CHECK(rejected.diagnostic_code == "parameter_key_forbidden");
+    CHECK(rejected.diagnostic_code == "parameter_immutable_fact");
 
     Slic3r::GUI::OrcaTrialSliceExecutor* executor_ptr = nullptr;
     Slic3r::GUI::OrcaTrialSliceExecutor canceled_executor([&executor_ptr] {
