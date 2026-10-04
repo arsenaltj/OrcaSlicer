@@ -13,6 +13,9 @@ add_executable(${_TEST_NAME}_tests
     test_model_generation_client.cpp
     test_model_preview_palette.cpp
     test_model_preview_normals.cpp
+    test_gl_model_geometry.cpp
+    test_mesh_raycaster.cpp
+    test_font_texture_compression.cpp
     test_model_library_metadata.cpp
     test_model_generation_submission_state.cpp
     test_local_print_color_matching.cpp

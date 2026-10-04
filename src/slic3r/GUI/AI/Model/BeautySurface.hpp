@@ -41,6 +41,12 @@ struct BeautySurface {
         const std::vector<RGBA>& colors, const std::vector<uint32_t>& saved_partition = {},
         const std::function<bool()>& canceled = {});
 
+    // Appearance and partitioning need face adjacency. Geometry distance rows
+    // are prepared only by vertex_weights/deform if this lighter entry is used.
+    static std::shared_ptr<BeautySurface> build_for_appearance(const indexed_triangle_set& mesh,
+        const std::vector<RGBA>& colors, const std::vector<uint32_t>& saved_partition = {},
+        const std::function<bool()>& canceled = {});
+
     // Appearance feathering stays inside the selected surface. Geometry uses
     // separate continuous vertex weights and freezes every outside/protected
     // incident vertex, including duplicates across UV seams.
@@ -54,6 +60,13 @@ struct BeautySurface {
         const std::vector<uint8_t>& selected, const std::vector<uint8_t>& protected_faces,
         double displacement_mm, double falloff_mm, size_t& moved_vertices,
         const std::function<bool()>& canceled = {}) const;
+private:
+    std::vector<float> vertex_weights_impl(const indexed_triangle_set& mesh,
+        const std::vector<uint8_t>& selected,const std::vector<uint8_t>& protected_faces,
+        double falloff_mm,const std::function<bool()>& canceled) const;
+    static std::shared_ptr<BeautySurface> build_impl(const indexed_triangle_set& mesh,
+        const std::vector<RGBA>& colors, const std::vector<uint32_t>& saved_partition,
+        const std::function<bool()>& canceled, bool vertex_graph);
 };
 
 } // namespace Slic3r::AI

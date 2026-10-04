@@ -5,6 +5,11 @@
 #include <libslic3r/TriangleMesh.hpp>
 
 #include <numeric>
+#include <mutex>
+#include <chrono>
+#include <cstdlib>
+
+#include <boost/log/trivial.hpp>
 
 #ifdef SLIC3R_HOLE_RAYCASTER
 #include <libslic3r/SLA/Hollowing.hpp>
@@ -20,6 +25,9 @@ private:
 public:
     void init(const indexed_triangle_set &its, bool calculate_epsilon)
     {
+        const char* trace_value = std::getenv("ORCASLICER_SCENE_TIMING");
+        const bool trace = trace_value != nullptr && trace_value[0] == '1' && trace_value[1] == '\0';
+        const auto started = trace ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         m_triangle_ray_epsilon = 0.000001;
         if (calculate_epsilon) {
             // Calculate epsilon from average triangle edge length.
@@ -27,8 +35,15 @@ public:
             if (l > 0)
                 m_triangle_ray_epsilon = 0.000001 * l * l;
         }
+        const auto epsilon_done = trace ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         m_tree = AABBTreeIndirect::build_aabb_tree_over_indexed_triangle_set(
-            its.vertices, its.indices);
+            its.vertices, its.indices, 0.f, true);
+        if (trace) {
+            const auto tree_done = std::chrono::steady_clock::now();
+            BOOST_LOG_TRIVIAL(info) << "AABB raycaster timing: faces=" << its.indices.size()
+                << ", epsilon_ms=" << std::chrono::duration<double, std::milli>(epsilon_done - started).count()
+                << ", tree_ms=" << std::chrono::duration<double, std::milli>(tree_done - epsilon_done).count();
+        }
     }
 
     void intersect_ray(const indexed_triangle_set &its,
@@ -66,6 +81,24 @@ public:
     }
 };
 
+// Ray queries only need the tree. Build adjacency if a caller actually asks for it.
+class AABBMesh::Topology {
+public:
+    void ensure(const indexed_triangle_set &mesh)
+    {
+        std::call_once(m_once, [&] {
+            m_vfidx.create(mesh);
+            m_fnidx = its_face_neighbors(mesh);
+        });
+    }
+
+    VertexFaceIndex m_vfidx;
+    std::vector<Vec3i32> m_fnidx;
+
+private:
+    std::once_flag m_once;
+};
+
 template<class M> void AABBMesh::init(const M &mesh, bool calculate_epsilon)
 {
     // Build the AABB accelaration tree
@@ -75,8 +108,7 @@ template<class M> void AABBMesh::init(const M &mesh, bool calculate_epsilon)
 AABBMesh::AABBMesh(const indexed_triangle_set &tmesh, bool calculate_epsilon)
     : m_tm(&tmesh)
     , m_aabb(new AABBImpl())
-    , m_vfidx{tmesh}
-    , m_fnidx{its_face_neighbors(tmesh)}
+    , m_topology(std::make_shared<Topology>())
 {
     init(tmesh, calculate_epsilon);
 }
@@ -84,8 +116,7 @@ AABBMesh::AABBMesh(const indexed_triangle_set &tmesh, bool calculate_epsilon)
 AABBMesh::AABBMesh(const TriangleMesh &mesh, bool calculate_epsilon)
     : m_tm(&mesh.its)
     , m_aabb(new AABBImpl())
-    , m_vfidx{mesh.its}
-    , m_fnidx{its_face_neighbors(mesh.its)}
+    , m_topology(std::make_shared<Topology>())
 {
     init(mesh, calculate_epsilon);
 }
@@ -95,16 +126,14 @@ AABBMesh::~AABBMesh() {}
 AABBMesh::AABBMesh(const AABBMesh &other)
     : m_tm(other.m_tm)
     , m_aabb(new AABBImpl(*other.m_aabb))
-    , m_vfidx{other.m_vfidx}
-    , m_fnidx{other.m_fnidx}
+    , m_topology(other.m_topology)
 {}
 
 AABBMesh &AABBMesh::operator=(const AABBMesh &other)
 {
     m_tm = other.m_tm;
     m_aabb.reset(new AABBImpl(*other.m_aabb));
-    m_vfidx = other.m_vfidx;
-    m_fnidx = other.m_fnidx;
+    m_topology = other.m_topology;
 
     return *this;
 }
@@ -112,6 +141,18 @@ AABBMesh &AABBMesh::operator=(const AABBMesh &other)
 AABBMesh &AABBMesh::operator=(AABBMesh &&other) = default;
 
 AABBMesh::AABBMesh(AABBMesh &&other) = default;
+
+const VertexFaceIndex &AABBMesh::vertex_face_index() const
+{
+    m_topology->ensure(*m_tm);
+    return m_topology->m_vfidx;
+}
+
+const std::vector<Vec3i32> &AABBMesh::face_neighbor_index() const
+{
+    m_topology->ensure(*m_tm);
+    return m_topology->m_fnidx;
+}
 
 
 

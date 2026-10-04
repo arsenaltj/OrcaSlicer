@@ -26,6 +26,8 @@
 #include <boost/log/trivial.hpp>
 
 #include <algorithm>
+#include <chrono>
+#include <wx/thread.h>
 #include <cctype>
 #include <limits>
 #include <set>
@@ -36,19 +38,28 @@
 namespace Slic3r::GUI {
 namespace {
 
+// Wall time only: scopes that can open modal UI are named explicitly so their
+// duration is not mistaken for uninterrupted main-thread computation.
+class ImportStageTiming {
+public:
+    explicit ImportStageTiming(const char* stage) : m_stage(stage) {}
+    ~ImportStageTiming()
+    {
+        BOOST_LOG_TRIVIAL(info) << "AI import timing: stage=" << m_stage
+            << ", elapsed_ms=" << std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - m_start).count()
+            << ", main_thread=" << wxIsMainThread();
+    }
+private:
+    const char* m_stage;
+    const std::chrono::steady_clock::time_point m_start = std::chrono::steady_clock::now();
+};
 
 bool is_nonempty_obj(const boost::filesystem::path& path)
 {
     boost::system::error_code ec;
     return boost::filesystem::is_regular_file(path, ec) && !ec && boost::filesystem::file_size(path, ec) > 0 && !ec &&
            path.extension() == ".obj";
-}
-
-bool has_open_mesh_edges(const ModelObject& object)
-{
-    return std::any_of(object.volumes.begin(), object.volumes.end(), [](const ModelVolume* volume) {
-        return volume != nullptr && its_num_open_edges(volume->mesh().its) != 0;
-    });
 }
 
 ObjImportColorFn make_obj_color_mapper(const std::vector<std::string>& extruder_colours,
@@ -179,11 +190,12 @@ TextureImportOptions model_import_color_options(const AI::ModelImportRequest& re
 
 AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImportRequest& request)
 {
+    const ImportStageTiming total_timing("import_wall_including_dialogs");
     AI::ModelImportResult result;
     result.color_mode = request.color_mode;
     result.subface_color_count = request.subface_color_overrides.size();
     TriangleMesh semantic_source_mesh;
-    bool has_semantic_source_mesh = false;
+    const indexed_triangle_set* semantic_source_its = nullptr;
     if (m_plater == nullptr || !AI::is_model_artifact(request.artifact.local_path)) {
         result.outcome = AI::ModelImportOutcome::InvalidArtifact;
         result.error = "The generated OBJ/GLB is missing or invalid.";
@@ -192,7 +204,9 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
 
     boost::filesystem::path path = request.artifact.local_path;
     std::shared_ptr<const indexed_triangle_set> matched_source;
+    std::string matched_geometry_id;
     if(request.matched_colors && request.color_mode==AI::ImportColorMode::NativeMatch) {
+        const ImportStageTiming timing("matched_identity_validation");
         const auto& matched=*request.matched_colors;
         const auto current=printable_palette();
         bool palette_matches=matched.palette.size()==current.physical_channels.size();
@@ -206,30 +220,43 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
             palette_matches=palette_matches && std::any_of(current.mixed_recipes.begin(),current.mixed_recipes.end(),
                 [&](const auto& r){return AI::same_native_mixed_recipe(r,recipe);});
         TriangleMesh mesh;ObjInfo colors;
-        if(!matched.valid() || !palette_matches || AI::model_artifact_sha256(path)!=matched.source_sha256 ||
-           !AI::load_model_artifact(path,mesh,colors,result.error) || mesh.its.indices.size()!=matched.face_slots.size() ||
-           AI::SurfaceSelectionPersistence::geometry_fingerprint(mesh.its)!=matched.geometry_id) {
+        bool source_valid = matched.valid() && palette_matches &&
+            AI::model_artifact_sha256(path) == matched.source_sha256 &&
+            AI::load_model_artifact(path, mesh, colors, result.error) &&
+            mesh.its.indices.size() == matched.face_slots.size();
+        if (source_valid) {
+            matched_geometry_id = AI::SurfaceSelectionPersistence::geometry_fingerprint(mesh.its);
+            source_valid = matched_geometry_id == matched.geometry_id;
+        }
+        if (!source_valid) {
             result.outcome=AI::ModelImportOutcome::InvalidArtifact;
             result.error="模型或准备页耗材已变化，请回美颜工作台重新匹配并保存后导入。";return result;
         }
         matched_source=std::make_shared<indexed_triangle_set>(std::move(mesh.its));
+        semantic_source_its = matched_source.get();
     }
     if (request.color_mode == AI::ImportColorMode::NativeMatch &&
         (!request.face_color_overrides.empty() || !request.subface_color_overrides.empty())) {
-        ObjInfo source_colors;
-        if (!AI::load_model_artifact(path, semantic_source_mesh, source_colors, result.error)) {
-            result.outcome = AI::ModelImportOutcome::InvalidArtifact;
-            return result;
+        const ImportStageTiming timing("edited_geometry_validation");
+        if (!semantic_source_its) {
+            ObjInfo source_colors;
+            if (!AI::load_model_artifact(path, semantic_source_mesh, source_colors, result.error)) {
+                result.outcome = AI::ModelImportOutcome::InvalidArtifact;
+                return result;
+            }
+            semantic_source_its = &semantic_source_mesh.its;
         }
-        has_semantic_source_mesh = true;
-        const auto identity = AI::SurfaceSelectionPersistence::geometry_fingerprint(semantic_source_mesh.its);
+        // Native matching already decoded and verified this exact source for
+        // its face slots. Reuse that mesh for local-edit identity checks.
+        const auto identity = matched_source ? matched_geometry_id :
+            AI::SurfaceSelectionPersistence::geometry_fingerprint(*semantic_source_its);
         if (identity.empty() || identity != request.face_color_geometry_id) {
             result.outcome = AI::ModelImportOutcome::InvalidArtifact;
             result.error = "The locally edited surface belongs to another model version. Reload the model before importing.";
             return result;
         }
         for (const auto& override : request.face_color_overrides) {
-            if (override.first >= semantic_source_mesh.its.indices.size() ||
+            if (override.first >= semantic_source_its->indices.size() ||
                 std::any_of(override.second.begin(), override.second.end(), [](float channel) {
                     return !std::isfinite(channel) || channel < 0.f || channel > 1.f;
                 })) {
@@ -239,7 +266,7 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
             }
         }
         for (const auto& override : request.subface_color_overrides) {
-            if (override.face_id >= semantic_source_mesh.its.indices.size() || override.depth == 0 ||
+            if (override.face_id >= semantic_source_its->indices.size() || override.depth == 0 ||
                 override.depth > 2 || unsigned(override.path) >= (1u << (2u * override.depth)) ||
                 std::any_of(override.color.begin(), override.color.end(), [](float channel) {
                     return !std::isfinite(channel) || channel < 0.f || channel > 1.f;
@@ -251,40 +278,31 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
         }
     }
     if (AI::model_artifact_format(path) == "glb" && request.color_mode != AI::ImportColorMode::NativeMatch) {
+        const ImportStageTiming timing("glb_to_obj_preparation");
         // Feed the same Z-up millimetres and sampled sRGB colors as the AI
         // preview into Orca's existing color matching and undo transaction.
         // Keep the textured GLB and an immutable, local import copy separately.
-        const auto hash = AI::model_artifact_sha256(path);
-        TriangleMesh mesh; ObjInfo colors;
-        if (hash.empty() || !AI::load_model_artifact(path, mesh, colors, result.error)) {
-            result.outcome = AI::ModelImportOutcome::InvalidArtifact;
-            return result;
-        }
         const auto original = path;
         const boost::filesystem::path cache_root = Slic3r::temporary_dir();
-        if (cache_root.empty()) {
-            result.outcome = AI::ModelImportOutcome::InvalidArtifact;
-            result.error = "The Orca temporary directory is unavailable for model import.";
-            return result;
-        }
-        // Saved-version names and history nesting must not lengthen the import
-        // copy beyond Windows path limits. The complete content hash owns it.
-        // Normal 3MF saves retain only the basename of the volume source.
-        path = cache_root / "ai-import" / ("orcaslicer-ai-glb-" + hash + ".obj");
-        if (!AI::is_model_artifact(path) && !AI::write_model_artifact(path, mesh.its, colors.vertex_colors, result.error)) {
-            BOOST_LOG_TRIVIAL(error) << "AI model import preparation failed: source=" << original
-                << ", output=" << path << ", error=" << result.error;
+        bool reused = false;
+        if (!AI::prepare_glb_obj_import(original, cache_root, m_verified_glb_import,
+                                        path, result.error, reused)) {
             result.outcome = AI::ModelImportOutcome::InvalidArtifact;
             return result;
         }
+        BOOST_LOG_TRIVIAL(info) << "AI import preparation: verified_obj_reused=" << reused;
     }
     Sidebar& workflow = m_plater->sidebar();
     workflow.start_ai_workflow(_L("正在导入 AI 生成模型"));
     workflow.update_ai_workflow_step(Sidebar::AIImportModel, Sidebar::AIWorkflowStatus::Running, _L("读取模型"));
 
     bool import_cancelled = false;
-    auto load_model = [this, &path, &import_cancelled, &request,&matched_source](const char* snapshot_name, AI::ImportColorMode color_mode, bool& colors_applied,
+    AIImportSeamResult preloaded_seams;
+    bool preloaded_seams_checked = false;
+    auto load_model = [this, &path, &import_cancelled, &request, &matched_source,
+                       &preloaded_seams, &preloaded_seams_checked](const char* snapshot_name, AI::ImportColorMode color_mode, bool& colors_applied,
                                     size_t& source_color_count, size_t& mapped_color_count) {
+        const ImportStageTiming timing("load_and_color_including_dialogs");
         import_cancelled = false;
         if (color_mode == AI::ImportColorMode::NativeMatch) {
             // Pass the actual selected GLB version through with its UVs and
@@ -332,6 +350,16 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
                     : Model::obj_import_face_color_deal(in_out.filament_ids, in_out.first_extruder_id, in_out.model);
                 if (!colors_applied)
                     mapped_color_count = 0;
+            };
+        } else if (color_mode == AI::ImportColorMode::SingleColor && request.face_color_overrides.empty() &&
+                   request.subface_color_overrides.empty()) {
+            color_mapper = [&preloaded_seams, &preloaded_seams_checked](ObjDialogInOut& in_out) {
+                // For this unpainted OBJ, close exact seams before Plater creates
+                // the render mesh and raycaster. A cancelled or absent callback
+                // still uses the ordinary post-load check below.
+                if (!in_out.model || in_out.model->objects.size() != 1 || !in_out.model->objects.front()) return;
+                preloaded_seams = stitch_ai_import_seams(*in_out.model->objects.front());
+                preloaded_seams_checked = true;
             };
         } else {
             color_mapper = [](ObjDialogInOut&) {};
@@ -388,7 +416,7 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
     if (!request.subface_color_overrides.empty()) {
         std::string subface_error;
         ModelVolume* volume = nullptr;
-        if (!has_semantic_source_mesh || loaded.size() != 1 || loaded.front() >= m_plater->model().objects.size()) {
+        if (!semantic_source_its || loaded.size() != 1 || loaded.front() >= m_plater->model().objects.size()) {
             subface_error = "Semantic subfaces require one unchanged imported model.";
         } else if (ModelObject* object = m_plater->model().objects[loaded.front()]) {
             for (ModelVolume* candidate : object->volumes) {
@@ -402,7 +430,7 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
         }
         if (volume != nullptr) {
             auto painting = volume->mmu_segmentation_facets.get_data();
-            if (apply_subface_color_overrides(semantic_source_mesh.its, volume->mesh().its, painting,
+            if (apply_subface_color_overrides(*semantic_source_its, volume->mesh().its, painting,
                     request.face_color_overrides, request.subface_color_overrides, subface_error)) {
                 volume->mmu_segmentation_facets.set_data(std::move(painting));
                 result.subface_colors_applied = true;
@@ -449,18 +477,23 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
     };
     update_color_status();
 
-    bool requires_repair = false;
-    size_t stitched_volumes = 0;
-    for (size_t object_index : loaded) {
-        if (object_index >= m_plater->model().objects.size()) continue;
-        ModelObject* object = m_plater->model().objects[object_index];
-        if (!object) continue;
-        const size_t stitched = stitch_ai_import_seams(*object);
-        if (stitched) {
-            stitched_volumes += stitched;
-            m_plater->changed_mesh(int(object_index));
+    const bool prechecked_single_object = preloaded_seams_checked && loaded.size() == 1;
+    bool requires_repair = prechecked_single_object && preloaded_seams.has_open_edges;
+    size_t stitched_volumes = prechecked_single_object ? preloaded_seams.stitched_volumes : 0;
+    if (!prechecked_single_object) {
+        for (size_t object_index : loaded) {
+            if (object_index >= m_plater->model().objects.size()) continue;
+            ModelObject* object = m_plater->model().objects[object_index];
+            if (!object) continue;
+            const ImportStageTiming timing("mesh_check_and_seam_repair_per_object");
+            const auto seam_result = stitch_ai_import_seams(*object);
+            const size_t stitched = seam_result.stitched_volumes;
+            if (stitched) {
+                stitched_volumes += stitched;
+                m_plater->changed_mesh(int(object_index));
+            }
+            requires_repair |= seam_result.has_open_edges;
         }
-        requires_repair |= has_open_mesh_edges(*object);
     }
     if (requires_repair) {
         // CGAL repair has no interruptible per-mesh operation. Do not make it

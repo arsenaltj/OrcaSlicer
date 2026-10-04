@@ -411,7 +411,7 @@ void MeshClipper::recalculate_triangles()
 
 Vec3f MeshRaycaster::get_triangle_normal(size_t facet_idx) const
 {
-    return m_normals[facet_idx];
+    return its_face_normal(m_mesh->its, m_mesh->its.indices[facet_idx]);
 }
 
 void MeshRaycaster::line_from_mouse_pos(const Vec2d& mouse_pos, const Transform3d& trafo, const Camera& camera, Vec3d& point, Vec3d& direction)
@@ -570,7 +570,7 @@ Vec3f MeshRaycaster::get_closest_point(const Vec3f& point, Vec3f* normal) const
     m_emesh.squared_distance(pointd, idx, closest_point);
     if (normal)
         // TODO: consider: get_normal(m_emesh, pointd).cast<float>();
-        *normal = m_normals[idx];
+        *normal = get_triangle_normal(size_t(idx));
 
     return closest_point.cast<float>();
 }

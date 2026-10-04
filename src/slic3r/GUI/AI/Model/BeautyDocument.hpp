@@ -71,17 +71,24 @@ struct BeautyDocument {
     }
     nlohmann::json encode() const {
         using Json=nlohmann::json;
-        Json runs=Json::array();
+        // Size the outer array once. Each run owns a two-number array; build it
+        // directly instead of constructing nested initializer-list temporaries.
+        size_t run_count=face_patch.empty()?0:1;
+        for(size_t i=1;i<face_patch.size();++i)run_count+=face_patch[i]!=face_patch[i-1];
+        Json::array_t runs;runs.reserve(run_count);
         for(size_t start=0;start<face_patch.size();) {
             size_t end=start+1;while(end<face_patch.size() && face_patch[end]==face_patch[start])++end;
-            runs.push_back({face_patch[start],end-start});start=end;
+            Json::array_t run;run.reserve(2);
+            run.emplace_back(face_patch[start]);run.emplace_back(end-start);
+            runs.emplace_back(std::move(run));start=end;
         }
         Json saved_groups=Json::array();
         for(const auto& g:groups)saved_groups.push_back({{"id",g.id},{"name",g.name},{"faces",g.faces},
             {"locked",g.locked},{"preserve_color",g.preserve_color}});
-        return {{"schema","orca.beauty-workbench/v1"},{"geometry_id",geometry_id},{"face_count",face_count},
-            {"patch_algorithm",BeautySurface::algorithm_version},{"patch_runs",std::move(runs)},
-            {"next_group_id",next_group_id},{"groups",std::move(saved_groups)},{"edits",edits}};
+        Json result={{"schema","orca.beauty-workbench/v1"},{"geometry_id",geometry_id},{"face_count",face_count},
+            {"patch_algorithm",BeautySurface::algorithm_version},{"next_group_id",next_group_id},{"edits",edits}};
+        result["patch_runs"]=std::move(runs);result["groups"]=std::move(saved_groups);
+        return result;
     }
     static BeautyDocument decode(const nlohmann::json& json,const std::string& geometry,size_t faces) {
         auto require=[](bool v,const char* m){if(!v)throw std::runtime_error(m);};

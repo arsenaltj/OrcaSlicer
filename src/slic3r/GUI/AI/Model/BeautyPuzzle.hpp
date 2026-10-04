@@ -5,8 +5,11 @@
 #include "libslic3r/TextureToColor/ColorUtils.hpp"
 #include <nlohmann/json.hpp>
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <future>
+#include <mutex>
 #include <limits>
 #include <map>
 #include <numeric>
@@ -14,6 +17,7 @@
 #include <queue>
 #include <set>
 #include <stdexcept>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -471,6 +475,14 @@ struct BeautyPuzzle {
 
     std::array<float, 4> representative_color(uint32_t id, const BeautySurface& surface) const {
         check_surface(surface);
+        return representative_color_on_validated_surface(id,surface);
+    }
+
+    // For the live workbench, whose puzzle and surface were validated when
+    // installed. Keep the full validation in representative_color for external data.
+    std::array<float, 4> representative_color_on_validated_surface(uint32_t id, const BeautySurface& surface) const {
+        require(geometry_id == surface.geometry_id && face_piece.size() == surface.face_patch.size() &&
+                face_piece.size() == surface.areas.size(), "Puzzle belongs to different geometry.");
         require_piece(id);
         const auto found = colors.find(id);
         if (found != colors.end()) return found->second;
@@ -920,17 +932,23 @@ struct BeautyPuzzle {
     nlohmann::json encode() const {
         check_state();
         using Json = nlohmann::json;
-        Json runs = Json::array(), saved_colors = Json::array();
+        size_t run_count=face_piece.empty()?0:1;
+        for(size_t f=1;f<face_piece.size();++f)run_count+=face_piece[f]!=face_piece[f-1];
+        Json::array_t runs;runs.reserve(run_count);
+        Json saved_colors = Json::array();
         for (size_t start = 0; start < face_piece.size();) {
             size_t end = start + 1;
             while (end < face_piece.size() && face_piece[end] == face_piece[start]) ++end;
-            runs.push_back({face_piece[start], end - start});
+            Json::array_t run;run.reserve(2);
+            run.emplace_back(face_piece[start]);run.emplace_back(end-start);
+            runs.emplace_back(std::move(run));
             start = end;
         }
         for (const auto& item : colors) saved_colors.push_back({{"id", item.first}, {"rgba", item.second}});
         Json result={{"schema", !target_colors.empty()?"orca.beauty-puzzle/v4":palette.empty()?"orca.beauty-puzzle/v1":mixed_recipes.empty()?"orca.beauty-puzzle/v2":"orca.beauty-puzzle/v3"}, {"geometry_id", geometry_id},
                 {"face_count", face_piece.size()}, {"next_id", next_id},
-                {"piece_runs", std::move(runs)}, {"colors", std::move(saved_colors)}};
+                {"colors", std::move(saved_colors)}};
+        result["piece_runs"]=std::move(runs);
         if(!palette.empty()) {
             result["palette"]=Json::array();result["filament_slots"]=Json::array();
             for(const auto& channel:palette)result["palette"].push_back({{"slot",channel.slot},{"color",channel.display_color},{"material",channel.material_type},{"compatible",channel.compatible}});
@@ -1133,7 +1151,8 @@ private:
     // Diffuse region indicators in a physical-width geodesic band. Solving
     // (area + sigma^2 * surface-Laplacian) u = area * indicator suppresses
     // multi-triangle stairs at a scale tied to surface area, rather than to a
-    // fixed number of triangle rings. Only scalar bands are resident at once.
+    // fixed number of triangle rings. Solves retain per-owner scores until
+    // they can be merged in the original owner order.
     BoundaryField boundary_field(const BeautySurface& surface, const std::vector<uint8_t>& scope,
                                  const std::vector<int32_t>& protected_labels,
                                  const std::unordered_map<uint32_t, size_t>& slot,
@@ -1143,8 +1162,12 @@ private:
                                  const std::vector<int32_t>* semantics,
                                  const std::vector<uint8_t>* deliberate) const {
         const size_t count = face_piece.size();
+        std::mutex cancel_mutex;
         auto checkpoint = [&] {
-            if (canceled && canceled()) throw std::runtime_error("Puzzle preparation cancelled.");
+            if (canceled) {
+                std::lock_guard<std::mutex> lock(cancel_mutex);
+                if (canceled()) throw std::runtime_error("Puzzle preparation cancelled.");
+            }
         };
         std::map<uint32_t, std::vector<size_t>> seeds;
         for (size_t f = 0; f < count; ++f) {
@@ -1162,14 +1185,22 @@ private:
         for (double value : area) total_area += value;
         BoundaryField result {std::vector<uint32_t>(count, 0), std::vector<float>(count, 0.f)};
         std::vector<float> own(count, 1.f);
-        std::vector<double> distance(count, std::numeric_limits<double>::infinity());
-        std::vector<int32_t> local(count, -1);
+        struct Scratch {
+            std::vector<double> distance;
+            std::vector<int32_t> local;
+            explicit Scratch(size_t count)
+                : distance(count, std::numeric_limits<double>::infinity()), local(count, -1) {}
+        };
+        struct Score { size_t face; float value; bool own; };
         using Entry = std::pair<double, size_t>;
-        for (const auto& item : seeds) {
+        auto solve = [&](const auto& item, Scratch& scratch) {
             checkpoint();
             const uint32_t owner = item.first;
             const size_t owner_slot = slot.at(owner);
-            if (members[owner_slot] <= 12) continue;
+            std::vector<Score> scores;
+            if (members[owner_slot] <= 12) return scores;
+            auto& distance = scratch.distance;
+            auto& local = scratch.local;
             const double sigma = std::max(1.5 * std::sqrt(area[owner_slot] / double(members[owner_slot])),
                 std::min(.12 * std::sqrt(area[owner_slot]), .03 * std::sqrt(total_area)));
             const double radius = 2.5 * sigma, time = sigma * sigma;
@@ -1252,13 +1283,59 @@ private:
                 for (size_t i = 0; i < size; ++i) direction[i] = residual[i] / diagonal[i] + beta * direction[i];
                 rz = next_rz;
             }
+            scores.reserve(size);
             for (size_t i = 0; i < size; ++i) {
                 const size_t f = band[i];
                 const float score = std::isfinite(value[i]) ? float(std::clamp(value[i], 0., 1.)) : (face_piece[f] == owner ? 1.f : 0.f);
-                if (face_piece[f] == owner) own[f] = score;
-                else if (score > result.confidence[f]) { result.confidence[f] = score; result.target[f] = owner; }
+                scores.push_back({f, score, face_piece[f] == owner});
                 distance[f] = std::numeric_limits<double>::infinity(); local[f] = -1;
             }
+            return scores;
+        };
+        auto merge = [&](uint32_t owner, const std::vector<Score>& scores) {
+            for (const Score& score : scores) {
+                if (score.own) own[score.face] = score.value;
+                else if (score.value > result.confidence[score.face]) {
+                    result.confidence[score.face] = score.value;
+                    result.target[score.face] = owner;
+                }
+            }
+        };
+        const unsigned hardware = std::thread::hardware_concurrency();
+        const unsigned workers = std::min(3u, hardware == 0 ? 1u : hardware);
+        if (count >= 200000 && seeds.size() >= 4 && workers >= 2) {
+            // Solves read an immutable partition. Apply their scores in the
+            // original owner order so equal-confidence ties keep their owner.
+            using Seed = std::pair<const uint32_t, std::vector<size_t>>;
+            std::vector<const Seed*> ordered;
+            ordered.reserve(seeds.size());
+            for (const auto& item : seeds) ordered.push_back(&item);
+            std::vector<std::vector<Score>> solved(ordered.size());
+            std::atomic<size_t> next{0};
+            std::atomic<bool> stop{false};
+            std::vector<std::future<void>> tasks;
+            tasks.reserve(workers);
+            for (unsigned worker = 0; worker < workers; ++worker) {
+                tasks.push_back(std::async(std::launch::async, [&] {
+                    Scratch scratch(count);
+                    while (!stop.load()) {
+                        const size_t i = next.fetch_add(1);
+                        if (i >= ordered.size()) break;
+                        try { solved[i] = solve(*ordered[i], scratch); }
+                        catch (...) { stop.store(true); throw; }
+                    }
+                }));
+            }
+            std::exception_ptr failure;
+            for (auto& task : tasks) {
+                try { task.get(); }
+                catch (...) { if (!failure) failure = std::current_exception(); }
+            }
+            if (failure) std::rethrow_exception(failure);
+            for (size_t i = 0; i < ordered.size(); ++i) merge(ordered[i]->first, solved[i]);
+        } else {
+            Scratch scratch(count);
+            for (const auto& item : seeds) merge(item.first, solve(item, scratch));
         }
         for (size_t f = 0; f < count; ++f) {
             result.confidence[f] -= own[f];
@@ -1530,14 +1607,27 @@ private:
             if ((component[f] != 0 && component[f] == best_component[original[f]]) ||
                 (best_component[original[f]] == 0 && f == deepest[original[f]])) settled[f] = 1;
         std::fill(distance.begin(), distance.end(), std::numeric_limits<double>::infinity());
+        // Patch and region colors stay fixed during growth. Cache only the last
+        // owner per patch, so temporary memory does not depend on region IDs.
+        struct PatchColorDistance {
+            uint32_t owner = std::numeric_limits<uint32_t>::max();
+            double distance = 0.;
+        };
+        std::vector<PatchColorDistance> patch_color_distance(patch_lab.size());
         auto offer = [&](size_t from, size_t to, double d) {
             if (settled[to]) return;
             const uint32_t owner = face_piece[from];
-            double color_distance = 0.;
-            for (size_t ch = 0; ch < 3; ++ch)
-                color_distance += std::pow(patch_lab[surface.face_patch[to]][ch] - piece_lab[owner][ch], 2);
+            const size_t patch = surface.face_patch[to];
+            auto& color = patch_color_distance[patch];
+            if (color.owner != owner) {
+                double squared_distance = 0.;
+                for (size_t ch = 0; ch < 3; ++ch)
+                    squared_distance += std::pow(patch_lab[patch][ch] - piece_lab[owner][ch], 2);
+                color.distance = std::sqrt(squared_distance);
+                color.owner = owner;
+            }
             const double bend = 1. - std::clamp(surface.normals[from].dot(surface.normals[to]), -1., 1.);
-            const double next = d + length(from, to) * (1. + .10 * std::sqrt(color_distance) + .8 * bend);
+            const double next = d + length(from, to) * (1. + .10 * color.distance + .8 * bend);
             if (next < distance[to]) {
                 distance[to] = next; face_piece[to] = owner;
                 pending.emplace(next, to);

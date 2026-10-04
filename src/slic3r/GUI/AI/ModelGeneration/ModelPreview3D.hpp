@@ -10,6 +10,9 @@
 #include "slic3r/GUI/AI/Model/BeautyBoundaryDrag.hpp"
 #include "ModelColorPreviewShader.hpp"
 #include "ModelPreviewNormals.hpp"
+#include "ModelPreviewGeometry.hpp"
+#include "BeautySourceSnapshot.hpp"
+#include "ModelHistoryMetadata.hpp"
 #include "ModelPreviewPuzzle.hpp"
 #include "ModelPreviewPalette.hpp"
 #include "ModelPreviewColorControls.hpp"
@@ -39,6 +42,8 @@
 #include <atomic>
 #include <cmath>
 #include <chrono>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <exception>
 #include <functional>
@@ -61,9 +66,18 @@ public:
     explicit ModelPreview3D(wxWindow* parent, bool retain_surface_attributes = false)
         : wxPanel(parent), m_retain_surface_attributes(retain_surface_attributes)
     {
+        wxString trace_value;
+        const bool trace = wxGetEnv("ORCASLICER_UI_LATENCY_TRACE", &trace_value) && trace_value == "1";
+        const auto started = std::chrono::steady_clock::now();
+        auto trace_stage = [trace, &started](const char* stage) {
+            if (trace)
+                BOOST_LOG_TRIVIAL(info) << "AI canvas build: " << stage << " elapsed_ms="
+                    << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+        };
         SetBackgroundColour(wxGetApp().get_window_default_clr());
         auto* sizer = new wxBoxSizer(wxVERTICAL);
         m_canvas = OpenGLManager::create_wxglcanvas(*this);
+        trace_stage("canvas_created");
         m_canvas->SetMinSize(wxSize(FromDIP(360), FromDIP(300)));
         sizer->Add(m_canvas, 1, wxEXPAND);
         m_region_prepare_status = new wxStaticText(this, wxID_ANY, wxEmptyString);
@@ -75,6 +89,7 @@ public:
         Bind(wxEVT_TIMER, [this](wxTimerEvent&) { finish_surface_selection(); }, m_surface_timer.GetId());
         m_semantic_timer.SetOwner(this);
         Bind(wxEVT_TIMER, [this](wxTimerEvent&) { finish_semantic_coloring(); }, m_semantic_timer.GetId());
+        trace_stage("status_and_timers");
         m_color_trial = new ModelPreviewColorControls(this);
         sizer->Add(m_color_trial, 0, wxEXPAND);
         m_color_trial->Hide();
@@ -87,9 +102,11 @@ public:
             BOOST_LOG_TRIVIAL(info) << "AI color trial toggled: enabled=" << m_color_trial_enabled
                 << ", palette=" << m_trial_palette.size() << ", geometry_reloaded=false";
         };
+        trace_stage("color_controls");
         SetSizer(sizer);
 
         m_context = wxGetApp().init_glcontext(*m_canvas);
+        trace_stage("gl_context");
         m_canvas->Bind(wxEVT_PAINT, &ModelPreview3D::on_paint, this);
         m_canvas->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
             m_canvas->Refresh(false);
@@ -239,17 +256,27 @@ public:
     }
 
     ~ModelPreview3D() override {
+        const bool region_was_running = m_region_preparation && !m_region_preparation->done.load();
+        if (m_region_preparation) m_region_preparation->canceled = true;
         m_semantic_timer.Stop();
         m_semantic_controller.reset();
         cancel_surface_selection();
         m_surface_timer.Stop();
         if (m_surface_worker.joinable()) m_surface_worker.join();
         m_region_prepare_timer.Stop();
-        // The worker owns only CPU data. Joining here makes destruction safe;
-        // ordinary model switches merely invalidate its generation and never wait.
-        if (m_region_prepare_worker.joinable()) m_region_prepare_worker.join();
+        // The worker owns only CPU data. Cooperatively cancel before joining;
+        // ordinary model switches invalidate the generation and never wait.
+        if (m_region_prepare_worker.joinable()) {
+            const auto started = std::chrono::steady_clock::now();
+            m_region_prepare_worker.join();
+            BOOST_LOG_TRIVIAL(info) << "AI selection preparation shutdown: wait_ms="
+                << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count()
+                << ", running_before_cancel=" << region_was_running;
+        }
         clear();
     }
+
+    bool retains_surface_attributes() const { return m_retain_surface_attributes; }
 
     struct ViewState { double yaw, pitch, zoom; BoundingBoxf3 bounds; double pan_x, pan_y; };
     ViewState view_state() const { return {m_yaw, m_pitch, m_zoom, m_bounds, m_pan_x, m_pan_y}; }
@@ -269,6 +296,26 @@ public:
     // OBJ parsing nor per-triangle color/normal preparation needs an OpenGL context.
     struct PreparedModel {
         GLModel::Geometry geometry;
+        std::optional<GLModel::PreparedGeometry> render_geometry;
+
+        // Freeze CPU geometry and its exact bounds before the GUI adopts it.
+        // Synchronous consumers can still use the unprepared geometry.
+        void prepare_render_geometry(const std::function<bool()>& canceled = {}, bool share_exact_vertices = false)
+        {
+            if (share_exact_vertices) {
+                auto shared = ModelPreviewGeometry::share_exact_vertices(mesh, geometry, canceled);
+                if (shared) {
+                    auto frozen = GLModel::prepare_geometry(std::move(*shared), canceled);
+                    render_geometry.emplace(std::move(frozen));
+                    geometry = {}; // Release expanded storage on this worker.
+                    return;
+                }
+            }
+            render_geometry.emplace(GLModel::prepare_geometry(std::move(geometry), canceled));
+        }
+        const GLModel::Geometry& render_data() const
+        { return render_geometry ? render_geometry->geometry() : geometry; }
+
         indexed_triangle_set mesh;
         std::vector<RGBA> vertex_colors;
         BoundingBoxf3 bounds;
@@ -287,18 +334,47 @@ public:
 
     static bool prepare_model(const boost::filesystem::path& path, PreparedModel& prepared,
                               std::string& error, const FaceColorOverrides& explicit_overrides = {},
-                              const boost::filesystem::path& metadata_path = {}, bool restore_saved_edits = true)
+                              const boost::filesystem::path& metadata_path = {}, bool restore_saved_edits = true,
+                              const std::function<bool()>& canceled = {}, ModelHistoryMetadata* history_metadata = nullptr)
     {
+        if (history_metadata) history_metadata->clear();
         const auto started = std::chrono::steady_clock::now();
+        const char* timing_env = std::getenv("ORCASLICER_MODEL_PREPARE_TIMING");
+        const bool trace_prepare = timing_env && std::string(timing_env) == "1";
+        auto trace_tick = started;
+        const auto trace_stage = [&](const char* stage) {
+            if (!trace_prepare) return;
+            const auto now = std::chrono::steady_clock::now();
+            BOOST_LOG_TRIVIAL(info) << "AI preview prepare stage: " << stage
+                << " elapsed_ms=" << std::chrono::duration<double, std::milli>(now - trace_tick).count();
+            trace_tick = std::chrono::steady_clock::now();
+        };
         prepared = PreparedModel {};
+        auto stop_if_canceled = [&] {
+            if (!canceled || !canceled()) return false;
+            // No partial CPU result can be installed or cached by a caller.
+            prepared = PreparedModel {};
+            if (history_metadata) history_metadata->clear();
+            error = "Model preview loading canceled.";
+            return true;
+        };
+        if (stop_if_canceled()) return false;
         const FileStamp initial_stamp = file_stamp(path);
         TriangleMesh mesh;
         ObjInfo obj_info;
-        if (!AI::load_model_artifact(path, mesh, obj_info, error) || mesh.empty())
+        if (!AI::load_model_artifact(path, mesh, obj_info, error, canceled) || mesh.empty()) {
+            if (error == "Model loading canceled.") error = "Model preview loading canceled.";
+            else stop_if_canceled();
             return false;
-
+        }
+        // Assimp's ReadFile remains indivisible. Stop before the remaining
+        // fingerprints, normals and large render arrays once it returns.
+        if (stop_if_canceled()) return false;
+        trace_stage("decode");
         const indexed_triangle_set& its = mesh.its;
         prepared.geometry_id = AI::SurfaceSelectionPersistence::geometry_fingerprint(its);
+        if (stop_if_canceled()) return false;
+        trace_stage("geometry_fingerprint");
         prepared.face_color_overrides = explicit_overrides;
         auto record = metadata_path;
         if (record.empty()) { record = path; record.replace_extension(".json"); }
@@ -307,7 +383,10 @@ public:
         boost::filesystem::ifstream record_stream(record);
         // Bound auxiliary state independently of the mesh, before JSON allocates.
         if (restore_saved_edits && record_stream && !record_error && record_bytes <= 128ULL * 1024 * 1024) {
-            const auto metadata = nlohmann::json::parse(record_stream, nullptr, false);
+            const bool frozen_history = history_metadata && history_metadata->read(record, canceled);
+            if (stop_if_canceled()) return false;
+            const auto fallback = frozen_history ? nlohmann::json() : nlohmann::json::parse(record_stream, nullptr, false);
+            const auto& metadata = frozen_history ? history_metadata->restoration_fields() : fallback;
             std::string state_error;
             if (metadata.is_object()) {
                 if (metadata.contains("color_trial")) {
@@ -328,6 +407,8 @@ public:
             }
             if (!state_error.empty()) BOOST_LOG_TRIVIAL(warning) << "Saved local editing state ignored: " << state_error;
         }
+        if (stop_if_canceled()) return false;
+        trace_stage("saved_state");
         std::unordered_map<size_t, PreviewPalette::Color> locked_colors;
         for (const auto& item : prepared.face_color_overrides) {
             if (item.first >= its.indices.size()) { error = "Local face color no longer matches this model."; return false; }
@@ -344,6 +425,8 @@ public:
             source->content_id = AI::SemanticColoring::content_fingerprint(*source);
             prepared.semantic_source = std::move(source);
         }
+        if (stop_if_canceled()) return false;
+        trace_stage("semantic_snapshot");
         const RGBA fallback {ColorRGBA::ORCA().r(), ColorRGBA::ORCA().g(), ColorRGBA::ORCA().b(), 1.0f};
         GLModel::Geometry geometry;
         geometry.format = {GLModel::Geometry::EPrimitiveType::Triangles, GLModel::Geometry::EVertexLayout::P3N3T2};
@@ -358,11 +441,35 @@ public:
         if (has_vertex_colors) {
             packed_vertex_colors.reserve(obj_info.vertex_colors.size());
             counted_vertices.assign(obj_info.vertex_colors.size(), 0);
-            for (const RGBA& color : obj_info.vertex_colors)
-                packed_vertex_colors.push_back(preview_rgb8(color[0], color[1], color[2]));
+            std::array<float, 3> previous_rgb {};
+            uint32_t previous_packed = 0;
+            bool previous_rgb_valid = false;
+            for (const RGBA& color : obj_info.vertex_colors) {
+                // Repeated face-corner colors need the RGB8 conversion once.
+                // Alpha stays in the original per-vertex array used by rendering.
+                if (!previous_rgb_valid || std::memcmp(color.data(), previous_rgb.data(), sizeof(previous_rgb)) != 0) {
+                    previous_packed = preview_rgb8(color[0], color[1], color[2]);
+                    std::copy_n(color.data(), previous_rgb.size(), previous_rgb.begin());
+                    previous_rgb_valid = std::all_of(previous_rgb.begin(), previous_rgb.end(), [](float value) { return std::isfinite(value); });
+                }
+                packed_vertex_colors.push_back(previous_packed);
+            }
         }
-        const auto corner_normals = ModelPreviewNormals::corner_normals(its);
+        if (stop_if_canceled()) return false;
+        trace_stage("packed_colors");
+        std::function<void(const char*)> normal_trace;
+        auto normal_tick = trace_prepare ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point {};
+        if (trace_prepare) normal_trace = [&](const char* stage) {
+            const auto now = std::chrono::steady_clock::now();
+            BOOST_LOG_TRIVIAL(info) << "AI preview normals stage: " << stage
+                << " elapsed_ms=" << std::chrono::duration<double, std::milli>(now - normal_tick).count();
+            normal_tick = std::chrono::steady_clock::now();
+        };
+        const auto corner_normals = ModelPreviewNormals::corner_normals(its, 45.f, normal_trace);
+        if (stop_if_canceled()) return false;
+        trace_stage("normals");
         for (size_t face_index = 0; face_index < its.indices.size(); ++face_index) {
+            if ((face_index & 4095) == 0 && stop_if_canceled()) return false;
             const auto lock = locked_colors.find(face_index);
             const auto& indices = its.indices[face_index];
             const Vec3f& a = its.vertices[indices[0]];
@@ -396,12 +503,16 @@ public:
             return false;
         }
 
+        if (stop_if_canceled()) return false;
+        trace_stage("render");
         prepared.bounds = mesh.bounding_box();
         prepared.triangles = its.indices.size();
         prepared.colors = observed_colors.size();
         const auto palette_started = std::chrono::steady_clock::now();
         prepared.trial_palette = trial_histogram->palette(6, {}, true);
         prepared.trial_histogram = std::move(trial_histogram);
+        if (stop_if_canceled()) return false;
+        trace_stage("palette");
         BOOST_LOG_TRIVIAL(info) << "AI color trial palette: colors=" << prepared.trial_palette.size()
             << ", clustering_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - palette_started).count();
@@ -414,6 +525,7 @@ public:
             prepared.mesh = std::move(mesh.its);
             if (has_vertex_colors) prepared.vertex_colors = std::move(obj_info.vertex_colors);
         }
+        trace_stage("publish");
         BOOST_LOG_TRIVIAL(info) << "AI model preview CPU prepare: triangles=" << prepared.triangles
             << ", elapsed_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - started).count();
@@ -427,20 +539,24 @@ public:
             error = "OpenGL preview context is unavailable.";
             return false;
         }
-        if (prepared.geometry.is_empty()) {
+        const auto& geometry = prepared.render_data();
+        if (geometry.is_empty()) {
             error = "The OBJ contains no renderable triangles.";
             return false;
         }
         cache_current_preview();
         clear_current_preview();
         if (m_retain_surface_attributes) {
-            m_surface_vertices = prepared.geometry.vertices;
-            m_original_surface_colors.reserve(prepared.geometry.vertices_count());
-            for (size_t v = 0; v < prepared.geometry.vertices_count(); ++v)
-                m_original_surface_colors.push_back(prepared.geometry.extract_tex_coord_2(v));
+            m_surface_vertices = geometry.vertices;
+            m_original_surface_colors.reserve(geometry.vertices_count());
+            for (size_t v = 0; v < geometry.vertices_count(); ++v)
+                m_original_surface_colors.push_back(geometry.extract_tex_coord_2(v));
         }
         auto model = std::make_unique<GLModel>();
-        model->init_from(std::move(prepared.geometry));
+        if (prepared.render_geometry)
+            model->init_from(std::move(*prepared.render_geometry));
+        else
+            model->init_from(std::move(prepared.geometry));
         m_models.emplace_back(std::move(model));
         m_bounds = prepared.bounds;
         m_pending_mesh = std::move(prepared.mesh);
@@ -506,17 +622,24 @@ public:
         return true;
     }
 
+    bool try_use_current_model(const boost::filesystem::path& path, const std::vector<std::string>& palette,
+                               size_t& triangle_count, Vec3d& dimensions, size_t& color_count) const
+    {
+        if (!m_has_model || path != m_model_path || palette != m_palette ||
+            !same_stamp(m_model_stamp, file_stamp(path))) return false;
+        triangle_count = m_triangle_count; color_count = m_color_count;
+        dimensions = m_model_dimensions;
+        return true;
+    }
+
     bool load_model(const boost::filesystem::path& path, const std::vector<std::string>& palette,
                     size_t& triangle_count, Vec3d& dimensions, size_t& color_count, std::string& error,
                     const FaceColorOverrides& explicit_overrides = {})
     {
         // Accepting an already displayed preview should not reparse the OBJ or
         // rebuild GPU buffers. The file stamp still invalidates external edits.
-        if (m_has_model && path == m_model_path && palette == m_palette && same_stamp(m_model_stamp, file_stamp(path))) {
-            triangle_count = m_triangle_count; color_count = m_color_count;
-            dimensions = m_model_dimensions;
+        if (try_use_current_model(path, palette, triangle_count, dimensions, color_count))
             return true;
-        }
         if (try_load_cached_model(path, palette, triangle_count, dimensions, color_count))
             return true;
         PreparedModel prepared;
@@ -545,6 +668,7 @@ private:
         m_stroke.clear();
         m_drawing_selection = false;
         ++m_region_generation;
+        if (m_region_preparation) m_region_preparation->canceled = true;
         m_deferred_selection = {};
         m_region_prepare_failed = false;
         m_region_prepare_status->Hide();
@@ -681,6 +805,14 @@ public:
     std::shared_ptr<const AI::VertexColorRegionEditor> beauty_editor() const {
         return m_region_editor->ready() ? m_region_editor : nullptr;
     }
+    BeautySourceSnapshot beauty_source() const {
+        if(m_region_editor->ready())
+            return BeautySourceSnapshot::share(m_region_editor,m_region_editor->mesh(),m_region_editor->vertex_colors());
+        if(!m_region_prepare_failed && current_region_preparation())
+            return BeautySourceSnapshot::share(m_region_preparation,m_region_preparation->mesh,m_region_preparation->colors);
+        return {};
+    }
+    bool region_selection_failed() const { return m_region_prepare_failed; }
     std::function<std::vector<size_t>()> m_puzzle_focus;
     std::function<std::vector<size_t>()> m_puzzle_aperture;
     std::function<void(int)> m_puzzle_stroke_start;
@@ -700,12 +832,13 @@ public:
     bool puzzle_display_ready() const { return bool(m_puzzle_display.fill); }
     void show_puzzle(const AI::BeautySurface& surface,const AI::BeautyPuzzle& puzzle,
                      const std::vector<RGBA>& base_colors,uint32_t selected,bool repaint,bool borders,
-                     const std::vector<uint32_t>* edit_regions=nullptr) {
+                     const std::vector<uint32_t>* edit_regions=nullptr,ModelPreviewPuzzle::Prepared* prepared=nullptr) {
         if(!m_region_editor->ready() || puzzle.geometry_id!=m_geometry_id)return;
         if(edit_regions && edit_regions->size()!=puzzle.face_piece.size())return;
         if(!m_context || !m_canvas->SetCurrent(*m_context))return;
-        m_puzzle_display.update(m_region_editor->mesh(),base_colors,surface,puzzle,selected,
-                                repaint || !m_puzzle_display.fill,edit_regions);
+        if(!prepared || !m_puzzle_display.install(*prepared,m_region_editor->mesh(),base_colors,surface,puzzle,selected,edit_regions))
+            m_puzzle_display.update(m_region_editor->mesh(),base_colors,surface,puzzle,selected,
+                                    repaint || !m_puzzle_display.fill,edit_regions);
         double total_area=0.,selected_area=0.;
         for(size_t f=0;f<puzzle.face_piece.size();++f) {
             total_area+=surface.areas[f];
@@ -875,7 +1008,7 @@ public:
         return use_current_trial && m_color_trial_enabled ? color_trial_mapping()
                                                         : PreviewPalette::ColorTrialMapping {};
     }
-    bool region_selection_preparing() const { return !m_region_editor->ready() && region_editing_ready() && bool(m_region_preparation); }
+    bool region_selection_preparing() const { return region_editing_ready() && current_region_preparation(); }
     bool region_editing_ready() const {
         return !m_region_prepare_failed && (m_region_editor->ready() || current_region_preparation() || (!m_pending_mesh.indices.empty() &&
             m_pending_vertex_colors.size() == m_pending_mesh.vertices.size()));
@@ -969,7 +1102,7 @@ public:
 
     size_t select_elevated_overhang_regions()
     {
-        if (!ensure_region_editor()) {
+        if (!ensure_region_editor(true)) {
             if (region_editing_ready()) m_deferred_selection = [this] { select_elevated_overhang_regions(); };
             return 0;
         }
@@ -1103,7 +1236,12 @@ private:
         indexed_triangle_set mesh;
         std::vector<RGBA> colors;
         AI::VertexColorRegionEditor editor;
-        std::atomic<bool> done {false};
+        // Upgrade only the tolerant legacy graph. Read-only source ownership
+        // keeps geometry alive without copying it on the UI thread.
+        std::shared_ptr<const AI::VertexColorRegionEditor> source_editor;
+        std::unique_ptr<AI::VertexColorRegionEditor::RegionTopology> topology;
+        bool regions {true};
+        std::atomic<bool> canceled {false}, done {false};
         bool success {false};
         std::string error;
         std::chrono::steady_clock::time_point started;
@@ -1119,9 +1257,13 @@ private:
         Layout();
     }
 
-    bool ensure_region_editor()
+    bool ensure_region_editor(bool require_regions = false)
     {
-        if (m_region_editor->ready())
+        // Beauty callbacks are installed before load completion. Synchronize
+        // may enable selection before it enables the puzzle on a new model.
+        // Legacy ray fallback and overhang localization request regions explicitly.
+        const bool regions = require_regions || !m_puzzle_pick;
+        if (m_region_editor->ready() && (!regions || m_region_editor->region_selection_ready()))
             return true;
         if (!region_editing_ready())
             return false;
@@ -1131,13 +1273,26 @@ private:
         if (m_region_preparation) return false;
         auto task = std::make_shared<RegionPreparation>();
         task->generation = m_region_generation;
-        task->mesh = std::move(m_pending_mesh);
-        task->colors = std::move(m_pending_vertex_colors);
+        task->regions = regions;
+        if (m_region_editor->ready()) task->source_editor = m_region_editor;
+        else {
+            task->mesh = std::move(m_pending_mesh);
+            task->colors = std::move(m_pending_vertex_colors);
+        }
         task->started = std::chrono::steady_clock::now();
         m_region_preparation = task;
         try {
             m_region_prepare_worker = std::thread([task] {
-                try { task->success = task->editor.initialize(task->mesh, task->colors, task->error); }
+                try {
+                    const auto canceled = [task] { return task->canceled.load(); };
+                    if (task->canceled.load()) task->error = "Local selection preparation canceled.";
+                    else if (task->source_editor) {
+                        task->topology = task->source_editor->prepare_region_topology(task->error, canceled);
+                        task->success = bool(task->topology);
+                    } else if (task->regions)
+                        task->success = task->editor.initialize(task->mesh, task->colors, task->error, canceled);
+                    else task->success = task->editor.initialize_for_picking(task->mesh, task->colors, task->error, canceled);
+                }
                 catch (const std::exception& error) { task->error = error.what(); }
                 catch (...) { task->error = "Unknown region preparation failure"; }
                 task->done.store(true, std::memory_order_release);
@@ -1147,10 +1302,10 @@ private:
             m_pending_mesh = std::move(task->mesh);
             m_pending_vertex_colors = std::move(task->colors);
             m_region_preparation.reset();
-            m_region_prepare_failed = true;
+            m_region_prepare_failed = !task->source_editor;
             show_region_preparation_status(_L("局部选择准备失败，请重新加载模型后重试。"));
             BOOST_LOG_TRIVIAL(warning) << "AI model preview selection worker failed: " << error.what();
-            set_selection_enabled(false);
+            if (m_region_prepare_failed) set_selection_enabled(false);
         }
         return false;
     }
@@ -1162,21 +1317,29 @@ private:
         auto task = std::move(m_region_preparation);
         m_region_prepare_timer.Stop();
         if (task->generation != m_region_generation) {
+            BOOST_LOG_TRIVIAL(info) << "AI obsolete selection preparation: elapsed_ms="
+                << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - task->started).count()
+                << ", canceled=" << task->canceled.load() << ", success=" << task->success;
             if (m_selection_enabled || m_deferred_selection) ensure_region_editor();
             return;
         }
         BOOST_LOG_TRIVIAL(info) << "AI model preview selection prepare: elapsed_ms="
             << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - task->started).count()
-            << ", background=true, success=" << task->success;
+            << ", background=true, region_topology=" << task->regions
+            << ", upgrade=" << bool(task->source_editor) << ", success=" << task->success;
+        if (task->success && task->source_editor)
+            task->success = task->source_editor == m_region_editor &&
+                m_region_editor->install_region_topology(std::move(task->topology));
         if (!task->success) {
-            m_region_prepare_failed = true;
+            m_region_prepare_failed = !task->source_editor;
             m_deferred_selection = {};
             show_region_preparation_status(_L("局部选择准备失败，请重新加载模型后重试。"));
             BOOST_LOG_TRIVIAL(warning) << "AI model preview selection initialization failed: " << task->error;
-            set_selection_enabled(false);
+            if (m_region_prepare_failed) set_selection_enabled(false);
             return;
         }
-        m_region_editor = std::make_shared<AI::VertexColorRegionEditor>(std::move(task->editor));
+        if (!task->source_editor)
+            m_region_editor = std::make_shared<AI::VertexColorRegionEditor>(std::move(task->editor));
         if (m_pending_selection) {
             auto state = std::move(*m_pending_selection); m_pending_selection.reset();
             m_region_editor->restore_selection(state.selected);
@@ -1399,7 +1562,7 @@ private:
     }
     std::optional<Vec2d> puzzle_boundary_hit(const wxPoint& point,bool collect_preview=false)
     {
-        if(!m_region_editor->ready() || m_puzzle_display.active_edges.empty())return std::nullopt;
+        if(!m_region_editor->ready() || m_puzzle_display.cpu.active_edges.empty())return std::nullopt;
         const auto started=std::chrono::steady_clock::now();
         const int width=std::max(1,m_canvas->GetClientSize().x),height=std::max(1,m_canvas->GetClientSize().y);
         const double radius=std::max(.001,.5*m_bounds.size().norm()),hh=fitted_half_height(width,height),hw=hh*width/height;
@@ -1424,7 +1587,7 @@ private:
         const Vec2d pointer(point.x,point.y);
         const double preview_limit=FromDIP(128);
         size_t preview_rays=0,preview_edges=0;
-        for(const auto& edge:m_puzzle_display.active_edges) {
+        for(const auto& edge:m_puzzle_display.cpu.active_edges) {
             const Vec2d a=project(edge.a),b=project(edge.b);
             if(std::max(a.x(),b.x())<0 || std::min(a.x(),b.x())>width ||
                std::max(a.y(),b.y())<0 || std::min(a.y(),b.y())>height)continue;
@@ -1438,7 +1601,7 @@ private:
             if(distance<nearest && on_surface){nearest=distance;snapped=closest;}
         }
         if(collect_preview)BOOST_LOG_TRIVIAL(info)<<"Puzzle boundary hit: edges="
-            <<m_puzzle_display.active_edges.size()<<", preview_rays="<<preview_rays
+            <<m_puzzle_display.cpu.active_edges.size()<<", preview_rays="<<preview_rays
             <<", preview_edges="<<preview_edges<<", elapsed_ms="
             <<std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-started).count();
         return snapped;
@@ -1468,13 +1631,13 @@ private:
 
     using ShapeFrame=std::pair<Vec2d,Vec2d>;
     std::optional<ShapeFrame> puzzle_shape_frame() const {
-        if(!m_puzzle_enabled || !m_selection_enabled || !m_shape_eligible || m_puzzle_display.active_edges.empty())return std::nullopt;
+        if(!m_puzzle_enabled || !m_selection_enabled || !m_shape_eligible || m_puzzle_display.cpu.active_edges.empty())return std::nullopt;
         const int width=std::max(1,m_canvas->GetClientSize().x),height=std::max(1,m_canvas->GetClientSize().y);
         const double radius=std::max(.001,.5*m_bounds.size().norm()),hh=fitted_half_height(width,height),hw=hh*width/height;
         const Transform3d view=Geometry::translation_transform(Vec3d(m_pan_x*radius,m_pan_y*radius,-3*radius))*
             view_rotation()*Geometry::translation_transform(-m_bounds.center().cast<double>());
         Vec2d low=Vec2d::Constant(1e20),high=Vec2d::Constant(-1e20);
-        for(const auto& edge:m_puzzle_display.active_edges)for(const auto& vertex:{edge.a,edge.b}) {
+        for(const auto& edge:m_puzzle_display.cpu.active_edges)for(const auto& vertex:{edge.a,edge.b}) {
             const Vec3d p=view*vertex.cast<double>();
             const Vec2d screen((p.x()/hw+1)*width/2.,(1-p.y()/hh)*height/2.);
             low=low.cwiseMin(screen);high=high.cwiseMax(screen);
@@ -1483,7 +1646,7 @@ private:
             low.x()<0 || low.y()<0 || high.x()>width || high.y()>height)return std::nullopt;
         // Hide controls for a piece occluded after rotating the model.
         bool visible=false;
-        const auto& edges=m_puzzle_display.active_edges;
+        const auto& edges=m_puzzle_display.cpu.active_edges;
         for(size_t i=0;i<edges.size() && !visible;i+=std::max(size_t(1),edges.size()/8)) {
             const Vec3d p=view*((edges[i].a+edges[i].b)*.5f).cast<double>();
             const auto hit=puzzle_face_at(wxPoint(int((p.x()/hw+1)*width/2.),int((1-p.y()/hh)*height/2.)));
@@ -1662,6 +1825,11 @@ private:
         if (!face)
             return;
         if(m_puzzle_enabled && m_puzzle_pick) {m_puzzle_pick(*face,m_puzzle_merge_click);return;}
+        if (!(m_beauty_patch_selection && m_beauty_surface && m_beauty_surface->geometry_id == m_geometry_id) &&
+            !ensure_region_editor(true)) {
+            m_deferred_selection = [this, origin, direction, operation, settings] { select_ray(origin, direction, operation, settings); };
+            return;
+        }
         const std::vector<uint8_t> previous = m_region_editor->selected_faces();
         if (m_beauty_patch_selection && m_beauty_surface && m_beauty_surface->geometry_id==m_geometry_id) {
             auto mask=previous;

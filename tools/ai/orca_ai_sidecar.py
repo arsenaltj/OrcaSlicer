@@ -91,15 +91,22 @@ from model_input_image_quality import (
     recommend_printable_style,
 )
 from model_job_support import (
+    MAX_MODEL_FACES,
+    MAX_MODEL_FACE_RATIO,
+    MIN_MODEL_FACE_RATIO,
     apply_legacy_material_fragmentation_gate as _apply_legacy_material_fragmentation_gate,
     assess_job_model_reference as _assess_job_model_reference,
     file_info as _file_info,
     generation_prompt as _generation_prompt,
     image_type as _image_type,
+    legacy_face_error_is_recoverable as _legacy_face_error_is_recoverable,
+    mark_prepaid_multiview_retry as _mark_prepaid_multiview_retry,
     model_input_quality_message as _model_input_quality_message,
     preprocess_failure_payload,
     printable_preview_message as _printable_preview_message,
+    stale_high_quality_face_gate_is_recoverable as _stale_high_quality_face_gate_is_recoverable,
     stored_image_type as _stored_image_type,
+    validate_face_target as _validate_face_target,
 )
 from model_provider_gateway import (
     ModelProviderGateway,
@@ -158,9 +165,6 @@ MAX_TEXTURE_PIXELS = 64 * 1024 * 1024
 MAX_PALETTE_COLORS = MAX_PRINTABLE_COLORS
 MIN_PALETTE_COLORS = MIN_PRINTABLE_COLORS
 DEFAULT_PALETTE_COLORS = LEGACY_DEFAULT_PRINTABLE_COLORS
-MAX_MODEL_FACES = 2000000
-MIN_MODEL_FACE_RATIO = 0.90
-MAX_MODEL_FACE_RATIO = 1.25
 MODEL_FACE_LIMITS = (100000, 300000, 500000, 1000000, 2000000)
 DEFAULT_MODEL_FACE_LIMIT = 300000
 GENERATION_PROFILES = ("quality", "performance")
@@ -933,35 +937,6 @@ def _generation_provider(payload: dict[str, Any]) -> str:
     return provider
 
 
-def _validate_face_target(face_count: int, face_limit: int) -> str:
-    maximum = min(MAX_MODEL_FACES, math.ceil(face_limit * MAX_MODEL_FACE_RATIO))
-    if face_count > maximum:
-        return (
-            f"The generated OBJ contains {face_count} triangles; the {face_limit}-triangle target allows at most {maximum}."
-        )
-    return ""
-
-
-def _legacy_face_error_is_recoverable(message: str, face_limit: int) -> bool:
-    match = re.search(r"contains\s+(\d+)\s+triangles;\s+at least\s+(\d+)\s+are required", message, re.IGNORECASE)
-    if match is None:
-        return False
-    face_count = int(match.group(1))
-    minimum = math.floor(face_limit * MIN_MODEL_FACE_RATIO)
-    maximum = min(MAX_MODEL_FACES, math.ceil(face_limit * MAX_MODEL_FACE_RATIO))
-    return minimum <= face_count <= maximum
-
-
-def _stale_high_quality_face_gate_is_recoverable(message: str, face_limit: int) -> bool:
-    normalized = message.strip().lower()
-    return (
-        face_limit > 1_000_000
-        and face_limit <= MAX_MODEL_FACES
-        and "structural quality gate" in normalized
-        and "too_many_faces" in normalized
-    )
-
-
 def _normalize_image_instruction(value: Any) -> str:
     if value is None:
         return DEFAULT_IMAGE_INSTRUCTION
@@ -1383,18 +1358,10 @@ def _restore_jobs(*, resume_jobs: bool = True) -> list[Job]:
             and job.progress >= 10
         )
         if recoverable_multiview_failure:
-            job.state = "awaiting_confirmation"
-            job.phase = "multiview_retry"
-            job.message = (
+            _mark_prepaid_multiview_retry(job, (
                 "Four-view portrait preparation stopped before any paid Tripo task was created. "
                 "The approved preview is preserved and can be retried."
-            )
-            job.progress = max(17, job.progress)
-            job.image_metrics["multiview_retry"] = {
-                "required": True,
-                "reason": "legacy_prepaid_multiview_failure",
-                "paid_task_created": False,
-            }
+            ), "legacy_prepaid_multiview_failure")
         if _can_manually_retry_hunyuan(job):
             job.state = "awaiting_confirmation"
             job.phase = "model_retry"
@@ -1777,15 +1744,7 @@ def _return_to_portrait_multiview_retry(job: Job, message: str) -> None:
             job.message = "Model generation stopped."
             job.progress = 0
         else:
-            job.state = "awaiting_confirmation"
-            job.phase = "multiview_retry"
-            job.message = message
-            job.progress = max(17, job.progress)
-            job.image_metrics["multiview_retry"] = {
-                "required": True,
-                "reason": message,
-                "paid_task_created": False,
-            }
+            _mark_prepaid_multiview_retry(job, message, message)
         _clear_job_artifact(job)
         _persist_job(job)
 

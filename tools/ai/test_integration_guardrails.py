@@ -177,6 +177,7 @@ class IntegrationGuardrailTests(unittest.TestCase):
         panel_source = (REPO_ROOT / "src/slic3r/GUI/ModelGenerationPanel.cpp").read_text(encoding="utf-8")
         client_source = (REPO_ROOT / "src/slic3r/GUI/AIModelGenerationClient.cpp").read_text(encoding="utf-8")
         color_contract = (REPO_ROOT / "src/slic3r/AI/Contracts/ColorIntent.hpp").read_text(encoding="utf-8")
+        legacy_state = (REPO_ROOT / "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationLegacyState.hpp").read_text(encoding="utf-8")
         beauty_view = (REPO_ROOT / "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationBeautyView.cpp").read_text(encoding="utf-8")
         beauty_controls = (REPO_ROOT / "src/slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchControls.cpp").read_text(encoding="utf-8")
 
@@ -188,7 +189,7 @@ class IntegrationGuardrailTests(unittest.TestCase):
             "m_palette_recommendation_remove",
             "m_palette_role_choices",
         ):
-            self.assertRegex(
+            self.assertNotRegex(
                 panel_header,
                 rf"std::array<[^,\n]+,\s*Slic3r::AI::kMaxTargetPaletteColors>\s+{member}\s*\{{",
             )
@@ -200,9 +201,12 @@ class IntegrationGuardrailTests(unittest.TestCase):
         self.assertIn("for(const auto& channel:palette.physical_channels)", beauty_controls)
         self.assertIn("AI::is_valid_physical_channel_set(palette.physical_channels)", beauty_controls)
 
-        self.assertIn('palette_sources.Add(_L("不限制颜色"))', panel_source)
-        self.assertIn('palette_sources.Add(_L("读取耗材颜色"))', panel_source)
-        self.assertIn("它不等同于物理进料通道数", panel_source)
+        self.assertIn("ModelGenerationLegacyState m_legacy_generation_state", panel_header)
+        self.assertNotIn("#include <wx/", legacy_state)
+        self.assertIn("AI::kLegacyDefaultTargetPaletteColors", legacy_state)
+        self.assertIn("AI::is_supported_target_palette_color_count(count)", legacy_state)
+        self.assertIn("kMinTargetPaletteColors = 1;", color_contract)
+        self.assertIn("kMaxTargetPaletteColors = 6;", color_contract)
         self.assertIn('"palette_color_count", palette_color_count', client_source)
         self.assertIn('.form_add("palette_color_count", std::to_string(palette_color_count))', client_source)
         self.assertNotIn("1–4", panel_source)

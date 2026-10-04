@@ -6,6 +6,7 @@
 #include <array>
 #include <unordered_map>
 #include <istream>
+#include <functional>
 
 namespace ObjParser {
 
@@ -126,7 +127,7 @@ struct MtlData
     // indices are positional, so texture import needs the original order.
     std::vector<std::string>                                    mtl_orders;
 };
-extern bool objparse(const char *path, ObjData &data);
+extern bool objparse(const char *path, ObjData &data, const std::function<bool()>& canceled = {});
 extern bool mtlparse(const char *path, MtlData &data);
 extern bool objparse(std::istream &stream, ObjData &data);
 

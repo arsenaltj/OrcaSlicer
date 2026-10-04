@@ -5,6 +5,11 @@
 #include "slic3r/GUI/ModelColorImportResult.hpp"
 #include "slic3r/GUI/TextureImportModel.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
+#include <boost/filesystem/fstream.hpp>
+#include <nlohmann/json.hpp>
+#include <chrono>
+#include <cstdlib>
 
 using namespace Slic3r;
 using namespace Slic3r::GUI;
@@ -126,13 +131,17 @@ TEST_CASE("AI import stitches exact texture seams after painting without losing 
     const auto colors=volume->mmu_segmentation_facets.get_data();
     const auto before=volume->mesh().its;
     CHECK(its_num_open_edges(volume->mesh().its)>0);
-    REQUIRE(stitch_ai_import_seams(*object)==1);
+    const auto result = stitch_ai_import_seams(*object);
+    REQUIRE(result.stitched_volumes == 1);
+    CHECK_FALSE(result.has_open_edges);
     CHECK(its_num_open_edges(volume->mesh().its)==0);
     CHECK(volume->mesh().its.indices.size()==seams.indices.size());
     CHECK(volume->mmu_segmentation_facets.get_data()==colors);
     for(size_t f=0;f<seams.indices.size();++f)for(int corner=0;corner<3;++corner)
         CHECK(volume->mesh().its.vertices[volume->mesh().its.indices[f][corner]]==before.vertices[before.indices[f][corner]]);
-    CHECK(stitch_ai_import_seams(*object)==0);
+    const auto repeated = stitch_ai_import_seams(*object);
+    CHECK(repeated.stitched_volumes == 0);
+    CHECK_FALSE(repeated.has_open_edges);
 }
 
 TEST_CASE("AI import leaves a genuine opening and its painting unchanged for manual repair", "[ModelColorImport][AIImportSeam]") {
@@ -147,7 +156,9 @@ TEST_CASE("AI import leaves a genuine opening and its painting unchanged for man
     TriangleSelector painting(volume->mesh());painting.set_facet(0,EnforcerBlockerType::Extruder1);
     volume->mmu_segmentation_facets.set(painting);
     const auto colors=volume->mmu_segmentation_facets.get_data();
-    REQUIRE(stitch_ai_import_seams(*object)==0);
+    const auto result = stitch_ai_import_seams(*object);
+    REQUIRE(result.stitched_volumes == 0);
+    CHECK(result.has_open_edges);
     CHECK(volume->mesh().its.indices==open.indices);
     CHECK(volume->mmu_segmentation_facets.get_data()==colors);
     CHECK(its_num_open_edges(volume->mesh().its)>0);
@@ -299,4 +310,74 @@ TEST_CASE("Color matching still warns for a real missing face", "[ModelColorImpo
     PaintedMesh painted;
     CHECK_FALSE(face_colors_to_painting(source, painted, settings));
     CHECK(repair_prompt);
+}
+TEST_CASE("AI seam status includes untouched modifier openings and rechecks changed geometry", "[ModelColorImport][AIImportSeam]") {
+    Model model;
+    auto* object = model.add_object();
+    const auto cube = its_make_cube(10,10,10);
+    auto* solid = object->add_volume(TriangleMesh(cube));
+    auto open = cube;
+    open.indices.pop_back();
+    auto* modifier = object->add_volume(TriangleMesh(open), ModelVolumeType::PARAMETER_MODIFIER);
+    const auto id = modifier->id();
+    const auto result = stitch_ai_import_seams(*object);
+    CHECK(result.stitched_volumes == 0);
+    CHECK(result.has_open_edges);
+    CHECK(modifier->id() == id);
+    CHECK(modifier->mesh().its.indices == open.indices);
+    modifier->set_mesh(TriangleMesh(cube));
+    CHECK_FALSE(stitch_ai_import_seams(*object).has_open_edges);
+    solid->set_mesh(TriangleMesh(open));
+    CHECK(stitch_ai_import_seams(*object).has_open_edges);
+}
+
+TEST_CASE("Local import seam checks compare transaction reuse with repeated adjacency checks", "[.AIImportSeamProbe]") {
+    const char* source = std::getenv("ORCASLICER_MODEL_ARTIFACT_FIXTURE");
+    const char* report = std::getenv("ORCASLICER_SEAM_PROBE_REPORT");
+    if (!source || !report) SKIP("Set a local model and a new seam probe report path.");
+    REQUIRE_FALSE(boost::filesystem::exists(report));
+    const auto source_hash = AI::model_artifact_sha256(source);
+    TriangleMesh mesh; ObjInfo colors; std::string error;
+    REQUIRE(AI::load_model_artifact(source, mesh, colors, error));
+    auto baseline = [](ModelObject& object) {
+        AIImportSeamResult result;
+        for (ModelVolume* volume : object.volumes) {
+            if (!volume || !volume->is_model_part() || its_num_open_edges(volume->mesh().its) == 0) continue;
+            TriangleMesh candidate = volume->mesh();
+            if (!stitch_exact_mesh_seams(candidate)) continue;
+            volume->set_mesh(std::move(candidate));
+            volume->set_new_unique_id();
+            ++result.stitched_volumes;
+        }
+        result.has_open_edges = std::any_of(object.volumes.begin(), object.volumes.end(), [](const ModelVolume* volume) {
+            return volume != nullptr && its_num_open_edges(volume->mesh().its) != 0;
+        });
+        return result;
+    };
+    nlohmann::json runs = nlohmann::json::array();
+    for (int run = 0; run < 6; ++run) {
+        Model models[2];
+        for (auto& model : models) model.add_object()->add_volume(mesh);
+        AIImportSeamResult result[2];
+        double ms[2];
+        for (int order = 0; order < 2; ++order) {
+            const int kind = (run + order) % 2;
+            const auto start = std::chrono::steady_clock::now();
+            result[kind] = kind ? stitch_ai_import_seams(*models[kind].objects[0]) : baseline(*models[kind].objects[0]);
+            ms[kind] = std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now() - start).count();
+        }
+        REQUIRE(result[0].stitched_volumes == result[1].stitched_volumes);
+        REQUIRE(result[0].has_open_edges == result[1].has_open_edges);
+        const auto& a = models[0].objects[0]->volumes[0]->mesh().its;
+        const auto& b = models[1].objects[0]->volumes[0]->mesh().its;
+        REQUIRE(a.vertices == b.vertices);
+        REQUIRE(a.indices == b.indices);
+        runs.push_back({{"run",run},{"baseline_ms",ms[0]},{"candidate_ms",ms[1]},
+                        {"stitched",result[1].stitched_volumes},{"open",result[1].has_open_edges}});
+    }
+    REQUIRE(AI::model_artifact_sha256(source) == source_hash);
+    boost::filesystem::ofstream output(report, std::ios::binary);
+    output << nlohmann::json({{"source_sha256",source_hash},{"faces",mesh.its.indices.size()},{"runs",runs}}).dump(2);
+    output.close();
+    REQUIRE(output.good());
 }

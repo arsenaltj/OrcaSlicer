@@ -366,6 +366,26 @@ TEST_CASE("direct assignment minimizes surface error instead of palette centroid
     CHECK_THAT(computed.result.targets.front().delta_e00, Catch::Matchers::WithinAbs(optimum, 1e-8));
 }
 
+TEST_CASE("repeated face colors keep exact float differences in physical matching", "[LocalPrintColorMatching]")
+{
+    auto input = matching_input(1);
+    input.identity.physical_channels = {{0, "#804C33", "PLA", true}};
+    const AI::PrintRgb first {0.500f, 0.300f, 0.200f};
+    const AI::PrintRgb second {0.501f, 0.300f, 0.200f};
+    REQUIRE(Matching::packed_rgb(first) == Matching::packed_rgb(second));
+    input.faces.clear();
+    for (size_t face = 0; face < 20000; ++face)
+        input.faces.push_back({face % 2 ? second : first, 1.0});
+    input.identity.face_count = input.faces.size();
+
+    const auto computed = Matching::compute(input);
+    REQUIRE(computed.ok());
+    REQUIRE(computed.result.targets.size() == 1);
+    const auto physical = Matching::hex_rgb("#804C33");
+    const double expected = (Matching::delta_e(first, physical) + Matching::delta_e(second, physical)) / 2;
+    CHECK_THAT(computed.result.targets.front().delta_e00, Catch::Matchers::WithinAbs(expected, 1e-8));
+}
+
 TEST_CASE("local printing mode follows the requested budget rather than source RGB count", "[LocalPrintColorMatching]")
 {
     const auto requested = GENERATE(size_t(1), size_t(4), size_t(6), size_t(7), size_t(8), size_t(12), size_t(16));

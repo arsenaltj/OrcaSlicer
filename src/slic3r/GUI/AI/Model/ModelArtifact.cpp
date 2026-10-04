@@ -2,6 +2,7 @@
 
 #include "libslic3r/Format/AssimpImport.hpp"
 #include "libslic3r/TexturePainting.hpp"
+#include "libslic3r/Sha256Digest.hpp"
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
 #include <nlohmann/json.hpp>
@@ -17,6 +18,11 @@
 #include <openssl/evp.h>
 #include <memory>
 #include <sstream>
+#include <unordered_map>
+#include <type_traits>
+#ifdef _WIN32
+#include <charconv>
+#endif
 
 namespace Slic3r::AI {
 namespace {
@@ -96,19 +102,16 @@ std::string model_artifact_format(const boost::filesystem::path& path) {
 }
 
 std::string model_artifact_sha256(const boost::filesystem::path& path) {
-    std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> digest(EVP_MD_CTX_new(), EVP_MD_CTX_free);
     boost::filesystem::ifstream input(path, std::ios::binary);
-    if (!input || !digest || EVP_DigestInit_ex(digest.get(), EVP_sha256(), nullptr) != 1) return {};
+    if (!input) return {};
+    Sha256Digest digest;
     std::array<char, 65536> buffer;
     while (input) {
         input.read(buffer.data(), buffer.size());
-        if (input.gcount() && EVP_DigestUpdate(digest.get(), buffer.data(), size_t(input.gcount())) != 1) return {};
+        if (input.gcount() && !digest.update(buffer.data(), size_t(input.gcount()))) return {};
     }
-    unsigned char bytes[EVP_MAX_MD_SIZE]; unsigned length = 0;
-    if (!input.eof() || EVP_DigestFinal_ex(digest.get(), bytes, &length) != 1) return {};
-    std::ostringstream hex;
-    for (unsigned i = 0; i < length; ++i) hex << std::hex << std::setw(2) << std::setfill('0') << unsigned(bytes[i]);
-    return hex.str();
+    if (!input.eof()) return {};
+    return digest.final_hex();
 }
 
 bool is_model_artifact(const boost::filesystem::path& path) {
@@ -118,99 +121,196 @@ bool is_model_artifact(const boost::filesystem::path& path) {
     return !ec && size > 0 && size <= max_bytes;
 }
 
-bool load_model_artifact(const boost::filesystem::path& path, TriangleMesh& mesh, ObjInfo& info, std::string& error) {
+bool load_model_artifact(const boost::filesystem::path& path, TriangleMesh& mesh, ObjInfo& info, std::string& error,
+                         const std::function<bool()>& canceled) {
     error.clear();
     info = ObjInfo {};
+    auto stop_if_canceled = [&] {
+        if (!canceled || !canceled()) return false;
+        mesh = TriangleMesh {};info = ObjInfo {};
+        error = "Model loading canceled.";
+        return true;
+    };
     try {
+        if (stop_if_canceled()) return false;
         if (!is_model_artifact(path)) throw std::runtime_error("The OBJ/GLB model is missing or exceeds 512 MB.");
-        if (model_artifact_format(path) == "obj") return load_obj(path.string().c_str(), &mesh, info, error);
+        if (model_artifact_format(path) == "obj") return load_obj(path.string().c_str(), &mesh, info, error, nullptr, canceled);
         const auto doc = glb_description(path);
+        if (stop_if_canceled()) return false;
         TexturedMesh textured;
         std::vector<std::array<float, 4>> vertex_colors;
-        if (!load_assimp_textured_model(path.string(), textured, &error, &vertex_colors)) return false;
+        const auto source_materials = doc.find("materials");
+        // A declared but missing texture must still follow the original raw
+        // sampling/error path. Inspect conservatively without moving validation.
+        const bool raw_fallback_only = source_materials == doc.end() ||
+            (source_materials->is_array() && std::all_of(source_materials->begin(), source_materials->end(), [](const auto& material) {
+                if (!material.is_object()) return false;
+                const auto pbr = material.find("pbrMetallicRoughness");
+                return pbr == material.end() || (pbr->is_object() && !pbr->contains("baseColorTexture"));
+            }));
+        if (!load_assimp_textured_model(path.string(), textured, &error, &vertex_colors,
+                raw_fallback_only ? AssimpRawColorPolicy::FallbackOnly : AssimpRawColorPolicy::Always)) return false;
+        if (stop_if_canceled()) return false;
         if (textured.vertices.empty() || textured.vertices.size() > 6000000 || textured.indices.size() > 2000000)
             throw std::runtime_error("GLB model exceeds the editable mesh limit.");
         indexed_triangle_set its;
         its.vertices.reserve(textured.vertices.size());
         its.indices.reserve(textured.indices.size());
-        for (const auto& v : textured.vertices) {
+        for (size_t vertex = 0; vertex < textured.vertices.size(); ++vertex) {
+            if ((vertex & 4095) == 0 && stop_if_canceled()) return false;
+            const auto& v = textured.vertices[vertex];
             if (!std::all_of(v.begin(), v.end(), [](float x) { return std::isfinite(x); }))
                 throw std::runtime_error("GLB contains non-finite geometry.");
             its.vertices.emplace_back(v[0] * 1000.f, -v[2] * 1000.f, v[1] * 1000.f);
         }
-        for (const auto& f : textured.indices) {
+        for (size_t face = 0; face < textured.indices.size(); ++face) {
+            if ((face & 4095) == 0 && stop_if_canceled()) return false;
+            const auto& f = textured.indices[face];
             for (int v : f) if (v < 0 || size_t(v) >= its.vertices.size()) throw std::runtime_error("GLB triangle index is invalid.");
             its.indices.emplace_back(f[0], f[1], f[2]);
         }
         struct Pixels { std::vector<unsigned char> data; int width {0}, height {0}; };
         std::vector<Pixels> images(textured.textures.size());
-        for (size_t i = 0; i < images.size(); ++i)
+        for (size_t i = 0; i < images.size(); ++i) {
+            if (stop_if_canceled()) return false;
             if (!decode_texture_to_pixels(textured.textures[i], images[i].data, images[i].width, images[i].height) ||
                 uint64_t(images[i].width) * images[i].height > 64ull * 1024 * 1024)
                 throw std::runtime_error("GLB color texture cannot be decoded.");
+        }
         info = ObjInfo {};
+        const auto materials = doc.find("materials");
+        const bool declares_color_texture = materials != doc.end() &&
+            std::any_of(materials->begin(), materials->end(), [](const auto& material) {
+                return material.value("pbrMetallicRoughness", nlohmann::json::object()).contains("baseColorTexture");
+            });
+        if (!declares_color_texture && textured.precomputed_vertex_colors.size() == its.vertices.size()) {
+            // Native import already converted each primitive's vertex colors.
+            // Keep editing's opaque alpha and white unreferenced vertices;
+            // declared textures retain the original missing-texture checks.
+            std::vector<unsigned char> referenced(its.vertices.size(), 0);
+            for (const auto& face : its.indices)
+                for (int vertex : face) referenced[vertex] = 1;
+            info.vertex_colors = std::move(textured.precomputed_vertex_colors);
+            for (size_t vertex = 0; vertex < info.vertex_colors.size(); ++vertex) {
+                if ((vertex & 4095) == 0 && stop_if_canceled()) return false;
+                if (!referenced[vertex]) info.vertex_colors[vertex] = RGBA {1.f, 1.f, 1.f, 1.f};
+                else info.vertex_colors[vertex][3] = 1.f;
+            }
+            mesh = TriangleMesh(std::move(its));
+            if (mesh.volume() < 0) mesh.flip_triangles();
+            if (stop_if_canceled()) return false;
+            return !mesh.empty();
+        }
         info.vertex_colors.assign(its.vertices.size(), RGBA {1.f, 1.f, 1.f, 1.f});
         std::vector<unsigned char> assigned(its.vertices.size(), 0);
-        for (size_t fi = 0; fi < textured.indices.size(); ++fi) {
-            const int material = fi < textured.material_ids.size() ? textured.material_ids[fi] : -1;
-            const int texture = material >= 0 && size_t(material) < textured.material_texture_map.size()
-                ? textured.material_texture_map[material] : -1;
-            const auto factor = material >= 0 && size_t(material) < textured.material_colors.size()
-                ? textured.material_colors[material] : std::array<float, 4>{1.f, 1.f, 1.f, 1.f};
-            int wrap_s = 10497, wrap_t = 10497;
+        struct MaterialSampling {
+            int texture {-1}, wrap_s {10497}, wrap_t {10497};
+            std::array<float, 4> factor {1.f, 1.f, 1.f, 1.f};
+            std::array<float, 3> previous_vertex_color {};
+            RGBA previous_output_color {1.f, 1.f, 1.f, 1.f};
+            bool previous_color_ready {false};
+            bool uniform_color_candidate {true};
             nlohmann::json transform = nlohmann::json::object();
-            if (material >= 0 && doc.contains("materials") && size_t(material) < doc["materials"].size()) {
-                const auto& pbr = doc["materials"][material].value("pbrMetallicRoughness", nlohmann::json::object());
-                if (pbr.contains("baseColorTexture")) {
-                    if (texture < 0) throw std::runtime_error("The GLB color texture is missing or cannot be read.");
-                    const auto& ti = pbr["baseColorTexture"];
-                    transform = ti.value("extensions", nlohmann::json::object()).value("KHR_texture_transform", nlohmann::json::object());
-                    const auto& td = doc.at("textures").at(ti.at("index").get<size_t>());
-                    if (td.contains("sampler")) {
-                        const auto& sampler = doc.at("samplers").at(td.at("sampler").get<size_t>());
-                        wrap_s = sampler.value("wrapS", 10497); wrap_t = sampler.value("wrapT", 10497);
+            std::array<float, 2> scale {1.f, 1.f}, offset {0.f, 0.f};
+            float cosine {1.f}, sine {0.f};
+            bool transform_ready {false};
+        };
+        // Only cache materials actually encountered in this load. Keep texture
+        // transform parsing lazy: unused vertices/materials were not sampled.
+        std::unordered_map<int, MaterialSampling> material_sampling;
+        const bool has_vertex_colors = vertex_colors.size() == its.vertices.size();
+        for (size_t fi = 0; fi < textured.indices.size(); ++fi) {
+            if ((fi & 4095) == 0 && stop_if_canceled()) return false;
+            const int material = fi < textured.material_ids.size() ? textured.material_ids[fi] : -1;
+            auto inserted = material_sampling.try_emplace(material);
+            auto& sampling = inserted.first->second;
+            if (inserted.second) {
+                sampling.texture = material >= 0 && size_t(material) < textured.material_texture_map.size()
+                    ? textured.material_texture_map[material] : -1;
+                sampling.factor = material >= 0 && size_t(material) < textured.material_colors.size()
+                    ? textured.material_colors[material] : std::array<float, 4>{1.f, 1.f, 1.f, 1.f};
+                if (material >= 0 && doc.contains("materials") && size_t(material) < doc["materials"].size()) {
+                    const auto& pbr = doc["materials"][material].value("pbrMetallicRoughness", nlohmann::json::object());
+                    if (pbr.contains("baseColorTexture")) {
+                        if (sampling.texture < 0) throw std::runtime_error("The GLB color texture is missing or cannot be read.");
+                        const auto& ti = pbr["baseColorTexture"];
+                        sampling.transform = ti.value("extensions", nlohmann::json::object()).value("KHR_texture_transform", nlohmann::json::object());
+                        const auto& td = doc.at("textures").at(ti.at("index").get<size_t>());
+                        if (td.contains("sampler")) {
+                            const auto& sampler = doc.at("samplers").at(td.at("sampler").get<size_t>());
+                            sampling.wrap_s = sampler.value("wrapS", 10497); sampling.wrap_t = sampler.value("wrapT", 10497);
+                        }
                     }
                 }
             }
+            const int texture = sampling.texture;
+            const auto& factor = sampling.factor;
             for (int vi : textured.indices[fi]) {
                 if (assigned[vi]) continue;
                 assigned[vi] = 1;
+                // Untextured primitives often use one vertex color for an
+                // entire material. Reuse only identical float bit patterns so
+                // invalid or signed-zero inputs keep the original behavior.
+                if (texture < 0 && sampling.uniform_color_candidate && sampling.previous_color_ready) {
+                    if (!has_vertex_colors ||
+                        std::memcmp(vertex_colors[vi].data(), sampling.previous_vertex_color.data(), sizeof(float) * 3) == 0) {
+                        info.vertex_colors[vi] = sampling.previous_output_color;
+                        continue;
+                    }
+                    // A varying material has no consecutive-color reuse;
+                    // leave it on the original conversion path from here on.
+                    sampling.uniform_color_candidate = false;
+                }
                 RGBA color {1.f, 1.f, 1.f, 1.f};
                 if (texture >= 0) {
                     if (size_t(texture) >= images.size() || size_t(vi) >= textured.uvs.size())
                         throw std::runtime_error("GLB texture coordinates are missing.");
                     const auto& image = images[texture];
                     auto uv = textured.uvs[vi];
-                    const auto scale = transform.value("scale", std::array<float, 2>{1.f, 1.f});
-                    const auto offset = transform.value("offset", std::array<float, 2>{0.f, 0.f});
-                    const float angle = transform.value("rotation", 0.f);
-                    const float u = uv[0] * scale[0], v = uv[1] * scale[1];
-                    uv = {offset[0] + std::cos(angle) * u - std::sin(angle) * v,
-                          offset[1] + std::sin(angle) * u + std::cos(angle) * v};
+                    if (!sampling.transform_ready) {
+                        sampling.scale = sampling.transform.value("scale", std::array<float, 2>{1.f, 1.f});
+                        sampling.offset = sampling.transform.value("offset", std::array<float, 2>{0.f, 0.f});
+                        const float angle = sampling.transform.value("rotation", 0.f);
+                        sampling.cosine = std::cos(angle); sampling.sine = std::sin(angle);
+                        sampling.transform_ready = true;
+                    }
+                    const float u = uv[0] * sampling.scale[0], v = uv[1] * sampling.scale[1];
+                    uv = {sampling.offset[0] + sampling.cosine * u - sampling.sine * v,
+                          sampling.offset[1] + sampling.sine * u + sampling.cosine * v};
                     if (!std::isfinite(uv[0]) || !std::isfinite(uv[1])) throw std::runtime_error("GLB UV is invalid.");
-                    const int x = std::min(image.width - 1, int(wrap(uv[0], wrap_s) * image.width));
-                    const int y = std::min(image.height - 1, int(wrap(uv[1], wrap_t) * image.height));
+                    const int x = std::min(image.width - 1, int(wrap(uv[0], sampling.wrap_s) * image.width));
+                    const int y = std::min(image.height - 1, int(wrap(uv[1], sampling.wrap_t) * image.height));
                     const auto* pixel = image.data.data() + (size_t(y) * image.width + x) * 3;
                     for (size_t c = 0; c < 3; ++c) color[c] = linear(pixel[2 - c] / 255.f);
                 }
                 for (size_t c = 0; c < 3; ++c) {
-                    const float vertex = vertex_colors.size() == its.vertices.size() ? vertex_colors[vi][c] : 1.f;
+                    const float vertex = has_vertex_colors ? vertex_colors[vi][c] : 1.f;
                     if (!std::isfinite(vertex) || !std::isfinite(factor[c])) throw std::runtime_error("GLB color is invalid.");
                     color[c] = srgb(color[c] * factor[c] * vertex);
                 }
                 info.vertex_colors[vi] = color;
+                if (texture < 0 && sampling.uniform_color_candidate) {
+                    if (has_vertex_colors)
+                        std::memcpy(sampling.previous_vertex_color.data(), vertex_colors[vi].data(), sizeof(float) * 3);
+                    sampling.previous_output_color = color;
+                    sampling.previous_color_ready = true;
+                }
             }
         }
         mesh = TriangleMesh(std::move(its));
         if (mesh.volume() < 0) mesh.flip_triangles();
+        if (stop_if_canceled()) return false;
         return !mesh.empty();
     } catch (const std::exception& e) { error = e.what(); return false; }
 }
 
-bool write_model_artifact(const boost::filesystem::path& path, const indexed_triangle_set& mesh,
-                          const std::vector<RGBA>& colors, std::string& error) {
+static bool write_model_artifact_impl(const boost::filesystem::path& path, const indexed_triangle_set& mesh,
+                                      const std::vector<RGBA>& colors, std::string& error,
+                                      std::string* written_sha256) {
     boost::filesystem::path temporary = path; temporary += ".partial";
     bool owned = false;
+    std::string prepared_hash;
+    if (written_sha256) written_sha256->clear();
     try {
         if (mesh.vertices.empty() || mesh.indices.empty() || colors.size() != mesh.vertices.size())
             throw std::runtime_error("The edited model has incomplete geometry or colors.");
@@ -229,12 +329,123 @@ bool write_model_artifact(const boost::filesystem::path& path, const indexed_tri
         owned = true;
         output.imbue(std::locale::classic());
         if (model_artifact_format(path) == "obj") {
-            output << "# Orca AI model: Z-up millimetres, sRGB vertex colors\n" << std::setprecision(9);
+            constexpr char header[] = "# Orca AI model: Z-up millimetres, sRGB vertex colors\n";
+            output << header << std::setprecision(9);
+#ifdef _WIN32
+            // Like LocalesUtils, use floating-point to_chars on the supported
+            // Windows toolchain. Keep the classic-locale stream fallback for
+            // toolchains whose C++17 library lacks floating-point charconv.
+            // A bounded batch avoids stream locale/sentry work per number.
+            std::string batch;
+            batch.reserve(64 * 1024 + 256);
+            std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> digest(nullptr, EVP_MD_CTX_free);
+            if (written_sha256) {
+                digest.reset(EVP_MD_CTX_new());
+                if (!digest || EVP_DigestInit_ex(digest.get(), EVP_sha256(), nullptr) != 1 ||
+                    EVP_DigestUpdate(digest.get(), header, sizeof(header) - 1) != 1)
+                    throw std::runtime_error("Unable to hash the prepared OBJ import copy.");
+            }
+            auto append_number = [](std::string& target, auto value) {
+                char text[64];
+                std::to_chars_result converted;
+                if constexpr (std::is_floating_point_v<decltype(value)>)
+                    converted = std::to_chars(text, text + sizeof(text), value, std::chars_format::general, 9);
+                else
+                    converted = std::to_chars(text, text + sizeof(text), value);
+                if (converted.ec != std::errc()) throw std::runtime_error("Unable to format the model number.");
+                target.append(text, converted.ptr);
+            };
+            struct PositionText {
+                uint32_t bits {0};
+                uint8_t length {0};
+                bool valid {false};
+                char text[64] {};
+            };
+            constexpr unsigned position_cache_bits = 12;
+            constexpr size_t position_cache_size = size_t(1) << position_cache_bits;
+            auto position_cache = std::make_unique<PositionText[]>(position_cache_size);
+            size_t position_samples = 0, position_hits = 0;
+            auto append_position = [&](std::string& target, float value) {
+                if (!position_cache) {
+                    append_number(target, value);
+                    return;
+                }
+                uint32_t bits;
+                std::memcpy(&bits, &value, sizeof(bits));
+                auto& entry = position_cache[(bits * 2654435761u) >> (32 - position_cache_bits)];
+                if (entry.valid && entry.bits == bits) {
+                    ++position_hits;
+                } else {
+                    const auto converted = std::to_chars(entry.text, entry.text + sizeof(entry.text),
+                                                         value, std::chars_format::general, 9);
+                    if (converted.ec != std::errc()) throw std::runtime_error("Unable to format the model number.");
+                    entry.bits = bits;
+                    entry.length = uint8_t(converted.ptr - entry.text);
+                    entry.valid = true;
+                }
+                target.append(entry.text, entry.length);
+                // Sparse coordinate reuse pays less than the lookup cost. Decide
+                // once from roughly the first 1.4k vertices, without changing any bytes.
+                if (++position_samples == 4096 && position_hits < 820)
+                    position_cache.reset();
+            };
+            auto flush_batch = [&]() {
+                output.write(batch.data(), std::streamsize(batch.size()));
+                if (!output) throw std::runtime_error("Unable to write the complete model.");
+                if (digest && EVP_DigestUpdate(digest.get(), batch.data(), batch.size()) != 1)
+                    throw std::runtime_error("Unable to hash the prepared OBJ import copy.");
+                batch.clear();
+            };
+            std::array<float, 3> previous_color {};
+            std::string formatted_color;
+            bool has_previous_color = false;
+            for (size_t i = 0; i < mesh.vertices.size(); ++i) {
+                batch += "v ";
+                for (int c = 0; c < 3; ++c) {
+                    append_position(batch, mesh.vertices[i][c]);
+                    batch += ' ';
+                }
+                const auto& color = colors[i];
+                // Material-colored meshes often repeat a color for millions of
+                // vertices. Compare bits so signed zero retains its OBJ text.
+                if (!has_previous_color || std::memcmp(previous_color.data(), color.data(), sizeof(float) * 3) != 0) {
+                    std::copy_n(color.begin(), 3, previous_color.begin());
+                    formatted_color.clear();
+                    for (int c = 0; c < 3; ++c) {
+                        append_number(formatted_color, color[c]);
+                        if (c != 2) formatted_color += ' ';
+                    }
+                    has_previous_color = true;
+                }
+                batch += formatted_color;
+                batch += '\n';
+                if (batch.size() >= 64 * 1024) flush_batch();
+            }
+            for (const auto& face : mesh.indices) {
+                batch += "f ";
+                for (int c = 0; c < 3; ++c) {
+                    append_number(batch, face[c] + 1);
+                    batch += c == 2 ? '\n' : ' ';
+                }
+                if (batch.size() >= 64 * 1024) flush_batch();
+            }
+            if (!batch.empty()) flush_batch();
+            if (digest) {
+                unsigned char bytes[EVP_MAX_MD_SIZE]; unsigned length = 0;
+                if (EVP_DigestFinal_ex(digest.get(), bytes, &length) != 1)
+                    throw std::runtime_error("Unable to hash the prepared OBJ import copy.");
+                std::ostringstream hex;
+                for (unsigned i = 0; i < length; ++i)
+                    hex << std::hex << std::setw(2) << std::setfill('0') << unsigned(bytes[i]);
+                prepared_hash = hex.str();
+            }
+#else
             for (size_t i = 0; i < mesh.vertices.size(); ++i) {
                 const auto& v = mesh.vertices[i]; const auto& c = colors[i];
                 output << "v " << v.x() << ' ' << v.y() << ' ' << v.z() << ' ' << c[0] << ' ' << c[1] << ' ' << c[2] << '\n';
             }
             for (const auto& f : mesh.indices) output << "f " << f[0] + 1 << ' ' << f[1] + 1 << ' ' << f[2] + 1 << '\n';
+#endif
         } else {
             std::vector<unsigned char> binary;
             std::array<float, 3> minimum {INFINITY, INFINITY, INFINITY}, maximum {-INFINITY, -INFINITY, -INFINITY};
@@ -271,13 +482,90 @@ bool write_model_artifact(const boost::filesystem::path& path, const indexed_tri
         }
         output.close();
         if (!output || boost::filesystem::file_size(temporary) > max_bytes) throw std::runtime_error("Unable to write the complete model.");
+        // Windows OBJ imports already hashed the exact bytes sent to the
+        // writer. Other formats/toolchains retain the read-back path.
+        if (written_sha256 && prepared_hash.empty()) {
+            prepared_hash = model_artifact_sha256(temporary);
+            if (prepared_hash.empty()) throw std::runtime_error("Unable to hash the prepared model file.");
+        }
         boost::filesystem::rename(temporary, path);
+        if (written_sha256) written_sha256->swap(prepared_hash);
         return true;
     } catch (const std::exception& e) {
         if (owned) { boost::system::error_code ignored; boost::filesystem::remove(temporary, ignored); }
         error = e.what(); return false;
     }
 }
+
+bool write_model_artifact(const boost::filesystem::path& path, const indexed_triangle_set& mesh,
+                          const std::vector<RGBA>& colors, std::string& error) {
+    return write_model_artifact_impl(path, mesh, colors, error, nullptr);
+}
+
+bool prepare_glb_obj_import(const boost::filesystem::path& source,
+                            const boost::filesystem::path& cache_root,
+                            VerifiedGlbImportCopy& verified,
+                            boost::filesystem::path& output,
+                            std::string& error,
+                            bool& reused) {
+    output.clear();
+    error.clear();
+    reused = false;
+    if (cache_root.empty()) {
+        error = "The Orca temporary directory is unavailable for model import.";
+        return false;
+    }
+    if (model_artifact_format(source) != "glb" || !is_model_artifact(source)) {
+        error = "The generated GLB is missing or exceeds 512 MB.";
+        return false;
+    }
+
+    try {
+        const std::string source_hash = model_artifact_sha256(source);
+        if (source_hash.empty()) {
+            error = "Unable to verify the GLB import source.";
+            return false;
+        }
+        // The full content hash keeps history nesting and saved-version names
+        // out of the import path; a 3MF save retains only this OBJ basename.
+        const auto canonical = cache_root / "ai-import" / ("orcaslicer-ai-glb-" + source_hash + ".obj");
+        const bool previously_verified = verified.source_sha256 == source_hash &&
+                                         !verified.obj_sha256.empty();
+        if (previously_verified && is_model_artifact(verified.obj_path) &&
+            model_artifact_sha256(verified.obj_path) == verified.obj_sha256) {
+            output = verified.obj_path;
+            reused = true;
+            return true;
+        }
+
+        // A content-addressed name does not prove that an OBJ was produced
+        // from these GLB bytes. Never trust a previous process's copy (or a
+        // modified copy from this process) after decoding the source again.
+        verified = {};
+        TriangleMesh mesh;
+        ObjInfo colors;
+        if (!load_model_artifact(source, mesh, colors, error)) return false;
+        boost::filesystem::path candidate = canonical;
+        if (boost::filesystem::exists(candidate))
+            candidate = cache_root / "ai-import" /
+                ("orcaslicer-ai-glb-" + source_hash + "-" +
+                 boost::filesystem::unique_path("%%%%-%%%%").string() + ".obj");
+        std::string obj_hash;
+        if (!write_model_artifact_impl(candidate, mesh.its, colors.vertex_colors, error, &obj_hash)) return false;
+        if (obj_hash.empty()) {
+            error = "Unable to verify the prepared OBJ import copy.";
+            return false;
+        }
+        verified = {source_hash, candidate, obj_hash};
+        output = candidate;
+        return true;
+    } catch (const std::exception& e) {
+        verified = {};
+        error = e.what();
+        return false;
+    }
+}
+
 bool archive_local_model(const boost::filesystem::path& source,const boost::filesystem::path& destination,std::string& error) {
     const auto staged=destination.parent_path()/boost::filesystem::unique_path("local-model-%%%%-%%%%.glb");
     bool owned=false;

@@ -11,6 +11,7 @@
 #include <array>
 #include <cstddef>
 #include <ctime>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -64,6 +65,12 @@ std::string download_job_id(const boost::filesystem::path& path);
 bool valid_provider_task_id(const std::string& value);
 nlohmann::json read_json(const boost::filesystem::path& path);
 bool write_json(const boost::filesystem::path& path, const nlohmann::json& value);
+// The field value must come from nlohmann::json::dump() in this process.
+// Streams it into the ordered object without copying or re-encoding that value.
+bool write_json_with_preencoded_field(const boost::filesystem::path& path, const nlohmann::json& object,
+                                      const std::string& key, const std::string& serialized_value);
+bool write_json_with_preencoded_fields(const boost::filesystem::path& path, const nlohmann::json& object,
+                                       const std::map<std::string, std::string>& encoded);
 bool path_is_inside(const boost::filesystem::path& root, const boost::filesystem::path& candidate);
 struct DesignHistoryEntry
 {

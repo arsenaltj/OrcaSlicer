@@ -928,6 +928,21 @@ TEST_CASE("Original color identity survives seam splits and changes when origina
     CHECK(content_fingerprint(source) != before);
 }
 
+TEST_CASE("Semantic identity preserves its canonical digest across buffered blocks and rejects late invalid data", "[SemanticColoring]")
+{
+    auto source = triangles(std::vector<Color>(1030, {.2f,.4f,.8f}));
+    // Independent hashlib digest of the unchanged v1 prefix and LE float32 RGB.
+    constexpr char expected[] = "b4702d6afc0e7db2475c91ba7f8500e370d6eac200ece8ddf5267149b9d31a8e";
+    REQUIRE(content_fingerprint(source) == expected);
+    source.vertex_colors.back()[3] = .125f;
+    CHECK(content_fingerprint(source) == expected);
+    source.mesh.indices.back()[2] = -1;
+    CHECK(content_fingerprint(source).empty());
+    source.mesh.indices.back()[2] = int(source.mesh.vertices.size() - 1);
+    source.vertex_colors.back()[0] = std::numeric_limits<float>::quiet_NaN();
+    CHECK(content_fingerprint(source).empty());
+}
+
 TEST_CASE("Semantic rendering rejects invalid geometry and supports cancellation", "[SemanticColoring]")
 {
     auto source = triangles({{.2f,.4f,.8f}});

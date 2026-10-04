@@ -16,6 +16,12 @@
 #include <cstring>
 #include <iterator>
 #include <limits>
+#include <chrono>
+#include <cstdlib>
+#ifdef _WIN32
+#include <windows.h>
+#include <psapi.h>
+#endif
 
 using namespace Slic3r;
 using namespace Slic3r::AI;
@@ -159,6 +165,82 @@ ModelFinishingOptions puzzle_options(const boost::filesystem::path& base) {
                                {"puzzle_base_sha256", model_artifact_sha256(base)}};
     return options;
 }
+}
+
+// Opt-in real-asset measurement; never runs in the regular regression suite.
+TEST_CASE("Puzzle save measurements preserve the verified original asset", "[.][PuzzleSaveProbe]") {
+    const char* input = std::getenv("ORCA_SAVE_SOURCE");
+    const char* output = std::getenv("ORCA_SAVE_OUTPUT");
+    const char* mode = std::getenv("ORCA_SAVE_MODE");
+    REQUIRE(input);
+    REQUIRE(output);
+    REQUIRE(mode);
+    REQUIRE_FALSE(boost::filesystem::exists(output));
+    Fixture fixture;
+    const auto base = fixture.directory / "base.glb";
+    const auto source = fixture.directory / "current.glb";
+    boost::filesystem::copy_file(input, base);
+    const auto hash = model_artifact_sha256(base);
+    if (std::string(mode) == "material-edited") {
+        auto glb = read_glb(base);
+        REQUIRE_FALSE(glb.doc["materials"].empty());
+        for (auto& material : glb.doc["materials"])
+            material["pbrMetallicRoughness"]["baseColorFactor"] = {.8, .9, .7, 1.0};
+        write_glb(source, glb.doc, glb.binary);
+        REQUIRE(model_artifact_sha256(source) != hash);
+    } else {
+        REQUIRE(std::string(mode) == "identical");
+        boost::filesystem::copy_file(base, source);
+    }
+    const auto source_hash = model_artifact_sha256(source);
+    const auto options = puzzle_options(base);
+    Json samples = Json::array();
+#ifdef _WIN32
+    const auto caller_cpu_ms = [] {
+        FILETIME created{}, exited{}, kernel{}, user{};
+        REQUIRE(GetThreadTimes(GetCurrentThread(), &created, &exited, &kernel, &user));
+        ULARGE_INTEGER k{}, u{};
+        k.LowPart=kernel.dwLowDateTime; k.HighPart=kernel.dwHighDateTime;
+        u.LowPart=user.dwLowDateTime; u.HighPart=user.dwHighDateTime;
+        return double(k.QuadPart + u.QuadPart) / 10000.;
+    };
+#endif
+    for (int iteration = 0; iteration < 5; ++iteration) {
+        const auto destination = fixture.directory / ("saved-" + std::to_string(iteration) + ".glb");
+#ifdef _WIN32
+        const double cpu_started = caller_cpu_ms();
+#endif
+        const auto start = std::chrono::steady_clock::now();
+        const auto result = finish_model_artifact(source, destination, options);
+        const double elapsed = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - start).count();
+        Json cpu_ms = nullptr;
+#ifdef _WIN32
+        cpu_ms = caller_cpu_ms() - cpu_started; // Caller only; not total process CPU.
+        REQUIRE(cpu_ms.get<double>() >= 0.);
+#endif
+        INFO(result.error);
+        REQUIRE(result.success);
+        REQUIRE(result.output_sha256 == hash);
+        REQUIRE(model_artifact_sha256(destination) == hash);
+        REQUIRE(result.faces_before == result.faces_after);
+        REQUIRE(model_artifact_sha256(source) == source_hash);
+        REQUIRE(model_artifact_sha256(base) == hash);
+        uint64_t peak = 0;
+#ifdef _WIN32
+        PROCESS_MEMORY_COUNTERS counters{};
+        REQUIRE(K32GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters)));
+        peak = counters.PeakWorkingSetSize;
+#endif
+        samples.push_back({{"save_ms", elapsed}, {"caller_thread_cpu_ms", cpu_ms}, {"process_lifetime_peak_bytes", peak},
+                           {"output_sha256", result.output_sha256}, {"faces", result.faces_after}});
+        boost::filesystem::remove(destination);
+    }
+    REQUIRE(model_artifact_sha256(input) == hash);
+    boost::filesystem::ofstream stream(output);
+    stream << Json{{"input_sha256", hash}, {"mode", mode}, {"samples", samples}}.dump(2);
+    stream.close();
+    REQUIRE(bool(stream));
 }
 
 TEST_CASE("Local appearance changes selected texture pixels while preserving geometry and texture variation", "[BeautyWorkbench][BeautyAppearance]") {
@@ -364,6 +446,44 @@ TEST_CASE("Unsupported vertex-only appearance editing returns an explicit recove
     REQUIRE_FALSE(boost::filesystem::exists(destination));
 }
 
+TEST_CASE("Rejected vertex-colored puzzle saves preserve the source and allow saving after clearing paint", "[BeautyWorkbench][BeautyAppearance][BeautyPuzzle]") {
+    Fixture fixture;
+    const auto source = fixture.directory / "vertex-base.glb";
+    boost::filesystem::copy_file(boost::filesystem::path(std::string(TEST_DATA_DIR)) /
+        "model_artifact" / "vertex-material-color.glb", source);
+    const auto hash = model_artifact_sha256(source);
+    auto options = puzzle_options(source);
+    auto puzzle = BeautyPuzzle::decode(options.beauty_document["puzzle"], options.beauty_surface->geometry_id,
+                                      options.beauty_surface->face_patch.size());
+    REQUIRE_FALSE(puzzle.face_piece.empty());
+    const auto piece = puzzle.face_piece.front();
+    puzzle.paint(piece, {.2f, .7f, .4f, 1.f});
+    options.beauty_document["puzzle"] = puzzle.encode();
+    const auto record = options.beauty_document;
+    const auto destination = fixture.directory / "saved.glb";
+    // Characterize the current GUI failure through the real save entry point.
+    // Vertex-color save support remains a product gap, not an accepted success.
+    const auto rejected = finish_model_artifact(source, destination, options);
+    REQUIRE_FALSE(rejected.success);
+    REQUIRE_FALSE(rejected.canceled);
+    REQUIRE(rejected.error.find("untextured") != std::string::npos);
+    CHECK_FALSE(rejected.changed_edit_record);
+    CHECK(rejected.output_sha256.empty());
+    CHECK_FALSE(boost::filesystem::exists(destination));
+    CHECK(model_artifact_sha256(source) == hash);
+    CHECK(options.beauty_document == record);
+    CHECK(std::distance(boost::filesystem::directory_iterator(fixture.directory), boost::filesystem::directory_iterator()) == 1);
+
+    puzzle.clear_color(piece);
+    options.beauty_document["puzzle"] = puzzle.encode();
+    const auto restored = finish_model_artifact(source, destination, options);
+    INFO(restored.error);
+    REQUIRE(restored.success);
+    CHECK(restored.changed_edit_record);
+    CHECK(model_artifact_sha256(destination) == hash);
+    CHECK(model_artifact_sha256(source) == hash);
+}
+
 TEST_CASE("Puzzle appearance assigns absolute face colors while retaining alpha geometry and unpainted pixels", "[BeautyWorkbench][BeautyAppearance][BeautyPuzzle]") {
     Fixture fixture;
     const auto source = make_neutral_fixture(fixture), destination = fixture.directory / "puzzle.glb";
@@ -469,6 +589,73 @@ TEST_CASE("Puzzle saves restore released regions from the verified original text
     CHECK_FALSE(finish_model_artifact(source, restored_path, options).success);
 }
 
+TEST_CASE("Puzzle saves verify both identical input files even when reusing decoded geometry", "[BeautyAppearance][BeautyPuzzle]") {
+    for (int mutation : {0, 1, 2}) {
+        DYNAMIC_SECTION("input changed during save " << mutation) {
+            Fixture fixture;
+            const auto base = make_neutral_fixture(fixture);
+            const auto source = fixture.directory / "copy.glb";
+            const auto destination = fixture.directory / "saved.glb";
+            boost::filesystem::copy_file(base, source);
+            auto options = puzzle_options(base);
+            options.beauty_surface.reset(); // Exercise building from the reused decoded colors.
+            const auto hash = model_artifact_sha256(base);
+            int checkpoints = 0;
+            const auto result = finish_model_artifact(source, destination, options, [&] {
+                if (++checkpoints == 2 && mutation != 0) {
+                    boost::filesystem::ofstream output(mutation == 1 ? source : base,
+                                                      std::ios::binary | std::ios::app);
+                    output.put(' ');
+                }
+                return false;
+            });
+            INFO(result.error);
+            if (mutation == 0) {
+                REQUIRE(result.success);
+                CHECK(model_artifact_sha256(destination) == hash);
+                CHECK(model_artifact_sha256(source) == hash);
+                CHECK(model_artifact_sha256(base) == hash);
+            } else {
+                CHECK_FALSE(result.success);
+                CHECK_FALSE(result.changed_edit_record);
+                CHECK(result.output_sha256.empty());
+                CHECK_FALSE(boost::filesystem::exists(destination));
+                CHECK(std::distance(boost::filesystem::directory_iterator(fixture.directory),
+                                    boost::filesystem::directory_iterator()) == 2);
+            }
+        }
+    }
+}
+
+TEST_CASE("Puzzle saves reject independently decoded geometry that differs from the original", "[BeautyAppearance][BeautyPuzzle]") {
+    Fixture fixture;
+    const auto base = make_neutral_fixture(fixture), source = fixture.directory / "different.glb";
+    const auto destination = fixture.directory / "saved.glb";
+    const auto options = puzzle_options(base);
+    const auto base_hash = model_artifact_sha256(base);
+    auto glb = read_glb(base);
+    const size_t accessor_id = glb.doc["meshes"][0]["primitives"][0]["attributes"]["POSITION"].get<size_t>();
+    const auto& accessor = glb.doc["accessors"][accessor_id];
+    const auto& view = glb.doc["bufferViews"][accessor["bufferView"].get<size_t>()];
+    const size_t offset = view.value("byteOffset", size_t(0)) + accessor.value("byteOffset", size_t(0));
+    REQUIRE(offset + sizeof(float) <= glb.binary.size());
+    std::vector<unsigned char> changed; append_float(changed, .125f);
+    std::copy(changed.begin(), changed.end(), glb.binary.begin() + offset);
+    write_glb(source, glb.doc, glb.binary);
+    const auto source_hash = model_artifact_sha256(source);
+    REQUIRE(source_hash != base_hash);
+    const auto result = finish_model_artifact(source, destination, options);
+    CHECK_FALSE(result.success);
+    CHECK_FALSE(result.changed_edit_record);
+    CHECK(result.output_sha256.empty());
+    CHECK(result.error.find("different geometry") != std::string::npos);
+    CHECK_FALSE(boost::filesystem::exists(destination));
+    CHECK(model_artifact_sha256(base) == base_hash);
+    CHECK(model_artifact_sha256(source) == source_hash);
+    CHECK(std::distance(boost::filesystem::directory_iterator(fixture.directory),
+                        boost::filesystem::directory_iterator()) == 2);
+}
+
 TEST_CASE("Puzzle saves reject invalid base references and clean canceled partition-only outputs", "[BeautyWorkbench][BeautyAppearance][BeautyPuzzle]") {
     Fixture fixture;
     const auto source = make_neutral_fixture(fixture), destination = fixture.directory / "invalid-base.glb";
@@ -497,4 +684,49 @@ TEST_CASE("Puzzle saves reject invalid base references and clean canceled partit
             CHECK(std::distance(boost::filesystem::directory_iterator(fixture.directory), boost::filesystem::directory_iterator()) == 1);
         }
     }
+}
+
+TEST_CASE("Subpixel unselected UV islands retain texels across winding and wrap modes", "[BeautyWorkbench][BeautyAppearance]") {
+    for (float center : {.25f, 0.f, 1.f}) for (float radius : {.0001f, 0.f})
+        for (bool reversed : {false, true}) for (int wrap : {10497, 33071, 33648}) {
+            DYNAMIC_SECTION("center " << center << " radius " << radius << " reversed " << reversed << " wrap " << wrap) {
+                Fixture fixture;
+                const auto source = make_fixture(fixture), destination = fixture.directory / "edited.glb";
+                auto original = read_glb(source);
+                // The selected quad covers the image. The unselected quad has
+                // a tiny (or collapsed) UV island that must still protect its
+                // bilinear texels, including the texture's horizontal edges.
+                const float left = std::clamp(center - radius, 0.f, 1.f);
+                const float right = std::clamp(center + radius, 0.f, 1.f);
+                std::array<std::array<float, 2>, 8> uvs{{{0,0},{1,0},{1,1},{0,1},
+                    {left,.5f-radius},{right,.5f-radius},{right,.5f+radius},{left,.5f+radius}}};
+                if (reversed) std::reverse(uvs.begin()+4, uvs.end());
+                std::vector<unsigned char> encoded;
+                for (const auto& uv : uvs) for (float value : uv) append_float(encoded, value);
+                const auto& view = original.doc["bufferViews"][original.doc["accessors"][1]["bufferView"].get<size_t>()];
+                const size_t offset = view.value("byteOffset", size_t(0));
+                REQUIRE(offset + encoded.size() <= original.binary.size());
+                std::copy(encoded.begin(), encoded.end(), original.binary.begin()+offset);
+                original.doc["samplers"][0]["wrapS"] = wrap;
+                original.doc["samplers"][0]["wrapT"] = wrap;
+                write_glb(source, original.doc, original.binary);
+                original = read_glb(source);
+                const auto source_hash = model_artifact_sha256(source);
+                const auto result = edit_glb_appearance(source, destination, selected_left());
+                INFO(result.error);
+                REQUIRE(result.success);
+                REQUIRE(result.changed_pixels > 100);
+                REQUIRE(model_artifact_sha256(source) == source_hash);
+                const auto edited = read_glb(destination);
+                require_preserved_geometry(original, edited);
+                const auto before = color_image(original), after = color_image(edited);
+                const int protected_x = std::min(63, int(center * 64));
+                CHECK(after.at<cv::Vec4b>(16,protected_x) == before.at<cv::Vec4b>(16,protected_x));
+                CHECK(after.at<cv::Vec4b>(16,40) != before.at<cv::Vec4b>(16,40));
+                if (center == .25f)
+                    CHECK(after.at<cv::Vec4b>(15,15) == before.at<cv::Vec4b>(15,15));
+                for (int y=0; y<32; ++y) for (int x=0; x<64; ++x)
+                    REQUIRE(after.at<cv::Vec4b>(y,x)[3] == before.at<cv::Vec4b>(y,x)[3]);
+            }
+        }
 }

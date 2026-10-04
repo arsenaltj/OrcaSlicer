@@ -9,6 +9,7 @@
 #include "libslic3r_version.h"
 
 #include <cstddef>
+#include <cstdlib>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -9646,11 +9647,21 @@ void Plater::priv::load_auxiliary_files()
 
 fs::path Plater::priv::get_export_file_path(GUI::FileType file_type)
 {
+    const bool trace_save_dialog = std::getenv("ORCASLICER_SAVE_DIALOG_TRACE") != nullptr;
+    const auto trace_start = std::chrono::steady_clock::now();
+    const auto trace_stage = [&](const char* stage) {
+        if (trace_save_dialog)
+            BOOST_LOG_TRIVIAL(info) << "Save dialog trace: " << stage << " elapsed_ms="
+                << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - trace_start).count();
+    };
+    trace_stage("path.enter");
     // Update printbility state of each of the ModelInstances.
     this->update_print_volume_state();
+    trace_stage("path.after_print_volume");
 
     const Selection& selection = get_selection();
     int obj_idx = selection.get_object_idx();
+    trace_stage("path.after_selection");
 
     fs::path output_file;
     if (file_type == FT_3MF)
@@ -9664,6 +9675,7 @@ fs::path Plater::priv::get_export_file_path(GUI::FileType file_type)
             output_file = into_path(get_project_name());
         }
     }
+    trace_stage("path.after_project_filename");
     //bbs  name the project using the part name
     if (output_file.empty()) {
         if (get_project_name() != _L("Untitled")) {
@@ -9689,11 +9701,20 @@ fs::path Plater::priv::get_export_file_path(GUI::FileType file_type)
             // Use _L("Untitled") name
             output_file = into_path(_L("Untitled"));
     }
+    trace_stage("path.return");
     return output_file;
 }
 
 wxString Plater::priv::get_export_file(GUI::FileType file_type)
 {
+    const bool trace_save_dialog = std::getenv("ORCASLICER_SAVE_DIALOG_TRACE") != nullptr;
+    const auto trace_start = std::chrono::steady_clock::now();
+    const auto trace_stage = [&](const char* stage) {
+        if (trace_save_dialog)
+            BOOST_LOG_TRIVIAL(info) << "Save dialog trace: " << stage << " elapsed_ms="
+                << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - trace_start).count();
+    };
+    trace_stage("dialog.enter");
     wxString wildcard;
     switch (file_type) {
         case FT_STL:
@@ -9710,6 +9731,7 @@ wxString Plater::priv::get_export_file(GUI::FileType file_type)
     }
 
     fs::path output_file = get_export_file_path(file_type);
+    trace_stage("dialog.after_path");
 
     wxString dlg_title;
     switch (file_type) {
@@ -9748,12 +9770,15 @@ wxString Plater::priv::get_export_file(GUI::FileType file_type)
     }
 
     std::string out_dir = (boost::filesystem::path(output_file).parent_path()).string();
+    trace_stage("dialog.before_construct");
 
     wxFileDialog dlg(q, dlg_title,
         is_shapes_dir(out_dir) ? from_u8(wxGetApp().app_config->get_last_dir()) : from_path(output_file.parent_path()), from_path(output_file.filename()),
         wildcard, wxFD_SAVE | wxFD_OVERWRITE_PROMPT | wxPD_APP_MODAL);
+    trace_stage("dialog.before_show");
 
     int result = dlg.ShowModal();
+    trace_stage("dialog.after_show");
     if (result == wxID_CANCEL)
         return "<cancel>";
     if (result != wxID_OK)

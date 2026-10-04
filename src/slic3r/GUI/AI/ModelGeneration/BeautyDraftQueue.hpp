@@ -22,6 +22,10 @@ public:
         nlohmann::json record;
         bool remove = false;
         bool clear_legacy = false;
+        bool recognition = false;
+        // An immutable UI snapshot may be encoded by the ordered writer.
+        // Keep the factory on failure so flush() can retry an encode error.
+        std::function<nlohmann::json()> prepare_record;
     };
     using Writer = std::function<void(const Request&)>;
 
@@ -41,7 +45,8 @@ public:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (!pending_.empty() && pending_.back().model == request.model &&
-                !pending_.back().remove && !request.remove)
+                !pending_.back().remove && !request.remove &&
+                !pending_.back().recognition && !request.recognition)
                 pending_.back() = std::move(request);
             else
                 pending_.push_back(std::move(request));
@@ -88,7 +93,13 @@ private:
                 active_ = true;
             }
             std::string error;
-            try { writer_(request); }
+            try {
+                if (request.prepare_record) {
+                    request.record = request.prepare_record();
+                    request.prepare_record = {};
+                }
+                writer_(request);
+            }
             catch (const std::exception& failure) { error = failure.what(); }
             catch (...) { error = "Unknown beauty draft persistence failure."; }
             {

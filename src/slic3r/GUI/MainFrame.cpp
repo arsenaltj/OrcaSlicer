@@ -51,6 +51,7 @@
 #include "../Utils/NetworkAgentFactory.hpp"
 #include "../Utils/PrintHost.hpp"
 
+#include <chrono>
 #include <fstream>
 #include <string_view>
 
@@ -1250,6 +1251,17 @@ void MainFrame::show_option(bool show)
 }
 
 void MainFrame::init_tabpanel() {
+    wxString startup_trace_value;
+    const bool startup_trace = wxGetEnv("ORCASLICER_STARTUP_TRACE", &startup_trace_value) && startup_trace_value == "1";
+    auto stage_started = std::chrono::steady_clock::now();
+    auto trace_stage = [&](const char* stage) {
+        if (!startup_trace)
+            return;
+        const auto now = std::chrono::steady_clock::now();
+        BOOST_LOG_TRIVIAL(info) << "Startup detail: " << stage << " elapsed_ms="
+            << std::chrono::duration_cast<std::chrono::milliseconds>(now - stage_started).count();
+        stage_started = now;
+    };
     // wxNB_NOPAGETHEME: Disable Windows Vista theme for the Notebook background. The theme performance is terrible on
     // Windows 10 with multiple high resolution displays connected.
     // BBS
@@ -1307,6 +1319,7 @@ void MainFrame::init_tabpanel() {
 
     if (wxGetApp().is_editor()) {
         m_webview         = new WebViewPanel(m_tabpanel);
+        trace_stage("home_webview");
         Bind(EVT_LOAD_URL, [this](wxCommandEvent &evt) {
             wxString url = evt.GetString();
             select_tab(TAB_ID_HOME);
@@ -1314,9 +1327,11 @@ void MainFrame::init_tabpanel() {
         });
         m_tabpanel->AddPage(TAB_ID_HOME, m_webview, "", "tab_home_active");
         m_param_panel = new ParamsPanel(m_tabpanel, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBK_LEFT | wxTAB_TRAVERSAL);
+        trace_stage("params_panel");
     }
 
     m_plater = new Plater(this, this);
+    trace_stage("plater");
     m_plater->SetBackgroundColour(*wxWHITE);
     m_plater->Hide();
 
@@ -1332,17 +1347,21 @@ void MainFrame::init_tabpanel() {
         // Smart Slicing pane through the View menu first.
         m_plater->show_smart_slicing(true);
     }, [this] { register_ai_assistant(); });
+    trace_stage("ai_feature_host");
     m_tabpanel->AddPage(TAB_ID_GENERATE_3D, m_ai_feature_host->model_generation_panel(), _L("3D 生成"),
                         "tab_generate_3d_active");
 
     create_preset_tabs();
+    trace_stage("preset_tabs");
 
         //BBS add pages
     m_monitor = new MonitorPanel(m_tabpanel, wxID_ANY, wxDefaultPosition, wxDefaultSize);
+    trace_stage("monitor_panel");
     m_monitor->SetBackgroundColour(*wxWHITE);
     m_tabpanel->AddPage(TAB_ID_MONITOR, m_monitor, _L("Device"), "tab_monitor_active");
 
     m_printer_view = new PrinterWebView(m_tabpanel);
+    trace_stage("printer_webview");
     Bind(EVT_LOAD_PRINTER_URL, [this](LoadPrinterViewEvent &evt) {
         wxString url = evt.GetString();
         wxString key = evt.GetAPIkey();
@@ -1359,21 +1378,26 @@ void MainFrame::init_tabpanel() {
     }
 
     m_project = new ProjectPanel(m_tabpanel, wxID_ANY, wxDefaultPosition, wxDefaultSize);
+    trace_stage("project_panel");
     m_project->SetBackgroundColour(*wxWHITE);
     m_tabpanel->AddPage(TAB_ID_PROJECT, m_project, _L("Project"), "tab_auxiliary_active");
 
     m_calibration = new CalibrationPanel(m_tabpanel, wxID_ANY, wxDefaultPosition, wxDefaultSize);
     m_calibration->SetBackgroundColour(*wxWHITE);
     m_tabpanel->AddPage(TAB_ID_CALIBRATION, m_calibration, _L("Calibration"), "tab_calibration_active");
+    trace_stage("calibration_panel");
 
     // Plugin pages are appended after the built-in tabs; their ids are namespaced
     // (plugin.<plugin_key>.<name>) so they can't collide with the built-in TAB_ID_* constants.
     m_plugin_pages.initialize(m_tabpanel);
+    trace_stage("plugin_pages");
 
     if (m_plater) {
         // load initial config
         auto full_config = wxGetApp().preset_bundle->full_config();
+        trace_stage("initial_full_config");
         m_plater->on_config_change(full_config);
+        trace_stage("initial_config_change");
 
         // Show a correct number of filament fields.
         // nozzle_diameter is undefined when SLA printer is selected
@@ -1381,7 +1405,9 @@ void MainFrame::init_tabpanel() {
         if (full_config.has("filament_colour")) {
             m_plater->on_filament_count_change(full_config.option<ConfigOptionStrings>("filament_colour")->values.size());
         }
+        trace_stage("initial_filament_count");
     }
+    trace_stage("remaining_tabs_and_initial_config");
 }
 
 void MainFrame::register_ai_assistant()

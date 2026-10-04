@@ -230,11 +230,8 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
     m_job_state = status.state;
     m_job_phase = status.phase;
     m_job_palette_color_count = status.palette_color_count;
-    if (m_palette_color_count != nullptr &&
-        (job_changed || palette_count_unchanged)) {
-        m_palette_color_count->SetSelection(static_cast<int>(
-            status.palette_color_count - Slic3r::AI::kMinTargetPaletteColors));
-    }
+    if (job_changed || palette_count_unchanged)
+        m_legacy_generation_state.restore_palette_color_count(status.palette_color_count);
     if (!status.provider_task_id.empty()) {
         m_job_provider_name = status.provider_name;
         m_job_provider_task_id = status.provider_task_id;
@@ -269,8 +266,7 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
                 }
             }
             m_palette_roles_source = m_custom_palette;
-            if (m_palette_source != nullptr)
-                m_palette_source->SetSelection(2);
+            m_legacy_generation_state.palette_source = 2;
             m_job_use_printable_colors = true;
         }
     }
@@ -415,7 +411,7 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
         status.state == "failed" && !m_custom_palette.empty() &&
         status.message.find("palette recommendation") != std::string::npos;
     if (palette_recommendation_fallback) {
-        m_palette_source->SetSelection(2);
+        m_legacy_generation_state.palette_source = 2;
         m_palette_recommendation_confirmed = true;
         m_awaiting_palette_confirmation = false;
         m_job_palette.clear();

@@ -8,6 +8,7 @@
 #include "SelectMachinePop.hpp"
 
 #include "DeviceCore/DevManager.h"
+#include <chrono>
 
 namespace Slic3r { namespace GUI {
 
@@ -467,6 +468,17 @@ CalibrationPanel::CalibrationPanel(wxWindow* parent, wxWindowID id, const wxPoin
 }
 
 void CalibrationPanel::init_tabpanel() {
+    wxString startup_trace_value;
+    const bool startup_trace = wxGetEnv("ORCASLICER_STARTUP_TRACE", &startup_trace_value) && startup_trace_value == "1";
+    auto stage_started = std::chrono::steady_clock::now();
+    auto trace_stage = [&](const char* stage) {
+        if (!startup_trace)
+            return;
+        const auto now = std::chrono::steady_clock::now();
+        BOOST_LOG_TRIVIAL(info) << "Startup detail: calibration_" << stage << " elapsed_ms="
+            << std::chrono::duration_cast<std::chrono::milliseconds>(now - stage_started).count();
+        stage_started = now;
+    };
     m_side_tools = new SideTools(this, wxID_ANY);
     m_side_tools->get_panel()->Connect(wxEVT_LEFT_DOWN, wxMouseEventHandler(CalibrationPanel::on_printer_clicked), NULL, this);
 
@@ -477,9 +489,12 @@ void CalibrationPanel::init_tabpanel() {
     m_tabpanel = new Tabbook(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, sizer_side_tools, wxNB_LEFT | wxTAB_TRAVERSAL | wxNB_NOPAGETHEME);
     m_side_tools->set_table_panel(m_tabpanel);
     m_tabpanel->SetBackgroundColour(wxColour("#FEFFFF")); // ORCA match sidebar background color
+    trace_stage("tabbook");
 
     m_cali_panels[0] = new PressureAdvanceWizard(m_tabpanel);
+    trace_stage("pressure_advance_wizard");
     m_cali_panels[1] = new FlowRateWizard(m_tabpanel);
+    trace_stage("flow_rate_wizard");
     //m_cali_panels[2] = new MaxVolumetricSpeedWizard(m_tabpanel);
 
     for (int i = 0; i < (int)CALI_MODE_COUNT; i++) {
@@ -499,6 +514,7 @@ void CalibrationPanel::init_tabpanel() {
     //m_tabpanel->GetBtnsListCtrl()->SetPaddingSize({ FromDIP(15), padding_size.y });
 
     m_initialized = true;
+    trace_stage("finish");
 }
 
 void CalibrationPanel::init_timer()

@@ -762,12 +762,13 @@ static void stb__InitDXT()
 
 void stb_compress_dxt_block(unsigned char *dest, const unsigned char *src, int alpha, int mode)
 {
-   static int init=1;
-   if (init) 
-   {
+   // Font upload and background bed compression may enter concurrently.
+   // C++ local-static initialization publishes the tables exactly once.
+   static const bool initialized = [] {
       stb__InitDXT();
-      init=0;
-   }
+      return true;
+   }();
+   (void)initialized;
 
    if (alpha) 
    {

@@ -96,15 +96,25 @@ ModelFinishingResult finish_puzzle_artifact(const boost::filesystem::path& sourc
                        "The original puzzle texture changed; reopen the original model before editing.");
         result.source_sha256 = model_artifact_sha256(source);
         require_puzzle(!result.source_sha256.empty(), "Cannot verify the source model.");
-        TriangleMesh mesh, original;
-        ObjInfo info, original_colors;
+        TriangleMesh mesh, original_storage;
+        ObjInfo info, original_color_storage;
         std::string error;
         require_puzzle(load_model_artifact(source, mesh, info, error), "Cannot load the current puzzle model.");
         checkpoint();
-        require_puzzle(load_model_artifact(base, original, original_colors, error), "Cannot load the original puzzle model.");
+        // Identical file contents produce the same mesh and sampled colors.
+        // Keep both final file-hash checks: either path may change during saving.
+        const bool same_contents = result.source_sha256 == base_hash;
+        if (!same_contents)
+            require_puzzle(load_model_artifact(base, original_storage, original_color_storage, error),
+                           "Cannot load the original puzzle model.");
+        const auto& original = same_contents ? mesh : original_storage;
+        const auto& original_colors = same_contents ? info : original_color_storage;
         const auto geometry = SurfaceSelectionPersistence::geometry_fingerprint(mesh.its);
-        require_puzzle(SurfaceSelectionPersistence::geometry_fingerprint(original.its) == geometry &&
-                       original.its.indices == mesh.its.indices && original.its.vertices == mesh.its.vertices,
+        // Identical content makes original an alias of this validated mesh.
+        // Compare independent meshes; keep both final file identity checks.
+        require_puzzle(same_contents || (
+                       SurfaceSelectionPersistence::geometry_fingerprint(original.its) == geometry &&
+                       original.its.indices == mesh.its.indices && original.its.vertices == mesh.its.vertices),
                        "The original puzzle texture belongs to different geometry.");
         const auto puzzle = BeautyPuzzle::decode(record.at("puzzle"), geometry, mesh.its.indices.size());
         auto surface = options.beauty_surface;

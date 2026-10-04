@@ -7,6 +7,7 @@
 #include "slic3r/GUI/I18N.hpp"
 
 #include <boost/filesystem.hpp>
+#include <boost/log/trivial.hpp>
 #include <nlohmann/json.hpp>
 #include <wx/button.h>
 #include <wx/msgdlg.h>
@@ -46,7 +47,7 @@ void ModelGenerationPanel::on_discard(wxCommandEvent&)
             if (guidance.ShowModal() != wxID_OK) return;
         }
     }
-    const bool reuse_palette = m_palette_source->GetSelection() == 2 && !current_palette().empty();
+    const bool reuse_palette = m_legacy_generation_state.palette_source == 2 && !current_palette().empty();
     boost::system::error_code reference_error;
     if (!m_reference_image_path.empty() && boost::filesystem::is_regular_file(m_reference_image_path, reference_error)) {
         m_selected_image_path = m_reference_image_path;
@@ -120,28 +121,39 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
     });
     auto compare = [this] {
         if (m_busy || m_finishing_candidate.empty()) return;
-        const auto& path = m_finishing_before ? m_finishing_candidate : m_finishing_source;
-        if (!show_finishing_version(path)) return;
-        m_finishing_before = !m_finishing_before;
-        m_finishing_compare->SetLabel(m_finishing_before ? _L("查看修改后") : _L("查看修改前"));
-        m_finishing_compare_model->SetLabel(m_finishing_compare->GetLabel());
-        m_model_preview_message->SetLabel(m_finishing_before ? _L("修改前 · 当前版本") : _L("修改后 · 尚未保存"));
-        refresh_model_finishing();
+        const bool before = !m_finishing_before;
+        show_finishing_version(before ? m_finishing_source : m_finishing_candidate, [this, before] {
+            m_finishing_before = before;
+            m_finishing_compare->SetLabel(before ? _L("查看修改后") : _L("查看修改前"));
+            m_finishing_compare_model->SetLabel(m_finishing_compare->GetLabel());
+            m_model_preview_message->SetLabel(before ? _L("修改前 · 当前版本") : _L("修改后 · 尚未保存"));
+        });
     };
     m_finishing_compare->Bind(wxEVT_BUTTON, [compare](wxCommandEvent&) { compare(); });
     m_finishing_compare_model->Bind(wxEVT_LEFT_DOWN, [this](wxMouseEvent&) {
         if (m_busy || m_finishing_candidate.empty() || m_finishing_before) return;
-        if (!show_finishing_version(m_finishing_source)) return;
         m_finishing_compare_held = true;
         m_finishing_compare_model->CaptureMouse();
-        m_model_preview_message->SetLabel(_L("修改前 · 松开恢复修改后"));
+        show_finishing_version(m_finishing_source, [this] {
+            m_model_preview_message->SetLabel(_L("修改前 · 松开恢复修改后"));
+        });
+        if (m_preview_loading)
+            m_model_preview_message->SetLabel(_L("正在准备修改前 · 松开恢复修改后"));
     });
     auto release_compare = [this] {
         if (!m_finishing_compare_held) return;
         m_finishing_compare_held = false;
         if (m_finishing_compare_model->HasCapture()) m_finishing_compare_model->ReleaseMouse();
-        show_finishing_version(m_finishing_candidate);
-        m_model_preview_message->SetLabel(_L("修改后 · 尚未保存"));
+        if (m_preview_loading) {
+            // The candidate is still displayed. Retire the pending source without joining on the UI thread.
+            if (m_preview_canceled) m_preview_canceled->store(true);
+            m_model_preview_message->SetLabel(_L("修改后 · 尚未保存"));
+        } else {
+            m_model_preview_message->SetLabel(_L("修改前 · 当前版本"));
+            show_finishing_version(m_finishing_candidate, [this] {
+                m_model_preview_message->SetLabel(_L("修改后 · 尚未保存"));
+            });
+        }
     };
     m_finishing_compare_model->Bind(wxEVT_LEFT_UP, [release_compare](wxMouseEvent&) { release_compare(); });
     m_finishing_compare_model->Bind(wxEVT_MOUSE_CAPTURE_LOST,
@@ -182,6 +194,8 @@ void ModelGenerationPanel::refresh_model_finishing()
             boost::filesystem::remove(m_finishing_candidate, ignored);
         m_finishing_candidate.clear();
         m_finishing_source.clear();
+        m_finishing_serialized_workbench.clear();
+        m_finishing_serialized_geometry_id.clear();
     }
     const bool pending = !m_finishing_candidate.empty();
     const bool ready = m_model_preview_ready && is_nonempty_model(m_displayed_model_path);
@@ -229,15 +243,21 @@ void ModelGenerationPanel::preview_model_finishing()
         m_finishing_status->SetLabel(_L("模型文件已不存在，请从历史资产重新加载。"));
         return;
     }
-    AI::ModelFinishingOptions options {false, false, 0.0};
+    BeautyWorkbenchControls::SaveCapture save;
+    std::shared_ptr<AI::ModelFinishingOptions> options;
     try {
-        m_beauty_controls->prepare_options(options, m_model_preview->selection_state());
+        save = m_beauty_controls->capture_save();
+        options = std::make_shared<AI::ModelFinishingOptions>(AI::ModelFinishingOptions{false, false, 0.0});
     } catch (const std::exception& error) {
         m_finishing_status->SetLabel(from_u8(error.what()));
         return;
     }
     if (m_finishing_worker.joinable()) m_finishing_worker.join();
-    m_finishing_options = std::move(options);
+    // The worker fills this snapshot before posting its result; history
+    // acceptance reads it only after the worker is joined on the UI thread.
+    m_finishing_options = options;
+    m_finishing_serialized_workbench.clear();
+    m_finishing_serialized_geometry_id.clear();
     m_finishing_source = source;
     m_finishing_id = "finish-" + new_request_id();
     const auto destination = source.parent_path() / temp_path(m_finishing_id, "glb").filename();
@@ -251,18 +271,44 @@ void ModelGenerationPanel::preview_model_finishing()
     const uint64_t sequence = m_sequence;
     const auto view = m_model_preview->view_state();
     try {
-        m_finishing_worker = std::thread([weak, source, destination, options = m_finishing_options,
+        m_finishing_worker = std::thread([weak, source, destination, options, save=std::move(save),
                                            canceled, sequence, view] {
-            const auto result = AI::finish_model_artifact(source, destination, options,
-                [canceled] { return canceled->load(); });
+            AI::ModelFinishingResult result;
+            try {
+                if(canceled->load())result.canceled=true;
+                else {
+                    options->beauty_puzzle=true;
+                    options->beauty_document=save.prepare_record();
+                    options->beauty_surface=std::move(save.surface);
+                    if(canceled->load())result.canceled=true;
+                    else result=AI::finish_model_artifact(source, destination, *options,
+                        [canceled] { return canceled->load(); });
+                }
+            }catch(const std::exception& error){result.error=error.what();}
             auto prepared = std::make_shared<ModelPreview3D::PreparedModel>();
             std::string preview_error;
             if (result.success && result.changed() && !canceled->load()) {
-                try { ModelPreview3D::prepare_model(destination, *prepared, preview_error, {}); }
+                try { ModelPreview3D::prepare_model(destination, *prepared, preview_error, {}, {}, true,
+                    [canceled] { return canceled->load(); }); }
                 catch (const std::exception& error) { preview_error = error.what(); }
             }
+            std::string serialized_workbench, serialized_geometry_id;
+            if (result.success && result.changed() && preview_error.empty() &&
+                !prepared->geometry_id.empty() && !canceled->load()) {
+                try {
+                    serialized_geometry_id = prepared->geometry_id;
+                    serialized_workbench = BeautyWorkbenchControls::accepted_document(
+                        *options, serialized_geometry_id).dump();
+                } catch (const std::exception& error) {
+                    // Keep the preview usable; acceptance can use the old writer.
+                    BOOST_LOG_TRIVIAL(warning) << "Cannot pre-encode beauty history: " << error.what();
+                    serialized_workbench.clear();
+                }
+            }
             wxGetApp().CallAfter([weak, source, destination, result, sequence, canceled,
-                                  prepared, preview_error, view] {
+                                  prepared, preview_error, view,
+                                  serialized_workbench=std::move(serialized_workbench),
+                                  serialized_geometry_id=std::move(serialized_geometry_id)]() mutable {
                 if (!weak || weak->m_shutdown || sequence != weak->m_sequence) {
                     if (result.success) { boost::system::error_code ignored; boost::filesystem::remove(destination, ignored); }
                     return;
@@ -286,6 +332,10 @@ void ModelGenerationPanel::preview_model_finishing()
                             std::move(*prepared), {}, triangles, dimensions, colors, error)) {
                         self->m_finishing_status->SetLabel(_L("预览加载失败，当前版本已保留：") + from_u8(error));
                     } else {
+                        if (self->m_model_preview->geometry_id() == serialized_geometry_id) {
+                            self->m_finishing_serialized_workbench = std::move(serialized_workbench);
+                            self->m_finishing_serialized_geometry_id = std::move(serialized_geometry_id);
+                        }
                         self->m_model_preview->restore_view(view);
                         self->m_model_stats->SetLabel(wxString::Format(
                             _L("%llu 个三角面 · %llu 个原始色值\n%.1f × %.1f × %.1f mm"),
@@ -315,23 +365,39 @@ void ModelGenerationPanel::preview_model_finishing()
     }
 }
 
-bool ModelGenerationPanel::show_finishing_version(const boost::filesystem::path& path)
+void ModelGenerationPanel::show_finishing_version(const boost::filesystem::path& path,
+    std::function<void()> installed)
 {
+    if (m_shutdown || m_preview_loading) return;
     const auto view = m_model_preview->view_state();
-    size_t triangles = 0, colors = 0;
-    Vec3d dimensions = Vec3d::Zero();
-    std::string error;
-    if (!m_model_preview->load_model(path, {}, triangles, dimensions, colors, error)) {
-        m_finishing_status->SetLabel(_L("模型加载失败，当前版本仍保留：") + from_u8(error));
-        return false;
-    }
-    m_model_preview->restore_view(view);
-    m_model_preview->set_color_controls_visible(!m_finishing_workbench);
-    m_model_preview_ready = true;
-    m_model_stats->SetLabel(wxString::Format(_L("%llu 个三角面 · %llu 个原始色值\n%.1f × %.1f × %.1f mm"),
-        static_cast<unsigned long long>(triangles), static_cast<unsigned long long>(colors),
-        dimensions.x(), dimensions.y(), dimensions.z()));
-    return true;
+    const auto source = m_finishing_source, candidate = m_finishing_candidate;
+    const auto previous_message = m_model_preview_message->GetLabel();
+    load_model_preview_async(path, {},
+        [this, view, installed](size_t triangles, Vec3d dimensions, size_t colors, double) {
+            m_model_preview->restore_view(view);
+            m_model_preview->set_color_controls_visible(!m_finishing_workbench);
+            m_model_preview_ready = true;
+            m_model_stats->SetLabel(wxString::Format(_L("%llu 个三角面 · %llu 个原始色值\n%.1f × %.1f × %.1f mm"),
+                static_cast<unsigned long long>(triangles), static_cast<unsigned long long>(colors),
+                dimensions.x(), dimensions.y(), dimensions.z()));
+            m_finishing_status->SetLabel(_L("预览已就绪。对照修改前后，再保存到历史资产。"));
+            m_finishing_status->SetToolTip(wxEmptyString);
+            installed();
+            m_finishing_status->Wrap(FromDIP(280));
+            refresh_controls();
+        },
+        [this, previous_message](std::string error) {
+            m_finishing_compare_held = false;
+            if (m_finishing_compare_model->HasCapture()) m_finishing_compare_model->ReleaseMouse();
+            m_model_preview_message->SetLabel(previous_message);
+            m_finishing_status->SetLabel(_L("模型加载失败，当前版本仍保留。\n请检查文件是否可用，再重试。"));
+            m_finishing_status->SetToolTip(from_u8(error));
+            m_finishing_status->Wrap(FromDIP(280));
+            refresh_controls();
+        }, {}, {}, [this, source, candidate] {
+            return m_finishing_source == source && m_finishing_candidate == candidate &&
+                   m_displayed_model_path == source;
+        });
 }
 
 void ModelGenerationPanel::select_local_finishing_version(const boost::filesystem::path& path, const std::string& id)
@@ -366,61 +432,76 @@ void ModelGenerationPanel::select_local_finishing_version(const boost::filesyste
 void ModelGenerationPanel::accept_model_finishing()
 {
     if (m_busy || m_finishing_candidate.empty()) return;
-    if (!show_finishing_version(m_finishing_candidate)) return;
-    const auto root = generated_models_root();
-    nlohmann::json metadata {
-        {"schema_version", 4}, {"job_id", m_finishing_id},
-        {"model_path", m_finishing_candidate.lexically_relative(root).generic_string()},
-        {"source", "local_finishing"}, {"prompt", "3D 美颜"},
-        {"source_model", m_finishing_source.lexically_relative(root).generic_string()},
-        {"source_sha256", m_finishing_result.source_sha256},
-        {"model_sha256", m_finishing_result.output_sha256},
-        {"palette", nlohmann::json::array()}, {"palette_roles", nlohmann::json::object()},
-        {"use_printable_colors", false}, {"generated_at", std::time(nullptr)},
-        {"triangle_count", m_finishing_result.faces_after},
-        {"dimensions", m_finishing_result.dimensions},
-        {"finishing", {{"beauty_puzzle", true}, {"changed_texture_pixels", m_finishing_result.changed_texture_pixels}}}
-    };
-    metadata["face_color_intent"] = m_model_preview->face_color_metadata();
-    metadata["color_trial"] = m_model_preview->color_trial_metadata();
-    metadata["semantic_color_state"] = m_model_preview->semantic_color_metadata();
-    metadata["beauty_workbench"] = BeautyWorkbenchControls::accepted_document(
-        m_finishing_options, m_model_preview->geometry_id());
-    if (!m_reference_image_path.empty() && path_is_inside(root, m_reference_image_path))
-        metadata["reference_image_path"] = m_reference_image_path.lexically_relative(root).generic_string();
-    if (!m_raw_preview_path.empty() && path_is_inside(root, m_raw_preview_path))
-        metadata["ai_image_path"] = m_raw_preview_path.lexically_relative(root).generic_string();
-    if (!write_json(library_metadata_path(m_finishing_id), metadata)) {
-        m_finishing_status->SetLabel(_L("版本记录保存失败，尚未接受；请检查磁盘空间后重试。"));
-        return;
-    }
-    m_beauty_controls->mark_saved();
-    select_local_finishing_version(m_finishing_candidate, m_finishing_id);
-    m_finishing_candidate.clear();
-    m_finishing_source.clear();
-    m_finishing_status->SetLabel(_L("新版本已保存到历史资产。可继续编辑，或匹配打印颜色。"));
-    m_status->SetLabel(m_finishing_status->GetLabel());
-    m_model_preview_message->SetLabel(_L("当前显示：已保存的美颜版本。"));
-    load_library_entries();
-    refresh_controls();
+    show_finishing_version(m_finishing_candidate, [this] {
+        const auto root = generated_models_root();
+        nlohmann::json metadata {
+            {"schema_version", 4}, {"job_id", m_finishing_id},
+            {"model_path", m_finishing_candidate.lexically_relative(root).generic_string()},
+            {"source", "local_finishing"}, {"prompt", "3D 美颜"},
+            {"source_model", m_finishing_source.lexically_relative(root).generic_string()},
+            {"source_sha256", m_finishing_result.source_sha256},
+            {"model_sha256", m_finishing_result.output_sha256},
+            {"palette", nlohmann::json::array()}, {"palette_roles", nlohmann::json::object()},
+            {"use_printable_colors", false}, {"generated_at", std::time(nullptr)},
+            {"triangle_count", m_finishing_result.faces_after},
+            {"dimensions", m_finishing_result.dimensions},
+            {"finishing", {{"beauty_puzzle", true}, {"changed_texture_pixels", m_finishing_result.changed_texture_pixels}}}
+        };
+        metadata["face_color_intent"] = m_model_preview->face_color_metadata();
+        metadata["color_trial"] = m_model_preview->color_trial_metadata();
+        metadata["semantic_color_state"] = m_model_preview->semantic_color_metadata();
+        if (!m_reference_image_path.empty() && path_is_inside(root, m_reference_image_path))
+            metadata["reference_image_path"] = m_reference_image_path.lexically_relative(root).generic_string();
+        if (!m_raw_preview_path.empty() && path_is_inside(root, m_raw_preview_path))
+            metadata["ai_image_path"] = m_raw_preview_path.lexically_relative(root).generic_string();
+        const bool preencoded = !m_finishing_serialized_workbench.empty() &&
+            m_finishing_serialized_geometry_id == m_model_preview->geometry_id();
+        if (!preencoded) metadata["beauty_workbench"] = BeautyWorkbenchControls::accepted_document(
+            *m_finishing_options, m_model_preview->geometry_id());
+        const bool written = preencoded
+            ? write_json_with_preencoded_field(library_metadata_path(m_finishing_id), metadata,
+                                               "beauty_workbench", m_finishing_serialized_workbench)
+            : write_json(library_metadata_path(m_finishing_id), metadata);
+        if (!written) {
+            m_finishing_status->SetLabel(_L("版本记录保存失败，尚未接受；请检查磁盘空间后重试。"));
+            return;
+        }
+        m_beauty_controls->mark_saved();
+        select_local_finishing_version(m_finishing_candidate, m_finishing_id);
+        m_finishing_candidate.clear();
+        m_finishing_source.clear();
+        m_finishing_serialized_workbench.clear();
+        m_finishing_serialized_geometry_id.clear();
+        m_finishing_status->SetLabel(_L("新版本已保存到历史资产。可继续编辑，或匹配打印颜色。"));
+        m_status->SetLabel(m_finishing_status->GetLabel());
+        m_model_preview_message->SetLabel(_L("当前显示：已保存的美颜版本。"));
+        load_library_entries();
+    });
 }
 
 void ModelGenerationPanel::discard_model_finishing()
 {
     if (m_busy || m_finishing_candidate.empty()) return;
-    if (!show_finishing_version(m_finishing_source)) return;
-    boost::system::error_code ignored;
-    boost::filesystem::remove(m_finishing_candidate, ignored);
-    m_finishing_candidate.clear();
-    m_finishing_before = false;
-    m_finishing_status->SetLabel(_L("已放弃预览，当前美颜修改仍可继续编辑。"));
-    m_status->SetLabel(m_finishing_status->GetLabel());
-    m_model_preview_message->SetLabel(_L("当前显示：修改前模型。"));
-    refresh_controls();
+    show_finishing_version(m_finishing_source, [this] {
+        boost::system::error_code ignored;
+        boost::filesystem::remove(m_finishing_candidate, ignored);
+        m_finishing_candidate.clear();
+        m_finishing_serialized_workbench.clear();
+        m_finishing_serialized_geometry_id.clear();
+        m_finishing_before = false;
+        m_finishing_status->SetLabel(_L("已放弃预览，当前美颜修改仍可继续编辑。"));
+        m_status->SetLabel(m_finishing_status->GetLabel());
+        m_model_preview_message->SetLabel(_L("当前显示：修改前模型。"));
+    });
 }
 
 void ModelGenerationPanel::stop_model_finishing()
 {
+    if (m_finishing_compare_held) {
+        m_finishing_compare_held = false;
+        if (m_finishing_compare_model->HasCapture()) m_finishing_compare_model->ReleaseMouse();
+        if (m_preview_canceled) m_preview_canceled->store(true);
+    }
     if (m_finishing_canceled) m_finishing_canceled->store(true);
     if (m_finishing_worker.joinable()) m_finishing_worker.join();
     m_finishing_running = false;
@@ -429,5 +510,7 @@ void ModelGenerationPanel::stop_model_finishing()
         boost::filesystem::remove(m_finishing_candidate, ignored);
         m_finishing_candidate.clear();
     }
+    m_finishing_serialized_workbench.clear();
+    m_finishing_serialized_geometry_id.clear();
 }
 } // namespace Slic3r::GUI

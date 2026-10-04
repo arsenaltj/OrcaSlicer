@@ -54,6 +54,10 @@ Index of this file:
 #endif
 #endif
 #include <boost/log/trivial.hpp>
+#include <thread>
+#include <exception>
+
+bool ImFontAtlasUsesDefaultAllocator();
 
 // Visual Studio warnings
 #ifdef _MSC_VER
@@ -147,8 +151,34 @@ namespace IMGUI_STB_NAMESPACE
 #ifdef  IMGUI_ENABLE_STB_TRUETYPE
 #ifndef STB_TRUETYPE_IMPLEMENTATION                         // in case the user already have an implementation in the _same_ compilation unit (e.g. unity builds)
 #ifndef IMGUI_DISABLE_STB_TRUETYPE_IMPLEMENTATION           // in case the user already have an implementation in another compilation unit
+// Workers use the captured default callbacks directly, without touching ImGui's
+// shared context/allocation counters. Custom callbacks are never sent to workers.
+#if !defined(IMGUI_STB_TRUETYPE_FILENAME) && !defined(IMGUI_STB_NAMESPACE)
+#define IMGUI_FONT_RASTERIZER_PARALLEL
+struct ImFontRasterizerAllocator
+{
+    ImGuiMemAllocFunc Alloc;
+    ImGuiMemFreeFunc Free;
+    void* UserData;
+};
+static thread_local const ImFontRasterizerAllocator* FontRasterizerAllocator = NULL;
+static void* ImFontRasterizerAlloc(size_t size)
+{
+    return FontRasterizerAllocator ? FontRasterizerAllocator->Alloc(size, FontRasterizerAllocator->UserData) : IM_ALLOC(size);
+}
+static void ImFontRasterizerFree(void* ptr)
+{
+    if (FontRasterizerAllocator)
+        FontRasterizerAllocator->Free(ptr, FontRasterizerAllocator->UserData);
+    else
+        IM_FREE(ptr);
+}
+#define STBTT_malloc(x,u)   ((void)(u), ImFontRasterizerAlloc(x))
+#define STBTT_free(x,u)     ((void)(u), ImFontRasterizerFree(x))
+#else
 #define STBTT_malloc(x,u)   ((void)(u), IM_ALLOC(x))
 #define STBTT_free(x,u)     ((void)(u), IM_FREE(x))
+#endif
 #define STBTT_assert(x)     do { IM_ASSERT(x); } while(0)
 #define STBTT_fmod(x,y)     ImFmod(x,y)
 #define STBTT_sqrt(x)       ImSqrt(x)
@@ -2326,6 +2356,58 @@ static void UnpackBitVectorToFlatIndexList(const ImBitVector* in, ImVector<int>*
                     out->push_back((int)(((it - it_begin) << 5) + bit_n));
 }
 
+#ifdef IMGUI_FONT_RASTERIZER_PARALLEL
+static void ImFontAtlasRasterizeSource(stbtt_pack_context& spc, ImFontBuildSrcData& src)
+{
+    const unsigned count = src.GlyphsCount >= 2048 && ImFontAtlasUsesDefaultAllocator()
+        ? ImMin(4u, ImMax(1u, std::thread::hardware_concurrency())) : 1u;
+    if (count == 1)
+    {
+        stbtt_PackFontRangesRenderIntoRects(&spc, &src.FontInfo, &src.PackRange, 1, src.Rects);
+        return;
+    }
+    ImFontRasterizerAllocator allocator;
+    ImGui::GetAllocatorFunctions(&allocator.Alloc, &allocator.Free, &allocator.UserData);
+    // Packing has finished. Every glyph owns disjoint pixel/rect/metric storage;
+    // copy the pack context because stb mutates its oversampling fields.
+    const auto render = [&](unsigned chunk)
+    {
+        const int begin = src.GlyphsCount * chunk / count;
+        const int end = src.GlyphsCount * (chunk + 1) / count;
+        stbtt_pack_context local = spc;
+        stbtt_pack_range range = src.PackRange;
+        range.array_of_unicode_codepoints += begin;
+        range.chardata_for_range += begin;
+        range.num_chars = end - begin;
+        stbtt_PackFontRangesRenderIntoRects(&local, &src.FontInfo, &range, 1, src.Rects + begin);
+    };
+    std::thread jobs[3];
+    unsigned started = 0;
+    try
+    {
+        for (unsigned chunk = 1; chunk < count; ++chunk)
+        {
+            jobs[started] = std::thread([&, chunk]
+            {
+                FontRasterizerAllocator = &allocator;
+                render(chunk);
+                FontRasterizerAllocator = NULL;
+            });
+            ++started;
+        }
+    }
+    catch (const std::exception&)
+    {
+        // Failed thread creation leaves untouched chunks for the caller.
+    }
+    render(0);
+    for (unsigned chunk = started + 1; chunk < count; ++chunk)
+        render(chunk);
+    for (unsigned i = 0; i < started; ++i)
+        jobs[i].join();
+}
+#endif
+
 static bool ImFontAtlasBuildWithStbTruetype(ImFontAtlas* atlas)
 {
     IM_ASSERT(atlas->ConfigData.Size > 0);
@@ -2522,7 +2604,11 @@ static bool ImFontAtlasBuildWithStbTruetype(ImFontAtlas* atlas)
         if (src_tmp.GlyphsCount == 0)
             continue;
 
+#ifdef IMGUI_FONT_RASTERIZER_PARALLEL
+        ImFontAtlasRasterizeSource(spc, src_tmp);
+#else
         stbtt_PackFontRangesRenderIntoRects(&spc, &src_tmp.FontInfo, &src_tmp.PackRange, 1, src_tmp.Rects);
+#endif
 
         // Apply multiply operator
         if (cfg.RasterizerMultiply != 1.0f)

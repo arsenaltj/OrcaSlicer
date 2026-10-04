@@ -17,6 +17,7 @@
 
 #include <cmath>
 #include <deque>
+#include <limits>
 #include <queue>
 #include <vector>
 #include <utility>
@@ -47,6 +48,21 @@ static void fill_initial_stats(const indexed_triangle_set &its, TriangleMeshStat
     out.number_of_facets    = its.indices.size();
     out.volume              = its_volume(its);
     update_bounding_box(its, out);
+
+    // Expanded triangles cannot share an edge by vertex index, even when their
+    // positions coincide. Derive the same statistics without a neighbors array.
+    bool independent = its.indices.size() <= size_t(std::numeric_limits<int>::max() / 3) &&
+                       its.indices.size() <= its.vertices.size() / 3;
+    for (size_t face = 0; independent && face < its.indices.size(); ++face) {
+        const auto& indices = its.indices[face];
+        independent = size_t(indices[0]) == face * 3 && size_t(indices[1]) == face * 3 + 1 &&
+                      size_t(indices[2]) == face * 3 + 2;
+    }
+    if (independent) {
+        out.number_of_parts = int(its.indices.size());
+        out.open_edges = int(its.indices.size() * 3);
+        return;
+    }
 
     const std::vector<Vec3i32> face_neighbors = its_face_neighbors(its);
     out.number_of_parts = its_number_of_patches(its, face_neighbors);
