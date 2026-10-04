@@ -1,5 +1,15 @@
 [
   {
+    "pr": 18,
+    "run": 37171938603,
+    "head": "9b9068e414c9594dd8f1e39a6401a45d77dbd8e3",
+    "base": "19a0b7f05e96c304b0a1e333a61d67643cb2e21b",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "fix(ai): 保留美颜目标色与草稿，精简工程规则并建立模型回归",
+    "path": "pr/18/9b9068e414c9594dd8f1e39a6401a45d77dbd8e3/37171938603",
+    "created": "2026-10-04T02:46:03+00:00"
+  },
+  {
     "pr": 19,
     "run": 36446823855,
     "head": "71f8f9c8f792afc396655cfc2a796ac3c47b5556",
