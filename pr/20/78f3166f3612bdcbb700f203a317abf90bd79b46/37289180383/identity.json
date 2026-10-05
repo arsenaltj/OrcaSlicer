@@ -1,0 +1,25 @@
+{
+  "pr": 20,
+  "run": 37289180383,
+  "head": "78f3166f3612bdcbb700f203a317abf90bd79b46",
+  "base": "95c131f63b855d5cdf97f81e1595caa8d1ad2624",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "UX v4.1：PR18 后续 Windows 协作基线与验收进度",
+  "path": "pr/20/78f3166f3612bdcbb700f203a317abf90bd79b46/37289180383",
+  "created": "2026-10-05T09:21:05+00:00",
+  "files": {
+    "index.html": "408d5301373fd499584d0169d636ef2c7ced47d4067e6a33c2a09eb8e4eef28c",
+    "details.html": "dd7849c30945a40ade3e77040f333bbf2a421cf8a610642da4d95462b88d0501",
+    "report.json": "6483dbb4735714b80bda882da2d5b1e20853ba93e0497cb631023646a0e594bd",
+    "summary.md": "1336e614651dcf7cbeb2b0a57e19077d652c10b3bf4b39c44301bbe75583235d",
+    "archify-receipts.json": "416b128b4fd3c5239115c0b1c6a79d058db1be6bd832f9a45b7617a8dc95e4e7",
+    "l0-context.html": "b40651a699aa26cdcc642dfa7985a7e7ed388cf8cea416c2ba2ea4dc66d73ba8",
+    "l0-context.json": "b32626c8af75db55a5e8f281596c8e8148bf097e31761caeb0267871b2444776",
+    "l1-modules.html": "409cac68ec6b61d8f92d330d49f70efd992301dfdd9adb539d63a8f26151d9f4",
+    "l1-modules.json": "ece1b231c8df45934c910178bb85611d574fd350403d3bcb69cb0e2b695c4082",
+    "l2-generation.html": "5acbda288166f273c4137cf06a8ac7d2386d95f696589621ca5b3ca4e845c7fc",
+    "l2-generation.json": "e38c2d3e962b690d22bf3a3e61c5fb208d5a8b2b4c2ab96c683e2a85305f7d05",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}

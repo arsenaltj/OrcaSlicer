@@ -1,5 +1,15 @@
 [
   {
+    "pr": 20,
+    "run": 37289180383,
+    "head": "78f3166f3612bdcbb700f203a317abf90bd79b46",
+    "base": "95c131f63b855d5cdf97f81e1595caa8d1ad2624",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "UX v4.1：PR18 后续 Windows 协作基线与验收进度",
+    "path": "pr/20/78f3166f3612bdcbb700f203a317abf90bd79b46/37289180383",
+    "created": "2026-10-05T09:21:05+00:00"
+  },
+  {
     "pr": 18,
     "run": 37171938603,
     "head": "9b9068e414c9594dd8f1e39a6401a45d77dbd8e3",
