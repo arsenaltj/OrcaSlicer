@@ -38,6 +38,7 @@
 #include "calib_dlg.hpp"
 #include "MultiMachinePage.hpp"
 #include "slic3r/plugin/host/PluginPages.hpp"
+#include "AI/DesktopWorkspaceNavigation.hpp"
 
 // Stable identifiers for MainFrame::m_tabpanel's built-in pages. These are
 // names rather than positional indices so optional pages cannot shift them.
@@ -65,7 +66,6 @@ namespace Slic3r {
 namespace GUI
 {
 
-class AIDesktopFeatureHost;
 class Tab;
 class PrintHostQueueDialog;
 class Plater;
@@ -134,6 +134,7 @@ class MainFrame : public DPIFrame
 #endif
     wxMenuItem* m_menu_item_reslice_now { nullptr };
     wxSizer*    m_main_sizer{ nullptr };
+    DesktopWorkspaceNavigation* m_workspace_navigation {nullptr};
 
     wxString    m_last_selected_tab;
 

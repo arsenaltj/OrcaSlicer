@@ -524,7 +524,7 @@ TEST_CASE("the final quality gate keeps evidence and explicit locks on tied outp
     const auto& target=result.result.targets[result.result.face_targets[0]];
     CHECK(target.physical_slot==0);
     CHECK_FALSE(result.result.confirmed);
-    CHECK(result.result.algorithm_version=="region-direct-v5-boundary-v1-quality-v1-locks-v1");
+    CHECK(result.result.algorithm_version=="region-direct-v6-boundary-v1-quality-v1-locks-v1");
     e.input.cancelled=[] {return true;};
     const auto stopped=Boundary::compute_guarded(e.input,e.mesh);
     CHECK(stopped.cancelled); CHECK_FALSE(stopped.ok());

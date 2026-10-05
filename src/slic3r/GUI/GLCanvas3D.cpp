@@ -1352,11 +1352,13 @@ void GLCanvas3D::on_change_color_mode(bool is_dark, bool reinit) {
 
     // Toolbar
     if (m_canvas_type == CanvasView3D) {
-        m_gizmos.on_change_color_mode(is_dark);
+        const bool toolbar_dark = is_dark || m_workspace_background.has_value();
+        m_gizmos.on_change_color_mode(toolbar_dark);
         if (reinit) {
             // reset svg
-            _switch_toolbars_icon_filename();
+            _switch_toolbars_icon_filename(toolbar_dark);
             m_gizmos.switch_gizmos_icon_filename();
+            m_workspace_toolbar_theme_dirty = false;
             // set dirty to re-generate icon texture
             m_separator_toolbar.set_icon_dirty();
             m_main_toolbar.set_icon_dirty();
@@ -1948,6 +1950,25 @@ bool GLCanvas3D::make_current_for_postinit() {
     return _set_current();
 }
 
+bool GLCanvas3D::capture_viewport(ThumbnailData& frame)
+{
+    frame.reset();
+    if (m_in_render || m_viewport_capture || !m_canvas || !m_canvas->IsShownOnScreen() ||
+        !m_enable_render || has_mouse_capture() || is_dragging()) {
+        BOOST_LOG_TRIVIAL(warning) << "software viewport capture rejected: in_render=" << m_in_render
+            << ", pending=" << (m_viewport_capture != nullptr) << ", canvas=" << (m_canvas != nullptr)
+            << ", shown=" << (m_canvas && m_canvas->IsShownOnScreen()) << ", enabled=" << m_enable_render
+            << ", mouse_capture=" << has_mouse_capture() << ", dragging=" << is_dragging();
+        return false;
+    }
+    m_viewport_capture = &frame;
+    Slic3r::ScopeGuard capture_guard([this] { m_viewport_capture = nullptr; });
+    render();
+    BOOST_LOG_TRIVIAL(info) << "software viewport capture result: valid=" << frame.is_valid()
+        << ", width=" << frame.width << ", height=" << frame.height;
+    return frame.is_valid();
+}
+
 void GLCanvas3D::render(bool only_init)
 {
     if (m_in_render) {
@@ -2274,6 +2295,62 @@ void GLCanvas3D::render(bool only_init)
     wxGetApp().imgui()->render();
 
     trace_stage("imgui_draw");
+    // Capture this composed frame before swapping. No thumbnail camera, model
+    // render, new GL host, or OS screenshot is involved.
+    if (m_viewport_capture) {
+        const auto size = get_canvas_size();
+        const int width = size.get_width(), height = size.get_height();
+        if (width > 0 && height > 0 && size_t(width) * size_t(height) <= 64u * 1024u * 1024u) {
+            m_viewport_capture->set(width, height);
+            // Separate pre-existing renderer errors from this readback, while
+            // retaining them in diagnostics. Read the window's composed buffer,
+            // irrespective of an earlier FBO's read binding.
+            for (int count = 0; count < 16; ++count) {
+                const auto previous_error = ::glGetError();
+                if (previous_error == GL_NO_ERROR) break;
+                BOOST_LOG_TRIVIAL(warning) << "software viewport prior GL error: " << previous_error;
+            }
+            const auto fbo_type = OpenGLManager::get_framebuffers_type();
+            GLint read_framebuffer = 0;
+            if (fbo_type == OpenGLManager::EFramebufferType::Arb) {
+                ::glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read_framebuffer);
+                ::glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+            } else if (fbo_type == OpenGLManager::EFramebufferType::Ext) {
+                ::glGetIntegerv(GL_FRAMEBUFFER_BINDING_EXT, &read_framebuffer);
+                ::glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, 0);
+            }
+            GLint alignment, row_length, skip_rows, skip_pixels, pack_buffer, read_buffer;
+            ::glGetIntegerv(GL_PACK_ALIGNMENT, &alignment);
+            ::glGetIntegerv(GL_PACK_ROW_LENGTH, &row_length);
+            ::glGetIntegerv(GL_PACK_SKIP_ROWS, &skip_rows);
+            ::glGetIntegerv(GL_PACK_SKIP_PIXELS, &skip_pixels);
+            ::glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &pack_buffer);
+            ::glGetIntegerv(GL_READ_BUFFER, &read_buffer);
+            ::glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+            ::glPixelStorei(GL_PACK_ALIGNMENT, 1);
+            ::glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+            ::glPixelStorei(GL_PACK_SKIP_ROWS, 0);
+            ::glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
+            GLboolean double_buffered = GL_TRUE;
+            ::glGetBooleanv(GL_DOUBLEBUFFER, &double_buffered);
+            ::glReadBuffer(double_buffered ? GL_BACK : GL_FRONT);
+            ::glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, m_viewport_capture->pixels.data());
+            const auto error = ::glGetError();
+            ::glReadBuffer(read_buffer);
+            if (fbo_type == OpenGLManager::EFramebufferType::Arb)
+                ::glBindFramebuffer(GL_READ_FRAMEBUFFER, read_framebuffer);
+            else if (fbo_type == OpenGLManager::EFramebufferType::Ext)
+                ::glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, read_framebuffer);
+            ::glPixelStorei(GL_PACK_ALIGNMENT, alignment);
+            ::glPixelStorei(GL_PACK_ROW_LENGTH, row_length);
+            ::glPixelStorei(GL_PACK_SKIP_ROWS, skip_rows);
+            ::glPixelStorei(GL_PACK_SKIP_PIXELS, skip_pixels);
+            ::glBindBuffer(GL_PIXEL_PACK_BUFFER, pack_buffer);
+            BOOST_LOG_TRIVIAL(info) << "software viewport readback: error=" << error
+                << ", prior_read_fbo=" << read_framebuffer << ", double_buffered=" << int(double_buffered);
+            if (error != GL_NO_ERROR) m_viewport_capture->reset();
+        }
+    }
 
     // On Wayland, eglSwapBuffers blocks when the canvas is hidden or
     // occluded. Skip the swap to avoid stalling the render loop.
@@ -3768,6 +3845,23 @@ void GLCanvas3D::on_key(wxKeyEvent& evt)
     );}
 
     const int keyCode = evt.GetKeyCode();
+
+    // This toolbar popup does not capture the keyboard by itself. Handle Esc
+    // before the canvas selection shortcut, but only for this open popup.
+    if (evt.GetEventType() == wxEVT_KEY_DOWN && keyCode == WXK_ESCAPE) {
+        const std::string toolbar_name = into_u8(_L("Canvas Toolbar"));
+        if (ImGuiWindow* toolbar = ImGui::FindWindowByName(toolbar_name.c_str())) {
+            const ImGuiID popup_id = toolbar->GetID("CanvasToolbarMenu");
+            ImVector<ImGuiPopupData>& popups = ImGui::GetCurrentContext()->OpenPopupStack;
+            for (int index = 0; index < popups.Size; ++index) {
+                if (popups[index].PopupId == popup_id) {
+                    ImGui::ClosePopupToLevel(index, true);
+                    render();
+                    return;
+                }
+            }
+        }
+    }
 
     auto imgui = wxGetApp().imgui();
     if (imgui->update_key_data(evt))
@@ -6779,58 +6873,63 @@ void GLCanvas3D::_update_slice_error_status()
     _set_warning_notification_if_needed(EWarning::FilamentUnPrintableOnFirstLayer);
 }
 
-void GLCanvas3D::_switch_toolbars_icon_filename()
+void GLCanvas3D::_switch_toolbars_icon_filename(bool dark)
 {
     BackgroundTexture::Metadata background_data;
-    background_data.filename = m_is_dark ? "toolbar_background_dark.png" : "toolbar_background.png";
+    background_data.filename = dark ? "toolbar_background_dark.png" : "toolbar_background.png";
     background_data.left = 16;
     background_data.top = 16;
     background_data.right = 16;
     background_data.bottom = 16;
     m_main_toolbar.init(background_data);
     m_assemble_view_toolbar.init(background_data);
-    m_separator_toolbar.init(background_data);
+    // The separator uses a flat texture region, unlike the rounded toolbars.
+    // Preserve its original zero-border metadata when changing themes.
+    BackgroundTexture::Metadata separator_background = background_data;
+    separator_background.left = separator_background.top = 0;
+    separator_background.right = separator_background.bottom = 0;
+    m_separator_toolbar.init(separator_background);
     wxGetApp().plater()->get_collapse_toolbar().init(background_data);
 
     // main toolbar
     {
         GLToolbarItem* item;
         item = m_main_toolbar.get_item("add");
-        item->set_icon_filename(m_is_dark ? "toolbar_open_dark.svg" : "toolbar_open.svg");
+        item->set_icon_filename(dark ? "toolbar_open_dark.svg" : "toolbar_open.svg");
 
         item = m_main_toolbar.get_item("addplate");
-        item->set_icon_filename(m_is_dark ? "toolbar_add_plate_dark.svg" : "toolbar_add_plate.svg");
+        item->set_icon_filename(dark ? "toolbar_add_plate_dark.svg" : "toolbar_add_plate.svg");
 
         item = m_main_toolbar.get_item("orient");
-        item->set_icon_filename(m_is_dark ? "toolbar_orient_dark.svg" : "toolbar_orient.svg");
+        item->set_icon_filename(dark ? "toolbar_orient_dark.svg" : "toolbar_orient.svg");
 
         item = m_main_toolbar.get_item("addplate");
-        item->set_icon_filename(m_is_dark ? "toolbar_add_plate_dark.svg" : "toolbar_add_plate.svg");
+        item->set_icon_filename(dark ? "toolbar_add_plate_dark.svg" : "toolbar_add_plate.svg");
 
         item = m_main_toolbar.get_item("arrange");
-        item->set_icon_filename(m_is_dark ? "toolbar_arrange_dark.svg" : "toolbar_arrange.svg");
+        item->set_icon_filename(dark ? "toolbar_arrange_dark.svg" : "toolbar_arrange.svg");
 
         item = m_main_toolbar.get_item("more");
-        item->set_icon_filename(m_is_dark ? "instance_add_dark.svg" : "instance_add.svg");
+        item->set_icon_filename(dark ? "instance_add_dark.svg" : "instance_add.svg");
 
         item = m_main_toolbar.get_item("fewer");
-        item->set_icon_filename(m_is_dark ? "instance_remove_dark.svg" : "instance_remove.svg");
+        item->set_icon_filename(dark ? "instance_remove_dark.svg" : "instance_remove.svg");
 
         item = m_main_toolbar.get_item("splitobjects");
-        item->set_icon_filename(m_is_dark ? "split_objects_dark.svg" : "split_objects.svg");
+        item->set_icon_filename(dark ? "split_objects_dark.svg" : "split_objects.svg");
 
         item = m_main_toolbar.get_item("splitvolumes");
-        item->set_icon_filename(m_is_dark ? "split_parts_dark.svg" : "split_parts.svg");
+        item->set_icon_filename(dark ? "split_parts_dark.svg" : "split_parts.svg");
 
         item = m_main_toolbar.get_item("layersediting");
-        item->set_icon_filename(m_is_dark ? "toolbar_variable_layer_height_dark.svg" : "toolbar_variable_layer_height.svg");
+        item->set_icon_filename(dark ? "toolbar_variable_layer_height_dark.svg" : "toolbar_variable_layer_height.svg");
     }
 
     // assemble view toolbar
     {
         GLToolbarItem* item;
         item = m_assemble_view_toolbar.get_item("assembly_view");
-        item->set_icon_filename(m_is_dark ? "toolbar_assemble_dark.svg" : "toolbar_assemble.svg");
+        item->set_icon_filename(dark ? "toolbar_assemble_dark.svg" : "toolbar_assemble.svg");
     }
 }
 bool GLCanvas3D::_init_toolbars()
@@ -7963,8 +8062,10 @@ void GLCanvas3D::_render_background()
     // Draws a bottom to top gradient over the complete screen.
     glsafe(::glDisable(GL_DEPTH_TEST));
 
-    ColorRGBA background_color = m_is_dark ? DEFAULT_BG_LIGHT_COLOR_DARK : DEFAULT_BG_LIGHT_COLOR;
-    ColorRGBA error_background_color = m_is_dark ? ERROR_BG_LIGHT_COLOR_DARK : ERROR_BG_LIGHT_COLOR;
+    ColorRGBA background_color = m_workspace_background.value_or(
+        m_is_dark ? DEFAULT_BG_LIGHT_COLOR_DARK : DEFAULT_BG_LIGHT_COLOR);
+    ColorRGBA error_background_color = (m_is_dark || m_workspace_background.has_value()) ?
+        ERROR_BG_LIGHT_COLOR_DARK : ERROR_BG_LIGHT_COLOR;
     const ColorRGBA bottom_color = use_error_color ? error_background_color : background_color;
 
     if (!m_background.is_initialized()) {
@@ -8024,7 +8125,8 @@ void GLCanvas3D::_render_bed(const Transform3d& view_matrix, const Transform3d& 
 
 void GLCanvas3D::_render_platelist(const Transform3d& view_matrix, const Transform3d& projection_matrix, bool bottom, bool only_current, bool only_body, int hover_id, bool render_cali, bool show_grid)
 {
-    wxGetApp().plater()->get_partplate_list().render(view_matrix, projection_matrix, bottom, only_current, only_body, hover_id, render_cali, show_grid);
+    wxGetApp().plater()->get_partplate_list().render(view_matrix, projection_matrix, bottom, only_current, only_body, hover_id, render_cali, show_grid,
+                                                       m_workspace_background.has_value());
 }
 
 void GLCanvas3D::_render_shadows(const Transform3d& view_matrix, const Transform3d& projection_matrix)
@@ -8931,6 +9033,20 @@ int GLCanvas3D::get_main_toolbar_offset() const
 //when rendering, {0, 0} is at the center, left-up is -0.5, 0.5, right-up is 0.5, -0.5
 void GLCanvas3D::_render_main_toolbar()
 {
+    if (m_workspace_toolbar_theme_dirty && m_canvas_type == CanvasView3D) {
+        // Retheme native controls only while the workspace surface is active;
+        // the bed, model and G-code retain the application's own color mode.
+        const bool toolbar_dark = m_is_dark || m_workspace_background.has_value();
+        _switch_toolbars_icon_filename(toolbar_dark);
+        m_gizmos.on_change_color_mode(toolbar_dark);
+        m_gizmos.switch_gizmos_icon_filename();
+        m_separator_toolbar.set_icon_dirty();
+        m_main_toolbar.set_icon_dirty();
+        wxGetApp().plater()->get_collapse_toolbar().set_icon_dirty();
+        m_assemble_view_toolbar.set_icon_dirty();
+        m_gizmos.set_icon_dirty();
+        m_workspace_toolbar_theme_dirty = false;
+    }
     if (!m_main_toolbar.is_enabled())
         return;
 
@@ -9487,6 +9603,12 @@ void GLCanvas3D::_render_canvas_toolbar()
 
     ImVec2        btn_size = ImVec2(36.f, 36.f) * sc;
     ImVec2        margin   = ImVec2(m_canvas_toolbar_pos[0] > 0 ? 0.f : (10.f * sc), 10.f * sc);
+    // The workspace sidebar narrows the preview until the toolbar and moves
+    // slider overlap horizontally. Keep their hit areas separate vertically.
+    if (m_workspace_background && m_canvas_type == ECanvasType::CanvasPreview) {
+        if (const IMSlider* moves = m_gcode_viewer.get_moves_slider())
+            margin.y += moves->horizontal_slider_window_height();
+    }
     ImVec2        spacing  = ImVec2(6.f, 6.f)  * sc;
     ImVec2        padding  = ImVec2(2.f, 2.f)  * sc;
     Vec2i32       pos      = {
@@ -9494,6 +9616,7 @@ void GLCanvas3D::_render_canvas_toolbar()
         get_canvas_size().get_height() - margin.y
     };
     bool          zoom_btn = wxGetApp().show_canvas_zoom_button();
+    const bool    toolbar_dark = m_is_dark || m_workspace_background.has_value();
 
     imgui.set_next_window_pos(pos[0], pos[1], ImGuiCond_Always, 0, 1); // pivot bottom-left
 
@@ -9505,8 +9628,8 @@ void GLCanvas3D::_render_canvas_toolbar()
     imgui.begin(_L("Canvas Toolbar"), ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoMove |
                                            ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse);//
 
-    ImTextureID m_normal_id = m_gizmos.get_icon_texture_id(m_is_dark ? GLGizmosManager::MENU_ICON_NAME::IC_CANVAS_MENU_DARK       : GLGizmosManager::MENU_ICON_NAME::IC_CANVAS_MENU);
-    ImTextureID m_hover_id  = m_gizmos.get_icon_texture_id(m_is_dark ? GLGizmosManager::MENU_ICON_NAME::IC_CANVAS_MENU_DARK_HOVER : GLGizmosManager::MENU_ICON_NAME::IC_CANVAS_MENU_HOVER);
+    ImTextureID m_normal_id = m_gizmos.get_icon_texture_id(toolbar_dark ? GLGizmosManager::MENU_ICON_NAME::IC_CANVAS_MENU_DARK       : GLGizmosManager::MENU_ICON_NAME::IC_CANVAS_MENU);
+    ImTextureID m_hover_id  = m_gizmos.get_icon_texture_id(toolbar_dark ? GLGizmosManager::MENU_ICON_NAME::IC_CANVAS_MENU_DARK_HOVER : GLGizmosManager::MENU_ICON_NAME::IC_CANVAS_MENU_HOVER);
 
     if (ImGui::ImageButton3(m_normal_id, m_hover_id, btn_size)) {
         if(!ImGui::IsPopupOpen("CanvasToolbarMenu")){
@@ -9518,8 +9641,8 @@ void GLCanvas3D::_render_canvas_toolbar()
     if(zoom_btn){
         ImGui::Dummy({ 0, spacing.y});
 
-        ImTextureID z_normal_id = m_gizmos.get_icon_texture_id(m_is_dark ? GLGizmosManager::MENU_ICON_NAME::IC_CANVAS_ZOOM_DARK       : GLGizmosManager::MENU_ICON_NAME::IC_CANVAS_ZOOM);
-        ImTextureID z_hover_id  = m_gizmos.get_icon_texture_id(m_is_dark ? GLGizmosManager::MENU_ICON_NAME::IC_CANVAS_ZOOM_DARK_HOVER : GLGizmosManager::MENU_ICON_NAME::IC_CANVAS_ZOOM_HOVER);
+        ImTextureID z_normal_id = m_gizmos.get_icon_texture_id(toolbar_dark ? GLGizmosManager::MENU_ICON_NAME::IC_CANVAS_ZOOM_DARK       : GLGizmosManager::MENU_ICON_NAME::IC_CANVAS_ZOOM);
+        ImTextureID z_hover_id  = m_gizmos.get_icon_texture_id(toolbar_dark ? GLGizmosManager::MENU_ICON_NAME::IC_CANVAS_ZOOM_DARK_HOVER : GLGizmosManager::MENU_ICON_NAME::IC_CANVAS_ZOOM_HOVER);
 
         if (ImGui::ImageButton3(z_normal_id, z_hover_id, btn_size)) {
             select_view("plate");
@@ -9542,10 +9665,10 @@ void GLCanvas3D::_render_canvas_toolbar()
 
     ImGui::PopStyleVar(4); // Window
 
-    ImGui::PushStyleColor(ImGuiCol_PopupBg           , m_is_dark ? ImGuiWrapper::COL_TOOLBAR_BG_DARK : ImGuiWrapper::COL_TOOLBAR_BG);
-    ImGui::PushStyleColor(ImGuiCol_Separator         , m_is_dark ? ImVec4(1, 1, 1, .20f) : ImVec4(0, 0, 0, .2f));
-    ImGui::PushStyleColor(ImGuiCol_Text              , m_is_dark ? ImVec4(1, 1, 1, .88f) : ImVec4(50 / 255.f, 58 / 255.f, 61 / 255.f, 1.f));
-    ImGui::PushStyleColor(ImGuiCol_TextDisabled      , m_is_dark ? ImVec4(1, 1, 1, .44f) : ImVec4(50 / 255.f, 58 / 255.f, 61 / 255.f, .5f));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg           , toolbar_dark ? ImGuiWrapper::COL_TOOLBAR_BG_DARK : ImGuiWrapper::COL_TOOLBAR_BG);
+    ImGui::PushStyleColor(ImGuiCol_Separator         , toolbar_dark ? ImVec4(1, 1, 1, .20f) : ImVec4(0, 0, 0, .2f));
+    ImGui::PushStyleColor(ImGuiCol_Text              , toolbar_dark ? ImVec4(1, 1, 1, .88f) : ImVec4(50 / 255.f, 58 / 255.f, 61 / 255.f, 1.f));
+    ImGui::PushStyleColor(ImGuiCol_TextDisabled      , toolbar_dark ? ImVec4(1, 1, 1, .44f) : ImVec4(50 / 255.f, 58 / 255.f, 61 / 255.f, .5f));
     ImGui::PushStyleColor(ImGuiCol_HeaderHovered     , ImVec4(0, 0, 0, 0.f)); // bg color for menu item
     ImGui::PushStyleColor(ImGuiCol_BorderActive      , ImGuiWrapper::COL_ORCA);
     ImGui::PushStyleVar(ImGuiStyleVar_PopupBorderSize, 0.f     );
@@ -9572,7 +9695,7 @@ void GLCanvas3D::_render_canvas_toolbar()
             if (ImGui::BBLMenuItem(("        " + _u8L(name)).c_str(), nullptr, false, enable, ImGui::CalcTextSize(_u8L(name).c_str()).y))
                 action();
             ImGui::SameLine(12.f * sc);
-            ImGui::TextColored(enable ? ImVec4(1,1,1,1) : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled), "%s", into_u8(condition ? ImGui::VisibleIcon : ImGui::HiddenIcon).c_str());
+            ImGui::TextColored(ImGui::GetStyleColorVec4(enable ? ImGuiCol_Text : ImGuiCol_TextDisabled), "%s", into_u8(condition ? ImGui::VisibleIcon : ImGui::HiddenIcon).c_str());
         };
 
         create_menu_item( _utf8(L("3D Navigator")),
@@ -9667,7 +9790,7 @@ void GLCanvas3D::_render_canvas_toolbar()
 
 void GLCanvas3D::_render_separator_toolbar_right() const
 {
-    if (!m_separator_toolbar.is_enabled())
+    if (m_workspace_background || !m_separator_toolbar.is_enabled())
         return;
 
     const Size cnv_size = get_canvas_size();
@@ -9683,7 +9806,7 @@ void GLCanvas3D::_render_separator_toolbar_right() const
 
 void GLCanvas3D::_render_separator_toolbar_left() const
 {
-    if (!m_separator_toolbar.is_enabled())
+    if (m_workspace_background || !m_separator_toolbar.is_enabled())
         return;
 
     const Size cnv_size = get_canvas_size();

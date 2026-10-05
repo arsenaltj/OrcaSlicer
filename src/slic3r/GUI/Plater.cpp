@@ -6938,7 +6938,7 @@ struct Plater::priv
     bool run_textured_mesh_import_dialog(Slic3r::Model& loaded_model, TextureImportResult& result,
                                          std::function<bool()> cancel_callback = {},
                                          std::function<bool(int)> progress_callback = {},
-                                         const TextureImportOptions* texture_options = nullptr);
+                                         const TextureImportOptions* texture_options = nullptr, ModelColorImportResult* color_result = nullptr);
     void apply_textured_mesh_import_result(Slic3r::Model& loaded_model, const std::vector<size_t>& obj_idxs,
                                            const TextureImportResult& result,
                                            LoadProgressCallback progress_callback = {}, bool update_scene = true);
@@ -9217,8 +9217,8 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
                     dlg_cont = dlg.Update(progress_percent, _L("Matching textures to filaments"));
                     return dlg_cont;
                 };
-                if (!run_textured_mesh_import_dialog(model, texture_import_result, cancel_cb, progress_cb, texture_options)) {
-                    if (color_result != nullptr) color_result->cancelled = true;
+                if (!run_textured_mesh_import_dialog(model, texture_import_result, cancel_cb, progress_cb, texture_options, color_result)) {
+                    if (color_result != nullptr) color_result->cancelled = color_result->error.empty();
                     q->skip_thumbnail_invalid = false;
                     return empty_result;
                 }
@@ -10050,6 +10050,7 @@ void Plater::priv::reset(bool apply_presets_change)
     // BBS
     m_saved_timestamp = m_backup_timestamp = size_t(-1);
 
+    if (smart_slicing_host != nullptr) smart_slicing_host->show(false);
     // Save window layout
     if (sidebar_layout.is_enabled) {
         // Reset show state

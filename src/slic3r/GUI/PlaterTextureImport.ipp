@@ -11,7 +11,7 @@ std::vector<size_t> Plater::load_files(const std::vector<fs::path>& input_files,
 bool Plater::priv::run_textured_mesh_import_dialog(Slic3r::Model& loaded_model, TextureImportResult& result,
                                                    std::function<bool()> cancel_callback,
                                                    std::function<bool(int)> progress_callback,
-                                                   const TextureImportOptions* texture_options)
+                                                   const TextureImportOptions* texture_options, ModelColorImportResult* color_result)
 {
     if (!loaded_model.texture_mesh || !has_importable_texture(*loaded_model.texture_mesh)) return false;
 
@@ -50,10 +50,13 @@ bool Plater::priv::run_textured_mesh_import_dialog(Slic3r::Model& loaded_model, 
             entry.color_hex = (colours_opt && i < colours_opt->values.size()) ? colours_opt->values[i] : "#808080";
 
             std::string name;
+            entry.compatible = false;
             if (i < preset_bundle.filament_presets.size()) {
                 auto* preset = preset_bundle.filaments.find_preset(preset_bundle.filament_presets[i]);
                 if (preset) {
                     name = preset->label(false);
+                    entry.compatible = preset->is_compatible;
+                    entry.preset_name = preset->name;
                     // Material type belongs to each filament preset, not to
                     // the project's color/mixing arrays. Match the workbench
                     // snapshot's source for this identity check.
@@ -87,22 +90,46 @@ bool Plater::priv::run_textured_mesh_import_dialog(Slic3r::Model& loaded_model, 
             result.matched_colors=true;
             result.painted.cluster_colors.resize(std::set<size_t>(options.matched_face_slots.begin(),options.matched_face_slots.end()).size());
             return true;
-        }catch(const std::exception& e) {MessageDialog(q,from_u8(e.what()),_L("区域配色"),wxOK|wxICON_ERROR).ShowModal();return false;}
+        }catch(const std::exception& e) {if(color_result)color_result->error=e.what();MessageDialog(q,from_u8(e.what()),_L("区域配色"),wxOK|wxICON_ERROR).ShowModal();return false;}
     }
     const std::string& source = loaded_model.objects.front()->input_file;
     if (boost::algorithm::iends_with(source, ".glb") || boost::algorithm::iends_with(source, ".gltf"))
         options.z_up = true; // The native loader has already converted glTF Y-up to Z-up.
+    filament_entries = workspace_texture_filaments(filament_entries, texture_options);
+    if (texture_options && texture_options->workspace_presentation && filament_entries.empty()) {
+        const wxString message = _L("当前工程没有兼容的实体耗材。请在准备页核对打印机与材料后重试；本次未导入，原模型和工程保留。");
+        if (color_result) color_result->error = into_u8(message);
+        MessageDialog(q, message, _L("无法匹配打印耗材"), wxOK | wxICON_WARNING).ShowModal();
+        return false;
+    }
+
     TextureImportDialog dlg(q, *loaded_model.texture_mesh, filament_entries,
                             std::move(cancel_callback), std::move(progress_callback),
                             options);
+    auto apply_geometry_filament = [&](size_t slot) {
+        if (!apply_single_color_import(loaded_model, slot)) return false;
+        if (color_result) {
+            color_result->single_color_filament = slot;
+            color_result->mapped_color_count = 1;
+            color_result->colors_applied = true;
+        }
+        return true;
+    };
+    auto choose_geometry_filament = [&]() {
+        const auto slot = dlg.choose_single_color_filament();
+        return slot && apply_geometry_filament(*slot);
+    };
     if (dlg.ShowModal() != wxID_OK) {
         if (dlg.was_skipped()) {
             BOOST_LOG_TRIVIAL(info) << "handle_textured_mesh_import: user skipped texture matching";
+            const size_t slot = dlg.get_single_color_filament();
+            if (!apply_geometry_filament(slot)) return false;
             result.skipped = true;
             loaded_model.texture_mesh.reset();
             return true;
         }
         if (dlg.fallback_to_geometry_only()) {
+            if (!choose_geometry_filament()) return false;
             BOOST_LOG_TRIVIAL(warning) << "handle_textured_mesh_import: texture import failed, falling back to geometry-only import";
             result.fallback_to_geometry_only = true;
             result.fallback_warning = fallback_warning;
@@ -118,6 +145,7 @@ bool Plater::priv::run_textured_mesh_import_dialog(Slic3r::Model& loaded_model, 
     auto final_matches = dlg.get_matches();
 
     if (painted.face_colors.empty() || final_matches.empty()) {
+        if (!choose_geometry_filament()) return false;
         BOOST_LOG_TRIVIAL(warning) << "handle_textured_mesh_import: no painting result";
         result.fallback_to_geometry_only = true;
         result.fallback_warning = fallback_warning;

@@ -3,6 +3,7 @@
 #include "slic3r/GUI/AI/Orca/LocalPrintColorApplication.hpp"
 #include "slic3r/GUI/AI/Orca/LocalPrintColorCommit.hpp"
 #include "slic3r/GUI/AI/Orca/LocalPrintModelImport.hpp"
+#include "slic3r/Utils/UndoRedo.hpp"
 #include "slic3r/GUI/AI/Orca/LocalPrintRecipeApplication.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/LocalPrintColorRecipes.hpp"
 #include <catch2/generators/catch_generators.hpp>
@@ -16,6 +17,7 @@
 #include "slic3r/GUI/AI/Orca/LocalPrintRecipeTransition.hpp"
 #include "slic3r/GUI/AI/Orca/LocalPrintColorRestore.hpp"
 #include "slic3r/GUI/AI/Model/LocalPrintColorState.hpp"
+#include "slic3r/GUI/AI/Model/LocalPrintColorVersion.hpp"
 
 using namespace Slic3r;
 namespace Application = GUI::LocalPrintColorApplication;
@@ -90,6 +92,64 @@ TEST_CASE("failed color import history registration removes only the new object 
     REQUIRE(live.objects.size() == 1); CHECK(live.objects.front() == previous);
     CHECK(previous->name == "Retain this"); CHECK(index == 999); CHECK(config.changed);
     CHECK(GUI::LocalPrintRecipeApplication::identity(fixture.bundle) == before);
+}
+
+
+TEST_CASE("a rejected native material history registration can retry the same color model without stale failure state", "[LocalPrintModelImport][LocalPrintImportRetry]")
+{
+    Test::RecipeApplicationFixture fixture(GENERATE(2u, 3u));
+    Model source; auto* incoming = source.add_object(); incoming->input_file = "confirmed.glb";
+    auto* part = incoming->add_volume(TriangleMesh(fixture.mesh), ModelVolumeType::MODEL_PART, false);
+    part->source.input_file = incoming->input_file;
+    GUI::LocalPrintRecipeApplication::Prepared recipe; std::string error;
+    REQUIRE(GUI::LocalPrintRecipeApplication::prepare(part->mesh(), fixture.mesh.its, fixture.result,
+        fixture.snapshot, fixture.bundle, recipe, error));
+    const auto expected_paint = recipe.painting.data;
+    REQUIRE(GUI::LocalPrintRecipeApplication::apply_painting(*part, std::move(recipe.painting), error));
+    std::unique_ptr<Model> prepared;
+    REQUIRE(GUI::LocalPrintModelImport::prepare(*incoming, {25, 35}, {250, 250}, prepared, error));
+    Model live; auto* previous = live.add_object(); previous->name = "Retain this";
+    previous->add_volume(TriangleMesh(its_make_cube(5, 6, 7)));
+    const auto previous_mesh = previous->volumes.front()->mesh().its.vertices;
+    const auto before = GUI::LocalPrintRecipeApplication::identity(fixture.bundle);
+    const auto before_config = fixture.bundle.project_config;
+    const auto before_cache = fixture.bundle.ams_multi_color_filment;
+    UndoRedo::ProjectConfigUndo::Prepared config {recipe.bundle->project_config, recipe.bundle->filament_presets, true};
+    const auto expected_config = config.config;
+    const auto expected_names = config.filament_presets;
+    auto cache = GUI::ProjectConfigRestore::prepare_cache(config.filament_presets.size(), fixture.bundle);
+    const auto staged_cache = cache;
+    auto change = UndoRedo::ProjectConfigUndo::Change::capture(before_config, fixture.bundle.filament_presets,
+        config.config, config.filament_presets);
+    REQUIRE(change);
+    UndoRedo::SnapshotData selection {};
+    selection.snapshot_type = UndoRedo::SnapshotType::Selection; selection.printer_technology = ptFFF;
+    std::vector<UndoRedo::Snapshot> history {{"Select model", 10, 1, selection}, {"@@@ Topmost @@@", 20, 0, selection}};
+    // Use the production consumer: selection-only history cannot own a material action.
+    auto record = [&] { return UndoRedo::record_project_config_change(history, 20, change); };
+    size_t index = 999;
+    REQUIRE_FALSE(GUI::LocalPrintModelImport::adopt(live, *prepared->objects.front(), config, cache, fixture.bundle, record, index, error));
+    REQUIRE_FALSE(error.empty()); REQUIRE(live.objects.size() == 1);
+    CHECK(live.objects.front() == previous); CHECK(previous->volumes.front()->mesh().its.vertices == previous_mesh);
+    CHECK(index == 999); CHECK(config.changed); CHECK(config.config == expected_config);
+    CHECK(config.filament_presets == expected_names); CHECK(cache == staged_cache);
+    CHECK(fixture.bundle.ams_multi_color_filment == before_cache);
+    CHECK(GUI::LocalPrintRecipeApplication::identity(fixture.bundle) == before);
+    CHECK_FALSE(history.front().project_config_change);
+    // A new action snapshot makes the same unconsumed candidate eligible for retry.
+    history.front().snapshot_data.snapshot_type = UndoRedo::SnapshotType::Action;
+    history.front().name = "Apply local print colors";
+    REQUIRE(GUI::LocalPrintModelImport::adopt(live, *prepared->objects.front(), config, cache, fixture.bundle, record, index, error));
+    CHECK(error.empty()); REQUIRE(live.objects.size() == 2); REQUIRE(index == 1);
+    CHECK(live.objects.front() == previous); CHECK(previous->volumes.front()->mesh().its.vertices == previous_mesh);
+    CHECK(live.objects[index]->volumes.front()->mmu_segmentation_facets.get_data() == expected_paint);
+    CHECK(live.objects[index]->input_file == "confirmed.glb");
+    CHECK(fixture.bundle.project_config == expected_config); CHECK(fixture.bundle.filament_presets == expected_names);
+    CHECK_FALSE(config.changed); REQUIRE(history.front().project_config_change);
+    UndoRedo::ProjectConfigUndo::Prepared undone;
+    REQUIRE(UndoRedo::ProjectConfigUndo::prepare_jump(history, 20, 10, fixture.bundle.project_config,
+        fixture.bundle.filament_presets, undone, error));
+    CHECK(undone.config == before_config);
 }
 
 TEST_CASE("invalid color import placement is rejected before preparing a live model", "[LocalPrintModelImport]")
@@ -798,4 +858,105 @@ TEST_CASE("gradient slots are not reused for a constant recipe with the same dis
     CHECK(second.target_slots==std::vector<size_t>{4,4});CHECK(second.added_slots==1);
     CHECK(second.bundle->project_config.opt_bool("filament_mixed_gradient",3));
     CHECK_FALSE(second.bundle->project_config.opt_bool("filament_mixed_gradient",4));
+}
+
+
+TEST_CASE("uncommitted color version files are removed and the same candidate can retry", "[LocalPrintColorVersion]")
+{
+    ScopedTemporaryDir directory("color-version");
+    indexed_triangle_set mesh;
+    mesh.vertices = {{0, 0, 0}, {10, 0, 0}, {0, 10, 0}};
+    mesh.indices = {{0, 1, 2}};
+    const std::vector<RGBA> colors(3, RGBA{.2f, .4f, .6f, 1.f});
+    boost::filesystem::path rejected_asset, rejected_record;
+    const nlohmann::json candidate = {{"result", {{"face_targets", {0}}, {"physical_slot", 2}}}};
+    {
+        GUI::LocalPrintColorVersion::Pending attempt(directory.path());
+        rejected_asset = attempt.asset(); rejected_record = attempt.record();
+        attempt.publish(mesh, colors, candidate);
+        REQUIRE(boost::filesystem::exists(rejected_asset));
+        REQUIRE(boost::filesystem::exists(rejected_record));
+        // The real native consumer rejects after publication, before committing.
+    }
+    CHECK_FALSE(boost::filesystem::exists(rejected_asset));
+    CHECK_FALSE(boost::filesystem::exists(rejected_record));
+    {
+        GUI::LocalPrintColorVersion::Pending retry(directory.path());
+        retry.publish(mesh, colors, candidate);
+        retry.keep();
+        boost::filesystem::ifstream stream(retry.record());
+        const auto record = nlohmann::json::parse(stream);
+        CHECK(record.at("result") == candidate.at("result"));
+        CHECK(record.at("derived_sha256") == AI::model_artifact_sha256(retry.asset()));
+    }
+    CHECK(std::distance(boost::filesystem::directory_iterator(directory.path()),
+                        boost::filesystem::directory_iterator()) == 2);
+}
+
+TEST_CASE("failed color record serialization removes this attempt but preserves earlier versions", "[LocalPrintColorVersion]")
+{
+    ScopedTemporaryDir directory("color-version");
+    indexed_triangle_set mesh;
+    mesh.vertices = {{0, 0, 0}, {10, 0, 0}, {0, 10, 0}};
+    mesh.indices = {{0, 1, 2}};
+    const std::vector<RGBA> colors(3, RGBA{.2f, .4f, .6f, 1.f});
+    boost::filesystem::path prior, failed_asset, temporary;
+    {
+        GUI::LocalPrintColorVersion::Pending previous(directory.path());
+        previous.publish(mesh, colors, {{"value", "previous"}});
+        previous.keep(); prior = previous.asset();
+    }
+    const auto prior_hash = AI::model_artifact_sha256(prior);
+    {
+        GUI::LocalPrintColorVersion::Pending attempt(directory.path());
+        failed_asset = attempt.asset(); temporary = attempt.temporary();
+        // nlohmann rejects malformed UTF-8 while writing the actual JSON stream.
+        const nlohmann::json malformed = {{"source_name", std::string(1, char(0xff))}};
+        REQUIRE_THROWS(attempt.publish(mesh, colors, malformed));
+    }
+    CHECK_FALSE(boost::filesystem::exists(failed_asset));
+    CHECK_FALSE(boost::filesystem::exists(temporary));
+    CHECK(AI::model_artifact_sha256(prior) == prior_hash);
+    CHECK(std::distance(boost::filesystem::directory_iterator(directory.path()),
+                        boost::filesystem::directory_iterator()) == 2);
+}
+
+TEST_CASE("color version conflicts never overwrite or remove a foreign output", "[LocalPrintColorVersion]")
+{
+    ScopedTemporaryDir directory("color-version");
+    indexed_triangle_set mesh;
+    mesh.vertices = {{0, 0, 0}, {10, 0, 0}, {0, 10, 0}};
+    mesh.indices = {{0, 1, 2}};
+    const std::vector<RGBA> colors(3, RGBA{.2f, .4f, .6f, 1.f});
+    boost::filesystem::path foreign;
+    {
+        GUI::LocalPrintColorVersion::Pending attempt(directory.path());
+        const int conflict = GENERATE(0, 1, 2);
+        foreign = conflict == 0 ? attempt.asset() : conflict == 1 ? attempt.record() : attempt.temporary();
+        boost::filesystem::ofstream stream(foreign);
+        stream << "prior bytes"; stream.close();
+        REQUIRE_THROWS(attempt.publish(mesh, colors, {{"value", "new"}}));
+    }
+    boost::filesystem::ifstream stream(foreign);
+    std::string bytes; std::getline(stream, bytes);
+    CHECK(bytes == "prior bytes");
+}
+
+TEST_CASE("committed color version files survive a later refresh exception", "[LocalPrintColorVersion]")
+{
+    ScopedTemporaryDir directory("color-version");
+    indexed_triangle_set mesh;
+    mesh.vertices = {{0, 0, 0}, {10, 0, 0}, {0, 10, 0}};
+    mesh.indices = {{0, 1, 2}};
+    const std::vector<RGBA> colors(3, RGBA{.2f, .4f, .6f, 1.f});
+    boost::filesystem::path asset, record;
+    try {
+        GUI::LocalPrintColorVersion::Pending attempt(directory.path());
+        asset = attempt.asset(); record = attempt.record();
+        attempt.publish(mesh, colors, {{"value", "committed"}});
+        attempt.keep();
+        throw std::runtime_error("refresh failed");
+    } catch (const std::runtime_error&) {}
+    CHECK(boost::filesystem::exists(asset));
+    CHECK(boost::filesystem::exists(record));
 }

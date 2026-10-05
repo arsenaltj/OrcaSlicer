@@ -18,7 +18,8 @@ SmartSlicingViewModel SmartSlicingViewModel::from_snapshot(const AI::SmartSlicin
     view.can_add_model = snapshot.state == WorkflowState::Idle ||
         (view.can_recheck && snapshot.context && snapshot.context->objects.empty());
     view.needs_polling = snapshot.state == WorkflowState::OfficialSlicing ||
-        snapshot.state == WorkflowState::Completed || snapshot.state == WorkflowState::ApplyFailed;
+        snapshot.state == WorkflowState::Completed || snapshot.state == WorkflowState::ApplyFailed ||
+        (snapshot.state == WorkflowState::Failed && snapshot.context.has_value());
     view.detail     = snapshot.detail;
     if (view.has_report) {
         view.issue_count = snapshot.report->issues.size();
@@ -39,6 +40,8 @@ SmartSlicingViewModel SmartSlicingViewModel::from_snapshot(const AI::SmartSlicin
         card.recommended     = snapshot.comparison && snapshot.comparison->recommended_candidate_id == candidate.id;
         card.selected        = snapshot.selected_candidate_id == candidate.id;
         card.failed          = candidate.status == AI::SmartSlicing::CandidateStatus::Failed;
+        if (card.failed)
+            card.diagnostic_message = candidate.diagnostic_message;
         card.can_retry       = snapshot.state == WorkflowState::ReadyToApply && card.failed;
         card.can_select      = snapshot.state == WorkflowState::ReadyToApply && !card.failed;
         if (card.recommended && snapshot.comparison)
@@ -104,7 +107,13 @@ SmartSlicingViewModel SmartSlicingViewModel::from_snapshot(const AI::SmartSlicin
                                  LegacyAIWorkflowStatus::Waiting, LegacyAIWorkflowStatus::Waiting, LegacyAIWorkflowStatus::Waiting};
         break;
     case WorkflowState::ReadyForCandidatePlanning: {
-        const bool needs_attention = snapshot.report && snapshot.report->readiness == AI::SmartSlicing::Readiness::NeedsAttention;
+        // A missing formal slice is expected at this stage. Keep the deferred
+        // native check visible, but do not mark the step as needing user repair.
+        const bool needs_attention = snapshot.report &&
+            snapshot.report->readiness == AI::SmartSlicing::Readiness::NeedsAttention &&
+            std::any_of(snapshot.report->issues.begin(), snapshot.report->issues.end(), [](const auto& issue) {
+                return issue.code != AI::SmartSlicing::IssueCode::NativeValidationUnavailable;
+            });
         if (needs_attention) {
             view.summary_key = "preflight_complete_with_warnings";
             complete_through(0);
@@ -139,7 +148,7 @@ SmartSlicingViewModel SmartSlicingViewModel::from_snapshot(const AI::SmartSlicin
     case WorkflowState::ReadyToApply:
         view.summary_key = "candidates_ready";
         complete_through(2);
-        view.stages[3].status = SmartSlicingStageStatus::Active;
+        view.stages[3].status = SmartSlicingStageStatus::Waiting;
         break;
     case WorkflowState::Applying:
         view.summary_key = "applying_candidate";
@@ -179,6 +188,15 @@ SmartSlicingViewModel SmartSlicingViewModel::from_snapshot(const AI::SmartSlicin
         view.legacy_steps.fill(LegacyAIWorkflowStatus::Warning);
         break;
     case WorkflowState::Failed:
+        if (snapshot.detail == "baseline_trial_failed") {
+            view.summary_key = "baseline_trial_failed";
+            complete_through(1);
+            view.stages[2].status = SmartSlicingStageStatus::NeedsAttention;
+            view.legacy_steps = {LegacyAIWorkflowStatus::Success, LegacyAIWorkflowStatus::Success,
+                                 LegacyAIWorkflowStatus::Success, LegacyAIWorkflowStatus::Success,
+                                 LegacyAIWorkflowStatus::Failed, LegacyAIWorkflowStatus::Waiting};
+            break;
+        }
         view.summary_key      = snapshot.detail == "interrupted_workflow_recovered" ?
                                     "interrupted_workflow_recovered" : "preflight_failed";
         view.stages[0].status = SmartSlicingStageStatus::NeedsAttention;

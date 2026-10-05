@@ -3,6 +3,7 @@
 
 #include <memory>
 #include <exception>
+#include <functional>
 
 #include <libslic3r/TriangleMesh.hpp>
 #include <Eigen/Geometry>
@@ -71,8 +72,11 @@ TriangleMesh merge(std::vector<TriangleMesh> meshes);
 bool does_bound_a_volume(const CGALMesh &mesh);
 bool empty(const CGALMesh &mesh);
 
-// Repair a mesh using CGAL. Returns true on success. Optionally returns a summary of repairs and an error string.
-bool repair(TriangleMesh &mesh, RepairedMeshErrors *repaired_errors = nullptr, std::string *error = nullptr);
+// Repair a mesh using CGAL. Cancellation is checked between CGAL calls and while
+// copying input; individual CGAL calls cannot be interrupted. On cancellation,
+// returns false without changing mesh or repaired_errors.
+bool repair(TriangleMesh &mesh, RepairedMeshErrors *repaired_errors = nullptr, std::string *error = nullptr,
+            const std::function<bool()> &is_canceled = {});
 }
 
 namespace mcut {

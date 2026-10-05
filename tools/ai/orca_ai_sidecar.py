@@ -6,6 +6,7 @@ from array import array
 from collections import Counter, deque
 from io import BytesIO
 import hmac
+import hashlib
 import math
 import json
 import os
@@ -17,6 +18,7 @@ import ssl
 import stat
 import sys
 import threading
+import tempfile
 import time
 import traceback
 import uuid
@@ -1453,6 +1455,91 @@ def _resume_restored_jobs(restored: list[Job]) -> None:
                     _fail_job(job, "The preserved geometry reference is unavailable; start a new task manually.")
             else:
                 _submit(job, _generate_job, job.prepared_prompt, True)
+
+
+def _check_saved_model(request: Mapping[str, Any]) -> dict[str, Any]:
+    """Check the registered saved artifact without creating/adopting a generation job."""
+    asset_id = request.get("asset_id")
+    expected = request.get("artifact_sha256")
+    read_only = request.get("read_only", False)
+    if not isinstance(read_only, bool):
+        raise RequestError("invalid_request", "read_only must be a boolean.", 400)
+    if not isinstance(asset_id, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", asset_id) is None:
+        raise RequestError("invalid_request", "A registered model asset ID is required.", 400)
+    if not isinstance(expected, str) or re.fullmatch(r"[0-9a-f]{64}", expected) is None:
+        raise RequestError("invalid_request", "The saved model fingerprint is required.", 400)
+    root = _model_output_root()
+    record_path = root / "downloads" / f"orcaslicer-ai-{asset_id}.json"
+    try:
+        if record_path.is_symlink() or record_path.resolve(strict=True) != record_path:
+            raise ValueError("unregistered record")
+        # Region documents can be larger than a generation job manifest.
+        if record_path.stat().st_size > 64 * 1024 * 1024:
+            raise ValueError("oversized record")
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        if not isinstance(record, dict) or record.get("job_id") != asset_id:
+            raise ValueError("unregistered record")
+        relative = Path(record["model_path"])
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("unregistered artifact")
+        artifact = root / relative
+        if artifact.resolve(strict=True) != artifact:
+            raise ValueError("linked artifact")
+        artifact.relative_to(root)
+        if artifact.suffix.lower() not in {".obj", ".glb"} or not 0 < artifact.stat().st_size <= MAX_ARTIFACT_BYTES:
+            raise ValueError("unavailable artifact")
+    except (OSError, ValueError, KeyError, TypeError, UnicodeError):
+        raise RequestError("artifact_not_ready", "The registered saved model is unavailable.", 409) from None
+
+    def fingerprint(path: Path) -> str:
+        with path.open("rb") as stream:
+            return hashlib.file_digest(stream, "sha256").hexdigest()
+
+    try:
+        if fingerprint(artifact) != expected or record.get("model_sha256", expected) != expected:
+            raise RequestError("artifact_changed", "The saved model changed; reload it before checking.", 409)
+        cache = root / ".model-checks"
+        if read_only:
+            # History must only restore a report for these exact bytes. Missing,
+            # legacy or incompatible reports remain unchecked; never analyze here.
+            quality = {}
+            report = cache / f"{expected}-quality.json"
+            try:
+                if cache.is_symlink() or cache.resolve(strict=True) != cache:
+                    raise ValueError("linked report directory")
+                if report.is_symlink() or report.resolve(strict=True) != report or not 0 < report.stat().st_size <= 1024 * 1024:
+                    raise ValueError("unavailable report")
+                candidate = json.loads(report.read_text(encoding="utf-8"))
+                if (isinstance(candidate, dict) and candidate.get("artifact_sha256") == expected
+                        and candidate.get("units") == "mm"
+                        and candidate.get("gate_version") == MODEL_QUALITY_GATE_VERSION):
+                    quality = candidate
+            except (OSError, ValueError, UnicodeError):
+                pass
+            if fingerprint(artifact) != expected:
+                raise RequestError("artifact_changed", "The saved model changed during report recovery.", 409)
+            return {"id": asset_id, "source": "saved_model", "state": "ready", "model_quality": quality}
+        cache.mkdir(exist_ok=True)
+        if cache.is_symlink() or cache.resolve() != cache:
+            raise RequestError("quality_report_unavailable", "The model check storage is unavailable.", 503, True)
+        # Work from an immutable copy. Each request has a private projection;
+        # no shared analysis-model.obj in downloads can belong to another model.
+        with tempfile.TemporaryDirectory(prefix="check-", dir=cache) as directory:
+            snapshot = Path(directory) / ("model" + artifact.suffix.lower())
+            shutil.copyfile(artifact, snapshot)
+            if fingerprint(snapshot) != expected:
+                raise RequestError("artifact_changed", "The saved model changed during checking.", 409)
+            analysis = _analysis_artifact(snapshot)
+            quality = analyze_printable_obj(analysis, allow_repairable_topology=True)
+            if fingerprint(artifact) != expected:
+                raise RequestError("artifact_changed", "The saved model changed during checking.", 409)
+            quality["artifact_sha256"] = expected
+            quality["units"] = "mm"
+            report = write_model_quality_report(quality, Path(directory) / "quality.json")
+            os.replace(report, cache / f"{expected}-quality.json")
+    except (OSError, GlbError, TripoError, ModelQualityError, ValueError) as exc:
+        raise RequestError("quality_report_unavailable", "The saved model could not be checked. Its files are unchanged.", 503, True) from exc
+    return {"id": asset_id, "source": "saved_model", "state": "ready", "model_quality": quality}
 
 
 def _adopt_legacy_completed_job(job_id: str) -> Job | None:
@@ -8353,6 +8440,15 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 record = _record_journey_event(self._read_model_json())
                 self.send_json(201, {"event": record})
+            except RequestError as exc:
+                self._model_error(exc.status, exc.code, exc.message, exc.retryable)
+            return
+
+        if self.path == "/v1/orcaslicer/model-check":
+            if not self._require_native_client():
+                return
+            try:
+                self.send_json(200, {"job": _check_saved_model(self._read_model_json())})
             except RequestError as exc:
                 self._model_error(exc.status, exc.code, exc.message, exc.retryable)
             return

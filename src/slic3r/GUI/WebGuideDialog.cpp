@@ -463,6 +463,7 @@ void GuideFrame::OnScriptMessage(wxWebViewEvent &evt)
             m_Res["command"] = "response_userguide_profile";
             m_Res["sequence_id"] = "10001";
             m_Res["response"]        = m_ProfileJson;
+            m_Res["response"]["region"] = m_Region;
 
             //wxString strJS = wxString::Format("HandleStudio(%s)", m_Res.dump(-1, ' ', false, json::error_handler_t::ignore));
             wxString strJS = wxString::Format("HandleStudio(%s)", m_Res.dump(-1, ' ', true));
@@ -500,7 +501,8 @@ void GuideFrame::OnScriptMessage(wxWebViewEvent &evt)
 
                         // Automatically select default materials for this printer model
                         // This mirrors the behavior of the old ConfigWizard::select_default_materials_for_printer_model()
-                        if (TmpModel.contains("materials") && !TmpModel["materials"].is_null()) {
+                        if (TmpModel.value("nozzle_selected", std::string()).empty() &&
+                            TmpModel.contains("materials") && !TmpModel["materials"].is_null()) {
                             std::string materials_str;
 
                             // Handle both string and JSON array formats for materials
@@ -565,25 +567,7 @@ void GuideFrame::OnScriptMessage(wxWebViewEvent &evt)
         else if (strCmd == "user_guide_finish") {
             SaveProfile();
 
-            std::string oldregion = m_ProfileJson["region"];
-            if (m_Region != oldregion) {
-                AppConfig* config = GUI::wxGetApp().app_config;
-                std::string country_code = config->get_country_code();
-                NetworkAgent* agent = wxGetApp().getAgent();
-                if (agent) {
-                    agent->set_country_code(country_code);
-                    if (wxGetApp().is_user_login()) {
-                        BOOST_LOG_TRIVIAL(info) << "logout: user_logout on user_guide_finish";
-                        // agent->user_logout();
-                        wxGetApp().request_user_logout();
-                    }
-                }
-            }
-
             this->EndModal(wxID_OK);
-
-            if (InstallNetplugin)
-                GUI::wxGetApp().CallAfter([] { GUI::wxGetApp().ShowDownNetPluginDlg(); });
         }
         else if (strCmd == "user_guide_create_printer") {
             this->EndModal(wxID_CANCEL);
@@ -720,14 +704,6 @@ int GuideFrame::SaveProfile()
     //     m_MainPtr->app_config->set(std::string(m_SectionName.mb_str()), "privacyuse", "1");
     // } else
     //     m_MainPtr->app_config->set(std::string(m_SectionName.mb_str()), "privacyuse", "0");
-
-    m_MainPtr->app_config->set("region", m_Region);
-    m_MainPtr->app_config->set_bool("stealth_mode", StealthMode);
-
-    //finish
-    m_MainPtr->app_config->set(std::string(m_SectionName.mb_str()), "finish", "1");
-
-    m_MainPtr->app_config->save();
 
     std::string strAll = m_ProfileJson.dump(-1, ' ', false, json::error_handler_t::ignore);
 
@@ -1046,6 +1022,22 @@ bool GuideFrame::run()
         BOOST_LOG_TRIVIAL(info) << "GuideFrame returned ok";
         if (! this->apply_config(app.app_config, app.preset_bundle, app.preset_updater, apply_keeped_changes))
             return false;
+
+        // Commit guide settings only after the native preset application succeeds.
+        const bool region_changed = app.app_config->get("region") != m_Region;
+        app.app_config->set("region", m_Region);
+        app.app_config->set_bool("stealth_mode", StealthMode);
+        app.app_config->set(std::string(m_SectionName.mb_str()), "finish", "1");
+        app.app_config->save();
+        if (region_changed) {
+            if (NetworkAgent* agent = app.getAgent()) {
+                agent->set_country_code(app.app_config->get_country_code());
+                if (app.is_user_login())
+                    app.request_user_logout();
+            }
+        }
+        if (InstallNetplugin)
+            app.CallAfter([] { GUI::wxGetApp().ShowDownNetPluginDlg(); });
 
         if (apply_keeped_changes)
             app.apply_keeped_preset_modifications();

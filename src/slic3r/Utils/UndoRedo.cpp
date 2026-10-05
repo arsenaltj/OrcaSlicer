@@ -936,10 +936,11 @@ void StackImpl::take_snapshot(const std::string& snapshot_name, const Slic3r::Mo
 	assert(m_active_snapshot_time <= m_current_time);
 	for (auto &kvp : m_objects)
 		kvp.second->release_after_timestamp(m_active_snapshot_time);
-	bool topmost_saved = false;
+	bool active_saved = false;
 	if (! m_snapshots.empty()) {
-		// If the project was saved for the topmost snapshot, restore the "saved" state after the "topmost" snapshot is taken.
-		topmost_saved = m_active_snapshot_time == m_saved_snapshot_time && m_active_snapshot_time == m_snapshots.back().timestamp;
+		// Replacing a saved state with an equivalent snapshot must keep its save
+		// marker, including when branching after Undo (not only at the top).
+		active_saved = m_active_snapshot_time == m_saved_snapshot_time;
 		auto it = std::lower_bound(m_snapshots.begin(), m_snapshots.end(), Snapshot(m_active_snapshot_time));
 		this->release_snapshots(it, m_snapshots.end());
 	}
@@ -958,7 +959,7 @@ void StackImpl::take_snapshot(const std::string& snapshot_name, const Slic3r::Mo
 
     // Save the snapshot info.
 	m_snapshots.emplace_back(snapshot_name, m_current_time, model.id().id, snapshot_data);
-	if (topmost_saved)
+	if (active_saved)
 		// Restore the "saved" timestamp.
 		m_saved_snapshot_time = m_current_time;
 	m_active_snapshot_time = ++ m_current_time;

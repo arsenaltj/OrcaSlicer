@@ -24,6 +24,38 @@
 using namespace Slic3r;
 using namespace Slic3r::Test;
 
+TEST_CASE("Restoring an automatic filament assignment invalidates cached toolpaths", "[MultiFilament][AutoMapRestore]")
+{
+    auto config = multifilament_config(2, {
+        { "nozzle_diameter", "0.4,0.4" },
+        { "printer_extruder_id", "1,2" },
+        { "printer_extruder_variant", "Direct Drive Standard;Direct Drive Standard" },
+        { "filament_map", "1,2" },
+        { "gcode_comments", 1 },
+    });
+    config.set_key_value("filament_map_mode", new ConfigOptionEnum<FilamentMapMode>(fmmAutoForFlush));
+    struct CachedPrint : Print {
+        using Print::set_started;
+        using Print::set_done;
+    } print;
+    Model model;
+    init_print({cube(5)}, print, model, config);
+    // Represent completed work on the current assignment. Applying that same
+    // configuration must keep the cache; restoring another assignment must not.
+    print.set_started(psWipeTower);
+    print.set_done(psWipeTower);
+    print.set_started(psGCodeExport);
+    print.set_done(psGCodeExport);
+    print.apply(model, config);
+    REQUIRE(print.is_step_done(psWipeTower));
+    REQUIRE(print.is_step_done(psGCodeExport));
+
+    config.set_key_value("filament_map", new ConfigOptionInts({1, 1}));
+    print.apply(model, config);
+    CHECK_FALSE(print.is_step_done(psWipeTower));
+    CHECK_FALSE(print.is_step_done(psGCodeExport));
+}
+
 // 0-based tool indices used by extrusions whose role comment contains `role` (needs gcode_comments).
 static std::set<int> tools_for_role(const std::string& gcode, const std::string& role)
 {

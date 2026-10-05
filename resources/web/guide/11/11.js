@@ -36,24 +36,20 @@ function HandleRegionlList(  pItem )
 {
 	m_OldRegion=pItem['region'];
 	
-	let nNum=$(".RegionItem[region='"+m_OldRegion+"']").length;
-	if( nNum==1 )
-		ChooseRegion(m_OldRegion);
+	ChooseRegion(m_OldRegion);
 }
 
 
 function ChooseRegion( strRegion )
 {
-	m_Region=strRegion;
-	
-	$('.RegionItem').removeClass('RegionSelected');
-	$(".RegionItem[region='"+strRegion+"']").addClass('RegionSelected');
+	const regions = ['Asia-Pacific', 'China', 'Europe', 'North America', 'Others'];
+	m_Region = regions.includes(strRegion) ? strRegion : 'Asia-Pacific';
+	document.getElementById('RegionSelect').value = m_Region;
 }
 
 function GotoPolicyPage()
 {
-	let ItemSelected=$('.RegionSelected')[0];
-	let RegionFinal=$(ItemSelected).attr("region");
+	let RegionFinal=document.getElementById('RegionSelect').value;
 	
 	var tSend={};
 	tSend['sequence_id']=Math.round(new Date() / 1000);

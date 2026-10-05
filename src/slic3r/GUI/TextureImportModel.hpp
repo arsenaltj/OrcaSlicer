@@ -6,6 +6,23 @@
 
 namespace Slic3r::GUI {
 
+// Preserve project slot identity when removing unusable workbench entries.
+// The ordinary native importer keeps its existing physical/mixed behaviour.
+inline std::vector<TextureFilamentEntry> workspace_texture_filaments(
+    const std::vector<TextureFilamentEntry>& entries, const TextureImportOptions* options)
+{
+    if (!options || !options->workspace_presentation) return entries;
+    std::vector<TextureFilamentEntry> usable;
+    for (const auto& entry : entries) {
+        if (entry.kind != TextureFilamentKind::ExistingPhysical || !entry.compatible ||
+            entry.type.empty() || entry.preset_name.empty()) continue;
+        usable.push_back(entry);
+        usable.back().dialog_index = int(usable.size() - 1);
+    }
+    return usable;
+}
+
+
 // The workbench already knows glTF units; do not guess again from model size.
 inline bool apply_texture_import_units(Model& model, const TextureImportOptions* options)
 {
@@ -34,7 +51,7 @@ inline void apply_matched_texture_colors(Model& model,const TextureImportOptions
         const auto found=std::find_if(current.begin(),current.end(),[&](const auto& c){return c.kind==saved.kind &&
             c.project_config_index==saved.project_config_index && c.color_hex==saved.color_hex &&
             (saved.kind==TextureFilamentKind::ExistingMixed?(c.mixed_components==saved.mixed_components && c.mixed_ratios==saved.mixed_ratios):c.type==saved.type);});
-        require(found!=current.end() && saved.project_config_index<=max_slot,"耗材已变化，请回工作台重新匹配颜色。");
+        require(found!=current.end() && found->compatible && saved.project_config_index<=max_slot,"耗材已变化，请回工作台重新匹配颜色。");
         allowed.insert(saved.project_config_index);
     }
     require(!options.matched_face_slots.empty(),"区域配色为空。");

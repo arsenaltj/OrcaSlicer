@@ -1,5 +1,5 @@
 <!doctype html>
-<html>
+<html data-guide-theme="figma">
 <head>
 <meta charset="utf-8">
 <meta http-equiv="Cache-Control" content="max-age=7200" />
@@ -17,6 +17,8 @@
 <script type="text/javascript" src="../js/common.js"></script>
 <script type="text/javascript" src="../21/common.js"></script> <!-- ORCA use common sources for setup guide and standalone dialog -->
 <script type="text/javascript" src="21.js"></script>	
+<link rel="stylesheet" href="../css/ux.css" />
+<script src="../js/ux.js"></script>
 </head>
 <body onLoad="OnInit()">
 <div id="Title">
@@ -81,7 +83,8 @@
 	
 </div>
 <div id="AcceptArea">
-	<div class="ButtonStyleRegular ButtonTypeChoice trans" id="PreBtn" tid="t8"  onclick="window.open('../1/index.html','_self')">Back</div>
+	<div class="ButtonStyleRegular ButtonTypeChoice trans GuideCancel" tid="t38" onclick="CancelGuide()">Cancel</div>
+	<div class="ButtonStyleRegular ButtonTypeChoice trans" id="PreBtn" tid="t8"  onclick="ReturnRegionPage()">Back</div>
 	<div class="ButtonStyleConfirm ButtonTypeChoice trans" id="AcceptBtn" tid="t9"  onclick="GotoFilamentPage()">Next</div>
 </div>
 	

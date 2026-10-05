@@ -1,4 +1,7 @@
 #include "LocalPrintColorPanel.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/ModelGenerationInputStyle.hpp"
+#include "slic3r/GUI/Widgets/Label.hpp"
+#include <wx/wrapsizer.h>
 #include "slic3r/GUI/AI/Orca/OrcaWorkspaceAdapter.hpp"
 #include "slic3r/GUI/AI/Orca/LocalPrintColorApplication.hpp"
 #include "slic3r/GUI/AI/Orca/LocalPrintColorCommit.hpp"
@@ -11,6 +14,7 @@
 #include "slic3r/GUI/AI/ModelGeneration/LocalPrintColorQuality.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/LocalPrintColorBoundaryRefinement.hpp"
 #include "slic3r/GUI/AI/Model/LocalPrintColorState.hpp"
+#include "slic3r/GUI/AI/Model/LocalPrintColorVersion.hpp"
 #include "slic3r/GUI/AI/Model/BeautyPrintColorHandoff.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchControls.hpp"
 #include "slic3r/GUI/AI/Model/LocalSemanticDraft.hpp"
@@ -61,10 +65,12 @@ nlohmann::json read_record(const fs::path& path)
 struct LocalPrintColorPanel::Impl {
     Impl(LocalPrintColorPanel* page, Plater* workspace, std::function<void()> navigation,
          std::function<void()> back_to_workbench)
-        : owner(page), plater(workspace), adapter(workspace, {}), navigate(std::move(navigation))
+        : owner(page), plater(workspace), adapter(workspace, {}), navigate(std::move(navigation)),
+          return_to_origin(back_to_workbench ? back_to_workbench : navigate)
     {
+        const bool from_workbench = static_cast<bool>(back_to_workbench);
         auto* root = new wxBoxSizer(wxVERTICAL);
-        auto* top = new wxBoxSizer(wxHORIZONTAL);
+        auto* top = new wxWrapSizer(wxHORIZONTAL);
         if (back_to_workbench) {
             add_button(top, _L("返回美颜工具"), std::move(back_to_workbench));
         } else {
@@ -81,29 +87,42 @@ struct LocalPrintColorPanel::Impl {
         layer_cancel_button = add_button(top, _L("取消层序核验"), [this] {
             if (layer_busy) { cancel = true; refresh(); message(_L("正在取消层序核验，准备页未修改。")); }
         });
-        top->AddStretchSpacer();
         add_button(top, _L("返回准备页"), [this] { if (navigate) navigate(); });
         root->Add(top, 0, wxEXPAND | wxALL, owner->FromDIP(8));
         auto* content = new wxBoxSizer(wxHORIZONTAL);
         preview = new ModelPreview3D(owner, true);
-        preview->set_preview_background(wxColour(184, 184, 184));
+        preview->SetName("ai_content_color");
+        preview->SetMinSize(wxSize(1, 1));
+        preview->set_preview_background(ModelGenerationInputStyle::background);
         content->Add(preview, 1, wxEXPAND | wxALL, owner->FromDIP(8));
-        auto* sidebar = new wxScrolledWindow(owner, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVSCROLL);
-        sidebar->SetMinSize(owner->FromDIP(wxSize(405, 100))); sidebar->SetScrollRate(0, owner->FromDIP(16));
+        auto* sidebar_surface = new ModelGenerationInputStyle::RoundedPanel(owner);
+        sidebar_surface->SetMinSize(owner->FromDIP(wxSize(340, 100)));
+        auto* sidebar_column = new wxBoxSizer(wxVERTICAL);
+        auto* sidebar = new wxScrolledWindow(sidebar_surface, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVSCROLL);
+        sidebar->SetMinSize(wxSize(1, 1)); sidebar->SetScrollRate(0, owner->FromDIP(16));
+        sidebar_column->Add(sidebar, 1, wxEXPAND);
         controls_parent = sidebar;
         auto* controls = new wxBoxSizer(wxVERTICAL);
         controls->Add(new wxStaticText(sidebar, wxID_ANY, _L("本地颜色匹配")), 0, wxALL, owner->FromDIP(6));
-        controls->Add(new wxStaticText(sidebar, wxID_ANY, _L("目标颜色数（与实体耗材数量独立）")), 0, wxALL, owner->FromDIP(6));
-        count = new wxSpinCtrl(sidebar, wxID_ANY); count->SetRange(1, 32); count->SetValue(6);
+        controls->Add(new wxStaticText(sidebar, wxID_ANY, _L("目标颜色数 · 不会增加实际耗材")), 0, wxALL, owner->FromDIP(6));
+        count = new wxSpinCtrl(sidebar, wxID_ANY, {}, wxDefaultPosition, wxDefaultSize, wxSP_ARROW_KEYS | wxTE_PROCESS_ENTER);
+        count->SetName("input_field");
+        count->SetRange(1, 32); count->SetValue(6);
         controls->Add(count, 0, wxEXPAND | wxALL, owner->FromDIP(6));
         count->Bind(wxEVT_SPINCTRL, [this](wxSpinEvent&) {
             if (busy || input.faces.empty()) return;
-            checkpoint(); input.identity.requested_color_count = size_t(count->GetValue()); compute();
+            recompute_from_count();
         });
-        add_button(controls, _L("按当前耗材重新匹配"), [this] { if (!busy && !input.faces.empty()) compute(); });
-        original = new wxCheckBox(sidebar, wxID_ANY, _L("对照模型原色"));
+        count->Bind(wxEVT_TEXT, [this](wxCommandEvent& event) { refresh(); event.Skip(); });
+        count->Bind(wxEVT_TEXT_ENTER, [this](wxCommandEvent&) { recompute_from_count(); });
+        rematch_button = add_button(controls, _L("按此色数和当前耗材重新匹配"), [this] { recompute_from_count(); });
+        controls->Add(new wxStaticText(sidebar, wxID_ANY, _L("1–6 色直接匹配；7–32 色尝试叠色。\n色数更多不保证更接近原色。")), 0, wxALL, owner->FromDIP(6));
+        controls->Add(new wxStaticText(sidebar, wxID_ANY, _L("本次匹配耗材 · 在准备页修改后重新匹配")), 0, wxALL, owner->FromDIP(6));
+        palette_grid = new wxFlexGridSizer(3, owner->FromDIP(4), owner->FromDIP(8));
+        controls->Add(palette_grid, 0, wxEXPAND | wxALL, owner->FromDIP(6));
+        original = new wxCheckBox(sidebar, wxID_ANY, _L("查看进入配色前的原色（仅对照）"));
         controls->Add(original, 0, wxALL, owner->FromDIP(6));
-        original->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) { display(); });
+        original->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) { display(); refresh(); });
         auto* views = new wxBoxSizer(wxHORIZONTAL);
         add_button(views, _L("整体视角"), [this] { preview->reset_view(); });
         add_button(views, _L("正面视角"), [this] { preview->front_view(); });
@@ -143,44 +162,126 @@ struct LocalPrintColorPanel::Impl {
             checkpoint(); input.identity.regions.clear(); input.identity.contrasts.clear(); input.identity.user_overrides.clear(); compute();
         });
         report = new wxTextCtrl(sidebar, wxID_ANY, _L("从生成页进入，或打开准备页选中模型。"), wxDefaultPosition,
-            owner->FromDIP(wxSize(370, 230)), wxTE_MULTILINE | wxTE_READONLY);
+            owner->FromDIP(wxSize(1, 230)), wxTE_MULTILINE | wxTE_READONLY);
+        report->SetMinSize(owner->FromDIP(wxSize(1, 150)));
         controls->Add(report, 1, wxEXPAND | wxALL, owner->FromDIP(6));
-        accept_error = new wxCheckBox(sidebar, wxID_ANY, _L("接受预测色差（仍须全部分配）"));
-        controls->Add(accept_error, 0, wxALL, owner->FromDIP(6));
+        auto* footer = new wxPanel(sidebar_surface);
+        auto* footer_actions = new wxBoxSizer(wxVERTICAL);
+        // Keep submission status next to the action even when controls scroll.
+        preview_status = new Label(footer, _L("等待载入模型"), LB_AUTO_WRAP | wxST_NO_AUTORESIZE);
+        preview_status->SetMinSize(wxSize(1, -1));
+        footer_actions->Add(preview_status, 0, wxALL | wxEXPAND, owner->FromDIP(6));
+        accept_error = new wxCheckBox(footer, wxID_ANY, _L("接受预测色差（仍须全部分配）"));
+        footer_actions->Add(accept_error, 0, wxALL, owner->FromDIP(6));
         accept_error->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) { refresh(); });
-        apply_button = add_button(controls, _L("确认配色并应用到准备页"), [this] { apply(false); });
-        defer_button = add_button(controls, _L("稍后匹配，保留原色资产"), [this] { apply(true); });
-        add_button(controls, _L("取消本次调整"), [this] {
-            if (busy) { cancel = true; message(_L("正在取消计算，准备页未修改。")); return; }
+        controls_parent = footer;
+        apply_button = add_button(footer_actions, _L("确认配色并应用到准备页"), [this] { apply(false); });
+        apply_button->SetName("input_primary");
+        defer_button = add_button(footer_actions, _L("稍后匹配，保留原色资产"), [this] { apply(true); });
+        add_button(footer_actions, from_workbench ? _L("取消配色，返回美颜") : _L("取消本次调整"), [this] {
+            if (busy) {
+                cancel = true;
+                message(_L("正在取消计算，准备页未修改。"));
+            }
             if (!input.faces.empty()) {
                 input.identity = initial; undo.clear(); redo.clear();
-                count->SetValue(int(input.identity.requested_color_count)); compute();
+                has_result = false; restored_confirmation = false;
+                count->SetValue(int(input.identity.requested_color_count)); refresh();
             }
-            if (navigate) navigate();
+            // Leaving is immediate; cancellation must not start a hidden rematch.
+            // The existing worker revision/lifetime guard owns any late completion.
+            if (return_to_origin) return_to_origin();
         });
+        controls_parent = sidebar;
+        footer->SetSizer(footer_actions);
+        sidebar_column->Add(footer, 0, wxEXPAND | wxALL, owner->FromDIP(8));
+        sidebar_surface->SetSizer(sidebar_column);
         sidebar->SetSizer(controls); sidebar->FitInside();
-        content->Add(sidebar, 0, wxEXPAND | wxALL, owner->FromDIP(8));
+        content->Insert(0, sidebar_surface, 0, wxEXPAND | wxALL, owner->FromDIP(8));
         root->Add(content, 1, wxEXPAND); owner->SetSizer(root); refresh();
     }
 
-    wxButton* add_button(wxSizer* sizer, const wxString& label, std::function<void()> action)
+    Button* add_button(wxSizer* sizer, const wxString& label, std::function<void()> action)
     {
-        auto* button = new wxButton(controls_parent ? controls_parent : owner, wxID_ANY, label);
+        auto* button = new Button(controls_parent ? controls_parent : owner, label);
+        button->SetName("input_field");
+        button->SetPaddingSize(owner->FromDIP(wxSize(8, 6)));
+        button->SetMinSize(owner->FromDIP(wxSize(-1, 36)));
         button->Bind(wxEVT_BUTTON, [action = std::move(action)](wxCommandEvent&) { action(); });
         sizer->Add(button, 0, wxALL | wxEXPAND, owner->FromDIP(4)); return button;
     }
     void message(const wxString& text) { report->SetValue(text); }
+    bool requested_count(long& value) const
+    {
+        return count->GetTextValue().ToLong(&value) && value >= 1 && value <= 32;
+    }
+    void recompute_from_count()
+    {
+        if (busy || input.faces.empty()) return;
+        long value = 0;
+        if (!requested_count(value)) { message(_L("请输入 1–32 的整数色数。")); return; }
+        if (size_t(value) != input.identity.requested_color_count) {
+            checkpoint(); input.identity.requested_color_count = size_t(value);
+        }
+        compute();
+    }
+    void display_palette()
+    {
+        palette_grid->Clear(true);
+        for (const auto& slot : computed.physical_channels) {
+            auto* row = new wxBoxSizer(wxHORIZONTAL);
+            auto* swatch = new wxPanel(controls_parent, wxID_ANY, wxDefaultPosition, owner->FromDIP(wxSize(18, 18)));
+            swatch->SetName("ai_content_color");
+            const wxColour color(u8(slot.display_color));
+            if (color.IsOk()) swatch->SetBackgroundColour(color);
+            swatch->SetToolTip(u8(slot.display_color + "  " + slot.material_type));
+            row->Add(swatch, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, owner->FromDIP(4));
+            auto* label = new wxStaticText(controls_parent, wxID_ANY,
+                wxString::Format(_L("耗材 %d"), int(slot.slot + 1)) + (slot.compatible ? "" : _L(" 不可用")));
+            // These controls are created after the native page theme is applied.
+            label->SetForegroundColour(report->GetForegroundColour());
+            row->Add(label, 0, wxALIGN_CENTER_VERTICAL);
+            palette_grid->Add(row);
+        }
+        controls_parent->Layout();
+        static_cast<wxScrolledWindow*>(controls_parent)->FitInside();
+    }
     void refresh()
     {
+        // Text events may be emitted while the constructor is still wiring controls.
+        if (!apply_button) return;
         layer_button->Enable(!busy && target_volume.valid());
         layer_cancel_button->Enable(layer_busy && !cancel.load());
         count->Enable(!busy); slots->Enable(!busy); select->Enable(!busy);
+        long requested = 0;
+        const bool valid_count = requested_count(requested);
+        const bool pending_count = !valid_count || (has_result && size_t(requested) != computed.requested_color_count);
+        rematch_button->Enable(!busy && !input.faces.empty() && valid_count);
+        original->Enable(!busy && has_result);
+        bool stale_context = false;
+        if (has_result && !busy) {
+            const auto current = adapter.printable_palette();
+            stale_context = current.material_fingerprint != computed.material_fingerprint ||
+                current.process_fingerprint != computed.process_fingerprint;
+        }
         const bool covered = has_result && std::all_of(computed.targets.begin(), computed.targets.end(), [](const auto& target) { return target.executable; });
+        const wxString stale_reason = _L("材料或工艺已改变 · 请重新匹配后再确认");
+        if (busy) preview_status->SetLabel(_L("正在计算 · 请等待新结果"));
+        else if (!valid_count) preview_status->SetLabel(_L("请输入 1–32 的整数色数，再重新匹配"));
+        else if (stale_context) preview_status->SetLabel(stale_reason);
+        else if (pending_count && has_result) preview_status->SetLabel(_L("色数尚未应用 · 请重新匹配"));
+        else if (has_result && !covered) preview_status->SetLabel(_L("尚有未分配目标色 · 请调整耗材或减少色数"));
+        else if (has_result) preview_status->SetLabel(original->GetValue() ?
+            _L("正在对照原色 · 取消勾选查看匹配结果") :
+            restored_confirmation ? _L("正在预览已恢复的确认配色") : _L("正在预览匹配结果 · 尚未应用到准备页"));
+        else preview_status->SetLabel(_L("暂无可应用结果 · 请查看下方说明"));
         const bool physical_application = std::none_of(computed.targets.begin(), computed.targets.end(),
             [](const auto& target) { return bool(target.recipe); });
         accept_error->Enable(!busy && covered);
-        apply_button->Enable(!busy && covered && physical_application && (computed.unresolved_count() == 0 || accept_error->GetValue()));
+        apply_button->SetToolTip(stale_context ? stale_reason : wxString());
+        apply_button->Enable(!busy && !stale_context && !pending_count && !original->GetValue() && covered && physical_application && (computed.unresolved_count() == 0 || accept_error->GetValue()));
         defer_button->Enable(!busy && !input.faces.empty());
+        ModelGenerationInputStyle::apply_control(apply_button, ModelGenerationInputStyle::Role::PrimaryAction);
     }
     void shutdown() { stopped = true; ++operation_revision; cancel = true; if (worker.joinable()) worker.join(); }
     void checkpoint() { undo.push_back(input.identity); redo.clear(); }
@@ -258,6 +359,7 @@ struct LocalPrintColorPanel::Impl {
         auto samples = std::make_shared<std::vector<Matching::FaceSample>>();
         auto restored = std::make_shared<std::optional<AI::LocalPrintColorResult>>();
         auto beauty = std::make_shared<std::optional<AI::ModelMatchedColors>>();
+        auto beauty_appearance = std::make_shared<std::optional<AI::BeautyPuzzle>>();
         auto destination_mesh = std::make_shared<indexed_triangle_set>();
         auto destination_paint = std::make_shared<TriangleSelector::TriangleSplittingData>();
         auto saved_paint_matches = std::make_shared<bool>(!destination.valid());
@@ -284,7 +386,7 @@ struct LocalPrintColorPanel::Impl {
         wxWeakRef<LocalPrintColorPanel> weak(owner);
         worker = std::thread([this, weak, item = AI::GeneratedModelArtifact(item), destination, saved, title, parent_version, prepared, mesh, native, colors, samples, restored,
                               expected_source, expected_paint, expected_config, destination_mesh, destination_paint, saved_paint_matches,
-                              restore_snapshot, restore_bundle, restore_routing, beauty, revision]() mutable {
+                              restore_snapshot, restore_bundle, restore_routing, beauty, beauty_appearance, revision]() mutable {
             std::string error, hash;
             try {
                 hash = AI::model_artifact_sha256(item.local_path);
@@ -293,7 +395,7 @@ struct LocalPrintColorPanel::Impl {
                 // that copy deliberately has no neighboring history record.
                 if (saved.empty() && !destination.valid()) {
                     AI::ModelImportRequest request;
-                    BeautyWorkbenchControls::prepare_import(item.local_path, request);
+                    BeautyWorkbenchControls::prepare_import(item.local_path, request, beauty_appearance.get());
                     *beauty = std::move(request.matched_colors);
                 }
                 // Generated GLBs can live in a generation download directory.
@@ -356,7 +458,7 @@ struct LocalPrintColorPanel::Impl {
                 }
             } catch (const std::exception& exception) { error = exception.what(); }
             wxGetApp().CallAfter([this, weak, item, destination, title, parent_version, prepared, mesh, native, colors, samples, hash, error, restored,
-                                   expected_source, expected_paint, expected_config, saved_paint_matches, restore_snapshot, beauty, revision] {
+                                   expected_source, expected_paint, expected_config, saved_paint_matches, restore_snapshot, beauty, beauty_appearance, revision] {
                 if (!weak || stopped || revision != operation_revision) return;
                 if (worker.joinable()) worker.join(); busy = false;
                 if (cancel || !error.empty()) { message(cancel ? _L("已取消，准备页未修改。") : u8(error)); refresh(); return; }
@@ -392,9 +494,10 @@ struct LocalPrintColorPanel::Impl {
                 initial = input.identity; undo.clear(); redo.clear(); count->SetValue(int(input.identity.requested_color_count));
                 original->SetValue(false); accept_error->SetValue(false);
                 refresh_palette();
-                if (*beauty) {
+                if (*beauty || *beauty_appearance) {
                     try {
-                        BeautyPrintColorHandoff::seed(**beauty, input.identity);
+                        if (*beauty) BeautyPrintColorHandoff::seed(**beauty, input.identity);
+                        else BeautyPrintColorHandoff::seed_appearance(**beauty_appearance, input.identity);
                         initial = input.identity;
                         count->SetValue(int(input.identity.requested_color_count));
                     } catch (const std::exception& failure) {
@@ -423,7 +526,7 @@ struct LocalPrintColorPanel::Impl {
                     // Its previous confirmation includes accepting recorded error.
                     has_result = true; restored_confirmation = true;
                     accept_error->SetValue(computed.unresolved_count() != 0);
-                    display(); refresh();
+                    display_palette(); display(); refresh();
                 } else compute(!beauty->has_value());
             });
         });
@@ -645,7 +748,7 @@ struct LocalPrintColorPanel::Impl {
                 }
                 computed = std::move(result.result);
                 if (!cleanup_notice.empty()) computed.notices.push_back("Local semantic request cleanup incomplete.");
-                has_result = true; display(); refresh();
+                has_result = true; display_palette(); display(); refresh();
             });
         });
     }
@@ -660,6 +763,7 @@ struct LocalPrintColorPanel::Impl {
         const auto quality = LocalPrintColorQuality::evaluate(input.faces, computed);
         wxString text = wxString::Format(_L("目标 n=%d；实际分组 k=%d；物理耗材 p=%d\n"), int(computed.requested_color_count),
             int(computed.targets.size()), int(computed.physical_channels.size()));
+        text += _L("色板缺少的颜色只能近似。可减少目标色数对照，\n或返回准备页配置实际拥有的耗材后重新匹配。\n");
         if (restored_confirmation) text += _L("已恢复确认配色，面分组保持不变。\n");
         text += computed.mode == AI::PrintColorMode::Direct ? _L("直接匹配\n") : _L("叠色扩展：比较实体色与合法配方\n");
         if (computed.mode == AI::PrintColorMode::Layered) {
@@ -732,18 +836,24 @@ struct LocalPrintColorPanel::Impl {
         for (size_t t = 0; t < computed.targets.size(); ++t) {
             const auto& target = computed.targets[t];
             text += wxString::Format(_L("分组 %d："), int(t + 1));
+            text += wxString::Format("#%06X", unsigned(Matching::packed_rgb(target.source))) + u8(" → ");
+            if (target.executable) text += wxString::Format("#%06X  ", unsigned(Matching::packed_rgb(target.output)));
             text += target.physical_slot ? wxString::Format(_L("耗材 %d，ΔE %.2f"), int(*target.physical_slot + 1), target.delta_e00) :
                 target.recipe ? wxString::Format(_L("%d 料叠色，ΔE %.2f"), int(target.recipe->components.size()), target.delta_e00) : _L("未分配");
             text += target.within_tolerance ? "\n" : _L("，需处理\n");
         }
-        for (const auto& region : quality.regions)
-            text += u8(region.label) + wxString::Format(_L("：ΔE %.2f，最大 %.2f\n"), region.mean_delta_e, region.worst_delta_e);
+        for (const auto& region : quality.regions) {
+            const auto label = region.id.find("beauty-appearance-") == 0 ? _L("已保存的美颜改色") : u8(region.label);
+            text += label + wxString::Format(_L("：ΔE %.2f，最大 %.2f\n"), region.mean_delta_e, region.worst_delta_e);
+        }
         message(text);
     }
 
     void apply(bool deferred)
     {
         if (busy || input.faces.empty() || plater == nullptr || (!deferred && !has_result)) return;
+        long requested = 0;
+        if (!deferred && (!requested_count(requested) || size_t(requested) != computed.requested_color_count || original->GetValue())) return;
         if (!deferred && computed.unresolved_count() != 0 && !accept_error->GetValue()) return;
         bool applied = false;
         try {
@@ -794,9 +904,9 @@ struct LocalPrintColorPanel::Impl {
                     throw std::runtime_error(error);
                 if (!existing && !LocalPrintRecipeApplication::apply_painting(*volume, std::move(painting), error)) throw std::runtime_error(error);
             }
-            const auto directory = version_directory(); fs::create_directories(directory);
-            const auto id = fs::unique_path("orca-color-%%%%%%%%-%%%%%%%%").string();
-            const auto version_asset = directory / (id + ".glb");
+            LocalPrintColorVersion::Pending version(version_directory());
+            const auto& id = version.id();
+            const auto& version_asset = version.asset();
             LocalPrintColorCommit::Prepared mutation;
             if (existing && !LocalPrintColorCommit::prepare(*existing, std::move(painting), version_asset.string(), mutation, error))
                 throw std::runtime_error(error);
@@ -806,16 +916,12 @@ struct LocalPrintColorPanel::Impl {
                     const auto& rgb = result.targets[result.face_targets[f]].output;
                     colors[f*3+c] = {rgb[0], rgb[1], rgb[2], 1.f};
                 }
-            if (!AI::write_model_artifact(version_asset, source_mesh, colors, error)) throw std::runtime_error(error);
             nlohmann::json record = {{"schema", "orcaslicer.local-color-version.v1"}, {"version_id", id},
                 {"parent_version", input.identity.parent_version}, {"source_path", artifact.local_path.string()},
                 {"source_name", model_name},
                 {"source_sha256", input.identity.source_sha256}, {"binding_geometry_id", input.identity.geometry_id},
-                {"derived_sha256", AI::model_artifact_sha256(version_asset)},
                 {"result", deferred ? nlohmann::json(nullptr) : LocalPrintColorState::encode(result)}};
-            const auto temporary = directory / (id + ".json.tmp");
-            { fs::ofstream stream(temporary); stream << record.dump(2); stream.close(); if (!stream) throw std::runtime_error("Unable to save the color version."); }
-            fs::rename(temporary, directory / (id + ".json"));
+            version.publish(source_mesh, colors, std::move(record));
             auto refresh_materials = [&] {
                 if (!recipe.native.bundle) return;
                 auto& bundle = *wxGetApp().preset_bundle;
@@ -829,6 +935,7 @@ struct LocalPrintColorPanel::Impl {
             if (existing) {
                 if (!plater->apply_local_print_colors(*existing, mutation, recipe.native.bundle.get(), error)) throw std::runtime_error(error);
                 applied = true;
+                version.keep();
                 target_source = existing->source.input_file; target_paint_stamp = existing->mmu_segmentation_facets.timestamp();
                 target_config_stamp = static_cast<const ObjectBase&>(existing->config).timestamp();
                 refresh_materials();
@@ -841,6 +948,7 @@ struct LocalPrintColorPanel::Impl {
                 if (!plater->adopt_local_print_model(*object, recipe.native.bundle.get(), index, error))
                     throw std::runtime_error(error);
                 applied = true;
+                version.keep();
                 target_volume = plater->model().objects[index]->volumes.front()->id();
                 const auto* imported = plater->model().objects[index]->volumes.front();
                 target_source = imported->source.input_file; target_paint_stamp = imported->mmu_segmentation_facets.timestamp();
@@ -853,6 +961,7 @@ struct LocalPrintColorPanel::Impl {
             if (navigate) navigate();
         } catch (const std::exception& error) {
             message(applied ? _L("配色已应用，但界面刷新未完成。可在准备页撤销。\n") + u8(error.what()) : u8(error.what()));
+            refresh();
         }
     }
 
@@ -861,15 +970,17 @@ struct LocalPrintColorPanel::Impl {
     Plater* plater;
     OrcaWorkspaceAdapter adapter;
     std::function<void()> navigate;
+    std::function<void()> return_to_origin;
     ModelPreview3D* preview {nullptr}; wxSpinCtrl* count {nullptr}; wxChoice* slots {nullptr};
     wxCheckBox* original {nullptr}; wxCheckBox* select {nullptr}; wxCheckBox* accept_error {nullptr}; wxTextCtrl* report {nullptr};
-    wxButton* apply_button {nullptr}; wxButton* defer_button {nullptr};
+    Button* apply_button {nullptr}; Button* defer_button {nullptr};
+    Button* rematch_button {nullptr}; wxStaticText* preview_status {nullptr}; wxFlexGridSizer* palette_grid {nullptr};
     std::thread worker; std::atomic<bool> cancel {false}; bool busy {false}; bool stopped {false}; bool has_result {false};
     bool restored_confirmation {false};
     uint64_t operation_revision {0};
     std::shared_ptr<const LocalSemanticEvidence::Evidence> semantic_evidence;
     wxString semantic_notice, layer_notice;
-    wxButton* layer_button {nullptr}; wxButton* layer_cancel_button {nullptr}; bool layer_busy {false};
+    Button* layer_button {nullptr}; Button* layer_cancel_button {nullptr}; bool layer_busy {false};
     AI::GeneratedModelArtifact artifact; ObjectID target_volume; std::string model_name;
     fs::path workbench_source_path;
     std::string target_source; ObjectBase::Timestamp target_paint_stamp {0}, target_config_stamp {0};
@@ -881,15 +992,46 @@ struct LocalPrintColorPanel::Impl {
 
 LocalPrintColorPanel::LocalPrintColorPanel(wxWindow* parent, Plater* plater, std::function<void()> navigation,
                                          std::function<void()> back_to_workbench)
-    : wxPanel(parent), m_impl(std::make_unique<Impl>(this, plater, std::move(navigation), std::move(back_to_workbench))) {}
+    : wxPanel(parent), m_impl(std::make_unique<Impl>(this, plater, std::move(navigation), std::move(back_to_workbench)))
+{
+    SetName("color_matching");
+    apply_ai_theme(true);
+}
+void LocalPrintColorPanel::apply_ai_theme(bool update_fonts)
+{
+    ModelGenerationInputStyle::apply(this, update_fonts);
+    Refresh(false);
+}
 LocalPrintColorPanel::~LocalPrintColorPanel() { shutdown(); }
 bool LocalPrintColorPanel::open_artifact(const AI::GeneratedModelArtifact& artifact)
 {
     if (m_impl->busy || m_impl->stopped) return false;
     // Returning to the same workbench model must retain its edits/undo history.
     if (m_impl->workbench_source_path == artifact.local_path && !m_impl->input.faces.empty() &&
-        AI::model_artifact_sha256(artifact.local_path) == m_impl->input.identity.source_sha256)
+        AI::model_artifact_sha256(artifact.local_path) == m_impl->input.identity.source_sha256) {
+        // Explicitly reopening an asset after undo or a project switch starts
+        // a new import when its former prepared volume no longer belongs here.
+        // Keep the candidate and edit history; a live but changed target still
+        // uses the existing apply guards and is never silently retargeted.
+        if (m_impl->target_volume.valid() && m_impl->plater) {
+            bool owned = false;
+            for (const auto* object : m_impl->plater->model().objects)
+                for (const auto* volume : object->volumes)
+                    if (volume->id() == m_impl->target_volume) owned = true;
+            if (!owned) {
+                m_impl->target_volume = {};
+                m_impl->target_source.clear();
+                m_impl->target_paint_stamp = m_impl->target_config_stamp = 0;
+                m_impl->layer_notice.clear();
+                m_impl->restored_confirmation = false;
+                if (m_impl->has_result) m_impl->display();
+            }
+        }
+        // A cancelled draft has no reusable result. Match only when entered again.
+        if (!m_impl->has_result) m_impl->compute();
+        else m_impl->refresh();
         return true;
+    }
     m_impl->open(artifact);
     m_impl->workbench_source_path = artifact.local_path;
     return true;

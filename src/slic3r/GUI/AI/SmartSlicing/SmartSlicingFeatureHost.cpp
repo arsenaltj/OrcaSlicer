@@ -1,4 +1,5 @@
 #include "SmartSlicingFeatureHost.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/ModelGenerationInputStyle.hpp"
 
 #include "slic3r/GUI/AI/Orca/OrcaOfficialSliceGateway.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaParameterProposalAdapter.hpp"
@@ -8,14 +9,20 @@
 #include "slic3r/GUI/AI/SmartSlicing/SmartSlicingPanel.hpp"
 #include "slic3r/GUI/AI/SmartSlicing/SmartSlicingPresenter.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
+#include "slic3r/GUI/GUI_ObjectList.hpp"
 #include "slic3r/GUI/GLCanvas3D.hpp"
 #include "slic3r/GUI/Plater.hpp"
+#include "slic3r/GUI/MainFrame.hpp"
+#include "slic3r/GUI/Notebook.hpp"
+#include "slic3r/GUI/PresetComboBoxes.hpp"
 #include "slic3r/Utils/UndoRedo.hpp"
 #include "slic3r/AI/SmartSlicing/Application/SmartSlicingCoordinator.hpp"
 
 #include <wx/aui/framemanager.h>
 #include <wx/button.h>
 #include <wx/sizer.h>
+#include <wx/weakref.h>
+#include <wx/glcanvas.h>
 
 #include <algorithm>
 #include <cmath>
@@ -102,7 +109,7 @@ bool collect_transform_targets(Plater& plater, const AI::SmartSlicing::SliceCand
 }
 
 bool prepare_parameter_patch(Plater& plater, const AI::SmartSlicing::SliceCandidate& candidate,
-                             DynamicPrintConfig& plate_patch, std::string& diagnostic)
+                             std::vector<OrcaObjectParameterPatch>& object_patches, std::string& diagnostic)
 {
     if (candidate.parameters.entries.empty())
         return true;
@@ -118,20 +125,34 @@ bool prepare_parameter_patch(Plater& plater, const AI::SmartSlicing::SliceCandid
 
     DynamicPrintConfig current_config = wxGetApp().preset_bundle->full_config();
     current_config.apply(*plate->config(), true);
-    DynamicPrintConfig patched_config;
-    const OrcaParameterApplyResult result = OrcaParameterProposalAdapter().validate_and_apply(
-        candidate.parameters, plate->id().id, current_config, patched_config);
+    std::vector<ModelObject*> targets;
+    Model& model = plater.model();
+    for (size_t object_index = 0; object_index < model.objects.size(); ++object_index) {
+        auto* object = model.objects[object_index];
+        if (object == nullptr || !object->printable)
+            continue;
+        bool on_plate = false, outside_plate = false;
+        for (size_t i = 0; i < object->instances.size(); ++i) {
+            const auto* instance = object->instances[i];
+            if (instance == nullptr) continue;
+            if (plate->contain_instance(static_cast<int>(object_index), static_cast<int>(i))) {
+                if (instance->printable) on_plate = true;
+            } else {
+                outside_plate = true;
+            }
+        }
+        if (!on_plate) continue;
+        if (outside_plate) {
+            diagnostic = "parameter_object_shared_across_plates";
+            return false;
+        }
+        targets.push_back(object);
+    }
+    const auto result = OrcaParameterProposalAdapter().prepare_object_patches(
+        candidate.parameters, plate->id().id, current_config, targets, object_patches);
     if (!result.accepted) {
         diagnostic = result.diagnostic_code;
         return false;
-    }
-    for (const AI::SmartSlicing::ConfigPatchEntry& entry : candidate.parameters.entries) {
-        const ConfigOption* replacement = patched_config.option(entry.key);
-        if (replacement == nullptr) {
-            diagnostic = "parameter_native_option_unavailable";
-            return false;
-        }
-        plate_patch.set_key_value(entry.key, replacement->clone());
     }
     return true;
 }
@@ -155,6 +176,8 @@ struct SmartSlicingFeatureHost::Impl
             std::move(start_official_slice),
             [this] {
                 this->plater.select_view_3D("Preview");
+                if (this->plater.IsShownOnScreen() && wxGetApp().mainframe)
+                    wxGetApp().mainframe->select_tab(TAB_ID_PREVIEW);
                 return this->plater.is_preview_shown();
             },
             [this] {
@@ -166,6 +189,7 @@ struct SmartSlicingFeatureHost::Impl
                 if (!this->plater.can_undo())
                     return false;
                 this->plater.undo();
+                if (wxGetApp().mainframe) wxGetApp().mainframe->select_tab(TAB_ID_PREPARE);
                 return this->plater.undo_redo_stack_main().active_snapshot_time() != *applied_snapshot_time;
             }))
         , coordinator(std::make_unique<AI::SmartSlicing::SmartSlicingCoordinator>(
@@ -189,13 +213,25 @@ struct SmartSlicingFeatureHost::Impl
             const auto& snapshot = coordinator->snapshot();
             if (!snapshot.context)
                 return std::vector<AI::SmartSlicing::SliceCandidate> {};
-            trial_executor->prepare_session_input(workspace->capture_trial_slice_input());
-            return workspace->candidate_proposals(snapshot.context->revision);
+            auto candidates = workspace->candidate_proposals(snapshot.context->revision);
+            trial_executor->prepare_session_input(workspace->capture_trial_slice_input(), candidates);
+            return candidates;
         }, [this] {
             trial_executor->cancel_trial_slice();
         }, [this] {
             this->plater.add_file();
-        }, &plater);
+        }, &plater, [this] {
+            show(false);
+            this->plater.collapse_sidebar(false);
+            // The mode switch hides its focused action. Hand keyboard input
+            // to the existing native preset after the AUI layout settles.
+            wxWeakRef<wxWindow> native_printer(this->sidebar.printer_combox());
+            wxGetApp().CallAfter([native_printer] {
+                if (!wxGetApp().is_closing() && native_printer &&
+                    native_printer->IsShownOnScreen() && native_printer->IsEnabled())
+                    native_printer->SetFocus();
+            });
+        });
         presenter->set_view_changed([this](const SmartSlicingViewModel& view) { render(view); });
         entry_button = new wxButton(&sidebar, wxID_ANY, _L("智能切片：检查与优化…"));
         entry_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { show(true); });
@@ -205,13 +241,54 @@ struct SmartSlicingFeatureHost::Impl
         aui_manager.AddPane(panel, wxAuiPaneInfo()
                                        .Name("smart_slicing")
                                        .Caption(_L("智能切片"))
-                                       .Right()
+                                       .Left()
+                                       .CaptionVisible(false)
+                                       .PaneBorder(false)
+                                       .Movable(false)
+                                       .Floatable(false)
                                        .CloseButton(true)
                                        .TopDockable(false)
                                        .BottomDockable(false)
-                                       .BestSize(wxSize(38 * wxGetApp().em_unit(), 70 * wxGetApp().em_unit()))
+                                       .BestSize(plater.FromDIP(wxSize(380, 520)))
+                                       .MinSize(plater.FromDIP(wxSize(320, 200)))
                                        .Hide());
         aui_manager.Update();
+        plater.Bind(wxEVT_AUI_PANE_CLOSE, &Impl::on_pane_close, this);
+        selection_canvas = plater.get_view3D_canvas3D()->get_wxglcanvas();
+        selection_sidebar = &sidebar;
+        selection_canvas->Bind(EVT_GLCANVAS_OBJECT_SELECT, &Impl::on_selection_changed, this);
+        selection_sidebar->Bind(EVT_OBJ_LIST_OBJECT_SELECT, &Impl::on_selection_changed, this);
+    }
+
+    ~Impl()
+    {
+        if (selection_canvas)
+            selection_canvas->Unbind(EVT_GLCANVAS_OBJECT_SELECT, &Impl::on_selection_changed, this);
+        if (selection_sidebar)
+            selection_sidebar->Unbind(EVT_OBJ_LIST_OBJECT_SELECT, &Impl::on_selection_changed, this);
+        plater.Unbind(wxEVT_AUI_PANE_CLOSE, &Impl::on_pane_close, this);
+    }
+
+    void on_selection_changed(SimpleEvent& event)
+    {
+        // Native Selection is already updated when these notifications arrive.
+        // Refresh only the existing preparation controls; retain Orca's handler.
+        if (!wxGetApp().is_closing() && panel != nullptr)
+            panel->refresh_preparation_selection();
+        event.Skip();
+    }
+
+    void on_pane_close(wxAuiManagerEvent& event)
+    {
+        if (event.GetPane() && event.GetPane()->window == panel) {
+            for (auto* canvas : {plater.get_view3D_canvas3D(), plater.get_preview_canvas3D()})
+                if (canvas) canvas->set_workspace_background(std::nullopt);
+        }
+        if (event.GetPane() && event.GetPane()->window == panel && restore_sidebar) {
+            plater.collapse_sidebar(false);
+            restore_sidebar = false;
+        }
+        event.Skip();
     }
 
     std::string validate_candidate(const AI::SmartSlicing::SliceCandidate& candidate)
@@ -219,7 +296,7 @@ struct SmartSlicingFeatureHost::Impl
         if (plater.get_view3D_canvas3D()->get_gizmos_manager().is_running())
             return "close_active_model_tool";
         std::vector<TransformTarget> targets;
-        DynamicPrintConfig parameter_patch;
+        std::vector<OrcaObjectParameterPatch> parameter_patch;
         std::string diagnostic;
         if (!collect_transform_targets(plater, candidate, targets, diagnostic) ||
             !prepare_parameter_patch(plater, candidate, parameter_patch, diagnostic))
@@ -230,7 +307,7 @@ struct SmartSlicingFeatureHost::Impl
     OrcaApplyMutationResult apply_candidate(const AI::SmartSlicing::SliceCandidate& candidate)
     {
         std::vector<TransformTarget> targets;
-        DynamicPrintConfig parameter_patch;
+        std::vector<OrcaObjectParameterPatch> parameter_patch;
         std::string diagnostic;
         if (!collect_transform_targets(plater, candidate, targets, diagnostic) ||
             !prepare_parameter_patch(plater, candidate, parameter_patch, diagnostic))
@@ -246,6 +323,10 @@ struct SmartSlicingFeatureHost::Impl
         }
         if (changed.empty() && candidate.parameters.entries.empty())
             return { true, false, {} };
+        for (size_t i = 0; i < plater.model().objects.size(); ++i)
+            for (const auto& patch : parameter_patch)
+                if (plater.model().objects[i]->id().id == patch.object_id)
+                    changed_object_indices.push_back(i);
         std::sort(changed_object_indices.begin(), changed_object_indices.end());
         changed_object_indices.erase(
             std::unique(changed_object_indices.begin(), changed_object_indices.end()), changed_object_indices.end());
@@ -261,12 +342,9 @@ struct SmartSlicingFeatureHost::Impl
                 PartPlate* plate = plater.get_partplate_list().get_curr_plate();
                 if (plate == nullptr)
                     throw std::runtime_error("Current plate disappeared while applying a smart-slicing candidate.");
-                for (const AI::SmartSlicing::ConfigPatchEntry& entry : candidate.parameters.entries) {
-                    const ConfigOption* replacement = parameter_patch.option(entry.key);
-                    if (replacement == nullptr)
-                        throw std::runtime_error("Validated smart-slicing parameter disappeared before apply.");
-                    plate->config()->set_key_value(entry.key, replacement->clone());
-                }
+                const auto applied = OrcaParameterProposalAdapter().apply_object_patches(plater.model(), parameter_patch);
+                if (!applied.accepted)
+                    throw std::runtime_error(applied.diagnostic_code);
                 if (!changed_object_indices.empty())
                     plater.changed_objects(changed_object_indices);
                 if (!candidate.parameters.entries.empty())
@@ -303,6 +381,20 @@ struct SmartSlicingFeatureHost::Impl
         auto& pane = aui_manager.GetPane(panel);
         if (!pane.IsOk())
             return;
+        if (should_show && !is_shown()) {
+            restore_sidebar = !plater.is_sidebar_collapsed();
+            if (restore_sidebar) plater.collapse_sidebar(true);
+            pane.Left().BestSize(plater.FromDIP(wxSize(380, 520)));
+        } else if (!should_show && restore_sidebar) {
+            plater.collapse_sidebar(false);
+            restore_sidebar = false;
+        }
+        for (auto* canvas : {plater.get_view3D_canvas3D(), plater.get_preview_canvas3D()}) {
+            if (!canvas) continue;
+            const auto& color = ModelGenerationInputStyle::background;
+            canvas->set_workspace_background(should_show ? std::optional<ColorRGBA>(
+                ColorRGBA(color.Red() / 255.f, color.Green() / 255.f, color.Blue() / 255.f, 1.f)) : std::nullopt);
+        }
         pane.Show(should_show);
         aui_manager.Update();
     }
@@ -317,7 +409,10 @@ struct SmartSlicingFeatureHost::Impl
     std::unique_ptr<OrcaWorkflowRuntimeStore> runtime_store;
     std::unique_ptr<SmartSlicingPresenter> presenter;
     SmartSlicingPanel* panel { nullptr };
+    wxWeakRef<wxWindow> selection_canvas;
+    wxWeakRef<wxWindow> selection_sidebar;
     wxButton* entry_button { nullptr };
+    bool restore_sidebar { false };
     std::optional<size_t> applied_snapshot_time;
 };
 

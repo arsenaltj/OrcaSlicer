@@ -47,6 +47,16 @@ ComboBox::ComboBox(wxWindow *parent,
     TextInput::Create(parent, "", value, (style & CB_NO_DROP_ICON) ? "" : "drop_down", pos, size,
                       style | wxTE_PROCESS_ENTER);
     drop.Create(this, style & DD_STYLE_MASK);
+    const auto dismiss_on_escape = [this](wxKeyEvent& event) {
+        if (event.GetKeyCode() == WXK_ESCAPE && drop_down) {
+            drop.DismissAndNotify();
+            SetFocus();
+        } else {
+            event.Skip();
+        }
+    };
+    Bind(wxEVT_CHAR_HOOK, dismiss_on_escape);
+    drop.Bind(wxEVT_CHAR_HOOK, dismiss_on_escape);
 
     if (style & wxCB_READONLY) {
         GetTextCtrl()->Hide();

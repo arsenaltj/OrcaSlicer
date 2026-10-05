@@ -1,6 +1,8 @@
 #include "OrcaModelPreparationPanel.hpp"
 #include "OrcaModelPreparation.hpp"
 #include "slic3r/GUI/AI/AIWindowAppearance.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/ModelGenerationInputStyle.hpp"
+#include "slic3r/GUI/Widgets/Label.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/GUI_ObjectList.hpp"
 #include "slic3r/GUI/GLCanvas3D.hpp"
@@ -21,48 +23,58 @@
 namespace Slic3r::GUI {
 
 OrcaModelPreparationPanel::OrcaModelPreparationPanel(wxWindow* parent, Plater& plater,
-    std::function<bool()> busy, std::function<void()> changed)
-    : wxPanel(parent), m_plater(plater), m_busy(std::move(busy)), m_changed(std::move(changed)), m_timer(this)
+    std::function<bool()> busy, std::function<void()> changed, std::function<void()> expanded)
+    : wxPanel(parent), m_plater(plater), m_busy(std::move(busy)), m_changed(std::move(changed)),
+      m_expanded(std::move(expanded)), m_timer(this)
 {
+    SetName("ai_model_preparation");
     auto* root = new wxBoxSizer(wxVERTICAL);
     auto* title = new wxStaticText(this, wxID_ANY, _L("调整当前模型（可跳过）"));
     title->SetFont(wxGetApp().bold_font());
     root->Add(title, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
-    m_context = new wxStaticText(this, wxID_ANY, "");
+    m_context = new Label(this, "", LB_AUTO_WRAP);
+    m_context->SetMinSize(wxSize(1, -1));
     root->Add(m_context, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
     root->Add(new wxStaticText(this, wxID_ANY, _L("总高度（mm，含底座）")), 0, wxBOTTOM, FromDIP(4));
     m_height = new wxTextCtrl(this, wxID_ANY, "120");
     root->Add(m_height, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
-    m_base = new wxCheckBox(this, wxID_ANY, _L("生成后添加预制底座"));
+    m_base = new wxCheckBox(this, wxID_ANY, _L("添加预制底座（应用后生效）"));
     m_base->SetToolTip(_L("底座在模型生成后作为独立部件加入，可撤销、替换并随 3MF 保存。请在原生预览中检查连接与支撑。"));
     root->Add(m_base, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
-    m_base_template = new wxChoice(this, wxID_ANY);
+    m_base_template = new ComboBox(this, wxID_ANY, wxEmptyString, wxDefaultPosition,
+        FromDIP(wxSize(-1, 36)), 0, nullptr, wxCB_READONLY);
+    m_base_template->SetName("input_field");
     m_base_template->Append(_L("圆形底座"));
     m_base_template->Append(_L("椭圆底座"));
     m_base_template->Append(_L("矩形底座"));
     m_base_template->SetSelection(0);
     m_base_template->Enable(false);
     root->Add(m_base_template, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
-    m_apply = new wxButton(this, wxID_ANY, _L("应用尺寸与底座"));
+    m_apply = new Button(this, _L("应用尺寸与底座"));
+    m_apply->SetName("input_field");
+    m_apply->SetPaddingSize(FromDIP(wxSize(12, 8)));
+    m_apply->SetMinSize(FromDIP(wxSize(-1, 36)));
     root->Add(m_apply, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
-    m_feedback = new wxStaticText(this, wxID_ANY, _L("编辑保存在当前工程，可使用 Orca 撤销。生成原件保留在模型库。"));
+    m_feedback = new Label(this, _L("编辑保存在当前工程，可使用 Orca 撤销。生成原件保留在模型库。"), LB_AUTO_WRAP);
+    m_feedback->SetMinSize(wxSize(1, -1));
     m_feedback_text = m_feedback->GetLabel();
     root->Add(m_feedback, 0, wxEXPAND);
     SetSizer(root);
     m_apply->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { apply(); });
     m_base->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) {
         m_base_template->Enable(m_base->GetValue());
+        m_requested_base_object_id = m_base->GetValue() ? m_displayed_object_id : 0;
     });
     Bind(wxEVT_TIMER, [this](wxTimerEvent&) { if (IsShownOnScreen()) refresh(); }, m_timer.GetId());
-    Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
-        const int width = std::max(1, GetClientSize().x);
-        m_context->Wrap(width);
-        m_feedback->SetLabel(m_feedback_text);
-        m_feedback->Wrap(width);
-        event.Skip();
-    });
     m_timer.Start(1000);
+    apply_ai_theme(true);
     refresh();
+}
+
+void OrcaModelPreparationPanel::apply_ai_theme(bool update_fonts)
+{
+    ModelGenerationInputStyle::apply(this, update_fonts);
+    Refresh(false);
 }
 
 int OrcaModelPreparationPanel::editable_object(wxString& reason) const
@@ -93,35 +105,58 @@ int OrcaModelPreparationPanel::editable_object(wxString& reason) const
 
 void OrcaModelPreparationPanel::refresh()
 {
-    // Keep native theme/font changes inside this feature, including while idle.
-    if (GetBackgroundColour() != wxGetApp().get_window_default_clr() || GetFont() != wxGetApp().normal_font()) {
-        refresh_ai_appearance(GetParent());
-        GetParent()->Layout();
-    }
     wxString context;
     const int index = editable_object(context);
-    m_displayed_object_id = 0;
     if (index >= 0) {
         const auto* object = m_plater.model().objects[index];
+        const double actual_height = object->instance_bounding_box(0).size().z();
+        if (m_displayed_object_id != object->id().id) {
+            // A different object must not inherit another object's dimensions
+            // or pending base choice. Neither selecting nor suggesting edits it.
+            m_height->ChangeValue(wxString::Format("%.3f", actual_height));
+            m_base->SetValue(m_requested_base_object_id == object->id().id);
+            m_base_template->SetSelection(0);
+            m_base_template->Enable(m_base->GetValue());
+            show_feedback(m_base->GetValue()
+                ? _L("此作品选择了添加底座。请确认模板和含底座总高度，再点击应用；当前几何尚未改变。")
+                : _L("已切换当前模型，尺寸取自该模型。确认后再应用；生成原件保留在模型库。"));
+        }
+        else if (std::abs(actual_height - m_displayed_height_mm) > 1e-5 ||
+                 object->volumes.size() != m_displayed_volume_count) {
+            // Native Undo/Redo can change the same object's geometry. Keep its
+            // pending base request, but do not retain feedback for old geometry.
+            m_height->ChangeValue(wxString::Format("%.3f", actual_height));
+            show_feedback(_L("当前工程的模型已更新。已刷新实际高度，请确认后再应用。"));
+        }
+        m_displayed_height_mm = actual_height;
+        m_displayed_volume_count = object->volumes.size();
         m_displayed_object_id = object->id().id;
         context = from_u8(object->name) + wxString::Format(_L(" · 当前高 %.1f mm"), object->instance_bounding_box(0).size().z());
     }
     if (wxGetApp().preset_bundle != nullptr)
         context += _L("\n设备：") + from_u8(wxGetApp().preset_bundle->printers.get_selected_preset().name) +
-            _L("\n材料和工艺沿用左侧当前配置；适配结果以原生切片为准。");
+            _L("\n沿用工程材料与工艺。\n可在 Orca 原生设置中调整。");
     m_context->SetLabel(context);
-    m_context->Wrap(std::max(1, GetClientSize().x));
     m_apply->Enable(index >= 0);
     Layout();
     GetParent()->Layout();
     if (auto* scroll = dynamic_cast<wxScrolledWindow*>(GetParent())) scroll->FitInside();
 }
 
+void OrcaModelPreparationPanel::suggest_base_for_object(uint64_t object_id)
+{
+    m_requested_base_object_id = object_id;
+    m_displayed_object_id = 0;
+    show_feedback(_L("此作品选择了添加底座。请完整选中该模型，确认模板和含底座总高度，再点击应用；当前几何尚未改变。"));
+    Show();
+    if (m_expanded) m_expanded();
+    refresh();
+}
+
 void OrcaModelPreparationPanel::show_feedback(const wxString& message)
 {
     m_feedback_text = message;
     m_feedback->SetLabel(message);
-    m_feedback->Wrap(std::max(1, GetClientSize().x));
 }
 
 void OrcaModelPreparationPanel::apply()
@@ -167,7 +202,12 @@ void OrcaModelPreparationPanel::apply()
                 save_object_mesh(*object);
                 m_plater.update_title_dirty_status();
             }
+            // Preserve this successful operation's feedback on the final refresh.
+            const auto* updated_object = m_plater.model().objects[index];
+            m_displayed_height_mm = updated_object->instance_bounding_box(0).size().z();
+            m_displayed_volume_count = updated_object->volumes.size();
             m_base->SetValue(false);
+            m_requested_base_object_id = 0;
             m_base_template->Enable(false);
             show_feedback(_L("已更新当前模型。请重新检查打印适配；可在 Orca 撤销，或保存 3MF 保留编辑版本。"));
             if (m_changed) m_changed();
@@ -178,7 +218,6 @@ void OrcaModelPreparationPanel::apply()
                 _L("未能应用。请检查模型是否有效且未带切割连接件；原件仍保留，可以调整后重试。"));
         }
     }
-    m_feedback->Wrap(std::max(1, GetClientSize().x));
     refresh();
     GetParent()->Layout();
 }

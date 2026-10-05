@@ -1,4 +1,6 @@
 #include "OrcaSmartSlicingAdapter.hpp"
+#include "OrcaSlicingRevision.hpp"
+#include "OrcaParameterProposalAdapter.hpp"
 
 #include "libslic3r/Model.hpp"
 #include "libslic3r/PresetBundle.hpp"
@@ -10,6 +12,7 @@
 #include "slic3r/GUI/Plater.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <iomanip>
 #include <limits>
 #include <locale>
@@ -111,6 +114,35 @@ OrcaSmartSlicingAdapter::candidate_proposals(const AI::SmartSlicing::WorkspaceRe
     if (plate == nullptr)
         return {};
 
+    DynamicPrintConfig profile_config = wxGetApp().preset_bundle->full_config();
+    profile_config.apply(*plate->config(), true);
+    std::vector<ModelObject*> profile_targets;
+    bool shared_object = false;
+    auto& profile_model = m_plater->model();
+    for (size_t object_index = 0; object_index < profile_model.objects.size(); ++object_index) {
+        auto* object = profile_model.objects[object_index];
+        if (object == nullptr || !object->printable) continue;
+        bool on_plate = false, outside_plate = false;
+        for (size_t i = 0; i < object->instances.size(); ++i) {
+            const auto* instance = object->instances[i];
+            if (instance == nullptr) continue;
+            if (plate->contain_instance(static_cast<int>(object_index), static_cast<int>(i)))
+                on_plate = on_plate || instance->printable;
+            else
+                outside_plate = true;
+        }
+        if (on_plate) {
+            profile_targets.push_back(object);
+            shared_object = shared_object || outside_plate;
+        }
+    }
+    if (!shared_object) {
+        auto profiles = OrcaParameterProposalAdapter().priority_candidates(
+            revision, static_cast<int64_t>(plate->id().id), profile_config, profile_targets);
+        if (!profiles.empty())
+            return profiles;
+    }
+
     OrcaPlacementCandidateInput input;
     input.model          = current_plate_model_copy(*m_plater, *plate);
     input.config         = wxGetApp().preset_bundle->full_config();
@@ -125,13 +157,33 @@ OrcaSmartSlicingAdapter::candidate_proposals(const AI::SmartSlicing::WorkspaceRe
 
     DynamicPrintConfig current_config = wxGetApp().preset_bundle->full_config();
     current_config.apply(*plate->config(), true);
-    const double current_brim_width = current_config.opt_float("brim_width");
+    double current_brim_width = current_config.opt_float("brim_width");
+    bool uniform_brim = true, found_brim = false;
     bool benefits_from_brim = false;
     const Model& model = m_plater->model();
-    for (size_t object_index = 0; object_index < model.objects.size() && !benefits_from_brim; ++object_index) {
+    for (size_t object_index = 0; object_index < model.objects.size(); ++object_index) {
         const ModelObject* object = model.objects[object_index];
-        if (object == nullptr)
+        if (object == nullptr || !object->printable)
             continue;
+        bool on_plate = false, outside_plate = false;
+        for (size_t i = 0; i < object->instances.size(); ++i) {
+            const auto* instance = object->instances[i];
+            if (instance == nullptr) continue;
+            if (plate->contain_instance(static_cast<int>(object_index), static_cast<int>(i))) {
+                if (instance->printable) on_plate = true;
+            } else {
+                outside_plate = true;
+            }
+        }
+        if (!on_plate) continue;
+        const double object_brim = object->config.has("brim_width") ?
+            object->config.opt_float("brim_width") : current_config.opt_float("brim_width");
+        if (found_brim && std::abs(object_brim - current_brim_width) > 1e-9) uniform_brim = false;
+        current_brim_width = object_brim;
+        found_brim = true;
+        if (outside_plate) uniform_brim = false;
+        for (const auto* volume : object->volumes)
+            if (volume != nullptr && volume->config.has("brim_width")) uniform_brim = false;
         for (size_t instance_index = 0; instance_index < object->instances.size(); ++instance_index) {
             const ModelInstance* instance = object->instances[instance_index];
             if (instance == nullptr || !instance->printable ||
@@ -139,13 +191,13 @@ OrcaSmartSlicingAdapter::candidate_proposals(const AI::SmartSlicing::WorkspaceRe
                 continue;
             const Vec3d size = object->instance_bounding_box(*instance).size();
             const double minimum_footprint = std::min(size.x(), size.y());
-            benefits_from_brim = minimum_footprint > 0.0 &&
-                (minimum_footprint <= 8.0 || size.z() >= 2.0 * minimum_footprint);
+            benefits_from_brim = benefits_from_brim || (minimum_footprint > 0.0 &&
+                (minimum_footprint <= 8.0 || size.z() >= 2.0 * minimum_footprint));
             if (benefits_from_brim)
                 break;
         }
     }
-    if (benefits_from_brim && current_brim_width < 10.0) {
+    if (benefits_from_brim && uniform_brim && found_brim && current_brim_width < 10.0) {
         const double proposed_brim_width = std::min(10.0, std::max(5.0, current_brim_width + 2.0));
         AI::SmartSlicing::SliceCandidate candidate;
         candidate.id            = "parameter-brim-stability-v1";
@@ -331,9 +383,8 @@ AI::SmartSlicing::WorkspaceContext OrcaSmartSlicingAdapter::capture_context_impl
     plate_stream << context.plate_index << ':' << plate->id().id << ':' << static_cast<int>(plate->get_bed_type(true)) << ':'
                  << static_cast<int>(plate->get_real_print_seq()) << ':' << static_cast<int>(plate->get_filament_map_mode()) << ':'
                  << plate->is_locked() << ':' << plate->get_spiral_vase_mode();
-    plate_stream << ":config:\n" << canonical_config(*plate->config());
-    for (const int map : plate->get_filament_maps())
-        plate_stream << ":filament_map:" << map;
+    plate_stream << ":config:\n" << canonical_config(slicing_revision_plate_config(
+        *plate->config(), plate->get_real_filament_map_mode(bundle.project_config)));
     for (const int extruder : plate->get_first_layer_print_sequence())
         plate_stream << ":first_layer_extruder:" << extruder;
     for (const LayerPrintSequence& layer_sequence : plate->get_other_layers_print_sequence()) {

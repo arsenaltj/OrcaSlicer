@@ -48,7 +48,12 @@ struct AIDesktopFeatureHost::Impl final : wxEvtHandler
 {
     Impl(wxWindow* parent, Plater* plater, NavigateAfterImportFn navigate_after_import,
          SmartSlicingAvailableFn smart_slicing_available)
-        : model_generation(parent, plater, navigate_after_import, [this] { retry_now(); })
+        : model_generation(parent, plater, [plater, navigate_after_import] {
+            if (plater) { plater->exit_gizmo(); plater->update(true, true); }
+            if (navigate_after_import) navigate_after_import();
+            // Keep height/base controls available after an accepted import.
+            if (plater) plater->show_smart_slicing(true);
+        }, [this] { retry_now(); })
         , service_manager(AISidecarClient::default_endpoint())
         , retry_timer(this)
         , on_smart_slicing_available(std::move(smart_slicing_available))
@@ -157,6 +162,26 @@ wxWindow* AIDesktopFeatureHost::model_generation_panel() const
 void AIDesktopFeatureHost::start()
 {
     m_impl->start();
+}
+
+void AIDesktopFeatureHost::navigate_generation(ModelGenerationPresentation::WorkspaceAction action)
+{
+    m_impl->model_generation.navigate(action);
+}
+
+ModelGenerationPresentation::WorkspaceView AIDesktopFeatureHost::generation_view() const
+{
+    return m_impl->model_generation.workspace_view();
+}
+
+bool AIDesktopFeatureHost::has_generation_model() const
+{
+    return m_impl->model_generation.has_model();
+}
+
+void AIDesktopFeatureHost::set_workspace_changed_handler(std::function<void()> handler)
+{
+    m_impl->model_generation.set_workspace_changed_handler(std::move(handler));
 }
 
 void AIDesktopFeatureHost::shutdown()

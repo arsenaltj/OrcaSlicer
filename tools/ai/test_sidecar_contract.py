@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import contextlib
 import hmac
+import hashlib
 import importlib.util
 from io import BytesIO
 import json
@@ -110,6 +111,165 @@ class SidecarHealthContractTests(unittest.TestCase):
         guard = mock.patch.object(urllib.request.OpenerDirector, "open", local_only)
         guard.start()
         self.addCleanup(guard.stop)
+
+    def registered_saved_model(self, root, asset_id="finish-test", glb=False):
+        from test_glb_artifact import fixture
+        downloads = Path(root) / "downloads"
+        downloads.mkdir(exist_ok=True)
+        artifact = downloads / (asset_id + (".glb" if glb else ".obj"))
+        if glb:
+            fixture(artifact)
+        else:
+            artifact.write_text("v 0 0 0\nv 60 0 0\nv 0 40 0\nv 0 0 100\nf 1 3 2\nf 1 2 4\nf 2 3 4\nf 3 1 4\n", encoding="utf-8")
+        digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+        metadata = downloads / f"orcaslicer-ai-{asset_id}.json"
+        metadata.write_text(json.dumps({"job_id": asset_id, "model_path": artifact.relative_to(root).as_posix(), "model_sha256": digest}), encoding="utf-8")
+        return artifact, metadata, {"asset_id": asset_id, "artifact_sha256": digest}
+
+    def test_saved_model_check_uses_registered_glb_in_mm_without_creating_a_job(self):
+        with tempfile.TemporaryDirectory() as root, temporary_environment(ORCASLICER_AI_OUTPUT_DIR=root):
+            artifact, metadata, request = self.registered_saved_model(root, glb=True)
+            originals = [p.read_bytes() for p in (artifact, metadata)]
+            jobs = set(PRODUCTION._JOBS)
+            with mock.patch.object(PRODUCTION, "review_model_visual_quality") as paid, sidecar_server(PRODUCTION.Handler) as port:
+                url = f"http://127.0.0.1:{port}/v1/orcaslicer/model-check"
+                headers = {"X-OrcaSlicer-Client": "native", "Content-Type": "application/json"}
+                with urllib.request.urlopen(urllib.request.Request(url, data=json.dumps(request).encode(), headers=headers), timeout=10) as response:
+                    result = json.load(response)["job"]
+                paid.assert_not_called()
+            quality = result["model_quality"]
+            self.assertEqual(result["id"], request["asset_id"])
+            self.assertEqual(quality["artifact_sha256"], request["artifact_sha256"])
+            self.assertEqual(quality["units"], "mm")
+            self.assertTrue(quality["gate_version"])
+            self.assertTrue(quality["thresholds"])
+            dimensions = quality["metrics"]["dimensions_mm"]
+            for axis, expected in {"x": 60, "y": 40, "z": 100}.items():
+                self.assertAlmostEqual(dimensions[axis], expected, places=4)
+            self.assertEqual(set(PRODUCTION._JOBS), jobs)
+            self.assertEqual([p.read_bytes() for p in (artifact, metadata)], originals)
+
+    def test_saved_models_in_one_download_directory_keep_independent_analysis(self):
+        with tempfile.TemporaryDirectory() as root, temporary_environment(ORCASLICER_AI_OUTPUT_DIR=root):
+            _, _, first = self.registered_saved_model(root, "finish-first", glb=True)
+            artifact, metadata, second = self.registered_saved_model(root, "finish-second")
+            artifact.write_text(artifact.read_text().replace("0 0 100", "0 0 200"))
+            second["artifact_sha256"] = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            record = json.loads(metadata.read_text()); record["model_sha256"] = second["artifact_sha256"]
+            metadata.write_text(json.dumps(record))
+            a = PRODUCTION._check_saved_model(first)["model_quality"]
+            b = PRODUCTION._check_saved_model(second)["model_quality"]
+            self.assertAlmostEqual(a["metrics"]["dimensions_mm"]["z"], 100, places=4)
+            self.assertEqual(b["metrics"]["dimensions_mm"]["z"], 200)
+            self.assertNotEqual(a["artifact_sha256"], b["artifact_sha256"])
+            for request in (first, second):
+                self.assertTrue((Path(root) / ".model-checks" / (request["artifact_sha256"] + "-quality.json")).is_file())
+
+    def test_saved_model_check_refuses_stale_fingerprints_and_unregistered_paths(self):
+        with tempfile.TemporaryDirectory() as root, temporary_environment(ORCASLICER_AI_OUTPUT_DIR=root):
+            artifact, metadata, request = self.registered_saved_model(root)
+            original = artifact.read_bytes()
+            with mock.patch.object(PRODUCTION, "analyze_printable_obj") as analyze:
+                stale = dict(request, artifact_sha256="0" * 64)
+                with self.assertRaises(PRODUCTION.RequestError) as error:
+                    PRODUCTION._check_saved_model(stale)
+                self.assertEqual(error.exception.code, "artifact_changed")
+                for path in ("../outside.obj", str(artifact.resolve())):
+                    metadata.write_text(json.dumps({"job_id": request["asset_id"], "model_path": path}))
+                    with self.assertRaises(PRODUCTION.RequestError) as error:
+                        PRODUCTION._check_saved_model(request)
+                    self.assertEqual(error.exception.code, "artifact_not_ready")
+                analyze.assert_not_called()
+            self.assertEqual(artifact.read_bytes(), original)
+
+    def test_saved_model_check_does_not_publish_when_source_changes_during_analysis(self):
+        with tempfile.TemporaryDirectory() as root, temporary_environment(ORCASLICER_AI_OUTPUT_DIR=root):
+            artifact, _, request = self.registered_saved_model(root)
+            original = artifact.read_bytes()
+            analyze = PRODUCTION.analyze_printable_obj
+            def changed_source(*args, **kwargs):
+                quality = analyze(*args, **kwargs)
+                artifact.write_bytes(original + b"# changed\n")
+                return quality
+            with mock.patch.object(PRODUCTION, "analyze_printable_obj", side_effect=changed_source):
+                with self.assertRaises(PRODUCTION.RequestError) as error:
+                    PRODUCTION._check_saved_model(request)
+            self.assertEqual(error.exception.code, "artifact_changed")
+            self.assertFalse(any((Path(root) / ".model-checks").glob("*-quality.json")))
+            artifact.write_bytes(original)
+            self.assertEqual(PRODUCTION._check_saved_model(request)["model_quality"]["artifact_sha256"], request["artifact_sha256"])
+
+    def test_saved_model_report_write_failure_retains_source_and_retries_same_artifact(self):
+        with tempfile.TemporaryDirectory() as root, temporary_environment(ORCASLICER_AI_OUTPUT_DIR=root):
+            artifact, metadata, request = self.registered_saved_model(root)
+            original = [p.read_bytes() for p in (artifact, metadata)]
+            cache = Path(root) / ".model-checks"; cache.mkdir()
+            report = cache / (request["artifact_sha256"] + "-quality.json")
+            report.mkdir()
+            with self.assertRaises(PRODUCTION.RequestError) as error:
+                PRODUCTION._check_saved_model(request)
+            self.assertEqual(error.exception.code, "quality_report_unavailable")
+            self.assertTrue(error.exception.retryable)
+            self.assertEqual([p.read_bytes() for p in (artifact, metadata)], original)
+            self.assertEqual(list(cache.iterdir()), [report])
+            report.rmdir()
+            result = PRODUCTION._check_saved_model(request)
+            self.assertEqual(result["model_quality"]["artifact_sha256"], request["artifact_sha256"])
+            self.assertTrue(report.is_file())
+            self.assertEqual([p.read_bytes() for p in (artifact, metadata)], original)
+
+    def test_saved_report_recovery_reads_exact_report_without_analysis_or_mutation(self):
+        with tempfile.TemporaryDirectory() as root, temporary_environment(ORCASLICER_AI_OUTPUT_DIR=root):
+            artifact, metadata, request = self.registered_saved_model(root, glb=True)
+            expected = PRODUCTION._check_saved_model(request)["model_quality"]
+            report = Path(root) / ".model-checks" / (request["artifact_sha256"] + "-quality.json")
+            paths = (artifact, metadata, report)
+            originals = [p.read_bytes() for p in paths]
+            jobs = set(PRODUCTION._JOBS)
+            with mock.patch.object(PRODUCTION, "analyze_printable_obj") as analyze, sidecar_server(PRODUCTION.Handler) as port:
+                headers = {"X-OrcaSlicer-Client": "native", "Content-Type": "application/json"}
+                body = json.dumps(dict(request, read_only=True)).encode()
+                url = f"http://127.0.0.1:{port}/v1/orcaslicer/model-check"
+                with urllib.request.urlopen(urllib.request.Request(url, data=body, headers=headers), timeout=10) as response:
+                    self.assertEqual(json.load(response)["job"]["model_quality"], expected)
+                analyze.assert_not_called()
+            self.assertEqual([p.read_bytes() for p in paths], originals)
+            self.assertEqual(set(PRODUCTION._JOBS), jobs)
+
+    def test_saved_report_recovery_missing_or_incompatible_report_stays_unchecked(self):
+        with tempfile.TemporaryDirectory() as root, temporary_environment(ORCASLICER_AI_OUTPUT_DIR=root):
+            artifact, metadata, request = self.registered_saved_model(root)
+            read_request = dict(request, read_only=True)
+            with mock.patch.object(PRODUCTION, "analyze_printable_obj") as analyze:
+                self.assertEqual(PRODUCTION._check_saved_model(read_request)["model_quality"], {})
+                self.assertFalse((Path(root) / ".model-checks").exists())
+                cache = Path(root) / ".model-checks"; cache.mkdir()
+                report = cache / (request["artifact_sha256"] + "-quality.json")
+                valid = {"artifact_sha256": request["artifact_sha256"], "units": "mm",
+                         "gate_version": PRODUCTION.MODEL_QUALITY_GATE_VERSION}
+                for report_value in ("not-json", {}, dict(valid, artifact_sha256="0" * 64),
+                                     dict(valid, units="m"), dict(valid, gate_version="structural-v1"),
+                                     dict(valid, gate_version="structural-v999"), dict(valid, artifact_sha256="")):
+                    with self.subTest(report=report_value):
+                        report.write_text(report_value if isinstance(report_value, str) else json.dumps(report_value))
+                        before = report.read_bytes()
+                        self.assertEqual(PRODUCTION._check_saved_model(read_request)["model_quality"], {})
+                        self.assertEqual(report.read_bytes(), before)
+                analyze.assert_not_called()
+
+    def test_saved_report_recovery_refuses_changed_artifacts_and_invalid_read_flag(self):
+        with tempfile.TemporaryDirectory() as root, temporary_environment(ORCASLICER_AI_OUTPUT_DIR=root):
+            artifact, _, request = self.registered_saved_model(root)
+            for value in ("true", 1, None):
+                with self.subTest(value=value), self.assertRaises(PRODUCTION.RequestError) as error:
+                    PRODUCTION._check_saved_model(dict(request, read_only=value))
+                self.assertEqual(error.exception.code, "invalid_request")
+            artifact.write_bytes(artifact.read_bytes() + b"# changed")
+            with mock.patch.object(PRODUCTION, "analyze_printable_obj") as analyze:
+                with self.assertRaises(PRODUCTION.RequestError) as error:
+                    PRODUCTION._check_saved_model(dict(request, read_only=True))
+                self.assertEqual(error.exception.code, "artifact_changed")
+                analyze.assert_not_called()
 
     def test_parent_pid_validation_and_current_process_probe(self):
         with temporary_environment(ORCASLICER_AI_PARENT_PID=None):

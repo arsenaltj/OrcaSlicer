@@ -483,12 +483,12 @@ function ChooseDefaultFilament()
 	UpdateStats();
 }
 
-function ResponseFilamentResult()
+function ResponseFilamentResult(requireSelection = true)
 {
 	let FilaSelectedList= $("#ItemBlockArea input:checked");
 	let nAll=FilaSelectedList.length;
 
-	if( nAll==0 )
+	if( nAll==0 && requireSelection )
 	{
 		ShowNotice(1);
 		return false;
@@ -508,6 +508,10 @@ function ResponseFilamentResult()
 		}
 	}
 	
+	if (requireSelection && FilaArray.length === 0) {
+		ShowNotice(1);
+		return false;
+	}
 	var tSend={};
 	tSend['sequence_id']=Math.round(new Date() / 1000);
 	tSend['command']="save_userguide_filaments";
@@ -586,6 +590,9 @@ function initInputEvents(){
 				const cb   = item.querySelector("input");
 				const hide = showSel ? !cb.checked : cb.checked;
 				item.style.position = hide ? "absolute" : "unset";
+				// Off-screen positioning alone leaves hidden checkboxes tabbable.
+				// Visibility preserves selection/counting while removing keyboard targets.
+				item.style.visibility = hide ? "hidden" : "visible";
 				if(hide) hidden++;
 			});
 		}
@@ -594,6 +601,7 @@ function initInputEvents(){
 				const text = item.querySelector("span").textContent.toLowerCase();
 				const hide = search && !text.includes(search);
 				item.style.position = hide ? "absolute" : "unset";
+				item.style.visibility = hide ? "hidden" : "visible";
 				if(hide) hidden++;
 			});
 		}

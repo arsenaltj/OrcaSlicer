@@ -11,6 +11,7 @@
 #include <string_view>
 
 using Slic3r::GUI::ModelPreview3D;
+using Slic3r::Vec3d;
 namespace selection = Slic3r::AI::SurfaceSelectionPersistence;
 namespace trial = Slic3r::AI::ColorTrialPersistence;
 
@@ -461,6 +462,27 @@ TEST_CASE("Legacy history fields and arbitrary beauty values survive the existin
                     output, fields, beauty);
             REQUIRE(saved);
             CHECK(Slic3r::GUI::ModelGenerationPresentation::read_json(output) == document);
+
+}
+}
+}
+
+TEST_CASE("Initial view shows planar assets instead of collapsing their faces", "[ModelPreviewState]")
+{
+    // Different planar orientations and units exercise the production initial
+    // camera without constructing a window or an OpenGL context.
+    for (double scale : {0.001, 1.0, 1000.0}) {
+        for (int normal_axis = 0; normal_axis < 3; ++normal_axis) {
+            Vec3d first = Vec3d::Zero(), second = Vec3d::Zero();
+            first[(normal_axis + 1) % 3] = 90.0 * scale;
+            second[(normal_axis + 2) % 3] = 30.0 * scale;
+            const auto angles = ModelPreview3D::initial_view_angles(first + second);
+            const auto rotation =
+                Slic3r::Geometry::rotation_transform(angles.second * Vec3d::UnitX()) *
+                Slic3r::Geometry::rotation_transform(angles.first * Vec3d::UnitZ());
+            const Vec3d a = rotation * first, b = rotation * second;
+            const double projected_area = std::abs(a.x() * b.y() - a.y() * b.x());
+            CHECK(projected_area > first.norm() * second.norm() * 0.25);
         }
     }
 }
@@ -837,4 +859,27 @@ TEST_CASE("Large ordinary history values keep DOM types and nested beauty fields
     CHECK(fields.dump() == expected.dump());
     CHECK(fields.at("unknown").at("values").at(0).is_number_unsigned());
     CHECK(fields.at("unknown").at("float").is_number_float());
+
+}
+
+TEST_CASE("Initial view keeps the portrait facing the camera for volumetric models", "[ModelPreviewState]")
+{
+    const auto angles = ModelPreview3D::initial_view_angles(Vec3d(52.1, 54.0, 100.0));
+    const auto rotation =
+        Slic3r::Geometry::rotation_transform(angles.second * Vec3d::UnitX()) *
+        Slic3r::Geometry::rotation_transform(angles.first * Vec3d::UnitZ());
+    const Vec3d facing = rotation * Vec3d::UnitX();
+    CHECK(facing.z() > 0.99);
+    CHECK(std::abs(facing.x()) < 1e-8);
+    CHECK(std::abs(facing.y()) < 1e-8);
+}
+
+TEST_CASE("Thin planar assets remain visible before their thickness reaches zero", "[ModelPreviewState]")
+{
+    const auto angles = ModelPreview3D::initial_view_angles(Vec3d(90.0, 0.01, 30.0));
+    const auto rotation =
+        Slic3r::Geometry::rotation_transform(angles.second * Vec3d::UnitX()) *
+        Slic3r::Geometry::rotation_transform(angles.first * Vec3d::UnitZ());
+    const Vec3d facing = rotation * Vec3d::UnitY();
+    CHECK(std::abs(facing.z()) > 0.25);
 }

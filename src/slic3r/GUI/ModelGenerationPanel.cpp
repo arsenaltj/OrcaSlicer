@@ -1,12 +1,19 @@
+#include "AI/ModelGeneration/ModelGenerationInputStyle.hpp"
+#include "AI/ModelGeneration/ModelGenerationConfirmation.hpp"
 #include "ModelGenerationPanel.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/ModelGenerationImageInput.hpp"
 #include "AI/ColorMatching/LocalPrintColorPanel.hpp"
 #include "AI/ModelGeneration/BeautyWorkbenchControls.hpp"
 
 #include "3DScene.hpp"
 #include "AI/Model/VertexColorRegionEditor.hpp"
+#include "AI/Model/ModelArtifact.hpp"
 #include "AI/AIWindowAppearance.hpp"
 #include "AI/ModelGeneration/ModelGenerationPresentation.hpp"
 #include "AI/ModelGeneration/ModelPreview3D.hpp"
+#include "AI/ModelGeneration/ModelViewportFacts.hpp"
+#include "AI/ModelGeneration/ModelViewportToolbar.hpp"
+#include "AI/ModelGeneration/LocalModelImportState.hpp"
 #include "AI/ModelGeneration/ModelImageDisplayCopy.hpp"
 #include "AI/ModelGeneration/ModelGenerationStatusText.hpp"
 #include "AISidecarClient.hpp"
@@ -19,6 +26,7 @@
 #include "MsgDialog.hpp"
 #include "OpenGLManager.hpp"
 #include "Widgets/Label.hpp"
+#include "Widgets/TextInput.hpp"
 #include "libslic3r/Format/OBJ.hpp"
 #include "libslic3r/Geometry.hpp"
 #include "libslic3r/Model.hpp"
@@ -46,13 +54,16 @@
 #include <wx/gauge.h>
 #include <wx/glcanvas.h>
 #include <wx/image.h>
-#include <wx/notebook.h>
+#include <wx/simplebook.h>
 #include <wx/scrolwin.h>
 #include <wx/sizer.h>
+#include <wx/wrapsizer.h>
+#include <wx/spinctrl.h>
 #include <wx/stdpaths.h>
 #include <wx/statbmp.h>
 #include <wx/statbox.h>
 #include <wx/stattext.h>
+#include <wx/numformatter.h>
 #include <wx/textctrl.h>
 #include <wx/tglbtn.h>
 #include <wx/utils.h>
@@ -80,6 +91,101 @@ namespace {
 
 constexpr int POLL_TIMER_ID = wxID_HIGHEST + 913;
 
+// A sibling of the existing GL host: changing facts or layout never recreates
+// the canvas, reloads a model or changes its camera.
+class ModelViewportInfo final : public wxPanel, public AIThemeOwner {
+public:
+    explicit ModelViewportInfo(wxWindow* parent) : wxPanel(parent)
+    {
+        SetBackgroundStyle(wxBG_STYLE_PAINT);
+        auto* grid = m_grid = new wxFlexGridSizer(3, 2, FromDIP(14), FromDIP(12));
+        grid->AddGrowableCol(1);
+        const std::array<wxString, 3> labels {_L("拓扑"), _L("面数"), _L("原始色值")};
+        for (size_t row = 0; row < labels.size(); ++row) {
+            m_labels[row] = new wxStaticText(this, wxID_ANY, labels[row]);
+            m_values[row] = new wxStaticText(this, wxID_ANY, wxEmptyString,
+                wxDefaultPosition, wxDefaultSize, wxALIGN_RIGHT | wxST_NO_AUTORESIZE);
+            m_values[row]->SetMinSize(wxSize(1, -1));
+            grid->Add(m_labels[row], 0, wxALIGN_CENTER_VERTICAL);
+            grid->Add(m_values[row], 1, wxEXPAND | wxALIGN_CENTER_VERTICAL);
+        }
+        auto* root = new wxBoxSizer(wxVERTICAL);
+        root->Add(grid, 1, wxEXPAND | wxALL, FromDIP(12));
+        SetSizer(root);
+        apply_ai_theme(true);
+        Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
+            wxAutoBufferedPaintDC dc(this);
+            dc.SetBackground(wxBrush(ModelGenerationInputStyle::background)); dc.Clear();
+            dc.SetPen(wxPen(ModelGenerationInputStyle::secondary.ChangeLightness(45)));
+            dc.SetBrush(wxBrush(ModelGenerationInputStyle::panel));
+            dc.DrawRoundedRectangle(GetClientRect(), FromDIP(8));
+        });
+        SetToolTip(_L("当前视口模型的实际三角面与原始色值统计；尺寸和加载说明见左侧当前模型信息。"));
+        Hide();
+    }
+
+    void apply_ai_theme(bool fonts) override
+    {
+        using namespace ModelGenerationInputStyle;
+        SetBackgroundColour(panel);
+        for (size_t row = 0; row < m_labels.size(); ++row) {
+            for (auto* control : {m_labels[row], m_values[row]}) {
+                control->SetBackgroundColour(panel);
+                if (fonts) {
+                    auto font = wxGetApp().normal_font(); font.SetFaceName(font_face);
+                    control->SetFont(font);
+                }
+            }
+            m_labels[row]->SetForegroundColour(secondary);
+            m_values[row]->SetForegroundColour(text);
+        }
+        Refresh(false);
+    }
+
+    void set_compact(bool compact)
+    {
+        if (compact == m_compact) return;
+        m_compact = compact;
+        m_grid->Clear(false);
+        for (int col = 0; col < m_grid->GetCols(); ++col)
+            if (m_grid->IsColGrowable(col)) m_grid->RemoveGrowableCol(col);
+        m_grid->SetRows(compact ? 2 : 3);
+        m_grid->SetCols(compact ? 3 : 2);
+        m_grid->SetVGap(FromDIP(compact ? 6 : 14));
+        if (compact) {
+            for (int col = 0; col < 3; ++col) m_grid->AddGrowableCol(col);
+            for (auto* label : m_labels) m_grid->Add(label, 0, wxALIGN_CENTER_VERTICAL);
+            for (auto* value : m_values) m_grid->Add(value, 1, wxEXPAND | wxALIGN_CENTER_VERTICAL);
+        } else {
+            m_grid->AddGrowableCol(1);
+            for (size_t row = 0; row < m_labels.size(); ++row) {
+                m_grid->Add(m_labels[row], 0, wxALIGN_CENTER_VERTICAL);
+                m_grid->Add(m_values[row], 1, wxEXPAND | wxALIGN_CENTER_VERTICAL);
+            }
+        }
+        Layout(); Refresh(false);
+    }
+
+    void set_facts(const ModelViewportFacts& facts)
+    {
+        const std::array<wxString, 3> values {_L("三角面"),
+            wxNumberFormatter::ToString(static_cast<wxLongLong_t>(facts.triangles), wxNumberFormatter::Style_WithThousandsSep),
+            wxNumberFormatter::ToString(static_cast<wxLongLong_t>(facts.colors), wxNumberFormatter::Style_WithThousandsSep)};
+        bool changed = false;
+        for (size_t row = 0; row < values.size(); ++row) {
+            if (m_values[row]->GetLabel() == values[row]) continue;
+            m_values[row]->SetLabel(values[row]); changed = true;
+        }
+        if (changed) { Layout(); Refresh(false); }
+    }
+
+private:
+    wxFlexGridSizer* m_grid {nullptr};
+    bool m_compact {false};
+    std::array<wxStaticText*, 3> m_labels {};
+    std::array<wxStaticText*, 3> m_values {};
+};
+
 // Native scrolling copies pixels, including stale OpenGL contents. Invalidate
 // the page after moving its child windows so controls below the canvas repaint.
 class ModelResultScrolledWindow final : public wxScrolledWindow
@@ -91,6 +197,133 @@ public:
         wxScrolledWindow::ScrollWindow(dx, dy, rect);
         Refresh();
     }
+};
+
+// Keep native scrolling and child focus behavior. Only cover the bright
+// non-client scrollbar with a dark, draggable track in migrated UX panels.
+class DarkScrollTrack final : public wxPanel
+{
+public:
+    DarkScrollTrack(wxWindow* parent, wxScrolledWindow* scroll, bool layout_column = false)
+        : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE),
+          m_scroll(scroll), m_layout_column(layout_column)
+    {
+        SetBackgroundStyle(wxBG_STYLE_PAINT);
+        Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
+            wxAutoBufferedPaintDC dc(this);
+            dc.SetBackground(wxBrush(wxColour(34, 34, 37)));
+            dc.Clear();
+            const wxRect thumb = thumb_rect();
+            if (thumb.height <= 0) return;
+            const int inset = FromDIP(5);
+            dc.SetPen(*wxTRANSPARENT_PEN);
+            dc.SetBrush(wxBrush(m_dragging ? wxColour(153, 153, 157) : wxColour(103, 103, 108)));
+            dc.DrawRoundedRectangle(inset, thumb.y, std::max(FromDIP(4), GetClientSize().x - 2 * inset),
+                thumb.height, FromDIP(3));
+        });
+        Bind(wxEVT_LEFT_DOWN, [this](wxMouseEvent& event) {
+            const wxRect thumb = thumb_rect();
+            m_drag_offset = thumb.Contains(event.GetPosition()) ? event.GetY() - thumb.y : thumb.height / 2;
+            m_dragging = true;
+            CaptureMouse();
+            scroll_to_track_y(event.GetY() - m_drag_offset);
+        });
+        Bind(wxEVT_MOTION, [this](wxMouseEvent& event) {
+            if (m_dragging && event.LeftIsDown()) scroll_to_track_y(event.GetY() - m_drag_offset);
+        });
+        Bind(wxEVT_LEFT_UP, [this](wxMouseEvent&) { stop_drag(); });
+        Bind(wxEVT_MOUSE_CAPTURE_LOST, [this](wxMouseCaptureLostEvent&) { m_dragging = false; Refresh(); });
+        Bind(wxEVT_MOUSEWHEEL, [this](wxMouseEvent& event) {
+            int x = 0, y = 0;
+            m_scroll->GetViewStart(&x, &y);
+            const int lines = event.GetWheelRotation() / event.GetWheelDelta() * event.GetLinesPerAction();
+            m_scroll->Scroll(-1, std::max(0, y - lines));
+            Refresh();
+        });
+    }
+
+    void sync_geometry()
+    {
+        if (m_layout_column) {
+            Refresh();
+            return;
+        }
+        const wxSize outer = m_scroll->GetSize();
+        const wxSize client = m_scroll->GetClientSize();
+        const int width = outer.x - client.x;
+        if (width <= 0) {
+            Hide();
+            return;
+        }
+        const wxPoint origin = m_scroll->GetPosition();
+        SetSize(origin.x + client.x, origin.y, width, client.y);
+        Show();
+        Raise();
+        Refresh();
+    }
+
+    void cover_during_layout()
+    {
+        if (m_layout_column) {
+            Refresh();
+            Update();
+            return;
+        }
+        // The native bar can paint while the card sizer is rebuilt, before
+        // its final client/virtual sizes are available to sync_geometry().
+        const wxSize outer = m_scroll->GetSize();
+        const wxSize client = m_scroll->GetClientSize();
+        if (outer.x <= 0 || outer.y <= 0) return;
+        const int width = outer.x - client.x;
+        if (width <= 0) return;
+        const wxPoint origin = m_scroll->GetPosition();
+        SetSize(origin.x + client.x, origin.y, width, client.y);
+        Show();
+        Raise();
+        Refresh();
+        Update();
+    }
+
+private:
+    wxRect thumb_rect() const
+    {
+        const int height = GetClientSize().y;
+        const int viewport = m_scroll->GetClientSize().y;
+        const int total = m_scroll->GetVirtualSize().y;
+        if (height <= 0 || total <= viewport || viewport <= 0) return {};
+        const int length = std::min(height, std::max(FromDIP(28), int(std::lround(double(height) * viewport / total))));
+        int unit_x = 0, unit_y = 0;
+        m_scroll->GetScrollPixelsPerUnit(&unit_x, &unit_y);
+        const int start = m_scroll->GetViewStart().y * std::max(1, unit_y);
+        const int top = int(std::lround(double(height - length) * std::clamp(start, 0, total - viewport) /
+            (total - viewport)));
+        return wxRect(0, top, GetClientSize().x, length);
+    }
+
+    void scroll_to_track_y(int top)
+    {
+        const wxRect thumb = thumb_rect();
+        const int travel = GetClientSize().y - thumb.height;
+        if (travel <= 0) return;
+        const int remaining = m_scroll->GetVirtualSize().y - m_scroll->GetClientSize().y;
+        int unit_x = 0, unit_y = 0;
+        m_scroll->GetScrollPixelsPerUnit(&unit_x, &unit_y);
+        const int pixels = int(std::lround(double(std::clamp(top, 0, travel)) * remaining / travel));
+        m_scroll->Scroll(-1, int(std::lround(double(pixels) / std::max(1, unit_y))));
+        Refresh();
+    }
+
+    void stop_drag()
+    {
+        m_dragging = false;
+        if (HasCapture()) ReleaseMouse();
+        Refresh();
+    }
+
+    wxScrolledWindow* m_scroll;
+    bool m_layout_column;
+    int m_drag_offset {0};
+    bool m_dragging {false};
 };
 
 } // namespace
@@ -151,6 +384,7 @@ void ModelGenerationPanel::initialize_page()
     BOOST_LOG_TRIVIAL(info) << "AI model generation panel: build visible page";
     build_page();
     trace_stage("build_page");
+    attach_input_form_scroll_track();
     m_page_initialized = true;
     Unbind(wxEVT_IDLE, &ModelGenerationPanel::on_first_visible_idle, this);
     m_status->SetLabel(_L("正在检查本地 3D 生成服务..."));
@@ -162,6 +396,7 @@ void ModelGenerationPanel::initialize_page()
     trace_stage("refresh_controls");
     refresh_ai_appearance(this);
     trace_stage("refresh_ai_appearance");
+    refresh_input_layout();
     Layout();
     trace_stage("layout");
     BOOST_LOG_TRIVIAL(info) << "AI model generation panel: visible page initialized";
@@ -202,7 +437,10 @@ void ModelGenerationPanel::set_service_retry_handler(std::function<void()> handl
 void ModelGenerationPanel::show_input_hint(const wxString& message, wxWindow* focus)
 {
     m_status->SetLabel(message);
+    m_status->InvalidateBestSize();
     m_status->GetParent()->Layout();
+    m_workflow_panel->Layout();
+    Layout();
     if (focus != nullptr) focus->SetFocus();
 }
 
@@ -239,6 +477,7 @@ void ModelGenerationPanel::restore_job(AIModelGenerationClient::JobStatus status
 {
     if (m_shutdown || sequence != m_sequence || !m_job_id.empty())
         return;
+    if (m_prepare_base) m_prepare_base->SetValue(false);
     m_job_palette = status.palette;
     m_job_palette_color_count = status.palette_color_count;
     m_legacy_generation_state.restore_palette_color_count(status.palette_color_count);
@@ -409,11 +648,15 @@ void ModelGenerationPanel::shutdown()
         return;
     m_shutdown = true;
     if (m_preview_canceled) *m_preview_canceled = true;
+    if (auto* local = local_model_import_state(m_library_import); local && local->cancel)
+        local->cancel->store(true);
     if (m_workbench_color_matching) m_workbench_color_matching->shutdown();
     stop_library_loading();
     stop_model_finishing();
     if (m_preview_worker.joinable()) m_preview_worker.join();
     if (m_library_import_worker.joinable()) m_library_import_worker.join();
+    if (auto* local = local_model_import_state(m_library_import); local && local->cancel && local->rollback_after_join)
+        local->rollback_after_join();
     ++m_sequence;
     m_poll_timer.Stop();
     const bool preview_download_was_active = m_preview_download_in_flight;
@@ -426,371 +669,6 @@ void ModelGenerationPanel::shutdown()
     cleanup_files();
 }
 
-void ModelGenerationPanel::build_page()
-{
-    wxString trace_value;
-    const bool trace = wxGetEnv("ORCASLICER_UI_LATENCY_TRACE", &trace_value) && trace_value == "1";
-    const auto started = std::chrono::steady_clock::now();
-    auto trace_stage = [trace, &started](const char* stage) {
-        if (trace)
-            BOOST_LOG_TRIVIAL(info) << "AI page build: " << stage << " elapsed_ms="
-                << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
-    };
-    auto* root = new wxBoxSizer(wxVERTICAL);
-    auto* header = new wxPanel(this);
-    header->SetBackgroundColour(wxColour(246, 249, 249));
-    auto* header_sizer = new wxBoxSizer(wxVERTICAL);
-    auto* title = new wxStaticText(header, wxID_ANY, _L("3D 生成"));
-    wxFont title_font = title->GetFont();
-    title_font.SetPointSize(title_font.GetPointSize() + 5);
-    title_font.SetWeight(wxFONTWEIGHT_BOLD);
-    title->SetFont(title_font);
-    title->SetForegroundColour(wxColour(31, 55, 59));
-    header_sizer->Add(title, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
-    header_sizer->AddSpacer(FromDIP(4));
-    header_sizer->Add(new wxStaticText(header, wxID_ANY, _L("通过文字、参考图或两者组合生成可预览、可打印的 3D 模型。")),
-                      0, wxLEFT | wxRIGHT, FromDIP(12));
-    header_sizer->AddSpacer(FromDIP(10));
-    header->SetSizer(header_sizer);
-    root->Add(header, 0, wxEXPAND);
-
-    auto* content = new wxBoxSizer(wxHORIZONTAL);
-    m_workflow_panel = build_workflow_panel(this);
-    trace_stage("workflow_panel");
-    content->Add(m_workflow_panel, 0, wxEXPAND | wxALL, FromDIP(12));
-
-    content->Add(build_preview_panel(this), 1, wxEXPAND | wxTOP | wxRIGHT | wxBOTTOM, FromDIP(12));
-    trace_stage("preview_panel");
-    root->Add(content, 1, wxEXPAND);
-    SetSizer(root);
-    trace_stage("set_sizer");
-}
-
-wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
-{
-    wxString trace_value;
-    const bool trace = wxGetEnv("ORCASLICER_UI_LATENCY_TRACE", &trace_value) && trace_value == "1";
-    const auto started = std::chrono::steady_clock::now();
-    auto trace_stage = [trace, &started](const char* stage) {
-        if (trace)
-            BOOST_LOG_TRIVIAL(info) << "AI workflow build: " << stage << " elapsed_ms="
-                << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
-    };
-    auto* panel = new wxPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(FromDIP(400), -1), wxBORDER_SIMPLE);
-    panel->SetMinSize(wxSize(FromDIP(360), -1));
-    panel->SetBackgroundColour(wxColour(250, 251, 251));
-    auto* outer = new wxBoxSizer(wxVERTICAL);
-
-    auto* journey = new wxPanel(panel);
-    journey->SetBackgroundColour(wxColour(244, 248, 248));
-    auto* journey_sizer = new wxBoxSizer(wxVERTICAL);
-    auto* step_row = new wxBoxSizer(wxHORIZONTAL);
-    const std::array<wxString, 4> step_names = {
-        _L("1 输入"), _L("2 图片确认"), _L("3 生成 3D"), _L("4 导入")
-    };
-    for (size_t index = 0; index < step_names.size(); ++index) {
-        m_step_labels[index] = new wxStaticText(journey, wxID_ANY, step_names[index],
-                                                wxDefaultPosition, wxDefaultSize, wxALIGN_CENTER_HORIZONTAL);
-        m_step_labels[index]->SetForegroundColour(index == 0 ? wxColour(24, 112, 105) : wxColour(132, 143, 145));
-        wxFont step_font = m_step_labels[index]->GetFont();
-        step_font.SetWeight(index == 0 ? wxFONTWEIGHT_BOLD : wxFONTWEIGHT_NORMAL);
-        m_step_labels[index]->SetFont(step_font);
-        step_row->Add(m_step_labels[index], 1, wxALIGN_CENTER_VERTICAL);
-    }
-    journey_sizer->Add(step_row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(10));
-
-    m_workflow_steps = new wxStaticText(journey, wxID_ANY, _L("输入文字、图片，或同时使用两者"));
-    m_workflow_steps->SetForegroundColour(wxColour(91, 104, 107));
-    m_workflow_steps->Wrap(FromDIP(330));
-    journey_sizer->Add(m_workflow_steps, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(8));
-    auto* progress_header = new wxBoxSizer(wxHORIZONTAL);
-    m_workflow_phase = new wxStaticText(journey, wxID_ANY, _L("检查本地服务"));
-    wxFont workflow_font = m_workflow_phase->GetFont();
-    workflow_font.SetWeight(wxFONTWEIGHT_BOLD);
-    m_workflow_phase->SetFont(workflow_font);
-    m_progress_percent = new wxStaticText(journey, wxID_ANY, "0%");
-    m_progress_percent->SetForegroundColour(wxColour(91, 104, 107));
-    progress_header->Add(m_workflow_phase, 1, wxALIGN_CENTER_VERTICAL);
-    progress_header->Add(m_progress_percent, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(8));
-    journey_sizer->Add(progress_header, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(6));
-    m_generation_progress = new wxGauge(journey, wxID_ANY, 100, wxDefaultPosition, wxSize(-1, FromDIP(6)));
-    m_generation_progress->SetValue(0);
-    journey_sizer->Add(m_generation_progress, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(10));
-    journey_sizer->AddSpacer(FromDIP(8));
-    journey->SetSizer(journey_sizer);
-    outer->Add(journey, 0, wxEXPAND);
-
-    auto* scroll = new wxScrolledWindow(panel, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVSCROLL);
-    scroll->SetBackgroundColour(wxColour(250, 251, 251));
-    scroll->SetScrollRate(0, FromDIP(12));
-    auto* sizer = new wxBoxSizer(wxVERTICAL);
-
-    sizer->Add(section_label(scroll, _L("输入内容")), 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
-    sizer->AddSpacer(FromDIP(4));
-    auto* input_hint = new wxStaticText(scroll, wxID_ANY,
-                                        _L("文字和图片至少提供一项。\n同时提供时，文字用于描述调整方向。"));
-    input_hint->SetForegroundColour(wxColour(91, 104, 107));
-    sizer->Add(input_hint, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
-    sizer->AddSpacer(FromDIP(6));
-    m_prompt_label = new wxStaticText(scroll, wxID_ANY, _L("文字描述（可选）"));
-    sizer->Add(m_prompt_label, 0, wxLEFT | wxRIGHT, FromDIP(12));
-    sizer->AddSpacer(FromDIP(4));
-    m_prompt = new wxTextCtrl(scroll, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(-1, FromDIP(50)),
-                              wxTE_MULTILINE);
-    m_prompt->SetHint(_L("例如：一只坐在圆形底座上的机械猫"));
-    sizer->Add(m_prompt, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
-    sizer->AddSpacer(FromDIP(8));
-
-    auto* style_row = new wxBoxSizer(wxHORIZONTAL);
-    auto* style_label = new wxStaticText(scroll, wxID_ANY, _L("风格"));
-    wxArrayString styles;
-    styles.Add(_L("单色写实"));
-    styles.Add(_L("多色写实"));
-    styles.Add(_L("多色风格化"));
-    m_style = new wxChoice(scroll, wxID_ANY, wxDefaultPosition, wxDefaultSize, styles);
-    m_style->SetSelection(0);
-    style_row->Add(style_label, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(10));
-    style_row->Add(m_style, 1, wxALIGN_CENTER_VERTICAL);
-    sizer->Add(style_row, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
-    sizer->AddSpacer(FromDIP(8));
-    wxArrayString stylized;
-    for (const char* style : {"portrait_sketch", "cartoon", "low_poly", "relief", "ink_relief", "diorama", "custom"})
-        stylized.Add(ModelGenerationPresentation::style_label(style));
-    m_stylized_style = new wxChoice(scroll, wxID_ANY, wxDefaultPosition, wxDefaultSize, stylized);
-    m_stylized_style->SetSelection(1);
-    m_stylized_style->SetToolTip(_L("选择多色风格化的具体表现方式"));
-    sizer->Add(m_stylized_style, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
-
-    m_custom_style_panel = new wxPanel(scroll);
-    m_custom_style_panel->SetBackgroundColour(wxColour(250, 251, 251));
-    auto* custom_style_sizer = new wxBoxSizer(wxVERTICAL);
-    auto* custom_style_label = new wxStaticText(m_custom_style_panel, wxID_ANY, _L("自定义风格描述"));
-    m_custom_style = new wxTextCtrl(m_custom_style_panel, wxID_ANY, wxEmptyString, wxDefaultPosition,
-                                    wxSize(-1, FromDIP(50)), wxTE_MULTILINE);
-    m_custom_style->SetHint(_L("描述外观即可；系统会保留主体、构图和可见元素"));
-    m_custom_style->SetMaxLength(240);
-    custom_style_sizer->Add(custom_style_label, 0, wxEXPAND | wxBOTTOM, FromDIP(4));
-    custom_style_sizer->Add(m_custom_style, 0, wxEXPAND);
-    m_custom_style_panel->SetSizer(custom_style_sizer);
-    m_custom_style_panel->Hide();
-    sizer->Add(m_custom_style_panel, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
-    sizer->AddSpacer(FromDIP(8));
-
-    auto* image_row = new wxBoxSizer(wxHORIZONTAL);
-    m_choose_image = new wxButton(scroll, wxID_ANY, _L("选择图片"));
-    m_clear_image = new wxButton(scroll, wxID_ANY, _L("移除"));
-    m_selected_image = new wxStaticText(scroll, wxID_ANY, _L("未选择图片"),
-                                        wxDefaultPosition, wxDefaultSize, wxST_ELLIPSIZE_END);
-    m_selected_image->SetMinSize(wxSize(FromDIP(70), -1));
-    image_row->Add(m_choose_image, 0, wxRIGHT, FromDIP(8));
-    image_row->Add(m_clear_image, 0, wxRIGHT, FromDIP(8));
-    image_row->Add(m_selected_image, 1, wxALIGN_CENTER_VERTICAL);
-    sizer->Add(image_row, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
-
-    m_style_recommendation_panel = new wxPanel(scroll, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_SIMPLE);
-    m_style_recommendation_panel->SetBackgroundColour(wxColour(239, 248, 246));
-    auto* style_recommendation_sizer = new wxBoxSizer(wxVERTICAL);
-    m_style_recommendation_title = new wxStaticText(m_style_recommendation_panel, wxID_ANY, _L("正在推荐风格..."));
-    wxFont recommendation_font = m_style_recommendation_title->GetFont();
-    recommendation_font.SetWeight(wxFONTWEIGHT_BOLD);
-    m_style_recommendation_title->SetFont(recommendation_font);
-    m_style_recommendation_title->SetForegroundColour(wxColour(31, 97, 90));
-    style_recommendation_sizer->Add(m_style_recommendation_title, 0, wxEXPAND | wxALL, FromDIP(8));
-    m_style_recommendation_reason = new wxStaticText(m_style_recommendation_panel, wxID_ANY, wxEmptyString);
-    m_style_recommendation_reason->SetForegroundColour(wxColour(75, 91, 94));
-    m_style_recommendation_reason->Wrap(FromDIP(290));
-    style_recommendation_sizer->Add(m_style_recommendation_reason, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(8));
-    auto* style_alternatives = new wxBoxSizer(wxHORIZONTAL);
-    m_style_recommendation_alternative_label = new wxStaticText(
-        m_style_recommendation_panel, wxID_ANY, _L("也可以："));
-    style_alternatives->Add(m_style_recommendation_alternative_label, 0,
-                            wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(6));
-    for (wxButton*& button : m_style_recommendation_alternatives) {
-        button = new wxButton(m_style_recommendation_panel, wxID_ANY, wxEmptyString,
-                              wxDefaultPosition, wxDefaultSize, wxBU_EXACTFIT);
-        style_alternatives->Add(button, 0, wxRIGHT, FromDIP(6));
-    }
-    style_recommendation_sizer->Add(style_alternatives, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(8));
-    m_style_recommendation_panel->SetSizer(style_recommendation_sizer);
-    m_style_recommendation_panel->Hide();
-    sizer->AddSpacer(FromDIP(6));
-    sizer->Add(m_style_recommendation_panel, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
-
-    m_upload_notice = new wxStaticText(scroll, wxID_ANY, _L("仅会将选中的图片和文字描述发送给 AI。"));
-    m_upload_notice->Wrap(FromDIP(310));
-    m_upload_notice->SetForegroundColour(wxColour(91, 104, 107));
-    sizer->AddSpacer(FromDIP(4));
-    sizer->Add(m_upload_notice, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
-    sizer->AddSpacer(FromDIP(10));
-    trace_stage("input_controls");
-
-    auto* creation_colors = new wxStaticText(scroll, wxID_ANY,
-        _L("生成保留自然颜色和细节；完成后再到 Orca 匹配打印耗材。"));
-    creation_colors->Wrap(FromDIP(310));
-    sizer->Add(creation_colors, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
-    // Old print settings are ordinary data; no hidden native controls are needed.
-    trace_stage("legacy_print_settings");
-
-    m_model_settings_panel = new wxPanel(scroll);
-    m_model_settings_panel->SetBackgroundColour(wxColour(250, 251, 251));
-    auto* model_settings_sizer = new wxBoxSizer(wxVERTICAL);
-    model_settings_sizer->Add(section_label(m_model_settings_panel, _L("3D 生成设置")), 0, wxEXPAND | wxBOTTOM, FromDIP(6));
-    auto* provider_row = new wxBoxSizer(wxHORIZONTAL);
-    provider_row->Add(new wxStaticText(m_model_settings_panel, wxID_ANY, _L("模型服务")),
-                      0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(10));
-    m_provider = new wxChoice(m_model_settings_panel, wxID_ANY, wxDefaultPosition, wxDefaultSize,
-                              wxArrayString {wxString("Tripo"), _L("腾讯混元3D")});
-    m_provider->SetMinSize(wxSize(1, -1));
-    m_provider->SetSelection(0);
-    provider_row->Add(m_provider, 1, wxALIGN_CENTER_VERTICAL);
-    model_settings_sizer->Add(provider_row, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
-    auto* quality_row = new wxBoxSizer(wxHORIZONTAL);
-    auto* quality_label = new wxStaticText(m_model_settings_panel, wxID_ANY, _L("目标面数"));
-    wxArrayString quality_levels;
-    quality_levels.Add(_L("30 万面"));
-    quality_levels.Add(_L("100 万面（推荐）"));
-    quality_levels.Add(_L("200 万面（需精细几何）"));
-    m_quality = new wxChoice(m_model_settings_panel, wxID_ANY, wxDefaultPosition, wxDefaultSize, quality_levels);
-    // The workflow sidebar has a bounded width. Let the sizer shrink choices
-    // instead of growing the scrolled content beyond its visible right edge.
-    m_quality->SetMinSize(wxSize(1, -1));
-    m_quality->SetSelection(1);
-    m_quality->SetToolTip(
-        _L("面数是生成目标，实际结果可能不同。200 万面需 Tripo v3.1 精细几何；更多面数会增加下载、预览和导入耗时。"));
-    quality_row->Add(quality_label, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(10));
-    quality_row->Add(m_quality, 1, wxALIGN_CENTER_VERTICAL);
-    model_settings_sizer->Add(quality_row, 0, wxEXPAND);
-    auto add_option = [&](const wxString& label, const wxArrayString& choices) {
-        auto* row = new wxBoxSizer(wxHORIZONTAL);
-        row->Add(new wxStaticText(m_model_settings_panel, wxID_ANY, label), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(10));
-        auto* choice = new wxChoice(m_model_settings_panel, wxID_ANY, wxDefaultPosition, wxDefaultSize, choices);
-        choice->SetMinSize(wxSize(1, -1));
-        choice->SetSelection(0);
-        row->Add(choice, 1, wxALIGN_CENTER_VERTICAL);
-        model_settings_sizer->Add(row, 0, wxEXPAND | wxTOP, FromDIP(6));
-        return choice;
-    };
-    m_geometry_quality = add_option(_L("几何"), {_L("标准（+0 积分）"), _L("精细（+20 积分）")});
-    m_texture_quality = add_option(_L("纹理"), {_L("标准（+0 积分）"), _L("高清（+10 积分）"), _L("8K（+20 积分）")});
-    m_output_format = add_option(_L("格式"), {_L("GLB（+0 积分）"), _L("OBJ（转换 +5 积分）")});
-    m_generation_cost = new wxStaticText(m_model_settings_panel, wxID_ANY, wxEmptyString,
-                                         wxDefaultPosition, wxDefaultSize, wxST_NO_AUTORESIZE);
-    m_generation_cost->SetMinSize(wxSize(1, -1));
-    model_settings_sizer->Add(m_generation_cost, 0, wxEXPAND | wxTOP, FromDIP(8));
-    m_model_settings_panel->SetSizer(model_settings_sizer);
-    sizer->Insert(0, m_model_settings_panel, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
-
-    sizer->Insert(0, build_import_settings(scroll), 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
-
-    m_preprocess_section = section_label(scroll, _L("确认提示词"));
-    sizer->Add(m_preprocess_section, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(8));
-    m_prepared_prompt_label = new wxStaticText(scroll, wxID_ANY, _L("用于 3D 生成的提示词"));
-    sizer->Add(m_prepared_prompt_label, 0, wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(8));
-    m_prepared_prompt = new wxTextCtrl(scroll, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(-1, FromDIP(72)), wxTE_MULTILINE);
-    sizer->Add(m_prepared_prompt, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
-
-    scroll->SetSizer(sizer);
-    // Initial refresh fits the scroll extent after settling control visibility.
-    outer->Add(scroll, 1, wxEXPAND);
-    trace_stage("settings_and_scroll_layout");
-
-    auto* action_panel = new wxPanel(panel);
-    action_panel->SetBackgroundColour(*wxWHITE);
-    auto* action_panel_sizer = new wxBoxSizer(wxVERTICAL);
-    auto* status_row = new wxBoxSizer(wxVERTICAL);
-    // Keep the full status above the diagnostics action. The shared Label
-    // retains its unwrapped text and reflows it when the available width changes.
-    m_status = new Label(action_panel, wxGetApp().normal_font(), _L("空闲"),
-                         LB_AUTO_WRAP, FromDIP(wxSize(310, -1)));
-    m_status->SetMinSize(wxSize(1, -1));
-    m_workflow_steps->Wrap(FromDIP(330));
-    m_workflow_steps->InvalidateBestSize();
-    m_status->SetForegroundColour(wxColour(60, 75, 78));
-    auto* open_diagnostics = new wxButton(action_panel, wxID_ANY, _L("打开诊断日志"));
-    open_diagnostics->SetToolTip(_L("打开 AI 后台日志目录；反馈问题时请发送 orca-ai-sidecar.log 和诊断 ID"));
-    status_row->Add(m_status, 0, wxEXPAND);
-    status_row->Add(open_diagnostics, 0, wxALIGN_RIGHT | wxTOP, FromDIP(4));
-    action_panel_sizer->Add(status_row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
-    auto* action_buttons = new wxBoxSizer(wxHORIZONTAL);
-    m_preprocess = new wxButton(action_panel, wxID_ANY, _L("生成图片预览"),
-                                wxDefaultPosition, wxSize(-1, FromDIP(38)));
-    m_generate = new wxButton(action_panel, wxID_ANY, _L("确认并生成 3D"),
-                              wxDefaultPosition, wxSize(-1, FromDIP(38)));
-    m_stop = new wxButton(action_panel, wxID_ANY, _L("停止生成"),
-                          wxDefaultPosition, wxSize(-1, FromDIP(38)));
-    m_retry_service = new wxButton(action_panel, wxID_ANY, _L("重新检测服务"),
-                                   wxDefaultPosition, wxSize(-1, FromDIP(38)));
-    m_import = new wxButton(action_panel, wxID_ANY, _L("导入到准备页"),
-                            wxDefaultPosition, wxSize(-1, FromDIP(38)));
-    m_discard = new wxButton(action_panel, wxID_ANY, _L("重新开始"),
-                             wxDefaultPosition, wxSize(-1, FromDIP(38)));
-    action_buttons->Add(m_preprocess, 1, wxRIGHT, FromDIP(8));
-    action_buttons->Add(m_generate, 1, wxRIGHT, FromDIP(8));
-    action_buttons->Add(m_stop, 1, wxRIGHT, FromDIP(8));
-    action_buttons->Add(m_retry_service, 1, wxRIGHT, FromDIP(8));
-    action_buttons->Add(m_import, 1, wxRIGHT, FromDIP(8));
-    action_buttons->Add(m_discard, 0);
-    action_panel_sizer->Add(action_buttons, 0, wxEXPAND | wxALL, FromDIP(12));
-    auto* back_to_prepare = new wxButton(action_panel, wxID_ANY, _L("返回当前工程 · 准备页"));
-    back_to_prepare->SetToolTip(_L("继续编辑当前工程；生成任务和本页输入会保留。"));
-    back_to_prepare->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-        if (m_prepare_navigation) m_prepare_navigation();
-    });
-    action_panel_sizer->Add(back_to_prepare, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
-    action_panel->SetSizer(action_panel_sizer);
-    outer->Add(action_panel, 0, wxEXPAND);
-    panel->SetSizer(outer);
-    trace_stage("action_controls");
-
-    m_prompt->Bind(wxEVT_TEXT, [this](wxCommandEvent&) { refresh_controls(); });
-    m_style->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) {
-        select_style(current_style(), true);
-    });
-    m_stylized_style->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) { select_style(current_style(), true); });
-    for (size_t index = 0; index < m_style_recommendation_alternatives.size(); ++index) {
-        m_style_recommendation_alternatives[index]->Bind(wxEVT_BUTTON, [this, index](wxCommandEvent&) {
-            if (index < m_style_recommendation.alternatives.size())
-                select_style(m_style_recommendation.alternatives[index], true);
-        });
-    }
-    m_custom_style->Bind(wxEVT_TEXT, [this](wxCommandEvent&) { refresh_controls(); });
-    for (auto* choice : {m_provider, m_quality, m_geometry_quality, m_texture_quality, m_output_format})
-        choice->Bind(wxEVT_CHOICE, [this, choice](wxCommandEvent&) {
-            if (choice == m_provider && !m_busy) {
-                ++m_sequence; // Ignore callbacks from the previously selected provider.
-                m_submission_state.clear();
-                if (m_awaiting_confirmation) {
-                    m_status->SetLabel(_L("模型服务已切换，请确认设置后继续。"));
-                    m_result_summary->SetLabel(_L("当前设计图已保留；生成需要再次确认。"));
-                }
-            }
-            m_legacy_generation_defaults = false;
-            refresh_provider_options();
-            persist_generation_options();
-        });
-    m_choose_image->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_choose_image, this);
-    m_clear_image->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_clear_image, this);
-    m_import_color_mode->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) { refresh_controls(); });
-    m_preprocess->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_preprocess, this);
-    m_generate->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_generate, this);
-    m_stop->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_stop, this);
-    m_retry_service->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_retry_service, this);
-    m_import->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_import, this);
-    m_discard->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_discard, this);
-    open_diagnostics->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-        const boost::filesystem::path log_directory = boost::filesystem::path(Slic3r::data_dir()) / "log";
-        boost::system::error_code ec;
-        boost::filesystem::create_directories(log_directory, ec);
-        wxString path = from_path(log_directory);
-        if (!path.empty() && !wxFileName::IsPathSeparator(path.Last()))
-            path += wxFileName::GetPathSeparator();
-        if (ec || !wxLaunchDefaultApplication(path))
-            show_error(this, _L("无法打开诊断日志目录：") + from_path(log_directory));
-    });
-    trace_stage("event_bindings");
-    return panel;
-}
-
 wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
 {
     wxString trace_value;
@@ -801,11 +679,9 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
             BOOST_LOG_TRIVIAL(info) << "AI preview build: " << stage << " elapsed_ms="
                 << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
     };
-    auto* panel = new wxPanel(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_SIMPLE);
-    panel->SetBackgroundColour(*wxWHITE);
+    auto* panel = new ModelGenerationInputStyle::RoundedPanel(parent);
     auto* sizer = new wxBoxSizer(wxVERTICAL);
-    auto* header = new wxBoxSizer(wxHORIZONTAL);
-    header->Add(section_label(panel, _L("预览结果")), 1, wxALIGN_CENTER_VERTICAL);
+    auto* header = new wxWrapSizer(wxHORIZONTAL);
     m_preview_kind = new wxStaticText(panel, wxID_ANY, _L("结果对照"));
     m_preview_kind->SetForegroundColour(wxColour(91, 104, 107));
     m_preview_details_pane = new wxCollapsiblePane(panel, wxID_ANY, _L("多视图"), wxDefaultPosition,
@@ -816,13 +692,18 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     preview_stages.Add(_L("模型多视图"));
     m_preview_stage = new wxChoice(preview_details_parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, preview_stages);
     m_preview_stage->SetSelection(0);
-    m_preview_stage_hint = new wxStaticText(
-        panel, wxID_ANY, _L("生成后可在这里确认图片效果。"));
+    m_preview_stage_hint = new Label(panel, _L("生成后可在这里确认图片效果。"), LB_AUTO_WRAP);
+    m_preview_stage_hint->SetMinSize(wxSize(1, -1));
     m_preview_stage_hint->SetForegroundColour(wxColour(91, 104, 107));
-    m_preview_stage_hint->Wrap(FromDIP(760));
-    m_zoom_out = new wxButton(panel, wxID_ANY, "-", wxDefaultPosition, wxSize(FromDIP(30), FromDIP(28)));
-    m_zoom_fit = new wxButton(panel, wxID_ANY, _L("图片适应"), wxDefaultPosition, wxDefaultSize);
-    m_zoom_in = new wxButton(panel, wxID_ANY, "+", wxDefaultPosition, wxSize(FromDIP(30), FromDIP(28)));
+    m_zoom_out = new Button(panel, "-");
+    m_zoom_out->SetName("input_field");
+    m_zoom_out->SetPaddingSize(FromDIP(wxSize(8, 5)));
+    m_zoom_fit = new Button(panel, _L("图片适应"));
+    m_zoom_fit->SetName("input_field");
+    m_zoom_fit->SetPaddingSize(FromDIP(wxSize(8, 5)));
+    m_zoom_in = new Button(panel, "+");
+    m_zoom_in->SetName("input_field");
+    m_zoom_in->SetPaddingSize(FromDIP(wxSize(8, 5)));
     m_preview_zoom = new wxStaticText(panel, wxID_ANY, "100%", wxDefaultPosition, wxSize(FromDIP(48), -1), wxALIGN_CENTER_HORIZONTAL);
     m_zoom_out->SetToolTip(_L("缩小图片预览"));
     m_zoom_fit->SetToolTip(_L("完整显示图片"));
@@ -857,7 +738,7 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     sizer->Add(m_preview_details_pane, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(18));
     trace_stage("header_and_details");
 
-    m_preview_book = new wxNotebook(panel, wxID_ANY);
+    m_preview_book = new wxSimplebook(panel, wxID_ANY);
     m_preview_book->SetMinSize(wxSize(1, 1));
     auto* model_page = new ModelResultScrolledWindow(
         m_preview_book, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxHSCROLL | wxVSCROLL);
@@ -874,7 +755,7 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
         comparison_panel, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxHSCROLL | wxVSCROLL);
     m_preview_area->SetBackgroundColour(wxColour(241, 244, 245));
     m_preview_area->SetBackgroundStyle(wxBG_STYLE_PAINT);
-    m_preview_area->SetMinSize(wxSize(FromDIP(420), FromDIP(320)));
+    m_preview_area->SetMinSize(wxSize(1, 1));
     m_preview_area->SetScrollRate(FromDIP(12), FromDIP(12));
     m_preview_area->Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
         wxAutoBufferedPaintDC dc(m_preview_area);
@@ -897,18 +778,18 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
                 return;
             wxRect rect = virtual_rect;
             rect.Offset(-offset.x, -offset.y);
-            dc.SetPen(wxPen(wxColour(204, 213, 215)));
-            dc.SetBrush(wxBrush(wxColour(255, 255, 255)));
+            dc.SetPen(wxPen(ModelGenerationInputStyle::background));
+            dc.SetBrush(wxBrush(ModelGenerationInputStyle::field));
             dc.DrawRectangle(rect);
 
             const wxRect label_rect(rect.x, rect.y, rect.width, label_height);
             dc.SetPen(*wxTRANSPARENT_PEN);
-            dc.SetBrush(wxBrush(ai_result ? wxColour(229, 244, 242) : wxColour(235, 239, 240)));
+            dc.SetBrush(wxBrush(ai_result ? ModelGenerationInputStyle::selected : ModelGenerationInputStyle::panel));
             dc.DrawRectangle(label_rect);
             wxFont label_font = dc.GetFont();
             label_font.SetWeight(wxFONTWEIGHT_BOLD);
             dc.SetFont(label_font);
-            dc.SetTextForeground(ai_result ? wxColour(24, 112, 105) : wxColour(60, 75, 78));
+            dc.SetTextForeground(ai_result ? ModelGenerationInputStyle::yellow : ModelGenerationInputStyle::text);
             const wxSize label_size = dc.GetTextExtent(label);
             dc.DrawText(label, label_rect.x + FromDIP(10), label_rect.y + (label_rect.height - label_size.y) / 2);
 
@@ -926,7 +807,7 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
                 wxFont placeholder_font = dc.GetFont();
                 placeholder_font.SetWeight(wxFONTWEIGHT_NORMAL);
                 dc.SetFont(placeholder_font);
-                dc.SetTextForeground(wxColour(108, 120, 123));
+                dc.SetTextForeground(ModelGenerationInputStyle::secondary);
                 const wxSize text_size = dc.GetTextExtent(placeholder);
                 dc.DrawText(placeholder,
                             image_rect.x + std::max(FromDIP(8), (image_rect.width - text_size.x) / 2),
@@ -938,8 +819,9 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
             ? _L("该历史记录未保存原图")
             : _L("文字生成，无原图");
         draw_pane(m_reference_preview_pane, _L("原图"), m_reference_bitmap, reference_placeholder, false);
-        const wxString result_label = m_preview_stage != nullptr && m_preview_stage->GetSelection() != wxNOT_FOUND
+        wxString result_label = m_preview_stage != nullptr && m_preview_stage->GetSelection() != wxNOT_FOUND
             ? m_preview_stage->GetStringSelection() : _L("AI 生成图");
+        if (m_design_preview_stale) result_label += _L(" · 旧版");
         draw_pane(m_style_preview_pane, result_label, m_style_preview_bitmap, m_style_preview_placeholder, true);
     });
     m_preview_area->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
@@ -947,53 +829,156 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
         event.Skip();
     });
     trace_stage("image_controls");
-    auto* model_card = new wxPanel(comparison_panel, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_SIMPLE);
+    auto* model_card = new wxPanel(comparison_panel, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
     model_card->SetBackgroundColour(*wxWHITE);
     // Let the toolbar and canvas determine the minimum height. A fixed 560 DIP
     // card clips the model below the visible result page on short windows.
-    model_card->SetMinSize(wxSize(FromDIP(440), wxDefaultCoord));
+    model_card->SetMinSize(wxSize(1, 1));
     auto* model_card_sizer = new wxBoxSizer(wxVERTICAL);
-    auto* model_toolbar = new wxBoxSizer(wxHORIZONTAL);
-    m_model_stats = new wxStaticText(model_card, wxID_ANY, _L("3D 模型 · 生成后将在这里显示"));
+    auto* model_toolbar = new wxWrapSizer(wxHORIZONTAL);
+    m_model_stats = new Label(model_card, _L("3D 模型 · 生成后将在这里显示"), LB_AUTO_WRAP);
+    m_model_stats->SetMinSize(wxSize(1, -1));
+    m_model_stats->SetName("input_secondary");
     m_model_stats->SetForegroundColour(wxColour(91, 104, 107));
-    m_front_model_view = new wxButton(model_card, wxID_ANY, _L("完整显示模型"));
+    m_front_model_view = new Button(model_card, _L("完整显示模型"));
+    m_front_model_view->SetName("input_field");
+    m_front_model_view->SetMinSize(FromDIP(wxSize(-1, 30)));
+    m_front_model_view->SetPaddingSize(FromDIP(wxSize(12, 4)));
     m_front_model_view->SetToolTip(_L("恢复规范正面并自动适应画布大小"));
-    m_reset_model_view = new wxButton(model_card, wxID_ANY, _L("三维视角"));
+    m_reset_model_view = new Button(model_card, _L("三维视角"));
+    m_reset_model_view->SetName("input_field");
+    m_reset_model_view->SetMinSize(FromDIP(wxSize(-1, 30)));
+    m_reset_model_view->SetPaddingSize(FromDIP(wxSize(12, 4)));
     m_reset_model_view->SetToolTip(_L("恢复便于检查侧面和底座的三维观察角度"));
-    model_toolbar->Add(m_model_stats, 1, wxALIGN_CENTER_VERTICAL);
     model_toolbar->Add(m_front_model_view, 0, wxLEFT, FromDIP(8));
     model_toolbar->Add(m_reset_model_view, 0, wxLEFT, FromDIP(6));
     model_card_sizer->Add(model_toolbar, 0, wxEXPAND | wxALL, FromDIP(10));
-    m_finishing_compare_model = new wxButton(model_card, wxID_ANY, _L("查看处理前"));
+    model_card_sizer->Add(m_model_stats, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
+    m_finishing_compare_model = new Button(model_card, _L("查看处理前"));
+    m_finishing_compare_model->SetName("input_field");
+    m_finishing_compare_model->SetMinSize(FromDIP(wxSize(-1, 30)));
+    m_finishing_compare_model->SetPaddingSize(FromDIP(wxSize(12, 4)));
     m_finishing_compare_model->Hide();
     model_card_sizer->Add(m_finishing_compare_model, 0, wxLEFT | wxBOTTOM, FromDIP(10));
     trace_stage("model_toolbar");
     m_model_preview = new ModelPreview3D(model_card);
     trace_stage("model_canvas");
-    m_model_preview->SetMinSize(wxSize(FromDIP(420), wxDefaultCoord));
+    m_model_preview->set_preview_background(ModelGenerationInputStyle::background);
+    m_model_preview->SetMinSize(wxSize(1, 1));
     model_card_sizer->Add(m_model_preview, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
+    // Keep the overlay beside the native GL child, not above an ancestor panel:
+    // GL composition on Windows can cover an overlay in the outer card.
+    auto* viewport_info = new ModelViewportInfo(m_model_preview);
+    auto show_viewport_info = std::make_shared<bool>(true);
+    auto* viewport_tools = new ModelViewportToolbar(m_model_preview);
+    auto* viewport_info_toggle = new Button(model_card, _L("隐藏信息"));
+    viewport_info_toggle->SetName("input_field");
+    viewport_info_toggle->SetMinSize(FromDIP(wxSize(-1, 30)));
+    viewport_info_toggle->SetPaddingSize(FromDIP(wxSize(12, 4)));
+    viewport_info_toggle->SetToolTip(_L("显示或隐藏当前视口模型统计，不改变模型、视角和编辑草稿。"));
+    model_toolbar->Add(viewport_info_toggle, 0, wxLEFT, FromDIP(6));
+    auto sync_viewport_info = [this, viewport_info, show_viewport_info, viewport_tools] {
+        const wxSize available=m_model_preview->GetClientSize();
+        const int toolbar_width=std::min(FromDIP(407),available.x-FromDIP(16));
+        const int toolbar_height=viewport_tools->height_for_width(toolbar_width);
+        const bool toolbar_visible=m_model_preview_ready && !m_preview_loading &&
+            m_workspace_view==WorkspaceView::Model && !m_finishing_workbench &&
+            m_model_preview->IsShown() && toolbar_width>=FromDIP(56) &&
+            available.y>=toolbar_height+FromDIP(16);
+        viewport_tools->Show(toolbar_visible);
+        if(toolbar_visible) {
+            const wxRect bounds((available.x-toolbar_width)/2,
+                available.y-toolbar_height-FromDIP(8),toolbar_width,toolbar_height);
+            if(viewport_tools->GetRect()!=bounds)viewport_tools->SetSize(bounds);
+            viewport_tools->arrange(toolbar_width);
+            viewport_tools->Raise();
+        } else m_model_preview->set_auto_rotation(false);
+        const bool enabled=toolbar_visible && !m_busy;
+        viewport_tools->set_state(ModelViewportToolbar::Texture,enabled,!m_model_preview->gray_view());
+        viewport_tools->set_state(ModelViewportToolbar::Mesh,enabled,m_model_preview->wireframe_view());
+        viewport_tools->set_state(ModelViewportToolbar::Info,enabled,*show_viewport_info);
+        viewport_tools->set_state(ModelViewportToolbar::Rotate,enabled,m_model_preview->auto_rotation());
+        const auto* facts = dynamic_cast<const ModelViewportFacts*>(m_model_stats->GetClientObject());
+        const wxRect canvas = m_model_preview->GetRect();
+        const int inset = FromDIP(8);
+        const bool visible = *show_viewport_info && m_model_preview_ready && !m_preview_loading && facts &&
+            (m_workspace_view == WorkspaceView::Model || m_finishing_workbench) &&
+            m_model_preview->IsShown() && canvas.width >= FromDIP(160);
+        const bool changed = viewport_info->Show(visible);
+        const int bottom = toolbar_visible ? toolbar_height + 2 * inset : 0;
+        if (!visible) { m_model_preview->set_overlay_insets(0, bottom); return; }
+        const bool compact = available.x < FromDIP(520) || available.y < FromDIP(480);
+        viewport_info->set_compact(compact);
+        viewport_info->set_facts(*facts);
+        const int width = std::min(FromDIP(compact ? 407 : 250), canvas.width - 2 * inset);
+        const wxRect bounds(wxPoint(inset, inset),
+            wxSize(width, viewport_info->GetSizer()->CalcMin().y));
+        if (viewport_info->GetRect() != bounds) {
+            viewport_info->SetSize(bounds); viewport_info->Layout(); viewport_info->Raise();
+            BOOST_LOG_TRIVIAL(info) << "AI viewport facts layout: canvas="
+                << canvas.width << 'x' << canvas.height << ", card="
+                << bounds.x << ',' << bounds.y << ',' << bounds.width << ',' << bounds.height;
+        } else if (changed) viewport_info->Raise();
+        m_model_preview->set_overlay_insets(bounds.GetBottom() + 1 + inset, bottom);
+    };
+    viewport_tools->on_tool=[this,viewport_info_toggle,show_viewport_info,sync_viewport_info](ModelViewportToolbar::Tool tool) {
+        if(m_busy || !m_model_preview_ready || m_finishing_workbench)return;
+        if(tool==ModelViewportToolbar::Texture) {
+            const bool gray=!m_model_preview->gray_view();m_model_preview->set_gray_view(gray);
+            if(m_finishing_gray)m_finishing_gray->SetValue(gray);
+        } else if(tool==ModelViewportToolbar::Mesh)
+            m_model_preview->set_wireframe_view(!m_model_preview->wireframe_view());
+        else if(tool==ModelViewportToolbar::Info) {
+            *show_viewport_info=!*show_viewport_info;
+            viewport_info_toggle->SetLabel(*show_viewport_info?_L("隐藏信息"):_L("显示信息"));
+        } else if(tool==ModelViewportToolbar::Rotate)
+            m_model_preview->set_auto_rotation(!m_model_preview->auto_rotation());
+        sync_viewport_info();
+    };
+    viewport_info_toggle->Bind(wxEVT_BUTTON, [viewport_info_toggle, show_viewport_info, sync_viewport_info](wxCommandEvent&) {
+        *show_viewport_info = !*show_viewport_info;
+        viewport_info_toggle->SetLabel(*show_viewport_info ? _L("隐藏信息") : _L("显示信息"));
+        sync_viewport_info();
+    });
+    m_model_preview->Bind(wxEVT_SIZE, [sync_viewport_info](wxSizeEvent& event) {
+        sync_viewport_info(); event.Skip();
+    });
+    model_card->Bind(wxEVT_UPDATE_UI, [sync_viewport_info](wxUpdateUIEvent& event) {
+        sync_viewport_info(); event.Skip();
+    });
     model_card->SetSizer(model_card_sizer);
     comparison_sizer->Add(model_card, 5, wxEXPAND | wxRIGHT, FromDIP(10));
     comparison_sizer->Add(m_preview_area, 4, wxEXPAND);
     comparison_sizer->Add(build_model_finishing(comparison_panel), 0, wxEXPAND | wxLEFT, FromDIP(10));
     trace_stage("finishing_controls");
     comparison_panel->SetSizer(comparison_sizer);
+    attach_finishing_editor_scroll_track();
     auto* expand_images = m_expand_images = new wxToggleButton(panel, wxID_ANY, _L("展开图片"));
     header->Add(expand_images, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(8));
     expand_images->Bind(wxEVT_TOGGLEBUTTON, [this, expand_images](wxCommandEvent&) {
-        expand_images->SetLabel(expand_images->GetValue() ? _L("返回模型对照") : _L("展开图片"));
-        refresh_comparison_layout(true);
+        select_workspace_view(expand_images->GetValue() ? WorkspaceView::Image : WorkspaceView::Model);
     });
     model_page->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
         refresh_comparison_layout();
         event.Skip();
     });
     model_sizer->Add(comparison_panel, 1, wxEXPAND | wxALL, FromDIP(12));
-    auto* finishing_shortcut = m_finishing_shortcut = new wxButton(panel, wxID_ANY, _L("3D 美颜工作台"));
+    auto* finishing_shortcut = m_finishing_shortcut = new Button(panel, _L("3D 美颜工作台"));
+    finishing_shortcut->SetName("input_field");
+    finishing_shortcut->SetPaddingSize(FromDIP(wxSize(12, 8)));
     header->Add(finishing_shortcut, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(6));
-    finishing_shortcut->Bind(wxEVT_BUTTON, [this, model_page](wxCommandEvent&) {
-        if (!m_model_preview_ready && !m_finishing_workbench) return;
-        set_finishing_workbench(!m_finishing_workbench);
+    finishing_shortcut->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        if (m_finishing_workbench) {
+            set_finishing_workbench(false);
+            return;
+        }
+        if (workbench_access(m_model_preview_ready,
+                is_nonempty_model(m_displayed_model_path), m_preview_loading || m_preview_download_in_flight,
+                m_busy) != WorkbenchAccess::Available) {
+            show_input_hint(m_finishing_shortcut->GetToolTipText());
+            return;
+        }
+        open_model_finishing();
     });
     trace_stage("comparison_shortcuts");
 
@@ -1093,23 +1078,25 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     m_model_quality_panel->Hide();
     trace_stage("quality_controls");
     m_model_preview_message = new wxStaticText(
-        model_page, wxID_ANY, _L("拖动模型旋转，滚轮缩放；点击“完整显示模型”恢复全貌。上方缩放按钮用于图片。"));
+        model_page, wxID_ANY, _L("拖动模型旋转，滚轮缩放；点击“完整显示模型”恢复全貌。图片缩放请切换到图像页。"));
     m_model_preview_message->SetForegroundColour(wxColour(91, 104, 107));
     model_sizer->Add(m_model_preview_message, 0, wxEXPAND | wxALL, FromDIP(12));
     model_page->SetSizer(model_sizer);
     model_page->FitInside();
     m_preview_book->AddPage(model_page, _L("结果对照"), true);
     trace_stage("result_layout");
-    m_preview_book->AddPage(build_model_library(m_preview_book), _L("历史资产"), false);
+    m_library_view_page = build_model_library(m_preview_book);
+    m_preview_book->AddPage(m_library_view_page, _L("历史资产"), false);
     trace_stage("library_controls");
     sizer->Add(m_preview_book, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(18));
 
-    m_preview_message = new wxStaticText(panel, wxID_ANY, _L("请先输入描述或选择参考图。"));
+    m_preview_message = new Label(panel, _L("请先输入描述或选择参考图。"), LB_AUTO_WRAP);
+    m_preview_message->SetMinSize(wxSize(1, -1));
     m_preview_message->SetForegroundColour(wxColour(91, 104, 107));
     sizer->Add(m_preview_message, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(18));
 
-    m_result_summary = new wxStaticText(panel, wxID_ANY, _L("尚未生成模型。"));
-    m_result_summary->Wrap(FromDIP(520));
+    m_result_summary = new Label(panel, _L("尚未生成模型。"), LB_AUTO_WRAP);
+    m_result_summary->SetMinSize(wxSize(1, -1));
     sizer->Add(m_result_summary, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(18));
     panel->SetSizer(sizer);
 
@@ -1244,27 +1231,31 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
         }
         refresh_local_recolor_controls();
     });
-    m_preview_book->Bind(wxEVT_NOTEBOOK_PAGE_CHANGED, [this, panel, expand_images](wxBookCtrlEvent& event) {
+    m_preview_book->Bind(wxEVT_BOOKCTRL_PAGE_CHANGED, [this, panel, expand_images](wxBookCtrlEvent& event) {
         const int selection = event.GetSelection();
-        const bool result_page = selection == 0;
+        const bool result_page = selection == m_preview_book->FindPage(m_model_page);
+        const bool library_page = selection == m_preview_book->FindPage(m_library_view_page);
+        if (!m_selecting_workspace) {
+            m_workspace_view = library_page ? WorkspaceView::Library : result_page ? m_result_view : WorkspaceView::Model;
+        }
         m_zoom_out->Show(result_page && !m_finishing_workbench);
         m_zoom_fit->Show(result_page && !m_finishing_workbench);
         m_zoom_in->Show(result_page && !m_finishing_workbench);
         m_preview_zoom->Show(result_page && !m_finishing_workbench);
         expand_images->Show(result_page && !m_finishing_workbench);
-        if (result_page) show_model_comparison();
+
         m_preview_details_pane->Show(result_page && m_model_views_available);
         m_preview_kind->SetLabel(result_page ? (m_finishing_workbench ? _L("美颜工作台") : _L("结果对照"))
             : selection == 1 ? _L("历史资产") : _L("颜色匹配"));
-        if (selection == 1) {
+        if (library_page) {
             wxWeakRef<ModelGenerationPanel> weak(this);
             wxGetApp().CallAfter([weak] {
                 if (weak && !weak->m_shutdown) weak->load_library_entries();
             });
         } else cancel_library_loading();
         panel->Layout();
-        if (selection == 0 && m_model_preview != nullptr)
-            m_model_preview->refresh();
+        if (result_page && m_model_preview != nullptr) m_model_preview->refresh();
+        if (m_page_initialized && !m_selecting_workspace) refresh_controls();
         event.Skip();
     });
     trace_stage("event_bindings");
@@ -1273,41 +1264,170 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
 
 wxWindow* ModelGenerationPanel::build_model_library(wxWindow* parent)
 {
-    class LibraryScrolledWindow final : public wxScrolledWindow {
+    class LibraryScrollWindow final : public wxScrolledWindow {
     public:
         using wxScrolledWindow::wxScrolledWindow;
-        void ScrollWindow(int dx, int dy, const wxRect* rect = nullptr) override
-        {
-            wxScrolledWindow::ScrollWindow(dx, dy, rect);
-            // Repaint after native scrolling, as the adjacent result page does.
-            // Cached notebook/GL pixels must not become historical thumbnails.
-            Refresh();
+        bool Layout() override {
+            if (!GetSizer()) return wxScrolledWindow::Layout();
+            // wxScrollHelper's default layout uses client height when the native
+            // bar is hidden. Our separate track still needs the full virtual row.
+            const wxSize client = GetClientSize();
+            GetSizer()->SetDimension(CalcScrolledPosition(wxPoint(0, 0)),
+                wxSize(client.x, std::max(client.y, GetVirtualSize().y)));
+            return true;
         }
     };
-    auto* panel = new wxPanel(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_SIMPLE);
-    panel->SetBackgroundColour(*wxWHITE);
+    class LibrarySearch final : public TextInput, public AIThemeOwner {
+    public:
+        explicit LibrarySearch(wxWindow* parent) : TextInput(parent, wxEmptyString, wxEmptyString,
+            "figma-ux/library-search", wxDefaultPosition, parent->FromDIP(wxSize(340, 36))) {}
+        void apply_ai_theme(bool fonts) override {
+            using namespace ModelGenerationInputStyle;
+            SetBackgroundColour(panel);
+            const wxColour search_fill = field;
+            SetBackgroundColor(search_fill);
+            SetBorderColor(StateColor(std::make_pair(yellow, int(StateColor::Focused)),
+                std::make_pair(secondary, int(StateColor::Normal))));
+            SetCornerRadius(FromDIP(18));
+            SetTextColor(text);
+            GetTextCtrl()->SetBackgroundColour(search_fill);
+            GetTextCtrl()->SetForegroundColour(text);
+            if (fonts) { auto font = GetTextCtrl()->GetFont(); font.SetFaceName(font_face); GetTextCtrl()->SetFont(font); }
+        }
+    };
+    auto* panel = new ModelGenerationInputStyle::RoundedPanel(parent);
     auto* sizer = new wxBoxSizer(wxVERTICAL);
-    sizer->Add(section_label(panel, _L("历史资产")), 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(18));
-    m_library_import=new wxButton(panel,wxID_ANY,_L("导入模型…"));
-    m_library_import->Bind(wxEVT_BUTTON,[this](wxCommandEvent&){choose_local_model();});
-    sizer->Add(m_library_import,0,wxLEFT|wxRIGHT|wxTOP,FromDIP(18));
-    auto* session = new wxStaticText(
-        panel, wxID_ANY, _L("重开设计图继续创作，或加载模型预览和导入；每次重新设计分别保留。"));
-    session->SetForegroundColour(wxColour(91, 104, 107));
-    sizer->Add(session, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(18));
-    m_library_empty = new wxStaticText(panel, wxID_ANY, _L("还没有保存的设计图或模型。"));
-    m_library_empty->SetForegroundColour(wxColour(110, 122, 125));
-    sizer->Add(m_library_empty, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(18));
-    m_library_scroller = new LibraryScrolledWindow(panel, wxID_ANY, wxDefaultPosition, FromDIP(wxSize(-1, 180)), wxVSCROLL);
-    m_library_scroller->SetScrollRate(0, FromDIP(8));
+    auto action = [this, panel](const wxString& label, const wxString& icon = wxEmptyString) {
+        auto* button = new Button(panel, label, icon, 0, icon.empty() ? 0 : 20);
+        button->SetName("input_quiet");
+        button->SetMinSize(FromDIP(wxSize(-1, 36)));
+        button->SetPaddingSize(FromDIP(wxSize(14, 6)));
+        return button;
+    };
+    auto* heading = new wxBoxSizer(wxHORIZONTAL);
+    m_library_title = section_label(panel, _L("我的资产"));
+    heading->Add(m_library_title, 1, wxALIGN_CENTER_VERTICAL);
+    m_library_import = action(_L("导入模型"), "figma-ux/library-import");
+    m_library_import->SetClientObject(new LocalModelImportState);
+    m_library_import->SetToolTip(_L("从本机导入模型，原始文件保留。"));
+    m_library_import->Bind(wxEVT_BUTTON, [this](wxCommandEvent& event) {
+        const wxString before = m_status->GetLabel();
+        if (auto* local=local_model_import_state(m_library_import); local && local->cancel)
+            on_stop(event);
+        else choose_local_model();
+        show_library_action_feedback(before);
+    });
+    heading->Add(m_library_import, 0);
+    m_library_full_controls.push_back(m_library_import);
+    sizer->Add(heading, 0, wxEXPAND | wxALL, FromDIP(16));
+    auto* filter_row = new wxBoxSizer(wxHORIZONTAL);
+    auto* search_label = new wxStaticText(panel, wxID_ANY, _L("搜索名称 / Task ID"));
+    filter_row->Add(search_label, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(10));
+    m_library_full_controls.push_back(search_label);
+    auto* search = new LibrarySearch(panel);
+    search->SetMinSize(FromDIP(wxSize(160, 36)));
+    m_library_search = search->GetTextCtrl();
+    m_library_search->SetName("library_search_text");
+    m_library_search->SetToolTip(_L("搜索完整名称、本地 ID、Task ID 或转换任务 ID；不区分英文大小写。"));
+    filter_row->Add(search, 1, wxRIGHT | wxALIGN_CENTER_VERTICAL, FromDIP(12));
+    const std::array<wxString, 4> filters {_L("全部"), _L("我的图片"), _L("我的模型"), _L("美颜版本")};
+    for (size_t i = 0; i < filters.size(); ++i) {
+        auto* button = action(filters[i]);
+        button->SetName(i == 0 ? "input_quiet" : "input_field");
+        m_library_filter_buttons[i] = button;
+        m_library_full_controls.push_back(button);
+        button->Bind(wxEVT_BUTTON, [this, i](wxCommandEvent&) {
+            m_library_category = static_cast<ModelLibraryCategory>(i);
+            apply_library_filter();
+        });
+        filter_row->Add(button, 0, wxRIGHT, FromDIP(8));
+    }
+    auto* clear = action(_L("重置筛选"));
+    clear->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        m_library_search->ChangeValue(wxEmptyString);
+        m_library_category = ModelLibraryCategory::All;
+        apply_library_filter();
+    });
+    filter_row->Add(clear, 0);
+    m_library_full_controls.push_back(clear);
+    sizer->Add(filter_row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(16));
+    m_library_filter_timer.SetOwner(this);
+    Bind(wxEVT_TIMER, [this](wxTimerEvent&) { apply_library_filter(); }, m_library_filter_timer.GetId());
+    m_library_search->Bind(wxEVT_TEXT, [this](wxCommandEvent&) { m_library_filter_timer.StartOnce(250); });
+    m_library_search->Bind(wxEVT_TEXT_ENTER, [this](wxCommandEvent&) { apply_library_filter(); });
+    m_library_search->Bind(wxEVT_KEY_DOWN, [this](wxKeyEvent& event) {
+        if (event.GetKeyCode() == WXK_ESCAPE && !m_library_search->IsEmpty()) {
+            m_library_search->ChangeValue(wxEmptyString);
+            apply_library_filter();
+        } else event.Skip();
+    });
+    auto* session = new wxStaticText(panel, wxID_ANY,
+        _L("本地设计与模型 · 单击选中，再加载使用；原件和已保存版本分别保留。"));
+    session->SetName("input_secondary");
+    m_library_full_controls.push_back(session);
+    sizer->Add(session, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(16));
+    m_library_empty = new wxStaticText(panel, wxID_ANY, _L("还没有保存的设计图或模型。"), wxDefaultPosition, wxSize(1, -1), wxST_ELLIPSIZE_END | wxST_NO_AUTORESIZE);
+    m_library_empty->SetName("input_secondary");
+    sizer->Add(m_library_empty, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(16));
+    m_library_scroller = new LibraryScrollWindow(panel, wxID_ANY, wxDefaultPosition,
+        FromDIP(wxSize(-1, 180)), wxVSCROLL | wxBORDER_NONE | wxCLIP_CHILDREN);
+    m_library_scroller->SetMinSize(wxSize(1, 1));
+    m_library_scroller->SetScrollRate(0, FromDIP(12));
+    // Keep scrolling native, but let the adjacent dark track own its layout.
+    // An overlapping sibling cannot reliably cover MSW non-client repaints.
+    m_library_scroller->ShowScrollbars(wxSHOW_SB_DEFAULT, wxSHOW_SB_NEVER);
     m_library_sizer = new wxBoxSizer(wxVERTICAL);
     m_library_scroller->SetSizer(m_library_sizer);
-    sizer->Add(m_library_scroller, 1, wxEXPAND | wxALL, FromDIP(12));
+    m_library_scroller->Bind(wxEVT_CHAR_HOOK, [this](wxKeyEvent& event) {
+        const int key = event.GetKeyCode();
+        if (event.HasModifiers() || (key != WXK_PAGEUP && key != WXK_PAGEDOWN &&
+            key != WXK_HOME && key != WXK_END)) {
+            event.Skip();
+            return;
+        }
+        // On MSW a thumbnail panel's PageUp/Down can become notebook navigation.
+        // Only the card list owns these unmodified keys; search and shortcuts
+        // outside this scroller keep their native handling.
+        int unit_x = 0, unit_y = 0, view_x = 0, view_y = 0;
+        m_library_scroller->GetScrollPixelsPerUnit(&unit_x, &unit_y);
+        m_library_scroller->GetViewStart(&view_x, &view_y);
+        if (unit_y <= 0) return;
+        const int height = m_library_scroller->GetClientSize().y;
+        const int last = (std::max(0, m_library_scroller->GetVirtualSize().y - height) + unit_y - 1) / unit_y;
+        const int page = std::max(1, height / unit_y - 1);
+        const int next = key == WXK_HOME ? 0 : key == WXK_END ? last :
+            view_y + (key == WXK_PAGEUP ? -page : page);
+        m_library_scroller->Scroll(view_x, std::clamp(next, 0, last));
+        if (m_library_scroll_track) m_library_scroll_track->Refresh();
+    });
+    auto* scroll_row = new wxBoxSizer(wxHORIZONTAL);
+    scroll_row->Add(m_library_scroller, 1, wxEXPAND);
+    auto* scroll_track = new DarkScrollTrack(panel, m_library_scroller, true);
+    m_library_scroll_track = scroll_track;
+    scroll_track->SetMinSize(FromDIP(wxSize(17, 1)));
+    scroll_row->Add(scroll_track, 0, wxEXPAND);
+    sizer->Add(scroll_row, 1, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(16));
+    const auto update_track = [scroll_track](wxScrollWinEvent& event) {
+        scroll_track->Refresh();
+        event.Skip();
+    };
+    m_library_scroller->Bind(wxEVT_SCROLLWIN_TOP, update_track);
+    m_library_scroller->Bind(wxEVT_SCROLLWIN_BOTTOM, update_track);
+    m_library_scroller->Bind(wxEVT_SCROLLWIN_LINEUP, update_track);
+    m_library_scroller->Bind(wxEVT_SCROLLWIN_LINEDOWN, update_track);
+    m_library_scroller->Bind(wxEVT_SCROLLWIN_PAGEUP, update_track);
+    m_library_scroller->Bind(wxEVT_SCROLLWIN_PAGEDOWN, update_track);
+    m_library_scroller->Bind(wxEVT_SCROLLWIN_THUMBTRACK, update_track);
+    m_library_scroller->Bind(wxEVT_SCROLLWIN_THUMBRELEASE, update_track);
     auto* navigation = new wxBoxSizer(wxHORIZONTAL);
-    auto* refresh = new wxButton(panel, wxID_ANY, _L("刷新"));
+    auto* refresh = action(_L("刷新"));
     refresh->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { load_library_entries(); });
-    navigation->Add(refresh, 0, wxRIGHT, FromDIP(8));
-    m_library_previous = new wxButton(panel, wxID_ANY, _L("上一页"));
+    navigation->Add(refresh, 0, wxRIGHT, FromDIP(12));
+    m_library_full_controls.push_back(refresh);
+    m_library_page_label = new wxStaticText(panel, wxID_ANY, _L("正在读取本地资产…"));
+    m_library_page_label->SetName("input_secondary");
+    navigation->Add(m_library_page_label, 1, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(12));
+    m_library_previous = action(_L("上一页"));
     m_library_previous->Disable();
     m_library_previous->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         if (m_library_page == 0) return;
@@ -1316,20 +1436,87 @@ wxWindow* ModelGenerationPanel::build_model_library(wxWindow* parent)
         refresh_library();
     });
     navigation->Add(m_library_previous, 0, wxRIGHT, FromDIP(8));
-    m_library_page_label = new wxStaticText(panel, wxID_ANY, _L("历史资产尚未加载"));
-    navigation->Add(m_library_page_label, 1, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
-    m_library_next = new wxButton(panel, wxID_ANY, _L("下一页"));
+    m_library_next = action(_L("下一页"));
     m_library_next->Disable();
     m_library_next->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-        if ((m_library_page + 1) * m_library_page_size >= m_library_entries.size()) return;
+        if ((m_library_page + 1) * m_library_page_size >= m_library_filtered_indices.size()) return;
         ++m_library_page;
         m_library_scroller->Scroll(0, 0);
         refresh_library();
     });
     navigation->Add(m_library_next, 0);
-    sizer->Add(navigation, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
+    sizer->Add(navigation, 0, wxEXPAND | wxALL, FromDIP(16));
+    m_library_full_controls.push_back(m_library_page_label);
+    m_library_full_controls.push_back(m_library_previous);
+    m_library_full_controls.push_back(m_library_next);
+    m_library_drawer_footer = new ModelGenerationInputStyle::RoundedPanel(panel);
+    auto* drawer_footer = new wxBoxSizer(wxVERTICAL);
+    m_library_drawer_selection = new wxStaticText(m_library_drawer_footer, wxID_ANY,
+        _L("选择图片，再打开历史设计"), wxDefaultPosition, FromDIP(wxSize(1, 22)), wxST_ELLIPSIZE_END);
+    drawer_footer->Add(m_library_drawer_selection, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
+    m_library_drawer_use = new Button(m_library_drawer_footer, _L("打开设计"));
+    m_library_drawer_use->SetName("input_primary");
+    m_library_drawer_use->SetMinSize(FromDIP(wxSize(-1, 36)));
+    m_library_drawer_use->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        if (m_busy || m_design_history_loading || m_finishing_running) return;
+        const auto entry = std::find_if(m_library_entries.begin(), m_library_entries.end(),
+            [this](const auto& value) { return value.job_id == m_library_selected_asset_id; });
+        if (entry == m_library_entries.end()) return;
+        const wxString before = m_status->GetLabel();
+        if (entry->design_only) load_design_library_entry(entry->job_id);
+        else {
+            // Copy the path before callbacks can rebuild the shared snapshot.
+            const auto image = entry->ai_image_path;
+            if (replace_input_image(image)) {
+                set_library_drawer(false);
+                select_workspace_view(ModelGenerationPresentation::WorkspaceView::Image);
+            }
+        }
+        show_library_action_feedback(before);
+    });
+    drawer_footer->Add(m_library_drawer_use, 0, wxEXPAND | wxBOTTOM, FromDIP(12));
+    auto* drawer_pager = new wxBoxSizer(wxHORIZONTAL);
+    for (size_t i = 0; i < 4; ++i) {
+        if (i == 2) {
+            m_library_drawer_pages = new wxStaticText(m_library_drawer_footer, wxID_ANY, "1 / 1");
+            drawer_pager->Add(m_library_drawer_pages, 1, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, FromDIP(12));
+        }
+        auto* button = new Button(m_library_drawer_footer, wxEmptyString,
+            i == 0 || i == 3 ? "figma-ux/drawer-arrows" : "figma-ux/drawer-arrow", 0, 16);
+        if (i < 2) {
+            auto bitmap = create_scaled_bitmap(i == 0 ? "figma-ux/drawer-arrows" : "figma-ux/drawer-arrow", panel, 16);
+            // Same original asset; horizontal reflection is the Figma wrapper transform.
+            button->SetIcon(wxBitmap(bitmap.ConvertToImage().Mirror(true)));
+        }
+        button->SetName("input_field");
+        button->SetMinSize(FromDIP(wxSize(32, 36)));
+        button->SetPaddingSize(FromDIP(wxSize(8, 6)));
+        const std::array<wxString, 4> labels {_L("第一页"), _L("上一页"), _L("下一页"), _L("最后一页")};
+        button->SetToolTip(labels[i]);
+        button->Bind(wxEVT_BUTTON, [this, i](wxCommandEvent&) {
+            const size_t last = m_library_filtered_indices.empty() ? 0 : (m_library_filtered_indices.size()-1)/m_library_page_size;
+            m_library_page = i == 0 ? 0 : i == 1 ? (m_library_page ? m_library_page-1 : 0) : i == 2 ? std::min(last,m_library_page+1) : last;
+            m_library_scroller->Scroll(0, 0);
+            refresh_library();
+        });
+        button->SetName("input_quiet");
+        m_library_drawer_pager[i] = button;
+        drawer_pager->Add(button, 0, wxLEFT, FromDIP(6));
+    }
+    drawer_footer->Add(drawer_pager, 0, wxEXPAND);
+    m_library_drawer_footer->SetSizer(drawer_footer);
+    sizer->Add(m_library_drawer_footer, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(16));
+    m_library_drawer_footer->Hide();
     m_library_timer.SetOwner(this);
     Bind(wxEVT_TIMER, &ModelGenerationPanel::on_library_timer, this, m_library_timer.GetId());
+    m_library_scroller->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
+        if (m_library_refresh_pending) cover_library_scroll_track_during_layout();
+        else sync_library_scroll_track();
+        // Reflow only this page after native resize settles; do not rescan disk.
+        if (!m_shutdown && !m_library_refresh_pending && m_library_scroller->IsShownOnScreen())
+            m_library_timer.Start(100);
+        event.Skip();
+    });
     m_library_scroller->Bind(wxEVT_SHOW, [this](wxShowEvent& event) {
         if (!event.IsShown()) cancel_library_loading();
         event.Skip();
@@ -1338,8 +1525,139 @@ wxWindow* ModelGenerationPanel::build_model_library(wxWindow* parent)
     return panel;
 }
 
+void ModelGenerationPanel::sync_library_scroll_track()
+{
+    if (m_library_scroll_track && m_library_scroller)
+        static_cast<DarkScrollTrack*>(m_library_scroll_track)->sync_geometry();
+}
+
+void ModelGenerationPanel::cover_library_scroll_track_during_layout()
+{
+    if (m_library_scroll_track && m_library_scroller)
+        static_cast<DarkScrollTrack*>(m_library_scroll_track)->cover_during_layout();
+}
+
+void ModelGenerationPanel::attach_model_overview_scroll_track()
+{
+    auto* overview = static_cast<wxScrolledWindow*>(m_model_overview);
+    auto* track = new DarkScrollTrack(overview->GetParent(), overview);
+    m_model_overview_scroll_track = track;
+    track->Hide();
+    const auto update_track = [track](wxScrollWinEvent& event) {
+        track->Refresh();
+        event.Skip();
+    };
+    overview->Bind(wxEVT_SCROLLWIN_TOP, update_track);
+    overview->Bind(wxEVT_SCROLLWIN_BOTTOM, update_track);
+    overview->Bind(wxEVT_SCROLLWIN_LINEUP, update_track);
+    overview->Bind(wxEVT_SCROLLWIN_LINEDOWN, update_track);
+    overview->Bind(wxEVT_SCROLLWIN_PAGEUP, update_track);
+    overview->Bind(wxEVT_SCROLLWIN_PAGEDOWN, update_track);
+    overview->Bind(wxEVT_SCROLLWIN_THUMBTRACK, update_track);
+    overview->Bind(wxEVT_SCROLLWIN_THUMBRELEASE, update_track);
+    overview->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
+        sync_model_overview_scroll_track();
+        event.Skip();
+    });
+}
+
+void ModelGenerationPanel::sync_model_overview_scroll_track()
+{
+    if (!m_model_overview_scroll_track || !m_model_overview) return;
+    if (!m_model_overview->IsShown()) {
+        m_model_overview_scroll_track->Hide();
+        return;
+    }
+    static_cast<DarkScrollTrack*>(m_model_overview_scroll_track)->sync_geometry();
+}
+
+void ModelGenerationPanel::attach_input_form_scroll_track()
+{
+    auto* form = static_cast<wxScrolledWindow*>(m_input_form);
+    auto* track = new DarkScrollTrack(form->GetParent(), form);
+    m_input_form_scroll_track = track;
+    track->Hide();
+    const auto update_track = [track](wxScrollWinEvent& event) {
+        track->Refresh();
+        event.Skip();
+    };
+    form->Bind(wxEVT_SCROLLWIN_TOP, update_track);
+    form->Bind(wxEVT_SCROLLWIN_BOTTOM, update_track);
+    form->Bind(wxEVT_SCROLLWIN_LINEUP, update_track);
+    form->Bind(wxEVT_SCROLLWIN_LINEDOWN, update_track);
+    form->Bind(wxEVT_SCROLLWIN_PAGEUP, update_track);
+    form->Bind(wxEVT_SCROLLWIN_PAGEDOWN, update_track);
+    form->Bind(wxEVT_SCROLLWIN_THUMBTRACK, update_track);
+    form->Bind(wxEVT_SCROLLWIN_THUMBRELEASE, update_track);
+    form->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
+        sync_input_form_scroll_track();
+        event.Skip();
+    });
+    form->Bind(wxEVT_PAINT, [this](wxPaintEvent& event) {
+        event.Skip();
+        wxWeakRef<ModelGenerationPanel> weak(this);
+        CallAfter([weak] {
+            if (weak && weak->m_input_form->IsShownOnScreen())
+                weak->sync_input_form_scroll_track();
+        });
+    });
+}
+
+void ModelGenerationPanel::sync_input_form_scroll_track()
+{
+    if (!m_input_form_scroll_track || !m_input_form) return;
+    if (!m_input_form->IsShownOnScreen()) {
+        m_input_form_scroll_track->Hide();
+        return;
+    }
+    static_cast<DarkScrollTrack*>(m_input_form_scroll_track)->sync_geometry();
+}
+
+void ModelGenerationPanel::attach_finishing_editor_scroll_track()
+{
+    auto* editor = m_finishing_editor_scroll;
+    auto* track = new DarkScrollTrack(editor->GetParent(), editor);
+    m_finishing_editor_scroll_track = track;
+    track->Hide();
+    const auto update_track = [track](wxScrollWinEvent& event) {
+        track->Refresh();
+        event.Skip();
+    };
+    editor->Bind(wxEVT_SCROLLWIN_TOP, update_track);
+    editor->Bind(wxEVT_SCROLLWIN_BOTTOM, update_track);
+    editor->Bind(wxEVT_SCROLLWIN_LINEUP, update_track);
+    editor->Bind(wxEVT_SCROLLWIN_LINEDOWN, update_track);
+    editor->Bind(wxEVT_SCROLLWIN_PAGEUP, update_track);
+    editor->Bind(wxEVT_SCROLLWIN_PAGEDOWN, update_track);
+    editor->Bind(wxEVT_SCROLLWIN_THUMBTRACK, update_track);
+    editor->Bind(wxEVT_SCROLLWIN_THUMBRELEASE, update_track);
+    editor->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
+        sync_finishing_editor_scroll_track();
+        event.Skip();
+    });
+    editor->Bind(wxEVT_PAINT, [this](wxPaintEvent& event) {
+        event.Skip();
+        wxWeakRef<ModelGenerationPanel> weak(this);
+        CallAfter([weak] {
+            if (weak && weak->m_finishing_editor_scroll->IsShownOnScreen())
+                weak->sync_finishing_editor_scroll_track();
+        });
+    });
+}
+
+void ModelGenerationPanel::sync_finishing_editor_scroll_track()
+{
+    if (!m_finishing_editor_scroll_track || !m_finishing_editor_scroll) return;
+    if (!m_finishing_panel->IsShown()) {
+        m_finishing_editor_scroll_track->Hide();
+        return;
+    }
+    static_cast<DarkScrollTrack*>(m_finishing_editor_scroll_track)->sync_geometry();
+}
+
 void ModelGenerationPanel::on_choose_image(wxCommandEvent&)
 {
+    if (!input_editable()) return;
     wxString initial_directory;
     const boost::filesystem::path generated_root = generated_models_root();
     const auto is_user_image_directory = [&generated_root](const boost::filesystem::path& directory) {
@@ -1367,16 +1685,89 @@ void ModelGenerationPanel::on_choose_image(wxCommandEvent&)
                         _L("PNG 和 JPEG 图片 (*.png;*.jpg;*.jpeg)|*.png;*.jpg;*.jpeg"), wxFD_OPEN | wxFD_FILE_MUST_EXIST);
     if (dialog.ShowModal() != wxID_OK)
         return;
-    boost::filesystem::path path(dialog.GetPath().ToStdWstring());
-    if (!is_supported_image(path)) {
-        MessageDialog error(this, _L("请选择可完整打开、边长至少 64 px 且不超过 20 MB 的 PNG 或 JPEG 图片。"),
-                            wxEmptyString, wxOK | wxICON_ERROR);
-        error.ShowModal();
+    replace_input_image(boost::filesystem::path(dialog.GetPath().ToStdWstring()));
+}
+
+bool ModelGenerationPanel::input_editable() const
+{
+    return m_page_initialized && !m_shutdown && !m_busy && !m_preview_download_in_flight &&
+           !m_preview_loading && !m_finishing_running && !m_design_history_loading && !m_saving_generation_options;
+}
+
+bool ModelGenerationPanel::accept_input_files(const wxArrayString& paths)
+{
+    if (!input_editable()) return false;
+    if (paths.size() != 1) {
+        show_input_hint(_L("一次只能选择一张参考图；当前图片未改变。"));
+        return false;
+    }
+    return replace_input_image(boost::filesystem::path(paths.front().ToStdWstring()));
+}
+
+void ModelGenerationPanel::paste_input_image()
+{
+    if (!input_editable()) return;
+    wxClipboardLocker clipboard;
+    if (!clipboard) {
+        show_input_hint(_L("暂时无法读取剪贴板，请稍后重试。"));
         return;
     }
-    if (!m_job_id.empty() && !m_awaiting_palette_confirmation)
+    // File copies retain the original format, size and EXIF; don't re-encode them.
+    if (wxTheClipboard->IsSupported(wxDF_FILENAME)) {
+        wxFileDataObject files;
+        if (wxTheClipboard->GetData(files)) accept_input_files(files.GetFilenames());
+        return;
+    }
+    if (!wxTheClipboard->IsSupported(wxDF_BITMAP)) {
+        show_input_hint(_L("剪贴板中没有图片。文字请粘贴到描述词框。"));
+        return;
+    }
+    wxBitmapDataObject bitmap;
+    if (!wxTheClipboard->GetData(bitmap) || !bitmap.GetBitmap().IsOk()) {
+        show_input_hint(_L("无法读取剪贴板图片；当前图片未改变。"));
+        return;
+    }
+    const auto size = bitmap.GetBitmap().GetSize();
+    if (size.x < 64 || size.y < 64 || uint64_t(size.x) * uint64_t(size.y) > MAX_INPUT_IMAGE_PIXELS) {
+        show_input_hint(_L("图片宽高至少为 64 px，总像素不能超过 1677 万；当前图片未改变。"));
+        return;
+    }
+    const auto path = temp_path("clipboard-" + new_request_id(), "png");
+    const bool saved = bitmap.GetBitmap().ConvertToImage().SaveFile(path.wstring(), wxBITMAP_TYPE_PNG);
+    if (!saved) show_input_hint(_L("无法保存剪贴板图片，请检查本地目录空间和权限；当前图片未改变。"));
+    if (!saved || !replace_input_image(path)) {
+        boost::system::error_code ignored;
+        boost::filesystem::remove(path, ignored);
+    }
+}
+
+bool ModelGenerationPanel::replace_input_image(const boost::filesystem::path& path)
+{
+    if (!input_editable()) return false;
+    wxImage image;
+    const auto error = prepare_model_input_replacement(path, image,
+        [this] { return !preserve_unsaved_finishing(); });
+    if (error == ImageInputError::Cancelled) return false;
+    if (error != ImageInputError::None) {
+        wxString reason;
+        switch (error) {
+        case ImageInputError::Unreadable: reason = _L("图片不存在、为空或无法读取。"); break;
+        case ImageInputError::Unsupported: reason = _L("仅支持 PNG/JPEG，暂不支持 WebP 等格式。"); break;
+        case ImageInputError::ExtensionMismatch: reason = _L("图片内容与文件后缀不一致，请用图片软件重新导出。"); break;
+        case ImageInputError::TooLarge: reason = _L("图片超过 20 MB，请压缩后重试。"); break;
+        case ImageInputError::TooSmall: reason = _L("图片宽和高均需至少 64 px。"); break;
+        case ImageInputError::TooManyPixels: reason = _L("图片总像素超过 1677 万，请缩小分辨率后重试。"); break;
+        default: reason = _L("图片损坏或无法完整解码，请重新导出 PNG/JPEG。"); break;
+        }
+        show_input_hint(reason + _L("\n当前图片和描述未改变。"));
+        return false;
+    }
+    // History and local imports have a ready model but no active job ID.
+    // Replacing their reference must also detach that model from the new input.
+    if (m_ready || m_model_preview_ready || (!m_job_id.empty() && !m_awaiting_palette_confirmation))
         reset(true);
-    m_selected_image_path = std::move(path);
+    m_selected_image_path = path;
+    if (m_prepare_base) m_prepare_base->SetValue(false);
     m_style_user_selected = false;
     m_style_recommendation_available = false;
     if (wxGetApp().app_config != nullptr)
@@ -1391,24 +1782,32 @@ void ModelGenerationPanel::on_choose_image(wxCommandEvent&)
     m_strict_preview_available = false;
     m_model_views_available = false;
     m_heatmap_available = false;
-    const size_t bytes = boost::filesystem::file_size(m_selected_image_path);
+    boost::system::error_code size_error;
+    const auto bytes = boost::filesystem::file_size(m_selected_image_path, size_error);
     m_selected_image->SetLabel(wxString::FromUTF8(m_selected_image_path.filename().string()) +
-                               wxString::Format(" (%llu KB)", static_cast<unsigned long long>((bytes + 1023) / 1024)));
-    show_selected_image_preview();
+                               (size_error ? wxString() : wxString::Format(" (%llu KB)", static_cast<unsigned long long>((bytes + 1023) / 1024))));
+    m_status->SetLabel(_L("空闲"));
+    show_selected_image_preview(&image);
+    select_workspace_view(WorkspaceView::Image);
     request_style_recommendation();
     refresh_controls();
+    return true;
 }
 
 void ModelGenerationPanel::on_clear_image(wxCommandEvent&)
 {
-    if (!m_job_id.empty() && !m_awaiting_palette_confirmation)
+    if (!input_editable()) return;
+    if (preserve_unsaved_finishing()) return;
+    if (m_ready || m_model_preview_ready || (!m_job_id.empty() && !m_awaiting_palette_confirmation))
         reset(true);
     m_selected_image_path.clear();
     ++m_style_recommendation_sequence;
+    if (m_prepare_base) m_prepare_base->SetValue(false);
     m_style_recommendation_loading = false;
     m_style_recommendation_available = false;
     m_style_recommendation = {};
     m_selected_image->SetLabel(_L("未选择图片"));
+    m_status->SetLabel(_L("空闲"));
     set_preview_empty(_L("请输入描述、选择参考图，或同时提供两者。"));
     refresh_controls();
 }
@@ -1418,6 +1817,10 @@ void ModelGenerationPanel::on_recommend_palette(wxCommandEvent&)
     if (m_busy || m_shutdown)
         return;
     const std::string prompt = m_prompt->GetValue().ToUTF8().data();
+    if (prompt.size() > MAX_MODEL_INPUT_BYTES) {
+        show_input_hint(_L("描述超过 2000 字节，请精简后生成；文字已完整保留。"), m_prompt);
+        return;
+    }
     const bool image_mode = has_image_input();
     const size_t palette_color_count = current_palette_color_count();
     if (prompt.empty() && !image_mode) {
@@ -1523,13 +1926,26 @@ void ModelGenerationPanel::on_confirm_recommended_palette(wxCommandEvent& event)
 
 void ModelGenerationPanel::on_preprocess(wxCommandEvent& event)
 {
-    if (m_busy || m_shutdown)
+    if (!input_editable() || !m_service_available)
         return;
+    if (can_reload_design_preview()) {
+        m_preview_download_cancelled = false;
+        m_style_preview_placeholder = _L("正在加载 AI 设计图...");
+        m_preview_message->SetLabel(_L("正在重新加载当前任务的设计图；不会创建新生成任务。"));
+        m_status->SetLabel(_L("正在重新加载已生成的 2D 设计图..."));
+        download_preview(m_sequence);
+        refresh_controls();
+        return;
+    }
     if (current_style().empty()) {
         show_input_hint(_L("请先选择生成风格。"), m_style);
         return;
     }
     const std::string entered_prompt = m_prompt->GetValue().ToUTF8().data();
+    if (entered_prompt.size() > MAX_MODEL_INPUT_BYTES) {
+        show_input_hint(_L("描述超过 2000 字节，请精简后生成；文字已完整保留。"), m_prompt);
+        return;
+    }
     const bool image_mode = has_image_input();
     if (entered_prompt.empty() && !image_mode) {
         show_input_hint(_L("请先输入描述或选择参考图。"), m_prompt);
@@ -1566,6 +1982,19 @@ void ModelGenerationPanel::on_preprocess(wxCommandEvent& event)
         return;
     }
     const bool regenerating_preview = m_style_preview_ready || m_awaiting_confirmation;
+    const auto confirmation_inputs = [this]() {
+        const auto options = current_generation_options();
+        const auto settings = current_print_settings();
+        return nlohmann::json::array({m_sequence, m_job_id, m_prompt->GetValue().ToStdString(),
+            m_selected_image_path.generic_string(), current_style(), current_custom_style(),
+            use_printable_colors(), current_palette(), current_palette_roles(), current_palette_color_count(),
+            m_palette_recommendation_confirmed, m_awaiting_palette_confirmation,
+            current_generation_profile(), options.provider, options.face_limit, options.geometry_quality,
+            options.texture_quality, options.output_format, settings.width_mm, settings.nozzle_mm,
+            settings.line_width_mm, settings.minimum_feature_mm, settings.color_distance,
+            settings.print_mode, settings.shadow_color});
+    };
+    const auto confirmed_inputs = confirmation_inputs();
     if (image_mode) {
         static const std::regex absolute_path(R"(^\s*(?:[A-Za-z]:[\\/]|/).*)");
         if (!entered_prompt.empty() && std::regex_match(entered_prompt, absolute_path)) {
@@ -1583,21 +2012,28 @@ void ModelGenerationPanel::on_preprocess(wxCommandEvent& event)
         }
         if ((current_style() == "realistic" || current_style() == "portrait_sketch") && use_printable_colors())
             message << _L("\n若识别到真人，优先保留脸型、五官和姿态。");
-        MessageDialog confirm(this, message,
+        message += _L("\n\n费用未报价，金额未知；实际按图片服务账户套餐或账单结算。\n取消不发送请求；停止只停止本地等待，远端请求可能继续运行并计费。");
+        ModelGenerationConfirmation confirm(this, message,
                               regenerating_preview ? _L("重新生成图片预览") : _L("生成风格预览"),
-                              wxYES_NO | wxICON_QUESTION);
+                              _L("生成 2D 设计图"));
         if (confirm.ShowModal() != wxID_YES)
             return;
     } else {
-        MessageDialog confirm(this,
-            use_printable_colors()
+        wxString message = use_printable_colors()
                 ? _L("要根据文字生成 AI 设计图吗？\n\n会生成适合 3D 建模的高质量设计图，并保留所选配色供后续模型使用。此操作消耗 API 额度。")
-                : _L("要根据文字生成 AI 设计图吗？\n\n会先生成并检查图片，再用于后续 3D 生成；此操作可能消耗 API 额度。"),
-            _L("生成图片预览"), wxYES_NO | wxICON_QUESTION);
+                : _L("要根据文字生成 AI 设计图吗？\n\n会先生成并检查图片，再用于后续 3D 生成；此操作可能消耗 API 额度。");
+        message += _L("\n\n费用未报价，金额未知；实际按图片服务账户套餐或账单结算。\n取消不发送请求；停止只停止本地等待，远端请求可能继续运行并计费。");
+        ModelGenerationConfirmation confirm(this, message, _L("生成图片预览"), _L("生成 2D 设计图"));
         if (confirm.ShowModal() != wxID_YES)
             return;
     }
 
+    // A modal keeps dispatching service/restore events. Never submit a mixture
+    // of the input shown in the confirmation and a newer owner state.
+    if (!input_editable() || !m_service_available || confirmation_inputs() != confirmed_inputs) {
+        show_input_hint(_L("任务或输入已变化，本次没有提交。请核对当前输入后重新确认。"));
+        return;
+    }
     const std::string previous_job_id = m_job_id;
     const bool palette_was_ai_recommended = ai_palette_source && m_palette_recommendation_confirmed;
     if (regenerating_preview)
@@ -1740,6 +2176,16 @@ void ModelGenerationPanel::on_retexture_from_library(const std::string& geometry
 void ModelGenerationPanel::on_stop(wxCommandEvent&)
 {
     if (m_saving_generation_options) return;
+    if (auto* local = local_model_import_state(m_library_import); local && local->cancel) {
+        local->cancel->store(true);
+        const wxString progress = local->open_beauty
+            ? _L("正在取消创建副本，原模型和当前编辑保持不变……")
+            : _L("正在取消本地导入，原文件和当前模型保持不变……");
+        m_status->SetLabel(progress);
+        if (local->open_beauty) m_model_preview_message->SetLabel(progress);
+        refresh_controls();
+        return;
+    }
     if (m_design_history_loading) {
         ++m_design_history_sequence;
         m_design_history_loading = false;
@@ -1768,9 +2214,9 @@ void ModelGenerationPanel::on_stop(wxCommandEvent&)
             m_artifact_download_started = false;
         if (m_ready) m_busy = false;
         m_style_preview_placeholder = _L("预览加载已取消");
-        m_preview_message->SetLabel(_L("图片预览加载已取消，输入已保留；可重新生成图片预览。"));
+        m_preview_message->SetLabel(_L("图片预览加载已取消，输入已保留；可重新加载已生成的设计图。"));
         m_status->SetLabel(_L("已取消图片预览加载，未停止远端任务。"));
-        m_result_summary->SetLabel(_L("输入和服务端结果已保留，可重新生成或从历史资产恢复。"));
+        m_result_summary->SetLabel(_L("输入和服务端结果已保留；重新加载只下载当前任务结果，不会创建新生成任务。"));
         update_preview_view();
         refresh_controls();
         if (m_busy) m_poll_timer.StartOnce(1500);
@@ -1816,17 +2262,34 @@ void ModelGenerationPanel::on_retry_service(wxCommandEvent&)
     m_service_retry_handler();
 }
 
-void ModelGenerationPanel::on_import(wxCommandEvent&)
+void ModelGenerationPanel::on_import(wxCommandEvent& event)
 {
+    if (m_model_preview_ready && m_workspace_view == WorkspaceView::Image) {
+        dispatch_workspace_action(WorkspaceAction::ShowModel);
+        return;
+    }
+    if (m_model_preview_ready && !m_ready && m_job_id.empty() && m_prepare_navigation &&
+        !m_last_imported_model_path.empty() && m_last_imported_model_path == m_displayed_model_path) {
+        dispatch_workspace_action(WorkspaceAction::Prepare);
+        return;
+    }
     if (m_finishing_running || !m_finishing_candidate.empty()) return;
+    if (preserve_unsaved_finishing()) return;
     if (m_ready && !m_model_preview_ready && !m_artifact_download_started) {
         m_artifact_download_started = true;
         download_model_preview(m_sequence);
         return;
     }
-    download_and_import();
+    download_and_import(wxDynamicCast(event.GetEventObject(), wxWindow));
 }
 void ModelGenerationPanel::on_poll(wxTimerEvent&) { schedule_poll(); }
+
+bool ModelGenerationPanel::can_reload_design_preview() const
+{
+    return m_job_preview_expected && !m_preview_download_in_flight && !m_restoring_input &&
+        design_preview_reload_available(m_job_id, job_inputs_match(),
+                                        m_preview_output_available, m_style_preview_ready);
+}
 
 void ModelGenerationPanel::download_preview(uint64_t sequence)
 {
@@ -1890,7 +2353,8 @@ void ModelGenerationPanel::download_preview(uint64_t sequence)
                     weak->m_preview_download_cancelled = false;
                     weak->m_preview_path.clear();
                     weak->m_style_preview_ready = false;
-                    weak->m_preview_output_available = false;
+                    // A failed local GET does not revoke the saved server result.
+                    // Keep it reloadable without another paid generation request.
                     weak->show_input_hint(_L("风格预览下载失败：") + wxString::FromUTF8(error));
                     weak->show_preview_failure(_L("AI 设计图下载未完成，输入已保留。"));
                     weak->m_client.record_journey_event("preview_failed", weak->m_job_id);
@@ -1945,7 +2409,7 @@ void ModelGenerationPanel::download_auxiliary_previews(uint64_t sequence, int st
         });
 }
 
-void ModelGenerationPanel::download_and_import()
+void ModelGenerationPanel::download_and_import(wxWindow* entry_window)
 {
     if (!m_ready || !m_model_preview_ready || m_busy)
         return;
@@ -1975,6 +2439,8 @@ void ModelGenerationPanel::download_and_import()
         return;
     }
 
+    // Capture the initiating control before disabling the import actions.
+    const wxWeakRef<wxWindow> entry(entry_window);
     m_busy = true;
     update_progress(96, 5, _L("导入准备页"));
     m_workflow_phase->SetLabel(_L("导入准备页"));
@@ -1984,31 +2450,45 @@ void ModelGenerationPanel::download_and_import()
     refresh_controls();
 
     if (!local_path.empty()) {
-        import_local_artifact(local_path, sequence);
+        import_local_artifact(local_path, sequence, entry);
         return;
     }
 
     wxWeakRef<ModelGenerationPanel> weak(this);
     m_client.download_artifact(m_job_id, m_artifact_format, m_artifact_path,
-        [weak, sequence](boost::filesystem::path path) mutable {
+        [weak, sequence, entry](boost::filesystem::path path) mutable {
             if (!weak) return;
-            wxGetApp().CallAfter([weak, sequence, path = std::move(path)]() {
+            wxGetApp().CallAfter([weak, sequence, entry, path = std::move(path)]() {
                 if (!weak || weak->m_shutdown || sequence != weak->m_sequence)
                     return;
-                weak->import_local_artifact(path, sequence);
+                weak->import_local_artifact(path, sequence, entry);
             });
         },
-        [weak, sequence](std::string error) mutable {
+        [weak, sequence, entry](std::string error) mutable {
             if (!weak) return;
-            wxGetApp().CallAfter([weak, sequence, error = std::move(error)]() {
+            wxGetApp().CallAfter([weak, sequence, entry, error = std::move(error)]() {
                 if (!weak) return;
                 weak->cleanup_files();
                 weak->handle_error(error, sequence);
+                weak->restore_import_focus(entry, sequence);
             });
         });
 }
 
-void ModelGenerationPanel::import_local_artifact(const boost::filesystem::path& path, uint64_t sequence)
+void ModelGenerationPanel::restore_import_focus(wxWeakRef<wxWindow> entry, uint64_t sequence)
+{
+    wxWeakRef<ModelGenerationPanel> weak(this);
+    // Defer until refresh_controls has finished re-enabling and laying out the page.
+    CallAfter([weak, entry, sequence]() {
+        if (!weak || weak->m_shutdown || weak->m_busy || sequence != weak->m_sequence ||
+            !entry || !weak->IsDescendant(entry.get()) ||
+            !entry->IsShownOnScreen() || !entry->IsEnabled())
+            return;
+        entry->SetFocus();
+    });
+}
+
+void ModelGenerationPanel::import_local_artifact(const boost::filesystem::path& path, uint64_t sequence, wxWeakRef<wxWindow> entry)
 {
     if (m_shutdown || sequence != m_sequence)
         return;
@@ -2017,6 +2497,7 @@ void ModelGenerationPanel::import_local_artifact(const boost::filesystem::path& 
         m_status->SetLabel(_L("本地模型无效或已不存在。"));
         m_result_summary->SetLabel(_L("请从模型库重新加载有效模型后再导入准备页。"));
         refresh_controls();
+        restore_import_focus(entry, sequence);
         return;
     }
 
@@ -2048,7 +2529,7 @@ void ModelGenerationPanel::import_local_artifact(const boost::filesystem::path& 
         request.face_color_geometry_id = m_model_preview->geometry_id();
     }
     try {BeautyWorkbenchControls::prepare_import(path,request);}
-    catch(const std::exception& e) {m_busy=false;m_status->SetLabel(wxString::FromUTF8(e.what()));refresh_controls();return;}
+    catch(const std::exception& e) {m_busy=false;m_status->SetLabel(wxString::FromUTF8(e.what()));refresh_controls();restore_import_focus(entry, sequence);return;}
     const bool has_color_intent = !m_color_intent_path.empty() || !m_color_intent_schema.empty() ||
                                   !m_color_intent_sha256.empty();
     if (has_color_intent) {
@@ -2068,6 +2549,7 @@ void ModelGenerationPanel::import_local_artifact(const boost::filesystem::path& 
         ? AI::ImportColorMode::SingleColor
         : color_selection == 1 ? AI::ImportColorMode::AutoMap
         : color_selection == 3 ? AI::ImportColorMode::ManualMatch : AI::ImportColorMode::NativeMatch;
+    request.suggest_base_preparation = m_prepare_base && m_prepare_base->GetValue();
     const AI::ModelImportResult result = m_artifact_consumer.import_artifact(request);
     if (!result.imported()) {
         m_busy = false;
@@ -2075,7 +2557,8 @@ void ModelGenerationPanel::import_local_artifact(const boost::filesystem::path& 
             m_status->SetLabel(_L("已取消导入。"));
             m_result_summary->SetLabel(_L("模型仍保留在本地，可以稍后重新导入。"));
         } else if (result.outcome == AI::ModelImportOutcome::InvalidArtifact) {
-            m_status->SetLabel(_L("无法准备本地模型以供导入。"));
+            m_status->SetLabel(result.error.empty()
+                ? _L("无法准备本地模型以供导入。") : from_u8(result.error));
             m_result_summary->SetLabel(result.error.empty()
                 ? _L("请从模型库重新加载模型后重试。") : from_u8(result.error));
         } else if (result.outcome == AI::ModelImportOutcome::RepairFailed) {
@@ -2087,10 +2570,12 @@ void ModelGenerationPanel::import_local_artifact(const boost::filesystem::path& 
             m_result_summary->SetLabel(_L("模型已保留在本地，请调整耗材配置后重试。"));
         }
         refresh_controls();
+        restore_import_focus(entry, sequence);
         return;
     }
 
     const std::string job_id = m_job_id;
+    if (m_prepare_base) m_prepare_base->SetValue(false);
     const std::string library_job_id = !m_displayed_model_job_id.empty()
         ? m_displayed_model_job_id : job_id;
     update_library_import_status(library_job_id);
@@ -2198,9 +2683,12 @@ void ModelGenerationPanel::refresh_controls()
 {
     if (m_shutdown || !m_page_initialized)
         return;
-    if (m_preview_loading || m_finishing_running || m_design_history_loading || m_saving_generation_options) m_busy = true;
+    const auto* local_import = local_model_import_state(m_library_import);
+    const bool importing_local = local_import && local_import->cancel;
+    const bool canceling_local = importing_local && local_import->cancel->load();
+    if (importing_local || m_preview_loading || m_finishing_running || m_design_history_loading || m_saving_generation_options) m_busy = true;
     const bool busy = m_busy || m_preview_download_in_flight;
-    update_adaptive_text_height(m_prompt, 2, 6);
+    update_adaptive_text_height(m_prompt, 3, 3);
     update_adaptive_text_height(m_custom_style, 2, 5);
     refresh_palette();
     const bool image_input = has_image_input();
@@ -2208,21 +2696,32 @@ void ModelGenerationPanel::refresh_controls()
     const bool style_selected = m_style->GetSelection() != wxNOT_FOUND;
     const bool custom_style_selected = current_style() == "custom";
     const bool custom_style_ready = !custom_style_selected || !current_custom_style().empty();
-    const bool valid_input = (!m_prompt->GetValue().empty() || image_input) && style_selected && custom_style_ready;
+    const auto prompt_bytes = m_prompt->GetValue().ToUTF8();
+    const bool prompt_valid = prompt_bytes && prompt_bytes.length() <= MAX_MODEL_INPUT_BYTES;
+    const bool valid_input = prompt_valid && (!m_prompt->GetValue().Strip(wxString::both).empty() || image_input) && style_selected && custom_style_ready;
     const bool printable_colors = use_printable_colors();
     const bool ai_palette_source = printable_colors && m_legacy_generation_state.palette_source == 2;
     const bool palette_matches = !printable_colors || m_awaiting_palette_confirmation || m_job_id.empty() ||
         (printable_colors == m_job_use_printable_colors && (!printable_colors || m_palette == m_job_palette));
     const bool stale_job = !m_restoring_input && !m_job_id.empty() &&
                            (!job_inputs_match() || !palette_matches);
+    // Import finishes the active task, but its local preview remains viewable.
+    // Viewing that preview must not depend on permission to import it again.
+    const bool view_local_model = m_workspace_view == WorkspaceView::Image &&
+        m_model_preview_ready && !stale_job;
+    const bool return_to_preparation = m_workspace_view == WorkspaceView::Model &&
+        m_model_preview_ready && !m_ready && m_job_id.empty() && m_prepare_navigation &&
+        !m_last_imported_model_path.empty() && m_last_imported_model_path == m_displayed_model_path;
     const bool show_review = m_awaiting_confirmation && !image_job && !stale_job;
     const bool local_artifact = is_nonempty_model(m_artifact_path) ||
         (!m_job_id.empty() && is_nonempty_model(temp_path(m_job_id, m_artifact_format)));
     const bool preview_quality_ok = m_palette_quality_ok && m_model_input_eligible;
     const bool multiview_retry = m_job_phase == "multiview_retry";
 
-    m_preprocess->SetLabel(m_awaiting_confirmation && image_job && !stale_job
-                               ? _L("换一张")
+    const bool reload_design = !stale_job && can_reload_design_preview();
+    m_preprocess->SetLabel(reload_design ? _L("重新加载 2D 设计图")
+                               : m_awaiting_confirmation && image_job && !stale_job
+                               ? _L("重新生成 2D 设计图")
                                : ai_palette_source && m_awaiting_palette_confirmation && !stale_job
                                ? _L("采用配色并生成预览")
                                : ai_palette_source && !m_palette_recommendation_confirmed
@@ -2234,7 +2733,9 @@ void ModelGenerationPanel::refresh_controls()
                                : image_input && printable_colors ? _L("生成多色图片预览")
                                : image_input ? _L("生成风格图片预览")
                                : _L("生成 AI 设计图"));
-    m_preprocess->SetToolTip(ai_palette_source && !m_palette_recommendation_confirmed
+    m_preprocess->SetToolTip(reload_design
+        ? _L("下载当前任务已生成的设计图，不重新生成或创建新的付费任务。")
+        : ai_palette_source && !m_palette_recommendation_confirmed
         ? _L("推荐配色后直接生成 1 张 AI 设计图，消耗 API 额度；不自动创建 3D 任务。")
         : _L("生成适合 3D 建模的高质量 AI 设计图。"));
     m_generate->SetLabel(multiview_retry ? _L("重试生成 3D")
@@ -2244,19 +2745,28 @@ void ModelGenerationPanel::refresh_controls()
                                : image_job ? _L("确认当前图片并创建 1 个付费 3D 任务")
                                : _L("确认当前提示词并创建 1 个付费 3D 任务"));
     const bool local_model_loading = m_ready && m_artifact_download_started && !m_model_preview_ready;
-    m_stop->SetLabel((local_model_loading || m_preview_download_in_flight || m_design_history_loading) ? _L("取消加载") : _L("停止生成"));
-    m_stop->SetToolTip(m_design_history_loading
+    m_stop->SetLabel(importing_local
+                        ? canceling_local ? _L("正在取消…")
+                          : local_import->open_beauty ? _L("取消创建副本") : _L("取消本地导入")
+                        : (local_model_loading || m_preview_download_in_flight || m_design_history_loading) ? _L("取消加载") : _L("停止生成"));
+    m_stop->SetToolTip(importing_local
+                           ? _L("只取消本次本地导入或副本创建，原件和当前编辑保留；不会发送远程停止请求。转换结束后清理本次临时文件。")
+                           : m_design_history_loading
                            ? _L("取消打开历史设计，保留当前内容")
                            : local_model_loading || m_preview_download_in_flight
                            ? _L("只取消当前本地下载和预览加载；已生成的远端模型会保留，可稍后重新加载")
                            : _L("停止本地任务；已经提交给远端的生成任务可能仍会继续运行并计费"));
     m_import->SetLabel(!m_model_preview_ready
                            ? _L("重新加载 3D 模型")
-                           : _L("导入到准备页"));
-    m_import->SetToolTip(m_visual_quality.available && !m_visual_quality.import_recommended
+                           : m_workspace_view == WorkspaceView::Image ? _L("打开 3D 工作台")
+                           : return_to_preparation ? _L("返回工程准备")
+                           : _L("将此模型加入工程"));
+    m_import->SetToolTip(m_model_preview_ready && m_workspace_view == WorkspaceView::Image
+                             ? _L("查看已下载的模型；不会导入工程或开始切片。")
+                             : m_visual_quality.available && !m_visual_quality.import_recommended
                              ? _L("外观检查仅供参考，可继续导入；请对照原图确认效果。")
                              : wxString());
-    m_discard->SetLabel(_L("重新开始"));
+    m_discard->SetLabel(_L("修改输入，重新设计"));
     m_clear_image->Show(image_input);
     m_upload_notice->Show(image_input);
     m_model_settings_panel->Show(m_awaiting_confirmation && !stale_job);
@@ -2278,25 +2788,48 @@ void ModelGenerationPanel::refresh_controls()
     m_geometry_quality->Enable(!busy && !hunyuan);
     m_texture_quality->Enable(!busy && !hunyuan);
     m_output_format->Enable(!busy);
-    m_generation_cost->SetLabel(generation_options_summary(m_job_id.empty() || m_job_preview_expected));
+    wxString generation_cost = generation_options_summary(m_job_id.empty() || m_job_preview_expected);
     if (m_legacy_generation_defaults)
-        m_generation_cost->SetLabel(m_generation_cost->GetLabel() + _L("\n旧记录未指定几何档位，重新生成沿用标准几何的 100 万面上限；历史模型不变。"));
-    m_generation_cost->Wrap(FromDIP(280));
-    if(m_library_import)m_library_import->Enable(!busy);
+        generation_cost += _L("\n旧记录未指定几何档位，重新生成沿用标准几何的 100 万面上限；历史模型不变。");
+    wxClientDC generation_cost_dc(m_generation_cost);
+    generation_cost_dc.SetFont(m_generation_cost->GetFont());
+    const int generation_cost_width = m_generation_cost->GetClientSize().x > FromDIP(120)
+        ? m_generation_cost->GetClientSize().x : FromDIP(280);
+    wxString wrapped_generation_cost;
+    const wxSize generation_cost_size = Label::split_lines(
+        generation_cost_dc, generation_cost_width, generation_cost, wrapped_generation_cost);
+    m_generation_cost->SetLabel(wrapped_generation_cost);
+    m_generation_cost->SetMinSize(wxSize(1, generation_cost_size.y));
+    m_generation_cost->InvalidateBestSize();
+    if(m_library_import) {
+        m_library_import->Enable(importing_local ? !canceling_local : !busy);
+        m_library_import->SetLabel(importing_local
+            ? canceling_local ? _L("正在取消…") : _L("取消本地导入") : _L("导入模型"));
+        m_library_import->SetToolTip(importing_local
+            ? _L("取消本次本地导入，保留原文件、当前模型和已有历史记录。")
+            : _L("从本机导入模型，原始文件保留。"));
+    }
     m_choose_image->Enable(!busy);
+    m_paste_image->Enable(!busy);
     m_clear_image->Enable(!busy);
     m_import_color_mode->Enable(!busy);
     m_import_color_source->Enable(!busy && m_import_color_mode->GetSelection() == 0);
     m_preprocess->Enable(m_service_available && !busy && valid_input &&
                          (ai_palette_source || !printable_colors || !m_palette.empty()));
     m_prepared_prompt->Enable(m_service_available && !busy && show_review);
+    if (m_prepare_base) m_prepare_base->Enable(!busy);
     m_generate->Enable(generation_options_valid() && m_service_available && !busy && m_awaiting_confirmation && !stale_job &&
                        (!image_job || m_style_preview_ready));
-    m_stop->Enable(!m_saving_generation_options && (m_design_history_loading || (busy && !m_job_id.empty() && (local_model_loading || m_preview_download_in_flight || m_service_available))));
+    m_stop->Enable(!m_saving_generation_options && (importing_local
+                       ? !canceling_local
+                       : m_design_history_loading || (busy && !m_job_id.empty() && (local_model_loading || m_preview_download_in_flight || m_service_available))));
     m_retry_service->Enable(!m_service_available && !busy && static_cast<bool>(m_service_retry_handler));
-    m_import->Enable((local_artifact || m_service_available) && !busy &&
+    // Retain the business qualification independently of beauty's temporary
+    // edit guard, so undoing back to a saved version can restore the action.
+    m_model_import_available = !busy && (view_local_model || return_to_preparation || ((local_artifact || m_service_available) &&
                      m_ready && !stale_job &&
-                     (m_model_preview_ready || !m_artifact_download_started));
+                     (m_model_preview_ready || !m_artifact_download_started)));
+    m_import->Enable(m_model_import_available);
     m_recheck_model->Enable(m_service_available && !busy && !m_quality_check_busy && !m_visual_check_busy &&
                             m_model_preview_ready && !m_displayed_model_job_id.empty());
     m_visual_review_model->Enable(m_service_available && !busy && !m_quality_check_busy && !m_visual_check_busy &&
@@ -2311,14 +2844,15 @@ void ModelGenerationPanel::refresh_controls()
     const bool has_restartable_work = !m_job_id.empty() || m_ready || m_model_preview_ready || m_style_preview_ready;
     m_discard->Enable(!busy && has_restartable_work);
 
-    const bool show_preprocess = !busy && (!m_ready || stale_job) &&
+    const bool show_preprocess = !busy && (reload_design || ((!m_ready || stale_job) &&
         (m_job_id.empty() || stale_job || (!m_awaiting_confirmation && !m_ready) ||
-         (m_awaiting_confirmation && image_job));
-    m_preprocess->Show(m_service_available && show_preprocess);
+         (m_awaiting_confirmation && image_job))));
+    m_preprocess->Show(m_service_available && show_preprocess &&
+        (reload_design || (!view_local_model && !return_to_preparation)));
     m_generate->Show(m_service_available && !busy && m_awaiting_confirmation);
     m_stop->Show(busy && !m_saving_generation_options);
     m_retry_service->Show(!m_service_available && !busy);
-    m_import->Show(!busy && m_ready && !stale_job);
+    m_import->Show(!busy && (view_local_model || return_to_preparation || (m_ready && !stale_job)));
     m_discard->Show(!busy && has_restartable_work);
     if (!busy && ((m_job_id.empty() && !m_ready) || stale_job))
         update_progress(0, 1, _L("输入"));
@@ -2328,11 +2862,13 @@ void ModelGenerationPanel::refresh_controls()
                                : _L("输入或颜色已变化，请重新生成图片预览。"));
     if (m_ready && !stale_job) {
         if (!busy) {
-            update_progress(100, 4, _L("模型已生成 · 待导入"));
+            update_progress(100, 4, _L("模型已生成 · 可查看"));
             m_generation_progress->Hide();
             m_progress_percent->Hide();
         }
-        wxString ready_guidance = _L("检查右侧 3D 模型，然后选择导入方式");
+        wxString ready_guidance = m_workspace_view == WorkspaceView::Image
+            ? _L("打开 3D 工作台查看模型，再决定是否加入工程")
+            : _L("检查当前模型；加入工程前可选择配色方式");
         if (m_visual_quality.available && !m_visual_quality.import_recommended) {
             const bool identity_risk = std::find(
                 m_visual_quality.blocking_warnings.begin(), m_visual_quality.blocking_warnings.end(),
@@ -2421,13 +2957,15 @@ void ModelGenerationPanel::refresh_controls()
         m_workflow_steps->SetLabel(_L("返回当前工程继续调整尺寸、底座与打印适配。生成原件保留在模型库。"));
         m_workflow_steps->Wrap(FromDIP(330));
     }
-    if (wxGetApp().dark_mode()) refresh_ai_appearance(this, false);
+    refresh_preview_stage_hint(stale_job);
+    refresh_input_layout();
     Layout();
 }
 
 void ModelGenerationPanel::apply_model_quality(const AIModelGenerationClient::ModelQuality& quality)
 {
     m_model_quality = quality;
+    m_quality_check_failed = false;
     refresh_model_quality_card();
 }
 
@@ -2450,6 +2988,8 @@ void ModelGenerationPanel::clear_model_quality()
     m_visual_quality = {};
     m_model_refinement = {};
     m_quality_check_busy = false;
+    m_quality_check_failed = false;
+    ++m_quality_request_revision;
     m_visual_check_busy = false;
     m_thin_region_navigation_active = false;
     m_thin_region_navigation_index = 0;
@@ -2462,27 +3002,37 @@ void ModelGenerationPanel::refresh_model_quality_card()
         return;
     wxColour foreground(91, 104, 107);
     wxColour background(246, 248, 248);
-    wxString status = _L("按需分析模型");
-    wxString summary = m_model_preview_ready
-        ? _L("可直接继续导入。厚度与悬垂建议结合准备页的尺寸、方向和打印设置判断。")
-        : _L("模型生成或加载后可进行结构检查。");
-    if (m_quality_check_busy) {
+    const auto check_stage = model_check_stage(m_model_preview_ready, m_quality_check_busy,
+                                               m_quality_check_failed, m_model_quality);
+    wxString status = _L("尚未检查");
+    wxString summary = check_stage == ModelCheckStage::NeedsModel
+        ? _L("模型生成或加载后可进行结构检查。")
+        : _L("当前保存版本尚无结构检查结果。能预览不代表可打印；导入时仍会校验几何，尺寸、方向和厚度需在准备页复核。");
+    if (check_stage == ModelCheckStage::Checking) {
         status = _L("正在检查...");
         summary = _L("正在本地分析拓扑、组件、接地和悬垂，请稍候。");
         foreground = wxColour(31, 122, 116);
         background = wxColour(229, 244, 242);
-    } else if (m_model_quality.available) {
-        if (m_model_quality.status == "pass") {
+    } else if (check_stage == ModelCheckStage::Failed) {
+        status = _L("检查未完成");
+        summary = _L("未取得当前保存版本的有效结构检查结果。模型与编辑已保留；可重试检查，不能据此判断可打印。");
+        foreground = wxColour(174, 112, 22);
+        background = wxColour(255, 246, 225);
+    } else if (check_stage == ModelCheckStage::Passed || check_stage == ModelCheckStage::Review ||
+               check_stage == ModelCheckStage::Rejected) {
+        if (check_stage == ModelCheckStage::Passed) {
             status = _L("结构检查通过");
             summary = _L("本次分析未发现明显结构问题；仍需结合实际打印设置判断。");
             foreground = wxColour(31, 122, 90);
             background = wxColour(232, 246, 238);
-        } else if (m_model_quality.status == "review") {
+        } else if (check_stage == ModelCheckStage::Review) {
             status = _L("建议复核");
+            summary = _L("当前保存版本存在需要复核的结构风险；请结合检查指标及准备页设置判断。");
             foreground = wxColour(174, 112, 22);
             background = wxColour(255, 246, 225);
-        } else if (m_model_quality.status == "reject") {
+        } else if (check_stage == ModelCheckStage::Rejected) {
             status = _L("未通过结构检查");
+            summary = _L("当前保存版本存在结构问题；请先查看检查指标并修复，再重新检查。");
             foreground = wxColour(188, 62, 54);
             background = wxColour(253, 235, 233);
         }
@@ -2509,8 +3059,10 @@ void ModelGenerationPanel::refresh_model_quality_card()
         m_model_decision_summary->SetLabel(summary);
         m_model_decision_panel->SetBackgroundColour(background);
     }
+    const bool has_check_result = check_stage == ModelCheckStage::Passed ||
+        check_stage == ModelCheckStage::Review || check_stage == ModelCheckStage::Rejected;
     wxString details;
-    if (m_model_quality.available) {
+    if (has_check_result) {
         details << wxString::Format(_L("三角面：%llu · 顶点：%llu · 连通部件：%llu\n"),
                     static_cast<unsigned long long>(m_model_quality.face_count),
                     static_cast<unsigned long long>(m_model_quality.vertex_count),
@@ -2580,7 +3132,10 @@ void ModelGenerationPanel::refresh_model_quality_card()
         details = _L("尚无结构化质量指标。");
     }
     m_model_quality_details->SetLabel(details);
-    m_model_quality_details_pane->Show(m_model_quality.available);
+    if (m_model_overview_check_metrics)
+        m_model_overview_check_metrics->SetLabel(model_check_scope(m_model_quality) + "\n\n" + details);
+    refresh_model_overview_risks();
+    m_model_quality_details_pane->Show(has_check_result);
 
     wxString visual_status = _L("AI 视觉复核：未运行");
     wxString visual_summary = m_model_preview_ready
@@ -2661,6 +3216,21 @@ void ModelGenerationPanel::on_recheck_model(wxCommandEvent&)
         return;
     const std::string job_id = m_displayed_model_job_id;
     const uint64_t sequence = m_sequence;
+    const auto model_path = m_displayed_model_path;
+    std::string artifact_sha256;
+    try { artifact_sha256 = AI::model_artifact_sha256(model_path); }
+    catch (const std::exception&) { artifact_sha256.clear(); }
+    if (artifact_sha256.empty()) {
+        clear_model_quality();
+        m_quality_check_failed = true;
+        m_status->SetLabel(_L("模型文件不可读；请从资产库重新加载后检查。"));
+        refresh_model_quality_card();
+        refresh_controls();
+        return;
+    }
+    const uint64_t revision = ++m_quality_request_revision;
+    m_model_quality = {};
+    m_quality_check_failed = false;
     m_thin_region_navigation_active = false;
     m_thin_region_navigation_index = 0;
     m_quality_check_busy = true;
@@ -2668,31 +3238,48 @@ void ModelGenerationPanel::on_recheck_model(wxCommandEvent&)
     refresh_model_quality_card();
     refresh_controls();
     wxWeakRef<ModelGenerationPanel> weak(this);
-    m_client.recheck(job_id,
-        [weak, sequence, job_id](AIModelGenerationClient::JobStatus status) mutable {
+    m_client.check_saved_artifact(job_id, artifact_sha256,
+        [weak, sequence, job_id, model_path, revision, artifact_sha256](AIModelGenerationClient::JobStatus status) mutable {
             if (!weak) return;
-            wxGetApp().CallAfter([weak, sequence, job_id, status = std::move(status)]() mutable {
+            wxGetApp().CallAfter([weak, sequence, job_id, model_path, revision, artifact_sha256, status = std::move(status)]() mutable {
                 if (!weak || weak->m_shutdown || sequence != weak->m_sequence ||
-                    weak->m_displayed_model_job_id != job_id)
+                    weak->m_displayed_model_job_id != job_id || weak->m_displayed_model_path != model_path ||
+                    weak->m_quality_request_revision != revision)
                     return;
                 weak->m_quality_check_busy = false;
+                bool current_artifact = false;
+                try { current_artifact = AI::model_artifact_sha256(model_path) == artifact_sha256; }
+                catch (const std::exception&) {}
+                if (!current_artifact || status.id != job_id ||
+                    !model_quality_matches_artifact(status.model_quality, artifact_sha256)) {
+                    weak->m_quality_check_failed = true;
+                    weak->m_status->SetLabel(_L("模型版本或检查单位不匹配；已保留模型与编辑，请重新加载后检查。"));
+                    weak->refresh_model_quality_card();
+                    weak->refresh_controls();
+                    return;
+                }
                 weak->apply_model_quality(status.model_quality);
-                weak->apply_visual_quality(status.visual_quality);
-                weak->apply_model_refinement(status.refinement);
-                weak->m_status->SetLabel(status.model_quality.status == "pass"
+                weak->m_quality_check_failed = !status.model_quality.available;
+                weak->refresh_model_quality_card();
+                weak->m_status->SetLabel(!status.model_quality.available
+                    ? _L("检查未完成，模型与编辑已保留。") : status.model_quality.status == "pass"
                     ? _L("结构检查通过。") : status.model_quality.status == "review"
-                    ? _L("结构检查完成，建议复核提示项。") : _L("结构检查未通过，已禁用导入。"));
+                    ? _L("结构检查完成，建议复核提示项。") : status.model_quality.status == "reject"
+                    ? _L("结构检查未通过，请先复核结构问题。") : _L("检查未完成，模型与编辑已保留。"));
                 weak->refresh_controls();
             });
         },
-        [weak, sequence, job_id](std::string error) mutable {
+        [weak, sequence, job_id, model_path, revision, artifact_sha256](std::string error) mutable {
             if (!weak) return;
-            wxGetApp().CallAfter([weak, sequence, job_id, error = std::move(error)]() {
+            wxGetApp().CallAfter([weak, sequence, job_id, model_path, revision, error = std::move(error)]() {
                 if (!weak || weak->m_shutdown || sequence != weak->m_sequence ||
-                    weak->m_displayed_model_job_id != job_id)
+                    weak->m_displayed_model_job_id != job_id || weak->m_displayed_model_path != model_path ||
+                    weak->m_quality_request_revision != revision)
                     return;
                 weak->m_quality_check_busy = false;
-                weak->m_status->SetLabel(_L("无法重新检查历史模型：") + from_u8(error));
+                weak->m_quality_check_failed = true;
+                BOOST_LOG_TRIVIAL(warning) << "Saved-model check failed: " << error;
+                weak->m_status->SetLabel(model_check_failure_message(error));
                 weak->refresh_model_quality_card();
                 weak->refresh_controls();
             });
@@ -3029,13 +3616,13 @@ void ModelGenerationPanel::refresh_provider_options()
         m_geometry_quality->SetSelection(0);
         m_texture_quality->SetSelection(0);
     } else if (!hunyuan && m_geometry_quality->GetCount() == 1) {
-        m_geometry_quality->Set(wxArrayString {_L("标准（+0 积分）"), _L("精细（+20 积分）")});
-        m_texture_quality->Set(wxArrayString {_L("标准（+0 积分）"), _L("高清（+10 积分）"), _L("8K（+20 积分）")});
+        m_geometry_quality->Set(wxArrayString {_L("标准"), _L("精细")});
+        m_texture_quality->Set(wxArrayString {_L("标准"), _L("高清"), _L("8K")});
         m_geometry_quality->SetSelection(0);
         m_texture_quality->SetSelection(0);
     }
-    m_output_format->SetString(0, hunyuan ? wxString("GLB") : _L("GLB（+0 积分）"));
-    m_output_format->SetString(1, hunyuan ? wxString("OBJ") : _L("OBJ（转换 +5 积分）"));
+    m_output_format->SetString(0, hunyuan ? wxString("GLB") : _L("GLB"));
+    m_output_format->SetString(1, hunyuan ? wxString("OBJ") : _L("OBJ（另建转换任务）"));
 }
 
 bool ModelGenerationPanel::generation_options_valid() const
@@ -3044,26 +3631,22 @@ bool ModelGenerationPanel::generation_options_valid() const
     return options.face_limit != 2000000 || options.geometry_quality == "detailed";
 }
 
-wxString ModelGenerationPanel::generation_options_summary(bool image_mode) const
+wxString ModelGenerationPanel::generation_options_summary(bool) const
 {
     const auto options = current_generation_options();
     if (options.provider == "hunyuan") {
-        return wxString::Format(_L("腾讯混元3D · %d 万面 · %s\n费用按腾讯云账户的套餐或额度结算，实际以账单为准。\nOBJ 使用生成结果，无额外格式转换任务；不含设计图费用。"),
+        return wxString::Format(_L("腾讯混元3D · %d 万面 · %s\n费用未报价，金额未知；按腾讯云账户套餐或额度结算，以实际账单为准。\nOBJ 使用生成结果，无额外格式转换任务；不含 2D 设计图费用。"),
             options.face_limit / 10000, options.output_format == "obj" ? "OBJ" : "GLB");
     }
-    const int base = image_mode ? 30 : 20;
-    const int geometry = options.geometry_quality == "detailed" ? 20 : 0;
-    const int texture = options.texture_quality == "extreme" ? 20 : options.texture_quality == "detailed" ? 10 : 0;
-    const int format = options.output_format == "obj" ? 5 : 0;
     wxString summary = wxString::Format(_L("%d 万面 · %s几何 · %s纹理 · %s\n"), options.face_limit / 10000,
-        geometry ? _L("精细") : _L("标准"), texture == 20 ? _L("8K") : texture == 10 ? _L("高清") : _L("标准"),
+        options.geometry_quality == "detailed" ? _L("精细") : _L("标准"),
+        options.texture_quality == "extreme" ? _L("8K") : options.texture_quality == "detailed" ? _L("高清") : _L("标准"),
         options.output_format == "obj" ? "OBJ" : "GLB");
-    summary += wxString::Format(_L("预估 %d 积分\n基础 %d + 几何 %d + 纹理 %d + 格式 %d。"),
-                               base + geometry + texture + format, base, geometry, texture, format);
-    summary += generation_options_valid()
-        ? _L("\nTripo v3.1 官方价（2026-09-12）")
-        : _L("\n200 万面需精细几何（+20 积分）。");
-    summary += _L("\n不含设计图，实际以账单为准。");
+    // A configurable provider/model has no quote in this client contract.
+    // A public rate card is not a quote for the active account and request.
+    summary += _L("Tripo 费用未报价，积分未知。\n不含 2D 设计图费用，实际以服务商账单为准。");
+    if (!generation_options_valid())
+        summary += _L("\n200 万面需精细几何。");
     return summary;
 }
 
@@ -3123,6 +3706,7 @@ void ModelGenerationPanel::refresh_palette()
 void ModelGenerationPanel::reset(bool remove_remote)
 {
     if (m_preview_canceled) *m_preview_canceled = true;
+    m_preserve_image_on_model_ready = false;
     m_saving_generation_options = false;
     ++m_design_history_sequence;
     m_design_history_loading = false;
@@ -3324,7 +3908,8 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
                                                const boost::filesystem::path& color_intent_path,
                                                const std::string& color_intent_schema,
                                                const std::string& color_intent_sha256,
-                                               const std::string& job_id, const wxString& title)
+                                               const std::string& job_id, const wxString& title,
+                                               bool open_beauty_after_load)
 {
     if (m_busy || m_model_preview == nullptr)
         return;
@@ -3332,6 +3917,7 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
         load_design_library_entry(job_id);
         return;
     }
+    if (preserve_unsaved_finishing()) return;
     // Clicking a history entry is an explicit context switch.  Detach the
     // current preview below, but do not delete its remote job or source input.
     // This keeps history loading to one action even when a restored image
@@ -3342,10 +3928,15 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
         return;
     }
 
+    const auto* local_import=local_model_import_state(m_library_import);
+    const auto local_cancel=local_import && local_import->parsing ? local_import->cancel : nullptr;
     const wxString previous_model_stats = m_model_stats->GetLabel();
     auto history_metadata = std::make_shared<ModelHistoryMetadata>();
     m_status->SetLabel(_L("正在加载历史模型：") + title);
     m_model_stats->SetLabel(_L("正在解析模型..."));
+    std::string loaded_artifact_sha256;
+    try { loaded_artifact_sha256 = AI::model_artifact_sha256(model_path); }
+    catch (const std::exception&) {}
     load_model_preview_async(model_path, palette,
         [=](size_t triangle_count, Vec3d dimensions, size_t color_count, double load_seconds) {
     // Avoid repainting intermediate control and notebook states while restoring history.
@@ -3359,6 +3950,7 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
     wxWindowUpdateLocker update_locker(this);
     // Successful explicit history navigation starts a fresh editing context,
     // including when the user selects the same source file again.
+    if (m_prepare_base) m_prepare_base->SetValue(false);
     if (!m_finishing_candidate.empty()) {
         boost::system::error_code ignored;
         if (m_finishing_candidate != model_path) boost::filesystem::remove(m_finishing_candidate, ignored);
@@ -3487,6 +4079,8 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
     m_displayed_model_palette = palette;
     m_displayed_model_palette_roles = m_job_palette_roles;
     m_model_preview_ready = true;
+    if (m_finishing_workbench && !open_beauty_after_load)
+        set_finishing_workbench(false);
     if (m_finishing_status != nullptr)
         m_finishing_status->SetLabel(m_artifact_format == "glb"
             ? _L("点选拼图改色，调整范围后保存新版本。原件和未改区域的纹理保留。")
@@ -3495,6 +4089,7 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
     m_library_model_loaded = true;
     clear_model_quality();
     update_progress(100, 4, _L("检查并导入"));
+    set_model_viewport_facts(m_model_stats, triangle_count, color_count);
     m_model_stats->SetLabel(wxString::Format(
         _L("%llu 个三角面 · %llu 个原始色值\n%.1f × %.1f × %.1f mm\n%s"),
         static_cast<unsigned long long>(triangle_count), static_cast<unsigned long long>(color_count),
@@ -3517,39 +4112,99 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
     refresh_controls();
     m_updating_comparison_layout = comparison_was_updating;
     refresh_comparison_layout(true);
+    if (open_beauty_after_load) {
+        set_finishing_workbench(true);
+        m_finishing_status->SetLabel(_L("已创建独立 GLB 美颜副本；原 OBJ 模型与 Task ID 保留。"));
+    }
     const uint64_t sequence = m_sequence;
     wxWeakRef<ModelGenerationPanel> weak(this);
+    const uint64_t quality_revision = m_quality_request_revision;
+    const auto restore_saved_quality = [weak, sequence, job_id, model_path, loaded_artifact_sha256, quality_revision]() {
+        if (!weak || weak->m_shutdown || sequence != weak->m_sequence ||
+            weak->m_displayed_model_job_id != job_id || weak->m_displayed_model_path != model_path ||
+            weak->m_quality_request_revision != quality_revision)
+            return;
+        weak->m_client.check_saved_artifact(job_id, loaded_artifact_sha256,
+            [weak, sequence, job_id, model_path, loaded_artifact_sha256, quality_revision](AIModelGenerationClient::JobStatus saved) mutable {
+                if (!weak) return;
+                wxGetApp().CallAfter([weak, sequence, job_id, model_path, loaded_artifact_sha256, quality_revision,
+                                     saved = std::move(saved)]() mutable {
+                    if (!weak || weak->m_shutdown || sequence != weak->m_sequence ||
+                        weak->m_displayed_model_job_id != job_id || weak->m_displayed_model_path != model_path ||
+                        weak->m_quality_request_revision != quality_revision || saved.id != job_id ||
+                        !model_quality_matches_artifact(saved.model_quality, loaded_artifact_sha256))
+                        return;
+                    try {
+                        if (AI::model_artifact_sha256(model_path) != loaded_artifact_sha256) return;
+                    } catch (const std::exception&) { return; }
+                    weak->apply_model_quality(saved.model_quality);
+                    weak->m_status->SetLabel(_L("已恢复当前保存版本的检查报告。"));
+                    weak->refresh_controls();
+                });
+            }, [](std::string) {}, true);
+    };
     m_client.get_status(job_id,
-        [weak, sequence, job_id](AIModelGenerationClient::JobStatus status) mutable {
+        [weak, sequence, job_id, model_path, loaded_artifact_sha256, quality_revision, restore_saved_quality](AIModelGenerationClient::JobStatus status) mutable {
             if (!weak) return;
-            wxGetApp().CallAfter([weak, sequence, job_id, status = std::move(status)]() mutable {
+            wxGetApp().CallAfter([weak, sequence, job_id, model_path, loaded_artifact_sha256, quality_revision, restore_saved_quality, status = std::move(status)]() mutable {
                 if (!weak || weak->m_shutdown || sequence != weak->m_sequence ||
-                    weak->m_displayed_model_job_id != job_id)
+                    weak->m_displayed_model_job_id != job_id || weak->m_displayed_model_path != model_path ||
+                    status.id != job_id)
                     return;
                 if (!status.palette_roles.empty() && status.palette == weak->m_displayed_model_palette) {
                     weak->m_job_palette_roles = status.palette_roles;
                     weak->m_displayed_model_palette_roles = status.palette_roles;
                 }
                 weak->update_library_provider_tasks(job_id, status);
-                weak->apply_model_quality(status.model_quality);
+                if (weak->m_quality_request_revision == quality_revision && status.model_quality.available) {
+                    bool current_artifact = false;
+                    if (model_quality_matches_artifact(status.model_quality, loaded_artifact_sha256)) {
+                        try { current_artifact = AI::model_artifact_sha256(model_path) == loaded_artifact_sha256; }
+                        catch (const std::exception&) {}
+                    }
+                    if (current_artifact)
+                        weak->apply_model_quality(status.model_quality);
+                    else {
+                        // A legacy or changed report is not a verdict for the loaded model.
+                        weak->m_status->SetLabel(_L("历史检查报告无法对应当前模型或检查版本；请重新检查。"));
+                        weak->refresh_model_quality_card();
+                    }
+                }
                 weak->apply_visual_quality(status.visual_quality);
                 weak->apply_model_refinement(status.refinement);
                 weak->refresh_controls();
+                if (!model_quality_matches_artifact(status.model_quality, loaded_artifact_sha256))
+                    restore_saved_quality();
             });
         },
-        [weak, sequence, job_id](std::string) {
+        [weak, sequence, job_id, quality_revision, restore_saved_quality](std::string) {
             if (!weak) return;
-            wxGetApp().CallAfter([weak, sequence, job_id]() {
+            wxGetApp().CallAfter([weak, sequence, job_id, quality_revision, restore_saved_quality]() {
                 if (!weak || weak->m_shutdown || sequence != weak->m_sequence ||
                     weak->m_displayed_model_job_id != job_id)
                     return;
                 weak->refresh_model_quality_card();
                 weak->refresh_controls();
+                restore_saved_quality();
             });
         });
-    }, [this, previous_model_stats](std::string error) {
+    }, [this, previous_model_stats, open_beauty_after_load, local_cancel](std::string error) {
         m_model_stats->SetLabel(previous_model_stats);
-        m_status->SetLabel(_L("历史模型加载失败，保留当前模型与预览。"));
+        if(local_cancel && local_cancel->load()) {
+            const wxString before=m_status->GetLabel();
+            const wxString message=open_beauty_after_load
+                ? _L("已取消创建副本，原模型和当前编辑已保留。")
+                : _L("已取消本地导入，原文件和当前模型已保留。");
+            m_status->SetLabel(message);
+            if(open_beauty_after_load) m_model_preview_message->SetLabel(message);
+            load_library_entries();
+            refresh_controls();
+            show_library_action_feedback(before);
+            return;
+        }
+        m_status->SetLabel(open_beauty_after_load
+            ? _L("GLB 副本已保存在模型库，但加载失败；原 OBJ 模型保持不变。")
+            : _L("历史模型加载失败，保留当前模型与预览。"));
         m_result_summary->SetLabel(from_u8(error));
         refresh_controls();
     }, library_metadata_path(job_id), history_metadata);
@@ -3648,8 +4303,24 @@ void ModelGenerationPanel::delete_library_entry(const GeneratedModelEntry& entry
     }
     MessageDialog confirm(
         this,
-        _L("要删除这个历史资产的本地文件、预览和元数据吗？\n\n此操作不会取消远端任务，也无法撤销。"),
+        _L("要删除以下资产的本地文件、预览和元数据吗？\n\n") +
+            (entry.search_text.empty() ? entry.title : entry.search_text) +
+            _L("\n本地 ID：") + wxString::FromUTF8(entry.job_id) +
+            _L("\n\n此操作不会取消远端任务，也无法撤销。"),
         _L("删除本地资产"), wxYES_NO | wxICON_WARNING);
+    // MsgDialog uses custom buttons, so explicitly choose the non-destructive
+    // keyboard default and escape result for this irreversible action.
+    confirm.SetButtonLabel(wxID_YES, _L("Delete"));
+    confirm.SetButtonLabel(wxID_NO, _L("Cancel"), true);
+    confirm.SetAffirmativeId(wxID_NO);
+    confirm.SetEscapeId(wxID_NO);
+    confirm.Bind(wxEVT_CHAR_HOOK, [&confirm](wxKeyEvent& event) {
+        if (event.GetKeyCode() == WXK_ESCAPE) {
+            confirm.EndModal(wxID_NO);
+            return;
+        }
+        event.Skip();
+    });
     if (confirm.ShowModal() != wxID_YES)
         return;
 
@@ -3781,11 +4452,13 @@ void ModelGenerationPanel::delete_library_entry(const GeneratedModelEntry& entry
     refresh_controls();
 }
 
-void ModelGenerationPanel::show_selected_image_preview()
+void ModelGenerationPanel::show_selected_image_preview(const wxImage* validated)
 {
     if (m_selected_image_path.empty())
         return;
-    wxImage image(m_selected_image_path.wstring());
+    wxImage image;
+    if (validated) image = *validated;
+    else load_model_input_image(m_selected_image_path, image);
     if (!image.IsOk())
         return;
     m_reference_image = image;
@@ -3828,15 +4501,52 @@ void ModelGenerationPanel::apply_preview_stage(bool center)
     else if (show_views) m_style_preview_placeholder = _L("正在加载模型多视图...");
     else if (m_raw_preview_available) m_style_preview_placeholder = _L("正在加载 AI 设计图...");
     if (m_preview_stage != nullptr) m_preview_stage->Enable(m_model_views_available);
-    if (m_preview_stage_hint != nullptr) {
-        m_preview_stage_hint->SetLabel(show_views
-            ? _L("使用“展开图片”放大多视图，检查各个角度的形体与结构。")
-            : m_ready ? _L("对照原图与 AI 设计图查看模型；调整请进入3D美颜，重新设计请选“重新开始”。")
-                      : _L("确认主体、姿态与细节。生成 3D 时使用已确认的 AI 设计图。"));
-        m_preview_stage_hint->Wrap(FromDIP(760));
-    }
+    refresh_preview_stage_hint(m_design_preview_stale);
     update_preview_view(center);
     if (m_preview_area != nullptr) m_preview_area->Update();
+}
+
+void ModelGenerationPanel::refresh_preview_stage_hint(bool stale_job)
+{
+    const bool has_design = m_style_preview_image.IsOk() && !m_job_id.empty();
+    const bool stale_design = has_design && stale_job;
+    const bool restored = m_design_preview_stale && !stale_design;
+    const bool version_changed = m_design_preview_stale != stale_design;
+    m_design_preview_stale = stale_design;
+    const bool show_views = m_preview_stage != nullptr && m_preview_stage->GetSelection() == 1;
+    if (m_preview_stage_hint != nullptr) {
+        wxString hint = !has_design
+            ? _L("生成后可在这里确认图片效果。")
+            : m_design_preview_stale
+            ? _L("描述、风格或颜色已变化。右侧是旧版设计图；恢复原输入可继续使用，或重新生成。")
+            : show_views
+            ? _L("使用“展开图片”放大多视图，检查各个角度的形体与结构。")
+            : m_ready ? _L("设计图已保留。打开 3D 工作台查看、检查或美颜；加入工程需另行操作。")
+                      : _L("确认主体、姿态与细节。生成 3D 时使用已确认的 AI 设计图。");
+        if (!show_views && m_job_image_path.empty() && !m_job_prompt.empty()) {
+            // Show the submitted source, never the possibly edited next input.
+            wxString summary = m_job_prompt;
+            summary.Replace("\r", " ");
+            summary.Replace("\n", " ");
+            if (summary.length() > 80) summary = summary.Left(80) + wxString::FromUTF8("…");
+            hint = _L("文字来源：") + summary + "\n" + hint;
+            m_preview_stage_hint->SetToolTip(m_job_prompt);
+        } else {
+            m_preview_stage_hint->UnsetToolTip();
+        }
+        m_preview_stage_hint->SetLabel(hint);
+        m_preview_stage_hint->Wrap(FromDIP(760));
+    }
+    // Undoing input changes reuses the same accepted design. Restore only the
+    // stale-input projection, without hiding a newer submission error or loading state.
+    if (restored && has_design && !m_busy && !m_preview_download_in_flight &&
+        m_awaiting_confirmation && !m_awaiting_palette_confirmation &&
+        m_submission_state.error({m_job_id, current_generation_options().provider, m_sequence}).empty()) {
+        m_status->SetLabel(_L("原输入已恢复，可继续使用这张 AI 设计图。"));
+        m_result_summary->SetLabel(_L("确认图片效果后可继续生成 3D；无需重新生成 2D。"));
+        update_progress(35, 2, _L("确认AI 设计图"));
+    }
+    if (version_changed && m_preview_area != nullptr) m_preview_area->Refresh();
 }
 
 void ModelGenerationPanel::update_preview_view(bool center)
@@ -3844,6 +4554,7 @@ void ModelGenerationPanel::update_preview_view(bool center)
     if (m_preview_area == nullptr || m_updating_preview)
         return;
     m_updating_preview = true;
+    refresh_input_image_thumbnail();
     if (!m_reference_image.IsOk() && !m_style_preview_image.IsOk() && !m_model_preview_ready) {
         m_reference_bitmap = wxNullBitmap;
         m_style_preview_bitmap = wxNullBitmap;
@@ -3956,11 +4667,12 @@ void ModelGenerationPanel::update_progress(int value, int step, const wxString& 
         const int label_step = int(index) + 1;
         const bool active = label_step == step;
         const bool complete = label_step < step;
-        m_step_labels[index]->SetForegroundColour(active || complete ? wxColour(24, 112, 105)
-                                                                     : wxColour(132, 143, 145));
+        m_step_labels[index]->SetName(active || complete ? "input_accent" : "input_secondary");
+        ModelGenerationInputStyle::apply_control(m_step_labels[index], active || complete ?
+            ModelGenerationInputStyle::Role::Accent : ModelGenerationInputStyle::Role::Secondary);
         wxFont font = m_step_labels[index]->GetFont();
         font.SetWeight(active ? wxFONTWEIGHT_BOLD : wxFONTWEIGHT_NORMAL);
-        m_step_labels[index]->SetFont(font);
+        if (m_step_labels[index]->GetFont() != font) m_step_labels[index]->SetFont(font);
     }
 }
 
@@ -4019,8 +4731,8 @@ void ModelGenerationPanel::update_workflow(const AIModelGenerationClient::JobSta
             guidance = _L("正在核对人脸相似度、主体完整性和材料归属");
             step = 4;
         } else if (status->state == "ready") {
-            phase = _L("检查并导入");
-            guidance = _L("检查右侧 3D 模型，然后选择导入方式");
+            phase = _L("查看模型");
+            guidance = _L("模型生成完成；打开 3D 工作台查看与检查");
             step = 4;
         } else if (status->state == "stopping") {
             phase = _L("停止生成");
@@ -4059,8 +4771,10 @@ void ModelGenerationPanel::set_preview_empty(const wxString& message)
     m_preview_metrics_available = false;
     m_preview_changed_pixel_ratio = 0.0;
     m_preview_minimum_feature_px = 0;
-    if (m_preview_stage_hint != nullptr)
+    if (m_preview_stage_hint != nullptr) {
         m_preview_stage_hint->SetLabel(_L("生成后可在这里确认图片效果。"));
+        m_preview_stage_hint->UnsetToolTip();
+    }
     if (m_preview_technical_details != nullptr)
         m_preview_technical_details->SetLabel(
             _L("完成预览后会显示颜色映射和小色块处理数据。"));

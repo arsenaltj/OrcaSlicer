@@ -22,7 +22,9 @@
       "paths": [
         "src/slic3r/GUI",
         "src/slic3r/GUI/AI/AIDesktopFeatureHost.cpp",
-        "src/slic3r/GUI/AI/AIDesktopFeatureHost.hpp"
+        "src/slic3r/GUI/AI/AIDesktopFeatureHost.hpp",
+        "src/slic3r/GUI/AI/DesktopWorkspaceNavigation.cpp",
+        "src/slic3r/GUI/AI/DesktopWorkspaceNavigation.hpp"
       ],
       "purpose": "组合主窗口、功能入口与本地服务可用性"
     },
@@ -218,6 +220,12 @@
       "id": "beauty_target_colors",
       "path": "src/slic3r/GUI/AI/Model/BeautyPuzzle.hpp",
       "needle": "target_colors;"
+    },
+    {
+      "id": "saved_model_check",
+      "path": "tools/ai/orca_ai_sidecar.py",
+      "needle": "def _check_saved_model",
+      "detail": "Registered saved artifact structural check; private snapshot and SHA/mm binding; no generation job."
     }
   ],
   "journeys": [

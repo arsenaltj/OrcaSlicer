@@ -45,6 +45,8 @@ public:
 private:
     void transition(WorkflowState state, std::string detail = {});
     bool workspace_revision_matches() const;
+    bool refresh_completed_report();
+    bool refresh_preflight_report();
     void persist_runtime_state();
     std::string resource_violation(size_t candidate_count) const;
 
@@ -55,6 +57,7 @@ private:
     CandidatePlanningWorkflow m_candidate_planner;
     WorkflowSnapshot m_snapshot;
     std::optional<WorkspaceRevision> m_applied_revision;
+    bool m_completed_report_current{false};
     Observer m_observer;
     WorkflowId m_last_workflow_id{0};
     IWorkflowRuntimeStore* m_runtime_store{nullptr};

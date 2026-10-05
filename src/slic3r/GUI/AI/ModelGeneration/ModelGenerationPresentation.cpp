@@ -1,4 +1,5 @@
 #include "ModelGenerationPresentation.hpp"
+#include "slic3r/GUI/AIModelGenerationHttpError.hpp"
 #include "ModelLibraryThumbnail.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include "slic3r/GUI/AIModelOutputDirectory.hpp"
@@ -95,7 +96,7 @@ bool is_transient_sidecar_poll_error(const std::string& error)
            error.find("AI sidecar request timed out") != std::string::npos ||
            error.find("AI sidecar request failed") != std::string::npos ||
            error == "A valid OrcaSlicer AI session is required." ||
-           error == "Model generation request failed with HTTP 401.";
+           model_submission_http_error_ambiguous(error);
 }
 
 std::string new_request_id()
@@ -438,6 +439,88 @@ wxStaticText* section_label(wxWindow* parent, const wxString& text)
     return label;
 }
 
+std::vector<ModelCheckRisk> model_check_risks(const AIModelGenerationClient::ModelQuality& quality)
+{
+    std::vector<ModelCheckRisk> result;
+    if (!quality.available) return result;
+    const auto add = [&](const std::string& code, bool blocking) {
+        if (std::any_of(result.begin(), result.end(), [&](const auto& risk) { return risk.code == code; })) return;
+        wxString title = _L("结构提醒"), detail = model_quality_code_label(code);
+        const auto count = [&](const char* key, const wxString& format) {
+            const auto it = quality.report_metrics.find(key);
+            if (it != quality.report_metrics.end() && std::isfinite(it->second) && it->second >= 0)
+                detail = wxString::Format(format, it->second) + _L("\n") + detail;
+        };
+        if (code == "boundary_edges" || code == "repairable_boundary_edges") {
+            title = _L("开放边"); count("boundary_edges", _L("检测到 %.0f 条开放边"));
+        } else if (code == "non_manifold_edges" || code == "repairable_non_manifold_edges") {
+            title = _L("非流形边"); count("non_manifold_edges", _L("检测到 %.0f 条非流形边"));
+        } else if (code == "tiny_detached_components") {
+            title = _L("微小脱离部件"); count("tiny_component_count", _L("检测到 %.0f 个微小部件"));
+        } else if (code == "localized_overhang_regions") {
+            title = _L("局部悬垂"); count("significant_overhang_region_count", _L("检测到 %.0f 处局部悬垂"));
+        } else if (code == "tiny_printable_color_regions") {
+            title = _L("细碎色块"); count("tiny_color_region_count", _L("检测到 %.0f 个细碎色块"));
+        } else if (code == "thin_local_wall_regions") {
+            title = _L("局部薄壁"); count("thin_local_region_count", _L("检测到 %.0f 处薄壁风险区"));
+        } else if (code == "thin_structural_components") {
+            title = _L("薄型部件"); count("thin_component_count", _L("检测到 %.0f 个薄型部件"));
+        } else if (code == "weak_bed_contact") title = _L("接地不足");
+        else if (code == "flat_or_empty_axis") title = _L("无有效厚度");
+        else if (code == "too_many_faces") title = _L("面数超限");
+        else if (code == "floating_disconnected_components") title = _L("悬空部件");
+        result.push_back({code, title, detail, blocking});
+    };
+    // Errors and warnings both remain reachable, including when a check rejects.
+    for (const auto& code : quality.errors) add(code, true);
+    for (const auto& code : quality.warnings) add(code, false);
+    return result;
+}
+
+wxString model_check_scope(const AIModelGenerationClient::ModelQuality& quality)
+{
+    if (!quality.available) return _L("尚无当前保存版本的有效检查报告。");
+    wxString text = _L("检查范围：当前保存版本的原始尺寸与方向。仅本地结构分析，不自动修形，不运行切片或付费 AI。工程中的缩放、方向或几何变更后需重新复核。\n");
+    text += _L("单位：") + from_u8(quality.units) + _L(" · 检查版本：") + from_u8(quality.gate_version);
+    if (!quality.artifact_sha256.empty()) {
+        text += _L("\n模型 SHA256：\n");
+        for (size_t i = 0; i < quality.artifact_sha256.size(); i += 16) {
+            if (i) text += " ";
+            text += from_u8(quality.artifact_sha256.substr(i, 16));
+        }
+    }
+    text += quality.local_thickness_available
+        ? _L("\n局部壁厚为有限采样，不能排除未采样区域的风险。")
+        : _L("\n局部壁厚：本次未完成采样，不能判断壁厚通过。");
+    text += _L("\n本次报告阈值（未提供的指标不推定通过）：");
+    const auto threshold = [&](const char* key, const wxString& format, double scale = 1.0) {
+        const auto it = quality.report_thresholds.find(key);
+        if (it != quality.report_thresholds.end() && std::isfinite(it->second))
+            text += "\n" + wxString::Format(format, it->second * scale);
+    };
+    threshold("max_faces", _L("面数上限：%.0f"));
+    threshold("min_local_wall_thickness_mm", _L("局部壁厚下限：%.2f mm"));
+    threshold("min_component_thickness_mm", _L("部件厚度下限：%.2f mm"));
+    threshold("ground_band_mm", _L("接地带高度：%.2f mm"));
+    threshold("min_contact_span_ratio", _L("接地跨度下限：%.2f%%"), 100);
+    threshold("min_contact_area_ratio", _L("接地面积下限：%.2f%%"), 100);
+    threshold("max_downward_area_ratio", _L("向下表面积比例上限：%.1f%%"), 100);
+    threshold("min_overhang_region_area_mm2", _L("局部悬垂面积下限：%.2f mm²"));
+    threshold("local_thickness_sample_limit", _L("壁厚采样上限：%.0f"));
+    return text;
+}
+
+wxString model_check_failure_message(const std::string& error)
+{
+    if (error.find("artifact_changed") != std::string::npos)
+        return _L("保存版本已变化；请从资产库重新加载后检查。模型与编辑已保留。");
+    if (error.find("quality_report_unavailable") != std::string::npos)
+        return _L("检查报告暂时无法读取或写入。请检查开发数据目录的可用空间与写入权限，再重试。模型与编辑已保留。");
+    if (error.find("timeout") != std::string::npos || error.find("timed out") != std::string::npos)
+        return _L("本地检查超时。模型与编辑已保留，可重试检查。");
+    return _L("本地检查未完成。请确认模型文件与本地服务可用后重试；详细原因见诊断日志。模型与编辑已保留。");
+}
+
 wxString model_quality_code_label(const std::string& code)
 {
     if (code == "tiny_detached_components") return _L("检测到微小脱离部件，请旋转模型确认是否需要保留。");
@@ -453,8 +536,8 @@ wxString model_quality_code_label(const std::string& code)
     if (code == "high_downward_surface_ratio") return _L("向下表面较多，打印时可能需要更多支撑。");
     if (code == "localized_overhang_regions") return _L("检测到局部悬垂面，请旋转模型检查是否需要支撑。");
     if (code == "dense_micro_triangles") return _L("局部三角面非常密集，请检查细小结构。");
-    if (code == "repairable_boundary_edges") return _L("存在少量开放边，将在导入时交给 Orca 修复。");
-    if (code == "repairable_non_manifold_edges") return _L("存在少量非流形边，将在导入时交给 Orca 修复。");
+    if (code == "repairable_boundary_edges") return _L("开放边可能影响封闭性；导入后仍需复核 Orca 修复结果。");
+    if (code == "repairable_non_manifold_edges") return _L("非流形边可能影响切片；导入后仍需复核 Orca 修复结果。");
     if (code == "repairable_inconsistent_winding_edges") return _L("存在少量面绕序异常，将在导入时交给 Orca 修复。");
     if (code == "boundary_edges") return _L("模型包含开放边，当前不能安全导入切片。");
     if (code == "non_manifold_edges") return _L("模型包含非流形边，当前不能安全导入切片。");

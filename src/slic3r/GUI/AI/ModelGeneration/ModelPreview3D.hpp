@@ -9,6 +9,8 @@
 #include "slic3r/GUI/AI/Model/BeautySurface.hpp"
 #include "slic3r/GUI/AI/Model/BeautyBoundaryDrag.hpp"
 #include "ModelColorPreviewShader.hpp"
+#include "ModelLibraryModelThumbnail.hpp"
+#include "ModelPreviewTexture.hpp"
 #include "ModelPreviewNormals.hpp"
 #include "ModelPreviewGeometry.hpp"
 #include "BeautySourceSnapshot.hpp"
@@ -25,6 +27,7 @@
 #include "slic3r/GUI/OpenGLManager.hpp"
 #include "libslic3r/Format/OBJ.hpp"
 #include "libslic3r/Geometry.hpp"
+#include "libslic3r/Utils.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/TriangleMesh.hpp"
 
@@ -78,13 +81,26 @@ public:
         auto* sizer = new wxBoxSizer(wxVERTICAL);
         m_canvas = OpenGLManager::create_wxglcanvas(*this);
         trace_stage("canvas_created");
-        m_canvas->SetMinSize(wxSize(FromDIP(360), FromDIP(300)));
+        m_canvas->SetMinSize(wxSize(1, 1));
+        m_overlay_top = sizer->AddSpacer(0);
         sizer->Add(m_canvas, 1, wxEXPAND);
+        m_overlay_bottom = sizer->AddSpacer(0);
         m_region_prepare_status = new wxStaticText(this, wxID_ANY, wxEmptyString);
         sizer->Add(m_region_prepare_status, 0, wxEXPAND | wxALL, FromDIP(6));
         m_region_prepare_status->Hide();
         m_region_prepare_timer.SetOwner(this);
         Bind(wxEVT_TIMER, [this](wxTimerEvent&) { finish_region_preparation(); }, m_region_prepare_timer.GetId());
+        m_rotation_timer.SetOwner(this);
+        Bind(wxEVT_TIMER,[this](wxTimerEvent&) {
+            const auto now=std::chrono::steady_clock::now();
+            const double seconds=std::chrono::duration<double>(now-m_rotation_tick).count();
+            m_rotation_tick=now;
+            if (!IsShownOnScreen() || !m_has_model || m_dragging || m_drawing_selection) {
+                set_auto_rotation(false);return;
+            }
+            m_yaw=std::remainder(m_yaw+std::min(seconds,0.1)*0.35,6.283185307179586);
+            m_canvas->Refresh(false);
+        },m_rotation_timer.GetId());
         m_surface_timer.SetOwner(this);
         Bind(wxEVT_TIMER, [this](wxTimerEvent&) { finish_surface_selection(); }, m_surface_timer.GetId());
         m_semantic_timer.SetOwner(this);
@@ -113,6 +129,7 @@ public:
             event.Skip();
         });
         m_canvas->Bind(wxEVT_LEFT_DOWN, [this](wxMouseEvent& event) {
+            set_auto_rotation(false);
             if (m_puzzle_enabled && selection_busy()) return;
             m_dragging = true;
             m_drag_moved = false;
@@ -209,6 +226,7 @@ public:
             m_canvas->Refresh(false);
         });
         m_canvas->Bind(wxEVT_RIGHT_DOWN, [this](wxMouseEvent& event) {
+            set_auto_rotation(false);
             if(m_boundary_pending)return;
             m_boundary_hover.reset();
             if (m_drawing_selection) finish_drag();
@@ -258,6 +276,7 @@ public:
     ~ModelPreview3D() override {
         const bool region_was_running = m_region_preparation && !m_region_preparation->done.load();
         if (m_region_preparation) m_region_preparation->canceled = true;
+        m_rotation_timer.Stop();
         m_semantic_timer.Stop();
         m_semantic_controller.reset();
         cancel_surface_selection();
@@ -316,6 +335,7 @@ public:
         const GLModel::Geometry& render_data() const
         { return render_geometry ? render_geometry->geometry() : geometry; }
 
+        AI::ModelArtifactTextureSurface texture_surface;
         indexed_triangle_set mesh;
         std::vector<RGBA> vertex_colors;
         BoundingBoxf3 bounds;
@@ -326,6 +346,7 @@ public:
         std::vector<PreviewPalette::Color> trial_palette;
         std::shared_ptr<const PreviewPalette::Histogram> trial_histogram;
         std::string geometry_id;
+        std::string artifact_sha256;
         FaceColorOverrides face_color_overrides;
         std::optional<SelectionState> selection;
         std::optional<ModelPreviewColorControls::State> color_trial;
@@ -362,7 +383,7 @@ public:
         const FileStamp initial_stamp = file_stamp(path);
         TriangleMesh mesh;
         ObjInfo obj_info;
-        if (!AI::load_model_artifact(path, mesh, obj_info, error, canceled) || mesh.empty()) {
+        if (!AI::load_model_artifact(path, mesh, obj_info, error, canceled, &prepared.texture_surface) || mesh.empty()) {
             if (error == "Model loading canceled.") error = "Model preview loading canceled.";
             else stop_if_canceled();
             return false;
@@ -518,10 +539,12 @@ public:
                 std::chrono::steady_clock::now() - palette_started).count();
         prepared.geometry = std::move(geometry);
         prepared.path = path;
+        try { prepared.artifact_sha256 = AI::model_artifact_sha256(path); }
+        catch (...) { /* A cache failure must not reject a valid model. */ }
         prepared.stamp = file_stamp(path);
         if (!same_stamp(initial_stamp, prepared.stamp))
             prepared.stamp.valid = false;
-        if (has_vertex_colors || !restore_saved_edits) {
+        if (has_vertex_colors || !restore_saved_edits || !prepared.texture_surface.faces.empty()) {
             prepared.mesh = std::move(mesh.its);
             if (has_vertex_colors) prepared.vertex_colors = std::move(obj_info.vertex_colors);
         }
@@ -552,6 +575,12 @@ public:
             for (size_t v = 0; v < geometry.vertices_count(); ++v)
                 m_original_surface_colors.push_back(geometry.extract_tex_coord_2(v));
         }
+        if (!prepared.texture_surface.faces.empty()) {
+            try {
+                m_texture_model = std::make_unique<ModelPreviewTexture>(prepared.texture_surface,prepared.mesh,
+                    ModelPreviewNormals::corner_normals(prepared.mesh));
+            } catch (const std::exception& failure) { error=failure.what(); return false; }
+        }
         auto model = std::make_unique<GLModel>();
         if (prepared.render_geometry)
             model->init_from(std::move(*prepared.render_geometry));
@@ -580,7 +609,8 @@ public:
         if (prepared.color_trial) m_color_trial->restore(*prepared.color_trial);
         m_paint_diagnostics_logged = false;
         m_render_diagnostics_logged = false;
-        front_view();
+        default_view();
+        m_pending_library_thumbnail_sha = std::move(prepared.artifact_sha256);
         notify_selection_changed();
         return true;
     }
@@ -596,6 +626,7 @@ public:
         cache_current_preview();
         clear_current_preview();
         m_models = std::move(cached->models);
+        m_texture_model = std::move(cached->texture_model);
         m_pending_mesh = std::move(cached->mesh);
         m_pending_vertex_colors = std::move(cached->vertex_colors);
         m_geometry_id = std::move(cached->geometry_id);
@@ -616,7 +647,7 @@ public:
         if (cached->color_trial) m_color_trial->restore(*cached->color_trial);
         m_paint_diagnostics_logged = false;
         m_render_diagnostics_logged = false;
-        front_view();
+        default_view();
         notify_selection_changed();
         BOOST_LOG_TRIVIAL(info) << "AI model preview cache hit: triangles=" << triangle_count;
         return true;
@@ -649,6 +680,7 @@ public:
 
     void clear()
     {
+        set_auto_rotation(false);
         clear_current_preview();
         m_cached_preview.reset();
     }
@@ -675,6 +707,7 @@ private:
         if (m_context != nullptr && m_canvas != nullptr)
             m_canvas->SetCurrent(*m_context);
         m_models.clear();
+        m_texture_model.reset();
         m_semantic_model.reset();
         m_puzzle_display.reset(); m_puzzle_enabled=false;
         m_selection_model.reset();
@@ -692,6 +725,7 @@ private:
         if (m_color_trial) m_color_trial->clear();
         m_selection_enabled = false;
         m_model_path.clear();
+        m_pending_library_thumbnail_sha.clear();
         m_model_stamp = FileStamp {};
         if (m_canvas != nullptr)
             m_canvas->SetCursor(wxCursor(wxCURSOR_ARROW));
@@ -700,14 +734,30 @@ private:
     }
 
 public:
+    void set_library_thumbnail_root(const boost::filesystem::path& root) { m_library_thumbnail_root = root; }
     void set_preview_background(const wxColour& color)
     {
         m_preview_background = color;
+        SetBackgroundColour(color);
         if (m_canvas != nullptr) m_canvas->Refresh(false);
+    }
+
+    // Native GL dimensions, rendering and hit testing share this safe area.
+    // Reserving sibling controls changes layout, never the stored view/edit state.
+    void set_overlay_insets(int top, int bottom)
+    {
+        const wxSize top_size(0, std::max(0, top));
+        const wxSize bottom_size(0, std::max(0, bottom));
+        if (m_overlay_top->GetMinSize() == top_size && m_overlay_bottom->GetMinSize() == bottom_size) return;
+        m_overlay_top->SetMinSize(top_size);
+        m_overlay_bottom->SetMinSize(bottom_size);
+        Layout();
+        m_canvas->Refresh(false);
     }
 
     void reset_view()
     {
+        set_auto_rotation(false);
         m_pan_x = m_pan_y = 0.0;
         m_yaw = -0.65;
         m_pitch = -1.05;
@@ -716,8 +766,33 @@ public:
             m_canvas->Refresh(false);
     }
 
+    // The portrait front camera sees the Y-Z projection. Thin X-Z / X-Y
+    // assets would collapse to a line, so their initial view uses the existing
+    // Z-up three-dimensional angle. Explicit front-view actions stay literal.
+    static std::pair<double, double> initial_view_angles(const Vec3d& dimensions)
+    {
+        const double extent = dimensions.maxCoeff();
+        if (extent > 0.0 &&
+            std::min(dimensions.y(), dimensions.z()) < extent * 0.02)
+            return {-0.65, -1.05};
+        return {-1.5707963267948966, -1.5707963267948966};
+    }
+
+    void default_view()
+    {
+        set_auto_rotation(false);
+        m_pan_x = m_pan_y = 0.0;
+        const auto angles = initial_view_angles(m_bounds.size().cast<double>());
+        m_yaw = angles.first;
+        m_pitch = angles.second;
+        m_zoom = 1.0;
+        if (m_canvas != nullptr)
+            m_canvas->Refresh(false);
+    }
+
     void front_view()
     {
+        set_auto_rotation(false);
         m_pan_x = m_pan_y = 0.0;
         // Generated portrait OBJ files are Z-up and face +X. Rotate +X toward
         // the orthographic camera so identity can be compared without asking
@@ -968,6 +1043,15 @@ public:
         for (size_t i = 0; i < selected.size(); ++i) if (selected[i]) result.push_back(i);
         return result;
     }
+    bool gray_view() const {return m_gray_view;}
+    bool wireframe_view() const {return m_wireframe_view;}
+    bool auto_rotation() const {return m_rotation_timer.IsRunning();}
+    void set_wireframe_view(bool enabled) {m_wireframe_view=enabled;m_canvas->Refresh(false);}
+    void set_auto_rotation(bool enabled) {
+        if(enabled && m_has_model && IsShownOnScreen()) {
+            m_rotation_tick=std::chrono::steady_clock::now();m_rotation_timer.Start(33);
+        } else m_rotation_timer.Stop();
+    }
     void set_gray_view(bool enabled) { m_gray_view = enabled; m_canvas->Refresh(false); }
     void set_selection_overlay_visible(bool visible) { m_selection_overlay_visible = visible; m_canvas->Refresh(false); }
     bool focus_selection() {
@@ -1143,6 +1227,7 @@ public:
 private:
     struct CachedPreview {
         std::vector<std::unique_ptr<GLModel>> models;
+        std::unique_ptr<ModelPreviewTexture> texture_model;
         indexed_triangle_set mesh;
         std::vector<RGBA> vertex_colors;
         BoundingBoxf3 bounds;
@@ -1195,6 +1280,7 @@ private:
                        colors.capacity() * sizeof(RGBA);
         for (const auto& model : m_models)
             bytes += model->cpu_memory_used() + model->gpu_memory_used();
+        if (m_texture_model) bytes += m_texture_model->memory_used();
         constexpr size_t cache_limit = size_t(384) * 1024 * 1024;
         if (bytes > cache_limit)
             return;
@@ -1205,6 +1291,7 @@ private:
         m_cached_preview->selection = selection_state();
         m_cached_preview->color_trial = m_color_trial->state();
         m_cached_preview->models = std::move(m_models);
+        m_cached_preview->texture_model = std::move(m_texture_model);
         if (m_region_editor->ready()) {
             // Retain only compact source arrays, never the adjacency/BVH. This
             // keeps the first local before/after comparison free of OBJ parsing.
@@ -1890,9 +1977,122 @@ private:
         }
     }
 
+    // One derived frame per CPU-loaded source, using this existing GL context
+    // and model buffers. No thumbnail canvases, geometry copies or UI camera
+    // changes are created while the user scrolls the library.
+    void cache_library_model_thumbnail(const std::string& sha)
+    {
+        if (m_library_thumbnail_root.empty() || !library_model_thumbnail_sha(sha) ||
+            !same_stamp(m_model_stamp, file_stamp(m_model_path)) ||
+            OpenGLManager::get_framebuffers_type() != OpenGLManager::EFramebufferType::Arb ||
+            !wxGetApp().init_opengl()) return;
+        if (!library_model_thumbnail_image(m_library_thumbnail_root, m_model_path).empty()) return;
+        try {
+            if (!m_color_shader) {
+                m_color_shader = std::make_unique<GLShaderProgram>();
+                if (!initialize_model_color_shader(*m_color_shader)) { m_color_shader.reset(); return; }
+            }
+            constexpr int width = 640, height = 480;
+            GLuint fbo = 0, color = 0, depth = 0;
+            GLint draw_fbo = 0, read_fbo = 0, renderbuffer = 0, viewport[4] {}, program = 0;
+            GLint alignment = 0, row_length = 0, skip_rows = 0, skip_pixels = 0, pack_buffer = 0;
+            GLint depth_func = 0, polygon[2] {};
+            GLboolean depth_write = GL_TRUE, color_write[4] {};
+            GLfloat clear_color[4] {}; GLdouble clear_depth = 1;
+            const bool depth_test = ::glIsEnabled(GL_DEPTH_TEST), cull = ::glIsEnabled(GL_CULL_FACE);
+            const bool blend = ::glIsEnabled(GL_BLEND), scissor = ::glIsEnabled(GL_SCISSOR_TEST);
+            ::glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw_fbo); ::glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read_fbo);
+            ::glGetIntegerv(GL_RENDERBUFFER_BINDING, &renderbuffer); ::glGetIntegerv(GL_VIEWPORT, viewport);
+            ::glGetIntegerv(GL_CURRENT_PROGRAM, &program); ::glGetIntegerv(GL_DEPTH_FUNC, &depth_func);
+            ::glGetIntegerv(GL_POLYGON_MODE, polygon); ::glGetBooleanv(GL_DEPTH_WRITEMASK, &depth_write);
+            ::glGetBooleanv(GL_COLOR_WRITEMASK, color_write); ::glGetFloatv(GL_COLOR_CLEAR_VALUE, clear_color);
+            ::glGetDoublev(GL_DEPTH_CLEAR_VALUE, &clear_depth);
+            ::glGetIntegerv(GL_PACK_ALIGNMENT, &alignment); ::glGetIntegerv(GL_PACK_ROW_LENGTH, &row_length);
+            ::glGetIntegerv(GL_PACK_SKIP_ROWS, &skip_rows); ::glGetIntegerv(GL_PACK_SKIP_PIXELS, &skip_pixels);
+            ::glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &pack_buffer);
+            Slic3r::ScopeGuard restore([&] {
+                ::glBindFramebuffer(GL_DRAW_FRAMEBUFFER, draw_fbo); ::glBindFramebuffer(GL_READ_FRAMEBUFFER, read_fbo);
+                ::glBindRenderbuffer(GL_RENDERBUFFER, renderbuffer); ::glViewport(viewport[0],viewport[1],viewport[2],viewport[3]);
+                ::glUseProgram(program); ::glDepthFunc(depth_func); ::glDepthMask(depth_write);
+                ::glColorMask(color_write[0],color_write[1],color_write[2],color_write[3]);
+                ::glClearColor(clear_color[0],clear_color[1],clear_color[2],clear_color[3]); ::glClearDepth(clear_depth);
+                ::glPolygonMode(GL_FRONT_AND_BACK, polygon[0]);
+                (depth_test ? ::glEnable : ::glDisable)(GL_DEPTH_TEST);
+                (cull ? ::glEnable : ::glDisable)(GL_CULL_FACE); (blend ? ::glEnable : ::glDisable)(GL_BLEND);
+                (scissor ? ::glEnable : ::glDisable)(GL_SCISSOR_TEST);
+                ::glPixelStorei(GL_PACK_ALIGNMENT, alignment); ::glPixelStorei(GL_PACK_ROW_LENGTH, row_length);
+                ::glPixelStorei(GL_PACK_SKIP_ROWS, skip_rows); ::glPixelStorei(GL_PACK_SKIP_PIXELS, skip_pixels);
+                ::glBindBuffer(GL_PIXEL_PACK_BUFFER, pack_buffer);
+                if (depth) ::glDeleteRenderbuffers(1, &depth); if (color) ::glDeleteRenderbuffers(1, &color);
+                if (fbo) ::glDeleteFramebuffers(1, &fbo);
+            });
+            (void)restore;
+            ::glGenFramebuffers(1, &fbo); ::glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            ::glGenRenderbuffers(1, &color); ::glBindRenderbuffer(GL_RENDERBUFFER, color);
+            ::glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, width, height);
+            ::glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, color);
+            ::glGenRenderbuffers(1, &depth); ::glBindRenderbuffer(GL_RENDERBUFFER, depth);
+            ::glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width, height);
+            ::glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth);
+            if (::glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) return;
+            ::glViewport(0, 0, width, height); ::glDisable(GL_SCISSOR_TEST); ::glDisable(GL_CULL_FACE);
+            ::glDisable(GL_BLEND); ::glEnable(GL_DEPTH_TEST); ::glDepthFunc(GL_LESS); ::glDepthMask(GL_TRUE);
+            ::glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE); ::glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+            ::glClearColor(49.f/255,49.f/255,54.f/255,1); ::glClearDepth(1);
+            ::glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            const Vec3d size = m_bounds.size().cast<double>();
+            const double radius = std::max(0.001, 0.5 * size.norm()), near_z = 0.01 * radius, far_z = 8.0 * radius;
+            const auto angles = initial_view_angles(size);
+            const Transform3d rotation = Geometry::rotation_transform(angles.second * Vec3d::UnitX()) *
+                Geometry::rotation_transform(angles.first * Vec3d::UnitZ());
+            const Vec3d extents = rotation.linear().cwiseAbs() * (0.5 * size);
+            const double aspect = double(width) / height;
+            const double hh = std::max(0.001, std::max(extents.y(), extents.x()/aspect)*1.08);
+            Transform3d projection = Transform3d::Identity(); projection.matrix().setZero();
+            projection.matrix()(0,0)=1/(hh*aspect); projection.matrix()(1,1)=1/hh;
+            projection.matrix()(2,2)=-2/(far_z-near_z); projection.matrix()(2,3)=-(far_z+near_z)/(far_z-near_z);
+            projection.matrix()(3,3)=1;
+            const Transform3d view = Geometry::translation_transform(Vec3d(0,0,-3*radius)) * rotation *
+                Geometry::translation_transform(-m_bounds.center().cast<double>());
+            auto* shader = m_color_shader.get(); shader->start_using();
+            shader->set_uniform("view_model_matrix", view); shader->set_uniform("projection_matrix", projection);
+            shader->set_uniform("view_normal_matrix", Matrix3d(view.matrix().block(0,0,3,3).inverse().transpose()));
+            shader->set_uniform("use_uniform_color", false); shader->set_uniform("preview_texture_enabled", false);
+            shader->set_uniform("preview_unlit_overlay", false); shader->set_uniform("preview_boundary_stroke", false);
+            shader->set_uniform("gray_view", false); shader->set_uniform("exact_surface_colors", false);
+            shader->set_uniform("preview_lighting", true); shader->set_uniform("preview_lightness_weight", PreviewPalette::lightness_weight);
+            shader->set_uniform("preview_color_count", 0);
+            if (m_texture_model) m_texture_model->render(shader, view);
+            else for (const auto& model : m_models) model->render(shader);
+            shader->stop_using();
+            ::glBindBuffer(GL_PIXEL_PACK_BUFFER, 0); ::glPixelStorei(GL_PACK_ALIGNMENT, 1);
+            ::glPixelStorei(GL_PACK_ROW_LENGTH, 0); ::glPixelStorei(GL_PACK_SKIP_ROWS, 0); ::glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
+            ::glReadBuffer(GL_COLOR_ATTACHMENT0);
+            std::vector<unsigned char> pixels(size_t(width)*height*3);
+            ::glReadPixels(0,0,width,height,GL_RGB,GL_UNSIGNED_BYTE,pixels.data());
+            if (::glGetError() != GL_NO_ERROR || !same_stamp(m_model_stamp, file_stamp(m_model_path))) return;
+            publish_library_model_thumbnail(m_library_thumbnail_root, m_model_path,
+                {sha, m_model_stamp.bytes, m_model_stamp.modified.time_since_epoch().count()}, width, height, pixels);
+        } catch (const std::exception& error) {
+            BOOST_LOG_TRIVIAL(warning) << "Model library thumbnail unavailable: " << error.what();
+        }
+    }
+
     void on_paint(wxPaintEvent&)
     {
         wxPaintDC dc(m_canvas);
+        // Match the native Orca canvas: nested paints must not render or swap
+        // the same context while a frame is already being submitted.
+        if (m_in_paint) {
+            m_canvas->Refresh(false);
+            return;
+        }
+        const wxSize drawable_size = m_canvas->GetClientSize();
+        if (!m_canvas->IsShownOnScreen() || drawable_size.x <= 0 || drawable_size.y <= 0)
+            return;
+        m_in_paint = true;
+        Slic3r::ScopeGuard paint_guard([this]() { m_in_paint = false; });
+        (void)paint_guard;
         const bool context_ok = m_context != nullptr && m_context->IsOK();
         const bool current_ok = context_ok && m_canvas->SetCurrent(*m_context);
         if (!m_paint_diagnostics_logged) {
@@ -1971,6 +2171,7 @@ private:
                 shader->set_uniform("projection_matrix", projection);
                 shader->set_uniform("view_normal_matrix", normal_matrix);
                 shader->set_uniform("use_uniform_color", false);
+                shader->set_uniform("preview_texture_enabled", false);
                 shader->set_uniform("preview_unlit_overlay", false);
                 shader->set_uniform("preview_boundary_stroke", false);
                 shader->set_uniform("gray_view", m_gray_view);
@@ -1993,11 +2194,21 @@ private:
                     glsafe(::glDisable(GL_MULTISAMPLE));
                     glsafe(::glDisable(GL_DITHER));
                 }
+                GLint polygon_mode[2]={GL_FILL,GL_FILL};
+                ::glGetIntegerv(GL_POLYGON_MODE,polygon_mode);
+                if(m_wireframe_view)glsafe(::glPolygonMode(GL_FRONT_AND_BACK,GL_LINE));
                 const bool puzzle=m_puzzle_enabled && bool(m_puzzle_display.fill);
                 if(puzzle) {
                     shader->set_uniform("preview_color_count",0);
-                    glsafe(::glEnable(GL_POLYGON_OFFSET_FILL));glsafe(::glPolygonOffset(2.0f,8.0f));
-                    m_puzzle_display.fill->render(shader);
+                    glsafe(::glEnable(GL_POLYGON_OFFSET_FILL));
+                    if (m_texture_model && !m_gray_view) {
+                        glsafe(::glPolygonOffset(2.0f,8.0f)); m_texture_model->render(shader, view_model);
+                        if (m_puzzle_display.painted_fill) {
+                            glsafe(::glPolygonOffset(1.0f,4.0f)); m_puzzle_display.painted_fill->render(shader);
+                        }
+                    } else {
+                        glsafe(::glPolygonOffset(2.0f,8.0f)); m_puzzle_display.fill->render(shader);
+                    }
                     glsafe(::glDisable(GL_POLYGON_OFFSET_FILL));
                     shader->set_uniform("use_uniform_color",true);shader->set_uniform("preview_lighting",false);
                     shader->set_uniform("preview_unlit_overlay",true);
@@ -2023,8 +2234,10 @@ private:
                     glsafe(::glDepthMask(GL_TRUE));shader->set_uniform("preview_boundary_stroke",false);
                 } else if (m_semantic_ready && m_semantic_model && m_color_trial_enabled && m_color_trial->semantic_optimization() && !m_gray_view)
                     m_semantic_model->render(shader);
+                else if (m_texture_model && !m_exact_surface_display) m_texture_model->render(shader, view_model);
                 else for (const std::unique_ptr<GLModel>& model : m_models)
                     model->render(shader);
+                if(m_wireframe_view)glsafe(::glPolygonMode(GL_FRONT_AND_BACK,polygon_mode[0]));
                 if (multisample) glsafe(::glEnable(GL_MULTISAMPLE));
                 if (dither) glsafe(::glEnable(GL_DITHER));
                 if ((m_selection_model || m_protection_model) && m_selection_enabled && m_selection_overlay_visible && !m_puzzle_enabled) {
@@ -2037,13 +2250,23 @@ private:
                     if (m_protection_model) m_protection_model->render(shader);
                     glsafe(::glDisable(GL_POLYGON_OFFSET_FILL));
                 }
-                if (!m_render_diagnostics_logged) {
+                if (!m_render_diagnostics_logged || m_render_diagnostics_size != wxSize(width,height) ||
+                    m_render_diagnostics_zoom != m_zoom) {
                     const GLenum error = ::glGetError();
+                    GLint viewport[4]{};
+                    ::glGetIntegerv(GL_VIEWPORT,viewport);
                     BOOST_LOG_TRIVIAL(info) << "AI model preview render: groups=" << m_models.size()
                                             << ", viewport=" << width << "x" << height
                                             << ", shader=" << shader->get_id()
-                                            << ", gl_error=" << error;
+                                            << ", gl_error=" << error
+                                            << ", client=" << drawable_size.x << "x" << drawable_size.y
+                                            << ", dpi=" << m_canvas->GetDPIScaleFactor()
+                                            << ", content_scale=" << m_canvas->GetContentScaleFactor()
+                                            << ", gl_viewport=" << viewport[2] << "x" << viewport[3]
+                                            << ", zoom=" << m_zoom;
                     m_render_diagnostics_logged = true;
+                    m_render_diagnostics_size = wxSize(width,height);
+                    m_render_diagnostics_zoom = m_zoom;
                 }
                 shader->stop_using();
                 glsafe(::glDisable(GL_DEPTH_TEST));
@@ -2119,7 +2342,18 @@ private:
                 m_render_diagnostics_logged = true;
             }
         }
-        m_canvas->SwapBuffers();
+        // Visibility can change through native window messages during a paint.
+        // Do not submit a frame for a canvas hidden by navigation or layout.
+        if (!m_canvas->IsShownOnScreen())
+            return;
+        const bool frame_submitted = m_canvas->SwapBuffers();
+        if (frame_submitted && m_has_model && m_color_shader != nullptr && !m_pending_library_thumbnail_sha.empty()) {
+            // The first visible frame initializes the GL drawing state. Capture once
+            // afterwards, rather than before the newly loaded model has been drawn.
+            auto artifact_sha = std::move(m_pending_library_thumbnail_sha);
+            m_pending_library_thumbnail_sha.clear();
+            cache_library_model_thumbnail(artifact_sha);
+        }
         if (m_trial_toggle_started) {
             BOOST_LOG_TRIVIAL(info) << "AI color trial frame submitted: enabled=" << m_color_trial_enabled
                 << ", elapsed_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -2140,7 +2374,11 @@ private:
     std::optional<Vec2d> m_boundary_hover;
     std::optional<AI::BeautyBoundaryDrag> m_boundary_pending;
     std::vector<std::pair<Vec2d,Vec2d>> m_boundary_preview;
+    boost::filesystem::path m_library_thumbnail_root;
+    std::string m_pending_library_thumbnail_sha;
     wxGLCanvas* m_canvas {nullptr};
+    wxSizerItem* m_overlay_top {nullptr};
+    wxSizerItem* m_overlay_bottom {nullptr};
     void update_semantic_coloring();
     void finish_semantic_coloring();
     wxTimer m_semantic_timer;
@@ -2156,10 +2394,14 @@ private:
     std::shared_ptr<const PreviewPalette::Histogram> m_trial_histogram;
     bool m_color_trial_enabled {false};
     bool m_gray_view {false};
+    bool m_wireframe_view {false};
+    wxTimer m_rotation_timer;
+    std::chrono::steady_clock::time_point m_rotation_tick;
     double m_pan_x {0.0}, m_pan_y {0.0};
     std::optional<std::chrono::steady_clock::time_point> m_trial_toggle_started;
     wxGLContext* m_context {nullptr};
     std::vector<std::unique_ptr<GLModel>> m_models;
+    std::unique_ptr<ModelPreviewTexture> m_texture_model;
     std::unique_ptr<GLModel> m_selection_model;
     std::unique_ptr<GLModel> m_protection_model;
     std::unique_ptr<GLShaderProgram> m_color_shader;
@@ -2234,8 +2476,11 @@ private:
     bool m_selection_overlay_visible {true};
     bool m_puzzle_ready {false};
     bool m_has_model {false};
+    bool m_in_paint {false};
     bool m_paint_diagnostics_logged {false};
     bool m_render_diagnostics_logged {false};
+    wxSize m_render_diagnostics_size {0,0};
+    double m_render_diagnostics_zoom {0.0};
 };
 
 } // namespace Slic3r::GUI

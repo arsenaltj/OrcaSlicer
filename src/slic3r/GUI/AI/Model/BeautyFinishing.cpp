@@ -110,15 +110,33 @@ ModelFinishingResult finish_puzzle_artifact(const boost::filesystem::path& sourc
         const auto& original = same_contents ? mesh : original_storage;
         const auto& original_colors = same_contents ? info : original_color_storage;
         const auto geometry = SurfaceSelectionPersistence::geometry_fingerprint(mesh.its);
-        // Identical content makes original an alias of this validated mesh.
-        // Compare independent meshes; keep both final file identity checks.
-        require_puzzle(same_contents || (
-                       SurfaceSelectionPersistence::geometry_fingerprint(original.its) == geometry &&
-                       original.its.indices == mesh.its.indices && original.its.vertices == mesh.its.vertices),
+        // Keep the alias/identical-array fast path. Face painting may split
+        // coincident vertices; only exactly equal ordered corner positions are
+        // eligible, never a changed face order, winding or geometric position.
+        bool same_ordered_geometry = same_contents ||
+            (original.its.indices == mesh.its.indices && original.its.vertices == mesh.its.vertices);
+        if (!same_ordered_geometry && original.its.indices.size() == mesh.its.indices.size()) {
+            same_ordered_geometry = true;
+            for (size_t f = 0; f < mesh.its.indices.size() && same_ordered_geometry; ++f) {
+                if ((f & 4095) == 0) checkpoint();
+                for (size_t c = 0; c < 3; ++c) {
+                    const int from = original.its.indices[f][c], to = mesh.its.indices[f][c];
+                    if (from < 0 || to < 0 || size_t(from) >= original.its.vertices.size() ||
+                        size_t(to) >= mesh.its.vertices.size() || !original.its.vertices[from].allFinite() ||
+                        original.its.vertices[from] != mesh.its.vertices[to]) {
+                        same_ordered_geometry = false;
+                        break;
+                    }
+                }
+            }
+        }
+        require_puzzle(same_contents || (same_ordered_geometry &&
+                       SurfaceSelectionPersistence::geometry_fingerprint(original.its) == geometry),
                        "The original puzzle texture belongs to different geometry.");
         const auto puzzle = BeautyPuzzle::decode(record.at("puzzle"), geometry, mesh.its.indices.size());
         auto surface = options.beauty_surface;
-        if (!surface) surface = BeautySurface::build(original.its, original_colors.vertex_colors, {}, canceled);
+        if (!surface) surface = BeautySurface::build(mesh.its,
+            remap_model_vertex_colors(original.its,original_colors.vertex_colors,mesh.its), {}, canceled);
         puzzle.validate(*surface);
         checkpoint();
         result.faces_before = mesh.its.indices.size();
@@ -155,7 +173,7 @@ ModelFinishingResult finish_puzzle_artifact(const boost::filesystem::path& sourc
         TriangleMesh saved;
         ObjInfo saved_colors;
         require_puzzle(load_model_artifact(destination, saved, saved_colors, error), "Cannot reload the saved puzzle model.");
-        require_puzzle(saved.its.indices == mesh.its.indices && saved.its.vertices == mesh.its.vertices,
+        require_puzzle(SurfaceSelectionPersistence::geometry_fingerprint(saved.its) == geometry,
                        "Puzzle editing changed the model geometry.");
         result.faces_after = saved.its.indices.size();
         const auto size = saved.bounding_box().size();
