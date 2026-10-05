@@ -328,3 +328,9 @@ The shared launcher also handles PowerShell's empty `ArgumentList` case when
 no `--datadir` is supplied. Rerunning it with
 `powershell -ExecutionPolicy Bypass -File ...` starts R142 successfully and
 keeps the sidecar output in the shared profile.
+
+`start_figma_3d.cmd` is the normal Windows entry point for this version. It
+directly starts `build-figma-3d/runtime-r142/orca-slicer.exe` without
+`--datadir`, clears validation-only AI environment overrides and relies on
+Orca's standard user profile selection. It is suitable for double-click
+startup and does not depend on PowerShell execution policy.
