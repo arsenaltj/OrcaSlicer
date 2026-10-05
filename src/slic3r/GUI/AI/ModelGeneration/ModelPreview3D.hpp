@@ -6,6 +6,8 @@
 #include "slic3r/GUI/AI/Model/SurfaceSelectionRefinement.hpp"
 #include "slic3r/GUI/AI/Model/SurfaceSelectionState.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
+#include "SecondaryRegionEvidence.hpp"
+#include "ReadonlyEvidenceRender.hpp"
 #include "ModelColorPreviewShader.hpp"
 #include "ModelPreviewNormals.hpp"
 #include "ModelPreviewPalette.hpp"
@@ -28,6 +30,7 @@
 #include <boost/filesystem/fstream.hpp>
 #include <glad/gl.h>
 #include <wx/dcclient.h>
+#include <wx/dialog.h>
 #include <wx/glcanvas.h>
 #include <wx/panel.h>
 #include <wx/button.h>
@@ -46,6 +49,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <thread>
 #include <utility>
@@ -59,6 +63,7 @@ public:
     using SelectionState = AI::SurfaceSelectionPersistence::SelectionState;
     using FaceColorOverrides = AI::SurfaceSelectionPersistence::FaceColorOverrides;
     using SubfaceColorOverrides = AI::SemanticColoring::SubfaceColors;
+    wxWindow* workbench_overlay_parent() const { return m_preview_host; }
     explicit ModelPreview3D(wxWindow* parent)
         : wxPanel(parent)
     {
@@ -104,6 +109,7 @@ public:
             m_trial_palette = m_color_trial->colors();
             if (!m_suppress_semantic_change) update_semantic_coloring();
             m_canvas->Refresh(false);
+            if (m_color_trial_changed) m_color_trial_changed(m_trial_palette.size());
             BOOST_LOG_TRIVIAL(info) << "AI color trial toggled: enabled=" << m_color_trial_enabled
                 << ", palette=" << m_trial_palette.size() << ", geometry_reloaded=false";
         };
@@ -263,6 +269,7 @@ public:
         boost::filesystem::path path;
         FileStamp stamp;
         size_t triangles {0};
+        size_t vertices {0};
         size_t colors {0};
         std::vector<PreviewPalette::Color> trial_palette;
         std::shared_ptr<const PreviewPalette::Histogram> trial_histogram;
@@ -275,6 +282,8 @@ public:
         SubfaceColorOverrides saved_semantic_subfaces;
         std::shared_ptr<const SemanticRegionEvidence> region_evidence;
         std::string region_runtime_identity, region_evidence_error;
+        std::shared_ptr<const SecondaryRegionEvidence> secondary_region_evidence;
+        std::string secondary_region_evidence_error;
     };
 
     static bool prepare_model(const boost::filesystem::path& path, PreparedModel& prepared,
@@ -291,7 +300,7 @@ public:
 
         const indexed_triangle_set& its = mesh.its;
         prepared.geometry_id = AI::SurfaceSelectionPersistence::geometry_fingerprint(its);
-        nlohmann::json region_reference;
+        nlohmann::json region_reference, secondary_region_reference;
         prepared.face_color_overrides = explicit_overrides;
         auto record = metadata_path;
         if (record.empty()) { record = path; record.replace_extension(".json"); }
@@ -299,11 +308,12 @@ public:
         const auto record_bytes = boost::filesystem::file_size(record, record_error);
         boost::filesystem::ifstream record_stream(record);
         // Bound auxiliary state independently of the mesh, before JSON allocates.
-        if (record_stream && !record_error && record_bytes <= 128ULL * 1024 * 1024) {
+        if (record_stream && !record_error && record_bytes <= 256ULL * 1024 * 1024) {
             const auto metadata = nlohmann::json::parse(record_stream, nullptr, false);
             std::string state_error;
             if (metadata.is_object()) {
                 if (metadata.contains("semantic_region_evidence")) region_reference = metadata["semantic_region_evidence"];
+                if (metadata.contains("secondary_region_evidence")) secondary_region_reference = metadata["secondary_region_evidence"];
                 if (metadata.contains("color_trial")) {
                     ModelPreviewColorControls::State trial;
                     if (AI::ColorTrialPersistence::decode(metadata["color_trial"], its.indices.size(), prepared.geometry_id, trial, state_error)) {
@@ -379,6 +389,21 @@ public:
         } else if (prepared.semantic_source)
             prepared.region_evidence = load_legacy_semantic_region_evidence(*prepared.semantic_source,
                 runtime, cache / "portrait_semantics", prepared.region_runtime_identity, prepared.region_evidence_error);
+        if (!secondary_region_reference.is_null()) {
+            const auto expected_hash = secondary_region_reference.is_object() ? secondary_region_reference.find("model_sha256") : secondary_region_reference.end();
+            const auto source_hash = AI::model_artifact_sha256(path);
+            if (expected_hash != secondary_region_reference.end() && expected_hash->is_string() && expected_hash->get<std::string>() != source_hash)
+                prepared.secondary_region_evidence_error = "Secondary evidence model source hash mismatch";
+            else {
+                prepared.secondary_region_evidence = SecondaryRegionEvidenceCache::load(secondary_region_reference,
+                    boost::filesystem::path((cache / "beauty_secondary_regions").native()), prepared.geometry_id,
+                    source_hash, its.indices.size(), prepared.region_runtime_identity, prepared.secondary_region_evidence_error);
+            }
+        } else if (prepared.region_evidence && prepared.semantic_source) {
+            prepared.secondary_region_evidence = SecondaryRegionEvidence::from_primary(
+                *prepared.region_evidence, AI::model_artifact_sha256(path), prepared.semantic_source->content_id,
+                prepared.secondary_region_evidence_error, !region_reference.is_null());
+        }
         const RGBA fallback {ColorRGBA::ORCA().r(), ColorRGBA::ORCA().g(), ColorRGBA::ORCA().b(), 1.0f};
         GLModel::Geometry geometry;
         geometry.format = {GLModel::Geometry::EPrimitiveType::Triangles, GLModel::Geometry::EVertexLayout::P3N3T2};
@@ -433,6 +458,7 @@ public:
 
         prepared.bounds = mesh.bounding_box();
         prepared.triangles = its.indices.size();
+        prepared.vertices = its.vertices.size();
         prepared.colors = observed_colors.size();
         const auto palette_started = std::chrono::steady_clock::now();
         const size_t preview_color_count = std::clamp(prepared.colors, size_t(1), PreviewPalette::max_preview_colors);
@@ -481,10 +507,13 @@ public:
         m_region_runtime_identity = std::move(prepared.region_runtime_identity);
         m_region_evidence = std::move(prepared.region_evidence);
         m_region_evidence_error = std::move(prepared.region_evidence_error);
+        m_secondary_region_evidence = std::move(prepared.secondary_region_evidence);
+        m_secondary_region_evidence_error = std::move(prepared.secondary_region_evidence_error);
         m_pending_selection = std::move(prepared.selection);
         m_model_path = std::move(prepared.path);
         m_model_stamp = prepared.stamp;
         m_triangle_count = prepared.triangles;
+        m_vertex_count = prepared.vertices;
         m_color_count = prepared.colors;
         m_trial_palette = std::move(prepared.trial_palette);
         m_trial_histogram = std::move(prepared.trial_histogram);
@@ -527,6 +556,8 @@ public:
         m_region_runtime_identity = semantic_region_runtime_identity(semantic_region_runtime_directory());
         m_region_evidence_error = std::move(cached->region_evidence_error);
         m_region_evidence = std::move(cached->region_evidence);
+        m_secondary_region_evidence_error = std::move(cached->secondary_region_evidence_error);
+        m_secondary_region_evidence = std::move(cached->secondary_region_evidence);
         const auto saved_faces = std::move(cached->saved_semantic_faces);
         const auto saved_subfaces = std::move(cached->saved_semantic_subfaces);
         m_pending_selection = std::move(cached->selection);
@@ -534,6 +565,7 @@ public:
         m_model_stamp = cached->stamp;
         m_bounds = cached->bounds;
         m_triangle_count = triangle_count = cached->triangles;
+        m_vertex_count = cached->vertices;
         if (m_region_evidence) restore_semantic_region_evidence(m_region_evidence);
         m_color_count = color_count = cached->colors;
         m_trial_palette = std::move(cached->trial_palette);
@@ -591,6 +623,7 @@ private:
         m_semantic_analysis.reset(); m_semantic_ready = false;
         m_semantic_error.clear();
         m_region_evidence.reset(); m_region_runtime_identity.clear(); m_region_evidence_error.clear();
+        m_secondary_region_evidence.reset(); m_secondary_region_evidence_error.clear();
         m_protected_faces.clear();
         m_foreground_faces.clear(); m_selection_domain.clear();
         m_pending_selection.reset(); m_geometry_id.clear(); m_face_color_overrides.clear();
@@ -604,6 +637,8 @@ private:
         if (m_context != nullptr && m_canvas != nullptr)
             m_canvas->SetCurrent(*m_context);
         m_models.clear();
+        m_workbench_grid.reset();
+        m_workbench_grid_geometry.clear();
         m_semantic_model.reset();
         m_partition_model.reset();
         m_beauty_pick = {};
@@ -615,6 +650,7 @@ private:
         m_selection_history.clear();
         m_palette.clear();
         m_has_model = false;
+        m_vertex_count = 0;
         m_color_trial_enabled = false;
         m_trial_palette.clear();
         m_trial_histogram.reset();
@@ -692,6 +728,7 @@ public:
     std::shared_ptr<const AI::VertexColorRegionEditor> beauty_editor() const {
         return m_region_editor->ready() ? m_region_editor : nullptr;
     }
+    void prepare_beauty_editor() { ensure_region_editor(); }
     bool semantic_regions_ready() const {
         return m_region_evidence && m_region_evidence->compatible(
             m_geometry_id, m_triangle_count, m_region_runtime_identity);
@@ -724,6 +761,160 @@ public:
     }
     size_t semantic_selection_protected_count() const { return m_semantic_selection_protected; }
     size_t semantic_selection_low_confidence_count() const { return m_semantic_selection_low_confidence; }
+    bool secondary_regions_ready() const {
+        return m_secondary_region_evidence && m_secondary_region_evidence->compatible(
+            m_geometry_id, AI::model_artifact_sha256(m_model_path), m_triangle_count, m_region_runtime_identity);
+    }
+    std::vector<std::string> secondary_region_details(const std::string& parent = {}) const {
+        return secondary_regions_ready() ? m_secondary_region_evidence->detail_ids(parent) : std::vector<std::string> {};
+    }
+    std::shared_ptr<const SecondaryRegionEvidence> secondary_region_evidence() const { return m_secondary_region_evidence; }
+    const std::string& secondary_region_evidence_error() const { return m_secondary_region_evidence_error; }
+    bool restore_secondary_region_evidence(std::shared_ptr<const SecondaryRegionEvidence> evidence,
+                                           const std::string& previous_error = {}) {
+        if (!evidence) {
+            m_secondary_region_evidence.reset();
+            m_secondary_region_evidence_error = previous_error;
+            return false;
+        }
+        if (!evidence->valid() || !evidence->compatible(m_geometry_id,
+                AI::model_artifact_sha256(m_model_path), m_triangle_count, m_region_runtime_identity)) {
+            m_secondary_region_evidence.reset();
+            m_secondary_region_evidence_error = "Secondary evidence identity mismatch";
+            return false;
+        }
+        m_secondary_region_evidence = std::move(evidence);
+        m_secondary_region_evidence_error.clear();
+        return true;
+    }
+    bool transfer_secondary_region_evidence(std::shared_ptr<const SecondaryRegionEvidence> original,
+                                            const std::string& original_source_sha256) {
+        std::string error;
+        auto transferred = original ? SecondaryRegionEvidence::for_derived_model(*original,
+            original_source_sha256, m_geometry_id, m_triangle_count, m_region_runtime_identity,
+            AI::model_artifact_sha256(m_model_path), error) : nullptr;
+        return restore_secondary_region_evidence(std::move(transferred), error);
+    }
+    bool import_secondary_region_evidence(const boost::filesystem::path& evidence_path, std::string& error) {
+        error.clear();
+        if (!m_has_model || m_model_path.empty()) { error = "No model is loaded"; return false; }
+        boost::system::error_code file_error;
+        const auto bytes = boost::filesystem::file_size(evidence_path, file_error);
+        if (file_error || !boost::filesystem::is_regular_file(evidence_path, file_error) ||
+            file_error || bytes == 0 || bytes > SecondaryRegionEvidenceCache::maximum_bytes) {
+            error = "Secondary evidence file is missing or too large"; return false;
+        }
+        const auto source_hash = AI::model_artifact_sha256(m_model_path);
+        if (!AI::SurfaceSelectionPersistence::detail::valid_fingerprint(source_hash)) {
+            error = "Current model source hash is unavailable"; return false;
+        }
+        try {
+            boost::filesystem::ifstream input(evidence_path, std::ios::binary);
+            const auto document = nlohmann::json::parse(input, nullptr, false);
+            if (document.is_discarded()) { error = "Secondary evidence JSON is invalid"; return false; }
+            auto loaded = SecondaryRegionEvidence::decode(document, m_geometry_id, source_hash,
+                m_triangle_count, m_region_runtime_identity, error);
+            if (!loaded) return false;
+            std::string cache_error;
+            if (SecondaryRegionEvidenceCache::save(*loaded,
+                    boost::filesystem::path(Slic3r::data_dir()) / "cache" / "beauty_secondary_regions",
+                    cache_error).empty()) {
+                error = cache_error.empty() ? "Secondary evidence cache write failed" : cache_error;
+                return false;
+            }
+            m_secondary_region_evidence = std::move(loaded);
+            m_secondary_region_evidence_error.clear();
+            return true;
+        } catch (const std::exception& exception) {
+            error = exception.what(); return false;
+        }
+    }
+    bool import_current_semantic_details(boost::filesystem::path& output, std::string& error) {
+        output.clear();
+        error.clear();
+        if (!semantic_regions_ready() || !m_semantic_source ||
+            m_region_evidence->source_content_id != m_semantic_source->content_id) {
+            error = "当前模型没有同源的可靠语义缓存";
+            return false;
+        }
+        const auto source_hash = AI::model_artifact_sha256(m_model_path);
+        auto evidence = SecondaryRegionEvidence::from_primary(*m_region_evidence, source_hash,
+            m_semantic_source->content_id, error);
+        if (!evidence) return false;
+        const auto cache = boost::filesystem::path(Slic3r::data_dir()) / "cache" / "beauty_secondary_regions";
+        const auto reference = SecondaryRegionEvidenceCache::save(*evidence, cache, error);
+        if (reference.empty()) return false;
+        auto loaded = SecondaryRegionEvidenceCache::load(reference, cache, m_geometry_id,
+            source_hash, m_triangle_count, m_region_runtime_identity, error);
+        if (!loaded) return false;
+        output = cache / (reference.at("sha256").get<std::string>() + ".json");
+        m_secondary_region_evidence = std::move(loaded);
+        m_secondary_region_evidence_error.clear();
+        return true;
+    }
+    bool regenerate_readonly_evidence(boost::filesystem::path& output, std::string& error) const {
+        output.clear();
+        error.clear();
+        if (!m_has_model || m_model_path.empty() || !m_semantic_source) {
+            error = "当前模型没有可用的原始面颜色输入";
+            return false;
+        }
+        const auto source_hash = AI::model_artifact_sha256(m_model_path);
+        if (source_hash.size() != 64) {
+            error = "当前模型 source hash 不可用";
+            return false;
+        }
+        const auto root = boost::filesystem::path(Slic3r::data_dir()) /
+            "cache" / "beauty_evidence_runs";
+        boost::system::error_code fs_error;
+        boost::filesystem::create_directories(root, fs_error);
+        if (fs_error) { error = "无法创建证据缓存目录"; return false; }
+        const auto stamp = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        const std::string base_name = "run-" + std::to_string(stamp);
+        // The writer creates the directory atomically. A second click or a
+        // partial prior run only moves to a new suffix; no run is overwritten.
+        for (size_t suffix = 0; suffix < 32; ++suffix) {
+            const std::string name = suffix == 0 ? base_name :
+                base_name + "-" + std::to_string(suffix);
+            output = root / name;
+            ReadonlyEvidenceRenderResult result;
+            if (write_readonly_evidence_render_package(*m_semantic_source, output, source_hash,
+                    1024, result, error)) return true;
+            if (error != "证据输出目录已存在，未覆盖已有运行") return false;
+        }
+        output.clear();
+        error = "无法分配新的证据运行目录";
+        return false;
+    }
+    size_t select_semantic_detail(const std::string& detail_id, bool record_history = true,
+                                  bool include_protected_preview = false) {
+        m_semantic_selection_protected = m_semantic_selection_low_confidence = 0;
+        if (!secondary_regions_ready() || !region_editing_ready()) return 0;
+        if (!m_region_editor->ready()) {
+            m_deferred_selection = [this, detail_id, record_history, include_protected_preview] {
+                select_semantic_detail(detail_id, record_history, include_protected_preview);
+            };
+            ensure_region_editor(); return 0;
+        }
+        const auto before = selection_state();
+        auto match = m_secondary_region_evidence->select(detail_id, before, include_protected_preview);
+        m_semantic_selection_protected = match.protected_count;
+        m_semantic_selection_low_confidence = match.low_confidence;
+        if (!match.selected) return 0;
+        if (record_history) push_selection_history(before.selected);
+        m_selection_preview_suppressed = false; m_selection_overlay_visible = true; set_selection_enabled(true);
+        restore_selection_state(std::move(match.selection));
+        return match.selected;
+    }
+    std::vector<std::string> beauty_semantic_names() const {
+        if (!secondary_regions_ready()) return {};
+        std::vector<std::string> names = {"unknown", "background", "hair", "face", "body", "cloth", "accessories",
+            "lips", "imouth", "eyes", "iris", "eyebrow"};
+        for (const auto& detail : m_secondary_region_evidence->regions) names.push_back(detail.detail_id);
+        return names;
+    }
+    std::vector<std::string> beauty_semantic_guidance() const { return beauty_semantic_names(); }
     nlohmann::json semantic_region_evidence_metadata() const {
         if (!semantic_regions_ready()) return nlohmann::json::object();
         std::string error;
@@ -735,6 +926,15 @@ public:
             if (hash.empty()) return nlohmann::json::object();
             reference["model_sha256"] = hash;
         }
+        return reference;
+    }
+    nlohmann::json secondary_region_evidence_metadata() const {
+        if (!secondary_regions_ready()) return nlohmann::json::object();
+        std::string error;
+        auto reference = SecondaryRegionEvidenceCache::save(*m_secondary_region_evidence,
+            boost::filesystem::path(Slic3r::data_dir()) / "cache" / "beauty_secondary_regions", error);
+        if (!error.empty()) BOOST_LOG_TRIVIAL(warning) << "Secondary region evidence cache save failed: " << error;
+        if (!reference.empty()) reference["model_sha256"] = AI::model_artifact_sha256(m_model_path);
         return reference;
     }
     bool semantic_result_active() const {
@@ -765,6 +965,17 @@ public:
             labels.push_back(m_region_evidence->confidence[face] >= AI::SemanticColoring::minimum_confidence &&
                 label != AI::SemanticColoring::Label::Unknown && label != AI::SemanticColoring::Label::Background
                     ? int32_t(label) : -1);
+        }
+        if (secondary_regions_ready()) {
+            std::set<size_t> assigned;
+            for (size_t index = 0; index < m_secondary_region_evidence->regions.size(); ++index) {
+                const auto& detail = m_secondary_region_evidence->regions[index];
+                if (!detail.selectable()) continue;
+                const int32_t semantic_id = int32_t(AI::SemanticColoring::label_count + index);
+                for (size_t face : detail.accepted_faces)
+                    if (face < labels.size() && labels[face] >= 0 && assigned.insert(face).second)
+                        labels[face] = semantic_id;
+            }
         }
         return labels;
     }
@@ -806,15 +1017,32 @@ public:
         m_beauty_lighting = enabled;
         if (m_canvas) m_canvas->Refresh(false);
     }
+    bool beauty_lighting() const { return m_beauty_lighting; }
+    bool beauty_original_view() const { return m_beauty_original_view; }
     void set_beauty_original_view(bool enabled) {
         m_beauty_original_view = enabled;
         if (m_canvas) m_canvas->Refresh(false);
     }
     void set_beauty_view(bool enabled) {
         m_beauty_view = enabled;
+        const wxColour background = enabled ? wxColour(49, 49, 54) : wxGetApp().get_window_default_clr();
+        SetBackgroundColour(background);
+        m_splitter->SetBackgroundColour(background);
+        m_preview_host->SetBackgroundColour(background);
+        m_region_prepare_status->SetBackgroundColour(background);
+        m_region_prepare_status->SetForegroundColour(enabled ? wxColour(220, 220, 222) : *wxBLACK);
+        Refresh(false);
+        m_splitter->Refresh(false);
+        m_preview_host->Refresh(false);
+        if (m_canvas) m_canvas->Refresh(false);
+    }
+    void set_workbench_grid_visible(bool visible) {
+        m_workbench_grid_visible = visible;
         if (m_canvas) m_canvas->Refresh(false);
     }
     size_t triangle_count() const { return m_triangle_count; }
+    size_t vertex_count() const { return m_vertex_count; }
+    const Vec3d& model_dimensions() const { return m_model_dimensions; }
     // Select an already recognized material region for Beauty editing. This
     // only consumes the cached analysis; it never starts recognition. Existing
     // protected faces remain protected so the user can add or subtract detail
@@ -1010,6 +1238,10 @@ public:
     {
         m_selection_changed = std::move(callback);
     }
+    void set_color_trial_changed_callback(std::function<void(size_t)> callback)
+    {
+        m_color_trial_changed = std::move(callback);
+    }
     void set_selection_commit_callback(std::function<void(const SelectionState&, const SelectionState&)> callback)
     {
         m_selection_commit = std::move(callback);
@@ -1068,6 +1300,42 @@ public:
         return true;
     }
     ModelPreviewColorControls::State color_trial_state() const { return m_color_trial->state(); }
+    wxWindow* build_workbench_palette(wxWindow* parent) { return m_color_trial->build_workbench_palette(parent); }
+    void set_workbench_palette_editable(bool editable) { m_color_trial->set_workbench_editable(editable); }
+    void show_workbench_palette_details() {
+        if (!m_has_model) return;
+        set_color_controls_visible(false);
+        wxDialog dialog(this, wxID_ANY, _L("色卡详情"), wxDefaultPosition, FromDIP(wxSize(620, 560)),
+                        wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER);
+        dialog.SetBackgroundColour(wxColour(32, 32, 35));
+        dialog.SetName("ai_content_color");
+        dialog.SetFont(GetFont());
+        auto* root = new wxBoxSizer(wxVERTICAL);
+        auto* scroll = new WorkbenchScrolledWindow(&dialog, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVSCROLL);
+        scroll->SetBackgroundColour(wxColour(32, 32, 35));
+        scroll->SetScrollRate(0, FromDIP(12));
+        auto* controls = new wxBoxSizer(wxVERTICAL);
+        m_controls_scroll->GetSizer()->Detach(m_color_trial);
+        m_color_trial->Reparent(scroll);
+        WorkbenchAppearanceScope appearance(m_color_trial);
+        m_color_trial->set_workbench_detail_choices(true);
+        controls->Add(m_color_trial, 0, wxEXPAND);
+        scroll->SetSizer(controls);
+        m_color_trial->Show();
+        root->Add(scroll, 1, wxEXPAND | wxALL, FromDIP(12));
+        auto* close = workbench_button(&dialog, _L("完成"));
+        close->Bind(wxEVT_BUTTON, [&dialog](wxCommandEvent&) { dialog.EndModal(wxID_OK); });
+        root->Add(close, 0, wxALIGN_RIGHT | wxALL, FromDIP(12));
+        dialog.SetSizer(root);
+        scroll->FitInside();
+        dialog.CenterOnParent();
+        dialog.ShowModal();
+        m_color_trial->set_workbench_detail_choices(false);
+        controls->Detach(m_color_trial);
+        m_color_trial->Reparent(m_controls_scroll);
+        m_controls_scroll->GetSizer()->Add(m_color_trial, 0, wxEXPAND);
+        m_color_trial->Hide();
+    }
     nlohmann::json color_trial_metadata() const {
         AI::ColorTrialPersistence::State saved = m_color_trial->state();
         saved.source = 2;
@@ -1109,6 +1377,7 @@ public:
             m_pending_vertex_colors.size() == m_pending_mesh.vertices.size()));
     }
     bool can_undo_selection() const { return selection_busy() || bool(m_deferred_selection) || !m_selection_history.empty(); }
+    bool can_redo_selection() const { return !selection_busy() && !m_selection_redo.empty(); }
 
     bool selection_matches_face_evidence(const std::vector<size_t>& face_indices) const
     {
@@ -1245,6 +1514,7 @@ private:
         boost::filesystem::path path;
         FileStamp stamp;
         size_t triangles {0};
+        size_t vertices {0};
         size_t colors {0};
         std::vector<PreviewPalette::Color> trial_palette;
         std::shared_ptr<const PreviewPalette::Histogram> trial_histogram;
@@ -1257,6 +1527,8 @@ private:
         SubfaceColorOverrides saved_semantic_subfaces;
         std::shared_ptr<const SemanticRegionEvidence> region_evidence;
         std::string region_runtime_identity, region_evidence_error;
+        std::shared_ptr<const SecondaryRegionEvidence> secondary_region_evidence;
+        std::string secondary_region_evidence_error;
     };
 
     static FileStamp file_stamp(const boost::filesystem::path& path)
@@ -1305,6 +1577,8 @@ private:
         m_cached_preview->region_evidence = m_region_evidence;
         m_cached_preview->region_runtime_identity = m_region_runtime_identity;
         m_cached_preview->region_evidence_error = m_region_evidence_error;
+        m_cached_preview->secondary_region_evidence = m_secondary_region_evidence;
+        m_cached_preview->secondary_region_evidence_error = m_secondary_region_evidence_error;
         m_cached_preview->saved_semantic_faces = m_saved_semantic_faces;
         m_cached_preview->saved_semantic_subfaces = m_saved_semantic_subfaces;
         m_cached_preview->selection = selection_state();
@@ -1327,6 +1601,7 @@ private:
         m_cached_preview->path = m_model_path;
         m_cached_preview->stamp = m_model_stamp;
         m_cached_preview->triangles = m_triangle_count;
+        m_cached_preview->vertices = m_vertex_count;
         m_cached_preview->colors = m_color_count;
         m_cached_preview->trial_histogram = m_trial_histogram;
         // New model loads reset the trial; never relabel a previous custom or
@@ -1355,6 +1630,8 @@ private:
 
     void show_region_preparation_status(const wxString& message) {
         m_region_prepare_status->SetLabel(message);
+        m_region_prepare_status->SetBackgroundColour(m_beauty_view ? wxColour(49, 49, 54) : *wxWHITE);
+        m_region_prepare_status->SetForegroundColour(m_beauty_view ? wxColour(220, 220, 222) : *wxBLACK);
         m_region_prepare_status->Show();
         Layout();
     }
@@ -1429,7 +1706,7 @@ private:
         auto deferred = std::move(m_deferred_selection);
         m_deferred_selection = {};
         if (deferred) deferred();
-        else if (m_selection_enabled) notify_selection_changed();
+        else if (m_selection_enabled || m_beauty_view) notify_selection_changed();
     }
 
     void push_selection_history(const std::vector<uint8_t>& selected_faces)
@@ -1752,7 +2029,7 @@ private:
         glsafe(::glDepthMask(GL_TRUE));
         glsafe(::glDepthFunc(GL_LESS));
         glsafe(::glViewport(0, 0, width, height));
-        const wxColour background = wxGetApp().get_window_default_clr();
+        const wxColour background = m_beauty_view ? wxColour(49, 49, 54) : wxGetApp().get_window_default_clr();
         glsafe(::glClearColor(background.Red() / 255.0f, background.Green() / 255.0f, background.Blue() / 255.0f, 1.0f));
         glsafe(::glClearDepth(1.0));
         glsafe(::glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT));
@@ -1795,6 +2072,33 @@ private:
                 shader->set_uniform("view_model_matrix", view_model);
                 shader->set_uniform("projection_matrix", projection);
                 shader->set_uniform("view_normal_matrix", normal_matrix);
+                if (m_beauty_view && m_workbench_grid_visible) {
+                    if (!m_workbench_grid || m_workbench_grid_geometry != m_geometry_id) {
+                        GLModel::Geometry grid;
+                        grid.format = {GLModel::Geometry::EPrimitiveType::Lines, GLModel::Geometry::EVertexLayout::P3N3};
+                        const float extent = float(radius * 1.8);
+                        const float z = m_bounds.min.z() - float(radius * 0.01);
+                        for (unsigned int i = 0; i <= 18; ++i) {
+                            const float offset = -extent + 2.f * extent * float(i) / 18.f;
+                            const unsigned int base = unsigned(grid.vertices_count());
+                            grid.add_vertex(Vec3f(float(center.x()) - extent, float(center.y()) + offset, z), Vec3f(0, 0, 1));
+                            grid.add_vertex(Vec3f(float(center.x()) + extent, float(center.y()) + offset, z), Vec3f(0, 0, 1));
+                            grid.add_vertex(Vec3f(float(center.x()) + offset, float(center.y()) - extent, z), Vec3f(0, 0, 1));
+                            grid.add_vertex(Vec3f(float(center.x()) + offset, float(center.y()) + extent, z), Vec3f(0, 0, 1));
+                            grid.add_line(base, base + 1); grid.add_line(base + 2, base + 3);
+                        }
+                        m_workbench_grid = std::make_unique<GLModel>();
+                        m_workbench_grid->init_from(std::move(grid));
+                        m_workbench_grid->set_color(ColorRGBA(0.30f, 0.30f, 0.32f, 1.f));
+                        m_workbench_grid_geometry = m_geometry_id;
+                    }
+                    shader->set_uniform("use_uniform_color", true);
+                    shader->set_uniform("preview_color_count", 0);
+                    shader->set_uniform("preview_lighting", false);
+                    shader->set_uniform("beauty_unlit", true);
+                    shader->set_uniform("gray_view", false);
+                    m_workbench_grid->render(shader);
+                }
                 shader->set_uniform("use_uniform_color", false);
                 shader->set_uniform("gray_view", m_gray_view);
                 shader->set_uniform("preview_lighting", m_beauty_view ? m_beauty_lighting : m_color_trial->lighting());
@@ -1913,6 +2217,8 @@ private:
     std::shared_ptr<const AI::SemanticColoring::Analysis> m_semantic_analysis;
     std::shared_ptr<const SemanticRegionEvidence> m_region_evidence;
     std::string m_region_runtime_identity, m_region_evidence_error;
+    std::shared_ptr<const SecondaryRegionEvidence> m_secondary_region_evidence;
+    std::string m_secondary_region_evidence_error;
     size_t m_semantic_selection_protected {0}, m_semantic_selection_low_confidence {0};
     std::unique_ptr<GLModel> m_semantic_model;
     bool m_semantic_ready {false};
@@ -1927,7 +2233,10 @@ private:
     std::shared_ptr<const PreviewPalette::Histogram> m_trial_histogram;
     bool m_color_trial_enabled {false};
     bool m_beauty_view {false};
-    bool m_beauty_lighting {false};
+    bool m_workbench_grid_visible {true};
+    std::unique_ptr<GLModel> m_workbench_grid;
+    std::string m_workbench_grid_geometry;
+    bool m_beauty_lighting {true};
     bool m_beauty_original_view {false};
     bool m_gray_view {false};
     double m_pan_x {0.0}, m_pan_y {0.0};
@@ -1953,6 +2262,7 @@ private:
     boost::filesystem::path m_model_path;
     FileStamp m_model_stamp;
     size_t m_triangle_count {0};
+    size_t m_vertex_count {0};
     size_t m_color_count {0};
     std::vector<SelectionState> m_selection_history, m_selection_redo;
     std::vector<uint8_t> m_protected_faces;
@@ -1973,6 +2283,7 @@ private:
     wxPoint m_last_mouse;
     wxPoint m_drag_start;
     std::function<void(size_t)> m_selection_changed;
+    std::function<void(size_t)> m_color_trial_changed;
     std::function<void(const SelectionState&, const SelectionState&)> m_selection_commit;
     AI::RegionSelectionSettings m_selection_settings;
     AI::RegionSelectionOperation m_selection_operation {AI::RegionSelectionOperation::Replace};

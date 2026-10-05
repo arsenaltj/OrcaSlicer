@@ -63,7 +63,12 @@ void ModelPreview3D::finish_semantic_coloring()
         m_region_runtime_identity = std::move(result->region_runtime_identity);
         if (m_semantic_analysis && result->error.empty()) {
             auto evidence = SemanticRegionEvidence::from_analysis(*m_semantic_analysis, m_region_runtime_identity);
-            if (evidence) restore_semantic_region_evidence(std::move(evidence));
+            if (evidence && restore_semantic_region_evidence(std::move(evidence))) {
+                std::string detail_error;
+                auto details = SecondaryRegionEvidence::from_primary(*m_region_evidence,
+                    AI::model_artifact_sha256(m_model_path), m_semantic_source->content_id, detail_error);
+                restore_secondary_region_evidence(std::move(details), detail_error);
+            }
         }
         bool completed = false;
         if (!result->error.empty()) {

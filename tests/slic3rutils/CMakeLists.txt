@@ -43,6 +43,7 @@ add_executable(${_TEST_NAME}_tests
     test_beauty_document.cpp
     test_beauty_partition_bridge.cpp
     test_beauty_transaction_controller.cpp
+    test_beauty_surface.cpp
     # LocalSemanticEvidence/Draft/Geometry and texture-backed Beauty tests are
     # retained in the PR snapshot but are registered only with their shared
     # contract/finishing adapters in later migration stages.

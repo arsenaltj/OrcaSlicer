@@ -10,11 +10,45 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <cstring>
 #include <ios>
 #include <list>
+#include <optional>
 #include <string>
+#include <vector>
 
 namespace Slic3r::GUI {
+
+// Only owned pixels cross the worker/UI boundary; wxImage reference data is
+// not atomic in every supported wx build.
+struct LibraryThumbnailPixels {
+    uint64_t revision;
+    size_t index;
+    int width {0}, height {0};
+    std::vector<unsigned char> rgb, alpha;
+};
+
+// nullopt ignores an obsolete delivery. An invalid image finishes a current
+// card's loading state with its placeholder.
+inline std::optional<wxImage> receive_library_thumbnail(
+    const LibraryThumbnailPixels& thumbnail, uint64_t revision, size_t target_count)
+{
+    if (thumbnail.revision != revision || thumbnail.index >= target_count) return std::nullopt;
+    wxImage image;
+    if (thumbnail.width <= 0 || thumbnail.height <= 0 ||
+        thumbnail.width > 1024 || thumbnail.height > 1024) return image;
+    const size_t pixels = size_t(thumbnail.width) * size_t(thumbnail.height);
+    if (thumbnail.rgb.size() != pixels * 3 ||
+        (!thumbnail.alpha.empty() && thumbnail.alpha.size() != pixels)) return image;
+    if (image.Create(thumbnail.width, thumbnail.height)) {
+        std::memcpy(image.GetData(), thumbnail.rgb.data(), thumbnail.rgb.size());
+        if (!thumbnail.alpha.empty()) {
+            image.InitAlpha();
+            std::memcpy(image.GetAlpha(), thumbnail.alpha.data(), thumbnail.alpha.size());
+        }
+    }
+    return image;
+}
 
 // History only needs file identity while listing. Full image validation belongs
 // to opening a design, not to walking every historical record on the UI thread.

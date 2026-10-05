@@ -30,6 +30,24 @@ inline constexpr const char* INTERNAL_DEFAULT_IMAGE_INSTRUCTION =
     "occlusions, subjects, objects, and background; do not add, remove, reveal, reconstruct, or extend anything.";
 inline constexpr const auto& PALETTE_ROLE_IDS = Slic3r::AI::kPaletteRoleIds;
 
+struct WorkbenchHistoryRecord {
+    wxString title;
+    boost::filesystem::path model_path;
+    std::time_t generated_at {0};
+    bool design_only {false};
+    bool available {false};
+    bool accepted_finishing {false};
+    std::optional<size_t> color_count;
+};
+enum class WorkbenchHistoryFilter { All, Original, Monochrome, Multicolor };
+enum class WorkbenchVersionStatus { Saved, Current, Accepted, Candidate };
+std::vector<size_t> workbench_history_indices(const std::vector<WorkbenchHistoryRecord>& entries,
+                                             const wxString& query,
+                                             WorkbenchHistoryFilter filter = WorkbenchHistoryFilter::All);
+WorkbenchVersionStatus workbench_version_status(const boost::filesystem::path& path,
+    const boost::filesystem::path& current, const boost::filesystem::path& accepted,
+    const boost::filesystem::path& candidate_source);
+
 wxString thin_local_region_metrics(
     const AIModelGenerationClient::ModelQuality::ThinLocalRegion& region,
     bool threshold_available,
@@ -63,7 +81,7 @@ boost::filesystem::path library_metadata_path(const std::string& job_id);
 std::string download_job_id(const boost::filesystem::path& path);
 bool valid_provider_task_id(const std::string& value);
 nlohmann::json read_json(const boost::filesystem::path& path);
-bool write_json(const boost::filesystem::path& path, const nlohmann::json& value);
+bool write_json(const boost::filesystem::path& path, const nlohmann::json& value, int indent = 2);
 bool path_is_inside(const boost::filesystem::path& root, const boost::filesystem::path& candidate);
 struct DesignHistoryEntry
 {

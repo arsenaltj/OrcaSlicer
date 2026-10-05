@@ -59,9 +59,15 @@ void ModelGenerationPanel::load_model_preview_async(const boost::filesystem::pat
     std::function<void(std::string)> failed, const boost::filesystem::path& metadata_path)
 {
     if (m_shutdown || m_preview_loading) return;
+    m_workbench_load_error = false;
+    // History controls can be rebuilt by refresh_controls() below. Their
+    // callbacks own these arguments, so detach values before that rebuild.
+    const boost::filesystem::path model_path = path;
+    const std::vector<std::string> model_palette = palette;
+    const boost::filesystem::path model_metadata_path = metadata_path;
     size_t triangles = 0, colors = 0; Vec3d dimensions;
     // Explicit history navigation restores persisted state, not unsaved cached edits.
-    if (metadata_path.empty() && m_model_preview->try_load_cached_model(path, palette, triangles, dimensions, colors)) {
+    if (model_metadata_path.empty() && m_model_preview->try_load_cached_model(model_path, model_palette, triangles, dimensions, colors)) {
         loaded(triangles, dimensions, colors, 0.0);
         return;
     }
@@ -71,13 +77,13 @@ void ModelGenerationPanel::load_model_preview_async(const boost::filesystem::pat
     const uint64_t sequence = m_sequence;
     wxWeakRef<ModelGenerationPanel> weak(this);
     try {
-        m_preview_worker = std::thread([weak, path, palette, sequence, loaded, failed, metadata_path] {
+        m_preview_worker = std::thread([weak, model_path, model_palette, sequence, loaded, failed, model_metadata_path] {
             const auto start = std::chrono::steady_clock::now();
             auto prepared = std::make_shared<ModelPreview3D::PreparedModel>();
             std::string error;
-            try { ModelPreview3D::prepare_model(path, *prepared, error, {}, metadata_path); }
+            try { ModelPreview3D::prepare_model(model_path, *prepared, error, {}, model_metadata_path); }
             catch (const std::exception& e) { error = e.what(); }
-            wxGetApp().CallAfter([weak, prepared, palette, sequence, start, loaded, failed, error]() mutable {
+            wxGetApp().CallAfter([weak, prepared, model_palette, sequence, start, loaded, failed, error]() mutable {
                 if (!weak || weak->m_shutdown) return;
                 auto* self = weak.get();
                 if (self->m_preview_worker.joinable()) self->m_preview_worker.join();
@@ -86,7 +92,8 @@ void ModelGenerationPanel::load_model_preview_async(const boost::filesystem::pat
                 if (sequence != self->m_sequence) { self->refresh_controls(); return; }
                 size_t triangles = 0, colors = 0; Vec3d dimensions;
                 if (!error.empty() || !self->m_model_preview->load_prepared_model(
-                    std::move(*prepared), palette, triangles, dimensions, colors, error)) {
+                    std::move(*prepared), model_palette, triangles, dimensions, colors, error)) {
+                    self->m_workbench_load_error = true;
                     failed(error); return;
                 }
                 loaded(triangles, dimensions, colors,
@@ -95,6 +102,7 @@ void ModelGenerationPanel::load_model_preview_async(const boost::filesystem::pat
         });
     } catch (const std::exception& e) {
         m_preview_loading = false; m_busy = false;
+        m_workbench_load_error = true;
         failed(e.what());
     }
 }

@@ -355,6 +355,28 @@ TEST_CASE("Finishing preserves sharp features instead of rounding a tetrahedron"
     INFO(result.error); REQUIRE(result.success); REQUIRE(result.moved_vertices == 0);
 }
 
+TEST_CASE("Workbench smoothing iterations and hard-edge preference reach the finishing backend", "[ModelFinishing][BeautyWorkbench]")
+{
+    Fixture preserved; preserved.write(tetrahedron);
+    ModelFinishingOptions keep_edges;
+    keep_edges.smooth_surface = true;
+    keep_edges.repair_mesh = true;
+    keep_edges.strength = 1.0;
+    keep_edges.smoothing_iterations = 1;
+    keep_edges.preserve_hard_edges = true;
+    const auto kept = finish_model_obj(preserved.source, preserved.output, keep_edges);
+    INFO(kept.error);
+    REQUIRE(kept.success);
+    CHECK(kept.moved_vertices == 0);
+
+    Fixture relaxed; relaxed.write(tetrahedron);
+    keep_edges.preserve_hard_edges = false;
+    const auto softened = finish_model_obj(relaxed.source, relaxed.output, keep_edges);
+    INFO(softened.error);
+    REQUIRE(softened.success);
+    CHECK(softened.moved_vertices > 0);
+}
+
 TEST_CASE("Finishing cancellation discards only its incomplete output", "[ModelFinishing]")
 {
     Fixture f; f.write(noisy_grid(80)); const auto original = read(f.source);

@@ -137,3 +137,15 @@ TEST_CASE("A missing chosen history record does not borrow another adjacent snap
     CHECK_FALSE(prepared.color_trial.has_value());
     CHECK(prepared.face_color_overrides.empty());
 }
+
+TEST_CASE("A preview retains source vertex counts without vertex colors", "[ModelPreviewState]")
+{
+    ModelPreview3D::PreparedModel prepared;
+    std::string error;
+    REQUIRE(ModelPreview3D::prepare_model(
+        boost::filesystem::path(std::string(TEST_DATA_DIR)) / "pyramid.obj", prepared, error));
+    CHECK(prepared.triangles == 6);
+    CHECK(prepared.vertices == 5);
+    CHECK(prepared.mesh.vertices.empty());
+    CHECK(prepared.vertex_colors.empty());
+}

@@ -355,7 +355,8 @@ struct BeautyPuzzle {
             if(size_t(seed.semantic_id)<semantic_names.size()) {
                 const auto& name=semantic_names[size_t(seed.semantic_id)];
                 seed.crease_guard=name=="nose" || name=="le" || name=="re" || name=="iris" ||
-                    name=="ulip" || name=="llip" || name=="imouth";
+                    name=="ulip" || name=="llip" || name=="imouth" || name=="teeth" ||
+                    name=="lip-line-corner";
             }
             for (double& ch : seed.lab) ch /= seed.area;
             if (seed.normal.norm() > 1e-15) seed.normal.normalize();

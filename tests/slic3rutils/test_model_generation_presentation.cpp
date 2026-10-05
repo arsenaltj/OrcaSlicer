@@ -15,12 +15,70 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <future>
 #include <optional>
 #include <set>
 #include <stdexcept>
 
 using Slic3r::GUI::AIModelGenerationClient;
 using namespace Slic3r::GUI::ModelGenerationPresentation;
+
+TEST_CASE("Workbench history only lists available model assets newest first", "[ModelGenerationPresentation][HistoryThumbnails]")
+{
+    const std::vector<WorkbenchHistoryRecord> entries {
+        {"Older model", "older.glb", 10, false, true},
+        {"Design", {}, 40, true, true},
+        {"Missing model", "missing.glb", 30, false, false},
+        {"Newest MODEL", "newest.glb", 20, false, true},
+        {"Equal date", "equal.glb", 20, false, true}
+    };
+    CHECK(workbench_history_indices(entries, {}) == std::vector<size_t>{3, 4, 0});
+    CHECK(workbench_history_indices(entries, "model") == std::vector<size_t>{3, 0});
+    CHECK(workbench_history_indices(entries, "missing").empty());
+}
+
+TEST_CASE("Workbench categories preserve unknown colors and combine with search", "[ModelGenerationPresentation][HistoryThumbnails]")
+{
+    const std::vector<WorkbenchHistoryRecord> entries {
+        {"Unknown", "unknown.glb", 10, false, true, false, std::nullopt},
+        {"Uncolored", "uncolored.obj", 20, false, true, false, 0},
+        {"Single color", "single.obj", 30, false, true, true, 1},
+        {"Multiple colors", "multiple.glb", 40, false, true, true, 20},
+        {"Missing", "missing.obj", 50, false, false, false, 1},
+        {"Design", {}, 60, true, true, false, 1}
+    };
+    CHECK(workbench_history_indices(entries, {}) == std::vector<size_t>{3, 2, 1, 0});
+    CHECK(workbench_history_indices(entries, {}, WorkbenchHistoryFilter::Original) == std::vector<size_t>{1, 0});
+    CHECK(workbench_history_indices(entries, {}, WorkbenchHistoryFilter::Monochrome) == std::vector<size_t>{2, 1});
+    CHECK(workbench_history_indices(entries, {}, WorkbenchHistoryFilter::Multicolor) == std::vector<size_t>{3});
+    CHECK(workbench_history_indices(entries, "SINGLE", WorkbenchHistoryFilter::Monochrome) == std::vector<size_t>{2});
+    CHECK(workbench_history_indices(entries, "Unknown", WorkbenchHistoryFilter::Multicolor).empty());
+}
+
+TEST_CASE("Workbench selection follows accepted versions and marks pending candidates", "[ModelGenerationPresentation][BeautyWorkbench]")
+{
+    const boost::filesystem::path original = "original.glb", accepted = "accepted.glb";
+    CHECK(workbench_version_status(original, original, {}, {}) == WorkbenchVersionStatus::Current);
+    CHECK(workbench_version_status(original, original, {}, original) == WorkbenchVersionStatus::Candidate);
+    CHECK(workbench_version_status(accepted, accepted, accepted, {}) == WorkbenchVersionStatus::Accepted);
+    CHECK(workbench_version_status(original, accepted, accepted, {}) == WorkbenchVersionStatus::Saved);
+    CHECK(workbench_version_status({}, {}, {}, {}) == WorkbenchVersionStatus::Saved);
+}
+
+TEST_CASE("Large finishing metadata can be stored compactly and restored",
+          "[ModelGenerationPresentation][BeautyWorkbench]")
+{
+    ScopedTemporaryDir temporary("orca-compact-finishing-metadata");
+    nlohmann::json metadata = {{"schema_version", 4}, {"semantic_result", nlohmann::json::array()}};
+    for (size_t face = 0; face < 10000; ++face)
+        metadata["semantic_result"].push_back({face, "#AABBCC"});
+    const auto compact = temporary.path() / "compact.json";
+    const auto default_format = temporary.path() / "default.json";
+    REQUIRE(write_json(compact, metadata, -1));
+    REQUIRE(write_json(default_format, metadata));
+    CHECK(boost::filesystem::file_size(compact) < boost::filesystem::file_size(default_format));
+    CHECK(read_json(compact) == metadata);
+}
 
 TEST_CASE("sidecar restart authentication is recoverable without retrying provider failures",
           "[ModelGenerationPresentation][SidecarRecovery]")
@@ -213,6 +271,81 @@ TEST_CASE("Oversized and corrupt history images cannot allocate a full thumbnail
     }
     CHECK_FALSE(is_library_image_file(image.path()));
     CHECK_FALSE(load_library_thumbnail(image.path(), 96, cancelled).IsOk());
+}
+
+TEST_CASE("Late history thumbnail deliveries cannot overwrite a replacement page",
+          "[ModelGenerationPresentation][HistoryThumbnails]")
+{
+    using namespace Slic3r::GUI;
+    std::promise<void> release;
+    auto worker = std::async(std::launch::async, [ready = release.get_future()]() mutable {
+        ready.wait();
+        return LibraryThumbnailPixels {10, 0, 1, 1, {255, 0, 0}, {}};
+    });
+    // The old worker is still in flight when the UI replaces its card list.
+    const uint64_t replacement_revision = 11;
+    const auto current = receive_library_thumbnail({11, 0, 1, 1, {0, 0, 255}, {}}, replacement_revision, 1);
+    release.set_value();
+    const auto late = worker.get();
+    REQUIRE(current);
+    REQUIRE(current->IsOk());
+    wxImage displayed = *current;
+    const auto obsolete = receive_library_thumbnail(late, replacement_revision, 1);
+    if (obsolete) displayed = *obsolete;
+    CHECK_FALSE(obsolete);
+    CHECK(displayed.GetBlue(0, 0) == 255);
+    CHECK(displayed.GetRed(0, 0) == 0);
+    // An old failed decode must not clear a new card to its placeholder either.
+    CHECK_FALSE(receive_library_thumbnail({10, 0}, replacement_revision, 1));
+    CHECK_FALSE(receive_library_thumbnail(late, replacement_revision + 1, 1));
+}
+
+TEST_CASE("Thumbnail deliveries ignore removed targets and preserve pixel ownership",
+          "[ModelGenerationPresentation][HistoryThumbnails]")
+{
+    using namespace Slic3r::GUI;
+    LibraryThumbnailPixels pixels {3, 1, 2, 1, {32, 128, 224, 255, 0, 0}, {64, 255}};
+    CHECK_FALSE(receive_library_thumbnail(pixels, 3, 0));
+    CHECK_FALSE(receive_library_thumbnail(pixels, 3, 1));
+    auto received = receive_library_thumbnail(pixels, 3, 2);
+    REQUIRE(received);
+    REQUIRE(received->IsOk());
+    CHECK(received->GetWidth() == 2);
+    CHECK(received->GetHeight() == 1);
+    CHECK(received->GetRed(0, 0) == 32);
+    CHECK(received->GetBlue(0, 0) == 224);
+    CHECK(received->GetAlpha(0, 0) == 64);
+    CHECK(received->GetAlpha(1, 0) == 255);
+    pixels.rgb.assign(pixels.rgb.size(), 0);
+    pixels.alpha.assign(pixels.alpha.size(), 0);
+    CHECK(received->GetBlue(0, 0) == 224);
+    CHECK(received->GetAlpha(0, 0) == 64);
+}
+
+TEST_CASE("Unavailable or malformed current thumbnails finish with a placeholder",
+          "[ModelGenerationPresentation][HistoryThumbnails]")
+{
+    using namespace Slic3r::GUI;
+    const std::vector<LibraryThumbnailPixels> invalid {
+        {4, 0},
+        {4, 0, 0, 1, {1, 2, 3}, {}},
+        {4, 0, -1, 1, {1, 2, 3}, {}},
+        {4, 0, 1025, 1, {}, {}},
+        {4, 0, 1, 1025, {}, {}},
+        {4, 0, 1, 1, {1, 2}, {}},
+        {4, 0, 1, 1, {1, 2, 3, 4}, {}},
+        {4, 0, 2, 1, {1, 2, 3, 4, 5, 6}, {255}},
+        {4, 0, 1, 1, {1, 2, 3}, {255, 255}}
+    };
+    for (const auto& pixels : invalid) {
+        const auto result = receive_library_thumbnail(pixels, 4, 1);
+        REQUIRE(result);
+        CHECK_FALSE(result->IsOk());
+    }
+    const auto opaque = receive_library_thumbnail({4, 0, 1, 1, {1, 2, 3}, {}}, 4, 1);
+    REQUIRE(opaque);
+    REQUIRE(opaque->IsOk());
+    CHECK_FALSE(opaque->HasAlpha());
 }
 
 TEST_CASE("Design history preserves separate image versions before any model exists",

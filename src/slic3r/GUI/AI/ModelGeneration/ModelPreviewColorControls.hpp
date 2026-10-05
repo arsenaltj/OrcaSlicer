@@ -3,9 +3,11 @@
 #include "ModelPreviewPalette.hpp"
 #include "../Model/ColorTrialState.hpp"
 #include "PortraitColorPackMapping.hpp"
+#include "WorkbenchStyle.hpp"
 #include "slic3r/GUI/AI/Orca/FilamentColorPack.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/I18N.hpp"
+#include "slic3r/GUI/Widgets/ComboBox.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include <wx/button.h>
 #include <wx/checkbox.h>
@@ -14,8 +16,12 @@
 #include <wx/panel.h>
 #include <wx/scrolwin.h>
 #include <wx/spinctrl.h>
+#include <wx/slider.h>
 #include <wx/stattext.h>
+#include <wx/statline.h>
+#include <wx/tooltip.h>
 #include <wx/wrapsizer.h>
+#include <wx/weakref.h>
 #include <chrono>
 #include <functional>
 #include <memory>
@@ -28,6 +34,187 @@ namespace SemanticColoring = AI::SemanticColoring;
 class ModelPreviewColorControls final : public wxPanel {
 public:
     using Color = PreviewPalette::Color;
+    void set_workbench_detail_choices(bool enabled) {
+        if (enabled == !m_detail_choices.empty()) return;
+        if (enabled) {
+            std::vector<wxChoice*> originals {m_source};
+            originals.insert(originals.end(), m_region_slots.begin(), m_region_slots.end());
+            for (auto* original : originals) {
+                auto* choice = workbench_choice(this);
+                choice->SetName("ai_content_color");
+                choice->GetDropDown().SetUseContentWidth(true, true);
+                choice->SetMinSize(original->GetMinSize());
+                original->GetContainingSizer()->Replace(original, choice);
+                original->Hide();
+                m_detail_choices.push_back({original, choice});
+                choice->Bind(wxEVT_COMBOBOX, [this, original, choice](wxCommandEvent&) {
+                    original->SetSelection(choice->GetSelection());
+                    wxCommandEvent event(wxEVT_CHOICE, original->GetId());
+                    event.SetEventObject(original);
+                    event.SetInt(original->GetSelection());
+                    event.SetString(original->GetStringSelection());
+                    original->GetEventHandler()->ProcessEvent(event);
+                });
+            }
+            m_detail_count_panel = new wxPanel(this);
+            m_detail_count_panel->SetName("ai_content_color");
+            m_detail_count_panel->SetBackgroundColour(wxColour(32, 32, 35));
+            auto* count_row = new wxBoxSizer(wxHORIZONTAL);
+            m_detail_count_slider = new WorkbenchSlider(m_detail_count_panel, wxID_ANY,
+                m_count->GetValue(), m_count->GetMin(), m_count->GetMax());
+            m_detail_count_slider->SetMinSize(wxSize(FromDIP(96), FromDIP(28)));
+            count_row->Add(m_detail_count_slider, 1, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(6));
+            m_detail_count_value = new wxStaticText(m_detail_count_panel, wxID_ANY, wxEmptyString);
+            m_detail_count_value->SetForegroundColour(wxColour(235, 235, 235));
+            m_detail_count_value->SetMinSize(wxSize(FromDIP(22), -1));
+            count_row->Add(m_detail_count_value, 0, wxALIGN_CENTER_VERTICAL);
+            m_detail_count_panel->SetSizer(count_row);
+            m_detail_count_panel->SetToolTip(m_count->GetToolTipText());
+            m_count->GetContainingSizer()->Replace(m_count, m_detail_count_panel);
+            m_count->Hide();
+            const auto change_count = [this](wxScrollEvent&) {
+                if (m_count->GetValue() == m_detail_count_slider->GetValue()) return;
+                m_count->SetValue(m_detail_count_slider->GetValue());
+                recompute();
+            };
+            m_detail_count_slider->Bind(wxEVT_SCROLL_THUMBRELEASE, change_count);
+            m_detail_count_slider->Bind(wxEVT_SCROLL_CHANGED, change_count);
+            std::vector<wxCheckBox*> switch_originals {m_fidelity, m_semantic, m_lighting};
+            switch_originals.insert(switch_originals.end(), m_locks.begin(), m_locks.end());
+            for (auto* original : switch_originals) {
+                auto* row = new wxPanel(this);
+                row->SetName("ai_content_color");
+                row->SetBackgroundColour(wxColour(32, 32, 35));
+                auto* layout = new wxBoxSizer(wxHORIZONTAL);
+                auto* label = new wxStaticText(row, wxID_ANY, original->GetLabel());
+                label->SetForegroundColour(wxColour(235, 235, 235));
+                layout->Add(label, 1, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
+                auto* toggle = new WorkbenchSwitch(row, original->GetLabel());
+                layout->Add(toggle, 0, wxALIGN_CENTER_VERTICAL);
+                row->SetSizer(layout);
+                original->GetContainingSizer()->Replace(original, row);
+                if (original == m_lighting) {
+                    auto* item = row->GetContainingSizer()->GetItem(row);
+                    item->SetFlag(item->GetFlag() | wxEXPAND);
+                }
+                original->Hide();
+                const auto lock = std::find(m_locks.begin(), m_locks.end(), original);
+                const int lock_index = lock == m_locks.end() ? -1 : int(lock - m_locks.begin());
+                m_detail_switches.push_back({original, row, toggle, lock_index});
+                toggle->Bind(wxEVT_TOGGLEBUTTON, [original, toggle](wxCommandEvent&) {
+                    toggle->SetValue(toggle->GetValue());
+                    original->SetValue(toggle->GetValue());
+                    wxCommandEvent event(wxEVT_CHECKBOX, original->GetId());
+                    event.SetEventObject(original);
+                    event.SetInt(original->GetValue());
+                    original->GetEventHandler()->ProcessEvent(event);
+                });
+            }
+            for (auto* original : m_detail_commands) {
+                auto* button = workbench_button(this, original->GetLabel());
+                button->SetName("ai_content_color");
+                button->SetMinSize(wxSize(std::max(FromDIP(88), original->GetMinSize().x), FromDIP(32)));
+                original->GetContainingSizer()->Replace(original, button);
+                button->Show(original->IsShown());
+                original->Hide();
+                m_detail_buttons.push_back({original, button});
+                button->Bind(wxEVT_BUTTON, [this, original](wxCommandEvent&) {
+                    if (original == m_semantic_cancel && !m_semantic_busy) return;
+                    wxCommandEvent event(wxEVT_BUTTON, original->GetId());
+                    event.SetEventObject(original);
+                    original->GetEventHandler()->ProcessEvent(event);
+                });
+            }
+            sync_workbench_detail_choices();
+        } else {
+            for (const auto& entry : m_detail_buttons) {
+                entry.button->GetContainingSizer()->Replace(entry.button, entry.original);
+                entry.original->Show(entry.original == m_semantic_cancel ? m_semantic_busy : entry.button->IsShown());
+                entry.button->Destroy();
+            }
+            m_detail_buttons.clear();
+            m_detail_count_panel->GetContainingSizer()->Replace(m_detail_count_panel, m_count);
+            m_count->Show();
+            m_detail_count_panel->Destroy();
+            m_detail_count_panel = nullptr;
+            m_detail_count_slider = nullptr;
+            m_detail_count_value = nullptr;
+            for (const auto& entry : m_detail_switches) {
+                entry.row->GetContainingSizer()->Replace(entry.row, entry.original);
+                entry.original->Show(entry.row->IsShown());
+                entry.row->Destroy();
+            }
+            m_detail_switches.clear();
+            for (const auto& entry : m_detail_choices) {
+                entry.choice->GetContainingSizer()->Replace(entry.choice, entry.original);
+                entry.original->Show();
+                entry.choice->Destroy();
+            }
+            m_detail_choices.clear();
+        }
+        wrap_status();
+        Layout();
+    }
+    void set_workbench_editable(bool editable) {
+        m_workbench_editable = editable;
+        if (!m_workbench_source) return;
+        m_workbench_source->Enable(editable && bool(m_histogram));
+        m_workbench_mode->Enable(editable && bool(m_histogram) && m_colors.size() <= 6);
+        const int source = m_source->GetSelection();
+        m_workbench_count->Enable(editable && bool(m_histogram) && (source == 0 || source == 2));
+    }
+    wxWindow* build_workbench_palette(wxWindow* parent) {
+        auto* container = new wxPanel(parent);
+        container->SetBackgroundColour(parent->GetBackgroundColour());
+        auto* contents = new wxBoxSizer(wxVERTICAL);
+        m_workbench_mode = new WorkbenchPaletteChoice(container);
+        m_workbench_mode->Append(_L("通用模式"));
+        m_workbench_mode->Append(_L("人像模式"));
+        m_workbench_mode->SetName(_L("配色模式"));
+        m_workbench_mode->SetToolTip(_L("人像模式使用现有的本地人像区域优化，支持 1 至 6 色。"));
+        m_workbench_mode->Bind(wxEVT_COMBOBOX, [this](wxCommandEvent&) {
+            if (!m_workbench_editable || !m_histogram || m_colors.size() > 6) return;
+            m_semantic->SetValue(m_workbench_mode->GetSelection() == 1);
+            wxCommandEvent event(wxEVT_CHECKBOX, m_semantic->GetId());
+            event.SetEventObject(m_semantic); event.SetInt(m_semantic->GetValue());
+            m_semantic->GetEventHandler()->ProcessEvent(event);
+        });
+        contents->Add(m_workbench_mode, 0, wxEXPAND | wxBOTTOM, FromDIP(12));
+        auto* panel = new WorkbenchPanel(container, true);
+        panel->SetWindowStyle(panel->GetWindowStyle() | wxCLIP_CHILDREN);
+        panel->SetBackgroundColour(wxColour(22, 22, 25));
+        auto* root = new wxBoxSizer(wxVERTICAL);
+        m_workbench_source = new WorkbenchPaletteChoice(panel);
+        m_workbench_source->SetName(_L("色卡来源"));
+        for (unsigned i = 0; i < m_source->GetCount(); ++i) m_workbench_source->Append(m_source->GetString(i));
+        root->Add(m_workbench_source, 0, wxEXPAND);
+        auto* divider = new wxStaticLine(panel);
+        divider->SetBackgroundColour(wxColour(46, 46, 49));
+        root->Add(divider, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
+        m_workbench_count_label = new wxStaticText(panel, wxID_ANY,
+            wxString::Format(_L("%d 色"), m_count->GetValue()), wxDefaultPosition, wxDefaultSize,
+            wxALIGN_CENTER | wxST_NO_AUTORESIZE);
+        m_workbench_count_label->SetForegroundColour(wxColour(235, 235, 235));
+        root->Add(m_workbench_count_label, 0, wxEXPAND | wxTOP | wxBOTTOM, FromDIP(10));
+        m_workbench_count = new WorkbenchSlider(panel, wxID_ANY, m_count->GetValue(), 1,
+            int(PreviewPalette::max_preview_colors), wxColour(255, 194, 39), "workbench_slider_thumb");
+        root->Add(m_workbench_count, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
+        m_workbench_source->Bind(wxEVT_COMBOBOX, [this](wxCommandEvent&) {
+            m_source->SetSelection(m_workbench_source->GetSelection());
+            wxCommandEvent event(wxEVT_CHOICE, m_source->GetId());
+            event.SetEventObject(m_source); m_source->GetEventHandler()->ProcessEvent(event);
+        });
+        m_workbench_count->Bind(wxEVT_SCROLL_THUMBRELEASE, [this](wxScrollEvent&) {
+            m_count->SetValue(m_workbench_count->GetValue()); recompute();
+        });
+        m_workbench_count->Bind(wxEVT_SCROLL_CHANGED, [this](wxScrollEvent&) {
+            if (m_count->GetValue() == m_workbench_count->GetValue()) return;
+            m_count->SetValue(m_workbench_count->GetValue()); recompute();
+        });
+        panel->SetSizer(root);
+        contents->Add(panel, 0, wxEXPAND);
+        container->SetSizer(contents); update(); return container;
+    }
     explicit ModelPreviewColorControls(wxWindow* parent) : wxPanel(parent) {
         auto* box = new wxBoxSizer(wxVERTICAL);
         auto* row = new wxBoxSizer(wxHORIZONTAL);
@@ -71,6 +258,7 @@ public:
         m_semantic->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) { changed(); });
         m_semantic_cancel->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { m_semantic->SetValue(false); changed(); });
         auto* pack_button = new wxButton(this, wxID_ANY, _L("应用 / 保存耗材包…"));
+        m_detail_commands = {m_toggle, reset, m_semantic_cancel, pack_button};
         box->Add(pack_button, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(6));
         pack_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
             const bool applied = show_filament_color_packs(this);
@@ -104,6 +292,7 @@ public:
         auto* region_header = new wxBoxSizer(wxHORIZONTAL);
         region_header->Add(new wxStaticText(this, wxID_ANY, _L("语义区域槽位")), 1, wxALIGN_CENTER_VERTICAL);
         m_region_reset = new wxButton(this, wxID_ANY, _L("恢复自动区域颜色"));
+        m_detail_commands.push_back(m_region_reset);
         region_header->Add(m_region_reset, 0);
         box->Add(region_header, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(6));
         const std::array<wxString, SemanticColoring::semantic_region_slot_count> region_names {{
@@ -175,7 +364,30 @@ public:
             }
             event.Skip();
         });
-        Bind(wxEVT_SIZE, [this](wxSizeEvent& event) { wrap_status(); event.Skip(); });
+        Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
+            wrap_status();
+            Layout();
+            if (!m_status_text.empty() && event.GetSize().x != m_status_layout_width) {
+                m_status_layout_width = event.GetSize().x;
+                if (!m_status_layout_pending) {
+                    m_status_layout_pending = true;
+                    wxWeakRef<ModelPreviewColorControls> self(this);
+                    // The enclosing scroller must remeasure after its current layout finishes.
+                    CallAfter([self] {
+                        if (!self) return;
+                        self->m_status_layout_pending = false;
+                        self->wrap_status();
+                        self->Layout();
+                        self->SetMinSize(wxSize(self->FromDIP(420), self->GetSizer()->CalcMin().y));
+                        if (auto* parent = self->GetParent()) {
+                            parent->Layout();
+                            if (auto* scroll = dynamic_cast<wxScrolledWindow*>(parent)) scroll->FitInside();
+                        }
+                    });
+                }
+            }
+            event.Skip();
+        });
     }
     void load(std::shared_ptr<const PreviewPalette::Histogram> histogram, std::vector<Color> colors) {
         m_histogram = std::move(histogram); m_colors = std::move(colors); m_mapping_colors = m_colors;
@@ -224,10 +436,12 @@ public:
         m_region_available = available; update();
     }
     void set_semantic_status(const wxString& message, bool busy) {
-        if (m_semantic_status->GetLabel() == message && m_semantic_cancel->IsShown() == busy) return;
+        if (m_semantic_status->GetLabel() == message && m_semantic_busy == busy) return;
+        m_semantic_busy = busy;
         m_semantic_status->SetLabel(message); m_semantic_status->Show(!message.empty());
         m_semantic_status->Wrap(std::max(FromDIP(220), GetClientSize().x - FromDIP(12)));
-        m_semantic_cancel->Show(busy); Layout();
+        m_semantic_cancel->Show(busy && m_detail_buttons.empty());
+        sync_workbench_detail_choices(); Layout();
         if (auto* parent = GetParent()) {
             parent->Layout();
             if (auto* scroll = dynamic_cast<wxScrolledWindow*>(parent))
@@ -449,9 +663,38 @@ private:
         sync_active_palette_state();
         m_notice = _L("已按人物色卡建议配色，可通过人像区域优化进一步调整；局部修改请到 3D 美颜。");
     }
-    void wrap_status() { m_status->Wrap(std::max(FromDIP(220), GetClientSize().x - FromDIP(12))); }
+    void wrap_status() {
+        const int width = std::max(FromDIP(220), GetClientSize().x - FromDIP(12));
+        wxString wrapped, line;
+        for (wxUniChar character : m_status_text) {
+            if (character == '\r') continue;
+            if (character == '\n') {
+                wrapped += line + "\n"; line.clear();
+                continue;
+            }
+            wxString next = line; next += character;
+            if (!line.empty() && m_status->GetTextExtent(next).x > width) {
+                wrapped += line + "\n"; line.clear();
+            }
+            line += character;
+        }
+        wrapped += line;
+        m_status->SetLabel(wrapped);
+        wxClientDC dc(m_status);
+        dc.SetFont(m_status->GetFont());
+        m_status->SetMinSize(wxSize(1, dc.GetMultiLineTextExtent(wrapped).y + FromDIP(2)));
+    }
     void update() {
         const int source = m_source->GetSelection();
+        if (m_workbench_source) {
+            m_workbench_mode->SetSelection(semantic_optimization() ? 1 : 0);
+            m_workbench_mode->Enable(m_workbench_editable && bool(m_histogram) && m_colors.size() <= 6);
+            m_workbench_source->SetSelection(source);
+            m_workbench_source->Enable(m_workbench_editable && bool(m_histogram));
+            m_workbench_count->SetValue(m_count->GetValue());
+            m_workbench_count->Enable(m_workbench_editable && bool(m_histogram) && (source == 0 || source == 2));
+            m_workbench_count_label->SetLabel(wxString::Format(_L("%d 色"), m_count->GetValue()));
+        }
         const auto& displayed_colors = semantic_optimization() ? semantic_palette() : m_colors;
         const auto& region_palette = semantic_optimization() ? semantic_palette() : m_colors;
         Show(bool(m_histogram));
@@ -493,6 +736,8 @@ private:
             const wxColour color = wx_color(displayed_colors[i]);
             const wxString hex = color.GetAsString(wxC2S_HTML_SYNTAX);
             m_swatches[i]->SetLabel(hex); m_swatches[i]->SetBackgroundColour(color);
+            m_swatches[i]->SetMinSize(wxSize(
+                std::max(FromDIP(64), m_swatches[i]->GetTextExtent(hex).x + FromDIP(16)), FromDIP(26)));
             m_swatches[i]->SetForegroundColour((color.Red()*299 + color.Green()*587 + color.Blue()*114 > 145000) ? *wxBLACK : *wxWHITE);
             const auto project_color = std::find(m_project_colors.begin(), m_project_colors.end(), displayed_colors[i]);
             const size_t project_index = size_t(std::distance(m_project_colors.begin(), project_color));
@@ -509,7 +754,8 @@ private:
         text += m_enabled ? _L("导入时可沿用当前试色，或从模型原色重新配色。") : _L("原色导入时可重新选择目标颜色数量，再匹配实际耗材。");
         if (source == 1 && !m_project_error.empty()) text += "\n" + m_project_error;
         if (!m_notice.empty()) text += "\n" + m_notice;
-        m_status->SetLabel(text); wrap_status(); Layout();
+        sync_workbench_detail_choices();
+        m_status_text = text; wrap_status(); Layout();
         // Controls must not consume the model viewport's existing minimum height.
         SetMinSize(wxSize(FromDIP(420), GetSizer()->CalcMin().y));
         if (auto* parent = GetParent()) {
@@ -519,7 +765,78 @@ private:
             if (auto* grandparent = parent->GetParent()) grandparent->Layout();
         }
     }
+    void sync_workbench_detail_choices() {
+        for (const auto& entry : m_detail_buttons) {
+            entry.button->SetLabel(entry.original->GetLabel());
+            const bool cancellation = entry.original == m_semantic_cancel;
+            entry.button->Enable(entry.original->IsEnabled() && (!cancellation || m_semantic_busy));
+            if (cancellation) entry.button->Show();
+            if (const auto* tooltip = entry.original->GetToolTip())
+                entry.button->SetToolTip(tooltip->GetTip());
+        }
+        for (const auto& entry : m_detail_switches) {
+            if (entry.lock_index >= 0) {
+                entry.row->Show(m_source->GetSelection() == 0 && m_swatches[entry.lock_index]->IsShown());
+                entry.original->Hide();
+            }
+            entry.toggle->SetValue(entry.original->GetValue());
+            entry.toggle->Enable(entry.original->IsEnabled());
+            if (const auto* tooltip = entry.original->GetToolTip()) {
+                entry.toggle->SetToolTip(tooltip->GetTip());
+                entry.row->SetToolTip(tooltip->GetTip());
+            }
+        }
+        for (const auto& entry : m_detail_choices) {
+            const wxArrayString items = entry.original->GetStrings();
+            if (entry.choice->GetStrings() != items) entry.choice->Set(items);
+            if (entry.original != m_source) {
+                wxClientDC native_dc(entry.choice);
+                wxGCDC dc(native_dc);
+                dc.SetFont(entry.choice->GetFont());
+                int width = entry.original->GetMinSize().x;
+                for (const auto& item : items)
+                    width = std::max(width, dc.GetTextExtent(item).x + FromDIP(40));
+                // WorkbenchChoice suppresses TextInput's automatic minimum width.
+                // Reserve each wrapped slot's measured width in its layout instead.
+                entry.choice->GetContainingSizer()->SetMinSize(wxSize(width, -1));
+            }
+            entry.choice->SetSelection(entry.original->GetSelection());
+            entry.choice->Enable(entry.original->IsEnabled());
+            entry.choice->SetToolTip(entry.original->GetStringSelection());
+        }
+        if (m_detail_count_slider) {
+            m_detail_count_slider->SetValue(m_count->GetValue());
+            m_detail_count_slider->Enable(m_count->IsEnabled());
+            m_detail_count_value->SetLabel(wxString::Format("%d", m_count->GetValue()));
+        }
+    }
+    struct DetailChoice {
+        wxChoice* original;
+        ComboBox* choice;
+    };
+    std::vector<DetailChoice> m_detail_choices;
+    struct DetailSwitch {
+        wxCheckBox* original;
+        wxPanel* row;
+        WorkbenchSwitch* toggle;
+        int lock_index;
+    };
+    std::vector<DetailSwitch> m_detail_switches;
+    struct DetailButton {
+        wxButton* original;
+        WorkbenchButton* button;
+    };
+    std::vector<wxButton*> m_detail_commands;
+    std::vector<DetailButton> m_detail_buttons;
+    wxPanel* m_detail_count_panel {nullptr};
+    WorkbenchSlider* m_detail_count_slider {nullptr};
+    wxStaticText* m_detail_count_value {nullptr};
     std::vector<FilamentColorPack> m_packs;
+    wxWeakRef<WorkbenchPaletteChoice> m_workbench_mode;
+    wxWeakRef<WorkbenchPaletteChoice> m_workbench_source;
+    wxWeakRef<wxSlider> m_workbench_count;
+    wxWeakRef<wxStaticText> m_workbench_count_label;
+    bool m_workbench_editable {false};
     wxButton* m_toggle;
     wxChoice* m_source;
     wxSpinCtrl* m_count;
@@ -528,12 +845,16 @@ private:
     wxCheckBox* m_semantic;
     wxButton* m_semantic_cancel;
     wxStaticText* m_semantic_status;
+    bool m_semantic_busy {false};
     wxButton* m_region_reset;
     std::array<wxChoice*, SemanticColoring::semantic_region_slot_count> m_region_slots {};
     std::array<bool, SemanticColoring::semantic_region_slot_count> m_region_available {};
     SemanticColoring::SemanticRegionSlotBindings m_semantic_region_slots = SemanticColoring::default_semantic_region_slot_bindings;
     std::vector<Color> m_semantic_colors, m_semantic_mapping, m_semantic_card;
     wxStaticText* m_status;
+    wxString m_status_text;
+    int m_status_layout_width = -1;
+    bool m_status_layout_pending = false;
     std::array<wxButton*, PreviewPalette::max_preview_colors> m_swatches {};
     std::array<wxCheckBox*, PreviewPalette::max_preview_colors> m_locks {};
     std::shared_ptr<const PreviewPalette::Histogram> m_histogram;

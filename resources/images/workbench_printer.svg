@@ -1,0 +1,9 @@
+<svg preserveAspectRatio="none" overflow="visible" style="display: block;" width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g id="printer" opacity="0.45">
+<g id="icon">
+<path d="M15 13C16.1046 13 17 13.8954 17 15V20C17 21.1046 16.1046 22 15 22H9C7.89543 22 7 21.1046 7 20V15C7 13.8954 7.89543 13 9 13H15Z" fill="white"/>
+<path fill-rule="evenodd" clip-rule="evenodd" d="M19 5C20.6569 5 22 6.34315 22 8V16C22 17.6569 20.6569 19 19 19H18.7998V15C18.7998 12.9013 17.0987 11.2002 15 11.2002H9C6.90132 11.2002 5.2002 12.9013 5.2002 15V19H5C3.34315 19 2 17.6569 2 16V8C2 6.34315 3.34315 5 5 5H19ZM19 7C18.4477 7 18 7.44772 18 8C18 8.55228 18.4477 9 19 9C19.5523 9 20 8.55228 20 8C20 7.44772 19.5523 7 19 7Z" fill="white"/>
+<path d="M16 1.5C17.1045 1.5 17.9999 2.39551 18 3.5H6C6.0001 2.39551 6.89549 1.5 8 1.5H16Z" fill="white"/>
+</g>
+</g>
+</svg>

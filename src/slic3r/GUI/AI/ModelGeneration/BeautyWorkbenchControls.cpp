@@ -1,39 +1,45 @@
 #include "BeautyWorkbenchControls.hpp"
 #include "ModelPreview3D.hpp"
+#include "WorkbenchStyle.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include "slic3r/GUI/I18N.hpp"
+#include "slic3r/GUI/Widgets/ComboBox.hpp"
 #include <boost/filesystem/fstream.hpp>
 #include <wx/button.h>
-#include <wx/checkbox.h>
+#include <wx/bmpcbox.h>
+#include <wx/dcmemory.h>
+#include <wx/dcclient.h>
 #include <wx/choice.h>
 #include <wx/sizer.h>
 #include <wx/slider.h>
 #include <wx/stattext.h>
+#include <wx/settings.h>
+#include <wx/wrapsizer.h>
 #include <algorithm>
 #include <exception>
 
 namespace Slic3r::GUI {
+
+bool BeautyWorkbenchControls::preview_protected_details() const
+{
+    return m_preview_protected && m_preview_protected->GetValue();
+}
 
 BeautyWorkbenchControls::BeautyWorkbenchControls(wxWindow* parent, ModelPreview3D* preview,
                                                  AI::IPrintablePaletteProvider& palette,
                                                  std::function<void()> layout_changed)
     : wxPanel(parent), m_preview(preview), m_palette(palette), m_layout_changed(std::move(layout_changed))
 {
+    SetBackgroundColour(wxColour(32, 32, 35));
     auto* root = new wxBoxSizer(wxVERTICAL);
+    auto dark_choice = [this] { return workbench_choice(this); };
     m_status = new wxStaticText(this, wxID_ANY, _L("区域自定义 · 正在准备模型表面"));
     m_status->Wrap(FromDIP(250));
     root->Add(m_status, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
-    auto* partition_row = new wxBoxSizer(wxHORIZONTAL);
-    m_auto_partition = new wxButton(this, wxID_ANY, _L("区域自定义 · 自动划区"));
-    m_pick_partition = new wxButton(this, wxID_ANY, _L("点选分区"));
-    m_apply_partition = new wxButton(this, wxID_ANY, _L("将选区划为分区"));
-    partition_row->Add(m_auto_partition, 1, wxRIGHT, FromDIP(4));
-    partition_row->Add(m_pick_partition, 1, wxRIGHT, FromDIP(4));
-    root->Add(partition_row, 0, wxEXPAND | wxBOTTOM, FromDIP(4));
-    root->Add(m_apply_partition, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
     auto* operation_row = new wxBoxSizer(wxHORIZONTAL);
-    operation_row->Add(new wxStaticText(this, wxID_ANY, _L("当前操作")), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(6));
-    m_operation = new wxChoice(this, wxID_ANY);
+    m_operation_label = new wxStaticText(this, wxID_ANY, _L("当前操作"));
+    operation_row->Add(m_operation_label, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(6));
+    m_operation = dark_choice();
     m_operation->Append(_L("局部改色"));
     m_operation->Append(_L("表面柔化"));
     m_operation->Append(_L("网格修复"));
@@ -42,55 +48,102 @@ BeautyWorkbenchControls::BeautyWorkbenchControls(wxWindow* parent, ModelPreview3
     m_operation->SetSelection(0);
     operation_row->Add(m_operation, 1);
     root->Add(operation_row, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
-    m_color_slot = new wxChoice(this, wxID_ANY);
-    m_color_slot->SetToolTip(_L("将当前分区绑定到当前有效耗材槽位；不修改工程耗材。"));
-    root->Add(m_color_slot, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
-    m_lighting = new wxCheckBox(this, wxID_ANY, _L("光照立体展示"));
+    m_color_slot = dark_choice();
+    m_color_slot->SetKeepDropArrow(true);
+    m_color_slot->SetToolTip(_L("显示当前有效耗材色卡；将当前分区绑定到槽位，不修改工程耗材。"));
+    root->Add(m_color_slot, 0, wxEXPAND | wxBOTTOM, FromDIP(12));
+    m_details_toggle = workbench_button(this, _L("语义区域与分区"));
+    m_details_toggle->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        m_details_open = !m_details_open;
+        update_text();
+    });
+    root->Add(m_details_toggle, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
+    m_secondary_status = new wxStaticText(this, wxID_ANY, wxEmptyString);
+    m_secondary_status->SetForegroundColour(wxSystemSettings::GetColour(wxSYS_COLOUR_GRAYTEXT));
+    m_secondary_status->Wrap(FromDIP(250));
+    root->Add(m_secondary_status, 0, wxEXPAND | wxBOTTOM, FromDIP(4));
+    auto* secondary_row = new wxBoxSizer(wxVERTICAL);
+    m_import_secondary = workbench_button(this, _L("导入外部二级证据"));
+    m_import_secondary->SetToolTip(_L("只读导入与当前模型 source、geometry、面数和运行时身份匹配的二级证据；不会修改模型或材料树。"));
+    secondary_row->Add(m_import_secondary, 0, wxEXPAND);
+    m_regenerate_evidence = workbench_button(this, _L("生成六视角渲染包"));
+    m_regenerate_evidence->SetToolTip(_L("为当前模型生成新的六视角只读渲染证据包；不会修改模型、颜色或材料树。"));
+    secondary_row->Add(m_regenerate_evidence, 0, wxEXPAND | wxTOP, FromDIP(4));
+    root->Add(secondary_row, 0, wxEXPAND | wxBOTTOM, FromDIP(4));
+    auto* partition_row = new wxBoxSizer(wxHORIZONTAL);
+    m_auto_partition = workbench_button(this, _L("自动划区"));
+    m_pick_partition = workbench_button(this, _L("点选分区"));
+    m_apply_partition = workbench_button(this, _L("将选区划为分区"));
+    partition_row->Add(m_auto_partition, 1, wxRIGHT, FromDIP(4));
+    partition_row->Add(m_pick_partition, 1, wxRIGHT, FromDIP(4));
+    root->Add(partition_row, 0, wxEXPAND | wxBOTTOM, FromDIP(4));
+    root->Add(m_apply_partition, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
+    auto switch_row = [this, root](const wxString& label, wxPanel*& row) {
+        row = new wxPanel(this);
+        row->SetBackgroundColour(GetBackgroundColour());
+        auto* sizer = new wxBoxSizer(wxHORIZONTAL);
+        auto* text = new wxStaticText(row, wxID_ANY, label);
+        text->SetForegroundColour(wxColour(235, 235, 235));
+        sizer->Add(text, 1, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
+        auto* toggle = new WorkbenchSwitch(row, label);
+        sizer->Add(toggle, 0, wxALIGN_CENTER_VERTICAL);
+        row->SetSizer(sizer);
+        root->Add(row, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
+        return toggle;
+    };
+    m_lighting = switch_row(_L("光照立体展示"), m_lighting_row);
     m_lighting->SetToolTip(_L("只改变预览明暗，不改变模型颜色或耗材槽位。"));
-    root->Add(m_lighting, 0, wxBOTTOM, FromDIP(6));
-    m_original_view = new wxCheckBox(this, wxID_ANY, _L("查看模型原色"));
-    root->Add(m_original_view, 0, wxBOTTOM, FromDIP(6));
-    m_displacement = new wxSlider(this, wxID_ANY, 2, -20, 20);
+    m_original_view = switch_row(_L("查看模型原色"), m_original_view_row);
+    m_displacement = new WorkbenchSlider(this, wxID_ANY, 2, -20, 20, wxColour(61, 127, 255), "workbench_parameter_thumb");
     m_displacement->SetToolTip(_L("局部表面推拉距离，单位 0.1 mm；负值向内。"));
     m_displacement_label = new wxStaticText(this, wxID_ANY, _L("推拉距离 · 0.1 mm/格"));
     root->Add(m_displacement_label, 0);
     root->Add(m_displacement, 0, wxEXPAND | wxBOTTOM, FromDIP(4));
-    m_falloff = new wxSlider(this, wxID_ANY, 10, 1, 50);
+    m_falloff = new WorkbenchSlider(this, wxID_ANY, 10, 1, 50, wxColour(61, 127, 255), "workbench_parameter_thumb");
     m_falloff->SetToolTip(_L("局部拉伸边缘渐变距离，单位 0.1 mm。"));
     m_falloff_label = new wxStaticText(this, wxID_ANY, _L("边缘衰减 · 0.1 mm/格"));
     root->Add(m_falloff_label, 0);
     root->Add(m_falloff, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
     auto* semantic_row = new wxBoxSizer(wxHORIZONTAL);
-    m_auto_region = new wxChoice(this, wxID_ANY);
+    m_auto_region = dark_choice();
     m_auto_region->Append(_L("头发"));
     m_auto_region->Append(_L("皮肤"));
     m_auto_region->Append(_L("眼睛"));
     m_auto_region->Append(_L("嘴唇"));
     m_auto_region->Append(_L("衣服"));
     m_auto_region->SetSelection(0);
-    m_auto_match = new wxButton(this, wxID_ANY, _L("自动匹配区域"));
-    m_reoptimize = new wxButton(this, wxID_ANY, _L("重新优化人像区域"));
+    m_auto_match = workbench_button(this, _L("自动匹配区域"));
+    m_auto_detail = dark_choice();
+    m_auto_detail->SetToolTip(_L("可选的二级语义选区；只读取已验证证据，不自动改色或选择耗材。"));
+    m_auto_detail->Hide();
+    m_reoptimize = workbench_button(this, _L("重新优化人像区域"));
     semantic_row->Add(m_auto_region, 1, wxRIGHT, FromDIP(4));
-    semantic_row->Add(m_auto_match, 0, wxRIGHT, FromDIP(4));
-    semantic_row->Add(m_reoptimize, 0);
-    root->Add(semantic_row, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
+    semantic_row->Add(m_auto_match, 0);
+    root->Add(semantic_row, 0, wxEXPAND | wxBOTTOM, FromDIP(4));
+    root->Add(m_auto_detail, 0, wxEXPAND | wxBOTTOM, FromDIP(4));
+    root->Add(m_reoptimize, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
+    m_preview_protected = switch_row(_L("预览全部二级证据"), m_preview_protected_row);
+    m_preview_protected->SetToolTip(_L("临时把已加载的保护、单视角和低置信二级证据作为查看选区；不改变 Provider 授权、耗材槽位或生产材料树。"));
+    m_preview_protected_row->Hide();
     auto* actions = new wxBoxSizer(wxHORIZONTAL);
-    m_boundary = new wxButton(this, wxID_ANY, _L("贴合边界"));
-    m_undo = new wxButton(this, wxID_ANY, _L("撤销"));
-    m_redo = new wxButton(this, wxID_ANY, _L("重做"));
-    m_save = new wxButton(this, wxID_ANY, _L("保存新 GLB"));
-    m_preview_button = new wxButton(this, wxID_ANY, _L("预览修改"));
-    m_accept = new wxButton(this, wxID_ANY, _L("接受候选"));
-    m_discard = new wxButton(this, wxID_ANY, _L("放弃候选"));
-    m_cancel = new wxButton(this, wxID_ANY, _L("取消处理"));
-    for (wxButton* button : {m_boundary, m_undo, m_redo, m_save})
+    m_boundary = workbench_button(this, _L("贴合边界"));
+    m_undo = workbench_button(this, _L("撤销"));
+    m_redo = workbench_button(this, _L("重做"));
+    m_save = workbench_button(this, _L("保存新 GLB"));
+    m_preview_button = workbench_button(this, _L("预览修改"));
+    m_accept = workbench_button(this, _L("接受候选"));
+    m_discard = workbench_button(this, _L("放弃候选"));
+    m_cancel = workbench_button(this, _L("取消处理"));
+    for (Button* button : {m_boundary, m_undo, m_redo, m_save})
         actions->Add(button, 1, wxRIGHT, FromDIP(4));
     root->Add(actions, 0, wxEXPAND);
     auto* candidate_row = new wxBoxSizer(wxHORIZONTAL);
-    for (wxButton* button : {m_preview_button, m_accept, m_discard, m_cancel})
+    for (Button* button : {m_preview_button, m_accept, m_discard, m_cancel})
         candidate_row->Add(button, 1, wxRIGHT, FromDIP(4));
     root->Add(candidate_row, 0, wxEXPAND | wxTOP, FromDIP(6));
     SetSizer(root);
+    m_boundary->Hide();
+    m_save->Hide();
     m_boundary->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { if (on_boundary_adjust) on_boundary_adjust(); });
     m_undo->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { if (on_undo) on_undo(); });
     m_redo->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { if (on_redo) on_redo(); });
@@ -100,6 +153,12 @@ BeautyWorkbenchControls::BeautyWorkbenchControls(wxWindow* parent, ModelPreview3
     m_discard->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { if (on_discard) on_discard(); });
     m_cancel->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { if (on_cancel) on_cancel(); });
     m_auto_partition->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { start_partition(); });
+    m_import_secondary->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        if (on_import_secondary_evidence) on_import_secondary_evidence();
+    });
+    m_regenerate_evidence->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        if (on_regenerate_readonly_evidence) on_regenerate_readonly_evidence();
+    });
     m_pick_partition->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         if (!m_partition || m_partition_task) return;
         if (on_pick_mode) on_pick_mode();
@@ -108,28 +167,36 @@ BeautyWorkbenchControls::BeautyWorkbenchControls(wxWindow* parent, ModelPreview3
     m_apply_partition->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { apply_partition_selection(); });
     m_partition_timer.SetOwner(this);
     Bind(wxEVT_TIMER, [this](wxTimerEvent&) { finish_partition(); }, m_partition_timer.GetId());
-    m_lighting->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) {
-        if (m_preview) m_preview->set_beauty_lighting(m_lighting->GetValue());
+    m_lighting->Bind(wxEVT_TOGGLEBUTTON, [this](wxCommandEvent& event) {
+        m_lighting->SetValue(event.IsChecked());
+        if (m_preview) m_preview->set_beauty_lighting(event.IsChecked());
     });
-    m_original_view->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) {
-        if (m_preview) m_preview->set_beauty_original_view(m_original_view->GetValue());
+    m_original_view->Bind(wxEVT_TOGGLEBUTTON, [this](wxCommandEvent& event) {
+        m_original_view->SetValue(event.IsChecked());
+        if (m_preview) m_preview->set_beauty_original_view(event.IsChecked());
+        if (on_original_view_changed) on_original_view_changed(event.IsChecked());
     });
-    m_operation->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) {
+    m_operation->Bind(wxEVT_COMBOBOX, [this](wxCommandEvent&) {
         if (on_operation_changed && m_operation->GetSelection() >= 0)
             on_operation_changed(m_operation->GetSelection());
         update_text();
     });
-    m_color_slot->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) {
+    m_color_slot->Bind(wxEVT_COMBOBOX, [this](wxCommandEvent&) {
         if (on_color_slot_changed && m_color_slot->GetSelection() >= 0)
             on_color_slot_changed(size_t(m_color_slot->GetSelection()));
     });
     m_displacement->Bind(wxEVT_SLIDER, [this](wxCommandEvent&) { update_text(); });
+    m_falloff->Bind(wxEVT_SLIDER, [this](wxCommandEvent&) { update_text(); });
     m_auto_match->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         if (!on_auto_match || !m_auto_region || m_auto_region->GetSelection() < 0) return;
         static constexpr const char* keys[] = {"hair", "skin", "eyes", "lips", "clothes"};
         const int index = m_auto_region->GetSelection();
         const std::string region = index >= 0 && index < 5 ? keys[index] : std::string {};
-        const size_t count = on_auto_match(region);
+        const bool detail_selected = m_auto_detail && m_auto_detail->GetSelection() > 0;
+        const int detail_index = m_auto_detail ? m_auto_detail->GetSelection() : -1;
+        const std::string detail = detail_selected && detail_index >= 0 && size_t(detail_index) < m_auto_detail_ids.size()
+            ? m_auto_detail_ids[size_t(detail_index)] : std::string {};
+        const size_t count = detail_selected && on_auto_detail_match ? on_auto_detail_match(detail) : on_auto_match(region);
         if (count > 0) m_dirty = true;
         update_text();
         if (count == 0) {
@@ -138,17 +205,25 @@ BeautyWorkbenchControls::BeautyWorkbenchControls(wxWindow* parent, ModelPreview3
             else if (!m_preview->beauty_editor())
                 m_status->SetLabel(_L("正在准备模型选区数据，请稍后再次点击自动匹配区域。"));
             else
-                m_status->SetLabel(wxString::Format(_L("该区域未匹配到可选面；保护排除 %llu 面，低置信度排除 %llu 面。原选区保留，可继续手动补选。"),
+                m_status->SetLabel(wxString::Format(_L("%s 未匹配到可选面；保护排除 %llu 面，低置信度排除 %llu 面。原选区保留。"),
+                    detail_selected ? wxString::FromUTF8(detail) : _L("一级分区"),
                     static_cast<unsigned long long>(m_preview->semantic_selection_protected_count()),
                     static_cast<unsigned long long>(m_preview->semantic_selection_low_confidence_count())));
         } else {
-            m_status->SetLabel(wxString::Format(_L("已自动匹配 %llu 个面；保护排除 %llu 面，低置信度排除 %llu 面。可继续补选、保护或编辑。"),
+            m_status->SetLabel(wxString::Format(_L("%s 已匹配 %llu 个面；保护排除 %llu 面，低置信度排除 %llu 面。"),
+                detail_selected ? wxString::FromUTF8(detail) : _L("一级分区"),
                 static_cast<unsigned long long>(count),
                 static_cast<unsigned long long>(m_preview->semantic_selection_protected_count()),
                 static_cast<unsigned long long>(m_preview->semantic_selection_low_confidence_count())));
         }
-        m_status->Wrap(FromDIP(250));
+        wrap_status(m_status);
         Layout();
+        if (m_layout_changed) m_layout_changed();
+    });
+    m_auto_region->Bind(wxEVT_COMBOBOX, [this](wxCommandEvent&) { update_secondary_details(); });
+    m_preview_protected->Bind(wxEVT_TOGGLEBUTTON, [this](wxCommandEvent& event) {
+        m_preview_protected->SetValue(event.IsChecked());
+        update_text();
     });
     m_reoptimize->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         update_text();
@@ -160,10 +235,52 @@ BeautyWorkbenchControls::BeautyWorkbenchControls(wxWindow* parent, ModelPreview3
                 ? _L("已请求重新优化；Beauty 选区和手动保护保持不变。")
                 : _L("人像区域优化未启动，当前模型和选区保持不变。"));
         }
-        m_status->Wrap(FromDIP(250));
+        wrap_status(m_status);
         Layout();
+        if (m_layout_changed) m_layout_changed();
     });
     Hide();
+}
+
+void BeautyWorkbenchControls::update_secondary_details()
+{
+    if (!m_auto_detail || !m_preview || !m_auto_region || m_auto_region->GetSelection() < 0) return;
+    const std::string previous_detail = m_auto_detail->GetSelection() > 0 &&
+        size_t(m_auto_detail->GetSelection()) < m_auto_detail_ids.size()
+            ? m_auto_detail_ids[size_t(m_auto_detail->GetSelection())] : std::string {};
+    static constexpr const char* keys[] = {"hair", "skin", "eyes", "lips", "clothes"};
+    const int index = m_auto_region->GetSelection();
+    const std::string parent = index >= 0 && index < 5 ? keys[index] : std::string {};
+    m_auto_detail->Freeze();
+    m_auto_detail->Clear();
+    m_auto_detail_ids.clear();
+    m_auto_detail->Append(_L("整个一级分区"));
+    m_auto_detail_ids.emplace_back();
+    const auto details = m_preview->secondary_region_details(parent);
+    const auto evidence = m_preview->secondary_region_evidence();
+    for (const auto& detail : details) {
+        m_auto_detail_ids.push_back(detail);
+        wxString label = wxString::FromUTF8(detail);
+        if (evidence) for (const auto& entry : evidence->catalog())
+            if (entry.detail_id == detail && entry.accepted_count == 0 && entry.protected_count > 0) {
+                label += _L("（保护）"); break;
+            }
+        m_auto_detail->Append(label);
+    }
+    const auto previous = std::find(m_auto_detail_ids.begin(), m_auto_detail_ids.end(), previous_detail);
+    m_auto_detail->SetSelection(previous == m_auto_detail_ids.end() ? 0 :
+        int(std::distance(m_auto_detail_ids.begin(), previous)));
+    m_auto_detail->Show(m_details_open && !details.empty());
+    m_auto_detail->Thaw();
+    Layout();
+}
+
+void BeautyWorkbenchControls::synchronize_preview_options()
+{
+    if (m_preview) {
+        m_lighting->SetValue(m_preview->beauty_lighting());
+        m_original_view->SetValue(m_preview->beauty_original_view());
+    }
 }
 
 void BeautyWorkbenchControls::synchronize(const boost::filesystem::path& source, bool editable, bool visible,
@@ -172,10 +289,14 @@ void BeautyWorkbenchControls::synchronize(const boost::filesystem::path& source,
     const auto previous_source = m_source;
     const std::string previous_geometry = m_geometry_id;
     m_source = source;
+    synchronize_preview_options();
     m_editable = editable;
     m_processing = processing;
     m_candidate_ready = candidate_ready;
     m_visible = visible;
+    if (!m_pending_secondary_partition_source.empty() &&
+        source != m_pending_secondary_partition_source)
+        m_pending_secondary_partition_source.clear();
     const std::string geometry = m_preview ? m_preview->geometry_id() : std::string {};
     if (geometry != previous_geometry) {
         m_geometry_id = geometry;
@@ -188,17 +309,21 @@ void BeautyWorkbenchControls::synchronize(const boost::filesystem::path& source,
     }
     const bool region_available = m_preview && !m_geometry_id.empty() && m_preview->region_editing_ready();
     const auto editor = m_preview ? m_preview->beauty_editor() : nullptr;
+    if (visible && region_available && !editor) m_preview->prepare_beauty_editor();
     m_ready = region_available && bool(editor);
-    if (m_ready && !m_partition && source != previous_source && !source.empty()) {
+    update_secondary_details();
+    if (m_ready && !m_partition && source != m_partition_restore_source && !source.empty()) {
+        m_partition_restore_source = source;
         auto metadata_path = source;
         metadata_path.replace_extension(".json");
         boost::system::error_code error;
         if (boost::filesystem::is_regular_file(metadata_path, error) &&
-            boost::filesystem::file_size(metadata_path, error) < 128ULL * 1024 * 1024) {
+            boost::filesystem::file_size(metadata_path, error) < 256ULL * 1024 * 1024) {
             boost::filesystem::ifstream input(metadata_path);
             const auto metadata = nlohmann::json::parse(input, nullptr, false);
-            if (metadata.is_object() && metadata.value("beauty_workbench", nlohmann::json::object()).is_object()) {
-                const auto& record = metadata.at("beauty_workbench");
+            const auto workbench = metadata.is_object() ? metadata.find("beauty_workbench") : metadata.end();
+            if (workbench != metadata.end() && workbench->is_object()) {
+                const auto& record = *workbench;
                 const std::string saved_hash = record.value("model_sha256", std::string {});
                 if (record.contains("puzzle") &&
                     (saved_hash.empty() || saved_hash == AI::model_artifact_sha256(source)))
@@ -211,7 +336,15 @@ void BeautyWorkbenchControls::synchronize(const boost::filesystem::path& source,
         m_preview->set_beauty_pick_callback([this](size_t face) { select_piece(face); });
     }
     Show(visible);
+    if (!m_pending_secondary_partition_source.empty() && m_ready && !m_processing &&
+        m_visible && !m_partition_task && m_preview->secondary_regions_ready())
+        start_partition();
     update_text();
+}
+
+void BeautyWorkbenchControls::request_secondary_partition(const boost::filesystem::path& source)
+{
+    m_pending_secondary_partition_source = source;
 }
 
 void BeautyWorkbenchControls::update_text()
@@ -225,17 +358,66 @@ void BeautyWorkbenchControls::update_text()
     else if (m_candidate_ready) m_status->SetLabel(_L("候选版本已就绪；可继续编辑、接受或放弃。"));
     else if (m_partition) m_status->SetLabel(wxString::Format(_L("区域自定义已就绪 · 当前分区 %u；点选分区后可编辑。"), m_selected_piece));
     else if (m_dirty) m_status->SetLabel(_L("Beauty 有未保存修改；保存后生成新的 GLB 版本。"));
-    else m_status->SetLabel(_L("Beauty 工作台已连接；局部改色会继续经过语义色槽和手动覆盖。"));
+    else m_status->SetLabel(_L("就绪"));
+    if (m_secondary_status) {
+        if (!m_preview) {
+            m_secondary_status->SetLabel(_L("二级语义：未加载（没有模型证据）。"));
+        } else if (!m_preview->secondary_regions_ready()) {
+            m_secondary_status->SetLabel(m_preview->secondary_region_evidence_error().empty()
+                ? _L("二级语义：未加载（当前模型没有二级证据引用）。")
+                : wxString::Format(_L("二级语义：校验失败，已回退一级分区（%s）。"),
+                    wxString::FromUTF8(m_preview->secondary_region_evidence_error())));
+        } else {
+            size_t detail_count = 0, accepted = 0, protected_count = 0, low_confidence = 0;
+            for (const auto& entry : m_preview->secondary_region_evidence()->catalog()) {
+                ++detail_count;
+                accepted += entry.accepted_count;
+                protected_count += entry.protected_count;
+                low_confidence += entry.low_confidence_count;
+            }
+            if (accepted == 0)
+                m_secondary_status->SetLabel(wxString::Format(
+                    preview_protected_details()
+                        ? _L("二级语义预览已开启：已加载 %llu 个细节；当前显示保护面 %llu，低置信 %llu。")
+                        : _L("二级语义：已加载 %llu 个细节，但可选面为 0；保护 %llu，低置信 %llu。"),
+                    static_cast<unsigned long long>(detail_count),
+                    static_cast<unsigned long long>(protected_count),
+                    static_cast<unsigned long long>(low_confidence)));
+            else
+                m_secondary_status->SetLabel(wxString::Format(
+                    preview_protected_details()
+                        ? _L("二级语义预览已开启：已加载 %llu 个细节；可选面 %llu，保护面 %llu，低置信 %llu。")
+                        : _L("二级语义：已加载 %llu 个细节；可选面 %llu，保护 %llu，低置信 %llu。"),
+                    static_cast<unsigned long long>(detail_count),
+                    static_cast<unsigned long long>(accepted),
+                    static_cast<unsigned long long>(protected_count),
+                    static_cast<unsigned long long>(low_confidence)));
+        }
+    }
     const bool selection_calculating = m_preview && m_preview->selection_busy();
-    const bool active = m_editable && m_ready && !m_processing && !m_partition_task && !selection_calculating;
+    const bool available = m_editable && !m_processing && !m_partition_task && !selection_calculating;
+    const bool active = available && m_ready;
     if (on_available_colors) {
         const auto colors = on_available_colors();
         if (colors != m_palette_colors) {
             m_palette_colors = colors;
             m_color_slot->Clear();
-            for (size_t slot = 0; slot < colors.size(); ++slot)
+            for (size_t slot = 0; slot < colors.size(); ++slot) {
+                const wxString hex = wxString::FromUTF8(colors[slot]);
+                wxColour color(hex);
+                if (!color.IsOk()) color = wxColour(128, 128, 128);
+                const int swatch_width = FromDIP(30), swatch_height = FromDIP(16);
+                wxBitmap swatch(swatch_width, swatch_height, 32);
+                wxMemoryDC dc(swatch);
+                dc.SetBackground(wxBrush(wxColour(22, 22, 25)));
+                dc.Clear();
+                dc.SetBrush(wxBrush(color));
+                dc.SetPen(wxPen(wxColour(80, 80, 80), FromDIP(1)));
+                dc.DrawRoundedRectangle(0, 0, swatch_width, swatch_height, FromDIP(2));
+                dc.SelectObject(wxNullBitmap);
                 m_color_slot->Append(wxString::Format(_L("耗材 %llu · "),
-                    static_cast<unsigned long long>(slot + 1)) + wxString::FromUTF8(colors[slot]));
+                    static_cast<unsigned long long>(slot + 1)) + hex, swatch);
+            }
             if (!colors.empty()) m_color_slot->SetSelection(0);
         }
     }
@@ -246,13 +428,18 @@ void BeautyWorkbenchControls::update_text()
     m_apply_partition->Enable(active && bool(m_partition));
     m_apply_partition->SetLabel(m_selected_piece ? _L("应用补选与边界调整") : _L("将选区划为新分区"));
     m_boundary->Enable(active);
-    m_undo->Enable(active);
-    m_redo->Enable(active);
+    m_undo->Enable(active && m_can_undo);
+    m_redo->Enable(active && m_can_redo);
     m_save->Enable(active && (m_dirty || m_candidate_ready));
     const bool semantic = m_preview && m_preview->semantic_regions_ready();
     m_auto_region->Enable(active);
     m_auto_match->Enable(active);
-    m_operation->Enable(active);
+    m_import_secondary->Enable(active && !m_source.empty());
+    m_regenerate_evidence->Enable(active && !m_source.empty());
+    const bool secondary_ready = m_preview && m_preview->secondary_regions_ready() && m_auto_detail->GetCount() > 1;
+    m_preview_protected_row->Show(m_details_open && secondary_ready);
+    m_preview_protected->Enable(active && secondary_ready);
+    m_operation->Enable(available);
     m_auto_match->SetToolTip(semantic
         ? _L("按当前已缓存的人像语义结果选择区域，不会重新识别。")
         : m_preview ? m_preview->semantic_region_status() : _L("当前没有已加载模型。"));
@@ -261,16 +448,24 @@ void BeautyWorkbenchControls::update_text()
         ? m_preview->semantic_reoptimization_reason()
         : _L("显式重新识别人像区域；选区与保护区保持不变。"));
     const bool deform = geometry_deform_selected();
+    m_displacement_label->SetLabel(wxString::Format(_L("推拉距离 · %.1f mm"), displacement_mm()));
+    m_falloff_label->SetLabel(wxString::Format(_L("边缘衰减 · %.1f mm"), falloff_mm()));
     m_displacement->Show(deform);
     m_falloff->Show(deform);
     m_displacement_label->Show(deform);
     m_falloff_label->Show(deform);
     m_displacement->Enable(active);
     m_falloff->Enable(active);
-    m_preview_button->Enable(active && (!deform || bool(m_surface)));
-    m_accept->Enable(active && m_candidate_ready);
-    m_discard->Enable(active && m_candidate_ready);
+    m_preview_button->Enable(active);
+    m_accept->Enable(available && m_candidate_ready);
+    m_discard->Enable(available && m_candidate_ready);
     m_cancel->Enable(m_processing || bool(m_partition_task) || selection_calculating);
+    m_details_toggle->SetLabel(m_details_open ? _L("收起语义区域与分区") : _L("语义区域与分区"));
+    for (wxWindow* control : std::initializer_list<wxWindow*>{m_secondary_status, m_import_secondary,
+             m_regenerate_evidence, m_auto_partition, m_pick_partition, m_apply_partition,
+             m_auto_region, m_auto_match, m_reoptimize})
+        control->Show(m_details_open);
+    m_auto_detail->Show(m_details_open && m_auto_detail->GetCount() > 1);
     const wxString locked_reason = _L("当前正在计算分区或选区边界，请等待完成或取消。");
     for (wxWindow* control : std::initializer_list<wxWindow*>{m_auto_partition, m_pick_partition,
                               m_apply_partition, m_boundary, m_operation, m_preview_button,
@@ -285,11 +480,88 @@ void BeautyWorkbenchControls::update_text()
         m_auto_region->SetToolTip(wxEmptyString);
         m_color_slot->SetToolTip(_L("将当前分区绑定到当前有效耗材槽位；不修改工程耗材。"));
     }
+    for (auto* label : {m_status, m_secondary_status}) wrap_status(label);
     Layout();
     if (m_layout_changed) m_layout_changed();
 }
 
+void BeautyWorkbenchControls::wrap_status(wxStaticText* label)
+{
+    wxString source = label->GetLabel(), line, wrapped;
+    source.Replace("\r", "");
+    source.Replace("\n", "");
+    const int width = GetClientSize().x > 0
+        ? std::max(FromDIP(80), GetClientSize().x) : FromDIP(240);
+    for (size_t offset = 0; offset < source.length();) {
+        wxString token;
+        const auto is_digit = [](wxUniChar value) { return value >= '0' && value <= '9'; };
+        token += source[offset++];
+        if (is_digit(token[0])) {
+            while (offset < source.length() && is_digit(source[offset]))
+                token += source[offset++];
+        }
+        wxString next = line + token;
+        if (!line.empty() && label->GetTextExtent(next).x > width) {
+            wrapped += line + "\n"; line.clear();
+        }
+        for (wxUniChar character : token) {
+            next = line; next += character;
+            if (!line.empty() && label->GetTextExtent(next).x > width) {
+                wrapped += line + "\n"; line.clear();
+            }
+            line += character;
+        }
+    }
+    wrapped += line;
+    label->SetLabel(wrapped);
+    wxClientDC dc(label);
+    dc.SetFont(label->GetFont());
+    label->SetMinSize(wxSize(1, dc.GetMultiLineTextExtent(wrapped).y + FromDIP(2)));
+}
+
 bool BeautyWorkbenchControls::geometry_deform_selected() const { return m_operation && m_operation->GetSelection() == 4; }
+int BeautyWorkbenchControls::operation_index() const { return m_operation ? m_operation->GetSelection() : 0; }
+
+void BeautyWorkbenchControls::attach_parameters(wxWindow* surface, wxWindow* strength_label, wxWindow* strength)
+{
+    auto* parameters = surface->GetSizer();
+    for (wxWindow* control : std::initializer_list<wxWindow*>{
+             m_displacement_label, m_displacement, m_falloff_label, m_falloff,
+             strength_label, strength, m_lighting_row, m_original_view_row}) {
+        control->GetContainingSizer()->Detach(control);
+        control->Reparent(surface);
+        parameters->Add(control, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, surface->FromDIP(12));
+    }
+}
+
+void BeautyWorkbenchControls::attach_actions(wxWindow* footer)
+{
+    auto* actions = new wxWrapSizer(wxHORIZONTAL, wxREMOVE_LEADING_SPACES);
+    for (Button* button : {m_preview_button, m_accept, m_discard, m_cancel, m_undo, m_redo, m_save}) {
+        button->GetContainingSizer()->Detach(button);
+        button->Reparent(footer);
+        if (button == m_undo || button == m_redo) {
+            const wxString label = button->GetLabel();
+            button->SetName(label);
+            button->SetToolTip(label);
+            button->SetLabel(wxEmptyString);
+            button->SetIcon(button == m_undo ? "topbar_undo" : "topbar_redo");
+            button->SetMinSize(FromDIP(wxSize(32, 32)));
+            button->SetMaxSize(FromDIP(wxSize(32, 32)));
+        } else {
+            button->SetMinSize(FromDIP(wxSize(92, 32)));
+        }
+        actions->Add(button, 0, wxRIGHT | wxBOTTOM, FromDIP(4));
+    }
+    footer->SetSizer(actions);
+}
+
+void BeautyWorkbenchControls::set_history_permissions(bool undo, bool redo)
+{
+    m_can_undo = undo;
+    m_can_redo = redo;
+    update_text();
+}
 double BeautyWorkbenchControls::displacement_mm() const { return m_displacement ? 0.1 * m_displacement->GetValue() : 0.; }
 double BeautyWorkbenchControls::falloff_mm() const { return m_falloff ? 0.1 * m_falloff->GetValue() : 1.; }
 
@@ -308,19 +580,25 @@ void BeautyWorkbenchControls::cancel_partition()
 
 void BeautyWorkbenchControls::start_partition(const nlohmann::json& saved)
 {
-    if (!m_ready || m_partition_task || m_processing ||
-        (on_partition_started && !on_partition_started())) return;
+    if (!m_ready || m_partition_task || m_processing) return;
+    const auto pending_source = std::move(m_pending_secondary_partition_source);
+    m_pending_secondary_partition_source.clear();
+    if (on_partition_started && !on_partition_started()) {
+        m_pending_secondary_partition_source = pending_source;
+        return;
+    }
     if (m_partition_worker.joinable()) m_partition_worker.join();
     auto task = m_partition_task = std::make_shared<PartitionTask>();
     task->geometry = m_geometry_id;
     task->saved = saved;
     task->restoring = saved.is_object() && !saved.empty();
     task->before_selection = m_preview->selection_state();
-    const auto surface = m_surface;
+    const auto surface = pending_source.empty() ? m_surface : nullptr;
     const auto editor = m_preview->beauty_editor();
     const auto labels = m_preview->beauty_semantic_labels();
+    const auto semantic_names = m_preview->beauty_semantic_names();
     try {
-        m_partition_worker = std::thread([task, surface, editor, labels] {
+        m_partition_worker = std::thread([task, surface, editor, labels, semantic_names] {
             try {
                 task->surface = surface ? surface : AI::BeautySurface::build(editor->mesh(), editor->vertex_colors(), {},
                     [task] { return task->canceled.load(); });
@@ -329,7 +607,7 @@ void BeautyWorkbenchControls::start_partition(const nlohmann::json& saved)
                         editor->mesh().indices.size());
                     task->result.validate(*task->surface);
                 } else task->result = AI::BeautyPuzzle::create_regions(*task->surface, labels,
-                    [task] { return task->canceled.load(); });
+                    [task] { return task->canceled.load(); }, semantic_names);
             } catch (const std::exception& error) { task->error = error.what(); }
             task->done.store(true);
         });
@@ -491,7 +769,7 @@ void BeautyWorkbenchControls::prepare_options(
     AI::ModelFinishingOptions& options,
     const AI::SurfaceSelectionPersistence::SelectionState& selection) const
 {
-    if (!m_preview || !m_surface || m_source.empty()) return;
+    if (!m_preview || m_source.empty()) return;
     const auto editor = m_preview->beauty_editor();
     if (!editor || selection.selected.empty()) return;
     options.beauty_appearance = true;
@@ -505,7 +783,14 @@ void BeautyWorkbenchControls::prepare_options(
     options.beauty_protected_faces = selection.protected_faces;
     options.appearance.face_weights.assign(editor->mesh().indices.size(), 0.f);
     options.appearance.face_target_colors.resize(editor->mesh().indices.size());
-    options.beauty_document = m_document.encode();
+    auto document = m_document;
+    if (!m_surface) {
+        // The finishing worker builds the surface when no partition cache
+        // exists, so a manual selection can be deformed directly.
+        document.geometry_id = m_geometry_id;
+        document.face_count = editor->mesh().indices.size();
+    }
+    options.beauty_document = document.encode();
 }
 
 nlohmann::json BeautyWorkbenchControls::accepted_document(const AI::ModelFinishingOptions& options,

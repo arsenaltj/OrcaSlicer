@@ -18,6 +18,10 @@ struct ModelFinishingOptions {
     bool smooth_surface {true};
     bool repair_mesh {true};
     double strength {0.35};
+    // Optional workbench controls. Zero keeps the legacy strength-derived
+    // iteration count; a positive value is clamped by the finishing backend.
+    int smoothing_iterations {0};
+    bool preserve_hard_edges {true};
     // Zero-based face ordinals in the source triangle OBJ (not preview draw
     // order). Empty means the whole surface. A local selection requires
     // repair_mesh=false; vertices incident to unselected faces stay fixed.

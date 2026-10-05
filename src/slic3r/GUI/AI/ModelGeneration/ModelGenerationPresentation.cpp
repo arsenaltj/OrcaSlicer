@@ -31,6 +31,36 @@ constexpr const char* GENERATED_MODEL_PREFIX = "orcaslicer-ai-";
 
 } // namespace
 
+std::vector<size_t> workbench_history_indices(const std::vector<WorkbenchHistoryRecord>& entries,
+                                             const wxString& query, WorkbenchHistoryFilter filter)
+{
+    std::vector<size_t> indices;
+    const wxString search = query.Lower();
+    for (size_t index = 0; index < entries.size(); ++index) {
+        const auto& entry = entries[index];
+        const bool category_matches = filter == WorkbenchHistoryFilter::All ||
+            (filter == WorkbenchHistoryFilter::Original && !entry.accepted_finishing) ||
+            (filter == WorkbenchHistoryFilter::Monochrome && entry.color_count && *entry.color_count <= 1) ||
+            (filter == WorkbenchHistoryFilter::Multicolor && entry.color_count && *entry.color_count > 1);
+        if (!entry.design_only && entry.available && !entry.model_path.empty() &&
+            category_matches && (search.empty() || entry.title.Lower().Contains(search))) indices.push_back(index);
+    }
+    std::stable_sort(indices.begin(), indices.end(), [&](size_t left, size_t right) {
+        return entries[left].generated_at > entries[right].generated_at;
+    });
+    return indices;
+}
+
+WorkbenchVersionStatus workbench_version_status(const boost::filesystem::path& path,
+    const boost::filesystem::path& current, const boost::filesystem::path& accepted,
+    const boost::filesystem::path& candidate_source)
+{
+    if (path.empty()) return WorkbenchVersionStatus::Saved;
+    if (!candidate_source.empty() && path == candidate_source) return WorkbenchVersionStatus::Candidate;
+    if (path == current) return path == accepted ? WorkbenchVersionStatus::Accepted : WorkbenchVersionStatus::Current;
+    return WorkbenchVersionStatus::Saved;
+}
+
 wxString thin_local_region_metrics(
     const AIModelGenerationClient::ModelQuality::ThinLocalRegion& region,
     bool threshold_available,
@@ -180,12 +210,12 @@ nlohmann::json read_json(const boost::filesystem::path& path)
     return nlohmann::json::parse(stream, nullptr, false);
 }
 
-bool write_json(const boost::filesystem::path& path, const nlohmann::json& value)
+bool write_json(const boost::filesystem::path& path, const nlohmann::json& value, int indent)
 {
     boost::filesystem::ofstream stream(path);
     if (!stream)
         return false;
-    stream << value.dump(2);
+    stream << value.dump(indent);
     stream.close();
     return stream.good();
 }

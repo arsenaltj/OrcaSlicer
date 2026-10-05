@@ -115,13 +115,15 @@ TEST_CASE("Saved beauty regions preserve partial patches protection and reversib
     REQUIRE_THROWS(BeautyDocument::decode(corrupt,d.geometry_id,d.face_count));
 }
 TEST_CASE("Beauty geometry versions round trip without overwriting the source or losing face correspondence","[BeautyWorkbench][BeautySurface]") {
+    const bool cached_surface = GENERATE(true, false);
     Fixture fixture;const auto source=fixture.root/"source.glb",target=fixture.root/"edited.glb";
     const auto initial=grid(true);std::string error;
     REQUIRE(write_model_artifact(source,initial,std::vector<RGBA>(initial.vertices.size(),RGBA{.6f,.4f,.3f,1}),error));
     TriangleMesh mesh;ObjInfo colors;REQUIRE(load_model_artifact(source,mesh,colors,error));
     auto surface=BeautySurface::build(mesh.its,colors.vertex_colors);auto doc=document_for(surface);
+    if (!cached_surface) doc.face_patch.clear();
     ModelFinishingOptions options;options.smooth_surface=false;options.repair_mesh=false;options.beauty_deform=true;
-    options.beauty_surface=surface;options.beauty_document=doc.encode();options.beauty_displacement_mm=.1;options.beauty_falloff_mm=1;
+    options.beauty_surface=cached_surface ? surface : nullptr;options.beauty_document=doc.encode();options.beauty_displacement_mm=.1;options.beauty_falloff_mm=1;
     const auto mask=middle(mesh.its);for(size_t f=0;f<mask.size();++f)if(mask[f])options.selected_faces.push_back(f);
     const auto hash=model_artifact_sha256(source);
     const auto result=finish_model_artifact(source,target,options);INFO(result.error);REQUIRE(result.success);REQUIRE(result.moved_vertices>0);

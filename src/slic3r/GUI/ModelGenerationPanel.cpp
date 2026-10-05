@@ -9,6 +9,7 @@
 #include "AI/ModelGeneration/BeautyWorkbenchTransactionController.hpp"
 #include "AI/ModelGeneration/ModelImageDisplayCopy.hpp"
 #include "AI/ModelGeneration/ModelGenerationStatusText.hpp"
+#include "AI/ModelGeneration/WorkbenchStyle.hpp"
 #include "AISidecarClient.hpp"
 #include "GUI.hpp"
 #include "GUI_App.hpp"
@@ -18,6 +19,7 @@
 #include "GuiColor.hpp"
 #include "MsgDialog.hpp"
 #include "OpenGLManager.hpp"
+#include "Plater.hpp"
 #include "Widgets/Label.hpp"
 #include "libslic3r/Format/OBJ.hpp"
 #include "libslic3r/Geometry.hpp"
@@ -432,6 +434,7 @@ void ModelGenerationPanel::build_page()
 {
     auto* root = new wxBoxSizer(wxVERTICAL);
     auto* header = new wxPanel(this);
+    m_generation_header = header;
     header->SetBackgroundColour(wxColour(246, 249, 249));
     auto* header_sizer = new wxBoxSizer(wxVERTICAL);
     auto* title = new wxStaticText(header, wxID_ANY, _L("3D 生成"));
@@ -449,11 +452,14 @@ void ModelGenerationPanel::build_page()
     root->Add(header, 0, wxEXPAND);
 
     auto* content = new wxBoxSizer(wxHORIZONTAL);
+    m_generation_content = content;
     m_workflow_panel = build_workflow_panel(this);
     content->Add(m_workflow_panel, 0, wxEXPAND | wxALL, FromDIP(12));
 
-    content->Add(build_preview_panel(this), 1, wxEXPAND | wxTOP | wxRIGHT | wxBOTTOM, FromDIP(12));
+    m_result_panel = build_preview_panel(this);
+    content->Add(m_result_panel, 1, wxEXPAND | wxTOP | wxRIGHT | wxBOTTOM, FromDIP(12));
     root->Add(content, 1, wxEXPAND);
+    root->Add(build_post_generation_workbench(this), 1, wxEXPAND);
     SetSizer(root);
 }
 
@@ -1127,16 +1133,21 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     model_toolbar->Add(m_front_model_view, 0, wxLEFT, FromDIP(8));
     model_toolbar->Add(m_reset_model_view, 0, wxLEFT, FromDIP(6));
     model_card_sizer->Add(model_toolbar, 0, wxEXPAND | wxALL, FromDIP(10));
-    m_finishing_compare_model = new wxButton(model_card, wxID_ANY, _L("查看处理前"));
+    m_finishing_compare_model = workbench_button(model_card, _L("查看处理前"));
     m_finishing_compare_model->Hide();
     model_card_sizer->Add(m_finishing_compare_model, 0, wxLEFT | wxBOTTOM, FromDIP(10));
     m_model_preview = new ModelPreview3D(model_card);
     m_model_preview->SetMinSize(wxSize(FromDIP(420), FromDIP(280)));
     model_card_sizer->Add(m_model_preview, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
     model_card->SetSizer(model_card_sizer);
+    // Keep the result page and the post-generation workbench in the same
+    // native page. The workbench inspector is first so it becomes the left
+    // rail when the image comparison is hidden; the model viewport remains the
+    // central expanding item in both modes.
     comparison_sizer->Add(model_card, 5, wxEXPAND | wxRIGHT, FromDIP(10));
-    comparison_sizer->Add(m_preview_area, 4, wxEXPAND);
-    comparison_sizer->Add(build_model_finishing(comparison_panel), 0, wxEXPAND | wxLEFT, FromDIP(10));
+    comparison_sizer->Add(m_preview_area, 4, wxEXPAND | wxRIGHT, FromDIP(10));
+    comparison_sizer->Add(build_workbench_history(comparison_panel), 0, wxEXPAND);
+    comparison_sizer->Add(build_model_finishing(comparison_panel), 0, wxEXPAND);
     comparison_panel->SetSizer(comparison_sizer);
     auto* expand_images = m_expand_images = new wxToggleButton(panel, wxID_ANY, _L("展开图片"));
     header->Add(expand_images, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(8));
@@ -1149,10 +1160,19 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     });
     comparison_panel->Bind(wxEVT_SIZE, [this, comparison_panel, comparison_sizer, model_card](wxSizeEvent& event) {
         const bool stacked = !m_finishing_workbench && comparison_panel->GetClientSize().x < FromDIP(920);
+        if (m_finishing_workbench) refresh_post_generation_workbench();
         const int orientation = stacked ? wxVERTICAL : wxHORIZONTAL;
         if (comparison_sizer->GetOrientation() != orientation) {
             comparison_sizer->SetOrientation(orientation);
-            comparison_sizer->GetItem(model_card)->SetFlag(wxEXPAND | (stacked ? wxBOTTOM : wxRIGHT));
+            const std::array<wxWindow*, 4> layout_windows = {
+                static_cast<wxWindow*>(m_finishing_panel),
+                static_cast<wxWindow*>(model_card),
+                static_cast<wxWindow*>(m_preview_area),
+                static_cast<wxWindow*>(m_workbench_history_panel)};
+            for (wxWindow* item_window : layout_windows) {
+                if (auto* item = comparison_sizer->GetItem(item_window))
+                    item->SetFlag(wxEXPAND | (stacked ? wxBOTTOM : wxRIGHT));
+            }
             comparison_panel->Layout();
             if (auto* page = dynamic_cast<wxScrolledWindow*>(comparison_panel->GetParent())) page->FitInside();
         }
@@ -1440,14 +1460,13 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     m_model_preview->set_selection_commit_callback([this](const AI::SurfaceSelectionPersistence::SelectionState& before,
                                                           const AI::SurfaceSelectionPersistence::SelectionState& after) {
         if (!m_finishing_workbench || !m_beauty_transactions || m_beauty_transactions->processing()) return;
+        if (m_beauty_controls) m_beauty_controls->set_dirty(true);
         m_beauty_transactions->record({BeautyWorkbenchTransactionController::OperationKind::Selection,
             "manual Beauty selection",
             [this, before] { if (m_model_preview) m_model_preview->restore_selection_state(before); },
             [this, after] { if (m_model_preview) m_model_preview->restore_selection_state(after); }});
     });
     m_model_preview->set_selection_changed_callback([this](size_t selected_faces) {
-        if (m_beauty_controls && selected_faces > 0)
-            m_beauty_controls->set_dirty(true);
         if (m_finishing_workbench && (m_finishing_tool->GetSelection() == 1 || m_finishing_tool->GetSelection() == 4 || m_finishing_tool->GetSelection() == 5)) {
             if (m_busy || !m_finishing_candidate.empty()) selected_faces = m_finishing_options.selected_faces.size();
             m_finishing_selection_status->SetLabel(wxString::Format(_L("已选 %llu 个面 · 保护 %llu 个面"),
@@ -2817,6 +2836,7 @@ void ModelGenerationPanel::import_local_artifact(const boost::filesystem::path& 
         : color_selection == 3 ? AI::ImportColorMode::ManualMatch : AI::ImportColorMode::NativeMatch;
     const AI::ModelImportResult result = m_artifact_consumer.import_artifact(request);
     if (!result.imported()) {
+        m_open_smart_slicing_after_import = false;
         m_busy = false;
         if (result.outcome == AI::ModelImportOutcome::Cancelled) {
             m_status->SetLabel(_L("已取消导入。"));
@@ -2837,6 +2857,10 @@ void ModelGenerationPanel::import_local_artifact(const boost::filesystem::path& 
         return;
     }
 
+    if (m_open_smart_slicing_after_import) {
+        m_open_smart_slicing_after_import = false;
+        if (auto* plater = wxGetApp().plater()) plater->show_smart_slicing(true);
+    }
     const std::string job_id = m_job_id;
     const std::string library_job_id = !m_displayed_model_job_id.empty()
         ? m_displayed_model_job_id : job_id;
@@ -3553,7 +3577,8 @@ void ModelGenerationPanel::refresh_local_recolor_controls()
                        m_model_preview->region_editing_ready();
     if (!ready)
         m_local_recolor_toggle->SetValue(false);
-    const bool recolor_tool = m_finishing_workbench && m_finishing_tool->GetSelection() == 4;
+    const bool recolor_tool = m_finishing_workbench && m_workbench_editing &&
+                             m_finishing_tool->GetSelection() == 4;
     const bool editing = ready && recolor_tool && (m_finishing_candidate.empty() || m_finishing_workbench);
     if (editing) update_region_mode();
     m_local_recolor_toggle->SetValue(editing);
@@ -3583,7 +3608,7 @@ void ModelGenerationPanel::refresh_local_recolor_controls()
             ready && !m_busy && !m_model_quality.thin_local_face_indices.empty());
     }
     if (m_model_preview != nullptr)
-        m_model_preview->set_selection_enabled(editing || (m_finishing_workbench &&
+        m_model_preview->set_selection_enabled(editing || (m_finishing_workbench && m_workbench_editing &&
             (m_finishing_tool->GetSelection() == 1 || m_finishing_tool->GetSelection() == 5) &&
             !m_busy));
 
@@ -4405,6 +4430,10 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
                                                const std::string& color_intent_sha256,
                                                const std::string& job_id, const wxString& title)
 {
+    if (m_finishing_running || !m_finishing_candidate.empty()) {
+        m_status->SetLabel(_L("请先接受或放弃候选版本，再切换历史模型。"));
+        return;
+    }
     if (m_beauty_transactions && m_beauty_transactions->processing()) {
         m_status->SetLabel(_L("Beauty 正在处理或划分区域，完成或取消后才能切换模型。"));
         return;
@@ -4421,12 +4450,12 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
     // preview is still waiting for its paid-generation decision.
     boost::system::error_code ec;
     if (!boost::filesystem::is_regular_file(model_path, ec)) {
-        m_status->SetLabel(_L("历史模型文件已不存在。"));
+        m_status->SetLabel(_L("模型文件已不存在。"));
         return;
     }
 
     const wxString previous_model_stats = m_model_stats->GetLabel();
-    m_status->SetLabel(_L("正在加载历史模型：") + title);
+    m_status->SetLabel(_L("正在加载模型：") + title);
     m_model_stats->SetLabel(_L("正在解析模型..."));
     load_model_preview_async(model_path, palette,
         [=](size_t triangle_count, Vec3d dimensions, size_t color_count, double load_seconds) {
@@ -4440,6 +4469,8 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
     clear_unaccepted_beauty_candidates();
     m_beauty_session_source.reset();
     if (m_beauty_transactions) m_beauty_transactions->reset();
+    m_finishing_source.clear();
+    m_finishing_accepted_path.clear();
     m_finishing_options.selected_faces.clear();
     m_finishing_before = false;
     m_finishing_undo_path.clear(); m_finishing_redo_path.clear();
@@ -4447,14 +4478,17 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
     const wxImage ai_image = ai_image_path.empty() ? wxImage() : wxImage(ai_image_path.wstring());
     m_history_display_image = load_model_image_display_copy(ai_image_path);
     m_history_display_source = ai_image_path;
-    nlohmann::json metadata = read_json(library_metadata_path(job_id));
-    if (metadata.is_object()) {
+    nlohmann::json metadata = job_id.empty() ? nlohmann::json::object() : read_json(library_metadata_path(job_id));
+    if (!job_id.empty() && metadata.is_object()) {
         metadata["schema_version"] = std::max(4, metadata.value("schema_version", 0));
         metadata["triangle_count"] = triangle_count;
         metadata["color_count"] = color_count;
         metadata["load_seconds"] = load_seconds;
         metadata["dimensions"] = {dimensions.x(), dimensions.y(), dimensions.z()};
-        if (!write_json(library_metadata_path(job_id), metadata))
+        // Accepted finishing records can contain a large persisted partition.
+        // Loading a history entry must not expand or rewrite that record.
+        if (metadata.value("source", std::string()) != "local_finishing" &&
+            !write_json(library_metadata_path(job_id), metadata))
             BOOST_LOG_TRIVIAL(warning) << "Unable to update model load metrics for " << job_id;
     }
 
@@ -4582,6 +4616,17 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
     apply_preview_stage(true);
     m_model_preview->refresh();
     refresh_controls();
+    if (m_finishing_workbench) refresh_workbench_history();
+    if (job_id.empty()) {
+        m_status->SetLabel(_L("已加载本地模型：") + title);
+        m_result_summary->SetLabel(_L("本地模型可继续美颜或导入准备页；原文件保留。"));
+        m_model_preview_message->SetLabel(_L("本地模型已自动摆正，可继续美颜或导入准备页。"));
+        m_preview_message->SetLabel(_L("本地模型没有关联图片。"));
+        m_selected_image->SetLabel(_L("本地模型没有参考图"));
+        m_style_preview_placeholder = _L("本地模型没有关联设计图");
+        apply_preview_stage(true);
+        return;
+    }
     const uint64_t sequence = m_sequence;
     wxWeakRef<ModelGenerationPanel> weak(this);
     m_client.get_status(job_id,
@@ -4614,10 +4659,10 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
         });
     }, [this, previous_model_stats](std::string error) {
         m_model_stats->SetLabel(previous_model_stats);
-        m_status->SetLabel(_L("历史模型加载失败，保留当前模型与预览。"));
+        m_status->SetLabel(_L("模型加载失败，保留当前模型与预览。"));
         m_result_summary->SetLabel(from_u8(error));
         refresh_controls();
-    }, library_metadata_path(job_id));
+    }, job_id.empty() ? boost::filesystem::path() : library_metadata_path(job_id));
 }
 
 void ModelGenerationPanel::update_library_provider_tasks(
