@@ -11,3 +11,7 @@ release/server/* text eol=lf
 # resume after `call :label`. With LF endings that offset can land wrong and the
 # label lookup fails, so keep these CRLF whatever the platform.
 *.bat text eol=crlf
+
+# Keep original Figma exports byte-for-byte across checkouts.
+resources/images/figma-ux/* -text
+resources/images/figma_ux_0929_*.svg -text

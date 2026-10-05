@@ -1334,33 +1334,11 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
     if (!print_diff_set.empty() && print_diff_set.find("filament_map_mode") == print_diff_set.end())
     {
         FilamentMapMode map_mode = new_full_config.option<ConfigOptionEnum<FilamentMapMode>>("filament_map_mode", true)->value;
-        if (is_auto_filament_map_mode(map_mode)) {
-            if (print_diff_set.find("filament_map") != print_diff_set.end()) {
-                print_diff_set.erase("filament_map");
-                //full_config_diff.erase("filament_map");
-                ConfigOptionInts* old_opt = m_full_print_config.option<ConfigOptionInts>("filament_map", true);
-                ConfigOptionInts* new_opt = new_full_config.option<ConfigOptionInts>("filament_map", true);
-                old_opt->set(new_opt);
-                m_config.filament_map = *new_opt;
-            }
-            if (print_diff_set.find("filament_volume_map") != print_diff_set.end()) {
-                print_diff_set.erase("filament_volume_map");
-                //full_config_diff.erase("filament_volume_map");
-                ConfigOptionInts* old_opt = m_full_print_config.option<ConfigOptionInts>("filament_volume_map", true);
-                ConfigOptionInts* new_opt = new_full_config.option<ConfigOptionInts>("filament_volume_map", true);
-                old_opt->set(new_opt);
-                m_config.filament_volume_map = *new_opt;
-            }
-            if (print_diff_set.find("filament_nozzle_map") != print_diff_set.end()) {
-                print_diff_set.erase("filament_nozzle_map");
-                //full_config_diff.erase("filament_nozzle_map");
-                ConfigOptionInts* old_opt = m_full_print_config.option<ConfigOptionInts>("filament_nozzle_map", true);
-                ConfigOptionInts* new_opt = new_full_config.option<ConfigOptionInts>("filament_nozzle_map", true);
-                old_opt->set(new_opt);
-                m_config.filament_nozzle_map = *new_opt;
-            }
-        }
-        else {
+        // A restored auto assignment may differ from the one used by cached
+        // toolpaths. Keep those diffs so normal invalidation regenerates the
+        // tower and export together. The GUI's unchanged engine write-back
+        // already compares equal and does not need a special suppression.
+        if (!is_auto_filament_map_mode(map_mode)) {
             print_diff_set.erase("extruder_ams_count");
             if (map_mode == fmmManual) {
                 // filament_nozzle_map is an engine output, not a GUI input, in manual mode

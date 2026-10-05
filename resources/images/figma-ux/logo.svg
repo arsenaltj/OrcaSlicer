@@ -1,0 +1,35 @@
+<svg preserveAspectRatio="none" overflow="visible" style="display: block;" width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g id="logo2">
+<g id="icon">
+<g id="Rectangle 2">
+<rect width="48" height="48" rx="12" fill="url(#paint0_linear_0_23)"/>
+<rect width="48" height="48" rx="12" fill="url(#paint1_linear_0_23)"/>
+</g>
+<circle id="Ellipse 759" cx="20.5" cy="17.5" r="1.5" fill="white"/>
+<circle id="Ellipse 758" cx="26.7" cy="11.3" r="1.5" fill="white"/>
+<g id="Group 6">
+<path id="Vector 1" d="M20.4952 17.6443L10.1672 14.2817C10.0993 14.2596 10.0297 14.3102 10.0297 14.3815V32.544C10.0297 32.5842 10.0526 32.6208 10.0886 32.6384L20.4167 37.6793C20.4864 37.7133 20.5677 37.6626 20.5677 37.585V17.7442C20.5677 17.6987 20.5385 17.6584 20.4952 17.6443Z" stroke="white" stroke-width="1.6"/>
+<path id="Vector 4" d="M20.6523 17.6519L37.8309 14.2616C37.8958 14.2488 37.9562 14.2985 37.9562 14.3646V33.2627C37.9562 33.3108 37.9235 33.3528 37.8769 33.3645L20.6983 37.6903C20.632 37.707 20.5677 37.6569 20.5677 37.5885L20.5676 17.7549C20.5676 17.7048 20.6031 17.6616 20.6523 17.6519Z" stroke="white" stroke-width="1.6"/>
+<path id="Vector 3" d="M26.8935 11.0044L10.4048 14.0374C10.2979 14.057 10.2877 14.2064 10.3911 14.2404C14.3625 15.5463 16.4692 16.2492 20.5566 17.5925C20.5738 17.5982 20.5925 17.5994 20.6102 17.5959L37.5721 14.2262C37.6803 14.2048 37.6864 14.0523 37.5803 14.0223L26.9411 11.0066C26.9256 11.0022 26.9093 11.0015 26.8935 11.0044Z" stroke="white" stroke-width="1.6"/>
+</g>
+</g>
+<path id="Vector 606" d="M26.7 11.5V28.5M26.7 28.5L10 32.5M26.7 28.5L38 33" stroke="white" stroke-opacity="0.65" stroke-width="1.6"/>
+<circle id="Ellipse 760" cx="26.6" cy="28.5" r="1.5" fill="#FFE4AB"/>
+<circle id="Ellipse 758_2" cx="10.1" cy="14.3999" r="1.5" fill="white"/>
+<circle id="Ellipse 759_2" cx="37.8" cy="14.3" r="1.5" fill="white"/>
+<circle id="Ellipse 760_2" cx="20.5" cy="37.5" r="1.5" fill="white"/>
+<circle id="Ellipse 761" cx="10.1" cy="32.5" r="1.5" fill="white"/>
+<circle id="Ellipse 762" cx="37.8" cy="33.3" r="1.5" fill="white"/>
+</g>
+<defs>
+<linearGradient id="paint0_linear_0_23" x1="5.7931" y1="1.65517" x2="43.8621" y2="52.1379" gradientUnits="userSpaceOnUse">
+<stop stop-color="#FFD13D"/>
+<stop offset="0.368373" stop-color="#FFB310"/>
+<stop offset="0.819621" stop-color="#FF9A08"/>
+</linearGradient>
+<linearGradient id="paint1_linear_0_23" x1="23.9273" y1="-10" x2="20" y2="26.5" gradientUnits="userSpaceOnUse">
+<stop stop-color="#FFD13D"/>
+<stop offset="1" stop-color="#FFB310"/>
+</linearGradient>
+</defs>
+</svg>

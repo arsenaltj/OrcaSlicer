@@ -318,6 +318,8 @@ function SwitchDarkMode( DarkCssPath )
 
 function ExecuteDarkMode( DarkCssPath )
 {
+	// The new guide surface owns its theme; do not append a late global override.
+	if (document.documentElement.dataset.guideTheme === 'figma') return;
     let nMode=0;
 	let bDarkMode=navigator.userAgent.match(  RegExp('dark','i') );	
 	if( bDarkMode!=null )

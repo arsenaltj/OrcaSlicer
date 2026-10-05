@@ -1,36 +1,14 @@
-@keyframes rotate {
-    from {
-        transform: rotate(0deg);
-    }
-    to {
-        transform: rotate(360deg);
-    }
-}
-
-body
-{
-	display:flex;
-	align-content: center;
-	justify-content: center;
-}
-
-#LoadBlock
-{
-	display:flex;
-	align-items: center;
-	justify-content: center;
-}
-
-#LoadingSvg
-{
-	animation: rotate 1.2s infinite linear;
-	margin-right: 8px;
-	height: 120%;
-}
-
-#LoadTip
-{
-	font-size: 15px;
-	font-weight: 700;
-	color: #009688;
+/* Buffering surface from 17:2063; real branding replaces the design placeholder. */
+html, body { background: #313136; }
+body { box-sizing: border-box; align-items: center; justify-content: center; padding: 32px 24px; overflow: auto; }
+#LoadBlock { display: flex; flex-direction: column; align-items: center; gap: 28px; max-width: 100%; text-align: center; }
+#SlicerLogo { width: 180px; height: 180px; border-radius: 24px; opacity: .4; }
+#ProductName { font-size: 44px; line-height: 1.2; font-weight: 600; color: #fff; margin-top: 20px; }
+#LoadTip { max-width: 560px; font-size: 20px; line-height: 1.5; font-weight: 400; color: rgba(255,255,255,.55); }
+#CancelLoadBtn { min-width: 200px; min-height: 46px; border-radius: 12px; padding: 8px 16px; font-size: 16px; cursor: pointer; }
+@media (max-height: 560px) {
+    body { padding: 24px; }
+    #LoadBlock { gap: 20px; }
+    #SlicerLogo { width: 120px; height: 120px; }
+    #ProductName { font-size: 32px; margin-top: 0; }
 }

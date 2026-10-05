@@ -2,6 +2,7 @@
 
 #include "slic3r/AI/SmartSlicing/Application/CandidatePlanningWorkflow.hpp"
 #include "slic3r/AI/SmartSlicing/Application/ApplyWorkflow.hpp"
+#include "slic3r/AI/SmartSlicing/Application/TrialSlicingWorkflow.hpp"
 #include "slic3r/AI/SmartSlicing/Application/SmartSlicingCoordinator.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaOfficialSliceGateway.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaTrialSliceExecutor.hpp"
@@ -64,12 +65,13 @@ class WorkflowWorkspace final : public IOrcaWorkspace
 public:
     WorkspaceContext context = printable_context();
     bool revision_unavailable{false};
+    std::function<WorkspaceContext()> capture_override;
 
     WorkspaceRevision current_revision() const override {
         if (revision_unavailable) throw std::runtime_error("revision unavailable");
         return context.revision;
     }
-    WorkspaceContext capture_context() const override { return context; }
+    WorkspaceContext capture_context() const override { return capture_override ? capture_override() : context; }
 };
 
 class FakeTrialSliceExecutor final : public ITrialSliceExecutor
@@ -141,14 +143,16 @@ TEST_CASE("candidate planning binds drafts to one workspace revision and caps pr
     proposals.push_back(proposal("z", context.revision));
     proposals.push_back(proposal("a", context.revision));
     proposals.push_back(proposal("extra", context.revision));
+    proposals.push_back(proposal("zz-overflow", context.revision));
     proposals.push_back(proposal("stale", WorkspaceRevision{9, 9, 9, "old"}));
 
     const std::vector<SliceCandidate> planned = CandidatePlanningWorkflow().plan(context, proposals);
 
-    REQUIRE(planned.size() == 3);
+    REQUIRE(planned.size() == 4);
     CHECK(planned[0].id == "baseline");
     CHECK(planned[1].id == "a");
     CHECK(planned[2].id == "extra");
+    CHECK(planned[3].id == "z");
     for (const SliceCandidate& candidate : planned) {
         CHECK(candidate.base_revision == context.revision);
         CHECK(candidate.status == CandidateStatus::Draft);
@@ -287,7 +291,7 @@ TEST_CASE("ready candidate workflow projects into optimization and apply stages"
 
     CHECK(view.summary_key == "candidates_ready");
     CHECK(view.stages[2].status == Slic3r::GUI::SmartSlicingStageStatus::Complete);
-    CHECK(view.stages[3].status == Slic3r::GUI::SmartSlicingStageStatus::Active);
+    CHECK(view.stages[3].status == Slic3r::GUI::SmartSlicingStageStatus::Waiting);
     REQUIRE(view.candidates.size() == 1);
     CHECK(view.candidates.front().recommended);
     CHECK(view.candidates.front().selected);
@@ -545,6 +549,13 @@ TEST_CASE("Orca trial slicing owns model config print and gcode copies", "[AI][S
     candidate.parameters.entries.push_back({ConfigScope::Plate, PresetOwner::Process, 7, "layer_height",
                                             0.25, 0.20, "improve_surface_detail"});
 
+    Slic3r::GUI::OrcaTrialSliceInput prepared;
+    prepared.model = formal_model; prepared.config = formal_config;
+    prepared.plate_id = 7; prepared.plate_name = "Trial";
+    executor.prepare_session_input(std::move(prepared), {candidate});
+    auto altered = candidate;
+    altered.parameters.entries.front().new_value = 0.22;
+    CHECK(executor.execute_trial_slice(altered).diagnostic_code == "parameter_trial_input_not_prepared");
     const TrialSliceResult result = executor.execute_trial_slice(candidate);
 
     INFO("trial diagnostic: " << result.diagnostic_code);
@@ -647,7 +658,19 @@ TEST_CASE("Native trial slicing checks device height for a prepared 120 mm model
     if (device_height < 120) {
         CHECK(result.status == TrialSliceStatus::Failed);
         CHECK(result.diagnostic_code == "trial_validation_failed");
+        CHECK_FALSE(result.diagnostic_message.empty());
+        CHECK(result.diagnostic_message.find(object->name) != std::string::npos);
         CHECK_FALSE(result.metrics);
+        auto failed = candidate;
+        CHECK_FALSE(TrialSlicingWorkflow::accept_result(failed, result));
+        WorkflowSnapshot snapshot;
+        snapshot.state = WorkflowState::Failed;
+        snapshot.detail = "baseline_trial_failed";
+        snapshot.candidates.push_back(failed);
+        const auto view = Slic3r::GUI::SmartSlicingViewModel::from_snapshot(snapshot);
+        REQUIRE(view.candidates.size() == 1);
+        CHECK(view.candidates.front().diagnostic_message == result.diagnostic_message);
+        CHECK_FALSE(view.can_apply);
     } else {
         REQUIRE(result.status == TrialSliceStatus::Succeeded);
         REQUIRE(result.metrics);
@@ -711,4 +734,332 @@ TEST_CASE("Orca trial slicing enforces execution memory timeout and disk budgets
     const TrialSliceResult disk_result = disk_limited.execute_trial_slice(candidate);
     CHECK(disk_result.status == TrialSliceStatus::Failed);
     CHECK(disk_result.diagnostic_code == "workflow_disk_budget_exceeded");
+}
+
+TEST_CASE("failed trial reports expire after a model config or plate change", "[AI][SmartSlicing][Workflow]")
+{
+    const int changed_component = GENERATE(0, 1, 2);
+    WorkflowWorkspace workspace;
+    FakeTrialSliceExecutor executor;
+    executor.result_for = [](const SliceCandidate& candidate, size_t) {
+        TrialSliceResult result;
+        result.candidate_id = candidate.id;
+        result.base_revision = candidate.base_revision;
+        result.status = TrialSliceStatus::Failed;
+        result.diagnostic_code = "native_trial_failed";
+        return result;
+    };
+    SmartSlicingCoordinator coordinator(workspace, executor);
+    coordinator.start();
+    CHECK_FALSE(coordinator.plan_and_slice_candidates());
+    REQUIRE(coordinator.snapshot().state == WorkflowState::Failed);
+    REQUIRE(coordinator.snapshot().report);
+    REQUIRE(coordinator.snapshot().context);
+    const WorkspaceRevision original = coordinator.snapshot().context->revision;
+    const auto failed_view = Slic3r::GUI::SmartSlicingViewModel::from_snapshot(coordinator.snapshot());
+    CHECK(failed_view.has_report);
+    CHECK(failed_view.needs_polling);
+    CHECK_FALSE(failed_view.can_apply);
+    CHECK_FALSE(coordinator.refresh_revision());
+
+    if (changed_component == 0) ++workspace.context.revision.model_revision;
+    if (changed_component == 1) ++workspace.context.revision.config_revision;
+    if (changed_component == 2) ++workspace.context.revision.plate_revision;
+    workspace.context.revision.fingerprint = "revision-b";
+    workspace.revision_unavailable = true;
+    CHECK_FALSE(coordinator.refresh_revision());
+    CHECK(coordinator.snapshot().state == WorkflowState::Failed);
+    CHECK(coordinator.snapshot().context->revision == original);
+    workspace.revision_unavailable = false;
+    REQUIRE(coordinator.refresh_revision());
+    CHECK(coordinator.snapshot().state == WorkflowState::Stale);
+    const auto stale_view = Slic3r::GUI::SmartSlicingViewModel::from_snapshot(coordinator.snapshot());
+    CHECK_FALSE(stale_view.has_report);
+    CHECK(stale_view.issues.empty());
+    CHECK(stale_view.candidates.empty());
+    CHECK_FALSE(stale_view.can_apply);
+    CHECK(stale_view.can_start);
+    CHECK_FALSE(coordinator.select_candidate("baseline"));
+    CHECK(executor.calls.size() == 1);
+
+    executor.result_for = {};
+    coordinator.start();
+    REQUIRE(coordinator.snapshot().context);
+    CHECK(coordinator.snapshot().context->revision == workspace.context.revision);
+    CHECK(coordinator.plan_and_slice_candidates());
+    CHECK(coordinator.snapshot().state == WorkflowState::ReadyToApply);
+    CHECK(executor.calls.size() == 2);
+}
+
+TEST_CASE("Completed slicing refreshes native issues and Undo restores the original preflight", "[AI][SmartSlicing][Apply]")
+{
+    WorkflowWorkspace workspace;
+    workspace.context.native_validation_available = false;
+    const auto baseline = workspace.context;
+    FakeTrialSliceExecutor trial;
+    FakeOfficialSliceGateway official;
+    official.on_commit = [&] { workspace.context.revision.config_revision++; };
+    SmartSlicingCoordinator coordinator(workspace, trial, official);
+    coordinator.start();
+    REQUIRE(coordinator.snapshot().report->issues.front().code == IssueCode::NativeValidationUnavailable);
+    REQUIRE(coordinator.plan_and_slice_candidates());
+    REQUIRE(coordinator.apply_selected_candidate());
+
+    workspace.context.native_validation_available = true;
+    const auto diagnostic = GENERATE(0, 1, 2);
+    if (diagnostic == 1) workspace.context.validation_warnings.push_back("current native warning");
+    if (diagnostic == 2) workspace.context.validation_errors.push_back("current native error");
+    official.polled = {OfficialSlicePhase::Completed, {}, true, true};
+    REQUIRE(coordinator.poll_official_slice());
+    REQUIRE(coordinator.snapshot().state == WorkflowState::Completed);
+    CHECK(coordinator.snapshot().report->revision == workspace.context.revision);
+    CHECK(coordinator.snapshot().context->revision == baseline.revision);
+    const auto view = Slic3r::GUI::SmartSlicingViewModel::from_snapshot(coordinator.snapshot());
+    if (diagnostic == 0) {
+        CHECK(view.issues.empty());
+    } else {
+        REQUIRE(view.issues.size() == 1);
+        CHECK(view.issues.front().first == (diagnostic == 1 ? "configuration_validation_warning" : "configuration_validation_error"));
+        CHECK(view.issues.front().second == (diagnostic == 1 ? "current native warning" : "current native error"));
+    }
+    CHECK_FALSE(coordinator.refresh_revision());
+    workspace.context = baseline; // Native Undo restores the captured project.
+    REQUIRE(coordinator.undo_applied_candidate());
+    REQUIRE(coordinator.snapshot().report->issues.size() == 1);
+    CHECK(coordinator.snapshot().report->revision == baseline.revision);
+    CHECK(coordinator.snapshot().report->issues.front().code == IssueCode::NativeValidationUnavailable);
+}
+
+TEST_CASE("Completed native reports wait for a usable capture of the applied revision", "[AI][SmartSlicing][Apply]")
+{
+    WorkflowWorkspace workspace;
+    workspace.context.native_validation_available = false;
+    const auto baseline = workspace.context;
+    FakeTrialSliceExecutor trial;
+    FakeOfficialSliceGateway official;
+    official.on_commit = [&] { workspace.context.revision.config_revision++; };
+    SmartSlicingCoordinator coordinator(workspace, trial, official);
+    coordinator.start();
+    REQUIRE(coordinator.plan_and_slice_candidates());
+    REQUIRE(coordinator.apply_selected_candidate());
+    workspace.context.native_validation_available = true;
+    const auto failure = GENERATE(0, 1, 2, 3, 4, 5);
+    workspace.capture_override = [&]() -> WorkspaceContext {
+        if (failure == 4) throw std::runtime_error("temporary capture failure");
+        auto current = workspace.context;
+        if (failure == 0) current.native_validation_available = false;
+        if (failure == 1) current.revision.model_revision++;
+        if (failure == 2) current.revision.config_revision++;
+        if (failure == 3) current.revision.plate_revision++;
+        if (failure == 5) workspace.revision_unavailable = true;
+        return current;
+    };
+    official.polled = {OfficialSlicePhase::Completed, {}, true, true};
+    REQUIRE(coordinator.poll_official_slice());
+    REQUIRE(coordinator.snapshot().report->issues.size() == 1);
+    CHECK(coordinator.snapshot().report->revision == baseline.revision);
+    CHECK(coordinator.snapshot().report->issues.front().code == IssueCode::NativeValidationUnavailable);
+    workspace.capture_override = {};
+    workspace.revision_unavailable = false;
+    REQUIRE(coordinator.refresh_revision());
+    CHECK(coordinator.snapshot().report->revision == workspace.context.revision);
+    CHECK(coordinator.snapshot().report->issues.empty());
+    CHECK_FALSE(coordinator.refresh_revision());
+}
+
+TEST_CASE("Failed formal slicing keeps its original preflight report", "[AI][SmartSlicing][Apply]")
+{
+    WorkflowWorkspace workspace;
+    workspace.context.native_validation_available = false;
+    const auto baseline = workspace.context;
+    FakeTrialSliceExecutor trial;
+    FakeOfficialSliceGateway official;
+    SmartSlicingCoordinator coordinator(workspace, trial, official);
+    coordinator.start();
+    REQUIRE(coordinator.plan_and_slice_candidates());
+    REQUIRE(coordinator.apply_selected_candidate());
+    workspace.context.native_validation_available = true;
+    workspace.capture_override = []() -> WorkspaceContext { FAIL("Failed slicing must not publish a completed report"); return {}; };
+    official.polled = {OfficialSlicePhase::Failed, "native slice failed", true, true};
+    REQUIRE(coordinator.poll_official_slice());
+    CHECK(coordinator.snapshot().state == WorkflowState::ApplyFailed);
+    CHECK(coordinator.snapshot().report->revision == baseline.revision);
+    CHECK(coordinator.snapshot().report->issues.front().code == IssueCode::NativeValidationUnavailable);
+    CHECK_FALSE(coordinator.refresh_revision());
+}
+
+TEST_CASE("Immediate native completion refreshes its report without changing trial context", "[AI][SmartSlicing][Apply]")
+{
+    WorkflowWorkspace workspace;
+    workspace.context.native_validation_available = false;
+    FakeTrialSliceExecutor trial;
+    FakeOfficialSliceGateway official;
+    official.committed = {OfficialSlicePhase::Completed, {}, false, false};
+    official.on_commit = [&] { workspace.context.native_validation_available = true; };
+    SmartSlicingCoordinator coordinator(workspace, trial, official);
+    coordinator.start();
+    REQUIRE(coordinator.plan_and_slice_candidates());
+    REQUIRE(coordinator.apply_selected_candidate());
+    CHECK(coordinator.snapshot().state == WorkflowState::Completed);
+    CHECK(coordinator.snapshot().report->issues.empty());
+    CHECK_FALSE(coordinator.snapshot().context->native_validation_available);
+}
+
+TEST_CASE("Manual slicing refreshes native validation without applying the selected suggestion", "[AI][SmartSlicing][Apply]")
+{
+    WorkflowWorkspace workspace;
+    workspace.context.native_validation_available = false;
+    FakeTrialSliceExecutor trial;
+    FakeOfficialSliceGateway official;
+    SmartSlicingCoordinator coordinator(workspace, trial, official);
+    coordinator.start();
+    REQUIRE(coordinator.plan_and_slice_candidates());
+    const auto before = coordinator.snapshot();
+    REQUIRE(before.state == WorkflowState::ReadyToApply);
+    REQUIRE(before.report->issues.front().code == IssueCode::NativeValidationUnavailable);
+    workspace.context.native_validation_available = true;
+    const auto diagnostic = GENERATE(0, 1, 2);
+    if (diagnostic == 1) workspace.context.validation_warnings.push_back("manual native warning");
+    if (diagnostic == 2) workspace.context.validation_errors.push_back("manual native error");
+    REQUIRE(coordinator.refresh_revision());
+    const auto& after = coordinator.snapshot();
+    CHECK(after.state == before.state);
+    CHECK(after.detail == before.detail);
+    CHECK(after.selected_candidate_id == before.selected_candidate_id);
+    CHECK(after.candidates.size() == before.candidates.size());
+    CHECK_FALSE(after.can_undo_apply);
+    CHECK_FALSE(after.context->native_validation_available);
+    CHECK(after.context->revision == before.context->revision);
+    CHECK(after.report->revision == workspace.context.revision);
+    if (diagnostic == 0) {
+        CHECK(after.report->issues.empty());
+    } else {
+        REQUIRE(after.report->issues.size() == 1);
+        CHECK(after.report->issues.front().code == (diagnostic == 1 ? IssueCode::ConfigurationValidationWarning : IssueCode::ConfigurationValidationError));
+        CHECK(after.report->issues.front().evidence == (diagnostic == 1 ? "manual native warning" : "manual native error"));
+    }
+    CHECK_FALSE(coordinator.refresh_revision());
+}
+
+TEST_CASE("Manual native reports keep the preflight until the same revision is available", "[AI][SmartSlicing][Apply]")
+{
+    WorkflowWorkspace workspace;
+    workspace.context.native_validation_available = false;
+    FakeTrialSliceExecutor trial;
+    FakeOfficialSliceGateway official;
+    SmartSlicingCoordinator coordinator(workspace, trial, official);
+    coordinator.start();
+    REQUIRE(coordinator.plan_and_slice_candidates());
+    const auto before = coordinator.snapshot();
+    workspace.context.native_validation_available = true;
+    const auto failure = GENERATE(0, 1, 2, 3, 4, 5);
+    workspace.capture_override = [&]() {
+        if (failure == 4) throw std::runtime_error("manual capture unavailable");
+        auto current = workspace.context;
+        if (failure == 0) current.native_validation_available = false;
+        if (failure == 1) current.revision.model_revision++;
+        if (failure == 2) current.revision.config_revision++;
+        if (failure == 3) current.revision.plate_revision++;
+        if (failure == 5) workspace.revision_unavailable = true;
+        return current;
+    };
+    CHECK_FALSE(coordinator.refresh_revision());
+    CHECK(coordinator.snapshot().state == before.state);
+    CHECK(coordinator.snapshot().selected_candidate_id == before.selected_candidate_id);
+    REQUIRE(coordinator.snapshot().report->issues.size() == before.report->issues.size());
+    CHECK(coordinator.snapshot().report->issues.front().code == IssueCode::NativeValidationUnavailable);
+    workspace.capture_override = {};
+    workspace.revision_unavailable = false;
+    REQUIRE(coordinator.refresh_revision());
+    CHECK(coordinator.snapshot().report->issues.empty());
+    CHECK(coordinator.snapshot().selected_candidate_id == before.selected_candidate_id);
+}
+
+TEST_CASE("Trial failure reasons belong to the matching candidate and clear on success", "[AI][SmartSlicing][Workflow]")
+{
+    const int outcome = GENERATE(0, 1, 2, 3, 4);
+    auto candidate = proposal("candidate", WorkspaceRevision{1, 2, 3, "current"});
+    candidate.diagnostic_message = "previous native failure";
+    TrialSliceResult result;
+    result.candidate_id = candidate.id;
+    result.base_revision = candidate.base_revision;
+    result.diagnostic_code = "trial_validation_failed";
+    result.diagnostic_message = "current native failure";
+    if (outcome == 1) result.candidate_id = "other-candidate";
+    if (outcome == 2) result.base_revision.fingerprint = "other-revision";
+    if (outcome == 3) result.status = TrialSliceStatus::Canceled;
+    if (outcome == 4) {
+        result.status = TrialSliceStatus::Succeeded;
+        result.metrics = SlicingMetrics{};
+        result.diagnostic_code.clear();
+    }
+    CHECK(TrialSlicingWorkflow::accept_result(candidate, result) == (outcome == 4));
+    CHECK(candidate.diagnostic_message == (outcome == 0 ? "current native failure" : ""));
+    if (outcome == 1 || outcome == 2)
+        CHECK(candidate.diagnostic_code == "trial_result_mismatch");
+}
+
+TEST_CASE("A failed baseline exposes the native reason and a fresh successful check clears it", "[AI][SmartSlicing][Workflow]")
+{
+    WorkflowWorkspace workspace;
+    FakeTrialSliceExecutor executor;
+    executor.result_for = [](const SliceCandidate& candidate, size_t) {
+        TrialSliceResult result;
+        result.candidate_id = candidate.id;
+        result.base_revision = candidate.base_revision;
+        result.diagnostic_code = "trial_validation_failed";
+        result.diagnostic_message = "Prime Tower is partially outside the printable area.";
+        return result;
+    };
+    SmartSlicingCoordinator coordinator(workspace, executor);
+    coordinator.start();
+    CHECK_FALSE(coordinator.plan_and_slice_candidates());
+    const auto failed = Slic3r::GUI::SmartSlicingViewModel::from_snapshot(coordinator.snapshot());
+    REQUIRE(failed.candidates.size() == 1);
+    CHECK(failed.candidates.front().diagnostic_message == "Prime Tower is partially outside the printable area.");
+    CHECK(failed.summary_key == "baseline_trial_failed");
+    CHECK_FALSE(failed.can_apply);
+    executor.result_for = {};
+    coordinator.start();
+    REQUIRE(coordinator.plan_and_slice_candidates());
+    const auto recovered = Slic3r::GUI::SmartSlicingViewModel::from_snapshot(coordinator.snapshot());
+    REQUIRE(recovered.candidates.size() == 1);
+    CHECK(recovered.candidates.front().diagnostic_message.empty());
+    CHECK(recovered.summary_key == "candidates_ready");
+    CHECK(recovered.can_apply);
+}
+
+TEST_CASE("Canceling an alternative retry does not present its previous native error as the current reason", "[AI][SmartSlicing][Workflow]")
+{
+    WorkflowWorkspace workspace;
+    FakeTrialSliceExecutor executor;
+    executor.result_for = [](const SliceCandidate& candidate, size_t call) {
+        TrialSliceResult result;
+        result.candidate_id = candidate.id;
+        result.base_revision = candidate.base_revision;
+        if (call == 0) {
+            result.status = TrialSliceStatus::Succeeded;
+            result.metrics = SlicingMetrics{};
+            result.metrics->estimated_time_seconds = 100.0;
+        } else if (call == 1) {
+            result.diagnostic_code = "trial_validation_failed";
+            result.diagnostic_message = "Previous native failure before retry.";
+        } else {
+            result.status = TrialSliceStatus::Canceled;
+        }
+        return result;
+    };
+    SmartSlicingCoordinator coordinator(workspace, executor);
+    coordinator.start();
+    REQUIRE(coordinator.plan_and_slice_candidates({proposal("alternative", workspace.context.revision)}));
+    REQUIRE(coordinator.snapshot().candidates.size() == 2);
+    REQUIRE_FALSE(coordinator.snapshot().candidates[1].diagnostic_message.empty());
+    CHECK_FALSE(coordinator.retry_candidate("alternative"));
+    const auto view = Slic3r::GUI::SmartSlicingViewModel::from_snapshot(coordinator.snapshot());
+    REQUIRE(view.candidates.size() == 2);
+    CHECK(view.summary_key == "candidates_ready");
+    CHECK(view.candidates[1].diagnostic_code == "retry_canceled");
+    CHECK(view.candidates[1].diagnostic_message.empty());
+    CHECK(view.candidates[0].can_select);
+    CHECK(view.can_apply);
 }

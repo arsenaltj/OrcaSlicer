@@ -24,6 +24,7 @@ struct SliceCandidate
     std::string diagnostic_code;
     CandidateStatus status{CandidateStatus::Draft};
     std::optional<SlicingMetrics> metrics;
+    std::string diagnostic_message;
 };
 
 } // namespace Slic3r::AI::SmartSlicing

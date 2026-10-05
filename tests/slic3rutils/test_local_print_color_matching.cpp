@@ -119,6 +119,96 @@ TEST_CASE("Native mixed beauty assignments are not silently flattened by physica
     CHECK(input.identity.regions.empty());
 }
 
+TEST_CASE("A tiny saved appearance edit survives matching refinement and persistence", "[LocalPrintColorMatching][BeautyHandoff]")
+{
+    const auto mesh=its_make_cube(10,10,10);
+    auto input=matching_input(2);
+    input.identity.geometry_id=AI::SurfaceSelectionPersistence::geometry_fingerprint(mesh);
+    input.faces.assign(mesh.indices.size(),{{1.f,1.f,1.f},100});
+    input.faces[0]={{.95f,.95f,1.f},.001};
+    input.identity.face_count=input.faces.size();
+    AI::BeautyPuzzle saved;
+    saved.geometry_id=input.identity.geometry_id;
+    saved.face_piece.assign(input.faces.size(),1);saved.face_piece[0]=2;saved.next_id=3;
+    saved.colors[2]={0.f,0.f,1.f,1.f};
+    GUI::BeautyPrintColorHandoff::seed_appearance(saved,input.identity);
+    REQUIRE(input.identity.regions.size()==1);
+    CHECK_FALSE(input.identity.regions[0].locked_physical_slot.has_value());
+    const auto matched=GUI::LocalPrintColorBoundaryRefinement::compute_guarded(input,mesh);
+    REQUIRE(matched.ok());
+    CHECK(matched.result.targets.at(matched.result.face_targets[0]).physical_slot==4);
+    CHECK(matched.result.targets.at(matched.result.face_targets[1]).physical_slot==1);
+    auto accepted=matched.result;accepted.confirmed=true;
+    AI::LocalPrintColorResult restored;std::string error;
+    REQUIRE(GUI::LocalPrintColorState::decode(GUI::LocalPrintColorState::encode(accepted),
+        accepted.source_sha256,accepted.geometry_id,accepted.material_fingerprint,
+        accepted.process_fingerprint,restored,error,accepted.algorithm_version));
+    CHECK(restored.user_overrides==accepted.user_overrides);
+    CHECK(restored.face_targets==accepted.face_targets);
+    CHECK_FALSE(restored.regions[0].locked_physical_slot.has_value());
+}
+
+TEST_CASE("Appearance handoff rejects stale or conflicting edits without changing the draft", "[LocalPrintColorMatching][BeautyHandoff]")
+{
+    auto input=matching_input();
+    AI::BeautyPuzzle saved;saved.geometry_id=input.identity.geometry_id;
+    saved.face_piece.assign(input.faces.size(),1);saved.colors[1]={0.f,0.f,1.f,1.f};
+    SECTION("geometry") {saved.geometry_id="other";}
+    SECTION("face count") {saved.face_piece.pop_back();}
+    SECTION("material history") {saved.palette=input.identity.physical_channels;}
+    SECTION("existing edits") {input.identity.user_overrides={{0,{1.f,0.f,0.f}}};}
+    SECTION("invalid color") {saved.colors[1][0]=2.f;}
+    const auto before=input.identity.user_overrides;
+    REQUIRE_THROWS(GUI::BeautyPrintColorHandoff::seed_appearance(saved,input.identity));
+    CHECK(input.identity.regions.empty());
+    CHECK(input.identity.user_overrides==before);
+}
+
+TEST_CASE("Whole palette assignment cannot trade away an available explicit appearance color", "[LocalPrintColorMatching][BeautyHandoff]")
+{
+    auto input=matching_input(2);
+    input.identity.physical_channels={{0,"#668CB6","PLA",true},{1,"#FFFFFF","PLA",true}};
+    input.faces={{{.4f,.549f,.714f},.001},{{0.f,0.f,0.f},100}};
+    input.identity.face_count=2;
+    const auto blue=Matching::hex_rgb("#668CB6");
+    input.identity.user_overrides={{0,blue}};
+    SECTION("matching prioritizes the tiny explicit edit over total surface error") {}
+    SECTION("equal RGB slots do not infer a physical lock") {
+        input.identity.physical_channels[0].compatible=false;
+        input.identity.physical_channels.push_back({2,"#668CB6","PLA",true});
+    }
+    SECTION("unavailable exact color remains a best-effort match") {
+        input.identity.physical_channels[0].display_color="#668CB7";
+    }
+    const auto matched=Matching::compute(input);REQUIRE(matched.ok());
+    const auto& target=matched.result.targets.at(matched.result.face_targets[0]);
+    REQUIRE(target.physical_slot.has_value());
+    if(input.identity.physical_channels[0].display_color=="#668CB6") CHECK(target.output==blue);
+    CHECK(matched.result.regions.empty());
+}
+
+TEST_CASE("Older confirmed direct color records retain their explicit algorithm identity", "[LocalPrintColorMatching][BeautyHandoff]")
+{
+    auto matched=Matching::compute(matching_input());REQUIRE(matched.ok());
+    matched.result.algorithm_version="region-direct-v5";matched.result.confirmed=true;
+    AI::LocalPrintColorResult restored;std::string error;
+    REQUIRE(GUI::LocalPrintColorState::decode(GUI::LocalPrintColorState::encode(matched.result),
+        matched.result.source_sha256,matched.result.geometry_id,matched.result.material_fingerprint,
+        matched.result.process_fingerprint,restored,error,"region-direct-v5"));
+    CHECK(restored.algorithm_version=="region-direct-v5");
+    CHECK(restored.face_targets==matched.result.face_targets);
+}
+
+TEST_CASE("Too few print colors reports a conflict instead of dropping saved appearance edits", "[LocalPrintColorMatching][BeautyHandoff]")
+{
+    auto input=matching_input(1);
+    AI::BeautyPuzzle saved;saved.geometry_id=input.identity.geometry_id;
+    saved.face_piece={1,2,0,0,0,0};
+    saved.colors[1]={0.f,0.f,1.f,1.f};saved.colors[2]={1.f,0.f,0.f,1.f};
+    GUI::BeautyPrintColorHandoff::seed_appearance(saved,input.identity);
+    CHECK_FALSE(Matching::compute(input).ok());
+}
+
 TEST_CASE("unsaved beauty draft completes the cold color matching path and reloads its selection", "[LocalPrintColorMatching][ColdPath]")
 {
     // This deliberately starts with an empty LocalPrintColorResult: a newly

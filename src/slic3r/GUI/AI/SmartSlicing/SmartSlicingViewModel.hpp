@@ -48,6 +48,7 @@ struct SmartSlicingCandidateView
     bool failed{false};
     bool can_retry{false};
     bool can_select{false};
+    std::string diagnostic_message;
 };
 
 struct SmartSlicingViewModel

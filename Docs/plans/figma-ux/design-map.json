@@ -1,0 +1,2618 @@
+{
+  "schema_version": 2,
+  "plan_version": "v4.1-20260929-chat-review",
+  "purpose": "新稿实施索引，不是运行时路由/配置；UX-00～12稳定，N0～N9仅交付分组",
+  "authority_note": "用户已按v4.1恢复连续实施与自验；历史暂停已解除。单代理、同一暖构建单写者，不逐卡等待确认。",
+  "figma": {
+    "file_key": "TafDZMN6dVlTTT5DX1LwCF",
+    "page_id": "0:1",
+    "observed_on": "2026-09-29",
+    "version_id": null,
+    "visual_reference": {
+      "id": "15:4031",
+      "url": "https://www.figma.com/design/TafDZMN6dVlTTT5DX1LwCF/3D?node-id=15-4031",
+      "role": "默认图像输入；其它页面使用各状态Frame"
+    },
+    "design_baseline_rule": "节点不是不可变版本；执行前重读对应上下文/截图/原始资产。文字和静态示例不是实时业务事实。",
+    "frame_count": 33,
+    "full_context_count": 33,
+    "screenshot_inspected_count": 33,
+    "saved_reference_screenshots": 8,
+    "inventory": ".tmp/dev/figma-ux/0929-replan/figma-inventory.json",
+    "frames": [
+      {
+        "id": "15:914",
+        "name": "叠色",
+        "size": [
+          1920,
+          1200
+        ],
+        "url": "https://www.figma.com/design/TafDZMN6dVlTTT5DX1LwCF/3D?node-id=15-914",
+        "inspection": "full_design_context_and_screenshot_2026-09-29",
+        "screen_ids": [
+          "slice-prepare"
+        ],
+        "task_ids": [
+          "UX-01",
+          "UX-08",
+          "UX-12"
+        ],
+        "visual_status": "NOT_RUN_NEW_RUNTIME",
+        "asset_count_observed": 46,
+        "reference_screenshot": {
+          "path": ".tmp/dev/figma-ux/0929-replan/15-914.png",
+          "sha256": "90CBD65778E35ADE71CB1BA2F087525194B65E05805770C06C336074E4A0ADCF"
+        },
+        "role": "导入颜色匹配弹层"
+      },
+      {
+        "id": "15:1251",
+        "name": "未选切片",
+        "size": [
+          1920,
+          1200
+        ],
+        "url": "https://www.figma.com/design/TafDZMN6dVlTTT5DX1LwCF/3D?node-id=15-1251",
+        "inspection": "full_design_context_and_screenshot_2026-09-29",
+        "screen_ids": [
+          "slice-prepare"
+        ],
+        "task_ids": [
+          "UX-09"
+        ],
+        "visual_status": "NOT_RUN_NEW_RUNTIME",
+        "asset_count_observed": 25,
+        "reference_screenshot": {
+          "path": ".tmp/dev/figma-ux/0929-replan/15-1251.png",
+          "sha256": "6A04EE496E235499EE215D0570B2AA4943FEA406FE05D951C28A1A9F2AEFD8E2"
+        },
+        "role": "切片方案未选"
+      },
+      {
+        "id": "15:1462",
+        "name": "开始切片（加载）",
+        "size": [
+          1920,
+          1384
+        ],
+        "url": "https://www.figma.com/design/TafDZMN6dVlTTT5DX1LwCF/3D?node-id=15-1462",
+        "inspection": "full_design_context_and_screenshot_2026-09-29",
+        "screen_ids": [
+          "slice-prepare"
+        ],
+        "task_ids": [
+          "UX-09"
+        ],
+        "visual_status": "NOT_RUN_NEW_RUNTIME",
+        "asset_count_observed": 24,
+        "role": "已选方案/详情/切片进行中"
+      },
+      {
+        "id": "15:1685",
+        "name": "去打印（加载）",
+        "size": [
+          1920,
+          1384
+        ],
+        "url": "https://www.figma.com/design/TafDZMN6dVlTTT5DX1LwCF/3D?node-id=15-1685",
+        "inspection": "full_design_context_and_screenshot_2026-09-29",
+        "screen_ids": [
+          "slice-prepare"
+        ],
+        "task_ids": [
+          "UX-09",
+          "UX-12"
+        ],
+        "visual_status": "NOT_RUN_NEW_RUNTIME",
+        "asset_count_observed": 36,
+        "role": "正式预览/去打印上传示意"
+      },
+      {
+        "id": "15:2020",
+        "name": "orca原生",
+        "size": [
+          1920,
+          1504
+        ],
+        "url": "https://www.figma.com/design/TafDZMN6dVlTTT5DX1LwCF/3D?node-id=15-2020",
+        "inspection": "full_design_context_and_screenshot_2026-09-29",
+        "screen_ids": [
+          "slice-prepare"
+        ],
+        "task_ids": [
+          "UX-09",
+          "UX-12"
+        ],
+        "visual_status": "NOT_RUN_NEW_RUNTIME",
+        "asset_count_observed": 57,
+        "role": "Orca原生设置与预览"
+      },
+      {
+        "id": "15:2569",
+        "name": "模型1",
+        "size": [
+          1920,
+          1200
+        ],
+        "url": "https://www.figma.com/design/TafDZMN6dVlTTT5DX1LwCF/3D?node-id=15-2569",
+        "inspection": "full_design_context_and_screenshot_2026-09-29",
+        "screen_ids": [
+          "model-library",
+          "model-workbench"
+        ],
+        "task_ids": [
+          "UX-06",
+          "UX-07"
+        ],
+        "visual_status": "NOT_RUN_NEW_RUNTIME",
+        "asset_count_observed": 40,
+        "role": "模型总览/工具栏/模型抽屉"
+      },
+      {
+        "id": "15:2853",
+        "name": "检查无问题",
+        "size": [
+          1920,
+          1200
+        ],
+        "url": "https://www.figma.com/design/TafDZMN6dVlTTT5DX1LwCF/3D?node-id=15-2853",
+        "inspection": "full_design_context_and_screenshot_2026-09-30",
+        "screen_ids": [
+          "model-workbench"
+        ],
+        "task_ids": [
+          "UX-07",
+          "UX-08"
+        ],
+        "visual_status": "NOT_RUN_NEW_RUNTIME",
+        "asset_count_observed": 41,
+        "role": "检查完成反馈",
+        "latest_evidence": ".tmp/dev/figma-ux/0930-N4/review.md"
+      },
+      {
+        "id": "15:3147",
+        "name": "3D 美颜工作台",
+        "size": [
+          1920,
+          1200
+        ],
+        "url": "https://www.figma.com/design/TafDZMN6dVlTTT5DX1LwCF/3D?node-id=15-3147",
+        "inspection": "full_design_context_and_screenshot_2026-09-30",
+        "screen_ids": [
+          "model-workbench"
+        ],
+        "task_ids": [
+          "UX-01",
+          "UX-07",
+          "UX-12"
+        ],
+        "visual_status": "PARTIAL_OVERALL_CONTROLS_GUI",
+        "asset_count_observed": 30,
+        "reference_screenshot": {
+          "path": ".tmp/dev/figma-ux/0929-replan/15-3147.png",
+          "sha256": "F40457B7BFD894E07AD86EA9EAC2C92926CACAD879291196665CF7A231E576D7"
+        },
+        "role": "右侧整体美颜",
+        "latest_evidence": ".tmp/dev/figma-ux/0930-N4/review.md"
+      },
+      {
+        "id": "15:3393",
+        "name": "打印",
+        "size": [
+          1920,
+          1200
+        ],
+        "url": "https://www.figma.com/design/TafDZMN6dVlTTT5DX1LwCF/3D?node-id=15-3393",
+        "inspection": "full_design_context_and_screenshot_2026-09-29",
+        "screen_ids": [
+          "device-monitor"
+        ],
+        "task_ids": [
+          "UX-11"
+        ],
+        "visual_status": "NOT_RUN_NEW_RUNTIME",
+        "asset_count_observed": 18,
+        "role": "实际打印遥测/视频"
+      },
+      {
+        "id": "15:3525",
+        "name": "打印完成-视频图片",
+        "size": [
+          1920,
+          1200
+        ],
+        "url": "https://www.figma.com/design/TafDZMN6dVlTTT5DX1LwCF/3D?node-id=15-3525",
+        "inspection": "full_design_context_and_screenshot_2026-09-29",
+        "screen_ids": [
+          "print-result"
+        ],
+        "task_ids": [
+          "UX-11"
+        ],
+        "visual_status": "NOT_RUN_NEW_RUNTIME",
+        "asset_count_observed": 23,
+        "role": "打印记录/视频图片"
+      },
+      {
+        "id": "15:3693",
+        "name": "确认暂停",
+        "size": [
+          1920,
+          1200
+        ],
+        "url": "https://www.figma.com/design/TafDZMN6dVlTTT5DX1LwCF/3D?node-id=15-3693",
+        "inspection": "full_design_context_and_screenshot_2026-09-29",
+        "screen_ids": [
+          "device-monitor"
+        ],
+        "task_ids": [
+          "UX-11"
+        ],
+        "visual_status": "NOT_RUN_NEW_RUNTIME",
+        "asset_count_observed": 19,
+        "role": "暂停打印确认"
+      },
+      {
+        "id": "15:3837",
+        "name": "上传图片",
+        "size": [
+          1920,
+          1200
+        ],
+        "url": "https://www.figma.com/design/TafDZMN6dVlTTT5DX1LwCF/3D?node-id=15-3837",
+        "inspection": "full_design_context_and_screenshot_2026-09-29",
+        "screen_ids": [
+          "image-input"
+        ],
+        "task_ids": [
+          "UX-03"
+        ],
+        "visual_status": "NOT_RUN_NEW_RUNTIME",
+        "asset_count_observed": 26,
+        "role": "输入空态/风格下拉"
+      },
+      {
+        "id": "15:4031",
+        "name": "上传图片",
+        "size": [
+          1920,
+          1200
+        ],
+        "url": "https://www.figma.com/design/TafDZMN6dVlTTT5DX1LwCF/3D?node-id=15-4031",
+        "inspection": "full_design_context_and_screenshot_2026-09-29",
+        "screen_ids": [
+          "app-shell",
+          "image-input"
+        ],
+        "task_ids": [
+          "UX-01",
+          "UX-02",
+          "UX-03",
+          "UX-12"
+        ],
+        "visual_status": "NOT_RUN_NEW_RUNTIME",
+        "asset_count_observed": 26,
+        "reference_screenshot": {
+          "path": ".tmp/dev/figma-ux/0929-replan/15-4031.png",
+          "sha256": "0A3DC47ABF99028D0F3129F1CCA68E0E642F9ABD2125FCFBC7BCF8C54DF55121"
+        },
+        "role": "默认输入空态/风格子类"
+      },
+      {
+        "id": "15:4205",
+        "name": "图片",
+        "size": [
+          1920,
+          1200
+        ],
+        "url": "https://www.figma.com/design/TafDZMN6dVlTTT5DX1LwCF/3D?node-id=15-4205",
+        "inspection": "full_design_context_and_screenshot_2026-09-29",
+        "screen_ids": [
+          "image-input"
+        ],
+        "task_ids": [
+          "UX-03"
+        ],
+        "visual_status": "NOT_RUN_NEW_RUNTIME",
+        "asset_count_observed": 26,
+        "role": "雕塑风格输入空态"
+      },
+      {
+        "id": "15:4392",
+        "name": "图片",
+        "size": [
+          1920,
+          1200
+        ],
+        "url": "https://www.figma.com/design/TafDZMN6dVlTTT5DX1LwCF/3D?node-id=15-4392",
+        "inspection": "full_design_context_and_screenshot_2026-09-29",
+        "screen_ids": [
+          "image-input"
+        ],
+        "task_ids": [
+          "UX-03",
+          "UX-05"
+        ],
+        "visual_status": "NOT_RUN_NEW_RUNTIME",
+        "asset_count_observed": 23,
+        "role": "上传成功/单图"
+      },
+      {
+        "id": "15:4541",
+        "name": "生成中-卡片",
+        "size": [
+          1920,
+          1200
+        ],
+        "url": "https://www.figma.com/design/TafDZMN6dVlTTT5DX1LwCF/3D?node-id=15-4541",
+        "inspection": "full_design_context_and_screenshot_2026-09-29",
+        "screen_ids": [
+          "image-result"
+        ],
+        "task_ids": [
+          "UX-04",
+          "UX-05"
+        ],
+        "visual_status": "NOT_RUN_NEW_RUNTIME",
+        "asset_count_observed": 23,
+        "role": "2D结果卡生成中"
+      },
+      {
+        "id": "15:4694",
+        "name": "右侧展开",
+        "size": [
+          1920,
+          1200
+        ],
+        "url": "https://www.figma.com/design/TafDZMN6dVlTTT5DX1LwCF/3D?node-id=15-4694",
+        "inspection": "full_design_context_and_screenshot_2026-09-29",
+        "screen_ids": [
+          "image-result",
+          "model-library"
+        ],
+        "task_ids": [
+          "UX-01",
+          "UX-05",
+          "UX-06",
+          "UX-12"
+        ],
+        "visual_status": "NOT_RUN_NEW_RUNTIME",
+        "asset_count_observed": 39,
+        "reference_screenshot": {
+          "path": ".tmp/dev/figma-ux/0929-replan/15-4694.png",
+          "sha256": "1736A9F5286B68AD74C02503F92CCF7379AAF8E7F6D56ECAAC8D411C6DBD3CA4"
+        },
+        "role": "双图与我的图片抽屉"
+      },
+      {
+        "id": "15:4903",
+        "name": "2D 生成",
+        "size": [
+          1920,
+          1200
+        ],
+        "url": "https://www.figma.com/design/TafDZMN6dVlTTT5DX1LwCF/3D?node-id=15-4903",
+        "inspection": "full_design_context_and_screenshot_2026-09-29",
+        "screen_ids": [
+          "image-result"
+        ],
+        "task_ids": [
+          "UX-04",
+          "UX-05"
+        ],
+        "visual_status": "NOT_RUN_NEW_RUNTIME",
+        "asset_count_observed": 39,
+        "role": "2D付费确认"
+      },
+      {
+        "id": "15:5110",
+        "name": "3D 生成",
+        "size": [
+          1920,
+          1200
+        ],
+        "url": "https://www.figma.com/design/TafDZMN6dVlTTT5DX1LwCF/3D?node-id=15-5110",
+        "inspection": "full_design_context_and_screenshot_2026-09-29",
+        "screen_ids": [
+          "image-result"
+        ],
+        "task_ids": [
+          "UX-04",
+          "UX-05"
+        ],
+        "visual_status": "NOT_RUN_NEW_RUNTIME",
+        "asset_count_observed": 39,
+        "role": "3D付费确认"
+      },
+      {
+        "id": "15:5317",
+        "name": "参数修改",
+        "size": [
+          1920,
+          1200
+        ],
+        "url": "https://www.figma.com/design/TafDZMN6dVlTTT5DX1LwCF/3D?node-id=15-5317",
+        "inspection": "full_design_context_and_screenshot_2026-09-29",
+        "screen_ids": [
+          "image-result"
+        ],
+        "task_ids": [
+          "UX-03",
+          "UX-04",
+          "UX-05"
+        ],
+        "visual_status": "NOT_RUN_NEW_RUNTIME",
+        "asset_count_observed": 24,
+        "role": "参数修改/旧结果状态"
+      },
+      {
+        "id": "15:5474",
+        "name": "图片",
+        "size": [
+          1920,
+          1200
+        ],
+        "url": "https://www.figma.com/design/TafDZMN6dVlTTT5DX1LwCF/3D?node-id=15-5474",
+        "inspection": "full_design_context_and_screenshot_2026-09-29",
+        "screen_ids": [
+          "image-input"
+        ],
+        "task_ids": [
+          "UX-03"
+        ],
+        "visual_status": "NOT_RUN_NEW_RUNTIME",
+        "asset_count_observed": 27,
+        "role": "原生文件选择器参考（macOS样式，Windows使用系统对话框）"
+      },
+      {
+        "id": "15:5691",
+        "name": "资产",
+        "size": [
+          1920,
+          1200
+        ],
+        "url": "https://www.figma.com/design/TafDZMN6dVlTTT5DX1LwCF/3D?node-id=15-5691",
+        "inspection": "full_design_context_and_screenshot_2026-09-29",
+        "screen_ids": [
+          "model-library"
+        ],
+        "task_ids": [
+          "UX-02",
+          "UX-06"
+        ],
+        "visual_status": "NOT_RUN_NEW_RUNTIME",
+        "asset_count_observed": 45,
+        "reference_screenshot": {
+          "path": ".tmp/dev/figma-ux/0929-replan/15-5691.png",
+          "sha256": "500EAF23CBA348170D9EB70ACBC96F3BA47E9BE4A4C7D4C827D4D8D85B3F6B90"
+        },
+        "role": "社区资产示意；本地资产与外部社区能力分开"
+      },
+      {
+        "id": "15:6079",
+        "name": "3D",
+        "size": [
+          1920,
+          1200
+        ],
+        "url": "https://www.figma.com/design/TafDZMN6dVlTTT5DX1LwCF/3D?node-id=15-6079",
+        "inspection": "full_design_context_and_screenshot_2026-09-29",
+        "screen_ids": [
+          "model-library",
+          "model-workbench"
+        ],
+        "task_ids": [
+          "UX-02",
+          "UX-06",
+          "UX-07",
+          "UX-08"
+        ],
+        "visual_status": "NOT_RUN_NEW_RUNTIME",
+        "asset_count_observed": 41,
+        "role": "检查中/问题与配色来源菜单"
+      },
+      {
+        "id": "15:6355",
+        "name": "3D-准备",
+        "size": [
+          1920,
+          1200
+        ],
+        "url": "https://www.figma.com/design/TafDZMN6dVlTTT5DX1LwCF/3D?node-id=15-6355",
+        "inspection": "full_design_context_and_screenshot_2026-09-29",
+        "screen_ids": [
+          "model-workbench"
+        ],
+        "task_ids": [
+          "UX-05",
+          "UX-07"
+        ],
+        "visual_status": "NOT_RUN_NEW_RUNTIME",
+        "asset_count_observed": 14,
+        "role": "3D下载解析就绪/进入工作台"
+      },
+      {
+        "id": "15:6433",
+        "name": "打印",
+        "size": [
+          1920,
+          1200
+        ],
+        "url": "https://www.figma.com/design/TafDZMN6dVlTTT5DX1LwCF/3D?node-id=15-6433",
+        "inspection": "full_design_context_and_screenshot_2026-09-29",
+        "screen_ids": [
+          "app-shell",
+          "print-confirm",
+          "device-monitor"
+        ],
+        "task_ids": [
+          "UX-02",
+          "UX-09",
+          "UX-11"
+        ],
+        "visual_status": "NOT_RUN_NEW_RUNTIME",
+        "asset_count_observed": 20,
+        "reference_screenshot": {
+          "path": ".tmp/dev/figma-ux/0929-replan/15-6433.png",
+          "sha256": "405346483E3EB08E0FBC9F237700F08C47FBB5501A0E933AAB5B889042398A60"
+        },
+        "role": "打印确认/设备选项"
+      },
+      {
+        "id": "17:938",
+        "name": "首次使用",
+        "size": [
+          1920,
+          1200
+        ],
+        "url": "https://www.figma.com/design/TafDZMN6dVlTTT5DX1LwCF/3D?node-id=17-938",
+        "inspection": "full_design_context_and_screenshot_2026-09-29",
+        "screen_ids": [
+          "setup"
+        ],
+        "task_ids": [
+          "UX-10"
+        ],
+        "visual_status": "NOT_RUN_NEW_RUNTIME",
+        "asset_count_observed": 14,
+        "role": "首次欢迎"
+      },
+      {
+        "id": "17:1110",
+        "name": "选择打印机（未选）",
+        "size": [
+          1920,
+          1200
+        ],
+        "url": "https://www.figma.com/design/TafDZMN6dVlTTT5DX1LwCF/3D?node-id=17-1110",
+        "inspection": "full_design_context_and_screenshot_2026-09-29",
+        "screen_ids": [
+          "setup"
+        ],
+        "task_ids": [
+          "UX-10"
+        ],
+        "visual_status": "NOT_RUN_NEW_RUNTIME",
+        "asset_count_observed": 17,
+        "role": "打印机未选"
+      },
+      {
+        "id": "17:1298",
+        "name": "选择地区",
+        "size": [
+          1920,
+          1200
+        ],
+        "url": "https://www.figma.com/design/TafDZMN6dVlTTT5DX1LwCF/3D?node-id=17-1298",
+        "inspection": "full_design_context_and_screenshot_2026-09-29",
+        "screen_ids": [
+          "setup"
+        ],
+        "task_ids": [
+          "UX-10"
+        ],
+        "visual_status": "NOT_RUN_NEW_RUNTIME",
+        "asset_count_observed": 16,
+        "role": "地区选择"
+      },
+      {
+        "id": "17:1476",
+        "name": "选择打印机（选中）",
+        "size": [
+          1920,
+          1200
+        ],
+        "url": "https://www.figma.com/design/TafDZMN6dVlTTT5DX1LwCF/3D?node-id=17-1476",
+        "inspection": "full_design_context_and_screenshot_2026-09-29",
+        "screen_ids": [
+          "setup"
+        ],
+        "task_ids": [
+          "UX-10"
+        ],
+        "visual_status": "NOT_RUN_NEW_RUNTIME",
+        "asset_count_observed": 17,
+        "role": "打印机选中"
+      },
+      {
+        "id": "17:1664",
+        "name": "选择耗材",
+        "size": [
+          1920,
+          1200
+        ],
+        "url": "https://www.figma.com/design/TafDZMN6dVlTTT5DX1LwCF/3D?node-id=17-1664",
+        "inspection": "full_design_context_and_screenshot_2026-09-29",
+        "screen_ids": [
+          "setup"
+        ],
+        "task_ids": [
+          "UX-10"
+        ],
+        "visual_status": "NOT_RUN_NEW_RUNTIME",
+        "asset_count_observed": 14,
+        "reference_screenshot": {
+          "path": ".tmp/dev/figma-ux/0929-replan/17-1664.png",
+          "sha256": "6932B8304CBFAA96767D8696047B83E4E16993D324B95105A482ADB21D5A28EE"
+        },
+        "role": "耗材选择"
+      },
+      {
+        "id": "17:1883",
+        "name": "选择耗材（异常）",
+        "size": [
+          1920,
+          1200
+        ],
+        "url": "https://www.figma.com/design/TafDZMN6dVlTTT5DX1LwCF/3D?node-id=17-1883",
+        "inspection": "full_design_context_and_screenshot_2026-09-29",
+        "screen_ids": [
+          "setup"
+        ],
+        "task_ids": [
+          "UX-10"
+        ],
+        "visual_status": "NOT_RUN_NEW_RUNTIME",
+        "asset_count_observed": 15,
+        "role": "耗材异常"
+      },
+      {
+        "id": "17:2063",
+        "name": "缓冲页",
+        "size": [
+          1920,
+          1200
+        ],
+        "url": "https://www.figma.com/design/TafDZMN6dVlTTT5DX1LwCF/3D?node-id=17-2063",
+        "inspection": "full_design_context_and_screenshot_2026-09-29",
+        "screen_ids": [
+          "setup"
+        ],
+        "task_ids": [
+          "UX-10"
+        ],
+        "visual_status": "NOT_RUN_NEW_RUNTIME",
+        "asset_count_observed": 4,
+        "role": "主窗口准备阶段"
+      },
+      {
+        "id": "17:2081",
+        "name": "启动",
+        "size": [
+          1920,
+          1200
+        ],
+        "url": "https://www.figma.com/design/TafDZMN6dVlTTT5DX1LwCF/3D?node-id=17-2081",
+        "inspection": "full_design_context_and_screenshot_2026-09-29",
+        "screen_ids": [
+          "setup"
+        ],
+        "task_ids": [
+          "UX-10"
+        ],
+        "visual_status": "NOT_RUN_NEW_RUNTIME",
+        "asset_count_observed": 3,
+        "role": "启动窗口"
+      }
+    ],
+    "incremental_original_assets_20261001_risk_details": {
+      "nodes": [
+        "15:3321",
+        "15:3326"
+      ],
+      "parent": "15:3307",
+      "provenance": ".tmp/dev/figma-ux/0930-N4/risk-details-assets.json",
+      "runtime_observed": true
+    }
+  },
+  "source_modules": {
+    "owner": {
+      "files": [
+        "src/slic3r/GUI/ModelGenerationPanel.hpp",
+        "src/slic3r/GUI/ModelGenerationPanel.cpp",
+        "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationFeatureHost.hpp",
+        "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationFeatureHost.cpp"
+      ],
+      "notes": "现有唯一生成会话/生命周期所有者，动作在原owner内分发；不假定private函数可由视图直接调用"
+    },
+    "input": {
+      "files": [
+        "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationInputLayout.cpp",
+        "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationInputStyle.hpp",
+        "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationInputWelcome.hpp",
+        "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationImageInput.hpp"
+      ],
+      "notes": "R2：共享验证后替换路径；原生文件选择、文件拖入、位图/文件剪贴板；文本编辑保持原生行为。"
+    },
+    "theme": {
+      "files": [
+        "src/slic3r/GUI/AI/AIWindowAppearance.hpp",
+        "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationInputStyle.hpp"
+      ],
+      "notes": "AIThemeOwner 明确迁移子树；原生子树沿用旧主题，内容颜色不覆盖。输入控件用语义角色，轮询只更新状态变化。"
+    },
+    "presentation": {
+      "files": [
+        "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationPresentation.hpp",
+        "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationPresentation.cpp",
+        "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationPresentationCore.cpp",
+        "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationSubmissionState.hpp",
+        "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationSubmission.cpp",
+        "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationPreviewLayout.cpp"
+      ],
+      "notes": "原 Panel 持有具名 WorkspaceView；动作按 WorkspaceAction 分发；纯只读 workspace_presentation 投影。不复制任务/服务状态。"
+    },
+    "library": {
+      "files": [
+        "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationLibraryView.cpp",
+        "src/slic3r/GUI/AI/ModelGeneration/ModelLibraryMetadata.hpp",
+        "src/slic3r/GUI/AI/ModelGeneration/ModelLibraryThumbnail.hpp"
+      ],
+      "notes": "复用现有历史快照与摘要；asset/version ID选择"
+    },
+    "beauty": {
+      "files": [
+        "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationBeautyView.cpp",
+        "src/slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchControls.hpp",
+        "src/slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchControls.cpp",
+        "src/slic3r/GUI/AI/ModelGeneration/ModelPreview3D.hpp",
+        "src/slic3r/GUI/AI/Model/ModelFinishing.hpp",
+        "src/slic3r/GUI/AI/Model/ModelFinishing.cpp",
+        "src/slic3r/GUI/AI/Model/ModelArtifact.hpp",
+        "src/slic3r/GUI/AI/Model/ModelArtifact.cpp",
+        "src/slic3r/GUI/AI/ModelGeneration/ModelPreviewTexture.hpp",
+        "src/slic3r/GUI/AI/ModelGeneration/ModelPreviewPuzzle.hpp",
+        "src/slic3r/GUI/AI/ModelGeneration/ModelColorPreviewShader.hpp"
+      ],
+      "notes": "原生GL及现有编辑/保存/撤销，保留模型版本"
+    },
+    "contracts": {
+      "files": [
+        "src/slic3r/AI/Contracts/IModelArtifactConsumer.hpp",
+        "src/slic3r/AI/Contracts/IPrintablePaletteProvider.hpp",
+        "src/slic3r/AI/Contracts/LocalPrintColorResult.hpp"
+      ],
+      "notes": "完整导入元数据与版本指纹，不改成path-only快捷调用"
+    },
+    "preparation": {
+      "files": [
+        "src/slic3r/GUI/AI/ColorMatching/LocalPrintColorPanel.hpp",
+        "src/slic3r/GUI/AI/ColorMatching/LocalPrintColorPanel.cpp",
+        "src/slic3r/GUI/AI/Orca/OrcaModelPreparationPanel.hpp",
+        "src/slic3r/GUI/AI/Orca/OrcaModelPreparationPanel.cpp",
+        "src/slic3r/GUI/AI/Orca/LocalPrintModelImport.hpp",
+        "src/slic3r/GUI/AI/Orca/OrcaModelPreparation.hpp",
+        "src/slic3r/GUI/AI/Orca/OrcaModelPreparation.cpp"
+      ],
+      "notes": "配色应用、Imported结果驱动导航，原生对象事务"
+    },
+    "slicing": {
+      "files": [
+        "src/slic3r/GUI/AI/SmartSlicing/SmartSlicingFeatureHost.hpp",
+        "src/slic3r/GUI/AI/SmartSlicing/SmartSlicingFeatureHost.cpp",
+        "src/slic3r/GUI/AI/SmartSlicing/SmartSlicingPresenter.cpp",
+        "src/slic3r/GUI/AI/SmartSlicing/SmartSlicingViewModel.cpp",
+        "src/slic3r/GUI/AI/SmartSlicing/SmartSlicingPanel.cpp",
+        "src/slic3r/GUI/AI/Orca/OrcaSmartSlicingAdapter.cpp",
+        "src/slic3r/GUI/AI/Orca/OrcaPrintConfirmation.cpp",
+        "src/slic3r/GUI/AI/Orca/OrcaSlicingRevision.hpp",
+        "src/slic3r/GUI/GLCanvas3D.hpp",
+        "src/slic3r/GUI/GLCanvas3D.cpp",
+        "src/slic3r/GUI/GCodeViewer.cpp",
+        "src/slic3r/GUI/IMSlider.hpp",
+        "src/slic3r/GUI/IMSlider.cpp",
+        "src/libslic3r/PrintApply.cpp",
+        "src/slic3r/Utils/UndoRedo.cpp",
+        "src/slic3r/GUI/AI/SmartSlicing/SmartSlicingPanel.hpp"
+      ],
+      "notes": "真实方案、应用守卫与正式切片；共享Plater按实际消费者读取"
+    },
+    "navigation": {
+      "files": [
+        "src/slic3r/GUI/MainFrame.hpp",
+        "src/slic3r/GUI/MainFrame.cpp",
+        "src/slic3r/GUI/AI/AIDesktopFeatureHost.hpp",
+        "src/slic3r/GUI/AI/AIDesktopFeatureHost.cpp",
+        "src/slic3r/GUI/AI/DesktopWorkspaceNavigation.cpp"
+      ],
+      "notes": "m_tabpanel当前为Notebook*；使用TAB_ID_*与宿主子视图窄接口；不推断为Tabbook"
+    },
+    "setup": {
+      "files": [
+        "src/slic3r/GUI/WebGuideDialog.hpp",
+        "src/slic3r/GUI/WebGuideDialog.cpp",
+        "resources/web/guide/css/ux.css",
+        "resources/web/guide/js/ux.js",
+        "src/slic3r/GUI/AI/Orca/OrcaFilamentSelection.hpp",
+        "src/slic3r/GUI/AI/Orca/OrcaFilamentSelection.cpp",
+        "resources/web/guide/22/common.js",
+        "scripts/test_setup_ux.cjs",
+        "src/slic3r/GUI/GUI_App.cpp"
+      ],
+      "notes": "GuideFrame草稿owner；完成提交地区/预设。独立OrcaFilamentSelection编辑工程实体槽预设/显示色；沿原生combo接口，不等同硬件路由或在线装料。 GUI_App.cpp已有SplashScreen；新启动页复用实际生命周期。"
+    },
+    "device": {
+      "files": [
+        "src/slic3r/GUI/PrinterWebView.hpp",
+        "src/slic3r/GUI/PrinterWebView.cpp",
+        "src/slic3r/GUI/MainFrame.cpp"
+      ],
+      "notes": "已定位既有网页/路由；遥测与命令API及设备能力待对应任务读取，不假设存在MonitorPanel.cpp 上述候选文件已定位存在，具体遥测/命令字段需UX-11实施前读取，尚未认证能力。",
+      "inspection_candidates": [
+        "src/slic3r/GUI/DeviceManager.cpp",
+        "src/slic3r/GUI/Monitor.cpp",
+        "src/slic3r/GUI/MonitorPage.cpp"
+      ]
+    },
+    "native_color_import": {
+      "files": [
+        "src/slic3r/GUI/TextureImportDialog.hpp",
+        "src/slic3r/GUI/TextureImportDialog.cpp",
+        "src/slic3r/GUI/PlaterTextureImport.ipp",
+        "src/slic3r/GUI/AI/Orca/OrcaWorkspaceAdapter.hpp",
+        "src/slic3r/GUI/AI/Orca/OrcaWorkspaceAdapter.cpp",
+        "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationArtifactFlow.cpp"
+      ],
+      "notes": "默认NativeMatch经原导入事务进入TextureImportDialog；独立LocalPrintColorPanel仍有physical_application/recipe门槛，不因改视觉合并或绕过。已有弹窗GL预览继续复用。"
+    }
+  },
+  "delivery_batches": [
+    {
+      "id": "N0",
+      "tasks": [
+        "UX-00"
+      ],
+      "depends_on": [],
+      "state": "PLAN_COMPLETE"
+    },
+    {
+      "id": "N1",
+      "tasks": [
+        "UX-01",
+        "UX-02",
+        "UX-12"
+      ],
+      "depends_on": [
+        "N0"
+      ],
+      "state": "MINIMUM_LOCAL_EXIT_VERIFIED"
+    },
+    {
+      "id": "N2",
+      "tasks": [
+        "UX-03",
+        "UX-04",
+        "UX-05",
+        "UX-07"
+      ],
+      "depends_on": [
+        "N1"
+      ],
+      "state": "IN_PROGRESS"
+    },
+    {
+      "id": "N3",
+      "tasks": [
+        "UX-06"
+      ],
+      "depends_on": [
+        "N1"
+      ],
+      "state": "IN_PROGRESS"
+    },
+    {
+      "id": "N4",
+      "tasks": [
+        "UX-07"
+      ],
+      "depends_on": [
+        "N3"
+      ],
+      "state": "IN_PROGRESS"
+    },
+    {
+      "id": "N5",
+      "tasks": [
+        "UX-08"
+      ],
+      "depends_on": [
+        "N4"
+      ],
+      "state": "IN_PROGRESS"
+    },
+    {
+      "id": "N6",
+      "tasks": [
+        "UX-09"
+      ],
+      "depends_on": [
+        "N5"
+      ],
+      "state": "PARTIAL"
+    },
+    {
+      "id": "N7",
+      "tasks": [
+        "UX-10"
+      ],
+      "depends_on": [
+        "N1"
+      ],
+      "state": "PARTIAL"
+    },
+    {
+      "id": "N8",
+      "tasks": [
+        "UX-11"
+      ],
+      "depends_on": [
+        "N6"
+      ],
+      "state": "PARTIAL_LOCAL_DEVICE_EXTERNAL"
+    },
+    {
+      "id": "N9",
+      "tasks": [
+        "UX-12"
+      ],
+      "depends_on": [
+        "N2",
+        "N3",
+        "N4",
+        "N5",
+        "N6",
+        "N7",
+        "N8"
+      ],
+      "state": "PLANNED_LOCAL_SCOPE"
+    }
+  ],
+  "decision_ids": [
+    "D01",
+    "D02",
+    "D03",
+    "D04",
+    "D05",
+    "D06",
+    "D07",
+    "D08",
+    "D09",
+    "D10",
+    "D11",
+    "D12",
+    "D13",
+    "D14",
+    "D15"
+  ],
+  "decision_details": "README.md#3-新稿歧义的落地决定执行建议",
+  "legacy_supplementary_acceptance": [
+    {
+      "id": "AC-R1-01",
+      "task": "UX-01",
+      "description": "主题刷新稳定且内容色不被覆盖"
+    },
+    {
+      "id": "AC-R1-02",
+      "task": "UX-02",
+      "description": "导航保持同一owner/输入/模型/相机且无新增任务"
+    },
+    {
+      "id": "AC-R1-03",
+      "task": "UX-01",
+      "description": "无开发阶段标签、无无反馈辅助入口"
+    },
+    {
+      "id": "AC-R1-04",
+      "task": "UX-02",
+      "description": "导航行为依据稳定身份，入口往返高亮同步"
+    }
+  ],
+  "acceptance_overrides": [
+    {
+      "ids": [
+        "I12"
+      ],
+      "reason": "以当前2000 UTF-8字节为真实限制，单位明确、Unicode完整；800字符不是已实现要求"
+    },
+    {
+      "ids": [
+        "I07"
+      ],
+      "reason": "能力与宣传一致；不支持WebP时明确说明。若用户要求新增支持，则继续解码/服务验证"
+    },
+    {
+      "ids": [
+        "B05"
+      ],
+      "reason": "默认有限补丁/已知产物回退，无需为了用例新建永久双布局开关"
+    },
+    {
+      "ids": [
+        "U04",
+        "U05"
+      ],
+      "reason": "按实际机器与阶段记录DPI/客户区；未验证900×500 DIP不能继承1100×700记录"
+    },
+    {
+      "ids": [
+        "U01"
+      ],
+      "reason": "迁移说明放交付文档；开发P1阶段标识不保留在产品UI"
+    },
+    {
+      "ids": [
+        "G12",
+        "D02",
+        "D03"
+      ],
+      "reason": "实服/设备证据独立于逻辑测试；按具体授权范围；未运行保留NOT_RUN"
+    },
+    {
+      "ids": [
+        "I14",
+        "I15",
+        "G01",
+        "G02",
+        "G06",
+        "G09",
+        "G10",
+        "G11",
+        "D01",
+        "D03",
+        "D04",
+        "D05",
+        "S09"
+      ],
+      "reason": "fixture只用于已隔离的自动测试；真实主窗口验收不搭独立mock服务，缺少真实状态则明确未验GUI层"
+    }
+  ],
+  "external_dependencies": [
+    {
+      "id": "EXT-01",
+      "tasks": [
+        "UX-06"
+      ],
+      "scope": "关注/推荐/热门、作者、点赞、社区下载",
+      "state": "EXTERNAL",
+      "resume_when": "真实服务/账号与权限/分页搜索下载协议具备",
+      "local_deliverable": "我的模型/我的图片真实资产库；无假热度"
+    },
+    {
+      "id": "EXT-02",
+      "tasks": [
+        "UX-11"
+      ],
+      "scope": "设备遥测、相机、AI检测、余量、录像与媒体",
+      "state": "EXTERNAL",
+      "resume_when": "具体设备/连接/能力接口与真实记录具备",
+      "local_deliverable": "无设备/未知/离线状态和本地导出"
+    },
+    {
+      "id": "EXT-03",
+      "tasks": [
+        "UX-11"
+      ],
+      "scope": "真实启动/暂停/停止与实物打印",
+      "state": "NOT_RUN",
+      "resume_when": "具体设备和作业授权及安全实物条件具备",
+      "local_deliverable": "既有隔离逻辑测试不替代真机"
+    },
+    {
+      "id": "EXT-04",
+      "tasks": [
+        "UX-10"
+      ],
+      "scope": "WebView2向导真实交互验证",
+      "state": "GUI_ACCESS_LIMITATION",
+      "resume_when": "允许的真实GUI交互通道可用；不得绕过既有注入拒绝",
+      "local_deliverable": "源/定向测试及允许页面验证，缺的操作明确NOT_RUN"
+    }
+  ],
+  "documented_design_differences": [
+    {
+      "decision": "D03",
+      "tasks": [
+        "UX-03"
+      ],
+      "state": "CAPABILITY_GAP_RETAINED",
+      "description": "PNG/JPEG与2000UTF-8字节；WebP/800字完整支持须另验证端到端，不把文案修正记同稿能力完成"
+    },
+    {
+      "decision": "D11",
+      "tasks": [
+        "UX-10",
+        "UX-12"
+      ],
+      "state": "PLATFORM_ADAPTATION",
+      "description": "Windows系统文件选择器、当前真实品牌/版本；不用macOS示例或NAME占位"
+    },
+    {
+      "decision": "D12",
+      "tasks": [
+        "UX-01",
+        "UX-03",
+        "UX-06",
+        "UX-12"
+      ],
+      "state": "VISUAL_GAP_RETAINED",
+      "description": "原生输入/菜单/玻璃未解单列；不再重复失败方案，也不把近似写MATCH"
+    },
+    {
+      "decision": "D06",
+      "tasks": [
+        "UX-06",
+        "UX-07",
+        "UX-12"
+      ],
+      "state": "PROPOSED_ADAPTATION_NOT_VISUALLY_ACCEPTED",
+      "description": "沿用覆盖式资源抽屉，稿件并排与运行覆盖差异保留；非已获视觉接受。"
+    },
+    {
+      "decision": "D07",
+      "tasks": [
+        "UX-03",
+        "UX-08"
+      ],
+      "state": "PROPOSED_ADAPTATION_NOT_VISUALLY_ACCEPTED",
+      "description": "建议预制底座准备意图默认关闭，不进入AI请求/指纹；AI造型底座不在本次默认范围。"
+    },
+    {
+      "decision": "D15",
+      "tasks": [
+        "UX-01",
+        "UX-12"
+      ],
+      "state": "PROPOSED_ADAPTATION_NOT_VISUALLY_ACCEPTED",
+      "description": "稿内FED445/FFC227并存，首轮复用现有token；建议最终FFC227，未接受差异不能报全设计完成。"
+    }
+  ],
+  "progress_policy": "按批次与适用验收条目PASS/FAIL/NOT_RUN/EXTERNAL计数；新稿未验收不能继承旧粗估70%。N0为文档成果。",
+  "update_rule": "仅维护README、work-items与本索引；归档v3不再改。每个批次更新受影响卡、证据与短状态；暂停期间不实施。",
+  "updated_on": "2026-10-05",
+  "source_checkout": "OrcaSlicer/",
+  "execution": {
+    "state": "ACTIVE_BY_USER",
+    "current_batch": "N9",
+    "resume_at": "UX-08/UX-12视觉、键盘及原N2～N7未结项；本次插队交付同分支协作基线。"
+  },
+  "screens": [
+    {
+      "id": "app-shell",
+      "name": "主导航",
+      "frame_ids": [
+        "15:4031",
+        "15:6433"
+      ],
+      "source_modules": [
+        "navigation",
+        "owner",
+        "input"
+      ],
+      "task_ids": [
+        "UX-01",
+        "UX-02",
+        "UX-12"
+      ],
+      "states": [
+        "image",
+        "library",
+        "model",
+        "prepare",
+        "preview",
+        "monitor",
+        "native-page"
+      ],
+      "status": "NEW_BASELINE_PENDING",
+      "differences": [
+        "新四入口与原工程/预览/设备的层级重组，见D01。",
+        "主导航、主操作与各页布局新稿待验；N1只补必要可达性，资源抽屉按D06保留覆盖式。"
+      ]
+    },
+    {
+      "id": "image-input",
+      "name": "图像输入",
+      "frame_ids": [
+        "15:3837",
+        "15:4031",
+        "15:4205",
+        "15:4392",
+        "15:5474"
+      ],
+      "source_modules": [
+        "owner",
+        "input",
+        "theme",
+        "presentation"
+      ],
+      "task_ids": [
+        "UX-00",
+        "UX-01",
+        "UX-02",
+        "UX-03"
+      ],
+      "states": [
+        "empty",
+        "valid",
+        "invalid-replacement",
+        "locked-by-task",
+        "service-unavailable"
+      ],
+      "status": "NEW_BASELINE_PENDING",
+      "differences": [
+        "D03：真实PNG/JPEG、20MB/64px/16M像素/2000UTF-8字节，WebP/800字为未实现协议差异。",
+        "换图后原生提示词持续浅底、内滚动条/拖入/IME仍缺口；旧RichEdit等失败方案不重复。"
+      ]
+    },
+    {
+      "id": "image-result",
+      "name": "双图与生成状态",
+      "frame_ids": [
+        "15:4541",
+        "15:4694",
+        "15:4903",
+        "15:5110",
+        "15:5317"
+      ],
+      "source_modules": [
+        "owner",
+        "presentation",
+        "library"
+      ],
+      "task_ids": [
+        "UX-04",
+        "UX-05",
+        "UX-06"
+      ],
+      "states": [
+        "generating-2d",
+        "design-ready",
+        "design-stale",
+        "generating-3d",
+        "downloading-model",
+        "failed",
+        "stopping",
+        "submission-unconfirmed"
+      ],
+      "status": "NEW_BASELINE_PENDING",
+      "differences": [
+        "2D卡片忙碌与失败、明确确认动作、3D就绪页待新版视觉闭环。",
+        "单owner、指纹、恢复/历史沿用；D04不复制生成中可点按钮或过时费用示例。"
+      ]
+    },
+    {
+      "id": "model-library",
+      "name": "本地资产/抽屉与社区能力边界",
+      "frame_ids": [
+        "15:5691",
+        "15:4694",
+        "15:6079",
+        "15:2569"
+      ],
+      "source_modules": [
+        "owner",
+        "library",
+        "input"
+      ],
+      "task_ids": [
+        "UX-06"
+      ],
+      "states": [
+        "empty",
+        "loading",
+        "ready",
+        "filtered-empty",
+        "load-failed",
+        "dirty-selection-guard",
+        "community-unavailable",
+        "local-models",
+        "local-images"
+      ],
+      "status": "NEW_BASELINE_PENDING",
+      "differences": [
+        "D02：资产社区流与本地历史库的数据域不同；本地先还原卡片/抽屉，社区服务EXTERNAL。",
+        "Task ID与性能为强制回归项；真玻璃/暗色菜单保留未解，不算已通过。"
+      ]
+    },
+    {
+      "id": "model-workbench",
+      "name": "3D总览与美颜",
+      "frame_ids": [
+        "15:6355",
+        "15:6079",
+        "15:2569",
+        "15:2853",
+        "15:3147"
+      ],
+      "source_modules": [
+        "beauty",
+        "owner",
+        "contracts",
+        "preparation"
+      ],
+      "task_ids": [
+        "UX-07",
+        "UX-08"
+      ],
+      "states": [
+        "model-ready",
+        "editing",
+        "candidate-preview",
+        "saving",
+        "checking",
+        "issues-found",
+        "unsupported-check"
+      ],
+      "status": "NEW_BASELINE_PENDING",
+      "differences": [
+        "左侧分组/信息浮层/右侧美颜及工作台返回按新稿重排。",
+        "准备/失败/保存/草稿及整体修整能力逐项核对，不抹去旧已实现的局部编辑。"
+      ]
+    },
+    {
+      "id": "slice-prepare",
+      "name": "准备与切片",
+      "frame_ids": [
+        "15:914",
+        "15:1251",
+        "15:1462",
+        "15:1685",
+        "15:2020"
+      ],
+      "source_modules": [
+        "contracts",
+        "preparation",
+        "slicing",
+        "navigation",
+        "native_color_import"
+      ],
+      "task_ids": [
+        "UX-08",
+        "UX-09"
+      ],
+      "states": [
+        "import-pending",
+        "prepared",
+        "proposal-ready",
+        "applied",
+        "slicing",
+        "slice-ready",
+        "slice-stale",
+        "slice-failed"
+      ],
+      "status": "NEW_BASELINE_PENDING",
+      "differences": [
+        "新左右配色弹层、三方案卡片与参数同源、真实切片进度和预览。",
+        "D07/08：目标色/实体通道/配方分别表示；原几何、颜色、3MF、Undo与切片revision保留。",
+        "D13：15:914优先重排TextureImportDialog；独立配色页recipe守卫单独回归。"
+      ]
+    },
+    {
+      "id": "print-confirm",
+      "name": "打印确认",
+      "frame_ids": [
+        "15:6433"
+      ],
+      "source_modules": [
+        "slicing",
+        "navigation",
+        "device"
+      ],
+      "task_ids": [
+        "UX-09"
+      ],
+      "states": [
+        "eligible",
+        "no-device",
+        "unsupported-option",
+        "stale-slice",
+        "dispatching",
+        "result-unconfirmed"
+      ],
+      "status": "NEW_BASELINE_PENDING",
+      "differences": [
+        "D01/09：去打印仅打开当前板/切片/设备确认；本地导出不要求设备在线。",
+        "未知/不支持设备功能禁用并解释，不能照抄全开开关。"
+      ]
+    },
+    {
+      "id": "setup",
+      "name": "启动与首次配置",
+      "frame_ids": [
+        "17:2081",
+        "17:2063",
+        "17:938",
+        "17:1298",
+        "17:1110",
+        "17:1476",
+        "17:1664",
+        "17:1883"
+      ],
+      "source_modules": [
+        "setup",
+        "contracts",
+        "theme"
+      ],
+      "task_ids": [
+        "UX-10"
+      ],
+      "states": [
+        "existing-user",
+        "draft-region",
+        "draft-printer",
+        "draft-materials",
+        "incompatible",
+        "offline-with-local-presets",
+        "committed",
+        "cancelled"
+      ],
+      "status": "NEW_BASELINE_PENDING",
+      "differences": [
+        "8状态需新稿视觉及首次真实GUI；当前WebGuide/预设草稿复用。",
+        "D09/11：离线预设不要求在线设备，通道数量动态，NAME/版本使用真实数据，系统选择器遵从Windows。"
+      ]
+    },
+    {
+      "id": "device-monitor",
+      "name": "打印机监控",
+      "frame_ids": [
+        "15:6433",
+        "15:3393",
+        "15:3693"
+      ],
+      "source_modules": [
+        "device",
+        "navigation"
+      ],
+      "task_ids": [
+        "UX-11"
+      ],
+      "states": [
+        "unknown",
+        "offline",
+        "stale",
+        "printing",
+        "paused",
+        "camera-unavailable",
+        "command-pending"
+      ],
+      "status": "NEW_BASELINE_PENDING",
+      "differences": [
+        "无设备/离线/未知本地状态可实施；新监控需实际服务/设备。",
+        "温度/余量/AI检测/视频不得用示例数据；真机命令无此轮授权，NOT_RUN。"
+      ]
+    },
+    {
+      "id": "print-result",
+      "name": "打印终态",
+      "frame_ids": [
+        "15:3525"
+      ],
+      "source_modules": [
+        "device",
+        "navigation",
+        "library"
+      ],
+      "task_ids": [
+        "UX-11"
+      ],
+      "states": [
+        "completed",
+        "cancelled",
+        "failed"
+      ],
+      "status": "NEW_BASELINE_PENDING",
+      "differences": [
+        "真实媒体列表/终态未具备完整证据；D10完成主操作不等同开始打印。",
+        "媒体/设备服务EXTERNAL，空态/失败/能力反馈须可本地交付。"
+      ]
+    }
+  ],
+  "tasks": [
+    {
+      "id": "UX-00",
+      "name": "新旧基线核对与范围冻结",
+      "v2_tasks": [
+        "T00",
+        "T01"
+      ],
+      "depends_on": [],
+      "batches": [
+        "N0"
+      ],
+      "source_modules": [
+        "owner",
+        "input",
+        "navigation"
+      ],
+      "frame_ids": [],
+      "legacy_acceptance_ids": [
+        "B01",
+        "B02"
+      ],
+      "control_ids": [],
+      "acceptance_ids": [
+        "AC-0929-00-01",
+        "AC-0929-00-02"
+      ],
+      "execution_status": "PLAN_AUDITED_IMPLEMENTATION_RESUMED"
+    },
+    {
+      "id": "UX-01",
+      "name": "新稿主题、控件状态与容器",
+      "v2_tasks": [
+        "T02"
+      ],
+      "depends_on": [
+        "UX-00"
+      ],
+      "batches": [
+        "N1"
+      ],
+      "source_modules": [
+        "theme",
+        "input",
+        "navigation"
+      ],
+      "frame_ids": [
+        "15:4031",
+        "15:4694",
+        "15:3147",
+        "15:914"
+      ],
+      "legacy_acceptance_ids": [
+        "U02",
+        "U03",
+        "U04",
+        "U06",
+        "U08",
+        "U09",
+        "AC-R1-01",
+        "AC-R1-03"
+      ],
+      "control_ids": [],
+      "acceptance_ids": [
+        "AC-0929-01-01",
+        "AC-0929-01-02",
+        "AC-0929-01-03"
+      ],
+      "execution_status": "REUSE_PARTIAL_RESTYLE_PENDING"
+    },
+    {
+      "id": "UX-02",
+      "name": "四入口导航与明确页面动作",
+      "v2_tasks": [
+        "T03",
+        "T18"
+      ],
+      "depends_on": [
+        "UX-01"
+      ],
+      "batches": [
+        "N1"
+      ],
+      "source_modules": [
+        "navigation",
+        "presentation",
+        "owner"
+      ],
+      "frame_ids": [
+        "15:4031",
+        "15:5691",
+        "15:6079",
+        "15:6433"
+      ],
+      "legacy_acceptance_ids": [
+        "U01",
+        "U05",
+        "U06",
+        "B05",
+        "G08",
+        "AC-R1-02",
+        "AC-R1-04"
+      ],
+      "control_ids": [
+        "UI37"
+      ],
+      "acceptance_ids": [
+        "AC-0929-02-01",
+        "AC-0929-02-02",
+        "AC-0929-02-03"
+      ],
+      "execution_status": "REUSE_PARTIAL_NAVIGATION_PENDING"
+    },
+    {
+      "id": "UX-03",
+      "name": "完整图像输入与真实限制",
+      "v2_tasks": [
+        "T04"
+      ],
+      "depends_on": [
+        "UX-02"
+      ],
+      "batches": [
+        "N2"
+      ],
+      "source_modules": [
+        "input",
+        "presentation",
+        "owner"
+      ],
+      "frame_ids": [
+        "15:3837",
+        "15:4031",
+        "15:4205",
+        "15:4392",
+        "15:5474",
+        "15:5317"
+      ],
+      "legacy_acceptance_ids": [
+        "I01",
+        "I02",
+        "I03",
+        "I04",
+        "I05",
+        "I06",
+        "I07",
+        "I08",
+        "I09",
+        "I10",
+        "I11",
+        "I12",
+        "I13",
+        "U08",
+        "U09"
+      ],
+      "control_ids": [
+        "UI01",
+        "UI02",
+        "UI03",
+        "UI04",
+        "UI05",
+        "UI06",
+        "UI07"
+      ],
+      "acceptance_ids": [
+        "AC-0929-03-01",
+        "AC-0929-03-02",
+        "AC-0929-03-03",
+        "AC-0929-03-04",
+        "AC-0929-03-05"
+      ],
+      "execution_status": "REUSE_PARTIAL_INPUT_MATRIX_PENDING"
+    },
+    {
+      "id": "UX-04",
+      "name": "输入版本、单任务与恢复守卫",
+      "v2_tasks": [
+        "T05"
+      ],
+      "depends_on": [
+        "UX-03"
+      ],
+      "batches": [
+        "N2"
+      ],
+      "source_modules": [
+        "presentation",
+        "owner"
+      ],
+      "frame_ids": [
+        "15:5317",
+        "15:4903",
+        "15:5110",
+        "15:4541"
+      ],
+      "legacy_acceptance_ids": [
+        "G04",
+        "G05",
+        "G06",
+        "G07",
+        "G11"
+      ],
+      "control_ids": [
+        "UI08",
+        "UI09",
+        "UI10",
+        "UI13"
+      ],
+      "acceptance_ids": [
+        "AC-0929-04-01",
+        "AC-0929-04-02",
+        "AC-0929-04-03"
+      ],
+      "execution_status": "REUSE_PARTIAL_RECOVERY_PENDING"
+    },
+    {
+      "id": "UX-05",
+      "name": "双图、生成状态与确认弹层",
+      "v2_tasks": [
+        "T06",
+        "T07"
+      ],
+      "depends_on": [
+        "UX-04"
+      ],
+      "batches": [
+        "N2"
+      ],
+      "source_modules": [
+        "input",
+        "presentation",
+        "owner"
+      ],
+      "frame_ids": [
+        "15:4392",
+        "15:4541",
+        "15:4694",
+        "15:4903",
+        "15:5110",
+        "15:5317",
+        "15:6355"
+      ],
+      "legacy_acceptance_ids": [
+        "G01",
+        "G02",
+        "G03",
+        "G04",
+        "G05",
+        "G06",
+        "G07",
+        "G08",
+        "G09",
+        "G10",
+        "G11",
+        "G12",
+        "I14",
+        "I15"
+      ],
+      "control_ids": [
+        "UI08",
+        "UI09",
+        "UI10",
+        "UI11",
+        "UI12",
+        "UI13"
+      ],
+      "acceptance_ids": [
+        "AC-0929-05-01",
+        "AC-0929-05-02",
+        "AC-0929-05-03"
+      ],
+      "execution_status": "REUSE_PARTIAL_GENERATION_VIEW_PENDING"
+    },
+    {
+      "id": "UX-06",
+      "name": "本地资产与右侧抽屉；社区能力分列",
+      "v2_tasks": [
+        "T08"
+      ],
+      "depends_on": [
+        "UX-02",
+        "UX-04"
+      ],
+      "batches": [
+        "N3"
+      ],
+      "source_modules": [
+        "library",
+        "owner",
+        "input"
+      ],
+      "frame_ids": [
+        "15:5691",
+        "15:4694",
+        "15:6079",
+        "15:2569"
+      ],
+      "legacy_acceptance_ids": [
+        "L01",
+        "L02",
+        "L03",
+        "L04",
+        "L05",
+        "L06",
+        "L07",
+        "L08",
+        "U07"
+      ],
+      "control_ids": [
+        "UI14",
+        "UI15",
+        "UI16",
+        "UI17",
+        "UI18",
+        "UI19"
+      ],
+      "acceptance_ids": [
+        "AC-0929-06-01",
+        "AC-0929-06-02",
+        "AC-0929-06-03",
+        "AC-0929-06-04",
+        "AC-0929-06-05",
+        "AC-0929-06-06"
+      ],
+      "execution_status": "REUSE_PARTIAL_LOCAL_ASSETS_PENDING_EXTERNAL_COMMUNITY"
+    },
+    {
+      "id": "UX-07",
+      "name": "3D总览、右侧美颜与保存闭环",
+      "v2_tasks": [
+        "T09"
+      ],
+      "depends_on": [
+        "UX-06"
+      ],
+      "batches": [
+        "N2",
+        "N4"
+      ],
+      "source_modules": [
+        "beauty",
+        "input",
+        "presentation",
+        "owner"
+      ],
+      "frame_ids": [
+        "15:6355",
+        "15:6079",
+        "15:2569",
+        "15:2853",
+        "15:3147"
+      ],
+      "legacy_acceptance_ids": [
+        "M01",
+        "M02",
+        "M03",
+        "M04",
+        "M05",
+        "L06"
+      ],
+      "control_ids": [
+        "UI20",
+        "UI21",
+        "UI22",
+        "UI23"
+      ],
+      "acceptance_ids": [
+        "AC-0929-07-01",
+        "AC-0929-07-02",
+        "AC-0929-07-03",
+        "AC-0929-07-04",
+        "AC-0929-07-05",
+        "AC-0929-07-06",
+        "AC-0929-07-07"
+      ],
+      "execution_status": "N4_CORE_JOURNEY_EXIT_SCOPED_REMAINDERS_PARTIAL"
+    },
+    {
+      "id": "UX-08",
+      "name": "检查、底座、配色弹层与工程交接",
+      "v2_tasks": [
+        "T10",
+        "T11"
+      ],
+      "depends_on": [
+        "UX-07"
+      ],
+      "batches": [
+        "N5"
+      ],
+      "source_modules": [
+        "native_color_import",
+        "preparation",
+        "contracts",
+        "beauty",
+        "owner"
+      ],
+      "frame_ids": [
+        "15:6079",
+        "15:2853",
+        "15:914"
+      ],
+      "legacy_acceptance_ids": [
+        "M06",
+        "M07",
+        "M08",
+        "M09",
+        "M10",
+        "S01",
+        "S02",
+        "S03"
+      ],
+      "control_ids": [
+        "UI24",
+        "UI25",
+        "UI26",
+        "UI27",
+        "UI28"
+      ],
+      "acceptance_ids": [
+        "AC-0929-08-01",
+        "AC-0929-08-02",
+        "AC-0929-08-03",
+        "AC-0929-08-04",
+        "AC-0929-08-05",
+        "AC-0929-08-06",
+        "AC-0929-08-07"
+      ],
+      "execution_status": "N5_IN_PROGRESS_PHYSICAL_IDENTITY_PARTIAL"
+    },
+    {
+      "id": "UX-09",
+      "name": "切片方案、正式结果与打印确认",
+      "v2_tasks": [
+        "T12",
+        "T13",
+        "T14"
+      ],
+      "depends_on": [
+        "UX-08"
+      ],
+      "batches": [
+        "N6"
+      ],
+      "source_modules": [
+        "slicing",
+        "preparation",
+        "navigation",
+        "contracts"
+      ],
+      "frame_ids": [
+        "15:1251",
+        "15:1462",
+        "15:1685",
+        "15:2020",
+        "15:6433"
+      ],
+      "legacy_acceptance_ids": [
+        "S04",
+        "S05",
+        "S06",
+        "S07",
+        "S08",
+        "S09",
+        "S10",
+        "D03"
+      ],
+      "control_ids": [
+        "UI29",
+        "UI30",
+        "UI31",
+        "UI32"
+      ],
+      "acceptance_ids": [
+        "AC-0929-09-01",
+        "AC-0929-09-02",
+        "AC-0929-09-03",
+        "AC-0929-09-04"
+      ],
+      "execution_status": "IN_PROGRESS_N6"
+    },
+    {
+      "id": "UX-10",
+      "name": "启动、地区、打印机与耗材向导",
+      "v2_tasks": [
+        "T15"
+      ],
+      "depends_on": [
+        "UX-01"
+      ],
+      "batches": [
+        "N7"
+      ],
+      "source_modules": [
+        "setup",
+        "theme",
+        "contracts"
+      ],
+      "frame_ids": [
+        "17:2081",
+        "17:2063",
+        "17:938",
+        "17:1298",
+        "17:1110",
+        "17:1476",
+        "17:1664",
+        "17:1883"
+      ],
+      "legacy_acceptance_ids": [
+        "O01",
+        "O02",
+        "O03",
+        "O04",
+        "O05"
+      ],
+      "control_ids": [
+        "UI33",
+        "UI34"
+      ],
+      "acceptance_ids": [
+        "AC-0929-10-01",
+        "AC-0929-10-02",
+        "AC-0929-10-03",
+        "AC-0929-10-04"
+      ],
+      "execution_status": "IN_PROGRESS_N7"
+    },
+    {
+      "id": "UX-11",
+      "name": "打印中心、真实监控和媒体终态",
+      "v2_tasks": [
+        "T16",
+        "T17"
+      ],
+      "depends_on": [
+        "UX-09"
+      ],
+      "batches": [
+        "N8"
+      ],
+      "source_modules": [
+        "device",
+        "navigation",
+        "slicing"
+      ],
+      "frame_ids": [
+        "15:6433",
+        "15:3393",
+        "15:3693",
+        "15:3525"
+      ],
+      "legacy_acceptance_ids": [
+        "D01",
+        "D02",
+        "D03",
+        "D04",
+        "D05",
+        "L07"
+      ],
+      "control_ids": [
+        "UI35",
+        "UI36"
+      ],
+      "acceptance_ids": [
+        "AC-0929-11-01",
+        "AC-0929-11-02",
+        "AC-0929-11-03",
+        "AC-0929-11-04",
+        "AC-0929-11-05",
+        "AC-0929-11-06"
+      ],
+      "execution_status": "IN_PROGRESS_N8"
+    },
+    {
+      "id": "UX-12",
+      "name": "跨页面视觉、窗口与最终交付",
+      "v2_tasks": [
+        "T18",
+        "T19"
+      ],
+      "depends_on": [
+        "UX-02",
+        "UX-03",
+        "UX-05",
+        "UX-06",
+        "UX-07",
+        "UX-08",
+        "UX-09",
+        "UX-10",
+        "UX-11"
+      ],
+      "batches": [
+        "N1",
+        "N9"
+      ],
+      "source_modules": [
+        "navigation",
+        "theme",
+        "slicing",
+        "owner"
+      ],
+      "frame_ids": [
+        "15:4031",
+        "15:4694",
+        "15:3147",
+        "15:914",
+        "15:1685",
+        "15:2020"
+      ],
+      "legacy_acceptance_ids": [
+        "U01",
+        "U02",
+        "U03",
+        "U04",
+        "U05",
+        "U06",
+        "U07",
+        "U08",
+        "U09",
+        "U10",
+        "B03",
+        "B04",
+        "B05",
+        "G08",
+        "S10"
+      ],
+      "control_ids": [
+        "UI37"
+      ],
+      "acceptance_ids": [
+        "AC-0929-12-01",
+        "AC-0929-12-02",
+        "AC-0929-12-03",
+        "AC-0929-12-04",
+        "AC-0929-12-05",
+        "AC-0929-12-06"
+      ],
+      "execution_status": "REUSE_PARTIAL_FINAL_ACCEPTANCE_PENDING"
+    }
+  ],
+  "acceptance": [
+    {
+      "id": "AC-0929-00-01",
+      "description": "33个Frame均有node/角色/任务归属，8张重点截图有SHA-256；旧3份计划原字节可核对。",
+      "evidence_layer": "文档",
+      "status": "PASS_DOCUMENTATION_ONLY",
+      "task_id": "UX-00"
+    },
+    {
+      "id": "AC-0929-00-02",
+      "description": "最新暂停决定进入主计划/短状态/README；自动续办PAUSED；所有产品dirty文件和运行实例未受本轮修改。",
+      "evidence_layer": "文档/只读",
+      "status": "PASS_DOCUMENTATION_ONLY",
+      "task_id": "UX-00"
+    },
+    {
+      "id": "AC-0929-01-01",
+      "description": "图像/库/3D/配色/切片间切换、恢复窗口、动态创建及主题刷新后文字可读，图像与耗材色未被覆盖。",
+      "evidence_layer": "GUI/视觉",
+      "status": "PARTIAL",
+      "task_id": "UX-01"
+    },
+    {
+      "id": "AC-0929-01-02",
+      "description": "同控件normal/hover/pressed/disabled/focus可辨；新稿颜色/间距/字体差异有逐项结果。",
+      "evidence_layer": "GUI/视觉",
+      "status": "PARTIAL",
+      "task_id": "UX-01"
+    },
+    {
+      "id": "AC-0929-01-03",
+      "description": "普通Orca页面原主题不被污染；输入控件选区、光标和长文本操作保持。",
+      "evidence_layer": "GUI",
+      "status": "PARTIAL",
+      "task_id": "UX-01"
+    },
+    {
+      "id": "AC-0929-02-01",
+      "description": "空态与已有历史模型各走一遍四导航，选中高亮/页面一致，无静默无响应或跳错；主操作只在其页面出现。",
+      "evidence_layer": "GUI",
+      "status": "PASS",
+      "task_id": "UX-02"
+    },
+    {
+      "id": "AC-0929-02-02",
+      "description": "任务进行时切页后返回保持任务ID/进度且请求数不增加；只读投影测试覆盖缺模型/忙碌/待确认。",
+      "evidence_layer": "逻辑/GUI",
+      "status": "PARTIAL",
+      "task_id": "UX-02"
+    },
+    {
+      "id": "AC-0929-02-03",
+      "description": "带草稿返回、开库、取消使用另一资产均保留草稿与当前加载项；工程/预览/原生入口仍可达。",
+      "evidence_layer": "GUI",
+      "status": "NOT_RUN",
+      "task_id": "UX-02"
+    },
+    {
+      "id": "AC-0929-03-01",
+      "description": "选择/跨窗口拖入/单文件粘贴/位图粘贴/移除均等比预览；文本框Ctrl+V优先文本，上传区才接图片。多文件、假扩展、坏图、超20MB、过小/像素超限拒绝且原状态不丢。",
+      "evidence_layer": "逻辑/GUI",
+      "status": "PARTIAL",
+      "task_id": "UX-03"
+    },
+    {
+      "id": "AC-0929-03-02",
+      "description": "中文/emoji/IME组合、全选复制粘贴撤销、长文本滚轮与Ctrl+Home/End；2000字节边界不截断UTF-8，不合格不能提交。",
+      "evidence_layer": "逻辑/GUI",
+      "status": "PASS",
+      "task_id": "UX-03"
+    },
+    {
+      "id": "AC-0929-03-03",
+      "description": "历史模型有效换图或移除后旧3D不能冒充新输入，即使job_id为空；坏图/取消不影响旧模型。未保存编辑替换时分别走保存/放弃/取消，保存失败及取消保留原高亮/草稿。",
+      "evidence_layer": "GUI",
+      "status": "PARTIAL",
+      "task_id": "UX-03"
+    },
+    {
+      "id": "AC-0929-03-04",
+      "description": "空态、聚焦输入、历史恢复、换图后都可读，主按钮固定可达；WebP/800字差异保持D03，不能伪称同稿能力完成。",
+      "evidence_layer": "GUI/视觉",
+      "status": "PARTIAL",
+      "task_id": "UX-03"
+    },
+    {
+      "id": "AC-0929-03-05",
+      "status": "PASS",
+      "task_id": "UX-03",
+      "description": "准备底座开关默认关闭；切换只记录当前作品准备意图，不改AI请求/输入指纹、不使旧设计过期、不自动生成；实际应用前确认模板/总高度。",
+      "evidence_layer": "逻辑/GUI"
+    },
+    {
+      "id": "AC-0929-04-01",
+      "description": "双击/连回车/多个入口只提交一次；费用确认默认焦点在取消，打开它的回车及按键重复不能立即确认，释放后独立操作才提交；确认期间输入/参数变化拒绝旧快照。",
+      "evidence_layer": "逻辑/GUI",
+      "status": "PARTIAL",
+      "task_id": "UX-04"
+    },
+    {
+      "id": "AC-0929-04-02",
+      "description": "旧设计明确标记失效、不能误生成3D；只改3D参数不额外计费生成2D；换图错误不失效旧结果。",
+      "evidence_layer": "逻辑/GUI",
+      "status": "PARTIAL",
+      "task_id": "UX-04"
+    },
+    {
+      "id": "AC-0929-04-03",
+      "description": "迟到结果/轮询失败/本地重启恢复不覆盖当前编辑，不重建付费任务；停止本地等待与远端状态分开。",
+      "evidence_layer": "逻辑/真实可达GUI",
+      "status": "PARTIAL",
+      "task_id": "UX-04"
+    },
+    {
+      "id": "AC-0929-05-01",
+      "description": "从有效图片或文字经2D确认/等待/结果/3D确认/下载解析/就绪打开工作台；记录真实任务ID与费用依据。文字来源显示对应摘要，不残留旧照片，未知费用不写死30积分。",
+      "evidence_layer": "在线/GUI",
+      "status": "PARTIAL",
+      "task_id": "UX-05"
+    },
+    {
+      "id": "AC-0929-05-02",
+      "description": "取消两类确认均不发请求；状态未知不显示成功；已成功2D可恢复/再次查看，历史重新打开不收费。",
+      "evidence_layer": "逻辑/GUI",
+      "status": "PARTIAL",
+      "task_id": "UX-05"
+    },
+    {
+      "id": "AC-0929-05-03",
+      "description": "更改描述/风格后旧图标旧版本且新请求失败不误示成功；长文件名/费用/停止说明在紧凑窗不裁切，Esc返回焦点。",
+      "evidence_layer": "GUI/视觉",
+      "status": "PARTIAL",
+      "task_id": "UX-05"
+    },
+    {
+      "id": "AC-0929-06-01",
+      "description": "Task ID展示复制与搜索正确；单击只选、打开才加载；带未保存草稿取消切换保持原卡和原模型，返回库保持页码/查询。",
+      "evidence_layer": "GUI",
+      "status": "PASS",
+      "task_id": "UX-06"
+    },
+    {
+      "id": "AC-0929-06-02",
+      "description": "空库/无结果/缺缩略图/坏资产/删除失败有反馈；末页最后一项删除后页码有效，无1/0，迟到缩略图不覆盖当前选择，导出/取消不损坏原件。",
+      "evidence_layer": "逻辑/GUI",
+      "status": "PASS",
+      "task_id": "UX-06"
+    },
+    {
+      "id": "AC-0929-06-03",
+      "description": "全页与抽屉各测冷/热载和连续上下滚动，记录样本数量/计时及白轨残影；无明显卡顿或选择错乱。",
+      "evidence_layer": "GUI/性能",
+      "status": "PASS",
+      "task_id": "UX-06"
+    },
+    {
+      "id": "AC-0929-06-04",
+      "description": "资源抽屉覆盖而不挤压GL；Tab首尾、Esc先清查询再关闭并回焦点、Enter/Space与系统组合键正确；紧凑窗可走完整库；并排差异/真玻璃未实现均保留记录。",
+      "evidence_layer": "GUI/视觉",
+      "status": "PASS",
+      "task_id": "UX-06"
+    },
+    {
+      "id": "AC-0929-06-05",
+      "description": "社区作者/点赞/下载/关注只有真实接口数据才展示为实际信息；缺服务标EXTERNAL，本地卡片不冒充社区完成。",
+      "evidence_layer": "外部",
+      "status": "NOT_RUN",
+      "task_id": "UX-06"
+    },
+    {
+      "id": "AC-0929-06-06",
+      "status": "NOT_RUN",
+      "task_id": "UX-06",
+      "description": "真实社区内容源具备后，下载验证授权/格式/路径与资产来源；下载失败保持当前作品，不能直接导入打印。缺服务保留EXTERNAL，回本地库仍可用。",
+      "evidence_layer": "外部/GUI"
+    },
+    {
+      "id": "AC-0929-07-01",
+      "description": "整体修整和区域编辑各完成参数/选区→显式预览→前后对比→放弃或接受并保存→退出重开；撤销/重做可用，原件不变，新版本可追溯，不能用局部成功替整体通过。",
+      "evidence_layer": "GUI",
+      "status": "PASS",
+      "task_id": "UX-07"
+    },
+    {
+      "id": "AC-0929-07-02",
+      "description": "准备中返回/准备失败/预览取消/保存失败/退出草稿恢复保持当前编辑和原件；失败态不滞留“准备中”。",
+      "evidence_layer": "逻辑/GUI",
+      "status": "PARTIAL",
+      "task_id": "UX-07"
+    },
+    {
+      "id": "AC-0929-07-03",
+      "description": "Alt旋转/平移/缩放/点击/拖动及丢捕获恢复正常，开关右栏不重建GL、不重置相机；OBJ副本入口可达且取消不创建修改。",
+      "evidence_layer": "GUI",
+      "status": "PARTIAL",
+      "task_id": "UX-07"
+    },
+    {
+      "id": "AC-0929-07-04",
+      "description": "模型检查绑定模型版本/单位/阈值，检查A后选B或改几何不沿用正常结论；原色/局部编辑/保存版本清楚，配色使用选定保存版本，历史图/Task ID保留。",
+      "evidence_layer": "逻辑/GUI/视觉",
+      "status": "PARTIAL",
+      "task_id": "UX-07"
+    },
+    {
+      "id": "AC-0929-07-05",
+      "status": "PARTIAL",
+      "task_id": "UX-07",
+      "description": "灰模开关只改渲染，原件/草稿/目标色/槽位不变；拖强度不启动全模型计算。候选接受后即使面数相同也复核几何身份和依赖，取消/失败不半接受。",
+      "evidence_layer": "逻辑/GUI"
+    },
+    {
+      "id": "AC-0929-07-06",
+      "status": "PARTIAL",
+      "task_id": "UX-07",
+      "description": "下载/解析/可预览/失败分层；既有大模型按解析、显示、编辑、切片各自真实能力处理，支持预览/导出的不全局拒绝，不静默降面。打开工作台不写工程，重复导航不重复导入。",
+      "evidence_layer": "逻辑/GUI"
+    },
+    {
+      "id": "AC-0929-07-07",
+      "status": "PASS",
+      "task_id": "UX-07",
+      "description": "识别未结束时基础编辑及普通配色回退可用；随后旧识别结果不覆盖人工改动。若当前仍需等待，该目标明确未完成，不能改为不适用后算通过。",
+      "evidence_layer": "逻辑/GUI"
+    },
+    {
+      "id": "AC-0929-08-01",
+      "description": "打开/取消不改模型/工程/材料；色数、边界、材料、设备或工艺改变后旧预览不可确认。人工锁色/局部目标保持或明示冲突；接受色差不绕过几何/材料身份校验。",
+      "evidence_layer": "逻辑/GUI",
+      "status": "PARTIAL",
+      "task_id": "UX-08"
+    },
+    {
+      "id": "AC-0929-08-02",
+      "description": "美颜局部色经配色→工程→撤销/重做→保存3MF→重开，色板/单位/几何/槽位保持，原GLB不变；导入失败或取消不残留半工程/新增材料。",
+      "evidence_layer": "逻辑/GUI",
+      "status": "PARTIAL",
+      "task_id": "UX-08"
+    },
+    {
+      "id": "AC-0929-08-03",
+      "description": "缺耗材/不兼容/无结果/坏网格/底座失败有提示；单色必须主动指定真实材料，非失败时静默降级，原彩色资产保持；检查不显示未测能力正常。",
+      "evidence_layer": "GUI",
+      "status": "PARTIAL",
+      "task_id": "UX-08"
+    },
+    {
+      "id": "AC-0929-08-04",
+      "description": "窄窗映射列表可滚、预览和确认不遮挡；弹层关闭回原入口焦点，GL相机/模型不变。",
+      "evidence_layer": "GUI/视觉",
+      "status": "PASS",
+      "task_id": "UX-08"
+    },
+    {
+      "id": "AC-0929-08-05",
+      "status": "PARTIAL",
+      "task_id": "UX-08",
+      "description": "分别从默认完整颜色匹配、原生导入和独立配色页检查实际消费者；TextureImportDialog事务和LocalPrintColorPanel的recipe禁用门槛各自有效，换肤不扩大能力。",
+      "evidence_layer": "源码/逻辑/GUI"
+    },
+    {
+      "id": "AC-0929-08-06",
+      "status": "PARTIAL",
+      "task_id": "UX-08",
+      "description": "准备底座/尺寸绑定当前对象；A切B拒绝旧对象快照；非法/非有限尺寸无写入，重复应用无意外重叠底座。应用→撤销/重做→3MF重开一致，修改后旧切片失效。",
+      "evidence_layer": "逻辑/GUI"
+    },
+    {
+      "id": "AC-0929-08-07",
+      "status": "PARTIAL",
+      "task_id": "UX-08",
+      "description": "用真实支持的1/4/6实体配置（含同RGB异槽）核对槽位身份，不按RGB合并。支持虚拟配方时分别明示新增实体/虚拟数并事务应用；缺材料/工艺/配方条件不可应用，不称CMYK或实物标定。",
+      "evidence_layer": "逻辑/GUI/条件受限"
+    },
+    {
+      "id": "AC-0929-09-01",
+      "description": "同一候选的卡片/详情/应用快照值一致，选择不修改工程，应用可撤销；输入变化后候选或旧切片明确失效。",
+      "evidence_layer": "逻辑/GUI",
+      "status": "PARTIAL",
+      "task_id": "UX-09"
+    },
+    {
+      "id": "AC-0929-09-02",
+      "description": "真实本地工程完成切片→轨迹/图例/层滑块→G-code导出，文件/耗材/时长属于当前板；未知成本不造数字。取消/失败保留工程，不以旧结果假成功。",
+      "evidence_layer": "GUI",
+      "status": "PARTIAL",
+      "task_id": "UX-09"
+    },
+    {
+      "id": "AC-0929-09-03",
+      "description": "无切片/进行中/过期禁止打印，缺设备可导出；点去打印只开确认、零上传/启动，允许必要只读查询。确认后模型/材料/设备/工艺/板变化须复核，不仅检查文件存在。",
+      "evidence_layer": "逻辑/GUI",
+      "status": "PARTIAL",
+      "task_id": "UX-09"
+    },
+    {
+      "id": "AC-0929-09-04",
+      "description": "紧凑窗不发生缩放按钮命中轨迹滑块/侧栏挡视口；原生设置、撤销、保存重开与手动切片均可用。",
+      "evidence_layer": "GUI/视觉",
+      "status": "PARTIAL",
+      "task_id": "UX-09"
+    },
+    {
+      "id": "AC-0929-10-01",
+      "description": "空配置首次欢迎→地区→打印机未选/选中→耗材→完成，结果与真实配置一致；已有用户不强制重走且取消不覆盖。允许延后打印机配置进入图像创作，后续需配置操作再引导。",
+      "evidence_layer": "GUI",
+      "status": "PARTIAL",
+      "task_id": "UX-10"
+    },
+    {
+      "id": "AC-0929-10-02",
+      "description": "返回/关闭/重入的草稿符合选择；切换不同预设时喷头/实体槽/颜色分别匹配真实结构，数量不写死4，无匹配不可误提交。",
+      "evidence_layer": "逻辑/GUI",
+      "status": "NOT_RUN",
+      "task_id": "UX-10"
+    },
+    {
+      "id": "AC-0929-10-03",
+      "description": "断网可用本地预设；无预设/读取失败/不兼容/设备未装料分别反馈，设备离线不误报无本地材料；新窗口不遮工程。",
+      "evidence_layer": "GUI",
+      "status": "NOT_RUN",
+      "task_id": "UX-10"
+    },
+    {
+      "id": "AC-0929-10-04",
+      "description": "品牌/版本/图标/状态、选中框/错误/按钮与新稿一致；Windows原生选择器允许系统外观差异。",
+      "evidence_layer": "GUI/视觉",
+      "status": "PARTIAL",
+      "task_id": "UX-10"
+    },
+    {
+      "id": "AC-0929-11-01",
+      "description": "未配置/离线/无切片时打印中心无假进度或“正常”；本地导出及返回配置/切片路径可走通，按钮理由明确。",
+      "evidence_layer": "GUI",
+      "status": "PARTIAL",
+      "task_id": "UX-11"
+    },
+    {
+      "id": "AC-0929-11-02",
+      "description": "有效设备的数据、相机与耗材/AI状态来自真实接口；过期显示未知；没有能力不显示正常。",
+      "evidence_layer": "设备只读",
+      "status": "NOT_RUN",
+      "task_id": "UX-11"
+    },
+    {
+      "id": "AC-0929-11-03",
+      "description": "启动/暂停/继续/停止去重；暂停/停止取消零命令，确认待权威回执；上传成功不等于开始，超时先查同一作业，A设备迟到回执不改B。真实命令只在具体设备/作业授权后执行。",
+      "evidence_layer": "逻辑/设备命令",
+      "status": "NOT_RUN",
+      "task_id": "UX-11"
+    },
+    {
+      "id": "AC-0929-11-04",
+      "description": "完成/失败/取消终态不同，停止不叫急停；真实媒体筛选/预览/导出可用，无录像不造文件，媒体操作不发打印命令，再次准备仍走新鲜度和设备确认。",
+      "evidence_layer": "设备/GUI",
+      "status": "NOT_RUN",
+      "task_id": "UX-11"
+    },
+    {
+      "id": "AC-0929-11-05",
+      "description": "无设备页面与确认弹层按新稿布局；真机与实物分别NOT_RUN，不阻止N9对本地项验收。",
+      "evidence_layer": "GUI/视觉",
+      "status": "PARTIAL",
+      "task_id": "UX-11"
+    },
+    {
+      "id": "AC-0929-11-06",
+      "status": "PARTIAL",
+      "task_id": "UX-11",
+      "description": "设备已有媒体、设备截图、软件视口截图来源可区分；无权限/缺文件/重名/磁盘满/取消导出明确反馈，不覆盖未确认文件或删原记录。客户端录制未接保持不可用，进页面不自动采集。",
+      "evidence_layer": "GUI/外部"
+    },
+    {
+      "id": "AC-0929-12-01",
+      "description": "N1后普通/紧凑窗四入口与主操作均可达；N9目标客户区/DPI实测数值有记录，没测条件不能计PASS。",
+      "evidence_layer": "GUI/视觉",
+      "status": "PARTIAL",
+      "task_id": "UX-12"
+    },
+    {
+      "id": "AC-0929-12-02",
+      "description": "完成输入→2D→3D→美颜保存→历史重开→配色工程→切片预览→本地导出→打印确认的连续旅程，模型/任务/颜色/工程身份不串。",
+      "evidence_layer": "GUI/在线",
+      "status": "PASS",
+      "task_id": "UX-12"
+    },
+    {
+      "id": "AC-0929-12-03",
+      "description": "Tab/Shift+Tab、Enter/Space、Esc、系统Alt+Space、中文IME/emoji、长文本/Task ID、读屏名称按实际支持检查；各缺口有具体控件和复现。",
+      "evidence_layer": "GUI",
+      "status": "PARTIAL",
+      "task_id": "UX-12"
+    },
+    {
+      "id": "AC-0929-12-04",
+      "description": "单个已安装身份上普通Orca路径回归通过；原件/用户工程保护，程序无新增主流程崩溃。",
+      "evidence_layer": "GUI",
+      "status": "PASS",
+      "task_id": "UX-12"
+    },
+    {
+      "id": "AC-0929-12-05",
+      "description": "交付有可运行入口、匹配EXE/DLL/资源/sidecar、截图、测试/构建/GUI/视觉分层结果和复现步骤；外部/协议例外逐项列出，未接受差异不能写全设计完成。",
+      "evidence_layer": "交付",
+      "status": "NOT_RUN",
+      "task_id": "UX-12"
+    },
+    {
+      "id": "AC-0929-12-06",
+      "status": "PASS",
+      "task_id": "UX-12",
+      "description": "固定机器/模型对照切页、开抽屉、灰模和空闲；记录耗时/响应与解析、GL、任务活动，不重复解析、不新增常驻GL或任务，不以视觉截图宣称零性能开销。",
+      "evidence_layer": "GUI/性能"
+    }
+  ],
+  "progress_snapshot": {
+    "total": 59,
+    "status_counts": {
+      "PASS_DOCUMENTATION_ONLY": 2,
+      "PARTIAL": 35,
+      "PASS": 13,
+      "NOT_RUN": 9
+    },
+    "covered": 50,
+    "strict_passed_including_documentation": 15,
+    "coverage_percent": 84.75,
+    "strict_percent": 25.42,
+    "product_passed": 13,
+    "product_total": 57,
+    "note": "覆盖不是完成率；外部条件及失败不从分母删除。完整私有运行证据留在本机.tmp，不上传用户资产。"
+  },
+  "handoff_snapshot": {
+    "integration_base": "95c131f63b855d5cdf97f81e1595caa8d1ad2624",
+    "branch": "codex/team/model-generation",
+    "pr18": "MERGED",
+    "merged_runtime_validation": "PASS_SCOPED",
+    "full_visual": "PARTIAL",
+    "device_community_media": "EXTERNAL_NOT_RUN",
+    "original_acceptance_conclusions_preserved": true,
+    "cpp_tests": "645/645 PASS",
+    "setup_tests": "14/14 PASS",
+    "sidecar_contract_tests": "70/70 PASS",
+    "windows_run": "5 steps exit0 / PREPARED; official Sidecar STARTED",
+    "integration": "FAIL 3 diff budgets; not relaxed",
+    "whole_merged_journey": "NOT_RUN",
+    "ci_and_non_author_review": "PENDING",
+    "same_branch_user_authorized_public_delivery": true
+  }
+}

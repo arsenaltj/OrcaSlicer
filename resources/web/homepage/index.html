@@ -228,6 +228,19 @@
     document.onkeydown = function (event) {
 		var e = event || window.event || arguments.callee.caller.arguments[0];
 
+        // Let the native window manager handle close and system-menu keys.
+        if (e.altKey && !e.ctrlKey && !e.metaKey && (e.keyCode === 115 || e.keyCode === 32))
+            return;
+
+        // Page keys keep browser scrolling unless this is a workspace shortcut.
+        if (e.keyCode === 33 || e.keyCode === 34) {
+            if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && !e.isComposing && !e.repeat) {
+                OutputKey(e.keyCode, e.ctrlKey, false, e.metaKey);
+                e.preventDefault();
+            }
+            return;
+        }
+
 		if (e.ctrlKey && e.metaKey)
 			OutputKey(e.keyCode, true, false, true);
 		else if (e.ctrlKey)

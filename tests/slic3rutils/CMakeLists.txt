@@ -17,6 +17,8 @@ add_executable(${_TEST_NAME}_tests
     test_mesh_raycaster.cpp
     test_font_texture_compression.cpp
     test_model_library_metadata.cpp
+    test_model_library_filter.cpp
+    test_model_library_export.cpp
     test_model_generation_submission_state.cpp
     test_local_print_color_matching.cpp
     test_local_print_color_recipes.cpp
@@ -65,6 +67,7 @@ add_executable(${_TEST_NAME}_tests
     test_smart_slicing_candidates.cpp
     test_smart_slicing_coordinator.cpp
     test_smart_slicing_apply_guard.cpp
+    test_software_viewport_export.cpp
     test_smart_slicing_parameters.cpp
     test_smart_slicing_runtime.cpp
     test_smart_slicing_workflow.cpp

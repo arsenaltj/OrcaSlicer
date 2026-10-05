@@ -20,13 +20,17 @@ public:
         if (!result_matches(candidate, result) || result.status != TrialSliceStatus::Succeeded || !result.metrics) {
             candidate.status          = CandidateStatus::Failed;
             candidate.metrics.reset();
-            candidate.diagnostic_code = result_matches(candidate, result) ? result.diagnostic_code : "trial_result_mismatch";
+            const bool matches = result_matches(candidate, result);
+            candidate.diagnostic_code = matches ? result.diagnostic_code : "trial_result_mismatch";
+            candidate.diagnostic_message = matches && result.status == TrialSliceStatus::Failed ?
+                std::move(result.diagnostic_message) : std::string{};
             return false;
         }
 
         candidate.status          = CandidateStatus::Ready;
         candidate.metrics         = std::move(result.metrics);
         candidate.diagnostic_code = std::move(result.diagnostic_code);
+        candidate.diagnostic_message.clear();
         return true;
     }
 };

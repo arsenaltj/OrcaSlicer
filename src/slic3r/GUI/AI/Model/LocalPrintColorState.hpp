@@ -139,7 +139,7 @@ inline AI::PrintRgb rgb(const Json& j)
 // confirmed state. Callers supply current identities before applying a cache.
 inline bool decode(const Json& j, const std::string& source_sha256, const std::string& geometry_id,
     const std::string& material_fingerprint, const std::string& process_fingerprint,
-    AI::LocalPrintColorResult& destination, std::string& error, const std::string& algorithm_version = "region-direct-v5")
+    AI::LocalPrintColorResult& destination, std::string& error, const std::string& algorithm_version = "region-direct-v6")
 {
     try {
         AI::LocalPrintColorResult value;

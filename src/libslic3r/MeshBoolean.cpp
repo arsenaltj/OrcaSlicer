@@ -7,6 +7,8 @@
 
 #include <boost/next_prior.hpp>
 #include "boost/log/trivial.hpp"
+#include <chrono>
+#include <limits>
 // Include igl first. It defines "L" macro which then clashes with our localization
 #include <igl/copyleft/cgal/mesh_boolean.h>
 #undef L
@@ -33,6 +35,50 @@
 
 namespace Slic3r {
 namespace MeshBoolean {
+
+namespace {
+
+constexpr size_t invalid_repair_metric = std::numeric_limits<size_t>::max();
+
+class CgalRepairStageTimer
+{
+public:
+    CgalRepairStageTimer(const char *stage, size_t vertices = 0, size_t faces = 0)
+        : m_stage(stage), m_vertices(vertices), m_faces(faces),
+          m_started(std::chrono::steady_clock::now())
+    {
+        BOOST_LOG_TRIVIAL(info) << "[CgalRepair] begin stage=" << m_stage
+            << " vertices=" << m_vertices << " faces=" << m_faces;
+    }
+
+    ~CgalRepairStageTimer() { finish(); }
+
+    void finish(size_t vertices = invalid_repair_metric, size_t faces = invalid_repair_metric)
+    {
+        if (m_finished)
+            return;
+        if (vertices != invalid_repair_metric)
+            m_vertices = vertices;
+        if (faces != invalid_repair_metric)
+            m_faces = faces;
+
+        const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - m_started).count();
+        BOOST_LOG_TRIVIAL(info) << "[CgalRepair] end stage=" << m_stage
+            << " elapsed_ms=" << elapsed_ms
+            << " vertices=" << m_vertices << " faces=" << m_faces;
+        m_finished = true;
+    }
+
+private:
+    const char *m_stage;
+    size_t m_vertices;
+    size_t m_faces;
+    std::chrono::steady_clock::time_point m_started;
+    bool m_finished = false;
+};
+
+} // namespace
 
 using MapMatrixXfUnaligned = Eigen::Map<const Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor | Eigen::DontAlign>>;
 using MapMatrixXiUnaligned = Eigen::Map<const Eigen::Matrix<int,   Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor | Eigen::DontAlign>>;
@@ -477,15 +523,27 @@ bool empty(const CGALMesh &mesh)
     return mesh.m.is_empty();
 }
 
-bool repair(TriangleMesh& mesh, RepairedMeshErrors* repaired_errors, std::string* error)
+bool repair(TriangleMesh& mesh, RepairedMeshErrors* repaired_errors, std::string* error,
+            const std::function<bool()> &is_canceled)
 {
     using namespace CGAL;
     namespace PMP = CGAL::Polygon_mesh_processing;
 
+    const auto canceled = [&]() {
+        if (!is_canceled || !is_canceled())
+            return false;
+        if (error)
+            *error = "Repair canceled";
+        return true;
+    };
+    if (canceled())
+        return false;
     if (mesh.empty())
         return true;
 
     try {
+        CgalRepairStageTimer total_stage("repair_mesh_total", mesh.its.vertices.size(), mesh.its.indices.size());
+
         // 1) Convert to polygon soup
         std::vector<_EpicMesh::Point>         points;
         std::vector<std::vector<std::size_t>> polygons;
@@ -493,39 +551,101 @@ bool repair(TriangleMesh& mesh, RepairedMeshErrors* repaired_errors, std::string
         points.reserve(mesh.its.vertices.size());
         polygons.reserve(mesh.its.indices.size());
 
-        for (const auto& v : mesh.its.vertices)
-            points.emplace_back(v.x(), v.y(), v.z());
+        {
+            CgalRepairStageTimer stage("copy_input_to_polygon_soup", mesh.its.vertices.size(), mesh.its.indices.size());
+            size_t copied = 0;
+            for (const auto& v : mesh.its.vertices) {
+                if ((copied++ & 4095) == 0 && canceled())
+                    return false;
+                points.emplace_back(v.x(), v.y(), v.z());
+            }
 
-        for (const auto& f : mesh.its.indices)
-            polygons.push_back({size_t(f[0]), size_t(f[1]), size_t(f[2])});
+            copied = 0;
+            for (const auto& f : mesh.its.indices) {
+                if ((copied++ & 4095) == 0 && canceled())
+                    return false;
+                polygons.push_back({size_t(f[0]), size_t(f[1]), size_t(f[2])});
+            }
+        }
 
         // 2) Aggressive soup cleanup
-        PMP::repair_polygon_soup(points, polygons);
+        if (canceled())
+            return false;
+        {
+            CgalRepairStageTimer stage("repair_polygon_soup", points.size(), polygons.size());
+            PMP::repair_polygon_soup(points, polygons);
+            stage.finish(points.size(), polygons.size());
+        }
 
         // 3) Convert soup → mesh
+        if (canceled())
+            return false;
         _EpicMesh cgal_mesh;
-        PMP::polygon_soup_to_polygon_mesh(points, polygons, cgal_mesh);
+        {
+            CgalRepairStageTimer stage("polygon_soup_to_polygon_mesh", points.size(), polygons.size());
+            PMP::polygon_soup_to_polygon_mesh(points, polygons, cgal_mesh);
+            stage.finish(num_vertices(cgal_mesh), num_faces(cgal_mesh));
+        }
 
         // 4) Remove degenerate geometry
-        PMP::remove_degenerate_faces(cgal_mesh);
-        PMP::remove_isolated_vertices(cgal_mesh);
+        if (canceled())
+            return false;
+        {
+            CgalRepairStageTimer stage("remove_degenerate_faces", num_vertices(cgal_mesh), num_faces(cgal_mesh));
+            PMP::remove_degenerate_faces(cgal_mesh);
+            stage.finish(num_vertices(cgal_mesh), num_faces(cgal_mesh));
+        }
+        if (canceled())
+            return false;
+        {
+            CgalRepairStageTimer stage("remove_isolated_vertices", num_vertices(cgal_mesh), num_faces(cgal_mesh));
+            PMP::remove_isolated_vertices(cgal_mesh);
+            stage.finish(num_vertices(cgal_mesh), num_faces(cgal_mesh));
+        }
 
         // 5) Fix remaining non-manifold vertices and reconnect coincident borders.
-        PMP::stitch_borders(cgal_mesh);
-        PMP::duplicate_non_manifold_vertices(cgal_mesh);
-        PMP::stitch_borders(cgal_mesh);
+        if (canceled())
+            return false;
+        {
+            CgalRepairStageTimer stage("stitch_borders_initial", num_vertices(cgal_mesh), num_faces(cgal_mesh));
+            PMP::stitch_borders(cgal_mesh);
+            stage.finish(num_vertices(cgal_mesh), num_faces(cgal_mesh));
+        }
+        if (canceled())
+            return false;
+        {
+            CgalRepairStageTimer stage("duplicate_non_manifold_vertices", num_vertices(cgal_mesh), num_faces(cgal_mesh));
+            PMP::duplicate_non_manifold_vertices(cgal_mesh);
+            stage.finish(num_vertices(cgal_mesh), num_faces(cgal_mesh));
+        }
+        if (canceled())
+            return false;
+        {
+            CgalRepairStageTimer stage("stitch_borders_after_non_manifold", num_vertices(cgal_mesh), num_faces(cgal_mesh));
+            PMP::stitch_borders(cgal_mesh);
+            stage.finish(num_vertices(cgal_mesh), num_faces(cgal_mesh));
+        }
 
         // 6) Fill one boundary cycle at a time. Re-extracting cycles after each
         // mutation avoids keeping stale halfedge descriptors on complex repairs.
+        if (canceled())
+            return false;
         if (!CGAL::is_closed(cgal_mesh)) {
             using halfedge_descriptor = boost::graph_traits<_EpicMesh>::halfedge_descriptor;
             using face_descriptor = boost::graph_traits<_EpicMesh>::face_descriptor;
 
-            for (size_t attempt = 0; attempt < 256 && !CGAL::is_closed(cgal_mesh); ++attempt) {
+            CgalRepairStageTimer stage("fill_boundary_cycles", num_vertices(cgal_mesh), num_faces(cgal_mesh));
+            for (size_t attempt = 0; attempt < 256; ++attempt) {
+                if (canceled())
+                    return false;
+                if (CGAL::is_closed(cgal_mesh))
+                    break;
                 std::vector<halfedge_descriptor> borders;
                 PMP::extract_boundary_cycles(cgal_mesh, std::back_inserter(borders));
                 bool filled = false;
                 for (halfedge_descriptor border : borders) {
+                    if (canceled())
+                        return false;
                     std::vector<face_descriptor> patch;
                     PMP::triangulate_hole(
                         cgal_mesh, border,
@@ -538,10 +658,19 @@ bool repair(TriangleMesh& mesh, RepairedMeshErrors* repaired_errors, std::string
                 if (!filled)
                     break;
             }
-            PMP::stitch_borders(cgal_mesh);
+            stage.finish(num_vertices(cgal_mesh), num_faces(cgal_mesh));
+            if (canceled())
+                return false;
+            {
+                CgalRepairStageTimer stage("stitch_borders_after_hole_filling", num_vertices(cgal_mesh), num_faces(cgal_mesh));
+                PMP::stitch_borders(cgal_mesh);
+                stage.finish(num_vertices(cgal_mesh), num_faces(cgal_mesh));
+            }
         }
 
         // 7) Final validity check
+        if (canceled())
+            return false;
         if (!CGAL::is_closed(cgal_mesh)) {
             if (error)
                 *error = "Repair failed: mesh still open after hole filling.";
@@ -550,16 +679,36 @@ bool repair(TriangleMesh& mesh, RepairedMeshErrors* repaired_errors, std::string
 
         // 8) Resolve self-intersections only after the mesh is closed. Keep the
         // repaired shell if the optional union cannot produce a closed result.
+        if (canceled())
+            return false;
         _EpicMesh union_mesh;
-        if (PMP::corefine_and_compute_union(cgal_mesh, cgal_mesh, union_mesh) && CGAL::is_closed(union_mesh))
-            cgal_mesh = std::move(union_mesh);
+        {
+            CgalRepairStageTimer stage("corefine_and_compute_union", num_vertices(cgal_mesh), num_faces(cgal_mesh));
+            if (PMP::corefine_and_compute_union(cgal_mesh, cgal_mesh, union_mesh) && CGAL::is_closed(union_mesh))
+                cgal_mesh = std::move(union_mesh);
+            stage.finish(num_vertices(cgal_mesh), num_faces(cgal_mesh));
+        }
 
         // 9) Ensure outward orientation
-        if (!PMP::does_bound_a_volume(cgal_mesh))
+        if (canceled())
+            return false;
+        if (!PMP::does_bound_a_volume(cgal_mesh)) {
+            CgalRepairStageTimer stage("orient_to_bound_a_volume", num_vertices(cgal_mesh), num_faces(cgal_mesh));
             PMP::orient_to_bound_a_volume(cgal_mesh);
+            stage.finish(num_vertices(cgal_mesh), num_faces(cgal_mesh));
+        }
 
         // 10) Convert back
-        indexed_triangle_set its = cgal_to_indexed_triangle_set(cgal_mesh);
+        if (canceled())
+            return false;
+        indexed_triangle_set its;
+        {
+            CgalRepairStageTimer stage("cgal_to_indexed_triangle_set", num_vertices(cgal_mesh), num_faces(cgal_mesh));
+            its = cgal_to_indexed_triangle_set(cgal_mesh);
+            stage.finish(its.vertices.size(), its.indices.size());
+        }
+        if (canceled())
+            return false;
 
         RepairedMeshErrors errs{};
         errs.facets_removed = 0;

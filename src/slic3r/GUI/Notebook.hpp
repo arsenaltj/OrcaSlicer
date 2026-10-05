@@ -34,6 +34,11 @@ public:
     void SetCompact(size_t n, bool compact); // ORCA
     wxString GetPageText(size_t n) const;
     wxFlexGridSizer* GetBtnsSizer(){return m_buttons_sizer;}; // ORCA
+    void SetExternalNavigation(bool external) {
+        m_external_navigation = external;
+        m_buttons_sizer->ShowItems(!external);
+        Layout();
+    }
     // ORCA: a companion widget shown right after the tab buttons (before any side_tools), e.g.
     // an overflow indicator. Pass nullptr to remove it; ownership stays with the caller.
     void SetOverflowButton(wxWindow* button);
@@ -48,6 +53,7 @@ private:
     int                             m_line_margin;
     std::vector<wxString>           m_pageLabels; // ORCA
     wxWindow*                       m_overflow_button{nullptr}; // ORCA
+    bool                            m_external_navigation{false};
 };
 
 class Notebook : public wxBookCtrlBase
@@ -106,6 +112,13 @@ public:
 
 
     // Methods specific to this class.
+    void ShowPageBar(bool show) {
+        if (m_bookctrl->IsShown() == show) return;
+        m_bookctrl->Show(show);
+        m_page_bar_visible = show;
+        Layout();
+        DoSize();
+    }
 
     // A method allowing to add a new page without any label (which is unused
     // by this control) and show it immediately.
@@ -417,6 +430,10 @@ public:
     }
 
 protected:
+    wxRect GetPageRect() const override {
+        return m_page_bar_visible ? wxBookCtrlBase::GetPageRect() : GetClientRect();
+    }
+    bool m_page_bar_visible{true};
     virtual void UpdateSelectedPage(size_t WXUNUSED(newsel)) override
     {
         // Nothing to do here, but must be overridden to avoid the assert in

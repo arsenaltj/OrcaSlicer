@@ -140,7 +140,8 @@ TEST_CASE("runtime recovery keeps a matching summary and discards stale journals
 TEST_CASE("resource budgets expose candidate timeout memory and disk violations", "[AI][SmartSlicing][Runtime]")
 {
     WorkflowResourceBudget budget;
-    CHECK(workflow_budget_violation(budget, 4, std::chrono::seconds(0), {}) == "candidate_budget_exceeded");
+    CHECK(workflow_budget_violation(budget, 4, std::chrono::seconds(0), {}).empty());
+    CHECK(workflow_budget_violation(budget, 5, std::chrono::seconds(0), {}) == "candidate_budget_exceeded");
     CHECK(workflow_budget_violation(budget, 3, std::chrono::minutes(31), {}) == "workflow_timeout");
     CHECK(workflow_budget_violation(budget, 3, std::chrono::seconds(0),
                                     {budget.maximum_memory_bytes + 1, 0}) == "workflow_memory_budget_exceeded");
@@ -182,12 +183,16 @@ TEST_CASE("Orca runtime store round trips bounded metadata without workspace pay
     WorkflowRuntimeRecord record{11, WorkflowState::TrialSlicingBaseline, {1, 2, 3, "revision"},
                                  {{"baseline", CandidateGoal::Stability, CandidateStatus::TrialSlicing}},
                                  "trial_slicing_baseline", 123};
+    record.candidates.push_back({"balanced", CandidateGoal::Stability, CandidateStatus::Draft});
+    record.candidates.push_back({"speed", CandidateGoal::Speed, CandidateStatus::Draft});
+    record.candidates.push_back({"quality", CandidateGoal::Quality, CandidateStatus::Draft});
     store.save(record);
     const std::optional<WorkflowRuntimeRecord> loaded = store.load();
     REQUIRE(loaded);
     CHECK(loaded->workflow_id == 11);
     CHECK(loaded->revision == record.revision);
-    CHECK(loaded->candidates.size() == 1);
+    CHECK(loaded->candidates.size() == 4);
+    CHECK(loaded->candidates.back().id == "quality");
 
     std::ifstream stream(path.string(), std::ios::binary);
     const std::string serialized((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());

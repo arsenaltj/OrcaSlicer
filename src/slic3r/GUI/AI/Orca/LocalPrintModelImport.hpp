@@ -47,6 +47,7 @@ bool adopt(Model& model, const ModelObject& source, UndoRedo::ProjectConfigUndo:
     ProjectConfigRestore::ColorCache& cache, PresetBundle& bundle, Record&& record,
     size_t& index, std::string& error)
 {
+    error.clear();
     const size_t before = model.objects.size();
     auto rollback = [&] { while (model.objects.size() > before) model.delete_object(model.objects.size() - 1); };
     try {

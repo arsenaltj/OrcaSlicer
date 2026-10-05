@@ -1,6 +1,7 @@
 #include "slic3r/GUI/ModelGenerationPanel.hpp"
 #include "ModelGenerationPresentation.hpp"
 #include "ModelGenerationStatusText.hpp"
+#include "ModelGenerationConfirmation.hpp"
 #include "ModelPreview3D.hpp"
 #include "slic3r/GUI/GUI.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
@@ -12,6 +13,7 @@
 #include <wx/weakref.h>
 #include <algorithm>
 #include <utility>
+#include <tuple>
 
 namespace Slic3r::GUI {
 using namespace ModelGenerationPresentation;
@@ -19,8 +21,9 @@ using namespace ModelGenerationStatusText;
 
 void ModelGenerationPanel::on_generate(wxCommandEvent&)
 {
+    if (!input_editable() || !m_service_available) return;
     if (!generation_options_valid()) {
-        show_input_hint(_L("200 万面需要选择精细几何（+20 积分）。"));
+        show_input_hint(_L("200 万面需要选择精细几何。"));
         return;
     }
     const bool image_mode = m_job_preview_expected;
@@ -39,11 +42,30 @@ void ModelGenerationPanel::on_generate(wxCommandEvent&)
         : _L("要根据已确认的提示词创建 1 个付费 %s 生成任务吗？"), provider_label);
     message += "\n\n" + generation_options_summary(image_mode);
     if (m_job_generation_options.provider == "tripo" && m_job_generation_options.output_format == "obj")
-        message += _L("\n本次还将创建 1 个 OBJ 基础转换任务（已计入估算）。");
+        message += _L("\n本次还将创建 1 个 OBJ 转换任务，可能单独计费，费用同样未报价。");
     message += _L("\n停止：只停止本地等待；已提交的远端任务可能继续运行并计费。");
-    MessageDialog confirm(this, message, _L("确认生成 3D 模型"), wxYES_NO | wxICON_QUESTION);
+    const SubmissionContext confirmation_context {m_job_id, m_job_generation_options.provider, m_sequence};
+    const auto confirmed_options = m_job_generation_options;
+    const auto confirmed_profile = m_job_generation_profile;
+    const auto confirmed_prompt = m_prepared_prompt->GetValue();
+    ModelGenerationConfirmation confirm(this, message, _L("确认生成 3D 模型"), _L("创建 3D 任务"));
     if (confirm.ShowModal() != wxID_YES)
         return;
+    // The modal pumps events: restore, service loss or a late status may have
+    // changed the job while the user was reading the confirmation.
+    const auto current_options = current_generation_options();
+    const auto option_values = [](const AIModelGenerationClient::GenerationOptions& options) {
+        return std::tie(options.provider, options.face_limit, options.geometry_quality,
+                        options.texture_quality, options.output_format);
+    };
+    if (!input_editable() || !m_service_available || !m_awaiting_confirmation || !job_inputs_match() ||
+        use_printable_colors() != m_job_use_printable_colors || current_palette() != m_job_palette ||
+        option_values(current_options) != option_values(confirmed_options) ||
+        current_generation_profile() != confirmed_profile || m_prepared_prompt->GetValue() != confirmed_prompt ||
+        !confirmation_context.matches(m_job_id, current_generation_options().provider, m_sequence)) {
+        show_input_hint(_L("任务或输入已变化，本次没有提交。请核对当前设计后重新确认。"));
+        return;
+    }
     if (image_mode)
         m_client.record_journey_event("preview_accepted", m_job_id);
     m_client.record_journey_event("model_submitted", m_job_id);

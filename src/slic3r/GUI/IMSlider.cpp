@@ -1218,6 +1218,11 @@ bool IMSlider::vertical_slider(const char* str_id, int* higher_value, int* lower
     return value_changed;
 }
 
+float IMSlider::horizontal_slider_window_height() const
+{
+    return HORIZONTAL_SLIDER_WINDOW_HEIGHT * m_scale;
+}
+
 bool IMSlider::render(int canvas_width, int canvas_height)
 {
     bool result = false;

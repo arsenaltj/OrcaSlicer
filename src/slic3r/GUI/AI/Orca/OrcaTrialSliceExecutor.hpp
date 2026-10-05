@@ -1,6 +1,6 @@
 #pragma once
 
-#include "libslic3r/Model.hpp"
+#include "OrcaParameterProposalAdapter.hpp"
 #include "libslic3r/PrintConfig.hpp"
 #include "slic3r/AI/SmartSlicing/Ports/ITrialSliceExecutor.hpp"
 
@@ -37,7 +37,8 @@ public:
     explicit OrcaTrialSliceExecutor(InputProvider input_provider);
     ~OrcaTrialSliceExecutor() override;
 
-    void prepare_session_input(OrcaTrialSliceInput input);
+    void prepare_session_input(OrcaTrialSliceInput input,
+        const std::vector<AI::SmartSlicing::SliceCandidate>& candidates = {});
     void clear_session_input();
     void set_resource_limits(std::chrono::seconds maximum_duration, uint64_t maximum_memory_bytes,
                              uint64_t maximum_temporary_disk_bytes);
@@ -60,6 +61,12 @@ private:
     Print* m_active_print{nullptr};
     std::mutex m_session_mutex;
     std::optional<OrcaTrialSliceInput> m_session_input;
+    struct PreparedParameters {
+        AI::SmartSlicing::SliceCandidate candidate;
+        OrcaParameterApplyResult result;
+        std::vector<OrcaObjectParameterPatch> patches;
+    };
+    std::vector<PreparedParameters> m_prepared_parameters;
     std::chrono::seconds m_maximum_duration{std::chrono::minutes(30)};
     uint64_t m_maximum_memory_bytes{2ull * 1024ull * 1024ull * 1024ull};
     uint64_t m_maximum_temporary_disk_bytes{512ull * 1024ull * 1024ull};

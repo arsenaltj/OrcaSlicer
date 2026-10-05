@@ -122,9 +122,26 @@ OrcaTrialSliceExecutor::OrcaTrialSliceExecutor(InputProvider input_provider) : m
 
 OrcaTrialSliceExecutor::~OrcaTrialSliceExecutor() { cancel_trial_slice(); }
 
-void OrcaTrialSliceExecutor::prepare_session_input(OrcaTrialSliceInput input)
+void OrcaTrialSliceExecutor::prepare_session_input(
+    OrcaTrialSliceInput input, const std::vector<SliceCandidate>& candidates)
 {
+    std::vector<PreparedParameters> prepared;
+    std::vector<ModelObject*> targets;
+    for (auto* object : input.model.objects)
+        if (object != nullptr && object->printable && std::any_of(object->instances.begin(), object->instances.end(),
+                [](const ModelInstance* instance) { return instance != nullptr && instance->printable; }))
+            targets.push_back(object);
+    for (const auto& candidate : candidates) {
+        if (candidate.parameters.entries.empty())
+            continue;
+        PreparedParameters parameters;
+        parameters.candidate = candidate;
+        parameters.result = OrcaParameterProposalAdapter().prepare_object_patches(
+            candidate.parameters, input.plate_id, input.config, targets, parameters.patches);
+        prepared.push_back(std::move(parameters));
+    }
     std::lock_guard<std::mutex> lock(m_session_mutex);
+    m_prepared_parameters = std::move(prepared);
     m_session_input = std::move(input);
     m_cancel_requested.store(false, std::memory_order_release);
     m_timed_out.store(false, std::memory_order_release);
@@ -134,6 +151,7 @@ void OrcaTrialSliceExecutor::clear_session_input()
 {
     std::lock_guard<std::mutex> lock(m_session_mutex);
     m_session_input.reset();
+    m_prepared_parameters.clear();
 }
 
 void OrcaTrialSliceExecutor::set_resource_limits(std::chrono::seconds maximum_duration, uint64_t maximum_memory_bytes,
@@ -218,11 +236,27 @@ TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice(const SliceCandidat
     try {
         OrcaTrialSliceInput input;
         bool prepared_session = false;
+        std::optional<PreparedParameters> prepared_parameters;
         {
             std::lock_guard<std::mutex> lock(m_session_mutex);
             if (m_session_input) {
                 input = *m_session_input;
                 prepared_session = true;
+                for (const auto& prepared : m_prepared_parameters) {
+                    if (prepared.candidate.id != candidate.id ||
+                        prepared.candidate.base_revision != candidate.base_revision ||
+                        prepared.candidate.parameters.entries.size() != candidate.parameters.entries.size())
+                        continue;
+                    bool matches = true;
+                    for (size_t i = 0; i < candidate.parameters.entries.size(); ++i) {
+                        const auto& a = prepared.candidate.parameters.entries[i];
+                        const auto& b = candidate.parameters.entries[i];
+                        if (a.scope != b.scope || a.owner != b.owner || a.target_id != b.target_id ||
+                            a.key != b.key || a.expected_value != b.expected_value || a.new_value != b.new_value)
+                            matches = false;
+                    }
+                    if (matches) prepared_parameters = prepared;
+                }
             }
         }
         if (!prepared_session) {
@@ -262,14 +296,25 @@ TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice(const SliceCandidat
             return result;
         }
         if (!candidate.parameters.entries.empty()) {
-            DynamicPrintConfig patched_config;
-            const OrcaParameterApplyResult parameter_result = OrcaParameterProposalAdapter().validate_and_apply(
-                candidate.parameters, input.plate_id, input.config, patched_config);
-            if (!parameter_result.accepted) {
-                result.diagnostic_code = parameter_result.diagnostic_code;
+            const auto domain = ParameterProposalValidator().validate(candidate.parameters);
+            if (!domain.accepted()) {
+                result.diagnostic_code = parameter_rejection_code_name(domain.rejections.front().code);
                 return result;
             }
-            input.config = std::move(patched_config);
+            if (!prepared_parameters) {
+                result.diagnostic_code = "parameter_trial_input_not_prepared";
+                return result;
+            }
+            if (!prepared_parameters->result.accepted) {
+                result.diagnostic_code = prepared_parameters->result.diagnostic_code;
+                return result;
+            }
+            const auto applied = OrcaParameterProposalAdapter().apply_object_patches(
+                input.model, prepared_parameters->patches);
+            if (!applied.accepted) {
+                result.diagnostic_code = applied.diagnostic_code;
+                return result;
+            }
         }
         if (!apply_placement(input.model, candidate.placement)) {
             result.diagnostic_code = "invalid_candidate_placement";
@@ -295,6 +340,7 @@ TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice(const SliceCandidat
         const StringObjectException validation_error = trial_print.validate(&validation_warnings);
         if (!validation_error.string.empty()) {
             result.diagnostic_code = "trial_validation_failed";
+            result.diagnostic_message = validation_error.string;
             return result;
         }
 
@@ -314,6 +360,10 @@ TrialSliceResult OrcaTrialSliceExecutor::execute_trial_slice(const SliceCandidat
     } catch (const CanceledException&) {
         result.status          = TrialSliceStatus::Canceled;
         result.diagnostic_code = m_timed_out.load(std::memory_order_acquire) ? "workflow_timeout" : "trial_slice_canceled";
+    } catch (const std::exception& error) {
+        result.status          = TrialSliceStatus::Failed;
+        result.diagnostic_code = "trial_slice_exception";
+        result.diagnostic_message = error.what();
     } catch (...) {
         result.status          = TrialSliceStatus::Failed;
         result.diagnostic_code = "trial_slice_exception";

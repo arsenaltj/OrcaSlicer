@@ -1,6 +1,13 @@
-# 当前开发状态（2026-10-04）
+# 当前开发状态
 
-- **当前焦点**：按用户本轮授权交付稳定态修改，沿用codex/team/model-generation和[现有Draft PR18](https://github.com/arsenaltj/OrcaSlicer/pull/18)。本机当前构建及核心GUI已通过；完整去向见[唯一主计划](../../Docs/plans/2026-09-25-product-convergence-and-lightweight-plan.md)，性能约70%范围覆盖粗估保持，不接管另一台UX。
-- **交付/返回点**：[本轮证据](../../.tmp/pr18-stable-20261004/summary.md)：source f96a4c91…/native d084eae0…/DLL6618196e…，475项C++、145个Python方法、完整Windows运行目录及普通CPU两进程GUI通过，覆盖加载切换、旧草稿/局部改色/撤销重做、保存与新进程恢复、导入和3MF重开。PR head与测试快照按文件等价核对；[r54](../../.tmp/performance-candidate-20261004-r54/README.md)仍是旧试用包，未追加组包。返回E2预算与A.3失败恢复，旧效果返回点保留。
-- **关键阻塞/边界**：CMakeLists/MainFrame/Plater三预算仍超限，完整最新集成门禁/候选CI/非作者评审未由本机结果替代，保持Draft。未保存退出/持续写失败恢复优先补证；单耗材导入显示颜色匹配需处理，不称多色完成。身份/取消/编辑就绪与历史/槽位/LegacyState兼容保持；另一台UX、完整视觉/打印未验。
-- **下一步**：交付后返回E2共享宿主胶水与构建预算、A.3数据恢复；实际UX接入再验证受影响消费者。非阻塞微优化、存储/包体/全面清理仍延期，原因/恢复条件只在主计划。GUI进程已正常退出，原件/seed保护通过；本轮仅按明确授权commit/push和更新PR，不合并，后续默认不自动远端提交或发布。
+更新：2026-10-05。活动checkout仍OrcaSlicer，现有分支 `codex/team/model-generation`；用户要求合入PR18后同分支提交协作PR，不新分支。PR18实际已合入，集成base `95c131f63b855d5cdf97f81e1595caa8d1ad2624`。本次远端交付单独授权；后续自动UX续办不自动推送、合并或打印。
+
+主线：UX v4.1 / N9回收UX-08、UX-12及原N2～N7，保持UX/N和59原编号。原59实算2文档PASS/13PASS/35PARTIAL/9NOT_RUN；50/59覆盖84.75%，15/59严格25.42%含2文档（产品13/57）；覆盖不是完成率。原完整实施条款见[唯一UX计划](../plans/figma-ux/README.md)、[任务卡](../plans/figma-ux/work-items.md)、[映射](../plans/figma-ux/design-map.json)，仍未全验。
+
+本轮：PR18不可变CPU快照、异步美颜准备/保存与缓存和原dirty UX逐块合入。相关C++645/645、设置14/14、运行Python侧车契约70/70通过。当前90a722e6完整WindowsRun 164748-967五步0，正式Sidecar165216-159独立dev-data。真实GUI历史原色模型加载/美颜准备返回、未分配禁Apply/取消、原生配色圆角/边缘缩放/标题拖动/Close回焦及CtrlPage往返限定通过，合并后完整保存失败矩阵和整旅程未重跑。六份旧草稿/旧工程保留。
+
+未结：verify_ai_integration实际FAIL3预算（CMakeLists、MainFrame、Plater），不放宽。新PR Draft待预算收敛、当前CI和非作者复核。完整视觉33Frame、短高度/多DPI/跨屏、Close原SVG黑色/视口图标回退、UX-03-01真实文件/位图拖贴、确认竞态与真实失败矩阵等仍原归属；设备/社区/媒体逐项EXTERNAL/NOT_RUN，旧FAIL不倒改。本轮源身份90a722e6，源码/测试与完整安装匹配，文档同步较晚。
+
+下一步：交付当前同分支PR后继续原N9有界真实消费者；原03-01、08/12视觉/键盘和原N2～N7按映射未结推进，不重复付费或普通保存充验收。共享MainFrame/Plater/CMake/Contracts先协调，团队各用独立暖构建/开发数据。运行入口见[快速开发](quick-development.md)，`./dev.ps1 -NoLaunch`后 `./dev.ps1 Sidecar`；安装前保护dirty并正常退出准确实例。详细本机证据为`.tmp/dev/figma-ux/0930-N4/pr18-handoff-audit.json`与原verification/review，历史完整权威原字节已在同忽略目录pre-handoff-docs备份。
+
+计划变更／同步：范围及59验收不变，仅用户明确授权本次同分支协作交付。get_goal本轮实际active，原objective旧N4文字不代表当前恢复点，不能称全计划完成。正式权限审查不绕过旧拒绝；不删除资产/草稿、不发设备命令、不强退/重复启动。每轮以约定五行收尾。

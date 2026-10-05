@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 #include "slic3r/AI/Contracts/GeneratedModelArtifact.hpp"
+#include "ModelGenerationPresentation.hpp"
 
 class wxWindow;
 
@@ -26,6 +27,10 @@ public:
     ModelGenerationFeatureHost& operator=(const ModelGenerationFeatureHost&) = delete;
 
     wxWindow* panel() const;
+    void navigate(ModelGenerationPresentation::WorkspaceAction action);
+    ModelGenerationPresentation::WorkspaceView workspace_view() const;
+    bool has_model() const;
+    void set_workspace_changed_handler(std::function<void()> handler);
     void set_service_availability(bool available, const std::string& message);
     void shutdown();
 

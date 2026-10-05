@@ -3167,6 +3167,24 @@ void GCodeViewer::render_legend(float &legend_height, int canvas_width, int canv
     ImGui::SetNextWindowSizeConstraints({ 0.0f, 0.0f }, { -1.0f, max_height });
     imgui.begin(std::string("Legend"), ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove);
 
+    // Collapse only when entering a constrained viewport. The existing fold
+    // control remains usable, and returning to a large viewport restores its
+    // previous state instead of changing the user's normal layout preference.
+    const bool compact = canvas_width < 600.0f * m_scale || canvas_height < 480.0f * m_scale;
+    ImGuiStorage* legend_state = ImGui::GetStateStorage();
+    const ImGuiID compact_key = ImGui::GetID("compact_viewport");
+    const ImGuiID normal_fold_key = ImGui::GetID("normal_fold");
+    if (compact != legend_state->GetBool(compact_key, false)) {
+        if (compact) {
+            legend_state->SetBool(normal_fold_key, m_fold);
+            m_fold = true;
+        } else {
+            m_fold = legend_state->GetBool(normal_fold_key, false);
+        }
+        legend_state->SetBool(compact_key, compact);
+        imgui.set_requires_extra_frame();
+    }
+
     enum class EItemType : unsigned char
     {
         Rect,

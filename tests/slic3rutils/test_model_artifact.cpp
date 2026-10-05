@@ -1,4 +1,5 @@
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/LocalModelImportState.hpp"
 #include "slic3r/GUI/AI/Model/ModelFinishing.hpp"
 #include "slic3r/GUI/AI/Model/GlbGeometryEditing.hpp"
 #include "slic3r/GUI/AI/Model/VertexColorRegionEditor.hpp"
@@ -287,8 +288,10 @@ TEST_CASE("An explicit local portrait retains face correspondence through native
 
 TEST_CASE("Embedded JPEG textures retain their dimensions and projected colors", "[ModelArtifact][JPEG]") {
     const auto source = samples / "jpeg-textured.glb";
+    const auto hash = model_artifact_sha256(source);
     TriangleMesh mesh; ObjInfo colors; std::string error;
-    const bool loaded = load_model_artifact(source, mesh, colors, error);
+    ModelArtifactTextureSurface texture;
+    const bool loaded = load_model_artifact(source, mesh, colors, error, {},&texture);
     INFO(error);
     REQUIRE(loaded);
     REQUIRE(mesh.its.vertices.size() == 4);
@@ -320,6 +323,21 @@ TEST_CASE("Embedded JPEG textures retain their dimensions and projected colors",
     REQUIRE(width == 32);
     REQUIRE(height == 16);
     REQUIRE(pixels.size() == size_t(width) * height * 3);
+
+    // History and the finishing viewport request the exact texture consumer,
+    // which must work with this build's JPEG-free OpenCV as well as sampling.
+    REQUIRE(texture.faces.size() == mesh.its.indices.size());
+    REQUIRE(texture.images.size() == 1);
+    const auto& image = texture.images.front();
+    REQUIRE(image.width == width);
+    REQUIRE(image.height == height);
+    REQUIRE(image.rgba.size() == size_t(width) * height * 4);
+    for (size_t pixel = 0; pixel < size_t(width) * height; ++pixel) {
+        for (size_t channel = 0; channel < 3; ++channel)
+            CHECK(image.rgba[pixel * 4 + channel] == pixels[pixel * 3 + 2 - channel]);
+        CHECK(image.rgba[pixel * 4 + 3] == 255);
+    }
+    CHECK(model_artifact_sha256(source) == hash);
 }
 
 TEST_CASE("Malformed or truncated embedded JPEG textures fail without publishing a model", "[ModelArtifact][JPEG]") {
@@ -351,11 +369,13 @@ TEST_CASE("An explicitly supplied local GLB loads without changing its source", 
     REQUIRE_FALSE(hash.empty());
     TriangleMesh mesh; ObjInfo colors; std::string error;
     const auto started = std::chrono::steady_clock::now();
-    const bool loaded = load_model_artifact(source, mesh, colors, error);
+    ModelArtifactTextureSurface texture;
+    const bool loaded = load_model_artifact(source, mesh, colors, error, {},&texture);
     const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
     INFO("Artifact: " << source.string() << "; SHA256: " << hash << "; load seconds: " << seconds << "; error: " << error);
     REQUIRE(loaded);
     REQUIRE_FALSE(mesh.empty());
+    if (!texture.faces.empty()) REQUIRE(texture.faces.size() == mesh.its.indices.size());
     REQUIRE(colors.vertex_colors.size() == mesh.its.vertices.size());
     const bool finite_vertices = std::all_of(mesh.its.vertices.begin(), mesh.its.vertices.end(),
         [](const Vec3f& v) { return v.allFinite(); });
@@ -1665,4 +1685,251 @@ TEST_CASE("A local artifact reports full file hashing without modifying its sour
     output<<nlohmann::json{{"source_sha256",expected},{"bytes",bytes},{"samples",samples},
         {"scope","Full-file hash CPU/IO wall time; prewarmed by identity check, no GUI/speedup/working-set claim"}}.dump(2);
     output.close();REQUIRE(output.good());
+
+}
+
+
+TEST_CASE("Canceling a completed local archive discards only its new asset before preview publication", "[ModelArtifact][LocalModelImport]") {
+    Fixture f;
+    const auto source=samples/"textured.glb",destination=f.directory/"new.glb",record=f.directory/"new.json";
+    const auto existing=f.directory/"existing.glb",draft=f.directory/"existing.draft";
+    boost::filesystem::copy_file(source,existing);
+    {boost::filesystem::ofstream out(draft);out<<"saved-user-draft";}
+    const auto source_hash=model_artifact_sha256(source),existing_hash=model_artifact_sha256(existing);
+    const auto draft_hash=model_artifact_sha256(draft);
+    LocalModelImportState state;
+    const auto token=state.cancel=std::make_shared<std::atomic<bool>>(false);
+    std::string error;
+    REQUIRE(archive_local_model(source,destination,error));
+    {boost::filesystem::ofstream out(record);out<<"new-local-record";}
+    state.parsing=true;
+    int rollbacks=0;
+    state.rollback_after_join=[&] {
+        ++rollbacks;
+        boost::filesystem::remove(record);
+        boost::filesystem::remove(destination);
+    };
+    // The worker is done; the UI cancellation precedes its preview callback.
+    token->store(true);
+    state.complete(token,true);
+    state.complete(token,true); // A duplicate late callback cannot run cleanup again.
+    CHECK(rollbacks==1);
+    CHECK_FALSE(boost::filesystem::exists(destination));
+    CHECK_FALSE(boost::filesystem::exists(record));
+    CHECK(model_artifact_sha256(source)==source_hash);
+    CHECK(model_artifact_sha256(existing)==existing_hash);
+    CHECK(model_artifact_sha256(draft)==draft_hash);
+    CHECK_FALSE(state.cancel);
+    CHECK_FALSE(state.parsing);
+}
+
+TEST_CASE("A stale local preview callback cannot clear or roll back the next import", "[ModelArtifact][LocalModelImport]") {
+    LocalModelImportState state;
+    const auto old=std::make_shared<std::atomic<bool>>(true);
+    const auto current=state.cancel=std::make_shared<std::atomic<bool>>(false);
+    state.parsing=true;
+    int rollbacks=0;
+    state.rollback_after_join=[&]{++rollbacks;};
+    state.complete(old,true);
+    CHECK(state.cancel==current);
+    CHECK(state.parsing);
+    CHECK(rollbacks==0);
+    state.complete(current,false);
+    CHECK_FALSE(state.cancel);
+    CHECK_FALSE(state.parsing);
+    CHECK(rollbacks==0);
+}
+
+TEST_CASE("Successful local preview publication retains its independent archive", "[ModelArtifact][LocalModelImport]") {
+    Fixture f; std::string error;
+    const auto source=samples/"textured.glb",destination=f.directory/"accepted.glb";
+    REQUIRE(archive_local_model(source,destination,error));
+    LocalModelImportState state;
+    const auto token=state.cancel=std::make_shared<std::atomic<bool>>(false);
+    state.parsing=true;
+    state.rollback_after_join=[&]{boost::filesystem::remove(destination);};
+    state.complete(token,false);
+    state.complete(token,true);
+    CHECK(boost::filesystem::exists(destination));
+    CHECK(model_artifact_sha256(destination)==model_artifact_sha256(source));
+    CHECK_FALSE(state.cancel);
+    CHECK_FALSE(state.rollback_after_join);
+}
+
+TEST_CASE("Exact GLB preview retains every explicit sampler filter and per-material identity", "[ModelArtifact][PreviewSampler]") {
+    Fixture f;
+    for (const int min_filter : {9728,9729,9984,9985,9986,9987}) for (const int mag_filter : {9728,9729}) {
+        DYNAMIC_SECTION(min_filter << "/" << mag_filter) {
+            auto fixture=read_glb_fixture(samples/"textured.glb");
+            fixture.doc["samplers"]=GlbJson::array({{{"minFilter",min_filter},{"magFilter",mag_filter},{"wrapS",33648},{"wrapT",33071}}});
+            fixture.doc["textures"][0]["sampler"]=0;
+            const auto path=f.directory/"sampler.glb"; save_glb_fixture(path,fixture);
+            const auto hash=model_artifact_sha256(path);
+            TriangleMesh mesh; ObjInfo colors; std::string error; ModelArtifactTextureSurface texture;
+            REQUIRE(load_model_artifact(path,mesh,colors,error,{},&texture));
+            REQUIRE_FALSE(texture.faces.empty());
+            for (const auto& face:texture.faces) if(face.image>=0) {
+                CHECK(face.min_filter==min_filter); CHECK(face.mag_filter==mag_filter);
+                CHECK(face.wrap_s==33648); CHECK(face.wrap_t==33071);
+            }
+            CHECK(model_artifact_sha256(path)==hash);
+        }
+    }
+    auto fixture=read_glb_fixture(samples/"multi-material.glb");
+    fixture.doc["samplers"]=GlbJson::array({{{"magFilter",9728}},{{"minFilter",9987},{"magFilter",9729}}});
+    REQUIRE(fixture.doc["textures"].size()==1);
+    REQUIRE(fixture.doc["materials"].size()>=2);
+    fixture.doc["textures"].push_back(fixture.doc["textures"][0]);
+    fixture.doc["textures"][0]["sampler"]=0; fixture.doc["textures"][1]["sampler"]=1;
+    fixture.doc["materials"][1]["pbrMetallicRoughness"]["baseColorTexture"]={{"index",1}};
+    const auto path=f.directory/"shared-materials.glb";save_glb_fixture(path,fixture);
+    TriangleMesh mesh;ObjInfo colors;std::string error;ModelArtifactTextureSurface texture;
+    REQUIRE(load_model_artifact(path,mesh,colors,error,{},&texture));
+    bool nearest=false,mipmap=false;
+    for(const auto& face:texture.faces) {nearest|=face.mag_filter==9728; mipmap|=face.min_filter==9987;}
+    CHECK(nearest);CHECK(mipmap);
+}
+
+TEST_CASE("Invalid GLB filtering is rejected before exact preview publication", "[ModelArtifact][PreviewSampler]") {
+    Fixture f;
+    for (const char* field : {"minFilter","magFilter"}) {
+        auto fixture=read_glb_fixture(samples/"textured.glb");
+        fixture.doc["samplers"]=GlbJson::array({{{field,1234}}}); fixture.doc["textures"][0]["sampler"]=0;
+        const auto path=f.directory/"invalid-sampler.glb";save_glb_fixture(path,fixture);
+        const auto hash=model_artifact_sha256(path);
+        TriangleMesh mesh;ObjInfo colors;std::string error;ModelArtifactTextureSurface texture;
+        CHECK_FALSE(load_model_artifact(path,mesh,colors,error,{},&texture));
+        CHECK(error.find("filtering")!=std::string::npos);CHECK(texture.faces.empty());CHECK(mesh.empty());
+        CHECK(model_artifact_sha256(path)==hash);
+    }
+}
+
+TEST_CASE("Preview mipmaps retain level zero and odd-size edge pixels with linear RGB averaging", "[ModelArtifact][PreviewSampler]") {
+    ModelArtifactTextureSurface::Image image{3,1,{255,0,0,0, 0,255,0,127, 0,0,255,255}};
+    const auto levels=model_texture_mipmaps(image);
+    REQUIRE(levels.size()==2);CHECK(levels[0].rgba==image.rgba);
+    CHECK(levels[1].width==1);CHECK(levels[1].height==1);
+    for(int ch=0;ch<3;++ch)CHECK_THAT(double(levels[1].rgba[ch]),WithinAbs(156.,1.));
+    CHECK(levels[1].rgba[3]==127);
+    image.width=5;image.height=3;image.rgba.assign(5*3*4,93);
+    const auto constant=model_texture_mipmaps(image);
+    REQUIRE(constant.size()==3);CHECK(constant[1].width==2);CHECK(constant[1].height==1);
+    CHECK(constant.back().rgba==std::vector<unsigned char>(4,93));
+    CHECK_THROWS(model_texture_mipmaps({}));
+}
+
+TEST_CASE("Exact preview retains material alpha modes for textured and untextured models", "[ModelArtifact][PreviewAlpha]") {
+    Fixture f;
+    using Mode=ModelArtifactTextureSurface::AlphaMode;
+    for (const char* sample:{"textured","baseline"}) for (const char* mode:{"OPAQUE","MASK","BLEND"}) {
+        DYNAMIC_SECTION(sample << "/" << mode) {
+            auto fixture=read_glb_fixture(samples/(std::string(sample)+".glb"));
+            REQUIRE_FALSE(fixture.doc["materials"].empty());
+            for (auto& material:fixture.doc["materials"]) {
+                material["alphaMode"]=mode;
+                material["alphaCutoff"]=.65;
+                material["pbrMetallicRoughness"]["baseColorFactor"]={1.,1.,1.,.35};
+            }
+            if(std::string(sample)=="baseline") {
+                for(auto& material:fixture.doc["materials"])
+                    material["pbrMetallicRoughness"].erase("baseColorTexture");
+                fixture.doc.erase("images");fixture.doc.erase("textures");fixture.doc.erase("samplers");
+            }
+            const auto path=f.directory/"alpha.glb"; save_glb_fixture(path,fixture);
+            const auto hash=model_artifact_sha256(path);
+            TriangleMesh mesh;ObjInfo colors;std::string error;ModelArtifactTextureSurface surface;
+            REQUIRE(load_model_artifact(path,mesh,colors,error,{},&surface));
+            REQUIRE(surface.faces.size()==mesh.its.indices.size());
+            const Mode expected=std::string(mode)=="MASK"?Mode::Mask:std::string(mode)=="BLEND"?Mode::Blend:Mode::Opaque;
+            for (const auto& face:surface.faces) {
+                CHECK(face.alpha_mode==expected);
+                CHECK_THAT(face.alpha_cutoff,WithinAbs(.65f,.00001));
+                for(const auto& corner:face.corners)
+                    CHECK_THAT(corner.multiplier[3],WithinAbs(.35f,.00001));
+            }
+            if(std::string(sample)=="baseline") CHECK(surface.images.empty());
+            else CHECK_FALSE(surface.images.empty());
+            CHECK(model_artifact_sha256(path)==hash);
+        }
+    }
+}
+
+TEST_CASE("Shared-image materials retain independent alpha modes and cutoffs", "[ModelArtifact][PreviewAlpha]") {
+    Fixture f;auto fixture=read_glb_fixture(samples/"multi-material.glb");
+    REQUIRE(fixture.doc["materials"].size()>=2);
+    fixture.doc["materials"][0]["alphaMode"]="MASK";
+    fixture.doc["materials"][0]["alphaCutoff"]=1.2;
+    fixture.doc["materials"][1]["alphaMode"]="BLEND";
+    fixture.doc["materials"][1]["pbrMetallicRoughness"]["baseColorFactor"]={1.,1.,1.,.25};
+    const auto path=f.directory/"mixed-alpha.glb";save_glb_fixture(path,fixture);
+    TriangleMesh mesh;ObjInfo colors;std::string error;ModelArtifactTextureSurface surface;
+    REQUIRE(load_model_artifact(path,mesh,colors,error,{},&surface));
+    bool mask=false,blend=false;
+    for(const auto& face:surface.faces) {
+        if(face.alpha_mode==ModelArtifactTextureSurface::AlphaMode::Mask) {
+            mask=true;CHECK_THAT(face.alpha_cutoff,WithinAbs(1.2f,.00001));
+        }
+        if(face.alpha_mode==ModelArtifactTextureSurface::AlphaMode::Blend) {
+            blend=true;
+            for(const auto& corner:face.corners)CHECK_THAT(corner.multiplier[3],WithinAbs(.25f,.00001));
+        }
+    }
+    CHECK(mask);CHECK(blend);
+}
+
+TEST_CASE("Unsupported alpha modes and invalid cutoffs fail before publishing preview data", "[ModelArtifact][PreviewAlpha]") {
+    Fixture f;
+    for (const char* failure:{"unknown-mode","negative-cutoff"}) {
+        DYNAMIC_SECTION(failure) {
+            auto fixture=read_glb_fixture(samples/"textured.glb");
+            auto& material=fixture.doc["materials"][0];
+            material["alphaMode"]=std::string(failure)=="unknown-mode"?"UNKNOWN":"MASK";
+            material["alphaCutoff"]=std::string(failure)=="negative-cutoff"?-.01:.5;
+            const auto path=f.directory/"invalid-alpha.glb";save_glb_fixture(path,fixture);
+            const auto hash=model_artifact_sha256(path);
+            TriangleMesh mesh;ObjInfo colors;std::string error;ModelArtifactTextureSurface surface;
+            CHECK_FALSE(load_model_artifact(path,mesh,colors,error,{},&surface));
+            CHECK(error.find("alpha")!=std::string::npos);
+            CHECK(surface.faces.empty());CHECK(mesh.empty());
+            CHECK(model_artifact_sha256(path)==hash);
+        }
+    }
+}
+
+TEST_CASE("Document material order does not change exact GLB preview ownership", "[ModelArtifact][PreviewAlpha]") {
+    Fixture f;auto fixture=read_glb_fixture(samples/"multi-material.glb");
+    const auto count=fixture.doc["materials"].size();
+    REQUIRE(count>=2);
+    fixture.doc["materials"][0]["alphaMode"]="MASK";
+    fixture.doc["materials"][0]["alphaCutoff"]=.7;
+    fixture.doc["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"]["extensions"]["KHR_texture_transform"]=
+        {{"offset",{.1,.2}},{"scale",{.5,.75}},{"rotation",.3}};
+
+    fixture.doc["materials"][1]["alphaMode"]="BLEND";
+    fixture.doc["samplers"]=GlbJson::array({{{"magFilter",9728},{"minFilter",9987}}});
+    fixture.doc["textures"][0]["sampler"]=0;
+    const auto original=f.directory/"original-materials.glb";save_glb_fixture(original,fixture);
+    TriangleMesh before,after;ObjInfo before_colors,after_colors;std::string error;
+    ModelArtifactTextureSurface before_surface,after_surface;
+    REQUIRE(load_model_artifact(original,before,before_colors,error,{},&before_surface));
+    std::reverse(fixture.doc["materials"].begin(),fixture.doc["materials"].end());
+    for(auto& glb_mesh:fixture.doc["meshes"]) for(auto& primitive:glb_mesh["primitives"])
+        if(primitive.contains("material"))primitive["material"]=count-1-primitive["material"].get<size_t>();
+    const auto path=f.directory/"reordered-materials.glb";save_glb_fixture(path,fixture);
+    const auto hash=model_artifact_sha256(path);
+    const bool loaded=load_model_artifact(path,after,after_colors,error,{},&after_surface);
+    INFO(error);REQUIRE(loaded);
+    CHECK(after.its.vertices==before.its.vertices);CHECK(after.its.indices==before.its.indices);
+    REQUIRE(after_surface.faces.size()==before_surface.faces.size());
+    for(size_t i=0;i<before_surface.faces.size();++i) {
+        const auto& a=before_surface.faces[i];const auto& b=after_surface.faces[i];
+        CHECK((a.image>=0)==(b.image>=0));
+        CHECK(a.alpha_mode==b.alpha_mode);CHECK(a.alpha_cutoff==b.alpha_cutoff);
+        CHECK(a.min_filter==b.min_filter);CHECK(a.mag_filter==b.mag_filter);
+        for(size_t c=0;c<3;++c) {
+            CHECK(a.corners[c].multiplier==b.corners[c].multiplier);
+            CHECK(a.corners[c].uv==b.corners[c].uv);
+        }
+    }
+    CHECK(model_artifact_sha256(path)==hash);
 }

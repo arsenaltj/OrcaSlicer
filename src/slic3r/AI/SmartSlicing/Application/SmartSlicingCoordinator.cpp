@@ -117,6 +117,7 @@ void SmartSlicingCoordinator::start()
 
     m_snapshot             = {};
     m_applied_revision.reset();
+    m_completed_report_current = false;
     m_snapshot.workflow_id = ++m_last_workflow_id;
     m_started_at = std::chrono::steady_clock::now();
 
@@ -307,6 +308,7 @@ bool SmartSlicingCoordinator::retry_candidate(const CandidateId& candidate_id, b
 
     transition(WorkflowState::TrialSlicingCandidates, "retrying_trial_slice");
     candidate->status = CandidateStatus::TrialSlicing;
+    candidate->diagnostic_message.clear();
     TrialSliceResult result = m_trial_slice_executor->execute_trial_slice(*candidate);
     if (!defer_revision_checks && !workspace_revision_matches()) {
         for (SliceCandidate& planned : m_snapshot.candidates)
@@ -360,6 +362,7 @@ bool SmartSlicingCoordinator::apply_selected_candidate()
         return false;
     }
 
+    m_completed_report_current = false;
     transition(WorkflowState::Applying, "applying_candidate");
     OfficialSliceResult result;
     try {
@@ -383,6 +386,7 @@ bool SmartSlicingCoordinator::apply_selected_candidate()
         transition(WorkflowState::OfficialSlicing, "official_slicing");
         return true;
     case OfficialSlicePhase::Completed:
+        refresh_completed_report();
         transition(WorkflowState::Completed, "official_slice_complete");
         return true;
     case OfficialSlicePhase::Rejected:
@@ -413,6 +417,7 @@ bool SmartSlicingCoordinator::poll_official_slice()
     }
     m_snapshot.can_undo_apply        = result.can_undo;
     if (result.phase == OfficialSlicePhase::Completed) {
+        refresh_completed_report();
         transition(WorkflowState::Completed, "official_slice_complete");
         return true;
     }
@@ -440,8 +445,58 @@ bool SmartSlicingCoordinator::undo_applied_candidate()
         return false;
     }
     m_snapshot.can_undo_apply = false;
+    m_completed_report_current = false;
+    // The trial candidates still belong to the original captured workspace.
+    // Restore its preflight report when native Undo restores that workspace.
+    if (m_snapshot.context)
+        m_snapshot.report = m_inspector.inspect(*m_snapshot.context);
     transition(WorkflowState::ReadyToApply, "apply_undone");
     return true;
+}
+
+bool SmartSlicingCoordinator::refresh_completed_report()
+{
+    if (m_completed_report_current || !m_applied_revision)
+        return false;
+    try {
+        const WorkspaceContext current = m_workspace.capture_context();
+        // A completed callback alone is not evidence of usable native validation.
+        // Qualify the capture against the applied model, config and plate both
+        // before and after inspection; leave the original report on transient failure.
+        if (!current.native_validation_available || current.revision != *m_applied_revision)
+            return false;
+        PrintabilityReport report = m_inspector.inspect(current);
+        if (m_workspace.current_revision() != *m_applied_revision)
+            return false;
+        m_snapshot.report = std::move(report);
+        m_completed_report_current = true;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool SmartSlicingCoordinator::refresh_preflight_report()
+{
+    // A native manual slice may finish while the suggestions remain unapplied.
+    // Refresh only the unavailable preflight, retaining the captured trial context.
+    if (!m_snapshot.context || !m_snapshot.report ||
+        !std::any_of(m_snapshot.report->issues.begin(), m_snapshot.report->issues.end(),
+                     [](const PrintabilityIssue& issue) { return issue.code == IssueCode::NativeValidationUnavailable; }))
+        return false;
+    try {
+        const auto expected = m_snapshot.context->revision;
+        const WorkspaceContext current = m_workspace.capture_context();
+        if (!current.native_validation_available || current.revision != expected)
+            return false;
+        PrintabilityReport report = m_inspector.inspect(current);
+        if (m_workspace.current_revision() != expected)
+            return false;
+        m_snapshot.report = std::move(report);
+        return true;
+    } catch (...) {
+        return false;
+    }
 }
 
 bool SmartSlicingCoordinator::refresh_revision()
@@ -449,13 +504,20 @@ bool SmartSlicingCoordinator::refresh_revision()
     if (m_snapshot.state == WorkflowState::OfficialSlicing)
         return poll_official_slice();
     const bool after_apply = m_snapshot.state == WorkflowState::Completed || m_snapshot.state == WorkflowState::ApplyFailed;
-    if (!m_snapshot.context || (!m_snapshot.can_cancel() && !after_apply))
+    const bool failed_with_context = m_snapshot.state == WorkflowState::Failed && m_snapshot.context.has_value();
+    if (!m_snapshot.context || (!m_snapshot.can_cancel() && !after_apply && !failed_with_context))
         return false;
 
     try {
         const auto current = m_workspace.current_revision();
-        if (after_apply ? (m_applied_revision && current == *m_applied_revision) : current == m_snapshot.context->revision)
+        if (after_apply ? (m_applied_revision && current == *m_applied_revision) : current == m_snapshot.context->revision) {
+            if ((m_snapshot.state == WorkflowState::Completed && refresh_completed_report()) ||
+                (!after_apply && !failed_with_context && refresh_preflight_report())) {
+                transition(m_snapshot.state, m_snapshot.detail);
+                return true;
+            }
             return false;
+        }
     } catch (...) {
         // A transient capture failure must not turn a previously valid candidate
         // into stale. The next refresh will retry.

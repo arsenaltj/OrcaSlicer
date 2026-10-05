@@ -16,6 +16,7 @@ struct TrialSliceResult
     TrialSliceStatus status{TrialSliceStatus::Failed};
     std::optional<SlicingMetrics> metrics;
     std::string diagnostic_code;
+    std::string diagnostic_message; // Current native failure text; never a machine diagnostic code.
 };
 
 class ITrialSliceExecutor

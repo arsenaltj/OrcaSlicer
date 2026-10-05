@@ -13,8 +13,28 @@
 #include <ios>
 #include <list>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace Slic3r::GUI {
+
+// The UI owns the current page. Old worker results must neither address its
+// cards nor consume its repaint budget; deferred current results keep order.
+template<class Thumbnail, class Publish>
+std::vector<Thumbnail> publish_library_thumbnail_batch(std::vector<Thumbnail> results,
+    uint64_t revision, size_t card_count, size_t budget, Publish publish)
+{
+    std::vector<Thumbnail> deferred;
+    size_t published = 0;
+    for (auto& result : results) {
+        if (result.revision != revision || result.index >= card_count) continue;
+        if (published < budget) {
+            publish(result);
+            ++published;
+        } else deferred.push_back(std::move(result));
+    }
+    return deferred;
+}
 
 // History only needs file identity while listing. Full image validation belongs
 // to opening a design, not to walking every historical record on the UI thread.

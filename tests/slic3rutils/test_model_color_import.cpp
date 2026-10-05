@@ -29,6 +29,10 @@ TEST_CASE("Workbench mixed colors import as native virtual slots and reject alte
     const auto blank=volume->mmu_segmentation_facets.get_data();
     auto altered=options.matched_filaments;altered.back().mixed_ratios={60,40};
     CHECK_THROWS(apply_matched_texture_colors(model,options,altered));CHECK(volume->mmu_segmentation_facets.get_data()==blank);
+    auto incompatible = options.matched_filaments;
+    incompatible.front().compatible = false;
+    CHECK_THROWS(apply_matched_texture_colors(model,options,incompatible));
+    CHECK(volume->mmu_segmentation_facets.get_data()==blank);
     apply_matched_texture_colors(model,options,options.matched_filaments);
     TriangleSelector expected(volume->mesh());
     for(size_t f=0;f<mesh.indices.size();++f)expected.set_facet(int(f),EnforcerBlockerType(int(EnforcerBlockerType::Extruder1)+int(matched.face_slots[f])));
@@ -380,4 +384,68 @@ TEST_CASE("Local import seam checks compare transaction reuse with repeated adja
     output << nlohmann::json({{"source_sha256",source_hash},{"faces",mesh.its.indices.size()},{"runs",runs}}).dump(2);
     output.close();
     REQUIRE(output.good());
+
+}
+
+TEST_CASE("explicit single-color import preserves geometry and uses the chosen native slot", "[ModelColorImport][SingleColorImport]") {
+    Model model;
+    auto* object = model.add_object();
+    auto* volume = object->add_volume(TriangleMesh(its_make_cube(10, 10, 10)));
+    const auto before = volume->mesh().its;
+    TriangleSelector painting(volume->mesh());
+    painting.set_facet(0, EnforcerBlockerType::Extruder2);
+    volume->mmu_segmentation_facets.set(painting);
+    REQUIRE(apply_single_color_import(model, 4));
+    CHECK(object->config.opt_int("extruder") == 5);
+    CHECK(volume->config.opt_int("extruder") == 5);
+    CHECK(volume->mmu_segmentation_facets.empty());
+    CHECK(volume->mesh().its.vertices == before.vertices);
+    CHECK(volume->mesh().its.indices == before.indices);
+}
+TEST_CASE("missing single-color choice leaves the private model untouched", "[ModelColorImport][SingleColorImport]") {
+    Model model;
+    auto* object = model.add_object();
+    auto* volume = object->add_volume(TriangleMesh(its_make_cube(10, 10, 10)));
+    const auto config = object->config.get();
+    CHECK_FALSE(apply_single_color_import(model, size_t(-1)));
+    CHECK(object->config.get() == config);
+    CHECK(volume->mmu_segmentation_facets.empty());
+}
+
+
+TEST_CASE("Workbench texture matching filters incompatible slots without merging identical colors", "[ModelColorImport][TextureCompatibility]")
+{
+    std::vector<TextureFilamentEntry> entries(4);
+    for (size_t i = 0; i < entries.size(); ++i) {
+        entries[i].dialog_index = int(i);
+        entries[i].project_config_index = i + 1;
+        entries[i].color_hex = "#668CB6";
+        entries[i].type = "PLA";
+        entries[i].preset_name = "PLA fixture";
+    }
+    entries[1].compatible = false;
+    entries[3].kind = TextureFilamentKind::ExistingMixed;
+    TextureImportOptions options;
+    options.workspace_presentation = true;
+    const auto usable = workspace_texture_filaments(entries, &options);
+    REQUIRE(usable.size() == 2);
+    CHECK(usable[0].project_config_index == 1);
+    CHECK(usable[1].project_config_index == 3);
+    CHECK(usable[0].dialog_index == 0);
+    CHECK(usable[1].dialog_index == 1);
+    CHECK(usable[0].color_hex == usable[1].color_hex);
+    options.workspace_presentation = false;
+    CHECK(workspace_texture_filaments(entries, &options).size() == entries.size());
+    CHECK(workspace_texture_filaments(entries, nullptr).size() == entries.size());
+}
+
+TEST_CASE("Workbench texture matching returns no usable slots when material identity is missing", "[ModelColorImport][TextureCompatibility]")
+{
+    std::vector<TextureFilamentEntry> entries(3);
+    entries[0].compatible = false;
+    entries[1].type = "PLA";
+    entries[2].preset_name = "PLA fixture";
+    TextureImportOptions options;
+    options.workspace_presentation = true;
+    CHECK(workspace_texture_filaments(entries, &options).empty());
 }

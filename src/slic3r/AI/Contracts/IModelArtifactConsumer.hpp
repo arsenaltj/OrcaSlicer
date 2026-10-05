@@ -79,6 +79,9 @@ struct ModelImportRequest
     std::vector<ModelSubfaceColorOverride> subface_color_overrides;
     std::string face_color_geometry_id;
     std::optional<ModelMatchedColors> matched_colors;
+    // Desktop preparation intent only. Never serialized into a provider job or
+    // applied to geometry by importing; the user must confirm in preparation.
+    bool suggest_base_preparation {false};
 };
 
 enum class ModelImportOutcome

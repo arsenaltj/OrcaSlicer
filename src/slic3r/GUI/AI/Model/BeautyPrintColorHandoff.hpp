@@ -2,12 +2,49 @@
 
 #include "slic3r/AI/Contracts/IModelArtifactConsumer.hpp"
 #include "slic3r/AI/Contracts/LocalPrintColorResult.hpp"
+#include "BeautyPuzzle.hpp"
 #include <algorithm>
 #include <map>
 #include <set>
 #include <stdexcept>
 
 namespace Slic3r::GUI::BeautyPrintColorHandoff {
+
+// Unmatched beauty edits express appearance, not material identity. Keep their
+// exact face masks and RGB targets out of ordinary clustering, without guessing
+// a physical slot from RGB (two spools may have identical display colors).
+inline void seed_appearance(const AI::BeautyPuzzle& saved, AI::LocalPrintColorResult& draft)
+{
+    if (saved.geometry_id != draft.geometry_id || saved.face_piece.size() != draft.face_count ||
+        !saved.palette.empty() || !saved.filament_slots.empty())
+        throw std::invalid_argument("Saved appearance does not match this surface or requires material handoff.");
+    if (!draft.regions.empty() || !draft.user_overrides.empty())
+        throw std::invalid_argument("Beauty appearance cannot replace an existing color draft.");
+    std::map<uint32_t, AI::PrintColorRegion> grouped;
+    std::vector<std::pair<size_t, AI::PrintRgb>> overrides;
+    for (size_t face = 0; face < saved.face_piece.size(); ++face) {
+        const auto id = saved.face_piece[face];
+        const auto found = saved.colors.find(id);
+        if (found == saved.colors.end()) continue;
+        const AI::PrintRgb color {found->second[0], found->second[1], found->second[2]};
+        if (!AI::valid_print_rgb(color)) throw std::invalid_argument("Invalid saved appearance color.");
+        grouped[id].faces.push_back(face);
+        overrides.emplace_back(face, color);
+    }
+    std::vector<AI::PrintColorRegion> regions;
+    for (auto& entry : grouped) {
+        auto& region = entry.second;
+        region.id = "beauty-appearance-" + std::to_string(entry.first);
+        region.label = "accepted beauty appearance";
+        region.confidence = 1;
+        region.user_protected = true;
+        region.protect_color = true;
+        regions.push_back(std::move(region));
+    }
+    draft.regions = std::move(regions);
+    draft.user_overrides = std::move(overrides);
+    draft.confirmed = false;
+}
 
 // Transfer accepted physical assignments as explicit locks, not RGB samples.
 // Build the replacement first so a stale source/palette cannot partially edit

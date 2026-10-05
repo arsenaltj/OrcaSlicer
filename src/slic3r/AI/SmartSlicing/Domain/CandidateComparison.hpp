@@ -8,7 +8,8 @@
 
 namespace Slic3r::AI::SmartSlicing {
 
-inline constexpr size_t MAX_COMPARABLE_CANDIDATES = 3;
+// One read-only baseline plus the three visible priority alternatives.
+inline constexpr size_t MAX_COMPARABLE_CANDIDATES = 4;
 
 struct CandidateComparison
 {

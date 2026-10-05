@@ -531,7 +531,7 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
     m_loaded = true;
 
     // initialize layout
-    m_main_sizer = new wxBoxSizer(wxVERTICAL);
+    m_main_sizer = new wxBoxSizer(wxHORIZONTAL);
     wxSizer* sizer = new wxBoxSizer(wxVERTICAL);
 #ifndef __APPLE__
      sizer->Add(m_topbar, 0, wxEXPAND);
@@ -571,7 +571,7 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
     // BBS
     Fit();
 
-    const wxSize min_size = wxGetApp().get_min_size(); //wxSize(76*wxGetApp().em_unit(), 49*wxGetApp().em_unit());
+    const wxSize min_size = FromDIP(wxSize(900, 500));
 
     SetMinSize(min_size/*wxSize(760, 490)*/);
     SetSize(wxSize(FromDIP(1200), FromDIP(800)));
@@ -1033,7 +1033,10 @@ void MainFrame::update_layout()
         const size_t prepare_pos = (anchor_idx == wxNOT_FOUND) ? 0 : static_cast<size_t>(anchor_idx) + 1;
         m_tabpanel->InsertPage(prepare_pos, TAB_ID_PREPARE, m_plater, _L("Prepare"), "tab_3d_active");
         m_tabpanel->InsertPage(prepare_pos + 1, TAB_ID_PREVIEW, m_plater, _L("Preview"), "tab_preview_active");
+        if (!m_workspace_navigation) m_workspace_navigation = new DesktopWorkspaceNavigation(this, m_tabpanel, *m_ai_feature_host);
+        m_main_sizer->Add(m_workspace_navigation, 0, wxEXPAND | wxALL, FromDIP(12));
         m_main_sizer->Add(m_tabpanel, 1, wxEXPAND | wxTOP, 0);
+        if (m_workspace_navigation) m_workspace_navigation->refresh();
 
         m_tabpanel->Bind(wxCUSTOMEVT_NOTEBOOK_SEL_CHANGED, [this](wxCommandEvent& evt)
         {
@@ -1285,6 +1288,7 @@ void MainFrame::init_tabpanel() {
         wxWindow* panel = m_tabpanel->GetCurrentPage();
         //wxString page_text = m_tabpanel->GetPageText(sel);
         m_last_selected_tab = m_tabpanel->GetSelectedPageName();
+        if (m_workspace_navigation) m_workspace_navigation->refresh();
         if (panel == m_plater) {
             if (m_last_selected_tab == TAB_ID_PREPARE) {
                 wxPostEvent(m_plater, SimpleEvent(EVT_GLVIEWTOOLBAR_3D));
@@ -1338,14 +1342,7 @@ void MainFrame::init_tabpanel() {
     wxGetApp().plater_ = m_plater;
 
     m_ai_feature_host = std::make_unique<AIDesktopFeatureHost>(m_tabpanel, m_plater, [this] {
-        m_plater->exit_gizmo();
-        m_plater->update(true, true);
         select_tab(TAB_ID_PREPARE);
-        // AI imports and color matching return to the native prepare page.
-        // Keep the post-generation preparation controls visible so the user
-        // can add a detached base immediately, without discovering the
-        // Smart Slicing pane through the View menu first.
-        m_plater->show_smart_slicing(true);
     }, [this] { register_ai_assistant(); });
     trace_stage("ai_feature_host");
     m_tabpanel->AddPage(TAB_ID_GENERATE_3D, m_ai_feature_host->model_generation_panel(), _L("3D 生成"),
@@ -1600,6 +1597,7 @@ bool MainFrame::is_prepare_or_preview_tab() const
 
 void MainFrame::fit_tab_labels()
 {
+    if (m_workspace_navigation) return; // Public navigation is owned by the main window.
     if (!m_tabpanel || !m_slice_option_btn) // ignore layout change while slice/print buttons not visible
         return;
 
@@ -2596,6 +2594,7 @@ void MainFrame::on_dpi_changed(const wxRect& suggested_rect)
     wxGetApp().update_fonts(this);
     this->SetFont(this->normal_font());
     if (m_ai_feature_host) refresh_ai_appearance(m_ai_feature_host->model_generation_panel());
+    if (m_workspace_navigation) refresh_ai_appearance(m_workspace_navigation);
 
 #ifdef _MSW_DARK_MODE
     // update common mode sizer
@@ -2669,6 +2668,7 @@ void MainFrame::on_sys_color_changed()
     // update label colors in respect to the system mode
     wxGetApp().init_label_colours();
     if (m_ai_feature_host) refresh_ai_appearance(m_ai_feature_host->model_generation_panel());
+    if (m_workspace_navigation) refresh_ai_appearance(m_workspace_navigation);
 
 #ifndef __WINDOWS__
     wxGetApp().force_colors_update();
