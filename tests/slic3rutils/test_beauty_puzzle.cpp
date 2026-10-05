@@ -1,22 +1,1105 @@
 #include <catch2/catch_all.hpp>
 #include "slic3r/GUI/AI/Model/BeautyPuzzle.hpp"
+#include "slic3r/GUI/AI/Model/BeautyDocument.hpp"
 #include "slic3r/GUI/AI/Model/BeautyEyeDetail.hpp"
 #include "slic3r/GUI/AI/Model/BeautyGuidance.hpp"
 #include "slic3r/GUI/AI/Model/BeautyRecognition.hpp"
 #include "slic3r/GUI/AI/Model/LocalSemanticGeometry.hpp"
 #include "slic3r/GUI/AI/Model/BeautyMetadata.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
+#include "slic3r/GUI/AI/Model/ModelFinishing.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/ModelPreviewPuzzle.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/ModelGenerationPresentation.hpp"
 #include <boost/filesystem/fstream.hpp>
 #include <boost/nowide/cstdlib.hpp>
 #include "libslic3r/FilamentMixer.hpp"
 #include "slic3r/GUI/NativeMixedFilamentSuggestion.hpp"
 #include <limits>
+#include <iterator>
 #include <numeric>
 #include <cstring>
 #include <chrono>
+#include <atomic>
+#include <thread>
+#include <string_view>
+#ifdef _WIN32
+#include <windows.h>
+#include <psapi.h>
+// RPC headers define this legacy macro; keep ordinary test identifiers intact.
+#undef small
+#endif
 
 using namespace Slic3r;
 using namespace Slic3r::AI;
+
+TEST_CASE("Puzzle preview repaints base and painted colors after a source replacement", "[ModelPreviewPuzzle]") {
+    indexed_triangle_set mesh;
+    mesh.vertices={{0,0,0},{1,0,0},{0,1,0},{1,1,0}};
+    mesh.indices={{0,1,2},{2,1,3}};
+    std::vector<std::array<float,4>> base{{1,0,0,1},{0,1,0,1},{0,0,1,.8f},{.5f,.5f,.5f,1}};
+    const auto surface=BeautySurface::build(mesh,base);
+    BeautyPuzzle puzzle;puzzle.geometry_id=surface->geometry_id;puzzle.face_piece={1,2};puzzle.next_id=3;
+    REQUIRE_NOTHROW(puzzle.validate(*surface));
+    Slic3r::GUI::ModelPreviewPuzzle preview;
+    preview.update(mesh,base,*surface,puzzle,UINT32_MAX,true);
+    REQUIRE(preview.fill);
+    CHECK(preview.fill->get_geometry().vertices[2*8+6]==float(0x0000FF));
+    puzzle.paint(1,{0,1,0,1});
+    preview.update(mesh,base,*surface,puzzle,UINT32_MAX,true);
+    CHECK(preview.fill->get_geometry().vertices[0*8+6]==float(0x00FF00));
+    CHECK(preview.fill->get_geometry().vertices[3*8+6]==float(0x0000FF));
+    auto replacement=base;replacement[2]={1,1,0,.6f};
+    preview.update(mesh,replacement,*surface,puzzle,UINT32_MAX,true);
+    CHECK(preview.fill->get_geometry().vertices[2*8+6]==float(0x00FF00));
+    CHECK_THAT(preview.fill->get_geometry().vertices[2*8+7],Catch::Matchers::WithinAbs(.6f,1e-6f));
+    CHECK(preview.fill->get_geometry().vertices[3*8+6]==float(0xFFFF00));
+    preview.reset();
+    preview.update(mesh,base,*surface,puzzle,UINT32_MAX,true);
+    CHECK(preview.fill->get_geometry().vertices[3*8+6]==float(0x0000FF));
+}
+
+TEST_CASE("Puzzle preview preserves complete geometry across repaint and topology replacement", "[ModelPreviewPuzzle]") {
+    indexed_triangle_set mesh;
+    mesh.vertices={{0,0,0},{1,0,0},{0,1,0},{1,1,0}};
+    mesh.indices={{0,1,2},{2,1,3}};
+    std::vector<std::array<float,4>> base(mesh.vertices.size(),{1,0,0,.5f});
+    auto surface=BeautySurface::build(mesh,base);
+    BeautyPuzzle puzzle;puzzle.geometry_id=surface->geometry_id;puzzle.face_piece={1,2};puzzle.next_id=3;
+    Slic3r::GUI::ModelPreviewPuzzle preview;
+    preview.update(mesh,base,*surface,puzzle,UINT32_MAX,true);
+    puzzle.paint(1,{0,1,0,1});
+    preview.update(mesh,base,*surface,puzzle,UINT32_MAX,true);
+    REQUIRE(preview.fill);
+    CHECK(preview.fill->get_geometry().indices==std::vector<unsigned>{0,1,2,3,4,5});
+    CHECK(preview.fill->get_geometry().vertices[6]==float(0x00FF00));
+    CHECK_THAT(preview.fill->get_geometry().vertices[7],Catch::Matchers::WithinAbs(.5f,1e-6f));
+    // Repartitioning preserves topology; replacing the mesh changes it.
+    puzzle.face_piece={1,1};
+    preview.update(mesh,base,*surface,puzzle,UINT32_MAX,true);
+    CHECK(preview.fill->get_geometry().indices==std::vector<unsigned>{0,1,2,3,4,5});
+    mesh.vertices[2]={0,2,0};mesh.indices={{2,0,1}};
+    surface=BeautySurface::build(mesh,base);
+    puzzle.geometry_id=surface->geometry_id;puzzle.face_piece={1};
+    preview.update(mesh,base,*surface,puzzle,UINT32_MAX,true);
+    REQUIRE(preview.fill);
+    const auto& geometry=preview.fill->get_geometry();
+    CHECK(geometry.indices==std::vector<unsigned>{0,1,2});
+    REQUIRE(geometry.vertices.size()==24);
+    for(size_t corner=0;corner<3;++corner) {
+        const auto& position=mesh.vertices[mesh.indices[0][corner]];
+        for(size_t axis=0;axis<3;++axis) {
+            CHECK_THAT(geometry.vertices[corner*8+axis],Catch::Matchers::WithinAbs(position[axis],1e-6f));
+            CHECK_THAT(geometry.vertices[corner*8+3+axis],Catch::Matchers::WithinAbs(float(surface->normals[0][axis]),1e-6f));
+        }
+        CHECK(geometry.vertices[corner*8+6]==float(0x00FF00));
+        CHECK_THAT(geometry.vertices[corner*8+7],Catch::Matchers::WithinAbs(.5f,1e-6f));
+    }
+}
+
+TEST_CASE("Puzzle preview republishes complete triangles when an attribute update is rejected", "[ModelPreviewPuzzle]") {
+    indexed_triangle_set mesh;
+    mesh.vertices={{0,0,0},{1,0,0},{0,1,0}};mesh.indices={{0,1,2}};
+    std::vector<std::array<float,4>> base(3,{1,0,0,.7f});
+    const auto surface=BeautySurface::build(mesh,base);
+    BeautyPuzzle puzzle;puzzle.geometry_id=surface->geometry_id;puzzle.face_piece={1};puzzle.next_id=2;
+    Slic3r::GUI::ModelPreviewPuzzle preview;
+    preview.update(mesh,base,*surface,puzzle,UINT32_MAX,true);
+    // Equal counts permit reuse, but a different vertex stride rejects the update.
+    Slic3r::GUI::GLModel::Geometry incompatible;
+    incompatible.format={Slic3r::GUI::GLModel::Geometry::EPrimitiveType::Triangles,
+                         Slic3r::GUI::GLModel::Geometry::EVertexLayout::P3};
+    for(const auto& vertex:mesh.vertices)incompatible.add_vertex(vertex);
+    incompatible.add_triangle(0,1,2);
+    preview.fill=std::make_unique<Slic3r::GUI::GLModel>();
+    preview.fill->init_from(std::move(incompatible));
+    puzzle.paint(1,{0,0,1,1});
+    preview.update(mesh,base,*surface,puzzle,UINT32_MAX,true);
+    REQUIRE(preview.fill);
+    const auto& geometry=preview.fill->get_geometry();
+    CHECK(geometry.indices==std::vector<unsigned>{0,1,2});
+    REQUIRE(geometry.vertices.size()==24);
+    for(size_t corner=0;corner<3;++corner) {
+        CHECK(geometry.vertices[corner*8+6]==float(0x0000FF));
+        CHECK_THAT(geometry.vertices[corner*8+7],Catch::Matchers::WithinAbs(.7f,1e-6f));
+        for(size_t axis=0;axis<3;++axis)
+            CHECK_THAT(geometry.vertices[corner*8+axis],Catch::Matchers::WithinAbs(mesh.vertices[corner][axis],1e-6f));
+    }
+}
+
+TEST_CASE("Background preview data preserves the display and subsequent edits", "[ModelPreviewPuzzle][BeautyWorkbench]") {
+    const bool custom=GENERATE(false,true);
+    const uint32_t selected=GENERATE(UINT32_MAX,1u,17u);
+    indexed_triangle_set mesh;
+    mesh.vertices={{0,0,0},{1,0,0},{0,1,0},{1,1,0}};mesh.indices={{0,1,2},{2,1,3}};
+    std::vector<std::array<float,4>> base(4,{.2f,.4f,.6f,.7f});
+    const auto surface=BeautySurface::build(mesh,base);
+    BeautyPuzzle puzzle;puzzle.geometry_id=surface->geometry_id;puzzle.face_piece={1,2};puzzle.next_id=3;
+    puzzle.paint(1,{1,0,0,1});
+    std::vector<uint32_t> regions{17,17};const auto* partition=custom?&regions:nullptr;
+    using Preview=Slic3r::GUI::ModelPreviewPuzzle;
+    std::optional<Preview::Prepared> prepared;
+    std::exception_ptr error;
+    std::thread worker([&] {
+        try {prepared=Preview::prepare_initial(mesh,base,*surface,puzzle,selected,partition);}
+        catch(...) {error=std::current_exception();}
+    });
+    worker.join();REQUIRE_FALSE(error);REQUIRE(prepared);
+    Preview reference,actual;
+    reference.update(mesh,base,*surface,puzzle,selected,true,partition);
+    REQUIRE(actual.install(*prepared,mesh,base,*surface,puzzle,selected,partition));
+    CHECK_FALSE(actual.install(*prepared,mesh,base,*surface,puzzle,selected,partition));
+    const auto compare=[](const Slic3r::GUI::GLModel* a,const Slic3r::GUI::GLModel* b) {
+        REQUIRE(bool(a)==bool(b));if(!a)return;
+        const auto& a_bounds=a->get_bounding_box();const auto& b_bounds=b->get_bounding_box();
+        CHECK(a_bounds.defined==b_bounds.defined);
+        CHECK(std::memcmp(a_bounds.min.data(),b_bounds.min.data(),3*sizeof(double))==0);
+        CHECK(std::memcmp(a_bounds.max.data(),b_bounds.max.data(),3*sizeof(double))==0);
+        const auto& left=a->get_geometry();const auto& right=b->get_geometry();
+        REQUIRE(left.vertices.size()==right.vertices.size());CHECK(left.indices==right.indices);
+        // Rendering attributes must retain their original ordered float bits.
+        if(!left.vertices.empty())CHECK(std::memcmp(left.vertices.data(),right.vertices.data(),left.vertices.size()*sizeof(float))==0);
+    };
+    compare(reference.fill.get(),actual.fill.get());compare(reference.borders.get(),actual.borders.get());
+    compare(reference.active.get(),actual.active.get());
+    REQUIRE(reference.cpu.contours.size()==actual.cpu.contours.size());
+    for(size_t i=0;i<reference.cpu.contours.size();++i) {
+        const auto& a=reference.cpu.contours[i];const auto& b=actual.cpu.contours[i];
+        CHECK(a.face==b.face);CHECK(a.neighbor==b.neighbor);CHECK(a.left==b.left);CHECK(a.right==b.right);
+        CHECK(std::memcmp(&a.tolerance,&b.tolerance,sizeof(float))==0);
+    }
+    puzzle.paint(1,{0,1,0,1});
+    reference.update(mesh,base,*surface,puzzle,selected,true,partition);
+    actual.update(mesh,base,*surface,puzzle,selected,true,partition);
+    compare(reference.fill.get(),actual.fill.get());compare(reference.active.get(),actual.active.get());
+    CHECK(actual.fill->get_geometry().vertices[6]==float(0x00FF00));
+}
+
+TEST_CASE("Obsolete or canceled preview preparation leaves the installed display intact", "[ModelPreviewPuzzle][BeautyWorkbench]") {
+    indexed_triangle_set mesh;
+    mesh.vertices={{0,0,0},{1,0,0},{0,1,0}};mesh.indices={{0,1,2}};
+    std::vector<std::array<float,4>> base(3,{1,0,0,1});
+    const auto surface=BeautySurface::build(mesh,base);
+    BeautyPuzzle puzzle;puzzle.geometry_id=surface->geometry_id;puzzle.face_piece={1};puzzle.next_id=2;
+    using Preview=Slic3r::GUI::ModelPreviewPuzzle;
+    Preview actual;actual.update(mesh,base,*surface,puzzle,UINT32_MAX,true);
+    auto* installed=actual.fill.get();const auto before=installed->get_geometry().vertices;
+    auto prepared=Preview::prepare_initial(mesh,base,*surface,puzzle,UINT32_MAX);
+    auto replacement=mesh;
+    CHECK_FALSE(actual.install(prepared,replacement,base,*surface,puzzle,UINT32_MAX));
+    auto colors=base;
+    CHECK_FALSE(actual.install(prepared,mesh,colors,*surface,puzzle,UINT32_MAX));
+    auto changed=puzzle;changed.paint(1,{0,0,1,1});
+    CHECK_FALSE(actual.install(prepared,mesh,base,*surface,changed,UINT32_MAX));
+    changed=puzzle;changed.face_piece={2};changed.next_id=3;
+    CHECK_FALSE(actual.install(prepared,mesh,base,*surface,changed,UINT32_MAX));
+    CHECK_FALSE(actual.install(prepared,mesh,base,*surface,puzzle,1));
+    std::vector<uint32_t> regions{17};
+    auto layered=Preview::prepare_initial(mesh,base,*surface,puzzle,UINT32_MAX,&regions);
+    CHECK_FALSE(actual.install(layered,mesh,base,*surface,changed,UINT32_MAX,&regions));
+    regions[0]=18;
+    CHECK_FALSE(actual.install(layered,mesh,base,*surface,puzzle,UINT32_MAX,&regions));
+    CHECK_FALSE(actual.install(layered,mesh,base,*surface,puzzle,UINT32_MAX));
+    size_t checkpoints=0;
+    std::exception_ptr error;
+    std::thread canceled_worker([&] {
+        try {Preview::prepare_initial(mesh,base,*surface,puzzle,UINT32_MAX,nullptr,
+            [&]{return ++checkpoints>=4;});}
+        catch(...) {error=std::current_exception();}
+    });
+    canceled_worker.join();REQUIRE(error);
+    CHECK(checkpoints==4);CHECK(actual.fill.get()==installed);
+    CHECK(actual.fill->get_geometry().vertices==before);
+    CHECK(prepared.valid);
+    REQUIRE(actual.install(prepared,mesh,base,*surface,puzzle,UINT32_MAX));
+}
+
+// Local performance fixture only: requires a user-supplied historical model
+// and its matching saved draft, or explicit fresh regions; never runs by default.
+TEST_CASE("Historical puzzle preview keeps its fill bytes across repaint runs", "[.ModelPreviewPuzzleProbe]") {
+    const auto env=[](const char* key){const auto value=boost::nowide::getenv(key);return value?std::string(value):std::string{};};
+    const auto source=env("ORCA_PREVIEW_SOURCE"),draft=env("ORCA_PREVIEW_DRAFT"),report=env("ORCA_PREVIEW_REPORT");
+    const bool fresh=env("ORCA_PREVIEW_CREATE")=="1";
+    if(source.empty() || (!fresh && draft.empty()) || report.empty())SKIP("Set model, matching draft or explicit fresh regions, and a fresh report path.");
+    REQUIRE(boost::filesystem::is_regular_file(source));
+    if(!fresh)REQUIRE(boost::filesystem::is_regular_file(draft));
+    REQUIRE_FALSE(boost::filesystem::exists(report));
+    const auto source_hash=model_artifact_sha256(source);
+    TriangleMesh mesh;ObjInfo colors;std::string error;
+    REQUIRE(load_model_artifact(source,mesh,colors,error));
+    const size_t faces=mesh.its.indices.size();
+    BeautyDocument document;
+    nlohmann::json record;
+    if(!fresh) {
+        boost::filesystem::ifstream input(draft);nlohmann::json wrapper;input>>wrapper;
+        record=wrapper.at("beauty_puzzle_draft");
+        document=BeautyDocument::decode(record,record.at("geometry_id").get<std::string>(),faces);
+    }
+    const auto surface=BeautySurface::build(mesh.its,colors.vertex_colors,document.face_patch);
+    auto puzzle=fresh?BeautyPuzzle::create_regions(*surface):BeautyPuzzle::decode(record.at("puzzle"),surface->geometry_id,faces);
+    puzzle.validate(*surface);
+    Slic3r::GUI::ModelPreviewPuzzle preview;
+    std::atomic<size_t> cancellation_checks{0};
+    std::function<bool()> keep_running;
+    if(env("ORCA_PREVIEW_CHECK_CANCEL")=="1")keep_running=[&] {++cancellation_checks;return false;};
+    double background_ms=0.,install_ms=0.;
+    const auto initial_start=std::chrono::steady_clock::now();
+    if(env("ORCA_PREVIEW_STAGED")=="1") {
+        const auto started=std::chrono::steady_clock::now();
+        std::optional<Slic3r::GUI::ModelPreviewPuzzle::Prepared> prepared;
+        std::exception_ptr worker_error;
+        std::thread worker([&] {
+            try {prepared=Slic3r::GUI::ModelPreviewPuzzle::prepare_initial(mesh.its,colors.vertex_colors,*surface,puzzle,UINT32_MAX,nullptr,keep_running);}
+            catch(...) {worker_error=std::current_exception();}
+        });
+        worker.join();REQUIRE_FALSE(worker_error);REQUIRE(prepared);
+        background_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
+        const auto install_start=std::chrono::steady_clock::now();
+        REQUIRE(preview.install(*prepared,mesh.its,colors.vertex_colors,*surface,puzzle,UINT32_MAX));
+        install_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-install_start).count();
+    } else preview.update(mesh.its,colors.vertex_colors,*surface,puzzle,UINT32_MAX,true);
+    const double initial_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-initial_start).count();
+    // Complete initial CPU display output, beyond the fill-only repaint check.
+    const auto hash_initial = [&] {
+        uint64_t hash = 14695981039346656037ull;
+        const auto bytes = [&](const void* data, size_t size) {
+            for (size_t i = 0; i < size; ++i)
+                hash = (hash ^ static_cast<const unsigned char*>(data)[i]) * 1099511628211ull;
+        };
+        for (const auto* model : {preview.fill.get(), preview.borders.get(), preview.active.get()}) {
+            const bool present = model != nullptr;
+            bytes(&present, sizeof(present));
+            if (!present) continue;
+            const auto& geometry = model->get_geometry();
+            const size_t vertices = geometry.vertices.size(), indices = geometry.indices.size();
+            bytes(&vertices, sizeof(vertices)); bytes(&indices, sizeof(indices));
+            bytes(geometry.vertices.data(), vertices * sizeof(float));
+            bytes(geometry.indices.data(), indices * sizeof(unsigned));
+        }
+        for (const auto& edge : preview.cpu.contours) {
+            for (int axis = 0; axis < 3; ++axis) {
+                bytes(&edge.a[axis], sizeof(float)); bytes(&edge.b[axis], sizeof(float));
+            }
+            bytes(&edge.face, sizeof(edge.face)); bytes(&edge.neighbor, sizeof(edge.neighbor));
+            bytes(&edge.left, sizeof(edge.left)); bytes(&edge.right, sizeof(edge.right));
+            bytes(&edge.tolerance, sizeof(edge.tolerance));
+        }
+        return hash;
+    };
+    const uint64_t initial_frame_hash = hash_initial();
+    // Bounds must match the original ordered scan, including ribbon vertices.
+    for(const auto* model:{preview.fill.get(),preview.borders.get(),preview.active.get()}) {
+        if(!model)continue;
+        const auto& geometry=model->get_geometry();
+        BoundingBoxf3 expected;
+        for(size_t i=0;i<geometry.vertices_count();++i)
+            expected.merge(geometry.extract_position_3(i).cast<double>());
+        const auto& actual=model->get_bounding_box();
+        CHECK(actual.defined==expected.defined);
+        CHECK(std::memcmp(actual.min.data(),expected.min.data(),3*sizeof(double))==0);
+        CHECK(std::memcmp(actual.max.data(),expected.max.data(),3*sizeof(double))==0);
+    }
+    puzzle.paint(puzzle.face_piece.front(),{1.f,1.f,1.f,1.f});
+    nlohmann::json samples=nlohmann::json::array();
+    for(int iteration=0;iteration<6;++iteration) {
+        const auto start=std::chrono::steady_clock::now();
+        preview.update(mesh.its,colors.vertex_colors,*surface,puzzle,UINT32_MAX,true);
+        samples.push_back(std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count());
+    }
+    REQUIRE(preview.fill);
+    const auto& vertices=preview.fill->get_geometry().vertices;
+    REQUIRE(vertices.size()==faces*3*8);
+    std::vector<float> reference(vertices.size());
+    for(size_t f=0;f<faces;++f) {
+        const auto& face=mesh.its.indices[f];
+        const auto painted=puzzle.colors.find(puzzle.face_piece[f]);
+        const auto normal=surface->normals[f].cast<float>();
+        for(int corner=0;corner<3;++corner) {
+            const auto base_color=size_t(face[corner])<colors.vertex_colors.size()?colors.vertex_colors[face[corner]]:
+                std::array<float,4>{.7f,.7f,.7f,1};
+            auto shown=painted!=puzzle.colors.end()?painted->second:base_color;shown[3]=base_color[3];
+            const uint32_t rgb=(uint32_t(std::lround(shown[0]*255))<<16) |
+                (uint32_t(std::lround(shown[1]*255))<<8) | uint32_t(std::lround(shown[2]*255));
+            const auto& position=mesh.its.vertices[face[corner]];
+            float* vertex=reference.data()+(f*3+corner)*8;
+            vertex[0]=position.x();vertex[1]=position.y();vertex[2]=position.z();
+            vertex[3]=normal.x();vertex[4]=normal.y();vertex[5]=normal.z();
+            vertex[6]=float(rgb);vertex[7]=shown[3];
+        }
+    }
+    CHECK(std::memcmp(reference.data(),vertices.data(),vertices.size()*sizeof(float))==0);
+    const auto& indices=preview.fill->get_geometry().indices;
+    REQUIRE(indices.size()==faces*3);
+    bool linear_indices=true;
+    for(size_t i=0;i<indices.size();++i)if(indices[i]!=i){linear_indices=false;break;}
+    CHECK(linear_indices);
+    uint64_t digest=14695981039346656037ull;
+    for(const unsigned char byte:std::string_view(reinterpret_cast<const char*>(vertices.data()),vertices.size()*sizeof(float)))
+        digest=(digest^byte)*1099511628211ull;
+    boost::filesystem::ofstream output(report);
+    output<<nlohmann::json{{"source_sha256",source_hash},{"faces",faces},{"vertices_bytes",vertices.size()*sizeof(float)},
+        {"source_vertices",mesh.its.vertices.size()},{"packed_base_bytes",preview.cpu.packed_base_colors.size()*sizeof(uint32_t)},
+        {"fresh_regions",fresh},{"pieces",puzzle.piece_count()},{"cancellation_checks",cancellation_checks.load()},
+        {"initial_ms",initial_ms},{"background_ms",background_ms},{"install_ms",install_ms},
+        {"initial_frame_fnv64",initial_frame_hash},{"fill_fnv64",digest},{"repaint_ms",samples},
+        {"scope","headless CPU geometry and GLModel update before GPU upload"}}.dump(2);
+    output.close();REQUIRE(output.good());
+    REQUIRE(model_artifact_sha256(source)==source_hash);
+}
+
+// Opt-in local timing for the existing save button's value-only preparation.
+// The historical draft is read from a caller-owned copy and never rewritten.
+TEST_CASE("Historical puzzle save record measures UI-side encoding and copying", "[.BeautySaveRecordProbe]") {
+    const auto env=[](const char* key){const auto value=boost::nowide::getenv(key);return value?std::string(value):std::string{};};
+    const auto draft=env("ORCA_SAVE_RECORD_DRAFT"),report=env("ORCA_SAVE_RECORD_REPORT");
+    if(draft.empty() || report.empty())SKIP("Set a draft copy and a fresh report path.");
+    REQUIRE(boost::filesystem::is_regular_file(draft));
+    REQUIRE_FALSE(boost::filesystem::exists(report));
+    const auto source_hash=model_artifact_sha256(draft);
+    boost::filesystem::ifstream input(draft);nlohmann::json wrapper;input>>wrapper;
+    const auto& saved=wrapper.at("beauty_puzzle_draft");
+    REQUIRE_FALSE(saved.contains("edit_regions"));
+    REQUIRE_FALSE(saved.contains("guidance"));
+    const auto geometry=saved.at("geometry_id").get<std::string>();
+    const size_t faces=saved.at("face_count").get<size_t>();
+    const auto document=BeautyDocument::decode(saved,geometry,faces);
+    const auto puzzle=BeautyPuzzle::decode(saved.at("puzzle"),geometry,faces);
+    nlohmann::json encode_samples=nlohmann::json::array(),copy_samples=nlohmann::json::array();
+    nlohmann::json shared_samples=nlohmann::json::array();
+    nlohmann::json accepted_copy_samples=nlohmann::json::array(),accepted_dump_samples=nlohmann::json::array();
+    nlohmann::json accepted_write_samples=nlohmann::json::array();
+    nlohmann::json preencode_samples=nlohmann::json::array(),preencoded_write_samples=nlohmann::json::array();
+    size_t accepted_bytes=0;
+    for(int iteration=0;iteration<6;++iteration) {
+        const auto started=std::chrono::steady_clock::now();
+        auto encoded=document.encode();encoded["puzzle"]=puzzle.encode();
+        encoded["puzzle_base_file"]=saved.at("puzzle_base_file");
+        encoded["puzzle_base_sha256"]=saved.at("puzzle_base_sha256");
+        const auto encoded_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
+        REQUIRE(encoded==saved);
+        ModelFinishingOptions options;options.beauty_puzzle=true;options.beauty_document=std::move(encoded);
+        const auto copy_started=std::chrono::steady_clock::now();
+        auto worker_options=options;
+        const auto copy_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-copy_started).count();
+        REQUIRE(worker_options.beauty_document==saved);
+        const auto shared_started=std::chrono::steady_clock::now();
+        auto snapshot=std::make_shared<const ModelFinishingOptions>(std::move(options));
+        auto worker_snapshot=snapshot;
+        const auto shared_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-shared_started).count();
+        snapshot.reset();
+        REQUIRE(worker_snapshot->beauty_document==saved);
+        const auto accepted_started=std::chrono::steady_clock::now();
+        auto accepted=worker_snapshot->beauty_document;
+        accepted["geometry_id"]=geometry;
+        accepted["edits"]=nlohmann::json::array({{{"kind","puzzle"},{"source_geometry",geometry}}});
+        const auto accepted_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-accepted_started).count();
+        REQUIRE(accepted.at("puzzle")==saved.at("puzzle"));
+        const auto preencode_started=std::chrono::steady_clock::now();
+        const auto preencoded=accepted.dump();
+        const auto preencode_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-preencode_started).count();
+        nlohmann::json full_metadata=nlohmann::json::object();
+        full_metadata["beauty_workbench"]=std::move(accepted);
+        const auto dump_started=std::chrono::steady_clock::now();
+        const auto serialized=full_metadata.dump();
+        const auto dump_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-dump_started).count();
+        accepted_bytes=serialized.size();
+        const boost::filesystem::path output_path=report+".history-probe.json";
+        REQUIRE_FALSE(boost::filesystem::exists(output_path));
+        const auto write_started=std::chrono::steady_clock::now();
+        boost::filesystem::ofstream history(output_path);
+        history<<serialized;history.close();
+        const auto write_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-write_started).count();
+        REQUIRE(history.good());
+        REQUIRE(boost::filesystem::file_size(output_path)==accepted_bytes);
+        REQUIRE(boost::filesystem::remove(output_path));
+        const auto preencoded_write_started=std::chrono::steady_clock::now();
+        REQUIRE(GUI::ModelGenerationPresentation::write_json_with_preencoded_field(
+            output_path,nlohmann::json::object(),"beauty_workbench",preencoded));
+        const auto preencoded_write_ms=std::chrono::duration<double,std::milli>(
+            std::chrono::steady_clock::now()-preencoded_write_started).count();
+        boost::filesystem::ifstream persisted(output_path);
+        const std::string actual((std::istreambuf_iterator<char>(persisted)),std::istreambuf_iterator<char>());
+        REQUIRE(actual==serialized);
+        persisted.close();
+        REQUIRE(boost::filesystem::remove(output_path));
+        encode_samples.push_back(encoded_ms);copy_samples.push_back(copy_ms);shared_samples.push_back(shared_ms);
+        accepted_copy_samples.push_back(accepted_ms);accepted_dump_samples.push_back(dump_ms);
+        accepted_write_samples.push_back(write_ms);
+        preencode_samples.push_back(preencode_ms);preencoded_write_samples.push_back(preencoded_write_ms);
+    }
+    boost::filesystem::ofstream output(report);
+    output<<nlohmann::json{{"draft_sha256",source_hash},{"faces",faces},
+        {"draft_bytes",boost::filesystem::file_size(draft)},
+        {"encode_ms",encode_samples},{"options_copy_ms",copy_samples},
+        {"shared_capture_ms",shared_samples},{"accepted_record_copy_ms",accepted_copy_samples},
+        {"accepted_metadata_dump_ms",accepted_dump_samples},{"accepted_file_write_ms",accepted_write_samples},
+        {"worker_preencode_ms",preencode_samples},{"preencoded_file_write_ms",preencoded_write_samples},
+        {"accepted_metadata_bytes",accepted_bytes},
+        {"scope","headless C++ equivalent of save-button record encoding, worker capture and history acceptance; no GUI"}}.dump(2);
+    output.close();REQUIRE(output.good());
+    REQUIRE(model_artifact_sha256(draft)==source_hash);
+}
+
+TEST_CASE("Palette changes match the original target instead of the previous approximation", "[BeautyTarget]") {
+    const auto surface=BeautySurface::build(its_make_cube(10,10,10),{});
+    auto p=BeautyPuzzle::create(*surface,1);
+    const std::vector<RGBA> source(surface->areas.size(),RGBA{1,0,0,1});
+    p.match_filaments(*surface,{{0,"#808080","PLA",true}}, {},source);
+    auto restored=BeautyPuzzle::decode(p.encode(),p.geometry_id,p.face_piece.size());
+    restored.match_filaments(*surface,{{0,"#808080","PLA",true},{1,"#FF0000","PLA",true}}, {},source);
+    for(const auto& slot:restored.filament_slots)CHECK(slot.second==1);
+}
+
+TEST_CASE("Custom targets survive edits and reject corrupt persisted records", "[BeautyTarget]") {
+    const auto surface=BeautySurface::build(its_make_cube(10,10,10),{});
+    auto p=BeautyPuzzle::create(*surface,1);const auto id=p.face_piece.front();
+    p.match_filaments(*surface,{{0,"#808080","PLA",true}});
+    p.paint(id,{1,0,0,1});
+    const auto snapshot=p;const auto saved=p.encode();
+    REQUIRE(saved.at("schema")=="orca.beauty-puzzle/v4");
+    auto restored=BeautyPuzzle::decode(saved,p.geometry_id,p.face_piece.size());
+    CHECK(restored.same_edit(p));
+    const auto split=restored.split(id,{0},*surface);
+    CHECK(restored.target_colors.at(split)==p.target_colors.at(id));
+    restored.match_filaments(*surface,{{0,"#808080","PLA",true},{1,"#FF0000","PLA",true}});
+    CHECK(restored.filament_slots.at(split)==1);
+    restored.paint_filament(split,0);CHECK_FALSE(restored.target_colors.count(split));
+    const auto explicit_paint=restored;
+    restored.match_filaments(*surface,restored.palette);CHECK(restored.same_edit(explicit_paint));
+    restored.clear_color(split);CHECK_FALSE(restored.target_colors.count(split));
+    restored=snapshot;CHECK(restored.same_edit(p)); // Undo restores both intent and output.
+    restored.merge(id,restored.split(id,{0},*surface),*surface);
+    CHECK(restored.target_colors.size()==1);REQUIRE_NOTHROW(restored.validate(*surface));
+    auto invalid=saved;invalid["target_colors"][0]["id"]=999;
+    CHECK_THROWS(BeautyPuzzle::decode(invalid,p.geometry_id,p.face_piece.size()));
+    invalid=saved;invalid["target_colors"][0]["rgba"][0]=1.1;
+    CHECK_THROWS(BeautyPuzzle::decode(invalid,p.geometry_id,p.face_piece.size()));
+    invalid=saved;invalid["target_colors"].push_back(invalid["target_colors"][0]);
+    CHECK_THROWS(BeautyPuzzle::decode(invalid,p.geometry_id,p.face_piece.size()));
+    invalid=saved;invalid.erase("target_colors");
+    CHECK_THROWS(BeautyPuzzle::decode(invalid,p.geometry_id,p.face_piece.size()));
+    auto legacy=saved;legacy["schema"]="orca.beauty-puzzle/v2";legacy.erase("target_colors");legacy.erase("mixed_recipes");
+    restored=BeautyPuzzle::decode(legacy,p.geometry_id,p.face_piece.size());
+    CHECK(restored.target_colors.empty());
+    restored.match_filaments(*surface,{{0,"#808080","PLA",true},{1,"#FF0000","PLA",true}});
+    CHECK(restored.filament_slots.at(id)==0); // Old gray paint has no recoverable red intent.
+}
+
+TEST_CASE("Explicit same color material slots survive unrelated palette changes", "[BeautyTarget]") {
+    const auto surface=BeautySurface::build(its_make_cube(10,10,10),{});
+    auto p=BeautyPuzzle::create(*surface,1);const auto id=p.face_piece.front();
+    p.match_filaments(*surface,{{0,"#808080","PLA",true},{1,"#808080","PLA",true}});
+    p.paint_filament(id,1);
+    p=BeautyPuzzle::decode(p.encode(),p.geometry_id,p.face_piece.size());
+    p.match_filaments(*surface,{{0,"#808080","PLA",true},{1,"#808080","PLA",true},{2,"#FF0000","PLA",true}});
+    CHECK(p.filament_slots.at(id)==1);
+    p.match_filaments(*surface,{{0,"#808080","PLA",true},{1,"#808080","PLA",false},{2,"#FF0000","PLA",true}});
+    CHECK(p.filament_slots.at(id)==0);
+}
+
+TEST_CASE("A selected custom target survives reload without repainting other faces", "[BeautyTarget]") {
+    const auto surface=BeautySurface::build(its_make_cube(10,10,10),{});
+    auto p=BeautyPuzzle::create(*surface,1);
+    p.match_filaments(*surface,{{0,"#808080","PLA",true}});
+    p.paint_faces_target({0},*surface,{1,0,0,1});
+    p=BeautyPuzzle::decode(p.encode(),p.geometry_id,p.face_piece.size());
+    p.match_filaments(*surface,{{0,"#808080","PLA",true},{1,"#FF0000","PLA",true}});
+    for(size_t f=0;f<p.face_piece.size();++f)CHECK(p.filament_slots.at(p.face_piece[f])==(f==0?1:0));
+    const auto before=p;
+    CHECK_THROWS(p.paint_faces_target({999},*surface,{1,0,0,1}));CHECK(p.same_edit(before));
+    CHECK_THROWS(p.paint_faces_target({0},*surface,{2,0,0,1}));CHECK(p.same_edit(before));
+}
+
+namespace {
+// Explicit-instantiation access is confined to this test translation unit. It
+// observes private stages without changing production visibility or its ODR.
+template<class Tag, typename Tag::Type Member> struct PuzzleStageAccess {
+    friend typename Tag::Type stage_member(Tag) { return Member; }
+};
+struct RegularizeStage {
+    using Type = void (BeautyPuzzle::*)(const BeautySurface&, const std::function<bool()>&);
+    friend Type stage_member(RegularizeStage);
+};
+struct SmoothStage {
+    using Type = void (BeautyPuzzle::*)(const BeautySurface&, const std::vector<uint8_t>&,
+        const std::vector<int32_t>&, const std::function<bool()>&,
+        const std::vector<uint32_t>*, const std::vector<int32_t>*, const std::vector<uint8_t>*);
+    friend Type stage_member(SmoothStage);
+};
+template struct PuzzleStageAccess<RegularizeStage, &BeautyPuzzle::regularize_boundaries>;
+template struct PuzzleStageAccess<SmoothStage, &BeautyPuzzle::smooth_partition>;
+template<class Tag, auto Member> struct AutoPuzzleStageAccess {
+    friend auto stage_member(Tag) { return Member; }
+};
+struct BoundaryFieldStage { friend auto stage_member(BoundaryFieldStage); };
+template struct AutoPuzzleStageAccess<BoundaryFieldStage, &BeautyPuzzle::boundary_field>;
+struct PuzzleLab {
+    using Type = std::array<double,3> (*)(const std::array<double,3>&);
+    friend Type stage_member(PuzzleLab);
+};
+template struct PuzzleStageAccess<PuzzleLab, &BeautyPuzzle::to_lab>;
+struct PuzzleStateCheck {
+    using Type = void (BeautyPuzzle::*)() const;
+    friend Type stage_member(PuzzleStateCheck);
+};
+struct PuzzleSurfaceCheck {
+    using Type = void (*)(const BeautySurface&);
+    friend Type stage_member(PuzzleSurfaceCheck);
+};
+template struct PuzzleStageAccess<PuzzleStateCheck, &BeautyPuzzle::check_state>;
+template struct PuzzleStageAccess<PuzzleSurfaceCheck, &BeautyPuzzle::check_surface_data>;
+
+
+// Shared bounded topology proof for test-only transfer candidates.
+size_t restore_candidate_faces(const BeautyPuzzle& before, BeautyPuzzle& proposed,
+                               const BeautySurface& surface, const std::vector<size_t>& risky,
+                               size_t* unresolved, const std::function<bool()>& canceled) {
+    const auto checkpoint=[&] {if(canceled && canceled())throw std::runtime_error("Candidate preparation cancelled.");};
+    std::vector<uint32_t> visited(before.face_piece.size(),0);uint32_t stamp=0;
+    std::vector<size_t> queue;queue.reserve(128);
+    const auto donor_connected=[&](size_t removed,uint32_t owner) {
+        std::vector<size_t> same;
+        for(int32_t n:surface.face_neighbors[removed])if(n>=0 && proposed.face_piece[n]==owner &&
+            std::find(same.begin(),same.end(),size_t(n))==same.end())same.push_back(size_t(n));
+        if(same.empty())return false;
+        if(same.size()==1)return true;
+        if(++stamp==0){std::fill(visited.begin(),visited.end(),0);++stamp;}
+        queue.assign(1,same[0]);visited[same[0]]=stamp;size_t reached=1;
+        for(size_t at=0;at<queue.size() && queue.size()<128;++at)
+            for(int32_t n:surface.face_neighbors[queue[at]])
+                if(n>=0 && size_t(n)!=removed && proposed.face_piece[n]==owner && visited[n]!=stamp) {
+                    visited[n]=stamp;queue.push_back(size_t(n));
+                    if(std::find(same.begin()+1,same.end(),size_t(n))!=same.end())++reached;
+                    if(reached==same.size())return true;
+                }
+        return false;
+    };
+    size_t reverted=0;
+    for(unsigned pass=0;pass<8;++pass) {
+        checkpoint();size_t changed=0;
+        for(size_t at=0;at<risky.size();++at) {
+            if((at&4095)==0)checkpoint();
+            const size_t f=risky[pass%2?risky.size()-1-at:at];
+            const uint32_t target=before.face_piece[f],owner=proposed.face_piece[f];
+            if(target==owner)continue;
+            const auto& neighbors=surface.face_neighbors[f];
+            if(std::none_of(neighbors.begin(),neighbors.end(),[&](int32_t n){return n>=0 && proposed.face_piece[n]==target;}))continue;
+            if(!donor_connected(f,owner))continue;
+            proposed.face_piece[f]=target;++changed;
+        }
+        reverted+=changed;if(!changed)break;
+    }
+    if(unresolved)*unresolved=risky.size()-reverted;
+    return reverted;
+}
+
+// TEST CANDIDATE ONLY. Restore a strong-color face only when it touches its
+// original region and its removal provably leaves the donor connected. The
+// bounded connectivity proof follows the existing smooth_partition approach.
+size_t guard_color_transfers(const BeautyPuzzle& before, BeautyPuzzle& proposed,
+                             const BeautySurface& surface, size_t* unresolved=nullptr,
+                             const std::function<bool()>& canceled={}) {
+    const auto checkpoint=[&] {if(canceled && canceled())throw std::runtime_error("Candidate preparation cancelled.");};
+    std::map<uint32_t,size_t> slots;
+    for(uint32_t id:before.face_piece)slots.emplace(id,slots.size());
+    std::vector<std::array<double,3>> mean(slots.size()),lab;
+    std::vector<double> area(slots.size(),0.);
+    for(const auto& patch:surface.patches)lab.push_back(stage_member(PuzzleLab{})(patch.mean_color));
+    for(size_t f=0;f<before.face_piece.size();++f) {
+        if((f&4095)==0)checkpoint();
+        const size_t a=slots.at(before.face_piece[f]);
+        const double mass=std::max(surface.areas[f],1e-15);area[a]+=mass;
+        for(size_t c=0;c<3;++c)mean[a][c]+=lab[surface.face_patch[f]][c]*mass;
+    }
+    for(size_t i=0;i<area.size();++i)for(double& c:mean[i])c/=area[i];
+    std::vector<size_t> risky;
+    for(size_t f=0;f<before.face_piece.size();++f)if(before.face_piece[f]!=proposed.face_piece[f]) {
+        if((f&4095)==0)checkpoint();
+        const size_t a=slots.at(before.face_piece[f]),b=slots.at(proposed.face_piece[f]);
+        double old_fit=0.,new_fit=0.;
+        for(size_t c=0;c<3;++c) {
+            const double color=lab[surface.face_patch[f]][c];
+            old_fit+=std::pow(color-mean[a][c],2);new_fit+=std::pow(color-mean[b][c],2);
+        }
+        // Initial scale comes from existing teeth trimming, not sample tuning.
+        if(std::sqrt(new_fit)>std::sqrt(old_fit)+12.)risky.push_back(f);
+    }
+    return restore_candidate_faces(before,proposed,surface,risky,unresolved,canceled);
+}
+
+
+size_t guarded_regularize(BeautyPuzzle& puzzle,const BeautySurface& surface,
+                         const std::function<bool()>& canceled={},size_t* unresolved=nullptr) {
+    auto proposed=puzzle;
+    (proposed.*stage_member(RegularizeStage{}))(surface,canceled);
+    const size_t reverted=guard_color_transfers(puzzle,proposed,surface,unresolved,canceled);
+    if(canceled && canceled())throw std::runtime_error("Candidate preparation cancelled.");
+    proposed.validate(surface);puzzle=std::move(proposed);
+    return reverted;
+}
+
+
+// Automatic-only test candidate, not a persistence/manual-paint policy.
+nlohmann::json constrain_stationary_palette(const BeautyPuzzle& baseline,BeautyPuzzle& candidate,
+                                           const BeautySurface& surface,const std::vector<RGBA>& source) {
+    if(!baseline.same_palette(candidate.palette) || baseline.geometry_id!=candidate.geometry_id ||
+       baseline.face_piece.size()!=candidate.face_piece.size() || source.size()!=candidate.face_piece.size() ||
+       !baseline.mixed_recipes.empty() || !candidate.mixed_recipes.empty())
+        throw std::invalid_argument("Joint candidate requires identical physical palette and geometry.");
+    baseline.validate(surface);candidate.validate(surface);
+    const size_t k=candidate.palette.size();
+    if(!k || k>6 || std::any_of(candidate.palette.begin(),candidate.palette.end(),[](const auto& c){return !c.compatible;}))
+        throw std::invalid_argument("Joint candidate requires compatible physical channels.");
+    std::map<size_t,size_t> index;
+    std::vector<std::array<float,4>> palette;
+    for(size_t j=0;j<k;++j){index[candidate.palette[j].slot]=j;palette.push_back(BeautyPuzzle::filament_color(candidate.palette[j]));}
+    struct Region {std::array<double,6> cost{};std::array<bool,6> allowed,all_allowed;Region(){allowed.fill(true);all_allowed.fill(true);}};
+    std::map<uint32_t,Region> regions;
+    std::map<std::array<float,3>,std::array<double,6>> cache;
+    for(size_t f=0;f<source.size();++f) {
+        const std::array<float,3> rgb{source[f][0],source[f][1],source[f][2]};
+        for(float c:rgb)if(!std::isfinite(c) || c<0 || c>1)throw std::invalid_argument("Invalid joint source color.");
+        auto entry=cache.try_emplace(rgb);
+        if(entry.second)for(size_t j=0;j<k;++j)
+            entry.first->second[j]=tex2color::color_utils::calc_rgb_color_difference_by_ciede2000_srgb01(
+                {rgb[0],rgb[1],rgb[2]},{palette[j][0],palette[j][1],palette[j][2]});
+        const auto& distances=entry.first->second;
+        const auto original=baseline.face_piece[f],id=candidate.face_piece[f];
+        const double old_error=distances[index.at(baseline.filament_slots.at(original))];
+        auto& region=regions[id];
+        for(size_t j=0;j<k;++j) {
+            region.cost[j]+=surface.areas[f]*distances[j];
+            if(surface.areas[f]>0 && distances[j]>old_error+1e-7) {
+                region.all_allowed[j]=false;if(original==id)region.allowed[j]=false;
+            }
+        }
+    }
+    auto result=candidate;size_t changed=0;
+    nlohmann::json infeasible=nlohmann::json::array();
+    for(const auto& item:regions) {
+        const auto id=item.first;const auto& region=item.second;
+        const size_t previous=index.at(candidate.filament_slots.at(id));
+        size_t best=k;
+        for(size_t j=0;j<k;++j)if(region.allowed[j] && (best==k || region.cost[j]<region.cost[best]))best=j;
+        if(best==k)throw std::runtime_error("Stationary-region baseline must provide a feasible color.");
+        if(region.allowed[previous] && region.cost[previous]==region.cost[best])best=previous;
+        bool feasible=false;for(size_t j=0;j<k;++j)feasible|=region.all_allowed[j];
+        if(!feasible)infeasible.push_back(id);
+        changed+=best!=previous;
+        // Preserve automatic target RGB; do not turn this into explicit paint.
+        result.colors[id]=palette[best];result.filament_slots[id]=candidate.palette[best].slot;
+    }
+    result.validate(surface);candidate=std::move(result);
+    return {{"changed_region_colors",changed},{"all_faces_infeasible_regions",infeasible},
+            {"status","test_candidate_only; source-error constraint, not manual intent or visual acceptance"}};
+}
+
+// Fixed-output diagnostic: test whether residual transfers can be undone without
+// any other face changing color. Targets are intentionally frozen; this is not
+// a rematch-safe or manual-edit production operation.
+nlohmann::json restore_residual_transfers(const BeautyPuzzle& baseline,BeautyPuzzle& candidate,
+                                         const BeautySurface& surface,const std::vector<RGBA>& source,
+                                         const std::function<bool()>& canceled={}) {
+    const auto checkpoint=[&] {if(canceled && canceled())throw std::runtime_error("Residual candidate cancelled.");};
+    checkpoint();baseline.validate(surface);candidate.validate(surface);
+    if(!baseline.same_palette(candidate.palette) || baseline.geometry_id!=candidate.geometry_id ||
+       source.size()!=candidate.face_piece.size() || baseline.face_piece.size()!=source.size() ||
+       !baseline.mixed_recipes.empty() || !candidate.mixed_recipes.empty())
+        throw std::invalid_argument("Residual candidate requires identical physical palette and geometry.");
+    const auto error=[](const RGBA& source,const RGBA& output) {
+        return tex2color::color_utils::calc_rgb_color_difference_by_ciede2000_srgb01(
+            {source[0],source[1],source[2]},{output[0],output[1],output[2]});
+    };
+    std::vector<size_t> risky;size_t rejected_color=0;
+    for(size_t f=0;f<source.size();++f) {
+        if((f&4095)==0)checkpoint();
+        for(float c:source[f])if(!std::isfinite(c) || c<0 || c>1)throw std::invalid_argument("Invalid residual source color.");
+        const auto original=baseline.face_piece[f],current=candidate.face_piece[f];
+        if(original==current || surface.areas[f]<=0)continue;
+        const double old_error=error(source[f],baseline.colors.at(original));
+        const double current_error=error(source[f],candidate.colors.at(current));
+        if(current_error<=old_error+1e-7)continue;
+        const auto target=candidate.colors.find(original);
+        if(target==candidate.colors.end() || error(source[f],target->second)>old_error+1e-7) {
+            ++rejected_color;continue;
+        }
+        risky.push_back(f);
+    }
+    auto result=candidate;size_t unresolved=0;
+    const size_t restored=restore_candidate_faces(baseline,result,surface,risky,&unresolved,canceled);
+    checkpoint();result.validate(surface);candidate=std::move(result);
+    return {{"restored_faces",restored},{"unresolved_topology_or_pass_limit",unresolved},
+            {"rejected_destination_color",rejected_color},
+            {"status","fixed-output diagnostic only; target refresh and rematch not validated"}};
+}
+
+}
+
+TEST_CASE("Historical workbench partition separates grouping regularization and smoothing", "[.BeautyPartitionProbe]") {
+    const auto env=[](const char* key){const auto value=boost::nowide::getenv(key);return value?std::string(value):std::string{};};
+    const auto source=env("ORCA_BEAUTY_PREP_SOURCE"),report=env("ORCA_BEAUTY_PARTITION_REPORT");
+    if(source.empty() || report.empty())SKIP("Set a local model and a fresh partition report path.");
+    REQUIRE(boost::filesystem::exists(source));
+    REQUIRE_FALSE(boost::filesystem::exists(report));
+    const auto source_hash=model_artifact_sha256(source);
+    REQUIRE_FALSE(source_hash.empty());
+    TriangleMesh mesh;ObjInfo colors;std::string error;
+    REQUIRE(load_model_artifact(source,mesh,colors,error));
+    auto surface=BeautySurface::build(mesh.its,colors.vertex_colors);
+    nlohmann::json samples=nlohmann::json::array();
+    std::string expected;
+    for(int iteration=0;iteration<5;++iteration) {
+        auto previous=std::chrono::steady_clock::now();const auto started=previous;
+        nlohmann::json stages=nlohmann::json::object();
+        const auto mark=[&](const char* name) {
+            const auto now=std::chrono::steady_clock::now();
+            stages[name]=std::chrono::duration<double,std::milli>(now-previous).count();previous=now;
+        };
+        auto puzzle=BeautyPuzzle::create(*surface,28);
+        mark("create_28");
+        (puzzle.*stage_member(RegularizeStage{}))(*surface,{});
+        mark("regularize_boundaries");
+        (puzzle.*stage_member(SmoothStage{}))(*surface,{},{},{},nullptr,nullptr,nullptr);
+        mark("smooth_partition");
+        const double operation_ms=std::chrono::duration<double,std::milli>(previous-started).count();
+        puzzle.validate(*surface);
+        const auto encoded=puzzle.encode().dump();
+        if(iteration==0) {
+            expected=encoded;
+            CHECK(encoded==BeautyPuzzle::create_regions(*surface).encode().dump());
+        } else CHECK(encoded==expected);
+        samples.push_back({{"phase",iteration==0?"first":iteration==1?"warmup":"warm"},
+            {"stages_ms",stages},{"operation_ms",operation_ms},{"pieces",puzzle.piece_count()}});
+    }
+    REQUIRE(model_artifact_sha256(source)==source_hash);
+    const auto puzzle_digest=Slic3r::GUI::LocalSemanticGeometry::detail::digest(expected.data(),expected.size(),nullptr);
+    std::string puzzle_sha256;
+    for(unsigned char byte:puzzle_digest){puzzle_sha256+="0123456789abcdef"[byte>>4];puzzle_sha256+="0123456789abcdef"[byte&15];}
+    boost::filesystem::ofstream output(report);
+    output<<nlohmann::json{{"source_sha256",source_hash},{"faces",mesh.its.indices.size()},
+        {"puzzle_sha256",puzzle_sha256},{"samples",samples},
+        {"scope","offline no-recognition partition; surface and model loading excluded"}}.dump(2);
+    output.close();
+    REQUIRE(output.good());
+}
+
+TEST_CASE("Historical workbench boundary field stays stable across replays", "[.BeautyBoundaryFieldProbe]") {
+    const auto env=[](const char* key){const auto value=boost::nowide::getenv(key);return value?std::string(value):std::string{};};
+    const auto source=env("ORCA_BEAUTY_PREP_SOURCE"),report=env("ORCA_BEAUTY_FIELD_REPORT");
+    if(source.empty() || report.empty())SKIP("Set a local model and a fresh field report path.");
+    REQUIRE(boost::filesystem::exists(source));
+    REQUIRE_FALSE(boost::filesystem::exists(report));
+    const auto source_hash=model_artifact_sha256(source);
+    TriangleMesh mesh;ObjInfo colors;std::string error;
+    REQUIRE(load_model_artifact(source,mesh,colors,error));
+    auto surface=BeautySurface::build(mesh.its,colors.vertex_colors);
+    auto puzzle=BeautyPuzzle::create(*surface,28);
+    (puzzle.*stage_member(RegularizeStage{}))(*surface,{});
+    std::unordered_map<uint32_t,size_t> slot;
+    std::vector<double> area;
+    std::vector<size_t> members;
+    for(size_t f=0;f<puzzle.face_piece.size();++f) {
+        const auto entry=slot.emplace(puzzle.face_piece[f],slot.size());
+        if(entry.second) {area.push_back(0.);members.push_back(0);}
+        area[entry.first->second]+=std::max(surface->areas[f],1e-15);
+        ++members[entry.first->second];
+    }
+    const std::vector<uint8_t> no_scope;
+    const std::vector<int32_t> no_labels;
+    const std::function<bool()> no_cancel;
+    nlohmann::json samples=nlohmann::json::array();
+    std::vector<uint32_t> expected_targets;
+    std::vector<float> expected_confidence;
+    for(int iteration=0;iteration<5;++iteration) {
+        const auto started=std::chrono::steady_clock::now();
+        auto field=(puzzle.*stage_member(BoundaryFieldStage{}))(*surface,no_scope,no_labels,
+            slot,area,members,no_cancel,nullptr,nullptr,nullptr);
+        const double elapsed=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
+        if(iteration==0) {expected_targets=field.target;expected_confidence=field.confidence;}
+        else {CHECK(field.target==expected_targets);CHECK(field.confidence==expected_confidence);}
+        samples.push_back({{"phase",iteration==0?"first":iteration==1?"warmup":"warm"},
+            {"elapsed_ms",elapsed},{"targeted_faces",std::count_if(field.target.begin(),field.target.end(),
+                [](uint32_t target){return target!=0;})}});
+    }
+    if (puzzle.face_piece.size() >= 200000 && std::thread::hardware_concurrency() > 1) {
+        const auto caller = std::this_thread::get_id();
+        std::atomic<bool> worker_seen{false};
+        std::atomic<unsigned> worker_checks{0};
+        // Optional delayed cancellation reaches work inside the solve, while
+        // the default replay still cancels at its first worker checkpoint.
+        const auto delay_text = env("ORCA_BEAUTY_FIELD_CANCEL_CHECKS");
+        const unsigned cancel_after = delay_text.empty() ? 1u : unsigned(std::stoul(delay_text));
+        REQUIRE(cancel_after > 0);
+        REQUIRE(cancel_after <= 4096);
+        const std::function<bool()> cancel_on_worker = [&] {
+            if (std::this_thread::get_id() != caller) {
+                worker_seen = true;
+                return ++worker_checks >= cancel_after;
+            }
+            return false;
+        };
+        const auto original_partition = puzzle.encode();
+        REQUIRE_THROWS_AS((puzzle.*stage_member(BoundaryFieldStage{}))(*surface,no_scope,no_labels,
+            slot,area,members,cancel_on_worker,nullptr,nullptr,nullptr), std::runtime_error);
+        CHECK(worker_seen.load());
+        CHECK(worker_checks.load() >= cancel_after);
+        CHECK(puzzle.encode() == original_partition);
+    }
+    REQUIRE(model_artifact_sha256(source)==source_hash);
+    std::string field_bytes;
+    field_bytes.reserve(expected_targets.size()*sizeof(uint32_t)+expected_confidence.size()*sizeof(float));
+    field_bytes.append(reinterpret_cast<const char*>(expected_targets.data()),expected_targets.size()*sizeof(uint32_t));
+    field_bytes.append(reinterpret_cast<const char*>(expected_confidence.data()),expected_confidence.size()*sizeof(float));
+    const auto field_digest=Slic3r::GUI::LocalSemanticGeometry::detail::digest(field_bytes.data(),field_bytes.size(),nullptr);
+    std::string field_sha256;
+    for(unsigned char byte:field_digest){field_sha256+="0123456789abcdef"[byte>>4];field_sha256+="0123456789abcdef"[byte&15];}
+    boost::filesystem::ofstream output(report);
+    output<<nlohmann::json{{"source_sha256",source_hash},{"faces",mesh.its.indices.size()},
+        {"field_sha256",field_sha256},{"samples",samples},
+        {"scope","offline no-recognition boundary field only"}}.dump(2);
+    output.close();
+    REQUIRE(output.good());
+}
+
+// Explicit, read-only replay on user supplied model copies. Not GUI acceptance.
+TEST_CASE("Historical models retain direct matching after a restrictive palette round trip", "[.][BeautyTargetModelProbe]") {
+    const auto env=[](const char* key){const auto p=boost::nowide::getenv(key);return p?std::string(p):std::string{};};
+    const auto source=env("ORCA_TARGET_SOURCE"),output=env("ORCA_TARGET_OUTPUT");
+    if(source.empty() || output.empty())SKIP("Explicit model copy and fresh output required.");
+    REQUIRE_FALSE(boost::filesystem::exists(output));
+    const auto hash=model_artifact_sha256(source);
+    const auto repeat_text=env("ORCA_TARGET_REPEATS");
+    const int repeats=repeat_text.empty()?0:std::stoi(repeat_text);
+    REQUIRE(repeats>=0);REQUIRE(repeats<=20);
+    const auto signature=[](const std::string& bytes) {
+        const auto raw=Slic3r::GUI::LocalSemanticGeometry::detail::digest(bytes.data(),bytes.size(),nullptr);
+        std::string result;for(unsigned char c:raw){result+="0123456789abcdef"[c>>4];result+="0123456789abcdef"[c&15];}
+        return result;
+    };
+    nlohmann::json measurements=nlohmann::json::array(), summary;
+    std::string expected_signature, expected_loaded_signature;
+    for(int iteration=0;iteration<(repeats?repeats+2:1);++iteration) {
+    nlohmann::json stages=nlohmann::json::object();
+    auto previous=std::chrono::steady_clock::now();const auto started=previous;
+    const auto mark=[&](const char* name) {
+        const auto now=std::chrono::steady_clock::now();
+        stages[name]=std::chrono::duration<double>(now-previous).count();previous=now;
+    };
+    TriangleMesh mesh;ObjInfo colors;std::string error;
+    const bool loaded=load_model_artifact(source,mesh,colors,error);INFO(error);REQUIRE(loaded);
+    mark("load_decode");
+    const auto surface=BeautySurface::build(mesh.its,colors.vertex_colors);
+    mark("surface_adjacency");
+    const auto faces=beauty_source_face_colors(mesh.its,colors.vertex_colors);
+    mark("source_face_colors");
+    auto original=BeautyPuzzle::create(*surface,180);
+    mark("partition");
+    const std::vector<PhysicalFilamentChannel> palette{{0,"#F7E2DA","PLA",true},{1,"#282629","PLA",true},
+        {2,"#F6F7F9","PLA",true},{3,"#EA9A92","PLA",true},{4,"#668CB6","PLA",true},{5,"#958B86","PLA",true}};
+    auto direct=original;auto roundtrip=original;mark("puzzle_copies");
+    direct.match_filaments(*surface,palette,{},faces);mark("direct_match");
+    roundtrip.match_filaments(*surface,{{0,"#808080","PLA",true}}, {},faces);mark("restrictive_match");
+    const auto serialized=roundtrip.encode().dump();mark("json_encode");
+    roundtrip=BeautyPuzzle::decode(nlohmann::json::parse(serialized),roundtrip.geometry_id,roundtrip.face_piece.size());
+    mark("json_decode");
+    roundtrip.match_filaments(*surface,palette,{},faces);
+    mark("rematch");
+    const double operation_seconds=std::chrono::duration<double>(previous-started).count();
+    size_t changed=0;for(size_t f=0;f<faces.size();++f)
+        changed+=direct.filament_slots.at(direct.face_piece[f])!=roundtrip.filament_slots.at(roundtrip.face_piece[f]);
+    std::string loaded_bytes;
+    loaded_bytes.reserve(mesh.its.vertices.size()*3*sizeof(float)+mesh.its.indices.size()*3*sizeof(int)+colors.vertex_colors.size()*4*sizeof(float));
+    const auto append=[&](const auto& value) { loaded_bytes.append(reinterpret_cast<const char*>(&value),sizeof(value)); };
+    for(const auto& vertex:mesh.its.vertices)for(int c=0;c<3;++c)append(vertex[c]);
+    for(const auto& face:mesh.its.indices)for(int c=0;c<3;++c)append(face[c]);
+    for(const auto& color:colors.vertex_colors)for(int c=0;c<4;++c)append(color[c]);
+    const auto loaded_signature=signature(loaded_bytes);
+    if(iteration==0)expected_loaded_signature=loaded_signature;
+    CHECK(loaded_signature==expected_loaded_signature);
+    const auto output_signature=signature(direct.encode().dump());
+    if(iteration==0)expected_signature=output_signature;
+    CHECK(output_signature==expected_signature);CHECK(changed==0);
+    nlohmann::json memory=nullptr;
+#ifdef _WIN32
+    PROCESS_MEMORY_COUNTERS counters{};counters.cb=sizeof(counters);
+    if(K32GetProcessMemoryInfo(GetCurrentProcess(),&counters,sizeof(counters)))
+        memory={{"working_set_bytes",uint64_t(counters.WorkingSetSize)},
+                {"process_lifetime_peak_working_set_bytes",uint64_t(counters.PeakWorkingSetSize)}};
+#endif
+    measurements.push_back({{"phase",iteration==0?"first_process_pass":iteration==1?"warmup":"warm"},
+        {"stages_seconds",stages},{"operation_seconds",operation_seconds},{"memory",memory},
+        {"output_sha256",output_signature},{"changed_faces",changed}});
+    summary={{"source",source},{"sha256",hash},{"faces",faces.size()},
+             {"loaded_mesh_colors_sha256",loaded_signature},{"pieces",original.piece_count()},{"changed_faces",changed},{"source_unchanged",true}};
+    if(iteration==0 && env("ORCA_TARGET_EDIT_PROFILE")=="1") {
+        REQUIRE(repeats==0); // Isolated diagnostic, never mixed with stage timings.
+        auto current=BeautyPuzzle::create_regions(*surface);
+        beauty_match_feature_filaments(current,*surface,BeautyGuidance{},faces,palette,{});
+        BeautyDocument document;document.geometry_id=surface->geometry_id;
+        document.face_count=faces.size();document.face_patch=surface->face_patch;
+        const auto expected=current.encode();const auto expected_document=document.encode();
+        nlohmann::json samples=nlohmann::json::array();
+        for(unsigned sample=0;sample<7;++sample) {
+            nlohmann::json times;
+            auto start=std::chrono::steady_clock::now();
+            const auto mark_edit=[&](const char* name) {
+                auto end=std::chrono::steady_clock::now();
+                times[name]=std::chrono::duration<double>(end-start).count();start=end;
+            };
+            auto next=current;mark_edit("snapshot_copy");
+            next.match_filaments(*surface,palette);mark_edit("same_palette_match");
+            (next.*stage_member(PuzzleStateCheck{}))();mark_edit("state_validation");
+            stage_member(PuzzleSurfaceCheck{})(*surface);mark_edit("surface_validation");
+
+            const bool same=next.same_edit(current);mark_edit("same_edit");
+            auto record=document.encode();mark_edit("document_encode");
+            record["puzzle"]=next.encode();mark_edit("puzzle_encode_and_attach");
+            record["puzzle_base_file"]="input.glb";record["puzzle_base_sha256"]=hash;
+            mark_edit("base_metadata_attach");
+            const auto serialized=record.dump();mark_edit("json_dump");
+            const auto parsed=nlohmann::json::parse(serialized);mark_edit("json_parse");
+            REQUIRE(same);REQUIRE(record.at("puzzle")==expected);
+            REQUIRE(parsed==record);
+            REQUIRE(BeautyPuzzle::decode(parsed.at("puzzle"),current.geometry_id,faces.size()).same_edit(current));
+            REQUIRE(BeautyDocument::decode(parsed,current.geometry_id,faces.size()).encode()==expected_document);
+            samples.push_back({{"phase",sample==0?"first":sample==1?"warmup":"warm"},
+                {"seconds",times},{"record_bytes",serialized.size()},
+                {"patch_runs",record.at("patch_runs").size()},
+                {"puzzle_runs",record.at("puzzle").at("piece_runs").size()},
+                {"record_sha256",signature(serialized)}});
+        }
+        summary["edit_profile"]={{"samples",samples},{"pieces",current.piece_count()},
+            {"scope","offline replay of actual methods; no GUI/event-loop/disk/render timing"},
+            {"state","no-recognition automatic fallback; no edit_regions, semantic guidance or user groups"}};
+    }
+    const auto quality_dir=env("ORCA_TARGET_QUALITY_DIR");
+    if(iteration==0 && !quality_dir.empty()) {
+        REQUIRE(repeats==0); // Exports are not part of the performance protocol.
+        const boost::filesystem::path directory(quality_dir);
+        REQUIRE_FALSE(boost::filesystem::exists(directory));
+        REQUIRE(boost::filesystem::create_directory(directory));
+        auto quality_puzzle=BeautyPuzzle::create_regions(*surface);
+        beauty_match_feature_filaments(quality_puzzle,*surface,BeautyGuidance{},faces,palette,{});
+        REQUIRE_NOTHROW(quality_puzzle.validate(*surface));
+        const auto export_quality=[&](const BeautyPuzzle& quality_puzzle,
+                                      const boost::filesystem::path& directory,
+                                      const std::string& method) {
+        nlohmann::json files=nlohmann::json::object();
+        const auto write=[&](const char* name,const auto& values,const char* dtype,size_t columns) {
+            const auto path=directory/name;
+            boost::filesystem::ofstream out(path,std::ios::binary);
+            const size_t bytes=values.size()*sizeof(values[0]);
+            out.write(reinterpret_cast<const char*>(values.data()),std::streamsize(bytes));out.close();
+            REQUIRE(out.good());
+            files[name]={{"sha256",model_artifact_sha256(path)},{"bytes",bytes},{"dtype",dtype},
+                         {"shape",{values.size()/columns,columns}}};
+        };
+        std::vector<float> vertices,source_rgb,automatic_rgb;
+        std::vector<int32_t> triangles;
+        vertices.reserve(mesh.its.vertices.size()*3);triangles.reserve(mesh.its.indices.size()*3);
+        for(const auto& v:mesh.its.vertices)for(int c=0;c<3;++c)vertices.push_back(v[c]);
+        for(const auto& f:mesh.its.indices)for(int c=0;c<3;++c)triangles.push_back(f[c]);
+        source_rgb.reserve(faces.size()*3);automatic_rgb.reserve(faces.size()*3);
+        for(size_t f=0;f<faces.size();++f)for(int c=0;c<3;++c) {
+            source_rgb.push_back(faces[f][c]);automatic_rgb.push_back(quality_puzzle.colors.at(quality_puzzle.face_piece[f])[c]);
+        }
+        const uint32_t endian=1;REQUIRE(*reinterpret_cast<const unsigned char*>(&endian)==1);
+        write("vertices.f32",vertices,"<f4",3);write("triangles.i32",triangles,"<i4",3);
+        write("source.f32",source_rgb,"<f4",3);write("automatic.f32",automatic_rgb,"<f4",3);
+        write("areas.f64",surface->areas,"<f8",1);write("pieces.u32",quality_puzzle.face_piece,"<u4",1);
+        boost::filesystem::ofstream metadata(directory/"manifest.json");
+        metadata<<nlohmann::json({{"schema",1},{"source_sha256",hash},{"geometry_id",surface->geometry_id},
+            {"loaded_mesh_colors_sha256",loaded_signature},{"output_sha256",signature(quality_puzzle.encode().dump())},
+            {"palette",quality_puzzle.encode().at("palette")},{"files",files},
+            {"source_representation","native loader vertex colors averaged per face; not original texture pixels"},
+            {"automatic_method",method}}).dump(2);
+        metadata.close();REQUIRE(metadata.good());
+        };
+        export_quality(quality_puzzle,directory,"workbench no-recognition fallback: create_regions + beauty_match_feature_filaments; no manual edits");
+        if(env("ORCA_TARGET_QUALITY_STAGES")=="1") {
+            auto staged=BeautyPuzzle::create(*surface,28);
+            const auto export_stage=[&](const char* name) {
+                auto matched=staged;
+                beauty_match_feature_filaments(matched,*surface,BeautyGuidance{},faces,palette,{});
+                REQUIRE_NOTHROW(matched.validate(*surface));
+                const auto folder=directory/name;
+                REQUIRE(boost::filesystem::create_directory(folder));
+                export_quality(matched,folder,std::string("stage replay with identical matching: ")+name);
+                return matched;
+            };
+            export_stage("01-create28");
+            (staged.*stage_member(RegularizeStage{}))(*surface,{});
+            export_stage("02-regularize");
+            (staged.*stage_member(SmoothStage{}))(*surface,{},{},{},nullptr,nullptr,nullptr);
+            const auto final=export_stage("03-smooth");
+            REQUIRE(final.encode()==quality_puzzle.encode());
+            // Ablation only: keep the same initial budget and matcher, omit
+            // regularization, and retain smoothing. Never a production route.
+            staged=BeautyPuzzle::create(*surface,28);
+            (staged.*stage_member(SmoothStage{}))(*surface,{},{},{},nullptr,nullptr,nullptr);
+            export_stage("04-ablation-no-regularize");
+            staged=BeautyPuzzle::create(*surface,28);
+            const auto before_guard=staged.face_piece;
+            const auto guard_started=std::chrono::steady_clock::now();
+            size_t unresolved=0;
+            const size_t reverted=guarded_regularize(staged,*surface,{},&unresolved);
+            const double guard_seconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-guard_started).count();
+            size_t retained=0;double retained_area=0.;
+            for(size_t f=0;f<before_guard.size();++f)if(before_guard[f]!=staged.face_piece[f]) {
+                ++retained;retained_area+=surface->areas[f];
+            }
+            export_stage("05-guard-regularize");
+            (staged.*stage_member(SmoothStage{}))(*surface,{},{},{},nullptr,nullptr,nullptr);
+            auto joint=export_stage("06-guard-smooth");
+            const auto target_before=joint.target_colors;const auto partition_before=joint.face_piece;
+            const auto joint_stats=constrain_stationary_palette(quality_puzzle,joint,*surface,faces);
+            REQUIRE(joint.target_colors==target_before);REQUIRE(joint.face_piece==partition_before);
+            const auto joint_dir=directory/"07-joint-palette";
+            REQUIRE(boost::filesystem::create_directory(joint_dir));
+            export_quality(joint,joint_dir,"native test candidate: local color guard + stationary source-error constrained physical palette");
+            boost::filesystem::ofstream joint_report(directory/"joint.json");joint_report<<joint_stats.dump(2);
+            joint_report.close();REQUIRE(joint_report.good());
+            auto residual=joint;
+            const auto residual_stats=restore_residual_transfers(quality_puzzle,residual,*surface,faces);
+            REQUIRE(residual.colors==joint.colors);REQUIRE(residual.filament_slots==joint.filament_slots);
+            const auto residual_dir=directory/"08-residual-transfer";
+            REQUIRE(boost::filesystem::create_directory(residual_dir));
+            export_quality(residual,residual_dir,"fixed-output residual transfer diagnostic; no production or rematch acceptance");
+            boost::filesystem::ofstream residual_report(directory/"residual.json");
+            residual_report<<residual_stats.dump(2);residual_report.close();REQUIRE(residual_report.good());
+            boost::filesystem::ofstream guard_report(directory/"guard.json");
+            guard_report<<nlohmann::json({{"reverted_faces",reverted},{"unresolved_risky_faces",unresolved},{"retained_transfer_faces",retained},
+                {"retained_transfer_area",retained_area},{"regularize_plus_guard_seconds",guard_seconds},
+                {"status","test_candidate_only; single diagnostic timing, not performance acceptance"}}).dump(2);
+            guard_report.close();REQUIRE(guard_report.good());
+            std::vector<uint32_t> component(surface->areas.size(),0);
+            uint32_t component_count=0;
+            std::vector<size_t> queue;
+            for(size_t seed=0;seed<component.size();++seed)if(!component[seed]) {
+                ++component_count;component[seed]=component_count;queue.assign(1,seed);
+                for(size_t at=0;at<queue.size();++at)
+                    for(int32_t n:surface->face_neighbors[queue[at]])if(n>=0 && !component[n]) {
+                        component[n]=component_count;queue.push_back(size_t(n));
+                    }
+            }
+            boost::filesystem::ofstream graph(directory/"components.u32",std::ios::binary);
+            graph.write(reinterpret_cast<const char*>(component.data()),std::streamsize(component.size()*sizeof(uint32_t)));
+            graph.close();REQUIRE(graph.good());
+            boost::filesystem::ofstream topology(directory/"topology.json");
+            topology<<nlohmann::json({{"source_sha256",hash},{"surface_patches",surface->patches.size()},
+                {"connected_components",component_count},{"faces",component.size()},
+                {"components_sha256",model_artifact_sha256(directory/"components.u32")}}).dump(2);
+            topology.close();REQUIRE(topology.good());
+        }
+    }
+    } // Each iteration releases its model data; allocator/OS caches are not cleared.
+    REQUIRE(model_artifact_sha256(source)==hash);
+    summary["measurements"]=measurements;
+    summary["memory_scope"]="OS process lifetime peak (includes test harness and validation), not per-stage allocation";
+    summary["timing_scope"]="native stages exclude source hashes, output signature, comparison and report write; no GUI or disk-save timing";
+    boost::filesystem::ofstream result(output);
+    result<<summary.dump(2);
+    REQUIRE(result.good());
+}
 
 TEST_CASE("Region mix targets use area weighted original faces regardless of saved paint", "[BeautyPuzzle]") {
     const auto mesh=its_make_cube(10,10,10);const auto surface=BeautySurface::build(mesh,{});
@@ -104,7 +1187,7 @@ TEST_CASE("Only unchanged automatic partitions and exact filament assignments qu
     const auto surface=BeautySurface::build(its_make_cube(10,10,10),{});
     auto automatic=BeautyPuzzle::create(*surface,4);
     automatic.match_filaments(*surface,{{0,"#FFFFFF","PLA",true},{1,"#000000","PLA",true}});
-    auto saved=automatic;saved.colors.clear();saved.filament_slots.clear();
+    auto saved=automatic;saved.colors.clear();saved.filament_slots.clear();saved.target_colors.clear();
     for(auto& id:saved.face_piece)id+=100;
     for(const auto& c:automatic.colors)saved.colors[c.first+100]=c.second;
     for(const auto& s:automatic.filament_slots)saved.filament_slots[s.first+100]=s.second;
@@ -300,6 +1383,7 @@ TEST_CASE("Native mixed puzzle assignments survive reopen and decline changed re
     puzzle.match_filaments(*surface,palette,{mix});
     const auto id=puzzle.face_piece.front();const auto partition=puzzle.face_piece;
     puzzle.paint_mixed(id,mix);
+    puzzle.target_colors.clear(); // Exercise the pre-target v3 format too.
     const auto saved=puzzle.encode();REQUIRE(saved["schema"]=="orca.beauty-puzzle/v3");
     auto restored=BeautyPuzzle::decode(saved,puzzle.geometry_id,partition.size());
     restored.match_filaments(*surface,palette,{mix});
@@ -364,6 +1448,7 @@ TEST_CASE("Matched puzzle colors preserve separate regions and exact physical sl
     REQUIRE(puzzle.filament_slots.size()==puzzle.piece_count());
     const uint32_t id=puzzle.face_piece.front();
     puzzle.paint_filament(id,4);
+    puzzle.target_colors.clear(); // Exercise the pre-target v2 format too.
     const auto saved=puzzle.encode();
     REQUIRE(saved["schema"]=="orca.beauty-puzzle/v2");
     auto restored=BeautyPuzzle::decode(saved,puzzle.geometry_id,partition.size());
@@ -462,6 +1547,114 @@ size_t boundary_edges(const BeautyPuzzle& puzzle, const BeautySurface& surface) 
             if (n >= 0 && size_t(n) > f && puzzle.face_piece[f] != puzzle.face_piece[n]) ++result;
     return result;
 }
+}
+
+TEST_CASE("Candidate color guard rejects contrasting transfers without undoing independent uniform edits", "[BeautyColorGuard]") {
+    auto surface=color_strip();
+    // Two independent six-face chains: red/blue contrast and uniform gray.
+    for(size_t f=6;f<12;++f) {
+        surface.face_patch.push_back(uint32_t(f));surface.areas.push_back(1.);
+        surface.centers.emplace_back(double(f),0.,0.);surface.normals.emplace_back(0.,0.,1.);
+        surface.face_neighbors.push_back({f==6?-1:int32_t(f-1),f==11?-1:int32_t(f+1),-1});
+        BeautyPatch patch;patch.faces={f};patch.area=1.;patch.mean_color={.5,.5,.5};
+        patch.center=surface.centers.back();patch.normal=surface.normals.back();surface.patches.push_back(patch);
+    }
+    BeautyPuzzle before;before.geometry_id=surface.geometry_id;before.next_id=5;
+    before.face_piece={1,1,1,2,2,2,3,3,3,4,4,4};
+    auto proposed=before;proposed.face_piece[2]=2;proposed.face_piece[8]=4;
+    REQUIRE_NOTHROW(before.validate(surface));REQUIRE_NOTHROW(proposed.validate(surface));
+    CHECK(guard_color_transfers(before,proposed,surface)==1);
+    CHECK(proposed.face_piece[2]==1);CHECK(proposed.face_piece[8]==4);
+    REQUIRE_NOTHROW(proposed.validate(surface));
+    CHECK(proposed.piece_count()==before.piece_count());
+}
+
+TEST_CASE("Candidate color guard restores a harmful transfer while retaining a beneficial one", "[BeautyColorGuard]") {
+    auto surface=color_strip();
+    // The center region sends to one neighbor and receives from the other.
+    // A beneficial transfer remains; both regions must stay connected.
+    BeautyPuzzle before;before.geometry_id=surface.geometry_id;before.next_id=4;
+    before.face_piece={1,1,2,2,3,3};
+    auto proposed=before;proposed.face_piece[1]=2;proposed.face_piece[3]=3;
+    REQUIRE_NOTHROW(proposed.validate(surface));
+    CHECK(guard_color_transfers(before,proposed,surface)==1);
+    CHECK(proposed.face_piece[1]==1);CHECK(proposed.face_piece[3]==3);
+    REQUIRE_NOTHROW(proposed.validate(surface));
+}
+
+TEST_CASE("Candidate color guard refuses to cut a donor bridge", "[BeautyColorGuard]") {
+    auto surface=color_strip();
+    surface.face_neighbors={{{1,2,3}},{{0,5,-1}},{{0,4,-1}},{{0,4,-1}},{{2,3,5}},{{1,4,-1}}};
+    for(size_t f=0;f<6;++f) {
+        surface.patches[f].mean_color=(f==2 || f==3)?std::array<double,3>{.1,.2,.8}:std::array<double,3>{.8,.2,.1};
+        surface.areas[f]=(f==2 || f==3)?10.:1.;surface.patches[f].area=surface.areas[f];
+    }
+    BeautyPuzzle before;before.geometry_id=surface.geometry_id;before.next_id=3;
+    before.face_piece={1,1,2,2,2,1};
+    auto proposed=before;proposed.face_piece[0]=2;proposed.face_piece[4]=1;
+    REQUIRE_NOTHROW(before.validate(surface));REQUIRE_NOTHROW(proposed.validate(surface));
+    size_t unresolved=0;
+    CHECK(guard_color_transfers(before,proposed,surface,&unresolved)==0);
+    CHECK(unresolved==1);CHECK(proposed.face_piece[0]==2);
+    REQUIRE_NOTHROW(proposed.validate(surface));
+}
+
+TEST_CASE("Joint palette candidate protects stationary faces without erasing automatic targets or sparse slots", "[BeautyColorGuard]") {
+    auto surface=color_strip();surface.areas[2]=100.;surface.patches[2].area=100.;
+    BeautyPuzzle before;before.geometry_id=surface.geometry_id;before.next_id=3;before.face_piece={1,1,1,2,2,2};
+    const std::vector<PhysicalFilamentChannel> palette{{5,"#FF0000","PLA",true},{9,"#0000FF","PLA",true}};
+    std::vector<RGBA> source(6,{1,0,0,1});for(size_t f=3;f<6;++f)source[f]={0,0,1,1};
+    auto candidate=before;candidate.face_piece[2]=2;
+    before.match_filaments(surface,palette,{},source);candidate.match_filaments(surface,palette,{},source);
+    REQUIRE(candidate.filament_slots.at(2)==5);
+    const auto target=candidate.target_colors;const auto partition=candidate.face_piece;
+    const auto stats=constrain_stationary_palette(before,candidate,surface,source);
+    CHECK(candidate.filament_slots.at(1)==5);CHECK(candidate.filament_slots.at(2)==9);
+    CHECK(candidate.target_colors==target);CHECK(candidate.face_piece==partition);
+    CHECK(stats.at("all_faces_infeasible_regions")==nlohmann::json::array({2}));
+    CHECK(BeautyPuzzle::decode(candidate.encode(),candidate.geometry_id,6).same_edit(candidate));
+}
+
+TEST_CASE("Joint palette candidate rejects mismatched palettes without changing its input", "[BeautyColorGuard]") {
+    const auto surface=color_strip();auto before=BeautyPuzzle::create(surface,2);
+    const std::vector<RGBA> source(6,{1,0,0,1});before.match_filaments(surface,{{0,"#FF0000","PLA",true}}, {},source);
+    auto candidate=before;candidate.match_filaments(surface,{{0,"#0000FF","PLA",true}}, {},source);
+    const auto saved=candidate.encode();
+    CHECK_THROWS(constrain_stationary_palette(before,candidate,surface,source));CHECK(candidate.encode()==saved);
+}
+
+TEST_CASE("Residual transfer rollback preserves colors and cancels transactionally", "[BeautyColorGuard]") {
+    const auto surface=color_strip();
+    BeautyPuzzle baseline;baseline.geometry_id=surface.geometry_id;baseline.next_id=3;baseline.face_piece={1,1,1,2,2,2};
+    std::vector<RGBA> source(6,{1,0,0,1});for(size_t f=3;f<6;++f)source[f]={0,0,1,1};
+    baseline.match_filaments(surface,{{5,"#FF0000","PLA",true},{9,"#0000FF","PLA",true}}, {},source);
+    auto candidate=baseline;candidate.face_piece[2]=2;
+    const auto saved=candidate.encode();
+    CHECK_THROWS(restore_residual_transfers(baseline,candidate,surface,source,[]{return true;}));
+    CHECK(candidate.encode()==saved);
+    const auto stats=restore_residual_transfers(baseline,candidate,surface,source);
+    CHECK(stats.at("restored_faces")==1);CHECK(candidate.face_piece==baseline.face_piece);
+    CHECK(candidate.colors==baseline.colors);CHECK(candidate.filament_slots==baseline.filament_slots);
+    CHECK(candidate.target_colors==baseline.target_colors);
+}
+
+TEST_CASE("Residual transfer rollback rejects a destination whose color has become worse", "[BeautyColorGuard]") {
+    const auto surface=color_strip();
+    BeautyPuzzle baseline;baseline.geometry_id=surface.geometry_id;baseline.next_id=3;baseline.face_piece={1,1,1,2,2,2};
+    std::vector<RGBA> source(6,{1,0,0,1});for(size_t f=3;f<6;++f)source[f]={0,0,1,1};
+    baseline.match_filaments(surface,{{5,"#FF0000","PLA",true},{9,"#0000FF","PLA",true}}, {},source);
+    auto candidate=baseline;candidate.face_piece[2]=2;candidate.paint_filament(1,9);
+    const auto saved=candidate.encode();
+    const auto stats=restore_residual_transfers(baseline,candidate,surface,source);
+    CHECK(stats.at("restored_faces")==0);CHECK(stats.at("rejected_destination_color")==1);
+    CHECK(candidate.encode()==saved);
+}
+
+TEST_CASE("Candidate regularization cancellation preserves its input", "[BeautyColorGuard]") {
+    const auto surface=puzzle_grid();auto puzzle=BeautyPuzzle::create(*surface,4);
+    const auto saved=puzzle.encode();
+    CHECK_THROWS(guarded_regularize(puzzle,*surface,[]{return true;}));
+    CHECK(puzzle.encode()==saved);
 }
 
 TEST_CASE("Mouth texture separates coherent light detail and refuses weak or unrelated evidence", "[BeautyWorkbench][BeautyPuzzle]") {
@@ -579,6 +1772,50 @@ TEST_CASE("Saved colored regions lose staircase teeth without erasing small piec
     auto foreign = *surface; foreign.geometry_id = "different-surface";
     REQUIRE_THROWS(puzzle.smooth_boundaries(foreign));
     CHECK(puzzle.encode() == saved);
+}
+
+TEST_CASE("Smoothing preserves saved colors and partitions when region identities become sparse", "[BeautyWorkbench][BeautyPuzzle]") {
+    const bool sparse_ids = GENERATE(false, true);
+    const auto surface = puzzle_grid(40, 24);
+    auto puzzle = columns(*surface, 20.);
+    puzzle.next_id = 4;
+    for (size_t f = 0; f < puzzle.face_piece.size(); ++f) {
+        const auto& c = surface->centers[f];
+        if (c.x() < 22. && int(c.y()) % 4 < 2) puzzle.face_piece[f] = 1;
+        if (c.x() > 4. && c.x() < 6. && c.y() > 4. && c.y() < 5.) puzzle.face_piece[f] = 3;
+    }
+    puzzle.paint(1, blue); puzzle.paint(2, red); puzzle.paint(3, red);
+    puzzle.palette = {{7, "#FF0000", "PLA", true}};
+    puzzle.paint_filament(2, 7);
+    puzzle.target_colors[2] = {.25f, .5f, .75f, 1.f};
+    const std::array<uint32_t, 4> renamed = sparse_ids
+        ? std::array<uint32_t, 4>{0, 17, 4096, BeautyPuzzle::max_id - 1}
+        : std::array<uint32_t, 4>{0, 2, 4, 6};
+    auto restored = puzzle;
+    restored.next_id = sparse_ids ? BeautyPuzzle::max_id : 7;
+    for (auto& id : restored.face_piece) id = renamed[id];
+    restored.colors.clear(); restored.target_colors.clear(); restored.filament_slots.clear();
+    for (const auto& entry : puzzle.colors) restored.colors[renamed[entry.first]] = entry.second;
+    for (const auto& entry : puzzle.target_colors) restored.target_colors[renamed[entry.first]] = entry.second;
+    for (const auto& entry : puzzle.filament_slots) restored.filament_slots[renamed[entry.first]] = entry.second;
+    restored = BeautyPuzzle::decode(restored.encode(), surface->geometry_id, surface->face_patch.size());
+    const auto initial = puzzle.face_piece;
+    const auto old_patches = surface->face_patch;
+    const auto old_neighbors = surface->face_neighbors;
+    puzzle.smooth_boundaries(*surface);
+    restored.smooth_boundaries(*surface);
+    REQUIRE_NOTHROW(puzzle.validate(*surface));
+    REQUIRE_NOTHROW(restored.validate(*surface));
+    REQUIRE(puzzle.face_piece != initial);
+    std::vector<uint32_t> expected;
+    for (uint32_t id : puzzle.face_piece) expected.push_back(renamed[id]);
+    CHECK(restored.face_piece == expected);
+    CHECK(restored.next_id == (sparse_ids ? BeautyPuzzle::max_id : 7));
+    for (const auto& entry : puzzle.colors) CHECK(restored.colors.at(renamed[entry.first]) == entry.second);
+    for (const auto& entry : puzzle.target_colors) CHECK(restored.target_colors.at(renamed[entry.first]) == entry.second);
+    for (const auto& entry : puzzle.filament_slots) CHECK(restored.filament_slots.at(renamed[entry.first]) == entry.second);
+    CHECK(surface->face_patch == old_patches);
+    CHECK(surface->face_neighbors == old_neighbors);
 }
 
 TEST_CASE("Smoothing preserves narrow connecting necks and sparse saved identities", "[BeautyWorkbench][BeautyPuzzle]") {
@@ -1018,17 +2255,21 @@ TEST_CASE("Unpainted puzzle colors use surface area and painted colors remain ex
     surface.areas[0] = 4.;
     const auto puzzle = BeautyPuzzle::create(surface, 1);
     const auto color = puzzle.representative_color(1, surface);
+    CHECK(puzzle.representative_color_on_validated_surface(1, surface) == color);
     // Red half has area 6; blue half has area 3.
     CHECK_THAT(color[0], Catch::Matchers::WithinAbs((.8 * 6 + .1 * 3) / 9., 1e-6));
     CHECK_THAT(color[2], Catch::Matchers::WithinAbs((.1 * 6 + .8 * 3) / 9., 1e-6));
     auto edited = puzzle;
     edited.paint(1, blue);
     CHECK(edited.representative_color(1, surface) == blue);
+    CHECK(edited.representative_color_on_validated_surface(1, surface) == blue);
     edited.clear_color(1);
     CHECK(edited.representative_color(1, surface) == color);
+    CHECK(edited.representative_color_on_validated_surface(1, surface) == color);
     auto wrong_surface = surface;
     wrong_surface.geometry_id = "other";
     REQUIRE_THROWS(edited.representative_color(1, wrong_surface));
+    REQUIRE_THROWS(edited.representative_color_on_validated_surface(1, wrong_surface));
     wrong_surface = surface;
     wrong_surface.face_neighbors[0][1] = -1;
     REQUIRE_THROWS(BeautyPuzzle::create(wrong_surface, 2));
@@ -1076,6 +2317,11 @@ TEST_CASE("Boundary regularization changes the real partition and removes unifor
     CHECK(smooth.face_piece != jagged.face_piece);
     CHECK(boundary_edges(smooth, *surface) < boundary_edges(jagged, *surface));
     CHECK(smooth.piece_count() <= jagged.piece_count());
+    auto guarded=jagged;
+    CHECK(guarded_regularize(guarded,*surface)==0);
+    (guarded.*stage_member(SmoothStage{}))(*surface,{},{},{},nullptr,nullptr,nullptr);
+    CHECK(guarded.face_piece==smooth.face_piece);
+    CHECK(boundary_edges(guarded,*surface)<boundary_edges(jagged,*surface));
 }
 
 TEST_CASE("Sparse semantic hints preserve separate regions and cannot flood an unrelated coarse block", "[BeautyWorkbench][BeautyPuzzle]") {
@@ -1377,7 +2623,7 @@ static size_t probe_coalesce_mask_regions(BeautyPuzzle& puzzle,const BeautySurfa
         if(a>b)std::swap(a,b);
         parent[b]=a;parts[a].names=std::move(names);
         members[a].insert(members[a].end(),members[b].begin(),members[b].end());members[b].clear();
-        puzzle.colors.erase(b);puzzle.filament_slots.erase(b);++merged;
+        puzzle.colors.erase(b);puzzle.filament_slots.erase(b);puzzle.target_colors.erase(b);++merged;
     }
     for(auto& id:puzzle.face_piece)id=root(id);
     return merged;

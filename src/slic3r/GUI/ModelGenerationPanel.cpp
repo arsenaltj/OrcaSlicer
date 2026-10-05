@@ -35,12 +35,9 @@
 #include <glad/gl.h>
 
 #include <wx/button.h>
-#include <wx/checkbox.h>
 #include <wx/choice.h>
 #include <wx/clipbrd.h>
 #include <wx/collpane.h>
-#include <wx/colordlg.h>
-#include <wx/clrpicker.h>
 #include <wx/dataobj.h>
 #include <wx/dcbuffer.h>
 #include <wx/dcclient.h>
@@ -52,7 +49,6 @@
 #include <wx/notebook.h>
 #include <wx/scrolwin.h>
 #include <wx/sizer.h>
-#include <wx/spinctrl.h>
 #include <wx/stdpaths.h>
 #include <wx/statbmp.h>
 #include <wx/statbox.h>
@@ -61,6 +57,7 @@
 #include <wx/tglbtn.h>
 #include <wx/utils.h>
 #include <wx/weakref.h>
+#include <wx/wupdlock.h>
 
 #include <algorithm>
 #include <array>
@@ -141,8 +138,19 @@ void ModelGenerationPanel::on_first_visible_idle(wxIdleEvent& event)
 void ModelGenerationPanel::initialize_page()
 {
     if (m_shutdown || m_page_initialized || !IsShownOnScreen()) return;
+    // Paint the completed page after creating and configuring all its controls.
+    wxWindowUpdateLocker update_locker(this);
+    wxString trace_value;
+    const bool trace = wxGetEnv("ORCASLICER_UI_LATENCY_TRACE", &trace_value) && trace_value == "1";
+    const auto started = std::chrono::steady_clock::now();
+    auto trace_stage = [trace, &started](const char* stage) {
+        if (trace)
+            BOOST_LOG_TRIVIAL(info) << "AI page first-open: " << stage << " elapsed_ms="
+                << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+    };
     BOOST_LOG_TRIVIAL(info) << "AI model generation panel: build visible page";
     build_page();
+    trace_stage("build_page");
     m_page_initialized = true;
     Unbind(wxEVT_IDLE, &ModelGenerationPanel::on_first_visible_idle, this);
     m_status->SetLabel(_L("正在检查本地 3D 生成服务..."));
@@ -151,8 +159,11 @@ void ModelGenerationPanel::initialize_page()
         set_service_availability(m_service_available);
     else
         refresh_controls();
+    trace_stage("refresh_controls");
     refresh_ai_appearance(this);
+    trace_stage("refresh_ai_appearance");
     Layout();
+    trace_stage("layout");
     BOOST_LOG_TRIVIAL(info) << "AI model generation panel: visible page initialized";
 }
 
@@ -230,18 +241,14 @@ void ModelGenerationPanel::restore_job(AIModelGenerationClient::JobStatus status
         return;
     m_job_palette = status.palette;
     m_job_palette_color_count = status.palette_color_count;
-    if (m_palette_color_count != nullptr) {
-        m_palette_color_count->SetSelection(static_cast<int>(
-            status.palette_color_count - Slic3r::AI::kMinTargetPaletteColors));
-    }
+    m_legacy_generation_state.restore_palette_color_count(status.palette_color_count);
     m_job_palette_roles = status.palette_roles.empty() ? automatic_palette_roles(status.palette) : status.palette_roles;
     m_palette_roles = m_job_palette_roles;
     m_palette_roles_source = status.palette;
     if (status.palette_recommendation.confirmed && !status.palette.empty()) {
         m_palette_recommendation_confirmed = true;
         m_custom_palette = status.palette;
-        if (m_palette_source != nullptr)
-            m_palette_source->SetSelection(2);
+        m_legacy_generation_state.palette_source = 2;
     }
     m_job_use_printable_colors = !status.palette.empty() || status.palette_recommendation.available;
     m_job_preview_expected = status.source == "image" || status.preview_ready || status.raw_preview_ready ||
@@ -264,8 +271,6 @@ void ModelGenerationPanel::restore_job(AIModelGenerationClient::JobStatus status
     m_job_prompt = wxString::FromUTF8(status.user_prompt);
     if (m_prompt != nullptr)
         m_prompt->SetValue(m_job_prompt);
-    if (m_use_printable_colors != nullptr)
-        m_use_printable_colors->SetValue(m_job_use_printable_colors);
     if (m_style != nullptr) {
         m_style->SetSelection(style_selection(status.style));
         m_stylized_style->SetSelection(stylized_style_selection(status.style));
@@ -273,11 +278,9 @@ void ModelGenerationPanel::restore_job(AIModelGenerationClient::JobStatus status
     }
     if (m_custom_style != nullptr)
         m_custom_style->SetValue(wxString::FromUTF8(status.custom_style));
-    if (m_palette_source != nullptr) {
-        m_custom_palette = status.palette;
-        m_palette_source->SetSelection(m_job_use_printable_colors ? 2 : 1);
-        m_palette_recommendation_confirmed = !status.palette.empty();
-    }
+    m_custom_palette = status.palette;
+    m_legacy_generation_state.palette_source = m_job_use_printable_colors ? 2 : 1;
+    m_palette_recommendation_confirmed = !status.palette.empty();
     if (m_provider) m_provider->SetSelection(status.generation_options.provider == "hunyuan" ? 1 : 0);
     refresh_provider_options();
     if (m_quality != nullptr) {
@@ -287,24 +290,17 @@ void ModelGenerationPanel::restore_job(AIModelGenerationClient::JobStatus status
     if (m_texture_quality) m_texture_quality->SetSelection(m_texture_quality->GetCount() == 1 ? 0 : status.generation_options.texture_quality == "extreme" ? 2 :
                                                          status.generation_options.texture_quality == "detailed" ? 1 : 0);
     if (m_output_format) m_output_format->SetSelection(status.generation_options.output_format == "obj" ? 1 : 0);
-    if (m_print_width != nullptr) m_print_width->SetValue(status.print_settings.width_mm);
-    if (m_nozzle_size != nullptr) m_nozzle_size->SetValue(status.print_settings.nozzle_mm);
-    if (m_line_width != nullptr) m_line_width->SetValue(status.print_settings.line_width_mm);
-    if (m_minimum_feature != nullptr) m_minimum_feature->SetValue(status.print_settings.minimum_feature_mm);
-    if (m_shadow_color != nullptr) {
-        const int selection = status.print_settings.shadow_color == "red" ? 1 :
-                              status.print_settings.shadow_color == "green" ? 2 :
-                              status.print_settings.shadow_color == "white" ? 3 : 0;
-        m_shadow_color->SetSelection(selection);
-    }
+    m_legacy_generation_state.restore_print_settings(status.print_settings.width_mm,
+        status.print_settings.nozzle_mm, status.print_settings.line_width_mm,
+        status.print_settings.minimum_feature_mm);
     m_job_image_path.clear();
     if (status.source == "image" && status.input_ready) {
         m_job_image_path = temp_path(status.id + "-input", "png");
         m_selected_image_path = m_job_image_path;
         m_restoring_input = true;
     }
-    // Widget setters may clamp or normalize restored values (notably spin controls).
-    // Rebase the comparison snapshot on the values the user actually sees so opening
+    // Widget setters and legacy numeric restoration may normalize saved values.
+    // Rebase the comparison snapshot on the restored values so opening
     // a completed preview cannot immediately mark that same preview as stale.
     m_job_prompt = m_prompt->GetValue();
     m_job_style = current_style();
@@ -412,6 +408,7 @@ void ModelGenerationPanel::shutdown()
     if (m_shutdown)
         return;
     m_shutdown = true;
+    if (m_preview_canceled) *m_preview_canceled = true;
     if (m_workbench_color_matching) m_workbench_color_matching->shutdown();
     stop_library_loading();
     stop_model_finishing();
@@ -431,6 +428,14 @@ void ModelGenerationPanel::shutdown()
 
 void ModelGenerationPanel::build_page()
 {
+    wxString trace_value;
+    const bool trace = wxGetEnv("ORCASLICER_UI_LATENCY_TRACE", &trace_value) && trace_value == "1";
+    const auto started = std::chrono::steady_clock::now();
+    auto trace_stage = [trace, &started](const char* stage) {
+        if (trace)
+            BOOST_LOG_TRIVIAL(info) << "AI page build: " << stage << " elapsed_ms="
+                << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+    };
     auto* root = new wxBoxSizer(wxVERTICAL);
     auto* header = new wxPanel(this);
     header->SetBackgroundColour(wxColour(246, 249, 249));
@@ -451,15 +456,26 @@ void ModelGenerationPanel::build_page()
 
     auto* content = new wxBoxSizer(wxHORIZONTAL);
     m_workflow_panel = build_workflow_panel(this);
+    trace_stage("workflow_panel");
     content->Add(m_workflow_panel, 0, wxEXPAND | wxALL, FromDIP(12));
 
     content->Add(build_preview_panel(this), 1, wxEXPAND | wxTOP | wxRIGHT | wxBOTTOM, FromDIP(12));
+    trace_stage("preview_panel");
     root->Add(content, 1, wxEXPAND);
     SetSizer(root);
+    trace_stage("set_sizer");
 }
 
 wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
 {
+    wxString trace_value;
+    const bool trace = wxGetEnv("ORCASLICER_UI_LATENCY_TRACE", &trace_value) && trace_value == "1";
+    const auto started = std::chrono::steady_clock::now();
+    auto trace_stage = [trace, &started](const char* stage) {
+        if (trace)
+            BOOST_LOG_TRIVIAL(info) << "AI workflow build: " << stage << " elapsed_ms="
+                << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+    };
     auto* panel = new wxPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(FromDIP(400), -1), wxBORDER_SIMPLE);
     panel->SetMinSize(wxSize(FromDIP(360), -1));
     panel->SetBackgroundColour(wxColour(250, 251, 251));
@@ -606,189 +622,14 @@ wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
     sizer->AddSpacer(FromDIP(4));
     sizer->Add(m_upload_notice, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
     sizer->AddSpacer(FromDIP(10));
+    trace_stage("input_controls");
 
     auto* creation_colors = new wxStaticText(scroll, wxID_ANY,
         _L("生成保留自然颜色和细节；完成后再到 Orca 匹配打印耗材。"));
     creation_colors->Wrap(FromDIP(310));
     sizer->Add(creation_colors, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
-    auto* legacy_palette_controls = new wxPanel(scroll);
-    auto* legacy_palette_sizer = new wxBoxSizer(wxVERTICAL);
-    legacy_palette_sizer->Add(section_label(legacy_palette_controls, _L("配色")), 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
-    legacy_palette_sizer->AddSpacer(FromDIP(6));
-    m_use_printable_colors = new wxCheckBox(legacy_palette_controls, wxID_ANY, _L("限制为打印机耗材颜色"));
-    m_use_printable_colors->SetValue(false);
-    m_use_printable_colors->SetToolTip(_L("开启后只使用下方 1–6 种耗材颜色，生成结果更适合多色打印。"));
-    m_use_printable_colors->Hide();
-    wxArrayString palette_sources;
-    palette_sources.Add(_L("读取耗材颜色"));
-    palette_sources.Add(_L("不限制颜色"));
-    palette_sources.Add(_L("AI 推荐配色"));
-    m_palette_source = new wxChoice(legacy_palette_controls, wxID_ANY, wxDefaultPosition, wxDefaultSize, palette_sources);
-    m_palette_source->SetSelection(1);
-    legacy_palette_sizer->Add(m_palette_source, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
-    legacy_palette_sizer->AddSpacer(FromDIP(6));
-    m_palette_panel = new wxPanel(legacy_palette_controls);
-    m_palette_panel->SetBackgroundColour(wxColour(250, 251, 251));
-    m_palette_sizer = new wxGridSizer(6, FromDIP(6), FromDIP(6));
-    m_palette_panel->SetSizer(m_palette_sizer);
-    legacy_palette_sizer->Add(m_palette_panel, 0, wxLEFT | wxRIGHT, FromDIP(12));
-    legacy_palette_sizer->AddSpacer(FromDIP(5));
-    m_palette_summary = new wxStaticText(legacy_palette_controls, wxID_ANY, wxEmptyString);
-    m_palette_summary->Wrap(FromDIP(310));
-    m_palette_summary->SetForegroundColour(wxColour(91, 104, 107));
-    legacy_palette_sizer->Add(m_palette_summary, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
-    legacy_palette_sizer->AddSpacer(FromDIP(6));
-    m_custom_color_panel = new wxPanel(legacy_palette_controls);
-    m_custom_color_panel->SetBackgroundColour(wxColour(250, 251, 251));
-    auto* custom_color_row = new wxBoxSizer(wxHORIZONTAL);
-    m_custom_color = new wxColourPickerCtrl(m_custom_color_panel, wxID_ANY, *wxWHITE);
-    m_custom_color->SetName("ai_content_color");
-    m_add_custom_color = new wxButton(m_custom_color_panel, wxID_ANY, _L("添加颜色"));
-    custom_color_row->Add(m_custom_color, 1, wxRIGHT, FromDIP(8));
-    custom_color_row->Add(m_add_custom_color, 0);
-    m_custom_color_panel->SetSizer(custom_color_row);
-    legacy_palette_sizer->Add(m_custom_color_panel, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
-    legacy_palette_sizer->AddSpacer(FromDIP(6));
-
-    m_palette_recommendation_panel = new wxPanel(legacy_palette_controls, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_SIMPLE);
-    m_palette_recommendation_panel->SetBackgroundColour(*wxWHITE);
-    auto* recommendation_sizer = new wxBoxSizer(wxVERTICAL);
-    auto* recommendation_actions = new wxBoxSizer(wxVERTICAL);
-    auto* color_count_row = new wxBoxSizer(wxHORIZONTAL);
-    auto* color_count_label = new wxStaticText(m_palette_recommendation_panel, wxID_ANY, _L("推荐颜色数量"));
-    wxArrayString color_counts;
-    for (size_t count = Slic3r::AI::kMinTargetPaletteColors; count <= Slic3r::AI::kMaxTargetPaletteColors; ++count) {
-        color_counts.Add(wxString::Format(_L("%llu 色"), static_cast<unsigned long long>(count)));
-    }
-    m_palette_color_count = new wxChoice(m_palette_recommendation_panel, wxID_ANY, wxDefaultPosition, wxDefaultSize, color_counts);
-    m_palette_color_count->SetSelection(static_cast<int>(Slic3r::AI::kLegacyDefaultTargetPaletteColors - Slic3r::AI::kMinTargetPaletteColors));
-    m_palette_color_count->SetToolTip(_L("选择 AI 本次推荐的设计目标色数量；它不等同于物理进料通道数。"));
-    color_count_row->Add(color_count_label, 1, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(10));
-    color_count_row->Add(m_palette_color_count, 0, wxALIGN_CENTER_VERTICAL);
-    recommendation_actions->Add(color_count_row, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
-    m_recommend_palette = new wxButton(m_palette_recommendation_panel, wxID_ANY, _L("AI 推荐配色"));
-    m_recommend_palette->SetToolTip(_L("根据文字、参考图和风格推荐一组设计目标色；不会修改打印机耗材槽"));
-    m_confirm_recommended_palette = new wxButton(
-        m_palette_recommendation_panel, wxID_ANY, _L("确认配色并生成预览"));
-    recommendation_actions->Add(m_recommend_palette, 0, wxEXPAND | wxBOTTOM, FromDIP(4));
-    recommendation_actions->Add(m_confirm_recommended_palette, 0, wxEXPAND);
-    recommendation_sizer->Add(recommendation_actions, 0, wxEXPAND | wxALL, FromDIP(8));
-    m_palette_recommendation_summary = new wxStaticText(
-        m_palette_recommendation_panel, wxID_ANY,
-        _L("AI 会推荐理想目标色；确认后再由你匹配实际耗材。"));
-    m_palette_recommendation_summary->SetForegroundColour(wxColour(91, 104, 107));
-    m_palette_recommendation_summary->Wrap(FromDIP(300));
-    recommendation_sizer->Add(
-        m_palette_recommendation_summary, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(8));
-    for (size_t index = 0; index < m_palette_recommendation_cards.size(); ++index) {
-        auto* card = new wxPanel(m_palette_recommendation_panel, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_SIMPLE);
-        card->SetBackgroundColour(wxColour(250, 251, 251));
-        auto* card_sizer = new wxBoxSizer(wxVERTICAL);
-        auto* content = new wxBoxSizer(wxHORIZONTAL);
-        auto* swatch = new wxPanel(card, wxID_ANY, wxDefaultPosition, FromDIP(wxSize(30, 30)), wxBORDER_SIMPLE);
-        swatch->SetMinSize(FromDIP(wxSize(30, 30)));
-        auto* details = new wxStaticText(card, wxID_ANY, wxEmptyString);
-        details->Wrap(FromDIP(230));
-        auto* replace = new wxButton(
-            card, wxID_ANY, _L("替换"), wxDefaultPosition, FromDIP(wxSize(52, 28)), wxBU_EXACTFIT);
-        auto* remove = new wxButton(
-            card, wxID_ANY, _L("删除"), wxDefaultPosition, FromDIP(wxSize(52, 28)), wxBU_EXACTFIT);
-        content->Add(swatch, 0, wxALIGN_CENTER_VERTICAL | wxALL, FromDIP(6));
-        content->Add(details, 1, wxALIGN_CENTER_VERTICAL | wxTOP | wxRIGHT | wxBOTTOM, FromDIP(6));
-        auto* actions = new wxBoxSizer(wxHORIZONTAL);
-        actions->AddStretchSpacer();
-        actions->Add(replace, 0, wxRIGHT, FromDIP(4));
-        actions->Add(remove, 0);
-        actions->AddSpacer(FromDIP(20));
-        card_sizer->Add(content, 0, wxEXPAND);
-        card_sizer->Add(actions, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(6));
-        card->SetSizer(card_sizer);
-        recommendation_sizer->Add(card, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(6));
-        m_palette_recommendation_cards[index] = card;
-        m_palette_recommendation_swatches[index] = swatch;
-        m_palette_recommendation_details[index] = details;
-        m_palette_recommendation_replace[index] = replace;
-        m_palette_recommendation_remove[index] = remove;
-        card->Hide();
-        replace->Bind(wxEVT_BUTTON, [this, index](wxCommandEvent&) { replace_recommended_color(index); });
-        remove->Bind(wxEVT_BUTTON, [this, index](wxCommandEvent&) {
-            if (index < m_custom_palette.size())
-                remove_custom_color(m_custom_palette[index]);
-        });
-    }
-    m_palette_recommendation_panel->SetSizer(recommendation_sizer);
-    m_palette_recommendation_panel->Hide();
-    legacy_palette_sizer->Add(m_palette_recommendation_panel, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
-    legacy_palette_sizer->AddSpacer(FromDIP(6));
-
-    m_advanced_toggle = new wxButton(legacy_palette_controls, wxID_ANY, _L("显示高级设置"), wxDefaultPosition,
-                                     wxSize(-1, FromDIP(30)), wxBU_LEFT);
-    m_advanced_toggle->SetToolTip(_L("显示颜色用途、打印尺寸和最小色块设置。"));
-    legacy_palette_sizer->Add(m_advanced_toggle, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
-    legacy_palette_sizer->AddSpacer(FromDIP(6));
-
-    m_advanced_options = new wxPanel(legacy_palette_controls);
-    m_advanced_options->SetBackgroundColour(wxColour(250, 251, 251));
-    auto* advanced = m_advanced_options;
-    auto* advanced_sizer = new wxBoxSizer(wxVERTICAL);
-
-    auto* palette_roles_label = new wxStaticText(advanced, wxID_ANY, _L("颜色用途"));
-    wxFont palette_roles_font = palette_roles_label->GetFont();
-    palette_roles_font.SetWeight(wxFONTWEIGHT_BOLD);
-    palette_roles_label->SetFont(palette_roles_font);
-    advanced_sizer->Add(palette_roles_label, 0, wxEXPAND);
-    auto* palette_roles_hint = new wxStaticText(advanced, wxID_ANY, _L("系统已自动分配；只有效果不理想时才调整。"));
-    palette_roles_hint->SetForegroundColour(wxColour(91, 104, 107));
-    advanced_sizer->Add(palette_roles_hint, 0, wxEXPAND | wxTOP, FromDIP(4));
-    advanced_sizer->AddSpacer(FromDIP(5));
-
-    m_palette_roles_panel = new wxPanel(advanced);
-    m_palette_roles_panel->SetBackgroundColour(advanced->GetBackgroundColour());
-    auto* palette_roles_sizer = new wxBoxSizer(wxVERTICAL);
-    const std::array<wxString, Slic3r::AI::kMaxTargetPaletteColors> role_labels {
-        _L("主色"), _L("轮廓 / 暗部"), _L("浅色"), _L("点缀色"), _L("辅助色"), _L("细节色") };
-    for (size_t index = 0; index < m_palette_role_choices.size(); ++index) {
-        auto* row = new wxBoxSizer(wxHORIZONTAL);
-        row->Add(new wxStaticText(m_palette_roles_panel, wxID_ANY, role_labels[index]), 0,
-                 wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(10));
-        m_palette_role_choices[index] = new wxChoice(m_palette_roles_panel, wxID_ANY);
-        row->Add(m_palette_role_choices[index], 1, wxALIGN_CENTER_VERTICAL);
-        palette_roles_sizer->Add(row, 0, wxEXPAND | wxBOTTOM, FromDIP(4));
-    }
-    m_palette_roles_panel->SetSizer(palette_roles_sizer);
-    advanced_sizer->Add(m_palette_roles_panel, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
-
-    auto* print_constraints_label = new wxStaticText(advanced, wxID_ANY, _L("参考图细节简化（不修改模型尺寸或设备）"));
-    wxFont print_constraints_font = print_constraints_label->GetFont();
-    print_constraints_font.SetWeight(wxFONTWEIGHT_BOLD);
-    print_constraints_label->SetFont(print_constraints_font);
-    advanced_sizer->Add(print_constraints_label, 0, wxEXPAND | wxTOP, FromDIP(4));
-    const auto add_print_number = [this, advanced, advanced_sizer](const wxString& label, wxSpinCtrlDouble*& control,
-                                                                  double value, double minimum, double maximum,
-                                                                  double increment, int digits) {
-        auto* row = new wxBoxSizer(wxHORIZONTAL);
-        row->Add(new wxStaticText(advanced, wxID_ANY, label), 1, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(10));
-        control = new wxSpinCtrlDouble(advanced, wxID_ANY);
-        control->SetRange(minimum, maximum);
-        control->SetIncrement(increment);
-        control->SetDigits(digits);
-        control->SetValue(value);
-        row->Add(control, 0, wxALIGN_CENTER_VERTICAL);
-        advanced_sizer->Add(row, 0, wxEXPAND | wxTOP, FromDIP(5));
-    };
-    add_print_number(_L("参考图处理宽度（mm）"), m_print_width, 160.0, 20.0, 2000.0, 10.0, 1);
-    m_print_width->SetToolTip(_L("仅用于参考图的色块简化。实际模型高度请在准备页“智能切片”的“调整当前模型”中设置。"));
-    add_print_number(_L("喷嘴直径（mm）"), m_nozzle_size, 0.4, 0.1, 2.0, 0.1, 2);
-    add_print_number(_L("挤出线宽（mm）"), m_line_width, 0.4, 0.1, 3.0, 0.05, 2);
-    add_print_number(_L("最小特征（mm）"), m_minimum_feature, 0.8, 0.1, 20.0, 0.1, 2);
-    m_minimum_feature->SetToolTip(_L("建议不小于两条挤出线宽；过小色块会合并到相邻主色块。"));
-    advanced->SetSizer(advanced_sizer);
-    m_advanced_options->Hide();
-    legacy_palette_sizer->Add(m_advanced_options, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
-    legacy_palette_sizer->AddSpacer(FromDIP(12));
-
-    legacy_palette_controls->SetSizer(legacy_palette_sizer);
-    legacy_palette_controls->Hide();
+    // Old print settings are ordinary data; no hidden native controls are needed.
+    trace_stage("legacy_print_settings");
 
     m_model_settings_panel = new wxPanel(scroll);
     m_model_settings_panel->SetBackgroundColour(wxColour(250, 251, 251));
@@ -849,8 +690,9 @@ wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
     sizer->Add(m_prepared_prompt, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
 
     scroll->SetSizer(sizer);
-    scroll->FitInside();
+    // Initial refresh fits the scroll extent after settling control visibility.
     outer->Add(scroll, 1, wxEXPAND);
+    trace_stage("settings_and_scroll_layout");
 
     auto* action_panel = new wxPanel(panel);
     action_panel->SetBackgroundColour(*wxWHITE);
@@ -898,6 +740,7 @@ wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
     action_panel->SetSizer(action_panel_sizer);
     outer->Add(action_panel, 0, wxEXPAND);
     panel->SetSizer(outer);
+    trace_stage("action_controls");
 
     m_prompt->Bind(wxEVT_TEXT, [this](wxCommandEvent&) { refresh_controls(); });
     m_style->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) {
@@ -927,25 +770,7 @@ wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
         });
     m_choose_image->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_choose_image, this);
     m_clear_image->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_clear_image, this);
-    m_use_printable_colors->Bind(wxEVT_CHECKBOX, &ModelGenerationPanel::on_printable_colors_toggled, this);
-    m_palette_source->Bind(wxEVT_CHOICE, &ModelGenerationPanel::on_palette_source_changed, this);
-    m_palette_color_count->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) { refresh_controls(); });
     m_import_color_mode->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) { refresh_controls(); });
-    m_add_custom_color->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_add_custom_color, this);
-    m_recommend_palette->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_recommend_palette, this);
-    m_confirm_recommended_palette->Bind(
-        wxEVT_BUTTON, &ModelGenerationPanel::on_confirm_recommended_palette, this);
-    for (size_t index = 0; index < m_palette_role_choices.size(); ++index)
-        m_palette_role_choices[index]->Bind(wxEVT_CHOICE, [this, index](wxCommandEvent&) { on_palette_role_changed(index); });
-    for (wxSpinCtrlDouble* control : {m_print_width, m_nozzle_size, m_line_width, m_minimum_feature})
-        control->Bind(wxEVT_SPINCTRLDOUBLE, [this](wxSpinDoubleEvent&) { refresh_controls(); });
-    m_advanced_toggle->Bind(wxEVT_BUTTON, [this, scroll](wxCommandEvent&) {
-        m_advanced_options_expanded = !m_advanced_options_expanded;
-        m_advanced_options->Show(m_advanced_options_expanded);
-        m_advanced_toggle->SetLabel(m_advanced_options_expanded ? _L("收起高级设置") : _L("显示高级设置"));
-        scroll->Layout();
-        scroll->FitInside();
-    });
     m_preprocess->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_preprocess, this);
     m_generate->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_generate, this);
     m_stop->Bind(wxEVT_BUTTON, &ModelGenerationPanel::on_stop, this);
@@ -962,11 +787,20 @@ wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
         if (ec || !wxLaunchDefaultApplication(path))
             show_error(this, _L("无法打开诊断日志目录：") + from_path(log_directory));
     });
+    trace_stage("event_bindings");
     return panel;
 }
 
 wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
 {
+    wxString trace_value;
+    const bool trace = wxGetEnv("ORCASLICER_UI_LATENCY_TRACE", &trace_value) && trace_value == "1";
+    const auto started = std::chrono::steady_clock::now();
+    auto trace_stage = [trace, &started](const char* stage) {
+        if (trace)
+            BOOST_LOG_TRIVIAL(info) << "AI preview build: " << stage << " elapsed_ms="
+                << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+    };
     auto* panel = new wxPanel(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_SIMPLE);
     panel->SetBackgroundColour(*wxWHITE);
     auto* sizer = new wxBoxSizer(wxVERTICAL);
@@ -1021,6 +855,7 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
         event.Skip();
     });
     sizer->Add(m_preview_details_pane, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(18));
+    trace_stage("header_and_details");
 
     m_preview_book = new wxNotebook(panel, wxID_ANY);
     m_preview_book->SetMinSize(wxSize(1, 1));
@@ -1111,6 +946,7 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
         update_preview_view();
         event.Skip();
     });
+    trace_stage("image_controls");
     auto* model_card = new wxPanel(comparison_panel, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_SIMPLE);
     model_card->SetBackgroundColour(*wxWHITE);
     // Let the toolbar and canvas determine the minimum height. A fixed 560 DIP
@@ -1131,13 +967,16 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     m_finishing_compare_model = new wxButton(model_card, wxID_ANY, _L("查看处理前"));
     m_finishing_compare_model->Hide();
     model_card_sizer->Add(m_finishing_compare_model, 0, wxLEFT | wxBOTTOM, FromDIP(10));
+    trace_stage("model_toolbar");
     m_model_preview = new ModelPreview3D(model_card);
+    trace_stage("model_canvas");
     m_model_preview->SetMinSize(wxSize(FromDIP(420), wxDefaultCoord));
     model_card_sizer->Add(m_model_preview, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
     model_card->SetSizer(model_card_sizer);
     comparison_sizer->Add(model_card, 5, wxEXPAND | wxRIGHT, FromDIP(10));
     comparison_sizer->Add(m_preview_area, 4, wxEXPAND);
     comparison_sizer->Add(build_model_finishing(comparison_panel), 0, wxEXPAND | wxLEFT, FromDIP(10));
+    trace_stage("finishing_controls");
     comparison_panel->SetSizer(comparison_sizer);
     auto* expand_images = m_expand_images = new wxToggleButton(panel, wxID_ANY, _L("展开图片"));
     header->Add(expand_images, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(8));
@@ -1156,6 +995,7 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
         if (!m_model_preview_ready && !m_finishing_workbench) return;
         set_finishing_workbench(!m_finishing_workbench);
     });
+    trace_stage("comparison_shortcuts");
 
     m_model_decision_panel = new wxPanel(
         model_page, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_SIMPLE);
@@ -1251,6 +1091,7 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     quality_sizer->Add(m_model_refinement_panel, 0, wxEXPAND);
     m_model_quality_panel->SetSizer(quality_sizer);
     m_model_quality_panel->Hide();
+    trace_stage("quality_controls");
     m_model_preview_message = new wxStaticText(
         model_page, wxID_ANY, _L("拖动模型旋转，滚轮缩放；点击“完整显示模型”恢复全貌。上方缩放按钮用于图片。"));
     m_model_preview_message->SetForegroundColour(wxColour(91, 104, 107));
@@ -1258,7 +1099,9 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     model_page->SetSizer(model_sizer);
     model_page->FitInside();
     m_preview_book->AddPage(model_page, _L("结果对照"), true);
+    trace_stage("result_layout");
     m_preview_book->AddPage(build_model_library(m_preview_book), _L("历史资产"), false);
+    trace_stage("library_controls");
     sizer->Add(m_preview_book, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(18));
 
     m_preview_message = new wxStaticText(panel, wxID_ANY, _L("请先输入描述或选择参考图。"));
@@ -1424,6 +1267,7 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
             m_model_preview->refresh();
         event.Skip();
     });
+    trace_stage("event_bindings");
     return panel;
 }
 
@@ -1569,41 +1413,6 @@ void ModelGenerationPanel::on_clear_image(wxCommandEvent&)
     refresh_controls();
 }
 
-void ModelGenerationPanel::on_palette_source_changed(wxCommandEvent&)
-{
-    refresh_palette();
-    refresh_controls();
-}
-
-void ModelGenerationPanel::on_printable_colors_toggled(wxCommandEvent&)
-{
-    refresh_palette();
-    refresh_controls();
-}
-
-void ModelGenerationPanel::on_add_custom_color(wxCommandEvent&)
-{
-    if (m_palette_source->GetSelection() == 0)
-        return;
-    const size_t palette_limit = m_palette_source->GetSelection() == 2
-        ? current_palette_color_count() : Slic3r::AI::kMaxTargetPaletteColors;
-    if (m_custom_palette.size() >= palette_limit) {
-        show_input_hint(wxString::Format(_L("当前配色最多使用 %llu 种目标色。"), static_cast<unsigned long long>(palette_limit)));
-        return;
-    }
-    std::string color = m_custom_color->GetColour().GetAsString(wxC2S_HTML_SYNTAX).ToStdString();
-    std::transform(color.begin(), color.end(), color.begin(), [](unsigned char ch) {
-        return static_cast<char>(std::toupper(ch));
-    });
-    if (std::find(m_custom_palette.begin(), m_custom_palette.end(), color) == m_custom_palette.end()) {
-        m_custom_palette.emplace_back(std::move(color));
-        if (m_palette_source->GetSelection() == 2)
-            m_user_adjusted_palette_colors.emplace_back(m_custom_palette.back());
-    }
-    refresh_palette();
-    refresh_controls();
-}
-
 void ModelGenerationPanel::on_recommend_palette(wxCommandEvent&)
 {
     if (m_busy || m_shutdown)
@@ -1620,7 +1429,7 @@ void ModelGenerationPanel::on_recommend_palette(wxCommandEvent&)
         return;
     }
     reset(true);
-    m_palette_source->SetSelection(2);
+    m_legacy_generation_state.palette_source = 2;
     m_job_palette.clear();
     m_job_palette_roles.clear();
     m_job_palette_color_count = palette_color_count;
@@ -1731,7 +1540,7 @@ void ModelGenerationPanel::on_preprocess(wxCommandEvent& event)
         show_input_hint(_L("请描述希望使用的自定义风格。"), m_custom_style);
         return;
     }
-    const bool ai_palette_source = use_printable_colors() && m_palette_source->GetSelection() == 2;
+    const bool ai_palette_source = use_printable_colors() && m_legacy_generation_state.palette_source == 2;
     if (ai_palette_source && !m_job_id.empty() &&
         current_palette_color_count() != m_job_palette_color_count) {
         on_recommend_palette(event);
@@ -1752,7 +1561,7 @@ void ModelGenerationPanel::on_preprocess(wxCommandEvent& event)
         show_input_hint(_L("生成可打印模型前，请至少配置一种有效耗材颜色。"));
         return;
     }
-    if (use_printable_colors() && m_minimum_feature->GetValue() < m_line_width->GetValue()) {
+    if (use_printable_colors() && m_legacy_generation_state.minimum_feature_mm < m_legacy_generation_state.line_width_mm) {
         show_input_hint(_L("最小特征不能小于挤出线宽。建议设置为两条线宽，例如 0.8 mm。"));
         return;
     }
@@ -1952,6 +1761,7 @@ void ModelGenerationPanel::on_stop(wxCommandEvent&)
     m_client.cancel_current();
     if (preview_download_was_active) {
         ++m_sequence;
+        if (m_preview_canceled) *m_preview_canceled = true;
         // The client cancels all its HTTP downloads. Allow an interrupted
         // model download to be reloaded too, without losing a running job.
         if (m_artifact_download_started && !m_model_preview_ready)
@@ -1968,6 +1778,7 @@ void ModelGenerationPanel::on_stop(wxCommandEvent&)
     }
     if (m_ready && m_artifact_download_started && !m_model_preview_ready) {
         ++m_sequence;
+        if (m_preview_canceled) *m_preview_canceled = true;
         m_busy = false;
         m_restoring_input = false;
         m_artifact_download_started = false;
@@ -2399,7 +2210,7 @@ void ModelGenerationPanel::refresh_controls()
     const bool custom_style_ready = !custom_style_selected || !current_custom_style().empty();
     const bool valid_input = (!m_prompt->GetValue().empty() || image_input) && style_selected && custom_style_ready;
     const bool printable_colors = use_printable_colors();
-    const bool ai_palette_source = printable_colors && m_palette_source->GetSelection() == 2;
+    const bool ai_palette_source = printable_colors && m_legacy_generation_state.palette_source == 2;
     const bool palette_matches = !printable_colors || m_awaiting_palette_confirmation || m_job_id.empty() ||
         (printable_colors == m_job_use_printable_colors && (!printable_colors || m_palette == m_job_palette));
     const bool stale_job = !m_restoring_input && !m_job_id.empty() &&
@@ -2448,10 +2259,6 @@ void ModelGenerationPanel::refresh_controls()
     m_discard->SetLabel(_L("重新开始"));
     m_clear_image->Show(image_input);
     m_upload_notice->Show(image_input);
-    const bool show_advanced = printable_colors && !busy && !m_ready;
-    m_advanced_toggle->Show(show_advanced);
-    m_advanced_options->Show(show_advanced && m_advanced_options_expanded);
-    m_advanced_toggle->SetLabel(m_advanced_options_expanded ? _L("收起高级设置") : _L("显示高级设置"));
     m_model_settings_panel->Show(m_awaiting_confirmation && !stale_job);
     m_import_settings_panel->Show(m_ready && !stale_job);
     m_preprocess_section->Show(show_review);
@@ -2478,17 +2285,8 @@ void ModelGenerationPanel::refresh_controls()
     if(m_library_import)m_library_import->Enable(!busy);
     m_choose_image->Enable(!busy);
     m_clear_image->Enable(!busy);
-    m_use_printable_colors->Enable(!busy);
-    m_palette_source->Enable(!busy);
     m_import_color_mode->Enable(!busy);
     m_import_color_source->Enable(!busy && m_import_color_mode->GetSelection() == 0);
-    m_custom_color->Enable(!busy && printable_colors && m_palette_source->GetSelection() != 0);
-    m_add_custom_color->Enable(!busy && printable_colors && m_palette_source->GetSelection() != 0 &&
-        m_custom_palette.size() < (ai_palette_source ? current_palette_color_count() : Slic3r::AI::kMaxTargetPaletteColors));
-    for (wxSpinCtrlDouble* control : {m_print_width, m_nozzle_size, m_line_width, m_minimum_feature})
-        control->Enable(!busy && printable_colors);
-    if (m_shadow_color != nullptr)
-        m_shadow_color->Enable(!busy && printable_colors);
     m_preprocess->Enable(m_service_available && !busy && valid_input &&
                          (ai_palette_source || !printable_colors || !m_palette.empty()));
     m_prepared_prompt->Enable(m_service_available && !busy && show_review);
@@ -3014,7 +2812,7 @@ std::vector<std::string> ModelGenerationPanel::current_palette() const
 {
     if (!use_printable_colors())
         return {};
-    auto palette = m_palette_source != nullptr && m_palette_source->GetSelection() == 2 ? m_custom_palette : project_palette();
+    auto palette = m_legacy_generation_state.palette_source == 2 ? m_custom_palette : project_palette();
     if (current_style() == "sculpture" && palette.size() > 1)
         palette.resize(1);
     return palette;
@@ -3024,13 +2822,7 @@ size_t ModelGenerationPanel::current_palette_color_count() const
 {
     if (current_style() == "sculpture")
         return 1;
-    if (m_palette_color_count == nullptr || m_palette_color_count->GetSelection() == wxNOT_FOUND)
-        return Slic3r::AI::kLegacyDefaultTargetPaletteColors;
-    const size_t count = static_cast<size_t>(m_palette_color_count->GetSelection()) +
-                         Slic3r::AI::kMinTargetPaletteColors;
-    return Slic3r::AI::is_supported_target_palette_color_count(count)
-        ? count
-        : Slic3r::AI::kLegacyDefaultTargetPaletteColors;
+    return m_legacy_generation_state.palette_color_count;
 }
 
 AIModelGenerationClient::PaletteRoles ModelGenerationPanel::current_palette_roles() const
@@ -3060,48 +2852,6 @@ void ModelGenerationPanel::refresh_palette_roles(const std::vector<std::string>&
         m_palette_roles_source = palette;
         m_palette_roles = automatic_palette_roles(palette);
     }
-    for (size_t index = 0; index < m_palette_role_choices.size(); ++index) {
-        wxChoice* choice = m_palette_role_choices[index];
-        if (choice == nullptr)
-            continue;
-        choice->Freeze();
-        choice->Clear();
-        for (const std::string& color : palette)
-            choice->Append(from_u8(color));
-        const auto role = m_palette_roles.find(PALETTE_ROLE_IDS[index]);
-        if (role != m_palette_roles.end()) {
-            const auto color = std::find(palette.begin(), palette.end(), role->second);
-            choice->SetSelection(color == palette.end() ? wxNOT_FOUND : int(std::distance(palette.begin(), color)));
-            choice->Enable(!m_busy && use_printable_colors());
-        } else {
-            choice->SetSelection(wxNOT_FOUND);
-            choice->Enable(false);
-        }
-        choice->Thaw();
-    }
-}
-
-void ModelGenerationPanel::on_palette_role_changed(size_t role_index)
-{
-    if (m_busy || role_index >= m_palette_role_choices.size())
-        return;
-    wxChoice* choice = m_palette_role_choices[role_index];
-    const int selection = choice == nullptr ? wxNOT_FOUND : choice->GetSelection();
-    const std::vector<std::string> palette = current_palette();
-    if (selection == wxNOT_FOUND || selection >= int(palette.size()))
-        return;
-    const std::string role = PALETTE_ROLE_IDS[role_index];
-    const std::string selected = palette[selection];
-    const std::string previous = m_palette_roles[role];
-    for (auto& [other_role, color] : m_palette_roles) {
-        if (other_role != role && color == selected) {
-            color = previous;
-            break;
-        }
-    }
-    m_palette_roles[role] = selected;
-    refresh_palette_roles(palette);
-    refresh_controls();
 }
 
 void ModelGenerationPanel::request_style_recommendation()
@@ -3161,8 +2911,6 @@ void ModelGenerationPanel::select_style(const std::string& style, bool user_sele
     if (user_selected)
         m_style_user_selected = true;
     const bool multicolor = style_uses_printable_colors(current_style());
-    if (m_use_printable_colors != nullptr)
-        m_use_printable_colors->SetValue(multicolor);
     if (m_import_color_mode != nullptr)
         m_import_color_mode->SetSelection(multicolor ? 0 : 2);
     refresh_palette();
@@ -3322,13 +3070,11 @@ wxString ModelGenerationPanel::generation_options_summary(bool image_mode) const
 AIModelGenerationClient::ImagePrintSettings ModelGenerationPanel::current_print_settings() const
 {
     AIModelGenerationClient::ImagePrintSettings settings;
-    if (m_print_width != nullptr) settings.width_mm = m_print_width->GetValue();
-    if (m_nozzle_size != nullptr) settings.nozzle_mm = m_nozzle_size->GetValue();
-    if (m_line_width != nullptr) settings.line_width_mm = m_line_width->GetValue();
-    if (m_minimum_feature != nullptr) settings.minimum_feature_mm = m_minimum_feature->GetValue();
-    static constexpr std::array<const char*, 4> shadows {"blue", "red", "green", "white"};
-    const int selection = m_shadow_color == nullptr ? 0 : m_shadow_color->GetSelection();
-    settings.shadow_color = shadows[selection >= 0 && selection < int(shadows.size()) ? selection : 0];
+    settings.width_mm = m_legacy_generation_state.print_width_mm;
+    settings.nozzle_mm = m_legacy_generation_state.nozzle_mm;
+    settings.line_width_mm = m_legacy_generation_state.line_width_mm;
+    settings.minimum_feature_mm = m_legacy_generation_state.minimum_feature_mm;
+    // The former shadow choice was never constructed; preserve the default.
     return settings;
 }
 
@@ -3356,211 +3102,27 @@ bool ModelGenerationPanel::job_base_inputs_match() const
         std::abs(settings.line_width_mm - m_job_print_settings.line_width_mm) < 0.001 &&
         std::abs(settings.minimum_feature_mm - m_job_print_settings.minimum_feature_mm) < 0.001 &&
         settings.shadow_color == m_job_print_settings.shadow_color;
-    const bool palette_count_matches = !use_printable_colors() || m_palette_source == nullptr || m_palette_source->GetSelection() != 2 ||
+    const bool palette_count_matches = !use_printable_colors() || m_legacy_generation_state.palette_source != 2 ||
                                        current_palette_color_count() == m_job_palette_color_count;
     return m_job_id.empty() || (m_prompt->GetValue() == m_job_prompt && m_selected_image_path == m_job_image_path &&
                                  current_style() == m_job_style && current_custom_style() == m_job_custom_style &&
                                  palette_count_matches && print_matches);
 }
 
-void ModelGenerationPanel::remove_custom_color(const std::string& color)
-{
-    if (m_busy || m_palette_source->GetSelection() == 0)
-        return;
-    const auto item = std::find(m_custom_palette.begin(), m_custom_palette.end(), color);
-    if (item != m_custom_palette.end())
-        m_custom_palette.erase(item);
-    refresh_palette();
-    refresh_controls();
-}
-
-void ModelGenerationPanel::replace_recommended_color(size_t index)
-{
-    if (m_busy || m_palette_source->GetSelection() != 2 || index >= m_custom_palette.size())
-        return;
-    wxColourData data;
-    data.SetChooseFull(true);
-    data.SetColour(wxColour(from_u8(m_custom_palette[index])));
-    wxColourDialog dialog(this, &data);
-    if (dialog.ShowModal() != wxID_OK)
-        return;
-    std::string replacement = dialog.GetColourData().GetColour().GetAsString(wxC2S_HTML_SYNTAX).ToStdString();
-    std::transform(replacement.begin(), replacement.end(), replacement.begin(), [](unsigned char ch) {
-        return static_cast<char>(std::toupper(ch));
-    });
-    const auto duplicate = std::find(m_custom_palette.begin(), m_custom_palette.end(), replacement);
-    if (duplicate != m_custom_palette.end() && size_t(std::distance(m_custom_palette.begin(), duplicate)) != index) {
-        show_input_hint(_L("这个颜色已经在当前目标色板中。"));
-        return;
-    }
-    const std::string previous = m_custom_palette[index];
-    m_custom_palette[index] = replacement;
-    for (auto& [role, color] : m_palette_roles)
-        if (color == previous) color = replacement;
-    for (auto& color : m_palette_recommendation.colors)
-        if (color.hex == previous) color.hex = replacement;
-    if (std::find(m_user_adjusted_palette_colors.begin(), m_user_adjusted_palette_colors.end(), replacement) ==
-        m_user_adjusted_palette_colors.end())
-        m_user_adjusted_palette_colors.emplace_back(replacement);
-    refresh_palette();
-    refresh_controls();
-}
-
-void ModelGenerationPanel::refresh_palette_recommendation()
-{
-    if (m_palette_recommendation_panel == nullptr || m_palette_source == nullptr)
-        return;
-    const bool ai_source = use_printable_colors() && m_palette_source->GetSelection() == 2;
-    m_palette_recommendation_panel->Show(ai_source);
-    if (!ai_source)
-        return;
-
-    const bool stale = !m_restoring_input && !m_job_id.empty() && !job_base_inputs_match();
-    m_palette_color_count->Enable(!m_busy && current_style() != "sculpture");
-    if (current_style() == "sculpture") m_palette_color_count->SetSelection(0);
-    if (m_busy && !m_awaiting_confirmation) {
-        const bool generating_model =
-            m_job_phase == "preparing_multiview" || m_job_phase == "generating" ||
-            m_job_phase == "texturing" || m_job_phase == "converting" ||
-            m_job_phase == "downloading_artifact" || m_job_phase == "checking_model";
-        m_palette_recommendation_summary->SetLabel(
-            !m_palette_recommendation_confirmed
-                ? _L("AI 正在推荐易区分、适合打印的配色...")
-                : generating_model
-                ? _L("已采用当前配色；正在生成并检查 3D 模型...")
-                : _L("正在生成并检查图片预览..."));
-    }
-    else if (m_palette_recommendation.available) {
-        wxString text = _L("推荐配色已显示在上方色块中，可点击色块删除或添加新颜色。");
-        if (stale)
-            text = _L("输入已变化；可继续使用当前配色，或重新推荐。");
-        else if (m_palette_recommendation_confirmed)
-            text = _L("已采用当前配色；生成预览后仍可返回调整。");
-        m_palette_recommendation_summary->SetLabel(text);
-    } else {
-        m_palette_recommendation_summary->SetLabel(
-            m_palette_recommendation_confirmed
-                ? _L("已恢复上次 AI 配色；可继续换图或生成 3D。")
-                : _L("点击“AI 推荐并生成”将进行配色推荐和 1 次 AI 生图，消耗 API 额度；不会修改耗材槽。"));
-    }
-    m_palette_recommendation_summary->Wrap(FromDIP(300));
-
-    const std::vector<std::string> palette = current_palette();
-    for (size_t index = 0; index < m_palette_recommendation_cards.size(); ++index) {
-        m_palette_recommendation_cards[index]->Show(false);
-        if (index >= palette.size())
-            continue;
-        const std::string& hex = palette[index];
-        m_palette_recommendation_swatches[index]->SetName("ai_content_color");
-        m_palette_recommendation_swatches[index]->SetBackgroundColour(wxColour(from_u8(hex)));
-        const auto detail = std::find_if(
-            m_palette_recommendation.colors.begin(), m_palette_recommendation.colors.end(),
-            [&hex](const AIModelGenerationClient::PaletteRecommendationColor& color) { return color.hex == hex; });
-        wxString label = from_u8(hex);
-        if (detail != m_palette_recommendation.colors.end()) {
-            label += _L(" · ") + from_u8(detail->name) + _L(" · ") + from_u8(detail->usage) +
-                     "\n" + from_u8(detail->reason);
-        } else {
-            label += _L(" · 用户添加的目标色");
-        }
-        if (std::find(m_user_adjusted_palette_colors.begin(), m_user_adjusted_palette_colors.end(), hex) !=
-            m_user_adjusted_palette_colors.end())
-            label += _L("（用户已调整）");
-        m_palette_recommendation_details[index]->SetLabel(label);
-        m_palette_recommendation_details[index]->Wrap(FromDIP(230));
-        m_palette_recommendation_replace[index]->Enable(!m_busy);
-        m_palette_recommendation_remove[index]->Enable(!m_busy && palette.size() > 1);
-    }
-    const bool valid_input = !m_prompt->GetValue().empty() || has_image_input();
-    m_recommend_palette->SetLabel(m_palette_recommendation.available ? _L("重新推荐配色") : _L("AI 推荐配色"));
-    m_recommend_palette->Enable(m_service_available && !m_busy && valid_input);
-    m_recommend_palette->Show(!m_busy);
-    m_confirm_recommended_palette->Show(false);
-    m_confirm_recommended_palette->SetLabel(stale ? _L("继续使用此配色") : _L("确认配色并生成预览"));
-    m_confirm_recommended_palette->Enable(
-        m_service_available && !m_busy && m_awaiting_palette_confirmation && !palette.empty());
-    m_palette_recommendation_panel->Layout();
-}
-
 void ModelGenerationPanel::refresh_palette()
 {
-    if (m_palette_sizer == nullptr || m_palette_summary == nullptr)
-        return;
-    const std::vector<std::string> palette = current_palette();
+    const auto palette = current_palette();
     refresh_palette_roles(palette);
-    const bool enabled = use_printable_colors();
-    const bool custom = m_palette_source->GetSelection() != 0;
-    const bool palette_changed = palette != m_palette || custom != m_palette_is_custom;
-    if (palette_changed) {
+    const bool custom = m_legacy_generation_state.palette_source != 0;
+    if (palette != m_palette || custom != m_palette_is_custom) {
         m_palette = palette;
         m_palette_is_custom = custom;
-        m_palette_sizer->Clear(true);
-        for (const std::string& color : m_palette) {
-            auto* swatch = new wxPanel(m_palette_panel, wxID_ANY, wxDefaultPosition, wxSize(FromDIP(24), FromDIP(24)), wxBORDER_SIMPLE);
-            swatch->SetMinSize(wxSize(FromDIP(24), FromDIP(24)));
-            swatch->SetName("ai_content_color");
-            swatch->SetBackgroundColour(wxColour(wxString::FromUTF8(color)));
-            swatch->SetToolTip(wxString::FromUTF8(color) + (custom ? _L(" · 点击移除") : wxString()));
-            if (custom) {
-                swatch->SetCursor(wxCursor(wxCURSOR_HAND));
-                swatch->Bind(wxEVT_LEFT_UP, [this, color](wxMouseEvent&) { remove_custom_color(color); });
-            }
-            m_palette_sizer->Add(swatch);
-        }
     }
-    if (!enabled) {
-        m_palette_summary->SetLabel(current_style() == "sculpture"
-            ? _L("单材质写实造型，不限定具体色值。")
-            : _L("不限制颜色数量，优先生成高质量、适合 3D 建模的设计图。"));
-        m_palette_summary->SetForegroundColour(wxColour(91, 104, 107));
-    } else if (m_palette.empty() && m_palette_source->GetSelection() == 2) {
-        m_palette_summary->SetLabel(_L("尚未生成 AI 设计目标色。"));
-        m_palette_summary->SetForegroundColour(wxColour(91, 104, 107));
-    } else if (m_palette.empty()) {
-        m_palette_summary->SetLabel(_L("当前没有配置有效的耗材颜色。"));
-        m_palette_summary->SetForegroundColour(wxColour(180, 55, 55));
-    } else if (!m_job_palette.empty() && m_palette != m_job_palette) {
-        m_palette_summary->SetLabel(_L("耗材颜色已变化，请重新生成预览以使用当前色板。"));
-        m_palette_summary->SetForegroundColour(wxColour(180, 55, 55));
-    } else if (m_palette_source->GetSelection() == 2) {
-        m_palette_summary->SetLabel(wxString::Format(
-            _L("%llu 种 AI 设计目标色 · 导入时由你匹配实际耗材"),
-            static_cast<unsigned long long>(m_palette.size())));
-        m_palette_summary->SetForegroundColour(wxColour(91, 104, 107));
-    } else if (m_palette_source->GetSelection() == 1) {
-        m_palette_summary->SetLabel(wxString::Format(_L("%llu 种自定义颜色 · 点击色块可移除"),
-                                                     static_cast<unsigned long long>(m_palette.size())));
-        m_palette_summary->SetForegroundColour(wxColour(91, 104, 107));
-    } else {
-        const size_t valid_slots = valid_project_slots().size();
-        const size_t compatible_slots = compatible_project_slots().size();
-        if (compatible_slots < valid_slots) {
-            m_palette_summary->SetLabel(wxString::Format(
-                _L("已选择 %llu 种兼容耗材色（最多 6 种）\n已排除 %llu 个不兼容或超出上限的槽位"),
-                static_cast<unsigned long long>(m_palette.size()),
-                static_cast<unsigned long long>(valid_slots - compatible_slots)));
-        } else {
-            m_palette_summary->SetLabel(wxString::Format(_L("当前耗材：%llu 种颜色"),
-                                                         static_cast<unsigned long long>(m_palette.size())));
-        }
-        m_palette_summary->SetForegroundColour(wxColour(91, 104, 107));
-    }
-    if (enabled && palette.size() > 1 && minimum_palette_distance(palette) < 12.0) {
-        m_palette_summary->SetLabel(m_palette_summary->GetLabel() +
-                                    _L("\n提示：部分耗材颜色非常接近，打印后色区可能不易区分。"));
-        m_palette_summary->SetForegroundColour(wxColour(174, 112, 22));
-    }
-    m_palette_source->Show(true);
-    m_palette_panel->Show(enabled);
-    m_palette_roles_panel->Show(enabled && !m_palette.empty());
-    m_custom_color_panel->Show(enabled && custom);
-    refresh_palette_recommendation();
-    m_palette_panel->Layout();
-    m_palette_panel->GetParent()->Layout();
 }
 
 void ModelGenerationPanel::reset(bool remove_remote)
 {
+    if (m_preview_canceled) *m_preview_canceled = true;
     m_saving_generation_options = false;
     ++m_design_history_sequence;
     m_design_history_loading = false;
@@ -3781,10 +3343,20 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
     }
 
     const wxString previous_model_stats = m_model_stats->GetLabel();
+    auto history_metadata = std::make_shared<ModelHistoryMetadata>();
     m_status->SetLabel(_L("正在加载历史模型：") + title);
     m_model_stats->SetLabel(_L("正在解析模型..."));
     load_model_preview_async(model_path, palette,
         [=](size_t triangle_count, Vec3d dimensions, size_t color_count, double load_seconds) {
+    // Avoid repainting intermediate control and notebook states while restoring history.
+    // History restoration changes several layout inputs while repainting is
+    // frozen. Fit the comparison once after all of those inputs are installed.
+    const bool comparison_was_updating = m_updating_comparison_layout;
+    m_updating_comparison_layout = true;
+    ScopeGuard comparison_restore([this, comparison_was_updating] {
+        m_updating_comparison_layout = comparison_was_updating;
+    });
+    wxWindowUpdateLocker update_locker(this);
     // Successful explicit history navigation starts a fresh editing context,
     // including when the user selects the same source file again.
     if (!m_finishing_candidate.empty()) {
@@ -3792,20 +3364,25 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
         if (m_finishing_candidate != model_path) boost::filesystem::remove(m_finishing_candidate, ignored);
         m_finishing_candidate.clear();
     }
-    m_finishing_options.selected_faces.clear();
+    m_finishing_options.reset();
     m_finishing_before = false;
     const wxImage reference_image = reference_image_path.empty() ? wxImage() : wxImage(reference_image_path.wstring());
     const wxImage ai_image = ai_image_path.empty() ? wxImage() : wxImage(ai_image_path.wstring());
     m_history_display_image = load_model_image_display_copy(ai_image_path);
     m_history_display_source = ai_image_path;
-    nlohmann::json metadata = read_json(library_metadata_path(job_id));
+    nlohmann::json metadata;
+    std::map<std::string, std::string> encoded_fields;
+    if (!history_metadata->take_if_current(library_metadata_path(job_id), metadata, encoded_fields))
+        metadata = read_json(library_metadata_path(job_id));
     if (metadata.is_object()) {
         metadata["schema_version"] = std::max(4, metadata.value("schema_version", 0));
         metadata["triangle_count"] = triangle_count;
         metadata["color_count"] = color_count;
         metadata["load_seconds"] = load_seconds;
         metadata["dimensions"] = {dimensions.x(), dimensions.y(), dimensions.z()};
-        if (!write_json(library_metadata_path(job_id), metadata))
+        const bool saved = encoded_fields.empty() ? write_json(library_metadata_path(job_id), metadata)
+            : write_json_with_preencoded_fields(library_metadata_path(job_id), metadata, encoded_fields);
+        if (!saved)
             BOOST_LOG_TRIVIAL(warning) << "Unable to update model load metrics for " << job_id;
     }
 
@@ -3826,7 +3403,7 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
     m_custom_palette = palette;
     m_palette_roles = m_job_palette_roles;
     m_palette_roles_source = palette;
-    m_palette_source->SetSelection(use_printable_colors && !palette.empty() ? 2 : 1);
+    m_legacy_generation_state.palette_source = use_printable_colors && !palette.empty() ? 2 : 1;
     m_palette_recommendation_confirmed = !palette.empty();
     m_awaiting_palette_confirmation = false;
     // Replace the visible input atomically after the new model has loaded.
@@ -3905,8 +3482,6 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
     m_awaiting_confirmation = false;
     m_ready = true;
     m_artifact_download_started = true;
-    if (m_use_printable_colors != nullptr)
-        m_use_printable_colors->SetValue(use_printable_colors);
     m_displayed_model_path = model_path;
     m_displayed_model_job_id = job_id;
     m_displayed_model_palette = palette;
@@ -3940,6 +3515,8 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
     apply_preview_stage(true);
     m_model_preview->refresh();
     refresh_controls();
+    m_updating_comparison_layout = comparison_was_updating;
+    refresh_comparison_layout(true);
     const uint64_t sequence = m_sequence;
     wxWeakRef<ModelGenerationPanel> weak(this);
     m_client.get_status(job_id,
@@ -3975,7 +3552,7 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
         m_status->SetLabel(_L("历史模型加载失败，保留当前模型与预览。"));
         m_result_summary->SetLabel(from_u8(error));
         refresh_controls();
-    }, library_metadata_path(job_id));
+    }, library_metadata_path(job_id), history_metadata);
 }
 
 void ModelGenerationPanel::update_library_provider_tasks(

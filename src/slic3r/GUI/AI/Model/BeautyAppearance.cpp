@@ -176,25 +176,36 @@ std::array<Point, 3> face_uvs(const TexturedMesh& mesh, size_t face, const Mater
     }
     return triangle;
 }
-bool touches(const std::array<Point, 3>& triangle, double x, double y) {
-    // A texel can contribute through bilinear sampling one pixel away from
-    // its center. Separating-axis triangle/square coverage also handles tiny
-    // triangles, so a subpixel unselected face is never accidentally missed.
-    for (size_t edge = 0; edge < 3; ++edge) {
-        const auto& a = triangle[edge]; const auto& b = triangle[(edge + 1) % 3];
-        const double nx = b[1] - a[1], ny = a[0] - b[0];
-        const double p0 = nx * (triangle[0][0] - x) + ny * (triangle[0][1] - y);
-        const double p1 = nx * (triangle[1][0] - x) + ny * (triangle[1][1] - y);
-        const double p2 = nx * (triangle[2][0] - x) + ny * (triangle[2][1] - y);
-        const double extent = std::abs(nx) + std::abs(ny);
-        if (std::min({p0,p1,p2}) > extent || std::max({p0,p1,p2}) < -extent) return false;
+struct TriangleCoverage {
+    const std::array<Point, 3>& triangle;
+    std::array<std::array<double, 3>, 3> axes;
+    double min_x, max_x, min_y, max_y;
+
+    explicit TriangleCoverage(const std::array<Point, 3>& value) : triangle(value),
+        min_x(std::min({value[0][0],value[1][0],value[2][0]})),
+        max_x(std::max({value[0][0],value[1][0],value[2][0]})),
+        min_y(std::min({value[0][1],value[1][1],value[2][1]})),
+        max_y(std::max({value[0][1],value[1][1],value[2][1]})) {
+        for (size_t edge = 0; edge < axes.size(); ++edge) {
+            const auto& a = triangle[edge]; const auto& b = triangle[(edge + 1) % 3];
+            const double nx = b[1] - a[1], ny = a[0] - b[0];
+            axes[edge] = {nx, ny, std::abs(nx) + std::abs(ny)};
+        }
     }
-    const double min_x = std::min({triangle[0][0],triangle[1][0],triangle[2][0]});
-    const double max_x = std::max({triangle[0][0],triangle[1][0],triangle[2][0]});
-    const double min_y = std::min({triangle[0][1],triangle[1][1],triangle[2][1]});
-    const double max_y = std::max({triangle[0][1],triangle[1][1],triangle[2][1]});
-    return x + 1 >= min_x && x - 1 <= max_x && y + 1 >= min_y && y - 1 <= max_y;
-}
+
+    bool touches(double x, double y) const {
+        // Keep bilinear coverage and the projection arithmetic unchanged;
+        // only the per-triangle axes and bounds are reused across texels.
+        for (const auto& axis : axes) {
+            const double nx = axis[0], ny = axis[1], extent = axis[2];
+            const double p0 = nx * (triangle[0][0] - x) + ny * (triangle[0][1] - y);
+            const double p1 = nx * (triangle[1][0] - x) + ny * (triangle[1][1] - y);
+            const double p2 = nx * (triangle[2][0] - x) + ny * (triangle[2][1] - y);
+            if (std::min({p0,p1,p2}) > extent || std::max({p0,p1,p2}) < -extent) return false;
+        }
+        return x + 1 >= min_x && x - 1 <= max_x && y + 1 >= min_y && y - 1 <= max_y;
+    }
+};
 int wrap_pixel(int position, int size, int wrap) {
     if (wrap == 10497) return (position % size + size) % size;
     return std::clamp(position, 0, size - 1); // Only the immediately adjacent tile edge can occur here.
@@ -217,6 +228,7 @@ RasterMask raster_mask(const TexturedMesh& mesh, const std::vector<Material>& ma
         const int mi = mesh.material_ids[face];
         if (mi < 0 || size_t(mi) >= material.size() || !material[mi].textured || material[mi].image != image) continue;
         const auto triangle = face_uvs(mesh, face, material[mi], width, height);
+        const TriangleCoverage coverage(triangle);
         const int x0 = std::max(-1, int(std::floor(std::min({triangle[0][0],triangle[1][0],triangle[2][0]}) - 1.5)));
         const int x1 = std::min(width, int(std::ceil(std::max({triangle[0][0],triangle[1][0],triangle[2][0]}) + .5)));
         const int y0 = std::max(-1, int(std::floor(std::min({triangle[0][1],triangle[1][1],triangle[2][1]}) - 1.5)));
@@ -225,7 +237,7 @@ RasterMask raster_mask(const TexturedMesh& mesh, const std::vector<Material>& ma
         require(visits <= 300000000, "The UV layout is too expensive for local editing; simplify or unwrap the texture first.");
         for (int y = y0; y <= y1; ++y) {
             if ((y & 127) == 0) checkpoint(canceled);
-            for (int x = x0; x <= x1; ++x) if (touches(triangle, x + .5, y + .5)) {
+            for (int x = x0; x <= x1; ++x) if (coverage.touches(x + .5, y + .5)) {
                 const size_t pixel = size_t(wrap_pixel(y, height, material[mi].wrap_t)) * width + wrap_pixel(x, width, material[mi].wrap_s);
                 mask.weights[pixel] = mask.weights[pixel] < 0 ? options.face_weights[face] : std::min(mask.weights[pixel], options.face_weights[face]);
                 if (absolute && options.face_weights[face] > 0) {

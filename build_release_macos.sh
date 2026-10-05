@@ -294,6 +294,9 @@ function build_slicer() {
             resources_path=$(readlink ./OrcaSlicer.app/Contents/Resources)
             rm ./OrcaSlicer.app/Contents/Resources
             cp -R "$resources_path" ./OrcaSlicer.app/Contents/Resources
+            # Source maps are only needed by browser devtools, not the shipped WebView.
+            # Keep the source tree intact; remove them from this copied bundle only.
+            find ./OrcaSlicer.app/Contents/Resources/web -type f -name '*.js.map' -delete
             relocate_python_runtime ./OrcaSlicer.app
             # delete .DS_Store file
             find ./OrcaSlicer.app/ -name '.DS_Store' -delete

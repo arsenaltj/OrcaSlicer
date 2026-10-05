@@ -5,6 +5,7 @@
 #include "slic3r/GUI/TextureImportModel.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaWorkspaceAdapter.hpp"
 #include "libslic3r/Format/AssimpImport.hpp"
+#include "libslic3r/Format/OBJ.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/TexturePainting.hpp"
 #include "libslic3r/TriangleMesh.hpp"
@@ -74,6 +75,60 @@ TEST_CASE("Local history import preserves GLB bytes and refuses to overwrite an 
     const auto malformed=f.directory/"broken.glb";{boost::filesystem::ofstream out(malformed);out<<"broken";}
     CHECK_FALSE(archive_local_model(malformed,f.directory/"rejected.glb",error));
     CHECK_FALSE(boost::filesystem::exists(f.directory/"rejected.glb"));CHECK(model_artifact_sha256(source)==hash);
+}
+
+TEST_CASE("Repeated GLB import reuses only a source and OBJ verified in this process", "[ModelArtifact][GlbImportCache]") {
+    Fixture f;
+    const auto source = f.directory / "source.glb";
+    const auto same_bytes = f.directory / "same-bytes.glb";
+    boost::filesystem::copy_file(samples / "textured.glb", source);
+    boost::filesystem::copy_file(source, same_bytes);
+    const auto stale_copy = f.directory / "ai-import" /
+        ("orcaslicer-ai-glb-" + model_artifact_sha256(source) + ".obj");
+    boost::filesystem::create_directories(stale_copy.parent_path());
+    { boost::filesystem::ofstream stale(stale_copy);
+      stale << "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"; }
+    const auto stale_hash = model_artifact_sha256(stale_copy);
+    VerifiedGlbImportCopy verified;
+    boost::filesystem::path output;
+    std::string error;
+    bool reused = true;
+
+    REQUIRE(prepare_glb_obj_import(source, f.directory, verified, output, error, reused));
+    REQUIRE_FALSE(reused);
+    REQUIRE(is_model_artifact(output));
+    CHECK(output != stale_copy);
+    CHECK(model_artifact_sha256(stale_copy) == stale_hash);
+    const auto original_copy = output;
+    const auto original_hash = model_artifact_sha256(output);
+    REQUIRE(prepare_glb_obj_import(same_bytes, f.directory, verified, output, error, reused));
+    REQUIRE(reused);
+    CHECK(output == original_copy);
+
+    // A changed but still valid OBJ must not become the import copy merely
+    // because its filename still contains the source GLB's hash.
+    { boost::filesystem::ofstream changed(original_copy, std::ios::app); changed << "\n# altered cache\n"; }
+    REQUIRE(prepare_glb_obj_import(source, f.directory, verified, output, error, reused));
+    REQUIRE_FALSE(reused);
+    REQUIRE(output != original_copy);
+    CHECK(model_artifact_sha256(original_copy) != original_hash);
+    TriangleMesh restored;
+    ObjInfo colors;
+    REQUIRE(load_model_artifact(output, restored, colors, error));
+    CHECK_FALSE(restored.its.indices.empty());
+
+    boost::filesystem::remove(output);
+    REQUIRE(prepare_glb_obj_import(source, f.directory, verified, output, error, reused));
+    REQUIRE_FALSE(reused);
+    REQUIRE(is_model_artifact(output));
+
+    // Changing source bytes invalidates the content identity even if its
+    // pathname and the previously prepared OBJ remain unchanged.
+    { boost::filesystem::ofstream changed(source, std::ios::binary | std::ios::trunc); changed << "broken"; }
+    REQUIRE_FALSE(prepare_glb_obj_import(source, f.directory, verified, output, error, reused));
+    CHECK_FALSE(reused);
+    CHECK(output.empty());
+    CHECK_FALSE(error.empty());
 }
 
 TEST_CASE("Local OBJ import embeds texture bytes and retains printable size and UV orientation", "[ModelArtifact][LocalModelImport]") {
@@ -356,6 +411,28 @@ TEST_CASE("Local GLB versions preserve geometry colors and the source file", "[M
     REQUIRE_FALSE(write_model_artifact(output, mesh.its, colors.vertex_colors, error));
 }
 
+TEST_CASE("OBJ writer keeps repeated and signed-zero colors byte stable", "[ModelArtifact]") {
+    Fixture f;
+    indexed_triangle_set mesh;
+    mesh.vertices = {Vec3f(0, 0, 0), Vec3f(1, 0, 0), Vec3f(0, 1, 0), Vec3f(0, 0, 1)};
+    mesh.indices = {Vec3i32(0, 1, 2), Vec3i32(0, 2, 3)};
+    const std::vector<RGBA> colors = {{.25f, .5f, .75f, 1.f}, {.25f, .5f, .75f, 1.f},
+                                      {-0.f, 0.f, 1.f, 1.f}, {0.f, 0.f, 1.f, 1.f}};
+    const auto path = f.directory / "colors.obj";
+    std::string error;
+    REQUIRE(write_model_artifact(path, mesh, colors, error));
+    boost::filesystem::ifstream input(path, std::ios::binary);
+    REQUIRE(input.good());
+    const std::string actual((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    CHECK(actual == "# Orca AI model: Z-up millimetres, sRGB vertex colors\n"
+                    "v 0 0 0 0.25 0.5 0.75\n"
+                    "v 1 0 0 0.25 0.5 0.75\n"
+                    "v 0 1 0 -0 0 1\n"
+                    "v 0 0 1 0 0 1\n"
+                    "f 1 2 3\n"
+                    "f 1 3 4\n");
+}
+
 TEST_CASE("Ordinary GLB imports apply material factors to linear vertex colors", "[ModelArtifact]") {
     for (const std::string name : {"vertex-material-color", "ushort-vertex-colors"}) {
         DYNAMIC_SECTION(name) {
@@ -536,7 +613,7 @@ size_t add_float_accessor(GlbFixtureData& fixture, const std::vector<float>& val
     const size_t start = fixture.binary.size(), view = fixture.doc["bufferViews"].size(), accessor = fixture.doc["accessors"].size();
     for (float value : values) { uint32_t bits; std::memcpy(&bits, &value, 4); glb_append_u32(fixture.binary, bits); }
     fixture.doc["bufferViews"].push_back({{"buffer", 0}, {"byteOffset", start}, {"byteLength", values.size() * 4}});
-    fixture.doc["accessors"].push_back({{"bufferView", view}, {"componentType", 5126}, {"count", values.size() / width}, {"type", width == 2 ? "VEC2" : "VEC3"}});
+    fixture.doc["accessors"].push_back({{"bufferView", view}, {"componentType", 5126}, {"count", values.size() / width}, {"type", width == 2 ? "VEC2" : width == 4 ? "VEC4" : "VEC3"}});
     return accessor;
 }
 std::vector<Vec3f> glb_vectors(const GlbFixtureData& fixture, const char* semantic) {
@@ -593,6 +670,240 @@ GlbFixtureData noisy_glb_grid() {
     fixture.doc["meshes"][0]["primitives"][0]["indices"] = indices;
     return fixture;
 }
+}
+
+TEST_CASE("Untextured GLB repeats and changes vertex colors without stale material sampling", "[ModelArtifact]") {
+    Fixture f;
+    auto fixture = read_glb_fixture(samples / "baseline.glb");
+    fixture.doc["materials"][0]["pbrMetallicRoughness"].erase("baseColorTexture");
+    const std::array<std::array<float, 3>, 4> input = {{{.2f, .4f, .6f}, {.2f, .4f, .6f},
+                                                        {.8f, .1f, .3f}, {.8f, .1f, .3f}}};
+    std::vector<float> values;
+    for (const auto& color : input) values.insert(values.end(), color.begin(), color.end());
+    auto& primitive = fixture.doc["meshes"][0]["primitives"][0];
+    primitive["attributes"]["COLOR_0"] = add_float_accessor(fixture, values, 3);
+    const auto positions = glb_vectors(fixture, "POSITION");
+    const auto source = f.directory / "repeated-colors.glb";
+    save_glb_fixture(source, fixture);
+    TriangleMesh mesh; ObjInfo colors; std::string error;
+    REQUIRE(load_model_artifact(source, mesh, colors, error));
+    REQUIRE(mesh.its.vertices.size() == input.size());
+    REQUIRE(colors.vertex_colors.size() == input.size());
+    TexturedMesh native;
+    REQUIRE(load_assimp_textured_model(source.string(), native, &error));
+    REQUIRE(native.precomputed_vertex_colors.size() == native.vertices.size());
+    REQUIRE(native.precomputed_face_colors.size() == native.indices.size());
+    for (size_t i = 0; i < input.size(); ++i) {
+        const Vec3f position(positions[i].x() * 1000.f, -positions[i].z() * 1000.f,
+                             positions[i].y() * 1000.f);
+        const auto found = std::find_if(mesh.its.vertices.begin(), mesh.its.vertices.end(),
+            [&](const Vec3f& v) { return (v - position).norm() < .001f; });
+        REQUIRE(found != mesh.its.vertices.end());
+        const auto& output = colors.vertex_colors[std::distance(mesh.its.vertices.begin(), found)];
+        const auto native_found = std::find_if(native.vertices.begin(), native.vertices.end(), [&](const auto& v) {
+            return (Vec3f(v[0] * 1000.f, -v[2] * 1000.f, v[1] * 1000.f) - position).norm() < .001f;
+        });
+        REQUIRE(native_found != native.vertices.end());
+        const auto& native_color = native.precomputed_vertex_colors[std::distance(native.vertices.begin(), native_found)];
+        for (size_t c = 0; c < 3; ++c) {
+            const float linear = .5f * input[i][c];
+            const float expected = linear <= .0031308f ? linear * 12.92f
+                : 1.055f * std::pow(linear, 1.f / 2.4f) - .055f;
+            CHECK_THAT(output[c], WithinAbs(expected, 1e-6));
+            CHECK_THAT(native_color[c], WithinAbs(expected, 1e-6));
+        }
+    }
+
+    const auto accessor_id = primitive["attributes"]["COLOR_0"].get<size_t>();
+    const auto& accessor = fixture.doc["accessors"][accessor_id];
+    const auto& view = fixture.doc["bufferViews"][accessor["bufferView"].get<size_t>()];
+    const size_t offset = view.value("byteOffset", size_t(0)) + 3 * 12;
+    const uint32_t nan_bits = 0x7fc00000u;
+    std::memcpy(fixture.binary.data() + offset, &nan_bits, sizeof(nan_bits));
+    const auto invalid = f.directory / "late-invalid-color.glb";
+    save_glb_fixture(invalid, fixture);
+    REQUIRE_FALSE(load_model_artifact(invalid, mesh, colors, error));
+    REQUIRE_FALSE(load_assimp_textured_model(invalid.string(), native, &error));
+    CHECK(native.vertices.empty());
+    CHECK(native.precomputed_vertex_colors.empty());
+}
+
+TEST_CASE("Native GLB colors preserve alpha differences and signed zero", "[ModelArtifact]") {
+    Fixture f;
+    auto fixture = read_glb_fixture(samples / "baseline.glb");
+    auto& material = fixture.doc["materials"][0]["pbrMetallicRoughness"];
+    material.erase("baseColorTexture");
+    material["baseColorFactor"] = {.5f, .5f, .5f, .5f};
+    const std::array<RGBA, 4> input = {{{0.f, .25f, .75f, .2f}, {-0.f, .25f, .75f, .2f},
+                                       {.8f, .1f, .3f, .4f}, {.8f, .1f, .3f, .9f}}};
+    std::vector<float> values;
+    for (const auto& color : input) values.insert(values.end(), color.begin(), color.end());
+    auto& primitive = fixture.doc["meshes"][0]["primitives"][0];
+    const size_t accessor_id = add_float_accessor(fixture, values, 4);
+    primitive["attributes"]["COLOR_0"] = accessor_id;
+    const auto positions = glb_vectors(fixture, "POSITION");
+    const auto source = f.directory / "alpha-colors.glb";
+    save_glb_fixture(source, fixture);
+    std::string error;
+    for (bool request_raw : {false, true})
+        for (auto policy : {AssimpRawColorPolicy::Always, AssimpRawColorPolicy::FallbackOnly}) {
+        DYNAMIC_SECTION("raw colors requested " << request_raw << " policy " << int(policy)) {
+            TexturedMesh native; std::vector<RGBA> raw;
+            REQUIRE(load_assimp_textured_model(source.string(), native, &error, request_raw ? &raw : nullptr, policy));
+            REQUIRE(native.precomputed_vertex_colors.size() == native.vertices.size());
+            if (request_raw && policy == AssimpRawColorPolicy::Always)
+                REQUIRE(raw.size() == native.vertices.size());
+            else
+                REQUIRE(raw.empty());
+            TriangleMesh edited; ObjInfo edited_colors;
+            REQUIRE(load_model_artifact(source, edited, edited_colors, error));
+            REQUIRE(edited_colors.vertex_colors.size() == native.vertices.size());
+            for (size_t i = 0; i < input.size(); ++i) {
+                const auto found = std::find_if(native.vertices.begin(), native.vertices.end(), [&](const auto& v) {
+                    return (Vec3f(v[0], v[1], v[2]) - positions[i]).norm() < 1e-6f;
+                });
+                REQUIRE(found != native.vertices.end());
+                const size_t vertex = std::distance(native.vertices.begin(), found);
+                const auto& color = native.precomputed_vertex_colors[vertex];
+                if (!raw.empty()) for (size_t channel = 0; channel < 4; ++channel) {
+                    CHECK_THAT(raw[vertex][channel], WithinAbs(input[i][channel], 1e-6));
+                    CHECK(std::signbit(raw[vertex][channel]) == std::signbit(input[i][channel]));
+                }
+                CHECK_THAT(color[3], WithinAbs(.5f * input[i][3], 1e-6));
+                if (i < 2) CHECK(std::signbit(color[0]) == std::signbit(input[i][0]));
+                const auto& edited_color = edited_colors.vertex_colors[std::distance(native.vertices.begin(), found)];
+                CHECK_THAT(edited_color[3], WithinAbs(1.f, 1e-6));
+                for (size_t c = 0; c < 3; ++c)
+                    CHECK_THAT(edited_color[c], WithinAbs(color[c], 1e-6));
+                if (i < 2) CHECK(std::signbit(edited_color[0]) == std::signbit(input[i][0]));
+            }
+        }
+    }
+    const auto& accessor = fixture.doc["accessors"][accessor_id];
+    const auto& view = fixture.doc["bufferViews"][accessor["bufferView"].get<size_t>()];
+    const size_t offset = view.value("byteOffset", size_t(0)) + 3 * 16 + 3 * sizeof(float);
+    const uint32_t nan_bits = 0x7fc00000u;
+    std::memcpy(fixture.binary.data() + offset, &nan_bits, sizeof(nan_bits));
+    const auto invalid = f.directory / "late-invalid-alpha.glb";
+    save_glb_fixture(invalid, fixture);
+    for (auto policy : {AssimpRawColorPolicy::Always, AssimpRawColorPolicy::FallbackOnly}) {
+        TexturedMesh rejected; std::vector<RGBA> raw {{9.f, 9.f, 9.f, 9.f}};
+        REQUIRE_FALSE(load_assimp_textured_model(invalid.string(), rejected, &error, &raw, policy));
+        CHECK(rejected.precomputed_vertex_colors.empty());
+        CHECK(rejected.vertices.empty());
+    }
+}
+
+TEST_CASE("Fallback raw color requests retain texture and unconverted scene colors", "[ModelArtifact]") {
+    for (const std::string scene : {"textured", "no-colors", "mixed"}) {
+        DYNAMIC_SECTION(scene) {
+            Fixture f;
+            auto fixture = read_glb_fixture(samples / "baseline.glb");
+            auto& primitive = fixture.doc["meshes"][0]["primitives"][0];
+            if (scene == "no-colors") {
+                primitive["attributes"].erase("COLOR_0");
+                fixture.doc["materials"][0]["pbrMetallicRoughness"].erase("baseColorTexture");
+            } else {
+                primitive["attributes"]["COLOR_0"] = add_float_accessor(fixture,
+                    {0.f, .25f, .75f, .2f, -0.f, .25f, .75f, .2f,
+                     .8f, .1f, .3f, .4f, .8f, .1f, .3f, .9f}, 4);
+                if (scene == "mixed") {
+                    auto untextured = fixture.doc["materials"][0];
+                    untextured["pbrMetallicRoughness"].erase("baseColorTexture");
+                    fixture.doc["materials"].push_back(untextured);
+                    auto other = primitive;
+                    other["material"] = 1;
+                    fixture.doc["meshes"][0]["primitives"].push_back(other);
+                }
+            }
+            const auto source = f.directory / (scene + ".glb");
+            save_glb_fixture(source, fixture);
+            TexturedMesh reference, candidate;
+            std::vector<RGBA> always {{9.f, 9.f, 9.f, 9.f}}, fallback = always;
+            std::string error;
+            REQUIRE(load_assimp_textured_model(source.string(), reference, &error, &always));
+            REQUIRE(load_assimp_textured_model(source.string(), candidate, &error, &fallback,
+                AssimpRawColorPolicy::FallbackOnly));
+            REQUIRE(reference.precomputed_vertex_colors.empty());
+            REQUIRE(candidate.precomputed_vertex_colors.empty());
+            REQUIRE(always.size() == reference.vertices.size());
+            REQUIRE(fallback.size() == always.size());
+            CHECK(std::memcmp(always.data(), fallback.data(), always.size() * sizeof(RGBA)) == 0);
+            CHECK(candidate.vertices == reference.vertices);
+            CHECK(candidate.indices == reference.indices);
+            CHECK(candidate.uvs == reference.uvs);
+            CHECK(candidate.material_ids == reference.material_ids);
+            CHECK(candidate.material_texture_map == reference.material_texture_map);
+            TriangleMesh edited; ObjInfo colors;
+            REQUIRE(load_model_artifact(source, edited, colors, error));
+            REQUIRE(colors.vertex_colors.size() == edited.its.vertices.size());
+        }
+    }
+}
+
+TEST_CASE("Untextured GLB primitives retain their own colors when unused source vertices are discarded", "[ModelArtifact]") {
+    Fixture f;
+    auto fixture = read_glb_fixture(samples / "baseline.glb");
+    auto& first_material = fixture.doc["materials"][0]["pbrMetallicRoughness"];
+    first_material.erase("baseColorTexture");
+    first_material["baseColorFactor"] = {.5f, .5f, .5f, .5f};
+    auto second_material = fixture.doc["materials"][0];
+    second_material["pbrMetallicRoughness"]["baseColorFactor"] = {.25f, .25f, .25f, .25f};
+    fixture.doc["materials"].push_back(second_material);
+    auto positions = glb_vectors(fixture, "POSITION");
+    positions.emplace_back(3.f, 4.f, 5.f);
+    std::vector<float> coordinates, colors, normals;
+    for (const auto& position : positions) {
+        for (int c = 0; c < 3; ++c) coordinates.push_back(position[c]);
+        colors.insert(colors.end(), {.8f, .1f, .3f, .4f});
+        normals.insert(normals.end(), {0.f, 0.f, 1.f});
+    }
+    auto& primitives = fixture.doc["meshes"][0]["primitives"];
+    auto primitive = primitives[0];
+    primitive["attributes"].erase("TEXCOORD_0");
+    primitive["attributes"]["POSITION"] = add_float_accessor(fixture, coordinates, 3);
+    primitive["attributes"]["NORMAL"] = add_float_accessor(fixture, normals, 3);
+    primitive["attributes"]["COLOR_0"] = add_float_accessor(fixture, colors, 4);
+    primitive["material"] = 0;
+    primitives[0] = primitive;
+    primitive["material"] = 1;
+    primitives.push_back(primitive);
+    const auto source = f.directory / "unused-multimaterial.glb";
+    save_glb_fixture(source, fixture);
+    TexturedMesh native; TriangleMesh edited; ObjInfo edited_colors; std::string error;
+    REQUIRE(load_assimp_textured_model(source.string(), native, &error));
+    REQUIRE(load_model_artifact(source, edited, edited_colors, error));
+    REQUIRE(edited.its.vertices.size() == native.vertices.size());
+    REQUIRE(edited_colors.vertex_colors.size() == native.vertices.size());
+    std::vector<bool> referenced(native.vertices.size(), false);
+    for (const auto& face : native.indices) for (int vertex : face) referenced[vertex] = true;
+    // Assimp discards the unused source vertex even with explicit normals.
+    // Check that removing it does not blend the two materials' colors.
+    CHECK(std::none_of(native.vertices.begin(), native.vertices.end(), [](const auto& v) {
+        return v[0] == 3.f && v[1] == 4.f && v[2] == 5.f;
+    }));
+    REQUIRE(std::set<int>(native.material_ids.begin(), native.material_ids.end()).size() == 2);
+    REQUIRE(native.precomputed_vertex_colors.size() == native.vertices.size());
+    for (size_t i = 0; i < native.vertices.size(); ++i) {
+        for (size_t c = 0; c < 3; ++c) {
+            const float expected = referenced[i] ? native.precomputed_vertex_colors[i][c] : 1.f;
+            CHECK_THAT(edited_colors.vertex_colors[i][c], WithinAbs(expected, 1e-6));
+        }
+        CHECK_THAT(edited_colors.vertex_colors[i][3], WithinAbs(1.f, 1e-6));
+    }
+}
+
+TEST_CASE("GLB editing rejects a missing declared texture even with vertex colors", "[ModelArtifact]") {
+    Fixture f;
+    auto fixture = read_glb_fixture(samples / "baseline.glb");
+    const std::vector<float> colors(16, .5f);
+    fixture.doc["meshes"][0]["primitives"][0]["attributes"]["COLOR_0"] = add_float_accessor(fixture, colors, 4);
+    fixture.doc["textures"][0]["source"] = 99;
+    const auto source = f.directory / "missing-color-texture.glb";
+    save_glb_fixture(source, fixture);
+    TriangleMesh mesh; ObjInfo info; std::string error;
+    REQUIRE_FALSE(load_model_artifact(source, mesh, info, error));
+    REQUIRE_FALSE(error.empty());
 }
 
 TEST_CASE("GLB geometry edits retain embedded appearance through accessor remapping and node transforms", "[ModelArtifact][GlbGeometry]") {
@@ -875,4 +1186,483 @@ TEST_CASE("GLB regional recoloring preserves unselected colors and the source ed
         }
     }
     REQUIRE(model_artifact_sha256(source) == hash);
+}
+
+TEST_CASE("Repeated GLB materials keep independent texture transforms across faces and loads", "[ModelArtifact]") {
+    Fixture f;
+    auto plain = read_glb_fixture(samples / "textured.glb");
+    const auto rotated = read_glb_fixture(samples / "uv-rotation.glb");
+    plain.doc["materials"].push_back(rotated.doc["materials"][0]);
+    auto primitive = plain.doc["meshes"][0]["primitives"][0];
+    plain.doc["meshes"][0]["primitives"] = GlbJson::array();
+    for (int material : {0, 1, 0, 1}) {
+        primitive["material"] = material;
+        plain.doc["meshes"][0]["primitives"].push_back(primitive);
+    }
+    plain.doc["extensionsUsed"] = {"KHR_texture_transform"};
+    const auto path = f.directory / "repeated.glb";
+    save_glb_fixture(path, plain);
+    // Compare face positions AND unquantized RGBA; palette agreement alone
+    // could conceal a changed texture sample. Face/vertex ordering is incidental.
+    const auto painted_faces = [](const boost::filesystem::path& input) {
+        TriangleMesh mesh; ObjInfo colors; std::string error;
+        const bool loaded = load_model_artifact(input, mesh, colors, error);
+        INFO(error); REQUIRE(loaded);
+        std::multiset<std::array<float, 21>> faces;
+        for (const auto& face : mesh.its.indices) {
+            std::array<std::array<float, 7>, 3> corners;
+            for (int k = 0; k < 3; ++k) {
+                for (int c = 0; c < 3; ++c) corners[k][c] = mesh.its.vertices[face[k]][c];
+                for (int c = 0; c < 4; ++c) corners[k][c+3] = colors.vertex_colors[face[k]][c];
+            }
+            std::sort(corners.begin(), corners.end());
+            std::array<float, 21> record;
+            for (int k = 0; k < 3; ++k) std::copy(corners[k].begin(), corners[k].end(), record.begin()+k*7);
+            faces.insert(record);
+        }
+        return faces;
+    };
+    const auto original = painted_faces(samples / "textured.glb");
+    const auto rotation = painted_faces(samples / "uv-rotation.glb");
+    REQUIRE(original != rotation);
+    auto expected = original;
+    expected.insert(original.begin(), original.end());
+    for (int i = 0; i < 2; ++i) expected.insert(rotation.begin(), rotation.end());
+    CHECK(painted_faces(path) == expected);
+    CHECK(painted_faces(samples / "textured.glb") == original);
+}
+
+TEST_CASE("A later GLB material still rejects an invalid sampler and can be repaired", "[ModelArtifact]") {
+    Fixture f;
+    auto fixture = read_glb_fixture(samples / "multi-material.glb");
+    fixture.doc["samplers"].push_back({{"wrapS", 123}, {"wrapT", 33071}});
+    fixture.doc["textures"].push_back({{"source", 0}, {"sampler", 1}});
+    fixture.doc["materials"][1]["pbrMetallicRoughness"]["baseColorTexture"]["index"] = 1;
+    const auto path = f.directory / "sampler.glb";
+    save_glb_fixture(path, fixture);
+    TriangleMesh mesh; ObjInfo colors; std::string error;
+    CHECK_FALSE(load_model_artifact(path, mesh, colors, error));
+    CHECK(error.find("wrapping mode") != std::string::npos);
+    fixture.doc["samplers"][1]["wrapS"] = 33071;
+    save_glb_fixture(path, fixture);
+    REQUIRE(load_model_artifact(path, mesh, colors, error));
+    CHECK(error.empty());
+}
+
+TEST_CASE("Canceling a partially read OBJ releases its file and discards parsed data", "[ModelArtifact]") {
+    Fixture f;
+    const auto path = f.directory / "partial.obj";
+    {
+        boost::filesystem::ofstream output(path);
+        output << "v 0 0 0 1 0 0\nv 1 0 0 0 1 0\nv 0 1 0 0 0 1\nv 0 0 1 1 1 1\n";
+        for (int i = 0; i < 6000; ++i)
+            output << "f 1 3 2\nf 1 2 4\nf 2 3 4\nf 3 1 4\n";
+        REQUIRE(output.good());
+    }
+    const auto hash = model_artifact_sha256(path);
+    ObjParser::ObjData parsed;
+    REQUIRE_FALSE(ObjParser::objparse(path.string().c_str(), parsed, [&] { return !parsed.coordinates.empty(); }));
+    CHECK(parsed.coordinates.empty());
+    CHECK(parsed.vertices.empty());
+    CHECK_FALSE(parsed.has_vertex_color);
+    // Windows refuses this rename if the parser still holds its FILE handle.
+    const auto renamed = f.directory / "retry.obj";
+    boost::filesystem::rename(path, renamed);
+    CHECK(model_artifact_sha256(renamed) == hash);
+    REQUIRE(ObjParser::objparse(renamed.string().c_str(), parsed));
+    CHECK(parsed.coordinates.size() == 4 * OBJ_VERTEX_LENGTH);
+    CHECK(parsed.has_vertex_color);
+    CHECK(parsed.vertices.size() == 6000 * 4 * ONE_FACE_SIZE);
+    REQUIRE_FALSE(ObjParser::objparse((f.directory / "missing.obj").string().c_str(), parsed, [] { return true; }));
+    CHECK(parsed.coordinates.empty());
+    CHECK(parsed.vertices.empty());
+}
+
+TEST_CASE("Canceled OBJ loading clears old outputs and retries with identical geometry and colors", "[ModelArtifact]") {
+    Fixture f;
+    const auto path = f.directory / "colored.obj";
+    {
+        boost::filesystem::ofstream output(path);
+        output << "v 0 0 0 1 0 0\nv 1 0 0 0 1 0\nv 0 1 0 0 0 1\nv 0 0 1 1 1 1\n";
+        for (int i = 0; i < 6000; ++i)
+            output << "f 1 3 2\nf 1 2 4\nf 2 3 4\nf 3 1 4\n";
+        REQUIRE(output.good());
+    }
+    const auto hash = model_artifact_sha256(path);
+    TriangleMesh reference;
+    ObjInfo reference_colors;
+    std::string error;
+    REQUIRE(load_obj(path.string().c_str(), &reference, reference_colors, error));
+    REQUIRE(reference.its.indices.size() == 24000);
+    REQUIRE(reference_colors.vertex_colors.size() == 4);
+    for (int checkpoint : {1, 5, 12}) {
+        INFO("Cancellation poll " << checkpoint);
+        TriangleMesh mesh = reference;
+        ObjInfo colors = reference_colors;
+        ObjParser::MtlData materials;
+        materials.mtl_orders = {"stale"};
+        int visits = 0;
+        // A one-time request must remain effective after the parser returns.
+        REQUIRE_FALSE(load_obj(path.string().c_str(), &mesh, colors, error, &materials,
+            [&] { return ++visits == checkpoint; }));
+        CHECK(error == "Model loading canceled.");
+        CHECK(mesh.empty());
+        CHECK(colors.vertex_colors.empty());
+        CHECK(colors.face_colors.empty());
+        CHECK(colors.uvs.empty());
+        CHECK(materials.mtl_orders.empty());
+        REQUIRE(load_model_artifact(path, mesh, colors, error, [] { return false; }));
+        CHECK(error.empty());
+        CHECK(mesh.its.vertices == reference.its.vertices);
+        CHECK(mesh.its.indices == reference.its.indices);
+        CHECK(colors.vertex_colors == reference_colors.vertex_colors);
+    }
+    CHECK(model_artifact_sha256(path) == hash);
+}
+
+TEST_CASE("Canceling mixed OBJ faces stops material conversion before all faces finish", "[ModelArtifact]") {
+    Fixture f;
+    const auto path = f.directory / "mixed.obj";
+    {
+        boost::filesystem::ofstream material(f.directory / "paint.mtl");
+        material << "newmtl paint\nKa 0 0 0\nKd 0.2 0.4 0.6\nTr 1\n";
+        REQUIRE(material.good());
+        boost::filesystem::ofstream output(path);
+        output << "mtllib paint.mtl\nusemtl paint\nv 0 0 0\nv 1 0 0\nv 0 1 0\nv 0 0 1\nf 1 2 3 4\n";
+        for (int i = 0; i < 6000; ++i)
+            output << "f 1 3 2\nf 1 2 4\nf 2 3 4\nf 3 1 4\n";
+        REQUIRE(output.good());
+    }
+    TriangleMesh reference;
+    ObjInfo reference_colors;
+    std::string error;
+    REQUIRE(load_obj(path.string().c_str(), &reference, reference_colors, error));
+    REQUIRE(reference_colors.face_colors.size() == 24002);
+    TriangleMesh mesh;
+    ObjInfo colors;
+    size_t converted_before_cancel = 0;
+    REQUIRE_FALSE(load_obj(path.string().c_str(), &mesh, colors, error, nullptr, [&] {
+        if (colors.face_colors.size() < 3000) return false;
+        converted_before_cancel = colors.face_colors.size();
+        return true;
+    }));
+    CHECK(converted_before_cancel >= 3000);
+    CHECK(converted_before_cancel < reference_colors.face_colors.size());
+    CHECK(error == "Model loading canceled.");
+    CHECK(mesh.empty());
+    CHECK(colors.face_colors.empty());
+    REQUIRE(load_model_artifact(path, mesh, colors, error));
+    CHECK(mesh.its.vertices == reference.its.vertices);
+    CHECK(mesh.its.indices == reference.its.indices);
+    CHECK(colors.face_colors == reference_colors.face_colors);
+}
+
+TEST_CASE("Canceled GLB loading discards outputs and preserves the normal retry", "[ModelArtifact]") {
+    const auto path = samples / "baseline.glb";
+    const auto hash = model_artifact_sha256(path);
+    TriangleMesh reference;
+    ObjInfo reference_colors;
+    std::string error;
+    REQUIRE(load_model_artifact(path, reference, reference_colors, error));
+    for (int checkpoint : {1, 3, 5}) {
+        TriangleMesh mesh = reference;
+        ObjInfo colors = reference_colors;
+        int visits = 0;
+        REQUIRE_FALSE(load_model_artifact(path, mesh, colors, error, [&] { return ++visits == checkpoint; }));
+        CHECK(error == "Model loading canceled.");
+        CHECK(mesh.empty());
+        CHECK(colors.vertex_colors.empty());
+        REQUIRE(load_model_artifact(path, mesh, colors, error, [] { return false; }));
+        CHECK(error.empty());
+        CHECK(mesh.its.vertices == reference.its.vertices);
+        CHECK(mesh.its.indices == reference.its.indices);
+        CHECK(colors.vertex_colors == reference_colors.vertex_colors);
+    }
+    CHECK(model_artifact_sha256(path) == hash);
+}
+
+// Opt-in stage probe; this is the adapter's GLB-to-OBJ preparation only,
+// not Plater loading, modal interaction, seam repair or event-loop latency.
+TEST_CASE("A local OBJ reports parser mesh and single-color model loading separately", "[.NativeObjLoadProbe]") {
+    const char* input = std::getenv("ORCASLICER_OBJ_PROBE_FIXTURE");
+    const char* report = std::getenv("ORCASLICER_OBJ_PROBE_REPORT");
+    REQUIRE(input != nullptr);
+    REQUIRE(report != nullptr);
+    REQUIRE_FALSE(boost::filesystem::exists(report));
+    const auto original_hash = model_artifact_sha256(input);
+    REQUIRE_FALSE(original_hash.empty());
+    TriangleMesh reference; ObjInfo reference_colors; std::string error;
+    REQUIRE(load_obj(input, &reference, reference_colors, error));
+    nlohmann::json runs = nlohmann::json::array();
+    auto elapsed = [](const auto& started) {
+        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+    };
+    // File cache is prewarmed. Rotate order to avoid always timing the parser first.
+    for (int run = 0; run < 6; ++run) {
+        for (int step = 0; step < 3; ++step) {
+            const int stage = (run + step) % 3;
+            double ms = 0;
+            if (stage == 0) {
+                ObjParser::ObjData parsed;
+                const auto started = std::chrono::steady_clock::now();
+                const bool ok = ObjParser::objparse(input, parsed);
+                ms = elapsed(started);
+                REQUIRE(ok);
+                REQUIRE(parsed.coordinates.size() / OBJ_VERTEX_LENGTH == reference.its.vertices.size());
+                for (size_t i = 0; i < reference.its.vertices.size(); ++i)
+                    for (size_t axis = 0; axis < 3; ++axis)
+                        if (parsed.coordinates[i * OBJ_VERTEX_LENGTH + axis] != reference.its.vertices[i][axis])
+                            FAIL("Parser changed a vertex coordinate");
+            } else {
+                TriangleMesh mesh; ObjInfo colors; Model model;
+                const auto started = std::chrono::steady_clock::now();
+                if (stage == 1) {
+                    const bool ok = load_obj(input, &mesh, colors, error);
+                    ms = elapsed(started);
+                    REQUIRE(ok);
+                } else {
+                    // Same no-op color callback as the single-color GUI importer.
+                    model = Model::read_from_file(input, nullptr, nullptr, LoadStrategy::LoadModel,
+                        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, 0,
+                        [](ObjDialogInOut&) {});
+                    ms = elapsed(started);
+                    REQUIRE(model.objects.size() == 1);
+                    REQUIRE(model.objects.front()->volumes.size() == 1);
+                }
+                const auto& its = stage == 1 ? mesh.its : model.objects.front()->volumes.front()->mesh().its;
+                REQUIRE(its.vertices.size() == reference.its.vertices.size());
+                // ModelVolume centers local coordinates and retains their offset in its transform.
+                double max_error = 0;
+                for (size_t i = 0; i < its.vertices.size(); ++i) {
+                    const Vec3d point = stage == 1 ? its.vertices[i].cast<double>().eval()
+                        : (model.objects.front()->volumes.front()->get_matrix() * its.vertices[i].cast<double>()).eval();
+                    max_error = std::max(max_error, (point - reference.its.vertices[i].cast<double>()).cwiseAbs().maxCoeff());
+                }
+                CHECK_THAT(max_error, WithinAbs(0.0, 1e-5));
+                REQUIRE(its.indices == reference.its.indices);
+                if (stage == 1) REQUIRE(colors.vertex_colors == reference_colors.vertex_colors);
+            }
+            runs.push_back({{"run", run}, {"stage", stage}, {"milliseconds", ms}});
+        }
+    }
+    REQUIRE(model_artifact_sha256(input) == original_hash);
+    boost::filesystem::ofstream output(report, std::ios::binary);
+    output << nlohmann::json({{"source_sha256", original_hash}, {"runs", runs}}).dump(2);
+    REQUIRE(output.good());
+}
+
+TEST_CASE("Local GLB import preparation reports hash decode and OBJ write separately", "[.ModelImportPreparationProbe]") {
+    const char* input = std::getenv("ORCASLICER_MODEL_ARTIFACT_FIXTURE");
+    const char* report = std::getenv("ORCASLICER_IMPORT_PROBE_REPORT");
+    if (!input || !*input || !report || !*report)
+        SKIP("Set fixture and a new ORCASLICER_IMPORT_PROBE_REPORT path.");
+    REQUIRE_FALSE(boost::filesystem::exists(report));
+    Fixture f;
+    const boost::filesystem::path source(input);
+    REQUIRE(model_artifact_format(source) == "glb");
+    const auto original_hash = model_artifact_sha256(source);
+    REQUIRE_FALSE(original_hash.empty());
+    nlohmann::json runs = nlohmann::json::array();
+    std::string first_output_hash;
+    auto elapsed = [](const auto& begin) {
+        return std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - begin).count();
+    };
+    // Input hashing prewarms the file cache. First run is not disk-cold.
+    for (int run = 0; run < 6; ++run) {
+        auto started = std::chrono::steady_clock::now();
+        const auto hash = model_artifact_sha256(source);
+        const double hash_ms = elapsed(started);
+        REQUIRE(hash == original_hash);
+        TriangleMesh mesh; ObjInfo colors; std::string error;
+        started = std::chrono::steady_clock::now();
+        const bool loaded = load_model_artifact(source, mesh, colors, error);
+        const double decode_ms = elapsed(started);
+        INFO(error);
+        REQUIRE(loaded);
+        const auto output = f.directory / (std::to_string(run) + ".obj");
+        started = std::chrono::steady_clock::now();
+        const bool written = write_model_artifact(output, mesh.its, colors.vertex_colors, error);
+        const double write_ms = elapsed(started);
+        REQUIRE(written);
+        started = std::chrono::steady_clock::now();
+        const bool cached = is_model_artifact(output);
+        const double cache_check_ms = elapsed(started);
+        REQUIRE(cached);
+        started = std::chrono::steady_clock::now();
+        const auto output_hash = model_artifact_sha256(output);
+        const double obj_hash_ms = elapsed(started);
+        REQUIRE_FALSE(output_hash.empty());
+        if (run == 0) first_output_hash = output_hash;
+        REQUIRE(output_hash == first_output_hash);
+        // Verify the conversion once, outside the measured stages.
+        if (run == 0) {
+            TriangleMesh restored; ObjInfo restored_colors;
+            REQUIRE(load_model_artifact(output, restored, restored_colors, error));
+            REQUIRE(restored.its.indices == mesh.its.indices);
+            REQUIRE(restored.its.vertices == mesh.its.vertices);
+            REQUIRE(restored_colors.vertex_colors.size() == colors.vertex_colors.size());
+            for (size_t i = 0; i < colors.vertex_colors.size(); ++i)
+                for (size_t c = 0; c < 3; ++c)
+                    if (std::abs(restored_colors.vertex_colors[i][c] - colors.vertex_colors[i][c]) > 1e-6f)
+                        FAIL("OBJ round trip changed a vertex color");
+        }
+        runs.push_back({{"run", run}, {"hash_ms", hash_ms}, {"decode_ms", decode_ms},
+                        {"write_ms", write_ms}, {"cache_check_ms", cache_check_ms},
+                        {"obj_hash_ms", obj_hash_ms},
+                        {"obj_bytes", boost::filesystem::file_size(output)},
+                        {"vertices", mesh.its.vertices.size()}, {"faces", mesh.its.indices.size()},
+                        {"output_sha256", output_hash}});
+    }
+    REQUIRE(model_artifact_sha256(source) == original_hash);
+    boost::filesystem::ofstream output(report, std::ios::binary);
+    output << nlohmann::json({{"source_sha256", original_hash}, {"runs", runs}}).dump(2);
+    output.close();
+    REQUIRE(output.good());
+}
+
+TEST_CASE("Verified GLB import reports first preparation and reuse separately", "[.GlbImportPreparationProbe]") {
+    const char* input = std::getenv("ORCASLICER_MODEL_ARTIFACT_FIXTURE");
+    const char* report = std::getenv("ORCASLICER_IMPORT_CACHE_PROBE_REPORT");
+    if (!input || !*input || !report || !*report)
+        SKIP("Set fixture and a new ORCASLICER_IMPORT_CACHE_PROBE_REPORT path.");
+    REQUIRE_FALSE(boost::filesystem::exists(report));
+    Fixture f;
+    const boost::filesystem::path source(input);
+    REQUIRE(model_artifact_format(source) == "glb");
+    const auto source_hash = model_artifact_sha256(source);
+    REQUIRE_FALSE(source_hash.empty());
+    nlohmann::json runs = nlohmann::json::array();
+    std::string first_obj_hash;
+    for (int run = 0; run < 5; ++run) {
+        VerifiedGlbImportCopy verified;
+        boost::filesystem::path output;
+        std::string error;
+        bool reused = true;
+        const auto cache_root = f.directory / std::to_string(run);
+        auto started = std::chrono::steady_clock::now();
+        REQUIRE(prepare_glb_obj_import(source, cache_root, verified, output, error, reused));
+        const double first_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - started).count();
+        REQUIRE_FALSE(reused);
+        REQUIRE(verified.source_sha256 == source_hash);
+        REQUIRE(verified.obj_path == output);
+        const auto on_disk_hash = model_artifact_sha256(output);
+        REQUIRE_FALSE(on_disk_hash.empty());
+        REQUIRE(verified.obj_sha256 == on_disk_hash);
+        if (run == 0) first_obj_hash = on_disk_hash;
+        REQUIRE(on_disk_hash == first_obj_hash);
+        const auto original_output = output;
+        started = std::chrono::steady_clock::now();
+        REQUIRE(prepare_glb_obj_import(source, cache_root, verified, output, error, reused));
+        const double reuse_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - started).count();
+        REQUIRE(reused);
+        REQUIRE(output == original_output);
+        runs.push_back({{"run", run}, {"first_ms", first_ms}, {"reuse_ms", reuse_ms},
+                        {"obj_bytes", boost::filesystem::file_size(output)},
+                        {"obj_sha256", on_disk_hash}});
+        REQUIRE(boost::filesystem::remove(output));
+    }
+    REQUIRE(model_artifact_sha256(source) == source_hash);
+    boost::filesystem::ofstream result(report, std::ios::binary);
+    result << nlohmann::json({{"source_sha256", source_hash}, {"runs", runs}}).dump(2);
+    result.close();
+    REQUIRE(result.good());
+}
+
+TEST_CASE("OBJ writing retains nine digit classic locale text across numeric extremes and batches", "[ModelArtifact]") {
+    Fixture f;
+    indexed_triangle_set mesh;
+    std::vector<RGBA> colors;
+    uint32_t random = 1729;
+    const float edges[] = {0.f, -0.f, 1.f, -1.f, 0.0001f, 0.00001f,
+        999999999.f, 1e9f, std::numeric_limits<float>::max(),
+        std::numeric_limits<float>::min(), std::numeric_limits<float>::denorm_min()};
+    for (size_t i = 0; i < 8193; ++i) {
+        Vec3f point;
+        for (int c = 0; c < 3; ++c) {
+            random = random * 1664525u + 1013904223u;
+            float value; std::memcpy(&value, &random, sizeof(value));
+            point[c] = i < std::size(edges) ? edges[i] : (std::isfinite(value) ? value : 0.f);
+        }
+        mesh.vertices.push_back(point);
+        colors.push_back({float(i % 251) / 250.f, .123456789f, .99999994f, 1.f});
+        if (i % 3 == 2) mesh.indices.emplace_back(int(i - 2), int(i - 1), int(i));
+    }
+    // The pre-optimization serializer is an independent compatibility oracle.
+    std::ostringstream expected;
+    expected.imbue(std::locale::classic());
+    expected << "# Orca AI model: Z-up millimetres, sRGB vertex colors\n" << std::setprecision(9);
+    for (size_t i = 0; i < mesh.vertices.size(); ++i) {
+        const auto& v = mesh.vertices[i]; const auto& c = colors[i];
+        expected << "v " << v.x() << ' ' << v.y() << ' ' << v.z() << ' ' << c[0] << ' ' << c[1] << ' ' << c[2] << '\n';
+    }
+    for (const auto& face : mesh.indices)
+        expected << "f " << face[0] + 1 << ' ' << face[1] + 1 << ' ' << face[2] + 1 << '\n';
+    std::string error;
+    const auto path = f.directory / "numbers.obj";
+    REQUIRE(write_model_artifact(path, mesh, colors, error));
+    boost::filesystem::ifstream file(path, std::ios::binary);
+    const std::string actual((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    REQUIRE(actual == expected.str());
+    const auto hash = model_artifact_sha256(path);
+    REQUIRE_FALSE(write_model_artifact(path, mesh, colors, error));
+    REQUIRE(model_artifact_sha256(path) == hash);
+    REQUIRE_FALSE(boost::filesystem::exists(path.string() + ".partial"));
+}
+
+TEST_CASE("Artifact file hashes preserve binary bytes across stream boundaries and missing files", "[ModelArtifact]")
+{
+    Fixture fixture;
+    const auto file=fixture.directory/boost::filesystem::path(L"\u6a21\u578b-\u6307\u7eb9.bin");
+    const std::vector<std::pair<size_t,std::string>> expected {
+        {0, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+        {1, "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d"},
+        {55, "5d05a4435b96f43e53e5a582bbb0b8d840a71c023e7468d6604d1c9ae6511c4c"},
+        {56, "0851bc0b733318bd14db8098dec9a591c02ee1e72295d3ba54560e56342430fb"},
+        {64, "949f78c7321c5fa8a90f3d236c471950df72d869abc1d36e985cfce9a3ac98b9"},
+        {65535, "7295617328ad381348e633b2e223536068c1ea4ea2c1e3b63fb73acef69a50b4"},
+        {65536, "0b1920fd5be0f3e4af437b7fa14d7053c9b5a43b94942bdf206c6d3cee2e5a03"},
+        {65537, "bf3f784409bf5d96eca02467657fcf888a9c2643991b31ec2169a96fae3cf4d4"},
+        {131073, "dec259f4fd5678fed4e56bb51b0acedcf2c0573a900fa2086a5f2d779f0bdb46"}
+    };
+    std::string data(131073,'\0');
+    for(size_t i=0;i<data.size();++i)data[i]=char((i*131u+(i>>8))&255u);
+    for(const auto& sample:expected) {
+        DYNAMIC_SECTION(sample.first) {
+            {boost::filesystem::ofstream output(file,std::ios::binary);output.write(data.data(),sample.first);output.close();REQUIRE(output.good());}
+            CHECK(model_artifact_sha256(file)==sample.second);
+            CHECK(boost::filesystem::file_size(file)==sample.first);
+            boost::filesystem::ifstream input(file,std::ios::binary);
+            const std::string contents((std::istreambuf_iterator<char>(input)),{});
+            CHECK(contents==data.substr(0,sample.first));
+        }
+    }
+    CHECK(model_artifact_sha256(fixture.directory/"missing.bin").empty());
+}
+
+TEST_CASE("A local artifact reports full file hashing without modifying its source", "[.ArtifactFileHashProbe]")
+{
+    const auto input=std::getenv("ORCA_HASH_SOURCE"),report=std::getenv("ORCA_HASH_REPORT");
+    if(!input || !*input || !report || !*report)SKIP("Set a local source and fresh hash report path.");
+    REQUIRE_FALSE(boost::filesystem::exists(report));
+    const boost::filesystem::path source(input);
+    const auto expected=model_artifact_sha256(source);
+    REQUIRE_FALSE(expected.empty());
+    const auto bytes=boost::filesystem::file_size(source);
+    nlohmann::json samples=nlohmann::json::array();
+    for(int round=0;round<6;++round) {
+        const auto start=std::chrono::steady_clock::now();
+        const auto actual=model_artifact_sha256(source);
+        const auto finish=std::chrono::steady_clock::now();
+        REQUIRE(actual==expected);
+        samples.push_back({{"round",round},{"elapsed_ms",std::chrono::duration<double,std::milli>(finish-start).count()},{"sha256",actual}});
+    }
+    REQUIRE(boost::filesystem::file_size(source)==bytes);
+    REQUIRE(model_artifact_sha256(source)==expected);
+    boost::filesystem::ofstream output(report,std::ios::binary);
+    output<<nlohmann::json{{"source_sha256",expected},{"bytes",bytes},{"samples",samples},
+        {"scope","Full-file hash CPU/IO wall time; prewarmed by identity check, no GUI/speedup/working-set claim"}}.dump(2);
+    output.close();REQUIRE(output.good());
 }

@@ -101,14 +101,8 @@ void GLModel::Geometry::add_vertex(const Vec3f& position, const Vec3f& normal)
 void GLModel::Geometry::add_vertex(const Vec3f& position, const Vec3f& normal, const Vec2f& tex_coord)
 {
     assert(format.vertex_layout == EVertexLayout::P3N3T2);
-    vertices.emplace_back(position.x());
-    vertices.emplace_back(position.y());
-    vertices.emplace_back(position.z());
-    vertices.emplace_back(normal.x());
-    vertices.emplace_back(normal.y());
-    vertices.emplace_back(normal.z());
-    vertices.emplace_back(tex_coord.x());
-    vertices.emplace_back(tex_coord.y());
+    vertices.insert(vertices.end(), {position.x(), position.y(), position.z(),
+        normal.x(), normal.y(), normal.z(), tex_coord.x(), tex_coord.y()});
 }
 
 void GLModel::Geometry::add_vertex(const Vec4f& position)
@@ -133,9 +127,7 @@ void GLModel::Geometry::add_line(unsigned int id1, unsigned int id2)
 
 void GLModel::Geometry::add_triangle(unsigned int id1, unsigned int id2, unsigned int id3)
 {
-    indices.emplace_back(id1);
-    indices.emplace_back(id2);
-    indices.emplace_back(id3);
+    indices.insert(indices.end(), {id1, id2, id3});
 }
 
 Vec2f GLModel::Geometry::extract_position_2(size_t id) const
@@ -406,31 +398,68 @@ bool GLModel::Geometry::has_tex_coord(const Format& format)
     };
 }
 
+namespace {
+BoundingBoxf3 geometry_bounds(const GLModel::Geometry& geometry, const std::function<bool()>& canceled = {})
+{
+    using Geometry = GLModel::Geometry;
+    BoundingBoxf3 bounds;
+    // Layout and count are invariant while scanning the installed geometry.
+    // Include every stored position in its original order, even unindexed ones.
+    const size_t count = geometry.vertices_count();
+    const size_t stride = Geometry::vertex_stride_floats(geometry.format);
+    const size_t dimensions = Geometry::position_stride_floats(geometry.format);
+    const size_t offset = Geometry::position_offset_floats(geometry.format);
+    if (dimensions == 3) {
+        for (size_t begin = 0; begin < count; begin += 4096) {
+            if (canceled && canceled()) throw std::runtime_error("Render geometry preparation cancelled.");
+            const size_t end = std::min(count, begin + 4096);
+            for (size_t i = begin; i < end; ++i) {
+                const float* position = geometry.vertices.data() + i * stride + offset;
+                bounds.merge(Vec3f(position[0], position[1], position[2]).cast<double>());
+            }
+        }
+    } else if (dimensions == 2) {
+        for (size_t begin = 0; begin < count; begin += 4096) {
+            if (canceled && canceled()) throw std::runtime_error("Render geometry preparation cancelled.");
+            const size_t end = std::min(count, begin + 4096);
+            for (size_t i = begin; i < end; ++i) {
+                const float* position = geometry.vertices.data() + i * stride + offset;
+                bounds.merge(Vec3f(position[0], position[1], 0.0f).cast<double>());
+            }
+        }
+    }
+    if (canceled && canceled()) throw std::runtime_error("Render geometry preparation cancelled.");
+    return bounds;
+}
+}
+
 void GLModel::init_from(Geometry&& data)
 {
-    if (is_initialized()) {
+    if (is_initialized() || data.vertices.empty() || data.indices.empty()) {
         // call reset() if you want to reuse this model
         assert(false);
         return;
     }
+    m_render_data.geometry = std::move(data);
+    m_bounding_box = geometry_bounds(m_render_data.geometry);
+}
 
-    if (data.vertices.empty() || data.indices.empty()) {
+GLModel::PreparedGeometry GLModel::prepare_geometry(Geometry&& data, const std::function<bool()>& canceled)
+{
+    if (data.vertices.empty() || data.indices.empty())
+        throw std::invalid_argument("Cannot prepare empty render geometry.");
+    const auto bounds = geometry_bounds(data, canceled);
+    return PreparedGeometry(std::move(data), bounds);
+}
+
+void GLModel::init_from(PreparedGeometry&& data)
+{
+    if (is_initialized() || data.m_geometry.vertices.empty() || data.m_geometry.indices.empty()) {
         assert(false);
         return;
     }
-
-    m_render_data.geometry = std::move(data);
-
-    // update bounding box
-    for (size_t i = 0; i < vertices_count(); ++i) {
-        const size_t position_stride = Geometry::position_stride_floats(data.format);
-        if (position_stride == 3)
-            m_bounding_box.merge(m_render_data.geometry.extract_position_3(i).cast<double>());
-        else if (position_stride == 2) {
-            const Vec2f position = m_render_data.geometry.extract_position_2(i);
-            m_bounding_box.merge(Vec3f(position.x(), position.y(), 0.0f).cast<double>());
-        }
-    }
+    m_render_data.geometry = std::move(data.m_geometry);
+    m_bounding_box = data.m_bounds;
 }
 
 void GLModel::init_from(const TriangleMesh& mesh)

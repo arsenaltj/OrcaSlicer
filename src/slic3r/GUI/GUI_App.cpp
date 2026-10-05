@@ -1061,6 +1061,70 @@ void GUI_App::advance_startup(wxTimerEvent&)
             mainframe->Refresh();
             update_publish_status();
             log_startup_timing("workspace_revealed");
+            // Event delivery gaps include OS scheduling and nested/modal loops;
+            // they are not frame time or proof of uninterrupted computation.
+            // Keep this off for normal users and correlate with operation logs.
+            {
+                wxString trace;
+                if (wxGetEnv("ORCASLICER_UI_LATENCY_TRACE", &trace) && trace == "1") {
+                    // Keep the default self-owner: application-wide timer
+                    // handlers must not intercept diagnostic events.
+                    // Running time of this UI thread, excluding background workers.
+                    // An unavailable counter stays explicit; a gap is not all CPU time.
+                    const auto read_thread_cpu_ms = []() -> double {
+#ifdef __WXMSW__
+                        FILETIME created, exited, kernel, user;
+                        if (!::GetThreadTimes(::GetCurrentThread(), &created, &exited, &kernel, &user))
+                            return -1.0;
+                        ULARGE_INTEGER kernel_ticks {}, user_ticks {};
+                        kernel_ticks.LowPart = kernel.dwLowDateTime;
+                        kernel_ticks.HighPart = kernel.dwHighDateTime;
+                        user_ticks.LowPart = user.dwLowDateTime;
+                        user_ticks.HighPart = user.dwHighDateTime;
+                        return double(kernel_ticks.QuadPart + user_ticks.QuadPart) / 10000.0;
+#else
+                        return -1.0;
+#endif
+                    };
+                    const auto now = std::chrono::steady_clock::now();
+                    const double initial_cpu_ms = read_thread_cpu_ms();
+                    m_ui_latency_timer.Bind(wxEVT_TIMER, [this, read_thread_cpu_ms, last = now, window_start = now,
+                                      last_cpu_ms = initial_cpu_ms, window_cpu_ms = initial_cpu_ms,
+                                      max_gap_ms = 0.0, ticks = size_t(0)](wxTimerEvent&) mutable {
+                        if (is_closing()) { m_ui_latency_timer.Stop(); return; }
+                        const auto current = std::chrono::steady_clock::now();
+                        const double current_cpu_ms = read_thread_cpu_ms();
+                        const double gap_cpu_ms = last_cpu_ms >= 0.0 && current_cpu_ms >= last_cpu_ms
+                            ? current_cpu_ms - last_cpu_ms : -1.0;
+                        const double gap_ms = std::chrono::duration<double, std::milli>(current - last).count();
+                        last = current;
+                        last_cpu_ms = current_cpu_ms;
+                        max_gap_ms = std::max(max_gap_ms, gap_ms);
+                        ++ticks;
+                        if (gap_ms >= 150.0)
+                            BOOST_LOG_TRIVIAL(info) << "UI response probe: gap_ms=" << gap_ms
+                                << ", nominal_interval_ms=50, thread_cpu_ms=" << gap_cpu_ms
+                                << ", thread_cpu_available=" << (gap_cpu_ms >= 0.0);
+                        const double window_ms = std::chrono::duration<double, std::milli>(current - window_start).count();
+                        if (window_ms >= 5000.0) {
+                            const double window_thread_cpu_ms = window_cpu_ms >= 0.0 && current_cpu_ms >= window_cpu_ms
+                                ? current_cpu_ms - window_cpu_ms : -1.0;
+                            BOOST_LOG_TRIVIAL(info) << "UI response probe: window_ms=" << window_ms
+                                << ", ticks=" << ticks << ", max_gap_ms=" << max_gap_ms
+                                << ", window_thread_cpu_ms=" << window_thread_cpu_ms
+                                << ", thread_cpu_available=" << (window_thread_cpu_ms >= 0.0);
+                            window_start = current;
+                            window_cpu_ms = current_cpu_ms;
+                            max_gap_ms = 0.0;
+                            ticks = 0;
+                        }
+                    }, m_ui_latency_timer.GetId());
+                    if (m_ui_latency_timer.Start(50))
+                        BOOST_LOG_TRIVIAL(info) << "UI response probe: enabled, nominal_interval_ms=50";
+                    else
+                        BOOST_LOG_TRIVIAL(warning) << "UI response probe: timer start failed";
+                }
+            }
             break;
         default:
             break;
@@ -1361,6 +1425,7 @@ void GUI_App::shutdown()
     BOOST_LOG_TRIVIAL(info) << "GUI_App::shutdown enter";
     m_startup_timer.Stop();
     m_startup_stage = StartupStage::Closing;
+    m_ui_latency_timer.Stop();
 
 	if (m_removable_drive_manager) {
 		removable_drive_manager()->shutdown();
@@ -2933,6 +2998,7 @@ bool GUI_App::OnInit()
 
 int GUI_App::OnExit()
 {
+    m_ui_latency_timer.Stop();
     stop_http_server();
     stop_sync_user_preset();
 

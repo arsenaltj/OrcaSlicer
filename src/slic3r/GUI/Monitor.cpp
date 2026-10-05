@@ -20,6 +20,8 @@
 #include <wx/dataview.h>
 #include <wx/tglbtn.h>
 
+#include <chrono>
+
 #include "wxExtensions.hpp"
 #include "GUI_App.hpp"
 #include "GUI_ObjectList.hpp"
@@ -168,6 +170,17 @@ void MonitorPanel::init_timer()
 
 void MonitorPanel::init_tabpanel()
 {
+    wxString startup_trace_value;
+    const bool startup_trace = wxGetEnv("ORCASLICER_STARTUP_TRACE", &startup_trace_value) && startup_trace_value == "1";
+    auto stage_started = std::chrono::steady_clock::now();
+    auto trace_stage = [&](const char* stage) {
+        if (!startup_trace)
+            return;
+        const auto now = std::chrono::steady_clock::now();
+        BOOST_LOG_TRIVIAL(info) << "Startup detail: monitor_" << stage << " elapsed_ms="
+            << std::chrono::duration_cast<std::chrono::milliseconds>(now - stage_started).count();
+        stage_started = now;
+    };
     m_side_tools = new SideTools(this, wxID_ANY);
     wxBoxSizer* sizer_side_tools = new wxBoxSizer(wxVERTICAL);
     sizer_side_tools->Add(m_side_tools, 1, wxEXPAND, 0);
@@ -186,16 +199,20 @@ void MonitorPanel::init_tabpanel()
 
     //m_status_add_machine_panel = new AddMachinePanel(m_tabpanel);
     m_status_info_panel        = new StatusPanel(m_tabpanel);
+    trace_stage("status_panel");
     m_tabpanel->AddPage(m_status_info_panel, _L("Status"), true);
 
     m_media_file_panel = new MediaFilePanel(m_tabpanel);
+    trace_stage("media_file_panel");
     m_tabpanel->AddPage(m_media_file_panel, _L("Storage"), false);
     //m_tabpanel->AddPage(m_media_file_panel, _L("Internal Storage"), false);
 
     m_upgrade_panel = new UpgradePanel(m_tabpanel);
+    trace_stage("upgrade_panel");
     m_tabpanel->AddPage(m_upgrade_panel, _L_CONTEXT(L_CONTEXT("Update", "Firmware"), "Firmware"), false);
 
     m_hms_panel = new HMSPanel(m_tabpanel);
+    trace_stage("hms_panel");
     m_tabpanel->AddPage(m_hms_panel, _L("Assistant(HMS)"),    false);
 
     std::string network_ver = Slic3r::NetworkAgent::get_version();
@@ -205,6 +222,7 @@ void MonitorPanel::init_tabpanel()
 
     m_initialized = true;
     show_status((int)MonitorStatus::MONITOR_NO_PRINTER);
+    trace_stage("finish");
 }
 
 void MonitorPanel::set_default()

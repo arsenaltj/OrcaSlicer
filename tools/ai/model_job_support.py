@@ -1,9 +1,57 @@
 from __future__ import annotations
 
+import math
+import re
 from pathlib import Path
 from typing import Any
 
 from model_input_image_quality import ModelInputImageQualityError, assess_model_input_image
+
+MAX_MODEL_FACES = 2000000
+MIN_MODEL_FACE_RATIO = 0.90
+MAX_MODEL_FACE_RATIO = 1.25
+
+
+def validate_face_target(face_count: int, face_limit: int) -> str:
+    maximum = min(MAX_MODEL_FACES, math.ceil(face_limit * MAX_MODEL_FACE_RATIO))
+    if face_count > maximum:
+        return (
+            f"The generated OBJ contains {face_count} triangles; the {face_limit}-triangle target allows at most {maximum}."
+        )
+    return ""
+
+
+def legacy_face_error_is_recoverable(message: str, face_limit: int) -> bool:
+    match = re.search(r"contains\s+(\d+)\s+triangles;\s+at least\s+(\d+)\s+are required", message, re.IGNORECASE)
+    if match is None:
+        return False
+    face_count = int(match.group(1))
+    minimum = math.floor(face_limit * MIN_MODEL_FACE_RATIO)
+    maximum = min(MAX_MODEL_FACES, math.ceil(face_limit * MAX_MODEL_FACE_RATIO))
+    return minimum <= face_count <= maximum
+
+
+def stale_high_quality_face_gate_is_recoverable(message: str, face_limit: int) -> bool:
+    normalized = message.strip().lower()
+    return (
+        face_limit > 1_000_000
+        and face_limit <= MAX_MODEL_FACES
+        and "structural quality gate" in normalized
+        and "too_many_faces" in normalized
+    )
+
+
+def mark_prepaid_multiview_retry(job: Any, message: str, reason: str) -> None:
+    """Keep an approved preview retryable without creating a provider task."""
+    job.state = "awaiting_confirmation"
+    job.phase = "multiview_retry"
+    job.message = message
+    job.progress = max(17, job.progress)
+    job.image_metrics["multiview_retry"] = {
+        "required": True,
+        "reason": reason,
+        "paid_task_created": False,
+    }
 
 
 def image_type(data: bytes) -> str | None:

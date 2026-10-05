@@ -73,6 +73,8 @@
 #include <float.h>
 #include <algorithm>
 #include <cmath>
+#include <chrono>
+#include <cstdlib>
 
 #ifndef IMGUI_DEFINE_MATH_OPERATORS
 #define IMGUI_DEFINE_MATH_OPERATORS
@@ -1965,6 +1967,22 @@ void GLCanvas3D::render(bool only_init)
     if (!m_enable_render)
         return;
 
+    const char* first_render_trace = std::getenv("ORCASLICER_FIRST_RENDER_TRACE");
+    const bool trace_first_render = m_rendered_frames == 0 && m_canvas_type == ECanvasType::CanvasView3D &&
+        first_render_trace != nullptr && first_render_trace[0] == '1' && first_render_trace[1] == '\0';
+    using RenderClock = std::chrono::steady_clock;
+    const auto render_started = RenderClock::now();
+    auto last_render_stage = render_started;
+    auto trace_stage = [&](const char* stage) {
+        if (!trace_first_render)
+            return;
+        const auto now = RenderClock::now();
+        BOOST_LOG_TRIVIAL(info) << "First render timing: stage=" << stage
+            << ", elapsed_ms=" << std::chrono::duration<double, std::milli>(now - last_render_stage).count()
+            << ", total_ms=" << std::chrono::duration<double, std::milli>(now - render_started).count();
+        last_render_stage = now;
+    };
+
     // ensures this canvas is current and initialized
     if (!_is_shown_on_screen() || !_set_current() || !wxGetApp().init_opengl())
         return;
@@ -1993,6 +2011,8 @@ void GLCanvas3D::render(bool only_init)
 
     if (only_init)
         return;
+
+    trace_stage("preflight");
 
 #if ENABLE_ENVIRONMENT_MAP
     if (wxGetApp().is_editor())
@@ -2028,6 +2048,8 @@ void GLCanvas3D::render(bool only_init)
 
     camera.apply_projection(_max_bounding_box(true, true, true));
 
+    trace_stage("camera");
+
     wxGetApp().imgui()->new_frame();
 
     if (m_picking_enabled) {
@@ -2049,12 +2071,16 @@ void GLCanvas3D::render(bool only_init)
         }
     }
 
+    trace_stage("picking");
+
     // draw scene
     glsafe(::glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT));
     // Invalidate the shadow map each frame; only the View3D path below rebuilds it. This keeps
     // the Preview / Assemble canvases from sampling a stale map with an outdated light matrix.
     m_shadow_map_valid = false;
     _render_background();
+
+    trace_stage("background");
 
     //BBS add partplater rendering logic
     bool only_current = false, only_body = false, no_partplate = false;
@@ -2074,17 +2100,22 @@ void GLCanvas3D::render(bool only_init)
     if (m_canvas_type == ECanvasType::CanvasView3D) {
         if (!no_partplate)
             _render_bed(camera.get_view_matrix(), camera.get_projection_matrix(), !camera.is_looking_downward(), m_show_world_axes);
+        trace_stage("bed");
         if (!no_partplate) //BBS: add outline logic
             _render_platelist(camera.get_view_matrix(), camera.get_projection_matrix(), !camera.is_looking_downward(), only_current, only_body, hover_id, true, show_grid);
+
+        trace_stage("plates");
         
         //BBS: add outline logic
         // Depth pass for object-on-object and self shadows; consumed by the gouraud shader below.
         _render_shadows(camera.get_view_matrix(), camera.get_projection_matrix());
+        trace_stage("shadows");
         _render_objects(GLVolumeCollection::ERenderType::Opaque, !m_gizmos.is_running());
         _render_sla_slices();
         _render_selection();
         _render_objects(GLVolumeCollection::ERenderType::Transparent, !m_gizmos.is_running());
         _render_wireframe_overlay();
+        trace_stage("objects_and_selection");
     }
     /* preview render */
     else if (m_canvas_type == ECanvasType::CanvasPreview && m_render_preview) {
@@ -2149,6 +2180,8 @@ void GLCanvas3D::render(bool only_init)
 
     // draw overlays
     _render_overlays();
+
+    trace_stage("gizmos_and_overlays");
 
     const int current_fps = m_render_stats.get_fps_and_reset_if_needed();
     if (_is_fps_overlay_enabled())
@@ -2240,6 +2273,8 @@ void GLCanvas3D::render(bool only_init)
 
     wxGetApp().imgui()->render();
 
+    trace_stage("imgui_draw");
+
     // On Wayland, eglSwapBuffers blocks when the canvas is hidden or
     // occluded. Skip the swap to avoid stalling the render loop.
     if (m_canvas->IsShownOnScreen()) {
@@ -2247,6 +2282,7 @@ void GLCanvas3D::render(bool only_init)
         ++m_rendered_frames;
         m_render_stats.increment_fps_counter();
     }
+    trace_stage("swap");
 }
 
 void GLCanvas3D::render_thumbnail(ThumbnailData &         thumbnail_data,
@@ -2468,6 +2504,28 @@ void GLCanvas3D::mirror_selection(Axis axis)
 // 5) Out of bed collision status & message overlay (texture)
 void GLCanvas3D::reload_scene(bool refresh_immediately, bool force_full_scene_refresh)
 {
+    // Default-off wall time, including any nested rendering or event handling.
+    struct ReloadTiming {
+        using Clock = std::chrono::steady_clock;
+        bool enabled;
+        int canvas;
+        bool immediate, full;
+        Clock::time_point last;
+        void step(const char* phase) {
+            if (!enabled) return;
+            const auto now = Clock::now();
+            BOOST_LOG_TRIVIAL(info) << "Scene reload timing: canvas=" << canvas << ", phase=" << phase
+                << ", elapsed_ms=" << std::chrono::duration<double, std::milli>(now - last).count()
+                << ", immediate=" << immediate << ", full=" << full
+                << ", main_thread=" << (wxIsMainThread() ? "true" : "false");
+            last = Clock::now();
+        }
+        ~ReloadTiming() { step("remaining"); }
+    };
+    const char* timing_env = std::getenv("ORCASLICER_SCENE_TIMING");
+    const bool timing_enabled = timing_env && std::string(timing_env) == "1";
+    ReloadTiming timing { timing_enabled, int(m_canvas_type), refresh_immediately, force_full_scene_refresh,
+        timing_enabled ? ReloadTiming::Clock::now() : ReloadTiming::Clock::time_point{} };
     if (m_canvas == nullptr || m_config == nullptr || m_model == nullptr)
         return;
 
@@ -2590,6 +2648,7 @@ void GLCanvas3D::reload_scene(bool refresh_immediately, bool force_full_scene_re
     std::sort(model_volume_state.begin(), model_volume_state.end(), model_volume_state_lower);
     std::sort(aux_volume_state.begin(), aux_volume_state.end(), model_volume_state_lower);
 
+    timing.step("context_and_volume_state");
     // BBS: normalize painting data with current filament count
     for (unsigned int obj_idx = 0; obj_idx < (unsigned int)m_model->objects.size(); ++obj_idx) {
         const ModelObject& model_object = *m_model->objects[obj_idx];
@@ -2603,6 +2662,7 @@ void GLCanvas3D::reload_scene(bool refresh_immediately, bool force_full_scene_re
         }
     }
 
+    timing.step("painting_normalization");
     // Release all ModelVolume based GLVolumes not found in the current Model. Find the GLVolume of a hollowed mesh.
     for (size_t volume_id = 0; volume_id < m_volumes.volumes.size(); ++volume_id) {
         GLVolume* volume = m_volumes.volumes[volume_id];
@@ -2730,6 +2790,7 @@ void GLCanvas3D::reload_scene(bool refresh_immediately, bool force_full_scene_re
                 update_object_list = true;
         }
     }
+    timing.step("existing_volumes");
     m_volumes.volumes = std::move(glvolumes_new);
     for (unsigned int obj_idx = 0; obj_idx < (unsigned int)m_model->objects.size(); ++ obj_idx) {
         const ModelObject &model_object = *m_model->objects[obj_idx];
@@ -2767,6 +2828,7 @@ void GLCanvas3D::reload_scene(bool refresh_immediately, bool force_full_scene_re
             }
         }
     }
+    timing.step("new_model_volumes");
     if (printer_technology == ptSLA) {
         size_t idx = 0;
         const SLAPrint *sla_print = this->sla_print();
@@ -2929,6 +2991,7 @@ void GLCanvas3D::reload_scene(bool refresh_immediately, bool force_full_scene_re
         }
     }
 
+    timing.step("auxiliary_volumes");
     update_volumes_colors_by_extruder();
 	// Update selection indices based on the old/new GLVolumeCollection.
     if (m_selection.get_mode() == Selection::Instance)
@@ -2948,6 +3011,7 @@ void GLCanvas3D::reload_scene(bool refresh_immediately, bool force_full_scene_re
     if (update_object_list)
         post_event(SimpleEvent(EVT_GLCANVAS_OBJECT_SELECT));
 
+    timing.step("selection_and_gizmos");
     //BBS:exclude the assmble view
     if (m_canvas_type != ECanvasType::CanvasAssembleView) {
         _update_slice_error_status();
@@ -3030,6 +3094,7 @@ void GLCanvas3D::reload_scene(bool refresh_immediately, bool force_full_scene_re
         }
     }
 
+    timing.step("print_volume_checks");
     refresh_camera_scene_box();
 
     if (m_selection.is_empty()) {

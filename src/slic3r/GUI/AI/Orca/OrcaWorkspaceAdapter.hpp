@@ -2,6 +2,7 @@
 
 #include "slic3r/AI/Contracts/IModelArtifactConsumer.hpp"
 #include "slic3r/AI/Contracts/IPrintablePaletteProvider.hpp"
+#include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 
 #include <functional>
 
@@ -29,6 +30,7 @@ public:
 private:
     Plater*           m_plater { nullptr };
     ImportSucceededFn m_on_import_succeeded;
+    AI::VerifiedGlbImportCopy m_verified_glb_import;
 };
 
 } // namespace Slic3r::GUI

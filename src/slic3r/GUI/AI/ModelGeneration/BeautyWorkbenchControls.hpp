@@ -11,10 +11,12 @@
 #include <wx/timer.h>
 #include <thread>
 #include <atomic>
+#include <functional>
 #include <optional>
-#include <mutex>
-#include <condition_variable>
-#include <deque>
+#include "BeautyDraftQueue.hpp"
+#include "BeautyPreparationTicket.hpp"
+#include "BeautySourceSnapshot.hpp"
+#include "ModelPreviewPuzzle.hpp"
 
 class wxChoice; class wxCheckBox; class wxSlider; class wxStaticText; class wxButton;
 namespace Slic3r::GUI {
@@ -28,18 +30,27 @@ public:
     bool has_changes() const {return dirty;}
     bool ready() const {return bool(surface) && !failed && !task;}
     void mark_saved();
+    struct SaveCapture {
+        std::function<nlohmann::json()> prepare_record;
+        std::shared_ptr<const AI::BeautySurface> surface;
+    };
+    SaveCapture capture_save() const;
     void prepare_options(AI::ModelFinishingOptions&, const AI::SurfaceSelectionPersistence::SelectionState&);
     static nlohmann::json accepted_document(const AI::ModelFinishingOptions&, const std::string& output_geometry);
     static void prepare_import(const boost::filesystem::path&, AI::ModelImportRequest&);
     std::function<void(const std::string&)> add_native_mixed_filament;
 private:
     static constexpr uint32_t none=UINT32_MAX;
-    struct Preparation {
-        std::atomic<bool> canceled {false}, done {false};
+    struct Preparation : BeautyPreparationTicket {
+        Preparation(boost::filesystem::path model,std::string geometry_id,BeautySourceSnapshot geometry)
+            : BeautyPreparationTicket(std::move(model),std::move(geometry_id)),source_geometry(std::move(geometry)) {}
+        const BeautySourceSnapshot source_geometry;
+        std::atomic<bool> done {false};
         std::atomic<int> stage {0};
         std::shared_ptr<const AI::BeautySurface> surface;
         AI::BeautyDocument document;
         AI::BeautyPuzzle puzzle;
+        std::optional<ModelPreviewPuzzle::Prepared> display;
         AI::BeautyPuzzle saved_puzzle;
         std::optional<AI::BeautyEditRegions> edit_regions;
         std::optional<AI::BeautyEditRegions> saved_edit_regions;
@@ -50,6 +61,7 @@ private:
         std::vector<LocalSemanticEvidence::EyeDetail> eye_shapes;
         std::string base_file,base_hash,error,notice;
         nlohmann::json recognition_attempt;
+        nlohmann::json recognition_record;
         AI::BeautyPuzzle before_upgrade;
         bool upgraded=false;
         bool draft=false,regroup=false,guidance_only=false,guidance_ready=false;
@@ -71,21 +83,7 @@ private:
     wxButton* focus_button;
     wxTimer timer;
     std::thread worker;
-    struct DraftRequest {
-        boost::filesystem::path model;
-        nlohmann::json record;
-        uint64_t generation=0;
-        bool remove=false;
-        bool clear_legacy=false;
-        bool durable_cleanup=false;
-    };
-    std::thread draft_worker;
-    std::mutex draft_mutex;
-    std::condition_variable draft_cv;
-    std::optional<DraftRequest> draft_pending;
-    std::deque<DraftRequest> draft_cleanup_pending;
-    std::atomic<bool> draft_cancel{false};
-    std::atomic<uint64_t> draft_generation{0};
+    std::unique_ptr<BeautyDraftQueue> draft_queue;
     std::shared_ptr<Preparation> task;
     std::shared_ptr<const AI::BeautySurface> surface;
     std::shared_ptr<const AI::BeautySurface> cached_surface;
@@ -122,9 +120,11 @@ private:
     void commit(AI::BeautyPuzzle,uint32_t);
     void commit_layers(AI::BeautyPuzzle,std::optional<AI::BeautyEditRegions>,uint32_t);
     void restore(bool forward);
-    void render(bool repaint);
+    void render(bool repaint,ModelPreviewPuzzle::Prepared* prepared=nullptr);
     void save_draft(const AI::BeautyPuzzle&,const std::optional<AI::BeautyEditRegions>&);
-    void invalidate_draft_queue();
+    void flush_drafts();
+    std::function<nlohmann::json()> capture_record(const AI::BeautyPuzzle&,
+        const std::optional<AI::BeautyEditRegions>&) const;
     nlohmann::json record(const AI::BeautyPuzzle&,const std::optional<AI::BeautyEditRegions>&) const;
     bool layers_equal(const AI::BeautyPuzzle&,const std::optional<AI::BeautyEditRegions>&,
                       const AI::BeautyPuzzle&,const std::optional<AI::BeautyEditRegions>&) const;

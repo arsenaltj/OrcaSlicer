@@ -16,6 +16,18 @@
 #include "bbs_3mf.hpp"
 
 #include <limits>
+#include <charconv>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <memory>
+#include <array>
+#include <atomic>
+#include <condition_variable>
+#include <cstring>
+#include <exception>
+#include <mutex>
+#include <thread>
 #include <stdexcept>
 #include <iomanip>
 #include <regex>
@@ -816,12 +828,33 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
 
             bool empty() { return vertices.empty() || triangles.empty(); }
 
+            void append_face_attributes(const char** attributes, unsigned int count)
+            {
+                const size_t face = triangles.size() - 1;
+                auto append = [face](std::vector<std::string>& values, const char* text) {
+                    if (values.empty()) {
+                        if (text == nullptr || *text == '\0')
+                            return;
+                        values.resize(face);
+                    }
+                    values.emplace_back(text != nullptr ? text : "");
+                };
+                append(custom_supports, bbs_get_attribute_value_charptr(attributes, count, CUSTOM_SUPPORTS_ATTR));
+                append(custom_seam, bbs_get_attribute_value_charptr(attributes, count, CUSTOM_SEAM_ATTR));
+                append(mmu_segmentation, bbs_get_attribute_value_charptr(attributes, count, MMU_SEGMENTATION_ATTR));
+                append(fuzzy_skin, bbs_get_attribute_value_charptr(attributes, count, CUSTOM_FUZZY_SKIN_ATTR));
+                append(face_properties, bbs_get_attribute_value_charptr(attributes, count, FACE_PROPERTY_ATTR));
+            }
+
             // backup & restore
             void swap(Geometry& o) {
                 std::swap(vertices, o.vertices);
                 std::swap(triangles, o.triangles);
                 std::swap(custom_supports, o.custom_supports);
                 std::swap(custom_seam, o.custom_seam);
+                std::swap(mmu_segmentation, o.mmu_segmentation);
+                std::swap(fuzzy_skin, o.fuzzy_skin);
+                std::swap(face_properties, o.face_properties);
             }
 
             void reset() {
@@ -831,6 +864,7 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                 custom_seam.clear();
                 mmu_segmentation.clear();
                 fuzzy_skin.clear();
+                face_properties.clear();
             }
         };
 
@@ -977,13 +1011,12 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             std::string object_path;
             std::string zip_path;
             _BBS_3MF_Importer *top_importer{nullptr};
-            XML_Parser object_xml_parser;
+            XML_Parser object_xml_parser{nullptr};
             bool obj_parse_error { false };
             std::string obj_parse_error_message;
 
             //local parsed datas
             std::string obj_curr_metadata_name;
-            std::string obj_curr_characters;
             float object_unit_factor;
             int object_current_color_group{-1};
             std::map<int, std::string> object_group_id_to_color;
@@ -999,6 +1032,7 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             ~ObjectImporter()
             {
                 _destroy_object_xml_parser();
+                delete current_object;
             }
 
             void _destroy_object_xml_parser()
@@ -1040,17 +1074,15 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                     return false;
                 }
 
+                ScopeGuard close_archive([&archive] { close_zip_reader(&archive); });
                 if (!top_importer->_extract_from_archive(archive, object_path, [this] (mz_zip_archive& archive, const mz_zip_archive_file_stat& stat) {
                     return _extract_object_from_archive(archive, stat);
                 }, top_importer->m_load_restore)) {
                     std::string error_msg = std::string("Archive does not contain a valid model for ") + object_path;
-                    top_importer->add_error(error_msg);
-
-                    close_zip_reader(&archive);
+                    if (!top_importer->m_read_cancelled.load(std::memory_order_relaxed))
+                        top_importer->add_error(error_msg);
                     return false;
                 }
-
-                close_zip_reader(&archive);
 
                 if (obj_parse_error) {
                     //already add_error inside
@@ -1102,12 +1134,10 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
 
             void _handle_object_start_model_xml_element(const char* name, const char** attributes);
             void _handle_object_end_model_xml_element(const char* name);
-            void _handle_object_xml_characters(const XML_Char* s, int len);
 
             // callbacks to parse the .model file of an object
             static void XMLCALL _handle_object_start_model_xml_element(void* userData, const char* name, const char** attributes);
             static void XMLCALL _handle_object_end_model_xml_element(void* userData, const char* name);
-            static void XMLCALL _handle_object_xml_characters(void* userData, const XML_Char* s, int len);
         };
 
         // Version of the 3mf file
@@ -1174,7 +1204,11 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
         std::string m_thumbnail_middle;
         std::string m_thumbnail_small;
         std::vector<std::string> m_sub_model_paths;
-        std::vector<ObjectImporter*> m_object_importers;
+        std::vector<std::unique_ptr<ObjectImporter>> m_object_importers;
+        Import3mfProgressFn m_read_progress;
+        std::exception_ptr m_read_progress_error;
+        std::atomic<bool> m_read_cancelled{false};
+        int m_read_progress_current{1};
 
         std::map<int, ModelVolume*> m_shared_meshes;
 
@@ -1730,6 +1764,10 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
         int plate_id)
     {
         bool cb_cancel = false;
+        m_read_progress = proFn;
+        m_read_progress_error = nullptr;
+        m_read_cancelled.store(false, std::memory_order_relaxed);
+        m_read_progress_current = 1;
         //BBS progress point
         // prepare restore
         if (m_load_restore) {
@@ -1824,26 +1862,69 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                 m_sub_model_path.clear();
             }
 #else
-            for (auto path : m_sub_model_paths) {
-                ObjectImporter *object_importer = new ObjectImporter(this, filename, path);
-                m_object_importers.push_back(object_importer);
-            }
+            for (const auto& path : m_sub_model_paths)
+                m_object_importers.push_back(std::make_unique<ObjectImporter>(this, filename, path));
 
             bool object_load_result = true;
             boost::mutex mutex;
-            tbb::parallel_for(
-                tbb::blocked_range<size_t>(0, m_object_importers.size()),
-                [this, &mutex, &object_load_result](const tbb::blocked_range<size_t>& importer_range) {
-                    CNumericLocalesSetter locales_setter;
-                    for (size_t object_index = importer_range.begin(); object_index < importer_range.end(); ++ object_index) {
-                        bool result = m_object_importers[object_index]->extract_object_model();
-                        {
+            auto read_objects = [this, &mutex, &object_load_result] {
+                tbb::parallel_for(
+                    tbb::blocked_range<size_t>(0, m_object_importers.size()),
+                    [this, &mutex, &object_load_result](const tbb::blocked_range<size_t>& importer_range) {
+                        CNumericLocalesSetter locales_setter;
+                        for (size_t object_index = importer_range.begin(); object_index < importer_range.end(); ++object_index) {
+                            if (m_read_cancelled.load(std::memory_order_relaxed))
+                                break;
+                            const bool result = m_object_importers[object_index]->extract_object_model();
                             boost::unique_lock l(mutex);
                             object_load_result &= result;
                         }
+                    });
+            };
+            if (!proFn) {
+                read_objects();
+            } else {
+                // wx progress consumers belong to this caller. Keep parallel
+                // XML parsing on workers and only share a cancellation flag.
+                std::mutex progress_mutex;
+                std::condition_variable completed;
+                bool done = false, reported = false;
+                std::exception_ptr error;
+                std::thread reader([&] {
+                    try { read_objects(); }
+                    catch (...) { error = std::current_exception(); }
+                    {
+                        std::lock_guard<std::mutex> lock(progress_mutex);
+                        done = true;
+                    }
+                    completed.notify_one();
+                });
+                ScopeGuard join_reader([&] {
+                    if (reader.joinable()) {
+                        m_read_cancelled.store(true, std::memory_order_relaxed);
+                        reader.join();
+                    }
+                });
+                for (;;) {
+                    std::unique_lock<std::mutex> lock(progress_mutex);
+                    if (completed.wait_for(lock, std::chrono::milliseconds(50), [&] { return done; }))
+                        break;
+                    lock.unlock();
+                    proFn(IMPORT_STAGE_READ_FILES, 1, 3, cb_cancel);
+                    reported = true;
+                    if (cb_cancel) {
+                        m_read_cancelled.store(true, std::memory_order_relaxed);
+                        break;
                     }
                 }
-            );
+                reader.join();
+                if (error)
+                    std::rethrow_exception(error);
+                if (!reported && object_load_result)
+                    proFn(IMPORT_STAGE_READ_FILES, 1, 3, cb_cancel);
+                if (cb_cancel)
+                    return false;
+            }
 
             if (!object_load_result) {
                 BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << ":" << __LINE__ << boost::format(", loading sub-objects error\n");
@@ -1851,17 +1932,17 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             }
 
             //merge these objects into one
-            for (auto obj_importer : m_object_importers) {
+            for (auto& obj_importer : m_object_importers) {
                 for (const IdToCurrentObjectMap::value_type&  obj : obj_importer->object_list)
                     m_current_objects.insert({ std::move(obj.first), std::move(obj.second)});
                 for (auto group_color : obj_importer->object_group_id_to_color)
                     m_group_id_to_color.insert(std::move(group_color));
-
-                delete obj_importer;
+                obj_importer.reset();
             }
             m_object_importers.clear();
 #endif
             // BBS: load root model
+            m_read_progress_current = 2;
             if (proFn) {
                 proFn(IMPORT_STAGE_READ_FILES, 2, 3, cb_cancel);
                 if (cb_cancel)
@@ -1873,7 +1954,10 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
         if (!_extract_from_archive(archive, m_start_part_path, [this] (mz_zip_archive& archive, const mz_zip_archive_file_stat& stat) {
                     return _extract_model_from_archive(archive, stat);
             })) {
-            add_error("Archive does not contain a valid model");
+            if (m_read_progress_error)
+                std::rethrow_exception(m_read_progress_error);
+            if (!m_read_cancelled.load(std::memory_order_relaxed))
+                add_error("Archive does not contain a valid model");
             return false;
         }
 
@@ -2568,6 +2652,8 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             XML_Parser& parser;
             _BBS_3MF_Importer& importer;
             const mz_zip_archive_file_stat& stat;
+            std::exception_ptr error, progress_error;
+            std::chrono::steady_clock::time_point next_progress{};
 
             CallbackData(XML_Parser& parser, _BBS_3MF_Importer& importer, const mz_zip_archive_file_stat& stat) : parser(parser), importer(importer), stat(stat) {}
         };
@@ -2580,15 +2666,42 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
         {
             mz_file_write_func callback = [](void* pOpaque, mz_uint64 file_ofs, const void* pBuf, size_t n)->size_t {
                 CallbackData* data = (CallbackData*)pOpaque;
-                if (!XML_Parse(data->parser, (const char*)pBuf, (int)n, (file_ofs + n == data->stat.m_uncomp_size) ? 1 : 0) || data->importer.parse_error()) {
-                    char error_buf[1024];
-                    ::snprintf(error_buf, 1024, "Error (%s) while parsing '%s' at line %d", data->importer.parse_error_message(), data->stat.m_filename, (int)XML_GetCurrentLineNumber(data->parser));
-                    throw Slic3r::FileIOError(error_buf);
+                if (data->importer.m_read_cancelled.load(std::memory_order_relaxed))
+                    return 0;
+                try {
+                    if (!XML_Parse(data->parser, (const char*)pBuf, (int)n, (file_ofs + n == data->stat.m_uncomp_size) ? 1 : 0) || data->importer.parse_error()) {
+                        char error_buf[1024];
+                        ::snprintf(error_buf, 1024, "Error (%s) while parsing '%s' at line %d", data->importer.parse_error_message(), data->stat.m_filename, (int)XML_GetCurrentLineNumber(data->parser));
+                        throw Slic3r::FileIOError(error_buf);
+                    }
+                } catch (...) {
+                    data->error = std::current_exception();
+                    return 0;
+                }
+                if (data->importer.m_read_progress) {
+                    const auto now = std::chrono::steady_clock::now();
+                    if (now >= data->next_progress) {
+                        bool cancel = false;
+                        try {
+                            data->importer.m_read_progress(IMPORT_STAGE_READ_FILES,
+                                data->importer.m_read_progress_current, 3, cancel);
+                        } catch (...) {
+                            data->progress_error = std::current_exception();
+                            return 0;
+                        }
+                        data->next_progress = now + std::chrono::milliseconds(50);
+                        if (cancel) {
+                            data->importer.m_read_cancelled.store(true, std::memory_order_relaxed);
+                            return 0;
+                        }
+                    }
                 }
                 return n;
             };
             void* opaque = &data;
             res = mz_zip_reader_extract_to_callback(&archive, stat.m_file_index, callback, opaque, 0);
+            if (data.error)
+                std::rethrow_exception(data.error);
         }
         catch (const version_error& e)
         {
@@ -2600,6 +2713,13 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             add_error(e.what());
             return false;
         }
+
+        if (data.progress_error) {
+            m_read_progress_error = data.progress_error;
+            return false;
+        }
+        if (m_read_cancelled.load(std::memory_order_relaxed))
+            return false;
 
         if (res == 0) {
             add_error("Error while extracting model data from zip archive");
@@ -3416,7 +3536,11 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
         bool res = true;
         unsigned int num_attributes = (unsigned int)XML_GetSpecifiedAttributeCount(m_xml_parser);
 
-        if (::strcmp(MODEL_TAG, name) == 0)
+        if (::strcmp(TRIANGLE_TAG, name) == 0)
+            res = _handle_start_triangle(attributes, num_attributes);
+        else if (::strcmp(VERTEX_TAG, name) == 0)
+            res = _handle_start_vertex(attributes, num_attributes);
+        else if (::strcmp(MODEL_TAG, name) == 0)
             res = _handle_start_model(attributes, num_attributes);
         else if (::strcmp(RESOURCES_TAG, name) == 0)
             res = _handle_start_resources(attributes, num_attributes);
@@ -3430,12 +3554,8 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             res = _handle_start_mesh(attributes, num_attributes);
         else if (::strcmp(VERTICES_TAG, name) == 0)
             res = _handle_start_vertices(attributes, num_attributes);
-        else if (::strcmp(VERTEX_TAG, name) == 0)
-            res = _handle_start_vertex(attributes, num_attributes);
         else if (::strcmp(TRIANGLES_TAG, name) == 0)
             res = _handle_start_triangles(attributes, num_attributes);
-        else if (::strcmp(TRIANGLE_TAG, name) == 0)
-            res = _handle_start_triangle(attributes, num_attributes);
         else if (::strcmp(COMPONENTS_TAG, name) == 0)
             res = _handle_start_components(attributes, num_attributes);
         else if (::strcmp(COMPONENT_TAG, name) == 0)
@@ -3458,7 +3578,11 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
 
         bool res = true;
 
-        if (::strcmp(MODEL_TAG, name) == 0)
+        if (::strcmp(TRIANGLE_TAG, name) == 0)
+            res = _handle_end_triangle();
+        else if (::strcmp(VERTEX_TAG, name) == 0)
+            res = _handle_end_vertex();
+        else if (::strcmp(MODEL_TAG, name) == 0)
             res = _handle_end_model();
         else if (::strcmp(RESOURCES_TAG, name) == 0)
             res = _handle_end_resources();
@@ -3472,12 +3596,8 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             res = _handle_end_mesh();
         else if (::strcmp(VERTICES_TAG, name) == 0)
             res = _handle_end_vertices();
-        else if (::strcmp(VERTEX_TAG, name) == 0)
-            res = _handle_end_vertex();
         else if (::strcmp(TRIANGLES_TAG, name) == 0)
             res = _handle_end_triangles();
-        else if (::strcmp(TRIANGLE_TAG, name) == 0)
-            res = _handle_end_triangle();
         else if (::strcmp(COMPONENTS_TAG, name) == 0)
             res = _handle_end_components();
         else if (::strcmp(COMPONENT_TAG, name) == 0)
@@ -3885,12 +4005,7 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                 bbs_get_attribute_value_int(attributes, num_attributes, V2_ATTR),
                 bbs_get_attribute_value_int(attributes, num_attributes, V3_ATTR));
 
-            m_curr_object->geometry.custom_supports.push_back(bbs_get_attribute_value_string(attributes, num_attributes, CUSTOM_SUPPORTS_ATTR));
-            m_curr_object->geometry.custom_seam.push_back(bbs_get_attribute_value_string(attributes, num_attributes, CUSTOM_SEAM_ATTR));
-            m_curr_object->geometry.mmu_segmentation.push_back(bbs_get_attribute_value_string(attributes, num_attributes, MMU_SEGMENTATION_ATTR));
-            m_curr_object->geometry.fuzzy_skin.push_back(bbs_get_attribute_value_string(attributes, num_attributes, CUSTOM_FUZZY_SKIN_ATTR));
-            // BBS
-            m_curr_object->geometry.face_properties.push_back(bbs_get_attribute_value_string(attributes, num_attributes, FACE_PROPERTY_ATTR));
+            m_curr_object->geometry.append_face_attributes(attributes, num_attributes);
         }
         return true;
     }
@@ -5136,11 +5251,19 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
 
                 its.vertices.assign(sub_object->geometry.vertices.begin(), sub_object->geometry.vertices.end());
 
-                // BBS
-                for (const std::string& prop_str : sub_object->geometry.face_properties) {
-                    FaceProperty face_prop;
-                    face_prop.from_string(prop_str);
-                    its.properties.push_back(face_prop);
+                // An empty optional vector means every face has its default value.
+                const auto& face_properties = sub_object->geometry.face_properties;
+                if (face_properties.empty()) {
+                    FaceProperty default_property;
+                    default_property.from_string("");
+                    its.properties.assign(triangles_count, default_property);
+                } else {
+                    its.properties.reserve(triangles_count);
+                    for (const std::string& prop_str : face_properties) {
+                        FaceProperty face_prop;
+                        face_prop.from_string(prop_str);
+                        its.properties.push_back(face_prop);
+                    }
                 }
 
                 TriangleMesh triangle_mesh(std::move(its), volume_data->mesh_stats);
@@ -5177,7 +5300,14 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             if (has_transform)
                 volume->source.transform = Slic3r::Geometry::Transformation(volume_matrix_to_object);
 
-            volume->calculate_convex_hull();
+            // A fresh volume already computed its hull before centering. At
+            // this point source.mesh_offset still records that actual shift;
+            // historical source metadata is restored below. Only reuse a valid
+            // hull when the mesh did not move. Recompute shifted/shared meshes
+            // to preserve the original ordered hull and floating-point output.
+            const auto& hull = volume->get_convex_hull_shared_ptr();
+            if (shared_volume || !volume->source.mesh_offset.isApprox(Vec3d::Zero()) || !hull || hull->empty())
+                volume->calculate_convex_hull();
 
             //set transform from 3mf
             Slic3r::Geometry::Transformation comp_transformatino(sub_comp.transform);
@@ -5196,17 +5326,17 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                 volume->mmu_segmentation_facets.reserve(triangles_count);
                 volume->fuzzy_skin_facets.reserve(triangles_count);
                 for (size_t i=0; i<triangles_count; ++i) {
-                    assert(i < sub_object->geometry.custom_supports.size());
-                    assert(i < sub_object->geometry.custom_seam.size());
-                    assert(i < sub_object->geometry.mmu_segmentation.size());
-                    assert(i < sub_object->geometry.fuzzy_skin.size());
-                    if (! sub_object->geometry.custom_supports[i].empty())
+                    assert(sub_object->geometry.custom_supports.empty() || i < sub_object->geometry.custom_supports.size());
+                    assert(sub_object->geometry.custom_seam.empty() || i < sub_object->geometry.custom_seam.size());
+                    assert(sub_object->geometry.mmu_segmentation.empty() || i < sub_object->geometry.mmu_segmentation.size());
+                    assert(sub_object->geometry.fuzzy_skin.empty() || i < sub_object->geometry.fuzzy_skin.size());
+                    if (!sub_object->geometry.custom_supports.empty() && !sub_object->geometry.custom_supports[i].empty())
                         volume->supported_facets.set_triangle_from_string(i, sub_object->geometry.custom_supports[i]);
-                    if (! sub_object->geometry.custom_seam[i].empty())
+                    if (!sub_object->geometry.custom_seam.empty() && !sub_object->geometry.custom_seam[i].empty())
                         volume->seam_facets.set_triangle_from_string(i, sub_object->geometry.custom_seam[i]);
-                    if (! sub_object->geometry.mmu_segmentation[i].empty())
+                    if (!sub_object->geometry.mmu_segmentation.empty() && !sub_object->geometry.mmu_segmentation[i].empty())
                         volume->mmu_segmentation_facets.set_triangle_from_string(i, sub_object->geometry.mmu_segmentation[i]);
-                    if (!sub_object->geometry.fuzzy_skin[i].empty())
+                    if (!sub_object->geometry.fuzzy_skin.empty() && !sub_object->geometry.fuzzy_skin[i].empty())
                         volume->fuzzy_skin_facets.set_triangle_from_string(i, sub_object->geometry.fuzzy_skin[i]);
                 }
                 volume->supported_facets.shrink_to_fit();
@@ -5322,11 +5452,17 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                 }
                 its.vertices.assign(geometry.vertices.begin() + min_id, geometry.vertices.begin() + max_id + 1);
 
-                // BBS
-                for (const std::string prop_str : geometry.face_properties) {
-                    FaceProperty face_prop;
-                    face_prop.from_string(prop_str);
-                    its.properties.push_back(face_prop);
+                if (geometry.face_properties.empty()) {
+                    FaceProperty default_property;
+                    default_property.from_string("");
+                    its.properties.assign(geometry.triangles.size(), default_property);
+                } else {
+                    its.properties.reserve(geometry.face_properties.size());
+                    for (const std::string& prop_str : geometry.face_properties) {
+                        FaceProperty face_prop;
+                        face_prop.from_string(prop_str);
+                        its.properties.push_back(face_prop);
+                    }
                 }
 
                 // rebase indices to the current vertices list
@@ -5362,14 +5498,14 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             volume->mmu_segmentation_facets.reserve(triangles_count);
             for (size_t i=0; i<triangles_count; ++i) {
                 size_t index = volume_data.first_triangle_id + i;
-                assert(index < geometry.custom_supports.size());
-                assert(index < geometry.custom_seam.size());
-                assert(index < geometry.mmu_segmentation.size());
-                if (! geometry.custom_supports[index].empty())
+                assert(geometry.custom_supports.empty() || index < geometry.custom_supports.size());
+                assert(geometry.custom_seam.empty() || index < geometry.custom_seam.size());
+                assert(geometry.mmu_segmentation.empty() || index < geometry.mmu_segmentation.size());
+                if (!geometry.custom_supports.empty() && !geometry.custom_supports[index].empty())
                     volume->supported_facets.set_triangle_from_string(i, geometry.custom_supports[index]);
-                if (! geometry.custom_seam[index].empty())
+                if (!geometry.custom_seam.empty() && !geometry.custom_seam[index].empty())
                     volume->seam_facets.set_triangle_from_string(i, geometry.custom_seam[index]);
-                if (! geometry.mmu_segmentation[index].empty())
+                if (!geometry.mmu_segmentation.empty() && !geometry.mmu_segmentation[index].empty())
                     volume->mmu_segmentation_facets.set_triangle_from_string(i, geometry.mmu_segmentation[index]);
             }
             volume->supported_facets.shrink_to_fit();
@@ -5674,12 +5810,7 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                 bbs_get_attribute_value_int(attributes, num_attributes, V2_ATTR),
                 bbs_get_attribute_value_int(attributes, num_attributes, V3_ATTR));
 
-            current_object->geometry.custom_supports.push_back(bbs_get_attribute_value_string(attributes, num_attributes, CUSTOM_SUPPORTS_ATTR));
-            current_object->geometry.custom_seam.push_back(bbs_get_attribute_value_string(attributes, num_attributes, CUSTOM_SEAM_ATTR));
-            current_object->geometry.mmu_segmentation.push_back(bbs_get_attribute_value_string(attributes, num_attributes, MMU_SEGMENTATION_ATTR));
-            current_object->geometry.fuzzy_skin.push_back(bbs_get_attribute_value_string(attributes, num_attributes, CUSTOM_FUZZY_SKIN_ATTR));
-            // BBS
-            current_object->geometry.face_properties.push_back(bbs_get_attribute_value_string(attributes, num_attributes, FACE_PROPERTY_ATTR));
+            current_object->geometry.append_face_attributes(attributes, num_attributes);
         }
         return true;
     }
@@ -5760,7 +5891,11 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
         bool res = true;
         unsigned int num_attributes = (unsigned int)XML_GetSpecifiedAttributeCount(object_xml_parser);
 
-        if (::strcmp(MODEL_TAG, name) == 0)
+        if (::strcmp(TRIANGLE_TAG, name) == 0)
+            res = _handle_object_start_triangle(attributes, num_attributes);
+        else if (::strcmp(VERTEX_TAG, name) == 0)
+            res = _handle_object_start_vertex(attributes, num_attributes);
+        else if (::strcmp(MODEL_TAG, name) == 0)
             res = _handle_object_start_model(attributes, num_attributes);
         else if (::strcmp(RESOURCES_TAG, name) == 0)
             res = _handle_object_start_resources(attributes, num_attributes);
@@ -5774,12 +5909,8 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             res = _handle_object_start_mesh(attributes, num_attributes);
         else if (::strcmp(VERTICES_TAG, name) == 0)
             res = _handle_object_start_vertices(attributes, num_attributes);
-        else if (::strcmp(VERTEX_TAG, name) == 0)
-            res = _handle_object_start_vertex(attributes, num_attributes);
         else if (::strcmp(TRIANGLES_TAG, name) == 0)
             res = _handle_object_start_triangles(attributes, num_attributes);
-        else if (::strcmp(TRIANGLE_TAG, name) == 0)
-            res = _handle_object_start_triangle(attributes, num_attributes);
         else if (::strcmp(COMPONENTS_TAG, name) == 0)
             res = _handle_object_start_components(attributes, num_attributes);
         else if (::strcmp(COMPONENT_TAG, name) == 0)
@@ -5798,7 +5929,11 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
 
         bool res = true;
 
-        if (::strcmp(MODEL_TAG, name) == 0)
+        if (::strcmp(TRIANGLE_TAG, name) == 0)
+            res = _handle_object_end_triangle();
+        else if (::strcmp(VERTEX_TAG, name) == 0)
+            res = _handle_object_end_vertex();
+        else if (::strcmp(MODEL_TAG, name) == 0)
             res = _handle_object_end_model();
         else if (::strcmp(RESOURCES_TAG, name) == 0)
             res = _handle_object_end_resources();
@@ -5812,12 +5947,8 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             res = _handle_object_end_mesh();
         else if (::strcmp(VERTICES_TAG, name) == 0)
             res = _handle_object_end_vertices();
-        else if (::strcmp(VERTEX_TAG, name) == 0)
-            res = _handle_object_end_vertex();
         else if (::strcmp(TRIANGLES_TAG, name) == 0)
             res = _handle_object_end_triangles();
-        else if (::strcmp(TRIANGLE_TAG, name) == 0)
-            res = _handle_object_end_triangle();
         else if (::strcmp(COMPONENTS_TAG, name) == 0)
             res = _handle_object_end_components();
         else if (::strcmp(COMPONENT_TAG, name) == 0)
@@ -5827,11 +5958,6 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
 
         if (!res)
             _stop_object_xml_parser();
-    }
-
-    void _BBS_3MF_Importer::ObjectImporter::_handle_object_xml_characters(const XML_Char* s, int len)
-    {
-        obj_curr_characters.append(s, len);
     }
 
     void XMLCALL _BBS_3MF_Importer::ObjectImporter::_handle_object_start_model_xml_element(void* userData, const char* name, const char** attributes)
@@ -5848,11 +5974,100 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             importer->_handle_object_end_model_xml_element(name);
     }
 
-    void XMLCALL _BBS_3MF_Importer::ObjectImporter::_handle_object_xml_characters(void* userData, const XML_Char* s, int len)
+    // Only the inflater reads this archive. XML callbacks remain on the caller
+    // thread, and three fixed blocks bound read-ahead independently of file size.
+    static mz_bool bbs_extract_object_with_read_ahead(mz_zip_archive& archive,
+        const mz_zip_archive_file_stat& stat, mz_file_write_func callback, void* opaque)
     {
-        ObjectImporter* importer = (ObjectImporter*)userData;
-        if (importer != nullptr)
-            importer->_handle_object_xml_characters(s, len);
+        if (stat.m_uncomp_size < 8 * 1024 * 1024 || stat.m_method != MZ_DEFLATED ||
+            std::thread::hardware_concurrency() <= 1)
+            return mz_zip_reader_extract_to_callback(&archive, stat.m_file_index, callback, opaque, 0);
+
+        struct Pipe {
+            struct Block {
+                std::array<unsigned char, TINFL_LZ_DICT_SIZE> bytes;
+                mz_uint64 offset{0};
+                size_t size{0};
+            };
+            std::array<Block, 3> blocks;
+            std::mutex mutex;
+            std::condition_variable readable, writable;
+            size_t read{0}, write{0}, count{0};
+            bool stopped{false}, finished{false};
+            mz_bool result{MZ_FALSE};
+            std::exception_ptr error;
+        };
+        auto state = std::make_unique<Pipe>();
+        Pipe& pipe = *state;
+        std::thread inflater([&archive, &stat, &pipe] {
+            try {
+                mz_file_write_func enqueue = [](void* opaque, mz_uint64 offset,
+                    const void* bytes, size_t size) -> size_t {
+                    auto& pipe = *static_cast<Pipe*>(opaque);
+                    std::unique_lock<std::mutex> lock(pipe.mutex);
+                    pipe.writable.wait(lock, [&] { return pipe.stopped || pipe.count < pipe.blocks.size(); });
+                    if (pipe.stopped)
+                        return 0;
+                    auto& block = pipe.blocks[pipe.write];
+                    if (size > block.bytes.size())
+                        throw std::length_error("ZIP inflater output exceeds its dictionary block");
+                    std::memcpy(block.bytes.data(), bytes, size);
+                    block.offset = offset;
+                    block.size = size;
+                    pipe.write = (pipe.write + 1) % pipe.blocks.size();
+                    ++pipe.count;
+                    lock.unlock();
+                    pipe.readable.notify_one();
+                    return size;
+                };
+                const mz_bool result = mz_zip_reader_extract_to_callback(&archive, stat.m_file_index, enqueue, &pipe, 0);
+                std::lock_guard<std::mutex> lock(pipe.mutex);
+                pipe.result = result;
+                pipe.finished = true;
+            } catch (...) {
+                std::lock_guard<std::mutex> lock(pipe.mutex);
+                pipe.error = std::current_exception();
+                pipe.finished = true;
+            }
+            pipe.readable.notify_one();
+        });
+        struct JoinInflater {
+            Pipe& pipe;
+            std::thread& thread;
+            ~JoinInflater()
+            {
+                {
+                    std::lock_guard<std::mutex> lock(pipe.mutex);
+                    pipe.stopped = true;
+                }
+                pipe.writable.notify_one();
+                thread.join();
+            }
+        } join{pipe, inflater};
+
+        for (;;) {
+            std::unique_lock<std::mutex> lock(pipe.mutex);
+            pipe.readable.wait(lock, [&] { return pipe.count != 0 || pipe.finished; });
+            if (pipe.count == 0) {
+                const auto error = pipe.error;
+                const auto result = pipe.result;
+                lock.unlock();
+                if (error)
+                    std::rethrow_exception(error);
+                return result;
+            }
+            const auto& block = pipe.blocks[pipe.read];
+            lock.unlock();
+            // The current block remains counted until the callback returns, so
+            // the producer cannot reuse its memory while the parser consumes it.
+            if (callback(opaque, block.offset, block.bytes.data(), block.size) != block.size)
+                return MZ_FALSE;
+            lock.lock();
+            pipe.read = (pipe.read + 1) % pipe.blocks.size();
+            --pipe.count;
+            lock.unlock();
+            pipe.writable.notify_one();
+        }
     }
 
     bool _BBS_3MF_Importer::ObjectImporter::_extract_object_from_archive(mz_zip_archive& archive, const mz_zip_archive_file_stat& stat)
@@ -5870,7 +6085,6 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
 
         XML_SetUserData(object_xml_parser, (void*)this);
         XML_SetElementHandler(object_xml_parser, _BBS_3MF_Importer::ObjectImporter::_handle_object_start_model_xml_element, _BBS_3MF_Importer::ObjectImporter::_handle_object_end_model_xml_element);
-        XML_SetCharacterDataHandler(object_xml_parser, _BBS_3MF_Importer::ObjectImporter::_handle_object_xml_characters);
         XML_SetEntityDeclHandler(object_xml_parser, nullptr);
         XML_SetExternalEntityRefHandler(object_xml_parser, nullptr);
 
@@ -5879,27 +6093,53 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             XML_Parser& parser;
             _BBS_3MF_Importer::ObjectImporter& importer;
             const mz_zip_archive_file_stat& stat;
+            bool trace;
+            double parse_ms{0.0};
+            size_t parse_calls{0};
+            std::exception_ptr error;
 
-            CallbackData(XML_Parser& parser, _BBS_3MF_Importer::ObjectImporter& importer, const mz_zip_archive_file_stat& stat) : parser(parser), importer(importer), stat(stat) {}
+            CallbackData(XML_Parser& parser, _BBS_3MF_Importer::ObjectImporter& importer, const mz_zip_archive_file_stat& stat)
+                : parser(parser), importer(importer), stat(stat), trace([] {
+                    const char* value = std::getenv("ORCASLICER_3MF_READ_TIMING");
+                    return value != nullptr && value[0] == '1' && value[1] == '\0';
+                }()) {}
         };
 
         CallbackData data(object_xml_parser, *this, stat);
 
         mz_bool res = 0;
+        const auto extract_started = data.trace ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
 
         try
         {
             mz_file_write_func callback = [](void* pOpaque, mz_uint64 file_ofs, const void* pBuf, size_t n)->size_t {
                 CallbackData* data = (CallbackData*)pOpaque;
-                if (!XML_Parse(data->parser, (const char*)pBuf, (int)n, (file_ofs + n == data->stat.m_uncomp_size) ? 1 : 0) || data->importer.object_parse_error()) {
-                    char error_buf[1024];
-                    ::snprintf(error_buf, 1024, "Error (%s) while parsing '%s' at line %d", data->importer.object_parse_error_message(), data->stat.m_filename, (int)XML_GetCurrentLineNumber(data->parser));
-                    throw Slic3r::FileIOError(error_buf);
+                if (data->importer.top_importer->m_read_cancelled.load(std::memory_order_relaxed))
+                    return 0;
+                try {
+                    const auto parse_started = data->trace ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+                    const auto parsed = XML_Parse(data->parser, (const char*)pBuf, (int)n, (file_ofs + n == data->stat.m_uncomp_size) ? 1 : 0);
+                    if (data->trace) {
+                        data->parse_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - parse_started).count();
+                        ++data->parse_calls;
+                    }
+                    if (!parsed || data->importer.object_parse_error()) {
+                        char error_buf[1024];
+                        ::snprintf(error_buf, 1024, "Error (%s) while parsing '%s' at line %d", data->importer.object_parse_error_message(), data->stat.m_filename, (int)XML_GetCurrentLineNumber(data->parser));
+                        throw Slic3r::FileIOError(error_buf);
+                    }
+                    return n;
+                } catch (...) {
+                    // Let miniz release its buffers before rethrowing on this
+                    // same caller thread; do not unwind through a C callback.
+                    data->error = std::current_exception();
+                    return 0;
                 }
-                return n;
             };
             void* opaque = &data;
-            res = mz_zip_reader_extract_to_callback(&archive, stat.m_file_index, callback, opaque, 0);
+            res = bbs_extract_object_with_read_ahead(archive, stat, callback, opaque);
+            if (data.error)
+                std::rethrow_exception(data.error);
         }
         catch (const version_error& e)
         {
@@ -5914,6 +6154,14 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             return false;
         }
 
+        if (data.trace) {
+            BOOST_LOG_TRIVIAL(info) << "3MF object read timing: bytes=" << stat.m_uncomp_size
+                << ", extract_ms=" << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - extract_started).count()
+                << ", xml_parse_ms=" << data.parse_ms << ", calls=" << data.parse_calls;
+        }
+
+        if (top_importer->m_read_cancelled.load(std::memory_order_relaxed))
+            return false;
         if (res == 0) {
             top_importer->add_error("Error while extracting model data from zip archive for "+object_path);
             return false;
@@ -6900,9 +7148,11 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                 // GH issue #6193.
                 (uint64_t(1) << 32) - 1,
 #if WRITE_ZIP_LANGUAGE_ENCODING
-            nullptr, nullptr, 0, MZ_DEFAULT_LEVEL, nullptr, 0, nullptr, 0)) {
+            // Mesh XML dominates large-project save latency. Level 3 keeps
+            // the same lossless ZIP format with a modest size tradeoff.
+            nullptr, nullptr, 0, 3, nullptr, 0, nullptr, 0)) {
 #else
-            nullptr, nullptr, 0, MZ_DEFAULT_COMPRESSION, extra.c_str(), extra.length(), extra.c_str(), extra.length())) {
+            nullptr, nullptr, 0, 3, extra.c_str(), extra.length(), extra.c_str(), extra.length())) {
 #endif
             add_error("Unable to add model file to archive");
             BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << ":" << __LINE__ << boost::format(", Unable to add model file to archive\n");
@@ -7173,8 +7423,10 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                     CNumericLocalesSetter locales_setter;
                     _add_model_file_to_archive(object_paths[i], archive, model, objects_data2, nullptr, project);
                     iter->second = objects_data2.begin()->second;
-                    void *ppBuf; size_t pSize;
+                    void *ppBuf = nullptr; size_t pSize = 0;
                     mz_zip_writer_finalize_heap_archive(&archive, &ppBuf, &pSize);
+                    // Finalization transfers the allocation; the reader only borrows it.
+                    std::unique_ptr<void, decltype(&mz_free)> buffer(ppBuf, &mz_free);
                     mz_zip_writer_end(&archive);
                     mz_zip_zero_struct(&archive);
                     mz_zip_reader_init_mem(&archive, ppBuf, pSize, 0);
@@ -7192,13 +7444,24 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
 
     bool _BBS_3MF_Exporter::_add_object_to_model_stream(mz_zip_writer_staged_context &context, ObjectData const &object_data) const
     {
+        const char* timing_env = std::getenv("ORCASLICER_3MF_TIMING");
+        const bool timing = timing_env && std::string(timing_env) == "1";
+        using Clock = std::chrono::steady_clock;
+        const auto started = timing ? Clock::now() : Clock::time_point{};
+        double flush_ms = 0.0;
+        size_t bytes = 0;
         // backup: make _add_mesh_to_object_stream() reusable
-        auto flush = [this, &context](std::string & buf, bool force = false) {
+        auto flush = [this, &context, timing, &flush_ms, &bytes](std::string & buf, bool force = false) {
             if ((force && !buf.empty()) || buf.size() >= 65536 * 16) {
+                const auto flush_started = timing ? Clock::now() : Clock::time_point{};
                 if (!mz_zip_writer_add_staged_data(&context, buf.data(), buf.size())) {
                     add_error("Error during writing or compression");
                     BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << ":" << __LINE__ << boost::format(", Error during writing or compression\n");
                     return false;
+                }
+                if (timing) {
+                    flush_ms += std::chrono::duration<double, std::milli>(Clock::now() - flush_started).count();
+                    bytes += buf.size();
                 }
                 buf.clear();
             }
@@ -7208,6 +7471,14 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             add_error("Unable to add mesh to archive");
             BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << ":" << __LINE__ << boost::format(", Unable to add mesh to archive\n");
             return false;
+        }
+        if (timing) {
+            const double total_ms = std::chrono::duration<double, std::milli>(Clock::now() - started).count();
+            // Staged flush includes compression/output; the remainder includes
+            // XML generation and mesh metadata. Archive finalization is outside.
+            BOOST_LOG_TRIVIAL(info) << "3MF mesh timing: total_ms=" << total_ms
+                << ", staged_flush_ms=" << flush_ms << ", generation_ms=" << total_ms - flush_ms
+                << ", uncompressed_bytes=" << bytes;
         }
 
         // Move all components to main model
@@ -7331,7 +7602,14 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             // Return pointer to the end.
             return ptr;
 #else
-            // Round-trippable float, shortest possible.
+            // MSVC's floating to_chars matches %.9g on historical projects
+            // and avoids millions of locale-aware sprintf calls per save.
+#ifdef _WIN32
+            const auto result = std::to_chars(buf, buf + 32, f, std::chars_format::general, 9);
+            if (result.ec == std::errc())
+                return result.ptr;
+#endif
+            // Keep the existing portable formatter as a fallback.
             return buf + sprintf(buf, "%.9g", f);
 #endif
         };
@@ -7339,6 +7617,8 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
         auto const & object = *object_data.object;
 
         char buf[256];
+        const std::string vertex_start = std::string("     <") + VERTEX_TAG + " x=\"";
+        const std::string triangle_start = std::string("     <") + TRIANGLE_TAG + " v1=\"";
         unsigned int vertices_count = 0;
         //unsigned int triangles_count = 0;
         for (unsigned int index = 0; index < object.volumes.size(); index++) {
@@ -7399,15 +7679,21 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                 //Vec3f v = (matrix * its.vertices[i].cast<double>()).cast<float>();
                 Vec3f v = its.vertices[i];
                 char* ptr = buf;
-                boost::spirit::karma::generate(ptr, boost::spirit::lit("     <") << VERTEX_TAG << " x=\"");
+                std::memcpy(ptr, vertex_start.data(), vertex_start.size());
+                ptr += vertex_start.size();
                 ptr = format_coordinate(v.x(), ptr);
-                boost::spirit::karma::generate(ptr, "\" y=\"");
+                constexpr char y[] = "\" y=\"";
+                std::memcpy(ptr, y, sizeof(y) - 1);
+                ptr += sizeof(y) - 1;
                 ptr = format_coordinate(v.y(), ptr);
-                boost::spirit::karma::generate(ptr, "\" z=\"");
+                constexpr char z[] = "\" z=\"";
+                std::memcpy(ptr, z, sizeof(z) - 1);
+                ptr += sizeof(z) - 1;
                 ptr = format_coordinate(v.z(), ptr);
-                boost::spirit::karma::generate(ptr, "\"/>\n");
-                *ptr = '\0';
-                output_buffer += buf;
+                constexpr char end[] = "\"/>\n";
+                std::memcpy(ptr, end, sizeof(end) - 1);
+                ptr += sizeof(end) - 1;
+                output_buffer.append(buf, ptr - buf);
                 if (!flush(output_buffer, false))
                     return false;
             }
@@ -7441,15 +7727,24 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                 {
                     const Vec3i32 &idx = its.indices[i];
                     char *ptr = buf;
-                    boost::spirit::karma::generate(ptr, boost::spirit::lit("     <") << TRIANGLE_TAG <<
-                        " v1=\"" << boost::spirit::int_ <<
-                        "\" v2=\"" << boost::spirit::int_ <<
-                        "\" v3=\"" << boost::spirit::int_ << "\"",
-                        idx[is_left_handed ? 2 : 0],
-                        idx[1],
-                        idx[is_left_handed ? 0 : 2]);
-                    *ptr = '\0';
-                    output_buffer += buf;
+                    std::memcpy(ptr, triangle_start.data(), triangle_start.size());
+                    ptr += triangle_start.size();
+                    auto append_index = [&ptr, &buf](int value) {
+                        const auto result = std::to_chars(ptr, buf + sizeof(buf), value);
+                        assert(result.ec == std::errc());
+                        ptr = result.ptr;
+                    };
+                    append_index(idx[is_left_handed ? 2 : 0]);
+                    constexpr char v2[] = "\" v2=\"";
+                    std::memcpy(ptr, v2, sizeof(v2) - 1);
+                    ptr += sizeof(v2) - 1;
+                    append_index(idx[1]);
+                    constexpr char v3[] = "\" v3=\"";
+                    std::memcpy(ptr, v3, sizeof(v3) - 1);
+                    ptr += sizeof(v3) - 1;
+                    append_index(idx[is_left_handed ? 0 : 2]);
+                    *ptr++ = '"';
+                    output_buffer.append(buf, ptr - buf);
                 }
 
                 std::string custom_supports_data_string = volume->supported_facets.get_triangle_as_string(i);
@@ -8651,8 +8946,10 @@ bool _BBS_3MF_Exporter::_add_gcode_file_to_archive(mz_zip_archive& archive, cons
                 }
                 mz_zip_writer_add_staged_finish(&context);
             }
-            void *ppBuf; size_t pSize;
+            void *ppBuf = nullptr; size_t pSize = 0;
             mz_zip_writer_finalize_heap_archive(&archive, &ppBuf, &pSize);
+            // Keep the transferred heap alive until the borrowed reader is closed.
+            std::unique_ptr<void, decltype(&mz_free)> buffer(ppBuf, &mz_free);
             mz_zip_writer_end(&archive);
             mz_zip_zero_struct(&archive);
             mz_zip_reader_init_mem(&archive, ppBuf, pSize, 0);

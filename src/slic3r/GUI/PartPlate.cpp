@@ -4369,27 +4369,6 @@ void PartPlateList::generate_icon_textures()
 		BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << boost::format(":load file %1% failed") % file_name;
 		}
 	}
-
-	std::string text_str = "01";
-    // ORCA also scale font size to prevent low res texture
-    int size = wxGetApp().em_unit() * PARTPLATE_ICON_SIZE;
-    auto l = Label::sysFont(int(size), true);
-    wxFont* font = &l;
-
-	for (int i = 0; i < MAX_PLATE_COUNT; i++) {
-		if (m_idx_textures[i].get_id() == 0) {
-			//file_name = path + (boost::format("plate_%1%.svg") % (i + 1)).str();
-			if ( i < 9 )
-				file_name = std::string("0") + std::to_string(i+1);
-			else
-				file_name = std::to_string(i+1);
-
-			wxColour foreground(0xf2, 0x75, 0x4e, 0xff);
-			if (!m_idx_textures[i].generate_from_text_string(file_name, *font, *wxBLACK, foreground)) {
-				BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << boost::format(":load file %1% failed") % file_name;
-			}
-		}
-	}
 }
 
 void PartPlateList::release_icon_textures()
@@ -5968,6 +5947,29 @@ void PartPlateList::render(const Transform3d& view_matrix, const Transform3d& pr
 		generate_icon_textures();
 	} else if(m_del_texture.get_id() == 0)
 		generate_icon_textures();
+	// Index labels only need GPU textures for plates that currently exist.
+	// Generate a new label here when a plate is added after the icon atlas was loaded.
+	bool missing_index_texture = false;
+	for (PartPlate* plate : m_plate_list) {
+		const int index = plate->get_index();
+		if (index >= 0 && index < MAX_PLATE_COUNT && m_idx_textures[index].get_id() == 0) {
+			missing_index_texture = true;
+			break;
+		}
+	}
+	if (missing_index_texture) {
+		const int size = wxGetApp().em_unit() * PARTPLATE_ICON_SIZE;
+		auto font = Label::sysFont(size, true);
+		const wxColour foreground(0xf2, 0x75, 0x4e, 0xff);
+		for (PartPlate* plate : m_plate_list) {
+			const int index = plate->get_index();
+			if (index < 0 || index >= MAX_PLATE_COUNT || m_idx_textures[index].get_id() != 0)
+				continue;
+			const std::string label = index < 9 ? "0" + std::to_string(index + 1) : std::to_string(index + 1);
+			if (!m_idx_textures[index].generate_from_text_string(label, font, *wxBLACK, foreground))
+				BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << ": load plate index " << label << " failed";
+		}
+	}
 	for (it = m_plate_list.begin(); it != m_plate_list.end(); it++) {
 		int current_index = (*it)->get_index();
 		if (only_current && (current_index != m_current_plate))

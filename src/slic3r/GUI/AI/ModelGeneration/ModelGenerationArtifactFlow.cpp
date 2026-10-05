@@ -56,34 +56,47 @@ wxWindow* ModelGenerationPanel::build_import_settings(wxWindow* parent)
 void ModelGenerationPanel::load_model_preview_async(const boost::filesystem::path& path,
     const std::vector<std::string>& palette,
     std::function<void(size_t, Vec3d, size_t, double)> loaded,
-    std::function<void(std::string)> failed, const boost::filesystem::path& metadata_path)
+    std::function<void(std::string)> failed, const boost::filesystem::path& metadata_path,
+    std::shared_ptr<ModelHistoryMetadata> history_metadata, std::function<bool()> may_install)
 {
     if (m_shutdown || m_preview_loading) return;
     size_t triangles = 0, colors = 0; Vec3d dimensions;
     // Explicit history navigation restores persisted state, not unsaved cached edits.
-    if (metadata_path.empty() && m_model_preview->try_load_cached_model(path, palette, triangles, dimensions, colors)) {
+    if (metadata_path.empty() &&
+        (m_model_preview->try_use_current_model(path, palette, triangles, dimensions, colors) ||
+         m_model_preview->try_load_cached_model(path, palette, triangles, dimensions, colors))) {
         loaded(triangles, dimensions, colors, 0.0);
         return;
     }
     if (m_preview_worker.joinable()) m_preview_worker.join();
     m_preview_loading = true; m_busy = true;
+    m_preview_canceled = std::make_shared<std::atomic<bool>>(false);
+    const auto canceled = m_preview_canceled;
+    const bool share_exact_vertices = !m_model_preview->retains_surface_attributes();
     refresh_controls();
     const uint64_t sequence = m_sequence;
     wxWeakRef<ModelGenerationPanel> weak(this);
     try {
-        m_preview_worker = std::thread([weak, path, palette, sequence, loaded, failed, metadata_path] {
+        m_preview_worker = std::thread([weak, path, palette, sequence, loaded, failed, metadata_path, canceled, history_metadata, share_exact_vertices, may_install] {
             const auto start = std::chrono::steady_clock::now();
             auto prepared = std::make_shared<ModelPreview3D::PreparedModel>();
             std::string error;
-            try { ModelPreview3D::prepare_model(path, *prepared, error, {}, metadata_path); }
+            try {
+                if (ModelPreview3D::prepare_model(path, *prepared, error, {}, metadata_path, true,
+                    [canceled] { return canceled->load(); }, history_metadata.get()))
+                    prepared->prepare_render_geometry([canceled] { return canceled->load(); }, share_exact_vertices);
+            }
             catch (const std::exception& e) { error = e.what(); }
-            wxGetApp().CallAfter([weak, prepared, palette, sequence, start, loaded, failed, error]() mutable {
+            wxGetApp().CallAfter([weak, prepared, palette, sequence, start, loaded, failed, error, canceled, may_install]() mutable {
                 if (!weak || weak->m_shutdown) return;
                 auto* self = weak.get();
                 if (self->m_preview_worker.joinable()) self->m_preview_worker.join();
                 self->m_preview_loading = false;
                 self->m_busy = false;
-                if (sequence != self->m_sequence) { self->refresh_controls(); return; }
+                // A release/cancel can arrive after CPU work completes but before publication.
+                if (sequence != self->m_sequence || canceled->load() || (may_install && !may_install())) {
+                    self->refresh_controls(); return;
+                }
                 size_t triangles = 0, colors = 0; Vec3d dimensions;
                 if (!error.empty() || !self->m_model_preview->load_prepared_model(
                     std::move(*prepared), palette, triangles, dimensions, colors, error)) {

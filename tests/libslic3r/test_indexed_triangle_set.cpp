@@ -9,6 +9,77 @@
 
 using namespace Slic3r;
 
+namespace {
+void require_generic_topology_stats(const TriangleMesh& mesh)
+{
+    // The generic adjacency implementation is unchanged and is the oracle for
+    // both expanded and shared-index meshes; coincident positions do not weld.
+    const auto neighbors = its_face_neighbors(mesh.its);
+    CHECK(mesh.stats().number_of_parts == int(its_number_of_patches(mesh.its, neighbors)));
+    CHECK(mesh.stats().open_edges == int(its_num_open_edges(neighbors)));
+    CHECK(mesh.stats().number_of_facets == mesh.its.indices.size());
+    CHECK_THAT(mesh.stats().volume, Catch::Matchers::WithinAbs(its_volume(mesh.its), 1e-6));
+    if (!mesh.its.vertices.empty()) {
+        const auto bounds = Slic3r::bounding_box(mesh.its);
+        for (int axis = 0; axis < 3; ++axis) {
+            CHECK_THAT(mesh.stats().min[axis], Catch::Matchers::WithinAbs(float(bounds.min[axis]), 1e-6));
+            CHECK_THAT(mesh.stats().max[axis], Catch::Matchers::WithinAbs(float(bounds.max[axis]), 1e-6));
+        }
+    }
+}
+}
+
+TEST_CASE("Expanded meshes preserve topology statistics for coincident degenerate and unused vertices", "[TriangleMeshStats][its]")
+{
+    indexed_triangle_set source;
+    for (int face = 0; face < 320; ++face) {
+        const int base = int(source.vertices.size());
+        // Many geometrically coincident faces, plus isolated zero-area faces.
+        source.vertices.insert(source.vertices.end(), {Vec3f(0,0,1), Vec3f(1,0,1),
+            face % 3 == 0 ? Vec3f(1,0,1) : Vec3f(0,1,1)});
+        source.indices.emplace_back(base, base + 1, base + 2);
+    }
+    source.vertices.emplace_back(-5, 8, -2);
+    const TriangleMesh copied(source);
+    require_generic_topology_stats(copied);
+    CHECK(copied.stats().number_of_parts == 320);
+    CHECK(copied.stats().open_edges == 960);
+    CHECK_FALSE(copied.stats().manifold());
+    RepairedMeshErrors repairs;
+    repairs.edges_fixed = 7;
+    repairs.facets_reversed = 3;
+    indexed_triangle_set moved_source = source;
+    const TriangleMesh moved(std::move(moved_source), repairs);
+    require_generic_topology_stats(moved);
+    CHECK(moved.stats().repaired_errors.edges_fixed == 7);
+    CHECK(moved.stats().repaired_errors.facets_reversed == 3);
+    const TriangleMesh vectors(source.vertices, source.indices);
+    require_generic_topology_stats(vectors);
+    require_generic_topology_stats(TriangleMesh(indexed_triangle_set {}));
+}
+
+TEST_CASE("Mesh initialization retains generic topology for shared reordered and nonmanifold indices", "[TriangleMeshStats][its]")
+{
+    std::vector<indexed_triangle_set> sources;
+    indexed_triangle_set shared;
+    shared.vertices = {{0,0,0},{1,0,0},{0,1,0},{1,1,0},{0,0,1},{5,5,5}};
+    shared.indices = {{0,1,2},{1,0,3}};
+    sources.push_back(shared);
+    shared.indices.push_back({0,1,4});
+    sources.push_back(shared);
+    shared.indices = {{0,2,1},{3,4,5}};
+    sources.push_back(shared);
+    std::swap(shared.indices[0],shared.indices[1]);
+    sources.push_back(shared);
+    sources.push_back(its_make_cube(1,2,3));
+    for (size_t i = 0; i < sources.size(); ++i) {
+        DYNAMIC_SECTION("Topology case " << i) {
+            const TriangleMesh mesh(sources[i]);
+            require_generic_topology_stats(mesh);
+        }
+    }
+}
+
 TEST_CASE("Split empty mesh", "[its_split][its]") {
     using namespace Slic3r;
 

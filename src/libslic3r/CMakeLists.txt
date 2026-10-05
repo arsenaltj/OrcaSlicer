@@ -22,6 +22,8 @@ option(BUILD_SHARED_LIBS "Build shared libs" OFF)
 option(USE_SLIC3R_CONSOLE_LOG "Enable console logging in RelWithDebInfo builds" OFF)
 
 set(lisbslic3r_sources
+    Sha256Digest.cpp
+    Sha256Digest.hpp
     AABBMesh.cpp
     AABBMesh.hpp
     AABBTreeIndirect.hpp
@@ -656,7 +658,8 @@ if (TARGET OpenVDB::openvdb)
 endif()
 
 if(WIN32)
-    target_link_libraries(libslic3r PRIVATE Psapi.lib bcrypt.lib)
+    # The streaming digest's OpenSSL fallback also needs its static CAPI engine.
+    target_link_libraries(libslic3r PRIVATE Psapi.lib bcrypt.lib Crypt32.lib)
 endif()
 
 if(SLIC3R_PROFILE)

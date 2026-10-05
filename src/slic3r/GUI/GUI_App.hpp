@@ -247,6 +247,7 @@ private:
     enum class StartupStage { Waiting, Runtime, Context, Canvas, Fonts, FirstFrame, Finish, Reveal, Ready, Failed, Closing };
     StartupStage    m_startup_stage { StartupStage::Waiting };
     wxTimer         m_startup_timer;
+    wxTimer         m_ui_latency_timer; // Opt-in diagnostics; never changes UI scheduling.
     wxWeakRef<wxWindow> m_startup_loading;
     wxWeakRef<wxWindow> m_startup_frame;
     std::chrono::steady_clock::time_point m_startup_started;

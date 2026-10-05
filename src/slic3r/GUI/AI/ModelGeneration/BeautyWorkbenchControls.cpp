@@ -21,6 +21,7 @@
 #include <wx/menu.h>
 #include <wx/dialog.h>
 #include <algorithm>
+#include <chrono>
 
 namespace Slic3r::GUI {
 namespace {
@@ -71,33 +72,16 @@ void write_metadata(const boost::filesystem::path& model,const nlohmann::json& m
     } catch(...) {boost::system::error_code ignored;boost::filesystem::remove(temporary,ignored);throw;}
 }
 
-void write_draft_metadata(const boost::filesystem::path& model, const nlohmann::json& value,
-                          const std::atomic<bool>* canceled = nullptr,
-                          const std::atomic<uint64_t>* generation = nullptr,
-                          uint64_t expected_generation = 0)
+void write_draft_metadata(const boost::filesystem::path& model, const nlohmann::json& value)
 {
     const auto metadata=AI::beauty_metadata_path(model,boost::filesystem::path(data_dir())/"generated_models");
     const auto path=draft_metadata_path(metadata);
     const auto temporary=path.parent_path()/boost::filesystem::unique_path("beauty-draft-%%%%-%%%%.tmp");
     try {
-        const auto current = [&] {
-            return (!canceled || !canceled->load()) &&
-                (!generation || generation->load() == expected_generation);
-        };
-        if (!current()) throw std::runtime_error("Beauty draft write cancelled.");
         boost::filesystem::ofstream output(temporary,std::ios::binary);
-        const auto bytes=nlohmann::json{{"beauty_puzzle_draft", value}}.dump();
-        constexpr size_t chunk=64*1024;
-        for(size_t offset=0;offset<bytes.size();offset+=chunk) {
-            if(!current())throw std::runtime_error("Beauty draft write cancelled.");
-            output.write(bytes.data()+offset,std::streamsize(std::min(chunk,bytes.size()-offset)));
-        }
+        output << nlohmann::json{{"beauty_puzzle_draft", value}}.dump();
         output.close();
         if(!output)throw std::runtime_error("Cannot save the puzzle draft. Check disk space and permissions.");
-        // A reset/model switch can invalidate this request while the file is
-        // being serialized. Never publish an obsolete snapshot after that
-        // point; the next queued request owns the final state.
-        if(!current())throw std::runtime_error("Beauty draft write cancelled.");
         boost::filesystem::rename(temporary,path);
     } catch(...) {boost::system::error_code ignored;boost::filesystem::remove(temporary,ignored);throw;}
 }
@@ -108,6 +92,21 @@ void remove_draft_metadata(const boost::filesystem::path& model)
     boost::system::error_code error;
     boost::filesystem::remove(draft_metadata_path(metadata),error);
     if (error) throw std::runtime_error("Cannot remove the beauty draft: " + error.message());
+}
+
+nlohmann::json encode_workbench_record(const AI::BeautyDocument& document,
+                                       const AI::BeautyPuzzle& puzzle,
+                                       const std::optional<AI::BeautyEditRegions>& regions,
+                                       const std::string& base_file,
+                                       const std::string& base_hash,
+                                       const std::string& identity,
+                                       const std::optional<AI::BeautyGuidance>& guidance)
+{
+    auto result=document.encode();result["puzzle"]=puzzle.encode();result["puzzle_base_file"]=base_file;
+    result["puzzle_base_sha256"]=base_hash;
+    if(regions)result["edit_regions"]=regions->encode();
+    if(guidance)result["guidance"]=guidance->encode(identity,base_hash);
+    return result;
 }
 }
 BeautyWorkbenchControls::BeautyWorkbenchControls(wxWindow* parent,ModelPreview3D* model,AI::IPrintablePaletteProvider& palette,std::function<void()> layout_changed)
@@ -150,7 +149,7 @@ BeautyWorkbenchControls::BeautyWorkbenchControls(wxWindow* parent,ModelPreview3D
     reset_button=new wxButton(this,wxID_ANY,_L("放弃未保存修改"));root->Add(reset_button,0,wxEXPAND);
     reset_button->Bind(wxEVT_BUTTON,[this](wxCommandEvent&){
         if(!editable || !dirty)return;
-        try {invalidate_draft_queue();remove_draft_metadata(source);auto metadata=read_metadata(source);metadata.erase("beauty_puzzle_draft");write_metadata(source,metadata);
+        try {flush_drafts();remove_draft_metadata(source);auto metadata=read_metadata(source);metadata.erase("beauty_puzzle_draft");write_metadata(source,metadata);
             identity.clear();dirty=false;synchronize(source,true,true);
         }catch(const std::exception& e){message(wxString::FromUTF8(e.what()));}
     });
@@ -194,48 +193,23 @@ BeautyWorkbenchControls::BeautyWorkbenchControls(wxWindow* parent,ModelPreview3D
     };
     preview->m_puzzle_undo=[this](bool forward){restore(forward);};
     Bind(wxEVT_TIMER,[this](wxTimerEvent&){tick();});timer.Start(200);
-    draft_worker=std::thread([this] {
-        for (;;) {
-            DraftRequest request;
-            {
-                std::unique_lock<std::mutex> lock(draft_mutex);
-                draft_cv.wait(lock,[this] {
-                    return draft_cancel.load() || !draft_cleanup_pending.empty() || draft_pending.has_value();
-                });
-                if (!draft_cleanup_pending.empty()) {
-                    request=std::move(draft_cleanup_pending.front());
-                    draft_cleanup_pending.pop_front();
-                } else {
-                    if (draft_cancel.load()) return;
-                    request=std::move(*draft_pending);
-                    draft_pending.reset();
-                }
-            }
-            if (!request.durable_cleanup &&
-                (draft_cancel.load() || request.generation!=draft_generation.load())) continue;
+    draft_queue=std::make_unique<BeautyDraftQueue>([](const BeautyDraftQueue::Request& request) {
+        if(request.recognition) {
+            // Recognition is advisory. Keep draft persistence errors separate
+            // from a failure to cache this optional result.
             try {
-                const auto current = [this, &request] {
-                    return request.durable_cleanup ||
-                        (!draft_cancel.load() && request.generation == draft_generation.load());
-                };
-                if (!current()) continue;
-                if (request.remove) {
-                    remove_draft_metadata(request.model);
-                    if (request.clear_legacy && current()) {
-                        auto metadata=read_metadata(request.model);
-                        if (!current()) continue;
-                        if (metadata.erase("beauty_puzzle_draft")) write_metadata(request.model,metadata);
-                    }
-                } else {
-                    write_draft_metadata(request.model,request.record,&draft_cancel,
-                                         &draft_generation,request.generation);
-                }
-            } catch (const std::exception& error) {
-                if (request.durable_cleanup ||
-                    (!draft_cancel.load() && request.generation == draft_generation.load()))
-                    BOOST_LOG_TRIVIAL(warning)<<"Cannot persist beauty draft asynchronously: "<<error.what();
+                auto metadata=read_metadata(request.model);
+                for(auto it=request.record.begin();it!=request.record.end();++it)
+                    metadata[it.key()]=it.value();
+                write_metadata(request.model,metadata);
+            }catch(const std::exception& e){BOOST_LOG_TRIVIAL(warning)<<"Cannot persist recognition result: "<<e.what();}
+        } else if(request.remove) {
+            remove_draft_metadata(request.model);
+            if(request.clear_legacy) {
+                auto metadata=read_metadata(request.model);
+                if(metadata.erase("beauty_puzzle_draft"))write_metadata(request.model,metadata);
             }
-        }
+        } else write_draft_metadata(request.model,request.record);
     });
 }
 std::vector<size_t> BeautyWorkbenchControls::selected_faces() const {
@@ -244,7 +218,7 @@ std::vector<size_t> BeautyWorkbenchControls::selected_faces() const {
 }
 std::array<float,4> BeautyWorkbenchControls::selected_color() const {
     return edit_regions?edit_regions->representative_color(puzzle,*surface,selected):
-        puzzle.representative_color(selected,*surface);
+        puzzle.representative_color_on_validated_surface(selected,*surface);
 }
 void BeautyWorkbenchControls::restore_selected_color() {
     if(selected==none || !surface)return;
@@ -258,7 +232,7 @@ void BeautyWorkbenchControls::restore_selected_color() {
                 next.clear_color(restored);
             } else {
                 const auto target=edit_regions->source_region_color(original,*surface,selected);
-                next.paint_faces_filament(selected_faces(),*surface,next.nearest_filament(target));
+                next.paint_faces_target(selected_faces(),*surface,target);
             }
         } else next.restore_source_color(selected,*surface);
         commit(std::move(next),selected);
@@ -348,7 +322,9 @@ void BeautyWorkbenchControls::change_color() {
         if(mixed!=palette.mixed_recipes.end() && std::none_of(next.mixed_recipes.begin(),next.mixed_recipes.end(),
             [&](const auto& recipe){return recipe.existing_virtual_slot==mixed->existing_virtual_slot;}))
             next.mixed_recipes.push_back(*mixed);
-        next.paint_faces_filament(selected_faces(),*surface,slot);
+        if(chosen_slot==SIZE_MAX)
+            next.paint_faces_target(selected_faces(),*surface,{color.Red()/255.f,color.Green()/255.f,color.Blue()/255.f,1});
+        else next.paint_faces_filament(selected_faces(),*surface,slot);
     }
     else if(next.palette.empty())next.paint(selected,{color.Red()/255.f,color.Green()/255.f,color.Blue()/255.f,1});
     else if(mixed!=palette.mixed_recipes.end())next.paint_mixed(selected,*mixed);
@@ -426,20 +402,36 @@ void BeautyWorkbenchControls::more_actions() {
 BeautyWorkbenchControls::~BeautyWorkbenchControls() {
     timer.Stop();
     if(task)task->canceled=true;
+    const auto join_started=std::chrono::steady_clock::now();
     if(worker.joinable())worker.join();
-    draft_cancel=true;
-    { std::lock_guard<std::mutex> lock(draft_mutex); draft_pending.reset(); }
-    draft_cv.notify_all();
-    if(draft_worker.joinable())draft_worker.join();
+    if(task)BOOST_LOG_TRIVIAL(info)<<"Beauty preparation shutdown join: elapsed_ms="<<
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-join_started).count();
+    // Finish the last edit and any accepted-version cleanup before shutdown.
+    const auto flush_started=std::chrono::steady_clock::now();
+    draft_queue->flush();
+    BOOST_LOG_TRIVIAL(info)<<"Beauty draft shutdown flush: elapsed_ms="<<
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-flush_started).count();
+    const auto error=draft_queue->take_error();
+    if(!error.empty())BOOST_LOG_TRIVIAL(warning)<<"Cannot persist beauty draft: "<<error;
+    draft_queue.reset();
 }
 void BeautyWorkbenchControls::message(const wxString& text) {
     status->SetLabel(text);status->Wrap(FromDIP(250));Layout();changed();
 }
 void BeautyWorkbenchControls::synchronize(const boost::filesystem::path& path,bool enabled,bool visible) {
     editable=enabled;
+    // A new asset can arrive while the workbench is hidden or temporarily disabled.
+    // Retire its old preparation before a timer tick can publish the result.
+    if(task)task->cancel_if_changed(path,preview->geometry_id());
     if(enabled && (path!=source || identity!=preview->geometry_id())) {
+        try {flush_drafts();}
+        catch(const std::exception& error) {
+            editable=false;Enable(false);preview->set_puzzle_enabled(false,false);
+            status->SetLabel(_L("草稿保存失败，请恢复磁盘空间或权限后重试：")+wxString::FromUTF8(error.what()));
+            status->Wrap(FromDIP(250));Layout();
+            return;
+        }
         if(surface){cached_surface=surface;cached_base_colors=std::move(base_colors);cached_base_hash=base_hash;}
-        invalidate_draft_queue();
         source=path;identity=preview->geometry_id();failed=false;surface.reset();document={};puzzle={};edit_regions.reset();
         base_colors.clear();semantic_labels.clear();semantic_names.clear();eye_details.clear();eye_shapes.clear();guidance_ready=false;guidance_requested=false;original_view->SetValue(false);undo.clear();redo.clear();selected=none;dirty=false;saved_puzzle={};saved_edit_regions.reset();regroup_requested=false;
         if(task)task->canceled=true;
@@ -475,18 +467,35 @@ void BeautyWorkbenchControls::tick() {
     // the document identity. Restore the display once its new editor is ready.
     if(editable && surface && !task && identity==preview->geometry_id() &&
        !preview->puzzle_display_ready() && preview->beauty_editor())render(true);
-    if(task && task->done) {
+    const auto selection_editor=preview->beauty_editor();
+    const bool selection_failed=preview->region_selection_failed();
+    if(task && selection_failed)task->canceled=true;
+    if(task && task->done && !task->waits_for_selection(bool(selection_editor),selection_failed,
+                                                     source,identity,preview->geometry_id())) {
         if(worker.joinable())worker.join();
         auto completed=std::move(task);
-        if(!completed->canceled) {
-            // Persist successful and empty recognition independently of edits.
-            // Failure is recorded separately and must never masquerade as saved guidance.
-            if(!completed->recognition_attempt.is_null())try {
-                auto metadata=read_metadata(source);
-                if(completed->guidance_ready)metadata["beauty_guidance"]=AI::BeautyGuidance{completed->semantic_labels,completed->eye_details,completed->eye_shapes,completed->semantic_names}.encode(identity,completed->base_hash);
-                if(!completed->recognition_attempt.is_null())metadata["beauty_recognition"]=completed->recognition_attempt;
-                write_metadata(source,metadata);
-            }catch(const std::exception& e){BOOST_LOG_TRIVIAL(warning)<<"Cannot persist recognition result: "<<e.what();}
+        const bool current=completed->accepts(source,identity,preview->geometry_id(),bool(selection_editor)) && !selection_failed;
+        const bool source_matches=current && (completed->display?
+            completed->display->rebind_identical_mesh(completed->source_geometry.mesh(),selection_editor->mesh()):
+            completed->source_geometry.matches_geometry(selection_editor->mesh()));
+        const bool accepted=current && source_matches;
+        if(current && !source_matches) {
+            failed=!surface;
+            message(_L("分区未完成，已保留原设置：")+wxString::FromUTF8("Prepared source geometry changed; reload the model."));
+        }
+        BOOST_LOG_TRIVIAL(info)<<"Beauty preparation result: accepted="<<accepted<<
+            ", canceled="<<completed->canceled.load()<<", model_matches="<<(source==completed->model)<<
+            ", geometry_matches="<<(identity==completed->geometry_id && identity==preview->geometry_id())<<", source_matches="<<source_matches;
+        if(accepted) {
+            // Queue accepted recognition behind draft writes. The worker has
+            // already encoded guidance so large metadata never blocks repaint.
+            if(!completed->recognition_record.is_null()) {
+                BeautyDraftQueue::Request request;
+                request.model=source;
+                request.record=std::move(completed->recognition_record);
+                request.recognition=true;
+                draft_queue->submit(std::move(request));
+            }
             if(!completed->error.empty()) {failed=!surface;preview->set_puzzle_enabled(editable,bool(surface));Enable(editable && bool(surface));message(_L("分区未完成，已保留原设置：")+wxString::FromUTF8(completed->error));}
             else if(completed->regroup || completed->guidance_only) {
                 if(completed->guidance_ready) {
@@ -514,13 +523,15 @@ void BeautyWorkbenchControls::tick() {
                 dirty=!layers_equal(puzzle,edit_regions,saved_puzzle,saved_edit_regions);
                 if(completed->upgraded)undo.push_back({std::move(completed->before_upgrade),edit_regions,none});
                 if(dirty)try {save_draft(puzzle,edit_regions);}catch(const std::exception& e) {BOOST_LOG_TRIVIAL(warning)<<"Cannot persist automatic palette draft: "<<e.what();}
-                preview->set_beauty_surface(surface);preview->set_puzzle_enabled(editable);Enable(editable);update_gesture();render(true);
+                preview->set_beauty_surface(surface);preview->set_puzzle_enabled(editable);Enable(editable);update_gesture();
+                render(true,completed->display?&*completed->display:nullptr);
             }
         }
     }
     if(!editable || failed || (surface && !regroup_requested && !guidance_requested) || task || source.empty() || identity!=preview->geometry_id())return;
-    const auto editor=preview->beauty_editor();if(!editor)return;
-    task=std::make_shared<Preparation>();shown_stage=-1;preview->set_puzzle_enabled(true,false);const auto work=task;const auto path=source;const auto id=identity;
+    const auto geometry=preview->beauty_source();if(!geometry)return;
+    const auto path=source;const auto id=identity;
+    task=std::make_shared<Preparation>(path,id,geometry);shown_stage=-1;preview->set_puzzle_enabled(true,false);const auto work=task;
     work->regroup=regroup_requested;work->guidance_only=guidance_requested;regroup_requested=false;guidance_requested=false;Enable(false);
     const auto current_puzzle=puzzle;
     const auto palette=palette_provider.printable_palette();
@@ -533,13 +544,15 @@ void BeautyWorkbenchControls::tick() {
     const auto requests=boost::filesystem::path(data_dir())/"beauty_semantic_requests";
     const auto cache=boost::filesystem::path(data_dir())/"beauty_semantic_cache";
     try {
-        worker=std::thread([work,editor,path,id,current_puzzle,palette,reuse_surface,reuse_colors,reuse_hash,config_path,modules,installed_runtime,requests,cache]{
+        worker=std::thread([work,path,id,current_puzzle,palette,reuse_surface,reuse_colors,reuse_hash,config_path,modules,installed_runtime,requests,cache]{
+            const auto started=std::chrono::steady_clock::now();
+            const auto& geometry=work->source_geometry;
             try {
                 auto metadata=read_metadata(path);auto record=metadata.value("beauty_workbench",nlohmann::json::object());
                 const auto saved_record=record;
                 if(metadata.contains("beauty_puzzle_draft")){record=metadata["beauty_puzzle_draft"];work->draft=true;}
-                if(!record.empty())work->document=AI::BeautyDocument::decode(record,id,editor->mesh().indices.size());
-                else {work->document.geometry_id=id;work->document.face_count=editor->mesh().indices.size();}
+                if(!record.empty())work->document=AI::BeautyDocument::decode(record,id,geometry.mesh().indices.size());
+                else {work->document.geometry_id=id;work->document.face_count=geometry.mesh().indices.size();}
                 work->base_file=record.value("puzzle_base_file",path.filename().string());
                 const boost::filesystem::path name(work->base_file);
                 if(work->base_file.find_first_of("/\\:")!=std::string::npos || name.has_parent_path() || name.filename()!=name || name.extension()!=".glb")throw std::runtime_error("Invalid puzzle base model reference.");
@@ -547,7 +560,7 @@ void BeautyWorkbenchControls::tick() {
                 if(boost::filesystem::is_symlink(base) || boost::filesystem::canonical(base).parent_path()!=boost::filesystem::canonical(path.parent_path()))throw std::runtime_error("Invalid puzzle base model location.");
                 work->base_hash=AI::model_artifact_sha256(base);
                 if(work->base_hash.empty() || work->base_hash!=record.value("puzzle_base_sha256",work->base_hash))throw std::runtime_error("The original puzzle texture is missing or changed.");
-                work->base_colors=editor->vertex_colors();
+                work->base_colors=geometry.colors();
                 const bool reusable=reuse_surface && reuse_surface->geometry_id==id && reuse_hash==work->base_hash &&
                     (work->document.face_patch.empty() || work->document.face_patch==reuse_surface->face_patch);
                 if(reusable)work->base_colors=reuse_colors;
@@ -557,7 +570,7 @@ void BeautyWorkbenchControls::tick() {
                     if(AI::SurfaceSelectionPersistence::geometry_fingerprint(mesh.its)!=id)throw std::runtime_error("The original puzzle surface no longer matches.");
                     work->base_colors=std::move(info.vertex_colors);
                 }
-                work->surface=reusable?reuse_surface:AI::BeautySurface::build(editor->mesh(),work->base_colors,work->document.face_patch,[work]{return work->canceled.load();});
+                work->surface=reusable?reuse_surface:AI::BeautySurface::build_for_appearance(geometry.mesh(),work->base_colors,work->document.face_patch,[work]{return work->canceled.load();});
                 work->document.face_patch=work->surface->face_patch;
                 bool fresh_partition=!record.contains("puzzle");
                 {
@@ -568,8 +581,8 @@ void BeautyWorkbenchControls::tick() {
                         try {
                             const auto hints=metadata.contains("beauty_guidance")?metadata.at("beauty_guidance"):record.value("guidance",nlohmann::json{});
                             if(!hints.is_null()) {
-                                auto saved=AI::BeautyGuidance::decode(hints,id,work->base_hash,editor->mesh().indices.size());
-                                if(saved.completed(editor->mesh().indices.size())) {
+                                auto saved=AI::BeautyGuidance::decode(hints,id,work->base_hash,geometry.mesh().indices.size());
+                                if(saved.completed(geometry.mesh().indices.size())) {
                                     work->notice=saved.has_features()?"restored":"no_details";
                                     labels=std::move(saved.labels);work->semantic_names=std::move(saved.names);work->eye_details=std::move(saved.details);work->eye_shapes=std::move(saved.eyes);work->guidance_ready=true;
                                 }
@@ -586,7 +599,7 @@ void BeautyWorkbenchControls::tick() {
                         if(LocalSemanticWorker::read_runtime_configuration(config_path,installed_runtime,config,reason) && config.enabled) {
                             boost::filesystem::create_directories(requests);owned=requests/boost::filesystem::unique_path("beauty-%%%%-%%%%-%%%%");
                             if(!boost::filesystem::create_directory(owned))throw std::runtime_error("Cannot create local recognition request.");
-                            auto analyzed=LocalSemanticWorker::analyze(config,modules,owned,base,editor->mesh(),work->canceled,cache);
+                            auto analyzed=LocalSemanticWorker::analyze(config,modules,owned,base,geometry.mesh(),work->canceled,cache);
                             if(analyzed.process.status==LocalSemanticWorker::Status::Ready) {
                                 auto guidance=AI::beauty_feature_guidance(analyzed.evidence,work->surface.get());
                                 labels=std::move(guidance.labels);work->semantic_names=std::move(guidance.names);
@@ -594,7 +607,7 @@ void BeautyWorkbenchControls::tick() {
                                 int32_t detail_id=int32_t(work->semantic_names.size());
                                 for(auto& eye:work->eye_shapes) {
                                     auto detail=eye.iris_faces.empty()?
-                                        AI::BeautyEyeDetail::dark_region(editor->mesh(),work->base_colors,*work->surface,eye.aperture_faces):eye.iris_faces;
+                                        AI::BeautyEyeDetail::dark_region(geometry.mesh(),work->base_colors,*work->surface,eye.aperture_faces):eye.iris_faces;
                                     if(!detail.empty()) {
                                         eye.iris_faces=detail;
                                         for(size_t f:detail)labels[f]=detail_id;
@@ -617,13 +630,13 @@ void BeautyWorkbenchControls::tick() {
                     if(work->canceled)throw std::runtime_error("Puzzle preparation cancelled.");
                     if(!restore && !work->regroup && !work->guidance_only) {
                         AI::BeautyGuidance refined{labels,work->eye_details,work->eye_shapes,work->semantic_names};
-                        AI::beauty_refine_mouth_guidance(*work->surface,AI::beauty_source_face_colors(editor->mesh(),work->base_colors),refined);
+                        AI::beauty_refine_mouth_guidance(*work->surface,AI::beauty_source_face_colors(geometry.mesh(),work->base_colors),refined);
                         labels=std::move(refined.labels);work->semantic_names=std::move(refined.names);
                     }
                     work->stage=2;
                     if(work->guidance_only)work->puzzle=current_puzzle;
                     else if(restore) {
-                        work->puzzle=AI::BeautyPuzzle::decode(record["puzzle"],id,editor->mesh().indices.size());
+                        work->puzzle=AI::BeautyPuzzle::decode(record["puzzle"],id,geometry.mesh().indices.size());
                         if(work->guidance_ready && !work->recognition_attempt.is_null() && std::any_of(labels.begin(),labels.end(),[](int32_t n){return n>=0;})) {
                             auto automatic=AI::BeautyPuzzle::create_regions(*work->surface,{},[work]{return work->canceled.load();});
                             automatic.match_filaments(*work->surface,work->puzzle.palette,work->puzzle.mixed_recipes);
@@ -644,15 +657,17 @@ void BeautyWorkbenchControls::tick() {
                             for(uint32_t piece:ids) {
                                 if(current_puzzle.filament_slots.count(entry.first))work->puzzle.paint_filament(piece,current_puzzle.filament_slots.at(entry.first));
                                 else work->puzzle.paint(piece,entry.second);
+                                if(current_puzzle.target_colors.count(entry.first))
+                                    work->puzzle.target_colors[piece]=current_puzzle.target_colors.at(entry.first);
                             }
                         }
                     }
                 }
-                if(saved_record.contains("puzzle"))work->saved_puzzle=AI::BeautyPuzzle::decode(saved_record["puzzle"],id,editor->mesh().indices.size());
+                if(saved_record.contains("puzzle"))work->saved_puzzle=AI::BeautyPuzzle::decode(saved_record["puzzle"],id,geometry.mesh().indices.size());
                 else work->saved_puzzle=work->draft?AI::BeautyPuzzle{}:work->puzzle;
                 if(saved_record.contains("edit_regions"))
                     work->saved_edit_regions=AI::BeautyEditRegions::decode(saved_record.at("edit_regions"),id,
-                        work->base_hash,editor->mesh().indices.size());
+                        work->base_hash,geometry.mesh().indices.size());
                 // A new model keeps its original texture until the user chooses
                 // whole-model filament matching. Existing matches follow project changes.
                 if(!work->puzzle.palette.empty())
@@ -660,8 +675,26 @@ void BeautyWorkbenchControls::tick() {
                 work->puzzle.validate(*work->surface);
                 if(record.contains("edit_regions"))
                     work->edit_regions=AI::BeautyEditRegions::decode(record.at("edit_regions"),id,
-                        work->base_hash,editor->mesh().indices.size());
+                        work->base_hash,geometry.mesh().indices.size());
+                if(!work->regroup && !work->guidance_only)
+                    work->display=ModelPreviewPuzzle::prepare_initial(geometry.mesh(),work->base_colors,*work->surface,
+                        work->puzzle,none,work->edit_regions?&work->edit_regions->face_region:nullptr,
+                        [work]{return work->canceled.load();});
             } catch(const std::exception& e) {work->error=e.what();}
+            if(!work->recognition_attempt.is_null())try {
+                work->recognition_record={{"beauty_recognition",work->recognition_attempt}};
+                if(work->guidance_ready)
+                    work->recognition_record["beauty_guidance"]=AI::BeautyGuidance{
+                        work->semantic_labels,work->eye_details,work->eye_shapes,work->semantic_names
+                    }.encode(id,work->base_hash);
+            }catch(const std::exception& e){
+                work->recognition_record=nullptr;
+                BOOST_LOG_TRIVIAL(warning)<<"Cannot encode recognition result: "<<e.what();
+            }
+            BOOST_LOG_TRIVIAL(info)<<"Beauty preparation worker: elapsed_ms="<<
+                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-started).count()<<
+                ", canceled="<<work->canceled.load()<<", failed="<<!work->error.empty()<<
+                ", regroup="<<work->regroup<<", guidance_only="<<work->guidance_only;
             work->done=true;
         });
     } catch(const std::exception& e) {task.reset();failed=true;message(wxString::FromUTF8(e.what()));}
@@ -692,9 +725,30 @@ void BeautyWorkbenchControls::stroke(const std::vector<size_t>& faces) {
 }
 nlohmann::json BeautyWorkbenchControls::record(const AI::BeautyPuzzle& value,
                                                 const std::optional<AI::BeautyEditRegions>& regions) const {
-    auto result=document.encode();result["puzzle"]=value.encode();result["puzzle_base_file"]=base_file;result["puzzle_base_sha256"]=base_hash;
-    if(regions)result["edit_regions"]=regions->encode();
-    if(guidance_ready)result["guidance"]=AI::BeautyGuidance{semantic_labels,eye_details,eye_shapes,semantic_names}.encode(identity,base_hash);return result;
+    const auto guidance=guidance_ready?
+        std::optional<AI::BeautyGuidance>{AI::BeautyGuidance{semantic_labels,eye_details,eye_shapes,semantic_names}}:
+        std::nullopt;
+    return encode_workbench_record(document,value,regions,base_file,base_hash,identity,guidance);
+}
+std::function<nlohmann::json()> BeautyWorkbenchControls::capture_record(
+    const AI::BeautyPuzzle& value,const std::optional<AI::BeautyEditRegions>& regions) const {
+    // The encoder owns every value it will read after the UI changes models.
+    auto draft_document=document;
+    auto draft_puzzle=value;
+    auto draft_regions=regions;
+    auto draft_base_file=base_file;
+    auto draft_base_hash=base_hash;
+    auto draft_identity=identity;
+    auto draft_guidance=guidance_ready?
+        std::optional<AI::BeautyGuidance>{AI::BeautyGuidance{semantic_labels,eye_details,eye_shapes,semantic_names}}:
+        std::nullopt;
+    return [draft_document=std::move(draft_document),draft_puzzle=std::move(draft_puzzle),
+            draft_regions=std::move(draft_regions),draft_base_file=std::move(draft_base_file),
+            draft_base_hash=std::move(draft_base_hash),draft_identity=std::move(draft_identity),
+            draft_guidance=std::move(draft_guidance)] {
+        return encode_workbench_record(draft_document,draft_puzzle,draft_regions,draft_base_file,
+                                       draft_base_hash,draft_identity,draft_guidance);
+    };
 }
 bool BeautyWorkbenchControls::layers_equal(const AI::BeautyPuzzle& left,
                                             const std::optional<AI::BeautyEditRegions>& left_regions,
@@ -708,25 +762,24 @@ bool BeautyWorkbenchControls::layers_equal(const AI::BeautyPuzzle& left,
 void BeautyWorkbenchControls::save_draft(const AI::BeautyPuzzle& value,
                                           const std::optional<AI::BeautyEditRegions>& regions) {
     if(identity!=preview->geometry_id())throw std::runtime_error("The model changed; reload before editing.");
-    DraftRequest request;
+    BeautyDraftQueue::Request request;
     request.model=source;
-    request.generation=draft_generation.load();
     if(layers_equal(value,regions,saved_puzzle,saved_edit_regions)) {
         request.remove=true;
         // Migrate the pre-sidecar format lazily when the draft returns to the
         // accepted state. This is rare compared with ordinary edit commits.
         request.clear_legacy=true;
     } else {
-        request.record=record(value,regions);
+        request.prepare_record=capture_record(value,regions);
     }
-    { std::lock_guard<std::mutex> lock(draft_mutex); draft_pending=std::move(request); }
-    draft_cv.notify_one();
+    draft_queue->submit(std::move(request));
 }
-void BeautyWorkbenchControls::invalidate_draft_queue() {
-    draft_generation.fetch_add(1);
-    { std::lock_guard<std::mutex> lock(draft_mutex); draft_pending.reset(); }
-    draft_cv.notify_one();
+void BeautyWorkbenchControls::flush_drafts() {
+    draft_queue->flush();
+    const auto error=draft_queue->take_error();
+    if(!error.empty())throw std::runtime_error(error);
 }
+
 void BeautyWorkbenchControls::trim(std::vector<Snapshot>& stack) {
     const size_t bytes_per_face=edit_regions?sizeof(uint32_t)*2:sizeof(uint32_t);
     const size_t limit=std::min(size_t(16),std::max(size_t(1),size_t(24*1024*1024)/std::max(size_t(1),puzzle.face_piece.size()*bytes_per_face)));
@@ -757,7 +810,7 @@ void BeautyWorkbenchControls::restore(bool forward) {
         selected=from.back().selected;from.pop_back();dirty=!layers_equal(puzzle,edit_regions,saved_puzzle,saved_edit_regions);render(true);}
     catch(const std::exception& e){message(wxString::FromUTF8(e.what()));}
 }
-void BeautyWorkbenchControls::render(bool repaint) {
+void BeautyWorkbenchControls::render(bool repaint,ModelPreviewPuzzle::Prepared* prepared) {
     if(!surface)return;
     if(surface->boundary_edges || surface->nonmanifold_edges) {
         topology_status->SetLabel(wxString::Format(_L("网格预检：%llu 条开放边，%llu 条非流形边。先处理网格；配色保存不等于可打印。"),
@@ -777,7 +830,7 @@ void BeautyWorkbenchControls::render(bool repaint) {
     if(selected!=none && selected_faces().empty())selected=none;
     if(original_view->GetValue()) {auto original=puzzle;original.colors.clear();preview->show_puzzle(*surface,original,base_colors,none,repaint,false);}
     else preview->show_puzzle(*surface,puzzle,base_colors,selected,repaint,borders->GetValue(),
-        edit_regions?&edit_regions->face_region:nullptr);
+        edit_regions?&edit_regions->face_region:nullptr,prepared);
     match_button->Enable(editable && puzzle.palette.empty() && !original_view->GetValue() && !preview->selection_busy());
     focus_button->Enable(selected!=none && !original_view->GetValue() && !preview->selection_busy());
     color_button->Enable(selected!=none && !original_view->GetValue());restore_button->Enable(selected!=none && (edit_regions || puzzle.colors.count(selected)));
@@ -804,23 +857,23 @@ void BeautyWorkbenchControls::render(bool repaint) {
     message(palette_hint+wxString::Format(_L("%llu 个区域\n"),static_cast<unsigned long long>(edit_regions?edit_regions->count():puzzle.piece_count()))+(dirty?_L("修改待保存 · "):_L("已保存 · "))+hint);
 }
 void BeautyWorkbenchControls::mark_saved() {
-    try {invalidate_draft_queue();
-        DraftRequest request;request.model=source;request.remove=true;request.clear_legacy=true;request.durable_cleanup=true;
-        { std::lock_guard<std::mutex> lock(draft_mutex); draft_cleanup_pending.push_back(std::move(request)); }
-        draft_cv.notify_one();
-        dirty=false;saved_puzzle=puzzle;saved_edit_regions=edit_regions;}
-    catch(const std::exception& e){message(_L("新版本已保存，但旧草稿清理失败：")+wxString::FromUTF8(e.what()));}
+    try {
+        BeautyDraftQueue::Request request;request.model=source;request.remove=true;request.clear_legacy=true;
+        draft_queue->submit(std::move(request));
+        dirty=false;saved_puzzle=puzzle;saved_edit_regions=edit_regions;
+    } catch(const std::exception& e){message(_L("新版本已保存，但旧草稿清理失败：")+wxString::FromUTF8(e.what()));}
+}
+
+BeautyWorkbenchControls::SaveCapture BeautyWorkbenchControls::capture_save() const {
+    if(!surface || source.empty() || !dirty)throw std::runtime_error("请先修改拼图，再保存新版本。");
+    return {capture_record(puzzle,edit_regions),surface};
 }
 void BeautyWorkbenchControls::prepare_options(AI::ModelFinishingOptions& options,const AI::SurfaceSelectionPersistence::SelectionState&) {
     if(!surface || source.empty() || !dirty)throw std::runtime_error("请先修改拼图，再保存新版本。");
     options.beauty_puzzle=true;options.beauty_appearance=false;options.beauty_deform=false;
     options.beauty_document=record(puzzle,edit_regions);options.beauty_surface=surface;
-    options.appearance.face_weights.assign(puzzle.face_piece.size(),0);options.appearance.face_target_colors.resize(puzzle.face_piece.size());
-    for(size_t f=0;f<puzzle.face_piece.size();++f) {
-        const auto c=puzzle.colors.find(puzzle.face_piece[f]);if(c==puzzle.colors.end())continue;
-        options.selected_faces.push_back(f);options.appearance.face_weights[f]=1;
-        options.appearance.face_target_colors[f]={c->second[0],c->second[1],c->second[2]};
-    }
+    // finish_puzzle_artifact validates this record and rebuilds the paint mask
+    // on its worker thread. The appearance/selection arrays are unused there.
 }
 nlohmann::json BeautyWorkbenchControls::accepted_document(const AI::ModelFinishingOptions& options,const std::string& output_geometry) {
     auto result=options.beauty_document;result["geometry_id"]=output_geometry;
@@ -832,7 +885,7 @@ void BeautyWorkbenchControls::prepare_import(const boost::filesystem::path& path
     const auto& record=metadata.at("beauty_workbench");
     if(!record.contains("puzzle"))return;
     const auto schema=record.at("puzzle").value("schema",std::string{});
-    if(schema!="orca.beauty-puzzle/v2" && schema!="orca.beauty-puzzle/v3")return;
+    if(schema!="orca.beauty-puzzle/v2" && schema!="orca.beauty-puzzle/v3" && schema!="orca.beauty-puzzle/v4")return;
     const auto& saved=record.at("puzzle");
     const auto puzzle=AI::BeautyPuzzle::decode(saved,record.at("geometry_id").get<std::string>(),saved.at("face_count").get<size_t>());
     AI::ModelMatchedColors matched;

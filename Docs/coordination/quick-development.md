@@ -50,8 +50,26 @@ C++ 逻辑修改增量构建对应 `<suite>_tests`，再按 CTest 标签或名�
 
 ## 每轮只解决一个可见问题
 
-从[当前状态](current-development.md)恢复上下文，指定一个固定样本、预期效果和相关验证范围。默认单 Agent / Astra medium，明确的小改用 low，几何/切片/状态排错用 high；不默认 max/ultra。模型选择由客户端控制，项目文字不会切换活动模型。
+从[当前状态](../../docs/coordination/current-development.md)恢复上下文，指定一个固定样本、预期效果和相关验证范围。默认单 Agent / Astra medium，明确的小改用 low，几何/切片/状态排错用 high；不默认 max/ultra。模型选择由客户端控制，项目文字不会切换活动模型。
 
 先交付可判断效果的试验，方向确认后补齐受影响的稳定性收尾。导入、保存、撤销、切片变化仍验证对应行为；Windows 之外的平台不进入当前本地迭代。独立 Agent 只用于可并行的审查或明确独立子任务，不同时写同一构建目录或操作同一窗口。只在阶段交付时冻结新快照；保留 R101 对照资产，不每轮复制完整运行环境。
 
 每次运行的 `result.json` 自动记录步骤耗时和退出码；比较从提出想法到可见效果的时间、失败/返工次数。当前状态只保留目标、版本、结果、缺口、证据路径；历史大报告不再重复追加当前摘要。已确认的阶段成果可形成明确范围的本地提交，不自动推送。
+
+## 已有 3D 模型离线回归（B.1）
+
+`python scripts/run_beauty_model_regression.py --manifest <私有清单.json> --executable <slic3rutils_tests.exe> --output <全新结果目录>`。清单格式见脚本说明；仅支持 GLB 与自包含顶点色 OBJ，模型路径和真实资产留在忽略目录。记录程序指纹，不自动认证源码版本；固定色板来自原生 BeautyTargetModelProbe，清单条件是证据说明而非修改算法参数。失败、缺报告、哈希不符均非通过，已有目录不覆盖。
+
+脚本回归：`python -m unittest discover -s scripts -p test_beauty_model_regression.py -v`。真实模型结果只证明两条配色路径一致，不证明未见泛化、视觉或实物颜色；任务状态只更新主计划 B.1。
+
+性能基线在同一命令追加 `--repeats 5 --timeout 300`：每个模型独立进程内运行首轮、一次预热、五次热运行，汇总十个原生阶段的中位数和范围，并检查输出签名稳定。先增量构建当前探针；旧测试程序缺少测量报告会失败。输入哈希/复制会预热文件缓存，首轮不叫磁盘冷启动；JSON 往返不含磁盘保存，Windows 峰值工作集覆盖整个测试进程及验证开销，不是单阶段内存。程序/输入指纹和机器条件写入结果，其他平台未取得内存则记为空。
+
+加载优化的同机对照还应比较探针 `loaded_mesh_colors_sha256`（顶点、面和逐顶点 RGBA 的有序字节签名）与最终 `output_sha256`，不能仅凭量化后槽位相同判定原色无变化；字节签名限定同平台/工具链，峰值包含计时外的签名验证内存。
+
+质量诊断在模型回归命令追加 `--quality`（不能同时使用 `--repeats`），生成绑定输入哈希的原生几何/面均色/工作台无识别回退配色数组；不是性能探针的 180 区效果。然后运行 `python scripts/beauty_color_quality.py --manifest <quality/manifest.json> --output <新目录>`，可选 `--renderer-module <与仓库一致的 local_semantic_render.py 副本>`，其旁可复用已构建的 raster DLL 加速。生成固定四视图、面积加权 CIEDE2000 和逐面最近色下界；目标/人工修正及语义标注缺失保留为空，不输出合格判定。测试：`python -m unittest discover -s scripts -p 'test_beauty*.py' -v`。依赖现有 NumPy/Pillow，模型/渲染副本留忽略目录，勿上传私人资产。
+
+同条件分阶段定位可追加 `--quality --quality-stages`：导出 `01-create28`、`02-regularize`、`03-smooth`，每步使用相同配色，并断言末步与工作台回退完整状态一致；`04-ablation-no-regularize` 仅为跳过边界整理、保留初始预算/平滑/配色的测试对照，不是生产开关。各目录的 `manifest.json` 复用同一质量评估命令；另有带哈希的 `components.u32` / `topology.json` 记录表面邻接连通分量。测试访问仅限测试翻译单元，不改变生产头文件可见性。
+
+测试保色候选也随 `--quality-stages` 导出：`05-guard-regularize` 为局部保色后/平滑前，`06-guard-smooth` 为最终候选；`guard.json` 区分撤回、保留与未恢复风险面。用 `BeautyColorGuard` 标签验证候选拓扑/取消行为，现有 `BeautyPuzzle` 均色锯齿用例验证规整保留；这些测试路径不进入生产。未恢复计数包含搜索/迭代预算限制，单次计时不能代替配对性能验收。
+
+`--quality-stages` 的 `07-joint-palette` 为固定色板自动路径的原生联合约束候选；`joint.json` 报告变色区与“所有面不退化”无单色可行解的区域。Python `beauty_color_quality.constrain_region_palette` 是独立对照实现，输入为现有 CIEDE2000 距离、面积、前后区域与色板列索引；不代表人工锁色/换材策略，也不将不可行区域面积当作实际退化面积。

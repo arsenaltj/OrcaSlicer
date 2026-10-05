@@ -6,9 +6,11 @@
 #include "slic3r/AI/Contracts/LocalPrintColorResult.hpp"
 #include "libslic3r/TextureToColor/ColorUtils.hpp"
 #include <functional>
+#include <cstring>
 #include <numeric>
 #include <map>
 #include <memory>
+#include <unordered_map>
 
 namespace Slic3r::GUI::LocalPrintColorMatching {
 using AI::PrintRgb;
@@ -346,11 +348,39 @@ inline Computation compute(const Input& input)
         // each target/slot cost once, then reuse it for all <= 720 assignments.
         std::vector<std::vector<double>> surface_cost(k, std::vector<double>(p, 0));
         std::vector<std::vector<double>> preference_cost(k, std::vector<double>(p, 0));
+        // Reuse expensive CIEDE2000 calculations only for bit-identical face
+        // colors. Rounded RGB8 keys would merge different corner averages.
+        using ColorBits = std::array<uint32_t, 3>;
+        struct ColorBitsHash {
+            size_t operator()(const ColorBits& bits) const noexcept {
+                size_t hash = 0;
+                for (uint32_t component : bits)
+                    hash ^= std::hash<uint32_t>{}(component) + size_t(0x9e3779b9) + (hash << 6) + (hash >> 2);
+                return hash;
+            }
+        };
+        static_assert(sizeof(PrintRgb) == sizeof(ColorBits));
+        constexpr size_t max_cached_colors = 262144;
+        const bool use_cost_cache = faces.size() >= 16384 && source_colors.size() <= faces.size() / 4;
+        std::unordered_map<ColorBits, std::array<double, AI::kMaxPhysicalColorChannels>, ColorBitsHash> cost_cache;
+        if (use_cost_cache) cost_cache.reserve(std::min(max_cached_colors, source_colors.size() * 2));
         for (size_t f = 0; f < faces.size(); ++f) {
             if (f % 4096 == 0 && cancelled()) { computation.cancelled = true; return computation; }
             const size_t t = result.face_targets[f];
+            const std::array<double, AI::kMaxPhysicalColorChannels>* cached = nullptr;
+            if (use_cost_cache) {
+                ColorBits bits;
+                std::memcpy(bits.data(), faces[f].color.data(), sizeof(bits));
+                auto found = cost_cache.find(bits);
+                if (found == cost_cache.end() && cost_cache.size() < max_cached_colors) {
+                    found = cost_cache.try_emplace(bits).first;
+                    for (size_t s = 0; s < p; ++s)
+                        found->second[s] = delta_e(faces[f].color, material_colors[s]);
+                }
+                if (found != cost_cache.end()) cached = &found->second;
+            }
             for (size_t s = 0; s < p; ++s) {
-                const double error = delta_e(faces[f].color, material_colors[s]);
+                const double error = cached ? (*cached)[s] : delta_e(faces[f].color, material_colors[s]);
                 surface_cost[t][s] += (faces[f].area / result.targets[t].area) * error;
                 preference_cost[t][s] += (faces[f].area / total_area + semantic_weight[f]) * error;
             }

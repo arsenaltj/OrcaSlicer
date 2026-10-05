@@ -11,6 +11,8 @@
 #include <type_traits>
 #include <vector>
 
+#include <tbb/parallel_invoke.h>
+
 #include <Eigen/Geometry>
 
 #include "BoundingBox.hpp"
@@ -83,21 +85,21 @@ public:
 	//        Union of bounding boxes at a single level of the AABB tree is used for deciding the longest axis aligned dimension
 	//        to split around.
 	template<typename SourceNode>
-	void build(std::vector<SourceNode> &&input)
+	void build(std::vector<SourceNode> &&input, bool parallel = false)
 	{
-		this->build_modify_input(input);
+		this->build_modify_input(input, parallel);
         input.clear();
 	}
 
 	template<typename SourceNode>
-	void build_modify_input(std::vector<SourceNode> &input)
+	void build_modify_input(std::vector<SourceNode> &input, bool parallel = false)
 	{
         if (input.empty())
 			clear();
 		else {
 			// Allocate enough memory for a full binary tree.
             m_nodes.assign(next_highest_power_of_2(input.size()) * 2 - 1, Node());
-            build_recursive(input, 0, 0, input.size() - 1);
+            build_recursive(input, 0, 0, input.size() - 1, parallel);
 		}
 	}
 
@@ -121,7 +123,7 @@ public:
 private:
 	// Build a balanced tree by splitting the input sequence by an axis aligned plane at a dimension.
 	template<typename SourceNode>
-	void build_recursive(std::vector<SourceNode> &input, size_t node, const size_t left, const size_t right)
+	void build_recursive(std::vector<SourceNode> &input, size_t node, const size_t left, const size_t right, bool parallel)
 	{
         assert(node < m_nodes.size());
         assert(left <= right);
@@ -145,8 +147,16 @@ private:
 		// Insert an inner node into the tree. Inner node does not reference any input entity (triangle, line segment etc).
 		m_nodes[node].idx  = inner;
 		m_nodes[node].bbox = bbox;
-        build_recursive(input, node * 2 + 1, left, center);
-		build_recursive(input, node * 2 + 2, center + 1, right);
+		// Each child owns a disjoint input range and a disjoint subtree in m_nodes.
+		// Keep small trees sequential to avoid task scheduling overhead.
+		if (parallel && right - left + 1 >= 131072) {
+			tbb::parallel_invoke(
+				[&] { build_recursive(input, node * 2 + 1, left, center, true); },
+				[&] { build_recursive(input, node * 2 + 2, center + 1, right, true); });
+		} else {
+			build_recursive(input, node * 2 + 1, left, center, parallel);
+			build_recursive(input, node * 2 + 2, center + 1, right, parallel);
+		}
 	}
 
 	// Partition the input m_nodes <left, right> at "k" and "dimension" using the QuickSelect method:
@@ -675,7 +685,8 @@ inline Tree<3, typename VertexType::Scalar> build_aabb_tree_over_indexed_triangl
 	// Indexed triangle set - triangular faces, references to vertices.
     const std::vector<IndexedFaceType> 	&faces,
 	//FIXME do we want to apply an epsilon?
-    const typename VertexType::Scalar 	 eps = 0)
+    const typename VertexType::Scalar 	 eps = 0,
+    bool parallel_build = false)
 {
     using 				 TreeType 		= Tree<3, typename VertexType::Scalar>;
 //    using				 CoordType      = typename TreeType::CoordType;
@@ -712,7 +723,7 @@ inline Tree<3, typename VertexType::Scalar> build_aabb_tree_over_indexed_triangl
 	}
 
 	TreeType out;
-	out.build(std::move(input));
+	out.build(std::move(input), parallel_build);
 	return out;
 }
 

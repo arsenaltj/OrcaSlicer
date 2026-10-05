@@ -26,12 +26,12 @@ class TriangleMesh;
 // casting and other higher level operations.
 class AABBMesh {
     class AABBImpl;
+    class Topology;
 
     const indexed_triangle_set* m_tm;
 
     std::unique_ptr<AABBImpl> m_aabb;
-    VertexFaceIndex m_vfidx;    // vertex-face index
-    std::vector<Vec3i32> m_fnidx; // face-neighbor index
+    std::shared_ptr<Topology> m_topology;
 
 #ifdef SLIC3R_HOLE_RAYCASTER
     // This holds a copy of holes in the mesh. Initialized externally
@@ -132,8 +132,8 @@ public:
 
     const indexed_triangle_set * get_triangle_mesh() const { return m_tm; }
 
-    const VertexFaceIndex &vertex_face_index() const { return m_vfidx; }
-    const std::vector<Vec3i32> &face_neighbor_index() const { return m_fnidx; }
+    const VertexFaceIndex &vertex_face_index() const;
+    const std::vector<Vec3i32> &face_neighbor_index() const;
 };
 
 

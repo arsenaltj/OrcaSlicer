@@ -21,6 +21,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <string_view>
 
 namespace Slic3r::GUI::ModelGenerationPresentation {
 namespace {
@@ -190,6 +191,54 @@ bool write_json(const boost::filesystem::path& path, const nlohmann::json& value
     stream << value.dump();
     stream.close();
     return stream.good();
+}
+
+namespace {
+template<class Value>
+bool write_json_preencoded(const boost::filesystem::path& path, const nlohmann::json& object,
+                           const std::map<std::string, Value>& encoded)
+{
+    if (!object.is_object()) return false;
+    for (const auto& item : encoded)
+        if (object.contains(item.first) || item.second.empty()) return false;
+    boost::filesystem::ofstream stream(path);
+    if (!stream) return false;
+    stream << '{';
+    bool first = true;
+    auto pending = encoded.begin();
+    const auto field = [&](const std::string& name, std::string_view value) {
+        if (!first) stream << ',';
+        first = false;
+        stream << nlohmann::json(name).dump() << ':' << value;
+    };
+    for (auto it = object.begin(); it != object.end(); ++it) {
+        while (pending != encoded.end() && pending->first < it.key()) {
+            field(pending->first, pending->second);
+            ++pending;
+        }
+        field(it.key(), it.value().dump());
+    }
+    while (pending != encoded.end()) {
+        field(pending->first, pending->second);
+        ++pending;
+    }
+    stream << '}';
+    stream.close();
+    return stream.good();
+}
+}
+
+bool write_json_with_preencoded_field(const boost::filesystem::path& path, const nlohmann::json& object,
+                                      const std::string& key, const std::string& serialized_value)
+{
+    // The single-field compatibility route must not copy a large value.
+    return write_json_preencoded(path, object, std::map<std::string, std::string_view>{{key, serialized_value}});
+}
+
+bool write_json_with_preencoded_fields(const boost::filesystem::path& path, const nlohmann::json& object,
+                                       const std::map<std::string, std::string>& encoded)
+{
+    return write_json_preencoded(path, object, encoded);
 }
 
 bool path_is_inside(const boost::filesystem::path& root, const boost::filesystem::path& candidate)

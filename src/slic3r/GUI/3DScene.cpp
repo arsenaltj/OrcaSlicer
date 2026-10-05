@@ -27,6 +27,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <chrono>
 
 #include <boost/log/trivial.hpp>
 
@@ -828,13 +829,30 @@ int GLVolumeCollection::load_object_volume(
     color.a(model_volume->is_model_part() ? 0.7f : 0.4f);
 
     std::shared_ptr<const TriangleMesh> mesh = model_volume->mesh_ptr();
+    static const bool trace_scene = [] {
+        const char* value = ::getenv("ORCASLICER_SCENE_TIMING");
+        return value != nullptr && value[0] == '1' && value[1] == '\0';
+    }();
+    auto phase_start = trace_scene ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    auto trace_phase = [&](const char* phase) {
+        if (!trace_scene) return;
+        const auto now = std::chrono::steady_clock::now();
+        BOOST_LOG_TRIVIAL(info) << "Scene volume timing: object=" << obj_idx << ", volume=" << volume_idx
+            << ", instance=" << instance_idx << ", faces=" << mesh->its.indices.size()
+            << ", phase=" << phase << ", elapsed_ms="
+            << std::chrono::duration<double, std::milli>(now - phase_start).count()
+            << ", main_thread=" << (wxIsMainThread() ? "true" : "false");
+        phase_start = now;
+    };
     this->volumes.emplace_back(new GLVolume(color));
     GLVolume& v = *this->volumes.back();
     v.set_color(color_from_model_volume(*model_volume));
     v.name = model_volume->name;
 
     v.model.init_from(*mesh);
+    trace_phase("render_geometry");
     if (need_raycaster) { v.mesh_raycaster = std::make_unique<GUI::MeshRaycaster>(mesh); }
+    trace_phase("raycaster");
     v.composite_id = GLVolume::CompositeID(obj_idx, volume_idx, instance_idx);
 
     if (model_volume->is_model_part())
@@ -858,6 +876,8 @@ int GLVolumeCollection::load_object_volume(
         v.model_object_ID = instance->loaded_id;
     else
         v.model_object_ID = instance->id().id;
+
+    trace_phase("volume_metadata");
 
     return int(this->volumes.size() - 1);
 }

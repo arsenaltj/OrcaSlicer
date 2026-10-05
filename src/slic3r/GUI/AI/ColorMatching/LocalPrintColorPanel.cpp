@@ -11,6 +11,8 @@
 #include "slic3r/GUI/AI/ModelGeneration/LocalPrintColorQuality.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/LocalPrintColorBoundaryRefinement.hpp"
 #include "slic3r/GUI/AI/Model/LocalPrintColorState.hpp"
+#include "slic3r/GUI/AI/Model/BeautyPrintColorHandoff.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchControls.hpp"
 #include "slic3r/GUI/AI/Model/LocalSemanticDraft.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/LocalSemanticWorkerClient.hpp"
 #include "slic3r/GUI/Plater.hpp"
@@ -124,6 +126,7 @@ struct LocalPrintColorPanel::Impl {
             checkpoint(); const auto color = dialog.GetColourData().GetColour();
             auto& edits = input.identity.user_overrides;
             const std::set<size_t> selected(faces.begin(), faces.end());
+            BeautyPrintColorHandoff::unlock_faces(input.identity.regions, selected);
             edits.erase(std::remove_if(edits.begin(), edits.end(), [&](const auto& item) { return selected.count(item.first); }), edits.end());
             edits.reserve(edits.size() + faces.size());
             for (size_t face : faces) {
@@ -254,6 +257,7 @@ struct LocalPrintColorPanel::Impl {
         auto colors = std::make_shared<std::vector<RGBA>>();
         auto samples = std::make_shared<std::vector<Matching::FaceSample>>();
         auto restored = std::make_shared<std::optional<AI::LocalPrintColorResult>>();
+        auto beauty = std::make_shared<std::optional<AI::ModelMatchedColors>>();
         auto destination_mesh = std::make_shared<indexed_triangle_set>();
         auto destination_paint = std::make_shared<TriangleSelector::TriangleSplittingData>();
         auto saved_paint_matches = std::make_shared<bool>(!destination.valid());
@@ -280,11 +284,18 @@ struct LocalPrintColorPanel::Impl {
         wxWeakRef<LocalPrintColorPanel> weak(owner);
         worker = std::thread([this, weak, item = AI::GeneratedModelArtifact(item), destination, saved, title, parent_version, prepared, mesh, native, colors, samples, restored,
                               expected_source, expected_paint, expected_config, destination_mesh, destination_paint, saved_paint_matches,
-                              restore_snapshot, restore_bundle, restore_routing, revision]() mutable {
+                              restore_snapshot, restore_bundle, restore_routing, beauty, revision]() mutable {
             std::string error, hash;
             try {
                 hash = AI::model_artifact_sha256(item.local_path);
                 if (!saved.empty() && saved.at("source_sha256") != hash) throw std::runtime_error("Original color asset changed.");
+                // Read accepted metadata before archiving the GLB under its hash:
+                // that copy deliberately has no neighboring history record.
+                if (saved.empty() && !destination.valid()) {
+                    AI::ModelImportRequest request;
+                    BeautyWorkbenchControls::prepare_import(item.local_path, request);
+                    *beauty = std::move(request.matched_colors);
+                }
                 // Generated GLBs can live in a generation download directory.
                 // Keep their original bytes independently of subsequent cleanup.
                 if (AI::model_artifact_format(item.local_path) == "glb") {
@@ -345,7 +356,7 @@ struct LocalPrintColorPanel::Impl {
                 }
             } catch (const std::exception& exception) { error = exception.what(); }
             wxGetApp().CallAfter([this, weak, item, destination, title, parent_version, prepared, mesh, native, colors, samples, hash, error, restored,
-                                   expected_source, expected_paint, expected_config, saved_paint_matches, restore_snapshot, revision] {
+                                   expected_source, expected_paint, expected_config, saved_paint_matches, restore_snapshot, beauty, revision] {
                 if (!weak || stopped || revision != operation_revision) return;
                 if (worker.joinable()) worker.join(); busy = false;
                 if (cancel || !error.empty()) { message(cancel ? _L("已取消，准备页未修改。") : u8(error)); refresh(); return; }
@@ -381,6 +392,19 @@ struct LocalPrintColorPanel::Impl {
                 initial = input.identity; undo.clear(); redo.clear(); count->SetValue(int(input.identity.requested_color_count));
                 original->SetValue(false); accept_error->SetValue(false);
                 refresh_palette();
+                if (*beauty) {
+                    try {
+                        BeautyPrintColorHandoff::seed(**beauty, input.identity);
+                        initial = input.identity;
+                        count->SetValue(int(input.identity.requested_color_count));
+                    } catch (const std::exception& failure) {
+                        // Do not leave a usable unprotected draft after a stale
+                        // handoff. Reopening is required; ordinary actions must
+                        // not silently bypass the rejected saved assignments.
+                        input = {}; has_result = false;
+                        message(u8(failure.what())); refresh(); return;
+                    }
+                }
                 // The worker checked recipes against an immutable native
                 // capture. Invalidate that result if live evidence changed.
                 if (*restored && std::any_of((**restored).targets.begin(), (**restored).targets.end(),
@@ -400,7 +424,7 @@ struct LocalPrintColorPanel::Impl {
                     has_result = true; restored_confirmation = true;
                     accept_error->SetValue(computed.unresolved_count() != 0);
                     display(); refresh();
-                } else compute(true);
+                } else compute(!beauty->has_value());
             });
         });
     }

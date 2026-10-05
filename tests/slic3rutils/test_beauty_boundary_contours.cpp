@@ -1,5 +1,8 @@
 #include <catch2/catch_all.hpp>
 #include "slic3r/GUI/AI/Model/BeautyBoundaryContours.hpp"
+#include <atomic>
+#include <cstring>
+#include <thread>
 using namespace Slic3r;
 using namespace Slic3r::AI;
 
@@ -45,4 +48,96 @@ TEST_CASE("Closed boundary curves have no gaps or artificial open endpoints", "[
     CHECK((curves.front().a-curves.front().b).norm()>1e-4);
     double area=0;for(const auto& edge:curves)area+=edge.a.x()*edge.b.y()-edge.b.x()*edge.a.y();
     CHECK(std::abs(area)*.5>2.7);
+}
+
+namespace {
+std::string contour_bytes(const std::vector<BeautyBoundaryContours::Segment>& segments) {
+    std::string bytes;
+    const auto append=[&](const auto& value) {
+        bytes.append(reinterpret_cast<const char*>(&value),sizeof(value));
+    };
+    for(const auto& segment:segments) {
+        for(int axis=0;axis<3;++axis) {append(segment.a[axis]);append(segment.b[axis]);}
+        append(segment.face);append(segment.neighbor);append(segment.left);append(segment.right);append(segment.tolerance);
+    }
+    return bytes;
+}
+}
+
+TEST_CASE("Pre-cancelled contour work stops before accessing empty geometry", "[BeautyWorkbench][BeautyBoundaryContours]") {
+    const indexed_triangle_set mesh;
+    const BeautyBoundaryContours::Neighbors neighbors;
+    const std::vector<BeautyBoundaryContours::Edge> edges;
+    const std::vector<Vec3f> points;
+    const std::function<bool()> canceled=[] {return true;};
+    REQUIRE_THROWS_AS(BeautyBoundaryContours::build(edges,mesh,neighbors,canceled),std::runtime_error);
+    REQUIRE_THROWS_AS(BeautyBoundaryContours::fair(points,false,canceled),std::runtime_error);
+    CHECK(BeautyBoundaryContours::build(edges,mesh,neighbors).empty());
+    CHECK(BeautyBoundaryContours::fair(points,false).empty());
+}
+
+TEST_CASE("A long contour cancels on a worker and can be retried without changing its input", "[BeautyWorkbench][BeautyBoundaryContours]") {
+    indexed_triangle_set mesh;
+    mesh.vertices={{-10000,-10000,0},{30000,-10000,0},{-10000,30000,0}};
+    mesh.indices={{0,1,2}};
+    const BeautyBoundaryContours::Neighbors neighbors(1,{-1,-1,-1});
+    std::vector<BeautyBoundaryContours::Edge> edges;
+    for(size_t i=0;i<10000;++i) {
+        edges.push_back({{float(i),float(i%2)*.2f,0},{float(i+1),float((i+1)%2)*.2f,0},0,-1,1,2});
+    }
+    const auto original=edges;
+    const auto original_vertices=mesh.vertices;
+    std::atomic<unsigned> checks{0};
+    bool completed=false;
+    std::exception_ptr failure;
+    std::thread worker([&] {
+        try {BeautyBoundaryContours::build(edges,mesh,neighbors,[&] {return ++checks>=3;});completed=true;}
+        catch(...) {failure=std::current_exception();}
+    });
+    worker.join();
+    REQUIRE(failure);
+    REQUIRE_THROWS_AS(std::rethrow_exception(failure),std::runtime_error);
+    CHECK_FALSE(completed);
+    CHECK(checks.load()>1);
+    REQUIRE(edges.size()==original.size());
+    bool unchanged=true;
+    for(size_t i=0;i<edges.size();++i) {
+        if(std::memcmp(edges[i].a.data(),original[i].a.data(),3*sizeof(float))!=0)unchanged=false;
+        if(std::memcmp(edges[i].b.data(),original[i].b.data(),3*sizeof(float))!=0)unchanged=false;
+        if(edges[i].face!=original[i].face || edges[i].neighbor!=original[i].neighbor ||
+           edges[i].left!=original[i].left || edges[i].right!=original[i].right)unchanged=false;
+    }
+    for(size_t i=0;i<mesh.vertices.size();++i)
+        if(std::memcmp(mesh.vertices[i].data(),original_vertices[i].data(),3*sizeof(float))!=0)unchanged=false;
+    CHECK(unchanged);
+    const auto baseline=BeautyBoundaryContours::build(edges,mesh,neighbors);
+    const auto retry=BeautyBoundaryContours::build(edges,mesh,neighbors,[] {return false;});
+    REQUIRE_FALSE(baseline.empty());
+    CHECK(contour_bytes(retry)==contour_bytes(baseline));
+}
+
+TEST_CASE("Long boundary smoothing cancels on a worker without changing its source points", "[BeautyWorkbench][BeautyBoundaryContours]") {
+    std::vector<Vec3f> points;
+    for(size_t i=0;i<10000;++i)points.emplace_back(float(i),float(i%2)*.2f,0);
+    const auto original=points;
+    std::atomic<unsigned> checks{0};
+    std::exception_ptr failure;
+    std::thread worker([&] {
+        try {BeautyBoundaryContours::fair(points,false,[&] {return ++checks>=4;});}
+        catch(...) {failure=std::current_exception();}
+    });
+    worker.join();
+    REQUIRE(failure);
+    REQUIRE_THROWS_AS(std::rethrow_exception(failure),std::runtime_error);
+    CHECK(checks.load()>1);
+    bool unchanged=true;
+    for(size_t i=0;i<points.size();++i)
+        if(std::memcmp(points[i].data(),original[i].data(),3*sizeof(float))!=0)unchanged=false;
+    CHECK(unchanged);
+    const auto baseline=BeautyBoundaryContours::fair(points,false);
+    const auto retry=BeautyBoundaryContours::fair(points,false,[] {return false;});
+    bool identical=baseline.size()==retry.size();
+    for(size_t i=0;i<baseline.size() && identical;++i)
+        if(std::memcmp(baseline[i].data(),retry[i].data(),3*sizeof(float))!=0)identical=false;
+    CHECK(identical);
 }

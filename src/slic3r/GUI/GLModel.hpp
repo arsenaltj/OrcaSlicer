@@ -3,6 +3,7 @@
 
 #include "libslic3r/Point.hpp"
 #include "libslic3r/BoundingBox.hpp"
+#include <functional>
 #include "libslic3r/Color.hpp"
 #include <vector>
 #include <string>
@@ -129,6 +130,21 @@ namespace GUI {
             static bool has_tex_coord(const Format& format);
         };
 
+        // Frozen CPU storage: bounds and geometry cannot diverge before upload.
+        // Preparing or discarding it needs no GL context.
+        class PreparedGeometry
+        {
+            friend class GLModel;
+            Geometry m_geometry;
+            BoundingBoxf3 m_bounds;
+            PreparedGeometry(Geometry&& geometry, const BoundingBoxf3& bounds)
+                : m_geometry(std::move(geometry)), m_bounds(bounds) {}
+        public:
+            PreparedGeometry(PreparedGeometry&&) = default;
+            PreparedGeometry& operator=(PreparedGeometry&&) = default;
+            const Geometry& geometry() const { return m_geometry; }
+        };
+
         struct RenderData
         {
             Geometry geometry;
@@ -169,6 +185,8 @@ namespace GUI {
         const Geometry& get_geometry() const { return m_render_data.geometry; }
 
         void init_from(Geometry&& data);
+        static PreparedGeometry prepare_geometry(Geometry&& data, const std::function<bool()>& canceled = {});
+        void init_from(PreparedGeometry&& data);
         // Replace same-layout vertex attributes without replacing topology or
         // allocating a new index buffer. The caller retains unchanged positions.
         bool update_vertex_attributes(const std::vector<float>& vertices);

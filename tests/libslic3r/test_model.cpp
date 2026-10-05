@@ -1,6 +1,7 @@
 #include <catch2/catch_all.hpp>
 
 #include "libslic3r/Model.hpp"
+#include "libslic3r/AABBMesh.hpp"
 #include "libslic3r/Format/AssimpImport.hpp"
 #include "libslic3r/TexturePainting.hpp"
 
@@ -8,6 +9,48 @@
 #include <cmath>
 
 using namespace Slic3r;
+
+TEST_CASE("Unpainted volume skips facet extraction and invalidates painted extruder cache", "[Model][ExtruderCount]")
+{
+    Model model;
+    ModelVolume* volume = model.add_object()->add_volume(make_cube(20, 20, 20), ModelVolumeType::MODEL_PART, false);
+    REQUIRE(volume->mmu_segmentation_facets.empty());
+    CHECK(volume->get_extruders() == std::vector<int>{1});
+    volume->update_extruder_count(1);
+    CHECK(volume->get_extruders() == std::vector<int>{1});
+
+    TriangleSelector selector(volume->mesh());
+    selector.set_facet(0, EnforcerBlockerType::Extruder2);
+    REQUIRE(volume->mmu_segmentation_facets.set(selector));
+    CHECK(volume->get_extruders() == std::vector<int>({2, 1}));
+    CHECK(volume->get_extruders() == std::vector<int>({2, 1}));
+
+    volume->mmu_segmentation_facets.reset();
+    REQUIRE(volume->mmu_segmentation_facets.empty());
+    CHECK(volume->get_extruders() == std::vector<int>{1});
+}
+
+TEST_CASE("AABB mesh copies retain vertex and face topology", "[Model][AABBMesh]")
+{
+    const TriangleMesh mesh = make_cube(20, 20, 20);
+    AABBMesh original(mesh, true);
+    AABBMesh copied(original);
+    AABBMesh assigned(mesh);
+    assigned = original;
+
+    const VertexFaceIndex expected_vertices(mesh.its);
+    const auto expected_neighbors = its_face_neighbors(mesh.its);
+    for (const AABBMesh* candidate : {&original, &copied, &assigned}) {
+        CHECK(candidate->indices().size() == mesh.its.indices.size());
+        for (size_t vertex = 0; vertex < mesh.its.vertices.size(); ++vertex)
+            CHECK(candidate->vertex_face_index().count(vertex) == expected_vertices.count(vertex));
+        const auto& neighbors = candidate->face_neighbor_index();
+        REQUIRE(neighbors.size() == expected_neighbors.size());
+        for (size_t face = 0; face < neighbors.size(); ++face)
+            for (int edge = 0; edge < 3; ++edge)
+                CHECK(neighbors[face][edge] == expected_neighbors[face][edge]);
+    }
+}
 
 TEST_CASE("Native textured imports retain closed geometry through color application", "[Model][ModelImport]")
 {
@@ -170,5 +213,110 @@ TEST_CASE("A part's 2D convex hull is its footprint projected onto the bed", "[M
         CHECK(bb.min.y() == scaled(5.));
         CHECK(bb.max.x() == scaled(50.));
         CHECK(bb.max.y() == scaled(45.));
+    }
+}
+
+namespace {
+void append_painted_root(TriangleSelector::TriangleSplittingData& data, int root,
+                         std::initializer_list<int> nibbles)
+{
+    data.triangles_to_split.emplace_back(root, int(data.bitstream.size()));
+    for (int nibble : nibbles)
+        for (int bit = 0; bit < 4; ++bit)
+            data.bitstream.push_back((nibble >> bit) & 1);
+}
+}
+
+TEST_CASE("Painted extruder queries retain split leaves with missing or stale summaries", "[Model][ExtruderCount]")
+{
+    Model model;
+    auto* volume = model.add_object()->add_volume(make_cube(20, 20, 20), ModelVolumeType::MODEL_PART, false);
+    TriangleSelector::TriangleSplittingData data;
+    // A four-child root contains a nested two-child split and extended slots.
+    append_painted_root(data, 0, {3, 4, 1, 12, 14, 12, 15, 0, 12, 15, 14, 0});
+    append_painted_root(data, 1, {8});
+    append_painted_root(data, 2, {12, 0});
+    const int summary = GENERATE(0, 1, 2, 3);
+    CAPTURE(summary);
+    if (summary == 0) data.used_states.clear();
+    if (summary == 1) std::fill(data.used_states.begin(), data.used_states.end(), false);
+    if (summary == 2) std::fill(data.used_states.begin(), data.used_states.end(), true);
+    if (summary == 3) data.used_states[4] = true;
+    const auto saved = data;
+    volume->mmu_segmentation_facets.set_data(std::move(data));
+    const auto stamp = volume->mmu_segmentation_facets.timestamp();
+    CHECK(volume->get_extruders() == std::vector<int>({1, 2, 3, 17, 18, 32, 1}));
+    CHECK(volume->get_extruders() == std::vector<int>({1, 2, 3, 17, 18, 32, 1}));
+    CHECK(volume->mmu_segmentation_facets.get_data() == saved);
+    CHECK(volume->mmu_segmentation_facets.timestamp() == stamp);
+}
+
+TEST_CASE("Painted extruder caches refresh after replacement copy assignment and reset", "[Model][ExtruderCount]")
+{
+    Model model;
+    auto* volume = model.add_object()->add_volume(make_cube(20, 20, 20), ModelVolumeType::MODEL_PART, false);
+    TriangleSelector selector(volume->mesh());
+    selector.set_facet(0, EnforcerBlockerType::Extruder32);
+    REQUIRE(volume->mmu_segmentation_facets.set(selector));
+    CHECK(volume->get_extruders() == std::vector<int>({32, 1}));
+    Model copied(model);
+    auto* other = copied.objects.front()->volumes.front();
+    CHECK(other->get_extruders() == std::vector<int>({32, 1}));
+    TriangleSelector replacement(other->mesh());
+    replacement.set_facet(1, EnforcerBlockerType::Extruder18);
+    REQUIRE(other->mmu_segmentation_facets.set(replacement));
+    CHECK(other->get_extruders() == std::vector<int>({18, 1}));
+    CHECK(volume->get_extruders() == std::vector<int>({32, 1}));
+    volume->mmu_segmentation_facets.assign(other->mmu_segmentation_facets);
+    CHECK(volume->get_extruders() == std::vector<int>({18, 1}));
+    volume->config.set_key_value("extruder", new ConfigOptionInt(5));
+    CHECK(volume->get_extruders() == std::vector<int>({18, 5}));
+    volume->mmu_segmentation_facets.reset();
+    CHECK(volume->get_extruders() == std::vector<int>({5}));
+}
+
+TEST_CASE("Historical noncanonical painted roots keep deserialization behavior", "[Model][ExtruderCount]")
+{
+    Model model;
+    auto* volume = model.add_object()->add_volume(make_cube(20, 20, 20), ModelVolumeType::MODEL_PART, false);
+    TriangleSelector::TriangleSplittingData data;
+    const int history = GENERATE(0, 1, 2);
+    CAPTURE(history);
+    if (history == 0) {
+        append_painted_root(data, 0, {8});
+        append_painted_root(data, 0, {12, 15, 14}); // Last assignment wins.
+    } else if (history == 1) {
+        append_painted_root(data, 0, {8});
+        append_painted_root(data, int(volume->mesh().its.indices.size()), {12, 15, 14});
+    } else {
+        append_painted_root(data, 2, {8});
+        append_painted_root(data, 0, {12, 15, 14});
+    }
+    volume->mmu_segmentation_facets.set_data(std::move(data));
+    const auto expected = history == 0 ? std::vector<int>{32, 1} :
+                          history == 1 ? std::vector<int>{1} : std::vector<int>{2, 32, 1};
+    CHECK(volume->get_extruders() == expected);
+    CHECK(volume->get_extruders() == expected);
+}
+
+TEST_CASE("Painted extruder lists refresh after filament limiting and deletion", "[Model][ExtruderCount]")
+{
+    Model model;
+    auto* volume = model.add_object()->add_volume(make_cube(20, 20, 20), ModelVolumeType::MODEL_PART, false);
+    TriangleSelector selector(volume->mesh());
+    selector.set_facet(0, EnforcerBlockerType::Extruder1);
+    selector.set_facet(1, EnforcerBlockerType::Extruder2);
+    selector.set_facet(2, EnforcerBlockerType::Extruder18);
+    selector.set_facet(3, EnforcerBlockerType::Extruder32);
+    REQUIRE(volume->mmu_segmentation_facets.set(selector));
+    CHECK(volume->get_extruders() == std::vector<int>({1, 2, 18, 32, 1}));
+    const bool remove = GENERATE(false, true);
+    CAPTURE(remove);
+    if (remove) {
+        volume->update_extruder_count_when_delete_filament(31, 1, 2);
+        CHECK(volume->get_extruders() == std::vector<int>({1, 2, 17, 31, 1}));
+    } else {
+        volume->update_extruder_count(18);
+        CHECK(volume->get_extruders() == std::vector<int>({1, 2, 18, 1}));
     }
 }

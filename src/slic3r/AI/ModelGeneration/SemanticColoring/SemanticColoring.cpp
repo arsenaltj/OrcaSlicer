@@ -1,6 +1,7 @@
 #include "SemanticColoring.hpp"
 #include "SemanticMaskRefinement.hpp"
 #include "SemanticMaterialRegions.hpp"
+#include "libslic3r/Sha256Digest.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -421,10 +422,9 @@ bool Prediction::valid_for(const RGBImage& image) const
 std::string content_fingerprint(const MeshSnapshot& source)
 {
     if (source.geometry_id.empty() || !validate_snapshot(source).empty()) return {};
-    std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> ctx(EVP_MD_CTX_new(), EVP_MD_CTX_free);
-    if (!ctx || EVP_DigestInit_ex(ctx.get(), EVP_sha256(), nullptr) != 1) return {};
+    Sha256Digest digest;
     const std::string prefix = std::string("orca.semantic-source/v1:") + source.geometry_id + ":" + std::to_string(source.mesh.indices.size()) + ":";
-    if (EVP_DigestUpdate(ctx.get(), prefix.data(), prefix.size()) != 1) return {};
+    if (!digest.update(prefix.data(), prefix.size())) return {};
     std::array<unsigned char, 1024 * 3 * 3 * 4> buffer {};
     size_t used = 0;
     for (size_t face = 0; face < source.mesh.indices.size(); ++face) {
@@ -435,15 +435,10 @@ std::string content_fingerprint(const MeshSnapshot& source)
                 for (size_t byte = 0; byte < 4; ++byte) buffer[used++] = static_cast<unsigned char>(bits >> (byte * 8));
             }
         }
-        if (used == buffer.size()) { if (EVP_DigestUpdate(ctx.get(), buffer.data(), used) != 1) return {}; used = 0; }
+        if (used == buffer.size()) { if (!digest.update(buffer.data(), used)) return {}; used = 0; }
     }
-    if (used && EVP_DigestUpdate(ctx.get(), buffer.data(), used) != 1) return {};
-    std::array<unsigned char, EVP_MAX_MD_SIZE> bytes {}; unsigned int count = 0;
-    if (EVP_DigestFinal_ex(ctx.get(), bytes.data(), &count) != 1 || count != 32) return {};
-    constexpr char hex[] = "0123456789abcdef";
-    std::string result; result.reserve(64);
-    for (unsigned int i = 0; i < count; ++i) { result += hex[bytes[i] >> 4]; result += hex[bytes[i] & 15]; }
-    return result;
+    if (used && !digest.update(buffer.data(), used)) return {};
+    return digest.final_hex();
 }
 
 RenderedView render_view(const MeshSnapshot& source, float yaw_degrees, int image_size, const Cancel& cancel)

@@ -20,6 +20,7 @@
 #include <wx/debug.h>
 
 #include <glad/gl.h>
+#include "stb_dxt/stb_dxt.h"
 
 #ifndef IMGUI_DEFINE_MATH_OPERATORS
 #define IMGUI_DEFINE_MATH_OPERATORS
@@ -43,6 +44,7 @@
 #include <nanosvg/nanosvg.h>
 #include <nanosvg/nanosvgrast.h>
 #include "OpenGLManager.hpp"
+#include "FontTextureCompression.hpp"
 #include "GUI_App.hpp"
 
 namespace Slic3r {
@@ -3000,10 +3002,26 @@ void ImGuiWrapper::init_font(bool compress)
     glsafe(::glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR));
     glsafe(::glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR));
     glsafe(::glPixelStorei(GL_UNPACK_ROW_LENGTH, 0));
+    // Keep the existing DXT5 memory footprint without making the driver compress
+    // the entire atlas synchronously on the first frame. Reuse the bed-texture encoder.
+    const bool use_dxt5 = compress && GLAD_GL_EXT_texture_compression_s3tc;
+    std::vector<unsigned char> compressed_pixels;
+    if (use_dxt5) {
+        const auto compression_start = std::chrono::steady_clock::now();
+        const size_t block_bytes = size_t((width + 3) / 4) * size_t((height + 3) / 4) * 16;
+        compressed_pixels.resize(block_bytes);
+        int compressed_size = 0;
+        compress_font_dxt5(compressed_pixels.data(), pixels, width, height, compressed_size);
+        assert(size_t(compressed_size) == block_bytes);
+        BOOST_LOG_TRIVIAL(info) << "Startup timing: font_cpu_compression elapsed_ms="
+            << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - compression_start).count()
+            << " bytes=" << block_bytes;
+    }
     const auto upload_start = std::chrono::steady_clock::now();
-    if (compress && GLAD_GL_EXT_texture_compression_s3tc)
-        glsafe(::glTexImage2D(GL_TEXTURE_2D, 0, GL_COMPRESSED_RGBA_S3TC_DXT5_EXT, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels));
-    else
+    if (use_dxt5) {
+        glsafe(::glCompressedTexImage2D(GL_TEXTURE_2D, 0, GL_COMPRESSED_RGBA_S3TC_DXT5_EXT,
+            width, height, 0, static_cast<GLsizei>(compressed_pixels.size()), compressed_pixels.data()));
+    } else
         glsafe(::glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels));
     // Measure the API call, without forcing GPU completion or changing startup behavior.
     BOOST_LOG_TRIVIAL(info) << "Startup timing: font_texture_upload elapsed_ms="

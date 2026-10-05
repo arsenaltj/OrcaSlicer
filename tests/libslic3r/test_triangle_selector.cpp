@@ -1,4 +1,5 @@
 #include <catch2/catch_all.hpp>
+#include <cstring>
 
 #include "libslic3r/TriangleSelector.hpp"
 #include "libslic3r/TriangleMesh.hpp"
@@ -159,4 +160,97 @@ TEST_CASE("Invalid midpoint subface input leaves the original facet unchanged", 
     CHECK_FALSE(selector.set_facet_midpoint_subfaces(0, EnforcerBlockerType::Extruder1,
         {{1, 2, EnforcerBlockerType::Extruder2}, {1, 2, EnforcerBlockerType::Extruder3}}));
     CHECK(selector.serialize() == before);
+}
+
+namespace {
+void require_same_facet_mesh(const indexed_triangle_set& actual, const indexed_triangle_set& expected)
+{
+    REQUIRE(actual.vertices.size() == expected.vertices.size());
+    REQUIRE(actual.indices.size() == expected.indices.size());
+    for (size_t i = 0; i < actual.vertices.size(); ++i) {
+        // Color groups must retain original vertex bits, including signed zero.
+        REQUIRE(std::memcmp(actual.vertices[i].data(), expected.vertices[i].data(), 3 * sizeof(float)) == 0);
+    }
+    for (size_t i = 0; i < actual.indices.size(); ++i)
+        REQUIRE(std::memcmp(actual.indices[i].data(), expected.indices[i].data(), 3 * sizeof(int)) == 0);
+}
+
+void require_all_facet_meshes(const TriangleSelector& selector)
+{
+    std::vector<indexed_triangle_set> all;
+    selector.get_facets(all);
+    REQUIRE(all.size() == size_t(EnforcerBlockerType::ExtruderMax) + 1);
+    for (size_t state = 0; state < all.size(); ++state) {
+        CAPTURE(state);
+        require_same_facet_mesh(all[state], selector.get_facets(EnforcerBlockerType(state)));
+    }
+}
+}
+
+TEST_CASE("All color facet meshes retain vertex bits and face order for every state", "[TriangleSelector][FacetMeshes]")
+{
+    TriangleMesh mesh = test_mesh();
+    mesh.its.vertices.front().x() = -0.0f;
+    const int states = int(EnforcerBlockerType::ExtruderMax) + 1;
+    const int painted_states = GENERATE(1, 2, 6, 33);
+    REQUIRE(painted_states <= states);
+    TriangleSelector selector(mesh);
+    for (size_t i = 0; i < mesh.its.indices.size(); ++i)
+        selector.set_facet(int(i), EnforcerBlockerType(i % painted_states));
+    const auto before = selector.serialize();
+    require_all_facet_meshes(selector);
+    CHECK(selector.serialize() == before);
+}
+
+TEST_CASE("All color facet meshes retain nested split leaves across recovery and replacement", "[TriangleSelector][FacetMeshes]")
+{
+    const TriangleMesh mesh = test_mesh();
+    TriangleSelector selector(mesh);
+    REQUIRE(selector.set_facet_midpoint_subfaces(0, EnforcerBlockerType::Extruder1,
+        {{1, 0, EnforcerBlockerType::Extruder2}, {2, uint8_t((1u << 2) | 3u), EnforcerBlockerType::Extruder32}}));
+    REQUIRE(selector.set_facet_midpoint_subfaces(1, EnforcerBlockerType::Extruder18,
+        {{2, uint8_t((2u << 2) | 1u), EnforcerBlockerType::Extruder3}}));
+    const auto before = selector.serialize();
+    require_all_facet_meshes(selector);
+    TriangleSelector restored(mesh);
+    auto historical = before;
+    historical.used_states.clear();
+    restored.deserialize(historical);
+    require_all_facet_meshes(restored);
+    std::vector<indexed_triangle_set> original, recovered;
+    selector.get_facets(original);
+    restored.get_facets(recovered);
+    REQUIRE(original.size() == recovered.size());
+    for (size_t i = 0; i < original.size(); ++i)
+        require_same_facet_mesh(original[i], recovered[i]);
+    CHECK(selector.serialize() == before);
+    restored.set_facet(0, EnforcerBlockerType::Extruder4);
+    require_all_facet_meshes(restored);
+    restored.reset();
+    require_all_facet_meshes(restored);
+}
+
+TEST_CASE("All color facet meshes replace reused output slots and retain empty groups", "[TriangleSelector][FacetMeshes]")
+{
+    const TriangleMesh empty_mesh;
+    TriangleSelector empty(empty_mesh);
+    std::vector<indexed_triangle_set> all(2, test_mesh().its);
+    empty.get_facets(all);
+    REQUIRE(all.size() == size_t(EnforcerBlockerType::ExtruderMax) + 1);
+    for (const auto& group : all) {
+        CHECK(group.vertices.empty());
+        CHECK(group.indices.empty());
+    }
+    const TriangleMesh mesh = test_mesh();
+    TriangleSelector selector(mesh);
+    selector.set_facet(0, EnforcerBlockerType::Extruder32);
+    selector.get_facets(all);
+    require_same_facet_mesh(all[32], selector.get_facets(EnforcerBlockerType::Extruder32));
+    selector.reset();
+    selector.get_facets(all);
+    require_same_facet_mesh(all[0], selector.get_facets(EnforcerBlockerType::NONE));
+    for (size_t state = 1; state < all.size(); ++state) {
+        CHECK(all[state].vertices.empty());
+        CHECK(all[state].indices.empty());
+    }
 }

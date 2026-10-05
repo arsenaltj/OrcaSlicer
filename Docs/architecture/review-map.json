@@ -208,6 +208,16 @@
       "id": "native_output",
       "path": "src/slic3r/GUI/Plater.cpp",
       "needle": "void Plater::priv::export_gcode("
+    },
+    {
+      "id": "beauty_physical_handoff",
+      "path": "src/slic3r/GUI/AI/Model/BeautyPrintColorHandoff.hpp",
+      "needle": "inline void seed("
+    },
+    {
+      "id": "beauty_target_colors",
+      "path": "src/slic3r/GUI/AI/Model/BeautyPuzzle.hpp",
+      "needle": "target_colors;"
     }
   ],
   "journeys": [
@@ -635,11 +645,13 @@
     {
       "id": "import",
       "label": "模型导入",
-      "detail": "将已就绪的模型交给 Orca 准备页",
+      "detail": "将已就绪的模型交给 Orca 准备页；美颜实体耗材槽位经身份校验后保留到配色页，v4 美颜记录另存量化前目标色供换耗材重匹配",
       "boundary": "导入不自动切片或更换预设",
       "group": "资产与工作区",
       "evidence": [
-        "import_model"
+        "import_model",
+        "beauty_physical_handoff",
+        "beauty_target_colors"
       ],
       "modules": [
         "generation",

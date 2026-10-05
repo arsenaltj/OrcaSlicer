@@ -1555,25 +1555,35 @@ indexed_triangle_set TriangleSelector::get_facets(EnforcerBlockerType state) con
 void TriangleSelector::get_facets(std::vector<indexed_triangle_set>& facets_per_type) const
 {
     facets_per_type.clear();
+    const size_t state_count = size_t(EnforcerBlockerType::ExtruderMax) + 1;
+    // Keep each state's original triangle order without scanning every triangle
+    // for every slot. References remain valid throughout this const operation.
+    std::vector<std::vector<const Triangle*>> leaves_per_type(state_count);
+    for (const Triangle& tr : m_triangles) {
+        if (tr.valid() && !tr.is_split()) {
+            const int state = int(tr.get_state());
+            if (state >= 0 && size_t(state) < state_count)
+                leaves_per_type[size_t(state)].push_back(&tr);
+        }
+    }
 
-    for (int type = (int)EnforcerBlockerType::NONE; type <= (int)EnforcerBlockerType::ExtruderMax; type++) {
-        facets_per_type.emplace_back();
-        indexed_triangle_set& its = facets_per_type.back();
+    facets_per_type.resize(state_count);
+    for (size_t type = 0; type < state_count; ++type) {
+        if (leaves_per_type[type].empty())
+            continue;
+        indexed_triangle_set& its = facets_per_type[type];
         std::vector<int> vertex_map(m_vertices.size(), -1);
-
-        for (const Triangle& tr : m_triangles) {
-            if (tr.valid() && !tr.is_split() && tr.get_state() == (EnforcerBlockerType)type) {
-                stl_triangle_vertex_indices indices;
-                for (int i = 0; i < 3; ++i) {
-                    int j = tr.verts_idxs[i];
-                    if (vertex_map[j] == -1) {
-                        vertex_map[j] = int(its.vertices.size());
-                        its.vertices.emplace_back(m_vertices[j].v);
-                    }
-                    indices[i] = vertex_map[j];
+        for (const Triangle* tr : leaves_per_type[type]) {
+            stl_triangle_vertex_indices indices;
+            for (int i = 0; i < 3; ++i) {
+                const int j = tr->verts_idxs[i];
+                if (vertex_map[j] == -1) {
+                    vertex_map[j] = int(its.vertices.size());
+                    its.vertices.emplace_back(m_vertices[j].v);
                 }
-                its.indices.emplace_back(indices);
+                indices[i] = vertex_map[j];
             }
+            its.indices.emplace_back(indices);
         }
     }
 }

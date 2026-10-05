@@ -82,6 +82,8 @@ TEST_CASE("Geometry hashing processes more than one buffered block consistently"
         split.indices.emplace_back(first, first + 1, first + 2);
     }
     REQUIRE_FALSE(persistence::geometry_fingerprint(shared).empty());
+    // Independently encoded with Python hashlib/struct, including schema NUL.
+    REQUIRE(persistence::geometry_fingerprint(shared) == "6d280bfa236123e144b020f59cbecc3ff5285c98c8d6e05cdfcd31fa56744209");
     REQUIRE(persistence::geometry_fingerprint(shared) == persistence::geometry_fingerprint(split));
 }
 

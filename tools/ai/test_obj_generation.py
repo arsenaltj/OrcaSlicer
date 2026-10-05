@@ -1852,6 +1852,39 @@ class ObjGenerationTests(unittest.TestCase):
         self.assertFalse(self.job.image_metrics["multiview_retry"]["paid_task_created"])
         gateway.start_or_reuse_model_task.assert_not_called()
 
+    def test_restart_preserves_prepaid_multiview_preview_for_explicit_retry(self):
+        self.job.source = "image"
+        self.job.style = "realistic"
+        self.job.generation_profile = "quality"
+        self.job.face_limit = 1000000
+        self.job.state = "failed"
+        self.job.phase = "failed"
+        self.job.progress = 12
+        self.job.image_metrics["portrait_skin_cleanup"] = {"activated": 1}
+        reference = self.job.directory / "model-reference.png"
+        Image.new("RGB", (512, 512), "white").save(reference)
+        original = reference.read_bytes()
+        self.job.model_reference_path = reference
+        self.job.attempts = []
+        SIDECAR._persist_job(self.job)
+        with SIDECAR._JOBS_LOCK:
+            SIDECAR._JOBS.clear()
+
+        with mock.patch.object(SIDECAR, "_submit") as submit:
+            SIDECAR._restore_jobs()
+
+        restored = SIDECAR._JOBS[self.job.id]
+        self.assertEqual((restored.state, restored.phase), ("awaiting_confirmation", "multiview_retry"))
+        self.assertEqual(restored.progress, 17)
+        self.assertEqual(restored.attempts, [])
+        self.assertEqual(restored.image_metrics["multiview_retry"], {
+            "required": True,
+            "reason": "legacy_prepaid_multiview_failure",
+            "paid_task_created": False,
+        })
+        self.assertEqual(reference.read_bytes(), original)
+        submit.assert_not_called()
+
     def test_unreviewed_existing_multiview_sheet_can_be_rechecked_without_image_call(self):
         self.job.source = "image"
         self.job.style = "realistic"

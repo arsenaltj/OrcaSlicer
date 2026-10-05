@@ -1338,7 +1338,8 @@ endif()
 # Resources install target, configure fhs.hpp on UNIX
 if (WIN32)
     install(DIRECTORY "${SLIC3R_RESOURCES_DIR}/" DESTINATION "./resources"
-        PATTERN "generated_models" EXCLUDE)
+        PATTERN "generated_models" EXCLUDE
+        PATTERN "*.js.map" EXCLUDE)
     set(ORCA_AI_PACKAGE_REVISION "local" CACHE STRING "Revision label used by the OrcaSlicer AI installer")
     set(ORCA_AI_DISTRIBUTION_CHANNEL "internal" CACHE STRING "AI distribution channel: internal or commercial")
     set_property(CACHE ORCA_AI_DISTRIBUTION_CHANNEL PROPERTY STRINGS internal commercial)
@@ -1423,6 +1424,7 @@ elseif (SLIC3R_FHS)
     install(DIRECTORY ${SLIC3R_RESOURCES_DIR}/ DESTINATION ${SLIC3R_FHS_RESOURCES}
         PATTERN "*/udev" EXCLUDE
         PATTERN "generated_models" EXCLUDE
+        PATTERN "*.js.map" EXCLUDE
     )
     if(ORCA_BUNDLED_UV_EXECUTABLE)
         install(PROGRAMS "${ORCA_BUNDLED_UV_EXECUTABLE}" DESTINATION "${SLIC3R_FHS_RESOURCES}/tools/uv" RENAME "${ORCA_BUNDLED_UV_FILENAME}")
@@ -1441,7 +1443,8 @@ elseif (CMAKE_MACOSX_BUNDLE)
 else ()
     install(FILES src/dev-utils/platform/unix/com.orcaslicer.OrcaSlicer.desktop DESTINATION ${CMAKE_INSTALL_PREFIX}/resources/applications)
     install(DIRECTORY "${SLIC3R_RESOURCES_DIR}/" DESTINATION "${CMAKE_INSTALL_PREFIX}/resources"
-        PATTERN "generated_models" EXCLUDE)
+        PATTERN "generated_models" EXCLUDE
+        PATTERN "*.js.map" EXCLUDE)
     if(ORCA_BUNDLED_UV_EXECUTABLE)
         install(PROGRAMS "${ORCA_BUNDLED_UV_EXECUTABLE}" DESTINATION "${CMAKE_INSTALL_PREFIX}/resources/tools/uv" RENAME "${ORCA_BUNDLED_UV_FILENAME}")
     endif()

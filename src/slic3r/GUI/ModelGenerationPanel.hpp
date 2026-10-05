@@ -6,6 +6,7 @@
 #include "slic3r/GUI/AI/Model/ModelFinishing.hpp"
 #include "slic3r/GUI/AI/Model/SurfaceSelectionState.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationSubmissionState.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/ModelGenerationLegacyState.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelLibraryMetadata.hpp"
 
 #include <boost/filesystem/path.hpp>
@@ -25,15 +26,11 @@
 #include <vector>
 
 class wxButton;
-class wxCheckBox;
 class wxChoice;
 class wxCollapsiblePane;
-class wxColourPickerCtrl;
 class wxGauge;
-class wxGridSizer;
 class wxNotebook;
 class wxScrolledWindow;
-class wxSpinCtrlDouble;
 class wxSlider;
 class wxStaticText;
 class wxTextCtrl;
@@ -42,6 +39,7 @@ class wxToggleButton;
 namespace Slic3r::GUI {
 
 class ModelPreview3D;
+class ModelHistoryMetadata;
 class BeautyWorkbenchControls;
 class LocalPrintColorPanel;
 class Plater;
@@ -77,12 +75,8 @@ private:
 
     void on_choose_image(wxCommandEvent& event);
     void on_clear_image(wxCommandEvent& event);
-    void on_printable_colors_toggled(wxCommandEvent& event);
-    void on_palette_source_changed(wxCommandEvent& event);
-    void on_add_custom_color(wxCommandEvent& event);
     void on_recommend_palette(wxCommandEvent& event);
     void on_confirm_recommended_palette(wxCommandEvent& event);
-    void on_palette_role_changed(size_t role_index);
     void on_preprocess(wxCommandEvent& event);
     void on_generate(wxCommandEvent& event);
     void on_retexture_from_library(const std::string& geometry_job_id, const wxString& title);
@@ -112,8 +106,6 @@ private:
     size_t current_palette_color_count() const;
     AIModelGenerationClient::PaletteRoles current_palette_roles() const;
     void refresh_palette_roles(const std::vector<std::string>& palette);
-    void refresh_palette_recommendation();
-    void replace_recommended_color(size_t index);
     void request_style_recommendation();
     void select_style(const std::string& style, bool user_selected);
     void refresh_style_recommendation();
@@ -134,14 +126,15 @@ private:
     bool job_uses_image() const;
     bool job_inputs_match() const;
     bool job_base_inputs_match() const;
-    void remove_custom_color(const std::string& color);
     void reset(bool remove_remote);
     void download_preview(uint64_t sequence);
     void download_model_preview(uint64_t sequence);
     void finish_model_preview_download(const boost::filesystem::path& path, uint64_t sequence);
     void load_model_preview_async(const boost::filesystem::path& path, const std::vector<std::string>& palette,
         std::function<void(size_t, Vec3d, size_t, double)> loaded,
-        std::function<void(std::string)> failed, const boost::filesystem::path& metadata_path = {});
+        std::function<void(std::string)> failed, const boost::filesystem::path& metadata_path = {},
+        std::shared_ptr<ModelHistoryMetadata> history_metadata = {},
+        std::function<bool()> may_install = {});
     void download_and_import();
     void import_local_artifact(const boost::filesystem::path& path, uint64_t sequence);
     void cleanup_files();
@@ -166,7 +159,8 @@ private:
     void refresh_model_finishing();
     void set_finishing_workbench(bool enabled);
     void preview_model_finishing();
-    bool show_finishing_version(const boost::filesystem::path& path);
+    void show_finishing_version(const boost::filesystem::path& path,
+        std::function<void()> installed);
     wxButton* m_finishing_color_match { nullptr };
     void accept_model_finishing();
     void discard_model_finishing();
@@ -252,11 +246,13 @@ private:
     std::thread m_preview_worker;
     std::thread m_library_import_worker;
     bool m_preview_loading {false};
+    std::shared_ptr<std::atomic<bool>> m_preview_canceled;
     std::shared_ptr<std::atomic<bool>> m_finishing_canceled;
     boost::filesystem::path m_finishing_source, m_finishing_candidate;
     std::string m_finishing_id;
     AI::ModelFinishingResult m_finishing_result;
-    AI::ModelFinishingOptions m_finishing_options;
+    std::shared_ptr<const AI::ModelFinishingOptions> m_finishing_options;
+    std::string m_finishing_serialized_workbench, m_finishing_serialized_geometry_id;
     bool m_finishing_running {false};
     bool m_finishing_before {false};
 
@@ -281,37 +277,11 @@ private:
     wxButton*       m_clear_image { nullptr };
     wxStaticText*   m_selected_image { nullptr };
     wxStaticText*   m_upload_notice { nullptr };
-    wxPanel*        m_palette_panel { nullptr };
-    wxPanel*        m_custom_color_panel { nullptr };
-    wxGridSizer*    m_palette_sizer { nullptr };
-    wxCheckBox*     m_use_printable_colors { nullptr };
-    wxChoice*       m_palette_source { nullptr };
+    ModelGenerationLegacyState m_legacy_generation_state;
     wxChoice*       m_import_color_mode { nullptr };
     wxChoice*       m_import_color_source { nullptr };
-    wxColourPickerCtrl* m_custom_color { nullptr };
-    wxButton*       m_add_custom_color { nullptr };
-    wxStaticText*   m_palette_summary { nullptr };
-    wxPanel*        m_palette_recommendation_panel { nullptr };
-    wxChoice*       m_palette_color_count { nullptr };
-    wxButton*       m_recommend_palette { nullptr };
-    wxButton*       m_confirm_recommended_palette { nullptr };
-    wxStaticText*   m_palette_recommendation_summary { nullptr };
-    std::array<wxPanel*, Slic3r::AI::kMaxTargetPaletteColors> m_palette_recommendation_cards {};
-    std::array<wxPanel*, Slic3r::AI::kMaxTargetPaletteColors> m_palette_recommendation_swatches {};
-    std::array<wxStaticText*, Slic3r::AI::kMaxTargetPaletteColors> m_palette_recommendation_details {};
-    std::array<wxButton*, Slic3r::AI::kMaxTargetPaletteColors> m_palette_recommendation_replace {};
-    std::array<wxButton*, Slic3r::AI::kMaxTargetPaletteColors> m_palette_recommendation_remove {};
-    wxPanel*        m_palette_roles_panel { nullptr };
-    std::array<wxChoice*, Slic3r::AI::kMaxTargetPaletteColors> m_palette_role_choices {};
     wxPanel*        m_model_settings_panel { nullptr };
     wxPanel*        m_import_settings_panel { nullptr };
-    wxButton*       m_advanced_toggle { nullptr };
-    wxPanel*        m_advanced_options { nullptr };
-    wxSpinCtrlDouble* m_print_width { nullptr };
-    wxSpinCtrlDouble* m_nozzle_size { nullptr };
-    wxSpinCtrlDouble* m_line_width { nullptr };
-    wxSpinCtrlDouble* m_minimum_feature { nullptr };
-    wxChoice*       m_shadow_color { nullptr };
     wxStaticText*   m_preprocess_section { nullptr };
     wxButton*       m_preprocess { nullptr };
     wxStaticText*   m_prepared_prompt_label { nullptr };
@@ -476,7 +446,6 @@ private:
     bool m_style_user_selected { false };
     bool m_job_preview_expected { false };
     bool m_palette_is_custom { false };
-    bool m_advanced_options_expanded { false };
     bool m_job_use_printable_colors { false };
     bool m_raw_preview_available { false };
     bool m_model_reference_available { false };

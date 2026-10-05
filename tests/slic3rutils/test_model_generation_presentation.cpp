@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationPresentation.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/ModelGenerationLegacyState.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelLibraryThumbnail.hpp"
 #include "slic3r/GUI/AIModelOutputDirectory.hpp"
 #include "test_utils.hpp"
@@ -12,15 +13,130 @@
 #include <wx/imagpng.h>
 #include <wx/imagjpeg.h>
 #include <wx/log.h>
+#include <wx/spinctrl.h>
 
 #include <algorithm>
 #include <cstdlib>
+#include <cmath>
+#include <iterator>
+#include <limits>
 #include <optional>
 #include <set>
 #include <stdexcept>
 
 using Slic3r::GUI::AIModelGenerationClient;
 using namespace Slic3r::GUI::ModelGenerationPresentation;
+
+TEST_CASE("Hidden print settings retain client defaults without a page",
+          "[ModelGenerationPresentation][ModelGenerationLegacyState]")
+{
+    const Slic3r::GUI::ModelGenerationLegacyState state;
+    const AIModelGenerationClient::ImagePrintSettings defaults;
+    CHECK(state.print_width_mm == defaults.width_mm);
+    CHECK(state.nozzle_mm == defaults.nozzle_mm);
+    CHECK(state.line_width_mm == defaults.line_width_mm);
+    CHECK(state.minimum_feature_mm == defaults.minimum_feature_mm);
+}
+
+#ifdef __WXMSW__
+TEST_CASE("Historical print numbers retain native precision and range semantics",
+          "[ModelGenerationPresentation][ModelGenerationLegacyState]")
+{
+    // The linked wx implementation supplies the independent numeric oracle.
+    // No Create(), parent, native window or GUI input is involved.
+    struct NativeNumber : wxSpinCtrlDouble {
+        double restored(double value, double minimum, double maximum, unsigned digits) {
+            m_min = minimum;
+            m_max = maximum;
+            m_digits = digits;
+            m_snap_to_ticks = false;
+            const double adjusted = AdjustAndSnap(value);
+            double stored = adjusted;
+            if (!DoTextToValue(DoValueToText(adjusted), &stored)) stored = adjusted;
+            return stored;
+        }
+    } native;
+    Slic3r::GUI::ModelGenerationLegacyState state;
+    const auto check = [&](double width, double nozzle, double line, double feature) {
+        state.restore_print_settings(width, nozzle, line, feature);
+        const double actual[] = {state.print_width_mm, state.nozzle_mm, state.line_width_mm, state.minimum_feature_mm};
+        const double expected[] = {native.restored(width, 20., 2000., 1), native.restored(nozzle, .1, 2., 2),
+                                   native.restored(line, .1, 3., 2), native.restored(feature, .1, 20., 2)};
+        for (size_t i = 0; i < 4; ++i) {
+            INFO("field=" << i << " input=" << width << "," << nozzle << "," << line << "," << feature);
+            if (std::isnan(expected[i])) CHECK(std::isnan(actual[i]));
+            else CHECK(actual[i] == expected[i]); // Exact restored double preserves history comparisons/JSON.
+        }
+    };
+    check(160., .4, .4, .8);
+    check(20., .1, .1, .1);
+    check(2000., 2., 3., 20.);
+    check(-1e100, -1., -1., -1.);
+    check(1e100, 10., 10., 100.);
+    for (int i = 0; i < 2001; ++i)
+        check(20.05 + i * .99, .105 + i * .00094, .105 + i * .0014, .105 + i * .00994);
+    for (double special : {std::numeric_limits<double>::quiet_NaN(),
+                           std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity()})
+        check(special, special, special, special);
+    check(123.456, .456, .456, .876); // Increments must not snap to 10/.1/.05 ticks.
+    check(160., .4, .4, .8); // A later restore must replace all four old values.
+}
+#endif
+
+TEST_CASE("Restoring old target color counts keeps all supported counts and recovers from invalid history",
+          "[ModelGenerationPresentation][ModelGenerationLegacyState]")
+{
+    Slic3r::GUI::ModelGenerationLegacyState state;
+    CHECK(state.palette_color_count == AIModelGenerationClient::JobStatus{}.palette_color_count);
+    for (size_t count = Slic3r::AI::kMinTargetPaletteColors;
+         count <= Slic3r::AI::kMaxTargetPaletteColors; ++count) {
+        DYNAMIC_SECTION("Restoring " << count << " target colors") {
+            state.palette_source = 2;
+            state.restore_palette_color_count(count);
+            CHECK(state.palette_color_count == count);
+            CHECK(state.palette_source == 2);
+            for (size_t invalid : {size_t(0), Slic3r::AI::kMaxTargetPaletteColors + 1,
+                                   std::numeric_limits<size_t>::max()}) {
+                state.restore_palette_color_count(invalid);
+                CHECK(state.palette_color_count == Slic3r::AI::kLegacyDefaultTargetPaletteColors);
+                state.restore_palette_color_count(count);
+                CHECK(state.palette_color_count == count);
+            }
+        }
+    }
+}
+
+TEST_CASE("Pre-encoded history field writes identical JSON and rejects ambiguous input",
+          "[ModelGenerationPresentation][BeautyPersistence]")
+{
+    ScopedTemporaryFile output(".json");
+    const nlohmann::json workbench = {
+        {"geometry_id", "geometry/1"},
+        {"puzzle", {{"piece_runs", nlohmann::json::array({{0, 12}, {3, 27}})}}},
+        {"note", "雪人 \\\" 保存"}
+    };
+    const nlohmann::json metadata = {
+        {"ai_image_path", "images/scene \\\"one\\\".png"},
+        {"finishing", {{"beauty_puzzle", true}}},
+        {"schema_version", 4},
+        {"use_printable_colors", false}
+    };
+    auto expected = metadata;
+    expected["beauty_workbench"] = workbench;
+    REQUIRE(write_json_with_preencoded_field(output.path(), metadata,
+                                             "beauty_workbench", workbench.dump()));
+    boost::filesystem::ifstream stream(output.path());
+    const std::string actual((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    CHECK(actual == expected.dump());
+    CHECK(read_json(output.path()) == expected);
+    CHECK_FALSE(write_json_with_preencoded_field(output.path(), expected,
+                                                 "beauty_workbench", workbench.dump()));
+    CHECK_FALSE(write_json_with_preencoded_field(output.path(), metadata, "beauty_workbench", ""));
+    CHECK_FALSE(write_json_with_preencoded_field(output.path(), nlohmann::json::array(),
+                                                 "beauty_workbench", workbench.dump()));
+    boost::filesystem::ifstream unchanged(output.path());
+    CHECK(std::string((std::istreambuf_iterator<char>(unchanged)), std::istreambuf_iterator<char>()) == actual);
+}
 
 TEST_CASE("sidecar restart authentication is recoverable without retrying provider failures",
           "[ModelGenerationPresentation][SidecarRecovery]")
@@ -534,4 +650,31 @@ TEST_CASE("style families retain legacy styles in a compact secondary choice",
     CHECK(selected_style(2, -1) == "cartoon");
     CHECK(style_uses_printable_colors("portrait_sketch"));
     CHECK(style_uses_printable_colors("ink_relief"));
+}
+
+TEST_CASE("Multiple preencoded fields preserve key order and reject collisions before writing", "[ModelGenerationPresentation][BeautyPersistence]")
+{
+    ScopedTemporaryFile output(".json");
+    const nlohmann::json metadata {{"middle", true}, {"z", 17}};
+    const std::map<std::string, std::string> encoded {
+        {"", nlohmann::json("empty-key").dump()},
+        {"beauty_puzzle_draft", nlohmann::json{{"future", "雪\n\"draft\""}}.dump()},
+        {"beauty_workbench", "null"}, {"zz", "[1,2,3]"}
+    };
+    auto expected=metadata;
+    for(const auto& item:encoded)expected[item.first]=nlohmann::json::parse(item.second);
+    REQUIRE(write_json_with_preencoded_fields(output.path(),metadata,encoded));
+    const auto bytes=[&] {boost::filesystem::ifstream input(output.path(),std::ios::binary);
+        return std::string((std::istreambuf_iterator<char>(input)),{});};
+    CHECK(bytes()==expected.dump());
+    auto collision=encoded;collision.emplace("middle","false");
+    CHECK_FALSE(write_json_with_preencoded_fields(output.path(),metadata,collision));
+    CHECK(bytes()==expected.dump());
+    auto missing=encoded;missing["beauty_puzzle_draft"].clear();
+    CHECK_FALSE(write_json_with_preencoded_fields(output.path(),metadata,missing));
+    CHECK(bytes()==expected.dump());
+    CHECK_FALSE(write_json_with_preencoded_fields(output.path(),nlohmann::json::array(),encoded));
+    CHECK(bytes()==expected.dump());
+    REQUIRE(write_json_with_preencoded_fields(output.path(),metadata,{}));
+    CHECK(bytes()==metadata.dump());
 }

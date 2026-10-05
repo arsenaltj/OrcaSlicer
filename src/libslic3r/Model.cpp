@@ -2648,16 +2648,34 @@ std::vector<int> ModelVolume::get_extruders() const
         return std::vector<int>();
 
     if (mmu_segmentation_facets.timestamp() != mmuseg_ts) {
-        std::vector<indexed_triangle_set> its_per_type;
         mmuseg_extruders.clear();
         mmuseg_ts = mmu_segmentation_facets.timestamp();
-        mmu_segmentation_facets.get_facets(*this, its_per_type);
-        for (int idx = 1; idx < its_per_type.size(); idx++) {
-            indexed_triangle_set& its = its_per_type[idx];
-            if (its.indices.empty())
-                continue;
-
-            mmuseg_extruders.push_back(idx);
+        // A fresh unpainted volume has no per-face extruders. Building a
+        // TriangleSelector here copies the entire mesh on first scene reload.
+        if (!mmu_segmentation_facets.empty()) {
+            const auto& data = mmu_segmentation_facets.get_data();
+            int previous_root = -1;
+            const bool ordered_roots = std::all_of(data.triangles_to_split.begin(), data.triangles_to_split.end(),
+                [&](const TriangleSelector::TriangleBitStreamMapping& mapping) {
+                    const bool valid = mapping.triangle_idx > previous_root &&
+                        size_t(mapping.triangle_idx) < mesh().its.indices.size();
+                    previous_root = mapping.triangle_idx;
+                    return valid;
+                });
+            if (ordered_roots) {
+                // Query paint IDs without rebuilding the mesh and per-filament geometry.
+                // Read the encoded leaves: historical used_states may be absent or stale.
+                for (int idx = 1; idx <= int(EnforcerBlockerType::ExtruderMax); ++idx)
+                    if (mmu_segmentation_facets.has_facets(*this, EnforcerBlockerType(idx)))
+                        mmuseg_extruders.push_back(idx);
+            } else {
+                // Preserve deserialization's last-root-wins and invalid-root behavior.
+                std::vector<indexed_triangle_set> its_per_type;
+                mmu_segmentation_facets.get_facets(*this, its_per_type);
+                for (int idx = 1; idx < its_per_type.size(); ++idx)
+                    if (!its_per_type[idx].indices.empty())
+                        mmuseg_extruders.push_back(idx);
+            }
         }
     }
 

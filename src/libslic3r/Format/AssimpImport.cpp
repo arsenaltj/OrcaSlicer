@@ -17,7 +17,10 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <chrono>
+#include <cstdlib>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <sstream>
 #include <string>
@@ -25,6 +28,35 @@
 
 namespace Slic3r {
 namespace {
+
+// Opt-in CPU attribution; only a few clock reads per mesh, never per vertex.
+// Keep this inside the importer so UI and caller contracts stay unchanged.
+struct AssimpImportTiming {
+    enum Stage { Setup, ReadFile, Materials, Reserve, Vertices, Faces, Finalize, Count };
+    bool enabled {false};
+    std::chrono::steady_clock::time_point started {}, previous {};
+    std::array<double, Count> milliseconds {};
+    AssimpImportTiming() {
+        const char* value = std::getenv("ORCASLICER_ASSIMP_TIMING");
+        enabled = value && std::strcmp(value, "1") == 0;
+        if (enabled) started = previous = std::chrono::steady_clock::now();
+    }
+    void mark(Stage stage) {
+        if (!enabled) return;
+        const auto now = std::chrono::steady_clock::now();
+        milliseconds[stage] += std::chrono::duration<double, std::milli>(now - previous).count();
+        previous = now;
+    }
+    ~AssimpImportTiming() {
+        if (!enabled) return;
+        mark(Finalize);
+        BOOST_LOG_TRIVIAL(info) << "Assimp load timing: setup_ms=" << milliseconds[Setup]
+            << " read_file_ms=" << milliseconds[ReadFile] << " materials_ms=" << milliseconds[Materials]
+            << " reserve_ms=" << milliseconds[Reserve] << " vertices_ms=" << milliseconds[Vertices]
+            << " faces_ms=" << milliseconds[Faces] << " finalize_ms=" << milliseconds[Finalize]
+            << " total_ms=" << std::chrono::duration<double, std::milli>(previous - started).count();
+    }
+};
 
 void clear_textured_mesh(TexturedMesh& out)
 {
@@ -60,10 +92,13 @@ bool should_flip_uvs(const std::string& path)
 
 unsigned int assimp_import_flags(const std::string& path)
 {
+    // TexturedMesh does not retain Assimp normals. For GLB, consumers rebuild
+    // them from triangles; keep other formats' processing unchanged.
     unsigned int flags = aiProcess_Triangulate
-                       | aiProcess_GenNormals
                        | aiProcess_PreTransformVertices
                        | aiProcess_SortByPType;
+    if (!boost::algorithm::iends_with(path, ".glb"))
+        flags |= aiProcess_GenNormals;
     if (should_flip_uvs(path))
         flags |= aiProcess_FlipUVs;
     return flags;
@@ -181,7 +216,8 @@ std::array<float, 4> get_material_color(const aiMaterial& material)
 }
 
 bool collect_mesh(const aiMesh& mesh, size_t& vertex_offset, TexturedMesh& out, std::string& error,
-                  std::vector<std::array<float, 4>>* raw_vertex_colors, bool precompute_colors)
+                  std::vector<std::array<float, 4>>* raw_vertex_colors, bool precompute_colors,
+                  AssimpImportTiming& timing)
 {
     if (mesh.mNumVertices > static_cast<size_t>(std::numeric_limits<int>::max()) - vertex_offset) {
         error = "Assimp mesh has too many vertices for TexturedMesh indices";
@@ -190,6 +226,8 @@ bool collect_mesh(const aiMesh& mesh, size_t& vertex_offset, TexturedMesh& out, 
 
     const auto factor = mesh.mMaterialIndex < out.material_colors.size()
         ? out.material_colors[mesh.mMaterialIndex] : std::array<float, 4>{1.f, 1.f, 1.f, 1.f};
+    std::array<float, 4> previous_color {}, previous_converted {};
+    bool previous_color_ready = false;
     for (unsigned int i = 0; i < mesh.mNumVertices; ++i) {
         const aiVector3D& v = mesh.mVertices[i];
         out.vertices.push_back({v.x, v.y, v.z});
@@ -198,16 +236,27 @@ bool collect_mesh(const aiMesh& mesh, size_t& vertex_offset, TexturedMesh& out, 
             raw_vertex_colors->push_back({color.r, color.g, color.b, color.a});
         }
         if (precompute_colors) {
-            std::array<float, 4> converted {color.r, color.g, color.b, color.a};
-            for (size_t channel = 0; channel < converted.size(); ++channel) {
-                const float value = converted[channel] * factor[channel];
-                if (!std::isfinite(value)) {
-                    error = "Assimp mesh has a non-finite vertex or material color";
-                    return false;
+            const std::array<float, 4> input {color.r, color.g, color.b, color.a};
+            std::array<float, 4> converted;
+            // The material factor is fixed for this mesh. Reuse only identical
+            // RGBA bits, preserving signed zero, alpha and invalid-value checks.
+            if (previous_color_ready && std::memcmp(input.data(), previous_color.data(), sizeof(input)) == 0) {
+                converted = previous_converted;
+            } else {
+                converted = input;
+                for (size_t channel = 0; channel < converted.size(); ++channel) {
+                    const float value = converted[channel] * factor[channel];
+                    if (!std::isfinite(value)) {
+                        error = "Assimp mesh has a non-finite vertex or material color";
+                        return false;
+                    }
+                    const float linear = std::clamp(value, 0.f, 1.f);
+                    converted[channel] = channel == 3 ? linear : linear <= 0.0031308f
+                        ? 12.92f * linear : 1.055f * std::pow(linear, 1.f / 2.4f) - 0.055f;
                 }
-                const float linear = std::clamp(value, 0.f, 1.f);
-                converted[channel] = channel == 3 ? linear : linear <= 0.0031308f
-                    ? 12.92f * linear : 1.055f * std::pow(linear, 1.f / 2.4f) - 0.055f;
+                previous_color = input;
+                previous_converted = converted;
+                previous_color_ready = true;
             }
             out.precomputed_vertex_colors.push_back(converted);
         }
@@ -220,6 +269,7 @@ bool collect_mesh(const aiMesh& mesh, size_t& vertex_offset, TexturedMesh& out, 
         }
     }
 
+    timing.mark(AssimpImportTiming::Vertices);
     const int material_index = static_cast<int>(mesh.mMaterialIndex);
     for (unsigned int i = 0; i < mesh.mNumFaces; ++i) {
         const aiFace& face = mesh.mFaces[i];
@@ -249,6 +299,7 @@ bool collect_mesh(const aiMesh& mesh, size_t& vertex_offset, TexturedMesh& out, 
         }
     }
 
+    timing.mark(AssimpImportTiming::Faces);
     vertex_offset += mesh.mNumVertices;
     return true;
 }
@@ -306,8 +357,10 @@ std::string scene_failure_summary(const std::string& path, const char* assimp_er
 } // namespace
 
 bool load_assimp_textured_model(const std::string& path, TexturedMesh& out, std::string* error_message,
-                               std::vector<std::array<float, 4>>* raw_vertex_colors)
+                               std::vector<std::array<float, 4>>* raw_vertex_colors,
+                               AssimpRawColorPolicy raw_color_policy)
 {
+    AssimpImportTiming timing;
     clear_textured_mesh(out);
     if (raw_vertex_colors) raw_vertex_colors->clear();
 
@@ -315,7 +368,9 @@ bool load_assimp_textured_model(const std::string& path, TexturedMesh& out, std:
     const unsigned int flags = assimp_import_flags(path);
     configure_importer(importer, path, flags);
 
+    timing.mark(AssimpImportTiming::Setup);
     const aiScene* scene = importer.ReadFile(path, flags);
+    timing.mark(AssimpImportTiming::ReadFile);
     if (!scene || (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) || !scene->mRootNode) {
         const std::string message = scene_failure_summary(path, importer.GetErrorString());
         BOOST_LOG_TRIVIAL(error) << "AssimpImport: " << message;
@@ -331,6 +386,7 @@ bool load_assimp_textured_model(const std::string& path, TexturedMesh& out, std:
     }
 
     collect_materials(*scene, boost::filesystem::path(path).parent_path(), out);
+    timing.mark(AssimpImportTiming::Materials);
 
     // Precomputed colors bypass texture sampling. Only use them for a glTF
     // scene with COLOR_0 and no color textures, including on other meshes.
@@ -347,14 +403,45 @@ bool load_assimp_textured_model(const std::string& path, TexturedMesh& out, std:
     }
     const bool precompute_colors = has_vertex_colors && !has_color_texture &&
         (boost::algorithm::iends_with(path, ".glb") || boost::algorithm::iends_with(path, ".gltf"));
+    if (precompute_colors && raw_color_policy == AssimpRawColorPolicy::FallbackOnly)
+        raw_vertex_colors = nullptr;
 
+    // GLB scenes can contain many material primitives. Reserve once for the
+    // whole scene; reserving at each primitive copies every prior large array.
+    if (boost::algorithm::iends_with(path, ".glb")) {
+        size_t vertices = 0, faces = 0;
+        bool bounded = true;
+        for (unsigned int i = 0; i < scene->mNumMeshes; ++i) {
+            const aiMesh* mesh = scene->mMeshes[i];
+            if (!mesh || !mesh->HasPositions()) continue;
+            if (mesh->mNumVertices > 8'000'000 - vertices || mesh->mNumFaces > 4'000'000 - faces) {
+                bounded = false;
+                break;
+            }
+            vertices += mesh->mNumVertices;
+            faces += mesh->mNumFaces;
+        }
+        if (bounded) {
+            out.vertices.reserve(vertices);
+            out.uvs.reserve(vertices);
+            out.indices.reserve(faces);
+            out.material_ids.reserve(faces);
+            if (raw_vertex_colors) raw_vertex_colors->reserve(vertices);
+            if (precompute_colors) {
+                out.precomputed_vertex_colors.reserve(vertices);
+                out.precomputed_face_colors.reserve(faces);
+            }
+        }
+    }
+
+    timing.mark(AssimpImportTiming::Reserve);
     size_t vertex_offset = 0;
     for (unsigned int mesh_index = 0; mesh_index < scene->mNumMeshes; ++mesh_index) {
         const aiMesh* mesh = scene->mMeshes[mesh_index];
         if (!mesh || !mesh->HasPositions())
             continue;
         std::string mesh_error;
-        if (!collect_mesh(*mesh, vertex_offset, out, mesh_error, raw_vertex_colors, precompute_colors)) {
+        if (!collect_mesh(*mesh, vertex_offset, out, mesh_error, raw_vertex_colors, precompute_colors, timing)) {
             const std::string message = mesh_error + ": " + path;
             BOOST_LOG_TRIVIAL(error) << "AssimpImport: " << message;
             set_error_message(error_message, message);

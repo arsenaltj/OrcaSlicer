@@ -2,37 +2,15 @@
 
 本项目在 OrcaSlicer 上增加模型生成和智能切片。目标是将文字/图片转为可检查、可导入的彩色打印模型，并由 Orca 管理打印配置、切片和预览。先按任务选择下表入口，不必通读所有历史报告或整个 Orca 仓库。
 
-## 事实与决策入口
+## 有效入口
 
-- 日常先看[当前开发状态](coordination/current-development.md)和[快速开发入口](coordination/quick-development.md)。以下 dated 审计是历史证据，不是当前待办。
-- 多人 Review 与架构影响可视化：[架构影响入口](coordination/architecture-review.md)。PR 自动生成版本对应的模块图、交互 HTML 与 JSON；只需定位少量代码时仍直接阅读源码，不强制先查图。
-- 三人开发、集成与飞书协作：[ADR-007](architecture/ADR-007-three-developer-feishu-integration.md)、[日常同步、合入与版本存档](coordination/team-integration-sop.md)、[落地和接入状态](audits/2026-09-09-team-feishu-integration.md)、[分支准备工具](../scripts/team_collaboration/README.md)、[飞书服务](../tools/team_integration/README.md)。采用四条新的 `codex/team/*` 分支，旧角色分支停止用于新工作；先通知和候选检查，人工合入。
+- [短状态](../docs/coordination/current-development.md)指向唯一[主计划](plans/2026-09-25-product-convergence-and-lightweight-plan.md)；实现以注明版本的源码/测试为准。
+- [快速开发](coordination/quick-development.md)：本机独立增量构建和验证；机器路径以 checkout 的忽略配置为准，不照抄历史 `D:/Workspace/11_3DDY_Continue` 或其他机器路径。
+- [架构评审](coordination/architecture-review.md)、[集成锁](../docs/architecture/ai-integration-lock.json)、[打印与颜色边界](domain/printing-color-boundaries.md)：按修改范围读取。Accepted 设计不代表已实现/验收。
+- [团队 SOP](coordination/team-integration-sop.md)仅用于明确请求的远程协作；[交接流程](coordination/validation-handoff.md)仅用于相应交付。
+- [配色历史证据](plans/model-coloring/README.md)和 `Docs/audits/`、`Docs/history/` 保留版本结论，不提供另一套当前待办。[续建来源](../CONTINUATION.md)解释已退役入口的 Git 追溯方法。
 
-- 当前实现：工作树代码和对应测试；报告须说明使用 HEAD 还是含未提交修改的工作树。
-- 模型配色持续优化：[计划、问题与迭代记录](plans/model-coloring/README.md)。每轮改动均登记假设、版本、固定区域对照、结果和回退基线，保留未通过的视觉问题。
-- 最新体验与修改：[性能、质量提示和 3D 美颜](audits/2026-09-09-performance-advisory-finishing.md)，含实际模型加载、美颜保存回退与原生导入取消验证；质量判断不再拦截下一步。
-- 当前产品修正：[不限色生成与本地三维修整](audits/2026-09-09-unrestricted-generation-and-finishing.md)；保留单色写实，仅[AI 原生配色交接](plans/2026-09-09-ai-native-color-matching-handoff.md)由同事实施。[RGB 预检误拦修复](audits/2026-09-09-reference-preflight-fix.md)已验证实际任务恢复、图片确认和切页；其他 GUI 主路径仍需验收，不能用编译结果代替。
-- 本机续建编译路径：先看 [2026-09-12 共享依赖与磁盘存储](coordination/local-build-storage.md) 中的 D 盘公共依赖及兼容入口；[2026-09-08 工具链与构建记录](plans/2026-09-08-ai-journey-interaction-fixes.md#本机构建路径2026-09-08-复核) 保留 MSVC、CMake 和历史配置参数。各项目及验证任务保持独立增量构建。
-- 集成基线、运行版本、端口、所有权和预算：[ai-integration-lock.json](../docs/architecture/ai-integration-lock.json)。不要在导航中复制会漂移的版本值。
-- 架构决策：[模块边界与 lineage](../docs/architecture/ADR-003-upstream-lineage-ai-integration.md)、[渐进拆分](../docs/architecture/ADR-005-guarded-incremental-ai-decomposition.md)、[颜色交接](architecture/ADR-006-six-channel-model-color-intent.md)、[智能切片事务](../docs/architecture/ADR-002-smart-slicing-transactional-workbench.md)。Accepted 表示接受的设计，实际完成度仍需代码和验收证据。
-- 硬件/颜色术语及检验限度：[打印与颜色边界](domain/printing-color-boundaries.md)。
-- 本次资产盘点和未解决问题：[2026-09-07 审计](audits/2026-09-07-ai-engineering-asset-audit.md)。这是日期快照，不是新的实时任务表。
-- 日常开发：[最短开发入口](coordination/quick-development.md)。默认单 Agent 修改、相关检查和 diff 复核；明确要求独立验收时才读[交接流程](coordination/validation-handoff.md)。
-
-## 文件收纳与工作区选择
-
-| 类别 | 现有位置 | 使用原则 |
-|---|---|---|
-| 产品源码和资源 | `src/`、`resources/`、`tools/ai/` | 按下表的功能边界查找；名称相似的契约、适配器和实现不是当然重复。 |
-| 验证与交付工具 | `tests/`、`scripts/`、`release/`、`.github/workflows/` | 分别维护测试、构建/检查、打包与 CI；清理前确认调用者和历史产物依赖。 |
-| 稳定规则与当前导航 | 根/局部 AGENTS、本文、`docs/architecture/`、`.agents/skills/` | 保留稳定约束；具体数值从集成锁读取。 |
-| 任务与历史证据 | `Docs/coordination/`、`Docs/history/`、`Docs/plans/`、`Docs/audits/` | state 是实时任务记录；报告/计划按日期理解，不复制成第二份当前状态。 |
-| 依赖、构建和运行产物 | `deps/`、`build/` 及各 worktree 的构建目录 | 可重建性、运行占用和具体保留版本核实后，才能进入清理批次。 |
-| 本机实验与生成资料 | `.planning/`、`output/`、`generated_models/`、`.tmp/`、`tmp/`、`projects/` | 可能含唯一源文件、模型或验收证据；忽略/未跟踪不等于可删除，不整目录清空。 |
-
-当前续建工作区是 `D:/Workspace/11_3DDY_Continue`，团队远程为 `arsenaltj/OrcaSlicer`。原 `06_3DDY_claude`、`06_3DDY_smart_slicing`、`06_3DDY_orca_integration_v2` 工作区仅保留为历史；不能从旧导航自动启动任务或修改那些目录。新成员从确认后的共同基线建立自己的 checkout，具体准备状态见 ADR-007 实施记录。
-
-Codex 项目名、任务记录的 cwd、registry 提示与实际 Git worktree 可能不一致。开工时核对路径、分支和 HEAD；相同路径的两个项目入口共享文件，不是两个隔离仓库。`Docs/` 与 `docs/` 的 Git 路径大小写混用要作为路径迁移问题处理，不能删除其中一个名字来解决。
+`Docs/` 与 `docs/` 有历史 Git 大小写差异，按目标实际拼写链接，不批量改名。忽略目录中的模型、用户资产、运行实例及证据不因文档清理而删除。
 
 ## 按任务定位
 

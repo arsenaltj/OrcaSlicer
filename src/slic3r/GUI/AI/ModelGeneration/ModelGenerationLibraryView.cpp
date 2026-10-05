@@ -678,7 +678,7 @@ void ModelGenerationPanel::load_design_library_entry(const std::string& job_id)
                     boost::filesystem::remove(weak->m_finishing_candidate, ignored);
                     weak->m_finishing_candidate.clear();
                 }
-                weak->m_finishing_options.selected_faces.clear();
+                weak->m_finishing_options.reset();
                 weak->m_finishing_before = false;
                 weak->m_selected_image_path.clear();
                 weak->reset(false);

@@ -974,6 +974,16 @@ static ImGuiMemAllocFunc    GImAllocatorAllocFunc = MallocWrapper;
 static ImGuiMemFreeFunc     GImAllocatorFreeFunc = FreeWrapper;
 static void*                GImAllocatorUserData = NULL;
 
+// Internal to the bundled font builder; custom allocators keep their serial path.
+bool ImFontAtlasUsesDefaultAllocator()
+{
+#ifndef IMGUI_DISABLE_DEFAULT_ALLOCATORS
+    return GImAllocatorAllocFunc == MallocWrapper && GImAllocatorFreeFunc == FreeWrapper;
+#else
+    return false;
+#endif
+}
+
 //-----------------------------------------------------------------------------
 // [SECTION] USER FACING STRUCTURES (ImGuiStyle, ImGuiIO)
 //-----------------------------------------------------------------------------

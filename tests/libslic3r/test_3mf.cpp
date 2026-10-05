@@ -20,6 +20,23 @@
 #include <Eigen/Geometry>
 #include <type_traits> // for std::enable_if_t
 #include <typeinfo>    // for typeid
+#include <array>
+#include <algorithm>
+#include <chrono>
+#include <charconv>
+#include <cstdint>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <limits>
+#include <memory>
+#include <thread>
+#include <atomic>
+#include <stdexcept>
+#include <regex>
+#include <boost/filesystem/fstream.hpp>
+#include <nlohmann/json.hpp>
 
 namespace Catch {
     template <typename T>
@@ -702,5 +719,888 @@ SCENARIO("Mixed-color filament setup and painting round-trip through a .3mf", "[
             release_PlateData_list(dst_plates);
             delete plate; // store_bbs_3mf does not take ownership of the source plate
         }
+    }
+}
+
+TEST_CASE("Repeated split project saves preserve embedded G-code bytes", "[3mf][ThreeMFArchiveLifetime]")
+{
+    Model model;
+    REQUIRE(load_stl((std::string(TEST_DATA_DIR) + "/test_3mf/Prusa.stl").c_str(), &model));
+    model.add_default_instances();
+    ScopedTemporaryDir backup("archive_lifetime");
+    model.set_backup_path(backup.string());
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    ScopedTemporaryFile gcode(".gcode");
+    std::string contents;
+    for (int i = 0; i < 10000; ++i)
+        contents += "G1 X" + std::to_string(i % 200) + " Y20 E0.5\n";
+    {
+        boost::filesystem::ofstream stream(gcode.string(), std::ios::binary);
+        stream.write(contents.data(), contents.size());
+        REQUIRE(stream.good());
+    }
+    for (int iteration = 0; iteration < 3; ++iteration) {
+        ScopedTemporaryFile output(".3mf");
+        PlateData plate;
+        plate.plate_index = 0;
+        plate.is_sliced_valid = true;
+        plate.gcode_file = gcode.string();
+        StoreParams params;
+        params.path = output.string();
+        params.model = &model;
+        params.config = &config;
+        params.plate_data_list.push_back(&plate);
+        params.strategy = SaveStrategy::Zip64 | SaveStrategy::Silence | SaveStrategy::SplitModel | SaveStrategy::WithGcode;
+        REQUIRE(store_bbs_3mf(params));
+        struct Reader {
+            mz_zip_archive archive{};
+            ~Reader() { mz_zip_end(&archive); }
+        } reader;
+        REQUIRE(mz_zip_reader_init_file(&reader.archive, output.string().c_str(), 0));
+        size_t size = 0;
+        std::unique_ptr<void, decltype(&mz_free)> data(
+            mz_zip_reader_extract_file_to_heap(&reader.archive, "Metadata/plate_1.gcode", &size, 0), &mz_free);
+        REQUIRE(static_cast<bool>(data));
+        CHECK(std::string(static_cast<const char*>(data.get()), size) == contents);
+        CHECK(mz_zip_validate_archive(&reader.archive, 0));
+    }
+}
+
+TEST_CASE("Face properties retain their positions through split 3MF import", "[3mf][Regression]")
+{
+    Model model;
+    const std::string source = std::string(TEST_DATA_DIR) + "/test_3mf/Prusa.stl";
+    REQUIRE(load_stl(source.c_str(), &model));
+    model.add_default_instances();
+    ScopedTemporaryDir backup("three_mf_face_props");
+    model.set_backup_path(backup.string());
+    REQUIRE(model.objects.size() == 1);
+    REQUIRE(model.objects.front()->volumes.size() == 1);
+    auto* volume = model.objects.front()->volumes.front();
+    TriangleMesh painted = volume->mesh();
+    const size_t faces = painted.its.indices.size();
+    REQUIRE(faces >= 3);
+    painted.its.properties.assign(faces, FaceProperty{eNormal, 0.0});
+    painted.its.properties[faces - 2] = FaceProperty{eSmallHole, 1.25};
+    painted.its.properties[faces - 1] = FaceProperty{eExteriorAppearance, 0.0};
+    volume->set_mesh(std::move(painted));
+    TriangleSelector selector(volume->mesh());
+    selector.set_facet(static_cast<int>(faces - 1), EnforcerBlockerType::Extruder2);
+    REQUIRE(volume->mmu_segmentation_facets.set(selector));
+
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    ScopedTemporaryFile file(".3mf");
+    PlateData plate;
+    plate.plate_index = 0;
+    StoreParams params;
+    params.path = file.string();
+    params.model = &model;
+    params.config = &config;
+    params.plate_data_list.push_back(&plate);
+    params.strategy = SaveStrategy::Zip64 | SaveStrategy::Silence | SaveStrategy::SplitModel;
+    REQUIRE(store_bbs_3mf(params));
+
+    Model restored;
+    ScopedTemporaryDir restored_backup("three_mf_face_props_restore");
+    restored.set_backup_path(restored_backup.string());
+    DynamicPrintConfig restored_config;
+    ConfigSubstitutionContext substitutions{ForwardCompatibilitySubstitutionRule::Enable};
+    PlateDataPtrs plates;
+    std::vector<Preset*> presets;
+    bool bbl = false, orca = false;
+    Semver version;
+    const bool loaded = load_bbs_3mf(file.string().c_str(), &restored_config, &substitutions,
+        &restored, &plates, &presets, &bbl, &orca, &version, nullptr,
+        LoadStrategy::LoadModel | LoadStrategy::LoadConfig);
+    release_PlateData_list(plates);
+    for (auto* preset : presets) delete preset;
+    REQUIRE(loaded);
+    REQUIRE(restored.objects.size() == 1);
+    REQUIRE(restored.objects.front()->volumes.size() == 1);
+    const auto* restored_volume = restored.objects.front()->volumes.front();
+    const auto& properties = restored_volume->mesh().its.properties;
+    REQUIRE(properties.size() == faces);
+    CHECK(properties[0].type == eNormal);
+    CHECK_THAT(properties[0].area, Catch::Matchers::WithinAbs(0.0, 1e-6));
+    CHECK(properties[faces - 2].type == eSmallHole);
+    CHECK_THAT(properties[faces - 2].area, Catch::Matchers::WithinAbs(1.25, 1e-6));
+    CHECK(properties[faces - 1].type == eExteriorAppearance);
+    CHECK_THAT(properties[faces - 1].area, Catch::Matchers::WithinAbs(0.0, 1e-6));
+    CHECK(restored_volume->mmu_segmentation_facets.get_triangle_as_string(0).empty());
+    CHECK(restored_volume->mmu_segmentation_facets.get_triangle_as_string(static_cast<int>(faces - 1)) ==
+          volume->mmu_segmentation_facets.get_triangle_as_string(static_cast<int>(faces - 1)));
+}
+
+TEST_CASE("Imported volume hulls match their final mesh", "[3mf][Regression]")
+{
+    const int shape = GENERATE(0, 1, 2, 3);
+    CAPTURE(shape);
+    Model model;
+    ScopedTemporaryDir backup("three_mf_hull");
+    model.set_backup_path(backup.string());
+    auto* object = model.add_object();
+    object->name = "hull_roundtrip";
+    TriangleMesh mesh = make_cube(13.25, 20.5, 17.75);
+    mesh.translate(-6.625f, -10.25f, -8.875f);
+    if (shape == 1)
+        mesh.translate(3.141f, 10000.25f, -17.125f);
+    if (shape == 3) {
+        indexed_triangle_set triangle;
+        triangle.vertices = {Vec3f(-1.f, -1.f, 0.f), Vec3f(1.f, -1.f, 0.f), Vec3f(0.f, 1.f, 0.f)};
+        triangle.indices = {Vec3i32(0, 1, 2)};
+        mesh = TriangleMesh(std::move(triangle));
+    }
+    auto* volume = object->add_volume(std::move(mesh), ModelVolumeType::MODEL_PART, false);
+    if (shape == 2) {
+        auto* shared = object->add_volume_with_shared_mesh(*volume);
+        shared->translate(Vec3d(30.0, 0.0, 0.0));
+    }
+    model.add_default_instances();
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    ScopedTemporaryFile file(".3mf");
+    PlateData plate;
+    plate.plate_index = 0;
+    StoreParams params;
+    params.path = file.string();
+    params.model = &model;
+    params.config = &config;
+    params.plate_data_list.push_back(&plate);
+    params.strategy = SaveStrategy::Zip64 | SaveStrategy::Silence | SaveStrategy::SplitModel | SaveStrategy::ShareMesh;
+    REQUIRE(store_bbs_3mf(params));
+
+    Model restored;
+    ScopedTemporaryDir restored_backup("three_mf_hull_restore");
+    restored.set_backup_path(restored_backup.string());
+    REQUIRE(boost::filesystem::create_directories(restored_backup.path() / "Metadata"));
+    DynamicPrintConfig restored_config;
+    ConfigSubstitutionContext substitutions{ForwardCompatibilitySubstitutionRule::Enable};
+    PlateDataPtrs plates;
+    std::vector<Preset*> presets;
+    bool bbl = false, orca = false;
+    Semver version;
+    const bool loaded = load_bbs_3mf(file.string().c_str(), &restored_config, &substitutions,
+        &restored, &plates, &presets, &bbl, &orca, &version, nullptr,
+        LoadStrategy::LoadModel | LoadStrategy::LoadConfig);
+    release_PlateData_list(plates);
+    for (auto* preset : presets) delete preset;
+    REQUIRE(loaded);
+    REQUIRE(restored.objects.size() == 1);
+    const auto& volumes = restored.objects.front()->volumes;
+    REQUIRE(volumes.size() == (shape == 2 ? 2 : 1));
+    if (shape == 2)
+        CHECK(volumes[0]->get_mesh_shared_ptr() == volumes[1]->get_mesh_shared_ptr());
+    if (shape == 1)
+        CHECK_FALSE(volumes.front()->mesh().get_init_shift().isApprox(Vec3d::Zero()));
+    else
+        CHECK(volumes.front()->mesh().get_init_shift().isApprox(Vec3d::Zero()));
+
+    for (const auto* imported : volumes) {
+        const auto& hull = imported->get_convex_hull_shared_ptr();
+        REQUIRE(hull);
+        const TriangleMesh expected = imported->mesh().convex_hull_3d();
+        REQUIRE(hull->its.vertices.size() == expected.its.vertices.size());
+        REQUIRE(hull->its.indices.size() == expected.its.indices.size());
+        // Reusing a hull must preserve the exact ordered output of the previous
+        // recomputation, including float bits; approximate geometry is insufficient.
+        for (size_t i = 0; i < expected.its.vertices.size(); ++i)
+            for (int axis = 0; axis < 3; ++axis)
+                CHECK(std::memcmp(&hull->its.vertices[i][axis], &expected.its.vertices[i][axis], sizeof(float)) == 0);
+        for (size_t i = 0; i < expected.its.indices.size(); ++i)
+            CHECK(hull->its.indices[i] == expected.its.indices[i]);
+    }
+}
+
+// Hidden diagnostic: explicitly supplied local fixture; no provider or GUI calls.
+TEST_CASE("A real project separates archive inflation from model import", "[.ThreeMFReadProbe]")
+{
+    const char* fixture = std::getenv("ORCASLICER_3MF_FIXTURE");
+    const char* report_path = std::getenv("ORCASLICER_3MF_REPORT");
+    REQUIRE(fixture != nullptr);
+    REQUIRE(report_path != nullptr);
+    struct RestoreLogging {
+        unsigned level = get_logging_level();
+        ~RestoreLogging() { set_logging_level(level); }
+    } restore_logging;
+    set_logging_level(3);
+    struct Archive {
+        mz_zip_archive zip{};
+        ~Archive() { mz_zip_end(&zip); }
+    } archive;
+    REQUIRE(mz_zip_reader_init_file(&archive.zip, fixture, 0));
+    std::vector<mz_uint> model_entries;
+    for (mz_uint entry = 0; entry < mz_zip_reader_get_num_files(&archive.zip); ++entry) {
+        mz_zip_archive_file_stat stat{};
+        REQUIRE(mz_zip_reader_file_stat(&archive.zip, entry, &stat));
+        const std::string name = stat.m_filename;
+        if (name.size() >= 6 && name.substr(name.size() - 6) == ".model")
+            model_entries.push_back(entry);
+    }
+    REQUIRE_FALSE(model_entries.empty());
+    boost::filesystem::ofstream report(report_path);
+    REQUIRE(report.good());
+    report.imbue(std::locale::classic());
+    report << "iteration,inflate_ms,import_ms,model_xml_bytes,objects,triangles,index_hash,geometry_hash,hull_hash,annotation_hash,transform_hash,zero_shift_volumes,read_callbacks,max_read_gap_ms,cancel_return_ms,progress_attempt_ms\n";
+    const char* progress_env = std::getenv("ORCASLICER_3MF_PROGRESS_MODE");
+    const std::string progress_mode = progress_env ? progress_env : "";
+    const std::array<std::string, 4> supported_modes{"", "normal", "cancel", "throw"};
+    REQUIRE(std::find(supported_modes.begin(), supported_modes.end(), progress_mode) != supported_modes.end());
+    using Clock = std::chrono::steady_clock;
+    size_t expected_triangles = 0;
+    std::uint64_t expected_index_hash = 0;
+    std::array<std::uint64_t, 4> expected_full{};
+    for (int iteration = 0; iteration < 4; ++iteration) {
+        size_t xml_bytes = 0;
+        const auto inflate_started = Clock::now();
+        for (mz_uint entry : model_entries) {
+            size_t size = 0;
+            std::unique_ptr<void, decltype(&mz_free)> data(
+                mz_zip_reader_extract_to_heap(&archive.zip, entry, &size, 0), &mz_free);
+            REQUIRE(data != nullptr);
+            xml_bytes += size;
+        }
+        const double inflate_ms = std::chrono::duration<double, std::milli>(Clock::now() - inflate_started).count();
+
+        Model model;
+        ScopedTemporaryDir backup("three_mf_read_probe");
+        model.set_backup_path(backup.string());
+        REQUIRE(boost::filesystem::create_directories(backup.path() / "Metadata"));
+        DynamicPrintConfig config;
+        ConfigSubstitutionContext substitutions{ForwardCompatibilitySubstitutionRule::Enable};
+        PlateDataPtrs plates;
+        std::vector<Preset*> presets;
+        bool bbl = false, orca = false;
+        Semver version;
+        const auto caller = std::this_thread::get_id();
+        std::atomic<bool> wrong_thread{false};
+        size_t read_callbacks = 0;
+        double max_read_gap_ms = 0.0, cancel_return_ms = 0.0, progress_attempt_ms = 0.0;
+        Clock::time_point previous_read{}, cancel_requested{};
+        Import3mfProgressFn progress;
+        if (!progress_mode.empty()) {
+            progress = [&](int stage, int current, int total, bool& cancel) {
+                if (std::this_thread::get_id() != caller) {
+                    wrong_thread.store(true);
+                    cancel = true;
+                    return;
+                }
+                if (stage != IMPORT_STAGE_READ_FILES || current != 1 || total != 3)
+                    return;
+                const auto now = Clock::now();
+                if (read_callbacks != 0)
+                    max_read_gap_ms = std::max(max_read_gap_ms,
+                        std::chrono::duration<double, std::milli>(now - previous_read).count());
+                previous_read = now;
+                ++read_callbacks;
+                if (progress_mode == "cancel" || progress_mode == "throw") {
+                    cancel_requested = now;
+                    if (progress_mode == "throw")
+                        throw std::runtime_error("3MF progress callback failure");
+                    cancel = true;
+                }
+            };
+        }
+        auto load = [&](Import3mfProgressFn callback) {
+            return load_bbs_3mf(fixture, &config, &substitutions, &model,
+                &plates, &presets, &bbl, &orca, &version, callback,
+                LoadStrategy::LoadModel | LoadStrategy::LoadConfig);
+        };
+        auto import_started = Clock::now();
+        bool loaded = false, callback_threw = false;
+        try { loaded = load(progress); }
+        catch (const std::runtime_error& error) {
+            callback_threw = std::string(error.what()) == "3MF progress callback failure";
+            if (!callback_threw) throw;
+        }
+        double import_ms = std::chrono::duration<double, std::milli>(Clock::now() - import_started).count();
+        REQUIRE_FALSE(wrong_thread.load());
+        if (!progress_mode.empty()) {
+            progress_attempt_ms = import_ms;
+            REQUIRE(read_callbacks > 0);
+        }
+        if (progress_mode == "cancel" || progress_mode == "throw") {
+            cancel_return_ms = std::chrono::duration<double, std::milli>(Clock::now() - cancel_requested).count();
+            REQUIRE_FALSE(loaded);
+            REQUIRE(callback_threw == (progress_mode == "throw"));
+            REQUIRE(model.objects.empty());
+            release_PlateData_list(plates);
+            for (auto* preset : presets) delete preset;
+            presets.clear();
+            import_started = Clock::now();
+            loaded = load(nullptr);
+            import_ms = std::chrono::duration<double, std::milli>(Clock::now() - import_started).count();
+        }
+        release_PlateData_list(plates);
+        for (auto* preset : presets) delete preset;
+        REQUIRE(loaded);
+        REQUIRE_FALSE(model.objects.empty());
+        size_t triangles = 0;
+        std::uint64_t index_hash = 14695981039346656037ull;
+        for (const auto* object : model.objects)
+            for (const auto* volume : object->volumes) {
+                triangles += volume->mesh().its.indices.size();
+                for (const auto& triangle : volume->mesh().its.indices)
+                    for (int corner = 0; corner < 3; ++corner) {
+                        index_hash ^= static_cast<std::uint32_t>(triangle[corner]);
+                        index_hash *= 1099511628211ull;
+                    }
+            }
+        std::array<std::uint64_t, 4> full{
+            14695981039346656037ull, 14695981039346656037ull,
+            14695981039346656037ull, 14695981039346656037ull};
+        const auto hash_bytes = [](std::uint64_t& hash, const void* data, size_t size) {
+            const auto* bytes = static_cast<const unsigned char*>(data);
+            for (size_t j = 0; j < size; ++j) {
+                hash ^= bytes[j];
+                hash *= 1099511628211ull;
+            }
+        };
+        const auto hash_mesh = [&](std::uint64_t& hash, const indexed_triangle_set& its) {
+            const size_t vertices = its.vertices.size(), faces = its.indices.size();
+            hash_bytes(hash, &vertices, sizeof(vertices));
+            hash_bytes(hash, &faces, sizeof(faces));
+            // Hash scalar fields rather than Eigen/struct storage and padding.
+            for (const auto& vertex : its.vertices)
+                for (int axis = 0; axis < 3; ++axis)
+                    hash_bytes(hash, &vertex[axis], sizeof(float));
+            for (const auto& face : its.indices)
+                for (int corner = 0; corner < 3; ++corner)
+                    hash_bytes(hash, &face[corner], sizeof(int));
+        };
+        size_t zero_shift_volumes = 0;
+        for (const auto* object : model.objects) {
+            for (const auto* instance : object->instances) {
+                const auto matrix = instance->get_matrix().matrix();
+                hash_bytes(full[3], matrix.data(), sizeof(double) * 16);
+            }
+            for (const auto* volume : object->volumes) {
+                hash_mesh(full[0], volume->mesh().its);
+                for (const auto& property : volume->mesh().its.properties) {
+                    hash_bytes(full[0], &property.type, sizeof(property.type));
+                    hash_bytes(full[0], &property.area, sizeof(property.area));
+                }
+                const auto& hull = volume->get_convex_hull_shared_ptr();
+                const bool has_hull = bool(hull);
+                hash_bytes(full[1], &has_hull, sizeof(has_hull));
+                if (hull) hash_mesh(full[1], hull->its);
+                const auto matrix = volume->get_matrix().matrix();
+                hash_bytes(full[3], matrix.data(), sizeof(double) * 16);
+                hash_bytes(full[3], volume->source.mesh_offset.data(), sizeof(double) * 3);
+                // Historical source metadata may overwrite source.mesh_offset;
+                // the mesh records the actual translation made during import.
+                zero_shift_volumes += volume->mesh().get_init_shift().isApprox(Vec3d::Zero());
+                for (size_t face = 0; face < volume->mesh().its.indices.size(); ++face)
+                    for (const auto* annotation : {&volume->supported_facets, &volume->seam_facets,
+                            &volume->mmu_segmentation_facets, &volume->fuzzy_skin_facets}) {
+                        const auto value = annotation->get_triangle_as_string(int(face));
+                        const size_t size = value.size();
+                        hash_bytes(full[2], &size, sizeof(size));
+                        hash_bytes(full[2], value.data(), size);
+                    }
+            }
+        }
+        if (iteration == 0) expected_full = full;
+        CHECK(full == expected_full);
+        if (iteration == 0) {
+            expected_triangles = triangles;
+            expected_index_hash = index_hash;
+        }
+        CHECK(triangles == expected_triangles);
+        CHECK(index_hash == expected_index_hash);
+        report << iteration << ',' << inflate_ms << ',' << import_ms << ',' << xml_bytes
+               << ',' << model.objects.size() << ',' << triangles << ',' << index_hash
+               << ',' << full[0] << ',' << full[1] << ',' << full[2] << ',' << full[3] << ',' << zero_shift_volumes
+               << ',' << read_callbacks << ',' << max_read_gap_ms << ',' << cancel_return_ms << ',' << progress_attempt_ms << '\n';
+        report.flush();
+        REQUIRE(report.good());
+    }
+}
+
+// Hidden diagnostic: explicitly supplied local fixture; no provider or GUI calls.
+TEST_CASE("A real project retains its mesh through repeated timed saves", "[.ThreeMFSaveProbe]")
+{
+    const char* fixture = std::getenv("ORCASLICER_3MF_FIXTURE");
+    const char* report_path = std::getenv("ORCASLICER_3MF_REPORT");
+    const char* captured_path = std::getenv("ORCASLICER_3MF_CAPTURE");
+    REQUIRE(fixture != nullptr);
+    REQUIRE(report_path != nullptr);
+    struct RestoreLogging {
+        unsigned level = get_logging_level();
+        ~RestoreLogging() { set_logging_level(level); }
+    } restore_logging;
+    set_logging_level(3);
+    Model model;
+    ScopedTemporaryDir backup("three_mf_probe");
+    model.set_backup_path(backup.string());
+    REQUIRE(boost::filesystem::create_directories(backup.path() / "Metadata"));
+    // Match Plater loading: deserialize into an empty dynamic configuration.
+    DynamicPrintConfig config;
+    auto read = [](const char* path, Model& target, DynamicPrintConfig& target_config) {
+        ConfigSubstitutionContext substitutions{ForwardCompatibilitySubstitutionRule::Enable};
+        PlateDataPtrs plates;
+        std::vector<Preset*> presets;
+        bool bbl = false, orca = false;
+        Semver version;
+        const bool ok = load_bbs_3mf(path, &target_config, &substitutions, &target,
+            &plates, &presets, &bbl, &orca, &version, nullptr,
+            LoadStrategy::LoadModel | LoadStrategy::LoadConfig);
+        release_PlateData_list(plates);
+        for (auto* preset : presets) delete preset;
+        return ok;
+    };
+    REQUIRE(read(fixture, model, config));
+    REQUIRE_FALSE(model.objects.empty());
+    boost::filesystem::ofstream report(report_path);
+    REQUIRE(report.good());
+    report.imbue(std::locale::classic());
+    report << "iteration,save_ms,reload_ms\n";
+    using Clock = std::chrono::steady_clock;
+    for (int iteration = 0; iteration < 6; ++iteration) {
+        ScopedTemporaryFile output(".3mf");
+        PlateData plate;
+        plate.plate_index = 0;
+        StoreParams params;
+        params.path = output.string();
+        params.model = &model;
+        params.config = &config;
+        params.plate_data_list.push_back(&plate);
+        params.strategy = SaveStrategy::Zip64 | SaveStrategy::Silence | SaveStrategy::SplitModel | SaveStrategy::ShareMesh;
+        const auto started = Clock::now();
+        const bool saved = store_bbs_3mf(params);
+        const double save_ms = std::chrono::duration<double, std::milli>(Clock::now() - started).count();
+        REQUIRE(saved);
+        Model restored;
+        ScopedTemporaryDir restored_backup("three_mf_probe_restore");
+        restored.set_backup_path(restored_backup.string());
+        REQUIRE(boost::filesystem::create_directories(restored_backup.path() / "Metadata"));
+        DynamicPrintConfig restored_config;
+        const auto load_started = Clock::now();
+        const bool loaded = read(output.string().c_str(), restored, restored_config);
+        const double load_ms = std::chrono::duration<double, std::milli>(Clock::now() - load_started).count();
+        REQUIRE(loaded);
+        REQUIRE(restored.objects.size() == model.objects.size());
+        double max_coordinate_error = 0.0;
+        bool indices_equal = true;
+        for (size_t o = 0; o < model.objects.size(); ++o) {
+            REQUIRE(restored.objects[o]->volumes.size() == model.objects[o]->volumes.size());
+            for (size_t v = 0; v < model.objects[o]->volumes.size(); ++v) {
+                const auto& a = model.objects[o]->volumes[v]->mesh().its;
+                const auto& b = restored.objects[o]->volumes[v]->mesh().its;
+                REQUIRE(a.vertices.size() == b.vertices.size());
+                REQUIRE(a.indices.size() == b.indices.size());
+                for (size_t i = 0; i < a.vertices.size(); ++i)
+                    max_coordinate_error = std::max(max_coordinate_error, double((a.vertices[i] - b.vertices[i]).cwiseAbs().maxCoeff()));
+                for (size_t i = 0; i < a.indices.size(); ++i)
+                    indices_equal = indices_equal && (a.indices[i].array() == b.indices[i].array()).all();
+            }
+        }
+        CHECK_THAT(max_coordinate_error, Catch::Matchers::WithinAbs(0.0, 1e-7));
+        CHECK(indices_equal);
+        report << iteration << ',' << save_ms << ',' << load_ms << '\n';
+        report.flush();
+        REQUIRE(report.good());
+        if (captured_path && iteration == 5)
+            REQUIRE(boost::filesystem::copy_file(output.path(), captured_path, boost::filesystem::copy_option::overwrite_if_exists));
+    }
+}
+
+// Hidden diagnostic for the GUI save handoff: measure the copy that would
+// still run on the caller thread before a background exporter could start.
+TEST_CASE("A painted project model can be copied without sharing mutable annotations", "[.ThreeMFSnapshotProbe]")
+{
+    const char* fixture = std::getenv("ORCASLICER_3MF_FIXTURE");
+    const char* report_path = std::getenv("ORCASLICER_3MF_REPORT");
+    REQUIRE(fixture != nullptr);
+    REQUIRE(report_path != nullptr);
+    Model model;
+    ScopedTemporaryDir backup("three_mf_snapshot_probe");
+    model.set_backup_path(backup.string());
+    REQUIRE(boost::filesystem::create_directories(backup.path() / "Metadata"));
+    DynamicPrintConfig config;
+    ConfigSubstitutionContext substitutions{ForwardCompatibilitySubstitutionRule::Enable};
+    PlateDataPtrs plates;
+    std::vector<Preset*> presets;
+    bool bbl = false, orca = false;
+    Semver version;
+    const bool loaded = load_bbs_3mf(fixture, &config, &substitutions, &model,
+        &plates, &presets, &bbl, &orca, &version, nullptr,
+        LoadStrategy::LoadModel | LoadStrategy::LoadConfig);
+    release_PlateData_list(plates);
+    for (auto* preset : presets) delete preset;
+    REQUIRE(loaded);
+    REQUIRE_FALSE(model.objects.empty());
+
+    boost::filesystem::ofstream report(report_path);
+    REQUIRE(report.good());
+    report.imbue(std::locale::classic());
+    report << "iteration,model_copy_ms,config_copy_ms,shared_meshes,painted_volumes\n";
+    using Clock = std::chrono::steady_clock;
+    for (int iteration = 0; iteration < 6; ++iteration) {
+        const auto model_started = Clock::now();
+        Model snapshot(model);
+        const double model_ms = std::chrono::duration<double, std::milli>(Clock::now() - model_started).count();
+        const auto config_started = Clock::now();
+        DynamicPrintConfig config_snapshot(config);
+        const double config_ms = std::chrono::duration<double, std::milli>(Clock::now() - config_started).count();
+        REQUIRE(snapshot.objects.size() == model.objects.size());
+        size_t shared_meshes = 0;
+        size_t painted_volumes = 0;
+        for (size_t o = 0; o < model.objects.size(); ++o) {
+            REQUIRE(snapshot.objects[o] != model.objects[o]);
+            REQUIRE(snapshot.objects[o]->volumes.size() == model.objects[o]->volumes.size());
+            for (size_t v = 0; v < model.objects[o]->volumes.size(); ++v) {
+                const auto* source = model.objects[o]->volumes[v];
+                auto* copied = snapshot.objects[o]->volumes[v];
+                shared_meshes += source->get_mesh_shared_ptr() == copied->get_mesh_shared_ptr();
+                REQUIRE(source->mmu_segmentation_facets.equals(copied->mmu_segmentation_facets));
+                if (!source->mmu_segmentation_facets.empty()) {
+                    ++painted_volumes;
+                    copied->mmu_segmentation_facets.reset();
+                    CHECK_FALSE(source->mmu_segmentation_facets.empty());
+                    CHECK(copied->mmu_segmentation_facets.empty());
+                }
+            }
+        }
+        CHECK(painted_volumes > 0);
+        report << iteration << ',' << model_ms << ',' << config_ms << ','
+               << shared_meshes << ',' << painted_volumes << '\n';
+        report.flush();
+        REQUIRE(report.good());
+    }
+}
+
+TEST_CASE("Model XML remains identical across timed compression levels", "[.ThreeMFCompressionProbe]")
+{
+    const char* fixture = std::getenv("ORCASLICER_3MF_FIXTURE");
+    const char* report_path = std::getenv("ORCASLICER_3MF_REPORT");
+    REQUIRE(fixture != nullptr);
+    REQUIRE(report_path != nullptr);
+    struct Archive {
+        mz_zip_archive zip{};
+        ~Archive() { mz_zip_end(&zip); }
+    } input;
+    REQUIRE(mz_zip_reader_init_file(&input.zip, fixture, 0));
+    boost::filesystem::ofstream report(report_path);
+    REQUIRE(report.good());
+    report.imbue(std::locale::classic());
+    report << "entry,iteration,level,xml_bytes,zip_bytes,compress_ms\n";
+    size_t mesh_entries = 0;
+    for (mz_uint entry = 0; entry < mz_zip_reader_get_num_files(&input.zip); ++entry) {
+        mz_zip_archive_file_stat stat{};
+        REQUIRE(mz_zip_reader_file_stat(&input.zip, entry, &stat));
+        const std::string name = stat.m_filename;
+        if (name.size() < 6 || name.substr(name.size() - 6) != ".model") continue;
+        size_t size = 0;
+        std::unique_ptr<void, decltype(&mz_free)> data(mz_zip_reader_extract_to_heap(&input.zip, entry, &size, 0), &mz_free);
+        REQUIRE(data != nullptr);
+        const std::string xml(static_cast<const char*>(data.get()), size);
+        if (xml.find("<vertices>") == std::string::npos) continue;
+        ++mesh_entries;
+        for (int iteration = 0; iteration < 6; ++iteration) {
+            const int levels[] = {6, 3, 1};
+            for (int order = 0; order < 3; ++order) {
+                const int level = levels[(order + iteration) % 3];
+                Archive output;
+                REQUIRE(mz_zip_writer_init_heap(&output.zip, 0, 1024 * 1024));
+                mz_zip_writer_staged_context context{};
+                const auto started = std::chrono::steady_clock::now();
+                REQUIRE(mz_zip_writer_add_staged_open(&output.zip, &context, "3D/model.model",
+                    (uint64_t(1) << 32) - 1, nullptr, nullptr, 0, level, nullptr, 0, nullptr, 0));
+                for (size_t offset = 0; offset < size; offset += 1024 * 1024)
+                    REQUIRE(mz_zip_writer_add_staged_data(&context, xml.data() + offset, std::min(size - offset, size_t(1024 * 1024))));
+                REQUIRE(mz_zip_writer_add_staged_finish(&context));
+                void* bytes = nullptr;
+                size_t byte_count = 0;
+                REQUIRE(mz_zip_writer_finalize_heap_archive(&output.zip, &bytes, &byte_count));
+                const double elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+                std::unique_ptr<void, decltype(&mz_free)> archive_data(bytes, &mz_free);
+                Archive verify;
+                REQUIRE(mz_zip_reader_init_mem(&verify.zip, bytes, byte_count, 0));
+                std::string restored(size, '\0');
+                REQUIRE(mz_zip_reader_extract_to_mem(&verify.zip, 0, restored.data(), restored.size(), 0));
+                CHECK(restored == xml);
+                report << entry << ',' << iteration << ',' << level << ',' << size << ',' << byte_count << ',' << elapsed << '\n';
+                report.flush();
+                REQUIRE(report.good());
+            }
+        }
+    }
+    REQUIRE(mesh_entries > 0);
+}
+
+TEST_CASE("Reordered triangle attributes retain all sparse annotations", "[3mf][Regression]")
+{
+    const bool split_model = GENERATE(false, true);
+    CAPTURE(split_model);
+    Model model;
+    ScopedTemporaryDir backup("three_mf_attribute_order");
+    model.set_backup_path(backup.string());
+    TriangleMesh mesh = make_cube(13.25, 20.5, 17.75);
+    const size_t faces = mesh.its.indices.size();
+    REQUIRE(faces >= 12);
+    mesh.its.properties.assign(faces, FaceProperty{eNormal, 0.0});
+    mesh.its.properties[4] = FaceProperty{eSmallHole, 1.25};
+    mesh.its.properties[8] = FaceProperty{eExteriorAppearance, 0.0};
+    auto* volume = model.add_object()->add_volume(std::move(mesh), ModelVolumeType::MODEL_PART, false);
+    std::array<FacetsAnnotation*, 4> annotations = {
+        &volume->supported_facets, &volume->seam_facets,
+        &volume->mmu_segmentation_facets, &volume->fuzzy_skin_facets};
+    for (size_t i = 0; i != annotations.size(); ++i) {
+        TriangleSelector selector(volume->mesh());
+        selector.set_facet(static_cast<int>(1 + 2 * i), EnforcerBlockerType::ENFORCER);
+        selector.set_facet(static_cast<int>(faces - 2), EnforcerBlockerType::BLOCKER);
+        REQUIRE(annotations[i]->set(selector));
+    }
+    model.add_default_instances();
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    ScopedTemporaryFile original(".3mf"), reordered(".3mf");
+    PlateData plate;
+    plate.plate_index = 0;
+    StoreParams params;
+    params.path = original.string();
+    params.model = &model;
+    params.config = &config;
+    params.plate_data_list.push_back(&plate);
+    params.strategy = SaveStrategy::Zip64 | SaveStrategy::Silence;
+    if (split_model)
+        params.strategy = params.strategy | SaveStrategy::SplitModel;
+    REQUIRE(store_bbs_3mf(params));
+
+    // Exercise the actual importers with legal external ordering and unknown
+    // names. Keep the original XML attribute values and all other archive data.
+    size_t reordered_faces = 0;
+    {
+        struct Archive {
+            mz_zip_archive zip{};
+            ~Archive() { mz_zip_end(&zip); }
+        } input, output;
+        REQUIRE(mz_zip_reader_init_file(&input.zip, original.string().c_str(), 0));
+        REQUIRE(mz_zip_writer_init_file(&output.zip, reordered.string().c_str(), 0));
+        const std::regex attribute(R"attr(([^\s=]+)="([^"]*)")attr");
+        for (mz_uint entry = 0; entry < mz_zip_reader_get_num_files(&input.zip); ++entry) {
+            mz_zip_archive_file_stat stat{};
+            REQUIRE(mz_zip_reader_file_stat(&input.zip, entry, &stat));
+            const std::string name = stat.m_filename;
+            size_t size = 0;
+            std::unique_ptr<void, decltype(&mz_free)> data(
+                mz_zip_reader_extract_to_heap(&input.zip, entry, &size, 0), &mz_free);
+            REQUIRE(data != nullptr);
+            std::string bytes(static_cast<const char*>(data.get()), size);
+            if (name.size() >= 6 && name.substr(name.size() - 6) == ".model") {
+                size_t position = 0;
+                while ((position = bytes.find("<triangle ", position)) != std::string::npos) {
+                    const size_t end = bytes.find("/>", position);
+                    REQUIRE(end != std::string::npos);
+                    const std::string fields = bytes.substr(position + 10, end - position - 10);
+                    std::vector<std::string> values;
+                    for (std::sregex_iterator it(fields.begin(), fields.end(), attribute), stop; it != stop; ++it)
+                        values.push_back(it->str());
+                    REQUIRE(values.size() >= 3);
+                    std::string triangle = "<triangle opaque=\"ignored\" paint_unused=\"x\" face_unused=\"y\"";
+                    for (auto it = values.rbegin(); it != values.rend(); ++it)
+                        triangle += " " + *it;
+                    triangle += "/>";
+                    bytes.replace(position, end + 2 - position, triangle);
+                    position += triangle.size();
+                    ++reordered_faces;
+                }
+            }
+            REQUIRE(mz_zip_writer_add_mem(&output.zip, name.c_str(), bytes.data(), bytes.size(), MZ_DEFAULT_COMPRESSION));
+        }
+        REQUIRE(mz_zip_writer_finalize_archive(&output.zip));
+    }
+    REQUIRE(reordered_faces == faces);
+    Model restored;
+    ScopedTemporaryDir restored_backup("three_mf_attribute_order_restore");
+    restored.set_backup_path(restored_backup.string());
+    REQUIRE(boost::filesystem::create_directories(restored_backup.path() / "Metadata"));
+    DynamicPrintConfig restored_config;
+    ConfigSubstitutionContext substitutions{ForwardCompatibilitySubstitutionRule::Enable};
+    PlateDataPtrs plates;
+    std::vector<Preset*> presets;
+    bool bbl = false, orca = false;
+    Semver version;
+    const bool loaded = load_bbs_3mf(reordered.string().c_str(), &restored_config, &substitutions,
+        &restored, &plates, &presets, &bbl, &orca, &version, nullptr,
+        LoadStrategy::LoadModel | LoadStrategy::LoadConfig);
+    release_PlateData_list(plates);
+    for (auto* preset : presets) delete preset;
+    REQUIRE(loaded);
+    REQUIRE(restored.objects.size() == 1);
+    REQUIRE(restored.objects.front()->volumes.size() == 1);
+    const auto* actual = restored.objects.front()->volumes.front();
+    std::array<const FacetsAnnotation*, 4> actual_annotations = {
+        &actual->supported_facets, &actual->seam_facets,
+        &actual->mmu_segmentation_facets, &actual->fuzzy_skin_facets};
+    REQUIRE(actual->mesh().its.indices.size() == faces);
+    for (size_t i = 0; i != annotations.size(); ++i)
+        for (size_t face = 0; face != faces; ++face)
+            CHECK(actual_annotations[i]->get_triangle_as_string(static_cast<int>(face)) ==
+                  annotations[i]->get_triangle_as_string(static_cast<int>(face)));
+    const auto& actual_properties = actual->mesh().its.properties;
+    const auto& expected_properties = volume->mesh().its.properties;
+    REQUIRE(actual_properties.size() == expected_properties.size());
+    for (size_t face = 0; face != faces; ++face) {
+        CHECK(actual_properties[face].type == expected_properties[face].type);
+        CHECK_THAT(actual_properties[face].area,
+            Catch::Matchers::WithinAbs(expected_properties[face].area, 1e-6));
+    }
+}
+
+TEST_CASE("Large archived model parts retain geometry and recover from XML failures and cancellation", "[3mf][ArchiveRead]")
+{
+    const bool split_model = GENERATE(false, true);
+    const int failure = GENERATE(0, 1, 2, 3, 4);
+    const int compression = GENERATE(MZ_NO_COMPRESSION, MZ_DEFAULT_COMPRESSION);
+    CAPTURE(split_model, failure, compression);
+    Model model;
+    ScopedTemporaryDir backup("three_mf_large_part");
+    model.set_backup_path(backup.string());
+    auto* volume = model.add_object()->add_volume(make_cube(13.25, 20.5, 17.75), ModelVolumeType::MODEL_PART, false);
+    TriangleSelector selector(volume->mesh());
+    selector.set_facet(2, EnforcerBlockerType::ENFORCER);
+    selector.set_facet(9, EnforcerBlockerType::BLOCKER);
+    REQUIRE(volume->mmu_segmentation_facets.set(selector));
+    if (split_model)
+        model.add_object()->add_volume(make_cube(11.0, 7.0, 8.0), ModelVolumeType::MODEL_PART, false);
+    model.add_default_instances();
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    ScopedTemporaryFile original(".3mf"), padded(".3mf");
+    PlateData plate;
+    plate.plate_index = 0;
+    StoreParams params;
+    params.path = original.string();
+    params.model = &model;
+    params.config = &config;
+    params.plate_data_list.push_back(&plate);
+    params.strategy = SaveStrategy::Zip64 | SaveStrategy::Silence;
+    if (split_model)
+        params.strategy = params.strategy | SaveStrategy::SplitModel;
+    REQUIRE(store_bbs_3mf(params));
+    size_t large_parts = 0;
+    {
+        struct Archive {
+            mz_zip_archive zip{};
+            ~Archive() { mz_zip_end(&zip); }
+        } input, output;
+        REQUIRE(mz_zip_reader_init_file(&input.zip, original.string().c_str(), 0));
+        REQUIRE(mz_zip_writer_init_file(&output.zip, padded.string().c_str(), 0));
+        for (mz_uint entry = 0; entry < mz_zip_reader_get_num_files(&input.zip); ++entry) {
+            mz_zip_archive_file_stat stat{};
+            REQUIRE(mz_zip_reader_file_stat(&input.zip, entry, &stat));
+            size_t size = 0;
+            std::unique_ptr<void, decltype(&mz_free)> data(mz_zip_reader_extract_to_heap(&input.zip, entry, &size, 0), &mz_free);
+            REQUIRE(data != nullptr);
+            std::string bytes(static_cast<const char*>(data.get()), size);
+            const std::string name = stat.m_filename;
+            const auto mesh = bytes.find("<mesh>");
+            if (large_parts == 0 && name.size() >= 6 && name.substr(name.size() - 6) == ".model" && mesh != std::string::npos) {
+                // Legal whitespace spans many ZIP output blocks. Fail either
+                // before the reader fills its buffers or after draining them.
+                std::string prefix;
+                if (failure == 1)
+                    prefix = "<broken></wrong>";
+                bytes.insert(mesh + 6, prefix + std::string(9 * 1024 * 1024, ' '));
+                if (failure == 2) {
+                    const auto end = bytes.find("</mesh>");
+                    REQUIRE(end != std::string::npos);
+                    bytes.insert(end, "<broken></wrong>");
+                }
+                ++large_parts;
+            }
+            REQUIRE(mz_zip_writer_add_mem(&output.zip, name.c_str(), bytes.data(), bytes.size(), compression));
+        }
+        REQUIRE(mz_zip_writer_finalize_archive(&output.zip));
+    }
+    REQUIRE(large_parts == 1);
+    Model restored;
+    ScopedTemporaryDir restored_backup("three_mf_large_part_restore");
+    restored.set_backup_path(restored_backup.string());
+    REQUIRE(boost::filesystem::create_directories(restored_backup.path() / "Metadata"));
+    DynamicPrintConfig restored_config;
+    ConfigSubstitutionContext substitutions{ForwardCompatibilitySubstitutionRule::Enable};
+    PlateDataPtrs plates;
+    std::vector<Preset*> presets;
+    bool bbl = false, orca = false;
+    Semver version;
+    const auto caller = std::this_thread::get_id();
+    bool saw_read_checkpoint = false, finished = false, read_regressed = false;
+    std::atomic<bool> wrong_thread{false};
+    int last_read = -1;
+    Import3mfProgressFn progress;
+    if (failure == 0 || failure >= 3) {
+        progress = [&](int stage, int current, int total, bool& cancel) {
+            if (std::this_thread::get_id() != caller) {
+                wrong_thread = true;
+                cancel = true;
+                return;
+            }
+            finished |= stage == IMPORT_STAGE_FINISH;
+            if (stage == IMPORT_STAGE_READ_FILES) {
+                read_regressed |= current < last_read;
+                last_read = current;
+            }
+            if (stage == IMPORT_STAGE_READ_FILES && current == 1 && total == 3) {
+                saw_read_checkpoint = true;
+                if (failure == 4)
+                    throw std::runtime_error("3MF progress callback failure");
+                cancel = failure == 3;
+            }
+        };
+    }
+    auto load = [&](Import3mfProgressFn callback) {
+        return load_bbs_3mf(padded.string().c_str(), &restored_config, &substitutions,
+            &restored, &plates, &presets, &bbl, &orca, &version, callback,
+            LoadStrategy::LoadModel | LoadStrategy::LoadConfig);
+    };
+    bool loaded = false, callback_threw = false;
+    try { loaded = load(progress); }
+    catch (const std::runtime_error& error) {
+        callback_threw = std::string(error.what()) == "3MF progress callback failure";
+        if (!callback_threw) throw;
+    }
+    release_PlateData_list(plates);
+    for (auto* preset : presets) delete preset;
+    presets.clear();
+    REQUIRE_FALSE(wrong_thread.load());
+    REQUIRE_FALSE(read_regressed);
+    if (failure == 0) {
+        REQUIRE(saw_read_checkpoint);
+        REQUIRE(finished);
+    }
+    if (failure >= 3) {
+        REQUIRE(saw_read_checkpoint);
+        REQUIRE_FALSE(finished);
+        REQUIRE_FALSE(loaded);
+        REQUIRE(callback_threw == (failure == 4));
+        REQUIRE(restored.objects.empty());
+        // Return includes draining/joining the archive readers. The same file
+        // and destination remain usable immediately, without changing config.
+        loaded = load(nullptr);
+        release_PlateData_list(plates);
+        for (auto* preset : presets) delete preset;
+    }
+    if (failure == 1 || failure == 2) {
+        REQUIRE_FALSE(loaded);
+        return;
+    }
+    REQUIRE(loaded);
+    REQUIRE(restored.objects.size() == model.objects.size());
+    if (split_model) {
+        REQUIRE(restored.objects.back()->volumes.size() == 1);
+        const auto size = restored.objects.back()->volumes.front()->mesh().bounding_box().size();
+        CHECK_THAT(size.x(), Catch::Matchers::WithinAbs(11.0, 1e-6));
+        CHECK_THAT(size.y(), Catch::Matchers::WithinAbs(7.0, 1e-6));
+        CHECK_THAT(size.z(), Catch::Matchers::WithinAbs(8.0, 1e-6));
+    }
+    REQUIRE(restored.objects.front()->volumes.size() == 1);
+    const auto* actual = restored.objects.front()->volumes.front();
+    REQUIRE(actual->mesh().its.indices.size() == volume->mesh().its.indices.size());
+    CHECK_THAT(actual->mesh().bounding_box().size().x(), Catch::Matchers::WithinAbs(13.25, 1e-6));
+    CHECK_THAT(actual->mesh().bounding_box().size().y(), Catch::Matchers::WithinAbs(20.5, 1e-6));
+    CHECK_THAT(actual->mesh().bounding_box().size().z(), Catch::Matchers::WithinAbs(17.75, 1e-6));
+    for (size_t face = 0; face != volume->mesh().its.indices.size(); ++face) {
+        CHECK(actual->mesh().its.indices[face] == volume->mesh().its.indices[face]);
+        CHECK(actual->mmu_segmentation_facets.get_triangle_as_string(static_cast<int>(face)) ==
+            volume->mmu_segmentation_facets.get_triangle_as_string(static_cast<int>(face)));
     }
 }

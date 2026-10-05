@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <string.h>
+#include <memory>
 
 #include <boost/log/trivial.hpp>
 #include <boost/nowide/cstdio.hpp>
@@ -664,11 +665,13 @@ static bool        mtl_parseline(const char *line, MtlData &data)
     return true;
 }
 
-bool objparse(const char *path, ObjData &data)
+bool objparse(const char *path, ObjData &data, const std::function<bool()>& canceled)
 {
     Slic3r::CNumericLocalesSetter locales_setter;
+    if (canceled && canceled()) { data = ObjData {}; return false; }
 
-	FILE *pFile = boost::nowide::fopen(path, "rt");
+	std::unique_ptr<FILE, decltype(&::fclose)> file(boost::nowide::fopen(path, "rt"), &::fclose);
+	FILE *pFile = file.get();
 	if (pFile == 0)
 		return false;
 
@@ -677,6 +680,7 @@ bool objparse(const char *path, ObjData &data)
 		size_t len = 0;
 		size_t lenPrev = 0;
 		while ((len = ::fread(buf + lenPrev, 1, 65536, pFile)) != 0) {
+			if (canceled && canceled()) { data = ObjData {}; return false; }
 			len += lenPrev;
 			size_t lastLine = 0;
 			for (size_t i = 0; i < len; ++ i)
@@ -693,7 +697,6 @@ bool objparse(const char *path, ObjData &data)
 			lenPrev = len - lastLine;
 			if (lenPrev > 65536) {
 		    	BOOST_LOG_TRIVIAL(error) << "ObjParser: Excessive line length";
-				::fclose(pFile);
 				return false;
 			}
 			memmove(buf, buf + lastLine, lenPrev);
@@ -702,7 +705,7 @@ bool objparse(const char *path, ObjData &data)
     catch (std::bad_alloc&) {
     	BOOST_LOG_TRIVIAL(error) << "ObjParser: Out of memory";
 	}
-	::fclose(pFile);
+	if (canceled && canceled()) { data = ObjData {}; return false; }
 	return true;
 }
 
