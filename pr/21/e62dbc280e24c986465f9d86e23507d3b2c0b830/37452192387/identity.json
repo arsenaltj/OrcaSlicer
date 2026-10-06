@@ -1,0 +1,25 @@
+{
+  "pr": 21,
+  "run": 37452192387,
+  "head": "e62dbc280e24c986465f9d86e23507d3b2c0b830",
+  "base": "2aa5ca0df09ed1ee478eb8d2e40b5a3913a421c7",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "Migrate accepted desktop UX onto the PR20 integration baseline",
+  "path": "pr/21/e62dbc280e24c986465f9d86e23507d3b2c0b830/37452192387",
+  "created": "2026-10-06T10:50:44+00:00",
+  "files": {
+    "index.html": "40276515bb5b4a595a868a5aa26317a0452f2c0170f18f3ec682a8e4b346673f",
+    "details.html": "12f586a2c5eb7e228a34a2ce798d985463fb7665339b368aa5b937902bfbb507",
+    "report.json": "37c0ec07b79b17bbc0b5c425a54b1b147d1e49d246f87de669f8ffdf9f765674",
+    "summary.md": "2894293b228d001c6a9e7b3f0e94ea1c93f821ee6272ee992c4e717f54cbfd27",
+    "archify-receipts.json": "1888d42a4abada6849a41442bbe40eb44a1ca1a39350d66cb88ba85597b4004a",
+    "l0-context.html": "b40651a699aa26cdcc642dfa7985a7e7ed388cf8cea416c2ba2ea4dc66d73ba8",
+    "l0-context.json": "b32626c8af75db55a5e8f281596c8e8148bf097e31761caeb0267871b2444776",
+    "l1-modules.html": "f3b635e279f7158b37e1f151e3232983ac21b292621c41027d78d42cbb3ee344",
+    "l1-modules.json": "203b9c2b615942ffbfb563193c260cc4280bf07ff4a9a68336f8219cc6e7008b",
+    "l2-generation.html": "5acbda288166f273c4137cf06a8ac7d2386d95f696589621ca5b3ca4e845c7fc",
+    "l2-generation.json": "e38c2d3e962b690d22bf3a3e61c5fb208d5a8b2b4c2ab96c683e2a85305f7d05",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}

@@ -1,6 +1,16 @@
 [
   {
     "pr": 21,
+    "run": 37452192387,
+    "head": "e62dbc280e24c986465f9d86e23507d3b2c0b830",
+    "base": "2aa5ca0df09ed1ee478eb8d2e40b5a3913a421c7",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "Migrate accepted desktop UX onto the PR20 integration baseline",
+    "path": "pr/21/e62dbc280e24c986465f9d86e23507d3b2c0b830/37452192387",
+    "created": "2026-10-06T10:50:44+00:00"
+  },
+  {
+    "pr": 21,
     "run": 37441584520,
     "head": "30a25e8e37f44bd3c60969cdf819ef7cf658417d",
     "base": "2aa5ca0df09ed1ee478eb8d2e40b5a3913a421c7",
