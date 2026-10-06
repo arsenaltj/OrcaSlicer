@@ -199,3 +199,17 @@
 - 已上传状态隐藏整个空态 tile；缩略图使用固定 150 DIP 居中画布、最大 134 DIP 的圆角图片，并在同一画布内绘制圆形 × 标记。关闭命中区域清空图片，其他图片区域仍可重选；保留拖拽入口和原有校验。空态恢复原 tile。
 - HEAD `5bb5f06b11` 加当前两文件未提交修改，Windows x64 Release 增量 `OrcaSlicer_app_gui` 通过，记录 `.tmp/dev/logs/20260924-121927-351/result.json`；定向 `[UiRedesign],[ImageSelection]` 通过 7 例／43 断言，日志 `build/ui-redesign-upload-tests-20260924.log`。
 - 用户要求继续使用旧候选路径。覆盖前确认其 EXE 未运行且 DLL 与先前记录匹配，仅将新构建 DLL 覆盖 `.tmp/ui-redesign-visual-20260924/run/OrcaSlicer.dll`；SHA256 `2F06269843DAE780A4FCD59563499232E0C32CABAADBD60CCC29A8FDBF788EC5`，EXE、资源和 Python 未改变。候选未由 Codex 启动，图片居中、角部、关闭/重选/拖入及清空后恢复等待用户真实窗口验收。
+
+### 2026-10-06 打印机模块：实现与离线主窗口验收
+
+- 基于用户指定的 `origin/codex/ui-redesign-3d-model-ux-20260930`，源码起点为 `047af2bf4d5350e79aabaa18bcd1335cd9f2dce6`。在独立工作树的 `codex/ui-redesign-printer-ux-20261006` 分支实现，原工作树未改动。用户已确认本地候选并要求提交到 GitHub；保持这一独立分支，后续再合并。任务背景依据为本仓库的同名计划文档。
+- 对照 Figma 文件 `TafDZMN6dVlTTT5DX1LwCF` 的打印准备 `15:6433`、实时监控 `15:3393`、暂停确认 `15:3693`、打印完成媒体 `15:3525`，将 `Print` 占位页替换为 `PrinterWorkspace`。实现深色三栏布局、打印机/选项/G-code/时间、实际模型缩略图、设备状态和进度、暂停/恢复/停止确认、视频/图片筛选与查看、导出及返回打印准备。共享圆角控件提取到 `RedesignWidgets.hpp`；打印确认使用紧凑弹窗，默认选择取消。
+- `OrcaPrinterAdapter` 复用 `Plater`、`DeviceManager`、既有发送打印流程、`MediaPlayCtrl` 和 `PrinterFileSystem`。切片准备与发送打印分开；支持状态由设备能力决定，未知温度、进度、耗材和 AI 检测明确显示缺失状态。任务确认结束后重新读取设备及其上报任务标识再执行命令；不持有跨弹窗的设备裸指针。设备任务标识的唯一性仍取决于原生上报协议。
+- 修复新 Shell 下首次切片的实际崩溃：隐藏的原生 3D 画布没有建立 ImGui 字体，切片通知计算文字尺寸时发生访问违规。适配器在导入缩略图/切片前初始化该画布的 GL/字体资源，保留隐藏和禁止持续渲染的状态；未修改切片引擎。模型预览使用原生带光照的缩略图，G-code 显示业务导出文件名。
+- 本地视频提供独立的播放/暂停按钮，并按实际播放状态更新文字，避免 Windows 后端没有发出 `wxEVT_MEDIA_LOADED` 时按钮一直禁用。首次自动播放请求仍受该后端异步就绪时序影响，实测通过点击播放开始。页面离开和切换图片会停止播放器。实时截图只读取已解码帧；媒体回调核对页面生命周期和设备范围。关闭时先销毁媒体控制器及其工作线程，再销毁视频窗口，并解除祖先事件绑定。
+- 修改范围：新增 `PrinterWorkspace.*`、`PrinterWorkspaceState.hpp`、`OrcaPrinterAdapter.*`、共享控件、3 个打印图标及 `tests/ui_redesign`；调整 `RedesignShell`、`MainFrame` 的最小路由、`RedesignMessageDialog`、媒体生命周期和构建清单。`Prepare/Preview` 请求进入打印准备，`Monitor/Web` 请求进入监控，媒体入口进入新媒体页；没有新增可见的旧 Notebook 回退。
+- Windows VS2022 x64 Release 的 `dev.ps1 Run -Jobs 4` 构建、完整安装、运行时检查和隔离 Python/Pillow PNG round-trip 均通过。构建后仅补充实施记录和架构映射，未再修改原生代码或资源。完整构建身份、产物哈希、日志、截图及本机验收资料保留在忽略目录，不随源码提交。
+- `printer_workspace_tests.exe '[PrinterWorkspace]'` 通过 **8 个用例、57 个断言**，覆盖设备/任务变化、未连接/未上报、能力和阶段、切片与打印边界、既有打印 host 以及时间单位/溢出。这组测试不替代实体设备联调。
+- 已操作最终候选真实主窗口（200% DPI）：导入自建 20 mm STL，带光照模型预览正常；切片生成实际 G-code，显示 `offline-20mm-box.gcode` 和 `18m`，离线开始打印禁用。监控缺失数据及暂停/停止/截图禁用正确。15 秒 H.264 测试视频的播放、暂停和继续播放、图片预览、全部/视频/图片筛选、准备/监控/媒体切换通过；离开媒体页后日志状态变为停止。图片导出内容 SHA256 与原文件相同。测试项目另存后正常关闭，日志含媒体控制器和应用正常析构。
+- `git diff --check` 与架构 README 一致性检查通过。集成守卫仍报告 **6 项基线已有的共享文件 diff budget 超限**（根/GUI CMake、MainFrame.cpp/.hpp、Plater.cpp/.hpp）；其中本轮只向 GUI CMake 增加 6 行，并对 MainFrame.cpp 作最小路由修改，其余超限文件未改动。没有放宽或跳过守卫，不能将此项写为集成通过；本次为独立分支源码提交，未执行团队集成合并。
+- **未验证范围**：真实设备发送打印、暂停/恢复/停止及确认弹窗现场交互、状态自动进入打印完成页、实时摄像头/实际帧截图、设备存储媒体的列举和下载、实体设备选项以及其他 DPI/平台。本轮没有连接或控制实体打印机；本地媒体文件仅为离线验收夹具，不作为用户打印记录交付。其余页面、模型编辑/交互式 3D 画布和旧 UI 全量迁移不属于本次打印机模块验收。

@@ -228,6 +228,21 @@
       "id": "native_output",
       "path": "src/slic3r/GUI/Plater.cpp",
       "needle": "void Plater::priv::export_gcode("
+    },
+    {
+      "id": "printer_workspace",
+      "path": "src/slic3r/GUI/Redesign/PrinterWorkspace.cpp",
+      "needle": "void PrinterWorkspace::set_view"
+    },
+    {
+      "id": "printer_adapter",
+      "path": "src/slic3r/GUI/Redesign/OrcaPrinterAdapter.cpp",
+      "needle": "bool OrcaPrinterAdapter::start_print()"
+    },
+    {
+      "id": "printer_task_guard",
+      "path": "src/slic3r/GUI/Redesign/PrinterWorkspaceState.hpp",
+      "needle": "inline bool printer_command_allowed"
     }
   ],
   "journeys": [
@@ -776,6 +791,22 @@
         "core"
       ],
       "impact_scope": "evidence"
+    },
+    {
+      "id": "printer",
+      "label": "打印机工作区",
+      "detail": "打印准备、实时监控、暂停确认与媒体查看复用原生打印和设备接口",
+      "boundary": "确认后重新核对设备及已上报任务标识；缺失状态明确显示，实机控制与摄像头链路尚待验证",
+      "group": "设备与打印",
+      "evidence": [
+        "printer_workspace",
+        "printer_adapter",
+        "printer_task_guard"
+      ],
+      "modules": [
+        "desktop"
+      ],
+      "impact_scope": "evidence"
     }
   ],
   "product_overview": {
@@ -819,8 +850,8 @@
       },
       {
         "label": "设备管理与打印",
-        "detail": "原生设备 / 打印入口；尚无细粒度业务映射",
-        "module": "desktop"
+        "detail": "新界面打印准备、实时监控、暂停确认与媒体查看；复用现有设备和打印流程",
+        "flow": "printer"
       }
     ],
     "foundation": [

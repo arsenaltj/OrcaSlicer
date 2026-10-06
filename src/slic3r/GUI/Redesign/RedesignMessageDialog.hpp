@@ -20,7 +20,7 @@ class RedesignMessageDialog final : public DPIDialog
 {
 public:
     RedesignMessageDialog(wxWindow* parent, const wxString& message,
-                          const wxString& caption = wxEmptyString, long style = wxOK);
+                          const wxString& caption = wxEmptyString, long style = wxOK, bool compact = false);
 
 private:
     void add_action_button(wxWindowID id, const wxString& label, bool primary);
@@ -31,6 +31,8 @@ private:
 
     int m_cancel_result { wxID_CANCEL };
     int m_default_result { wxID_OK };
+    int m_dialog_width { 560 };
+    int m_message_width { 408 };
     wxPoint m_drag_offset;
     wxWindow* m_drag_source { nullptr };
     wxPanel* m_title_bar { nullptr };

@@ -29,6 +29,7 @@ class ModelGenerationFeatureHost;
 class UploadThumbnail;
 class ImagePreview;
 class ModelPreview3D;
+class PrinterWorkspace;
 
 class RedesignShell final : public wxPanel
 {
@@ -42,6 +43,8 @@ public:
     bool navigate_to_tab(const wxString& id);
     wxString active_tab_id() const;
     void set_service_status(AIServiceStatus status);
+    void show_printer_media();
+    void refresh_printer_state();
 
 private:
     enum class ImageState { Empty, Loading, Ready, Failed };
@@ -84,6 +87,7 @@ private:
     wxPanel* m_content_host { nullptr };
     wxPanel* m_image_page { nullptr };
     wxPanel* m_model_page { nullptr };
+    PrinterWorkspace* m_print_page { nullptr };
     wxPanel* m_image_settings_panel { nullptr };
     wxScrolledWindow* m_image_settings_scroll { nullptr };
     wxPanel* m_upload_surface { nullptr };

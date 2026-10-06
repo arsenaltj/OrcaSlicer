@@ -1,5 +1,7 @@
 #include "RedesignShell.hpp"
 #include "RedesignTheme.hpp"
+#include "RedesignWidgets.hpp"
+#include "PrinterWorkspace.hpp"
 #include "../MainFrame.hpp"
 #include "../GUI_App.hpp"
 #include "../AI/AIDesktopFeatureHost.hpp"
@@ -167,32 +169,7 @@ wxImage resource_image(const char* name)
 }
 
 // Paint the surrounding colour in the corners; native wxPanels are square.
-class RoundedPanel final : public wxPanel {
-public:
-    RoundedPanel(wxWindow* parent, const wxSize& size, const wxColour& face,
-                 const wxColour& surrounding, int radius)
-        : wxPanel(parent, wxID_ANY, wxDefaultPosition, size)
-        , m_face(face), m_surrounding(surrounding), m_radius(radius)
-    {
-        SetBackgroundStyle(wxBG_STYLE_PAINT);
-        SetBackgroundColour(surrounding);
-        Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
-            wxAutoBufferedPaintDC dc(this);
-            dc.SetBackground(wxBrush(m_surrounding));
-            dc.Clear();
-            const wxSize size = GetClientSize();
-            if (size.x <= 0 || size.y <= 0) return;
-            auto gc = std::unique_ptr<wxGraphicsContext>(wxGraphicsContext::Create(dc));
-            if (!gc) return;
-            gc->SetPen(*wxTRANSPARENT_PEN);
-            gc->SetBrush(wxBrush(m_face));
-            gc->DrawRoundedRectangle(0, 0, size.x, size.y, FromDIP(m_radius));
-        });
-    }
-private:
-    wxColour m_face, m_surrounding;
-    int m_radius;
-};
+
 
 class ImageDropTarget final : public wxFileDropTarget
 {
@@ -835,99 +812,7 @@ private:
     wxImage m_arrow;
 };
 
-class RoundedActionButton final : public wxPanel {
-public:
-    RoundedActionButton(wxWindow* parent, const wxString& caption, bool primary, int height)
-        : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(-1, parent->FromDIP(height)))
-        , m_primary(primary)
-    {
-        SetLabel(caption);
-        SetMinSize(wxSize(-1, FromDIP(height)));
-        SetBackgroundStyle(wxBG_STYLE_PAINT);
-        SetBackgroundColour(panel_colour());
-        SetCanFocus(true);
-        style_text(this, primary ? wxColour(20, 20, 20) : primary_text_colour(), 11, primary);
-        Bind(wxEVT_PAINT, [this](wxPaintEvent&) { paint(); });
-        Bind(wxEVT_ENTER_WINDOW, [this](wxMouseEvent& event) {
-            m_hovered = true;
-            Refresh();
-            event.Skip();
-        });
-        Bind(wxEVT_LEAVE_WINDOW, [this](wxMouseEvent& event) {
-            m_hovered = false;
-            m_pressed = false;
-            Refresh();
-            event.Skip();
-        });
-        Bind(wxEVT_LEFT_DOWN, [this](wxMouseEvent& event) {
-            if (!IsEnabled())
-                return;
-            m_pressed = true;
-            SetFocus();
-            Refresh();
-            event.Skip();
-        });
-        Bind(wxEVT_LEFT_UP, [this](wxMouseEvent&) {
-            if (!IsEnabled() || !m_pressed)
-                return;
-            m_pressed = false;
-            Refresh();
-            wxCommandEvent command(wxEVT_BUTTON, GetId());
-            command.SetEventObject(this);
-            ProcessWindowEvent(command);
-        });
-        Bind(wxEVT_KEY_DOWN, [this](wxKeyEvent& event) {
-            if (IsEnabled() && (event.GetKeyCode() == WXK_RETURN || event.GetKeyCode() == WXK_SPACE)) {
-                wxCommandEvent command(wxEVT_BUTTON, GetId());
-                command.SetEventObject(this);
-                ProcessWindowEvent(command);
-                return;
-            }
-            event.Skip();
-        });
-        Bind(wxEVT_SET_FOCUS, [this](wxFocusEvent& event) { Refresh(); event.Skip(); });
-        Bind(wxEVT_KILL_FOCUS, [this](wxFocusEvent& event) { Refresh(); event.Skip(); });
-    }
 
-private:
-    void paint()
-    {
-        wxAutoBufferedPaintDC dc(this);
-        dc.SetBackground(wxBrush(panel_colour()));
-        dc.Clear();
-        const wxSize size = GetClientSize();
-        if (size.x <= 0 || size.y <= 0)
-            return;
-        auto gc = std::unique_ptr<wxGraphicsContext>(wxGraphicsContext::Create(dc));
-        if (!gc)
-            return;
-
-        wxColour face;
-        wxColour foreground;
-        if (!IsEnabled()) {
-            face = m_primary ? wxColour(91, 80, 43) : wxColour(43, 43, 47);
-            foreground = m_primary ? wxColour(25, 25, 25, 150) : wxColour(255, 255, 255, 78);
-        } else if (m_primary) {
-            face = m_pressed ? wxColour(231, 168, 20) : m_hovered ? wxColour(255, 207, 76) : accent_colour();
-            foreground = wxColour(20, 20, 20);
-        } else {
-            face = m_pressed ? wxColour(52, 52, 56) : m_hovered ? wxColour(47, 47, 51) : control_colour();
-            foreground = primary_text_colour();
-        }
-
-        gc->SetBrush(wxBrush(face));
-        gc->SetPen(FindFocus() == this ? wxPen(accent_colour(), std::max(1, FromDIP(1))) : *wxTRANSPARENT_PEN);
-        gc->DrawRoundedRectangle(FromDIP(1), FromDIP(1), size.x - FromDIP(2), size.y - FromDIP(2), FromDIP(10));
-        dc.SetFont(GetFont());
-        dc.SetTextForeground(foreground);
-        const wxSize extent = dc.GetTextExtent(GetLabel());
-        dc.DrawText(GetLabel(), (size.x - extent.x) / 2, (size.y - extent.y) / 2);
-    }
-
-    bool m_primary { false };
-    bool m_hovered { false };
-    bool m_pressed { false };
-};
 
 }
 
@@ -1096,6 +981,8 @@ RedesignShell::RedesignShell(wxWindow* parent, ModelGenerationFeatureHost* model
 
 RedesignShell::~RedesignShell()
 {
+    if (m_print_page != nullptr)
+        m_print_page->set_active(false);
     if (m_model_generation_host != nullptr)
         m_model_generation_host->set_state_listener({});
     ++m_model_preview_request_generation;
@@ -1409,8 +1296,10 @@ void RedesignShell::build_image_workspace()
         create_placeholder_page(text("资产中心"), text("新界面资产中心正在建设中。此页面不会跳回旧版工作区。"));
     m_pages[static_cast<std::size_t>(Page::Image)] = m_image_page;
     m_pages[static_cast<std::size_t>(Page::Model)] = build_model_workspace();
-    m_pages[static_cast<std::size_t>(Page::Print)] =
-        create_placeholder_page(text("准备与打印"), text("新界面准备与打印工作区正在建设中。旧版 Prepare/Preview 请求已在此界面内承接。"));
+    m_print_page = new PrinterWorkspace(m_content_host, wxGetApp().plater());
+    m_pages[static_cast<std::size_t>(Page::Print)] = m_print_page;
+    m_content_host->GetSizer()->Add(m_print_page, 1, wxEXPAND);
+    m_print_page->Hide();
     navigate_to(Page::Image);
 }
 
@@ -2357,7 +2246,7 @@ bool RedesignShell::navigate_to(Page page)
         m_active_tab_id = TAB_ID_GENERATE_3D;
         break;
     case Page::Print:
-        m_active_tab_id = TAB_ID_PREPARE;
+        m_active_tab_id = TAB_ID_MONITOR;
         break;
     }
     for (std::size_t i = 0; i < m_pages.size(); ++i) {
@@ -2377,6 +2266,8 @@ bool RedesignShell::navigate_to(Page page)
     if (m_content_host != nullptr && m_content_host->GetParent() != nullptr)
         m_content_host->GetParent()->Layout();
     Layout();
+    if (m_print_page != nullptr)
+        m_print_page->set_active(page == Page::Print);
     return true;
 }
 
@@ -2412,11 +2303,35 @@ bool RedesignShell::navigate_to_tab(const wxString& id)
     // mistake Preview/Monitor/Multi-device for Prepare merely because they
     // share the same migration host.
     m_active_tab_id = id;
+    if (page == Page::Print && m_print_page != nullptr) {
+        if (id == TAB_ID_PREPARE || id == TAB_ID_PREVIEW)
+            m_print_page->show_prepare();
+        else if (id == TAB_ID_MONITOR || id == TAB_ID_MONITOR_WEB)
+            m_print_page->show_monitor();
+    }
     return true;
+}
+
+void RedesignShell::show_printer_media()
+{
+    if (navigate_to(Page::Print) && m_print_page != nullptr)
+        m_print_page->show_media();
+}
+
+void RedesignShell::refresh_printer_state()
+{
+    if (m_print_page != nullptr)
+        m_print_page->refresh_state();
 }
 
 wxString RedesignShell::active_tab_id() const
 {
+    if (m_active_page == Page::Print && m_print_page != nullptr) {
+        if (m_print_page->monitoring())
+            return TAB_ID_MONITOR;
+        if (m_active_tab_id == TAB_ID_MONITOR)
+            return TAB_ID_PREPARE;
+    }
     return m_active_tab_id;
 }
 void RedesignShell::bind_upload_click(wxWindow* window)

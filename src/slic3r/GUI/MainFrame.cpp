@@ -1353,7 +1353,10 @@ void MainFrame::select_monitor_status(const std::string& dev_id)
 
 void MainFrame::jump_to_monitor_media()
 {
-    if (m_redesign_shell_active) { select_tab(TAB_ID_MONITOR); return; }
+    if (m_redesign_shell_active) {
+        if (m_redesign_shell != nullptr) m_redesign_shell->show_printer_media();
+        return;
+    }
     jump_to_monitor();
     if (m_monitor) m_monitor->get_tabpanel()->ChangeSelection(MonitorPanel::PT_MEDIA);
 }
@@ -1370,7 +1373,7 @@ void MainFrame::notify_hms_read(const wxString& error_code)
 void MainFrame::refresh_device_surface()
 {
     if (m_redesign_shell_active) {
-        if (m_redesign_shell != nullptr) m_redesign_shell->Layout();
+        if (m_redesign_shell != nullptr) m_redesign_shell->refresh_printer_state();
         return;
     }
     if (m_monitor != nullptr) {
