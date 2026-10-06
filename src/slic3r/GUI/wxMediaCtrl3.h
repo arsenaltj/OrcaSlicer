@@ -10,6 +10,7 @@
 
 #include "wx/uri.h"
 #include "wx/mediactrl.h"
+#include <wx/image.h>
 
 wxDECLARE_EVENT(EVT_MEDIA_CTRL_STAT, wxCommandEvent);
 
@@ -46,6 +47,10 @@ public:
 
     wxSize GetVideoSize();
 
+    // A copy of the decoded video, excluding control chrome and idle artwork.
+    // Used by the redesign's screenshot action; decoding stays owned here.
+    wxImage GetCurrentFrame();
+
 protected:
     DECLARE_EVENT_TABLE()
 
@@ -67,6 +72,7 @@ private:
     int m_error  = 0;
     wxSize m_video_size = wxDefaultSize;
     wxSize m_frame_size = wxDefaultSize;
+    bool m_frame_is_video { false };
 #ifdef _WIN32
     wxBitmap m_frame;
 #else

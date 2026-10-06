@@ -1,3 +1,12 @@
+# 2026-10-06 本轮：PR20 后主线接入打印 UX
+
+主线：PR20 已合入 `codex/team/integration`，固定基线 `2aa5ca0df09ed1ee478eb8d2e40b5a3913a421c7`。
+本轮：用户授权合并打印 UX；隔离分支 `codex/ui-redesign-printer-ux-integration-20261006` 迁入独立 PrinterWorkspace，保留 PR20 业务、版本校验与设备数据时效。
+本机证据：完整 Windows Release 构建、安装身份检查、打印工作区 10 项与主线确认/版本/媒体守卫 14 项通过。真实隔离窗口完成模型导入不自动切片、切片留在打印页、确认取消/离线 G-code 导出、原生预览与准备页、本地图片/视频播放暂停和筛选；资产/图像/模型入口保留。证据见 `.tmp/printer-integration-20261006/summary.md`。
+未结：远程候选 CI 和受保护合入待执行；原 UX 未结保持。三项原预算失败已通过原样抽取装配/配置解决，真机/设备媒体/实物打印未验，短窗口缩放被输入法浮窗遮挡未完成。
+下一步：提交指向 integration 的 PR，核对最新 base/head、候选检查后执行用户授权的受保护合入；实际状态以本轮 PR 元数据为准。
+计划变更：仅增加本轮 UX-11 / N8 接入，其他稳定任务编号及范围不变。
+
 # 当前开发状态
 
 更新：2026-10-05。活动checkout仍OrcaSlicer，现有分支 `codex/team/model-generation`；用户要求合入PR18后同分支提交协作PR，不新分支。PR18实际已合入，集成base `95c131f63b855d5cdf97f81e1595caa8d1ad2624`。本次远端交付单独授权；后续自动UX续办不自动推送、合并或打印。
