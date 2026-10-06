@@ -1,6 +1,16 @@
 [
   {
     "pr": 21,
+    "run": 37441584520,
+    "head": "30a25e8e37f44bd3c60969cdf819ef7cf658417d",
+    "base": "2aa5ca0df09ed1ee478eb8d2e40b5a3913a421c7",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "Integrate Figma printer UX with PR20 native printing flow",
+    "path": "pr/21/30a25e8e37f44bd3c60969cdf819ef7cf658417d/37441584520",
+    "created": "2026-10-06T09:16:57+00:00"
+  },
+  {
+    "pr": 21,
     "run": 37440908544,
     "head": "f3e4e24d559426fc7f5d53898a85ec00dd6ab2d6",
     "base": "2aa5ca0df09ed1ee478eb8d2e40b5a3913a421c7",
