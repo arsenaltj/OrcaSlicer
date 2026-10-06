@@ -1,0 +1,25 @@
+{
+  "pr": 21,
+  "run": 37439250086,
+  "head": "f3e4e24d559426fc7f5d53898a85ec00dd6ab2d6",
+  "base": "2aa5ca0df09ed1ee478eb8d2e40b5a3913a421c7",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "Integrate Figma printer UX with PR20 native printing flow",
+  "path": "pr/21/f3e4e24d559426fc7f5d53898a85ec00dd6ab2d6/37439250086",
+  "created": "2026-10-06T08:57:21+00:00",
+  "files": {
+    "index.html": "5ae38e15570fadfe2d8328b4b4d01e8304dfa9234bb786774b0481fd1da4d832",
+    "details.html": "8a5c336bdb9165d49713b54e1036289be7c53a9a595d17cb3e0dd418dd666927",
+    "report.json": "5f4af423522cea26c78ff9d6a16c794a2a84db699b7ab24ec51ac214dffc3cb0",
+    "summary.md": "73104b2b7d90f7b22c1de05e1a9244027e8737a4d7551d3ff43e98181b2a1858",
+    "archify-receipts.json": "be75142de1cecde2d852a4cbdcce09aa2597a1fe769d8287856714bef51d835b",
+    "l0-context.html": "b40651a699aa26cdcc642dfa7985a7e7ed388cf8cea416c2ba2ea4dc66d73ba8",
+    "l0-context.json": "b32626c8af75db55a5e8f281596c8e8148bf097e31761caeb0267871b2444776",
+    "l1-modules.html": "9d43038f812c6f2e113ff3000cef3eb19db579f91d858286f1d3316391f4d5af",
+    "l1-modules.json": "98370e0a6ba5a3fbe440af9a61b6c662568bdc938dbf52e6cf62551735aebcbc",
+    "l2-generation.html": "5acbda288166f273c4137cf06a8ac7d2386d95f696589621ca5b3ca4e845c7fc",
+    "l2-generation.json": "e38c2d3e962b690d22bf3a3e61c5fb208d5a8b2b4c2ab96c683e2a85305f7d05",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}
