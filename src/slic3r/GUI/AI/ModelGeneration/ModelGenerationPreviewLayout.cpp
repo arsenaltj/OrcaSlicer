@@ -79,12 +79,14 @@ void ModelGenerationPanel::refresh_comparison_layout(bool reset_scroll)
     if (!row) return;
     m_updating_comparison_layout = true;
     wxWindow* card = m_model_preview->GetParent();
-    const bool show_model = m_finishing_workbench || (m_model_preview_ready && !m_expand_images->GetValue());
+    const bool show_model = m_finishing_workbench ||
+        (m_model_preview_ready && m_workspace_view == ModelGenerationPresentation::WorkspaceView::Model);
     const bool stacked = !m_finishing_workbench && m_model_page->GetClientSize().x < FromDIP(920);
     const int orientation = stacked ? wxVERTICAL : wxHORIZONTAL;
     // Compact overview gives the real GL canvas the available height. Image
     // comparison remains one navigation action away, with its zoom preserved.
-    const bool show_images = !m_finishing_workbench && (!show_model || !stacked);
+    const bool show_images = !m_finishing_workbench &&
+        m_workspace_view != ModelGenerationPresentation::WorkspaceView::Model;
     const bool visibility_changed = card->IsShown() != show_model || m_preview_area->IsShown() != show_images;
     const bool layout_changed = row->GetOrientation() != orientation;
     card->Show(show_model);

@@ -2,6 +2,7 @@
 
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/AI/AIWindowAppearance.hpp"
+#include "slic3r/GUI/Redesign/RedesignTheme.hpp"
 #include "slic3r/GUI/Widgets/Button.hpp"
 #include "slic3r/GUI/wxExtensions.hpp"
 #include "slic3r/GUI/Widgets/ComboBox.hpp"
@@ -10,17 +11,18 @@
 #include <wx/dcbuffer.h>
 #include <wx/graphics.h>
 #include <wx/panel.h>
+#include <wx/stattext.h>
 #include <wx/textctrl.h>
 #include <array>
 
 namespace Slic3r::GUI::ModelGenerationInputStyle {
 
-inline const wxColour background(49, 49, 54);
-inline const wxColour panel(34, 34, 37);
-inline const wxColour field(19, 19, 22);
-inline const wxColour text(226, 226, 228);
-inline const wxColour secondary(158, 158, 163);
-inline const wxColour yellow(254, 212, 69);
+inline const wxColour background = RedesignTheme::background_colour();
+inline const wxColour panel = RedesignTheme::panel_colour();
+inline const wxColour field = RedesignTheme::control_colour();
+inline const wxColour text = RedesignTheme::primary_text_colour();
+inline const wxColour secondary = RedesignTheme::secondary_text_colour();
+inline const wxColour yellow = RedesignTheme::accent_colour();
 inline const wxColour selected(74, 66, 37);
 inline const wxColour disabled_action(111, 96, 48);
 inline const wxColour action_text(20, 20, 22);
@@ -28,7 +30,7 @@ inline const wxColour success(117, 211, 168);
 inline const wxColour warning(255, 166, 145);
 inline constexpr int corner_radius = 12;
 inline constexpr const char* font_face = "HONOR SANS Design";
-enum class Role { Panel, Field, QuietAction, Secondary, PrimaryAction, Accent, Navigation, SelectedNavigation, Success, Warning };
+enum class Role { Panel, Canvas, Field, QuietAction, Secondary, PrimaryAction, Accent, Navigation, SelectedNavigation, Success, Warning };
 
 inline void apply_control(wxWindow* window, Role role, bool update_fonts = false, bool force_colors = false)
 {
@@ -36,7 +38,7 @@ inline void apply_control(wxWindow* window, Role role, bool update_fonts = false
     const bool quiet = role == Role::QuietAction;
     const wxColour quiet_fill(78, 78, 81);
     const wxColour bg = primary ? (window->IsThisEnabled() ? yellow : disabled_action) :
-        quiet ? quiet_fill : role == Role::Field ? field : role == Role::SelectedNavigation ? selected : panel;
+        quiet ? quiet_fill : role == Role::Canvas ? background : role == Role::Field ? field : role == Role::SelectedNavigation ? selected : panel;
     const wxColour fg = primary ? action_text : (role == Role::SelectedNavigation || role == Role::Accent) ? yellow :
         role == Role::Success ? success : role == Role::Warning ? warning :
         (role == Role::Secondary || role == Role::Navigation) ? secondary : text;
@@ -45,12 +47,16 @@ inline void apply_control(wxWindow* window, Role role, bool update_fonts = false
     const bool painted_button = button && (primary || quiet || role == Role::Field || navigation);
     // StaticBox paints its rounded fill over the native window background.
     // Keep that outer canvas at the surface color, so corners remain visible.
-    const wxColour canvas = painted_button ? panel : bg;
+    const bool inherit_canvas = painted_button || dynamic_cast<wxStaticText*>(window);
+    const wxColour canvas = inherit_canvas && window->GetParent()
+        ? window->GetParent()->GetBackgroundColour() : bg;
     const bool changed = window->GetBackgroundColour() != canvas || window->GetForegroundColour() != fg;
     if (force_colors || window->GetBackgroundColour() != canvas) window->SetBackgroundColour(canvas);
     if (force_colors || window->GetForegroundColour() != fg) window->SetForegroundColour(fg);
     if (update_fonts) {
-        wxFont font = window->GetFont(); font.SetFaceName(font_face);
+        wxFont font = window->GetFont();
+        const auto family = RedesignTheme::font_family();
+        if (!family.empty()) font.SetFaceName(family);
         if (window->GetFont() != font) window->SetFont(font);
     }
     if (painted_button && (changed || update_fonts || force_colors)) {
@@ -78,7 +84,8 @@ inline void apply(wxWindow* window, bool update_fonts = true)
         return;
     }
     const auto name = window->GetName();
-    const Role role = name == "input_primary" ? Role::PrimaryAction :
+    const Role role = name == "input_canvas" ? Role::Canvas :
+        name == "input_primary" ? Role::PrimaryAction :
         name == "input_quiet" ? Role::QuietAction :
         name == "ai_status_success" ? Role::Success :
         name == "ai_status_warning" ? Role::Warning :
@@ -123,7 +130,8 @@ public:
         Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
             wxAutoBufferedPaintDC dc(this);
             dc.SetBackground(wxBrush(background)); dc.Clear();
-            dc.SetPen(*wxTRANSPARENT_PEN); dc.SetBrush(wxBrush(panel));
+            dc.SetPen(*wxTRANSPARENT_PEN);
+            dc.SetBrush(wxBrush(GetName() == "input_canvas" ? background : panel));
             dc.DrawRoundedRectangle(GetClientRect(), FromDIP(12));
         });
     }

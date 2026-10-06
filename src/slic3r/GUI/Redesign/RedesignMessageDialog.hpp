@@ -9,6 +9,7 @@
 class wxBoxSizer;
 class wxPanel;
 class wxStaticText;
+class wxScrolledWindow;
 class wxWindow;
 
 namespace Slic3r::GUI {
@@ -16,11 +17,14 @@ namespace Slic3r::GUI {
 class RedesignDialogActionButton;
 class RedesignDialogCloseButton;
 
-class RedesignMessageDialog final : public DPIDialog
+class RedesignMessageDialog : public DPIDialog
 {
 public:
     RedesignMessageDialog(wxWindow* parent, const wxString& message,
-                          const wxString& caption = wxEmptyString, long style = wxOK, bool compact = false);
+                          const wxString& caption = wxEmptyString, long style = wxOK, bool compact = false,
+                          bool scroll_message = false);
+    void set_action_label(wxWindowID id, const wxString& label);
+    void enable_action(wxWindowID id, bool enabled);
 
 private:
     void add_action_button(wxWindowID id, const wxString& label, bool primary);
@@ -38,6 +42,7 @@ private:
     wxPanel* m_title_bar { nullptr };
     wxStaticText* m_title { nullptr };
     wxStaticText* m_message { nullptr };
+    wxScrolledWindow* m_message_view { nullptr };
     wxPanel* m_icon { nullptr };
     RedesignDialogCloseButton* m_close_button { nullptr };
     wxBoxSizer* m_action_sizer { nullptr };

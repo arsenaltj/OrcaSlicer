@@ -61,7 +61,10 @@ void main() {
 })";
     sources[size_t(GLShaderProgram::EShaderType::Fragment)] = version +
         (modern ? "in vec2 texture_uv; in vec4 texture_multiplier; in vec4 shaded_color; in vec3 source_rgb; in float light_intensity; in float local_color_lock; in float stroke_side; out vec4 out_color;\n"
-                : "varying vec2 texture_uv; varying vec4 texture_multiplier; varying vec4 shaded_color; varying vec3 source_rgb; varying float light_intensity; varying float local_color_lock; varying float stroke_side;\n") + R"(
+                : "varying vec2 texture_uv; varying vec4 texture_multiplier; varying vec4 shaded_color; varying vec3 source_rgb; varying float light_intensity; varying float local_color_lock; varying float stroke_side;\n") +
+        // Forward-compatible contexts remove the legacy sampler name even if
+        // the loaded model does not take the texture branch.
+        (modern ? "#define model_preview_texture_2d texture\n" : "#define model_preview_texture_2d texture2D\n") + R"(
 uniform bool preview_texture_enabled;
 uniform bool preview_texture_has_image;
 uniform int preview_alpha_mode;
@@ -92,7 +95,7 @@ void main() {
     vec3 rgb_source = source_rgb;
     float material_alpha = 1.0;
     if (preview_texture_enabled) {
-        vec4 texel = preview_texture_has_image ? texture2D(preview_texture, texture_uv) : vec4(1.0);
+        vec4 texel = preview_texture_has_image ? model_preview_texture_2d(preview_texture, texture_uv) : vec4(1.0);
         vec3 linear_rgb = mix(texel.rgb/12.92, pow((texel.rgb+0.055)/1.055, vec3(2.4)), step(vec3(0.04045),texel.rgb));
         linear_rgb = clamp(linear_rgb*texture_multiplier.rgb,0.0,1.0);
         rgb_source = mix(12.92*linear_rgb,1.055*pow(linear_rgb,vec3(1.0/2.4))-0.055,step(vec3(0.0031308),linear_rgb));

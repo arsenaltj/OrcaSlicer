@@ -241,6 +241,24 @@
       "id": "printer_adapter",
       "path": "src/slic3r/GUI/Redesign/OrcaPrinterAdapter.cpp",
       "needle": "bool OrcaPrinterAdapter::review_print(wxWindow* parent) const"
+    },
+    {
+      "id": "accepted_ux_controls",
+      "path": "src/slic3r/GUI/Redesign/RedesignControls.hpp",
+      "needle": "class RedesignNavigationButton final",
+      "detail": "Visuals from 047af2b; native Button/dropdown activation and PR20 task owners retained."
+    },
+    {
+      "id": "accepted_ux_image_workspace",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationInputLayout.cpp",
+      "needle": "wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)",
+      "detail": "Accepted shell form and guide use the current generation, history and draft state."
+    },
+    {
+      "id": "accepted_ux_confirmation",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationConfirmation.hpp",
+      "needle": "class ModelGenerationConfirmation final",
+      "detail": "Shared redesign dialog keeps default Cancel, held-key arming and current owner confirmation."
     }
   ],
   "journeys": [

@@ -18,4 +18,6 @@ set(ORCA_DESKTOP_WORKSPACE_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/../Redesign/RedesignMessageDialog.hpp
     ${CMAKE_CURRENT_LIST_DIR}/../Redesign/RedesignWidgets.hpp
     ${CMAKE_CURRENT_LIST_DIR}/../Redesign/RedesignTheme.hpp
+    ${CMAKE_CURRENT_LIST_DIR}/../Redesign/RedesignControls.hpp
+    ${CMAKE_CURRENT_LIST_DIR}/../Redesign/RedesignFlowGuide.hpp
 )

@@ -1,5 +1,6 @@
 #include "DesktopWorkspaceNavigation.hpp"
 #include "../Redesign/PrinterWorkspace.hpp"
+#include "../Redesign/RedesignControls.hpp"
 #include "AIDesktopFeatureHost.hpp"
 #include "ModelGeneration/ModelGenerationInputStyle.hpp"
 #include "Orca/OrcaPrintConfirmation.hpp"
@@ -164,6 +165,7 @@ DesktopWorkspaceNavigation::DesktopWorkspaceNavigation(wxWindow* parent, Noteboo
     parent->SetBackgroundColour(background);
     m_tabpanel->GetBtnsListCtrl()->SetExternalNavigation(true);
     auto* navigation = new RoundedPanel(this);
+    navigation->SetMinSize(FromDIP(wxSize(92, 1)));
     m_body = navigation;
     auto* root = new wxBoxSizer(wxVERTICAL);
     root->Add(navigation, 1, wxEXPAND);
@@ -171,21 +173,20 @@ DesktopWorkspaceNavigation::DesktopWorkspaceNavigation(wxWindow* parent, Noteboo
     build_print_center();
     auto* column = new wxBoxSizer(wxVERTICAL);
     column->Add(new wxStaticBitmap(navigation, wxID_ANY,
-        create_scaled_bitmap("figma-ux/logo", navigation, 48)), 0,
-        wxALIGN_CENTER_HORIZONTAL | wxTOP | wxBOTTOM, FromDIP(20));
+        redesign_resource_bitmap(navigation, "redesign_logo.png", wxSize(48, 48))), 0,
+        wxALIGN_CENTER_HORIZONTAL | wxTOP, FromDIP(16));
+    column->AddSpacer(FromDIP(78));
     struct Entry { const char* icon; wxString label; DesktopDestination destination; };
-    const std::array<Entry, 4> entries {{{"library", _L("资产"), DesktopDestination::Library},
-        {"image", _L("图像"), DesktopDestination::Image},
-        {"object", _L("3D模型"), DesktopDestination::Model},
-        {"printer", _L("打印"), DesktopDestination::Print}}};
+    const std::array<Entry, 4> entries {{{"redesign_nav_assets.png", _L("资产"), DesktopDestination::Library},
+        {"redesign_nav_image.png", _L("图像"), DesktopDestination::Image},
+        {"redesign_nav_model.png", _L("3D模型"), DesktopDestination::Model},
+        {"redesign_nav_print.png", _L("打印"), DesktopDestination::Print}}};
     for (const auto& entry : entries) {
-        auto* button = new Button(navigation, entry.label, wxString("figma-ux/") + entry.icon, wxBORDER_NONE, 24);
-        button->SetVertical();
-        button->SetPaddingSize(FromDIP(wxSize(4, 8)));
-        button->SetMinSize(FromDIP(wxSize(76, 70)));
+        auto* button = new RedesignNavigationButton(navigation, entry.label, entry.icon);
+        button->SetMinSize(FromDIP(wxSize(92, 70)));
         button->SetName("input_navigation");
         button->EnableTooltipEvenDisabled();
-        column->Add(button, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
+        column->Add(button, 0, wxEXPAND | wxBOTTOM, FromDIP(24));
         m_workspace_buttons.push_back(button);
         button->Bind(wxEVT_BUTTON, [this, button, destination = entry.destination](wxCommandEvent&) {
             if (destination == DesktopDestination::Print) {
@@ -205,11 +206,12 @@ DesktopWorkspaceNavigation::DesktopWorkspaceNavigation(wxWindow* parent, Noteboo
     column->AddStretchSpacer();
     for (const auto& entry : std::array<std::pair<wxString, wxString>, 3>{{
              {_L("工程准备"), TAB_ID_PREPARE}, {_L("切片预览"), TAB_ID_PREVIEW}, {_L("更多"), ""}}}) {
-        auto* button = new Button(navigation, entry.first, "", wxBORDER_NONE);
-        button->SetPaddingSize(FromDIP(wxSize(4, 4)));
-        button->SetMinSize(FromDIP(wxSize(76, 36)));
+        const char* icon = entry.second == TAB_ID_PREPARE ? "redesign_nav_model.png" :
+            entry.second == TAB_ID_PREVIEW ? "redesign_nav_print.png" : "redesign_nav_settings.png";
+        auto* button = new RedesignNavigationButton(navigation, entry.first, icon, false);
+        button->SetMinSize(FromDIP(wxSize(92, 56)));
         button->SetName("input_navigation");
-        column->Add(button, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
+        column->Add(button, 0, wxEXPAND | wxBOTTOM, FromDIP(20));
         m_workspace_buttons.push_back(button);
         button->Bind(wxEVT_BUTTON, [this, button, id = entry.second](wxCommandEvent&) {
             if (id.empty()) show_workspace_pages();
@@ -310,17 +312,17 @@ bool DesktopWorkspaceNavigation::route_printer_page_request(const wxString& id)
 void DesktopWorkspaceNavigation::update_compact_layout()
 {
     if (!m_body || m_workspace_buttons.size() != 7) return;
-    const bool compact = GetClientSize().y < FromDIP(550);
+    const bool compact = GetClientSize().y < FromDIP(820);
     if (compact == m_compact) return;
     m_compact = compact;
     auto* column = m_body->GetSizer();
-    column->GetItem(size_t(0))->SetBorder(FromDIP(compact ? 8 : 20));
+    column->GetItem(size_t(0))->SetBorder(FromDIP(compact ? 8 : 16));
+    column->GetItem(size_t(1))->SetMinSize(wxSize(0, FromDIP(compact ? 16 : 78)));
     for (size_t index = 0; index < m_workspace_buttons.size(); ++index) {
         auto* button = m_workspace_buttons[index];
         const bool primary = index < 4;
-        button->SetPaddingSize(FromDIP(wxSize(4, primary && !compact ? 8 : 4)));
-        button->SetMinSize(FromDIP(wxSize(76, primary ? (compact ? 58 : 70) : (compact ? 32 : 36))));
-        column->GetItem(button)->SetBorder(FromDIP(compact ? 4 : 8));
+        button->SetMinSize(FromDIP(wxSize(92, compact ? (primary ? 58 : 44) : (primary ? 70 : 56))));
+        column->GetItem(button)->SetBorder(FromDIP(compact ? 4 : primary ? 24 : 20));
     }
     // Keep all destinations reachable; the original logo and icons retain their sizes.
     m_body->Layout();
@@ -392,7 +394,7 @@ void DesktopWorkspaceNavigation::refresh()
     for (size_t index = 0; index < selected.size(); ++index) {
         auto* button = m_workspace_buttons[index];
         button->SetName(selected[index] ? "input_navigation_selected" : "input_navigation");
-        apply_control(button, selected[index] ? Role::SelectedNavigation : Role::Navigation);
+        static_cast<RedesignNavigationButton*>(button)->set_selected(selected[index]);
     }
     // Keep native slice/send controls, without a second public tab bar.
     m_tabpanel->ShowPageBar(page == TAB_ID_PREPARE || page == TAB_ID_PREVIEW);

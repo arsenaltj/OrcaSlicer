@@ -13,6 +13,7 @@
 #include <wx/settings.h>
 #include <wx/sizer.h>
 #include <wx/stattext.h>
+#include <wx/scrolwin.h>
 
 namespace Slic3r::GUI {
 namespace {
@@ -115,7 +116,8 @@ public:
             ProcessWindowEvent(command);
         });
         Bind(wxEVT_KEY_DOWN, [this](wxKeyEvent& event) {
-            if (IsEnabled() && (event.GetKeyCode() == WXK_RETURN || event.GetKeyCode() == WXK_SPACE)) {
+            if (IsEnabled() && (event.GetKeyCode() == WXK_RETURN ||
+                                event.GetKeyCode() == WXK_NUMPAD_ENTER || event.GetKeyCode() == WXK_SPACE)) {
                 wxCommandEvent command(wxEVT_BUTTON, GetId());
                 command.SetEventObject(this);
                 ProcessWindowEvent(command);
@@ -201,7 +203,8 @@ public:
             ProcessWindowEvent(command);
         });
         Bind(wxEVT_KEY_DOWN, [this](wxKeyEvent& event) {
-            if (event.GetKeyCode() == WXK_RETURN || event.GetKeyCode() == WXK_SPACE) {
+            if (event.GetKeyCode() == WXK_RETURN || event.GetKeyCode() == WXK_NUMPAD_ENTER ||
+                event.GetKeyCode() == WXK_SPACE) {
                 wxCommandEvent command(wxEVT_BUTTON, GetId());
                 command.SetEventObject(this);
                 ProcessWindowEvent(command);
@@ -251,7 +254,7 @@ private:
 };
 
 RedesignMessageDialog::RedesignMessageDialog(wxWindow* parent, const wxString& message,
-                                             const wxString& caption, long style, bool compact)
+                                             const wxString& caption, long style, bool compact, bool scroll_message)
     : DPIDialog(parent, wxID_ANY, caption, wxDefaultPosition, wxDefaultSize,
                 wxBORDER_NONE | wxFRAME_NO_TASKBAR | wxFRAME_SHAPED)
 {
@@ -285,13 +288,25 @@ RedesignMessageDialog::RedesignMessageDialog(wxWindow* parent, const wxString& m
     m_icon = new DialogStatusIcon(this, (style & wxICON_WARNING) != 0);
     if (!compact) content_sizer->Add(m_icon, 0, wxTOP, FromDIP(2));
     else m_icon->Hide();
-    m_message = new wxStaticText(this, wxID_ANY, message);
+    if (scroll_message) {
+        m_message_view = new wxScrolledWindow(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVSCROLL);
+        m_message_view->SetBackgroundColour(RedesignTheme::panel_colour());
+        m_message_view->SetScrollRate(0, FromDIP(12));
+    }
+    m_message = new wxStaticText(m_message_view ? static_cast<wxWindow*>(m_message_view) : this, wxID_ANY, message);
     RedesignTheme::style_text(m_message, RedesignTheme::primary_text_colour(), compact ? 12 : 10);
     m_message->SetMinSize(wxSize(FromDIP(m_message_width), -1));
     m_message->Wrap(FromDIP(m_message_width));
-    content_sizer->Add(m_message, 1, wxLEFT, FromDIP(compact ? 0 : 16));
+    if (m_message_view) {
+        auto* body = new wxBoxSizer(wxVERTICAL);
+        body->Add(m_message, 0, wxEXPAND);
+        m_message_view->SetSizer(body);
+        m_message_view->SetMinSize(wxSize(FromDIP(m_message_width),
+            std::min(m_message->GetBestSize().y, FromDIP(240))));
+        content_sizer->Add(m_message_view, 1, wxEXPAND);
+    } else content_sizer->Add(m_message, 1, wxLEFT, FromDIP(compact ? 0 : 16));
     root->AddSpacer(FromDIP(compact ? 8 : 24));
-    root->Add(content_sizer, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(24));
+    root->Add(content_sizer, scroll_message ? 1 : 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(24));
 
     m_action_sizer = new wxBoxSizer(wxHORIZONTAL);
     if (!compact) m_action_sizer->AddStretchSpacer(1);
@@ -311,6 +326,13 @@ RedesignMessageDialog::RedesignMessageDialog(wxWindow* parent, const wxString& m
     SetMinSize(wxSize(FromDIP(m_dialog_width), -1));
     root->SetSizeHints(this);
     SetSize(wxSize(FromDIP(m_dialog_width), GetSize().y));
+    if (m_message_view) {
+        m_message_view->SetMinSize(wxSize(FromDIP(m_message_width), FromDIP(48)));
+        SetMinSize(FromDIP(wxSize(m_dialog_width, 200)));
+        const int available = wxGetTopLevelParent(parent)->GetClientSize().y - FromDIP(32);
+        SetSize(wxSize(GetSize().x, std::max(FromDIP(200), std::min(GetSize().y, available))));
+        m_message_view->FitInside();
+    }
     Layout();
     update_shape();
     CentreOnParent();
@@ -351,6 +373,18 @@ void RedesignMessageDialog::add_action_button(wxWindowID id, const wxString& lab
     button->Bind(wxEVT_BUTTON, [this, id](wxCommandEvent&) { finish_with(id); });
     m_action_sizer->Add(button, 0, wxLEFT, FromDIP(compact && m_action_buttons.empty() ? 0 : 12));
     m_action_buttons.push_back(button);
+}
+
+void RedesignMessageDialog::set_action_label(wxWindowID id, const wxString& label)
+{
+    for (auto* button : m_action_buttons)
+        if (button->GetId() == id) { button->SetLabel(label); button->Refresh(false); }
+}
+
+void RedesignMessageDialog::enable_action(wxWindowID id, bool enabled)
+{
+    for (auto* button : m_action_buttons)
+        if (button->GetId() == id) { button->Enable(enabled); button->Refresh(false); }
 }
 
 void RedesignMessageDialog::bind_title_drag(wxWindow* window)
