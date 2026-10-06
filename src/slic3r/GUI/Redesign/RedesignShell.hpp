@@ -37,6 +37,7 @@ public:
 
     explicit RedesignShell(wxWindow* parent, ModelGenerationFeatureHost* model_generation_host = nullptr);
     ~RedesignShell() override;
+    void disconnect_model_generation_host();
 
     bool navigate_to(Page page);
     bool navigate_to_tab(const wxString& id);

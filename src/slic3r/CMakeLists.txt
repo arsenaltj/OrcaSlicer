@@ -381,6 +381,13 @@ set(SLIC3R_GUI_SOURCES
     GUI/Redesign/RedesignState.cpp
     GUI/Redesign/RedesignState.hpp
     GUI/Redesign/RedesignTheme.hpp
+    GUI/Redesign/StartupSetupService.cpp
+    GUI/Redesign/StartupSetupService.hpp
+    GUI/Redesign/StartupSetupDialog.cpp
+    GUI/Redesign/StartupSetupDialog.hpp
+    GUI/Redesign/StartupSplashView.hpp
+    GUI/Redesign/StartupBufferView.hpp
+    GUI/FilamentColourPalette.hpp
     GUI/AIModelGenerationClient.cpp
     GUI/AIModelGenerationClient.hpp
     GUI/ModelGenerationPanel.cpp GUI/AI/ModelGeneration/ModelGenerationLibraryView.cpp GUI/AI/ModelGeneration/ModelGenerationArtifactFlow.cpp GUI/AI/ModelGeneration/ModelGenerationFeatureHost.cpp GUI/AI/ModelGeneration/ModelGenerationPresentation.cpp GUI/AI/ModelGeneration/ModelGenerationPresentationCore.cpp GUI/AI/ModelGeneration/ModelGenerationStatusText.cpp

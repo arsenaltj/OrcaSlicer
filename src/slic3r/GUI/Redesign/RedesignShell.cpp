@@ -1096,11 +1096,18 @@ RedesignShell::RedesignShell(wxWindow* parent, ModelGenerationFeatureHost* model
 
 RedesignShell::~RedesignShell()
 {
-    if (m_model_generation_host != nullptr)
-        m_model_generation_host->set_state_listener({});
+    disconnect_model_generation_host();
     ++m_model_preview_request_generation;
     if (m_model_preview_worker.joinable())
         m_model_preview_worker.join();
+}
+
+void RedesignShell::disconnect_model_generation_host()
+{
+    if (m_model_generation_host != nullptr) {
+        m_model_generation_host->set_state_listener({});
+        m_model_generation_host = nullptr;
+    }
 }
 
 void RedesignShell::set_service_status(AIServiceStatus status)
@@ -1520,10 +1527,11 @@ void RedesignShell::connect_model_generation_host()
     apply_model_generation_state(m_model_generation_host->snapshot());
     wxWeakRef<RedesignShell> weak(this);
     m_model_generation_host->set_state_listener([weak](const ModelGenerationUIState& state) {
-        if (!weak)
+        if (!weak || weak->m_model_generation_host == nullptr)
             return;
         weak->CallAfter([weak, state] {
-            if (!weak || state.revision < weak->m_model_generation_state.revision)
+            if (!weak || weak->m_model_generation_host == nullptr ||
+                state.revision < weak->m_model_generation_state.revision)
                 return;
             weak->apply_model_generation_state(state);
         });

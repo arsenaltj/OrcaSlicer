@@ -11,6 +11,7 @@
 #include "CalibUtils.hpp"
 #include "../Utils/ColorSpaceConvert.hpp"
 #include "EncodedFilament.hpp"
+#include "FilamentColourPalette.hpp"
 
 
 #include "DeviceCore/DevConfig.h"
@@ -1662,30 +1663,8 @@ ColorPickerPopup::ColorPickerPopup(wxWindow* parent)
     :PopupWindow(parent, wxBORDER_NONE)
 {
     m_def_colors.clear();
-    m_def_colors.push_back(wxColour("#FFFFFF"));
-    m_def_colors.push_back(wxColour("#fff144"));
-    m_def_colors.push_back(wxColour("#DCF478"));
-    m_def_colors.push_back(wxColour("#0ACC38"));
-    m_def_colors.push_back(wxColour("#057748"));
-    m_def_colors.push_back(wxColour("#0d6284"));
-    m_def_colors.push_back(wxColour("#0EE2A0"));
-    m_def_colors.push_back(wxColour("#76D9F4"));
-    m_def_colors.push_back(wxColour("#46a8f9"));
-    m_def_colors.push_back(wxColour("#2850E0"));
-    m_def_colors.push_back(wxColour("#443089"));
-    m_def_colors.push_back(wxColour("#A03CF7"));
-    m_def_colors.push_back(wxColour("#F330F9"));
-    m_def_colors.push_back(wxColour("#D4B1DD"));
-    m_def_colors.push_back(wxColour("#f95d73"));
-    m_def_colors.push_back(wxColour("#f72323"));
-    m_def_colors.push_back(wxColour("#7c4b00"));
-    m_def_colors.push_back(wxColour("#f98c36"));
-    m_def_colors.push_back(wxColour("#fcecd6"));
-    m_def_colors.push_back(wxColour("#D3C5A3"));
-    m_def_colors.push_back(wxColour("#AF7933"));
-    m_def_colors.push_back(wxColour("#898989"));
-    m_def_colors.push_back(wxColour("#BCBCBC"));
-    m_def_colors.push_back(wxColour("#161616"));
+    for (const char* colour : default_filament_colour_palette)
+        m_def_colors.emplace_back(colour);
 
 
     SetBackgroundColour(wxColour(*wxWHITE));

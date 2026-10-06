@@ -18,6 +18,7 @@
 #include <slic3r/plugin/PythonPluginInterface.hpp>
 #include <wx/event.h>
 #include <wx/eventfilter.h>
+#include <wx/evtloop.h>
 
 // Localization headers: include libslic3r version first so everything in this file
 // uses the slic3r/GUI version (the macros will take precedence over the functions).
@@ -92,6 +93,10 @@
 #include "3DScene.hpp"
 #include "MainFrame.hpp"
 #include "Redesign/RedesignFeatureFlags.hpp"
+#include "Redesign/StartupSplashView.hpp"
+#include "Redesign/StartupBufferView.hpp"
+#include "Redesign/StartupSetupDialog.hpp"
+#include "Redesign/StartupSetupService.hpp"
 #include "Plater.hpp"
 #include "GLCanvas3D.hpp"
 #include "EncodedFilament.hpp"
@@ -306,7 +311,9 @@ public:
         // is shown. The previous 1500 ms auto-timeout closed the splash long
         // before init finished, leaving the user staring at a frozen blank
         // screen during the slow load_presets / new MainFrame phases.
-        : wxSplashScreen(wxBitmap(FromDIP(wxSize(480,480),nullptr)), wxSPLASH_CENTRE_ON_SCREEN, 0, nullptr, wxID_ANY, wxDefaultPosition, wxDefaultSize,
+        : wxSplashScreen(wxBitmap(FromDIP(RedesignFeatureFlags::surface_enabled("STARTUP_SPLASH") ?
+                             StartupSplashView::logical_size() : wxSize(480,480), nullptr)),
+                         wxSPLASH_CENTRE_ON_SCREEN, 0, nullptr, wxID_ANY, wxDefaultPosition, wxDefaultSize,
 #ifdef __APPLE__
             wxBORDER_NONE | wxFRAME_NO_TASKBAR | wxSTAY_ON_TOP
 #else
@@ -329,6 +336,27 @@ public:
 		#endif
 		
         this->SetPosition(pos);
+        if (m_redesign) {
+            wxSize size = FromDIP(StartupSplashView::logical_size());
+            const int display_index = wxDisplay::GetFromWindow(this);
+            const wxRect area = wxDisplay(display_index == wxNOT_FOUND ? 0 : display_index).GetClientArea();
+            const int margin = FromDIP(24);
+            size.x = std::min(size.x, std::max(1, area.width - margin * 2));
+            size.y = std::min(size.y, std::max(1, area.height - margin * 2));
+            SetClientSize(size);
+            m_window->SetSize(GetClientSize());
+            SetTitle("NAME - Startup");
+            Bind(wxEVT_CLOSE_WINDOW, [this](wxCloseEvent& event) {
+                if (m_review_loop && event.CanVeto()) {
+                    event.Veto();
+                    m_review_loop->Exit();
+                } else {
+                    event.Skip();
+                }
+            });
+            BOOST_LOG_TRIVIAL(info) << "[StartupSplash] Figma node=17:2081 size="
+                << size.x << "x" << size.y << " dpi=" << GetDPIScaleFactor();
+        }
         this->CenterOnScreen();
 
         scale_font(m_font_version, 1.65f); // only scale this one since it hasnt a preloaded font like Label::Body_24;
@@ -341,7 +369,8 @@ public:
         bool dark_mode = m_fg_color != wxColour("#6B6A6A");
         wxSize sz  = m_window->GetClientSize();
         BitmapCache bmp_cache;
-        m_logo_bmp = *bmp_cache.load_svg(dark_mode ? "splash_logo_dark" : "splash_logo", sz.GetWidth(), sz.GetHeight());
+        if (!m_redesign)
+            m_logo_bmp = *bmp_cache.load_svg(dark_mode ? "splash_logo_dark" : "splash_logo", sz.GetWidth(), sz.GetHeight());
 
         m_window->Bind(wxEVT_PAINT, &SplashScreen::OnPaint, this);
         m_window->Refresh();
@@ -351,6 +380,10 @@ public:
     void OnPaint(wxPaintEvent& evt)
     {
         wxPaintDC dc(m_window);
+        if (m_redesign) {
+            StartupSplashView::paint(m_window, dc, m_text_version, m_text_action, m_progress);
+            return;
+        }
         wxSize c_sz = m_window->GetClientSize();
 
         dc.SetBackground(wxBrush(m_bg_color));
@@ -408,7 +441,38 @@ public:
     // intermittent use-after-free crash. Override the filter to a no-op so the
     // splash can only be removed via the explicit Destroy() once the main frame
     // is shown.
-    int FilterEvent(wxEvent& /*event*/) override { return wxEventFilter::Event_Skip; }
+    int FilterEvent(wxEvent& event) override
+    {
+        if (m_review_loop && event.GetEventType() == wxEVT_KEY_DOWN) {
+            const auto& key = static_cast<wxKeyEvent&>(event);
+            if (key.GetKeyCode() == WXK_ESCAPE || (key.AltDown() && key.GetKeyCode() == WXK_F4)) {
+                m_review_loop->Exit();
+                return wxEventFilter::Event_Processed;
+            }
+        }
+        return wxEventFilter::Event_Skip;
+    }
+
+    void Review()
+    {
+        wxGUIEventLoop loop;
+        wxEventLoopActivator activate(&loop);
+        m_review_loop = &loop;
+        // wxSplashScreen adds tool-window styles; expose the paused review in the taskbar.
+        Hide();
+        SetWindowStyleFlag(GetWindowStyleFlag() & ~(wxFRAME_TOOL_WINDOW | wxFRAME_NO_TASKBAR));
+#ifdef __WXMSW__
+        // Removing wxFRAME_NO_TASKBAR leaves wxWidgets' hidden native owner attached.
+        ::SetWindowLongPtrW(static_cast<HWND>(GetHandle()), GWLP_HWNDPARENT, 0);
+#endif
+        Show();
+        Raise();
+        m_window->SetFocus();
+        BOOST_LOG_TRIVIAL(info) << "[StartupSplash] Review paused after profile loading; Escape exits."
+            << " shown=" << IsShownOnScreen() << " position=" << GetPosition().x << "," << GetPosition().y;
+        loop.Run();
+        m_review_loop = nullptr;
+    }
 
     void scale_font(wxFont& font, float scale)
     {
@@ -428,6 +492,8 @@ public:
     }
 
 private:
+    bool m_redesign = RedesignFeatureFlags::surface_enabled("STARTUP_SPLASH");
+    wxGUIEventLoop* m_review_loop = nullptr;
     wxBitmap m_logo_bmp;
     wxColour m_fg_color;
     wxColour m_bg_color;
@@ -796,23 +862,35 @@ class StartupLoadingPanel final : public wxPanel, public wxEventFilter
 public:
     explicit StartupLoadingPanel(wxWindow* parent) : wxPanel(parent, wxID_ANY)
     {
-        SetBackgroundColour(wxGetApp().get_window_default_clr());
-        SetForegroundColour(wxGetApp().get_label_clr_default());
-        auto* layout = new wxBoxSizer(wxVERTICAL);
-        layout->AddStretchSpacer();
-        add_loading_brand(this, layout);
-        m_message = new wxStaticText(this, wxID_ANY, _L("Loading configuration"),
-                                    wxDefaultPosition, wxDefaultSize, wxALIGN_CENTER_HORIZONTAL);
-        m_message->SetFont(wxGetApp().normal_font());
-        layout->Add(m_message, 0, wxALIGN_CENTER | wxALL, FromDIP(12));
-        auto* close = new wxButton(this, wxID_CLOSE, _L("Close"));
-        close->Bind(wxEVT_BUTTON, [parent](wxCommandEvent&) { parent->Close(); });
-        layout->Add(close, 0, wxALIGN_CENTER | wxALL, FromDIP(12));
-        layout->AddStretchSpacer();
-        SetSizer(layout);
-        SetSize(parent->GetClientRect());
-        Layout();
-        close->SetFocus();
+        if (RedesignFeatureFlags::surface_enabled("STARTUP_BUFFER")) {
+            const char* review_env = std::getenv("ORCASLICER_UI_REDESIGN_STARTUP_BUFFER_REVIEW");
+            m_review = review_env && std::string_view(review_env) == "1";
+            auto* layout = new wxBoxSizer(wxVERTICAL);
+            m_buffer = new StartupBufferView(this, static_cast<wxTopLevelWindow*>(parent));
+            layout->Add(m_buffer, 1, wxEXPAND);
+            SetSizer(layout);
+            SetSize(parent->GetClientRect());
+            Layout();
+            BOOST_LOG_TRIVIAL(info) << "[StartupBuffer] Figma node=17:2063 dpi=" << GetDPIScaleFactor();
+        } else {
+            SetBackgroundColour(wxGetApp().get_window_default_clr());
+            SetForegroundColour(wxGetApp().get_label_clr_default());
+            auto* layout = new wxBoxSizer(wxVERTICAL);
+            layout->AddStretchSpacer();
+            add_loading_brand(this, layout);
+            m_message = new wxStaticText(this, wxID_ANY, _L("Loading configuration"),
+                                        wxDefaultPosition, wxDefaultSize, wxALIGN_CENTER_HORIZONTAL);
+            m_message->SetFont(wxGetApp().normal_font());
+            layout->Add(m_message, 0, wxALIGN_CENTER | wxALL, FromDIP(12));
+            auto* close = new wxButton(this, wxID_CLOSE, _L("Close"));
+            close->Bind(wxEVT_BUTTON, [parent](wxCommandEvent&) { parent->Close(); });
+            layout->Add(close, 0, wxALIGN_CENTER | wxALL, FromDIP(12));
+            layout->AddStretchSpacer();
+            SetSizer(layout);
+            SetSize(parent->GetClientRect());
+            Layout();
+            close->SetFocus();
+        }
 #ifdef __WXMSW__
         clip_siblings();
 #endif
@@ -843,10 +921,17 @@ public:
         return wxEventFilter::Event_Skip;
     }
 
+    bool review_pending() const { return m_review; }
+    void resume_review() { m_review = false; }
+
     void set_message(const wxString& message)
     {
-        m_message->SetLabel(message);
-        m_message->Wrap(FromDIP(480));
+        if (m_buffer)
+            m_buffer->set_message(message);
+        else {
+            m_message->SetLabel(message);
+            m_message->Wrap(FromDIP(480));
+        }
         Layout();
         Raise();
         paint_now();
@@ -858,10 +943,14 @@ public:
         clip_siblings();
 #endif
         paint_loading_content(this);
+        if (m_buffer)
+            paint_loading_content(m_buffer);
     }
 
 private:
-    wxStaticText* m_message;
+    wxStaticText* m_message = nullptr;
+    StartupBufferView* m_buffer = nullptr;
+    bool m_review = false;
 #ifdef __WXMSW__
     void clip_siblings()
     {
@@ -898,6 +987,13 @@ void GUI_App::schedule_startup(StartupStage stage, const wxString& message)
     m_startup_stage_started = std::chrono::steady_clock::now();
     if (m_startup_loading)
         static_cast<StartupLoadingPanel*>(m_startup_loading.get())->set_message(message);
+    if (m_startup_loading && static_cast<StartupLoadingPanel*>(m_startup_loading.get())->review_pending() &&
+        (stage == StartupStage::Fonts || stage == StartupStage::Finish)) {
+        m_startup_timer.Stop();
+        BOOST_LOG_TRIVIAL(info) << "[StartupBuffer] Review paused at real stage=" << static_cast<int>(stage)
+            << " message=" << into_u8(message);
+        return;
+    }
     // Return to the event loop between stages. Update() above paints only this
     // panel; a general wxYield here would allow reentrant startup/shutdown.
     m_startup_timer.StartOnce(16);
@@ -3389,7 +3485,10 @@ bool GUI_App::on_init_inner()
 
     // Orca: use wxWeakRef to provent wild pointer.
     wxWeakRef<SplashScreen> scrn = nullptr;
-    if (app_config->get("show_splash_screen") == "true") {
+    const char* startup_review_env = std::getenv("ORCASLICER_UI_REDESIGN_STARTUP_REVIEW");
+    const bool startup_splash_review = RedesignFeatureFlags::surface_enabled("STARTUP_SPLASH") &&
+                                      startup_review_env && std::string_view(startup_review_env) == "1";
+    if (app_config->get("show_splash_screen") == "true" || startup_splash_review) {
         // Detect position (display) to show the splash screen
         // Now this position is equal to the mainframe position
         wxPoint splashscreen_pos = wxDefaultPosition;
@@ -3646,6 +3745,13 @@ bool GUI_App::on_init_inner()
         }
     //}
 
+    if (startup_splash_review && scrn) {
+        scrn->Review();
+        if (scrn)
+            scrn->Destroy();
+        return false;
+    }
+
 #ifdef WIN32
     register_win32_device_notification_event();
 #endif // WIN32
@@ -3681,6 +3787,8 @@ bool GUI_App::on_init_inner()
     m_startup_frame = mainframe;
     plater_->canvas3D()->enable_render(false);
     m_startup_loading = new StartupLoadingPanel(mainframe);
+    if (RedesignFeatureFlags::surface_enabled("STARTUP_BUFFER"))
+        static_cast<StartupLoadingPanel*>(m_startup_loading.get())->set_message(_L("Preparing the interface..."));
     mainframe->set_workspace_enabled(false);
     m_startup_timer.SetOwner(this);
     Bind(wxEVT_TIMER, &GUI_App::advance_startup, this, m_startup_timer.GetId());
@@ -3704,6 +3812,14 @@ bool GUI_App::on_init_inner()
             (event.AltDown() && event.GetKeyCode() == WXK_F4) ||
             (event.CmdDown() && event.GetKeyCode() == 'Q'))
             mainframe->Close();
+        else if (event.CmdDown() && event.GetKeyCode() == WXK_RETURN &&
+                 static_cast<StartupLoadingPanel*>(m_startup_loading.get())->review_pending() &&
+                 (m_startup_stage == StartupStage::Fonts || m_startup_stage == StartupStage::Finish)) {
+            static_cast<StartupLoadingPanel*>(m_startup_loading.get())->resume_review();
+            m_startup_stage_started = std::chrono::steady_clock::now();
+            m_startup_timer.StartOnce(16);
+            BOOST_LOG_TRIVIAL(info) << "[StartupBuffer] Review resumed initialization.";
+        }
         else if (event.GetKeyCode() == WXK_TAB || event.GetKeyCode() == WXK_RETURN ||
                  event.GetKeyCode() == WXK_SPACE)
             event.Skip();
@@ -9994,6 +10110,23 @@ void GUI_App::window_pos_center(wxTopLevelWindow *window)
 
 bool GUI_App::config_wizard_startup()
 {
+    if (RedesignFeatureFlags::surface_enabled("STARTUP_SETUP")) {
+        const bool valid_printer = !preset_bundle->printers.only_default_printers() &&
+                                   !preset_bundle->printers.get_selected_preset().is_default;
+        if (!StartupSetupService::needs_setup(m_app_conf_exists, valid_printer))
+            return false;
+        BOOST_LOG_TRIVIAL(info) << "[StartupSetup] Opening native first-use setup.";
+        if (run_startup_setup(mainframe)) {
+            m_app_conf_exists = true;
+            load_current_presets();
+            update_publish_status();
+            mainframe->refresh_plugin_tips();
+        } else {
+            BOOST_LOG_TRIVIAL(info) << "[StartupSetup] Cancelled; exiting without applying the draft.";
+            mainframe->Close();
+        }
+        return true;
+    }
     if (!m_app_conf_exists || preset_bundle->printers.only_default_printers()) {
         BOOST_LOG_TRIVIAL(info) << "run wizard...";
         run_wizard(ConfigWizard::RR_DATA_EMPTY);

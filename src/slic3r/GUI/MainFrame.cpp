@@ -329,7 +329,12 @@ const char* ui_redesign_win32_message_name(WXUINT message)
 
 }
 
-MainFrame::~MainFrame() = default;
+MainFrame::~MainFrame()
+{
+    // Member-owned hosts are destroyed before wxWidgets destroys child windows.
+    if (m_redesign_shell != nullptr)
+        m_redesign_shell->disconnect_model_generation_host();
+}
 
 MainFrame::MainFrame() :
 DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_STYLE, "mainframe")
@@ -1474,6 +1479,8 @@ void MainFrame::shutdown()
 #endif
     // BBS: backup
     Slic3r::set_backup_callback(nullptr);
+    if (m_redesign_shell != nullptr)
+        m_redesign_shell->disconnect_model_generation_host();
     if (m_ai_feature_host != nullptr)
         m_ai_feature_host->shutdown();
 #ifdef _WIN32
