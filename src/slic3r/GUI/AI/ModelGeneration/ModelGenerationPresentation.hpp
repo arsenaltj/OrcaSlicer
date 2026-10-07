@@ -21,6 +21,40 @@ class wxWindow;
 
 namespace Slic3r::GUI::ModelGenerationPresentation {
 
+enum class WorkspaceView { Image, Library, Model };
+enum class WorkspaceAction { ShowImage, ShowLibrary, ShowModel, Prepare };
+struct WorkspacePresentation {
+    WorkspaceView view;
+    bool welcome;
+    bool journey;
+    bool model_enabled;
+    bool prepare_enabled;
+};
+WorkspacePresentation workspace_presentation(WorkspaceView view, bool has_image,
+    bool has_model, bool busy, bool awaiting_confirmation, bool ready, bool can_prepare);
+WorkspaceView workspace_destination(WorkspaceAction action, WorkspaceView current, bool has_model);
+
+// Reloading a saved design is distinct from creating another paid design.
+bool design_preview_reload_available(const std::string& job_id, bool inputs_match,
+    bool output_available, bool preview_ready);
+
+enum class WorkbenchAccess { Available, NeedsModel, Loading, Busy };
+WorkbenchAccess workbench_access(bool model_ready, bool has_local_model, bool loading, bool busy);
+
+// Read-only projection of the current model check; preview readiness is not a
+// structural verdict or an import guarantee.
+bool model_quality_matches_artifact(const AIModelGenerationClient::ModelQuality& quality,
+                                    const std::string& sha256);
+
+enum class ModelCheckStage { NeedsModel, Unchecked, Checking, Failed, Passed, Review, Rejected };
+ModelCheckStage model_check_stage(bool model_ready, bool checking, bool failed,
+                                 const AIModelGenerationClient::ModelQuality& quality);
+
+// Read-only projection of the existing editor/preview transaction.
+enum class FinishingStage { Preparing, Failed, Editing, Processing, Preview, Saved };
+FinishingStage finishing_stage(bool editor_ready, bool running, bool candidate, bool dirty,
+                              bool editor_failed = false);
+
 inline constexpr size_t MAX_MODEL_INPUT_BYTES = 2000;
 inline constexpr double MIN_PREVIEW_ZOOM = 0.5;
 inline constexpr double MAX_PREVIEW_ZOOM = 4.0;
@@ -96,6 +130,15 @@ std::string selected_style(int family, int stylized);
 bool style_uses_printable_colors(const std::string& style);
 wxString style_recommendation_reason(const std::string& reason);
 wxStaticText* section_label(wxWindow* parent, const wxString& text);
+struct ModelCheckRisk {
+    std::string code;
+    wxString title;
+    wxString detail;
+    bool blocking;
+};
+std::vector<ModelCheckRisk> model_check_risks(const AIModelGenerationClient::ModelQuality& quality);
+wxString model_check_scope(const AIModelGenerationClient::ModelQuality& quality);
+wxString model_check_failure_message(const std::string& error);
 wxString model_quality_code_label(const std::string& code);
 wxString visual_quality_code_label(const std::string& code);
 

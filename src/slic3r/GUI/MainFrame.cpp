@@ -504,7 +504,7 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
 
     //BBS
     Bind(EVT_SELECT_TAB, [this](wxCommandEvent& evt) {
-        m_tabpanel->SelectPageByName(evt.GetString());
+        select_tab(evt.GetString());
     });
 
     Bind(EVT_SYNC_CLOUD_PRESET, &MainFrame::on_select_default_preset, this);
@@ -531,7 +531,7 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
     m_loaded = true;
 
     // initialize layout
-    m_main_sizer = new wxBoxSizer(wxVERTICAL);
+    m_main_sizer = new wxBoxSizer(wxHORIZONTAL);
     wxSizer* sizer = new wxBoxSizer(wxVERTICAL);
 #ifndef __APPLE__
      sizer->Add(m_topbar, 0, wxEXPAND);
@@ -571,7 +571,7 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
     // BBS
     Fit();
 
-    const wxSize min_size = wxGetApp().get_min_size(); //wxSize(76*wxGetApp().em_unit(), 49*wxGetApp().em_unit());
+    const wxSize min_size = FromDIP(wxSize(900, 500));
 
     SetMinSize(min_size/*wxSize(760, 490)*/);
     SetSize(wxSize(FromDIP(1200), FromDIP(800)));
@@ -711,7 +711,7 @@ DPIFrame(NULL, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, BORDERLESS_FRAME_
             }
             return;}
 #endif
-        if (evt.CmdDown() && evt.GetKeyCode() == 'R') { if (m_slice_enable) { wxGetApp().plater()->update(true, true); wxPostEvent(m_plater, SimpleEvent(EVT_GLTOOLBAR_SLICE_PLATE)); this->m_tabpanel->SelectPageByName(TAB_ID_PREVIEW); } return; }
+        if (evt.CmdDown() && evt.GetKeyCode() == 'R') { if (m_slice_enable) { wxGetApp().plater()->update(true, true); wxPostEvent(m_plater, SimpleEvent(EVT_GLTOOLBAR_SLICE_PLATE)); select_tab(TAB_ID_PREVIEW); } return; }
         if (evt.CmdDown() && evt.ShiftDown() && evt.GetKeyCode() == 'G') {
             m_plater->apply_background_progress();
             m_print_enable = get_enable_print_status();
@@ -1033,7 +1033,10 @@ void MainFrame::update_layout()
         const size_t prepare_pos = (anchor_idx == wxNOT_FOUND) ? 0 : static_cast<size_t>(anchor_idx) + 1;
         m_tabpanel->InsertPage(prepare_pos, TAB_ID_PREPARE, m_plater, _L("Prepare"), "tab_3d_active");
         m_tabpanel->InsertPage(prepare_pos + 1, TAB_ID_PREVIEW, m_plater, _L("Preview"), "tab_preview_active");
+        if (!m_workspace_navigation) m_workspace_navigation = new DesktopWorkspaceNavigation(this, m_tabpanel, *m_ai_feature_host);
+        m_main_sizer->Add(m_workspace_navigation, 0, wxEXPAND | wxALL, FromDIP(12));
         m_main_sizer->Add(m_tabpanel, 1, wxEXPAND | wxTOP, 0);
+        if (m_workspace_navigation) m_workspace_navigation->refresh();
 
         m_tabpanel->Bind(wxCUSTOMEVT_NOTEBOOK_SEL_CHANGED, [this](wxCommandEvent& evt)
         {
@@ -1250,154 +1253,8 @@ void MainFrame::show_option(bool show)
     }
 }
 
-void MainFrame::init_tabpanel() {
-    wxString startup_trace_value;
-    const bool startup_trace = wxGetEnv("ORCASLICER_STARTUP_TRACE", &startup_trace_value) && startup_trace_value == "1";
-    auto stage_started = std::chrono::steady_clock::now();
-    auto trace_stage = [&](const char* stage) {
-        if (!startup_trace)
-            return;
-        const auto now = std::chrono::steady_clock::now();
-        BOOST_LOG_TRIVIAL(info) << "Startup detail: " << stage << " elapsed_ms="
-            << std::chrono::duration_cast<std::chrono::milliseconds>(now - stage_started).count();
-        stage_started = now;
-    };
-    // wxNB_NOPAGETHEME: Disable Windows Vista theme for the Notebook background. The theme performance is terrible on
-    // Windows 10 with multiple high resolution displays connected.
-    // BBS
-    wxBoxSizer *side_tools = create_side_tools();
-    m_tabpanel = new Notebook(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, side_tools,
-                              wxNB_TOP | wxTAB_TRAVERSAL | wxNB_NOPAGETHEME);
-    m_tabpanel->SetBackgroundColour(*wxWHITE);
-
-#ifndef __WXOSX__ // Don't call SetFont under OSX to avoid name cutting in ObjectList
-    m_tabpanel->SetFont(Slic3r::GUI::wxGetApp().normal_font());
-#endif
-    m_tabpanel->Hide();
-    m_settings_dialog.set_tabpanel(m_tabpanel);
-
-#ifdef __WXMSW__
-    m_tabpanel->Bind(wxEVT_BOOKCTRL_PAGE_CHANGED, [this](wxBookCtrlEvent& e) {
-#else
-    m_tabpanel->Bind(wxEVT_NOTEBOOK_PAGE_CHANGED, [this](wxBookCtrlEvent& e) {
-#endif
-        //BBS
-        wxWindow* panel = m_tabpanel->GetCurrentPage();
-        //wxString page_text = m_tabpanel->GetPageText(sel);
-        m_last_selected_tab = m_tabpanel->GetSelectedPageName();
-        if (panel == m_plater) {
-            if (m_last_selected_tab == TAB_ID_PREPARE) {
-                wxPostEvent(m_plater, SimpleEvent(EVT_GLVIEWTOOLBAR_3D));
-                m_param_panel->OnActivate();
-            }
-            else if (m_last_selected_tab == TAB_ID_PREVIEW) {
-                m_plater->reset_check_status();
-                if (!m_plater->check_ams_status(m_slice_select == eSliceAll))
-                    return;
-                wxPostEvent(m_plater, SimpleEvent(EVT_GLVIEWTOOLBAR_PREVIEW));
-                m_param_panel->OnActivate();
-            }
-            fit_tab_labels(); // ORCA on switching prepare / preview
-        }
-        //else if (panel == m_param_panel)
-        //    m_param_panel->OnActivate();
-        else if (panel == m_monitor) {
-            //monitor
-        }
-#ifndef __APPLE__
-        if (m_last_selected_tab == TAB_ID_PREPARE) {
-            m_topbar->EnableUndoRedoItems();
-        }
-        else {
-            m_topbar->DisableUndoRedoItems();
-        }
-#endif
-
-        if (panel)
-            panel->SetFocus();
-    });
-
-    if (wxGetApp().is_editor()) {
-        m_webview         = new WebViewPanel(m_tabpanel);
-        trace_stage("home_webview");
-        Bind(EVT_LOAD_URL, [this](wxCommandEvent &evt) {
-            wxString url = evt.GetString();
-            select_tab(TAB_ID_HOME);
-            m_webview->load_url(url);
-        });
-        m_tabpanel->AddPage(TAB_ID_HOME, m_webview, "", "tab_home_active");
-        m_param_panel = new ParamsPanel(m_tabpanel, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBK_LEFT | wxTAB_TRAVERSAL);
-        trace_stage("params_panel");
-    }
-
-    m_plater = new Plater(this, this);
-    trace_stage("plater");
-    m_plater->SetBackgroundColour(*wxWHITE);
-    m_plater->Hide();
-
-    wxGetApp().plater_ = m_plater;
-
-    initialize_ai_features([&] { trace_stage("ai_feature_host"); });
-    create_preset_tabs();
-    trace_stage("preset_tabs");
-
-        //BBS add pages
-    m_monitor = new MonitorPanel(m_tabpanel, wxID_ANY, wxDefaultPosition, wxDefaultSize);
-    trace_stage("monitor_panel");
-    m_monitor->SetBackgroundColour(*wxWHITE);
-    m_tabpanel->AddPage(TAB_ID_MONITOR, m_monitor, _L("Device"), "tab_monitor_active");
-
-    m_printer_view = new PrinterWebView(m_tabpanel);
-    trace_stage("printer_webview");
-    Bind(EVT_LOAD_PRINTER_URL, [this](LoadPrinterViewEvent &evt) {
-        wxString url = evt.GetString();
-        wxString key = evt.GetAPIkey();
-        //select_tab(MainFrame::tpMonitor);
-        m_printer_view->load_url(url, key);
-    });
-    m_printer_view->Hide();
-
-    if (wxGetApp().is_enable_multi_machine()) {
-        m_multi_machine = new MultiMachinePage(m_tabpanel, wxID_ANY, wxDefaultPosition, wxDefaultSize);
-        m_multi_machine->SetBackgroundColour(*wxWHITE);
-        // TODO: change the bitmap
-        m_tabpanel->AddPage(TAB_ID_MULTI_DEVICE, m_multi_machine, _L("Multi-device"), "tab_multi_active");
-    }
-
-    m_project = new ProjectPanel(m_tabpanel, wxID_ANY, wxDefaultPosition, wxDefaultSize);
-    trace_stage("project_panel");
-    m_project->SetBackgroundColour(*wxWHITE);
-    m_tabpanel->AddPage(TAB_ID_PROJECT, m_project, _L("Project"), "tab_auxiliary_active");
-
-    m_calibration = new CalibrationPanel(m_tabpanel, wxID_ANY, wxDefaultPosition, wxDefaultSize);
-    m_calibration->SetBackgroundColour(*wxWHITE);
-    m_tabpanel->AddPage(TAB_ID_CALIBRATION, m_calibration, _L("Calibration"), "tab_calibration_active");
-    trace_stage("calibration_panel");
-
-    // Plugin pages are appended after the built-in tabs; their ids are namespaced
-    // (plugin.<plugin_key>.<name>) so they can't collide with the built-in TAB_ID_* constants.
-    m_plugin_pages.initialize(m_tabpanel);
-    trace_stage("plugin_pages");
-
-    if (m_plater) {
-        // load initial config
-        auto full_config = wxGetApp().preset_bundle->full_config();
-        trace_stage("initial_full_config");
-        m_plater->on_config_change(full_config);
-        trace_stage("initial_config_change");
-
-        // Show a correct number of filament fields.
-        // nozzle_diameter is undefined when SLA printer is selected
-        // BBS
-        if (full_config.has("filament_colour")) {
-            m_plater->on_filament_count_change(full_config.option<ConfigOptionStrings>("filament_colour")->values.size());
-        }
-        trace_stage("initial_filament_count");
-    }
-    trace_stage("remaining_tabs_and_initial_config");
-}
-
 #include "AI/MainFrameAIWorkflow.ipp"
+#include "MainFrameWorkspace.ipp"
 
 // SoftFever
 void MainFrame::show_device(bool should_use_native) {
@@ -1576,6 +1433,7 @@ bool MainFrame::is_prepare_or_preview_tab() const
 
 void MainFrame::fit_tab_labels()
 {
+    if (m_workspace_navigation) return; // Public navigation is owned by the main window.
     if (!m_tabpanel || !m_slice_option_btn) // ignore layout change while slice/print buttons not visible
         return;
 
@@ -2049,7 +1907,7 @@ wxBoxSizer* MainFrame::create_side_tools()
                     wxPostEvent(m_plater, SimpleEvent(EVT_GLTOOLBAR_SLICE_ALL));
                 else
                     wxPostEvent(m_plater, SimpleEvent(EVT_GLTOOLBAR_SLICE_PLATE));
-                this->m_tabpanel->SelectPageByName(TAB_ID_PREVIEW);
+                select_tab(TAB_ID_PREVIEW);
             }
         });
 
@@ -2572,6 +2430,7 @@ void MainFrame::on_dpi_changed(const wxRect& suggested_rect)
     wxGetApp().update_fonts(this);
     this->SetFont(this->normal_font());
     if (m_ai_feature_host) refresh_ai_appearance(m_ai_feature_host->model_generation_panel());
+    if (m_workspace_navigation) refresh_ai_appearance(m_workspace_navigation);
 
 #ifdef _MSW_DARK_MODE
     // update common mode sizer
@@ -2645,6 +2504,7 @@ void MainFrame::on_sys_color_changed()
     // update label colors in respect to the system mode
     wxGetApp().init_label_colours();
     if (m_ai_feature_host) refresh_ai_appearance(m_ai_feature_host->model_generation_panel());
+    if (m_workspace_navigation) refresh_ai_appearance(m_workspace_navigation);
 
 #ifndef __WINDOWS__
     wxGetApp().force_colors_update();
@@ -4092,10 +3952,10 @@ void MainFrame::jump_to_monitor(std::string dev_id)
 {
     if(!m_monitor)
         return;
-    m_tabpanel->SelectPageByName(TAB_ID_MONITOR);
     if (!dev_id.empty()) {
         ((MonitorPanel*)m_monitor)->select_machine(dev_id);
     }
+    select_tab(TAB_ID_MONITOR);
 }
 
 void MainFrame::jump_to_multipage()
@@ -4110,6 +3970,8 @@ void MainFrame::jump_to_multipage()
 //BBS GUI refactor: remove unused layout new/dlg
 void MainFrame::select_tab(const wxString& id/* = wxString()*/)
 {
+    if (m_workspace_navigation && m_workspace_navigation->route_printer_page_request(id))
+        return;
     //bool tabpanel_was_hidden = false;
 
     // Controls on page are created on active page of active tab now.

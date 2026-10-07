@@ -12,11 +12,35 @@
 <script type="text/javascript" src="../homepage/js/globalapi.js"></script>
 <script type="text/javascript" src="../homepage/js/home.js"></script>
 </head>
+<style>
+html, body { margin: 0; background: #202022; color: #fff; font: 16px/1.65 system-ui, sans-serif; }
+.container { box-sizing: border-box; max-width: 1000px; margin: auto; padding: 32px; background: transparent; box-shadow: none; text-align: left; }
+h1 { font-size: 28px; margin: 0 0 12px; color: #ffc227; }
+.device-state { background: #313136; border-radius: 16px; padding: 24px; }
+.device-state p { color: #c7c7cd; }
+ol { padding-left: 24px; }
+li { margin: 12px 0; }
+details { margin-top: 24px; }
+summary { color: #fed445; cursor: pointer; }
+summary:focus-visible { outline: 2px solid #fed445; outline-offset: 4px; }
+details img { max-width: 100%; margin-top: 16px; }
+</style>
 <body onLoad="OnInit()">
     <div class="container">
-        <h1 class="trans">Printer Connection</h1>
-        <p class="trans">Please set up your printer connection to view the device.</p>
-        <img src="setup_connection.gif" alt="Printer connection setup demonstration" style="max-width: 100%; height: auto; display: block;"/>
+        <h1>设备</h1>
+        <section class="device-state">
+            <h2>尚未配置打印机连接</h2>
+            <p>当前没有可读取的设备状态。完成连接后，这里将显示打印机提供的实际监控页面。</p>
+            <ol>
+                <li>点击左侧“工程”，选择实际使用的打印机预设。</li>
+                <li>点击打印机名称旁的连接设置图标，填写设备地址与所需凭据。</li>
+                <li>测试连接并保存，然后返回“设备”。</li>
+            </ol>
+            <p>未连接时仍可导入模型、保存工程、切片和导出 G-code。</p>
+        </section>
+        <details><summary>查看连接设置示例（旧版界面）</summary>
+            <img src="setup_connection.gif" alt="打印机预设旁的连接设置位置示例"/>
+        </details>
     </div>
 </body>
 </html>

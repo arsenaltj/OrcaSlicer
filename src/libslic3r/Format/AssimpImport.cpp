@@ -6,6 +6,7 @@
 #include <assimp/Importer.hpp>
 #include <assimp/config.h>
 #include <assimp/material.h>
+#include <assimp/GltfMaterial.h>
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
 
@@ -358,11 +359,13 @@ std::string scene_failure_summary(const std::string& path, const char* assimp_er
 
 bool load_assimp_textured_model(const std::string& path, TexturedMesh& out, std::string* error_message,
                                std::vector<std::array<float, 4>>* raw_vertex_colors,
-                               AssimpRawColorPolicy raw_color_policy)
+                               AssimpRawColorPolicy raw_color_policy,
+                               std::vector<AssimpMaterialPreview>* preview_materials)
 {
     AssimpImportTiming timing;
     clear_textured_mesh(out);
     if (raw_vertex_colors) raw_vertex_colors->clear();
+    if (preview_materials) preview_materials->clear();
 
     Assimp::Importer importer;
     const unsigned int flags = assimp_import_flags(path);
@@ -386,6 +389,31 @@ bool load_assimp_textured_model(const std::string& path, TexturedMesh& out, std:
     }
 
     collect_materials(*scene, boost::filesystem::path(path).parent_path(), out);
+    if (preview_materials) {
+        preview_materials->resize(scene->mNumMaterials);
+        for (unsigned i=0;i<scene->mNumMaterials;++i) {
+            const auto* material=scene->mMaterials[i];if(!material)continue;
+            auto& preview=(*preview_materials)[i];
+            aiString mode; if(material->Get(AI_MATKEY_GLTF_ALPHAMODE,mode)==AI_SUCCESS)
+                preview.alpha_mode=mode.C_Str();
+            material->Get(AI_MATKEY_GLTF_ALPHACUTOFF,preview.alpha_cutoff);
+            aiString texture_path;
+            const auto type=material->GetTextureCount(aiTextureType_BASE_COLOR)>0
+                ?aiTextureType_BASE_COLOR:aiTextureType_DIFFUSE;
+            preview.has_color_texture=material->GetTexture(type,0,&texture_path)==AI_SUCCESS;
+            if(!preview.has_color_texture)continue;
+            int wrap;
+            auto gl_wrap=[](int value) {
+                return value==aiTextureMapMode_Clamp?33071:value==aiTextureMapMode_Mirror?33648:10497;
+            };
+            if(material->Get(AI_MATKEY_MAPPINGMODE_U(type,0),wrap)==AI_SUCCESS)preview.wrap_s=gl_wrap(wrap);
+            if(material->Get(AI_MATKEY_MAPPINGMODE_V(type,0),wrap)==AI_SUCCESS)preview.wrap_t=gl_wrap(wrap);
+            material->Get(AI_MATKEY_GLTF_MAPPINGFILTER_MIN(type,0),preview.min_filter);
+            material->Get(AI_MATKEY_GLTF_MAPPINGFILTER_MAG(type,0),preview.mag_filter);
+
+        }
+    }
+
     timing.mark(AssimpImportTiming::Materials);
 
     // Precomputed colors bypass texture sampling. Only use them for a glTF

@@ -617,7 +617,7 @@ function initKeyEvents(closeOnESC) {
 
 		// ORCA focus search bar on key input
 		// SearchBox not in focus && writable character && non modifier
-		if (document.activeElement != SearchBox && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+		if (!e.defaultPrevented && !e.isComposing && !e.target.closest('input, select, button, [role="button"]') && document.activeElement != SearchBox && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
 			SearchBox.focus();
 		}
 

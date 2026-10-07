@@ -29,6 +29,7 @@
 #include <string>
 
 class AccentSlider;
+class wxStaticBitmap;
 
 namespace Slic3r { namespace GUI {
 
@@ -66,6 +67,7 @@ struct TextureFilamentEntry {
     std::string         preset_name;
     std::vector<unsigned int> mixed_components;
     std::vector<int>          mixed_ratios;
+    bool compatible = true; // Ordinary imports retain legacy entries by default.
 };
 
 struct TextureNewMixedFilament {
@@ -89,12 +91,18 @@ class AutoMixSelectPopup;
 
 // Optional desktop import context. Defaults preserve ordinary Orca imports.
 struct TextureImportOptions {
+    // Workbench-only role palette; ordinary Orca imports retain their theme.
+    bool workspace_presentation = false;
     size_t initial_target_colors = 0;
     // Negative keeps the ordinary importer's default (5); AI starts with no
     // boundary cleanup so small lip/eye regions can be checked before merging.
     int initial_color_smoothing = -1;
     size_t physical_filament_limit = 0;
     bool preserve_existing_filaments = false;
+    // Ordinary imports retain legacy mixing. Workbench matching disables
+    // recipes lacking material/process proof; verified assignments bypass
+    // this dialog through matched_face_slots.
+    bool allow_unverified_mixed_filaments = true;
     bool z_up = false;
     bool source_units_in_meters = false;
     std::vector<std::array<std::size_t, 3>> fixed_palette;
@@ -230,12 +238,17 @@ public:
                         TextureImportOptions             options = {});
     ~TextureImportDialog();
 
+#ifdef __WXMSW__
+    WXLRESULT MSWWindowProc(WXUINT message, WXWPARAM wparam, WXLPARAM lparam) override;
+#endif
     int ShowModal() override;
     void on_dpi_changed(const wxRect& suggested_rect) override;
 
     Slic3r::PaintedMesh               get_painted_mesh() const;
     std::vector<Slic3r::FilamentMatch> get_matches() const;
     bool                               was_skipped() const { return m_skipped; }
+    std::optional<size_t> choose_single_color_filament();
+    size_t get_single_color_filament() const { return m_single_color_filament; }
     bool                               fallback_to_geometry_only() const { return m_fallback_to_geometry_only; }
     // Colors of virtual filaments that need to be created after dialog confirmation.
     // Index i corresponds to filament index (m_existing_filament_count + i).
@@ -336,6 +349,7 @@ private:
     void update_color_count_preset_buttons();
 
     bool has_valid_result() const;
+    bool has_valid_parameter_input() const;
     bool is_params_dirty() const;
     void update_confirm_button_state();
     void style_confirm_button(bool dirty);
@@ -353,6 +367,7 @@ private:
     std::string                        m_default_virtual_filament_preset_name;
 
     TextureImportState                 m_state = TextureImportState::Idle;
+    size_t m_single_color_filament = size_t(-1);
     bool                               m_skipped = false;
     bool                               m_fallback_to_geometry_only = false;
     // True iff *the most recent* do_auto_match() ran into the global filament
@@ -395,6 +410,10 @@ private:
     SpinInput*    m_smooth_spin    = nullptr;
     Button*       m_btn_apply      = nullptr;
 
+    wxPanel*              m_workspace_header = nullptr;
+    wxStaticText*         m_workspace_title = nullptr;
+    Button*               m_workspace_close = nullptr;
+    wxStaticBitmap*       m_workspace_merge_icon = nullptr;
     wxCheckBox*           m_auto_merge_cb = nullptr;
     Button*               m_btn_auto_mix  = nullptr;
     Button*               m_btn_mix_reset = nullptr;
@@ -417,7 +436,7 @@ private:
     Button*       m_btn_skip = nullptr;
     Button*       m_btn_ok   = nullptr;
     wxStaticText* m_drop_warning_label = nullptr;
-    bool m_show_advanced = false;
+    bool m_show_advanced = true;
     wxStaticText* m_mapping_summary = nullptr;
 
     int   m_param_color_count = 4;

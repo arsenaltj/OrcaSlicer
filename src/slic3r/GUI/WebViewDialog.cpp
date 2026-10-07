@@ -10,6 +10,8 @@
 #include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/json_parser.hpp>
 
+#include <sstream>
+
 #include <wx/sizer.h>
 #include <wx/toolbar.h>
 #include <wx/textdlg.h>
@@ -919,6 +921,25 @@ void WebViewPanel::OnScriptMessage(wxWebViewEvent& evt)
     if (!IsCurrentBrowserEvent(evt))
         return;
     BOOST_LOG_TRIVIAL(trace) << __FUNCTION__ << ": " << evt.GetString().ToUTF8().data();
+    // WebView owns the focused HWND; route its page keys from the Home panel,
+    // whose parent is the existing notebook, rather than posting a character key.
+    if (m_browser->GetCurrentURL() == m_home_url) {
+        try {
+            pt::ptree request;
+            std::istringstream stream(evt.GetString().ToUTF8().data());
+            pt::read_json(stream, request);
+            const int key = request.get<int>("key_event.key", 0);
+            if (request.get<std::string>("command", "") == "get_web_shortcut" &&
+                (request.get<bool>("key_event.ctrl", false) || request.get<bool>("key_event.cmd", false)) &&
+                !request.get<bool>("key_event.shift", false) && (key == 33 || key == 34)) {
+                Navigate(wxNavigationKeyEvent::WinChange |
+                    (key == 34 ? wxNavigationKeyEvent::IsForward : wxNavigationKeyEvent::IsBackward));
+                return;
+            }
+        } catch (const pt::ptree_error&) {
+            // Keep malformed or unrelated messages on the existing request path.
+        }
+    }
     // update login status
     if (m_LoginUpdateTimer == nullptr) {
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << " Create Timer";

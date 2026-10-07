@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <memory>
 #include <vector>
+#include <nlohmann/json_fwd.hpp>
 
 namespace Slic3r::AI {
 
@@ -17,6 +18,13 @@ struct SurfaceVertexBlend {
     uint32_t a{0},b{0};
     double fraction{0};
 };
+// Appearance edits may span several material primitives in one static mesh.
+// Verify every transformed triangle and material against the imported surface,
+// returning face counts in primitive order. This does not broaden the separate
+// geometry-writing path below; import reordering is rejected rather than guessed.
+std::vector<size_t> verify_glb_appearance_layout(const nlohmann::json& document,
+    const std::vector<unsigned char>& binary, const indexed_triangle_set& editor_mesh,
+    const std::vector<int>& face_materials, const std::function<void()>& checkpoint = {});
 
 // This is a deliberately bounded geometry-only path. It accepts one static
 // triangle primitive used by one node, dense float positions/optional normals,

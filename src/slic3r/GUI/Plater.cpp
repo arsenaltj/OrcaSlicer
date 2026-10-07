@@ -6914,7 +6914,7 @@ struct Plater::priv
     bool run_textured_mesh_import_dialog(Slic3r::Model& loaded_model, TextureImportResult& result,
                                          std::function<bool()> cancel_callback = {},
                                          std::function<bool(int)> progress_callback = {},
-                                         const TextureImportOptions* texture_options = nullptr);
+                                         const TextureImportOptions* texture_options = nullptr, ModelColorImportResult* color_result = nullptr);
     void apply_textured_mesh_import_result(Slic3r::Model& loaded_model, const std::vector<size_t>& obj_idxs,
                                            const TextureImportResult& result,
                                            LoadProgressCallback progress_callback = {}, bool update_scene = true);
@@ -9193,8 +9193,8 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
                     dlg_cont = dlg.Update(progress_percent, _L("Matching textures to filaments"));
                     return dlg_cont;
                 };
-                if (!run_textured_mesh_import_dialog(model, texture_import_result, cancel_cb, progress_cb, texture_options)) {
-                    if (color_result != nullptr) color_result->cancelled = true;
+                if (!run_textured_mesh_import_dialog(model, texture_import_result, cancel_cb, progress_cb, texture_options, color_result)) {
+                    if (color_result != nullptr) color_result->cancelled = color_result->error.empty();
                     q->skip_thumbnail_invalid = false;
                     return empty_result;
                 }
@@ -10026,6 +10026,7 @@ void Plater::priv::reset(bool apply_presets_change)
     // BBS
     m_saved_timestamp = m_backup_timestamp = size_t(-1);
 
+    if (smart_slicing_host != nullptr) smart_slicing_host->show(false);
     // Save window layout
     if (sidebar_layout.is_enabled) {
         // Reset show state
@@ -13691,7 +13692,7 @@ bool Plater::priv::check_ams_status_impl(bool is_slice_all)
                         wxPostEvent(q, SimpleEvent(EVT_GLTOOLBAR_SLICE_ALL));
                     else
                         wxPostEvent(q, SimpleEvent(EVT_GLTOOLBAR_SLICE_PLATE));
-                    wxGetApp().mainframe->m_tabpanel->SelectPageByName(TAB_ID_PREVIEW);
+                    wxGetApp().mainframe->select_tab(TAB_ID_PREVIEW);
                 }
                 return false;
             }
@@ -17085,52 +17086,7 @@ bool Plater::is_sidebar_collapsed() const { return p->sidebar_layout.is_collapse
 void Plater::collapse_sidebar(bool collapse) { p->collapse_sidebar(collapse); }
 Sidebar::DockingState Plater::get_sidebar_docking_state() const { return p->get_sidebar_docking_state(); }
 
-bool Plater::is_ai_assistant_shown() const
-{
-    return p->ai_assistant_panel != nullptr && p->m_aui_mgr.GetPane(p->ai_assistant_panel).IsShown();
-}
-
-void Plater::enable_ai_assistant()
-{
-    if (p->ai_assistant_panel != nullptr)
-        return;
-
-    p->ai_assistant_panel = new AIAssistantPanel(this, this);
-    p->m_aui_mgr.AddPane(p->ai_assistant_panel, wxAuiPaneInfo()
-                                                     .Name("ai_assistant")
-                                                     .Caption(_L("AI Assistant"))
-                                                     .Right()
-                                                     .CloseButton(true)
-                                                     .TopDockable(false)
-                                                     .BottomDockable(false)
-                                                     .BestSize(wxSize(32 * wxGetApp().em_unit(), 70 * wxGetApp().em_unit()))
-                                                     .Hide());
-    p->m_aui_mgr.Update();
-}
-
-void Plater::show_ai_assistant(bool show)
-{
-    if (p->ai_assistant_panel == nullptr)
-        return;
-    auto& pane = p->m_aui_mgr.GetPane(p->ai_assistant_panel);
-    if (!pane.IsOk())
-        return;
-    pane.Show(show);
-    p->m_aui_mgr.Update();
-}
-
-bool Plater::is_smart_slicing_shown() const
-{
-    return p->smart_slicing_host != nullptr && p->smart_slicing_host->is_shown();
-}
-
-#include "AI/PlaterSmartSlicingWorkflow.ipp"
-
-void Plater::show_smart_slicing(bool show)
-{
-    if (p->smart_slicing_host != nullptr)
-        p->smart_slicing_host->show(show);
-}
+#include "PlaterAIFeatureHosts.ipp"
 
 void Plater::reset_window_layout() { p->reset_window_layout(); }
 

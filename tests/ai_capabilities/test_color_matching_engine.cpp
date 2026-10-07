@@ -2,6 +2,7 @@
 #include "slic3r/AI/ColorMatching/ColorMatchingEngine.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/LocalPrintColorMatching.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/PortraitColorPackMapping.hpp"
+#include "slic3r/GUI/AI/Model/LocalPrintColorState.hpp"
 
 using namespace Slic3r;
 namespace Matching = AI::ColorMatching;
@@ -48,13 +49,27 @@ TEST_CASE("Color matching retains sparse physical slots and leaves the input unc
     CHECK(result.result.targets[result.result.face_targets[0]].physical_slot == std::optional<size_t>(3));
     CHECK(result.result.targets[result.result.face_targets[1]].physical_slot == std::optional<size_t>(11));
     CHECK(result.algorithm_id == "region-matching");
-    CHECK(result.result.algorithm_version == "region-direct-v5");
+    CHECK(result.result.algorithm_version == "region-direct-v6");
     CHECK_FALSE(result.result.confirmed);
     CHECK(input.identity.confirmed);
     CHECK(input.identity.targets.empty());
     CHECK(input.identity.face_targets.empty());
     CHECK(input.identity.material_fingerprint == result.result.material_fingerprint);
     CHECK(input.identity.process_fingerprint == result.result.process_fingerprint);
+
+    auto confirmed = result.result;
+    confirmed.confirmed = true;
+    AI::LocalPrintColorResult reopened;
+    std::string reopen_error;
+    const bool reopens = GUI::LocalPrintColorState::decode(
+        GUI::LocalPrintColorState::encode(confirmed), confirmed.source_sha256,
+        confirmed.geometry_id, confirmed.material_fingerprint,
+        confirmed.process_fingerprint, reopened, reopen_error);
+    INFO(reopen_error);
+    REQUIRE(reopens);
+    CHECK(reopened.face_targets == confirmed.face_targets);
+    CHECK(reopened.targets[reopened.face_targets[0]].physical_slot == std::optional<size_t>(3));
+    CHECK(reopened.targets[reopened.face_targets[1]].physical_slot == std::optional<size_t>(11));
 }
 
 TEST_CASE("Layered matching retains its persisted algorithm variant", "[ColorMatchingEngine]")

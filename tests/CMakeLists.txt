@@ -85,5 +85,6 @@ add_subdirectory(ai_capabilities)
 add_subdirectory(fff_print)
 add_subdirectory(sla_print)
 add_subdirectory(filament_group)
+add_subdirectory(ui_redesign)
 
 

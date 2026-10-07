@@ -1,10 +1,14 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include "slic3r/AI/ModelGeneration/ModelGenerationClient.hpp"
 
 using namespace Slic3r::AI::ModelGeneration;
 namespace {
 struct Observations {
-    int generated {0}, queried {0}, remote_stops {0}, local_cancels {0}, downloads {0};
+    int generated {0}, queried {0}, remote_stops {0}, local_cancels {0}, downloads {0}, checked {0};
+    std::string asset_id, artifact_hash;
+    bool read_only {false};
     std::string job_id, prepared_prompt, output_format;
     ModelGenerationTypes::GenerationOptions options;
     ModelGenerationTypes::StatusFn pending;
@@ -25,6 +29,10 @@ public:
     { ++calls.queried; calls.job_id = job_id; calls.pending = std::move(on_complete); }
     void get_latest(LatestFn on_complete, ErrorFn) override
     { on_complete(std::nullopt); }
+    void check_saved_artifact(const std::string& asset_id, const std::string& sha256,
+        StatusFn on_complete, ErrorFn, bool read_only = false) override
+    { ++calls.checked; calls.asset_id = asset_id; calls.artifact_hash = sha256;
+      calls.read_only = read_only; calls.pending = std::move(on_complete); }
     void stop(const std::string& job_id, StatusFn, ErrorFn) override
     { ++calls.remote_stops; calls.job_id = job_id; }
     void cancel_current() override { ++calls.local_cancels; }
@@ -143,6 +151,32 @@ TEST_CASE("Generation service replacement preserves the confirmed options and re
     CHECK(calls.remote_stops == 0);
     client.stop("existing-job", {}, {});
     CHECK(calls.remote_stops == 1);
+}
+
+TEST_CASE("Saved artifact checks preserve their identity and read-only intent across services", "[GenerationService]")
+{
+    const bool read_only = GENERATE(false, true);
+    Observations calls;
+    ModelGenerationClient client(std::make_unique<RecordingGenerationService>(calls));
+    ModelGenerationClient::JobStatus received;
+    const std::string hash(64, 'a');
+    client.check_saved_artifact("existing-local-asset", hash,
+        [&](auto status) { received = std::move(status); }, [](auto) { FAIL("Unexpected error"); }, read_only);
+    REQUIRE(calls.checked == 1);
+    CHECK(calls.asset_id == "existing-local-asset");
+    CHECK(calls.artifact_hash == hash);
+    CHECK(calls.read_only == read_only);
+    ModelGenerationClient::JobStatus result;
+    result.model_quality.artifact_sha256 = hash;
+    result.model_quality.units = "mm";
+    result.model_quality.report_metrics["minimum_thickness_mm"] = 0.4;
+    calls.pending(std::move(result));
+    CHECK(received.model_quality.artifact_sha256 == hash);
+    CHECK(received.model_quality.units == "mm");
+    CHECK_THAT(received.model_quality.report_metrics.at("minimum_thickness_mm"),
+               Catch::Matchers::WithinAbs(0.4, 1e-12));
+    CHECK(received.service_implementation_id == "recording-service");
+    CHECK(calls.generated == 0);
 }
 
 TEST_CASE("Generation recovery and downloads never start a paid task", "[GenerationService]")

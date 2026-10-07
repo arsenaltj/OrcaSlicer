@@ -1,5 +1,7 @@
 #include "slic3r/GUI/TextureImportDialog.hpp"
 #include "OrcaWorkspaceAdapter.hpp"
+#include "OrcaModelPreparationPanel.hpp"
+#include "OrcaFilamentSelection.hpp"
 #include "ModelColorUpdate.hpp"
 #include "OrcaPaletteSnapshotBuilder.hpp"
 #include "OrcaPrintPaletteSnapshot.hpp"
@@ -21,6 +23,7 @@
 #include "libslic3r/Print.hpp"
 #include "libslic3r/TriangleMesh.hpp"
 #include "libslic3r/Utils.hpp"
+#include "slic3r/Utils/UndoRedo.hpp"
 
 #include <boost/filesystem.hpp>
 #include <boost/log/trivial.hpp>
@@ -147,12 +150,14 @@ AI::PrintablePaletteSnapshot OrcaWorkspaceAdapter::printable_palette() const
 TextureImportOptions model_import_color_options(const AI::ModelImportRequest& request)
 {
     TextureImportOptions options;
+    options.workspace_presentation = true;
     // Twelve editable target groups leave room for skin, lips and clothing
     // shades. This is a starting point, not a requirement for twelve filaments.
     options.initial_target_colors = 12;
     options.initial_color_smoothing = 0;
     options.physical_filament_limit = 6;
     options.preserve_existing_filaments = true;
+    options.allow_unverified_mixed_filaments = false;
     options.z_up = true;
     options.source_units_in_meters = AI::model_artifact_format(request.artifact.local_path) == "glb";
     const auto to_rgb = [](const auto& color) {
@@ -292,6 +297,39 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
         }
         BOOST_LOG_TRIVIAL(info) << "AI import preparation: verified_obj_reused=" << reused;
     }
+    // Reject geometrically flat input before the native loader starts an undo
+    // transaction or changes the active workspace. This is only a zero-extent
+    // guard, not a general printability or watertightness decision. Keep the
+    // artifact available for preview and editing in the existing GL host.
+    {
+        TriangleMesh import_geometry;
+        ObjInfo import_colors;
+        const indexed_triangle_set* geometry = semantic_source_its;
+        if (!geometry) {
+            if (!AI::load_model_artifact(path, import_geometry, import_colors, result.error)) {
+                result.outcome = AI::ModelImportOutcome::InvalidArtifact;
+                return result;
+            }
+            geometry = &import_geometry.its;
+        }
+        BoundingBoxf3 bounds;
+        for(const auto& vertex:geometry->vertices) bounds.merge(vertex.cast<double>());
+        const Vec3d extent=bounds.size();
+        if (extent.x() <= 0.0 || extent.y() <= 0.0 || extent.z() <= 0.0) {
+            result.outcome = AI::ModelImportOutcome::InvalidArtifact;
+            result.error = "当前模型有一个方向的厚度为零，不能直接导入切片。模型和编辑已保留，请换用有厚度的模型后重试。";
+            return result;
+        }
+    }
+
+    std::optional<size_t> single_color_filament;
+    if (request.color_mode == AI::ImportColorMode::SingleColor) {
+        single_color_filament = choose_single_color_filament(m_plater, *m_plater);
+        if (!single_color_filament) {
+            result.outcome = AI::ModelImportOutcome::Cancelled;
+            return result;
+        }
+    }
     Sidebar& workflow = m_plater->sidebar();
     workflow.start_ai_workflow(_L("正在导入 AI 生成模型"));
     workflow.update_ai_workflow_step(Sidebar::AIImportModel, Sidebar::AIWorkflowStatus::Running, _L("读取模型"));
@@ -299,7 +337,7 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
     bool import_cancelled = false;
     AIImportSeamResult preloaded_seams;
     bool preloaded_seams_checked = false;
-    auto load_model = [this, &path, &import_cancelled, &request, &matched_source,
+    auto load_model = [this, &path, &import_cancelled, &request, &matched_source, &result,
                        &preloaded_seams, &preloaded_seams_checked](const char* snapshot_name, AI::ImportColorMode color_mode, bool& colors_applied,
                                     size_t& source_color_count, size_t& mapped_color_count) {
         const ImportStageTiming timing("load_and_color_including_dialogs");
@@ -313,6 +351,8 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
             options.matched_source=matched_source;
             auto loaded = m_plater->load_files({path}, LoadStrategy::LoadModel, false, nullptr, &color_result, &options);
             import_cancelled = color_result.cancelled;
+            if (!color_result.error.empty()) result.error = color_result.error;
+            if (color_result.single_color_filament) result.color_mode = AI::ImportColorMode::SingleColor;
             colors_applied = color_result.colors_applied;
             source_color_count = color_result.source_color_count;
             mapped_color_count = color_result.mapped_color_count;
@@ -398,13 +438,17 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
         }
     }
     const size_t before = m_plater->model().objects.size();
+    const size_t before_snapshot = m_plater->undo_redo_stack_main().active_snapshot_time();
     std::vector<size_t> loaded = load_model("Import AI generated model", request.color_mode, result.colors_applied,
                                             result.source_color_count, result.mapped_color_count);
     if (loaded.empty() || m_plater->model().objects.size() <= before) {
-        if (!loaded.empty() && m_plater->model().objects.size() > before)
+        // The loader snapshots before opening color confirmation, even when
+        // cancellation adds no object. Roll back only if this call created a
+        // snapshot; otherwise undo would consume an existing user operation.
+        if (m_plater->undo_redo_stack_main().active_snapshot_time() != before_snapshot)
             m_plater->undo();
         result.outcome = import_cancelled ? AI::ModelImportOutcome::Cancelled : AI::ModelImportOutcome::ImportFailed;
-        result.error = import_cancelled ? "OBJ import cancelled." : "OBJ import failed.";
+        if (result.error.empty()) result.error = import_cancelled ? "OBJ import cancelled." : "OBJ import failed.";
         workflow.update_ai_workflow_step(Sidebar::AIImportModel,
             import_cancelled ? Sidebar::AIWorkflowStatus::Warning : Sidebar::AIWorkflowStatus::Failed,
             import_cancelled ? _L("已取消导入。") : _L("OBJ 导入失败"));
@@ -412,8 +456,19 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
         return result;
     }
 
+    if (single_color_filament) {
+        for (size_t index : loaded)
+            if (index < m_plater->model().objects.size()) {
+                ModelObject* object = m_plater->model().objects[index];
+                object->config.set_key_value("extruder", new ConfigOptionInt(int(*single_color_filament + 1)));
+                for (auto* volume : object->volumes)
+                    volume->config.set_key_value("extruder", new ConfigOptionInt(int(*single_color_filament + 1)));
+            }
+        result.colors_applied = true;
+        result.mapped_color_count = 1;
+    }
     bool subface_import_incomplete = false;
-    if (!request.subface_color_overrides.empty()) {
+    if (result.color_mode != AI::ImportColorMode::SingleColor && !request.subface_color_overrides.empty()) {
         std::string subface_error;
         ModelVolume* volume = nullptr;
         if (!semantic_source_its || loaded.size() != 1 || loaded.front() >= m_plater->model().objects.size()) {
@@ -447,24 +502,24 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
     workflow.update_ai_workflow_step(Sidebar::AICheckMesh, Sidebar::AIWorkflowStatus::Running);
 
     auto update_color_status = [&]() {
-        result.color_mapping_collapsed = request.color_mode != AI::ImportColorMode::SingleColor && result.colors_applied &&
+        result.color_mapping_collapsed = result.color_mode != AI::ImportColorMode::SingleColor && result.colors_applied &&
                                          result.source_color_count > 1 && result.mapped_color_count < 2;
-        result.manual_coloring_required = request.color_mode != AI::ImportColorMode::SingleColor &&
+        result.manual_coloring_required = result.color_mode != AI::ImportColorMode::SingleColor &&
                                           (!result.colors_applied || result.color_mapping_collapsed ||
                                            subface_import_incomplete);
-        BOOST_LOG_TRIVIAL(info) << "AI OBJ color import: mode=" << static_cast<int>(request.color_mode)
+        BOOST_LOG_TRIVIAL(info) << "AI OBJ color import: mode=" << static_cast<int>(result.color_mode)
                                 << ", source_colours=" << result.source_color_count
                                 << ", mapped_colours=" << result.mapped_color_count
                                 << ", applied=" << result.colors_applied
                                 << ", collapsed=" << result.color_mapping_collapsed;
 
-        if (request.color_mode == AI::ImportColorMode::ManualMatch ||
-            request.color_mode == AI::ImportColorMode::NativeMatch) {
+        if (result.color_mode == AI::ImportColorMode::ManualMatch ||
+            result.color_mode == AI::ImportColorMode::NativeMatch) {
             workflow.update_ai_workflow_step(
                 Sidebar::AIProcessColors,
                 result.manual_coloring_required ? Sidebar::AIWorkflowStatus::Warning : Sidebar::AIWorkflowStatus::Success,
                 result.manual_coloring_required ? _L("颜色匹配未完成") : _L("已确认模型颜色与耗材槽"));
-        } else if (request.color_mode == AI::ImportColorMode::SingleColor) {
+        } else if (result.color_mode == AI::ImportColorMode::SingleColor) {
             workflow.update_ai_workflow_step(Sidebar::AIProcessColors, Sidebar::AIWorkflowStatus::Success,
                                              _L("单色导入"));
         } else if (result.colors_applied) {
@@ -539,6 +594,15 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
     }
 
     m_on_import_succeeded();
+    if (request.suggest_base_preparation) {
+        auto* preparation = dynamic_cast<OrcaModelPreparationPanel*>(
+            wxWindow::FindWindowByName("ai_model_preparation", m_plater));
+        if (preparation && loaded.size() == 1 && loaded.front() < m_plater->model().objects.size())
+            preparation->suggest_base_for_object(m_plater->model().objects[loaded.front()]->id().id);
+        else
+            wxMessageBox(_L("模型已加入工程，尚未添加底座。请在准备页完整选中一个模型，再展开尺寸与底座并确认应用。"),
+                _L("确认底座准备"), wxOK | wxICON_INFORMATION, m_plater);
+    }
     if (arrange_copy) {
         // ArrangeJob runs on the UI worker. Keep the workflow active until its
         // finalize() callback applies the transforms, otherwise the panel

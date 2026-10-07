@@ -12,7 +12,7 @@ public:
     ParameterProposal advise(const WorkspaceContext& context) override
     {
         ParameterProposal proposal;
-        if (context.parameter_plate_id < 0 || !(context.current_brim_width < 10.0))
+        if (!context.brim_scope_consistent || context.parameter_plate_id < 0 || !(context.current_brim_width < 10.0))
             return proposal;
         const bool benefits_from_brim = std::any_of(context.printable_instance_sizes_mm.begin(),
             context.printable_instance_sizes_mm.end(), [](const auto& size) {

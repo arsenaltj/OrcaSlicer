@@ -89,7 +89,7 @@ TEST_CASE("candidate comparison excludes unusable results and caps cognitive loa
     failed.status          = CandidateStatus::Failed;
     candidates.push_back(std::move(failed));
 
-    const CandidateComparison comparison = compare_candidates(candidates, CandidateGoal::Speed);
+    const CandidateComparison comparison = compare_candidates(candidates, CandidateGoal::Speed, 3);
 
     REQUIRE(comparison.ordered_candidate_ids.size() == 3);
     CHECK(comparison.ordered_candidate_ids == std::vector<CandidateId>{"a", "b", "c"});

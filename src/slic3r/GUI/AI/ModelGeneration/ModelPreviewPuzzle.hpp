@@ -28,7 +28,7 @@ struct ModelPreviewPuzzle {
         std::string packed_base_geometry_id;
     };
     CpuState cpu;
-    std::unique_ptr<GLModel> fill,borders,active;
+    std::unique_ptr<GLModel> fill,painted_fill,borders,active;
     static uint32_t packed_rgb(const std::array<float,4>& c) {
         return (uint32_t(std::lround(c[0]*255))<<16) |
                (uint32_t(std::lround(c[1]*255))<<8) | uint32_t(std::lround(c[2]*255));
@@ -43,15 +43,15 @@ struct ModelPreviewPuzzle {
         geometry.add_triangle(first,first+1,first+2);geometry.add_triangle(first,first+2,first+3);
     }
     void reset() {
-        fill.reset(); borders.reset(); active.reset(); cpu.active_edges.clear();cpu.contours.clear();
+        fill.reset(); painted_fill.reset(); borders.reset(); active.reset(); cpu.active_edges.clear();cpu.contours.clear();
         cpu.contour_partition.clear();cpu.contour_geometry_id.clear();cpu.contour_mesh=nullptr;cpu.contour_surface=nullptr;
         cpu.contour_cache_ready=false;
         cpu.packed_base_colors.clear();cpu.packed_base_source=nullptr;cpu.packed_base_mesh=nullptr;
         cpu.packed_base_surface=nullptr;cpu.packed_base_geometry_id.clear();
     }
     struct Frame {
-        GLModel::Geometry colors,lines,highlight;
-        std::optional<GLModel::PreparedGeometry> ready_colors,ready_lines,ready_highlight;
+        GLModel::Geometry colors,painted_colors,lines,highlight;
+        std::optional<GLModel::PreparedGeometry> ready_colors,ready_painted_colors,ready_lines,ready_highlight;
         bool repaint=false,reuse_fill=false;
         size_t fill_vertices=0;
     };
@@ -96,6 +96,7 @@ struct ModelPreviewPuzzle {
         result.frame=build(result.cache,mesh,base_colors,surface,puzzle,selected,true,edit_regions,false,0,0,canceled);
         auto& frame=result.frame;
         if(!frame.colors.is_empty())frame.ready_colors=GLModel::prepare_geometry(std::move(frame.colors),canceled);
+        if(!frame.painted_colors.is_empty())frame.ready_painted_colors=GLModel::prepare_geometry(std::move(frame.painted_colors),canceled);
         if(!frame.lines.is_empty())frame.ready_lines=GLModel::prepare_geometry(std::move(frame.lines),canceled);
         if(!frame.highlight.is_empty())frame.ready_highlight=GLModel::prepare_geometry(std::move(frame.highlight),canceled);
         result.valid=true;
@@ -127,7 +128,7 @@ private:
         };
         checkpoint();
         Frame frame;
-        auto& colors=frame.colors;auto& lines=frame.lines;auto& highlight=frame.highlight;
+        auto& colors=frame.colors;auto& painted_colors=frame.painted_colors;auto& lines=frame.lines;auto& highlight=frame.highlight;
         cache.active_edges.clear();
         const auto& partition=edit_regions?*edit_regions:puzzle.face_piece;
         const bool rebuild=!cache.contour_cache_ready || cache.contour_mesh!=&mesh || cache.contour_surface!=&surface ||
@@ -137,6 +138,7 @@ private:
             existing_vertices==fill_vertices && existing_indices==fill_vertices;
         std::vector<AI::BeautyBoundaryContours::Edge> edges;
         colors.format={GLModel::Geometry::EPrimitiveType::Triangles,GLModel::Geometry::EVertexLayout::P3N3T2};
+        painted_colors.format=colors.format;
         lines.format=highlight.format={GLModel::Geometry::EPrimitiveType::Triangles,GLModel::Geometry::EVertexLayout::P3N3T2};
         if(repaint) {
             // P3N3T2 stores position, normal, then color/alpha in eight floats.
@@ -175,6 +177,12 @@ private:
                     vertex[3]=n.x();vertex[4]=n.y();vertex[5]=n.z();
                     vertex[6]=float(rgb);vertex[7]=base_color[3];
                 }
+                if(painted!=puzzle.colors.end()) {
+                    const auto start=unsigned(painted_colors.vertices_count());
+                    for(int corner=0;corner<3;++corner)
+                        painted_colors.add_vertex(mesh.vertices[face[corner]],n,Vec2f(float(paint_rgb),1));
+                    painted_colors.add_triangle(start,start+1,start+2);
+                }
                 if(!reuse_fill) {
                     colors.indices[first]=first;colors.indices[first+1]=first+1;colors.indices[first+2]=first+2;
                 }
@@ -212,7 +220,7 @@ private:
         return frame;
     }
     void publish(Frame& frame) {
-        auto& colors=frame.colors;auto& lines=frame.lines;auto& highlight=frame.highlight;
+        auto& colors=frame.colors;auto& painted_colors=frame.painted_colors;auto& lines=frame.lines;auto& highlight=frame.highlight;
         const bool repaint=frame.repaint,reuse_fill=frame.reuse_fill;
         const size_t fill_vertices=frame.fill_vertices;
         auto publish=[](GLModel::Geometry& geometry,std::optional<GLModel::PreparedGeometry>& prepared,
@@ -234,6 +242,7 @@ private:
                 publish(colors,frame.ready_colors,fill,ColorRGBA(1.f,1.f,1.f,1.f));
             }
         }
+        if(repaint) publish(painted_colors,frame.ready_painted_colors,painted_fill,ColorRGBA(1.f,1.f,1.f,1.f));
         publish(lines,frame.ready_lines,borders,ColorRGBA(.05f,.30f,.34f,1));
         publish(highlight,frame.ready_highlight,active,ColorRGBA(1,.42f,.02f,1));
     }

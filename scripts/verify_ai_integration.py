@@ -1341,6 +1341,8 @@ def validate_gui_feature_boundaries(repo_root: Path) -> list[dict[str, str]]:
         ("src/slic3r/GUI/AI/MainFrameAIWorkflow.ipp", "main"),
         ("src/slic3r/GUI/AI/SidebarAIWorkflow.ipp", "plater"),
         ("src/slic3r/GUI/AI/PlaterSmartSlicingWorkflow.ipp", "plater"),
+        ("src/slic3r/GUI/MainFrameWorkspace.ipp", "main"),
+        ("src/slic3r/GUI/PlaterAIFeatureHosts.ipp", "plater"),
     ):
         if (repo_root / fragment).is_file():
             if target == "main":

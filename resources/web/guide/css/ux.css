@@ -1,0 +1,39 @@
+/* Guide-only Figma surface; actual printers and preset controls remain native data. */
+:root, body {
+  --main-color: #fed445; --main-color-hover: #ffe278;
+  --bg-color: #202022; --bg-color-secondary: #313136;
+  --fg-color-text: #fff; --fg-color-label: #c7c7cd;
+  --border-color: #55555c; --focus-bg-item: #414147;
+  --focus-bg-box: #414147;
+}
+html, body { background: #202022; color: #fff; max-width: none; max-height: none; }
+#Title { flex: 0 0 80px; }
+#Title div { color: #ffc227; font-size: 28px; line-height: 36px; padding: 0 24px; }
+#Content { flex: 1 1 auto; min-height: 0; height: auto; padding: 12px 24px; color: #fff; }
+#AcceptArea { flex: 0 0 80px; min-height: 80px; max-height: 80px; gap: 12px; padding: 0 24px; }
+.ButtonTypeChoice { min-width: 112px; height: 46px; line-height: 46px; margin: 0; border-radius: 12px; box-sizing: border-box; }
+.ButtonStyleConfirm { background: #fed445; color: #202022; border: 1px solid #fed445; }
+.ButtonStyleConfirm:hover { background: #ffe278; color: #202022; }
+.ButtonStyleRegular { background: transparent; color: #fed445; border: 1px solid #fed445; }
+.ButtonStyleRegular:hover { background: #3b3726; }
+.GuideCancel { margin-right: auto; }
+:focus-visible { outline: 2px solid #fed445; outline-offset: 3px; }
+#EarthIcon { width: 120px; height: 120px; display: grid; place-items: center; margin: 28px 0; }
+#EarthIcon img { width: 102px; height: 102px; min-width: 0; }
+#RegionList { width: min(336px, 100%); border: 0; }
+#RegionSelect { appearance: none; width: 100%; height: 56px; border-radius: 12px; padding: 0 40px 0 16px; font-size: 16px; color: #fff; background: #323234 url('../../../images/figma-ux/setup-chevron.svg') no-repeat right 16px center; }
+#RegionSelect option { background: #313136; color: #fff; }
+.PrinterBlock { border-radius: 12px; }
+.PrinterBlock:has(.ModelCheckBoxSelected) { border-color: #fed445; }
+.ModelCheckBoxSelected, input[type=checkbox]:checked { background: transparent url('../../../images/figma-ux/setup-checked.svg') no-repeat center; border: 0; }
+.ModelCheckBox, input[type=checkbox] { width: 20px; height: 20px; flex: 0 0 20px; }
+input[type=checkbox]:checked::before { content: none; }
+.cbr-browser-container { border-radius: 12px; overflow: hidden; grid-template-rows: minmax(140px, 48%) minmax(100px, 1fr); }
+.cbr-column { background: #313136; }
+.cbr-column-title-container { min-height: 40px; }
+.cbr-column-title-container input { color: #fff; }
+.cbr-content label { padding: 6px 4px; box-sizing: border-box; }
+.MItem { width: calc(50% - 8px); }
+#NoticeBody { background: #313136; border-radius: 12px; }
+#NoticeBar { color: #ffc227; }
+@media (max-width: 700px) { .PrinterArea { grid-template-columns: repeat(3, 1fr); } #Title div { font-size: 24px; } }

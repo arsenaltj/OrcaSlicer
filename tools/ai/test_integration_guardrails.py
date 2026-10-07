@@ -820,6 +820,10 @@ class IntegrationGuardrailTests(unittest.TestCase):
             fragment.write_text('m_ai_service_manager;\nEVT_GLTOOLBAR_SLICE_PLATE;\n', encoding="utf-8")
             (fragment.parent / "PlaterSmartSlicingWorkflow.ipp").write_text(
                 'SmartSlicingCoordinator;\n', encoding="utf-8")
+            (fragment.parent.parent / "MainFrameWorkspace.ipp").write_text(
+                'm_ai_service_manager;\n', encoding="utf-8")
+            (fragment.parent.parent / "PlaterAIFeatureHosts.ipp").write_text(
+                'SmartSlicingCoordinator;\n', encoding="utf-8")
             for relative_path in ("src/slic3r/GUI/MainFrame.cpp", "src/slic3r/GUI/MainFrame.hpp",
                                   "src/slic3r/GUI/Plater.cpp", "src/slic3r/GUI/ModelGenerationPanel.cpp",
                                   "src/slic3r/CMakeLists.txt"):
@@ -832,6 +836,14 @@ class IntegrationGuardrailTests(unittest.TestCase):
                                 for error in GUARDRAILS.validate_gui_feature_boundaries(root)))
             self.assertTrue(any(error["code"] == "model_generation.auto_slice"
                                 for error in GUARDRAILS.validate_model_generation_import_boundary(root)))
+            fragment.write_text("", encoding="utf-8")
+            (fragment.parent / "PlaterSmartSlicingWorkflow.ipp").write_text("", encoding="utf-8")
+            self.assertTrue(any(error["code"] == "gui.mainframe_boundary" and
+                                "m_ai_service_manager" in error["message"]
+                                for error in GUARDRAILS.validate_gui_feature_boundaries(root)))
+            self.assertTrue(any(error["code"] == "gui.plater_boundary" and
+                                "SmartSlicingCoordinator" in error["message"]
+                                for error in GUARDRAILS.validate_gui_feature_boundaries(root)))
 
 
 if __name__ == "__main__":

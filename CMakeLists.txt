@@ -984,11 +984,7 @@ find_package(Python3 ${_bundled_python_version} EXACT REQUIRED
     COMPONENTS Interpreter Development.Embed
 )
 
-if(WIN32)
-    option(ORCA_AI_WINDOWS_INSTALLER "Package the integrated local AI runtime in the Windows installer" OFF)
-endif()
-
-include("${CMAKE_CURRENT_LIST_DIR}/cmake/OrcaAIWindowsRuntime.cmake")
+include("${CMAKE_SOURCE_DIR}/cmake/OrcaWindowsAIRuntime.cmake")
 
 # Provide a minimal pybind11::embed target sourced from deps_src/pybind11 headers.
 set(PYBIND11_SOURCE_DIR "${CMAKE_SOURCE_DIR}/deps_src/pybind11")

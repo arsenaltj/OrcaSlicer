@@ -52,6 +52,8 @@ public:
     void get_status(const std::string& job_id, StatusFn on_complete, ErrorFn on_error) override;
     void get_latest(LatestFn on_complete, ErrorFn on_error) override;
     void recheck(const std::string& job_id, StatusFn on_complete, ErrorFn on_error) override;
+    void check_saved_artifact(const std::string& asset_id, const std::string& sha256,
+                              StatusFn on_complete, ErrorFn on_error, bool read_only = false) override;
     void visual_review(const std::string& job_id, StatusFn on_complete, ErrorFn on_error) override;
     void stop(const std::string& job_id, StatusFn on_complete, ErrorFn on_error) override;
     void remove(const std::string& job_id, CompleteFn on_complete, ErrorFn on_error) override;

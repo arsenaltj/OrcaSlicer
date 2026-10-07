@@ -2,6 +2,7 @@
 
 #include <functional>
 #include <memory>
+#include "ModelGeneration/ModelGenerationPresentation.hpp"
 
 class wxWindow;
 class wxString;
@@ -37,6 +38,10 @@ public:
     AIDesktopFeatureHost& operator=(const AIDesktopFeatureHost&) = delete;
 
     wxWindow* model_generation_panel() const;
+    void navigate_generation(ModelGenerationPresentation::WorkspaceAction action);
+    ModelGenerationPresentation::WorkspaceView generation_view() const;
+    bool has_generation_model() const;
+    void set_workspace_changed_handler(std::function<void()> handler);
     void start();
     void shutdown();
 

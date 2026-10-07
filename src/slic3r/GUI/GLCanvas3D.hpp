@@ -519,6 +519,8 @@ public:
 
 private:
     bool m_is_dark = false;
+    std::optional<ColorRGBA> m_workspace_background;
+    bool m_workspace_toolbar_theme_dirty = false;
     wxGLCanvas* m_canvas;
     wxGLContext* m_context;
     SceneRaycaster m_scene_raycaster;
@@ -579,6 +581,7 @@ private:
     bool m_render_preview{ true };
     bool m_enable_render { true };
     size_t m_rendered_frames { 0 };
+    ThumbnailData* m_viewport_capture { nullptr };
     bool m_apply_zoom_to_volumes_filter;
     bool m_picking_enabled;
     bool m_moving_enabled;
@@ -781,6 +784,12 @@ public:
     void reset_explosion_ratio() { m_explosion_ratio = 1.0; }
     void on_change_color_mode(bool is_dark, bool reinit = true);
     const bool get_dark_mode_status() { return m_is_dark; }
+    // A workspace surface may override only the backdrop, preserving native content colors.
+    void set_workspace_background(std::optional<ColorRGBA> color) {
+        m_workspace_toolbar_theme_dirty |= m_workspace_background.has_value() != color.has_value();
+        m_workspace_background = color;
+        m_dirty = true;
+    }
     void set_as_dirty() { m_dirty = true; }
     void requires_check_outside_state() { m_requires_check_outside_state = true; }
 
@@ -922,6 +931,8 @@ public:
     bool has_mouse_capture() const;
 
     void render(bool only_init = false);
+    // Reads the actual composed viewport at the end of its next synchronous frame.
+    bool capture_viewport(ThumbnailData& frame);
     size_t rendered_frames() const { return m_rendered_frames; }
     bool is_rendering_enabled()
     {
@@ -1232,7 +1243,7 @@ private:
 
     void _update_slice_error_status();
 
-    void _switch_toolbars_icon_filename();
+    void _switch_toolbars_icon_filename(bool dark);
     bool _init_toolbars();
     bool _init_main_toolbar();
     bool _init_select_plate_toolbar();

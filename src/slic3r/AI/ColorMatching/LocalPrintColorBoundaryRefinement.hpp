@@ -394,7 +394,7 @@ inline ::Slic3r::AI::ColorMatching::Computation compute_quality_guarded(
     auto candidate = compute_refined(input, mesh, Matching::compute(input), false);
     if (!candidate.ok()) return candidate;
     candidate.result.algorithm_version = candidate.result.mode == AI::PrintColorMode::Layered ?
-        "region-layered-v2-boundary-v2-patches-v3-quality-v1" : "region-direct-v5-boundary-v1-quality-v1";
+        "region-layered-v2-boundary-v2-patches-v3-quality-v1" : "region-direct-v6-boundary-v1-quality-v1";
     bool has_preference = false;
     auto baseline_input = input;
     for (auto& region : baseline_input.identity.regions) {
@@ -435,7 +435,7 @@ inline ::Slic3r::AI::ColorMatching::Computation compute_guarded(
     auto baseline = compute_quality_guarded(input, mesh);
     if (!baseline.ok()) return baseline; // Preserve input validation and conflicts.
     baseline.result.algorithm_version = baseline.result.mode == AI::PrintColorMode::Layered ?
-        "region-layered-v2-boundary-v2-patches-v3-quality-v1" : "region-direct-v5-boundary-v1-quality-v1-locks-v1";
+        "region-layered-v2-boundary-v2-patches-v3-quality-v1" : "region-direct-v6-boundary-v1-quality-v1-locks-v1";
     auto unlocked = input;
     std::map<size_t, size_t> locks;
     for (auto& region : unlocked.identity.regions) {

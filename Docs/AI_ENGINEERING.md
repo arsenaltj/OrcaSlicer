@@ -83,7 +83,7 @@
 
 五个任务可在不同 checkout/构建目录并行调优；同一 `.tmp/dev/build` 仍只有一个写者。模块共同 CMake、Contracts、ModelArtifacts 和 GUI 接线由一个集成任务维护。UX 完成后只对实际新版消费者补集成核验，不作为开始算法调优的前置。
 
-生成离线网关用 `test_model_provider_gateway.py`；桌面提交/恢复、工程应用和存储兼容仍在 slic3rutils_tests 中按对应标签验证。旧 GUI 头文件和客户端保留转发，中性模块禁止依赖 GUI/供应商 SDK。安装配置在 `cmake/OrcaAIWindowsRuntime.cmake`，宿主绑定在 `GUI/AI/{MainFrameAIWorkflow,SidebarAIWorkflow,PlaterSmartSlicingWorkflow}.ipp`；来源和依赖门禁同样检查被委托的片段。
+生成离线网关用 `test_model_provider_gateway.py`；桌面提交/恢复、工程应用和存储兼容仍在 slic3rutils_tests 中按对应标签验证。旧 GUI 头文件和客户端保留转发，中性模块禁止依赖 GUI/供应商 SDK。安装配置在 `cmake/OrcaWindowsAIRuntime.cmake`，宿主绑定在 `GUI/AI/{MainFrameAIWorkflow,SidebarAIWorkflow,PlaterSmartSlicingWorkflow}.ipp`；来源和依赖门禁同样检查被委托的片段。
 
 ## 选择验证范围
 

@@ -1,4 +1,5 @@
 #include "SidecarModelGenerationService.hpp"
+#include "../../AIModelGenerationHttpError.hpp"
 
 #include "slic3r/GUI/AISidecarClient.hpp"
 
@@ -41,23 +42,7 @@ std::string normalize_endpoint(std::string endpoint)
 
 std::string error_message(const std::string& body, const std::string& error, unsigned status)
 {
-    if (status == 401)
-        return "A valid OrcaSlicer AI session is required.";
-    if (!error.empty()) {
-        if (error.find("connect") != std::string::npos || error.find("Connection") != std::string::npos)
-            return "AI sidecar is not reachable.";
-        if (error.find("timed out") != std::string::npos || error.find("Timeout") != std::string::npos)
-            return "AI sidecar request timed out.";
-        return "AI sidecar request failed.";
-    }
-    auto parsed = nlohmann::json::parse(body, nullptr, false);
-    if (!parsed.is_discarded()) {
-        if (parsed.contains("error") && parsed["error"].is_object())
-            return parsed["error"].value("message", "Model generation request failed.");
-        if (parsed.contains("error") && parsed["error"].is_string())
-            return parsed["error"].get<std::string>();
-    }
-    return "Model generation request failed with HTTP " + std::to_string(status) + ".";
+    return model_generation_http_error(body, error, status);
 }
 
 bool valid_recommendation_text(const std::string& value)
@@ -544,7 +529,7 @@ void SidecarModelGenerationService::get_status(const std::string& job_id, Status
     });
     http.on_error([on_error = std::move(on_error)](std::string body, std::string error, unsigned status) {
         if (on_error)
-            on_error(error_message(body, error, status));
+            on_error(model_generation_http_error(body, error, status, true));
     });
     m_active_request = http.perform();
 }
@@ -587,6 +572,15 @@ void SidecarModelGenerationService::recheck(const std::string& job_id, StatusFn 
 {
     post_json("/v1/orcaslicer/model-jobs/" + job_id + "/recheck", json::object(),
               std::move(on_complete), std::move(on_error));
+}
+
+void SidecarModelGenerationService::check_saved_artifact(const std::string& asset_id, const std::string& sha256,
+                                                  StatusFn on_complete, ErrorFn on_error, bool read_only)
+{
+    json body = {{"asset_id", asset_id}, {"artifact_sha256", sha256}};
+    if (read_only) body["read_only"] = true;
+    post_json("/v1/orcaslicer/model-check", body,
+              std::move(on_complete), std::move(on_error), read_only ? 15 : 420, read_only);
 }
 
 void SidecarModelGenerationService::visual_review(const std::string& job_id, StatusFn on_complete, ErrorFn on_error)
@@ -986,6 +980,9 @@ std::optional<SidecarModelGenerationService::JobStatus> SidecarModelGenerationSe
     }
     if (job.contains("model_quality") && job["model_quality"].is_object()) {
         const auto& quality = job["model_quality"];
+        status.model_quality.artifact_sha256 = quality.value("artifact_sha256", std::string());
+        status.model_quality.units = quality.value("units", std::string());
+        status.model_quality.gate_version = quality.value("gate_version", std::string());
         status.model_quality.status = quality.value("status", std::string());
         status.model_quality.available = !status.model_quality.status.empty();
         const auto read_codes = [&quality](const char* name, std::vector<std::string>& output) {
@@ -996,6 +993,18 @@ std::optional<SidecarModelGenerationService::JobStatus> SidecarModelGenerationSe
         };
         read_codes("errors", status.model_quality.errors);
         read_codes("warnings", status.model_quality.warnings);
+        // Keep only finite numeric values actually present in this report.
+        // Missing measurements must not become reassuring zero counts.
+        const auto read_numbers = [](const nlohmann::json& input, std::map<std::string, double>& output) {
+            if (!input.is_object()) return;
+            for (auto it = input.begin(); it != input.end(); ++it) {
+                if (!it.value().is_number()) continue;
+                const double value = it.value().get<double>();
+                if (std::isfinite(value)) output.emplace(it.key(), value);
+            }
+        };
+        if (quality.contains("metrics")) read_numbers(quality["metrics"], status.model_quality.report_metrics);
+        if (quality.contains("thresholds")) read_numbers(quality["thresholds"], status.model_quality.report_thresholds);
         if (quality.contains("thresholds") && quality["thresholds"].is_object()) {
             const auto& thresholds = quality["thresholds"];
             if (thresholds.contains("min_local_wall_thickness_mm") &&

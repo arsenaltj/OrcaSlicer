@@ -9,7 +9,7 @@ namespace Slic3r::AI::SmartSlicing {
 
 struct WorkflowResourceBudget
 {
-    size_t maximum_candidates{3};
+    size_t maximum_candidates{4}; // Baseline plus three alternatives, sliced sequentially.
     std::chrono::seconds maximum_elapsed{std::chrono::minutes(30)};
     uint64_t maximum_memory_bytes{2ull * 1024ull * 1024ull * 1024ull};
     uint64_t maximum_temporary_disk_bytes{512ull * 1024ull * 1024ull};

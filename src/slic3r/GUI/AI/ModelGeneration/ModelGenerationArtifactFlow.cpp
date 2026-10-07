@@ -2,6 +2,8 @@
 
 #include "ModelGenerationPresentation.hpp"
 #include "ModelPreview3D.hpp"
+#include "ModelViewportFacts.hpp"
+#include "LocalModelImportState.hpp"
 #include "libslic3r/Geometry.hpp"
 #include "slic3r/GUI/GUI.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
@@ -9,7 +11,7 @@
 
 #include <boost/filesystem.hpp>
 
-#include <wx/notebook.h>
+#include <wx/simplebook.h>
 #include <wx/stattext.h>
 #include <wx/weakref.h>
 
@@ -60,11 +62,15 @@ void ModelGenerationPanel::load_model_preview_async(const boost::filesystem::pat
     std::shared_ptr<ModelHistoryMetadata> history_metadata, std::function<bool()> may_install)
 {
     if (m_shutdown || m_preview_loading) return;
+    m_model_preview->set_library_thumbnail_root(generated_models_root());
+    const auto* local=local_model_import_state(m_library_import);
+    const auto local_cancel=local && local->parsing ? local->cancel : nullptr;
     size_t triangles = 0, colors = 0; Vec3d dimensions;
     // Explicit history navigation restores persisted state, not unsaved cached edits.
     if (metadata_path.empty() &&
         (m_model_preview->try_use_current_model(path, palette, triangles, dimensions, colors) ||
          m_model_preview->try_load_cached_model(path, palette, triangles, dimensions, colors))) {
+        if(local_cancel) complete_local_model_import(m_library_import,local_cancel,false);
         loaded(triangles, dimensions, colors, 0.0);
         return;
     }
@@ -77,26 +83,32 @@ void ModelGenerationPanel::load_model_preview_async(const boost::filesystem::pat
     const uint64_t sequence = m_sequence;
     wxWeakRef<ModelGenerationPanel> weak(this);
     try {
-        m_preview_worker = std::thread([weak, path, palette, sequence, loaded, failed, metadata_path, canceled, history_metadata, share_exact_vertices, may_install] {
+        m_preview_worker = std::thread([weak, path, palette, sequence, loaded, failed, metadata_path, local_cancel, canceled, history_metadata, share_exact_vertices, may_install] {
             const auto start = std::chrono::steady_clock::now();
             auto prepared = std::make_shared<ModelPreview3D::PreparedModel>();
             std::string error;
             try {
                 if (ModelPreview3D::prepare_model(path, *prepared, error, {}, metadata_path, true,
-                    [canceled] { return canceled->load(); }, history_metadata.get()))
-                    prepared->prepare_render_geometry([canceled] { return canceled->load(); }, share_exact_vertices);
+                    [canceled,local_cancel] { return canceled->load() || (local_cancel && local_cancel->load()); }, history_metadata.get()))
+                    prepared->prepare_render_geometry([canceled,local_cancel] { return canceled->load() || (local_cancel && local_cancel->load()); }, share_exact_vertices);
             }
             catch (const std::exception& e) { error = e.what(); }
-            wxGetApp().CallAfter([weak, prepared, palette, sequence, start, loaded, failed, error, canceled, may_install]() mutable {
+            wxGetApp().CallAfter([weak, prepared, palette, sequence, start, loaded, failed, error, local_cancel, canceled, may_install]() mutable {
                 if (!weak || weak->m_shutdown) return;
                 auto* self = weak.get();
                 if (self->m_preview_worker.joinable()) self->m_preview_worker.join();
                 self->m_preview_loading = false;
                 self->m_busy = false;
-                // A release/cancel can arrive after CPU work completes but before publication.
+                if(local_cancel && local_cancel->load()) {
+                    complete_local_model_import(self->m_library_import,local_cancel,true);
+                    failed({});
+                    return;
+                }
                 if (sequence != self->m_sequence || canceled->load() || (may_install && !may_install())) {
+                    if(local_cancel) complete_local_model_import(self->m_library_import,local_cancel,true);
                     self->refresh_controls(); return;
                 }
+                if(local_cancel) complete_local_model_import(self->m_library_import,local_cancel,false);
                 size_t triangles = 0, colors = 0; Vec3d dimensions;
                 if (!error.empty() || !self->m_model_preview->load_prepared_model(
                     std::move(*prepared), palette, triangles, dimensions, colors, error)) {
@@ -108,6 +120,7 @@ void ModelGenerationPanel::load_model_preview_async(const boost::filesystem::pat
         });
     } catch (const std::exception& e) {
         m_preview_loading = false; m_busy = false;
+        if(local_cancel) complete_local_model_import(m_library_import,local_cancel,false);
         failed(e.what());
     }
 }
@@ -221,13 +234,15 @@ void ModelGenerationPanel::finish_model_preview_download(const boost::filesystem
     m_displayed_model_palette_roles = m_job_palette_roles;
     m_busy = false;
     m_model_preview_ready = true;
+    refresh_model_quality_card();
     show_model_comparison();
     m_library_model_loaded = false;
-    update_progress(100, 4, _L("检查并导入"));
+    update_progress(100, 4, _L("查看模型"));
     const bool visual_gate_blocked = m_visual_quality.available && !m_visual_quality.import_recommended;
     m_status->SetLabel(visual_gate_blocked
         ? _L("模型已生成，但人脸相似度或材料归属未通过；建议重新优化。")
-        : _L("3D 模型已生成，请确认外观后再导入准备页。"));
+        : _L("3D 模型已生成，可打开工作台查看与检查。"));
+    set_model_viewport_facts(m_model_stats, triangle_count, color_count);
     m_model_stats->SetLabel(wxString::Format(
         _L("%llu 个三角面 · %llu 个原始色值\n%.1f × %.1f × %.1f mm\n%s"),
         static_cast<unsigned long long>(triangle_count), static_cast<unsigned long long>(color_count),
@@ -237,12 +252,13 @@ void ModelGenerationPanel::finish_model_preview_download(const boost::filesystem
     m_result_summary->SetLabel(visual_gate_blocked
         ? _L("模型已可用。外观检查仅作提示，可继续导入或进行本地美颜。")
         : m_color_intent_path.empty()
-            ? _L("模型已下载并通过解析，可继续导入准备页。")
-            : _L("模型与颜色意图已校验，可继续导入准备页。"));
+            ? _L("模型已下载并通过解析，可打开 3D 工作台。")
+            : _L("模型与颜色意图已校验，可打开 3D 工作台。"));
     const size_t artifact_size = boost::filesystem::file_size(path);
     save_library_entry(artifact_size, triangle_count, dimensions.x(), dimensions.y(),
                        dimensions.z(), color_count, load_seconds);
-    if (m_preview_book != nullptr)
+    // A late preview load must not replace an explicitly opened library page.
+    if (m_preview_book != nullptr && m_workspace_view != WorkspaceView::Library)
         m_preview_book->SetSelection(0);
     wxWeakRef<ModelGenerationPanel> weak(this);
     wxGetApp().CallAfter([weak]() {

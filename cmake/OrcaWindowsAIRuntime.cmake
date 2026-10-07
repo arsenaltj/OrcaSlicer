@@ -1,3 +1,7 @@
+if(WIN32)
+    option(ORCA_AI_WINDOWS_INSTALLER "Package the integrated local AI runtime in the Windows installer" OFF)
+endif()
+
 # The image preprocessing pipeline imports Pillow at Sidecar startup. Keep the
 # Windows AI runtime self-contained: fetch one architecture-specific CPython
 # wheel from the official PyPI file host, verify its immutable digest, and stage

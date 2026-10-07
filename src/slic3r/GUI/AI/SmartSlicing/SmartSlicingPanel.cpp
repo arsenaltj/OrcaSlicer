@@ -1,6 +1,10 @@
 #include "SmartSlicingPanel.hpp"
 #include "slic3r/GUI/AI/AIWindowAppearance.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaModelPreparationPanel.hpp"
+#include "slic3r/GUI/AI/Orca/OrcaPrintConfirmation.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/ModelGenerationInputStyle.hpp"
+#include "slic3r/GUI/Widgets/Label.hpp"
+#include <wx/statbmp.h>
 
 #include "slic3r/AI/SmartSlicing/Application/SmartSlicingCoordinator.hpp"
 #include "slic3r/GUI/GUI.hpp"
@@ -11,7 +15,6 @@
 #include <utility>
 #include <wx/button.h>
 #include <wx/collpane.h>
-#include <wx/radiobut.h>
 #include <wx/settings.h>
 #include <wx/sizer.h>
 #include <wx/statbox.h>
@@ -22,6 +25,22 @@
 
 namespace Slic3r::GUI {
 namespace {
+
+Label* wrapped_label(wxWindow* parent, const wxString& text)
+{
+    auto* label = new Label(parent, text, LB_AUTO_WRAP);
+    label->SetMinSize(wxSize(1, -1));
+    return label;
+}
+
+Button* action_button(wxWindow* parent, const wxString& label, bool primary = false)
+{
+    auto* button = new Button(parent, label);
+    button->SetName(primary ? "input_primary" : "input_field");
+    button->SetPaddingSize(parent->FromDIP(wxSize(12, 8)));
+    button->SetMinSize(parent->FromDIP(wxSize(-1, 36)));
+    return button;
+}
 
 wxString summary_text(const std::string& key)
 {
@@ -65,6 +84,8 @@ wxString summary_text(const std::string& key)
         return _L("撤销未完成，请重试或查看 Orca 撤销历史。");
     if (key == "close_active_model_tool")
         return _L("请先结束当前模型编辑工具，再重新检查并应用方案。");
+    if (key == "baseline_trial_failed")
+        return _L("当前方案试切失败，请先处理原生切片提示");
     if (key == "preflight_failed")
         return _L("检查失败，请重试");
     if (key == "interrupted_workflow_recovered")
@@ -107,7 +128,7 @@ wxString issue_name(const std::string& code)
     if (code == "multicolor_evidence_unavailable")
         return _L("多色兼容证据不可用");
     if (code == "native_validation_unavailable")
-        return _L("当前原生配置校验尚不可用");
+        return _L("原生配置校验待正式切片");
     if (code == "configuration_validation_error")
         return _L("配置校验错误");
     if (code == "configuration_validation_warning")
@@ -125,7 +146,7 @@ wxString format_duration(const std::optional<double>& seconds)
 
 wxString format_volume(const std::optional<double>& volume_mm3)
 {
-    return volume_mm3 ? wxString::Format("%.2f cm³", *volume_mm3 / 1000.0) : _L("不可用");
+    return volume_mm3 ? wxString::Format(wxString::FromUTF8("%.2f cm³"), *volume_mm3 / 1000.0) : _L("不可用");
 }
 
 wxString format_delta(const std::optional<double>& value, double scale, const wxString& unit)
@@ -133,10 +154,57 @@ wxString format_delta(const std::optional<double>& value, double scale, const wx
     return value ? wxString::Format("%+.2f %s", *value / scale, unit.c_str()) : _L("—");
 }
 
+wxString candidate_name(const SmartSlicingCandidateView& candidate)
+{
+    if (candidate.id == "baseline")
+        return _L("当前方案");
+    if (candidate.explanation == "layer_height_balanced_candidate")
+        return _L("均衡方案");
+    if (candidate.explanation == "layer_height_speed_candidate")
+        return _L("速度优先");
+    if (candidate.explanation == "layer_height_quality_candidate")
+        return _L("质量优先");
+    if (candidate.explanation == "small_or_slender_footprint_brim_candidate")
+        return _L("稳定性方案");
+    if (candidate.placement_change_count > 0)
+        return _L("排布方案");
+    return candidate.recommended ? _L("推荐方案") : _L("候选方案");
+}
+
+bool is_priority_profile(const SmartSlicingCandidateView& candidate)
+{
+    return candidate.explanation == "layer_height_balanced_candidate" ||
+        candidate.explanation == "layer_height_speed_candidate" ||
+        candidate.explanation == "layer_height_quality_candidate";
+}
+
+wxString candidate_secondary(const SmartSlicingCandidateView& candidate)
+{
+    if (candidate.failed) return _L("试切失败");
+    for (const auto& entry : candidate.parameter_changes)
+        if (entry.key == "layer_height")
+            if (const auto* value = std::get_if<double>(&entry.new_value))
+                return wxString::Format("%.2f mm", *value);
+    return is_priority_profile(candidate) ? _L("当前层高") : format_duration(candidate.estimated_time_seconds);
+}
+
+void style_candidate(Button* button, bool update_fonts = false)
+{
+    ModelGenerationInputStyle::apply_control(button, ModelGenerationInputStyle::Role::QuietAction, update_fonts, true);
+    const wxColour fill(78, 78, 81);
+    button->SetBorderColor(StateColor(
+        std::make_pair(ModelGenerationInputStyle::yellow, int(StateColor::Focused)),
+        std::make_pair(button->IsSelected() ? wxColour(255, 194, 39) : fill, int(StateColor::Normal))));
+}
+
 wxString candidate_reason(const SmartSlicingCandidateView& candidate)
 {
-    if (candidate.failed)
-        return _L("试切失败，可单独重试；基线仍然可用。");
+    if (candidate.failed) {
+        if (candidate.id == "baseline")
+            return _L("当前方案试切失败，暂不可应用。请检查原生设置后重新检查。");
+        return candidate.can_retry ? _L("试切失败，可单独重试此方案。") :
+                                     _L("试切失败，暂不可应用。");
+    }
     if (candidate.id == "baseline")
         return _L("当前正式工作区的只读基线。");
     wxString reason = candidate.recommended ? _L("推荐方案。") : _L("可选方案。");
@@ -176,17 +244,24 @@ wxString candidate_changes(const SmartSlicingCandidateView& candidate)
         }, value);
     };
     wxString text;
-    if (candidate.explanation == "small_or_slender_footprint_brim_candidate")
+    if (candidate.explanation == "layer_height_balanced_candidate")
+        text = _L("按当前喷嘴选择中等层高，兼顾层纹细度与预计时间。\n");
+    else if (candidate.explanation == "layer_height_speed_candidate")
+        text = _L("按当前喷嘴限制选择较厚层高，减少层数；请比较真实试切时间。\n");
+    else if (candidate.explanation == "layer_height_quality_candidate")
+        text = _L("按当前喷嘴限制选择较薄层高，细化层纹；不代表实物质量已验证。\n");
+    else if (candidate.explanation == "small_or_slender_footprint_brim_candidate")
         text = _L("增加裙边宽度，改善小底面或细高模型的附着。\n");
     else if (candidate.placement_change_count > 0)
         text = _L("调整模型摆放；请结合试切时间与支撑用量选择。\n");
     for (const auto& entry : candidate.parameter_changes) {
-        const wxString name = entry.key == "brim_width" ? _L("裙边宽度（mm）") : from_u8(entry.key);
+        const wxString name = entry.key == "brim_width" ? _L("裙边宽度（mm）") :
+            entry.key == "layer_height" ? _L("层高（mm）") : from_u8(entry.key);
         const wxString scope = entry.scope == ConfigScope::Plate ? _L("当前打印板") :
             entry.scope == ConfigScope::Object ? _L("对象") :
             entry.scope == ConfigScope::Material ? _L("材料") : _L("工程");
         text += scope + _L(" · ") + name + ": " + value_text(entry.expected_value) +
-                " → " + value_text(entry.new_value) + "\n";
+                _L(" 改为 ") + value_text(entry.new_value) + "\n";
     }
     if (candidate.placement_change_count > 0)
         text += wxString::Format(_L("摆放方案涉及 %llu 个模型实例\n"),
@@ -198,9 +273,11 @@ wxString issue_action(const std::string& code)
 {
     if (code == "empty_plate") return _L("请先添加模型，再重新检查。");
     if (code == "missing_printer" || code == "missing_process" || code == "missing_material")
-        return _L("请在左侧选择打印机、工艺和材料，再重新检查。");
+        return _L("请打开 Orca 原生设置，选择打印机、工艺和材料，再重新检查。");
     if (code == "outside_build_volume") return _L("请移动或缩小模型，使其位于打印板范围内。");
     if (code == "open_mesh") return _L("请使用模型修复工具处理开放边，再重新检查。");
+    if (code == "native_validation_unavailable")
+        return _L("当前打印板尚无有效正式切片；可继续比较方案，正式切片完成后复核配置。");
     return _L("请查看准备页的模型和配置提示，处理后重新检查；诊断详情可展开查看。");
 }
 
@@ -208,82 +285,108 @@ wxString issue_action(const std::string& code)
 
 SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSlicingCoordinator& coordinator,
                                      PlanCandidatesFn plan_candidates, CancelTrialFn cancel_trial,
-                                     std::function<void()> add_model, Plater* plater)
-    : wxScrolledWindow(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVSCROLL | wxTAB_TRAVERSAL)
+                                     std::function<void()> add_model, Plater* plater,
+                                     std::function<void()> native_settings)
+    : wxPanel(parent, wxID_ANY)
     , m_coordinator(coordinator)
     , m_plan_candidates(std::move(plan_candidates))
     , m_cancel_trial(std::move(cancel_trial))
     , m_revision_timer(this)
 {
-    SetScrollRate(0, FromDIP(12));
-    SetBackgroundColour(wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOW));
+    m_content = new wxScrolledWindow(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVSCROLL | wxTAB_TRAVERSAL);
+    m_content->SetMinSize(wxSize(1, 1));
+    m_content->SetScrollRate(0, FromDIP(12));
+    m_footer = new wxPanel(this);
+    SetBackgroundColour(ModelGenerationInputStyle::panel);
     auto* root        = new wxBoxSizer(wxVERTICAL);
-    auto* title       = new wxStaticText(this, wxID_ANY, _L("智能切片"));
+    auto* title       = new wxStaticText(m_content, wxID_ANY, _L("智能切片"));
     wxFont title_font = title->GetFont();
     title_font.SetWeight(wxFONTWEIGHT_BOLD);
     title_font.SetPointSize(title_font.GetPointSize() + 2);
     title->SetFont(title_font);
     root->Add(title, 0, wxEXPAND | wxALL, FromDIP(16));
 
-    if (plater != nullptr)
-        root->Add(new OrcaModelPreparationPanel(this, *plater,
+    if (plater != nullptr) {
+        auto* toggle = action_button(m_content, _L("展开尺寸与底座（可选）"));
+        auto* preparation = new OrcaModelPreparationPanel(m_content, *plater,
             [this] { return m_worker_running.load(std::memory_order_acquire); },
-            [this] { m_coordinator.refresh_revision(); }),
-            0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(16));
+            [this] { m_coordinator.refresh_revision(); },
+            [this, toggle] {
+                toggle->SetLabel(_L("收起尺寸与底座"));
+                m_content->Layout(); m_content->FitInside(); Layout();
+            });
+        m_preparation = preparation;
+        root->Add(toggle, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(16));
+        root->Add(preparation, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(16));
+        preparation->Hide();
+        toggle->Bind(wxEVT_BUTTON, [this, toggle, preparation](wxCommandEvent&) {
+            const bool expand = !preparation->IsShown();
+            preparation->Show(expand);
+            if (expand) preparation->refresh_selection();
+            toggle->SetLabel(expand ? _L("收起尺寸与底座") : _L("展开尺寸与底座（可选）"));
+            m_content->Layout(); m_content->FitInside(); Layout();
+        });
+    }
 
-    m_summary = new wxStaticText(this, wxID_ANY, _L("从当前打印板开始智能切片"));
-    m_summary->Wrap(FromDIP(330));
+    m_summary = wrapped_label(m_content, _L("从当前打印板开始智能切片"));
     root->Add(m_summary, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(16));
 
     const std::array<wxString, 4> stage_names{_L("1. 模型与材料"), _L("2. 健康与准备"), _L("3. 优化方案"), _L("4. 检查并切片")};
     for (size_t index = 0; index < stage_names.size(); ++index) {
-        m_stage_labels[index] = new wxStaticText(this, wxID_ANY, stage_names[index] + _L("  等待"));
+        m_stage_labels[index] = new wxStaticText(m_content, wxID_ANY, stage_names[index] + _L("  等待"));
         root->Add(m_stage_labels[index], 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(16));
     }
 
-    root->Add(new wxStaticLine(this), 0, wxEXPAND | wxALL, FromDIP(16));
-    m_issues = new wxStaticText(this, wxID_ANY, _L("尚未运行检查"));
-    m_issues->Wrap(FromDIP(330));
+    root->Add(new wxStaticLine(m_content), 0, wxEXPAND | wxALL, FromDIP(16));
+    m_issues = wrapped_label(m_content, _L("尚未运行检查"));
     root->Add(m_issues, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(16));
-    m_add_model = new wxButton(this, wxID_ANY, _L("添加模型…"));
+    m_add_model = action_button(m_content, _L("添加模型…"));
     root->Add(m_add_model, 0, wxEXPAND | wxALL, FromDIP(16));
     m_add_model->Bind(wxEVT_BUTTON, [this, add_model](wxCommandEvent&) {
         if (m_can_recheck) m_coordinator.cancel();
         if (add_model) add_model();
     });
-    m_diagnostics = new wxCollapsiblePane(this, wxID_ANY, _L("诊断详情"), wxDefaultPosition,
-        wxDefaultSize, wxCP_DEFAULT_STYLE | wxCP_NO_TLW_RESIZE);
-    m_diagnostic_text = new wxStaticText(m_diagnostics->GetPane(), wxID_ANY, "");
+    m_diagnostics = new wxPanel(m_content);
+    auto* diagnostic_toggle = action_button(m_diagnostics, _L("展开诊断详情"));
+    m_diagnostic_text = wrapped_label(m_diagnostics, "");
     auto* diagnostic_sizer = new wxBoxSizer(wxVERTICAL);
-    diagnostic_sizer->Add(m_diagnostic_text, 0, wxEXPAND | wxALL, FromDIP(8));
-    m_diagnostics->GetPane()->SetSizer(diagnostic_sizer);
+    diagnostic_sizer->Add(diagnostic_toggle, 0, wxEXPAND);
+    diagnostic_sizer->Add(m_diagnostic_text, 0, wxEXPAND | wxTOP, FromDIP(8));
+    m_diagnostics->SetSizer(diagnostic_sizer);
+    m_diagnostic_text->Hide();
     root->Add(m_diagnostics, 0, wxEXPAND | wxALL, FromDIP(16));
-    m_diagnostics->Bind(wxEVT_COLLAPSIBLEPANE_CHANGED, [this](wxCollapsiblePaneEvent&) { Layout(); FitInside(); });
+    diagnostic_toggle->Bind(wxEVT_BUTTON, [this, diagnostic_toggle](wxCommandEvent&) {
+        const bool expand = !m_diagnostic_text->IsShown();
+        m_diagnostic_text->Show(expand);
+        diagnostic_toggle->SetLabel(expand ? _L("收起诊断详情") : _L("展开诊断详情"));
+        m_diagnostics->Layout(); m_content->Layout(); m_content->FitInside(); Layout();
+    });
 
-    m_p0_notice = new wxStaticText(this, wxID_ANY, _L("预检与候选试切均在隔离副本中执行。"));
+    m_p0_notice = wrapped_label(m_content, _L("预检与候选试切均在隔离副本中执行。"));
     m_p0_notice->SetForegroundColour(wxSystemSettings::GetColour(wxSYS_COLOUR_GRAYTEXT));
-    m_p0_notice->Wrap(FromDIP(330));
+    m_p0_notice->SetName("input_secondary");
     root->Add(m_p0_notice, 0, wxEXPAND | wxALL, FromDIP(16));
 
-    m_candidate_section = new wxPanel(this);
+    m_candidate_section = new wxPanel(m_content);
     auto* candidate_root = new wxBoxSizer(wxVERTICAL);
+    auto* candidate_grid = new wxFlexGridSizer(2, FromDIP(12), FromDIP(12));
+    candidate_grid->AddGrowableCol(0);
+    candidate_grid->AddGrowableCol(1);
     for (size_t index = 0; index < m_candidate_controls.size(); ++index) {
         CandidateControls& controls = m_candidate_controls[index];
         controls.panel = new wxPanel(m_candidate_section);
-        auto* box = new wxStaticBoxSizer(wxVERTICAL, controls.panel, _L("候选方案"));
-        controls.selector = new wxRadioButton(controls.panel, wxID_ANY, _L("选择此方案"), wxDefaultPosition,
-                                              wxDefaultSize, index == 0 ? wxRB_GROUP : 0);
-        controls.metrics = new wxStaticText(controls.panel, wxID_ANY, "");
-        controls.reason  = new wxStaticText(controls.panel, wxID_ANY, "");
-        controls.reason->Wrap(FromDIP(300));
-        controls.retry = new wxButton(controls.panel, wxID_ANY, _L("重试此方案"));
-        box->Add(controls.selector, 0, wxEXPAND | wxALL, FromDIP(8));
-        box->Add(controls.metrics, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(8));
-        box->Add(controls.reason, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(8));
-        box->Add(controls.retry, 0, wxALIGN_RIGHT | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(8));
+        auto* box = new wxBoxSizer(wxVERTICAL);
+        controls.selector = new Button(controls.panel, "", "figma-ux/slice-candidate", 0, 24);
+        controls.selector->SetName("input_quiet");
+        controls.selector->SetPaddingSize(FromDIP(wxSize(6, 12)));
+        controls.selector->SetMinSize(FromDIP(wxSize(128, 64)));
+        controls.selector->SetMaxSize(FromDIP(wxSize(168, -1)));
+        controls.retry = action_button(controls.panel, _L("重试此方案"));
+        box->Add(controls.selector, 0, wxEXPAND);
+        box->Add(controls.retry, 0, wxEXPAND | wxTOP, FromDIP(6));
         controls.panel->SetSizer(box);
-        candidate_root->Add(controls.panel, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
-        controls.selector->Bind(wxEVT_RADIOBUTTON, [this, index](wxCommandEvent&) {
+        candidate_grid->Add(controls.panel, 1, wxEXPAND);
+        controls.selector->Bind(wxEVT_BUTTON, [this, index](wxCommandEvent&) {
             if (!m_candidate_ids[index].empty())
                 m_coordinator.select_candidate(m_candidate_ids[index]);
         });
@@ -294,14 +397,29 @@ SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSl
                 });
         });
     }
-    auto* candidate_actions = new wxBoxSizer(wxVERTICAL);
-    m_keep_baseline = new wxButton(m_candidate_section, wxID_ANY, _L("保留当前方案"));
-    m_undo_apply    = new wxButton(m_candidate_section, wxID_ANY, _L("撤销本次应用"));
-    m_apply         = new wxButton(m_candidate_section, wxID_ANY, _L("应用并切片"));
-    candidate_actions->Add(m_keep_baseline, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
-    candidate_actions->Add(m_undo_apply, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
-    candidate_actions->Add(m_apply, 0, wxEXPAND);
-    candidate_root->Add(candidate_actions, 0, wxEXPAND);
+    candidate_root->Add(candidate_grid, 0, wxEXPAND);
+    m_candidate_hint = wrapped_label(m_candidate_section, "");
+    m_candidate_hint->SetName("input_secondary");
+    candidate_root->Add(m_candidate_hint, 0, wxEXPAND | wxTOP, FromDIP(12));
+    m_candidate_details = new ModelGenerationInputStyle::RoundedPanel(m_candidate_section);
+    auto* details = new wxBoxSizer(wxVERTICAL);
+    m_candidate_title = wrapped_label(m_candidate_details, "");
+    m_candidate_metrics = wrapped_label(m_candidate_details, "");
+    m_candidate_reason = wrapped_label(m_candidate_details, "");
+    details->Add(m_candidate_title, 0, wxEXPAND | wxALL, FromDIP(12));
+    details->Add(m_candidate_metrics, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
+    details->Add(m_candidate_reason, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
+    m_candidate_details->SetSizer(details);
+    candidate_root->Add(m_candidate_details, 0, wxEXPAND | wxTOP, FromDIP(12));
+    auto* footer = new wxBoxSizer(wxVERTICAL);
+    auto* candidate_actions = new wxBoxSizer(wxHORIZONTAL);
+    m_keep_baseline = action_button(m_footer, _L("保留当前方案"));
+    m_undo_apply    = action_button(m_footer, _L("撤销本次应用"));
+    m_apply         = action_button(m_footer, _L("应用并切片"), true);
+    candidate_actions->Add(m_keep_baseline, 1, wxEXPAND | wxRIGHT, FromDIP(8));
+    footer->Add(m_undo_apply, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
+    candidate_actions->Add(m_apply, 1, wxEXPAND);
+    footer->Add(candidate_actions, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
     m_candidate_section->SetSizer(candidate_root);
     root->Add(m_candidate_section, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(16));
     m_candidate_section->Hide();
@@ -310,12 +428,36 @@ SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSl
     m_apply->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { m_coordinator.apply_selected_candidate(); });
 
     auto* actions = new wxBoxSizer(wxHORIZONTAL);
-    m_cancel      = new wxButton(this, wxID_CANCEL, _L("取消"));
-    m_start       = new wxButton(this, wxID_ANY, _L("开始检查"));
+    m_cancel      = action_button(m_footer, _L("取消"));
+    m_start       = action_button(m_footer, _L("开始检查"), true);
     actions->Add(m_cancel, 0, wxRIGHT, FromDIP(8));
     actions->Add(m_start, 1, wxEXPAND);
-    root->Add(actions, 0, wxEXPAND | wxALL, FromDIP(16));
-    SetSizer(root);
+    footer->Add(actions, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
+    if (native_settings) {
+        auto* native_row = new ModelGenerationInputStyle::RoundedPanel(m_footer);
+        auto* native_sizer = new wxBoxSizer(wxHORIZONTAL);
+        auto* native = action_button(native_row, _L("Orca 原生设置"));
+        auto* arrow = new wxStaticBitmap(native_row, wxID_ANY,
+            create_scaled_bitmap("figma-ux/native-settings-arrow", native_row, 24));
+        native_sizer->Add(native, 1, wxEXPAND);
+        native_sizer->Add(arrow, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
+        native_row->SetSizer(native_sizer);
+        native->Bind(wxEVT_BUTTON, [native_settings](wxCommandEvent&) { native_settings(); });
+        for (wxWindow* target : std::array<wxWindow*, 2>{native_row, arrow})
+            target->Bind(wxEVT_LEFT_UP, [native_settings](wxMouseEvent&) { native_settings(); });
+        footer->Add(native_row, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
+    }
+    if (plater) {
+        m_confirm = action_button(m_footer, _L("查看打印确认…"));
+        footer->Add(m_confirm, 0, wxEXPAND);
+        m_confirm->Bind(wxEVT_BUTTON, [this, plater](wxCommandEvent&) { show_orca_print_confirmation(this, *plater); });
+    }
+    m_content->SetSizer(root);
+    m_footer->SetSizer(footer);
+    auto* layout = new wxBoxSizer(wxVERTICAL);
+    layout->Add(m_content, 1, wxEXPAND);
+    layout->Add(m_footer, 0, wxEXPAND | wxALL, FromDIP(12));
+    SetSizer(layout);
 
     m_start->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         if (m_can_plan_candidates) {
@@ -342,6 +484,8 @@ SmartSlicingPanel::SmartSlicingPanel(wxWindow* parent, AI::SmartSlicing::SmartSl
             m_coordinator.cancel();
     });
     Bind(wxEVT_SHOW, [this](wxShowEvent& event) {
+        if (event.IsShown() && !m_worker_running.load(std::memory_order_acquire))
+            m_coordinator.refresh_revision();
         if (!event.IsShown() && m_worker_running.load(std::memory_order_acquire) && m_cancel_trial)
             m_cancel_trial();
         event.Skip();
@@ -357,6 +501,20 @@ SmartSlicingPanel::~SmartSlicingPanel()
         m_cancel_trial();
     if (m_worker.joinable())
         m_worker.join();
+}
+
+void SmartSlicingPanel::refresh_preparation_selection()
+{
+    if (m_preparation != nullptr && m_preparation->IsShownOnScreen())
+        m_preparation->refresh_selection();
+}
+
+void SmartSlicingPanel::apply_ai_theme(bool update_fonts)
+{
+    ModelGenerationInputStyle::apply(this, update_fonts);
+    for (auto& controls : m_candidate_controls)
+        style_candidate(controls.selector, update_fonts);
+    Refresh(false);
 }
 
 bool SmartSlicingPanel::run_in_background(std::function<void()> work)
@@ -379,11 +537,26 @@ bool SmartSlicingPanel::run_in_background(std::function<void()> work)
 void SmartSlicingPanel::render(const SmartSlicingViewModel& view_model)
 {
     static const std::array<wxString, 4> names{_L("1. 模型与材料"), _L("2. 健康与准备"), _L("3. 优化方案"), _L("4. 检查并切片")};
-    m_summary->SetLabel(summary_text(view_model.summary_key));
-    m_summary->Wrap(FromDIP(330));
+    const bool awaiting_native_slice = view_model.issues.size() == 1 &&
+                                       view_model.issues.front().first == "native_validation_unavailable";
+    m_summary->SetLabel(awaiting_native_slice && view_model.summary_key == "preflight_complete_with_warnings" ?
+        _L("预检查完成，可继续比较方案") : summary_text(view_model.summary_key));
     for (size_t index = 0; index < m_stage_labels.size(); ++index)
-        m_stage_labels[index]->SetLabel(names[index] + _L("  ") + status_text(view_model.stages[index].status));
-    if (!view_model.has_report || view_model.issues.empty()) {
+        m_stage_labels[index]->SetLabel(names[index] + _L("  ") +
+            (index == 3 && view_model.summary_key == "candidates_ready" ? _L("等待应用") :
+             status_text(view_model.stages[index].status)));
+    if (view_model.summary_key == "baseline_trial_failed") {
+        wxString failure = _L("当前基线未通过试切，不能应用或用于打印。原工程未被修改。");
+        const auto baseline = std::find_if(view_model.candidates.begin(), view_model.candidates.end(),
+            [](const SmartSlicingCandidateView& candidate) { return candidate.id == "baseline" && candidate.failed; });
+        if (baseline != view_model.candidates.end() && !baseline->diagnostic_message.empty())
+            failure += _L("\n原生切片原因：\n") + from_u8(baseline->diagnostic_message);
+        failure += _L("\n请打开 Orca 原生设置按上述原因调整配置或摆放，再重新检查。");
+        m_issues->SetLabel(failure);
+    } else if (view_model.has_report && awaiting_native_slice) {
+        m_issues->SetLabel(issue_name("native_validation_unavailable") + _L("\n") +
+                           issue_action("native_validation_unavailable"));
+    } else if (!view_model.has_report || view_model.issues.empty()) {
         m_issues->SetLabel(view_model.has_report ? _L("本次检查未发现问题") : _L("尚无有效检查结果"));
     } else {
         wxString issues = wxString::Format(_L("发现 %llu 项需要留意的问题"), static_cast<unsigned long long>(view_model.issue_count));
@@ -396,7 +569,6 @@ void SmartSlicingPanel::render(const SmartSlicingViewModel& view_model)
             issues += wxString::Format(_L("\n…另有 %llu 项"),
                                        static_cast<unsigned long long>(view_model.issues.size() - visible_issue_count));
         m_issues->SetLabel(issues);
-        m_issues->Wrap(FromDIP(330));
     }
     wxString diagnostics;
     for (const auto& [code, evidence] : view_model.issues)
@@ -406,33 +578,77 @@ void SmartSlicingPanel::render(const SmartSlicingViewModel& view_model)
             diagnostics += from_u8(candidate.id) + ": " + from_u8(candidate.explanation) + "\n";
         if (!candidate.diagnostic_code.empty())
             diagnostics += from_u8(candidate.id) + ": " + from_u8(candidate.diagnostic_code) + "\n";
+        if (!candidate.diagnostic_message.empty())
+            diagnostics += from_u8(candidate.diagnostic_message) + "\n";
     }
     m_diagnostic_text->SetLabel(diagnostics);
-    m_diagnostic_text->Wrap(FromDIP(300));
     m_diagnostics->Show(view_model.has_report && !diagnostics.empty());
     m_add_model->Show(view_model.can_add_model);
     m_can_recheck = view_model.can_recheck;
     m_can_plan_candidates = view_model.can_plan_candidates;
     m_start->Enable(view_model.can_start || view_model.can_plan_candidates || view_model.can_recheck);
+    const bool has_candidates = !view_model.candidates.empty() && !view_model.is_stale;
+    const bool slice_ready = view_model.summary_key == "official_slice_complete";
+    m_start->SetName(has_candidates ? "input_field" : "input_primary");
+    ModelGenerationInputStyle::apply_control(m_start, has_candidates ?
+        ModelGenerationInputStyle::Role::Field : ModelGenerationInputStyle::Role::PrimaryAction);
+    if (m_confirm) {
+        m_confirm->SetName(slice_ready ? "input_primary" : "input_field");
+        ModelGenerationInputStyle::apply_control(m_confirm, slice_ready ?
+            ModelGenerationInputStyle::Role::PrimaryAction : ModelGenerationInputStyle::Role::Field);
+    }
     m_start->SetLabel(view_model.can_plan_candidates ? _L("生成并试切方案") :
                       view_model.is_stale || view_model.can_recheck ? _L("重新检查") : _L("开始检查"));
     m_cancel->Enable(view_model.can_cancel);
 
     const bool show_candidates = !view_model.candidates.empty();
     m_candidate_section->Show(show_candidates);
+    m_keep_baseline->Show(show_candidates);
+    m_apply->Show(show_candidates);
+    const bool trial_running = view_model.summary_key == "trial_slicing_baseline" ||
+                               view_model.summary_key == "trial_slicing_candidates";
+    m_candidate_hint->Show(view_model.can_apply || trial_running ||
+                           view_model.summary_key == "baseline_trial_failed");
+    m_candidate_hint->SetLabel(trial_running ?
+        _L("正在试切候选方案。完成后才能选择和应用。") :
+        view_model.summary_key == "baseline_trial_failed" ?
+        _L("当前方案试切失败。请查看诊断，或返回原生设置处理。") :
+        view_model.candidates.size() == 1 ?
+        _L("本次只有当前方案可用。可保留此方案，或在原生设置中调整参数后重新检查。") :
+        _L("选择卡片查看方案详情；选择不会修改工程。"));
+    const bool has_profiles = std::any_of(view_model.candidates.begin(), view_model.candidates.end(), is_priority_profile);
+    const SmartSlicingCandidateView* selected = nullptr;
+    std::vector<const SmartSlicingCandidateView*> visible_candidates;
+    for (const auto& candidate : view_model.candidates) {
+        if (candidate.selected) selected = &candidate;
+        if ((!has_profiles && view_model.candidates.size() <= m_candidate_controls.size()) || candidate.id != "baseline")
+            visible_candidates.push_back(&candidate);
+    }
     for (size_t index = 0; index < m_candidate_controls.size(); ++index) {
         CandidateControls& controls = m_candidate_controls[index];
-        const bool visible = index < view_model.candidates.size();
+        const bool visible = index < visible_candidates.size();
         controls.panel->Show(visible);
         m_candidate_ids[index].clear();
         if (!visible)
             continue;
-        const SmartSlicingCandidateView& candidate = view_model.candidates[index];
+        const SmartSlicingCandidateView& candidate = *visible_candidates[index];
         m_candidate_ids[index] = candidate.id;
-        controls.selector->SetLabel(candidate.id == "baseline" ? _L("当前方案（基线）") :
-                                    candidate.recommended ? _L("推荐候选") : _L("候选方案"));
-        controls.selector->SetValue(candidate.selected);
+        controls.selector->SetLabel(candidate_name(candidate) + "\n" +
+            candidate_secondary(candidate));
+        controls.selector->SetSelected(candidate.selected);
         controls.selector->Enable(candidate.can_select);
+        controls.selector->SetToolTip(candidate_name(candidate) + "\n" +
+            candidate_changes(candidate) + candidate_reason(candidate));
+        style_candidate(controls.selector);
+        controls.retry->Show(candidate.can_retry);
+        if (candidate.selected)
+            selected = &candidate;
+    }
+    m_candidate_details->Show(selected != nullptr);
+    if (selected != nullptr) {
+        const auto& candidate = *selected;
+        m_candidate_title->SetLabel(_L("所选方案 · ") + candidate_name(candidate) +
+            (candidate.recommended ? _L("（推荐）") : wxString()));
         wxString metrics = _L("时间：") + format_duration(candidate.estimated_time_seconds) +
                            _L("  材料：") + format_volume(candidate.filament_volume_mm3) +
                            _L("\n支撑：") + format_volume(candidate.support_volume_mm3) +
@@ -459,29 +675,32 @@ void SmartSlicingPanel::render(const SmartSlicingViewModel& view_model)
                        _L("，冲刷 ") + format_delta(candidate.flush_delta_mm3, 1000.0, _L("cm³")) +
                        _L("，擦料塔 ") + format_delta(candidate.wipe_tower_delta_mm3, 1000.0, _L("cm³"));
         }
-        controls.metrics->SetLabel(metrics);
-        controls.metrics->Wrap(FromDIP(300));
-        controls.reason->SetLabel(candidate_changes(candidate) + candidate_reason(candidate));
-        controls.reason->Wrap(FromDIP(300));
-        controls.retry->Show(candidate.can_retry);
+        m_candidate_metrics->SetLabel(_L("试切估算\n") + metrics);
+        const wxString changes = candidate_changes(candidate);
+        m_candidate_reason->SetLabel(
+            (changes.empty() ? _L("应用时保留当前参数与摆放。\n") : changes) + candidate_reason(candidate));
     }
     m_keep_baseline->Enable(std::any_of(view_model.candidates.begin(), view_model.candidates.end(),
                                        [](const SmartSlicingCandidateView& candidate) {
                                            return candidate.id == "baseline" && !candidate.selected && candidate.can_select;
                                        }));
     m_apply->Enable(view_model.can_apply);
+    ModelGenerationInputStyle::apply_control(m_apply, ModelGenerationInputStyle::Role::PrimaryAction);
     m_undo_apply->Show(view_model.can_undo_apply);
     m_undo_apply->Enable(view_model.can_undo_apply);
-    m_p0_notice->SetLabel(view_model.can_undo_apply ? _L("可撤销本次应用；若之后编辑了工程，请使用 Orca 撤销历史。") :
+    m_p0_notice->SetLabel(view_model.summary_key == "baseline_trial_failed" ?
+                         _L("试切在隔离副本中失败；原工程保留，可返回原生设置处理。") :
+                         view_model.can_undo_apply ? _L("可撤销本次应用；若之后编辑了工程，请使用 Orca 撤销历史。") :
                          show_candidates ? _L("选择“应用并切片”后，将修改当前打印板并开始正式切片。") :
                                             _L("预检与候选试切均在隔离副本中执行。"));
-    m_p0_notice->Wrap(FromDIP(330));
     if ((view_model.can_cancel || view_model.needs_polling) && !m_revision_timer.IsRunning())
         m_revision_timer.Start(1000);
     else if (!view_model.can_cancel && !view_model.needs_polling && m_revision_timer.IsRunning())
         m_revision_timer.Stop();
+    m_content->Layout();
+    m_content->FitInside();
+    m_footer->Layout();
     Layout();
-    FitInside();
 }
 
 void SmartSlicingPanel::on_revision_timer(wxTimerEvent&)

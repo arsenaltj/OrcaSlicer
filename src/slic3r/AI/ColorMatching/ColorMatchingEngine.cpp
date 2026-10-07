@@ -9,7 +9,7 @@ public:
     const char* algorithm_version(const Input& input) const noexcept override
     {
         return print_color_mode(input.identity.requested_color_count) == PrintColorMode::Layered
-            ? "region-layered-v2" : "region-direct-v5";
+            ? "region-layered-v2" : "region-direct-v6";
     }
     Computation compute(const Input& input) const override { return compute_baseline(input); }
 };

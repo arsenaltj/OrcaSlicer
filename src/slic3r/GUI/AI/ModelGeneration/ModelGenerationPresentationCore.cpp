@@ -8,6 +8,69 @@
 #include <set>
 
 namespace Slic3r::GUI::ModelGenerationPresentation {
+bool model_quality_matches_artifact(const AIModelGenerationClient::ModelQuality& quality,
+                                    const std::string& sha256)
+{
+    const bool valid_sha256 = sha256.size() == 64 && std::all_of(sha256.begin(), sha256.end(),
+        [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
+    // Only the supported millimetre report schema defines the displayed risks.
+    return quality.available && valid_sha256 && quality.artifact_sha256 == sha256 &&
+        quality.units == "mm" && quality.gate_version == "structural-v12";
+}
+
+ModelCheckStage model_check_stage(bool model_ready, bool checking, bool failed,
+                                 const AIModelGenerationClient::ModelQuality& quality)
+{
+    if (!model_ready) return ModelCheckStage::NeedsModel;
+    if (checking) return ModelCheckStage::Checking;
+    if (failed) return ModelCheckStage::Failed;
+    if (!quality.available) return ModelCheckStage::Unchecked;
+    if (quality.status == "pass") return ModelCheckStage::Passed;
+    if (quality.status == "review") return ModelCheckStage::Review;
+    if (quality.status == "reject") return ModelCheckStage::Rejected;
+    return ModelCheckStage::Failed;
+}
+
+FinishingStage finishing_stage(bool editor_ready, bool running, bool candidate, bool dirty, bool editor_failed)
+{
+    if (running) return FinishingStage::Processing;
+    if (candidate) return FinishingStage::Preview;
+    if (editor_failed) return FinishingStage::Failed;
+    if (!editor_ready) return FinishingStage::Preparing;
+    return dirty ? FinishingStage::Editing : FinishingStage::Saved;
+}
+
+bool design_preview_reload_available(const std::string& job_id, bool inputs_match,
+                                     bool output_available, bool preview_ready)
+{
+    return !job_id.empty() && inputs_match && output_available && !preview_ready;
+}
+
+WorkbenchAccess workbench_access(bool model_ready, bool has_local_model, bool loading, bool busy)
+{
+    if (loading) return WorkbenchAccess::Loading;
+    if (busy) return WorkbenchAccess::Busy;
+    return model_ready && has_local_model ? WorkbenchAccess::Available : WorkbenchAccess::NeedsModel;
+}
+
+WorkspaceView workspace_destination(WorkspaceAction action, WorkspaceView current, bool /*has_model*/)
+{
+    switch (action) {
+    case WorkspaceAction::ShowImage: return WorkspaceView::Image;
+    case WorkspaceAction::ShowLibrary: return WorkspaceView::Library;
+    case WorkspaceAction::ShowModel: return WorkspaceView::Model;
+    case WorkspaceAction::Prepare: return current;
+    }
+    return current;
+}
+
+WorkspacePresentation workspace_presentation(WorkspaceView view, bool has_image,
+    bool has_model, bool busy, bool awaiting_confirmation, bool ready, bool can_prepare)
+{
+    return {view, view == WorkspaceView::Image && !has_image && !has_model && !busy,
+        busy || awaiting_confirmation || ready, has_model, can_prepare};
+}
+
 namespace {
 
 struct LabColor

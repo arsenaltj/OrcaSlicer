@@ -4203,7 +4203,7 @@ Vec2d PartPlateList::compute_shape_position(int index, int cols)
 }
 
 //generate icon textures
-void PartPlateList::generate_icon_textures()
+void PartPlateList::generate_icon_textures(bool icon_dark)
 {
 	// use higher resolution images if graphic card and opengl version allow
 	GLint max_tex_size = OpenGLManager::get_gl_info().get_max_tex_size(), icon_size = max_tex_size / 8;
@@ -4214,7 +4214,7 @@ void PartPlateList::generate_icon_textures()
 		icon_size = 256;
 	//if (m_del_texture.get_id() == 0)
 	{
-		file_name = path + (m_is_dark ? "plate_close_dark.svg" : "plate_close.svg");
+		file_name = path + (icon_dark ? "plate_close_dark.svg" : "plate_close.svg");
 		if (!m_del_texture.load_from_svg_file(file_name, true, false, false, icon_size)) {
 			BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << boost::format(":load file %1% failed") % file_name;
 		}
@@ -4222,7 +4222,7 @@ void PartPlateList::generate_icon_textures()
 
 	//if (m_del_hovered_texture.get_id() == 0)
 	{
-		file_name = path + (m_is_dark ? "plate_close_hover_dark.svg" : "plate_close_hover.svg");
+		file_name = path + (icon_dark ? "plate_close_hover_dark.svg" : "plate_close_hover.svg");
 		if (!m_del_hovered_texture.load_from_svg_file(file_name, true, false, false, icon_size)) {
 			BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << boost::format(":load file %1% failed") % file_name;
 		}
@@ -4231,7 +4231,7 @@ void PartPlateList::generate_icon_textures()
 	
 	// if (m_move_front_texture.get_id() == 0)
     {
-        file_name = path + (m_is_dark ? "plate_move_front_dark.svg" : "plate_move_front.svg");
+        file_name = path + (icon_dark ? "plate_move_front_dark.svg" : "plate_move_front.svg");
         if (!m_move_front_texture.load_from_svg_file(file_name, true, false, false, icon_size)) {
             BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << boost::format(":load file %1% failed") % file_name;
         }
@@ -4239,7 +4239,7 @@ void PartPlateList::generate_icon_textures()
 
     // if (m_move_front_hovered_texture.get_id() == 0)
     {
-        file_name = path + (m_is_dark ? "plate_move_front_hover_dark.svg" : "plate_move_front_hover.svg");
+        file_name = path + (icon_dark ? "plate_move_front_hover_dark.svg" : "plate_move_front_hover.svg");
         if (!m_move_front_hovered_texture.load_from_svg_file(file_name, true, false, false, icon_size)) {
             BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << boost::format(":load file %1% failed") % file_name;
         }
@@ -4247,7 +4247,7 @@ void PartPlateList::generate_icon_textures()
 
 	//if (m_arrange_texture.get_id() == 0)
 	{
-		file_name = path + (m_is_dark ? "plate_arrange_dark.svg" : "plate_arrange.svg");
+		file_name = path + (icon_dark ? "plate_arrange_dark.svg" : "plate_arrange.svg");
 		if (!m_arrange_texture.load_from_svg_file(file_name, true, false, false, icon_size)) {
 			BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << boost::format(":load file %1% failed") % file_name;
 		}
@@ -4255,7 +4255,7 @@ void PartPlateList::generate_icon_textures()
 
 	//if (m_arrange_hovered_texture.get_id() == 0)
 	{
-		file_name = path + (m_is_dark ? "plate_arrange_hover_dark.svg" : "plate_arrange_hover.svg");
+		file_name = path + (icon_dark ? "plate_arrange_hover_dark.svg" : "plate_arrange_hover.svg");
 		if (!m_arrange_hovered_texture.load_from_svg_file(file_name, true, false, false, icon_size)) {
 			BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << boost::format(":load file %1% failed") % file_name;
 		}
@@ -4263,7 +4263,7 @@ void PartPlateList::generate_icon_textures()
 
 	//if (m_orient_texture.get_id() == 0)
 	{
-		file_name = path + (m_is_dark ? "plate_orient_dark.svg" : "plate_orient.svg");
+		file_name = path + (icon_dark ? "plate_orient_dark.svg" : "plate_orient.svg");
 		if (!m_orient_texture.load_from_svg_file(file_name, true, false, false, icon_size)) {
 			BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << boost::format(":load file %1% failed") % file_name;
 		}
@@ -4271,7 +4271,7 @@ void PartPlateList::generate_icon_textures()
 
 	//if (m_orient_hovered_texture.get_id() == 0)
 	{
-		file_name = path + (m_is_dark ? "plate_orient_hover_dark.svg" : "plate_orient_hover.svg");
+		file_name = path + (icon_dark ? "plate_orient_hover_dark.svg" : "plate_orient_hover.svg");
 		if (!m_orient_hovered_texture.load_from_svg_file(file_name, true, false, false, icon_size)) {
 			BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << boost::format(":load file %1% failed") % file_name;
 		}
@@ -4279,7 +4279,7 @@ void PartPlateList::generate_icon_textures()
 
 	//if (m_locked_texture.get_id() == 0)
 	{
-		file_name = path + (m_is_dark ? "plate_locked_dark.svg" : "plate_locked.svg");
+		file_name = path + (icon_dark ? "plate_locked_dark.svg" : "plate_locked.svg");
 		if (!m_locked_texture.load_from_svg_file(file_name, true, false, false, icon_size)) {
 			BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << boost::format(":load file %1% failed") % file_name;
 		}
@@ -4287,7 +4287,7 @@ void PartPlateList::generate_icon_textures()
 
 	//if (m_locked_hovered_texture.get_id() == 0)
 	{
-		file_name = path + (m_is_dark ? "plate_locked_hover_dark.svg" : "plate_locked_hover.svg");
+		file_name = path + (icon_dark ? "plate_locked_hover_dark.svg" : "plate_locked_hover.svg");
 		if (!m_locked_hovered_texture.load_from_svg_file(file_name, true, false, false, icon_size)) {
 			BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << boost::format(":load file %1% failed") % file_name;
 		}
@@ -4295,7 +4295,7 @@ void PartPlateList::generate_icon_textures()
 
 	//if (m_lockopen_texture.get_id() == 0)
 	{
-		file_name = path + (m_is_dark ? "plate_unlocked_dark.svg" : "plate_unlocked.svg");
+		file_name = path + (icon_dark ? "plate_unlocked_dark.svg" : "plate_unlocked.svg");
 		if (!m_lockopen_texture.load_from_svg_file(file_name, true, false, false, icon_size)) {
 			BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << boost::format(":load file %1% failed") % file_name;
 		}
@@ -4303,7 +4303,7 @@ void PartPlateList::generate_icon_textures()
 
 	//if (m_lockopen_hovered_texture.get_id() == 0)
 	{
-		file_name = path + (m_is_dark ? "plate_unlocked_hover_dark.svg" : "plate_unlocked_hover.svg");
+		file_name = path + (icon_dark ? "plate_unlocked_hover_dark.svg" : "plate_unlocked_hover.svg");
 		if (!m_lockopen_hovered_texture.load_from_svg_file(file_name, true, false, false, icon_size)) {
 			BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << boost::format(":load file %1% failed") % file_name;
 		}
@@ -4311,21 +4311,21 @@ void PartPlateList::generate_icon_textures()
 
 	//if (m_bedtype_texture.get_id() == 0)
 	{
-		file_name = path + (m_is_dark ? "plate_settings_dark.svg" : "plate_settings.svg");
+		file_name = path + (icon_dark ? "plate_settings_dark.svg" : "plate_settings.svg");
 		if (!m_plate_settings_texture.load_from_svg_file(file_name, true, false, false, icon_size)) {
 			BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << boost::format(":load file %1% failed") % file_name;
 		}
 	}
 
 	{
-        file_name = path + (m_is_dark ? "plate_set_filament_map_dark.svg" : "plate_set_filament_map.svg");
+        file_name = path + (icon_dark ? "plate_set_filament_map_dark.svg" : "plate_set_filament_map.svg");
         if (!m_plate_set_filament_map_texture.load_from_svg_file(file_name, true, false, false, icon_size)) {
             BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << boost::format(":load file %1% failed") % file_name;
         }
     }
 
 	{
-        file_name = path + (m_is_dark ? "plate_set_filament_map_hover_dark.svg" : "plate_set_filament_map_hover.svg");
+        file_name = path + (icon_dark ? "plate_set_filament_map_hover_dark.svg" : "plate_set_filament_map_hover.svg");
         if (!m_plate_set_filament_map_hovered_texture.load_from_svg_file(file_name, true, false, false, icon_size)) {
             BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << boost::format(":load file %1% failed") % file_name;
         }
@@ -4333,7 +4333,7 @@ void PartPlateList::generate_icon_textures()
 
 	//if (m_bedtype_changed_texture.get_id() == 0)
 	{
-		file_name = path + (m_is_dark ? "plate_settings_changed_dark.svg" : "plate_settings_changed.svg");
+		file_name = path + (icon_dark ? "plate_settings_changed_dark.svg" : "plate_settings_changed.svg");
 		if (!m_plate_settings_changed_texture.load_from_svg_file(file_name, true, false, false, icon_size)) {
 			BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << boost::format(":load file %1% failed") % file_name;
 		}
@@ -4341,7 +4341,7 @@ void PartPlateList::generate_icon_textures()
 
 	//if (m_bedtype_hovered_texture.get_id() == 0)
 	{
-		file_name = path + (m_is_dark ? "plate_settings_hover_dark.svg" : "plate_settings_hover.svg");
+		file_name = path + (icon_dark ? "plate_settings_hover_dark.svg" : "plate_settings_hover.svg");
 		if (!m_plate_settings_hovered_texture.load_from_svg_file(file_name, true, false, false, icon_size)) {
 			BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << boost::format(":load file %1% failed") % file_name;
 		}
@@ -4349,7 +4349,7 @@ void PartPlateList::generate_icon_textures()
 
 	//if (m_bedtype_changed_hovered_texture.get_id() == 0)
 	{
-		file_name = path + (m_is_dark ? "plate_settings_changed_hover_dark.svg" : "plate_settings_changed_hover.svg");
+		file_name = path + (icon_dark ? "plate_settings_changed_hover_dark.svg" : "plate_settings_changed_hover.svg");
 		if (!m_plate_settings_changed_hovered_texture.load_from_svg_file(file_name, true, false, false, icon_size)) {
 			BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << boost::format(":load file %1% failed") % file_name;
 		}
@@ -4357,14 +4357,14 @@ void PartPlateList::generate_icon_textures()
 
 	// if (m_plate_name_edit_texture.get_id() == 0)
 	{
-		file_name = path + (m_is_dark ? "plate_name_edit_dark.svg" : "plate_name_edit.svg");
+		file_name = path + (icon_dark ? "plate_name_edit_dark.svg" : "plate_name_edit.svg");
 		if (!m_plate_name_edit_texture.load_from_svg_file(file_name, true, false, false, icon_size)) {
 			BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << boost::format(":load file %1% failed") % file_name;
 		 }
 	}
     // if (m_plate_name_edit_hovered_texture.get_id() == 0)
 	{
-		file_name = path + (m_is_dark ? "plate_name_edit_hover_dark.svg" : "plate_name_edit_hover.svg");
+		file_name = path + (icon_dark ? "plate_name_edit_hover_dark.svg" : "plate_name_edit_hover.svg");
 		if (!m_plate_name_edit_hovered_texture.load_from_svg_file(file_name, true, false, false, icon_size)) {
 		BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << boost::format(":load file %1% failed") % file_name;
 		}
@@ -5929,7 +5929,7 @@ void PartPlateList::postprocess_arrange_polygon(arrangement::ArrangePolygon& arr
 
 /*rendering related functions*/
 //render
-void PartPlateList::render(const Transform3d& view_matrix, const Transform3d& projection_matrix, bool bottom, bool only_current, bool only_body, int hover_id, bool render_cali, bool show_grid)
+void PartPlateList::render(const Transform3d& view_matrix, const Transform3d& projection_matrix, bool bottom, bool only_current, bool only_body, int hover_id, bool render_cali, bool show_grid, bool workspace_dark_icons)
 {
 	const std::lock_guard<std::mutex> local_lock(m_plates_mutex);
 	std::vector<PartPlate*>::iterator it = m_plate_list.begin();
@@ -5941,12 +5941,13 @@ void PartPlateList::render(const Transform3d& view_matrix, const Transform3d& pr
 		plate_hover_action = hover_id % PartPlate::GRABBER_COUNT;
 	}
 
-	static bool last_dark_mode_status = m_is_dark;
-	if (m_is_dark != last_dark_mode_status) {
-		last_dark_mode_status = m_is_dark;
-		generate_icon_textures();
-	} else if(m_del_texture.get_id() == 0)
-		generate_icon_textures();
+	// The workspace rethemes plate action icons only. Bed and model colors
+	// continue to follow the application's native color mode.
+	const bool icon_dark = m_is_dark || workspace_dark_icons;
+	if (m_icon_textures_dark != icon_dark || m_del_texture.get_id() == 0) {
+		generate_icon_textures(icon_dark);
+		m_icon_textures_dark = icon_dark;
+	}
 	// Index labels only need GPU textures for plates that currently exist.
 	// Generate a new label here when a plate is added after the icon atlas was loaded.
 	bool missing_index_texture = false;

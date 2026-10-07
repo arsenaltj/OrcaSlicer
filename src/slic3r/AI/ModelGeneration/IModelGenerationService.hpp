@@ -49,6 +49,9 @@ public:
     virtual void get_status(const std::string& job_id, StatusFn on_complete, ErrorFn on_error) = 0;
     virtual void get_latest(LatestFn on_complete, ErrorFn on_error) = 0;
     virtual void recheck(const std::string& job_id, StatusFn on_complete, ErrorFn on_error) = 0;
+    virtual void check_saved_artifact(const std::string& asset_id, const std::string& sha256,
+                                      StatusFn on_complete, ErrorFn on_error, bool read_only = false)
+    { if (on_error) on_error("Saved artifact checks are unavailable with this generation service."); }
     virtual void visual_review(const std::string& job_id, StatusFn on_complete, ErrorFn on_error) = 0;
     virtual void stop(const std::string& job_id, StatusFn on_complete, ErrorFn on_error) = 0;
     virtual void remove(const std::string& job_id, CompleteFn on_complete, ErrorFn on_error) = 0;

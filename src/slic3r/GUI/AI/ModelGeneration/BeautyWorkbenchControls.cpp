@@ -1,4 +1,5 @@
 #include "BeautyWorkbenchControls.hpp"
+#include "ModelGenerationInputStyle.hpp"
 #include "ModelPreview3D.hpp"
 #include "LocalSemanticWorkerClient.hpp"
 #include "slic3r/GUI/NativeMixedFilamentSuggestion.hpp"
@@ -9,6 +10,7 @@
 #include "slic3r/GUI/AI/Model/BeautyMetadata.hpp"
 #include "libslic3r/Utils.hpp"
 #include "slic3r/GUI/I18N.hpp"
+#include "slic3r/GUI/Widgets/Label.hpp"
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
 #include <wx/button.h>
@@ -32,7 +34,7 @@ boost::filesystem::path draft_metadata_path(const boost::filesystem::path& metad
     return result;
 }
 
-nlohmann::json read_metadata(const boost::filesystem::path& model) {
+nlohmann::json read_metadata(const boost::filesystem::path& model,bool include_draft=true) {
     const auto root=boost::filesystem::path(data_dir())/"generated_models";
     const auto path=AI::beauty_metadata_path(model,root);
     nlohmann::json json=nlohmann::json::object();
@@ -51,7 +53,7 @@ nlohmann::json read_metadata(const boost::filesystem::path& model) {
     // is not serialized on every click. The wrapper keeps deletion preflight
     // and older readers compatible with the original embedded field.
     const auto sidecar=draft_metadata_path(path);
-    if(boost::filesystem::is_regular_file(sidecar)) {
+    if(include_draft && boost::filesystem::is_regular_file(sidecar)) {
         if(boost::filesystem::file_size(sidecar)>128*1024*1024)throw std::runtime_error("The beauty draft is too large to load safely.");
         boost::filesystem::ifstream input(sidecar);
         if(!input)throw std::runtime_error("Cannot read the beauty draft.");
@@ -113,26 +115,47 @@ BeautyWorkbenchControls::BeautyWorkbenchControls(wxWindow* parent,ModelPreview3D
     :wxPanel(parent),preview(model),palette_provider(palette),changed(std::move(layout_changed)),timer(this)
 {
     auto* root=new wxBoxSizer(wxVERTICAL);
-    workflow_status=new wxStaticText(this,wxID_ANY,_L("流程：检查网格 → 原色美颜 → 导入时确认耗材配色"));
-    workflow_status->Wrap(FromDIP(250));root->Add(workflow_status,0,wxEXPAND|wxBOTTOM,FromDIP(6));
-    topology_status=new wxStaticText(this,wxID_ANY,_L("网格预检：正在读取模型……"));
-    topology_status->Wrap(FromDIP(250));root->Add(topology_status,0,wxEXPAND|wxBOTTOM,FromDIP(8));
-    status=new wxStaticText(this,wxID_ANY,_L("正在准备拼图……"));
-    status->SetMinSize(wxSize(1,FromDIP(55)));root->Add(status,0,wxEXPAND|wxBOTTOM,FromDIP(8));
+    auto action = [this](const wxString& text) {
+        auto* control = new Button(this, text);
+        control->SetName("input_field");
+        control->SetMinSize(FromDIP(wxSize(-1, 36)));
+        control->SetPaddingSize(FromDIP(wxSize(12, 6)));
+        return control;
+    };
+    auto section = [this, root](const wxString& text) {
+        auto* label = new wxStaticText(this, wxID_ANY, text);
+        label->SetName("input_secondary");
+        root->Add(label, 0, wxTOP | wxBOTTOM, FromDIP(12));
+    };
+    SetMinSize(wxSize(1,-1));
+    workflow_status=new Label(this,_L("流程：检查网格 → 原色美颜 → 导入时确认耗材配色"),LB_AUTO_WRAP|wxST_NO_AUTORESIZE,FromDIP(wxSize(250,-1)));
+    root->Add(workflow_status,0,wxEXPAND|wxBOTTOM,FromDIP(6));
+    workflow_status->Hide(); // The workbench header owns the workflow/version summary.
+    topology_status=new Label(this,_L("网格预检：正在读取模型……"),LB_AUTO_WRAP|wxST_NO_AUTORESIZE,FromDIP(wxSize(250,-1)));
+    status=new Label(this,_L("正在准备拼图……"),LB_AUTO_WRAP|wxST_NO_AUTORESIZE,FromDIP(wxSize(250,-1)));
+    status->SetMinSize(wxSize(1,-1));
+    status->SetName("input_secondary");
+    section(_L("查看与对照"));
     original_view=new wxCheckBox(this,wxID_ANY,_L("对照原始全彩（仅查看）"));root->Add(original_view,0,wxBOTTOM,FromDIP(10));
+    original_view->SetName(original_view->GetLabel());
     original_view->Bind(wxEVT_CHECKBOX,[this](wxCommandEvent&){render(true);});
-    match_button=new wxButton(this,wxID_ANY,_L("匹配整模型耗材颜色（可撤销）"));
+    section(_L("颜色编辑"));
+    match_button=action(_L("匹配整模型耗材颜色（可撤销）"));
     match_button->SetToolTip(_L("将原始全彩近似为当前耗材。先对照预览，检查肤色、衣服和底座，再保存导入。"));
     match_button->Disable();root->Add(match_button,0,wxEXPAND|wxBOTTOM,FromDIP(6));
     match_button->Bind(wxEVT_BUTTON,[this](wxCommandEvent&){match_colors();});
-    color_button=new wxButton(this,wxID_ANY,_L("更改这块颜色"));root->Add(color_button,0,wxEXPAND|wxBOTTOM,FromDIP(6));
+    color_button=action(_L("更改这块颜色"));root->Add(color_button,0,wxEXPAND|wxBOTTOM,FromDIP(6));
+    ModelGenerationInputStyle::apply_control(color_button, ModelGenerationInputStyle::Role::Field);
+    color_button->SetName("ai_content_color");
+    color_button->EnableTooltipEvenDisabled();
     color_button->Bind(wxEVT_BUTTON,[this](wxCommandEvent&){change_color();});
-    focus_button=new wxButton(this,wxID_ANY,_L("放大编辑这块"));root->Add(focus_button,0,wxEXPAND|wxBOTTOM,FromDIP(6));
+    focus_button=action(_L("放大编辑这块"));root->Add(focus_button,0,wxEXPAND|wxBOTTOM,FromDIP(6));
+    focus_button->EnableTooltipEvenDisabled();
     focus_button->Bind(wxEVT_BUTTON,[this](wxCommandEvent&){
-        if(selected==none || task || preview->selection_busy())return;
+        if(selected==none || preparing() || preview->selection_busy())return;
         preview->select_beauty_faces(selected_faces());preview->focus_selection();
     });
-    restore_button=new wxButton(this,wxID_ANY,_L("这块恢复原纹理"));root->Add(restore_button,0,wxEXPAND|wxBOTTOM,FromDIP(12));
+    restore_button=action(_L("这块恢复原纹理"));root->Add(restore_button,0,wxEXPAND|wxBOTTOM,FromDIP(12));
     restore_button->Bind(wxEVT_BUTTON,[this](wxCommandEvent&){restore_selected_color();});
     mode=new wxChoice(this,wxID_ANY);
     for(const auto& name:{_L("点选拼图"),_L("扩入：把旁边涂进这块"),_L("擦出：把边缘还给旁边"),_L("合并：点击相邻拼图"),_L("拆分：圈出新的一块")})mode->Append(name);
@@ -141,20 +164,24 @@ BeautyWorkbenchControls::BeautyWorkbenchControls(wxWindow* parent,ModelPreview3D
     radius=new wxSlider(this,wxID_ANY,18,4,60);radius->SetToolTip(_L("笔刷大小"));root->Add(radius,0,wxEXPAND|wxBOTTOM,FromDIP(8));
     radius->Bind(wxEVT_SLIDER,[this](wxCommandEvent&){update_gesture();});
     borders=new wxCheckBox(this,wxID_ANY,_L("显示拼图边线"));borders->SetValue(true);root->Add(borders,0,wxBOTTOM,FromDIP(12));
+    borders->SetName(borders->GetLabel());
     borders->Bind(wxEVT_CHECKBOX,[this](wxCommandEvent&){render(false);});
     auto* history=new wxBoxSizer(wxHORIZONTAL);
-    undo_button=new wxButton(this,wxID_ANY,_L("撤销"));redo_button=new wxButton(this,wxID_ANY,_L("重做"));
+    undo_button=action(_L("撤销"));redo_button=action(_L("重做"));
     history->Add(undo_button,1,wxRIGHT,FromDIP(6));history->Add(redo_button,1);root->Add(history,0,wxEXPAND|wxBOTTOM,FromDIP(6));
     undo_button->Bind(wxEVT_BUTTON,[this](wxCommandEvent&){restore(false);});redo_button->Bind(wxEVT_BUTTON,[this](wxCommandEvent&){restore(true);});
-    reset_button=new wxButton(this,wxID_ANY,_L("放弃未保存修改"));root->Add(reset_button,0,wxEXPAND);
+    reset_button=action(_L("放弃未保存修改"));root->Add(reset_button,0,wxEXPAND);
     reset_button->Bind(wxEVT_BUTTON,[this](wxCommandEvent&){
         if(!editable || !dirty)return;
         try {flush_drafts();remove_draft_metadata(source);auto metadata=read_metadata(source);metadata.erase("beauty_puzzle_draft");write_metadata(source,metadata);
             identity.clear();dirty=false;synchronize(source,true,true);
         }catch(const std::exception& e){message(wxString::FromUTF8(e.what()));}
     });
-    more_button=new wxButton(this,wxID_ANY,_L("更多操作…"));root->Add(more_button,0,wxEXPAND|wxTOP,FromDIP(8));
+    more_button=action(_L("更多操作…"));root->Add(more_button,0,wxEXPAND|wxTOP,FromDIP(8));
     more_button->Bind(wxEVT_BUTTON,[this](wxCommandEvent&){more_actions();});
+    section(_L("模型与选区"));
+    root->Add(topology_status,0,wxEXPAND|wxBOTTOM,FromDIP(8));
+    root->Add(status,0,wxEXPAND|wxBOTTOM,FromDIP(8));
     mode->Hide();restore_button->Hide();borders->Hide();reset_button->Hide();radius->Hide();
     SetSizer(root);
     preview->m_puzzle_focus=[this]{return original_view->GetValue()?std::vector<size_t>{}:selected_faces();};
@@ -179,7 +206,7 @@ BeautyWorkbenchControls::BeautyWorkbenchControls(wxWindow* parent,ModelPreview3D
     preview->m_puzzle_change_color=[this]{change_color();};
     preview->m_puzzle_stroke=[this](const auto& f){stroke(f);};
     preview->m_puzzle_reshape=[this](const auto& added,const auto& removed,bool preserve_shape) {
-        if(!editable || !surface || task || stroke_selected==none || original_view->GetValue())return;
+        if(!editable || !surface || preparing() || stroke_selected==none || original_view->GetValue())return;
         if(edit_regions || !boundary_recolor) {
             try {
                 auto next=puzzle;
@@ -242,13 +269,14 @@ void BeautyWorkbenchControls::restore_selected_color() {
     }catch(const std::exception& e){message(wxString::FromUTF8(e.what()));}
 }
 void BeautyWorkbenchControls::change_color() {
-    if(!editable || !surface || task || selected==none || preview->selection_busy() || original_view->GetValue())return;
+    if(!editable || !surface || preparing() || selected==none || preview->selection_busy() || original_view->GetValue())return;
     const auto c=selected_color();wxColourData data;
     data.SetColour(wxColour(int(c[0]*255),int(c[1]*255),int(c[2]*255)));
     auto palette=palette_provider.printable_palette();
     wxDialog dialog(this,wxID_ANY,_L("区域颜色"));
     auto* root=new wxBoxSizer(wxVERTICAL);
-    root->Add(new wxStaticText(&dialog,wxID_ANY,_L("准备页当前耗材")),0,wxALL,FromDIP(14));
+    root->Add(new wxStaticText(&dialog,wxID_ANY,puzzle.palette.empty()
+        ? _L("借用耗材颜色修改外观（不锁定耗材）") : _L("指定准备页当前耗材")),0,wxALL,FromDIP(14));
     auto* swatches=new wxGridSizer(3,FromDIP(8),FromDIP(8));
     wxColour color=data.GetColour();size_t custom_index=0,chosen_slot=SIZE_MAX;
     for(const auto& channel:palette.physical_channels) {
@@ -336,7 +364,7 @@ void BeautyWorkbenchControls::change_color() {
     commit(std::move(next),selected);
 }
 void BeautyWorkbenchControls::match_colors() {
-    if(!editable || !surface || task || !puzzle.palette.empty() || preview->selection_busy() || original_view->GetValue())return;
+    if(!editable || !surface || preparing() || !puzzle.palette.empty() || preview->selection_busy() || original_view->GetValue())return;
     const auto palette=palette_provider.printable_palette();
     if(!AI::is_valid_physical_channel_set(palette.physical_channels) ||
        std::none_of(palette.physical_channels.begin(),palette.physical_channels.end(),[](const auto& c){return c.compatible;})) {
@@ -397,7 +425,7 @@ void BeautyWorkbenchControls::refine_selected_colors(bool smooth) {
     }catch(const std::exception& e){message(_L("局部修整未完成：")+wxString::FromUTF8(e.what()));}
 }
 void BeautyWorkbenchControls::more_actions() {
-    if(!editable || !surface || preview->selection_busy() || task || original_view->GetValue())return;
+    if(!editable || !surface || preview->selection_busy() || preparing() || original_view->GetValue())return;
     if(edit_regions) {
         wxMenu menu;
         menu.Append(1,_L("框出一个编辑区域（保留颜色，Ctrl 拖动）"));
@@ -458,6 +486,7 @@ void BeautyWorkbenchControls::more_actions() {
     menu.Append(14,_L("修整选中区域色块边界（可撤销）"));menu.Enable(14,selected!=none && !puzzle.palette.empty());
     menu.AppendCheckItem(12,_L("拖边界时延伸相邻颜色"));menu.Check(12,boundary_recolor);menu.Enable(12,!puzzle.palette.empty());
     menu.Append(10,_L("更新五官识别（保留当前区域）"));
+    menu.Enable(4,!task);menu.Enable(10,!task);
     if(!semantic_names.empty())menu.Append(11,_L("补出五官区域并配色（可撤销）"));
     if(!eye_details.empty())menu.Append(9,_L("按识别结果修整眼珠（可撤销）"));
     menu.AppendCheckItem(5,_L("显示所有区域边线"));menu.Check(5,borders->GetValue());
@@ -511,14 +540,28 @@ BeautyWorkbenchControls::~BeautyWorkbenchControls() {
     if(!error.empty())BOOST_LOG_TRIVIAL(warning)<<"Cannot persist beauty draft: "<<error;
     draft_queue.reset();
 }
+bool BeautyWorkbenchControls::showing_original() const { return original_view->GetValue(); }
 void BeautyWorkbenchControls::message(const wxString& text) {
-    status->SetLabel(text);status->Wrap(FromDIP(250));Layout();changed();
+    status->SetLabel(text);status->InvalidateBestSize();
+    // The scroll parent otherwise keeps the panel height cached from the
+    // shorter loading message, clipping the recovered draft's instructions.
+    InvalidateBestSize();Layout();changed();
 }
 void BeautyWorkbenchControls::synchronize(const boost::filesystem::path& path,bool enabled,bool visible) {
+    const bool retry_preparation=failed && !task && !presentation_active && enabled && visible &&
+        path==source && identity==preview->geometry_id();
+    presentation_active=visible;
     editable=enabled;
     // A new asset can arrive while the workbench is hidden or temporarily disabled.
     // Retire its old preparation before a timer tick can publish the result.
     if(task)task->cancel_if_changed(path,preview->geometry_id());
+    // Only an explicit re-entry retries a failed preparation. Timer refreshes
+    // must not repeatedly read an inaccessible file or reset preserved edits.
+    if(retry_preparation) {
+        failed=false;
+        topology_status->SetLabel(_L("网格预检：正在重新读取模型……"));
+        message(_L("正在重新准备颜色分区，原件与草稿保留。"));
+    }
     if(enabled && (path!=source || identity!=preview->geometry_id())) {
         try {flush_drafts();}
         catch(const std::exception& error) {
@@ -527,15 +570,18 @@ void BeautyWorkbenchControls::synchronize(const boost::filesystem::path& path,bo
             status->Wrap(FromDIP(250));Layout();
             return;
         }
-        if(surface){cached_surface=surface;cached_base_colors=std::move(base_colors);cached_base_hash=base_hash;}
+        // Geometry identity describes faces, not the vertex storage layout.
+        // Rebuild across source versions: a color seam may split/reorder vertices.
+        if(surface && path==source){cached_surface=surface;cached_base_colors=std::move(base_colors);cached_base_hash=base_hash;}
+        else {cached_surface.reset();cached_base_colors.clear();cached_base_hash.clear();}
         source=path;identity=preview->geometry_id();failed=false;surface.reset();document={};puzzle={};edit_regions.reset();
         base_colors.clear();semantic_labels.clear();semantic_names.clear();eye_details.clear();eye_shapes.clear();guidance_ready=false;guidance_requested=false;boundary_recolor=false;original_view->SetValue(false);undo.clear();redo.clear();selected=none;dirty=false;saved_puzzle={};saved_edit_regions.reset();regroup_requested=false;
         if(task)task->canceled=true;
         preview->set_beauty_surface({});topology_status->SetLabel(_L("网格预检：正在读取模型……"));
-        message(_L("正在整理大区域和识别五官，首次需要稍等。\n可先旋转查看，识别结果会保存在本地。"));
+        message(_L("正在准备颜色分区，可先旋转查看。\n五官识别将在后台继续，不影响基础编辑。"));
     }
-    Enable(enabled && bool(surface) && !task);preview->set_puzzle_enabled(visible,enabled && bool(surface) && !task);update_gesture();
-    if(enabled && visible && surface && !task) {
+    Enable(enabled && bool(surface) && !preparing());preview->set_puzzle_enabled(visible,enabled && bool(surface) && !preparing());update_gesture();
+    if(enabled && visible && surface && !preparing()) {
         const auto palette=palette_provider.printable_palette();
         const bool changed_mix=std::any_of(puzzle.mixed_recipes.begin(),puzzle.mixed_recipes.end(),[&](const auto& r){
             return std::none_of(palette.mixed_recipes.begin(),palette.mixed_recipes.end(),[&](const auto& current){return AI::same_native_mixed_recipe(r,current);});
@@ -553,7 +599,7 @@ void BeautyWorkbenchControls::update_gesture() {
     Layout();
 }
 void BeautyWorkbenchControls::tick() {
-    if(task && !task->done && !task->canceled && shown_stage!=task->stage.load()) {
+    if(task && !task->guidance_only && !task->done && !task->canceled && shown_stage!=task->stage.load()) {
         shown_stage=task->stage.load();
         message(shown_stage==0?_L("正在准备模型表面，可先旋转查看……"):
             shown_stage==1?_L("正在识别五官，首次可能需要几分钟。\n可先旋转查看，结果会保存在本地。"):
@@ -561,7 +607,7 @@ void BeautyWorkbenchControls::tick() {
     }
     // Reloading an identical asset clears its GL resources without changing
     // the document identity. Restore the display once its new editor is ready.
-    if(editable && surface && !task && identity==preview->geometry_id() &&
+    if(editable && surface && !preparing() && identity==preview->geometry_id() &&
        !preview->puzzle_display_ready() && preview->beauty_editor())render(true);
     const auto selection_editor=preview->beauty_editor();
     const bool selection_failed=preview->region_selection_failed();
@@ -592,7 +638,14 @@ void BeautyWorkbenchControls::tick() {
                 request.recognition=true;
                 draft_queue->submit(std::move(request));
             }
-            if(!completed->error.empty()) {failed=!surface;preview->set_puzzle_enabled(editable,bool(surface));Enable(editable && bool(surface));message(_L("分区未完成，已保留原设置：")+wxString::FromUTF8(completed->error));}
+            if(!completed->error.empty()) {
+                failed=!surface;
+                if(failed) topology_status->SetLabel(_L("网格预检未完成 · 原件与草稿保留"));
+                BOOST_LOG_TRIVIAL(warning)<<"Beauty preparation failed: "<<completed->error;
+                preview->set_puzzle_enabled(presentation_active && editable,bool(surface));Enable(editable && bool(surface));
+                message(failed?_L("准备未完成，原件与草稿保留。\n请恢复文件访问或存储后，点击重新准备编辑。"):
+                    _L("分区更新未完成，原设置保留。可继续编辑或稍后重试。"));
+            }
             else if(completed->regroup || completed->guidance_only) {
                 if(completed->guidance_ready) {
                     semantic_labels=std::move(completed->semantic_labels);
@@ -600,7 +653,8 @@ void BeautyWorkbenchControls::tick() {
                     eye_details=std::move(completed->eye_details);eye_shapes=std::move(completed->eye_shapes);
                     guidance_ready=true;
                 }
-                preparation_notice=completed->notice;Enable(editable);
+                preparation_notice=completed->guidance_only && completed->guidance_ready &&
+                    !semantic_names.empty()?"recognized_preserved":completed->notice;Enable(editable);
                 if(completed->regroup)commit(std::move(completed->puzzle),none);
                 else {
                     render(false);
@@ -617,10 +671,10 @@ void BeautyWorkbenchControls::tick() {
                 eye_details=std::move(completed->eye_details);eye_shapes=std::move(completed->eye_shapes);
                 guidance_ready=completed->guidance_ready;
                 dirty=!layers_equal(puzzle,edit_regions,saved_puzzle,saved_edit_regions);
-                if(completed->upgraded)undo.push_back({std::move(completed->before_upgrade),edit_regions,none});
                 if(dirty)try {save_draft(puzzle,edit_regions);}catch(const std::exception& e) {BOOST_LOG_TRIVIAL(warning)<<"Cannot persist automatic palette draft: "<<e.what();}
-                preview->set_beauty_surface(surface);preview->set_puzzle_enabled(editable);Enable(editable);update_gesture();
-                render(true,completed->display?&*completed->display:nullptr);
+                if(presentation_active && identity==preview->geometry_id())preview->set_beauty_surface(surface);
+                preview->set_puzzle_enabled(presentation_active && editable);Enable(editable);update_gesture();render(true,completed->display?&*completed->display:nullptr);
+                guidance_requested=completed->request_guidance;
             }
         }
     }
@@ -628,7 +682,10 @@ void BeautyWorkbenchControls::tick() {
     const auto geometry=preview->beauty_source();if(!geometry)return;
     const auto path=source;const auto id=identity;
     task=std::make_shared<Preparation>(path,id,geometry);shown_stage=-1;preview->set_puzzle_enabled(true,false);const auto work=task;
-    work->regroup=regroup_requested;work->guidance_only=guidance_requested;regroup_requested=false;guidance_requested=false;Enable(false);
+    work->regroup=regroup_requested;work->guidance_only=guidance_requested && !regroup_requested;
+    regroup_requested=false;guidance_requested=false;
+    preview->set_puzzle_enabled(presentation_active && editable,!preparing());Enable(editable && !preparing());
+    if(work->guidance_only)render(false);
     const auto current_puzzle=puzzle;
     const auto palette=palette_provider.printable_palette();
     const auto reuse_surface=surface?surface:cached_surface;
@@ -658,13 +715,15 @@ void BeautyWorkbenchControls::tick() {
                 if(work->base_hash.empty() || work->base_hash!=record.value("puzzle_base_sha256",work->base_hash))throw std::runtime_error("The original puzzle texture is missing or changed.");
                 work->base_colors=geometry.colors();
                 const bool reusable=reuse_surface && reuse_surface->geometry_id==id && reuse_hash==work->base_hash &&
+                    reuse_surface->vertex_class.size()==geometry.mesh().vertices.size() &&
+                    reuse_colors.size()==geometry.mesh().vertices.size() &&
                     (work->document.face_patch.empty() || work->document.face_patch==reuse_surface->face_patch);
                 if(reusable)work->base_colors=reuse_colors;
                 else if(base!=path) {
                     TriangleMesh mesh;ObjInfo info;std::string error;
                     if(!AI::load_model_artifact(base,mesh,info,error))throw std::runtime_error(error);
                     if(AI::SurfaceSelectionPersistence::geometry_fingerprint(mesh.its)!=id)throw std::runtime_error("The original puzzle surface no longer matches.");
-                    work->base_colors=std::move(info.vertex_colors);
+                    work->base_colors=AI::remap_model_vertex_colors(mesh.its,info.vertex_colors,geometry.mesh());
                 }
                 work->surface=reusable?reuse_surface:AI::BeautySurface::build_for_appearance(geometry.mesh(),work->base_colors,work->document.face_patch,[work]{return work->canceled.load();});
                 work->document.face_patch=work->surface->face_patch;
@@ -688,7 +747,12 @@ void BeautyWorkbenchControls::tick() {
                     const auto now=int64_t(std::time(nullptr));
                     const bool due=work->guidance_only || work->regroup || AI::beauty_recognition_due(metadata.value("beauty_recognition",nlohmann::json{}),id,work->base_hash,now);
                     if(!work->guidance_ready && !due)work->notice="retry_later";
-                    if(!work->guidance_ready && due)try {
+                    // Publish the usable color partition before starting the
+                    // optional recognizer on this same worker. Only explicit
+                    // repartitioning waits for recognition.
+                    work->request_guidance=!work->guidance_ready && due && !work->guidance_only && !work->regroup;
+                    if(work->request_guidance)work->notice="recognizing";
+                    if(!work->guidance_ready && due && !work->request_guidance)try {
                         work->stage=1;
                         work->recognition_attempt={{"geometry",id},{"source",work->base_hash},{"time",now},{"state","failed"},{"reason","unavailable"}};
                         LocalSemanticWorker::Configuration config;std::string reason;
@@ -793,10 +857,10 @@ void BeautyWorkbenchControls::tick() {
                 ", regroup="<<work->regroup<<", guidance_only="<<work->guidance_only;
             work->done=true;
         });
-    } catch(const std::exception& e) {task.reset();failed=true;message(wxString::FromUTF8(e.what()));}
+    } catch(const std::exception& e) {task.reset();failed=!surface;message(wxString::FromUTF8(e.what()));}
 }
 void BeautyWorkbenchControls::pick(size_t face,bool merge) {
-    if(!editable || !surface || task || original_view->GetValue() || face>=puzzle.face_piece.size())return;
+    if(!editable || !surface || preparing() || original_view->GetValue() || face>=puzzle.face_piece.size())return;
     const auto id=edit_regions?edit_regions->face_region[face]:puzzle.face_piece[face];
     if(edit_regions){selected=id;render(false);return;}
     if((merge || mode->GetSelection()==3) && selected!=none && selected!=id) {
@@ -806,7 +870,7 @@ void BeautyWorkbenchControls::pick(size_t face,bool merge) {
 }
 void BeautyWorkbenchControls::stroke(const std::vector<size_t>& faces) {
     if(original_view->GetValue())return;
-    if(!editable || !surface || task)return;
+    if(!editable || !surface || preparing())return;
     if(edit_regions) {
         if(stroke_mode!=4){message(_L("选中后拖边界，或使用 Ctrl 拖动建立编辑区域。"));return;}
         try {
@@ -893,7 +957,7 @@ void BeautyWorkbenchControls::commit(AI::BeautyPuzzle next,uint32_t id) {
 }
 void BeautyWorkbenchControls::commit_layers(AI::BeautyPuzzle next,
                                              std::optional<AI::BeautyEditRegions> next_regions,uint32_t id) {
-    if(task)return;
+    if(preparing())return;
     if(preview->selection_busy()){message(_L("请等待这一笔处理完成。"));return;}
     try {if(!next.palette.empty()) {
             const auto palette=palette_provider.printable_palette();
@@ -906,7 +970,7 @@ void BeautyWorkbenchControls::commit_layers(AI::BeautyPuzzle next,
     catch(const std::exception& e){message(_L("修改未保存：")+wxString::FromUTF8(e.what()));}
 }
 void BeautyWorkbenchControls::restore(bool forward) {
-    if(!editable || !surface || task || preview->selection_busy())return;
+    if(!editable || !surface || preparing() || preview->selection_busy())return;
     auto& from=forward?redo:undo;auto& to=forward?undo:redo;if(from.empty())return;
     try {save_draft(from.back().puzzle,from.back().edit_regions);to.push_back({puzzle,edit_regions,selected});trim(to);
         puzzle=std::move(from.back().puzzle);edit_regions=std::move(from.back().edit_regions);
@@ -914,22 +978,27 @@ void BeautyWorkbenchControls::restore(bool forward) {
     catch(const std::exception& e){message(wxString::FromUTF8(e.what()));}
 }
 void BeautyWorkbenchControls::render(bool repaint,ModelPreviewPuzzle::Prepared* prepared) {
+    // A hidden regional editor must never replace the overall candidate or
+    // re-enable its overlays when a late recognition result arrives.
+    if(!presentation_active || identity!=preview->geometry_id())return;
     if(!surface)return;
     if(surface->boundary_edges || surface->nonmanifold_edges) {
-        topology_status->SetLabel(wxString::Format(_L("网格预检：%llu 条开放边，%llu 条非流形边。先处理网格；配色保存不等于可打印。"),
+        topology_status->SetLabel(wxString::Format(_L("网格待检查：%llu 条开放边 · %llu 条非流形边"),
             static_cast<unsigned long long>(surface->boundary_edges),
             static_cast<unsigned long long>(surface->nonmanifold_edges)));
-        topology_status->SetForegroundColour(wxColour(188,62,54));
+        topology_status->SetName("ai_status_warning");
+        ModelGenerationInputStyle::apply_control(topology_status, ModelGenerationInputStyle::Role::Warning);
     } else {
-        topology_status->SetLabel(_L("网格预检：未发现开放边或非流形边，导入后仍需切片检查。"));
-        topology_status->SetForegroundColour(wxColour(31,122,90));
+        topology_status->SetLabel(_L("网格预检通过 · 打印前仍需切片检查"));
+        topology_status->SetName("ai_status_success");
+        ModelGenerationInputStyle::apply_control(topology_status, ModelGenerationInputStyle::Role::Success);
     }
-    topology_status->Wrap(FromDIP(250));
+    topology_status->InvalidateBestSize();
     workflow_status->SetLabel(puzzle.palette.empty()
         ? _L("流程：检查网格 → 原色美颜 → 导入时确认耗材配色")
         : _L("流程：检查网格 → 已匹配耗材 → 对照原色再导入"));
-    workflow_status->Wrap(FromDIP(250));
-    preview->set_puzzle_enabled(editable,!task);
+    workflow_status->InvalidateBestSize();
+    preview->set_puzzle_enabled(editable,!preparing());
     if(selected!=none && selected_faces().empty())selected=none;
     if(original_view->GetValue()) {auto original=puzzle;original.colors.clear();preview->show_puzzle(*surface,original,base_colors,none,repaint,false);}
     else preview->show_puzzle(*surface,puzzle,base_colors,selected,repaint,borders->GetValue(),
@@ -937,7 +1006,19 @@ void BeautyWorkbenchControls::render(bool repaint,ModelPreviewPuzzle::Prepared* 
     match_button->Enable(editable && puzzle.palette.empty() && !original_view->GetValue() && !preview->selection_busy());
     focus_button->Enable(selected!=none && !original_view->GetValue() && !preview->selection_busy());
     color_button->Enable(selected!=none && !original_view->GetValue());restore_button->Enable(selected!=none && (edit_regions || puzzle.colors.count(selected)));
-    if(selected!=none){const auto c=selected_color();color_button->SetBackgroundColour(wxColour(int(c[0]*255),int(c[1]*255),int(c[2]*255)));color_button->SetForegroundColour(c[0]*.3f+c[1]*.6f+c[2]*.1f<.5f?*wxWHITE:*wxBLACK);}
+    if(selected!=none) {
+        const auto c=selected_color();
+        const wxColour fill(int(c[0]*255),int(c[1]*255),int(c[2]*255));
+        color_button->SetBackgroundColor(StateColor(
+            std::make_pair(ModelGenerationInputStyle::field, int(StateColor::Disabled)),
+            std::make_pair(fill.ChangeLightness(110), int(StateColor::Hovered)),
+            std::make_pair(fill, int(StateColor::Normal))));
+        color_button->SetTextColor(StateColor(
+            std::make_pair(ModelGenerationInputStyle::secondary, int(StateColor::Disabled)),
+            std::make_pair(c[0]*.3f+c[1]*.6f+c[2]*.1f<.5f?*wxWHITE:*wxBLACK, int(StateColor::Normal))));
+    } else ModelGenerationInputStyle::apply_control(color_button, ModelGenerationInputStyle::Role::Field, false, true);
+    color_button->SetToolTip(selected==none ? _L("先在模型上单击选择区域，再修改颜色。") : _L("修改选区颜色；原件保留，可撤销。"));
+    focus_button->SetToolTip(selected==none ? _L("先在模型上选择需要放大的区域。") : _L("将当前选区放大到视口中心。"));
     undo_button->Enable(!undo.empty());redo_button->Enable(!redo.empty());reset_button->Enable(dirty);
     wxString hint=edit_regions && selected==none?_L("点击大区，双击改色；选中后拖边界。"):
         mode->GetSelection()==4?_L("拖出方框或圈住衣服、鼻子等，建立独立区域。"):
@@ -950,11 +1031,12 @@ void BeautyWorkbenchControls::render(bool repaint,ModelPreviewPuzzle::Prepared* 
         _L("\n已匹配整模型耗材。对照原色，检查肤色、衣服和底座；逐块调整后保存。\n按住空格暂时隐藏分区线。");
     hint+=boundary_recolor?_L("\n拖边界将延伸边缘颜色；更多操作可关闭。"):
         _L("\n拖边界只调整分区，保留内部颜色；更多操作可启用颜色延伸、清理杂色或修边。");
-    if(selected==none) {
+    if(selected==none && !(task && task->guidance_only)) {
         if(preparation_notice=="no_details")hint=_L("本次未检出可靠五官，已按颜色分区。\n可在更多操作中重新识别。");
         else if(preparation_notice=="unavailable" || preparation_notice=="retry_later")hint=_L("五官识别未完成，当前为颜色分区。\n可在更多操作中重试识别。");
         else if(preparation_notice=="recognized_preserved")hint=_L("五官辅助已补充，保留了现有修改。\n更多操作可补出五官区域，可撤销。");
     }
+    if(task && task->guidance_only)hint=_L("五官辅助在后台识别，可继续编辑、撤销和预览。\n不会自动替换人工修改。\n")+hint;
     const auto palette_hint=puzzle.palette.empty()?_L("原始全彩 · 尚未匹配整模型耗材\n"):
         !puzzle.mixed_recipes.empty()?_L("已匹配当前耗材（含叠色） · "):
         wxString::Format(_L("已匹配 %llu 种耗材 · "),static_cast<unsigned long long>(puzzle.palette.size()));
@@ -973,6 +1055,10 @@ BeautyWorkbenchControls::SaveCapture BeautyWorkbenchControls::capture_save() con
     if(!surface || source.empty() || !dirty)throw std::runtime_error("请先修改拼图，再保存新版本。");
     return {capture_record(puzzle,edit_regions),surface};
 }
+bool BeautyWorkbenchControls::has_saved_draft(const boost::filesystem::path& path) {
+    return read_metadata(path).contains("beauty_puzzle_draft");
+}
+
 void BeautyWorkbenchControls::prepare_options(AI::ModelFinishingOptions& options,const AI::SurfaceSelectionPersistence::SelectionState&) {
     if(!surface || source.empty() || !dirty)throw std::runtime_error("请先修改拼图，再保存新版本。");
     options.beauty_puzzle=true;options.beauty_appearance=false;options.beauty_deform=false;
@@ -984,12 +1070,20 @@ nlohmann::json BeautyWorkbenchControls::accepted_document(const AI::ModelFinishi
     auto result=options.beauty_document;result["geometry_id"]=output_geometry;
     result["edits"]=nlohmann::json::array({{{"kind","puzzle"},{"source_geometry",output_geometry}}});return result;
 }
-void BeautyWorkbenchControls::prepare_import(const boost::filesystem::path& path,AI::ModelImportRequest& request) {
+void BeautyWorkbenchControls::prepare_import(const boost::filesystem::path& path,AI::ModelImportRequest& request,
+                                             std::optional<AI::BeautyPuzzle>* appearance) {
     const auto metadata=read_metadata(path);
     if(!metadata.contains("beauty_workbench"))return;
     const auto& record=metadata.at("beauty_workbench");
     if(!record.contains("puzzle"))return;
     const auto schema=record.at("puzzle").value("schema",std::string{});
+    if(schema=="orca.beauty-puzzle/v1" && appearance) {
+        if(metadata.at("model_sha256").get<std::string>()!=AI::model_artifact_sha256(path))
+            throw std::runtime_error("已保存外观与模型文件不一致，请重新打开已保存版本。");
+        const auto& saved=record.at("puzzle");
+        *appearance=AI::BeautyPuzzle::decode(saved,record.at("geometry_id").get<std::string>(),saved.at("face_count").get<size_t>());
+        return;
+    }
     if(schema!="orca.beauty-puzzle/v2" && schema!="orca.beauty-puzzle/v3" && schema!="orca.beauty-puzzle/v4")return;
     const auto& saved=record.at("puzzle");
     const auto puzzle=AI::BeautyPuzzle::decode(saved,record.at("geometry_id").get<std::string>(),saved.at("face_count").get<size_t>());

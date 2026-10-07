@@ -94,6 +94,7 @@ if (SLIC3R_GUI)
 
     message(STATUS "wx libs: ${wxWidgets_LIBRARIES}")
 
+    include(slic3r/GUI/AI/DesktopWorkspaceSources.cmake)
     add_subdirectory(slic3r)
 endif()
 

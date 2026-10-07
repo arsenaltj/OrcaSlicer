@@ -437,7 +437,10 @@ void Button::mouseCaptureLost(wxMouseCaptureLostEvent &event)
 
 void Button::keyDownUp(wxKeyEvent &event)
 {
-    if (event.GetKeyCode() == WXK_SPACE || event.GetKeyCode() == WXK_RETURN) {
+    // Modified keys belong to the window/OS (for example Alt+Space), not to
+    // the focused button's unmodified activation gesture.
+    if ((event.GetKeyCode() == WXK_SPACE || event.GetKeyCode() == WXK_RETURN) &&
+        !event.AltDown() && !event.CmdDown()) {
         wxMouseEvent evt(event.GetEventType() == wxEVT_KEY_UP ? wxEVT_LEFT_UP : wxEVT_LEFT_DOWN);
         event.SetEventObject(this);
         GetEventHandler()->ProcessEvent(evt);

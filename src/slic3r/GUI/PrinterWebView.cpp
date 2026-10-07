@@ -12,6 +12,8 @@
 #include <wx/sizer.h>
 #include <wx/string.h>
 #include <wx/toolbar.h>
+#include <wx/stattext.h>
+#include "Widgets/Button.hpp"
 
 #include <slic3r/GUI/Widgets/WebView.hpp>
 #include <wx/webview.h>
@@ -109,11 +111,17 @@ PrinterWebView::PrinterWebView(wxWindow *parent)
  {
 
     wxBoxSizer* topsizer = new wxBoxSizer(wxVERTICAL);
+    SetSizer(topsizer);
+    SetBackgroundColour(wxColour(32, 32, 34));
 
       // Create the webview
     m_browser = WebView::CreateWebView(this, "");
     if (m_browser == nullptr) {
         wxLogError("Could not init m_browser");
+        auto* unavailable = new wxStaticText(this, wxID_ANY,
+            _L("设备页面无法初始化。请重启软件后重试；仍可在工程中离线切片。"));
+        unavailable->SetForegroundColour(*wxWHITE);
+        topsizer->Add(unavailable, 0, wxALL, FromDIP(24));
         return;
     }
 
@@ -132,7 +140,37 @@ PrinterWebView::PrinterWebView(wxWindow *parent)
     m_browser->Bind(wxEVT_WEBVIEW_NEWWINDOW, &PrinterWebView::OnNewWindow, this);
     m_browser->Bind(wxEVT_WEBVIEW_SCRIPT_MESSAGE_RECEIVED, &PrinterWebView::OnScriptMessage, this);
 
-    SetSizer(topsizer);
+    auto* connection = new wxPanel(this);
+    connection->SetBackgroundColour(wxColour(49, 49, 54));
+    auto* row = new wxBoxSizer(wxHORIZONTAL);
+    auto* status = new wxStaticText(connection, wxID_ANY, _L("设备页面尚未加载"));
+    status->SetForegroundColour(*wxWHITE);
+    auto* retry = new Button(connection, _L("重新加载"));
+    retry->SetBackgroundColor(wxColour(254, 212, 69));
+    retry->SetTextColor(wxColour(32, 32, 34));
+    row->Add(status, 1, wxALIGN_CENTER_VERTICAL | wxALL, FromDIP(12));
+    row->Add(retry, 0, wxALIGN_CENTER_VERTICAL | wxALL, FromDIP(12));
+    connection->SetSizer(row);
+    topsizer->Add(connection, 0, wxEXPAND);
+    connection->Hide();
+    retry->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { reload(); });
+    m_browser->Bind(wxEVT_WEBVIEW_NAVIGATING, [this, connection, status](wxWebViewEvent& event) {
+        const bool remote = event.GetURL().StartsWith("http://") || event.GetURL().StartsWith("https://");
+        connection->Show(remote);
+        status->SetLabel(_L("正在加载设备页面…"));
+        Layout();
+        event.Skip();
+    });
+    m_browser->Bind(wxEVT_WEBVIEW_LOADED, [status](wxWebViewEvent& event) {
+        status->SetLabel(_L("设备页面已加载 · 打印状态以设备实时反馈为准"));
+        event.Skip();
+    });
+    m_browser->Bind(wxEVT_WEBVIEW_ERROR, [this, connection, status](wxWebViewEvent& event) {
+        connection->Show();
+        status->SetLabel(_L("设备页面加载失败。请检查设备地址、网络与授权，然后重试。"));
+        Layout();
+        event.Skip();
+    });
 
     topsizer->Add(m_browser, wxSizerFlags().Expand().Proportion(1));
 
@@ -202,12 +240,12 @@ bool PrinterWebView::Show(bool show)
 
 void PrinterWebView::reload()
 {
-    m_browser->Reload();
+    if (m_browser) m_browser->Reload();
 }
 
 void PrinterWebView::update_mode()
 {
-    m_browser->EnableAccessToDevTools(wxGetApp().app_config->get_bool("developer_mode"));
+    if (m_browser) m_browser->EnableAccessToDevTools(wxGetApp().app_config->get_bool("developer_mode"));
 }
 
 /**

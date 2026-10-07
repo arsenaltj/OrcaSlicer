@@ -12,6 +12,8 @@
 #include <cmath>
 #include <cstring>
 #include <iomanip>
+#include <functional>
+#include <set>
 #include <limits>
 #include <locale>
 #include <stdexcept>
@@ -23,8 +25,27 @@
 #ifdef _WIN32
 #include <charconv>
 #endif
+#include <opencv2/imgcodecs.hpp>
 
 namespace Slic3r::AI {
+std::vector<RGBA> remap_model_vertex_colors(const indexed_triangle_set& original,
+    const std::vector<RGBA>& colors, const indexed_triangle_set& target)
+{
+    if (original.indices.size() != target.indices.size() || colors.size() != original.vertices.size())
+        throw std::runtime_error("The original colors no longer match the edited surface.");
+    std::vector<RGBA> result(target.vertices.size(), RGBA{1,1,1,1});
+    std::vector<uint8_t> assigned(target.vertices.size(),0);
+    for (size_t f = 0; f < original.indices.size(); ++f) for (size_t c = 0; c < 3; ++c) {
+        const int from = original.indices[f][c], to = target.indices[f][c];
+        if (from < 0 || to < 0 || size_t(from) >= original.vertices.size() || size_t(to) >= target.vertices.size() ||
+            original.vertices[from] != target.vertices[to] || !original.vertices[from].allFinite())
+            throw std::runtime_error("The original colors belong to different geometry.");
+        if (assigned[to] && result[to] != colors[from])
+            throw std::runtime_error("The edited surface merges different original colors.");
+        result[to] = colors[from]; assigned[to] = 1;
+    }
+    return result;
+}
 namespace {
 constexpr uint64_t max_bytes = 512ull * 1024 * 1024;
 float linear(float v) { return v <= .04045f ? v / 12.92f : std::pow((v + .055f) / 1.055f, 2.4f); }
@@ -72,6 +93,12 @@ nlohmann::json glb_description(const boost::filesystem::path& path) {
         if (primitive.value("mode", 4) != 4 || primitive.contains("targets"))
             throw std::runtime_error("GLB must contain static triangle meshes.");
     for (const auto& material : doc.value("materials", nlohmann::json::array())) {
+        const auto mode = material.value("alphaMode", std::string("OPAQUE"));
+        if (mode != "OPAQUE" && mode != "MASK" && mode != "BLEND")
+            throw std::runtime_error("Unsupported GLB alpha rendering mode.");
+        const float cutoff = material.value("alphaCutoff", 0.5f);
+        if (!std::isfinite(cutoff) || cutoff < 0.f)
+            throw std::runtime_error("Invalid GLB alpha cutoff.");
         const auto pbr = material.value("pbrMetallicRoughness", nlohmann::json::object());
         if (pbr.contains("baseColorTexture")) {
             const auto& ti = pbr["baseColorTexture"];
@@ -94,6 +121,34 @@ float wrap(float value, int mode) {
     throw std::runtime_error("Unsupported GLB texture wrapping mode.");
 }
 } // namespace
+
+std::vector<ModelArtifactTextureSurface::Image> model_texture_mipmaps(const ModelArtifactTextureSurface::Image& image) {
+    if (image.width <= 0 || image.height <= 0 || image.rgba.size() != size_t(image.width)*image.height*4)
+        throw std::runtime_error("Invalid preview texture pixels.");
+    std::vector<ModelArtifactTextureSurface::Image> levels{image};
+    while (levels.back().width > 1 || levels.back().height > 1) {
+        const auto& from = levels.back();
+        ModelArtifactTextureSurface::Image next;
+        next.width = std::max(1, from.width/2); next.height = std::max(1, from.height/2);
+        next.rgba.resize(size_t(next.width)*next.height*4);
+        for (int y = 0; y < next.height; ++y) for (int x = 0; x < next.width; ++x) {
+            const int x0=x*from.width/next.width, x1=(x+1)*from.width/next.width;
+            const int y0=y*from.height/next.height, y1=(y+1)*from.height/next.height;
+            double sum[4]{};
+            for (int sy=y0; sy<y1; ++sy) for (int sx=x0; sx<x1; ++sx) {
+                const auto* in=from.rgba.data()+(size_t(sy)*from.width+sx)*4;
+                for (int ch=0; ch<3; ++ch) sum[ch]+=linear(in[ch]/255.f);
+                sum[3]+=in[3]/255.f;
+            }
+            auto* out=next.rgba.data()+(size_t(y)*next.width+x)*4;
+            const double count=(x1-x0)*(y1-y0);
+            for (int ch=0; ch<3; ++ch) out[ch]=static_cast<unsigned char>(std::lround(srgb(float(sum[ch]/count))*255.f));
+            out[3]=static_cast<unsigned char>(std::lround(sum[3]/count*255.));
+        }
+        levels.push_back(std::move(next));
+    }
+    return levels;
+}
 
 std::string model_artifact_format(const boost::filesystem::path& path) {
     std::string extension = path.extension().string();
@@ -122,9 +177,10 @@ bool is_model_artifact(const boost::filesystem::path& path) {
 }
 
 bool load_model_artifact(const boost::filesystem::path& path, TriangleMesh& mesh, ObjInfo& info, std::string& error,
-                         const std::function<bool()>& canceled) {
+                         const std::function<bool()>& canceled, ModelArtifactTextureSurface* texture_surface) {
     error.clear();
     info = ObjInfo {};
+    if (texture_surface) *texture_surface = {};
     auto stop_if_canceled = [&] {
         if (!canceled || !canceled()) return false;
         mesh = TriangleMesh {};info = ObjInfo {};
@@ -136,9 +192,30 @@ bool load_model_artifact(const boost::filesystem::path& path, TriangleMesh& mesh
         if (!is_model_artifact(path)) throw std::runtime_error("The OBJ/GLB model is missing or exceeds 512 MB.");
         if (model_artifact_format(path) == "obj") return load_obj(path.string().c_str(), &mesh, info, error, nullptr, canceled);
         const auto doc = glb_description(path);
+        // Assimp's glTF LazyDict assigns indices on first retrieval, not from
+        // JSON array positions. Static scenes retrieve child nodes before the
+        // parent mesh. Preserve that association for optional transforms,
+        // including older assets omitting extensionsUsed.
+        std::vector<size_t> material_documents;
+        std::set<size_t> seen_nodes,seen_meshes,seen_materials;
+        std::function<void(size_t)> visit=[&](size_t id) {
+            if(!seen_nodes.insert(id).second)return;
+            const auto& node=doc.at("nodes").at(id);
+            for(const auto& child:node.value("children",nlohmann::json::array()))visit(child.get<size_t>());
+            if(!node.contains("mesh"))return;
+            const size_t mesh=node.at("mesh").get<size_t>();
+            if(!seen_meshes.insert(mesh).second)return;
+            for(const auto& primitive:doc.at("meshes").at(mesh).at("primitives"))if(primitive.contains("material")) {
+                const size_t material=primitive.at("material").get<size_t>();
+                if(seen_materials.insert(material).second)material_documents.push_back(material);
+            }
+        };
+        if(doc.contains("scenes"))for(const auto& node:doc.at("scenes").at(doc.value("scene",size_t(0))).value("nodes",nlohmann::json::array()))
+            visit(node.get<size_t>());
         if (stop_if_canceled()) return false;
         TexturedMesh textured;
         std::vector<std::array<float, 4>> vertex_colors;
+        std::vector<AssimpMaterialPreview> imported_materials;
         const auto source_materials = doc.find("materials");
         // A declared but missing texture must still follow the original raw
         // sampling/error path. Inspect conservatively without moving validation.
@@ -149,7 +226,7 @@ bool load_model_artifact(const boost::filesystem::path& path, TriangleMesh& mesh
                 return pbr == material.end() || (pbr->is_object() && !pbr->contains("baseColorTexture"));
             }));
         if (!load_assimp_textured_model(path.string(), textured, &error, &vertex_colors,
-                raw_fallback_only ? AssimpRawColorPolicy::FallbackOnly : AssimpRawColorPolicy::Always)) return false;
+                raw_fallback_only && !texture_surface ? AssimpRawColorPolicy::FallbackOnly : AssimpRawColorPolicy::Always, &imported_materials)) return false;
         if (stop_if_canceled()) return false;
         if (textured.vertices.empty() || textured.vertices.size() > 6000000 || textured.indices.size() > 2000000)
             throw std::runtime_error("GLB model exceeds the editable mesh limit.");
@@ -177,13 +254,50 @@ bool load_model_artifact(const boost::filesystem::path& path, TriangleMesh& mesh
                 uint64_t(images[i].width) * images[i].height > 64ull * 1024 * 1024)
                 throw std::runtime_error("GLB color texture cannot be decoded.");
         }
+        ModelArtifactTextureSurface exact;
+        // Preserve material alpha even without an image. Ordinary fully opaque
+        // vertex-color models keep the existing lighter preview path.
+        bool material_alpha = false;
+        for (const auto& material : doc.value("materials", nlohmann::json::array())) {
+            const auto pbr = material.value("pbrMetallicRoughness", nlohmann::json::object());
+            const auto factor = pbr.value("baseColorFactor", std::array<float,4>{1,1,1,1});
+            material_alpha |= material.value("alphaMode", std::string("OPAQUE")) != "OPAQUE" || factor[3] != 1.f;
+        }
+        const bool vertex_alpha = std::any_of(vertex_colors.begin(), vertex_colors.end(),
+            [](const auto& color) { return color[3] != 1.f; });
+        const bool retain_textures = texture_surface && (material_alpha || vertex_alpha ||
+            std::any_of(textured.material_texture_map.begin(), textured.material_texture_map.end(),
+                [](int index) { return index >= 0; }));
+        if (retain_textures) {
+            exact.faces.resize(textured.indices.size());
+            exact.images.resize(textured.textures.size());
+            for (size_t i = 0; i < exact.images.size(); ++i) {
+                const auto& encoded = textured.textures[i].data;
+                // This build's OpenCV has no JPEG codec. The sampling adapter
+                // already decoded JPEG with libjpeg into BGR; reuse its pixels.
+                // Keep the PNG path unchanged so its alpha channel is retained.
+                const bool jpeg = encoded.size() >= 2 && encoded[0] == 0xff && encoded[1] == 0xd8;
+                const cv::Mat pixels = jpeg
+                    ? cv::Mat(images[i].height, images[i].width, CV_8UC3, images[i].data.data())
+                    : cv::imdecode(encoded, cv::IMREAD_UNCHANGED);
+                if (pixels.empty() || pixels.depth() != CV_8U || (pixels.channels() != 3 && pixels.channels() != 4))
+                    throw std::runtime_error("GLB preview requires an RGB or RGBA color texture.");
+                auto& image = exact.images[i]; image.width = pixels.cols; image.height = pixels.rows;
+                image.rgba.resize(size_t(image.width) * image.height * 4);
+                for (int y = 0; y < image.height; ++y) for (int x = 0; x < image.width; ++x) {
+                    const auto* in = pixels.ptr<unsigned char>(y) + size_t(x) * pixels.channels();
+                    auto* out = image.rgba.data() + (size_t(y) * image.width + x) * 4;
+                    out[0] = in[2]; out[1] = in[1]; out[2] = in[0]; out[3] = pixels.channels() == 4 ? in[3] : 255;
+                }
+            }
+        }
         info = ObjInfo {};
         const auto materials = doc.find("materials");
         const bool declares_color_texture = materials != doc.end() &&
             std::any_of(materials->begin(), materials->end(), [](const auto& material) {
                 return material.value("pbrMetallicRoughness", nlohmann::json::object()).contains("baseColorTexture");
             });
-        if (!declares_color_texture && textured.precomputed_vertex_colors.size() == its.vertices.size()) {
+        if (!retain_textures && !declares_color_texture && textured.precomputed_vertex_colors.size() == its.vertices.size()) {
             // Native import already converted each primitive's vertex colors.
             // Keep editing's opaque alpha and white unreferenced vertices;
             // declared textures retain the original missing-texture checks.
@@ -204,7 +318,9 @@ bool load_model_artifact(const boost::filesystem::path& path, TriangleMesh& mesh
         info.vertex_colors.assign(its.vertices.size(), RGBA {1.f, 1.f, 1.f, 1.f});
         std::vector<unsigned char> assigned(its.vertices.size(), 0);
         struct MaterialSampling {
-            int texture {-1}, wrap_s {10497}, wrap_t {10497};
+            int texture {-1}, wrap_s {10497}, wrap_t {10497}, min_filter {9729}, mag_filter {9729};
+            ModelArtifactTextureSurface::AlphaMode alpha_mode {ModelArtifactTextureSurface::AlphaMode::Opaque};
+            float alpha_cutoff {.5f};
             std::array<float, 4> factor {1.f, 1.f, 1.f, 1.f};
             std::array<float, 3> previous_vertex_color {};
             RGBA previous_output_color {1.f, 1.f, 1.f, 1.f};
@@ -229,22 +345,72 @@ bool load_model_artifact(const boost::filesystem::path& path, TriangleMesh& mesh
                     ? textured.material_texture_map[material] : -1;
                 sampling.factor = material >= 0 && size_t(material) < textured.material_colors.size()
                     ? textured.material_colors[material] : std::array<float, 4>{1.f, 1.f, 1.f, 1.f};
-                if (material >= 0 && doc.contains("materials") && size_t(material) < doc["materials"].size()) {
-                    const auto& pbr = doc["materials"][material].value("pbrMetallicRoughness", nlohmann::json::object());
-                    if (pbr.contains("baseColorTexture")) {
-                        if (sampling.texture < 0) throw std::runtime_error("The GLB color texture is missing or cannot be read.");
-                        const auto& ti = pbr["baseColorTexture"];
-                        sampling.transform = ti.value("extensions", nlohmann::json::object()).value("KHR_texture_transform", nlohmann::json::object());
-                        const auto& td = doc.at("textures").at(ti.at("index").get<size_t>());
-                        if (td.contains("sampler")) {
-                            const auto& sampler = doc.at("samplers").at(td.at("sampler").get<size_t>());
-                            sampling.wrap_s = sampler.value("wrapS", 10497); sampling.wrap_t = sampler.value("wrapT", 10497);
-                        }
+            if (material >= 0 && size_t(material) < imported_materials.size()) {
+                const auto& metadata=imported_materials[material];
+                const auto& mode=metadata.alpha_mode;
+                sampling.alpha_mode = mode == "MASK" ? ModelArtifactTextureSurface::AlphaMode::Mask :
+                    mode == "BLEND" ? ModelArtifactTextureSurface::AlphaMode::Blend : ModelArtifactTextureSurface::AlphaMode::Opaque;
+                sampling.alpha_cutoff=metadata.alpha_cutoff;
+                if(metadata.has_color_texture) {
+                    if(sampling.texture<0)throw std::runtime_error("The GLB color texture is missing or cannot be read.");
+                    sampling.wrap_s=metadata.wrap_s;sampling.wrap_t=metadata.wrap_t;
+                    sampling.min_filter=metadata.min_filter;sampling.mag_filter=metadata.mag_filter;
+                    if(size_t(material)>=material_documents.size())
+                        throw std::runtime_error("GLB texture material ownership is incomplete.");
+                    const auto& source_material=doc.at("materials").at(material_documents[material]);
+                    const auto ti=source_material.value("pbrMetallicRoughness",nlohmann::json::object())
+                        .value("baseColorTexture",nlohmann::json::object());
+                    sampling.transform=ti.value("extensions",nlohmann::json::object())
+                        .value("KHR_texture_transform",nlohmann::json::object());
+                    // Assimp normalizes unknown sampler values. Validate the
+                    // original GLB descriptor once per encountered material,
+                    // even when another material already assigned its vertices.
+                    const auto& texture_doc=doc.at("textures").at(ti.at("index").get<size_t>());
+                    if(texture_doc.contains("sampler")) {
+                        const auto& sampler_doc=doc.at("samplers").at(texture_doc.at("sampler").get<size_t>());
+                        sampling.wrap_s=sampler_doc.value("wrapS",10497);
+                        sampling.wrap_t=sampler_doc.value("wrapT",10497);
+                        sampling.min_filter=sampler_doc.value("minFilter",9729);
+                        sampling.mag_filter=sampler_doc.value("magFilter",9729);
                     }
+                    (void)wrap(0.f,sampling.wrap_s);
+                    (void)wrap(0.f,sampling.wrap_t);
+                    if((sampling.mag_filter!=9728 && sampling.mag_filter!=9729) ||
+                        (sampling.min_filter!=9728 && sampling.min_filter!=9729 && (sampling.min_filter<9984 || sampling.min_filter>9987)))
+                        throw std::runtime_error("Unsupported GLB texture filtering mode.");
+
                 }
+            }
             }
             const int texture = sampling.texture;
             const auto& factor = sampling.factor;
+            if (retain_textures) {
+                auto& face = exact.faces[fi]; face.image = texture; face.wrap_s = sampling.wrap_s; face.wrap_t = sampling.wrap_t;
+                face.min_filter = sampling.min_filter; face.mag_filter = sampling.mag_filter;
+                face.alpha_mode = sampling.alpha_mode; face.alpha_cutoff = sampling.alpha_cutoff;
+                if (!sampling.transform_ready) {
+                    sampling.scale=sampling.transform.value("scale",std::array<float,2>{1,1});
+                    sampling.offset=sampling.transform.value("offset",std::array<float,2>{0,0});
+                    const float angle=sampling.transform.value("rotation",0.f);
+                    sampling.cosine=std::cos(angle); sampling.sine=std::sin(angle);sampling.transform_ready=true;
+                }
+                const auto& scale=sampling.scale;const auto& offset=sampling.offset;
+                for (size_t corner = 0; corner < 3; ++corner) {
+                    const int vi = textured.indices[fi][corner]; auto& out = face.corners[corner];
+                    if (texture >= 0) {
+                        if (size_t(vi) >= textured.uvs.size()) throw std::runtime_error("GLB texture coordinates are missing.");
+                        const auto uv = textured.uvs[vi]; const float u = uv[0] * scale[0], v = uv[1] * scale[1];
+                        out.uv = {offset[0] + sampling.cosine*u - sampling.sine*v,
+                                  offset[1] + sampling.sine*u + sampling.cosine*v};
+                        for (float value : out.uv) if (!std::isfinite(value)) throw std::runtime_error("GLB UV is invalid.");
+                    }
+                    for (size_t ch = 0; ch < 4; ++ch) {
+                        const float vertex = vertex_colors.size() == its.vertices.size() ? vertex_colors[vi][ch] : 1.f;
+                        if (!std::isfinite(vertex) || !std::isfinite(factor[ch])) throw std::runtime_error("GLB color is invalid.");
+                        out.multiplier[ch] = std::clamp(vertex * factor[ch], 0.f, 1.f);
+                    }
+                }
+            }
             for (int vi : textured.indices[fi]) {
                 if (assigned[vi]) continue;
                 assigned[vi] = 1;
@@ -298,8 +464,12 @@ bool load_model_artifact(const boost::filesystem::path& path, TriangleMesh& mesh
             }
         }
         mesh = TriangleMesh(std::move(its));
-        if (mesh.volume() < 0) mesh.flip_triangles();
+        if (mesh.volume() < 0) {
+            mesh.flip_triangles();
+            for (auto& face : exact.faces) std::swap(face.corners[1], face.corners[2]);
+        }
         if (stop_if_canceled()) return false;
+        if (texture_surface) *texture_surface = std::move(exact);
         return !mesh.empty();
     } catch (const std::exception& e) { error = e.what(); return false; }
 }

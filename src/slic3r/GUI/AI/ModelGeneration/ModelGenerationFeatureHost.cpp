@@ -33,6 +33,7 @@ struct ModelGenerationFeatureHost::Impl
             return;
         shutdown_requested = true;
         if (model_generation != nullptr) {
+            model_generation->set_workspace_changed_handler({});
             model_generation->set_service_retry_handler({});
             model_generation->set_prepare_navigation_handler({});
             model_generation->set_color_matching_handler({});
@@ -59,6 +60,26 @@ ModelGenerationFeatureHost::~ModelGenerationFeatureHost()
 wxWindow* ModelGenerationFeatureHost::panel() const
 {
     return m_impl->model_generation;
+}
+
+void ModelGenerationFeatureHost::navigate(ModelGenerationPresentation::WorkspaceAction action)
+{
+    m_impl->model_generation->navigate_workspace(action);
+}
+
+ModelGenerationPresentation::WorkspaceView ModelGenerationFeatureHost::workspace_view() const
+{
+    return m_impl->model_generation->workspace_view();
+}
+
+bool ModelGenerationFeatureHost::has_model() const
+{
+    return m_impl->model_generation->has_workspace_model();
+}
+
+void ModelGenerationFeatureHost::set_workspace_changed_handler(std::function<void()> handler)
+{
+    m_impl->model_generation->set_workspace_changed_handler(std::move(handler));
 }
 
 void ModelGenerationFeatureHost::set_service_availability(bool available, const std::string& message)

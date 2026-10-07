@@ -11,7 +11,9 @@
     "src/slic3r/GUI/AISidecarClient.hpp",
     "tools/ai",
     "tests/ai_capabilities",
-    "tests/slic3rutils"
+    "tests/slic3rutils",
+    "src/slic3r/GUI/Redesign",
+    "tests/ui_redesign"
   ],
   "modules": [
     {
@@ -23,7 +25,10 @@
       "paths": [
         "src/slic3r/GUI",
         "src/slic3r/GUI/AI/AIDesktopFeatureHost.cpp",
-        "src/slic3r/GUI/AI/AIDesktopFeatureHost.hpp"
+        "src/slic3r/GUI/AI/AIDesktopFeatureHost.hpp",
+        "src/slic3r/GUI/AI/DesktopWorkspaceNavigation.cpp",
+        "src/slic3r/GUI/AI/DesktopWorkspaceNavigation.hpp",
+        "src/slic3r/GUI/Redesign"
       ],
       "purpose": "组合主窗口、功能入口与本地服务可用性"
     },
@@ -95,7 +100,9 @@
       "label": "Orca 适配",
       "ownership": [],
       "paths": [
-        "src/slic3r/GUI/AI/Orca"
+        "src/slic3r/GUI/AI/Orca",
+        "src/slic3r/GUI/Redesign/OrcaPrinterAdapter.cpp",
+        "src/slic3r/GUI/Redesign/OrcaPrinterAdapter.hpp"
       ],
       "purpose": "把 AI 请求转换为 Orca 原生工程操作"
     },
@@ -322,6 +329,40 @@
       "id": "beauty_target_colors",
       "path": "src/slic3r/GUI/AI/Model/BeautyPuzzle.hpp",
       "needle": "target_colors;"
+    },
+    {
+      "id": "saved_model_check",
+      "path": "tools/ai/orca_ai_sidecar.py",
+      "needle": "def _check_saved_model",
+      "detail": "Registered saved artifact structural check; private snapshot and SHA/mm binding; no generation job."
+    },
+    {
+      "id": "printer_workspace",
+      "path": "src/slic3r/GUI/Redesign/PrinterWorkspace.cpp",
+      "needle": "void PrinterWorkspace::build_workspace()"
+    },
+    {
+      "id": "printer_adapter",
+      "path": "src/slic3r/GUI/Redesign/OrcaPrinterAdapter.cpp",
+      "needle": "bool OrcaPrinterAdapter::review_print(wxWindow* parent) const"
+    },
+    {
+      "id": "accepted_ux_controls",
+      "path": "src/slic3r/GUI/Redesign/RedesignControls.hpp",
+      "needle": "class RedesignNavigationButton final",
+      "detail": "Visuals from 047af2b; native Button/dropdown activation and PR20 task owners retained."
+    },
+    {
+      "id": "accepted_ux_image_workspace",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationInputLayout.cpp",
+      "needle": "wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)",
+      "detail": "Accepted shell form and guide use the current generation, history and draft state."
+    },
+    {
+      "id": "accepted_ux_confirmation",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationConfirmation.hpp",
+      "needle": "class ModelGenerationConfirmation final",
+      "detail": "Shared redesign dialog keeps default Cancel, held-key arming and current owner confirmation."
     }
   ],
   "journeys": [
@@ -920,7 +961,7 @@
       },
       {
         "label": "设备管理与打印",
-        "detail": "原生设备 / 打印入口；尚无细粒度业务映射",
+        "detail": "打印准备、实时监控与媒体工作区；复用原生工程确认及设备接口，真机待验",
         "module": "desktop"
       }
     ],

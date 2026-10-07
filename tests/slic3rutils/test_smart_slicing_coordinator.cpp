@@ -235,9 +235,16 @@ TEST_CASE("unavailable native validation is explicit and non-blocking", "[AI][Sm
     snapshot.context                              = context;
     snapshot.report                               = report;
     const Slic3r::GUI::SmartSlicingViewModel view = Slic3r::GUI::SmartSlicingViewModel::from_snapshot(snapshot);
-    CHECK(view.summary_key == "preflight_complete_with_warnings");
-    CHECK(view.stages[1].status == Slic3r::GUI::SmartSlicingStageStatus::NeedsAttention);
-    CHECK(view.legacy_steps[1] == Slic3r::GUI::LegacyAIWorkflowStatus::Warning);
+    CHECK(view.summary_key == "preflight_complete");
+    CHECK(view.stages[1].status == Slic3r::GUI::SmartSlicingStageStatus::Complete);
+    CHECK(view.legacy_steps[1] == Slic3r::GUI::LegacyAIWorkflowStatus::Success);
+
+    context.validation_warnings.push_back("An actual native configuration warning.");
+    snapshot.report = PrintabilityInspector().inspect(context);
+    const Slic3r::GUI::SmartSlicingViewModel warning_view = Slic3r::GUI::SmartSlicingViewModel::from_snapshot(snapshot);
+    CHECK(warning_view.summary_key == "preflight_complete_with_warnings");
+    CHECK(warning_view.stages[1].status == Slic3r::GUI::SmartSlicingStageStatus::NeedsAttention);
+    CHECK(warning_view.legacy_steps[1] == Slic3r::GUI::LegacyAIWorkflowStatus::Warning);
 }
 
 TEST_CASE("empty material preset entries do not satisfy printability prerequisites", "[AI][SmartSlicing]")
@@ -369,4 +376,28 @@ TEST_CASE("canceled view model does not expose a report from an obsolete workspa
     CHECK(view.summary_key == "canceled");
     CHECK(view.issue_count == 0);
     CHECK(view.issues.empty());
+}
+
+TEST_CASE("baseline trial failure retains completed preflight and blocks candidate application", "[AI][SmartSlicing]")
+{
+    WorkflowSnapshot snapshot;
+    snapshot.state = WorkflowState::Failed;
+    snapshot.detail = "baseline_trial_failed";
+    SliceCandidate baseline;
+    baseline.id = "baseline";
+    baseline.status = CandidateStatus::Failed;
+    baseline.diagnostic_code = "trial_validation_failed";
+    snapshot.candidates.push_back(baseline);
+    const auto view = Slic3r::GUI::SmartSlicingViewModel::from_snapshot(snapshot);
+    CHECK(view.summary_key == "baseline_trial_failed");
+    CHECK(view.stages[0].status == Slic3r::GUI::SmartSlicingStageStatus::Complete);
+    CHECK(view.stages[1].status == Slic3r::GUI::SmartSlicingStageStatus::Complete);
+    CHECK(view.stages[2].status == Slic3r::GUI::SmartSlicingStageStatus::NeedsAttention);
+    CHECK(view.stages[3].status == Slic3r::GUI::SmartSlicingStageStatus::Waiting);
+    CHECK(view.can_start);
+    CHECK_FALSE(view.can_apply);
+    REQUIRE(view.candidates.size() == 1);
+    CHECK(view.candidates[0].failed);
+    CHECK_FALSE(view.candidates[0].can_select);
+    CHECK_FALSE(view.candidates[0].can_retry);
 }

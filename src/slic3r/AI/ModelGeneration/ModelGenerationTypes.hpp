@@ -42,6 +42,11 @@ struct ModelGenerationTypes {
         };
 
         bool                     available { false };
+        std::string              artifact_sha256;
+        std::string              units;
+        std::string              gate_version;
+        std::map<std::string, double> report_metrics;
+        std::map<std::string, double> report_thresholds;
         std::string              status;
         std::vector<std::string> errors;
         std::vector<std::string> warnings;

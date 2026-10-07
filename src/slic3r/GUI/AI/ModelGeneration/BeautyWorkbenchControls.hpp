@@ -17,6 +17,7 @@
 #include "BeautyPreparationTicket.hpp"
 #include "BeautySourceSnapshot.hpp"
 #include "ModelPreviewPuzzle.hpp"
+#include "slic3r/GUI/Widgets/Button.hpp"
 
 class wxChoice; class wxCheckBox; class wxSlider; class wxStaticText; class wxButton;
 namespace Slic3r::GUI {
@@ -27,8 +28,11 @@ public:
     ~BeautyWorkbenchControls();
     void synchronize(const boost::filesystem::path&, bool editable, bool visible);
     void update_gesture();
+    bool showing_original() const;
     bool has_changes() const {return dirty;}
-    bool ready() const {return bool(surface) && !failed && !task;}
+    static bool has_saved_draft(const boost::filesystem::path&);
+    bool ready() const {return bool(surface) && !failed && !preparing();}
+    bool preparation_failed() const {return failed && !preparing();}
     void mark_saved();
     struct SaveCapture {
         std::function<nlohmann::json()> prepare_record;
@@ -37,7 +41,8 @@ public:
     SaveCapture capture_save() const;
     void prepare_options(AI::ModelFinishingOptions&, const AI::SurfaceSelectionPersistence::SelectionState&);
     static nlohmann::json accepted_document(const AI::ModelFinishingOptions&, const std::string& output_geometry);
-    static void prepare_import(const boost::filesystem::path&, AI::ModelImportRequest&);
+    static void prepare_import(const boost::filesystem::path&, AI::ModelImportRequest&,
+                               std::optional<AI::BeautyPuzzle>* appearance = nullptr);
     std::function<void(const std::string&)> add_native_mixed_filament;
 private:
     static constexpr uint32_t none=UINT32_MAX;
@@ -65,6 +70,7 @@ private:
         AI::BeautyPuzzle before_upgrade;
         bool upgraded=false;
         bool draft=false,regroup=false,guidance_only=false,guidance_ready=false;
+        bool request_guidance=false;
     };
     struct Snapshot {AI::BeautyPuzzle puzzle;std::optional<AI::BeautyEditRegions> edit_regions;uint32_t selected=none;};
     ModelPreview3D* preview;
@@ -77,14 +83,16 @@ private:
     wxStaticText* topology_status;
     wxStaticText* workflow_status;
     wxSlider* radius;
-    wxButton *color_button,*restore_button,*undo_button,*redo_button,*reset_button;
-    wxButton* more_button;
-    wxButton* match_button;
-    wxButton* focus_button;
+    Button *color_button,*restore_button,*undo_button,*redo_button,*reset_button;
+    Button* more_button;
+    Button* match_button;
+    Button* focus_button;
     wxTimer timer;
     std::thread worker;
     std::unique_ptr<BeautyDraftQueue> draft_queue;
     std::shared_ptr<Preparation> task;
+    // Optional recognition never owns or blocks the editable document.
+    bool preparing() const {return task && !task->guidance_only;}
     std::shared_ptr<const AI::BeautySurface> surface;
     std::shared_ptr<const AI::BeautySurface> cached_surface;
     std::vector<std::array<float,4>> cached_base_colors;
@@ -104,6 +112,7 @@ private:
     int stroke_mode=0;
     int shown_stage=-1;
     bool editable=false,failed=false,dirty=false,regroup_requested=false;
+    bool presentation_active=false;
     bool guidance_requested=false,guidance_ready=false;
     bool boundary_recolor=false;
     std::string preparation_notice;

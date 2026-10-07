@@ -35,7 +35,7 @@ inline Computation compute_baseline(const Input& input)
     Computation computation;
     auto& result = computation.result;
     result = input.identity;
-    result.algorithm_version = "region-direct-v5";
+    result.algorithm_version = "region-direct-v6";
     result.mode = AI::print_color_mode(result.requested_color_count);
     result.color_tolerance = input.tolerance;
     result.important_area_floor = input.important_area_floor;
@@ -319,6 +319,18 @@ inline Computation compute_baseline(const Input& input)
         if (selection.cancelled) { computation.cancelled = true; return computation; }
         result.algorithm_version = "region-layered-v2";
     } else if (k <= 6 && p > 0) {
+        // An explicit appearance edit must use its exact display color when
+        // available. Constrain RGB, not slot identity: duplicate-color spools
+        // remain interchangeable unless the user explicitly locked a material.
+        std::vector<std::optional<uint32_t>> exact_colors(k);
+        for (const auto& edit : result.user_overrides) {
+            const size_t t = result.face_targets[edit.first];
+            if (target_locks[t]) continue;
+            const auto rgb = packed_rgb(edit.second);
+            if (std::any_of(material_colors.begin(), material_colors.end(),
+                [&](const auto& color) { return packed_rgb(color) == rgb; }))
+                exact_colors[t] = rgb;
+        }
         // CIEDE2000 is nonlinear: the distance to an Oklab centroid can rank
         // spools differently from the error on the actual surface. Accumulate
         // each target/slot cost once, then reuse it for all <= 720 assignments.
@@ -372,6 +384,9 @@ inline Computation compute_baseline(const Input& input)
             double cost = 0, coverage = 0; bool feasible = true;
             for (size_t t = 0; t < k; ++t) {
                 if (target_locks[t] && (order[t] >= p || result.physical_channels[physical[order[t]]].slot != *target_locks[t])) {
+                    feasible = false; break;
+                }
+                if (exact_colors[t] && (order[t] >= p || packed_rgb(material_colors[order[t]]) != *exact_colors[t])) {
                     feasible = false; break;
                 }
                 if (order[t] >= p) continue;

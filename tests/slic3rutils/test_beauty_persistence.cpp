@@ -4,6 +4,8 @@
 #include "slic3r/GUI/AI/ModelGeneration/BeautyPreparationTicket.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchControls.hpp"
 #include "slic3r/GUI/AI/Model/BeautyPrintColorHandoff.hpp"
+#include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
+#include "slic3r/GUI/AI/Model/BeautyMetadata.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/LocalPrintColorMatching.hpp"
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
@@ -187,9 +189,9 @@ struct HistoryFixture {
         puzzle.colors[1]={1.f,0.f,0.f,1.f};
     }
     ~HistoryFixture() {boost::system::error_code ignored;boost::filesystem::remove_all(directory,ignored);}
-    void save() {
+    void save(const std::string& hash=std::string(64,'b')) {
         boost::filesystem::ofstream output(directory/"model.json");
-        output<<nlohmann::json{{"model_sha256",std::string(64,'b')},
+        output<<nlohmann::json{{"model_sha256",hash},
             {"beauty_workbench",{{"geometry_id",puzzle.geometry_id},{"puzzle",puzzle.encode()}}}};
     }
 };
@@ -202,6 +204,50 @@ TEST_CASE("Appearance-only history continues through normal import matching", "[
     REQUIRE_NOTHROW(BeautyWorkbenchControls::prepare_import(fixture.model,request));
     CHECK_FALSE(request.matched_colors.has_value());
     CHECK(request.face_color_overrides.size()==1);
+}
+
+TEST_CASE("Saved draft detection separates accepted history from unsaved edits across assets", "[BeautyWorkbench][BeautyPersistence]") {
+    HistoryFixture fixture; fixture.save();
+    CHECK_FALSE(BeautyWorkbenchControls::has_saved_draft(fixture.model));
+    const auto metadata = fixture.directory / "model.json";
+    if (GENERATE(false, true)) {
+        boost::filesystem::ofstream draft(metadata.string() + ".draft");
+        draft << nlohmann::json{{"beauty_puzzle_draft", {{"puzzle", fixture.puzzle.encode()}}}};
+    } else {
+        boost::filesystem::ofstream draft(metadata);
+        draft << nlohmann::json{{"beauty_puzzle_draft", {{"puzzle", fixture.puzzle.encode()}}}};
+    }
+    CHECK(BeautyWorkbenchControls::has_saved_draft(fixture.model));
+    CHECK_FALSE(BeautyWorkbenchControls::has_saved_draft(fixture.directory / "other.glb"));
+}
+
+TEST_CASE("An unreadable draft is not treated as an asset without unsaved edits", "[BeautyWorkbench][BeautyPersistence]") {
+    HistoryFixture fixture; fixture.save();
+    const auto path = fixture.directory / "model.json.draft";
+    { boost::filesystem::ofstream draft(path); draft << "{broken"; }
+    REQUIRE_THROWS(BeautyWorkbenchControls::has_saved_draft(fixture.model));
+    boost::filesystem::ifstream preserved(path);
+    std::string bytes;
+    std::getline(preserved, bytes);
+    CHECK(bytes == "{broken");
+}
+
+TEST_CASE("Accepted appearance history is handed off only for the original model bytes", "[BeautyWorkbench][BeautyPersistence]") {
+    HistoryFixture fixture;
+    {boost::filesystem::ofstream model(fixture.model);model<<"appearance-source";}
+    fixture.save(AI::model_artifact_sha256(fixture.model));
+    AI::ModelImportRequest request;
+    std::optional<AI::BeautyPuzzle> appearance;
+    REQUIRE_NOTHROW(BeautyWorkbenchControls::prepare_import(fixture.model,request,&appearance));
+    REQUIRE(appearance.has_value());
+    CHECK(appearance->face_piece==fixture.puzzle.face_piece);
+    CHECK(appearance->colors==fixture.puzzle.colors);
+    CHECK_FALSE(request.matched_colors.has_value());
+    {boost::filesystem::ofstream model(fixture.model);model<<"different-source";}
+    appearance.reset();
+    REQUIRE_THROWS(BeautyWorkbenchControls::prepare_import(fixture.model,request,&appearance));
+    CHECK_FALSE(appearance.has_value());
+    CHECK_FALSE(request.matched_colors.has_value());
 }
 
 TEST_CASE("Matched history preserves explicit physical slots including identical colors", "[BeautyWorkbench][BeautyPersistence]") {
@@ -332,4 +378,118 @@ TEST_CASE("Prepared display rebinds only bitwise identical source geometry", "[M
     REQUIRE(prepared.rebind_identical_mesh(source,target));
     CHECK(prepared.matches(target,owner->colors,*surface,puzzle,UINT32_MAX,nullptr));
     CHECK_FALSE(prepared.matches(source,owner->colors,*surface,puzzle,UINT32_MAX,nullptr));
+
+}
+
+TEST_CASE("Accepting a beauty version publishes a complete record and preserves the source draft", "[BeautyWorkbench][BeautyPersistence]") {
+    HistoryFixture fixture;
+    const auto candidate=fixture.directory/"candidate.glb", history=fixture.directory/"candidate.json";
+    {boost::filesystem::ofstream file(fixture.model);file<<"source-model";}
+    {boost::filesystem::ofstream file(candidate);file<<"preview-model";}
+    {boost::filesystem::ofstream file(fixture.directory/"model.json.draft");file<<"user-edit";}
+    const auto model_hash=AI::model_artifact_sha256(candidate), source_hash=AI::model_artifact_sha256(fixture.model);
+    nlohmann::json metadata{{"model_sha256",model_hash},{"source_sha256",source_hash},{"beauty_workbench",{{"puzzle",fixture.puzzle.encode()}}}};
+    REQUIRE_NOTHROW(AI::publish_beauty_version_record(history,candidate,fixture.model,metadata));
+    boost::filesystem::ifstream file(history);const auto saved=nlohmann::json::parse(file);
+    CHECK(saved==metadata);
+    CHECK(AI::model_artifact_sha256(candidate)==model_hash);
+    CHECK(AI::model_artifact_sha256(fixture.model)==source_hash);
+    boost::filesystem::ifstream draft(fixture.directory/"model.json.draft");std::string bytes;std::getline(draft,bytes);
+    CHECK(bytes=="user-edit");
+    CHECK(std::distance(boost::filesystem::directory_iterator(fixture.directory),boost::filesystem::directory_iterator())==4);
+}
+
+TEST_CASE("Failed beauty record publication keeps history and previews available for retry", "[BeautyWorkbench][BeautyPersistence]") {
+    HistoryFixture fixture;
+    const auto candidate=fixture.directory/"candidate.glb", blocker=fixture.directory/"history", history=blocker/"accepted.json";
+    {boost::filesystem::ofstream file(fixture.model);file<<"source-model";}
+    {boost::filesystem::ofstream file(candidate);file<<"preview-model";}
+    {boost::filesystem::ofstream file(blocker);file<<"existing-user-file";}
+    const auto model_hash=AI::model_artifact_sha256(candidate), source_hash=AI::model_artifact_sha256(fixture.model);
+    const nlohmann::json metadata{{"model_sha256",model_hash},{"source_sha256",source_hash}};
+    REQUIRE_THROWS(AI::publish_beauty_version_record(history,candidate,fixture.model,metadata));
+    CHECK(AI::model_artifact_sha256(candidate)==model_hash);
+    CHECK(AI::model_artifact_sha256(fixture.model)==source_hash);
+    boost::filesystem::ifstream file(blocker);std::string bytes;std::getline(file,bytes);file.close();
+    CHECK(bytes=="existing-user-file");
+    CHECK(std::distance(boost::filesystem::directory_iterator(fixture.directory),boost::filesystem::directory_iterator())==3);
+    boost::filesystem::remove(blocker);boost::filesystem::create_directory(blocker);
+    REQUIRE_NOTHROW(AI::publish_beauty_version_record(history,candidate,fixture.model,metadata));
+    boost::filesystem::ifstream accepted(history);CHECK(nlohmann::json::parse(accepted)==metadata);
+    CHECK(std::distance(boost::filesystem::directory_iterator(blocker),boost::filesystem::directory_iterator())==1);
+}
+
+TEST_CASE("Beauty acceptance rejects changed models and existing records without replacing them", "[BeautyWorkbench][BeautyPersistence]") {
+    HistoryFixture fixture;
+    const auto candidate=fixture.directory/"candidate.glb", history=fixture.directory/"candidate.json";
+    {boost::filesystem::ofstream file(fixture.model);file<<"source-model";}
+    {boost::filesystem::ofstream file(candidate);file<<"preview-model";}
+    const nlohmann::json metadata{{"model_sha256",AI::model_artifact_sha256(candidate)},{"source_sha256",AI::model_artifact_sha256(fixture.model)}};
+    const int failure=GENERATE(0,1,2,3);
+    if(failure==0) {boost::filesystem::ofstream file(candidate);file<<"changed-preview";}
+    if(failure==1) {boost::filesystem::ofstream file(fixture.model);file<<"changed-source";}
+    if(failure==2) {boost::filesystem::ofstream file(history);file<<"existing-history";}
+    auto invalid=metadata;
+    if(failure==3)invalid["invalid-utf8"]=std::string(1,char(0xff));
+    const auto model_hash=AI::model_artifact_sha256(candidate), source_hash=AI::model_artifact_sha256(fixture.model);
+    REQUIRE_THROWS(AI::publish_beauty_version_record(history,candidate,fixture.model,invalid));
+    CHECK(AI::model_artifact_sha256(candidate)==model_hash);
+    CHECK(AI::model_artifact_sha256(fixture.model)==source_hash);
+    if(failure==2) {
+        boost::filesystem::ifstream file(history);std::string bytes;std::getline(file,bytes);
+        CHECK(bytes=="existing-history");
+    } else CHECK_FALSE(boost::filesystem::exists(history));
+    CHECK(std::distance(boost::filesystem::directory_iterator(fixture.directory),boost::filesystem::directory_iterator())==(failure==2?3:2));
+}
+
+TEST_CASE("Unavailable beauty files preserve the candidate and can be saved after access returns", "[BeautyWorkbench][BeautyPersistence]") {
+    HistoryFixture fixture;
+    const auto candidate=fixture.directory/"candidate.glb", history=fixture.directory/"candidate.json";
+    {boost::filesystem::ofstream file(fixture.model);file<<"source-model";}
+    {boost::filesystem::ofstream file(candidate);file<<"preview-model";}
+    const auto model_hash=AI::model_artifact_sha256(candidate), source_hash=AI::model_artifact_sha256(fixture.model);
+    const nlohmann::json metadata{{"model_sha256",model_hash},{"source_sha256",source_hash}};
+    const bool unavailable_source=GENERATE(false,true);
+    const auto unavailable=unavailable_source?fixture.model:candidate;
+    const auto held=fixture.directory/"unavailable.glb";
+    boost::filesystem::rename(unavailable,held);
+    std::string error;
+    try {AI::publish_beauty_version_record(history,candidate,fixture.model,metadata);}
+    catch(const std::runtime_error& failure) {error=failure.what();}
+    REQUIRE_FALSE(error.empty());
+    CHECK(error.find("恢复文件访问")!=std::string::npos);
+    CHECK(error.find("重新预览")==std::string::npos);
+    CHECK_FALSE(boost::filesystem::exists(history));
+    CHECK(AI::model_artifact_sha256(held)==(unavailable_source?source_hash:model_hash));
+    CHECK(AI::model_artifact_sha256(unavailable_source?candidate:fixture.model)==(unavailable_source?model_hash:source_hash));
+    CHECK(std::distance(boost::filesystem::directory_iterator(fixture.directory),boost::filesystem::directory_iterator())==2);
+    boost::filesystem::rename(held,unavailable);
+    REQUIRE_NOTHROW(AI::publish_beauty_version_record(history,candidate,fixture.model,metadata));
+    boost::filesystem::ifstream accepted(history);
+    CHECK(nlohmann::json::parse(accepted)==metadata);
+    CHECK(AI::model_artifact_sha256(candidate)==model_hash);
+    CHECK(AI::model_artifact_sha256(fixture.model)==source_hash);
+}
+
+TEST_CASE("Preencoded accepted beauty records retain publication guards", "[BeautyPersistence]") {
+    HistoryFixture fixture;
+    const auto candidate=fixture.directory/"prepared.glb",history=fixture.directory/"prepared.json";
+    {boost::filesystem::ofstream file(fixture.model);file<<"source-model";}
+    {boost::filesystem::ofstream file(candidate);file<<"preview-model";}
+    const nlohmann::json metadata {{"model_sha256",AI::model_artifact_sha256(candidate)},
+        {"source_sha256",AI::model_artifact_sha256(fixture.model)},{"a",true},{"z",19}};
+    const nlohmann::json workbench {{"puzzle",fixture.puzzle.encode()},
+        {"unknown",nlohmann::json::array({true,17,"unicode-roundtrip"})}};
+    const auto encoded=workbench.dump();
+    REQUIRE_NOTHROW(AI::publish_beauty_version_record(history,candidate,fixture.model,metadata,&encoded));
+    boost::filesystem::ifstream input(history);
+    const std::string before((std::istreambuf_iterator<char>(input)),{});
+    auto expected=metadata;expected["beauty_workbench"]=workbench;
+    CHECK(before==expected.dump());
+    REQUIRE_THROWS(AI::publish_beauty_version_record(history,candidate,fixture.model,metadata,&encoded));
+    boost::filesystem::ifstream existing(history);
+    CHECK(std::string((std::istreambuf_iterator<char>(existing)),{})==before);
+    auto collision=metadata;collision["beauty_workbench"]=nullptr;
+    CHECK_THROWS(AI::publish_beauty_version_record(fixture.directory/"collision.json",candidate,fixture.model,collision,&encoded));
+    CHECK_FALSE(boost::filesystem::exists(fixture.directory/"collision.json"));
 }

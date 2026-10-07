@@ -80,6 +80,10 @@ public:
     void recheck(const std::string& job_id, StatusFn on_complete, ErrorFn on_error) override
     { m_service->recheck(job_id, status_callback(std::move(on_complete)), std::move(on_error)); }
 
+    void check_saved_artifact(const std::string& asset_id, const std::string& sha256,
+                              StatusFn on_complete, ErrorFn on_error, bool read_only = false) override
+    { m_service->check_saved_artifact(asset_id, sha256, status_callback(std::move(on_complete)), std::move(on_error), read_only); }
+
     void visual_review(const std::string& job_id, StatusFn on_complete, ErrorFn on_error) override
     { m_service->visual_review(job_id, status_callback(std::move(on_complete)), std::move(on_error)); }
 

@@ -1,20 +1,15 @@
 // Included once by MainFrame.cpp inside Slic3r::GUI; desktop AI composition.
 template<typename Trace>
-void MainFrame::initialize_ai_features(Trace&& trace_stage)
+static std::unique_ptr<AIDesktopFeatureHost> create_ai_feature_host(
+    Notebook* tabs, Plater* plater, std::function<void()> select_prepare,
+    std::function<void()> register_assistant, Trace&& trace_stage)
 {
-    m_ai_feature_host = std::make_unique<AIDesktopFeatureHost>(m_tabpanel, m_plater, [this] {
-        m_plater->exit_gizmo();
-        m_plater->update(true, true);
-        select_tab(TAB_ID_PREPARE);
-        // AI imports and color matching return to the native prepare page.
-        // Keep the post-generation preparation controls visible so the user
-        // can add a detached base immediately, without discovering the
-        // Smart Slicing pane through the View menu first.
-        m_plater->show_smart_slicing(true);
-    }, [this] { register_ai_assistant(); });
+    auto host = std::make_unique<AIDesktopFeatureHost>(tabs, plater,
+        std::move(select_prepare), std::move(register_assistant));
     trace_stage();
-    m_tabpanel->AddPage(TAB_ID_GENERATE_3D, m_ai_feature_host->model_generation_panel(), _L("3D 生成"),
+    tabs->AddPage(TAB_ID_GENERATE_3D, host->model_generation_panel(), _L("3D 生成"),
                         "tab_generate_3d_active");
+    return host;
 }
 
 void MainFrame::register_ai_assistant()

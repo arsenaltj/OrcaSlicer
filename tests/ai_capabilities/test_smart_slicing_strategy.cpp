@@ -47,6 +47,9 @@ TEST_CASE("The baseline parameter advisor preserves brim rules using a native-fr
     CHECK(std::get<double>(proposal.entries.front().expected_value) == 2.0);
     CHECK(std::get<double>(proposal.entries.front().new_value) == 5.0);
     CHECK(context.current_brim_width == 2.0);
+    context.brim_scope_consistent = false;
+    CHECK(advisor.advise(context).entries.empty());
+    context.brim_scope_consistent = true;
     context.current_brim_width = 10;
     CHECK(advisor.advise(context).entries.empty());
     context.current_brim_width = 2;
