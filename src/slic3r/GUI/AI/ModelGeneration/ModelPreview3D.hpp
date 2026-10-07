@@ -500,6 +500,11 @@ public:
             error = "The OBJ contains no renderable triangles.";
             return false;
         }
+        // Async model loading can upload textures before the first paint initializes GLAD.
+        if (!wxGetApp().init_opengl()) {
+            error = "OpenGL preview initialization failed.";
+            return false;
+        }
         std::unique_ptr<ModelPreviewTexture> texture_model;
         auto model = std::make_unique<GLModel>();
         try {
