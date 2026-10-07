@@ -595,10 +595,11 @@ def archify_spec(report):
     Five selected dependency pairs make the overview readable and deterministic.
     Missing/new non-backbone edges are counted explicitly, never fabricated.
     """
-    positions = {"desktop": [60, 60], "generation": [60, 260], "contracts": [470, 260],
-                 "slicing": [880, 260], "adapter": [470, 60], "tests": [470, 460],
-                 "core": [880, 60], "engineering": [60, 460], "assets": [880, 460],
-                 "unknown": [60, 660]}
+    positions = {"desktop": [60, 60], "generation": [60, 230], "contracts": [470, 230],
+                 "slicing": [880, 230], "adapter": [470, 60], "tests": [470, 400],
+                 "core": [880, 60], "engineering": [60, 400], "assets": [880, 400],
+                 "color": [60, 570], "appearance": [470, 570], "modelassets": [880, 570],
+                 "placement": [470, 740], "unknown": [60, 740]}
     components = []
     for module in report["modules"]:
         key = module["id"]
