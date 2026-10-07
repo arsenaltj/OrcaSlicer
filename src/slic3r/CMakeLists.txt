@@ -923,6 +923,10 @@ else ()
     add_library(libslic3r_gui STATIC ${SLIC3R_GUI_SOURCES} ${ORCA_BUILD_INFO_SOURCE})
 endif ()
 target_include_directories(libslic3r_gui PRIVATE Utils ${CMAKE_CURRENT_BINARY_DIR})
+if(MSVC)
+    # Remove unused COMDAT definitions to keep the Release archive below MSVC's 4 GiB limit.
+    target_compile_options(libslic3r_gui PRIVATE $<$<CONFIG:Release>:/Zc:inline>)
+endif()
 include("${CMAKE_SOURCE_DIR}/cmake/OrcaModelColoring.cmake")
 
 if (WIN32)
