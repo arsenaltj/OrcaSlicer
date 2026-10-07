@@ -12,6 +12,8 @@
 
 补充原生缓存回归与平台编译：1091 项仅为上述受影响检查集，不包含旧全量 CI 的两项 H2C 失败。复现后确认 fixture 未模拟 `BackgroundSlicingProcess` 的切片后喷嘴分配回填，导致重新应用旧种子被生产守卫正确判为变化。仅补齐两项 fixture 的实际往返，保留原缓存有效断言，并加入明确改变分配后缓存必须失效的断言，未修改 `PrintApply` 保护。CppTest `20261008-032108-051` 的 H2C 26/26 与 `20261008-032427-501` 的既有 AutoMapRestore 1/1 通过，源码身份同为 `af3d0232e798f93ba3c31290fb9ecda15e6cef8f937ea482da992beddb0d798b`；失败和临时诊断日志保留，诊断代码已移除。候选 `37667741762` 的 Linux 编译继续暴露 Windows 消息诊断函数签名未受平台条件保护；将完整函数置于与 `MSWWindowProc` 相同的 `__WXMSW__` 条件内，保持 Windows 行为。最终提交后的 Windows 构建、原生全量 CI、候选收据和运行产物继续在 PR23 对应 head/base/candidate 上核对，不沿用旧候选通过项。
 
+跨平台补验：候选 `0b702271`（head `3c541fd14`）的 macOS 完整构建、Linux 编译通过。macOS 的 25 项打印确认用例缺少 Python 动态库，另三项模型检查数值断言失败；补齐打印测试的运行库和 macOS 相对 rpath，文案复用现有 UTF-8 `format_wxstr`，原有断言及未测量/非法值保护不变。Windows CppTest `20261008-050957-449` 模型呈现 50/50、`20261008-051543-758` SmartSlicing 313/313 通过，同源码身份 `55b1a8b0…`，最终提交与新候选全量检查继续在 PR23 对应记录核对。Linux 外部 CLI 检查 19 失败、63 通过、4 跳过、7 xfailed；涉及的 CLI/配置/切片核心文件与 `7584ff7d` blob 一致，外部仓库最新为 `599ea6d9`，现有 CLI 兼容性问题保留，不屏蔽检查或冒充 Linux 原生全量通过。该外部步骤失败使 Linux 原生 CI 尚未运行。
+
 ## 2026-10-06 整体 UX 迁入 PR20 后主线（用户授权）
 
 用户最新明确指令为整体迁移 `origin/codex/ui-redesign-3d-model-ux-20260930` 复现较好的 UX，替代此前误解的打印单模块范围。以已合入 PR20 的 `2aa5ca0df09ed1ee478eb8d2e40b5a3913a421c7` 为业务基线，视觉源固定 `047af2bf4d5350e79aabaa18bcd1335cd9f2dce6`；继续隔离分支 `codex/ui-redesign-printer-ux-integration-20261006` 与 PR21。承接 UX-01/02/03/05/06/07/08/09/10/11/12 中实际受影响消费者，原 59 项、N1～N9 及延期恢复条件不重编号。
