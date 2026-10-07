@@ -84,10 +84,80 @@
 
 #include "ModelGenerationInputStyle.hpp"
 #include "ModelGenerationInputWelcome.hpp"
+#include "slic3r/GUI/Redesign/RedesignControls.hpp"
 namespace Slic3r::GUI {
 using namespace ModelGenerationPresentation;
 
 namespace {
+class RedesignPromptSurface final : public wxPanel, public AIThemeOwner {
+public:
+    explicit RedesignPromptSurface(wxWindow* parent) : wxPanel(parent) {
+        SetBackgroundStyle(wxBG_STYLE_PAINT);
+        Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
+            wxAutoBufferedPaintDC dc(this);
+            dc.SetBackground(wxBrush(RedesignTheme::panel_colour())); dc.Clear();
+            dc.SetPen(*wxTRANSPARENT_PEN);
+            dc.SetBrush(wxBrush(RedesignTheme::control_colour()));
+            dc.DrawRoundedRectangle(GetClientRect(), FromDIP(12));
+        });
+    }
+    void apply_ai_theme(bool fonts) override {
+        SetBackgroundColour(RedesignTheme::control_colour());
+        for (auto* child : GetChildren()) {
+            child->SetBackgroundColour(RedesignTheme::control_colour());
+            child->SetForegroundColour(child->GetName() == "input_secondary"
+                ? RedesignTheme::secondary_text_colour() : RedesignTheme::primary_text_colour());
+            if (fonts) RedesignTheme::style_text(child, child->GetForegroundColour(), 10);
+        }
+        Refresh(false);
+    }
+};
+
+class RedesignImageUpload final : public Button, public AIThemeOwner {
+public:
+    explicit RedesignImageUpload(wxWindow* parent) : Button(parent, _L("点击、拖拽或粘贴图片")),
+        m_add(this, "figma-ux/add", 28) {
+        SetMinSize(FromDIP(wxSize(1, 160)));
+        SetBackgroundStyle(wxBG_STYLE_PAINT);
+        apply_ai_theme(true);
+        Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
+            wxAutoBufferedPaintDC dc(this);
+            dc.SetBackground(wxBrush(RedesignTheme::panel_colour())); dc.Clear();
+            dc.SetPen(HasFocus() ? wxPen(RedesignTheme::accent_colour()) : *wxTRANSPARENT_PEN);
+            dc.SetBrush(wxBrush(RedesignTheme::control_colour()));
+            dc.DrawRoundedRectangle(GetClientRect(), FromDIP(12));
+            const auto size = GetClientSize();
+            if (m_thumbnail.IsOk()) {
+                dc.DrawBitmap(m_thumbnail, (size.x - m_thumbnail.GetWidth()) / 2,
+                    (size.y - m_thumbnail.GetHeight()) / 2, true);
+                return;
+            }
+            const int tile = FromDIP(70), tile_x = (size.x - tile) / 2;
+            dc.SetPen(wxPen(wxColour(105, 105, 108), 1, wxPENSTYLE_SHORT_DASH));
+            dc.SetBrush(wxBrush(wxColour(60, 60, 62)));
+            dc.DrawRoundedRectangle(tile_x, FromDIP(22), tile, tile, FromDIP(12));
+            dc.DrawBitmap(m_add.bmp(), tile_x + (tile - m_add.GetBmpWidth()) / 2,
+                FromDIP(22) + (tile - m_add.GetBmpHeight()) / 2, true);
+            dc.SetFont(GetFont()); dc.SetTextForeground(RedesignTheme::primary_text_colour());
+            const auto label = wxControl::Ellipsize(GetLabel(), dc, wxELLIPSIZE_END, std::max(1, size.x - FromDIP(12)));
+            dc.DrawText(label, (size.x - dc.GetTextExtent(label).x) / 2, FromDIP(105));
+            wxFont hint = GetFont(); hint.SetPointSize(8); dc.SetFont(hint);
+            dc.SetTextForeground(RedesignTheme::secondary_text_colour());
+            const auto support = _L("PNG、JPG、JPEG · 最大 20 MB");
+            dc.DrawText(support, (size.x - dc.GetTextExtent(support).x) / 2, FromDIP(130));
+        });
+    }
+    void set_thumbnail(const wxBitmap& bitmap) { m_thumbnail = bitmap; Refresh(false); }
+    void apply_ai_theme(bool fonts) override {
+        SetBackgroundColour(RedesignTheme::panel_colour());
+        if (fonts) { RedesignTheme::style_text(this, RedesignTheme::primary_text_colour(), 10); m_add.msw_rescale(); }
+        Refresh(false);
+    }
+private:
+    ScalableBitmap m_add;
+    wxBitmap m_thumbnail;
+};
+
 // Local drawer affordance; the library remains the only content/selection owner.
 class ImageDrawerHandle final : public wxControl, public AIThemeOwner {
 public:
@@ -671,13 +741,14 @@ void ModelGenerationPanel::refresh_input_image_thumbnail()
         const int width = std::max(1, int(std::lround(m_reference_image.GetWidth() * scale)));
         const int height = std::max(1, int(std::lround(m_reference_image.GetHeight() * scale)));
         m_choose_image->SetLabel(_L("更换图片"));
-        m_choose_image->SetIcon(wxBitmap(m_reference_image.Scale(width, height, wxIMAGE_QUALITY_HIGH)));
+        static_cast<RedesignImageUpload*>(m_choose_image)->set_thumbnail(
+            wxBitmap(m_reference_image.Scale(width, height, wxIMAGE_QUALITY_HIGH)));
         m_choose_image->SetMinSize(wxSize(-1, m_choose_image->FromDIP(160)));
         m_choose_image->SetToolTip(_L("当前参考图；点击更换，或拖入一张 PNG/JPEG 图片。"));
     } else {
-        m_choose_image->SetLabel(_L("点击或拖入图片"));
-        m_choose_image->SetIcon(create_scaled_bitmap("figma-ux/add", m_choose_image, 26));
-        m_choose_image->SetMinSize(wxSize(-1, m_choose_image->FromDIP(68)));
+        m_choose_image->SetLabel(_L("点击、拖拽或粘贴图片"));
+        static_cast<RedesignImageUpload*>(m_choose_image)->set_thumbnail(wxNullBitmap);
+        m_choose_image->SetMinSize(wxSize(-1, m_choose_image->FromDIP(160)));
         m_choose_image->SetToolTip(_L("选择或拖入一张 PNG/JPEG 图片。"));
     }
     if (m_input_form) {
@@ -690,7 +761,7 @@ void ModelGenerationPanel::refresh_input_image_thumbnail()
 wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
 {
     auto* panel = new ModelGenerationInputStyle::RoundedPanel(parent);
-    panel->SetMinSize(wxSize(FromDIP(330), -1));
+    panel->SetMinSize(wxSize(FromDIP(373), -1));
     panel->SetBackgroundColour(wxColour(250, 251, 251));
     auto* outer = new wxBoxSizer(wxVERTICAL);
 
@@ -741,11 +812,10 @@ wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
     scroll->SetScrollRate(0, FromDIP(12));
     auto* sizer = new wxBoxSizer(wxVERTICAL);
 
-    sizer->Add(section_label(scroll, _L("上传图片")), 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(16));
-    sizer->AddSpacer(FromDIP(12));
+    sizer->Add(section_label(scroll, _L("上传图片")), 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
+    sizer->AddSpacer(FromDIP(14));
     auto* image_row = new wxBoxSizer(wxHORIZONTAL);
-    m_choose_image = new Button(scroll, _L("点击或拖入图片"), "figma-ux/add", 0, 26);
-    m_choose_image->SetMinSize(wxSize(-1, FromDIP(68)));
+    m_choose_image = new RedesignImageUpload(scroll);
     m_choose_image->Bind(wxEVT_DPI_CHANGED, [this](wxDPIChangedEvent& event) {
         m_input_thumbnail_extent = 0;
         refresh_input_image_thumbnail();
@@ -762,65 +832,69 @@ wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
     m_selected_image = new wxStaticText(scroll, wxID_ANY, _L("未选择图片"),
                                         wxDefaultPosition, wxDefaultSize, wxST_ELLIPSIZE_END);
     m_selected_image->SetMinSize(wxSize(FromDIP(70), -1));
-    m_choose_image->SetVertical();
-    sizer->Add(m_choose_image, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
-    auto* supported = new wxStaticText(scroll, wxID_ANY, _L("PNG、JPG、JPEG · 最大 20 MB"));
-    supported->SetToolTip(_L("宽高至少 64 px，总像素不超过 1677 万；暂不支持 WebP。"));
-    sizer->Add(supported, 0, wxALIGN_CENTER_HORIZONTAL | wxBOTTOM, FromDIP(8));
+    sizer->Add(m_choose_image, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(21));
+    m_choose_image->SetToolTip(_L("宽高至少 64 px，总像素不超过 1677 万；暂不支持 WebP。"));
     image_row->Add(m_paste_image, 0, wxRIGHT, FromDIP(6));
     image_row->Add(m_clear_image, 0, wxRIGHT, FromDIP(6));
     image_row->Add(m_selected_image, 1, wxALIGN_CENTER_VERTICAL);
-    sizer->Add(image_row, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
+    sizer->Add(image_row, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(21));
 
-    sizer->AddSpacer(FromDIP(10));
+    sizer->AddSpacer(FromDIP(21));
     m_prompt_label = new wxStaticText(scroll, wxID_ANY, _L("描述词"));
-    sizer->Add(m_prompt_label, 0, wxLEFT | wxRIGHT, FromDIP(12));
-    sizer->AddSpacer(FromDIP(4));
-    m_prompt = new wxTextCtrl(scroll, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(-1, FromDIP(66)),
-                              wxTE_MULTILINE);
+    sizer->Add(m_prompt_label, 0, wxLEFT | wxRIGHT, FromDIP(21));
+    sizer->AddSpacer(FromDIP(14));
+    auto* prompt_surface = new RedesignPromptSurface(scroll);
+    auto* prompt_sizer = new wxBoxSizer(wxVERTICAL);
+    m_prompt = new RedesignPromptTextCtrl(prompt_surface, wxSize(-1, FromDIP(118)));
+    m_prompt->SetBackgroundColour(RedesignTheme::control_colour());
+    // Multiline hints remember the current text color and restore it on focus.
+    RedesignTheme::style_text(m_prompt, RedesignTheme::primary_text_colour(), 10);
     m_prompt->SetHint(_L("描述你想创作的内容，例如：一只可爱的小猫。"));
-    sizer->Add(m_prompt, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
-    sizer->AddSpacer(FromDIP(8));
+    prompt_sizer->Add(m_prompt, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
 
-    m_prompt_count = new wxStaticText(scroll, wxID_ANY, _L("0 / 2000 字节（UTF-8）"));
-    sizer->Add(m_prompt_count, 0, wxALIGN_RIGHT | wxRIGHT | wxBOTTOM, FromDIP(12));
-    auto* style_row = new wxBoxSizer(wxHORIZONTAL);
+    m_prompt_count = new wxStaticText(prompt_surface, wxID_ANY, _L("0 / 2000 字节（UTF-8）"));
+    prompt_sizer->Add(m_prompt_count, 0, wxALIGN_RIGHT | wxRIGHT | wxBOTTOM, FromDIP(12));
+    prompt_surface->SetSizer(prompt_sizer);
+    sizer->Add(prompt_surface, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(21));
+    sizer->AddSpacer(FromDIP(21));
+    sizer->Add(section_label(scroll, _L("3D 模型选择")), 0, wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(21));
+    m_provider = new RedesignChoice(scroll, {wxString("Tripo"), _L("腾讯混元3D")});
+    sizer->Add(m_provider, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(21));
     auto* style_label = new wxStaticText(scroll, wxID_ANY, _L("风格"));
     wxArrayString styles;
     styles.Add(_L("单色写实"));
     styles.Add(_L("多色写实"));
     styles.Add(_L("多色风格化"));
-    m_style = new ComboBox(scroll, wxID_ANY, wxEmptyString, wxDefaultPosition, FromDIP(wxSize(215, 42)), 0, nullptr, wxCB_READONLY);
-    for (const auto& style : styles) m_style->Append(style);
-    m_style->SetSelection(0);
-    auto* style_icon = new wxStaticBitmap(scroll, wxID_ANY, create_scaled_bitmap("figma-ux/emoji", scroll, 24));
-    style_row->Add(style_icon, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
-    style_row->Add(style_label, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(10));
-    style_row->Add(m_style, 1, wxALIGN_CENTER_VERTICAL);
-    sizer->Add(style_row, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
+    m_style = new RedesignChoice(scroll, styles, "redesign_skill_emoji.png");
+    sizer->Add(style_label, 0, wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(21));
+    sizer->Add(m_style, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(21));
     sizer->AddSpacer(FromDIP(8));
     wxArrayString stylized;
     for (const char* style : {"portrait_sketch", "cartoon", "low_poly", "relief", "ink_relief", "diorama", "custom"})
         stylized.Add(ModelGenerationPresentation::style_label(style));
-    m_stylized_style = new ComboBox(scroll, wxID_ANY, wxEmptyString, wxDefaultPosition, FromDIP(wxSize(280, 42)), 0, nullptr, wxCB_READONLY);
-    for (const auto& style : stylized) m_stylized_style->Append(style);
+    m_stylized_style = new RedesignChoice(scroll, stylized);
     m_stylized_style->SetSelection(1);
     m_stylized_style->SetToolTip(_L("选择多色风格化的具体表现方式"));
-    sizer->Add(m_stylized_style, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
+    sizer->Add(m_stylized_style, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(21));
 
     m_custom_style_panel = new wxPanel(scroll);
     m_custom_style_panel->SetBackgroundColour(wxColour(250, 251, 251));
     auto* custom_style_sizer = new wxBoxSizer(wxVERTICAL);
     auto* custom_style_label = new wxStaticText(m_custom_style_panel, wxID_ANY, _L("自定义风格描述"));
-    m_custom_style = new wxTextCtrl(m_custom_style_panel, wxID_ANY, wxEmptyString, wxDefaultPosition,
-                                    wxSize(-1, FromDIP(50)), wxTE_MULTILINE);
+    auto* custom_surface = new RedesignPromptSurface(m_custom_style_panel);
+    auto* custom_edit_sizer = new wxBoxSizer(wxVERTICAL);
+    m_custom_style = new RedesignPromptTextCtrl(custom_surface, wxSize(-1, FromDIP(50)));
+    m_custom_style->SetBackgroundColour(RedesignTheme::control_colour());
+    RedesignTheme::style_text(m_custom_style, RedesignTheme::primary_text_colour(), 10);
     m_custom_style->SetHint(_L("描述外观即可；系统会保留主体、构图和可见元素"));
     m_custom_style->SetMaxLength(240);
+    custom_edit_sizer->Add(m_custom_style, 0, wxEXPAND | wxALL, FromDIP(10));
+    custom_surface->SetSizer(custom_edit_sizer);
     custom_style_sizer->Add(custom_style_label, 0, wxEXPAND | wxBOTTOM, FromDIP(4));
-    custom_style_sizer->Add(m_custom_style, 0, wxEXPAND);
+    custom_style_sizer->Add(custom_surface, 0, wxEXPAND);
     m_custom_style_panel->SetSizer(custom_style_sizer);
     m_custom_style_panel->Hide();
-    sizer->Add(m_custom_style_panel, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
+    sizer->Add(m_custom_style_panel, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(21));
     sizer->AddSpacer(FromDIP(8));
 
     m_prepare_base = new wxCheckBox(scroll, wxID_ANY, _L("打印准备时添加底座"));
@@ -872,15 +946,6 @@ wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
     m_model_settings_panel->SetBackgroundColour(wxColour(250, 251, 251));
     auto* model_settings_sizer = new wxBoxSizer(wxVERTICAL);
     model_settings_sizer->Add(section_label(m_model_settings_panel, _L("3D 生成设置")), 0, wxEXPAND | wxBOTTOM, FromDIP(6));
-    auto* provider_row = new wxBoxSizer(wxHORIZONTAL);
-    provider_row->Add(new wxStaticText(m_model_settings_panel, wxID_ANY, _L("模型服务")),
-                      0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(10));
-    m_provider = new wxChoice(m_model_settings_panel, wxID_ANY, wxDefaultPosition, wxDefaultSize,
-                              wxArrayString {wxString("Tripo"), _L("腾讯混元3D")});
-    m_provider->SetMinSize(wxSize(1, -1));
-    m_provider->SetSelection(0);
-    provider_row->Add(m_provider, 1, wxALIGN_CENTER_VERTICAL);
-    model_settings_sizer->Add(provider_row, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
     auto* quality_row = new wxBoxSizer(wxHORIZONTAL);
     auto* quality_label = new wxStaticText(m_model_settings_panel, wxID_ANY, _L("目标面数"));
     wxArrayString quality_levels;
@@ -1049,34 +1114,34 @@ wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
     action_panel_sizer->Add(status_row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
     auto* action_buttons = new wxBoxSizer(wxVERTICAL);
     m_preprocess = new Button(action_panel, _L("生成 2D 设计图"));
-    m_preprocess->SetMinSize(wxSize(-1, FromDIP(44)));
+    m_preprocess->SetMinSize(wxSize(-1, FromDIP(48)));
     m_generate = new Button(action_panel, _L("确认并生成 3D"));
     m_generate->SetName("input_field");
     m_generate->SetPaddingSize(FromDIP(wxSize(12, 9)));
-    m_generate->SetMinSize(wxSize(-1, FromDIP(44)));
+    m_generate->SetMinSize(wxSize(-1, FromDIP(48)));
     m_stop = new Button(action_panel, _L("停止生成"));
     m_stop->SetName("input_field");
     m_stop->SetPaddingSize(FromDIP(wxSize(12, 9)));
-    m_stop->SetMinSize(wxSize(-1, FromDIP(44)));
+    m_stop->SetMinSize(wxSize(-1, FromDIP(48)));
     m_retry_service = new Button(action_panel, _L("重新检测服务"));
     m_retry_service->SetName("input_field");
     m_retry_service->SetPaddingSize(FromDIP(wxSize(12, 9)));
-    m_retry_service->SetMinSize(wxSize(-1, FromDIP(44)));
+    m_retry_service->SetMinSize(wxSize(-1, FromDIP(48)));
     m_import = new Button(action_panel, _L("将此模型加入工程"));
     m_import->SetName("input_field");
     m_import->SetPaddingSize(FromDIP(wxSize(12, 9)));
-    m_import->SetMinSize(wxSize(-1, FromDIP(44)));
+    m_import->SetMinSize(wxSize(-1, FromDIP(48)));
     m_discard = new Button(action_panel, _L("修改输入，重新设计"));
     m_discard->SetName("input_field");
     m_discard->SetPaddingSize(FromDIP(wxSize(12, 9)));
-    m_discard->SetMinSize(wxSize(-1, FromDIP(44)));
+    m_discard->SetMinSize(wxSize(-1, FromDIP(48)));
     action_buttons->Add(m_preprocess, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
     action_buttons->Add(m_generate, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
     action_buttons->Add(m_stop, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
     action_buttons->Add(m_retry_service, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
     action_buttons->Add(m_import, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
     action_buttons->Add(m_discard, 0, wxEXPAND);
-    action_panel_sizer->Add(action_buttons, 0, wxEXPAND | wxALL, FromDIP(12));
+    action_panel_sizer->Add(action_buttons, 0, wxEXPAND | wxALL, FromDIP(21));
     action_panel->SetSizer(action_panel_sizer);
     outer->Add(action_panel, 0, wxEXPAND);
     panel->SetSizer(outer);
@@ -1103,8 +1168,8 @@ wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
         });
     }
     m_custom_style->Bind(wxEVT_TEXT, [this](wxCommandEvent&) { refresh_controls(); });
-    for (auto* choice : {m_provider, m_quality, m_geometry_quality, m_texture_quality, m_output_format})
-        choice->Bind(wxEVT_CHOICE, [this, choice](wxCommandEvent&) {
+    for (auto* choice : std::array<wxWindow*, 5>{m_provider, m_quality, m_geometry_quality, m_texture_quality, m_output_format})
+        choice->Bind(choice == m_provider ? wxEVT_COMBOBOX : wxEVT_CHOICE, [this, choice](wxCommandEvent&) {
             if (choice == m_provider && !m_busy) {
                 ++m_sequence; // Ignore callbacks from the previously selected provider.
                 m_submission_state.clear();

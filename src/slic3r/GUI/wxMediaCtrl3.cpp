@@ -47,6 +47,7 @@ void wxMediaCtrl3::Load(wxURI url)
 {
     std::unique_lock<std::mutex> lk(m_mutex);
     m_video_size = wxDefaultSize;
+    m_frame_is_video = false;
     m_error = 0;
     m_url.reset(new wxURI(url));
     m_cond.notify_all();
@@ -69,6 +70,7 @@ void wxMediaCtrl3::Stop()
     std::unique_lock<std::mutex> lk(m_mutex);
     m_url.reset();
     m_frame = wxImage(m_idle_image);
+    m_frame_is_video = false;
     NotifyStopped();
     m_cond.notify_all();
     Refresh();
@@ -82,6 +84,7 @@ void wxMediaCtrl3::SetIdleImage(wxString const &image)
     if (m_url == nullptr) {
         std::unique_lock<std::mutex> lk(m_mutex);
         m_frame = wxImage(m_idle_image);
+        m_frame_is_video = false;
         assert(m_frame.IsOk());
         Refresh();
     }
@@ -103,6 +106,18 @@ wxSize wxMediaCtrl3::GetVideoSize()
 {
     std::unique_lock<std::mutex> lk(m_mutex);
     return m_video_size;
+}
+
+wxImage wxMediaCtrl3::GetCurrentFrame()
+{
+    std::unique_lock<std::mutex> lk(m_mutex);
+    if (m_state != wxMEDIASTATE_PLAYING || !m_frame_is_video || !m_frame.IsOk())
+        return {};
+#ifdef _WIN32
+    return m_frame.ConvertToImage();
+#else
+    return m_frame.Copy();
+#endif
 }
 
 wxSize wxMediaCtrl3::DoGetBestSize() const
@@ -283,6 +298,7 @@ void wxMediaCtrl3::PlayThread()
                         m_last_PTS_practical = now;
                     }
                     m_frame = bm;
+                    m_frame_is_video = true;
                 }
                 CallAfter([this] { Refresh(); });
             }
@@ -305,6 +321,7 @@ void wxMediaCtrl3::PlayThread()
 
 void wxMediaCtrl3::NotifyStopped()
 {
+    m_frame_is_video = false;
     m_state = wxMEDIASTATE_STOPPED;
     wxMediaEvent event(wxEVT_MEDIA_STATECHANGED);
     event.SetId(GetId());

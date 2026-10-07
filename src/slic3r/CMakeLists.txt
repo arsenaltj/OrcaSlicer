@@ -359,7 +359,7 @@ set(SLIC3R_GUI_SOURCES
     GUI/AI/Orca/OrcaWorkspaceAdapter.hpp
     GUI/AI/AIDesktopFeatureHost.cpp
     GUI/AI/AIDesktopFeatureHost.hpp
-    GUI/AI/DesktopWorkspaceNavigation.cpp GUI/AI/DesktopWorkspaceNavigation.hpp GUI/AI/Orca/OrcaPrintConfirmation.cpp GUI/AI/Orca/OrcaPrintConfirmation.hpp GUI/AI/Orca/OrcaFilamentSelection.cpp GUI/AI/Orca/OrcaFilamentSelection.hpp
+    ${ORCA_DESKTOP_WORKSPACE_SOURCES}
     GUI/AI/SmartSlicing/SmartSlicingFeatureHost.cpp
     GUI/AI/SmartSlicing/SmartSlicingFeatureHost.hpp
     GUI/AI/Model/VertexColorRegionEditor.cpp GUI/AI/Model/ModelFinishing.cpp GUI/AI/ModelGeneration/ModelGenerationBeautyView.cpp GUI/AI/Model/BeautySurface.cpp GUI/AI/Model/BeautyAppearance.cpp GUI/AI/Model/BeautyFinishing.cpp GUI/AI/ModelGeneration/BeautyWorkbenchControls.cpp GUI/AI/ModelGeneration/BeautyPreparationTicket.hpp

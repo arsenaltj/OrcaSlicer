@@ -17,7 +17,7 @@ param(
     [string]$PythonPath,
     [string]$CMakePath,
     [string]$DepsPrefix,
-    [ValidateSet('slic3rutils_tests', 'libslic3r_tests', 'fff_print_tests')][string]$TestSuite,
+    [ValidateSet('slic3rutils_tests', 'libslic3r_tests', 'fff_print_tests', 'printer_workspace_tests', 'printer_confirmation_tests')][string]$TestSuite,
     [string]$TestLabel,
     [ValidateRange(1, 32)][int]$Jobs = 2,
     [string[]]$TestPattern = @(),

@@ -365,7 +365,7 @@ private:
     wxPanel*        m_custom_style_panel { nullptr };
     wxTextCtrl*     m_custom_style { nullptr };
     wxChoice*       m_quality { nullptr };
-    wxChoice*       m_provider { nullptr };
+    ComboBox*       m_provider { nullptr };
     wxChoice*       m_geometry_quality { nullptr };
     wxChoice*       m_texture_quality { nullptr };
     wxChoice*       m_output_format { nullptr };

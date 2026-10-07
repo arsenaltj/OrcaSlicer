@@ -680,6 +680,7 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
                 << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
     };
     auto* panel = new ModelGenerationInputStyle::RoundedPanel(parent);
+    panel->SetName("input_canvas");
     auto* sizer = new wxBoxSizer(wxVERTICAL);
     auto* header = new wxWrapSizer(wxHORIZONTAL);
     m_preview_kind = new wxStaticText(panel, wxID_ANY, _L("结果对照"));
@@ -743,6 +744,7 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     auto* model_page = new ModelResultScrolledWindow(
         m_preview_book, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxHSCROLL | wxVSCROLL);
     model_page->SetBackgroundColour(wxColour(241, 244, 245));
+    model_page->SetName("input_canvas");
     model_page->SetScrollRate(FromDIP(12), FromDIP(12));
     model_page->SetMinSize(wxSize(1, 1));
     auto* model_sizer = new wxBoxSizer(wxVERTICAL);
@@ -750,10 +752,12 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     m_comparison_panel = comparison_panel;
     m_model_page = model_page;
     comparison_panel->SetBackgroundColour(wxColour(241, 244, 245));
+    comparison_panel->SetName("input_canvas");
     auto* comparison_sizer = new wxBoxSizer(wxHORIZONTAL);
     m_preview_area = new wxScrolledWindow(
         comparison_panel, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxHSCROLL | wxVSCROLL);
     m_preview_area->SetBackgroundColour(wxColour(241, 244, 245));
+    m_preview_area->SetName("input_canvas");
     m_preview_area->SetBackgroundStyle(wxBG_STYLE_PAINT);
     m_preview_area->SetMinSize(wxSize(1, 1));
     m_preview_area->SetScrollRate(FromDIP(12), FromDIP(12));
@@ -770,7 +774,7 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
         m_preview_area->GetViewStart(&view_x, &view_y);
         m_preview_area->GetScrollPixelsPerUnit(&unit_x, &unit_y);
         const wxPoint offset(view_x * unit_x, view_y * unit_y);
-        const int label_height = FromDIP(32);
+        const int label_height = FromDIP(40);
 
         auto draw_pane = [&](const wxRect& virtual_rect, const wxString& label, const wxBitmap& bitmap,
                              const wxString& placeholder, bool ai_result) {
@@ -778,22 +782,22 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
                 return;
             wxRect rect = virtual_rect;
             rect.Offset(-offset.x, -offset.y);
-            dc.SetPen(wxPen(ModelGenerationInputStyle::background));
-            dc.SetBrush(wxBrush(ModelGenerationInputStyle::field));
-            dc.DrawRectangle(rect);
-
             const wxRect label_rect(rect.x, rect.y, rect.width, label_height);
-            dc.SetPen(*wxTRANSPARENT_PEN);
-            dc.SetBrush(wxBrush(ai_result ? ModelGenerationInputStyle::selected : ModelGenerationInputStyle::panel));
-            dc.DrawRectangle(label_rect);
             wxFont label_font = dc.GetFont();
+            const auto family = RedesignTheme::font_family();
+            if (!family.empty()) label_font.SetFaceName(family);
+            label_font.SetPointSize(12);
             label_font.SetWeight(wxFONTWEIGHT_BOLD);
             dc.SetFont(label_font);
-            dc.SetTextForeground(ai_result ? ModelGenerationInputStyle::yellow : ModelGenerationInputStyle::text);
+            dc.SetTextForeground(ModelGenerationInputStyle::text);
             const wxSize label_size = dc.GetTextExtent(label);
-            dc.DrawText(label, label_rect.x + FromDIP(10), label_rect.y + (label_rect.height - label_size.y) / 2);
+            dc.DrawText(label, label_rect.x + (label_rect.width - label_size.x) / 2,
+                label_rect.y + (label_rect.height - label_size.y) / 2);
 
             const wxRect image_rect(rect.x, rect.y + label_height, rect.width, rect.height - label_height);
+            dc.SetPen(wxPen(wxColour(69, 69, 73)));
+            dc.SetBrush(wxBrush(ModelGenerationInputStyle::field));
+            dc.DrawRoundedRectangle(image_rect, FromDIP(12));
             if (bitmap.IsOk()) {
                 const int x = image_rect.x + (image_rect.width - bitmap.GetWidth()) / 2;
                 const int y = image_rect.y + (image_rect.height - bitmap.GetHeight()) / 2;
@@ -818,7 +822,7 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
         const wxString reference_placeholder = m_library_model_loaded
             ? _L("该历史记录未保存原图")
             : _L("文字生成，无原图");
-        draw_pane(m_reference_preview_pane, _L("原图"), m_reference_bitmap, reference_placeholder, false);
+        draw_pane(m_reference_preview_pane, _L("平面图"), m_reference_bitmap, reference_placeholder, false);
         wxString result_label = m_preview_stage != nullptr && m_preview_stage->GetSelection() != wxNOT_FOUND
             ? m_preview_stage->GetStringSelection() : _L("AI 生成图");
         if (m_design_preview_stale) result_label += _L(" · 旧版");
@@ -830,6 +834,7 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     });
     trace_stage("image_controls");
     auto* model_card = new wxPanel(comparison_panel, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
+    model_card->SetName("input_canvas");
     model_card->SetBackgroundColour(*wxWHITE);
     // Let the toolbar and canvas determine the minimum height. A fixed 560 DIP
     // card clips the model below the visible result page on short windows.
@@ -862,6 +867,7 @@ wxWindow* ModelGenerationPanel::build_preview_panel(wxWindow* parent)
     model_card_sizer->Add(m_finishing_compare_model, 0, wxLEFT | wxBOTTOM, FromDIP(10));
     trace_stage("model_toolbar");
     m_model_preview = new ModelPreview3D(model_card);
+    m_model_preview->SetName("input_canvas");
     trace_stage("model_canvas");
     m_model_preview->set_preview_background(ModelGenerationInputStyle::background);
     m_model_preview->SetMinSize(wxSize(1, 1));
@@ -2688,7 +2694,12 @@ void ModelGenerationPanel::refresh_controls()
     const bool canceling_local = importing_local && local_import->cancel->load();
     if (importing_local || m_preview_loading || m_finishing_running || m_design_history_loading || m_saving_generation_options) m_busy = true;
     const bool busy = m_busy || m_preview_download_in_flight;
-    update_adaptive_text_height(m_prompt, 3, 3);
+    const int prompt_height = FromDIP(118);
+    if (m_prompt->GetMinSize().GetHeight() != prompt_height || m_prompt->GetMaxSize().GetHeight() != prompt_height) {
+        m_prompt->SetMinSize(wxSize(-1, prompt_height));
+        m_prompt->SetMaxSize(wxSize(-1, prompt_height));
+        m_prompt->InvalidateBestSize();
+    }
     update_adaptive_text_height(m_custom_style, 2, 5);
     refresh_palette();
     const bool image_input = has_image_input();
@@ -2947,7 +2958,7 @@ void ModelGenerationPanel::refresh_controls()
         m_model_preview->GetParent()->Layout();
     if (m_preview_details_pane != nullptr && m_preview_details_pane->GetParent() != nullptr)
         m_preview_details_pane->GetParent()->Layout();
-    if (auto* scroll = dynamic_cast<wxScrolledWindow*>(m_prompt->GetParent())) {
+    if (auto* scroll = dynamic_cast<wxScrolledWindow*>(m_input_form)) {
         scroll->Layout();
         scroll->FitInside();
     }
@@ -4569,7 +4580,7 @@ void ModelGenerationPanel::update_preview_view(bool center)
     const wxSize client = m_preview_area->GetClientSize();
     const int padding = FromDIP(16);
     const int gap = FromDIP(16);
-    const int label_height = FromDIP(32);
+    const int label_height = FromDIP(40);
     const wxImage* comparison_image = m_reference_image.IsOk() ? &m_reference_image : nullptr;
     const bool show_views = m_preview_stage != nullptr && m_preview_stage->GetSelection() == 1;
     const bool comparison = !show_views && m_reference_image.IsOk() && m_style_preview_image.IsOk();
@@ -4583,7 +4594,7 @@ void ModelGenerationPanel::update_preview_view(bool center)
             bitmap = wxNullBitmap;
             return;
         }
-        const double fit_scale = std::min({ 1.0,
+        const double fit_scale = std::min({
             double(base_pane_width) / image.GetWidth(),
             double(base_image_height) / image.GetHeight() });
         double scale = fit_scale * m_preview_zoom_factor;
