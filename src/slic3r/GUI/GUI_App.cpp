@@ -10115,8 +10115,11 @@ bool GUI_App::config_wizard_startup()
                                    !preset_bundle->printers.get_selected_preset().is_default;
         if (!StartupSetupService::needs_setup(m_app_conf_exists, valid_printer))
             return false;
-        BOOST_LOG_TRIVIAL(info) << "[StartupSetup] Opening native first-use setup.";
-        if (run_startup_setup(mainframe)) {
+        BOOST_LOG_TRIVIAL(info) << "[StartupSetup] Opening embedded first-use setup.";
+        const bool applied = run_startup_setup(mainframe);
+        if (is_closing() || !mainframe || mainframe->IsBeingDeleted())
+            return true;
+        if (applied) {
             m_app_conf_exists = true;
             load_current_presets();
             update_publish_status();

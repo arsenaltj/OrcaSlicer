@@ -4,7 +4,7 @@
 
 namespace Slic3r::GUI {
 
-// Runs the complete native first-use session against the existing application.
+// Runs first-use setup inside the existing main window, then resumes startup.
 bool run_startup_setup(wxWindow* parent);
 
 }

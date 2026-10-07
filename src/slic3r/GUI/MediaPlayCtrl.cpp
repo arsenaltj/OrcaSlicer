@@ -133,6 +133,20 @@ MediaPlayCtrl::MediaPlayCtrl(wxWindow *parent, wxMediaCtrl3 *media_ctrl, const w
 
 MediaPlayCtrl::~MediaPlayCtrl()
 {
+    // The redesign destroys this controller before its video and page hosts.
+    // Remove the ancestor handlers so a later page-hide cannot call a dead controller.
+    // Legacy StatusPanel may destroy its video child first. Both current hosts
+    // own the controller and video as siblings; inspect the live child list
+    // before touching the borrowed pointer during parent destruction.
+    for (auto* child : GetParent()->GetChildren()) {
+        if (child == m_media_ctrl) {
+            m_media_ctrl->Unbind(wxEVT_MEDIA_STATECHANGED, &MediaPlayCtrl::onStateChanged, this);
+            m_media_ctrl->Disconnect(wxID_ANY, wxID_ANY, EVT_MEDIA_CTRL_STAT);
+            break;
+        }
+    }
+    GetParent()->Unbind(wxEVT_SHOW, &MediaPlayCtrl::on_show_hide, this);
+    GetParent()->GetParent()->GetParent()->Unbind(wxEVT_SHOW, &MediaPlayCtrl::on_show_hide, this);
     {
         boost::unique_lock lock(m_mutex);
         m_tasks.push_back("<exit>");

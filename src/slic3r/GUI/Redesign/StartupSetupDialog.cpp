@@ -21,8 +21,8 @@
 #include <wx/colordlg.h>
 #include <wx/control.h>
 #include <wx/dcbuffer.h>
-#include <wx/dialog.h>
-#include <wx/display.h>
+#include <wx/evtloop.h>
+#include <wx/eventfilter.h>
 #include <wx/graphics.h>
 #include <wx/popupwin.h>
 #include <wx/scrolwin.h>
@@ -471,23 +471,18 @@ private:
     wxBitmap m_avatar;
 };
 
-class StartupSetupDialog final : public wxDialog
+class StartupSetupPanel final : public wxPanel, public wxEventFilter
 {
 public:
-    explicit StartupSetupDialog(wxWindow* parent)
-        : wxDialog(parent, wxID_ANY, _L("首次配置"), wxDefaultPosition, wxDefaultSize,
-                    wxNO_BORDER | wxRESIZE_BORDER | wxSYSTEM_MENU | wxMINIMIZE_BOX | wxMAXIMIZE_BOX)
+    StartupSetupPanel(wxTopLevelWindow* parent, std::function<void(bool)> complete)
+        : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE | wxTAB_TRAVERSAL)
         , m_service(*wxGetApp().app_config)
+        , m_frame(parent)
+        , m_complete(std::move(complete))
     {
-#ifdef __WXMSW__
-        const HWND handle = static_cast<HWND>(GetHandle());
-        const LONG_PTR style = ::GetWindowLongPtr(handle, GWL_STYLE);
-        ::SetWindowLongPtr(handle, GWL_STYLE, style & ~LONG_PTR(WS_CAPTION));
-        ::SetWindowPos(handle, nullptr, 0, 0, 0, 0,
-            SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
-#endif
+        SetName(_L("首次配置"));
         SetBackgroundColour(RedesignTheme::flow_background_colour());
-        m_backdrop = new StartupBufferView(this, this, false);
+        m_backdrop = new StartupBufferView(this, parent, false);
         m_backdrop->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) { arrange(); event.Skip(); });
         auto* layout = new wxBoxSizer(wxVERTICAL);
         layout->Add(m_backdrop, 1, wxEXPAND);
@@ -526,29 +521,90 @@ public:
             event.Skip();
         });
 #endif
-        Bind(wxEVT_CLOSE_WINDOW, [this](wxCloseEvent& event) {
-            if (m_service.snapshot().submitting) { event.Veto(); return; }
-            cancel();
-        });
-        Bind(wxEVT_CHAR_HOOK, [this](wxKeyEvent& event) {
-            if (event.GetKeyCode() == WXK_ESCAPE) cancel();
-            else event.Skip();
-        });
-        SetMinSize(FromDIP(wxSize(720, 540)));
-        SetSize(parent->GetScreenRect());
+        parent->Bind(wxEVT_CLOSE_WINDOW, &StartupSetupPanel::on_host_close, this);
+        parent->Bind(wxEVT_SIZE, &StartupSetupPanel::on_host_size, this);
+        parent->Bind(wxEVT_CHAR_HOOK, &StartupSetupPanel::on_host_key, this);
+        SetSize(parent->GetClientRect());
+        Layout();
         arrange();
         refresh();
+        Raise();
+        for (wxWindow* sibling : parent->GetChildren()) {
+            if (sibling != this && !sibling->IsTopLevel() && sibling->IsShown()) {
+                m_hidden_siblings.emplace_back(sibling);
+                sibling->Hide();
+            }
+        }
+        wxEvtHandler::AddFilter(this);
         m_next->SetFocus();
         load_catalog();
     }
 
-    ~StartupSetupDialog() override
+    ~StartupSetupPanel() override
     {
         *m_cancel = true;
         if (m_worker.joinable()) m_worker.join();
+        wxEvtHandler::RemoveFilter(this);
+        if (m_frame && !m_frame->IsBeingDeleted()) {
+            m_frame->Unbind(wxEVT_CLOSE_WINDOW, &StartupSetupPanel::on_host_close, this);
+            m_frame->Unbind(wxEVT_SIZE, &StartupSetupPanel::on_host_size, this);
+            m_frame->Unbind(wxEVT_CHAR_HOOK, &StartupSetupPanel::on_host_key, this);
+        }
+        if (m_frame && !m_frame->IsBeingDeleted()) {
+            for (const auto& sibling : m_hidden_siblings)
+                if (sibling && !sibling->IsBeingDeleted()) sibling->Show();
+            m_frame->Layout();
+            m_frame->Refresh();
+        }
+        if (!m_finished) {
+            m_service.cancel();
+            m_complete(false);
+        }
+    }
+
+    int FilterEvent(wxEvent& event) override
+    {
+        if (!m_finished && IsShownOnScreen() && event.GetEventType() == wxEVT_MENU && event.GetId() != wxID_EXIT)
+            return wxEventFilter::Event_Processed;
+        return wxEventFilter::Event_Skip;
     }
 
 private:
+    void on_host_size(wxSizeEvent& event)
+    {
+        SetSize(m_frame->GetClientRect());
+        Layout();
+        Raise();
+        event.Skip();
+    }
+
+    void on_host_close(wxCloseEvent& event)
+    {
+        if (event.CanVeto()) {
+            event.Veto();
+            cancel();
+        } else {
+            finish(false);
+            event.Skip();
+        }
+    }
+
+    void on_host_key(wxKeyEvent& event)
+    {
+        if (event.GetKeyCode() == WXK_ESCAPE || (event.CmdDown() && event.GetKeyCode() == 'Q'))
+            cancel();
+        else if (!event.CmdDown())
+            event.Skip();
+    }
+
+    void finish(bool applied)
+    {
+        if (m_finished) return;
+        m_finished = true;
+        *m_cancel = true;
+        m_complete(applied);
+    }
+
     wxStaticText* label(const wxString& text, int pixels, const wxColour& colour = *wxWHITE)
     {
         auto* control = new wxStaticText(m_panel, wxID_ANY, text, wxDefaultPosition, wxDefaultSize,
@@ -646,7 +702,7 @@ private:
         const std::string resources = resources_dir();
         const std::string data = data_dir();
         const auto cancel_token = m_cancel;
-        const wxWeakRef<StartupSetupDialog> weak(this);
+        const wxWeakRef<StartupSetupPanel> weak(this);
         m_worker = std::thread([resources, data, cancel_token, weak, revision] {
             std::vector<StartupSetupPrinter> printers;
             std::string error;
@@ -710,7 +766,7 @@ private:
             BOOST_LOG_TRIVIAL(info) << "[StartupSetup] Configuration saved printer="
                                     << m_service.snapshot().draft.printer_model
                                     << " heads=" << m_service.snapshot().draft.heads.size();
-            EndModal(wxID_OK);
+            finish(true);
         } else {
             BOOST_LOG_TRIVIAL(error) << "[StartupSetup] Configuration failed: " << m_service.snapshot().error;
             refresh();
@@ -722,7 +778,7 @@ private:
         if (m_service.snapshot().submitting) return;
         *m_cancel = true;
         m_service.cancel();
-        if (IsModal()) EndModal(wxID_CANCEL);
+        finish(false);
     }
 
     void refresh()
@@ -873,6 +929,10 @@ private:
     }
 
     StartupSetupService m_service;
+    wxWeakRef<wxTopLevelWindow> m_frame;
+    std::function<void(bool)> m_complete;
+    bool m_finished = false;
+    std::vector<wxWeakRef<wxWindow>> m_hidden_siblings;
     std::shared_ptr<std::atomic<bool>> m_cancel = std::make_shared<std::atomic<bool>>(false);
     std::thread m_worker;
     StartupBufferView* m_backdrop = nullptr;
@@ -900,8 +960,21 @@ private:
 
 bool run_startup_setup(wxWindow* parent)
 {
-    StartupSetupDialog dialog(parent);
-    const bool applied = dialog.ShowModal() == wxID_OK;
+    auto* frame = wxDynamicCast(parent, wxTopLevelWindow);
+    if (!frame || frame->IsBeingDeleted()) return false;
+    wxEventLoop loop;
+    bool applied = false;
+    wxWeakRef<StartupSetupPanel> panel(new StartupSetupPanel(frame, [&](bool saved) {
+        applied = saved;
+        if (loop.IsRunning()) loop.Exit();
+    }));
+    // Keep the existing startup continuation ordered behind setup completion.
+    wxEventLoopActivator activate(&loop);
+    loop.Run();
+    if (panel) {
+        panel->Hide();
+        delete panel.get();
+    }
     if (applied) wxGetApp().update_mode();
     return applied;
 }
