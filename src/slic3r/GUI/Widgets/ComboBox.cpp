@@ -388,6 +388,11 @@ void ComboBox::mouseWheelMoved(wxMouseEvent &event)
     }
 }
 
+void ComboBox::DismissDropdown()
+{
+    if (drop_down) drop.DismissAndNotify();
+}
+
 void ComboBox::keyDown(wxKeyEvent& event)
 {
     switch (event.GetKeyCode()) {

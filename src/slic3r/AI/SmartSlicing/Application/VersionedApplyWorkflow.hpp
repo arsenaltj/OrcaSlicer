@@ -25,6 +25,7 @@ public:
     OfficialSliceResult poll();
     OfficialSliceResult notify_slice_completed(bool success, std::string diagnostic_code = {});
     OfficialSliceResult undo(const OfficialApplyTransactionIdentity& transaction);
+    bool retire_completed_transaction();
 
     const std::optional<OfficialApplyTransactionIdentity>& active_transaction() const
     {

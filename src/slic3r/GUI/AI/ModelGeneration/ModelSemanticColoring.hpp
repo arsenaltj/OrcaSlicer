@@ -2,14 +2,26 @@
 
 #include "slic3r/AI/ModelGeneration/SemanticColoring/SemanticColoring.hpp"
 #include "slic3r/GUI/GLModel.hpp"
+#include "SemanticRegionEvidence.hpp"
+#include "PortraitShapeDetails.hpp"
 #include <filesystem>
 #include <memory>
 
 namespace Slic3r::GUI {
 
+std::string semantic_region_runtime_identity(const std::filesystem::path& runtime);
+std::filesystem::path semantic_region_runtime_directory();
+std::string portrait_shape_runtime_fingerprint();
+std::shared_ptr<const SemanticRegionEvidence> load_legacy_semantic_region_evidence(
+    const AI::SemanticColoring::MeshSnapshot&, const std::filesystem::path& runtime,
+    const std::filesystem::path& cache, const std::string& runtime_identity, std::string& error);
+
 GLModel::Geometry build_semantic_colored_geometry(
     const AI::SemanticColoring::MeshSnapshot&, const AI::SemanticColoring::FaceColors&,
     const AI::SemanticColoring::SubfaceColors&, const AI::SemanticColoring::Cancel& = {});
+
+bool decode_semantic_result(const nlohmann::json&,const std::string& geometry,size_t face_count,
+    AI::SemanticColoring::FaceColors&,AI::SemanticColoring::SubfaceColors&);
 
 // No UI callbacks from the worker. The owning preview polls and adopts only
 // the current request, so cancellation/model switches cannot paint a new model.
@@ -22,20 +34,29 @@ public:
         GLModel::Geometry geometry;
         FaceColors automatic;
         AI::SemanticColoring::SubfaceColors automatic_subfaces;
+        // Diagnostic baseline before local boundaries are composed; never applied by the UI.
+        FaceColors native_automatic;
+        AI::SemanticColoring::SubfaceColors native_automatic_subfaces;
         std::shared_ptr<const AI::SemanticColoring::Analysis> analysis;
         std::string error;
+        std::string region_runtime_identity;
         bool person_detected {false};
         bool cache_hit {false};
+        bool verified_original_source {false};
         size_t subface_added_triangles {0};
         size_t subface_rejected_candidates {0};
         double elapsed_ms {0};
+        std::shared_ptr<const PortraitShapeDetails> shape_details;
+        std::string shape_error;
     };
     ModelSemanticColoring(std::filesystem::path runtime, std::filesystem::path cache);
     ~ModelSemanticColoring();
     ModelSemanticColoring(const ModelSemanticColoring&) = delete;
     ModelSemanticColoring& operator=(const ModelSemanticColoring&) = delete;
     bool request(std::shared_ptr<const Snapshot>, std::vector<Color> mapping_palette, std::vector<Color> target_palette,
-                 std::vector<Color> portrait_card, FaceColors manual);
+                 std::vector<Color> portrait_card, FaceColors manual,
+                 std::filesystem::path source_path = {},
+                 std::shared_ptr<const PortraitShapeDetails> shapes = {});
     void cancel();
     std::unique_ptr<Result> poll();
     bool busy() const;

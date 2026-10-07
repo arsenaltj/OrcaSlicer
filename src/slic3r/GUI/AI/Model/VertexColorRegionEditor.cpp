@@ -3,15 +3,20 @@
 
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
+#include <boost/log/trivial.hpp>
+#include <boost/unordered/unordered_flat_map.hpp>
 
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <chrono>
 #include <iomanip>
 #include <limits>
+#include <memory_resource>
 #include <numeric>
 #include <queue>
 #include <sstream>
+#include <stdexcept>
 #include <unordered_map>
 
 namespace Slic3r::AI {
@@ -19,6 +24,14 @@ namespace {
 
 constexpr float PI = 3.14159265358979323846f;
 constexpr size_t PICK_BVH_LEAF_SIZE = 8;
+constexpr size_t PREPARATION_BATCH_SIZE = 4096;
+
+struct RegionPreparationCanceled {};
+
+void check_preparation_canceled(const std::function<bool()>& canceled)
+{
+    if (canceled && canceled()) throw RegionPreparationCanceled {};
+}
 
 struct PositionCell
 {
@@ -77,7 +90,7 @@ float color_distance_squared(const RGBA& left, const RGBA& right)
 
 bool ray_triangle_intersection(const Vec3d& origin, const Vec3d& direction,
                                const Vec3f& a_float, const Vec3f& b_float, const Vec3f& c_float,
-                               double& distance)
+                               double& distance, Vec3d& barycentric)
 {
     constexpr double epsilon = 1e-9;
     const Vec3d a = a_float.cast<double>();
@@ -99,6 +112,7 @@ bool ray_triangle_intersection(const Vec3d& origin, const Vec3d& direction,
     if (v < 0.0 || u + v > 1.0)
         return false;
     distance = edge_b.dot(q) * inverse;
+    barycentric = Vec3d(1.-u-v,u,v);
     return distance > epsilon;
 }
 
@@ -136,7 +150,27 @@ bool ray_box_intersection(const Vec3d& origin, const Vec3d& direction,
 bool VertexColorRegionEditor::initialize(indexed_triangle_set mesh, std::vector<RGBA> vertex_colors,
                                          std::string& error)
 {
+    return initialize(std::move(mesh), std::move(vertex_colors), error, {});
+}
+
+bool VertexColorRegionEditor::initialize(indexed_triangle_set mesh, std::vector<RGBA> vertex_colors,
+                                         std::string& error, const std::function<bool()>& canceled)
+{
+    return initialize_impl(std::move(mesh), std::move(vertex_colors), error, canceled, true);
+}
+
+bool VertexColorRegionEditor::initialize_for_picking(indexed_triangle_set mesh, std::vector<RGBA> vertex_colors,
+    std::string& error, const std::function<bool()>& canceled)
+{
+    return initialize_impl(std::move(mesh), std::move(vertex_colors), error, canceled, false);
+}
+
+bool VertexColorRegionEditor::initialize_impl(indexed_triangle_set mesh, std::vector<RGBA> vertex_colors,
+    std::string& error, const std::function<bool()>& canceled, bool regions) try
+{
+    const auto started = std::chrono::steady_clock::now();
     clear();
+    check_preparation_canceled(canceled);
     if (mesh.indices.empty() || mesh.vertices.empty()) {
         error = "The OBJ contains no selectable triangles.";
         return false;
@@ -148,157 +182,377 @@ bool VertexColorRegionEditor::initialize(indexed_triangle_set mesh, std::vector<
 
     m_mesh = std::move(mesh);
     m_vertex_colors = std::move(vertex_colors);
-    m_face_normals.resize(m_mesh.indices.size());
-    m_face_centers.resize(m_mesh.indices.size());
-    m_face_neighbors.resize(m_mesh.indices.size());
     m_selected_faces.assign(m_mesh.indices.size(), 0);
 
     Vec3f minimum = m_mesh.vertices.front();
     Vec3f maximum = minimum;
-    for (const Vec3f& vertex : m_mesh.vertices) {
-        minimum = minimum.cwiseMin(vertex);
-        maximum = maximum.cwiseMax(vertex);
+    for (size_t batch_begin = 0; batch_begin < m_mesh.vertices.size(); batch_begin += PREPARATION_BATCH_SIZE) {
+        check_preparation_canceled(canceled);
+        const size_t batch_end = std::min(m_mesh.vertices.size(), batch_begin + PREPARATION_BATCH_SIZE);
+        for (size_t vertex_index = batch_begin; vertex_index < batch_end; ++vertex_index) {
+            const Vec3f& vertex = m_mesh.vertices[vertex_index];
+            minimum = minimum.cwiseMin(vertex);
+            maximum = maximum.cwiseMax(vertex);
+        }
     }
     m_mesh_diagonal = (maximum - minimum).norm();
 
-    std::unordered_map<uint64_t, IndexedEdgeOwner> indexed_edges;
-    indexed_edges.reserve(m_mesh.indices.size() * 3);
-    for (size_t face_index = 0; face_index < m_mesh.indices.size(); ++face_index) {
-        const stl_triangle_vertex_indices& face = m_mesh.indices[face_index];
-        const Vec3f& a = m_mesh.vertices[face[0]];
-        const Vec3f& b = m_mesh.vertices[face[1]];
-        const Vec3f& c = m_mesh.vertices[face[2]];
-        Vec3f normal = (b - a).cross(c - a);
-        if (normal.squaredNorm() > 1e-12f)
-            normal.normalize();
-        else
-            normal = Vec3f::UnitZ();
-        m_face_normals[face_index] = normal;
-        m_face_centers[face_index] = (a + b + c) / 3.0f;
-
-        const std::array<std::pair<uint32_t, uint32_t>, 3> edges {{
-            {uint32_t(face[0]), uint32_t(face[1])},
-            {uint32_t(face[1]), uint32_t(face[2])},
-            {uint32_t(face[2]), uint32_t(face[0])}
-        }};
-        for (const auto& edge : edges) {
-            const uint64_t key = edge_key(edge.first, edge.second);
-            const auto [owner, inserted] = indexed_edges.emplace(
-                key, IndexedEdgeOwner {edge.first, edge.second, uint32_t(face_index), 1});
-            if (!inserted) {
-                ++owner->second.use_count;
-                if (owner->second.first_face != face_index) {
-                    m_face_neighbors[face_index].push_back(owner->second.first_face);
-                    m_face_neighbors[owner->second.first_face].push_back(uint32_t(face_index));
-                }
+    const auto setup_done = std::chrono::steady_clock::now();
+    double indexed_ms = 0, weld_ms = 0, adjacency_ms = 0;
+    if (regions) {
+        auto topology = prepare_region_topology_impl(true, canceled);
+        indexed_ms = topology->indexed_ms;weld_ms = topology->weld_ms;adjacency_ms = topology->adjacency_ms;
+        m_face_centers = std::move(topology->centers);
+        if (!install_region_topology(std::move(topology)))
+            throw std::logic_error("Region topology does not belong to this model.");
+    } else {
+        m_face_centers.resize(m_mesh.indices.size());
+        for (size_t begin = 0; begin < m_mesh.indices.size(); begin += PREPARATION_BATCH_SIZE) {
+            check_preparation_canceled(canceled);
+            const size_t end = std::min(m_mesh.indices.size(), begin + PREPARATION_BATCH_SIZE);
+            for (size_t face_index = begin; face_index < end; ++face_index) {
+                const auto& face = m_mesh.indices[face_index];
+                m_face_centers[face_index] = (m_mesh.vertices[face[0]] + m_mesh.vertices[face[1]] + m_mesh.vertices[face[2]]) / 3.0f;
             }
         }
+        indexed_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - setup_done).count();
     }
+    const auto adjacency_done = std::chrono::steady_clock::now();
+    m_pick_face_order.resize(m_mesh.indices.size());
+    std::iota(m_pick_face_order.begin(), m_pick_face_order.end(), uint32_t(0));
+    m_pick_nodes.reserve(std::max<size_t>(1, m_mesh.indices.size() / 2));
+    build_pick_bvh(0, m_pick_face_order.size(), canceled);
+    check_preparation_canceled(canceled);
+    const auto bvh_done = std::chrono::steady_clock::now();
+    const auto milliseconds = [](auto begin, auto end) {
+        return std::chrono::duration<double, std::milli>(end - begin).count();
+    };
+    // Argument copies and destruction of temporary maps are outside these stages.
+    BOOST_LOG_TRIVIAL(info) << "AI region initialize: faces=" << m_mesh.indices.size()
+        << ", setup_ms=" << milliseconds(started, setup_done)
+        << ", indexed_ms=" << indexed_ms
+        << ", weld_ms=" << weld_ms
+        << ", adjacency_ms=" << adjacency_ms
+        << ", bvh_ms=" << milliseconds(adjacency_done, bvh_done)
+        << ", region_topology=" << region_selection_ready();
+    return true;
+}
+catch (const RegionPreparationCanceled&) {
+    clear();
+    error = "Local selection preparation canceled.";
+    return false;
+}
+catch (...) {
+    clear();
+    throw;
+}
 
-    // OBJ exporters commonly duplicate vertices along UV or material seams. Weld only
-    // boundary-edge endpoints for selection adjacency; the mesh and its indices remain unchanged.
-    const double position_tolerance = std::clamp(double(m_mesh_diagonal) * 1e-7, 1e-7, 1e-4);
-    const double tolerance_squared = position_tolerance * position_tolerance;
-    std::unordered_map<PositionCell, std::vector<uint32_t>, PositionCellHash> vertices_by_cell;
-    vertices_by_cell.reserve(m_mesh.vertices.size());
-    std::vector<uint32_t> canonical_vertices(m_mesh.vertices.size());
-    for (size_t vertex_index = 0; vertex_index < m_mesh.vertices.size(); ++vertex_index) {
-        const Vec3f& vertex = m_mesh.vertices[vertex_index];
-        const PositionCell cell = position_cell(vertex, position_tolerance);
-        uint32_t canonical = std::numeric_limits<uint32_t>::max();
-        for (int64_t dx = -1; dx <= 1; ++dx) {
-            for (int64_t dy = -1; dy <= 1; ++dy) {
-                for (int64_t dz = -1; dz <= 1; ++dz) {
-                    const auto candidates = vertices_by_cell.find({cell.x + dx, cell.y + dy, cell.z + dz});
-                    if (candidates == vertices_by_cell.end())
-                        continue;
-                    for (uint32_t candidate : candidates->second) {
-                        if ((m_mesh.vertices[candidate].cast<double>() - vertex.cast<double>()).squaredNorm() <=
-                            tolerance_squared)
-                            canonical = std::min(canonical, candidate);
+std::unique_ptr<VertexColorRegionEditor::RegionTopology>
+VertexColorRegionEditor::prepare_region_topology_impl(bool centers,
+    const std::function<bool()>& canceled) const
+{
+    check_preparation_canceled(canceled);
+    const auto started = std::chrono::steady_clock::now();
+    auto topology = std::make_unique<RegionTopology>();
+    topology->source = this;topology->generation = m_geometry_generation;
+    topology->normals.resize(m_mesh.indices.size());
+    topology->neighbors.resize(m_mesh.indices.size());
+    if (centers) topology->centers.resize(m_mesh.indices.size());
+    // Temporary topology nodes share an arena and are released together after
+    // initialization. No editor state retains an allocator or arena reference.
+    std::pmr::monotonic_buffer_resource topology_memory;
+    std::pmr::unordered_map<uint64_t, IndexedEdgeOwner> indexed_edges{&topology_memory};
+    bool independent_corners = m_mesh.indices.size() <= size_t(std::numeric_limits<int32_t>::max() / 3) &&
+        m_mesh.indices.size() <= m_mesh.vertices.size() / 3;
+    for (size_t batch_begin = 0; independent_corners && batch_begin < m_mesh.indices.size(); batch_begin += PREPARATION_BATCH_SIZE) {
+        check_preparation_canceled(canceled);
+        const size_t batch_end = std::min(m_mesh.indices.size(), batch_begin + PREPARATION_BATCH_SIZE);
+        for (size_t face = batch_begin; independent_corners && face < batch_end; ++face) {
+            const auto& indices = m_mesh.indices[face];
+            independent_corners = size_t(indices[0]) == face * 3 && size_t(indices[1]) == face * 3 + 1 &&
+                size_t(indices[2]) == face * 3 + 2;
+        }
+    }
+    // Independent face corners cannot share indexed edges. Their geometric
+    // seams still follow the same canonical-point and boundary grouping rules.
+    if (!independent_corners)
+        indexed_edges.reserve(m_mesh.indices.size() * 3);
+    for (size_t batch_begin = 0; batch_begin < m_mesh.indices.size(); batch_begin += PREPARATION_BATCH_SIZE) {
+        check_preparation_canceled(canceled);
+        const size_t batch_end = std::min(m_mesh.indices.size(), batch_begin + PREPARATION_BATCH_SIZE);
+        for (size_t face_index = batch_begin; face_index < batch_end; ++face_index) {
+            const stl_triangle_vertex_indices& face = m_mesh.indices[face_index];
+            const Vec3f& a = m_mesh.vertices[face[0]];
+            const Vec3f& b = m_mesh.vertices[face[1]];
+            const Vec3f& c = m_mesh.vertices[face[2]];
+            Vec3f normal = (b - a).cross(c - a);
+            if (normal.squaredNorm() > 1e-12f)
+                normal.normalize();
+            else
+                normal = Vec3f::UnitZ();
+            topology->normals[face_index] = normal;
+            if (centers) topology->centers[face_index] = (a + b + c) / 3.0f;
+
+            if (independent_corners)
+                continue;
+
+            const std::array<std::pair<uint32_t, uint32_t>, 3> edges {{
+                {uint32_t(face[0]), uint32_t(face[1])},
+                {uint32_t(face[1]), uint32_t(face[2])},
+                {uint32_t(face[2]), uint32_t(face[0])}
+            }};
+            for (const auto& edge : edges) {
+                const uint64_t key = edge_key(edge.first, edge.second);
+                const auto [owner, inserted] = indexed_edges.emplace(
+                    key, IndexedEdgeOwner {edge.first, edge.second, uint32_t(face_index), 1});
+                if (!inserted) {
+                    ++owner->second.use_count;
+                    if (owner->second.first_face != face_index) {
+                        topology->neighbors[face_index].push_back(owner->second.first_face);
+                        topology->neighbors[owner->second.first_face].push_back(uint32_t(face_index));
                     }
                 }
             }
         }
-        if (canonical == std::numeric_limits<uint32_t>::max()) {
-            canonical = uint32_t(vertex_index);
-            vertices_by_cell[cell].push_back(canonical);
+    }
+
+    const auto indexed_done = std::chrono::steady_clock::now();
+    // OBJ exporters commonly duplicate vertices along UV or material seams. Weld only
+    // boundary-edge endpoints for selection adjacency; the mesh and its indices remain unchanged.
+    const double position_tolerance = std::clamp(double(m_mesh_diagonal) * 1e-7, 1e-7, 1e-4);
+    const double tolerance_squared = position_tolerance * position_tolerance;
+    constexpr uint32_t no_canonical = std::numeric_limits<uint32_t>::max();
+    struct CanonicalEntry {
+        uint32_t vertex;
+        uint32_t next;
+    };
+    // Cell heads refer to one contiguous list, avoiding a tiny vector allocation
+    // for each occupied cell. Entries own only indices, never mesh references.
+    // Flat storage avoids per-cell nodes and releases old arrays on growth.
+    // Cell iterators are used only until the next insertion.
+    boost::unordered_flat_map<PositionCell, uint32_t, PositionCellHash> vertices_by_cell;
+    vertices_by_cell.reserve(m_mesh.vertices.size() / (independent_corners ? 3 : 1));
+    std::vector<CanonicalEntry> canonical_entries;
+    canonical_entries.reserve(m_mesh.vertices.size() / (independent_corners ? 3 : 1));
+    std::vector<uint32_t> canonical_vertices(m_mesh.vertices.size());
+    // The extra center-cell lookup pays off for very large meshes with many
+    // exactly repeated positions; smaller meshes keep the single-pass search.
+    const bool try_exact_canonical = m_mesh.vertices.size() >= 4'000'000;
+    for (size_t batch_begin = 0; batch_begin < m_mesh.vertices.size(); batch_begin += PREPARATION_BATCH_SIZE) {
+        check_preparation_canceled(canceled);
+        const size_t batch_end = std::min(m_mesh.vertices.size(), batch_begin + PREPARATION_BATCH_SIZE);
+        for (size_t vertex_index = batch_begin; vertex_index < batch_end; ++vertex_index) {
+            const Vec3f& vertex = m_mesh.vertices[vertex_index];
+            const PositionCell cell = position_cell(vertex, position_tolerance);
+            uint32_t canonical = no_canonical;
+            bool exact_canonical = false;
+            if (try_exact_canonical) {
+                const auto same_cell = vertices_by_cell.find(cell);
+                if (same_cell != vertices_by_cell.end()) {
+                    for (uint32_t entry = same_cell->second; entry != no_canonical; entry = canonical_entries[entry].next) {
+                        const uint32_t candidate = canonical_entries[entry].vertex;
+                        const Vec3f& existing = m_mesh.vertices[candidate];
+                        if (existing.x() == vertex.x() && existing.y() == vertex.y() && existing.z() == vertex.z()) {
+                            canonical = candidate;
+                            exact_canonical = true;
+                            break;
+                        }
+                        if ((existing.cast<double>() - vertex.cast<double>()).squaredNorm() <= tolerance_squared)
+                            canonical = std::min(canonical, candidate);
+                    }
+                }
+            }
+            // An identical canonical point was inserted only after all older nearby
+            // canonicals had been ruled out. Later insertions cannot have a smaller index.
+            if (!exact_canonical) {
+                for (int64_t dx = -1; dx <= 1; ++dx) {
+                    for (int64_t dy = -1; dy <= 1; ++dy) {
+                        for (int64_t dz = -1; dz <= 1; ++dz) {
+                            if (try_exact_canonical && dx == 0 && dy == 0 && dz == 0)
+                                continue;
+                            const auto candidates = vertices_by_cell.find({cell.x + dx, cell.y + dy, cell.z + dz});
+                            if (candidates == vertices_by_cell.end())
+                                continue;
+                            for (uint32_t entry = candidates->second; entry != no_canonical; entry = canonical_entries[entry].next) {
+                                const uint32_t candidate = canonical_entries[entry].vertex;
+                                if ((m_mesh.vertices[candidate].cast<double>() - vertex.cast<double>()).squaredNorm() <=
+                                    tolerance_squared)
+                                    canonical = std::min(canonical, candidate);
+                            }
+                        }
+                    }
+                }
+            }
+            if (canonical == no_canonical) {
+                canonical = uint32_t(vertex_index);
+                const auto [head, inserted] = vertices_by_cell.try_emplace(cell, no_canonical);
+                canonical_entries.push_back({canonical, head->second});
+                head->second = uint32_t(canonical_entries.size() - 1);
+            }
+            canonical_vertices[vertex_index] = canonical;
         }
-        canonical_vertices[vertex_index] = canonical;
     }
 
-    std::unordered_map<uint64_t, std::vector<uint32_t>> faces_by_geometric_edge;
-    faces_by_geometric_edge.reserve(indexed_edges.size());
-    for (const auto& item : indexed_edges) {
-        const IndexedEdgeOwner& edge = item.second;
-        if (edge.use_count != 1)
-            continue;
-        const uint32_t first = canonical_vertices[edge.first_vertex];
-        const uint32_t second = canonical_vertices[edge.second_vertex];
+    const auto weld_done = std::chrono::steady_clock::now();
+    struct GeometricBoundaryEdge {
+        uint64_t key;
+        uint32_t face;
+    };
+    std::vector<GeometricBoundaryEdge> boundary_edges;
+    const auto append_boundary = [&](uint32_t first_vertex, uint32_t second_vertex, uint32_t face) {
+        const uint32_t first = canonical_vertices[first_vertex];
+        const uint32_t second = canonical_vertices[second_vertex];
         if (first != second)
-            faces_by_geometric_edge[edge_key(first, second)].push_back(edge.first_face);
+            boundary_edges.push_back({edge_key(first, second), face});
+    };
+    if (independent_corners) {
+        boundary_edges.reserve(m_mesh.indices.size() * 3);
+        for (size_t face_index = 0; face_index < m_mesh.indices.size(); ++face_index) {
+            if ((face_index & 4095) == 0) check_preparation_canceled(canceled);
+            const auto& face = m_mesh.indices[face_index];
+            for (size_t side = 0; side < 3; ++side)
+                append_boundary(uint32_t(face[side]), uint32_t(face[(side + 1) % 3]), uint32_t(face_index));
+        }
+    } else {
+        size_t edge_work = 0;
+        for (const auto& item : indexed_edges) {
+            if ((edge_work++ & 4095) == 0) check_preparation_canceled(canceled);
+            const IndexedEdgeOwner& edge = item.second;
+            if (edge.use_count == 1)
+                append_boundary(edge.first_vertex, edge.second_vertex, edge.first_face);
+        }
     }
-    for (const auto& item : faces_by_geometric_edge) {
-        const std::vector<uint32_t>& faces = item.second;
-        if (faces.size() != 2 || faces[0] == faces[1])
-            continue;
-        m_face_neighbors[faces[0]].push_back(faces[1]);
-        m_face_neighbors[faces[1]].push_back(faces[0]);
+    // Keep the original comparator and ordering cost. Cancellation is cooperative:
+    // one standard-library sort must finish before its following checkpoint.
+    check_preparation_canceled(canceled);
+    std::sort(boundary_edges.begin(), boundary_edges.end(), [](const auto& a, const auto& b) {
+        return a.key < b.key;
+    });
+    check_preparation_canceled(canceled);
+    size_t boundary_work = 0;
+    for (size_t begin = 0; begin < boundary_edges.size();) {
+        if ((boundary_work++ & 4095) == 0) check_preparation_canceled(canceled);
+        size_t end = begin + 1;
+        while (end < boundary_edges.size() && boundary_edges[end].key == boundary_edges[begin].key) {
+            if ((end & 4095) == 0) check_preparation_canceled(canceled);
+            ++end;
+        }
+        if (end - begin == 2 && boundary_edges[begin].face != boundary_edges[begin + 1].face) {
+            const uint32_t first = boundary_edges[begin].face;
+            const uint32_t second = boundary_edges[begin + 1].face;
+            // Independent corners have at most one neighbor per side. Allocate
+            // once on the first link, without allocating for disconnected faces.
+            if (independent_corners) {
+                if (topology->neighbors[first].empty())
+                    topology->neighbors[first].reserve(3);
+                if (topology->neighbors[second].empty())
+                    topology->neighbors[second].reserve(3);
+            }
+            topology->neighbors[first].push_back(second);
+            topology->neighbors[second].push_back(first);
+        }
+        begin = end;
     }
-    for (std::vector<uint32_t>& neighbors : m_face_neighbors) {
-        std::sort(neighbors.begin(), neighbors.end());
-        neighbors.erase(std::unique(neighbors.begin(), neighbors.end()), neighbors.end());
+    for (size_t batch_begin = 0; batch_begin < topology->neighbors.size(); batch_begin += PREPARATION_BATCH_SIZE) {
+        check_preparation_canceled(canceled);
+        const size_t batch_end = std::min(topology->neighbors.size(), batch_begin + PREPARATION_BATCH_SIZE);
+        for (size_t face = batch_begin; face < batch_end; ++face) {
+            std::vector<uint32_t>& neighbors = topology->neighbors[face];
+            std::sort(neighbors.begin(), neighbors.end());
+            neighbors.erase(std::unique(neighbors.begin(), neighbors.end()), neighbors.end());
+        }
     }
 
-    m_pick_face_order.resize(m_mesh.indices.size());
-    std::iota(m_pick_face_order.begin(), m_pick_face_order.end(), uint32_t(0));
-    m_pick_nodes.reserve(std::max<size_t>(1, m_mesh.indices.size() / 2));
-    build_pick_bvh(0, m_pick_face_order.size());
+    check_preparation_canceled(canceled);
+    const auto adjacency_done = std::chrono::steady_clock::now();
+    const auto milliseconds = [](auto begin, auto end) {
+        return std::chrono::duration<double, std::milli>(end - begin).count();
+    };
+    topology->indexed_ms = milliseconds(started, indexed_done);
+    topology->weld_ms = milliseconds(indexed_done, weld_done);
+    topology->adjacency_ms = milliseconds(weld_done, adjacency_done);
+    return topology;
+}
+
+std::unique_ptr<VertexColorRegionEditor::RegionTopology>
+VertexColorRegionEditor::prepare_region_topology(std::string& error,
+    const std::function<bool()>& canceled) const try
+{
+    if (!ready()) {error = "The model contains no selectable triangles.";return {};}
+    return prepare_region_topology_impl(false, canceled);
+}
+catch (const RegionPreparationCanceled&) {
+    error = "Local selection preparation canceled.";
+    return {};
+}
+
+bool VertexColorRegionEditor::install_region_topology(std::unique_ptr<RegionTopology> topology)
+{
+    if (!topology || !ready() || region_selection_ready() || topology->source != this ||
+        topology->generation != m_geometry_generation ||
+        topology->neighbors.size() != m_mesh.indices.size() || topology->normals.size() != m_mesh.indices.size())
+        return false;
+    m_face_normals = std::move(topology->normals);
+    m_face_neighbors = std::move(topology->neighbors);
     return true;
 }
 
-uint32_t VertexColorRegionEditor::build_pick_bvh(size_t begin, size_t end)
+uint32_t VertexColorRegionEditor::build_pick_bvh(size_t begin, size_t end, const std::function<bool()>& canceled)
 {
+    if ((m_pick_nodes.size() & (PREPARATION_BATCH_SIZE - 1)) == 0)
+        check_preparation_canceled(canceled);
+    const size_t count = end - begin;
     PickBvhNode node;
     node.minimum = Vec3f::Constant(std::numeric_limits<float>::infinity());
     node.maximum = Vec3f::Constant(-std::numeric_limits<float>::infinity());
-    Vec3f center_minimum = node.minimum;
-    Vec3f center_maximum = node.maximum;
-    for (size_t item = begin; item < end; ++item) {
-        const uint32_t face_index = m_pick_face_order[item];
-        const stl_triangle_vertex_indices& face = m_mesh.indices[face_index];
-        for (size_t corner = 0; corner < 3; ++corner) {
-            const Vec3f& vertex = m_mesh.vertices[face[corner]];
-            node.minimum = node.minimum.cwiseMin(vertex);
-            node.maximum = node.maximum.cwiseMax(vertex);
-        }
-        center_minimum = center_minimum.cwiseMin(m_face_centers[face_index]);
-        center_maximum = center_maximum.cwiseMax(m_face_centers[face_index]);
-    }
-
-    const uint32_t node_index = uint32_t(m_pick_nodes.size());
-    m_pick_nodes.emplace_back(node);
-    const size_t count = end - begin;
     if (count <= PICK_BVH_LEAF_SIZE) {
+        for (size_t item = begin; item < end; ++item) {
+            const stl_triangle_vertex_indices& face = m_mesh.indices[m_pick_face_order[item]];
+            for (size_t corner = 0; corner < 3; ++corner) {
+                const Vec3f& vertex = m_mesh.vertices[face[corner]];
+                node.minimum = node.minimum.cwiseMin(vertex);
+                node.maximum = node.maximum.cwiseMax(vertex);
+            }
+        }
+        const uint32_t node_index = uint32_t(m_pick_nodes.size());
+        m_pick_nodes.emplace_back(node);
         m_pick_nodes[node_index].first = uint32_t(begin);
         m_pick_nodes[node_index].count = uint32_t(count);
         return node_index;
     }
 
+    Vec3f center_minimum = node.minimum;
+    Vec3f center_maximum = node.maximum;
+    for (size_t batch_begin = begin; batch_begin < end; batch_begin += PREPARATION_BATCH_SIZE) {
+        if (count >= PREPARATION_BATCH_SIZE) check_preparation_canceled(canceled);
+        const size_t batch_end = std::min(end, batch_begin + PREPARATION_BATCH_SIZE);
+        for (size_t item = batch_begin; item < batch_end; ++item) {
+            const uint32_t face_index = m_pick_face_order[item];
+            center_minimum = center_minimum.cwiseMin(m_face_centers[face_index]);
+            center_maximum = center_maximum.cwiseMax(m_face_centers[face_index]);
+        }
+    }
+
+    const uint32_t node_index = uint32_t(m_pick_nodes.size());
+    m_pick_nodes.emplace_back(node);
     Eigen::Index split_axis = 0;
     (center_maximum - center_minimum).maxCoeff(&split_axis);
     const size_t middle = begin + count / 2;
-    std::nth_element(
-        m_pick_face_order.begin() + begin,
-        m_pick_face_order.begin() + middle,
-        m_pick_face_order.begin() + end,
-        [this, split_axis](uint32_t left, uint32_t right) {
-            const float left_value = m_face_centers[left][split_axis];
-            const float right_value = m_face_centers[right][split_axis];
-            return left_value == right_value ? left < right : left_value < right_value;
-        });
-    const uint32_t left = build_pick_bvh(begin, middle);
-    const uint32_t right = build_pick_bvh(middle, end);
+    const auto face_less = [this, split_axis](uint32_t left, uint32_t right) {
+        const float left_value = m_face_centers[left][split_axis];
+        const float right_value = m_face_centers[right][split_axis];
+        return left_value == right_value ? left < right : left_value < right_value;
+    };
+    if (count >= PREPARATION_BATCH_SIZE) check_preparation_canceled(canceled);
+    std::nth_element(m_pick_face_order.begin() + begin,
+                     m_pick_face_order.begin() + middle,
+                     m_pick_face_order.begin() + end, face_less);
+    const uint32_t left = build_pick_bvh(begin, middle, canceled);
+    const uint32_t right = build_pick_bvh(middle, end, canceled);
+    // Each triangle's bounds are visited once in a leaf; parent boxes are
+    // assembled from their children without scanning the same vertices again.
+    m_pick_nodes[node_index].minimum = m_pick_nodes[left].minimum.cwiseMin(m_pick_nodes[right].minimum);
+    m_pick_nodes[node_index].maximum = m_pick_nodes[left].maximum.cwiseMax(m_pick_nodes[right].maximum);
     m_pick_nodes[node_index].left = left;
     m_pick_nodes[node_index].right = right;
     return node_index;
@@ -306,6 +560,7 @@ uint32_t VertexColorRegionEditor::build_pick_bvh(size_t begin, size_t end)
 
 void VertexColorRegionEditor::clear()
 {
+    ++m_geometry_generation;
     m_mesh = {};
     m_vertex_colors.clear();
     m_face_color_overrides.clear();
@@ -322,11 +577,31 @@ void VertexColorRegionEditor::clear()
 std::optional<size_t> VertexColorRegionEditor::pick_face(const Vec3d& ray_origin,
                                                          const Vec3d& ray_direction) const
 {
+    const auto hit = pick_surface(ray_origin,ray_direction);
+    return hit ? std::optional<size_t>(hit->face) : std::nullopt;
+}
+
+void VertexColorRegionEditor::set_face_adjacency(const std::vector<std::vector<int32_t>>& adjacency)
+{
+    if (adjacency.size() != m_mesh.indices.size()) throw std::invalid_argument("Editor adjacency changed.");
+    std::vector<std::vector<uint32_t>> result(adjacency.size());
+    for (size_t f = 0; f < adjacency.size(); ++f) for (const auto n : adjacency[f]) if (n >= 0) {
+        if (size_t(n) >= adjacency.size() || size_t(n) == f ||
+            std::find(adjacency[n].begin(),adjacency[n].end(),int32_t(f)) == adjacency[n].end())
+            throw std::invalid_argument("Editor adjacency is invalid or asymmetric.");
+        result[f].push_back(uint32_t(n));
+    }
+    m_face_neighbors = std::move(result);
+}
+
+std::optional<VertexColorRegionEditor::SurfaceHit> VertexColorRegionEditor::pick_surface(const Vec3d& ray_origin,
+                                                         const Vec3d& ray_direction) const
+{
     if (!ready() || ray_direction.squaredNorm() < 1e-12)
         return std::nullopt;
     const Vec3d direction = ray_direction.normalized();
     double nearest = std::numeric_limits<double>::infinity();
-    std::optional<size_t> result;
+    std::optional<SurfaceHit> result;
     if (m_pick_nodes.empty())
         return result;
 
@@ -352,14 +627,15 @@ std::optional<size_t> VertexColorRegionEditor::pick_face(const Vec3d& ray_origin
                 const size_t face_index = m_pick_face_order[item];
                 const stl_triangle_vertex_indices& face = m_mesh.indices[face_index];
                 double distance = 0.0;
+                Vec3d barycentric;
                 if (!ray_triangle_intersection(ray_origin, direction,
                                                m_mesh.vertices[face[0]], m_mesh.vertices[face[1]],
-                                               m_mesh.vertices[face[2]], distance))
+                                               m_mesh.vertices[face[2]], distance, barycentric))
                     continue;
                 if (distance < nearest - 1e-9 ||
-                    (std::abs(distance - nearest) <= 1e-9 && (!result || face_index < *result))) {
+                    (std::abs(distance - nearest) <= 1e-9 && (!result || face_index < result->face))) {
                     nearest = distance;
-                    result = face_index;
+                    result = SurfaceHit{face_index,barycentric,distance};
                 }
             }
             continue;
@@ -477,7 +753,7 @@ std::vector<size_t> VertexColorRegionEditor::local_patch(
 size_t VertexColorRegionEditor::update_selection(size_t seed_face, RegionSelectionOperation operation,
                                                  const RegionSelectionSettings& settings)
 {
-    if (!ready() || seed_face >= m_mesh.indices.size())
+    if (!region_selection_ready() || seed_face >= m_mesh.indices.size())
         return m_selected_face_count;
     const std::vector<size_t> region = (operation == RegionSelectionOperation::Replace || operation == RegionSelectionOperation::AddSimilar)
         ? smart_region(seed_face, settings) : local_patch(seed_face, settings);
@@ -550,7 +826,7 @@ size_t VertexColorRegionEditor::select_palette_material(const std::vector<RGBA>&
 size_t VertexColorRegionEditor::select_elevated_overhang_regions(
     const OverhangRegionSettings& settings)
 {
-    if (!ready())
+    if (!region_selection_ready())
         return 0;
 
     const float ground_band = std::max(0.0f, settings.ground_band_mm);

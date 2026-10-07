@@ -244,6 +244,79 @@ void append_vectors(Json& doc, std::vector<unsigned char>& binary, size_t old_ac
 }
 } // namespace
 
+std::vector<size_t> verify_glb_appearance_layout(const Json& doc,
+    const std::vector<unsigned char>& binary, const indexed_triangle_set& editor_mesh,
+    const std::vector<int>& face_materials, const std::function<void()>& checkpoint)
+{
+    require(doc.at("meshes").size() == 1, "Appearance corner edits require one static GLB mesh.");
+    require(editor_mesh.indices.size() <= max_faces && editor_mesh.vertices.size() <= max_vertices &&
+        face_materials.size() == editor_mesh.indices.size(), "Invalid appearance surface layout.");
+    const auto& mesh = doc.at("meshes")[0];
+    no_extensions(mesh);
+    require(!mesh.contains("weights") && !mesh.at("primitives").empty(), "Appearance edits require static primitives.");
+    const Eigen::Matrix4d world = model_transform(doc);
+    std::vector<size_t> face_counts;
+    size_t face_offset = 0;
+    int winding = 0;
+    for (const auto& primitive : mesh.at("primitives")) {
+        if (checkpoint) checkpoint();
+        no_extensions(primitive);
+        require(number(primitive, "mode", 4) == 4 && !primitive.contains("targets"), "Appearance edits require static triangles.");
+        const auto& attributes = primitive.at("attributes");
+        for (auto it = attributes.begin(); it != attributes.end(); ++it)
+            require(it.key() == "POSITION" || it.key() == "NORMAL" || it.key() == "TEXCOORD_0" || it.key() == "COLOR_0",
+                "This GLB attribute is not supported for corner appearance edits.");
+        const auto positions = read_vectors(binary, accessor(doc, unsigned_value(attributes.at("POSITION")), binary.size(), true), checkpoint);
+        std::vector<size_t> corners;
+        if (primitive.contains("indices")) {
+            const auto layout = accessor(doc, unsigned_value(primitive.at("indices")), binary.size(), false);
+            require(layout.count % 3 == 0 && layout.count / 3 <= max_faces, "Invalid appearance triangle count.");
+            corners.resize(layout.count);
+            for (size_t i = 0; i < corners.size(); ++i) {
+                if ((i & 4095) == 0 && checkpoint) checkpoint();
+                const auto* value = binary.data() + layout.offset + i * layout.stride;
+                corners[i] = layout.width == 1 ? value[0] : layout.width == 2 ? uint32_t(value[0]) | uint32_t(value[1]) << 8 : u32(value);
+                require(corners[i] < positions.size(), "Appearance triangle index is out of range.");
+            }
+        } else {
+            require(positions.size() % 3 == 0, "Unindexed appearance geometry must contain complete triangles.");
+            corners.resize(positions.size());
+            for (size_t i = 0; i < corners.size(); ++i) corners[i] = i;
+        }
+        const size_t faces = corners.size() / 3;
+        require(faces <= editor_mesh.indices.size() - face_offset, "Appearance triangle mapping changed during import.");
+        const size_t material = unsigned_value(primitive.at("material"));
+        for (size_t face = 0; face < faces; ++face) {
+            if ((face & 4095) == 0 && checkpoint) checkpoint();
+            require(face_materials[face_offset + face] == int(material), "Appearance material mapping changed during import.");
+            std::array<Vec3d, 3> expected, actual;
+            for (size_t c = 0; c < 3; ++c) {
+                expected[c] = (world * positions[corners[face * 3 + c]].cast<double>().homogeneous()).head<3>();
+                const int index = editor_mesh.indices[face_offset + face][c];
+                require(index >= 0 && size_t(index) < editor_mesh.vertices.size(), "Invalid imported appearance vertex.");
+                actual[c] = editor_mesh.vertices[index].cast<double>();
+                require(expected[c].allFinite() && actual[c].allFinite(), "Invalid transformed appearance position.");
+            }
+            int direction = 0;
+            for (int sign : {1, -1}) for (size_t start = 0; start < 3; ++start) {
+                bool matches = true;
+                for (size_t c = 0; c < 3; ++c) {
+                    const auto& p = expected[(start + (sign > 0 ? c : 3 - c)) % 3];
+                    const double tolerance = std::max(1e-5, p.cwiseAbs().maxCoeff() * 2e-6);
+                    matches = matches && (actual[c] - p).norm() <= tolerance;
+                }
+                if (matches) direction = sign;
+            }
+            require(direction != 0 && (!winding || winding == direction), "Appearance triangle order or geometry could not be verified.");
+            winding = direction;
+        }
+        face_counts.push_back(faces);
+        face_offset += faces;
+    }
+    require(face_offset == editor_mesh.indices.size(), "Appearance surface contains unmapped triangles.");
+    return face_counts;
+}
+
 struct GlbGeometrySource {
     boost::filesystem::path path;
     std::string sha256;

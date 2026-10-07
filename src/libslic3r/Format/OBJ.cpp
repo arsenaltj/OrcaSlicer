@@ -24,14 +24,29 @@
 
 namespace Slic3r {
 
-bool load_obj(const char *path, TriangleMesh *meshptr, ObjInfo& obj_info, std::string &message, ObjParser::MtlData *out_mtl)
+bool load_obj(const char *path, TriangleMesh *meshptr, ObjInfo& obj_info, std::string &message, ObjParser::MtlData *out_mtl,
+              const std::function<bool()>& canceled)
 {
     if (meshptr == nullptr)
         return false;
+    bool cancellation_requested = false;
+    const std::function<bool()> poll_cancellation = canceled ? std::function<bool()>([&] {
+        cancellation_requested = cancellation_requested || canceled();
+        return cancellation_requested;
+    }) : std::function<bool()> {};
+    auto stop_if_canceled = [&] {
+        if (!poll_cancellation || !poll_cancellation()) return false;
+        *meshptr = TriangleMesh {};obj_info = ObjInfo {};
+        if (out_mtl) *out_mtl = ObjParser::MtlData {};
+        message = "Model loading canceled.";
+        return true;
+    };
+    if (stop_if_canceled()) return false;
     // Parse the OBJ file.
     ObjParser::ObjData data;
     ObjParser::MtlData mtl_data;
-    if (! ObjParser::objparse(path, data)) {
+    if (! ObjParser::objparse(path, data, poll_cancellation)) {
+        if (stop_if_canceled()) return false;
         BOOST_LOG_TRIVIAL(error) << "load_obj: failed to parse " << path;
         message = _L("load_obj: failed to parse");
         return false;
@@ -39,6 +54,7 @@ bool load_obj(const char *path, TriangleMesh *meshptr, ObjInfo& obj_info, std::s
     bool exist_mtl = false;
     if (data.mtllibs.size() > 0) { // read mtl
         for (auto mtl_name : data.mtllibs) {
+            if (stop_if_canceled()) return false;
             if (mtl_name.size() == 0){
                 continue;
             }
@@ -72,7 +88,12 @@ bool load_obj(const char *path, TriangleMesh *meshptr, ObjInfo& obj_info, std::s
     // Count the faces and verify, that all faces are triangular.
     size_t num_faces = 0;
     size_t num_quads = 0;
+    size_t next_cancel_poll = 0;
     for (size_t i = 0; i < data.vertices.size(); ++ i) {
+        if (i >= next_cancel_poll) {
+            if (stop_if_canceled()) return false;
+            next_cancel_poll = i + 4096;
+        }
         // Find the end of face.
         size_t j = i;
         for (; j < data.vertices.size() && data.vertices[j].coordIdx != -1; ++ j) ;
@@ -106,6 +127,7 @@ bool load_obj(const char *path, TriangleMesh *meshptr, ObjInfo& obj_info, std::s
     }
     bool has_color = data.has_vertex_color;
     for (size_t i = 0; i < num_vertices; ++ i) {
+        if ((i & 4095) == 0 && stop_if_canceled()) return false;
         size_t j = i * OBJ_VERTEX_LENGTH;
         its.vertices.emplace_back(data.coordinates[j], data.coordinates[j + 1], data.coordinates[j + 2]);
         if (data.has_vertex_color) {
@@ -116,7 +138,12 @@ bool load_obj(const char *path, TriangleMesh *meshptr, ObjInfo& obj_info, std::s
     }
     int indices[ONE_FACE_SIZE];
     int uvs[ONE_FACE_SIZE];
-    for (size_t i = 0; i < data.vertices.size();)
+    next_cancel_poll = 0;
+    for (size_t i = 0; i < data.vertices.size();) {
+        if (i >= next_cancel_poll) {
+            if (stop_if_canceled()) return false;
+            next_cancel_poll = i + 4096;
+        }
         if (data.vertices[i].coordIdx == -1)
             ++ i;
         else {
@@ -206,6 +233,8 @@ bool load_obj(const char *path, TriangleMesh *meshptr, ObjInfo& obj_info, std::s
             }
         }
 
+    }
+    if (stop_if_canceled()) return false;
     *meshptr = TriangleMesh(std::move(its));
     if (meshptr->empty()) {
         BOOST_LOG_TRIVIAL(error) << "load_obj: This OBJ file couldn't be read because it's empty. " << path;
@@ -214,6 +243,7 @@ bool load_obj(const char *path, TriangleMesh *meshptr, ObjInfo& obj_info, std::s
     }
     if (meshptr->volume() < 0)
         meshptr->flip_triangles();
+    if (stop_if_canceled()) return false;
     // Hand the parsed material table back so callers can build a TexturedMesh from it.
     if (out_mtl)
         *out_mtl = mtl_data;

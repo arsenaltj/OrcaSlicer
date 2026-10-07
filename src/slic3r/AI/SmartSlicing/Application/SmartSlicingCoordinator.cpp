@@ -222,6 +222,42 @@ void SmartSlicingCoordinator::cancel()
     transition(WorkflowState::Canceled, "canceled");
 }
 
+bool SmartSlicingCoordinator::keep_current_mesh(const WorkspaceRevision& reviewed_revision)
+{
+    if (m_snapshot.state != WorkflowState::AwaitingRiskDecision || !m_snapshot.context ||
+        !m_snapshot.report || m_snapshot.report->revision != reviewed_revision)
+        return false;
+    try {
+        if (!workspace_revision_matches()) {
+            transition(WorkflowState::Stale, "workspace_changed");
+            return false;
+        }
+    } catch (...) {
+        transition(WorkflowState::Failed, "preflight_revision_unavailable");
+        return false;
+    }
+    auto& report = *m_snapshot.report;
+    bool open_mesh = false;
+    for (const auto& issue : report.issues) {
+        if (!issue.blocks_trial_slice) continue;
+        if (issue.code != IssueCode::OpenMesh || !issue.requires_user_decision ||
+            std::find(issue.resolution_codes.begin(), issue.resolution_codes.end(),
+                      "keep_current_mesh") == issue.resolution_codes.end())
+            return false;
+        open_mesh = true;
+    }
+    if (!open_mesh) return false;
+    for (auto& issue : report.issues) {
+        if (issue.code != IssueCode::OpenMesh) continue;
+        issue.blocks_trial_slice = false;
+        issue.requires_user_decision = false;
+        issue.severity = Severity::Warning;
+    }
+    report.readiness = Readiness::NeedsAttention;
+    transition(WorkflowState::ReadyForCandidatePlanning, "preflight_complete_with_warnings");
+    return true;
+}
+
 bool SmartSlicingCoordinator::workspace_revision_matches() const
 {
     return m_snapshot.context && m_workspace.current_revision() == m_snapshot.context->revision;

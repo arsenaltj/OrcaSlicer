@@ -54,6 +54,19 @@ bool Snapshot::is_topmost() const
 	return this->name == topmost_snapshot_name;
 }
 
+bool detail::has_redo_action(const std::vector<Snapshot>& history, size_t active_time)
+{
+    if (history.size() < 2 || active_time >= history.back().timestamp)
+        return false;
+    auto current = std::lower_bound(history.begin(), history.end(), Snapshot(active_time));
+    if (current == history.end() || current->timestamp != active_time)
+        return false;
+    // An action names the interval leading to the following state. The final
+    // state, captured or temporary, has no following interval to redo.
+    return std::any_of(current, history.end() - 1,
+        [](const Snapshot& snapshot) { return snapshot_modifies_project(snapshot); });
+}
+
 bool detail::abort_top_action_history(std::vector<Snapshot>& history, size_t& active_time,
                                       const ActionSnapshotIdentity& identity)
 {
@@ -1110,13 +1123,7 @@ bool StackImpl::has_redo_snapshot() const
 		return false;
 #endif
 
-	// BBS: undo-redo until modify record
-	auto it = std::lower_bound(m_snapshots.begin(), m_snapshots.end(), Snapshot(m_active_snapshot_time));
-	for (; it != m_snapshots.end(); ++it) {
-		if (snapshot_modifies_project(*it))
-			return true;
-	}
-	return false;
+	return detail::has_redo_action(m_snapshots, m_active_snapshot_time);
 }
 
 bool StackImpl::undo(Slic3r::Model &model, const Slic3r::GUI::Selection &selection, Slic3r::GUI::GLGizmosManager &gizmos, Slic3r::GUI::PartPlateList& plate_list, const SnapshotData &snapshot_data, size_t time_to_load)

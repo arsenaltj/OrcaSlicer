@@ -2,6 +2,7 @@
 #include "OpenGLManager.hpp"
 
 #include "TextureImportDialog.hpp"
+#include "Redesign/RedesignTheme.hpp"
 #include "I18N.hpp"
 #include "GUI_App.hpp"
 #include "MsgDialog.hpp"
@@ -211,6 +212,7 @@ public:
     int  GetValue() const;
     void SetValue(int val);
     bool Enable(bool enable = true) override;
+    void SetWorkbenchReview(bool review) { m_workbench_review = review; Refresh(); }
 private:
     void OnPaint(wxPaintEvent&);
     void OnMouse(wxMouseEvent&);
@@ -218,6 +220,7 @@ private:
     int  valueFromX(int x) const;
     int  m_value, m_min, m_max;
     bool m_dragging = false;
+    bool m_workbench_review = false;
 };
 
 AccentSlider::AccentSlider(wxWindow* parent, int value, int minVal, int maxVal,
@@ -295,8 +298,11 @@ void AccentSlider::OnPaint(wxPaintEvent&)
     int ts = FromDIP(8);
     int pen_w = FromDIP(2);
 
-    wxColour accent_clr = StateColor::darkModeColorFor(IsEnabled() ? wxColour("#009688") : wxColour("#ACACAC"));
-    wxColour track_clr  = StateColor::darkModeColorFor(IsEnabled() ? wxColour("#CECECE") : wxColour("#DFDFDF"));
+    wxColour accent_clr = m_workbench_review
+        ? (IsEnabled() ? Slic3r::GUI::RedesignTheme::accent_colour() : wxColour(105, 105, 109))
+        : StateColor::darkModeColorFor(IsEnabled() ? wxColour("#009688") : wxColour("#ACACAC"));
+    wxColour track_clr = m_workbench_review ? wxColour(95, 95, 99)
+        : StateColor::darkModeColorFor(IsEnabled() ? wxColour("#CECECE") : wxColour("#DFDFDF"));
 
     int tx = xFromValue();
 
@@ -305,6 +311,13 @@ void AccentSlider::OnPaint(wxPaintEvent&)
 
     dc.SetPen(wxPen(track_clr, pen_w));
     dc.DrawLine(tx, track_y, sz.x - margin, track_y);
+
+    if (m_workbench_review) {
+        dc.SetPen(*wxTRANSPARENT_PEN);
+        dc.SetBrush(wxBrush(IsEnabled() ? wxColour(245, 245, 245) : wxColour(155, 155, 159)));
+        dc.DrawCircle(tx, track_y, FromDIP(5));
+        return;
+    }
 
     wxPoint tri[3] = {
         {tx,          track_y + FromDIP(1)},
@@ -525,7 +538,7 @@ public:
                         std::function<bool()>                    can_decompose_color,
                         std::function<void(bool)>                on_close,
                         std::vector<int>                         display_numbers,
-                        bool show_advanced)
+                        bool show_advanced, bool workbench_review)
         : PopupWindow(parent, wxBORDER_NONE | wxPU_CONTAINS_CONTROLS)
         , m_entries(entries)
         , m_colors_rgba(colors_rgba)
@@ -539,8 +552,9 @@ public:
         , m_can_decompose_color(std::move(can_decompose_color))
         , m_on_close(std::move(on_close))
         , m_display_numbers(std::move(display_numbers))
+        , m_workbench_review(workbench_review)
     {
-        wxColour pop_bg = StateColor::darkModeColorFor(*wxWHITE);
+        wxColour pop_bg = m_workbench_review ? RedesignTheme::panel_colour() : StateColor::darkModeColorFor(*wxWHITE);
         SetBackgroundColour(pop_bg);
 
         m_content = new wxScrolledWindow(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVSCROLL);
@@ -602,7 +616,7 @@ public:
         decompose_label->SetFont(af);
         const bool add_enabled = !m_can_add_filament || m_can_add_filament();
         const bool decompose_enabled = !m_can_decompose_color || m_can_decompose_color();
-        const wxColour action_clr = StateColor::darkModeColorFor(wxColour("#009688"));
+        const wxColour action_clr = m_workbench_review ? RedesignTheme::accent_colour() : StateColor::darkModeColorFor(wxColour("#009688"));
         add_label->SetForegroundColour(add_enabled ? action_clr : header_clr);
         decompose_label->SetForegroundColour(decompose_enabled ? action_clr : header_clr);
         add_label->SetCursor(wxCursor(add_enabled ? wxCURSOR_HAND : wxCURSOR_ARROW));
@@ -705,9 +719,9 @@ private:
 
     wxPanel* create_item_row(size_t idx, int row_h)
     {
-        wxColour row_bg    = StateColor::darkModeColorFor(*wxWHITE);
-        wxColour hover_bg  = StateColor::darkModeColorFor(wxColour("#F4F4F4"));
-        wxColour name_fg   = texture_import_text_colour();
+        wxColour row_bg = m_workbench_review ? RedesignTheme::panel_colour() : StateColor::darkModeColorFor(*wxWHITE);
+        wxColour hover_bg = m_workbench_review ? wxColour(77, 77, 79) : StateColor::darkModeColorFor(wxColour("#F4F4F4"));
+        wxColour name_fg = m_workbench_review ? RedesignTheme::primary_text_colour() : texture_import_text_colour();
 
         wxPanel* row = new wxPanel(m_content, wxID_ANY, wxDefaultPosition, wxSize(-1, row_h));
         row->SetBackgroundColour(row_bg);
@@ -800,9 +814,9 @@ private:
 
     wxPanel* create_mixed_item_row(const TextureFilamentEntry& entry, int row_h)
     {
-        wxColour row_bg    = StateColor::darkModeColorFor(*wxWHITE);
-        wxColour hover_bg  = StateColor::darkModeColorFor(wxColour("#F4F4F4"));
-        wxColour name_fg   = texture_import_text_colour();
+        wxColour row_bg = m_workbench_review ? RedesignTheme::panel_colour() : StateColor::darkModeColorFor(*wxWHITE);
+        wxColour hover_bg = m_workbench_review ? wxColour(77, 77, 79) : StateColor::darkModeColorFor(wxColour("#F4F4F4"));
+        wxColour name_fg = m_workbench_review ? RedesignTheme::primary_text_colour() : texture_import_text_colour();
         const int idx = entry.dialog_index;
 
         wxPanel* row = new wxPanel(m_content, wxID_ANY, wxDefaultPosition, wxSize(-1, row_h));
@@ -904,6 +918,7 @@ private:
     // 1-based display number per dialog_index, mirroring the post-apply
     // sidebar ordering (ExistingPhysical, NewPhysical, ExistingMixed, NewMixed).
     std::vector<int>                           m_display_numbers;
+    bool m_workbench_review = false;
     int                                        m_hover_idx = -1;
     bool                                       m_closing_from_action = false;
     bool                                       m_destroy_scheduled = false;
@@ -928,14 +943,15 @@ public:
                        int popup_width,
                        int font_point_size,
                        std::function<void(TextureAutoMixMode)> on_select,
-                       std::function<void()> on_close)
+                       std::function<void()> on_close, bool workbench_review)
         : PopupWindow(parent, wxBORDER_NONE | wxPU_CONTAINS_CONTROLS)
         , m_current_mode(current_mode)
         , m_font_point_size(font_point_size)
         , m_on_select(std::move(on_select))
         , m_on_close(std::move(on_close))
+        , m_workbench_review(workbench_review)
     {
-        wxColour pop_bg = StateColor::darkModeColorFor(*wxWHITE);
+        wxColour pop_bg = m_workbench_review ? RedesignTheme::panel_colour() : StateColor::darkModeColorFor(*wxWHITE);
         SetBackgroundColour(pop_bg);
 
         auto* content = new wxPanel(this, wxID_ANY);
@@ -967,10 +983,10 @@ private:
 
     wxPanel* create_item_row(wxWindow* parent, TextureAutoMixMode mode, int row_h)
     {
-        wxColour row_bg   = StateColor::darkModeColorFor(*wxWHITE);
-        wxColour hover_bg = StateColor::darkModeColorFor(wxColour("#F4F4F4"));
-        wxColour text_fg  = texture_import_text_colour();
-        wxColour accent   = StateColor::darkModeColorFor(wxColour("#009688"));
+        wxColour row_bg = m_workbench_review ? RedesignTheme::panel_colour() : StateColor::darkModeColorFor(*wxWHITE);
+        wxColour hover_bg = m_workbench_review ? wxColour(77, 77, 79) : StateColor::darkModeColorFor(wxColour("#F4F4F4"));
+        wxColour text_fg = m_workbench_review ? RedesignTheme::primary_text_colour() : texture_import_text_colour();
+        wxColour accent = m_workbench_review ? RedesignTheme::accent_colour() : StateColor::darkModeColorFor(wxColour("#009688"));
 
         wxPanel* row = new wxPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(-1, row_h),
                                    wxTAB_TRAVERSAL | wxFULL_REPAINT_ON_RESIZE);
@@ -1033,6 +1049,7 @@ private:
 
     TextureAutoMixMode m_current_mode;
     int m_font_point_size = 10;
+    bool m_workbench_review = false;
     int m_hover_idx = -1;
     std::function<void(TextureAutoMixMode)> m_on_select;
     std::function<void()> m_on_close;
@@ -1505,7 +1522,8 @@ void TexturePreviewCanvas::render()
     wxSize viewport_sz = gl_viewport_size(this, sz);
     glViewport(0, 0, viewport_sz.x, viewport_sz.y);
     // Same palette key as the preview container, so canvas and frame cannot drift apart.
-    const wxColour clear_clr = StateColor::darkModeColorFor(wxColour("#EEEEEE"));
+    const wxColour clear_clr = m_workbench_review ? RedesignTheme::control_colour()
+        : StateColor::darkModeColorFor(wxColour("#EEEEEE"));
     glClearColor(clear_clr.Red() / 255.f, clear_clr.Green() / 255.f, clear_clr.Blue() / 255.f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -1774,14 +1792,15 @@ TextureImportDialog::TextureImportDialog(
     TextureImportOptions             options)
     : DPIDialog(parent, wxID_ANY, texture_import_label("Import color matching", "导入颜色匹配"),
                 wxDefaultPosition, wxDefaultSize,
-                (wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER) & ~(wxMINIMIZE_BOX | wxMAXIMIZE_BOX))
+                options.workbench_review ? wxBORDER_NONE | wxRESIZE_BORDER :
+                    (wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER) & ~(wxMINIMIZE_BOX | wxMAXIMIZE_BOX))
     , m_textured_mesh(textured_mesh)
     , m_options(std::move(options))
     , m_filament_entries(filament_entries)
     , m_initial_cancel_callback(std::move(initial_cancel_callback))
     , m_initial_progress_callback(std::move(initial_progress_callback))
 {
-    SetSize(wxSize(FromDIP(960), FromDIP(640)));
+    SetSize(FromDIP(m_options.workbench_review ? wxSize(1024, 700) : wxSize(960, 640)));
     if (m_options.initial_target_colors > 0)
         m_param_color_count = (int)std::min(m_options.initial_target_colors, max_filament_count());
     if (m_options.initial_color_smoothing >= 0)
@@ -1819,7 +1838,16 @@ TextureImportDialog::TextureImportDialog(
     m_preview_canvas->set_z_up(m_options.z_up);
     SetMinSize(wxSize(FromDIP(800), FromDIP(500)));
     CenterOnParent();
+    if (m_options.workbench_review) {
+        wxWindow* anchor = wxGetTopLevelParent(GetParent());
+        if (anchor && anchor->IsShownOnScreen()) {
+            const auto area = anchor->GetScreenRect();
+            SetPosition(wxPoint(area.x + (area.width - GetSize().x) / 2,
+                                area.y + (area.height - GetSize().y) / 2));
+        } else CentreOnScreen();
+    }
     wxGetApp().UpdateDlgDarkUI(this);
+    style_workbench_review();
 
     m_preview_canvas->set_mesh_data(m_textured_mesh.vertices, m_textured_mesh.indices);
 
@@ -1956,9 +1984,21 @@ void TextureImportDialog::build_ui()
 
     wxBoxSizer* root_sizer = new wxBoxSizer(wxVERTICAL);
 
-    auto line_top = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxSize(-1, 1));
-    line_top->SetBackgroundColour(texture_import_separator_colour());
-    root_sizer->Add(line_top, 0, wxEXPAND);
+    if (m_options.workbench_review) {
+        auto* header = new wxBoxSizer(wxHORIZONTAL);
+        auto* title = new wxStaticText(this, wxID_ANY, GetTitle());
+        header->Add(title, 1, wxALIGN_CENTER_VERTICAL);
+        auto* close = new Button(this, wxEmptyString, "redesign_startup_close", wxBORDER_NONE, 16);
+        close->SetMinSize(FromDIP(wxSize(28, 28)));
+        close->SetToolTip(_L("Close"));
+        close->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { EndModal(wxID_CANCEL); });
+        header->Add(close, 0, wxALIGN_CENTER_VERTICAL);
+        root_sizer->Add(header, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(16));
+    } else {
+        auto* line_top = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxSize(-1, 1));
+        line_top->SetBackgroundColour(texture_import_separator_colour());
+        root_sizer->Add(line_top, 0, wxEXPAND);
+    }
 
     wxBoxSizer* main_sizer = new wxBoxSizer(wxHORIZONTAL);
 
@@ -1973,7 +2013,7 @@ void TextureImportDialog::build_ui()
     auto* params_sizer = new wxBoxSizer(wxVERTICAL);
     build_params_panel(params, params_sizer);
     params->SetSizer(params_sizer);
-    params->Hide();
+    params->Show(m_options.workbench_review);
     right_sizer->Add(params, 0, wxEXPAND);
     advanced_toggle->Bind(wxEVT_BUTTON, [this, params, advanced_toggle](wxCommandEvent&) {
         dismiss_filament_popup();
@@ -1991,6 +2031,12 @@ void TextureImportDialog::build_ui()
     auto* mapping_panel = new wxPanel(this);
     auto* mapping_sizer = new wxBoxSizer(wxVERTICAL);
     build_mapping_panel(mapping_panel, mapping_sizer);
+    if (m_options.workbench_review) {
+        m_show_advanced = true;
+        advanced_toggle->Hide();
+        m_btn_auto_mix->Show();
+        m_auto_merge_cb->Show();
+    }
     mapping_panel->SetSizer(mapping_sizer);
     right_sizer->Add(mapping_panel, 1, wxEXPAND);
     build_bottom_buttons(right_sizer);
@@ -2024,8 +2070,9 @@ void TextureImportDialog::build_ui()
 
 void TextureImportDialog::build_preview_panel(wxWindow* parent, wxSizer* sizer)
 {
-    wxColour preview_bg = StateColor::darkModeColorFor(wxColour("#EEEEEE"));
-    wxColour preview_bd = texture_import_separator_colour();
+    wxColour preview_bg = m_options.workbench_review ? RedesignTheme::control_colour()
+        : StateColor::darkModeColorFor(wxColour("#EEEEEE"));
+    wxColour preview_bd = m_options.workbench_review ? preview_bg : texture_import_separator_colour();
 
     wxPanel* preview_container = new wxPanel(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
     preview_container->SetBackgroundColour(preview_bg);
@@ -2162,6 +2209,8 @@ void TextureImportDialog::build_params_panel(wxWindow* parent, wxSizer* sizer)
     color_header_sizer->Add(m_btn_color_6,  0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(2));
     color_header_sizer->Add(m_btn_color_8,  0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(2));
     color_header_sizer->Add(m_btn_color_16, 0, wxALIGN_CENTER_VERTICAL);
+    if (m_options.workbench_review)
+        for (auto* button : {m_btn_color_4, m_btn_color_6, m_btn_color_8, m_btn_color_16}) button->Hide();
     sizer->Add(color_header_sizer, 0, wxBOTTOM, FromDIP(4));
 
     wxBoxSizer* color_slider_sizer = new wxBoxSizer(wxHORIZONTAL);
@@ -2328,7 +2377,15 @@ void TextureImportDialog::build_mapping_panel(wxWindow* parent, wxSizer* sizer)
         auto* chip = new wxPanel(parent, wxID_ANY);
         auto* row = new wxBoxSizer(wxHORIZONTAL);
         auto* swatch = new wxPanel(chip, wxID_ANY, wxDefaultPosition, FromDIP(wxSize(20, 20)), wxBORDER_SIMPLE);
-        swatch->SetBackgroundColour(wxColour(wxString::FromUTF8(entry.color_hex)));
+        swatch->SetName("texture_filament_swatch");
+        const wxColour physical_colour(wxString::FromUTF8(entry.color_hex));
+        swatch->SetBackgroundStyle(wxBG_STYLE_PAINT);
+        swatch->SetBackgroundColour(physical_colour);
+        swatch->Bind(wxEVT_PAINT, [swatch, physical_colour](wxPaintEvent&) {
+            wxAutoBufferedPaintDC dc(swatch);
+            dc.SetBackground(wxBrush(physical_colour));
+            dc.Clear();
+        });
         row->Add(swatch, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(3));
         row->Add(new wxStaticText(chip, wxID_ANY, wxString::Format("%d", int(entry.project_config_index + 1))),
                  0, wxALIGN_CENTER_VERTICAL);
@@ -2360,7 +2417,7 @@ void TextureImportDialog::build_mapping_panel(wxWindow* parent, wxSizer* sizer)
     sizer->Add(m_mapping_summary, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
 
     m_mapping_scroll = new wxScrolledWindow(parent, wxID_ANY, wxDefaultPosition,
-                                             wxSize(-1, FromDIP(300)));
+                                             wxSize(-1, FromDIP(m_options.workbench_review ? 160 : 300)));
     m_mapping_scroll->SetScrollRate(0, FromDIP(10));
     m_mapping_scroll->SetBackgroundColour(StateColor::darkModeColorFor(*wxWHITE));
     m_mapping_scroll->Bind(wxEVT_MOUSEWHEEL, &TextureImportDialog::dismiss_filament_popup_on_wheel, this);
@@ -2407,6 +2464,7 @@ void TextureImportDialog::build_bottom_buttons(wxSizer* sizer)
     apply_accent_button_colours(m_btn_ok);
 
     auto* cancel = new Button(this, texture_import_label("Back", "返回"));
+    cancel->SetId(wxID_CANCEL);
     cancel->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { EndModal(wxID_CANCEL); });
     btn_sizer->Add(cancel, 0, wxRIGHT, FromDIP(8));
     btn_sizer->AddStretchSpacer();
@@ -2463,7 +2521,61 @@ void TextureImportDialog::update_ui_for_state()
         m_hint_label->Hide();
 
     m_btn_ok->Refresh();
+    style_workbench_review();
     Layout();
+}
+
+void TextureImportDialog::style_workbench_review()
+{
+    if (!m_options.workbench_review) return;
+    if (m_preview_canvas) m_preview_canvas->set_workbench_review(true);
+    const auto style = [](auto&& self, wxWindow* window) -> void {
+        if (window->GetName() == "texture_filament_swatch") return;
+        if (dynamic_cast<wxPanel*>(window) || dynamic_cast<wxDialog*>(window)) {
+            window->SetName("ai_content_color");
+            window->SetBackgroundColour(RedesignTheme::panel_colour());
+        }
+        if (dynamic_cast<wxStaticText*>(window) || dynamic_cast<wxCheckBox*>(window))
+            RedesignTheme::style_text(window, RedesignTheme::primary_text_colour(), 9);
+        if (auto* button = dynamic_cast<Button*>(window)) {
+            button->SetBackgroundColour(button->GetParent()->GetBackgroundColour());
+            button->SetCornerRadius(dynamic_cast<SpinInput*>(button->GetParent()) ? 0 : window->FromDIP(6));
+            button->SetBorderWidth(0);
+            button->SetBackgroundColor(StateColor(
+                std::pair<wxColour, int>(wxColour(48, 48, 51), StateColor::Disabled),
+                std::pair<wxColour, int>(wxColour(95, 95, 99), StateColor::Hovered),
+                std::pair<wxColour, int>(wxColour(77, 77, 79), StateColor::Normal)));
+            button->SetTextColor(StateColor(
+                std::pair<wxColour, int>(wxColour(125, 125, 129), StateColor::Disabled),
+                std::pair<wxColour, int>(RedesignTheme::primary_text_colour(), StateColor::Normal)));
+        }
+        if (auto* spin = dynamic_cast<SpinInput*>(window)) {
+            spin->SetBackgroundColor(RedesignTheme::panel_colour());
+            spin->SetBorderWidth(0);
+            spin->SetTextColor(RedesignTheme::primary_text_colour());
+        }
+        if (auto* text = dynamic_cast<wxTextCtrl*>(window)) {
+            text->SetBackgroundColour(RedesignTheme::panel_colour());
+            text->SetForegroundColour(RedesignTheme::primary_text_colour());
+        }
+        for (auto* child : window->GetChildren()) self(self, child);
+    };
+    style(style, this);
+    m_mapping_scroll->SetBackgroundColour(RedesignTheme::panel_colour());
+    m_color_slider->SetWorkbenchReview(true);
+    m_smooth_slider->SetWorkbenchReview(true);
+    m_btn_auto_mix->SetMinSize(FromDIP(wxSize(118, 28)));
+    highlight_view_button(m_preview_canvas->get_render_mode() == TexturePreviewCanvas::RenderMode::Original ? 0 : 1);
+    for (auto* button : {m_btn_skip, m_btn_ok}) button->SetCornerRadius(FromDIP(6));
+    m_btn_ok->SetBackgroundColor(StateColor(
+        std::pair<wxColour, int>(wxColour(76, 76, 79), StateColor::Disabled),
+        std::pair<wxColour, int>(wxColour(255, 210, 78), StateColor::Hovered),
+        std::pair<wxColour, int>(RedesignTheme::accent_colour(), StateColor::Normal)));
+    m_btn_ok->SetTextColor(wxColour(22, 22, 25));
+    m_btn_ok->SetLabel(texture_import_label("Apply colors and import", "应用配色并导入"));
+    m_btn_skip->SetBackgroundColor(wxColour(77, 77, 79));
+    m_btn_skip->SetTextColor(RedesignTheme::primary_text_colour());
+    m_btn_skip->SetBorderWidth(0);
 }
 
 // ---- Async computation ----
@@ -3333,7 +3445,7 @@ void TextureImportDialog::show_auto_mix_popup()
 
     auto* popup = new AutoMixSelectPopup(this, m_auto_mix_mode, m_btn_auto_mix->GetSize().x,
                                          m_auto_mix_font_point_size,
-                                         on_select, on_close);
+                                         on_select, on_close, m_options.workbench_review);
     wxPoint pos = m_btn_auto_mix->ClientToScreen(wxPoint(0, m_btn_auto_mix->GetSize().y));
     wxRect display_rect;
     int display_idx = wxDisplay::GetFromPoint(pos);
@@ -3742,7 +3854,7 @@ void TextureImportDialog::show_filament_popup(size_t row_index)
                  }) >= 2);
         },
         on_close,
-        display_numbers, m_show_advanced);
+        display_numbers, m_show_advanced, m_options.workbench_review);
 
     wxPoint pos = tp->ClientToScreen(wxPoint(0, tp->GetSize().y));
     wxRect display_rect;
@@ -3937,12 +4049,12 @@ void TextureImportDialog::rebuild_mapping_rows()
         return wxString::Format("Filament %d", display_number(idx));
     };
 
-    const wxColour dash_clr   = StateColor::darkModeColorFor(wxColour("#ACACAC"));
-    const wxColour hex_fg     = texture_import_text_colour();
-    const wxColour card_bg    = StateColor::darkModeColorFor(wxColour("#E8E8E8"));
-    const wxColour card_bd    = StateColor::darkModeColorFor(wxColour("#DBDBDB"));
-    const wxColour name_fg    = texture_import_text_colour();
-    const wxColour chev_clr   = StateColor::darkModeColorFor(wxColour("#6B6B6A"));
+    const wxColour dash_clr = m_options.workbench_review ? wxColour(77, 77, 79) : StateColor::darkModeColorFor(wxColour("#ACACAC"));
+    const wxColour hex_fg = m_options.workbench_review ? RedesignTheme::primary_text_colour() : texture_import_text_colour();
+    const wxColour card_bg = m_options.workbench_review ? wxColour(77, 77, 79) : StateColor::darkModeColorFor(wxColour("#E8E8E8"));
+    const wxColour card_bd = m_options.workbench_review ? card_bg : StateColor::darkModeColorFor(wxColour("#DBDBDB"));
+    const wxColour name_fg = hex_fg;
+    const wxColour chev_clr = m_options.workbench_review ? wxColour(210, 210, 214) : StateColor::darkModeColorFor(wxColour("#6B6B6A"));
 
     m_mapping_rows.resize(m_current_matches.size());
     for (size_t ci = 0; ci < m_current_matches.size(); ++ci) {
@@ -3983,7 +4095,7 @@ void TextureImportDialog::rebuild_mapping_rows()
             dc.SetPen(*wxTRANSPARENT_PEN);
             dc.DrawRectangle(0, 0, sz.x, sz.y);
 
-            wxPen dash_pen(dash_clr, 1, wxPENSTYLE_SHORT_DASH);
+            wxPen dash_pen(dash_clr, 1, m_options.workbench_review ? wxPENSTYLE_SOLID : wxPENSTYLE_SHORT_DASH);
             dc.SetPen(dash_pen);
             dc.SetBrush(wxBrush(p->GetParent()->GetBackgroundColour()));
             int r = p->FromDIP(8);
@@ -3995,7 +4107,8 @@ void TextureImportDialog::rebuild_mapping_rows()
             int cy = (sz.y - cd) / 2;
             dc.SetPen(*wxTRANSPARENT_PEN);
             dc.SetBrush(wxBrush(src_wx_color));
-            dc.DrawEllipse(cx, cy, cd, cd);
+            if (m_options.workbench_review) dc.DrawRoundedRectangle(cx, cy, cd, cd, p->FromDIP(3));
+            else dc.DrawEllipse(cx, cy, cd, cd);
             draw_filament_swatch_ellipse_border(dc, src_wx_color, cx, cy, cd, cd);
 
             if (ci < m_mapping_rows.size()) {
@@ -4003,7 +4116,8 @@ void TextureImportDialog::rebuild_mapping_rows()
                 hex_font.SetPointSize(9);
                 dc.SetFont(hex_font);
                 dc.SetTextForeground(hex_fg);
-                wxString hex_str = wxString::Format(texture_import_label("Color %d", "颜色 %d"), int(ci + 1));
+                wxString hex_str = m_options.workbench_review ? wxString::FromUTF8(m_mapping_rows[ci].source_hex) :
+                    wxString::Format(texture_import_label("Color %d", "颜色 %d"), int(ci + 1));
                 wxSize tsz = dc.GetTextExtent(hex_str);
                 dc.DrawText(hex_str, cx + cd + p->FromDIP(6), (sz.y - tsz.y) / 2);
             }
@@ -4367,6 +4481,15 @@ void TextureImportDialog::on_auto_merge_toggled(wxCommandEvent&)
 void TextureImportDialog::highlight_view_button(int view_index)
 {
     Button* btns[] = { m_btn_view_original, m_btn_view_filaments };
+    if (m_options.workbench_review) {
+        for (int i = 0; i < 2; ++i) {
+            btns[i]->SetBackgroundColor(i == view_index ? wxColour(77, 77, 79) : RedesignTheme::control_colour());
+            btns[i]->SetTextColor(i == view_index ? RedesignTheme::accent_colour() : RedesignTheme::secondary_text_colour());
+            btns[i]->SetBorderWidth(0);
+            btns[i]->Refresh();
+        }
+        return;
+    }
 
     // The inactive pill lies on m_tab_panel, which is preview_bg (#EEEEEE -> #4C4C55), and has to
     // read as raised above that strip in both themes — so its fill steps away from the strip in
@@ -4549,7 +4672,7 @@ void TextureImportDialog::on_dpi_changed(const wxRect&)
         m_smooth_spin->SetMinSize(wxSize(FromDIP(60), FromDIP(28)));
 
     if (m_mapping_scroll) {
-        m_mapping_scroll->SetMinSize(wxSize(-1, FromDIP(300)));
+        m_mapping_scroll->SetMinSize(wxSize(-1, FromDIP(m_options.workbench_review ? 160 : 300)));
         m_mapping_scroll->SetScrollRate(0, FromDIP(10));
     }
 
@@ -4571,6 +4694,7 @@ void TextureImportDialog::on_dpi_changed(const wxRect&)
     Layout();
     Refresh();
     wxGetApp().UpdateDlgDarkUI(this);
+    style_workbench_review();
 }
 
 }} // namespace Slic3r::GUI

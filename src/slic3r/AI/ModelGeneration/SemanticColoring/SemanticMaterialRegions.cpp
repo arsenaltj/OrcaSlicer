@@ -80,7 +80,9 @@ struct Region {
 };
 void fill_supported_skin_gaps(const Analysis& analysis, const std::vector<Face>& faces,
                              const std::vector<std::pair<uint32_t,uint32_t>>& edges,
-                             float maximum_surface_distance, std::vector<int>& refined)
+                             float maximum_surface_distance,
+                             const std::vector<uint8_t>& protected_faces,
+                             std::vector<int>& refined)
 {
     constexpr uint8_t unconditional_hops = 6;
     constexpr uint8_t maximum_hops = 16;
@@ -95,7 +97,8 @@ void fill_supported_skin_gaps(const Analysis& analysis, const std::vector<Face>&
         if (label==Label::FaceSkin && analysis.face_confidence[id]>=minimum_confidence &&
             faces[id].assigned>=0) {
             owner[id]=id;hops[id]=0;have_seed=true;
-        } else if (faces[id].assigned<0 && (label==Label::FaceSkin || label==Label::Unknown)) {
+        } else if (faces[id].assigned<0 && (label==Label::FaceSkin || label==Label::Unknown) &&
+                   !protected_faces[id]) {
             eligible[id]=1;have_gap=true;
         }
     }
@@ -156,6 +159,7 @@ void fill_supported_skin_gaps(const Analysis& analysis, const std::vector<Face>&
 
 void fill_isolated_assigned_skin_holes(const Analysis& analysis, const std::vector<Face>& faces,
                                        const std::vector<std::pair<uint32_t,uint32_t>>& edges,
+                                       const std::vector<uint8_t>& protected_faces,
                                        std::vector<int>& refined)
 {
     const size_t count = faces.size();
@@ -174,6 +178,7 @@ void fill_isolated_assigned_skin_holes(const Analysis& analysis, const std::vect
     std::vector<std::array<uint8_t, 6>> votes(count);
     const auto visit = [&](uint32_t id, uint32_t neighbor) {
         if (analysis.face_labels[id] != Label::Unknown || faces[id].assigned < 0 ||
+            protected_faces[id] ||
             !warm_skin_appearance(faces[id].color)) return;
         ++neighbors[id];
         const Label label = analysis.face_labels[neighbor];
@@ -198,6 +203,8 @@ void fill_reliable_skin_shadow_holes(const Analysis& analysis, const std::vector
                                      const std::vector<std::pair<uint32_t,uint32_t>>& edges,
                                      const std::vector<std::pair<uint32_t,uint32_t>>& surface_edges,
                                      const std::vector<uint8_t>& point_detail_barrier,
+                                     const std::vector<uint8_t>& protected_faces,
+                                     bool replace_assigned_non_skin,
                                      float detail_radius,
                                      std::vector<int>& refined)
 {
@@ -217,8 +224,12 @@ void fill_reliable_skin_shadow_holes(const Analysis& analysis, const std::vector
 
     std::vector<uint8_t> shadow_candidate(count, 0), eligible(count, 0), blocked(count, 0);
     for (uint32_t id = 0; id < count; ++id) {
+        const bool assigned_non_skin = faces[id].assigned >= 0 &&
+            (size_t(faces[id].assigned) >= skin_slots.size() || !skin_slots[size_t(faces[id].assigned)]);
         shadow_candidate[id] = analysis.face_labels[id] == Label::FaceSkin &&
-            analysis.face_confidence[id] >= minimum_ear_fold_confidence && faces[id].assigned < 0 &&
+            analysis.face_confidence[id] >= minimum_ear_fold_confidence &&
+            (faces[id].assigned < 0 || (replace_assigned_non_skin && assigned_non_skin)) &&
+            !protected_faces[id] &&
             faces[id].color[0] <= .62f && chroma(faces[id].color) <= .14f;
         eligible[id] = shadow_candidate[id] && analysis.face_confidence[id] >= minimum_confidence;
     }
@@ -538,6 +549,231 @@ float narrow_width(const Region& region, const std::vector<Face>& faces)
     std::sort(extent.begin(), extent.end());
     return float(extent[1]);
 }
+
+std::vector<uint8_t> refine_six_color_base(
+    const MeshSnapshot& source, const Analysis& analysis, const std::vector<Face>& faces,
+    const std::vector<std::pair<uint32_t,uint32_t>>& topology_edges,
+    const std::vector<Color>& palette_labs, const Vec3f& lower, const Vec3f& upper,
+    double total_area, std::vector<int>& refined)
+{
+    const size_t count = faces.size();
+    std::vector<uint8_t> base(count, 0), candidate(count, 0), seed(count, 0);
+    const float height = upper.z() - lower.z();
+    const float diagonal = (upper - lower).norm();
+    if (height <= 0.f || diagonal <= 0.f || total_area <= 0.) return base;
+    const float floor_tolerance = std::max(height * .004f, diagonal * .0015f);
+    const float maximum_height = lower.z() + height * .16f;
+    for (uint32_t id = 0; id < count; ++id) {
+        const Label label = analysis.face_labels[id];
+        const bool reliable_character_material = analysis.face_confidence[id] >= minimum_confidence &&
+            label != Label::Unknown && label != Label::Background;
+        if (faces[id].area <= 0. || faces[id].center.z() > maximum_height ||
+            chroma(faces[id].color) > .045f || faces[id].color[0] > .72f ||
+            face_detail_label(label) || reliable_character_material) continue;
+        candidate[id] = 1;
+        const auto& triangle = source.mesh.indices[id];
+        const float maximum_vertex_z = std::max({source.mesh.vertices[triangle[0]].z(),
+            source.mesh.vertices[triangle[1]].z(), source.mesh.vertices[triangle[2]].z()});
+        seed[id] = maximum_vertex_z <= lower.z() + floor_tolerance;
+    }
+    std::vector<std::vector<uint32_t>> adjacency(count);
+    for (const auto& edge : topology_edges) {
+        adjacency[edge.first].push_back(edge.second);
+        adjacency[edge.second].push_back(edge.first);
+    }
+    std::vector<uint8_t> visited(count, 0);
+    for (uint32_t first = 0; first < count; ++first) {
+        if (!seed[first] || visited[first]) continue;
+        std::vector<uint32_t> component {first};
+        visited[first] = 1;
+        for (size_t cursor = 0; cursor < component.size(); ++cursor) {
+            const uint32_t id = component[cursor];
+            for (uint32_t neighbor : adjacency[id]) {
+                if (!candidate[neighbor] || visited[neighbor] ||
+                    appearance_distance(faces[id].color, faces[neighbor].color) > .0025f) continue;
+                visited[neighbor] = 1;
+                component.push_back(neighbor);
+            }
+        }
+        double component_area = 0.;
+        Vec3f component_lower = Vec3f::Constant(std::numeric_limits<float>::infinity());
+        Vec3f component_upper = -component_lower;
+        std::vector<double> votes(palette_labs.size(), 0.);
+        Color mean {};
+        for (uint32_t id : component) {
+            component_area += faces[id].area;
+            component_lower = component_lower.cwiseMin(faces[id].center);
+            component_upper = component_upper.cwiseMax(faces[id].center);
+            for (size_t channel = 0; channel < mean.size(); ++channel)
+                mean[channel] += faces[id].color[channel] * float(faces[id].area);
+            if (faces[id].assigned >= 0) votes[size_t(faces[id].assigned)] += faces[id].area;
+        }
+        const Vec3f model_span = upper - lower;
+        const Vec3f component_span = component_upper - component_lower;
+        if (component_area < total_area * .003 ||
+            component_span.x() < model_span.x() * .10f ||
+            component_span.y() < model_span.y() * .10f) continue;
+        for (float& channel : mean) channel /= float(component_area);
+        size_t slot = palette_labs.size();
+        double supported = 0.;
+        for (size_t candidate_slot = 0; candidate_slot < votes.size(); ++candidate_slot) {
+            if (chroma(palette_labs[candidate_slot]) > .055f) continue;
+            if (votes[candidate_slot] > supported) { supported = votes[candidate_slot]; slot = candidate_slot; }
+        }
+        if (slot == palette_labs.size() || supported < component_area * .55) {
+            float best = std::numeric_limits<float>::max();
+            for (size_t candidate_slot = 0; candidate_slot < palette_labs.size(); ++candidate_slot) {
+                if (chroma(palette_labs[candidate_slot]) > .055f) continue;
+                const float score = appearance_distance(mean, palette_labs[candidate_slot]);
+                if (score < best) { best = score; slot = candidate_slot; }
+            }
+        }
+        if (slot >= palette_labs.size()) continue;
+        for (uint32_t id : component) { base[id] = 1; refined[id] = int(slot); }
+    }
+    return base;
+}
+
+void refine_six_color_dark_hair(const Analysis& analysis, const std::vector<Face>& faces,
+                                const std::vector<std::pair<uint32_t,uint32_t>>& topology_edges,
+                                const std::vector<Color>& palette_labs,
+                                const std::vector<uint8_t>& base_faces,
+                                std::vector<int>& refined)
+{
+    const size_t count = faces.size();
+    std::vector<std::vector<uint32_t>> adjacency(count);
+    for (const auto& edge : topology_edges) {
+        // Keep only a genuine two-face edge; a moderate fold is still a valid
+        // hair surface, while opposing shells remain blocked.
+        if (faces[edge.first].normal.dot(faces[edge.second].normal) < .35f) continue;
+        adjacency[edge.first].push_back(edge.second);
+        adjacency[edge.second].push_back(edge.first);
+    }
+    std::vector<uint32_t> owner(count, absent), queue;
+    const auto source_dark = [&](uint32_t id) {
+        return faces[id].color[0] <= .38f && chroma(faces[id].color) <= .085f;
+    };
+    const auto eligible = [&](uint32_t id) {
+        if (base_faces[id] || !source_dark(id)) return false;
+        const Label label = analysis.face_labels[id];
+        if (label == Label::Hair || label == Label::Unknown || label == Label::Background)
+            return true;
+        return label == Label::Clothes && analysis.face_confidence[id] < minimum_confidence;
+    };
+    for (uint32_t id = 0; id < count; ++id) {
+        if (analysis.face_labels[id] != Label::Hair || analysis.face_confidence[id] < minimum_confidence ||
+            faces[id].assigned < 0 || !source_dark(id)) continue;
+        const size_t slot = size_t(faces[id].assigned);
+        if (palette_labs[slot][0] > .50f || chroma(palette_labs[slot]) > .08f) continue;
+        owner[id] = id;
+        queue.push_back(id);
+    }
+    for (size_t cursor = 0; cursor < queue.size(); ++cursor) {
+        const uint32_t id = queue[cursor], seed = owner[id];
+        for (uint32_t neighbor : adjacency[id]) {
+            if (owner[neighbor] != absent || !eligible(neighbor) ||
+                appearance_distance(faces[id].color, faces[neighbor].color) > .0016f ||
+                appearance_distance(faces[seed].color, faces[neighbor].color) > .0036f) continue;
+            owner[neighbor] = seed;
+            queue.push_back(neighbor);
+        }
+    }
+    // A baked highlight can be warm enough to miss source_dark even inside a
+    // black hair component. If reliable hair on both sides already resolves to
+    // the darkest available hair slot, repair the isolated interior face from
+    // that local material evidence. Standalone brown/gray hair has no such
+    // black neighborhood and remains unchanged.
+    size_t dark_slot = palette_labs.size();
+    float darkest = std::numeric_limits<float>::max();
+    for (size_t slot = 0; slot < palette_labs.size(); ++slot) {
+        if (palette_labs[slot][0] > .50f || chroma(palette_labs[slot]) > .08f) continue;
+        if (palette_labs[slot][0] < darkest) {
+            darkest = palette_labs[slot][0];
+            dark_slot = slot;
+        }
+    }
+    if (dark_slot < palette_labs.size()) for (uint32_t id = 0; id < count; ++id) {
+        if ((analysis.face_labels[id] != Label::Hair && analysis.face_labels[id] != Label::Unknown) ||
+            analysis.face_confidence[id] < minimum_confidence || faces[id].assigned < 0 ||
+            size_t(faces[id].assigned) == dark_slot || faces[id].color[0] > .40f ||
+            chroma(faces[id].color) > .12f) continue;
+        size_t dark_neighbors = 0;
+        for (uint32_t neighbor : adjacency[id]) {
+            if (analysis.face_labels[neighbor] != Label::Hair ||
+                analysis.face_confidence[neighbor] < minimum_confidence) continue;
+            const int target = refined[neighbor] >= 0 ? refined[neighbor] : faces[neighbor].assigned;
+            if (target == int(dark_slot)) ++dark_neighbors;
+        }
+        if (dark_neighbors >= 2) refined[id] = int(dark_slot);
+    }
+    for (uint32_t id = 0; id < count; ++id)
+        if (owner[id] != absent && owner[id] != id)
+            refined[id] = faces[owner[id]].assigned;
+}
+
+// Generated meshes can leave broad facial patches as Unknown when the raster
+// projection misses them. Their baked RGB is not a trustworthy material cue:
+// it often comes from the wrong view or from a lighting/compositing artifact.
+// Extend only a reliable FaceSkin assignment over the connected, unassigned
+// facial surface. Hard semantic details are barriers, so this cannot repaint
+// eyes, brows, lips, hair or clothing.
+void fill_unrecognized_face_regions(const Analysis& analysis, const std::vector<Face>& faces,
+                                   const std::vector<std::pair<uint32_t,uint32_t>>& edges,
+                                   float maximum_surface_distance, std::vector<int>& refined)
+{
+    const size_t count = faces.size();
+    if (count == 0 || maximum_surface_distance <= 0.f) return;
+    std::vector<std::vector<uint32_t>> adjacency(count);
+    for (const auto& edge : edges) {
+        if (edge.first >= count || edge.second >= count ||
+            faces[edge.first].normal.dot(faces[edge.second].normal) < .65f) continue;
+        adjacency[edge.first].push_back(edge.second);
+        adjacency[edge.second].push_back(edge.first);
+    }
+    const auto candidate = [&](uint32_t id) {
+        const Label label = analysis.face_labels[id];
+        return faces[id].assigned < 0 && refined[id] < 0 && faces[id].area > 0. &&
+            (label == Label::Unknown || (label == Label::FaceSkin &&
+                                         analysis.face_confidence[id] < minimum_confidence));
+    };
+    std::vector<uint32_t> owner(count, absent), queue;
+    std::vector<uint8_t> hops(count, 255);
+    std::vector<float> distance(count, std::numeric_limits<float>::max());
+    for (uint32_t id = 0; id < count; ++id) {
+        if (analysis.face_labels[id] != Label::FaceSkin ||
+            analysis.face_confidence[id] < minimum_confidence) continue;
+        const int slot = refined[id] >= 0 ? refined[id] : faces[id].assigned;
+        if (slot < 0) continue;
+        owner[id] = id;
+        hops[id] = 0;
+        distance[id] = 0.f;
+        queue.push_back(id);
+    }
+    if (queue.empty()) return;
+    for (size_t cursor = 0; cursor < queue.size(); ++cursor) {
+        const uint32_t id = queue[cursor], seed = owner[id];
+        for (uint32_t neighbor : adjacency[id]) {
+            if (!candidate(neighbor) || owner[neighbor] != absent || hops[id] >= 48) continue;
+            // The candidate itself must not be a known detail. It is valid for
+            // an unrecognized facial face to touch an eye/brow boundary; the
+            // reliable detail face remains a seed barrier because it is never
+            // eligible as a candidate.
+            const float step = (faces[id].center - faces[neighbor].center).norm();
+            const float total = distance[id] + step;
+            if (!std::isfinite(step) || total > maximum_surface_distance) continue;
+            owner[neighbor] = seed;
+            hops[neighbor] = uint8_t(hops[id] + 1);
+            distance[neighbor] = total;
+            queue.push_back(neighbor);
+        }
+    }
+    for (uint32_t id = 0; id < count; ++id) {
+        if (owner[id] == absent || owner[id] == id) continue;
+        const uint32_t seed = owner[id];
+        const int slot = refined[seed] >= 0 ? refined[seed] : faces[seed].assigned;
+        if (slot >= 0) refined[id] = slot;
+    }
+}
 } // namespace
 
 void refine_material_patches(const MeshSnapshot& source, const Analysis& analysis,
@@ -550,6 +786,9 @@ void refine_material_patches(const MeshSnapshot& source, const Analysis& analysi
         count == 0 || count > 2000000 || vertex_count == 0 || vertex_count > 6000000 ||
         palette.empty() || palette.size() > 6 || analysis.face_labels.size() != count ||
         analysis.face_confidence.size() != count) return;
+    // Keep the six-color material repairs isolated from compact test meshes
+    // and non-portrait semantic previews.
+    const bool six_color_portrait_context = palette.size() == 6 && count >= 256;
     const bool vertex_colors = source.vertex_colors.size() == vertex_count;
     if (!vertex_colors && source.face_colors.size() != count) return;
     std::vector<Color> palette_labs;
@@ -570,7 +809,7 @@ void refine_material_patches(const MeshSnapshot& source, const Analysis& analysi
     const float diagonal = (upper-lower).norm();
     if (diagonal <= 0 || !std::isfinite(diagonal)) return;
     double total_area = 0;
-    bool have_hair = false, have_clothes = false, have_skin = false;
+    bool have_hair = false, have_clothes = false, have_skin = false, have_face_seed = false;
     for (size_t id = 0; id < count; ++id) {
         const auto& triangle = source.mesh.indices[id];
         const float confidence = analysis.face_confidence[id];
@@ -596,12 +835,16 @@ void refine_material_patches(const MeshSnapshot& source, const Analysis& analysi
         const bool assigned = face.assigned >= 0 && confidence >= minimum_confidence;
         have_hair |= assigned && face.dark && analysis.face_labels[id] == Label::Hair;
         have_clothes |= assigned && face.bright && analysis.face_labels[id] == Label::Clothes && face.color[0] >= .78f;
+        have_face_seed |= assigned && analysis.face_labels[id] == Label::FaceSkin;
         have_skin |= assigned && analysis.face_labels[id] == Label::FaceSkin && warm_skin_appearance(face.color);
     }
-    if (total_area <= 0 || (!have_hair && !have_clothes && !have_skin)) return;
+    if (total_area <= 0 || (!have_hair && !have_clothes && !have_skin && !have_face_seed)) return;
 
-    // Canonical IDs unify only exactly equal finite positions. No tolerance or
-    // spatial bridge joins overlapping layers.
+    // Generated portrait meshes frequently duplicate vertices at UV/color
+    // seams with tiny floating-point drift. Canonicalize near-identical
+    // positions at model scale so material boundaries remain connected across
+    // generators, while the normal and edge checks below still reject
+    // opposing sheets and non-manifold point contacts.
     std::vector<uint32_t> order(vertex_count), canonical(vertex_count);
     std::iota(order.begin(), order.end(), 0);
     const auto less_position = [&](uint32_t a, uint32_t b) {
@@ -612,10 +855,13 @@ void refine_material_patches(const MeshSnapshot& source, const Analysis& analysi
         return a < b;
     };
     std::sort(order.begin(), order.end(), less_position);
-    uint32_t previous = order.front(), canonical_id = previous;
+    const float seam_tolerance = std::max(diagonal * 1e-7f, 1e-6f);
+    const float seam_tolerance_squared = seam_tolerance * seam_tolerance;
+    uint32_t canonical_id = order.front();
     for (uint32_t vertex : order) {
-        if (source.mesh.vertices[vertex] != source.mesh.vertices[previous]) canonical_id = vertex;
-        canonical[vertex] = canonical_id; previous = vertex;
+        const Vec3f delta = source.mesh.vertices[vertex] - source.mesh.vertices[canonical_id];
+        if (delta.squaredNorm() > seam_tolerance_squared) canonical_id = vertex;
+        canonical[vertex] = canonical_id;
     }
     std::vector<Edge> edges; edges.reserve(count*3);
     std::vector<std::array<uint32_t,3>> triangles(count);
@@ -629,13 +875,15 @@ void refine_material_patches(const MeshSnapshot& source, const Analysis& analysi
         }
     }
     std::sort(edges.begin(), edges.end(), [](const Edge& a,const Edge& b) { return a.key < b.key; });
-    std::vector<std::pair<uint32_t,uint32_t>> neighbors;
+    std::vector<std::pair<uint32_t,uint32_t>> topology_neighbors, neighbors;
     for (size_t first = 0; first < edges.size();) {
         size_t end = first+1; while (end < edges.size() && edges[end].key == edges[first].key) ++end;
         if (end-first == 2) {
             const uint32_t a = edges[first].face,b = edges[first+1].face;
-            if (a != b && triangles[a] != triangles[b] &&
-                faces[a].normal.dot(faces[b].normal) >= .75f) neighbors.emplace_back(a,b);
+            if (a != b && triangles[a] != triangles[b]) {
+                topology_neighbors.emplace_back(a,b);
+                if (faces[a].normal.dot(faces[b].normal) >= .75f) neighbors.emplace_back(a,b);
+            }
         }
         first = end;
     }
@@ -651,7 +899,8 @@ void refine_material_patches(const MeshSnapshot& source, const Analysis& analysi
     for (uint32_t id = 0; id < count; ++id) {
         if (analysis.face_confidence[id] < minimum_confidence ||
             (analysis.face_labels[id] != Label::FaceSkin &&
-             !face_detail_label(analysis.face_labels[id]))) continue;
+             !face_detail_label(analysis.face_labels[id]) &&
+             !(palette.size() <= 4 && analysis.face_labels[id] == Label::Hair))) continue;
         for (uint32_t vertex : triangles[id]) vertex_faces.push_back({vertex, id});
     }
     std::sort(vertex_faces.begin(), vertex_faces.end(), [](const VertexFace& lhs, const VertexFace& rhs) {
@@ -701,13 +950,85 @@ void refine_material_patches(const MeshSnapshot& source, const Analysis& analysi
     }
     std::sort(skin_neighbors.begin(), skin_neighbors.end());
     skin_neighbors.erase(std::unique(skin_neighbors.begin(), skin_neighbors.end()), skin_neighbors.end());
+    // Four-color previews need a local eye/brow collar before any skin-hole
+    // fill runs. The collar is deliberately restricted to reliable eye detail
+    // and its immediate surface/point neighborhood, so distant hair and ear
+    // boundary repairs keep their existing behavior.
+    std::vector<uint8_t> protected_eye_faces(count, 0);
+    if (palette.size() <= 4) {
+        std::vector<uint8_t> detail_touch(count, 0), hair_touch(count, 0);
+        const auto eye_detail = [](Label label) {
+            return label == Label::EyeSclera || label == Label::Iris || label == Label::Eyebrow;
+        };
+        for (uint32_t id = 0; id < count; ++id) {
+            if (analysis.face_confidence[id] < minimum_confidence || !eye_detail(analysis.face_labels[id])) continue;
+            protected_eye_faces[id] = 1;
+        }
+        for (const auto& edge : neighbors) {
+            const auto mark_side = [&](uint32_t detail, uint32_t other) {
+                if (!eye_detail(analysis.face_labels[detail]) ||
+                    analysis.face_confidence[detail] < minimum_confidence) return;
+                detail_touch[other] = 1;
+                if (analysis.face_labels[other] == Label::FaceSkin ||
+                    analysis.face_labels[other] == Label::Unknown)
+                    protected_eye_faces[other] = 1;
+            };
+            mark_side(edge.first, edge.second);
+            mark_side(edge.second, edge.first);
+            if (analysis.face_labels[edge.first] == Label::Hair &&
+                analysis.face_confidence[edge.first] >= minimum_confidence) hair_touch[edge.second] = 1;
+            if (analysis.face_labels[edge.second] == Label::Hair &&
+                analysis.face_confidence[edge.second] >= minimum_confidence) hair_touch[edge.first] = 1;
+        }
+        // Reuse the sorted exact-vertex incidence list for point contacts.
+        // It is already bounded and validated above for the skin seam pass.
+        for (size_t first = 0; first < vertex_faces.size();) {
+            size_t end = first + 1;
+            while (end < vertex_faces.size() && vertex_faces[end].vertex == vertex_faces[first].vertex) ++end;
+            bool has_detail = false, has_hair = false;
+            for (size_t index = first; index < end; ++index) {
+                const Label label = analysis.face_labels[vertex_faces[index].face];
+                has_detail |= eye_detail(label);
+                has_hair |= label == Label::Hair;
+            }
+            if (has_detail || has_hair) for (size_t index = first; index < end; ++index) {
+                const uint32_t face = vertex_faces[index].face;
+                if (has_detail) detail_touch[face] = 1;
+                if (has_hair) hair_touch[face] = 1;
+                if (has_detail && (analysis.face_labels[face] == Label::FaceSkin ||
+                                   analysis.face_labels[face] == Label::Unknown))
+                    protected_eye_faces[face] = 1;
+            }
+            first = end;
+        }
+        // A face that touches both an eye/brow detail and hair is the common
+        // source of the eye-to-hair bridge. Never let a donor traverse it.
+        for (uint32_t id = 0; id < count; ++id)
+            if (detail_touch[id] && hair_touch[id] &&
+                (analysis.face_labels[id] == Label::FaceSkin ||
+                 analysis.face_labels[id] == Label::Unknown))
+                protected_eye_faces[id] = 1;
+    }
     std::vector<VertexFace>().swap(vertex_faces);
     std::vector<int> refined(count,-1);
     if (have_skin) {
-        fill_supported_skin_gaps(analysis,faces,neighbors,diagonal*.012f,refined);
-        fill_isolated_assigned_skin_holes(analysis,faces,neighbors,refined);
+        fill_supported_skin_gaps(analysis,faces,neighbors,diagonal*.012f,protected_eye_faces,refined);
+        fill_isolated_assigned_skin_holes(analysis,faces,neighbors,protected_eye_faces,refined);
         fill_reliable_skin_shadow_holes(analysis,faces,skin_neighbors,neighbors,point_detail_barrier,
+                                        protected_eye_faces,
+                                        six_color_portrait_context,
                                         diagonal*.012f,refined);
+    }
+    if (have_face_seed && (palette.size() == 4 || palette.size() == 6) && count >= 256)
+        fill_unrecognized_face_regions(analysis, faces, neighbors, diagonal * .08f, refined);
+    std::vector<uint8_t> six_color_base(count, 0);
+    if (six_color_portrait_context) {
+        six_color_base = refine_six_color_base(source, analysis, faces, topology_neighbors,
+                                                palette_labs, lower, upper, total_area, refined);
+    }
+    if (six_color_portrait_context || (palette.size() <= 4 && count >= 256)) {
+        refine_six_color_dark_hair(analysis, faces, topology_neighbors, palette_labs,
+                                   six_color_base, refined);
     }
     protect_uncertain_contours(analysis,diagonal*.005f,neighbors,faces);
     neighbors.erase(std::remove_if(neighbors.begin(),neighbors.end(),[&](const auto& edge) {
@@ -877,6 +1198,44 @@ void refine_material_patches(const MeshSnapshot& source, const Analysis& analysi
             votes<=0 || target_votes[slot]<votes*.8 || region.area>surrounding_area*.025 ||
             inner_hair<=0 || inner_clothes>inner_hair*.15) continue;
         for (uint32_t id : region.faces) refined[id]=int(slot);
+    }
+    if (palette.size() <= 4) {
+        std::vector<int> white_sources(count, -1);
+        const auto neutral_cloth = [&](uint32_t id) {
+            return analysis.face_labels[id] == Label::Clothes && faces[id].allowed &&
+                faces[id].color[0] >= .65f && chroma(faces[id].color) < .018f;
+        };
+        for (uint32_t id = 0; id < count; ++id) {
+            if (!neutral_cloth(id) || analysis.face_confidence[id] < minimum_confidence ||
+                faces[id].assigned < 0) continue;
+            const size_t slot = size_t(faces[id].assigned);
+            if (palette_labs[slot][0] >= .8f && chroma(palette_labs[slot]) < .02f)
+                white_sources[id] = int(slot);
+        }
+        // Use only the original reliable garment as a seed. A short, same-label
+        // surface path may fill uncertain neutral cloth, but cannot jump across
+        // skin, hair, a chromatic stripe, or an abrupt gray material edge.
+        for (int step = 0; step < 3; ++step) {
+            std::vector<int> proposed(count, -1);
+            const auto visit = [&](uint32_t from, uint32_t to) {
+                if (white_sources[from] < 0 || !neutral_cloth(to) ||
+                    analysis.face_confidence[to] < .35f ||
+                    analysis.face_confidence[to] >= minimum_confidence ||
+                    faces[to].assigned >= 0 || refined[to] >= 0 ||
+                    std::abs(faces[from].color[0] - faces[to].color[0]) > .12f ||
+                    chromaticity_distance(faces[from].color, faces[to].color) > .02f) return;
+                proposed[to] = white_sources[from];
+            };
+            for (const auto& edge : neighbors) {
+                visit(edge.first, edge.second);
+                visit(edge.second, edge.first);
+            }
+            bool changed = false;
+            for (uint32_t id = 0; id < count; ++id) if (proposed[id] >= 0) {
+                refined[id] = white_sources[id] = proposed[id]; changed = true;
+            }
+            if (!changed) break;
+        }
     }
     if (std::none_of(refined.begin(),refined.end(),[](int value){return value>=0;})) return;
     // Construct the replacement only after validation and classification finish.

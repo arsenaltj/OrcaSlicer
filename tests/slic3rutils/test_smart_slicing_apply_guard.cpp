@@ -284,6 +284,54 @@ TEST_CASE("versioned apply commits transform config and combined plans in one tr
     CHECK(preview_calls == 0);
 }
 
+TEST_CASE("finished slice transactions retire without releasing consumed apply identities", "[SmartSlicing][UiRedesign]")
+{
+    WorkspaceRevision current {1, 2, 3, "before"};
+    RecordingVersionedTransaction transaction;
+    bool owner_thread = true;
+    size_t legacy_calls = 0, slice_calls = 0, preview_calls = 0;
+    auto gateway = versioned_gateway(current, transaction, owner_thread, legacy_calls, slice_calls, preview_calls);
+    const auto plan = versioned_plan(current, 1, 1, "retire-plan");
+    const auto applied = gateway.commit_plan(plan);
+    REQUIRE(applied.apply_transaction);
+    const auto identity = *applied.apply_transaction;
+    CHECK_FALSE(gateway.retire_committed_plan(identity));
+    REQUIRE(gateway.start_committed_plan_slice(identity).phase == OfficialSlicePhase::Slicing);
+    CHECK_FALSE(gateway.retire_committed_plan(identity));
+    REQUIRE(gateway.complete_official_slice(identity, true).phase == OfficialSlicePhase::Completed);
+    owner_thread = false;
+    CHECK_FALSE(gateway.retire_committed_plan(identity));
+    owner_thread = true;
+    REQUIRE(gateway.retire_committed_plan(identity));
+    CHECK_FALSE(gateway.retire_committed_plan(identity));
+    CHECK(gateway.commit_plan(plan).diagnostic_code == "apply_plan_already_consumed");
+    CHECK(transaction.snapshot_count == 1);
+    CHECK(slice_calls == 1);
+    CHECK(legacy_calls == 0);
+}
+
+TEST_CASE("a stale pending slice can retire after its late completion arrives", "[SmartSlicing][UiRedesign]")
+{
+    WorkspaceRevision current {1, 2, 3, "before"};
+    RecordingVersionedTransaction transaction;
+    bool owner_thread = true;
+    size_t legacy_calls = 0, slice_calls = 0, preview_calls = 0;
+    auto gateway = versioned_gateway(current, transaction, owner_thread, legacy_calls, slice_calls, preview_calls);
+    const auto applied = gateway.commit_plan(versioned_plan(current, 1, 1, "stale-slice"));
+    REQUIRE(applied.apply_transaction);
+    const auto identity = *applied.apply_transaction;
+    REQUIRE(gateway.start_committed_plan_slice(identity).phase == OfficialSlicePhase::Slicing);
+    current.fingerprint = "edited-during-slicing";
+    CHECK(gateway.poll_committed_plan(identity).diagnostic_code == "workspace_changed");
+    CHECK_FALSE(gateway.retire_committed_plan(identity));
+    const auto completed = gateway.complete_official_slice(identity, true);
+    CHECK(completed.diagnostic_code == "workspace_changed");
+    CHECK_FALSE(completed.can_retry_slice);
+    CHECK_FALSE(completed.can_print);
+    REQUIRE(gateway.retire_committed_plan(identity));
+    CHECK(preview_calls == 0);
+}
+
 TEST_CASE("versioned apply rejects invalid stale replayed and non-owner plans before snapshot",
           "[AI][SmartSlicing][D6T3]")
 {

@@ -26,6 +26,17 @@ add_executable(${_TEST_NAME}_tests
     test_local_print_color_application.cpp
     test_project_config_undo.cpp
     test_model_preview_state.cpp
+    test_post_generation_workbench.cpp
+    test_beauty_document.cpp
+    test_beauty_partition_bridge.cpp
+    test_beauty_transaction_controller.cpp
+    test_semantic_region_evidence.cpp
+    test_beauty_leaf_domain.cpp
+    test_beauty_leaf_editing.cpp
+    test_beauty_shape_lock.cpp
+    test_portrait_color_plan.cpp
+    test_portrait_shape_details.cpp
+    test_portrait_surface_ownership.cpp
     test_local_semantic_worker_client.cpp
     test_model_color_import.cpp
     test_plugin_host_api.cpp

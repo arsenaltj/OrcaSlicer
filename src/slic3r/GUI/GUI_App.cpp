@@ -1163,7 +1163,7 @@ void GUI_App::advance_startup(wxTimerEvent&)
             finish_post_init();
             if (is_closing() || !m_startup_frame || m_startup_frame.get() != mainframe)
                 return;
-            canvas->enable_render(!mainframe->is_redesign_shell_active());
+            canvas->enable_render(!mainframe->is_redesign_shell_active() || mainframe->is_prepare_or_preview_tab());
             log_stage("workspace");
             schedule_startup(StartupStage::Reveal, _L("Opening the workspace..."));
             break;

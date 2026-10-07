@@ -2,6 +2,7 @@
 
 #include "SurfaceSelectionState.hpp"
 #include "slic3r/AI/Contracts/LocalPrintColorResult.hpp"
+#include <map>
 #include <set>
 #include <string>
 
@@ -14,7 +15,7 @@ inline constexpr size_t max_bytes = 128ULL * 1024 * 1024, max_subjects = 32, max
 
 inline bool supported_label(const std::string& value)
 {
-    static const std::set<std::string> labels {"neck","face","rr","lr","rb","lb","re","le","nose","imouth","llip","ulip","hair","cloth"};
+    static const std::set<std::string> labels {"neck","face","rr","lr","rb","lb","re","le","nose","imouth","llip","ulip","lip-line-corner","hair","cloth"};
     return labels.count(value) != 0;
 }
 
@@ -127,6 +128,13 @@ struct FeatureDetail {
     std::vector<size_t> faces, iris_faces;
     size_t view_support {0};
 };
+struct ShapeDetail {
+    std::string subject_id, label, status;
+    std::vector<size_t> accepted_faces, rejected_faces, nested_faces;
+    size_t view_support {0};
+    std::map<std::string, double> metrics;
+    std::vector<std::string> reasons;
+};
 struct Evidence {
     ExpectedIdentity identity;
     std::string render_geometry_id;
@@ -137,6 +145,7 @@ struct Evidence {
     // Optional geometry hints, separate from semantic confidence and authority.
     std::vector<EyeDetail> eye_details;
     std::vector<FeatureDetail> feature_details;
+    std::vector<ShapeDetail> shape_details;
     size_t known_faces {0}, unknown_faces {0}, ambiguous_faces {0}, below_threshold_faces {0};
 };
 
@@ -199,6 +208,7 @@ inline bool decode(const std::string& bytes,const ExpectedIdentity& expected,con
                 "weights_sha256","runtime_sha256","policy_sha256","subjects","regions"};
         if(j.contains("eye_details"))fields.insert("eye_details");
         if(j.contains("feature_details"))fields.insert("feature_details");
+        if(j.contains("shape_details"))fields.insert("shape_details");
         keys(j,fields);
         require(j.at("schema")==schema && j.at("label_schema")==label_schema,"Unsupported semantic schema.");
         require(j.at("request_id")==expected.request_id && j.at("source_sha256")==expected.source_sha256 &&
@@ -286,9 +296,9 @@ inline bool decode(const std::string& bytes,const ExpectedIdentity& expected,con
         }
         if(j.contains("feature_details")) {
             const auto& hints=j.at("feature_details");
-            require(hints.is_array() && hints.size()<=5*max_subjects,"Too many facial shape hints.");
-            const std::set<std::string> parts={"re","le","ulip","llip","imouth"};
-            const std::set<std::string> head={"face","nose","re","le","ulip","llip","imouth","rb","lb"};
+            require(hints.is_array() && hints.size()<=8*max_subjects,"Too many facial shape hints.");
+            const std::set<std::string> parts={"re","le","ulip","llip","imouth","lip-line-corner","lb","rb"};
+            const std::set<std::string> head={"face","nose","re","le","ulip","llip","imouth","lip-line-corner","rb","lb"};
             std::set<std::pair<std::string,std::string>> seen;
             std::vector<bool> occupied(expected.face_count,false);
             for(const auto& hint:hints) {
@@ -346,6 +356,81 @@ inline bool decode(const std::string& bytes,const ExpectedIdentity& expected,con
                     shape.iris_faces.push_back(f);
                 }
                 value.feature_details.push_back(std::move(shape));
+            }
+        }
+        if(j.contains("shape_details")) {
+            const auto& hints=j.at("shape_details");
+            require(hints.is_array() && hints.size()<=8*max_subjects,"Too many shape details.");
+            const std::set<std::string> shape_labels={"re","le","ulip","llip","imouth","lip-line-corner","lb","rb"};
+            const std::set<std::string> shape_statuses={"VALID_SHAPE","PROTECTED_SHAPE_UNCERTAIN","INVALID_SHAPE_CONFLICT"};
+            const std::set<std::string> head={"face","nose","re","le","ulip","llip","imouth","lip-line-corner","rb","lb"};
+            std::set<std::pair<std::string,std::string>> seen;
+            std::map<size_t,std::pair<std::string,std::string>> claimed;
+            for(const auto& hint:hints) {
+                std::set<std::string> allowed={"subject_id","label","status","accepted_faces","rejected_faces","view_support","metrics","reasons"};
+                if(hint.contains("nested_faces"))allowed.insert("nested_faces");
+                keys(hint,allowed);
+                ShapeDetail shape;
+                shape.subject_id=hint.at("subject_id").get<std::string>();
+                shape.label=hint.at("label").get<std::string>();
+                shape.status=hint.at("status").get<std::string>();
+                shape.view_support=index(hint.at("view_support"),16);
+                require(subjects.count(shape.subject_id) && shape_labels.count(shape.label) && shape_statuses.count(shape.status) &&
+                    seen.emplace(shape.subject_id,shape.label).second,"Invalid shape detail identity or status.");
+                auto faces=[&](const Json& array) {
+                    require(array.is_array() && array.size()<=expected.face_count,"Invalid shape detail face list.");
+                    std::vector<size_t> result;
+                    for(const auto& item:array) {
+                        const size_t f=index(item,expected.face_count-1);
+                        require((result.empty() || f>result.back()) && binding.usable_face(f),"Invalid shape detail face list.");
+                        result.push_back(f);
+                    }
+                    return result;
+                };
+                shape.accepted_faces=faces(hint.at("accepted_faces"));
+                shape.rejected_faces=faces(hint.at("rejected_faces"));
+                std::set<size_t> accepted(shape.accepted_faces.begin(),shape.accepted_faces.end());
+                for(const auto f:shape.rejected_faces)require(!accepted.count(f),"Shape detail accepted/rejected overlap.");
+                // Rejected faces are diagnostic observations, not ownership
+                // claims. They may overlap another detail's rejected or
+                // accepted set without creating a writable region.
+                for(const auto f:shape.accepted_faces)require(claimed.emplace(f,std::make_pair(shape.subject_id,shape.label)).second,
+                    "Shape detail face is claimed by multiple details.");
+                auto verify_owner=[&](const std::vector<size_t>& values) {
+                    for(const auto f:values) {
+                        require(value.face_regions[f]>=0,"Shape detail face is not a verified surface.");
+                        const auto& region=value.regions[size_t(value.face_regions[f])];
+                        require(region.subject_id==shape.subject_id && head.count(region.label),"Shape detail crosses a protected surface.");
+                    }
+                };
+                verify_owner(shape.accepted_faces);verify_owner(shape.rejected_faces);
+                if(hint.contains("nested_faces")) {
+                    shape.nested_faces=faces(hint.at("nested_faces"));
+                    require(shape.nested_faces.empty() || shape.label=="re" || shape.label=="le",
+                        "Nested iris detail requires an eye parent.");
+                    for(const auto f:shape.nested_faces)require(accepted.count(f),"Nested shape detail leaves its accepted surface.");
+                }
+                require(shape.status!="VALID_SHAPE" || (!shape.accepted_faces.empty() && shape.view_support>=2),
+                    "Valid shape detail lacks accepted evidence.");
+                require(shape.status!="INVALID_SHAPE_CONFLICT" || shape.accepted_faces.empty(),
+                    "Conflicting shape detail cannot contain accepted faces.");
+                require(shape.accepted_faces.empty() || shape.view_support>=2,
+                    "Editable shape detail lacks multi-view support.");
+                const auto& metrics=hint.at("metrics");
+                require(metrics.is_object() && metrics.size()<=32,"Too many shape metrics.");
+                for(auto i=metrics.begin();i!=metrics.end();++i) {
+                    require(detail::identifier(i.key()) && i.value().is_number() && std::isfinite(i.value().get<double>()),
+                        "Invalid shape metric.");
+                    shape.metrics.emplace(i.key(),i.value().get<double>());
+                }
+                const auto& reasons=hint.at("reasons");
+                require(reasons.is_array() && reasons.size()<=16,"Too many shape reasons.");
+                for(const auto& reason:reasons) {
+                    const auto text=reason.get<std::string>();
+                    require(detail::identifier(text),"Invalid shape reason.");
+                    shape.reasons.push_back(text);
+                }
+                value.shape_details.push_back(std::move(shape));
             }
         }
         value.unknown_faces=expected.face_count-value.known_faces;

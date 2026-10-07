@@ -13,13 +13,13 @@
 namespace Slic3r::GUI {
 using namespace ModelGenerationPresentation;
 void ModelGenerationPanel::choose_local_model() {
-    if(m_busy || m_shutdown)return;
-    if(m_beauty_controls && m_beauty_controls->has_changes()) {
-        m_status->SetLabel(_L("请先保存当前美颜修改，再导入其他模型。"));return;
+    if(!can_replace_model_asset()) {
+        m_status->SetLabel(_L("请先完成处理、接受或放弃候选，并保存当前美颜修改。"));return;
     }
     wxFileDialog picker(this,_L("导入到历史资产"),wxEmptyString,wxEmptyString,
         _L("全彩模型 (*.glb;*.obj)|*.glb;*.obj"),wxFD_OPEN|wxFD_FILE_MUST_EXIST);
     if(picker.ShowModal()!=wxID_OK)return;
+    if(!can_replace_model_asset())return;
     const boost::filesystem::path source(picker.GetPath().ToStdWstring());
     const std::string id="finish-import-"+new_request_id();
     const auto destination=temp_path(id,"glb"),metadata_path=library_metadata_path(id),root=generated_models_root();

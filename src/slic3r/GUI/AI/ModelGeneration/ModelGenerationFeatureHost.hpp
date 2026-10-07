@@ -1,11 +1,13 @@
 #pragma once
 
 #include "ModelGenerationHost.hpp"
+#include "PostGenerationWorkbenchState.hpp"
 
 #include <functional>
 #include <memory>
 #include <string>
 #include "slic3r/AI/Contracts/GeneratedModelArtifact.hpp"
+#include "slic3r/AI/Contracts/IModelArtifactConsumer.hpp"
 
 class wxWindow;
 
@@ -42,6 +44,19 @@ public:
     bool request_import();
     bool request_refresh_history();
     bool request_open_history(const std::string& job_id);
+    PostGenerationWorkbenchState workbench_snapshot() const;
+    void set_workbench_listener(PostGenerationWorkbenchListener listener);
+    void set_workbench_results_handler(std::function<void()> handler);
+    void mount_workbench(wxWindow* parent);
+    void unmount_workbench();
+    void set_color_matching_handler(std::function<void(const AI::GeneratedModelArtifact&)> handler);
+    void set_workbench_import_handler(std::function<void(const AI::ModelImportRequest&)> handler);
+    AI::ModelImportResult import_workbench_model(const AI::ModelImportRequest& request);
+    bool request_open_workbench();
+    bool request_enter_beauty();
+    bool request_return_overview();
+    bool request_workbench_color_matching();
+    bool request_enable_portrait(bool enabled);
     void set_service_availability(bool available, const std::string& message);
     void shutdown();
 

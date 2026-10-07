@@ -238,6 +238,7 @@ public:
         REQUIRE(active.has_value());
         REQUIRE(*active == identity);
         ++slice_calls;
+        pending = true;
         return {OfficialSlicePhase::Slicing, {}, true, true, active};
     }
     OfficialSliceResult retry_official_slice(const OfficialApplyTransactionIdentity& identity) override
@@ -245,6 +246,7 @@ public:
         REQUIRE(active.has_value());
         REQUIRE(*active == identity);
         ++retry_calls;
+        pending = true;
         return {OfficialSlicePhase::Slicing, {}, true, true, active};
     }
     OfficialSliceResult complete_official_slice(const OfficialApplyTransactionIdentity& identity,
@@ -252,6 +254,7 @@ public:
     {
         REQUIRE(active.has_value());
         REQUIRE(*active == identity);
+        pending = false;
         return {success ? OfficialSlicePhase::Completed : OfficialSlicePhase::Failed,
                 success ? std::string{} : std::move(diagnostic), true, true, active,
                 !success, success};
@@ -266,10 +269,20 @@ public:
     OfficialSliceResult poll() override { return {}; }
     bool undo_last_apply() override { return false; }
 
+    bool retire_committed_plan(const OfficialApplyTransactionIdentity& identity) override
+    {
+        if (!active || *active != identity || pending) return false;
+        ++retire_calls;
+        active.reset();
+        return true;
+    }
+
     size_t apply_calls{0};
     size_t slice_calls{0};
     size_t retry_calls{0};
     size_t undo_calls{0};
+    size_t retire_calls{0};
+    bool pending{false};
     std::optional<OfficialApplyTransactionIdentity> active;
 };
 
@@ -305,6 +318,13 @@ TEST_CASE("versioned application commits once and retries only the official slic
     CHECK(workflow.retry(*workflow.active_transaction()).phase == OfficialSlicePhase::Slicing);
     CHECK(gateway.retry_calls == 1);
     CHECK(gateway.apply_calls == 1);
+    CHECK_FALSE(workflow.retire_completed_transaction());
+    REQUIRE(workflow.notify_slice_completed(true, {}).phase == OfficialSlicePhase::Completed);
+    REQUIRE(workflow.retire_completed_transaction());
+    CHECK_FALSE(workflow.active_transaction());
+    CHECK(gateway.retire_calls == 1);
+    CHECK(gateway.apply_calls == 1);
+    CHECK(workflow.retry(*failed.apply_transaction).diagnostic_code == "slice_retry_not_allowed");
 }
 
 namespace {

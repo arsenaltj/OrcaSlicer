@@ -78,9 +78,12 @@ struct ModelGenerationFeatureHost::Impl
         shutdown_requested = true;
         if (model_generation != nullptr) {
             model_generation->set_ui_state_listener({});
+            model_generation->set_workbench_listener({});
+            model_generation->set_workbench_results_handler({});
             model_generation->set_service_retry_handler({});
             model_generation->set_prepare_navigation_handler({});
             model_generation->set_color_matching_handler({});
+            model_generation->set_workbench_import_handler({});
             model_generation->shutdown();
         }
     }
@@ -102,6 +105,16 @@ ModelGenerationFeatureHost::ModelGenerationFeatureHost(wxWindow* parent, Plater*
 ModelGenerationFeatureHost::~ModelGenerationFeatureHost()
 {
     shutdown();
+}
+
+void ModelGenerationFeatureHost::set_workbench_import_handler(std::function<void(const AI::ModelImportRequest&)> handler)
+{
+    m_impl->model_generation->set_workbench_import_handler(std::move(handler));
+}
+
+AI::ModelImportResult ModelGenerationFeatureHost::import_workbench_model(const AI::ModelImportRequest& request)
+{
+    return m_impl->workspace->import_workbench_artifact(request);
 }
 
 wxWindow* ModelGenerationFeatureHost::panel() const
@@ -181,6 +194,33 @@ bool ModelGenerationFeatureHost::request_open_history(const std::string& job_id)
 {
     return m_impl->model_generation != nullptr && m_impl->model_generation->request_open_history(job_id);
 }
+
+PostGenerationWorkbenchState ModelGenerationFeatureHost::workbench_snapshot() const
+{
+    return m_impl->model_generation->workbench_snapshot();
+}
+
+void ModelGenerationFeatureHost::set_workbench_listener(PostGenerationWorkbenchListener listener)
+{
+    m_impl->model_generation->set_workbench_listener(std::move(listener));
+}
+
+void ModelGenerationFeatureHost::set_workbench_results_handler(std::function<void()> handler)
+{
+    m_impl->model_generation->set_workbench_results_handler(std::move(handler));
+}
+
+bool ModelGenerationFeatureHost::request_open_workbench() { return m_impl->model_generation->request_open_workbench(); }
+void ModelGenerationFeatureHost::mount_workbench(wxWindow* parent) { m_impl->model_generation->mount_workbench(parent); }
+void ModelGenerationFeatureHost::unmount_workbench() { m_impl->model_generation->unmount_workbench(); }
+void ModelGenerationFeatureHost::set_color_matching_handler(std::function<void(const AI::GeneratedModelArtifact&)> handler)
+{
+    m_impl->model_generation->set_color_matching_handler(std::move(handler));
+}
+bool ModelGenerationFeatureHost::request_enter_beauty() { return m_impl->model_generation->request_enter_beauty(); }
+bool ModelGenerationFeatureHost::request_return_overview() { return m_impl->model_generation->request_return_overview(); }
+bool ModelGenerationFeatureHost::request_workbench_color_matching() { return m_impl->model_generation->request_workbench_color_matching(); }
+bool ModelGenerationFeatureHost::request_enable_portrait(bool enabled) { return m_impl->model_generation->request_enable_portrait(enabled); }
 
 void ModelGenerationFeatureHost::set_service_availability(bool available, const std::string& message)
 {

@@ -2,7 +2,7 @@
 
 #include "libslic3r/TriangleMesh.hpp"
 #include <nlohmann/json.hpp>
-#include <openssl/evp.h>
+#include "libslic3r/Sha256Digest.hpp"
 
 #include <algorithm>
 #include <array>
@@ -66,15 +66,14 @@ inline std::string geometry_fingerprint(const indexed_triangle_set& mesh)
 {
     static_assert(sizeof(float) == 4 && std::numeric_limits<float>::is_iec559,
                   "Surface selection identity requires IEEE float32.");
-    std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> digest(EVP_MD_CTX_new(), EVP_MD_CTX_free);
-    if (!digest || EVP_DigestInit_ex(digest.get(), EVP_sha256(), nullptr) != 1) return {};
+    Sha256Digest digest;
     constexpr char schema[] = "orca.surface-selection.geometry/v1";
-    if (EVP_DigestUpdate(digest.get(), schema, sizeof(schema)) != 1) return {};
+    if (!digest.update(schema, sizeof(schema))) return {};
     std::array<unsigned char, 8> count_bytes {};
     for (size_t i = 0; i < count_bytes.size(); ++i) count_bytes[i] = static_cast<unsigned char>(uint64_t(mesh.indices.size()) >> (i * 8));
-    if (EVP_DigestUpdate(digest.get(), count_bytes.data(), count_bytes.size()) != 1) return {};
-    // Hash 1024 complete faces per EVP call, keeping memory independent of mesh
-    // size and avoiding millions of EVP calls for a production-sized model.
+    if (!digest.update(count_bytes.data(), count_bytes.size())) return {};
+    // Hash 1024 complete faces per digest call, keeping memory independent of
+    // mesh size and avoiding millions of calls for a production-sized model.
     std::array<unsigned char, 1024 * 3 * 3 * 4> buffer {};
     size_t used = 0;
     for (const auto& face : mesh.indices) {
@@ -89,19 +88,12 @@ inline std::string geometry_fingerprint(const indexed_triangle_set& mesh)
             }
         }
         if (used == buffer.size()) {
-            if (EVP_DigestUpdate(digest.get(), buffer.data(), used) != 1) return {};
+            if (!digest.update(buffer.data(), used)) return {};
             used = 0;
         }
     }
-    if (used && EVP_DigestUpdate(digest.get(), buffer.data(), used) != 1) return {};
-    std::array<unsigned char, EVP_MAX_MD_SIZE> bytes {};
-    unsigned int length = 0;
-    if (EVP_DigestFinal_ex(digest.get(), bytes.data(), &length) != 1 || length != 32) return {};
-    constexpr char hex[] = "0123456789abcdef";
-    std::string result;
-    result.reserve(length * 2);
-    for (unsigned int i = 0; i < length; ++i) { result += hex[bytes[i] >> 4]; result += hex[bytes[i] & 15]; }
-    return result;
+    if (used && !digest.update(buffer.data(), used)) return {};
+    return digest.final_hex();
 }
 
 // Empty optional masks mean all zero. Nonempty masks must have exactly the

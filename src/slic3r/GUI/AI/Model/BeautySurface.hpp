@@ -25,7 +25,9 @@ struct BeautySurface {
     std::string geometry_id;
     std::vector<uint32_t> face_patch;
     std::vector<BeautyPatch> patches;
-    std::vector<std::array<int32_t, 3>> face_neighbors;
+    // Canonical triangles retain their three edge slots. Derived surfaces may
+    // have more neighbors along an adaptively subdivided edge.
+    std::vector<std::vector<int32_t>> face_neighbors;
     // Topology preflight on position-welded edges; UV seams stay untouched.
     size_t boundary_edges {0}, nonmanifold_edges {0};
     std::vector<Vec3d> centers, normals;
@@ -38,6 +40,12 @@ struct BeautySurface {
     std::vector<float> edge_lengths;
 
     static std::shared_ptr<BeautySurface> build(const indexed_triangle_set& mesh,
+        const std::vector<RGBA>& colors, const std::vector<uint32_t>& saved_partition = {},
+        const std::function<bool()>& canceled = {});
+
+    // Appearance and partitioning need face adjacency. Geometry distance rows
+    // are prepared only by vertex_weights/deform if this lighter entry is used.
+    static std::shared_ptr<BeautySurface> build_for_appearance(const indexed_triangle_set& mesh,
         const std::vector<RGBA>& colors, const std::vector<uint32_t>& saved_partition = {},
         const std::function<bool()>& canceled = {});
 
@@ -54,6 +62,13 @@ struct BeautySurface {
         const std::vector<uint8_t>& selected, const std::vector<uint8_t>& protected_faces,
         double displacement_mm, double falloff_mm, size_t& moved_vertices,
         const std::function<bool()>& canceled = {}) const;
+private:
+    std::vector<float> vertex_weights_impl(const indexed_triangle_set& mesh,
+        const std::vector<uint8_t>& selected,const std::vector<uint8_t>& protected_faces,
+        double falloff_mm,const std::function<bool()>& canceled) const;
+    static std::shared_ptr<BeautySurface> build_impl(const indexed_triangle_set& mesh,
+        const std::vector<RGBA>& colors, const std::vector<uint32_t>& saved_partition,
+        const std::function<bool()>& canceled, bool vertex_graph);
 };
 
 } // namespace Slic3r::AI

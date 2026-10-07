@@ -6,16 +6,19 @@
 #include "slic3r/GUI/AI/Model/SurfaceSelectionRefinement.hpp"
 #include "slic3r/GUI/AI/Model/SurfaceSelectionState.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
-#include "slic3r/GUI/AI/Model/BeautySurface.hpp"
-#include "slic3r/GUI/AI/Model/BeautyBoundaryDrag.hpp"
+#include "slic3r/GUI/AI/Model/BeautyLeafEdits.hpp"
+#include "SecondaryRegionEvidence.hpp"
+#include "ReadonlyEvidenceRender.hpp"
 #include "ModelColorPreviewShader.hpp"
+#include "ModelPreviewTexture.hpp"
 #include "ModelPreviewNormals.hpp"
-#include "ModelPreviewPuzzle.hpp"
 #include "ModelPreviewPalette.hpp"
 #include "ModelPreviewColorControls.hpp"
 #include "ModelSemanticColoring.hpp"
 #include "slic3r/GUI/I18N.hpp"
 #include <unordered_set>
+#include <functional>
+#include <utility>
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/GLModel.hpp"
 #include "slic3r/GUI/GLShader.hpp"
@@ -29,11 +32,15 @@
 #include <boost/filesystem/fstream.hpp>
 #include <glad/gl.h>
 #include <wx/dcclient.h>
+#include <wx/dialog.h>
 #include <wx/glcanvas.h>
 #include <wx/panel.h>
 #include <wx/button.h>
+#include <wx/scrolwin.h>
+#include <wx/splitter.h>
 #include <wx/stattext.h>
 #include <wx/timer.h>
+#include <wx/stdpaths.h>
 
 #include <algorithm>
 #include <atomic>
@@ -42,9 +49,9 @@
 #include <filesystem>
 #include <exception>
 #include <functional>
-#include <limits>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <thread>
 #include <utility>
@@ -58,14 +65,35 @@ public:
     using SelectionState = AI::SurfaceSelectionPersistence::SelectionState;
     using FaceColorOverrides = AI::SurfaceSelectionPersistence::FaceColorOverrides;
     using SubfaceColorOverrides = AI::SemanticColoring::SubfaceColors;
+    wxWindow* workbench_overlay_parent() const { return m_preview_host; }
     explicit ModelPreview3D(wxWindow* parent, bool retain_surface_attributes = false)
         : wxPanel(parent), m_retain_surface_attributes(retain_surface_attributes)
     {
         SetBackgroundColour(wxGetApp().get_window_default_clr());
         auto* sizer = new wxBoxSizer(wxVERTICAL);
-        m_canvas = OpenGLManager::create_wxglcanvas(*this);
-        m_canvas->SetMinSize(wxSize(FromDIP(360), FromDIP(300)));
-        sizer->Add(m_canvas, 1, wxEXPAND);
+        m_splitter = new wxSplitterWindow(this, wxID_ANY, wxDefaultPosition, wxDefaultSize,
+            wxSP_LIVE_UPDATE | wxSP_3DSASH);
+        m_splitter->SetMinimumPaneSize(FromDIP(170));
+        m_saved_splitter_sash = FromDIP(360);
+        m_preview_host = new wxPanel(m_splitter);
+        auto* preview_sizer = new wxBoxSizer(wxVERTICAL);
+        m_canvas = OpenGLManager::create_wxglcanvas(*m_preview_host);
+        m_canvas->SetMinSize(wxSize(FromDIP(360), FromDIP(260)));
+        preview_sizer->Add(m_canvas, 1, wxEXPAND);
+        m_preview_host->SetSizer(preview_sizer);
+        m_controls_scroll = new wxScrolledWindow(m_splitter, wxID_ANY, wxDefaultPosition, wxDefaultSize,
+            wxVSCROLL | wxBORDER_NONE);
+        m_controls_scroll->SetScrollRate(0, FromDIP(12));
+        auto* controls_sizer = new wxBoxSizer(wxVERTICAL);
+        m_color_trial = new ModelPreviewColorControls(m_controls_scroll);
+        controls_sizer->Add(m_color_trial, 0, wxEXPAND);
+        m_controls_scroll->SetSizer(controls_sizer);
+        m_splitter->SplitHorizontally(m_preview_host, m_controls_scroll, FromDIP(360));
+        m_splitter->Bind(wxEVT_SPLITTER_SASH_POS_CHANGED, [this](wxSplitterEvent& event) {
+            m_saved_splitter_sash = event.GetSashPosition();
+            event.Skip();
+        });
+        sizer->Add(m_splitter, 1, wxEXPAND);
         m_region_prepare_status = new wxStaticText(this, wxID_ANY, wxEmptyString);
         sizer->Add(m_region_prepare_status, 0, wxEXPAND | wxALL, FromDIP(6));
         m_region_prepare_status->Hide();
@@ -75,17 +103,21 @@ public:
         Bind(wxEVT_TIMER, [this](wxTimerEvent&) { finish_surface_selection(); }, m_surface_timer.GetId());
         m_semantic_timer.SetOwner(this);
         Bind(wxEVT_TIMER, [this](wxTimerEvent&) { finish_semantic_coloring(); }, m_semantic_timer.GetId());
-        m_color_trial = new ModelPreviewColorControls(this);
-        sizer->Add(m_color_trial, 0, wxEXPAND);
         m_color_trial->Hide();
+        m_controls_scroll->Hide();
         m_color_trial->on_changed = [this] {
             m_trial_toggle_started = std::chrono::steady_clock::now();
             m_color_trial_enabled = m_color_trial->enabled();
             m_trial_palette = m_color_trial->colors();
-            update_semantic_coloring();
+            if (!m_suppress_semantic_change) update_semantic_coloring();
             m_canvas->Refresh(false);
+            if (m_color_trial_changed) m_color_trial_changed(m_trial_palette.size());
             BOOST_LOG_TRIVIAL(info) << "AI color trial toggled: enabled=" << m_color_trial_enabled
                 << ", palette=" << m_trial_palette.size() << ", geometry_reloaded=false";
+        };
+        m_color_trial->on_region_changed = [this] {
+            rebuild_semantic_preview_from_cached_result();
+            m_canvas->Refresh(false);
         };
         SetSizer(sizer);
 
@@ -96,23 +128,16 @@ public:
             event.Skip();
         });
         m_canvas->Bind(wxEVT_LEFT_DOWN, [this](wxMouseEvent& event) {
-            if (m_puzzle_enabled && selection_busy()) return;
+            if (m_selection_enabled && !selection_busy() && !event.AltDown() &&
+                m_selection_gesture != SelectionGesture::Orbit &&
+                m_selection_gesture != SelectionGesture::Similar)
+                set_selection_preview_suppressed(false);
             m_dragging = true;
             m_drag_moved = false;
             m_drag_start = event.GetPosition();
             m_last_mouse = event.GetPosition();
-            m_puzzle_merge_click = event.ShiftDown();
-            m_puzzle_drag_kind = 0;
-            m_shape_handle = 0;
-            if (m_puzzle_enabled && m_puzzle_ready && m_selection_enabled && !event.AltDown()) {
-                if (event.ControlDown()) m_puzzle_drag_kind = 2;
-                else if (m_selection_gesture == SelectionGesture::Similar && puzzle_boundary_at(event.GetPosition()) &&
-                         begin_boundary_drag(event.GetPosition()))
-                    m_puzzle_drag_kind = 1;
-            }
-            m_drawing_selection = m_selection_enabled && (!m_puzzle_enabled || m_puzzle_ready) && !event.AltDown() &&
-                (m_puzzle_drag_kind != 0 ||
-                 (m_selection_gesture != SelectionGesture::Orbit && m_selection_gesture != SelectionGesture::Similar));
+            m_drawing_selection = m_selection_enabled && !selection_busy() && !event.AltDown() &&
+                m_selection_gesture != SelectionGesture::Orbit && m_selection_gesture != SelectionGesture::Similar;
             if (m_drawing_selection) {
                 m_stroke.clear();
                 m_stroke.emplace_back(event.GetX(), event.GetY());
@@ -125,21 +150,15 @@ public:
         m_canvas->Bind(wxEVT_LEFT_UP, [this](wxMouseEvent& event) {
             if (m_drawing_selection) {
                 m_stroke.emplace_back(event.GetX(), event.GetY());
-                if (m_puzzle_drag_kind == 0 || m_drag_moved) submit_surface_selection();
-                else select_at(event.GetPosition());
+                submit_surface_selection();
             } else if (m_selection_enabled && !m_drag_moved && !event.AltDown() &&
-                       m_selection_gesture == SelectionGesture::Similar)
+                       m_selection_gesture == SelectionGesture::Similar) {
+                set_selection_preview_suppressed(false);
                 select_at(event.GetPosition());
+            }
             finish_drag();
         });
-        m_canvas->Bind(wxEVT_LEFT_DCLICK, [this](wxMouseEvent& event) {
-            if (m_puzzle_enabled && m_puzzle_ready && m_selection_enabled && !selection_busy() && !event.AltDown()) {
-                m_puzzle_merge_click = false; select_at(event.GetPosition()); finish_drag();
-                if (m_puzzle_change_color) m_puzzle_change_color();
-            } else event.Skip();
-        });
         m_canvas->Bind(wxEVT_LEAVE_WINDOW, [this](wxMouseEvent&) {
-            m_boundary_hover.reset();
             if (!wxGetMouseState().LeftIsDown())
                 finish_drag();
         });
@@ -153,14 +172,9 @@ public:
                 m_pan_y -= (current.y - m_last_mouse.y) * scale;
                 m_last_mouse = current; m_canvas->Refresh(false); return;
             }
-            if (!m_dragging || !event.LeftIsDown()) {
-                if(m_puzzle_enabled && m_puzzle_ready && m_selection_enabled && !selection_busy())
-                    m_canvas->SetCursor(wxCursor(puzzle_boundary_at(event.GetPosition()) ? wxCURSOR_SIZING : wxCURSOR_ARROW));
+            if (!m_dragging || !event.LeftIsDown())
                 return;
-            }
             const wxPoint current = event.GetPosition();
-            const wxPoint distance = current - m_drag_start;
-            m_drag_moved = m_drag_moved || distance.x * distance.x + distance.y * distance.y > FromDIP(3) * FromDIP(3);
             if (m_drawing_selection) {
                 if ((Vec2d(current.x, current.y) - m_stroke.back()).squaredNorm() >= 4.0)
                     m_stroke.emplace_back(current.x, current.y);
@@ -173,7 +187,6 @@ public:
             }
             if (!m_drag_moved)
                 return;
-            if (m_puzzle_enabled && m_puzzle_ready && !event.AltDown()) return;
             m_yaw += (current.x - m_last_mouse.x) * 0.012;
             m_pitch = std::clamp(
                 m_pitch + (current.y - m_last_mouse.y) * 0.012,
@@ -182,18 +195,15 @@ public:
             m_canvas->Refresh(false);
         });
         m_canvas->Bind(wxEVT_MOUSEWHEEL, [this](wxMouseEvent& event) {
-            if (m_drawing_selection || m_boundary_pending) return;
+            if (m_drawing_selection) return;
             const int delta = event.GetWheelDelta();
             if (delta == 0)
                 return;
             const double turns = double(event.GetWheelRotation()) / double(delta);
-            m_boundary_hover.reset();
             m_zoom = std::clamp(m_zoom * std::pow(1.15, turns), 0.45, 12.0);
             m_canvas->Refresh(false);
         });
         m_canvas->Bind(wxEVT_RIGHT_DOWN, [this](wxMouseEvent& event) {
-            if(m_boundary_pending)return;
-            m_boundary_hover.reset();
             if (m_drawing_selection) finish_drag();
             m_last_mouse = event.GetPosition();
             if (!m_canvas->HasCapture()) m_canvas->CaptureMouse();
@@ -203,11 +213,7 @@ public:
             m_dragging = false; m_drawing_selection = false; m_stroke.clear(); m_canvas->Refresh(false);
         });
         m_canvas->Bind(wxEVT_KEY_DOWN, [this](wxKeyEvent& event) {
-            if (m_puzzle_enabled && event.GetKeyCode() == WXK_SPACE && !event.ControlDown() && !event.AltDown()) {
-                m_puzzle_hide_overlays = true; m_canvas->Refresh(false); return;
-            }
             if (!event.ControlDown() && (event.GetKeyCode() == 'F' || event.GetKeyCode() == 'f')) {
-                if(m_puzzle_enabled && m_puzzle_focus)select_beauty_faces(m_puzzle_focus());
                 focus_selection(); return;
             }
             if (!m_selection_enabled) {
@@ -215,8 +221,7 @@ public:
                 return;
             }
             if (event.ControlDown() && (event.GetKeyCode() == 'Z' || event.GetKeyCode() == 'z')) {
-                if(m_puzzle_enabled && m_puzzle_undo) m_puzzle_undo(event.ShiftDown());
-                else if (event.ShiftDown()) redo_selection(); else undo_selection();
+                if (event.ShiftDown()) redo_selection(); else undo_selection();
                 return;
             }
             if (event.GetKeyCode() == WXK_ESCAPE) {
@@ -226,15 +231,6 @@ public:
                 return;
             }
             event.Skip();
-        });
-        m_canvas->Bind(wxEVT_KEY_UP, [this](wxKeyEvent& event) {
-            if (event.GetKeyCode() == WXK_SPACE && m_puzzle_hide_overlays) {
-                m_puzzle_hide_overlays = false; m_canvas->Refresh(false); return;
-            }
-            event.Skip();
-        });
-        m_canvas->Bind(wxEVT_KILL_FOCUS, [this](wxFocusEvent& event) {
-            m_puzzle_hide_overlays = false; m_canvas->Refresh(false); event.Skip();
         });
     }
 
@@ -275,30 +271,51 @@ public:
         boost::filesystem::path path;
         FileStamp stamp;
         size_t triangles {0};
+        size_t vertices {0};
         size_t colors {0};
         std::vector<PreviewPalette::Color> trial_palette;
         std::shared_ptr<const PreviewPalette::Histogram> trial_histogram;
         std::string geometry_id;
+        AI::ModelArtifactTextureSurface texture_surface;
+        std::vector<Vec3f> corner_normals;
         FaceColorOverrides face_color_overrides;
         std::optional<SelectionState> selection;
         std::optional<ModelPreviewColorControls::State> color_trial;
         std::shared_ptr<const AI::SemanticColoring::MeshSnapshot> semantic_source;
+        FaceColorOverrides saved_semantic_faces;
+        SubfaceColorOverrides saved_semantic_subfaces;
+        std::shared_ptr<const SemanticRegionEvidence> region_evidence;
+        std::string region_runtime_identity, region_evidence_error;
+        std::shared_ptr<const SecondaryRegionEvidence> secondary_region_evidence;
+        std::string secondary_region_evidence_error;
+        std::shared_ptr<const PortraitShapeDetails> shape_details;
+        bool shapes_unlocked {false};
+        nlohmann::json leaf_edits;
     };
 
     static bool prepare_model(const boost::filesystem::path& path, PreparedModel& prepared,
                               std::string& error, const FaceColorOverrides& explicit_overrides = {},
-                              const boost::filesystem::path& metadata_path = {}, bool restore_saved_edits = true)
+                              const boost::filesystem::path& metadata_path = {}, bool restore_saved_edits = true,
+                              const std::function<bool()>& canceled = {})
     {
         const auto started = std::chrono::steady_clock::now();
         prepared = PreparedModel {};
+        const auto stop_if_canceled = [&] {
+            if (!canceled || !canceled()) return false;
+            prepared = PreparedModel {};
+            error = "Model preview loading canceled.";
+            return true;
+        };
+        if (stop_if_canceled()) return false;
         const FileStamp initial_stamp = file_stamp(path);
         TriangleMesh mesh;
         ObjInfo obj_info;
-        if (!AI::load_model_artifact(path, mesh, obj_info, error) || mesh.empty())
+        if (!AI::load_model_artifact(path, mesh, obj_info, error, canceled, &prepared.texture_surface) || mesh.empty())
             return false;
 
         const indexed_triangle_set& its = mesh.its;
         prepared.geometry_id = AI::SurfaceSelectionPersistence::geometry_fingerprint(its);
+        nlohmann::json region_reference, secondary_region_reference, shape_reference;
         prepared.face_color_overrides = explicit_overrides;
         auto record = metadata_path;
         if (record.empty()) { record = path; record.replace_extension(".json"); }
@@ -306,10 +323,15 @@ public:
         const auto record_bytes = boost::filesystem::file_size(record, record_error);
         boost::filesystem::ifstream record_stream(record);
         // Bound auxiliary state independently of the mesh, before JSON allocates.
-        if (restore_saved_edits && record_stream && !record_error && record_bytes <= 128ULL * 1024 * 1024) {
+        if (restore_saved_edits && record_stream && !record_error && record_bytes <= 256ULL * 1024 * 1024) {
             const auto metadata = nlohmann::json::parse(record_stream, nullptr, false);
             std::string state_error;
             if (metadata.is_object()) {
+                if (metadata.contains("semantic_region_evidence")) region_reference = metadata["semantic_region_evidence"];
+                if (metadata.contains("secondary_region_evidence")) secondary_region_reference = metadata["secondary_region_evidence"];
+                if (metadata.contains("portrait_shape_reference")) shape_reference = metadata["portrait_shape_reference"];
+                if (metadata.contains("beauty_leaf_edit")) prepared.leaf_edits=metadata["beauty_leaf_edit"];
+                prepared.shapes_unlocked = metadata.value("portrait_shapes_unlocked", false);
                 if (metadata.contains("color_trial")) {
                     ModelPreviewColorControls::State trial;
                     if (AI::ColorTrialPersistence::decode(metadata["color_trial"], its.indices.size(), prepared.geometry_id, trial, state_error)) {
@@ -325,6 +347,10 @@ public:
                 }
                 if (explicit_overrides.empty() && metadata.contains("face_color_intent"))
                     AI::SurfaceSelectionPersistence::decode_colors(metadata["face_color_intent"], its.indices.size(), prepared.geometry_id, prepared.face_color_overrides, state_error);
+                if (metadata.contains("semantic_result") && metadata["semantic_result"].is_object()) {
+                    decode_semantic_result(metadata["semantic_result"],prepared.geometry_id,its.indices.size(),
+                        prepared.saved_semantic_faces,prepared.saved_semantic_subfaces);
+                }
             }
             if (!state_error.empty()) BOOST_LOG_TRIVIAL(warning) << "Saved local editing state ignored: " << state_error;
         }
@@ -343,6 +369,43 @@ public:
             source->geometry_id = prepared.geometry_id;
             source->content_id = AI::SemanticColoring::content_fingerprint(*source);
             prepared.semantic_source = std::move(source);
+        }
+        const auto runtime = semantic_region_runtime_directory();
+        const auto cache = std::filesystem::u8path(Slic3r::data_dir()) / "cache";
+        if (!shape_reference.is_null()) try {
+            if (shape_reference.at("model_sha256") != AI::model_artifact_sha256(path))
+                throw std::invalid_argument("Portrait shape model hash changed.");
+            prepared.shape_details = PortraitShapeCache::load(shape_reference, boost::filesystem::path(cache.native()),
+                prepared.geometry_id, its.indices.size(), portrait_shape_runtime_fingerprint(), true);
+        } catch (const std::exception& failure) {
+            BOOST_LOG_TRIVIAL(warning) << "Portrait shape cache rejected: " << failure.what();
+        }
+        prepared.region_runtime_identity = semantic_region_runtime_identity(runtime);
+        if (!region_reference.is_null()) {
+            const auto expected_hash = region_reference.is_object() ? region_reference.find("model_sha256") : region_reference.end();
+            if (expected_hash == region_reference.end() || !expected_hash->is_string() ||
+                expected_hash->get<std::string>() != AI::model_artifact_sha256(path))
+                prepared.region_evidence_error = "Region evidence model source hash mismatch";
+            else prepared.region_evidence = SemanticRegionEvidenceCache::load(region_reference,
+                boost::filesystem::path((cache / "beauty_regions").native()), prepared.geometry_id,
+                its.indices.size(), prepared.region_runtime_identity, prepared.region_evidence_error);
+        } else if (prepared.semantic_source)
+            prepared.region_evidence = load_legacy_semantic_region_evidence(*prepared.semantic_source,
+                runtime, cache / "portrait_semantics", prepared.region_runtime_identity, prepared.region_evidence_error);
+        if (!secondary_region_reference.is_null()) {
+            const auto expected_hash = secondary_region_reference.is_object() ? secondary_region_reference.find("model_sha256") : secondary_region_reference.end();
+            const auto source_hash = AI::model_artifact_sha256(path);
+            if (expected_hash != secondary_region_reference.end() && expected_hash->is_string() && expected_hash->get<std::string>() != source_hash)
+                prepared.secondary_region_evidence_error = "Secondary evidence model source hash mismatch";
+            else {
+                prepared.secondary_region_evidence = SecondaryRegionEvidenceCache::load(secondary_region_reference,
+                    boost::filesystem::path((cache / "beauty_secondary_regions").native()), prepared.geometry_id,
+                    source_hash, its.indices.size(), prepared.region_runtime_identity, prepared.secondary_region_evidence_error);
+            }
+        } else if (prepared.region_evidence && prepared.semantic_source) {
+            prepared.secondary_region_evidence = SecondaryRegionEvidence::from_primary(
+                *prepared.region_evidence, AI::model_artifact_sha256(path), prepared.semantic_source->content_id,
+                prepared.secondary_region_evidence_error, !region_reference.is_null());
         }
         const RGBA fallback {ColorRGBA::ORCA().r(), ColorRGBA::ORCA().g(), ColorRGBA::ORCA().b(), 1.0f};
         GLModel::Geometry geometry;
@@ -363,6 +426,7 @@ public:
         }
         const auto corner_normals = ModelPreviewNormals::corner_normals(its);
         for (size_t face_index = 0; face_index < its.indices.size(); ++face_index) {
+            if ((face_index & 4095) == 0 && stop_if_canceled()) return false;
             const auto lock = locked_colors.find(face_index);
             const auto& indices = its.indices[face_index];
             const Vec3f& a = its.vertices[indices[0]];
@@ -398,21 +462,24 @@ public:
 
         prepared.bounds = mesh.bounding_box();
         prepared.triangles = its.indices.size();
+        prepared.vertices = its.vertices.size();
         prepared.colors = observed_colors.size();
         const auto palette_started = std::chrono::steady_clock::now();
-        prepared.trial_palette = trial_histogram->palette(6, {}, true);
+        const size_t preview_color_count = std::clamp(prepared.colors, size_t(1), PreviewPalette::max_preview_colors);
+        prepared.trial_palette = trial_histogram->palette(preview_color_count, {}, true);
         prepared.trial_histogram = std::move(trial_histogram);
         BOOST_LOG_TRIVIAL(info) << "AI color trial palette: colors=" << prepared.trial_palette.size()
             << ", clustering_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - palette_started).count();
         prepared.geometry = std::move(geometry);
+        if (!prepared.texture_surface.faces.empty()) prepared.corner_normals = corner_normals;
         prepared.path = path;
         prepared.stamp = file_stamp(path);
         if (!same_stamp(initial_stamp, prepared.stamp))
             prepared.stamp.valid = false;
-        if (has_vertex_colors || !restore_saved_edits) {
+        if (has_vertex_colors || has_face_colors || !prepared.texture_surface.faces.empty() || !restore_saved_edits) {
             prepared.mesh = std::move(mesh.its);
-            if (has_vertex_colors) prepared.vertex_colors = std::move(obj_info.vertex_colors);
+            prepared.vertex_colors = std::move(obj_info.vertex_colors);
         }
         BOOST_LOG_TRIVIAL(info) << "AI model preview CPU prepare: triangles=" << prepared.triangles
             << ", elapsed_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -431,6 +498,14 @@ public:
             error = "The OBJ contains no renderable triangles.";
             return false;
         }
+        std::unique_ptr<ModelPreviewTexture> texture_model;
+        auto model = std::make_unique<GLModel>();
+        try {
+            if (!prepared.texture_surface.faces.empty())
+                texture_model = std::make_unique<ModelPreviewTexture>(prepared.texture_surface,
+                    prepared.mesh, prepared.corner_normals, prepared.face_color_overrides);
+            model->init_from(GLModel::Geometry(prepared.geometry));
+        } catch (const std::exception& failure) { error = failure.what(); return false; }
         cache_current_preview();
         clear_current_preview();
         if (m_retain_surface_attributes) {
@@ -439,8 +514,7 @@ public:
             for (size_t v = 0; v < prepared.geometry.vertices_count(); ++v)
                 m_original_surface_colors.push_back(prepared.geometry.extract_tex_coord_2(v));
         }
-        auto model = std::make_unique<GLModel>();
-        model->init_from(std::move(prepared.geometry));
+        m_texture_model = std::move(texture_model);
         m_models.emplace_back(std::move(model));
         m_bounds = prepared.bounds;
         m_pending_mesh = std::move(prepared.mesh);
@@ -448,10 +522,19 @@ public:
         m_geometry_id = std::move(prepared.geometry_id);
         m_face_color_overrides = std::move(prepared.face_color_overrides);
         m_semantic_source = std::move(prepared.semantic_source);
+        m_portrait_shapes = std::move(prepared.shape_details);
+        m_shapes_unlocked = prepared.shapes_unlocked;
+        if (m_portrait_shapes && m_portrait_shapes->locks.leaf_domain) m_pending_leaf_edits=std::move(prepared.leaf_edits);
+        m_region_runtime_identity = std::move(prepared.region_runtime_identity);
+        m_region_evidence = std::move(prepared.region_evidence);
+        m_region_evidence_error = std::move(prepared.region_evidence_error);
+        m_secondary_region_evidence = std::move(prepared.secondary_region_evidence);
+        m_secondary_region_evidence_error = std::move(prepared.secondary_region_evidence_error);
         m_pending_selection = std::move(prepared.selection);
         m_model_path = std::move(prepared.path);
         m_model_stamp = prepared.stamp;
         m_triangle_count = prepared.triangles;
+        m_vertex_count = prepared.vertices;
         m_color_count = prepared.colors;
         m_trial_palette = std::move(prepared.trial_palette);
         m_trial_histogram = std::move(prepared.trial_histogram);
@@ -461,7 +544,13 @@ public:
         m_palette = palette;
         m_has_model = true;
         m_color_trial->load(m_trial_histogram, m_trial_palette);
-        if (prepared.color_trial) m_color_trial->restore(*prepared.color_trial);
+        if (prepared.color_trial) {
+            m_suppress_semantic_change = m_beauty_view || !prepared.saved_semantic_faces.empty() || !prepared.saved_semantic_subfaces.empty();
+            m_color_trial->restore(*prepared.color_trial);
+            m_suppress_semantic_change = false;
+        }
+        if (!prepared.saved_semantic_faces.empty() || !prepared.saved_semantic_subfaces.empty())
+            set_saved_semantic_result(std::move(prepared.saved_semantic_faces), std::move(prepared.saved_semantic_subfaces));
         m_paint_diagnostics_logged = false;
         m_render_diagnostics_logged = false;
         front_view();
@@ -480,16 +569,29 @@ public:
         cache_current_preview();
         clear_current_preview();
         m_models = std::move(cached->models);
+        m_texture_model = std::move(cached->texture_model);
         m_pending_mesh = std::move(cached->mesh);
         m_pending_vertex_colors = std::move(cached->vertex_colors);
         m_geometry_id = std::move(cached->geometry_id);
         m_face_color_overrides = std::move(cached->face_color_overrides);
         m_semantic_source = std::move(cached->semantic_source);
+        m_portrait_shapes = std::move(cached->shape_details);
+        m_shapes_unlocked = cached->shapes_unlocked;
+        if (m_portrait_shapes && m_portrait_shapes->locks.leaf_domain) m_pending_leaf_edits=std::move(cached->leaf_edits);
+        m_region_runtime_identity = semantic_region_runtime_identity(semantic_region_runtime_directory());
+        m_region_evidence_error = std::move(cached->region_evidence_error);
+        m_region_evidence = std::move(cached->region_evidence);
+        m_secondary_region_evidence_error = std::move(cached->secondary_region_evidence_error);
+        m_secondary_region_evidence = std::move(cached->secondary_region_evidence);
+        const auto saved_faces = std::move(cached->saved_semantic_faces);
+        const auto saved_subfaces = std::move(cached->saved_semantic_subfaces);
         m_pending_selection = std::move(cached->selection);
         m_model_path = std::move(cached->path);
         m_model_stamp = cached->stamp;
         m_bounds = cached->bounds;
         m_triangle_count = triangle_count = cached->triangles;
+        m_vertex_count = cached->vertices;
+        if (m_region_evidence) restore_semantic_region_evidence(m_region_evidence);
         m_color_count = color_count = cached->colors;
         m_trial_palette = std::move(cached->trial_palette);
         m_trial_histogram = std::move(cached->trial_histogram);
@@ -497,7 +599,13 @@ public:
         m_palette = palette;
         m_has_model = true;
         m_color_trial->load(m_trial_histogram, m_trial_palette);
-        if (cached->color_trial) m_color_trial->restore(*cached->color_trial);
+        if (cached->color_trial) {
+            if (m_beauty_view || !saved_faces.empty() || !saved_subfaces.empty())
+                restore_color_trial_without_recognition(*cached->color_trial);
+            else m_color_trial->restore(*cached->color_trial);
+        }
+        if (!saved_faces.empty() || !saved_subfaces.empty())
+            set_saved_semantic_result(saved_faces, saved_subfaces);
         m_paint_diagnostics_logged = false;
         m_render_diagnostics_logged = false;
         front_view();
@@ -508,7 +616,8 @@ public:
 
     bool load_model(const boost::filesystem::path& path, const std::vector<std::string>& palette,
                     size_t& triangle_count, Vec3d& dimensions, size_t& color_count, std::string& error,
-                    const FaceColorOverrides& explicit_overrides = {})
+                    const FaceColorOverrides& explicit_overrides = {},
+                    const boost::filesystem::path& metadata_path = {})
     {
         // Accepting an already displayed preview should not reparse the OBJ or
         // rebuild GPU buffers. The file stamp still invalidates external edits.
@@ -520,7 +629,7 @@ public:
         if (try_load_cached_model(path, palette, triangle_count, dimensions, color_count))
             return true;
         PreparedModel prepared;
-        return prepare_model(path, prepared, error, explicit_overrides) && load_prepared_model(std::move(prepared), palette,
+        return prepare_model(path, prepared, error, explicit_overrides, metadata_path) && load_prepared_model(std::move(prepared), palette,
             triangle_count, dimensions, color_count, error);
     }
 
@@ -536,11 +645,16 @@ private:
         cancel_surface_selection();
         if (m_semantic_controller) m_semantic_controller->cancel();
         m_semantic_source.reset(); m_automatic_face_colors.clear(); m_automatic_subface_colors.clear();
+        m_portrait_shapes.reset(); m_shapes_unlocked = false; m_leaf_editing.reset();
+        m_manual_leaf_colors.clear(); m_pending_leaf_edits=nullptr;
+        m_saved_semantic_faces.clear(); m_saved_semantic_subfaces.clear();
         m_semantic_analysis.reset(); m_semantic_ready = false;
+        m_semantic_error.clear();
+        m_region_evidence.reset(); m_region_runtime_identity.clear(); m_region_evidence_error.clear();
+        m_secondary_region_evidence.reset(); m_secondary_region_evidence_error.clear();
         m_protected_faces.clear();
         m_foreground_faces.clear(); m_selection_domain.clear();
         m_pending_selection.reset(); m_geometry_id.clear(); m_face_color_overrides.clear();
-        m_surface_vertices.clear(); m_original_surface_colors.clear(); m_exact_surface_display = false;
         m_selection_redo.clear();
         m_stroke.clear();
         m_drawing_selection = false;
@@ -551,8 +665,15 @@ private:
         if (m_context != nullptr && m_canvas != nullptr)
             m_canvas->SetCurrent(*m_context);
         m_models.clear();
+        m_texture_model.reset();
+        m_surface_vertices.clear();
+        m_original_surface_colors.clear();
+        m_exact_surface_display = false;
+        m_workbench_grid.reset();
+        m_workbench_grid_geometry.clear();
         m_semantic_model.reset();
-        m_puzzle_display.reset(); m_puzzle_enabled=false;
+        m_partition_model.reset();
+        m_beauty_pick = {};
         m_selection_model.reset();
         m_protection_model.reset();
         m_region_editor = std::make_shared<AI::VertexColorRegionEditor>();
@@ -561,6 +682,7 @@ private:
         m_selection_history.clear();
         m_palette.clear();
         m_has_model = false;
+        m_vertex_count = 0;
         m_color_trial_enabled = false;
         m_trial_palette.clear();
         m_trial_histogram.reset();
@@ -576,12 +698,6 @@ private:
     }
 
 public:
-    void set_preview_background(const wxColour& color)
-    {
-        m_preview_background = color;
-        if (m_canvas != nullptr) m_canvas->Refresh(false);
-    }
-
     void reset_view()
     {
         m_pan_x = m_pan_y = 0.0;
@@ -639,38 +755,624 @@ public:
         return {m_region_editor->selected_faces(), m_protected_faces, m_foreground_faces, m_selection_domain};
     }
     const std::string& geometry_id() const { return m_geometry_id; }
-    bool display_surface_colors(const std::vector<PreviewPalette::Color>& colors, const std::string& geometry_id,
-                                std::string& error)
-    {
+    void set_preview_background(const wxColour& color) {
+        m_preview_background = color;
+        SetBackgroundColour(color);
+        m_canvas->Refresh(false);
+    }
+    bool display_surface_colors(const std::vector<PreviewPalette::Color>& colors,
+                                const std::string& geometry_id, std::string& error) {
         if (!m_retain_surface_attributes || m_models.size() != 1 || geometry_id != m_geometry_id ||
             m_surface_vertices.size() != m_triangle_count * 3 * 8 ||
             m_original_surface_colors.size() != m_triangle_count * 3 ||
             (!colors.empty() && colors.size() != m_triangle_count)) {
             error = "Surface preview does not match this model geometry."; return false;
         }
-        for (const auto& c : colors) for (float v : c)
-            if (!std::isfinite(v) || v < 0 || v > 1) { error = "Invalid surface preview color."; return false; }
-        if (!m_context || !m_canvas->SetCurrent(*m_context)) { error = "OpenGL preview is unavailable."; return false; }
-        for (size_t f = 0; f < m_triangle_count; ++f) for (size_t corner = 0; corner < 3; ++corner) {
-            const size_t v = f * 3 + corner;
-            m_surface_vertices[v * 8 + 6] = colors.empty() ? m_original_surface_colors[v].x() :
-                float(preview_rgb8(colors[f][0], colors[f][1], colors[f][2]));
-            m_surface_vertices[v * 8 + 7] = colors.empty() ? m_original_surface_colors[v].y() : -1.f;
+        for (const auto& color : colors) for (float value : color)
+            if (!std::isfinite(value) || value < 0 || value > 1) {
+                error = "Invalid surface preview color."; return false;
+            }
+        if (!m_context || !m_canvas->SetCurrent(*m_context)) {
+            error = "OpenGL preview is unavailable."; return false;
         }
-        if (!m_models.front()->update_vertex_attributes(m_surface_vertices)) { error = "Unable to update surface colors."; return false; }
+        for (size_t face = 0; face < m_triangle_count; ++face) for (size_t corner = 0; corner < 3; ++corner) {
+            const size_t vertex = face * 3 + corner;
+            m_surface_vertices[vertex * 8 + 6] = colors.empty() ? m_original_surface_colors[vertex].x() :
+                float(preview_rgb8(colors[face][0], colors[face][1], colors[face][2]));
+            m_surface_vertices[vertex * 8 + 7] = colors.empty() ? m_original_surface_colors[vertex].y() : -1.f;
+        }
+        if (!m_models.front()->update_vertex_attributes(m_surface_vertices)) {
+            error = "Unable to update surface colors."; return false;
+        }
         m_exact_surface_display = !colors.empty();
         m_color_trial_enabled = false;
         m_canvas->Refresh(false);
         return true;
     }
+    // Beauty adapters consume the already prepared immutable surface editor;
+    // they never mutate the preview mesh or trigger semantic recognition.
+    std::shared_ptr<const AI::VertexColorRegionEditor> beauty_editor() const {
+        return m_region_editor->ready() ? m_region_editor : nullptr;
+    }
+    void prepare_beauty_editor() { ensure_region_editor(); }
+    bool leaf_editing() const { return bool(m_leaf_editing); }
+    uint64_t leaf_edit_revision() const { return m_leaf_edit_revision; }
+    nlohmann::json leaf_edit_metadata() const {
+        if (!m_leaf_editing || !m_portrait_shapes) return m_pending_leaf_edits;
+        return AI::BeautyLeafEdits::capture(*m_leaf_editing,m_portrait_shapes->locks,m_manual_leaf_colors,selection_state())
+            .encode(*m_leaf_editing,m_portrait_shapes->locks);
+    }
+    bool restore_leaf_edits(const nlohmann::json& value) {
+        ++m_leaf_edit_revision;
+        if (value.is_null() || value.empty()) { m_manual_leaf_colors.clear(); m_pending_leaf_edits=nullptr; refresh_leaf_colors(); return true; }
+        if (!m_leaf_editing) { m_pending_leaf_edits=value; ensure_region_editor(); return true; }
+        try {
+            const auto state=AI::BeautyLeafEdits::decode(value,*m_leaf_editing,m_portrait_shapes->locks);
+            m_manual_leaf_colors=state.colors; m_pending_leaf_edits=nullptr;
+            restore_selection_state(state.selection); refresh_leaf_colors(); return true;
+        } catch (const std::exception& error) {
+            BOOST_LOG_TRIVIAL(warning)<<"Leaf editing state rejected: "<<error.what();
+            m_manual_leaf_colors.clear(); m_pending_leaf_edits=nullptr; refresh_leaf_colors(); return false;
+        }
+    }
+    bool paint_selected_leaves(const RGBA& color) {
+        if (!m_leaf_editing || !m_region_editor->ready()) return false;
+        auto state=selection_state(); constrain_shape_selection(state);
+        auto colors=m_manual_leaf_colors; size_t painted=0;
+        for (size_t i=0;i<state.selected.size();++i) if (state.selected[i] &&
+            (i>=state.protected_faces.size() || !state.protected_faces[i])) {
+            colors[m_leaf_editing->keys[i]]={color[0],color[1],color[2]}; ++painted;
+        }
+        if (!painted) return false;
+        AI::BeautyLeafEdits::capture(*m_leaf_editing,m_portrait_shapes->locks,colors,state);
+        m_manual_leaf_colors=std::move(colors); ++m_leaf_edit_revision; refresh_leaf_colors(); return true;
+    }
+    void refresh_leaf_colors() {
+        if (!m_leaf_editing || !m_semantic_source || !m_context || !m_canvas->SetCurrent(*m_context)) return;
+        auto geometry=build_semantic_colored_geometry(*m_semantic_source,import_face_color_overrides(true),import_subface_color_overrides(true));
+        if (geometry.is_empty()) return;
+        auto model=std::make_unique<GLModel>(); model->init_from(std::move(geometry)); m_semantic_model=std::move(model);
+        m_semantic_ready=true; m_canvas->Refresh(false);
+    }
+    size_t editing_face_count() const { return m_leaf_editing ? m_leaf_editing->keys.size() : m_triangle_count; }
+    std::string beauty_geometry_id() const { return m_leaf_editing ? m_leaf_editing->surface->geometry_id : m_geometry_id; }
+    std::shared_ptr<const AI::BeautySurface> beauty_leaf_surface() const { return m_leaf_editing ? m_leaf_editing->surface : nullptr; }
+    std::vector<PortraitShapeDetails::Detail> portrait_detail_catalog(const std::string& parent = {}) const {
+        return m_portrait_shapes ? m_portrait_shapes->catalog(parent,m_leaf_editing.get()) : std::vector<PortraitShapeDetails::Detail>{};
+    }
+    const AI::ShapeLockSet* active_editing_shape_locks() const {
+        return active_shape_locks() ? (m_leaf_editing ? &m_leaf_editing->editing_locks : active_shape_locks()) : nullptr;
+    }
+    bool semantic_regions_ready() const {
+        return m_region_evidence && m_region_evidence->compatible(
+            m_geometry_id, m_triangle_count, m_region_runtime_identity);
+    }
+    std::shared_ptr<const SemanticRegionEvidence> semantic_region_evidence() const { return m_region_evidence; }
+    const std::string& semantic_region_evidence_error() const { return m_region_evidence_error; }
+    bool restore_semantic_region_evidence(std::shared_ptr<const SemanticRegionEvidence> evidence,
+                                         const std::string& previous_error = {}) {
+        if (!evidence) {
+            m_region_evidence.reset();
+            m_region_evidence_error = previous_error;
+            return false;
+        }
+        if (!evidence->compatible(m_geometry_id, m_triangle_count, m_region_runtime_identity)) {
+            m_region_evidence.reset();
+            m_region_evidence_error = "Region evidence geometry, face order or runtime changed";
+            return false;
+        }
+        m_region_evidence = std::move(evidence);
+        m_region_evidence_error.clear();
+        return true;
+    }
+    wxString semantic_region_status() const {
+        if (m_semantic_controller && m_semantic_controller->busy()) return _L("正在识别人像区域，请等待完成或取消。");
+        if (semantic_regions_ready()) return _L("区域识别缓存可用；自动匹配不会重新识别。");
+        if (!m_region_evidence_error.empty()) return _L("区域证据失效或恢复失败，请点击“重新优化人像区域”：") +
+            wxString::FromUTF8(m_region_evidence_error);
+        if (!m_semantic_error.empty()) return _L("人像识别未完成，请点击“重新优化人像区域”重试：") + m_semantic_error;
+        return _L("当前模型尚无可靠区域标签，请先点击“重新优化人像区域”完成识别。");
+    }
+    size_t semantic_selection_protected_count() const { return m_semantic_selection_protected; }
+    size_t semantic_selection_low_confidence_count() const { return m_semantic_selection_low_confidence; }
+    bool secondary_regions_ready() const {
+        return m_secondary_region_evidence && m_secondary_region_evidence->compatible(
+            m_geometry_id, AI::model_artifact_sha256(m_model_path), m_triangle_count, m_region_runtime_identity);
+    }
+    std::vector<std::string> secondary_region_details(const std::string& parent = {}) const {
+        auto result = secondary_regions_ready() ? m_secondary_region_evidence->detail_ids(parent) : std::vector<std::string> {};
+        result.erase(std::remove_if(result.begin(), result.end(), [](const auto& id) {
+            return id == "iris" || id == "imouth" || AI::ShapeLockSet::supported_label(id);
+        }), result.end());
+        for (const auto& detail : portrait_detail_catalog(parent)) result.push_back(detail.key);
+        return result;
+    }
+    std::shared_ptr<const PortraitShapeDetails> portrait_shape_details() const { return m_portrait_shapes; }
+    bool portrait_shapes_unlocked() const { return m_shapes_unlocked; }
+    void restore_portrait_shapes(std::shared_ptr<const PortraitShapeDetails> details, bool unlocked = false) {
+        const bool changed_domain = m_portrait_shapes && details &&
+            (m_portrait_shapes->locks.encode() != details->locks.encode() ||
+             (m_portrait_shapes->surface_ownership ? m_portrait_shapes->surface_ownership->fingerprint() : std::string()) !=
+             (details->surface_ownership ? details->surface_ownership->fingerprint() : std::string()));
+        if (m_leaf_editing && (!details || changed_domain)) {
+            cancel_surface_selection();
+            m_region_editor = m_leaf_editing->canonical_editor;
+            m_leaf_editing.reset();
+            m_protected_faces.clear(); m_foreground_faces.clear(); m_selection_domain.clear();
+            m_selection_history.clear(); m_selection_redo.clear();
+            m_manual_leaf_colors.clear(); m_pending_leaf_edits=nullptr;
+        }
+        m_portrait_shapes = details && details->compatible(m_geometry_id, m_triangle_count) ? std::move(details) : nullptr;
+        m_shapes_unlocked = m_portrait_shapes && unlocked;
+        if (m_portrait_shapes && m_portrait_shapes->locks.leaf_domain && !m_leaf_editing && m_region_editor->ready()) {
+            cancel_surface_selection();
+            m_pending_mesh = m_region_editor->mesh(); m_pending_vertex_colors = m_region_editor->vertex_colors();
+            m_pending_selection = selection_state();
+            m_region_editor = std::make_shared<AI::VertexColorRegionEditor>();
+            ensure_region_editor();
+        }
+    }
+    const AI::ShapeLockSet* active_shape_locks() const {
+        return m_portrait_shapes && !m_shapes_unlocked && !m_portrait_shapes->locks.empty() ? &m_portrait_shapes->locks : nullptr;
+    }
+    nlohmann::json portrait_shape_metadata(const boost::filesystem::path& model = {}) const {
+        if (!m_portrait_shapes || !m_portrait_shapes->compatible(m_geometry_id, m_triangle_count)) return nlohmann::json();
+        auto reference = PortraitShapeCache::save(*m_portrait_shapes, boost::filesystem::path(Slic3r::data_dir()) / "cache");
+        reference["model_sha256"] = AI::model_artifact_sha256(model.empty() ? m_model_path : model);
+        return reference;
+    }
+    void constrain_shape_selection(SelectionState& state, bool parent_selection = false) const {
+        if (m_leaf_editing && active_shape_locks()) { m_leaf_editing->constrain(state,parent_selection); return; }
+        if (!active_shape_locks() || state.selected.size() != m_triangle_count) return;
+        const auto owned = m_portrait_shapes->ownership();
+        bool has_locked = false;
+        if (!parent_selection) for (size_t f = 0; f < owned.size(); ++f) if (state.selected[f] && owned[f]) { has_locked = true; break; }
+        for (size_t f = 0; f < owned.size(); ++f)
+            if ((parent_selection && owned[f]) || (has_locked && !owned[f])) {
+                state.selected[f] = 0;
+                if (f < state.foreground.size()) state.foreground[f] = 0;
+                if (f < state.domain.size()) state.domain[f] = 0;
+            }
+    }
+    std::shared_ptr<const SecondaryRegionEvidence> secondary_region_evidence() const { return m_secondary_region_evidence; }
+    const std::string& secondary_region_evidence_error() const { return m_secondary_region_evidence_error; }
+    bool restore_secondary_region_evidence(std::shared_ptr<const SecondaryRegionEvidence> evidence,
+                                           const std::string& previous_error = {}) {
+        if (!evidence) {
+            m_secondary_region_evidence.reset();
+            m_secondary_region_evidence_error = previous_error;
+            return false;
+        }
+        if (!evidence->valid() || !evidence->compatible(m_geometry_id,
+                AI::model_artifact_sha256(m_model_path), m_triangle_count, m_region_runtime_identity)) {
+            m_secondary_region_evidence.reset();
+            m_secondary_region_evidence_error = "Secondary evidence identity mismatch";
+            return false;
+        }
+        m_secondary_region_evidence = std::move(evidence);
+        m_secondary_region_evidence_error.clear();
+        return true;
+    }
+    bool transfer_secondary_region_evidence(std::shared_ptr<const SecondaryRegionEvidence> original,
+                                            const std::string& original_source_sha256) {
+        std::string error;
+        auto transferred = original ? SecondaryRegionEvidence::for_derived_model(*original,
+            original_source_sha256, m_geometry_id, m_triangle_count, m_region_runtime_identity,
+            AI::model_artifact_sha256(m_model_path), error) : nullptr;
+        return restore_secondary_region_evidence(std::move(transferred), error);
+    }
+    bool import_secondary_region_evidence(const boost::filesystem::path& evidence_path, std::string& error) {
+        error.clear();
+        if (!m_has_model || m_model_path.empty()) { error = "No model is loaded"; return false; }
+        boost::system::error_code file_error;
+        const auto bytes = boost::filesystem::file_size(evidence_path, file_error);
+        if (file_error || !boost::filesystem::is_regular_file(evidence_path, file_error) ||
+            file_error || bytes == 0 || bytes > SecondaryRegionEvidenceCache::maximum_bytes) {
+            error = "Secondary evidence file is missing or too large"; return false;
+        }
+        const auto source_hash = AI::model_artifact_sha256(m_model_path);
+        if (!AI::SurfaceSelectionPersistence::detail::valid_fingerprint(source_hash)) {
+            error = "Current model source hash is unavailable"; return false;
+        }
+        try {
+            boost::filesystem::ifstream input(evidence_path, std::ios::binary);
+            const auto document = nlohmann::json::parse(input, nullptr, false);
+            if (document.is_discarded()) { error = "Secondary evidence JSON is invalid"; return false; }
+            auto loaded = SecondaryRegionEvidence::decode(document, m_geometry_id, source_hash,
+                m_triangle_count, m_region_runtime_identity, error);
+            if (!loaded) return false;
+            std::string cache_error;
+            if (SecondaryRegionEvidenceCache::save(*loaded,
+                    boost::filesystem::path(Slic3r::data_dir()) / "cache" / "beauty_secondary_regions",
+                    cache_error).empty()) {
+                error = cache_error.empty() ? "Secondary evidence cache write failed" : cache_error;
+                return false;
+            }
+            m_secondary_region_evidence = std::move(loaded);
+            m_secondary_region_evidence_error.clear();
+            return true;
+        } catch (const std::exception& exception) {
+            error = exception.what(); return false;
+        }
+    }
+    bool import_current_semantic_details(boost::filesystem::path& output, std::string& error) {
+        output.clear();
+        error.clear();
+        if (!semantic_regions_ready() || !m_semantic_source ||
+            m_region_evidence->source_content_id != m_semantic_source->content_id) {
+            error = "当前模型没有同源的可靠语义缓存";
+            return false;
+        }
+        const auto source_hash = AI::model_artifact_sha256(m_model_path);
+        auto evidence = SecondaryRegionEvidence::from_primary(*m_region_evidence, source_hash,
+            m_semantic_source->content_id, error);
+        if (!evidence) return false;
+        const auto cache = boost::filesystem::path(Slic3r::data_dir()) / "cache" / "beauty_secondary_regions";
+        const auto reference = SecondaryRegionEvidenceCache::save(*evidence, cache, error);
+        if (reference.empty()) return false;
+        auto loaded = SecondaryRegionEvidenceCache::load(reference, cache, m_geometry_id,
+            source_hash, m_triangle_count, m_region_runtime_identity, error);
+        if (!loaded) return false;
+        output = cache / (reference.at("sha256").get<std::string>() + ".json");
+        m_secondary_region_evidence = std::move(loaded);
+        m_secondary_region_evidence_error.clear();
+        return true;
+    }
+    bool regenerate_readonly_evidence(boost::filesystem::path& output, std::string& error) const {
+        output.clear();
+        error.clear();
+        if (!m_has_model || m_model_path.empty() || !m_semantic_source) {
+            error = "当前模型没有可用的原始面颜色输入";
+            return false;
+        }
+        const auto source_hash = AI::model_artifact_sha256(m_model_path);
+        if (source_hash.size() != 64) {
+            error = "当前模型 source hash 不可用";
+            return false;
+        }
+        const auto root = boost::filesystem::path(Slic3r::data_dir()) /
+            "cache" / "beauty_evidence_runs";
+        boost::system::error_code fs_error;
+        boost::filesystem::create_directories(root, fs_error);
+        if (fs_error) { error = "无法创建证据缓存目录"; return false; }
+        const auto stamp = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        const std::string base_name = "run-" + std::to_string(stamp);
+        // The writer creates the directory atomically. A second click or a
+        // partial prior run only moves to a new suffix; no run is overwritten.
+        for (size_t suffix = 0; suffix < 32; ++suffix) {
+            const std::string name = suffix == 0 ? base_name :
+                base_name + "-" + std::to_string(suffix);
+            output = root / name;
+            ReadonlyEvidenceRenderResult result;
+            if (write_readonly_evidence_render_package(*m_semantic_source, output, source_hash,
+                    1024, result, error)) return true;
+            if (error != "证据输出目录已存在，未覆盖已有运行") return false;
+        }
+        output.clear();
+        error = "无法分配新的证据运行目录";
+        return false;
+    }
+    size_t select_semantic_detail(const std::string& detail_id, bool record_history = true,
+                                  bool include_protected_preview = false) {
+        m_semantic_selection_protected = m_semantic_selection_low_confidence = 0;
+        if ((!secondary_regions_ready() && !m_portrait_shapes) || !region_editing_ready()) return 0;
+        if (!m_region_editor->ready()) {
+            m_deferred_selection = [this, detail_id, record_history, include_protected_preview] {
+                select_semantic_detail(detail_id, record_history, include_protected_preview);
+            };
+            ensure_region_editor(); return 0;
+        }
+        const auto before = selection_state();
+        for (const auto& detail : portrait_detail_catalog()) if (detail.key == detail_id) {
+            auto next = before;
+            next.selected.assign(editing_face_count(), 0);
+            next.foreground.assign(editing_face_count(), 0);
+            next.domain.assign(editing_face_count(), 0);
+            size_t count = 0;
+            for (const auto face : detail.faces) {
+                if (face < next.protected_faces.size() && next.protected_faces[face]) { ++m_semantic_selection_protected; continue; }
+                next.selected[face] = next.foreground[face] = next.domain[face] = 1; ++count;
+            }
+            if (!count) return 0;
+            if (record_history) push_selection_history(before.selected);
+            m_selection_preview_suppressed = false; m_selection_overlay_visible = true; set_selection_enabled(true);
+            restore_selection_state(std::move(next));
+            return count;
+        }
+        if (!secondary_regions_ready() || detail_id == "iris" || detail_id == "imouth" || AI::ShapeLockSet::supported_label(detail_id)) return 0;
+        auto match = m_secondary_region_evidence->select(detail_id,
+            m_leaf_editing ? m_leaf_editing->collapse(before) : before, include_protected_preview);
+        if (m_leaf_editing && match.selected) {
+            match.selection = m_leaf_editing->expand(match.selection);
+            match.selection.protected_faces = before.protected_faces;
+            for (size_t i = 0; i < match.selection.selected.size(); ++i)
+                if (i < before.protected_faces.size() && before.protected_faces[i]) match.selection.selected[i] = 0;
+            constrain_shape_selection(match.selection,true);
+            match.selected = size_t(std::count(match.selection.selected.begin(),match.selection.selected.end(),uint8_t(1)));
+        }
+        m_semantic_selection_protected = match.protected_count;
+        m_semantic_selection_low_confidence = match.low_confidence;
+        if (!match.selected) return 0;
+        if (record_history) push_selection_history(before.selected);
+        m_selection_preview_suppressed = false; m_selection_overlay_visible = true; set_selection_enabled(true);
+        restore_selection_state(std::move(match.selection));
+        return match.selected;
+    }
+    std::vector<std::string> beauty_semantic_names() const {
+        std::vector<std::string> names = {"unknown", "background", "hair", "face", "body", "cloth", "accessories",
+            "lips", "imouth", "eyes", "iris", "eyebrow"};
+        if (secondary_regions_ready()) for (const auto& detail : m_secondary_region_evidence->regions) names.push_back(detail.detail_id);
+        if (m_portrait_shapes) for (const auto& detail : m_portrait_shapes->catalog()) names.push_back(detail.label);
+        return names;
+    }
+    std::vector<std::string> beauty_semantic_guidance() const { return beauty_semantic_names(); }
+    nlohmann::json semantic_region_evidence_metadata() const {
+        if (!semantic_regions_ready()) return nlohmann::json::object();
+        std::string error;
+        auto reference = SemanticRegionEvidenceCache::save(*m_region_evidence,
+            boost::filesystem::path(Slic3r::data_dir()) / "cache" / "beauty_regions", error);
+        if (!error.empty()) BOOST_LOG_TRIVIAL(warning) << "Region evidence cache save failed: " << error;
+        if (!reference.empty()) {
+            const auto hash = AI::model_artifact_sha256(m_model_path);
+            if (hash.empty()) return nlohmann::json::object();
+            reference["model_sha256"] = hash;
+        }
+        return reference;
+    }
+    nlohmann::json secondary_region_evidence_metadata() const {
+        if (!secondary_regions_ready()) return nlohmann::json::object();
+        std::string error;
+        auto reference = SecondaryRegionEvidenceCache::save(*m_secondary_region_evidence,
+            boost::filesystem::path(Slic3r::data_dir()) / "cache" / "beauty_secondary_regions", error);
+        if (!error.empty()) BOOST_LOG_TRIVIAL(warning) << "Secondary region evidence cache save failed: " << error;
+        if (!reference.empty()) reference["model_sha256"] = AI::model_artifact_sha256(m_model_path);
+        return reference;
+    }
+    bool semantic_result_active() const {
+        return m_semantic_ready && (bool(m_semantic_analysis) ||
+            !m_saved_semantic_faces.empty() || !m_saved_semantic_subfaces.empty());
+    }
+    bool semantic_optimization_enabled() const {
+        return m_color_trial_enabled && m_color_trial && m_color_trial->semantic_optimization();
+    }
+    bool semantic_reoptimization_available() const {
+        return m_has_model && bool(m_semantic_source) && m_color_trial &&
+            !m_color_trial->colors().empty() && m_color_trial->colors().size() <= 6;
+    }
+    wxString semantic_reoptimization_reason() const {
+        if (!m_has_model) return _L("当前没有已加载模型。");
+        if (!m_semantic_source) return _L("当前模型缺少可用于人像识别的面颜色输入。");
+        if (!m_color_trial || m_color_trial->colors().empty()) return _L("当前没有有效色卡。");
+        if (m_color_trial->colors().size() > 6) return _L("人像区域优化只支持 1 至 6 个有效槽位。");
+        return m_semantic_error;
+    }
+    const wxString& semantic_error() const { return m_semantic_error; }
+    std::vector<int32_t> beauty_semantic_labels() const {
+        const bool parents=m_leaf_editing && m_portrait_shapes && m_portrait_shapes->surface_ownership;
+        if (!semantic_regions_ready() && !parents) return {};
+        std::vector<int32_t> labels;
+        labels.reserve(m_triangle_count);
+        for (size_t face = 0; face < m_triangle_count; ++face) {
+            if (!semantic_regions_ready()) { labels.push_back(-1); continue; }
+            const auto label = m_region_evidence->labels[face];
+            labels.push_back(m_region_evidence->confidence[face] >= AI::SemanticColoring::minimum_confidence &&
+                label != AI::SemanticColoring::Label::Unknown && label != AI::SemanticColoring::Label::Background
+                    ? int32_t(native_facial_detail(label) ? AI::SemanticColoring::Label::FaceSkin : label) : -1);
+        }
+        if (secondary_regions_ready()) {
+            std::set<size_t> assigned;
+            for (size_t index = 0; index < m_secondary_region_evidence->regions.size(); ++index) {
+                const auto& detail = m_secondary_region_evidence->regions[index];
+                if (detail.detail_id == "iris" || detail.detail_id == "imouth" || AI::ShapeLockSet::supported_label(detail.detail_id)) continue;
+                if (!detail.selectable()) continue;
+                const int32_t semantic_id = int32_t(AI::SemanticColoring::label_count + index);
+                for (size_t face : detail.accepted_faces)
+                    if (face < labels.size() && labels[face] >= 0 && assigned.insert(face).second)
+                        labels[face] = semantic_id;
+            }
+        }
+        if (m_leaf_editing) labels = m_leaf_editing->expand(labels,int32_t(-1));
+        if (parents) m_portrait_shapes->surface_ownership->overlay_labels(m_leaf_editing->keys,labels);
+        if (m_portrait_shapes) {
+            const auto offset = int32_t(AI::SemanticColoring::label_count + (secondary_regions_ready() ? m_secondary_region_evidence->regions.size() : 0));
+            const auto details = portrait_detail_catalog();
+            for (size_t index = 0; index < details.size(); ++index)
+                for (const auto f : details[index].faces) labels[f] = offset + int32_t(index);
+        }
+        return labels;
+    }
+    void set_beauty_pick_callback(std::function<void(size_t)> callback) { m_beauty_pick = std::move(callback); }
+    bool beauty_partition_visible() const { return bool(m_partition_model); }
+    void set_beauty_partition(const std::vector<uint32_t>& pieces,
+                              const std::vector<std::vector<int32_t>>& neighbors) {
+        m_partition_model.reset();
+        if (!m_context || !m_canvas->SetCurrent(*m_context)) return;
+        if (!m_region_editor->ready() || pieces.size() != m_region_editor->mesh().indices.size() ||
+            neighbors.size() != pieces.size()) return;
+        const auto& mesh = m_region_editor->mesh();
+        GLModel::Geometry lines;
+        lines.format = {GLModel::Geometry::EPrimitiveType::Lines, GLModel::Geometry::EVertexLayout::P3N3};
+        const float offset = std::max(1e-5f, float(m_bounds.size().norm()) * 0.0001f);
+        if (m_leaf_editing) for (const auto& segment : m_leaf_editing->boundary_segments(pieces)) {
+            const auto base = unsigned(lines.vertices_count());
+            lines.add_vertex(segment.a+offset*segment.normal,segment.normal);
+            lines.add_vertex(segment.b+offset*segment.normal,segment.normal);
+            lines.add_line(base,base+1);
+        }
+        else for (size_t face = 0; face < pieces.size(); ++face) {
+            const auto& triangle = mesh.indices[face];
+            Vec3f normal = (mesh.vertices[triangle[1]] - mesh.vertices[triangle[0]])
+                .cross(mesh.vertices[triangle[2]] - mesh.vertices[triangle[0]]);
+            if (normal.squaredNorm() < 1e-12f) continue;
+            normal.normalize();
+            for (size_t edge = 0; edge < 3; ++edge) {
+                const int32_t neighbor = edge < neighbors[face].size() ? neighbors[face][edge] : -1;
+                if (neighbor < 0 || size_t(neighbor) <= face || pieces[face] == pieces[size_t(neighbor)]) continue;
+                const unsigned int base = static_cast<unsigned int>(lines.vertices_count());
+                lines.add_vertex(mesh.vertices[triangle[edge]] + offset * normal, normal);
+                lines.add_vertex(mesh.vertices[triangle[(edge + 1) % 3]] + offset * normal, normal);
+                lines.add_line(base, base + 1);
+            }
+        }
+        if (!lines.is_empty()) {
+            m_partition_model = std::make_unique<GLModel>();
+            m_partition_model->init_from(std::move(lines));
+            m_partition_model->set_color(ColorRGBA(0.14f, 0.85f, 0.38f, 1.f));
+        }
+        m_canvas->Refresh(false);
+    }
+    void set_beauty_lighting(bool enabled) {
+        m_beauty_lighting = enabled;
+        if (m_canvas) m_canvas->Refresh(false);
+    }
+    bool beauty_lighting() const { return m_beauty_lighting; }
+    bool beauty_original_view() const { return m_beauty_original_view; }
+    void set_beauty_original_view(bool enabled) {
+        m_beauty_original_view = enabled;
+        if (m_canvas) m_canvas->Refresh(false);
+    }
+    void set_beauty_view(bool enabled) {
+        m_beauty_view = enabled;
+        const wxColour background = enabled ? wxColour(49, 49, 54) : wxGetApp().get_window_default_clr();
+        SetBackgroundColour(background);
+        m_splitter->SetBackgroundColour(background);
+        m_preview_host->SetBackgroundColour(background);
+        m_region_prepare_status->SetBackgroundColour(background);
+        m_region_prepare_status->SetForegroundColour(enabled ? wxColour(220, 220, 222) : *wxBLACK);
+        Refresh(false);
+        m_splitter->Refresh(false);
+        m_preview_host->Refresh(false);
+        if (m_canvas) m_canvas->Refresh(false);
+    }
+    void set_workbench_grid_visible(bool visible) {
+        m_workbench_grid_visible = visible;
+        if (m_canvas) m_canvas->Refresh(false);
+    }
+    size_t triangle_count() const { return m_triangle_count; }
+    size_t vertex_count() const { return m_vertex_count; }
+    const Vec3d& model_dimensions() const { return m_model_dimensions; }
+    // Select an already recognized material region for Beauty editing. This
+    // only consumes the cached analysis; it never starts recognition. Existing
+    // protected faces remain protected so the user can add or subtract detail
+    // with the normal brush tools afterward.
+    size_t select_semantic_region(const std::string& region, bool record_history = true)
+    {
+        m_semantic_selection_protected = m_semantic_selection_low_confidence = 0;
+        const bool parents=m_leaf_editing && m_portrait_shapes && m_portrait_shapes->surface_ownership;
+        if ((!semantic_regions_ready() && !parents) || !region_editing_ready()) return 0;
+        if (!m_region_editor->ready()) {
+            m_deferred_selection = [this, region, record_history] { select_semantic_region(region, record_history); };
+            ensure_region_editor();
+            return 0;
+        }
+        auto state = selection_state();
+        SemanticRegionEvidence::Match match;
+        if (semantic_regions_ready()) match = m_region_evidence->select(region,m_leaf_editing ? m_leaf_editing->collapse(state) : state);
+        else { match.selection=state; match.selection.selected.assign(state.selected.size(),0); }
+        if (!match.selected) {
+            if (!parents || (region!="skin" && region!="clothes")) return 0;
+            match.selection=state;
+            match.selection.selected.assign(state.selected.size(),0);
+            match.selection.foreground.assign(state.selected.size(),0);
+            match.selection.domain.assign(state.selected.size(),0);
+        }
+        if (m_leaf_editing && match.selected) {
+            match.selection = m_leaf_editing->expand(match.selection);
+            match.selection.protected_faces = state.protected_faces;
+            for (size_t i = 0; i < match.selection.selected.size(); ++i)
+                if (i < state.protected_faces.size() && state.protected_faces[i]) match.selection.selected[i] = 0;
+        }
+        if (parents) {
+            if (match.selection.selected.size()!=m_leaf_editing->keys.size()) {
+                match.selection=state;match.selection.selected.assign(state.selected.size(),0);
+            }
+            m_portrait_shapes->surface_ownership->overlay_selection(region,m_leaf_editing->keys,match.selection);
+        }
+        m_semantic_selection_protected = match.protected_count;
+        m_semantic_selection_low_confidence = match.low_confidence;
+        constrain_shape_selection(match.selection, true);
+        match.selected = size_t(std::count(match.selection.selected.begin(), match.selection.selected.end(), uint8_t(1)));
+        if (!match.selected) return 0;
+        if (record_history) push_selection_history(state.selected);
+        m_selection_preview_suppressed = false;
+        m_selection_overlay_visible = true;
+        set_selection_enabled(true);
+        restore_selection_state(std::move(match.selection));
+        return match.selected;
+    }
+    // Re-run the existing semantic request only after an explicit user action.
+    bool request_semantic_reoptimization() {
+        if (!semantic_reoptimization_available()) {
+            m_semantic_error = semantic_reoptimization_reason();
+            return false;
+        }
+        m_semantic_error.clear();
+        m_color_trial->activate_for_beauty_semantics();
+        m_color_trial_enabled = m_color_trial->enabled();
+        m_trial_palette = m_color_trial->colors();
+        // A completed request is normally de-duplicated by the worker. An
+        // explicit Beauty action must still create a fresh candidate, while
+        // allowing the worker to reuse its analysis cache.
+        if (m_semantic_controller) m_semantic_controller->cancel();
+        update_semantic_coloring();
+        return m_semantic_controller && m_semantic_controller->busy();
+    }
+    void cancel_semantic_request() {
+        if (m_semantic_controller) m_semantic_controller->cancel();
+        m_semantic_timer.Stop();
+        if (m_semantic_completion) {
+            auto callback = std::move(m_semantic_completion);
+            callback(false);
+        }
+    }
+    void set_semantic_completion_callback(std::function<void(bool)> callback) {
+        m_semantic_completion = std::move(callback);
+    }
     const FaceColorOverrides& face_color_overrides() const { return m_face_color_overrides; }
     FaceColorOverrides import_face_color_overrides(bool use_current_trial = true) const {
-        return AI::SemanticColoring::compose(m_automatic_face_colors, m_face_color_overrides,
-            use_current_trial && m_color_trial_enabled && m_color_trial->semantic_optimization() && m_semantic_ready);
+        if (use_current_trial && !m_semantic_analysis && !m_saved_semantic_faces.empty())
+            { auto result=AI::SemanticColoring::compose(m_saved_semantic_faces,m_face_color_overrides,true);
+              auto children=SubfaceColorOverrides{}; AI::compose_leaf_colors(result,children,m_manual_leaf_colors); return result; }
+        const bool semantic = use_current_trial && m_color_trial_enabled &&
+            m_color_trial->semantic_optimization() && m_semantic_ready && m_semantic_analysis;
+        auto automatic = semantic
+            ? AI::SemanticColoring::apply_semantic_region_slot_overrides(m_automatic_face_colors, *m_semantic_analysis,
+                m_color_trial->semantic_region_slots(), m_color_trial->semantic_palette())
+            : m_automatic_face_colors;
+        if (semantic && !(m_portrait_shapes && m_portrait_shapes->locks.leaf_domain)) {
+            FaceColorOverrides locked;
+            if (m_portrait_shapes) for (const auto& item : m_automatic_face_colors)
+                if (m_portrait_shapes->locks.face_locked(item.first)) locked.push_back(item);
+            auto children = m_automatic_subface_colors;
+            compose_portrait_shapes(*m_semantic_analysis, m_portrait_shapes.get(), automatic, children, locked);
+        }
+        auto result=AI::SemanticColoring::compose(automatic,m_face_color_overrides,semantic);
+        auto children=SubfaceColorOverrides{};
+        if (semantic && m_portrait_shapes && m_portrait_shapes->locks.leaf_domain)
+            AI::preserve_locked_leaf_colors(m_portrait_shapes->locks,m_automatic_face_colors,m_automatic_subface_colors,result,children);
+        AI::compose_leaf_colors(result,children,m_manual_leaf_colors); return result;
     }
     SubfaceColorOverrides import_subface_color_overrides(bool use_current_trial = true) const {
-        return AI::SemanticColoring::compose_subfaces(m_automatic_subface_colors, m_face_color_overrides,
-            use_current_trial && m_color_trial_enabled && m_color_trial->semantic_optimization() && m_semantic_ready);
+        if (use_current_trial && !m_semantic_analysis && !m_saved_semantic_subfaces.empty())
+            { auto result=AI::SemanticColoring::compose_subfaces(m_saved_semantic_subfaces,m_face_color_overrides,true);
+              auto roots=FaceColorOverrides{}; AI::compose_leaf_colors(roots,result,m_manual_leaf_colors); return result; }
+        const bool semantic = use_current_trial && m_color_trial_enabled &&
+            m_color_trial->semantic_optimization() && m_semantic_ready && m_semantic_analysis;
+        auto automatic = semantic
+            ? AI::SemanticColoring::apply_semantic_region_slot_overrides(m_automatic_subface_colors, *m_semantic_analysis,
+                m_color_trial->semantic_region_slots(), m_color_trial->semantic_palette())
+            : m_automatic_subface_colors;
+        if (semantic && !(m_portrait_shapes && m_portrait_shapes->locks.leaf_domain)) {
+            auto faces = m_automatic_face_colors;
+            compose_portrait_shapes(*m_semantic_analysis, m_portrait_shapes.get(), faces, automatic);
+        }
+        auto result=AI::SemanticColoring::compose_subfaces(automatic,m_face_color_overrides,semantic);
+        auto roots=semantic ? AI::SemanticColoring::apply_semantic_region_slot_overrides(m_automatic_face_colors,*m_semantic_analysis,
+            m_color_trial->semantic_region_slots(),m_color_trial->semantic_palette()) : FaceColorOverrides{};
+        if (semantic && m_portrait_shapes && m_portrait_shapes->locks.leaf_domain)
+            AI::preserve_locked_leaf_colors(m_portrait_shapes->locks,m_automatic_face_colors,m_automatic_subface_colors,roots,result);
+        AI::compose_leaf_colors(roots,result,m_manual_leaf_colors); return result;
     }
     nlohmann::json semantic_color_metadata() const {
         if (!m_semantic_analysis) return nlohmann::json::object();
@@ -678,57 +1380,33 @@ public:
             {"content_sha256", m_semantic_analysis->content_id}, {"body", m_semantic_analysis->body_identity},
             {"face", m_semantic_analysis->face_identity}};
     }
-    std::shared_ptr<const AI::VertexColorRegionEditor> beauty_editor() const {
-        return m_region_editor->ready() ? m_region_editor : nullptr;
+    nlohmann::json semantic_result_metadata() const {
+        const auto faces = import_face_color_overrides(true);
+        const auto subfaces = import_subface_color_overrides(true);
+        if (faces.empty() && subfaces.empty()) return nlohmann::json::object();
+        nlohmann::json result = {{"schema", "orca.semantic-result/v1"}, {"geometry_id", m_geometry_id},
+            {"face_count", m_triangle_count}, {"faces", nlohmann::json::array()},
+            {"subfaces", nlohmann::json::array()}};
+        for (const auto& item : faces) result["faces"].push_back({item.first, item.second});
+        for (const auto& item : subfaces)
+            result["subfaces"].push_back({item.face_id, item.path.depth, item.path.value, item.color});
+        return result;
     }
-    std::function<std::vector<size_t>()> m_puzzle_focus;
-    std::function<std::vector<size_t>()> m_puzzle_aperture;
-    std::function<void(int)> m_puzzle_stroke_start;
-    std::function<void(size_t,bool)> m_puzzle_pick;
-    std::function<bool(size_t)> m_puzzle_is_selected;
-    std::function<void()> m_puzzle_change_color;
-    std::function<void(const std::vector<size_t>&)> m_puzzle_stroke;
-    std::function<void(const std::vector<size_t>&,const std::vector<size_t>&,bool)> m_puzzle_reshape;
-    std::function<void(bool)> m_puzzle_undo;
-    void set_puzzle_enabled(bool enabled, bool ready = true) {
-        m_puzzle_ready = enabled && ready;
-        if (enabled && !ready) { m_deferred_selection = {}; finish_drag(); }
-        if(!enabled)m_puzzle_hide_overlays=false;
-        if(m_puzzle_enabled==enabled)return;
-        m_puzzle_enabled=enabled;m_selection_overlay_visible=!enabled;m_canvas->Refresh(false);
-    }
-    bool puzzle_display_ready() const { return bool(m_puzzle_display.fill); }
-    void show_puzzle(const AI::BeautySurface& surface,const AI::BeautyPuzzle& puzzle,
-                     const std::vector<RGBA>& base_colors,uint32_t selected,bool repaint,bool borders,
-                     const std::vector<uint32_t>* edit_regions=nullptr) {
-        if(!m_region_editor->ready() || puzzle.geometry_id!=m_geometry_id)return;
-        if(edit_regions && edit_regions->size()!=puzzle.face_piece.size())return;
-        if(!m_context || !m_canvas->SetCurrent(*m_context))return;
-        m_puzzle_display.update(m_region_editor->mesh(),base_colors,surface,puzzle,selected,
-                                repaint || !m_puzzle_display.fill,edit_regions);
-        double total_area=0.,selected_area=0.;
-        for(size_t f=0;f<puzzle.face_piece.size();++f) {
-            total_area+=surface.areas[f];
-            if((edit_regions?(*edit_regions)[f]:puzzle.face_piece[f])==selected)selected_area+=surface.areas[f];
-        }
-        m_shape_eligible=selected_area>0. && selected_area<total_area*.03;
-        m_boundary_hover.reset();
-        m_puzzle_borders=borders;m_canvas->Refresh(false);
-    }
-    void set_beauty_surface(std::shared_ptr<const AI::BeautySurface> surface) { m_beauty_surface=std::move(surface); }
-    void set_beauty_patch_selection(bool enabled) { m_beauty_patch_selection=enabled; }
-    void select_beauty_faces(const std::vector<size_t>& faces) {
-        if(!ensure_region_editor())return;
-        auto selected=m_region_editor->selected_faces();
-        std::fill(selected.begin(),selected.end(),0);
-        for(size_t f:faces)if(f<selected.size())selected[f]=1;
-        const auto old=m_region_editor->selected_faces();
-        m_region_editor->restore_selection(selected);
-        if(old!=selected)push_selection_history(old);
-        rebuild_selection_model();notify_selection_changed();m_canvas->Refresh(false);
+    bool set_saved_semantic_result(FaceColorOverrides faces, SubfaceColorOverrides subfaces) {
+        if (!m_semantic_source || !m_context || !m_canvas->SetCurrent(*m_context)) return false;
+        auto geometry = build_semantic_colored_geometry(*m_semantic_source, faces, subfaces);
+        if (geometry.is_empty()) return false;
+        auto model = std::make_unique<GLModel>();
+        model->init_from(std::move(geometry));
+        m_semantic_model = std::move(model);
+        m_saved_semantic_faces = std::move(faces);
+        m_saved_semantic_subfaces = std::move(subfaces);
+        m_semantic_ready = true;
+        m_canvas->Refresh(false);
+        return true;
     }
     nlohmann::json selection_metadata() const {
-        return AI::SurfaceSelectionPersistence::encode(selection_state(), m_triangle_count, m_geometry_id);
+        return AI::SurfaceSelectionPersistence::encode(m_leaf_editing ? m_leaf_editing->collapse(selection_state()) : selection_state(), m_triangle_count, m_geometry_id);
     }
     nlohmann::json face_color_metadata() const {
         return AI::SurfaceSelectionPersistence::encode_colors(m_face_color_overrides, m_triangle_count, m_geometry_id);
@@ -739,6 +1417,7 @@ public:
             m_deferred_selection = [this, state = std::move(state)]() mutable { restore_selection_state(std::move(state)); };
             return;
         }
+        if (m_leaf_editing && state.selected.size() == m_triangle_count) state = m_leaf_editing->expand(state);
         if (!m_region_editor->restore_selection(state.selected)) return;
         m_protected_faces = std::move(state.protected_faces);
         if (m_protected_faces.size() != state.selected.size()) m_protected_faces.assign(state.selected.size(), 0);
@@ -749,6 +1428,13 @@ public:
     }
     size_t protected_face_count() const { return std::count(m_protected_faces.begin(), m_protected_faces.end(), uint8_t(1)); }
     bool selection_busy() const { return m_surface_task && !m_surface_task->canceled; }
+    bool cancel_selection_calculation()
+    {
+        if (!selection_busy()) return false;
+        cancel_surface_selection();
+        notify_selection_changed();
+        return true;
+    }
     void refine_selection_boundary()
     {
         if (!m_region_editor->ready() || selection_busy()) return;
@@ -758,6 +1444,7 @@ public:
         }
         auto task = std::make_shared<SurfaceTask>();
         task->generation = m_region_generation; task->refinement = true;
+        task->editor = m_region_editor;
         task->started = std::chrono::steady_clock::now();
         m_surface_task = task;
         auto indices = [](const std::vector<uint8_t>& mask) {
@@ -808,6 +1495,14 @@ public:
     {
         m_selection_changed = std::move(callback);
     }
+    void set_color_trial_changed_callback(std::function<void(size_t)> callback)
+    {
+        m_color_trial_changed = std::move(callback);
+    }
+    void set_selection_commit_callback(std::function<void(const SelectionState&, const SelectionState&)> callback)
+    {
+        m_selection_commit = std::move(callback);
+    }
 
     void clear_selection(bool record_history = true)
     {
@@ -837,6 +1532,11 @@ public:
     }
     void set_gray_view(bool enabled) { m_gray_view = enabled; m_canvas->Refresh(false); }
     void set_selection_overlay_visible(bool visible) { m_selection_overlay_visible = visible; m_canvas->Refresh(false); }
+    void set_selection_preview_suppressed(bool suppressed) {
+        if (m_selection_preview_suppressed == suppressed) return;
+        m_selection_preview_suppressed = suppressed;
+        m_canvas->Refresh(false);
+    }
     bool focus_selection() {
         if (!m_region_editor->ready() || !m_region_editor->selected_face_count()) return false;
         const auto& mesh = m_region_editor->mesh();
@@ -857,13 +1557,66 @@ public:
         return true;
     }
     ModelPreviewColorControls::State color_trial_state() const { return m_color_trial->state(); }
+    wxWindow* build_workbench_palette(wxWindow* parent) { return m_color_trial->build_workbench_palette(parent); }
+    void set_workbench_palette_editable(bool editable) { m_color_trial->set_workbench_editable(editable); }
+    void show_workbench_palette_details() {
+        if (!m_has_model) return;
+        set_color_controls_visible(false);
+        wxDialog dialog(this, wxID_ANY, _L("色卡详情"), wxDefaultPosition, FromDIP(wxSize(620, 560)),
+                        wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER);
+        dialog.SetBackgroundColour(wxColour(32, 32, 35));
+        dialog.SetName("ai_content_color");
+        dialog.SetFont(GetFont());
+        auto* root = new wxBoxSizer(wxVERTICAL);
+        auto* scroll = new WorkbenchScrolledWindow(&dialog, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVSCROLL);
+        scroll->SetBackgroundColour(wxColour(32, 32, 35));
+        scroll->SetScrollRate(0, FromDIP(12));
+        auto* controls = new wxBoxSizer(wxVERTICAL);
+        m_controls_scroll->GetSizer()->Detach(m_color_trial);
+        m_color_trial->Reparent(scroll);
+        WorkbenchAppearanceScope appearance(m_color_trial);
+        m_color_trial->set_workbench_detail_choices(true);
+        controls->Add(m_color_trial, 0, wxEXPAND);
+        scroll->SetSizer(controls);
+        m_color_trial->Show();
+        root->Add(scroll, 1, wxEXPAND | wxALL, FromDIP(12));
+        auto* close = workbench_button(&dialog, _L("完成"));
+        close->Bind(wxEVT_BUTTON, [&dialog](wxCommandEvent&) { dialog.EndModal(wxID_OK); });
+        root->Add(close, 0, wxALIGN_RIGHT | wxALL, FromDIP(12));
+        dialog.SetSizer(root);
+        scroll->FitInside();
+        dialog.CenterOnParent();
+        dialog.ShowModal();
+        m_color_trial->set_workbench_detail_choices(false);
+        controls->Detach(m_color_trial);
+        m_color_trial->Reparent(m_controls_scroll);
+        m_controls_scroll->GetSizer()->Add(m_color_trial, 0, wxEXPAND);
+        m_color_trial->Hide();
+    }
     nlohmann::json color_trial_metadata() const {
         AI::ColorTrialPersistence::State saved = m_color_trial->state();
         saved.source = 2;
         return AI::ColorTrialPersistence::encode(saved, m_triangle_count, m_geometry_id);
     }
     void restore_color_trial(const ModelPreviewColorControls::State& state) { m_color_trial->restore(state); }
-    void set_color_controls_visible(bool visible) { m_color_trial->Show(visible && m_has_model); Layout(); }
+    void restore_color_trial_without_recognition(const ModelPreviewColorControls::State& state) {
+        m_suppress_semantic_change = true;
+        m_color_trial->restore(state);
+        m_suppress_semantic_change = false;
+        m_color_trial_enabled = m_color_trial->enabled();
+        m_trial_palette = m_color_trial->colors();
+        m_canvas->Refresh(false);
+    }
+    void set_color_controls_visible(bool visible) {
+        const bool show = visible && m_has_model;
+        m_color_trial->Show(show);
+        m_controls_scroll->Show(show);
+        if (show && !m_splitter->IsSplit())
+            m_splitter->SplitHorizontally(m_preview_host, m_controls_scroll, m_saved_splitter_sash);
+        else if (!show && m_splitter->IsSplit())
+            m_splitter->Unsplit(m_controls_scroll);
+        Layout();
+    }
     // Capture on the UI thread; callers own the copy and cannot mutate preview
     // controls, project slots or the source mesh through this snapshot.
     PreviewPalette::ColorTrialMapping color_trial_mapping() const {
@@ -881,12 +1634,19 @@ public:
             m_pending_vertex_colors.size() == m_pending_mesh.vertices.size()));
     }
     bool can_undo_selection() const { return selection_busy() || bool(m_deferred_selection) || !m_selection_history.empty(); }
+    bool can_redo_selection() const { return !selection_busy() && !m_selection_redo.empty(); }
 
     bool selection_matches_face_evidence(const std::vector<size_t>& face_indices) const
     {
         if (!m_region_editor->ready() || face_indices.empty())
             return false;
         std::vector<uint8_t> expected(m_region_editor->selected_faces().size(), 0);
+        if (m_leaf_editing) {
+            const std::set<size_t> roots(face_indices.begin(),face_indices.end());
+            for (size_t i=0;i<m_leaf_editing->keys.size();++i)
+                expected[i]=roots.count(m_leaf_editing->keys[i].source_face_id)?1:0;
+            return std::any_of(expected.begin(),expected.end(),[](auto value){return value!=0;}) && expected==m_region_editor->selected_faces();
+        }
         bool has_valid_face = false;
         for (size_t face_index : face_indices) {
             if (face_index >= expected.size())
@@ -938,6 +1698,7 @@ public:
             error = "The source model changed while recoloring. Please reload it.";
             return false;
         }
+        if (m_leaf_editing) { error = "Subface edits require the texture-safe Beauty appearance path."; return false; }
         return m_region_editor->apply_color_to_obj_copy(color, source, destination, error);
     }
 
@@ -995,7 +1756,13 @@ public:
             return 0;
         }
         const std::vector<uint8_t> previous = m_region_editor->selected_faces();
-        const size_t localized = m_region_editor->select_faces(face_indices);
+        std::vector<size_t> editing_indices;
+        if (m_leaf_editing) {
+            std::set<size_t> roots(face_indices.begin(),face_indices.end());
+            for (size_t i = 0; i < m_leaf_editing->keys.size(); ++i)
+                if (roots.count(m_leaf_editing->keys[i].source_face_id)) editing_indices.push_back(i);
+        }
+        const size_t localized = m_region_editor->select_faces(m_leaf_editing ? editing_indices : face_indices);
         if (localized == 0)
             return 0;
         if (previous != m_region_editor->selected_faces())
@@ -1010,6 +1777,7 @@ public:
 private:
     struct CachedPreview {
         std::vector<std::unique_ptr<GLModel>> models;
+        std::unique_ptr<ModelPreviewTexture> texture_model;
         indexed_triangle_set mesh;
         std::vector<RGBA> vertex_colors;
         BoundingBoxf3 bounds;
@@ -1017,6 +1785,7 @@ private:
         boost::filesystem::path path;
         FileStamp stamp;
         size_t triangles {0};
+        size_t vertices {0};
         size_t colors {0};
         std::vector<PreviewPalette::Color> trial_palette;
         std::shared_ptr<const PreviewPalette::Histogram> trial_histogram;
@@ -1025,6 +1794,15 @@ private:
         std::optional<SelectionState> selection;
         std::optional<ModelPreviewColorControls::State> color_trial;
         std::shared_ptr<const AI::SemanticColoring::MeshSnapshot> semantic_source;
+        FaceColorOverrides saved_semantic_faces;
+        SubfaceColorOverrides saved_semantic_subfaces;
+        std::shared_ptr<const SemanticRegionEvidence> region_evidence;
+        std::string region_runtime_identity, region_evidence_error;
+        std::shared_ptr<const SecondaryRegionEvidence> secondary_region_evidence;
+        std::string secondary_region_evidence_error;
+        std::shared_ptr<const PortraitShapeDetails> shape_details;
+        bool shapes_unlocked {false};
+        nlohmann::json leaf_edits;
     };
 
     static FileStamp file_stamp(const boost::filesystem::path& path)
@@ -1053,15 +1831,19 @@ private:
         // adjacency/BVH or let large artifacts accumulate through version browsing.
         if (!m_has_model || !m_model_stamp.valid)
             return;
-        const auto& mesh = m_region_editor->ready() ? m_region_editor->mesh()
+        const auto canonical = m_leaf_editing ? m_leaf_editing->canonical_editor : m_region_editor;
+        const auto& mesh = canonical->ready() ? canonical->mesh()
             : current_region_preparation() ? m_region_preparation->mesh : m_pending_mesh;
-        const auto& colors = m_region_editor->ready() ? m_region_editor->vertex_colors()
+        const auto& colors = canonical->ready() ? canonical->vertex_colors()
             : current_region_preparation() ? m_region_preparation->colors : m_pending_vertex_colors;
         size_t bytes = mesh.vertices.capacity() * sizeof(Vec3f) +
                        mesh.indices.capacity() * sizeof(stl_triangle_vertex_indices) +
                        colors.capacity() * sizeof(RGBA);
+        if (m_region_evidence) bytes += m_region_evidence->labels.capacity() * sizeof(AI::SemanticColoring::Label) +
+            m_region_evidence->confidence.capacity() * sizeof(float);
         for (const auto& model : m_models)
             bytes += model->cpu_memory_used() + model->gpu_memory_used();
+        if (m_texture_model) bytes += m_texture_model->memory_used();
         constexpr size_t cache_limit = size_t(384) * 1024 * 1024;
         if (bytes > cache_limit)
             return;
@@ -1069,14 +1851,25 @@ private:
         m_cached_preview->geometry_id = m_geometry_id;
         m_cached_preview->face_color_overrides = m_face_color_overrides;
         m_cached_preview->semantic_source = m_semantic_source;
-        m_cached_preview->selection = selection_state();
+        m_cached_preview->region_evidence = m_region_evidence;
+        m_cached_preview->region_runtime_identity = m_region_runtime_identity;
+        m_cached_preview->region_evidence_error = m_region_evidence_error;
+        m_cached_preview->secondary_region_evidence = m_secondary_region_evidence;
+        m_cached_preview->secondary_region_evidence_error = m_secondary_region_evidence_error;
+        m_cached_preview->shape_details = m_portrait_shapes;
+        m_cached_preview->shapes_unlocked = m_shapes_unlocked;
+        m_cached_preview->leaf_edits=leaf_edit_metadata();
+        m_cached_preview->saved_semantic_faces = m_saved_semantic_faces;
+        m_cached_preview->saved_semantic_subfaces = m_saved_semantic_subfaces;
+        m_cached_preview->selection = m_leaf_editing ? m_leaf_editing->collapse(selection_state()) : selection_state();
         m_cached_preview->color_trial = m_color_trial->state();
         m_cached_preview->models = std::move(m_models);
-        if (m_region_editor->ready()) {
+        m_cached_preview->texture_model = std::move(m_texture_model);
+        if (canonical->ready()) {
             // Retain only compact source arrays, never the adjacency/BVH. This
             // keeps the first local before/after comparison free of OBJ parsing.
-            m_cached_preview->mesh = m_region_editor->mesh();
-            m_cached_preview->vertex_colors = m_region_editor->vertex_colors();
+            m_cached_preview->mesh = canonical->mesh();
+            m_cached_preview->vertex_colors = canonical->vertex_colors();
         } else if (current_region_preparation()) {
             m_cached_preview->mesh = m_region_preparation->mesh;
             m_cached_preview->vertex_colors = m_region_preparation->colors;
@@ -1089,11 +1882,14 @@ private:
         m_cached_preview->path = m_model_path;
         m_cached_preview->stamp = m_model_stamp;
         m_cached_preview->triangles = m_triangle_count;
+        m_cached_preview->vertices = m_vertex_count;
         m_cached_preview->colors = m_color_count;
         m_cached_preview->trial_histogram = m_trial_histogram;
         // New model loads reset the trial; never relabel a previous custom or
         // project palette as a fresh automatic suggestion on a cache hit.
-        m_cached_preview->trial_palette = m_trial_histogram ? m_trial_histogram->palette(6, {}, true) : m_trial_palette;
+        const size_t preview_color_count = std::clamp(m_color_count, size_t(1), PreviewPalette::max_preview_colors);
+        m_cached_preview->trial_palette = m_trial_histogram
+            ? m_trial_histogram->palette(preview_color_count, {}, true) : m_trial_palette;
     }
 
     struct RegionPreparation {
@@ -1103,6 +1899,8 @@ private:
         indexed_triangle_set mesh;
         std::vector<RGBA> colors;
         AI::VertexColorRegionEditor editor;
+        std::shared_ptr<const PortraitShapeDetails> shapes;
+        std::shared_ptr<AI::BeautyLeafEditing> leaves;
         std::atomic<bool> done {false};
         bool success {false};
         std::string error;
@@ -1115,6 +1913,8 @@ private:
 
     void show_region_preparation_status(const wxString& message) {
         m_region_prepare_status->SetLabel(message);
+        m_region_prepare_status->SetBackgroundColour(m_beauty_view ? wxColour(49, 49, 54) : *wxWHITE);
+        m_region_prepare_status->SetForegroundColour(m_beauty_view ? wxColour(220, 220, 222) : *wxBLACK);
         m_region_prepare_status->Show();
         Layout();
     }
@@ -1133,13 +1933,20 @@ private:
         task->generation = m_region_generation;
         task->mesh = std::move(m_pending_mesh);
         task->colors = std::move(m_pending_vertex_colors);
+        task->shapes = m_portrait_shapes;
         task->started = std::chrono::steady_clock::now();
         m_region_preparation = task;
         try {
             m_region_prepare_worker = std::thread([task] {
-                try { task->success = task->editor.initialize(task->mesh, task->colors, task->error); }
-                catch (const std::exception& error) { task->error = error.what(); }
-                catch (...) { task->error = "Unknown region preparation failure"; }
+                try {
+                    task->success = task->editor.initialize(task->mesh, task->colors, task->error);
+                    if (task->success && task->shapes && task->shapes->locks.leaf_domain)
+                        task->leaves = AI::BeautyLeafEditing::build(task->shapes->locks,
+                            std::make_shared<AI::VertexColorRegionEditor>(std::move(task->editor)),task->shapes->base_colors,
+                            task->shapes->surface_ownership ? &task->shapes->surface_ownership->editing_domain : nullptr);
+                }
+                catch (const std::exception& error) { task->success = false; task->error = error.what(); }
+                catch (...) { task->success = false; task->error = "Unknown region preparation failure"; }
                 task->done.store(true, std::memory_order_release);
             });
             m_region_prepare_timer.Start(50);
@@ -1161,7 +1968,10 @@ private:
         if (m_region_prepare_worker.joinable()) m_region_prepare_worker.join();
         auto task = std::move(m_region_preparation);
         m_region_prepare_timer.Stop();
-        if (task->generation != m_region_generation) {
+        if (task->generation != m_region_generation || task->shapes != m_portrait_shapes) {
+            if (task->generation == m_region_generation) {
+                m_pending_mesh = std::move(task->mesh); m_pending_vertex_colors = std::move(task->colors);
+            }
             if (m_selection_enabled || m_deferred_selection) ensure_region_editor();
             return;
         }
@@ -1176,20 +1986,23 @@ private:
             set_selection_enabled(false);
             return;
         }
-        m_region_editor = std::make_shared<AI::VertexColorRegionEditor>(std::move(task->editor));
+        m_leaf_editing = std::move(task->leaves);
+        m_region_editor = m_leaf_editing ? m_leaf_editing->editor : std::make_shared<AI::VertexColorRegionEditor>(std::move(task->editor));
         if (m_pending_selection) {
             auto state = std::move(*m_pending_selection); m_pending_selection.reset();
+            if (m_leaf_editing && state.selected.size() == m_triangle_count) state = m_leaf_editing->expand(state);
             m_region_editor->restore_selection(state.selected);
             m_protected_faces = std::move(state.protected_faces);
             m_foreground_faces = std::move(state.foreground); m_selection_domain = std::move(state.domain);
             rebuild_selection_model();
         }
+        if (!m_pending_leaf_edits.is_null()) restore_leaf_edits(m_pending_leaf_edits);
         m_region_prepare_status->Hide();
         Layout();
         auto deferred = std::move(m_deferred_selection);
         m_deferred_selection = {};
         if (deferred) deferred();
-        else if (m_selection_enabled) notify_selection_changed();
+        else if (m_selection_enabled || m_beauty_view) notify_selection_changed();
     }
 
     void push_selection_history(const std::vector<uint8_t>& selected_faces)
@@ -1208,8 +2021,6 @@ private:
         m_dragging = false;
         m_drawing_selection = false;
         m_stroke.clear();
-        m_puzzle_drag_kind = 0;
-        if(!m_boundary_pending)m_boundary_preview.clear();
         if (m_canvas) m_canvas->Refresh(false);
         if (m_canvas != nullptr && m_canvas->HasCapture())
             m_canvas->ReleaseMouse();
@@ -1224,11 +2035,9 @@ private:
     struct SurfaceTask {
         std::atomic<bool> canceled {false}, done {false};
         uint64_t generation {0};
+        std::shared_ptr<const AI::VertexColorRegionEditor> editor;
         SelectionGesture gesture {SelectionGesture::Lasso};
         bool refinement {false};
-        bool puzzle_reshape {false};
-        bool puzzle_shape {false};
-        std::vector<size_t> removed_faces;
         AI::SurfaceSelection::Result result;
         std::string error;
         std::chrono::steady_clock::time_point started;
@@ -1237,7 +2046,6 @@ private:
     void cancel_surface_selection()
     {
         if (m_surface_task) m_surface_task->canceled = true;
-        m_boundary_pending.reset();m_boundary_preview.clear();
         m_drawing_selection = false;
         m_stroke.clear();
     }
@@ -1249,19 +2057,13 @@ private:
             show_region_preparation_status(_L("正在计算选区；可按 Esc 取消，完成后继续补选。"));
             return;
         }
-        if(m_surface_task && m_surface_task->done)finish_surface_selection();
-        if(m_puzzle_drag_kind==1) { start_boundary_reshape(); return; }
-        int direct_action = 0;
-        if(m_puzzle_drag_kind == 2) direct_action = 4;
-        if(m_puzzle_enabled && m_puzzle_stroke_start)m_puzzle_stroke_start(direct_action);
         const int width = std::max(1, m_canvas->GetClientSize().x);
         const int height = std::max(1, m_canvas->GetClientSize().y);
         const double radius = std::max(0.001, 0.5 * m_bounds.size().norm());
         const double half_height = fitted_half_height(width, height);
         const Transform3d view = Geometry::translation_transform(Vec3d(m_pan_x * radius, m_pan_y * radius, -3.0 * radius)) *
             view_rotation() * Geometry::translation_transform(-m_bounds.center().cast<double>());
-        auto request = [this, stroke = selection_outline(), gesture = m_puzzle_drag_kind==1?SelectionGesture::Brush:
-                        m_puzzle_drag_kind==2?SelectionGesture::Lasso:m_selection_gesture,
+        auto request = [this, stroke = selection_outline(), gesture = m_selection_gesture,
                         brush_radius = m_brush_radius, view, half_height, width, height] {
             start_surface_selection(stroke, gesture, brush_radius, view, half_height, width, height);
         };
@@ -1273,7 +2075,7 @@ private:
 
     std::vector<Vec2d> selection_outline() const
     {
-        if ((m_selection_gesture != SelectionGesture::Lasso && m_puzzle_drag_kind != 2) || m_stroke.size() < 2) return m_stroke;
+        if (m_selection_gesture != SelectionGesture::Lasso || m_stroke.size() < 2) return m_stroke;
         Vec2d lo = m_stroke.front(), hi = lo;
         double area = 0;
         for (size_t i=0; i<m_stroke.size(); ++i) {
@@ -1297,6 +2099,7 @@ private:
         }
         auto task = std::make_shared<SurfaceTask>();
         task->generation = m_region_generation; task->gesture = gesture;
+        task->editor = m_region_editor;
         task->started = std::chrono::steady_clock::now();
         m_surface_task = task;
         auto editor = m_region_editor; // A model switch leaves the worker's immutable geometry alive.
@@ -1327,7 +2130,7 @@ private:
             finish_surface_selection(); return;
         }
         m_surface_timer.Start(40);
-        if(!m_puzzle_enabled)show_region_preparation_status(_L("正在选择可见表面，模型可继续转动；Esc 取消。"));
+        show_region_preparation_status(_L("正在选择可见表面，模型可继续转动；Esc 取消。"));
         notify_selection_changed();
     }
 
@@ -1337,8 +2140,7 @@ private:
         if (m_surface_worker.joinable()) m_surface_worker.join();
         m_surface_timer.Stop();
         auto task = std::move(m_surface_task);
-        if(task->puzzle_reshape){m_boundary_pending.reset();m_boundary_preview.clear();m_canvas->Refresh(false);}
-        if (task->generation != m_region_generation) return;
+        if (task->generation != m_region_generation || task->editor != m_region_editor) return;
         if (task->canceled || task->result.canceled) {
             m_region_prepare_status->Hide(); notify_selection_changed(); return;
         }
@@ -1349,17 +2151,7 @@ private:
             BOOST_LOG_TRIVIAL(warning) << "Surface selection failed: " << task->error;
             notify_selection_changed(); return;
         }
-        if(m_puzzle_enabled && task->puzzle_reshape && m_puzzle_reshape) {
-            m_region_prepare_status->Hide();m_puzzle_reshape(task->result.faces,task->removed_faces,task->puzzle_shape);
-            BOOST_LOG_TRIVIAL(info) << "Puzzle boundary reshape: added=" << task->result.faces.size()
-                << ", removed=" << task->removed_faces.size() << ", elapsed_ms="
-                << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-task->started).count();
-            notify_selection_changed();m_canvas->Refresh(false);return;
-        }
-        if(m_puzzle_enabled && m_puzzle_stroke) {
-            m_region_prepare_status->Hide();m_puzzle_stroke(task->result.faces);
-            notify_selection_changed();m_canvas->Refresh(false);return;
-        }
+        const auto before = selection_state();
         auto selected = m_region_editor->selected_faces();
         if (m_protected_faces.size() != selected.size()) m_protected_faces.assign(selected.size(), 0);
         if (m_foreground_faces.size() != selected.size()) m_foreground_faces.assign(selected.size(), 0);
@@ -1378,6 +2170,10 @@ private:
         }
         m_region_editor->restore_selection(selected);
         rebuild_selection_model();
+        const auto after = selection_state();
+        if (m_selection_commit && (before.selected != after.selected ||
+            before.protected_faces != after.protected_faces || before.foreground != after.foreground ||
+            before.domain != after.domain)) m_selection_commit(before, after);
         show_region_preparation_status(task->result.faces.empty()
             ? _L("范围内未选到可见表面；可放大模型或用涂抹补选。")
             : _L("范围已更新。圈选会保留保护区；涂抹补选可重新纳入误保护的地方。"));
@@ -1387,238 +2183,8 @@ private:
         notify_selection_changed(); m_canvas->Refresh(false);
     }
 
-    std::optional<size_t> puzzle_face_at(const wxPoint& point) const
-    {
-        if(!m_region_editor->ready()) return std::nullopt;
-        const int width=std::max(1,m_canvas->GetClientSize().x),height=std::max(1,m_canvas->GetClientSize().y);
-        const double radius=std::max(.001,.5*m_bounds.size().norm()),half_height=fitted_half_height(width,height);
-        const Transform3d inverse=(Geometry::translation_transform(Vec3d(m_pan_x*radius,m_pan_y*radius,-3*radius))*
-            view_rotation()*Geometry::translation_transform(-m_bounds.center().cast<double>())).inverse();
-        return m_region_editor->pick_face(inverse*Vec3d((2.*point.x/width-1)*half_height*width/height,
-            (1-2.*point.y/height)*half_height,0),inverse.linear()*Vec3d(0,0,-1));
-    }
-    std::optional<Vec2d> puzzle_boundary_hit(const wxPoint& point,bool collect_preview=false)
-    {
-        if(!m_region_editor->ready() || m_puzzle_display.active_edges.empty())return std::nullopt;
-        const auto started=std::chrono::steady_clock::now();
-        const int width=std::max(1,m_canvas->GetClientSize().x),height=std::max(1,m_canvas->GetClientSize().y);
-        const double radius=std::max(.001,.5*m_bounds.size().norm()),hh=fitted_half_height(width,height),hw=hh*width/height;
-        const Transform3d view=Geometry::translation_transform(Vec3d(m_pan_x*radius,m_pan_y*radius,-3*radius))*
-            view_rotation()*Geometry::translation_transform(-m_bounds.center().cast<double>());
-        const Transform3d inverse=view.inverse();const Vec3d direction=inverse.linear()*Vec3d(0,0,-1);
-        auto project=[&](const Vec3f& p)->Vec2d { const Vec3d q=view*p.cast<double>();
-            return Vec2d((q.x()/hw+1)*width/2.,(1-q.y()/hh)*height/2.); };
-        const auto& mesh=m_region_editor->mesh();
-        auto visible=[&](const ModelPreviewPuzzle::BoundaryEdge& edge,const Vec2d& screen,double t) {
-            const Vec3d origin=inverse*Vec3d((2*screen.x()/width-1)*hw,(1-2*screen.y()/height)*hh,0);
-            const auto hit=m_region_editor->pick_face(origin,direction);if(!hit)return false;
-            if(*hit==edge.face || (edge.neighbor>=0 && *hit==size_t(edge.neighbor)))return true;
-            const auto& face=mesh.indices[*hit];const Vec3d a=mesh.vertices[face[0]].cast<double>();
-            const Vec3d normal=(mesh.vertices[face[1]].cast<double>()-a).cross(mesh.vertices[face[2]].cast<double>()-a);
-            const double denominator=normal.dot(direction);if(std::abs(denominator)<1e-16)return false;
-            const Vec3d surface=origin+direction*((a-origin).dot(normal)/denominator);
-            const Vec3d contour=((1-t)*edge.a.cast<double>()+t*edge.b.cast<double>());
-            return (surface-contour).norm()<=std::max(1e-6,double(edge.tolerance));
-        };
-        double nearest=double(FromDIP(14))*FromDIP(14);std::optional<Vec2d> snapped;
-        const Vec2d pointer(point.x,point.y);
-        const double preview_limit=FromDIP(128);
-        size_t preview_rays=0,preview_edges=0;
-        for(const auto& edge:m_puzzle_display.active_edges) {
-            const Vec2d a=project(edge.a),b=project(edge.b);
-            if(std::max(a.x(),b.x())<0 || std::min(a.x(),b.x())>width ||
-               std::max(a.y(),b.y())<0 || std::min(a.y(),b.y())>height)continue;
-            const Vec2d ab=b-a;const double t=std::clamp((pointer-a).dot(ab)/std::max(1e-12,ab.squaredNorm()),0.,1.);
-            const Vec2d closest=a+t*ab;const double distance=(pointer-closest).squaredNorm();
-            const bool preview_near=collect_preview && (m_shape_handle || distance<=preview_limit*preview_limit);
-            if(!preview_near && distance>=nearest)continue;
-            ++preview_rays;
-            const bool on_surface=visible(edge,closest,t);
-            if(preview_near && on_surface){m_boundary_preview.emplace_back(a,b);++preview_edges;}
-            if(distance<nearest && on_surface){nearest=distance;snapped=closest;}
-        }
-        if(collect_preview)BOOST_LOG_TRIVIAL(info)<<"Puzzle boundary hit: edges="
-            <<m_puzzle_display.active_edges.size()<<", preview_rays="<<preview_rays
-            <<", preview_edges="<<preview_edges<<", elapsed_ms="
-            <<std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-started).count();
-        return snapped;
-    }
-    bool puzzle_boundary_at(const wxPoint& point)
-    {
-        const auto frame=puzzle_shape_frame();
-        const int handle=frame?puzzle_shape_handle(point,*frame):0;
-        auto hit=puzzle_boundary_hit(point);
-        if(handle)hit=puzzle_shape_controls(*frame)[size_t(handle-1)];
-        const bool changed=bool(hit)!=bool(m_boundary_hover) || (hit && m_boundary_hover && (*hit-*m_boundary_hover).squaredNorm()>.25);
-        m_boundary_hover=hit;if(changed)m_canvas->Refresh(false);
-        return bool(hit);
-    }
-    bool begin_boundary_drag(const wxPoint& point)
-    {
-        const auto frame=puzzle_shape_frame();
-        m_shape_handle=frame?puzzle_shape_handle(point,*frame):0;
-        m_boundary_preview.clear();const auto hit=puzzle_boundary_hit(point,true);
-        if(m_shape_handle) {m_shape_frame=*frame;return !m_boundary_preview.empty();}
-        // Broad material borders need a longer falloff to avoid a pointed
-        // wedge after a short pull; small features keep their local radius.
-        m_boundary_radius=FromDIP(72);
-        if(frame)m_boundary_radius=std::clamp((frame->second-frame->first).minCoeff()*.65,double(FromDIP(8)),double(FromDIP(44)));
-        if(hit)m_boundary_anchor=*hit;return bool(hit);
-    }
-
-    using ShapeFrame=std::pair<Vec2d,Vec2d>;
-    std::optional<ShapeFrame> puzzle_shape_frame() const {
-        if(!m_puzzle_enabled || !m_selection_enabled || !m_shape_eligible || m_puzzle_display.active_edges.empty())return std::nullopt;
-        const int width=std::max(1,m_canvas->GetClientSize().x),height=std::max(1,m_canvas->GetClientSize().y);
-        const double radius=std::max(.001,.5*m_bounds.size().norm()),hh=fitted_half_height(width,height),hw=hh*width/height;
-        const Transform3d view=Geometry::translation_transform(Vec3d(m_pan_x*radius,m_pan_y*radius,-3*radius))*
-            view_rotation()*Geometry::translation_transform(-m_bounds.center().cast<double>());
-        Vec2d low=Vec2d::Constant(1e20),high=Vec2d::Constant(-1e20);
-        for(const auto& edge:m_puzzle_display.active_edges)for(const auto& vertex:{edge.a,edge.b}) {
-            const Vec3d p=view*vertex.cast<double>();
-            const Vec2d screen((p.x()/hw+1)*width/2.,(1-p.y()/hh)*height/2.);
-            low=low.cwiseMin(screen);high=high.cwiseMax(screen);
-        }
-        if((high-low).minCoeff()<FromDIP(4) || (high-low).maxCoeff()>std::min(width,height)*.65 ||
-            low.x()<0 || low.y()<0 || high.x()>width || high.y()>height)return std::nullopt;
-        // Hide controls for a piece occluded after rotating the model.
-        bool visible=false;
-        const auto& edges=m_puzzle_display.active_edges;
-        for(size_t i=0;i<edges.size() && !visible;i+=std::max(size_t(1),edges.size()/8)) {
-            const Vec3d p=view*((edges[i].a+edges[i].b)*.5f).cast<double>();
-            const auto hit=puzzle_face_at(wxPoint(int((p.x()/hw+1)*width/2.),int((1-p.y()/hh)*height/2.)));
-            visible=hit && (*hit==edges[i].face || (edges[i].neighbor>=0 && *hit==size_t(edges[i].neighbor)) ||
-                           (m_puzzle_is_selected && m_puzzle_is_selected(*hit)));
-        }
-        if(!visible)return std::nullopt;
-        return ShapeFrame{low,high};
-    }
-    std::array<Vec2d,5> puzzle_shape_controls(const ShapeFrame& frame) const {
-        const Vec2d center=(frame.first+frame.second)*.5;const double gap=FromDIP(10);
-        return {center,Vec2d(frame.first.x()-gap,center.y()),Vec2d(frame.second.x()+gap,center.y()),
-            Vec2d(center.x(),frame.first.y()-gap),Vec2d(center.x(),frame.second.y()+gap)};
-    }
-    int puzzle_shape_handle(const wxPoint& point,const ShapeFrame& frame) const {
-        const auto controls=puzzle_shape_controls(frame);double best=double(FromDIP(7))*FromDIP(7);int found=0;
-        for(size_t i=0;i<controls.size();++i) {
-            const double distance=(controls[i]-Vec2d(point.x,point.y)).squaredNorm();
-            if(distance<best){best=distance;found=int(i+1);}
-        }
-        return found;
-    }
-    AI::BeautyBoundaryDrag current_boundary_drag() const {
-        const Vec2d movement=m_stroke.back()-m_stroke.front();
-        if(m_shape_handle)return AI::BeautyBoundaryDrag::shape(m_shape_frame.first,m_shape_frame.second,m_shape_handle,movement);
-        return AI::BeautyBoundaryDrag(m_boundary_anchor,m_boundary_anchor+movement,m_boundary_radius);
-    }
-
-    void start_boundary_reshape()
-    {
-        if(!m_puzzle_focus || !m_puzzle_reshape || !m_region_editor->ready() || m_stroke.size()<2)return;
-        if(m_surface_worker.joinable())finish_surface_selection();
-        if(m_surface_worker.joinable())return;
-        if(m_puzzle_stroke_start)m_puzzle_stroke_start(5);
-        std::vector<uint8_t> selected(m_region_editor->mesh().indices.size(),0);
-        for(size_t f:m_puzzle_focus())if(f<selected.size())selected[f]=1;
-        std::vector<uint8_t> aperture;
-        if(m_shape_handle && m_puzzle_aperture) {
-            const auto faces=m_puzzle_aperture();
-            if(!faces.empty()) {aperture.resize(selected.size(),0);for(size_t f:faces)if(f<aperture.size())aperture[f]=1;}
-        }
-        const auto drag=current_boundary_drag();
-        m_boundary_pending=drag;
-        const int width=std::max(1,m_canvas->GetClientSize().x),height=std::max(1,m_canvas->GetClientSize().y);
-        const double radius=std::max(.001,.5*m_bounds.size().norm()),hh=fitted_half_height(width,height),hw=hh*width/height;
-        const Transform3d view=Geometry::translation_transform(Vec3d(m_pan_x*radius,m_pan_y*radius,-3*radius))*
-            view_rotation()*Geometry::translation_transform(-m_bounds.center().cast<double>());
-        const Transform3d inverse=view.inverse();
-        auto task=std::make_shared<SurfaceTask>();task->generation=m_region_generation;task->puzzle_reshape=true;
-        task->puzzle_shape=m_shape_handle!=0;
-        task->started=std::chrono::steady_clock::now();m_surface_task=task;
-        auto editor=m_region_editor;
-        try {
-            m_surface_worker=std::thread([task,editor,selected=std::move(selected),aperture=std::move(aperture),drag,view,inverse,hw,hh,width,height] {
-                try {
-                    auto pick=[&](const Vec2d& p) { return editor->pick_face(inverse*Vec3d((2*p.x()/width-1)*hw,
-                        (1-2*p.y()/height)*hh,0),inverse.linear()*Vec3d(0,0,-1)); };
-                    const auto& mesh=editor->mesh();
-                    struct ScreenSample { double depth=-std::numeric_limits<double>::infinity(); size_t face=std::numeric_limits<size_t>::max(); };
-                    std::vector<ScreenSample> screen_samples(size_t(width)*height);
-                    const auto screen_cell=[&](const Vec2d& point) -> std::optional<size_t> {
-                        if(point.x()<0 || point.y()<0 || point.x()>=width || point.y()>=height)return std::nullopt;
-                        return size_t(point.y())*width+size_t(point.x());
-                    };
-                    const auto face_screen=[&](size_t face) {
-                        const auto& tri=mesh.indices[face];
-                        const Vec3d point=view*((mesh.vertices[tri[0]]+mesh.vertices[tri[1]]+mesh.vertices[tri[2]])/3.f).cast<double>();
-                        return std::pair<Vec2d,double>(Vec2d((point.x()/hw+1)*width/2.,(1-point.y()/hh)*height/2.),point.z());
-                    };
-                    // One projected depth/label sample per screen pixel makes the
-                    // common interior case cheap. Exact rays remain the authority
-                    // at region transitions and for every face that may change.
-                    for(size_t face=0;face<mesh.indices.size();++face) {
-                        if((face&4095)==0 && task->canceled) {task->result.canceled=true;break;}
-                        const auto [screen,depth]=face_screen(face);
-                        if(depth>=0)continue;
-                        if(const auto cell=screen_cell(screen);cell && depth>screen_samples[*cell].depth)
-                            screen_samples[*cell]={depth,face};
-                    }
-                    size_t affected=0,source_rays=0,visible_rays=0,depth_rejected=0;
-                    for(size_t f=0;f<mesh.indices.size();++f) {
-                        if(task->result.canceled)break;
-                        if((f&1023)==0 && task->canceled) { task->result.canceled=true;break; }
-                        if((f&1023)==0 && std::chrono::steady_clock::now()-task->started>std::chrono::seconds(20)) {
-                            task->error="Boundary projection exceeded 20 seconds.";break;
-                        }
-                        const auto [screen,depth]=face_screen(f);
-                        if(depth>=0 || !drag.affects(screen))continue;
-                        const auto cell=screen_cell(screen);if(!cell)continue;
-                        ++affected;
-                        bool target=false;
-                        if(!aperture.empty())target=aperture[f] && drag.ellipse_contains(screen);
-                        else {
-                            const Vec2d source_screen=drag.inverse(screen);
-                            const auto source_cell=screen_cell(source_screen);
-                            bool exact=!source_cell || screen_samples[*source_cell].face==std::numeric_limits<size_t>::max();
-                            if(!exact) {
-                                target=selected[screen_samples[*source_cell].face]!=0;
-                                const int sx=int(source_screen.x()),sy=int(source_screen.y());
-                                for(int dy=-1;dy<=1 && !exact;++dy)for(int dx=-1;dx<=1;++dx) {
-                                    const int x=sx+dx,y=sy+dy;
-                                    if(x<0 || y<0 || x>=width || y>=height)continue;
-                                    const size_t neighbor=screen_samples[size_t(y)*width+size_t(x)].face;
-                                    if(neighbor!=std::numeric_limits<size_t>::max() && bool(selected[neighbor])!=target) {exact=true;break;}
-                                }
-                            }
-                            if(exact) {
-                                ++source_rays;
-                                const auto source=pick(source_screen);
-                                if(!source)continue;
-                                target=selected[*source]!=0;
-                            }
-                        }
-                        if(target==bool(selected[f]))continue;
-                        // A nearer projected sample rules out a hidden surface;
-                        // allow a millimetre for sub-pixel geometry and depth slope.
-                        if(screen_samples[*cell].depth>depth+1.) {++depth_rejected;continue;}
-                        ++visible_rays;
-                        const auto visible=pick(screen);if(!visible || *visible!=f)continue;
-                        (target?task->result.faces:task->removed_faces).push_back(f);
-                    }
-                    BOOST_LOG_TRIVIAL(info)<<"Puzzle boundary projection: affected="<<affected
-                        <<", source_rays="<<source_rays<<", visible_rays="<<visible_rays
-                        <<", depth_rejected="<<depth_rejected<<", added="<<task->result.faces.size()
-                        <<", removed="<<task->removed_faces.size();
-                } catch(const std::exception& e) { task->error=e.what(); }
-                task->done=true;
-            });
-        } catch(const std::exception& e) { task->error=e.what();task->done=true;finish_surface_selection();return; }
-        m_surface_timer.Start(40);notify_selection_changed();
-    }
-
     void select_at(const wxPoint& point)
     {
-        if (m_puzzle_enabled && !m_puzzle_ready) return;
         if (m_canvas == nullptr)
             return;
         int width = 0;
@@ -1657,19 +2223,19 @@ private:
     void select_ray(const Vec3d& origin, const Vec3d& direction,
                     AI::RegionSelectionOperation operation, const AI::RegionSelectionSettings& settings)
     {
-        if (selection_busy() || (m_puzzle_enabled && !m_puzzle_ready)) return;
-        const std::optional<size_t> face = m_region_editor->pick_face(origin, direction);
+        if (selection_busy()) return;
+        const auto hit = m_region_editor->pick_surface(origin,direction);
+        const std::optional<size_t> face = hit ? std::optional<size_t>(hit->face) : std::nullopt;
+        if (hit && m_leaf_editing && !(m_leaf_editing->hit_key(*hit) == m_leaf_editing->keys[hit->face])) return;
         if (!face)
             return;
-        if(m_puzzle_enabled && m_puzzle_pick) {m_puzzle_pick(*face,m_puzzle_merge_click);return;}
+        if (m_beauty_view && m_beauty_pick && m_selection_gesture == SelectionGesture::Similar) {
+            m_beauty_pick(*face);
+            return;
+        }
+        const auto before = selection_state();
         const std::vector<uint8_t> previous = m_region_editor->selected_faces();
-        if (m_beauty_patch_selection && m_beauty_surface && m_beauty_surface->geometry_id==m_geometry_id) {
-            auto mask=previous;
-            const auto id=m_beauty_surface->face_patch[*face];
-            if(operation==AI::RegionSelectionOperation::Replace)std::fill(mask.begin(),mask.end(),0);
-            for(size_t f:m_beauty_surface->patches[id].faces)mask[f]=operation!=AI::RegionSelectionOperation::Remove;
-            m_region_editor->restore_selection(mask);
-        } else m_region_editor->update_selection(*face, operation, settings);
+        m_region_editor->update_selection(*face, operation, settings);
         auto mask = m_region_editor->selected_faces();
         for (size_t i = 0; i < std::min(mask.size(), m_protected_faces.size()); ++i)
             if (m_protected_faces[i]) mask[i] = 0;
@@ -1677,6 +2243,10 @@ private:
         if (previous != m_region_editor->selected_faces())
             push_selection_history(previous);
         rebuild_selection_model();
+        const auto after = selection_state();
+        if (m_selection_commit && (before.selected != after.selected ||
+            before.protected_faces != after.protected_faces || before.foreground != after.foreground ||
+            before.domain != after.domain)) m_selection_commit(before, after);
         notify_selection_changed();
         m_canvas->Refresh(false);
     }
@@ -1759,7 +2329,8 @@ private:
         glsafe(::glDepthMask(GL_TRUE));
         glsafe(::glDepthFunc(GL_LESS));
         glsafe(::glViewport(0, 0, width, height));
-        const wxColour background = m_preview_background.IsOk() ? m_preview_background : wxGetApp().get_window_default_clr();
+        const wxColour background = m_preview_background.IsOk() ? m_preview_background :
+            m_beauty_view ? wxColour(49, 49, 54) : wxGetApp().get_window_default_clr();
         glsafe(::glClearColor(background.Red() / 255.0f, background.Green() / 255.0f, background.Blue() / 255.0f, 1.0f));
         glsafe(::glClearDepth(1.0));
         glsafe(::glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT));
@@ -1802,14 +2373,42 @@ private:
                 shader->set_uniform("view_model_matrix", view_model);
                 shader->set_uniform("projection_matrix", projection);
                 shader->set_uniform("view_normal_matrix", normal_matrix);
+                if (m_beauty_view && m_workbench_grid_visible) {
+                    if (!m_workbench_grid || m_workbench_grid_geometry != m_geometry_id) {
+                        GLModel::Geometry grid;
+                        grid.format = {GLModel::Geometry::EPrimitiveType::Lines, GLModel::Geometry::EVertexLayout::P3N3};
+                        const float extent = float(radius * 1.8);
+                        const float z = m_bounds.min.z() - float(radius * 0.01);
+                        for (unsigned int i = 0; i <= 18; ++i) {
+                            const float offset = -extent + 2.f * extent * float(i) / 18.f;
+                            const unsigned int base = unsigned(grid.vertices_count());
+                            grid.add_vertex(Vec3f(float(center.x()) - extent, float(center.y()) + offset, z), Vec3f(0, 0, 1));
+                            grid.add_vertex(Vec3f(float(center.x()) + extent, float(center.y()) + offset, z), Vec3f(0, 0, 1));
+                            grid.add_vertex(Vec3f(float(center.x()) + offset, float(center.y()) - extent, z), Vec3f(0, 0, 1));
+                            grid.add_vertex(Vec3f(float(center.x()) + offset, float(center.y()) + extent, z), Vec3f(0, 0, 1));
+                            grid.add_line(base, base + 1); grid.add_line(base + 2, base + 3);
+                        }
+                        m_workbench_grid = std::make_unique<GLModel>();
+                        m_workbench_grid->init_from(std::move(grid));
+                        m_workbench_grid->set_color(ColorRGBA(0.30f, 0.30f, 0.32f, 1.f));
+                        m_workbench_grid_geometry = m_geometry_id;
+                    }
+                    shader->set_uniform("use_uniform_color", true);
+                    shader->set_uniform("preview_color_count", 0);
+                    shader->set_uniform("preview_lighting", false);
+                    shader->set_uniform("beauty_unlit", true);
+                    shader->set_uniform("gray_view", false);
+                    m_workbench_grid->render(shader);
+                }
                 shader->set_uniform("use_uniform_color", false);
-                shader->set_uniform("preview_unlit_overlay", false);
-                shader->set_uniform("preview_boundary_stroke", false);
+                shader->set_uniform("preview_texture_enabled", false);
+                shader->set_uniform("exact_surface_colors", m_exact_surface_display);
                 shader->set_uniform("gray_view", m_gray_view);
-                shader->set_uniform("exact_surface_colors", m_exact_surface_display && !m_gray_view);
-                shader->set_uniform("preview_lighting", m_color_trial->lighting());
+                shader->set_uniform("preview_lighting", m_beauty_view ? m_beauty_lighting : m_color_trial->lighting());
+                shader->set_uniform("beauty_unlit", m_beauty_view && !m_beauty_lighting);
                 shader->set_uniform("preview_lightness_weight", PreviewPalette::lightness_weight);
-                shader->set_uniform("preview_color_count", m_color_trial_enabled && !m_gray_view ? int(m_trial_palette.size()) : 0);
+                shader->set_uniform("preview_color_count", m_color_trial_enabled && !m_gray_view &&
+                    !(m_beauty_view && m_beauty_original_view) ? int(m_trial_palette.size()) : 0);
                 if (m_color_trial_enabled) for (size_t i = 0; i < m_trial_palette.size(); ++i) {
                     shader->set_uniform(("preview_rgb[" + std::to_string(i) + "]").c_str(), m_trial_palette[i]);
                     shader->set_uniform(("preview_lab[" + std::to_string(i) + "]").c_str(), PreviewPalette::to_lab(m_color_trial->mapping_colors()[i]));
@@ -1817,49 +2416,26 @@ private:
                 // Pure separation must not introduce intermediate colors at
                 // multisample edges or through framebuffer dithering. Restore
                 // both states immediately after drawing the trial surface.
-                const bool pure_separation = !m_gray_view && (m_exact_surface_display ||
-                    (m_color_trial_enabled && !m_color_trial->lighting()));
+                const bool pure_separation = m_color_trial_enabled && !m_gray_view && !m_color_trial->lighting();
                 const bool multisample = pure_separation && ::glIsEnabled(GL_MULTISAMPLE);
                 const bool dither = pure_separation && ::glIsEnabled(GL_DITHER);
                 if (pure_separation) {
                     glsafe(::glDisable(GL_MULTISAMPLE));
                     glsafe(::glDisable(GL_DITHER));
                 }
-                const bool puzzle=m_puzzle_enabled && bool(m_puzzle_display.fill);
-                if(puzzle) {
-                    shader->set_uniform("preview_color_count",0);
-                    glsafe(::glEnable(GL_POLYGON_OFFSET_FILL));glsafe(::glPolygonOffset(2.0f,8.0f));
-                    m_puzzle_display.fill->render(shader);
-                    glsafe(::glDisable(GL_POLYGON_OFFSET_FILL));
-                    shader->set_uniform("use_uniform_color",true);shader->set_uniform("preview_lighting",false);
-                    shader->set_uniform("preview_unlit_overlay",true);
-                    shader->set_uniform("preview_boundary_stroke",true);
-                    shader->set_uniform("preview_viewport",Vec2f(float(width),float(height)));
-                    glsafe(::glDepthMask(GL_FALSE));
-                    glsafe(::glDepthFunc(GL_LEQUAL));
-                    const bool blend=::glIsEnabled(GL_BLEND);
-                    GLint old_src=GL_ONE,old_dst=GL_ZERO,old_src_alpha=GL_ONE,old_dst_alpha=GL_ZERO;
-                    ::glGetIntegerv(GL_BLEND_SRC_RGB,&old_src);::glGetIntegerv(GL_BLEND_DST_RGB,&old_dst);
-                    ::glGetIntegerv(GL_BLEND_SRC_ALPHA,&old_src_alpha);::glGetIntegerv(GL_BLEND_DST_ALPHA,&old_dst_alpha);
-                    glsafe(::glEnable(GL_BLEND));glsafe(::glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA));
-                    auto stroke=[&](GLModel& model,float width,const ColorRGBA& color) {
-                        model.set_color(ColorRGBA(1,1,1,.95f));shader->set_uniform("preview_stroke_width",width+3.f);model.render(shader);
-                        model.set_color(color);shader->set_uniform("preview_stroke_width",width+1.f);model.render(shader);
-                    };
-                    if(!m_puzzle_hide_overlays && m_puzzle_borders && m_puzzle_display.borders)stroke(*m_puzzle_display.borders,1.8f,ColorRGBA(.05f,.30f,.34f,1));
-                    if(!m_puzzle_hide_overlays && m_puzzle_display.active && !m_boundary_pending && !(m_drawing_selection && m_puzzle_drag_kind==1))
-                        stroke(*m_puzzle_display.active,m_boundary_hover?4.f:3.f,ColorRGBA(1,.42f,.02f,1));
-                    if(!blend)glsafe(::glDisable(GL_BLEND));
-                    glsafe(::glBlendFuncSeparate(old_src,old_dst,old_src_alpha,old_dst_alpha));
-                    glsafe(::glDepthFunc(GL_LESS));
-                    glsafe(::glDepthMask(GL_TRUE));shader->set_uniform("preview_boundary_stroke",false);
-                } else if (m_semantic_ready && m_semantic_model && m_color_trial_enabled && m_color_trial->semantic_optimization() && !m_gray_view)
+                if (m_semantic_ready && m_semantic_model && ((m_color_trial_enabled && m_color_trial->semantic_optimization()) ||
+                    (m_beauty_view && (!m_saved_semantic_faces.empty() || !m_saved_semantic_subfaces.empty())) ||
+                    (m_leaf_editing && !m_manual_leaf_colors.empty())) &&
+                    !m_gray_view && !(m_beauty_view && m_beauty_original_view))
                     m_semantic_model->render(shader);
+                else if (m_texture_model && !m_gray_view && !m_exact_surface_display)
+                    m_texture_model->render(shader, view_model);
                 else for (const std::unique_ptr<GLModel>& model : m_models)
                     model->render(shader);
                 if (multisample) glsafe(::glEnable(GL_MULTISAMPLE));
                 if (dither) glsafe(::glEnable(GL_DITHER));
-                if ((m_selection_model || m_protection_model) && m_selection_enabled && m_selection_overlay_visible && !m_puzzle_enabled) {
+                if ((m_selection_model || m_protection_model) && m_selection_enabled &&
+                    m_selection_overlay_visible && !m_selection_preview_suppressed) {
                     shader->set_uniform("gray_view", false);
                     shader->set_uniform("use_uniform_color", true);
                     shader->set_uniform("preview_color_count", 0);
@@ -1868,6 +2444,13 @@ private:
                     if (m_selection_model) m_selection_model->render(shader);
                     if (m_protection_model) m_protection_model->render(shader);
                     glsafe(::glDisable(GL_POLYGON_OFFSET_FILL));
+                }
+                if (m_beauty_view && m_partition_model && !m_selection_preview_suppressed) {
+                    shader->set_uniform("gray_view", false);
+                    shader->set_uniform("use_uniform_color", true);
+                    shader->set_uniform("preview_color_count", 0);
+                    shader->set_uniform("preview_lighting", false);
+                    m_partition_model->render(shader);
                 }
                 if (!m_render_diagnostics_logged) {
                     const GLenum error = ::glGetError();
@@ -1879,29 +2462,17 @@ private:
                 }
                 shader->stop_using();
                 glsafe(::glDisable(GL_DEPTH_TEST));
-                const auto shape_frame=puzzle_shape_frame();
-                if (!m_puzzle_hide_overlays && ((m_drawing_selection && !m_stroke.empty()) || m_boundary_pending || (m_puzzle_enabled && m_boundary_hover) || shape_frame)) {
+                if (m_drawing_selection && !m_stroke.empty()) {
                     GLModel::Geometry line;
                     line.format = {GLModel::Geometry::EPrimitiveType::Lines, GLModel::Geometry::EVertexLayout::P3N3};
                     const double cw = std::max(1, m_canvas->GetClientSize().x), ch = std::max(1, m_canvas->GetClientSize().y);
                     auto add_point = [&](const Vec2d& p) {
                         line.add_vertex(Vec3f(float(2*p.x()/cw-1), float(1-2*p.y()/ch), 0), Vec3f(0, 0, 1));
                     };
-                    if(m_puzzle_drag_kind==1 || m_boundary_pending) {
-                        const AI::BeautyBoundaryDrag drag=m_boundary_pending ? *m_boundary_pending :
-                            current_boundary_drag();
-                        for(const auto& edge:m_boundary_preview) {
-                            const unsigned int first=unsigned(line.vertices_count());
-                            add_point(drag.forward(edge.first));add_point(drag.forward(edge.second));line.add_line(first,first+1);
-                        }
-                    } else if(m_puzzle_enabled && m_boundary_hover && !m_drawing_selection) {
-                        for(unsigned i=0;i<32;++i){const double a=i*6.283185307179586/32;add_point(*m_boundary_hover+FromDIP(5)*Vec2d(std::cos(a),std::sin(a)));}
-                        for(unsigned i=0;i<32;++i)line.add_line(i,(i+1)%32);
-                    } else if(m_drawing_selection && !m_stroke.empty()) {
                     const auto outline = selection_outline();
                     for (const auto& p : outline) add_point(p);
                     for (unsigned int i = 1; i < outline.size(); ++i) line.add_line(i-1, i);
-                    if ((m_selection_gesture == SelectionGesture::Lasso || m_puzzle_drag_kind==2) && outline.size() > 2)
+                    if (m_selection_gesture == SelectionGesture::Lasso && outline.size() > 2)
                         line.add_line(unsigned(outline.size()-1), 0);
                     else {
                         const unsigned int base = unsigned(line.vertices_count());
@@ -1911,39 +2482,17 @@ private:
                         }
                         for (unsigned int i = 0; i < 32; ++i) line.add_line(base+i, base+(i+1)%32);
                     }
-                    }
-                    if(shape_frame && !m_drawing_selection && !m_boundary_pending) {
-                        for(const auto& control:puzzle_shape_controls(*shape_frame)) {
-                            const unsigned first=unsigned(line.vertices_count());const double r=FromDIP(4);
-                            for(const auto& offset:{Vec2d(-r,-r),Vec2d(r,-r),Vec2d(r,r),Vec2d(-r,r)})add_point(control+offset);
-                            for(unsigned i=0;i<4;++i)line.add_line(first+i,first+(i+1)%4);
-                        }
-                    }
                     if (!line.is_empty()) {
-                        GLModel::Geometry ribbon;
-                        ribbon.format={GLModel::Geometry::EPrimitiveType::Triangles,GLModel::Geometry::EVertexLayout::P3N3T2};
-                        for(size_t i=0;i+1<line.indices.size();i+=2)
-                            ModelPreviewPuzzle::add_stroke(ribbon,line.extract_position_3(line.indices[i]),line.extract_position_3(line.indices[i+1]));
-                        GLModel feedback; feedback.init_from(std::move(ribbon));
+                        GLModel feedback; feedback.init_from(std::move(line));
+                        feedback.set_color(m_selection_gesture == SelectionGesture::Protect
+                            ? ColorRGBA(0.3f,0.5f,0.95f,1) : ColorRGBA(1,0.55f,0,1));
                         shader->start_using();
                         shader->set_uniform("view_model_matrix", Transform3d::Identity());
                         shader->set_uniform("projection_matrix", Transform3d::Identity());
                         shader->set_uniform("use_uniform_color", true);
                         shader->set_uniform("preview_color_count", 0);
                         shader->set_uniform("preview_lighting", false);
-                        shader->set_uniform("preview_unlit_overlay",true);
-                        shader->set_uniform("preview_boundary_stroke",true);
-                        shader->set_uniform("preview_viewport",Vec2f(float(width),float(height)));
-                        const bool blended=::glIsEnabled(GL_BLEND);
-                        GLint src=GL_ONE,dst=GL_ZERO,src_alpha=GL_ONE,dst_alpha=GL_ZERO;
-                        ::glGetIntegerv(GL_BLEND_SRC_RGB,&src);::glGetIntegerv(GL_BLEND_DST_RGB,&dst);
-                        ::glGetIntegerv(GL_BLEND_SRC_ALPHA,&src_alpha);::glGetIntegerv(GL_BLEND_DST_ALPHA,&dst_alpha);
-                        glsafe(::glEnable(GL_BLEND));glsafe(::glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA));
-                        feedback.set_color(ColorRGBA(1.f,1.f,1.f,1.f));shader->set_uniform("preview_stroke_width",6.f);feedback.render(shader);
-                        feedback.set_color(m_selection_gesture==SelectionGesture::Protect?ColorRGBA(.3f,.5f,.95f,1):ColorRGBA(1,.42f,.02f,1));
-                        shader->set_uniform("preview_stroke_width",4.f);feedback.render(shader);
-                        if(!blended)glsafe(::glDisable(GL_BLEND));glsafe(::glBlendFuncSeparate(src,dst,src_alpha,dst_alpha));
-                        shader->set_uniform("preview_boundary_stroke",false);shader->stop_using();
+                        feedback.render(shader); shader->stop_using();
                     }
                 }
             } else if (!m_render_diagnostics_logged) {
@@ -1960,33 +2509,54 @@ private:
         }
     }
 
-    ModelPreviewPuzzle m_puzzle_display;
-    bool m_puzzle_enabled=false, m_puzzle_borders=true, m_puzzle_hide_overlays=false;
-    bool m_puzzle_merge_click=false;
-    int m_puzzle_drag_kind=0;
-    Vec2d m_boundary_anchor=Vec2d::Zero();
-    double m_boundary_radius=44.;
-    bool m_shape_eligible=false;
-    int m_shape_handle=0;
-    ShapeFrame m_shape_frame;
-    std::optional<Vec2d> m_boundary_hover;
-    std::optional<AI::BeautyBoundaryDrag> m_boundary_pending;
-    std::vector<std::pair<Vec2d,Vec2d>> m_boundary_preview;
     wxGLCanvas* m_canvas {nullptr};
+    bool m_retain_surface_attributes {false};
+    bool m_exact_surface_display {false};
+    wxColour m_preview_background;
+    std::vector<float> m_surface_vertices;
+    std::vector<Vec2f> m_original_surface_colors;
+    std::unique_ptr<ModelPreviewTexture> m_texture_model;
+    wxSplitterWindow* m_splitter {nullptr};
+    wxPanel* m_preview_host {nullptr};
+    wxScrolledWindow* m_controls_scroll {nullptr};
+    int m_saved_splitter_sash {360};
     void update_semantic_coloring();
     void finish_semantic_coloring();
+    void rebuild_semantic_preview_from_cached_result();
     wxTimer m_semantic_timer;
     std::unique_ptr<ModelSemanticColoring> m_semantic_controller;
+    std::function<void(bool)> m_semantic_completion;
     std::shared_ptr<const AI::SemanticColoring::MeshSnapshot> m_semantic_source;
+    std::shared_ptr<const PortraitShapeDetails> m_portrait_shapes;
+    std::shared_ptr<AI::BeautyLeafEditing> m_leaf_editing;
+    std::map<AI::BeautyLeafKey,AI::SemanticColoring::Color> m_manual_leaf_colors;
+    nlohmann::json m_pending_leaf_edits;
+    uint64_t m_leaf_edit_revision{0};
+    bool m_shapes_unlocked {false};
     std::shared_ptr<const AI::SemanticColoring::Analysis> m_semantic_analysis;
+    std::shared_ptr<const SemanticRegionEvidence> m_region_evidence;
+    std::string m_region_runtime_identity, m_region_evidence_error;
+    std::shared_ptr<const SecondaryRegionEvidence> m_secondary_region_evidence;
+    std::string m_secondary_region_evidence_error;
+    size_t m_semantic_selection_protected {0}, m_semantic_selection_low_confidence {0};
     std::unique_ptr<GLModel> m_semantic_model;
     bool m_semantic_ready {false};
+    wxString m_semantic_error;
     FaceColorOverrides m_automatic_face_colors;
     SubfaceColorOverrides m_automatic_subface_colors;
+    FaceColorOverrides m_saved_semantic_faces;
+    SubfaceColorOverrides m_saved_semantic_subfaces;
+    bool m_suppress_semantic_change {false};
     ModelPreviewColorControls* m_color_trial {nullptr};
     std::vector<PreviewPalette::Color> m_trial_palette;
     std::shared_ptr<const PreviewPalette::Histogram> m_trial_histogram;
     bool m_color_trial_enabled {false};
+    bool m_beauty_view {false};
+    bool m_workbench_grid_visible {true};
+    std::unique_ptr<GLModel> m_workbench_grid;
+    std::string m_workbench_grid_geometry;
+    bool m_beauty_lighting {true};
+    bool m_beauty_original_view {false};
     bool m_gray_view {false};
     double m_pan_x {0.0}, m_pan_y {0.0};
     std::optional<std::chrono::steady_clock::time_point> m_trial_toggle_started;
@@ -1994,6 +2564,8 @@ private:
     std::vector<std::unique_ptr<GLModel>> m_models;
     std::unique_ptr<GLModel> m_selection_model;
     std::unique_ptr<GLModel> m_protection_model;
+    std::unique_ptr<GLModel> m_partition_model;
+    std::function<void(size_t)> m_beauty_pick;
     std::unique_ptr<GLShaderProgram> m_color_shader;
     std::shared_ptr<AI::VertexColorRegionEditor> m_region_editor = std::make_shared<AI::VertexColorRegionEditor>();
     wxStaticText* m_region_prepare_status {nullptr};
@@ -2009,18 +2581,13 @@ private:
     boost::filesystem::path m_model_path;
     FileStamp m_model_stamp;
     size_t m_triangle_count {0};
+    size_t m_vertex_count {0};
     size_t m_color_count {0};
     std::vector<SelectionState> m_selection_history, m_selection_redo;
-    std::shared_ptr<const AI::BeautySurface> m_beauty_surface;
-    bool m_beauty_patch_selection {false};
     std::vector<uint8_t> m_protected_faces;
     std::vector<uint8_t> m_foreground_faces, m_selection_domain;
     std::optional<SelectionState> m_pending_selection;
     std::string m_geometry_id;
-    bool m_retain_surface_attributes {false};
-    bool m_exact_surface_display {false};
-    std::vector<float> m_surface_vertices;
-    std::vector<Vec2f> m_original_surface_colors;
     FaceColorOverrides m_face_color_overrides;
     SelectionGesture m_selection_gesture {SelectionGesture::Lasso};
     std::vector<Vec2d> m_stroke;
@@ -2035,6 +2602,8 @@ private:
     wxPoint m_last_mouse;
     wxPoint m_drag_start;
     std::function<void(size_t)> m_selection_changed;
+    std::function<void(size_t)> m_color_trial_changed;
+    std::function<void(const SelectionState&, const SelectionState&)> m_selection_commit;
     AI::RegionSelectionSettings m_selection_settings;
     AI::RegionSelectionOperation m_selection_operation {AI::RegionSelectionOperation::Replace};
     ColorRGBA m_selection_preview_color {1.0f, 0.55f, 0.0f, 1.0f};
@@ -2057,14 +2626,13 @@ private:
     }
 
     double m_yaw {-0.65};
-    wxColour m_preview_background;
     double m_pitch {-1.05};
     double m_zoom {1.0};
     bool m_dragging {false};
     bool m_drag_moved {false};
     bool m_selection_enabled {false};
     bool m_selection_overlay_visible {true};
-    bool m_puzzle_ready {false};
+    bool m_selection_preview_suppressed {false};
     bool m_has_model {false};
     bool m_paint_diagnostics_logged {false};
     bool m_render_diagnostics_logged {false};

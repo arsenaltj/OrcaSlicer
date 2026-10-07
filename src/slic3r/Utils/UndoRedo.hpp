@@ -131,6 +131,7 @@ inline bool record_project_config_change(std::vector<Snapshot>& history,size_t a
 // intentionally limited to the adjacent action/captured-topmost pair produced
 // by Stack::undo so a failed transaction cannot leave partial state redoable.
 namespace detail {
+bool has_redo_action(const std::vector<Snapshot>& history, size_t active_time);
 bool abort_top_action_history(std::vector<Snapshot>& history, size_t& active_time,
                               const ActionSnapshotIdentity& identity);
 }

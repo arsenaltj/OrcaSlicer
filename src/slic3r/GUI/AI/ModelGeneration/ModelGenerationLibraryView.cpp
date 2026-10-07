@@ -148,6 +148,8 @@ std::vector<ModelGenerationPanel::GeneratedModelEntry> ModelGenerationPanel::rea
 
         const nlohmann::json metadata = read_json(library_metadata_path(job_id));
         if (metadata.is_object()) {
+            entry.accepted_finishing = job_id.rfind("finish-", 0) == 0 &&
+                metadata.value("source", std::string()) == "local_finishing";
             entry.generated_at = metadata.value("generated_at", entry.generated_at);
             entry.imported_at = metadata.value("imported_at", std::time_t {0});
             entry.triangle_count = metadata.value("triangle_count", size_t {0});
@@ -540,7 +542,8 @@ void ModelGenerationPanel::on_library_timer(wxTimerEvent&)
                     return encoded ? std::string(encoded.data(), encoded.length()) : std::string();
                 };
                 m_ui_history_entries.clear();
-                const size_t count = std::min(m_library_page_size, m_library_entries.size());
+                const size_t count = m_finishing_workbench ? m_library_entries.size() :
+                    std::min(m_library_page_size, m_library_entries.size());
                 m_ui_history_entries.reserve(count);
                 for (size_t index = 0; index < count; ++index) {
                     const auto& source = m_library_entries[index];
@@ -567,6 +570,7 @@ void ModelGenerationPanel::on_library_timer(wxTimerEvent&)
             }
         }
     }
+    const bool workbench_updated = snapshot.has_value() || !thumbnails.empty();
     // Applying decoded pixels creates wxImage/wxBitmap objects on the UI
     // thread. Keep each timer tick bounded so opening the history page stays
     // interactive while the worker continues decoding the rest of the page.
@@ -610,6 +614,10 @@ void ModelGenerationPanel::on_library_timer(wxTimerEvent&)
             }
         }
         static_cast<LibraryThumbnail*>(m_library_thumbnails[thumbnail.index])->set_image(image);
+    }
+    if (workbench_updated && m_finishing_workbench) {
+        refresh_workbench_history();
+        refresh_post_generation_workbench();
     }
     // DPI changes invalidate only the visible page; the worker cache keys
     // include pixel size, and themes repaint via the normal AI appearance path.
@@ -810,6 +818,7 @@ void ModelGenerationPanel::refresh_library()
     for (size_t index = begin; index < end; ++index) {
         auto* card = create_library_card(m_library_entries[index]);
         refresh_ai_appearance(card);
+        if (m_library_appearance_handler) m_library_appearance_handler(card);
         m_library_sizer->Add(card, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(8));
     }
     m_library_page_label->SetLabel(wxString::Format(_L("第 %llu / %llu 页 · 共 %llu 条"),

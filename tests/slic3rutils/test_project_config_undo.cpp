@@ -74,6 +74,40 @@ static std::vector<UndoRedo::Snapshot> history()
             {"Second material change",30,1,action},{"@@@ Topmost @@@",40,0,action}};
 }
 
+TEST_CASE("current topmost state has no redo action while undone actions retain redo", "[ProjectConfigUndo]")
+{
+    auto steps = history();
+    CHECK_FALSE(UndoRedo::detail::has_redo_action({}, 0));
+    CHECK_FALSE(UndoRedo::detail::has_redo_action(steps, 40));
+    steps.back().model_id = 1;
+    CHECK_FALSE(UndoRedo::detail::has_redo_action(steps, 40));
+    CHECK(UndoRedo::detail::has_redo_action(steps, 30));
+    CHECK(UndoRedo::detail::has_redo_action(steps, 20));
+    CHECK_FALSE(UndoRedo::detail::has_redo_action(steps, 25));
+    steps[2].snapshot_data.snapshot_type = UndoRedo::SnapshotType::Selection;
+    CHECK_FALSE(UndoRedo::detail::has_redo_action(steps, 20));
+    CHECK(UndoRedo::detail::has_redo_action(steps, 10));
+}
+
+TEST_CASE("failed newest import rollback preserves earlier undo history without a redo branch", "[ProjectConfigUndo][LocalPrintModelImport]")
+{
+    auto steps = history();
+    steps[2].name = "Apply local print colors";
+    steps.back().model_id = 1;
+    const UndoRedo::ActionSnapshotIdentity identity {30, 40, steps[2].name};
+    size_t active = 30;
+    REQUIRE(UndoRedo::detail::has_redo_action(steps, active));
+    REQUIRE(UndoRedo::detail::abort_top_action_history(steps, active, identity));
+    REQUIRE(steps.size() == 3);
+    CHECK(steps.front().name == "First material change");
+    CHECK(steps[1].name == "Selection");
+    CHECK(active == 30);
+    CHECK(steps.back().is_topmost());
+    CHECK_FALSE(steps.back().is_topmost_captured());
+    CHECK_FALSE(UndoRedo::detail::has_redo_action(steps, active));
+    CHECK(UndoRedo::detail::has_redo_action(steps, 10));
+}
+
 TEST_CASE("native recipe project changes undo and redo without replacing unrelated settings", "[ProjectConfigUndo]")
 {
     Test::RecipeApplicationFixture fixture(GENERATE(2u,3u));

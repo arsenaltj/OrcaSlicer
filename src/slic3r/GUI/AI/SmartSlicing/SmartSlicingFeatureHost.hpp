@@ -3,6 +3,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include "SmartSlicingWorkbenchState.hpp"
 
 class wxAuiManager;
 
@@ -26,6 +27,18 @@ public:
     bool is_shown() const;
     void show(bool show);
     void notify_slice_completed(bool success, const std::string& failure_code);
+    SmartSlicingWorkbenchState workbench_snapshot() const;
+    void set_workbench_listener(SmartSlicingWorkbenchListener listener);
+    void set_workbench_active(bool active);
+    bool analyze_workbench();
+    bool keep_current_mesh_and_analyze(const AI::SmartSlicing::WorkspaceRevision& reviewed_revision);
+    bool select_goal(AI::SmartSlicing::RecommendationGoal goal);
+    AI::SmartSlicing::OfficialSliceResult start_workbench_slice(
+        const SmartSlicingWorkbenchState& reviewed,
+        const std::vector<AI::SmartSlicing::RiskConfirmationKind>& confirmations);
+    bool start_native_slice();
+    bool undo_workbench_apply();
+    void cancel_workbench_analysis();
 
 private:
     struct Impl;

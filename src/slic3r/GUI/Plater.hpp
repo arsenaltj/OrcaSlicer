@@ -70,6 +70,7 @@ namespace UndoRedo {
 }
 
 namespace GUI {
+class SmartSlicingFeatureHost;
 namespace LocalPrintColorCommit { struct Prepared; }
 struct ModelColorImportResult;
 struct TextureImportOptions;
@@ -516,6 +517,7 @@ public:
     void enable_smart_slicing();
     bool is_smart_slicing_shown() const;
     void show_smart_slicing(bool show);
+    SmartSlicingFeatureHost* smart_slicing_feature_host();
 
     void reset_window_layout();
 

@@ -4,6 +4,7 @@
 #include "OrcaPaletteSnapshotBuilder.hpp"
 #include "OrcaPrintPaletteSnapshot.hpp"
 #include "AIImportSeamRepair.hpp"
+#include "OrcaSmartSlicingAdapter.hpp"
 
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/GUI_ObjectList.hpp"
@@ -175,6 +176,41 @@ TextureImportOptions model_import_color_options(const AI::ModelImportRequest& re
         }
     }
     return options;
+}
+
+AI::ModelImportResult OrcaWorkspaceAdapter::import_workbench_artifact(const AI::ModelImportRequest& request)
+{
+    if (!m_plater) return {};
+    auto result = m_plater->import_workbench_model(request);
+    if (result.imported() && m_on_import_succeeded) m_on_import_succeeded();
+    return result;
+}
+
+std::function<bool()> OrcaWorkspaceAdapter::capture_import_guard() const
+{
+    if (!m_plater) return [] { return false; };
+    const auto revision = OrcaSmartSlicingAdapter(m_plater).current_revision();
+    return [plater = m_plater, revision] {
+        return OrcaSmartSlicingAdapter(plater).current_revision() == revision;
+    };
+}
+
+ObjImportColorFn workbench_obj_color_mapper(Plater* plater, AI::ImportColorMode mode,
+    const AI::PrintablePaletteSnapshot& palette, AI::ModelImportResult& result, bool& cancelled)
+{
+    if (mode == AI::ImportColorMode::AutoMap)
+        return make_obj_color_mapper(palette.project_colors, palette.compatible_slots, result.colors_applied,
+            result.source_color_count, result.mapped_color_count);
+    return [plater, colors = palette.project_colors, &result, &cancelled](ObjDialogInOut& input) {
+        input.preserve_input_colors = true;
+        result.source_color_count = std::set<RGBA>(input.input_colors.begin(), input.input_colors.end()).size();
+        ObjColorDialog dialog(plater, input, colors, Sidebar::should_show_SEMM_buttons());
+        if (dialog.ShowModal() != wxID_OK) { input.cancelled = cancelled = true; return; }
+        result.mapped_color_count = std::set<unsigned char>(input.filament_ids.begin(), input.filament_ids.end()).size();
+        result.colors_applied = input.deal_vertex_color ?
+            Model::obj_import_vertex_color_deal(input.filament_ids, input.first_extruder_id, input.model) :
+            Model::obj_import_face_color_deal(input.filament_ids, input.first_extruder_id, input.model);
+    };
 }
 
 AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImportRequest& request)

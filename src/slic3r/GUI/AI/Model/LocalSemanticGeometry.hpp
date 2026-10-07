@@ -2,6 +2,7 @@
 
 #include "SurfaceSelectionState.hpp"
 #include <atomic>
+#include <openssl/evp.h>
 
 namespace Slic3r::GUI::LocalSemanticGeometry {
 // Ordered native/render mesh interchange, never a proof of correspondence by

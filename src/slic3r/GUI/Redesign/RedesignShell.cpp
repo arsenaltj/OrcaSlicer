@@ -1,10 +1,14 @@
 #include "RedesignShell.hpp"
 #include "RedesignTheme.hpp"
+#include "RedesignFeatureFlags.hpp"
 #include "../MainFrame.hpp"
 #include "../GUI_App.hpp"
 #include "../AI/AIDesktopFeatureHost.hpp"
 #include "../AI/ModelGeneration/ModelGenerationPresentation.hpp"
 #include "../AI/ModelGeneration/ModelPreview3D.hpp"
+#include "../AI/SmartSlicing/SmartSlicingFeatureHost.hpp"
+#include "../Plater.hpp"
+#include "../Widgets/Label.hpp"
 
 #include <array>
 #include <algorithm>
@@ -1081,17 +1085,19 @@ private:
     int m_spinner_frame { 0 };
 };
 
-RedesignShell::RedesignShell(wxWindow* parent, ModelGenerationFeatureHost* model_generation_host)
+RedesignShell::RedesignShell(wxWindow* parent, ModelGenerationFeatureHost* model_generation_host, Plater* plater)
     : wxPanel(parent)
     , m_sizer(new wxBoxSizer(wxVERTICAL))
     , m_preview_resize_timer(this)
     , m_model_generation_host(model_generation_host)
 {
+    m_plater = plater;
     SetBackgroundColour(background_colour());
     SetSizer(m_sizer);
     Bind(wxEVT_TIMER, [this](wxTimerEvent&) { update_preview_bitmap(); }, m_preview_resize_timer.GetId());
     build_image_workspace();
     connect_model_generation_host();
+    build_model_workflow();
 }
 
 RedesignShell::~RedesignShell()
@@ -1104,7 +1110,23 @@ RedesignShell::~RedesignShell()
 
 void RedesignShell::disconnect_model_generation_host()
 {
+    if (m_slicing_host) {
+        m_slicing_host->set_workbench_listener({});
+        m_slicing_host->set_workbench_active(false);
+        m_slicing_host = nullptr;
+    }
+    if (m_plater && m_plater_original_parent) {
+        if (auto* sizer = m_plater->GetContainingSizer()) sizer->Detach(m_plater);
+        m_plater->Reparent(m_plater_original_parent);
+        m_plater->collapse_sidebar(m_saved_sidebar_collapsed);
+        m_plater->Hide();
+        m_plater_original_parent = nullptr;
+    }
     if (m_model_generation_host != nullptr) {
+        m_model_generation_host->set_workbench_listener({});
+        m_model_generation_host->set_workbench_results_handler({});
+        m_model_generation_host->set_workbench_import_handler({});
+        m_model_generation_host->unmount_workbench();
         m_model_generation_host->set_state_listener({});
         m_model_generation_host = nullptr;
     }
@@ -1470,13 +1492,15 @@ wxPanel* RedesignShell::build_model_workspace()
     gauge->SetValue(0);
     m_model_progress = gauge;
     status_sizer->Add(gauge, 0, wxEXPAND | wxBOTTOM, FromDIP(20));
-    m_model_stage_summary = new wxStaticText(status_column, wxID_ANY, wxEmptyString);
+    m_model_stage_summary = new Label(status_column, wxGetApp().normal_font(), wxEmptyString,
+                                      LB_AUTO_WRAP, FromDIP(wxSize(300, -1)));
     style_text(m_model_stage_summary, secondary_text_colour(), 10);
-    m_model_stage_summary->Wrap(FromDIP(330));
+    m_model_stage_summary->SetMinSize(wxSize(1, -1));
     status_sizer->Add(m_model_stage_summary, 0, wxEXPAND);
-    m_model_preview_details = new wxStaticText(status_column, wxID_ANY, wxEmptyString);
+    m_model_preview_details = new Label(status_column, wxGetApp().normal_font(), wxEmptyString,
+                                        LB_AUTO_WRAP, FromDIP(wxSize(300, -1)));
     style_text(m_model_preview_details, secondary_text_colour(), 9);
-    m_model_preview_details->Wrap(FromDIP(330));
+    m_model_preview_details->SetMinSize(wxSize(1, -1));
     m_model_preview_details->Hide();
     status_sizer->Add(m_model_preview_details, 0, wxEXPAND | wxTOP, FromDIP(14));
     m_model_view_controls = new wxPanel(status_column, wxID_ANY);
@@ -1945,8 +1969,14 @@ void RedesignShell::request_open_history(const std::string& job_id)
 {
     if (m_model_generation_state.busy || job_id.empty())
         return;
-    if (m_model_generation_host != nullptr && m_model_generation_host->request_open_history(job_id))
+    if (m_model_generation_host != nullptr && m_model_generation_host->request_open_history(job_id)) {
         set_history_expanded(false);
+        if (owns_model_workflow()) {
+            const auto& entries = m_model_generation_state.history_entries;
+            const auto entry = std::find_if(entries.begin(), entries.end(), [&](const auto& item) { return item.job_id == job_id; });
+            if (entry != entries.end() && !entry->design_only) m_pending_workbench_job = job_id;
+        }
+    }
 }
 
 void RedesignShell::request_generate_design()
@@ -2043,7 +2073,8 @@ void RedesignShell::request_model_page_action()
         update_model_page(m_model_generation_state);
         return;
     case ModelPageAction::Import:
-        handled = m_model_generation_host != nullptr && m_model_generation_host->request_import();
+        handled = owns_model_workflow() ? open_model_workbench() :
+            m_model_generation_host != nullptr && m_model_generation_host->request_import();
         break;
     case ModelPageAction::None:
         return;
@@ -2142,7 +2173,7 @@ void RedesignShell::update_model_page(const ModelGenerationUIState& state)
             visual_mode = ImagePreview::PlaceholderMode::Idle;
             if (state.can_import) {
                 m_model_page_action = ModelPageAction::Import;
-                action_label = text("导入");
+                action_label = owns_model_workflow() ? text("打开工作台") : text("导入");
             }
         }
     } else if (!state.model_generation_context) {
@@ -2156,7 +2187,6 @@ void RedesignShell::update_model_page(const ModelGenerationUIState& state)
     static_cast<wxGauge*>(m_model_progress)->SetValue(progress);
     m_model_progress->Show(show_progress);
     m_model_stage_summary->SetLabel(summary);
-    m_model_stage_summary->Wrap(FromDIP(330));
     const bool show_model_preview = state.stage == ModelGenerationUIStage::ModelReady &&
                                     !m_loaded_model_path.empty() && !m_model_preview_failed;
     m_model_stage_visual->Show(!show_model_preview);
@@ -2179,6 +2209,7 @@ void RedesignShell::update_model_page(const ModelGenerationUIState& state)
 
 void RedesignShell::ensure_model_preview(const ModelGenerationUIState& state)
 {
+    if (owns_model_workflow() && m_model_view != ModelView::Result) return;
     if (m_model_preview_3d == nullptr || !state.model_ready || state.busy || !state.can_import ||
         state.model_path.empty())
         return;
@@ -2246,7 +2277,6 @@ void RedesignShell::ensure_model_preview(const ModelGenerationUIState& state)
                         text("%llu 个三角面 · %.1f × %.1f × %.1f mm · %llu 种模型颜色"),
                         static_cast<unsigned long long>(triangles), dimensions.x(), dimensions.y(), dimensions.z(),
                         static_cast<unsigned long long>(colors)));
-                    self->m_model_preview_details->Wrap(self->FromDIP(330));
                 }
                 self->update_model_page(self->m_model_generation_state);
             });
@@ -2362,10 +2392,11 @@ bool RedesignShell::navigate_to(Page page)
         m_active_tab_id = TAB_ID_HOME;
         break;
     case Page::Model:
-        m_active_tab_id = TAB_ID_GENERATE_3D;
+        m_active_tab_id = owns_model_workflow() && m_model_view == ModelView::Preview ? TAB_ID_PREVIEW :
+            owns_model_workflow() && m_model_view == ModelView::Slicing ? TAB_ID_PREPARE : TAB_ID_GENERATE_3D;
         break;
     case Page::Print:
-        m_active_tab_id = TAB_ID_PREPARE;
+        m_active_tab_id = owns_model_workflow() ? TAB_ID_MONITOR : TAB_ID_PREPARE;
         break;
     }
     for (std::size_t i = 0; i < m_pages.size(); ++i) {
@@ -2385,6 +2416,7 @@ bool RedesignShell::navigate_to(Page page)
     if (m_content_host != nullptr && m_content_host->GetParent() != nullptr)
         m_content_host->GetParent()->Layout();
     Layout();
+    refresh_workflow_layout();
     return true;
 }
 
@@ -2392,6 +2424,12 @@ bool RedesignShell::navigate_to_tab(const wxString& id)
 {
     if (id.empty())
         return true;
+    if (owns_model_workflow() && (id == TAB_ID_PREPARE || id == TAB_ID_PREVIEW)) {
+        navigate_to(Page::Model);
+        show_model_view(id == TAB_ID_PREVIEW ? ModelView::Preview : ModelView::Slicing);
+        m_active_tab_id = id;
+        return true;
+    }
 
     Page page;
     if (id == wxString::FromUTF8(kRedesignAssetsTabId))

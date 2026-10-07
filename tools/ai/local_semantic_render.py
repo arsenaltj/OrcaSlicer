@@ -432,6 +432,14 @@ def sample_texture(texture, coords, sampler, linear_filter):
     return result
 
 
+def source_texture_projection(faces, uv, materials, material_ids, ids, bary, projected=None):
+    valid = ids >= 0
+    textured = np.asarray([material.texture is not None for material in materials], dtype=bool)
+    valid[valid] &= textured[material_ids[ids[valid]]]
+    rgb = shade(faces, uv, np.ones((len(uv), 3)), materials, material_ids, ids, bary, projected)
+    return rgb, valid, uv
+
+
 def shade(faces, uv, colors, materials, material_ids, ids, bary, projected=None):
     rgb = np.full((*ids.shape, 3), 184, dtype=np.uint8)
     valid = ids >= 0; visible = ids[valid]; indices = faces[visible]; weights = bary[valid]

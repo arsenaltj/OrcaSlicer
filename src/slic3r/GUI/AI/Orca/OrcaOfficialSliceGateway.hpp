@@ -213,8 +213,7 @@ public:
         std::string diagnostic_code = {}) override
     {
         using namespace AI::SmartSlicing;
-        if (!matches_versioned(transaction) || m_last.phase != OfficialSlicePhase::Slicing ||
-            !m_versioned_slice_pending)
+        if (!matches_versioned(transaction) || !m_versioned_slice_pending)
             return versioned_rejected("versioned_official_slice_not_active");
         m_versioned_slice_pending = false;
         if (!current_revision_matches(transaction.applied_revision)) {
@@ -314,6 +313,22 @@ public:
                           m_workspace_mutated, m_can_undo};
         }
         return m_last;
+    }
+
+    bool retire_committed_plan(const AI::SmartSlicing::OfficialApplyTransactionIdentity& transaction) override
+    {
+        if (!m_owner_thread || !m_owner_thread() || !matches_versioned(transaction) ||
+            m_versioned_slice_pending || m_versioned_action_in_progress ||
+            (m_last.phase != AI::SmartSlicing::OfficialSlicePhase::Completed &&
+             m_last.phase != AI::SmartSlicing::OfficialSlicePhase::Failed)) return false;
+        // The project history and consumed command identities outlive this UI session.
+        m_versioned_transaction.reset();
+        m_versioned_base_revision.reset();
+        m_versioned_can_retry = false;
+        m_versioned_can_print = false;
+        m_versioned_preview_attempted = false;
+        m_last = {};
+        return true;
     }
 
     bool undo_last_apply() override

@@ -57,6 +57,7 @@ public:
 
     void start();
     void cancel();
+    bool keep_current_mesh(const WorkspaceRevision& reviewed_revision);
     bool refresh_revision();
     bool plan_and_slice_candidates(std::vector<SliceCandidate> proposals = {},
                                    CandidateGoal goal = CandidateGoal::Stability,

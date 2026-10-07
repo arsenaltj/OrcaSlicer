@@ -1,6 +1,11 @@
+#include <glad/gl.h>
 #include "AI/Orca/FilamentColorPack.hpp"
 #include "Plater.hpp"
 #include "AI/Orca/LocalPrintModelImport.hpp"
+#include "AI/Orca/OrcaWorkspaceAdapter.hpp"
+#include "AI/Orca/ModelColorUpdate.hpp"
+#include "AI/Orca/WorkbenchTextureImport.hpp"
+#include "AI/Model/ModelArtifact.hpp"
 #include "AIAssistantPanel.hpp"
 #include "AI/SmartSlicing/SmartSlicingFeatureHost.hpp"
 #include "../Utils/NetworkAgent.hpp"
@@ -14522,6 +14527,7 @@ std::vector<size_t> Plater::physical_filament_config_indices() const
 }
 
 #include "PlaterTextureImport.ipp"
+#include "PlaterWorkbenchImport.ipp"
 
 Sidebar&        Plater::sidebar()           { return *p->sidebar; }
 const Model&    Plater::model() const       { return p->model; }
@@ -17164,6 +17170,12 @@ void Plater::show_smart_slicing(bool show)
 {
     if (p->smart_slicing_host != nullptr)
         p->smart_slicing_host->show(show);
+}
+
+SmartSlicingFeatureHost* Plater::smart_slicing_feature_host()
+{
+    enable_smart_slicing();
+    return p->smart_slicing_host.get();
 }
 
 void Plater::reset_window_layout() { p->reset_window_layout(); }

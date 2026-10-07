@@ -20,6 +20,55 @@
 using namespace Slic3r;
 namespace Application = GUI::LocalPrintColorApplication;
 
+TEST_CASE("working copy placement uses available plate space without moving fixed obstacles", "[LocalPrintModelImport]")
+{
+    Test::RecipeApplicationFixture fixture(2);
+    Model model;
+    auto* object = model.add_object();
+    object->input_file = "working.glb";
+    auto* volume = object->add_volume(TriangleMesh(its_make_cube(15, 15, 15)));
+    volume->source.input_file = object->input_file;
+    std::unique_ptr<Model> prepared;
+    std::string error;
+    REQUIRE(GUI::LocalPrintModelImport::prepare(*object, {50, 50}, {100, 100}, prepared, error));
+    const Polygon bed = Polygon::new_scale({{0, 0}, {100, 0}, {100, 100}, {0, 100}});
+    arrangement::ArrangePolygon fixed;
+    fixed.poly = ExPolygon(Polygon::new_scale({{30, 30}, {70, 30}, {70, 70}, {30, 70}}));
+    fixed.bed_idx = 0;
+    arrangement::ArrangePolygons obstacles {fixed};
+    const auto before = fixed.transformed_poly();
+    const bool placed_ok = GUI::LocalPrintModelImport::place(*prepared->objects.front(), bed, obstacles,
+        fixture.bundle.full_config(), 100., error);
+    INFO(error);
+    REQUIRE(placed_ok);
+    arrangement::ArrangePolygon placed;
+    prepared->objects.front()->instances.front()->get_arrange_polygon(&placed, fixture.bundle.full_config());
+    CHECK(intersection_ex({placed.transformed_poly()}, {before}).empty());
+    CHECK(diff_ex({placed.transformed_poly()}, {ExPolygon(bed)}).empty());
+    CHECK(obstacles.front().translation == fixed.translation);
+    CHECK(object->instances.empty());
+}
+
+TEST_CASE("a full plate or excessive model height retains the working copy and rejects import", "[LocalPrintModelImport]")
+{
+    Test::RecipeApplicationFixture fixture(2);
+    const bool full_plate = GENERATE(false, true);
+    Model model; auto* object = model.add_object(); object->input_file = "working.glb";
+    auto* volume = object->add_volume(TriangleMesh(its_make_cube(15, 15, 15)));
+    volume->source.input_file = object->input_file;
+    std::unique_ptr<Model> prepared; std::string error;
+    REQUIRE(GUI::LocalPrintModelImport::prepare(*object, {50, 50}, {100, 100}, prepared, error));
+    const Polygon bed = Polygon::new_scale({{0, 0}, {100, 0}, {100, 100}, {0, 100}});
+    arrangement::ArrangePolygons obstacles;
+    if (full_plate) { arrangement::ArrangePolygon fixed; fixed.poly = ExPolygon(bed); fixed.bed_idx = 0; obstacles.push_back(fixed); }
+    const auto transform = prepared->objects.front()->instances.front()->get_matrix();
+    CHECK_FALSE(GUI::LocalPrintModelImport::place(*prepared->objects.front(), bed, obstacles,
+        fixture.bundle.full_config(), full_plate ? 100. : 10., error));
+    CHECK_FALSE(error.empty());
+    CHECK(prepared->objects.front()->instances.front()->get_matrix().matrix() == transform.matrix());
+    CHECK(object->instances.empty());
+}
+
 TEST_CASE("new color models and recipe configuration are adopted together without changing existing objects", "[LocalPrintModelImport]")
 {
     Test::RecipeApplicationFixture fixture(GENERATE(2u, 3u));
@@ -90,6 +139,65 @@ TEST_CASE("failed color import history registration removes only the new object 
     REQUIRE(live.objects.size() == 1); CHECK(live.objects.front() == previous);
     CHECK(previous->name == "Retain this"); CHECK(index == 999); CHECK(config.changed);
     CHECK(GUI::LocalPrintRecipeApplication::identity(fixture.bundle) == before);
+}
+
+TEST_CASE("failed import finalization or registration restores model materials and cache", "[LocalPrintModelImport]")
+{
+    const int failure = GENERATE(0, 1, 2, 3, 4);
+    Test::RecipeApplicationFixture fixture(2);
+    Model source;
+    auto* incoming = source.add_object();
+    incoming->input_file = "confirmed.glb";
+    auto* part = incoming->add_volume(TriangleMesh(fixture.mesh), ModelVolumeType::MODEL_PART, false);
+    part->source.input_file = incoming->input_file;
+    GUI::LocalPrintRecipeApplication::Prepared recipe;
+    std::string error;
+    REQUIRE(GUI::LocalPrintRecipeApplication::prepare(part->mesh(), fixture.mesh.its, fixture.result,
+        fixture.snapshot, fixture.bundle, recipe, error));
+    std::unique_ptr<Model> prepared;
+    REQUIRE(GUI::LocalPrintModelImport::prepare(*incoming, {25, 35}, {250, 250}, prepared, error));
+    Model live;
+    auto* existing = live.add_object();
+    const auto config_before = fixture.bundle.project_config;
+    const auto materials_before = fixture.bundle.filament_presets;
+    fixture.bundle.ams_multi_color_filment = {{"#112233"}, {"#445566"}};
+    const auto cache_before = fixture.bundle.ams_multi_color_filment;
+    UndoRedo::ProjectConfigUndo::Prepared config {recipe.bundle->project_config, recipe.bundle->filament_presets, true};
+    auto cache = GUI::ProjectConfigRestore::prepare_cache(config.filament_presets.size(), fixture.bundle);
+    size_t index = 999;
+    int finalized = 0, recorded = 0;
+    auto attempt = [&] {
+        return GUI::LocalPrintModelImport::adopt(live, *prepared->objects.front(), config, cache, fixture.bundle,
+            [&] {
+                ++recorded;
+                CHECK(fixture.bundle.project_config == recipe.bundle->project_config);
+                if (failure == 3) throw std::runtime_error("registration failure");
+                return failure == 4;
+            }, index, error, [&](size_t imported) {
+                ++finalized;
+                CHECK(imported == 1);
+                CHECK(fixture.bundle.filament_presets == recipe.bundle->filament_presets);
+                if (failure == 1) throw std::runtime_error("finalization failure");
+                return failure != 0;
+            });
+    };
+    if (failure == 1 || failure == 3) CHECK_THROWS_AS(attempt(), std::runtime_error);
+    else CHECK(attempt() == (failure == 4));
+    CHECK(finalized == 1);
+    CHECK(recorded == (failure < 2 ? 0 : 1));
+    CHECK(live.objects.front() == existing);
+    if (failure == 4) {
+        CHECK(live.objects.size() == 2);
+        CHECK(index == 1);
+        CHECK_FALSE(config.changed);
+    } else {
+        CHECK(live.objects.size() == 1);
+        CHECK(index == 999);
+        CHECK(config.changed);
+        CHECK(fixture.bundle.project_config == config_before);
+        CHECK(fixture.bundle.filament_presets == materials_before);
+        CHECK(fixture.bundle.ams_multi_color_filment == cache_before);
+    }
 }
 
 TEST_CASE("invalid color import placement is rejected before preparing a live model", "[LocalPrintModelImport]")

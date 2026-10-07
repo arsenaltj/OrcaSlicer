@@ -406,15 +406,26 @@ TEST_CASE("Conflicting puzzle colors on shared UVs fail without producing a part
     REQUIRE(compatible.changed_pixels > 0);
 }
 
-TEST_CASE("Invalid puzzle target colors and material multipliers fail explicitly", "[BeautyWorkbench][BeautyAppearance][BeautyPuzzle]") {
+TEST_CASE("Absolute puzzle colors bake material multipliers without modifying the source", "[BeautyWorkbench][BeautyAppearance][BeautyPuzzle]") {
     Fixture fixture;
-    const auto nonneutral = make_fixture(fixture), destination = fixture.directory / "invalid-puzzle.glb";
+    const auto source = make_fixture(fixture), destination = fixture.directory / "material-puzzle.glb";
+    const auto hash = model_artifact_sha256(source);
     auto options = puzzle_colors();
-    const auto factor_result = edit_glb_appearance(nonneutral, destination, options);
-    CHECK_FALSE(factor_result.success);
-    CHECK(factor_result.error.find("multipliers") != std::string::npos);
-    CHECK_FALSE(boost::filesystem::exists(destination));
-    const auto source = make_neutral_fixture(fixture);
+    const auto result = edit_glb_appearance(source, destination, options);
+    INFO(result.error);
+    REQUIRE(result.success);
+    CHECK(result.changed_pixels > 0);
+    CHECK(model_artifact_sha256(source) == hash);
+    const auto saved = read_glb(destination);
+    const auto primitive = saved.doc["meshes"][0]["primitives"][0];
+    const auto material = primitive["material"].get<size_t>();
+    CHECK(saved.doc["materials"][material]["pbrMetallicRoughness"]["baseColorFactor"] == Json::array({1, 1, 1, 1}));
+}
+
+TEST_CASE("Invalid puzzle target colors fail without producing a partial asset", "[BeautyWorkbench][BeautyAppearance][BeautyPuzzle]") {
+    Fixture fixture;
+    const auto source = make_neutral_fixture(fixture), destination = fixture.directory / "invalid-puzzle.glb";
+    auto options = puzzle_colors();
     for (int invalid = 0; invalid < 3; ++invalid) {
         DYNAMIC_SECTION("invalid absolute target " << invalid) {
             options = puzzle_colors();

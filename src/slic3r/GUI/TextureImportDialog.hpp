@@ -88,6 +88,7 @@ class AutoMixSelectPopup;
 
 // Optional desktop import context. Defaults preserve ordinary Orca imports.
 struct TextureImportOptions {
+    bool workbench_review = false;
     size_t initial_target_colors = 0;
     // Negative keeps the ordinary importer's default (5); AI starts with no
     // boundary cleanup so small lip/eye regions can be checked before merging.
@@ -145,6 +146,7 @@ public:
     void set_computing_overlay(bool show);
     void reset_view();
     void set_z_up(bool enabled) { m_z_up = enabled; reset_view(); }
+    void set_workbench_review(bool enabled) { m_workbench_review = enabled; Refresh(); }
 
 private:
     void on_paint(wxPaintEvent& evt);
@@ -173,6 +175,7 @@ private:
     float   m_pan_x    = 0.0f;
     float   m_pan_y    = 0.0f;
     bool    m_z_up     = false;
+    bool    m_workbench_review = false;
     wxPoint m_last_mouse_pos;
     enum class DragMode { None, Rotate, Pan };
     DragMode m_drag_mode = DragMode::None;
@@ -337,6 +340,7 @@ private:
     bool is_params_dirty() const;
     void update_confirm_button_state();
     void style_confirm_button(bool dirty);
+    void style_workbench_review();
 
     Slic3r::TexturedMesh               m_textured_mesh;
     TextureImportOptions               m_options;

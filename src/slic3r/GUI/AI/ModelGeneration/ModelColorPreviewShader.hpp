@@ -23,20 +23,24 @@ inline bool initialize_model_color_shader(GLShaderProgram& shader)
     const std::string version = modern ? "#version 140\n" : "#version 110\n";
     GLShaderProgram::ShaderSources sources;
     sources[size_t(GLShaderProgram::EShaderType::Vertex)] = version +
-        (modern ? "in vec3 v_position; in vec3 v_normal; in vec2 v_tex_coord; out vec4 shaded_color; out vec3 source_rgb; out float light_intensity; out float local_color_lock; out float stroke_side;\n"
-                : "attribute vec3 v_position; attribute vec3 v_normal; attribute vec2 v_tex_coord; varying vec4 shaded_color; varying vec3 source_rgb; varying float light_intensity; varying float local_color_lock; varying float stroke_side;\n") + R"(
+        (modern ? "in vec3 v_position; in vec3 v_normal; in vec2 v_tex_coord; in vec4 v_texture_multiplier; out vec2 texture_uv; out vec4 texture_multiplier; out vec4 shaded_color; out vec3 source_rgb; out float light_intensity; out float local_color_lock; out float stroke_side;\n"
+                : "attribute vec3 v_position; attribute vec3 v_normal; attribute vec2 v_tex_coord; attribute vec4 v_texture_multiplier; varying vec2 texture_uv; varying vec4 texture_multiplier; varying vec4 shaded_color; varying vec3 source_rgb; varying float light_intensity; varying float local_color_lock; varying float stroke_side;\n") + R"(
 uniform mat4 view_model_matrix;
 uniform mat4 projection_matrix;
 uniform mat3 view_normal_matrix;
 uniform vec4 uniform_color;
 uniform bool use_uniform_color;
+uniform bool preview_texture_enabled;
+uniform bool preview_texture_color_lock;
 uniform bool preview_boundary_stroke;
 uniform vec2 preview_viewport;
 uniform float preview_stroke_width;
 void main() {
+    texture_uv = v_tex_coord; texture_multiplier = v_texture_multiplier;
     float encoded_rgb = floor(v_tex_coord.x);
     vec3 rgb = vec3(floor(encoded_rgb / 65536.0), mod(floor(encoded_rgb / 256.0), 256.0), mod(encoded_rgb, 256.0)) / 255.0;
-    local_color_lock = (!use_uniform_color && v_tex_coord.y < 0.0) ? 1.0 : 0.0;
+    local_color_lock = (preview_texture_enabled ? preview_texture_color_lock
+        : !use_uniform_color && v_tex_coord.y < 0.0) ? 1.0 : 0.0;
     vec4 color = use_uniform_color ? uniform_color : vec4(rgb, abs(v_tex_coord.y));
     vec3 normal = normalize(view_normal_matrix * v_normal);
     float intensity = 0.42 + 0.48 * max(dot(normal, vec3(-0.4574957, 0.4574957, 0.7624929)), 0.0)
@@ -58,18 +62,24 @@ void main() {
     }
 })";
     sources[size_t(GLShaderProgram::EShaderType::Fragment)] = version +
-        (modern ? "in vec4 shaded_color; in vec3 source_rgb; in float light_intensity; in float local_color_lock; in float stroke_side; out vec4 out_color;\n"
-                : "varying vec4 shaded_color; varying vec3 source_rgb; varying float light_intensity; varying float local_color_lock; varying float stroke_side;\n") + R"(
+        (modern ? "in vec2 texture_uv; in vec4 texture_multiplier; in vec4 shaded_color; in vec3 source_rgb; in float light_intensity; in float local_color_lock; in float stroke_side; out vec4 out_color;\n#define sample_preview_texture texture\n"
+                : "varying vec2 texture_uv; varying vec4 texture_multiplier; varying vec4 shaded_color; varying vec3 source_rgb; varying float light_intensity; varying float local_color_lock; varying float stroke_side;\n#define sample_preview_texture texture2D\n") + R"(
+uniform bool preview_texture_enabled;
+uniform bool preview_texture_has_image;
+uniform int preview_alpha_mode;
+uniform float preview_alpha_cutoff;
+uniform sampler2D preview_texture;
 uniform int preview_color_count;
 uniform bool preview_lighting;
 uniform float preview_lightness_weight;
 uniform bool gray_view;
 uniform bool exact_surface_colors;
 uniform bool preview_unlit_overlay;
+uniform bool beauty_unlit;
 uniform bool preview_boundary_stroke;
 uniform float preview_stroke_width;
-uniform vec3 preview_rgb[6];
-uniform vec3 preview_lab[6];
+uniform vec3 preview_rgb[32];
+uniform vec3 preview_lab[32];
 vec3 to_oklab(vec3 rgb) {
     vec3 linear_rgb = mix(rgb / 12.92, pow((rgb + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), rgb));
     vec3 lms = vec3(dot(linear_rgb, vec3(0.4122214708,0.5363325363,0.0514459929)),
@@ -82,14 +92,26 @@ vec3 to_oklab(vec3 rgb) {
 }
 void main() {
     vec4 result = shaded_color;
-    if (preview_unlit_overlay) result = vec4(source_rgb, shaded_color.a);
-    else if (gray_view) result = vec4(vec3(0.78) * light_intensity, shaded_color.a);
-    if (exact_surface_colors && local_color_lock > 0.5) result = vec4(source_rgb, 1.0);
+    vec3 rgb_source = source_rgb;
+    float material_alpha = 1.0;
+    if (preview_texture_enabled) {
+        vec4 texel = preview_texture_has_image ? sample_preview_texture(preview_texture, texture_uv) : vec4(1.0);
+        vec3 linear_rgb = mix(texel.rgb/12.92, pow((texel.rgb+0.055)/1.055, vec3(2.4)), step(vec3(0.04045),texel.rgb));
+        linear_rgb = clamp(linear_rgb*texture_multiplier.rgb,0.0,1.0);
+        rgb_source = mix(12.92*linear_rgb,1.055*pow(linear_rgb,vec3(1.0/2.4))-0.055,step(vec3(0.0031308),linear_rgb));
+        material_alpha = texel.a * texture_multiplier.a;
+        if (preview_alpha_mode == 1 && material_alpha < preview_alpha_cutoff) discard;
+        if (preview_alpha_mode != 2) material_alpha = 1.0;
+        result = vec4(rgb_source * light_intensity, material_alpha);
+    }
+    if (preview_unlit_overlay || beauty_unlit) result = vec4(rgb_source, result.a);
+    else if (gray_view) result = vec4(vec3(0.78) * light_intensity, result.a);
+    if (exact_surface_colors && local_color_lock > 0.5) result = vec4(rgb_source, 1.0);
     else if (preview_color_count > 0) {
-        vec3 lab = to_oklab(source_rgb);
-        vec3 selected = source_rgb;
+        vec3 lab = to_oklab(rgb_source);
+        vec3 selected = rgb_source;
         float best = 100.0;
-        for (int i = 0; i < 6; ++i) {
+        for (int i = 0; i < 32; ++i) {
             if (local_color_lock > 0.5) break;
             if (i >= preview_color_count) break;
             vec3 difference = lab - preview_lab[i];
@@ -101,6 +123,7 @@ void main() {
         // palette entries, never an interpolated or shaded target color.
         result = vec4(preview_lighting ? selected * light_intensity : selected, 1.0);
     }
+    if (preview_texture_enabled) result.a = material_alpha;
     if (preview_boundary_stroke) result.a *= clamp((1.0 - abs(stroke_side)) * preview_stroke_width * 0.5, 0.0, 1.0);
 )" + (modern ? "out_color = result; }" : "gl_FragColor = result; }");
     return shader.init_from_texts("ai_model_vertex_color", sources);

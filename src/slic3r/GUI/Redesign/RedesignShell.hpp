@@ -1,6 +1,9 @@
 #pragma once
 
 #include "../AI/ModelGeneration/ModelGenerationHost.hpp"
+#include "../AI/ModelGeneration/PostGenerationWorkbenchState.hpp"
+#include "../AI/SmartSlicing/SmartSlicingWorkbenchState.hpp"
+#include "slic3r/AI/Contracts/IModelArtifactConsumer.hpp"
 
 #include <boost/filesystem/path.hpp>
 
@@ -29,13 +32,16 @@ class ModelGenerationFeatureHost;
 class UploadThumbnail;
 class ImagePreview;
 class ModelPreview3D;
+class Plater;
+class SmartSlicingFeatureHost;
 
 class RedesignShell final : public wxPanel
 {
 public:
     enum class Page { Assets, Image, Model, Print };
 
-    explicit RedesignShell(wxWindow* parent, ModelGenerationFeatureHost* model_generation_host = nullptr);
+    explicit RedesignShell(wxWindow* parent, ModelGenerationFeatureHost* model_generation_host = nullptr,
+                           Plater* plater = nullptr);
     ~RedesignShell() override;
     void disconnect_model_generation_host();
 
@@ -43,6 +49,10 @@ public:
     bool navigate_to_tab(const wxString& id);
     wxString active_tab_id() const;
     void set_service_status(AIServiceStatus status);
+    bool owns_model_workflow() const;
+    bool native_workspace_visible() const;
+    void start_slicing_from_workspace();
+    void refresh_workflow_layout();
 
 private:
     enum class ImageState { Empty, Loading, Ready, Failed };
@@ -80,11 +90,54 @@ private:
     void update_image_state();
     void update_preview_bitmap();
     void bind_upload_click(wxWindow* window);
+    enum class ModelView { Result, Workbench, Slicing, Preview };
+    void build_model_workflow();
+    bool open_model_workbench();
+    void show_model_view(ModelView view);
+    void apply_workbench_state(const PostGenerationWorkbenchState& state);
+    void apply_slicing_state(const SmartSlicingWorkbenchState& state);
+    void confirm_workbench_import(const AI::ModelImportRequest& request);
+    void select_slicing_tab(bool native);
+    void start_workbench_slice();
 
     wxBoxSizer* m_sizer { nullptr };
     wxPanel* m_content_host { nullptr };
     wxPanel* m_image_page { nullptr };
     wxPanel* m_model_page { nullptr };
+    wxPanel* m_workbench_page { nullptr };
+    wxPanel* m_slicing_page { nullptr };
+    wxPanel* m_slicing_settings { nullptr };
+    wxPanel* m_native_slice_commands { nullptr };
+    wxPanel* m_native_plater_host { nullptr };
+    wxPanel* m_ai_slicing_controls { nullptr };
+    wxWindow* m_ai_slicing_tab { nullptr };
+    wxWindow* m_native_slicing_tab { nullptr };
+    wxWindow* m_slice_start { nullptr };
+    wxWindow* m_slice_analyze { nullptr };
+    wxWindow* m_slice_cancel { nullptr };
+    wxWindow* m_slice_keep_mesh { nullptr };
+    wxWindow* m_slice_export { nullptr };
+    std::array<wxWindow*, 3> m_slice_goals { nullptr, nullptr, nullptr };
+    wxStaticText* m_slice_details { nullptr };
+    wxStaticText* m_slice_status { nullptr };
+    wxStaticText* m_slice_check_status { nullptr };
+    wxStaticText* m_slice_model_stats { nullptr };
+    wxBoxSizer* m_slice_palette { nullptr };
+    std::vector<std::string> m_slice_displayed_palette;
+    wxStaticText* m_native_slice_status { nullptr };
+    wxWindow* m_native_slice_start { nullptr };
+    wxWindow* m_native_slice_export { nullptr };
+    wxWindow* m_return_slice { nullptr };
+    Plater* m_plater { nullptr };
+    wxWindow* m_plater_original_parent { nullptr };
+    SmartSlicingFeatureHost* m_slicing_host { nullptr };
+    PostGenerationWorkbenchState m_workbench_state;
+    SmartSlicingWorkbenchState m_slicing_state;
+    ModelView m_model_view {ModelView::Result};
+    bool m_native_slicing {false};
+    bool m_import_in_progress {false};
+    bool m_saved_sidebar_collapsed {false};
+    std::string m_pending_workbench_job;
     wxPanel* m_image_settings_panel { nullptr };
     wxScrolledWindow* m_image_settings_scroll { nullptr };
     wxPanel* m_upload_surface { nullptr };

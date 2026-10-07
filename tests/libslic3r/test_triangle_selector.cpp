@@ -159,4 +159,24 @@ TEST_CASE("Invalid midpoint subface input leaves the original facet unchanged", 
     CHECK_FALSE(selector.set_facet_midpoint_subfaces(0, EnforcerBlockerType::Extruder1,
         {{1, 2, EnforcerBlockerType::Extruder2}, {1, 2, EnforcerBlockerType::Extruder3}}));
     CHECK(selector.serialize() == before);
+    CHECK_FALSE(selector.set_facet_midpoint_subfaces(0, EnforcerBlockerType::Extruder1,
+        {{5, 0, EnforcerBlockerType::Extruder2}}));
+    CHECK(selector.serialize() == before);
+}
+
+TEST_CASE("Fine midpoint details survive native painting serialization", "[TriangleSelector][SubfaceColor]")
+{
+    const auto depth = GENERATE(uint8_t(3), uint8_t(4));
+    const TriangleMesh mesh = test_mesh();
+    TriangleSelector selector(mesh);
+    const uint8_t path = uint8_t((1u << (2u * depth)) - 1u);
+    REQUIRE(selector.set_facet_midpoint_subfaces(0, EnforcerBlockerType::Extruder1,
+        {{depth, path, EnforcerBlockerType::Extruder2}}));
+    CHECK(selector.num_facets(EnforcerBlockerType::Extruder2) == 1);
+    CHECK(selector.num_facets(EnforcerBlockerType::Extruder1) == 3 * depth);
+    const auto encoded = selector.serialize();
+    TriangleSelector restored(mesh);
+    restored.deserialize(encoded);
+    CHECK(restored.serialize() == encoded);
+    CHECK(restored.num_facets(EnforcerBlockerType::Extruder2) == 1);
 }

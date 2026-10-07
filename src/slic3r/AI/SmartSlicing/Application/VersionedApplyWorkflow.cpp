@@ -83,6 +83,14 @@ OfficialSliceResult VersionedApplyWorkflow::rejected(std::string diagnostic_code
     return {OfficialSlicePhase::Rejected, std::move(diagnostic_code), false, false};
 }
 
+bool VersionedApplyWorkflow::retire_completed_transaction()
+{
+    if (!m_active_transaction) return true;
+    if (!m_gateway.retire_committed_plan(*m_active_transaction)) return false;
+    m_active_transaction.reset();
+    return true;
+}
+
 bool VersionedApplyWorkflow::matches_active(
     const OfficialApplyTransactionIdentity& transaction) const
 {

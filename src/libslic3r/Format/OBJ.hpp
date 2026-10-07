@@ -1,6 +1,7 @@
 #ifndef slic3r_Format_OBJ_hpp_
 #define slic3r_Format_OBJ_hpp_
 #include "libslic3r/Color.hpp"
+#include "libslic3r/Point.hpp"
 #include "objparser.hpp"
 #include <unordered_map>
 namespace Slic3r {
@@ -36,7 +37,8 @@ struct ObjDialogInOut
     bool cancelled{false};
 };
 typedef std::function<void(ObjDialogInOut &in_out)> ObjImportColorFn;
-extern bool load_obj(const char *path, TriangleMesh *mesh, ObjInfo &vertex_colors, std::string &message, ObjParser::MtlData *out_mtl = nullptr);
+extern bool load_obj(const char *path, TriangleMesh *mesh, ObjInfo &vertex_colors, std::string &message, ObjParser::MtlData *out_mtl = nullptr,
+                     const std::function<bool()>& canceled = {});
 extern bool load_obj(const char *path, Model *model, ObjInfo &vertex_colors, std::string &message, const char *object_name = nullptr, ObjParser::MtlData *out_mtl = nullptr);
 
 struct TexturedMesh;

@@ -69,6 +69,23 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Runtime resource does not match'):
             dev.verify_runtime(self.root,self.build,[name])
 
+    def test_preserved_raster_rejects_changed_dependency_or_installed_bytes(self):
+        self.prepare()
+        source = self.root / ".tmp/frozen/local_semantic_raster.dll"
+        self.write(".tmp/frozen/local_semantic_raster.dll", "verified raster")
+        cache = self.build / "CMakeCache.txt"
+        cache.write_text(cache.read_text() + f"\nORCA_BEAUTY_RASTER_BINARY:FILEPATH={source}\n"
+                         f"ORCA_BEAUTY_RASTER_SHA256:STRING={dev.digest(source)}\n")
+        name = "resources/tools/ai/local_semantic_raster.dll"
+        self.write(".tmp/dev/run/" + name, "verified raster")
+        self.assertIn(name, dev.verify_runtime(self.root, self.build, [name]))
+        self.write(".tmp/dev/run/" + name, "unrelated raster")
+        with self.assertRaisesRegex(ValueError, "Runtime does not match"):
+            dev.verify_runtime(self.root, self.build, [name])
+        self.write(".tmp/frozen/local_semantic_raster.dll", "modified dependency")
+        with self.assertRaisesRegex(ValueError, "raster binary identity changed"):
+            dev.verify_runtime(self.root, self.build, [name])
+
     def test_preflight_is_read_only_and_accepts_dirty_detached_checkout(self):
         dev.git(self.root, "checkout", "--detach", "-q")
         self.write("tools/ai/provider.py", "value = 2\n")

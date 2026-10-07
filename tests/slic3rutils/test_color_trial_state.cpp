@@ -36,6 +36,7 @@ void require_same(const trial::State& a, const trial::State& b)
     REQUIRE(a.semantic_palette == b.semantic_palette);
     REQUIRE(a.semantic_mapping_palette == b.semantic_mapping_palette);
     REQUIRE(a.semantic_portrait_card == b.semantic_portrait_card);
+    REQUIRE(a.semantic_region_slots == b.semantic_region_slots);
 }
 }
 
@@ -208,8 +209,8 @@ TEST_CASE("Trial source count and paired palette sizes stay inside their support
     const auto saved = saved_trial();
     const std::vector<std::pair<std::string, nlohmann::json>> invalid {
         {"source", -1}, {"source", 3}, {"source", 1.0}, {"source", "2"},
-        {"count", 0}, {"count", 7}, {"count", 1.5}, {"count", 2},
-        {"schema", "orca.color-trial/v2"}, {"geometry_sha256", 123},
+        {"count", 0}, {"count", GUI::PreviewPalette::max_preview_colors + 1}, {"count", 1.5}, {"count", 2},
+        {"schema", "orca.color-trial/v3"}, {"geometry_sha256", 123},
         {"mapping_colors", nlohmann::json::array()},
         {"colors", nlohmann::json::array({{0, 0, 0}})}
     };
@@ -259,11 +260,29 @@ TEST_CASE("Invalid outgoing trial states cannot be saved as apparently valid sna
     auto state = saved_trial();
     state.source = 3;
     REQUIRE_THROWS_AS(trial::encode(state, 20, geometry_id), std::invalid_argument);
-    state = saved_trial(); state.count = 7;
+    state = saved_trial(); state.count = int(GUI::PreviewPalette::max_preview_colors) + 1;
     REQUIRE_THROWS_AS(trial::encode(state, 20, geometry_id), std::invalid_argument);
     state = saved_trial(); state.mapping_colors.pop_back();
     REQUIRE_THROWS_AS(trial::encode(state, 20, geometry_id), std::invalid_argument);
     state = saved_trial(); state.colors[0][0] = std::numeric_limits<float>::quiet_NaN();
     REQUIRE_THROWS_AS(trial::encode(state, 20, geometry_id), std::invalid_argument);
     REQUIRE_THROWS_AS(trial::encode(saved_trial(), 20, ""), std::invalid_argument);
+}
+
+TEST_CASE("Extended trials restore their slot bindings and legacy six-color drafts stay readable", "[ColorTrialState]")
+{
+    auto saved = saved_trial();
+    saved.count = int(GUI::PreviewPalette::max_preview_colors);
+    saved.semantic_region_slots = {0, 1, 2, -1};
+    trial::State restored;
+    std::string error;
+    REQUIRE(trial::decode(trial::encode(saved, 20, geometry_id), 20, geometry_id, restored, error));
+    require_same(saved, restored);
+
+    auto legacy = trial::encode(saved_trial(), 20, geometry_id);
+    legacy["schema"] = "orca.color-trial/v1";
+    legacy["locks"] = {true, false, true, false, false, false};
+    legacy.erase("semantic_region_slots");
+    REQUIRE(trial::decode(legacy, 20, geometry_id, restored, error));
+    require_same(saved_trial(), restored);
 }

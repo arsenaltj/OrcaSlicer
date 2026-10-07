@@ -7,6 +7,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -41,6 +43,31 @@ class VertexColorRegionEditor
 {
 public:
     bool initialize(indexed_triangle_set mesh, std::vector<RGBA> vertex_colors, std::string& error);
+    // An abandoned background preparation never leaves a partially ready editor.
+    bool initialize(indexed_triangle_set mesh, std::vector<RGBA> vertex_colors, std::string& error,
+                    const std::function<bool()>& canceled);
+    // Beauty uses its own topology. Prepare the same geometry/picker without
+    // the tolerant legacy region graph; old initialize overloads remain eager.
+    bool initialize_for_picking(indexed_triangle_set mesh, std::vector<RGBA> vertex_colors,
+                                std::string& error, const std::function<bool()>& canceled = {});
+    bool region_selection_ready() const {
+        return ready() && m_face_neighbors.size() == m_mesh.indices.size() &&
+            m_face_normals.size() == m_mesh.indices.size();
+    }
+    class RegionTopology {
+        friend class VertexColorRegionEditor;
+        const VertexColorRegionEditor* source {nullptr};
+        uint64_t generation {0};
+        std::vector<Vec3f> normals, centers;
+        std::vector<std::vector<uint32_t>> neighbors;
+        double indexed_ms {0}, weld_ms {0}, adjacency_ms {0};
+    };
+    // The source geometry must stay alive and immutable during preparation.
+    // The result belongs only to this editor generation. Installation preserves
+    // masks, overrides and the picker, including edits made while preparing.
+    std::unique_ptr<RegionTopology> prepare_region_topology(std::string& error,
+        const std::function<bool()>& canceled = {}) const;
+    bool install_region_topology(std::unique_ptr<RegionTopology> topology);
     void clear();
 
     bool ready() const { return !m_mesh.indices.empty() && m_vertex_colors.size() == m_mesh.vertices.size(); }
@@ -54,6 +81,9 @@ public:
     size_t selected_face_count() const { return m_selected_face_count; }
 
     std::optional<size_t> pick_face(const Vec3d& ray_origin, const Vec3d& ray_direction) const;
+    struct SurfaceHit { size_t face; Vec3d barycentric; double distance; };
+    std::optional<SurfaceHit> pick_surface(const Vec3d& ray_origin, const Vec3d& ray_direction) const;
+    void set_face_adjacency(const std::vector<std::vector<int32_t>>& adjacency);
     size_t update_selection(size_t seed_face, RegionSelectionOperation operation,
                             const RegionSelectionSettings& settings);
     size_t select_faces(const std::vector<size_t>& face_indices);
@@ -85,7 +115,11 @@ private:
         bool is_leaf() const { return count != 0; }
     };
 
-    uint32_t build_pick_bvh(size_t begin, size_t end);
+    bool initialize_impl(indexed_triangle_set mesh, std::vector<RGBA> vertex_colors,
+                         std::string& error, const std::function<bool()>& canceled, bool regions);
+    std::unique_ptr<RegionTopology> prepare_region_topology_impl(bool centers,
+        const std::function<bool()>& canceled) const;
+    uint32_t build_pick_bvh(size_t begin, size_t end, const std::function<bool()>& canceled);
     std::vector<size_t> smart_region(size_t seed_face, const RegionSelectionSettings& settings) const;
     std::vector<size_t> local_patch(size_t seed_face, const RegionSelectionSettings& settings) const;
     RGBA face_color(size_t face_index) const;
@@ -104,6 +138,7 @@ private:
     std::vector<uint8_t> m_selected_faces;
     size_t m_selected_face_count {0};
     float m_mesh_diagonal {0.0f};
+    uint64_t m_geometry_generation {0};
 };
 
 } // namespace Slic3r::AI

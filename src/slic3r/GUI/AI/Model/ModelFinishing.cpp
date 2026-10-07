@@ -372,11 +372,13 @@ ModelFinishingResult finish_model_obj(const boost::filesystem::path& source,
             const Vec3d& n1 = face_normals[edge.first];
             const Vec3d& n2 = face_normals[edge.second];
             // A crease above 55 degrees, an open boundary or a nonmanifold
-            // junction stays fixed. This does not infer semantic face regions.
+            // junction stays fixed when the workbench asks to preserve hard
+            // edges. This does not infer semantic face regions.
             const double dot = n1.dot(n2);
             if (n1.squaredNorm() <= degenerate_area_squared || n2.squaredNorm() <= degenerate_area_squared ||
-                dot < 0 ||
-                dot * dot < 0.573576436 * 0.573576436 * n1.squaredNorm() * n2.squaredNorm())
+                 dot < 0 ||
+                 (options.preserve_hard_edges &&
+                  dot * dot < 0.573576436 * 0.573576436 * n1.squaredNorm() * n2.squaredNorm()))
                 pinned[a] = pinned[b] = true;
         }
         if (options.repair_mesh) {
@@ -437,7 +439,9 @@ ModelFinishingResult finish_model_obj(const boost::filesystem::path& source,
             }
         }
         if (options.smooth_surface && options.strength > 0) {
-            const int iterations = 2 + int(std::ceil(10 * options.strength));
+            const int iterations = options.smoothing_iterations > 0
+                ? std::clamp(options.smoothing_iterations, 1, 32)
+                : 2 + int(std::ceil(10 * options.strength));
             // Only movable samples need iteration buffers. A cheek selection
             // must not copy/scan a million fixed vertices on every pass.
             std::vector<size_t> active;

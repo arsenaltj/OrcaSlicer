@@ -1,4 +1,5 @@
 #include "OrcaSmartSlicingAdapter.hpp"
+#include "OrcaPlateRevisionConfig.hpp"
 
 #include "libslic3r/Model.hpp"
 #include "libslic3r/PresetBundle.hpp"
@@ -704,9 +705,8 @@ AI::SmartSlicing::WorkspaceContext OrcaSmartSlicingAdapter::capture_context_impl
     plate_stream << context.plate_index << ':' << plate->id().id << ':' << static_cast<int>(plate->get_bed_type(true)) << ':'
                  << static_cast<int>(plate->get_real_print_seq()) << ':' << static_cast<int>(plate->get_filament_map_mode()) << ':'
                  << plate->is_locked() << ':' << plate->get_spiral_vase_mode();
-    plate_stream << ":config:\n" << canonical_config(*plate->config());
-    for (const int map : plate->get_filament_maps())
-        plate_stream << ":filament_map:" << map;
+    plate_stream << ":config:\n" << canonical_config(slice_input_plate_config(
+        *plate->config(), plate->get_real_filament_map_mode(bundle.project_config)));
     for (const int extruder : plate->get_first_layer_print_sequence())
         plate_stream << ":first_layer_extruder:" << extruder;
     for (const LayerPrintSequence& layer_sequence : plate->get_other_layers_print_sequence()) {

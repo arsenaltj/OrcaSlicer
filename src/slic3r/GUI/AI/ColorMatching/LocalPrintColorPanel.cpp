@@ -821,8 +821,6 @@ struct LocalPrintColorPanel::Impl {
                 const auto* imported = plater->model().objects[index]->volumes.front();
                 target_source = imported->source.input_file; target_paint_stamp = imported->mmu_segmentation_facets.timestamp();
                 target_config_stamp = static_cast<const ObjectBase&>(imported->config).timestamp();
-                refresh_materials();
-                plater->finish_local_print_model_import(index);
             }
             input.identity.parent_version = id; initial = input.identity; undo.clear(); redo.clear();
             message(deferred ? _L("原色资产已保留。可从准备页选中模型后继续匹配。") : _L("已按确认的面分组和耗材槽应用，未再次聚类。准备页支持撤销。"));

@@ -300,7 +300,7 @@ TEST_CASE("Native mixed puzzle assignments survive reopen and decline changed re
     puzzle.match_filaments(*surface,palette,{mix});
     const auto id=puzzle.face_piece.front();const auto partition=puzzle.face_piece;
     puzzle.paint_mixed(id,mix);
-    const auto saved=puzzle.encode();REQUIRE(saved["schema"]=="orca.beauty-puzzle/v3");
+    const auto saved=puzzle.encode();REQUIRE(saved["schema"]=="orca.beauty-puzzle/v4");
     auto restored=BeautyPuzzle::decode(saved,puzzle.geometry_id,partition.size());
     restored.match_filaments(*surface,palette,{mix});
     CHECK(restored.same_edit(puzzle));CHECK(restored.filament_slots.at(id)==2);
@@ -365,7 +365,7 @@ TEST_CASE("Matched puzzle colors preserve separate regions and exact physical sl
     const uint32_t id=puzzle.face_piece.front();
     puzzle.paint_filament(id,4);
     const auto saved=puzzle.encode();
-    REQUIRE(saved["schema"]=="orca.beauty-puzzle/v2");
+    REQUIRE(saved["schema"]=="orca.beauty-puzzle/v4");
     auto restored=BeautyPuzzle::decode(saved,puzzle.geometry_id,partition.size());
     REQUIRE(restored.same_edit(puzzle));
     restored.match_filaments(*surface,palette);

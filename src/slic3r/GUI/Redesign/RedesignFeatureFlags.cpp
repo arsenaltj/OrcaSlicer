@@ -23,6 +23,11 @@ bool RedesignFeatureFlags::enabled()
     return is_enabled_value(std::getenv("ORCASLICER_UI_REDESIGN"));
 }
 
+bool RedesignFeatureFlags::model_workflow_review_enabled()
+{
+    return is_enabled_value(std::getenv("ORCASLICER_MODEL_WORKFLOW_REVIEW"));
+}
+
 bool RedesignFeatureFlags::surface_enabled(std::string_view surface)
 {
     const std::string variable = "ORCASLICER_UI_REDESIGN_" + std::string(surface);

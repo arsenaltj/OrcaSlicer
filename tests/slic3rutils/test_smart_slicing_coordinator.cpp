@@ -100,6 +100,73 @@ TEST_CASE("smart slicing coordinator supports cancel and restart", "[AI][SmartSl
     CHECK(coordinator.snapshot().state == WorkflowState::ReadyForCandidatePlanning);
 }
 
+TEST_CASE("keeping a reviewed open mesh retains its warning and unlocks planning", "[SmartSlicing][SmartSlicingPreflight]")
+{
+    FakeWorkspace workspace;
+    workspace.context.materials.push_back({"material", "#FFFFFF"});
+    workspace.context.objects.front().open_edge_count = 3;
+    SmartSlicingCoordinator coordinator(workspace);
+    coordinator.start();
+    const auto revision = coordinator.snapshot().report->revision;
+    REQUIRE(coordinator.keep_current_mesh(revision));
+    CHECK(coordinator.snapshot().state == WorkflowState::ReadyForCandidatePlanning);
+    REQUIRE(coordinator.snapshot().report);
+    CHECK_FALSE(coordinator.snapshot().report->has_blocking_issue());
+    CHECK(coordinator.snapshot().report->readiness == Readiness::NeedsAttention);
+    CHECK(coordinator.snapshot().report->issues.front().code == IssueCode::OpenMesh);
+    CHECK(workspace.context.objects.front().open_edge_count == 3);
+    CHECK_FALSE(coordinator.keep_current_mesh(revision));
+    coordinator.cancel();
+    coordinator.start();
+    CHECK(coordinator.snapshot().report->has_blocking_issue());
+}
+
+TEST_CASE("a mesh decision cannot acknowledge a changed engineering revision", "[SmartSlicing][SmartSlicingPreflight]")
+{
+    FakeWorkspace workspace;
+    workspace.context.materials.push_back({"material", "#FFFFFF"});
+    workspace.context.objects.front().open_edge_count = 3;
+    SmartSlicingCoordinator coordinator(workspace);
+    coordinator.start();
+    auto revision = coordinator.snapshot().report->revision;
+    revision.fingerprint = "other";
+    CHECK_FALSE(coordinator.keep_current_mesh(revision));
+    CHECK(coordinator.snapshot().report->has_blocking_issue());
+    revision = coordinator.snapshot().report->revision;
+    workspace.context.revision.fingerprint = "changed";
+    CHECK_FALSE(coordinator.keep_current_mesh(revision));
+    CHECK(coordinator.snapshot().state == WorkflowState::Stale);
+    CHECK(coordinator.snapshot().report->has_blocking_issue());
+}
+
+TEST_CASE("a mesh decision cannot bypass incompatible material or misplaced objects", "[SmartSlicing][SmartSlicingPreflight]")
+{
+    FakeWorkspace workspace;
+    workspace.context.materials.push_back({"material", "#FFFFFF"});
+    workspace.context.objects.front().open_edge_count = 3;
+    const bool material_block = GENERATE(false, true);
+    if (material_block) workspace.context.material_compatibility.combination_status = MaterialCombinationStatus::Unsupported;
+    else workspace.context.objects.front().outside_build_volume = true;
+    SmartSlicingCoordinator coordinator(workspace);
+    coordinator.start();
+    CHECK_FALSE(coordinator.keep_current_mesh(coordinator.snapshot().report->revision));
+    CHECK(coordinator.snapshot().state == WorkflowState::AwaitingRiskDecision);
+    CHECK(coordinator.snapshot().report->has_blocking_issue());
+}
+
+TEST_CASE("a mesh decision fails closed when the current revision is unavailable", "[SmartSlicing][SmartSlicingPreflight]")
+{
+    FakeWorkspace workspace;
+    workspace.context.materials.push_back({"material", "#FFFFFF"});
+    workspace.context.objects.front().open_edge_count = 3;
+    SmartSlicingCoordinator coordinator(workspace);
+    coordinator.start();
+    workspace.throw_on_revision = true;
+    CHECK_FALSE(coordinator.keep_current_mesh(coordinator.snapshot().report->revision));
+    CHECK(coordinator.snapshot().state == WorkflowState::Failed);
+    CHECK(coordinator.snapshot().report->has_blocking_issue());
+}
+
 TEST_CASE("revision refresh makes an existing workflow stale", "[AI][SmartSlicing]")
 {
     FakeWorkspace workspace;

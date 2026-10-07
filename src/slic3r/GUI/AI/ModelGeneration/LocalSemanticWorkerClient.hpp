@@ -57,6 +57,7 @@ struct CacheWriteReport {
 struct MeshResult {
     Result process;
     LocalSemanticEvidence::Evidence evidence;
+    std::string evidence_sha256;
     bool cache_hit = false;
     CacheWriteReport cache_write;
 };

@@ -101,6 +101,7 @@ public:
     {
         return {OfficialSlicePhase::Rejected, "apply_undo_unavailable", false, false};
     }
+    virtual bool retire_committed_plan(const OfficialApplyTransactionIdentity&) { return false; }
     virtual OfficialSliceResult poll() = 0;
     virtual bool undo_last_apply() = 0;
 };

@@ -366,6 +366,16 @@ set(SLIC3R_GUI_SOURCES
     GUI/AI/SmartSlicing/SmartSlicingFeatureHost.cpp
     GUI/AI/SmartSlicing/SmartSlicingFeatureHost.hpp
     GUI/AI/Model/VertexColorRegionEditor.cpp GUI/AI/Model/ModelFinishing.cpp GUI/AI/ModelGeneration/ModelGenerationBeautyView.cpp GUI/AI/Model/BeautySurface.cpp GUI/AI/Model/BeautyAppearance.cpp GUI/AI/Model/BeautyFinishing.cpp GUI/AI/ModelGeneration/BeautyWorkbenchControls.cpp GUI/AI/ModelGeneration/BeautyGuidanceProtectedRegions.cpp GUI/AI/ModelGeneration/BeautyGuidanceProtectedRegions.hpp
+    GUI/AI/ModelGeneration/PostGenerationWorkbenchView.cpp
+    GUI/AI/ModelGeneration/PostGenerationWorkbenchPresentation.cpp
+    GUI/AI/ModelGeneration/PostGenerationWorkbenchHost.cpp
+    GUI/AI/ModelGeneration/ModelGenerationBeautySession.cpp
+    GUI/AI/ModelGeneration/ModelGenerationBeautyPreview.cpp
+    GUI/AI/ModelGeneration/ModelGenerationBeautyExport.cpp
+    GUI/AI/ModelGeneration/ModelGenerationBeautyVersions.cpp
+    GUI/AI/ModelGeneration/ModelGenerationWorkbenchHistory.cpp
+    GUI/AI/ModelGeneration/ModelPreviewSemantics.cpp
+    GUI/AI/ModelGeneration/ModelSemanticColoring.cpp
     GUI/AI/ColorMatching/LocalPrintColorPanel.cpp GUI/AI/ModelGeneration/LocalSemanticWorkerClient.cpp GUI/AI/ModelGeneration/ModelGenerationPreviewLayout.cpp GUI/AI/ModelGeneration/ModelGenerationSubmission.cpp
     GUI/AI/Model/VertexColorRegionEditor.hpp GUI/AI/Model/ModelArtifact.cpp GUI/AI/Model/ModelArtifact.hpp GUI/AI/Model/GlbGeometryEditing.cpp GUI/AI/ModelGeneration/ModelGenerationLocalImport.cpp
     GUI/Redesign/RedesignCommand.cpp
@@ -377,6 +387,7 @@ set(SLIC3R_GUI_SOURCES
     GUI/Redesign/RedesignMessageDialog.cpp
     GUI/Redesign/RedesignMessageDialog.hpp
     GUI/Redesign/RedesignShell.cpp
+    GUI/Redesign/RedesignModelWorkflow.cpp
     GUI/Redesign/RedesignShell.hpp
     GUI/Redesign/RedesignState.cpp
     GUI/Redesign/RedesignState.hpp
