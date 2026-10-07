@@ -84,5 +84,6 @@ add_subdirectory(slic3rutils)
 add_subdirectory(fff_print)
 add_subdirectory(sla_print)
 add_subdirectory(filament_group)
+add_subdirectory(ui_redesign)
 
 

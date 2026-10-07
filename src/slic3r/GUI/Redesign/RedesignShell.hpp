@@ -34,6 +34,7 @@ class ImagePreview;
 class ModelPreview3D;
 class Plater;
 class SmartSlicingFeatureHost;
+class PrinterWorkspace;
 
 class RedesignShell final : public wxPanel
 {
@@ -53,6 +54,8 @@ public:
     bool native_workspace_visible() const;
     void start_slicing_from_workspace();
     void refresh_workflow_layout();
+    void show_printer_media();
+    void refresh_printer_state();
 
 private:
     enum class ImageState { Empty, Loading, Ready, Failed };
@@ -138,6 +141,7 @@ private:
     bool m_import_in_progress {false};
     bool m_saved_sidebar_collapsed {false};
     std::string m_pending_workbench_job;
+    PrinterWorkspace* m_print_page { nullptr };
     wxPanel* m_image_settings_panel { nullptr };
     wxScrolledWindow* m_image_settings_scroll { nullptr };
     wxPanel* m_upload_surface { nullptr };

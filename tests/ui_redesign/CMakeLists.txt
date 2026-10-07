@@ -1,0 +1,4 @@
+add_executable(printer_workspace_tests test_printer_workspace.cpp)
+target_link_libraries(printer_workspace_tests PRIVATE Catch2::Catch2WithMain)
+target_include_directories(printer_workspace_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
+orcaslicer_discover_tests(printer_workspace_tests)

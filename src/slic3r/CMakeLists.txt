@@ -401,6 +401,12 @@ set(SLIC3R_GUI_SOURCES
     GUI/Redesign/StartupSplashView.hpp
     GUI/Redesign/StartupBufferView.hpp
     GUI/FilamentColourPalette.hpp
+    GUI/Redesign/RedesignWidgets.hpp
+    GUI/Redesign/PrinterWorkspaceState.hpp
+    GUI/Redesign/OrcaPrinterAdapter.cpp
+    GUI/Redesign/OrcaPrinterAdapter.hpp
+    GUI/Redesign/PrinterWorkspace.cpp
+    GUI/Redesign/PrinterWorkspace.hpp
     GUI/AIModelGenerationClient.cpp
     GUI/AIModelGenerationClient.hpp
     GUI/ModelGenerationPanel.cpp GUI/AI/ModelGeneration/ModelGenerationLibraryView.cpp GUI/AI/ModelGeneration/ModelGenerationArtifactFlow.cpp GUI/AI/ModelGeneration/ModelGenerationFeatureHost.cpp GUI/AI/ModelGeneration/ModelGenerationPresentation.cpp GUI/AI/ModelGeneration/ModelGenerationPresentationCore.cpp GUI/AI/ModelGeneration/ModelGenerationStatusText.cpp

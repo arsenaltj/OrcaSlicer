@@ -17,8 +17,6 @@
 namespace Slic3r::GUI {
 namespace {
 
-constexpr int kDialogWidth = 560;
-constexpr int kMessageWidth = 408;
 constexpr int kCornerRadius = 10;
 
 class DialogStatusIcon final : public wxPanel
@@ -78,15 +76,15 @@ private:
 class RedesignDialogActionButton final : public wxPanel
 {
 public:
-    RedesignDialogActionButton(wxWindow* parent, wxWindowID id, const wxString& caption, bool primary)
-        : wxPanel(parent, id, wxDefaultPosition, parent->FromDIP(wxSize(112, 38)), wxBORDER_NONE)
-        , m_primary(primary)
+    RedesignDialogActionButton(wxWindow* parent, wxWindowID id, const wxString& caption, bool primary, int width = 112)
+        : wxPanel(parent, id, wxDefaultPosition, parent->FromDIP(wxSize(width, 38)), wxBORDER_NONE)
+        , m_primary(primary), m_width(width)
     {
         SetLabel(caption);
         SetCanFocus(true);
         SetBackgroundStyle(wxBG_STYLE_PAINT);
         RedesignTheme::style_medium_text(this,
-            primary ? wxColour(20, 20, 20) : RedesignTheme::primary_text_colour(), 10);
+            primary ? wxColour(20, 20, 20) : RedesignTheme::primary_text_colour(), width == 170 ? 18 : 10);
         rescale();
         Bind(wxEVT_PAINT, [this](wxPaintEvent&) { paint(); });
         Bind(wxEVT_ENTER_WINDOW, [this](wxMouseEvent& event) {
@@ -131,8 +129,8 @@ public:
 
     void rescale()
     {
-        SetMinSize(FromDIP(wxSize(112, 38)));
-        SetMaxSize(FromDIP(wxSize(112, 38)));
+        SetMinSize(FromDIP(wxSize(m_width, 38)));
+        SetMaxSize(FromDIP(wxSize(m_width, 38)));
     }
 
 private:
@@ -174,6 +172,7 @@ private:
     }
 
     bool m_primary { false };
+    int m_width { 112 };
     bool m_hovered { false };
     bool m_pressed { false };
 };
@@ -252,12 +251,15 @@ private:
 };
 
 RedesignMessageDialog::RedesignMessageDialog(wxWindow* parent, const wxString& message,
-                                             const wxString& caption, long style)
+                                             const wxString& caption, long style, bool compact)
     : DPIDialog(parent, wxID_ANY, caption, wxDefaultPosition, wxDefaultSize,
                 wxBORDER_NONE | wxFRAME_NO_TASKBAR | wxFRAME_SHAPED)
 {
+    m_dialog_width = compact ? 400 : 560;
+    m_message_width = compact ? 352 : 408;
     m_cancel_result = (style & wxNO) ? wxID_NO : wxID_CANCEL;
-    m_default_result = (style & wxYES) ? wxID_YES : wxID_OK;
+    m_default_result = (style & wxNO_DEFAULT) && (style & wxNO) ? wxID_NO :
+                       (style & wxYES) ? wxID_YES : wxID_OK;
     SetBackgroundColour(RedesignTheme::panel_colour());
 
     auto* root = new wxBoxSizer(wxVERTICAL);
@@ -276,24 +278,29 @@ RedesignMessageDialog::RedesignMessageDialog(wxWindow* parent, const wxString& m
 
     auto* divider = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxSize(-1, FromDIP(1)), wxBORDER_NONE);
     divider->SetBackgroundColour(RedesignTheme::divider_colour());
-    root->Add(divider, 0, wxEXPAND);
+    if (!compact) root->Add(divider, 0, wxEXPAND);
+    else divider->Hide();
 
     auto* content_sizer = new wxBoxSizer(wxHORIZONTAL);
     m_icon = new DialogStatusIcon(this, (style & wxICON_WARNING) != 0);
-    content_sizer->Add(m_icon, 0, wxTOP, FromDIP(2));
+    if (!compact) content_sizer->Add(m_icon, 0, wxTOP, FromDIP(2));
+    else m_icon->Hide();
     m_message = new wxStaticText(this, wxID_ANY, message);
-    RedesignTheme::style_text(m_message, RedesignTheme::primary_text_colour(), 10);
-    m_message->SetMinSize(wxSize(FromDIP(kMessageWidth), -1));
-    m_message->Wrap(FromDIP(kMessageWidth));
-    content_sizer->Add(m_message, 1, wxLEFT, FromDIP(16));
-    root->Add(content_sizer, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(24));
+    RedesignTheme::style_text(m_message, RedesignTheme::primary_text_colour(), compact ? 12 : 10);
+    m_message->SetMinSize(wxSize(FromDIP(m_message_width), -1));
+    m_message->Wrap(FromDIP(m_message_width));
+    content_sizer->Add(m_message, 1, wxLEFT, FromDIP(compact ? 0 : 16));
+    root->AddSpacer(FromDIP(compact ? 8 : 24));
+    root->Add(content_sizer, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(24));
 
     m_action_sizer = new wxBoxSizer(wxHORIZONTAL);
-    m_action_sizer->AddStretchSpacer(1);
-    if (style & wxYES)
+    if (!compact) m_action_sizer->AddStretchSpacer(1);
+    if ((style & wxYES) && !compact)
         add_action_button(wxID_YES, _L("Yes"), true);
     if (style & wxNO)
         add_action_button(wxID_NO, _L("No"), false);
+    if ((style & wxYES) && compact)
+        add_action_button(wxID_YES, _L("Yes"), true);
     if (style & wxOK)
         add_action_button(wxID_OK, _L("OK"), true);
     if (style & wxCANCEL)
@@ -301,9 +308,9 @@ RedesignMessageDialog::RedesignMessageDialog(wxWindow* parent, const wxString& m
     root->Add(m_action_sizer, 0, wxEXPAND | wxALL, FromDIP(24));
 
     SetSizer(root);
-    SetMinSize(wxSize(FromDIP(kDialogWidth), -1));
+    SetMinSize(wxSize(FromDIP(m_dialog_width), -1));
     root->SetSizeHints(this);
-    SetSize(wxSize(FromDIP(kDialogWidth), GetSize().y));
+    SetSize(wxSize(FromDIP(m_dialog_width), GetSize().y));
     Layout();
     update_shape();
     CentreOnParent();
@@ -339,9 +346,10 @@ RedesignMessageDialog::RedesignMessageDialog(wxWindow* parent, const wxString& m
 
 void RedesignMessageDialog::add_action_button(wxWindowID id, const wxString& label, bool primary)
 {
-    auto* button = new RedesignDialogActionButton(this, id, label, primary);
+    const bool compact = m_dialog_width == 400;
+    auto* button = new RedesignDialogActionButton(this, id, label, primary, compact ? 170 : 112);
     button->Bind(wxEVT_BUTTON, [this, id](wxCommandEvent&) { finish_with(id); });
-    m_action_sizer->Add(button, 0, wxLEFT, FromDIP(12));
+    m_action_sizer->Add(button, 0, wxLEFT, FromDIP(compact && m_action_buttons.empty() ? 0 : 12));
     m_action_buttons.push_back(button);
 }
 
@@ -403,13 +411,13 @@ void RedesignMessageDialog::on_dpi_changed(const wxRect& suggested_rect)
     m_title_bar->SetMinSize(wxSize(-1, FromDIP(52)));
     m_close_button->rescale();
     static_cast<DialogStatusIcon*>(m_icon)->rescale();
-    m_message->SetMinSize(wxSize(FromDIP(kMessageWidth), -1));
-    m_message->Wrap(FromDIP(kMessageWidth));
+    m_message->SetMinSize(wxSize(FromDIP(m_message_width), -1));
+    m_message->Wrap(FromDIP(m_message_width));
     for (RedesignDialogActionButton* button : m_action_buttons)
         button->rescale();
-    SetMinSize(wxSize(FromDIP(kDialogWidth), -1));
+    SetMinSize(wxSize(FromDIP(m_dialog_width), -1));
     GetSizer()->SetSizeHints(this);
-    SetSize(wxSize(FromDIP(kDialogWidth), GetSize().y));
+    SetSize(wxSize(FromDIP(m_dialog_width), GetSize().y));
     Layout();
     update_shape();
 }
