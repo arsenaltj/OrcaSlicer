@@ -1,0 +1,289 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "L1 · 模块职责与本次改动",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "legend": {
+      "mode": "hidden"
+    }
+  },
+  "components": [
+    {
+      "id": "desktop",
+      "type": "frontend",
+      "label": "桌面与运行时",
+      "sublabel": "修改 12 · 潜在关联 2",
+      "tag": "直接修改",
+      "pos": [
+        60,
+        60
+      ],
+      "size": [
+        230,
+        86
+      ]
+    },
+    {
+      "id": "generation",
+      "type": "backend",
+      "label": "模型生成",
+      "sublabel": "修改 92 · 潜在关联 36",
+      "tag": "直接修改",
+      "pos": [
+        60,
+        230
+      ],
+      "size": [
+        230,
+        86
+      ]
+    },
+    {
+      "id": "color",
+      "type": "backend",
+      "label": "颜色匹配",
+      "sublabel": "修改 0 · 潜在关联 1",
+      "tag": "潜在关联",
+      "pos": [
+        60,
+        570
+      ],
+      "size": [
+        230,
+        86
+      ]
+    },
+    {
+      "id": "appearance",
+      "type": "backend",
+      "label": "3D 美颜",
+      "sublabel": "修改 0 · 潜在关联 0",
+      "tag": "无直接修改",
+      "pos": [
+        470,
+        570
+      ],
+      "size": [
+        230,
+        86
+      ]
+    },
+    {
+      "id": "modelassets",
+      "type": "backend",
+      "label": "模型资产读写",
+      "sublabel": "修改 7 · 潜在关联 0",
+      "tag": "直接修改",
+      "pos": [
+        880,
+        570
+      ],
+      "size": [
+        230,
+        86
+      ]
+    },
+    {
+      "id": "slicing",
+      "type": "backend",
+      "label": "智能切片",
+      "sublabel": "修改 9 · 潜在关联 15",
+      "tag": "直接修改",
+      "pos": [
+        880,
+        230
+      ],
+      "size": [
+        230,
+        86
+      ]
+    },
+    {
+      "id": "placement",
+      "type": "backend",
+      "label": "自动摆盘",
+      "sublabel": "修改 4 · 潜在关联 0",
+      "tag": "直接修改",
+      "pos": [
+        470,
+        740
+      ],
+      "size": [
+        230,
+        86
+      ]
+    },
+    {
+      "id": "contracts",
+      "type": "backend",
+      "label": "共享契约",
+      "sublabel": "修改 0 · 潜在关联 0",
+      "tag": "无直接修改",
+      "pos": [
+        470,
+        230
+      ],
+      "size": [
+        230,
+        86
+      ]
+    },
+    {
+      "id": "adapter",
+      "type": "backend",
+      "label": "Orca 适配",
+      "sublabel": "修改 3 · 潜在关联 16",
+      "tag": "直接修改",
+      "pos": [
+        470,
+        60
+      ],
+      "size": [
+        230,
+        86
+      ]
+    },
+    {
+      "id": "core",
+      "type": "backend",
+      "label": "Orca 核心",
+      "sublabel": "修改 0 · 潜在关联 0",
+      "tag": "无直接修改",
+      "pos": [
+        880,
+        60
+      ],
+      "size": [
+        230,
+        86
+      ]
+    },
+    {
+      "id": "tests",
+      "type": "backend",
+      "label": "测试",
+      "sublabel": "修改 24 · 潜在关联 32",
+      "tag": "直接修改",
+      "pos": [
+        470,
+        400
+      ],
+      "size": [
+        230,
+        86
+      ]
+    },
+    {
+      "id": "engineering",
+      "type": "backend",
+      "label": "开发与协作",
+      "sublabel": "修改 15 · 潜在关联 0",
+      "tag": "直接修改",
+      "pos": [
+        60,
+        400
+      ],
+      "size": [
+        230,
+        86
+      ]
+    },
+    {
+      "id": "assets",
+      "type": "backend",
+      "label": "资源与依赖",
+      "sublabel": "修改 0 · 潜在关联 0",
+      "tag": "无直接修改",
+      "pos": [
+        880,
+        400
+      ],
+      "size": [
+        230,
+        86
+      ]
+    },
+    {
+      "id": "unknown",
+      "type": "backend",
+      "label": "待归属",
+      "sublabel": "修改 1 · 潜在关联 0",
+      "tag": "直接修改",
+      "pos": [
+        60,
+        740
+      ],
+      "size": [
+        230,
+        86
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "adapter-contracts",
+      "from": "adapter",
+      "to": "contracts",
+      "label": "静态依赖",
+      "variant": "default",
+      "labelDy": 24
+    },
+    {
+      "id": "desktop-generation",
+      "from": "desktop",
+      "to": "generation",
+      "label": "静态依赖",
+      "variant": "default",
+      "labelDy": 24
+    },
+    {
+      "id": "generation-contracts",
+      "from": "generation",
+      "to": "contracts",
+      "label": "静态依赖",
+      "variant": "default"
+    },
+    {
+      "id": "slicing-contracts",
+      "from": "slicing",
+      "to": "contracts",
+      "label": "静态依赖",
+      "variant": "default"
+    },
+    {
+      "id": "tests-contracts",
+      "from": "tests",
+      "to": "contracts",
+      "label": "静态依赖",
+      "variant": "default"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "amber",
+      "title": "修改范围",
+      "items": [
+        "167 个直接修改文件；102 个潜在关联",
+        "PR 提交 · 7584ff7d → dd2337b5"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "静态依赖总览",
+      "items": [
+        "展示 5 条主干；其余 24 条见 details.html",
+        "全部关系：新增 6 · 移除 0；依据 code-review-graph"
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "判断边界",
+      "items": [
+        "44 个改动文件未解析；完整明细见 details.html / report.json",
+        "仅 AI 范围的静态依赖；动态调用可能遗漏；图不代表测试通过"
+      ]
+    }
+  ]
+}

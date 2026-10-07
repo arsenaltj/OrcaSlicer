@@ -1,5 +1,15 @@
 [
   {
+    "pr": 22,
+    "run": 37640425624,
+    "head": "dd2337b5377b656a8adc4e89497e38ca6e42dfee",
+    "base": "7584ff7d0548972d6deb6e618612b5b8337f4730",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "Decouple AI capabilities and protect portrait colour editing",
+    "path": "pr/22/dd2337b5377b656a8adc4e89497e38ca6e42dfee/37640425624",
+    "created": "2026-10-07T14:55:44+00:00"
+  },
+  {
     "pr": 21,
     "run": 37452192387,
     "head": "e62dbc280e24c986465f9d86e23507d3b2c0b830",
