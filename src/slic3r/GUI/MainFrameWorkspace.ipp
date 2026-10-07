@@ -12,9 +12,9 @@ bool ui_redesign_drag_trace_enabled()
     return enabled;
 }
 
+#ifdef __WXMSW__
 const char* ui_redesign_win32_message_name(WXUINT message)
 {
-#ifdef _WIN32
     switch (message) {
     case WM_NCLBUTTONDOWN: return "WM_NCLBUTTONDOWN";
     case WM_ENTERSIZEMOVE: return "WM_ENTERSIZEMOVE";
@@ -24,11 +24,8 @@ const char* ui_redesign_win32_message_name(WXUINT message)
     case WM_NCHITTEST: return "WM_NCHITTEST";
     default: return nullptr;
     }
-#else
-    (void)message;
-    return nullptr;
-#endif
 }
+#endif
 
 }
 
