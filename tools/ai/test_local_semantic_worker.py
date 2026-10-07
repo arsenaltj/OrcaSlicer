@@ -1,5 +1,6 @@
 """Protocol/config tests use stdlib only; no provider, torch or network calls."""
 import copy
+from contextlib import nullcontext
 import hashlib
 import json
 import os
@@ -7,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -143,6 +145,54 @@ raise SystemExit(w.main(sys.argv[1:]))
             with self.assertRaisesRegex(worker.WorkerError, "model execution reached"):
                 worker.probe(self.config)
         loader.assert_called_once_with(self.config)
+
+    def test_official_parser_loads_without_instance_label_names(self):
+        parser = SimpleNamespace(conf_name="celebm/448")
+        torch = SimpleNamespace(set_num_threads=mock.Mock(), set_num_interop_threads=mock.Mock())
+        facer = SimpleNamespace(face_detector=mock.Mock(return_value="detector"),
+                                face_parser=mock.Mock(return_value=parser))
+        with mock.patch.object(worker, "check_weights", return_value={}), \
+             mock.patch.dict(sys.modules, torch=torch, facer=facer):
+            result = worker.load_models(self.config)
+        self.assertIs(result[2], parser)
+        self.assertFalse(hasattr(parser, "label_names"))
+        facer.face_parser.assert_called_once_with("farl/celebm/448", device="cpu", model_path=str(
+            self.root / "face_parsing.farl.celebm.main_ema_181500_jit.pt"))
+
+    def test_full_probe_checks_actual_output_label_order_after_loading(self):
+        # Mimic the published parser API; instance labels are intentionally absent.
+        finite = SimpleNamespace(all=lambda: True)
+        torch = SimpleNamespace(inference_mode=nullcontext, full=lambda *a, **k: None,
+                                tensor=lambda *a, **k: None, uint8=None, int64=None,
+                                isfinite=lambda _: finite)
+        detector = lambda _: {"scores": None}
+        weights = {name: spec[1] for name, spec in worker.WEIGHTS.items()}
+        swapped = list(worker.LABEL_NAMES)
+        swapped[1], swapped[2] = swapped[2], swapped[1]
+        for labels in (worker.LABEL_NAMES, swapped, worker.LABEL_NAMES[:11]):
+            with self.subTest(labels=labels):
+                parser = lambda *args: {"seg": {"label_names": labels, "logits": SimpleNamespace(
+                    shape=(1, len(worker.LABEL_NAMES), 128, 128))}}
+                with mock.patch.object(worker, "load_models", return_value=(torch, detector, parser, weights)), \
+                     mock.patch.object(worker, "package_versions", return_value={"pyfacer": "fixture"}):
+                    if labels == worker.LABEL_NAMES:
+                        self.assertTrue(worker.probe(self.config)["capability_ready"])
+                    else:
+                        with self.assertRaisesRegex(worker.WorkerError, "unsupported_label_schema"):
+                            worker.probe(self.config)
+
+    def test_published_no_face_result_is_empty_evidence_not_a_failed_model(self):
+        torch = SimpleNamespace(empty=lambda shape, **kw: SimpleNamespace(shape=shape, **kw),
+                                float32="float32", int64="int64")
+        result = worker._detect(lambda _: {}, torch, "pixels")
+        self.assertEqual(result["scores"].shape, (0,))
+        self.assertEqual(result["rects"].shape, (0, 4))
+        self.assertEqual(result["points"].shape, (0, 5, 2))
+        self.assertEqual(result["image_ids"].dtype, "int64")
+        # Never turn a partial, invalid or nonempty result into valid unknowns.
+        for original in ({"scores": []}, {"error": "invalid"}, None, []):
+            with self.subTest(original=original):
+                self.assertIs(worker._detect(lambda _: original, torch, "pixels"), original)
 
     def test_probe_requires_the_configured_interpreter(self):
         other = self.root / "different-python.exe"

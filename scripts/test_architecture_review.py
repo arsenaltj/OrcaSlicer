@@ -138,6 +138,21 @@ class ArchitectureReviewTests(unittest.TestCase):
         report["relationships"] = []
         self.assertEqual(ar.archify_spec(report)["connections"], [])
 
+    def test_archify_layout_covers_the_current_module_map_without_inventing_edges(self):
+        config = ar.load_map(Path(__file__).resolve().parents[1])
+        report = {"modules": [{"id": module["id"], "label": module["label"],
+                              "changed": 1, "potential": 0} for module in config["modules"]],
+                  "relationships": [], "changes": [], "potential_files": [],
+                  "mode": "PR 提交", "base": "a" * 40, "head": "b" * 40}
+        spec = ar.archify_spec(report)
+        self.assertEqual({node["id"] for node in spec["components"]},
+                         {module["id"] for module in config["modules"]})
+        self.assertEqual(spec["connections"], [])
+        report["modules"].append({"id": "unmapped-capability", "label": "Future capability",
+                                  "changed": 1, "potential": 0})
+        with self.assertRaisesRegex(ValueError, "new module: unmapped-capability"):
+            ar.archify_spec(report)
+
     def test_archify_setup_rejects_tampered_archive_before_extracting(self):
         folder = self.root / ".tmp/architecture-review"
         folder.mkdir(parents=True)

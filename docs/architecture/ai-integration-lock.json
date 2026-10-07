@@ -161,6 +161,9 @@
       "src/slic3r/GUI/AboutDialog.cpp",
       "src/slic3r/GUI/AI/AIDesktopFeatureHost.cpp",
       "src/slic3r/GUI/AI/AIDesktopFeatureHost.hpp",
+      "src/slic3r/GUI/AI/MainFrameAIWorkflow.ipp",
+      "src/slic3r/GUI/AI/SidebarAIWorkflow.ipp",
+      "src/slic3r/GUI/AI/PlaterSmartSlicingWorkflow.ipp",
       "src/slic3r/GUI/AI/Orca",
       "src/slic3r/GUI/GUI_App.cpp",
       "src/slic3r/GUI/MainFrame.cpp",
@@ -184,6 +187,10 @@
       "tools/ai/verify_bundled_runtime.py"
     ],
     "model_generation_owned_paths": [
+      "src/slic3r/AI/ColorMatching",
+      "src/slic3r/AI/AppearanceEditing",
+      "src/slic3r/AI/ModelArtifacts",
+      "src/slic3r/AI/Placement",
       "src/slic3r/AI/ModelGeneration",
       "src/slic3r/GUI/AI/Model/ModelFinishing.cpp",
       "src/slic3r/GUI/AI/Model/ModelFinishing.hpp",

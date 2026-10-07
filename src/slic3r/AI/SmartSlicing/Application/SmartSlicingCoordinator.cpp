@@ -9,17 +9,20 @@
 
 namespace Slic3r::AI::SmartSlicing {
 
-SmartSlicingCoordinator::SmartSlicingCoordinator(IOrcaWorkspace& workspace) : m_workspace(workspace) {}
+SmartSlicingCoordinator::SmartSlicingCoordinator(IOrcaWorkspace& workspace, CandidateScoringStrategy scoring)
+    : m_workspace(workspace), m_candidate_scoring(std::move(scoring)) {}
 
-SmartSlicingCoordinator::SmartSlicingCoordinator(IOrcaWorkspace& workspace, ITrialSliceExecutor& trial_slice_executor)
-    : m_workspace(workspace), m_trial_slice_executor(&trial_slice_executor)
+SmartSlicingCoordinator::SmartSlicingCoordinator(IOrcaWorkspace& workspace, ITrialSliceExecutor& trial_slice_executor,
+    CandidateScoringStrategy scoring)
+    : m_workspace(workspace), m_trial_slice_executor(&trial_slice_executor), m_candidate_scoring(std::move(scoring))
 {}
 
 SmartSlicingCoordinator::SmartSlicingCoordinator(IOrcaWorkspace& workspace, ITrialSliceExecutor& trial_slice_executor,
-                                                 IOfficialSliceGateway& official_slice_gateway)
+                                                 IOfficialSliceGateway& official_slice_gateway, CandidateScoringStrategy scoring)
     : m_workspace(workspace)
     , m_trial_slice_executor(&trial_slice_executor)
     , m_official_slice_gateway(&official_slice_gateway)
+    , m_candidate_scoring(std::move(scoring))
 {}
 
 void SmartSlicingCoordinator::set_observer(Observer observer)
@@ -256,7 +259,7 @@ bool SmartSlicingCoordinator::plan_and_slice_candidates(std::vector<SliceCandida
             }
         }
 
-        m_snapshot.comparison = compare_candidates(m_snapshot.candidates, goal);
+        m_snapshot.comparison = compare_candidates_with_strategy(m_snapshot.candidates, goal, m_candidate_scoring);
         if (m_snapshot.comparison->recommended_candidate_id.empty()) {
             transition(WorkflowState::Failed, "no_comparable_candidate");
             return false;
@@ -327,7 +330,19 @@ bool SmartSlicingCoordinator::retry_candidate(const CandidateId& candidate_id, b
     }
 
     const bool accepted = TrialSlicingWorkflow::accept_result(*candidate, std::move(result));
-    m_snapshot.comparison = compare_candidates(m_snapshot.candidates, m_snapshot.goal);
+    try {
+        m_snapshot.comparison = compare_candidates_with_strategy(m_snapshot.candidates, m_snapshot.goal, m_candidate_scoring);
+    } catch (const std::exception& error) {
+        m_snapshot.comparison.reset();
+        m_snapshot.selected_candidate_id.clear();
+        transition(WorkflowState::Failed, error.what());
+        return false;
+    } catch (...) {
+        m_snapshot.comparison.reset();
+        m_snapshot.selected_candidate_id.clear();
+        transition(WorkflowState::Failed, "unknown_candidate_scoring_error");
+        return false;
+    }
     if (m_snapshot.selected_candidate_id.empty() ||
         std::none_of(m_snapshot.candidates.begin(), m_snapshot.candidates.end(), [this](const SliceCandidate& item) {
             return item.id == m_snapshot.selected_candidate_id && item.status == CandidateStatus::Ready;

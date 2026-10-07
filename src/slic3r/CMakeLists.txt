@@ -365,7 +365,7 @@ set(SLIC3R_GUI_SOURCES
     GUI/AI/Model/VertexColorRegionEditor.cpp GUI/AI/Model/ModelFinishing.cpp GUI/AI/ModelGeneration/ModelGenerationBeautyView.cpp GUI/AI/Model/BeautySurface.cpp GUI/AI/Model/BeautyAppearance.cpp GUI/AI/Model/BeautyFinishing.cpp GUI/AI/ModelGeneration/BeautyWorkbenchControls.cpp GUI/AI/ModelGeneration/BeautyPreparationTicket.hpp
     GUI/AI/ColorMatching/LocalPrintColorPanel.cpp GUI/AI/ModelGeneration/LocalSemanticWorkerClient.cpp GUI/AI/ModelGeneration/ModelGenerationInputLayout.cpp GUI/AI/ModelGeneration/ModelGenerationPreviewLayout.cpp GUI/AI/ModelGeneration/ModelGenerationSubmission.cpp
     GUI/AI/Model/VertexColorRegionEditor.hpp GUI/AI/Model/ModelArtifact.cpp GUI/AI/Model/ModelArtifact.hpp GUI/AI/Model/GlbGeometryEditing.cpp GUI/AI/ModelGeneration/ModelGenerationLocalImport.cpp
-    GUI/AIModelGenerationClient.cpp
+    GUI/AIModelGenerationClient.cpp GUI/AI/ModelGeneration/SidecarModelGenerationService.cpp
     GUI/AIModelGenerationClient.hpp
     GUI/ModelGenerationPanel.cpp GUI/AI/ModelGeneration/ModelGenerationLibraryView.cpp GUI/AI/ModelGeneration/ModelGenerationArtifactFlow.cpp GUI/AI/ModelGeneration/ModelGenerationFeatureHost.cpp GUI/AI/ModelGeneration/ModelGenerationPresentation.cpp GUI/AI/ModelGeneration/ModelGenerationPresentationCore.cpp GUI/AI/ModelGeneration/ModelGenerationStatusText.cpp
     GUI/ModelGenerationPanel.hpp GUI/AI/ModelGeneration/ModelGenerationFeatureHost.hpp GUI/AI/ModelGeneration/ModelGenerationPresentation.hpp GUI/AI/ModelGeneration/ModelGenerationStatusText.hpp GUI/AI/ModelGeneration/ModelPreview3D.hpp
@@ -905,7 +905,7 @@ else()
     set(_opengl_link_lib OpenGL::GL)
 endif()
 
-target_link_libraries(libslic3r_gui libslic3r OrcaSlicer::AIContracts OrcaSlicer::SmartSlicing cereal::cereal imgui imguizmo minilzo libvgcode md4c-html glad ${_opengl_link_lib} hidapi mdns ${wxWidgets_LIBRARIES} glfw libcurl OpenSSL::SSL OpenSSL::Crypto noise::noise pybind11::embed)
+target_link_libraries(libslic3r_gui libslic3r OrcaSlicer::AIContracts OrcaSlicer::SmartSlicing OrcaSlicer::ColorMatching OrcaSlicer::AppearanceEditing OrcaSlicer::ModelGeneration OrcaSlicer::Placement cereal::cereal imgui imguizmo minilzo libvgcode md4c-html glad ${_opengl_link_lib} hidapi mdns ${wxWidgets_LIBRARIES} glfw libcurl OpenSSL::SSL OpenSSL::Crypto noise::noise pybind11::embed)
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # Linux finds wxWidgets in module mode, whose include dirs and definitions

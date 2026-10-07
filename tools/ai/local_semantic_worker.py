@@ -141,6 +141,19 @@ def check_weights(directory: Path) -> dict:
     return actual
 
 
+def _detect(detector, torch, pixels):
+    result = detector(pixels)
+    # PyPI pyfacer returns {} when no face is detected; newer releases return
+    # empty tensors. Normalize only the documented empty result, leaving partial
+    # or malformed results for the probe/mesh validators to reject.
+    if isinstance(result, dict) and not result:
+        return {"scores": torch.empty((0,), dtype=torch.float32, device="cpu"),
+                "rects": torch.empty((0, 4), dtype=torch.float32, device="cpu"),
+                "points": torch.empty((0, 5, 2), dtype=torch.float32, device="cpu"),
+                "image_ids": torch.empty((0,), dtype=torch.int64, device="cpu")}
+    return result
+
+
 def load_models(config: dict):
     weights = check_weights(Path(config["weights_directory"]))
     # Deliberately delayed: ordinary product Python can import this module without torch.
@@ -156,8 +169,10 @@ def load_models(config: dict):
                                   model_path=str(directory / "mobilenet0.25_Final.pth"))
     parser = facer.face_parser("farl/celebm/448", device="cpu", model_path=str(
         directory / "face_parsing.farl.celebm.main_ema_181500_jit.pt"))
-    if list(parser.label_names) != LABEL_NAMES:
-        raise WorkerError("unsupported_label_schema")
+    # The official PyPI parser exposes labels on the inference result, not on
+    # the parser instance. Both the full probe and every accepted mesh view
+    # validate that result's exact label order and finite 19-channel logits.
+    # Do not infer a label schema from a version or add labels to the instance.
     parser.eye_landmarks = None
     parser.body_regions = None
     from local_body_regions import MODEL, load as load_body
@@ -173,7 +188,7 @@ def load_models(config: dict):
         except Exception:
             # Eye hints are optional; the verified FaRL evidence remains usable.
             pass
-    return torch, detector, parser, weights
+    return torch, lambda pixels: _detect(detector, torch, pixels), parser, weights
 
 
 def probe(config: dict, *, identity_only: bool = False) -> dict:

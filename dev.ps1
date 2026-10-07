@@ -17,7 +17,9 @@ param(
     [string]$PythonPath,
     [string]$CMakePath,
     [string]$DepsPrefix,
-    [ValidateSet('slic3rutils_tests', 'libslic3r_tests', 'fff_print_tests', 'printer_workspace_tests', 'printer_confirmation_tests')][string]$TestSuite,
+    [ValidateSet('slic3rutils_tests', 'libslic3r_tests', 'fff_print_tests', 'ai_capabilities_tests',
+        'ai_color_matching_tests', 'ai_appearance_tests', 'ai_generation_tests',
+        'ai_placement_tests', 'ai_slicing_strategy_tests', 'printer_workspace_tests', 'printer_confirmation_tests')][string]$TestSuite,
     [string]$TestLabel,
     [ValidateRange(1, 32)][int]$Jobs = 2,
     [string[]]$TestPattern = @(),
@@ -200,7 +202,12 @@ try {
         if ($after.source_identity -ne $check.source_identity -or $after.native_configuration -ne $check.native_configuration) { throw 'Source/configuration changed during build; rerun after edits finish.' }
         if ($Action -eq 'CppTest') {
             $ctest = Join-Path (Split-Path $check.cmake) 'ctest.exe'
-            Invoke-Step 'cpp-tests' $ctest @('--test-dir', (Join-Path $build 'tests'), '-C', 'Release', '-L', $TestLabel, '--output-on-failure', '--no-tests=error')
+            $testArguments = @('--test-dir', (Join-Path $build 'tests'), '-C', 'Release', '-L', $TestLabel, '--output-on-failure', '--no-tests=error')
+            if ($TestSuite -like 'ai_*_tests') {
+                $suitePrefix = $TestSuite.Substring(0, $TestSuite.Length - '_tests'.Length)
+                $testArguments += @('-R', ('^' + [regex]::Escape($suitePrefix) + '::'))
+            }
+            Invoke-Step 'cpp-tests' $ctest $testArguments
         }
     }
     if ($Action -eq 'Run') {

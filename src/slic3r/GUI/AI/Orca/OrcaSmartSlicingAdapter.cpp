@@ -148,6 +148,7 @@ OrcaSmartSlicingAdapter::candidate_proposals(const AI::SmartSlicing::WorkspaceRe
     input.config         = wxGetApp().preset_bundle->full_config();
     input.arrange_params = init_arrange_params(m_plater);
     input.plate_locked   = plate->is_locked();
+    input.engine         = m_placement_engine;
     const bool enable_wrapping = input.config.opt_bool("enable_wrapping_detection");
     plates.preprocess_exclude_areas(input.arrange_params.excluded_regions, enable_wrapping, 1, scale_(1));
     if (const auto wipe_tower = get_wipe_tower_arrangepoly(*m_plater))
@@ -157,9 +158,12 @@ OrcaSmartSlicingAdapter::candidate_proposals(const AI::SmartSlicing::WorkspaceRe
 
     DynamicPrintConfig current_config = wxGetApp().preset_bundle->full_config();
     current_config.apply(*plate->config(), true);
+    AI::SmartSlicing::WorkspaceContext advisor_context;
+    advisor_context.revision = revision;
+    advisor_context.parameter_plate_id = static_cast<int64_t>(plate->id().id);
+    advisor_context.current_brim_width = current_config.opt_float("brim_width");
     double current_brim_width = current_config.opt_float("brim_width");
     bool uniform_brim = true, found_brim = false;
-    bool benefits_from_brim = false;
     const Model& model = m_plater->model();
     for (size_t object_index = 0; object_index < model.objects.size(); ++object_index) {
         const ModelObject* object = model.objects[object_index];
@@ -190,27 +194,26 @@ OrcaSmartSlicingAdapter::candidate_proposals(const AI::SmartSlicing::WorkspaceRe
                 !plate->contain_instance(static_cast<int>(object_index), static_cast<int>(instance_index)))
                 continue;
             const Vec3d size = object->instance_bounding_box(*instance).size();
-            const double minimum_footprint = std::min(size.x(), size.y());
-            benefits_from_brim = benefits_from_brim || (minimum_footprint > 0.0 &&
-                (minimum_footprint <= 8.0 || size.z() >= 2.0 * minimum_footprint));
-            if (benefits_from_brim)
-                break;
+            advisor_context.printable_instance_sizes_mm.push_back({size.x(), size.y(), size.z()});
         }
     }
-    if (benefits_from_brim && uniform_brim && found_brim && current_brim_width < 10.0) {
-        const double proposed_brim_width = std::min(10.0, std::max(5.0, current_brim_width + 2.0));
+    advisor_context.current_brim_width = current_brim_width;
+    advisor_context.brim_scope_consistent = uniform_brim && found_brim;
+    auto parameters = advisor_context.brim_scope_consistent ? m_parameter_advisor->advise(advisor_context)
+        : AI::SmartSlicing::ParameterProposal{};
+    if (!parameters.entries.empty()) {
         AI::SmartSlicing::SliceCandidate candidate;
         candidate.id            = "parameter-brim-stability-v1";
         candidate.base_revision = revision;
         candidate.goal          = AI::SmartSlicing::CandidateGoal::Stability;
         candidate.explanation   = "small_or_slender_footprint_brim_candidate";
-        candidate.parameters.entries.push_back({AI::SmartSlicing::ConfigScope::Plate,
-                                                AI::SmartSlicing::PresetOwner::Process,
-                                                static_cast<int64_t>(plate->id().id),
-                                                "brim_width",
-                                                current_brim_width,
-                                                proposed_brim_width,
-                                                "improve_small_footprint_adhesion"});
+        candidate.parameters = std::move(parameters);
+        candidate.algorithm_id = m_parameter_advisor->algorithm_id();
+        candidate.algorithm_version = m_parameter_advisor->algorithm_version();
+        if (candidate.algorithm_id != "brim-stability" || candidate.algorithm_version != "brim-stability-v1") {
+            candidate.id = "parameter-" + candidate.algorithm_id + "-" + candidate.algorithm_version;
+            candidate.explanation = "parameter_advisor_candidate";
+        }
         candidates.push_back(std::move(candidate));
     }
     return candidates;

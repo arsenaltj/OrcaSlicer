@@ -3,6 +3,7 @@
 #include "GUI_Utils.hpp"
 #include "Widgets/ProgressDialog.hpp"
 #include "libslic3r/TexturePainting.hpp"
+#include "slic3r/AI/ColorMatching/TextureColorMatchingEngine.hpp"
 
 #include <wx/sizer.h>
 #include <wx/stattext.h>
@@ -115,6 +116,7 @@ struct TextureImportOptions {
     std::vector<size_t> matched_face_slots;
     std::vector<TextureFilamentEntry> matched_filaments;
     std::shared_ptr<const indexed_triangle_set> matched_source;
+    std::shared_ptr<const AI::ColorMatching::ITextureColorMatchingEngine> texture_color_engine;
 };
 // Lightweight 3D preview panel using wxGLCanvas.
 // Renders: original textured, multi-color, or filament-mapped.

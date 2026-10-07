@@ -1290,6 +1290,33 @@ TEST_CASE("Automatic facial color keeps source contrast without changing saved p
     }
 }
 
+TEST_CASE("Facial contrast follows new automatic colour regions and keeps saved paint", "[BeautyColorRegions][BeautyPuzzle]") {
+    BeautySurface surface;surface.geometry_id="split-feature";surface.areas.assign(11,1.);
+    std::vector<RGBA> source(11,{1,1,1,1});
+    source[0]={.6f,.6f,.6f,1};source[1]=source[2]={.4f,.4f,.4f,1};
+    for(int f=0;f<11;++f) {
+        surface.face_patch.push_back(uint32_t(f));surface.patches.emplace_back();
+        for(size_t c=0;c<3;++c)surface.patches.back().mean_color[c]=source[size_t(f)][c];
+        surface.centers.emplace_back(f,0,0);surface.normals.emplace_back(0,0,1);
+        surface.face_neighbors.push_back({f>0?f-1:-1,f<10?f+1:-1,-1});
+    }
+    BeautyPuzzle puzzle;puzzle.geometry_id=surface.geometry_id;puzzle.face_piece.assign(11,1);
+    puzzle.face_piece[0]=2;puzzle.next_id=3;
+    BeautyGuidance guidance;guidance.names={"face","lb"};guidance.labels.assign(11,-1);
+    guidance.labels[0]=0;guidance.labels[1]=guidance.labels[2]=1;
+    const std::vector<PhysicalFilamentChannel> palette{{0,"#FFFFFF","PLA",true},{1,"#808080","PLA",true},{2,"#404040","PLA",true}};
+    CHECK(beauty_match_feature_filaments(puzzle,surface,guidance,source,palette)==1);
+    CHECK(puzzle.face_piece[1]!=1);
+    CHECK(puzzle.filament_slots.at(puzzle.face_piece[0])==1);
+    CHECK(puzzle.filament_slots.at(puzzle.face_piece[1])==2);
+    CHECK(puzzle.filament_slots.at(puzzle.face_piece[10])==0);
+    REQUIRE_NOTHROW(puzzle.validate(surface));
+    auto saved=BeautyPuzzle::decode(puzzle.encode(),surface.geometry_id,source.size());
+    saved.paint_filament(saved.face_piece[1],0);const auto manual=saved;
+    CHECK(beauty_match_feature_filaments(saved,surface,guidance,source,palette)==0);
+    CHECK(saved.same_edit(manual));
+}
+
 // Read-only experiment: rank native mixer colors for supplied local evidence.
 // Proposals never create native slots or represent calibrated printed colors.
 TEST_CASE("Explicit portrait evidence ranks existing native mixer combinations", "[.][NativePortraitMixProbe]") {

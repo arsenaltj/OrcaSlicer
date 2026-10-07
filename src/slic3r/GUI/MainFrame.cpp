@@ -1253,6 +1253,7 @@ void MainFrame::show_option(bool show)
     }
 }
 
+#include "AI/MainFrameAIWorkflow.ipp"
 #include "MainFrameWorkspace.ipp"
 
 // SoftFever

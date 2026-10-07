@@ -9,6 +9,8 @@ Rules for writing tests under `tests/`. [CATCH2.md](CATCH2.md) is the Catch2 ref
 - `sla_print`: SLA support-tree and pad geometry, support-point generation, raycast.
 - `libnest2d`: 2D nesting and packing.
 - `slic3rutils`: the Python plugin system and its slicing-pipeline bindings; also the AI contracts, Sidecar client, model-generation presentation/palette helpers, and smart-slicing coordinator/workflow tests registered in `slic3rutils/CMakeLists.txt`.
+- `ai_capabilities`: extracted AI algorithm modules and their compatibility entries, linked without wxWidgets or libslic3r_gui. Run via `./dev.ps1 CppTest -TestSuite ai_capabilities_tests -TestLabel 'ColorMatchingEngine|TextureColorEngine|AppearanceEngine|GenerationService|LocalPrintColorBoundary|PlacementEngine|SlicingStrategy|SmartSlicing|BeautyAppearance|ModelFinishing'`. This suite filters its `ai_capabilities::` CTest names so it does not execute a stale GUI suite with shared tags.
+- Single-module AI optimization targets: `ai_color_matching_tests`, `ai_appearance_tests`, `ai_generation_tests`, `ai_placement_tests`, `ai_slicing_strategy_tests`. Use the corresponding module README's command. Each target links its own algorithm dependency closure, without wxWidgets/libslic3r_gui; dev.ps1 restricts CTest to that target's prefix even when another executable has the same tags. The aggregate suite still covers native cross-module placement/comparison fixtures.
 - `filament_group`: filament-to-extruder grouping, checked against golden files.
 
 ## Building and running

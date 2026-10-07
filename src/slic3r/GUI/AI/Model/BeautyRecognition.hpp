@@ -10,11 +10,19 @@ namespace Slic3r::AI {
 inline size_t beauty_match_feature_filaments(BeautyPuzzle& puzzle,const BeautySurface& surface,
     const BeautyGuidance& guidance,const std::vector<RGBA>& source,
     const std::vector<PhysicalFilamentChannel>& channels,const std::vector<MixedColorRecipe>& mixtures={}) {
-    std::set<uint32_t> eligible;
-    for(uint32_t id:puzzle.face_piece)if(!puzzle.colors.count(id) && !puzzle.filament_slots.count(id))eligible.insert(id);
+    const bool has_guidance=source.size()==puzzle.face_piece.size() && guidance.completed(source.size()) && !guidance.names.empty();
+    std::vector<uint8_t> eligible_faces(has_guidance?source.size():0,0);
+    for(size_t f=0;f<eligible_faces.size();++f) {
+        const auto id=puzzle.face_piece[f];
+        eligible_faces[f]=!puzzle.colors.count(id) && !puzzle.filament_slots.count(id);
+    }
     puzzle.match_filaments(surface,channels,mixtures,source);
-    if(eligible.empty() || source.size()!=puzzle.face_piece.size() ||
-       !guidance.completed(source.size()) || guidance.names.empty() || puzzle.palette.empty())return 0;
+    if(!has_guidance || puzzle.palette.empty())return 0;
+    // Automatic colour refinement may replace an ID or split it into children.
+    // Carry eligibility through face ownership, never infer it from fresh paint.
+    std::set<uint32_t> eligible;
+    for(size_t f=0;f<eligible_faces.size();++f)if(eligible_faces[f])eligible.insert(puzzle.face_piece[f]);
+    if(eligible.empty())return 0;
     using RGB=tex2color::color_utils::ColorDouble;
     const auto lightness=[](const RGB& rgb) {
         double y=0;const double weights[]{.2126,.7152,.0722};

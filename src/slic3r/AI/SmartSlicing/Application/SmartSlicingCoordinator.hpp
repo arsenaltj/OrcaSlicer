@@ -19,10 +19,11 @@ class SmartSlicingCoordinator
 public:
     using Observer = std::function<void(const WorkflowSnapshot&)>;
 
-    explicit SmartSlicingCoordinator(IOrcaWorkspace& workspace);
-    SmartSlicingCoordinator(IOrcaWorkspace& workspace, ITrialSliceExecutor& trial_slice_executor);
+    explicit SmartSlicingCoordinator(IOrcaWorkspace& workspace, CandidateScoringStrategy scoring = {});
     SmartSlicingCoordinator(IOrcaWorkspace& workspace, ITrialSliceExecutor& trial_slice_executor,
-                            IOfficialSliceGateway& official_slice_gateway);
+                            CandidateScoringStrategy scoring = {});
+    SmartSlicingCoordinator(IOrcaWorkspace& workspace, ITrialSliceExecutor& trial_slice_executor,
+                            IOfficialSliceGateway& official_slice_gateway, CandidateScoringStrategy scoring = {});
 
     const WorkflowSnapshot& snapshot() const { return m_snapshot; }
     void set_observer(Observer observer);
@@ -55,6 +56,7 @@ private:
     IOfficialSliceGateway* m_official_slice_gateway{nullptr};
     PrintabilityInspector m_inspector;
     CandidatePlanningWorkflow m_candidate_planner;
+    const CandidateScoringStrategy m_candidate_scoring;
     WorkflowSnapshot m_snapshot;
     std::optional<WorkspaceRevision> m_applied_revision;
     bool m_completed_report_current{false};

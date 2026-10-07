@@ -1,0 +1,29 @@
+{
+  "schema": "orca.portrait-palette-reference/v1",
+  "id": "portrait-six-v1",
+  "name": "人像六色 · 第一版",
+  "accepted_preview_date": "2026-10-05",
+  "status": "user_accepted_screen_targets_pending_physical_samples",
+  "color_space": "sRGB",
+  "channels": [
+    {"slot": 0, "name": "浅肤色", "role": "light_skin", "hex": "#F7E2DA", "rgb": [247, 226, 218]},
+    {"slot": 1, "name": "柔黑", "role": "dark_detail", "hex": "#282629", "rgb": [40, 38, 41]},
+    {"slot": 2, "name": "柔白", "role": "light_detail", "hex": "#F6F7F9", "rgb": [246, 247, 249]},
+    {"slot": 3, "name": "暖肤色", "role": "warm_skin", "hex": "#E8B49A", "rgb": [232, 180, 154]},
+    {"slot": 4, "name": "砖红唇色", "role": "lip", "hex": "#B9514A", "rgb": [185, 81, 74]},
+    {"slot": 5, "name": "暖棕色", "role": "brown_detail", "hex": "#70533E", "rgb": [112, 83, 62]}
+  ],
+  "physical_calibration": {
+    "status": "not_measured",
+    "material": null,
+    "process": null,
+    "measured_color_space": null,
+    "sample_measurements": []
+  },
+  "notes": [
+    "用户认可的是当前人像的软件对照效果；尚未确认实物耗材颜色或打印效果。",
+    "slot 为零基编号；不自动修改工程槽位或生成混色配方。",
+    "保持此版目标色，制作实物后另存测量色值和材料参数；不要把测量偏差覆盖成原始目标。",
+    "此表是六种耗材的配色目标，不是色母比例、染料配方、CMYK印刷标准或已标定生产色样。"
+  ]
+}

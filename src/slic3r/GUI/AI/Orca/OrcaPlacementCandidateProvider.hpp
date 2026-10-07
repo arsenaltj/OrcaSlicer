@@ -1,6 +1,7 @@
 #pragma once
 
 #include "libslic3r/ModelArrange.hpp"
+#include "slic3r/AI/Placement/PlacementEngine.hpp"
 #include "slic3r/AI/SmartSlicing/Domain/SliceCandidate.hpp"
 
 #include <algorithm>
@@ -20,6 +21,7 @@ struct OrcaPlacementCandidateInput
     std::set<uint64_t> locked_object_ids;
     std::set<uint64_t> locked_instance_ids;
     bool plate_locked{false};
+    std::shared_ptr<const AI::Placement::IPlacementEngine> engine;
 };
 
 class OrcaPlacementCandidateProvider
@@ -76,7 +78,9 @@ public:
             if (bed.size() < 3)
                 return {};
 
-            arrangement::arrange(selected, fixed, bed, params);
+            const auto placement = AI::Placement::arrange(selected, fixed, bed, params, input.engine);
+            if (placement.canceled)
+                return {};
             if (std::any_of(selected.begin(), selected.end(), [](const arrangement::ArrangePolygon& polygon) {
                     return polygon.bed_idx != 0;
                 }))
@@ -99,6 +103,8 @@ public:
             candidate.goal             = AI::SmartSlicing::CandidateGoal::Stability;
             candidate.explanation      = "native_arrange_stability_candidate";
             candidate.status           = AI::SmartSlicing::CandidateStatus::Draft;
+            candidate.algorithm_id     = placement.algorithm_id;
+            candidate.algorithm_version = placement.algorithm_version;
             candidate.placement.transforms.reserve(selected_instances.size());
             for (ModelInstance* instance : selected_instances) {
                 AI::SmartSlicing::ObjectTransform transform;

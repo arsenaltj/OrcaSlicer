@@ -86,12 +86,9 @@ void MainFrame::init_tabpanel() {
 
     wxGetApp().plater_ = m_plater;
 
-    m_ai_feature_host = std::make_unique<AIDesktopFeatureHost>(m_tabpanel, m_plater, [this] {
-        select_tab(TAB_ID_PREPARE);
-    }, [this] { register_ai_assistant(); });
-    trace_stage("ai_feature_host");
-    m_tabpanel->AddPage(TAB_ID_GENERATE_3D, m_ai_feature_host->model_generation_panel(), _L("3D 生成"),
-                        "tab_generate_3d_active");
+    m_ai_feature_host = create_ai_feature_host(m_tabpanel, m_plater,
+        [this] { select_tab(TAB_ID_PREPARE); }, [this] { register_ai_assistant(); },
+        [&] { trace_stage("ai_feature_host"); });
 
     create_preset_tabs();
     trace_stage("preset_tabs");
@@ -150,17 +147,4 @@ void MainFrame::init_tabpanel() {
         trace_stage("initial_filament_count");
     }
     trace_stage("remaining_tabs_and_initial_config");
-}
-
-void MainFrame::register_ai_assistant()
-{
-    if (m_plater != nullptr && m_view_menu != nullptr && !m_ai_assistant_registered) {
-        m_plater->enable_ai_assistant();
-        append_menu_check_item(
-            m_view_menu, wxID_ANY, _L("高级参数助手"), _L("打开高级参数问答工具。"),
-            [this](wxCommandEvent&) { m_plater->show_ai_assistant(!m_plater->is_ai_assistant_shown()); }, this,
-            [this]() { return is_prepare_or_preview_tab(); },
-            [this]() { return m_plater->is_ai_assistant_shown(); }, this);
-        m_ai_assistant_registered = true;
-    }
 }

@@ -10,6 +10,7 @@
     "src/slic3r/GUI/AISidecarClient.cpp",
     "src/slic3r/GUI/AISidecarClient.hpp",
     "tools/ai",
+    "tests/ai_capabilities",
     "tests/slic3rutils",
     "src/slic3r/GUI/Redesign",
     "tests/ui_redesign"
@@ -38,10 +39,36 @@
         "model_generation_owned_paths"
       ],
       "paths": [
+        "src/slic3r/AI/ModelGeneration",
+        "src/slic3r/GUI/AI/ModelGeneration/SidecarModelGenerationService.cpp",
         "src/slic3r/GUI/AI/Model",
         "tools/ai"
       ],
       "purpose": "设计预处理、确认生成、模型预览与历史资产"
+    },
+    {
+      "id": "color",
+      "label": "颜色匹配",
+      "ownership": [],
+      "paths": [
+        "src/slic3r/AI/ColorMatching",
+        "src/slic3r/GUI/AI/ColorMatching"
+      ],
+      "purpose": "只读颜色与材料快照计算候选，由 Orca 适配器显式应用"
+    },
+    {
+      "id": "appearance",
+      "label": "3D 美颜",
+      "ownership": [],
+      "paths": ["src/slic3r/AI/AppearanceEditing"],
+      "purpose": "外观及几何候选计算，保留来源与面序对应，不直接接受或提交工程"
+    },
+    {
+      "id": "modelassets",
+      "label": "模型资产读写",
+      "ownership": [],
+      "paths": ["src/slic3r/AI/ModelArtifacts"],
+      "purpose": "共享模型格式、GLB 几何及来源身份，供算法和导入适配器复用"
     },
     {
       "id": "slicing",
@@ -51,6 +78,13 @@
       ],
       "paths": [],
       "purpose": "采集工作区、试切比较、显式应用和撤销"
+    },
+    {
+      "id": "placement",
+      "label": "自动摆盘",
+      "ownership": [],
+      "paths": ["src/slic3r/AI/Placement"],
+      "purpose": "脱离模型 setter 的轮廓及约束快照计算候选，产品异步摆盘与智能候选复用"
     },
     {
       "id": "contracts",
@@ -126,6 +160,71 @@
     }
   ],
   "evidence": [
+    {
+      "id": "generation_service",
+      "path": "src/slic3r/AI/ModelGeneration/ModelGenerationClient.hpp",
+      "needle": "class ModelGenerationClient"
+    },
+    {
+      "id": "placement_engine",
+      "path": "src/slic3r/AI/Placement/PlacementEngine.cpp",
+      "needle": "std::shared_ptr<const IPlacementEngine> baseline_engine()"
+    },
+    {
+      "id": "candidate_scoring",
+      "path": "src/slic3r/AI/SmartSlicing/Domain/CandidateComparison.hpp",
+      "needle": "struct CandidateScoringStrategy"
+    },
+    {
+      "id": "appearance_algorithm",
+      "path": "src/slic3r/AI/AppearanceEditing/AppearanceEngine.cpp",
+      "needle": "std::shared_ptr<const IAppearanceEngine> baseline_engine()"
+    },
+    {
+      "id": "color_algorithm",
+      "path": "src/slic3r/AI/ColorMatching/ColorMatchingEngine.cpp",
+      "needle": "Computation compute(const Input& input)"
+    },
+    {
+      "id": "automatic_color_regions",
+      "path": "src/slic3r/AI/ColorMatching/AutomaticColorRegions.cpp",
+      "needle": "std::vector<ColorRegionSplit> refine_automatic_color_regions("
+    },
+    {
+      "id": "local_color_refinement",
+      "path": "src/slic3r/AI/ColorMatching/ColorIslandCleanup.cpp",
+      "needle": "std::vector<ColorIslandReplacement> find_enclosed_color_islands("
+    },
+    {
+      "id": "beauty_local_boundaries",
+      "path": "src/slic3r/AI/AppearanceEditing/BeautyPuzzleRefinement.cpp",
+      "needle": "size_t BeautyPuzzle::smooth_selected_boundaries("
+    },
+    {
+      "id": "beauty_region_precision",
+      "path": "src/slic3r/AI/AppearanceEditing/BeautyRegionPrecision.cpp",
+      "needle": "BeautyRegionPrecision refine_selected_region_mesh("
+    },
+    {
+      "id": "beauty_region_validity",
+      "path": "src/slic3r/AI/AppearanceEditing/BeautyRegionPrecision.cpp",
+      "needle": "BeautyPrecisionValidity assess_beauty_precision("
+    },
+    {
+      "id": "refined_asset_export",
+      "path": "src/slic3r/AI/ModelArtifacts/GlbGeometryEditing.cpp",
+      "needle": "void write_glb_surface_refinement("
+    },
+    {
+      "id": "source_color_details",
+      "path": "src/slic3r/AI/ColorMatching/SourceColorDetails.cpp",
+      "needle": "std::vector<ColorRegionSplit> recover_selected_source_color_details("
+    },
+    {
+      "id": "portrait_material_constraints",
+      "path": "src/slic3r/AI/ColorMatching/PortraitColorConstraints.cpp",
+      "needle": "std::vector<ColorRegionSplit> constrain_selected_portrait_materials("
+    },
     {
       "id": "desktop_host",
       "path": "src/slic3r/GUI/AI/AIDesktopFeatureHost.cpp",
@@ -215,6 +314,11 @@
       "id": "native_output",
       "path": "src/slic3r/GUI/Plater.cpp",
       "needle": "void Plater::priv::export_gcode("
+    },
+    {
+      "id": "official_native_start",
+      "path": "src/slic3r/GUI/AI/PlaterSmartSlicingWorkflow.ipp",
+      "needle": "void Plater::enable_smart_slicing()"
     },
     {
       "id": "beauty_physical_handoff",
@@ -692,6 +796,11 @@
       "evidence": [
         "import_model",
         "beauty_physical_handoff",
+        "automatic_color_regions",
+        "local_color_refinement",
+        "beauty_local_boundaries",
+        "source_color_details",
+        "portrait_material_constraints",
         "beauty_target_colors"
       ],
       "modules": [
