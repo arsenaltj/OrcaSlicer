@@ -1,0 +1,25 @@
+{
+  "pr": 23,
+  "run": 37660017978,
+  "head": "7dabcd2312c6cbb539472e744bb75483394f35bc",
+  "base": "7584ff7d0548972d6deb6e618612b5b8337f4730",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "整合最新全流程 UX 与模型、美颜及切片功能",
+  "path": "pr/23/7dabcd2312c6cbb539472e744bb75483394f35bc/37660017978",
+  "created": "2026-10-07T17:36:30+00:00",
+  "files": {
+    "index.html": "2730c9784925d657ab14167292ecbba70624400bb57b8457b7cdb53261f9f3c8",
+    "details.html": "774fdbbb4185d3adb59ab8809269fb384890cca6151e048991fa380c0f08d8fe",
+    "report.json": "03d82d450c0b48e5499167801ae09175a0813c6a6f1a1076d0a11f3a74034610",
+    "summary.md": "7ee3011e8626b15d8de83bb5249f577c059902b6543cba9d331de52d519ff791",
+    "archify-receipts.json": "41c76ed0de90cb756a0bbc8a1985d02a33d46c965534b63da99693236d14bf31",
+    "l0-context.html": "812d3647a86ed5c81c5840a35ed104e026db0e177e3097f5613f305605dcd5a0",
+    "l0-context.json": "36a802df81426b838b7c6596f1808af8bc2a12b56a4f511456ab918307633b19",
+    "l1-modules.html": "af9a91c1374b2038524ddd0dbff7fda54aa84ec9daa4c9af2c12621dc8203229",
+    "l1-modules.json": "e928fafd342df8ff1116f9468a0427c93dd1b159a670c03846798ab7c5b11c22",
+    "l2-generation.html": "5acbda288166f273c4137cf06a8ac7d2386d95f696589621ca5b3ca4e845c7fc",
+    "l2-generation.json": "e38c2d3e962b690d22bf3a3e61c5fb208d5a8b2b4c2ab96c683e2a85305f7d05",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}
