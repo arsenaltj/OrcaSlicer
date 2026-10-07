@@ -1,12 +1,13 @@
 [CmdletBinding()]
 param(
     [string]$DataDir,
+    [string]$RuntimeDir,
     [ValidateRange(1024, 65535)][int]$Port = 18767
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $workflowRoot = Split-Path $PSScriptRoot -Parent
-$runtime = Join-Path $workflowRoot '.tmp/dev/run'
+$runtime = if ($RuntimeDir) { [IO.Path]::GetFullPath($RuntimeDir) } else { Join-Path $workflowRoot '.tmp/dev/run' }
 if (-not $DataDir) { $DataDir = Join-Path $workflowRoot '.tmp/dev/workflow-review' }
 $DataDir = [IO.Path]::GetFullPath($DataDir)
 $application = Join-Path $runtime 'orca-slicer.exe'

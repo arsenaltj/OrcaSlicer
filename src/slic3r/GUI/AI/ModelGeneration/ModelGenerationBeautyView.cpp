@@ -421,11 +421,19 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
         }
         refresh_model_finishing();
     };
-    m_beauty_controls->on_reoptimize = [this] {
-        if (!m_model_preview || !m_portrait_mode || !workbench_snapshot().portrait_available) return false;
+    m_beauty_controls->on_reoptimize = [this](wxString& reason) {
+        if (!m_model_preview || !post_generation_ui_state().can_edit || !m_finishing_candidate.empty()) {
+            reason = _L("当前模型不可编辑，请先完成任务或接受、放弃候选版本。");
+            return false;
+        }
+        if (!m_model_preview->semantic_reoptimization_available()) {
+            reason = m_model_preview->semantic_reoptimization_reason();
+            return false;
+        }
         if (m_beauty_transactions && !m_beauty_transactions->begin(
                 BeautyWorkbenchTransactionController::OperationKind::SemanticReoptimization)) {
-            m_finishing_status->SetLabel(_L("当前仍有 Beauty 处理正在进行，请先完成或取消。"));
+            reason = _L("当前仍有 Beauty 处理正在进行，请先完成或取消。");
+            m_finishing_status->SetLabel(reason);
             refresh_model_finishing();
             return false;
         }
@@ -443,10 +451,15 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
             export_semantic_candidate();
         });
         if (!m_model_preview->request_semantic_reoptimization()) {
+            if (!m_beauty_reoptimization_before) {
+                reason = m_finishing_status->GetLabel();
+                return false;
+            }
+            reason = _L("未重新识别人像区域：") + m_model_preview->semantic_reoptimization_reason();
             m_model_preview->set_semantic_completion_callback({});
             if (auto before = std::move(m_beauty_reoptimization_before)) restore_beauty_candidate(*before);
             if (m_beauty_transactions) m_beauty_transactions->finish(false, false, "semantic request unavailable");
-            m_finishing_status->SetLabel(_L("未重新识别人像区域：") + m_model_preview->semantic_reoptimization_reason());
+            m_finishing_status->SetLabel(reason);
             refresh_model_finishing();
             return false;
         }
@@ -460,6 +473,10 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
     m_beauty_controls->on_accept = [this] { accept_model_finishing(); };
     m_beauty_controls->on_discard = [this] { discard_model_finishing(); };
     m_beauty_controls->on_cancel = [this] {
+        if (m_workbench_check_running && m_workbench_check_cancel) {
+            m_workbench_check_cancel->store(true);
+            return;
+        }
         if (m_beauty_controls && m_beauty_controls->partitioning()) {
             m_beauty_controls->cancel_partition();
             if (m_beauty_transactions) m_beauty_transactions->request_cancel();
@@ -473,12 +490,16 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
             return;
         }
         if (m_finishing_canceled) m_finishing_canceled->store(true);
-        if (m_beauty_transactions && m_beauty_transactions->processing() && !m_finishing_running && m_model_preview)
-            m_model_preview->cancel_semantic_request();
         if (m_beauty_transactions) m_beauty_transactions->request_cancel();
+        if (!m_finishing_running && m_model_preview && m_model_preview->semantic_processing()) {
+            m_model_preview->cancel_semantic_request();
+            refresh_model_finishing();
+            return;
+        }
         m_finishing_status->SetLabel(_L("正在取消，本次处理不会替换当前模型。"));
     };
     m_beauty_controls->on_partition_started = [this] {
+        if (!post_generation_ui_state().can_edit) return false;
         if (m_beauty_transactions && !m_beauty_transactions->begin(
                 BeautyWorkbenchTransactionController::OperationKind::Selection)) return false;
         m_finishing_status->SetLabel(_L("正在划分模型区域，可旋转、缩放、查看和取消。"));
@@ -493,6 +514,7 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
         refresh_model_finishing();
     };
     m_beauty_controls->on_pick_mode = [this] {
+        if (!post_generation_ui_state().can_edit) return;
         m_model_preview->set_selection_preview_suppressed(false);
         m_finishing_selection_operation->SetSelection(3);
         update_region_mode();

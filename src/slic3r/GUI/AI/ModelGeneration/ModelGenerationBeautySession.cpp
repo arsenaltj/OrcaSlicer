@@ -196,8 +196,9 @@ PostGenerationUiState ModelGenerationPanel::post_generation_ui_state() const
         m_model_preview_ready,
         !m_displayed_model_path.empty(),
         m_busy || m_preview_loading,
-        m_finishing_running,
+        m_finishing_running || m_workbench_check_running,
         (m_beauty_transactions && m_beauty_transactions->processing()) ||
+            (m_model_preview && m_model_preview->semantic_processing()) ||
             (m_finishing_workbench && m_model_preview && m_model_preview->selection_busy()),
         !m_finishing_candidate.empty(),
         m_finishing_before || m_finishing_compare_held,
@@ -216,7 +217,7 @@ PostGenerationUiState ModelGenerationPanel::post_generation_ui_state() const
 void ModelGenerationPanel::update_finishing_selection()
 {
     const bool local = m_finishing_workbench && m_workbench_editing && (m_finishing_tool->GetSelection() == 1 || m_finishing_tool->GetSelection() == 4 || m_finishing_tool->GetSelection() == 5);
-    m_model_preview->set_selection_enabled(local && !m_busy &&
+    m_model_preview->set_selection_enabled(local && !m_busy && !m_workbench_check_running && !m_model_preview->semantic_processing() &&
         (m_finishing_candidate.empty() || m_finishing_workbench));
     if (!local) return;
     const auto selected = m_model_preview->selected_face_count();
@@ -253,7 +254,8 @@ void ModelGenerationPanel::refresh_model_finishing()
     }
     const bool pending = !m_finishing_candidate.empty();
     const bool ready = m_model_preview_ready && is_nonempty_model(m_displayed_model_path);
-    const bool transaction_busy = (m_beauty_transactions && m_beauty_transactions->processing()) ||
+    const bool transaction_busy = m_workbench_check_running || (m_beauty_transactions && m_beauty_transactions->processing()) ||
+        m_model_preview->semantic_processing() ||
         (m_finishing_workbench && m_model_preview->selection_busy());
     const bool repaint_layout = m_finishing_workbench &&
         (m_finishing_panel->IsShown() != m_workbench_editing ||
@@ -320,7 +322,8 @@ void ModelGenerationPanel::refresh_model_finishing()
     m_finishing_redo->Show(!m_finishing_workbench && !m_finishing_redo_path.empty() && !pending && !m_finishing_running);
     m_finishing_redo->Enable(editable);
     if (pending || m_finishing_running || transaction_busy) {
-        m_status->SetLabel(m_finishing_running ? _L("正在本地处理，可切换页面或取消。")
+        m_status->SetLabel(m_workbench_check_running ? _L("正在检查与安全修复，可旋转、缩放或取消。")
+            : m_finishing_running ? _L("正在本地处理，可切换页面或取消。")
             : transaction_busy ? _L("正在处理人像区域，可旋转、缩放、查看日志或取消。")
             : _L("美颜预览就绪，接受新版本后可导入。"));
         m_import->Disable(); m_recheck_model->Disable(); m_visual_review_model->Disable();
@@ -361,7 +364,7 @@ void ModelGenerationPanel::refresh_model_finishing()
     // Paint the final visible surfaces after thawing, before returning from a mode switch.
     workbench_updates.reset();
     if (repaint_layout) repaint_workbench_surface(m_workbench_shell);
-    if (m_save_and_return && !m_busy && !m_finishing_running) {
+    if (m_save_and_return && !m_busy && !m_finishing_running && !m_workbench_check_running) {
         wxWeakRef<ModelGenerationPanel> weak(this);
         CallAfter([weak] { if (weak && !weak->m_shutdown) weak->finish_workbench_save(); });
     }
@@ -369,6 +372,12 @@ void ModelGenerationPanel::refresh_model_finishing()
 
 void ModelGenerationPanel::reset_beauty_asset()
 {
+    if (m_workbench_check_cancel) m_workbench_check_cancel->store(true);
+    if (m_workbench_check_worker.joinable()) m_workbench_check_worker.join();
+    m_workbench_check_cancel.reset();
+    m_workbench_check_running = m_workbench_auto_repair = false;
+    m_workbench_check_path.clear();
+    m_workbench_check_result = {};
     clear_unaccepted_beauty_candidates();
     m_finishing_source.clear();
     m_finishing_candidate.clear();
@@ -495,8 +504,12 @@ bool ModelGenerationPanel::restore_beauty_candidate(const BeautyCandidateSnapsho
     m_model_preview->restore_leaf_edits(snapshot.leaf_edits);
     if (m_beauty_controls) m_beauty_controls->restore_partition_snapshot(snapshot.partition);
     m_model_preview->restore_color_trial_without_recognition(snapshot.color_trial);
-    if (!snapshot.semantic_faces.empty() || !snapshot.semantic_subfaces.empty())
+    if (!snapshot.semantic_faces.empty() || !snapshot.semantic_subfaces.empty()) {
         m_model_preview->set_saved_semantic_result(snapshot.semantic_faces, snapshot.semantic_subfaces);
+        m_model_preview->synchronize_project_bound_semantics(snapshot.color_trial, m_model_preview->color_trial_state());
+        m_finishing_candidate_semantic_faces = m_model_preview->import_face_color_overrides(true);
+        m_finishing_candidate_semantic_subfaces = m_model_preview->import_subface_color_overrides(true);
+    }
     if (snapshot.geometry_id == m_model_preview->geometry_id() &&
         snapshot.selection.selected.size() == m_model_preview->triangle_count())
         m_model_preview->restore_selection_state(snapshot.selection);

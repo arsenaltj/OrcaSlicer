@@ -123,11 +123,14 @@ bool ModelGenerationPanel::show_finishing_version(const boost::filesystem::path&
         m_model_preview->restore_color_trial_without_recognition(color_state);
         m_model_preview->set_saved_semantic_result(
             m_finishing_candidate_semantic_faces, m_finishing_candidate_semantic_subfaces);
+        m_model_preview->synchronize_project_bound_semantics(color_state, m_model_preview->color_trial_state());
     } else if (session_source && (!m_beauty_session_source->semantic_faces.empty() ||
                                   !m_beauty_session_source->semantic_subfaces.empty())) {
         m_model_preview->restore_color_trial_without_recognition(m_beauty_session_source->color_trial);
         m_model_preview->set_saved_semantic_result(
             m_beauty_session_source->semantic_faces, m_beauty_session_source->semantic_subfaces);
+        m_model_preview->synchronize_project_bound_semantics(
+            m_beauty_session_source->color_trial, m_model_preview->color_trial_state());
     } else if (m_finishing_workbench || m_model_preview->semantic_result_active())
         m_model_preview->restore_color_trial_without_recognition(color_state);
     else m_model_preview->restore_color_trial(color_state);
@@ -167,7 +170,7 @@ void ModelGenerationPanel::select_local_finishing_version(const boost::filesyste
 
 void ModelGenerationPanel::accept_model_finishing()
 {
-    if (m_busy || m_finishing_running || m_finishing_candidate.empty()) return;
+    if (m_busy || m_finishing_running || m_workbench_check_running || m_finishing_candidate.empty()) return;
     if (m_finishing_workbench && m_beauty_transactions &&
         !m_beauty_transactions->begin(BeautyWorkbenchTransactionController::OperationKind::AcceptCandidate)) {
         m_finishing_status->SetLabel(_L("当前仍有 Beauty 处理正在进行，请先完成或取消。"));
@@ -306,6 +309,15 @@ void ModelGenerationPanel::accept_model_finishing()
                     self->m_finishing_status->SetLabel(canceled->load()
                         ? _L("已取消保存，候选和草稿保留，可再次保存。")
                         : _L("版本保存失败，候选和草稿保留：") + from_u8(error));
+                    if (self->m_workbench_auto_repair) {
+                        const auto hash = self->m_finishing_result.source_sha256;
+                        self->m_workbench_auto_repair = false;
+                        self->discard_model_finishing();
+                        self->m_workbench_check_result.status = WorkbenchCheckStatus::NotRun;
+                        self->m_workbench_check_result.model_sha256 = hash;
+                        self->m_workbench_check_result.repair_reason = "安全修复保存失败，已恢复原模型：" + error;
+                        self->m_finishing_status->SetLabel(from_u8(self->m_workbench_check_result.repair_reason));
+                    }
                     self->refresh_controls();
                     return;
                 }
@@ -361,26 +373,36 @@ void ModelGenerationPanel::accept_model_finishing()
                     _L("区域缓存未保存，重新打开后需要重新识别。"));
                 self->m_status->SetLabel(self->m_finishing_status->GetLabel());
                 self->m_model_preview_message->SetLabel(_L("当前显示：已接受的三维处理版本。"));
-                self->m_workbench_check_result = {};
+                if (!self->m_workbench_auto_repair) self->m_workbench_check_result = {};
                 self->m_workbench_history_filter = self->m_workbench_history_page = 0;
                 if (self->m_workbench_history_search) self->m_workbench_history_search->ChangeValue(wxEmptyString);
                 self->load_library_entries(self->m_finishing_workbench);
                 self->refresh_controls();
                 self->update_finishing_selection();
                 self->finish_workbench_save();
+                self->m_workbench_auto_repair = false;
+                self->ensure_workbench_check();
             });
         });
     } catch (const std::exception& error) {
         m_finishing_running = m_busy = m_save_and_return = false;
         if (m_beauty_transactions) m_beauty_transactions->finish(false, false, error.what());
         m_finishing_status->SetLabel(_L("暂时无法启动保存，候选保留：") + from_u8(error.what()));
+        if (m_workbench_auto_repair) {
+            const auto hash = m_finishing_result.source_sha256;
+            m_workbench_auto_repair = false;
+            discard_model_finishing();
+            m_workbench_check_result.status = WorkbenchCheckStatus::NotRun;
+            m_workbench_check_result.model_sha256 = hash;
+            m_workbench_check_result.repair_reason = "安全修复保存失败，已恢复原模型：" + std::string(error.what());
+        }
         refresh_controls();
     }
 }
 
 void ModelGenerationPanel::discard_model_finishing()
 {
-    if (m_busy || m_finishing_candidate.empty()) return;
+    if (m_busy || m_workbench_check_running || m_finishing_candidate.empty()) return;
     const auto discarded = m_finishing_candidate;
     const bool beauty = bool(m_beauty_session_source);
     if (m_beauty_session_source) {
@@ -406,7 +428,7 @@ void ModelGenerationPanel::discard_model_finishing()
 
 void ModelGenerationPanel::undo_model_finishing()
 {
-    if (m_busy || m_finishing_undo_path.empty()) return;
+    if (m_busy || m_workbench_check_running || m_finishing_undo_path.empty()) return;
     const auto redo_colors = m_model_preview->color_trial_state();
     if (!show_finishing_version(m_finishing_undo_path)) return;
     m_finishing_redo_preview = [this, redo_colors] { m_model_preview->restore_color_trial(redo_colors); };
@@ -422,11 +444,12 @@ void ModelGenerationPanel::undo_model_finishing()
     m_status->SetLabel(_L("已返回上个版本，可继续导入。"));
     m_model_preview_message->SetLabel(_L("当前显示：上个版本。"));
     refresh_controls();
+    ensure_workbench_check();
 }
 
 void ModelGenerationPanel::redo_model_finishing()
 {
-    if (m_busy || m_finishing_redo_path.empty() || m_displayed_model_path != m_finishing_redo_source) return;
+    if (m_busy || m_workbench_check_running || m_finishing_redo_path.empty() || m_displayed_model_path != m_finishing_redo_source) return;
     if (!show_finishing_version(m_finishing_redo_path)) return;
     m_finishing_undo_path = m_finishing_redo_source;
     m_finishing_accepted_path = m_finishing_redo_path;
@@ -438,6 +461,7 @@ void ModelGenerationPanel::redo_model_finishing()
     m_status->SetLabel(m_finishing_status->GetLabel());
     m_model_preview_message->SetLabel(_L("当前显示：已接受的三维处理版本。"));
     refresh_controls(); update_finishing_selection();
+    ensure_workbench_check();
 }
 
 void ModelGenerationPanel::stop_model_finishing()

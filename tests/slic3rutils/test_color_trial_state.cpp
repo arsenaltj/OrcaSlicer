@@ -37,6 +37,56 @@ void require_same(const trial::State& a, const trial::State& b)
     REQUIRE(a.semantic_mapping_palette == b.semantic_mapping_palette);
     REQUIRE(a.semantic_portrait_card == b.semantic_portrait_card);
     REQUIRE(a.semantic_region_slots == b.semantic_region_slots);
+    REQUIRE(a.project_color_slots == b.project_color_slots);
+    REQUIRE(a.project_semantic_slots == b.project_semantic_slots);
+    REQUIRE(a.project_slot_identity == b.project_slot_identity);
+}
+
+TEST_CASE("Project-bound trials update physical slots without rebuilding source assignments", "[ColorTrialState][PostGenerationWorkbench]")
+{
+    auto saved = saved_trial();
+    saved.source = 1;
+    saved.colors = {{1, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+    saved.semantic_palette = saved.colors;
+    saved.semantic_mapping_palette = saved.mapping_colors;
+    saved.project_color_slots = {0, 3, 2};
+    saved.project_semantic_slots = {0, 3, 2};
+    saved.project_slot_identity = "printer/filament-layout";
+    saved.enabled = false;
+    trial::State restored;
+    std::string error;
+    REQUIRE(trial::decode(trial::encode(saved, 20, geometry_id), 20, geometry_id, restored, error));
+    require_same(saved, restored);
+    REQUIRE(trial::synchronize_project_targets(restored, {0, 2, 3},
+        {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}, saved.project_slot_identity));
+    CHECK(restored.colors[0] == saved.colors[0]);
+    CHECK(restored.colors[1] == GUI::PreviewPalette::Color{0, 0, 1});
+    CHECK(restored.mapping_colors == saved.mapping_colors);
+    CHECK(restored.semantic_mapping_palette == saved.semantic_mapping_palette);
+    CHECK_FALSE(restored.enabled);
+    CHECK_FALSE(trial::project_target_replacement(saved, restored, {1, 0, 0}));
+    CHECK(trial::project_target_replacement(saved, restored, {0, 1, 0}) == GUI::PreviewPalette::Color{0, 1, 0});
+}
+
+TEST_CASE("Project binding rejects stale layouts atomically and preserves manual RGB trials", "[ColorTrialState][PostGenerationWorkbench]")
+{
+    auto saved = saved_trial();
+    saved.source = 1;
+    saved.project_color_slots = {0, 1, 2};
+    saved.project_slot_identity = "original";
+    auto state = saved;
+    CHECK_FALSE(trial::synchronize_project_targets(state, {0, 1, 2}, saved.colors, "different printer"));
+    require_same(saved, state);
+    CHECK_FALSE(trial::synchronize_project_targets(state, {0, 1, 3}, saved.colors, "original"));
+    require_same(saved, state);
+    auto doc = trial::encode(saved, 20, geometry_id);
+    doc["project_color_slots"] = {0, "1", 2};
+    std::string error;
+    CHECK_FALSE(trial::decode(doc, 20, geometry_id, state, error));
+    require_same(saved, state);
+    state = saved_trial();
+    REQUIRE(trial::synchronize_project_targets(state, {0, 1, 2}, {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}}, "other"));
+    require_same(saved_trial(), state);
 }
 }
 

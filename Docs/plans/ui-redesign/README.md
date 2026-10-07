@@ -32,6 +32,14 @@
 
 ## 分阶段路线
 
+### 正常启动默认入口（2026-10-07）
+
+- 按用户要求，启动窗、初始化缓冲页、首次配置和完整 3D 工作台／切片流程默认启用；正常双击 `orca-slicer.exe` 即可进入，无需审核脚本。
+- 正常启动使用 Orca 默认用户数据目录，复用已有配置、历史资产和本地 AI 服务发现。隔离审核脚本继续用于独立验收配置。
+- 携带输入文件、默认 Prepare 和工程恢复继续使用既有启动兼容规则。已有有效打印机配置跳过首次配置，不重置用户预设。
+- 页面开关 `ORCASLICER_UI_REDESIGN_STARTUP_SPLASH`、`STARTUP_BUFFER`、`STARTUP_SETUP` 和 `MODEL_WORKFLOW` 可分别显式关闭；后三项同样使用完整 `ORCASLICER_UI_REDESIGN_` 前缀。全局 `ORCASLICER_UI_REDESIGN=0` 关闭未被页面开关覆盖的新版入口。原 `ORCASLICER_MODEL_WORKFLOW_REVIEW` 继续作为完整模型流程的优先覆盖开关。
+- 默认启用不代表统一视觉或实体打印验收通过。四项工作台修正的 Windows 候选与未验证范围保留在本地验收记录。
+
 ### UI-001：基线和边界（当前阶段）
 
 - 固定旧 UI 的业务流程基线和输入资产。

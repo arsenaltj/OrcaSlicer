@@ -28,6 +28,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 class wxSizer;
@@ -99,6 +100,13 @@ public:
     void set_workbench_results_handler(std::function<void()> handler) { m_workbench_results = std::move(handler); }
     PostGenerationWorkbenchState workbench_snapshot() const;
     void set_workbench_listener(PostGenerationWorkbenchListener listener);
+    void set_project_color_handler(std::function<void(size_t)> handler,
+        std::function<std::vector<AI::PhysicalFilamentChannel>()> slots = {})
+    {
+        m_project_color_edit = std::move(handler);
+        m_project_channels_provider = std::move(slots);
+    }
+    void synchronize_workbench_project_palette(bool activate_preview = false);
 
 private:
     PostGenerationWorkbenchListener m_workbench_listener;
@@ -108,6 +116,16 @@ private:
     std::uint64_t m_workbench_check_revision {0};
     std::thread m_workbench_check_worker;
     std::shared_ptr<std::atomic<bool>> m_workbench_check_cancel;
+    std::unordered_set<std::string> m_workbench_repair_attempts;
+    bool m_workbench_check_running {false};
+    bool m_workbench_auto_repair {false};
+    void ensure_workbench_check();
+    std::function<void(size_t)> m_project_color_edit;
+    std::function<std::vector<AI::PhysicalFilamentChannel>()> m_project_channels_provider;
+    AI::PrintablePaletteSnapshot m_workbench_project_palette;
+    std::vector<AI::PhysicalFilamentChannel> m_workbench_project_channels;
+    wxPanel* m_workbench_project_colors {nullptr};
+    wxTimer m_workbench_sync_timer;
     bool m_save_and_return {false};
     std::function<void()> m_workbench_results;
     void finish_workbench_save();
@@ -317,6 +335,7 @@ private:
     wxPanel* m_workbench_shell {nullptr};
     wxStaticBitmap* m_workbench_logo {nullptr};
     wxPanel* m_workbench_settings {nullptr};
+    wxPanel* m_workbench_check_host {nullptr};
     wxScrolledWindow* m_workbench_settings_scroll {nullptr};
     wxBoxSizer* m_workbench_settings_sections {nullptr};
     std::array<wxBoxSizer*, 3> m_workbench_settings_groups {};

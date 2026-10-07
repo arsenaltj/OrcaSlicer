@@ -369,6 +369,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/AI/ModelGeneration/PostGenerationWorkbenchView.cpp
     GUI/AI/ModelGeneration/PostGenerationWorkbenchPresentation.cpp
     GUI/AI/ModelGeneration/PostGenerationWorkbenchHost.cpp
+    GUI/AI/ModelGeneration/PostGenerationWorkbenchPalette.cpp
+    GUI/AI/ModelGeneration/PostGenerationWorkbenchCheck.cpp
     GUI/AI/ModelGeneration/ModelGenerationBeautySession.cpp
     GUI/AI/ModelGeneration/ModelGenerationBeautyPreview.cpp
     GUI/AI/ModelGeneration/ModelGenerationBeautyExport.cpp

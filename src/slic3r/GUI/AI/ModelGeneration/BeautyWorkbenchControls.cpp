@@ -248,12 +248,13 @@ BeautyWorkbenchControls::BeautyWorkbenchControls(wxWindow* parent, ModelPreview3
     m_reoptimize->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         update_text();
         if (!m_preview || !m_preview->semantic_reoptimization_available())
-            m_status->SetLabel(_L("当前模型没有可用语义输入，或有效色卡不是 1 至 6 色。"));
+            m_status->SetLabel(m_preview ? m_preview->semantic_reoptimization_reason() : _L("当前没有已加载模型。"));
         else {
-            const bool started = on_reoptimize ? on_reoptimize() : false;
+            wxString reason;
+            const bool started = on_reoptimize && on_reoptimize(reason);
             m_status->SetLabel(started
                 ? _L("已请求重新优化；Beauty 选区和手动保护保持不变。")
-                : _L("人像区域优化未启动，当前模型和选区保持不变。"));
+                : !reason.empty() ? reason : _L("人像区域优化入口不可用，当前模型和选区保持不变。"));
         }
         wrap_status(m_status);
         Layout();
@@ -500,7 +501,7 @@ void BeautyWorkbenchControls::update_text()
     m_auto_match->SetToolTip(semantic
         ? _L("按当前已缓存的人像语义结果选择区域，不会重新识别。")
         : m_preview ? m_preview->semantic_region_status() : _L("当前没有已加载模型。"));
-    m_reoptimize->Enable(active && m_portrait_enabled && m_preview && m_preview->semantic_reoptimization_available());
+    m_reoptimize->Enable(active && !m_candidate_ready && m_preview && m_preview->semantic_reoptimization_available());
     m_reoptimize->SetToolTip(m_preview && !m_preview->semantic_reoptimization_available()
         ? m_preview->semantic_reoptimization_reason()
         : _L("显式重新识别人像区域；选区与保护区保持不变。"));
@@ -524,7 +525,7 @@ void BeautyWorkbenchControls::update_text()
     for (wxWindow* control : std::initializer_list<wxWindow*>{m_secondary_status, m_import_secondary,
              m_regenerate_evidence, m_auto_partition, m_pick_partition, m_apply_partition,
              m_auto_region, m_auto_match, m_reoptimize})
-        control->Show(m_details_open && (control != m_reoptimize || m_portrait_enabled));
+        control->Show(m_details_open);
     m_auto_detail->Show(m_details_open && m_auto_detail->GetCount() > 1);
     const wxString locked_reason = _L("当前正在计算分区或选区边界，请等待完成或取消。");
     for (wxWindow* control : std::initializer_list<wxWindow*>{m_auto_partition, m_pick_partition,

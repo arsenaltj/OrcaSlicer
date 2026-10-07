@@ -75,13 +75,17 @@ TEST_CASE("Image home startup requires no pending 3D work", "[UiRedesign]")
     CHECK_FALSE(RedesignFeatureFlags::image_home_on_startup(true, false, false, true));
 }
 
-TEST_CASE("Startup splash is opt-in until its visual review is accepted", "[UiRedesign]")
+TEST_CASE("Startup splash is enabled by default with an explicit override", "[UiRedesign]")
 {
     ScopedEnvironment global("ORCASLICER_UI_REDESIGN");
     ScopedEnvironment splash("ORCASLICER_UI_REDESIGN_STARTUP_SPLASH");
     set_environment("ORCASLICER_UI_REDESIGN", nullptr);
     set_environment("ORCASLICER_UI_REDESIGN_STARTUP_SPLASH", nullptr);
+    CHECK(RedesignFeatureFlags::surface_enabled("STARTUP_SPLASH"));
+
+    set_environment("ORCASLICER_UI_REDESIGN", "0");
     CHECK_FALSE(RedesignFeatureFlags::surface_enabled("STARTUP_SPLASH"));
+    set_environment("ORCASLICER_UI_REDESIGN", nullptr);
 
     set_environment("ORCASLICER_UI_REDESIGN_STARTUP_SPLASH", "1");
     CHECK(RedesignFeatureFlags::surface_enabled("STARTUP_SPLASH"));
@@ -94,7 +98,7 @@ TEST_CASE("Startup splash is opt-in until its visual review is accepted", "[UiRe
     CHECK_FALSE(RedesignFeatureFlags::surface_enabled("STARTUP_SPLASH"));
 }
 
-TEST_CASE("Startup buffer is independently opt-in during page review", "[UiRedesign]")
+TEST_CASE("Startup buffer defaults to the new layout and remains independently configurable", "[UiRedesign]")
 {
     ScopedEnvironment global("ORCASLICER_UI_REDESIGN");
     ScopedEnvironment buffer("ORCASLICER_UI_REDESIGN_STARTUP_BUFFER");
@@ -102,15 +106,52 @@ TEST_CASE("Startup buffer is independently opt-in during page review", "[UiRedes
     set_environment("ORCASLICER_UI_REDESIGN", nullptr);
     set_environment("ORCASLICER_UI_REDESIGN_STARTUP_BUFFER", nullptr);
     set_environment("ORCASLICER_UI_REDESIGN_STARTUP_SPLASH", nullptr);
-    CHECK_FALSE(RedesignFeatureFlags::surface_enabled("STARTUP_BUFFER"));
+    CHECK(RedesignFeatureFlags::surface_enabled("STARTUP_BUFFER"));
     set_environment("ORCASLICER_UI_REDESIGN_STARTUP_BUFFER", "1");
     CHECK(RedesignFeatureFlags::surface_enabled("STARTUP_BUFFER"));
-    CHECK_FALSE(RedesignFeatureFlags::surface_enabled("STARTUP_SPLASH"));
+    CHECK(RedesignFeatureFlags::surface_enabled("STARTUP_SPLASH"));
     CHECK(RedesignFeatureFlags::surface_enabled("IMAGE_HOME"));
     set_environment("ORCASLICER_UI_REDESIGN", "0");
     CHECK(RedesignFeatureFlags::surface_enabled("STARTUP_BUFFER"));
+    CHECK_FALSE(RedesignFeatureFlags::surface_enabled("STARTUP_SPLASH"));
     set_environment("ORCASLICER_UI_REDESIGN_STARTUP_BUFFER", "0");
     CHECK_FALSE(RedesignFeatureFlags::surface_enabled("STARTUP_BUFFER"));
+}
+
+TEST_CASE("First-use setup is enabled by default and respects startup compatibility overrides", "[UiRedesign]")
+{
+    ScopedEnvironment global("ORCASLICER_UI_REDESIGN");
+    ScopedEnvironment setup("ORCASLICER_UI_REDESIGN_STARTUP_SETUP");
+    set_environment("ORCASLICER_UI_REDESIGN", nullptr);
+    set_environment("ORCASLICER_UI_REDESIGN_STARTUP_SETUP", nullptr);
+    CHECK(RedesignFeatureFlags::surface_enabled("STARTUP_SETUP"));
+    set_environment("ORCASLICER_UI_REDESIGN_STARTUP_SETUP", "0");
+    CHECK_FALSE(RedesignFeatureFlags::surface_enabled("STARTUP_SETUP"));
+    set_environment("ORCASLICER_UI_REDESIGN_STARTUP_SETUP", nullptr);
+    set_environment("ORCASLICER_UI_REDESIGN", "0");
+    CHECK_FALSE(RedesignFeatureFlags::surface_enabled("STARTUP_SETUP"));
+    set_environment("ORCASLICER_UI_REDESIGN_STARTUP_SETUP", "1");
+    CHECK(RedesignFeatureFlags::surface_enabled("STARTUP_SETUP"));
+}
+
+TEST_CASE("The complete model workflow is enabled without a review launcher", "[UiRedesign]")
+{
+    ScopedEnvironment global("ORCASLICER_UI_REDESIGN");
+    ScopedEnvironment workflow("ORCASLICER_UI_REDESIGN_MODEL_WORKFLOW");
+    ScopedEnvironment review("ORCASLICER_MODEL_WORKFLOW_REVIEW");
+    set_environment("ORCASLICER_UI_REDESIGN", nullptr);
+    set_environment("ORCASLICER_UI_REDESIGN_MODEL_WORKFLOW", nullptr);
+    set_environment("ORCASLICER_MODEL_WORKFLOW_REVIEW", nullptr);
+    CHECK(RedesignFeatureFlags::model_workflow_review_enabled());
+    set_environment("ORCASLICER_UI_REDESIGN", "0");
+    CHECK_FALSE(RedesignFeatureFlags::model_workflow_review_enabled());
+    set_environment("ORCASLICER_UI_REDESIGN_MODEL_WORKFLOW", "1");
+    CHECK(RedesignFeatureFlags::model_workflow_review_enabled());
+    set_environment("ORCASLICER_MODEL_WORKFLOW_REVIEW", "0");
+    CHECK_FALSE(RedesignFeatureFlags::model_workflow_review_enabled());
+    set_environment("ORCASLICER_UI_REDESIGN_MODEL_WORKFLOW", "0");
+    set_environment("ORCASLICER_MODEL_WORKFLOW_REVIEW", "1");
+    CHECK(RedesignFeatureFlags::model_workflow_review_enabled());
 }
 
 TEST_CASE("Redesign command registry executes registered commands", "[UiRedesign]")

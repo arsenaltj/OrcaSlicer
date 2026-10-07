@@ -128,28 +128,34 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     settings->SetMinSize(FromDIP(wxSize(280, -1)));
     settings->SetBackgroundColour(wxColour(32, 32, 35));
     auto* settings_root = new wxBoxSizer(wxVERTICAL);
+    auto* check_host = m_workbench_check_host = new wxPanel(settings);
+    check_host->SetBackgroundColour(settings->GetBackgroundColour());
+    auto* check_contents = new wxBoxSizer(wxVERTICAL);
+    check_host->SetSizer(check_contents);
+    settings_root->Add(check_host, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(16));
     auto* scroll = new WorkbenchScrolledWindow(settings, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVSCROLL);
     m_workbench_settings_scroll = scroll;
     scroll->SetScrollRate(0, FromDIP(12));
     scroll->SetBackgroundColour(wxColour(32, 32, 35));
     auto* sections = m_workbench_settings_sections = new wxBoxSizer(wxVERTICAL);
-    for (auto*& group : m_workbench_settings_groups) {
-        group = new wxBoxSizer(wxVERTICAL);
-        sections->Add(group, 0, wxEXPAND);
+    for (size_t index = 0; index < m_workbench_settings_groups.size(); ++index) {
+        auto* group = m_workbench_settings_groups[index] = new wxBoxSizer(wxVERTICAL);
+        (index == 0 ? check_contents : sections)->Add(group, 0, wxEXPAND);
     }
     auto* controls = m_workbench_settings_groups[0];
-    auto heading = [this, scroll, &controls](const wxString& label,
+    wxWindow* section_parent = check_host;
+    auto heading = [this, &section_parent, &controls](const wxString& label,
         wxStaticBitmap** info = nullptr, const wxString& tooltip = wxEmptyString) {
-        auto* text = new wxStaticText(scroll, wxID_ANY, label);
+        auto* text = new wxStaticText(section_parent, wxID_ANY, label);
         text->SetForegroundColour(wxColour(220, 220, 222));
         text->SetFont(wxGetApp().bold_font());
         auto* title_row = new wxBoxSizer(wxHORIZONTAL);
         title_row->Add(text, 0, wxALIGN_CENTER_VERTICAL);
         if (info) {
-            auto* icon = *info = new wxStaticBitmap(scroll, wxID_ANY,
-                create_scaled_bitmap("workbench_info", scroll, 12));
+            auto* icon = *info = new wxStaticBitmap(section_parent, wxID_ANY,
+                create_scaled_bitmap("workbench_info", section_parent, 12));
             icon->SetName("ai_content_color");
-            icon->SetBackgroundColour(scroll->GetBackgroundColour());
+            icon->SetBackgroundColour(section_parent->GetBackgroundColour());
             icon->SetMinSize(FromDIP(wxSize(12, 12)));
             icon->SetToolTip(tooltip);
             title_row->Add(icon, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(5));
@@ -158,7 +164,7 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
         return text;
     };
     heading(_L("检查修复"), &m_workbench_check_info, _L("检查当前模型的网格质量"));
-    auto* check_panel = new WorkbenchPanel(scroll);
+    auto* check_panel = new WorkbenchPanel(check_host);
     check_panel->SetBackgroundColour(wxColour(22, 22, 25));
     check_panel->SetMinSize(FromDIP(wxSize(-1, 42)));
     auto* check_row = new wxBoxSizer(wxHORIZONTAL);
@@ -166,7 +172,8 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     check_label->SetForegroundColour(wxColour(220, 220, 222));
     check_row->Add(check_label, 1, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(12));
     auto* check_button = command(check_panel, check_row, _L("开始"), [this](wxCommandEvent& event) {
-        request_check_workbench();
+        if (m_workbench_check_running && m_workbench_check_cancel) m_workbench_check_cancel->store(true);
+        else request_check_workbench();
     });
     m_workbench_check = check_button;
     check_button->SetMinSize(FromDIP(wxSize(60, 27)));
@@ -179,10 +186,16 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     check_row->GetItem(m_workbench_check)->SetBorder(FromDIP(12));
     check_panel->SetSizer(check_row);
     controls->Add(check_panel, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
-    m_workbench_check_status = new wxStaticText(scroll, wxID_ANY, _L("尚未检查"));
+    m_workbench_check_status = new wxStaticText(check_host, wxID_ANY, _L("尚未检查"));
     m_workbench_check_status->SetForegroundColour(wxColour(170, 170, 176));
     controls->Add(m_workbench_check_status, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
+    section_parent = scroll;
     controls = m_workbench_settings_groups[1];
+    heading(_L("工程耗材颜色"));
+    m_workbench_project_colors = new wxPanel(scroll);
+    m_workbench_project_colors->SetBackgroundColour(scroll->GetBackgroundColour());
+    m_workbench_project_colors->SetSizer(new wxGridSizer(5, FromDIP(6), FromDIP(6)));
+    controls->Add(m_workbench_project_colors, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
     m_workbench_palette_heading = heading(_L("多色模型"));
     controls->Add(m_model_preview->build_workbench_palette(scroll), 0, wxEXPAND | wxBOTTOM, FromDIP(8));
     m_workbench_palette_details = command(scroll, controls, _L("色卡详情"), [this](wxCommandEvent&) {
@@ -294,7 +307,9 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     scroll_content->Add(sections, 0, wxEXPAND | wxRIGHT, FromDIP(8));
     scroll->SetSizer(scroll_content);
     settings_root->Add(scroll, 1, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(16));
-    m_workbench_print = command(settings, settings_root, _L("配色并导入切片"), [this](wxCommandEvent&) { request_workbench_color_matching(); });
+    m_workbench_print = command(settings, settings_root, _L("去打印"), [](wxCommandEvent&) {});
+    m_workbench_print->Disable();
+    m_workbench_print->SetToolTip(_L("设备打印尚未接入，请在切片区域导入模型并预览、导出 G-code。"));
     auto* print = static_cast<Button*>(m_workbench_print);
     print->SetBackgroundColor(StateColor(std::pair<wxColour, int>(wxColour(75, 75, 80), StateColor::Disabled),
         std::pair<wxColour, int>(wxColour(255, 194, 39), StateColor::Normal)));
@@ -302,6 +317,13 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     settings_root->GetItem(print)->SetBorder(FromDIP(12));
     settings_root->GetItem(print)->SetFlag(wxEXPAND | wxALL);
     settings->SetSizer(settings_root);
+    m_workbench_sync_timer.SetOwner(this, wxWindow::NewControlId());
+    Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
+        if (m_shutdown || !m_workbench_shell || !m_workbench_shell->IsShownOnScreen()) return;
+        synchronize_workbench_project_palette();
+        ensure_workbench_check();
+    }, m_workbench_sync_timer.GetId());
+    m_workbench_sync_timer.Start(500);
     row->Add(settings, 0, wxEXPAND | wxTOP | wxBOTTOM | wxRIGHT, FromDIP(12));
 
     auto* workspace = m_workbench_view_host = new wxPanel(shell);

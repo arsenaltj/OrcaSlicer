@@ -88,7 +88,7 @@ public:
     std::function<size_t(const std::string&)> on_auto_detail_match;
     std::function<void()> on_import_secondary_evidence;
     std::function<void()> on_regenerate_readonly_evidence;
-    std::function<bool()> on_reoptimize;
+    std::function<bool(wxString&)> on_reoptimize;
     std::function<void()> on_preview;
     std::function<void()> on_accept;
     std::function<void()> on_discard;

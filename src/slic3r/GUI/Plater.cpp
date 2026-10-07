@@ -21643,8 +21643,19 @@ bool Plater::can_copy_to_clipboard() const
     return true;
 }
 
-bool Plater::can_undo() const { return IsShown() && p->is_view3D_shown() && p->undo_redo_stack().has_undo_snapshot(); }
-bool Plater::can_redo() const { return IsShown() && p->is_view3D_shown() && p->undo_redo_stack().has_redo_snapshot(); }
+bool Plater::can_undo() const
+{
+    // The shell owns project commands while the native workspace is hidden.
+    if (!IsShown())
+        return p->can_begin_project_config_change() && p->undo_redo_stack_main().has_undo_snapshot();
+    return p->is_view3D_shown() && p->undo_redo_stack().has_undo_snapshot();
+}
+bool Plater::can_redo() const
+{
+    if (!IsShown())
+        return p->can_begin_project_config_change() && p->undo_redo_stack_main().has_redo_snapshot();
+    return p->is_view3D_shown() && p->undo_redo_stack().has_redo_snapshot();
+}
 bool Plater::can_reload_from_disk() const { return p->can_reload_from_disk(); }
 //BBS
 bool Plater::can_fillcolor() const { return p->can_fillcolor(); }

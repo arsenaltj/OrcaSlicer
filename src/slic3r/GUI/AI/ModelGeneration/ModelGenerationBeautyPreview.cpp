@@ -97,7 +97,7 @@ void repaint_workbench_surface(wxWindow* window)
 }
 void ModelGenerationPanel::preview_model_finishing()
 {
-    if (m_busy || m_shutdown || !m_model_preview_ready) return;
+    if (m_busy || m_shutdown || m_workbench_check_running || !m_model_preview_ready) return;
     if (m_model_preview->selection_busy()) {
         m_finishing_status->SetLabel(_L("正在更新选区，完成后即可预览；可按 Esc 取消选区计算。")); return;
     }
@@ -403,6 +403,8 @@ void ModelGenerationPanel::preview_model_finishing()
                         self->m_finishing_status->SetLabel(_L("语义预览无法加载，已保留处理前版本。"));
                         self->refresh_controls(); return;
                     }
+                    self->m_model_preview->synchronize_project_bound_semantics(
+                        color_state, self->m_model_preview->color_trial_state());
                 } else if (self->m_finishing_workbench)
                     self->m_model_preview->restore_color_trial_without_recognition(color_state);
                 else self->m_model_preview->restore_color_trial(color_state);

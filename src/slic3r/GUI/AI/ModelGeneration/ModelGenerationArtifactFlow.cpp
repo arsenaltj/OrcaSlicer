@@ -65,6 +65,7 @@ void ModelGenerationPanel::load_model_preview_async(boost::filesystem::path path
     // Explicit history navigation restores persisted state, not unsaved cached edits.
     if (metadata_path.empty() && m_model_preview->try_load_cached_model(path, palette, triangles, dimensions, colors)) {
         loaded(triangles, dimensions, colors, 0.0);
+        ensure_workbench_check();
         return;
     }
     if (m_preview_worker.joinable()) m_preview_worker.join();
@@ -95,6 +96,7 @@ void ModelGenerationPanel::load_model_preview_async(boost::filesystem::path path
                 }
                 loaded(triangles, dimensions, colors,
                     std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
+                self->ensure_workbench_check();
             });
         });
     } catch (const std::exception& e) {

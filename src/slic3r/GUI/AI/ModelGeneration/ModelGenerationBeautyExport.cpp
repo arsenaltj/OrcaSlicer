@@ -273,6 +273,8 @@ void ModelGenerationPanel::export_semantic_candidate()
                             self->refresh_controls();
                             return;
                         }
+                        self->m_model_preview->synchronize_project_bound_semantics(
+                            color_state, self->m_model_preview->color_trial_state());
                         self->m_finishing_candidate = destination;
                         self->m_finishing_before = false;
                         self->m_model_preview->set_selection_preview_suppressed(true);

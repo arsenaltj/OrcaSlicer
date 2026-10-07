@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -17,8 +18,8 @@ namespace Slic3r::AI::ColorTrialPersistence {
 
 // Pure saved snapshot of the controls. Source/target pairs retain their order:
 // target colors alone cannot reconstruct which original colors they replace.
-// A saved project/pack choice should be converted to source=2 (manual snapshot)
-// by the host; dynamic pack indices and project signatures are not persisted.
+// Dynamic pack indices remain manual snapshots. Project bindings use physical
+// slot identities so equal colors and repeated mapped targets stay distinct.
 struct State {
     std::vector<GUI::PreviewPalette::Color> colors, mapping_colors;
     std::array<bool, GUI::PreviewPalette::max_preview_colors> locks {};
@@ -27,6 +28,8 @@ struct State {
     bool semantic_optimization {true};
     std::vector<GUI::PreviewPalette::Color> semantic_palette, semantic_mapping_palette, semantic_portrait_card;
     SemanticColoring::SemanticRegionSlotBindings semantic_region_slots = SemanticColoring::default_semantic_region_slot_bindings;
+    std::vector<size_t> project_color_slots, project_semantic_slots;
+    std::string project_slot_identity;
 };
 
 namespace detail {
@@ -39,6 +42,13 @@ inline bool valid_fingerprint(const std::string& value)
 
 inline bool valid_state(const State& state)
 {
+    if (!state.project_slot_identity.empty() || !state.project_color_slots.empty() || !state.project_semantic_slots.empty()) {
+        if (state.source != 1 || state.project_slot_identity.empty() || state.project_slot_identity.size() > 65536 ||
+            state.project_color_slots.size() != state.colors.size() ||
+            state.project_semantic_slots.size() != state.semantic_palette.size()) return false;
+        for (const auto* slots : {&state.project_color_slots, &state.project_semantic_slots})
+            for (size_t slot : *slots) if (slot > 65535) return false;
+    }
     if (state.semantic_palette.size() > 6 ||
         (!state.semantic_mapping_palette.empty() && state.semantic_mapping_palette.size() != state.semantic_palette.size()) ||
         (!state.semantic_portrait_card.empty() && state.semantic_portrait_card.size() != 6)) return false;
@@ -107,7 +117,7 @@ inline nlohmann::json encode(const State& state, size_t actual_face_count, const
 {
     if (!detail::valid_fingerprint(fingerprint)) throw std::invalid_argument("Invalid trial color geometry fingerprint.");
     if (!detail::valid_state(state)) throw std::invalid_argument("Invalid trial color state.");
-    return {{"schema", "orca.color-trial/v2"}, {"geometry_sha256", fingerprint}, {"face_count", actual_face_count},
+    nlohmann::json doc {{"schema", "orca.color-trial/v2"}, {"geometry_sha256", fingerprint}, {"face_count", actual_face_count},
             {"colors", state.colors}, {"mapping_colors", state.mapping_colors}, {"locks", state.locks},
             {"source", state.source}, {"count", state.count}, {"enabled", state.enabled},
             {"fidelity", state.fidelity}, {"lighting", state.lighting},
@@ -120,6 +130,12 @@ inline nlohmann::json encode(const State& state, size_t actual_face_count, const
                 {"eyebrow", state.semantic_region_slots[2]},
                 {"lips", state.semantic_region_slots[3]}
             }}};
+    if (!state.project_slot_identity.empty()) {
+        doc["project_slot_identity"] = state.project_slot_identity;
+        doc["project_color_slots"] = state.project_color_slots;
+        doc["project_semantic_slots"] = state.project_semantic_slots;
+    }
+    return doc;
 }
 
 // Reject mismatched geometry or malformed fields before returning any state.
@@ -180,8 +196,60 @@ inline bool decode(const nlohmann::json& doc, size_t actual_face_count, const st
     if (doc.contains("semantic_region_slots") &&
         !detail::read_region_slots(doc["semantic_region_slots"], restored.semantic_region_slots))
         return fail("Invalid semantic region slot bindings.");
+    if (doc.contains("project_slot_identity") || doc.contains("project_color_slots") || doc.contains("project_semantic_slots")) {
+        if (!doc.contains("project_slot_identity") || !doc["project_slot_identity"].is_string())
+            return fail("Invalid project slot identity.");
+        restored.project_slot_identity = doc["project_slot_identity"].get<std::string>();
+        if (restored.project_slot_identity.empty()) return fail("Missing project slot identity.");
+        for (const auto& item : {std::make_pair("project_color_slots", &restored.project_color_slots),
+                                 std::make_pair("project_semantic_slots", &restored.project_semantic_slots)}) {
+            if (!doc.contains(item.first) || !doc[item.first].is_array() ||
+                doc[item.first].size() > GUI::PreviewPalette::max_preview_colors) return fail("Invalid project slot bindings.");
+            for (const auto& entry : doc[item.first]) {
+                uint64_t slot;
+                if (!detail::read_unsigned(entry, slot) || slot > 65535) return fail("Invalid physical project slot.");
+                item.second->push_back(size_t(slot));
+            }
+        }
+    }
     if (!detail::valid_state(restored)) return fail("Trial color centers and targets must form valid pairs.");
     output = std::move(restored);
     return true;
+}
+
+inline bool synchronize_project_targets(State& state, const std::vector<size_t>& slots,
+    const std::vector<GUI::PreviewPalette::Color>& colors, const std::string& identity)
+{
+    if (state.source != 1) return true;
+    if (!detail::valid_state(state) || state.project_slot_identity.empty() ||
+        state.project_slot_identity != identity || slots.size() != colors.size()) return false;
+    auto updated = state;
+    for (const auto& item : {std::make_pair(&updated.colors, &state.project_color_slots),
+                             std::make_pair(&updated.semantic_palette, &state.project_semantic_slots)}) {
+        for (size_t i = 0; i < item.second->size(); ++i) {
+            const auto found = std::find(slots.begin(), slots.end(), (*item.second)[i]);
+            if (found == slots.end()) return false;
+            (*item.first)[i] = colors[size_t(found - slots.begin())];
+        }
+    }
+    if (!detail::valid_state(updated)) return false;
+    state = std::move(updated);
+    return true;
+}
+
+inline std::optional<GUI::PreviewPalette::Color> project_target_replacement(const State& before,
+    const State& after, const GUI::PreviewPalette::Color& color)
+{
+    if (before.source != 1 || after.source != 1 || before.project_slot_identity.empty() ||
+        before.project_slot_identity != after.project_slot_identity ||
+        before.project_semantic_slots != after.project_semantic_slots ||
+        before.semantic_palette.size() != after.semantic_palette.size()) return {};
+    std::optional<GUI::PreviewPalette::Color> replacement;
+    for (size_t i = 0; i < before.semantic_palette.size(); ++i) {
+        if (before.semantic_palette[i] != color) continue;
+        if (replacement && *replacement != after.semantic_palette[i]) return {};
+        replacement = after.semantic_palette[i];
+    }
+    return replacement;
 }
 } // namespace Slic3r::AI::ColorTrialPersistence

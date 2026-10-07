@@ -1,5 +1,6 @@
 #include "slic3r/GUI/AI/Model/ModelFinishing.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/WorkbenchModelInspection.hpp"
 #include "libslic3r/Point.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
@@ -71,6 +72,44 @@ bool has_recolor_stage(const boost::filesystem::path& directory) {
         if (entry.path().filename().string().find(".recolor-") == 0) return true;
     return false;
 }
+}
+
+TEST_CASE("safe mesh repair is rechecked without mutating the original asset", "[ModelFinishing][PostGenerationWorkbench]")
+{
+    Fixture f;
+    f.write(std::string(tetrahedron) + "f 1/1/1 3/3/1 2/2/1\nf 1 1 2\n");
+    const auto original = read(f.source);
+    const auto before = GUI::inspect_workbench_model(f.source);
+    CHECK(before.status == GUI::WorkbenchCheckStatus::Invalid);
+    CHECK(before.degenerate_faces == 1);
+    CHECK(before.duplicate_faces == 1);
+    ModelFinishingOptions options;
+    options.smooth_surface = false;
+    options.repair_mesh = true;
+    const auto repaired = finish_model_artifact(f.source, f.output, options);
+    REQUIRE(repaired.success);
+    REQUIRE(repaired.changed());
+    CHECK(repaired.removed_duplicate_faces == 1);
+    CHECK(repaired.removed_degenerate_faces == 1);
+    const auto inspected = GUI::inspect_workbench_model(f.output);
+    CHECK(inspected.status == GUI::WorkbenchCheckStatus::Normal);
+    CHECK(inspected.boundary_edges == 0);
+    CHECK(inspected.nonmanifold_edges == 0);
+    CHECK(read(f.source) == original);
+}
+
+TEST_CASE("safe mesh repair retains unrepairable open boundary warnings", "[ModelFinishing][PostGenerationWorkbench]")
+{
+    Fixture f;
+    f.write(std::string(colored_square) + "f 1 2 3\n");
+    ModelFinishingOptions options;
+    options.smooth_surface = false;
+    options.repair_mesh = true;
+    REQUIRE(finish_model_artifact(f.source, f.output, options).success);
+    const auto inspected = GUI::inspect_workbench_model(f.output);
+    CHECK(inspected.status == GUI::WorkbenchCheckStatus::Attention);
+    CHECK(inspected.boundary_edges > 0);
+    CHECK_FALSE(inspected.summary.empty());
 }
 
 TEST_CASE("Local recoloring creates a comparable model version with exact isolated face colors", "[ModelFinishing][LocalRecolor]")

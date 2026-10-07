@@ -27,10 +27,13 @@ public:
     OrcaWorkspaceAdapter(Plater* plater, ImportSucceededFn on_import_succeeded);
 
     AI::PrintablePaletteSnapshot printable_palette() const override;
+    std::vector<AI::PhysicalFilamentChannel> project_filament_channels() const;
     AI::ModelImportResult import_artifact(const AI::ModelImportRequest& request) override;
     AI::ModelImportResult import_workbench_artifact(const AI::ModelImportRequest& request);
     // Opaque freshness check for a modal confirmation without exposing slicing types.
     std::function<bool()> capture_import_guard() const;
+    bool set_project_filament_color(size_t slot, const std::string& color,
+        const std::function<bool()>& current, std::string& error);
 
 private:
     Plater*           m_plater { nullptr };

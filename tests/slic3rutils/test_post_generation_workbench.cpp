@@ -2,10 +2,86 @@
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include "slic3r/GUI/AI/ModelGeneration/PostGenerationUiState.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/WorkbenchProjectColor.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/WorkbenchModelInspection.hpp"
 #include "slic3r/GUI/AI/SmartSlicing/SmartSlicingWorkbenchState.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaPlateRevisionConfig.hpp"
 
 using namespace Slic3r::GUI;
+
+TEST_CASE("ordinary region optimization remains available without portrait protection", "[PostGenerationWorkbench]")
+{
+    PostGenerationWorkbenchState state;
+    state.portrait_enabled = GENERATE(false, true);
+    state.portrait_available = false;
+    state.actions.can_edit = true;
+    CHECK(workbench_region_optimization_allowed(state.actions, false, true));
+    CHECK_FALSE(workbench_region_optimization_allowed(state.actions, true, true));
+    CHECK_FALSE(workbench_region_optimization_allowed(state.actions, false, false));
+    state.actions.can_edit = false;
+    CHECK_FALSE(workbench_region_optimization_allowed(state.actions, false, true));
+    CHECK_FALSE(state.can_print);
+}
+
+TEST_CASE("project color changes use physical slot identity and preserve unrelated config", "[PostGenerationWorkbench][ProjectConfigUndo]")
+{
+    using namespace Slic3r;
+    AI::PrintablePaletteSnapshot palette;
+    AI::PhysicalFilamentChannel first, fourth;
+    first.slot = 0; first.display_color = "#FFFFFF";
+    fourth.slot = 3; fourth.display_color = "#FFFFFF";
+    palette.physical_channels = {first, fourth};
+    DynamicPrintConfig config;
+    config.set_key_value("filament_colour", new ConfigOptionStrings({"#FFFFFF", "#111111", "#222222", "#FFFFFF"}));
+    config.set_key_value("layer_height", new ConfigOptionFloat(0.2));
+    bool changed = true;
+    std::string error;
+    REQUIRE(prepare_workbench_project_color(config, palette.physical_channels, 3, "#ab12Cd", changed, error));
+    CHECK(changed);
+    const auto& colors = config.option<ConfigOptionStrings>("filament_colour")->values;
+    CHECK(colors.at(0) == "#FFFFFF");
+    CHECK(colors.at(3) == "#AB12CD");
+    CHECK(config.option<ConfigOptionFloat>("layer_height")->value == 0.2);
+    REQUIRE(prepare_workbench_project_color(config, palette.physical_channels, 3, "#ab12cd", changed, error));
+    CHECK_FALSE(changed);
+    const auto before = config;
+    CHECK_FALSE(prepare_workbench_project_color(config, palette.physical_channels, 1, "#000000", changed, error));
+    CHECK_FALSE(error.empty());
+    CHECK(before.diff(config).empty());
+    CHECK_FALSE(prepare_workbench_project_color(config, palette.physical_channels, 0, "#GG0000", changed, error));
+    CHECK(before.diff(config).empty());
+}
+
+TEST_CASE("all physical project slots remain editable beyond the generation limit", "[PostGenerationWorkbench][ProjectConfigUndo]")
+{
+    using namespace Slic3r;
+    DynamicPrintConfig config;
+    config.set_key_value("filament_colour", new ConfigOptionStrings(
+        {"#FFFFFF", "#111111", "#222222", "#333333", "#444444", "#555555", "#FFFFFF", "#777777"}));
+    config.set_key_value("filament_is_mixed", new ConfigOptionBools({false, true, false, false, false, false, false, false}));
+    const auto channels = workbench_project_channels(config);
+    REQUIRE(channels.size() == 7);
+    CHECK(channels.front().slot == 0);
+    CHECK(channels.back().slot == 7);
+    CHECK_FALSE(workbench_physical_slot_exists(channels, 1));
+    bool changed = false;
+    std::string error;
+    REQUIRE(prepare_workbench_project_color(config, channels, 6, "#ab12cd", changed, error));
+    CHECK(changed);
+    const auto& colors = config.option<ConfigOptionStrings>("filament_colour")->values;
+    CHECK(colors.at(0) == "#FFFFFF");
+    CHECK(colors.at(6) == "#AB12CD");
+    CHECK(colors.at(1) == "#111111");
+}
+
+TEST_CASE("safe automatic repair rejects texture and identity bound edits", "[PostGenerationWorkbench]")
+{
+    CHECK(workbench_safe_repair_allowed("obj", false, false, false));
+    CHECK_FALSE(workbench_safe_repair_allowed("glb", false, false, false));
+    CHECK_FALSE(workbench_safe_repair_allowed("obj", true, false, false));
+    CHECK_FALSE(workbench_safe_repair_allowed("obj", false, true, false));
+    CHECK_FALSE(workbench_safe_repair_allowed("obj", false, false, true));
+}
 
 TEST_CASE("automatic nozzle writeback preserves slice input identity", "[SmartSlicing][UiRedesign]")
 {

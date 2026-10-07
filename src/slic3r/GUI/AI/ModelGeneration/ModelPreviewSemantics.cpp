@@ -10,6 +10,8 @@ void ModelPreview3D::update_semantic_coloring()
         m_color_trial->set_semantic_region_availability({});
         m_color_trial->set_semantic_status(wxEmptyString, false);
         if (m_semantic_completion) {
+            m_semantic_error = semantic_reoptimization_reason();
+            if (m_semantic_error.empty()) m_semantic_error = _L("人像区域优化已停用，请重新确认色卡和语义输入。");
             auto callback = std::move(m_semantic_completion);
             callback(false);
         }
@@ -32,6 +34,7 @@ void ModelPreview3D::update_semantic_coloring()
         m_color_trial->set_semantic_status(_L("正在本机识别人像区域，可旋转模型或取消……"), true);
         m_semantic_timer.Start(100);
     } else if (m_semantic_completion) {
+        m_semantic_error = _L("相同的人像区域优化请求已存在，请等待完成或取消后重试。");
         auto callback = std::move(m_semantic_completion);
         callback(false);
     }

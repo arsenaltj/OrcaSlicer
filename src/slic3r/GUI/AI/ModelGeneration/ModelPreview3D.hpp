@@ -54,6 +54,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -105,6 +106,7 @@ public:
         Bind(wxEVT_TIMER, [this](wxTimerEvent&) { finish_semantic_coloring(); }, m_semantic_timer.GetId());
         m_color_trial->Hide();
         m_controls_scroll->Hide();
+        m_color_trial->on_project_colors_changed = [this] { synchronize_project_colors(); };
         m_color_trial->on_changed = [this] {
             m_trial_toggle_started = std::chrono::steady_clock::now();
             m_color_trial_enabled = m_color_trial->enabled();
@@ -335,7 +337,7 @@ public:
                 if (metadata.contains("color_trial")) {
                     ModelPreviewColorControls::State trial;
                     if (AI::ColorTrialPersistence::decode(metadata["color_trial"], its.indices.size(), prepared.geometry_id, trial, state_error)) {
-                        trial.source = 2;
+                        if (trial.source != 1 || trial.project_slot_identity.empty()) trial.source = 2;
                         trial.notice = _L("已恢复此版本保存的试色。");
                         prepared.color_trial = std::move(trial);
                     }
@@ -551,6 +553,7 @@ public:
         }
         if (!prepared.saved_semantic_faces.empty() || !prepared.saved_semantic_subfaces.empty())
             set_saved_semantic_result(std::move(prepared.saved_semantic_faces), std::move(prepared.saved_semantic_subfaces));
+        if (prepared.color_trial) synchronize_project_bound_semantics(*prepared.color_trial, m_color_trial->state());
         m_paint_diagnostics_logged = false;
         m_render_diagnostics_logged = false;
         front_view();
@@ -606,6 +609,7 @@ public:
         }
         if (!saved_faces.empty() || !saved_subfaces.empty())
             set_saved_semantic_result(saved_faces, saved_subfaces);
+        if (cached->color_trial) synchronize_project_bound_semantics(*cached->color_trial, m_color_trial->state());
         m_paint_diagnostics_logged = false;
         m_render_diagnostics_logged = false;
         front_view();
@@ -1136,11 +1140,13 @@ public:
     bool semantic_optimization_enabled() const {
         return m_color_trial_enabled && m_color_trial && m_color_trial->semantic_optimization();
     }
+    bool semantic_processing() const { return m_semantic_controller && m_semantic_controller->busy(); }
     bool semantic_reoptimization_available() const {
-        return m_has_model && bool(m_semantic_source) && m_color_trial &&
+        return !semantic_processing() && m_has_model && bool(m_semantic_source) && m_color_trial &&
             !m_color_trial->colors().empty() && m_color_trial->colors().size() <= 6;
     }
     wxString semantic_reoptimization_reason() const {
+        if (semantic_processing()) return _L("正在识别人像区域，请等待完成或取消。");
         if (!m_has_model) return _L("当前没有已加载模型。");
         if (!m_semantic_source) return _L("当前模型缺少可用于人像识别的面颜色输入。");
         if (!m_color_trial || m_color_trial->colors().empty()) return _L("当前没有有效色卡。");
@@ -1319,8 +1325,10 @@ public:
         return m_semantic_controller && m_semantic_controller->busy();
     }
     void cancel_semantic_request() {
+        m_semantic_error = _L("用户已取消人像区域优化。");
         if (m_semantic_controller) m_semantic_controller->cancel();
         m_semantic_timer.Stop();
+        m_color_trial->set_semantic_status(m_semantic_error, false);
         if (m_semantic_completion) {
             auto callback = std::move(m_semantic_completion);
             callback(false);
@@ -1558,6 +1566,42 @@ public:
     }
     ModelPreviewColorControls::State color_trial_state() const { return m_color_trial->state(); }
     wxWindow* build_workbench_palette(wxWindow* parent) { return m_color_trial->build_workbench_palette(parent); }
+    void synchronize_project_colors(bool activate = false) {
+        const auto before = m_color_trial->state();
+        m_suppress_semantic_change = true;
+        const bool changed = m_color_trial->synchronize_project_colors(activate);
+        m_suppress_semantic_change = false;
+        m_color_trial_enabled = m_color_trial->enabled();
+        m_trial_palette = m_color_trial->colors();
+        if (changed) synchronize_project_bound_semantics(before, m_color_trial->state());
+        m_canvas->Refresh(false);
+    }
+    void synchronize_project_bound_semantics(const ModelPreviewColorControls::State& before,
+        const ModelPreviewColorControls::State& after) {
+        if (before.semantic_palette == after.semantic_palette) return;
+        auto recolor = [&before, &after](auto& color) {
+            const auto replacement = AI::ColorTrialPersistence::project_target_replacement(before, after,
+                {color[0], color[1], color[2]});
+            if (replacement) for (size_t i = 0; i < 3; ++i) color[i] = (*replacement)[i];
+        };
+        for (auto& item : m_automatic_face_colors) recolor(item.second);
+        for (auto& item : m_automatic_subface_colors) recolor(item.color);
+        std::unordered_set<size_t> manual_faces;
+        for (const auto& item : m_face_color_overrides) manual_faces.insert(item.first);
+        // Saved semantic results include manual leaf overlays and their descendants.
+        auto manual_leaf = [this](size_t face, uint8_t depth, uint8_t path) {
+            for (uint8_t ancestor = 0; ancestor <= depth; ++ancestor)
+                if (m_manual_leaf_colors.count({face, ancestor, uint8_t(path >> (2 * (depth - ancestor)))})) return true;
+            return false;
+        };
+        for (auto& item : m_saved_semantic_faces)
+            if (!manual_faces.count(item.first) && !manual_leaf(item.first, 0, 0)) recolor(item.second);
+        for (auto& item : m_saved_semantic_subfaces)
+            if (!manual_faces.count(item.face_id) && !manual_leaf(item.face_id, item.path.depth, item.path.value)) recolor(item.color);
+        if (!m_semantic_analysis && (!m_saved_semantic_faces.empty() || !m_saved_semantic_subfaces.empty()))
+            set_saved_semantic_result(m_saved_semantic_faces, m_saved_semantic_subfaces);
+        else rebuild_semantic_preview_from_cached_result();
+    }
     void set_workbench_palette_editable(bool editable) { m_color_trial->set_workbench_editable(editable); }
     void show_workbench_palette_details() {
         if (!m_has_model) return;
@@ -1595,7 +1639,10 @@ public:
     }
     nlohmann::json color_trial_metadata() const {
         AI::ColorTrialPersistence::State saved = m_color_trial->state();
-        saved.source = 2;
+        if (saved.source != 1 || saved.project_slot_identity.empty()) {
+            saved.source = 2;
+            saved.project_color_slots.clear(); saved.project_semantic_slots.clear(); saved.project_slot_identity.clear();
+        }
         return AI::ColorTrialPersistence::encode(saved, m_triangle_count, m_geometry_id);
     }
     void restore_color_trial(const ModelPreviewColorControls::State& state) { m_color_trial->restore(state); }

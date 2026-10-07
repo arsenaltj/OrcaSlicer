@@ -251,11 +251,11 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
     }
     if (m_workbench_settings_editing != m_workbench_editing) {
         // Move whole sizer groups, keeping their controls and Beauty session alive.
-        for (auto* group : m_workbench_settings_groups)
-            m_workbench_settings_sections->Detach(group);
-        for (size_t index = 0; index < m_workbench_settings_groups.size(); ++index)
+        for (size_t index = 1; index < m_workbench_settings_groups.size(); ++index)
+            m_workbench_settings_sections->Detach(m_workbench_settings_groups[index]);
+        for (size_t index = 0; index < 2; ++index)
             m_workbench_settings_sections->Insert(index,
-                m_workbench_settings_groups[m_workbench_editing ? 2 - index : index], 0, wxEXPAND);
+                m_workbench_settings_groups[m_workbench_editing ? 2 - index : 1 + index], 0, wxEXPAND);
         m_workbench_settings_editing = m_workbench_editing;
         m_workbench_beauty_heading->SetLabel(m_workbench_editing ? _L("模型美化") : _L("3D 美颜"));
         m_workbench_palette_heading->SetLabel(m_workbench_editing ? _L("目标色数") : _L("多色模型"));
@@ -276,13 +276,15 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
         m_workbench_editing || m_workbench_history_panel->IsShown());
     m_workbench_edit->Enable(m_model_preview_ready || m_finishing_running);
     const auto snapshot = workbench_snapshot();
-    m_workbench_check->Enable(state.can_import && snapshot.check.status != WorkbenchCheckStatus::Running);
+    m_workbench_check->SetLabel(m_workbench_check_running ? _L("取消") : _L("检查"));
+    m_workbench_check->Enable(m_workbench_check_running || (state.can_edit && m_finishing_candidate.empty() && !snapshot.dirty));
+    for (wxWindow* color : m_workbench_project_colors->GetChildren()) color->Enable(snapshot.can_edit_project_colors);
     m_workbench_palette_details->Enable(state.can_edit && m_finishing_candidate.empty());
     m_model_preview->set_workbench_palette_editable(state.can_edit && m_finishing_candidate.empty());
     m_workbench_original->SetValue(m_model_preview->beauty_original_view());
     m_workbench_edit->SetLabel(m_workbench_editing ? _L("一键美化") : _L("3D 美颜工作台"));
-    m_workbench_print->Enable(snapshot.actions.can_import && snapshot.check.status != WorkbenchCheckStatus::Running &&
-        is_nonempty_model(m_displayed_model_path));
+    m_workbench_print->Disable();
+    const bool can_import = snapshot.can_import_for_slicing && is_nonempty_model(m_displayed_model_path);
     if (auto* portrait = FindWindowByName("portrait_r6_entry", m_workbench_shell)) {
         portrait->Enable(snapshot.actions.can_edit && snapshot.portrait_available);
         portrait->SetLabel(snapshot.portrait_enabled ? _L("退出人像保护（R6）") : _L("人像保护（R6）"));
@@ -290,8 +292,8 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
             wxString::FromUTF8(snapshot.portrait_unavailable_reason));
     }
     if (m_workbench_print_navigation)
-        m_workbench_print_navigation->Enable(m_workbench_print->IsEnabled());
-    m_workbench_slicing->Enable(m_workbench_print->IsEnabled());
+        m_workbench_print_navigation->Enable(can_import);
+    m_workbench_slicing->Enable(can_import);
     m_workbench_settings_scroll->Layout();
     if (wxGetApp().preset_bundle) {
         const auto config = wxGetApp().preset_bundle->full_config();
@@ -347,17 +349,22 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
             }
         }
     }
-    m_workbench_check->SetToolTip(_L("离线检查当前文件的开放边和非流形边；不代表壁厚、悬垂或打印条件已通过。"));
+    m_workbench_check->SetToolTip(_L("检查拓扑并执行支持的安全修复；壁厚、悬垂和自交未检查。"));
     wxString check_text;
     switch (snapshot.check.status) {
     case WorkbenchCheckStatus::NotRun: check_text = _L("尚未检查"); break;
-    case WorkbenchCheckStatus::Running: check_text = _L("检查中…"); break;
+    case WorkbenchCheckStatus::Running:
+        check_text = snapshot.check.phase == WorkbenchCheckPhase::Repairing ? _L("安全修复中…") :
+            snapshot.check.phase == WorkbenchCheckPhase::Rechecking ? _L("复检中…") : _L("检查中…");
+        break;
     case WorkbenchCheckStatus::Normal: check_text = _L("拓扑正常"); break;
     case WorkbenchCheckStatus::Attention: check_text = _L("需注意"); break;
     case WorkbenchCheckStatus::Invalid: check_text = _L("异常"); break;
     case WorkbenchCheckStatus::Failed: check_text = _L("检查失败"); break;
     }
     if (!snapshot.check.summary.empty()) check_text += "\n" + from_u8(snapshot.check.summary);
+    if (!snapshot.check.repair_reason.empty()) check_text += "\n" + from_u8(snapshot.check.repair_reason);
+    m_workbench_check_status->SetToolTip(check_text);
     m_workbench_check_status->SetLabel(check_text);
     wrap_workbench_text(m_workbench_check_status, FromDIP(242), true);
     const auto trial = m_model_preview->color_trial_state();

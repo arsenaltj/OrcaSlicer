@@ -5,7 +5,13 @@
 
 #include <boost/log/trivial.hpp>
 #include <wx/colour.h>
+#include <wx/colordlg.h>
+#include <wx/msgdlg.h>
+#include "slic3r/GUI/I18N.hpp"
 #include <wx/window.h>
+#ifdef __WXMSW__
+#include <commdlg.h>
+#endif
 
 #include <utility>
 
@@ -57,6 +63,51 @@ struct ModelGenerationFeatureHost::Impl
     {
         BOOST_LOG_TRIVIAL(info) << "AI model generation startup: creating model generation panel";
         model_generation = new ModelGenerationPanel(parent, *workspace, *workspace);
+        model_generation->set_project_color_handler([this](size_t slot) {
+            const auto state = model_generation->workbench_snapshot();
+            auto* owner = wxGetTopLevelParent(model_generation);
+            if (!state.can_edit_project_colors) {
+                wxMessageBox(_L("模型正在处理或存在未接受候选，暂时不能修改工程耗材颜色。"),
+                    _L("工程耗材颜色"), wxOK | wxICON_WARNING, owner);
+                return;
+            }
+            const auto& channels = state.project_channels;
+            const auto selected = std::find_if(channels.begin(), channels.end(),
+                [slot](const auto& channel) { return channel.slot == slot; });
+            if (selected == channels.end()) {
+                wxMessageBox(_L("工程耗材槽位已变化，请重新选择颜色。"),
+                    _L("工程耗材颜色"), wxOK | wxICON_WARNING, owner);
+                return;
+            }
+            const auto current = workspace->capture_import_guard();
+            wxColourData data;
+            data.SetColour(wxColour(wxString::FromUTF8(selected->display_color)));
+            data.SetChooseFull(true);
+            // The feature panel is hidden when its workbench is mounted in the shell.
+            wxColourDialog picker(owner, &data);
+            picker.SetTitle(wxString::Format(_L("工程耗材 %u 的颜色"), unsigned(slot + 1)));
+            if (picker.ShowModal() != wxID_OK) {
+#ifdef __WXMSW__
+                const auto diagnostic = ::CommDlgExtendedError();
+                if (diagnostic != 0) {
+                    BOOST_LOG_TRIVIAL(error) << "Project filament color dialog failed: " << diagnostic;
+                    wxMessageBox(wxString::Format(_L("无法打开选色窗口，Windows 错误：%lu。"),
+                        static_cast<unsigned long>(diagnostic)), _L("工程耗材颜色"), wxOK | wxICON_ERROR, owner);
+                }
+#endif
+                return;
+            }
+            std::string error;
+            const auto latest = model_generation->workbench_snapshot();
+            if (!latest.can_edit_project_colors || latest.revision != state.revision || latest.asset_id != state.asset_id ||
+                !workspace->set_project_filament_color(slot,
+                    picker.GetColourData().GetColour().GetAsString(wxC2S_HTML_SYNTAX).ToStdString(), current, error)) {
+                if (error.empty()) error = "模型或工程状态已变化，请重新选择颜色。";
+                wxMessageBox(wxString::FromUTF8(error), _L("工程耗材颜色"), wxOK | wxICON_ERROR, owner);
+                return;
+            }
+            model_generation->synchronize_workbench_project_palette(true);
+        }, [this] { return workspace->project_filament_channels(); });
         model_generation->set_ui_state_listener([this](const ModelGenerationUIState& state) {
             latest_state = state;
             if (state_listener)
@@ -84,6 +135,7 @@ struct ModelGenerationFeatureHost::Impl
             model_generation->set_prepare_navigation_handler({});
             model_generation->set_color_matching_handler({});
             model_generation->set_workbench_import_handler({});
+            model_generation->set_project_color_handler({});
             model_generation->shutdown();
         }
     }

@@ -25,7 +25,9 @@ bool RedesignFeatureFlags::enabled()
 
 bool RedesignFeatureFlags::model_workflow_review_enabled()
 {
-    return is_enabled_value(std::getenv("ORCASLICER_MODEL_WORKFLOW_REVIEW"));
+    if (const char* value = std::getenv("ORCASLICER_MODEL_WORKFLOW_REVIEW"))
+        return is_enabled_value(value);
+    return surface_enabled("MODEL_WORKFLOW");
 }
 
 bool RedesignFeatureFlags::surface_enabled(std::string_view surface)
@@ -35,7 +37,8 @@ bool RedesignFeatureFlags::surface_enabled(std::string_view surface)
         return is_enabled_value(value);
     if (const char* value = std::getenv("ORCASLICER_UI_REDESIGN"))
         return is_enabled_value(value);
-    return surface == "IMAGE_HOME";
+    return surface == "IMAGE_HOME" || surface == "STARTUP_SPLASH" || surface == "STARTUP_BUFFER" ||
+           surface == "STARTUP_SETUP" || surface == "MODEL_WORKFLOW";
 }
 
 bool RedesignFeatureFlags::image_home_on_startup(bool shell_active, bool has_input_files,

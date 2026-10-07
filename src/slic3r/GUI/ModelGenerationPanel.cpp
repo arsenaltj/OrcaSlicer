@@ -709,6 +709,7 @@ void ModelGenerationPanel::shutdown()
         return;
     m_shutdown = true;
     if (m_workbench_check_cancel) m_workbench_check_cancel->store(true);
+    m_workbench_sync_timer.Stop();
     if (m_workbench_check_worker.joinable()) m_workbench_check_worker.join();
     if (m_workbench_color_matching) m_workbench_color_matching->shutdown();
     m_ui_state_listener = {};

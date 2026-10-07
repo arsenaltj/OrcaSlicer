@@ -22,6 +22,7 @@
 #include <wx/msgdlg.h>
 #include <wx/sizer.h>
 #include <wx/stattext.h>
+#include <wx/textctrl.h>
 #include <wx/weakref.h>
 #include <sstream>
 
@@ -394,15 +395,32 @@ void RedesignShell::build_model_workflow()
     if (auto* topbar = frame ? frame->topbar() : nullptr) {
         topbar->Bind(wxEVT_UPDATE_UI, [weak](wxUpdateUIEvent& event) {
             if (!weak) { event.Skip(); return; }
-            event.Enable(weak->native_workspace_visible() && weak->m_model_view == ModelView::Slicing &&
-                weak->m_plater->can_undo());
+            const bool workbench = weak->m_active_page == Page::Model &&
+                weak->m_model_view == ModelView::Workbench && weak->m_workbench_state.can_edit_project_colors;
+            event.Enable((workbench || (weak->native_workspace_visible() &&
+                weak->m_model_view == ModelView::Slicing)) && weak->m_plater->can_undo());
         }, wxID_UNDO);
         topbar->Bind(wxEVT_UPDATE_UI, [weak](wxUpdateUIEvent& event) {
             if (!weak) { event.Skip(); return; }
-            event.Enable(weak->native_workspace_visible() && weak->m_model_view == ModelView::Slicing &&
-                weak->m_plater->can_redo());
+            const bool workbench = weak->m_active_page == Page::Model &&
+                weak->m_model_view == ModelView::Workbench && weak->m_workbench_state.can_edit_project_colors;
+            event.Enable((workbench || (weak->native_workspace_visible() &&
+                weak->m_model_view == ModelView::Slicing)) && weak->m_plater->can_redo());
         }, wxID_REDO);
     }
+    Bind(wxEVT_CHAR_HOOK, [weak](wxKeyEvent& event) {
+        const auto key = event.GetKeyCode();
+        if (!weak || weak->m_active_page != Page::Model || weak->m_model_view != ModelView::Workbench ||
+            !event.CmdDown() || event.AltDown() || event.ShiftDown() || (key != 'Z' && key != 'Y') ||
+            dynamic_cast<wxTextEntry*>(wxWindow::FindFocus())) {
+            event.Skip();
+            return;
+        }
+        // Project history is independent of the Beauty version controls.
+        if (!weak->m_workbench_state.can_edit_project_colors) return;
+        if (key == 'Z' && weak->m_plater->can_undo()) weak->m_plater->undo();
+        if (key == 'Y' && weak->m_plater->can_redo()) weak->m_plater->redo();
+    });
     m_plater->sidebar().Bind(wxEVT_CHILD_FOCUS, [weak](wxChildFocusEvent& event) {
         event.Skip();
         if (weak && weak->native_workspace_visible() && weak->m_native_slicing)

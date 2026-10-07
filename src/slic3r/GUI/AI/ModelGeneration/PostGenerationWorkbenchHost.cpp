@@ -75,10 +75,22 @@ PostGenerationWorkbenchState ModelGenerationPanel::workbench_snapshot() const
         ? "当前保护边界与运行时不兼容，或没有可保护的细节。请使用匹配的 R6 运行时与保护数据。"
         : "当前模型缺少通过身份校验的人像保护数据。";
     state.dirty = m_beauty_controls && m_beauty_controls->has_changes();
+    state.project_palette = m_palette_provider.printable_palette();
+    state.project_channels = m_project_channels_provider ? m_project_channels_provider() : state.project_palette.physical_channels;
+    state.can_edit_project_colors = state.actions.can_edit && m_finishing_candidate.empty() && bool(m_project_color_edit);
+    state.can_reoptimize_regions = workbench_region_optimization_allowed(state.actions,
+        !m_finishing_candidate.empty(), m_model_preview && m_model_preview->semantic_reoptimization_available());
+    if (!state.can_reoptimize_regions) state.reoptimization_reason = m_model_preview
+        ? m_model_preview->semantic_reoptimization_reason().ToUTF8().data() : "当前没有已加载模型。";
     state.actions.can_switch_version = state.actions.can_switch_version && !state.dirty;
     state.actions.can_import = state.actions.can_import && !state.dirty;
     if (m_workbench_check_path == state.model_path && m_workbench_check_revision == state.revision)
         state.check = m_workbench_check_result;
+    if (!state.candidate_path.empty() || state.dirty) {
+        state.check = {};
+        state.check.summary = "存在候选或未保存修改，接受并保存后自动复检。";
+    }
+    state.can_import_for_slicing = state.actions.can_import && state.check.status != WorkbenchCheckStatus::Running;
     if (m_model_preview) {
         state.faces = m_model_preview->triangle_count();
         state.vertices = m_model_preview->vertex_count();
@@ -88,8 +100,9 @@ PostGenerationWorkbenchState ModelGenerationPanel::workbench_snapshot() const
 
 bool ModelGenerationPanel::can_replace_model_asset() const
 {
-    return !m_shutdown && post_generation_asset_switch_allowed(m_busy || m_preview_download_in_flight,
-        m_finishing_running, m_beauty_transactions && m_beauty_transactions->processing(),
+    return !m_shutdown && post_generation_asset_switch_allowed(m_busy || m_preview_download_in_flight || m_workbench_check_running,
+        m_finishing_running, (m_beauty_transactions && m_beauty_transactions->processing()) ||
+            (m_model_preview && m_model_preview->semantic_processing()),
         !m_finishing_candidate.empty(), m_finishing_before, m_beauty_controls && m_beauty_controls->has_changes());
 }
 
@@ -119,6 +132,8 @@ bool ModelGenerationPanel::request_open_workbench()
     }
     load_library_entries(true);
     refresh_post_generation_workbench();
+    synchronize_workbench_project_palette();
+    ensure_workbench_check();
     publish_workbench_state();
     return true;
 }
@@ -146,8 +161,7 @@ bool ModelGenerationPanel::request_return_overview()
 bool ModelGenerationPanel::request_workbench_color_matching()
 {
     const auto state = workbench_snapshot();
-    if (!state.actions.can_import || (!m_color_matching && !m_workbench_import) ||
-        state.check.status == WorkbenchCheckStatus::Running) return false;
+    if (!state.can_import_for_slicing || (!m_color_matching && !m_workbench_import)) return false;
     if (state.check.status == WorkbenchCheckStatus::NotRun || state.check.status == WorkbenchCheckStatus::Invalid ||
         state.check.status == WorkbenchCheckStatus::Failed) {
         const auto summary = state.check.status == WorkbenchCheckStatus::NotRun ? _L("尚未执行模型检查。") :
@@ -203,53 +217,6 @@ bool ModelGenerationPanel::request_workbench_results()
     return true;
 }
 
-bool ModelGenerationPanel::request_check_workbench()
-{
-    if (!workbench_snapshot().actions.can_import) return false;
-    if (m_workbench_check_cancel) m_workbench_check_cancel->store(true);
-    if (m_workbench_check_worker.joinable()) m_workbench_check_worker.join();
-    const auto source = m_displayed_model_path;
-    const auto revision = m_sequence;
-    const auto canceled = m_workbench_check_cancel = std::make_shared<std::atomic<bool>>(false);
-    m_workbench_check_path = source.string();
-    m_workbench_check_revision = revision;
-    m_workbench_check_result = {};
-    m_workbench_check_result.status = WorkbenchCheckStatus::Running;
-    refresh_post_generation_workbench();
-    wxWeakRef<ModelGenerationPanel> weak(this);
-    m_workbench_check_worker = std::thread([weak, source, revision, canceled] {
-        WorkbenchCheckResult result;
-        try {
-            TriangleMesh mesh;
-            ObjInfo colors;
-            std::string error;
-            if (!AI::load_model_artifact(source, mesh, colors, error, [canceled] { return canceled->load(); }))
-                throw std::runtime_error(error);
-            result.model_sha256 = AI::model_artifact_sha256(source);
-            const auto surface = AI::BeautySurface::build_for_appearance(mesh.its, colors.vertex_colors, {},
-                [canceled] { return canceled->load(); });
-            if (!surface || result.model_sha256.empty()) throw std::runtime_error("Topology inspection unavailable.");
-            result.boundary_edges = surface->boundary_edges;
-            result.nonmanifold_edges = surface->nonmanifold_edges;
-            result.status = result.nonmanifold_edges ? WorkbenchCheckStatus::Invalid :
-                result.boundary_edges ? WorkbenchCheckStatus::Attention : WorkbenchCheckStatus::Normal;
-            result.summary = "开放边 " + std::to_string(result.boundary_edges) + "；非流形边 " +
-                std::to_string(result.nonmanifold_edges) + "。壁厚和悬垂未检查。";
-        } catch (const std::exception& e) {
-            result.status = WorkbenchCheckStatus::Failed;
-            result.summary = e.what();
-        }
-        if (canceled->load()) return;
-        wxGetApp().CallAfter([weak, source, revision, canceled, result = std::move(result)] {
-            if (!weak || weak->m_shutdown || canceled->load() || revision != weak->m_sequence ||
-                source != weak->m_displayed_model_path || weak->m_workbench_check_cancel != canceled) return;
-            weak->m_workbench_check_result = result;
-            weak->refresh_post_generation_workbench();
-        });
-    });
-    return true;
-}
-
 bool ModelGenerationPanel::request_save_and_return()
 {
     if (!post_generation_ui_state().can_edit) return false;
@@ -272,7 +239,7 @@ bool ModelGenerationPanel::request_save_and_return()
 
 void ModelGenerationPanel::finish_workbench_save()
 {
-    if (!m_save_and_return || m_finishing_running || m_busy) return;
+    if (!m_save_and_return || m_finishing_running || m_workbench_check_running || m_busy) return;
     if (!m_finishing_candidate.empty() && m_finishing_result.success) {
         accept_model_finishing();
         if (!m_finishing_running) m_save_and_return = false;

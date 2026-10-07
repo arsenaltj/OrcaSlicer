@@ -151,7 +151,7 @@
     },
     {
       "id": "workbench_check",
-      "path": "src/slic3r/GUI/AI/ModelGeneration/PostGenerationWorkbenchHost.cpp",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/PostGenerationWorkbenchCheck.cpp",
       "needle": "bool ModelGenerationPanel::request_check_workbench()"
     },
     {
@@ -605,7 +605,7 @@
       "id": "startup_setup",
       "label": "启动与首次配置",
       "detail": "加载配置，在草稿中选择地区、机型、耗材和颜色，验证后保存",
-      "boundary": "已有有效配置跳过向导；审核入口启用，正常入口待统一验收",
+      "boundary": "正常启动默认启用；已有有效配置跳过向导；可通过启动开关显式关闭",
       "group": "资产与工作区",
       "evidence": ["startup_setup"],
       "modules": ["desktop", "adapter"],
@@ -706,8 +706,8 @@
     {
       "id": "workbench_check",
       "label": "工作副本检查",
-      "detail": "展示实际拓扑检查、执行状态和失败原因",
-      "boundary": "未执行的检查不显示正常；检查不修改正式工程",
+      "detail": "加载及保存后自动检查、安全修复和复检，展示残留问题与失败原因",
+      "boundary": "仅在身份兼容的 OBJ 工作副本上执行支持的修复；未覆盖的检查不显示正常",
       "group": "资产与工作区",
       "evidence": ["workbench_check"],
       "modules": ["generation"],
@@ -736,8 +736,8 @@
     {
       "id": "workbench_color_review",
       "label": "配色确认",
-      "detail": "复用原生、自动与手动匹配，保留工作副本中的局部改色",
-      "boundary": "取消不修改正式工程；导入前校验模型、耗材与摆放",
+      "detail": "导入前可独立撤销地修改真实工程色槽，复用原生、自动与手动匹配及局部改色",
+      "boundary": "取消导入不提交模型，保留已确认的工程改色；导入前校验模型、耗材与摆放",
       "group": "资产与工作区",
       "evidence": ["workbench_color_review", "workbench_import"],
       "modules": ["generation", "adapter"],

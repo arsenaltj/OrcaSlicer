@@ -13,9 +13,11 @@
 #include "slic3r/GUI/ObjColorDialog.hpp"
 #include "slic3r/GUI/ModelColorImportResult.hpp"
 #include "slic3r/GUI/Plater.hpp"
+#include "slic3r/GUI/PartPlate.hpp"
 #include "libslic3r/Format/OBJ.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include "slic3r/GUI/AI/Model/SurfaceSelectionState.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/WorkbenchProjectColor.hpp"
 #include "libslic3r/FilamentMixer.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/PresetBundle.hpp"
@@ -33,6 +35,7 @@
 #include <utility>
 #include <openssl/evp.h>
 #include <nlohmann/json.hpp>
+#include <wx/colour.h>
 
 namespace Slic3r::GUI {
 namespace {
@@ -178,6 +181,12 @@ TextureImportOptions model_import_color_options(const AI::ModelImportRequest& re
     return options;
 }
 
+std::vector<AI::PhysicalFilamentChannel> OrcaWorkspaceAdapter::project_filament_channels() const
+{
+    if (!m_plater || !wxGetApp().preset_bundle) return {};
+    return workbench_project_channels(wxGetApp().preset_bundle->project_config);
+}
+
 AI::ModelImportResult OrcaWorkspaceAdapter::import_workbench_artifact(const AI::ModelImportRequest& request)
 {
     if (!m_plater) return {};
@@ -193,6 +202,30 @@ std::function<bool()> OrcaWorkspaceAdapter::capture_import_guard() const
     return [plater = m_plater, revision] {
         return OrcaSmartSlicingAdapter(plater).current_revision() == revision;
     };
+}
+
+bool OrcaWorkspaceAdapter::set_project_filament_color(size_t slot, const std::string& color,
+    const std::function<bool()>& current, std::string& error)
+{
+    error.clear();
+    if (!m_plater || !wxGetApp().preset_bundle || !current || !current()) {
+        error = "工程或打印机已变化，请重新选择耗材颜色。";
+        return false;
+    }
+    const auto channels = project_filament_channels();
+    auto& bundle = *wxGetApp().preset_bundle;
+    auto config = bundle.project_config;
+    bool changed = false;
+    if (!prepare_workbench_project_color(config, channels, slot, color, changed, error)) return false;
+    if (!changed) return true;
+    if (!m_plater->apply_project_config(std::move(config), bundle.filament_presets,
+            "Change project filament color", error)) return false;
+    m_plater->on_config_change(bundle.full_config());
+    m_plater->get_partplate_list().invalid_all_slice_result();
+    m_plater->update_project_dirty_from_presets();
+    bundle.export_selections(*wxGetApp().app_config);
+    m_plater->update();
+    return true;
 }
 
 ObjImportColorFn workbench_obj_color_mapper(Plater* plater, AI::ImportColorMode mode,
