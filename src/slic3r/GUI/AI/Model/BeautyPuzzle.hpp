@@ -378,7 +378,8 @@ struct BeautyPuzzle {
             if(size_t(seed.semantic_id)<semantic_names.size()) {
                 const auto& name=semantic_names[size_t(seed.semantic_id)];
                 seed.crease_guard=name=="nose" || name=="le" || name=="re" || name=="iris" ||
-                    name=="ulip" || name=="llip" || name=="imouth";
+                    name=="ulip" || name=="llip" || name=="imouth" || name=="teeth" ||
+                    name=="lip-line-corner";
             }
             for (double& ch : seed.lab) ch /= seed.area;
             if (seed.normal.norm() > 1e-15) seed.normal.normalize();
@@ -1224,8 +1225,8 @@ private:
             }
             for (size_t i = 0; i < band.size(); ++i) local[band[i]] = int32_t(i);
             const size_t size = band.size();
-            std::vector<std::array<int32_t, 3>> neighbors(size);
-            std::vector<std::array<double, 3>> weights(size);
+            std::vector<std::vector<int32_t>> neighbors(size);
+            std::vector<std::vector<double>> weights(size);
             std::vector<double> diagonal(size), rhs(size), value(size), residual(size), direction(size), product(size);
             for (size_t i = 0; i < size; ++i) {
                 if ((i & 4095) == 0) checkpoint();
@@ -1234,8 +1235,9 @@ private:
                 diagonal[i] = mass;
                 value[i] = face_piece[f] == owner ? 1. : 0.;
                 rhs[i] = mass * value[i];
-                neighbors[i].fill(-1); weights[i].fill(0.);
-                for (size_t edge = 0; edge < 3; ++edge) {
+                neighbors[i].assign(surface.face_neighbors[f].size(),-1);
+                weights[i].assign(neighbors[i].size(),0.);
+                for (size_t edge = 0; edge < neighbors[i].size(); ++edge) {
                     const int32_t n = surface.face_neighbors[f][edge];
                     if (n < 0 || (barriers && (*barriers)[f] != (*barriers)[n])) continue;
                     const double length2 = std::max((surface.centers[f] - surface.centers[n]).squaredNorm(), 1e-24);
@@ -1251,7 +1253,7 @@ private:
             auto multiply = [&](const std::vector<double>& x, std::vector<double>& y) {
                 for (size_t i = 0; i < size; ++i) {
                     double sum = diagonal[i] * x[i];
-                    for (size_t edge = 0; edge < 3; ++edge)
+                    for (size_t edge = 0; edge < neighbors[i].size(); ++edge)
                         if (neighbors[i][edge] >= 0) sum -= weights[i][edge] * x[size_t(neighbors[i][edge])];
                     y[i] = sum;
                 }

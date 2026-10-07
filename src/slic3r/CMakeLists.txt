@@ -1,3 +1,4 @@
+include(${CMAKE_CURRENT_SOURCE_DIR}/GUI/Redesign/RedesignSources.cmake)
 cmake_minimum_required(VERSION 3.13)
 project(libslic3r_gui)
 
@@ -336,13 +337,11 @@ set(SLIC3R_GUI_SOURCES
     GUI/AIAssistantConfig.hpp
     GUI/AIAssistantPanel.cpp
     GUI/AIAssistantPanel.hpp
-    GUI/AI/SmartSlicing/SmartSlicingPanel.cpp
-    GUI/AI/SmartSlicing/SmartSlicingPanel.hpp
-    GUI/AI/SmartSlicing/SmartSlicingPresenter.cpp
-    GUI/AI/SmartSlicing/SmartSlicingPresenter.hpp
-    GUI/AI/SmartSlicing/SmartSlicingViewModel.cpp
-    GUI/AI/SmartSlicing/SmartSlicingViewModel.hpp
     GUI/AI/Orca/OrcaOfficialSliceGateway.hpp
+    GUI/AI/Orca/OrcaModelFeatureAnalyzer.cpp
+    GUI/AI/Orca/OrcaModelFeatureAnalyzer.hpp
+    GUI/AI/Orca/OrcaCandidateSearchAdapter.cpp
+    GUI/AI/Orca/OrcaCandidateSearchAdapter.hpp
     GUI/AI/Orca/OrcaSmartSlicingAdapter.cpp
     GUI/AI/Orca/OrcaSmartSlicingAdapter.hpp
     GUI/AI/Orca/OrcaParameterProposalAdapter.cpp
@@ -362,13 +361,12 @@ set(SLIC3R_GUI_SOURCES
     ${ORCA_DESKTOP_WORKSPACE_SOURCES}
     GUI/AI/SmartSlicing/SmartSlicingFeatureHost.cpp
     GUI/AI/SmartSlicing/SmartSlicingFeatureHost.hpp
-    GUI/AI/Model/VertexColorRegionEditor.cpp GUI/AI/Model/ModelFinishing.cpp GUI/AI/ModelGeneration/ModelGenerationBeautyView.cpp GUI/AI/Model/BeautySurface.cpp GUI/AI/Model/BeautyAppearance.cpp GUI/AI/Model/BeautyFinishing.cpp GUI/AI/ModelGeneration/BeautyWorkbenchControls.cpp GUI/AI/ModelGeneration/BeautyPreparationTicket.hpp
-    GUI/AI/ColorMatching/LocalPrintColorPanel.cpp GUI/AI/ModelGeneration/LocalSemanticWorkerClient.cpp GUI/AI/ModelGeneration/ModelGenerationInputLayout.cpp GUI/AI/ModelGeneration/ModelGenerationPreviewLayout.cpp GUI/AI/ModelGeneration/ModelGenerationSubmission.cpp
-    GUI/AI/Model/VertexColorRegionEditor.hpp GUI/AI/Model/ModelArtifact.cpp GUI/AI/Model/ModelArtifact.hpp GUI/AI/Model/GlbGeometryEditing.cpp GUI/AI/ModelGeneration/ModelGenerationLocalImport.cpp
+    ${ORCA_REDESIGN_WORKFLOW_SOURCES}
+    GUI/AI/ModelGeneration/BeautyPreparationTicket.hpp
     GUI/AIModelGenerationClient.cpp
     GUI/AIModelGenerationClient.hpp
     GUI/ModelGenerationPanel.cpp GUI/AI/ModelGeneration/ModelGenerationLibraryView.cpp GUI/AI/ModelGeneration/ModelGenerationArtifactFlow.cpp GUI/AI/ModelGeneration/ModelGenerationFeatureHost.cpp GUI/AI/ModelGeneration/ModelGenerationPresentation.cpp GUI/AI/ModelGeneration/ModelGenerationPresentationCore.cpp GUI/AI/ModelGeneration/ModelGenerationStatusText.cpp
-    GUI/ModelGenerationPanel.hpp GUI/AI/ModelGeneration/ModelGenerationFeatureHost.hpp GUI/AI/ModelGeneration/ModelGenerationPresentation.hpp GUI/AI/ModelGeneration/ModelGenerationStatusText.hpp GUI/AI/ModelGeneration/ModelPreview3D.hpp
+    GUI/ModelGenerationPanel.hpp GUI/AI/ModelGeneration/ModelGenerationFeatureHost.hpp GUI/AI/ModelGeneration/ModelGenerationHost.hpp GUI/AI/ModelGeneration/ModelGenerationPresentation.hpp GUI/AI/ModelGeneration/ModelGenerationStatusText.hpp GUI/AI/ModelGeneration/ModelPreview3D.hpp
     GUI/AISidecarClient.cpp
     GUI/AISidecarClient.hpp
     GUI/AIServiceManager.cpp
@@ -887,6 +885,8 @@ else ()
     add_library(libslic3r_gui STATIC ${SLIC3R_GUI_SOURCES} ${ORCA_BUILD_INFO_SOURCE})
 endif ()
 target_include_directories(libslic3r_gui PRIVATE Utils ${CMAKE_CURRENT_BINARY_DIR})
+# Drop unused COMDATs from MSVC Release GUI archives (4 GiB limit).
+target_compile_options(libslic3r_gui PRIVATE $<$<AND:$<BOOL:${MSVC}>,$<CONFIG:Release>>:/Zc:inline>)
 include("${CMAKE_SOURCE_DIR}/cmake/OrcaModelColoring.cmake")
 
 if (WIN32)

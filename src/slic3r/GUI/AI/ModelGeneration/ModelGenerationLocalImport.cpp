@@ -15,7 +15,7 @@
 namespace Slic3r::GUI {
 using namespace ModelGenerationPresentation;
 void ModelGenerationPanel::choose_local_model() {
-    if(m_busy || m_shutdown)return;
+    if(!can_replace_model_asset())return;
     if(m_beauty_controls && m_beauty_controls->has_changes()) {
         m_status->SetLabel(_L("请先保存当前美颜修改，再导入其他模型。"));return;
     }
@@ -26,7 +26,7 @@ void ModelGenerationPanel::choose_local_model() {
 }
 
 void ModelGenerationPanel::import_local_model(const boost::filesystem::path& source, bool open_beauty) {
-    if(m_busy || m_shutdown)return;
+    if(!can_replace_model_asset())return;
     if(m_beauty_controls && m_beauty_controls->has_changes()) {
         m_status->SetLabel(_L("请先保存当前美颜修改，再导入其他模型。"));return;
     }
@@ -130,7 +130,7 @@ void ModelGenerationPanel::import_local_model(const boost::filesystem::path& sou
             weak->load_library_entries();
             weak->load_library_entry(destination,reference_image_path,ai_image_path,
                 {},{},false,{},{},{},id,
-                open_beauty?_L("3D 美颜副本"):_L("本地导入模型"),open_beauty);
+                open_beauty?_L("3D 美颜副本"):_L("本地导入模型"));
             // A guarded/refused load did not start a preview worker.
             if(operation->cancel==canceled && !weak->m_preview_loading) {
                 complete_local_model_import(weak->m_library_import,canceled,false);

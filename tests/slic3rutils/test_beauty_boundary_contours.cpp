@@ -26,6 +26,16 @@ TEST_CASE("Contour construction keeps shared junctions fixed and projects curves
         {{0,0,0},{2,1,0},0,0,1,3},{{0,0,0},{1,-2,0},0,0,2,3}};
     const auto saved=mesh.vertices;
     const auto curves=BeautyBoundaryContours::build(edges,mesh,neighbors);
+    // Derived beauty surfaces can have more than three adjacent faces per row.
+    // The native canonical topology and the adaptive topology use the same
+    // projection and preserve junctions without copying either adjacency table.
+    const std::vector<std::vector<int32_t>> adaptive_neighbors{{-1,-1,-1,-1}};
+    const auto adaptive=BeautyBoundaryContours::build(edges,mesh,adaptive_neighbors);
+    REQUIRE(adaptive.size()==curves.size());
+    for(size_t i=0;i<curves.size();++i) {
+        CHECK((adaptive[i].a-curves[i].a).norm()<1e-6);
+        CHECK((adaptive[i].b-curves[i].b).norm()<1e-6);
+    }
     REQUIRE(curves.size()>edges.size());
     size_t junctions=0;
     for(const auto& edge:curves){

@@ -81,6 +81,9 @@ public:
     size_t selected_face_count() const { return m_selected_face_count; }
 
     std::optional<size_t> pick_face(const Vec3d& ray_origin, const Vec3d& ray_direction) const;
+    struct SurfaceHit { size_t face; Vec3d barycentric; double distance; };
+    std::optional<SurfaceHit> pick_surface(const Vec3d& ray_origin, const Vec3d& ray_direction) const;
+    void set_face_adjacency(const std::vector<std::vector<int32_t>>& adjacency);
     size_t update_selection(size_t seed_face, RegionSelectionOperation operation,
                             const RegionSelectionSettings& settings);
     size_t select_faces(const std::vector<size_t>& face_indices);

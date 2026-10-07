@@ -1,5 +1,6 @@
 #include "WebGuideDialog.hpp"
 #include "ConfigWizard.hpp"
+#include "Redesign/StartupSetupService.hpp"
 
 #include <boost/algorithm/string/join.hpp>
 #include <boost/filesystem/operations.hpp>
@@ -982,10 +983,11 @@ bool GuideFrame::apply_config(AppConfig *app_config, PresetBundle *preset_bundle
     BOOST_LOG_TRIVIAL(info) << "calling apply_vendor_config from WebGuideDialog";
     // Call the Core library function to apply vendor configuration
     // This handles bundle installation, filament @System substitution, AppConfig updates, and preset loading
-    if (!preset_bundle->apply_vendor_config(
+    if (!apply_startup_vendor_selection(
+            *preset_bundle,
+            *app_config,
             enabled_vendors,
             enabled_filaments,
-            app_config,
             true,
             preferred_model,
             preferred_variant))

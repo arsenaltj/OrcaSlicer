@@ -106,13 +106,21 @@ def restrict_network() -> None:
 
 EYE_MODEL = "face_landmarker.task"
 EYE_SHA256 = "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff"
+MEDIAPIPE_VERSION = "1.0.0"
+MEDIAPIPE_VERSIONS = (MEDIAPIPE_VERSION, "1.0.1")
 
 
 def package_versions(weights):
     names = ["torch", "torchvision", "pyfacer", "numpy", "Pillow"]
     if EYE_MODEL in weights or 'selfie_multiclass_256x256.tflite' in weights:
         names.append("mediapipe")
-    return {name: importlib.metadata.version(name) for name in names}
+    result = {name: importlib.metadata.version(name) for name in names}
+    for name in ('opencv-python', 'opencv-contrib-python', 'opencv-python-headless', 'opencv-contrib-python-headless'):
+        try:
+            result[name] = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            pass
+    return result
 
 
 def check_weights(directory: Path) -> dict:
@@ -127,14 +135,14 @@ def check_weights(directory: Path) -> dict:
     # Optional, locally installed capability. An absent/incompatible extension
     # keeps the established parser available; no downloads or environment edits.
     try:
-        if (importlib.metadata.version("mediapipe") == "1.0.1" and
+        if (importlib.metadata.version("mediapipe") in MEDIAPIPE_VERSIONS and
                 sha256_file(directory / EYE_MODEL, 3758596) == EYE_SHA256):
             actual[EYE_MODEL] = EYE_SHA256
     except (OSError, WorkerError, importlib.metadata.PackageNotFoundError):
         pass
     from local_body_regions import MODEL, SIZE, SHA256
     try:
-        if importlib.metadata.version('mediapipe') == '1.0.1' and sha256_file(directory / MODEL, SIZE) == SHA256:
+        if importlib.metadata.version('mediapipe') in MEDIAPIPE_VERSIONS and sha256_file(directory / MODEL, SIZE) == SHA256:
             actual[MODEL] = SHA256
     except (OSError, WorkerError, importlib.metadata.PackageNotFoundError):
         pass

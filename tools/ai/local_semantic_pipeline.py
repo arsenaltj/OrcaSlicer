@@ -19,7 +19,7 @@ import local_semantic_render as render
 from local_semantic_views import coarse_cameras, focus_camera
 from local_semantic_projection import Observation, project, LABEL_NAMES, SUPPORTED_LABELS
 
-POLICY_VERSION = 'visible-face-semantic-v5-body-supplement'
+POLICY_VERSION = 'visible-face-semantic-v7-farl-sides-source-brow-boundary'
 MAX_OBSERVATION_PIXELS = 16 * 1024 * 1024
 
 
@@ -61,7 +61,142 @@ def file_sha256(path):
     return digest.hexdigest()
 
 
-def analyze(source, native_packet, source_sha256, model_loader, on_view=None, cancelled=None):
+def _apply_shape_parent_fallback(projection, shape_details):
+    """Rebuild one-owner regions around accepted shape proposals.
+
+    Landmark proposals may refine a broad ``face`` region when the parser did
+    not emit a dedicated eye/lip row.  The old fallback only retained samples
+    already under a detail row, so a proposed face remained in both ``face``
+    and the detail returned by ``associate``.  Reassign accepted samples to a
+    legal detail owner and move only rejected samples back to ``face``.
+    """
+    if not shape_details:
+        return
+    parent_labels = {
+        're': {'re', 'face'}, 'le': {'le', 'face'},
+        'ulip': {'ulip', 'face'}, 'llip': {'llip', 'face'},
+        'imouth': {'imouth', 'face'},
+        'lip-line-corner': {'lip-line-corner', 'face', 'ulip', 'llip', 'imouth'},
+        'lb': {'lb', 'face'}, 'rb': {'rb', 'face'},
+    }
+    regions = [dict(region, samples=list(region['samples'])) for region in projection['regions']]
+    owner = {}
+    sample_by_face = {}
+    for index, region in enumerate(regions):
+        for sample in region['samples']:
+            face = int(sample[0])
+            owner[face] = (index, region['subject_id'], region['label'])
+            sample_by_face[face] = sample
+
+    accepted_moves = {}
+    rejected_to_parent = set()
+    for item in shape_details:
+        label = item['label']
+        accepted = set(item['accepted_faces']) if item['status'] != 'INVALID_SHAPE_CONFLICT' else set()
+        rejected = set(item['rejected_faces'])
+        for face in sorted(accepted):
+            source = owner.get(face)
+            legal = source is not None and source[1] == item['subject_id'] and source[2] in parent_labels.get(label, {label})
+            if not legal:
+                accepted.discard(face)
+                rejected.add(face)
+                reason = 'SOURCE_MAPPING' if source is None else 'SHAPE_OWNER_CONFLICT'
+                if reason not in item['reasons']:
+                    item['reasons'].append(reason)
+                continue
+            target = (item['subject_id'], label)
+            previous = accepted_moves.get(face)
+            if previous is not None and previous != target:
+                accepted_moves.pop(face, None)
+                rejected_to_parent.add(face)
+                for other in shape_details:
+                    if other is item or face not in other['accepted_faces']:
+                        continue
+                    other['accepted_faces'] = [value for value in other['accepted_faces'] if value != face]
+                    other['rejected_faces'] = sorted(set(other['rejected_faces']) | {face})
+                    other['status'] = 'PROTECTED_SHAPE_UNCERTAIN'
+                    if 'SHAPE_CONFLICTING_COMPONENT' not in other['reasons']:
+                        other['reasons'].append('SHAPE_CONFLICTING_COMPONENT')
+                item['status'] = 'PROTECTED_SHAPE_UNCERTAIN'
+                if 'SHAPE_CONFLICTING_COMPONENT' not in item['reasons']:
+                    item['reasons'].append('SHAPE_CONFLICTING_COMPONENT')
+                continue
+            accepted_moves[face] = target
+        item['accepted_faces'] = sorted(accepted)
+        item['rejected_faces'] = sorted(rejected)
+        if item['accepted_faces'] and item['status'] == 'INVALID_SHAPE_CONFLICT':
+            # A hard mapping conflict removed only part of a proposal. Keep
+            # the legal seed usable and expose the conflict as a risk; a
+            # completely unbound proposal remains INVALID below.
+            item['status'] = 'PROTECTED_SHAPE_UNCERTAIN'
+        elif not item['accepted_faces'] and any(reason in item['reasons']
+                                                for reason in ('SOURCE_MAPPING', 'SHAPE_OWNER_CONFLICT')):
+            item['status'] = 'INVALID_SHAPE_CONFLICT'
+        for face in rejected:
+            source = owner.get(face)
+            if source is not None and source[1] == item['subject_id'] and source[2] == label:
+                rejected_to_parent.add(face)
+
+    additions = {}
+    for index, region in enumerate(regions):
+        keep = []
+        for sample in region['samples']:
+            face = int(sample[0])
+            target = accepted_moves.get(face)
+            if target is not None and target != (region['subject_id'], region['label']):
+                additions.setdefault(target, {})[face] = sample
+                continue
+            if face in rejected_to_parent and region['label'] != 'face':
+                additions.setdefault((region['subject_id'], 'face'), {})[face] = sample
+                continue
+            keep.append(sample)
+        region['samples'] = keep
+
+    for target, samples in additions.items():
+        existing = next((region for region in regions
+                          if (region['subject_id'], region['label']) == target), None)
+        if existing is None:
+            existing = {'subject_id': target[0], 'label': target[1], 'samples': []}
+            regions.append(existing)
+        merged = {int(sample[0]): sample for sample in existing['samples']}
+        merged.update(samples)
+        existing['samples'] = list(merged.values())
+
+    # A shape record can refer to an owner that was removed by a previous
+    # conflict.  Keep only records that still have a concrete projection row.
+    valid_faces = {int(sample[0]) for region in regions for sample in region['samples']}
+    for item in shape_details:
+        item['accepted_faces'] = [face for face in item['accepted_faces'] if face in valid_faces]
+        item['rejected_faces'] = sorted(set(item['rejected_faces']) - set(item['accepted_faces']))
+        item['nested_faces'] = [face for face in item.get('nested_faces', [])
+                                if face in set(item['accepted_faces'])]
+    regions = [region for region in regions if region['samples']]
+    for region in regions:
+        region['samples'] = sorted(region['samples'], key=lambda sample: sample[0])
+    projection['regions'] = sorted(regions, key=lambda item: (item['subject_id'], item['label']))
+
+
+def _sync_shape_details(projection, feature_details, shape_details, audit):
+    shapes = {(item['subject_id'], item['label']): item for item in shape_details}
+    result = []
+    for feature in feature_details:
+        shape = shapes.get((feature['subject_id'], feature['label']))
+        if shape is None or not shape['accepted_faces']:
+            continue
+        feature = dict(feature, faces=list(shape['accepted_faces']), iris_faces=list(shape.get('nested_faces', [])))
+        if 'anchor_paths' in feature:
+            feature['anchor_paths'] = [path for path in feature['anchor_paths'] if path[0] in set(feature['faces'])]
+        result.append(feature)
+    for row in audit:
+        shape = shapes.get((row['subject_id'], row['label']))
+        if shape is not None:
+            row.update(final_accepted_count=len(shape['accepted_faces']), final_nested_count=len(shape.get('nested_faces', [])),
+                       rejected_faces=list(shape['rejected_faces']), reasons=list(shape['reasons']),
+                       owner_filter_removed_count=max(0, row['topology_completed_count'] - len(shape['accepted_faces'])))
+    return result
+
+
+def analyze(source, native_packet, source_sha256, model_loader, on_view=None, cancelled=None, refine_brows=True):
     """Return raw regions and the actual render mesh for subsequent host proof.
 
     The preliminary exact fingerprint match is intentionally narrower than the
@@ -159,7 +294,8 @@ def analyze(source, native_packet, source_sha256, model_loader, on_view=None, ca
         if keep and getattr(parser, 'eye_landmarks', None) is not None:
             try:
                 eye_observations.extend(eye_landmarks.observe(parser.eye_landmarks, rgb, ids))
-                face_observations.extend(face_landmarks.observe(parser.eye_landmarks, rgb, ids, bary, vertices, faces, camera, family))
+                source_pixels = render.source_texture_projection(faces, uv, materials, material_ids, ids, bary, projected)
+                face_observations.extend(face_landmarks.observe(parser.eye_landmarks, rgb, ids, bary, vertices, faces, camera, family, source_pixels))
             except Exception:
                 pass  # Missing eye hints must not discard valid raw semantics.
         if on_view is not None:
@@ -189,11 +325,20 @@ def analyze(source, native_packet, source_sha256, model_loader, on_view=None, ca
             rgb = render.shade(faces, uv, colors, materials, material_ids, ids, bary, projected)
             checkpoint()
             try:
-                face_observations.extend(face_landmarks.observe(parser.eye_landmarks, rgb, ids, bary, vertices, faces, camera, camera.name))
+                source_pixels = render.source_texture_projection(faces, uv, materials, material_ids, ids, bary, projected)
+                face_observations.extend(face_landmarks.observe(parser.eye_landmarks, rgb, ids, bary, vertices, faces, camera, camera.name, source_pixels))
             except Exception:
                 pass  # Optional shape aids must not discard accepted semantics.
-    feature_details = face_landmarks.associate(face_observations, result['regions'], vertices, faces)
-    eyes = eye_landmarks.associate(eye_observations, result['regions'])
+    shape_audit = []
+    feature_details, shape_details = face_landmarks.associate(
+        face_observations, result['regions'], vertices, faces, with_shapes=True, audit=shape_audit, refine_brows=refine_brows)
+    _apply_shape_parent_fallback(result, shape_details)
+    feature_details = _sync_shape_details(result, feature_details, shape_details, shape_audit)
+    eyes = [{'subject_id': item['subject_id'], 'label': item['label'],
+             'aperture_faces': list(item['accepted_faces']), 'iris_faces': list(item.get('nested_faces', []))}
+            for item in shape_details if item['label'] in ('le', 're') and item.get('nested_faces')]
+    if not shape_details:
+        eyes = eye_landmarks.associate(eye_observations, result['regions'])
     if body_observations:
         blocked = {f for hint in feature_details for f in hint['faces']}
         blocked.update(f for hint in feature_details for path in hint.get('anchor_paths', []) for f in path)
@@ -204,7 +349,8 @@ def analyze(source, native_packet, source_sha256, model_loader, on_view=None, ca
     runtime = {'python': sys.version.split()[0], 'bits': struct.calcsize('P')*8,
                'packages': {name: importlib.metadata.version(name) for name in ('torch','torchvision','pyfacer','numpy','Pillow')}}
     return {'projection': result, 'eye_details': eyes,
-            'feature_details': feature_details, 'vertices': vertices, 'faces': faces, 'render_geometry_id': rendered_id,
+            'feature_details': feature_details, 'shape_details': shape_details, 'shape_audit': shape_audit,
+            'vertices': vertices, 'faces': faces, 'render_geometry_id': rendered_id,
             'runtime': runtime, 'render_visible_faces': int(visible_surface.sum()),
             'render_unseen_faces': int(len(faces)-visible_surface.sum()),
             'source_sha256': source_sha256, 'weights': weights, 'views': reports, 'policy_version': POLICY_VERSION}

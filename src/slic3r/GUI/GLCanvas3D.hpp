@@ -521,6 +521,7 @@ private:
     bool m_is_dark = false;
     std::optional<ColorRGBA> m_workspace_background;
     bool m_workspace_toolbar_theme_dirty = false;
+    bool m_workbench_appearance = false;
     wxGLCanvas* m_canvas;
     wxGLContext* m_context;
     SceneRaycaster m_scene_raycaster;
@@ -783,6 +784,7 @@ public:
     float get_explosion_ratio() { return m_explosion_ratio; }
     void reset_explosion_ratio() { m_explosion_ratio = 1.0; }
     void on_change_color_mode(bool is_dark, bool reinit = true);
+    void use_workbench_appearance();
     const bool get_dark_mode_status() { return m_is_dark; }
     // A workspace surface may override only the backdrop, preserving native content colors.
     void set_workspace_background(std::optional<ColorRGBA> color) {

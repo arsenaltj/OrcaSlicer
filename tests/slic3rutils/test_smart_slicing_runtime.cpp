@@ -20,6 +20,11 @@ WorkspaceContext runtime_context(std::string fingerprint = "revision-a")
     context.process_preset_id = "process";
     context.materials.push_back({"material", "#FFFFFF"});
     context.objects.push_back({42, "cube", 1, 12, 0, false});
+    context.machine_capability.registry_version = "test-machine-registry";
+    context.machine_capability.support_status = MachineSupportStatus::Enabled;
+    context.material_compatibility.registry_version = "test-material-registry";
+    context.material_compatibility.combination_status = MaterialCombinationStatus::Compatible;
+    context.material_compatibility.common_family = MaterialFamily::PLA;
     context.native_validation_available = true;
     return context;
 }

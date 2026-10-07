@@ -88,6 +88,29 @@ TEST_CASE("Semantic midpoint import rejects changed topology transactionally", "
     CHECK(painting == before);
 }
 
+TEST_CASE("Fine portrait leaves transfer without changing source geometry", "[ModelColorUpdate][SubfaceColor]")
+{
+    const auto depth = GENERATE(uint8_t(3), uint8_t(4));
+    const indexed_triangle_set mesh = its_make_cube(20, 30, 40);
+    const TriangleMesh triangle_mesh(mesh);
+    TriangleSelector selector(triangle_mesh);
+    selector.set_facet(0, EnforcerBlockerType::Extruder1);
+    selector.set_facet(1, EnforcerBlockerType::Extruder2);
+    auto painting = selector.serialize();
+    const std::array<float, 3> skin {.8f,.5f,.3f}, detail {.95f,.95f,.95f};
+    const uint8_t path = uint8_t((1u << (2u * depth)) - 1u);
+    std::string error;
+    REQUIRE(apply_subface_color_overrides(mesh, mesh, painting,
+        {{0, skin}, {1, detail}}, {{0, depth, path, detail}}, error));
+    TriangleSelector restored(triangle_mesh);
+    restored.deserialize(painting);
+    CHECK(restored.num_facets(EnforcerBlockerType::Extruder2) == 2);
+    EnforcerBlockerType state;
+    CHECK_FALSE(restored.facet_state(0, state));
+    CHECK(restored.facet_state(1, state));
+    CHECK(state == EnforcerBlockerType::Extruder2);
+}
+
 TEST_CASE("Native preparation preserves source and targets total world height", "[ai][OrcaModelPreparation]")
 {
     Model model;

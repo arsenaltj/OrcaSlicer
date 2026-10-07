@@ -17,6 +17,9 @@
 
 #include <boost/log/trivial.hpp>
 
+#include <chrono>
+#include <cstdlib>
+
 #ifdef __WXGTK__
 #include <gtk/gtk.h>
 #endif
@@ -25,6 +28,19 @@
 #define TOPBAR_TITLE_WIDTH  300
 
 using namespace Slic3r;
+
+namespace {
+
+bool ui_redesign_drag_trace_enabled()
+{
+    static const bool enabled = [] {
+        const char *value = std::getenv("ORCASLICER_UI_REDESIGN_DRAG_TRACE");
+        return value != nullptr && (*value == '1' || *value == 'y' || *value == 'Y' || *value == 't' || *value == 'T');
+    }();
+    return enabled;
+}
+
+} // namespace
 
 enum CUSTOM_ID
 {
@@ -321,6 +337,28 @@ void BBLTopbar::Init(wxFrame* parent)
 
     m_title_ctrl = new CenteredTitle(this);
     m_title_ctrl->SetFont(Label::Body_12);
+    // The title is a child control of the AUI toolbar. Keep a small amount of
+    // direct tracing here because a press can be consumed by the child before
+    // it reaches BBLTopbar::OnMouseLeftDown; without this marker we cannot
+    // distinguish input routing from native window-move latency.
+    m_title_ctrl->Bind(wxEVT_LEFT_DOWN, [this](wxMouseEvent& event) {
+        if (ui_redesign_drag_trace_enabled()) {
+            const wxPoint screen = m_title_ctrl->ClientToScreen(event.GetPosition());
+            BOOST_LOG_TRIVIAL(info) << "[UiRedesignDrag][CenteredTitle] left down"
+                                     << " client=" << event.GetX() << "," << event.GetY()
+                                     << " screen=" << screen.x << "," << screen.y;
+        }
+        event.Skip();
+    });
+    m_title_ctrl->Bind(wxEVT_LEFT_UP, [this](wxMouseEvent& event) {
+        if (ui_redesign_drag_trace_enabled()) {
+            const wxPoint screen = m_title_ctrl->ClientToScreen(event.GetPosition());
+            BOOST_LOG_TRIVIAL(info) << "[UiRedesignDrag][CenteredTitle] left up"
+                                     << " client=" << event.GetX() << "," << event.GetY()
+                                     << " screen=" << screen.x << "," << screen.y;
+        }
+        event.Skip();
+    });
     wxAuiToolBarItem* title_item = this->AddControl(m_title_ctrl, "");
     title_item->SetProportion(1); 
 
@@ -709,12 +747,31 @@ void BBLTopbar::OnMouseLeftDown(wxMouseEvent& event)
     wxAuiToolBarItem* item = this->FindToolByPosition(event.GetX(), event.GetY());
     m_delta = mouse_pos - frame_pos;
 
+    if (ui_redesign_drag_trace_enabled()) {
+        BOOST_LOG_TRIVIAL(info) << "[UiRedesignDrag][BBLTopbar] left down"
+                                 << " client=" << event.GetX() << "," << event.GetY()
+                                 << " screen=" << mouse_pos.x << "," << mouse_pos.y
+                                 << " frame=" << frame_pos.x << "," << frame_pos.y
+                                 << " item=" << (item != nullptr)
+                                 << " title=" << (item != nullptr && item->GetWindow() == m_title_ctrl);
+    }
+
     if (item == NULL || item->GetWindow() == m_title_ctrl)
     {
 #ifdef __WXMSW__
-        CaptureMouse();
-        ReleaseMouse();
-        ::PostMessage((HWND) m_frame->GetHandle(), WM_NCLBUTTONDOWN, HTCAPTION, MAKELPARAM(mouse_pos.x, mouse_pos.y));
+        // WM_NCLBUTTONDOWN starts the native move loop. Do not capture the
+        // wx window here: the old CaptureMouse/ReleaseMouse pair adds another
+        // input-state transition without contributing to the native drag.
+        const auto send_begin = std::chrono::steady_clock::now();
+        const LRESULT result = ::SendMessage((HWND) m_frame->GetHandle(), WM_NCLBUTTONDOWN, HTCAPTION,
+                                             MAKELPARAM(mouse_pos.x, mouse_pos.y));
+        if (ui_redesign_drag_trace_enabled()) {
+            const auto send_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - send_begin).count();
+            BOOST_LOG_TRIVIAL(info) << "[UiRedesignDrag][BBLTopbar] sent WM_NCLBUTTONDOWN"
+                                     << " result=" << result
+                                     << " elapsed_us=" << send_us;
+        }
         return;
 #elif defined(__WXGTK__)
         // Use WM-integrated drag for smoother window movement on Linux.
@@ -825,6 +882,11 @@ WXLRESULT BBLTopbar::MSWWindowProc(WXUINT nMsg, WXWPARAM wParam, WXLPARAM lParam
 {
     switch (nMsg) {
     case WM_NCHITTEST: {
+        const bool trace_hit_test = ui_redesign_drag_trace_enabled();
+        const std::int64_t hit_test_begin = trace_hit_test
+            ? std::chrono::duration_cast<std::chrono::microseconds>(
+                  std::chrono::steady_clock::now().time_since_epoch()).count()
+            : 0;
         m_last_mouse_position = ScreenToClient({GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)});
 
         wxAuiToolBarItem* item = this->FindToolByCurrentPosition();
@@ -833,6 +895,13 @@ WXLRESULT BBLTopbar::MSWWindowProc(WXUINT nMsg, WXWPARAM wParam, WXLPARAM lParam
         }
 
         // Pass the event to main window if mouse is on the top bar and not on any of the buttons
+        if (trace_hit_test) {
+            const auto elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count() - hit_test_begin;
+            BOOST_LOG_TRIVIAL(info) << "[UiRedesignDrag][BBLTopbar] WM_NCHITTEST transparent"
+                                     << " item=" << (item != nullptr)
+                                     << " elapsed_us=" << elapsed_us;
+        }
         return HTTRANSPARENT;
     }
     }

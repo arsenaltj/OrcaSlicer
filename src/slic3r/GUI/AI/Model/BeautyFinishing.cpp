@@ -203,7 +203,7 @@ ModelFinishingResult finish_beauty_artifact(const boost::filesystem::path& sourc
     const boost::filesystem::path& destination,const ModelFinishingOptions& options,
     const std::function<bool()>& canceled)
 {
-    if (options.beauty_puzzle) return finish_puzzle_artifact(source, destination, options, canceled);
+    if (options.beauty_puzzle) return finish_puzzle_artifact(source,destination,options,canceled);
     ModelFinishingResult result;
     bool owns_output=false;
     auto checkpoint=[&]{if(canceled && canceled())throw std::runtime_error("Beauty edit cancelled.");};
@@ -245,6 +245,9 @@ ModelFinishingResult finish_beauty_artifact(const boost::filesystem::path& sourc
             if(appearance.face_weights.size()!=selected.size())throw std::runtime_error("Appearance mask is not ready.");
             for(size_t f=0;f<selected.size();++f)if((!selected[f] || protection[f]) && appearance.face_weights[f]!=0)
                 throw std::runtime_error("Appearance weights extend outside the selected surface.");
+            for(const auto& leaf:appearance.leaves) if(leaf.weight>0 &&
+                (leaf.key.source_face_id>=selected.size() || !selected[leaf.key.source_face_id] || protection[leaf.key.source_face_id]))
+                throw std::runtime_error("Appearance leaves extend outside the selected source surface.");
             const auto edited=edit_glb_appearance(source,destination,appearance,canceled);
             if(!edited.success) {result.canceled=edited.canceled;throw std::runtime_error(edited.error);}
             owns_output=true;result.changed_texture_pixels=edited.changed_pixels;

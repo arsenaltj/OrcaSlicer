@@ -3,15 +3,21 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
 namespace Slic3r::GUI::PreviewPalette {
 using Color = std::array<float, 3>;
+inline constexpr size_t max_preview_colors = 32;
+inline size_t initial_trial_color_count(size_t project_filaments, size_t model_suggestion)
+{
+    return std::clamp(project_filaments ? project_filaments : model_suggestion, size_t(1), max_preview_colors);
+}
 struct ColorTrialMapping {
     bool enabled {false};
     // Source centers determine group membership; editable target colors do
-    // not change that assignment. Values are normalized sRGB, at most six.
+    // not change that assignment. Values are normalized sRGB.
     std::vector<Color> mapping_colors;
     std::vector<Color> target_colors;
 };
@@ -197,17 +203,20 @@ public:
 
     // Locked RGB values remain exact and in input order. Invalid values and
     // exact duplicates are ignored. Automatic protection is intentionally opt-in.
+    std::vector<Color> print_palette(size_t limit, const std::vector<Color>& locked = {}) const
+    {
+        if (limit < 1 || limit > max_preview_colors) return {};
+        return palette_impl(limit, locked, false);
+    }
+
     std::vector<Color> palette(size_t limit = 6, const std::vector<Color>& locked = {}, bool preserve_hues = false) const
     {
         return palette_impl(std::min(size_t(6), limit), locked, preserve_hues);
     }
 
-    // Local printing has a separate target budget. Existing provider and color
-    // trial callers retain their six-color contract through palette().
-    std::vector<Color> print_palette(size_t limit, const std::vector<Color>& locked = {}) const
+    std::vector<Color> trial_palette(size_t limit, const std::vector<Color>& locked = {}, bool preserve_hues = false) const
     {
-        if (limit < 1 || limit > 32) return {};
-        return palette_impl(limit, locked, false);
+        return palette_impl(std::min(max_preview_colors, limit), locked, preserve_hues);
     }
 
 private:

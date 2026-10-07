@@ -22,12 +22,12 @@ REQUEST_SCHEMA = 'orcaslicer.local-semantic-request.v1'
 RESPONSE_SCHEMA = 'orcaslicer.local-semantic-response.v1'
 WORKER_VERSION = 'local-semantic-request-cpu-v1'
 LABEL_SCHEMA = 'farl-celebm-face19-subset-v1'
-POLICY_VERSION = 'visible-face-semantic-v5-body-supplement'
+POLICY_VERSION = 'visible-face-semantic-v7-farl-sides-source-brow-boundary'
 MODULES = ('glb_artifact.py', 'local_semantic_worker.py', 'local_semantic_geometry.py',
            'local_semantic_render.py', 'local_semantic_transform.py', 'local_semantic_views.py',
-           'local_semantic_projection.py', 'local_semantic_pipeline.py', 'local_semantic_request.py', 'local_eye_landmarks.py', 'local_face_landmarks.py', 'local_body_regions.py')
+           'local_semantic_projection.py', 'local_semantic_pipeline.py', 'local_semantic_request.py', 'local_eye_landmarks.py', 'local_face_landmarks.py', 'local_shape_constraints.py', 'local_brow_boundary.py', 'local_body_regions.py')
 POLICY_MODULES = ('local_semantic_render.py', 'local_semantic_transform.py', 'local_semantic_views.py',
-                  'local_semantic_projection.py', 'local_semantic_pipeline.py', 'local_eye_landmarks.py', 'local_face_landmarks.py', 'local_body_regions.py')
+                  'local_semantic_projection.py', 'local_semantic_pipeline.py', 'local_eye_landmarks.py', 'local_face_landmarks.py', 'local_shape_constraints.py', 'local_brow_boundary.py', 'local_body_regions.py')
 RASTER_ACCELERATOR = 'local_semantic_raster.dll'
 PACKAGES = ('torch', 'torchvision', 'pyfacer', 'numpy', 'Pillow')
 MAX_RENDER_BYTES = 96_000_184
@@ -200,8 +200,8 @@ def _validate_eye_details(hints, regions):
 def _validate_feature_details(hints, regions, face_count, vertices=None, triangles=None):
     # Independent shape aids may recover a missed part, but may never claim a
     # different person's surface or replace hair/neck/clothing evidence.
-    head = {'face','nose','re','le','ulip','llip','imouth','rb','lb'}
-    allowed = {'re','le','ulip','llip','imouth'}
+    head = {'face','nose','re','le','ulip','llip','imouth','lip-line-corner','rb','lb'}
+    allowed = {'re','le','ulip','llip','imouth','lip-line-corner','lb','rb'}
     owners = {s[0]:(r['subject_id'],r['label']) for r in regions for s in r['samples']}
     subjects = {r['subject_id'] for r in regions if r['label'] in head}
     _require(type(hints) is list and len(hints)<=160, 'invalid_feature_details')
@@ -248,6 +248,67 @@ def _validate_feature_details(hints, regions, face_count, vertices=None, triangl
         _require(anchored and type(iris) is list and len(iris)<=len(faces) and
                  all(type(f) is int and f in face_set for f in iris) and iris==sorted(set(iris)) and
                  (label in ('re','le') or not iris), 'invalid_feature_details')
+
+
+def _validate_shape_details(hints, regions, face_count):
+    statuses = {'VALID_SHAPE', 'PROTECTED_SHAPE_UNCERTAIN', 'INVALID_SHAPE_CONFLICT'}
+    labels = {'re', 'le', 'ulip', 'llip', 'imouth', 'lip-line-corner', 'lb', 'rb'}
+    head = {'face', 'nose', 're', 'le', 'ulip', 'llip', 'imouth', 'lip-line-corner', 'rb', 'lb'}
+    _require(type(hints) is list and len(hints) <= 8 * 32, 'invalid_shape_details')
+    owners = {sample[0]:(region['subject_id'], region['label'])
+              for region in regions for sample in region['samples']}
+    seen = set()
+    # Only accepted faces establish ownership. Rejected faces describe where
+    # a candidate was considered and may legitimately overlap another detail's
+    # rejected or accepted observation; they never authorize a write.
+    claimed = {}
+    for hint in hints:
+        required = {'subject_id', 'label', 'status', 'accepted_faces', 'rejected_faces',
+                    'view_support', 'metrics', 'reasons'}
+        allowed = required | {'nested_faces'}
+        _require(type(hint) is dict and required <= set(hint) and set(hint) <= allowed,
+                 'invalid_shape_details')
+        subject, label = hint['subject_id'], hint['label']
+        _require(isinstance(subject, str) and _IDENTIFIER.fullmatch(subject) and label in labels and
+                 hint['status'] in statuses and (subject, label) not in seen,
+                 'invalid_shape_details')
+        seen.add((subject, label))
+        _require(type(hint['view_support']) is int and 0 <= hint['view_support'] <= 16,
+                 'invalid_shape_details')
+        face_sets = {}
+        for key in ('accepted_faces', 'rejected_faces'):
+            values = hint[key]
+            _require(type(values) is list and values == sorted(set(values)) and
+                     all(type(face) is int and 0 <= face < face_count for face in values),
+                     'invalid_shape_details')
+            face_sets[key] = set(values)
+            for face in values:
+                owner = owners.get(face)
+                _require(owner is not None and owner[0] == subject and owner[1] in head,
+                         'invalid_shape_details')
+                if key == 'accepted_faces':
+                    previous = claimed.get(face)
+                    _require(previous is None or previous == (subject, label), 'invalid_shape_details')
+                    claimed[face] = (subject, label)
+        _require(not face_sets['accepted_faces'].intersection(face_sets['rejected_faces']),
+                 'invalid_shape_details')
+        if hint['status'] == 'VALID_SHAPE':
+            _require(bool(face_sets['accepted_faces']) and hint['view_support'] >= 2,
+                     'invalid_shape_details')
+        if 'nested_faces' in hint:
+            nested = hint['nested_faces']
+            _require(type(nested) is list and nested == sorted(set(nested)) and
+                     (not nested or label in {'re', 'le'}) and
+                     set(nested) <= face_sets['accepted_faces'] and
+                     all(type(face) is int and 0 <= face < face_count for face in nested),
+                     'invalid_shape_details')
+        _require(type(hint['metrics']) is dict and len(hint['metrics']) <= 32 and
+                 all(isinstance(key, str) and _IDENTIFIER.fullmatch(key) and
+                     type(value) in (int, float) and math.isfinite(value)
+                     for key, value in hint['metrics'].items()), 'invalid_shape_details')
+        _require(type(hint['reasons']) is list and len(hint['reasons']) <= 16 and
+                 all(isinstance(reason, str) and _IDENTIFIER.fullmatch(reason)
+                     for reason in hint['reasons']), 'invalid_shape_details')
 
 
 def _statistics(projection, result, face_count, known):
@@ -363,6 +424,9 @@ def _execute(request, config, request_dir, worker, directory):
         _validate_feature_details(result['feature_details'], projection['regions'], request['face_count'],
                                   result['vertices'], result['faces'])
         evidence['feature_details'] = result['feature_details']
+    if result.get('shape_details'):
+        _validate_shape_details(result['shape_details'], projection['regions'], request['face_count'])
+        evidence['shape_details'] = result['shape_details']
     rendered = geometry.encode(vertices, faces, request['source_sha256'])
     encoded_evidence = _json_bytes(evidence)
     _require(len(rendered) <= MAX_RENDER_BYTES and len(encoded_evidence) <= MAX_EVIDENCE_BYTES, 'output_too_large')

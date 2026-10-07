@@ -1,6 +1,7 @@
 #include "PrintabilityInspector.hpp"
 
 #include <algorithm>
+#include <sstream>
 #include <string>
 #include <utility>
 
@@ -18,6 +19,24 @@ void add_issue(PrintabilityReport& report,
                std::vector<std::string> resolutions = {})
 {
     report.issues.push_back({code, severity, scope, object_id, std::move(evidence), std::move(resolutions), blocks, decision});
+}
+
+std::string machine_evidence(const MachineCapabilitySnapshot& capability)
+{
+    std::ostringstream stream;
+    stream << "registry=" << capability.registry_version;
+    for (const MachineCapabilityReason reason : capability.reasons)
+        stream << ';' << machine_capability_reason_name(reason);
+    return stream.str();
+}
+
+std::string material_evidence(const MaterialCompatibilitySnapshot& compatibility)
+{
+    std::ostringstream stream;
+    stream << "registry=" << compatibility.registry_version;
+    for (const MaterialCompatibilityReason reason : compatibility.reasons)
+        stream << ';' << material_compatibility_reason_name(reason);
+    return stream.str();
 }
 
 } // namespace
@@ -39,6 +58,12 @@ PrintabilityReport PrintabilityInspector::inspect(const WorkspaceContext& contex
                                           [](const MaterialSnapshot& material) { return !material.preset_id.empty(); });
     if (!has_material)
         add_issue(report, IssueCode::MissingMaterial, Severity::Error, IssueScope::Material, "No material preset is selected.", true, false);
+    if (!context.machine_capability.enabled())
+        add_issue(report, IssueCode::MachineCapabilityUnavailable, Severity::Error, IssueScope::Configuration,
+                  machine_evidence(context.machine_capability), true, false);
+    if (!context.material_compatibility.compatible())
+        add_issue(report, IssueCode::UnsupportedMaterialCombination, Severity::Error, IssueScope::Material,
+                  material_evidence(context.material_compatibility), true, false);
     switch (context.multicolor.physical_slot_compatibility) {
     case PhysicalSlotCompatibility::Incompatible:
         add_issue(report, IssueCode::IncompatiblePhysicalSlots, Severity::Error, IssueScope::Material,

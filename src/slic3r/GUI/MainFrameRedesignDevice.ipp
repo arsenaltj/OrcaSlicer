@@ -1,0 +1,14 @@
+    void        jump_to_monitor_hms();
+    void        jump_to_monitor_upgrade();
+    void        jump_to_monitor_live_view();
+    void        jump_to_monitor_rack();
+    void        jump_to_monitor_playback(const std::string& dev_id);
+    void        select_monitor_status(const std::string& dev_id);
+    void        jump_to_monitor_media();
+    void        notify_hms_read(const wxString& error_code);
+    void        refresh_device_surface();
+    void        select_device(const std::string& dev_id);
+    void        update_monitor_error(MachineObject* obj);
+    void        layout_device_surface();
+    void        notify_calibration_job_finished(int tab_index, const wxString& payload);
+    void        update_print_error_info(int code, const std::string& message, const std::string& extra);

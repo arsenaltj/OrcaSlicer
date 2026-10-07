@@ -23,12 +23,12 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <vector>
 #include <string>
 
 class AccentSlider;
-class wxStaticBitmap;
 
 namespace Slic3r { namespace GUI {
 
@@ -90,17 +90,15 @@ class AutoMixSelectPopup;
 
 // Optional desktop import context. Defaults preserve ordinary Orca imports.
 struct TextureImportOptions {
-    // Workbench-only role palette; ordinary Orca imports retain their theme.
-    bool workspace_presentation = false;
+    bool workbench_review = false;
     size_t initial_target_colors = 0;
     // Negative keeps the ordinary importer's default (5); AI starts with no
     // boundary cleanup so small lip/eye regions can be checked before merging.
     int initial_color_smoothing = -1;
     size_t physical_filament_limit = 0;
     bool preserve_existing_filaments = false;
-    // Ordinary imports retain legacy mixing. Workbench matching disables
-    // recipes lacking material/process proof; verified assignments bypass
-    // this dialog through matched_face_slots.
+    // Ordinary imports retain legacy mixing. Workbench matching requires
+    // verified material and process conditions before using mixed recipes.
     bool allow_unverified_mixed_filaments = true;
     bool z_up = false;
     bool source_units_in_meters = false;
@@ -153,6 +151,7 @@ public:
     void set_computing_overlay(bool show);
     void reset_view();
     void set_z_up(bool enabled) { m_z_up = enabled; reset_view(); }
+    void set_workbench_review(bool enabled) { m_workbench_review = enabled; Refresh(); }
 
 private:
     void on_paint(wxPaintEvent& evt);
@@ -181,6 +180,7 @@ private:
     float   m_pan_x    = 0.0f;
     float   m_pan_y    = 0.0f;
     bool    m_z_up     = false;
+    bool    m_workbench_review = false;
     wxPoint m_last_mouse_pos;
     enum class DragMode { None, Rotate, Pan };
     DragMode m_drag_mode = DragMode::None;
@@ -236,9 +236,6 @@ public:
                         TextureImportOptions             options = {});
     ~TextureImportDialog();
 
-#ifdef __WXMSW__
-    WXLRESULT MSWWindowProc(WXUINT message, WXWPARAM wparam, WXLPARAM lparam) override;
-#endif
     int ShowModal() override;
     void on_dpi_changed(const wxRect& suggested_rect) override;
 
@@ -347,10 +344,10 @@ private:
     void update_color_count_preset_buttons();
 
     bool has_valid_result() const;
-    bool has_valid_parameter_input() const;
     bool is_params_dirty() const;
     void update_confirm_button_state();
     void style_confirm_button(bool dirty);
+    void style_workbench_review();
 
     Slic3r::TexturedMesh               m_textured_mesh;
     TextureImportOptions               m_options;
@@ -365,8 +362,8 @@ private:
     std::string                        m_default_virtual_filament_preset_name;
 
     TextureImportState                 m_state = TextureImportState::Idle;
-    size_t m_single_color_filament = size_t(-1);
     bool                               m_skipped = false;
+    size_t                             m_single_color_filament = 0;
     bool                               m_fallback_to_geometry_only = false;
     // True iff *the most recent* do_auto_match() ran into the global filament
     // limit and had to drop one or more clusters. Reset to false on every
@@ -408,10 +405,6 @@ private:
     SpinInput*    m_smooth_spin    = nullptr;
     Button*       m_btn_apply      = nullptr;
 
-    wxPanel*              m_workspace_header = nullptr;
-    wxStaticText*         m_workspace_title = nullptr;
-    Button*               m_workspace_close = nullptr;
-    wxStaticBitmap*       m_workspace_merge_icon = nullptr;
     wxCheckBox*           m_auto_merge_cb = nullptr;
     Button*               m_btn_auto_mix  = nullptr;
     Button*               m_btn_mix_reset = nullptr;
@@ -434,7 +427,7 @@ private:
     Button*       m_btn_skip = nullptr;
     Button*       m_btn_ok   = nullptr;
     wxStaticText* m_drop_warning_label = nullptr;
-    bool m_show_advanced = true;
+    bool m_show_advanced = false;
     wxStaticText* m_mapping_summary = nullptr;
 
     int   m_param_color_count = 4;

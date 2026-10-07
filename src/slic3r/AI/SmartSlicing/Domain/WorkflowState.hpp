@@ -2,6 +2,7 @@
 
 #include "CandidateComparison.hpp"
 #include "PrintabilityReport.hpp"
+#include "RecommendationTypes.hpp"
 #include "SliceCandidate.hpp"
 #include "WorkspaceContext.hpp"
 
@@ -39,6 +40,7 @@ struct WorkflowSnapshot
     std::optional<PrintabilityReport> report;
     std::vector<SliceCandidate> candidates;
     std::optional<CandidateComparison> comparison;
+    std::optional<RecommendationSnapshot> recommendation;
     CandidateId selected_candidate_id;
     bool can_undo_apply{false};
     CandidateGoal goal{CandidateGoal::Stability};

@@ -13,8 +13,7 @@
 
 #include <string>
 #include <map>
-#include <memory>
-#include <wx/timer.h>
+#include "AI/MainFrameWorkspaceSupport.hpp"
 
 #include "GUI_Utils.hpp"
 #include "Event.hpp"
@@ -38,12 +37,10 @@
 #include "calib_dlg.hpp"
 #include "MultiMachinePage.hpp"
 #include "slic3r/plugin/host/PluginPages.hpp"
-#include "AI/DesktopWorkspaceNavigation.hpp"
 
 // Stable identifiers for MainFrame::m_tabpanel's built-in pages. These are
 // names rather than positional indices so optional pages cannot shift them.
 #define TAB_ID_HOME          "home"
-#define TAB_ID_GENERATE_3D   "generate_3d"
 #define TAB_ID_PREPARE       "prepare"
 #define TAB_ID_PREVIEW       "preview"
 #define TAB_ID_MONITOR       "monitor"
@@ -66,6 +63,7 @@ namespace Slic3r {
 namespace GUI
 {
 
+class AIDesktopFeatureHost; class RedesignShell;
 class Tab;
 class PrintHostQueueDialog;
 class Plater;
@@ -134,7 +132,6 @@ class MainFrame : public DPIFrame
 #endif
     wxMenuItem* m_menu_item_reslice_now { nullptr };
     wxSizer*    m_main_sizer{ nullptr };
-    DesktopWorkspaceNavigation* m_workspace_navigation {nullptr};
 
     wxString    m_last_selected_tab;
 
@@ -164,6 +161,7 @@ class MainFrame : public DPIFrame
     bool can_delete() const;
     bool can_delete_all() const;
     bool can_reslice() const;
+#include "MainFrameRedesignCommands.ipp"
     void bind_diff_dialog();
 
     // BBS
@@ -261,6 +259,7 @@ public:
     };
 
     void update_layout();
+#include "MainFrameRedesignNavigation.ipp"
 
 	// Called when closing the application and when switching the application language.
 	void 		shutdown();
@@ -328,6 +327,7 @@ public:
     void        load_config(const DynamicPrintConfig& config);
     //BBS: jump to monitor
     void        jump_to_monitor(std::string dev_id = "");
+#include "MainFrameRedesignDevice.ipp"
     void        jump_to_multipage();
     //BBS: hint when jump to 3Deditor under preview only mode
     bool        preview_only_hint();
@@ -387,7 +387,7 @@ public:
     BBLTopbar*            m_topbar{ nullptr };
     PrintHostQueueDialog* printhost_queue_dlg() { return m_printhost_queue_dlg; }
     Plater*               m_plater { nullptr };
-    std::unique_ptr<AIDesktopFeatureHost> m_ai_feature_host;
+#include "MainFrameRedesignState.ipp"
     bool                   m_ai_assistant_registered { false };
     //BBS: GUI refactor
     MonitorPanel*         m_monitor{ nullptr };

@@ -1,6 +1,5 @@
-#include "AI/Orca/FilamentColorPack.hpp"
+#include <glad/gl.h>
 #include "Plater.hpp"
-#include "AI/Orca/LocalPrintModelImport.hpp"
 #include "AIAssistantPanel.hpp"
 #include "AI/SmartSlicing/SmartSlicingFeatureHost.hpp"
 #include "../Utils/NetworkAgent.hpp"
@@ -176,6 +175,7 @@
 #include "WipeTowerDialog.hpp"
 #include "MixedFilamentDialog.hpp"
 #include "TextureImportDialog.hpp"
+#include "AI/Orca/PlaterImportSupport.hpp"
 #include "TextureImportModel.hpp"
 #include "ModelColorImportResult.hpp"
 #include "libslic3r/TexturePainting.hpp"
@@ -3652,7 +3652,10 @@ void Sidebar::update_all_preset_comboboxes()
     }
 
     p_mainframe->show_device(use_native_device_tab);
-    p_mainframe->m_tabpanel->SetSelection(p_mainframe->m_tabpanel->GetSelection());
+    // Re-emit the current workspace request through MainFrame. The old
+    // notebook selection was previously used as an event trigger here; that
+    // would bypass RedesignShell after the new UI became active.
+    p_mainframe->select_tab(p_mainframe->selected_tab_id());
 }
 
 void Sidebar::update_presets(Preset::Type preset_type)
@@ -6992,7 +6995,7 @@ struct Plater::priv
 
     void undo();
     void redo();
-    void undo_redo_to(size_t time_to_load);
+    bool undo_redo_to(size_t time_to_load);
 
     // BBS: backup
     bool up_to_date(bool saved, bool backup);
@@ -7238,7 +7241,7 @@ private:
     void update_fff_scene();
     void update_sla_scene();
 
-    void undo_redo_to(std::vector<UndoRedo::Snapshot>::const_iterator it_snapshot);
+    bool undo_redo_to(std::vector<UndoRedo::Snapshot>::const_iterator it_snapshot);
     void update_after_undo_redo(const UndoRedo::Snapshot& snapshot, bool temp_snapshot_was_taken = false);
     void on_action_export_to_sdcard(SimpleEvent&);
     void on_action_export_to_sdcard_all(SimpleEvent&);
@@ -12811,6 +12814,14 @@ void Plater::priv::on_action_print_plate_from_sdcard(SimpleEvent&)
 
 void Plater::priv::on_tab_selection_changing(wxBookCtrlEvent& e)
 {
+    // The redesign shell is the one-way navigation boundary. The legacy
+    // notebook can still exist during migration, but it must not process
+    // page-changing events once the new surface owns the main frame.
+    if (main_frame != nullptr && main_frame->is_redesign_shell_active()) {
+        e.Skip();
+        return;
+    }
+
     // Ignore event raised by child controls
     if (!(main_frame->m_tabpanel && e.GetId() == main_frame->m_tabpanel->GetId())) {
         e.Skip();
@@ -14360,12 +14371,13 @@ void Plater::priv::redo()
     }
 }
 
-void Plater::priv::undo_redo_to(size_t time_to_load)
+bool Plater::priv::undo_redo_to(size_t time_to_load)
 {
     const std::vector<UndoRedo::Snapshot> &snapshots = this->undo_redo_stack().snapshots();
     auto it_current = std::lower_bound(snapshots.begin(), snapshots.end(), UndoRedo::Snapshot(time_to_load));
-    assert(it_current != snapshots.end());
-    this->undo_redo_to(it_current);
+    if (it_current == snapshots.end() || it_current->timestamp != time_to_load)
+        return false;
+    return this->undo_redo_to(it_current);
 }
 
 // BBS: check need save or backup
@@ -14536,6 +14548,7 @@ std::vector<size_t> Plater::physical_filament_config_indices() const
 }
 
 #include "PlaterTextureImport.ipp"
+#include "PlaterWorkbenchImport.ipp"
 
 Sidebar&        Plater::sidebar()           { return *p->sidebar; }
 const Model&    Plater::model() const       { return p->model; }
@@ -18955,15 +18968,8 @@ int Plater::export_config_3mf(int plate_idx, Export3mfProgressFn proFn)
 //BBS
 void Plater::send_calibration_job_finished(wxCommandEvent & evt)
 {
-    p->main_frame->request_select_tab(TAB_ID_CALIBRATION);
-    auto calibration_panel = p->main_frame->m_calibration;
-    if (calibration_panel) {
-        auto curr_wizard = static_cast<CalibrationWizard*>(calibration_panel->get_tabpanel()->GetPage(evt.GetInt()));
-        wxCommandEvent event(EVT_CALIBRATION_JOB_FINISHED);
-        event.SetString(evt.GetString());
-        event.SetEventObject(curr_wizard);
-        wxPostEvent(curr_wizard, event);
-    }
+    if (p->main_frame != nullptr)
+        p->main_frame->notify_calibration_job_finished(evt.GetInt(), evt.GetString());
     evt.Skip();
 }
 
@@ -18986,12 +18992,8 @@ void Plater::print_job_finished(wxCommandEvent &evt)
     Slic3r::DeviceManager* dev = Slic3r::GUI::wxGetApp().getDeviceManager();
     if (!dev) return;
 
-    dev->set_selected_machine(evt.GetString().ToStdString());
-    p->main_frame->request_select_tab(TAB_ID_MONITOR);
-    //jump to monitor and select device status panel
-    MonitorPanel* curr_monitor = p->main_frame->m_monitor;
-    if(curr_monitor)
-       curr_monitor->get_tabpanel()->ChangeSelection(MonitorPanel::PrinterTab::PT_STATUS);
+    if (p->main_frame != nullptr)
+        p->main_frame->select_monitor_status(evt.GetString().ToStdString());
 }
 
 void Plater::send_job_finished(wxCommandEvent& evt)
@@ -19062,6 +19064,7 @@ void Plater::redo_to(int selection)
     const int idx = p->get_active_snapshot_index() + selection + 1;
     p->undo_redo_to(p->undo_redo_stack().snapshots()[idx].timestamp);
 }
+
 bool Plater::undo_redo_string_getter(const bool is_undo, int idx, const char** out_text)
 {
     const std::vector<UndoRedo::Snapshot>& ss_stack = p->undo_redo_stack().snapshots();
@@ -19730,8 +19733,8 @@ void Plater::update_print_error_info(int code, std::string msg, std::string extr
     if (p->m_send_to_sdcard_dlg) {
         p->m_send_to_sdcard_dlg->update_print_error_info(code, msg, extra);
     }
-    if (p->main_frame->m_calibration)
-        p->main_frame->m_calibration->update_print_error_info(code, msg, extra);
+    if (p->main_frame != nullptr)
+        p->main_frame->update_print_error_info(code, msg, extra);
 }
 
 wxString Plater::get_project_filename(const wxString& extension) const
@@ -19995,7 +19998,7 @@ void Plater::pop_warning_and_go_to_device_page(wxString printer_name, PrinterWar
 {
     printer_name.Replace("Bambu Lab", "", false);
     wxString content;
-    bool device_page = (wxGetApp().mainframe == nullptr) && (wxGetApp().mainframe->m_monitor->IsShown());
+    bool device_page = wxGetApp().mainframe != nullptr && wxGetApp().mainframe->is_printer_view();
     if (type == PrinterWarningType::NOT_CONNECTED) {
         if (device_page) {
             content = wxString::Format(_L("Printer not connected. Please go to the device page to connect %s before syncing."),
@@ -21484,8 +21487,19 @@ bool Plater::can_copy_to_clipboard() const
     return true;
 }
 
-bool Plater::can_undo() const { return IsShown() && p->is_view3D_shown() && p->undo_redo_stack().has_undo_snapshot(); }
-bool Plater::can_redo() const { return IsShown() && p->is_view3D_shown() && p->undo_redo_stack().has_redo_snapshot(); }
+bool Plater::can_undo() const
+{
+    // The shell owns project commands while the native workspace is hidden.
+    if (!IsShown())
+        return p->can_begin_project_config_change() && p->undo_redo_stack_main().has_undo_snapshot();
+    return p->is_view3D_shown() && p->undo_redo_stack().has_undo_snapshot();
+}
+bool Plater::can_redo() const
+{
+    if (!IsShown())
+        return p->can_begin_project_config_change() && p->undo_redo_stack_main().has_redo_snapshot();
+    return p->is_view3D_shown() && p->undo_redo_stack().has_redo_snapshot();
+}
 bool Plater::can_reload_from_disk() const { return p->can_reload_from_disk(); }
 //BBS
 bool Plater::can_fillcolor() const { return p->can_fillcolor(); }

@@ -1,5 +1,8 @@
 #pragma once
 
+#include "IntentConstraintSnapshot.hpp"
+#include "MachineCapabilitySnapshot.hpp"
+#include "MaterialCompatibility.hpp"
 #include "WorkspaceRevision.hpp"
 
 #include <cstddef>
@@ -65,6 +68,9 @@ struct WorkspaceContext
     std::vector<MaterialSnapshot> materials;
     MulticolorSnapshot multicolor;
     std::vector<WorkspaceObjectSnapshot> objects;
+    IntentConstraintSnapshot intent_constraints;
+    MachineCapabilitySnapshot machine_capability;
+    MaterialCompatibilitySnapshot material_compatibility;
     bool native_validation_available{false};
     std::vector<std::string> validation_errors;
     std::vector<std::string> validation_warnings;

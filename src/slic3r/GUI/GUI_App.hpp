@@ -416,6 +416,7 @@ public:
     // Process command line parameters cached in this->init_params,
     // load configs, STLs etc.
     void            post_init();
+    bool            should_start_with_redesign_shell() const;
     void            shutdown();
     // If formatted for github, plaintext with OpenGL extensions enclosed into <details>.
     // Otherwise HTML formatted for the system info dialog.

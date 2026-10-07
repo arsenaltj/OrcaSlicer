@@ -1383,8 +1383,10 @@ TEST_CASE("Native mixed puzzle assignments survive reopen and decline changed re
     puzzle.match_filaments(*surface,palette,{mix});
     const auto id=puzzle.face_piece.front();const auto partition=puzzle.face_piece;
     puzzle.paint_mixed(id,mix);
-    puzzle.target_colors.clear(); // Exercise the pre-target v3 format too.
-    const auto saved=puzzle.encode();REQUIRE(saved["schema"]=="orca.beauty-puzzle/v3");
+    const bool legacy = GENERATE(false, true);
+    if (legacy) puzzle.target_colors.clear(); // Exercise the pre-target v3 format too.
+    const auto saved=puzzle.encode();
+    REQUIRE(saved["schema"]==(legacy ? "orca.beauty-puzzle/v3" : "orca.beauty-puzzle/v4"));
     auto restored=BeautyPuzzle::decode(saved,puzzle.geometry_id,partition.size());
     restored.match_filaments(*surface,palette,{mix});
     CHECK(restored.same_edit(puzzle));CHECK(restored.filament_slots.at(id)==2);
@@ -1438,6 +1440,7 @@ TEST_CASE("Eye texture detail stays inside recognized eyes and declines flat or 
 }
 
 TEST_CASE("Matched puzzle colors preserve separate regions and exact physical slots through edits and persistence", "[BeautyWorkbench][BeautyPuzzle]") {
+    const bool legacy = GENERATE(false, true);
     indexed_triangle_set mesh=its_make_cube(10,10,10);
     const auto surface=BeautySurface::build(mesh,{});
     auto puzzle=BeautyPuzzle::create(*surface,4);
@@ -1448,9 +1451,9 @@ TEST_CASE("Matched puzzle colors preserve separate regions and exact physical sl
     REQUIRE(puzzle.filament_slots.size()==puzzle.piece_count());
     const uint32_t id=puzzle.face_piece.front();
     puzzle.paint_filament(id,4);
-    puzzle.target_colors.clear(); // Exercise the pre-target v2 format too.
+    if (legacy) puzzle.target_colors.clear(); // Exercise the pre-target v2 format too.
     const auto saved=puzzle.encode();
-    REQUIRE(saved["schema"]=="orca.beauty-puzzle/v2");
+    REQUIRE(saved["schema"]==(legacy ? "orca.beauty-puzzle/v2" : "orca.beauty-puzzle/v4"));
     auto restored=BeautyPuzzle::decode(saved,puzzle.geometry_id,partition.size());
     REQUIRE(restored.same_edit(puzzle));
     restored.match_filaments(*surface,palette);

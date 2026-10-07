@@ -63,8 +63,17 @@ enum class Label : uint8_t {
 };
 inline constexpr size_t label_count = 12;
 inline constexpr float minimum_confidence = .70f;
+enum class SemanticRegionSlot : uint8_t {
+    EyeSclera,
+    Iris,
+    Eyebrow,
+    Lips
+};
+inline constexpr size_t semantic_region_slot_count = 4;
+using SemanticRegionSlotBindings = std::array<int, semantic_region_slot_count>;
+inline constexpr SemanticRegionSlotBindings default_semantic_region_slot_bindings {{-1, -1, -1, -1}};
 // Version of stored recognition evidence; palette-mapping edits do not invalidate it.
-inline constexpr const char* pipeline_version = "orca.semantic-coloring/v16";
+inline constexpr const char* pipeline_version = "orca.semantic-coloring/v17";
 
 struct SubfaceLabelEvidence {
     size_t face_id {0};
@@ -135,6 +144,7 @@ struct Analysis {
     std::vector<SubfaceLabelEvidence> subface_labels;
     bool person_detected {false};
     bool canceled {false};
+    int face_roi_size {512};
     size_t rendered_views {0}, face_views {0}, observed_faces {0}, reliable_faces {0};
     std::string error;
 };
@@ -147,6 +157,8 @@ struct RenderedView {
     std::vector<Barycentric> barycentric;
     std::vector<float> depth;
     std::vector<float> facing;
+    std::vector<Vec3f> projected_vertices;
+    float surface_depth_tolerance {0.f};
     // For a visible subpixel face with no direct raster sample: an adjacent
     // pixel checked against its plane and normal. Consumers must additionally
     // require source-color compatibility and neighboring semantic agreement.
@@ -158,12 +170,37 @@ struct RenderedView {
 // is letterboxed without distortion. Region rendering rerasterizes every source
 // triangle; it does not enlarge a previously sampled RGB/face-id image.
 struct ViewRegion { float left {0}, top {0}, width {1}, height {1}; };
+struct FaceRegionLeafDiagnostic {
+    size_t face_id {0};
+    SubfacePath path;
+    Label label {Label::Unknown};
+    float confidence {0.f};
+    float dominance {0.f};
+    uint32_t samples {0};
+};
+struct FaceRegionDiagnostic {
+    int view_index {0};
+    ViewRegion region;
+    bool face_detected {false};
+    std::vector<FaceRegionLeafDiagnostic> leaves;
+};
+struct AnalysisDiagnostics {
+    std::function<bool(size_t, const SubfacePath&)> include_leaf;
+    float yaw_offset_degrees {0.f};
+    std::vector<FaceRegionDiagnostic> face_regions;
+};
 RenderedView render_view(const MeshSnapshot&, float yaw_degrees, int image_size = 512,
                          const Cancel& = {});
 RenderedView render_region(const MeshSnapshot&, float yaw_degrees, const ViewRegion&,
                            int image_size = 512, const Cancel& = {});
 Analysis analyze(const MeshSnapshot&, IBodyRegionRecognizer&, IFaceRegionRecognizer&,
                  const Cancel& = {}, const Progress& = {});
+// Diagnostic-only resolution probe. Non-512 results cannot be cached or mapped
+// to materials, so experiments cannot enter the product path accidentally.
+Analysis analyze_with_face_roi_size(const MeshSnapshot&, IBodyRegionRecognizer&,
+                                    IFaceRegionRecognizer&, int face_roi_size,
+                                    const Cancel& = {}, const Progress& = {},
+                                    AnalysisDiagnostics* = nullptr);
 
 // portrait_card, when present, is ordered skin/dark/light/lips/cool/mid. Its
 // role colors must exist in palette. All outputs are exact members of palette;
@@ -175,6 +212,10 @@ FaceColors map_palette(const MeshSnapshot&, const Analysis&, const std::vector<C
 FaceColors remap_palette_targets(const FaceColors& suggestions, const std::vector<Color>& original_candidates,
                                 const std::vector<Color>& target_candidates);
 FaceColors compose(const FaceColors& automatic, const FaceColors& manual, bool automatic_enabled);
+std::array<bool, semantic_region_slot_count> semantic_region_availability(const Analysis&);
+FaceColors apply_semantic_region_slot_overrides(const FaceColors&, const Analysis&,
+                                                const SemanticRegionSlotBindings&,
+                                                const std::vector<Color>& target_palette);
 
 // Budgeting is transactional: malformed input produces no accepted leaves.
 // Candidates are considered by confidence, then stable face/path order. Each
@@ -188,6 +229,9 @@ bool map_subface_palette(const MeshSnapshot&, const Analysis&, const FaceColors&
 SubfaceColors remap_subface_palette_targets(const SubfaceColors& suggestions,
                                             const std::vector<Color>& original_candidates,
                                             const std::vector<Color>& target_candidates);
+SubfaceColors apply_semantic_region_slot_overrides(const SubfaceColors&, const Analysis&,
+                                                   const SemanticRegionSlotBindings&,
+                                                   const std::vector<Color>& target_palette);
 // Manual whole-face paint suppresses every automatic child of that face.
 SubfaceColors compose_subfaces(const SubfaceColors& automatic, const FaceColors& manual,
                                bool automatic_enabled);

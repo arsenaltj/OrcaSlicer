@@ -426,7 +426,7 @@ TEST_CASE("Workbench texture matching filters incompatible slots without merging
     entries[1].compatible = false;
     entries[3].kind = TextureFilamentKind::ExistingMixed;
     TextureImportOptions options;
-    options.workspace_presentation = true;
+    options.workbench_review = true;
     const auto usable = workspace_texture_filaments(entries, &options);
     REQUIRE(usable.size() == 2);
     CHECK(usable[0].project_config_index == 1);
@@ -434,7 +434,7 @@ TEST_CASE("Workbench texture matching filters incompatible slots without merging
     CHECK(usable[0].dialog_index == 0);
     CHECK(usable[1].dialog_index == 1);
     CHECK(usable[0].color_hex == usable[1].color_hex);
-    options.workspace_presentation = false;
+    options.workbench_review = false;
     CHECK(workspace_texture_filaments(entries, &options).size() == entries.size());
     CHECK(workspace_texture_filaments(entries, nullptr).size() == entries.size());
 }
@@ -446,6 +446,6 @@ TEST_CASE("Workbench texture matching returns no usable slots when material iden
     entries[1].type = "PLA";
     entries[2].preset_name = "PLA fixture";
     TextureImportOptions options;
-    options.workspace_presentation = true;
+    options.workbench_review = true;
     CHECK(workspace_texture_filaments(entries, &options).empty());
 }

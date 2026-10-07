@@ -3,7 +3,7 @@
 #include "slic3r/GUI/AI/AIWindowAppearance.hpp"
 #include "slic3r/GUI/AI/ColorMatching/LocalPrintColorPanel.hpp"
 #include "slic3r/GUI/I18N.hpp"
-#include <wx/simplebook.h>
+#include <wx/notebook.h>
 #include <wx/scrolwin.h>
 #include <wx/sizer.h>
 #include <wx/tglbtn.h>
@@ -24,7 +24,10 @@ void ModelGenerationPanel::show_workbench_color_matching(const AI::GeneratedMode
         refresh_ai_appearance(m_workbench_color_matching);
         m_preview_book->AddPage(m_workbench_color_matching, _L("颜色匹配"), false);
     }
+    const wxWeakRef<wxWindow> entry(wxWindow::FindFocus());
     if (!m_workbench_color_matching->open_artifact(artifact)) return;
+    m_color_matching_entry = entry;
+    m_color_matching_entry_sequence = m_sequence;
     m_preview_book->SetSelection(m_preview_book->FindPage(m_workbench_color_matching));
     m_preview_book->GetParent()->Layout();
 }
@@ -53,18 +56,6 @@ void ModelGenerationPanel::close_workbench_color_matching(bool restore_entry)
 
 void ModelGenerationPanel::show_model_comparison()
 {
-    // An async restore may finish after the user has explicitly opened Image.
-    // Make the model available without stealing that navigation choice.
-    const bool preserve_image = m_preserve_image_on_model_ready &&
-        m_workspace_view == ModelGenerationPresentation::WorkspaceView::Image;
-    m_preserve_image_on_model_ready = false;
-    if (preserve_image) {
-        refresh_comparison_layout(false);
-        return;
-    }
-    m_result_view = m_model_preview_ready ? ModelGenerationPresentation::WorkspaceView::Model : ModelGenerationPresentation::WorkspaceView::Image;
-    if (m_workspace_view != ModelGenerationPresentation::WorkspaceView::Library) m_workspace_view = m_result_view;
-    if (!m_expand_images) return;
     m_expand_images->SetValue(false);
     m_expand_images->SetLabel(_L("展开图片"));
     refresh_comparison_layout(true);
@@ -79,19 +70,12 @@ void ModelGenerationPanel::refresh_comparison_layout(bool reset_scroll)
     if (!row) return;
     m_updating_comparison_layout = true;
     wxWindow* card = m_model_preview->GetParent();
-    const bool show_model = m_finishing_workbench ||
-        (m_model_preview_ready && m_workspace_view == ModelGenerationPresentation::WorkspaceView::Model);
+    const bool show_model = m_finishing_workbench || (m_model_preview_ready && !m_expand_images->GetValue());
     const bool stacked = !m_finishing_workbench && m_model_page->GetClientSize().x < FromDIP(920);
     const int orientation = stacked ? wxVERTICAL : wxHORIZONTAL;
-    // Compact overview gives the real GL canvas the available height. Image
-    // comparison remains one navigation action away, with its zoom preserved.
-    const bool show_images = !m_finishing_workbench &&
-        m_workspace_view != ModelGenerationPresentation::WorkspaceView::Model;
-    const bool visibility_changed = card->IsShown() != show_model || m_preview_area->IsShown() != show_images;
+    const bool visibility_changed = card->IsShown() != show_model;
     const bool layout_changed = row->GetOrientation() != orientation;
     card->Show(show_model);
-    m_preview_area->Show(show_images);
-    m_model_preview_message->Show(show_model && show_images);
     m_expand_images->Enable(m_model_preview_ready && !m_finishing_workbench);
     if (layout_changed) {
         row->SetOrientation(orientation);

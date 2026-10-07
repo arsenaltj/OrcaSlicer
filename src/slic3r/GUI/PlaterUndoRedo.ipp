@@ -70,7 +70,7 @@ bool Plater::apply_local_print_colors(ModelVolume& volume, LocalPrintColorCommit
     return true;
 }
 
-void Plater::priv::undo_redo_to(std::vector<UndoRedo::Snapshot>::const_iterator it_snapshot)
+bool Plater::priv::undo_redo_to(std::vector<UndoRedo::Snapshot>::const_iterator it_snapshot)
 {
     UndoRedo::ProjectConfigUndo::Prepared restored_config;
     std::string config_error;
@@ -79,11 +79,11 @@ void Plater::priv::undo_redo_to(std::vector<UndoRedo::Snapshot>::const_iterator 
             bundle.filament_presets, restored_config, config_error) ||
         (restored_config.changed && !ProjectConfigRestore::validate(restored_config.config, restored_config.filament_presets, bundle, config_error))) {
         GUI::show_error(q, wxString::FromUTF8(config_error.c_str()));
-        return;
+        return false;
     }
     if (restored_config.changed && printer_technology != it_snapshot->snapshot_data.printer_technology) {
         GUI::show_error(q, _L("Cannot restore material settings across printer technologies."));
-        return;
+        return false;
     }
     auto restored_cache = restored_config.changed ? ProjectConfigRestore::prepare_cache(restored_config.filament_presets.size(), bundle) : ProjectConfigRestore::ColorCache{};
     // Make sure that no updating function calls take_snapshot until we are done.
@@ -147,9 +147,10 @@ void Plater::priv::undo_redo_to(std::vector<UndoRedo::Snapshot>::const_iterator 
     // Make a copy of the snapshot, undo/redo could invalidate the iterator
     const UndoRedo::Snapshot snapshot_copy = *it_snapshot;
     // Do the jump in time.
-    if (it_snapshot->timestamp < this->undo_redo_stack().active_snapshot_time() ?
+    const bool jumped = it_snapshot->timestamp < this->undo_redo_stack().active_snapshot_time() ?
         this->undo_redo_stack().undo(model, get_current_canvas3D()->get_canvas_type() == GLCanvas3D::CanvasAssembleView ? assemble_view->get_canvas3d()->get_selection() : this->view3D->get_canvas3d()->get_selection(), get_current_canvas3D()->get_canvas_type() == GLCanvas3D::CanvasAssembleView ? assemble_view->get_canvas3d()->get_gizmos_manager() : this->view3D->get_canvas3d()->get_gizmos_manager(), this->partplate_list, top_snapshot_data, it_snapshot->timestamp) :
-        this->undo_redo_stack().redo(model, get_current_canvas3D()->get_canvas_type() == GLCanvas3D::CanvasAssembleView ? assemble_view->get_canvas3d()->get_gizmos_manager() : this->view3D->get_canvas3d()->get_gizmos_manager(), this->partplate_list, it_snapshot->timestamp)) {
+        this->undo_redo_stack().redo(model, get_current_canvas3D()->get_canvas_type() == GLCanvas3D::CanvasAssembleView ? assemble_view->get_canvas3d()->get_gizmos_manager() : this->view3D->get_canvas3d()->get_gizmos_manager(), this->partplate_list, it_snapshot->timestamp);
+    if (jumped) {
         const bool materials_restored = restored_config.changed;
         ProjectConfigRestore::commit(restored_config, restored_cache, bundle);
         if (materials_restored) {
@@ -233,6 +234,7 @@ void Plater::priv::undo_redo_to(std::vector<UndoRedo::Snapshot>::const_iterator 
 
     dirty_state.update_from_undo_redo_stack(m_undo_redo_stack_main.project_modified());
     update_title_dirty_status();
+    return jumped;
 }
 
 
@@ -243,10 +245,14 @@ bool Plater::adopt_local_print_model(const ModelObject& object, const PresetBund
     if (!p->can_begin_project_config_change()) {
         error = "Finish the current editing operation before importing colors."; return false;
     }
+    if (p->undo_redo_stack_main().has_redo_snapshot()) {
+        error = "Restore or finish the current redo history before importing a new working copy."; return false;
+    }
     auto* plate = get_partplate_list().get_curr_plate();
     if (!plate || !wxGetApp().preset_bundle) { error = "The current plate or materials are unavailable."; return false; }
     const auto& volume = build_volume();
-    const Vec2d center = volume.bounding_volume2d().center();
+    if (plate->is_locked()) { error = "The current plate is locked."; return false; }
+    const Vec2d center = plate->get_bounding_box().center().head<2>();
     Vec2d placement = center;
     if (!plate->empty()) {
         const auto empty = canvas3D()->get_nearest_empty_cell({center.x(), center.y()});
@@ -256,6 +262,29 @@ bool Plater::adopt_local_print_model(const ModelObject& object, const PresetBund
     if (!LocalPrintModelImport::prepare(object, placement, volume.bounding_volume2d().size() - 2. * Vec2d::Ones(), prepared, error))
         return false;
     auto& bundle = *wxGetApp().preset_bundle;
+    const auto full_config = bundle.full_config();
+    arrangement::ArrangePolygons obstacles;
+    for (size_t oi = 0; oi < model().objects.size(); ++oi) {
+        const auto* existing = model().objects[oi];
+        for (size_t ii = 0; ii < existing->instances.size(); ++ii) {
+            if (!plate->contain_instance(int(oi), int(ii)) && !plate->intersect_instance(int(oi), int(ii))) continue;
+            arrangement::ArrangePolygon polygon;
+            existing->instances[ii]->get_arrange_polygon(&polygon, full_config);
+            polygon.bed_idx = 0;
+            obstacles.push_back(std::move(polygon));
+        }
+    }
+    for (const auto& area : plate->get_exclude_areas()) {
+        arrangement::ArrangePolygon polygon;
+        polygon.poly.contour = Polygon(Points {{scale_(area.min.x()), scale_(area.min.y())},
+            {scale_(area.max.x()), scale_(area.min.y())}, {scale_(area.max.x()), scale_(area.max.y())},
+            {scale_(area.min.x()), scale_(area.max.y())}});
+        polygon.bed_idx = 0;
+        obstacles.push_back(std::move(polygon));
+    }
+    if (auto tower = get_wipe_tower_arrangepoly(*this)) { tower->bed_idx = 0; obstacles.push_back(*tower); }
+    if (!LocalPrintModelImport::place(*prepared->objects.front(), plate->get_shared_printable_polygon(),
+            obstacles, full_config, plate->get_build_volume(true).max.z(), error)) return false;
     UndoRedo::ProjectConfigUndo::Prepared config;
     std::shared_ptr<const UndoRedo::ProjectConfigUndo::Change> change;
     ProjectConfigRestore::ColorCache cache;
@@ -274,8 +303,41 @@ bool Plater::adopt_local_print_model(const ModelObject& object, const PresetBund
     if (p->undo_redo_stack().active_snapshot_time() == before) {
         error = "Unable to create the color import history entry."; return false;
     }
-    return LocalPrintModelImport::adopt(model(), *prepared->objects.front(), config, cache, bundle,
-        [&] { return !change || p->undo_redo_stack().record_project_config_change(std::move(change)); }, index, error);
+    UndoRedo::ActionSnapshotIdentity identity;
+    if (!latest_main_snapshot_identity("Apply local print colors", identity)) {
+        error = "Unable to identify the color import history entry."; return false;
+    }
+    try {
+        SuppressSnapshots suppress(this);
+        if (LocalPrintModelImport::adopt(model(), *prepared->objects.front(), config, cache, bundle,
+            [&] { return !change || p->undo_redo_stack().record_project_config_change(std::move(change)); }, index, error,
+            [&](size_t imported) {
+                if (staged) {
+                    get_partplate_list().set_filament_count(int(bundle.filament_presets.size()));
+                    on_config_change(bundle.full_config());
+                    on_filament_count_change(bundle.filament_presets.size());
+                    wxGetApp().obj_list()->update_objects_list_filament_column(bundle.filament_presets.size());
+                    get_partplate_list().invalid_all_slice_result();
+                    bundle.export_selections(*wxGetApp().app_config);
+                }
+                finish_local_print_model_import(imported);
+                return true;
+            })) return true;
+    } catch (const std::exception& exception) { error = exception.what(); }
+    std::string rollback;
+    if (!rollback_main_snapshot_exact(identity, rollback)) error += " " + rollback;
+    try {
+        SuppressSnapshots suppress(this);
+        get_partplate_list().set_filament_count(int(bundle.filament_presets.size()));
+        on_config_change(bundle.full_config());
+        on_filament_count_change(bundle.filament_presets.size());
+        wxGetApp().obj_list()->update_objects_list_filament_column(bundle.filament_presets.size());
+        bundle.export_selections(*wxGetApp().app_config);
+    } catch (const std::exception& exception) {
+        error += " Unable to refresh restored materials: ";
+        error += exception.what();
+    }
+    return false;
 }
 
 void Plater::finish_local_print_model_import(size_t index)

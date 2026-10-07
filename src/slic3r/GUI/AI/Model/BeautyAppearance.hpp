@@ -6,10 +6,12 @@
 #include <functional>
 #include <string>
 #include <vector>
+#include "BeautyLeafDomain.hpp"
 
 namespace Slic3r::AI {
 
 struct BeautyAppearanceOptions {
+    struct Leaf { BeautyLeafKey key; float weight{0}; std::array<float,3> color{}; };
     // Face order is exactly load_model_artifact's order, including scene instances.
     // The minimum weight of all faces sampling a texel wins: shared UVs never
     // let a selected face recolor an unselected face through the base texture.
@@ -25,6 +27,10 @@ struct BeautyAppearanceOptions {
     // bake material/native vertex RGB into private images or corner colors;
     // they cannot be combined with relative filters.
     std::vector<std::array<float, 3>> face_target_colors;
+    // Complete partitions of split roots, including all unselected siblings.
+    // Their root weights must be zero; only these UV subtriangles may change.
+    std::vector<Leaf> leaves;
+    std::string canonical_geometry_id;
 };
 
 struct BeautyAppearanceResult {

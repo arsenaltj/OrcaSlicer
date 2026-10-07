@@ -4,6 +4,7 @@
 #include "slic3r/AI/Contracts/GeneratedModelArtifact.hpp"
 #include "slic3r/AI/Contracts/IModelArtifactConsumer.hpp"
 #include "slic3r/AI/Contracts/IPrintablePaletteProvider.hpp"
+#include "slic3r/AI/Contracts/ProtectedRegionManifest.hpp"
 #include "slic3r/AI/ModelGeneration/GeneratedModelArtifact.hpp"
 #include "slic3r/AI/ModelGeneration/IPrintablePaletteProvider.hpp"
 #include "slic3r/AI/SmartSlicing/IModelArtifactConsumer.hpp"
@@ -49,6 +50,51 @@ public:
 };
 
 } // namespace
+
+TEST_CASE("protected region manifests are read-only value contracts", "[AIContracts][ProtectedRegions]")
+{
+    static_assert(std::is_copy_constructible_v<ProtectedRegionManifest>);
+    static_assert(std::is_copy_assignable_v<ProtectedRegionManifest>);
+    static_assert(std::is_same_v<decltype(std::declval<const ProtectedRegionManifest&>().facet_ranges()),
+                                 const std::vector<ProtectedFacetRange>&>);
+
+    std::vector<ProtectedFacetRange> ranges {{1, 3}};
+    ProtectedRegionManifest manifest {
+        kProtectedRegionManifestSchema,
+        "generator-semantic/v1",
+        11,
+        22,
+        "geometry-v1",
+        8,
+        ProtectedRegionKind::Face,
+        ProtectedRegionSource::GeneratedSemantic,
+        ranges,
+        0.9,
+    };
+    ranges.front() = {4, 6};
+
+    REQUIRE(manifest.facet_ranges().size() == 1);
+    CHECK(manifest.facet_ranges().front().begin == 1);
+    CHECK(manifest.facet_ranges().front().end == 3);
+    CHECK(std::string(protected_region_kind_name(manifest.kind())) == "face");
+    CHECK(std::string(protected_region_source_name(manifest.source())) == "generated_semantic");
+
+    ProtectedRegionManifest copy = manifest;
+    copy = ProtectedRegionManifest {
+        kProtectedRegionManifestSchema,
+        "user-marked-runtime/v1",
+        11,
+        22,
+        "geometry-v1",
+        8,
+        ProtectedRegionKind::UserMarkedSurface,
+        ProtectedRegionSource::UserMarked,
+        {{4, 6}},
+        1.0,
+    };
+    CHECK(manifest.kind() == ProtectedRegionKind::Face);
+    CHECK(copy.kind() == ProtectedRegionKind::UserMarkedSurface);
+}
 
 TEST_CASE("neutral AI contracts preserve accepted defaults and legacy includes", "[AIContracts]")
 {

@@ -90,7 +90,7 @@ float color_distance_squared(const RGBA& left, const RGBA& right)
 
 bool ray_triangle_intersection(const Vec3d& origin, const Vec3d& direction,
                                const Vec3f& a_float, const Vec3f& b_float, const Vec3f& c_float,
-                               double& distance)
+                               double& distance, Vec3d& barycentric)
 {
     constexpr double epsilon = 1e-9;
     const Vec3d a = a_float.cast<double>();
@@ -112,6 +112,7 @@ bool ray_triangle_intersection(const Vec3d& origin, const Vec3d& direction,
     if (v < 0.0 || u + v > 1.0)
         return false;
     distance = edge_b.dot(q) * inverse;
+    barycentric = Vec3d(1.-u-v,u,v);
     return distance > epsilon;
 }
 
@@ -576,11 +577,31 @@ void VertexColorRegionEditor::clear()
 std::optional<size_t> VertexColorRegionEditor::pick_face(const Vec3d& ray_origin,
                                                          const Vec3d& ray_direction) const
 {
+    const auto hit = pick_surface(ray_origin,ray_direction);
+    return hit ? std::optional<size_t>(hit->face) : std::nullopt;
+}
+
+void VertexColorRegionEditor::set_face_adjacency(const std::vector<std::vector<int32_t>>& adjacency)
+{
+    if (adjacency.size() != m_mesh.indices.size()) throw std::invalid_argument("Editor adjacency changed.");
+    std::vector<std::vector<uint32_t>> result(adjacency.size());
+    for (size_t f = 0; f < adjacency.size(); ++f) for (const auto n : adjacency[f]) if (n >= 0) {
+        if (size_t(n) >= adjacency.size() || size_t(n) == f ||
+            std::find(adjacency[n].begin(),adjacency[n].end(),int32_t(f)) == adjacency[n].end())
+            throw std::invalid_argument("Editor adjacency is invalid or asymmetric.");
+        result[f].push_back(uint32_t(n));
+    }
+    m_face_neighbors = std::move(result);
+}
+
+std::optional<VertexColorRegionEditor::SurfaceHit> VertexColorRegionEditor::pick_surface(const Vec3d& ray_origin,
+                                                         const Vec3d& ray_direction) const
+{
     if (!ready() || ray_direction.squaredNorm() < 1e-12)
         return std::nullopt;
     const Vec3d direction = ray_direction.normalized();
     double nearest = std::numeric_limits<double>::infinity();
-    std::optional<size_t> result;
+    std::optional<SurfaceHit> result;
     if (m_pick_nodes.empty())
         return result;
 
@@ -606,14 +627,15 @@ std::optional<size_t> VertexColorRegionEditor::pick_face(const Vec3d& ray_origin
                 const size_t face_index = m_pick_face_order[item];
                 const stl_triangle_vertex_indices& face = m_mesh.indices[face_index];
                 double distance = 0.0;
+                Vec3d barycentric;
                 if (!ray_triangle_intersection(ray_origin, direction,
                                                m_mesh.vertices[face[0]], m_mesh.vertices[face[1]],
-                                               m_mesh.vertices[face[2]], distance))
+                                               m_mesh.vertices[face[2]], distance, barycentric))
                     continue;
                 if (distance < nearest - 1e-9 ||
-                    (std::abs(distance - nearest) <= 1e-9 && (!result || face_index < *result))) {
+                    (std::abs(distance - nearest) <= 1e-9 && (!result || face_index < result->face))) {
                     nearest = distance;
-                    result = face_index;
+                    result = SurfaceHit{face_index,barycentric,distance};
                 }
             }
             continue;

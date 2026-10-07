@@ -352,6 +352,19 @@ bool texture_to_painting(
     if (textured.vertices.empty() || textured.indices.empty() || textured.textures.empty())
         return false;
 
+    if (!settings.face_color_overrides.empty()) {
+        if (cancel && cancel()) return false;
+        // Explicit edits reference original faces. Sample without subdividing
+        // or repairing that geometry, then reuse the face-color matcher.
+        TexturedMesh sampled;
+        if (!sample_original_face_colors(textured, sampled.precomputed_face_colors))
+            return false;
+        if (cancel && cancel()) return false;
+        sampled.vertices = textured.vertices;
+        sampled.indices = textured.indices;
+        return face_colors_to_painting(sampled, painted, settings, progress, cancel);
+    }
+
     cv::Mat texture;
     tex2color::TriMesh input_mesh;
     std::vector<std::vector<Vec2f>> uv_coords;

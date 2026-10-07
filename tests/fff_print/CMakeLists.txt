@@ -1,6 +1,8 @@
 get_filename_component(_TEST_NAME ${CMAKE_CURRENT_LIST_DIR} NAME)
 add_executable(${_TEST_NAME}_tests 
 	../local_print_recipe_fixture.hpp
+	../../src/slic3r/GUI/AI/Orca/OrcaParameterProposalAdapter.cpp
+	../../src/slic3r/GUI/AI/Orca/OrcaTrialSliceExecutor.cpp
 	${_TEST_NAME}_tests.cpp
 	test_helpers.cpp
 	test_helpers.hpp
@@ -21,11 +23,12 @@ add_executable(${_TEST_NAME}_tests
 	test_color_surface_binding.cpp
 	test_skirt_brim.cpp
 	test_slicing_pipeline_hook.cpp
+	test_smart_slicing_trial_executor.cpp
 	test_support_material.cpp
 	test_trianglemesh.cpp
 	test_wipe_tower.cpp
 	)
-target_link_libraries(${_TEST_NAME}_tests test_common libslic3r Catch2::Catch2WithMain)
+target_link_libraries(${_TEST_NAME}_tests test_common libslic3r OrcaSlicer::SmartSlicing Catch2::Catch2WithMain)
 if(WIN32)
     # Snapshot identity tests use the existing OpenSSL SHA-256 implementation.
     target_link_libraries(${_TEST_NAME}_tests Crypt32)

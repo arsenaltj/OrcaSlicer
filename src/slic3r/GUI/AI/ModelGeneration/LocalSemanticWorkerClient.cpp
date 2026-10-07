@@ -468,9 +468,14 @@ bool complete_probe(const Json& response)
         id.at("worker_version")!="local-semantic-cpu-v1" || !id.at("bits").is_number_integer() ||
         !id.at("python").is_string() || id.at("python").get<std::string>().size()>64) return false;
     const auto& packages=id.at("packages");
+    if (!packages.is_object()) return false;
+    auto required_packages=packages;
+    for (const char* name:{"opencv-python","opencv-contrib-python","opencv-python-headless","opencv-contrib-python-headless"})
+        required_packages.erase(name);
     const bool eyes=packages.contains("mediapipe");
-    if (eyes ? (!exact_keys(packages,{"torch","torchvision","pyfacer","numpy","Pillow","mediapipe"}) || packages.at("mediapipe")!="1.0.1") :
-        !exact_keys(packages,{"torch","torchvision","pyfacer","numpy","Pillow"})) return false;
+    if (eyes ? (!exact_keys(required_packages,{"torch","torchvision","pyfacer","numpy","Pillow","mediapipe"}) ||
+        (packages.at("mediapipe")!="1.0.1" && packages.at("mediapipe")!="1.0.0")) :
+        !exact_keys(required_packages,{"torch","torchvision","pyfacer","numpy","Pillow"})) return false;
     for (const auto& version:packages) if (!version.is_string() || version.get<std::string>().empty() || version.get<std::string>().size()>128) return false;
     Json weights={{"mobilenet0.25_Final.pth","2979b33ffafda5d74b6948cd7a5b9a7a62f62b949cef24e95fd15d2883a65220"},
         {"face_parsing.farl.celebm.main_ema_181500_jit.pt","bbc1f0e9f68c80eb83a0b23f33850d1e10f2ec1eda96884112d111c2c1f15c79"}};
@@ -692,7 +697,7 @@ MeshResult analyze(const Configuration& c, const fs::path& directory, const fs::
         if(cancelled.load()) return finish();
         std::vector<std::string> module_names={"glb_artifact.py","local_semantic_worker.py","local_semantic_geometry.py",
             "local_semantic_render.py","local_semantic_transform.py","local_semantic_views.py","local_semantic_projection.py",
-            "local_semantic_pipeline.py","local_semantic_request.py","local_eye_landmarks.py","local_face_landmarks.py","local_body_regions.py"};
+            "local_semantic_pipeline.py","local_semantic_request.py","local_eye_landmarks.py","local_face_landmarks.py","local_shape_constraints.py","local_brow_boundary.py","local_body_regions.py"};
         // The exact native raster binary joins both identity maps only when
         // installed; an absent accelerator uses the pixel-identical Python path.
         if(fs::exists(directory/"local_semantic_raster.dll"))module_names.push_back("local_semantic_raster.dll");
@@ -714,7 +719,9 @@ MeshResult analyze(const Configuration& c, const fs::path& directory, const fs::
         for(const char* name:{"local_semantic_render.py","local_semantic_transform.py","local_semantic_views.py",
                              "local_semantic_projection.py","local_semantic_pipeline.py","local_eye_landmarks.py","local_face_landmarks.py","local_body_regions.py"}) policy_modules[name]=modules.at(name);
         if(modules.contains("local_semantic_raster.dll"))policy_modules["local_semantic_raster.dll"]=modules.at("local_semantic_raster.dll");
-        const Json policy={{"version","visible-face-semantic-v5-body-supplement"},{"label_schema","farl-celebm-face19-subset-v1"},
+        policy_modules["local_shape_constraints.py"]=modules.at("local_shape_constraints.py");
+        policy_modules["local_brow_boundary.py"]=modules.at("local_brow_boundary.py");
+        const Json policy={{"version","visible-face-semantic-v7-farl-sides-source-brow-boundary"},{"label_schema","farl-celebm-face19-subset-v1"},
                            {"modules_sha256",policy_modules}};
         const auto policy_hash=canonical_hash(policy);
         if(!fs::is_regular_file(source) || fs::file_size(source)>512ULL*1024*1024) throw std::runtime_error("source_size");
@@ -781,8 +788,10 @@ MeshResult analyze(const Configuration& c, const fs::path& directory, const fs::
             expected.request_id=validation_id;expected.source_sha256=source_hash;expected.geometry_id=geometry_id;expected.face_count=native.indices.size();
             expected.weights_sha256=canonical_hash(probe_identity.at("weights"));expected.runtime_sha256=runtime_hash;expected.policy_sha256=policy_hash;
             failure="invalid_semantic_evidence";
-            if(!LocalSemanticEvidence::decode(read_output("evidence.json",LocalSemanticEvidence::max_bytes),expected,binding,result.evidence,error))
+            const auto evidence_bytes=read_output("evidence.json",LocalSemanticEvidence::max_bytes);
+            if(!LocalSemanticEvidence::decode(evidence_bytes,expected,binding,result.evidence,error))
                 throw std::runtime_error("evidence_decode");
+            result.evidence_sha256=bytes_hash(evidence_bytes);
             const auto& statistics=response.at("statistics");
             std::map<std::string,unsigned long long> statistic_limits;
             for(const char* key:{"face_count","visible_faces","unseen_faces","ambiguous_faces","cross_subject_faces",

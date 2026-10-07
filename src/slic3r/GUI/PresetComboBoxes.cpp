@@ -1040,10 +1040,18 @@ bool PlaterPresetComboBox::switch_to_tab()
     }
     */
 
+    // Once the redesign shell is active, preset-related navigation must stay
+    // inside the new surface; do not reopen the legacy params dialog.
+    if (wxGetApp().mainframe->is_redesign_shell_active()) {
+        wxGetApp().mainframe->select_tab(m_type == Preset::TYPE_MODEL ? TAB_ID_GENERATE_3D : TAB_ID_PREPARE);
+        tab->restore_last_select_item();
+        return true;
+    }
+
     //BBS  Select NoteBook Tab params
-    if (tab->GetParent() == wxGetApp().params_panel())
+    if (tab->GetParent() == wxGetApp().params_panel()) {
         wxGetApp().mainframe->select_tab(TAB_ID_PREPARE);
-    else {
+    } else {
         wxGetApp().params_dialog()->Popup();
         tab->OnActivate();
     }

@@ -48,12 +48,7 @@ struct AIDesktopFeatureHost::Impl final : wxEvtHandler
 {
     Impl(wxWindow* parent, Plater* plater, NavigateAfterImportFn navigate_after_import,
          SmartSlicingAvailableFn smart_slicing_available)
-        : model_generation(parent, plater, [plater, navigate_after_import] {
-            if (plater) { plater->exit_gizmo(); plater->update(true, true); }
-            if (navigate_after_import) navigate_after_import();
-            // Keep height/base controls available after an accepted import.
-            if (plater) plater->show_smart_slicing(true);
-        }, [this] { retry_now(); })
+        : model_generation(parent, plater, navigate_after_import, [this] { retry_now(); })
         , service_manager(AISidecarClient::default_endpoint())
         , retry_timer(this)
         , on_smart_slicing_available(std::move(smart_slicing_available))
@@ -83,7 +78,24 @@ struct AIDesktopFeatureHost::Impl final : wxEvtHandler
             return;
         retry_timer.Stop();
         retry_count = 0;
+        set_service_status(ever_connected ? AIServiceStatus::Reconnecting : AIServiceStatus::Checking);
         discover();
+    }
+
+    void set_service_status_handler(ServiceStatusFn handler)
+    {
+        service_status_handler = std::move(handler);
+        if (service_status_handler)
+            service_status_handler(service_status);
+    }
+
+    void set_service_status(AIServiceStatus status)
+    {
+        if (service_status == status)
+            return;
+        service_status = status;
+        if (service_status_handler)
+            service_status_handler(status);
     }
 
     void discover()
@@ -93,19 +105,29 @@ struct AIDesktopFeatureHost::Impl final : wxEvtHandler
         discovery_active = true;
         service_manager.discover_async(model_generation.panel(), [this](AIServiceAvailability availability) {
             discovery_active = false;
-            apply_availability(availability);
+            const bool retry_pending = !availability.compatible && availability.transient && retry_count < 20;
+            apply_availability(availability, retry_pending);
             if (availability.compatible) {
                 retry_timer.Stop();
                 retry_count = 0;
-            } else if (availability.transient && retry_count < 20) {
+            } else if (retry_pending) {
                 ++retry_count;
                 retry_timer.StartOnce(500);
             }
         });
     }
 
-    void apply_availability(const AIServiceAvailability& availability)
+    void apply_availability(const AIServiceAvailability& availability, bool retry_pending)
     {
+        if (availability.compatible) {
+            ever_connected = true;
+            set_service_status(availability.model_generation_available ? AIServiceStatus::Connected
+                                                                       : AIServiceStatus::GenerationUnavailable);
+        } else {
+            set_service_status(retry_pending ? (ever_connected ? AIServiceStatus::Reconnecting
+                                                               : AIServiceStatus::Checking)
+                                             : AIServiceStatus::Unavailable);
+        }
         const std::string message = availability.compatible && !availability.model_generation_available
             ? "Configure the local AI service to enable 3D generation."
             : availability.error;
@@ -137,7 +159,10 @@ struct AIDesktopFeatureHost::Impl final : wxEvtHandler
     AIServiceManager service_manager;
     wxTimer retry_timer;
     SmartSlicingAvailableFn on_smart_slicing_available;
+    ServiceStatusFn service_status_handler;
     Plater* plater { nullptr };
+    AIServiceStatus service_status { AIServiceStatus::Checking };
+    bool ever_connected { false };
     unsigned retry_count { 0 };
     bool discovery_active { false };
     bool smart_slicing_announced { false };
@@ -159,29 +184,24 @@ wxWindow* AIDesktopFeatureHost::model_generation_panel() const
     return m_impl->model_generation.panel();
 }
 
+void AIDesktopFeatureHost::initialize_model_generation_for_shell()
+{
+    m_impl->model_generation.initialize_for_shell();
+}
+
+ModelGenerationFeatureHost* AIDesktopFeatureHost::model_generation_host() const
+{
+    return &m_impl->model_generation;
+}
+
+void AIDesktopFeatureHost::set_service_status_handler(ServiceStatusFn handler)
+{
+    m_impl->set_service_status_handler(std::move(handler));
+}
+
 void AIDesktopFeatureHost::start()
 {
     m_impl->start();
-}
-
-void AIDesktopFeatureHost::navigate_generation(ModelGenerationPresentation::WorkspaceAction action)
-{
-    m_impl->model_generation.navigate(action);
-}
-
-ModelGenerationPresentation::WorkspaceView AIDesktopFeatureHost::generation_view() const
-{
-    return m_impl->model_generation.workspace_view();
-}
-
-bool AIDesktopFeatureHost::has_generation_model() const
-{
-    return m_impl->model_generation.has_model();
-}
-
-void AIDesktopFeatureHost::set_workspace_changed_handler(std::function<void()> handler)
-{
-    m_impl->model_generation.set_workspace_changed_handler(std::move(handler));
 }
 
 void AIDesktopFeatureHost::shutdown()

@@ -25,7 +25,9 @@ struct BeautySurface {
     std::string geometry_id;
     std::vector<uint32_t> face_patch;
     std::vector<BeautyPatch> patches;
-    std::vector<std::array<int32_t, 3>> face_neighbors;
+    // Canonical triangles retain their three edge slots. Derived surfaces may
+    // have more neighbors along an adaptively subdivided edge.
+    std::vector<std::vector<int32_t>> face_neighbors;
     // Topology preflight on position-welded edges; UV seams stay untouched.
     size_t boundary_edges {0}, nonmanifold_edges {0};
     std::vector<Vec3d> centers, normals;

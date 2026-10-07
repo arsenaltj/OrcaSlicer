@@ -96,7 +96,7 @@ bool Plater::priv::run_textured_mesh_import_dialog(Slic3r::Model& loaded_model, 
     if (boost::algorithm::iends_with(source, ".glb") || boost::algorithm::iends_with(source, ".gltf"))
         options.z_up = true; // The native loader has already converted glTF Y-up to Z-up.
     filament_entries = workspace_texture_filaments(filament_entries, texture_options);
-    if (texture_options && texture_options->workspace_presentation && filament_entries.empty()) {
+    if (texture_options && texture_options->workbench_review && filament_entries.empty()) {
         const wxString message = _L("当前工程没有兼容的实体耗材。请在准备页核对打印机与材料后重试；本次未导入，原模型和工程保留。");
         if (color_result) color_result->error = into_u8(message);
         MessageDialog(q, message, _L("无法匹配打印耗材"), wxOK | wxICON_WARNING).ShowModal();

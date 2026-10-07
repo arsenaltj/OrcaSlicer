@@ -12,6 +12,9 @@ EYES = (
     ([362, 398, 384, 385, 386, 387, 388, 466, 263, 249, 390, 373, 374, 380, 381, 382], 473, [474, 475, 476, 477]),
 )
 
+# FaRL's existing label contract, rather than MediaPipe's anatomical side names.
+EYE_BY_LABEL = {'le': EYES[0], 're': EYES[1]}
+
 
 def load(path):
     import mediapipe as mp
@@ -54,6 +57,12 @@ def eye_masks(points, shape, eye):
     if inside.sum() < 24 or iris.sum() < 8 or not .08 <= iris.sum()/inside.sum() <= .8:
         return None
     return inside, iris, float(width)
+
+
+def shape_metrics(points, world, eye):
+    """Return the normalized pupil/eye-rim metrics used by the shape gate."""
+    from local_shape_constraints import ellipse_metrics
+    return ellipse_metrics(points, world, eye)
 
 
 def observe(detector, rgb, ids):

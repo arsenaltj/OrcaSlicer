@@ -33,6 +33,10 @@ MultiMachinePage::~MultiMachinePage()
 
 void MultiMachinePage::jump_to_send_page()
 {
+    if (wxGetApp().mainframe != nullptr && wxGetApp().mainframe->is_redesign_shell_active()) {
+        wxGetApp().mainframe->select_tab(TAB_ID_MONITOR);
+        return;
+    }
     m_tabpanel->SetSelection(1);
 }
 

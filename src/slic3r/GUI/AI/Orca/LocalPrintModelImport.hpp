@@ -1,6 +1,9 @@
 #pragma once
 
 #include "LocalPrintColorCommit.hpp"
+#include "libslic3r/Arrange.hpp"
+#include "libslic3r/ClipperUtils.hpp"
+#include <functional>
 
 namespace Slic3r::GUI::LocalPrintModelImport {
 
@@ -39,24 +42,83 @@ inline bool prepare(const ModelObject& source, const Vec2d& placement, const Vec
     return true;
 }
 
-// No UI callback is allowed here. A failed native clone or history registration
-// removes only this attempt's appended object, before any config commit. Native
-// allocation/backup exceptions are allowed to propagate after the rollback.
+inline bool place(ModelObject& object, const Polygon& bed, const arrangement::ArrangePolygons& obstacles,
+    const DynamicPrintConfig& config, double height, std::string& error)
+{
+    error.clear();
+    if (object.instances.size() != 1 || bed.points.size() < 3 || !std::isfinite(height) || height <= 0.) {
+        error = "The target plate is unavailable for placement."; return false;
+    }
+    auto* instance = object.instances.front();
+    if (object.instance_bounding_box(0).max.z() > height) {
+        error = "The new model exceeds the target plate's printable height."; return false;
+    }
+    arrangement::ArrangePolygon polygon;
+    instance->get_arrange_polygon(&polygon, config);
+    // FirstFit skips negative bin IDs as unfit, even for a new moving item.
+    polygon.bed_idx = 0;
+    polygon.height = object.instance_bounding_box(0).size().z();
+    arrangement::ArrangePolygons moving {polygon};
+    arrangement::ArrangeParams params(scale_(2.));
+    params.allow_rotations = false;
+    params.do_final_align = false;
+    params.parallel = false;
+    params.printable_height = float(height);
+    params.progressind = [](unsigned, std::string) {};
+    // Orca's arranger expects the spacing to be applied to the input polygons.
+    moving.front().inflation = params.min_obj_distance / 2;
+    auto fixed = obstacles;
+    arrangement::update_unselected_items_inflation(fixed, &config, params);
+    arrangement::arrange(moving, fixed, bed.points, params);
+    const auto& placed = moving.front();
+    if (placed.bed_idx != 0 || !diff_ex({placed.transformed_poly()}, {ExPolygon(bed)}).empty()) {
+        error = "The model does not fit on the current plate. The working copy has been retained."; return false;
+    }
+    for (const auto& obstacle : obstacles)
+        if (obstacle.bed_idx == 0 && !intersection_ex({placed.transformed_poly()}, {obstacle.transformed_poly()}).empty()) {
+            error = "The new model overlaps an existing object or excluded area."; return false;
+        }
+    auto offset = instance->get_offset();
+    offset.x() = unscale<double>(placed.translation.x());
+    offset.y() = unscale<double>(placed.translation.y());
+    instance->set_offset(offset);
+    instance->set_assemble_transformation(instance->get_transformation());
+    return true;
+}
+
+// The optional finalizer runs under the caller's snapshot suppression before
+// registration. A failed refresh restores only this attempt's model and config.
 template<class Record>
 bool adopt(Model& model, const ModelObject& source, UndoRedo::ProjectConfigUndo::Prepared& config,
     ProjectConfigRestore::ColorCache& cache, PresetBundle& bundle, Record&& record,
-    size_t& index, std::string& error)
+    size_t& index, std::string& error, std::function<bool(size_t)> finalize = {})
 {
     error.clear();
     const size_t before = model.objects.size();
-    auto rollback = [&] { while (model.objects.size() > before) model.delete_object(model.objects.size() - 1); };
+    const bool changed = config.changed;
+    bool committed = false;
+    auto rollback = [&] {
+        if (committed && changed) {
+            config.changed = true;
+            ProjectConfigRestore::commit(config, cache, bundle);
+            config.changed = true;
+        }
+        while (model.objects.size() > before) model.delete_object(model.objects.size() - 1);
+    };
     try {
         model.add_object(source);
+        if (finalize) {
+            ProjectConfigRestore::commit(config, cache, bundle);
+            committed = true;
+            if (!finalize(before)) {
+                rollback(); error = "Unable to finish the color import."; return false;
+            }
+        }
         if (!record()) {
             rollback(); error = "Unable to record the color import in project history."; return false;
         }
     } catch (...) { rollback(); throw; }
-    ProjectConfigRestore::commit(config, cache, bundle);
+    if (!committed) ProjectConfigRestore::commit(config, cache, bundle);
     index = before;
     return true;
 }

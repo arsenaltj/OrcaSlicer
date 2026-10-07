@@ -6,7 +6,9 @@ No inferred z coordinate, silhouette union, or recolored input is used.
 """
 from dataclasses import dataclass
 import numpy as np
-from local_eye_landmarks import EYES, eye_masks
+from local_eye_landmarks import EYE_BY_LABEL, eye_masks
+import local_brow_boundary as brow_boundary
+import local_shape_constraints as shape_constraints
 
 # Ordered eye/lip contours in the official MediaPipe 478-point topology.
 # A nose has no comparable sharp pigment boundary; keep the parser's nose mask.
@@ -14,15 +16,24 @@ UPPER_OUTER = [61,185,40,39,37,0,267,269,270,409,291]
 LOWER_OUTER = [61,146,91,181,84,17,314,405,321,375,291]
 UPPER_INNER = [78,191,80,81,82,13,312,311,310,415,308]
 LOWER_INNER = [78,95,88,178,87,14,317,402,318,324,308]
+EYEBROWS = {
+    # Ordered MediaPipe 478-point bands.  The two extra points at each end
+    # keep the projected mask narrow while preserving the eyebrow taper.
+    'lb': [46, 53, 52, 65, 70, 63, 105, 66, 107, 55],
+    'rb': [276, 283, 282, 295, 300, 296, 334, 293, 336, 285],
+}
 CONTOURS = {
-    're': EYES[0][0], 'le': EYES[1][0],
+    **{label: eye[0] for label, eye in EYE_BY_LABEL.items()},
+    'rb': EYEBROWS['rb'], 'lb': EYEBROWS['lb'],
     'ulip': UPPER_OUTER + UPPER_INNER[::-1],
     'llip': LOWER_OUTER + LOWER_INNER[::-1],
     'imouth': UPPER_INNER + LOWER_INNER[::-1],
+    # The line/corner detail is a narrow landmark band, not a parser class.
+    'lip-line-corner': [61, 13, 291, 14],
 }
 OVAL = [10,338,297,332,284,251,389,356,454,323,361,288,397,365,379,
         378,400,377,152,148,176,149,150,136,172,58,132,93,234,127,162,21,54,103,67,109]
-HEAD_LABELS = {'face','nose','re','le','ulip','llip','imouth','rb','lb'}
+HEAD_LABELS = {'face','nose','re','le','ulip','llip','imouth','lip-line-corner','rb','lb'}
 
 
 def polygon_mask(points, shape):
@@ -58,9 +69,10 @@ class FaceView:
     parts: dict
     irises: dict
     quality: float
+    boundary: object = None
 
 
-def from_points(points, ids, bary, vertices, faces, camera, family):
+def from_points(points, ids, bary, vertices, faces, camera, family, source=None):
     """Lift actual visible samples. MediaPipe's predicted depth is discarded."""
     p = np.asarray(points, dtype=float)
     if p.shape != (478, 2) or not np.isfinite(p).all():
@@ -90,9 +102,14 @@ def from_points(points, ids, bary, vertices, faces, camera, family):
         selected, inside = np.unique(ids[mask & (ids>=0)], return_counts=True)
         return selected, inside/counts[np.searchsorted(visible,selected)]
     for name, contour in CONTOURS.items():
-        mask = polygon_mask(p[contour], ids.shape) & oval
+        if name == 'lip-line-corner':
+            outer = polygon_mask(p[UPPER_OUTER], ids.shape) | polygon_mask(p[LOWER_OUTER], ids.shape)
+            inner = polygon_mask(p[UPPER_INNER], ids.shape) | polygon_mask(p[LOWER_INNER], ids.shape)
+            mask = outer & ~inner & oval
+        else:
+            mask = polygon_mask(p[contour], ids.shape) & oval
         if name in ('re','le'):
-            eye = eye_masks(p, ids.shape, EYES[0 if name=='re' else 1])
+            eye = eye_masks(p, ids.shape, EYE_BY_LABEL[name])
             if eye is None:
                 continue  # Closed/too small eyes are not fabricated.
             mask, iris, _ = eye
@@ -102,10 +119,22 @@ def from_points(points, ids, bary, vertices, faces, camera, family):
     # Frontal, resolved views have larger apparent eye spacing at equal scale.
     pixel_size = 2*camera.half_height/camera.size
     quality = interocular * min(1., interocular*pixel_size/scale)
-    return FaceView(family,p,world,valid,float(scale),pixel_size,visible,counts,head,parts,irises,float(quality))
+    boundary = None
+    if source is not None:
+        rgb, texture_valid, uv = source
+        lo = np.maximum(np.floor(p[OVAL].min(0)).astype(int) - 4, 0)
+        hi = np.minimum(np.ceil(p[OVAL].max(0)).astype(int) + 5, ids.shape[::-1])
+        crop = np.s_[lo[1]:hi[1], lo[0]:hi[0]]
+        crop_ids, crop_bary = ids[crop].copy(), bary[crop].copy()
+        valid_uv = texture_valid[crop].copy() & (crop_ids >= 0)
+        uv_pixels = np.zeros((*crop_ids.shape, 2), dtype=float)
+        uv_pixels[valid_uv] = np.einsum('ij,ijk->ik', crop_bary[valid_uv], uv[faces[crop_ids[valid_uv]]])
+        boundary = brow_boundary.Projection(rgb[crop].copy(), crop_ids, crop_bary, uv_pixels,
+                                             valid_uv, lo, p - lo)
+    return FaceView(family,p,world,valid,float(scale),pixel_size,visible,counts,head,parts,irises,float(quality),boundary)
 
 
-def observe(detector, rgb, ids, bary, vertices, faces, camera, family):
+def observe(detector, rgb, ids, bary, vertices, faces, camera, family, source=None):
     if detector is None:
         return []
     import mediapipe as mp
@@ -113,7 +142,7 @@ def observe(detector, rgb, ids, bary, vertices, faces, camera, family):
     views = []
     for landmarks in result.face_landmarks:
         p = np.array([[v.x*ids.shape[1],v.y*ids.shape[0]] for v in landmarks])
-        observation = from_points(p,ids,bary,vertices,faces,camera,family)
+        observation = from_points(p,ids,bary,vertices,faces,camera,family,source)
         if observation is not None:
             views.append(observation)
     return views
@@ -252,7 +281,7 @@ def context_paths(part, known, forbidden, visible, neighbors):
     return result if len(result)>=2 else []
 
 
-def associate(views, regions, vertices=None, triangles=None):
+def associate(views, regions, vertices=None, triangles=None, with_shapes=False, audit=None, refine_brows=True):
     subjects = {}
     blocked = {}
     for r in regions:
@@ -270,9 +299,14 @@ def associate(views, regions, vertices=None, triangles=None):
             continue
         groups[scores[0][1]].append(view)
     hints = []
-    neighbors = None
+    neighbors = surface_neighbors(vertices, triangles) if vertices is not None and triangles is not None else None
+    shape_details = []
     for sid, observations in groups.items():
         forbidden = set(blocked[sid])
+        # Shape details refine an already identified parent region. Landmark
+        # projection may touch nearby faces that the semantic parser did not
+        # own; those faces remain unknown and cannot become detail evidence.
+        parent_faces = np.unique(np.asarray(subjects[sid], dtype=np.int64))
         for other,faces in subjects.items():
             if other!=sid:
                 forbidden.update(faces)
@@ -282,7 +316,11 @@ def associate(views, regions, vertices=None, triangles=None):
             if not selected:
                 continue
             faces = np.setdiff1d(fuse_masks(selected,name),list(forbidden))
-            if len(faces)<4:
+            # A majority-supported seed may be smaller than four triangles on
+            # a high-resolution mesh.  Keep it for the shape proposal; the
+            # shape gate records small/disconnected support as risk and the
+            # bounded completion below may add a finite parent-local ring.
+            if len(faces)<1:
                 continue
             iris = np.intersect1d(faces,fuse_masks(selected,name,True)) if name in ('re','le') else np.array([],dtype=int)
             hint = {'subject_id':sid,'label':name,'faces':faces.tolist(),
@@ -290,8 +328,6 @@ def associate(views, regions, vertices=None, triangles=None):
             if not len(np.intersect1d(faces,subjects[sid])):
                 if vertices is None or triangles is None:
                     continue
-                if neighbors is None:
-                    neighbors = surface_neighbors(vertices, triangles)
                 # Context itself must be visible from at least two agreeing
                 # cameras, inside their face ovals, never through an occluder.
                 head, support = np.unique(np.concatenate([v.head for v in selected]),return_counts=True)
@@ -299,6 +335,48 @@ def associate(views, regions, vertices=None, triangles=None):
                 if not paths:
                     continue
                 hint['anchor_paths'] = paths
+            if with_shapes:
+                shape_eye = EYE_BY_LABEL.get(name)
+                faces = np.intersect1d(faces, parent_faces, assume_unique=False)
+                if len(faces) < 1:
+                    continue
+                iris = np.intersect1d(iris, faces, assume_unique=False)
+                projected_count, projected_iris_count = len(faces), len(iris)
+                original_seed_faces = set(int(face) for face in faces)
+                refinement = None
+                completion_parent = parent_faces
+                if name in EYEBROWS and refine_brows:
+                    owned = {region['label']: {int(sample[0]) for sample in region['samples']}
+                             for region in regions if region['subject_id'] == sid}
+                    legal = owned.get(name, set()) | owned.get('face', set())
+                    refinement = brow_boundary.refine(name, selected, faces, owned.get(name, set()),
+                                                       legal, neighbors, EYEBROWS[name], polygon_mask, fuse_masks)
+                    if refinement['refined']:
+                        faces = refinement['faces']
+                        selected = refinement['views']
+                        completion_parent = faces
+                shape, accepted, nested = shape_constraints.evaluate(
+                    name, selected, faces, iris, neighbors, shape_eye, sid,
+                    parent_faces=completion_parent, forbidden_faces=forbidden)
+                shape['rejected_faces'] = sorted(set(shape['rejected_faces']) |
+                                                  (original_seed_faces - set(int(face) for face in accepted)))
+                if refinement is not None and refinement['reason']:
+                    shape['reasons'].append(refinement['reason'])
+                    if accepted.size:
+                        shape['status'] = shape_constraints.PROTECTED_SHAPE_UNCERTAIN
+                if audit is not None:
+                    audit.append({'subject_id': sid, 'label': name,
+                                  'projected_seed_count': projected_count,
+                                  'projected_iris_count': projected_iris_count,
+                                  'source_refined_seed_count': len(faces),
+                                  'topology_completed_count': len(accepted),
+                                  'nested_before_owner_filter': len(nested),
+                                  'source_boundary': None if refinement is None else refinement['audit']})
+                shape_details.append(shape)
+                if len(accepted) == 0:
+                    continue
+                hint['faces'] = accepted.tolist()
+                hint['iris_faces'] = np.intersect1d(accepted, nested).tolist()
             hints.append(hint)
     # Conflicting boundaries remain unknown rather than depending on class order.
     if hints:
@@ -309,5 +387,55 @@ def associate(views, regions, vertices=None, triangles=None):
             h['iris_faces'] = np.intersect1d(h['faces'],h['iris_faces']).tolist()
             if 'anchor_paths' in h:
                 h['anchor_paths'] = [p for p in h['anchor_paths'] if p[0] in h['faces']]
-    return [h for h in hints if len(h['faces'])>=4 and
-            (len(np.intersect1d(h['faces'],subjects[h['subject_id']]))>0 or len(h.get('anchor_paths',[]))>=2)]
+    # Do not discard a conservative detail merely because its accepted seed
+    # is small.  Shape quality is represented by PROTECTED_SHAPE_UNCERTAIN;
+    # only an empty proposal or an unbound parent is rejected here.
+    result = [h for h in hints if len(h['faces'])>0 and
+              (len(np.intersect1d(h['faces'],subjects[h['subject_id']]))>0 or len(h.get('anchor_paths',[]))>=2)]
+    if with_shapes:
+        by_key = {(item['subject_id'], item['label']): item for item in result}
+        for item in shape_details:
+            key = (item['subject_id'], item['label'])
+            hint = by_key.get(key)
+            parent = set(subjects.get(item['subject_id'], ()))
+            original = (set(item['accepted_faces']) | set(item['rejected_faces'])) & parent
+            if hint is None:
+                # An empty proposal is not an editable risk-marked region.
+                # Keep the explicit conflict state so downstream ShapeLock
+                # creation can distinguish it from an uncertain region that
+                # still has safe faces to edit.
+                item['status'] = shape_constraints.INVALID_SHAPE_CONFLICT
+                item['accepted_faces'] = []
+                item['rejected_faces'] = sorted(original)
+                item['nested_faces'] = []
+                if 'SHAPE_CONFLICTING_COMPONENT' not in item['reasons']:
+                    item['reasons'].append('SHAPE_CONFLICTING_COMPONENT')
+            else:
+                accepted = set(hint['faces'])
+                item['accepted_faces'] = sorted(accepted)
+                item['rejected_faces'] = sorted(original - accepted)
+                item['nested_faces'] = sorted(set(item.get('nested_faces', [])) & accepted)
+        # A boundary face claimed by more than one *accepted* shape detail is
+        # ambiguous. Rejected faces are observations of uncertainty, not
+        # ownership claims; counting them here used to make unrelated detail
+        # proposals mutually erase the valid seeds.
+        claims = {}
+        for index, item in enumerate(shape_details):
+            for face in item['accepted_faces']:
+                claims.setdefault(face, []).append(index)
+        conflicts = {face for face, owners in claims.items() if len(set(owners)) > 1}
+        if conflicts:
+            for item in shape_details:
+                item_conflicts = (set(item['accepted_faces']) | set(item['rejected_faces'])) & conflicts
+                item['accepted_faces'] = [face for face in item['accepted_faces'] if face not in conflicts]
+                item['rejected_faces'] = [face for face in item['rejected_faces'] if face not in conflicts]
+                item['nested_faces'] = [face for face in item.get('nested_faces', []) if face not in conflicts]
+                if item_conflicts:
+                    item['status'] = (shape_constraints.PROTECTED_SHAPE_UNCERTAIN
+                                      if item['accepted_faces'] else
+                                      shape_constraints.INVALID_SHAPE_CONFLICT)
+                    if 'SHAPE_CONFLICTING_COMPONENT' not in item['reasons']:
+                        item['reasons'].append('SHAPE_CONFLICTING_COMPONENT')
+        shape_details = [item for item in shape_details if item['accepted_faces'] or item['rejected_faces']]
+        return result, shape_details
+    return result

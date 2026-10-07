@@ -25,8 +25,8 @@
         "src/slic3r/GUI",
         "src/slic3r/GUI/AI/AIDesktopFeatureHost.cpp",
         "src/slic3r/GUI/AI/AIDesktopFeatureHost.hpp",
-        "src/slic3r/GUI/AI/DesktopWorkspaceNavigation.cpp",
-        "src/slic3r/GUI/AI/DesktopWorkspaceNavigation.hpp",
+        "src/slic3r/GUI/Redesign/RedesignShell.cpp",
+        "src/slic3r/GUI/Redesign/RedesignShell.hpp",
         "src/slic3r/GUI/Redesign"
       ],
       "purpose": "组合主窗口、功能入口与本地服务可用性"
@@ -59,7 +59,7 @@
       "paths": [
         "src/slic3r/AI/Contracts"
       ],
-      "purpose": "生成产物、导入和颜色等共享接口"
+      "purpose": "生成产物、导入、颜色和中立重点区域等共享接口"
     },
     {
       "id": "adapter",
@@ -235,12 +235,12 @@
     {
       "id": "printer_workspace",
       "path": "src/slic3r/GUI/Redesign/PrinterWorkspace.cpp",
-      "needle": "void PrinterWorkspace::build_workspace()"
+      "needle": "void PrinterWorkspace::set_view"
     },
     {
       "id": "printer_adapter",
       "path": "src/slic3r/GUI/Redesign/OrcaPrinterAdapter.cpp",
-      "needle": "bool OrcaPrinterAdapter::review_print(wxWindow* parent) const"
+      "needle": "bool OrcaPrinterAdapter::start_print()"
     },
     {
       "id": "accepted_ux_controls",
@@ -259,6 +259,71 @@
       "path": "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationConfirmation.hpp",
       "needle": "class ModelGenerationConfirmation final",
       "detail": "Shared redesign dialog keeps default Cancel, held-key arming and current owner confirmation."
+    },
+    {
+      "id": "startup_setup",
+      "path": "src/slic3r/GUI/Redesign/StartupSetupService.cpp",
+      "needle": "StartupSetupSnapshot StartupSetupService::snapshot() const"
+    },
+    {
+      "id": "model_workflow_shell",
+      "path": "src/slic3r/GUI/Redesign/RedesignModelWorkflow.cpp",
+      "needle": "void RedesignShell::build_model_workflow()"
+    },
+    {
+      "id": "workbench_check",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/PostGenerationWorkbenchCheck.cpp",
+      "needle": "bool ModelGenerationPanel::request_check_workbench()"
+    },
+    {
+      "id": "workbench_beauty",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/PostGenerationWorkbenchHost.cpp",
+      "needle": "bool ModelGenerationPanel::request_enter_beauty()"
+    },
+    {
+      "id": "workbench_portrait",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/PostGenerationWorkbenchHost.cpp",
+      "needle": "bool ModelGenerationPanel::request_enable_portrait(bool enabled)"
+    },
+    {
+      "id": "workbench_color_review",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/PostGenerationWorkbenchHost.cpp",
+      "needle": "bool ModelGenerationPanel::request_workbench_color_matching()"
+    },
+    {
+      "id": "workbench_import",
+      "path": "src/slic3r/GUI/PlaterWorkbenchImport.ipp",
+      "needle": "AI::ModelImportResult Plater::import_workbench_model("
+    },
+    {
+      "id": "workbench_slice",
+      "path": "src/slic3r/GUI/AI/SmartSlicing/SmartSlicingFeatureHost.cpp",
+      "needle": "AI::SmartSlicing::OfficialSliceResult SmartSlicingFeatureHost::start_workbench_slice("
+    },
+    {
+      "id": "protected_region_manifest",
+      "path": "src/slic3r/AI/Contracts/ProtectedRegionManifest.hpp",
+      "needle": "class ProtectedRegionManifest final"
+    },
+    {
+      "id": "protected_region_binding",
+      "path": "src/slic3r/AI/SmartSlicing/Application/ProtectedRegionBinder.cpp",
+      "needle": "ProtectedRegionBindingResult ProtectedRegionBinder::bind"
+    },
+    {
+      "id": "model_feature_capture",
+      "path": "src/slic3r/GUI/AI/Orca/OrcaModelFeatureAnalyzer.cpp",
+      "needle": "OrcaModelFeatureCaptureResult OrcaModelFeatureAnalyzer::capture_current_plate"
+    },
+    {
+      "id": "beauty_protected_region_conversion",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/BeautyGuidanceProtectedRegions.cpp",
+      "needle": "BeautyGuidanceConversionResult beauty_guidance_to_protected_regions"
+    },
+    {
+      "id": "printer_task_guard",
+      "path": "src/slic3r/GUI/Redesign/PrinterWorkspaceState.hpp",
+      "needle": "inline bool printer_command_allowed"
     }
   ],
   "journeys": [
@@ -651,13 +716,14 @@
     {
       "id": "results",
       "label": "结果查看",
-      "detail": "检查产物是否就绪，再决定是否导入",
+      "detail": "就绪结果或历史资产进入独立总览和工作副本",
       "boundary": "ready 不等于已经导入工程",
       "group": "设计与生成",
       "evidence": [
         "generation_job",
         "history",
-        "import_model"
+        "import_model",
+        "model_workflow_shell"
       ],
       "modules": [
         "generation"
@@ -686,13 +752,14 @@
     {
       "id": "import",
       "label": "模型导入",
-      "detail": "将已就绪的模型交给 Orca 准备页；美颜实体耗材槽位经身份校验后保留到配色页，v4 美颜记录另存量化前目标色供换耗材重匹配",
+      "detail": "将校验后的模型、颜色和新对象摆放作为一次可撤销事务交给 Orca",
       "boundary": "导入不自动切片或更换预设",
       "group": "资产与工作区",
       "evidence": [
         "import_model",
         "beauty_physical_handoff",
-        "beauty_target_colors"
+        "beauty_target_colors",
+        "workbench_import"
       ],
       "modules": [
         "generation",
@@ -785,7 +852,8 @@
       "group": "方案决策与输出",
       "evidence": [
         "slicing_apply",
-        "slicing_poll"
+        "slicing_poll",
+        "workbench_slice"
       ],
       "modules": [
         "slicing"
@@ -807,6 +875,95 @@
       ],
       "modules": [
         "core"
+      ],
+      "impact_scope": "evidence"
+    },
+    {
+      "id": "startup_setup",
+      "label": "启动与首次配置",
+      "detail": "加载配置，在草稿中选择地区、机型、耗材和颜色，验证后保存",
+      "boundary": "正常启动默认启用；已有有效配置跳过向导；可通过启动开关显式关闭",
+      "group": "资产与工作区",
+      "evidence": [
+        "startup_setup"
+      ],
+      "modules": [
+        "desktop",
+        "adapter"
+      ],
+      "impact_scope": "evidence"
+    },
+    {
+      "id": "workbench_check",
+      "label": "工作副本检查",
+      "detail": "加载及保存后自动检查、安全修复和复检，展示残留问题与失败原因",
+      "boundary": "仅在身份兼容的 OBJ 工作副本上执行支持的修复；未覆盖的检查不显示正常",
+      "group": "资产与工作区",
+      "evidence": [
+        "workbench_check"
+      ],
+      "modules": [
+        "generation"
+      ],
+      "impact_scope": "evidence"
+    },
+    {
+      "id": "workbench_beauty",
+      "label": "美颜与版本",
+      "detail": "选区、保护、改色、候选对比、接受、放弃、保存及撤销重做",
+      "boundary": "候选或未保存编辑锁定资产更换与正式导入",
+      "group": "资产与工作区",
+      "evidence": [
+        "workbench_beauty"
+      ],
+      "modules": [
+        "generation"
+      ],
+      "impact_scope": "evidence"
+    },
+    {
+      "id": "workbench_portrait",
+      "label": "可选人像保护 R6",
+      "detail": "用户主动启用身份绑定的保护与显式解锁",
+      "boundary": "默认关闭；数据不兼容时拒绝启用；观感待用户验收",
+      "group": "资产与工作区",
+      "evidence": [
+        "workbench_portrait"
+      ],
+      "modules": [
+        "generation"
+      ],
+      "impact_scope": "evidence"
+    },
+    {
+      "id": "workbench_color_review",
+      "label": "配色确认",
+      "detail": "导入前可独立撤销地修改真实工程色槽，复用原生、自动与手动匹配及局部改色",
+      "boundary": "取消导入不提交模型，保留已确认的工程改色；导入前校验模型、耗材与摆放",
+      "group": "资产与工作区",
+      "evidence": [
+        "workbench_color_review",
+        "workbench_import"
+      ],
+      "modules": [
+        "generation",
+        "adapter"
+      ],
+      "impact_scope": "evidence"
+    },
+    {
+      "id": "printer",
+      "label": "打印机工作区",
+      "detail": "打印准备、实时监控、暂停确认与媒体查看复用原生打印和设备接口",
+      "boundary": "确认后重新核对设备及已上报任务标识；缺失状态明确显示，实机控制与摄像头链路尚待验证",
+      "group": "设备与打印",
+      "evidence": [
+        "printer_workspace",
+        "printer_adapter",
+        "printer_task_guard"
+      ],
+      "modules": [
+        "desktop"
       ],
       "impact_scope": "evidence"
     }
@@ -854,6 +1011,11 @@
         "label": "设备管理与打印",
         "detail": "打印准备、实时监控与媒体工作区；复用原生工程确认及设备接口，真机待验",
         "module": "desktop"
+      },
+      {
+        "label": "设备管理与打印",
+        "detail": "新界面打印准备、实时监控、暂停确认与媒体查看；复用现有设备和打印流程",
+        "flow": "printer"
       }
     ],
     "foundation": [
