@@ -1,6 +1,16 @@
 [
   {
     "pr": 23,
+    "run": 37688448851,
+    "head": "ef74a6f7a3bf3dff5bd7b46b727f68ab2598fea8",
+    "base": "7584ff7d0548972d6deb6e618612b5b8337f4730",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "整合最新全流程 UX 与模型、美颜及切片功能",
+    "path": "pr/23/ef74a6f7a3bf3dff5bd7b46b727f68ab2598fea8/37688448851",
+    "created": "2026-10-07T21:21:07+00:00"
+  },
+  {
+    "pr": 23,
     "run": 37676100217,
     "head": "3c541fd14e22b37e1b903fba16f873e3cdd1cd39",
     "base": "7584ff7d0548972d6deb6e618612b5b8337f4730",
