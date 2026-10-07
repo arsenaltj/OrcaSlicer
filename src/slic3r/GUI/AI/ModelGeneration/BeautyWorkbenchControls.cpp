@@ -570,7 +570,7 @@ void BeautyWorkbenchControls::update_text()
     for (wxWindow* control : std::initializer_list<wxWindow*>{m_auto_partition, m_pick_partition,
                               m_apply_partition, m_boundary, m_operation, m_preview_button,
                               m_save, m_accept, m_discard, m_undo, m_redo})
-        control->SetToolTip(selection_calculating || m_partition_task ? locked_reason : wxEmptyString);
+        control->SetToolTip(selection_calculating || m_partition_task ? locked_reason : wxString{});
     if (selection_calculating || m_partition_task) {
         m_auto_region->SetToolTip(locked_reason);
         m_auto_match->SetToolTip(locked_reason);

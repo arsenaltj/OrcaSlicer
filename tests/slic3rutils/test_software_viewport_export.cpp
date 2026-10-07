@@ -43,7 +43,7 @@ Slic3r::GUI::LibraryModelThumbnailSource thumbnail_source(const boost::filesyste
 {
     const auto path = std::filesystem::path(model.native());
     return {std::string(64, hash), std::filesystem::file_size(path),
-        std::filesystem::last_write_time(path).time_since_epoch().count()};
+        static_cast<int64_t>(std::filesystem::last_write_time(path).time_since_epoch().count())};
 }
 void write_thumbnail_model(const boost::filesystem::path& model)
 {

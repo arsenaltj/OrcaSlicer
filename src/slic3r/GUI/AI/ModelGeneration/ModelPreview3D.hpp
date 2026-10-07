@@ -2672,7 +2672,7 @@ private:
             ::glReadPixels(0,0,width,height,GL_RGB,GL_UNSIGNED_BYTE,pixels.data());
             if (::glGetError() != GL_NO_ERROR || !same_stamp(m_model_stamp, file_stamp(m_model_path))) return;
             publish_library_model_thumbnail(m_library_thumbnail_root, m_model_path,
-                {sha, m_model_stamp.bytes, m_model_stamp.modified.time_since_epoch().count()}, width, height, pixels);
+                {sha, m_model_stamp.bytes, static_cast<int64_t>(m_model_stamp.modified.time_since_epoch().count())}, width, height, pixels);
         } catch (const std::exception& error) {
             BOOST_LOG_TRIVIAL(warning) << "Model library thumbnail unavailable: " << error.what();
         }

@@ -138,7 +138,7 @@ inline void publish_library_model_thumbnail(const boost::filesystem::path& root,
         boost::filesystem::ofstream record(staging, std::ios::binary);
         record << nlohmann::json {{"source_sha256", source.sha256}, {"source_bytes", source.bytes},
             {"source_modified", source.modified}, {"image_bytes", uintmax_t(png.size())},
-            {"image_modified", image_modified.time_since_epoch().count()}}.dump();
+            {"image_modified", static_cast<int64_t>(image_modified.time_since_epoch().count())}}.dump();
         record.close();
         if (!record) throw std::runtime_error("Unable to write model thumbnail identity.");
         if (!library_model_thumbnail_matches(model, source))
