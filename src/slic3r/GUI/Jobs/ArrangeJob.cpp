@@ -564,7 +564,8 @@ void ArrangeJob::process(Ctl &ctl)
             <<", bbox:"<<get_extents(item.poly).min.transpose()<<","<<get_extents(item.poly).max.transpose();
     }
 
-    arrangement::arrange(m_selected, m_unselected, bedpts, params);
+    const auto placement = AI::Placement::arrange(m_selected, m_unselected, bedpts, params, m_placement_engine);
+    BOOST_LOG_TRIVIAL(info) << "arrange strategy: " << placement.algorithm_id << "/" << placement.algorithm_version;
 
     // sort by item id
     std::sort(m_selected.begin(), m_selected.end(), [](auto a, auto b) {return a.itemid < b.itemid; });
@@ -595,7 +596,8 @@ void ArrangeJob::process(Ctl &ctl)
         we_have_unpackable_items ? _u8L("Arranging complete, but some items were not able to be arranged. Reduce spacing and try again.") : _u8L("Arranging done."));
 }
 
-ArrangeJob::ArrangeJob() : m_plater{wxGetApp().plater()} { }
+ArrangeJob::ArrangeJob(std::shared_ptr<const AI::Placement::IPlacementEngine> engine)
+    : m_plater{wxGetApp().plater()}, m_placement_engine(engine ? std::move(engine) : AI::Placement::baseline_engine()) { }
 
 static std::string concat_strings(const std::set<std::string> &strings,
                                   const std::string &delim = "\n")

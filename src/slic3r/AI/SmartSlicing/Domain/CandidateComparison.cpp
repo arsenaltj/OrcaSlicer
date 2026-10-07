@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <optional>
+#include <set>
+#include <stdexcept>
 
 namespace Slic3r::AI::SmartSlicing {
 namespace {
@@ -132,6 +134,8 @@ CandidateComparison compare_candidates(const std::vector<SliceCandidate>& candid
                                        size_t maximum_candidates)
 {
     CandidateComparison comparison;
+    comparison.algorithm_id = "candidate-comparison";
+    comparison.algorithm_version = "candidate-comparison-v1";
     std::vector<const SliceCandidate*> usable_candidates;
     usable_candidates.reserve(candidates.size());
 
@@ -162,6 +166,36 @@ CandidateComparison compare_candidates(const std::vector<SliceCandidate>& candid
                 recommendation_evidence(*usable_candidates[0], *usable_candidates[1], goal));
     }
     return comparison;
+}
+
+CandidateComparison compare_candidates_with_strategy(const std::vector<SliceCandidate>& candidates,
+    CandidateGoal goal, const CandidateScoringStrategy& strategy)
+{
+    auto baseline = compare_candidates(candidates, goal);
+    if (!strategy.compare) return baseline;
+    std::vector<SliceCandidate> eligible;
+    std::set<CandidateId> eligible_ids;
+    for (const auto& candidate : candidates)
+        if (usable(candidate)) {
+            eligible.push_back(candidate);
+            eligible_ids.insert(candidate.id);
+        }
+    auto result = strategy.compare(eligible, goal);
+    if (strategy.algorithm_id.empty() || strategy.algorithm_version.empty() ||
+        result.ordered_candidate_ids.size() > MAX_COMPARABLE_CANDIDATES)
+        throw std::runtime_error("Candidate scoring strategy returned an invalid descriptor or ranking.");
+    std::set<CandidateId> ranked;
+    for (const auto& id : result.ordered_candidate_ids)
+        if (eligible_ids.count(id) == 0 || !ranked.insert(id).second)
+            throw std::runtime_error("Candidate scoring strategy ranked an ineligible or duplicate candidate.");
+    if (!result.recommended_candidate_id.empty() &&
+        (result.ordered_candidate_ids.empty() || result.recommended_candidate_id != result.ordered_candidate_ids.front()))
+        throw std::runtime_error("Candidate scoring strategy recommended an unranked candidate.");
+    result.excluded_candidate_ids = std::move(baseline.excluded_candidate_ids);
+    result.missing_metric_candidate_ids = std::move(baseline.missing_metric_candidate_ids);
+    result.algorithm_id = strategy.algorithm_id;
+    result.algorithm_version = strategy.algorithm_version;
+    return result;
 }
 
 } // namespace Slic3r::AI::SmartSlicing

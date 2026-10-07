@@ -281,6 +281,7 @@ public:
     void        show_option(bool show);
     void        init_tabpanel();
     void        register_ai_assistant();
+    template<typename Trace> void initialize_ai_features(Trace&& trace_stage);
     void        create_preset_tabs();
     //BBS: GUI refactor
     void        add_created_tab(Tab* panel, const std::string& bmp_name = "");

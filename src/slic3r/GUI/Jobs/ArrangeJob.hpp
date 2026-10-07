@@ -6,6 +6,7 @@
 
 #include "Job.hpp"
 #include "libslic3r/Arrange.hpp"
+#include "slic3r/AI/Placement/PlacementEngine.hpp"
 
 namespace Slic3r {
 
@@ -30,6 +31,7 @@ class ArrangeJob : public Job
     int current_plate_index = 0;
     Polygon bed_poly;
     Plater *m_plater;
+    std::shared_ptr<const AI::Placement::IPlacementEngine> m_placement_engine;
 
     // BBS: add flag for whether on current part plate
     bool only_on_partplate{false};
@@ -59,7 +61,7 @@ public:
 
     void process(Ctl &ctl) override;
 
-    ArrangeJob();
+    explicit ArrangeJob(std::shared_ptr<const AI::Placement::IPlacementEngine> engine = AI::Placement::baseline_engine());
 
     int status_range() const
     {

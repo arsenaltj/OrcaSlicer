@@ -380,6 +380,14 @@ TEST_CASE("Appearance preparation retains partitioning and geometry operations w
     CHECK(full->class_representative==appearance->class_representative);CHECK(full->face_patch==appearance->face_patch);
     CHECK(full->face_neighbors==appearance->face_neighbors);CHECK(bytes_equal(full->centers,appearance->centers));
     CHECK(bytes_equal(full->normals,appearance->normals));CHECK(bytes_equal(full->areas,appearance->areas));
+    CHECK(bytes_equal(full->face_edge_lengths,appearance->face_edge_lengths));
+    CHECK(std::memcmp(&full->geometry_extent,&appearance->geometry_extent,sizeof(double))==0);
+    REQUIRE(appearance->face_edge_lengths.size()==mesh.indices.size());
+    for(size_t f=0;f<mesh.indices.size();++f)for(size_t e=0;e<3;++e) {
+        const auto& triangle=mesh.indices[f];
+        const double expected=(mesh.vertices[triangle[e]].cast<double>()-mesh.vertices[triangle[(e+1)%3]].cast<double>()).norm();
+        CHECK_THAT(double(appearance->face_edge_lengths[f][e]),Catch::Matchers::WithinAbs(expected,1e-6));
+    }
     CHECK(full->boundary_edges==appearance->boundary_edges);CHECK(full->nonmanifold_edges==appearance->nonmanifold_edges);
     REQUIRE(full->patches.size()==appearance->patches.size());
     for(size_t p=0;p<full->patches.size();++p) {

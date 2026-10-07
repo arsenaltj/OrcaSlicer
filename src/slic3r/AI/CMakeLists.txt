@@ -1,5 +1,6 @@
 set(ORCA_AI_SMART_SLICING_SOURCES
     SmartSlicing/Application/ApplyWorkflow.hpp
+    SmartSlicing/Application/BrimParameterAdvisor.hpp
     SmartSlicing/Application/CandidatePlanningWorkflow.hpp
     SmartSlicing/Application/PrintabilityInspector.cpp
     SmartSlicing/Application/PrintabilityInspector.hpp
@@ -38,3 +39,9 @@ add_library(OrcaSlicer::SmartSlicing ALIAS orcaslicer_ai_smart_slicing)
 target_link_libraries(orcaslicer_ai_smart_slicing PUBLIC OrcaSlicer::AIContracts)
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${ORCA_AI_SMART_SLICING_SOURCES})
 encoding_check(orcaslicer_ai_smart_slicing)
+
+add_subdirectory(ColorMatching)
+add_subdirectory(ModelArtifacts)
+add_subdirectory(AppearanceEditing)
+add_subdirectory(ModelGeneration)
+add_subdirectory(Placement)

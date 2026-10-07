@@ -2523,8 +2523,10 @@ void TextureImportDialog::start_computation(bool auto_color, bool initial)
 
     Slic3r::TexturedMesh mesh_copy = m_textured_mesh;
     wxEvtHandler* handler = this;
+    const auto color_engine = m_options.texture_color_engine ? m_options.texture_color_engine
+        : AI::ColorMatching::baseline_texture_engine();
 
-    m_worker = std::make_unique<std::thread>([this, settings, mesh_copy, handler]() {
+    m_worker = std::make_unique<std::thread>([this, settings, mesh_copy, handler, color_engine]() {
         Slic3r::PaintedMesh result;
 
         auto progress_cb = [handler](int percent, const char*) {
@@ -2540,13 +2542,10 @@ void TextureImportDialog::start_computation(bool auto_color, bool initial)
         auto worker_settings = settings;
         bool mesh_repair_decision_required = false;
         worker_settings.mesh_repair_decision_required = &mesh_repair_decision_required;
-        bool ok;
-        if (!mesh_copy.precomputed_face_colors.empty()) {
-            ok = Slic3r::face_colors_to_painting(
-                mesh_copy, result, worker_settings, progress_cb, cancel_cb);
-        } else {
-            ok = Slic3r::texture_to_painting(mesh_copy, result, worker_settings, progress_cb, cancel_cb);
-        }
+        auto computation = AI::ColorMatching::compute_texture_colors(
+            {mesh_copy, worker_settings, progress_cb, cancel_cb}, color_engine);
+        const bool ok = computation.success;
+        result = std::move(computation.painted);
 
         if (m_cancel_flag.load()) {
             wxQueueEvent(handler, new wxCommandEvent(EVT_TEXTURE_COMPUTE_ERROR));
@@ -3843,11 +3842,13 @@ void TextureImportDialog::do_auto_match()
             m_filament_colors_rgba.begin(),
             m_filament_colors_rgba.begin() + std::min(m_existing_filament_count, m_filament_colors_rgba.size()));
 
-        m_current_matches = Slic3r::match_clusters_to_filaments(
-            m_painted.cluster_colors, existing_filament_colors, names);
+        const auto color_engine = m_options.texture_color_engine ? m_options.texture_color_engine
+            : AI::ColorMatching::baseline_texture_engine();
+        m_current_matches = AI::ColorMatching::match_texture_colors(
+            m_painted.cluster_colors, existing_filament_colors, names, color_engine);
 
         // For clusters with poor match (CIEDE2000 ΔE > 5), create virtual filaments.
-        constexpr double NEW_FILAMENT_THRESHOLD = 5.0;
+        const double NEW_FILAMENT_THRESHOLD = color_engine->new_filament_delta_e_threshold();
         std::map<std::array<std::size_t, 3>, int> virtual_color_index;
 
         for (auto& m : m_current_matches) {

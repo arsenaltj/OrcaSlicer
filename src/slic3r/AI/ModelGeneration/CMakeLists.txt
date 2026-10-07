@@ -1,0 +1,3 @@
+add_library(orcaslicer_ai_model_generation INTERFACE)
+add_library(OrcaSlicer::ModelGeneration ALIAS orcaslicer_ai_model_generation)
+target_link_libraries(orcaslicer_ai_model_generation INTERFACE OrcaSlicer::AIContracts Boost::filesystem)

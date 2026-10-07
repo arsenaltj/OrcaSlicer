@@ -314,6 +314,7 @@ public:
 
 private:
     void  auto_calc_flushing_volumes_internal(const int filament_id, const int extruder_id);
+    void  build_ai_workflow_panel(wxSizer* scrolled_sizer);
 
 private:
     struct priv;

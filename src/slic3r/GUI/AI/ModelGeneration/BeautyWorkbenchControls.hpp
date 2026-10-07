@@ -105,6 +105,7 @@ private:
     int shown_stage=-1;
     bool editable=false,failed=false,dirty=false,regroup_requested=false;
     bool guidance_requested=false,guidance_ready=false;
+    bool boundary_recolor=false;
     std::string preparation_notice;
     AI::BeautyPuzzle saved_puzzle;
     std::optional<AI::BeautyEditRegions> saved_edit_regions;
@@ -116,6 +117,9 @@ private:
     void change_color();
     void match_colors();
     void more_actions();
+    void refine_selected_colors(bool smooth);
+    void recover_selected_color_details();
+    void constrain_selected_colors();
     void stroke(const std::vector<size_t>&);
     void commit(AI::BeautyPuzzle,uint32_t);
     void commit_layers(AI::BeautyPuzzle,std::optional<AI::BeautyEditRegions>,uint32_t);

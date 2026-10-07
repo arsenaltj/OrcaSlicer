@@ -3,6 +3,7 @@
 #include "WorkspaceRevision.hpp"
 
 #include <cstddef>
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -68,6 +69,10 @@ struct WorkspaceContext
     bool native_validation_available{false};
     std::vector<std::string> validation_errors;
     std::vector<std::string> validation_warnings;
+    // Read-only current-plate inputs for parameter advisors; no native config or model.
+    int64_t parameter_plate_id {-1};
+    double current_brim_width {0};
+    std::vector<std::array<double, 3>> printable_instance_sizes_mm;
 };
 
 } // namespace Slic3r::AI::SmartSlicing

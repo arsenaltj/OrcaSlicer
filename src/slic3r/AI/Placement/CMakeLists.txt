@@ -1,0 +1,4 @@
+add_library(orcaslicer_ai_placement STATIC PlacementEngine.cpp PlacementEngine.hpp)
+add_library(OrcaSlicer::Placement ALIAS orcaslicer_ai_placement)
+target_link_libraries(orcaslicer_ai_placement PUBLIC OrcaSlicer::AIContracts libslic3r)
+encoding_check(orcaslicer_ai_placement)

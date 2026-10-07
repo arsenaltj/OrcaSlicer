@@ -3,9 +3,16 @@
 #include "slic3r/GUI/AI/Orca/AIImportSeamRepair.hpp"
 #include "libslic3r/TexturePainting.hpp"
 #include "slic3r/GUI/ModelColorImportResult.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchControls.hpp"
 #include "slic3r/GUI/TextureImportModel.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
+#include "libslic3r/Format/bbs_3mf.hpp"
+#include "libslic3r/PrintConfig.hpp"
+#include "libslic3r/Preset.hpp"
+#include "libslic3r/Semver.hpp"
+#include "test_utils.hpp"
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <boost/filesystem/fstream.hpp>
 #include <nlohmann/json.hpp>
 #include <chrono>
@@ -13,6 +20,49 @@
 
 using namespace Slic3r;
 using namespace Slic3r::GUI;
+
+// Explicit saved-asset consumer check; does not open a window or slice a model.
+TEST_CASE("Refined saved assets hand exact per-child slots to native facet painting", "[.][BeautyRegionPrecisionImportProbe]") {
+    const char* value=std::getenv("ORCA_PRECISION_IMPORT_SOURCE");if(!value || !*value)SKIP("Explicit saved precision GLB required.");
+    const boost::filesystem::path path(value);const auto hash=AI::model_artifact_sha256(path);
+    AI::ModelImportRequest request;REQUIRE_NOTHROW(BeautyWorkbenchControls::prepare_import(path,request));REQUIRE(request.matched_colors.has_value());REQUIRE(request.matched_colors->valid());CHECK(request.matched_colors->source_sha256==hash);
+    TriangleMesh mesh;ObjInfo info;std::string error;REQUIRE(AI::load_model_artifact(path,mesh,info,error));CHECK(request.matched_colors->geometry_id==AI::SurfaceSelectionPersistence::geometry_fingerprint(mesh.its));
+    std::vector<uint32_t> slots(mesh.its.indices.size());boost::filesystem::ifstream input(path.parent_path()/"slots.u32",std::ios::binary);input.read(reinterpret_cast<char*>(slots.data()),slots.size()*sizeof(uint32_t));REQUIRE(bool(input));REQUIRE(request.matched_colors->face_slots.size()==slots.size());
+    for(size_t f=0;f<slots.size();++f)CHECK(request.matched_colors->face_slots[f]==slots[f]);
+    Model model;auto* volume=model.add_object()->add_volume(mesh);model.texture_mesh=std::make_shared<TexturedMesh>();
+    for(const auto& v:mesh.its.vertices)model.texture_mesh->vertices.push_back({v.x(),v.y(),v.z()});for(const auto& t:mesh.its.indices)model.texture_mesh->indices.push_back({t.x(),t.y(),t.z()});
+    auto options=model_import_color_options(request);options.matched_source=std::make_shared<indexed_triangle_set>(mesh.its);
+    REQUIRE_NOTHROW(apply_matched_texture_colors(model,options,options.matched_filaments));TriangleSelector expected(mesh);
+    for(size_t f=0;f<slots.size();++f)expected.set_facet(int(f),EnforcerBlockerType(int(EnforcerBlockerType::Extruder1)+int(slots[f])));
+    CHECK(volume->mmu_segmentation_facets.get_data()==expected.serialize());CHECK(AI::model_artifact_sha256(path)==hash);
+    nlohmann::json receipt{{"source_sha256",hash},{"faces",slots.size()},{"geometry_id",request.matched_colors->geometry_id},{"exact_facet_slots",true},{"gui",false},{"slicing",false},{"three_mf_roundtrip",false}};
+    if(const char* roundtrip=std::getenv("ORCA_PRECISION_IMPORT_3MF");roundtrip && std::string(roundtrip)=="1") {
+        const auto project=path.parent_path()/"refined-materials.3mf";REQUIRE_FALSE(boost::filesystem::exists(project));
+        const auto facets=volume->mmu_segmentation_facets.get_data();const auto geometry=volume->mesh().its;
+        ScopedTemporaryDir backup("precision_3mf");model.set_backup_path(backup.string());model.add_default_instances();
+        DynamicPrintConfig config=DynamicPrintConfig::full_print_config();std::vector<std::string> palette(6);
+        for(const auto& channel:request.matched_colors->palette){REQUIRE(channel.slot<palette.size());palette[channel.slot]=channel.display_color;}
+        config.set_key_value("filament_colour",new ConfigOptionStrings(palette));
+        PlateData plate;plate.plate_index=0;StoreParams params;params.path=project.string();params.model=&model;params.config=&config;
+        params.plate_data_list.push_back(&plate);params.strategy=SaveStrategy::Zip64|SaveStrategy::Silence;REQUIRE(store_bbs_3mf(params));
+        Model restored;ScopedTemporaryDir restore_backup("precision_3mf_restore");restored.set_backup_path(restore_backup.string());
+        boost::filesystem::create_directories(restore_backup.path()/"Metadata");DynamicPrintConfig restored_config;
+        ConfigSubstitutionContext substitutions{ForwardCompatibilitySubstitutionRule::Enable};PlateDataPtrs plates;std::vector<Preset*> presets;
+        bool bbl=false,orca=false;Semver version;
+        const bool loaded=load_bbs_3mf(project.string().c_str(),&restored_config,&substitutions,&restored,&plates,&presets,&bbl,&orca,&version,nullptr,
+            LoadStrategy::LoadModel|LoadStrategy::LoadConfig);
+        release_PlateData_list(plates);for(auto* preset:presets)delete preset;REQUIRE(loaded);
+        REQUIRE(restored.objects.size()==1);REQUIRE(restored.objects[0]->volumes.size()==1);const auto* reopened=restored.objects[0]->volumes[0];
+        REQUIRE(reopened->mesh().its.indices==geometry.indices);REQUIRE(reopened->mesh().its.vertices.size()==geometry.vertices.size());
+        for(size_t v=0;v<geometry.vertices.size();++v)CHECK_THAT((reopened->mesh().its.vertices[v]-geometry.vertices[v]).norm(),Catch::Matchers::WithinAbs(0,1e-3));
+        CHECK(reopened->mmu_segmentation_facets.get_data()==facets);CHECK(volume->mmu_segmentation_facets.get_data()==facets);
+        REQUIRE(restored_config.option<ConfigOptionStrings>("filament_colour"));CHECK(restored_config.option<ConfigOptionStrings>("filament_colour")->values==palette);
+        REQUIRE(AI::model_artifact_sha256(path)==hash);
+        receipt["three_mf_roundtrip"]=true;receipt["three_mf_sha256"]=AI::model_artifact_sha256(project);receipt["three_mf_file"]=project.filename().string();
+        receipt["exact_three_mf_facets"]=true;receipt["exact_three_mf_palette"]=true;receipt["three_mf_vertex_tolerance_mm"]=1e-3;
+    }
+    const auto proof=path.parent_path()/"import-proof.json";REQUIRE_FALSE(boost::filesystem::exists(proof));boost::filesystem::ofstream report(proof);report<<receipt.dump(2);report.close();REQUIRE(bool(report));
+}
 
 TEST_CASE("Workbench mixed colors import as native virtual slots and reject altered mixtures before painting", "[ModelColorImport][BeautyWorkbench]") {
     const auto mesh=its_make_cube(10,10,10);Model model;

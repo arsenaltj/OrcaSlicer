@@ -1336,6 +1336,17 @@ def validate_gui_feature_boundaries(repo_root: Path) -> list[dict[str, str]]:
     plater_cpp = read("src/slic3r/GUI/Plater.cpp")
     panel_cpp = read("src/slic3r/GUI/ModelGenerationPanel.cpp")
     gui_cmake = read("src/slic3r/CMakeLists.txt")
+    # Delegating host code must not move forbidden ownership behind an include.
+    for fragment, target in (
+        ("src/slic3r/GUI/AI/MainFrameAIWorkflow.ipp", "main"),
+        ("src/slic3r/GUI/AI/SidebarAIWorkflow.ipp", "plater"),
+        ("src/slic3r/GUI/AI/PlaterSmartSlicingWorkflow.ipp", "plater"),
+    ):
+        if (repo_root / fragment).is_file():
+            if target == "main":
+                main_cpp += read(fragment)
+            else:
+                plater_cpp += read(fragment)
 
     for forbidden in (
         'ModelGenerationPanel.hpp',
@@ -1411,6 +1422,9 @@ def validate_model_generation_import_boundary(repo_root: Path) -> list[dict[str,
             "std::function<void(bool slice)>",
         ),
     }
+    forbidden_by_path["src/slic3r/GUI/AI/MainFrameAIWorkflow.ipp"] = (
+        "auto_slice_after_import", "slice_after_import", "EVT_GLTOOLBAR_SLICE_PLATE", "select_tab(TAB_ID_PREVIEW)"
+    )
     for relative_path, forbidden_tokens in forbidden_by_path.items():
         path = repo_root / relative_path
         if not path.is_file():
@@ -1445,12 +1459,12 @@ def validate_model_generation_import_boundary(repo_root: Path) -> list[dict[str,
 
 def _cpp_files(path: Path) -> Iterable[Path]:
     if path.is_file():
-        if path.suffix.lower() in {".cc", ".cpp", ".h", ".hpp"}:
+        if path.suffix.lower() in {".cc", ".cpp", ".h", ".hpp", ".ipp"}:
             yield path
         return
     if path.is_dir():
         for candidate in sorted(path.rglob("*")):
-            if candidate.is_file() and candidate.suffix.lower() in {".cc", ".cpp", ".h", ".hpp"}:
+            if candidate.is_file() and candidate.suffix.lower() in {".cc", ".cpp", ".h", ".hpp", ".ipp"}:
                 yield candidate
 
 
@@ -1499,6 +1513,18 @@ def validate_dependency_boundaries(repo_root: Path) -> list[dict[str, str]]:
                 errors.append(_dependency_issue(repo_root, path, line_number, "neutral contract isolation"))
 
     forbidden_domain_include = re.compile(r"(^|/)(wx|gui)(/|$)|plater|provider|tripo|openai", re.IGNORECASE)
+    forbidden_algorithm_include = re.compile(
+        r"(^|/)(wx|gui)(/|$)|plater|tools/ai|tripo|openai", re.IGNORECASE
+    )
+    for module in ("ColorMatching", "AppearanceEditing", "ModelArtifacts", "ModelGeneration", "Placement"):
+        for path in _cpp_files(repo_root / "src/slic3r/AI" / module):
+            content = path.read_text(encoding="utf-8", errors="replace")
+            for line_number, line in enumerate(content.splitlines(), 1):
+                match = include_pattern.match(line)
+                if match and forbidden_algorithm_include.search(match.group(1).replace("\\", "/")):
+                    errors.append(
+                        _dependency_issue(repo_root, path, line_number, f"{module} algorithm include isolation")
+                    )
     for layer in ("Domain", "Application"):
         location = repo_root / "src/slic3r/AI/SmartSlicing" / layer
         for path in _cpp_files(location):

@@ -175,7 +175,7 @@ class IntegrationGuardrailTests(unittest.TestCase):
     def test_model_generation_gui_uses_shared_one_to_six_color_contract(self) -> None:
         panel_header = (REPO_ROOT / "src/slic3r/GUI/ModelGenerationPanel.hpp").read_text(encoding="utf-8")
         panel_source = (REPO_ROOT / "src/slic3r/GUI/ModelGenerationPanel.cpp").read_text(encoding="utf-8")
-        client_source = (REPO_ROOT / "src/slic3r/GUI/AIModelGenerationClient.cpp").read_text(encoding="utf-8")
+        client_source = (REPO_ROOT / "src/slic3r/GUI/AI/ModelGeneration/SidecarModelGenerationService.cpp").read_text(encoding="utf-8")
         color_contract = (REPO_ROOT / "src/slic3r/AI/Contracts/ColorIntent.hpp").read_text(encoding="utf-8")
         legacy_state = (REPO_ROOT / "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationLegacyState.hpp").read_text(encoding="utf-8")
         beauty_view = (REPO_ROOT / "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationBeautyView.cpp").read_text(encoding="utf-8")
@@ -224,8 +224,11 @@ class IntegrationGuardrailTests(unittest.TestCase):
         self.assertNotIn("几何使用当前单色雕塑参考", panel_source)
 
     def test_color_intent_manifest_handoff_is_hash_bound_and_optional(self) -> None:
-        client_header = (REPO_ROOT / "src/slic3r/GUI/AIModelGenerationClient.hpp").read_text(encoding="utf-8")
-        client_source = (REPO_ROOT / "src/slic3r/GUI/AIModelGenerationClient.cpp").read_text(encoding="utf-8")
+        client_header = (REPO_ROOT / "src/slic3r/AI/ModelGeneration/ModelGenerationTypes.hpp").read_text(encoding="utf-8")
+        client_header += (REPO_ROOT / "src/slic3r/AI/ModelGeneration/IModelGenerationService.hpp").read_text(encoding="utf-8")
+        client_source = (REPO_ROOT / "src/slic3r/GUI/AI/ModelGeneration/SidecarModelGenerationService.cpp").read_text(encoding="utf-8")
+        facade = (REPO_ROOT / "src/slic3r/GUI/AIModelGenerationClient.cpp").read_text(encoding="utf-8")
+        self.assertIn("std::make_unique<SidecarModelGenerationService>", facade)
         panel_header = (REPO_ROOT / "src/slic3r/GUI/ModelGenerationPanel.hpp").read_text(encoding="utf-8")
         panel_sources = (REPO_ROOT / "src/slic3r/GUI/ModelGenerationPanel.cpp").read_text(encoding="utf-8")
         artifact_flow = REPO_ROOT / "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationArtifactFlow.cpp"
@@ -772,7 +775,28 @@ class IntegrationGuardrailTests(unittest.TestCase):
             self.assertEqual(file_errors, git_errors)
             self.assertEqual(1, len(file_errors))
 
+    def test_algorithm_modules_reject_gui_dependencies_and_accept_neutral_contracts(self) -> None:
+        for module in ("ColorMatching", "AppearanceEditing", "ModelArtifacts", "ModelGeneration", "Placement"):
+            with self.subTest(module=module), tempfile.TemporaryDirectory() as temporary_directory:
+                root = Path(temporary_directory)
+                header = root / "src/slic3r/AI" / module / "Engine.hpp"
+                header.parent.mkdir(parents=True)
+                header.write_text(
+                    '#include "slic3r/AI/Contracts/IPrintablePaletteProvider.hpp"\n',
+                    encoding="utf-8",
+                )
+                self.assertEqual([], GUARDRAILS.validate_dependency_boundaries(root))
+                header.write_text(
+                    '#include "slic3r/GUI/Plater.hpp"\n#include <wx/window.h>\n',
+                    encoding="utf-8",
+                )
+                errors = GUARDRAILS.validate_dependency_boundaries(root)
+                self.assertEqual(2, len(errors))
+                self.assertTrue(all(error["code"] == "boundary.dependency" for error in errors))
+
     def test_json_cli_supports_skip_git(self) -> None:
+        # The complete Git gate is a separate action; this CLI contract only
+        # covers source/ownership/budgets and explicitly reports skipped checks.
         completed = subprocess.run(
             [sys.executable, str(SCRIPT_PATH), "--json", "--skip-git"],
             cwd=REPO_ROOT,
@@ -787,6 +811,27 @@ class IntegrationGuardrailTests(unittest.TestCase):
         self.assertTrue(report["ok"])
         self.assertTrue(report["git_checks_skipped"])
         self.assertEqual([], report["errors"])
+
+    def test_delegated_host_fragments_cannot_hide_direct_ownership_or_auto_slicing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            fragment = root / "src/slic3r/GUI/AI/MainFrameAIWorkflow.ipp"
+            fragment.parent.mkdir(parents=True)
+            fragment.write_text('m_ai_service_manager;\nEVT_GLTOOLBAR_SLICE_PLATE;\n', encoding="utf-8")
+            (fragment.parent / "PlaterSmartSlicingWorkflow.ipp").write_text(
+                'SmartSlicingCoordinator;\n', encoding="utf-8")
+            for relative_path in ("src/slic3r/GUI/MainFrame.cpp", "src/slic3r/GUI/MainFrame.hpp",
+                                  "src/slic3r/GUI/Plater.cpp", "src/slic3r/GUI/ModelGenerationPanel.cpp",
+                                  "src/slic3r/CMakeLists.txt"):
+                (root / relative_path).write_text("", encoding="utf-8")
+            self.assertTrue(any(error["code"] == "gui.mainframe_boundary" and
+                                "m_ai_service_manager" in error["message"]
+                                for error in GUARDRAILS.validate_gui_feature_boundaries(root)))
+            self.assertTrue(any(error["code"] == "gui.plater_boundary" and
+                                "SmartSlicingCoordinator" in error["message"]
+                                for error in GUARDRAILS.validate_gui_feature_boundaries(root)))
+            self.assertTrue(any(error["code"] == "model_generation.auto_slice"
+                                for error in GUARDRAILS.validate_model_generation_import_boundary(root)))
 
 
 if __name__ == "__main__":

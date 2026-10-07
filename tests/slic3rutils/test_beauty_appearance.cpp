@@ -2,6 +2,8 @@
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include "slic3r/GUI/AI/Model/BeautyPuzzle.hpp"
 #include "slic3r/GUI/AI/Model/ModelFinishing.hpp"
+#include "slic3r/AI/ModelArtifacts/GlbGeometryEditing.hpp"
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include "libslic3r/Format/AssimpImport.hpp"
 #include "libslic3r/TexturePainting.hpp"
 #include <catch2/catch_test_macros.hpp>
@@ -15,6 +17,7 @@
 #include <cmath>
 #include <cstring>
 #include <iterator>
+#include <map>
 #include <limits>
 #include <chrono>
 #include <cstdlib>
@@ -165,6 +168,140 @@ ModelFinishingOptions puzzle_options(const boost::filesystem::path& base) {
                                {"puzzle_base_sha256", model_artifact_sha256(base)}};
     return options;
 }
+}
+
+namespace {
+struct RefinedFixture {indexed_triangle_set mesh;std::vector<SurfaceVertexBlend> vertices;std::vector<size_t> parents;};
+RefinedFixture refine_fixture(const indexed_triangle_set& original) {
+    RefinedFixture result;result.mesh.vertices=original.vertices;
+    for(size_t v=0;v<original.vertices.size();++v)result.vertices.push_back({uint32_t(v),uint32_t(v),0});
+    std::map<std::pair<int,int>,int> midpoints;
+    const auto midpoint=[&](int a,int b) {
+        if(b<a)std::swap(a,b);const auto old=midpoints.find({a,b});if(old!=midpoints.end())return old->second;
+        const int next=int(result.mesh.vertices.size());result.mesh.vertices.push_back((original.vertices[size_t(a)]+original.vertices[size_t(b)])*.5f);
+        result.vertices.push_back({uint32_t(a),uint32_t(b),.5});midpoints.emplace(std::pair<int,int>{a,b},next);return next;
+    };
+    for(size_t f=0;f<original.indices.size();++f) {
+        const auto& t=original.indices[f];const int ab=midpoint(t[0],t[1]),bc=midpoint(t[1],t[2]),ca=midpoint(t[2],t[0]);
+        for(const Vec3i32& child:{Vec3i32(t[0],ab,ca),Vec3i32(ab,t[1],bc),Vec3i32(ca,bc,t[2]),Vec3i32(ab,bc,ca)}){result.mesh.indices.push_back(child);result.parents.push_back(f);}
+    }
+    std::vector<int> compact(result.mesh.vertices.size(),-1);indexed_triangle_set mesh;std::vector<SurfaceVertexBlend> blends;
+    for(auto& t:result.mesh.indices)for(int& v:t) {
+        if(compact[size_t(v)]<0){compact[size_t(v)]=int(mesh.vertices.size());mesh.vertices.push_back(result.mesh.vertices[size_t(v)]);blends.push_back(result.vertices[size_t(v)]);}
+        v=compact[size_t(v)];
+    }
+    result.mesh.vertices=std::move(mesh.vertices);result.vertices=std::move(blends);return result;
+}
+std::vector<float> attribute_values(const Glb& glb,const char* semantic,size_t components) {
+    const auto index=glb.doc.at("meshes")[0].at("primitives")[0].at("attributes").at(semantic).get<size_t>();
+    const auto& accessor=glb.doc.at("accessors").at(index);const auto& view=glb.doc.at("bufferViews").at(accessor.at("bufferView").get<size_t>());
+    const size_t start=view.value("byteOffset",size_t(0))+accessor.value("byteOffset",size_t(0)),stride=view.value("byteStride",components*4),count=accessor.at("count").get<size_t>();
+    std::vector<float> result;
+    for(size_t v=0;v<count;++v)for(size_t c=0;c<components;++c){const auto bits=u32(glb.binary.data()+start+v*stride+c*4);float f;std::memcpy(&f,&bits,4);result.push_back(f);}return result;
+}
+}
+
+TEST_CASE("Surface refinement preserves embedded pixels and interpolates UVs in actual saved geometry", "[GlbSurfaceRefinement]") {
+    Fixture fixture;const auto path=make_fixture(fixture),destination=fixture.directory/"refined.glb";const auto original=read_glb(path);const auto hash=model_artifact_sha256(path);
+    TriangleMesh mesh;ObjInfo colors;std::string error;REQUIRE(load_model_artifact(path,mesh,colors,error));const auto refined=refine_fixture(mesh.its);
+    const auto source=read_glb_geometry_source(path,mesh.its);REQUIRE_NOTHROW(write_glb_surface_refinement(*source,destination,refined.mesh,refined.vertices,refined.parents));
+    const auto saved=read_glb(destination);
+    for(const char* field:{"materials","textures","images","samplers","nodes","scenes"})CHECK(saved.doc.at(field)==original.doc.at(field));
+    REQUIRE(saved.binary.size()>=original.binary.size());CHECK(std::equal(original.binary.begin(),original.binary.end(),saved.binary.begin()));
+    const auto before=attribute_values(original,"TEXCOORD_0",2),after=attribute_values(saved,"TEXCOORD_0",2);REQUIRE(after.size()==refined.vertices.size()*2);
+    for(size_t v=0;v<refined.vertices.size();++v)for(size_t c=0;c<2;++c){const auto& blend=refined.vertices[v];CHECK_THAT(after[v*2+c],Catch::Matchers::WithinAbs((1-blend.fraction)*before[blend.a*2+c]+blend.fraction*before[blend.b*2+c],1e-6));}
+    TriangleMesh reloaded;ObjInfo reloaded_colors;REQUIRE(load_model_artifact(destination,reloaded,reloaded_colors,error));CHECK(reloaded.its.indices==refined.mesh.indices);REQUIRE(reloaded.its.vertices.size()==refined.mesh.vertices.size());
+    for(size_t v=0;v<refined.mesh.vertices.size();++v)CHECK_THAT((reloaded.its.vertices[v]-refined.mesh.vertices[v]).norm(),Catch::Matchers::WithinAbs(0,1e-3));
+    CHECK(model_artifact_sha256(path)==hash);
+}
+
+TEST_CASE("Refined GLB color attributes retain linear interpolation and their component count", "[GlbSurfaceRefinement]") {
+    Fixture fixture;const auto path=fixture.directory/"colors.glb",destination=fixture.directory/"refined.glb";
+    const auto original_mesh=its_make_cube(10,10,10);std::vector<RGBA> color(original_mesh.vertices.size(),{.2f,.4f,.8f,1});std::string error;
+    REQUIRE(write_model_artifact(path,original_mesh,color,error));TriangleMesh loaded;ObjInfo info;REQUIRE(load_model_artifact(path,loaded,info,error));
+    const auto original=read_glb(path);const auto refined=refine_fixture(loaded.its);const auto source=read_glb_geometry_source(path,loaded.its);
+    REQUIRE_NOTHROW(write_glb_surface_refinement(*source,destination,refined.mesh,refined.vertices,refined.parents));const auto saved=read_glb(destination);
+    const auto old_index=original.doc.at("meshes")[0].at("primitives")[0].at("attributes").at("COLOR_0").get<size_t>();const auto components=original.doc.at("accessors").at(old_index).at("type")=="VEC4"?4u:3u;
+    const auto before=attribute_values(original,"COLOR_0",components),after=attribute_values(saved,"COLOR_0",components);REQUIRE(after.size()==refined.vertices.size()*components);
+    for(size_t v=0;v<refined.vertices.size();++v)for(size_t c=0;c<components;++c){const auto& blend=refined.vertices[v];CHECK_THAT(after[v*components+c],Catch::Matchers::WithinAbs((1-blend.fraction)*before[blend.a*components+c]+blend.fraction*before[blend.b*components+c],1e-6));}
+}
+
+TEST_CASE("Invalid surface ancestry missing coverage and unsupported UV encodings publish no GLB", "[GlbSurfaceRefinement]") {
+    Fixture fixture;const auto path=make_fixture(fixture),destination=fixture.directory/"refined.glb";TriangleMesh mesh;ObjInfo info;std::string error;REQUIRE(load_model_artifact(path,mesh,info,error));
+    const auto source=read_glb_geometry_source(path,mesh.its);const auto refined=refine_fixture(mesh.its);
+    auto moved=refined;moved.mesh.vertices[0].x()+=1;CHECK_THROWS(write_glb_surface_refinement(*source,destination,moved.mesh,moved.vertices,moved.parents));CHECK_FALSE(boost::filesystem::exists(destination));
+    auto missing=refined;missing.mesh.indices.pop_back();missing.parents.pop_back();CHECK_THROWS(write_glb_surface_refinement(*source,destination,missing.mesh,missing.vertices,missing.parents));CHECK_FALSE(boost::filesystem::exists(destination));
+    auto invalid=refined;invalid.vertices[0].a=uint32_t(mesh.its.vertices.size());CHECK_THROWS(write_glb_surface_refinement(*source,destination,invalid.mesh,invalid.vertices,invalid.parents));CHECK_FALSE(boost::filesystem::exists(destination));
+    auto glb=read_glb(path);glb.doc["accessors"][1]["normalized"]=true;write_glb(path,glb.doc,glb.binary);const auto quantized=read_glb_geometry_source(path,mesh.its);
+    CHECK_THROWS(write_glb_surface_refinement(*quantized,destination,refined.mesh,refined.vertices,refined.parents));CHECK_FALSE(boost::filesystem::exists(destination));
+}
+
+TEST_CASE("Surface publication preserves existing versions and rolls back cancellation or changed sources", "[GlbSurfaceRefinement]") {
+    Fixture fixture;const auto path=make_fixture(fixture),destination=fixture.directory/"refined.glb";TriangleMesh mesh;ObjInfo info;std::string error;REQUIRE(load_model_artifact(path,mesh,info,error));
+    const auto source=read_glb_geometry_source(path,mesh.its);const auto refined=refine_fixture(mesh.its);
+    CHECK_THROWS(write_glb_surface_refinement(*source,destination,refined.mesh,refined.vertices,refined.parents,[]{throw std::runtime_error("cancel");}));CHECK_FALSE(boost::filesystem::exists(destination));
+    REQUIRE_NOTHROW(write_glb_surface_refinement(*source,destination,refined.mesh,refined.vertices,refined.parents));const auto old_hash=model_artifact_sha256(destination);
+    CHECK_THROWS(write_glb_surface_refinement(*source,destination,refined.mesh,refined.vertices,refined.parents));CHECK(model_artifact_sha256(destination)==old_hash);
+    auto original=read_glb(path);original.doc["asset"]["generator"]="changed";write_glb(path,original.doc,original.binary);const auto other=fixture.directory/"new.glb";
+    CHECK_THROWS(write_glb_surface_refinement(*source,other,refined.mesh,refined.vertices,refined.parents));CHECK_FALSE(boost::filesystem::exists(other));
+    for(boost::filesystem::directory_iterator i(fixture.directory),end;i!=end;++i)CHECK_FALSE(boost::filesystem::is_directory(i->path()));
+}
+
+TEST_CASE("Equal area overlapping children cannot replace missing source surface", "[GlbSurfaceRefinement]") {
+    Fixture fixture;const auto path=make_fixture(fixture),destination=fixture.directory/"overlapping.glb";
+    TriangleMesh mesh;ObjInfo info;std::string error;REQUIRE(load_model_artifact(path,mesh,info,error));
+    const auto source=read_glb_geometry_source(path,mesh.its);auto refined=refine_fixture(mesh.its);
+    REQUIRE(refined.parents[0]==refined.parents[1]);
+    // The four midpoint children have equal area. Duplicate one and omit another:
+    // ancestry, winding and the sum of areas still match, but there is a hole.
+    refined.mesh.indices[1]=refined.mesh.indices[0];
+    CHECK_THROWS(write_glb_surface_refinement(*source,destination,refined.mesh,refined.vertices,refined.parents));
+    CHECK_FALSE(boost::filesystem::exists(destination));
+}
+
+TEST_CASE("Surface partitions preserve separate UV seam corners under rotation and unequal scale", "[GlbSurfaceRefinement]") {
+    Fixture fixture;const auto path=make_fixture(fixture),destination=fixture.directory/"seams.glb";auto original=read_glb(path);
+    // Place the second quad next to the first with duplicated boundary positions
+    // and distinct UVs, retaining its own corner attributes at the seam.
+    for(size_t v=4;v<8;++v) {
+        float x;std::memcpy(&x,original.binary.data()+v*12,4);x-=1;std::memcpy(original.binary.data()+v*12,&x,4);
+    }
+    original.doc["accessors"][0]["max"]={2,1,0};
+    original.doc["nodes"][0]["rotation"]={0,0,std::sqrt(.5),std::sqrt(.5)};
+    original.doc["nodes"][0]["scale"]={1.5,.7,2};write_glb(path,original.doc,original.binary);
+    TriangleMesh mesh;ObjInfo info;std::string error;REQUIRE(load_model_artifact(path,mesh,info,error));
+    REQUIRE(mesh.its.vertices.size()==8);
+    const std::vector<Vec3i32> expected_indices{Vec3i32(0,1,2),Vec3i32(0,2,3),Vec3i32(4,5,6),Vec3i32(4,6,7)};
+    REQUIRE(mesh.its.indices==expected_indices);
+    auto refined=refine_fixture(mesh.its);const auto source=read_glb_geometry_source(path,mesh.its);
+    // Separate child corner indices must also be accepted when geometry matches.
+    indexed_triangle_set copies;std::vector<SurfaceVertexBlend> blends;
+    for(const auto& t:refined.mesh.indices) {
+        const int first=int(copies.vertices.size());for(int v:t){copies.vertices.push_back(refined.mesh.vertices[size_t(v)]);blends.push_back(refined.vertices[size_t(v)]);}
+        copies.indices.emplace_back(first,first+1,first+2);
+    }
+    REQUIRE_NOTHROW(write_glb_surface_refinement(*source,destination,copies,blends,refined.parents));
+    const auto saved=read_glb(destination);CHECK(saved.doc.at("nodes")==original.doc.at("nodes"));
+    const auto before=attribute_values(original,"TEXCOORD_0",2),after=attribute_values(saved,"TEXCOORD_0",2);
+    for(size_t v=0;v<blends.size();++v)for(size_t c=0;c<2;++c) {
+        const auto& blend=blends[v];const double expected=(1-blend.fraction)*before[blend.a*2+c]+blend.fraction*before[blend.b*2+c];
+        CHECK_THAT(after[v*2+c],Catch::Matchers::WithinAbs(expected,1e-6));
+    }
+    TriangleMesh reloaded;ObjInfo reloaded_info;REQUIRE(load_model_artifact(destination,reloaded,reloaded_info,error));
+    CHECK(reloaded.its.indices==copies.indices);REQUIRE(reloaded.its.vertices.size()==copies.vertices.size());
+    for(size_t v=0;v<copies.vertices.size();++v)CHECK_THAT((reloaded.its.vertices[v]-copies.vertices[v]).norm(),Catch::Matchers::WithinAbs(0,1e-3));
+}
+
+TEST_CASE("Canceling immediately after surface publication removes only the new version", "[GlbSurfaceRefinement]") {
+    Fixture fixture;const auto path=make_fixture(fixture),destination=fixture.directory/"canceled.glb";
+    TriangleMesh mesh;ObjInfo info;std::string error;REQUIRE(load_model_artifact(path,mesh,info,error));
+    const auto source=read_glb_geometry_source(path,mesh.its);const auto refined=refine_fixture(mesh.its);const auto hash=model_artifact_sha256(path);
+    bool reached_publication=false;
+    CHECK_THROWS(write_glb_surface_refinement(*source,destination,refined.mesh,refined.vertices,refined.parents,[&]{
+        if(boost::filesystem::exists(destination)){reached_publication=true;throw std::runtime_error("late cancel");}
+    }));
+    CHECK(reached_publication);CHECK_FALSE(boost::filesystem::exists(destination));CHECK(model_artifact_sha256(path)==hash);
+    for(boost::filesystem::directory_iterator i(fixture.directory),end;i!=end;++i)CHECK_FALSE(boost::filesystem::is_directory(i->path()));
 }
 
 // Opt-in real-asset measurement; never runs in the regular regression suite.
