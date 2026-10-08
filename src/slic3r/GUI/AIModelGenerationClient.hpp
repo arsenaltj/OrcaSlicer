@@ -173,6 +173,8 @@ public:
         PaletteRoles palette_roles;
         ImagePrintSettings print_settings;
         double      updated_at { 0.0 };
+        double      design_elapsed_seconds { -1.0 };
+        double      design_estimated_seconds { 0.0 };
         bool        input_ready { false };
         bool        preview_ready { false };
         bool        raw_preview_ready { false };
@@ -259,6 +261,7 @@ public:
                                StyleRecommendationFn on_complete, ErrorFn on_error);
     void confirm_palette(const std::string& job_id, const std::vector<std::string>& palette,
                          const PaletteRoles& palette_roles, StatusFn on_complete, ErrorFn on_error);
+    void reuse_design(const std::string& job_id, StatusFn on_complete, ErrorFn on_error);
     void generate(const std::string& job_id, const std::string& prepared_prompt,
                   const std::vector<std::string>& palette, const GenerationOptions& options,
                   StatusFn on_complete, ErrorFn on_error, bool resume_existing = false);

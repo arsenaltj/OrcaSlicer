@@ -46,6 +46,7 @@ public:
     bool request_import();
     bool request_refresh_history();
     bool request_open_history(const std::string& job_id);
+    bool request_open_image_history(const std::string& job_id);
     PostGenerationWorkbenchState workbench_snapshot() const;
     void set_workbench_listener(PostGenerationWorkbenchListener listener);
     void set_workbench_results_handler(std::function<void()> handler);

@@ -31,6 +31,40 @@ constexpr const char* GENERATED_MODEL_PREFIX = "orcaslicer-ai-";
 
 } // namespace
 
+void DesignGenerationWait::synchronize(const std::string& job_id, double elapsed, double estimate, double now)
+{
+    const bool new_job = !m_active || (!m_job_id.empty() && job_id != m_job_id);
+    const double previous = new_job ? 0.0 : m_elapsed + std::max(0.0, now - m_synced_at);
+    m_elapsed = std::max(previous, std::isfinite(elapsed) && elapsed >= 0.0 ? std::min(elapsed, 86400.0) : 0.0);
+    m_estimate = std::isfinite(estimate) && estimate > 0.0 ? std::min(estimate, 86400.0) : 0.0;
+    m_synced_at = now;
+    m_job_id = job_id;
+    m_active = true;
+}
+
+void DesignGenerationWait::clear()
+{
+    m_active = false;
+    m_job_id.clear();
+    m_elapsed = m_estimate = m_synced_at = 0.0;
+}
+
+int DesignGenerationWait::elapsed_seconds(double now) const
+{
+    return m_active ? static_cast<int>(std::min(86400.0, m_elapsed + std::max(0.0, now - m_synced_at))) : 0;
+}
+
+wxString DesignGenerationWait::message(double now) const
+{
+    if (!m_active) return {};
+    const int elapsed = elapsed_seconds(now);
+    if (m_estimate > elapsed)
+        return wxString::Format(wxString::FromUTF8("预计还需约 %d 秒"), static_cast<int>(std::ceil(m_estimate - elapsed)));
+    if (m_estimate > 0.0)
+        return wxString::Format(wxString::FromUTF8("生成时间超出预计，已等待 %d 秒"), elapsed);
+    return wxString::Format(wxString::FromUTF8("已等待 %d 秒"), elapsed);
+}
+
 wxString thin_local_region_metrics(
     const AIModelGenerationClient::ModelQuality::ThinLocalRegion& region,
     bool threshold_available,
@@ -211,8 +245,8 @@ bool path_is_inside(const boost::filesystem::path& root, const boost::filesystem
     return root_part == canonical_root.end() && candidate_part != canonical_candidate.end();
 }
 
-std::optional<DesignHistoryEntry> read_design_history_entry(
-    const boost::filesystem::path& root, const std::string& job_id, bool validate_images)
+static std::optional<DesignHistoryEntry> read_history_entry(
+    const boost::filesystem::path& root, const std::string& job_id, bool validate_images, bool images_only)
 {
     // Match the sidecar status route, and never follow a record into another job.
     if (job_id.size() != 36) return std::nullopt;
@@ -229,7 +263,7 @@ std::optional<DesignHistoryEntry> read_design_history_entry(
         if (!path_is_inside(root, directory) || !path_is_inside(directory, state_path) ||
             !boost::filesystem::is_regular_file(state_path) || boost::filesystem::file_size(state_path) > 64 * 1024)
             return std::nullopt;
-        for (const char* name : {"model.glb", "model-vertex-color.obj"}) {
+        if (!images_only) for (const char* name : {"model.glb", "model-vertex-color.obj"}) {
             const auto model = directory / name;
             if (boost::filesystem::is_regular_file(model) && boost::filesystem::file_size(model) > 0)
                 return std::nullopt; // Existing model history takes precedence.
@@ -242,8 +276,12 @@ std::optional<DesignHistoryEntry> read_design_history_entry(
         entry.source = data.value("source", std::string());
         entry.state = data.value("state", std::string());
         entry.prompt = data.value("user_prompt", std::string());
+        entry.style = data.value("style", std::string("sculpture"));
+        entry.custom_style = data.value("custom_style", std::string());
+        if (images_only && (!data.value("source_design_job_id", std::string()).empty() ||
+            boost::filesystem::exists(root / "image-history-hidden" / (job_id + ".json")))) return std::nullopt;
         if ((entry.source != "image" && entry.source != "text") ||
-            (entry.state != "awaiting_confirmation" && entry.state != "stopped" && entry.state != "failed"))
+            (!images_only && entry.state != "awaiting_confirmation" && entry.state != "stopped" && entry.state != "failed"))
             return std::nullopt;
         wxLogNull suppress_invalid_images;
         const auto image_path = [&](const char* key) -> boost::filesystem::path {
@@ -270,6 +308,66 @@ std::optional<DesignHistoryEntry> read_design_history_entry(
     } catch (const nlohmann::json::exception&) {
         return std::nullopt;
     }
+}
+
+std::optional<DesignHistoryEntry> read_design_history_entry(
+    const boost::filesystem::path& root, const std::string& job_id, bool validate_images)
+{
+    return read_history_entry(root, job_id, validate_images, false);
+}
+
+std::optional<DesignHistoryEntry> read_image_history_entry(
+    const boost::filesystem::path& root, const std::string& job_id, bool validate_images)
+{
+    return read_history_entry(root, job_id, validate_images, true);
+}
+
+std::vector<DesignHistoryEntry> read_image_history(const boost::filesystem::path& root)
+{
+    std::vector<DesignHistoryEntry> entries;
+    if (!boost::filesystem::exists(root)) return entries;
+    for (boost::filesystem::directory_iterator it(root), end; it != end; ++it) {
+        const auto entry = read_image_history_entry(root, it->path().filename().string(), false);
+        if (entry) entries.push_back(*entry);
+    }
+    std::sort(entries.begin(), entries.end(), [](const auto& a, const auto& b) {
+        return a.generated_at != b.generated_at ? a.generated_at > b.generated_at : a.job_id > b.job_id;
+    });
+    return entries;
+}
+
+bool hide_image_history_entry(const boost::filesystem::path& root, const std::string& job_id)
+{
+    // Separate tombstones never modify sidecar job.json or shared image/model files.
+    if (!read_image_history_entry(root, job_id, false)) return false;
+    boost::filesystem::path pending;
+    try {
+        const auto directory = root / "image-history-hidden";
+        boost::filesystem::create_directories(directory);
+        if (!path_is_inside(root, directory)) return false;
+        pending = directory / (job_id + "-" + new_request_id() + ".part");
+        const auto target = directory / (job_id + ".json");
+        if (boost::filesystem::exists(target)) return true;
+        if (!write_json(pending, {{"version", 1}, {"job_id", job_id}})) {
+            boost::system::error_code ignored;
+            boost::filesystem::remove(pending, ignored);
+            return false;
+        }
+        boost::filesystem::rename(pending, target);
+        return true;
+    } catch (const boost::filesystem::filesystem_error&) {
+        boost::system::error_code ignored;
+        if (!pending.empty()) boost::filesystem::remove(pending, ignored);
+        return false;
+    }
+}
+
+bool image_history_matches(const DesignHistoryEntry& entry, const wxString& query)
+{
+    const wxString needle = wxString(query).Trim(true).Trim(false).Lower();
+    const wxString haystack = wxString::FromUTF8(entry.prompt + " " + entry.custom_style + " " + entry.style) +
+        " " + style_label(entry.style);
+    return needle.empty() || haystack.Lower().Find(needle) != wxNOT_FOUND;
 }
 
 bool has_persisted_generation_assets(const boost::filesystem::path& root, const std::string& job_id)

@@ -22,6 +22,46 @@
 using Slic3r::GUI::AIModelGenerationClient;
 using namespace Slic3r::GUI::ModelGenerationPresentation;
 
+TEST_CASE("Design wait shows elapsed time without enough history", "[ModelGenerationPresentation][DesignGenerationTiming]")
+{
+    DesignGenerationWait wait;
+    wait.synchronize("job-a", -1, 0, 100);
+    CHECK(wait.message(112) == wxString::FromUTF8("已等待 12 秒"));
+}
+
+TEST_CASE("Design estimate switches to overtime instead of a false completion", "[ModelGenerationPresentation][DesignGenerationTiming]")
+{
+    DesignGenerationWait wait;
+    wait.synchronize("job-a", 15, 60, 100);
+    CHECK(wait.message(100) == wxString::FromUTF8("预计还需约 45 秒"));
+    CHECK(wait.message(145) == wxString::FromUTF8("生成时间超出预计，已等待 60 秒"));
+    CHECK(wait.message(153) == wxString::FromUTF8("生成时间超出预计，已等待 68 秒"));
+}
+
+TEST_CASE("Polling and returning to a page preserve the design clock", "[ModelGenerationPresentation][DesignGenerationTiming]")
+{
+    DesignGenerationWait wait;
+    wait.synchronize("", -1, 0, 100);
+    wait.synchronize("job-a", 1, 60, 105);
+    CHECK(wait.elapsed_seconds(105) == 5);
+    wait.synchronize("job-a", 4, 60, 110);
+    CHECK(wait.elapsed_seconds(110) == 10);
+    CHECK(wait.elapsed_seconds(140) == 40);
+}
+
+TEST_CASE("Ending or replacing a design resets its wait state", "[ModelGenerationPresentation][DesignGenerationTiming]")
+{
+    DesignGenerationWait wait;
+    wait.synchronize("job-a", 40, 60, 100);
+    wait.synchronize("job-b", 2, 0, 110);
+    CHECK(wait.elapsed_seconds(110) == 2);
+    wait.clear();
+    CHECK_FALSE(wait.active());
+    CHECK(wait.message(120).empty());
+    wait.synchronize("", -1, 0, 130);
+    CHECK(wait.elapsed_seconds(131) == 1);
+}
+
 TEST_CASE("sidecar restart authentication is recoverable without retrying provider failures",
           "[ModelGenerationPresentation][SidecarRecovery]")
 {
@@ -561,6 +601,7 @@ TEST_CASE("style families retain legacy styles in a compact secondary choice",
     CHECK(style_selection("sculpture") == 0);
     CHECK(style_selection("realistic") == 1);
     for (const std::string style : {"portrait_sketch", "cartoon", "low_poly", "relief", "ink_relief", "diorama", "custom"}) {
+        CHECK(is_supported_style(style));
         CHECK(style_selection(style) == 2);
         CHECK(selected_style(2, stylized_style_selection(style)) == style);
     }
@@ -569,4 +610,89 @@ TEST_CASE("style families retain legacy styles in a compact secondary choice",
     CHECK(selected_style(2, -1) == "cartoon");
     CHECK(style_uses_printable_colors("portrait_sketch"));
     CHECK(style_uses_printable_colors("ink_relief"));
+}
+
+TEST_CASE("Style input accepts existing families and rejects unknown provider values",
+          "[ModelGenerationPresentation][UiRedesign]")
+{
+    CHECK(is_supported_style("sculpture"));
+    CHECK(is_supported_style("realistic"));
+    for (const std::string invalid : {"", "multicolor", "CUSTOM", "new-style", " cartoon "}) {
+        INFO(invalid);
+        CHECK_FALSE(is_supported_style(invalid));
+    }
+}
+
+TEST_CASE("Image history includes model results without changing legacy model precedence",
+          "[ModelGenerationPresentation][ImageHistory]")
+{
+    ScopedTemporaryDir temporary("orca-image-history");
+    const std::string id = "11111111-1111-4111-8111-111111111111";
+    auto record = write_design_fixture(temporary.path() / id);
+    record["state"] = "ready";
+    record["style"] = "custom";
+    record["custom_style"] = "paper sculpture";
+    REQUIRE(write_json(temporary.path() / id / "job.json", record));
+    { boost::filesystem::ofstream model(temporary.path() / id / "model.glb"); model << "saved model"; }
+    REQUIRE_FALSE(read_design_history_entry(temporary.path(), id));
+    const auto image = read_image_history_entry(temporary.path(), id);
+    REQUIRE(image);
+    CHECK(image->style == "custom");
+    CHECK(image->custom_style == "paper sculpture");
+    CHECK(image_history_matches(*image, " BLUE SCARF "));
+    CHECK(image_history_matches(*image, "paper"));
+    CHECK(image_history_matches(*image, wxString::FromUTF8("自定义")));
+    CHECK_FALSE(image_history_matches(*image, "absent"));
+}
+
+TEST_CASE("Removing an image record retains all assets and legacy history across reloads",
+          "[ModelGenerationPresentation][ImageHistory]")
+{
+    ScopedTemporaryDir temporary("orca-image-history");
+    const std::string id = "11111111-1111-4111-8111-111111111111";
+    const auto record = write_design_fixture(temporary.path() / id);
+    REQUIRE(hide_image_history_entry(temporary.path(), id));
+    CHECK(read_image_history(temporary.path()).empty());
+    CHECK_FALSE(read_image_history_entry(temporary.path(), id));
+    CHECK(read_design_history_entry(temporary.path(), id).has_value());
+    CHECK(read_json(temporary.path() / id / "job.json") == record);
+    CHECK(boost::filesystem::exists(temporary.path() / id / "input.png"));
+    CHECK_FALSE(hide_image_history_entry(temporary.path(), "../" + id));
+}
+
+TEST_CASE("Image history lists every version newest first and omits model-only forks",
+          "[ModelGenerationPresentation][ImageHistory]")
+{
+    ScopedTemporaryDir temporary("orca-image-history");
+    std::vector<std::string> ids;
+    for (int i = 0; i < 16; ++i) {
+        const std::string id = "11111111-1111-4111-8111-1111111111" + std::to_string(10 + i);
+        ids.push_back(id);
+        write_design_fixture(temporary.path() / id);
+        const auto entry = read_image_history_entry(temporary.path(), id);
+        REQUIRE(entry);
+        boost::filesystem::last_write_time(entry->raw_preview_path, 1700000000 + i);
+    }
+    auto entries = read_image_history(temporary.path());
+    REQUIRE(entries.size() == 16);
+    CHECK(entries.front().job_id == ids.back());
+    CHECK(entries.back().job_id == ids.front());
+    auto record = read_json(temporary.path() / ids.back() / "job.json");
+    record["source_design_job_id"] = ids.front();
+    REQUIRE(write_json(temporary.path() / ids.back() / "job.json", record));
+    entries = read_image_history(temporary.path());
+    REQUIRE(entries.size() == 15);
+    CHECK(entries.front().job_id == ids[14]);
+}
+
+TEST_CASE("Image history rejects escaped or corrupt previews without discarding valid versions",
+          "[ModelGenerationPresentation][ImageHistory]")
+{
+    ScopedTemporaryDir temporary("orca-image-history");
+    const std::string id = "11111111-1111-4111-8111-111111111111";
+    auto record = write_design_fixture(temporary.path() / id);
+    for (const auto* key : {"preview_path", "raw_preview_path", "model_reference_path"}) record[key] = "../external.png";
+    REQUIRE(write_json(temporary.path() / id / "job.json", record));
+    CHECK_FALSE(read_image_history_entry(temporary.path(), id));
+    CHECK_FALSE(read_image_history_entry(temporary.path(), "../" + id));
 }

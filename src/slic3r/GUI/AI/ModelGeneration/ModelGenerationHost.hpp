@@ -12,6 +12,8 @@ struct ModelGenerationUIInput
     std::string image_path;
     std::string prompt;
     std::string style { "sculpture" };
+    // Keep the editable draft intact; submission trims it only for custom style.
+    std::string custom_style;
 
     bool operator==(const ModelGenerationUIInput& other) const;
 };
@@ -80,6 +82,8 @@ struct ModelGenerationUIState
     std::uint64_t model_generation_session { 0 };
     bool inputs_match_job { true };
     int progress { 0 };
+    double design_elapsed_seconds { -1.0 };
+    double design_estimated_seconds { 0.0 };
     std::string job_id;
     std::string job_state;
     std::string job_phase;

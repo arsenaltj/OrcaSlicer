@@ -118,9 +118,54 @@ void ModelGenerationPanel::on_generate(wxCommandEvent&)
     if (m_job_generation_options.provider == "tripo" && m_job_generation_options.output_format == "obj")
         message += _L("\n本次还将创建 1 个 OBJ 基础转换任务（已计入估算）。");
     message += _L("\n停止：只停止本地等待；已提交的远端任务可能继续运行并计费。");
-    RedesignMessageDialog confirm(this, message, _L("确认生成 3D 模型"), wxYES_NO | wxICON_QUESTION);
-    if (confirm.ShowModal() != wxID_YES)
+    // The 3D design has a taller body (189 DIP) for its dynamic cost/options
+    // summary. Longer provider or conversion notes can grow the dialog further.
+    if (show_generation_confirmation(this, message, _L("确认生成3D模型"), 189) != wxID_YES)
         return;
+    if (m_local_image_history) {
+        m_design_history_loading = true;
+        const uint64_t history_sequence = ++m_design_history_sequence;
+        m_busy = true;
+        const uint64_t sequence = ++m_sequence;
+        const auto source = m_job_id;
+        m_status->SetLabel(_L("正在从历史设计图准备新任务..."));
+        refresh_controls();
+        wxWeakRef<ModelGenerationPanel> weak(this);
+        m_client.reuse_design(source,
+            [weak, sequence, history_sequence, source](AIModelGenerationClient::JobStatus status) mutable {
+                if (!weak) return;
+                wxGetApp().CallAfter([weak, sequence, history_sequence, source, status = std::move(status)] {
+                    if (!weak || weak->m_shutdown || sequence != weak->m_sequence || history_sequence != weak->m_design_history_sequence || weak->m_job_id != source) return;
+                    weak->m_design_history_loading = false;
+                    if (status.id.empty() || status.id == source || status.state != "awaiting_confirmation") {
+                        weak->m_busy = false;
+                        weak->m_status->SetLabel(_L("历史设计恢复失败，原图和历史模型已保留。"));
+                        weak->refresh_controls();
+                        return;
+                    }
+                    weak->m_local_image_history = false;
+                    weak->m_job_id = status.id;
+                    weak->submit_confirmed_model();
+                });
+            },
+            [weak, sequence, history_sequence](std::string) {
+                if (!weak) return;
+                wxGetApp().CallAfter([weak, sequence, history_sequence] {
+                    if (!weak || weak->m_shutdown || sequence != weak->m_sequence || history_sequence != weak->m_design_history_sequence) return;
+                    weak->m_design_history_loading = false;
+                    weak->m_busy = false;
+                    weak->m_status->SetLabel(_L("无法准备新任务，请检查 AI 服务后重试。历史图片仍然保留。"));
+                    weak->refresh_controls();
+                });
+            });
+        return;
+    }
+    submit_confirmed_model();
+}
+
+void ModelGenerationPanel::submit_confirmed_model()
+{
+    const bool image_mode = m_job_preview_expected;
     if (image_mode)
         m_client.record_journey_event("preview_accepted", m_job_id);
     m_client.record_journey_event("model_submitted", m_job_id);
@@ -379,6 +424,9 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
     m_job_id = status.id;
     m_job_state = status.state;
     m_job_phase = status.phase;
+    m_design_timing_job_id = status.id;
+    m_design_elapsed_seconds = status.design_elapsed_seconds;
+    m_design_estimated_seconds = status.design_estimated_seconds;
     if (!status.provider_error_code.empty()) {
         m_provider_error_code = status.provider_error_code;
         m_provider_error_category = status.provider_error_category;

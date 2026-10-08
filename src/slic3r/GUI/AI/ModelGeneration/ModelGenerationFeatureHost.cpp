@@ -19,7 +19,8 @@ namespace Slic3r::GUI {
 
 bool ModelGenerationUIInput::operator==(const ModelGenerationUIInput& other) const
 {
-    return image_path == other.image_path && prompt == other.prompt && style == other.style;
+    return image_path == other.image_path && prompt == other.prompt && style == other.style &&
+           custom_style == other.custom_style;
 }
 
 bool ModelGenerationUIOptions::operator==(const ModelGenerationUIOptions& other) const
@@ -50,6 +51,8 @@ bool ModelGenerationUIState::same_content(const ModelGenerationUIState& other) c
            model_generation_context == other.model_generation_context &&
            model_generation_session == other.model_generation_session && inputs_match_job == other.inputs_match_job &&
            progress == other.progress && job_id == other.job_id && job_state == other.job_state &&
+           design_elapsed_seconds == other.design_elapsed_seconds &&
+           design_estimated_seconds == other.design_estimated_seconds &&
            job_phase == other.job_phase && provider_error_code == other.provider_error_code &&
            provider_error_category == other.provider_error_category && provider_name == other.provider_name &&
            provider_task_id == other.provider_task_id &&
@@ -292,6 +295,11 @@ bool ModelGenerationFeatureHost::request_import()
 bool ModelGenerationFeatureHost::request_refresh_history()
 {
     return m_impl->model_generation != nullptr && m_impl->model_generation->request_refresh_history();
+}
+
+bool ModelGenerationFeatureHost::request_open_image_history(const std::string& job_id)
+{
+    return m_impl->model_generation != nullptr && m_impl->model_generation->request_open_image_history(job_id);
 }
 
 bool ModelGenerationFeatureHost::request_open_history(const std::string& job_id)

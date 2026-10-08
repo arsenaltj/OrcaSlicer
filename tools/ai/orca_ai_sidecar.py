@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Callable, Mapping
 
 from ai_diagnostics import diagnostic_context, event as diagnostic_event, exception_details, safe_endpoint
+from design_generation_timing import DesignTimingHistory, timing_key, seconds as timing_seconds
 from color_intent import (
     COLOR_INTENT_FILENAME,
     MAX_MANIFEST_BYTES as MAX_COLOR_INTENT_BYTES,
@@ -470,6 +471,7 @@ class Job:
     provider: str = "tripo"
     user_prompt: str = ""
     prepared_prompt: str = ""
+    source_design_job_id: str = ""
     input_path: Path | None = None
     raw_preview_path: Path | None = None
     strict_preview_path: Path | None = None
@@ -494,6 +496,7 @@ class Job:
     generate_image: bool = False
     attempts: list[dict[str, Any]] = field(default_factory=list)
     updated_at: float = field(default_factory=time.time)
+    design_started_monotonic: float | None = field(default=None, repr=False)
     stop_event: threading.Event = field(default_factory=threading.Event, repr=False)
     delete_requested: bool = field(default=False, repr=False)
     future: Future[Any] | None = field(default=None, repr=False)
@@ -1124,6 +1127,48 @@ def _copy_job_file(source: Path | None, job: Job, name: str) -> Path | None:
         ) from None
 
 
+def _reuse_design_job(source: Job) -> Job:
+    """Fork only saved design inputs. No provider calls, tasks, or model artifacts."""
+    if source.state not in {"awaiting_confirmation", "ready", "stopped", "failed", "cancelled"}:
+        raise RequestError("invalid_job_state", "The source design is still being generated.", 409)
+    reference = _model_generation_reference(source)
+    if reference is None:
+        raise RequestError("invalid_model_reference", "The saved design image is missing.", 409)
+    paths = {}
+    for name in ("input_path", "raw_preview_path", "preview_path", "model_reference_path", "geometry_reference_path"):
+        path = getattr(source, name)
+        if path is None:
+            continue
+        try:
+            resolved = path.resolve(strict=True)
+            resolved.relative_to(source.directory.resolve(strict=True))
+            if not resolved.is_file():
+                raise ValueError("not a file")
+            _validate_image_file(resolved, minimum_edge=64)
+        except (ValueError, OSError):
+            raise RequestError("invalid_model_reference", "A saved design file is missing or invalid.", 409) from None
+        paths[name] = resolved
+    if not any(name in paths for name in ("raw_preview_path", "preview_path", "model_reference_path")):
+        raise RequestError("invalid_model_reference", "The saved design image is missing.", 409)
+    child = _new_job(source.source, palette=source.palette, palette_roles=source.palette_roles,
+                     palette_color_count=source.palette_color_count, style=source.style,
+                     custom_style=source.custom_style, print_settings=dict(source.print_settings),
+                     provider=source.provider, generation_options={
+                         "face_limit": source.face_limit, "geometry_quality": source.geometry_quality or "standard",
+                         "texture_quality": source.texture_quality, "output_format": source.output_format})
+    child.source_design_job_id = source.source_design_job_id or source.id
+    child.user_prompt = source.user_prompt
+    child.prepared_prompt = source.prepared_prompt
+    child.preview_content_type = source.preview_content_type
+    for name, path in paths.items():
+        setattr(child, name, _copy_job_file(path, child, name.removesuffix("_path")))
+    child.state = child.phase = "awaiting_confirmation"
+    child.message = "Saved design is ready for explicit model generation confirmation."
+    child.progress = 15
+    _persist_job(child, required=True)
+    return child
+
+
 def _persist_job(job: Job, *, touch: bool = True, required: bool = False) -> None:
     if touch:
         job.updated_at = time.time()
@@ -1149,6 +1194,7 @@ def _persist_job(job: Job, *, touch: bool = True, required: bool = False) -> Non
         "provider": job.provider,
         "user_prompt": "" if job.source == "image" and job.user_prompt == DEFAULT_IMAGE_INSTRUCTION else job.user_prompt,
         "prepared_prompt": job.prepared_prompt,
+        "source_design_job_id": job.source_design_job_id,
         "input_path": _job_path_value(job, job.input_path),
         "raw_preview_path": _job_path_value(job, job.raw_preview_path),
         "strict_preview_path": _job_path_value(job, job.strict_preview_path),
@@ -1245,6 +1291,7 @@ def _load_job(directory: Path) -> Job | None:
         provider=_generation_provider(payload),
         print_settings=print_settings,
     )
+    job.source_design_job_id = str(payload.get("source_design_job_id", ""))
     job.state = str(payload.get("state", "failed"))
     job.phase = str(payload.get("phase", job.state))
     job.message = str(payload.get("message", "Recovered model job."))
@@ -1665,6 +1712,7 @@ def _public_job(job: Job) -> dict[str, Any]:
             "size_bytes": model_view_sheet_size if model_view_sheet_ready else 0,
         },
         "updated_at": job.updated_at,
+        "design_timing": _public_design_timing(job),
         "input": {
             "ready": input_ready,
             "content_type": _stored_image_type(job.input_path) if input_ready else "",
@@ -3749,8 +3797,43 @@ def _use_unrestricted_creation(job: Job) -> None:
         job.image_metrics["design_reference"] = "ai-design-v1"
 
 
+def _begin_design_timing(job: Job) -> None:
+    if job.design_started_monotonic is not None:
+        return
+    key = timing_key(image_provider_status(), os.environ.get("OPENAI_IMAGE_MODEL", "gpt-image-2"),
+                     os.environ.get("OPENAI_IMAGE_QUALITY", "high").strip().lower(), job.source, job.style)
+    job.design_started_monotonic = time.monotonic()
+    job.image_metrics["design_timing"] = {
+        "started_at": time.time(), "group": key,
+        "estimated_seconds": DesignTimingHistory(job.directory.parent).estimate(key),
+    }
+    _persist_job(job)
+
+
+def _public_design_timing(job: Job) -> dict[str, float]:
+    timing = job.image_metrics.get("design_timing", {})
+    if not isinstance(timing, dict) or job.design_started_monotonic is None:
+        return {}  # Legacy/recovered jobs must not invent a start time.
+    duration = timing_seconds(timing.get("duration_seconds"))
+    elapsed = duration or max(0.0, time.monotonic() - job.design_started_monotonic)
+    return {"elapsed_seconds": round(elapsed, 2),
+            "estimated_seconds": timing_seconds(timing.get("estimated_seconds"))}
+
+
+def _complete_design_timing(job: Job) -> None:
+    timing = job.image_metrics.get("design_timing", {})
+    if (job.design_started_monotonic is None or not isinstance(timing, dict)
+            or "duration_seconds" in timing or job.stop_event.is_set()):
+        return
+    duration = max(0.0, time.monotonic() - job.design_started_monotonic)
+    timing["duration_seconds"] = duration
+    timing["finished_at"] = time.time()
+    DesignTimingHistory(job.directory.parent).record(str(timing.get("group", "")), duration)
+
+
 def _preprocess_text_job(job: Job, prompt: str) -> None:
     _use_unrestricted_creation(job)
+    _begin_design_timing(job)
     try:
         _stop_boundary(job)
         prepared = _generation_prompt(
@@ -3815,6 +3898,8 @@ def _preprocess_text_job(job: Job, prompt: str) -> None:
             job.phase = "awaiting_confirmation"
             job.message = _printable_preview_message(job, "Review the prepared image before generation.")
             job.progress = 15
+            _complete_design_timing(job)
+            _persist_job(job)
     except JobStopped:
         _mark_stopped(job)
     except ValueError as exc:
@@ -3840,6 +3925,7 @@ def _preprocess_text_job(job: Job, prompt: str) -> None:
 
 def _preprocess_image_job(job: Job, input_path: Path, instruction: str) -> None:
     _use_unrestricted_creation(job)
+    _begin_design_timing(job)
     raw_preview = job.directory / "style-preview-raw.png"
     geometry_reference = job.directory / "geometry-reference.png"
     preview = job.directory / "preview.png"
@@ -3934,6 +4020,8 @@ def _preprocess_image_job(job: Job, input_path: Path, instruction: str) -> None:
             job.phase = "awaiting_confirmation"
             job.message = _printable_preview_message(job, "Review the prepared image before generation.")
             job.progress = 15
+            _complete_design_timing(job)
+            _persist_job(job)
     except JobStopped:
         _mark_stopped(job)
     except ValueError as exc:
@@ -8046,6 +8134,10 @@ def _executor_for(worker: Callable[..., None]) -> ThreadPoolExecutor:
 
 
 def _submit(job: Job, worker: Callable[..., None], *args: Any) -> None:
+    if worker in {_preprocess_text_job, _preprocess_image_job, _recommend_palette_job}:
+        with _JOBS_LOCK:
+            job.design_started_monotonic = None
+            _begin_design_timing(job)
     try:
         future = _executor_for(worker).submit(_run_worker_with_diagnostics, job, worker, args)
     except RuntimeError:
@@ -8241,7 +8333,7 @@ class Handler(BaseHTTPRequestHandler):
             parts[1] in {
                 "input", "raw-preview", "strict-preview", "preview", "model-reference", "heatmap", "metadata",
                 "background-mask", "subject-mask", "generate", "retexture", "stop", "artifact", "color-intent",
-                "recheck", "visual-review", "model-view-sheet", "confirm-palette", "generation-options",
+                "recheck", "visual-review", "model-view-sheet", "confirm-palette", "generation-options", "reuse-design",
             }
             or re.fullmatch(r"mask-[a-z0-9_]+", parts[1])
         ):
@@ -8474,12 +8566,14 @@ class Handler(BaseHTTPRequestHandler):
                 return
             job_id, action = self._job_route(self.path)
             if not job_id or action not in {
-                "generate", "retexture", "stop", "recheck", "visual-review", "confirm-palette", "generation-options"
+                "generate", "retexture", "stop", "recheck", "visual-review", "confirm-palette", "generation-options", "reuse-design"
             }:
                 self._model_error(404, "not_found", "Model job route not found.")
                 return
             if action == "generate":
                 self._generate(job_id)
+            elif action == "reuse-design":
+                self._reuse_design(job_id)
             elif action == "generation-options":
                 self._set_generation_options(job_id)
             elif action == "retexture":
@@ -8698,6 +8792,19 @@ class Handler(BaseHTTPRequestHandler):
                     setattr(job, name, value)
                 raise RequestError("state_save_failed", "Generation options could not be saved.", 503, True) from None
             response = _public_job(job)
+        self.send_json(200, {"job": response})
+
+    def _reuse_design(self, job_id: str) -> None:
+        request = self._read_model_json()
+        if request:
+            raise RequestError("invalid_request", "Reusing a design takes no provider or file arguments.", 400)
+        source = self._get_job(job_id)
+        if source is None:
+            raise RequestError("job_not_found", "Saved design not found.", 404)
+        with _JOBS_LOCK:
+            child = _reuse_design_job(source)
+            _JOBS[child.id] = child
+            response = _public_job(child)
         self.send_json(200, {"job": response})
 
     def _generate(self, job_id: str) -> None:

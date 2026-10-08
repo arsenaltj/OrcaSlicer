@@ -209,11 +209,14 @@ bool ModelGenerationPanel::synchronize_ui_input(const ModelGenerationUIInput& in
     if (m_shutdown || !m_page_initialized || m_busy || m_preview_download_in_flight ||
         m_finishing_running || m_design_history_loading || m_saving_generation_options)
         return false;
-    if (input.style != "sculpture" && input.style != "realistic" && input.style != "cartoon")
+    if (!ModelGenerationPresentation::is_supported_style(input.style))
         return false;
 
     const wxString prompt = wxString::FromUTF8(input.prompt);
     if (!input.prompt.empty() && prompt.empty())
+        return false;
+    const wxString custom_style = wxString::FromUTF8(input.custom_style);
+    if ((!input.custom_style.empty() && custom_style.empty()) || custom_style.length() > 240)
         return false;
 
     boost::filesystem::path image_path;
@@ -233,6 +236,7 @@ bool ModelGenerationPanel::synchronize_ui_input(const ModelGenerationUIInput& in
         return false;
     }
     m_prompt->ChangeValue(prompt);
+    m_custom_style->ChangeValue(custom_style);
     select_style(input.style, true);
     refresh_controls();
     return true;
@@ -320,8 +324,8 @@ void ModelGenerationPanel::publish_ui_state()
     ModelGenerationUIState state;
     state.input.image_path = path_to_utf8(m_selected_image_path);
     state.input.prompt = text_to_utf8(m_prompt->GetValue());
-    const int style_family = style_selection(current_style());
-    state.input.style = style_family == 0 ? "sculpture" : style_family == 1 ? "realistic" : "cartoon";
+    state.input.style = current_style();
+    state.input.custom_style = text_to_utf8(m_custom_style->GetValue());
     const auto options = current_generation_options();
     state.options.provider = options.provider;
     state.options.face_limit = options.face_limit;
@@ -347,6 +351,10 @@ void ModelGenerationPanel::publish_ui_state()
     state.inputs_match_job = m_job_id.empty() || job_inputs_match();
     state.progress = m_generation_progress->GetValue();
     state.job_id = m_job_id;
+    if (!m_job_id.empty() && m_design_timing_job_id == m_job_id) {
+        state.design_elapsed_seconds = m_design_elapsed_seconds;
+        state.design_estimated_seconds = m_design_estimated_seconds;
+    }
     state.job_state = m_job_state;
     state.job_phase = m_job_phase;
     state.provider_error_code = m_provider_error_code;
@@ -881,7 +889,7 @@ wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
     sizer->Add(style_row, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
     sizer->AddSpacer(FromDIP(8));
     wxArrayString stylized;
-    for (const char* style : {"portrait_sketch", "cartoon", "low_poly", "relief", "ink_relief", "diorama", "custom"})
+    for (const char* style : ModelGenerationPresentation::STYLIZED_STYLE_IDS)
         stylized.Add(ModelGenerationPresentation::style_label(style));
     m_stylized_style = new wxChoice(scroll, wxID_ANY, wxDefaultPosition, wxDefaultSize, stylized);
     m_stylized_style->SetSelection(1);
@@ -2160,18 +2168,14 @@ void ModelGenerationPanel::on_preprocess(wxCommandEvent& event)
         }
         if ((current_style() == "realistic" || current_style() == "portrait_sketch") && use_printable_colors())
             message << _L("\n若识别到真人，优先保留脸型、五官和姿态。");
-        RedesignMessageDialog confirm(this, message,
-                                      regenerating_preview ? _L("重新生成图片预览") : _L("生成风格预览"),
-                                      wxYES_NO | wxICON_QUESTION);
-        if (confirm.ShowModal() != wxID_YES)
+        if (show_generation_confirmation(this, message, _L("确认生成2D设计图")) != wxID_YES)
             return;
     } else {
-        RedesignMessageDialog confirm(this,
+        const wxString message =
             use_printable_colors()
                 ? _L("要根据文字生成 AI 设计图吗？\n\n会生成适合 3D 建模的高质量设计图，并保留所选配色供后续模型使用。此操作消耗 API 额度。")
-                : _L("要根据文字生成 AI 设计图吗？\n\n会先生成并检查图片，再用于后续 3D 生成；此操作可能消耗 API 额度。"),
-            _L("生成图片预览"), wxYES_NO | wxICON_QUESTION);
-        if (confirm.ShowModal() != wxID_YES)
+                : _L("要根据文字生成 AI 设计图吗？\n\n会先生成并检查图片，再用于后续 3D 生成；此操作可能消耗 API 额度。");
+        if (show_generation_confirmation(this, message, _L("确认生成2D设计图")) != wxID_YES)
             return;
     }
 
@@ -3949,6 +3953,7 @@ void ModelGenerationPanel::refresh_palette()
 
 void ModelGenerationPanel::reset(bool remove_remote)
 {
+    m_local_image_history = false;
     m_ui_model_generation_context = false;
     m_ui_stopping = false;
     m_saving_generation_options = false;

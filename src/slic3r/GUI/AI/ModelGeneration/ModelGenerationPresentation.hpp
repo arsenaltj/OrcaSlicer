@@ -52,6 +52,21 @@ wxString palette_role_label(const std::string& role);
 double minimum_palette_distance(const std::vector<std::string>& palette);
 int remap_progress(int value, int input_start, int input_end, int output_start, int output_end);
 int display_progress(const AIModelGenerationClient::JobStatus& status);
+// The caller supplies a monotonic clock so polling and page changes cannot
+// restart a countdown. Zero estimate means insufficient history.
+class DesignGenerationWait
+{
+public:
+    void synchronize(const std::string& job_id, double elapsed, double estimate, double now);
+    void clear();
+    bool active() const { return m_active; }
+    int elapsed_seconds(double now) const;
+    wxString message(double now) const;
+private:
+    bool m_active { false };
+    std::string m_job_id;
+    double m_elapsed { 0.0 }, m_estimate { 0.0 }, m_synced_at { 0.0 };
+};
 bool is_transient_sidecar_poll_error(const std::string& error);
 std::string new_request_id();
 bool is_supported_image(const boost::filesystem::path& path);
@@ -67,12 +82,18 @@ bool write_json(const boost::filesystem::path& path, const nlohmann::json& value
 bool path_is_inside(const boost::filesystem::path& root, const boost::filesystem::path& candidate);
 struct DesignHistoryEntry
 {
-    std::string job_id, state, source, prompt;
+    std::string job_id, state, source, prompt, style, custom_style;
     boost::filesystem::path input_path, preview_path, raw_preview_path;
     std::time_t generated_at { 0 };
 };
 std::optional<DesignHistoryEntry> read_design_history_entry(
     const boost::filesystem::path& root, const std::string& job_id, bool validate_images = true);
+// Image history also includes designs whose tasks subsequently produced a model.
+std::optional<DesignHistoryEntry> read_image_history_entry(
+    const boost::filesystem::path& root, const std::string& job_id, bool validate_images = true);
+std::vector<DesignHistoryEntry> read_image_history(const boost::filesystem::path& root);
+bool hide_image_history_entry(const boost::filesystem::path& root, const std::string& job_id);
+bool image_history_matches(const DesignHistoryEntry& entry, const wxString& query);
 bool has_persisted_generation_assets(const boost::filesystem::path& root, const std::string& job_id);
 boost::filesystem::path archive_library_image(const boost::filesystem::path& source,
                                               const std::string& job_id,
@@ -83,6 +104,10 @@ boost::filesystem::path library_image_path(const nlohmann::json& metadata,
                                            const boost::filesystem::path& root);
 wxString model_load_summary(size_t triangle_count, double load_seconds);
 wxString style_label(const std::string& style);
+inline constexpr std::array<const char*, 7> STYLIZED_STYLE_IDS {
+    "portrait_sketch", "cartoon", "low_poly", "relief", "ink_relief", "diorama", "custom"
+};
+bool is_supported_style(const std::string& style);
 int style_selection(const std::string& style);
 int stylized_style_selection(const std::string& style);
 std::string selected_style(int family, int stylized);

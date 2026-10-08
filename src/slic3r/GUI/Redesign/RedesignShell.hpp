@@ -37,6 +37,7 @@ class ModelPreview3D;
 class Plater;
 class SmartSlicingFeatureHost;
 class PrinterWorkspace;
+class ImageHistorySidebar;
 
 class RedesignShell final : public wxPanel
 {
@@ -70,15 +71,15 @@ private:
     void connect_model_generation_host();
     void apply_model_generation_state(const ModelGenerationUIState& state);
     ModelGenerationUIInput current_generation_input() const;
+    void update_generation_style_controls();
+    void layout_image_settings();
     ModelGenerationUIOptions current_generation_options() const;
     bool synchronize_generation_input();
     bool synchronize_generation_options();
     bool generation_input_editable() const;
     void apply_generation_options(const ModelGenerationUIOptions& options);
     void on_generation_option_changed();
-    void set_history_expanded(bool expanded);
-    void rebuild_history_panel();
-    void request_open_history(const std::string& job_id);
+    bool request_open_history(const std::string& job_id);
     void request_generate_design();
     void request_generate_model();
     void request_primary_action();
@@ -163,18 +164,20 @@ private:
     PrinterWorkspace* m_print_page { nullptr };
     wxPanel* m_image_settings_panel { nullptr };
     wxScrolledWindow* m_image_settings_scroll { nullptr };
+    wxPanel* m_image_settings_content { nullptr };
     wxPanel* m_upload_surface { nullptr };
     wxStaticText* m_upload_icon { nullptr };
     wxWindow* m_generate_button { nullptr };
     wxWindow* m_secondary_action_button { nullptr };
-    wxWindow* m_library_toggle { nullptr };
-    wxPanel* m_library_panel { nullptr };
-    wxScrolledWindow* m_library_scroller { nullptr };
-    wxBoxSizer* m_library_sizer { nullptr };
-    wxStaticText* m_library_status { nullptr };
+    ImageHistorySidebar* m_image_history { nullptr };
     wxStaticText* m_sidecar_status { nullptr };
     wxStaticText* m_provider_label { nullptr };
     wxPanel* m_style_choice { nullptr };
+    wxPanel* m_stylized_styles_panel { nullptr };
+    std::array<wxWindow*, 7> m_stylized_style_buttons {};
+    wxPanel* m_custom_style_panel { nullptr };
+    wxTextCtrl* m_custom_style { nullptr };
+    int m_last_stylized_style { 1 };
     wxPanel* m_provider_choice { nullptr };
     std::string m_selected_style_id { "sculpture" };
     wxStaticText* m_upload_hint { nullptr };
@@ -237,14 +240,9 @@ private:
     bool m_option_sync_ok { false };
     bool m_submit_in_progress { false };
     bool m_applying_model_generation_state { false };
-    bool m_history_expanded { false };
-    bool m_rendered_history_loading { false };
-    bool m_rendered_history_busy { false };
     bool m_model_preview_loading { false };
     bool m_model_preview_failed { false };
     std::string m_model_preview_error;
-    std::string m_rendered_history_error;
-    std::vector<ModelGenerationUIHistoryEntry> m_rendered_history_entries;
 };
 
 }

@@ -85,6 +85,7 @@ public:
     bool request_import();
     bool request_refresh_history();
     bool request_open_history(const std::string& job_id);
+    bool request_open_image_history(const std::string& job_id);
     void set_service_availability(bool available, const std::string& message = {});
     void set_service_availability(bool available, bool generation_available, const std::string& message);
     void set_service_retry_handler(std::function<void()> handler);
@@ -188,6 +189,7 @@ private:
     void on_palette_role_changed(size_t role_index);
     void on_preprocess(wxCommandEvent& event);
     void on_generate(wxCommandEvent& event);
+    void submit_confirmed_model();
     void on_retexture_from_library(const std::string& geometry_job_id, const wxString& title);
     void on_stop(wxCommandEvent& event);
     void on_import(wxCommandEvent& event);
@@ -710,6 +712,9 @@ private:
     std::string m_job_id;
     std::string m_job_state;
     std::string m_job_phase;
+    std::string m_design_timing_job_id;
+    double m_design_elapsed_seconds { -1.0 };
+    double m_design_estimated_seconds { 0.0 };
     std::string m_job_provider_name;
     std::string m_job_provider_task_id;
     std::string m_job_provider_conversion_task_id;
@@ -742,6 +747,7 @@ private:
     bool m_page_initialized { false };
     bool m_library_refresh_pending { true };
     bool m_library_requested_by_shell { false };
+    bool m_local_image_history { false };
     bool m_ui_history_loading { false };
     bool m_ui_model_generation_context { false };
     std::uint64_t m_model_generation_session { 0 };
