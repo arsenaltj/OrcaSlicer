@@ -1316,7 +1316,7 @@ void RedesignShell::build_image_workspace()
     content_sizer->Add(m_preview_host, 1, wxEXPAND);
     m_preview_host->Hide();
     m_image_page->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
-        if (m_image_state == ImageState::Ready)
+        if (m_preview_host->IsShown())
             m_preview_resize_timer.StartOnce(150);
         event.Skip();
     });
@@ -1474,7 +1474,7 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
 
     m_applying_model_generation_state = true;
     if (m_prompt != nullptr && m_prompt->GetValue().ToStdString(wxConvUTF8) != state.input.prompt)
-        m_prompt->ChangeValue(wxString::FromUTF8(state.input.prompt.c_str()));
+        m_prompt->SetValue(wxString::FromUTF8(state.input.prompt.c_str()));
     if (m_style_choice != nullptr) {
         const int style_selection = state.input.style == "realistic" ? 1 : state.input.style == "cartoon" ? 2 : 0;
         static_cast<StylePicker*>(m_style_choice)->set_selection(style_selection);
@@ -1513,8 +1513,9 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
     }
 
     wxString primary_label = text("生成 2D 设计图");
-    bool primary_enabled = m_input_sync_ok && m_image_state == ImageState::Ready &&
-                           state.can_generate_design && editable;
+    // The host validates both prompt-only and image inputs; editability still
+    // blocks submission while an image is loading.
+    bool primary_enabled = m_input_sync_ok && state.can_generate_design && editable;
     m_secondary_action = SecondaryAction::None;
     wxString secondary_label;
     wxString placeholder = text("等待生成");
@@ -1574,8 +1575,7 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
             update_design_preview();
         else {
             primary_label = text("重新生成 2D 设计图");
-            primary_enabled = m_input_sync_ok && m_image_state == ImageState::Ready &&
-                              state.can_generate_design && editable;
+            primary_enabled = m_input_sync_ok && state.can_generate_design && editable;
             placeholder = text("生成已停止");
             placeholder_mode = ImagePreview::PlaceholderMode::Stopped;
         }
@@ -1610,17 +1610,14 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
         break;
     case ModelGenerationUIStage::ModelReady:
         primary_label = text("重新生成 2D 设计图");
-        primary_enabled = m_input_sync_ok && m_image_state == ImageState::Ready &&
-                          state.can_generate_design && editable;
+        primary_enabled = m_input_sync_ok && state.can_generate_design && editable;
         update_design_preview();
         break;
     case ModelGenerationUIStage::Input:
         break;
     }
 
-    if (show_design_bitmap)
-        update_preview_bitmap();
-    else if (m_result_preview != nullptr)
+    if (!show_design_bitmap && m_result_preview != nullptr)
         m_result_preview->SetPlaceholder(placeholder, placeholder_mode);
     if (m_generate_button != nullptr) {
         m_generate_button->SetLabel(primary_label);
@@ -1644,6 +1641,7 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
     if (m_history_expanded)
         rebuild_history_panel();
     update_model_page(state);
+    update_image_state();
     if (entering_model_flow)
         navigate_to(Page::Model);
     if (m_image_settings_panel != nullptr)
@@ -2477,15 +2475,17 @@ void RedesignShell::clear_image()
 
 void RedesignShell::update_preview_bitmap()
 {
-    if (m_image_state != ImageState::Ready || !m_selected_image.IsOk() || !m_preview ||
+    if (!m_preview_host || !m_preview_host->IsShown() || !m_preview ||
         !m_result_preview || !m_source_preview_card || !m_result_preview_card)
         return;
+    const bool source_ready = m_image_state == ImageState::Ready && m_selected_image.IsOk();
     const wxSize available = m_preview_host->GetClientSize();
     if (available.x < FromDIP(240) || available.y < FromDIP(240))
         return;
 
     const int gap = FromDIP(16);
-    const int maximum_width = std::max(FromDIP(96), (available.x - FromDIP(48) - gap) / 2);
+    const int maximum_width = std::max(FromDIP(96), source_ready
+        ? (available.x - FromDIP(48) - gap) / 2 : available.x - FromDIP(48));
     const int maximum_height = std::max(FromDIP(128), available.y - FromDIP(92));
     const double aspect = 503.0 / 671.0;
     int width = std::min(FromDIP(503), maximum_width);
@@ -2498,7 +2498,6 @@ void RedesignShell::update_preview_bitmap()
     const bool bounds_changed = bounds != m_last_preview_bounds;
     m_last_preview_bounds = bounds;
     const wxSize image_bounds(std::max(1, bounds.x - FromDIP(4)), std::max(1, bounds.y - FromDIP(4)));
-    const wxBitmap bitmap = rounded_thumbnail(m_selected_image, image_bounds, FromDIP(10), true);
     if (bounds_changed) {
         m_preview->SetMinSize(bounds);
         m_preview->SetMaxSize(bounds);
@@ -2510,7 +2509,8 @@ void RedesignShell::update_preview_bitmap()
         m_result_preview_card->SetMinSize(card_size);
         m_result_preview_card->SetMaxSize(card_size);
     }
-    m_preview->SetBitmap(bitmap);
+    if (source_ready)
+        m_preview->SetBitmap(rounded_thumbnail(m_selected_image, image_bounds, FromDIP(10), true));
     if (m_design_image_state == ImageState::Ready && m_design_image.IsOk()) {
         m_result_preview->SetBitmap(
             rounded_thumbnail(m_design_image, image_bounds, FromDIP(10), true));
@@ -2545,12 +2545,16 @@ void RedesignShell::update_image_state()
         m_upload_thumbnail->SetBitmap(thumbnail);
         m_upload_thumbnail->SetToolTip(wxString(m_selected_image_path.filename().wstring()));
     }
-    m_guide_panel->Show(!ready);
-    m_preview_host->Show(ready);
+    const bool show_preview = ready || m_model_generation_state.stage != ModelGenerationUIStage::Input;
+    m_source_preview_card->Show(ready);
+    // The gap belongs to the source/design comparison; text-only designs use one card.
+    m_source_preview_card->GetContainingSizer()->Show(size_t(1), ready);
+    m_guide_panel->Show(!show_preview);
+    m_preview_host->Show(show_preview);
     m_upload_surface->Layout();
     m_upload_surface->GetParent()->Layout();
     m_image_page->Layout();
-    if (ready) {
+    if (show_preview) {
         m_preview_host->Layout();
         update_preview_bitmap();
     }

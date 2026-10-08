@@ -157,6 +157,9 @@ bool Plater::priv::undo_redo_to(std::vector<UndoRedo::Snapshot>::const_iterator 
             partplate_list.set_filament_count(int(bundle.filament_presets.size()));
             q->on_config_change(bundle.full_config());
             sidebar->on_filament_count_change(bundle.filament_presets.size());
+            // A color-only history jump keeps the slot count, so refresh existing icons too.
+            for (auto* combo : sidebar->combos_filament())
+                if (combo) combo->update();
             sidebar->obj_list()->update_objects_list_filament_column(bundle.filament_presets.size());
             partplate_list.invalid_all_slice_result();
             bundle.export_selections(*wxGetApp().app_config);

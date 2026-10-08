@@ -33,6 +33,9 @@ TEST_CASE("project color changes use physical slot identity and preserve unrelat
     palette.physical_channels = {first, fourth};
     DynamicPrintConfig config;
     config.set_key_value("filament_colour", new ConfigOptionStrings({"#FFFFFF", "#111111", "#222222", "#FFFFFF"}));
+    const std::vector<std::string> display_colors = {"#FFFFFF", "#111111 #222222", "#222222", "#FFFFFF"};
+    config.set_key_value("filament_multi_colour", new ConfigOptionStrings(display_colors));
+    config.set_key_value("filament_colour_type", new ConfigOptionStrings({"1", "0", "1", "0"}));
     config.set_key_value("layer_height", new ConfigOptionFloat(0.2));
     bool changed = true;
     std::string error;
@@ -41,9 +44,20 @@ TEST_CASE("project color changes use physical slot identity and preserve unrelat
     const auto& colors = config.option<ConfigOptionStrings>("filament_colour")->values;
     CHECK(colors.at(0) == "#FFFFFF");
     CHECK(colors.at(3) == "#AB12CD");
+    const auto& display = config.option<ConfigOptionStrings>("filament_multi_colour")->values;
+    const auto& types = config.option<ConfigOptionStrings>("filament_colour_type")->values;
+    CHECK(display.at(3) == colors.at(3));
+    CHECK(types.at(3) == "1");
+    CHECK(display.at(1) == display_colors.at(1));
+    CHECK(types.at(1) == "0");
     CHECK(config.option<ConfigOptionFloat>("layer_height")->value == 0.2);
     REQUIRE(prepare_workbench_project_color(config, palette.physical_channels, 3, "#ab12cd", changed, error));
     CHECK_FALSE(changed);
+    // Older workbench edits could save the RGB value with stale native icon data.
+    config.option<ConfigOptionStrings>("filament_multi_colour")->values.at(3) = "#FFFFFF";
+    REQUIRE(prepare_workbench_project_color(config, palette.physical_channels, 3, "#ab12cd", changed, error));
+    CHECK(changed);
+    CHECK(display.at(3) == colors.at(3));
     const auto before = config;
     CHECK_FALSE(prepare_workbench_project_color(config, palette.physical_channels, 1, "#000000", changed, error));
     CHECK_FALSE(error.empty());

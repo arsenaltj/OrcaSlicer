@@ -15,6 +15,7 @@
 #include "slic3r/GUI/ObjColorDialog.hpp"
 #include "slic3r/GUI/ModelColorImportResult.hpp"
 #include "slic3r/GUI/Plater.hpp"
+#include "slic3r/GUI/PresetComboBoxes.hpp"
 #include "slic3r/GUI/PartPlate.hpp"
 #include "libslic3r/Format/OBJ.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
@@ -237,6 +238,12 @@ bool OrcaWorkspaceAdapter::set_project_filament_color(size_t slot, const std::st
     if (!m_plater->apply_project_config(std::move(config), bundle.filament_presets,
             "Change project filament color", error)) return false;
     m_plater->on_config_change(bundle.full_config());
+    // The native preparation panel may be hidden while its spool colors change.
+    for (auto* combo : m_plater->sidebar().combos_filament())
+        if (combo) combo->update();
+    m_plater->sidebar().update_mixed_filament_list();
+    m_plater->sidebar().update_dynamic_filament_list();
+    if (auto* objects = wxGetApp().obj_list()) objects->update_filament_colors();
     m_plater->get_partplate_list().invalid_all_slice_result();
     m_plater->update_project_dirty_from_presets();
     bundle.export_selections(*wxGetApp().app_config);
