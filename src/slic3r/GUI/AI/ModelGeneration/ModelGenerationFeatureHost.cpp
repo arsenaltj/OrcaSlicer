@@ -19,7 +19,8 @@ namespace Slic3r::GUI {
 
 bool ModelGenerationUIInput::operator==(const ModelGenerationUIInput& other) const
 {
-    return image_path == other.image_path && prompt == other.prompt && style == other.style;
+    return image_path == other.image_path && prompt == other.prompt && style == other.style &&
+           custom_style == other.custom_style;
 }
 
 bool ModelGenerationUIOptions::operator==(const ModelGenerationUIOptions& other) const

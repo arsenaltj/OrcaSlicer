@@ -205,11 +205,14 @@ bool ModelGenerationPanel::synchronize_ui_input(const ModelGenerationUIInput& in
     if (m_shutdown || !m_page_initialized || m_busy || m_preview_download_in_flight ||
         m_finishing_running || m_design_history_loading || m_saving_generation_options)
         return false;
-    if (input.style != "sculpture" && input.style != "realistic" && input.style != "cartoon")
+    if (!ModelGenerationPresentation::is_supported_style(input.style))
         return false;
 
     const wxString prompt = wxString::FromUTF8(input.prompt);
     if (!input.prompt.empty() && prompt.empty())
+        return false;
+    const wxString custom_style = wxString::FromUTF8(input.custom_style);
+    if ((!input.custom_style.empty() && custom_style.empty()) || custom_style.length() > 240)
         return false;
 
     boost::filesystem::path image_path;
@@ -229,6 +232,7 @@ bool ModelGenerationPanel::synchronize_ui_input(const ModelGenerationUIInput& in
         return false;
     }
     m_prompt->ChangeValue(prompt);
+    m_custom_style->ChangeValue(custom_style);
     select_style(input.style, true);
     refresh_controls();
     return true;
@@ -316,8 +320,8 @@ void ModelGenerationPanel::publish_ui_state()
     ModelGenerationUIState state;
     state.input.image_path = path_to_utf8(m_selected_image_path);
     state.input.prompt = text_to_utf8(m_prompt->GetValue());
-    const int style_family = style_selection(current_style());
-    state.input.style = style_family == 0 ? "sculpture" : style_family == 1 ? "realistic" : "cartoon";
+    state.input.style = current_style();
+    state.input.custom_style = text_to_utf8(m_custom_style->GetValue());
     const auto options = current_generation_options();
     state.options.provider = options.provider;
     state.options.face_limit = options.face_limit;
@@ -841,7 +845,7 @@ wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
     sizer->Add(style_row, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
     sizer->AddSpacer(FromDIP(8));
     wxArrayString stylized;
-    for (const char* style : {"portrait_sketch", "cartoon", "low_poly", "relief", "ink_relief", "diorama", "custom"})
+    for (const char* style : ModelGenerationPresentation::STYLIZED_STYLE_IDS)
         stylized.Add(ModelGenerationPresentation::style_label(style));
     m_stylized_style = new wxChoice(scroll, wxID_ANY, wxDefaultPosition, wxDefaultSize, stylized);
     m_stylized_style->SetSelection(1);

@@ -111,6 +111,90 @@ void style_medium_text(wxWindow* window, const wxColour& colour, int point_size)
     RedesignTheme::style_medium_text(window, colour, point_size);
 }
 
+class ImageServiceStatusRow final : public wxPanel
+{
+public:
+    explicit ImageServiceStatusRow(wxWindow* parent) : wxPanel(parent, wxID_ANY)
+    {
+        SetBackgroundColour(parent->GetBackgroundColour());
+        auto* sizer = new wxBoxSizer(wxHORIZONTAL);
+        SetSizer(sizer);
+        m_indicator = new wxPanel(this, wxID_ANY);
+        m_indicator->SetBackgroundColour(GetBackgroundColour());
+        m_indicator->SetBackgroundStyle(wxBG_STYLE_PAINT);
+        m_indicator->SetMinSize(FromDIP(wxSize(14, 14)));
+        m_indicator->Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
+            wxAutoBufferedPaintDC dc(m_indicator);
+            dc.SetBackground(wxBrush(m_indicator->GetBackgroundColour()));
+            dc.Clear();
+            std::unique_ptr<wxGraphicsContext> gc(wxGraphicsContext::Create(dc));
+            if (!gc)
+                return;
+            const wxSize size = m_indicator->GetClientSize();
+            const wxColour colour = m_indicator->GetForegroundColour();
+            const double diameter = m_indicator->FromDIP(8);
+            const double halo = m_indicator->FromDIP(14);
+            gc->SetPen(*wxTRANSPARENT_PEN);
+            gc->SetBrush(wxBrush(wxColour(colour.Red(), colour.Green(), colour.Blue(), 35)));
+            gc->DrawEllipse((size.x - halo) / 2.0, (size.y - halo) / 2.0, halo, halo);
+            gc->SetBrush(wxBrush(colour));
+            gc->DrawEllipse((size.x - diameter) / 2.0, (size.y - diameter) / 2.0, diameter, diameter);
+        });
+        sizer->Add(m_indicator, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(7));
+        m_label = new wxStaticText(this, wxID_ANY, wxEmptyString);
+        style_text(m_label, secondary_text_colour(), 11);
+        sizer->Add(m_label, 0, wxALIGN_CENTER_VERTICAL);
+        set_status(AIServiceStatus::Checking);
+    }
+
+    wxStaticText* label() const { return m_label; }
+
+    void set_status(AIServiceStatus status)
+    {
+        wxColour colour(156, 156, 163);
+        wxString description = text("未连接");
+        wxString tooltip;
+        switch (status) {
+        case AIServiceStatus::Checking:
+            description = text("检测中");
+            colour = accent_colour();
+            break;
+        case AIServiceStatus::Reconnecting:
+            description = text("重新连接中");
+            colour = accent_colour();
+            break;
+        case AIServiceStatus::Unavailable:
+            break;
+        case AIServiceStatus::GenerationUnavailable:
+            tooltip = text("AI 图片生成服务已连接，但生成功能暂不可用，请检查服务配置。");
+            [[fallthrough]];
+        case AIServiceStatus::Connected:
+            description = text("已连接");
+            colour = wxColour(122, 205, 153);
+            break;
+        }
+        m_label->SetLabel(text("AI 图片生成服务: ") + description);
+        m_label->SetForegroundColour(colour);
+        m_indicator->SetForegroundColour(colour);
+        for (wxWindow* control : {static_cast<wxWindow*>(this),
+                                  static_cast<wxWindow*>(m_label),
+                                  static_cast<wxWindow*>(m_indicator)}) {
+            if (tooltip.empty())
+                control->UnsetToolTip();
+            else
+                control->SetToolTip(tooltip);
+        }
+        m_indicator->Refresh();
+        m_label->Refresh();
+        Layout();
+        GetParent()->Layout();
+    }
+
+private:
+    wxPanel* m_indicator { nullptr };
+    wxStaticText* m_label { nullptr };
+};
+
 wxBitmap scaled_bitmap(const wxImage& image, const wxSize& bounds, bool allow_upscale = false)
 {
     if (!image.IsOk() || bounds.x <= 0 || bounds.y <= 0)
@@ -1022,29 +1106,7 @@ void RedesignShell::set_service_status(AIServiceStatus status)
 {
     if (!m_sidecar_status)
         return;
-    switch (status) {
-    case AIServiceStatus::Checking:
-        m_sidecar_status->SetLabel(text("AI 服务：检测中"));
-        m_sidecar_status->SetForegroundColour(secondary_text_colour());
-        break;
-    case AIServiceStatus::Reconnecting:
-        m_sidecar_status->SetLabel(text("AI 服务：重新连接中"));
-        m_sidecar_status->SetForegroundColour(secondary_text_colour());
-        break;
-    case AIServiceStatus::Unavailable:
-        m_sidecar_status->SetLabel(text("AI 服务：不可用"));
-        m_sidecar_status->SetForegroundColour(wxColour(221, 165, 109));
-        break;
-    case AIServiceStatus::GenerationUnavailable:
-        m_sidecar_status->SetLabel(text("AI 服务：已连接，生成功能不可用"));
-        m_sidecar_status->SetForegroundColour(wxColour(221, 165, 109));
-        break;
-    case AIServiceStatus::Connected:
-        m_sidecar_status->SetLabel(text("AI 服务：已连接"));
-        m_sidecar_status->SetForegroundColour(wxColour(122, 205, 153));
-        break;
-    }
-    m_sidecar_status->GetParent()->Layout();
+    static_cast<ImageServiceStatusRow*>(m_sidecar_status->GetParent())->set_status(status);
 }
 
 void RedesignShell::build_image_workspace()
@@ -1124,7 +1186,7 @@ void RedesignShell::build_image_workspace()
     settings_scroll->SetBackgroundColour(panel_colour());
     settings_scroll->SetScrollRate(0, FromDIP(12));
     settings_scroll->ShowScrollbars(wxSHOW_SB_NEVER, wxSHOW_SB_NEVER);
-    auto* settings_content_host = new wxPanel(settings_scroll, wxID_ANY);
+    auto* settings_content_host = m_image_settings_content = new wxPanel(settings_scroll, wxID_ANY);
     settings_content_host->SetBackgroundColour(panel_colour());
     auto* settings_content = new wxBoxSizer(wxVERTICAL);
     settings_content_host->SetSizer(settings_content);
@@ -1213,9 +1275,9 @@ void RedesignShell::build_image_workspace()
     settings_content->Add(style_label_control, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
     const wxArrayString style_choices { text("雕塑"), text("多色写实"), text("多色风格化") };
     auto* style_picker = new StylePicker(settings_content_host, style_choices, [this](int selection) {
-        static constexpr const char* style_ids[] = { "sculpture", "realistic", "cartoon" };
-        if (selection >= 0 && selection < static_cast<int>(std::size(style_ids))) {
-            m_selected_style_id = style_ids[selection];
+        if (selection >= 0 && selection <= 2) {
+            m_selected_style_id = ModelGenerationPresentation::selected_style(selection, m_last_stylized_style);
+            update_generation_style_controls();
             if (!m_applying_model_generation_state)
                 synchronize_generation_input();
         }
@@ -1224,27 +1286,75 @@ void RedesignShell::build_image_workspace()
     m_style_choice = style_picker;
     settings_content->Add(style_picker, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
 
-    auto resize_settings_content = [settings_scroll, settings_content_host, settings_content] {
-        const int width = std::max(settings_scroll->FromDIP(330), settings_scroll->GetClientSize().x);
-        const int height = std::max(settings_scroll->GetClientSize().y, settings_content->CalcMin().y);
-        settings_content_host->SetSize(0, 0, width, height);
-        settings_content_host->Layout();
-        settings_scroll->SetVirtualSize(width, height);
-    };
-    settings_scroll->Bind(wxEVT_SIZE, [resize_settings_content](wxSizeEvent& event) {
-        resize_settings_content();
+    m_stylized_styles_panel = new wxPanel(settings_content_host, wxID_ANY);
+    m_stylized_styles_panel->SetBackgroundColour(panel_colour());
+    auto* style_grid = new wxGridSizer(2, FromDIP(8), FromDIP(8));
+    m_stylized_styles_panel->SetSizer(style_grid);
+    for (size_t index = 0; index < ModelGenerationPresentation::STYLIZED_STYLE_IDS.size(); ++index) {
+        const char* id = ModelGenerationPresentation::STYLIZED_STYLE_IDS[index];
+        auto* button = new RoundedActionButton(m_stylized_styles_panel,
+            ModelGenerationPresentation::style_label(id), false, 40);
+        button->SetName("image-style-" + wxString::FromUTF8(id));
+        button->SetToolTip(button->GetLabel());
+        style_text(button, primary_text_colour(), 10);
+        button->Bind(wxEVT_BUTTON, [this, index](wxCommandEvent&) {
+            if (!generation_input_editable())
+                return;
+            m_last_stylized_style = static_cast<int>(index);
+            m_selected_style_id = ModelGenerationPresentation::selected_style(2, m_last_stylized_style);
+            update_generation_style_controls();
+            synchronize_generation_input();
+        });
+        m_stylized_style_buttons[index] = button;
+        style_grid->Add(button, 1, wxEXPAND);
+    }
+    settings_content->Add(m_stylized_styles_panel, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
+
+    m_custom_style_panel = new wxPanel(settings_content_host, wxID_ANY);
+    m_custom_style_panel->SetBackgroundColour(panel_colour());
+    auto* custom_sizer = new wxBoxSizer(wxVERTICAL);
+    m_custom_style_panel->SetSizer(custom_sizer);
+    auto* custom_label = new wxStaticText(m_custom_style_panel, wxID_ANY, text("自定义风格描述"));
+    style_text(custom_label, primary_text_colour(), 11);
+    custom_sizer->Add(custom_label, 0, wxBOTTOM, FromDIP(10));
+    auto* custom_surface = new RoundedPanel(m_custom_style_panel, wxDefaultSize,
+        control_colour(), panel_colour(), 8);
+    custom_surface->SetBackgroundColour(control_colour());
+    auto* custom_input_sizer = new wxBoxSizer(wxVERTICAL);
+    custom_surface->SetSizer(custom_input_sizer);
+    m_custom_style = new PromptTextCtrl(custom_surface, wxSize(-1, FromDIP(76)));
+    m_custom_style->SetName("image-custom-style-description");
+    m_custom_style->SetBackgroundColour(control_colour());
+    style_text(m_custom_style, wxColour(230, 230, 233), 10);
+    m_custom_style->SetMaxLength(240);
+    m_custom_style->SetHint(text("描述外观即可；系统会保留主体、构图和可见元素"));
+    custom_input_sizer->Add(m_custom_style, 1, wxEXPAND | wxALL, FromDIP(12));
+    custom_sizer->Add(custom_surface, 0, wxEXPAND);
+    auto* custom_hint = new wxStaticText(m_custom_style_panel, wxID_ANY, text("必填，最多 240 字"));
+    style_text(custom_hint, secondary_text_colour(), 9);
+    custom_sizer->Add(custom_hint, 0, wxTOP, FromDIP(6));
+    m_custom_style->Bind(wxEVT_TEXT, [this](wxCommandEvent& event) {
+        if (!m_applying_model_generation_state)
+            synchronize_generation_input();
         event.Skip();
     });
-    resize_settings_content();
+    settings_content->Add(m_custom_style_panel, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
+    settings_content->AddSpacer(FromDIP(16));
+    update_generation_style_controls();
+
+    settings_scroll->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
+        layout_image_settings();
+        event.Skip();
+    });
+    layout_image_settings();
 
     auto* action_panel = new wxPanel(settings_panel, wxID_ANY);
     action_panel->SetBackgroundColour(panel_colour());
     auto* action_sizer = new wxBoxSizer(wxVERTICAL);
     action_panel->SetSizer(action_sizer);
-    m_sidecar_status = new wxStaticText(action_panel, wxID_ANY, text("AI 服务：检测中"));
-    style_text(m_sidecar_status, secondary_text_colour(), 9);
-    m_sidecar_status->SetMinSize(wxSize(-1, FromDIP(20)));
-    action_sizer->Add(m_sidecar_status, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
+    auto* service_status_row = new ImageServiceStatusRow(action_panel);
+    m_sidecar_status = service_status_row->label();
+    action_sizer->Add(service_status_row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
     action_sizer->AddSpacer(FromDIP(8));
     m_generate_button = new RoundedActionButton(action_panel, text("生成 2D 设计图"), true, 48);
     m_generate_button->SetName("generate-2d-design");
@@ -1464,10 +1574,14 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
     if (m_prompt != nullptr && m_prompt->GetValue().ToStdString(wxConvUTF8) != state.input.prompt)
         m_prompt->ChangeValue(wxString::FromUTF8(state.input.prompt.c_str()));
     if (m_style_choice != nullptr) {
-        const int style_selection = state.input.style == "realistic" ? 1 : state.input.style == "cartoon" ? 2 : 0;
+        const int style_selection = ModelGenerationPresentation::style_selection(state.input.style);
         static_cast<StylePicker*>(m_style_choice)->set_selection(style_selection);
-        m_selected_style_id = style_selection == 1 ? "realistic" : style_selection == 2 ? "cartoon" : "sculpture";
+        m_selected_style_id = state.input.style;
+        if (style_selection == 2)
+            m_last_stylized_style = ModelGenerationPresentation::stylized_style_selection(state.input.style);
     }
+    if (m_custom_style != nullptr && m_custom_style->GetValue().ToStdString(wxConvUTF8) != state.input.custom_style)
+        m_custom_style->ChangeValue(wxString::FromUTF8(state.input.custom_style));
     apply_generation_options(state.options);
     m_applying_model_generation_state = false;
     m_input_sync_ok = m_model_generation_host != nullptr && current_generation_input() == state.input;
@@ -1487,6 +1601,7 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
         picker->Enable(editable);
         picker->set_interactive(editable);
     }
+    update_generation_style_controls();
     const bool provider_visible = true;
     if (m_provider_label != nullptr)
         m_provider_label->Show(provider_visible);
@@ -1622,11 +1737,8 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
         m_secondary_action_button->Refresh();
     }
 
-    if (m_sidecar_status != nullptr && state.service_availability_known) {
-        m_sidecar_status->SetLabel(state.service_available ? text("AI 服务：已连接") : text("AI 服务：不可用"));
-        m_sidecar_status->SetForegroundColour(state.service_available ? wxColour(122, 205, 153)
-                                                                      : wxColour(221, 165, 109));
-    }
+    // Connection presentation is owned by set_service_status(). Generation
+    // availability only gates actions; it must not overwrite a connected service.
     if (m_library_toggle != nullptr)
         m_library_toggle->Enable(m_model_generation_host != nullptr);
     if (m_history_expanded)
@@ -1636,8 +1748,43 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
         navigate_to(Page::Model);
     if (m_image_settings_panel != nullptr)
         m_image_settings_panel->Layout();
-    if (m_image_settings_scroll != nullptr)
-        m_image_settings_scroll->FitInside();
+    layout_image_settings();
+}
+
+void RedesignShell::update_generation_style_controls()
+{
+    const bool stylized = ModelGenerationPresentation::style_selection(m_selected_style_id) == 2;
+    const bool editable = generation_input_editable();
+    if (m_stylized_styles_panel != nullptr) {
+        m_stylized_styles_panel->Show(stylized);
+        for (size_t index = 0; index < m_stylized_style_buttons.size(); ++index) {
+            auto* button = static_cast<RoundedActionButton*>(m_stylized_style_buttons[index]);
+            const bool selected = m_selected_style_id == ModelGenerationPresentation::STYLIZED_STYLE_IDS[index];
+            button->set_secondary_face(selected ? wxColour(73, 61, 29) : control_colour());
+            button->set_text_colour(selected ? accent_colour() : primary_text_colour());
+            button->Enable(editable);
+        }
+    }
+    if (m_custom_style_panel != nullptr) {
+        m_custom_style_panel->Show(m_selected_style_id == "custom");
+        m_custom_style->Enable(editable);
+    }
+    layout_image_settings();
+}
+
+void RedesignShell::layout_image_settings()
+{
+    if (m_image_settings_scroll == nullptr || m_image_settings_content == nullptr)
+        return;
+    const wxSize client = m_image_settings_scroll->GetClientSize();
+    const int width = std::max(FromDIP(330), client.x);
+    const int height = std::max(client.y, m_image_settings_content->GetSizer()->CalcMin().y);
+    // Keep the content in scrolled coordinates when expanding a style section.
+    int x = 0, y = 0;
+    m_image_settings_scroll->CalcScrolledPosition(0, 0, &x, &y);
+    m_image_settings_content->SetSize(x, y, width, height);
+    m_image_settings_content->Layout();
+    m_image_settings_scroll->SetVirtualSize(width, height);
 }
 
 ModelGenerationUIInput RedesignShell::current_generation_input() const
@@ -1654,6 +1801,8 @@ ModelGenerationUIInput RedesignShell::current_generation_input() const
             input.prompt.assign(encoded.data(), encoded.length());
     }
     input.style = m_selected_style_id;
+    if (m_custom_style != nullptr)
+        input.custom_style = m_custom_style->GetValue().ToStdString(wxConvUTF8);
     return input;
 }
 

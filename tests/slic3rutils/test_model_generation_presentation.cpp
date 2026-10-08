@@ -561,6 +561,7 @@ TEST_CASE("style families retain legacy styles in a compact secondary choice",
     CHECK(style_selection("sculpture") == 0);
     CHECK(style_selection("realistic") == 1);
     for (const std::string style : {"portrait_sketch", "cartoon", "low_poly", "relief", "ink_relief", "diorama", "custom"}) {
+        CHECK(is_supported_style(style));
         CHECK(style_selection(style) == 2);
         CHECK(selected_style(2, stylized_style_selection(style)) == style);
     }
@@ -569,4 +570,15 @@ TEST_CASE("style families retain legacy styles in a compact secondary choice",
     CHECK(selected_style(2, -1) == "cartoon");
     CHECK(style_uses_printable_colors("portrait_sketch"));
     CHECK(style_uses_printable_colors("ink_relief"));
+}
+
+TEST_CASE("Style input accepts existing families and rejects unknown provider values",
+          "[ModelGenerationPresentation][UiRedesign]")
+{
+    CHECK(is_supported_style("sculpture"));
+    CHECK(is_supported_style("realistic"));
+    for (const std::string invalid : {"", "multicolor", "CUSTOM", "new-style", " cartoon "}) {
+        INFO(invalid);
+        CHECK_FALSE(is_supported_style(invalid));
+    }
 }

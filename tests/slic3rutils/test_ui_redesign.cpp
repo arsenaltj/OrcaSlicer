@@ -2,6 +2,7 @@
 #include "slic3r/GUI/Redesign/RedesignFeatureFlags.hpp"
 #include "slic3r/GUI/Redesign/OrcaBusinessAdapter.hpp"
 #include "slic3r/GUI/Redesign/RedesignState.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/ModelGenerationHost.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -230,4 +231,43 @@ TEST_CASE("Orca business adapter stays inert before it is attached", "[UiRedesig
     CHECK_FALSE(state.can_undo);
     CHECK_FALSE(state.can_redo);
     CHECK(state.slice_status == RedesignSliceStatus::Idle);
+}
+
+TEST_CASE("Model generation snapshots distinguish styles within the same family", "[UiRedesign]")
+{
+    ModelGenerationUIState current;
+    current.input.style = "cartoon";
+    current.input.prompt = "a small cat";
+    for (const std::string style : {"portrait_sketch", "low_poly", "relief", "ink_relief", "diorama", "custom"}) {
+        DYNAMIC_SECTION(style) {
+            auto updated = current;
+            updated.input.style = style;
+            CHECK_FALSE(current.input == updated.input);
+            CHECK_FALSE(current.same_content(updated));
+            current = updated;
+            CHECK(current.same_content(updated));
+        }
+    }
+}
+
+TEST_CASE("Custom style edits publish new snapshots while preserving the unfinished draft", "[UiRedesign]")
+{
+    ModelGenerationUIState current;
+    current.input.style = "custom";
+    current.input.custom_style = "soft clay";
+    for (const std::string draft : {"", "soft clay ", "soft clay\nwith broad shapes"}) {
+        DYNAMIC_SECTION(draft) {
+            auto updated = current;
+            updated.input.custom_style = draft;
+            CHECK_FALSE(current.input == updated.input);
+            CHECK_FALSE(current.same_content(updated));
+            // Leaving the custom family keeps its draft available when switching back.
+            auto another_style = updated;
+            another_style.input.style = "low_poly";
+            CHECK_FALSE(updated.same_content(another_style));
+            another_style.input.style = "custom";
+            CHECK(updated.same_content(another_style));
+            CHECK(another_style.input.custom_style == draft);
+        }
+    }
 }

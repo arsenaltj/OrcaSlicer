@@ -83,6 +83,10 @@ boost::filesystem::path library_image_path(const nlohmann::json& metadata,
                                            const boost::filesystem::path& root);
 wxString model_load_summary(size_t triangle_count, double load_seconds);
 wxString style_label(const std::string& style);
+inline constexpr std::array<const char*, 7> STYLIZED_STYLE_IDS {
+    "portrait_sketch", "cartoon", "low_poly", "relief", "ink_relief", "diorama", "custom"
+};
+bool is_supported_style(const std::string& style);
 int style_selection(const std::string& style);
 int stylized_style_selection(const std::string& style);
 std::string selected_style(int family, int stylized);

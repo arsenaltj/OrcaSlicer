@@ -68,6 +68,8 @@ private:
     void connect_model_generation_host();
     void apply_model_generation_state(const ModelGenerationUIState& state);
     ModelGenerationUIInput current_generation_input() const;
+    void update_generation_style_controls();
+    void layout_image_settings();
     ModelGenerationUIOptions current_generation_options() const;
     bool synchronize_generation_input();
     bool synchronize_generation_options();
@@ -144,6 +146,7 @@ private:
     PrinterWorkspace* m_print_page { nullptr };
     wxPanel* m_image_settings_panel { nullptr };
     wxScrolledWindow* m_image_settings_scroll { nullptr };
+    wxPanel* m_image_settings_content { nullptr };
     wxPanel* m_upload_surface { nullptr };
     wxStaticText* m_upload_icon { nullptr };
     wxWindow* m_generate_button { nullptr };
@@ -156,6 +159,11 @@ private:
     wxStaticText* m_sidecar_status { nullptr };
     wxStaticText* m_provider_label { nullptr };
     wxPanel* m_style_choice { nullptr };
+    wxPanel* m_stylized_styles_panel { nullptr };
+    std::array<wxWindow*, 7> m_stylized_style_buttons {};
+    wxPanel* m_custom_style_panel { nullptr };
+    wxTextCtrl* m_custom_style { nullptr };
+    int m_last_stylized_style { 1 };
     wxPanel* m_provider_choice { nullptr };
     std::string m_selected_style_id { "sculpture" };
     wxStaticText* m_upload_hint { nullptr };
