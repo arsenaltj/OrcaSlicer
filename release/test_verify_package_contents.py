@@ -1,11 +1,17 @@
 import io
+import bz2
+import gzip
+import hashlib
 import json
 from pathlib import Path
 import tempfile
+import tarfile
 import unittest
+from unittest.mock import patch
 import zipfile
 
 from verify_package_contents import inspect
+import verify_package_contents as inspection
 
 
 class PackageInspectionTests(unittest.TestCase):
@@ -75,6 +81,97 @@ class PackageInspectionTests(unittest.TestCase):
         for members in cases:
             with self.subTest(paths=list(members)):
                 self.assertEqual(self.check(members)["status"], "BLOCKED_FINDINGS")
+
+    def test_compressed_resources_are_scanned_without_executing_them(self):
+        credential = b'api_key="fixture-opaque-value"'
+        self.assertEqual(self.check({"config.env.gz": gzip.compress(credential)})["status"], "BLOCKED_FINDINGS")
+        self.assertEqual(self.check({"config.env.bz2": bz2.compress(credential)})["status"], "BLOCKED_FINDINGS")
+        data = io.BytesIO()
+        with tarfile.open(fileobj=data, mode="w:gz") as archive:
+            item = tarfile.TarInfo("config.env"); item.size = len(credential)
+            archive.addfile(item, io.BytesIO(credential))
+        self.assertEqual(self.check({"resources.tar.gz": data.getvalue()})["status"], "BLOCKED_FINDINGS")
+
+    def test_compressed_traversal_links_and_size_limits_fail_closed(self):
+        for name, kind in (("../outside", tarfile.REGTYPE), ("linked", tarfile.SYMTYPE)):
+            data = io.BytesIO()
+            with tarfile.open(fileobj=data, mode="w:gz") as archive:
+                item = tarfile.TarInfo(name); item.type = kind
+                archive.addfile(item)
+            self.assertEqual(self.check({"resources.tar.gz": data.getvalue()})["status"], "UNKNOWN")
+        with patch.object(inspection, "MAX_FILE", 64):
+            self.assertEqual(self.check({"bomb.dat.gz": gzip.compress(b"a" * 1000)})["status"], "UNKNOWN")
+
+    def test_large_binary_streaming_catches_tokens_across_chunk_boundaries(self):
+        token = "sk-" + "a" * 24
+        with patch.object(inspection, "MAX_FILE", 64), patch.object(inspection, "SCAN_CHUNK", 11):
+            report = self.check({"runtime.dll": b"." * 80 + token.encode("utf-16-le") + b"b" * 80})
+            self.assertEqual(report["status"], "BLOCKED_FINDINGS")
+            self.assertNotIn(token, json.dumps(report))
+            self.assertEqual(self.check({"runtime.dll": b"a" * 200})["status"], "NOT_DETECTED_WITHIN_SCOPE")
+
+    def hardlink_archive(self, links, payload=b'api_key="fixture-opaque-value"', extra=None):
+        data = io.BytesIO()
+        with tarfile.open(fileobj=data, mode="w:gz") as archive:
+            item = tarfile.TarInfo("config.env"); item.size = len(payload)
+            archive.addfile(item, io.BytesIO(payload))
+            for name, target in links:
+                item = tarfile.TarInfo(name); item.type = tarfile.LNKTYPE; item.linkname = target
+                archive.addfile(item)
+            if extra is not None:
+                archive.addfile(extra)
+        return data.getvalue()
+
+    def test_internal_hardlink_aliases_scan_target_under_each_alias(self):
+        report = self.check({"resources.tar.gz": self.hardlink_archive([
+            ("alias.env", "config.env"), ("chain.env", "./alias.env")])})
+        self.assertEqual(report["status"], "BLOCKED_FINDINGS")
+        self.assertFalse(report["gaps"])
+        self.assertEqual({row["member"].split("!")[-1] for row in report["findings"]},
+                         {"config.env", "alias.env", "chain.env"})
+        self.assertNotIn("fixture-opaque-value", json.dumps(report))
+
+    def test_invalid_hardlink_targets_fail_closed(self):
+        cases = [
+            [("alias.env", "../config.env")], [("alias.env", "/config.env")],
+            [("alias.env", "C:/config.env")], [("alias.env", "missing.env")],
+            [("alias.env", "alias.env")], [("alias.env", "other.env"), ("other.env", "alias.env")],
+            [("../alias.env", "config.env")], [("alias.env", "config.env"), ("./alias.env", "config.env")],
+            [(f"alias{i}.env", f"alias{i+1}.env") for i in range(65)] + [("alias65.env", "config.env")],
+        ]
+        for links in cases:
+            with self.subTest(links=links[:2]):
+                self.assertEqual(self.check({"resources.tar.gz": self.hardlink_archive(links)})["status"], "UNKNOWN")
+        symbolic = tarfile.TarInfo("symbolic.env"); symbolic.type = tarfile.SYMTYPE; symbolic.linkname = "config.env"
+        report = self.check({"resources.tar.gz": self.hardlink_archive([("alias.env", "symbolic.env")], extra=symbolic)})
+        self.assertEqual(report["status"], "UNKNOWN")
+        self.assertTrue(any(row["reason"] == "unsafe_archive_hardlink" for row in report["gaps"]))
+
+    def test_hardlink_aliases_count_toward_total_budget(self):
+        data = self.hardlink_archive([("alias.bin", "config.env")], payload=b"x" * 512)
+        with patch.object(inspection, "MAX_TOTAL", len(data) + 768):
+            self.assertEqual(self.check({"resources.tar.gz": data})["status"], "UNKNOWN")
+
+    def test_large_model_zip_is_inspected_and_total_budget_stays_enforced(self):
+        model = self.package({"padding.bin": b"a" * 200, "config.env": b'api_key="fixture-opaque-value"'})
+        with patch.object(inspection, "MAX_FILE", 128):
+            self.assertEqual(self.check({"model.pt": model})["status"], "BLOCKED_FINDINGS")
+        with patch.object(inspection, "MAX_TOTAL", 100):
+            self.assertEqual(self.check({"model.pt": model})["status"], "UNKNOWN")
+
+    def test_audited_dependency_requires_exact_path_file_and_literal(self):
+        name = "resources/beauty-runtime/python/Lib/site-packages/library.py"
+        data = b'api_key="my_token"'
+        record = {"file_sha256": hashlib.sha256(data).hexdigest(),
+            "fields": {"api_key": [hashlib.sha256(b"my_token").hexdigest()]}}
+        with patch.object(inspection, "AUDITED_LIBRARY_LITERALS", {name: record}):
+            clean = self.check({name: data})
+            self.assertEqual(clean["status"], "NOT_DETECTED_WITHIN_SCOPE")
+            self.assertEqual(clean["config_fields"][0]["category"], "AUDITED_PUBLIC_LIBRARY_LITERAL")
+            self.assertEqual(self.check({"config.py": data})["status"], "BLOCKED_FINDINGS")
+            self.assertEqual(self.check({name: data + b'\npassword="opaque-value"'})["status"], "BLOCKED_FINDINGS")
+            record["fields"]["api_key"] = []
+            self.assertEqual(self.check({name: data})["status"], "BLOCKED_FINDINGS")
 
 
 import bz2

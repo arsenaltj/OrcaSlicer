@@ -30,6 +30,62 @@ def observe(model, rgb, ids, family):
     return family, ids.copy(), masks.argmax(-1).astype(np.uint8), masks.max(-1)
 
 
+def parent_details(projection, observations, vertices, faces, blocked=()):
+    """Independent body-skin proof for parent coloring, not a new facial label.
+
+    The historical supplement deliberately limits skin to the neck. Keep that
+    semantic contract and expose whole-body skin separately, using the same
+    independent source views. Never infer ownership from the chosen material.
+    """
+    import numpy as np
+    if len(projection['subjects']) != 1 or not observations:
+        return []
+    count = len(faces)
+    if count > 2_000_000 or len(observations) > 8:
+        raise ValueError('Body evidence budget exceeded')
+    known = np.zeros(count, bool)
+    head = []
+    for region in projection['regions']:
+        known[[row[0] for row in region['samples']]] = True
+        if region['label'] in ('face', 'nose'):
+            head.extend(row[0] for row in region['samples'])
+    known[list(blocked)] = True
+    if not head:
+        return []
+    centers = np.asarray(vertices)[np.asarray(faces)].mean(1)
+    head_low = np.quantile(centers[head, 2], .02)
+    floor = vertices[:, 2].min() + np.ptp(vertices[:, 2]) * .10
+    visible = np.zeros(count, np.uint8)
+    votes = np.zeros(count, np.uint8)
+    quality = np.zeros(count, np.float64)
+    pixels = np.zeros(count, np.uint32)
+    families = set()
+    for family, ids, labels, confidence in observations:
+        if not family or family in families:
+            raise ValueError('Correlated body views must not count twice')
+        families.add(family)
+        if (ids.shape != labels.shape or ids.shape != confidence.shape or ids.size > 1024**2
+                or np.any(ids < -1) or np.any(ids >= count) or np.any(labels > 5)
+                or not np.isfinite(confidence).all() or np.any(confidence < 0) or np.any(confidence > 1)):
+            raise ValueError('Invalid body evidence')
+        seen = ids >= 0
+        total = np.bincount(ids[seen], minlength=count)
+        visible[total > 0] += 1
+        selected = seen & (labels == 2) & (confidence >= .9)
+        amount = np.bincount(ids[selected], minlength=count)
+        score = np.bincount(ids[selected], weights=confidence[selected], minlength=count) / np.maximum(total, 1)
+        accepted = (score >= .9) & (amount > 0)
+        votes += accepted
+        quality += np.where(accepted, score, 0)
+        pixels += np.where(accepted, amount, 0).astype(np.uint32)
+    # Do not repurpose a whole-body model as a face/ear or pedestal detector.
+    selected = np.flatnonzero(~known & (votes >= 2) & (votes == visible)
+                              & (centers[:, 2] < head_low) & (centers[:, 2] > floor))
+    return [[int(face), projection['subjects'][0], 'body-skin',
+             float(quality[face] / votes[face]), int(pixels[face]), int(votes[face])]
+            for face in selected]
+
+
 def supplement(projection, observations, vertices, faces, blocked=()):
     """Fill only unknown faces with >=2 independent, agreeing high-quality views.
 

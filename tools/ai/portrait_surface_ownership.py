@@ -6,34 +6,14 @@ import re
 import numpy as np
 
 from beauty_leaf_domain import LeafKey, digest, domain, validate_keys
-from local_brow_boundary import Projection
-from local_face_landmarks import OVAL, FaceView, surface_neighbors
+from local_face_landmarks import OVAL, surface_neighbors
 from local_leaf_boundaries import BoundaryView, reconstruct_projection
+from portrait_r5_boundaries import load_views
 
 POLICY = {'algorithm': 'r6-parent-ownership/v1', 'minimum_confidence': .9,
           'minimum_dominance': .85, 'minimum_view_families': 2,
           'face_envelope_fraction': .9, 'cloth_seam_rings': 1,
           'maximum_depth': 4, 'source_color_is_ownership': False}
-
-
-def load_views(root):
-    result = []
-    for path in sorted(root.glob('*.npz')):
-        with np.load(path, allow_pickle=False) as data:
-            meta = json.loads(str(data['metadata']))
-            parts = {name: (data['part_'+name], data['fraction_'+name]) for name in meta['parts']}
-            irises = {name: (data['iris_'+name], data['iris_fraction_'+name]) for name in meta['irises']}
-            boundary = Projection(*(data['boundary_'+name] for name in
-                ('rgb', 'ids', 'barycentric', 'uv', 'valid', 'origin', 'points'))) if meta['boundary'] else None
-            result.append(FaceView(meta['family'], data['points'], data['world'], data['valid'],
-                meta['scale'], meta['pixel_size'], data['visible'], data['counts'], data['head'],
-                parts, irises, meta['quality'], boundary))
-    # A zoomed crop does not add a new independent view.
-    chosen = {}
-    for view in result:
-        if view.family not in chosen or view.quality > chosen[view.family].quality:
-            chosen[view.family] = view
-    return list(chosen.values())
 
 
 def partition(face, cuts, locked=()):

@@ -421,51 +421,7 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
         }
         refresh_model_finishing();
     };
-    m_beauty_controls->on_reoptimize = [this](wxString& reason) {
-        if (!m_model_preview || !post_generation_ui_state().can_edit || !m_finishing_candidate.empty()) {
-            reason = _L("当前模型不可编辑，请先完成任务或接受、放弃候选版本。");
-            return false;
-        }
-        if (!m_model_preview->semantic_reoptimization_available()) {
-            reason = m_model_preview->semantic_reoptimization_reason();
-            return false;
-        }
-        if (m_beauty_transactions && !m_beauty_transactions->begin(
-                BeautyWorkbenchTransactionController::OperationKind::SemanticReoptimization)) {
-            reason = _L("当前仍有 Beauty 处理正在进行，请先完成或取消。");
-            m_finishing_status->SetLabel(reason);
-            refresh_model_finishing();
-            return false;
-        }
-        m_beauty_reoptimization_before = std::make_shared<BeautyCandidateSnapshot>(capture_beauty_candidate());
-        m_model_preview->set_semantic_completion_callback([this](bool success) {
-            if (!success) {
-                const auto error = m_model_preview->semantic_error();
-                if (auto before = std::move(m_beauty_reoptimization_before)) restore_beauty_candidate(*before);
-                if (m_beauty_transactions) m_beauty_transactions->finish(false, false, "semantic optimization failed");
-                if (m_finishing_status) m_finishing_status->SetLabel(
-                    _L("人像区域优化未完成，当前模型和选区保持不变：") + error);
-                refresh_model_finishing();
-                return;
-            }
-            export_semantic_candidate();
-        });
-        if (!m_model_preview->request_semantic_reoptimization()) {
-            if (!m_beauty_reoptimization_before) {
-                reason = m_finishing_status->GetLabel();
-                return false;
-            }
-            reason = _L("未重新识别人像区域：") + m_model_preview->semantic_reoptimization_reason();
-            m_model_preview->set_semantic_completion_callback({});
-            if (auto before = std::move(m_beauty_reoptimization_before)) restore_beauty_candidate(*before);
-            if (m_beauty_transactions) m_beauty_transactions->finish(false, false, "semantic request unavailable");
-            m_finishing_status->SetLabel(reason);
-            refresh_model_finishing();
-            return false;
-        }
-        refresh_model_finishing();
-        return true;
-    };
+    m_beauty_controls->on_reoptimize = [this](wxString& reason) { return request_portrait_optimization(reason); };
     m_beauty_controls->on_save = [this] {
         request_save_and_return();
     };

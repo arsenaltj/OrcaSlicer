@@ -210,19 +210,8 @@ if (-not $versionLine) {
 }
 $version = $versionLine.Matches[0].Groups[1].Value
 
-$generatorPlatformLine = Select-String -LiteralPath $cmakeCache -Pattern '^CMAKE_GENERATOR_PLATFORM:[^=]+=(.+)$' | Select-Object -First 1
-$processorLine = Select-String -LiteralPath $cmakeCache -Pattern '^CMAKE_SYSTEM_PROCESSOR:[^=]+=(.+)$' | Select-Object -First 1
-$configuredArchitecture = if ($generatorPlatformLine) {
-    $generatorPlatformLine.Matches[0].Groups[1].Value
-} elseif ($processorLine) {
-    $processorLine.Matches[0].Groups[1].Value
-} else {
-    ''
-}
-if ($configuredArchitecture -notmatch '^(?i:x64|amd64|x86_64|arm64|aarch64)$') {
-    throw "Unsupported or missing Windows package architecture: '$configuredArchitecture'."
-}
-$architecture = if ($configuredArchitecture -match '^(?i:arm64|aarch64)$') { 'arm64' } else { 'x64' }
+. (Join-Path $PSScriptRoot 'package_windows_architecture.ps1')
+$architecture = Resolve-PackageWindowsArchitecture -BuildDir $resolvedBuildDir
 $runtimeDependenciesPath = Join-Path $resolvedBuildDir 'orca_ai_runtime_dependencies.json'
 if (-not (Test-Path -LiteralPath $runtimeDependenciesPath -PathType Leaf)) {
     throw 'Pinned AI runtime dependency metadata is missing. Reconfigure this build directory.'

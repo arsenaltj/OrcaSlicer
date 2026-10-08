@@ -84,6 +84,7 @@ public:
     struct SurfaceHit { size_t face; Vec3d barycentric; double distance; };
     std::optional<SurfaceHit> pick_surface(const Vec3d& ray_origin, const Vec3d& ray_direction) const;
     void set_face_adjacency(const std::vector<std::vector<int32_t>>& adjacency);
+    const std::vector<std::vector<uint32_t>>& face_adjacency() const { return m_face_neighbors; }
     size_t update_selection(size_t seed_face, RegionSelectionOperation operation,
                             const RegionSelectionSettings& settings);
     size_t select_faces(const std::vector<size_t>& face_indices);

@@ -120,6 +120,10 @@ def package_versions(weights):
             result[name] = importlib.metadata.version(name)
         except importlib.metadata.PackageNotFoundError:
             pass
+    try:
+        result['scipy'] = importlib.metadata.version('scipy')
+    except importlib.metadata.PackageNotFoundError:
+        pass
     return result
 
 
@@ -267,7 +271,12 @@ def main(argv=None) -> int:
         sys.path.insert(0, directory)
     restrict_network()
     try:
-        response.update(probe(load_config(options.config), identity_only=options.identity_only))
+        config=load_config(options.config)
+        runtime=Path(config["python_executable"]).resolve().parent.parent
+        if os.environ.get("ORCA_LOCAL_AI_REQUIRE_MANIFEST")=="1" or (runtime/"runtime-manifest.json").is_file():
+            from bundled_portrait_runtime import verify
+            verify(runtime,Path(directory))
+        response.update(probe(config, identity_only=options.identity_only))
     except WorkerError as error:
         response.update(status="unavailable", capability_ready=False, error_code=str(error))
     except Exception:

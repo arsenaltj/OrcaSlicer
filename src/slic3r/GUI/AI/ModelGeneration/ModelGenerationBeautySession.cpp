@@ -199,6 +199,7 @@ PostGenerationUiState ModelGenerationPanel::post_generation_ui_state() const
         m_finishing_running || m_workbench_check_running,
         (m_beauty_transactions && m_beauty_transactions->processing()) ||
             (m_model_preview && m_model_preview->semantic_processing()) ||
+            (m_portrait_task && m_portrait_task->snapshot().running()) ||
             (m_finishing_workbench && m_model_preview && m_model_preview->selection_busy()),
         !m_finishing_candidate.empty(),
         m_finishing_before || m_finishing_compare_held,
@@ -254,7 +255,7 @@ void ModelGenerationPanel::refresh_model_finishing()
     }
     const bool pending = !m_finishing_candidate.empty();
     const bool ready = m_model_preview_ready && is_nonempty_model(m_displayed_model_path);
-    const bool transaction_busy = m_workbench_check_running || (m_beauty_transactions && m_beauty_transactions->processing()) ||
+    const bool transaction_busy = (m_portrait_task && m_portrait_task->snapshot().running()) || m_workbench_check_running || (m_beauty_transactions && m_beauty_transactions->processing()) ||
         m_model_preview->semantic_processing() ||
         (m_finishing_workbench && m_model_preview->selection_busy());
     const bool repaint_layout = m_finishing_workbench &&
@@ -372,6 +373,7 @@ void ModelGenerationPanel::refresh_model_finishing()
 
 void ModelGenerationPanel::reset_beauty_asset()
 {
+    reset_portrait_session();
     if (m_workbench_check_cancel) m_workbench_check_cancel->store(true);
     if (m_workbench_check_worker.joinable()) m_workbench_check_worker.join();
     m_workbench_check_cancel.reset();
@@ -397,6 +399,7 @@ void ModelGenerationPanel::reset_beauty_asset()
     m_finishing_candidate_semantic_faces.clear();
     m_finishing_candidate_semantic_subfaces.clear();
     m_finishing_candidate_semantic_provenance = {};
+    m_finishing_candidate_baked_appearance = nullptr;
     m_finishing_candidate_region_evidence.reset();
     m_finishing_candidate_secondary_evidence.reset();
     m_beauty_session_source.reset();

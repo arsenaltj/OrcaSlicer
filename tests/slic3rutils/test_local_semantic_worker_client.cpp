@@ -198,6 +198,51 @@ TEST_CASE("Installed beauty runtime is relocatable and respects explicit opt out
     write(file,"broken");CHECK_FALSE(W::read_runtime_configuration(file,root,value,reason));
 }
 
+TEST_CASE("Installed portrait inference uses the modules shipped with its runtime", "[LocalSemanticWorkerClient][Regression]")
+{
+    ScopedTemporaryDir temporary;
+    const auto resources=temporary.path()/path8(u8"安装 程序")/"resources";
+    const auto runtime=resources/"beauty-runtime";
+    fs::create_directories(runtime/"python");
+    fs::create_directories(runtime/"weights");
+    fs::create_directories(runtime/"modules");
+    write(runtime/"python"/"python.exe","fixture");
+    write(runtime/"modules"/"local_semantic_worker.py","fixture");
+    for(const char* name:{"mobilenet0.25_Final.pth","face_parsing.farl.celebm.main_ema_181500_jit.pt","face_landmarker.task"})
+        write(runtime/"weights"/name,"fixture");
+    W::Configuration config;std::string reason;
+    REQUIRE(W::read_runtime_configuration(temporary.path()/"absent.json",runtime,config,reason));
+    const auto modules=W::runtime_modules_directory(resources);
+    CHECK(modules==runtime/"modules");
+    CHECK(fs::is_regular_file(modules/"local_semantic_worker.py"));
+    CHECK_FALSE(fs::exists(resources/"tools"/"ai"/"beauty_semantics"));
+}
+
+TEST_CASE("An incomplete installed portrait bundle cannot select unverified fallback modules", "[LocalSemanticWorkerClient][Regression]")
+{
+    ScopedTemporaryDir temporary;
+    const auto resources=temporary.path()/"resources";
+    fs::create_directories(resources/"beauty-runtime");
+    const auto fallback=resources/"tools"/"ai"/"beauty_semantics";
+    fs::create_directories(fallback);
+    write(fallback/"local_semantic_worker.py","unverified fallback");
+    const auto modules=W::runtime_modules_directory(resources);
+    CHECK(modules==resources/"beauty-runtime"/"modules");
+    CHECK_FALSE(fs::is_regular_file(modules/"local_semantic_worker.py"));
+}
+
+TEST_CASE("Developer portrait modules remain readable in earlier resource layouts", "[LocalSemanticWorkerClient][Regression]")
+{
+    ScopedTemporaryDir temporary;
+    const auto resources=temporary.path()/"resources";
+    const bool nested=GENERATE(false,true);
+    auto modules=resources/"tools"/"ai";
+    if(nested) modules/="beauty_semantics";
+    fs::create_directories(modules);
+    write(modules/"local_semantic_worker.py","fixture");
+    CHECK(W::runtime_modules_directory(resources)==modules);
+}
+
 TEST_CASE("request cleanup is idempotent and cannot remove outside its disposable parent", "[LocalSemanticWorkerClient][AI]")
 {
     ScopedTemporaryDir temporary;
@@ -291,7 +336,7 @@ TEST_CASE("Owned semantic workers handle protocol failure cancellation and timeo
     const auto script=root/"fake worker.py";
     std::string source=R"PY(import argparse, hashlib, json, os, pathlib, sys, time
 p=argparse.ArgumentParser(); p.add_argument('--probe',action='store_true'); p.add_argument('--config'); p.add_argument('--output'); a=p.parse_args()
-allowed={'SYSTEMROOT','WINDIR','TEMP','TMP','TMPDIR','PYTHONNOUSERSITE','HF_HUB_OFFLINE','TRANSFORMERS_OFFLINE','HF_HUB_DISABLE_TELEMETRY','OMP_NUM_THREADS','MKL_NUM_THREADS','LC_CTYPE'}
+allowed={'SYSTEMROOT','WINDIR','TEMP','TMP','TMPDIR','PYTHONNOUSERSITE','HF_HUB_OFFLINE','TRANSFORMERS_OFFLINE','HF_HUB_DISABLE_TELEMETRY','OMP_NUM_THREADS','MKL_NUM_THREADS','LC_CTYPE','ORCA_LOCAL_AI_REQUIRE_MANIFEST'}
 assert not (set(os.environ)-allowed)
 config=json.loads(pathlib.Path(a.config).read_text(encoding='utf-8')); assert pathlib.Path(config['python_executable']).is_absolute()
 mode=MODE
@@ -411,7 +456,7 @@ TEST_CASE("configured local mesh analysis reaches native face proof through the 
 
 TEST_CASE("owned mesh requests reject invalid payloads and stop mesh stage cancellation and timeout", "[LocalSemanticWorkerClient][AI]")
 {
-    // All nine modules are local stdlib-only fixtures. The source is synthetic;
+    // All runtime modules are local stdlib-only fixtures. The source is synthetic;
     // the actual host packet codec/proof/evidence decoder are still exercised.
     const char* configured_value=boost::nowide::getenv("ORCA_LOCAL_SEMANTIC_TEST_PYTHON");
     if(!configured_value || !*configured_value) SKIP("Set ORCA_LOCAL_SEMANTIC_TEST_PYTHON for owned mesh process tests.");
@@ -434,7 +479,7 @@ p=argparse.ArgumentParser();p.add_argument('--probe',action='store_true');p.add_
 mode=MODE
 token=FIXTURE_TOKEN
 root=pathlib.Path(__file__).parent
-allowed={'SYSTEMROOT','WINDIR','TEMP','TMP','TMPDIR','PYTHONNOUSERSITE','HF_HUB_OFFLINE','TRANSFORMERS_OFFLINE','HF_HUB_DISABLE_TELEMETRY','OMP_NUM_THREADS','MKL_NUM_THREADS','LC_CTYPE'}
+allowed={'SYSTEMROOT','WINDIR','TEMP','TMP','TMPDIR','PYTHONNOUSERSITE','HF_HUB_OFFLINE','TRANSFORMERS_OFFLINE','HF_HUB_DISABLE_TELEMETRY','OMP_NUM_THREADS','MKL_NUM_THREADS','LC_CTYPE','ORCA_LOCAL_AI_REQUIRE_MANIFEST'}
 assert not (set(os.environ)-allowed)
 config=json.loads(pathlib.Path(a.config).read_text(encoding='utf-8'))
 assert pathlib.Path(config['python_executable']).is_absolute()
@@ -494,12 +539,12 @@ if mode in ('cancel','timeout'):
  if os.name=='nt':child.wait(timeout=30)
  else:time.sleep(30)
 q=json.loads(request_path.read_text(encoding='utf-8'))
-names=['glb_artifact.py','local_semantic_worker.py','local_semantic_geometry.py','local_semantic_render.py','local_semantic_transform.py','local_semantic_views.py','local_semantic_projection.py','local_semantic_pipeline.py','local_semantic_request.py','local_eye_landmarks.py','local_face_landmarks.py','local_body_regions.py']
+names=['glb_artifact.py','local_semantic_worker.py','local_semantic_geometry.py','local_semantic_render.py','local_semantic_transform.py','local_semantic_views.py','local_semantic_projection.py','local_semantic_pipeline.py','local_semantic_request.py','local_eye_landmarks.py','local_face_landmarks.py','local_shape_constraints.py','local_brow_boundary.py','local_body_regions.py','local_contour_proposals.py','local_surface_contours.py','local_leaf_boundaries.py','beauty_leaf_domain.py','local_parent_ownership.py','local_parent_boundary.py','local_parent_projection.py']
 modules={name:sha((root/name).read_bytes()) for name in names}
 identity={'probe_identity':probe_id,'modules_sha256':modules}
 runtime=sha(canonical(identity))
-policy=sha(canonical({'version':'visible-face-semantic-v5-body-supplement','label_schema':'farl-celebm-face19-subset-v1',
- 'modules_sha256':{name:modules[name] for name in names if name in ['local_semantic_render.py','local_semantic_transform.py','local_semantic_views.py','local_semantic_projection.py','local_semantic_pipeline.py','local_eye_landmarks.py','local_face_landmarks.py','local_body_regions.py']}}))
+policy=sha(canonical({'version':'visible-face-semantic-v12-parent-local-views','label_schema':'farl-celebm-face19-subset-v1',
+ 'modules_sha256':{name:modules[name] for name in names if name not in ['glb_artifact.py','local_semantic_worker.py','local_semantic_geometry.py','local_semantic_request.py']}}))
 assert runtime==q['runtime_fingerprint'] and policy==q['policy_sha256']
 assert sha(pathlib.Path(q['source_path']).read_bytes())==q['source_sha256']
 native=(owned/'native.bin').read_bytes()
@@ -544,7 +589,8 @@ os._exit(0)
     script.replace(script.find("MODE"),4,Json(scenario).dump());
     script.replace(script.find("FIXTURE_TOKEN"),13,Json(fixture_token).dump());
     for(const char* name:{"glb_artifact.py","local_semantic_geometry.py","local_semantic_render.py",
-                          "local_semantic_transform.py","local_semantic_views.py","local_semantic_projection.py","local_semantic_pipeline.py","local_eye_landmarks.py","local_face_landmarks.py","local_body_regions.py"})
+                          "local_semantic_transform.py","local_semantic_views.py","local_semantic_projection.py","local_semantic_pipeline.py","local_eye_landmarks.py","local_face_landmarks.py","local_body_regions.py",
+                          "local_shape_constraints.py","local_brow_boundary.py","local_contour_proposals.py","local_surface_contours.py","local_leaf_boundaries.py","beauty_leaf_domain.py","local_parent_ownership.py","local_parent_boundary.py","local_parent_projection.py"})
         write(root/name,"# inert fixture module; no third-party dependencies\n");
     write(root/"local_semantic_worker.py",script);write(root/"local_semantic_request.py",script);
     indexed_triangle_set native;

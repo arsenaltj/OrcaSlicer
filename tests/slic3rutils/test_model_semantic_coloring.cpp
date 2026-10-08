@@ -243,6 +243,28 @@ TEST_CASE("Cancelled semantic work cannot return when optimization is enabled ag
     CHECK_FALSE(coordinator.busy());
 }
 
+TEST_CASE("Explicit portrait optimization reports missing local evidence instead of generic success", "[ModelSemanticColoring][PortraitOptimization]")
+{
+    Fixture fixture;
+    auto provider=fixture.add_providers("-required-local");
+    fixture.configure(provider.body,provider.face);
+    struct RestoreDirectories {
+        std::string data=Slic3r::data_dir(), resources=Slic3r::resources_dir();
+        ~RestoreDirectories() { Slic3r::set_data_dir(data); Slic3r::set_resources_dir(resources); }
+    } previous;
+    Slic3r::set_data_dir(fixture.runtime.generic_string());
+    Slic3r::set_resources_dir((fixture.runtime/"missing-resources").generic_string());
+    Coordinator coordinator(fixture.runtime,fixture.cache);
+    auto progress=std::make_shared<Slic3r::GUI::PortraitOptimizationTask>("explicit","asset",1);
+    REQUIRE(coordinator.request(source("required-evidence"),palette,palette,{}, {},
+        fixture.runtime/"missing-source.glb", {}, {}, true, {}, progress));
+    auto result=await_result(coordinator);
+    REQUIRE(result);
+    REQUIRE_FALSE(result->error.empty());
+    REQUIRE(result->geometry.is_empty());
+    REQUIRE(progress->snapshot().percent != 100);
+}
+
 TEST_CASE("Semantic preview emits the same sparse midpoint leaves used by MMU persistence",
           "[ModelSemanticColoring][SubfaceColor]")
 {
@@ -270,4 +292,49 @@ TEST_CASE("Semantic preview emits the same sparse midpoint leaves used by MMU pe
     const auto overridden = Slic3r::GUI::build_semantic_colored_geometry(
         *mesh, SC::compose(roots, manual, true), SC::compose_subfaces(leaves, manual, true));
     CHECK(overridden.indices_count() == 3);
+}
+TEST_CASE("Four level draft rendering retains the finest color and canonical triangle area", "[ModelSemanticColoring][BeautyLeafEditing]") {
+    const auto mesh=source("leaf-preview");
+    const SC::SubfaceColors leaves{{0,{1,0},gray,1.f},{0,{4,0},blue,1.f}};
+    const auto geometry=Slic3r::GUI::build_semantic_colored_geometry(*mesh,{{0,skin}},leaves);
+    REQUIRE(geometry.indices_count()==39);
+    double area=0.;
+    for (size_t i=0;i<geometry.indices_count()/3;++i) {
+        const auto a=geometry.extract_position_3(i*3), b=geometry.extract_position_3(i*3+1),c=geometry.extract_position_3(i*3+2);
+        area+=.5*double((b-a).cross(c-a).norm());
+    }
+    REQUIRE_THAT(area,WithinAbs(2.,1e-6));
+    REQUIRE(Slic3r::GUI::build_semantic_colored_geometry(*mesh,{},{{0,{5,0},blue,1.f}}).is_empty());
+}
+TEST_CASE("Saved semantic leaves reject integer overflow duplicates and invalid colors before narrowing", "[ModelSemanticColoring][BeautyLeafEditing]") {
+    const std::string geometry(64,'a');
+    nlohmann::json value{{"schema","orca.semantic-result/v1"},{"geometry_id",geometry},{"face_count",2},
+        {"faces",{{0,skin},{1,gray}}},{"subfaces",{{0,1,0,gray},{0,4,255,blue}}}};
+    SC::FaceColors faces; SC::SubfaceColors children;
+    REQUIRE(Slic3r::GUI::decode_semantic_result(value,geometry,2,faces,children));
+    REQUIRE(children.back().path==SC::SubfacePath{4,255});
+    for (const auto invalid : {nlohmann::json(256),nlohmann::json(-1),nlohmann::json(1.5)}) {
+        auto bad=value; bad["subfaces"][0][2]=invalid;
+        REQUIRE_FALSE(Slic3r::GUI::decode_semantic_result(bad,geometry,2,faces,children));
+        REQUIRE(faces.empty()); REQUIRE(children.empty());
+    }
+    auto bad=value; bad["subfaces"].push_back(bad["subfaces"][1]);
+    REQUIRE_FALSE(Slic3r::GUI::decode_semantic_result(bad,geometry,2,faces,children));
+    bad=value; bad["faces"][1][0]=0;
+    REQUIRE_FALSE(Slic3r::GUI::decode_semantic_result(bad,geometry,2,faces,children));
+    bad=value; bad["faces"][0][1]={0,0,1.1};
+    REQUIRE_FALSE(Slic3r::GUI::decode_semantic_result(bad,geometry,2,faces,children));
+    REQUIRE_FALSE(Slic3r::GUI::decode_semantic_result(value,std::string(64,'b'),2,faces,children));
+}
+
+TEST_CASE("Manual implicit cell color overrides parent repair and inherited children in the preview", "[ModelSemanticColoring][PortraitParentCleanup]") {
+    const auto mesh=source("manual-parent-cell");
+    const std::map<std::string,SC::Color> cells{{"source:0",blue}};
+    const auto actual=GUI::build_semantic_colored_geometry(*mesh,{{0,skin}},{{0,{1,0},gray,1.f}},{},nullptr,&cells);
+    const auto expected=GUI::build_semantic_colored_geometry(*mesh,{{0,blue}},{});
+    REQUIRE_FALSE(actual.is_empty());
+    for(size_t i=0;i<actual.vertices_count();++i) {
+        REQUIRE_THAT(actual.extract_tex_coord_2(i).x(),WithinAbs(expected.extract_tex_coord_2(0).x(),0.));
+        REQUIRE_THAT(actual.extract_tex_coord_2(i).y(),WithinAbs(expected.extract_tex_coord_2(0).y(),0.));
+    }
 }

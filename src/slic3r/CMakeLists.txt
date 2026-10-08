@@ -369,6 +369,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/AI/ModelGeneration/PostGenerationWorkbenchView.cpp
     GUI/AI/ModelGeneration/PostGenerationWorkbenchPresentation.cpp
     GUI/AI/ModelGeneration/PostGenerationWorkbenchHost.cpp
+    GUI/AI/ModelGeneration/ModelGenerationPortrait.cpp
+    GUI/AI/ModelGeneration/ModelGenerationPortraitDraft.cpp
     GUI/AI/ModelGeneration/PostGenerationWorkbenchPalette.cpp
     GUI/AI/ModelGeneration/PostGenerationWorkbenchCheck.cpp
     GUI/AI/ModelGeneration/ModelGenerationBeautySession.cpp
@@ -378,7 +380,7 @@ set(SLIC3R_GUI_SOURCES
     GUI/AI/ModelGeneration/ModelGenerationWorkbenchHistory.cpp
     GUI/AI/ModelGeneration/ModelPreviewSemantics.cpp
     GUI/AI/ModelGeneration/ModelSemanticColoring.cpp
-    GUI/AI/ColorMatching/LocalPrintColorPanel.cpp GUI/AI/ModelGeneration/LocalSemanticWorkerClient.cpp GUI/AI/ModelGeneration/ModelGenerationPreviewLayout.cpp GUI/AI/ModelGeneration/ModelGenerationSubmission.cpp
+    GUI/AI/ColorMatching/LocalPrintColorPanel.cpp GUI/AI/ModelGeneration/LocalSemanticWorkerClient.cpp GUI/AI/ModelGeneration/PortraitResidualProposalClient.cpp GUI/AI/ModelGeneration/PortraitParentCleanup.hpp GUI/AI/ModelGeneration/ModelGenerationPreviewLayout.cpp GUI/AI/ModelGeneration/ModelGenerationSubmission.cpp
     GUI/AI/Model/VertexColorRegionEditor.hpp GUI/AI/Model/ModelArtifact.cpp GUI/AI/Model/ModelArtifact.hpp GUI/AI/Model/GlbGeometryEditing.cpp GUI/AI/ModelGeneration/ModelGenerationLocalImport.cpp
     GUI/Redesign/RedesignCommand.cpp
     GUI/Redesign/RedesignCommand.hpp

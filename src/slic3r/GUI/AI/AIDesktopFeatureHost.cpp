@@ -132,7 +132,7 @@ struct AIDesktopFeatureHost::Impl final : wxEvtHandler
             ? "Configure the local AI service to enable 3D generation."
             : availability.error;
         model_generation.set_service_availability(
-            availability.compatible && availability.model_generation_available, message);
+            availability.compatible, availability.model_generation_available, message);
 
         if (!availability.compatible) {
             BOOST_LOG_TRIVIAL(info) << "AI features unavailable: " << availability.error;

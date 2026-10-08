@@ -12,6 +12,13 @@ namespace Slic3r::AI {
 
 struct BeautyAppearanceOptions {
     struct Leaf { BeautyLeafKey key; float weight{0}; std::array<float,3> color{}; };
+    struct Cell {
+        size_t source_face_id;
+        std::string id;
+        std::vector<std::array<Vec3d,3>> triangles;
+        float weight{0};
+        std::array<float,3> color{};
+    };
     // Face order is exactly load_model_artifact's order, including scene instances.
     // The minimum weight of all faces sampling a texel wins: shared UVs never
     // let a selected face recolor an unselected face through the base texture.
@@ -30,6 +37,9 @@ struct BeautyAppearanceOptions {
     // Complete partitions of split roots, including all unselected siblings.
     // Their root weights must be zero; only these UV subtriangles may change.
     std::vector<Leaf> leaves;
+    // Complete arbitrary polygon partitions, represented by exact barycentric
+    // triangles. Unselected siblings are included with zero weight.
+    std::vector<Cell> cells;
     std::string canonical_geometry_id;
 };
 
@@ -39,6 +49,9 @@ struct BeautyAppearanceResult {
     size_t changed_pixels = 0;
     size_t changed_vertices = 0;
 };
+
+void appearance_cell_colors(BeautyAppearanceOptions& options,const nlohmann::json& partition,
+    const std::map<std::string,std::array<float,3>>& colors,const std::string& geometry);
 
 // Edits embedded PNG/JPEG base-color pixels and publishes a new GLB atomically.
 // Ordered triangle positions, UVs, transforms and alpha remain intact.

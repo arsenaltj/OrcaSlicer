@@ -40,12 +40,52 @@ def _detection_arrays(count):
 
 
 class PipelineTests(unittest.TestCase):
+    def test_final_features_and_iris_follow_owner_filtered_shapes(self):
+        projection={'regions':[
+            {'subject_id':'one','label':'re','samples':[[0],[1]]},
+            {'subject_id':'one','label':'le','samples':[[2],[3]]}]}
+        shapes=[{'subject_id':'one','label':'re','status':'PROTECTED_SHAPE_UNCERTAIN',
+                 'accepted_faces':[0,1,2],'rejected_faces':[], 'nested_faces':[1,2],
+                 'view_support':2,'reasons':[],'metrics':{}}]
+        features=[{'subject_id':'one','label':'re','faces':[0,1,2], 'iris_faces':[1,2],'view_support':2}]
+        audit=[{'subject_id':'one','label':'re','topology_completed_count':3}]
+        pipeline._apply_shape_parent_fallback(projection,shapes)
+        result=pipeline._sync_shape_details(projection,features,shapes,audit)
+        self.assertEqual(result[0]['faces'],[0,1])
+        self.assertEqual(result[0]['iris_faces'],[1])
+        self.assertEqual(shapes[0]['nested_faces'],[1])
+        self.assertEqual(audit[0]['owner_filter_removed_count'],1)
+        self.assertIn('SHAPE_OWNER_CONFLICT',audit[0]['reasons'])
+
+    def test_shape_parent_fallback_deduplicates_rejected_faces(self):
+        projection = {'regions': [
+            {'subject_id': 'one', 'label': 'face', 'samples': [[1, .9, .9, 4, 2]]},
+            {'subject_id': 'one', 'label': 're', 'samples': [[2, .9, .9, 4, 2]]},
+            {'subject_id': 'one', 'label': 'le', 'samples': [[3, .9, .9, 4, 2]]},
+        ]}
+        details = [
+            {'subject_id': 'one', 'label': 're', 'status': 'PROTECTED_SHAPE_UNCERTAIN',
+             'accepted_faces': [], 'rejected_faces': [2], 'view_support': 2,
+             'metrics': {}, 'reasons': ['SHAPE_BOUNDARY_OUTSIDE_ENVELOPE']},
+            {'subject_id': 'one', 'label': 'le', 'status': 'PROTECTED_SHAPE_UNCERTAIN',
+             'accepted_faces': [], 'rejected_faces': [2, 3], 'view_support': 2,
+             'metrics': {}, 'reasons': ['SHAPE_CONFLICTING_COMPONENT']},
+        ]
+        pipeline._apply_shape_parent_fallback(projection, details)
+        face = next(region for region in projection['regions']
+                    if region['label'] == 'face')
+        self.assertEqual([sample[0] for sample in face['samples']], [1, 2, 3])
+        self.assertEqual([sample[0] for region in projection['regions']
+                          if region['label'] == 're' for sample in region['samples']], [])
+        self.assertEqual([sample[0] for region in projection['regions']
+                          if region['label'] == 'le' for sample in region['samples']], [])
+
     def test_coincident_triangles_are_unknown_but_unrelated_faces_remain_available(self):
         vertices = np.array([[0,0,0], [1,0,0], [0,1,0], [0,0,1], [0,0,0], [1,0,0], [0,1,0]], dtype=np.float32)
         faces = np.array([[0,1,2], [0,1,3], [6,5,4]])
         np.testing.assert_array_equal(pipeline.ambiguous_triangles(vertices, faces), [True, False, True])
 
-    def _analyze(self, count=1, budget=None, cancel_at=None, invalid_parser=None, geometry_matches=True):
+    def _analyze(self, count=1, budget=None, cancel_at=None, invalid_parser=None, geometry_matches=True, supplement=False):
         ids = np.repeat(np.arange(8, dtype=np.int32), 2).reshape(4, 4)
         camera = Camera('synthetic', np.eye(3), np.zeros(3), 1., 4)
         state = {'cancelled': False, 'stages': []}
@@ -103,6 +143,7 @@ class PipelineTests(unittest.TestCase):
             mocked(pipeline.render, 'project', lambda *args: None)
             mocked(pipeline.render, 'shade', lambda *args: np.zeros((4, 4, 3), np.uint8))
             mocked(pipeline, 'coarse_cameras', lambda *args: [camera])
+            mocked(pipeline, 'parent_cameras', lambda *args: [camera] if supplement else [])
             mocked(pipeline, 'project', aggregate)
             if budget is not None: mocked(pipeline, 'MAX_OBSERVATION_PIXELS', budget)
             return pipeline.analyze('unused', 'unused', 'source', loader, cancelled=lambda: state['cancelled'])
@@ -177,6 +218,17 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(region['label'], 'face')
         self.assertEqual(region['samples'][0][0], 0)
         self.assertEqual(set(region), {'subject_id', 'label', 'samples'})
+
+    def test_parent_supplement_does_not_multiply_primary_face_or_shape_votes(self):
+        baseline=self._analyze()
+        supplemented=self._analyze(supplement=True)
+        self.assertEqual(supplemented['projection'],baseline['projection'])
+        self.assertEqual(supplemented['shape_details'],baseline['shape_details'])
+        self.assertEqual(len(supplemented['views']),len(baseline['views'])+1)
+        self.assertEqual(self.state['stages'].count('projection'),1)
+        limited=self._analyze(budget=16,supplement=True)
+        self.assertIn('budget exceeded',limited['parent_diagnostic'])
+        self.assertIsNone(limited['parent_proposal'])
 
 
 if __name__ == '__main__':
