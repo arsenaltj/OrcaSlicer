@@ -31,6 +31,17 @@ add_executable(${_TEST_NAME}_tests
     test_local_print_color_application.cpp
     test_project_config_undo.cpp
     test_model_preview_state.cpp
+    test_post_generation_workbench.cpp
+    test_beauty_document.cpp
+    test_beauty_partition_bridge.cpp
+    test_beauty_transaction_controller.cpp
+    test_semantic_region_evidence.cpp
+    test_beauty_leaf_domain.cpp
+    test_beauty_leaf_editing.cpp
+    test_beauty_shape_lock.cpp
+    test_portrait_color_plan.cpp
+    test_portrait_shape_details.cpp
+    test_portrait_surface_ownership.cpp
     test_local_semantic_worker_client.cpp
     test_model_color_import.cpp
     test_plugin_host_api.cpp
@@ -44,6 +55,8 @@ add_executable(${_TEST_NAME}_tests
     test_plugin_sort.cpp
     test_plugin_cloud_metadata.cpp
     test_plugin_audit.cpp
+    test_ui_redesign.cpp
+    test_startup_setup.cpp
     test_vertex_color_region_editor.cpp
     test_surface_selection.cpp
     test_surface_selection_refinement.cpp
@@ -65,12 +78,29 @@ add_executable(${_TEST_NAME}_tests
     test_model_artifact.cpp
     test_orca_model_preparation.cpp
     test_smart_slicing_candidates.cpp
+    test_smart_slicing_candidate_evaluation.cpp
+    test_smart_slicing_candidate_selection.cpp
+    test_smart_slicing_candidate_search.cpp
+    test_smart_slicing_trial_scheduler.cpp
+    test_smart_slicing_candidate_capture.cpp
+    test_smart_slicing_capabilities.cpp
     test_smart_slicing_coordinator.cpp
+    test_smart_slicing_dispatch.cpp
+    test_smart_slicing_model_features.cpp
+    test_smart_slicing_orca_model_features.cpp
+    test_smart_slicing_protected_regions.cpp
+    test_beauty_protected_regions.cpp
     test_smart_slicing_apply_guard.cpp
     test_software_viewport_export.cpp
+    test_smart_slicing_apply_service.cpp
+    test_smart_slicing_risk_confirmation.cpp
     test_smart_slicing_parameters.cpp
+    test_smart_slicing_parameter_policy.cpp
     test_smart_slicing_runtime.cpp
+    test_smart_slicing_session.cpp
     test_smart_slicing_workflow.cpp
+    test_smart_slicing_performance_acceptance.cpp
+    test_smart_slicing_six_nozzle_validation.cpp
     ../fff_print/test_helpers.cpp
     )
 

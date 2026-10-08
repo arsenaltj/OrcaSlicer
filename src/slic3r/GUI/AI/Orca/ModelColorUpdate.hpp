@@ -97,7 +97,8 @@ inline bool apply_subface_color_overrides(
 
     std::map<size_t, std::vector<TriangleSelector::MidpointSubfaceState>> grouped;
     for (const AI::ModelSubfaceColorOverride& item : subfaces) {
-        if (item.face_id >= actual.indices.size() || item.depth == 0 || item.depth > 2 ||
+        if (item.face_id >= actual.indices.size() || item.depth == 0 ||
+            item.depth > TriangleSelector::MidpointSubfaceState::max_depth ||
             unsigned(item.path) >= (1u << (2u * item.depth)) ||
             std::any_of(item.color.begin(), item.color.end(), [](float value) {
                 return !std::isfinite(value) || value < 0.f || value > 1.f;

@@ -55,12 +55,14 @@ wxWindow* ModelGenerationPanel::build_import_settings(wxWindow* parent)
     return m_import_settings_panel;
 }
 
-void ModelGenerationPanel::load_model_preview_async(const boost::filesystem::path& path,
-    const std::vector<std::string>& palette,
+void ModelGenerationPanel::load_model_preview_async(boost::filesystem::path path,
+    std::vector<std::string> palette,
     std::function<void(size_t, Vec3d, size_t, double)> loaded,
     std::function<void(std::string)> failed, const boost::filesystem::path& metadata_path,
     std::shared_ptr<ModelHistoryMetadata> history_metadata, std::function<bool()> may_install)
 {
+    // Refreshing controls can destroy the history card that supplied these arguments.
+    // Own the inputs before refreshing or dispatching the worker.
     if (m_shutdown || m_preview_loading) return;
     m_model_preview->set_library_thumbnail_root(generated_models_root());
     const auto* local=local_model_import_state(m_library_import);
@@ -72,6 +74,7 @@ void ModelGenerationPanel::load_model_preview_async(const boost::filesystem::pat
          m_model_preview->try_load_cached_model(path, palette, triangles, dimensions, colors))) {
         if(local_cancel) complete_local_model_import(m_library_import,local_cancel,false);
         loaded(triangles, dimensions, colors, 0.0);
+        ensure_workbench_check();
         return;
     }
     if (m_preview_worker.joinable()) m_preview_worker.join();
@@ -116,6 +119,7 @@ void ModelGenerationPanel::load_model_preview_async(const boost::filesystem::pat
                 }
                 loaded(triangles, dimensions, colors,
                     std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
+                self->ensure_workbench_check();
             });
         });
     } catch (const std::exception& e) {
@@ -258,7 +262,7 @@ void ModelGenerationPanel::finish_model_preview_download(const boost::filesystem
     save_library_entry(artifact_size, triangle_count, dimensions.x(), dimensions.y(),
                        dimensions.z(), color_count, load_seconds);
     // A late preview load must not replace an explicitly opened library page.
-    if (m_preview_book != nullptr && m_workspace_view != WorkspaceView::Library)
+    if (m_preview_book != nullptr && !m_library_requested_by_shell)
         m_preview_book->SetSelection(0);
     wxWeakRef<ModelGenerationPanel> weak(this);
     wxGetApp().CallAfter([weak]() {

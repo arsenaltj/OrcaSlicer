@@ -6,6 +6,7 @@
 
 #include "slic3r/GUI/GUI.hpp"
 #include "slic3r/GUI/I18N.hpp"
+#include "slic3r/GUI/format.hpp"
 
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
@@ -45,19 +46,19 @@ wxString thin_local_region_metrics(
         metrics += item;
     };
     if (std::isfinite(region.minimum_thickness_mm) && region.minimum_thickness_mm > 0.0) {
-        wxString thickness = wxString::Format(_L("最薄 %.3f mm"), region.minimum_thickness_mm);
+        wxString thickness = format_wxstr(_L("最薄 %.3f mm"), region.minimum_thickness_mm);
         if (threshold_available && std::isfinite(minimum_wall_thickness_mm) &&
             minimum_wall_thickness_mm > 0.0) {
-            thickness += wxString::Format(_L(" / 建议 ≥ %.3f mm"), minimum_wall_thickness_mm);
+            thickness += format_wxstr(_L(" / 建议 ≥ %.3f mm"), minimum_wall_thickness_mm);
         }
         append(thickness);
     }
     if (region.sample_count > 0) {
-        append(wxString::Format(_L("%llu 个采样"),
+        append(format_wxstr(_L("%llu 个采样"),
                                 static_cast<unsigned long long>(region.sample_count)));
     }
     if (std::isfinite(region.sampled_area_mm2) && region.sampled_area_mm2 > 0.0)
-        append(wxString::Format(_L("%.3f mm²"), region.sampled_area_mm2));
+        append(format_wxstr(_L("%.3f mm²"), region.sampled_area_mm2));
     return metrics;
 }
 
@@ -68,7 +69,7 @@ wxString thin_local_region_status(
     bool threshold_available,
     double minimum_wall_thickness_mm)
 {
-    wxString status = wxString::Format(
+    wxString status = format_wxstr(
         _L("第 %llu/%llu 处薄壁"),
         static_cast<unsigned long long>(region_index + 1),
         static_cast<unsigned long long>(region_count));
@@ -380,7 +381,7 @@ boost::filesystem::path library_image_path(const nlohmann::json& metadata,
 
 wxString model_load_summary(size_t triangle_count, double load_seconds)
 {
-    wxString summary = wxString::Format(_L("本机实测加载 %.2f 秒"), std::max(0.0, load_seconds));
+    wxString summary = format_wxstr(_L("本机实测加载 %.2f 秒"), std::max(0.0, load_seconds));
     if (triangle_count >= 800000)
         summary += _L(" · 超高面数，旋转、选区和切片可能明显变慢");
     else if (triangle_count >= 300000)
@@ -449,7 +450,7 @@ std::vector<ModelCheckRisk> model_check_risks(const AIModelGenerationClient::Mod
         const auto count = [&](const char* key, const wxString& format) {
             const auto it = quality.report_metrics.find(key);
             if (it != quality.report_metrics.end() && std::isfinite(it->second) && it->second >= 0)
-                detail = wxString::Format(format, it->second) + _L("\n") + detail;
+                detail = format_wxstr(format, it->second) + _L("\n") + detail;
         };
         if (code == "boundary_edges" || code == "repairable_boundary_edges") {
             title = _L("开放边"); count("boundary_edges", _L("检测到 %.0f 条开放边"));
@@ -496,7 +497,7 @@ wxString model_check_scope(const AIModelGenerationClient::ModelQuality& quality)
     const auto threshold = [&](const char* key, const wxString& format, double scale = 1.0) {
         const auto it = quality.report_thresholds.find(key);
         if (it != quality.report_thresholds.end() && std::isfinite(it->second))
-            text += "\n" + wxString::Format(format, it->second * scale);
+            text += "\n" + format_wxstr(format, it->second * scale);
     };
     threshold("max_faces", _L("面数上限：%.0f"));
     threshold("min_local_wall_thickness_mm", _L("局部壁厚下限：%.2f mm"));

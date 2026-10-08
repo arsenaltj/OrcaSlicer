@@ -1,11 +1,10 @@
 #pragma once
 
 #include "SmartSlicingViewModel.hpp"
+#include "slic3r/AI/SmartSlicing/Application/OwnerThreadCallbackGate.hpp"
 #include "slic3r/AI/SmartSlicing/Application/SmartSlicingCoordinator.hpp"
 
 #include <functional>
-#include <atomic>
-#include <memory>
 
 namespace Slic3r::GUI {
 
@@ -20,13 +19,16 @@ public:
 
     const SmartSlicingViewModel& view_model() const { return m_view_model; }
     void set_view_changed(ViewChangedFn view_changed);
+    void publish_recommendation_snapshot(const AI::SmartSlicing::RecommendationSnapshot& recommendation);
+    void set_mode(SmartSlicingMode mode);
+    void set_purpose(SmartSlicingPurpose purpose);
 
 private:
     SmartSlicingViewModel m_view_model;
     AI::SmartSlicing::SmartSlicingCoordinator& m_coordinator;
     ViewChangedFn m_view_changed;
     DispatchFn m_dispatch;
-    std::shared_ptr<std::atomic<bool>> m_alive;
+    AI::SmartSlicing::OwnerThreadCallbackGate m_callback_gate;
 };
 
 } // namespace Slic3r::GUI

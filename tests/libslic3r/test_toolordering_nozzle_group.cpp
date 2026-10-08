@@ -487,6 +487,9 @@ TEST_CASE("Re-applying an unchanged config after slicing keeps the result valid"
     config.option<ConfigOptionStrings>("filament_colour", true)->values = {"#FF0000", "#00FF00", "#0000FF"};
     config.option<ConfigOptionInts>("filament_map", true)->values = {1, 2, 2};
     config.option<ConfigOptionInts>("filament_volume_map", true)->values = {(int) nvtStandard, (int) nvtStandard, (int) nvtHighFlow};
+    config.option<ConfigOptionInts>("filament_nozzle_map", true)->values = {0, 0, 0};
+    config.set_key_value("filament_map_mode", new ConfigOptionEnum<FilamentMapMode>(fmmAutoForFlush));
+    config.set_key_value("enable_filament_dynamic_map", new ConfigOptionBool(false));
 
     Model model;
     ModelObject *object = model.add_object("cube", "", make_cube(20, 20, 20));
@@ -497,9 +500,18 @@ TEST_CASE("Re-applying an unchanged config after slicing keeps the result valid"
     print.process();
     REQUIRE(print.is_step_done(psSlicingFinished));
 
+    // BackgroundSlicingProcess persists the resolved nozzle assignment to the plate.
+    // Keep that GUI round-trip here; a different auto assignment must still invalidate.
+    config.option<ConfigOptionInts>("filament_nozzle_map", true)->values = print.get_filament_nozzle_maps();
     auto status = print.apply(model, config);
     REQUIRE(status != PrintBase::APPLY_STATUS_INVALIDATED);
     REQUIRE(print.is_step_done(psSlicingFinished));
+
+    auto& restored_nozzles = config.option<ConfigOptionInts>("filament_nozzle_map", true)->values;
+    REQUIRE_FALSE(restored_nozzles.empty());
+    restored_nozzles.front() = restored_nozzles.front() == 0 ? 1 : 0;
+    REQUIRE(print.apply(model, config) == PrintBase::APPLY_STATUS_INVALIDATED);
+    REQUIRE_FALSE(print.is_step_done(psSlicingFinished));
 }
 
 TEST_CASE("A degenerate process variant map on a custom multi-extruder printer slices to a stable result", "[Print][Regression]")
@@ -965,6 +977,7 @@ TEST_CASE("Selector slicing keeps the result valid across re-apply", "[Print][H2
     config.option<ConfigOptionStrings>("filament_colour", true)->values = {"#FF0000", "#00FF00", "#0000FF"};
     config.option<ConfigOptionInts>("filament_map", true)->values = {1, 2, 2};
     config.option<ConfigOptionInts>("filament_volume_map", true)->values = {(int) nvtStandard, (int) nvtStandard, (int) nvtHighFlow};
+    config.option<ConfigOptionInts>("filament_nozzle_map", true)->values = {0, 0, 0};
     config.set_key_value("enable_filament_dynamic_map", new ConfigOptionBool(true));
     config.option<ConfigOptionEnum<FilamentMapMode>>("filament_map_mode", true)->value = FilamentMapMode::fmmAutoForFlush;
 
@@ -977,7 +990,15 @@ TEST_CASE("Selector slicing keeps the result valid across re-apply", "[Print][H2
     print.process();
     REQUIRE(print.is_step_done(psSlicingFinished));
 
+    // Match the GUI's post-slice write-back rather than restoring the auto-map seed.
+    config.option<ConfigOptionInts>("filament_nozzle_map", true)->values = print.get_filament_nozzle_maps();
     auto status = print.apply(model, config);
     REQUIRE(status != PrintBase::APPLY_STATUS_INVALIDATED);
     REQUIRE(print.is_step_done(psSlicingFinished));
+
+    auto& restored_nozzles = config.option<ConfigOptionInts>("filament_nozzle_map", true)->values;
+    REQUIRE_FALSE(restored_nozzles.empty());
+    restored_nozzles.front() = restored_nozzles.front() == 0 ? 1 : 0;
+    REQUIRE(print.apply(model, config) == PrintBase::APPLY_STATUS_INVALIDATED);
+    REQUIRE_FALSE(print.is_step_done(psSlicingFinished));
 }

@@ -279,19 +279,34 @@ struct RasterMask {
     // Only allocated for absolute colors: reference one face instead of storing
     // three floats per texel. -2 denotes conflicting requested colors.
     std::vector<int32_t> target_faces;
+    std::vector<std::array<float,3>> targets;
 };
 RasterMask raster_mask(const TexturedMesh& mesh, const std::vector<Material>& material,
-    size_t image, int width, int height, const BeautyAppearanceOptions& options, const std::function<bool()>& canceled) {
+    size_t image, int width, int height, const BeautyAppearanceOptions& options, const std::function<bool()>& canceled,
+    const std::vector<std::array<int,3>>& corner_map) {
     RasterMask mask;
     mask.weights.assign(size_t(width) * height, -1.f);
-    const bool absolute = !options.face_target_colors.empty();
+    const bool absolute = !options.face_target_colors.empty() || !options.leaves.empty();
     if (absolute) mask.target_faces.assign(mask.weights.size(), -1);
+    mask.targets=options.face_target_colors;
+    mask.targets.resize(mesh.indices.size());
+    for (const auto& leaf : options.leaves) mask.targets.push_back(leaf.color);
+    size_t first_leaf=0;
     uint64_t visits = 0;
     for (size_t face = 0; face < mesh.indices.size(); ++face) {
         if ((face & 1023) == 0) checkpoint(canceled);
         const int mi = mesh.material_ids[face];
         if (mi < 0 || size_t(mi) >= material.size() || !material[mi].textured || material[mi].image != image) continue;
-        const auto triangle = face_uvs(mesh, face, material[mi], width, height);
+        auto root_triangle = face_uvs(mesh, face, material[mi], width, height);
+        if (!corner_map.empty()) {
+            const auto raw=root_triangle;
+            for (size_t c=0;c<3;++c) root_triangle[c]=raw[corner_map[face][c]];
+        }
+        while (first_leaf<options.leaves.size() && options.leaves[first_leaf].key.source_face_id<face) ++first_leaf;
+        const size_t first=first_leaf;
+        while (first_leaf<options.leaves.size() && options.leaves[first_leaf].key.source_face_id==face) ++first_leaf;
+        const size_t end=first_leaf;
+        const auto visit=[&](const std::array<std::array<double,2>,3>& triangle,float weight,size_t target) {
         const TriangleCoverage coverage(triangle);
         const int x0 = std::max(-1, int(std::floor(std::min({triangle[0][0],triangle[1][0],triangle[2][0]}) - 1.5)));
         const int x1 = std::min(width, int(std::ceil(std::max({triangle[0][0],triangle[1][0],triangle[2][0]}) + .5)));
@@ -303,18 +318,27 @@ RasterMask raster_mask(const TexturedMesh& mesh, const std::vector<Material>& ma
             if ((y & 127) == 0) checkpoint(canceled);
             for (int x = x0; x <= x1; ++x) if (coverage.touches(x + .5, y + .5)) {
                 const size_t pixel = size_t(wrap_pixel(y, height, material[mi].wrap_t)) * width + wrap_pixel(x, width, material[mi].wrap_s);
-                mask.weights[pixel] = mask.weights[pixel] < 0 ? options.face_weights[face] : std::min(mask.weights[pixel], options.face_weights[face]);
-                if (absolute && options.face_weights[face] > 0) {
+                mask.weights[pixel] = mask.weights[pixel] < 0 ? weight : std::min(mask.weights[pixel], weight);
+                if (absolute && weight > 0) {
                     auto& owner = mask.target_faces[pixel];
-                    if (owner == -1) owner = int32_t(face);
+                    if (owner == -1) owner = int32_t(target);
                     else if (owner >= 0) {
-                        const auto& a = options.face_target_colors[size_t(owner)];
-                        const auto& b = options.face_target_colors[face];
+                        const auto& a = mask.targets[size_t(owner)];
+                        const auto& b = mask.targets[target];
                         for (size_t ch = 0; ch < 3; ++ch) if (std::abs(a[ch] - b[ch]) > 1e-6f) { owner = -2; break; }
                     }
                     if (owner == -2) mask.weights[pixel] = 0;
                 }
             }
+        }
+        };
+        if (first==end) visit(root_triangle,options.face_weights[face],face);
+        else for (size_t i=first;i<end;++i) {
+            std::array<std::array<double,2>,3> triangle{};
+            const auto corners=options.leaves[i].key.barycentric();
+            for (size_t c=0;c<3;++c) for (size_t k=0;k<3;++k) for (size_t axis=0;axis<2;++axis)
+                triangle[c][axis]+=corners[c][k]*root_triangle[k][axis];
+            visit(triangle,options.leaves[i].weight,mesh.indices.size()+i);
         }
     }
     return mask;
@@ -341,7 +365,7 @@ std::array<double, 3> adjust(std::array<double, 3> rgb, const BeautyAppearanceOp
 size_t edit_pixels(cv::Mat& pixels, const RasterMask& raster, const BeautyAppearanceOptions& options,
     const std::function<bool()>& canceled) {
     const auto& mask = raster.weights;
-    const bool absolute = !options.face_target_colors.empty();
+    const bool absolute = !options.face_target_colors.empty() || !options.leaves.empty();
     const cv::Mat original = pixels.clone();
     const int channels = pixels.channels(), width = pixels.cols, height = pixels.rows;
     size_t changed = 0;
@@ -387,7 +411,7 @@ size_t edit_pixels(cv::Mat& pixels, const RasterMask& raster, const BeautyAppear
             if (absolute) {
                 const int32_t face = raster.target_faces[size_t(y) * width + x];
                 require(face >= 0, "Missing target color for an editable texture pixel.");
-                const auto& target = options.face_target_colors[size_t(face)];
+                const auto& target = raster.targets[size_t(face)];
                 for (size_t ch = 0; ch < 3; ++ch) filtered[ch] = target[ch];
             } else filtered = adjust(filtered, options);
             bool different = false;
@@ -871,13 +895,26 @@ BeautyAppearanceResult edit_glb_appearance(const boost::filesystem::path& source
         require(!options.face_weights.empty() && options.face_weights.size() <= 2000000, "Appearance editing requires a nonempty face selection.");
         bool selected = false;
         for (float weight : options.face_weights) { parameter(weight,0,1); selected = selected || weight > 0; }
+        std::vector<BeautyLeafKey> leaf_keys;
+        std::map<size_t,double> coverage;
+        for (const auto& leaf : options.leaves) {
+            require(leaf.key.valid(options.face_weights.size()) && leaf.key.depth>0,"Invalid appearance leaf.");
+            parameter(leaf.weight,0,1); selected=selected || leaf.weight>0;
+            require(options.face_weights[leaf.key.source_face_id]==0,"Split roots cannot use whole-face appearance weights.");
+            for (auto channel : leaf.color) parameter(channel,0,1);
+            leaf_keys.push_back(leaf.key); coverage[leaf.key.source_face_id]+=std::ldexp(1.,-2*leaf.key.depth);
+        }
+        BeautyLeafDomain::validate_keys(leaf_keys,options.face_weights.size());
+        for (const auto& entry : coverage) require(entry.second==1.,"Appearance leaves do not cover every sibling.");
         require(selected, "Select an area before editing appearance.");
-        const bool absolute = !options.face_target_colors.empty();
+        const bool absolute = !options.face_target_colors.empty() || !options.leaves.empty();
         if (absolute) {
-            require(options.face_target_colors.size() == options.face_weights.size(), "Target colors do not match the surface.");
+            require(options.face_target_colors.empty() || options.face_target_colors.size() == options.face_weights.size(), "Target colors do not match the surface.");
             require(options.hue_degrees == 0 && options.saturation == 1 && options.brightness == 0 &&
                     options.denoise == 0 && options.soften == 0, "Choose either absolute puzzle colors or relative appearance adjustments.");
             for (const auto& color : options.face_target_colors) for (float channel : color) parameter(channel, 0, 1);
+            for (auto weight : options.face_weights) if (weight>0)
+                require(options.face_target_colors.size()==options.face_weights.size(),"Absolute root colors are missing.");
         }
         result.source_sha256 = model_artifact_sha256(source);
         require(!result.source_sha256.empty(), "Cannot verify the source GLB.");
@@ -911,6 +948,24 @@ BeautyAppearanceResult edit_glb_appearance(const boost::filesystem::path& source
         require(mesh.indices.size() == options.face_weights.size() && mesh.material_ids.size() == mesh.indices.size(),
             "The selection no longer matches the GLB triangle layout; reload the model.");
         require(mesh.vertices.size() <= 6000000, "The GLB exceeds the editable vertex limit.");
+        std::vector<std::array<int,3>> corner_map;
+        if (!options.leaves.empty()) {
+            TriangleMesh canonical; ObjInfo info;
+            require(load_model_artifact(source,canonical,info,error),"Cannot verify canonical leaf geometry.");
+            require(SurfaceSelectionPersistence::geometry_fingerprint(canonical.its)==options.canonical_geometry_id,
+                "Appearance leaf geometry changed.");
+            require(canonical.its.indices.size()==mesh.indices.size(),"Appearance canonical face order changed.");
+            corner_map.resize(mesh.indices.size());
+            for (size_t f=0;f<mesh.indices.size();++f) {
+                std::set<int> used;
+                for (size_t c=0;c<3;++c) {
+                    int raw=-1;
+                    for (int j=0;j<3;++j) if (canonical.its.indices[f][c]==mesh.indices[f][j]) raw=j;
+                    require(raw>=0 && used.insert(raw).second,"Appearance canonical corner mapping changed.");
+                    corner_map[f][c]=raw;
+                }
+            }
+        }
         require(model_artifact_sha256(source) == result.source_sha256, "The source GLB changed during loading; reload it first.");
         // Verify original material/image correspondence before private baked
         // images or new corner material references are appended to the document.
@@ -947,7 +1002,9 @@ BeautyAppearanceResult edit_glb_appearance(const boost::filesystem::path& source
             edit_corner_colors(doc, mesh, material, options, result, canceled);
         }
         std::map<size_t,size_t> edited_images;
-        for (size_t face = 0; face < mesh.indices.size(); ++face) if (options.face_weights[face] > 0) {
+        std::set<size_t> selected_roots;
+        for (const auto& leaf : options.leaves) if (leaf.weight>0) selected_roots.insert(leaf.key.source_face_id);
+        for (size_t face = 0; face < mesh.indices.size(); ++face) if (options.face_weights[face] > 0 || selected_roots.count(face)) {
             const int mi = mesh.material_ids[face];
             require(mi >= 0 && size_t(mi) < material.size(), "Invalid appearance face material.");
             if (absolute && !material[mi].textured) continue; // Already written as verified corner colors.
@@ -974,7 +1031,7 @@ BeautyAppearanceResult edit_glb_appearance(const boost::filesystem::path& source
             checkpoint(canceled);
             const auto encoded = image_bytes(doc,image.first);
             cv::Mat pixels = decode_image(encoded);
-            const auto mask = raster_mask(mesh,material,image.first,pixels.cols,pixels.rows,options,canceled);
+            const auto mask = raster_mask(mesh,material,image.first,pixels.cols,pixels.rows,options,canceled,corner_map);
             const bool editable = std::any_of(mask.weights.begin(),mask.weights.end(),[](float w){ return w > 0; });
             require(editable, "A selected texture only contains protected shared UV texels or is too small; no partial version was saved.");
             has_editable_pixel = true;

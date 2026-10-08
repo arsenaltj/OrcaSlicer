@@ -6,7 +6,7 @@
 #include "slic3r/GUI/GUI.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/I18N.hpp"
-#include "slic3r/GUI/MsgDialog.hpp"
+#include "slic3r/GUI/Redesign/RedesignMessageDialog.hpp"
 
 #include <wx/stattext.h>
 #include <wx/textctrl.h>
@@ -251,9 +251,15 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
     m_job_id = status.id;
     m_job_state = status.state;
     m_job_phase = status.phase;
+    if (status.state == "stopped" || status.state == "cancelled" || status.state == "failed")
+        m_ui_stopping = false;
     m_job_palette_color_count = status.palette_color_count;
-    if (job_changed || palette_count_unchanged)
-        m_legacy_generation_state.restore_palette_color_count(status.palette_color_count);
+    if (m_palette_color_count && (job_changed || palette_count_unchanged)) {
+        const size_t count = AI::is_supported_target_palette_color_count(status.palette_color_count)
+            ? status.palette_color_count : AI::kLegacyDefaultTargetPaletteColors;
+        m_palette_color_count->SetSelection(static_cast<int>(count - AI::kMinTargetPaletteColors));
+        m_legacy_generation_state.restore_palette_color_count(count);
+    }
     if (!status.provider_task_id.empty()) {
         m_job_provider_name = status.provider_name;
         m_job_provider_task_id = status.provider_task_id;
@@ -288,7 +294,7 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
                 }
             }
             m_palette_roles_source = m_custom_palette;
-            m_legacy_generation_state.palette_source = 2;
+            if (m_palette_source) m_palette_source->SetSelection(2);
             m_job_use_printable_colors = true;
         }
     }
@@ -433,7 +439,7 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
         status.state == "failed" && !m_custom_palette.empty() &&
         status.message.find("palette recommendation") != std::string::npos;
     if (palette_recommendation_fallback) {
-        m_legacy_generation_state.palette_source = 2;
+        if (m_palette_source) m_palette_source->SetSelection(2);
         m_palette_recommendation_confirmed = true;
         m_awaiting_palette_confirmation = false;
         m_job_palette.clear();

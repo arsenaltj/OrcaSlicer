@@ -1089,7 +1089,7 @@ void SelectMachineDialog::sync_ams_mapping_result(std::vector<FilamentInfo> &res
         }
     }
     relayout_nozzle_cards();
-    wxString tab_name = wxGetApp().tab_panel()->GetSelectedPageName();
+    wxString tab_name = wxGetApp().mainframe->selected_tab_id();
     if (tab_name == TAB_ID_PREPARE || tab_name == TAB_ID_PREVIEW) {
         updata_thumbnail_data_after_connected_printer();
     }
@@ -3466,17 +3466,8 @@ void SelectMachineDialog::navigate_to_timelapse_page()
         auto* main_frame = wxGetApp().mainframe;
         if (!main_frame) return;
 
-        // use existing jump_to_monitor to switch to Monitor tab
-        main_frame->jump_to_monitor();
-
-        // then switch to Storage (Media) tab inside Monitor
-        auto* monitor = dynamic_cast<MonitorPanel*>(main_frame->m_monitor);
-        if (monitor) {
-            auto* tabpanel = monitor->get_tabpanel();
-            if (tabpanel) {
-                tabpanel->SetSelection(MonitorPanel::PT_MEDIA);
-            }
-        }
+        // Route through MainFrame so the redesign host remains the only visible navigation surface.
+        main_frame->jump_to_monitor_media();
     });
 
     this->EndModal(wxID_CANCEL);

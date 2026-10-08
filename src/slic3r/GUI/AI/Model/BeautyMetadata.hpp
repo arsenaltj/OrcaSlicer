@@ -3,6 +3,7 @@
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
 #include <nlohmann/json.hpp>
+#include <functional>
 #include "ModelArtifact.hpp"
 
 namespace Slic3r::AI {
@@ -30,11 +31,16 @@ inline boost::filesystem::path beauty_metadata_path(const boost::filesystem::pat
 // preview and its source draft available for retry; it never truncates history.
 inline void publish_beauty_version_record(const boost::filesystem::path& history,
     const boost::filesystem::path& model, const boost::filesystem::path& source,
-    const nlohmann::json& metadata, const std::string* preencoded_workbench = nullptr)
+    const nlohmann::json& metadata, const std::string* preencoded_workbench = nullptr,
+    const std::function<bool()>& canceled = {}, const nlohmann::json* history_index = nullptr)
 {
     const auto model_hash=metadata.at("model_sha256").get<std::string>();
     const auto source_hash=metadata.at("source_sha256").get<std::string>();
+    const auto checkpoint=[&] {
+        if(canceled && canceled())throw std::runtime_error("Beauty version save canceled.");
+    };
     const auto verify=[&] {
+        checkpoint();
         if(model_hash.empty() || source_hash.empty() || boost::filesystem::is_symlink(model) ||
             boost::filesystem::is_symlink(source))
             throw std::runtime_error("预览或来源模型已变化，尚未保存。请返回编辑重新预览；原件和草稿保留。");
@@ -48,6 +54,9 @@ inline void publish_beauty_version_record(const boost::filesystem::path& history
     verify();
     if(boost::filesystem::exists(history) || boost::filesystem::is_symlink(history))
         throw std::runtime_error("版本记录已存在，未覆盖已有资产。请返回编辑重新预览。");
+    auto index_path=history;index_path.replace_extension(".history.json");
+    if(history_index && (boost::filesystem::exists(index_path) || boost::filesystem::is_symlink(index_path)))
+        throw std::runtime_error("历史索引已存在，未覆盖已有资产。");
     std::string bytes;
     if(preencoded_workbench) {
         if(preencoded_workbench->empty() || !metadata.is_object() || metadata.contains("beauty_workbench"))
@@ -65,19 +74,30 @@ inline void publish_beauty_version_record(const boost::filesystem::path& history
     } else bytes=metadata.dump();
     if(bytes.size()>128*1024*1024)
         throw std::runtime_error("版本记录过大，尚未保存。原件和草稿保留。");
-    const auto temporary=history.parent_path()/boost::filesystem::unique_path("beauty-version-%%%%-%%%%.tmp");
+    const auto publish=[&](const boost::filesystem::path& path,const std::string& content) {
+        const auto temporary=path.parent_path()/boost::filesystem::unique_path("beauty-version-%%%%-%%%%.tmp");
+        try {
+            boost::filesystem::ofstream output(temporary,std::ios::binary);
+            output.write(content.data(),std::streamsize(content.size()));output.close();
+            if(!output)throw std::runtime_error("版本记录写入失败，请检查磁盘空间或保存目录权限后重试。");
+            verify();
+            boost::filesystem::create_hard_link(temporary,path);
+        } catch(...) {
+            boost::system::error_code ignored;boost::filesystem::remove(temporary,ignored);throw;
+        }
+        boost::system::error_code ignored;boost::filesystem::remove(temporary,ignored);
+    };
+    bool published=false,indexed=false;
     try {
-        boost::filesystem::ofstream output(temporary,std::ios::binary);
-        output.write(bytes.data(),std::streamsize(bytes.size()));output.close();
-        if(!output)throw std::runtime_error("版本记录写入失败，请检查磁盘空间或保存目录权限后重试。");
-        verify();
-        // Unlike replacing an existing file, this also rejects a record that
-        // appeared after the preflight check. Both paths share the same volume.
-        boost::filesystem::create_hard_link(temporary,history);
+        publish(history,bytes);published=true;
+        if(history_index) { publish(index_path,history_index->dump());indexed=true; }
+        checkpoint();
     } catch(...) {
-        boost::system::error_code ignored;boost::filesystem::remove(temporary,ignored);throw;
+        boost::system::error_code ignored;
+        if(indexed)boost::filesystem::remove(index_path,ignored);
+        if(published)boost::filesystem::remove(history,ignored);
+        throw;
     }
-    boost::system::error_code ignored;boost::filesystem::remove(temporary,ignored);
 }
 
 }

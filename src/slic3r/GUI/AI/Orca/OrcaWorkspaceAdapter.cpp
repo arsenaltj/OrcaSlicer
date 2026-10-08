@@ -6,6 +6,7 @@
 #include "OrcaPaletteSnapshotBuilder.hpp"
 #include "OrcaPrintPaletteSnapshot.hpp"
 #include "AIImportSeamRepair.hpp"
+#include "OrcaSmartSlicingAdapter.hpp"
 
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/GUI_ObjectList.hpp"
@@ -14,9 +15,11 @@
 #include "slic3r/GUI/ObjColorDialog.hpp"
 #include "slic3r/GUI/ModelColorImportResult.hpp"
 #include "slic3r/GUI/Plater.hpp"
+#include "slic3r/GUI/PartPlate.hpp"
 #include "libslic3r/Format/OBJ.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include "slic3r/GUI/AI/Model/SurfaceSelectionState.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/WorkbenchProjectColor.hpp"
 #include "libslic3r/FilamentMixer.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/PresetBundle.hpp"
@@ -37,6 +40,7 @@
 #include <utility>
 #include <openssl/evp.h>
 #include <nlohmann/json.hpp>
+#include <wx/colour.h>
 
 namespace Slic3r::GUI {
 namespace {
@@ -150,7 +154,7 @@ AI::PrintablePaletteSnapshot OrcaWorkspaceAdapter::printable_palette() const
 TextureImportOptions model_import_color_options(const AI::ModelImportRequest& request)
 {
     TextureImportOptions options;
-    options.workspace_presentation = true;
+    options.workbench_review = true;
     // Twelve editable target groups leave room for skin, lips and clothing
     // shades. This is a starting point, not a requirement for twelve filaments.
     options.initial_target_colors = 12;
@@ -191,6 +195,71 @@ TextureImportOptions model_import_color_options(const AI::ModelImportRequest& re
         }
     }
     return options;
+}
+
+std::vector<AI::PhysicalFilamentChannel> OrcaWorkspaceAdapter::project_filament_channels() const
+{
+    if (!m_plater || !wxGetApp().preset_bundle) return {};
+    return workbench_project_channels(wxGetApp().preset_bundle->project_config);
+}
+
+AI::ModelImportResult OrcaWorkspaceAdapter::import_workbench_artifact(const AI::ModelImportRequest& request)
+{
+    if (!m_plater) return {};
+    auto result = m_plater->import_workbench_model(request);
+    if (result.imported() && m_on_import_succeeded) m_on_import_succeeded();
+    return result;
+}
+
+std::function<bool()> OrcaWorkspaceAdapter::capture_import_guard() const
+{
+    if (!m_plater) return [] { return false; };
+    const auto revision = OrcaSmartSlicingAdapter(m_plater).current_revision();
+    return [plater = m_plater, revision] {
+        return OrcaSmartSlicingAdapter(plater).current_revision() == revision;
+    };
+}
+
+bool OrcaWorkspaceAdapter::set_project_filament_color(size_t slot, const std::string& color,
+    const std::function<bool()>& current, std::string& error)
+{
+    error.clear();
+    if (!m_plater || !wxGetApp().preset_bundle || !current || !current()) {
+        error = "工程或打印机已变化，请重新选择耗材颜色。";
+        return false;
+    }
+    const auto channels = project_filament_channels();
+    auto& bundle = *wxGetApp().preset_bundle;
+    auto config = bundle.project_config;
+    bool changed = false;
+    if (!prepare_workbench_project_color(config, channels, slot, color, changed, error)) return false;
+    if (!changed) return true;
+    if (!m_plater->apply_project_config(std::move(config), bundle.filament_presets,
+            "Change project filament color", error)) return false;
+    m_plater->on_config_change(bundle.full_config());
+    m_plater->get_partplate_list().invalid_all_slice_result();
+    m_plater->update_project_dirty_from_presets();
+    bundle.export_selections(*wxGetApp().app_config);
+    m_plater->update();
+    return true;
+}
+
+ObjImportColorFn workbench_obj_color_mapper(Plater* plater, AI::ImportColorMode mode,
+    const AI::PrintablePaletteSnapshot& palette, AI::ModelImportResult& result, bool& cancelled)
+{
+    if (mode == AI::ImportColorMode::AutoMap)
+        return make_obj_color_mapper(palette.project_colors, palette.compatible_slots, result.colors_applied,
+            result.source_color_count, result.mapped_color_count);
+    return [plater, colors = palette.project_colors, &result, &cancelled](ObjDialogInOut& input) {
+        input.preserve_input_colors = true;
+        result.source_color_count = std::set<RGBA>(input.input_colors.begin(), input.input_colors.end()).size();
+        ObjColorDialog dialog(plater, input, colors, Sidebar::should_show_SEMM_buttons());
+        if (dialog.ShowModal() != wxID_OK) { input.cancelled = cancelled = true; return; }
+        result.mapped_color_count = std::set<unsigned char>(input.filament_ids.begin(), input.filament_ids.end()).size();
+        result.colors_applied = input.deal_vertex_color ?
+            Model::obj_import_vertex_color_deal(input.filament_ids, input.first_extruder_id, input.model) :
+            Model::obj_import_face_color_deal(input.filament_ids, input.first_extruder_id, input.model);
+    };
 }
 
 AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImportRequest& request)

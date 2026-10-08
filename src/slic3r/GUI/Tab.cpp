@@ -6467,6 +6467,14 @@ void Tab::load_current_preset()
             const PrinterTechnology printer_technology = m_presets->get_edited_preset().printer_technology();
             if (printer_technology != static_cast<TabPrinter*>(this)->m_printer_technology)
             {
+                const bool redesign_shell_active = wxGetApp().mainframe != nullptr &&
+                    wxGetApp().mainframe->is_redesign_shell_active();
+
+                // Keep the preset/configuration transition, but do not mutate
+                // the legacy notebook after the redesign shell has taken over
+                // the frame. The new shell will expose the resulting state
+                // through its own host/navigation layer.
+                if (!redesign_shell_active) {
                 // The change of the technology requires to remove some of unrelated Tabs
                 // During this action, wxNoteBook::RemovePage invoke wxEVT_NOTEBOOK_PAGE_CHANGED
                 // and as a result a function select_active_page() is called fron Tab::OnActive()
@@ -6504,12 +6512,13 @@ void Tab::load_current_preset()
                         wxGetApp().tab_panel()->RemovePage(page_id);
                     }
                 }
-                static_cast<TabPrinter*>(this)->m_printer_technology = printer_technology;
                 m_active_page = tmp_page;
 #ifdef _MSW_DARK_MODE
                 if (!wxGetApp().tabs_as_menu())
                     dynamic_cast<Notebook*>(wxGetApp().tab_panel())->SetPageImage(wxGetApp().tab_panel()->FindPage(this), printer_technology == ptFFF ? "printer" : "sla_printer");
 #endif
+                }
+                static_cast<TabPrinter*>(this)->m_printer_technology = printer_technology;
             }
             //update the object config due to extruder count change
             DynamicPrintConfig& new_print_config = wxGetApp().preset_bundle->prints.get_edited_preset().config;

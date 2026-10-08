@@ -1,17 +1,43 @@
 #include "ModelSemanticColoring.hpp"
 #include "ModelColorPreviewShader.hpp"
 #include "ModelPreviewNormals.hpp"
+#include "LocalSemanticWorkerClient.hpp"
+#include "PortraitColorPlanBuild.hpp"
+#include "libslic3r/Utils.hpp"
 #include "slic3r/AI/ModelGeneration/SemanticColoring/MediaPipeRegionRecognizers.hpp"
 #include <nlohmann/json.hpp>
 #include <atomic>
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <fstream>
 #include <map>
+#include <numeric>
 #include <thread>
+#include <boost/dll/runtime_symbol_info.hpp>
 
 namespace Slic3r::GUI {
 namespace SC = AI::SemanticColoring;
 namespace {
+bool red_preview_color(const SC::Color& color)
+{
+    SC::Color linear = color;
+    for (float& channel : linear)
+        channel = channel <= .04045f ? channel / 12.92f : std::pow((channel + .055f) / 1.055f, 2.4f);
+    const float l = std::cbrt(.4122214708f*linear[0] + .5363325363f*linear[1] + .0514459929f*linear[2]);
+    const float m = std::cbrt(.2119034982f*linear[0] + .6806995451f*linear[1] + .1073969566f*linear[2]);
+    const float s = std::cbrt(.0883024619f*linear[0] + .2817188376f*linear[1] + .6299787005f*linear[2]);
+    const float a = 1.9779984951f*l - 2.428592205f*m + .4505937099f*s;
+    const float b = .0259040371f*l + .7827717662f*m - .808675766f*s;
+    return std::hypot(a, b) >= .055f && a >= .045f && a > b * 1.25f + .01f;
+}
+bool neutral_preview_color(const SC::Color& color)
+{
+    const float maximum = std::max({color[0], color[1], color[2]});
+    const float minimum = std::min({color[0], color[1], color[2]});
+    return maximum - minimum < .10f &&
+        (color[0] + color[1] + color[2]) / 3.f >= .42f;
+}
 // Freeze provider selection with the request, so edits to the configuration
 // cannot be read by a stale worker after the user has selected another model.
 std::string provider_configuration(const std::filesystem::path& runtime)
@@ -28,6 +54,125 @@ std::string provider_configuration(const std::filesystem::path& runtime)
 
 }
 
+bool decode_semantic_result(const nlohmann::json& value,const std::string& geometry,size_t count,
+    SC::FaceColors& faces,SC::SubfaceColors& children)
+{
+    faces.clear(); children.clear();
+    try {
+        if (!value.is_object() || value.at("schema")!="orca.semantic-result/v1" ||
+            value.at("geometry_id")!=geometry || value.at("face_count")!=count ||
+            !value.at("faces").is_array() || value.at("faces").size()>count ||
+            !value.at("subfaces").is_array() || value.at("subfaces").size()>2000000)
+            throw std::invalid_argument("Invalid saved semantic identity.");
+        const auto integer=[](const nlohmann::json& field)->uint64_t {
+            if (!field.is_number_integer() || field.get<int64_t>()<0)
+                throw std::invalid_argument("Invalid saved semantic integer.");
+            return field.get<uint64_t>();
+        };
+        const auto rgb=[](const nlohmann::json& field)->SC::Color {
+            if (!field.is_array() || field.size()!=3) throw std::invalid_argument("Invalid saved semantic color.");
+            for (const auto& c:field) if (!c.is_number() || !std::isfinite(c.get<double>()) || c.get<double>()<0 || c.get<double>()>1)
+                throw std::invalid_argument("Invalid saved semantic channel.");
+            return field.get<SC::Color>();
+        };
+        for (const auto& item:value.at("faces")) {
+            if (!item.is_array() || item.size()!=2) throw std::invalid_argument("Invalid saved semantic face.");
+            const auto face=integer(item[0]);
+            if (face>=count || (!faces.empty() && face<=faces.back().first))
+                throw std::invalid_argument("Unordered saved semantic face.");
+            faces.push_back({size_t(face),rgb(item[1])});
+        }
+        for (const auto& item:value.at("subfaces")) {
+            if (!item.is_array() || item.size()!=4) throw std::invalid_argument("Invalid saved semantic child.");
+            const auto face=integer(item[0]),depth=integer(item[1]),path=integer(item[2]);
+            if (face>=count || !depth || depth>4 || path>=(1ull<<(2*depth)))
+                throw std::invalid_argument("Saved semantic child is out of range.");
+            SC::SubfaceColor child{size_t(face),{uint8_t(depth),uint8_t(path)},rgb(item[3]),1.f};
+            if (!children.empty() && !(std::tie(children.back().face_id,children.back().path)<std::tie(child.face_id,child.path)))
+                throw std::invalid_argument("Unordered saved semantic child.");
+            children.push_back(child);
+        }
+        return true;
+    } catch (const std::exception&) { faces.clear(); children.clear(); return false; }
+}
+
+std::filesystem::path semantic_region_runtime_directory()
+{
+    boost::system::error_code error;
+    const auto executable = boost::dll::program_location(error);
+    return error ? std::filesystem::path {} : std::filesystem::path(executable.native()).parent_path() / "ai" / "portrait_semantics";
+}
+
+std::string portrait_shape_runtime_fingerprint()
+{
+    LocalSemanticWorker::Configuration config;
+    std::string reason;
+    const auto modules = boost::filesystem::path(Slic3r::resources_dir()) / "tools" / "ai";
+    if (!LocalSemanticWorker::read_runtime_configuration(boost::filesystem::path(Slic3r::data_dir()) / "local_semantic_runtime.json",
+            boost::filesystem::path(Slic3r::resources_dir()) / "beauty-runtime", config, reason) || !config.enabled) return {};
+    std::string identity = AI::model_artifact_sha256(config.python_executable);
+    for (const char* name : {"glb_artifact.py", "local_semantic_worker.py", "local_semantic_geometry.py", "local_semantic_render.py",
+            "local_semantic_transform.py", "local_semantic_views.py", "local_semantic_projection.py", "local_semantic_pipeline.py",
+            "local_semantic_request.py", "local_eye_landmarks.py", "local_face_landmarks.py", "local_shape_constraints.py", "local_brow_boundary.py", "local_body_regions.py",
+            "local_hair_expansion_guard.py", "local_region_mask_consensus.py", "local_region_mask_projection.py",
+            "local_surface_region_consensus.py", "local_surface_region_holes.py"}) {
+        const auto hash = AI::model_artifact_sha256(modules / name);
+        if (hash.empty()) return {};
+        identity += std::string(name) + hash;
+    }
+    for (const char* name : {"mobilenet0.25_Final.pth", "face_parsing.farl.celebm.main_ema_181500_jit.pt", "face_landmarker.task"}) {
+        const auto hash = AI::model_artifact_sha256(config.weights_directory / name);
+        if (hash.empty()) return {};
+        identity += std::string(name) + hash;
+    }
+    const auto raster = modules / "local_semantic_raster.dll";
+    if (boost::filesystem::exists(raster)) identity += AI::model_artifact_sha256(raster);
+    return PortraitShapeCache::digest(identity);
+}
+
+std::string semantic_region_runtime_identity(const std::filesystem::path& runtime)
+{
+    if (runtime.empty()) return {};
+    std::string identity = std::string(SC::pipeline_version) + provider_configuration(runtime);
+    for (const char* name : {"runtime-manifest.json", "libmediapipe.dll", "face_landmarker.task",
+                             "selfie_multiclass_256x256.tflite"}) {
+        const auto hash = AI::model_artifact_sha256(boost::filesystem::path((runtime / name).native()));
+        if (hash.empty()) return {};
+        identity += std::string(name) + hash;
+    }
+    unsigned char bytes[EVP_MAX_MD_SIZE];
+    unsigned int length = 0;
+    if (EVP_Digest(identity.data(), identity.size(), bytes, &length, EVP_sha256(), nullptr) != 1 || length != 32) return {};
+    constexpr char hex[] = "0123456789abcdef";
+    std::string result;
+    for (unsigned int i = 0; i < length; ++i) { result += hex[bytes[i] >> 4]; result += hex[bytes[i] & 15]; }
+    return result;
+}
+
+std::shared_ptr<const SemanticRegionEvidence> load_legacy_semantic_region_evidence(
+    const SC::MeshSnapshot& source, const std::filesystem::path& runtime, const std::filesystem::path& cache,
+    const std::string& runtime_identity, std::string& error)
+{
+    try {
+        if (runtime_identity.empty() || !std::filesystem::is_directory(cache) || std::filesystem::is_empty(cache)) return {};
+        const auto configuration = nlohmann::json::parse(provider_configuration(runtime));
+        // Reading identities and decoding an existing file never calls predict/analyze.
+        auto providers = SC::create_region_recognizers(configuration.value("body_provider", "mediapipe.cpu.v1"),
+            configuration.value("face_provider", "mediapipe.cpu.v1"), runtime);
+        if (!providers.error.empty() || !providers.body || !providers.face) return {};
+        const auto file = cache / (SC::analysis_cache_key(source, providers.body->identity(), providers.face->identity()) + ".json");
+        std::error_code ec;
+        const auto bytes = std::filesystem::file_size(file, ec);
+        if (ec) return {};
+        if (bytes > SemanticRegionEvidenceCache::maximum_bytes) throw std::runtime_error("Legacy analysis cache too large");
+        std::ifstream input(file, std::ios::binary);
+        SC::Analysis analysis;
+        if (!SC::decode_analysis(nlohmann::json::parse(input, nullptr, false), source,
+            providers.body->identity(), providers.face->identity(), analysis, error)) return {};
+        return SemanticRegionEvidence::from_analysis(analysis, runtime_identity);
+    } catch (const std::exception& e) { error = e.what(); return {}; }
+}
+
 GLModel::Geometry build_semantic_colored_geometry(const SC::MeshSnapshot& source, const SC::FaceColors& paint,
                                                    const SC::SubfaceColors& subfaces, const SC::Cancel& cancel)
 {
@@ -40,7 +185,7 @@ GLModel::Geometry build_semantic_colored_geometry(const SC::MeshSnapshot& source
         if (paint[i].first < indices.size()) indices[paint[i].first] = int(i);
     std::map<size_t, std::map<SC::SubfacePath, SC::Color>> children;
     for (const SC::SubfaceColor& item : subfaces) {
-        if (item.face_id >= mesh.indices.size() || item.path.depth == 0 || item.path.depth > 2 ||
+        if (item.face_id >= mesh.indices.size() || item.path.depth == 0 || item.path.depth > 4 ||
             unsigned(item.path.value) >= (1u << (2u * item.path.depth))) return {};
         children[item.face_id][item.path] = item.color;
     }
@@ -57,28 +202,26 @@ GLModel::Geometry build_semantic_colored_geometry(const SC::MeshSnapshot& source
         if (child_colors == children.end()) {
             leaves.push_back({0, 0});
         } else {
-            std::array<bool, 4> split_child {};
+            std::set<SC::SubfacePath> branches;
             for (const auto& item : child_colors->second)
-                if (item.first.depth == 2) split_child[item.first.value >> 2] = true;
-            for (uint8_t child = 0; child < 4; ++child) {
-                if (split_child[child])
-                    for (uint8_t grandchild = 0; grandchild < 4; ++grandchild)
-                        leaves.push_back({2, uint8_t((child << 2) | grandchild)});
-                else
-                    leaves.push_back({1, child});
-            }
+                for (uint8_t level=0;level<item.first.depth;++level)
+                    branches.insert({level,uint8_t(item.first.value>>(2*(item.first.depth-level)))});
+            const auto visit = [&](const auto& self, SC::SubfacePath path)->void {
+                if (!branches.count(path)) { leaves.push_back(path); return; }
+                for (uint8_t child=0;child<4;++child) self(self,{uint8_t(path.depth+1),uint8_t((path.value<<2)|child)});
+            };
+            visit(visit,{0,0});
         }
         for (const SC::SubfacePath& leaf : leaves) {
             std::array<SC::Barycentric, 3> barycentric;
-            if (leaf.depth == 0)
-                barycentric = {{{1.f,0.f,0.f}, {0.f,1.f,0.f}, {0.f,0.f,1.f}}};
-            else if (!SC::subface_vertices(leaf, barycentric)) return {};
+            const auto corners = AI::BeautyLeafKey{f,leaf.depth,leaf.value}.barycentric();
+            for (size_t i=0;i<3;++i) for (size_t c=0;c<3;++c) barycentric[i][c]=float(corners[i][c]);
             const SC::Color* leaf_color = nullptr;
             if (child_colors != children.end()) {
-                auto found = child_colors->second.find(leaf);
-                if (found == child_colors->second.end() && leaf.depth == 2)
-                    found = child_colors->second.find({1, uint8_t(leaf.value >> 2)});
-                if (found != child_colors->second.end()) leaf_color = &found->second;
+                for (uint8_t depth=leaf.depth;depth>0;--depth) {
+                    const auto found=child_colors->second.find({depth,uint8_t(leaf.value>>(2*(leaf.depth-depth)))});
+                    if (found!=child_colors->second.end()) { leaf_color=&found->second; break; }
+                }
             }
             if (leaf_color == nullptr && indices[f] >= 0) leaf_color = &paint[size_t(indices[f])].second;
             const unsigned base = unsigned(geometry.vertices_count());
@@ -112,6 +255,8 @@ struct ModelSemanticColoring::Impl {
         FaceColors manual;
         std::string configuration;
         uint64_t generation {0};
+        std::filesystem::path source_path;
+        std::shared_ptr<const PortraitShapeDetails> shapes;
     } request;
     struct Job {
         Request request;
@@ -139,6 +284,7 @@ struct ModelSemanticColoring::Impl {
             auto result = std::make_unique<Result>();
             const SC::Cancel cancel = [task] { return task->canceled.load(); };
             try {
+                result->region_runtime_identity = semantic_region_runtime_identity(runtime);
                 if (!providers.body || !providers.face || providers_configuration != task->request.configuration) {
                     std::string body_id = "mediapipe.cpu.v1", face_id = body_id;
                     const auto doc = nlohmann::json::parse(task->request.configuration);
@@ -150,7 +296,27 @@ struct ModelSemanticColoring::Impl {
                 }
                 if (!providers.error.empty()) throw std::runtime_error(providers.error);
                 if (!providers.body || !providers.face) throw std::runtime_error("Local region recognizers unavailable");
-                const auto& source = *task->request.source;
+                std::shared_ptr<Snapshot> original_source;
+                if (task->request.shapes && task->request.shapes->compatible(
+                        task->request.source->geometry_id, task->request.source->mesh.indices.size())) {
+                    const auto original = PortraitShapeCache::verified_source(
+                        boost::filesystem::path(Slic3r::data_dir()) / "cache", task->request.shapes->locks.source_sha256);
+                    TriangleMesh mesh;
+                    ObjInfo colors;
+                    std::string error;
+                    if (!AI::load_model_artifact(original, mesh, colors, error)) throw std::runtime_error(error);
+                    original_source = std::make_shared<Snapshot>();
+                    original_source->mesh = std::move(mesh.its);
+                    original_source->geometry_id = AI::SurfaceSelectionPersistence::geometry_fingerprint(original_source->mesh);
+                    if (original_source->geometry_id != task->request.source->geometry_id ||
+                        original_source->mesh.indices.size() != task->request.source->mesh.indices.size())
+                        throw std::runtime_error("Original portrait face mapping changed.");
+                    original_source->vertex_colors = std::move(colors.vertex_colors);
+                    original_source->face_colors = std::move(colors.face_colors);
+                    original_source->content_id = SC::content_fingerprint(*original_source);
+                    result->verified_original_source = true;
+                }
+                const auto& source = original_source ? *original_source : *task->request.source;
                 const auto key = SC::analysis_cache_key(source, providers.body->identity(), providers.face->identity());
                 auto analysis = std::make_shared<SC::Analysis>();
                 const auto cache_file = cache / (key + ".json");
@@ -191,17 +357,244 @@ struct ModelSemanticColoring::Impl {
                             source, *analysis, task->request.palette, task->request.portrait);
                         result->automatic = SC::remap_palette_targets(source_automatic,
                             task->request.palette, task->request.targets);
+                        if (task->request.palette.size() <= 4) {
+                            // Slot remapping happens after semantic mapping. A
+                            // safe source slot can therefore become red in the
+                            // displayed target palette; enforce the same rule
+                            // once more on the actual output colors.
+                            std::vector<uint8_t> eye_vertices(source.mesh.vertices.size(), 0);
+                            std::vector<size_t> eye_canonical(source.mesh.vertices.size());
+                            std::iota(eye_canonical.begin(), eye_canonical.end(), 0);
+                            if (!source.mesh.vertices.empty()) {
+                                Vec3f lower = source.mesh.vertices.front(), upper = lower;
+                                for (const auto& vertex : source.mesh.vertices) {
+                                    lower = lower.cwiseMin(vertex);
+                                    upper = upper.cwiseMax(vertex);
+                                }
+                                const float seam_tolerance = std::max((upper - lower).norm() * 1e-7f, 1e-6f);
+                                const float seam_tolerance_squared = seam_tolerance * seam_tolerance;
+                                std::vector<size_t> vertex_order(source.mesh.vertices.size());
+                                std::iota(vertex_order.begin(), vertex_order.end(), 0);
+                                std::sort(vertex_order.begin(), vertex_order.end(), [&](size_t lhs, size_t rhs) {
+                                    for (int axis = 0; axis < 3; ++axis) {
+                                        if (source.mesh.vertices[lhs][axis] < source.mesh.vertices[rhs][axis]) return true;
+                                        if (source.mesh.vertices[lhs][axis] > source.mesh.vertices[rhs][axis]) return false;
+                                    }
+                                    return lhs < rhs;
+                                });
+                                size_t canonical_id = vertex_order.front();
+                                for (size_t vertex : vertex_order) {
+                                    const Vec3f delta = source.mesh.vertices[vertex] - source.mesh.vertices[canonical_id];
+                                    if (delta.squaredNorm() > seam_tolerance_squared) canonical_id = vertex;
+                                    eye_canonical[vertex] = canonical_id;
+                                }
+                            }
+                            for (size_t face_id = 0; face_id < analysis->face_labels.size(); ++face_id) {
+                                const auto label = analysis->face_labels[face_id];
+                                if (label != SC::Label::EyeSclera && label != SC::Label::Iris &&
+                                    label != SC::Label::Eyebrow) continue;
+                                if (face_id >= source.mesh.indices.size()) continue;
+                                for (int corner = 0; corner < 3; ++corner) {
+                                    const int vertex = source.mesh.indices[face_id][corner];
+                                    if (vertex >= 0 && size_t(vertex) < eye_vertices.size()) eye_vertices[eye_canonical[size_t(vertex)]] = 1;
+                                }
+                            }
+                            const auto eye_zone_face = [&](size_t face_id) {
+                                if (face_id >= source.mesh.indices.size() || face_id >= analysis->face_labels.size()) return false;
+                                const auto label = analysis->face_labels[face_id];
+                                if (label == SC::Label::EyeSclera || label == SC::Label::Iris || label == SC::Label::Eyebrow)
+                                    return true;
+                                if (label == SC::Label::Hair || label == SC::Label::Clothes || label == SC::Label::Accessories ||
+                                    label == SC::Label::Lips) return false;
+                                for (int corner = 0; corner < 3; ++corner) {
+                                    const int vertex = source.mesh.indices[face_id][corner];
+                                    if (vertex >= 0 && size_t(vertex) < eye_vertices.size() && eye_vertices[eye_canonical[size_t(vertex)]]) return true;
+                                }
+                                return false;
+                            };
+                            std::map<size_t, SC::Color> source_by_face;
+                            for (const auto& item : source_automatic) source_by_face[item.first] = item.second;
+                            std::map<size_t, SC::Color> safe;
+                            for (const auto& item : result->automatic) {
+                                const auto source_found = source_by_face.find(item.first);
+                                const size_t proposed = [&]() {
+                                    if (source_found == source_by_face.end()) return task->request.targets.size();
+                                    const auto slot = std::find(task->request.palette.begin(), task->request.palette.end(), source_found->second);
+                                    return slot == task->request.palette.end() ? task->request.targets.size() :
+                                        size_t(slot - task->request.palette.begin());
+                                }();
+                                const auto label = item.first < analysis->face_labels.size()
+                                    ? analysis->face_labels[item.first] : SC::Label::Unknown;
+                                const bool facial = label == SC::Label::EyeSclera || label == SC::Label::Iris ||
+                                    label == SC::Label::Eyebrow || label == SC::Label::FaceSkin || label == SC::Label::BodySkin;
+                                const bool eye_zone = eye_zone_face(item.first);
+                                const bool neutral_garment = label == SC::Label::Clothes && source_found != source_by_face.end() &&
+                                    neutral_preview_color(source_found->second);
+                                const bool source_red = source_found != source_by_face.end() && red_preview_color(source_found->second);
+                                const bool block_red = facial || eye_zone || neutral_garment ||
+                                    ((label == SC::Label::Clothes || label == SC::Label::Hair || label == SC::Label::Accessories) && !source_red);
+                                const auto acceptable = [&](size_t slot) {
+                                    if (slot >= task->request.targets.size()) return false;
+                                    if (block_red && red_preview_color(task->request.targets[slot])) return false;
+                                    if (neutral_garment && (!neutral_preview_color(task->request.targets[slot]) ||
+                                                             task->request.targets[slot][0] < .35f)) return false;
+                                    return true;
+                                };
+                                size_t selected = proposed;
+                                if (!acceptable(selected)) {
+                                    selected = task->request.targets.size();
+                                    float best = std::numeric_limits<float>::max();
+                                    for (size_t slot = 0; slot < task->request.targets.size(); ++slot) {
+                                        if (!acceptable(slot)) continue;
+                                        const auto& source_color = source_found != source_by_face.end()
+                                            ? source_found->second : item.second;
+                                        const float score = (source_color[0] - task->request.targets[slot][0]) *
+                                            (source_color[0] - task->request.targets[slot][0]) +
+                                            (source_color[1] - task->request.targets[slot][1]) *
+                                            (source_color[1] - task->request.targets[slot][1]) +
+                                            (source_color[2] - task->request.targets[slot][2]) *
+                                            (source_color[2] - task->request.targets[slot][2]);
+                                        if (score < best) { best = score; selected = slot; }
+                                    }
+                                }
+                                if (selected < task->request.targets.size()) safe[item.first] = task->request.targets[selected];
+                            }
+                            result->automatic.assign(safe.begin(), safe.end());
+                        }
                         SC::SubfaceBudgetResult source_subfaces;
                         std::string subface_error;
                         if (!SC::map_subface_palette(source, *analysis, source_automatic, task->request.palette,
                                 task->request.portrait, {}, source_subfaces, subface_error))
                             throw std::runtime_error(subface_error);
+                        if (task->request.palette.size() <= 4) {
+                            // Temporary limited-palette safeguard: eye detail
+                            // candidates are individually colored from tiny
+                            // raster samples and can introduce white/skin/iris
+                            // speckles. Keep whole-face eye mapping and all
+                            // non-eye boundary repairs (hair, clothing, skin).
+                            source_subfaces.accepted.erase(std::remove_if(
+                                source_subfaces.accepted.begin(), source_subfaces.accepted.end(),
+                                [&analysis = *analysis](const SC::SubfaceColor& item) {
+                                    if (item.face_id >= analysis.face_labels.size()) return false;
+                                    if (analysis.face_labels[item.face_id] == SC::Label::Lips ||
+                                        analysis.face_labels[item.face_id] == SC::Label::EyeSclera ||
+                                        analysis.face_labels[item.face_id] == SC::Label::Iris ||
+                                        analysis.face_labels[item.face_id] == SC::Label::Eyebrow)
+                                        return true;
+                                    return std::any_of(analysis.subface_labels.begin(), analysis.subface_labels.end(),
+                                        [&item](const SC::SubfaceLabelEvidence& evidence) {
+                                            return evidence.face_id == item.face_id && evidence.path == item.path &&
+                                                (evidence.label == SC::Label::Lips ||
+                                                 evidence.label == SC::Label::EyeSclera ||
+                                                 evidence.label == SC::Label::Iris ||
+                                                 evidence.label == SC::Label::Eyebrow);
+                                        });
+                                }), source_subfaces.accepted.end());
+                        }
                         result->automatic_subfaces = SC::remap_subface_palette_targets(
                             source_subfaces.accepted, task->request.palette, task->request.targets);
+                        result->native_automatic = result->automatic;
+                        result->native_automatic_subfaces = result->automatic_subfaces;
+                        const auto fingerprint = portrait_shape_runtime_fingerprint();
+                        const auto previous_shapes = task->request.shapes && task->request.shapes->compatible(
+                            source.geometry_id, source.mesh.indices.size()) ? task->request.shapes : nullptr;
+                        result->shape_details = task->request.shapes;
+                        if (result->shape_details && (fingerprint.empty() || !result->shape_details->compatible(source.geometry_id, source.mesh.indices.size()) ||
+                                result->shape_details->runtime_fingerprint != fingerprint)) result->shape_details.reset();
+                        if (!result->shape_details && !task->request.source_path.empty() && !cancel()) {
+                          try {
+                            LocalSemanticWorker::Configuration config;
+                            std::string reason;
+                            const auto data = boost::filesystem::path(Slic3r::data_dir());
+                            const auto modules = boost::filesystem::path(Slic3r::resources_dir()) / "tools" / "ai";
+                            if (LocalSemanticWorker::read_runtime_configuration(data / "local_semantic_runtime.json",
+                                    boost::filesystem::path(Slic3r::resources_dir()) / "beauty-runtime", config, reason) && config.enabled) {
+                                const auto requests = data / "beauty_semantic_requests";
+                                boost::filesystem::create_directories(requests);
+                                const auto owned = requests / boost::filesystem::unique_path("portrait-%%%%-%%%%-%%%%");
+                                const auto cache = data / "cache";
+                                const auto original = previous_shapes
+                                    ? PortraitShapeCache::verified_source(cache, previous_shapes->locks.source_sha256)
+                                    : PortraitShapeCache::preserve_source(cache, boost::filesystem::path(task->request.source_path.native()),
+                                        AI::model_artifact_sha256(boost::filesystem::path(task->request.source_path.native())));
+                                const auto local = LocalSemanticWorker::analyze(config, modules, owned,
+                                    original, source.mesh, task->canceled, data / "beauty_semantic_cache");
+                                std::string cleanup;
+                                LocalSemanticWorker::cleanup_request(owned, requests, cleanup);
+                                if (local.process.status == LocalSemanticWorker::Status::Ready && !cancel()) {
+                                    auto details = std::make_shared<PortraitShapeDetails>();
+                                    details->locks = AI::ShapeLockSet::from_evidence(local.evidence, local.evidence_sha256);
+                                    details->subjects = local.evidence.subjects;
+                                    details->runtime_fingerprint = fingerprint;
+                                    details->base_colors = previous_shapes ? previous_shapes->base_colors :
+                                        source.face_colors.size() == source.mesh.indices.size() ? source.face_colors :
+                                            AI::beauty_source_face_colors(source.mesh, source.vertex_colors);
+                                    std::set<size_t> reserved;
+                                    for (const auto& region : local.evidence.regions) if (AI::ShapeLockSet::supported_label(region.label))
+                                        reserved.insert(region.faces.begin(), region.faces.end());
+                                    for (const auto& shape : local.evidence.shape_details) {
+                                        reserved.insert(shape.accepted_faces.begin(), shape.accepted_faces.end());
+                                        reserved.insert(shape.rejected_faces.begin(), shape.rejected_faces.end());
+                                    }
+                                    details->reserved_faces.assign(reserved.begin(), reserved.end());
+                                    if (!details->compatible(source.geometry_id, source.mesh.indices.size())) throw std::runtime_error("Local shape source mapping changed.");
+                                    result->shape_details = std::move(details);
+                                } else result->shape_error = local.process.reason;
+                            } else result->shape_error = reason;
+                          } catch (const std::exception& error) {
+                              result->shape_details.reset();
+                              result->shape_error = error.what();
+                          }
+                        }
+                        SC::FaceColors locked_colors;
+                        const bool leaf_plan=result->shape_details && result->shape_details->locks.leaf_domain;
+                        if (leaf_plan && !cancel()) {
+                            const std::array<const char*,6> names{"portrait-skin","portrait-dark","portrait-light","portrait-lips","portrait-cool","portrait-mid"};
+                            if (task->request.targets.size()<3 || task->request.targets.size()>6 || task->request.portrait.size()!=6)
+                                throw std::runtime_error("The reviewed leaf boundary requires the fixed portrait card.");
+                            std::vector<PortraitColorPlan::Slot> palette;
+                            for (size_t slot=0;slot<task->request.targets.size();++slot) {
+                                if (task->request.palette[slot]!=task->request.portrait[slot])
+                                    throw std::runtime_error("Portrait card role order changed.");
+                                palette.push_back({names[slot],task->request.targets[slot]});
+                            }
+                            const auto surface=AI::BeautySurface::build(source.mesh,source.vertex_colors,{},cancel);
+                            if (result->shape_details->surface_ownership) {
+                                const auto& inherited=result->shape_details->color_inheritance;
+                                if (!inherited || inherited->palette!=task->request.targets)
+                                    throw std::runtime_error("R6 parent repair requires the matching reviewed color baseline.");
+                                result->automatic=inherited->faces;
+                                result->automatic_subfaces=inherited->subfaces;
+                            }
+                            const auto plan=build_portrait_color_plan(*result->shape_details,source.mesh,*surface,*analysis,
+                                palette,result->automatic,result->automatic_subfaces);
+                            apply_portrait_color_plan(plan,result->automatic,result->automatic_subfaces);
+                        } else if (result->shape_details && !result->shape_details->locks.empty() && !cancel()) {
+                          try {
+                            auto surface = AI::BeautySurface::build(source.mesh, source.vertex_colors, {}, cancel);
+                            std::vector<AI::PhysicalFilamentChannel> channels;
+                            for (size_t slot = 0; slot < task->request.targets.size(); ++slot) {
+                                const auto& color = task->request.targets[slot];
+                                std::ostringstream hex; hex << '#';
+                                for (float value : color) hex << std::hex << std::setw(2) << std::setfill('0') <<
+                                    unsigned(std::lround(std::clamp(value, 0.f, 1.f) * 255.f));
+                                channels.push_back({slot, hex.str(), {}, true});
+                            }
+                            SC::FaceColors parent_colors;
+                            for (const auto& item : result->automatic) if (item.first < analysis->face_labels.size() &&
+                                (analysis->face_labels[item.first] == SC::Label::FaceSkin || analysis->face_labels[item.first] == SC::Label::BodySkin))
+                                parent_colors.push_back(item);
+                            locked_colors = match_portrait_shape_colors(*result->shape_details, *surface, channels, parent_colors);
+                          } catch (const std::exception& error) {
+                              result->shape_error = error.what();
+                              result->shape_details.reset();
+                          }
+                        }
+                        if (!leaf_plan) compose_portrait_shapes(*analysis, result->shape_details.get(), result->automatic, result->automatic_subfaces, locked_colors);
                         result->subface_added_triangles = source_subfaces.added_triangles;
                         result->subface_rejected_candidates = source_subfaces.rejected_candidates;
                         if (!result->automatic.empty() || !result->automatic_subfaces.empty())
-                            result->geometry = build_semantic_colored_geometry(source,
+                            result->geometry = build_semantic_colored_geometry(*task->request.source,
                                 SC::compose(result->automatic, task->request.manual, true),
                                 SC::compose_subfaces(result->automatic_subfaces, task->request.manual, true), cancel);
                     }
@@ -224,16 +617,18 @@ ModelSemanticColoring::ModelSemanticColoring(std::filesystem::path runtime, std:
     : m_impl(std::make_unique<Impl>()) { m_impl->runtime = std::move(runtime); m_impl->cache = std::move(cache); }
 ModelSemanticColoring::~ModelSemanticColoring() { cancel(); if (m_impl->worker.joinable()) m_impl->worker.join(); }
 bool ModelSemanticColoring::request(std::shared_ptr<const Snapshot> source, std::vector<Color> palette, std::vector<Color> targets,
-                                   std::vector<Color> portrait_card, FaceColors manual)
+                                   std::vector<Color> portrait_card, FaceColors manual, std::filesystem::path source_path,
+                                   std::shared_ptr<const PortraitShapeDetails> shapes)
 {
     auto& state = *m_impl;
     auto configuration = provider_configuration(state.runtime);
     if (state.wanted && state.request.source == source && state.request.palette == palette &&
         state.request.targets == targets && state.request.portrait == portrait_card &&
-        state.request.manual == manual && state.request.configuration == configuration) return false;
+        state.request.manual == manual && state.request.configuration == configuration &&
+        state.request.source_path == source_path && state.request.shapes == shapes) return false;
     if (state.job) state.job->canceled.store(true);
     state.request = {std::move(source), std::move(palette), std::move(targets), std::move(portrait_card),
-        std::move(manual), std::move(configuration), ++state.generation};
+        std::move(manual), std::move(configuration), ++state.generation, std::move(source_path), std::move(shapes)};
     state.wanted = true; state.pending = true; state.start(); return true;
 }
 void ModelSemanticColoring::cancel() {

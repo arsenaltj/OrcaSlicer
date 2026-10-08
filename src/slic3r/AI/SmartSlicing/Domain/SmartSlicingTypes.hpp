@@ -6,6 +6,7 @@
 namespace Slic3r::AI::SmartSlicing {
 
 using WorkflowId  = uint64_t;
+using AttemptId   = uint64_t;
 using CandidateId = std::string;
 
 enum class Severity { Info, Warning, Error };
@@ -21,6 +22,8 @@ enum class IssueCode {
     MissingPrinter,
     MissingProcess,
     MissingMaterial,
+    MachineCapabilityUnavailable,
+    UnsupportedMaterialCombination,
     IncompatiblePhysicalSlots,
     InvalidMaterialTemperatureRange,
     ColorMappingDegraded,
@@ -39,6 +42,8 @@ inline const char* issue_code_name(IssueCode code)
     case IssueCode::MissingPrinter: return "missing_printer";
     case IssueCode::MissingProcess: return "missing_process";
     case IssueCode::MissingMaterial: return "missing_material";
+    case IssueCode::MachineCapabilityUnavailable: return "machine_capability_unavailable";
+    case IssueCode::UnsupportedMaterialCombination: return "unsupported_material_combination";
     case IssueCode::IncompatiblePhysicalSlots: return "incompatible_physical_slots";
     case IssueCode::InvalidMaterialTemperatureRange: return "invalid_material_temperature_range";
     case IssueCode::ColorMappingDegraded: return "color_mapping_degraded";

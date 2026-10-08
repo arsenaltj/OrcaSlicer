@@ -804,9 +804,13 @@ void PrinterWorkspace::rebuild_media()
         row->Add(thumb, 0, wxEXPAND);
         auto* info = new wxBoxSizer(wxVERTICAL);
         auto* name = label(card, text(entry.name), 12); name->SetToolTip(text(entry.name));
+        name->SetMinSize(wxSize(1, -1));
         info->Add(name, 0, wxEXPAND | wxTOP, FromDIP(12));
         const wxString date = entry.time ? wxDateTime(entry.time).Format("%Y-%m-%d %H:%M") : text("日期未上报");
-        info->Add(label(card, date, 9, true), 0, wxEXPAND | wxTOP, FromDIP(8));
+        auto* timestamp = label(card, date, 9, true);
+        timestamp->SetMinSize(wxSize(1, -1));
+        timestamp->SetToolTip(date);
+        info->Add(timestamp, 0, wxEXPAND | wxTOP, FromDIP(8));
         auto* export_button = new RoundedActionButton(card, {}, false, 24);
         export_button->SetMinSize(FromDIP(wxSize(24, 24))); export_button->SetName(text("导出媒体"));
         export_button->SetToolTip(text("导出到本地"));

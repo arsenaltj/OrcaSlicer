@@ -2228,8 +2228,7 @@ void StatusBasePanel::expand_filament_loading(wxMouseEvent& e)
     m_filament_step->Show(tag_show);
     Layout();
     Fit();
-    wxGetApp().mainframe->m_monitor->get_status_panel()->Layout();
-    wxGetApp().mainframe->m_monitor->Layout();
+    wxGetApp().mainframe->layout_device_surface();
 }
 
 void StatusBasePanel::show_ams_group(bool show)
@@ -2240,7 +2239,7 @@ void StatusBasePanel::show_ams_group(bool show)
         m_ams_control->Fit();
         Layout();
         Fit();
-        wxGetApp().mainframe->m_monitor->Layout();
+        wxGetApp().mainframe->layout_device_surface();
     }
 
     // On rack printers, don't clobber the rack view when the user has the switch on "Hotends".
@@ -2253,7 +2252,7 @@ void StatusBasePanel::show_ams_group(bool show)
         m_ams_control->Fit();
         Layout();
         Fit();
-        wxGetApp().mainframe->m_monitor->Layout();
+        wxGetApp().mainframe->layout_device_surface();
     }
 }
 
@@ -2277,8 +2276,7 @@ void StatusBasePanel::show_filament_load_group(bool show)
         Layout();
         Fit();
 
-        wxGetApp().mainframe->m_monitor->get_status_panel()->Layout();
-        wxGetApp().mainframe->m_monitor->Layout();
+        wxGetApp().mainframe->layout_device_surface();
     }
 }
 

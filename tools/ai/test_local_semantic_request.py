@@ -121,7 +121,7 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(actual, self.modules)
         policy = request.policy_identity(actual)
         self.assertEqual(set(policy['modules_sha256']), set(request.POLICY_MODULES))
-        self.assertEqual(policy['version'], 'visible-face-semantic-v5-body-supplement')
+        self.assertEqual(policy['version'], 'visible-face-semantic-v7-farl-sides-source-brow-boundary')
         self.assertEqual(policy['version'], self.pipeline.POLICY_VERSION)
         self.assertEqual(request.canonical_hash({'b': 1, 'a': 2}), hashlib.sha256(b'{"a":2,"b":1}').hexdigest())
         (module_dir/'local_semantic_views.py').write_bytes(b'changed')
@@ -168,6 +168,38 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(evidence['weights_sha256'], request.canonical_hash(self.weights))
         self.assertEqual(evidence['regions'], self.projection['regions'])
         self.assertFalse(list(self.directory.glob('*.partial')))
+
+    def test_shape_details_are_published_only_after_ownership_validation(self):
+        def add_valid(value, loader):
+            value['shape_details'] = [{
+                'subject_id': 'surface-one', 'label': 'lb', 'status': 'PROTECTED_SHAPE_UNCERTAIN',
+                'accepted_faces': [0], 'rejected_faces': [], 'view_support': 2,
+                'metrics': {'envelope_coverage': .40}, 'reasons': ['SHAPE_COMPONENT_DISCONNECTED']}]
+        with self.mocked(add_valid):
+            request.execute_request(self.spec, self.config, self.directory)
+        evidence = json.loads((self.directory/'evidence.json').read_text())
+        self.assertEqual(evidence['shape_details'][0]['accepted_faces'], [0])
+
+        def add_overlap(value, loader):
+            value['shape_details'] = [{
+                'subject_id': 'surface-one', 'label': 'lb', 'status': 'VALID_SHAPE',
+                'accepted_faces': [0], 'rejected_faces': [0], 'view_support': 2,
+                'metrics': {}, 'reasons': []}]
+        with self.mocked(add_overlap):
+            with self.assertRaises(request.RequestError):
+                request.execute_request(self.spec, self.config, self.directory)
+        self.assertFalse((self.directory/'result.json').exists())
+
+    def test_non_eye_shape_cannot_publish_nested_iris_even_with_valid_ownership(self):
+        def add_invalid_nested(value, loader):
+            value['shape_details'] = [{
+                'subject_id': 'surface-one', 'label': 'lb', 'status': 'VALID_SHAPE',
+                'accepted_faces': [0], 'rejected_faces': [], 'nested_faces': [0],
+                'view_support': 2, 'metrics': {}, 'reasons': []}]
+        with self.mocked(add_invalid_nested):
+            with self.assertRaises(request.RequestError):
+                request.execute_request(self.spec, self.config, self.directory)
+        self.assertFalse((self.directory/'result.json').exists())
 
     def test_cli_publishes_success_result_last_with_exact_response_fields(self):
         spec_path, config_path = self.directory/'request.json', self.directory/'config.json'

@@ -132,6 +132,14 @@ def verify_runtime(root: Path, build: Path, installed: list[str]) -> dict:
     pairs.update({"resources/tools/ai/" + name: root / "tools/ai" / name for name in modules(root)})
     pairs["resources/tools/ai/orca_ai_build_info.json"] = build / "orca_ai_build_info.json"
     pairs["resources/tools/ai/orca_ai_runtime_dependencies.json"] = build / "orca_ai_runtime_dependencies.json"
+    cache = (build / "CMakeCache.txt").read_text(encoding="utf-8")
+    raster = re.search(r"^ORCA_BEAUTY_RASTER_BINARY:FILEPATH=(.+)$", cache, re.MULTILINE)
+    if raster:
+        source = Path(raster[1].strip())
+        expected = re.search(r"^ORCA_BEAUTY_RASTER_SHA256:STRING=([0-9a-f]{64})$", cache, re.MULTILINE)
+        if expected is None or not source.is_file() or digest(source) != expected[1]:
+            raise ValueError("Preserved Beauty raster binary identity changed")
+        pairs["resources/tools/ai/local_semantic_raster.dll"] = source
     # uv is installed from CMake's configured/downloaded tool, not resources/.
     uv_name = "resources/tools/uv/uv.exe"
     if uv_name in installed:
@@ -148,7 +156,6 @@ def verify_runtime(root: Path, build: Path, installed: list[str]) -> dict:
             raise ValueError(f"Runtime does not match the build/source: {name}")
         checks[name] = digest(target)
     # The install manifest proves membership; compare resource bytes as well.
-    cache = (build / "CMakeCache.txt").read_text(encoding="utf-8")
     beauty = re.search(r"^ORCA_BEAUTY_RUNTIME_ROOT:PATH=(.+)$", cache, re.MULTILINE)
     for name in installed:
         if name.startswith("resources/") and not name.startswith("resources/tools/ai/") and name not in pairs:

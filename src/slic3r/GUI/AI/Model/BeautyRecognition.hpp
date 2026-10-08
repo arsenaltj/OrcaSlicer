@@ -1,6 +1,7 @@
 #pragma once
 #include "BeautyGuidance.hpp"
 #include "BeautyPuzzle.hpp"
+#include "BeautyShapeLock.hpp"
 #include "BeautyMouthDetail.hpp"
 
 namespace Slic3r::AI {
@@ -9,10 +10,46 @@ namespace Slic3r::AI {
 // This changes native slot choices only, not geometry, recognition or recipes.
 inline size_t beauty_match_feature_filaments(BeautyPuzzle& puzzle,const BeautySurface& surface,
     const BeautyGuidance& guidance,const std::vector<RGBA>& source,
-    const std::vector<PhysicalFilamentChannel>& channels,const std::vector<MixedColorRecipe>& mixtures={}) {
+    const std::vector<PhysicalFilamentChannel>& channels,const std::vector<MixedColorRecipe>& mixtures={},
+    const ShapeLockSet* locks=nullptr) {
     std::set<uint32_t> eligible;
     for(uint32_t id:puzzle.face_piece)if(!puzzle.colors.count(id) && !puzzle.filament_slots.count(id))eligible.insert(id);
+    // Matching a locked detail must not opportunistically assign every other
+    // puzzle piece. BeautyPuzzle::match_filaments still supplies the current
+    // palette and native recipe definitions, then all assignments outside a
+    // complete lock are restored byte-for-byte.
+    const auto before_match=puzzle;
     puzzle.match_filaments(surface,channels,mixtures,source);
+    if (locks && !locks->empty()) {
+        std::set<uint32_t> allowed;
+        for (const auto& lock : locks->locks) {
+            std::set<uint32_t> pieces;
+            for (const auto face : lock.locked_faces) if (face < puzzle.face_piece.size()) pieces.insert(puzzle.face_piece[face]);
+            for (const auto id : pieces) {
+                const auto faces=puzzle.faces(id);
+                if (faces.empty()) continue;
+                const bool nested=std::binary_search(lock.nested_faces.begin(),lock.nested_faces.end(),faces.front());
+                if (std::all_of(faces.begin(),faces.end(),[&](size_t face) {
+                        return locks->lock_for_face(face)==locks->lock_for_face(lock.locked_faces.front()) &&
+                            std::binary_search(lock.nested_faces.begin(),lock.nested_faces.end(),face)==nested;
+                    }))
+                    allowed.insert(id);
+            }
+        }
+        for (auto it=puzzle.colors.begin();it!=puzzle.colors.end();) {
+            if (!allowed.count(it->first)) it=puzzle.colors.erase(it); else ++it;
+        }
+        for (auto it=puzzle.filament_slots.begin();it!=puzzle.filament_slots.end();) {
+            if (!allowed.count(it->first)) it=puzzle.filament_slots.erase(it); else ++it;
+        }
+        for (auto it=puzzle.target_colors.begin();it!=puzzle.target_colors.end();) {
+            if (!allowed.count(it->first)) it=puzzle.target_colors.erase(it); else ++it;
+        }
+        for (const auto& entry : before_match.colors) if (!allowed.count(entry.first)) puzzle.colors[entry.first]=entry.second;
+        for (const auto& entry : before_match.filament_slots) if (!allowed.count(entry.first)) puzzle.filament_slots[entry.first]=entry.second;
+        for (const auto& entry : before_match.target_colors) if (!allowed.count(entry.first)) puzzle.target_colors[entry.first]=entry.second;
+        for (auto it=eligible.begin();it!=eligible.end();) if (!allowed.count(*it)) it=eligible.erase(it); else ++it;
+    }
     if(eligible.empty() || source.size()!=puzzle.face_piece.size() ||
        !guidance.completed(source.size()) || guidance.names.empty() || puzzle.palette.empty())return 0;
     using RGB=tex2color::color_utils::ColorDouble;
@@ -50,6 +87,13 @@ inline size_t beauty_match_feature_filaments(BeautyPuzzle& puzzle,const BeautySu
     const auto paint=puzzle.colors;size_t changed=0;
     for(uint32_t id:eligible) {
         const auto& p=parts.at(id);if(!feature(p.name) || !paint.count(id))continue;
+        if (locks && !locks->empty()) {
+            const auto piece_faces=puzzle.faces(id);
+            const auto owner=piece_faces.empty()?std::optional<size_t>{}:locks->lock_for_face(piece_faces.front());
+            if (!owner || std::any_of(piece_faces.begin(),piece_faces.end(),[&](size_t face) {
+                    return locks->lock_for_face(face)!=owner;
+                })) continue;
+        }
         std::set<uint32_t> visited{id},frontier{id},references;
         // Traverse only recognized facial parts, never a remote shell/person or
         // hair/clothing. Stop at the first skin neighborhood (at most 3 edges).
@@ -231,7 +275,36 @@ inline void beauty_clean_feature_seeds(std::vector<int32_t>& labels,const Beauty
 // Clear the old part first so a refined outline can shrink as well as expand.
 inline BeautyGuidance beauty_feature_guidance(const GUI::LocalSemanticEvidence::Evidence& evidence,const BeautySurface* surface=nullptr) {
     BeautyGuidance result;result.labels=evidence.face_regions;result.eyes=evidence.eye_details;
+    std::set<size_t> shape_rejected;
+    for(const auto& shape:evidence.shape_details)
+        shape_rejected.insert(shape.rejected_faces.begin(),shape.rejected_faces.end());
     std::map<std::pair<std::string,std::string>,int32_t> ids;
+    const auto shape_usable=[](const GUI::LocalSemanticEvidence::ShapeDetail* shape) {
+        return shape != nullptr && shape->view_support >= 2 && ShapeLockSet::lockable_shape(*shape);
+    };
+    const auto shape_for=[&](const std::string& subject,const std::string& label)->const GUI::LocalSemanticEvidence::ShapeDetail* {
+        const auto found=std::find_if(evidence.shape_details.begin(),evidence.shape_details.end(),[&](const auto& shape){
+            return shape.subject_id==subject && shape.label==label;
+        });
+        return found==evidence.shape_details.end()?nullptr:&*found;
+    };
+    const auto accepted_faces=[&](const GUI::LocalSemanticEvidence::FeatureDetail& shape) {
+        std::vector<size_t> faces=shape.faces;
+        if(evidence.shape_details.empty())return faces;
+        const auto gate=shape_for(shape.subject_id,shape.label);
+        if(!shape_usable(gate))return std::vector<size_t>{};
+        std::set<size_t> allowed(gate->accepted_faces.begin(),gate->accepted_faces.end());
+        faces.erase(std::remove_if(faces.begin(),faces.end(),[&](size_t face){return !allowed.count(face);}),faces.end());
+        return faces;
+    };
+    if(!evidence.shape_details.empty())for(auto& eye:result.eyes) {
+        const auto gate=shape_for(eye.subject_id,eye.label);
+        if(!shape_usable(gate)) { eye.aperture_faces.clear(); eye.iris_faces.clear(); continue; }
+        std::set<size_t> accepted(gate->accepted_faces.begin(),gate->accepted_faces.end());
+        std::set<size_t> nested(gate->nested_faces.begin(),gate->nested_faces.end());
+        eye.aperture_faces.erase(std::remove_if(eye.aperture_faces.begin(),eye.aperture_faces.end(),[&](size_t face){return !accepted.count(face);}),eye.aperture_faces.end());
+        eye.iris_faces.erase(std::remove_if(eye.iris_faces.begin(),eye.iris_faces.end(),[&](size_t face){return !nested.count(face);}),eye.iris_faces.end());
+    }
     for(const auto& region:evidence.regions) {
         ids[{region.subject_id,region.label}]=int32_t(result.names.size());result.names.push_back(region.label);
         if(region.label=="re" || region.label=="le") {
@@ -245,6 +318,7 @@ inline BeautyGuidance beauty_feature_guidance(const GUI::LocalSemanticEvidence::
         const auto id=int32_t(result.names.size());result.names.push_back(name);ids[key]=id;return id;
     };
     for(const auto& shape:evidence.feature_details) {
+        if(accepted_faces(shape).empty())continue;
         const auto found=ids.find({shape.subject_id,shape.label});
         if(found!=ids.end()) {
             const int32_t old=found->second, background=id_for(shape.subject_id,"face");
@@ -252,11 +326,20 @@ inline BeautyGuidance beauty_feature_guidance(const GUI::LocalSemanticEvidence::
         }
     }
     for(const auto& shape:evidence.feature_details) {
+        const auto faces=accepted_faces(shape);
+        if(faces.empty())continue;
         const int32_t id=id_for(shape.subject_id,shape.label);
-        for(size_t f:shape.faces)result.labels.at(f)=id;
+        for(size_t f:faces)result.labels.at(f)=id;
         if(shape.label=="re" || shape.label=="le") {
             result.eyes.erase(std::remove_if(result.eyes.begin(),result.eyes.end(),[&](const auto& eye){return eye.subject_id==shape.subject_id && eye.label==shape.label;}),result.eyes.end());
-            result.eyes.push_back({shape.subject_id,shape.label,shape.faces,shape.iris_faces});
+            std::set<size_t> accepted(faces.begin(),faces.end());
+            auto iris=shape.iris_faces;
+            iris.erase(std::remove_if(iris.begin(),iris.end(),[&](size_t face){return !accepted.count(face);}),iris.end());
+            if(const auto gate=shape_for(shape.subject_id,shape.label);gate!=nullptr && !gate->nested_faces.empty()) {
+                std::set<size_t> nested(gate->nested_faces.begin(),gate->nested_faces.end());
+                iris.erase(std::remove_if(iris.begin(),iris.end(),[&](size_t face){return !nested.count(face);}),iris.end());
+            }
+            result.eyes.push_back({shape.subject_id,shape.label,faces,iris});
         }
     }
     if(surface && surface->face_neighbors.size()==result.labels.size()) {
@@ -264,8 +347,10 @@ inline BeautyGuidance beauty_feature_guidance(const GUI::LocalSemanticEvidence::
         for(const auto& subject:subjects) {
             std::vector<uint8_t> band(result.labels.size(),0);std::set<int32_t> allowed{id_for(subject,"face")};
             for(const auto& shape:evidence.feature_details)if(shape.subject_id==subject) {
+                const auto faces=accepted_faces(shape);
+                if(faces.empty())continue;
                 const int32_t id=ids.at({subject,shape.label});allowed.insert(id);
-                for(size_t f:shape.faces)band[f]=1;
+                for(size_t f:faces)band[f]=1;
                 if(size_t(id)<evidence.regions.size())for(size_t f:evidence.regions[size_t(id)].faces)band[f]=1;
             }
             const auto initial=band;
@@ -284,6 +369,12 @@ inline BeautyGuidance beauty_feature_guidance(const GUI::LocalSemanticEvidence::
             beauty_clean_feature_seeds(parts,*surface,band,{0,1});eye.iris_faces.clear();
             for(size_t f:eye.aperture_faces)if(parts[f]==1)eye.iris_faces.push_back(f);
         }
+        // A shape gate is an ownership boundary.  Local cleanup may repair a
+        // tiny pinhole inside an accepted detail, but it must never grow that
+        // detail back across an explicitly rejected face.
+        for(const size_t f:shape_rejected)
+            if(f<result.labels.size() && f<evidence.face_regions.size())
+                result.labels[f]=evidence.face_regions[f];
     }
     return result;
 }
@@ -316,7 +407,7 @@ inline std::vector<RGBA> beauty_source_face_colors(const indexed_triangle_set& m
     return result;
 }
 inline BeautyPuzzle beauty_supplement_features(const BeautyPuzzle& original,const BeautySurface& surface,
-                                               const BeautyGuidance& guidance) {
+                                               const BeautyGuidance& guidance,const ShapeLockSet* locks=nullptr) {
     if(!guidance.completed(original.face_piece.size()))throw std::runtime_error("Recognize facial features first.");
     auto next=original;
     std::map<std::pair<uint32_t,int32_t>,std::vector<size_t>> cuts;
@@ -324,7 +415,7 @@ inline BeautyPuzzle beauty_supplement_features(const BeautyPuzzle& original,cons
         const auto label=guidance.labels[f];if(label<0 || size_t(label)>=guidance.names.size())continue;
         const auto& name=guidance.names[size_t(label)];
         if(name=="le" || name=="re" || name=="iris" || name=="llip" || name=="ulip" || name=="imouth" || name=="nose" || name=="lb" || name=="rb")
-            cuts[{original.face_piece[f],label}].push_back(f);
+            if (!locks || locks->empty() || locks->face_locked(f)) cuts[{original.face_piece[f],label}].push_back(f);
     }
     for(const auto& cut:cuts)next.assign_region(cut.second,surface);
     return next;

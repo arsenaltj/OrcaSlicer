@@ -1,0 +1,9 @@
+{
+  "schema": "orcaslicer.beauty-semantic-runtime.v1",
+  "runtime_namespace": "beauty_semantics",
+  "cache_namespace": "beauty_semantics",
+  "worker": "local_semantic_worker.py",
+  "protocol": "orcaslicer.local-semantic-worker.v1",
+  "network": "offline",
+  "weights": "application-configured"
+}

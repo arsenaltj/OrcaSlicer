@@ -48,6 +48,7 @@ class IntegrationGuardrailTests(unittest.TestCase):
                 "src/slic3r/AI/Contracts/IModelArtifactConsumer.hpp",
                 "src/slic3r/AI/Contracts/IPrintablePaletteProvider.hpp",
                 "src/slic3r/AI/Contracts/LocalPrintColorResult.hpp",
+                "src/slic3r/AI/Contracts/ProtectedRegionManifest.hpp",
                 "src/slic3r/GUI/AI/Orca/OrcaWorkspaceAdapter.hpp",
             },
             set(self.document["boundaries"]["allowed_cross_feature_contracts"]),
@@ -180,6 +181,8 @@ class IntegrationGuardrailTests(unittest.TestCase):
         legacy_state = (REPO_ROOT / "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationLegacyState.hpp").read_text(encoding="utf-8")
         beauty_view = (REPO_ROOT / "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationBeautyView.cpp").read_text(encoding="utf-8")
         beauty_controls = (REPO_ROOT / "src/slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchControls.cpp").read_text(encoding="utf-8")
+        workbench_host = (REPO_ROOT / "src/slic3r/GUI/AI/ModelGeneration/PostGenerationWorkbenchHost.cpp").read_text(encoding="utf-8")
+        native_matching = (REPO_ROOT / "src/slic3r/GUI/AI/ModelGeneration/LocalPrintColorMatching.hpp").read_text(encoding="utf-8")
 
         for member in (
             "m_palette_recommendation_cards",
@@ -197,9 +200,15 @@ class IntegrationGuardrailTests(unittest.TestCase):
         self.assertIn("kMinPhysicalColorChannels = 1;", color_contract)
         self.assertIn("kMaxPhysicalColorChannels = 6;", color_contract)
         self.assertIn("BeautyWorkbenchControls* m_beauty_controls", panel_header)
-        self.assertIn("new BeautyWorkbenchControls(scroll, m_model_preview, m_palette_provider", beauty_view)
-        self.assertIn("for(const auto& channel:palette.physical_channels)", beauty_controls)
-        self.assertIn("AI::is_valid_physical_channel_set(palette.physical_channels)", beauty_controls)
+        self.assertIn("new BeautyWorkbenchControls(m_finishing_panel, m_model_preview, m_palette_provider", beauty_view)
+        # The new control facade delegates color reads to the workbench host;
+        # native import still validates physical channels and filters unavailable ones.
+        self.assertIn("on_available_colors = [this] { return local_recolor_palette(); }", beauty_view)
+        self.assertIn("const auto colors = on_available_colors();", beauty_controls)
+        self.assertIn("std::vector<std::string> palette = project_palette();", workbench_host)
+        self.assertIn("m_palette_provider.printable_palette().compatible_colors", panel_source)
+        self.assertIn("AI::is_valid_physical_channel_set(result.physical_channels)", native_matching)
+        self.assertIn("if (!result.physical_channels[p].compatible) continue;", native_matching)
 
         self.assertIn("ModelGenerationLegacyState m_legacy_generation_state", panel_header)
         self.assertNotIn("#include <wx/", legacy_state)

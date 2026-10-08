@@ -11,7 +11,7 @@ namespace Slic3r::GUI {
 inline std::vector<TextureFilamentEntry> workspace_texture_filaments(
     const std::vector<TextureFilamentEntry>& entries, const TextureImportOptions* options)
 {
-    if (!options || !options->workspace_presentation) return entries;
+    if (!options || !options->workbench_review) return entries;
     std::vector<TextureFilamentEntry> usable;
     for (const auto& entry : entries) {
         if (entry.kind != TextureFilamentKind::ExistingPhysical || !entry.compatible ||

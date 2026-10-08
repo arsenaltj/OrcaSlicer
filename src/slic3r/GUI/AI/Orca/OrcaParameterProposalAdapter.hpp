@@ -5,6 +5,7 @@
 #include "slic3r/AI/SmartSlicing/Domain/SliceCandidate.hpp"
 
 #include <string>
+#include <vector>
 
 namespace Slic3r::GUI {
 
@@ -44,6 +45,13 @@ public:
 
     OrcaParameterApplyResult apply_object_patches(
         Model& model, const std::vector<OrcaObjectParameterPatch>& patches) const;
+    OrcaParameterApplyResult validate_and_apply(
+        const AI::SmartSlicing::ParameterProposal& proposal,
+        int64_t expected_plate_id,
+        const DynamicPrintConfig& base_config,
+        const AI::SmartSlicing::IntentConstraintSnapshot& intent_constraints,
+        const std::vector<AI::SmartSlicing::ParameterBoundEvidence>& profile_bounds,
+        DynamicPrintConfig& patched_config) const;
 };
 
 } // namespace Slic3r::GUI

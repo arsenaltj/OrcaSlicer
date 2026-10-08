@@ -1,9 +1,7 @@
-#include "AI/ModelGeneration/ModelLibraryFilter.hpp"
 #pragma once
 
 #include "AIModelGenerationClient.hpp"
-#include "Widgets/ComboBox.hpp"
-#include "Widgets/Button.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/ModelGenerationHost.hpp"
 #include "slic3r/AI/Contracts/IModelArtifactConsumer.hpp"
 #include "slic3r/AI/Contracts/IPrintablePaletteProvider.hpp"
 #include "slic3r/GUI/AI/Model/ModelFinishing.hpp"
@@ -11,8 +9,12 @@
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationSubmissionState.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationLegacyState.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelLibraryMetadata.hpp"
-#include "slic3r/GUI/AI/AIWindowAppearance.hpp"
-#include "slic3r/GUI/AI/ModelGeneration/ModelGenerationPresentation.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/ModelHistoryMetadata.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchTransactionController.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/ModelPreviewColorControls.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/PortraitShapeDetails.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/PostGenerationUiState.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/PostGenerationWorkbenchState.hpp"
 
 #include <boost/filesystem/path.hpp>
 #include <wx/image.h>
@@ -29,16 +31,24 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
+class wxSizer;
+class wxStaticBitmap;
+class wxBoxSizer;
+class Button;
+class ComboBox;
 class wxButton;
+class wxCheckBox;
 class wxChoice;
 class wxCollapsiblePane;
+class wxColourPickerCtrl;
 class wxGauge;
-class wxNotebook;
 class wxGridSizer;
-class wxSimplebook;
+class wxNotebook;
 class wxScrolledWindow;
+class wxSpinCtrlDouble;
 class wxSlider;
 class wxStaticText;
 class wxTextCtrl;
@@ -47,12 +57,14 @@ class wxToggleButton;
 namespace Slic3r::GUI {
 
 class ModelPreview3D;
-class ModelHistoryMetadata;
 class BeautyWorkbenchControls;
+struct BeautyPartitionSnapshot;
+struct SemanticRegionEvidence;
+struct SecondaryRegionEvidence;
 class LocalPrintColorPanel;
 class Plater;
 
-class ModelGenerationPanel : public wxPanel, public AIThemeOwner
+class ModelGenerationPanel : public wxPanel
 {
 public:
     ModelGenerationPanel(wxWindow* parent, AI::IModelArtifactConsumer& artifact_consumer,
@@ -60,73 +72,108 @@ public:
     ~ModelGenerationPanel() override;
 
     void shutdown();
+    void initialize_for_shell_host();
+    void mount_assets(wxWindow* parent);
+    void unmount_assets();
+    void set_history_navigation_handler(std::function<void(bool)> handler) { m_history_navigation = std::move(handler); }
+    void set_ui_state_listener(ModelGenerationUIStateListener listener);
+    ModelGenerationUIState ui_state_snapshot() const { return m_ui_state; }
+    bool synchronize_ui_input(const ModelGenerationUIInput& input);
+    bool synchronize_ui_options(const ModelGenerationUIOptions& options);
+    bool request_generate_design();
+    bool request_generate_model();
+    bool request_stop();
+    bool request_retry_service();
+    bool request_restore_latest();
+    bool request_restart();
+    bool request_import();
+    bool request_refresh_history();
+    bool request_open_history(const std::string& job_id);
     void set_service_availability(bool available, const std::string& message = {});
     void set_service_retry_handler(std::function<void()> handler);
     void set_prepare_navigation_handler(std::function<void()> handler) { m_prepare_navigation = std::move(handler); }
     void set_color_matching_handler(std::function<void(const AI::GeneratedModelArtifact&)> handler) { m_color_matching = std::move(handler); }
+    void set_workbench_import_handler(std::function<void(const AI::ModelImportRequest&)> handler) { m_workbench_import = std::move(handler); }
     void show_workbench_color_matching(const AI::GeneratedModelArtifact& artifact, Plater* plater);
-    void apply_ai_theme(bool update_fonts) override;
-    void navigate_workspace(ModelGenerationPresentation::WorkspaceAction action);
-    ModelGenerationPresentation::WorkspaceView workspace_view() const { return m_workspace_view; }
-    bool has_workspace_model() const { return m_model_preview_ready; }
-    void set_workspace_changed_handler(std::function<void()> handler) { m_workspace_changed = std::move(handler); }
+    bool request_open_workbench();
+    bool request_enter_beauty();
+    bool request_return_overview();
+    bool request_workbench_color_matching();
+    bool request_enable_portrait(bool enabled);
+    bool request_check_workbench();
+    bool request_save_and_return();
+    bool request_workbench_results();
+    void set_workbench_results_handler(std::function<void()> handler) { m_workbench_results = std::move(handler); }
+    PostGenerationWorkbenchState workbench_snapshot() const;
+    void set_workbench_listener(PostGenerationWorkbenchListener listener);
+    void set_project_color_handler(std::function<void(size_t)> handler,
+        std::function<std::vector<AI::PhysicalFilamentChannel>()> slots = {})
+    {
+        m_project_color_edit = std::move(handler);
+        m_project_channels_provider = std::move(slots);
+    }
+    void synchronize_workbench_project_palette(bool activate_preview = false);
 
 private:
-    std::function<void()> m_workspace_changed;
+    PostGenerationWorkbenchListener m_workbench_listener;
+    wxWindow* m_assets_home_parent {nullptr};
+    std::function<void(bool)> m_history_navigation;
+    wxButton* m_library_cancel {nullptr};
+    wxTextCtrl* m_assets_search {nullptr};
+    wxChoice* m_assets_category {nullptr};
+    std::vector<size_t> m_library_filtered_indices;
+    wxStaticText* m_library_operation_status {nullptr};
+    bool m_portrait_mode {false};
+    WorkbenchCheckResult m_workbench_check_result;
+    std::string m_workbench_check_path;
+    std::uint64_t m_workbench_check_revision {0};
+    std::thread m_workbench_check_worker;
+    std::shared_ptr<std::atomic<bool>> m_workbench_check_cancel;
+    std::unordered_set<std::string> m_workbench_repair_attempts;
+    bool m_workbench_check_running {false};
+    bool m_workbench_auto_repair {false};
+    void ensure_workbench_check();
+    std::function<void(size_t)> m_project_color_edit;
+    std::function<std::vector<AI::PhysicalFilamentChannel>()> m_project_channels_provider;
+    AI::PrintablePaletteSnapshot m_workbench_project_palette;
+    std::vector<AI::PhysicalFilamentChannel> m_workbench_project_channels;
+    wxPanel* m_workbench_project_colors {nullptr};
+    wxTimer m_workbench_sync_timer;
+    bool m_save_and_return {false};
+    std::function<void()> m_workbench_results;
+    void finish_workbench_save();
+    void publish_workbench_state();
     std::function<void()> m_prepare_navigation;
     std::function<void(const AI::GeneratedModelArtifact&)> m_color_matching;
+    std::function<void(const AI::ModelImportRequest&)> m_workbench_import;
     LocalPrintColorPanel* m_workbench_color_matching {nullptr};
     wxWeakRef<wxWindow> m_color_matching_entry;
     uint64_t m_color_matching_entry_sequence {0};
     void close_workbench_color_matching(bool restore_entry = true);
+    bool input_editable() const;
     void show_input_hint(const wxString& message, wxWindow* focus = nullptr);
-    void initialize_page();
+    bool set_selected_image(const boost::filesystem::path& path, bool request_recommendation);
+    void clear_selected_image();
+    void publish_ui_state();
+    void initialize_page(bool require_visible);
     void on_first_visible_idle(wxIdleEvent& event);
     void build_page();
-    void refresh_input_layout();
-    void dispatch_workspace_action(ModelGenerationPresentation::WorkspaceAction action);
-    void select_workspace_view(ModelGenerationPresentation::WorkspaceView view);
-    ModelGenerationPresentation::WorkspaceView m_workspace_view {ModelGenerationPresentation::WorkspaceView::Image};
-    ModelGenerationPresentation::WorkspaceView m_result_view {ModelGenerationPresentation::WorkspaceView::Image};
-    bool m_preserve_image_on_model_ready {false};
-    bool m_selecting_workspace {false};
-    std::array<bool, 3> m_input_text_enabled {};
-    wxWindow* m_library_view_page {nullptr};
-    void set_library_drawer(bool open);
-    void position_library_drawer();
-    void update_drawer_selection();
-    wxWindow* m_library_drawer_popup {nullptr};
-    wxWindow* m_library_drawer_host {nullptr};
-    wxWindow* m_library_drawer_footer {nullptr};
-    wxWindow* m_library_drawer_toggle {nullptr};
-    wxWindow* m_library_drawer_popup_toggle {nullptr};
-    Button* m_library_drawer_use {nullptr};
-    wxStaticText* m_library_title {nullptr};
-    wxStaticText* m_library_drawer_selection {nullptr};
-    wxStaticText* m_library_drawer_pages {nullptr};
-    std::array<Button*, 4> m_library_drawer_pager {};
-    std::vector<wxWindow*> m_library_full_controls;
-    bool m_library_drawer_open {false};
-    wxString m_library_saved_query;
-    ModelLibraryCategory m_library_saved_category {ModelLibraryCategory::All};
-    size_t m_library_saved_page {0};
-    std::string m_library_saved_selection;
-
     wxWindow* build_workflow_panel(wxWindow* parent);
     wxWindow* build_import_settings(wxWindow* parent);
     wxWindow* build_preview_panel(wxWindow* parent);
     wxWindow* build_model_library(wxWindow* parent);
     void choose_local_model();
     void import_local_model(const boost::filesystem::path& source, bool open_beauty);
+    bool can_replace_model_asset() const;
 
     void on_choose_image(wxCommandEvent& event);
-    bool replace_input_image(const boost::filesystem::path& path);
-    bool accept_input_files(const wxArrayString& paths);
-    void paste_input_image();
-    bool input_editable() const;
     void on_clear_image(wxCommandEvent& event);
+    void on_printable_colors_toggled(wxCommandEvent& event);
+    void on_palette_source_changed(wxCommandEvent& event);
+    void on_add_custom_color(wxCommandEvent& event);
     void on_recommend_palette(wxCommandEvent& event);
     void on_confirm_recommended_palette(wxCommandEvent& event);
+    void on_palette_role_changed(size_t role_index);
     void on_preprocess(wxCommandEvent& event);
     void on_generate(wxCommandEvent& event);
     void on_retexture_from_library(const std::string& geometry_job_id, const wxString& title);
@@ -143,7 +190,7 @@ private:
     void handle_error(const std::string& error, uint64_t sequence);
     void handle_poll_error(const std::string& error, uint64_t sequence);
     void schedule_poll();
-    void restore_latest_job();
+    void restore_latest_job(bool require_visible = true);
     void restore_job(AIModelGenerationClient::JobStatus status, uint64_t sequence);
     void download_restored_input(uint64_t sequence);
     void update_adaptive_text_height(wxTextCtrl* control, int minimum_lines, int maximum_lines);
@@ -156,6 +203,8 @@ private:
     size_t current_palette_color_count() const;
     AIModelGenerationClient::PaletteRoles current_palette_roles() const;
     void refresh_palette_roles(const std::vector<std::string>& palette);
+    void refresh_palette_recommendation();
+    void replace_recommended_color(size_t index);
     void request_style_recommendation();
     void select_style(const std::string& style, bool user_selected);
     void refresh_style_recommendation();
@@ -176,27 +225,23 @@ private:
     bool job_uses_image() const;
     bool job_inputs_match() const;
     bool job_base_inputs_match() const;
+    void remove_custom_color(const std::string& color);
     void reset(bool remove_remote);
-    bool can_reload_design_preview() const;
     void download_preview(uint64_t sequence);
     void download_model_preview(uint64_t sequence);
     void finish_model_preview_download(const boost::filesystem::path& path, uint64_t sequence);
-    void load_model_preview_async(const boost::filesystem::path& path, const std::vector<std::string>& palette,
+    void load_model_preview_async(boost::filesystem::path path, std::vector<std::string> palette,
         std::function<void(size_t, Vec3d, size_t, double)> loaded,
         std::function<void(std::string)> failed, const boost::filesystem::path& metadata_path = {},
-        std::shared_ptr<ModelHistoryMetadata> history_metadata = {},
-        std::function<bool()> may_install = {});
-    void download_and_import(wxWindow* entry);
-    void import_local_artifact(const boost::filesystem::path& path, uint64_t sequence, wxWeakRef<wxWindow> entry);
-    void restore_import_focus(wxWeakRef<wxWindow> entry, uint64_t sequence);
+        std::shared_ptr<ModelHistoryMetadata> history_metadata = {}, std::function<bool()> may_install = {});
+    void download_and_import();
+    void import_local_artifact(const boost::filesystem::path& path, uint64_t sequence);
     void cleanup_files();
     void set_preview_empty(const wxString& message);
     void show_preview_failure(const wxString& message);
-    void show_selected_image_preview(const wxImage* validated = nullptr);
-    void refresh_input_image_thumbnail();
+    void show_selected_image_preview();
     void update_preview_view(bool center = false);
     void apply_preview_stage(bool center = false);
-    void refresh_preview_stage_hint(bool stale_job);
     void download_auxiliary_previews(uint64_t sequence, int stage = 0);
     void set_preview_zoom(double zoom);
     void show_model_comparison();
@@ -208,32 +253,40 @@ private:
     void apply_model_refinement(const AIModelGenerationClient::ModelRefinementAdvice& refinement);
     void clear_model_quality();
     void refresh_model_quality_card();
-    void refresh_model_overview_risks();
     void refresh_local_recolor_controls();
     wxWindow* build_model_finishing(wxWindow* parent);
     void refresh_model_finishing();
     void set_finishing_workbench(bool enabled);
-    void open_model_finishing();
-    void open_model_color_matching(wxWindow* entry);
-    void refresh_model_tools();
-    bool preserve_unsaved_finishing();
+public:
+    void mount_workbench(wxWindow* parent);
+    void unmount_workbench();
+private:
+    PostGenerationUiState post_generation_ui_state() const;
+    void update_finishing_selection();
+    void redo_model_finishing();
+    void undo_model_finishing();
+    void export_semantic_candidate();
+    std::vector<std::string> local_recolor_palette() const;
+    void update_region_mode();
+    wxWindow* build_workbench_history(wxWindow* parent);
+    void refresh_workbench_history();
+    void rescale_post_generation_workbench();
     void preview_model_finishing();
-    void show_finishing_version(const boost::filesystem::path& path,
-        std::function<void()> installed);
-    Button* m_finishing_color_match { nullptr };
+    bool show_finishing_version(const boost::filesystem::path& path);
+    wxButton* m_finishing_color_match { nullptr };
     void accept_model_finishing();
     void discard_model_finishing();
     void stop_model_finishing();
     void select_local_finishing_version(const boost::filesystem::path& path, const std::string& id);
     struct GeneratedModelEntry;
-    void load_library_entries();
+    void load_library_entries(bool for_shell = false);
     static std::vector<GeneratedModelEntry> read_library_entries(
         const boost::filesystem::path& root, const std::atomic<bool>& cancelled);
     void start_library_worker();
     void cancel_library_loading();
     void stop_library_loading();
     void on_library_timer(wxTimerEvent& event);
-    void request_library_thumbnails();
+    void request_library_thumbnails(bool for_shell = false);
     wxWindow* create_library_card(const GeneratedModelEntry& entry);
     void load_design_library_entry(const std::string& job_id);
     void save_library_entry(size_t artifact_size, size_t triangle_count, double width, double depth,
@@ -247,22 +300,19 @@ private:
                              const boost::filesystem::path& color_intent_path,
                              const std::string& color_intent_schema,
                              const std::string& color_intent_sha256,
-                             const std::string& job_id, const wxString& title,
-                             bool open_beauty_after_load = false);
+                             const std::string& job_id, const wxString& title);
     void delete_library_entry(const GeneratedModelEntry& entry);
-    void export_library_entry(const GeneratedModelEntry& entry);
     void update_library_provider_tasks(const std::string& job_id,
                                        const AIModelGenerationClient::JobStatus& status);
     void update_library_import_status(const std::string& job_id);
     void record_library_print_feedback(const std::string& job_id, const std::string& feedback);
-    void refresh_library(bool prepare_hidden = false);
-    void show_library_action_feedback(const wxString& previous_status);
+    void refresh_library();
 
     struct GeneratedModelEntry
     {
         wxString title;
-        wxString search_text;
         wxString details;
+        wxString search_text;
         boost::filesystem::path model_path;
         boost::filesystem::path preview_path;
         boost::filesystem::path reference_image_path;
@@ -283,80 +333,187 @@ private:
         std::string print_feedback;
         bool use_printable_colors { false };
         bool design_only { false };
+        bool accepted_finishing { false };
     };
 
     AI::IModelArtifactConsumer&    m_artifact_consumer;
     AI::IPrintablePaletteProvider& m_palette_provider;
     AIModelGenerationClient m_client;
+    ModelGenerationUIStateListener m_ui_state_listener;
+    ModelGenerationUIState m_ui_state;
 
     wxPanel* m_finishing_panel {nullptr};
-    wxScrolledWindow* m_finishing_editor_scroll {nullptr};
-    wxWindow* m_finishing_editor_scroll_track {nullptr};
-    wxStaticText* m_finishing_version {nullptr};
+    wxWindow* m_finishing_selection_section {nullptr};
+    bool m_finishing_selection_open {false};
+    wxWindow* build_post_generation_workbench(wxWindow* parent);
+    void refresh_post_generation_workbench();
+    wxWindow* m_generation_header {nullptr};
+    wxWindow* m_result_panel {nullptr};
+    wxSizer* m_generation_content {nullptr};
+    wxPanel* m_workbench_view_host {nullptr};
+    wxPanel* m_workbench_shell {nullptr};
+    wxStaticBitmap* m_workbench_logo {nullptr};
+    wxPanel* m_workbench_settings {nullptr};
+    wxPanel* m_workbench_check_host {nullptr};
+    wxScrolledWindow* m_workbench_settings_scroll {nullptr};
+    wxBoxSizer* m_workbench_settings_sections {nullptr};
+    std::array<wxBoxSizer*, 3> m_workbench_settings_groups {};
+    bool m_workbench_settings_editing {false};
+    wxStaticText* m_workbench_beauty_heading {nullptr};
+    wxStaticText* m_workbench_palette_heading {nullptr};
+    wxStaticBitmap* m_workbench_check_info {nullptr};
+    wxStaticBitmap* m_workbench_beauty_info {nullptr};
+    wxWindow* m_workbench_base {nullptr};
+    wxPanel* m_workbench_footer {nullptr};
+    wxPanel* m_workbench_parameters {nullptr};
+    wxPanel* m_workbench_model_info {nullptr};
+    std::array<wxStaticText*, 4> m_workbench_model_info_values {};
+    wxStaticText* m_workbench_parameter_faces {nullptr};
+    wxStaticText* m_workbench_parameter_output {nullptr};
+    wxStaticBitmap* m_workbench_parameter_divider {nullptr};
+    wxSlider* m_workbench_smoothing_iterations {nullptr};
+    wxToggleButton* m_workbench_preserve_hard_edges {nullptr};
+    void layout_workbench_parameters();
+    wxStaticText* m_workbench_state_status {nullptr};
+    wxStaticText* m_workbench_model_name {nullptr};
+    wxStaticText* m_workbench_model_status {nullptr};
+    wxStaticText* m_workbench_check_status {nullptr};
+    wxStaticText* m_workbench_palette_status {nullptr};
+    wxWindow* m_workbench_print {nullptr};
+    wxWindow* m_workbench_print_navigation {nullptr};
+    wxWindow* m_workbench_edit {nullptr};
+    wxWindow* m_workbench_check {nullptr};
+    wxWindow* m_workbench_palette_details {nullptr};
+    wxToggleButton* m_workbench_original {nullptr};
+    wxWindow* m_workbench_slicing {nullptr};
+    std::array<wxStaticText*, 7> m_workbench_slice_values {};
+    bool m_open_smart_slicing_after_import {false};
+    wxWindow* m_workbench_history_toggle {nullptr};
+    bool m_workbench_editing {false};
+    bool m_refreshing_workbench_layout {false};
+    bool m_updating_comparison_layout {false};
+    bool m_workbench_history_collapsed {false};
+    bool m_workbench_history_user_open {false};
+    bool m_workbench_load_error {false};
+    wxTextCtrl* m_workbench_history_search {nullptr};
+    Button* m_workbench_history_upload {nullptr};
+    wxStaticText* m_workbench_history_page_label {nullptr};
+    Button* m_workbench_history_previous {nullptr};
+    Button* m_workbench_history_next {nullptr};
+    Button* m_workbench_history_first {nullptr};
+    Button* m_workbench_history_last {nullptr};
+    size_t m_workbench_history_page {0};
+    int m_workbench_history_filter {0};
+    std::array<Button*, 4> m_workbench_history_filters {};
+    std::vector<wxWindow*> m_workbench_thumbnails;
+    std::vector<size_t> m_workbench_thumbnail_entries;
+    std::vector<wxWindow*> m_library_thumbnail_targets;
+    bool m_library_scan_pending {false};
     BeautyWorkbenchControls* m_beauty_controls {nullptr};
+    std::unique_ptr<BeautyWorkbenchTransactionController> m_beauty_transactions;
     wxWindow* m_workflow_panel {nullptr};
-    wxWindow* m_input_welcome {nullptr};
-    wxWindow* m_model_empty {nullptr};
-    wxWindow* m_input_results {nullptr};
-    wxWindow* m_input_journey {nullptr};
-    wxWindow* m_input_form {nullptr};
-    wxWindow* m_input_actions {nullptr};
-    wxWindow* m_input_form_scroll_track {nullptr};
-    wxWindow* m_model_overview {nullptr};
-    wxWindow* m_model_overview_scroll_track {nullptr};
-    wxStaticText* m_model_overview_stats {nullptr};
-    wxStaticText* m_model_overview_action_status {nullptr};
-    wxStaticText* m_model_overview_quality_status {nullptr};
-    wxStaticText* m_model_overview_quality_summary {nullptr};
-    wxPanel* m_model_overview_risks {nullptr};
-    Button* m_model_overview_check_details {nullptr};
-    wxStaticText* m_model_overview_check_metrics {nullptr};
-    bool m_model_overview_check_expanded {false};
-    Button* m_model_overview_beauty {nullptr};
-    Button* m_model_overview_check {nullptr};
-    Button* m_model_overview_color_match {nullptr};
-    Button* m_model_overview_slice {nullptr};
-    bool m_model_import_available {false};
-    wxStaticText* m_prompt_count {nullptr};
     wxPanel* m_comparison_panel {nullptr};
     wxScrolledWindow* m_model_page {nullptr};
-    bool m_updating_comparison_layout {false};
-    Button* m_finishing_shortcut {nullptr};
-    bool m_finishing_workbench {false};
-    ComboBox* m_finishing_mode {nullptr};
-    ComboBox* m_finishing_preset {nullptr};
+    wxPanel* m_workbench_history_panel {nullptr};
+    wxScrolledWindow* m_workbench_history_scroller {nullptr};
+    wxBoxSizer* m_workbench_history_sizer {nullptr};
+    wxStaticText* m_workbench_history_status {nullptr};
+    wxButton* m_finishing_shortcut {nullptr};
+    wxChoice* m_finishing_tool {nullptr};
+    wxPanel* m_finishing_selection_controls {nullptr};
+    wxStaticText* m_finishing_selection_status {nullptr};
+    wxStaticText* m_finishing_cleanup_hint {nullptr};
+    ComboBox* m_finishing_selection_operation {nullptr};
+    wxSlider* m_finishing_radius {nullptr};
     wxCheckBox* m_finishing_gray {nullptr};
-    wxCheckBox* m_finishing_surface {nullptr};
-    wxWindow* m_finishing_overall_controls {nullptr};
-    wxWindow* m_finishing_strength_control {nullptr};
-    wxStaticText* m_finishing_strength_label {nullptr};
-    int m_finishing_strength {15};
+    wxPanel* m_finishing_overlay_row {nullptr};
+    wxToggleButton* m_finishing_overlay {nullptr};
+    wxStaticText* m_finishing_strength_value {nullptr};
+    wxButton* m_finishing_redo {nullptr};
+    bool m_finishing_workbench {false};
     bool m_finishing_compare_held {false};
-    Button* m_finishing_preview {nullptr};
-    Button* m_finishing_compare {nullptr};
+    boost::filesystem::path m_finishing_redo_path, m_finishing_redo_source;
+    std::string m_finishing_redo_id;
+    wxCheckBox* m_finishing_smooth {nullptr};
+    wxCheckBox* m_finishing_repair {nullptr};
+    wxSlider* m_finishing_strength {nullptr};
+    wxChoice* m_finishing_preset {nullptr};
+    wxButton* m_finishing_preview {nullptr};
+    wxButton* m_finishing_compare {nullptr};
     Button* m_finishing_compare_model {nullptr};
-    Button* m_finishing_accept {nullptr};
-    Button* m_finishing_discard {nullptr};
-    Button* m_finishing_cancel {nullptr};
+    wxButton* m_finishing_accept {nullptr};
+    wxButton* m_finishing_discard {nullptr};
+    wxButton* m_finishing_undo {nullptr};
+    wxButton* m_finishing_cancel {nullptr};
     wxStaticText* m_finishing_status {nullptr};
     std::thread m_finishing_worker;
     std::thread m_preview_worker;
-    std::thread m_library_import_worker;
     bool m_preview_loading {false};
     std::shared_ptr<std::atomic<bool>> m_preview_canceled;
     std::shared_ptr<std::atomic<bool>> m_finishing_canceled;
-    boost::filesystem::path m_finishing_source, m_finishing_candidate;
+    std::shared_ptr<std::atomic<bool>> m_beauty_publication_committed;
+    boost::filesystem::path m_finishing_source, m_finishing_candidate, m_finishing_undo_path, m_finishing_accepted_path;
     std::string m_finishing_id;
     AI::ModelFinishingResult m_finishing_result;
-    std::shared_ptr<const AI::ModelFinishingOptions> m_finishing_options;
-    std::string m_finishing_serialized_workbench, m_finishing_serialized_geometry_id;
+    AI::ModelFinishingOptions m_finishing_options;
     bool m_finishing_running {false};
     bool m_finishing_before {false};
+    std::function<void()> m_finishing_restore_context;
+    std::function<void()> m_finishing_source_context;
+    std::function<void()> m_finishing_restore_selection;
+    AI::SurfaceSelectionPersistence::SelectionState m_finishing_selection_state;
+    std::vector<std::pair<size_t, std::array<float, 3>>> m_finishing_candidate_face_overrides;
+    AI::SemanticColoring::FaceColors m_finishing_candidate_semantic_faces;
+    AI::SemanticColoring::SubfaceColors m_finishing_candidate_semantic_subfaces;
+    nlohmann::json m_finishing_candidate_semantic_provenance;
+    std::shared_ptr<const SemanticRegionEvidence> m_finishing_candidate_region_evidence;
+    std::string m_finishing_candidate_region_error;
+    std::shared_ptr<const SecondaryRegionEvidence> m_finishing_candidate_secondary_evidence;
+    std::string m_finishing_candidate_secondary_error;
+    std::vector<std::string> m_finishing_color_palette;
+    std::function<void()> m_finishing_redo_preview;
+    struct BeautyCandidateSnapshot {
+        boost::filesystem::path source;
+        boost::filesystem::path candidate;
+        std::string model_sha256;
+        std::string geometry_id;
+        std::string id;
+        AI::ModelFinishingResult result;
+        AI::ModelFinishingOptions options;
+        AI::SurfaceSelectionPersistence::SelectionState selection;
+        ModelPreviewColorControls::State color_trial;
+        std::vector<std::pair<size_t, std::array<float, 3>>> face_overrides;
+        AI::SemanticColoring::FaceColors semantic_faces;
+        AI::SemanticColoring::SubfaceColors semantic_subfaces;
+        nlohmann::json semantic_provenance;
+        std::shared_ptr<const SemanticRegionEvidence> region_evidence;
+        std::string region_evidence_error;
+        std::shared_ptr<const SecondaryRegionEvidence> secondary_evidence;
+        std::string secondary_evidence_error;
+        std::shared_ptr<const PortraitShapeDetails> shape_details;
+        bool shapes_unlocked {false};
+        nlohmann::json leaf_edits;
+        std::shared_ptr<const BeautyPartitionSnapshot> partition;
+    };
+    BeautyCandidateSnapshot capture_beauty_candidate() const;
+    std::function<void()> capture_model_context();
+    void reset_beauty_asset();
+    bool restore_beauty_candidate(const BeautyCandidateSnapshot& snapshot);
+    void record_beauty_candidate(BeautyWorkbenchTransactionController::OperationKind kind,
+                                 std::shared_ptr<BeautyCandidateSnapshot> before);
+    void clear_unaccepted_beauty_candidates(size_t start = 0);
+    std::vector<boost::filesystem::path> m_beauty_candidate_files;
+    std::vector<boost::filesystem::path> m_beauty_accepted_files;
+    std::shared_ptr<BeautyCandidateSnapshot> m_beauty_session_source;
+    std::shared_ptr<BeautyCandidateSnapshot> m_beauty_reoptimization_before;
+    size_t m_beauty_session_undo_base {0};
+    size_t m_beauty_session_file_base {0};
 
+    std::thread m_library_import_worker;
     wxStaticText*   m_prompt_label { nullptr };
     wxTextCtrl*     m_prompt { nullptr };
-    ComboBox*      m_style { nullptr };
-    ComboBox*      m_stylized_style { nullptr };
+    wxChoice*       m_style { nullptr };
+    wxChoice*       m_stylized_style { nullptr };
     wxPanel*        m_style_recommendation_panel { nullptr };
     wxStaticText*   m_style_recommendation_title { nullptr };
     wxStaticText*   m_style_recommendation_reason { nullptr };
@@ -365,31 +522,48 @@ private:
     wxPanel*        m_custom_style_panel { nullptr };
     wxTextCtrl*     m_custom_style { nullptr };
     wxChoice*       m_quality { nullptr };
-    ComboBox*       m_provider { nullptr };
+    wxChoice*       m_provider { nullptr };
     wxChoice*       m_geometry_quality { nullptr };
     wxChoice*       m_texture_quality { nullptr };
     wxChoice*       m_output_format { nullptr };
     wxStaticText*   m_generation_cost { nullptr };
-    Button*         m_choose_image { nullptr };
-    wxImage         m_input_thumbnail_source;
-    int             m_input_thumbnail_extent {0};
-    Button*       m_paste_image { nullptr };
-    Button*       m_clear_image { nullptr };
+    wxButton*       m_choose_image { nullptr };
+    wxButton*       m_clear_image { nullptr };
     wxStaticText*   m_selected_image { nullptr };
     wxStaticText*   m_upload_notice { nullptr };
-    ModelGenerationLegacyState m_legacy_generation_state;
     wxPanel*        m_palette_panel { nullptr };
     wxPanel*        m_custom_color_panel { nullptr };
     wxGridSizer*    m_palette_sizer { nullptr };
     wxCheckBox*     m_use_printable_colors { nullptr };
-    wxCheckBox*     m_prepare_base { nullptr };
     wxChoice*       m_palette_source { nullptr };
     wxChoice*       m_import_color_mode { nullptr };
     wxChoice*       m_import_color_source { nullptr };
+    wxColourPickerCtrl* m_custom_color { nullptr };
+    wxButton*       m_add_custom_color { nullptr };
+    wxStaticText*   m_palette_summary { nullptr };
+    wxPanel*        m_palette_recommendation_panel { nullptr };
+    wxChoice*       m_palette_color_count { nullptr };
+    wxButton*       m_recommend_palette { nullptr };
+    wxButton*       m_confirm_recommended_palette { nullptr };
+    wxStaticText*   m_palette_recommendation_summary { nullptr };
+    std::vector<wxPanel*> m_palette_recommendation_cards;
+    std::vector<wxPanel*> m_palette_recommendation_swatches;
+    std::vector<wxStaticText*> m_palette_recommendation_details;
+    std::vector<wxButton*> m_palette_recommendation_replace;
+    std::vector<wxButton*> m_palette_recommendation_remove;
+    wxPanel*        m_palette_roles_panel { nullptr };
+    std::vector<wxChoice*> m_palette_role_choices;
     wxPanel*        m_model_settings_panel { nullptr };
     wxPanel*        m_import_settings_panel { nullptr };
+    wxButton*       m_advanced_toggle { nullptr };
+    wxPanel*        m_advanced_options { nullptr };
+    wxSpinCtrlDouble* m_print_width { nullptr };
+    wxSpinCtrlDouble* m_nozzle_size { nullptr };
+    wxSpinCtrlDouble* m_line_width { nullptr };
+    wxSpinCtrlDouble* m_minimum_feature { nullptr };
+    wxChoice*       m_shadow_color { nullptr };
     wxStaticText*   m_preprocess_section { nullptr };
-    Button*        m_preprocess { nullptr };
+    wxButton*       m_preprocess { nullptr };
     wxStaticText*   m_prepared_prompt_label { nullptr };
     wxTextCtrl*     m_prepared_prompt { nullptr };
     wxStaticText*   m_workflow_steps { nullptr };
@@ -398,22 +572,28 @@ private:
     wxStaticText*   m_preview_kind { nullptr };
     wxChoice*       m_preview_stage { nullptr };
     wxStaticText*   m_preview_stage_hint { nullptr };
-    bool m_design_preview_stale { false }; // Display projection only; never changes task eligibility.
     wxCollapsiblePane* m_preview_details_pane { nullptr };
     wxStaticText*   m_preview_technical_details { nullptr };
-    wxSimplebook*     m_preview_book { nullptr };
-    Button*       m_zoom_out { nullptr };
+    wxNotebook*     m_preview_book { nullptr };
+    wxButton*       m_zoom_out { nullptr };
     wxToggleButton* m_expand_images { nullptr };
-    Button*       m_zoom_fit { nullptr };
-    Button*       m_zoom_in { nullptr };
+    wxButton*       m_zoom_fit { nullptr };
+    wxButton*       m_zoom_in { nullptr };
     wxStaticText*   m_preview_zoom { nullptr };
     wxStaticText*   m_preview_message { nullptr };
     wxStaticText*   m_result_summary { nullptr };
     ModelPreview3D* m_model_preview { nullptr };
     wxStaticText*   m_model_preview_message { nullptr };
     wxStaticText*   m_model_stats { nullptr };
-    Button*         m_front_model_view { nullptr };
-    Button*         m_reset_model_view { nullptr };
+    wxButton*       m_front_model_view { nullptr };
+    wxButton*       m_reset_model_view { nullptr };
+    wxPanel*        m_local_recolor_panel { nullptr };
+    wxToggleButton* m_local_recolor_toggle { nullptr };
+    wxPanel*        m_local_recolor_controls { nullptr };
+    std::array<wxToggleButton*, Slic3r::AI::kMaxPhysicalColorChannels> m_region_color_buttons {};
+    wxButton*       m_apply_region_color { nullptr };
+    int             m_region_color_index { 0 };
+    std::vector<std::string> m_region_palette;
     wxPanel*        m_model_decision_panel { nullptr };
     wxStaticText*   m_model_decision_status { nullptr };
     wxStaticText*   m_model_decision_summary { nullptr };
@@ -434,38 +614,23 @@ private:
     wxStaticText*   m_model_refinement_status { nullptr };
     wxStaticText*   m_model_refinement_summary { nullptr };
     wxButton*       m_apply_model_refinement { nullptr };
-    Button*       m_generate { nullptr };
-    Button*       m_stop { nullptr };
-    Button*       m_retry_service { nullptr };
+    wxButton*       m_generate { nullptr };
+    wxButton*       m_stop { nullptr };
+    wxButton*       m_retry_service { nullptr };
     wxStaticText*   m_progress_percent { nullptr };
     wxGauge*        m_generation_progress { nullptr };
     wxStaticText*   m_status { nullptr };
-    Button*       m_import { nullptr };
-    Button*       m_discard { nullptr };
+    wxButton*       m_import { nullptr };
+    wxButton*       m_discard { nullptr };
     wxScrolledWindow* m_preview_area { nullptr };
     wxScrolledWindow* m_library_scroller { nullptr };
-    wxWindow*      m_library_scroll_track { nullptr };
     wxBoxSizer*     m_library_sizer { nullptr };
     wxStaticText*   m_library_empty { nullptr };
-    Button*        m_library_import { nullptr };
+    wxButton*      m_library_import { nullptr };
     wxStaticText*   m_library_page_label { nullptr };
-    Button*         m_library_previous { nullptr };
-    Button*         m_library_next { nullptr };
+    wxButton*       m_library_previous { nullptr };
+    wxButton*       m_library_next { nullptr };
     wxTimer         m_library_timer;
-    wxTimer         m_library_filter_timer;
-    wxTextCtrl* m_library_search {nullptr};
-    std::array<Button*, 4> m_library_filter_buttons {};
-    ModelLibraryCategory m_library_category {ModelLibraryCategory::All};
-    std::vector<size_t> m_library_filtered_indices;
-    void apply_library_filter();
-    void sync_library_scroll_track();
-    void cover_library_scroll_track_during_layout();
-    void attach_model_overview_scroll_track();
-    void sync_model_overview_scroll_track();
-    void attach_input_form_scroll_track();
-    void sync_input_form_scroll_track();
-    void attach_finishing_editor_scroll_track();
-    void sync_finishing_editor_scroll_track();
     struct LibraryLoadState;
     std::shared_ptr<LibraryLoadState> m_library_load_state;
     std::thread     m_library_worker;
@@ -475,8 +640,8 @@ private:
     int            m_library_thumbnail_edge { 0 };
     int            m_library_layout_width { 0 };
     std::vector<wxWindow*> m_library_thumbnails;
-    std::string m_library_selected_asset_id;
-    bool m_library_open_pending {false};
+    std::function<void(wxWindow*)> m_library_appearance_handler;
+    std::set<std::string> m_library_expanded_details;
     wxTimer         m_poll_timer;
 
     boost::filesystem::path m_selected_image_path;
@@ -506,6 +671,8 @@ private:
     wxString m_style_preview_placeholder;
     std::vector<GeneratedModelEntry> m_library_entries;
     ModelLibraryMetadata m_library_metadata;
+    ModelGenerationLegacyState m_legacy_generation_state;
+    std::vector<ModelGenerationUIHistoryEntry> m_ui_history_entries;
     std::vector<std::string> m_palette;
     std::vector<std::string> m_custom_palette;
     std::vector<std::string> m_job_palette;
@@ -556,6 +723,12 @@ private:
     bool m_service_availability_known { false };
     bool m_page_initialized { false };
     bool m_library_refresh_pending { true };
+    bool m_library_requested_by_shell { false };
+    bool m_ui_history_loading { false };
+    bool m_ui_model_generation_context { false };
+    bool m_ui_stopping { false };
+    std::string m_ui_history_error;
+    size_t m_ui_history_thumbnails_pending { 0 };
     bool m_restore_checked { false };
     bool m_restoring_input { false };
     bool m_shutdown { false };
@@ -569,6 +742,7 @@ private:
     bool m_style_user_selected { false };
     bool m_job_preview_expected { false };
     bool m_palette_is_custom { false };
+    bool m_advanced_options_expanded { false };
     bool m_job_use_printable_colors { false };
     bool m_raw_preview_available { false };
     bool m_model_reference_available { false };
@@ -581,8 +755,6 @@ private:
     std::string m_model_input_primary_blocker;
     bool m_preview_metrics_available { false };
     bool m_quality_check_busy { false };
-    bool m_quality_check_failed { false };
-    uint64_t m_quality_request_revision { 0 };
     bool m_visual_check_busy { false };
     bool m_journey_model_submitted { false };
     int m_poll_connection_failures { 0 };

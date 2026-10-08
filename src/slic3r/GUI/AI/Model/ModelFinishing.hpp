@@ -18,6 +18,10 @@ struct ModelFinishingOptions {
     bool smooth_surface {true};
     bool repair_mesh {true};
     double strength {0.35};
+    // Optional workbench controls. Zero keeps the legacy strength-derived
+    // iteration count; a positive value is clamped by the finishing backend.
+    int smoothing_iterations {0};
+    bool preserve_hard_edges {true};
     // Zero-based face ordinals in the source triangle OBJ (not preview draw
     // order). Empty means the whole surface. A local selection requires
     // repair_mesh=false; vertices incident to unselected faces stay fixed.
@@ -30,6 +34,9 @@ struct ModelFinishingOptions {
     // cleanup. It assigns exact corner colors without moving source geometry.
     bool recolor_selected {false};
     std::array<float, 4> target_color {};
+    // Beauty edits are opt-in and are kept separate from the legacy finishing
+    // operations above. They preserve the source geometry and operate on a
+    // validated local surface/appearance document.
     bool beauty_appearance {false};
     bool beauty_deform {false};
     BeautyAppearanceOptions appearance;
@@ -95,8 +102,10 @@ ModelFinishingResult finish_model_artifact(
     const ModelFinishingOptions& options,
     const std::function<bool()>& canceled = {});
 
-ModelFinishingResult finish_beauty_artifact(const boost::filesystem::path& source,
-    const boost::filesystem::path& destination,const ModelFinishingOptions& options,
+ModelFinishingResult finish_beauty_artifact(
+    const boost::filesystem::path& source,
+    const boost::filesystem::path& destination,
+    const ModelFinishingOptions& options,
     const std::function<bool()>& canceled = {});
 
 } // namespace Slic3r::AI

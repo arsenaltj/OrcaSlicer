@@ -36,6 +36,57 @@ void require_same(const trial::State& a, const trial::State& b)
     REQUIRE(a.semantic_palette == b.semantic_palette);
     REQUIRE(a.semantic_mapping_palette == b.semantic_mapping_palette);
     REQUIRE(a.semantic_portrait_card == b.semantic_portrait_card);
+    REQUIRE(a.semantic_region_slots == b.semantic_region_slots);
+    REQUIRE(a.project_color_slots == b.project_color_slots);
+    REQUIRE(a.project_semantic_slots == b.project_semantic_slots);
+    REQUIRE(a.project_slot_identity == b.project_slot_identity);
+}
+
+TEST_CASE("Project-bound trials update physical slots without rebuilding source assignments", "[ColorTrialState][PostGenerationWorkbench]")
+{
+    auto saved = saved_trial();
+    saved.source = 1;
+    saved.colors = {{1, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+    saved.semantic_palette = saved.colors;
+    saved.semantic_mapping_palette = saved.mapping_colors;
+    saved.project_color_slots = {0, 3, 2};
+    saved.project_semantic_slots = {0, 3, 2};
+    saved.project_slot_identity = "printer/filament-layout";
+    saved.enabled = false;
+    trial::State restored;
+    std::string error;
+    REQUIRE(trial::decode(trial::encode(saved, 20, geometry_id), 20, geometry_id, restored, error));
+    require_same(saved, restored);
+    REQUIRE(trial::synchronize_project_targets(restored, {0, 2, 3},
+        {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}, saved.project_slot_identity));
+    CHECK(restored.colors[0] == saved.colors[0]);
+    CHECK(restored.colors[1] == GUI::PreviewPalette::Color{0, 0, 1});
+    CHECK(restored.mapping_colors == saved.mapping_colors);
+    CHECK(restored.semantic_mapping_palette == saved.semantic_mapping_palette);
+    CHECK_FALSE(restored.enabled);
+    CHECK_FALSE(trial::project_target_replacement(saved, restored, {1, 0, 0}));
+    CHECK(trial::project_target_replacement(saved, restored, {0, 1, 0}) == GUI::PreviewPalette::Color{0, 1, 0});
+}
+
+TEST_CASE("Project binding rejects stale layouts atomically and preserves manual RGB trials", "[ColorTrialState][PostGenerationWorkbench]")
+{
+    auto saved = saved_trial();
+    saved.source = 1;
+    saved.project_color_slots = {0, 1, 2};
+    saved.project_slot_identity = "original";
+    auto state = saved;
+    CHECK_FALSE(trial::synchronize_project_targets(state, {0, 1, 2}, saved.colors, "different printer"));
+    require_same(saved, state);
+    CHECK_FALSE(trial::synchronize_project_targets(state, {0, 1, 3}, saved.colors, "original"));
+    require_same(saved, state);
+    auto doc = trial::encode(saved, 20, geometry_id);
+    doc["project_color_slots"] = {0, "1", 2};
+    std::string error;
+    CHECK_FALSE(trial::decode(doc, 20, geometry_id, state, error));
+    require_same(saved, state);
+    state = saved_trial();
+    REQUIRE(trial::synchronize_project_targets(state, {0, 1, 2}, {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}}, "other"));
+    require_same(saved_trial(), state);
 }
 }
 
@@ -208,8 +259,8 @@ TEST_CASE("Trial source count and paired palette sizes stay inside their support
     const auto saved = saved_trial();
     const std::vector<std::pair<std::string, nlohmann::json>> invalid {
         {"source", -1}, {"source", 3}, {"source", 1.0}, {"source", "2"},
-        {"count", 0}, {"count", 7}, {"count", 1.5}, {"count", 2},
-        {"schema", "orca.color-trial/v2"}, {"geometry_sha256", 123},
+        {"count", 0}, {"count", GUI::PreviewPalette::max_preview_colors + 1}, {"count", 1.5}, {"count", 2},
+        {"schema", "orca.color-trial/v3"}, {"geometry_sha256", 123},
         {"mapping_colors", nlohmann::json::array()},
         {"colors", nlohmann::json::array({{0, 0, 0}})}
     };
@@ -259,11 +310,29 @@ TEST_CASE("Invalid outgoing trial states cannot be saved as apparently valid sna
     auto state = saved_trial();
     state.source = 3;
     REQUIRE_THROWS_AS(trial::encode(state, 20, geometry_id), std::invalid_argument);
-    state = saved_trial(); state.count = 7;
+    state = saved_trial(); state.count = int(GUI::PreviewPalette::max_preview_colors) + 1;
     REQUIRE_THROWS_AS(trial::encode(state, 20, geometry_id), std::invalid_argument);
     state = saved_trial(); state.mapping_colors.pop_back();
     REQUIRE_THROWS_AS(trial::encode(state, 20, geometry_id), std::invalid_argument);
     state = saved_trial(); state.colors[0][0] = std::numeric_limits<float>::quiet_NaN();
     REQUIRE_THROWS_AS(trial::encode(state, 20, geometry_id), std::invalid_argument);
     REQUIRE_THROWS_AS(trial::encode(saved_trial(), 20, ""), std::invalid_argument);
+}
+
+TEST_CASE("Extended trials restore their slot bindings and legacy six-color drafts stay readable", "[ColorTrialState]")
+{
+    auto saved = saved_trial();
+    saved.count = int(GUI::PreviewPalette::max_preview_colors);
+    saved.semantic_region_slots = {0, 1, 2, -1};
+    trial::State restored;
+    std::string error;
+    REQUIRE(trial::decode(trial::encode(saved, 20, geometry_id), 20, geometry_id, restored, error));
+    require_same(saved, restored);
+
+    auto legacy = trial::encode(saved_trial(), 20, geometry_id);
+    legacy["schema"] = "orca.color-trial/v1";
+    legacy["locks"] = {true, false, true, false, false, false};
+    legacy.erase("semantic_region_slots");
+    REQUIRE(trial::decode(legacy, 20, geometry_id, restored, error));
+    require_same(saved_trial(), restored);
 }

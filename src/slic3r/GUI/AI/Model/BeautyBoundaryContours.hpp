@@ -70,7 +70,8 @@ public:
         return result;
     }
 
-    static std::vector<Segment> build(const std::vector<Edge>& edges,const indexed_triangle_set& mesh,const Neighbors& neighbors,
+    template<class FaceNeighbors>
+    static std::vector<Segment> build(const std::vector<Edge>& edges,const indexed_triangle_set& mesh,const FaceNeighbors& neighbors,
                                       const std::function<bool()>& canceled={}) {
         Cancellation cancellation{canceled};cancellation.check();
         struct Key {

@@ -66,9 +66,11 @@ namespace UndoRedo {
     class Stack;
     enum class SnapshotType : unsigned char;
     struct Snapshot;
+    struct ActionSnapshotIdentity;
 }
 
 namespace GUI {
+class SmartSlicingFeatureHost;
 namespace LocalPrintColorCommit { struct Prepared; }
 struct ModelColorImportResult;
 struct TextureImportOptions;
@@ -155,18 +157,7 @@ class Sidebar : public wxPanel
     void update_sync_ams_btn_enable(wxUpdateUIEvent &e);
 
 public:
-    using AIWorkflowStatus = Slic3r::GUI::AIWorkflowStatus;
-
-    enum AIWorkflowStep : size_t
-    {
-        AIImportModel = 0,
-        AICheckMesh,
-        AIProcessColors,
-        AIArrange,
-        AISlice,
-        AIGCode,
-        AIWorkflowStepCount
-    };
+#include "AI/SidebarWorkflowDeclarations.ipp"
 
     enum DockingState
     {
@@ -515,6 +506,7 @@ public:
     void enable_smart_slicing();
     bool is_smart_slicing_shown() const;
     void show_smart_slicing(bool show);
+    SmartSlicingFeatureHost* smart_slicing_feature_host();
 
     void reset_window_layout();
 
@@ -620,6 +612,7 @@ public:
     void redo();
     void undo_to(int selection);
     void redo_to(int selection);
+#include "PlaterAITransaction.ipp"
     bool undo_redo_string_getter(const bool is_undo, int idx, const char** out_text);
     void undo_redo_topmost_string_getter(const bool is_undo, std::string& out_text);
     int update_print_required_data(Slic3r::DynamicPrintConfig config, Slic3r::Model model, Slic3r::PlateDataPtrs plate_data_list, std::string file_name, std::string file_path);

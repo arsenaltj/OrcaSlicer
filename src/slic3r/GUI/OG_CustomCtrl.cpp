@@ -333,7 +333,8 @@ void OG_CustomCtrl::OnPaint(wxPaintEvent&)
     // BBS: new layout
     if (!GetLabel().IsEmpty()) {
         dc.SetFont(Label::Head_16);
-        wxColour color = StateColor::darkModeColorFor("#283436");
+        wxColour color = GetName() == "ai_content_color" ? GetForegroundColour()
+            : StateColor::darkModeColorFor("#283436");
         draw_title(dc, {0, v_pos}, GetLabel(), &color, h_pos);
         dc.SetFont(m_font);
     }
@@ -955,12 +956,22 @@ wxCoord OG_CustomCtrl::CtrlLine::draw_text(wxDC &dc, wxPoint pos, const wxString
 #endif
             color = &clr_url;
         }
-        dc.SetTextForeground(color ? *color :
+        wxColour display_color = color ? *color :
 #ifdef _WIN32
-            wxGetApp().get_label_clr_default());
+            ctrl->GetName() == "ai_content_color" ? ctrl->GetForegroundColour() : wxGetApp().get_label_clr_default();
 #else
-            wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOWTEXT));
+            wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOWTEXT);
 #endif /* _WIN32 */
+        if (ctrl->GetName() == "ai_content_color" && color &&
+            StateColor::darkModeColorFor(*wxWHITE) == *wxWHITE) {
+            const auto& palette = StateColor::GetDarkMap();
+            for (const auto& entry : palette) {
+                if (entry.first != display_color) continue;
+                display_color = entry.second;
+                break;
+            }
+        }
+        dc.SetTextForeground(display_color);
         dc.DrawText(out_text, pos);
         dc.SetTextForeground(old_clr);
         dc.SetFont(old_font);

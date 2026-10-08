@@ -3,6 +3,7 @@
 #include "slic3r/GUI/AI/ModelGeneration/BeautyDraftQueue.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/BeautyPreparationTicket.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchControls.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/ModelPreviewPuzzle.hpp"
 #include "slic3r/GUI/AI/Model/BeautyPrintColorHandoff.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include "slic3r/GUI/AI/Model/BeautyMetadata.hpp"

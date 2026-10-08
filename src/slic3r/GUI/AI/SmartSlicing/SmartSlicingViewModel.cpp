@@ -4,6 +4,54 @@
 
 namespace Slic3r::GUI {
 
+namespace {
+
+SmartSlicingGoalState goal_state(AI::SmartSlicing::GoalResultStatus status)
+{
+    using AI::SmartSlicing::GoalResultStatus;
+    switch (status) {
+    case GoalResultStatus::Ready: return SmartSlicingGoalState::Ready;
+    case GoalResultStatus::Unavailable: return SmartSlicingGoalState::Unavailable;
+    case GoalResultStatus::Failed: return SmartSlicingGoalState::Failed;
+    case GoalResultStatus::Stale: return SmartSlicingGoalState::Stale;
+    case GoalResultStatus::Applied: return SmartSlicingGoalState::Applied;
+    case GoalResultStatus::Analyzing: return SmartSlicingGoalState::Analyzing;
+    }
+    return SmartSlicingGoalState::Analyzing;
+}
+
+SmartSlicingGoalState workflow_goal_state(const AI::SmartSlicing::WorkflowSnapshot& snapshot,
+                                          SmartSlicingGoalState fallback)
+{
+    using AI::SmartSlicing::WorkflowState;
+    switch (snapshot.state) {
+    case WorkflowState::OfficialSlicing: return SmartSlicingGoalState::OfficialSlicing;
+    case WorkflowState::ApplyFailed: return SmartSlicingGoalState::ApplyFailed;
+    case WorkflowState::Completed: return SmartSlicingGoalState::Applied;
+    case WorkflowState::Stale: return SmartSlicingGoalState::Stale;
+    case WorkflowState::Failed: return SmartSlicingGoalState::Failed;
+    default: return fallback;
+    }
+}
+
+void fill_goal_actions(SmartSlicingGoalView& view, const AI::SmartSlicing::WorkflowSnapshot& snapshot)
+{
+    view.actions.can_view_details = !view.diagnostic_codes.empty() || view.evidence.has_value() ||
+                                    !view.candidate_id.empty();
+    view.actions.can_select = view.state == SmartSlicingGoalState::Ready &&
+                              snapshot.state == AI::SmartSlicing::WorkflowState::ReadyToApply;
+    view.actions.can_apply = view.actions.can_select && !view.candidate_id.empty();
+    view.actions.can_retry_slice = view.state == SmartSlicingGoalState::ApplyFailed;
+    view.actions.can_undo = snapshot.can_undo_apply &&
+                            (view.state == SmartSlicingGoalState::Applied ||
+                             view.state == SmartSlicingGoalState::ApplyFailed);
+    view.actions.can_reanalyze = view.state == SmartSlicingGoalState::Unavailable ||
+                                 view.state == SmartSlicingGoalState::Failed ||
+                                 view.state == SmartSlicingGoalState::Stale;
+}
+
+} // namespace
+
 SmartSlicingViewModel SmartSlicingViewModel::from_snapshot(const AI::SmartSlicing::WorkflowSnapshot& snapshot)
 {
     using AI::SmartSlicing::WorkflowState;
@@ -21,6 +69,45 @@ SmartSlicingViewModel SmartSlicingViewModel::from_snapshot(const AI::SmartSlicin
         snapshot.state == WorkflowState::Completed || snapshot.state == WorkflowState::ApplyFailed ||
         (snapshot.state == WorkflowState::Failed && snapshot.context.has_value());
     view.detail     = snapshot.detail;
+    view.native_baseline_available = !snapshot.candidates.empty();
+    if (view.native_baseline_available) {
+        const AI::SmartSlicing::SliceCandidate& baseline = snapshot.candidates.front();
+        view.baseline.candidate_id = baseline.id.empty() ? "baseline" : baseline.id;
+        view.baseline.summary_key = "native_baseline";
+        if (baseline.metrics) {
+            view.baseline.estimated_time_seconds = baseline.metrics->estimated_time_seconds;
+            view.baseline.filament_volume_mm3 = baseline.metrics->filament_volume_mm3;
+        }
+    }
+    if (snapshot.recommendation) {
+        view.has_recommendation_contract = true;
+        view.recommendation_contract_version = snapshot.recommendation->contract_version;
+        view.baseline.candidate_id = snapshot.recommendation->baseline.candidate_id;
+        view.baseline.status = snapshot.recommendation->baseline.status;
+        view.baseline.diagnostic_codes = snapshot.recommendation->baseline.diagnostic_codes;
+        view.native_baseline_available = !view.baseline.candidate_id.empty() || view.baseline.status !=
+            AI::SmartSlicing::GoalResultStatus::Analyzing;
+        for (size_t index = 0; index < AI::SmartSlicing::RECOMMENDATION_GOALS.size(); ++index) {
+            const AI::SmartSlicing::RecommendationGoal goal = AI::SmartSlicing::RECOMMENDATION_GOALS[index];
+            const AI::SmartSlicing::GoalResult& result = snapshot.recommendation->goal_result(goal);
+            view.goal_results[index].goal_id = AI::SmartSlicing::recommendation_goal_id(goal);
+            view.goal_results[index].task_candidate_id = result.candidate_id;
+            view.goal_results[index].candidate_id = result.selected_candidate_id;
+            view.goal_results[index].status = result.status;
+            view.goal_results[index].state = workflow_goal_state(snapshot, goal_state(result.status));
+            view.goal_results[index].diagnostic_codes = result.diagnostic_codes;
+            if (result.status == AI::SmartSlicing::GoalResultStatus::Ready ||
+                result.status == AI::SmartSlicing::GoalResultStatus::Applied ||
+                result.status == AI::SmartSlicing::GoalResultStatus::Stale)
+                view.goal_results[index].evidence = result.evidence;
+            fill_goal_actions(view.goal_results[index], snapshot);
+        }
+    } else {
+        for (SmartSlicingGoalView& goal : view.goal_results) {
+            goal.state = workflow_goal_state(snapshot, SmartSlicingGoalState::Analyzing);
+            fill_goal_actions(goal, snapshot);
+        }
+    }
     if (view.has_report) {
         view.issue_count = snapshot.report->issues.size();
         view.issues.reserve(snapshot.report->issues.size());

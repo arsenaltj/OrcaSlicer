@@ -7,3 +7,4 @@ bool apply_local_print_colors(ModelVolume& volume, LocalPrintColorCommit::Prepar
 bool adopt_local_print_model(const ModelObject& object, const PresetBundle* staged,
     size_t& index, std::string& error);
 void finish_local_print_model_import(size_t index);
+AI::ModelImportResult import_workbench_model(const AI::ModelImportRequest& request);

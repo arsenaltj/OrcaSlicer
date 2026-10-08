@@ -105,6 +105,57 @@ TEST_CASE("Explicit face colors survive old trial mapping centers without changi
     CHECK(settings.fixed_mapping_palette == std::vector<Color>{blue, red});
 }
 
+TEST_CASE("Textured GLB edits keep original face identities during color matching", "[ModelVertexColors][FaceColorOverride][TexturedOverride]")
+{
+    const auto fixture = GENERATE("textured.glb", "multi-material.glb");
+    const auto model = Model::read_from_file(std::string(TEST_DATA_DIR) + "/model_artifact/" + fixture);
+    REQUIRE(model.texture_mesh);
+    const auto& source = *model.texture_mesh;
+    REQUIRE_FALSE(source.textures.empty());
+    REQUIRE_FALSE(source.indices.empty());
+    REQUIRE(source.precomputed_face_colors.empty());
+    const auto vertices = source.vertices;
+    const auto indices = source.indices;
+    TexturePaintingSettings settings;
+    settings.fixed_palette = {{255, 0, 0}};
+    settings.smooth_weight = 1.;
+    settings.oversampling_iters = 2;
+    settings.face_color_overrides = {{0, {0, 0, 255}}};
+    settings.mesh_repair_decision = TexturePaintingSettings::MeshRepairDecision::RepairAndImport;
+    bool repair_called = false;
+    settings.mesh_repair_callback = [&](const indexed_triangle_set&, indexed_triangle_set&,
+        std::function<void(const char*, unsigned)>, std::function<bool()>, std::string*) {
+        repair_called = true;
+        return false;
+    };
+    PaintedMesh painted;
+    REQUIRE(texture_to_painting(source, painted, settings));
+    CHECK_FALSE(repair_called);
+    CHECK(painted.vertices == vertices);
+    CHECK(painted.indices == indices);
+    REQUIRE(painted.face_colors.size() == indices.size());
+    CHECK(painted.face_colors[0] == std::array<size_t, 3>{0, 0, 255});
+    for (size_t face = 1; face < indices.size(); ++face)
+        CHECK(painted.face_colors[face] == std::array<size_t, 3>{255, 0, 0});
+    CHECK(source.precomputed_face_colors.empty());
+}
+
+TEST_CASE("Invalid or cancelled texture edits preserve the previous painted result", "[ModelVertexColors][FaceColorOverride][TexturedOverride]")
+{
+    const auto model = Model::read_from_file(std::string(TEST_DATA_DIR) + "/model_artifact/textured.glb");
+    REQUIRE(model.texture_mesh);
+    const auto& source = *model.texture_mesh;
+    const int failure = GENERATE(0, 1, 2);
+    TexturePaintingSettings settings;
+    settings.fixed_palette = {{255, 0, 0}};
+    settings.face_color_overrides = {{failure == 0 ? source.indices.size() : 0,
+        {0, 0, failure == 1 ? size_t{256} : size_t{255}}}};
+    PaintedMesh previous;
+    previous.face_colors = {{1, 2, 3}};
+    CHECK_FALSE(texture_to_painting(source, previous, settings, nullptr, [failure] { return failure == 2; }));
+    CHECK(previous.face_colors == std::vector<std::array<size_t, 3>>{{1, 2, 3}});
+}
+
 TEST_CASE("Explicit low-poly face colors retain conforming subdivision and untouched region colors", "[ModelVertexColors][FaceColorOverride]")
 {
     using Color = std::array<size_t, 3>;

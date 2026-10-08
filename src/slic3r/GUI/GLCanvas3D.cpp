@@ -24,6 +24,7 @@
 #include "OpenGLManager.hpp"
 #include "Plater.hpp"
 #include "MainFrame.hpp"
+#include "Redesign/RedesignFeatureFlags.hpp"
 #include "WipeTowerDialog.hpp"
 #include "GUI_App.hpp"
 #include "GUI_ObjectList.hpp"
@@ -1329,6 +1330,7 @@ bool GLCanvas3D::init()
 }
 
 void GLCanvas3D::on_change_color_mode(bool is_dark, bool reinit) {
+    is_dark = is_dark || m_workbench_appearance;
     m_is_dark = is_dark;
     // Bed color
     m_bed.on_change_color_mode(is_dark);
@@ -1376,6 +1378,24 @@ void GLCanvas3D::on_change_color_mode(bool is_dark, bool reinit) {
             m_gizmos.set_icon_dirty();
         }
     }
+}
+
+void GLCanvas3D::use_workbench_appearance()
+{
+    m_workbench_appearance = true;
+    if (m_is_dark) return;
+    m_is_dark = true;
+    m_gcode_viewer.on_change_color_mode(true);
+    if (m_canvas_type == CanvasView3D && m_initialized && _set_current()) {
+        _switch_toolbars_icon_filename(true);
+        m_gizmos.on_change_color_mode(true);
+        m_gizmos.switch_gizmos_icon_filename();
+        m_main_toolbar.set_icon_dirty();
+        m_separator_toolbar.set_icon_dirty();
+        m_assemble_view_toolbar.set_icon_dirty();
+        m_gizmos.set_icon_dirty();
+    }
+    set_as_dirty();
 }
 
 const float GLCanvas3D::get_scale() const
@@ -8062,10 +8082,11 @@ void GLCanvas3D::_render_background()
     // Draws a bottom to top gradient over the complete screen.
     glsafe(::glDisable(GL_DEPTH_TEST));
 
-    ColorRGBA background_color = m_workspace_background.value_or(
-        m_is_dark ? DEFAULT_BG_LIGHT_COLOR_DARK : DEFAULT_BG_LIGHT_COLOR);
-    ColorRGBA error_background_color = (m_is_dark || m_workspace_background.has_value()) ?
-        ERROR_BG_LIGHT_COLOR_DARK : ERROR_BG_LIGHT_COLOR;
+    const bool workflow_canvas = RedesignFeatureFlags::model_workflow_review_enabled() &&
+        wxGetApp().mainframe && wxGetApp().mainframe->is_redesign_shell_active();
+    ColorRGBA background_color = m_workspace_background ? *m_workspace_background : workflow_canvas ? ColorRGBA(49.f / 255.f, 49.f / 255.f, 54.f / 255.f, 1.f)
+        : m_is_dark ? DEFAULT_BG_LIGHT_COLOR_DARK : DEFAULT_BG_LIGHT_COLOR;
+    ColorRGBA error_background_color = m_is_dark ? ERROR_BG_LIGHT_COLOR_DARK : ERROR_BG_LIGHT_COLOR;
     const ColorRGBA bottom_color = use_error_color ? error_background_color : background_color;
 
     if (!m_background.is_initialized()) {
@@ -8125,8 +8146,10 @@ void GLCanvas3D::_render_bed(const Transform3d& view_matrix, const Transform3d& 
 
 void GLCanvas3D::_render_platelist(const Transform3d& view_matrix, const Transform3d& projection_matrix, bool bottom, bool only_current, bool only_body, int hover_id, bool render_cali, bool show_grid)
 {
-    wxGetApp().plater()->get_partplate_list().render(view_matrix, projection_matrix, bottom, only_current, only_body, hover_id, render_cali, show_grid,
-                                                       m_workspace_background.has_value());
+    // Hidden native canvases can reset the shared plate theme during initialization.
+    if (m_workbench_appearance)
+        wxGetApp().plater()->get_partplate_list().on_change_color_mode(true);
+    wxGetApp().plater()->get_partplate_list().render(view_matrix, projection_matrix, bottom, only_current, only_body, hover_id, render_cali, show_grid, m_workspace_background.has_value());
 }
 
 void GLCanvas3D::_render_shadows(const Transform3d& view_matrix, const Transform3d& projection_matrix)

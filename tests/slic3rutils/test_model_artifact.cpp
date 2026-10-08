@@ -1,5 +1,6 @@
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/LocalModelImportState.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/ModelPreviewTextureColor.hpp"
 #include "slic3r/GUI/AI/Model/ModelFinishing.hpp"
 #include "slic3r/GUI/AI/Model/GlbGeometryEditing.hpp"
 #include "slic3r/GUI/AI/Model/VertexColorRegionEditor.hpp"
@@ -29,6 +30,35 @@ using namespace Slic3r;
 using namespace Slic3r::AI;
 using Catch::Matchers::WithinAbs;
 using namespace Slic3r::GUI;
+
+TEST_CASE("Local preview edits preserve untouched texture faces and encode solid colors in linear RGB", "[ModelArtifact][ModelPreviewTexture]")
+{
+    ModelArtifactTextureSurface::Face source;
+    source.image = 2;
+    source.wrap_s = 33071;
+    source.alpha_mode = ModelArtifactTextureSurface::AlphaMode::Mask;
+    source.corners[0].uv = {.25f, .75f};
+    source.corners[0].multiplier = {.2f, .3f, .4f, .5f};
+    const auto untouched = preview_texture_face_color(source, nullptr);
+    CHECK(untouched.image == source.image);
+    CHECK(untouched.wrap_s == source.wrap_s);
+    CHECK(untouched.alpha_mode == source.alpha_mode);
+    CHECK(untouched.corners[0].uv == source.corners[0].uv);
+    CHECK(untouched.corners[0].multiplier == source.corners[0].multiplier);
+    const std::array<float, 3> color {0.f, .5f, 1.f};
+    const auto edited = preview_texture_face_color(source, &color);
+    CHECK(edited.image == -1);
+    CHECK(edited.alpha_mode == ModelArtifactTextureSurface::AlphaMode::Opaque);
+    CHECK(edited.corners[0].uv == source.corners[0].uv);
+    for (const auto& corner : edited.corners) {
+        CHECK_THAT(corner.multiplier[0], WithinAbs(0.f, 1e-6));
+        CHECK_THAT(corner.multiplier[1], WithinAbs(.214041f, 1e-6));
+        CHECK_THAT(corner.multiplier[2], WithinAbs(1.f, 1e-6));
+        CHECK_THAT(corner.multiplier[3], WithinAbs(1.f, 1e-6));
+    }
+    CHECK(source.image == 2);
+}
+
 namespace {
 struct Fixture {
     boost::filesystem::path directory = boost::filesystem::temp_directory_path() / boost::filesystem::unique_path("orca-glb-%%%%-%%%%-%%%%");

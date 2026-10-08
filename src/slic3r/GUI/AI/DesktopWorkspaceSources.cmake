@@ -1,10 +1,8 @@
-# The desktop navigation and printer view share the existing GUI target, flags,
-# encoding checks and PCH. Keep their assembly out of the main source list.
+# The printer view and native adapters share the existing GUI target and PCH.
+# RedesignShell now owns navigation; the legacy navigation is not assembled.
 set(ORCA_DESKTOP_WORKSPACE_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/../MainFrameWorkspace.ipp
     ${CMAKE_CURRENT_LIST_DIR}/../PlaterAIFeatureHosts.ipp
-    ${CMAKE_CURRENT_LIST_DIR}/DesktopWorkspaceNavigation.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/DesktopWorkspaceNavigation.hpp
     ${CMAKE_CURRENT_LIST_DIR}/Orca/OrcaPrintConfirmation.cpp
     ${CMAKE_CURRENT_LIST_DIR}/Orca/OrcaPrintConfirmation.hpp
     ${CMAKE_CURRENT_LIST_DIR}/Orca/OrcaFilamentSelection.cpp

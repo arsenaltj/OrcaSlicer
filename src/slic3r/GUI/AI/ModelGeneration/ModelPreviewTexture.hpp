@@ -1,10 +1,13 @@
 #pragma once
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
+#include "slic3r/GUI/AI/Model/SurfaceSelectionState.hpp"
+#include "ModelPreviewTextureColor.hpp"
 #include "slic3r/GUI/GLShader.hpp"
 #include "slic3r/GUI/OpenGLManager.hpp"
 #include <glad/gl.h>
 #include <stdexcept>
 #include <algorithm>
+#include <unordered_map>
 #include <boost/log/trivial.hpp>
 
 namespace Slic3r::GUI {
@@ -16,6 +19,7 @@ class ModelPreviewTexture {
         GLint first{0}; GLsizei count{0};
         int image{-1}, wrap_s{10497}, wrap_t{10497}, min_filter{9729}, mag_filter{9729};
         AlphaMode alpha_mode{AlphaMode::Opaque}; float alpha_cutoff{0.5f};
+        bool color_locked{false};
     };
     struct BlendFace { GLint first; size_t batch; Vec3d center; };
     GLuint m_vbo{0}, m_vao{0}, m_blend_indices{0};
@@ -29,7 +33,8 @@ class ModelPreviewTexture {
     mutable bool m_sampler_diagnostics_logged{false};
 public:
     ModelPreviewTexture(const AI::ModelArtifactTextureSurface& surface,
-                        const indexed_triangle_set& mesh, const std::vector<Vec3f>& normals) {
+                        const indexed_triangle_set& mesh, const std::vector<Vec3f>& normals,
+                        const AI::SurfaceSelectionPersistence::FaceColorOverrides& overrides = {}) {
         if (surface.faces.size() != mesh.indices.size() || normals.size() != mesh.indices.size()*3)
             throw std::runtime_error("Preview texture does not match the model faces.");
         GLint maximum=0; ::glGetIntegerv(GL_MAX_TEXTURE_SIZE,&maximum);
@@ -38,16 +43,25 @@ public:
                 image.rgba.size()!=size_t(image.width)*image.height*4)
                 throw std::runtime_error("The color texture exceeds this OpenGL preview capability.");
         std::vector<float> vertices; vertices.reserve(surface.faces.size()*3*12);
+        std::unordered_map<size_t, std::array<float, 3>> locked_colors;
+        for (const auto& entry : overrides) {
+            if (entry.first >= surface.faces.size())
+                throw std::runtime_error("Preview color override does not match the model faces.");
+            locked_colors[entry.first] = entry.second;
+        }
         for (size_t f=0; f<surface.faces.size(); ++f) {
-            const auto& face=surface.faces[f];
+            const auto lock = locked_colors.find(f);
+            const bool color_locked = lock != locked_colors.end();
+            const auto face = preview_texture_face_color(surface.faces[f], color_locked ? &lock->second : nullptr);
             if (face.image>=0 && size_t(face.image)>=surface.images.size())
                 throw std::runtime_error("Preview texture reference is invalid.");
             if (m_batches.empty() || m_batches.back().image!=face.image ||
                 m_batches.back().wrap_s!=face.wrap_s || m_batches.back().wrap_t!=face.wrap_t ||
                 m_batches.back().min_filter!=face.min_filter || m_batches.back().mag_filter!=face.mag_filter ||
-                m_batches.back().alpha_mode!=face.alpha_mode || m_batches.back().alpha_cutoff!=face.alpha_cutoff)
+                m_batches.back().alpha_mode!=face.alpha_mode || m_batches.back().alpha_cutoff!=face.alpha_cutoff ||
+                m_batches.back().color_locked!=color_locked)
                 m_batches.push_back({GLint(f*3),0,face.image,face.wrap_s,face.wrap_t,
-                    face.min_filter,face.mag_filter,face.alpha_mode,face.alpha_cutoff});
+                    face.min_filter,face.mag_filter,face.alpha_mode,face.alpha_cutoff,color_locked});
             m_batches.back().count+=3;
             if (face.alpha_mode == AlphaMode::Blend) {
                 Vec3d center = Vec3d::Zero();
@@ -133,6 +147,7 @@ public:
         ::glGetIntegerv(GL_BLEND_SRC_ALPHA,&src_alpha); ::glGetIntegerv(GL_BLEND_DST_ALPHA,&dst_alpha);
         ::glGetIntegerv(GL_BLEND_EQUATION_RGB,&equation_rgb); ::glGetIntegerv(GL_BLEND_EQUATION_ALPHA,&equation_alpha);
         const auto bind_batch = [&](const Batch& batch) {
+            shader->set_uniform("preview_texture_color_lock",batch.color_locked);
             shader->set_uniform("preview_alpha_mode",int(batch.alpha_mode));
             shader->set_uniform("preview_alpha_cutoff",batch.alpha_cutoff);
             const bool textured=batch.image>=0; shader->set_uniform("preview_texture_has_image",textured);
@@ -200,6 +215,7 @@ public:
         if (old_blend) ::glEnable(GL_BLEND); else ::glDisable(GL_BLEND);
         m_sampler_diagnostics_logged=true;
         shader->set_uniform("preview_texture_enabled",false);
+        shader->set_uniform("preview_texture_color_lock",false);
         for (GLint attribute:attributes) if(attribute>=0) ::glDisableVertexAttribArray(attribute);
         if(m_vao) ::glBindVertexArray(vao);
         ::glBindBuffer(GL_ARRAY_BUFFER,array); ::glBindTexture(GL_TEXTURE_2D,texture); ::glActiveTexture(active);

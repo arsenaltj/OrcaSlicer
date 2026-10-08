@@ -361,8 +361,9 @@ public:
     void set_facet(int facet_idx, EnforcerBlockerType state);
 
     struct MidpointSubfaceState {
-        // One or two four-way midpoint levels. The first child occupies the
+        // Up to four four-way midpoint levels. The first child occupies the
         // most-significant used pair of bits, matching semantic SubfacePath.
+        static constexpr uint8_t max_depth = 4;
         uint8_t depth {0};
         uint8_t path {0};
         EnforcerBlockerType state {EnforcerBlockerType::NONE};

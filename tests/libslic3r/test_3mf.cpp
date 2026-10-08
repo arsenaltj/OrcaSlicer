@@ -540,7 +540,7 @@ SCENARIO("Nozzle-group metadata .3mf round-trip", "[3mf][MultiNozzle]") {
 }
 
 
-TEST_CASE("Logical filaments beyond the nozzle count retain painting and assignments through a 3MF", "[3mf][MultiNozzle][Regression]")
+TEST_CASE("Logical filaments beyond the nozzle count retain painting and assignments through a 3MF", "[3mf][MultiNozzle][SubfaceColor][Regression]")
 {
     Model model;
     const std::string src_file = std::string(TEST_DATA_DIR) + "/test_3mf/Prusa.stl";
@@ -563,7 +563,8 @@ TEST_CASE("Logical filaments beyond the nozzle count retain painting and assignm
         selector.set_facet(static_cast<int>(i), states[i % states.size()]);
     REQUIRE(selector.set_facet_midpoint_subfaces(0, EnforcerBlockerType::Extruder5,
         {{1, 0, EnforcerBlockerType::Extruder6},
-         {2, uint8_t((1u << 2) | 3u), EnforcerBlockerType::Extruder7}}));
+         {2, uint8_t((1u << 2) | 3u), EnforcerBlockerType::Extruder7},
+         {4, 255, EnforcerBlockerType::Extruder17}}));
     REQUIRE(volume->mmu_segmentation_facets.set(selector));
 
     DynamicPrintConfig config = DynamicPrintConfig::full_print_config();

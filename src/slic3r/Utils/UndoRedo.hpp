@@ -92,6 +92,18 @@ struct Snapshot
 
 };
 
+struct ActionSnapshotIdentity
+{
+    size_t action_snapshot_time{0};
+    size_t active_snapshot_time{0};
+    std::string action_name;
+
+    bool valid() const
+    {
+        return action_snapshot_time < active_snapshot_time && !action_name.empty();
+    }
+};
+
 // BBS: moved from UndoRedo.cpp
 // If a snapshot modifies the snapshot type, 
 inline bool snapshot_modifies_project(SnapshotType type)
@@ -113,6 +125,15 @@ inline bool record_project_config_change(std::vector<Snapshot>& history,size_t a
     if(action.snapshot_data.snapshot_type!=SnapshotType::Action || !snapshot_modifies_project(action) || action.project_config_change) return false;
     action.project_config_change=std::move(change);
     return true;
+}
+
+// Remove a failed newest action after its state was restored exactly. This is
+// intentionally limited to the adjacent action/captured-topmost pair produced
+// by Stack::undo so a failed transaction cannot leave partial state redoable.
+namespace detail {
+bool has_redo_action(const std::vector<Snapshot>& history, size_t active_time);
+bool abort_top_action_history(std::vector<Snapshot>& history, size_t& active_time,
+                              const ActionSnapshotIdentity& identity);
 }
 
 // Excerpt of Slic3r::GUI::Selection for serialization onto the Undo / Redo stack.
@@ -173,6 +194,7 @@ public:
 
 	// Jump forward in time. If time_to_load is SIZE_MAX, the next snapshot is activated.
     bool redo(Slic3r::Model& model, Slic3r::GUI::GLGizmosManager& gizmos, Slic3r::GUI::PartPlateList& plate_list, size_t time_to_load = SIZE_MAX);
+    bool abort_top_action(const ActionSnapshotIdentity& identity);
 
 	// Snapshot history (names with timestamps).
 	// Each snapshot indicates start of an interval in which this operation is performed.
