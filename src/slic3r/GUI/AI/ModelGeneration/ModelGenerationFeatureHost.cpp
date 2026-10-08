@@ -49,6 +49,8 @@ bool ModelGenerationUIState::same_content(const ModelGenerationUIState& other) c
            can_restart == other.can_restart && design_ready == other.design_ready && model_ready == other.model_ready &&
            model_generation_context == other.model_generation_context && inputs_match_job == other.inputs_match_job &&
            progress == other.progress && job_id == other.job_id && job_state == other.job_state &&
+           design_elapsed_seconds == other.design_elapsed_seconds &&
+           design_estimated_seconds == other.design_estimated_seconds &&
            job_phase == other.job_phase && status_text == other.status_text && summary_text == other.summary_text &&
            workflow_phase == other.workflow_phase && workflow_guidance == other.workflow_guidance &&
            cost_summary == other.cost_summary && original_image_path == other.original_image_path &&

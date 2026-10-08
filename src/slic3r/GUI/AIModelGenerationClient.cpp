@@ -825,6 +825,17 @@ std::optional<AIModelGenerationClient::JobStatus> AIModelGenerationClient::parse
     status.style = job.value("style", std::string());
     status.custom_style = job.value("custom_style", std::string());
     status.updated_at = job.value("updated_at", 0.0);
+    const auto timing = job.find("design_timing");
+    if (timing != job.end() && timing->is_object()) {
+        const auto read_seconds = [&timing](const char* key, double fallback) {
+            const auto value = timing->find(key);
+            if (value == timing->end() || !value->is_number()) return fallback;
+            const double seconds = value->get<double>();
+            return std::isfinite(seconds) && seconds >= 0.0 && seconds <= 86400.0 ? seconds : fallback;
+        };
+        status.design_elapsed_seconds = read_seconds("elapsed_seconds", -1.0);
+        status.design_estimated_seconds = read_seconds("estimated_seconds", 0.0);
+    }
     if (job.contains("palette_color_count") && job["palette_color_count"].is_number_unsigned()) {
         const size_t color_count = job["palette_color_count"].get<size_t>();
         if (Slic3r::AI::is_supported_target_palette_color_count(color_count))

@@ -343,6 +343,10 @@ void ModelGenerationPanel::publish_ui_state()
     state.inputs_match_job = m_job_id.empty() || job_inputs_match();
     state.progress = m_generation_progress->GetValue();
     state.job_id = m_job_id;
+    if (!m_job_id.empty() && m_design_timing_job_id == m_job_id) {
+        state.design_elapsed_seconds = m_design_elapsed_seconds;
+        state.design_estimated_seconds = m_design_estimated_seconds;
+    }
     state.job_state = m_job_state;
     state.job_phase = m_job_phase;
     state.status_text = wrapped_text_to_utf8(m_status->GetLabel());

@@ -679,6 +679,9 @@ private:
     std::string m_job_id;
     std::string m_job_state;
     std::string m_job_phase;
+    std::string m_design_timing_job_id;
+    double m_design_elapsed_seconds { -1.0 };
+    double m_design_estimated_seconds { 0.0 };
     std::string m_job_provider_name;
     std::string m_job_provider_task_id;
     std::string m_job_provider_conversion_task_id;

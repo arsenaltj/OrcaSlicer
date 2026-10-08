@@ -52,6 +52,21 @@ wxString palette_role_label(const std::string& role);
 double minimum_palette_distance(const std::vector<std::string>& palette);
 int remap_progress(int value, int input_start, int input_end, int output_start, int output_end);
 int display_progress(const AIModelGenerationClient::JobStatus& status);
+// The caller supplies a monotonic clock so polling and page changes cannot
+// restart a countdown. Zero estimate means insufficient history.
+class DesignGenerationWait
+{
+public:
+    void synchronize(const std::string& job_id, double elapsed, double estimate, double now);
+    void clear();
+    bool active() const { return m_active; }
+    int elapsed_seconds(double now) const;
+    wxString message(double now) const;
+private:
+    bool m_active { false };
+    std::string m_job_id;
+    double m_elapsed { 0.0 }, m_estimate { 0.0 }, m_synced_at { 0.0 };
+};
 bool is_transient_sidecar_poll_error(const std::string& error);
 std::string new_request_id();
 bool is_supported_image(const boost::filesystem::path& path);

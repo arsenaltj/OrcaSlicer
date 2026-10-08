@@ -16,6 +16,7 @@
 #include <array>
 #include <algorithm>
 #include <cmath>
+#include <chrono>
 #include <cstring>
 #include <functional>
 #include <memory>
@@ -63,6 +64,18 @@ wxColour background_colour()
 wxColour flow_background_colour()
 {
     return RedesignTheme::flow_background_colour();
+}
+
+// Moving child windows can preserve pixels from their old positions on MSW.
+// Invalidate the whole visible center after layout, including card backgrounds
+// and labels, instead of relying on the newly exposed resize strip alone.
+void refresh_image_surface(wxWindow* window)
+{
+    if (!window || !window->IsShown())
+        return;
+    window->Refresh();
+    for (auto* child : window->GetChildren())
+        refresh_image_surface(child);
 }
 
 wxColour panel_colour()
@@ -744,7 +757,8 @@ private:
 class FlowGuideCanvas final : public wxPanel {
 public:
     explicit FlowGuideCanvas(wxWindow* parent)
-        : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(-1, parent->FromDIP(259)))
+        : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxSize(-1, parent->FromDIP(259)),
+                  wxTAB_TRAVERSAL | wxFULL_REPAINT_ON_RESIZE)
         , m_design(resource_image("redesign_flow_design.png"))
         , m_model_rear(resource_image("redesign_flow_model_mono.png"))
         , m_model_front(resource_image("redesign_flow_model_blue.png"))
@@ -753,6 +767,10 @@ public:
         SetMinSize(wxSize(-1, FromDIP(259)));
         SetBackgroundStyle(wxBG_STYLE_PAINT);
         SetBackgroundColour(flow_background_colour());
+        Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
+            Refresh(false);
+            event.Skip();
+        });
         Bind(wxEVT_PAINT, [this](wxPaintEvent&) { paint(); });
     }
 
@@ -968,12 +986,17 @@ public:
     enum class PlaceholderMode { Idle, Generating, Error, Stopped };
 
     ImagePreview(wxWindow* parent, const wxString& placeholder)
-        : wxPanel(parent, wxID_ANY)
+        : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize,
+                  wxTAB_TRAVERSAL | wxFULL_REPAINT_ON_RESIZE)
         , m_placeholder(placeholder)
         , m_animation_timer(this)
     {
         SetBackgroundStyle(wxBG_STYLE_PAINT);
         SetBackgroundColour(background_colour());
+        Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
+            Refresh(false);
+            event.Skip();
+        });
         Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
             m_spinner_frame = (m_spinner_frame + 1) % 12;
             Refresh(false);
@@ -988,15 +1011,14 @@ public:
             if (size.x <= 0 || size.y <= 0)
                 return;
             const bool generating = m_placeholder_mode == PlaceholderMode::Generating;
-            const wxColour face = generating ? wxColour(217, 217, 217) :
-                                  m_placeholder_mode == PlaceholderMode::Error ? wxColour(48, 34, 36) :
+            const wxColour face = m_placeholder_mode == PlaceholderMode::Error ? wxColour(48, 34, 36) :
                                   m_placeholder_mode == PlaceholderMode::Stopped ? wxColour(43, 43, 47) :
                                   control_colour();
-            const wxColour foreground = generating ? wxColour(68, 68, 72) :
+            const wxColour foreground = generating ? wxColour(255, 255, 255) :
                                         m_placeholder_mode == PlaceholderMode::Error ? wxColour(237, 174, 176) :
                                         secondary_text_colour();
             gc->SetBrush(wxBrush(face));
-            gc->SetPen(wxPen(generating ? wxColour(0, 0, 0, 24) : wxColour(255, 255, 255, 32),
+            gc->SetPen(wxPen(wxColour(255, 255, 255, 32),
                              std::max(1, FromDIP(1))));
             gc->DrawRoundedRectangle(FromDIP(1), FromDIP(1), size.x - FromDIP(2), size.y - FromDIP(2), FromDIP(11));
             if (m_bitmap.IsOk()) {
@@ -1007,7 +1029,10 @@ public:
             }
             dc.SetFont(GetFont());
             dc.SetTextForeground(foreground);
-            const wxSize extent = dc.GetTextExtent(m_placeholder);
+            wxString placeholder = m_placeholder;
+            if (generating && m_design_wait.active())
+                placeholder += "\n" + m_design_wait.message(monotonic_seconds());
+            const wxSize extent = dc.GetMultiLineTextExtent(placeholder);
             int text_y = (size.y - extent.y) / 2;
             if (generating) {
                 const double pi = std::acos(-1.0);
@@ -1016,12 +1041,11 @@ public:
                 auto path = gc->CreatePath();
                 path.AddArc(size.x / 2.0, size.y / 2.0 - FromDIP(28), radius,
                             start, start + pi * 1.45, false);
-                gc->SetPen(wxPen(wxColour(92, 92, 96), std::max(2, FromDIP(3))));
+                gc->SetPen(wxPen(wxColour(255, 255, 255), std::max(2, FromDIP(3))));
                 gc->StrokePath(path);
                 text_y += FromDIP(28);
             }
-            dc.DrawText(m_placeholder, std::max(FromDIP(12), (size.x - extent.x) / 2),
-                        text_y);
+            dc.DrawLabel(placeholder, wxRect(0, text_y, size.x, extent.y), wxALIGN_CENTER_HORIZONTAL);
         });
         style_text(this, secondary_text_colour(), 10);
     }
@@ -1029,6 +1053,7 @@ public:
     void SetBitmap(const wxBitmap& bitmap)
     {
         m_animation_timer.Stop();
+        m_design_wait.clear();
         m_bitmap = bitmap;
         m_placeholder_mode = PlaceholderMode::Idle;
         Refresh();
@@ -1049,7 +1074,18 @@ public:
         Refresh();
     }
 
+    void SetDesignTiming(const std::string& job_id, double elapsed, double estimate)
+    {
+        m_design_wait.synchronize(job_id, elapsed, estimate, monotonic_seconds());
+    }
+    void ClearDesignTiming() { m_design_wait.clear(); }
+
 private:
+    static double monotonic_seconds()
+    {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    }
+    ModelGenerationPresentation::DesignGenerationWait m_design_wait;
     wxBitmap m_bitmap;
     wxString m_placeholder;
     wxTimer m_animation_timer;
@@ -1435,13 +1471,19 @@ void RedesignShell::build_image_workspace()
     m_preview_host->Hide();
     m_image_history = new ImageHistorySidebar(m_image_page,
         [this](const std::string& id) { return request_open_history(id); },
-        [this] { m_last_preview_bounds = wxDefaultSize; update_preview_bitmap(); });
+        [this] { m_preview_resize_timer.StartOnce(1); });
     content_sizer->Add(m_image_history, 0, wxEXPAND | wxLEFT, FromDIP(12));
-    m_preview_host->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
-        if (m_image_state == ImageState::Ready || m_design_image_state == ImageState::Ready)
-            m_preview_resize_timer.StartOnce(150);
+    // Run after native child repositioning finishes. Sizers can emit forced
+    // size events without a size change: ignore those to avoid a layout loop.
+    auto resize_center = [this, last_size = wxDefaultSize](wxSizeEvent& event) mutable {
+        if (event.GetSize() != last_size) {
+            last_size = event.GetSize();
+            m_preview_resize_timer.StartOnce(1);
+        }
         event.Skip();
-    });
+    };
+    m_guide_panel->Bind(wxEVT_SIZE, resize_center);
+    m_preview_host->Bind(wxEVT_SIZE, resize_center);
     update_image_state();
 
     m_pages[static_cast<std::size_t>(Page::Assets)] =
@@ -1749,6 +1791,12 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
         update_preview_bitmap();
     else if (m_result_preview != nullptr)
         m_result_preview->SetPlaceholder(placeholder, placeholder_mode);
+    if (m_result_preview != nullptr) {
+        if (state.stage == ModelGenerationUIStage::GeneratingDesign)
+            m_result_preview->SetDesignTiming(state.job_id, state.design_elapsed_seconds, state.design_estimated_seconds);
+        else
+            m_result_preview->ClearDesignTiming();
+    }
     if (m_generate_button != nullptr) {
         m_generate_button->SetLabel(primary_label);
         m_generate_button->Enable(primary_enabled);
@@ -2345,6 +2393,8 @@ bool RedesignShell::navigate_to(Page page)
         m_content_host->GetParent()->Layout();
     Layout();
     refresh_workflow_layout();
+    if (page == Page::Image)
+        m_preview_resize_timer.StartOnce(1);
     if (m_print_page != nullptr)
         m_print_page->set_active(page == Page::Print);
     return true;
@@ -2498,18 +2548,37 @@ void RedesignShell::clear_image()
     m_selected_image_path.clear();
     m_image_state = ImageState::Empty;
     m_last_preview_bounds = wxDefaultSize;
-    update_image_state();
     synchronize_generation_input();
+    // Input synchronization also clears the old design result. Lay out the
+    // empty workspace only after both image states have been updated.
+    update_image_state();
 }
 
 void RedesignShell::update_preview_bitmap()
 {
-    if ((m_image_state != ImageState::Ready && m_design_image_state != ImageState::Ready) || !m_preview ||
-        !m_result_preview || !m_source_preview_card || !m_result_preview_card)
+    m_preview_resize_timer.Stop();
+    if (!m_image_page)
         return;
+    m_image_page->Layout();
+    auto refresh_center = [this] {
+        m_image_page->Refresh();
+        refresh_image_surface(m_guide_panel);
+        refresh_image_surface(m_preview_host);
+    };
+    // Empty placeholders need the same responsive card sizes as loaded images.
+    // Only the guide view skips preview layout, not the absence of a bitmap.
+    if (!m_preview_host || !m_preview_host->IsShown() || !m_preview ||
+        !m_result_preview || !m_source_preview_card || !m_result_preview_card) {
+        if (m_guide_panel)
+            m_guide_panel->Layout();
+        refresh_center();
+        return;
+    }
     const wxSize available = m_preview_host->GetClientSize();
-    if (available.x < FromDIP(240) || available.y < FromDIP(240))
+    if (available.x < FromDIP(240) || available.y < FromDIP(240)) {
+        refresh_center();
         return;
+    }
 
     const int gap = FromDIP(16);
     const int maximum_width = std::max(FromDIP(96), (available.x - FromDIP(48) - gap) / 2);
@@ -2525,7 +2594,6 @@ void RedesignShell::update_preview_bitmap()
     const bool bounds_changed = bounds != m_last_preview_bounds;
     m_last_preview_bounds = bounds;
     const wxSize image_bounds(std::max(1, bounds.x - FromDIP(4)), std::max(1, bounds.y - FromDIP(4)));
-    const wxBitmap bitmap = m_selected_image.IsOk() ? rounded_thumbnail(m_selected_image, image_bounds, FromDIP(10), true, true) : wxBitmap();
     if (bounds_changed) {
         m_preview->SetMinSize(bounds);
         m_preview->SetMaxSize(bounds);
@@ -2537,12 +2605,17 @@ void RedesignShell::update_preview_bitmap()
         m_result_preview_card->SetMinSize(card_size);
         m_result_preview_card->SetMaxSize(card_size);
     }
+    m_preview_host->Layout();
+    m_source_preview_card->Layout();
+    m_result_preview_card->Layout();
+    const wxBitmap bitmap = m_selected_image.IsOk() ? rounded_thumbnail(m_selected_image, image_bounds, FromDIP(10), true, true) : wxBitmap();
     m_preview->SetBitmap(bitmap);
+    // Placeholder/spinner repainting must not clear the active task clock.
     if (m_design_image_state == ImageState::Ready && m_design_image.IsOk()) {
         m_result_preview->SetBitmap(
             rounded_thumbnail(m_design_image, image_bounds, FromDIP(10), true, true));
     }
-    m_preview_host->Layout();
+    refresh_center();
 }
 
 void RedesignShell::update_image_state()
@@ -2572,16 +2645,15 @@ void RedesignShell::update_image_state()
         m_upload_thumbnail->SetBitmap(thumbnail);
         m_upload_thumbnail->SetToolTip(wxString(m_selected_image_path.filename().wstring()));
     }
-    const bool show_previews = ready || m_design_image_state == ImageState::Ready;
+    // Once entered, keep the two-card workspace when its images are removed.
+    // The initial session still shows the upload guide until an image is ready.
+    const bool show_previews = ready || m_design_image_state == ImageState::Ready || m_preview_host->IsShown();
     m_guide_panel->Show(!show_previews);
     m_preview_host->Show(show_previews);
     m_upload_surface->Layout();
     m_upload_surface->GetParent()->Layout();
     m_image_page->Layout();
-    if (show_previews) {
-        m_preview_host->Layout();
-        update_preview_bitmap();
-    }
+    update_preview_bitmap();
 }
 
 }

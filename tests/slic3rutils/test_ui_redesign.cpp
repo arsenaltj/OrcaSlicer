@@ -250,6 +250,18 @@ TEST_CASE("Model generation snapshots distinguish styles within the same family"
     }
 }
 
+TEST_CASE("Design timing changes are published even when progress stays unchanged", "[UiRedesign][DesignGenerationTiming]")
+{
+    ModelGenerationUIState current;
+    auto updated = current;
+    updated.design_elapsed_seconds = 12;
+    CHECK_FALSE(current.same_content(updated));
+    current = updated;
+    CHECK(current.same_content(updated));
+    updated.design_estimated_seconds = 60;
+    CHECK_FALSE(current.same_content(updated));
+}
+
 TEST_CASE("Custom style edits publish new snapshots while preserving the unfinished draft", "[UiRedesign]")
 {
     ModelGenerationUIState current;

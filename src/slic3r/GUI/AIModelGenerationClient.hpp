@@ -173,6 +173,8 @@ public:
         PaletteRoles palette_roles;
         ImagePrintSettings print_settings;
         double      updated_at { 0.0 };
+        double      design_elapsed_seconds { -1.0 };
+        double      design_estimated_seconds { 0.0 };
         bool        input_ready { false };
         bool        preview_ready { false };
         bool        raw_preview_ready { false };

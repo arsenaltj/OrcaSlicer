@@ -31,6 +31,40 @@ constexpr const char* GENERATED_MODEL_PREFIX = "orcaslicer-ai-";
 
 } // namespace
 
+void DesignGenerationWait::synchronize(const std::string& job_id, double elapsed, double estimate, double now)
+{
+    const bool new_job = !m_active || (!m_job_id.empty() && job_id != m_job_id);
+    const double previous = new_job ? 0.0 : m_elapsed + std::max(0.0, now - m_synced_at);
+    m_elapsed = std::max(previous, std::isfinite(elapsed) && elapsed >= 0.0 ? std::min(elapsed, 86400.0) : 0.0);
+    m_estimate = std::isfinite(estimate) && estimate > 0.0 ? std::min(estimate, 86400.0) : 0.0;
+    m_synced_at = now;
+    m_job_id = job_id;
+    m_active = true;
+}
+
+void DesignGenerationWait::clear()
+{
+    m_active = false;
+    m_job_id.clear();
+    m_elapsed = m_estimate = m_synced_at = 0.0;
+}
+
+int DesignGenerationWait::elapsed_seconds(double now) const
+{
+    return m_active ? static_cast<int>(std::min(86400.0, m_elapsed + std::max(0.0, now - m_synced_at))) : 0;
+}
+
+wxString DesignGenerationWait::message(double now) const
+{
+    if (!m_active) return {};
+    const int elapsed = elapsed_seconds(now);
+    if (m_estimate > elapsed)
+        return wxString::Format(wxString::FromUTF8("预计还需约 %d 秒"), static_cast<int>(std::ceil(m_estimate - elapsed)));
+    if (m_estimate > 0.0)
+        return wxString::Format(wxString::FromUTF8("生成时间超出预计，已等待 %d 秒"), elapsed);
+    return wxString::Format(wxString::FromUTF8("已等待 %d 秒"), elapsed);
+}
+
 wxString thin_local_region_metrics(
     const AIModelGenerationClient::ModelQuality::ThinLocalRegion& region,
     bool threshold_available,

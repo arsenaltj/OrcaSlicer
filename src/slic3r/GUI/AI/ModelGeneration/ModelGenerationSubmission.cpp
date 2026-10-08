@@ -273,6 +273,9 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
     m_job_id = status.id;
     m_job_state = status.state;
     m_job_phase = status.phase;
+    m_design_timing_job_id = status.id;
+    m_design_elapsed_seconds = status.design_elapsed_seconds;
+    m_design_estimated_seconds = status.design_estimated_seconds;
     if (status.state == "stopped" || status.state == "cancelled" || status.state == "failed")
         m_ui_stopping = false;
     m_job_palette_color_count = status.palette_color_count;

@@ -77,6 +77,8 @@ struct ModelGenerationUIState
     bool model_generation_context { false };
     bool inputs_match_job { true };
     int progress { 0 };
+    double design_elapsed_seconds { -1.0 };
+    double design_estimated_seconds { 0.0 };
     std::string job_id;
     std::string job_state;
     std::string job_phase;

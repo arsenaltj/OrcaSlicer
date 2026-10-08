@@ -22,6 +22,46 @@
 using Slic3r::GUI::AIModelGenerationClient;
 using namespace Slic3r::GUI::ModelGenerationPresentation;
 
+TEST_CASE("Design wait shows elapsed time without enough history", "[ModelGenerationPresentation][DesignGenerationTiming]")
+{
+    DesignGenerationWait wait;
+    wait.synchronize("job-a", -1, 0, 100);
+    CHECK(wait.message(112) == wxString::FromUTF8("已等待 12 秒"));
+}
+
+TEST_CASE("Design estimate switches to overtime instead of a false completion", "[ModelGenerationPresentation][DesignGenerationTiming]")
+{
+    DesignGenerationWait wait;
+    wait.synchronize("job-a", 15, 60, 100);
+    CHECK(wait.message(100) == wxString::FromUTF8("预计还需约 45 秒"));
+    CHECK(wait.message(145) == wxString::FromUTF8("生成时间超出预计，已等待 60 秒"));
+    CHECK(wait.message(153) == wxString::FromUTF8("生成时间超出预计，已等待 68 秒"));
+}
+
+TEST_CASE("Polling and returning to a page preserve the design clock", "[ModelGenerationPresentation][DesignGenerationTiming]")
+{
+    DesignGenerationWait wait;
+    wait.synchronize("", -1, 0, 100);
+    wait.synchronize("job-a", 1, 60, 105);
+    CHECK(wait.elapsed_seconds(105) == 5);
+    wait.synchronize("job-a", 4, 60, 110);
+    CHECK(wait.elapsed_seconds(110) == 10);
+    CHECK(wait.elapsed_seconds(140) == 40);
+}
+
+TEST_CASE("Ending or replacing a design resets its wait state", "[ModelGenerationPresentation][DesignGenerationTiming]")
+{
+    DesignGenerationWait wait;
+    wait.synchronize("job-a", 40, 60, 100);
+    wait.synchronize("job-b", 2, 0, 110);
+    CHECK(wait.elapsed_seconds(110) == 2);
+    wait.clear();
+    CHECK_FALSE(wait.active());
+    CHECK(wait.message(120).empty());
+    wait.synchronize("", -1, 0, 130);
+    CHECK(wait.elapsed_seconds(131) == 1);
+}
+
 TEST_CASE("sidecar restart authentication is recoverable without retrying provider failures",
           "[ModelGenerationPresentation][SidecarRecovery]")
 {

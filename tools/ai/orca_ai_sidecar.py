@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Callable, Mapping
 
 from ai_diagnostics import diagnostic_context, event as diagnostic_event, exception_details, safe_endpoint
+from design_generation_timing import DesignTimingHistory, timing_key, seconds as timing_seconds
 from color_intent import (
     COLOR_INTENT_FILENAME,
     MAX_MANIFEST_BYTES as MAX_COLOR_INTENT_BYTES,
@@ -495,6 +496,7 @@ class Job:
     generate_image: bool = False
     attempts: list[dict[str, Any]] = field(default_factory=list)
     updated_at: float = field(default_factory=time.time)
+    design_started_monotonic: float | None = field(default=None, repr=False)
     stop_event: threading.Event = field(default_factory=threading.Event, repr=False)
     delete_requested: bool = field(default=False, repr=False)
     future: Future[Any] | None = field(default=None, repr=False)
@@ -1710,6 +1712,7 @@ def _public_job(job: Job) -> dict[str, Any]:
             "size_bytes": model_view_sheet_size if model_view_sheet_ready else 0,
         },
         "updated_at": job.updated_at,
+        "design_timing": _public_design_timing(job),
         "input": {
             "ready": input_ready,
             "content_type": _stored_image_type(job.input_path) if input_ready else "",
@@ -3794,8 +3797,43 @@ def _use_unrestricted_creation(job: Job) -> None:
         job.image_metrics["design_reference"] = "ai-design-v1"
 
 
+def _begin_design_timing(job: Job) -> None:
+    if job.design_started_monotonic is not None:
+        return
+    key = timing_key(image_provider_status(), os.environ.get("OPENAI_IMAGE_MODEL", "gpt-image-2"),
+                     os.environ.get("OPENAI_IMAGE_QUALITY", "high").strip().lower(), job.source, job.style)
+    job.design_started_monotonic = time.monotonic()
+    job.image_metrics["design_timing"] = {
+        "started_at": time.time(), "group": key,
+        "estimated_seconds": DesignTimingHistory(job.directory.parent).estimate(key),
+    }
+    _persist_job(job)
+
+
+def _public_design_timing(job: Job) -> dict[str, float]:
+    timing = job.image_metrics.get("design_timing", {})
+    if not isinstance(timing, dict) or job.design_started_monotonic is None:
+        return {}  # Legacy/recovered jobs must not invent a start time.
+    duration = timing_seconds(timing.get("duration_seconds"))
+    elapsed = duration or max(0.0, time.monotonic() - job.design_started_monotonic)
+    return {"elapsed_seconds": round(elapsed, 2),
+            "estimated_seconds": timing_seconds(timing.get("estimated_seconds"))}
+
+
+def _complete_design_timing(job: Job) -> None:
+    timing = job.image_metrics.get("design_timing", {})
+    if (job.design_started_monotonic is None or not isinstance(timing, dict)
+            or "duration_seconds" in timing or job.stop_event.is_set()):
+        return
+    duration = max(0.0, time.monotonic() - job.design_started_monotonic)
+    timing["duration_seconds"] = duration
+    timing["finished_at"] = time.time()
+    DesignTimingHistory(job.directory.parent).record(str(timing.get("group", "")), duration)
+
+
 def _preprocess_text_job(job: Job, prompt: str) -> None:
     _use_unrestricted_creation(job)
+    _begin_design_timing(job)
     try:
         _stop_boundary(job)
         prepared = _generation_prompt(
@@ -3860,6 +3898,8 @@ def _preprocess_text_job(job: Job, prompt: str) -> None:
             job.phase = "awaiting_confirmation"
             job.message = _printable_preview_message(job, "Review the prepared image before generation.")
             job.progress = 15
+            _complete_design_timing(job)
+            _persist_job(job)
     except JobStopped:
         _mark_stopped(job)
     except ValueError as exc:
@@ -3885,6 +3925,7 @@ def _preprocess_text_job(job: Job, prompt: str) -> None:
 
 def _preprocess_image_job(job: Job, input_path: Path, instruction: str) -> None:
     _use_unrestricted_creation(job)
+    _begin_design_timing(job)
     raw_preview = job.directory / "style-preview-raw.png"
     geometry_reference = job.directory / "geometry-reference.png"
     preview = job.directory / "preview.png"
@@ -3979,6 +4020,8 @@ def _preprocess_image_job(job: Job, input_path: Path, instruction: str) -> None:
             job.phase = "awaiting_confirmation"
             job.message = _printable_preview_message(job, "Review the prepared image before generation.")
             job.progress = 15
+            _complete_design_timing(job)
+            _persist_job(job)
     except JobStopped:
         _mark_stopped(job)
     except ValueError as exc:
@@ -8044,6 +8087,10 @@ def _executor_for(worker: Callable[..., None]) -> ThreadPoolExecutor:
 
 
 def _submit(job: Job, worker: Callable[..., None], *args: Any) -> None:
+    if worker in {_preprocess_text_job, _preprocess_image_job, _recommend_palette_job}:
+        with _JOBS_LOCK:
+            job.design_started_monotonic = None
+            _begin_design_timing(job)
     try:
         future = _executor_for(worker).submit(_run_worker_with_diagnostics, job, worker, args)
     except RuntimeError:
