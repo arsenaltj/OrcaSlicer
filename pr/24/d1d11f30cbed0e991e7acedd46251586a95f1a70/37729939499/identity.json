@@ -1,0 +1,25 @@
+{
+  "pr": 24,
+  "run": 37729939499,
+  "head": "d1d11f30cbed0e991e7acedd46251586a95f1a70",
+  "base": "a65035aaa9fba1afbe809fb176451e4cc82acaa8",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "修复纯文字生图与工程耗材颜色撤销同步",
+  "path": "pr/24/d1d11f30cbed0e991e7acedd46251586a95f1a70/37729939499",
+  "created": "2026-10-08T05:00:20+00:00",
+  "files": {
+    "index.html": "c9e1f303432f7c08da2754d973d07ae50382cebdfbe056be9934c20c3b433f93",
+    "details.html": "7434a0d701d740d8e287442019131ab5e0b3f909cb91b43fa0bf4069f9cfb53c",
+    "report.json": "633720fec683dbaa52c0a097c1c03e1e755a81b046a7a1551d5444c0f8e01ab8",
+    "summary.md": "be3e3485a2f249aa51c310ac9c6af9466b4cfebcb7cb1a6080f5e0af7e38cc9b",
+    "archify-receipts.json": "9484781b28711a3d51819bd2f7c80c13ea6b4786a010b4eba36ff1b8ae5fdfc5",
+    "l0-context.html": "812d3647a86ed5c81c5840a35ed104e026db0e177e3097f5613f305605dcd5a0",
+    "l0-context.json": "36a802df81426b838b7c6596f1808af8bc2a12b56a4f511456ab918307633b19",
+    "l1-modules.html": "9b10bbc81301e4040037dcba415b4dad4ebc018a4ceb72b3ddb73c6b9998ad1e",
+    "l1-modules.json": "bdfa21e6473550f7d078ec1b95548f90f82531017cfe3460302549f82028ff87",
+    "l2-generation.html": "5acbda288166f273c4137cf06a8ac7d2386d95f696589621ca5b3ca4e845c7fc",
+    "l2-generation.json": "e38c2d3e962b690d22bf3a3e61c5fb208d5a8b2b4c2ab96c683e2a85305f7d05",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}

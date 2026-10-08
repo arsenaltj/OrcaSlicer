@@ -1,5 +1,15 @@
 [
   {
+    "pr": 24,
+    "run": 37729939499,
+    "head": "d1d11f30cbed0e991e7acedd46251586a95f1a70",
+    "base": "a65035aaa9fba1afbe809fb176451e4cc82acaa8",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "修复纯文字生图与工程耗材颜色撤销同步",
+    "path": "pr/24/d1d11f30cbed0e991e7acedd46251586a95f1a70/37729939499",
+    "created": "2026-10-08T05:00:20+00:00"
+  },
+  {
     "pr": 23,
     "run": 37688448851,
     "head": "ef74a6f7a3bf3dff5bd7b46b727f68ab2598fea8",
