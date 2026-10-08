@@ -41,8 +41,9 @@ void ModelGenerationPanel::on_generate(wxCommandEvent&)
     if (m_job_generation_options.provider == "tripo" && m_job_generation_options.output_format == "obj")
         message += _L("\n本次还将创建 1 个 OBJ 基础转换任务（已计入估算）。");
     message += _L("\n停止：只停止本地等待；已提交的远端任务可能继续运行并计费。");
-    RedesignMessageDialog confirm(this, message, _L("确认生成 3D 模型"), wxYES_NO | wxICON_QUESTION);
-    if (confirm.ShowModal() != wxID_YES)
+    // The 3D design has a taller body (189 DIP) for its dynamic cost/options
+    // summary. Longer provider or conversion notes can grow the dialog further.
+    if (show_generation_confirmation(this, message, _L("确认生成3D模型"), 189) != wxID_YES)
         return;
     if (m_local_image_history) {
         m_design_history_loading = true;

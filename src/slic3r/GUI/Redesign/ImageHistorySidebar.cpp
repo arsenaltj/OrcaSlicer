@@ -1,10 +1,10 @@
 #include "ImageHistorySidebar.hpp"
+#include "ImageHistoryPagination.hpp"
 #include "RedesignWidgets.hpp"
 #include "../AI/ModelGeneration/ModelGenerationPresentation.hpp"
 #include "../AI/ModelGeneration/ModelLibraryThumbnail.hpp"
 #include "RedesignMessageDialog.hpp"
 
-#include <wx/scrolwin.h>
 #include <wx/sizer.h>
 #include <wx/stattext.h>
 #include <wx/textctrl.h>
@@ -24,7 +24,7 @@ using namespace ModelGenerationPresentation;
 using namespace RedesignTheme;
 wxString tr(const char* value) { return wxString::FromUTF8(value); }
 
-// The virtual canvas paints only visible rows, and the worker decodes only
+// The paged canvas paints only the current page, and the worker decodes only
 // requested thumbnails. Library size never determines bitmap memory usage.
 struct ImageHistoryWorker {
     struct Pixels {
@@ -98,7 +98,10 @@ struct ImageHistorySidebar::Impl {
     wxPanel* panel;
     RoundedActionButton* toggle;
     wxTextCtrl* search;
-    wxScrolledWindow* canvas;
+    wxPanel* canvas;
+    wxPanel* page_label;
+    RoundedActionButton *first_page, *previous_page, *next_page, *last_page;
+    ImageHistoryPagination pagination;
     wxStaticText* status;
     std::vector<DesignHistoryEntry> entries;
     std::vector<size_t> filtered;
@@ -109,20 +112,26 @@ struct ImageHistorySidebar::Impl {
     bool expanded {true}, busy {false}, loading {false};
 
     int dip(int value) const { return owner->FromDIP(value); }
-    int edge() const { return std::max(dip(64), (canvas->GetClientSize().x - dip(12)) / 2); }
+    ImageHistoryGrid grid() const {
+        const auto size = canvas->GetClientSize();
+        return ImageHistoryGrid::fit(size.x, size.y, dip(12));
+    }
+    int edge() const { return grid().edge; }
+    int grid_left() const { return std::max(0, (canvas->GetClientSize().x - 2 * edge() - dip(12)) / 2); }
     wxRect tile(size_t index) const {
         const int e = edge();
-        return {int(index % 2) * (e + dip(12)), int(index / 2) * (e + dip(12)), e, e};
+        const size_t local = index - pagination.begin();
+        return {grid_left() + int(local % 2) * (e + dip(12)), int(local / 2) * (e + dip(12)), e, e};
     }
     wxRect trash(const wxRect& tile) const {
         return {tile.GetRight() - dip(32), tile.GetBottom() - dip(32), dip(28), dip(28)};
     }
     int hit(const wxPoint& position) const {
-        const wxPoint point = canvas->CalcUnscrolledPosition(position);
+        const wxPoint point(position.x - grid_left(), position.y);
         const int e = edge() + dip(12);
         const int col = point.x / e, row = point.y / e;
-        const size_t index = size_t(row) * 2 + col;
-        return point.x >= 0 && point.y >= 0 && col < 2 && index < filtered.size() && tile(index).Contains(point)
+        const size_t index = pagination.begin() + size_t(row) * 2 + col;
+        return point.x >= 0 && point.y >= 0 && col < 2 && pagination.contains(index) && tile(index).Contains(position)
             ? int(index) : -1;
     }
 
@@ -189,11 +198,65 @@ struct ImageHistorySidebar::Impl {
         status = new wxStaticText(panel, wxID_ANY, tr("正在读取历史图片…"));
         style_text(status, secondary_text_colour(), 10);
         column->Add(status, 0, wxLEFT | wxRIGHT | wxBOTTOM, dip(20));
-        canvas = new wxScrolledWindow(panel, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVSCROLL | wxBORDER_NONE);
+        canvas = new wxPanel(panel, wxID_ANY, wxDefaultPosition, wxDefaultSize,
+                             wxBORDER_NONE | wxFULL_REPAINT_ON_RESIZE);
         canvas->SetName("my-images-grid");
         canvas->SetBackgroundColour(panel_colour()); canvas->SetBackgroundStyle(wxBG_STYLE_PAINT);
-        canvas->SetScrollRate(0, dip(12)); canvas->SetCanFocus(true);
-        column->Add(canvas, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, dip(20));
+        canvas->SetMinSize({0, 0}); canvas->SetCanFocus(true);
+        column->Add(canvas, 1, wxEXPAND | wxLEFT | wxRIGHT, dip(20));
+        auto* footer = new wxPanel(panel, wxID_ANY);
+        footer->SetBackgroundColour(panel_colour());
+        auto* pager = new wxBoxSizer(wxHORIZONTAL);
+        footer->SetSizer(pager);
+        pager->AddStretchSpacer();
+        auto add_page_button = [&](const char* name, const char* tooltip, int direction, bool double_arrow,
+                                   std::function<void()> action) {
+            auto* button = new RoundedActionButton(footer, tr(tooltip), false, 32);
+            button->SetName(name); button->SetToolTip(tr(tooltip));
+            button->SetMinSize({dip(32), dip(32)});
+            button->SetMaxSize({dip(32), dip(32)});
+            button->Bind(wxEVT_PAINT, [this, button, direction, double_arrow](wxPaintEvent&) {
+                wxAutoBufferedPaintDC dc(button); dc.SetBackground(wxBrush(panel_colour())); dc.Clear();
+                dc.SetPen(wxPen(button->IsEnabled() ? secondary_text_colour() : wxColour(75, 75, 80),
+                                std::max(1, dip(1))));
+                const auto size = button->GetClientSize();
+                for (int i = 0; i < (double_arrow ? 2 : 1); ++i) {
+                    const int x = size.x / 2 + (double_arrow ? dip(i == 0 ? -3 : 3) : 0);
+                    dc.DrawLine(x - direction * dip(2), size.y / 2 - dip(4), x + direction * dip(2), size.y / 2);
+                    dc.DrawLine(x + direction * dip(2), size.y / 2, x - direction * dip(2), size.y / 2 + dip(4));
+                }
+                if (button->HasFocus()) {
+                    dc.SetBrush(*wxTRANSPARENT_BRUSH); dc.SetPen(wxPen(accent_colour(), std::max(1, dip(1))));
+                    dc.DrawRoundedRectangle(dip(1), dip(1), size.x - dip(2), size.y - dip(2), dip(5));
+                }
+            });
+            button->Bind(wxEVT_BUTTON, [action](wxCommandEvent&) { action(); });
+            pager->Add(button, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, dip(4));
+            return button;
+        };
+        first_page = add_page_button("my-images-first-page", "首页", -1, true, [this] { go_to_page(0); });
+        previous_page = add_page_button("my-images-previous-page", "上一页", -1, false,
+            [this] { if (pagination.page() > 0) go_to_page(pagination.page() - 1); });
+        page_label = new wxPanel(footer, wxID_ANY, wxDefaultPosition, {dip(64), dip(32)});
+        page_label->SetName("my-images-page-number");
+        page_label->SetBackgroundStyle(wxBG_STYLE_PAINT);
+        style_text(page_label, primary_text_colour(), 10);
+        page_label->Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
+            wxAutoBufferedPaintDC dc(page_label); dc.SetBackground(wxBrush(panel_colour())); dc.Clear();
+            dc.SetPen(wxPen(secondary_text_colour(), std::max(1, dip(1)))); dc.SetBrush(*wxTRANSPARENT_BRUSH);
+            const auto size = page_label->GetClientSize();
+            dc.DrawRoundedRectangle(dip(1), dip(1), size.x - dip(2), size.y - dip(2), dip(8));
+            dc.SetFont(page_label->GetFont()); dc.SetTextForeground(primary_text_colour());
+            dc.DrawLabel(page_label->GetLabel(), wxRect({0, 0}, size), wxALIGN_CENTER);
+        });
+        pager->Add(page_label, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, dip(8));
+        next_page = add_page_button("my-images-next-page", "下一页", 1, false,
+            [this] { go_to_page(pagination.page() + 1); });
+        last_page = add_page_button("my-images-last-page", "末页", 1, true,
+            [this] { go_to_page(pagination.pages() == 0 ? 0 : pagination.pages() - 1); });
+        pager->AddStretchSpacer();
+        column->Add(footer, 0, wxEXPAND | wxALL, dip(20));
+        update_pager();
         toggle->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
             expanded = !expanded; panel->Show(expanded);
             toggle->SetLabel(expanded ? tr("›") : tr("‹"));
@@ -222,21 +285,25 @@ struct ImageHistorySidebar::Impl {
             const int index = hit(event.GetPosition());
             if (index < 0 || busy) return;
             focused = index; canvas->SetFocus();
-            const bool remove = trash(tile(index)).Contains(canvas->CalcUnscrolledPosition(event.GetPosition()));
+            const bool remove = trash(tile(index)).Contains(event.GetPosition());
             activate(index, remove);
         });
         canvas->Bind(wxEVT_KEY_DOWN, [this](wxKeyEvent& event) {
             if (filtered.empty() || busy) { event.Skip(); return; }
             const int key = event.GetKeyCode();
             if (key == WXK_RETURN || key == WXK_SPACE || key == WXK_DELETE) {
-                if (focused >= 0) activate(focused, key == WXK_DELETE);
+                if (focused >= 0 && pagination.contains(size_t(focused))) activate(focused, key == WXK_DELETE);
+            } else if (key == WXK_PAGEUP || key == WXK_PAGEDOWN || key == WXK_HOME || key == WXK_END) {
+                if (key == WXK_HOME) go_to_page(0);
+                else if (key == WXK_END) go_to_page(pagination.pages() - 1);
+                else if (key == WXK_PAGEUP) go_to_page(pagination.page() == 0 ? 0 : pagination.page() - 1);
+                else go_to_page(pagination.page() + 1);
             } else if (key == WXK_LEFT || key == WXK_RIGHT || key == WXK_UP || key == WXK_DOWN) {
-                focused = std::clamp(focused + (key == WXK_LEFT ? -1 : key == WXK_RIGHT ? 1 : key == WXK_UP ? -2 : 2),
+                focused = focused < 0 ? int(pagination.begin()) :
+                    std::clamp(focused + (key == WXK_LEFT ? -1 : key == WXK_RIGHT ? 1 : key == WXK_UP ? -2 : 2),
                     0, int(filtered.size()) - 1);
-                const auto rect = tile(focused);
-                const int top = canvas->GetViewStart().y * dip(12), bottom = top + canvas->GetClientSize().y;
-                if (rect.y < top) canvas->Scroll(0, rect.y / dip(12));
-                else if (rect.GetBottom() > bottom) canvas->Scroll(0, (rect.GetBottom() - canvas->GetClientSize().y + dip(12)) / dip(12));
+                pagination.go_to(size_t(focused) / pagination.capacity());
+                hovered = -1; canvas->UnsetToolTip(); update_pager();
                 canvas->Refresh(false);
             } else event.Skip();
         });
@@ -253,20 +320,41 @@ struct ImageHistorySidebar::Impl {
         { std::lock_guard<std::mutex> lock(worker.mutex); worker.scan = true; }
         worker.wake.notify_one();
     }
+    void update_pager() {
+        const size_t pages = pagination.pages();
+        page_label->SetLabel(wxString::Format("%llu/%llu",
+            static_cast<unsigned long long>(pages == 0 ? 0 : pagination.page() + 1),
+            static_cast<unsigned long long>(pages)));
+        page_label->Refresh(false);
+        first_page->Enable(pagination.page() > 0); previous_page->Enable(pagination.page() > 0);
+        next_page->Enable(pagination.page() + 1 < pages); last_page->Enable(pagination.page() + 1 < pages);
+        for (auto* button : {first_page, previous_page, next_page, last_page}) button->Refresh(false);
+    }
+    void go_to_page(size_t page) {
+        pagination.go_to(page);
+        focused = pagination.begin() < pagination.end() ? int(pagination.begin()) : -1;
+        hovered = -1; canvas->UnsetToolTip();
+        update_pager(); canvas->Refresh(false);
+    }
     void resize() {
-        canvas->SetVirtualSize(canvas->GetClientSize().x, int((filtered.size() + 1) / 2) * (edge() + dip(12)));
+        // Collapsing the drawer must not change its page through a zero size.
+        if (!expanded || canvas->GetClientSize().x <= 0 || canvas->GetClientSize().y <= 0) return;
+        pagination.set_capacity(size_t(grid().rows) * 2);
+        if (focused >= 0 && !pagination.contains(size_t(focused))) focused = -1;
+        hovered = -1; canvas->UnsetToolTip(); update_pager();
         canvas->Refresh(false);
     }
-    void filter(bool reset_scroll) {
-        const auto position = canvas->GetViewStart();
+    void filter(bool reset_page) {
         filtered.clear();
         for (size_t i = 0; i < entries.size(); ++i)
             if (image_history_matches(entries[i], search->GetValue())) filtered.push_back(i);
         hovered = -1; focused = -1;
-        for (size_t i = 0; i < filtered.size(); ++i) if (entries[filtered[i]].job_id == selected) focused = int(i);
+        pagination.set_count(filtered.size(), reset_page);
         status->SetLabel(entries.empty() ? tr("还没有保存的设计图") : tr("没有匹配的图片"));
         status->Show(filtered.empty()); panel->Layout(); resize();
-        canvas->Scroll(0, reset_scroll ? 0 : position.y);
+        for (size_t i = pagination.begin(); i < pagination.end(); ++i)
+            if (entries[filtered[i]].job_id == selected) focused = int(i);
+        update_pager(); canvas->Refresh(false);
     }
     void poll() {
         std::vector<ImageHistoryWorker::Pixels> ready;
@@ -321,16 +409,13 @@ struct ImageHistorySidebar::Impl {
         else { status->SetLabel(tr("图片无法打开，当前内容已保留")); status->Show(); panel->Layout(); }
     }
     void paint() {
-        wxAutoBufferedPaintDC dc(canvas); canvas->PrepareDC(dc);
+        wxAutoBufferedPaintDC dc(canvas);
         dc.SetBackground(wxBrush(panel_colour())); dc.Clear();
         auto gc = std::unique_ptr<wxGraphicsContext>(wxGraphicsContext::Create(dc));
         if (!gc) return;
-        const int top = canvas->GetViewStart().y * dip(12);
-        const int bottom = top + canvas->GetClientSize().y;
         std::set<std::string> visible;
-        for (size_t i = 0; i < filtered.size(); ++i) {
+        for (size_t i = pagination.begin(); i < pagination.end(); ++i) {
             const auto rect = tile(i);
-            if (rect.GetBottom() < top || rect.y > bottom) continue;
             const auto& entry = entries[filtered[i]];
             visible.insert(entry.job_id);
             gc->SetPen(wxPen(entry.job_id == selected ? accent_colour() : control_colour(), dip(1)));

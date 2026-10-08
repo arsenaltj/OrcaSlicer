@@ -2127,18 +2127,14 @@ void ModelGenerationPanel::on_preprocess(wxCommandEvent& event)
         }
         if ((current_style() == "realistic" || current_style() == "portrait_sketch") && use_printable_colors())
             message << _L("\n若识别到真人，优先保留脸型、五官和姿态。");
-        RedesignMessageDialog confirm(this, message,
-                                      regenerating_preview ? _L("重新生成图片预览") : _L("生成风格预览"),
-                                      wxYES_NO | wxICON_QUESTION);
-        if (confirm.ShowModal() != wxID_YES)
+        if (show_generation_confirmation(this, message, _L("确认生成2D设计图")) != wxID_YES)
             return;
     } else {
-        RedesignMessageDialog confirm(this,
+        const wxString message =
             use_printable_colors()
                 ? _L("要根据文字生成 AI 设计图吗？\n\n会生成适合 3D 建模的高质量设计图，并保留所选配色供后续模型使用。此操作消耗 API 额度。")
-                : _L("要根据文字生成 AI 设计图吗？\n\n会先生成并检查图片，再用于后续 3D 生成；此操作可能消耗 API 额度。"),
-            _L("生成图片预览"), wxYES_NO | wxICON_QUESTION);
-        if (confirm.ShowModal() != wxID_YES)
+                : _L("要根据文字生成 AI 设计图吗？\n\n会先生成并检查图片，再用于后续 3D 生成；此操作可能消耗 API 额度。");
+        if (show_generation_confirmation(this, message, _L("确认生成2D设计图")) != wxID_YES)
             return;
     }
 

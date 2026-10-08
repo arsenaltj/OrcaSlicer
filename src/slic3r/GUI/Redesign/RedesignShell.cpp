@@ -28,6 +28,7 @@
 #include <wx/dnd.h>
 #include <wx/button.h>
 #include <wx/filedlg.h>
+#include <wx/filedlgcustomize.h>
 #include <wx/colour.h>
 #include <wx/font.h>
 #include <wx/fontenum.h>
@@ -53,6 +54,48 @@
 
 namespace Slic3r::GUI {
 namespace {
+
+using ImageDiagnosticClock = std::chrono::steady_clock;
+
+long long image_diagnostic_elapsed(ImageDiagnosticClock::time_point started)
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(ImageDiagnosticClock::now() - started).count();
+}
+
+// Observe the native dialog through wxWidgets' supported hook without adding
+// controls, changing dialog flags, or accepting/rejecting a selection.
+class ImagePickerDiagnostics final : public wxFileDialogCustomizeHook
+{
+public:
+    explicit ImagePickerDiagnostics(wxFileDialog& dialog) : m_dialog(dialog), m_id(++s_sequence) {}
+
+    void AddCustomControls(wxFileDialogCustomize&) override { log("hook_ready"); }
+    void UpdateCustomControls() override
+    {
+        const wxString selection = m_dialog.GetCurrentlySelectedFilename();
+        if (selection == m_selection)
+            return;
+        m_selection = selection;
+        // No image contents, filenames or directories are written to the log.
+        BOOST_LOG_TRIVIAL(info) << "[ImageUpload] picker=" << m_id
+            << " stage=selection_changed has_selection=" << !selection.empty()
+            << " path_chars=" << selection.length()
+            << " elapsed_ms=" << image_diagnostic_elapsed(m_started);
+    }
+    void TransferDataFromCustomControls() override { log("file_ok_callback"); }
+    void log(const char* stage) const
+    {
+        BOOST_LOG_TRIVIAL(info) << "[ImageUpload] picker=" << m_id << " stage=" << stage
+            << " elapsed_ms=" << image_diagnostic_elapsed(m_started);
+    }
+
+private:
+    inline static std::uint64_t s_sequence = 0; // File dialogs run on the GUI thread.
+    wxFileDialog& m_dialog;
+    const std::uint64_t m_id;
+    const ImageDiagnosticClock::time_point m_started = ImageDiagnosticClock::now();
+    wxString m_selection;
+};
 
 wxColour background_colour()
 {
@@ -2480,8 +2523,10 @@ void RedesignShell::bind_upload_click(wxWindow* window)
 
 void RedesignShell::choose_image()
 {
-    if (!generation_input_editable())
+    if (!generation_input_editable()) {
+        BOOST_LOG_TRIVIAL(info) << "[ImageUpload] stage=picker_ignored reason=input_not_editable";
         return;
+    }
     wxString directory = wxStandardPaths::Get().GetUserDir(wxStandardPaths::Dir_Pictures);
     if (!m_selected_image_path.empty())
         directory = wxString(m_selected_image_path.parent_path().wstring());
@@ -2490,36 +2535,65 @@ void RedesignShell::choose_image()
         if (!saved.empty() && boost::filesystem::is_directory(saved))
             directory = wxString::FromUTF8(saved);
     }
+    // Declare the hook first so it outlives the dialog holding its pointer.
+    std::unique_ptr<ImagePickerDiagnostics> diagnostics;
     wxFileDialog dialog(this, text("选择参考图"), directory, wxEmptyString,
                         text("PNG 和 JPEG 图片 (*.png;*.jpg;*.jpeg)|*.png;*.jpg;*.jpeg"),
                         wxFD_OPEN | wxFD_FILE_MUST_EXIST);
-    if (dialog.ShowModal() == wxID_OK)
+    diagnostics = std::make_unique<ImagePickerDiagnostics>(dialog);
+    diagnostics->log(dialog.SetCustomizeHook(*diagnostics) ? "hook_registered" : "hook_unavailable");
+    diagnostics->log("show_modal_begin");
+    const int result = dialog.ShowModal();
+    diagnostics->log(result == wxID_OK ? "returned_ok" : result == wxID_CANCEL ? "returned_cancel" : "returned_other");
+    if (result == wxID_OK)
         accept_image(dialog.GetPath());
 }
 
 void RedesignShell::accept_image(const wxString& path)
 {
-    if (m_image_state == ImageState::Loading || !generation_input_editable())
+    if (m_image_state == ImageState::Loading || !generation_input_editable()) {
+        BOOST_LOG_TRIVIAL(info) << "[ImageUpload] stage=load_ignored reason=input_not_editable"
+            << " already_loading=" << (m_image_state == ImageState::Loading);
         return;
+    }
     const ImageState previous_state = m_image_state;
     const std::uint64_t generation = ++m_image_request_generation;
+    const auto started = ImageDiagnosticClock::now();
+    BOOST_LOG_TRIVIAL(info) << "[ImageUpload] load=" << generation << " stage=load_begin";
     m_image_state = ImageState::Loading;
     update_image_state();
     apply_model_generation_state(m_model_generation_state);
-    CallAfter([this, path, generation, previous_state] {
-        if (generation != m_image_request_generation)
+    CallAfter([this, path, generation, previous_state, started] {
+        if (generation != m_image_request_generation) {
+            BOOST_LOG_TRIVIAL(info) << "[ImageUpload] load=" << generation << " stage=stale_callback"
+                << " elapsed_ms=" << image_diagnostic_elapsed(started);
             return;
+        }
         const boost::filesystem::path selected_path(path.ToStdWstring());
         bool valid = false;
         wxImage image;
         try {
+            BOOST_LOG_TRIVIAL(info) << "[ImageUpload] load=" << generation << " stage=validate_begin"
+                << " elapsed_ms=" << image_diagnostic_elapsed(started);
             valid = ModelGenerationPresentation::is_supported_image(selected_path);
-            if (valid)
+            BOOST_LOG_TRIVIAL(info) << "[ImageUpload] load=" << generation << " stage=validate_end valid=" << valid
+                << " elapsed_ms=" << image_diagnostic_elapsed(started);
+            if (valid) {
+                BOOST_LOG_TRIVIAL(info) << "[ImageUpload] load=" << generation << " stage=decode_begin"
+                    << " elapsed_ms=" << image_diagnostic_elapsed(started);
                 image.LoadFile(path);
-        } catch (const boost::filesystem::filesystem_error&) {
+                BOOST_LOG_TRIVIAL(info) << "[ImageUpload] load=" << generation << " stage=decode_end valid=" << image.IsOk()
+                    << " elapsed_ms=" << image_diagnostic_elapsed(started);
+            }
+        } catch (const boost::filesystem::filesystem_error& error) {
+            BOOST_LOG_TRIVIAL(warning) << "[ImageUpload] load=" << generation << " stage=filesystem_error"
+                << " error_code=" << error.code().value() << " category=" << error.code().category().name()
+                << " elapsed_ms=" << image_diagnostic_elapsed(started);
             valid = false;
         }
         if (!valid || !image.IsOk()) {
+            BOOST_LOG_TRIVIAL(warning) << "[ImageUpload] load=" << generation << " stage=load_rejected"
+                << " elapsed_ms=" << image_diagnostic_elapsed(started);
             m_image_state = previous_state == ImageState::Ready ? ImageState::Ready : ImageState::Failed;
             update_image_state();
             apply_model_generation_state(m_model_generation_state);
@@ -2533,8 +2607,14 @@ void RedesignShell::accept_image(const wxString& path)
             wxGetApp().app_config->set("model_generation_image_directory", selected_path.parent_path().string());
         m_image_state = ImageState::Ready;
         m_last_preview_bounds = wxDefaultSize;
+        BOOST_LOG_TRIVIAL(info) << "[ImageUpload] load=" << generation << " stage=preview_update_begin"
+            << " elapsed_ms=" << image_diagnostic_elapsed(started);
         update_image_state();
+        BOOST_LOG_TRIVIAL(info) << "[ImageUpload] load=" << generation << " stage=input_sync_begin"
+            << " elapsed_ms=" << image_diagnostic_elapsed(started);
         synchronize_generation_input();
+        BOOST_LOG_TRIVIAL(info) << "[ImageUpload] load=" << generation << " stage=load_end input_sync_ok=" << m_input_sync_ok
+            << " elapsed_ms=" << image_diagnostic_elapsed(started);
     });
 }
 

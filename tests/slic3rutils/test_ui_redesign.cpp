@@ -2,6 +2,7 @@
 #include "slic3r/GUI/Redesign/RedesignFeatureFlags.hpp"
 #include "slic3r/GUI/Redesign/OrcaBusinessAdapter.hpp"
 #include "slic3r/GUI/Redesign/RedesignState.hpp"
+#include "slic3r/GUI/Redesign/ImageHistoryPagination.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationHost.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -10,6 +11,87 @@
 #include <string>
 
 using namespace Slic3r::GUI;
+
+TEST_CASE("Image history pagination exposes each record exactly once", "[UiRedesign][ImageHistoryPagination]")
+{
+    ImageHistoryPagination pages;
+    pages.set_count(23);
+    REQUIRE(pages.pages() == 3);
+    size_t next = 0;
+    for (size_t page = 0; page < pages.pages(); ++page) {
+        pages.go_to(page);
+        CHECK(pages.begin() == next);
+        for (size_t i = pages.begin(); i < pages.end(); ++i) {
+            CHECK(pages.contains(i));
+            ++next;
+        }
+        CHECK_FALSE(pages.contains(pages.end()));
+    }
+    CHECK(next == 23);
+    pages.go_to(999);
+    CHECK(pages.page() == 2);
+    CHECK(pages.begin() == 20);
+    CHECK_FALSE(pages.contains(0)); // Hit/keyboard actions must not target another page.
+}
+
+TEST_CASE("Removing the last image on the last page returns to a valid page", "[UiRedesign][ImageHistoryPagination]")
+{
+    ImageHistoryPagination pages;
+    pages.set_count(21); pages.go_to(2);
+    pages.set_count(20);
+    CHECK(pages.page() == 1);
+    CHECK(pages.begin() == 10);
+    CHECK(pages.end() == 20);
+    pages.set_count(0);
+    CHECK(pages.pages() == 0);
+    CHECK(pages.begin() == pages.end());
+    CHECK_FALSE(pages.contains(0));
+    pages.go_to(999);
+    CHECK(pages.page() == 0);
+}
+
+TEST_CASE("Searching image history starts at the first matching page", "[UiRedesign][ImageHistoryPagination]")
+{
+    ImageHistoryPagination pages;
+    pages.set_count(100); pages.go_to(8);
+    pages.set_count(25, true);
+    CHECK(pages.page() == 0);
+    CHECK(pages.pages() == 3);
+    pages.go_to(1);
+    pages.set_count(25); // Reopening/refetching retains the user's page.
+    CHECK(pages.page() == 1);
+}
+
+TEST_CASE("Resizing image history keeps the former first record on screen", "[UiRedesign][ImageHistoryPagination]")
+{
+    ImageHistoryPagination pages;
+    pages.set_count(37); pages.go_to(2);
+    pages.set_capacity(6);
+    CHECK(pages.contains(20));
+    CHECK(pages.pages() == 7);
+    const size_t first = pages.begin();
+    pages.set_capacity(10);
+    CHECK(pages.contains(first));
+    pages.set_capacity(0);
+    CHECK(pages.capacity() == 1);
+}
+
+TEST_CASE("Image history fits whole square rows above the fixed pager", "[UiRedesign][ImageHistoryPagination]")
+{
+    const auto design = ImageHistoryGrid::fit(312, 798, 12);
+    CHECK(design.rows == 5);
+    CHECK(design.edge == 150);
+    CHECK(ImageHistoryGrid::fit(312, 797, 12).rows == 4);
+    for (int scale : {1, 2, 3}) {
+        for (int height : {50, 150, 300, 620, 798, 1200}) {
+            const auto grid = ImageHistoryGrid::fit(312 * scale, height * scale, 12 * scale);
+            CHECK(grid.rows >= 1);
+            CHECK(grid.rows <= 5);
+            CHECK(grid.rows * grid.edge + (grid.rows - 1) * 12 * scale <= height * scale);
+            CHECK(2 * grid.edge + 12 * scale <= 312 * scale);
+        }
+    }
+}
 
 namespace {
 
