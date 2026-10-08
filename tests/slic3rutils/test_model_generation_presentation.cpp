@@ -582,3 +582,77 @@ TEST_CASE("Style input accepts existing families and rejects unknown provider va
         CHECK_FALSE(is_supported_style(invalid));
     }
 }
+
+TEST_CASE("Image history includes model results without changing legacy model precedence",
+          "[ModelGenerationPresentation][ImageHistory]")
+{
+    ScopedTemporaryDir temporary("orca-image-history");
+    const std::string id = "11111111-1111-4111-8111-111111111111";
+    auto record = write_design_fixture(temporary.path() / id);
+    record["state"] = "ready";
+    record["style"] = "custom";
+    record["custom_style"] = "paper sculpture";
+    REQUIRE(write_json(temporary.path() / id / "job.json", record));
+    { boost::filesystem::ofstream model(temporary.path() / id / "model.glb"); model << "saved model"; }
+    REQUIRE_FALSE(read_design_history_entry(temporary.path(), id));
+    const auto image = read_image_history_entry(temporary.path(), id);
+    REQUIRE(image);
+    CHECK(image->style == "custom");
+    CHECK(image->custom_style == "paper sculpture");
+    CHECK(image_history_matches(*image, " BLUE SCARF "));
+    CHECK(image_history_matches(*image, "paper"));
+    CHECK(image_history_matches(*image, wxString::FromUTF8("自定义")));
+    CHECK_FALSE(image_history_matches(*image, "absent"));
+}
+
+TEST_CASE("Removing an image record retains all assets and legacy history across reloads",
+          "[ModelGenerationPresentation][ImageHistory]")
+{
+    ScopedTemporaryDir temporary("orca-image-history");
+    const std::string id = "11111111-1111-4111-8111-111111111111";
+    const auto record = write_design_fixture(temporary.path() / id);
+    REQUIRE(hide_image_history_entry(temporary.path(), id));
+    CHECK(read_image_history(temporary.path()).empty());
+    CHECK_FALSE(read_image_history_entry(temporary.path(), id));
+    CHECK(read_design_history_entry(temporary.path(), id).has_value());
+    CHECK(read_json(temporary.path() / id / "job.json") == record);
+    CHECK(boost::filesystem::exists(temporary.path() / id / "input.png"));
+    CHECK_FALSE(hide_image_history_entry(temporary.path(), "../" + id));
+}
+
+TEST_CASE("Image history lists every version newest first and omits model-only forks",
+          "[ModelGenerationPresentation][ImageHistory]")
+{
+    ScopedTemporaryDir temporary("orca-image-history");
+    std::vector<std::string> ids;
+    for (int i = 0; i < 16; ++i) {
+        const std::string id = "11111111-1111-4111-8111-1111111111" + std::to_string(10 + i);
+        ids.push_back(id);
+        write_design_fixture(temporary.path() / id);
+        const auto entry = read_image_history_entry(temporary.path(), id);
+        REQUIRE(entry);
+        boost::filesystem::last_write_time(entry->raw_preview_path, 1700000000 + i);
+    }
+    auto entries = read_image_history(temporary.path());
+    REQUIRE(entries.size() == 16);
+    CHECK(entries.front().job_id == ids.back());
+    CHECK(entries.back().job_id == ids.front());
+    auto record = read_json(temporary.path() / ids.back() / "job.json");
+    record["source_design_job_id"] = ids.front();
+    REQUIRE(write_json(temporary.path() / ids.back() / "job.json", record));
+    entries = read_image_history(temporary.path());
+    REQUIRE(entries.size() == 15);
+    CHECK(entries.front().job_id == ids[14]);
+}
+
+TEST_CASE("Image history rejects escaped or corrupt previews without discarding valid versions",
+          "[ModelGenerationPresentation][ImageHistory]")
+{
+    ScopedTemporaryDir temporary("orca-image-history");
+    const std::string id = "11111111-1111-4111-8111-111111111111";
+    auto record = write_design_fixture(temporary.path() / id);
+    for (const auto* key : {"preview_path", "raw_preview_path", "model_reference_path"}) record[key] = "../external.png";
+    REQUIRE(write_json(temporary.path() / id / "job.json", record));
+    CHECK_FALSE(read_image_history_entry(temporary.path(), id));
+    CHECK_FALSE(read_image_history_entry(temporary.path(), "../" + id));
+}

@@ -388,6 +388,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/Redesign/OrcaBusinessAdapter.hpp
     GUI/Redesign/RedesignMessageDialog.cpp
     GUI/Redesign/RedesignMessageDialog.hpp
+    GUI/Redesign/ImageHistorySidebar.cpp
+    GUI/Redesign/ImageHistorySidebar.hpp
     GUI/Redesign/RedesignShell.cpp
     GUI/Redesign/RedesignModelWorkflow.cpp
     GUI/Redesign/RedesignShell.hpp

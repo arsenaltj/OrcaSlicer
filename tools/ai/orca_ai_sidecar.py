@@ -470,6 +470,7 @@ class Job:
     provider: str = "tripo"
     user_prompt: str = ""
     prepared_prompt: str = ""
+    source_design_job_id: str = ""
     input_path: Path | None = None
     raw_preview_path: Path | None = None
     strict_preview_path: Path | None = None
@@ -1124,6 +1125,48 @@ def _copy_job_file(source: Path | None, job: Job, name: str) -> Path | None:
         ) from None
 
 
+def _reuse_design_job(source: Job) -> Job:
+    """Fork only saved design inputs. No provider calls, tasks, or model artifacts."""
+    if source.state not in {"awaiting_confirmation", "ready", "stopped", "failed", "cancelled"}:
+        raise RequestError("invalid_job_state", "The source design is still being generated.", 409)
+    reference = _model_generation_reference(source)
+    if reference is None:
+        raise RequestError("invalid_model_reference", "The saved design image is missing.", 409)
+    paths = {}
+    for name in ("input_path", "raw_preview_path", "preview_path", "model_reference_path", "geometry_reference_path"):
+        path = getattr(source, name)
+        if path is None:
+            continue
+        try:
+            resolved = path.resolve(strict=True)
+            resolved.relative_to(source.directory.resolve(strict=True))
+            if not resolved.is_file():
+                raise ValueError("not a file")
+            _validate_image_file(resolved, minimum_edge=64)
+        except (ValueError, OSError):
+            raise RequestError("invalid_model_reference", "A saved design file is missing or invalid.", 409) from None
+        paths[name] = resolved
+    if not any(name in paths for name in ("raw_preview_path", "preview_path", "model_reference_path")):
+        raise RequestError("invalid_model_reference", "The saved design image is missing.", 409)
+    child = _new_job(source.source, palette=source.palette, palette_roles=source.palette_roles,
+                     palette_color_count=source.palette_color_count, style=source.style,
+                     custom_style=source.custom_style, print_settings=dict(source.print_settings),
+                     provider=source.provider, generation_options={
+                         "face_limit": source.face_limit, "geometry_quality": source.geometry_quality or "standard",
+                         "texture_quality": source.texture_quality, "output_format": source.output_format})
+    child.source_design_job_id = source.source_design_job_id or source.id
+    child.user_prompt = source.user_prompt
+    child.prepared_prompt = source.prepared_prompt
+    child.preview_content_type = source.preview_content_type
+    for name, path in paths.items():
+        setattr(child, name, _copy_job_file(path, child, name.removesuffix("_path")))
+    child.state = child.phase = "awaiting_confirmation"
+    child.message = "Saved design is ready for explicit model generation confirmation."
+    child.progress = 15
+    _persist_job(child, required=True)
+    return child
+
+
 def _persist_job(job: Job, *, touch: bool = True, required: bool = False) -> None:
     if touch:
         job.updated_at = time.time()
@@ -1149,6 +1192,7 @@ def _persist_job(job: Job, *, touch: bool = True, required: bool = False) -> Non
         "provider": job.provider,
         "user_prompt": "" if job.source == "image" and job.user_prompt == DEFAULT_IMAGE_INSTRUCTION else job.user_prompt,
         "prepared_prompt": job.prepared_prompt,
+        "source_design_job_id": job.source_design_job_id,
         "input_path": _job_path_value(job, job.input_path),
         "raw_preview_path": _job_path_value(job, job.raw_preview_path),
         "strict_preview_path": _job_path_value(job, job.strict_preview_path),
@@ -1245,6 +1289,7 @@ def _load_job(directory: Path) -> Job | None:
         provider=_generation_provider(payload),
         print_settings=print_settings,
     )
+    job.source_design_job_id = str(payload.get("source_design_job_id", ""))
     job.state = str(payload.get("state", "failed"))
     job.phase = str(payload.get("phase", job.state))
     job.message = str(payload.get("message", "Recovered model job."))
@@ -8194,7 +8239,7 @@ class Handler(BaseHTTPRequestHandler):
             parts[1] in {
                 "input", "raw-preview", "strict-preview", "preview", "model-reference", "heatmap", "metadata",
                 "background-mask", "subject-mask", "generate", "retexture", "stop", "artifact", "color-intent",
-                "recheck", "visual-review", "model-view-sheet", "confirm-palette", "generation-options",
+                "recheck", "visual-review", "model-view-sheet", "confirm-palette", "generation-options", "reuse-design",
             }
             or re.fullmatch(r"mask-[a-z0-9_]+", parts[1])
         ):
@@ -8427,12 +8472,14 @@ class Handler(BaseHTTPRequestHandler):
                 return
             job_id, action = self._job_route(self.path)
             if not job_id or action not in {
-                "generate", "retexture", "stop", "recheck", "visual-review", "confirm-palette", "generation-options"
+                "generate", "retexture", "stop", "recheck", "visual-review", "confirm-palette", "generation-options", "reuse-design"
             }:
                 self._model_error(404, "not_found", "Model job route not found.")
                 return
             if action == "generate":
                 self._generate(job_id)
+            elif action == "reuse-design":
+                self._reuse_design(job_id)
             elif action == "generation-options":
                 self._set_generation_options(job_id)
             elif action == "retexture":
@@ -8651,6 +8698,19 @@ class Handler(BaseHTTPRequestHandler):
                     setattr(job, name, value)
                 raise RequestError("state_save_failed", "Generation options could not be saved.", 503, True) from None
             response = _public_job(job)
+        self.send_json(200, {"job": response})
+
+    def _reuse_design(self, job_id: str) -> None:
+        request = self._read_model_json()
+        if request:
+            raise RequestError("invalid_request", "Reusing a design takes no provider or file arguments.", 400)
+        source = self._get_job(job_id)
+        if source is None:
+            raise RequestError("job_not_found", "Saved design not found.", 404)
+        with _JOBS_LOCK:
+            child = _reuse_design_job(source)
+            _JOBS[child.id] = child
+            response = _public_job(child)
         self.send_json(200, {"job": response})
 
     def _generate(self, job_id: str) -> None:

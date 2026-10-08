@@ -131,7 +131,7 @@
     },
     {
       "id": "generate_confirmation",
-      "path": "src/slic3r/GUI/ModelGenerationPanel.cpp",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationSubmission.cpp",
       "needle": "void ModelGenerationPanel::on_generate"
     },
     {
@@ -203,6 +203,16 @@
       "id": "history",
       "path": "tools/ai/orca_ai_sidecar.py",
       "needle": "def _persist_job("
+    },
+    {
+      "id": "image_history",
+      "path": "src/slic3r/GUI/Redesign/ImageHistorySidebar.cpp",
+      "needle": "struct ImageHistorySidebar::Impl"
+    },
+    {
+      "id": "reuse_design",
+      "path": "tools/ai/orca_ai_sidecar.py",
+      "needle": "def _reuse_design_job("
     },
     {
       "id": "restore",
@@ -398,10 +408,12 @@
         },
         {
           "title": "就绪不等于导入完成",
-          "detail": "ready 还需产物可用；导入由用户触发。历史保存和恢复具有独立代码入口。",
+          "detail": "ready 还需产物可用；导入由用户触发。我的图片独立展示本地 2D 历史，可离线恢复输入，移除仅隐藏记录；明确确认后从设计图创建新 3D 任务并保留原资产。",
           "evidence": [
             "import_model",
             "history",
+            "image_history",
+            "reuse_design",
             "restore"
           ]
         }

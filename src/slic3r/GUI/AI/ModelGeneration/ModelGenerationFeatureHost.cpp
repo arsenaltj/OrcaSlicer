@@ -243,6 +243,11 @@ bool ModelGenerationFeatureHost::request_refresh_history()
     return m_impl->model_generation != nullptr && m_impl->model_generation->request_refresh_history();
 }
 
+bool ModelGenerationFeatureHost::request_open_image_history(const std::string& job_id)
+{
+    return m_impl->model_generation != nullptr && m_impl->model_generation->request_open_image_history(job_id);
+}
+
 bool ModelGenerationFeatureHost::request_open_history(const std::string& job_id)
 {
     return m_impl->model_generation != nullptr && m_impl->model_generation->request_open_history(job_id);

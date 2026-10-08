@@ -3910,6 +3910,7 @@ void ModelGenerationPanel::refresh_palette()
 
 void ModelGenerationPanel::reset(bool remove_remote)
 {
+    m_local_image_history = false;
     m_ui_model_generation_context = false;
     m_ui_stopping = false;
     m_saving_generation_options = false;

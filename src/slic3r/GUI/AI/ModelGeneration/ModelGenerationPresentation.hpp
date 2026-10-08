@@ -67,12 +67,18 @@ bool write_json(const boost::filesystem::path& path, const nlohmann::json& value
 bool path_is_inside(const boost::filesystem::path& root, const boost::filesystem::path& candidate);
 struct DesignHistoryEntry
 {
-    std::string job_id, state, source, prompt;
+    std::string job_id, state, source, prompt, style, custom_style;
     boost::filesystem::path input_path, preview_path, raw_preview_path;
     std::time_t generated_at { 0 };
 };
 std::optional<DesignHistoryEntry> read_design_history_entry(
     const boost::filesystem::path& root, const std::string& job_id, bool validate_images = true);
+// Image history also includes designs whose tasks subsequently produced a model.
+std::optional<DesignHistoryEntry> read_image_history_entry(
+    const boost::filesystem::path& root, const std::string& job_id, bool validate_images = true);
+std::vector<DesignHistoryEntry> read_image_history(const boost::filesystem::path& root);
+bool hide_image_history_entry(const boost::filesystem::path& root, const std::string& job_id);
+bool image_history_matches(const DesignHistoryEntry& entry, const wxString& query);
 bool has_persisted_generation_assets(const boost::filesystem::path& root, const std::string& job_id);
 boost::filesystem::path archive_library_image(const boost::filesystem::path& source,
                                               const std::string& job_id,

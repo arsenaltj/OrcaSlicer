@@ -490,6 +490,12 @@ void AIModelGenerationClient::confirm_palette(const std::string& job_id, const s
               std::move(on_complete), std::move(on_error));
 }
 
+void AIModelGenerationClient::reuse_design(const std::string& job_id, StatusFn on_complete, ErrorFn on_error)
+{
+    post_json("/v1/orcaslicer/model-jobs/" + job_id + "/reuse-design", json::object(),
+              std::move(on_complete), std::move(on_error));
+}
+
 void AIModelGenerationClient::generate(const std::string& job_id, const std::string& prepared_prompt,
                                        const std::vector<std::string>& palette, const GenerationOptions& options,
                                        StatusFn on_complete, ErrorFn on_error)
