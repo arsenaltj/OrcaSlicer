@@ -30,11 +30,33 @@ inline std::string model_generation_http_error(const std::string& body,
         return "AI sidecar request failed with HTTP " + std::to_string(status) + ".";
 
     auto parsed = nlohmann::json::parse(body, nullptr, false);
-    if (!parsed.is_discarded()) {
-        if (parsed.contains("error") && parsed["error"].is_object())
-            return parsed["error"].value("message", "Model generation request failed.");
-        if (parsed.contains("error") && parsed["error"].is_string())
-            return parsed["error"].get<std::string>();
+    if (parsed.is_object()) {
+        const auto error = parsed.find("error");
+        if (error != parsed.end() && error->is_object()) {
+            std::string message = "Model generation request failed.";
+            const auto message_value = error->find("message");
+            if (message_value != error->end() && message_value->is_string() &&
+                !message_value->get_ref<const std::string&>().empty())
+                message = message_value->get<std::string>();
+            const auto code_value = error->find("code");
+            if (code_value != error->end() && code_value->is_string()) {
+                const auto& code = code_value->get_ref<const std::string&>();
+                bool valid = !code.empty() && code.size() <= 64;
+                for (char value : code) {
+                    if (!((value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z') ||
+                          (value >= '0' && value <= '9') || value == '_' || value == '-')) {
+                        valid = false;
+                        break;
+                    }
+                }
+                // Submission recovery distinguishes pre-task upload failures
+                // from ambiguous paid requests by the sidecar's error code.
+                if (valid) return code + ": " + message;
+            }
+            return message;
+        }
+        if (error != parsed.end() && error->is_string())
+            return error->get<std::string>();
     }
     return "Model generation request failed with HTTP " + std::to_string(status) + ".";
 }

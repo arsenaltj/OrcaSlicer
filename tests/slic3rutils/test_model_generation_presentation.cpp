@@ -305,6 +305,39 @@ TEST_CASE("Ambiguous HTTP submissions resume queries without hiding definite rej
     CHECK_FALSE(is_transient_sidecar_poll_error("Model generation request failed with HTTP 50x."));
 }
 
+TEST_CASE("Structured submission errors retain recovery codes without changing status query recovery",
+          "[ModelGenerationPresentation][ModelGenerationSubmissionState][SidecarRecovery]")
+{
+    using Slic3r::GUI::model_generation_http_error;
+    const std::string code = GENERATE(std::string("provider_upload_unavailable"),
+        std::string("provider_upload_timeout"), std::string("provider_upload_rate_limited"),
+        std::string("provider_upload_failed"), std::string("provider_ambiguous"));
+    const nlohmann::json response = {{"error", {{"code", code}, {"message", "Provider request did not complete."}}}};
+    CHECK(model_generation_http_error(response.dump(), {}, 503) == code + ": Provider request did not complete.");
+    const auto query_error = model_generation_http_error(response.dump(), {}, 503, true);
+    CHECK(query_error == "AI sidecar request failed with HTTP 503.");
+    CHECK(is_transient_sidecar_poll_error(query_error));
+    CHECK(model_generation_http_error(response.dump(), {}, 401) == "A valid OrcaSlicer AI session is required.");
+}
+
+TEST_CASE("Malformed structured error fields preserve useful diagnostics without throwing",
+          "[ModelGenerationPresentation][SidecarRecovery]")
+{
+    using Slic3r::GUI::model_generation_http_error;
+    for (const nlohmann::json& code : {nlohmann::json(42), nlohmann::json(nullptr),
+            nlohmann::json(std::string(65, 'x')), nlohmann::json("provider_upload_failed:\n")}) {
+        const nlohmann::json response = {{"error", {{"code", code}, {"message", "Upload was rejected."}}}};
+        CHECK(model_generation_http_error(response.dump(), {}, 400) == "Upload was rejected.");
+    }
+    for (const nlohmann::json& message : {nlohmann::json(42), nlohmann::json(nullptr), nlohmann::json("")}) {
+        const nlohmann::json response = {{"error", {{"code", "provider_upload_failed"}, {"message", message}}}};
+        CHECK(model_generation_http_error(response.dump(), {}, 400) ==
+              "provider_upload_failed: Model generation request failed.");
+    }
+    CHECK(model_generation_http_error(R"({"error":"Legacy provider rejection."})", {}, 400) ==
+          "Legacy provider rejection.");
+}
+
 namespace {
 
 class ScopedEnvironmentValue
