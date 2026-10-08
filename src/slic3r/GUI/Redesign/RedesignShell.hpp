@@ -2,6 +2,7 @@
 
 #include "../AI/ModelGeneration/ModelGenerationHost.hpp"
 #include "../AI/ModelGeneration/PostGenerationWorkbenchState.hpp"
+#include "../AI/ModelGeneration/WorkbenchImportSession.hpp"
 #include "../AI/SmartSlicing/SmartSlicingWorkbenchState.hpp"
 #include "slic3r/AI/Contracts/IModelArtifactConsumer.hpp"
 
@@ -11,6 +12,7 @@
 #include <cstdint>
 #include <string>
 #include <thread>
+#include <chrono>
 
 #include <wx/image.h>
 
@@ -35,6 +37,7 @@ class ModelPreview3D;
 class Plater;
 class SmartSlicingFeatureHost;
 class PrinterWorkspace;
+class ImageHistorySidebar;
 
 class RedesignShell final : public wxPanel
 {
@@ -60,7 +63,7 @@ public:
 private:
     enum class ImageState { Empty, Loading, Ready, Failed };
     enum class SecondaryAction { None, Stop, RetryService, RestoreLatest, Restart };
-    enum class ModelPageAction { None, RetryService, RestoreLatest, BackToDesign, ReloadPreview, Import };
+    enum class ModelPageAction { None, RetryService, RetryModel, RestoreLatest, BackToDesign, ReloadPreview, Import };
 
     void build_image_workspace();
     wxPanel* m_assets_page {nullptr};
@@ -69,15 +72,15 @@ private:
     void connect_model_generation_host();
     void apply_model_generation_state(const ModelGenerationUIState& state);
     ModelGenerationUIInput current_generation_input() const;
+    void update_generation_style_controls();
+    void layout_image_settings();
     ModelGenerationUIOptions current_generation_options() const;
     bool synchronize_generation_input();
     bool synchronize_generation_options();
     bool generation_input_editable() const;
     void apply_generation_options(const ModelGenerationUIOptions& options);
     void on_generation_option_changed();
-    void set_history_expanded(bool expanded);
-    void rebuild_history_panel();
-    void request_open_history(const std::string& job_id);
+    bool request_open_history(const std::string& job_id);
     void request_generate_design();
     void request_generate_model();
     void request_primary_action();
@@ -103,6 +106,10 @@ private:
     void confirm_workbench_import(const AI::ModelImportRequest& request);
     void select_slicing_tab(bool native);
     void start_workbench_slice();
+    void update_import_loading(WorkbenchImportPhase phase, const std::string& message = {});
+    void finish_import_loading();
+    void check_import_first_frame();
+    void open_print_preparation();
 
     wxBoxSizer* m_sizer { nullptr };
     wxPanel* m_content_host { nullptr };
@@ -121,6 +128,7 @@ private:
     wxWindow* m_slice_cancel { nullptr };
     wxWindow* m_slice_keep_mesh { nullptr };
     wxWindow* m_slice_export { nullptr };
+    wxWindow* m_slice_print { nullptr };
     std::array<wxWindow*, 3> m_slice_goals { nullptr, nullptr, nullptr };
     wxStaticText* m_slice_details { nullptr };
     wxStaticText* m_slice_status { nullptr };
@@ -131,6 +139,7 @@ private:
     wxStaticText* m_native_slice_status { nullptr };
     wxWindow* m_native_slice_start { nullptr };
     wxWindow* m_native_slice_export { nullptr };
+    wxWindow* m_native_slice_print { nullptr };
     wxWindow* m_return_slice { nullptr };
     Plater* m_plater { nullptr };
     wxWindow* m_plater_original_parent { nullptr };
@@ -140,23 +149,36 @@ private:
     ModelView m_model_view {ModelView::Result};
     bool m_native_slicing {false};
     bool m_import_in_progress {false};
+    bool m_import_switching_view {false};
+    bool m_import_awaiting_frame {false};
+    size_t m_import_frame_baseline {0};
+    std::shared_ptr<WorkbenchImportSession> m_import_session;
+    wxPanel* m_import_loading {nullptr};
+    wxStaticText* m_import_stage {nullptr};
+    wxStaticText* m_import_elapsed {nullptr};
+    wxWindow* m_import_cancel {nullptr};
+    wxTimer m_import_timer;
+    std::chrono::steady_clock::time_point m_import_started;
+    std::chrono::steady_clock::time_point m_import_view_started;
     bool m_saved_sidebar_collapsed {false};
     std::string m_pending_workbench_job;
     PrinterWorkspace* m_print_page { nullptr };
     wxPanel* m_image_settings_panel { nullptr };
     wxScrolledWindow* m_image_settings_scroll { nullptr };
+    wxPanel* m_image_settings_content { nullptr };
     wxPanel* m_upload_surface { nullptr };
     wxStaticText* m_upload_icon { nullptr };
     wxWindow* m_generate_button { nullptr };
     wxWindow* m_secondary_action_button { nullptr };
-    wxWindow* m_library_toggle { nullptr };
-    wxPanel* m_library_panel { nullptr };
-    wxScrolledWindow* m_library_scroller { nullptr };
-    wxBoxSizer* m_library_sizer { nullptr };
-    wxStaticText* m_library_status { nullptr };
+    ImageHistorySidebar* m_image_history { nullptr };
     wxStaticText* m_sidecar_status { nullptr };
     wxStaticText* m_provider_label { nullptr };
     wxPanel* m_style_choice { nullptr };
+    wxPanel* m_stylized_styles_panel { nullptr };
+    std::array<wxWindow*, 7> m_stylized_style_buttons {};
+    wxPanel* m_custom_style_panel { nullptr };
+    wxTextCtrl* m_custom_style { nullptr };
+    int m_last_stylized_style { 1 };
     wxPanel* m_provider_choice { nullptr };
     std::string m_selected_style_id { "sculpture" };
     wxStaticText* m_upload_hint { nullptr };
@@ -209,18 +231,19 @@ private:
     ImageState m_design_image_state { ImageState::Empty };
     SecondaryAction m_secondary_action { SecondaryAction::None };
     ModelPageAction m_model_page_action { ModelPageAction::None };
+    // A model submission owns the Shell route until the user explicitly
+    // chooses "返回 2D 设计". The session and job identity reject stale
+    // callbacks that could otherwise repaint the old image page.
+    bool m_model_route_locked { false };
+    std::uint64_t m_model_route_session { 0 };
+    std::string m_model_route_job_id;
     bool m_input_sync_ok { false };
     bool m_option_sync_ok { false };
     bool m_submit_in_progress { false };
     bool m_applying_model_generation_state { false };
-    bool m_history_expanded { false };
-    bool m_rendered_history_loading { false };
-    bool m_rendered_history_busy { false };
     bool m_model_preview_loading { false };
     bool m_model_preview_failed { false };
     std::string m_model_preview_error;
-    std::string m_rendered_history_error;
-    std::vector<ModelGenerationUIHistoryEntry> m_rendered_history_entries;
 };
 
 }

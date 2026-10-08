@@ -244,6 +244,14 @@ bool Plater::priv::undo_redo_to(std::vector<UndoRedo::Snapshot>::const_iterator 
 bool Plater::adopt_local_print_model(const ModelObject& object, const PresetBundle* staged,
     size_t& index, std::string& error)
 {
+    LocalPrintModelImport::PlacementSnapshot placement;
+    std::unique_ptr<Model> prepared;
+    return capture_local_print_placement(placement, error) && placement.prepare_model(object, prepared, error) &&
+        commit_local_print_model(*prepared->objects.front(), staged, index, error);
+}
+
+bool Plater::capture_local_print_placement(LocalPrintModelImport::PlacementSnapshot& snapshot, std::string& error)
+{
     error.clear();
     if (!p->can_begin_project_config_change()) {
         error = "Finish the current editing operation before importing colors."; return false;
@@ -261,9 +269,6 @@ bool Plater::adopt_local_print_model(const ModelObject& object, const PresetBund
         const auto empty = canvas3D()->get_nearest_empty_cell({center.x(), center.y()});
         placement = {empty.x(), empty.y()};
     }
-    std::unique_ptr<Model> prepared;
-    if (!LocalPrintModelImport::prepare(object, placement, volume.bounding_volume2d().size() - 2. * Vec2d::Ones(), prepared, error))
-        return false;
     auto& bundle = *wxGetApp().preset_bundle;
     const auto full_config = bundle.full_config();
     arrangement::ArrangePolygons obstacles;
@@ -286,8 +291,29 @@ bool Plater::adopt_local_print_model(const ModelObject& object, const PresetBund
         obstacles.push_back(std::move(polygon));
     }
     if (auto tower = get_wipe_tower_arrangepoly(*this)) { tower->bed_idx = 0; obstacles.push_back(*tower); }
-    if (!LocalPrintModelImport::place(*prepared->objects.front(), plate->get_shared_printable_polygon(),
-            obstacles, full_config, plate->get_build_volume(true).max.z(), error)) return false;
+    snapshot.placement = placement;
+    snapshot.bed_size = volume.bounding_volume2d().size() - 2. * Vec2d::Ones();
+    snapshot.bed = plate->get_shared_printable_polygon();
+    snapshot.obstacles = std::move(obstacles);
+    snapshot.config = full_config;
+    snapshot.height = plate->get_build_volume(true).max.z();
+    return true;
+}
+
+bool Plater::commit_local_print_model(const ModelObject& object, const PresetBundle* staged,
+    size_t& index, std::string& error)
+{
+    if (!p->can_begin_project_config_change() || p->undo_redo_stack_main().has_redo_snapshot() ||
+        is_background_process_slicing()) {
+        error = "The project is busy or its undo history changed during import.";
+        return false;
+    }
+    auto* plate = get_partplate_list().get_curr_plate();
+    if (!plate || plate->is_locked() || !wxGetApp().preset_bundle || object.instances.size() != 1) {
+        error = "The prepared model or target plate is no longer available.";
+        return false;
+    }
+    auto& bundle = *wxGetApp().preset_bundle;
     UndoRedo::ProjectConfigUndo::Prepared config;
     std::shared_ptr<const UndoRedo::ProjectConfigUndo::Change> change;
     ProjectConfigRestore::ColorCache cache;
@@ -312,7 +338,7 @@ bool Plater::adopt_local_print_model(const ModelObject& object, const PresetBund
     }
     try {
         SuppressSnapshots suppress(this);
-        if (LocalPrintModelImport::adopt(model(), *prepared->objects.front(), config, cache, bundle,
+        if (LocalPrintModelImport::adopt(model(), object, config, cache, bundle,
             [&] { return !change || p->undo_redo_stack().record_project_config_change(std::move(change)); }, index, error,
             [&](size_t imported) {
                 if (staged) {

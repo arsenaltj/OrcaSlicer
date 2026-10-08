@@ -19,6 +19,81 @@ namespace Slic3r::GUI {
 using namespace ModelGenerationPresentation;
 using namespace ModelGenerationStatusText;
 
+namespace {
+
+void classify_submission_error(const std::string& error, std::string& code, std::string& category,
+                               bool& retryable, bool& ambiguous)
+{
+    code.clear();
+    category.clear();
+    retryable = false;
+    ambiguous = false;
+    if (error.find("provider_upload_unavailable") != std::string::npos ||
+        error.find("provider_upload_timeout") != std::string::npos ||
+        error.find("provider_upload_rate_limited") != std::string::npos) {
+        if (error.find("provider_upload_timeout") != std::string::npos)
+            code = "provider_upload_timeout";
+        else if (error.find("provider_upload_rate_limited") != std::string::npos)
+            code = "provider_upload_rate_limited";
+        else
+            code = "provider_upload_unavailable";
+        category = "upload";
+        retryable = true;
+        return;
+    }
+    if (error.find("provider_upload_failed") != std::string::npos) {
+        code = "provider_upload_failed";
+        category = "upload";
+        return;
+    }
+    if (error.find("provider_unavailable") != std::string::npos ||
+        error.find("Could not connect to Tripo") != std::string::npos) {
+        code = "provider_unavailable";
+        category = "availability";
+        retryable = true;
+        return;
+    }
+    if (error.find("provider_timeout") != std::string::npos ||
+        error.find("deadline expired") != std::string::npos ||
+        error.find("timed out") != std::string::npos) {
+        code = "provider_timeout";
+        category = "availability";
+        retryable = true;
+        ambiguous = error.find("ambiguous") != std::string::npos;
+        return;
+    }
+    if (error.find("provider_rejected") != std::string::npos ||
+        error.find("rejected the request") != std::string::npos) {
+        code = "provider_rejected";
+        category = "request";
+        return;
+    }
+    if (error.find("artifact_download_failed") != std::string::npos ||
+        error.find("download") != std::string::npos) {
+        code = "artifact_download_failed";
+        category = "artifact";
+        retryable = true;
+        return;
+    }
+    if (error.find("AI sidecar is not reachable") != std::string::npos ||
+        error.find("AI sidecar request timed out") != std::string::npos ||
+        error.find("service_unavailable") != std::string::npos ||
+        error.find("session_required") != std::string::npos) {
+        code = "sidecar_unavailable";
+        category = "local_sidecar";
+        retryable = true;
+        return;
+    }
+    if (error.find("ambiguous") != std::string::npos) {
+        code = "provider_ambiguous";
+        category = "availability";
+        ambiguous = true;
+        return;
+    }
+}
+
+} // namespace
+
 void ModelGenerationPanel::on_generate(wxCommandEvent&)
 {
     if (!input_editable() || !m_service_available) return;
@@ -48,8 +123,7 @@ void ModelGenerationPanel::on_generate(wxCommandEvent&)
     const auto confirmed_options = m_job_generation_options;
     const auto confirmed_profile = m_job_generation_profile;
     const auto confirmed_prompt = m_prepared_prompt->GetValue();
-    ModelGenerationConfirmation confirm(this, message, _L("确认生成 3D 模型"), _L("创建 3D 任务"));
-    if (confirm.ShowModal() != wxID_YES)
+    if (show_generation_confirmation(this, message, _L("确认生成3D模型"), 189) != wxID_YES)
         return;
     // The modal pumps events: restore, service loss or a late status may have
     // changed the job while the user was reading the confirmation.
@@ -66,10 +140,56 @@ void ModelGenerationPanel::on_generate(wxCommandEvent&)
         show_input_hint(_L("任务或输入已变化，本次没有提交。请核对当前设计后重新确认。"));
         return;
     }
+    if (m_local_image_history) {
+        m_design_history_loading = true;
+        const uint64_t history_sequence = ++m_design_history_sequence;
+        m_busy = true;
+        const uint64_t sequence = ++m_sequence;
+        const auto source = m_job_id;
+        m_status->SetLabel(_L("正在从历史设计图准备新任务..."));
+        refresh_controls();
+        wxWeakRef<ModelGenerationPanel> weak(this);
+        m_client.reuse_design(source,
+            [weak, sequence, history_sequence, source](AIModelGenerationClient::JobStatus status) mutable {
+                if (!weak) return;
+                wxGetApp().CallAfter([weak, sequence, history_sequence, source, status = std::move(status)] {
+                    if (!weak || weak->m_shutdown || sequence != weak->m_sequence || history_sequence != weak->m_design_history_sequence || weak->m_job_id != source) return;
+                    weak->m_design_history_loading = false;
+                    if (status.id.empty() || status.id == source || status.state != "awaiting_confirmation") {
+                        weak->m_busy = false;
+                        weak->m_status->SetLabel(_L("历史设计恢复失败，原图和历史模型已保留。"));
+                        weak->refresh_controls();
+                        return;
+                    }
+                    weak->m_local_image_history = false;
+                    weak->m_job_id = status.id;
+                    weak->submit_confirmed_model();
+                });
+            },
+            [weak, sequence, history_sequence](std::string) {
+                if (!weak) return;
+                wxGetApp().CallAfter([weak, sequence, history_sequence] {
+                    if (!weak || weak->m_shutdown || sequence != weak->m_sequence || history_sequence != weak->m_design_history_sequence) return;
+                    weak->m_design_history_loading = false;
+                    weak->m_busy = false;
+                    weak->m_status->SetLabel(_L("无法准备新任务，请检查 AI 服务后重试。历史图片仍然保留。"));
+                    weak->refresh_controls();
+                });
+            });
+        return;
+    }
+    submit_confirmed_model();
+}
+
+void ModelGenerationPanel::submit_confirmed_model()
+{
+    const bool image_mode = m_job_preview_expected;
     if (image_mode)
         m_client.record_journey_event("preview_accepted", m_job_id);
     m_client.record_journey_event("model_submitted", m_job_id);
     m_journey_model_submitted = true;
+    m_ui_model_generation_context = true;
+    ++m_model_generation_session;
     m_busy = true;
     m_awaiting_confirmation = false;
     m_artifact_download_started = false;
@@ -140,11 +260,71 @@ void ModelGenerationPanel::on_generate(wxCommandEvent&)
         });
 }
 
+bool ModelGenerationPanel::request_retry_model()
+{
+    if (m_shutdown || !m_page_initialized || m_busy || m_job_id.empty() ||
+        (m_job_state != "failed" && m_job_state != "stopped"))
+        return false;
+    if (m_provider_error_ambiguous && m_job_provider_task_id.empty()) {
+        show_input_hint(_L("提交结果不明确，当前未保存 Provider 任务编号。请先在 Tripo 服务端确认任务状态，程序不会自动重复提交。"));
+        return false;
+    }
+
+    const uint64_t sequence = ++m_sequence;
+    // A failed job may leave the provider selector editable. Recovery must
+    // follow the provider recorded with the job, otherwise a changed UI
+    // selection can make a valid remote task look like a provider mismatch.
+    const std::string provider = !m_job_provider_name.empty()
+        ? m_job_provider_name
+        : !m_job_generation_options.provider.empty()
+        ? m_job_generation_options.provider
+        : current_generation_options().provider;
+    auto options = current_generation_options();
+    options.provider = provider;
+    const SubmissionContext submission {m_job_id, provider, sequence};
+    m_submission_state.begin(submission);
+    m_busy = true;
+    m_ui_model_generation_context = true;
+    m_ui_stopping = false;
+    ++m_model_generation_session;
+    m_status->SetLabel(m_job_provider_task_id.empty()
+        ? _L("正在安全重试当前任务…") : _L("正在恢复原 Provider 任务…"));
+    m_result_summary->SetLabel(m_job_provider_task_id.empty()
+        ? _L("已确认没有 Provider 任务编号；将复用当前本地任务，不创建新的本地任务记录。")
+        : _L("将查询并复用原 Provider 任务，不会再次创建付费任务。"));
+    refresh_controls();
+
+    const std::string prepared = m_job_preview_expected ? std::string() : m_prepared_prompt->GetValue().ToUTF8().data();
+    const bool resume_existing = !m_job_provider_task_id.empty();
+    wxWeakRef<ModelGenerationPanel> weak(this);
+    auto success = [weak, sequence, submission, provider](AIModelGenerationClient::JobStatus status) mutable {
+        if (!weak) return;
+        wxGetApp().CallAfter([weak, sequence, submission, provider, status = std::move(status)]() mutable {
+            if (!weak || weak->m_shutdown || status.id != submission.job_id ||
+                !submission.matches(weak->m_job_id, provider, weak->m_sequence)) return;
+            weak->handle_status(std::move(status), sequence);
+        });
+    };
+    auto failure = [weak, sequence, submission, provider](std::string error) mutable {
+        if (!weak) return;
+        wxGetApp().CallAfter([weak, sequence, submission, provider, error = std::move(error)]() {
+            if (!weak || weak->m_shutdown ||
+                !submission.matches(weak->m_job_id, provider, weak->m_sequence)) return;
+            weak->handle_error(error, sequence);
+        });
+    };
+    m_client.generate(m_job_id, prepared, m_job_palette, options,
+        std::move(success), std::move(failure), resume_existing);
+    return true;
+}
+
 void ModelGenerationPanel::handle_error(const std::string& error, uint64_t sequence)
 {
     if (m_shutdown || sequence != m_sequence)
         return;
     m_submission_state.retain_error({m_job_id, current_generation_options().provider, sequence}, error);
+    classify_submission_error(error, m_provider_error_code, m_provider_error_category,
+                              m_provider_error_retryable, m_provider_error_ambiguous);
     if (m_journey_model_submitted) {
         m_client.record_journey_event("model_failed", m_job_id);
         m_journey_model_submitted = false;
@@ -153,6 +333,12 @@ void ModelGenerationPanel::handle_error(const std::string& error, uint64_t seque
     }
     m_poll_timer.Stop();
     m_busy = false;
+    // A request-level failure may arrive before the sidecar publishes a new
+    // job status (for example when the local service is unreachable). Keep the
+    // job on the model route and expose the same failed state used by polled
+    // provider failures so the diagnostic and safe-retry action are visible.
+    m_job_state = "failed";
+    m_job_phase = "failed";
     const bool paid_preflight_rejected =
         error.find("large square cutout") != std::string::npos ||
         error.find("missing body region") != std::string::npos ||
@@ -246,11 +432,34 @@ void ModelGenerationPanel::handle_status(AIModelGenerationClient::JobStatus stat
         m_job_provider_name.clear();
         m_job_provider_task_id.clear();
         m_job_provider_conversion_task_id.clear();
+        m_provider_error_code.clear();
+        m_provider_error_category.clear();
+        m_provider_error_retryable = false;
+        m_provider_error_ambiguous = false;
         m_color_intent_path.clear();
     }
     m_job_id = status.id;
     m_job_state = status.state;
     m_job_phase = status.phase;
+    m_design_timing_job_id = status.id;
+    m_design_elapsed_seconds = status.design_elapsed_seconds;
+    m_design_estimated_seconds = status.design_estimated_seconds;
+    if (!status.provider_error_code.empty()) {
+        m_provider_error_code = status.provider_error_code;
+        m_provider_error_category = status.provider_error_category;
+        m_provider_error_retryable = status.provider_error_retryable;
+        m_provider_error_ambiguous = status.provider_error_ambiguous;
+    } else if (status.state == "failed" && m_provider_error_code.empty()) {
+        // Older sidecars only persisted a bounded message. Preserve a useful
+        // diagnostic category instead of replacing it with a generic failure.
+        classify_submission_error(status.message, m_provider_error_code, m_provider_error_category,
+                                  m_provider_error_retryable, m_provider_error_ambiguous);
+    } else if (status.state == "queued" || status.state == "running" || status.state == "ready") {
+        m_provider_error_code.clear();
+        m_provider_error_category.clear();
+        m_provider_error_retryable = false;
+        m_provider_error_ambiguous = false;
+    }
     if (status.state == "stopped" || status.state == "cancelled" || status.state == "failed")
         m_ui_stopping = false;
     m_job_palette_color_count = status.palette_color_count;

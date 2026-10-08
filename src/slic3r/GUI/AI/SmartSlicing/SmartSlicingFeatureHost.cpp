@@ -1055,6 +1055,19 @@ struct SmartSlicingFeatureHost::Impl
         state.can_analyze = !state.analyzing && !native_session.pending() &&
             workbench_official.phase != OfficialSlicePhase::Slicing;
         state.can_retry = workbench_official.can_retry_slice;
+        state.native_execution = native_session.has_result();
+        auto* plate = plater.get_partplate_list().get_curr_plate();
+        if (native_session.pending() || workbench_official.phase == OfficialSlicePhase::Slicing || plater.is_background_process_slicing())
+            state.native_blocked_reason = "正在切片，请等待当前任务完成。";
+        else if (!plater.get_ui_job_worker().is_idle() || plater.get_view3D_canvas3D()->get_gizmos_manager().is_running())
+            state.native_blocked_reason = "请先完成当前模型处理或编辑操作。";
+        else if (plater.printer_technology() != ptFFF || plater.only_gcode_mode() || plater.using_exported_file())
+            state.native_blocked_reason = "当前工程模式不支持模型切片。";
+        else if (!plate || plate->is_locked() || !plate->has_printable_instances())
+            state.native_blocked_reason = "当前打印板没有可切片模型，或打印板已锁定。";
+        else if (!plate->can_slice())
+            state.native_blocked_reason = "请先处理模型摆放、耗材或打印配置中的错误。";
+        else state.can_start_native = true;
         const auto& preflight = coordinator->snapshot();
         state.preflight = preflight.report;
         if (preflight.context) {
@@ -1318,16 +1331,33 @@ AI::SmartSlicing::OfficialSliceResult SmartSlicingFeatureHost::start_workbench_s
 
 bool SmartSlicingFeatureHost::start_native_slice()
 {
-    if (m_impl->native_session.pending() || m_impl->workbench_official.phase == AI::SmartSlicing::OfficialSlicePhase::Slicing) return false;
+    const auto state = workbench_snapshot();
+    if (!state.can_start_native) {
+        if (!m_impl->native_session.pending() && state.official.phase != AI::SmartSlicing::OfficialSlicePhase::Slicing) {
+            m_impl->workbench_official = {AI::SmartSlicing::OfficialSlicePhase::Rejected, state.native_blocked_reason};
+            m_impl->publish_workbench();
+        }
+        return false;
+    }
     cancel_workbench_analysis();
-    if (!m_impl->versioned_apply_workflow->retire_completed_transaction()) return false;
+    if (!m_impl->versioned_apply_workflow->retire_completed_transaction()) {
+        m_impl->workbench_official = {AI::SmartSlicing::OfficialSlicePhase::Rejected, "请先完成或撤销已应用的 AI 方案。"};
+        m_impl->publish_workbench();
+        return false;
+    }
     const auto revision = m_impl->current_native_revision();
-    if (!revision.valid()) return false;
+    if (!revision.valid()) {
+        m_impl->workbench_official = {AI::SmartSlicing::OfficialSlicePhase::Rejected, "无法读取有效的工程切片状态。"};
+        m_impl->publish_workbench();
+        return false;
+    }
     m_impl->native_session.start(revision);
     bool started = false;
+    std::string failure = "official_slice_not_started";
     try { started = m_impl->native_slice && m_impl->native_slice(); }
-    catch (...) { }
-    if (!started) m_impl->native_session.complete(false, revision, "official_slice_not_started");
+    catch (const std::exception& error) { failure = error.what(); }
+    catch (...) { failure = "原生切片启动出现未知错误。"; }
+    if (!started) m_impl->native_session.complete(false, revision, failure);
     m_impl->workbench_official = m_impl->native_session.result();
     m_impl->recommendation_revision_timer->Start(1000);
     m_impl->publish_workbench();

@@ -194,7 +194,8 @@ void MainFrame::update_layout()
     // legacy notebook and Plater alive as migration hosts, but do not expose
     // them or allow a layout refresh to switch back to them.
     if (m_redesign_shell_requested && wxGetApp().is_editor()) {
-        if (m_layout != ESettingsLayout::Unknown)
+        // Detach any notebook page before the shell reparents the native Plater.
+        if (m_redesign_shell == nullptr || m_tabpanel->FindPage(m_plater) != wxNOT_FOUND)
             restore_to_creation();
         if (m_ai_feature_host != nullptr)
             m_ai_feature_host->initialize_model_generation_for_shell();

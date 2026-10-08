@@ -30,6 +30,10 @@ set(ORCA_REDESIGN_WORKFLOW_SOURCES
     GUI/Redesign/OrcaBusinessAdapter.hpp
     GUI/Redesign/RedesignMessageDialog.cpp
     GUI/Redesign/RedesignMessageDialog.hpp
+    GUI/Redesign/ImageHistorySidebar.cpp
+    GUI/Redesign/ImageHistorySidebar.hpp
+    GUI/Redesign/ImageHistoryPagination.hpp
+    GUI/Redesign/RedesignModelRoute.hpp
     GUI/Redesign/RedesignShell.cpp
     GUI/Redesign/RedesignModelWorkflow.cpp
     GUI/Redesign/RedesignShell.hpp

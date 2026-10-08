@@ -8,3 +8,9 @@ bool adopt_local_print_model(const ModelObject& object, const PresetBundle* stag
     size_t& index, std::string& error);
 void finish_local_print_model_import(size_t index);
 AI::ModelImportResult import_workbench_model(const AI::ModelImportRequest& request);
+bool capture_local_print_placement(LocalPrintModelImport::PlacementSnapshot& placement, std::string& error);
+bool commit_local_print_model(const ModelObject& object, const PresetBundle* staged,
+    size_t& index, std::string& error);
+bool import_workbench_model_async(const AI::ModelImportRequest& request,
+    std::shared_ptr<WorkbenchImportSession> session, WorkbenchImportProgress progress,
+    WorkbenchImportCompletion completion, std::function<bool()> asset_current);

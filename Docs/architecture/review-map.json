@@ -138,7 +138,7 @@
     },
     {
       "id": "generate_confirmation",
-      "path": "src/slic3r/GUI/ModelGenerationPanel.cpp",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationSubmission.cpp",
       "needle": "void ModelGenerationPanel::on_generate"
     },
     {
@@ -258,7 +258,7 @@
       "id": "accepted_ux_confirmation",
       "path": "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationConfirmation.hpp",
       "needle": "class ModelGenerationConfirmation final",
-      "detail": "Shared redesign dialog keeps default Cancel, held-key arming and current owner confirmation."
+      "detail": "Shared generation appearance keeps default Cancel, held-key release, scrollable long summaries and current owner confirmation."
     },
     {
       "id": "startup_setup",
@@ -299,6 +299,16 @@
       "id": "workbench_slice",
       "path": "src/slic3r/GUI/AI/SmartSlicing/SmartSlicingFeatureHost.cpp",
       "needle": "AI::SmartSlicing::OfficialSliceResult SmartSlicingFeatureHost::start_workbench_slice("
+    },
+    {
+      "id": "image_history",
+      "path": "src/slic3r/GUI/Redesign/ImageHistorySidebar.cpp",
+      "needle": "struct ImageHistorySidebar::Impl"
+    },
+    {
+      "id": "reuse_design",
+      "path": "tools/ai/orca_ai_sidecar.py",
+      "needle": "def _reuse_design_job("
     },
     {
       "id": "protected_region_manifest",
@@ -439,10 +449,12 @@
         },
         {
           "title": "就绪不等于导入完成",
-          "detail": "ready 还需产物可用；导入由用户触发。历史保存和恢复具有独立代码入口。",
+          "detail": "ready 还需产物可用；导入由用户触发。我的图片独立展示本地 2D 历史，可离线恢复输入，移除仅隐藏记录；明确确认后从设计图创建新 3D 任务并保留原资产。",
           "evidence": [
             "import_model",
             "history",
+            "image_history",
+            "reuse_design",
             "restore"
           ]
         }
@@ -660,7 +672,7 @@
     {
       "id": "design",
       "label": "设计准备",
-      "detail": "从文字或图片开始，预处理并准备设计",
+      "detail": "从文字或图片开始，预处理并准备设计；按图片服务、模型和生成方式统计近期成功耗时，样本不足显示已等待，样本足够显示预计剩余时间，超出预估后继续等待真实结果",
       "boundary": "等待设计及配色确认",
       "group": "设计与生成",
       "evidence": [

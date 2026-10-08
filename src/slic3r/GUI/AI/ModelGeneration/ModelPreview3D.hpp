@@ -618,7 +618,7 @@ public:
     bool load_prepared_model(PreparedModel&& prepared, const std::vector<std::string>& palette,
                              size_t& triangle_count, Vec3d& dimensions, size_t& color_count, std::string& error)
     {
-        if (m_context == nullptr || !m_context->IsOK() || !m_canvas->SetCurrent(*m_context)) {
+        if (m_canvas == nullptr || m_context == nullptr || !m_context->IsOK() || !m_canvas->SetCurrent(*m_context)) {
             error = "OpenGL preview context is unavailable.";
             return false;
         }

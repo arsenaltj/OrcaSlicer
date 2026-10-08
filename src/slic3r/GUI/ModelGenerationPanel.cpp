@@ -123,11 +123,15 @@ bool ModelGenerationPanel::request_generate_model()
         return false;
     wxCommandEvent event;
     on_generate(event);
-    if (m_journey_model_submitted) {
+    const bool submitted = m_journey_model_submitted;
+    if (submitted) {
         m_ui_model_generation_context = true;
         publish_ui_state();
     }
-    return true;
+    // on_generate() may be cancelled by the confirmation dialog or rejected
+    // by a final input/options check. Callers use this result to avoid
+    // locking the Shell on a 3D page when no model task was actually started.
+    return submitted;
 }
 
 bool ModelGenerationPanel::input_editable() const
@@ -212,11 +216,14 @@ bool ModelGenerationPanel::synchronize_ui_input(const ModelGenerationUIInput& in
     if (m_shutdown || !m_page_initialized || m_busy || m_preview_download_in_flight ||
         m_finishing_running || m_design_history_loading || m_saving_generation_options)
         return false;
-    if (input.style != "sculpture" && input.style != "realistic" && input.style != "cartoon")
+    if (!ModelGenerationPresentation::is_supported_style(input.style))
         return false;
 
     const wxString prompt = wxString::FromUTF8(input.prompt);
     if (!input.prompt.empty() && prompt.empty())
+        return false;
+    const wxString custom_style = wxString::FromUTF8(input.custom_style);
+    if ((!input.custom_style.empty() && custom_style.empty()) || custom_style.length() > 240)
         return false;
 
     boost::filesystem::path image_path;
@@ -236,6 +243,7 @@ bool ModelGenerationPanel::synchronize_ui_input(const ModelGenerationUIInput& in
         return false;
     }
     m_prompt->ChangeValue(prompt);
+    m_custom_style->ChangeValue(custom_style);
     select_style(input.style, true);
     refresh_controls();
     return true;
@@ -323,8 +331,8 @@ void ModelGenerationPanel::publish_ui_state()
     ModelGenerationUIState state;
     state.input.image_path = path_to_utf8(m_selected_image_path);
     state.input.prompt = text_to_utf8(m_prompt->GetValue());
-    const int style_family = style_selection(current_style());
-    state.input.style = style_family == 0 ? "sculpture" : style_family == 1 ? "realistic" : "cartoon";
+    state.input.style = current_style();
+    state.input.custom_style = text_to_utf8(m_custom_style->GetValue());
     const auto options = current_generation_options();
     state.options.provider = options.provider;
     state.options.face_limit = options.face_limit;
@@ -338,6 +346,10 @@ void ModelGenerationPanel::publish_ui_state()
     state.can_generate_model = m_generate->IsEnabled();
     state.can_stop = m_stop->IsEnabled();
     state.can_retry_service = m_retry_service->IsEnabled();
+    state.can_retry_model = !state.busy && (m_job_state == "failed" || m_job_state == "stopped") && !m_job_id.empty() &&
+        !m_provider_error_ambiguous &&
+        (!m_job_provider_task_id.empty() || m_provider_error_retryable ||
+         m_provider_error_code == "provider_unavailable" || m_provider_error_code == "sidecar_unavailable");
     state.can_restore_latest = m_service_available && !state.busy && m_job_id.empty();
     state.can_import = m_import->IsEnabled();
     state.can_restart = m_discard->IsEnabled();
@@ -346,8 +358,19 @@ void ModelGenerationPanel::publish_ui_state()
     state.inputs_match_job = m_job_id.empty() || job_inputs_match();
     state.progress = m_generation_progress->GetValue();
     state.job_id = m_job_id;
+    if (!m_job_id.empty() && m_design_timing_job_id == m_job_id) {
+        state.design_elapsed_seconds = m_design_elapsed_seconds;
+        state.design_estimated_seconds = m_design_estimated_seconds;
+    }
     state.job_state = m_job_state;
     state.job_phase = m_job_phase;
+    state.provider_error_code = m_provider_error_code;
+    state.provider_error_category = m_provider_error_category;
+    state.provider_name = m_job_provider_name.empty() ? options.provider : m_job_provider_name;
+    state.provider_task_id = m_job_provider_task_id;
+    state.provider_conversion_task_id = m_job_provider_conversion_task_id;
+    state.provider_error_retryable = m_provider_error_retryable;
+    state.provider_error_ambiguous = m_provider_error_ambiguous;
     state.status_text = wrapped_text_to_utf8(m_status->GetLabel());
     state.summary_text = text_to_utf8(m_result_summary->GetLabel());
     state.workflow_phase = text_to_utf8(m_workflow_phase->GetLabel());
@@ -368,6 +391,7 @@ void ModelGenerationPanel::publish_ui_state()
         m_job_phase == "checking_visual";
     state.model_generation_context = m_ui_model_generation_context || generating_model || state.model_ready ||
         m_job_phase == "multiview_retry" || !state.model_path.empty();
+    state.model_generation_session = m_model_generation_session;
     if (m_ui_stopping)
         state.stage = ModelGenerationUIStage::Stopping;
     else if (m_saving_generation_options)
@@ -622,6 +646,12 @@ void ModelGenerationPanel::restore_job(AIModelGenerationClient::JobStatus status
     m_job_palette = current_palette();
     m_job_print_settings = current_print_settings();
     m_status->SetLabel(_L("正在恢复上次模型生成任务..."));
+    m_ui_model_generation_context = status.artifact_ready || !status.provider_task_id.empty() ||
+        (status.provider_error_category != "image_preprocessing" &&
+         (!status.provider_error_code.empty() ||
+          ((status.state == "failed" || status.state == "stopped" || status.state == "cancelled") &&
+           status.model_reference_ready)));
+    ++m_model_generation_session;
     handle_status(std::move(status), sequence);
     // The persisted job owns the confirmed semantic material mapping. Widget
     // refreshes may infer generic light/chroma defaults while restore is still
@@ -857,7 +887,7 @@ wxWindow* ModelGenerationPanel::build_workflow_panel(wxWindow* parent)
     sizer->Add(style_row, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
     sizer->AddSpacer(FromDIP(8));
     wxArrayString stylized;
-    for (const char* style : {"portrait_sketch", "cartoon", "low_poly", "relief", "ink_relief", "diorama", "custom"})
+    for (const char* style : ModelGenerationPresentation::STYLIZED_STYLE_IDS)
         stylized.Add(ModelGenerationPresentation::style_label(style));
     m_stylized_style = new wxChoice(scroll, wxID_ANY, wxDefaultPosition, wxDefaultSize, stylized);
     m_stylized_style->SetSelection(1);
@@ -2167,18 +2197,14 @@ void ModelGenerationPanel::on_preprocess(wxCommandEvent& event)
         }
         if ((current_style() == "realistic" || current_style() == "portrait_sketch") && use_printable_colors())
             message << _L("\n若识别到真人，优先保留脸型、五官和姿态。");
-        RedesignMessageDialog confirm(this, message,
-                                      regenerating_preview ? _L("重新生成图片预览") : _L("生成风格预览"),
-                                      wxYES_NO | wxICON_QUESTION);
-        if (confirm.ShowModal() != wxID_YES)
+        if (show_generation_confirmation(this, message, _L("确认生成2D设计图")) != wxID_YES)
             return;
     } else {
-        RedesignMessageDialog confirm(this,
+        const wxString message =
             use_printable_colors()
                 ? _L("要根据文字生成 AI 设计图吗？\n\n会生成适合 3D 建模的高质量设计图，并保留所选配色供后续模型使用。此操作消耗 API 额度。")
-                : _L("要根据文字生成 AI 设计图吗？\n\n会先生成并检查图片，再用于后续 3D 生成；此操作可能消耗 API 额度。"),
-            _L("生成图片预览"), wxYES_NO | wxICON_QUESTION);
-        if (confirm.ShowModal() != wxID_YES)
+                : _L("要根据文字生成 AI 设计图吗？\n\n会先生成并检查图片，再用于后续 3D 生成；此操作可能消耗 API 额度。");
+        if (show_generation_confirmation(this, message, _L("确认生成2D设计图")) != wxID_YES)
             return;
     }
 
@@ -3981,6 +4007,7 @@ void ModelGenerationPanel::refresh_palette()
 
 void ModelGenerationPanel::reset(bool remove_remote)
 {
+    m_local_image_history = false;
     m_ui_model_generation_context = false;
     m_ui_stopping = false;
     m_saving_generation_options = false;
@@ -3999,6 +4026,10 @@ void ModelGenerationPanel::reset(bool remove_remote)
     m_job_provider_name.clear();
     m_job_provider_task_id.clear();
     m_job_provider_conversion_task_id.clear();
+    m_provider_error_code.clear();
+    m_provider_error_category.clear();
+    m_provider_error_retryable = false;
+    m_provider_error_ambiguous = false;
     m_job_palette.clear();
     m_job_palette_roles.clear();
     m_job_palette_color_count = Slic3r::AI::kLegacyDefaultTargetPaletteColors;
@@ -4247,6 +4278,7 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
     m_poll_timer.Stop();
     m_client.cancel_current();
     ++m_sequence;
+    ++m_model_generation_session;
     // The old download callbacks are invalidated above. Clear their busy and
     // output state only after the historical model has loaded successfully.
     m_preview_download_in_flight = false;

@@ -16,6 +16,8 @@
 #include <optional>
 #include <wx/button.h>
 #include <wx/choice.h>
+#include <wx/textctrl.h>
+#include <nlohmann/json.hpp>
 #include <wx/clipbrd.h>
 #include <wx/dataobj.h>
 #include <wx/datetime.h>
@@ -675,6 +677,12 @@ void ModelGenerationPanel::request_library_thumbnails(bool for_shell)
 
 void ModelGenerationPanel::persist_generation_options()
 {
+    if (m_local_image_history) {
+        // These options belong to the new draft, never to the old model job.
+        m_job_generation_options = current_generation_options();
+        refresh_controls();
+        return;
+    }
     if (m_shutdown || m_busy || m_restoring_input || !m_awaiting_confirmation || m_job_id.empty() ||
         !job_inputs_match() || use_printable_colors() != m_job_use_printable_colors ||
         (use_printable_colors() && current_palette() != m_job_palette)) {
@@ -726,6 +734,79 @@ void ModelGenerationPanel::persist_generation_options()
         [finish, previous](std::string error) {
             finish(previous, wxString::FromUTF8(error));
         });
+}
+
+bool ModelGenerationPanel::request_open_image_history(const std::string& job_id)
+{
+    if (!m_page_initialized || !can_replace_model_asset() || m_busy || m_shutdown) return false;
+    const auto root = generated_models_root();
+    const auto entry = read_image_history_entry(root, job_id);
+    if (!entry || !is_supported_style(entry->style) || wxString::FromUTF8(entry->custom_style).length() > 240)
+        return false;
+    // Validate everything before replacing the current context. Viewing uses no
+    // sidecar request and cannot resume a completed/failed paid model task.
+    wxImage preview(entry->preview_path.wstring());
+    wxImage original;
+    if (!entry->input_path.empty()) original.LoadFile(entry->input_path.wstring());
+    if (!preview.IsOk()) return false;
+    m_selected_image_path.clear();
+    reset(false);
+    m_restore_checked = true;
+    m_local_image_history = true;
+    m_journey_model_submitted = false;
+    m_ui_model_generation_context = false;
+    ++m_style_recommendation_sequence;
+    m_style_recommendation_loading = false;
+    m_style_recommendation_available = false;
+    m_style_recommendation = {};
+    m_history_display_image = wxImage();
+    m_history_display_source.clear();
+    set_finishing_workbench(false);
+    m_prompt->ChangeValue(wxString::FromUTF8(entry->prompt));
+    m_style->SetSelection(style_selection(entry->style));
+    m_stylized_style->SetSelection(stylized_style_selection(entry->style));
+    m_style_user_selected = true;
+    m_custom_style->ChangeValue(wxString::FromUTF8(entry->custom_style));
+    m_selected_image_path = original.IsOk() ? entry->input_path : boost::filesystem::path();
+    m_job_image_path = m_selected_image_path;
+    m_reference_image_path = m_selected_image_path;
+    m_reference_image = original;
+    m_clean_preview_image = preview;
+    m_model_reference_image = preview.Copy();
+    if (m_preview_stage) m_preview_stage->SetSelection(0);
+    m_preview_path = entry->preview_path;
+    m_raw_preview_path = entry->raw_preview_path;
+    m_job_id = job_id;
+    // An explicit local history selection also replaces the routed session,
+    // so the Shell must not mistake this design for a stale model update.
+    ++m_model_generation_session;
+    // This is a local design draft, independent of the original job's state.
+    // Explicit 3D confirmation forks it on the sidecar before submitting.
+    m_job_state = "awaiting_confirmation";
+    m_job_phase = "awaiting_confirmation";
+    m_awaiting_confirmation = true;
+    m_style_preview_ready = true;
+    m_preview_output_available = true;
+    m_job_preview_expected = true;
+    m_preview_zoom_factor = 1.0;
+    m_job_prompt = m_prompt->GetValue();
+    m_job_style = current_style();
+    m_job_custom_style = current_custom_style();
+    m_job_use_printable_colors = use_printable_colors();
+    m_job_palette = current_palette();
+    m_job_palette_roles = current_palette_roles();
+    m_job_print_settings = current_print_settings();
+    m_job_generation_options = current_generation_options();
+    m_job_face_limit = current_face_limit();
+    m_style_preview_placeholder.clear();
+    m_status->SetLabel(_L("已打开历史设计图。"));
+    m_result_summary->SetLabel(_L("原图、描述与风格已恢复；生成新模型时会保留原历史资产。"));
+    m_preview_kind->SetLabel(_L("结果对照"));
+    if (m_preview_book) m_preview_book->SetSelection(0);
+    apply_preview_stage();
+    update_preview_view();
+    refresh_controls();
+    return true;
 }
 
 void ModelGenerationPanel::load_design_library_entry(const std::string& job_id)

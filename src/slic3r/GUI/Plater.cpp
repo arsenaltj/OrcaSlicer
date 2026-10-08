@@ -14549,6 +14549,7 @@ std::vector<size_t> Plater::physical_filament_config_indices() const
 
 #include "PlaterTextureImport.ipp"
 #include "PlaterWorkbenchImport.ipp"
+#include "PlaterWorkbenchImportAsync.ipp"
 
 Sidebar&        Plater::sidebar()           { return *p->sidebar; }
 const Model&    Plater::model() const       { return p->model; }

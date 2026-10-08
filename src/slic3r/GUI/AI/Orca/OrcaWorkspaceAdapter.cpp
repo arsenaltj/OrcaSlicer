@@ -221,6 +221,15 @@ std::function<bool()> OrcaWorkspaceAdapter::capture_import_guard() const
     };
 }
 
+bool OrcaWorkspaceAdapter::import_workbench_artifact_async(const AI::ModelImportRequest& request,
+    std::shared_ptr<WorkbenchImportSession> session, WorkbenchImportProgress progress,
+    WorkbenchImportCompletion completion, std::function<bool()> asset_current)
+{
+    // The asynchronous caller keeps its loading surface until the first frame.
+    return m_plater && m_plater->import_workbench_model_async(request, std::move(session), std::move(progress),
+        std::move(completion), std::move(asset_current));
+}
+
 bool OrcaWorkspaceAdapter::set_project_filament_color(size_t slot, const std::string& color,
     const std::function<bool()>& current, std::string& error)
 {
@@ -252,18 +261,18 @@ bool OrcaWorkspaceAdapter::set_project_filament_color(size_t slot, const std::st
 }
 
 ObjImportColorFn workbench_obj_color_mapper(Plater* plater, AI::ImportColorMode mode,
-    const AI::PrintablePaletteSnapshot& palette, AI::ModelImportResult& result, bool& cancelled)
+    const AI::PrintablePaletteSnapshot& palette, AI::ModelImportResult& result, bool& cancelled, bool defer_apply)
 {
     if (mode == AI::ImportColorMode::AutoMap)
         return make_obj_color_mapper(palette.project_colors, palette.compatible_slots, result.colors_applied,
             result.source_color_count, result.mapped_color_count);
-    return [plater, colors = palette.project_colors, &result, &cancelled](ObjDialogInOut& input) {
+    return [plater, colors = palette.project_colors, &result, &cancelled, defer_apply](ObjDialogInOut& input) {
         input.preserve_input_colors = true;
         result.source_color_count = std::set<RGBA>(input.input_colors.begin(), input.input_colors.end()).size();
         ObjColorDialog dialog(plater, input, colors, Sidebar::should_show_SEMM_buttons());
         if (dialog.ShowModal() != wxID_OK) { input.cancelled = cancelled = true; return; }
         result.mapped_color_count = std::set<unsigned char>(input.filament_ids.begin(), input.filament_ids.end()).size();
-        result.colors_applied = input.deal_vertex_color ?
+        if (!defer_apply) result.colors_applied = input.deal_vertex_color ?
             Model::obj_import_vertex_color_deal(input.filament_ids, input.first_extruder_id, input.model) :
             Model::obj_import_face_color_deal(input.filament_ids, input.first_extruder_id, input.model);
     };
