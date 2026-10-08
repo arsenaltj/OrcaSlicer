@@ -4,10 +4,82 @@
 #include "slic3r/GUI/AI/ModelGeneration/PostGenerationUiState.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchProjectColor.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchModelInspection.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/BeautyColorPaint.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchTransactionController.hpp"
 #include "slic3r/GUI/AI/SmartSlicing/SmartSlicingWorkbenchState.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaPlateRevisionConfig.hpp"
 
 using namespace Slic3r::GUI;
+
+TEST_CASE("partition filling preserves protected and unrelated face colors", "[BeautyManualColor][PostGenerationWorkbench]")
+{
+    using namespace Slic3r::AI::SurfaceSelectionPersistence;
+    const std::array<float, 3> red {1.f, 0.f, 0.f}, blue {0.f, 0.f, 1.f};
+    const FaceColorOverrides before {{1, blue}, {3, blue}};
+    SelectionState selection;
+    selection.selected = {1, 1, 1, 0};
+    selection.protected_faces = {0, 1, 0, 0};
+    const auto result = paint_beauty_face_colors(before, selection, {0, 1, 2, 3, 99}, red);
+    REQUIRE(result.changed == 2);
+    CHECK(result.colors == FaceColorOverrides({{0, red}, {1, blue}, {2, red}, {3, blue}}));
+    CHECK(selection.protected_faces == std::vector<uint8_t>({0, 1, 0, 0}));
+    const std::string geometry(64, 'a');
+    FaceColorOverrides restored;
+    std::string error;
+    REQUIRE(decode_colors(encode_colors(result.colors, 4, geometry), 4, geometry, restored, error));
+    CHECK(restored == result.colors);
+    CHECK_FALSE(decode_colors(encode_colors(result.colors, 4, geometry), 4, std::string(64, 'b'), restored, error));
+}
+
+TEST_CASE("a paint stroke changes only touched faces even when a whole partition is selected", "[BeautyManualColor][PostGenerationWorkbench]")
+{
+    using namespace Slic3r::AI::SurfaceSelectionPersistence;
+    SelectionState selection;
+    selection.selected = {1, 1, 1, 1};
+    const std::array<float, 3> red {1.f, 0.f, 0.f};
+    const auto result = paint_beauty_face_colors({}, selection, {1, 1, 99}, red);
+    REQUIRE(result.changed == 1);
+    CHECK(result.colors == FaceColorOverrides({{1, red}}));
+    CHECK(paint_beauty_face_colors(result.colors, selection, {1}, red).changed == 0);
+    CHECK(paint_beauty_face_colors(result.colors, selection, {2}, {-1.f, 0.f, 0.f}).changed == 0);
+    CHECK(paint_beauty_face_colors(result.colors, selection, {2}, {NAN, 0.f, 0.f}).colors == result.colors);
+}
+
+TEST_CASE("manual strokes undo independently and a new stroke replaces the redo branch", "[BeautyManualColor][PostGenerationWorkbench]")
+{
+    using namespace Slic3r::AI::SurfaceSelectionPersistence;
+    FaceColorOverrides current;
+    BeautyWorkbenchTransactionController history;
+    SelectionState selection;
+    selection.selected = {1, 1, 1};
+    const auto stroke = [&](size_t face, const std::array<float, 3>& color) {
+        const auto before = current;
+        const auto result = paint_beauty_face_colors(current, selection, {face}, color);
+        if (!result.changed) return;
+        current = result.colors;
+        BeautyWorkbenchTransactionController::Entry entry;
+        entry.kind = BeautyWorkbenchTransactionController::OperationKind::AppearanceRecolor;
+        entry.undo = [&, before] { current = before; };
+        entry.redo = [&, after = current] { current = after; };
+        history.record(std::move(entry));
+    };
+    const std::array<float, 3> red {1.f, 0.f, 0.f}, blue {0.f, 0.f, 1.f};
+    stroke(0, red);
+    stroke(1, blue);
+    stroke(1, blue);
+    CHECK(history.undo_count() == 2);
+    REQUIRE(history.undo());
+    CHECK(current == FaceColorOverrides({{0, red}}));
+    REQUIRE(history.redo());
+    CHECK(current == FaceColorOverrides({{0, red}, {1, blue}}));
+    REQUIRE(history.undo());
+    stroke(2, blue);
+    CHECK_FALSE(history.redo());
+    CHECK(current == FaceColorOverrides({{0, red}, {2, blue}}));
+    REQUIRE(history.undo());
+    REQUIRE(history.undo());
+    CHECK(current.empty());
+}
 
 TEST_CASE("ordinary region optimization remains available without portrait protection", "[PostGenerationWorkbench]")
 {

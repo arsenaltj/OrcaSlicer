@@ -97,7 +97,8 @@ void repaint_workbench_surface(wxWindow* window)
 }
 void ModelGenerationPanel::export_semantic_candidate()
 {
-    if (!m_model_preview || (!m_model_preview->semantic_regions_ready() && !m_model_preview->leaf_editing()) ||
+    if (!m_model_preview || (!m_model_preview->semantic_regions_ready() && !m_model_preview->leaf_editing() &&
+        m_model_preview->face_color_overrides().empty()) ||
         !is_nonempty_model(m_finishing_candidate.empty() ? m_displayed_model_path : m_finishing_candidate)) {
         if (auto before = std::move(m_beauty_reoptimization_before)) restore_beauty_candidate(*before);
         if (m_beauty_transactions) m_beauty_transactions->finish(false, false, "semantic candidate source unavailable");
@@ -193,7 +194,7 @@ void ModelGenerationPanel::export_semantic_candidate()
         m_result_summary->SetLabel(wxEmptyString);
     }
     m_workbench_load_error = false;
-    m_finishing_status->SetLabel(_L("正在把人像语义结果写入新的 GLB 版本，可旋转查看或取消……"));
+    m_finishing_status->SetLabel(_L("正在把改色结果保存为新的 GLB 版本，可旋转查看或取消……"));
     refresh_controls();
     wxWeakRef<ModelGenerationPanel> weak(this);
     const uint64_t sequence = m_sequence;
@@ -276,6 +277,7 @@ void ModelGenerationPanel::export_semantic_candidate()
                         self->m_model_preview->synchronize_project_bound_semantics(
                             color_state, self->m_model_preview->color_trial_state());
                         self->m_finishing_candidate = destination;
+                        self->m_beauty_manual_color_dirty = false;
                         self->m_finishing_before = false;
                         self->m_model_preview->set_selection_preview_suppressed(true);
                         self->m_finishing_compare->SetLabel(_L("查看处理前"));
@@ -284,15 +286,20 @@ void ModelGenerationPanel::export_semantic_candidate()
                             before->selection.selected.size() == self->m_model_preview->triangle_count())
                             self->m_model_preview->restore_selection_state(before->selection);
                         self->record_beauty_candidate(
-                            BeautyWorkbenchTransactionController::OperationKind::SemanticReoptimization, before);
+                            before->manual_color_dirty
+                                ? BeautyWorkbenchTransactionController::OperationKind::AppearanceRecolor
+                                : BeautyWorkbenchTransactionController::OperationKind::SemanticReoptimization, before);
                         if (self->m_beauty_controls && self->m_model_preview->secondary_regions_ready())
                             self->m_beauty_controls->request_secondary_partition(destination);
-                        self->m_finishing_status->SetLabel(self->m_model_preview->active_shape_locks()
+                        self->m_finishing_status->SetLabel(before->manual_color_dirty
+                            ? _L("改色结果已写入新的 GLB 版本，可对比、继续编辑或保存。")
+                            : self->m_model_preview->active_shape_locks()
                             ? _L("GLB 候选已就绪，形状锁定细节已保留；可对比、继续编辑或接受。")
                             : self->m_model_preview->secondary_regions_ready()
                                 ? _L("人像区域和二级细节已就绪；正在自动划区，可对比、继续编辑或接受。")
                                 : _L("人像区域已写入新的 GLB 候选版本；二级细节不可用，一级分区仍可编辑。"));
-                        self->m_model_preview_message->SetLabel(_L("语义优化后 · 尚未接受"));
+                        self->m_model_preview_message->SetLabel(before->manual_color_dirty
+                            ? _L("手动改色后 · 尚未保存") : _L("语义优化后 · 尚未接受"));
                     }
                 }
                 self->m_status->SetLabel(self->m_finishing_status->GetLabel());

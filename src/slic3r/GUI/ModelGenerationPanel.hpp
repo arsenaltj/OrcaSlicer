@@ -272,6 +272,7 @@ private:
     void refresh_workbench_history();
     void rescale_post_generation_workbench();
     void preview_model_finishing();
+    void paint_beauty_color(const std::vector<size_t>& faces);
     bool show_finishing_version(const boost::filesystem::path& path);
     wxButton* m_finishing_color_match { nullptr };
     void accept_model_finishing();
@@ -492,6 +493,8 @@ private:
         std::string secondary_evidence_error;
         std::shared_ptr<const PortraitShapeDetails> shape_details;
         bool shapes_unlocked {false};
+        bool manual_color_dirty {false};
+        bool dirty {false};
         nlohmann::json leaf_edits;
         std::shared_ptr<const BeautyPartitionSnapshot> partition;
     };
@@ -508,6 +511,7 @@ private:
     std::shared_ptr<BeautyCandidateSnapshot> m_beauty_reoptimization_before;
     size_t m_beauty_session_undo_base {0};
     size_t m_beauty_session_file_base {0};
+    bool m_beauty_manual_color_dirty {false};
 
     std::thread m_library_import_worker;
     wxStaticText*   m_prompt_label { nullptr };

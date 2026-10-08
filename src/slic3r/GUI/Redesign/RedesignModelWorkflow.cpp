@@ -396,14 +396,16 @@ void RedesignShell::build_model_workflow()
         topbar->Bind(wxEVT_UPDATE_UI, [weak](wxUpdateUIEvent& event) {
             if (!weak) { event.Skip(); return; }
             const bool workbench = weak->m_active_page == Page::Model &&
-                weak->m_model_view == ModelView::Workbench && weak->m_workbench_state.can_edit_project_colors;
+                weak->m_model_view == ModelView::Workbench && !weak->m_workbench_state.editing &&
+                weak->m_workbench_state.can_edit_project_colors;
             event.Enable((workbench || (weak->native_workspace_visible() &&
                 weak->m_model_view == ModelView::Slicing)) && weak->m_plater->can_undo());
         }, wxID_UNDO);
         topbar->Bind(wxEVT_UPDATE_UI, [weak](wxUpdateUIEvent& event) {
             if (!weak) { event.Skip(); return; }
             const bool workbench = weak->m_active_page == Page::Model &&
-                weak->m_model_view == ModelView::Workbench && weak->m_workbench_state.can_edit_project_colors;
+                weak->m_model_view == ModelView::Workbench && !weak->m_workbench_state.editing &&
+                weak->m_workbench_state.can_edit_project_colors;
             event.Enable((workbench || (weak->native_workspace_visible() &&
                 weak->m_model_view == ModelView::Slicing)) && weak->m_plater->can_redo());
         }, wxID_REDO);
@@ -416,8 +418,11 @@ void RedesignShell::build_model_workflow()
             event.Skip();
             return;
         }
-        // Project history is independent of the Beauty version controls.
-        if (!weak->m_workbench_state.can_edit_project_colors) return;
+        // Beauty owns preview history even before a candidate file exists.
+        if (weak->m_workbench_state.editing || !weak->m_workbench_state.can_edit_project_colors) {
+            event.Skip();
+            return;
+        }
         if (key == 'Z' && weak->m_plater->can_undo()) weak->m_plater->undo();
         if (key == 'Y' && weak->m_plater->can_redo()) weak->m_plater->redo();
     });

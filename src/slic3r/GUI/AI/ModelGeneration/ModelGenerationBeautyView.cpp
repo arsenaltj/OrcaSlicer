@@ -197,7 +197,7 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
     wrap_workbench_text(selection_hint, FromDIP(260));
     selection_hint->Hide();
     m_finishing_selection_operation = workbench_choice(m_finishing_selection_controls);
-    for (const auto& label : {_L("圈选要修改的范围"), _L("涂抹补选"), _L("涂抹保护"), _L("点选相近颜色"), _L("转动模型")})
+    for (const auto& label : {_L("圈选要修改的范围"), _L("涂抹补选"), _L("涂抹保护"), _L("点选分区 / 相近颜色"), _L("转动模型"), _L("画笔直接涂色")})
         m_finishing_selection_operation->Append(label);
     m_finishing_selection_operation->SetSelection(0);
     selection->Add(m_finishing_selection_operation, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
@@ -325,6 +325,7 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
         if (m_beauty_transactions && m_beauty_transactions->undo_count()) {
             if (!m_beauty_transactions->undo())
                 m_finishing_status->SetLabel(_L("无法撤销：历史模型文件缺失或已变更，当前预览保持不变。"));
+            else m_finishing_status->SetLabel(_L("已撤销上一步修改。"));
             refresh_model_finishing(); return;
         }
         if (!m_finishing_undo_path.empty()) undo_model_finishing();
@@ -335,6 +336,7 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
         if (m_beauty_transactions && m_beauty_transactions->redo_count()) {
             if (!m_beauty_transactions->redo())
                 m_finishing_status->SetLabel(_L("无法重做：历史候选文件缺失或已变更，当前预览保持不变。"));
+            else m_finishing_status->SetLabel(_L("已重做上一步修改。"));
             refresh_model_finishing(); return;
         }
         if (!m_finishing_redo_path.empty()) redo_model_finishing();
@@ -520,6 +522,22 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
         update_region_mode();
         m_model_preview->set_selection_enabled(true);
     };
+    m_beauty_controls->on_fill_color = [this] {
+        if (m_model_preview) paint_beauty_color(m_model_preview->selected_face_indices());
+    };
+    m_beauty_controls->on_paint_mode = [this] {
+        if (!post_generation_ui_state().can_edit) return;
+        m_finishing_selection_open = true;
+        m_finishing_selection_operation->SetSelection(int(ModelPreview3D::SelectionGesture::Paint));
+        update_finishing_selection();
+        refresh_model_finishing();
+        m_finishing_status->SetLabel(_L("拖动画笔直接涂色；Alt＋左键旋转，右键平移，滚轮缩放。每笔可撤销。"));
+    };
+    m_model_preview->set_paint_commit_callback([this](const std::vector<size_t>& faces) { paint_beauty_color(faces); });
+    m_model_preview->set_beauty_history_callback([this](bool redo) {
+        if (!m_beauty_controls) return;
+        if (redo) m_beauty_controls->on_redo(); else m_beauty_controls->on_undo();
+    });
     m_beauty_controls->on_record = [this](const std::string& label,
         std::function<void()> undo, std::function<void()> redo) {
         if (m_beauty_transactions) m_beauty_transactions->record({
@@ -532,10 +550,7 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
         }
     };
     m_beauty_controls->on_available_colors = [this] { return local_recolor_palette(); };
-    m_beauty_controls->on_color_slot_changed = [this](size_t slot) {
-        m_region_color_index = int(slot);
-        refresh_local_recolor_controls();
-    };
+    m_beauty_controls->on_color_slot_changed = [this](size_t slot) { m_region_color_index = int(slot); };
     sizer->Insert(1, m_beauty_controls, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(10));
     m_finishing_panel->SetSizer(sizer);
     m_finishing_preview->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { preview_model_finishing(); });
@@ -582,6 +597,8 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
         if (m_finishing_candidate.empty() || m_busy) return;
         if (show_finishing_version(m_finishing_before ? m_finishing_candidate : m_finishing_source)) {
             m_finishing_before = !m_finishing_before;
+            if (!m_finishing_before && m_beauty_manual_color_dirty && m_beauty_controls)
+                m_beauty_controls->set_dirty(true);
             m_finishing_compare->SetLabel(m_finishing_before ? _L("查看处理后") : _L("查看处理前"));
             m_finishing_compare_model->SetLabel(m_finishing_compare->GetLabel());
             m_model_preview_message->SetLabel(m_finishing_before
@@ -638,5 +655,70 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
     // users choose operations from BeautyWorkbenchControls below.
     m_finishing_tool->Hide();
     return m_finishing_panel;
+}
+
+void ModelGenerationPanel::paint_beauty_color(const std::vector<size_t>& faces)
+{
+    if (!m_finishing_workbench || !m_workbench_editing || !post_generation_ui_state().can_edit ||
+        !m_model_preview || m_finishing_tool->GetSelection() != 4 || faces.empty()) return;
+    const auto palette = local_recolor_palette();
+    if (m_region_color_index < 0 || size_t(m_region_color_index) >= palette.size()) return;
+    const wxColour color(from_u8(palette[m_region_color_index]));
+    if (!color.IsOk()) return;
+    const auto geometry = m_model_preview->beauty_geometry_id();
+    const bool leaves = m_model_preview->leaf_editing();
+    const auto before_colors = m_model_preview->face_color_overrides();
+    const auto before_leaves = m_model_preview->leaf_edit_metadata();
+    const bool before_dirty = m_beauty_controls && m_beauty_controls->has_changes();
+    const bool before_manual_dirty = m_beauty_manual_color_dirty;
+    auto session_source = !m_beauty_session_source && m_finishing_candidate.empty()
+        ? std::make_shared<BeautyCandidateSnapshot>(capture_beauty_candidate()) : nullptr;
+    const size_t count = m_model_preview->paint_beauty_faces(faces,
+        {color.Red() / 255.f, color.Green() / 255.f, color.Blue() / 255.f, 1.f});
+    if (!count) return;
+    if (session_source) {
+        m_beauty_session_source = std::move(session_source);
+        m_beauty_session_undo_base = m_beauty_transactions ? m_beauty_transactions->undo_count() : 0;
+        m_beauty_session_file_base = m_beauty_candidate_files.size();
+    }
+    const auto after_colors = m_model_preview->face_color_overrides();
+    const auto after_leaves = m_model_preview->leaf_edit_metadata();
+    const auto restore = [this, geometry, leaves](const auto& colors, const auto& edits, bool dirty, bool manual_dirty) {
+        if (!m_model_preview || m_model_preview->beauty_geometry_id() != geometry ||
+            m_model_preview->leaf_editing() != leaves) return false;
+        const bool restored = leaves ? m_model_preview->restore_leaf_edits(edits)
+            : m_model_preview->restore_beauty_face_colors(colors);
+        if (restored) {
+            m_beauty_manual_color_dirty = manual_dirty;
+            if (m_beauty_controls) m_beauty_controls->set_dirty(dirty);
+            if (!m_finishing_candidate.empty()) {
+                m_finishing_candidate_face_overrides = m_model_preview->face_color_overrides();
+                m_finishing_candidate_semantic_faces = m_model_preview->import_face_color_overrides(true);
+                m_finishing_candidate_semantic_subfaces = m_model_preview->import_subface_color_overrides(true);
+            }
+        }
+        return restored;
+    };
+    if (m_beauty_transactions) {
+        BeautyWorkbenchTransactionController::Entry entry;
+        entry.kind = BeautyWorkbenchTransactionController::OperationKind::AppearanceRecolor;
+        entry.label = "manual color stroke";
+        entry.restore_undo = [restore, before_colors, before_leaves, before_dirty, before_manual_dirty] {
+            return restore(before_colors, before_leaves, before_dirty, before_manual_dirty);
+        };
+        entry.restore_redo = [restore, after_colors, after_leaves] { return restore(after_colors, after_leaves, true, true); };
+        m_beauty_transactions->record(std::move(entry));
+    }
+    if (m_beauty_controls) m_beauty_controls->set_dirty(true);
+    m_beauty_manual_color_dirty = true;
+    if (!m_finishing_candidate.empty()) {
+        m_finishing_candidate_face_overrides = after_colors;
+        m_finishing_candidate_semantic_faces = m_model_preview->import_face_color_overrides(true);
+        m_finishing_candidate_semantic_subfaces = m_model_preview->import_subface_color_overrides(true);
+    }
+    m_model_preview->set_selection_preview_suppressed(true);
+    m_finishing_status->SetLabel(wxString::Format(_L("已涂色 %llu 个面；保护区和未涂区域保持不变，可撤销或保存并返回。"),
+        static_cast<unsigned long long>(count)));
+    refresh_model_finishing();
 }
 } // namespace Slic3r::GUI

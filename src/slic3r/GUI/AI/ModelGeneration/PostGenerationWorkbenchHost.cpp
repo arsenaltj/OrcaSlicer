@@ -221,9 +221,18 @@ bool ModelGenerationPanel::request_save_and_return()
 {
     if (!post_generation_ui_state().can_edit) return false;
     m_save_and_return = true;
-    if (!m_finishing_candidate.empty()) accept_model_finishing();
+    if (m_beauty_manual_color_dirty) {
+        if (m_beauty_transactions && !m_beauty_transactions->begin(
+                BeautyWorkbenchTransactionController::OperationKind::AppearanceRecolor)) {
+            m_save_and_return = false;
+            return false;
+        }
+        export_semantic_candidate();
+        if (!m_finishing_running) m_save_and_return = false;
+    }
+    else if (!m_finishing_candidate.empty()) accept_model_finishing();
     else if (m_beauty_controls && m_beauty_controls->has_changes()) {
-        if (m_model_preview->leaf_editing()) {
+        if (m_model_preview->leaf_editing() || !m_model_preview->face_color_overrides().empty()) {
             if (m_beauty_transactions && !m_beauty_transactions->begin(
                     BeautyWorkbenchTransactionController::OperationKind::AppearanceRecolor)) {
                 m_save_and_return = false;

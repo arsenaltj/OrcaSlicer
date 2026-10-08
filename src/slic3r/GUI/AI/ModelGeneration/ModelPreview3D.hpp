@@ -69,7 +69,7 @@ namespace Slic3r::GUI {
 class ModelPreview3D final : public wxPanel
 {
 public:
-    enum class SelectionGesture { Lasso, Brush, Protect, Similar, Orbit };
+    enum class SelectionGesture { Lasso, Brush, Protect, Similar, Orbit, Paint };
     using SelectionState = AI::SurfaceSelectionPersistence::SelectionState;
     using FaceColorOverrides = AI::SurfaceSelectionPersistence::FaceColorOverrides;
     using SubfaceColorOverrides = AI::SemanticColoring::SubfaceColors;
@@ -249,6 +249,10 @@ public:
         m_canvas->Bind(wxEVT_KEY_DOWN, [this](wxKeyEvent& event) {
             if (!event.ControlDown() && (event.GetKeyCode() == 'F' || event.GetKeyCode() == 'f')) {
                 focus_selection(); return;
+            }
+            if (m_beauty_view && m_beauty_history && event.ControlDown() &&
+                (event.GetKeyCode() == 'Z' || event.GetKeyCode() == 'z')) {
+                m_beauty_history(event.ShiftDown()); return;
             }
             if (!m_selection_enabled) {
                 event.Skip();
@@ -709,6 +713,7 @@ public:
         clear_current_preview();
         m_models = std::move(cached->models);
         m_texture_model = std::move(cached->texture_model);
+        m_manual_color_model = std::move(cached->manual_color_model);
         m_pending_mesh = std::move(cached->mesh);
         m_pending_vertex_colors = std::move(cached->vertex_colors);
         m_geometry_id = std::move(cached->geometry_id);
@@ -815,6 +820,7 @@ private:
             m_canvas->SetCurrent(*m_context);
         m_models.clear();
         m_texture_model.reset();
+        m_manual_color_model.reset(); m_manual_corner_normals.clear();
         m_surface_vertices.clear();
         m_original_surface_colors.clear();
         m_exact_surface_display = false;
@@ -1526,6 +1532,10 @@ public:
         m_semantic_completion = std::move(callback);
     }
     const FaceColorOverrides& face_color_overrides() const { return m_face_color_overrides; }
+    size_t paint_beauty_faces(const std::vector<size_t>& faces, const RGBA& color);
+    bool restore_beauty_face_colors(const FaceColorOverrides& colors);
+    void set_paint_commit_callback(std::function<void(const std::vector<size_t>&)> callback) { m_paint_commit = std::move(callback); }
+    void set_beauty_history_callback(std::function<void(bool)> callback) { m_beauty_history = std::move(callback); }
     FaceColorOverrides import_face_color_overrides(bool use_current_trial = true) const {
         if (use_current_trial && !m_semantic_analysis && !m_saved_semantic_faces.empty())
             { auto result=AI::SemanticColoring::compose(m_saved_semantic_faces,m_face_color_overrides,true);
@@ -2030,6 +2040,7 @@ private:
     struct CachedPreview {
         std::vector<std::unique_ptr<GLModel>> models;
         std::unique_ptr<ModelPreviewTexture> texture_model;
+        std::unique_ptr<GLModel> manual_color_model;
         indexed_triangle_set mesh;
         std::vector<RGBA> vertex_colors;
         BoundingBoxf3 bounds;
@@ -2096,12 +2107,14 @@ private:
         for (const auto& model : m_models)
             bytes += model->cpu_memory_used() + model->gpu_memory_used();
         if (m_texture_model) bytes += m_texture_model->memory_used();
+        if (m_manual_color_model) bytes += m_manual_color_model->cpu_memory_used() + m_manual_color_model->gpu_memory_used();
         constexpr size_t cache_limit = size_t(384) * 1024 * 1024;
         if (bytes > cache_limit)
             return;
         m_cached_preview = std::make_unique<CachedPreview>();
         m_cached_preview->geometry_id = m_geometry_id;
         m_cached_preview->face_color_overrides = m_face_color_overrides;
+        m_cached_preview->manual_color_model = std::move(m_manual_color_model);
         m_cached_preview->semantic_source = m_semantic_source;
         m_cached_preview->region_evidence = m_region_evidence;
         m_cached_preview->region_runtime_identity = m_region_runtime_identity;
@@ -2431,6 +2444,12 @@ private:
                 : _L("本次选区未完成，请缩小范围重试；当前模型保持原样。"));
             BOOST_LOG_TRIVIAL(warning) << "Surface selection failed: " << task->error;
             notify_selection_changed(); return;
+        }
+        if (task->gesture == SelectionGesture::Paint) {
+            // Paint only this stroke, not a previously selected whole partition.
+            if (m_paint_commit) m_paint_commit(task->result.faces);
+            m_region_prepare_status->Hide();
+            notify_selection_changed(); m_canvas->Refresh(false); return;
         }
         const auto before = selection_state();
         auto selected = m_region_editor->selected_faces();
@@ -2836,6 +2855,14 @@ private:
                 else for (const std::unique_ptr<GLModel>& model : m_models)
                     model->render(shader);
                 if(m_wireframe_view)glsafe(::glPolygonMode(GL_FRONT_AND_BACK,polygon_mode[0]));
+                if (m_manual_color_model && m_beauty_view && !m_gray_view && !m_beauty_original_view) {
+                    shader->set_uniform("preview_texture_enabled", false);
+                    GLint depth_func = GL_LESS;
+                    glsafe(::glGetIntegerv(GL_DEPTH_FUNC, &depth_func));
+                    glsafe(::glDepthFunc(GL_LEQUAL));
+                    m_manual_color_model->render(shader);
+                    glsafe(::glDepthFunc(depth_func));
+                }
                 if (multisample) glsafe(::glEnable(GL_MULTISAMPLE));
                 if (dither) glsafe(::glEnable(GL_DITHER));
                 if ((m_selection_model || m_protection_model) && m_selection_enabled &&
@@ -2995,6 +3022,10 @@ private:
     std::vector<std::unique_ptr<GLModel>> m_models;
     std::unique_ptr<ModelPreviewTexture> m_texture_model;
     std::unique_ptr<GLModel> m_selection_model;
+    std::unique_ptr<GLModel> m_manual_color_model;
+    std::vector<Vec3f> m_manual_corner_normals;
+    std::function<void(const std::vector<size_t>&)> m_paint_commit;
+    std::function<void(bool)> m_beauty_history;
     std::unique_ptr<GLModel> m_protection_model;
     std::unique_ptr<GLModel> m_partition_model;
     std::function<void(size_t)> m_beauty_pick;

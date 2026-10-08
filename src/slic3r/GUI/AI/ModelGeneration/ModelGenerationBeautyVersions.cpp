@@ -171,6 +171,10 @@ void ModelGenerationPanel::select_local_finishing_version(const boost::filesyste
 void ModelGenerationPanel::accept_model_finishing()
 {
     if (m_busy || m_finishing_running || m_workbench_check_running || m_finishing_candidate.empty()) return;
+    if (m_finishing_workbench && m_beauty_manual_color_dirty) {
+        request_save_and_return();
+        return;
+    }
     if (m_finishing_workbench && m_beauty_transactions &&
         !m_beauty_transactions->begin(BeautyWorkbenchTransactionController::OperationKind::AcceptCandidate)) {
         m_finishing_status->SetLabel(_L("当前仍有 Beauty 处理正在进行，请先完成或取消。"));
@@ -341,6 +345,7 @@ void ModelGenerationPanel::accept_model_finishing()
                     self->m_finishing_restore_selection = {};
                     self->m_beauty_session_source.reset();
                 }
+                self->m_beauty_manual_color_dirty = false;
                 if (self->m_beauty_controls) self->m_beauty_controls->mark_saved();
                 if (self->m_beauty_transactions) {
                     self->m_beauty_transactions->finish(true, false);
@@ -355,6 +360,7 @@ void ModelGenerationPanel::accept_model_finishing()
                             self->m_finishing_redo_path.clear();
                             self->m_finishing_source_context = {};
                             self->m_beauty_session_source.reset();
+                            self->m_beauty_manual_color_dirty = false;
                             if (self->m_beauty_controls) self->m_beauty_controls->mark_saved();
                             self->m_workbench_check_result = {};
                             self->refresh_controls();
@@ -402,7 +408,8 @@ void ModelGenerationPanel::accept_model_finishing()
 
 void ModelGenerationPanel::discard_model_finishing()
 {
-    if (m_busy || m_workbench_check_running || m_finishing_candidate.empty()) return;
+    if (m_busy || m_workbench_check_running || (m_finishing_candidate.empty() &&
+        !(m_beauty_session_source && m_beauty_controls && m_beauty_controls->has_changes()))) return;
     const auto discarded = m_finishing_candidate;
     const bool beauty = bool(m_beauty_session_source);
     if (m_beauty_session_source) {

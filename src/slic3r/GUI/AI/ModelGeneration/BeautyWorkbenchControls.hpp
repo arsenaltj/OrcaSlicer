@@ -98,6 +98,8 @@ public:
     std::function<bool()> on_partition_started;
     std::function<void(bool)> on_partition_finished;
     std::function<void()> on_pick_mode;
+    std::function<void()> on_fill_color;
+    std::function<void()> on_paint_mode;
     std::function<void(const std::string&, std::function<void()>, std::function<void()>)> on_record;
     std::function<std::vector<std::string>()> on_available_colors;
     std::function<void(size_t)> on_color_slot_changed;
@@ -139,6 +141,8 @@ private:
     wxStaticText* m_operation_label {nullptr};
     Button* m_details_toggle {nullptr};
     ComboBox* m_color_slot {nullptr};
+    Button* m_fill_color {nullptr};
+    Button* m_paint_color {nullptr};
     std::vector<std::string> m_palette_colors;
     ComboBox* m_auto_region {nullptr};
     ComboBox* m_auto_detail {nullptr};

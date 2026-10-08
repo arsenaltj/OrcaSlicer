@@ -1,8 +1,77 @@
 #include "ModelPreview3D.hpp"
+#include "BeautyColorPaint.hpp"
 #include "libslic3r/Utils.hpp"
 #include <wx/stdpaths.h>
 
 namespace Slic3r::GUI {
+bool ModelPreview3D::restore_beauty_face_colors(const FaceColorOverrides& colors)
+{
+    if (!m_has_model || !m_semantic_source || !m_context || !m_canvas->SetCurrent(*m_context)) return false;
+    try {
+        const auto& mesh = m_semantic_source->mesh;
+        std::unique_ptr<GLModel> model;
+        if (!colors.empty()) {
+            if (m_manual_corner_normals.size() != mesh.indices.size() * 3)
+                m_manual_corner_normals = ModelPreviewNormals::corner_normals(mesh);
+            GLModel::Geometry geometry;
+            geometry.format = {GLModel::Geometry::EPrimitiveType::Triangles, GLModel::Geometry::EVertexLayout::P3N3T2};
+            geometry.reserve_vertices(colors.size() * 3);
+            geometry.reserve_indices(colors.size() * 3);
+            for (const auto& item : colors) {
+                if (item.first >= mesh.indices.size()) return false;
+                const auto& face = mesh.indices[item.first];
+                const auto packed = preview_rgb8(item.second[0], item.second[1], item.second[2]);
+                const auto base = uint32_t(geometry.vertices_count());
+                for (size_t corner = 0; corner < 3; ++corner)
+                    geometry.add_vertex(mesh.vertices[face[corner]], m_manual_corner_normals[item.first * 3 + corner],
+                                        Vec2f(float(packed), -1.f));
+                geometry.add_triangle(base, base + 1, base + 2);
+            }
+            model = std::make_unique<GLModel>();
+            model->init_from(std::move(geometry));
+        }
+        m_face_color_overrides = colors;
+        m_manual_color_model = std::move(model);
+        m_canvas->Refresh(false);
+        return true;
+    } catch (const std::exception& error) {
+        BOOST_LOG_TRIVIAL(warning) << "Manual color preview failed: " << error.what();
+        return false;
+    }
+}
+
+size_t ModelPreview3D::paint_beauty_faces(const std::vector<size_t>& faces, const RGBA& color)
+{
+    if (!m_beauty_view || !m_region_editor->ready() || selection_busy() || semantic_processing() ||
+        !same_stamp(m_model_stamp, file_stamp(m_model_path))) return 0;
+    auto selection = selection_state();
+    selection.selected.assign(editing_face_count(), 0);
+    for (size_t face : faces) if (face < selection.selected.size()) selection.selected[face] = 1;
+    constrain_shape_selection(selection);
+    const std::array<float, 3> target {color[0], color[1], color[2]};
+    if (!m_leaf_editing) {
+        const auto result = paint_beauty_face_colors(m_face_color_overrides, selection, faces, target);
+        return result.changed && restore_beauty_face_colors(result.colors) ? result.changed : 0;
+    }
+    const auto eligible = paint_beauty_face_colors({}, selection, faces, target);
+    if (!eligible.changed || !m_semantic_source || !m_context || !m_canvas->SetCurrent(*m_context)) return 0;
+    auto colors = m_manual_leaf_colors;
+    size_t changed = 0;
+    for (const auto& item : eligible.colors) {
+        const auto& key = m_leaf_editing->keys[item.first];
+        const auto found = colors.find(key);
+        if (found != colors.end() && found->second == target) continue;
+        colors[key] = target;
+        ++changed;
+    }
+    if (!changed) return 0;
+    AI::BeautyLeafEdits::capture(*m_leaf_editing, m_portrait_shapes->locks, colors, selection_state());
+    m_manual_leaf_colors = std::move(colors);
+    ++m_leaf_edit_revision;
+    refresh_leaf_colors();
+    return changed;
+}
+
 void ModelPreview3D::update_semantic_coloring()
 {
     if (!m_has_model || !m_semantic_source || !m_color_trial_enabled || !m_color_trial->semantic_optimization()) {

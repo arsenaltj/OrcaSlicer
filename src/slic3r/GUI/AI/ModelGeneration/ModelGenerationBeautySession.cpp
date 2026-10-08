@@ -403,6 +403,7 @@ void ModelGenerationPanel::reset_beauty_asset()
     m_beauty_reoptimization_before.reset();
     m_beauty_accepted_files.clear();
     m_beauty_session_undo_base = m_beauty_session_file_base = 0;
+    m_beauty_manual_color_dirty = false;
     m_finishing_before = m_finishing_compare_held = m_save_and_return = false;
     m_portrait_mode = false;
     if (m_beauty_controls) m_beauty_controls->reset_asset();
@@ -447,11 +448,12 @@ ModelGenerationPanel::BeautyCandidateSnapshot ModelGenerationPanel::capture_beau
     snapshot.options = m_finishing_options;
     snapshot.selection = m_model_preview->selection_state();
     snapshot.color_trial = m_model_preview->color_trial_state();
-    snapshot.face_overrides = m_finishing_candidate.empty()
-        ? m_model_preview->face_color_overrides() : m_finishing_candidate_face_overrides;
-    snapshot.semantic_faces = m_finishing_candidate.empty() && m_model_preview->semantic_result_active()
+    snapshot.manual_color_dirty = m_beauty_manual_color_dirty;
+    snapshot.dirty = m_beauty_controls && m_beauty_controls->has_changes();
+    snapshot.face_overrides = m_model_preview->face_color_overrides();
+    snapshot.semantic_faces = (m_finishing_candidate.empty() || m_beauty_manual_color_dirty) && m_model_preview->semantic_result_active()
         ? m_model_preview->import_face_color_overrides(true) : m_finishing_candidate_semantic_faces;
-    snapshot.semantic_subfaces = m_finishing_candidate.empty() && m_model_preview->semantic_result_active()
+    snapshot.semantic_subfaces = (m_finishing_candidate.empty() || m_beauty_manual_color_dirty) && m_model_preview->semantic_result_active()
         ? m_model_preview->import_subface_color_overrides(true) : m_finishing_candidate_semantic_subfaces;
     snapshot.semantic_provenance = m_finishing_candidate_semantic_provenance;
     snapshot.region_evidence = m_model_preview->semantic_region_evidence();
@@ -474,8 +476,19 @@ bool ModelGenerationPanel::restore_beauty_candidate(const BeautyCandidateSnapsho
     size_t triangles = 0, colors = 0;
     Vec3d dimensions;
     std::string error;
-    if (!m_model_preview->load_model(path, {}, triangles, dimensions, colors, error,
-            snapshot.face_overrides, AI::beauty_metadata_path(path, generated_models_root()))) {
+    const auto metadata = AI::beauty_metadata_path(path, generated_models_root());
+    bool restored = false;
+    if (m_model_preview->face_color_overrides() != snapshot.face_overrides) {
+        // A same-file cache hit retains the current GPU color draft. Restore
+        // the snapshot's appearance explicitly before retiring that draft.
+        ModelPreview3D::PreparedModel prepared;
+        restored = ModelPreview3D::prepare_model(path, prepared, error, snapshot.face_overrides, metadata) &&
+            m_model_preview->load_prepared_model(std::move(prepared), {}, triangles, dimensions, colors, error);
+    } else {
+        restored = m_model_preview->load_model(path, {}, triangles, dimensions, colors, error,
+                                               snapshot.face_overrides, metadata);
+    }
+    if (!restored) {
         m_finishing_status->SetLabel(_L("版本恢复失败，当前模型保持不变：") + from_u8(error));
         return false;
     }
@@ -515,6 +528,8 @@ bool ModelGenerationPanel::restore_beauty_candidate(const BeautyCandidateSnapsho
         m_model_preview->restore_selection_state(snapshot.selection);
     m_finishing_selection_state = snapshot.selection;
     m_finishing_before = false;
+    m_beauty_manual_color_dirty = snapshot.manual_color_dirty;
+    if (m_beauty_controls) m_beauty_controls->set_dirty(snapshot.dirty);
     m_model_preview->set_selection_preview_suppressed(!snapshot.candidate.empty());
     m_finishing_compare->SetLabel(_L("查看处理前"));
     if (m_beauty_transactions) {
