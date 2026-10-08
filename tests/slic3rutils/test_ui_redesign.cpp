@@ -403,6 +403,56 @@ TEST_CASE("Local design history replaces a locked model session without reusing 
     CHECK(model_generation_route_action(current, design, false, 0, {}) == RedesignModelRouteAction::Ignore);
 }
 
+TEST_CASE("A design stays on its page until a confirmed model submission starts", "[UiRedesign][ModelGenerationRoute]")
+{
+    ModelGenerationUIState design;
+    design.revision = 10;
+    design.model_generation_session = 3;
+    design.job_id = "current-design";
+    design.stage = ModelGenerationUIStage::DesignReady;
+    // Dismissing confirmation leaves the host state unchanged.
+    CHECK(model_generation_route_action(design, design, false, 3, design.job_id) == RedesignModelRouteAction::Refresh);
+
+    auto submitted = design;
+    ++submitted.revision;
+    ++submitted.model_generation_session;
+    submitted.model_generation_context = true;
+    submitted.busy = true;
+    submitted.stage = ModelGenerationUIStage::GeneratingModel;
+    CHECK(model_generation_route_action(submitted, design, false, 3, design.job_id) == RedesignModelRouteAction::Model);
+    CHECK(model_generation_route_action(design, submitted, true, 4, submitted.job_id) == RedesignModelRouteAction::Ignore);
+}
+
+TEST_CASE("History preparation stays on the image page and routes only its confirmed child task", "[UiRedesign][ModelGenerationRoute]")
+{
+    ModelGenerationUIState design;
+    design.revision = 10;
+    design.model_generation_session = 3;
+    design.job_id = "history-design";
+    design.stage = ModelGenerationUIStage::DesignReady;
+    auto preparing = design;
+    ++preparing.revision;
+    preparing.busy = true;
+    CHECK(model_generation_route_action(preparing, design, false, 3, design.job_id) == RedesignModelRouteAction::Refresh);
+
+    auto failed = preparing;
+    ++failed.revision;
+    failed.busy = false;
+    CHECK(model_generation_route_action(failed, preparing, false, 3, design.job_id) == RedesignModelRouteAction::Refresh);
+
+    auto submitted = preparing;
+    ++submitted.revision;
+    ++submitted.model_generation_session;
+    submitted.job_id = "new-child-task";
+    submitted.model_generation_context = true;
+    submitted.stage = ModelGenerationUIStage::GeneratingModel;
+    CHECK(model_generation_route_action(submitted, preparing, false, 3, design.job_id) == RedesignModelRouteAction::Model);
+
+    // A late preparation notification must not undo the child task's route.
+    preparing.revision = submitted.revision + 1;
+    CHECK(model_generation_route_action(preparing, submitted, true, 4, submitted.job_id) == RedesignModelRouteAction::Ignore);
+}
+
 TEST_CASE("A restored failed model opens its result page after leaving a history workbench", "[UiRedesign][ModelGenerationRoute]")
 {
     ModelGenerationUIState current;

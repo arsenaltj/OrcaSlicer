@@ -2042,41 +2042,14 @@ void RedesignShell::request_generate_model()
         apply_model_generation_state(m_model_generation_state);
         return;
     }
-    // Lock the destination before entering the provider call. The provider
-    // request and its first poll are asynchronous, so waiting for the old
-    // context edge would leave a visible gap where the 3D page can disappear.
-    const auto previous_session = m_model_generation_state.model_generation_session;
-    const auto previous_job_id = m_model_generation_state.job_id;
-    m_model_route_locked = true;
-    m_model_route_session = previous_session + 1;
-    m_model_route_job_id = previous_job_id;
-    m_model_view = ModelView::Result;
-    navigate_to(Page::Model);
-
-    if (m_model_generation_host == nullptr || !m_model_generation_host->request_generate_model()) {
-        m_submit_in_progress = false;
-        m_model_route_locked = false;
-        m_model_route_session = 0;
-        m_model_route_job_id.clear();
-        apply_model_generation_state(m_model_generation_host != nullptr ? m_model_generation_host->snapshot() : ModelGenerationUIState());
-        navigate_to(Page::Image);
-        return;
-    }
+    // The host presents confirmation on the current image page. Only its
+    // confirmed submission state may enter and lock the model route.
+    // A false return can also mean asynchronous history preparation is still
+    // pending; the state listener handles that submission when it is ready.
+    if (m_model_generation_host != nullptr)
+        m_model_generation_host->request_generate_model();
     m_submit_in_progress = false;
-    const auto snapshot = m_model_generation_host->snapshot();
-    if (!snapshot.model_generation_context || snapshot.model_generation_session < m_model_route_session) {
-        // A confirmation dialog can still cancel the request. Do not leave a
-        // page lock behind when no model task was accepted.
-        m_model_route_locked = false;
-        m_model_route_session = 0;
-        m_model_route_job_id.clear();
-        apply_model_generation_state(snapshot);
-        navigate_to(Page::Image);
-        return;
-    }
-    m_model_route_session = snapshot.model_generation_session;
-    m_model_route_job_id = snapshot.job_id;
-    apply_model_generation_state(snapshot);
+    apply_model_generation_state(m_model_generation_host != nullptr ? m_model_generation_host->snapshot() : ModelGenerationUIState());
 }
 
 void RedesignShell::request_primary_action()
