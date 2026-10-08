@@ -2,6 +2,7 @@
 #include "slic3r/GUI/Redesign/RedesignFeatureFlags.hpp"
 #include "slic3r/GUI/Redesign/OrcaBusinessAdapter.hpp"
 #include "slic3r/GUI/Redesign/RedesignState.hpp"
+#include "slic3r/GUI/Redesign/RedesignModelRoute.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -230,4 +231,80 @@ TEST_CASE("Orca business adapter stays inert before it is attached", "[UiRedesig
     CHECK_FALSE(state.can_undo);
     CHECK_FALSE(state.can_redo);
     CHECK(state.slice_status == RedesignSliceStatus::Idle);
+}
+
+TEST_CASE("A restored failed model opens its result page after leaving a history workbench", "[UiRedesign][ModelGenerationRoute]")
+{
+    ModelGenerationUIState current;
+    current.revision = 20;
+    current.model_generation_session = 3;
+    current.model_generation_context = true;
+    current.job_id = "completed-model";
+    current.stage = ModelGenerationUIStage::ModelReady;
+    auto restored = current;
+    restored.revision = 21;
+    restored.model_generation_session = 4;
+    restored.job_id = "failed-model";
+    restored.stage = ModelGenerationUIStage::Failed;
+    CHECK(model_generation_route_action(restored, current, true, 3, current.job_id) == RedesignModelRouteAction::Model);
+
+    restored.model_generation_context = false;
+    restored.stage = ModelGenerationUIStage::DesignReady;
+    CHECK(model_generation_route_action(restored, current, true, 3, current.job_id) == RedesignModelRouteAction::Image);
+
+    restored.job_id.clear();
+    CHECK(model_generation_route_action(restored, current, true, 3, current.job_id) == RedesignModelRouteAction::Ignore);
+}
+
+TEST_CASE("Old revisions and task identities cannot replace the selected model route", "[UiRedesign][ModelGenerationRoute]")
+{
+    ModelGenerationUIState current;
+    current.revision = 20;
+    current.model_generation_session = 3;
+    current.model_generation_context = true;
+    current.job_id = "active-model";
+    auto stale = current;
+    stale.revision = 19;
+    CHECK(model_generation_route_action(stale, current, true, 3, current.job_id) == RedesignModelRouteAction::Ignore);
+
+    stale.revision = 21;
+    stale.model_generation_session = 2;
+    CHECK(model_generation_route_action(stale, current, true, 3, current.job_id) == RedesignModelRouteAction::Ignore);
+
+    stale.model_generation_session = 3;
+    stale.job_id = "previous-model";
+    CHECK(model_generation_route_action(stale, current, true, 3, current.job_id) == RedesignModelRouteAction::Ignore);
+
+    stale.job_id = current.job_id;
+    stale.model_generation_context = false;
+    CHECK(model_generation_route_action(stale, current, true, 3, current.job_id) == RedesignModelRouteAction::Ignore);
+}
+
+TEST_CASE("Task updates preserve the selected model view across failure and recovery", "[UiRedesign][ModelGenerationRoute]")
+{
+    ModelGenerationUIState current;
+    current.model_generation_session = 3;
+    current.model_generation_context = true;
+    current.job_id = "active-model";
+    auto update = current;
+    update.revision = 1;
+    for (const auto stage : {ModelGenerationUIStage::GeneratingModel, ModelGenerationUIStage::Failed,
+                            ModelGenerationUIStage::Stopped, ModelGenerationUIStage::ModelReady}) {
+        update.stage = stage;
+        CHECK(model_generation_route_action(update, current, true, 3, current.job_id) == RedesignModelRouteAction::Refresh);
+    }
+}
+
+TEST_CASE("Returning to the design page is preserved until a new model session starts", "[UiRedesign][ModelGenerationRoute]")
+{
+    ModelGenerationUIState current;
+    current.model_generation_session = 3;
+    current.model_generation_context = true;
+    current.job_id = "active-model";
+    auto update = current;
+    update.revision = 1;
+    CHECK(model_generation_route_action(update, current, false, 0, {}) == RedesignModelRouteAction::Refresh);
+
+    ++update.model_generation_session;
+    CHECK(model_generation_route_action(update, current, false, 0, {}) == RedesignModelRouteAction::Model);
 }

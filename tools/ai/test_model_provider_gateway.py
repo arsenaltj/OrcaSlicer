@@ -204,6 +204,66 @@ class ModelTaskGatewayTests(unittest.TestCase):
         dependencies["create_image_task"].assert_called_once_with("image-token", 300000, "performance")
         dependencies["create_text_task"].assert_not_called()
 
+    def test_image_upload_failure_is_safe_to_retry_before_paid_task(self):
+        upload = mock.Mock(side_effect=TripoError("Could not connect to Tripo."))
+        gateway, dependencies = self.gateway(upload_image=upload)
+        with tempfile.TemporaryDirectory() as directory:
+            reference = Path(directory) / "reference.png"
+            reference.write_bytes(b"preview")
+            with self.assertRaises(ProviderGatewayError) as raised:
+                gateway.start_or_reuse_model_task(
+                    ModelTaskRequest(
+                        source="image",
+                        image_path=reference,
+                        face_limit=300000,
+                        generation_profile="performance",
+                    ),
+                    authorization=PaidTaskAuthorization.confirmed("job-upload:model:1"),
+                )
+
+        self.assertEqual(raised.exception.code, "provider_upload_unavailable")
+        self.assertEqual(raised.exception.category, "upload")
+        self.assertTrue(raised.exception.retryable)
+        self.assertFalse(raised.exception.ambiguous)
+        dependencies["create_image_task"].assert_not_called()
+
+    def test_image_task_creation_failure_remains_ambiguous(self):
+        create = mock.Mock(side_effect=TripoError("Could not connect to Tripo."))
+        gateway, dependencies = self.gateway(create_image_task=create)
+        with tempfile.TemporaryDirectory() as directory:
+            reference = Path(directory) / "reference.png"
+            reference.write_bytes(b"preview")
+            with self.assertRaises(ProviderGatewayError) as raised:
+                gateway.start_or_reuse_model_task(
+                    ModelTaskRequest(
+                        source="image",
+                        image_path=reference,
+                        face_limit=300000,
+                        generation_profile="performance",
+                    ),
+                    authorization=PaidTaskAuthorization.confirmed("job-create:model:1"),
+                )
+
+        self.assertEqual(raised.exception.code, "provider_unavailable")
+        self.assertTrue(raised.exception.retryable)
+        self.assertTrue(raised.exception.ambiguous)
+        dependencies["upload_image"].assert_called_once_with(reference)
+
+    def test_invalid_paid_creation_response_remains_ambiguous(self):
+        for message in ("Tripo returned an invalid response.", "Tripo did not return a task reference."):
+            with self.subTest(message=message):
+                create = mock.Mock(side_effect=TripoError(message))
+                gateway, dependencies = self.gateway(create_text_task=create)
+                with self.assertRaises(ProviderGatewayError) as raised:
+                    gateway.start_or_reuse_model_task(
+                        ModelTaskRequest(source="text", prompt="offline test object", face_limit=300000,
+                                         generation_profile="performance"),
+                        authorization=PaidTaskAuthorization.confirmed("job-invalid:model:1"),
+                    )
+                self.assertEqual(raised.exception.code, "invalid_provider_result")
+                self.assertTrue(raised.exception.ambiguous)
+                dependencies["create_text_task"].assert_called_once()
+
     def test_multiview_task_uploads_four_named_references_then_creates_one_task(self):
         tokens = iter(("front-token", "left-token", "back-token", "right-token"))
         gateway, dependencies = self.gateway(upload_image=mock.Mock(side_effect=tokens))

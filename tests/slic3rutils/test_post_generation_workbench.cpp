@@ -2,12 +2,125 @@
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include "slic3r/GUI/AI/ModelGeneration/PostGenerationUiState.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/WorkbenchImportSession.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchProjectColor.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchModelInspection.hpp"
 #include "slic3r/GUI/AI/SmartSlicing/SmartSlicingWorkbenchState.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaPlateRevisionConfig.hpp"
+#include "slic3r/GUI/AI/Orca/WorkbenchModelDecode.hpp"
+#include <future>
 
 using namespace Slic3r::GUI;
+
+TEST_CASE("background workbench decoding preserves native geometry units and texture handoff", "[PostGenerationWorkbench][UiRedesign][TextureImport]")
+{
+    using namespace Slic3r;
+    const std::string file = GENERATE("20mm_cube.obj", "model_artifact/textured.obj", "model_artifact/vertex-material-color.obj",
+        "model_artifact/textured.glb", "model_artifact/outward-textured.glb", "model_artifact/vertex-material-color.glb",
+        "model_artifact/transformed.glb", "model_artifact/nested-negative-nodes.glb");
+    const auto path = boost::filesystem::path(std::string(TEST_DATA_DIR)) / file;
+    DecodedWorkbenchModel decoded;
+    std::string error;
+    const bool loaded = std::async(std::launch::async, [&] { return decode_workbench_model(path, decoded, error); }).get();
+    INFO(error);
+    REQUIRE(loaded);
+    const bool meters = path.extension() == ".glb";
+    if (meters) decoded.mesh.scale(1000.f);
+    auto actual = assemble_workbench_model(decoded, path, meters);
+    auto expected = Model::read_from_file(path.string(), nullptr, nullptr, LoadStrategy::LoadModel);
+    if (meters) expected.convert_from_meters(false);
+    REQUIRE(actual->objects.size() == expected.objects.size());
+    const auto* av = actual->objects.front()->volumes.front();
+    const auto* ev = expected.objects.front()->volumes.front();
+    const auto& am = av->mesh().its;
+    const auto& em = ev->mesh().its;
+    REQUIRE(am.vertices.size() == em.vertices.size());
+    REQUIRE(am.indices.size() == em.indices.size());
+    for (size_t i = 0; i < am.vertices.size(); ++i)
+        CHECK_THAT((am.vertices[i].cast<double>() + av->get_offset() - em.vertices[i].cast<double>() - ev->get_offset()).norm(),
+            Catch::Matchers::WithinAbs(0., 1e-4));
+    for (size_t i = 0; i < am.indices.size(); ++i) CHECK(am.indices[i] == em.indices[i]);
+    CHECK(av->source.is_converted_from_meters == ev->source.is_converted_from_meters);
+    CHECK(av->source.input_file == ev->source.input_file);
+    REQUIRE(bool(actual->texture_mesh) == bool(expected.texture_mesh));
+    if (actual->texture_mesh) {
+        const auto& at = *actual->texture_mesh;
+        const auto& et = *expected.texture_mesh;
+        CHECK(at.vertices == et.vertices);
+        CHECK(at.indices == et.indices);
+        CHECK(at.uvs == et.uvs);
+        CHECK(at.uv_coords == et.uv_coords);
+        CHECK(at.uv_indices == et.uv_indices);
+        CHECK(at.material_ids == et.material_ids);
+        CHECK(at.material_colors == et.material_colors);
+        CHECK(at.material_texture_map == et.material_texture_map);
+        CHECK(at.precomputed_face_colors == et.precomputed_face_colors);
+        CHECK(at.precomputed_vertex_colors == et.precomputed_vertex_colors);
+        REQUIRE(at.textures.size() == et.textures.size());
+        for (size_t i = 0; i < at.textures.size(); ++i) CHECK(at.textures[i].data == et.textures[i].data);
+    }
+}
+
+TEST_CASE("cancelled decoding leaves no model or texture to commit", "[PostGenerationWorkbench][UiRedesign]")
+{
+    DecodedWorkbenchModel decoded;
+    std::string error;
+    const auto path = boost::filesystem::path(std::string(TEST_DATA_DIR)) / "20mm_cube.obj";
+    int polls = 0;
+    CHECK_FALSE(decode_workbench_model(path, decoded, error, [&] { return ++polls >= 3; }));
+    CHECK_FALSE(error.empty());
+    CHECK(decoded.mesh.empty());
+    CHECK_FALSE(decoded.texture);
+}
+
+TEST_CASE("cancelling model preparation prevents a late project commit", "[PostGenerationWorkbench][UiRedesign]")
+{
+    const auto phase = GENERATE(WorkbenchImportPhase::Reading, WorkbenchImportPhase::Colors, WorkbenchImportPhase::Placement);
+    WorkbenchImportSession session;
+    REQUIRE(session.advance(phase));
+    REQUIRE(session.can_cancel());
+    REQUIRE(session.cancel());
+    CHECK_FALSE(session.advance(WorkbenchImportPhase::Committing));
+    CHECK_FALSE(session.advance(WorkbenchImportPhase::UpdatingView));
+    CHECK_FALSE(session.cancel());
+    CHECK(session.cancelled());
+}
+
+TEST_CASE("project import commits once and cannot cancel an adopted model", "[PostGenerationWorkbench][UiRedesign]")
+{
+    WorkbenchImportSession session;
+    REQUIRE(session.advance(WorkbenchImportPhase::Placement));
+    REQUIRE(session.advance(WorkbenchImportPhase::Committing));
+    CHECK_FALSE(session.advance(WorkbenchImportPhase::Committing));
+    CHECK_FALSE(session.can_cancel());
+    CHECK_FALSE(session.cancel());
+    REQUIRE(session.advance(WorkbenchImportPhase::UpdatingView));
+    CHECK_FALSE(session.advance(WorkbenchImportPhase::Colors));
+    REQUIRE(session.advance(WorkbenchImportPhase::Completed));
+    CHECK_FALSE(session.advance(WorkbenchImportPhase::Committing));
+}
+
+TEST_CASE("closed import sessions reject queued UI updates and commits", "[PostGenerationWorkbench][UiRedesign]")
+{
+    WorkbenchImportSession session;
+    REQUIRE(session.advance(WorkbenchImportPhase::Colors));
+    session.invalidate();
+    CHECK_FALSE(session.valid());
+    CHECK(session.cancelled());
+    CHECK_FALSE(session.advance(WorkbenchImportPhase::Placement));
+    CHECK_FALSE(session.advance(WorkbenchImportPhase::Committing));
+}
+
+TEST_CASE("unavailable AI slicing uses native parameters while valid AI and retry retain priority", "[SmartSlicing][UiRedesign]")
+{
+    CHECK(workbench_slice_route(false, false, false, false, true) == WorkbenchSliceRoute::Native);
+    CHECK(workbench_slice_route(false, false, false, true, true) == WorkbenchSliceRoute::AiCandidate);
+    CHECK(workbench_slice_route(false, false, true, true, true) == WorkbenchSliceRoute::AiRetry);
+    CHECK(workbench_slice_route(true, false, true, true, true) == WorkbenchSliceRoute::Native);
+    CHECK(workbench_slice_route(true, false, true, true, false) == WorkbenchSliceRoute::Unavailable);
+    CHECK(workbench_slice_route(false, false, false, false, false) == WorkbenchSliceRoute::Unavailable);
+    CHECK(workbench_slice_route(false, true, true, true, true) == WorkbenchSliceRoute::Unavailable);
+}
 
 TEST_CASE("ordinary region optimization remains available without portrait protection", "[PostGenerationWorkbench]")
 {

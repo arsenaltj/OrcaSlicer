@@ -13,6 +13,8 @@ param(
 
     [string] $SourceManifest,
 
+    [string] $KnownIntegrationReport,
+
     [switch] $ValidateOnly
 )
 
@@ -44,6 +46,10 @@ $bundledPython = $pythonMatch.Groups[1].Value.Trim()
 $sourceArguments = @('-I', (Join-Path $repoRoot 'scripts\package_source_identity.py'), '--root', $repoRoot)
 if (-not [string]::IsNullOrWhiteSpace($SourceManifest)) {
     $sourceArguments += @('--manifest', (Resolve-Path -LiteralPath $SourceManifest).Path)
+}
+if ($KnownIntegrationReport) {
+    if (-not $SourceManifest) { throw 'A source snapshot manifest is required with KnownIntegrationReport.' }
+    $KnownIntegrationReport = (Resolve-Path -LiteralPath $KnownIntegrationReport).Path
 }
 function Get-PackageSourceIdentity {
     $sourceJson = & $bundledPython @sourceArguments
@@ -136,10 +142,16 @@ New-Item -ItemType Directory -Path $resolvedOutputDir -Force | Out-Null
 $sourceRecordPath = Join-Path $resolvedOutputDir 'source-snapshot.json'
 $sourceIdentity | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $sourceRecordPath -Encoding utf8
 
-& $bundledPython -I (Join-Path $repoRoot 'scripts\verify_ai_integration.py')
+$integrationReportPath = Join-Path $resolvedOutputDir 'integration-check.json'
+$integrationArguments = @('-I', (Join-Path $repoRoot 'scripts\package_integration_check.py'),
+    '--root', $repoRoot, '--report', $integrationReportPath)
+if ($SourceManifest) { $integrationArguments += @('--source-manifest', (Resolve-Path -LiteralPath $SourceManifest).Path) }
+if ($KnownIntegrationReport) { $integrationArguments += @('--known-report', $KnownIntegrationReport) }
+& $bundledPython @integrationArguments
 if ($LASTEXITCODE -ne 0) {
     throw "AI integration guardrails failed with exit code $LASTEXITCODE."
 }
+$integrationValidation = Get-Content -LiteralPath $integrationReportPath -Raw | ConvertFrom-Json
 
 # An incremental build is normally a no-op, but it prevents a stale binary from
 # being relabelled with the current source revision.
@@ -327,6 +339,7 @@ $releaseManifest = [ordered]@{
         installer_report = "$finalName.contents.json"
         portable_report = "$portableName.contents.json"
     }
+    integration_validation = $integrationValidation
     portable = $portableName
     portable_sha256 = $portableHash
     sidecar_version = $buildInfo.sidecar_version

@@ -1,6 +1,7 @@
 #include "RedesignShell.hpp"
 #include "RedesignTheme.hpp"
 #include "RedesignFeatureFlags.hpp"
+#include "RedesignModelRoute.hpp"
 #include "RedesignWidgets.hpp"
 #include "PrinterWorkspace.hpp"
 #include "../MainFrame.hpp"
@@ -994,6 +995,8 @@ RedesignShell::~RedesignShell()
 
 void RedesignShell::disconnect_model_generation_host()
 {
+    m_import_timer.Stop();
+    if (m_import_session) m_import_session->invalidate();
     if (m_print_page != nullptr)
         m_print_page->set_active(false);
     if (m_slicing_host) {
@@ -1452,10 +1455,16 @@ void RedesignShell::connect_model_generation_host()
 
 void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& state)
 {
-    if (state.revision < m_model_generation_state.revision)
+    const auto route_action = model_generation_route_action(state, m_model_generation_state,
+        m_model_route_locked, m_model_route_session, m_model_route_job_id);
+    if (route_action == RedesignModelRouteAction::Ignore)
         return;
-    const bool entering_model_flow = state.model_generation_context &&
-        !m_model_generation_state.model_generation_context;
+    if (route_action == RedesignModelRouteAction::Model || route_action == RedesignModelRouteAction::Image) {
+        m_model_route_locked = route_action == RedesignModelRouteAction::Model;
+        m_model_route_session = state.model_generation_session;
+        m_model_route_job_id = state.job_id;
+        m_model_view = ModelView::Result;
+    }
     m_model_generation_state = state;
     if (state.busy)
         m_submit_in_progress = false;
@@ -1632,8 +1641,10 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
     if (m_history_expanded)
         rebuild_history_panel();
     update_model_page(state);
-    if (entering_model_flow)
+    if (route_action == RedesignModelRouteAction::Model)
         navigate_to(Page::Model);
+    else if (route_action == RedesignModelRouteAction::Image)
+        navigate_to(Page::Image);
     if (m_image_settings_panel != nullptr)
         m_image_settings_panel->Layout();
     if (m_image_settings_scroll != nullptr)
@@ -1899,13 +1910,41 @@ void RedesignShell::request_generate_model()
         apply_model_generation_state(m_model_generation_state);
         return;
     }
+    // Lock the destination before entering the provider call. The provider
+    // request and its first poll are asynchronous, so waiting for the old
+    // context edge would leave a visible gap where the 3D page can disappear.
+    const auto previous_session = m_model_generation_state.model_generation_session;
+    const auto previous_job_id = m_model_generation_state.job_id;
+    m_model_route_locked = true;
+    m_model_route_session = previous_session + 1;
+    m_model_route_job_id = previous_job_id;
+    m_model_view = ModelView::Result;
+    navigate_to(Page::Model);
+
     if (m_model_generation_host == nullptr || !m_model_generation_host->request_generate_model()) {
         m_submit_in_progress = false;
+        m_model_route_locked = false;
+        m_model_route_session = 0;
+        m_model_route_job_id.clear();
         apply_model_generation_state(m_model_generation_host != nullptr ? m_model_generation_host->snapshot() : ModelGenerationUIState());
+        navigate_to(Page::Image);
         return;
     }
     m_submit_in_progress = false;
-    apply_model_generation_state(m_model_generation_host->snapshot());
+    const auto snapshot = m_model_generation_host->snapshot();
+    if (!snapshot.model_generation_context || snapshot.model_generation_session < m_model_route_session) {
+        // A confirmation dialog can still cancel the request. Do not leave a
+        // page lock behind when no model task was accepted.
+        m_model_route_locked = false;
+        m_model_route_session = 0;
+        m_model_route_job_id.clear();
+        apply_model_generation_state(snapshot);
+        navigate_to(Page::Image);
+        return;
+    }
+    m_model_route_session = snapshot.model_generation_session;
+    m_model_route_job_id = snapshot.job_id;
+    apply_model_generation_state(snapshot);
 }
 
 void RedesignShell::request_primary_action()
@@ -1947,10 +1986,16 @@ void RedesignShell::request_model_page_action()
     case ModelPageAction::RetryService:
         handled = m_model_generation_host != nullptr && m_model_generation_host->request_retry_service();
         break;
+    case ModelPageAction::RetryModel:
+        handled = m_model_generation_host != nullptr && m_model_generation_host->request_retry_model();
+        break;
     case ModelPageAction::RestoreLatest:
         handled = m_model_generation_host != nullptr && m_model_generation_host->request_restore_latest();
         break;
     case ModelPageAction::BackToDesign:
+        m_model_route_locked = false;
+        m_model_route_session = 0;
+        m_model_route_job_id.clear();
         navigate_to(Page::Image);
         return;
     case ModelPageAction::ReloadPreview:
@@ -2012,7 +2057,19 @@ void RedesignShell::update_model_page(const ModelGenerationUIState& state)
         visual_mode = ImagePreview::PlaceholderMode::Error;
         summary = !state.summary_text.empty() ? wxString::FromUTF8(state.summary_text.c_str())
                                               : text("当前任务和输入已保留，请按现有恢复入口继续。");
-        if (state.can_retry_service) {
+        if (!state.provider_error_code.empty()) {
+            summary += "\n" + text("错误码：") + wxString::FromUTF8(state.provider_error_code.c_str());
+        }
+        if (!state.provider_task_id.empty()) {
+            summary += "\n" + text("Provider 任务 ID：") + wxString::FromUTF8(state.provider_task_id.c_str());
+        }
+        if (state.provider_error_ambiguous) {
+            summary += "\n" + text("提交结果不明确，请先确认远端任务状态，避免重复计费。");
+        }
+        if (state.can_retry_model) {
+            m_model_page_action = ModelPageAction::RetryModel;
+            action_label = state.provider_task_id.empty() ? text("重试当前任务") : text("恢复当前任务");
+        } else if (state.can_retry_service) {
             m_model_page_action = ModelPageAction::RetryService;
             action_label = text("重新检测服务");
         } else if (state.can_restore_latest) {
@@ -2030,7 +2087,10 @@ void RedesignShell::update_model_page(const ModelGenerationUIState& state)
         visual_label = text("生成已停止");
         visual_mode = ImagePreview::PlaceholderMode::Stopped;
         summary = text("远端任务可能仍继续运行并计费；恢复操作会继续查询同一任务。");
-        if (state.can_restore_latest) {
+        if (state.can_retry_model) {
+            m_model_page_action = ModelPageAction::RetryModel;
+            action_label = state.provider_task_id.empty() ? text("重试当前任务") : text("恢复当前任务");
+        } else if (state.can_restore_latest) {
             m_model_page_action = ModelPageAction::RestoreLatest;
             action_label = text("恢复上次任务");
         } else {
@@ -2265,6 +2325,8 @@ wxPanel* RedesignShell::create_placeholder_page(const wxString& title, const wxS
 
 bool RedesignShell::navigate_to(Page page)
 {
+    if (m_import_in_progress && !m_import_switching_view) return false;
+    if (page == Page::Image && m_model_route_locked) return false;
     const std::size_t index = static_cast<std::size_t>(page);
     if (index >= m_pages.size() || m_pages[index] == nullptr)
         return false;
@@ -2312,6 +2374,7 @@ bool RedesignShell::navigate_to(Page page)
 
 bool RedesignShell::navigate_to_tab(const wxString& id)
 {
+    if (m_import_in_progress && !m_import_switching_view) return false;
     if (id.empty())
         return true;
     if (owns_model_workflow() && (id == TAB_ID_PREPARE || id == TAB_ID_PREVIEW)) {

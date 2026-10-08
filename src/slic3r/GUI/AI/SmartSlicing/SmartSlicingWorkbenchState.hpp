@@ -13,6 +13,17 @@
 
 namespace Slic3r::GUI {
 
+enum class WorkbenchSliceRoute { Unavailable, AiRetry, AiCandidate, Native };
+
+inline WorkbenchSliceRoute workbench_slice_route(bool native_tab, bool running, bool can_retry,
+    bool can_start_ai, bool can_start_native)
+{
+    if (running) return WorkbenchSliceRoute::Unavailable;
+    if (!native_tab && can_retry) return WorkbenchSliceRoute::AiRetry;
+    if (!native_tab && can_start_ai) return WorkbenchSliceRoute::AiCandidate;
+    return can_start_native ? WorkbenchSliceRoute::Native : WorkbenchSliceRoute::Unavailable;
+}
+
 inline std::vector<AI::SmartSlicing::ConfigPatchEntry> effective_candidate_parameters(
     std::vector<AI::SmartSlicing::ConfigPatchEntry> baseline,
     const AI::SmartSlicing::ParameterProposal& proposal)
@@ -96,6 +107,9 @@ struct SmartSlicingWorkbenchState
     bool can_analyze {true};
     bool can_start {false};
     bool can_retry {false};
+    bool can_start_native {false};
+    std::string native_blocked_reason;
+    bool native_execution {false};
     bool can_keep_current_mesh {false};
 };
 

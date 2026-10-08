@@ -43,19 +43,29 @@ std::string error_message(const std::string& body, const std::string& error, uns
 {
     if (status == 401)
         return "A valid OrcaSlicer AI session is required.";
+    // Preserve the sidecar's bounded error code when a request reached it. The
+    // native UI uses this prefix to distinguish local transport failures from
+    // provider failures without exposing credentials or request URLs.
+    auto parsed = nlohmann::json::parse(body, nullptr, false);
+    if (!parsed.is_discarded() && parsed.contains("error")) {
+        const auto& payload = parsed["error"];
+        if (payload.is_object()) {
+            const std::string code = payload.value("code", std::string());
+            const std::string message = payload.value("message", std::string());
+            if (!code.empty() && !message.empty())
+                return code + ": " + message;
+            if (!message.empty())
+                return message;
+        } else if (payload.is_string()) {
+            return payload.get<std::string>();
+        }
+    }
     if (!error.empty()) {
         if (error.find("connect") != std::string::npos || error.find("Connection") != std::string::npos)
             return "AI sidecar is not reachable.";
         if (error.find("timed out") != std::string::npos || error.find("Timeout") != std::string::npos)
             return "AI sidecar request timed out.";
         return "AI sidecar request failed.";
-    }
-    auto parsed = nlohmann::json::parse(body, nullptr, false);
-    if (!parsed.is_discarded()) {
-        if (parsed.contains("error") && parsed["error"].is_object())
-            return parsed["error"].value("message", "Model generation request failed.");
-        if (parsed.contains("error") && parsed["error"].is_string())
-            return parsed["error"].get<std::string>();
     }
     return "Model generation request failed with HTTP " + std::to_string(status) + ".";
 }
@@ -492,16 +502,17 @@ void AIModelGenerationClient::confirm_palette(const std::string& job_id, const s
 
 void AIModelGenerationClient::generate(const std::string& job_id, const std::string& prepared_prompt,
                                        const std::vector<std::string>& palette, const GenerationOptions& options,
-                                       StatusFn on_complete, ErrorFn on_error)
+                                       StatusFn on_complete, ErrorFn on_error, bool resume_existing)
 {
     post_json("/v1/orcaslicer/model-jobs/" + job_id + "/generate",
-              json::object({ { "prepared_prompt", prepared_prompt }, { "palette", palette },
-                             { "provider", options.provider },
-                             { "face_limit", options.face_limit },
-                             { "geometry_quality", options.geometry_quality },
-                             { "texture_quality", options.texture_quality },
-                             { "output_format", options.output_format } }),
-              std::move(on_complete), std::move(on_error));
+               json::object({ { "prepared_prompt", prepared_prompt }, { "palette", palette },
+                              { "provider", options.provider },
+                              { "face_limit", options.face_limit },
+                              { "geometry_quality", options.geometry_quality },
+                              { "texture_quality", options.texture_quality },
+                              { "output_format", options.output_format },
+                              { "resume_existing", resume_existing } }),
+               std::move(on_complete), std::move(on_error));
 }
 
 void AIModelGenerationClient::update_generation_options(const std::string& job_id, const GenerationOptions& options,

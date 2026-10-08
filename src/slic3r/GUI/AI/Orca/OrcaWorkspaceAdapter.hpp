@@ -3,6 +3,7 @@
 #include "slic3r/AI/Contracts/IModelArtifactConsumer.hpp"
 #include "slic3r/AI/Contracts/IPrintablePaletteProvider.hpp"
 #include "libslic3r/Format/OBJ.hpp"
+#include "../ModelGeneration/WorkbenchImportSession.hpp"
 
 #include <functional>
 
@@ -15,7 +16,7 @@ struct TextureImportOptions;
 // native handoff and its regression checks; does not mutate a project.
 TextureImportOptions model_import_color_options(const AI::ModelImportRequest& request);
 ObjImportColorFn workbench_obj_color_mapper(Plater* plater, AI::ImportColorMode mode,
-    const AI::PrintablePaletteSnapshot& palette, AI::ModelImportResult& result, bool& cancelled);
+    const AI::PrintablePaletteSnapshot& palette, AI::ModelImportResult& result, bool& cancelled, bool defer_apply = false);
 
 // Anti-corruption layer between AI application contracts and Orca workspace
 // implementation details. No Orca type crosses either public port.
@@ -30,6 +31,9 @@ public:
     std::vector<AI::PhysicalFilamentChannel> project_filament_channels() const;
     AI::ModelImportResult import_artifact(const AI::ModelImportRequest& request) override;
     AI::ModelImportResult import_workbench_artifact(const AI::ModelImportRequest& request);
+    bool import_workbench_artifact_async(const AI::ModelImportRequest& request,
+        std::shared_ptr<WorkbenchImportSession> session, WorkbenchImportProgress progress,
+        WorkbenchImportCompletion completion, std::function<bool()> asset_current);
     // Opaque freshness check for a modal confirmation without exposing slicing types.
     std::function<bool()> capture_import_guard() const;
     bool set_project_filament_color(size_t slot, const std::string& color,

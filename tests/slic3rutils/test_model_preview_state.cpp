@@ -2,11 +2,31 @@
 #include "../test_utils.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers.hpp>
 #include <boost/filesystem/fstream.hpp>
 
 using Slic3r::GUI::ModelPreview3D;
 namespace selection = Slic3r::AI::SurfaceSelectionPersistence;
 namespace trial = Slic3r::AI::ColorTrialPersistence;
+
+TEST_CASE("Texture upload rejects an uninitialized OpenGL loader without calling it", "[ModelPreviewState]")
+{
+    // A cold start has a canvas/context before GLAD has loaded its entry points.
+    // Keep this independent of other tests that may have initialized OpenGL.
+    struct RestoreEntryPoint {
+        PFNGLGETINTEGERVPROC saved {glad_glGetIntegerv};
+        ~RestoreEntryPoint() { glad_glGetIntegerv = saved; }
+    } restore;
+    glad_glGetIntegerv = nullptr;
+    Slic3r::AI::ModelArtifactTextureSurface surface;
+    surface.faces.resize(1);
+    indexed_triangle_set mesh;
+    mesh.vertices = {{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}};
+    mesh.indices.emplace_back(0, 1, 2);
+    const std::vector<Slic3r::Vec3f> normals(3, Slic3r::Vec3f(0.f, 0.f, 1.f));
+    REQUIRE_THROWS_WITH(Slic3r::GUI::ModelPreviewTexture(surface, mesh, normals),
+                        "OpenGL texture preview is not initialized.");
+}
 
 namespace {
 struct SavedPreview {

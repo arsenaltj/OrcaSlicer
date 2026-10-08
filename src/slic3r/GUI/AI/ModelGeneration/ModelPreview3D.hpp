@@ -492,8 +492,15 @@ public:
     bool load_prepared_model(PreparedModel&& prepared, const std::vector<std::string>& palette,
                              size_t& triangle_count, Vec3d& dimensions, size_t& color_count, std::string& error)
     {
-        if (m_context == nullptr || !m_context->IsOK() || !m_canvas->SetCurrent(*m_context)) {
+        if (m_canvas == nullptr || m_context == nullptr || !m_context->IsOK() || !m_canvas->SetCurrent(*m_context)) {
             error = "OpenGL preview context is unavailable.";
+            return false;
+        }
+        // The redesigned shell can load a result before this canvas first paints.
+        // A current context alone does not initialize GLAD or the shared shaders.
+        if (!wxGetApp().init_opengl()) {
+            error = "Unable to initialize OpenGL for the model preview.";
+            BOOST_LOG_TRIVIAL(error) << error;
             return false;
         }
         if (prepared.geometry.is_empty()) {
