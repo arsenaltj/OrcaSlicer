@@ -1130,7 +1130,14 @@ void MainFrame::update_layout()
     // legacy notebook and Plater alive as migration hosts, but do not expose
     // them or allow a layout refresh to switch back to them.
     if (m_redesign_shell_requested && wxGetApp().is_editor()) {
-        if (m_layout != ESettingsLayout::Unknown)
+        // The first layout pass still has m_layout == Unknown, but the
+        // notebook already owns m_plater as a page. Remove that page before
+        // the redesign workbench reparents Plater into its native host;
+        // leaving the notebook's page registry stale corrupts wxWidgets'
+        // child bookkeeping during startup. On later refreshes, keep the
+        // already-mounted Plater in the workbench unless the legacy notebook
+        // has registered it again.
+        if (m_redesign_shell == nullptr || m_tabpanel->FindPage(m_plater) != wxNOT_FOUND)
             restore_to_creation();
         if (m_ai_feature_host != nullptr)
             m_ai_feature_host->initialize_model_generation_for_shell();

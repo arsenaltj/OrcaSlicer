@@ -5,6 +5,7 @@
 #include "AI/Orca/OrcaWorkspaceAdapter.hpp"
 #include "AI/Orca/ModelColorUpdate.hpp"
 #include "AI/Orca/WorkbenchTextureImport.hpp"
+#include "AI/Orca/WorkbenchModelDecode.hpp"
 #include "AI/Model/ModelArtifact.hpp"
 #include "AIAssistantPanel.hpp"
 #include "AI/SmartSlicing/SmartSlicingFeatureHost.hpp"
@@ -14528,6 +14529,7 @@ std::vector<size_t> Plater::physical_filament_config_indices() const
 
 #include "PlaterTextureImport.ipp"
 #include "PlaterWorkbenchImport.ipp"
+#include "PlaterWorkbenchImportAsync.ipp"
 
 Sidebar&        Plater::sidebar()           { return *p->sidebar; }
 const Model&    Plater::model() const       { return p->model; }

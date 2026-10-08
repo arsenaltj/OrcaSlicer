@@ -86,6 +86,21 @@ inline bool place(ModelObject& object, const Polygon& bed, const arrangement::Ar
     return true;
 }
 
+struct PlacementSnapshot {
+    Vec2d placement;
+    Vec2d bed_size;
+    Polygon bed;
+    arrangement::ArrangePolygons obstacles;
+    DynamicPrintConfig config;
+    double height {0.};
+
+    bool prepare_model(const ModelObject& source, std::unique_ptr<Model>& model, std::string& error) const
+    {
+        return prepare(source, placement, bed_size, model, error) &&
+            place(*model->objects.front(), bed, obstacles, config, height, error);
+    }
+};
+
 // The optional finalizer runs under the caller's snapshot suppression before
 // registration. A failed refresh restores only this attempt's model and config.
 template<class Record>

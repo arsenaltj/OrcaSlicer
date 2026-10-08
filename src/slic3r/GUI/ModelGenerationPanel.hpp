@@ -76,6 +76,7 @@ public:
     bool synchronize_ui_options(const ModelGenerationUIOptions& options);
     bool request_generate_design();
     bool request_generate_model();
+    bool request_retry_model();
     bool request_stop();
     bool request_retry_service();
     bool request_restore_latest();
@@ -89,6 +90,7 @@ public:
     void set_prepare_navigation_handler(std::function<void()> handler) { m_prepare_navigation = std::move(handler); }
     void set_color_matching_handler(std::function<void(const AI::GeneratedModelArtifact&)> handler) { m_color_matching = std::move(handler); }
     void set_workbench_import_handler(std::function<void(const AI::ModelImportRequest&)> handler) { m_workbench_import = std::move(handler); }
+    void set_workbench_import_running(bool running);
     void show_workbench_color_matching(const AI::GeneratedModelArtifact& artifact, Plater* plater);
     bool request_open_workbench();
     bool request_enter_beauty();
@@ -119,6 +121,7 @@ private:
     std::shared_ptr<std::atomic<bool>> m_workbench_check_cancel;
     std::unordered_set<std::string> m_workbench_repair_attempts;
     bool m_workbench_check_running {false};
+    bool m_workbench_import_running {false};
     bool m_workbench_auto_repair {false};
     void ensure_workbench_check();
     std::function<void(size_t)> m_project_color_edit;
@@ -685,6 +688,10 @@ private:
     std::string m_job_provider_name;
     std::string m_job_provider_task_id;
     std::string m_job_provider_conversion_task_id;
+    std::string m_provider_error_code;
+    std::string m_provider_error_category;
+    bool m_provider_error_retryable { false };
+    bool m_provider_error_ambiguous { false };
     std::string m_displayed_model_job_id;
     std::string m_artifact_format;
     std::string m_artifact_color_encoding;
@@ -712,6 +719,7 @@ private:
     bool m_local_image_history { false };
     bool m_ui_history_loading { false };
     bool m_ui_model_generation_context { false };
+    std::uint64_t m_model_generation_session { 0 };
     bool m_ui_stopping { false };
     std::string m_ui_history_error;
     size_t m_ui_history_thumbnails_pending { 0 };

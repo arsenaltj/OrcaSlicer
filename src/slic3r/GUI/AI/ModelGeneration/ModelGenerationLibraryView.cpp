@@ -763,6 +763,9 @@ bool ModelGenerationPanel::request_open_image_history(const std::string& job_id)
     m_preview_path = entry->preview_path;
     m_raw_preview_path = entry->raw_preview_path;
     m_job_id = job_id;
+    // An explicit local history selection also replaces the routed session,
+    // so the Shell must not mistake this design for a stale model update.
+    ++m_model_generation_session;
     // This is a local design draft, independent of the original job's state.
     // Explicit 3D confirmation forks it on the sidecar before submitting.
     m_job_state = "awaiting_confirmation";

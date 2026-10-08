@@ -195,7 +195,7 @@ PostGenerationUiState ModelGenerationPanel::post_generation_ui_state() const
                               : PostGenerationUiState::Mode::Result,
         m_model_preview_ready,
         !m_displayed_model_path.empty(),
-        m_busy || m_preview_loading,
+        m_busy || m_preview_loading || m_workbench_import_running,
         m_finishing_running || m_workbench_check_running,
         (m_beauty_transactions && m_beauty_transactions->processing()) ||
             (m_model_preview && m_model_preview->semantic_processing()) ||

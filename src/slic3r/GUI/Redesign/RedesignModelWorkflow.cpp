@@ -2,6 +2,8 @@
 #include "RedesignShell.hpp"
 #include "RedesignFeatureFlags.hpp"
 #include "RedesignTheme.hpp"
+#include "PrinterWorkspace.hpp"
+#include "OrcaPrinterAdapter.hpp"
 #include "../AI/ModelGeneration/ModelGenerationFeatureHost.hpp"
 #include "../AI/ModelGeneration/WorkbenchStyle.hpp"
 #include "../AI/SmartSlicing/SmartSlicingFeatureHost.hpp"
@@ -19,11 +21,14 @@
 
 #include <wx/choice.h>
 #include <wx/dcclient.h>
+#include <wx/glcanvas.h>
 #include <wx/msgdlg.h>
 #include <wx/sizer.h>
 #include <wx/stattext.h>
 #include <wx/textctrl.h>
 #include <wx/weakref.h>
+#include <wx/activityindicator.h>
+#include <boost/log/trivial.hpp>
 #include <sstream>
 
 namespace Slic3r::GUI {
@@ -225,7 +230,7 @@ bool RedesignShell::native_workspace_visible() const
 
 void RedesignShell::start_slicing_from_workspace()
 {
-    if (native_workspace_visible()) start_workbench_slice();
+    if (!m_import_in_progress && native_workspace_visible()) start_workbench_slice();
 }
 
 void RedesignShell::build_model_workflow()
@@ -271,6 +276,9 @@ void RedesignShell::build_model_workflow()
         if (plate && plate->is_slice_result_ready_for_export()) m_plater->export_gcode(false);
     });
     native_commands->Add(m_native_slice_export, 0);
+    m_native_slice_print = command(m_native_slice_commands, _L("去打印"), true);
+    native_commands->Add(m_native_slice_print, 0, wxLEFT, FromDIP(8));
+    m_native_slice_print->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { open_print_preparation(); });
     page->Add(m_native_slice_commands, 0, wxEXPAND | wxALL, FromDIP(8));
     auto* row = new wxBoxSizer(wxHORIZONTAL);
     page->Add(row, 1, wxEXPAND);
@@ -370,6 +378,9 @@ void RedesignShell::build_model_workflow()
         auto* plate = m_plater->get_partplate_list().get_curr_plate();
         if (plate && plate->is_slice_result_ready_for_export()) m_plater->export_gcode(false);
     });
+    m_slice_print = command(settings, _L("去打印"), true);
+    root->Add(m_slice_print, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
+    m_slice_print->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { open_print_preparation(); });
     auto* return_slice = m_return_slice = command(settings, _L("返回切片参数"));
     root->Add(return_slice, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
     return_slice->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { show_model_view(ModelView::Slicing); });
@@ -390,21 +401,75 @@ void RedesignShell::build_model_workflow()
     m_plater->Hide();
     m_slicing_host = m_plater->smart_slicing_feature_host();
 
+    m_import_loading = new wxPanel(m_content_host);
+    m_import_loading->SetBackgroundColour(RedesignTheme::background_colour());
+    m_import_loading->SetBackgroundStyle(wxBG_STYLE_PAINT);
+    m_import_loading->Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
+        wxPaintDC dc(m_import_loading);
+        dc.SetBackground(wxBrush(RedesignTheme::background_colour()));
+        dc.Clear();
+    });
+    m_import_loading->SetName("workbench_import_loading");
+    auto* loading = new wxBoxSizer(wxVERTICAL);
+    m_import_loading->SetSizer(loading);
+    loading->AddStretchSpacer();
+    auto* activity = new wxActivityIndicator(m_import_loading, wxID_ANY, wxDefaultPosition, FromDIP(wxSize(36, 36)));
+    activity->SetForegroundColour(RedesignTheme::accent_colour());
+    activity->SetBackgroundColour(RedesignTheme::background_colour());
+    activity->Start();
+    loading->Add(activity, 0, wxALIGN_CENTER | wxBOTTOM, FromDIP(20));
+    m_import_stage = new wxStaticText(m_import_loading, wxID_ANY, _L("正在读取与验证模型…"));
+    RedesignTheme::style_text(m_import_stage, RedesignTheme::primary_text_colour(), 12);
+    loading->Add(m_import_stage, 0, wxALIGN_CENTER | wxLEFT | wxRIGHT, FromDIP(16));
+    m_import_elapsed = new wxStaticText(m_import_loading, wxID_ANY, wxEmptyString);
+    RedesignTheme::style_text(m_import_elapsed, RedesignTheme::secondary_text_colour(), 10);
+    loading->Add(m_import_elapsed, 0, wxALIGN_CENTER | wxTOP | wxBOTTOM, FromDIP(12));
+    m_import_cancel = command(m_import_loading, _L("取消"));
+    m_import_cancel->SetMinSize(FromDIP(wxSize(160, 36)));
+    loading->Add(m_import_cancel, 0, wxALIGN_CENTER);
+    m_import_cancel->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        if (m_import_session && m_import_session->cancel()) {
+            m_import_stage->SetLabel(_L("正在取消导入…"));
+            m_import_cancel->Disable();
+        }
+    });
+    loading->AddStretchSpacer();
+    m_import_loading->Hide();
+    m_content_host->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
+        event.Skip();
+        if (m_import_loading && m_import_in_progress) {
+            m_import_loading->SetSize(m_content_host->GetClientRect());
+            m_import_loading->Layout();
+        }
+    });
+    m_import_timer.SetOwner(this, wxWindow::NewControlId());
+    Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
+        m_import_elapsed->SetLabel(wxString::Format(_L("已用时 %.1f 秒"),
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - m_import_started).count()));
+        m_import_loading->Layout();
+        check_import_first_frame();
+    }, m_import_timer.GetId());
+
     wxWeakRef<RedesignShell> weak(this);
+    m_plater->get_view3D_canvas3D()->get_wxglcanvas()->Bind(wxEVT_PAINT, [weak](wxPaintEvent& event) {
+        event.Skip();
+        if (weak && weak->m_import_awaiting_frame)
+            weak->CallAfter([weak] { if (weak) weak->check_import_first_frame(); });
+    });
     auto* frame = dynamic_cast<MainFrame*>(wxGetTopLevelParent(this));
     if (auto* topbar = frame ? frame->topbar() : nullptr) {
         topbar->Bind(wxEVT_UPDATE_UI, [weak](wxUpdateUIEvent& event) {
             if (!weak) { event.Skip(); return; }
             const bool workbench = weak->m_active_page == Page::Model &&
                 weak->m_model_view == ModelView::Workbench && weak->m_workbench_state.can_edit_project_colors;
-            event.Enable((workbench || (weak->native_workspace_visible() &&
+            event.Enable(!weak->m_import_in_progress && (workbench || (weak->native_workspace_visible() &&
                 weak->m_model_view == ModelView::Slicing)) && weak->m_plater->can_undo());
         }, wxID_UNDO);
         topbar->Bind(wxEVT_UPDATE_UI, [weak](wxUpdateUIEvent& event) {
             if (!weak) { event.Skip(); return; }
             const bool workbench = weak->m_active_page == Page::Model &&
                 weak->m_model_view == ModelView::Workbench && weak->m_workbench_state.can_edit_project_colors;
-            event.Enable((workbench || (weak->native_workspace_visible() &&
+            event.Enable(!weak->m_import_in_progress && (workbench || (weak->native_workspace_visible() &&
                 weak->m_model_view == ModelView::Slicing)) && weak->m_plater->can_redo());
         }, wxID_REDO);
     }
@@ -417,7 +482,7 @@ void RedesignShell::build_model_workflow()
             return;
         }
         // Project history is independent of the Beauty version controls.
-        if (!weak->m_workbench_state.can_edit_project_colors) return;
+        if (weak->m_import_in_progress || !weak->m_workbench_state.can_edit_project_colors) return;
         if (key == 'Z' && weak->m_plater->can_undo()) weak->m_plater->undo();
         if (key == 'Y' && weak->m_plater->can_redo()) weak->m_plater->redo();
     });
@@ -434,7 +499,7 @@ void RedesignShell::build_model_workflow()
 
 bool RedesignShell::open_model_workbench()
 {
-    if (!owns_model_workflow() || !m_model_generation_host->request_open_workbench()) return false;
+    if (m_import_in_progress || !owns_model_workflow() || !m_model_generation_host->request_open_workbench()) return false;
     navigate_to(Page::Model);
     show_model_view(ModelView::Workbench);
     return true;
@@ -442,7 +507,19 @@ bool RedesignShell::open_model_workbench()
 
 void RedesignShell::show_model_view(ModelView view)
 {
-    if (!owns_model_workflow()) return;
+    if (!owns_model_workflow() || (m_import_in_progress && !m_import_switching_view)) return;
+
+    // Route changes can arrive synchronously from both the button handler and
+    // the model-generation state listener. Keep an already selected view
+    // idempotent so a nested callback cannot repeatedly mutate the wx layout
+    // while the original event is still being dispatched.
+    if (m_active_page == Page::Model && m_model_view == view) {
+        refresh_workflow_layout();
+        if (view == ModelView::Result)
+            update_model_page(m_model_generation_state);
+        return;
+    }
+
     m_model_view = view;
     m_active_tab_id = view == ModelView::Preview ? TAB_ID_PREVIEW :
         view == ModelView::Slicing ? TAB_ID_PREPARE : TAB_ID_GENERATE_3D;
@@ -476,11 +553,18 @@ void RedesignShell::refresh_workflow_layout()
     m_plater->get_current_canvas3D()->enable_render(slicing);
     if (slicing) m_plater->get_current_canvas3D()->set_as_dirty();
     m_slice_export->Show(m_model_view == ModelView::Preview);
+    m_slice_print->Show(m_model_view == ModelView::Preview);
+    m_native_slice_print->Show(m_model_view == ModelView::Preview);
     m_slice_start->Show(m_model_view != ModelView::Preview);
     m_return_slice->Show(m_model_view == ModelView::Preview);
     if (m_slicing_host) m_slicing_host->set_workbench_active(slicing);
     m_content_host->Layout();
     Layout();
+    if (m_import_in_progress && m_import_loading) {
+        m_import_loading->Raise();
+        m_import_loading->Refresh(false);
+        m_import_loading->Update();
+    }
 }
 
 void RedesignShell::apply_workbench_state(const PostGenerationWorkbenchState& state)
@@ -500,15 +584,122 @@ void RedesignShell::confirm_workbench_import(const AI::ModelImportRequest& reque
 {
     if (m_import_in_progress || !m_workbench_state.actions.can_import) return;
     m_import_in_progress = true;
-    auto result = m_model_generation_host->import_workbench_model(request);
+    m_import_started = std::chrono::steady_clock::now();
+    m_import_session = std::make_shared<WorkbenchImportSession>();
+    m_import_loading->SetSize(m_content_host->GetClientRect());
+    m_import_elapsed->SetLabel(_L("已用时 0.0 秒"));
+    m_import_loading->Show();
+    m_import_loading->Raise();
+    update_import_loading(WorkbenchImportPhase::Reading);
+    m_import_loading->Update();
+    BOOST_LOG_TRIVIAL(info) << "[WorkbenchImport] feedback_ms=" <<
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - m_import_started).count();
+    m_workbench_page->Disable();
+    m_slicing_page->Disable();
+    m_import_timer.Start(100);
+    wxWeakRef<RedesignShell> weak(this);
+    const auto session = m_import_session;
+    CallAfter([weak, session, request] {
+        if (!weak || !session->valid()) return;
+        if (session->cancelled()) { weak->finish_import_loading(); return; }
+        try {
+            const bool started = weak->m_model_generation_host && weak->m_model_generation_host->import_workbench_model_async(request, session,
+                [weak, session](auto phase, const auto& message) {
+                    if (weak && session->valid()) weak->update_import_loading(phase, message);
+                },
+                [weak, session](const auto& result) {
+                    if (!weak || !session->valid()) return;
+                    if (!result.imported()) {
+                        weak->finish_import_loading();
+                        if (result.outcome != AI::ModelImportOutcome::Cancelled)
+                            wxMessageBox(wxString::FromUTF8(result.error.empty() ? "模型导入失败，工作副本已保留。" : result.error),
+                                _L("模型导入"), wxOK | wxICON_ERROR, weak.get());
+                        return;
+                    }
+                    weak->update_import_loading(WorkbenchImportPhase::UpdatingView);
+                    weak->m_import_switching_view = true;
+                    weak->navigate_to(Page::Model);
+                    weak->show_model_view(ModelView::Slicing);
+                    weak->m_import_switching_view = false;
+                    auto* canvas = weak->m_plater->get_current_canvas3D();
+                    weak->m_import_frame_baseline = canvas->rendered_frames();
+                    weak->m_import_view_started = std::chrono::steady_clock::now();
+                    weak->m_import_awaiting_frame = true;
+                    canvas->set_as_dirty();
+                    canvas->get_wxglcanvas()->Refresh(false);
+                });
+            if (!started) {
+                weak->finish_import_loading();
+                wxMessageBox(_L("模型或工程状态已变化，或正在执行其他处理任务。请完成当前操作后重新导入。"),
+                    _L("模型导入"), wxOK | wxICON_WARNING, weak.get());
+            }
+        } catch (const std::exception& error) {
+            if (!weak) return;
+            weak->finish_import_loading();
+            wxMessageBox(wxString::FromUTF8(error.what()), _L("模型导入"), wxOK | wxICON_ERROR, weak.get());
+        }
+    });
+}
+
+void RedesignShell::update_import_loading(WorkbenchImportPhase phase, const std::string& message)
+{
+    if (!m_import_in_progress) return;
+    wxString label;
+    switch (phase) {
+    case WorkbenchImportPhase::Reading: label = _L("正在读取与验证模型…"); break;
+    case WorkbenchImportPhase::Colors: label = _L("正在准备配色…"); break;
+    case WorkbenchImportPhase::Placement: label = _L("正在校验模型摆放…"); break;
+    case WorkbenchImportPhase::Committing: label = _L("正在加入工程…"); break;
+    case WorkbenchImportPhase::UpdatingView: label = _L("正在更新模型视口…"); break;
+    default: break;
+    }
+    if (!message.empty()) label = wxString::FromUTF8(message);
+    if (!label.empty()) m_import_stage->SetLabel(label);
+    m_import_cancel->Enable(m_import_session && m_import_session->can_cancel());
+    m_import_loading->Layout();
+    m_import_loading->Refresh(false);
+    if (phase == WorkbenchImportPhase::Committing) m_import_loading->Update();
+}
+
+void RedesignShell::finish_import_loading()
+{
+    BOOST_LOG_TRIVIAL(info) << "[WorkbenchImport] total_ms=" <<
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - m_import_started).count();
+    m_import_timer.Stop();
+    m_import_awaiting_frame = false;
     m_import_in_progress = false;
-    if (!result.imported() && result.outcome != AI::ModelImportOutcome::Cancelled)
-        wxMessageBox(wxString::FromUTF8(result.error), _L("模型导入"), wxOK | wxICON_ERROR, this);
+    m_import_switching_view = false;
+    if (m_import_session) m_import_session->advance(WorkbenchImportPhase::Completed);
+    m_import_session.reset();
+    m_import_loading->Hide();
+    m_workbench_page->Enable();
+    m_slicing_page->Enable();
+    refresh_workflow_layout();
+    if (m_slicing_host) apply_slicing_state(m_slicing_host->workbench_snapshot());
+}
+
+void RedesignShell::check_import_first_frame()
+{
+    if (!m_import_awaiting_frame || !m_plater) return;
+    auto* canvas = m_plater->get_current_canvas3D();
+    if (canvas->is_initialized() && canvas->rendered_frames() > m_import_frame_baseline) {
+        finish_import_loading();
+    } else if (std::chrono::steady_clock::now() - m_import_view_started > std::chrono::seconds(15)) {
+        finish_import_loading();
+        wxMessageBox(_L("模型已导入工程，但视口尚未完成显示。请重新进入切片页面；无需重复导入。"),
+            _L("模型视口"), wxOK | wxICON_WARNING, this);
+    }
+}
+
+void RedesignShell::open_print_preparation()
+{
+    if (m_import_in_progress || !m_print_page || !OrcaPrinterAdapter(m_plater).snapshot().gcode_ready) return;
+    if (navigate_to(Page::Print)) m_print_page->show_prepare();
 }
 
 void RedesignShell::select_slicing_tab(bool native)
 {
-    if (!m_slicing_host || m_slicing_state.official.phase == OfficialSlicePhase::Slicing) return;
+    if (m_import_in_progress || !m_slicing_host || m_slicing_state.official.phase == OfficialSlicePhase::Slicing) return;
     const bool changed = m_native_slicing != native;
     m_native_slicing = native;
     m_ai_slicing_controls->Show(!native);
@@ -629,7 +820,16 @@ void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
         state.official.diagnostic_code.empty() ? _L("准备切片") : status, FromDIP(290));
     m_slice_keep_mesh->Show(state.can_keep_current_mesh && !state.analyzing);
     const bool running = state.official.phase == OfficialSlicePhase::Slicing;
-    m_slice_start->Enable(!running && (m_native_slicing ? plate && plate->has_printable_instances() : state.can_start || state.can_retry));
+    const auto route = workbench_slice_route(m_native_slicing, running || m_import_in_progress,
+        state.can_retry, state.can_start, state.can_start_native);
+    if (!m_native_slicing && route == WorkbenchSliceRoute::Native) {
+        status += (status.empty() ? wxString() : "\n") + _L("将使用当前工程参数切片。");
+        set_wrapped_label(m_slice_status, status, FromDIP(246));
+    } else if (route == WorkbenchSliceRoute::Unavailable && !running && !state.native_blocked_reason.empty()) {
+        status += (status.empty() ? wxString() : "\n") + wxString::FromUTF8(state.native_blocked_reason);
+        set_wrapped_label(m_slice_status, status, FromDIP(246));
+    }
+    m_slice_start->Enable(route != WorkbenchSliceRoute::Unavailable);
     m_slice_start->SetLabel(state.can_retry && !m_native_slicing ? _L("重试切片") : _L("开始切片"));
     m_native_slice_start->Enable(!running && (m_model_view == ModelView::Preview || m_slice_start->IsEnabled()));
     m_slice_analyze->Enable(state.can_analyze);
@@ -638,6 +838,9 @@ void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
     m_native_slicing_tab->Enable(!running);
     m_slice_export->Enable(plate && plate->is_slice_result_ready_for_export());
     m_native_slice_export->Enable(m_slice_export->IsEnabled());
+    const bool can_open_print = !m_import_in_progress && OrcaPrinterAdapter(m_plater).snapshot().gcode_ready;
+    m_slice_print->Enable(can_open_print);
+    m_native_slice_print->Enable(can_open_print);
     if (completed && m_model_view == ModelView::Slicing && m_active_page == Page::Model)
         show_model_view(ModelView::Preview);
     m_slice_status->GetParent()->Layout();
@@ -647,9 +850,16 @@ void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
 
 void RedesignShell::start_workbench_slice()
 {
-    if (!m_slicing_host) return;
-    if (m_native_slicing) { m_slicing_host->start_native_slice(); return; }
+    if (m_import_in_progress || !m_slicing_host) return;
     const auto reviewed = m_slicing_host->workbench_snapshot();
+    const auto route = workbench_slice_route(m_native_slicing, reviewed.official.phase == OfficialSlicePhase::Slicing,
+        reviewed.can_retry, reviewed.can_start, reviewed.can_start_native);
+    if (route == WorkbenchSliceRoute::Unavailable) { apply_slicing_state(reviewed); return; }
+    if (route == WorkbenchSliceRoute::Native) {
+        BOOST_LOG_TRIVIAL(info) << "[WorkbenchSlice] native=" << m_native_slicing << " fallback_reason=" << reviewed.diagnostic;
+        m_slicing_host->start_native_slice();
+        return;
+    }
     std::vector<RiskConfirmationKind> confirmations;
     const auto& goal = reviewed.session.recommendation.goal_result(reviewed.selected_goal);
     if (goal.risk_confirmation_contract) confirmations = goal.risk_confirmation_contract->required_confirmations();

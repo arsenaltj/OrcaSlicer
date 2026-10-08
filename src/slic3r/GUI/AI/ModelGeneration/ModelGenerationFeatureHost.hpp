@@ -2,6 +2,7 @@
 
 #include "ModelGenerationHost.hpp"
 #include "PostGenerationWorkbenchState.hpp"
+#include "WorkbenchImportSession.hpp"
 
 #include <functional>
 #include <memory>
@@ -37,6 +38,7 @@ public:
     bool synchronize_options(const ModelGenerationUIOptions& options);
     bool request_generate_design();
     bool request_generate_model();
+    bool request_retry_model();
     bool request_stop();
     bool request_retry_service();
     bool request_restore_latest();
@@ -53,6 +55,9 @@ public:
     void set_color_matching_handler(std::function<void(const AI::GeneratedModelArtifact&)> handler);
     void set_workbench_import_handler(std::function<void(const AI::ModelImportRequest&)> handler);
     AI::ModelImportResult import_workbench_model(const AI::ModelImportRequest& request);
+    bool import_workbench_model_async(const AI::ModelImportRequest& request,
+        std::shared_ptr<WorkbenchImportSession> session, WorkbenchImportProgress progress,
+        WorkbenchImportCompletion completion);
     bool request_open_workbench();
     bool request_enter_beauty();
     bool request_return_overview();

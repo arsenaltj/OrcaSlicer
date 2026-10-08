@@ -100,10 +100,17 @@ PostGenerationWorkbenchState ModelGenerationPanel::workbench_snapshot() const
 
 bool ModelGenerationPanel::can_replace_model_asset() const
 {
-    return !m_shutdown && post_generation_asset_switch_allowed(m_busy || m_preview_download_in_flight || m_workbench_check_running,
+    return !m_shutdown && post_generation_asset_switch_allowed(m_busy || m_preview_download_in_flight || m_workbench_check_running || m_workbench_import_running,
         m_finishing_running, (m_beauty_transactions && m_beauty_transactions->processing()) ||
             (m_model_preview && m_model_preview->semantic_processing()),
         !m_finishing_candidate.empty(), m_finishing_before, m_beauty_controls && m_beauty_controls->has_changes());
+}
+
+void ModelGenerationPanel::set_workbench_import_running(bool running)
+{
+    m_workbench_import_running = running;
+    refresh_post_generation_workbench();
+    publish_workbench_state();
 }
 
 void ModelGenerationPanel::set_workbench_listener(PostGenerationWorkbenchListener listener)

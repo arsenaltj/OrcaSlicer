@@ -264,7 +264,7 @@ public:
     void reuse_design(const std::string& job_id, StatusFn on_complete, ErrorFn on_error);
     void generate(const std::string& job_id, const std::string& prepared_prompt,
                   const std::vector<std::string>& palette, const GenerationOptions& options,
-                  StatusFn on_complete, ErrorFn on_error);
+                  StatusFn on_complete, ErrorFn on_error, bool resume_existing = false);
     void update_generation_options(const std::string& job_id, const GenerationOptions& options,
                                    StatusFn on_complete, ErrorFn on_error);
     void retexture(const std::string& reference_job_id, const std::string& geometry_job_id,

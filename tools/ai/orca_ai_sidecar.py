@@ -7672,6 +7672,23 @@ def _can_manually_retry_hunyuan(job: Job) -> bool:
     )
 
 
+def _latest_generation_task_id(job: Job) -> str:
+    """Return the newest persisted provider task without creating a new one."""
+    for attempt in reversed(job.attempts):
+        task_id = attempt.get("generation_task_id")
+        if isinstance(task_id, str) and task_id:
+            return task_id
+    return ""
+
+
+def _can_retry_unsubmitted_model(job: Job) -> bool:
+    """Allow an explicit retry only when no paid provider task was recorded."""
+    if job.state != "failed" or not job.attempts or _latest_generation_task_id(job):
+        return False
+    latest = job.attempts[-1]
+    return latest.get("provider_error_ambiguous") is not True
+
+
 def _generate_job(
     job: Job,
     prepared_prompt: str,
@@ -7685,8 +7702,24 @@ def _generate_job(
         artifact: Path | None = None
         last_quality_error: TripoError | ProviderGatewayError | None = None
         first_attempt = 1
-        if job.provider == "hunyuan" and job.attempts:
-            first_attempt = len(job.attempts) if resume else len(job.attempts) + 1
+        if job.attempts:
+            if resume:
+                # A provider task can be stored after an earlier quality
+                # attempt. Resume the attempt that owns the newest task ID,
+                # rather than assuming it is always attempt 1.
+                first_attempt = next(
+                    (index for index, attempt in reversed(list(enumerate(job.attempts, start=1)))
+                     if isinstance(attempt.get("generation_task_id"), str)
+                     and attempt.get("generation_task_id")),
+                    0,
+                )
+                if first_attempt == 0:
+                    raise TripoError("The paid model task reference is unavailable; start a new generation manually.")
+            else:
+                # Keep the local job and its prior attempt evidence. A retry
+                # without a provider task gets a new local attempt number but
+                # remains tied to the same job ID.
+                first_attempt = len(job.attempts) + 1
         last_attempt = first_attempt + MAX_GENERATION_ATTEMPTS - 1
         for attempt_number in range(first_attempt, last_attempt + 1):
             active_attempt = attempt_number
@@ -7787,6 +7820,20 @@ def _generate_job(
             generation_id = task_ref.task_id
             if not task_ref.reused:
                 _record_attempt(job, attempt_number, generation_task_id=generation_id, status="running")
+            else:
+                # Clear the previous failure presentation while retaining the
+                # same provider task identity and all immutable attempt data.
+                _record_attempt(
+                    job,
+                    attempt_number,
+                    generation_task_id=generation_id,
+                    status="running",
+                    error="",
+                    provider_error_code="",
+                    provider_error_category="",
+                    provider_error_retryable=False,
+                    provider_error_ambiguous=False,
+                )
             _stop_boundary(job)
             gateway.wait_for_task(
                 generation_id,
@@ -8769,6 +8816,7 @@ class Handler(BaseHTTPRequestHandler):
             raise RequestError("invalid_request", "prepared_prompt must be a string.", 400)
         if len(raw_prompt.strip().encode("utf-8")) > MAX_PROMPT_BYTES:
             raise RequestError("invalid_request", "prepared_prompt exceeds the 2000-byte limit.", 400)
+        resume_existing = _boolean_field(request.get("resume_existing"), "resume_existing", default=False)
         job = self._get_job(job_id)
         if job is None:
             raise RequestError("job_not_found", "Model job not found.", 404)
@@ -8782,10 +8830,36 @@ class Handler(BaseHTTPRequestHandler):
         provider = _generation_provider(request)
         with _JOBS_LOCK:
             manual_retry = _can_manually_retry_hunyuan(job)
-            if job.state != "awaiting_confirmation" and not manual_retry:
-                raise RequestError("invalid_job_state", "Job is not awaiting confirmation.", 409)
+            provider_task_id = _latest_generation_task_id(job)
+            unsubmitted_retry = _can_retry_unsubmitted_model(job)
+            if resume_existing:
+                if not provider_task_id:
+                    raise RequestError(
+                        "provider_task_reference_missing",
+                        "The saved job has no provider task reference; it cannot be resumed safely.",
+                        409,
+                    )
+                if job.state not in {"failed", "stopped", "queued", "running"}:
+                    raise RequestError("invalid_job_state", "The saved provider task cannot be resumed in this state.", 409)
+            elif provider_task_id and job.state == "failed":
+                raise RequestError(
+                    "resume_required",
+                    "A provider task already exists. Resume the saved task instead of creating another one.",
+                    409,
+                )
+            elif (job.state != "awaiting_confirmation" and not manual_retry and not unsubmitted_retry and
+                  not (job.state == "failed" and not provider_task_id)):
+                raise RequestError("invalid_job_state", "Job is not awaiting confirmation or an explicit safe retry.", 409)
+            if job.state == "failed" and not provider_task_id and not resume_existing and not unsubmitted_retry and not manual_retry:
+                raise RequestError(
+                    "provider_task_ambiguous",
+                    "The submission result is ambiguous and no provider task reference was saved. Confirm the provider task before retrying.",
+                    409,
+                )
             if manual_retry and provider != job.provider:
                 raise RequestError("invalid_request", "A rejected Hunyuan design must keep its provider for retry.", 409)
+            if resume_existing and provider != job.provider:
+                raise RequestError("invalid_request", "A resumed provider task must keep its original provider.", 409)
             _use_unrestricted_creation(job)
             prepared_prompt = raw_prompt.strip()
             reference = _model_generation_reference(job)
@@ -8807,8 +8881,10 @@ class Handler(BaseHTTPRequestHandler):
                 _assess_reference_advice(job)
             if not _model_gateway(provider).model_generation_available():
                 raise RequestError("feature_unavailable", "Model generation is not configured.", 503)
-            next_attempt = len(job.attempts) + 1 if provider == "hunyuan" else 1
-            authorization = PaidTaskAuthorization.confirmed(f"{job.id}:model:{next_attempt}", provider)
+            next_attempt = len(job.attempts) + 1
+            authorization = None if resume_existing else PaidTaskAuthorization.confirmed(
+                f"{job.id}:model:{next_attempt}", provider
+            )
             job.provider = provider
             job.prepared_prompt = prepared_prompt if job.source == "text" else ""
             job.face_limit = face_limit
@@ -8821,14 +8897,20 @@ class Handler(BaseHTTPRequestHandler):
             job.message = "Generation queued."
             job.progress = 20
             _clear_job_artifact(job)
+            # A previous stop is local intent. An explicit retry or resume
+            # clears that intent before the worker reaches its first boundary.
+            job.stop_event.clear()
             _persist_job(job)
         try:
-            _submit(job, _generate_job, prepared_prompt, False, authorization)
+            _submit(job, _generate_job, prepared_prompt, resume_existing, authorization)
         except RequestError:
             with _JOBS_LOCK:
-                job.state = "failed" if manual_retry else "awaiting_confirmation"
-                job.phase = job.state
-                job.message = "Review the prepared request before generation."
+                job.state = "failed" if (manual_retry or unsubmitted_retry or resume_existing) else "awaiting_confirmation"
+                job.phase = "failed" if job.state == "failed" else "awaiting_confirmation"
+                job.message = (
+                    "The saved provider task could not be resumed."
+                    if resume_existing else "Review the prepared request before generation."
+                )
                 job.progress = 15
                 _persist_job(job)
             raise

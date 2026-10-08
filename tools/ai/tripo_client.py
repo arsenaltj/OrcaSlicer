@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import email.utils
+import http.client
 import ipaddress
 import json
 import os
@@ -30,6 +31,10 @@ _REQUEST_TIMEOUT = 120.0
 _MAX_JSON_BYTES = 4 * 1024 * 1024
 _MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 _TRANSIENT_CODES = {408, 425, 429, 500, 502, 503, 504}
+# Uploading a reference file happens before Tripo creates a billable task. A
+# single bounded retry covers proxy connection resets without replaying a paid
+# generation request.
+_UPLOAD_STATUS_RETRIES = 1
 _ARTIFACT_DOWNLOAD_ATTEMPTS = 3
 
 
@@ -60,15 +65,19 @@ class _RejectRedirects(urllib.request.HTTPRedirectHandler):
 
 def _read_json(response: Any) -> dict[str, Any]:
     content_length = response.headers.get("Content-Length")
+    expected_length = None
     if content_length:
         try:
-            if int(content_length) > _MAX_JSON_BYTES:
+            expected_length = int(content_length)
+            if expected_length > _MAX_JSON_BYTES:
                 raise TripoError("Tripo returned an oversized response.")
         except ValueError:
             pass
     body = response.read(_MAX_JSON_BYTES + 1)
     if len(body) > _MAX_JSON_BYTES:
         raise TripoError("Tripo returned an oversized response.")
+    if expected_length is not None and len(body) < expected_length:
+        raise ConnectionError("The Tripo response ended before its declared length.")
     try:
         value = json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
@@ -161,6 +170,7 @@ def _request(
                 )
                 return result
         except TripoError as exc:
+            retrying = attempt < status_retries and str(exc) == "Tripo returned an invalid response."
             diagnostic_event(
                 "tripo.response.invalid",
                 level="ERROR",
@@ -168,10 +178,14 @@ def _request(
                 method=method,
                 elapsed_ms=round((time.monotonic() - started) * 1000),
                 attempt=attempt + 1,
+                retrying=retrying,
                 network=network,
                 exception_chain=exception_details(exc),
             )
-            raise
+            if retrying:
+                delay = _retry_after(None, attempt)
+            else:
+                raise
         except urllib.error.HTTPError as exc:
             retrying = exc.code in _TRANSIENT_CODES and attempt < status_retries
             safe_headers = {
@@ -202,8 +216,9 @@ def _request(
                 else:
                     message = "Tripo is temporarily unavailable."
                 raise TripoError(message) from None
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as exc:
             retrying = attempt < status_retries
+            failure_kind = classify_connection_error(exc)
             diagnostic_event(
                 "tripo.connection.failed",
                 level="ERROR",
@@ -213,12 +228,14 @@ def _request(
                 attempt=attempt + 1,
                 retrying=retrying,
                 network=network,
-                failure_kind=classify_connection_error(exc),
+                failure_kind=failure_kind,
                 exception_chain=exception_details(exc),
             )
             if attempt < status_retries:
                 delay = _retry_after(None, attempt)
             else:
+                if failure_kind == "timeout":
+                    raise TripoError("The Tripo request timed out.") from None
                 raise TripoError("Could not connect to Tripo.") from None
         if deadline is not None and time.monotonic() + delay >= deadline:
             raise TripoError("The Tripo task deadline expired.")
@@ -331,7 +348,10 @@ def upload_image(path: str | os.PathLike[str]) -> str:
             f"--{boundary}--\r\n".encode("ascii"),
         ]
     )
-    data = _data(_request("POST", "/files", body, "multipart/form-data; boundary=" + boundary))
+    data = _data(_request(
+        "POST", "/files", body, "multipart/form-data; boundary=" + boundary,
+        status_retries=_UPLOAD_STATUS_RETRIES,
+    ))
     token = data.get("file_token")
     if not isinstance(token, str) or not token:
         raise TripoError("Tripo did not return a file reference.")

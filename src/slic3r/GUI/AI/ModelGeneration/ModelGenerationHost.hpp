@@ -69,12 +69,17 @@ struct ModelGenerationUIState
     bool can_generate_model { false };
     bool can_stop { false };
     bool can_retry_service { false };
+    bool can_retry_model { false };
     bool can_restore_latest { false };
     bool can_import { false };
     bool can_restart { false };
     bool design_ready { false };
     bool model_ready { false };
     bool model_generation_context { false };
+    // Identifies the active model-generation session independently of the
+    // presentation revision. Late callbacks from an older session must not
+    // change the Shell route or replace the current diagnostic.
+    std::uint64_t model_generation_session { 0 };
     bool inputs_match_job { true };
     int progress { 0 };
     double design_elapsed_seconds { -1.0 };
@@ -82,6 +87,13 @@ struct ModelGenerationUIState
     std::string job_id;
     std::string job_state;
     std::string job_phase;
+    std::string provider_error_code;
+    std::string provider_error_category;
+    std::string provider_name;
+    std::string provider_task_id;
+    std::string provider_conversion_task_id;
+    bool provider_error_retryable { false };
+    bool provider_error_ambiguous { false };
     std::string status_text;
     std::string summary_text;
     std::string workflow_phase;

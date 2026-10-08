@@ -167,6 +167,7 @@ def _classify_tripo_error(
     category = "provider"
     retryable = False
     ambiguous = False
+    upload_operation = operation.endswith("_input_upload")
     if "not configured" in lowered:
         code, category = "provider_not_configured", "configuration"
     elif "rate limiting" in lowered or "rate limit" in lowered:
@@ -181,10 +182,25 @@ def _classify_tripo_error(
         ambiguous = creation_ambiguous
     elif "unsafe artifact" in lowered or "unsafe artifact location" in lowered:
         code, category = "unsafe_artifact", "security"
-    elif "invalid" in lowered or "oversized" in lowered or "no downloadable artifact" in lowered:
+    elif ("invalid" in lowered or "oversized" in lowered or "no downloadable artifact" in lowered
+          or "did not return a task reference" in lowered):
         code, category = "invalid_provider_result", "validation"
+        ambiguous = creation_ambiguous
     elif "rejected" in lowered:
         code, category = "provider_rejected", "request"
+    if upload_operation:
+        # A file upload only creates a temporary provider input token. It does
+        # not create the paid generation/texture task, so a transport failure
+        # is safe to retry even when the upload response itself was truncated.
+        if code == "provider_unavailable":
+            code, category = "provider_upload_unavailable", "upload"
+        elif code == "provider_timeout":
+            code, category = "provider_upload_timeout", "upload"
+        elif code == "provider_rate_limited":
+            code, category = "provider_upload_rate_limited", "upload"
+        elif code == "provider_failed":
+            code, category = "provider_upload_failed", "upload"
+        ambiguous = False
     return ProviderGatewayError(
         message,
         code=code,
@@ -218,6 +234,12 @@ class ModelProviderGateway:
         self._create_conversion = create_conversion
         self._wait_for_task = wait_for_task
         self._download_task_artifact = download_task_artifact
+
+    def _upload_reference(self, path: str | os.PathLike[str], operation: str) -> str:
+        try:
+            return self._upload_image(path)
+        except TripoError as error:
+            raise _classify_tripo_error(error, operation, creation_ambiguous=False) from None
 
     def model_generation_available(self) -> bool:
         return bool(os.environ.get("TRIPO_API_KEY", ""))
@@ -323,23 +345,29 @@ class ModelProviderGateway:
         options = {}
         if request.geometry_quality is not None or request.texture_quality != "standard":
             options = {"geometry_quality": request.geometry_quality, "texture_quality": request.texture_quality}
-        try:
-            if source == "text":
+        if source == "text":
+            try:
                 task_id = self._create_text_task(prompt, request.face_limit, request.generation_profile, **options)
-            elif source == "image":
-                assert image_path is not None
-                token = self._upload_image(image_path)
+            except TripoError as error:
+                raise _classify_tripo_error(error, "model_generation", creation_ambiguous=True) from None
+        elif source == "image":
+            assert image_path is not None
+            token = self._upload_reference(image_path, "model_input_upload")
+            try:
                 task_id = self._create_image_task(token, request.face_limit, request.generation_profile, **options)
-            else:
-                tokens = {
-                    view: self._upload_image(image_paths[view])
-                    for view in ("front", "left", "back", "right")
-                }
+            except TripoError as error:
+                raise _classify_tripo_error(error, "model_generation", creation_ambiguous=True) from None
+        else:
+            tokens = {
+                view: self._upload_reference(image_paths[view], "model_input_upload")
+                for view in ("front", "left", "back", "right")
+            }
+            try:
                 task_id = self._create_multiview_task(
                     tokens, request.face_limit, request.generation_profile, **options
                 )
-        except TripoError as error:
-            raise _classify_tripo_error(error, "model_generation", creation_ambiguous=True) from None
+            except TripoError as error:
+                raise _classify_tripo_error(error, "model_generation", creation_ambiguous=True) from None
         if not isinstance(task_id, str) or not task_id.strip():
             raise ProviderGatewayError(
                 "The model provider returned an invalid task reference.",
@@ -406,8 +434,8 @@ class ModelProviderGateway:
                 operation="model_texture",
             )
         authorization.consume("tripo", "model_texture")
+        token = self._upload_reference(image_path, "texture_input_upload")
         try:
-            token = self._upload_image(image_path)
             task_id = self._create_texture_task(
                 source_task_id,
                 token,
