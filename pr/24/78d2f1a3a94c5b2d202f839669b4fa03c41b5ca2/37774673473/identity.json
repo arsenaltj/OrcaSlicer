@@ -1,0 +1,25 @@
+{
+  "pr": 24,
+  "run": 37774673473,
+  "head": "78d2f1a3a94c5b2d202f839669b4fa03c41b5ca2",
+  "base": "a65035aaa9fba1afbe809fb176451e4cc82acaa8",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "整合最新图像与模型 UX，并恢复美颜填色和画笔交互",
+  "path": "pr/24/78d2f1a3a94c5b2d202f839669b4fa03c41b5ca2/37774673473",
+  "created": "2026-10-08T12:09:53+00:00",
+  "files": {
+    "index.html": "f451a978b5ce5e1a96d5aa6056cb96ec1978ba3230f502471a16d7cd7c09816d",
+    "details.html": "291ec3aa094c48021fc12907fb238fb32c89c6651196eedbcffe4246926609f7",
+    "report.json": "9d3d420f677f0b08818b056968b03362998895c955c5fa878b71515b4c105756",
+    "summary.md": "6033f5493152f178c9cea4011cd725c3c98425c1aaa9e356cc6104bdbb5a8978",
+    "archify-receipts.json": "d12f80e6ca82b71515c022725711a8e78a401b23f311b760a5e771e325e1fd98",
+    "l0-context.html": "2ed041164aacf3ff25a8a692a4c0ef3fbe9c6ab95c990bb078b8481aa5852760",
+    "l0-context.json": "ed8d5b43ab8fc730068db05ec4fcd3ea481c1da8b90533fe8efcf31f31188d28",
+    "l1-modules.html": "532f05c849ba9ba1ba86146b6d83dffa529932fdd09472ee68061a260896cfc0",
+    "l1-modules.json": "fe7210261f40f3880135e2dd1970f287a7af6e68cc79efa494b3e1be1196ddff",
+    "l2-generation.html": "f101802e002c795e22d556cff74d4e7e799048939932abd411f4bdbfcbb3cdb2",
+    "l2-generation.json": "22841df17bdd3edd92088ee1fee4594a28035678b0ca9359a3ab1b7cc160d872",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}

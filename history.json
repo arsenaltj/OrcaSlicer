@@ -1,6 +1,16 @@
 [
   {
     "pr": 24,
+    "run": 37774673473,
+    "head": "78d2f1a3a94c5b2d202f839669b4fa03c41b5ca2",
+    "base": "a65035aaa9fba1afbe809fb176451e4cc82acaa8",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "整合最新图像与模型 UX，并恢复美颜填色和画笔交互",
+    "path": "pr/24/78d2f1a3a94c5b2d202f839669b4fa03c41b5ca2/37774673473",
+    "created": "2026-10-08T12:09:53+00:00"
+  },
+  {
+    "pr": 24,
     "run": 37729939499,
     "head": "d1d11f30cbed0e991e7acedd46251586a95f1a70",
     "base": "a65035aaa9fba1afbe809fb176451e4cc82acaa8",
