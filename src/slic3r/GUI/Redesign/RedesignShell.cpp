@@ -1,5 +1,6 @@
 #include "RedesignShell.hpp"
 #include "ImageHistorySidebar.hpp"
+#include "ModelGalleryWorkspace.hpp"
 #include "RedesignTheme.hpp"
 #include "RedesignFeatureFlags.hpp"
 #include "RedesignMessageDialog.hpp"
@@ -1541,8 +1542,10 @@ void RedesignShell::build_image_workspace()
     m_preview_host->Bind(wxEVT_SIZE, resize_center);
     update_image_state();
 
-    m_pages[static_cast<std::size_t>(Page::Assets)] =
-        create_placeholder_page(text("资产中心"), text("新界面资产中心正在建设中。此页面不会跳回旧版工作区。"));
+    auto* gallery = new ModelGalleryWorkspace(m_content_host);
+    m_pages[static_cast<std::size_t>(Page::Assets)] = gallery;
+    m_content_host->GetSizer()->Add(gallery, 1, wxEXPAND);
+    gallery->Hide();
     m_pages[static_cast<std::size_t>(Page::Image)] = m_image_page;
     m_pages[static_cast<std::size_t>(Page::Model)] = build_model_workspace();
     m_print_page = new PrinterWorkspace(m_content_host, m_plater);

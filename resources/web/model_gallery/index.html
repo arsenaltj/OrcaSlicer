@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src https:; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <title>Orca 模型图库</title>
+  <link rel="stylesheet" href="gallery.css">
+  <script src="catalog-data.js" defer></script>
+  <script src="gallery-model.js" defer></script>
+  <script src="gallery.js" defer></script>
+</head>
+<body>
+  <header class="gallery-header">
+    <div><p class="eyebrow">探索 · 创作 · 打印</p><h1>模型图库</h1><p class="subtitle">找到下一件值得创作的作品。</p></div>
+    <div class="header-actions"><span id="download-status" class="service-status" role="status">正在检查模型下载服务…</span><button id="check-download" class="quiet-button" type="button">重新检查</button></div>
+  </header>
+  <div class="gallery-layout">
+    <aside aria-label="作品分类">
+      <h2>分类</h2>
+      <nav id="categories" aria-label="作品类型"></nav>
+      <div class="sidebar-note"><span class="note-icon" aria-hidden="true">↗</span><strong>从图库到工作台</strong><p>下载作品后，将文件导入 Orca，继续编辑与切片。</p></div>
+      <a class="site-link" href="https://arsenaltj.github.io/" target="_blank" rel="noopener noreferrer">打开公开图库 <span aria-hidden="true">↗</span></a>
+    </aside>
+    <main>
+      <div class="browse-toolbar">
+        <label class="search-box"><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"></circle><path d="m16 16 4 4"></path></svg><input id="search" type="search" placeholder="搜索作品名称、格式或创作方式" aria-label="搜索作品"><button id="clear-search" class="icon-button" type="button" aria-label="清除搜索" hidden>×</button></label>
+        <label class="select-label"><span class="sr-only">文件格式</span><select id="format"><option value="all">全部格式</option><option value="GLB">GLB</option><option value="OBJ">OBJ</option><option value="PNG">PNG</option></select></label>
+        <label class="select-label"><span class="sr-only">排序方式</span><select id="sort"><option value="default">默认顺序</option><option value="size">文件较小优先</option><option value="title">按名称排序</option></select></label>
+      </div>
+      <div class="results-heading"><h2 id="results-title">3D 模型</h2><span id="result-count" role="status" aria-live="polite"></span><button id="reset-filters" class="text-button" type="button" hidden>重置筛选</button></div>
+      <div id="grid" class="model-grid"></div>
+      <div id="empty" class="empty-state" hidden><span aria-hidden="true">⌕</span><h3>没有找到符合条件的作品</h3><p>试试其他关键词，或清除分类与格式筛选。</p><button id="empty-reset" class="primary-button" type="button">查看全部作品</button></div>
+      <p class="collection-note">模型与图片来自你的作品图库。预览可离线浏览，下载需要网络连接。</p>
+    </main>
+  </div>
+  <dialog id="detail" aria-labelledby="detail-title">
+    <button id="close-detail" class="modal-close icon-button" type="button" aria-label="关闭作品详情">×</button>
+    <div class="detail-layout"><div class="detail-preview"><img id="detail-image" alt=""></div><div class="detail-content"><p id="detail-kind" class="eyebrow"></p><h2 id="detail-title"></h2><p id="detail-category" class="subtitle"></p><dl><div><dt>文件格式</dt><dd id="detail-format"></dd></div><div><dt>文件大小</dt><dd id="detail-size"></dd></div></dl><p id="detail-help" class="detail-help"></p><a id="detail-download" class="primary-button" target="_blank" rel="noopener noreferrer"></a><p id="detail-download-note" class="download-note" role="status"></p><a class="site-link" href="https://arsenaltj.github.io/" target="_blank" rel="noopener noreferrer">在公开图库中查看 ↗</a></div></div>
+  </dialog>
+  <noscript><p>图库需要启用 JavaScript。你仍可在浏览器打开公开图库。</p></noscript>
+</body>
+</html>
