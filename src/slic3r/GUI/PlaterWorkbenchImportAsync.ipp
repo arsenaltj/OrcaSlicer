@@ -109,8 +109,8 @@ bool Plater::import_workbench_model_async(const AI::ModelImportRequest& request,
                 if (local_colors && request.color_mode != AI::ImportColorMode::NativeMatch) {
                     if (!notify(WorkbenchImportPhase::Colors, "等待配色确认")) return;
                     ui([&] {
-                        if (wxMessageBox(_L("此匹配方式将重新分配局部改色的耗材。继续？"), _L("配色确认"),
-                            wxYES_NO | wxNO_DEFAULT | wxICON_WARNING, weak.get()) != wxYES) session->cancel();
+                        if (show_redesign_confirmation(weak.get(), _L("此匹配方式将重新分配局部改色的耗材。继续？"), _L("配色确认"),
+                            {wxYES_NO | wxNO_DEFAULT}) != wxID_YES) session->cancel();
                     });
                     if (stopped()) return;
                 }

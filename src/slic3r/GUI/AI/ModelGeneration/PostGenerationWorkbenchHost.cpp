@@ -1,4 +1,5 @@
 #include "slic3r/GUI/ModelGenerationPanel.hpp"
+#include "slic3r/GUI/Redesign/RedesignMessageDialog.hpp"
 #include "BeautyWorkbenchControls.hpp"
 #include "BeautyWorkbenchTransactionController.hpp"
 #include "ModelPreview3D.hpp"
@@ -173,8 +174,8 @@ bool ModelGenerationPanel::request_workbench_color_matching()
         state.check.status == WorkbenchCheckStatus::Failed) {
         const auto summary = state.check.status == WorkbenchCheckStatus::NotRun ? _L("尚未执行模型检查。") :
             wxString::FromUTF8(state.check.summary);
-        if (wxMessageBox(summary + "\n" + _L("继续使用 Orca 原生导入校验？"), _L("模型检查"),
-            wxYES_NO | wxNO_DEFAULT | wxICON_WARNING, m_workbench_shell) != wxYES) return false;
+        if (show_redesign_confirmation(m_workbench_shell, summary + "\n" + _L("继续使用 Orca 原生导入校验？"),
+            _L("模型检查"), {wxYES_NO | wxNO_DEFAULT}) != wxID_YES) return false;
     }
     AI::GeneratedModelArtifact artifact;
     artifact.local_path = m_displayed_model_path.string();

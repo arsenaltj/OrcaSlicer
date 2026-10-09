@@ -101,6 +101,10 @@ public:
     bool request_save_and_return();
     bool request_workbench_results();
     void set_workbench_results_handler(std::function<void()> handler) { m_workbench_results = std::move(handler); }
+    void set_workbench_return_to_design_handler(std::function<void()> handler)
+    {
+        m_workbench_return_to_design = std::move(handler);
+    }
     PostGenerationWorkbenchState workbench_snapshot() const;
     void set_workbench_listener(PostGenerationWorkbenchListener listener);
     void set_project_color_handler(std::function<void(size_t)> handler,
@@ -132,6 +136,7 @@ private:
     wxTimer m_workbench_sync_timer;
     bool m_save_and_return {false};
     std::function<void()> m_workbench_results;
+    std::function<void()> m_workbench_return_to_design;
     void finish_workbench_save();
     void publish_workbench_state();
     std::function<void()> m_prepare_navigation;
@@ -143,6 +148,7 @@ private:
     bool set_selected_image(const boost::filesystem::path& path, bool request_recommendation);
     void clear_selected_image();
     void publish_ui_state();
+    bool can_generate_design_from_shell() const;
     void initialize_page(bool require_visible);
     void on_first_visible_idle(wxIdleEvent& event);
     void build_page();
@@ -375,6 +381,7 @@ private:
     std::array<wxStaticText*, 7> m_workbench_slice_values {};
     bool m_open_smart_slicing_after_import {false};
     wxWindow* m_workbench_history_toggle {nullptr};
+    wxWindow* m_workbench_return_to_design_button {nullptr};
     bool m_workbench_editing {false};
     bool m_refreshing_workbench_layout {false};
     bool m_updating_comparison_layout {false};

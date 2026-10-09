@@ -152,6 +152,7 @@ bool ModelGenerationPanel::show_finishing_version(const boost::filesystem::path&
 void ModelGenerationPanel::select_local_finishing_version(const boost::filesystem::path& path, const std::string& id)
 {
     ++m_sequence;
+    ++m_model_generation_session;
     m_poll_timer.Stop();
     m_job_id.clear(); m_job_palette.clear(); m_job_palette_roles.clear();
     m_job_use_printable_colors = false;

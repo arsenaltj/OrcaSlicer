@@ -1,4 +1,5 @@
 #include "slic3r/GUI/ModelGenerationPanel.hpp"
+#include "slic3r/GUI/Redesign/RedesignMessageDialog.hpp"
 #include "ModelGenerationPresentation.hpp"
 #include "ModelPreview3D.hpp"
 #include "BeautyWorkbenchControls.hpp"
@@ -99,11 +100,11 @@ void ModelGenerationPanel::on_discard(wxCommandEvent&)
 {
     if (m_busy || m_finishing_running || !m_finishing_candidate.empty()) return;
     if (m_ready || m_model_preview_ready || m_style_preview_ready) {
-        wxMessageDialog choice(this,
+        const int answer = show_redesign_confirmation(this,
             _L("要先看看重新设计的建议吗？当前历史模型会保留，图片和描述可继续使用。"),
-            _L("重新开始"), wxYES_NO | wxCANCEL | wxICON_QUESTION);
-        choice.SetYesNoCancelLabels(_L("直接重新开始"), _L("先看建议"), _L("留在当前作品"));
-        const int answer = choice.ShowModal();
+            _L("重新开始"), {wxYES_NO | wxCANCEL, 105,
+                {{wxID_YES, _L("直接重新开始"), true}, {wxID_NO, _L("先看建议")},
+                 {wxID_CANCEL, _L("留在当前作品")}}});
         if (answer == wxID_CANCEL) return;
         if (answer == wxID_NO) {
             wxString advice;
@@ -116,9 +117,8 @@ void ModelGenerationPanel::on_discard(wxCommandEvent&)
                     "• 颜色杂乱：先在3D美颜里试六色、保留嘴唇和服装等关键色。\n"
                     "• 表面小凹凸：先试局部美颜，通常不需要重新生成。\n\n"
                     "这些是设计建议，未运行新的AI分析。");
-            wxMessageDialog guidance(this, advice, _L("重新设计建议"), wxOK | wxCANCEL | wxICON_INFORMATION);
-            guidance.SetOKCancelLabels(_L("继续重新开始"), _L("返回调整作品"));
-            if (guidance.ShowModal() != wxID_OK) return;
+            if (show_redesign_confirmation(this, advice, _L("重新设计建议"), {wxOK | wxCANCEL, 105,
+                {{wxID_CANCEL, _L("返回调整作品")}, {wxID_OK, _L("继续重新开始"), true}}}) != wxID_OK) return;
         }
     }
     const bool reuse_palette = m_palette_source->GetSelection() == 2 && !current_palette().empty();

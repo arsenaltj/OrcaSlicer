@@ -346,6 +346,9 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
         refresh_model_finishing(); refresh_post_generation_workbench();
     });
     command(workspace, toolbar, _L("结果对照"), [this](wxCommandEvent&) { request_workbench_results(); });
+    m_workbench_return_to_design_button = command(workspace, toolbar, _L("返回图像设计"), [this](wxCommandEvent&) {
+        if (m_workbench_return_to_design) m_workbench_return_to_design();
+    });
     workspace_sizer->Add(toolbar, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(8));
     m_workbench_state_status = new wxStaticText(workspace, wxID_ANY, wxEmptyString);
     m_workbench_state_status->SetForegroundColour(wxColour(255, 194, 39));

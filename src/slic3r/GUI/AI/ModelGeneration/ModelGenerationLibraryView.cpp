@@ -1,4 +1,5 @@
 #include "slic3r/GUI/ModelGenerationPanel.hpp"
+#include "slic3r/GUI/Redesign/RedesignMessageDialog.hpp"
 #include "slic3r/GUI/I18N.hpp"
 #include "slic3r/GUI/MsgDialog.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
@@ -1022,13 +1023,10 @@ wxWindow* ModelGenerationPanel::create_library_card(const GeneratedModelEntry& e
                 card, wxID_ANY, feedback_label, wxDefaultPosition, wxSize(FromDIP(104), -1));
             feedback->SetToolTip(_L("由测试人员记录实际打印结果；不会从打印机自动推断"));
             feedback->Bind(wxEVT_BUTTON, [this, job_id = entry.job_id](wxCommandEvent&) {
-                MessageDialog dialog(
-                    this,
+                const int result = show_redesign_confirmation(this,
                     _L("请根据已经完成的真实打印记录结果。\n\n“打印成功”表示成品达到本次测试预期；“有问题”表示需要后续复盘。"),
-                    _L("记录实际打印结果"), wxYES_NO | wxCANCEL | wxICON_QUESTION);
-                dialog.SetButtonLabel(wxID_YES, _L("打印成功"));
-                dialog.SetButtonLabel(wxID_NO, _L("有问题"));
-                const int result = dialog.ShowModal();
+                    _L("记录实际打印结果"), {wxYES_NO | wxCANCEL, 105,
+                        {{wxID_YES, _L("打印成功"), true}, {wxID_NO, _L("有问题")}, {wxID_CANCEL, _L("Cancel")}}});
                 if (result == wxID_YES)
                     record_library_print_feedback(job_id, "success");
                 else if (result == wxID_NO)

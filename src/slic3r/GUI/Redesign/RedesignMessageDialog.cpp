@@ -8,6 +8,7 @@
 #include <memory>
 
 #include <wx/dcbuffer.h>
+#include <wx/checkbox.h>
 #include <wx/graphics.h>
 #include <wx/panel.h>
 #include <wx/region.h>
@@ -265,7 +266,10 @@ RedesignMessageDialog::RedesignMessageDialog(wxWindow* parent, const wxString& m
 
 RedesignMessageDialog::RedesignMessageDialog(wxWindow* parent, const wxString& message,
                                              const wxString& caption, long style, Appearance appearance,
-                                             int minimum_message_height)
+                                             int minimum_message_height,
+                                             const std::vector<RedesignDialogAction>& actions,
+                                             const wxString& checkbox_label,
+                                             bool checkbox_checked)
     : DPIDialog(parent, wxID_ANY, caption, wxDefaultPosition, wxDefaultSize,
                 wxBORDER_NONE | wxFRAME_NO_TASKBAR | wxFRAME_SHAPED)
     , m_appearance(appearance), m_original_message(message)
@@ -275,9 +279,12 @@ RedesignMessageDialog::RedesignMessageDialog(wxWindow* parent, const wxString& m
     m_dialog_width = design ? 480 : compact ? 400 : 560;
     m_message_width = design ? 432 : compact ? 352 : 408;
     m_message_min_height = design ? std::max(0, minimum_message_height) : -1;
-    m_cancel_result = (style & wxNO) ? wxID_NO : wxID_CANCEL;
-    m_default_result = (style & wxNO_DEFAULT) && (style & wxNO) ? wxID_NO :
-                       (style & wxYES) ? wxID_YES : wxID_OK;
+    m_cancel_result = redesign_dialog_dismiss_result(style);
+    m_default_result = redesign_dialog_default_result(style);
+    const int action_count = actions.empty() ? int(bool(style & wxYES)) + int(bool(style & wxNO)) +
+        int(bool(style & wxOK)) + int(bool(style & wxCANCEL)) : int(actions.size());
+    // Keep the 480-DIP face and readable labels for three-way decisions.
+    m_stacked_actions = design && action_count > 2;
     // Opaque dark-glass face keeps native text crisp; only the separate backdrop
     // dims the workspace, never the dialog controls themselves.
     SetBackgroundColour(design ? wxColour(53, 53, 55) : RedesignTheme::panel_colour());
@@ -326,21 +333,32 @@ RedesignMessageDialog::RedesignMessageDialog(wxWindow* parent, const wxString& m
     content_sizer->Add(m_message, 1, wxLEFT, FromDIP(compact ? 0 : 16));
     root->AddSpacer(FromDIP(compact ? 8 : 24));
     root->Add(content_sizer, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(24));
+    if (!checkbox_label.empty()) {
+        m_checkbox = new wxCheckBox(this, wxID_ANY, checkbox_label);
+        m_checkbox->SetValue(checkbox_checked);
+        RedesignTheme::style_text(m_checkbox, RedesignTheme::secondary_text_colour(), 10);
+        root->Add(m_checkbox, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(24));
+    }
 
-    m_action_sizer = new wxBoxSizer(wxHORIZONTAL);
-    if (!compact || design) m_action_sizer->AddStretchSpacer(1);
-    if ((style & wxYES) && !compact)
-        add_action_button(wxID_YES, _L("Yes"), true);
-    if (style & wxNO)
-        add_action_button(wxID_NO, _L("No"), false);
-    if ((style & wxYES) && compact)
-        add_action_button(wxID_YES, _L("Yes"), true);
-    if (style & wxOK)
-        add_action_button(wxID_OK, _L("OK"), true);
-    if (style & wxCANCEL)
-        add_action_button(wxID_CANCEL, _L("Cancel"), false);
+    m_action_sizer = new wxBoxSizer(m_stacked_actions ? wxVERTICAL : wxHORIZONTAL);
+    if ((!compact || design) && !m_stacked_actions) m_action_sizer->AddStretchSpacer(1);
+    if (!actions.empty()) {
+        for (const auto& action : actions)
+            add_action_button(action.id, action.label, action.primary);
+    } else {
+        if ((style & wxYES) && !compact)
+            add_action_button(wxID_YES, _L("Yes"), true);
+        if (style & wxNO)
+            add_action_button(wxID_NO, _L("No"), false);
+        if ((style & wxYES) && compact)
+            add_action_button(wxID_YES, _L("Yes"), true);
+        if (style & wxOK)
+            add_action_button(wxID_OK, _L("OK"), true);
+        if (style & wxCANCEL)
+            add_action_button(wxID_CANCEL, _L("Cancel"), false);
+    }
     if (design) {
-        m_action_sizer->AddStretchSpacer(1);
+        if (!m_stacked_actions) m_action_sizer->AddStretchSpacer(1);
         root->AddSpacer(FromDIP(16));
         root->Add(m_action_sizer, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(24));
         root->AddSpacer(FromDIP(20));
@@ -391,11 +409,18 @@ void RedesignMessageDialog::add_action_button(wxWindowID id, const wxString& lab
 {
     const bool design = m_appearance == Appearance::GenerationConfirmation;
     const bool compact = m_appearance != Appearance::Standard;
-    auto* button = new RedesignDialogActionButton(this, id, label, primary, design ? 200 : compact ? 170 : 112, design);
+    auto* button = new RedesignDialogActionButton(this, id, label, primary,
+        m_stacked_actions ? 432 : design ? 200 : compact ? 170 : 112, design);
     if (design) button->SetName(primary ? "generation-confirm-yes" : "generation-confirm-no");
     button->Bind(wxEVT_BUTTON, [this, id](wxCommandEvent&) { finish_with(id); });
-    m_action_sizer->Add(button, 0, wxLEFT, FromDIP(compact && m_action_buttons.empty() ? 0 : design ? 24 : 12));
+    m_action_sizer->Add(button, 0, m_stacked_actions ? wxTOP : wxLEFT,
+        FromDIP(compact && m_action_buttons.empty() ? 0 : m_stacked_actions ? 12 : design ? 24 : 12));
     m_action_buttons.push_back(button);
+}
+
+bool RedesignMessageDialog::checkbox_checked() const
+{
+    return m_checkbox != nullptr && m_checkbox->GetValue();
 }
 
 void RedesignMessageDialog::bind_title_drag(wxWindow* window)
@@ -486,6 +511,14 @@ void RedesignMessageDialog::wrap_message()
 int show_generation_confirmation(wxWindow* parent, const wxString& message,
                                  const wxString& caption, int minimum_message_height)
 {
+    RedesignConfirmationOptions options;
+    options.minimum_message_height = minimum_message_height;
+    return show_redesign_confirmation(parent, message, caption, options);
+}
+
+int show_redesign_confirmation(wxWindow* parent, const wxString& message,
+                              const wxString& caption, const RedesignConfirmationOptions& options)
+{
     auto* top = wxGetTopLevelParent(parent);
     wxDialog shade(top, wxID_ANY, {}, wxDefaultPosition, wxDefaultSize,
                    wxBORDER_NONE | wxFRAME_NO_TASKBAR | wxFRAME_FLOAT_ON_PARENT);
@@ -495,9 +528,15 @@ int show_generation_confirmation(wxWindow* parent, const wxString& message,
     const bool dimmed = top && shade.SetTransparent(140);
     if (dimmed) shade.ShowWithoutActivating();
     RedesignMessageDialog dialog(dimmed ? static_cast<wxWindow*>(&shade) : parent,
-        message, caption, wxYES_NO, RedesignMessageDialog::Appearance::GenerationConfirmation,
-        minimum_message_height);
-    return dialog.ShowModal();
+        message, caption, options.style,
+        options.standard_layout ? RedesignMessageDialog::Appearance::Standard :
+            RedesignMessageDialog::Appearance::GenerationConfirmation,
+        options.minimum_message_height, options.actions, options.checkbox_label, options.checkbox_checked);
+    if (options.dismiss_result != wxID_NONE) dialog.set_dismiss_result(options.dismiss_result);
+    const int result = dialog.ShowModal();
+    if (options.checkbox_state != nullptr)
+        *options.checkbox_state = dialog.checkbox_checked();
+    return result;
 }
 
 }

@@ -1,6 +1,8 @@
 #include <glad/gl.h>
 #include "RedesignShell.hpp"
+#include "RedesignMessageDialog.hpp"
 #include "RedesignFeatureFlags.hpp"
+#include "RedesignModelRoute.hpp"
 #include "RedesignTheme.hpp"
 #include "PrinterWorkspace.hpp"
 #include "OrcaPrinterAdapter.hpp"
@@ -365,8 +367,8 @@ void RedesignShell::build_model_workflow()
         if (!m_slicing_host) return;
         const auto reviewed = m_slicing_host->workbench_snapshot();
         if (!reviewed.can_keep_current_mesh || !reviewed.preflight) return;
-        if (wxMessageBox(_L("网格存在开放边。保留当前网格继续分析可能产生缺面或悬空路径，请在切片预览中检查结果。"),
-                _L("保留当前网格"), wxYES_NO | wxNO_DEFAULT | wxICON_WARNING, this) != wxYES) return;
+        if (show_redesign_confirmation(this, _L("网格存在开放边。保留当前网格继续分析可能产生缺面或悬空路径，请在切片预览中检查结果。"),
+                _L("保留当前网格"), {wxYES_NO | wxNO_DEFAULT}) != wxID_YES) return;
         m_slicing_host->keep_current_mesh_and_analyze(reviewed.preflight->revision);
     });
     m_slice_start = command(settings, _L("开始切片"), true);
@@ -493,6 +495,9 @@ void RedesignShell::build_model_workflow()
     });
     m_model_generation_host->set_workbench_listener([weak](const auto& state) { if (weak) weak->apply_workbench_state(state); });
     m_model_generation_host->set_workbench_results_handler([weak] { if (weak) weak->show_model_view(ModelView::Result); });
+    m_model_generation_host->set_workbench_return_to_design_handler([weak] {
+        if (weak) weak->return_to_image_design();
+    });
     m_model_generation_host->set_workbench_import_handler([weak](const auto& request) { if (weak) weak->confirm_workbench_import(request); });
     if (m_slicing_host) m_slicing_host->set_workbench_listener([weak](const auto& state) { if (weak) weak->apply_slicing_state(state); });
 }
@@ -570,6 +575,10 @@ void RedesignShell::refresh_workflow_layout()
 void RedesignShell::apply_workbench_state(const PostGenerationWorkbenchState& state)
 {
     m_workbench_state = state;
+    if (m_model_back_to_design_button && m_model_back_to_design_button->IsShown())
+        m_model_back_to_design_button->Enable(can_return_to_image_design());
+    if (m_image_page_view_only)
+        apply_model_generation_state(m_model_generation_state);
     if (m_slice_check_status) {
         set_wrapped_label(m_slice_check_status, state.check.summary.empty()
             ? _L("未执行检查") : wxString::FromUTF8(state.check.summary), FromDIP(246));
@@ -578,6 +587,48 @@ void RedesignShell::apply_workbench_state(const PostGenerationWorkbenchState& st
         m_pending_workbench_job.clear();
         open_model_workbench();
     }
+}
+
+bool RedesignShell::can_return_to_image_design() const
+{
+    return model_generation_return_to_design_allowed(
+        m_model_generation_state, m_workbench_state.actions,
+        m_import_in_progress || m_submit_in_progress || m_model_preview_loading);
+}
+
+bool RedesignShell::return_to_image_design()
+{
+    if (!can_return_to_image_design())
+        return false;
+
+    if (m_workbench_state.dirty || !m_workbench_state.candidate_path.empty()) {
+        if (show_redesign_confirmation(this,
+                _L("当前 3D 工作台存在未保存修改或尚未接受的候选。返回图像设计后，如果开始新的生成任务，这些修改可能无法继续恢复。仍要返回吗？"),
+                _L("返回图像设计"), {wxYES_NO | wxNO_DEFAULT}) != wxID_YES)
+            return false;
+    }
+
+    const bool route_locked = m_model_route_locked;
+    const bool view_only = m_image_page_view_only;
+    const auto route_session = m_model_route_session;
+    const auto route_id = m_model_route_id;
+    m_model_route_locked = false;
+    m_model_route_session = 0;
+    m_model_route_id.clear();
+    m_image_page_view_only = false;
+    if (!navigate_to(Page::Image)) {
+        m_model_route_locked = route_locked;
+        m_image_page_view_only = view_only;
+        m_model_route_session = route_session;
+        m_model_route_id = route_id;
+        return false;
+    }
+    // A missing historical style becomes a valid default only when the user
+    // explicitly returns to editing. This never restarts or submits a task.
+    if (current_generation_input().style != m_model_generation_state.input.style)
+        synchronize_generation_input();
+    apply_model_generation_state(m_model_generation_state);
+    return true;
 }
 
 void RedesignShell::confirm_workbench_import(const AI::ModelImportRequest& request)
@@ -867,7 +918,7 @@ void RedesignShell::start_workbench_slice()
         wxString risks;
         for (auto risk : confirmations) risks += risk == RiskConfirmationKind::ProtectedRegionSupportContact ?
             _L("保护区域将接触支撑。\n") : _L("保护区域将出现接缝。\n");
-        if (wxMessageBox(risks, _L("切片风险确认"), wxYES_NO | wxNO_DEFAULT | wxICON_WARNING, this) != wxYES) return;
+        if (show_redesign_confirmation(this, risks, _L("切片风险确认"), {wxYES_NO | wxNO_DEFAULT}) != wxID_YES) return;
     }
     const auto result = m_slicing_host->start_workbench_slice(reviewed, confirmations);
     if (result.phase == OfficialSlicePhase::Rejected)

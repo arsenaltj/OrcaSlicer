@@ -21,8 +21,8 @@ AI::ModelImportResult Plater::import_workbench_model(const AI::ModelImportReques
         if (local_colors && request.face_color_geometry_id != AI::SurfaceSelectionPersistence::geometry_fingerprint(source.its))
             return fail("The local colors belong to another geometry version.", AI::ModelImportOutcome::InvalidArtifact);
         if (local_colors && request.color_mode != AI::ImportColorMode::NativeMatch &&
-            wxMessageBox(_L("此匹配方式将重新分配局部改色的耗材。继续？"), _L("配色确认"),
-                wxYES_NO | wxNO_DEFAULT | wxICON_WARNING, this) != wxYES)
+            show_redesign_confirmation(this, _L("此匹配方式将重新分配局部改色的耗材。继续？"), _L("配色确认"),
+                {wxYES_NO | wxNO_DEFAULT}) != wxID_YES)
             return fail({}, AI::ModelImportOutcome::Cancelled);
         TextureImportOptions options = model_import_color_options(request);
         options.workbench_review = true;

@@ -50,6 +50,7 @@ public:
     PostGenerationWorkbenchState workbench_snapshot() const;
     void set_workbench_listener(PostGenerationWorkbenchListener listener);
     void set_workbench_results_handler(std::function<void()> handler);
+    void set_workbench_return_to_design_handler(std::function<void()> handler);
     void mount_workbench(wxWindow* parent);
     void unmount_workbench();
     void set_color_matching_handler(std::function<void(const AI::GeneratedModelArtifact&)> handler);

@@ -418,6 +418,10 @@ std::function<void()> ModelGenerationPanel::capture_model_context()
         schema = m_color_intent_schema, hash = m_color_intent_sha256, format = m_artifact_format,
         encoding = m_artifact_color_encoding, quality = m_model_quality, visual = m_visual_quality,
         refinement = m_model_refinement, library = m_library_model_loaded] {
+        // Undo/redo restores a legitimate asset context. Give it a fresh route
+        // identity so delayed notifications cannot restore the previous version.
+        if (m_displayed_model_job_id != displayed || m_displayed_model_path != source)
+            ++m_model_generation_session;
         m_job_id = job; m_displayed_model_job_id = displayed;
         m_artifact_path = artifact; m_displayed_model_path = source;
         m_job_palette = palette; m_job_palette_roles = roles;

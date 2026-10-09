@@ -37,6 +37,7 @@ enum class ModelGenerationUIStage
     Stopping,
     DesignReady,
     GeneratingModel,
+    LoadingModel,
     ModelReady,
     Failed,
     Stopped
@@ -85,6 +86,9 @@ struct ModelGenerationUIState
     double design_elapsed_seconds { -1.0 };
     double design_estimated_seconds { 0.0 };
     std::string job_id;
+    // Identifies the model currently displayed by the host. Historical model
+    // records intentionally have no active generation job.
+    std::string model_asset_id;
     std::string job_state;
     std::string job_phase;
     std::string provider_error_code;

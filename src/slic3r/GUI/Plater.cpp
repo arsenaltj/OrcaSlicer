@@ -1,6 +1,7 @@
 #include <glad/gl.h>
 #include "AI/Orca/FilamentColorPack.hpp"
 #include "Plater.hpp"
+#include "Redesign/RedesignMessageDialog.hpp"
 #include "AI/Orca/LocalPrintModelImport.hpp"
 #include "AI/Orca/OrcaWorkspaceAdapter.hpp"
 #include "AI/Orca/ModelColorUpdate.hpp"
@@ -17212,15 +17213,25 @@ int GUI::Plater::close_with_confirm(std::function<bool(bool)> second_check)
         return wxID_NO;
     }
 
-    MessageDialog dlg(static_cast<wxWindow*>(this), _L("The current project has unsaved changes. Would you like to save before continuing\?"),
-        wxString(SLIC3R_APP_FULL_NAME) + " - " + _L("Save"), wxYES_NO | wxCANCEL | wxYES_DEFAULT | wxCENTRE);
-    dlg.show_dsa_button(_L("Remember my choice."));
     auto choise = wxGetApp().app_config->get("save_project_choise");
-    auto result = choise.empty() ? dlg.ShowModal() : choise == "yes" ? wxID_YES : wxID_NO;
+    bool remember_choice = false;
+    int result;
+    if (choise.empty()) {
+        RedesignConfirmationOptions options;
+        options.style = wxYES_NO | wxCANCEL | wxYES_DEFAULT;
+        options.actions = {{wxID_YES, _L("是"), true}, {wxID_NO, _L("否")}, {wxID_CANCEL, _L("取消")}};
+        options.checkbox_label = _L("记住我的选择。");
+        options.checkbox_state = &remember_choice;
+        options.standard_layout = true;
+        result = show_redesign_confirmation(static_cast<wxWindow*>(this),
+            _L("当前项目包含未保存的修改，是否先保存？"), _L("保存"), options);
+    } else {
+        result = choise == "yes" ? wxID_YES : wxID_NO;
+    }
     if (result == wxID_CANCEL)
         return result;
     else {
-        if (dlg.get_checkbox_state())
+        if (remember_choice)
             wxGetApp().app_config->set("save_project_choise", result == wxID_YES ? "yes" : "no");
         if (result == wxID_YES) {
             result = save_project();

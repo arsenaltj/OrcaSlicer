@@ -50,7 +50,8 @@ bool ModelGenerationUIState::same_content(const ModelGenerationUIState& other) c
            can_restart == other.can_restart && design_ready == other.design_ready && model_ready == other.model_ready &&
            model_generation_context == other.model_generation_context &&
            model_generation_session == other.model_generation_session && inputs_match_job == other.inputs_match_job &&
-           progress == other.progress && job_id == other.job_id && job_state == other.job_state &&
+           progress == other.progress && job_id == other.job_id && model_asset_id == other.model_asset_id &&
+           job_state == other.job_state &&
            design_elapsed_seconds == other.design_elapsed_seconds &&
            design_estimated_seconds == other.design_estimated_seconds &&
            job_phase == other.job_phase && provider_error_code == other.provider_error_code &&
@@ -320,6 +321,11 @@ void ModelGenerationFeatureHost::set_workbench_listener(PostGenerationWorkbenchL
 void ModelGenerationFeatureHost::set_workbench_results_handler(std::function<void()> handler)
 {
     m_impl->model_generation->set_workbench_results_handler(std::move(handler));
+}
+
+void ModelGenerationFeatureHost::set_workbench_return_to_design_handler(std::function<void()> handler)
+{
+    m_impl->model_generation->set_workbench_return_to_design_handler(std::move(handler));
 }
 
 bool ModelGenerationFeatureHost::request_open_workbench() { return m_impl->model_generation->request_open_workbench(); }
