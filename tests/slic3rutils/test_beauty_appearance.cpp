@@ -1,6 +1,10 @@
 #include "slic3r/GUI/AI/Model/BeautyAppearance.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include "slic3r/GUI/AI/Model/BeautyPuzzle.hpp"
+#include "slic3r/GUI/AI/Model/BeautyLeafEdits.hpp"
+#include "slic3r/GUI/AI/Model/SurfacePartition.hpp"
+#include "slic3r/GUI/AI/Model/BeautyCellRemap.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/PortraitShapeDetails.hpp"
 #include "slic3r/GUI/AI/Model/ModelFinishing.hpp"
 #include "slic3r/GUI/AI/Model/SurfaceSelectionState.hpp"
 #include "slic3r/GUI/AI/Model/GlbGeometryEditing.hpp"
@@ -9,6 +13,8 @@
 #include <catch2/catch_test_macros.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
+#include <boost/nowide/cstdlib.hpp>
+#include <chrono>
 #include <nlohmann/json.hpp>
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -71,7 +77,7 @@ void write_glb(const boost::filesystem::path& path, Json doc, std::vector<unsign
     output.write(reinterpret_cast<const char*>(bytes.data()),bytes.size());
     REQUIRE(bool(output));
 }
-boost::filesystem::path make_fixture(const Fixture& fixture, bool overlapping = false, bool noise = false, bool multi_material = false) {
+boost::filesystem::path make_fixture(const Fixture& fixture, bool overlapping = false, bool noise = false, bool multi_material = false, size_t extra_faces = 0) {
     std::vector<unsigned char> binary;
     const std::array<std::array<float,3>,8> positions{{{0,0,0},{1,0,0},{1,1,0},{0,1,0},{2,0,0},{3,0,0},{3,1,0},{2,1,0}}};
     for (const auto& p : positions) for (float c : p) append_float(binary,c);
@@ -82,6 +88,7 @@ boost::filesystem::path make_fixture(const Fixture& fixture, bool overlapping = 
     for (const auto& uv : uvs) for (float c : uv) append_float(binary,c);
     const size_t index_offset = binary.size();
     for (uint32_t index : {0u,1u,2u,0u,2u,3u,4u,5u,6u,4u,6u,7u}) append32(binary,index);
+    for (size_t i=0;i<extra_faces;++i) for (uint32_t index : {4u,5u,6u}) append32(binary,index);
     const size_t image_offset = binary.size();
     cv::Mat pixels(32,64,CV_8UC4);
     for (int y=0;y<pixels.rows;++y) for (int x=0;x<pixels.cols;++x)
@@ -95,11 +102,11 @@ boost::filesystem::path make_fixture(const Fixture& fixture, bool overlapping = 
         {"nodes",Json::array({{{"mesh",0},{"translation",{.01,.02,.03}}}})},
         {"bufferViews",Json::array({{{"buffer",0},{"byteOffset",0},{"byteLength",uv_offset}},
             {{"buffer",0},{"byteOffset",uv_offset},{"byteLength",index_offset-uv_offset}},
-            {{"buffer",0},{"byteOffset",index_offset},{"byteLength",48}},
+            {{"buffer",0},{"byteOffset",index_offset},{"byteLength",image_offset-index_offset}},
             {{"buffer",0},{"byteOffset",image_offset},{"byteLength",png.size()}}})},
         {"accessors",Json::array({{{"bufferView",0},{"componentType",5126},{"count",8},{"type","VEC3"},{"min",{0,0,0}},{"max",{3,1,0}}},
             {{"bufferView",1},{"componentType",5126},{"count",8},{"type","VEC2"}},
-            {{"bufferView",2},{"componentType",5125},{"count",12},{"type","SCALAR"}}})},
+            {{"bufferView",2},{"componentType",5125},{"count",12+3*extra_faces},{"type","SCALAR"}}})},
         {"images",Json::array({{{"bufferView",3},{"mimeType","image/png"}}})},
         {"textures",Json::array({{{"source",0},{"sampler",0}}})},
         {"samplers",Json::array({{{"wrapS",33071},{"wrapT",33071}}})},
@@ -136,8 +143,8 @@ void require_preserved_geometry(const Glb& original, const Glb& edited) {
     REQUIRE(edited.binary.size() >= original.binary.size());
     REQUIRE(std::equal(original.binary.begin(),original.binary.end(),edited.binary.begin()));
 }
-boost::filesystem::path make_neutral_fixture(const Fixture& fixture, bool overlapping = false) {
-    const auto path = make_fixture(fixture, overlapping);
+boost::filesystem::path make_neutral_fixture(const Fixture& fixture, bool overlapping = false, size_t extra_faces = 0) {
+    const auto path = make_fixture(fixture, overlapping, false, false, extra_faces);
     auto original = read_glb(path);
     for (auto& material : original.doc["materials"])
         material["pbrMetallicRoughness"]["baseColorFactor"] = {1, 1, 1, 1};
@@ -286,6 +293,120 @@ TEST_CASE("Local appearance changes selected texture pixels while preserving geo
     TriangleMesh mesh; ObjInfo colors; std::string error;
     REQUIRE(load_model_artifact(destination,mesh,colors,error));
     REQUIRE(mesh.its.indices.size() == 4);
+}
+TEST_CASE("A selected UV leaf changes only its interior while its siblings retain source pixels", "[BeautyAppearance][BeautyLeafEditing]") {
+    Fixture f; const auto source=make_neutral_fixture(f),output=f.directory/"leaf.glb";
+    TriangleMesh mesh; ObjInfo colors; std::string error;
+    REQUIRE(load_model_artifact(source,mesh,colors,error));
+    BeautyAppearanceOptions options; options.face_weights.assign(4,0); options.face_target_colors.resize(4);
+    options.canonical_geometry_id=SurfaceSelectionPersistence::geometry_fingerprint(mesh.its);
+    for (uint8_t c=0;c<4;++c) options.leaves.push_back({{0,1,c},c==0?1.f:0.f,{1.f,0.f,0.f}});
+    const auto original=read_glb(source);
+    const auto result=edit_glb_appearance(source,output,options);
+    INFO(result.error);
+    REQUIRE(result.success); REQUIRE(result.changed_pixels>0);
+    const auto edited=read_glb(output); require_preserved_geometry(original,edited);
+    const auto a=color_image(original),b=color_image(edited);
+    size_t changed=0;
+    for (int y=0;y<a.rows;++y) for (int x=0;x<a.cols;++x) if (a.at<cv::Vec4b>(y,x)!=b.at<cv::Vec4b>(y,x)) {
+        ++changed;
+        REQUIRE(x<18);
+        REQUIRE(y<17);
+        REQUIRE(b.at<cv::Vec4b>(y,x)[3]==a.at<cv::Vec4b>(y,x)[3]);
+    }
+    REQUIRE(changed==result.changed_pixels);
+    auto bad=options; bad.leaves.pop_back();
+    REQUIRE_FALSE(edit_glb_appearance(source,f.directory/"incomplete.glb",bad).success);
+    bad=options; bad.face_weights[0]=1;
+    REQUIRE_FALSE(edit_glb_appearance(source,f.directory/"root.glb",bad).success);
+    bad=options; bad.canonical_geometry_id=std::string(64,'0');
+    REQUIRE_FALSE(edit_glb_appearance(source,f.directory/"drift.glb",bad).success);
+}
+TEST_CASE("UV leaves cannot recolor a shared unselected surface", "[BeautyAppearance][BeautyLeafEditing]") {
+    Fixture f; const auto source=make_neutral_fixture(f,true),output=f.directory/"shared.glb";
+    TriangleMesh mesh; ObjInfo colors; std::string error;
+    REQUIRE(load_model_artifact(source,mesh,colors,error));
+    BeautyAppearanceOptions options; options.face_weights.assign(4,0); options.face_target_colors.resize(4);
+    options.canonical_geometry_id=SurfaceSelectionPersistence::geometry_fingerprint(mesh.its);
+    for (uint8_t c=0;c<4;++c) options.leaves.push_back({{0,1,c},c==0?1.f:0.f,{1.f,0.f,0.f}});
+    REQUIRE_FALSE(edit_glb_appearance(source,output,options).success);
+    REQUIRE_FALSE(boost::filesystem::exists(output));
+}
+
+TEST_CASE("Clipped polygon colors bake and reopen while siblings retain source texture", "[BeautyAppearance][BeautyCellDomain]") {
+    Fixture f;const auto source=make_neutral_fixture(f,false,96),output=f.directory/"cells.glb";
+    TriangleMesh mesh;ObjInfo info;std::string error;
+    REQUIRE(load_model_artifact(source,mesh,info,error));
+    REQUIRE(mesh.its.indices.size()==100);
+    BeautyAppearanceOptions options;options.face_weights.assign(100,0);
+    options.canonical_geometry_id=SurfaceSelectionPersistence::geometry_fingerprint(mesh.its);
+    const Vec3d a(1,0,0),b(0,1,0),c(0,0,1),d(.65,.35,0),e(.65,0,.35);
+    options.cells={{0,std::string(64,'a'),{{a,d,e}},1,{1,0,0}},
+                   {0,std::string(64,'b'),{{d,b,c},{d,c,e}},0,{}}};
+    const auto original=read_glb(source);const auto hash=model_artifact_sha256(source);
+    const auto result=edit_glb_appearance(source,output,options);
+    INFO(result.error);
+    REQUIRE(result.success);
+    REQUIRE(result.changed_pixels>0);
+    REQUIRE(model_artifact_sha256(source)==hash);
+    const auto edited=read_glb(output);require_preserved_geometry(original,edited);
+    const auto before=color_image(original),after=color_image(edited);
+    size_t changed=0;
+    for(int y=0;y<before.rows;++y) for(int x=0;x<before.cols;++x)
+        if(before.at<cv::Vec4b>(y,x)!=after.at<cv::Vec4b>(y,x)) {
+            ++changed;
+            REQUIRE(x<14);
+            REQUIRE(y<13);
+            REQUIRE(after.at<cv::Vec4b>(y,x)[3]==before.at<cv::Vec4b>(y,x)[3]);
+        }
+    REQUIRE(changed==result.changed_pixels);
+    TriangleMesh reopened;ObjInfo reopened_info;
+    REQUIRE(load_model_artifact(output,reopened,reopened_info,error));
+    REQUIRE(SurfaceSelectionPersistence::geometry_fingerprint(reopened.its)==options.canonical_geometry_id);
+    auto bad=options;bad.cells.pop_back();
+    REQUIRE_FALSE(edit_glb_appearance(source,f.directory/"missing-cell.glb",bad).success);
+    bad=options;bad.cells.back().triangles.push_back({a,d,e});
+    REQUIRE_FALSE(edit_glb_appearance(source,f.directory/"overlap-cell.glb",bad).success);
+    bad=options;bad.canonical_geometry_id=std::string(64,'0');
+    REQUIRE_FALSE(edit_glb_appearance(source,f.directory/"drift-cell.glb",bad).success);
+    REQUIRE_FALSE(edit_glb_appearance(source,f.directory/"canceled-cell.glb",options,[]{return true;}).success);
+    REQUIRE_FALSE(boost::filesystem::exists(f.directory/"canceled-cell.glb"));
+}
+
+TEST_CASE("Clipped polygon baking rejects a shared unselected UV surface", "[BeautyAppearance][BeautyCellDomain]") {
+    Fixture f;const auto source=make_neutral_fixture(f,true,96),output=f.directory/"cells.glb";
+    TriangleMesh mesh;ObjInfo info;std::string error;
+    REQUIRE(load_model_artifact(source,mesh,info,error));
+    BeautyAppearanceOptions options;options.face_weights.assign(100,0);
+    options.canonical_geometry_id=SurfaceSelectionPersistence::geometry_fingerprint(mesh.its);
+    const Vec3d a(1,0,0),b(0,1,0),c(0,0,1),d(.65,.35,0),e(.65,0,.35);
+    options.cells={{0,std::string(64,'a'),{{a,d,e}},1,{1,0,0}},
+                   {0,std::string(64,'b'),{{d,b,c},{d,c,e}},0,{}}};
+    REQUIRE_FALSE(edit_glb_appearance(source,output,options).success);
+    REQUIRE_FALSE(boost::filesystem::exists(output));
+}
+TEST_CASE("Adaptive four level UV partitions save and reopen without expanding the selected child", "[BeautyAppearance][BeautyLeafEditing]") {
+    Fixture f; const auto source=make_neutral_fixture(f),output=f.directory/"adaptive.glb";
+    TriangleMesh mesh; ObjInfo colors; std::string error;
+    REQUIRE(load_model_artifact(source,mesh,colors,error));
+    const auto geometry=SurfaceSelectionPersistence::geometry_fingerprint(mesh.its),hash=model_artifact_sha256(source);
+    BeautyAppearanceOptions options; options.face_weights.assign(4,0); options.face_target_colors.resize(4);
+    appearance_subface_colors(options,{{0,{1,1},{1,0,0},1},{0,{4,0},{0,0,1},1}},geometry);
+    REQUIRE(options.leaves.size()==13);
+    const auto result=edit_glb_appearance(source,output,options);
+    INFO(result.error);
+    REQUIRE(result.success); REQUIRE(result.changed_pixels>0);
+    REQUIRE(result.source_sha256==hash);
+    REQUIRE(model_artifact_sha256(source)==hash);
+    TriangleMesh saved; ObjInfo saved_colors;
+    REQUIRE(load_model_artifact(output,saved,saved_colors,error));
+    REQUIRE(SurfaceSelectionPersistence::geometry_fingerprint(saved.its)==geometry);
+    REQUIRE(saved.its.indices==mesh.its.indices);
+    const auto before=color_image(read_glb(source)),after=color_image(read_glb(output));
+    for (int y=0;y<before.rows;++y) for (int x=0;x<before.cols;++x) {
+        REQUIRE(after.at<cv::Vec4b>(y,x)[3]==before.at<cv::Vec4b>(y,x)[3]);
+        if (x>=33 || y>=19) REQUIRE(after.at<cv::Vec4b>(y,x)==before.at<cv::Vec4b>(y,x));
+    }
 }
 
 TEST_CASE("Shared UVs cannot recolor an unselected surface", "[BeautyWorkbench][BeautyAppearance]") {
@@ -1517,5 +1638,81 @@ TEST_CASE("Exact preview retains mixed primitive textures transforms and distinc
         const auto uv=loaded.uvs[loaded.indices[face][corner]]; const bool second=face>=2;
         CHECK(std::abs(exact.faces[face].corners[corner].uv[0]-(second?uv[0]*.5f+.1f:uv[0]))<1e-6);
         CHECK(std::abs(exact.faces[face].corners[corner].uv[1]-(second?uv[1]*.75f+.2f:uv[1]))<1e-6);
+    }
+}
+
+// Opt-in regression uses the actual failed drafts without shipping private
+// source models or rewriting their content-addressed cache.
+TEST_CASE("Saved portrait drafts rebuild and bake all palette variants without recognition", "[.PortraitSaveReplay]") {
+    const char* input=boost::nowide::getenv("ORCA_PORTRAIT_SAVE_REPLAY");
+    REQUIRE(input);
+    const boost::filesystem::path base(input);
+    const char* output=boost::nowide::getenv("ORCA_PORTRAIT_SAVE_OUTPUT");
+    REQUIRE(output);
+    const boost::filesystem::path destination(output), cache=base/"gui-data/cache";
+    REQUIRE_FALSE(boost::filesystem::exists(destination));
+    boost::filesystem::create_directories(destination);
+    const auto read=[](const boost::filesystem::path& path) {
+        boost::filesystem::ifstream stream(path,std::ios::binary);
+        if(!stream) throw std::runtime_error("Missing replay input: "+path.string());
+        return Json::parse(stream);
+    };
+    const auto read_ref=[&](const Json& ref) {
+        const auto path=cache/ref.at("path").get<std::string>();
+        REQUIRE(model_artifact_sha256(path)==ref.at("sha256"));
+        return read(path);
+    };
+    const auto source=base/"gui-data/generated_models/downloads/orcaslicer-ai-8f6f1850-c076-4264-b26b-ced09f0397ff.glb";
+    const auto source_hash=model_artifact_sha256(source);
+    GUI::PortraitShapeCache::preserve_source(destination/"cache",source,source_hash);
+    Json report=Json::array();
+    for(const auto* name:{"three","four","five","six"}) {
+        const auto started=std::chrono::steady_clock::now();
+        const auto draft=read_ref(read(base/(std::string(name)+"-draft-reference.json")));
+        REQUIRE(draft.at("source_sha256")==source_hash);
+        const auto doc=read_ref(draft.at("shapes"));
+        auto shapes=GUI::PortraitShapeCache::load(draft.at("shapes"),cache,draft.at("geometry"),draft.at("face_count"),doc.at("runtime_fingerprint"),true);
+        const auto old=*shapes->surface_partition;
+        auto rebuilt=SurfacePartition::rebuild_tessellation(old);
+        REQUIRE(SurfacePartition::rebuild_tessellation(rebuilt)==rebuilt);
+        REQUIRE(rebuilt.at("faces").size()==old.at("faces").size());
+        auto next=std::make_shared<GUI::PortraitShapeDetails>(*shapes);
+        next->surface_partition=std::make_shared<const Json>(std::move(rebuilt));
+        auto locks=shapes->contour_locks->document;
+        const auto hash=beauty_leaf_digest(next->surface_partition->dump());
+        locks["partition_ref"]={{"schema","orca.surface-partition-reference/v1"},{"path","surface-partitions/"+hash+".json"},{"sha256",hash}};
+        next->contour_locks=std::make_shared<const BeautySurfaceShapeLock>(BeautySurfaceShapeLock::decode(locks,*next->surface_partition,BeautySurfaceShapeLock::identity(*next->surface_partition),hash));
+        const auto edits=remap_cell_edits(draft.at("leaf_edits"),old,*next->surface_partition,shapes->boundary_fingerprint(),next->boundary_fingerprint());
+        if(draft.at("leaf_edits").is_null()) REQUIRE(edits.is_null());
+        else for(const auto* key:{"colors","selected","protected","foreground","domain"}) REQUIRE(edits.at(key)==draft.at("leaf_edits").at(key));
+        const auto saved_ref=GUI::PortraitShapeCache::save(*next,destination/"cache");
+        const auto reopened=GUI::PortraitShapeCache::load(saved_ref,destination/"cache",draft.at("geometry"),draft.at("face_count"),doc.at("runtime_fingerprint"),true);
+        REQUIRE(reopened->cell_colors==shapes->cell_colors);
+        REQUIRE(reopened->contour_locks->document.at("locks")==shapes->contour_locks->document.at("locks"));
+        BeautyAppearanceOptions options;
+        options.face_weights.assign(draft.at("face_count"),0.f);
+        options.face_target_colors.resize(options.face_weights.size());
+        for(const auto& row:draft.at("semantic").at("faces")) {
+            const auto face=row[0].get<size_t>();options.face_weights.at(face)=1.f;
+            options.face_target_colors.at(face)=row[1].get<std::array<float,3>>();
+        }
+        SemanticColoring::SubfaceColors subfaces;
+        for(const auto& row:draft.at("semantic").at("subfaces"))
+            subfaces.push_back({row[0].get<size_t>(),{row[1].get<uint8_t>(),row[2].get<uint8_t>()},row[3].get<std::array<float,3>>(),1.f});
+        appearance_subface_colors(options,subfaces,draft.at("geometry"));
+        appearance_cell_colors(options,*next->surface_partition,next->cell_colors,draft.at("geometry"));
+        const auto path=destination/(std::string(name)+".glb");
+        const auto result=edit_glb_appearance(source,path,options);
+        INFO(name); INFO(result.error); REQUIRE(result.success);
+        TriangleMesh mesh;ObjInfo info;std::string error;
+        REQUIRE(load_model_artifact(path,mesh,info,error));
+        REQUIRE(mesh.its.indices.size()==draft.at("face_count"));
+        REQUIRE(SurfaceSelectionPersistence::geometry_fingerprint(mesh.its)==draft.at("geometry"));
+        REQUIRE(model_artifact_sha256(source)==source_hash);
+        report.push_back({{"palette",name},{"output_sha256",model_artifact_sha256(path)},
+            {"shape_reference",saved_ref},{"changed_texture_pixels",result.changed_pixels},
+            {"seconds",std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count()},
+            {"recognition_started",false},{"reopened",true}});
+        boost::filesystem::ofstream(destination/"results.json")<<report.dump(2);
     }
 }

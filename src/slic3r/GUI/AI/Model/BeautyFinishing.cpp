@@ -248,6 +248,9 @@ ModelFinishingResult finish_beauty_artifact(const boost::filesystem::path& sourc
             for(const auto& leaf:appearance.leaves) if(leaf.weight>0 &&
                 (leaf.key.source_face_id>=selected.size() || !selected[leaf.key.source_face_id] || protection[leaf.key.source_face_id]))
                 throw std::runtime_error("Appearance leaves extend outside the selected source surface.");
+            for(const auto& cell:appearance.cells) if(cell.weight>0 &&
+                (cell.source_face_id>=selected.size() || !selected[cell.source_face_id] || protection[cell.source_face_id]))
+                throw std::runtime_error("Appearance cells extend outside the selected source surface.");
             const auto edited=edit_glb_appearance(source,destination,appearance,canceled);
             if(!edited.success) {result.canceled=edited.canceled;throw std::runtime_error(edited.error);}
             owns_output=true;result.changed_texture_pixels=edited.changed_pixels;

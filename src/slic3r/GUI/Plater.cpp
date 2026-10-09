@@ -17148,45 +17148,6 @@ void Plater::reset_with_confirm()
     }
 }
 
-// BBS: save logic
-int GUI::Plater::close_with_confirm(std::function<bool(bool)> second_check)
-{
-    if (up_to_date(false, false)) {
-        if (second_check && !second_check(false)) return wxID_CANCEL;
-        model().set_backup_path("");
-        return wxID_NO;
-    }
-
-    MessageDialog dlg(static_cast<wxWindow*>(this), _L("The current project has unsaved changes. Would you like to save before continuing\?"),
-        wxString(SLIC3R_APP_FULL_NAME) + " - " + _L("Save"), wxYES_NO | wxCANCEL | wxYES_DEFAULT | wxCENTRE);
-    dlg.show_dsa_button(_L("Remember my choice."));
-    auto choise = wxGetApp().app_config->get("save_project_choise");
-    auto result = choise.empty() ? dlg.ShowModal() : choise == "yes" ? wxID_YES : wxID_NO;
-    if (result == wxID_CANCEL)
-        return result;
-    else {
-        if (dlg.get_checkbox_state())
-            wxGetApp().app_config->set("save_project_choise", result == wxID_YES ? "yes" : "no");
-        if (result == wxID_YES) {
-            result = save_project();
-            if (result == wxID_CANCEL) {
-                if (choise.empty())
-                    return result;
-                else
-                    result = wxID_NO;
-            }
-        }
-    }
-
-    if (second_check && !second_check(result == wxID_YES)) return wxID_CANCEL;
-
-    model().set_backup_path("");
-    up_to_date(true, false);
-    up_to_date(true, true);
-
-    return result;
-}
-
 //BBS: trigger a restore project event
 void Plater::trigger_restore_project(int skip_confirm)
 {

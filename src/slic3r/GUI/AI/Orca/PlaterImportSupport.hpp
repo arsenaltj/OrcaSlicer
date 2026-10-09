@@ -1,4 +1,5 @@
 #pragma once
+#include "slic3r/GUI/Redesign/RedesignMessageDialog.hpp"
 #include "slic3r/GUI/AIModelOutputDirectory.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchImportUiGuard.hpp"
 #include "slic3r/GUI/AI/Orca/FilamentColorPack.hpp"

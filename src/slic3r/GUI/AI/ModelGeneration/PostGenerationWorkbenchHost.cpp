@@ -1,4 +1,5 @@
 #include "slic3r/GUI/ModelGenerationPanel.hpp"
+#include "slic3r/GUI/Redesign/RedesignMessageDialog.hpp"
 #include "BeautyWorkbenchControls.hpp"
 #include "BeautyWorkbenchTransactionController.hpp"
 #include "ModelPreview3D.hpp"
@@ -68,9 +69,11 @@ PostGenerationWorkbenchState ModelGenerationPanel::workbench_snapshot() const
     state.candidate_path = m_finishing_candidate.string();
     state.palette = local_recolor_palette();
     state.editing = m_workbench_editing;
+    state.semantic_mode = m_semantic_mode;
+    if (m_portrait_task) state.portrait_optimization = m_portrait_task->snapshot();
     state.portrait_enabled = m_portrait_mode;
     const auto portrait = m_model_preview ? m_model_preview->portrait_shape_details() : nullptr;
-    state.portrait_available = portrait && !portrait->locks.empty();
+    state.portrait_available = m_model_preview && m_model_preview->active_shape_locks();
     if (!state.portrait_available) state.portrait_unavailable_reason = portrait
         ? "当前保护边界与运行时不兼容，或没有可保护的细节。请使用匹配的 R6 运行时与保护数据。"
         : "当前模型缺少通过身份校验的人像保护数据。";
@@ -90,6 +93,11 @@ PostGenerationWorkbenchState ModelGenerationPanel::workbench_snapshot() const
         state.check = {};
         state.check.summary = "存在候选或未保存修改，接受并保存后自动复检。";
     }
+    const bool portrait_blocked = state.portrait_optimization.running() || state.portrait_optimization.outcome == PortraitOutcome::DraftOnly;
+    state.can_reoptimize_regions = state.can_reoptimize_regions && !portrait_blocked;
+    state.actions.can_switch_version = state.actions.can_switch_version && !portrait_blocked;
+    state.actions.can_import = state.actions.can_import && !portrait_blocked;
+    state.can_edit_project_colors = state.can_edit_project_colors && !portrait_blocked;
     state.can_import_for_slicing = state.actions.can_import && state.check.status != WorkbenchCheckStatus::Running;
     if (m_model_preview) {
         state.faces = m_model_preview->triangle_count();
@@ -100,7 +108,8 @@ PostGenerationWorkbenchState ModelGenerationPanel::workbench_snapshot() const
 
 bool ModelGenerationPanel::can_replace_model_asset() const
 {
-    return !m_shutdown && post_generation_asset_switch_allowed(m_busy || m_preview_download_in_flight || m_workbench_check_running || m_workbench_import_running,
+    return !m_shutdown && !m_portrait_draft_before &&
+        !(m_portrait_task && m_portrait_task->snapshot().running()) && post_generation_asset_switch_allowed(m_busy || m_preview_download_in_flight || m_workbench_check_running || m_workbench_import_running,
         m_finishing_running, (m_beauty_transactions && m_beauty_transactions->processing()) ||
             (m_model_preview && m_model_preview->semantic_processing()),
         !m_finishing_candidate.empty(), m_finishing_before, m_beauty_controls && m_beauty_controls->has_changes());
@@ -173,8 +182,8 @@ bool ModelGenerationPanel::request_workbench_color_matching()
         state.check.status == WorkbenchCheckStatus::Failed) {
         const auto summary = state.check.status == WorkbenchCheckStatus::NotRun ? _L("尚未执行模型检查。") :
             wxString::FromUTF8(state.check.summary);
-        if (wxMessageBox(summary + "\n" + _L("继续使用 Orca 原生导入校验？"), _L("模型检查"),
-            wxYES_NO | wxNO_DEFAULT | wxICON_WARNING, m_workbench_shell) != wxYES) return false;
+        if (show_redesign_confirmation(m_workbench_shell, summary + "\n" + _L("继续使用 Orca 原生导入校验？"),
+            _L("模型检查"), {wxYES_NO | wxNO_DEFAULT}) != wxID_YES) return false;
     }
     AI::GeneratedModelArtifact artifact;
     artifact.local_path = m_displayed_model_path.string();
@@ -195,7 +204,7 @@ bool ModelGenerationPanel::request_workbench_color_matching()
         for (const auto& item : m_model_preview->import_subface_color_overrides(true))
             request.subface_color_overrides.push_back({item.face_id, item.path.depth, item.path.value, item.color});
         request.face_color_geometry_id = m_model_preview->geometry_id();
-        try { BeautyWorkbenchControls::prepare_import(m_displayed_model_path, request); }
+        try { prepare_portrait_import(request); BeautyWorkbenchControls::prepare_import(m_displayed_model_path, request); }
         catch (const std::exception& error) {
             wxMessageBox(wxString::FromUTF8(error.what()), _L("配色确认"), wxOK | wxICON_ERROR, this);
             return false;

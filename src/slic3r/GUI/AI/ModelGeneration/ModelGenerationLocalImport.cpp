@@ -130,7 +130,7 @@ void ModelGenerationPanel::import_local_model(const boost::filesystem::path& sou
             weak->load_library_entries();
             weak->load_library_entry(destination,reference_image_path,ai_image_path,
                 {},{},false,{},{},{},id,
-                open_beauty?_L("3D 美颜副本"):_L("本地导入模型"));
+                open_beauty?_L("3D 美颜副本"):_L("本地导入模型"), true);
             // A guarded/refused load did not start a preview worker.
             if(operation->cancel==canceled && !weak->m_preview_loading) {
                 complete_local_model_import(weak->m_library_import,canceled,false);

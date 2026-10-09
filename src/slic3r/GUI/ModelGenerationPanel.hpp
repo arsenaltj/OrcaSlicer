@@ -61,6 +61,7 @@ class BeautyWorkbenchControls;
 struct BeautyPartitionSnapshot;
 struct SemanticRegionEvidence;
 struct SecondaryRegionEvidence;
+namespace PortraitResidual { struct Document; }
 class LocalPrintColorPanel;
 class Plater;
 
@@ -92,6 +93,7 @@ public:
     bool request_open_history(const std::string& job_id);
     bool request_open_image_history(const std::string& job_id);
     void set_service_availability(bool available, const std::string& message = {});
+    void set_service_availability(bool available, bool generation_available, const std::string& message);
     void set_service_retry_handler(std::function<void()> handler);
     void set_prepare_navigation_handler(std::function<void()> handler) { m_prepare_navigation = std::move(handler); }
     void set_color_matching_handler(std::function<void(const AI::GeneratedModelArtifact&)> handler) { m_color_matching = std::move(handler); }
@@ -103,10 +105,26 @@ public:
     bool request_return_overview();
     bool request_workbench_color_matching();
     bool request_enable_portrait(bool enabled);
+    bool request_semantic_mode(SemanticMode mode);
+    bool request_portrait_optimization(wxString& reason);
+    void cancel_portrait_optimization();
+    wxWindow* build_portrait_optimization(wxWindow* parent);
+    void update_portrait_optimization();
+    void finish_portrait_optimization(PortraitOutcome outcome, const wxString& reason = wxString());
+    void portrait_preview_ready();
+    void reset_portrait_session();
+    void preserve_portrait_draft();
+    void restore_portrait_draft();
+    void clear_portrait_draft();
+    void prepare_portrait_import(AI::ModelImportRequest& request);
     bool request_check_workbench();
     bool request_save_and_return();
     bool request_workbench_results();
     void set_workbench_results_handler(std::function<void()> handler) { m_workbench_results = std::move(handler); }
+    void set_workbench_return_to_design_handler(std::function<void()> handler)
+    {
+        m_workbench_return_to_design = std::move(handler);
+    }
     PostGenerationWorkbenchState workbench_snapshot() const;
     void set_workbench_listener(PostGenerationWorkbenchListener listener);
     void set_project_color_handler(std::function<void(size_t)> handler,
@@ -126,7 +144,19 @@ private:
     wxChoice* m_assets_category {nullptr};
     std::vector<size_t> m_library_filtered_indices;
     wxStaticText* m_library_operation_status {nullptr};
-    bool m_portrait_mode {false};
+    bool m_portrait_mode {false}; // Optional R6 protection; independent of the editing mode.
+    SemanticMode m_semantic_mode {SemanticMode::General};
+    bool m_portrait_entered {false}, m_portrait_preview_drawn {false};
+    bool m_portrait_cancel_requested {false};
+    std::shared_ptr<PortraitOptimizationTask> m_portrait_task;
+    wxPanel* m_portrait_card {nullptr};
+    Button* m_portrait_start {nullptr};
+    Button* m_portrait_cancel {nullptr};
+    wxStaticText* m_portrait_status {nullptr};
+    wxStaticText* m_portrait_time {nullptr};
+    wxWindow* m_portrait_gauge {nullptr};
+    wxWindow* m_portrait_mode_choice {nullptr};
+    wxTimer m_portrait_timer;
     WorkbenchCheckResult m_workbench_check_result;
     std::string m_workbench_check_path;
     std::uint64_t m_workbench_check_revision {0};
@@ -145,6 +175,7 @@ private:
     wxTimer m_workbench_sync_timer;
     bool m_save_and_return {false};
     std::function<void()> m_workbench_results;
+    std::function<void()> m_workbench_return_to_design;
     void finish_workbench_save();
     void publish_workbench_state();
     std::function<void()> m_prepare_navigation;
@@ -159,6 +190,7 @@ private:
     bool set_selected_image(const boost::filesystem::path& path, bool request_recommendation);
     void clear_selected_image();
     void publish_ui_state();
+    bool can_generate_design_from_shell() const;
     void initialize_page(bool require_visible);
     void on_first_visible_idle(wxIdleEvent& event);
     void build_page();
@@ -306,7 +338,7 @@ private:
                              const boost::filesystem::path& color_intent_path,
                              const std::string& color_intent_schema,
                              const std::string& color_intent_sha256,
-                             const std::string& job_id, const wxString& title);
+                             const std::string& job_id, const wxString& title, bool new_asset = false);
     void delete_library_entry(const GeneratedModelEntry& entry);
     void export_library_entry(const GeneratedModelEntry& entry);
     void update_library_provider_tasks(const std::string& job_id,
@@ -396,6 +428,7 @@ private:
     std::array<wxStaticText*, 7> m_workbench_slice_values {};
     bool m_open_smart_slicing_after_import {false};
     wxWindow* m_workbench_history_toggle {nullptr};
+    wxWindow* m_workbench_return_to_design_button {nullptr};
     bool m_workbench_editing {false};
     bool m_refreshing_workbench_layout {false};
     bool m_updating_comparison_layout {false};
@@ -459,6 +492,7 @@ private:
     std::shared_ptr<std::atomic<bool>> m_preview_canceled;
     std::shared_ptr<std::atomic<bool>> m_finishing_canceled;
     std::shared_ptr<std::atomic<bool>> m_beauty_publication_committed;
+    std::shared_ptr<const PortraitResidual::Document> m_residual_review;
     boost::filesystem::path m_finishing_source, m_finishing_candidate, m_finishing_undo_path, m_finishing_accepted_path;
     std::string m_finishing_id;
     AI::ModelFinishingResult m_finishing_result;
@@ -473,6 +507,7 @@ private:
     AI::SemanticColoring::FaceColors m_finishing_candidate_semantic_faces;
     AI::SemanticColoring::SubfaceColors m_finishing_candidate_semantic_subfaces;
     nlohmann::json m_finishing_candidate_semantic_provenance;
+    nlohmann::json m_finishing_candidate_baked_appearance;
     std::shared_ptr<const SemanticRegionEvidence> m_finishing_candidate_region_evidence;
     std::string m_finishing_candidate_region_error;
     std::shared_ptr<const SecondaryRegionEvidence> m_finishing_candidate_secondary_evidence;
@@ -515,6 +550,8 @@ private:
     std::vector<boost::filesystem::path> m_beauty_accepted_files;
     std::shared_ptr<BeautyCandidateSnapshot> m_beauty_session_source;
     std::shared_ptr<BeautyCandidateSnapshot> m_beauty_reoptimization_before;
+    std::shared_ptr<BeautyCandidateSnapshot> m_portrait_draft_before;
+    std::shared_ptr<BeautyCandidateSnapshot> m_portrait_preview_draft;
     size_t m_beauty_session_undo_base {0};
     size_t m_beauty_session_file_base {0};
     bool m_beauty_manual_color_dirty {false};
@@ -737,6 +774,7 @@ private:
     bool m_model_preview_ready { false };
     bool m_library_model_loaded { false };
     bool m_service_available { false };
+    bool m_generation_available { false };
     bool m_service_availability_known { false };
     bool m_page_initialized { false };
     bool m_library_refresh_pending { true };

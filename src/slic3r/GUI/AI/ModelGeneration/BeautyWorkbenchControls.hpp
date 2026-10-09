@@ -90,6 +90,12 @@ public:
     std::function<size_t(const std::string&)> on_auto_detail_match;
     std::function<void()> on_import_secondary_evidence;
     std::function<void()> on_regenerate_readonly_evidence;
+    std::function<void()> on_residual_proposal;
+    std::function<void()> on_residual_apply;
+    std::function<void()> on_residual_cancel;
+    void set_residual_review(bool ready, bool actionable = true) {
+        m_residual_review=ready; m_residual_actionable=ready && actionable; update_text();
+    }
     std::function<bool(wxString&)> on_reoptimize;
     std::function<void()> on_preview;
     std::function<void()> on_accept;
@@ -136,6 +142,10 @@ private:
     wxStaticText* m_secondary_status {nullptr};
     Button* m_import_secondary {nullptr};
     Button* m_regenerate_evidence {nullptr};
+    Button* m_residual_proposal {nullptr};
+    Button* m_residual_apply {nullptr};
+    Button* m_residual_cancel {nullptr};
+    bool m_residual_review {false}, m_residual_actionable {false};
     Button* m_unlock_shapes {nullptr};
     WorkbenchSwitch* m_preview_protected {nullptr};
     wxPanel* m_preview_protected_row {nullptr};

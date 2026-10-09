@@ -159,11 +159,11 @@ public:
         m_workbench_editable = editable;
         if (!m_workbench_source) return;
         m_workbench_source->Enable(editable && bool(m_histogram));
-        m_workbench_mode->Enable(editable && bool(m_histogram) && m_colors.size() <= 6);
+        if (m_workbench_mode) m_workbench_mode->Enable(editable && bool(m_histogram) && m_colors.size() <= 6);
         const int source = m_source->GetSelection();
         m_workbench_count->Enable(editable && bool(m_histogram) && (source == 0 || source == 2));
     }
-    wxWindow* build_workbench_palette(wxWindow* parent) {
+    wxWindow* build_workbench_mode(wxWindow* parent) {
         auto* container = new wxPanel(parent);
         container->SetBackgroundColour(parent->GetBackgroundColour());
         auto* contents = new wxBoxSizer(wxVERTICAL);
@@ -174,12 +174,18 @@ public:
         m_workbench_mode->SetToolTip(_L("人像模式使用现有的本地人像区域优化，支持 1 至 6 色。"));
         m_workbench_mode->Bind(wxEVT_COMBOBOX, [this](wxCommandEvent&) {
             if (!m_workbench_editable || !m_histogram || m_colors.size() > 6) return;
-            m_semantic->SetValue(m_workbench_mode->GetSelection() == 1);
-            wxCommandEvent event(wxEVT_CHECKBOX, m_semantic->GetId());
-            event.SetEventObject(m_semantic); event.SetInt(m_semantic->GetValue());
-            m_semantic->GetEventHandler()->ProcessEvent(event);
+            if (on_semantic_mode) on_semantic_mode(m_workbench_mode->GetSelection() == 1);
+            update();
         });
         contents->Add(m_workbench_mode, 0, wxEXPAND | wxBOTTOM, FromDIP(12));
+        container->SetSizer(contents);
+        return container;
+    }
+    void set_semantic_mode(bool portrait) { m_host_portrait_mode = portrait; m_semantic->SetValue(portrait); update(); }
+    wxWindow* build_workbench_palette(wxWindow* parent) {
+        auto* container = new wxPanel(parent);
+        container->SetBackgroundColour(parent->GetBackgroundColour());
+        auto* contents = new wxBoxSizer(wxVERTICAL);
         auto* panel = new WorkbenchPanel(container, true);
         panel->SetWindowStyle(panel->GetWindowStyle() | wxCLIP_CHILDREN);
         panel->SetBackgroundColour(wxColour(22, 22, 25));
@@ -245,7 +251,7 @@ public:
         box->Add(options, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(6));
         auto* semantic_row = new wxBoxSizer(wxHORIZONTAL);
         m_semantic = new wxCheckBox(this, wxID_ANY, _L("人像区域优化"));
-        m_semantic->SetValue(true);
+        m_semantic->SetValue(false);
         m_semantic->SetToolTip(_L("在本机识别皮肤、衣服和嘴唇后分别匹配颜色；识别不明确的区域沿用原有配色。"));
         semantic_row->Add(m_semantic, 1, wxALIGN_CENTER_VERTICAL);
         m_semantic_cancel = new wxButton(this, wxID_ANY, _L("取消识别"));
@@ -255,8 +261,8 @@ public:
         m_semantic_status = new wxStaticText(this, wxID_ANY, wxEmptyString);
         box->Add(m_semantic_status, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(6));
         m_semantic_status->Hide();
-        m_semantic->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) { changed(); });
-        m_semantic_cancel->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { m_semantic->SetValue(false); changed(); });
+        m_semantic->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) { if (on_semantic_mode) on_semantic_mode(m_semantic->GetValue()); });
+        m_semantic_cancel->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { if (on_semantic_cancel) on_semantic_cancel(); });
         auto* pack_button = new wxButton(this, wxID_ANY, _L("应用 / 保存耗材包…"));
         m_detail_commands = {m_toggle, reset, m_semantic_cancel, pack_button};
         box->Add(pack_button, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(6));
@@ -338,14 +344,17 @@ public:
             if (m_source->GetSelection() == 1) read_project();
             recompute();
         });
-        m_count->Bind(wxEVT_SPINCTRL, [this](wxSpinEvent&) { recompute(); });
+        m_count->Bind(wxEVT_SPINCTRL, [this](wxSpinEvent&) {
+            if(!m_semantic_card.empty() && !m_semantic_roles.empty()) m_source->SetSelection(2);
+            recompute();
+        });
         m_fidelity->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) { recompute(); });
         m_lighting->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) { changed(); });
         reset->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
             read_project();
             m_initial_count = int(PreviewPalette::initial_trial_color_count(m_project_filament_count, m_model_suggestion_count));
             m_source->SetSelection(0); m_count->SetValue(m_initial_count); m_fidelity->SetValue(true);
-            m_semantic->SetValue(true);
+            m_semantic->SetValue(false);
             m_lighting->SetValue(false);
             m_semantic_region_slots = SemanticColoring::default_semantic_region_slot_bindings;
             for (auto* lock : m_locks) lock->SetValue(false);
@@ -395,10 +404,10 @@ public:
             m_colors = m_histogram->trial_palette(size_t(m_initial_count), {}, true);
             m_mapping_colors = m_colors;
         }
-        m_semantic_colors.clear(); m_semantic_mapping.clear(); m_semantic_card.clear();
+        m_semantic_colors.clear(); m_semantic_mapping.clear(); m_semantic_card.clear(); m_semantic_roles.clear();
         m_semantic_region_slots = SemanticColoring::default_semantic_region_slot_bindings;
         m_region_available = {};
-        m_semantic->SetValue(true);
+        m_semantic->SetValue(false);
         sync_active_palette_state();
         set_semantic_status(wxEmptyString, false);
         m_enabled = false; m_source->SetSelection(0); m_count->SetValue(m_initial_count); m_fidelity->SetValue(true);
@@ -409,7 +418,7 @@ public:
     }
     void clear() {
         m_histogram.reset(); m_colors.clear(); m_mapping_colors.clear();
-        m_semantic_colors.clear(); m_semantic_mapping.clear(); m_semantic_card.clear();
+        m_semantic_colors.clear(); m_semantic_mapping.clear(); m_semantic_card.clear(); m_semantic_roles.clear();
         m_semantic_region_slots = SemanticColoring::default_semantic_region_slot_bindings;
         m_region_available = {};
         m_enabled = false; Hide();
@@ -445,6 +454,7 @@ public:
     const std::vector<Color>& semantic_palette() const { return m_semantic_colors.empty() ? m_colors : m_semantic_colors; }
     const std::vector<Color>& semantic_mapping_palette() const { return m_semantic_mapping.empty() ? semantic_palette() : m_semantic_mapping; }
     const std::vector<Color>& semantic_portrait_card() const { return m_semantic_card; }
+    const std::vector<std::string>& semantic_palette_roles() const { return m_semantic_roles; }
     const SemanticColoring::SemanticRegionSlotBindings& semantic_region_slots() const { return m_semantic_region_slots; }
     void set_semantic_region_availability(std::array<bool, SemanticColoring::semantic_region_slot_count> available) {
         m_region_available = available; update();
@@ -452,9 +462,9 @@ public:
     void set_semantic_status(const wxString& message, bool busy) {
         if (m_semantic_status->GetLabel() == message && m_semantic_busy == busy) return;
         m_semantic_busy = busy;
-        m_semantic_status->SetLabel(message); m_semantic_status->Show(!message.empty());
+        m_semantic_status->SetLabel(message); m_semantic_status->Show(!m_workbench_mode && !message.empty());
         m_semantic_status->Wrap(std::max(FromDIP(220), GetClientSize().x - FromDIP(12)));
-        m_semantic_cancel->Show(busy && m_detail_buttons.empty());
+        m_semantic_cancel->Show(!m_workbench_mode && busy && m_detail_buttons.empty());
         sync_workbench_detail_choices(); Layout();
         if (auto* parent = GetParent()) {
             parent->Layout();
@@ -475,6 +485,7 @@ public:
         saved.project_signature = m_project_signature; saved.notice = m_notice;
         saved.semantic_optimization = m_semantic->GetValue();
         saved.semantic_region_slots = m_semantic_region_slots;
+        saved.semantic_role_uids=m_semantic_roles;
         if (m_colors.size() <= 6) {
             saved.semantic_palette = semantic_palette(); saved.semantic_mapping_palette = semantic_mapping_palette();
             if (saved.semantic_palette.size() == m_colors.size() &&
@@ -501,6 +512,8 @@ public:
         m_colors = saved.colors; m_mapping_colors = saved.mapping_colors;
         m_semantic_colors = saved.semantic_palette; m_semantic_mapping = saved.semantic_mapping_palette;
         m_semantic_card = saved.semantic_portrait_card;
+        m_semantic_roles=saved.semantic_role_uids.empty() ? portrait_roles_for_card(
+            saved.semantic_palette.empty()?saved.colors:saved.semantic_palette,saved.semantic_portrait_card) : saved.semantic_role_uids;
         m_semantic_region_slots = saved.semantic_region_slots;
         sync_active_palette_state();
         m_semantic->SetValue(saved.semantic_optimization);
@@ -515,6 +528,8 @@ public:
         }
         changed();
     }
+    std::function<void(bool)> on_semantic_mode;
+    std::function<void()> on_semantic_cancel;
     std::function<void()> on_changed;
     std::function<void()> on_region_changed;
     std::function<void()> on_project_colors_changed;
@@ -569,11 +584,14 @@ private:
         std::vector<Color> locked;
         for (size_t i = 0; i < m_colors.size(); ++i) if (m_locks[i]->GetValue()) locked.push_back(m_colors[i]);
         if (source == 1) {
+            m_semantic_roles.clear();
             m_colors = m_project_colors;
             m_semantic_colors = m_colors; m_semantic_mapping = m_colors; m_semantic_card.clear();
-            if (is_portrait_card(m_colors)) m_semantic_card = m_colors;
+            const auto card = portrait_card_colors();
+            const bool recognized_card = portrait_card_slot_mapping(m_colors, card).enabled;
+            if (recognized_card) m_semantic_card = card;
             m_mapping_colors = m_colors;
-            if (is_portrait_card(m_colors)) apply_portrait_mapping();
+            if (recognized_card) apply_portrait_mapping();
             m_project_color_slots = m_project_slots;
             m_project_semantic_slots = m_project_slots;
             m_bound_project_identity = m_project_slot_identity;
@@ -587,6 +605,7 @@ private:
             }
             if (!m_colors.empty()) m_count->SetValue(int(m_colors.size()));
         } else if (source >= 3 && size_t(source - 3) < m_packs.size()) {
+            m_semantic_roles.clear();
             m_colors.clear();
             for (const auto& hex : m_packs[source - 3].colors) {
                 const wxColour color(wxString::FromUTF8(hex));
@@ -594,10 +613,11 @@ private:
             }
             m_mapping_colors = m_colors; m_count->SetValue(int(m_colors.size()));
             m_semantic_colors = m_colors; m_semantic_mapping = m_colors; m_semantic_card.clear();
-            if (m_packs[source - 3].name == young_portrait_color_pack().name) m_semantic_card = m_colors;
+            if (m_packs[source - 3].name == young_portrait_color_pack().name) m_semantic_card = portrait_card_colors();
             m_notice = _L("色卡仅用于试色；点击“应用 / 保存耗材包”可切换工程耗材。");
             if (m_packs[source - 3].name == young_portrait_color_pack().name) apply_portrait_mapping();
         } else if (source == 0) {
+            m_semantic_roles.clear();
             if (locked.size() > size_t(m_count->GetValue())) {
                 m_count->SetValue(int(locked.size()));
                 m_notice = _L("已保留锁定颜色；如需更少颜色，请先取消部分保留。");
@@ -607,6 +627,18 @@ private:
             m_semantic_colors = m_colors; m_semantic_mapping = m_colors; m_semantic_card.clear();
             for (size_t i = 0; i < PreviewPalette::max_preview_colors; ++i) m_locks[i]->SetValue(i < m_colors.size() &&
                 std::find(locked.begin(), locked.end(), m_colors[i]) != locked.end());
+        } else if(!m_semantic_card.empty() && !m_semantic_roles.empty() && m_count->GetValue()>=3 && m_count->GetValue()<=6) {
+            const auto old_colors=m_semantic_colors;
+            const auto old_roles=m_semantic_roles;
+            const auto count=size_t(m_count->GetValue());
+            m_colors.assign(m_semantic_card.begin(),m_semantic_card.begin()+count);
+            m_mapping_colors=m_colors;m_semantic_mapping=m_colors;m_semantic_colors=m_colors;
+            m_semantic_roles.assign(portrait_role_names.begin(),portrait_role_names.begin()+count);
+            for(size_t i=0;i<count;++i) {
+                const auto previous=std::find(old_roles.begin(),old_roles.end(),m_semantic_roles[i]);
+                if(previous!=old_roles.end() && size_t(previous-old_roles.begin())<old_colors.size())
+                    m_colors[i]=m_semantic_colors[i]=old_colors[size_t(previous-old_roles.begin())];
+            }
         } else {
             const auto suggestions = m_histogram->trial_palette(PreviewPalette::max_preview_colors, {}, true);
             while (m_colors.size() < size_t(m_count->GetValue())) {
@@ -622,7 +654,7 @@ private:
                 m_semantic_mapping.resize(m_colors.size());
                 for (size_t i = previous_size; i < m_colors.size(); ++i)
                     m_semantic_colors[i] = m_semantic_mapping[i] = m_colors[i];
-                m_semantic_card.clear();
+                if(m_semantic_card.empty()) m_semantic_roles.clear();
             }
         }
         sync_active_palette_state();
@@ -667,6 +699,14 @@ private:
     }
     void changed() { update(); if (on_changed) on_changed(); }
     void region_changed() { update(); if (on_region_changed) on_region_changed(); }
+    static std::vector<Color> portrait_card_colors() {
+        std::vector<Color> colors;
+        for (const auto& hex : young_portrait_color_pack().colors) {
+            const wxColour color(wxString::FromUTF8(hex));
+            colors.push_back({color.Red()/255.f, color.Green()/255.f, color.Blue()/255.f});
+        }
+        return colors;
+    }
     static bool is_portrait_card(const std::vector<Color>& colors) {
         const auto card = young_portrait_color_pack();
         if (colors.size() != card.colors.size()) return false;
@@ -687,16 +727,21 @@ private:
             m_semantic_colors = m_colors;
             m_semantic_mapping = m_colors;
         }
-        if (m_colors.size() != 6 ||
+        if (m_colors.size() > 6 ||
             (!m_semantic_card.empty() && (m_semantic_card.size() != 6 || !is_portrait_card(m_semantic_card))))
             m_semantic_card.clear();
+        if(!valid_portrait_roles(m_semantic_roles,m_colors.size())) m_semantic_roles.clear();
+        if(m_semantic_roles.empty() && !m_semantic_card.empty())
+            m_semantic_roles=portrait_roles_for_card(semantic_palette(),m_semantic_card);
         for (int& slot : m_semantic_region_slots)
             if (slot < -1 || size_t(slot) >= m_colors.size()) slot = -1;
     }
     void apply_portrait_mapping() {
-        const auto mapping = PreviewPalette::portrait_pack_mapping(m_histogram->palette(6, {}, true), m_colors);
+        const auto mapping = portrait_card_slot_mapping(m_colors, m_semantic_card);
         if (!mapping.enabled) return;
         m_mapping_colors = mapping.mapping_colors; m_colors = mapping.target_colors;
+        m_semantic_colors=m_colors;m_semantic_mapping=m_mapping_colors;
+        m_semantic_roles=portrait_roles_for_card(m_colors,m_semantic_card);
         m_count->SetValue(int(m_colors.size()));
         sync_active_palette_state();
         m_notice = _L("已按人物色卡建议配色，可通过人像区域优化进一步调整；局部修改请到 3D 美颜。");
@@ -724,9 +769,18 @@ private:
     }
     void update() {
         const int source = m_source->GetSelection();
+        // The host owns the portrait mode, progress and cancellation card.
+        // Palette details must not expose a second mode/task entry point.
+        if (m_workbench_mode) {
+            m_semantic->Hide();
+            m_semantic_cancel->Hide();
+            m_semantic_status->Hide();
+        }
         if (m_workbench_source) {
-            m_workbench_mode->SetSelection(semantic_optimization() ? 1 : 0);
-            m_workbench_mode->Enable(m_workbench_editable && bool(m_histogram) && m_colors.size() <= 6);
+            if (m_workbench_mode) {
+                m_workbench_mode->SetSelection(m_host_portrait_mode ? 1 : 0);
+                m_workbench_mode->Enable(m_workbench_editable && bool(m_histogram) && m_colors.size() <= 6);
+            }
             m_workbench_source->SetSelection(source);
             m_workbench_source->Enable(m_workbench_editable && bool(m_histogram));
             m_workbench_count->SetValue(m_count->GetValue());
@@ -808,11 +862,15 @@ private:
             entry.button->SetLabel(entry.original->GetLabel());
             const bool cancellation = entry.original == m_semantic_cancel;
             entry.button->Enable(entry.original->IsEnabled() && (!cancellation || m_semantic_busy));
-            if (cancellation) entry.button->Show();
+            if (cancellation) entry.button->Show(!m_workbench_mode && m_semantic_busy);
             if (const auto* tooltip = entry.original->GetToolTip())
                 entry.button->SetToolTip(tooltip->GetTip());
         }
         for (const auto& entry : m_detail_switches) {
+            if (entry.original == m_semantic) {
+                entry.row->Show(!m_workbench_mode);
+                entry.original->Hide();
+            }
             if (entry.lock_index >= 0) {
                 entry.row->Show(m_source->GetSelection() == 0 && m_swatches[entry.lock_index]->IsShown());
                 entry.original->Hide();
@@ -870,6 +928,7 @@ private:
     WorkbenchSlider* m_detail_count_slider {nullptr};
     wxStaticText* m_detail_count_value {nullptr};
     std::vector<FilamentColorPack> m_packs;
+    bool m_host_portrait_mode {false};
     wxWeakRef<WorkbenchPaletteChoice> m_workbench_mode;
     wxWeakRef<WorkbenchPaletteChoice> m_workbench_source;
     wxWeakRef<wxSlider> m_workbench_count;
@@ -897,6 +956,7 @@ private:
     std::array<wxCheckBox*, PreviewPalette::max_preview_colors> m_locks {};
     std::shared_ptr<const PreviewPalette::Histogram> m_histogram;
     std::vector<Color> m_colors, m_project_colors, m_mapping_colors;
+    std::vector<std::string> m_semantic_roles;
     std::vector<wxString> m_project_names;
     std::vector<size_t> m_project_slots;
     std::vector<size_t> m_project_color_slots, m_project_semantic_slots;

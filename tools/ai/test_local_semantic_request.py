@@ -15,6 +15,47 @@ import local_semantic_worker as worker
 
 
 class RequestTests(unittest.TestCase):
+    def test_request_and_probe_share_the_twenty_minute_timeout_boundary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = dict(schema=worker.CONFIG_SCHEMA, enabled=True, python_executable=sys.executable,
+                          weights_directory=directory, cpu_threads=4, timeout_seconds=1200, cache_bytes=0)
+            for seconds in (10, 120, 600, 1200):
+                config['timeout_seconds'] = seconds
+                request._validate_config(config, worker)
+            for seconds in (9, 1201, True):
+                config['timeout_seconds'] = seconds
+                with self.subTest(seconds=seconds), self.assertRaises(request.RequestError):
+                    request._validate_config(config, worker)
+
+    def test_progress_is_atomic_request_bound_and_optional(self):
+        with tempfile.TemporaryDirectory() as directory:
+            identity = dict(request_id='one', source_sha256='a'*64, geometry_id='b'*64)
+            writer = request.ProgressWriter(directory, identity)
+            writer('recognizing', 'view front', 1, 8)
+            file = Path(directory)/'progress.json'
+            first = json.loads(file.read_text())
+            self.assertEqual(first['request_id'], identity['request_id'])
+            self.assertEqual(first['source_sha256'], identity['source_sha256'])
+            self.assertEqual(first['geometry_id'], identity['geometry_id'])
+            self.assertEqual(first['completed'], 1)
+            writer('ownership', 'fusion')
+            last = json.loads(file.read_text())
+            self.assertGreater(last['sequence'], first['sequence'])
+            self.assertEqual(last['total'], 0)
+            self.assertFalse(file.with_suffix('.partial').exists())
+            writer('unknown', 'ignored')
+            self.assertEqual(json.loads(file.read_text()), last)
+
+    def test_optional_body_parent_proof_requires_unique_independent_unknown_faces(self):
+        projection={'subjects':['one'],'regions':[{'subject_id':'one','label':'face','samples':[[0,.99,1.,2,2]]}]}
+        row=[1,'one','body-skin',.99,2,2]
+        request._validate_parent_details([row],projection,3)
+        invalid=[[[0,*row[1:]]],[[3,*row[1:]]],[[1,'other',*row[2:]]],
+                 [[1,'one','face',*row[3:]]],[[1,'one','body-skin',.89,2,2]],
+                 [[1,'one','body-skin',.99,2,1]],[row,row]]
+        for rows in invalid:
+            with self.subTest(rows=rows),self.assertRaises(request.RequestError):
+                request._validate_parent_details(rows,projection,3)
     def test_unknown_feature_requires_two_distinct_connected_subject_context_anchors(self):
         import numpy as np
         vertices=np.array([[1,1,1],[-1,-1,1],[-1,1,-1],[1,-1,-1]])
@@ -121,8 +162,12 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(actual, self.modules)
         policy = request.policy_identity(actual)
         self.assertEqual(set(policy['modules_sha256']), set(request.POLICY_MODULES))
-        self.assertEqual(policy['version'], 'visible-face-semantic-v7-farl-sides-source-brow-boundary')
+        self.assertEqual(policy['version'], 'visible-face-semantic-v12-parent-local-views')
         self.assertEqual(policy['version'], self.pipeline.POLICY_VERSION)
+        # The native host signs this policy before invoking the installed worker.
+        # A stale host version rejects every real request before inference.
+        host = Path(__file__).resolve().parents[2] / 'src/slic3r/GUI/AI/ModelGeneration/LocalSemanticWorkerClient.cpp'
+        self.assertIn('{"version","' + policy['version'] + '"}', host.read_text(encoding='utf-8'))
         self.assertEqual(request.canonical_hash({'b': 1, 'a': 2}), hashlib.sha256(b'{"a":2,"b":1}').hexdigest())
         (module_dir/'local_semantic_views.py').write_bytes(b'changed')
         self.assertNotEqual(request.runtime_modules(module_dir), actual)
@@ -158,6 +203,20 @@ class RequestTests(unittest.TestCase):
         for name, descriptor in response['files'].items():
             raw = (self.directory/name).read_bytes()
             self.assertEqual(descriptor, {'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()})
+
+    def test_optional_contours_bind_exact_evidence_bytes_without_changing_v1(self):
+        def contour(value, loader):
+            value['contour_proposal'] = dict(faces=[], curve_library={}, audit=[], policy={'version':'fixture'})
+        with self.mocked(contour):
+            response = request.execute_request(self.spec, self.config, self.directory)
+        self.assertEqual(set(response['files']), {'rendered.bin', 'evidence.json', 'contours.json'})
+        evidence = (self.directory / 'evidence.json').read_bytes()
+        document = json.loads((self.directory / 'contours.json').read_bytes())
+        self.assertEqual(document['identity']['evidence_sha256'], hashlib.sha256(evidence).hexdigest())
+        self.assertEqual(document['identity']['source_sha256'], self.source_sha)
+        self.assertEqual(document['identity']['geometry_id'], self.geometry_id)
+        self.assertEqual(json.loads(evidence)['schema'], 'orcaslicer.local-semantic-evidence.v1')
+        self.assertNotIn('contours', json.loads(evidence))
         vertices, faces, geom = self.geometry.read(self.directory/'rendered.bin', self.source_sha)
         self.np.testing.assert_array_equal(vertices, self.vertices)
         self.np.testing.assert_array_equal(faces, self.faces)

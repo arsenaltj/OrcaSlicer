@@ -1,6 +1,7 @@
 # Explicit local-semantic component installation; no dependency or weight fetch.
-# glb_artifact.py is already installed by the shared AI artifact component.
+# The isolated portrait bundle must also own the shared source-artifact reader.
 set(ORCA_LOCAL_SEMANTIC_RUNTIME_FILES
+    "${CMAKE_SOURCE_DIR}/tools/ai/glb_artifact.py"
     "${CMAKE_SOURCE_DIR}/tools/ai/beauty_leaf_domain.py"
     "${CMAKE_SOURCE_DIR}/tools/ai/local_leaf_boundaries.py"
     "${CMAKE_SOURCE_DIR}/tools/ai/portrait_surface_ownership.py"
@@ -17,7 +18,20 @@ set(ORCA_LOCAL_SEMANTIC_RUNTIME_FILES
     "${CMAKE_SOURCE_DIR}/tools/ai/local_face_landmarks.py"
     "${CMAKE_SOURCE_DIR}/tools/ai/local_shape_constraints.py"
     "${CMAKE_SOURCE_DIR}/tools/ai/local_brow_boundary.py"
+    "${CMAKE_SOURCE_DIR}/tools/ai/local_contour_proposals.py"
+    "${CMAKE_SOURCE_DIR}/tools/ai/local_surface_contours.py"
+    "${CMAKE_SOURCE_DIR}/tools/ai/local_leaf_boundaries.py"
+    "${CMAKE_SOURCE_DIR}/tools/ai/beauty_leaf_domain.py"
+    "${CMAKE_SOURCE_DIR}/tools/ai/portrait_residual_proposal.py"
+    "${CMAKE_SOURCE_DIR}/tools/ai/portrait_parent_cleanup_catalog.json"
+    "${CMAKE_SOURCE_DIR}/tools/ai/portrait_parent_cleanup_fangfei.json"
+    "${CMAKE_SOURCE_DIR}/tools/ai/portrait_parent_cleanup_partition.json"
+    "${CMAKE_SOURCE_DIR}/tools/ai/portrait_parent_cleanup_locks.json"
+    "${CMAKE_SOURCE_DIR}/tools/ai/bundled_portrait_runtime.py"
     "${CMAKE_SOURCE_DIR}/tools/ai/local_body_regions.py"
+    "${CMAKE_SOURCE_DIR}/tools/ai/local_parent_ownership.py"
+    "${CMAKE_SOURCE_DIR}/tools/ai/local_parent_boundary.py"
+    "${CMAKE_SOURCE_DIR}/tools/ai/local_parent_projection.py"
     "${CMAKE_SOURCE_DIR}/tools/ai/local_hair_expansion_guard.py"
     "${CMAKE_SOURCE_DIR}/tools/ai/local_region_mask_consensus.py"
     "${CMAKE_SOURCE_DIR}/tools/ai/local_region_mask_projection.py"

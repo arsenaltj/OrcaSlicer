@@ -91,9 +91,21 @@ void ModelPreview3D::update_semantic_coloring()
         m_semantic_controller = std::make_unique<ModelSemanticColoring>(executable.parent_path() / "ai" / "portrait_semantics",
             std::filesystem::u8path(Slic3r::data_dir()) / "cache" / "portrait_semantics");
     }
+    std::shared_ptr<ModelSemanticColoring::SavedAppearance> saved;
+    if(m_portrait_shapes && m_portrait_shapes->surface_partition && m_semantic_ready) {
+        saved=std::make_shared<ModelSemanticColoring::SavedAppearance>();
+        saved->geometry_id=m_semantic_source->geometry_id;saved->face_count=m_semantic_source->mesh.indices.size();
+        saved->faces=m_semantic_analysis ? m_automatic_face_colors : m_saved_semantic_faces;
+        saved->subfaces=m_semantic_analysis ? m_automatic_subface_colors : m_saved_semantic_subfaces;
+    }
     if (m_semantic_controller->request(m_semantic_source, m_color_trial->semantic_mapping_palette(), m_color_trial->semantic_palette(),
                                       m_color_trial->semantic_portrait_card(), m_face_color_overrides,
-                                      std::filesystem::path(m_model_path.native()), m_portrait_shapes)) {
+                                      std::filesystem::path(m_model_path.native()), m_portrait_shapes,m_color_trial->semantic_palette_roles(),
+                                      !m_shapes_unlocked && m_manual_leaf_colors.empty() && m_manual_cell_colors.empty(),
+                                      m_manual_cell_colors, m_portrait_progress,std::move(saved))) {
+        m_semantic_submission_edit_revision = m_leaf_edit_revision;
+        m_semantic_submission_manual = m_face_color_overrides;
+        m_semantic_submission_unlocked = m_shapes_unlocked;
         m_semantic_ready = false;
         m_semantic_analysis.reset();
         m_color_trial->set_semantic_region_availability({});
@@ -122,14 +134,16 @@ void ModelPreview3D::rebuild_semantic_preview_from_cached_result()
     FaceColorOverrides locked;
     if (m_portrait_shapes) for (const auto& item : m_automatic_face_colors)
         if (m_portrait_shapes->locks.face_locked(item.first)) locked.push_back(item);
-    if (!(m_portrait_shapes && m_portrait_shapes->locks.leaf_domain))
+    if (!(m_portrait_shapes && m_portrait_shapes->derived_boundary()))
         compose_portrait_shapes(*m_semantic_analysis, m_portrait_shapes.get(), regional_faces, regional_subfaces, locked);
     auto faces = AI::SemanticColoring::compose(regional_faces, m_face_color_overrides, true);
     auto subfaces = AI::SemanticColoring::compose_subfaces(regional_subfaces, m_face_color_overrides, true);
     if (m_portrait_shapes && m_portrait_shapes->locks.leaf_domain)
         AI::preserve_locked_leaf_colors(m_portrait_shapes->locks,m_automatic_face_colors,m_automatic_subface_colors,faces,subfaces);
     AI::compose_leaf_colors(faces,subfaces,m_manual_leaf_colors);
-    auto geometry = build_semantic_colored_geometry(*m_semantic_source, faces, subfaces);
+    const auto cells=import_cell_color_overrides();
+    auto geometry = build_semantic_colored_geometry(*m_semantic_source, faces, subfaces,{},
+        m_portrait_shapes ? m_portrait_shapes->surface_partition.get() : nullptr,&cells);
     if (geometry.is_empty()) return;
     auto model = std::make_unique<GLModel>();
     model->init_from(std::move(geometry));
@@ -140,6 +154,19 @@ void ModelPreview3D::finish_semantic_coloring()
 {
     if (!m_semantic_controller) { m_semantic_timer.Stop(); return; }
     if (auto result = m_semantic_controller->poll()) {
+        if (m_semantic_submission_edit_revision != m_leaf_edit_revision ||
+            m_semantic_submission_manual != m_face_color_overrides ||
+            m_semantic_submission_unlocked != m_shapes_unlocked) {
+            m_semantic_controller->cancel();
+            m_semantic_timer.Stop();
+            m_semantic_error = _L("已保留新的手工编辑，过期的人像优化结果未应用。");
+            m_color_trial->set_semantic_status(m_semantic_error, false);
+            if (m_semantic_completion) {
+                auto callback = std::move(m_semantic_completion);
+                callback(false);
+            }
+            return;
+        }
         if (result->error.empty()) restore_portrait_shapes(std::move(result->shape_details), m_shapes_unlocked);
         m_semantic_analysis = std::move(result->analysis);
         m_region_runtime_identity = std::move(result->region_runtime_identity);
@@ -169,14 +196,20 @@ void ModelPreview3D::finish_semantic_coloring()
             m_automatic_face_colors = std::move(result->automatic);
             m_automatic_subface_colors = std::move(result->automatic_subfaces);
             m_semantic_ready = true;
-            if (m_leaf_editing && !m_manual_leaf_colors.empty()) refresh_leaf_colors();
+            if (m_leaf_editing && (!m_manual_leaf_colors.empty() || !m_manual_cell_colors.empty())) refresh_leaf_colors();
             m_color_trial->set_semantic_region_availability(
                 AI::SemanticColoring::semantic_region_availability(*m_semantic_analysis));
             const bool has_region_override = std::any_of(
                 m_color_trial->semantic_region_slots().begin(), m_color_trial->semantic_region_slots().end(),
                 [](int slot) { return slot >= 0; });
             if (has_region_override) rebuild_semantic_preview_from_cached_result();
-            m_color_trial->set_semantic_status(_L("已按人像区域优化；不明确的区域沿用原配色，可在局部改色中修正。"), false);
+            if (result->parent_repair_cells) {
+                m_color_trial->set_semantic_status(wxString::Format(
+                    _L("已按人像区域优化并统一 %llu 个已确权皮肤/衣料单元；五官边界保持冻结。"),
+                    static_cast<unsigned long long>(result->parent_repair_cells)), false);
+            } else {
+                m_color_trial->set_semantic_status(_L("已按人像区域优化；不明确的区域沿用原配色，可在局部改色中修正。"), false);
+            }
             completed = true;
         } else {
             m_semantic_error = _L("OpenGL 预览无法加载识别结果。");
@@ -196,9 +229,14 @@ void ModelPreview3D::finish_semantic_coloring()
             << ", auto_subfaces=" << m_automatic_subface_colors.size()
             << ", added_triangles=" << result->subface_added_triangles
             << ", rejected_subfaces=" << result->subface_rejected_candidates
+            << ", parent_repair_cells=" << result->parent_repair_cells
+            << ", parent_repair_status=" << result->parent_repair_status
             << ", person=" << result->person_detected;
+        if (!result->parent_repair_audit.is_null() && !result->parent_repair_audit.empty())
+            BOOST_LOG_TRIVIAL(info) << "Portrait parent cleanup audit: " << result->parent_repair_audit.dump();
         if (!result->shape_error.empty()) BOOST_LOG_TRIVIAL(warning) << "Portrait shape details unavailable: " << result->shape_error;
-        BOOST_LOG_TRIVIAL(info) << "Portrait shape locks: " << (m_portrait_shapes ? m_portrait_shapes->locks.locks.size() : 0);
+        BOOST_LOG_TRIVIAL(info) << "Portrait shape locks: " << (m_portrait_shapes ? m_portrait_shapes->contour_locks ?
+            m_portrait_shapes->contour_locks->document.at("locks").size() : m_portrait_shapes->locks.locks.size() : 0);
         m_canvas->Refresh(false);
         if (m_semantic_completion) {
             auto callback = std::move(m_semantic_completion);

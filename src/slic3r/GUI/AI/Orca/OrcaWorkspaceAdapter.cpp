@@ -12,6 +12,7 @@
 #include "slic3r/GUI/GUI_ObjectList.hpp"
 #include "slic3r/GUI/GUI_Utils.hpp"
 #include "slic3r/GUI/MsgDialog.hpp"
+#include "slic3r/GUI/Redesign/RedesignMessageDialog.hpp"
 #include "slic3r/GUI/ObjColorDialog.hpp"
 #include "slic3r/GUI/ModelColorImportResult.hpp"
 #include "slic3r/GUI/Plater.hpp"
@@ -505,13 +506,11 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
             if (!same_source && objects[i]->volumes.size() == 1)
                 same_source = same_generated_artifact_name(objects[i]->volumes.front()->source.input_file, path.string());
             if (!same_source) continue;
-            RichMessageDialog repeat(m_plater,
+            const int answer = show_redesign_confirmation(m_plater,
                 _L("工程中已有这份模型。更新配色会替换它的耗材分配，保留位置、比例及其他设置；可撤销。\n"
                    "新增副本会使用 Orca 自动摆放。") + "\n\n" + wxString::FromUTF8(objects[i]->name),
-                _L("同一模型再次导入"), wxYES_NO | wxCANCEL | wxICON_QUESTION);
-            repeat.SetButtonLabel(wxID_YES, _L("更新配色"));
-            repeat.SetButtonLabel(wxID_NO, _L("新增并摆放"));
-            const int answer = repeat.ShowModal();
+                _L("同一模型再次导入"), {wxYES_NO | wxCANCEL, 105,
+                    {{wxID_YES, _L("更新配色"), true}, {wxID_NO, _L("新增并摆放")}, {wxID_CANCEL, _L("Cancel")}}});
             if (answer == wxID_CANCEL) {
                 result.outcome = AI::ModelImportOutcome::Cancelled;
                 workflow.finish_ai_workflow(false, _L("已取消，本次未导入；已有模型保留。"), true);

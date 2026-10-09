@@ -276,6 +276,8 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
         m_workbench_editing || m_workbench_history_panel->IsShown());
     m_workbench_edit->Enable(m_model_preview_ready || m_finishing_running);
     const auto snapshot = workbench_snapshot();
+    if (m_workbench_return_to_design_button)
+        m_workbench_return_to_design_button->Enable(post_generation_return_to_design_allowed(state));
     m_workbench_check->SetLabel(m_workbench_check_running ? _L("取消") : _L("检查"));
     m_workbench_check->Enable(m_workbench_check_running || (state.can_edit && m_finishing_candidate.empty() && !snapshot.dirty));
     for (wxWindow* color : m_workbench_project_colors->GetChildren()) color->Enable(snapshot.can_edit_project_colors);

@@ -2,6 +2,7 @@
 
 #include "../ModelGeneration/ModelPreviewPalette.hpp"
 #include "slic3r/AI/ModelGeneration/SemanticColoring/SemanticColoring.hpp"
+#include "../ModelGeneration/PortraitPaletteRoles.hpp"
 #include <nlohmann/json.hpp>
 
 #include <array>
@@ -27,6 +28,7 @@ struct State {
     bool enabled {false}, fidelity {true}, lighting {false};
     bool semantic_optimization {true};
     std::vector<GUI::PreviewPalette::Color> semantic_palette, semantic_mapping_palette, semantic_portrait_card;
+    std::vector<std::string> semantic_role_uids;
     SemanticColoring::SemanticRegionSlotBindings semantic_region_slots = SemanticColoring::default_semantic_region_slot_bindings;
     std::vector<size_t> project_color_slots, project_semantic_slots;
     std::string project_slot_identity;
@@ -49,6 +51,7 @@ inline bool valid_state(const State& state)
         for (const auto* slots : {&state.project_color_slots, &state.project_semantic_slots})
             for (size_t slot : *slots) if (slot > 65535) return false;
     }
+    if(!GUI::valid_portrait_roles(state.semantic_role_uids,state.colors.size())) return false;
     if (state.semantic_palette.size() > 6 ||
         (!state.semantic_mapping_palette.empty() && state.semantic_mapping_palette.size() != state.semantic_palette.size()) ||
         (!state.semantic_portrait_card.empty() && state.semantic_portrait_card.size() != 6)) return false;
@@ -124,6 +127,7 @@ inline nlohmann::json encode(const State& state, size_t actual_face_count, const
             {"semantic_optimization", state.semantic_optimization},
             {"semantic_palette", state.semantic_palette}, {"semantic_mapping_palette", state.semantic_mapping_palette},
             {"semantic_portrait_card", state.semantic_portrait_card},
+            {"semantic_role_uids", state.semantic_role_uids},
             {"semantic_region_slots", {
                 {"eye_sclera", state.semantic_region_slots[0]},
                 {"iris", state.semantic_region_slots[1]},
@@ -193,6 +197,14 @@ inline bool decode(const nlohmann::json& doc, size_t actual_face_count, const st
         return fail("Invalid semantic portrait card.");
     if (!restored.semantic_portrait_card.empty() && restored.semantic_portrait_card.size() != 6)
         return fail("A semantic portrait card requires six roles.");
+    if(doc.contains("semantic_role_uids")) {
+        if(!doc["semantic_role_uids"].is_array() || doc["semantic_role_uids"].size()>6) return fail("Invalid portrait role bindings.");
+        for(const auto& role:doc["semantic_role_uids"]) {
+            if(!role.is_string()) return fail("Invalid portrait role binding.");
+            restored.semantic_role_uids.push_back(role.get<std::string>());
+        }
+    } else restored.semantic_role_uids=GUI::portrait_roles_for_card(
+        restored.semantic_palette.empty()?restored.colors:restored.semantic_palette,restored.semantic_portrait_card);
     if (doc.contains("semantic_region_slots") &&
         !detail::read_region_slots(doc["semantic_region_slots"], restored.semantic_region_slots))
         return fail("Invalid semantic region slot bindings.");

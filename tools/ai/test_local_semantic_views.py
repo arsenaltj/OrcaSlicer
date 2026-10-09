@@ -1,6 +1,6 @@
 import unittest
 import numpy as np
-from local_semantic_views import coarse_cameras, focus_camera
+from local_semantic_views import coarse_cameras, focus_camera, parent_cameras
 from local_semantic_render import project
 
 
@@ -41,6 +41,30 @@ class CameraTests(unittest.TestCase):
         selected = np.ones((512, 512), dtype=bool)
         self.assertIsNone(focus_camera(camera, [0, 0, 2, 2], ids, depth, selected, 'tiny'))
         self.assertIsNone(focus_camera(camera, [0, 0, 50, 50], ids, depth, selected, 'empty'))
+
+    def test_parent_views_require_single_subject_reliable_current_face_evidence(self):
+        vertices=np.array([[0,y,z] for y in range(6) for z in range(6)
+                           for _,y,z in ((0,y,z),(0,y+1,z),(0,y,z+1))],dtype=np.float64)
+        faces=np.arange(len(vertices)).reshape(-1,3)
+        regions=[dict(subject_id='current',label='face',samples=[[i,.99,.99,3,2] for i in range(len(faces))])]
+        cameras=parent_cameras(vertices,faces,regions)
+        self.assertEqual(len(cameras),4)
+        self.assertEqual(len({c.name for c in cameras}),4)
+        for a in cameras:
+            np.testing.assert_allclose(a.basis@a.basis.T,np.eye(3),atol=1e-12)
+            self.assertEqual(a.size,768)
+            for b in cameras:
+                if a is not b:
+                    self.assertLess(float(a.basis[2]@b.basis[2]),np.cos(np.radians(5)))
+        shift=np.array([100.,-50.,200.])
+        for a,b in zip(cameras,parent_cameras(vertices+shift,faces,regions)):
+            np.testing.assert_allclose(b.center-a.center,shift)
+            np.testing.assert_allclose(a.basis,b.basis)
+            self.assertAlmostEqual(a.half_height,b.half_height)
+        self.assertEqual(parent_cameras(vertices,faces,[]),[])
+        self.assertEqual(parent_cameras(vertices,faces,regions+[dict(regions[0],subject_id='other')]),[])
+        self.assertEqual(parent_cameras(vertices,faces,[dict(regions[0],label='le')]),[])
+        self.assertEqual(parent_cameras(vertices,faces,[dict(regions[0],samples=[[i,.99,.99,3,1] for i in range(len(faces))])]),[])
 
 
 if __name__ == '__main__':

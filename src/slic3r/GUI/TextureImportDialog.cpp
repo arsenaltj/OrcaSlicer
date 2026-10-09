@@ -5,6 +5,7 @@
 #include "AI/Orca/OrcaFilamentSelection.hpp"
 #include "Plater.hpp"
 #include "Redesign/RedesignTheme.hpp"
+#include "Redesign/RedesignMessageDialog.hpp"
 #include "I18N.hpp"
 #include "GUI_App.hpp"
 #include "MsgDialog.hpp"
@@ -1526,7 +1527,7 @@ void TexturePreviewCanvas::render()
     wxSize viewport_sz = gl_viewport_size(this, sz);
     glViewport(0, 0, viewport_sz.x, viewport_sz.y);
     // Same palette key as the preview container, so canvas and frame cannot drift apart.
-    const wxColour clear_clr = m_workbench_review ? RedesignTheme::control_colour()
+    const wxColour clear_clr = m_workbench_review ? RedesignTheme::flow_background_colour()
         : StateColor::darkModeColorFor(wxColour("#EEEEEE"));
     glClearColor(clear_clr.Red() / 255.f, clear_clr.Green() / 255.f, clear_clr.Blue() / 255.f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -1796,7 +1797,10 @@ TextureImportDialog::TextureImportDialog(
     TextureImportOptions             options)
     : DPIDialog(parent, wxID_ANY, texture_import_label("Import color matching", "导入颜色匹配"),
                 wxDefaultPosition, wxDefaultSize,
-                options.workbench_review ? wxBORDER_NONE | wxRESIZE_BORDER :
+                // The redesign dialog has a fixed review layout. Avoid the
+                // native Windows resize frame, whose light non-client edge
+                // leaks through the dark surface as a one-pixel top border.
+                options.workbench_review ? wxBORDER_NONE :
                     (wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER) & ~(wxMINIMIZE_BOX | wxMAXIMIZE_BOX))
     , m_textured_mesh(textured_mesh)
     , m_options(std::move(options))
@@ -1991,6 +1995,7 @@ void TextureImportDialog::build_ui()
     if (m_options.workbench_review) {
         auto* header = new wxBoxSizer(wxHORIZONTAL);
         auto* title = new wxStaticText(this, wxID_ANY, GetTitle());
+        title->SetName("texture-import-title");
         header->Add(title, 1, wxALIGN_CENTER_VERTICAL);
         auto* close = new Button(this, wxEmptyString, "redesign_startup_close", wxBORDER_NONE, 16);
         close->SetMinSize(FromDIP(wxSize(28, 28)));
@@ -2074,9 +2079,11 @@ void TextureImportDialog::build_ui()
 
 void TextureImportDialog::build_preview_panel(wxWindow* parent, wxSizer* sizer)
 {
-    wxColour preview_bg = m_options.workbench_review ? RedesignTheme::control_colour()
+    // Keep the model readable against the workbench while preserving the
+    // darker control surfaces on the right.
+    wxColour preview_bg = m_options.workbench_review ? RedesignTheme::flow_background_colour()
         : StateColor::darkModeColorFor(wxColour("#EEEEEE"));
-    wxColour preview_bd = m_options.workbench_review ? preview_bg : texture_import_separator_colour();
+    wxColour preview_bd = m_options.workbench_review ? wxColour(75, 75, 81) : texture_import_separator_colour();
 
     wxPanel* preview_container = new wxPanel(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
     preview_container->SetBackgroundColour(preview_bg);
@@ -2539,8 +2546,10 @@ void TextureImportDialog::style_workbench_review()
             window->SetName("ai_content_color");
             window->SetBackgroundColour(RedesignTheme::panel_colour());
         }
-        if (dynamic_cast<wxStaticText*>(window) || dynamic_cast<wxCheckBox*>(window))
-            RedesignTheme::style_text(window, RedesignTheme::primary_text_colour(), 9);
+        if (dynamic_cast<wxStaticText*>(window) || dynamic_cast<wxCheckBox*>(window)) {
+            const bool title = window->GetName() == "texture-import-title";
+            RedesignTheme::style_text(window, RedesignTheme::primary_text_colour(), title ? 12 : 9, title);
+        }
         if (auto* button = dynamic_cast<Button*>(window)) {
             button->SetBackgroundColour(button->GetParent()->GetBackgroundColour());
             button->SetCornerRadius(dynamic_cast<SpinInput*>(button->GetParent()) ? 0 : window->FromDIP(6));
@@ -2860,36 +2869,54 @@ void TextureImportDialog::on_mesh_repair_decision_required(wxCommandEvent&)
     }
 
 #ifdef HAS_WIN10SDK
-    Slic3r::GUI::MessageDialog dlg(initial ? GetParent() : this,
-        _L("The mesh has non-manifold geometry or open boundaries. You can import it as-is or repair it with Windows 3D repair service before importing."),
-        _L("Mesh repair"), wxYES_NO | wxICON_WARNING | wxYES_DEFAULT);
-    dlg.SetButtonLabel(wxID_YES, _L("Import without repair"));
-    dlg.SetButtonLabel(wxID_NO, _L("Repair and import"), true);
-    // "Repair and import" is the recommended action here, so the accent moves off the default YES
-    // button onto NO. MsgDialog::add_button already styled both as ButtonType::Choice, so restyling
-    // with the same type swaps only the palette and leaves the geometry alone.
-    if (auto* yes_btn = dynamic_cast<Button*>(dlg.FindWindow(wxID_YES))) {
-        yes_btn->SetStyle(ButtonStyle::Regular, ButtonType::Choice);
-        yes_btn->SetMinSize(wxSize(FromDIP(180), FromDIP(24)));
+    int ret;
+    if (m_options.workbench_review) {
+        // NO means repair, not cancel. Preserve the native dialog's dismissal
+        // outcome (import as-is), and keep repair as its focused action.
+        ret = show_redesign_confirmation(initial ? GetParent() : this,
+            _L("The mesh has non-manifold geometry or open boundaries. You can import it as-is or repair it with Windows 3D repair service before importing."),
+            _L("Mesh repair"), {wxYES_NO | wxNO_DEFAULT, 105,
+                {{wxID_YES, _L("Import without repair")}, {wxID_NO, _L("Repair and import"), true}}, wxID_CANCEL});
+    } else {
+        Slic3r::GUI::MessageDialog dlg(initial ? GetParent() : this,
+            _L("The mesh has non-manifold geometry or open boundaries. You can import it as-is or repair it with Windows 3D repair service before importing."),
+            _L("Mesh repair"), wxYES_NO | wxICON_WARNING | wxYES_DEFAULT);
+        dlg.SetButtonLabel(wxID_YES, _L("Import without repair"));
+        dlg.SetButtonLabel(wxID_NO, _L("Repair and import"), true);
+        // "Repair and import" is the recommended action here, so the accent moves off the default YES
+        // button onto NO. MsgDialog::add_button already styled both as ButtonType::Choice, so restyling
+        // with the same type swaps only the palette and leaves the geometry alone.
+        if (auto* yes_btn = dynamic_cast<Button*>(dlg.FindWindow(wxID_YES))) {
+            yes_btn->SetStyle(ButtonStyle::Regular, ButtonType::Choice);
+            yes_btn->SetMinSize(wxSize(FromDIP(180), FromDIP(24)));
+        }
+        if (auto* no_btn = dynamic_cast<Button*>(dlg.FindWindow(wxID_NO))) {
+            no_btn->SetStyle(ButtonStyle::Confirm, ButtonType::Choice);
+            no_btn->SetMinSize(wxSize(FromDIP(160), FromDIP(24)));
+        }
+        dlg.Layout();
+        dlg.Fit();
+        dlg.CenterOnParent();
+        ret = dlg.ShowModal();
     }
-    if (auto* no_btn = dynamic_cast<Button*>(dlg.FindWindow(wxID_NO))) {
-        no_btn->SetStyle(ButtonStyle::Confirm, ButtonType::Choice);
-        no_btn->SetMinSize(wxSize(FromDIP(160), FromDIP(24)));
-    }
-    dlg.Layout();
-    dlg.Fit();
-    dlg.CenterOnParent();
-    int ret = dlg.ShowModal();
     m_mesh_repair_decision = (ret == wxID_NO)
         ? Slic3r::TexturePaintingSettings::MeshRepairDecision::RepairAndImport
         : Slic3r::TexturePaintingSettings::MeshRepairDecision::ImportWithoutRepair;
 #else
-    Slic3r::GUI::MessageDialog dlg(initial ? GetParent() : this,
-        _L("Please note that the mesh has non-manifold geometry or open boundaries."),
-        _L("Mesh issue"), wxOK | wxCANCEL | wxICON_WARNING | wxOK_DEFAULT);
-    dlg.SetButtonLabel(wxID_OK, _L("Continue"), true);
-    dlg.SetButtonLabel(wxID_CANCEL, _L("Cancel"));
-    int ret = dlg.ShowModal();
+    int ret;
+    if (m_options.workbench_review) {
+        ret = show_redesign_confirmation(initial ? GetParent() : this,
+            _L("Please note that the mesh has non-manifold geometry or open boundaries."),
+            _L("Mesh issue"), {wxOK | wxCANCEL, 105,
+                {{wxID_CANCEL, _L("Cancel")}, {wxID_OK, _L("Continue"), true}}});
+    } else {
+        Slic3r::GUI::MessageDialog dlg(initial ? GetParent() : this,
+            _L("Please note that the mesh has non-manifold geometry or open boundaries."),
+            _L("Mesh issue"), wxOK | wxCANCEL | wxICON_WARNING | wxOK_DEFAULT);
+        dlg.SetButtonLabel(wxID_OK, _L("Continue"), true);
+        dlg.SetButtonLabel(wxID_CANCEL, _L("Cancel"));
+        ret = dlg.ShowModal();
+    }
     if (ret != wxID_OK) {
         m_cancel_flag = true;
         if (initial) {

@@ -6,6 +6,8 @@
 #include "WorkbenchStyle.hpp"
 #include "slic3r/GUI/AI/Model/BeautyDocument.hpp"
 #include "slic3r/GUI/AI/Model/BeautySurface.hpp"
+#include "slic3r/GUI/AI/Model/BeautyCellRemap.hpp"
+#include "slic3r/GUI/AI/Model/BakedPortraitAppearance.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/GUI.hpp"
@@ -97,12 +99,15 @@ void repaint_workbench_surface(wxWindow* window)
 }
 void ModelGenerationPanel::export_semantic_candidate()
 {
+    const auto portrait_task = m_portrait_task && m_portrait_task->snapshot().running() ? m_portrait_task : nullptr;
+    if (portrait_task) portrait_task->report({PortraitStage::Saving, "校验颜色与连续裁切，准备保存候选",0,0});
     if (!m_model_preview || (!m_model_preview->semantic_regions_ready() && !m_model_preview->leaf_editing() &&
         m_model_preview->face_color_overrides().empty()) ||
         !is_nonempty_model(m_finishing_candidate.empty() ? m_displayed_model_path : m_finishing_candidate)) {
         if (auto before = std::move(m_beauty_reoptimization_before)) restore_beauty_candidate(*before);
         if (m_beauty_transactions) m_beauty_transactions->finish(false, false, "semantic candidate source unavailable");
         if (m_finishing_status) m_finishing_status->SetLabel(_L("人像区域结果没有可用的模型源，当前版本保持不变。"));
+        finish_portrait_optimization(PortraitOutcome::Failed, _L("人像区域结果没有可用的模型源，当前版本保持不变。"));
         refresh_model_finishing();
         return;
     }
@@ -115,6 +120,7 @@ void ModelGenerationPanel::export_semantic_candidate()
     const auto leaf_edits=m_model_preview->leaf_edit_metadata();
     const auto leaf_revision=m_model_preview->leaf_edit_revision();
     const auto partition_snapshot=m_beauty_controls ? m_beauty_controls->capture_partition() : nullptr;
+    const auto draft_snapshot=std::make_shared<BeautyCandidateSnapshot>(capture_beauty_candidate());
     auto before = m_beauty_reoptimization_before ? std::move(m_beauty_reoptimization_before)
         : std::make_shared<BeautyCandidateSnapshot>(capture_beauty_candidate());
     if (m_finishing_candidate.empty() && !m_beauty_session_source) {
@@ -125,16 +131,19 @@ void ModelGenerationPanel::export_semantic_candidate()
     const size_t faces = m_model_preview->triangle_count();
     const auto overrides = m_model_preview->import_face_color_overrides(true);
     const auto subfaces = m_model_preview->import_subface_color_overrides(true);
+    const auto cell_colors=m_model_preview->import_cell_color_overrides();
+    const auto baked_semantic=m_model_preview->semantic_result_metadata();
     const auto color_state = m_model_preview->color_trial_state();
     // Automatic semantic colors are baked into the candidate appearance. Keep
     // only explicit manual face locks as preview overrides so a later explicit
     // re-optimization can still replace automatic colors without overriding
     // the user's manual edits.
     const auto manual_overrides = m_model_preview->face_color_overrides();
-    if (faces == 0 || (overrides.empty() && subfaces.empty())) {
+    if (faces == 0 || (overrides.empty() && subfaces.empty() && cell_colors.empty())) {
         restore_beauty_candidate(*before);
         if (m_beauty_transactions) m_beauty_transactions->finish(false, false, "semantic result has no face colors");
         m_finishing_status->SetLabel(_L("人像区域没有产生可靠的面级颜色，当前模型保持不变。"));
+        finish_portrait_optimization(PortraitOutcome::Failed, _L("人像区域没有产生可靠的面级颜色，当前模型保持不变。"));
         refresh_model_finishing();
         return;
     }
@@ -158,10 +167,18 @@ void ModelGenerationPanel::export_semantic_candidate()
         std::sort(options.selected_faces.begin(),options.selected_faces.end());
         options.selected_faces.erase(std::unique(options.selected_faces.begin(),options.selected_faces.end()),options.selected_faces.end());
     }
+    if(shape_details && shape_details->surface_partition) {
+        for(const auto& face:shape_details->surface_partition->at("faces"))
+            for(const auto& cell:face.at("cells")) if(cell_colors.count(cell.at("id").get<std::string>()))
+                options.selected_faces.push_back(face.at("source_face_id").get<size_t>());
+        std::sort(options.selected_faces.begin(),options.selected_faces.end());
+        options.selected_faces.erase(std::unique(options.selected_faces.begin(),options.selected_faces.end()),options.selected_faces.end());
+    }
     if (options.selected_faces.empty()) {
         restore_beauty_candidate(*before);
         if (m_beauty_transactions) m_beauty_transactions->finish(false, false, "semantic face colors are out of range");
         m_finishing_status->SetLabel(_L("人像区域颜色与当前模型面数不一致，已保留原模型。"));
+        finish_portrait_optimization(PortraitOutcome::Failed, _L("人像区域颜色与当前模型面数不一致，已保留原模型。"));
         refresh_model_finishing();
         return;
     }
@@ -183,6 +200,7 @@ void ModelGenerationPanel::export_semantic_candidate()
         m_finishing_source = source;
     }
     m_finishing_id = "finish-semantic-" + new_request_id();
+    m_finishing_candidate_baked_appearance = nullptr;
     const auto destination = temp_path(m_finishing_id, "glb");
     m_finishing_canceled = std::make_shared<std::atomic<bool>>(false);
     m_beauty_publication_committed.reset();
@@ -198,10 +216,42 @@ void ModelGenerationPanel::export_semantic_candidate()
     refresh_controls();
     wxWeakRef<ModelGenerationPanel> weak(this);
     const uint64_t sequence = m_sequence;
+    const auto cache_root=boost::filesystem::path(Slic3r::data_dir())/"cache";
     try {
-        m_finishing_worker = std::thread([weak, source, destination, options, canceled, sequence, manual_overrides, color_state, before, region_evidence, secondary_evidence, shape_details, shapes_unlocked,leaf_edits,leaf_revision,partition_snapshot] {
-            const auto result = AI::finish_model_artifact(source, destination, options,
-                [canceled] { return canceled->load(); });
+        m_finishing_worker = std::thread([weak, source, destination, options, canceled, sequence, manual_overrides, color_state, before, region_evidence, secondary_evidence, shape_details, shapes_unlocked,leaf_edits,leaf_revision,partition_snapshot,portrait_task,cell_colors,cache_root,draft_snapshot,baked_semantic] {
+            auto saved_shapes=shape_details;
+            auto saved_edits=leaf_edits;
+            auto output_options=options;
+            AI::ModelFinishingResult result;
+            try {
+                if(shape_details && shape_details->surface_partition) {
+                    if(portrait_task) portrait_task->report({PortraitStage::Saving,"校验草稿与裁切网格",0,0});
+                    auto rebuilt=AI::SurfacePartition::rebuild_tessellation(*shape_details->surface_partition,
+                        [canceled]{return canceled->load();},[portrait_task](size_t done,size_t total){
+                            if(portrait_task) portrait_task->report({PortraitStage::Saving,"重建裁切网格与校验接缝",done,total});
+                        });
+                    if(rebuilt!=*shape_details->surface_partition) {
+                        auto copy=std::make_shared<PortraitShapeDetails>(*shape_details);
+                        copy->surface_partition=std::make_shared<const nlohmann::json>(std::move(rebuilt));
+                        auto locks=shape_details->contour_locks->document;
+                        const auto hash=AI::beauty_leaf_digest(copy->surface_partition->dump());
+                        locks["partition_ref"]={{"schema","orca.surface-partition-reference/v1"},
+                            {"path","surface-partitions/"+hash+".json"},{"sha256",hash}};
+                        copy->contour_locks=std::make_shared<const AI::BeautySurfaceShapeLock>(AI::BeautySurfaceShapeLock::decode(
+                            locks,*copy->surface_partition,AI::BeautySurfaceShapeLock::identity(*copy->surface_partition),hash));
+                        saved_edits=AI::remap_cell_edits(leaf_edits,*shape_details->surface_partition,*copy->surface_partition,
+                            shape_details->boundary_fingerprint(),copy->boundary_fingerprint());
+                        if(canceled->load()) throw std::runtime_error("Contour mesh rebuild cancelled.");
+                        PortraitShapeCache::save(*copy,cache_root);
+                        saved_shapes=std::move(copy);
+                    }
+                    AI::appearance_cell_colors(output_options.appearance,*saved_shapes->surface_partition,cell_colors,
+                        saved_shapes->locks.geometry_id);
+                }
+                if(portrait_task) portrait_task->report({PortraitStage::Saving,"裁切校验完成，正在烘焙 GLB",0,0});
+                result=AI::finish_model_artifact(source,destination,output_options,[canceled]{return canceled->load();});
+            } catch(const std::exception& e) { result.error=e.what();result.canceled=canceled->load(); }
+            if (portrait_task && result.success) portrait_task->report({PortraitStage::Preview,"候选已写出，解析预览模型",0,0});
             auto prepared = std::make_shared<ModelPreview3D::PreparedModel>();
             std::string preview_error;
             if (result.success && !canceled->load()) {
@@ -209,50 +259,72 @@ void ModelGenerationPanel::export_semantic_candidate()
                     [canceled] { return canceled->load(); }); }
                 catch (const std::exception& e) { preview_error = e.what(); }
             }
-            wxGetApp().CallAfter([weak, source, destination, result, sequence, canceled, prepared, preview_error, color_state, before, region_evidence, secondary_evidence, shape_details, shapes_unlocked,leaf_edits,leaf_revision,partition_snapshot] {
+            const auto baked=AI::baked_portrait_appearance(result.output_sha256,baked_semantic,cell_colors,
+                saved_shapes && saved_shapes->surface_partition ? saved_shapes->surface_partition->at("partition_sha256").get<std::string>() : std::string());
+            wxGetApp().CallAfter([weak, source, destination, result, sequence, canceled, prepared, preview_error, color_state, before, region_evidence, secondary_evidence, shape_details=saved_shapes, shapes_unlocked,leaf_edits=saved_edits,leaf_revision,partition_snapshot,portrait_task,draft_snapshot,output_options,baked] {
                 if (!weak || weak->m_shutdown || sequence != weak->m_sequence) {
                     if (result.success) { boost::system::error_code ignored; boost::filesystem::remove(destination, ignored); }
                     return;
                 }
                 auto* self = weak.get();
+                if (portrait_task && self->m_portrait_task != portrait_task) return;
                 if (self->m_finishing_worker.joinable()) self->m_finishing_worker.join();
                 self->m_finishing_running = false;
                 self->m_busy = false;
-                if (!leaf_edits.is_null() && self->m_model_preview->leaf_edit_revision()!=leaf_revision) {
+                if (self->m_model_preview->leaf_edit_revision()!=leaf_revision) {
                     self->m_save_and_return = false;
                     if (result.success) { boost::system::error_code ignored; boost::filesystem::remove(destination,ignored); }
                     if (self->m_beauty_transactions) self->m_beauty_transactions->finish(false,false,"leaf draft changed during export");
                     self->m_finishing_status->SetLabel(_L("草稿在保存期间已更新，已丢弃过期输出；请重新保存。"));
+                    self->m_portrait_draft_before = before;
+                    self->finish_portrait_optimization(PortraitOutcome::DraftOnly, self->m_finishing_status->GetLabel());
+                    self->preserve_portrait_draft();
                     self->refresh_controls(); return;
                 }
                 self->m_finishing_result = result;
+                self->m_finishing_options=output_options;
                 if (result.canceled || canceled->load()) {
                     self->m_save_and_return = false;
                     if (result.success) { boost::system::error_code ignored; boost::filesystem::remove(destination, ignored); }
-                    self->restore_beauty_candidate(*before);
+                    self->restore_beauty_candidate(*draft_snapshot);
+                    self->m_portrait_draft_before=before;
                     if (self->m_beauty_transactions) self->m_beauty_transactions->finish(false, false, "cancelled");
                     self->m_finishing_status->SetLabel(_L("已取消语义 GLB 写出，当前模型保持不变。"));
+                    self->finish_portrait_optimization(PortraitOutcome::Cancelled, self->m_finishing_status->GetLabel());
+                    self->preserve_portrait_draft();
                 } else if (!result.success || !preview_error.empty()) {
                     self->m_save_and_return = false;
                     if (result.success) { boost::system::error_code ignored; boost::filesystem::remove(destination, ignored); }
-                    self->restore_beauty_candidate(*before);
+                    const bool keep_contour_draft=shape_details && shape_details->surface_partition;
+                    if(!keep_contour_draft) self->restore_beauty_candidate(*before);
+                    else {
+                        self->m_portrait_draft_before = before;
+                        if (self->m_beauty_controls) self->m_beauty_controls->set_dirty(true);
+                    }
                     if (self->m_beauty_transactions) self->m_beauty_transactions->finish(false, false,
                         preview_error.empty() ? result.error : preview_error);
-                    self->m_finishing_status->SetLabel(_L("语义 GLB 写出失败，当前模型保持不变：") +
+                    self->m_finishing_status->SetLabel((keep_contour_draft ?
+                        _L("裁切草稿已保留，但无法安全烘焙为 GLB：") : _L("语义 GLB 写出失败，当前模型保持不变：")) +
                         from_u8(preview_error.empty() ? result.error : preview_error));
+                    self->finish_portrait_optimization(keep_contour_draft ? PortraitOutcome::DraftOnly : PortraitOutcome::Failed,
+                        self->m_finishing_status->GetLabel());
+                    if (keep_contour_draft) self->preserve_portrait_draft();
                 } else {
                     size_t triangles = 0, colors = 0; Vec3d dimensions; std::string error;
                     if (!self->m_model_preview->load_prepared_model(std::move(*prepared), {}, triangles,
                             dimensions, colors, error)) {
                         self->m_save_and_return = false;
                         boost::system::error_code ignored; boost::filesystem::remove(destination, ignored);
-                        self->restore_beauty_candidate(*before);
+                        self->restore_beauty_candidate(*draft_snapshot);
+                        self->m_portrait_draft_before=before;
+                        self->preserve_portrait_draft();
                         if (self->m_beauty_transactions) self->m_beauty_transactions->finish(false, false, error);
                         self->m_finishing_status->SetLabel(_L("语义 GLB 预览加载失败，当前模型保持不变：") + from_u8(error));
+                        self->finish_portrait_optimization(PortraitOutcome::DraftOnly,self->m_finishing_status->GetLabel());
                     } else {
                         self->m_model_preview->restore_semantic_region_evidence(region_evidence);
                         self->m_model_preview->restore_portrait_shapes(shape_details, shapes_unlocked);
-                        self->m_model_preview->restore_leaf_edits(leaf_edits);
+                        const bool edits_restored=self->m_model_preview->restore_leaf_edits(leaf_edits);
                         if (self->m_beauty_controls) self->m_beauty_controls->restore_partition_snapshot(partition_snapshot);
                         self->m_finishing_candidate_region_evidence = self->m_model_preview->semantic_region_evidence();
                         self->m_finishing_candidate_region_error = self->m_model_preview->semantic_region_evidence_error();
@@ -261,16 +333,19 @@ void ModelGenerationPanel::export_semantic_candidate()
                         self->m_finishing_candidate_secondary_evidence = self->m_model_preview->secondary_region_evidence();
                         self->m_finishing_candidate_secondary_error = self->m_model_preview->secondary_region_evidence_error();
                         self->m_model_preview->restore_color_trial_without_recognition(color_state);
-                        if (!self->m_model_preview->set_saved_semantic_result(
+                        if (!edits_restored || !self->m_model_preview->set_saved_semantic_result(
                                 self->m_finishing_candidate_semantic_faces,
                                 self->m_finishing_candidate_semantic_subfaces)) {
                             self->m_save_and_return = false;
                             boost::system::error_code ignored;
                             boost::filesystem::remove(destination, ignored);
-                            self->restore_beauty_candidate(*before);
+                            self->restore_beauty_candidate(*draft_snapshot);
+                            self->m_portrait_draft_before=before;
+                            self->preserve_portrait_draft();
                             if (self->m_beauty_transactions) self->m_beauty_transactions->finish(false, false,
                                 "semantic result preview unavailable");
                             self->m_finishing_status->SetLabel(_L("语义候选预览失败，已保留处理前版本。"));
+                            self->finish_portrait_optimization(PortraitOutcome::DraftOnly,self->m_finishing_status->GetLabel());
                             self->refresh_controls();
                             return;
                         }
@@ -278,13 +353,17 @@ void ModelGenerationPanel::export_semantic_candidate()
                             color_state, self->m_model_preview->color_trial_state());
                         self->m_finishing_candidate = destination;
                         self->m_beauty_manual_color_dirty = false;
+                        self->m_finishing_candidate_baked_appearance = baked;
                         self->m_finishing_before = false;
                         self->m_model_preview->set_selection_preview_suppressed(true);
                         self->m_finishing_compare->SetLabel(_L("查看处理前"));
                         if (self->m_beauty_transactions) self->m_beauty_transactions->finish(true, true);
-                        if (before->geometry_id == self->m_model_preview->geometry_id() &&
-                            before->selection.selected.size() == self->m_model_preview->triangle_count())
-                            self->m_model_preview->restore_selection_state(before->selection);
+                        // Cell masks above already refer to the rebuilt mesh.
+                        // Only a root-only draft uses the separate face mask.
+                        if ((leaf_edits.is_null() || leaf_edits.empty()) &&
+                            draft_snapshot->geometry_id == self->m_model_preview->geometry_id() &&
+                            draft_snapshot->selection.selected.size() == self->m_model_preview->triangle_count())
+                            self->m_model_preview->restore_selection_state(draft_snapshot->selection);
                         self->record_beauty_candidate(
                             before->manual_color_dirty
                                 ? BeautyWorkbenchTransactionController::OperationKind::AppearanceRecolor
@@ -300,6 +379,11 @@ void ModelGenerationPanel::export_semantic_candidate()
                                 : _L("人像区域已写入新的 GLB 候选版本；二级细节不可用，一级分区仍可编辑。"));
                         self->m_model_preview_message->SetLabel(before->manual_color_dirty
                             ? _L("手动改色后 · 尚未保存") : _L("语义优化后 · 尚未接受"));
+                        if (portrait_task) {
+                            self->m_portrait_preview_draft=draft_snapshot;
+                            self->m_portrait_draft_before=before;
+                        } else self->clear_portrait_draft();
+                        self->portrait_preview_ready();
                     }
                 }
                 self->m_status->SetLabel(self->m_finishing_status->GetLabel());
@@ -310,9 +394,12 @@ void ModelGenerationPanel::export_semantic_candidate()
     } catch (const std::exception& e) {
         m_finishing_running = false;
         m_busy = false;
-        restore_beauty_candidate(*before);
+        restore_beauty_candidate(*draft_snapshot);
+        m_portrait_draft_before=before;
         if (m_beauty_transactions) m_beauty_transactions->finish(false, false, e.what());
         m_finishing_status->SetLabel(_L("无法启动语义 GLB 写出，当前模型保持不变：") + from_u8(e.what()));
+        finish_portrait_optimization(PortraitOutcome::DraftOnly, m_finishing_status->GetLabel());
+        preserve_portrait_draft();
         refresh_controls();
     }
 }

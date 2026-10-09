@@ -1,6 +1,7 @@
 #include "BeautyAppearance.hpp"
 #include "ModelArtifact.hpp"
 #include "GlbGeometryEditing.hpp"
+#include "SurfacePartition.hpp"
 #include "libslic3r/Format/AssimpImport.hpp"
 #include "libslic3r/TexturePainting.hpp"
 #include <boost/filesystem.hpp>
@@ -286,12 +287,14 @@ RasterMask raster_mask(const TexturedMesh& mesh, const std::vector<Material>& ma
     const std::vector<std::array<int,3>>& corner_map) {
     RasterMask mask;
     mask.weights.assign(size_t(width) * height, -1.f);
-    const bool absolute = !options.face_target_colors.empty() || !options.leaves.empty();
+    const bool absolute = !options.face_target_colors.empty() || !options.leaves.empty() || !options.cells.empty();
     if (absolute) mask.target_faces.assign(mask.weights.size(), -1);
     mask.targets=options.face_target_colors;
     mask.targets.resize(mesh.indices.size());
     for (const auto& leaf : options.leaves) mask.targets.push_back(leaf.color);
+    for (const auto& cell : options.cells) mask.targets.push_back(cell.color);
     size_t first_leaf=0;
+    size_t first_cell=0;
     uint64_t visits = 0;
     for (size_t face = 0; face < mesh.indices.size(); ++face) {
         if ((face & 1023) == 0) checkpoint(canceled);
@@ -306,6 +309,9 @@ RasterMask raster_mask(const TexturedMesh& mesh, const std::vector<Material>& ma
         const size_t first=first_leaf;
         while (first_leaf<options.leaves.size() && options.leaves[first_leaf].key.source_face_id==face) ++first_leaf;
         const size_t end=first_leaf;
+        while(first_cell<options.cells.size() && options.cells[first_cell].source_face_id<face) ++first_cell;
+        const size_t cell_begin=first_cell;
+        while(first_cell<options.cells.size() && options.cells[first_cell].source_face_id==face) ++first_cell;
         const auto visit=[&](const std::array<std::array<double,2>,3>& triangle,float weight,size_t target) {
         const TriangleCoverage coverage(triangle);
         const int x0 = std::max(-1, int(std::floor(std::min({triangle[0][0],triangle[1][0],triangle[2][0]}) - 1.5)));
@@ -332,7 +338,15 @@ RasterMask raster_mask(const TexturedMesh& mesh, const std::vector<Material>& ma
             }
         }
         };
-        if (first==end) visit(root_triangle,options.face_weights[face],face);
+        if(cell_begin!=first_cell) {
+            for(size_t i=cell_begin;i<first_cell;++i) for(const auto& corners:options.cells[i].triangles) {
+                std::array<std::array<double,2>,3> triangle{};
+                for(size_t c=0;c<3;++c) for(size_t k=0;k<3;++k) for(size_t axis=0;axis<2;++axis)
+                    triangle[c][axis]+=corners[c][k]*root_triangle[k][axis];
+                visit(triangle,options.cells[i].weight,mesh.indices.size()+options.leaves.size()+i);
+            }
+        }
+        else if (first==end) visit(root_triangle,options.face_weights[face],face);
         else for (size_t i=first;i<end;++i) {
             std::array<std::array<double,2>,3> triangle{};
             const auto corners=options.leaves[i].key.barycentric();
@@ -365,7 +379,7 @@ std::array<double, 3> adjust(std::array<double, 3> rgb, const BeautyAppearanceOp
 size_t edit_pixels(cv::Mat& pixels, const RasterMask& raster, const BeautyAppearanceOptions& options,
     const std::function<bool()>& canceled) {
     const auto& mask = raster.weights;
-    const bool absolute = !options.face_target_colors.empty() || !options.leaves.empty();
+    const bool absolute = !options.face_target_colors.empty() || !options.leaves.empty() || !options.cells.empty();
     const cv::Mat original = pixels.clone();
     const int channels = pixels.channels(), width = pixels.cols, height = pixels.rows;
     size_t changed = 0;
@@ -883,6 +897,39 @@ void bake_texture_vertex_factors(Document& doc, TexturedMesh& mesh,
 
 } // namespace
 
+void appearance_cell_colors(BeautyAppearanceOptions& options,const nlohmann::json& partition,
+    const std::map<std::string,std::array<float,3>>& colors,const std::string& geometry) {
+    require(partition.at("geometry_id")==geometry && partition.at("face_count")==options.face_weights.size(),
+            "Contour appearance source changed.");
+    std::set<size_t> roots;
+    std::set<std::string> ids;
+    std::vector<BeautyAppearanceOptions::Cell> cells;
+    for(const auto& face:partition.at("faces")) {
+        const size_t root=face.at("source_face_id"); roots.insert(root);
+        for(const auto& item:face.at("cells")) {
+            BeautyAppearanceOptions::Cell cell;cell.source_face_id=root;cell.id=item.at("id");ids.insert(cell.id);
+            for(const auto& triangle:item.at("triangles")) {
+                std::array<Vec3d,3> corners;
+                for(size_t i=0;i<3;++i) for(size_t k=0;k<3;++k) corners[i][k]=triangle[i][k].get<double>();
+                cell.triangles.push_back(corners);
+            }
+            const auto color=colors.find(cell.id);
+            if(color!=colors.end()) {cell.weight=1;cell.color=color->second;}
+            else if(options.face_weights.at(root)>0) {
+                cell.weight=options.face_weights[root];cell.color=options.face_target_colors.at(root);
+            }
+            cells.push_back(std::move(cell));
+        }
+    }
+    for(const auto& entry:colors) require(ids.count(entry.first)!=0 || entry.first.compare(0,7,"source:")==0,
+        "Appearance color leaves its contour mapping.");
+    for(auto root:roots) options.face_weights[root]=0;
+    options.leaves.erase(std::remove_if(options.leaves.begin(),options.leaves.end(),
+        [&](const auto& leaf){return roots.count(leaf.key.source_face_id)!=0;}),options.leaves.end());
+    std::sort(cells.begin(),cells.end(),[](const auto& a,const auto& b){return std::tie(a.source_face_id,a.id)<std::tie(b.source_face_id,b.id);});
+    options.cells=std::move(cells);options.canonical_geometry_id=geometry;
+}
+
 BeautyAppearanceResult edit_glb_appearance(const boost::filesystem::path& source,
     const boost::filesystem::path& destination, const BeautyAppearanceOptions& options, const std::function<bool()>& canceled) {
     BeautyAppearanceResult result;
@@ -906,8 +953,49 @@ BeautyAppearanceResult edit_glb_appearance(const boost::filesystem::path& source
         }
         BeautyLeafDomain::validate_keys(leaf_keys,options.face_weights.size());
         for (const auto& entry : coverage) require(entry.second==1.,"Appearance leaves do not cover every sibling.");
+        std::map<size_t,ExPolygons> cell_coverage;
+        std::set<std::string> cell_ids;
+        std::pair<size_t,std::string> previous_cell;bool first_cell=true;
+        size_t extra_triangles=0;
+        for(const auto& cell:options.cells) {
+            require(cell.source_face_id<options.face_weights.size() && !cell.triangles.empty() &&
+                SurfacePartition::hash(cell.id) && cell_ids.insert(cell.id).second,"Invalid appearance cell.");
+            const auto key=std::make_pair(cell.source_face_id,cell.id);
+            require(first_cell || previous_cell<key,"Unordered appearance cells.");first_cell=false;previous_cell=key;
+            require(options.face_weights[cell.source_face_id]==0 && !coverage.count(cell.source_face_id),
+                    "Contour roots cannot also use leaf or whole-face edits.");
+            parameter(cell.weight,0,1);selected=selected || cell.weight>0;
+            for(float channel:cell.color) parameter(channel,0,1);
+            auto& covered=cell_coverage[cell.source_face_id];
+            for(const auto& corners:cell.triangles) {
+                Json triangle=Json::array();
+                for(const auto& corner:corners) triangle.push_back({corner[0],corner[1],corner[2]});
+                try {
+                    const auto region=SurfacePartition::polygons(Json::array({{{"polygon",triangle},{"holes",Json::array()}}}),true);
+                    require(SurfacePartition::area(region)>0 &&
+                            SurfacePartition::area(intersection_ex(covered,region))<SurfacePartition::area_tolerance,
+                            "Appearance cell triangles overlap.");
+                    covered=union_ex(covered,region);++extra_triangles;
+                } catch(const std::exception& error) {
+                    throw std::runtime_error("GLB contour validation face="+std::to_string(cell.source_face_id)+
+                        " cell="+cell.id+": "+error.what());
+                }
+            }
+        }
+        for(const auto& region:cell_coverage)
+            require(SurfacePartition::area(diff_ex(SurfacePartition::root(),region.second))<SurfacePartition::area_tolerance,
+                    "Appearance cells do not cover their siblings.");
+        if(!options.cells.empty()) {
+            extra_triangles-=cell_coverage.size();
+            for(const auto& entry:coverage) {
+                const auto count=std::count_if(options.leaves.begin(),options.leaves.end(),
+                    [&](const auto& leaf){return leaf.key.source_face_id==entry.first;});
+                extra_triangles+=size_t(count)-1;
+            }
+            require(extra_triangles<=std::min(size_t(20000),options.face_weights.size()*2/100),"Appearance partition exceeds its cumulative budget.");
+        }
         require(selected, "Select an area before editing appearance.");
-        const bool absolute = !options.face_target_colors.empty() || !options.leaves.empty();
+        const bool absolute = !options.face_target_colors.empty() || !options.leaves.empty() || !options.cells.empty();
         if (absolute) {
             require(options.face_target_colors.empty() || options.face_target_colors.size() == options.face_weights.size(), "Target colors do not match the surface.");
             require(options.hue_degrees == 0 && options.saturation == 1 && options.brightness == 0 &&
@@ -949,7 +1037,7 @@ BeautyAppearanceResult edit_glb_appearance(const boost::filesystem::path& source
             "The selection no longer matches the GLB triangle layout; reload the model.");
         require(mesh.vertices.size() <= 6000000, "The GLB exceeds the editable vertex limit.");
         std::vector<std::array<int,3>> corner_map;
-        if (!options.leaves.empty()) {
+        if (!options.leaves.empty() || !options.cells.empty()) {
             TriangleMesh canonical; ObjInfo info;
             require(load_model_artifact(source,canonical,info,error),"Cannot verify canonical leaf geometry.");
             require(SurfaceSelectionPersistence::geometry_fingerprint(canonical.its)==options.canonical_geometry_id,
@@ -1004,6 +1092,7 @@ BeautyAppearanceResult edit_glb_appearance(const boost::filesystem::path& source
         std::map<size_t,size_t> edited_images;
         std::set<size_t> selected_roots;
         for (const auto& leaf : options.leaves) if (leaf.weight>0) selected_roots.insert(leaf.key.source_face_id);
+        for(const auto& cell:options.cells) if(cell.weight>0) selected_roots.insert(cell.source_face_id);
         for (size_t face = 0; face < mesh.indices.size(); ++face) if (options.face_weights[face] > 0 || selected_roots.count(face)) {
             const int mi = mesh.material_ids[face];
             require(mi >= 0 && size_t(mi) < material.size(), "Invalid appearance face material.");
@@ -1034,7 +1123,7 @@ BeautyAppearanceResult edit_glb_appearance(const boost::filesystem::path& source
             const auto mask = raster_mask(mesh,material,image.first,pixels.cols,pixels.rows,options,canceled,corner_map);
             const bool editable = std::any_of(mask.weights.begin(),mask.weights.end(),[](float w){ return w > 0; });
             require(editable, "A selected texture only contains protected shared UV texels or is too small; no partial version was saved.");
-            has_editable_pixel = true;
+            has_editable_pixel = has_editable_pixel || editable;
             const size_t changed = edit_pixels(pixels,mask,options,canceled);
             result.changed_pixels += changed;
             image.second = image.first;

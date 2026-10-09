@@ -1,0 +1,38 @@
+{
+  "resources/beauty-runtime/python/Lib/site-packages/fsspec/spec.py": {
+    "file_sha256": "add54e74430d1167f8f9f5ac5349bebe811234f5055899dda3b4ac1c5b98603b",
+    "fields": {"password": ["5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8"]}
+  },
+  "resources/beauty-runtime/python/Lib/site-packages/fsspec/utils.py": {
+    "file_sha256": "9d35d657dc441e8f4be75d542e48fc4432fe01fb06ab80a501581f19afd6b35d",
+    "fields": {"password": ["a1159e9df3670d549d04524532629f5477ceb7deec9b45e47e8c009506ecb2c8"]}
+  },
+  "resources/beauty-runtime/python/Lib/site-packages/httpx2/_urls.py": {
+    "file_sha256": "b76c19382b96b663fcbc79f0ab684b84b67f836637e8add2329534bbfdc9f026",
+    "fields": {"password": ["984ca5162200734c592148f1820b71057f098573d138666b48663e4e30cd8d3a"]}
+  },
+  "resources/beauty-runtime/python/Lib/site-packages/huggingface_hub/_oidc.py": {
+    "file_sha256": "de47022dabd64391503b08b350fccb6816f57edd85209a346d25cbdb84b7af85",
+    "fields": {"access_token": ["4f35c59bd221afb3a5d1c3f7d3f91a702dbb21e5ab098e1327066aae66674f7a"]}
+  },
+  "resources/beauty-runtime/python/Lib/site-packages/huggingface_hub/_webhooks_server.py": {
+    "file_sha256": "7e311f673b52acb04b5b74a845d71f38757d807851d59ae7fc562a3335acd856",
+    "fields": {"webhook_secret": ["1f9233a121057dcedc0b8e6d32fb605d2137879e3974ee6570a07062975845d9", "65f7351ae3a88092fa7dad99a74849007d4e702809cd85e8a26167f05ae67fae"]}
+  },
+  "resources/beauty-runtime/python/Lib/site-packages/huggingface_hub/constants.py": {
+    "file_sha256": "f90d57aa46457e8f7efddc0b3cb1fdfd8d04b4be65657cd69001f600316935c6",
+    "fields": {"HUGGINGFACE_HEADER_X_XET_ACCESS_TOKEN": ["47b9f0c717bd7cdc58511dade5ef9b63ec58caf8d1f495f724cf502885744945"]}
+  },
+  "resources/beauty-runtime/python/Lib/site-packages/huggingface_hub/hf_api.py": {
+    "file_sha256": "98255846d9905bddb85a3bed2faee89b4369a2c7c9970399cc25e16a68f6e98a",
+    "fields": {"secret": ["186ef76e9d6a723ecb570d4d9c287487d001e5d35f7ed4a313350a407950318e"]}
+  },
+  "resources/beauty-runtime/python/Lib/site-packages/huggingface_hub/inference/_client.py": {
+    "file_sha256": "ea3eccd547be990cd9c18f1bf26c05889859c1b98a42f08a7d51ff9eef0aefa2",
+    "fields": {"api_key": ["3a677c572e24c21f1fa21af9f0ef58f21ca9c1e40e8171d46a1e54f163106c8e", "b37d355271d6e98cd067260259f1a336a299a5581c8c2b17fba581b0f5fdf541"]}
+  },
+  "resources/beauty-runtime/python/Lib/site-packages/huggingface_hub/inference/_generated/_async_client.py": {
+    "file_sha256": "435a2cc267f7539e31f21e99eaafb00b99802fee5b69e2d009846f69a07e2cd8",
+    "fields": {"api_key": ["3a677c572e24c21f1fa21af9f0ef58f21ca9c1e40e8171d46a1e54f163106c8e", "b37d355271d6e98cd067260259f1a336a299a5581c8c2b17fba581b0f5fdf541"]}
+  }
+}

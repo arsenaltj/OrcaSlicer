@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ImageDesignDraft.hpp"
 #include "../AI/ModelGeneration/ModelGenerationHost.hpp"
 #include "../AI/ModelGeneration/PostGenerationWorkbenchState.hpp"
 #include "../AI/ModelGeneration/WorkbenchImportSession.hpp"
@@ -63,7 +64,7 @@ public:
 
 private:
     enum class ImageState { Empty, Loading, Ready, Failed };
-    enum class SecondaryAction { None, Stop, RetryService, RestoreLatest, Restart };
+    enum class SecondaryAction { None, Stop, RetryService, RestoreLatest, Restart, ReturnToDesign };
     enum class ModelPageAction { None, RetryService, RetryModel, RestoreLatest, BackToDesign, ReloadPreview, Import };
 
     void build_image_workspace();
@@ -73,6 +74,7 @@ private:
     wxPanel* create_placeholder_page(const wxString& title, const wxString& body);
     void connect_model_generation_host();
     void apply_model_generation_state(const ModelGenerationUIState& state);
+    void restore_image_input(const ModelGenerationUIInput& input);
     ModelGenerationUIInput current_generation_input() const;
     void update_generation_style_controls();
     void layout_image_settings();
@@ -80,6 +82,7 @@ private:
     bool synchronize_generation_input();
     bool synchronize_generation_options();
     bool generation_input_editable() const;
+    void refresh_prompt_count();
     void apply_generation_options(const ModelGenerationUIOptions& options);
     void on_generation_option_changed();
     bool request_open_history(const std::string& job_id);
@@ -88,6 +91,8 @@ private:
     void request_primary_action();
     void request_secondary_action();
     void request_model_page_action();
+    bool can_return_to_image_design() const;
+    bool return_to_image_design();
     void update_model_page(const ModelGenerationUIState& state);
     void ensure_model_preview(const ModelGenerationUIState& state);
     void clear_model_preview();
@@ -115,6 +120,11 @@ private:
     bool can_save_print_project() const;
     void refresh_project_save_actions();
     void save_print_project();
+    bool navigate_to_impl(Page page, bool allow_locked_image_view);
+    // User navigation to the image page may inspect the current design while
+    // a model submission still owns the route. This path keeps the route lock
+    // and exposes the image workspace as read-only.
+    bool navigate_to_image_view();
 
     wxBoxSizer* m_sizer { nullptr };
     wxPanel* m_content_host { nullptr };
@@ -194,6 +204,7 @@ private:
     wxStaticText* m_upload_filename { nullptr };
     UploadThumbnail* m_upload_thumbnail { nullptr };
     wxTextCtrl* m_prompt { nullptr };
+    wxStaticText* m_prompt_count { nullptr };
     wxPanel* m_guide_panel { nullptr };
     wxPanel* m_preview_host { nullptr };
     wxPanel* m_source_preview_card { nullptr };
@@ -211,6 +222,7 @@ private:
     wxStaticText* m_model_progress_label { nullptr };
     wxWindow* m_model_progress { nullptr };
     wxWindow* m_model_action_button { nullptr };
+    wxWindow* m_model_back_to_design_button { nullptr };
     wxWindow* m_model_stop_button { nullptr };
     std::array<wxPanel*, 4> m_nav_markers { nullptr, nullptr, nullptr, nullptr };
     std::array<wxStaticText*, 4> m_nav_labels { nullptr, nullptr, nullptr, nullptr };
@@ -229,6 +241,7 @@ private:
     std::thread m_model_preview_worker;
     ModelGenerationFeatureHost* m_model_generation_host { nullptr };
     ModelGenerationUIState m_model_generation_state;
+    ImageDesignDraft m_image_design_draft;
     ModelGenerationUIOptions m_generation_options;
     Page m_active_page { Page::Image };
     // Keep the semantic workspace request, not only the visual host. Several
@@ -240,11 +253,12 @@ private:
     SecondaryAction m_secondary_action { SecondaryAction::None };
     ModelPageAction m_model_page_action { ModelPageAction::None };
     // A model submission owns the Shell route until the user explicitly
-    // chooses "返回 2D 设计". The session and job identity reject stale
+    // chooses "返回图像设计". The session and route identity reject stale
     // callbacks that could otherwise repaint the old image page.
     bool m_model_route_locked { false };
     std::uint64_t m_model_route_session { 0 };
-    std::string m_model_route_job_id;
+    std::string m_model_route_id;
+    bool m_image_page_view_only { false };
     bool m_input_sync_ok { false };
     bool m_option_sync_ok { false };
     bool m_submit_in_progress { false };

@@ -3,6 +3,7 @@
 #include "AssetsWorkspace.hpp"
 #include "RedesignTheme.hpp"
 #include "RedesignFeatureFlags.hpp"
+#include "RedesignMessageDialog.hpp"
 #include "RedesignModelRoute.hpp"
 #include "RedesignWidgets.hpp"
 #include "PrinterWorkspace.hpp"
@@ -225,8 +226,10 @@ public:
         case AIServiceStatus::Unavailable:
             break;
         case AIServiceStatus::GenerationUnavailable:
+            description = text("生成不可用，请检查服务配置");
+            colour = accent_colour();
             tooltip = text("AI 图片生成服务已连接，但生成功能暂不可用，请检查服务配置。");
-            [[fallthrough]];
+            break;
         case AIServiceStatus::Connected:
             description = text("已连接");
             colour = wxColour(122, 205, 153);
@@ -1184,6 +1187,7 @@ void RedesignShell::disconnect_model_generation_host()
     if (m_model_generation_host != nullptr) {
         m_model_generation_host->set_workbench_listener({});
         m_model_generation_host->set_workbench_results_handler({});
+        m_model_generation_host->set_workbench_return_to_design_handler({});
         m_model_generation_host->set_workbench_import_handler({});
         m_model_generation_host->unmount_workbench();
         m_model_generation_host->set_history_navigation_handler({});
@@ -1240,7 +1244,12 @@ void RedesignShell::build_image_workspace()
         navigation_sizer->Add(item, 0, wxEXPAND | wxBOTTOM, FromDIP(24));
 
         const Page page = static_cast<Page>(index);
-        auto navigate = [this, page](wxMouseEvent&) { navigate_to(page); };
+        auto navigate = [this, page](wxMouseEvent&) {
+            if (page == Page::Image)
+                navigate_to_image_view();
+            else
+                navigate_to(page);
+        };
         item->Bind(wxEVT_LEFT_UP, navigate);
         m_nav_labels[index]->Bind(wxEVT_LEFT_UP, navigate);
         item_icon->Bind(wxEVT_LEFT_UP, navigate);
@@ -1337,19 +1346,11 @@ void RedesignShell::build_image_workspace()
     // wxWidgets emulates hints for multiline controls and remembers the current text colour.
     m_prompt->SetHint(text("描述你想创作的内容，例如：一只可爱的小猫。"));
     prompt_sizer->Add(m_prompt, 1, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
-    auto* prompt_count = label(prompt_surface, "0/2000 UTF-8 字节", 9);
-    style_text(prompt_count, secondary_text_colour(), 9);
-    prompt_sizer->Add(prompt_count, 0, wxALIGN_RIGHT | wxRIGHT | wxBOTTOM, FromDIP(12));
-    m_prompt->Bind(wxEVT_TEXT, [this, prompt_count, prompt_surface](wxCommandEvent& event) {
-        const auto encoded = m_prompt->GetValue().ToUTF8();
-        const size_t bytes = encoded ? encoded.length() : 0;
-        const bool over_limit = bytes > ModelGenerationPresentation::MAX_MODEL_INPUT_BYTES;
-        prompt_count->SetLabel(wxString::Format("%zu/%zu", bytes,
-            ModelGenerationPresentation::MAX_MODEL_INPUT_BYTES) + text(" UTF-8 字节") +
-            (over_limit ? text("（已超限）") : wxString()));
-        prompt_count->SetForegroundColour(over_limit ? wxColour(255, 128, 112) : secondary_text_colour());
-        prompt_count->SetToolTip(text("中文通常占3字节。超限时保留完整文字，请精简后生成。"));
-        prompt_surface->Layout();
+    m_prompt_count = label(prompt_surface, "0/2000 UTF-8 字节", 9);
+    style_text(m_prompt_count, secondary_text_colour(), 9);
+    prompt_sizer->Add(m_prompt_count, 0, wxALIGN_RIGHT | wxRIGHT | wxBOTTOM, FromDIP(12));
+    m_prompt->Bind(wxEVT_TEXT, [this](wxCommandEvent& event) {
+        refresh_prompt_count();
         if (!m_applying_model_generation_state)
             synchronize_generation_input();
         event.Skip();
@@ -1638,6 +1639,10 @@ wxPanel* RedesignShell::build_model_workspace()
     m_model_action_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { request_model_page_action(); });
     m_model_action_button->Hide();
     status_sizer->Add(m_model_action_button, 0, wxEXPAND | wxTOP, FromDIP(14));
+    m_model_back_to_design_button = new RoundedActionButton(status_column, text("返回图像设计"), false, 40);
+    m_model_back_to_design_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { return_to_image_design(); });
+    m_model_back_to_design_button->Hide();
+    status_sizer->Add(m_model_back_to_design_button, 0, wxEXPAND | wxTOP, FromDIP(10));
     m_model_stop_button = new RoundedActionButton(status_column, text("停止生成"), false, 40);
     m_model_stop_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         if (m_model_generation_host != nullptr && m_model_generation_host->request_stop())
@@ -1683,9 +1688,16 @@ void RedesignShell::connect_model_generation_host()
 void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& state)
 {
     const auto route_action = model_generation_route_action(state, m_model_generation_state,
-        m_model_route_locked, m_model_route_session, m_model_route_job_id);
+        m_model_route_locked, m_model_route_session, m_model_route_id);
     if (route_action == RedesignModelRouteAction::Ignore)
         return;
+    const bool restore_input = image_design_restores_input(state, m_model_generation_state);
+    if (restore_input)
+        restore_image_input(state.input);
+    m_image_design_draft.observe(state);
+    const auto image_stage = m_image_design_draft.stage(state);
+    const bool preserve_model_workbench = model_generation_preserves_workbench(state, route_action,
+        m_active_page == Page::Model && m_model_view == ModelView::Workbench);
     const bool history_changed = state.design_ready &&
         (!m_model_generation_state.design_ready || state.job_id != m_model_generation_state.job_id);
     // An invalid draft must survive a host snapshot while the user edits it.
@@ -1698,12 +1710,13 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
     if (route_action == RedesignModelRouteAction::Model || route_action == RedesignModelRouteAction::Image) {
         m_model_route_locked = route_action == RedesignModelRouteAction::Model;
         m_model_route_session = state.model_generation_session;
-        m_model_route_job_id = state.job_id;
-        m_model_view = ModelView::Result;
+        m_model_route_id = model_generation_route_id(state);
+        if (!preserve_model_workbench)
+            m_model_view = ModelView::Result;
     }
     m_model_generation_state = state;
     if (m_image_history) {
-        m_image_history->set_busy(state.busy || m_submit_in_progress);
+        m_image_history->set_busy(state.busy || m_submit_in_progress || m_image_page_view_only);
         if (state.design_ready) m_image_history->set_selected(state.job_id);
         if (history_changed) m_image_history->refresh_history();
     }
@@ -1713,7 +1726,8 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
     m_applying_model_generation_state = true;
     if (m_prompt != nullptr && !preserve_over_limit_prompt &&
         m_prompt->GetValue().ToStdString(wxConvUTF8) != state.input.prompt)
-        m_prompt->SetValue(wxString::FromUTF8(state.input.prompt.c_str()));
+        m_prompt->ChangeValue(wxString::FromUTF8(state.input.prompt.c_str()));
+    refresh_prompt_count();
     if (m_style_choice != nullptr) {
         const int style_selection = ModelGenerationPresentation::style_selection(state.input.style);
         static_cast<StylePicker*>(m_style_choice)->set_selection(style_selection);
@@ -1727,10 +1741,13 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
     m_applying_model_generation_state = false;
     m_input_sync_ok = m_model_generation_host != nullptr && current_generation_input() == state.input;
     m_option_sync_ok = m_model_generation_host != nullptr && current_generation_options() == state.options;
-    if (state.design_ready && !state.design_image_path.empty())
+    if (!m_image_design_draft.pending() && state.design_ready && !state.design_image_path.empty())
         ensure_design_image(state.design_image_path);
     else
         clear_design_image();
+
+    if (restore_input)
+        update_image_state();
 
     const bool editable = generation_input_editable();
     if (m_upload_surface != nullptr)
@@ -1778,7 +1795,7 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
         }
     };
 
-    switch (state.stage) {
+    switch (image_stage) {
     case ModelGenerationUIStage::Saving3DOptions:
         primary_enabled = false;
         update_design_preview();
@@ -1852,6 +1869,12 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
             secondary_label = text("停止生成");
         }
         break;
+    case ModelGenerationUIStage::LoadingModel:
+        primary_label = text("正在加载 3D 模型...");
+        primary_enabled = false;
+        placeholder = text("正在加载 3D 模型");
+        placeholder_mode = ImagePreview::PlaceholderMode::Generating;
+        break;
     case ModelGenerationUIStage::ModelReady:
         primary_label = text("重新生成 2D 设计图");
         primary_enabled = m_input_sync_ok && state.can_generate_design && editable;
@@ -1861,10 +1884,17 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
         break;
     }
 
-    if (!show_design_bitmap && m_result_preview != nullptr)
+    if (m_image_page_view_only && m_secondary_action == SecondaryAction::None) {
+        m_secondary_action = SecondaryAction::ReturnToDesign;
+        secondary_label = text("返回图像设计");
+    }
+
+    if (show_design_bitmap)
+        update_preview_bitmap();
+    else if (m_result_preview != nullptr)
         m_result_preview->SetPlaceholder(placeholder, placeholder_mode);
     if (m_result_preview != nullptr) {
-        if (state.stage == ModelGenerationUIStage::GeneratingDesign)
+        if (image_stage == ModelGenerationUIStage::GeneratingDesign)
             m_result_preview->SetDesignTiming(state.job_id, state.design_elapsed_seconds, state.design_estimated_seconds);
         else
             m_result_preview->ClearDesignTiming();
@@ -1876,7 +1906,8 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
     }
     if (m_secondary_action_button != nullptr) {
         m_secondary_action_button->SetLabel(secondary_label);
-        m_secondary_action_button->Enable(m_secondary_action != SecondaryAction::None);
+        m_secondary_action_button->Enable(m_secondary_action != SecondaryAction::None &&
+            (m_secondary_action != SecondaryAction::ReturnToDesign || can_return_to_image_design()));
         m_secondary_action_button->Show(m_secondary_action != SecondaryAction::None);
         m_secondary_action_button->Refresh();
     }
@@ -1946,7 +1977,7 @@ ModelGenerationUIInput RedesignShell::current_generation_input() const
     input.style = m_selected_style_id;
     if (m_custom_style != nullptr)
         input.custom_style = m_custom_style->GetValue().ToStdString(wxConvUTF8);
-    return input;
+    return image_design_input_for_editing(std::move(input));
 }
 
 ModelGenerationUIOptions RedesignShell::current_generation_options() const
@@ -2007,9 +2038,24 @@ bool RedesignShell::synchronize_generation_options()
     return m_option_sync_ok;
 }
 
+void RedesignShell::refresh_prompt_count()
+{
+    if (!m_prompt || !m_prompt_count) return;
+    const auto encoded = m_prompt->GetValue().ToUTF8();
+    const size_t bytes = encoded ? encoded.length() : 0;
+    const bool over_limit = bytes > ModelGenerationPresentation::MAX_MODEL_INPUT_BYTES;
+    m_prompt_count->SetLabel(wxString::Format("%zu/%zu", bytes,
+        ModelGenerationPresentation::MAX_MODEL_INPUT_BYTES) + text(" UTF-8 字节") +
+        (over_limit ? text("（已超限）") : wxString()));
+    m_prompt_count->SetForegroundColour(over_limit ? wxColour(255, 128, 112) : secondary_text_colour());
+    m_prompt_count->SetToolTip(text("中文通常占3字节。超限时保留完整文字，请精简后生成。"));
+    m_prompt_count->GetParent()->Layout();
+}
+
 bool RedesignShell::generation_input_editable() const
 {
     return m_image_state != ImageState::Loading && !m_submit_in_progress && !m_model_generation_state.busy &&
+           !m_image_page_view_only &&
            m_model_generation_state.stage != ModelGenerationUIStage::GeneratingDesign &&
            m_model_generation_state.stage != ModelGenerationUIStage::GeneratingModel;
 }
@@ -2019,16 +2065,27 @@ bool RedesignShell::request_open_history(const std::string& job_id)
     if (!generation_input_editable() || job_id.empty() || !m_model_generation_host ||
         !m_model_generation_host->request_open_image_history(job_id)) return false;
     const auto state = m_model_generation_host->snapshot();
-    ++m_image_request_generation;
-    m_selected_image_path = boost::filesystem::path(wxString::FromUTF8(state.input.image_path).ToStdWstring());
-    m_selected_image = wxImage();
-    if (!m_selected_image_path.empty()) m_selected_image.LoadFile(m_selected_image_path.wstring());
-    m_image_state = m_selected_image.IsOk() ? ImageState::Ready : ImageState::Empty;
-    m_last_preview_bounds = wxDefaultSize;
     m_pending_workbench_job.clear();
     apply_model_generation_state(state);
     update_image_state();
     return true;
+}
+
+void RedesignShell::restore_image_input(const ModelGenerationUIInput& input)
+{
+    // Explicit context switches replace the source and the design together.
+    // Ordinary refreshes must not overwrite an uploaded, unsubmitted draft.
+    ++m_image_request_generation;
+    m_selected_image_path = boost::filesystem::path(wxString::FromUTF8(input.image_path).ToStdWstring());
+    m_selected_image = wxImage();
+    if (!m_selected_image_path.empty()) {
+        try {
+            m_selected_image.LoadFile(m_selected_image_path.wstring());
+        } catch (const boost::filesystem::filesystem_error&) {
+        }
+    }
+    m_image_state = m_selected_image.IsOk() ? ImageState::Ready : ImageState::Empty;
+    m_last_preview_bounds = wxDefaultSize;
 }
 
 void RedesignShell::request_generate_design()
@@ -2042,7 +2099,10 @@ void RedesignShell::request_generate_design()
         apply_model_generation_state(m_model_generation_host->snapshot());
         return;
     }
-    if (m_model_generation_host == nullptr || !m_model_generation_host->request_generate_design()) {
+    m_image_design_draft.begin_submission();
+    const bool requested = m_model_generation_host != nullptr && m_model_generation_host->request_generate_design();
+    m_image_design_draft.end_submission(m_model_generation_host != nullptr ? m_model_generation_host->snapshot() : ModelGenerationUIState());
+    if (!requested) {
         m_submit_in_progress = false;
         apply_model_generation_state(m_model_generation_host != nullptr ? m_model_generation_host->snapshot() : ModelGenerationUIState());
         return;
@@ -2053,7 +2113,8 @@ void RedesignShell::request_generate_design()
 
 void RedesignShell::request_generate_model()
 {
-    if (m_submit_in_progress || m_model_generation_state.stage != ModelGenerationUIStage::DesignReady ||
+    if (m_submit_in_progress || m_image_design_draft.pending() || !generation_input_editable() ||
+        m_model_generation_state.stage != ModelGenerationUIStage::DesignReady ||
         !m_model_generation_state.inputs_match_job || m_design_image_state != ImageState::Ready)
         return;
     m_submit_in_progress = true;
@@ -2075,7 +2136,7 @@ void RedesignShell::request_generate_model()
 
 void RedesignShell::request_primary_action()
 {
-    if (m_model_generation_state.stage == ModelGenerationUIStage::DesignReady &&
+    if (m_image_design_draft.stage(m_model_generation_state) == ModelGenerationUIStage::DesignReady &&
         m_model_generation_state.inputs_match_job)
         request_generate_model();
     else
@@ -2098,6 +2159,9 @@ void RedesignShell::request_secondary_action()
     case SecondaryAction::Restart:
         handled = m_model_generation_host != nullptr && m_model_generation_host->request_restart();
         break;
+    case SecondaryAction::ReturnToDesign:
+        return_to_image_design();
+        return;
     case SecondaryAction::None:
         return;
     }
@@ -2119,10 +2183,7 @@ void RedesignShell::request_model_page_action()
         handled = m_model_generation_host != nullptr && m_model_generation_host->request_restore_latest();
         break;
     case ModelPageAction::BackToDesign:
-        m_model_route_locked = false;
-        m_model_route_session = 0;
-        m_model_route_job_id.clear();
-        navigate_to(Page::Image);
+        return_to_image_design();
         return;
     case ModelPageAction::ReloadPreview:
         m_model_preview_failed = false;
@@ -2158,7 +2219,15 @@ void RedesignShell::update_model_page(const ModelGenerationUIState& state)
     int progress = 0;
     bool show_stop = false;
 
-    if (state.stage == ModelGenerationUIStage::GeneratingModel) {
+    if (state.stage == ModelGenerationUIStage::LoadingModel) {
+        title = text("正在加载 3D 模型");
+        status = !state.status_text.empty() ? wxString::FromUTF8(state.status_text.c_str())
+                                            : text("正在解析本地模型文件");
+        progress_label = text("加载中");
+        visual_label = text("正在加载 3D 模型预览");
+        visual_mode = ImagePreview::PlaceholderMode::Generating;
+        summary = text("模型加载完成后可继续查看、编辑或导入。");
+    } else if (state.stage == ModelGenerationUIStage::GeneratingModel) {
         title = text("正在生成 3D 模型");
         status = !state.status_text.empty() ? wxString::FromUTF8(state.status_text.c_str())
                                             : text("任务已提交，正在等待现有生成流程完成");
@@ -2203,7 +2272,7 @@ void RedesignShell::update_model_page(const ModelGenerationUIState& state)
             action_label = text("恢复上次任务");
         } else {
             m_model_page_action = ModelPageAction::BackToDesign;
-            action_label = text("返回 2D 设计");
+            action_label = text("返回图像设计");
         }
     } else if (state.stage == ModelGenerationUIStage::Stopped && state.model_generation_context) {
         title = text("3D 模型生成已停止");
@@ -2221,7 +2290,7 @@ void RedesignShell::update_model_page(const ModelGenerationUIState& state)
             action_label = text("恢复上次任务");
         } else {
             m_model_page_action = ModelPageAction::BackToDesign;
-            action_label = text("返回 2D 设计");
+            action_label = text("返回图像设计");
         }
     } else if (state.stage == ModelGenerationUIStage::ModelReady) {
         title = text("3D 模型已生成");
@@ -2273,7 +2342,12 @@ void RedesignShell::update_model_page(const ModelGenerationUIState& state)
         m_model_view_controls->Show(show_model_preview);
     m_model_action_button->SetLabel(action_label);
     m_model_action_button->Show(m_model_page_action != ModelPageAction::None);
-    m_model_action_button->Enable(m_model_page_action != ModelPageAction::None && !state.busy);
+    m_model_action_button->Enable(m_model_page_action != ModelPageAction::None &&
+        (m_model_page_action == ModelPageAction::BackToDesign ? can_return_to_image_design() : !state.busy));
+    const bool show_back_to_design = m_model_route_locked && state.model_generation_context &&
+                                     m_model_page_action != ModelPageAction::BackToDesign;
+    m_model_back_to_design_button->Show(show_back_to_design);
+    m_model_back_to_design_button->Enable(show_back_to_design && can_return_to_image_design());
     m_model_stop_button->Show(show_stop);
     m_model_stop_button->Enable(show_stop);
     m_model_page->Layout();
@@ -2352,7 +2426,10 @@ void RedesignShell::ensure_model_preview(const ModelGenerationUIState& state)
                         static_cast<unsigned long long>(triangles), dimensions.x(), dimensions.y(), dimensions.z(),
                         static_cast<unsigned long long>(colors)));
                 }
-                self->update_model_page(self->m_model_generation_state);
+                if (self->m_image_page_view_only)
+                    self->apply_model_generation_state(self->m_model_generation_state);
+                else
+                    self->update_model_page(self->m_model_generation_state);
             });
         });
     } catch (const std::exception& exception) {
@@ -2452,12 +2529,21 @@ wxPanel* RedesignShell::create_placeholder_page(const wxString& title, const wxS
 
 bool RedesignShell::navigate_to(Page page)
 {
+    return navigate_to_impl(page, false);
+}
+
+bool RedesignShell::navigate_to_impl(Page page, bool allow_locked_image_view)
+{
     if (m_import_in_progress && !m_import_switching_view) return false;
-    if (page == Page::Image && m_model_route_locked) return false;
+    if (page == Page::Image && m_model_route_locked && !allow_locked_image_view) return false;
     const std::size_t index = static_cast<std::size_t>(page);
     if (index >= m_pages.size() || m_pages[index] == nullptr)
         return false;
 
+    if (page == Page::Image)
+        m_image_page_view_only = allow_locked_image_view && m_model_route_locked;
+    else
+        m_image_page_view_only = false;
     m_active_page = page;
     switch (page) {
     case Page::Assets:
@@ -2501,6 +2587,14 @@ bool RedesignShell::navigate_to(Page page)
     return true;
 }
 
+bool RedesignShell::navigate_to_image_view()
+{
+    const bool navigated = navigate_to_impl(Page::Image, true);
+    if (navigated)
+        apply_model_generation_state(m_model_generation_state);
+    return navigated;
+}
+
 bool RedesignShell::navigate_to_tab(const wxString& id)
 {
     if (m_import_in_progress && !m_import_switching_view) return false;
@@ -2533,7 +2627,8 @@ bool RedesignShell::navigate_to_tab(const wxString& id)
         page = Page::Assets;
     }
 
-    if (!navigate_to(page))
+    const bool navigated = page == Page::Image ? navigate_to_image_view() : navigate_to(page);
+    if (!navigated)
         return false;
     // navigate_to() sets the host's canonical id. Restore the original
     // semantic request so command availability and status queries do not
@@ -2662,6 +2757,8 @@ void RedesignShell::accept_image(const wxString& path)
         }
         m_selected_image = std::move(image);
         m_selected_image_path = selected_path;
+        m_image_design_draft.begin(m_model_generation_state);
+        clear_design_image(); // Invalidates any queued load of the previous 2D result.
         if (wxGetApp().app_config != nullptr)
             wxGetApp().app_config->set("model_generation_image_directory", selected_path.parent_path().string());
         m_image_state = ImageState::Ready;
@@ -2673,6 +2770,8 @@ void RedesignShell::accept_image(const wxString& path)
             << " elapsed_ms=" << image_diagnostic_elapsed(started);
         synchronize_generation_input();
         BOOST_LOG_TRIVIAL(info) << "[ImageUpload] load=" << generation << " stage=load_end input_sync_ok=" << m_input_sync_ok
+            << " can_generate_design=" << m_model_generation_state.can_generate_design
+            << " input_editable=" << generation_input_editable()
             << " elapsed_ms=" << image_diagnostic_elapsed(started);
     });
 }

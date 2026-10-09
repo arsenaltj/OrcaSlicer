@@ -189,6 +189,7 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     m_workbench_check_status = new wxStaticText(check_host, wxID_ANY, _L("尚未检查"));
     m_workbench_check_status->SetForegroundColour(wxColour(170, 170, 176));
     controls->Add(m_workbench_check_status, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
+    check_contents->Add(build_portrait_optimization(check_host), 0, wxEXPAND | wxBOTTOM, FromDIP(8));
     section_parent = scroll;
     controls = m_workbench_settings_groups[1];
     heading(_L("工程耗材颜色"));
@@ -346,6 +347,9 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
         refresh_model_finishing(); refresh_post_generation_workbench();
     });
     command(workspace, toolbar, _L("结果对照"), [this](wxCommandEvent&) { request_workbench_results(); });
+    m_workbench_return_to_design_button = command(workspace, toolbar, _L("返回图像设计"), [this](wxCommandEvent&) {
+        if (m_workbench_return_to_design) m_workbench_return_to_design();
+    });
     workspace_sizer->Add(toolbar, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(8));
     m_workbench_state_status = new wxStaticText(workspace, wxID_ANY, wxEmptyString);
     m_workbench_state_status->SetForegroundColour(wxColour(255, 194, 39));

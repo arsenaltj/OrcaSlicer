@@ -146,6 +146,8 @@ struct Evidence {
     std::vector<EyeDetail> eye_details;
     std::vector<FeatureDetail> feature_details;
     std::vector<ShapeDetail> shape_details;
+    // Preserve verified observation counts for explicit offline parent cleanup.
+    Json parent_samples = Json::array();
     size_t known_faces {0}, unknown_faces {0}, ambiguous_faces {0}, below_threshold_faces {0};
 };
 
@@ -209,6 +211,7 @@ inline bool decode(const std::string& bytes,const ExpectedIdentity& expected,con
         if(j.contains("eye_details"))fields.insert("eye_details");
         if(j.contains("feature_details"))fields.insert("feature_details");
         if(j.contains("shape_details"))fields.insert("shape_details");
+        if(j.contains("parent_details"))fields.insert("parent_details");
         keys(j,fields);
         require(j.at("schema")==schema && j.at("label_schema")==label_schema,"Unsupported semantic schema.");
         require(j.at("request_id")==expected.request_id && j.at("source_sha256")==expected.source_sha256 &&
@@ -227,7 +230,9 @@ inline bool decode(const std::string& bytes,const ExpectedIdentity& expected,con
         std::vector<AI::PrintColorRegion> candidates;
         std::vector<int32_t> owners(expected.face_count,-1);
         std::vector<double> confidence(expected.face_count,0);
+        std::vector<double> dominance_values(expected.face_count,0);
         std::vector<uint8_t> accepted(expected.face_count,0);
+        std::vector<std::array<size_t,2>> support(expected.face_count);
         std::set<std::pair<std::string,std::string>> identities;
         size_t observations=0;
         for (const auto& record:j.at("regions")) {
@@ -253,6 +258,8 @@ inline bool decode(const std::string& bytes,const ExpectedIdentity& expected,con
                 require(pixels>0 && views>0 && views<=pixels,"Invalid semantic observation support.");
                 if (owners[face]!=-1) { owners[face]=-2; accepted[face]=0; continue; }
                 owners[face]=owner; confidence[face]=std::min(score,dominance);
+                dominance_values[face]=dominance;
+                support[face]={pixels,views};
                 accepted[face]=score>=expected.minimum_confidence && dominance>=expected.minimum_dominance && (pixels>=2 || views>=2);
             }
             candidates.push_back(std::move(region));
@@ -262,6 +269,28 @@ inline bool decode(const std::string& bytes,const ExpectedIdentity& expected,con
             if (owners[f]<0) continue;
             if (!accepted[f]) { ++value.below_threshold_faces; continue; }
             auto& region=candidates[size_t(owners[f])]; region.faces.push_back(f); region.confidence=std::min(region.confidence,confidence[f]);
+            if (region.label=="face" || region.label=="nose" || region.label=="lr" || region.label=="rr" ||
+                region.label=="neck" || region.label=="hair" ||
+                (region.label=="cloth" && dominance_values[f]>=.95))
+                value.parent_samples.push_back({f,region.subject_id,region.label,confidence[f],support[f][0],support[f][1]});
+        }
+        std::set<size_t> body_parent_faces;
+        if (j.contains("parent_details")) {
+            const auto& rows=j.at("parent_details");
+            require(rows.is_array() && rows.size()<=expected.face_count,"Too many parent observations.");
+            size_t previous=0;bool first=true;
+            for (const auto& row:rows) {
+                require(row.is_array() && row.size()==6,"Invalid body parent observation.");
+                const auto f=index(row.at(0),expected.face_count-1);
+                const auto sid=row.at(1).get<std::string>(),label=row.at(2).get<std::string>();
+                const auto quality=probability(row.at(3));
+                const auto views=index(row.at(5),8),pixels=index(row.at(4),8*1024*1024);
+                require((first || f>previous) && owners[f]==-1 && binding.usable_face(f) &&
+                    subjects.size()==1 && subjects.count(sid) && label=="body-skin" &&
+                    quality>=.9 && views>=2 && pixels>=views,"Invalid body parent observation support.");
+                previous=f;first=false;value.parent_samples.push_back(row);body_parent_faces.insert(f);
+            }
+            std::sort(value.parent_samples.begin(),value.parent_samples.end(),[](const Json& a,const Json& b){return a[0]<b[0];});
         }
         value.face_regions.assign(expected.face_count,-1);
         for (auto& region:candidates) {
@@ -389,6 +418,8 @@ inline bool decode(const std::string& bytes,const ExpectedIdentity& expected,con
                 };
                 shape.accepted_faces=faces(hint.at("accepted_faces"));
                 shape.rejected_faces=faces(hint.at("rejected_faces"));
+                for(const auto f:shape.accepted_faces)require(!body_parent_faces.count(f),"Body parent overlaps a facial shape.");
+                for(const auto f:shape.rejected_faces)require(!body_parent_faces.count(f),"Body parent overlaps a facial shape.");
                 std::set<size_t> accepted(shape.accepted_faces.begin(),shape.accepted_faces.end());
                 for(const auto f:shape.rejected_faces)require(!accepted.count(f),"Shape detail accepted/rejected overlap.");
                 // Rejected faces are diagnostic observations, not ownership

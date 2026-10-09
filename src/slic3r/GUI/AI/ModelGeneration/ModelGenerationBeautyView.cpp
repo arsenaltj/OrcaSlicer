@@ -1,4 +1,5 @@
 #include "slic3r/GUI/ModelGenerationPanel.hpp"
+#include "slic3r/GUI/Redesign/RedesignMessageDialog.hpp"
 #include "ModelGenerationPresentation.hpp"
 #include "ModelPreview3D.hpp"
 #include "BeautyWorkbenchControls.hpp"
@@ -99,11 +100,11 @@ void ModelGenerationPanel::on_discard(wxCommandEvent&)
 {
     if (m_busy || m_finishing_running || !m_finishing_candidate.empty()) return;
     if (m_ready || m_model_preview_ready || m_style_preview_ready) {
-        wxMessageDialog choice(this,
+        const int answer = show_redesign_confirmation(this,
             _L("要先看看重新设计的建议吗？当前历史模型会保留，图片和描述可继续使用。"),
-            _L("重新开始"), wxYES_NO | wxCANCEL | wxICON_QUESTION);
-        choice.SetYesNoCancelLabels(_L("直接重新开始"), _L("先看建议"), _L("留在当前作品"));
-        const int answer = choice.ShowModal();
+            _L("重新开始"), {wxYES_NO | wxCANCEL, 105,
+                {{wxID_YES, _L("直接重新开始"), true}, {wxID_NO, _L("先看建议")},
+                 {wxID_CANCEL, _L("留在当前作品")}}});
         if (answer == wxID_CANCEL) return;
         if (answer == wxID_NO) {
             wxString advice;
@@ -116,9 +117,8 @@ void ModelGenerationPanel::on_discard(wxCommandEvent&)
                     "• 颜色杂乱：先在3D美颜里试六色、保留嘴唇和服装等关键色。\n"
                     "• 表面小凹凸：先试局部美颜，通常不需要重新生成。\n\n"
                     "这些是设计建议，未运行新的AI分析。");
-            wxMessageDialog guidance(this, advice, _L("重新设计建议"), wxOK | wxCANCEL | wxICON_INFORMATION);
-            guidance.SetOKCancelLabels(_L("继续重新开始"), _L("返回调整作品"));
-            if (guidance.ShowModal() != wxID_OK) return;
+            if (show_redesign_confirmation(this, advice, _L("重新设计建议"), {wxOK | wxCANCEL, 105,
+                {{wxID_CANCEL, _L("返回调整作品")}, {wxID_OK, _L("继续重新开始"), true}}}) != wxID_OK) return;
         }
     }
     const bool reuse_palette = m_palette_source->GetSelection() == 2 && !current_palette().empty();
@@ -423,51 +423,7 @@ wxWindow* ModelGenerationPanel::build_model_finishing(wxWindow* parent)
         }
         refresh_model_finishing();
     };
-    m_beauty_controls->on_reoptimize = [this](wxString& reason) {
-        if (!m_model_preview || !post_generation_ui_state().can_edit || !m_finishing_candidate.empty()) {
-            reason = _L("当前模型不可编辑，请先完成任务或接受、放弃候选版本。");
-            return false;
-        }
-        if (!m_model_preview->semantic_reoptimization_available()) {
-            reason = m_model_preview->semantic_reoptimization_reason();
-            return false;
-        }
-        if (m_beauty_transactions && !m_beauty_transactions->begin(
-                BeautyWorkbenchTransactionController::OperationKind::SemanticReoptimization)) {
-            reason = _L("当前仍有 Beauty 处理正在进行，请先完成或取消。");
-            m_finishing_status->SetLabel(reason);
-            refresh_model_finishing();
-            return false;
-        }
-        m_beauty_reoptimization_before = std::make_shared<BeautyCandidateSnapshot>(capture_beauty_candidate());
-        m_model_preview->set_semantic_completion_callback([this](bool success) {
-            if (!success) {
-                const auto error = m_model_preview->semantic_error();
-                if (auto before = std::move(m_beauty_reoptimization_before)) restore_beauty_candidate(*before);
-                if (m_beauty_transactions) m_beauty_transactions->finish(false, false, "semantic optimization failed");
-                if (m_finishing_status) m_finishing_status->SetLabel(
-                    _L("人像区域优化未完成，当前模型和选区保持不变：") + error);
-                refresh_model_finishing();
-                return;
-            }
-            export_semantic_candidate();
-        });
-        if (!m_model_preview->request_semantic_reoptimization()) {
-            if (!m_beauty_reoptimization_before) {
-                reason = m_finishing_status->GetLabel();
-                return false;
-            }
-            reason = _L("未重新识别人像区域：") + m_model_preview->semantic_reoptimization_reason();
-            m_model_preview->set_semantic_completion_callback({});
-            if (auto before = std::move(m_beauty_reoptimization_before)) restore_beauty_candidate(*before);
-            if (m_beauty_transactions) m_beauty_transactions->finish(false, false, "semantic request unavailable");
-            m_finishing_status->SetLabel(reason);
-            refresh_model_finishing();
-            return false;
-        }
-        refresh_model_finishing();
-        return true;
-    };
+    m_beauty_controls->on_reoptimize = [this](wxString& reason) { return request_portrait_optimization(reason); };
     m_beauty_controls->on_save = [this] {
         request_save_and_return();
     };

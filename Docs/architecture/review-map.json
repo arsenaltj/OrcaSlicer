@@ -369,6 +369,11 @@
       "id": "printer_task_guard",
       "path": "src/slic3r/GUI/Redesign/PrinterWorkspaceState.hpp",
       "needle": "inline bool printer_command_allowed"
+    },
+    {
+      "id": "workbench_portrait_optimization",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationPortrait.cpp",
+      "needle": "bool ModelGenerationPanel::request_portrait_optimization(wxString& reason)"
     }
   ],
   "journeys": [
@@ -1014,6 +1019,34 @@
         "printer_workspace",
         "printer_adapter",
         "printer_task_guard"
+      ],
+      "modules": [
+        "desktop"
+      ],
+      "impact_scope": "evidence"
+    },
+    {
+      "id": "workbench_portrait_optimization",
+      "label": "普通人像优化与连续裁切",
+      "detail": "左侧人像入口、真实阶段与时间、连续裁切编辑、候选保存与可恢复草稿",
+      "boundary": "通用模式隐藏；历史恢复不重算；R6 独立；运行时失败禁止静默回退；视觉仍为部分改善候选",
+      "group": "资产与工作区",
+      "evidence": [
+        "workbench_portrait_optimization"
+      ],
+      "modules": [
+        "generation"
+      ],
+      "impact_scope": "evidence"
+    },
+    {
+      "id": "gallery",
+      "label": "模型图库",
+      "detail": "资产页离线浏览公开预览，支持分类、搜索、格式筛选、排序与详情",
+      "boundary": "下载交给默认浏览器；外部模型服务可用性未确认时明确提示，导入由用户另行操作",
+      "group": "资产与图库",
+      "evidence": [
+        "model_gallery"
       ],
       "modules": [
         "desktop"

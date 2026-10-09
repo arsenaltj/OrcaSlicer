@@ -7,6 +7,30 @@ import json
 from pathlib import Path, PurePosixPath
 import re
 import subprocess
+import shutil
+
+
+def create_snapshot(root: Path, destination: Path) -> Path:
+    root=root.resolve();destination=destination.resolve()
+    destination.mkdir(parents=True,exist_ok=False)
+    base=git(root,"rev-parse","HEAD").decode().strip()
+    base_paths=git_paths(root,"ls-tree","-r","--name-only","-z","HEAD")
+    changed=git_paths(root,"diff","--no-ext-diff","--no-renames","--name-only","-z","HEAD")
+    changed|=git_paths(root,"ls-files","--others","--exclude-standard","-z")
+    entries=[]
+    for name in sorted(changed):
+        file=source_path(root,name)
+        action="replace" if name in base_paths else "add"
+        if not file.exists():
+            entries.append({"path":name,"action":"delete"});continue
+        data=file.read_bytes()
+        entries.append({"path":name,"action":action,"bytes":len(data),"sha256":hashlib.sha256(data).hexdigest()})
+        copy=destination/"files"/name;copy.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(file,copy)
+    manifest=destination/"manifest.json"
+    manifest.write_text(json.dumps({"base_head":base,"files":entries},indent=2),encoding="utf-8")
+    (destination/"tracked.patch").write_bytes(git(root,"diff","--no-ext-diff","--no-renames","--binary","HEAD"))
+    capture(root,manifest)
+    return manifest
 
 
 def git(root: Path, *args: str) -> bytes:
@@ -108,8 +132,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--capture-to",type=Path)
     args = parser.parse_args()
     try:
+        if args.capture_to:
+            args.manifest=create_snapshot(args.root,args.capture_to)
         print(json.dumps(capture(args.root, args.manifest), ensure_ascii=True))
     except (ValueError, KeyError, OSError, subprocess.CalledProcessError) as exc:
         parser.exit(1, f"Internal package source check failed: {exc}\n")

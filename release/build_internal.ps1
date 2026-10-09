@@ -195,16 +195,25 @@ if (-not $SkipTargetedTests) {
         throw 'The bundled Python interpreter is missing from the CMake cache.'
     }
     $pythonPath = $pythonMatch.Groups[1].Value.Trim()
-    & $pythonPath -I (Join-Path $repoRoot 'tools\ai\test_integration_guardrails.py')
-    if ($LASTEXITCODE -ne 0) { throw 'Python integration guardrail tests failed.' }
     # The packager already ran the full check and recorded its exact decision.
     $integrationValidation = Get-Content -LiteralPath (Join-Path $outputPath 'integration-check.json') -Raw | ConvertFrom-Json
     if (-not $integrationValidation.decision.package_allowed -or
         $integrationValidation.source_identity_sha256 -ne $sourceIdentity.source_identity_sha256) {
         throw 'AI integration verification is missing or belongs to another snapshot.'
     }
+    $guardrailArguments = @('-I', (Join-Path $repoRoot 'tools\ai\test_integration_guardrails.py'))
+    if (-not $integrationValidation.decision.integration_passed) {
+        $guardrailArguments += @('--internal-package-report', (Join-Path $outputPath 'integration-check.json'),
+            '--source-manifest', $SourceManifest)
+    }
+    & $pythonPath @guardrailArguments
+    if ($LASTEXITCODE -ne 0) { throw 'Python integration guardrail tests failed.' }
 
-    & $cmakePath --build $buildPath --config Release --target slic3rutils_tests --parallel
+    if ($updatedCacheText -match '(?m)^CMAKE_GENERATOR:INTERNAL=Visual Studio') {
+        & $cmakePath --build $buildPath --config Release --target slic3rutils_tests -- /m:1 /p:CL_MPCount=2 /p:UseMultiToolTask=true /p:EnforceProcessCountAcrossBuilds=true
+    } else {
+        & $cmakePath --build $buildPath --config Release --target slic3rutils_tests --parallel 2
+    }
     if ($LASTEXITCODE -ne 0) { throw 'slic3rutils_tests build failed.' }
     $testExecutable = Join-Path $buildPath 'tests\slic3rutils\Release\slic3rutils_tests.exe'
     if (-not (Test-Path -LiteralPath $testExecutable -PathType Leaf)) {

@@ -50,7 +50,8 @@ bool ModelGenerationUIState::same_content(const ModelGenerationUIState& other) c
            can_restart == other.can_restart && design_ready == other.design_ready && model_ready == other.model_ready &&
            model_generation_context == other.model_generation_context &&
            model_generation_session == other.model_generation_session && inputs_match_job == other.inputs_match_job &&
-           progress == other.progress && job_id == other.job_id && job_state == other.job_state &&
+           progress == other.progress && job_id == other.job_id && model_asset_id == other.model_asset_id &&
+           job_state == other.job_state &&
            design_elapsed_seconds == other.design_elapsed_seconds &&
            design_estimated_seconds == other.design_estimated_seconds &&
            job_phase == other.job_phase && provider_error_code == other.provider_error_code &&
@@ -322,6 +323,11 @@ void ModelGenerationFeatureHost::set_workbench_results_handler(std::function<voi
     m_impl->model_generation->set_workbench_results_handler(std::move(handler));
 }
 
+void ModelGenerationFeatureHost::set_workbench_return_to_design_handler(std::function<void()> handler)
+{
+    m_impl->model_generation->set_workbench_return_to_design_handler(std::move(handler));
+}
+
 bool ModelGenerationFeatureHost::request_open_workbench() { return m_impl->model_generation->request_open_workbench(); }
 void ModelGenerationFeatureHost::mount_workbench(wxWindow* parent) { m_impl->model_generation->mount_workbench(parent); }
 void ModelGenerationFeatureHost::mount_assets(wxWindow* parent) { m_impl->model_generation->mount_assets(parent); }
@@ -340,13 +346,29 @@ bool ModelGenerationFeatureHost::request_enable_portrait(bool enabled) { return 
 
 void ModelGenerationFeatureHost::set_service_availability(bool available, const std::string& message)
 {
+    set_service_availability(available, available, message);
+}
+
+void ModelGenerationFeatureHost::set_service_availability(bool available, bool generation_available, const std::string& message)
+{
     if (m_impl->model_generation != nullptr)
-        m_impl->model_generation->set_service_availability(available, message);
+        m_impl->model_generation->set_service_availability(available, generation_available, message);
 }
 
 void ModelGenerationFeatureHost::shutdown()
 {
     m_impl->shutdown();
+}
+
+bool ModelGenerationFeatureHost::request_semantic_mode(SemanticMode mode) {
+    return !m_impl->shutdown_requested && m_impl->model_generation->request_semantic_mode(mode);
+}
+bool ModelGenerationFeatureHost::request_portrait_optimization() {
+    wxString reason;
+    return !m_impl->shutdown_requested && m_impl->model_generation->request_portrait_optimization(reason);
+}
+void ModelGenerationFeatureHost::cancel_portrait_optimization() {
+    if (!m_impl->shutdown_requested) m_impl->model_generation->cancel_portrait_optimization();
 }
 
 } // namespace Slic3r::GUI

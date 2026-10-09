@@ -74,6 +74,7 @@ if(WIN32 AND ORCA_AI_WINDOWS_INSTALLER)
         message(FATAL_ERROR "The verified Pillow wheel did not contain the expected CPython runtime files")
     endif()
 
+    include("${CMAKE_SOURCE_DIR}/cmake/OrcaPortraitOfflineDependencies.cmake")
     set(ORCA_AI_RUNTIME_DEPENDENCIES_FILE "${CMAKE_BINARY_DIR}/orca_ai_runtime_dependencies.json")
     configure_file(
         "${CMAKE_SOURCE_DIR}/tools/ai/orca_ai_runtime_dependencies.json.in"

@@ -102,6 +102,17 @@ class AnalyticVisibility:
         included = np.flatnonzero((upper[:,0] >= 0) & (upper[:,1] >= 0) &
                                  (lower[:,0] <= shape[1]) & (lower[:,1] <= shape[0]))
         self.triangles = triangles[included]
+        # clip_triangle accepts half-plane cross products down to -1e-9.
+        # Bound that relaxed triangle too, especially for thin slivers: an
+        # ordinary exact AABB would incorrectly skip its tolerated contacts.
+        edges = self.triangles[:,1:] - self.triangles[:,:1]
+        determinant = np.abs(edges[:,0,0]*edges[:,1,1]-edges[:,0,1]*edges[:,1,0])
+        slack = np.full(len(included), np.inf)
+        np.divide(1e-9, determinant, out=slack, where=determinant>0)
+        span = upper[included]-lower[included]
+        padding = 3*slack[:,None]*np.maximum(span,np.finfo(float).tiny)
+        padding += 32*np.finfo(float).eps*np.maximum(1,np.abs(self.triangles).max((1,2)))[:,None]
+        self.lower, self.upper = lower[included]-padding, upper[included]+padding
         self.face_ids = included
         self.depths = (vertices @ self.direction)[faces[included]]
         self.buckets = {}
@@ -131,7 +142,13 @@ class AnalyticVisibility:
         hi = np.floor(np.minimum(triangle.max(0),self.shape[::-1])/self.CELL).astype(int)
         candidates = {i for y in range(lo[1],hi[1]+1) for x in range(lo[0],hi[0]+1)
                       for i in self.buckets.get((x,y),[])}
-        for index in sorted(candidates):
+        # A spatial bucket contains many tiny triangles that do not intersect
+        # this face at all. Reject only disjoint bounding boxes before the exact
+        # clipping/depth proof, preserving its original face order and tolerance.
+        indices = np.asarray(sorted(candidates), dtype=np.intp)
+        lower, upper = clipped.min(0), clipped.max(0)
+        overlaps = np.all(self.upper[indices] >= lower, axis=1) & np.all(self.lower[indices] <= upper, axis=1)
+        for index in indices[overlaps]:
             if self.face_ids[index] == face:
                 continue
             occluder = self.triangles[index]
@@ -188,7 +205,7 @@ def reconstruct_projection(projection, vertices, faces):
     return transform, residual
 
 
-def source_brow_contour(projection, accepted, core, permitted, legal, landmark_band):
+def source_brow_contour(projection, accepted, core, permitted, legal, landmark_band, all_components=False):
     from local_face_landmarks import polygon_mask
     ids,valid = projection.ids,projection.valid
     candidate = valid & np.isin(ids,list(set(accepted) | set(permitted)))
@@ -229,11 +246,13 @@ def source_brow_contour(projection, accepted, core, permitted, legal, landmark_b
     contours,_ = cv2.findContours(smoothed.astype(np.uint8),cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_NONE)
     if not contours:
         raise ValueError('BROW_SOURCE_BOUNDARY_UNAVAILABLE')
-    contour = max(contours,key=cv2.contourArea).reshape(-1,2).astype(float)+.5
-    if area(contour) < 1:
+    supported = [c.reshape(-1,2).astype(float)+.5 for c in contours if cv2.contourArea(c) >= 1]
+    if not supported:
         raise ValueError('BROW_SOURCE_BOUNDARY_UNAVAILABLE')
+    contour = supported if all_components else max(supported,key=area)
     return contour,{'foreground_seed_pixels':int(fg.sum()),'source_pixels':int(foreground.sum()),
-                    'component_count':len(seed_components),'source_delta_l':skin_lightness-float(np.median(lab[fg,0]))}
+                    'component_count':len(seed_components),'retained_contours':len(supported) if all_components else 1,
+                    'source_delta_l':skin_lightness-float(np.median(lab[fg,0]))}
 
 
 def boundary_band(accepted, neighbors):

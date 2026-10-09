@@ -1,5 +1,11 @@
 get_filename_component(_TEST_NAME ${CMAKE_CURRENT_LIST_DIR} NAME)
 add_executable(${_TEST_NAME}_tests
+    test_beauty_cell_domain.cpp
+    test_parent_surface_visibility.cpp
+    test_portrait_parent_cleanup.cpp
+    test_portrait_residual_proposal.cpp
+    test_portrait_surface_ownership_v2.cpp
+    test_surface_partition.cpp
 	../local_print_recipe_fixture.hpp
     ${_TEST_NAME}_tests_main.cpp
     test_dev_mapping.cpp
@@ -32,6 +38,7 @@ add_executable(${_TEST_NAME}_tests
     test_project_config_undo.cpp
     test_model_preview_state.cpp
     test_post_generation_workbench.cpp
+    test_portrait_optimization.cpp
     test_beauty_document.cpp
     test_beauty_partition_bridge.cpp
     test_beauty_transaction_controller.cpp
@@ -142,3 +149,12 @@ elseif (APPLE)
 endif()
 
 orcaslicer_discover_tests(${_TEST_NAME}_tests)
+
+# Offline contour replay only; this target is not a software production entry.
+add_executable(surface_partition_tool ${CMAKE_SOURCE_DIR}/tools/ai/surface_partition_tool.cpp)
+target_link_libraries(surface_partition_tool PRIVATE libslic3r)
+target_include_directories(surface_partition_tool PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/src/libslic3r)
+if (WIN32)
+    target_link_libraries(surface_partition_tool PRIVATE Crypt32)
+endif ()
+set_property(TARGET surface_partition_tool PROPERTY FOLDER "tests")

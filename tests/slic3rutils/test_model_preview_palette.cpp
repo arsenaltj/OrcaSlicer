@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include "slic3r/GUI/AI/ModelGeneration/PortraitPaletteRoles.hpp"
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include "slic3r/GUI/AI/ModelGeneration/ModelPreviewPalette.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/PortraitColorPackMapping.hpp"
@@ -6,6 +7,92 @@
 #include <limits>
 
 using namespace Slic3r::GUI::PreviewPalette;
+
+TEST_CASE("Approved project portrait colors retain eye and brow roles beside the inherited skin preset",
+          "[PortraitPaletteRoles][Regression]")
+{
+    using namespace Slic3r::GUI;
+    const std::vector<Color> builtin{{247.f/255,226.f/255,218.f/255}, {40.f/255,38.f/255,41.f/255},
+        {246.f/255,247.f/255,249.f/255}, {234.f/255,154.f/255,146.f/255},
+        {102.f/255,140.f/255,182.f/255}, {149.f/255,139.f/255,134.f/255}};
+    auto approved=builtin;approved[0]={236.f/255,195.f/255,178.f/255};
+    for(size_t count:{size_t(3),size_t(4),size_t(5),size_t(6)}) {
+        auto slots=std::vector<Color>(approved.begin(),approved.begin()+count);
+        std::reverse(slots.begin(),slots.end());
+        const auto mapping=portrait_card_slot_mapping(slots,builtin);
+        REQUIRE(mapping.enabled);
+        CHECK(mapping.target_colors==slots);
+        CHECK(mapping.mapping_colors==slots);
+        const auto roles=portrait_roles_for_card(slots,builtin);
+        nlohmann::json partition={{"faces",nlohmann::json::array({{{"cells",nlohmann::json::array({
+            {{"id","left-white"},{"label","le"}},{{"id","right-white"},{"label","re"}},
+            {{"id","left-brow"},{"label","lb"}},{{"id","right-brow"},{"label","rb"}},
+            {{"id","iris"},{"label","iris-le"}}})}}})}};
+        const auto colors=portrait_contour_colors(partition,roles,slots);
+        REQUIRE(colors.size()==5);
+        CHECK(colors.at("left-white")==approved[2]);
+        CHECK(colors.at("right-white")==approved[2]);
+        CHECK(colors.at("left-brow")==approved[1]);
+        CHECK(colors.at("right-brow")==approved[1]);
+        CHECK(colors.at("iris")==approved[1]);
+    }
+    auto custom=approved;custom[0]={.3f,.2f,.4f};
+    CHECK_FALSE(portrait_card_slot_mapping(custom,builtin).enabled);
+}
+
+TEST_CASE("Portrait optimization retains physical skin and light slots when source groups share roles",
+          "[PortraitPaletteRoles][Regression]")
+{
+    using namespace Slic3r::GUI;
+    const std::vector<Color> card{{236.f/255,195.f/255,178.f/255}, {40.f/255,38.f/255,41.f/255},
+        {246.f/255,247.f/255,249.f/255}, {234.f/255,154.f/255,146.f/255},
+        {102.f/255,140.f/255,182.f/255}, {149.f/255,139.f/255,134.f/255}};
+    const std::vector<Color> source{{.10f,.10f,.10f}, {.14f,.14f,.14f}, {.85f,.85f,.85f},
+        {.96f,.96f,.96f}, {.76f,.55f,.41f}, {.80f,.60f,.46f}};
+    const auto groups = portrait_pack_mapping(source, card);
+    REQUIRE(groups.enabled);
+    REQUIRE(portrait_roles_for_card(groups.target_colors, card).empty());
+    const auto physical = portrait_card_slot_mapping(card, card);
+    REQUIRE(physical.enabled);
+    REQUIRE(physical.target_colors == card);
+    REQUIRE(physical.mapping_colors == card);
+    const auto roles = portrait_roles_for_card(physical.target_colors, card);
+    REQUIRE(roles.size() == 6);
+    REQUIRE(roles[0] == "portrait-skin");
+    REQUIRE(roles[2] == "portrait-light");
+    REQUIRE(physical.target_colors[0] != physical.target_colors[2]);
+}
+
+TEST_CASE("Portrait physical role bindings survive reduced and reordered cards without changing RGB",
+          "[PortraitPaletteRoles][Regression]")
+{
+    using namespace Slic3r::GUI;
+    const std::vector<Color> card{{236.f/255,195.f/255,178.f/255}, {40.f/255,38.f/255,41.f/255},
+        {246.f/255,247.f/255,249.f/255}, {234.f/255,154.f/255,146.f/255},
+        {102.f/255,140.f/255,182.f/255}, {149.f/255,139.f/255,134.f/255}};
+    for (size_t count = 3; count <= 6; ++count) {
+        DYNAMIC_SECTION("Count " << count) {
+            std::vector<Color> targets(card.begin(), card.begin() + count);
+            std::reverse(targets.begin(), targets.end());
+            const auto mapped = portrait_card_slot_mapping(targets, card);
+            REQUIRE(mapped.enabled);
+            REQUIRE(mapped.target_colors == targets);
+            const auto roles = portrait_roles_for_card(mapped.target_colors, card);
+            REQUIRE(roles[count-1] == "portrait-skin");
+            REQUIRE(roles[count-3] == "portrait-light");
+            REQUIRE(mapped.target_colors[count-1] == card[0]);
+            REQUIRE(mapped.target_colors[count-3] == card[2]);
+        }
+    }
+    auto unknown = card;
+    unknown[0] = {.2f,.8f,.4f};
+    REQUIRE_FALSE(portrait_card_slot_mapping(unknown, card).enabled);
+    auto duplicate = card;
+    duplicate[0] = duplicate[2];
+    REQUIRE_FALSE(portrait_card_slot_mapping(duplicate, card).enabled);
+}
+
+
 
 TEST_CASE("Portrait card keeps skin and lips separate and recolors cool clothing", "[FilamentColorPack]")
 {

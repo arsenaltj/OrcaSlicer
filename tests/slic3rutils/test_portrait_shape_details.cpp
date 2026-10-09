@@ -1,6 +1,10 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include "slic3r/GUI/AI/ModelGeneration/PortraitShapeDetails.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/PortraitContourProposal.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/PortraitPaletteRoles.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/PortraitParentCleanupLive.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelSemanticColoring.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/LocalSemanticWorkerClient.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/SecondaryRegionEvidence.hpp"
@@ -419,6 +423,76 @@ TEST_CASE("Portrait shape contexts restore colors locks masks and risks from an 
     CHECK(Cache::save(f.details, directory.path()) == reference);
 }
 
+TEST_CASE("Confirmed parent ownership restores cell selection without changing facial locks", "[PortraitShapeDetails][PortraitParentCleanup]") {
+    Fixture f;
+    ScopedTemporaryDir directory("confirmed-parent-context");
+    preserve_fixture_source(f,directory.path());
+    f.details.locks.locks.clear();
+    Json identity{{"geometry_id",f.surface->geometry_id},{"source_sha256",f.details.locks.source_sha256},
+        {"face_count",12},{"evidence_sha256",f.details.locks.evidence_sha256},{"runtime_sha256",f.details.locks.runtime_sha256},
+        {"policy_sha256",f.details.locks.policy_sha256},{"baseline_sha256",std::string(64,'f')},
+        {"boundary_policy_sha256",std::string(64,'1')}};
+    const auto base=[](const std::string& label) {
+        return Json{{"polygon",{{1,0,0},{0,1,0},{0,0,1}}},{"holes",Json::array()},
+            {"label",label},{"parent_label",label=="le" ? "le" : "face"},{"subject_id","person"},{"kind","R6_PARENT"}};
+    };
+    const auto partition=SurfacePartition::build({{"schema","orca.surface-partition-request/v1"},{"identity",identity},
+        {"triangle_budget",0},{"existing_added_triangles",0},{"faces",Json::array({
+            {{"source_face_id",0},{"baseline_triangle_count",1},{"base",Json::array({base("le")})},{"layers",Json::array()}},
+            {{"source_face_id",1},{"baseline_triangle_count",1},{"base",Json::array({base("skin")})},{"layers",Json::array()}}})}});
+    GUI::LocalSemanticEvidence::ShapeDetail shape;
+    shape.label="le"; shape.subject_id="person"; shape.status="VALID_SHAPE"; shape.view_support=2; shape.accepted_faces={0};
+    f.details.surface_partition=std::make_shared<Json>(partition);
+    f.details.contour_locks=std::make_shared<BeautySurfaceShapeLock>(BeautySurfaceShapeLock::from_partition(partition,{shape},Cache::digest(partition.dump())));
+    f.details.confirmed_parent_roots={{2,"skin"},{3,"cloth"}};
+    f.details.subjects={"person"};
+    GUI::LocalSemanticEvidence::Evidence parents;
+    parents.identity.source_sha256=f.details.locks.source_sha256;parents.identity.geometry_id=f.surface->geometry_id;
+    parents.identity.face_count=12;parents.identity.runtime_sha256=std::string(64,'2');parents.identity.policy_sha256=std::string(64,'3');
+    parents.subjects=f.details.subjects;parents.parent_samples=Json::array({Json::array({2,"person","body-skin",.93,3,2})});
+    const auto parent_runtime=std::string(64,'4');
+    f.details.bind_parent_evidence(parents,std::string(64,'5'),parent_runtime);
+    const auto reference=Cache::save(f.details,directory.path());
+    const auto restored=Cache::load(reference,directory.path(),f.surface->geometry_id,12,parent_runtime);
+    REQUIRE(restored->confirmed_parent_roots==f.details.confirmed_parent_roots);
+    REQUIRE(restored->boundary_fingerprint()==f.details.boundary_fingerprint());
+    REQUIRE(restored->parent_samples==parents.parent_samples);
+    REQUIRE(restored->parent_evidence_identity==f.details.parent_evidence_identity);
+    REQUIRE(restored->current_parent_evidence(parent_runtime));
+    const auto stale=Cache::load(reference,directory.path(),f.surface->geometry_id,12,std::string(64,'6'));
+    REQUIRE(stale->parent_samples.empty());
+    REQUIRE_FALSE(stale->current_parent_evidence(std::string(64,'6')));
+    REQUIRE(stale->boundary_fingerprint()==f.details.boundary_fingerprint());
+    BeautyLeafEditing editing; editing.cells=BeautyCellDomain::build(partition,identity);
+    std::vector<int32_t> labels(editing.size(),-1);
+    restored->overlay_parent_labels(editing,labels);
+    REQUIRE(labels[0]==-1); REQUIRE(labels[1]==int32_t(SC::Label::BodySkin));
+    REQUIRE(labels[2]==int32_t(SC::Label::BodySkin)); REQUIRE(labels[3]==int32_t(SC::Label::Clothes));
+    SurfaceSelectionPersistence::SelectionState state;
+    state.selected.assign(editing.size(),0); state.protected_faces.assign(editing.size(),0);
+    restored->overlay_parent_selection("skin",editing,state);
+    REQUIRE(state.selected[0]==0); REQUIRE(state.selected[1]==1); REQUIRE(state.selected[2]==1); REQUIRE(state.selected[3]==0);
+    state.protected_faces[2]=1;
+    restored->overlay_parent_selection("clothes",editing,state);
+    REQUIRE(state.selected[2]==0); REQUIRE(state.selected[3]==1);
+}
+
+TEST_CASE("Fresh parent evidence rejects source and subject drift without replacing saved observations", "[PortraitShapeDetails][PortraitParentCleanup]") {
+    Fixture f;f.details.subjects={"person-a"};
+    f.details.parent_samples=Json::array({Json::array({9,"person-a","face",.99,3,2})});
+    GUI::LocalSemanticEvidence::Evidence parents;parents.subjects=f.details.subjects;
+    parents.identity.source_sha256=f.details.locks.source_sha256;parents.identity.geometry_id=f.surface->geometry_id;
+    parents.identity.face_count=12;parents.identity.runtime_sha256=std::string(64,'2');parents.identity.policy_sha256=std::string(64,'3');
+    const auto before=f.details.parent_samples;
+    SECTION("Source") {parents.identity.source_sha256=std::string(64,'0');}
+    SECTION("Geometry") {parents.identity.geometry_id=std::string(64,'0');}
+    SECTION("Face count") {parents.identity.face_count=11;}
+    SECTION("Subject") {parents.subjects={"person-b"};}
+    REQUIRE_THROWS(f.details.bind_parent_evidence(parents,std::string(64,'5'),std::string(64,'6')));
+    REQUIRE(f.details.parent_samples==before);
+    REQUIRE(f.details.parent_evidence_identity.empty());
+}
+
 TEST_CASE("Portrait context references reject unsafe paths hashes runtimes and geometry", "[PortraitShapeDetails]")
 {
     Fixture f;
@@ -661,6 +735,181 @@ TEST_CASE("Editing a portrait appearance keeps native recognition bound to its c
     CHECK(second->native_automatic == first->native_automatic);
     CHECK(calls->load() == body_calls);
     CHECK(model_artifact_sha256(Cache::source_path(cache, f.details.locks.source_sha256)) == f.details.locks.source_sha256);
+}
+
+TEST_CASE("Unproved contour seam faces preserve appearance without gaining detail authority", "[PortraitShapeDetails][SurfacePartition]") {
+    namespace Semantic=GUI::LocalSemanticEvidence;
+    const auto mesh=its_make_cube(10,10,10);
+    Semantic::Evidence evidence;
+    evidence.identity.source_sha256=std::string(64,'a');
+    evidence.identity.geometry_id=SurfaceSelectionPersistence::geometry_fingerprint(mesh);
+    evidence.identity.face_count=mesh.indices.size();
+    evidence.identity.runtime_sha256=std::string(64,'b');
+    evidence.identity.policy_sha256=std::string(64,'c');
+    PrintColorRegion region;region.subject_id="person";region.label="rb";region.faces={0,1};
+    evidence.regions.push_back(region);
+    Semantic::ShapeDetail shape;shape.subject_id="person";shape.label="rb";
+    shape.status="PROTECTED_SHAPE_UNCERTAIN";shape.accepted_faces={0};shape.view_support=2;
+    evidence.shape_details.push_back(shape);
+    Json identity={{"source_sha256",evidence.identity.source_sha256},{"geometry_id",evidence.identity.geometry_id},
+        {"face_count",mesh.indices.size()},{"runtime_sha256",evidence.identity.runtime_sha256},
+        {"policy_sha256",evidence.identity.policy_sha256},{"evidence_sha256",std::string(64,'d')},
+        {"baseline_sha256",std::string(64,'d')},{"boundary_policy_sha256",std::string(64,'e')}};
+    Json rows=Json::array();
+    for(size_t face=0;face<2;++face) rows.push_back({{"source_face_id",face},{"baseline_triangle_count",1},
+        {"base",Json::array({{{"polygon",Json::array({{1.,0.,0.},{0.,1.,0.},{0.,0.,1.}})},
+            {"holes",Json::array()},{"label",face==0 ? "rb" : "R6"},{"parent_label","face"},
+            {"subject_id","person"},{"kind","SOURCE_PARENT"}}})},{"layers",Json::array()}});
+    Json request={{"schema","orca.surface-partition-request/v1"},{"identity",identity},
+        {"triangle_budget",0},{"existing_added_triangles",0},{"faces",rows}};
+    const auto partition=GUI::build_verified_contour_partition(request,evidence,mesh,std::string(64,'d'));
+    REQUIRE(partition.at("faces")[1].at("cells")[0].at("label")=="R6");
+    request["faces"][1]["base"][0]["label"]="rb";
+    REQUIRE_THROWS_WITH(GUI::build_verified_contour_partition(request,evidence,mesh,std::string(64,'d')),
+        "Contour fallback grants an unproved detail or nested iris.");
+}
+
+TEST_CASE("A source verified portrait replays continuous contours and explicit six color roles", "[.][PortraitContourReplay]") {
+    const auto env=[](const char* key){const auto value=boost::nowide::getenv(key);return value?std::string(value):std::string{};};
+    const boost::filesystem::path model(env("ORCA_CONTOUR_MODEL")),cache(env("ORCA_CONTOUR_CACHE")),
+        request_path(env("ORCA_CONTOUR_REQUEST")),output(env("ORCA_CONTOUR_OUTPUT"));
+    if(model.empty() || cache.empty() || request_path.empty() || output.empty())
+        SKIP("Explicit source model, evidence cache, contour request and new output are required.");
+    REQUIRE_FALSE(boost::filesystem::exists(output));
+    const auto read=[](const boost::filesystem::path& path){boost::filesystem::ifstream input(path,std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(input),{});};
+    const auto bytes=read(cache/"evidence.json");const auto document=Json::parse(bytes);
+    const auto source_hash=document.at("source_sha256").get<std::string>();
+    REQUIRE(model_artifact_sha256(model)==source_hash);
+    TriangleMesh mesh;ObjInfo colors;std::string error;
+    REQUIRE(load_model_artifact(model,mesh,colors,error));
+    GUI::LocalSemanticGeometry::Packet packet;
+    REQUIRE(GUI::LocalSemanticGeometry::decode(read(cache/"rendered.bin"),source_hash,packet,error));
+    GUI::LocalSemanticEvidence::VerifiedFaceBinding binding;
+    REQUIRE(GUI::LocalSemanticEvidence::prove_ordered_faces(source_hash,mesh.its,packet.mesh,binding,error));
+    GUI::LocalSemanticEvidence::ExpectedIdentity expected;
+    expected.request_id=document.at("request_id");expected.source_sha256=source_hash;
+    expected.geometry_id=binding.geometry_id();expected.face_count=mesh.its.indices.size();
+    expected.weights_sha256=document.at("weights_sha256");expected.runtime_sha256=document.at("runtime_sha256");
+    expected.policy_sha256=document.at("policy_sha256");
+    GUI::LocalSemanticEvidence::Evidence evidence;
+    REQUIRE(GUI::LocalSemanticEvidence::decode(bytes,expected,binding,evidence,error));
+    const auto partition=GUI::build_verified_contour_partition(Json::parse(read(request_path)),evidence,mesh.its,Cache::digest(bytes));
+    const auto locks=BeautySurfaceShapeLock::from_partition(partition,evidence.shape_details,Cache::digest(partition.dump()));
+    const std::vector<SC::Color> palette={{246.f/255,247.f/255,249.f/255},{236.f/255,195.f/255,178.f/255},
+        {234.f/255,154.f/255,146.f/255},{40.f/255,38.f/255,41.f/255},{149.f/255,139.f/255,134.f/255},{102.f/255,140.f/255,182.f/255}};
+    const std::vector<std::string> roles={"portrait-light","portrait-skin","portrait-lips","portrait-dark","portrait-mid","portrait-cool"};
+    std::set<std::string> missing;
+    const auto painted=GUI::portrait_contour_colors(partition,roles,palette,&missing);
+    REQUIRE(missing.empty());
+    Json counts=Json::object();
+    for(const auto& face:partition.at("faces")) for(const auto& cell:face.at("cells")) {
+        const auto label=cell.at("label").get<std::string>();
+        if(!counts.contains(label))counts[label]=0;
+        counts[label]=counts[label].get<size_t>()+1;
+        const auto id=cell.at("id").get<std::string>();
+        if(label=="le" || label=="re") REQUIRE(painted.at(id)==palette[0]);
+        if(label=="lb" || label=="rb" || label.compare(0,5,"iris-")==0) REQUIRE(painted.at(id)==palette[3]);
+    }
+    for(const auto* label:{"le","re","lb","rb","iris-le","iris-re"}) REQUIRE(counts.value(label,size_t(0))>0);
+    boost::filesystem::create_directory(output);
+    const auto write=[&](const char* name,const Json& value){boost::filesystem::ofstream stream(output/name,std::ios::binary);stream<<value.dump();REQUIRE(bool(stream));};
+    write("partition.json",partition);write("locks.json",locks.document);
+    write("audit.json",{{"source_sha256",source_hash},{"geometry_id",binding.geometry_id()},
+        {"cell_counts",counts},{"added_triangles",partition.at("added_triangles")},{"colored_cells",painted.size()},
+        {"evidence_sha256",Cache::digest(bytes)},{"request_sha256",model_artifact_sha256(request_path)},
+        {"status","SOURCE_PROVED_CONTOUR_REPLAY"}});
+    const boost::filesystem::path installed(env("ORCA_CONTOUR_INSTALLED_ROOT")),data(env("ORCA_CONTOUR_DATA"));
+    if(!installed.empty() && !data.empty()) {
+        struct ScopedDirectories {
+            std::string resources=Slic3r::resources_dir(),data=Slic3r::data_dir();
+            ~ScopedDirectories(){Slic3r::set_resources_dir(resources);Slic3r::set_data_dir(data);}
+        } directories;
+        Slic3r::set_resources_dir((installed/"resources").generic_string());Slic3r::set_data_dir(data.generic_string());
+        auto source=std::make_shared<SC::MeshSnapshot>();source->mesh=mesh.its;
+        source->vertex_colors=colors.vertex_colors;source->face_colors=colors.face_colors;
+        source->geometry_id=binding.geometry_id();source->content_id=SC::content_fingerprint(*source);
+        auto shapes=std::make_shared<PortraitShapeDetails>();
+        shapes->locks=ShapeLockSet::from_evidence(evidence,Cache::digest(bytes));
+        shapes->contour_locks=std::make_shared<BeautySurfaceShapeLock>(locks);
+        shapes->surface_partition=std::make_shared<Json>(partition);
+        shapes->base_colors=colors.face_colors.size()==mesh.its.indices.size() ? colors.face_colors :
+            beauty_source_face_colors(mesh.its,colors.vertex_colors);
+        shapes->subjects=evidence.subjects;shapes->parent_samples=evidence.parent_samples;
+        shapes->runtime_fingerprint=GUI::portrait_shape_runtime_fingerprint();
+        const bool refresh_parents=!env("ORCA_CONTOUR_REFRESH_PARENTS").empty();
+        if(refresh_parents) {
+            shapes->runtime_fingerprint=std::string(64,'0');
+            shapes->parent_samples=Json::array();
+        }
+        std::set<size_t> reserved;
+        for(const auto& region:evidence.regions)if(ShapeLockSet::supported_label(region.label))reserved.insert(region.faces.begin(),region.faces.end());
+        for(const auto& shape:evidence.shape_details) {
+            reserved.insert(shape.accepted_faces.begin(),shape.accepted_faces.end());reserved.insert(shape.rejected_faces.begin(),shape.rejected_faces.end());
+        }
+        shapes->reserved_faces.assign(reserved.begin(),reserved.end());
+        Cache::preserve_source(data/"cache",model,source_hash);
+        GUI::ModelSemanticColoring coordinator(std::filesystem::u8path((installed/"ai/portrait_semantics").generic_string()),
+            std::filesystem::u8path((data/"cache"/"portrait_semantics").generic_string()));
+        const std::vector<SC::Color> card={palette[1],palette[3],palette[0],palette[2],palette[5],palette[4]};
+        REQUIRE(coordinator.request(source,palette,palette,card,{},std::filesystem::u8path(model.generic_string()),shapes,roles));
+        std::unique_ptr<GUI::ModelSemanticColoring::Result> result;
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::minutes(refresh_parents ? 12 : 3);
+        while(!result && std::chrono::steady_clock::now()<deadline) {
+            result=coordinator.poll();if(!result)std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        REQUIRE(result);INFO(result->error);INFO(result->parent_repair_status);REQUIRE(result->error.empty());
+        REQUIRE(result->shape_details);REQUIRE(result->parent_repair_cells>0);
+        REQUIRE(result->parent_repair_status=="live_parent_rules_applied");
+        REQUIRE(result->parent_repair_audit.at("rule_counts").value("COL009_NEUTRAL_CLOTH_CORE",size_t(0))>0);
+        REQUIRE(result->parent_repair_audit.at("rule_counts").value("UNIFIED_CONFIRMED_BODY_SKIN",size_t(0))>0);
+        if(refresh_parents) {
+            REQUIRE_FALSE(result->shape_details->parent_evidence_identity.empty());
+            REQUIRE(result->shape_details->current_parent_evidence(GUI::portrait_shape_runtime_fingerprint()));
+            REQUIRE(result->shape_details->parent_evidence_identity.at("evidence_sha256")!=Cache::digest(bytes));
+        }
+        Json frozen=Json::array();std::set<std::string> frozen_seen;
+        for(const auto& lock:locks.document.at("locks"))for(const auto* key:{"locked_cells","nested_cells","periocular_cells"})
+            for(const auto& id:lock.value(key,Json::array()))if(frozen_seen.insert(id.get<std::string>()).second)frozen.push_back(id);
+        REQUIRE(SurfacePartition::preserves_frozen_cells(partition,*result->shape_details->surface_partition,frozen));
+        REQUIRE(result->shape_details->contour_locks->document.at("locks")==locks.document.at("locks"));
+        for(const auto& row:painted)REQUIRE(result->shape_details->cell_colors.at(row.first)==row.second);
+        std::set<size_t> suppressed_native_roots=reserved;
+        for(size_t face=0;face<result->analysis->face_labels.size();++face)
+            if(GUI::native_facial_detail(result->analysis->face_labels[face]))suppressed_native_roots.insert(face);
+        for(const auto& child:result->analysis->subface_labels)
+            if(GUI::native_facial_detail(child.label))suppressed_native_roots.insert(child.face_id);
+        for(const auto& child:result->automatic_subfaces)REQUIRE(suppressed_native_roots.count(child.face_id)==0);
+        write("parent-live-audit.json",result->parent_repair_audit);
+        write("partition-after.json",*result->shape_details->surface_partition);
+        write("locks-after.json",result->shape_details->contour_locks->document);
+        write("parent-coverage-audit.json",result->shape_details->parent_coverage_audit);
+        Json subfaces=Json::array();
+        for(const auto& row:result->automatic_subfaces)subfaces.push_back({{"source_face_id",row.face_id},
+            {"depth",row.path.depth},{"path",row.path.value},{"color",row.color},{"confidence",row.confidence}});
+        Json native_subfaces=Json::array();
+        for(const auto& row:result->native_automatic_subfaces)native_subfaces.push_back({{"face_id",row.face_id},
+            {"path",{{"depth",row.path.depth},{"value",row.path.value}}},{"color",row.color},{"confidence",row.confidence}});
+        write("parent-live-colors.json",{{"automatic",result->automatic},{"automatic_subfaces",subfaces},
+            {"native_automatic",result->native_automatic},{"native_automatic_subfaces",native_subfaces},
+            {"cell_colors",result->shape_details->cell_colors},{"parent_roots",result->shape_details->confirmed_parent_roots},
+            {"parent_cells",result->shape_details->confirmed_parent_cell_labels},{"frozen_detail_color_changes",0},
+            {"existing_native_subfaces",result->automatic_subfaces.size()},{"status","PRODUCTION_COORDINATOR_REPLAY"}});
+        Cache::preserve_source(output/"context-cache",model,source_hash);
+        const auto reference=Cache::save(*result->shape_details,output/"context-cache");
+        const auto restored=Cache::load(reference,output/"context-cache",source->geometry_id,source->mesh.indices.size(),GUI::portrait_shape_runtime_fingerprint(),true);
+        REQUIRE(restored->confirmed_parent_roots==result->shape_details->confirmed_parent_roots);
+        REQUIRE(restored->confirmed_parent_cell_labels==result->shape_details->confirmed_parent_cell_labels);
+        REQUIRE(restored->cell_colors==result->shape_details->cell_colors);
+        REQUIRE(restored->parent_cleanup_audit==result->parent_repair_audit);
+        REQUIRE(restored->parent_samples==result->shape_details->parent_samples);
+        REQUIRE(restored->parent_evidence_identity==result->shape_details->parent_evidence_identity);
+        REQUIRE(restored->parent_coverage_audit==result->shape_details->parent_coverage_audit);
+        if(result->shape_details->parent_proposal) {
+            REQUIRE(restored->parent_proposal);
+            REQUIRE(*restored->parent_proposal==*result->shape_details->parent_proposal);
+        }
+    }
 }
 
 TEST_CASE("A fixed portrait exports source native and integrated palettes without writing production", "[.][PortraitIntegrationReplay]")

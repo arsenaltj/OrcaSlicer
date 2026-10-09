@@ -180,6 +180,13 @@ TEST_CASE("Post-generation UI state locks history and commits while processing",
     CHECK(empty.status == State::Status::Empty);
     CHECK_FALSE(empty.can_edit);
     CHECK(empty.can_switch_version);
+    CHECK_FALSE(empty.can_import);
+
+    const auto loading_first = GUI::derive_post_generation_ui_state(
+        State::Mode::Workbench, false, false, true, false, false, false, false, false, false, false);
+    CHECK(loading_first.status == State::Status::Loading);
+    CHECK_FALSE(loading_first.can_switch_version);
+    CHECK_FALSE(loading_first.can_edit);
 
     const auto ready = GUI::derive_post_generation_ui_state(
         State::Mode::Workbench, true, true, false, false, false, false, false, false, false, false);

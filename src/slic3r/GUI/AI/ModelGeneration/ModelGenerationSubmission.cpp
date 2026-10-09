@@ -96,7 +96,7 @@ void classify_submission_error(const std::string& error, std::string& code, std:
 
 void ModelGenerationPanel::on_generate(wxCommandEvent&)
 {
-    if (!input_editable() || !m_service_available) return;
+    if (!input_editable() || !m_generation_available) return;
     if (!generation_options_valid()) {
         show_input_hint(_L("200 万面需要选择精细几何。"));
         return;
@@ -132,7 +132,7 @@ void ModelGenerationPanel::on_generate(wxCommandEvent&)
         return std::tie(options.provider, options.face_limit, options.geometry_quality,
                         options.texture_quality, options.output_format);
     };
-    if (!input_editable() || !m_service_available || !m_awaiting_confirmation || !job_inputs_match() ||
+    if (!input_editable() || !m_generation_available || !m_awaiting_confirmation || !job_inputs_match() ||
         use_printable_colors() != m_job_use_printable_colors || current_palette() != m_job_palette ||
         option_values(current_options) != option_values(confirmed_options) ||
         current_generation_profile() != confirmed_profile || m_prepared_prompt->GetValue() != confirmed_prompt ||
@@ -187,6 +187,7 @@ void ModelGenerationPanel::submit_confirmed_model()
     if (image_mode)
         m_client.record_journey_event("preview_accepted", m_job_id);
     m_client.record_journey_event("model_submitted", m_job_id);
+    reset_portrait_session();
     m_journey_model_submitted = true;
     m_ui_model_generation_context = true;
     ++m_model_generation_session;
@@ -262,7 +263,7 @@ void ModelGenerationPanel::submit_confirmed_model()
 
 bool ModelGenerationPanel::request_retry_model()
 {
-    if (m_shutdown || !m_page_initialized || m_busy || m_job_id.empty() ||
+    if (m_shutdown || !m_page_initialized || !m_generation_available || m_busy || m_job_id.empty() ||
         (m_job_state != "failed" && m_job_state != "stopped"))
         return false;
     if (m_provider_error_ambiguous && m_job_provider_task_id.empty()) {
