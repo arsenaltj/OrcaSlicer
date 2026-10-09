@@ -1,6 +1,7 @@
 #pragma once
 
 #include <wx/panel.h>
+#include "libslic3r/Utils.hpp"
 #include "ModelGalleryPolicy.hpp"
 #include "RedesignTheme.hpp"
 #include "../AI/ModelGeneration/WorkbenchStyle.hpp"
