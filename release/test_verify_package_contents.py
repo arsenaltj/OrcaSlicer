@@ -168,6 +168,10 @@ class PackageInspectionTests(unittest.TestCase):
             clean = self.check({name: data})
             self.assertEqual(clean["status"], "NOT_DETECTED_WITHIN_SCOPE")
             self.assertEqual(clean["config_fields"][0]["category"], "AUDITED_PUBLIC_LIBRARY_LITERAL")
+            dependency_path = "python/Lib/site-packages/library.py"
+            self.assertEqual(self.check({dependency_path: data})["status"], "NOT_DETECTED_WITHIN_SCOPE")
+            self.assertEqual(self.check({dependency_path: data + b'\npassword="opaque-value"'})["status"], "BLOCKED_FINDINGS")
+            self.assertEqual(self.check({"unrelated/" + dependency_path: data})["status"], "BLOCKED_FINDINGS")
             self.assertEqual(self.check({"config.py": data})["status"], "BLOCKED_FINDINGS")
             self.assertEqual(self.check({name: data + b'\npassword="opaque-value"'})["status"], "BLOCKED_FINDINGS")
             record["fields"]["api_key"] = []
@@ -216,6 +220,10 @@ class RuntimeArchiveInspectionTests(unittest.TestCase):
                'literals':[['password','public documentation example']]}
         with patch.object(inspector, 'PUBLIC_DEPENDENCY_LITERALS', [entry]):
             self.assertEqual(self.check({member:original})['status'],'NOT_DETECTED_WITHIN_SCOPE')
+            dependency_path = 'python/Lib/site-packages/example.py'
+            self.assertEqual(self.check({dependency_path:original})['status'],'NOT_DETECTED_WITHIN_SCOPE')
+            self.assertEqual(self.check({dependency_path:original+b'api_key="fixture-opaque-value"'})['status'],'BLOCKED_FINDINGS')
+            self.assertEqual(self.check({'unrelated/'+dependency_path:original})['status'],'BLOCKED_FINDINGS')
             for path, data in ((member, original+b'api_key="fixture-opaque-value"'),
                                ('config.py',original), (member,original.replace(b'example',b'changed'))):
                 self.assertEqual(self.check({path:data})['status'],'BLOCKED_FINDINGS')

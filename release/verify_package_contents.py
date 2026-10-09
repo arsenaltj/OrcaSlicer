@@ -50,8 +50,17 @@ PUBLIC_DEPENDENCY_LITERALS = json.loads(
     Path(__file__).with_name("public_dependency_literals.json").read_text(encoding="utf-8"))
 
 
-def public_dependency_literal(member, data, key, value):
+def dependency_classification_path(member):
     normalized = member.replace("\\", "/")
+    # Build-dependency ZIPs carry this same stack at the archive root. Reuse the
+    # existing exact-file/exact-literal audits; do not allowlist whole packages.
+    if normalized.startswith("python/Lib/site-packages/"):
+        return "resources/beauty-runtime/" + normalized
+    return normalized
+
+
+def public_dependency_literal(member, data, key, value):
+    normalized = dependency_classification_path(member)
     for entry in PUBLIC_DEPENDENCY_LITERALS:
         if (normalized.endswith("resources/beauty-runtime/" + entry["path"])
                 and [key, value] in entry["literals"]
@@ -280,7 +289,7 @@ class Inspection:
                 walk(parsed)
         else:
             file_hash = hashlib.sha256(data).hexdigest()
-            normalized = member.replace("\\", "/")
+            normalized = dependency_classification_path(member)
             for match in ASSIGNMENT.finditer(text):
                 if (match[1] == "secret" and match[2] == "\u3299\ufe0f"
                         and member.replace("\\", "/").endswith("resources/tooltip/main.js")

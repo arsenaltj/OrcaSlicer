@@ -102,14 +102,20 @@ package does not authorize sending it, pushing code or contacting testers.
 
 ## Offline beauty runtime for the Windows internal candidate
 
-Use `scripts/stage_beauty_runtime.py` with explicitly supplied Python, package
-and pinned-weight directories; set `ORCA_BEAUTY_RUNTIME_ROOT` to that prepared
-folder before configuring the internal build. The runtime manifest retains
-package versions and file hashes; runtime libraries, model weights and licenses
-travel under `resources/beauty-runtime`. Developer static libraries and Python
-bytecode caches are excluded. No user configuration or provider credentials are
-included. A user `local_semantic_runtime.json` overrides automatic bundled
-runtime discovery, including explicit opt-out.
+For the UX branch, follow the [Windows portrait dependency and build guide](../Docs/coordination/portrait-dependencies-windows.md).
+Run `python scripts/portrait_dependencies.py prepare`, then configure with its
+generated CMake initial cache. This supplies `ORCA_AI_WEIGHTS_DIR`,
+`ORCA_AI_PORTRAIT_SITE_PACKAGES` and the native semantic runtime from a fixed,
+file-hashed dependency attachment. The package includes four weights and the
+verified CPython 3.12 x64 CPU stack. Application Python modules and the raster
+DLL continue to come from the current source build, not the dependency archive.
+
+The older `scripts/stage_beauty_runtime.py` / `ORCA_BEAUTY_RUNTIME_ROOT` path does
+not provision these newer installer inputs. Do not use another developer's
+absolute cache paths. Runtime libraries, weights and licenses are installed under
+`resources/beauty-runtime`; no user configuration or provider credentials belong
+in the dependency attachment. A user `local_semantic_runtime.json` still overrides
+automatic bundled runtime discovery, including explicit opt-out.
 
 Content inspection supports bounded ZIP/TAR/gzip/bzip2/xz containers and the
 646 MB pinned parsing model. Public examples in audited dependency files are
