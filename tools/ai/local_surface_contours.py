@@ -195,7 +195,12 @@ class ContourView:
         return self.visibility.fraction(face,triangle,world)>=.9
 
 
-def proposals(label, independent, vertices, faces, accepted, core, permitted, legal):
+def proposals(label, independent, vertices, faces, accepted, core, permitted, legal, visibility_cache=None):
+    # The caller owns this cache for one immutable mesh/subject invocation.
+    # Eye, brow and lip proposals use the same geometry and camera; rebuilding
+    # its million-face index for each label adds no evidence.
+    if visibility_cache is None:
+        visibility_cache = {}
     result,audit=[],[]
     for view,transform,_,residual in independent:
         if label=='imouth-preserve':
@@ -228,7 +233,10 @@ def proposals(label, independent, vertices, faces, accepted, core, permitted, le
                 curves,holes,source_audit=eye_accessory(projection,label[11:],legal); row.update(source_audit)
             else:
                 raise ValueError('UNKNOWN_CONTOUR_LABEL')
-            visibility=AnalyticVisibility(vertices,faces,transform,projection.ids.shape)
+            key=(id(view),transform.tobytes(),projection.ids.shape)
+            if key not in visibility_cache:
+                visibility_cache[key]=AnalyticVisibility(vertices,faces,transform,projection.ids.shape)
+            visibility=visibility_cache[key]
             result.append(ContourView(view.family,transform,curves,scale,visibility,iris,opening,row,holes))
             row.update(status='SOURCE_CONTOUR',contours=len(curves))
         except (ValueError,cv2.error) as error:

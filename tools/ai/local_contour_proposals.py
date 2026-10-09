@@ -38,7 +38,7 @@ def topology_scope(seeds, neighbors, legal, blocked, rings):
     return result
 
 
-def build(views, regions, shapes, vertices, faces, cancelled=None):
+def build(views, regions, shapes, vertices, faces, cancelled=None, progress=None):
     """Identity is added only after evidence bytes have been validated and hashed."""
     from local_shape_constraints import _hard_conflict
     checkpoint = cancelled or (lambda: False)
@@ -68,13 +68,17 @@ def build(views, regions, shapes, vertices, faces, cancelled=None):
     layers, library, diagnostics = defaultdict(list), {}, []
     for subject, observations in groups.items():
         independent = independent_views(observations, vertices, faces)
-        for label in DETAILS + ('periocular-le', 'periocular-re'):
+        visibility_cache = {}
+        detail_labels = DETAILS + ('periocular-le', 'periocular-re')
+        for label_index, label in enumerate(detail_labels):
             if checkpoint():
                 raise RuntimeError('contour_request_cancelled')
             primary = label.removeprefix('periocular-')
             shape = eligible.get((subject, primary))
             if shape is None:
                 continue
+            if progress:
+                progress('ownership','校验连续五官边界 '+label,label_index,len(detail_labels))
             accepted = set(shape['accepted_faces']) - conflicts
             legal = {f for f, owner in owners.items() if owner == (subject, 'face')
                      or owner == (subject, 'nose') or owner == (subject, primary)} | accepted
@@ -84,7 +88,7 @@ def build(views, regions, shapes, vertices, faces, cancelled=None):
             scope = topology_scope(accepted, neighbors, legal, blocked, rings)
             boundary, _ = boundary_band(accepted, neighbors)
             fitted, audit = proposals(label, independent, vertices, faces,
-                                      accepted, accepted - boundary, scope, legal - blocked)
+                                      accepted, accepted - boundary, scope, legal - blocked, visibility_cache=visibility_cache)
             diagnostics.append(dict(subject_id=subject, label=label, scope_faces=len(scope),
                                     independent_views=len(fitted), views=audit))
             for face in sorted(scope):

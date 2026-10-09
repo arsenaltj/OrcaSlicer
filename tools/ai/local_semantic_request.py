@@ -138,7 +138,7 @@ def _validate_config(config, worker):
              type(config['enabled']) is bool, 'invalid_config')
     _absolute(config['python_executable'], 'invalid_config')
     _absolute(config['weights_directory'], 'invalid_config')
-    for key, low, high in (('cpu_threads', 1, 8), ('timeout_seconds', 10, 600), ('cache_bytes', 0, 4 * 1024**3)):
+    for key, low, high in (('cpu_threads', 1, 8), ('timeout_seconds', 10, 1200), ('cache_bytes', 0, 4 * 1024**3)):
         _require(type(config[key]) is int and low <= config[key] <= high, 'invalid_config')
     _require(config['enabled'], 'semantic_disabled')
     _require(os.path.samefile(config['python_executable'], sys.executable), 'interpreter_identity_mismatch')

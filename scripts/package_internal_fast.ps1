@@ -159,7 +159,7 @@ if (-not $integrationValidation.decision.integration_passed) {
 # An incremental build is normally a no-op, but it prevents a stale binary from
 # being relabelled with the current source revision.
 if ($cacheText -match '(?m)^CMAKE_GENERATOR:INTERNAL=Visual Studio') {
-    & $cmakeExecutable --build $resolvedBuildDir --config Release --target OrcaSlicer_app_gui -- /m:2 /p:CL_MPCount=1 /p:UseMultiToolTask=false /p:BuildInParallel=false /nologo /v:minimal
+    & $cmakeExecutable --build $resolvedBuildDir --config Release --target OrcaSlicer_app_gui -- /m:1 /p:CL_MPCount=2 /p:UseMultiToolTask=true /p:EnforceProcessCountAcrossBuilds=true /nologo /v:minimal
 } else {
     & $cmakeExecutable --build $resolvedBuildDir --config Release --target OrcaSlicer_app_gui --parallel 2
 }

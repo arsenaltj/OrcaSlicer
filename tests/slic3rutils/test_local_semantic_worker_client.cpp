@@ -191,11 +191,31 @@ TEST_CASE("Installed beauty runtime is relocatable and respects explicit opt out
         write(root/"weights"/name,"fixture");
     const auto file=temporary.path()/"config.json";
     W::Configuration value;std::string reason;
+    CHECK(value.timeout_seconds==1200);
     REQUIRE(W::read_runtime_configuration(file,root,value,reason));
     CHECK(value.enabled);CHECK(value.python_executable==root/"python"/"python.exe");
+    CHECK(value.timeout_seconds==1200);
+    auto explicit_config=config_json(root);write(file,explicit_config.dump());
+    REQUIRE(W::read_runtime_configuration(file,root,value,reason));
+    CHECK(value.timeout_seconds==120); // Explicit shorter operator settings still win.
     auto config=config_json(root);config["enabled"]=false;write(file,config.dump());
     REQUIRE(W::read_runtime_configuration(file,root,value,reason));CHECK_FALSE(value.enabled);
     write(file,"broken");CHECK_FALSE(W::read_runtime_configuration(file,root,value,reason));
+}
+
+TEST_CASE("Semantic worker accepts twenty minutes and rejects a larger limit without changing settings", "[LocalSemanticWorkerClient][AI]")
+{
+    ScopedTemporaryDir temporary;
+    const auto file=temporary.path()/"config.json";
+    auto config=config_json(temporary.path());
+    config["timeout_seconds"]=1200;write(file,config.dump());
+    W::Configuration value;std::string reason;
+    REQUIRE(W::read_configuration(file,value,reason));
+    CHECK(value.timeout_seconds==1200);
+    config["timeout_seconds"]=1201;write(file,config.dump());
+    CHECK_FALSE(W::read_configuration(file,value,reason));
+    CHECK(value.timeout_seconds==1200);
+    CHECK_FALSE(reason.empty());
 }
 
 TEST_CASE("Installed portrait inference uses the modules shipped with its runtime", "[LocalSemanticWorkerClient][Regression]")
@@ -386,6 +406,10 @@ sys.exit(2 if mode=='failure' else 0)
         {"stale","invalid_semantic_response"},{"incomplete","invalid_semantic_response"},
         {"wronglabels","invalid_semantic_response"},{"wrongweights","invalid_semantic_response"},{"fingerprint","invalid_semantic_response"}};
     CHECK(result.reason==reasons.at(scenario));
+    if (std::string(scenario)=="timeout") {
+        CHECK(result.diagnostic.find("10")!=std::string::npos);
+        CHECK(result.diagnostic.find("测试离线识别运行时")!=std::string::npos);
+    }
     CHECK(elapsed<std::chrono::seconds(20));
     CHECK(fs::is_directory(result.request_directory));
 }
@@ -475,7 +499,7 @@ TEST_CASE("owned mesh requests reject invalid payloads and stop mesh stage cance
     write(source,"synthetic source bytes; no GLB parsing or models in this fixture");
     const auto fixture_token=fs::unique_path("owned-%%%%-%%%%-%%%%").string();
     std::string script=R"PY(import argparse, hashlib, json, os, pathlib, struct, subprocess, sys, time
-p=argparse.ArgumentParser();p.add_argument('--probe',action='store_true');p.add_argument('--identity-only',action='store_true');p.add_argument('--request');p.add_argument('--config');p.add_argument('--output');a=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('--probe',action='store_true');p.add_argument('--identity-only',action='store_true');p.add_argument('--progress',action='store_true');p.add_argument('--request');p.add_argument('--config');p.add_argument('--output');a=p.parse_args()
 mode=MODE
 token=FIXTURE_TOKEN
 root=pathlib.Path(__file__).parent
@@ -536,6 +560,11 @@ with (owned/'grandchild-held.bin').open('wb') as held:
    child.terminate();child.wait(timeout=2);raise RuntimeError('fixture observer did not acknowledge child')
   time.sleep(.01)
 if mode in ('cancel','timeout'):
+ if a.progress:
+  q=json.loads(request_path.read_text(encoding='utf-8'))
+  record={k:q[k] for k in ('request_id','source_sha256','geometry_id')}
+  record.update(schema='orca.portrait-progress/v1',sequence=1,stage='ownership',detail='checking contours',completed=2,total=8)
+  (owned/'progress.json').write_text(json.dumps(record),encoding='utf-8')
  if os.name=='nt':child.wait(timeout=30)
  else:time.sleep(30)
 q=json.loads(request_path.read_text(encoding='utf-8'))
@@ -788,6 +817,11 @@ os._exit(0)
             CHECK(result.process.reason=="cancelled");
         } else if(std::string(scenario)=="timeout") {
             CHECK(result.process.status==W::Status::TimedOut);CHECK(result.process.reason=="semantic_timeout");
+            CHECK(result.process.diagnostic.find("checking contours")!=std::string::npos);
+            CHECK(result.process.diagnostic.find("10")!=std::string::npos);
+            std::string cleanup;
+            CHECK(W::cleanup_request(result.process.request_directory,root/"requests",cleanup));
+            CHECK(result.process.diagnostic.find("checking contours")!=std::string::npos);
         } else {
             CHECK(result.process.status==W::Status::Unavailable);
             if(std::string(scenario)=="oversize-partial") CHECK(result.process.reason=="semantic_output_too_large");

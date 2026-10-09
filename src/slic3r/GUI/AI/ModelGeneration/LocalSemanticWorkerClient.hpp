@@ -14,7 +14,7 @@ struct Configuration {
     boost::filesystem::path python_executable;
     boost::filesystem::path weights_directory;
     unsigned cpu_threads = 4;
-    unsigned timeout_seconds = 120;
+    unsigned timeout_seconds = 1200;
     unsigned long long cache_bytes = 1024ULL * 1024 * 1024;
 };
 
@@ -39,6 +39,8 @@ enum class Status { Ready, Disabled, Unavailable, Cancelled, TimedOut };
 struct Result {
     Status status = Status::Unavailable;
     std::string reason;
+    // Human-readable context, separate from the stable machine error code.
+    std::string diagnostic;
     std::string response_json;
     int exit_code = -1;
     boost::filesystem::path request_directory;

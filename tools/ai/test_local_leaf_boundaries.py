@@ -1,10 +1,41 @@
 import unittest
+from unittest.mock import patch
 import numpy as np
 from beauty_leaf_domain import LeafKey
 from local_leaf_boundaries import AnalyticVisibility, BoundaryView, boundary_band, clip_triangle, area, refine_root, refinement_roots, smooth_lid, source_brow_contour
 
 
 class BoundaryTests(unittest.TestCase):
+    def test_visibility_pruning_preserves_exact_depth_proof_and_tolerated_contacts(self):
+        rng = np.random.default_rng(7481)
+        triangles = rng.uniform(.1,7.9,(150,3,3))
+        # Include subpixel, almost touching, shared-edge and degenerate faces.
+        triangles[:5] = [[[1,1,0],[1.001,1,0],[1,1.001,0]],
+                         [[1.00100001,1,-1],[1.01,1,-1],[1.00100001,1.01,-1]],
+                         [[1,1,-1],[1.001,1,-1],[1,1.001,-1]],
+                         [[1,1,0],[1,1,0],[1,1,0]],
+                         [[1.001,1,-2],[2,1,-2],[1.001,2,-2]]]
+        vertices = triangles.reshape(-1,3)
+        faces = np.arange(len(vertices)).reshape(-1,3)
+        visibility = AnalyticVisibility(vertices,faces,self.views()[0].transform,(8,8))
+        actual = [visibility.fraction(i,t[:,:2],t) for i,t in enumerate(triangles)]
+        # Disable only the new broad phase; replay the original all-bucket
+        # narrow phase in its original order, including sliver tolerance.
+        visibility.lower[:] = -np.inf
+        visibility.upper[:] = np.inf
+        expected = [visibility.fraction(i,t[:,:2],t) for i,t in enumerate(triangles)]
+        np.testing.assert_array_equal(actual,expected)
+
+    def test_nonoverlapping_subpixel_faces_do_not_require_pairwise_clipping(self):
+        corners = np.array([[.1,.1,0],[.2,.1,0],[.1,.2,0]])
+        triangles = np.array([corners+[x*.3,y*.3,0] for x in range(20) for y in range(20)])
+        vertices = triangles.reshape(-1,3)
+        faces = np.arange(len(vertices)).reshape(-1,3)
+        visibility = AnalyticVisibility(vertices,faces,self.views()[0].transform,(8,8))
+        with patch('local_leaf_boundaries.clip_triangle',wraps=clip_triangle) as clipping:
+            self.assertEqual(visibility.fraction(0,corners[:,:2],corners),1.)
+            self.assertEqual(clipping.call_count,1) # Viewport clip only; 399 disjoint occluders.
+
     def views(self):
         transform = np.array([[1,0],[0,1],[0,0],[0,0]], dtype=float)
         contour = np.array([[-1,-1],[4,-1],[4,9],[-1,9]], dtype=float)

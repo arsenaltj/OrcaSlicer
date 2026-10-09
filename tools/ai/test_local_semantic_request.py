@@ -15,6 +15,18 @@ import local_semantic_worker as worker
 
 
 class RequestTests(unittest.TestCase):
+    def test_request_and_probe_share_the_twenty_minute_timeout_boundary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = dict(schema=worker.CONFIG_SCHEMA, enabled=True, python_executable=sys.executable,
+                          weights_directory=directory, cpu_threads=4, timeout_seconds=1200, cache_bytes=0)
+            for seconds in (10, 120, 600, 1200):
+                config['timeout_seconds'] = seconds
+                request._validate_config(config, worker)
+            for seconds in (9, 1201, True):
+                config['timeout_seconds'] = seconds
+                with self.subTest(seconds=seconds), self.assertRaises(request.RequestError):
+                    request._validate_config(config, worker)
+
     def test_progress_is_atomic_request_bound_and_optional(self):
         with tempfile.TemporaryDirectory() as directory:
             identity = dict(request_id='one', source_sha256='a'*64, geometry_id='b'*64)

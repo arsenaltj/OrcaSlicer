@@ -64,10 +64,22 @@ class CurrentParentOwnership(unittest.TestCase):
             rows.append(dict(camera=camera,family=family,ids=ids,rgb=np.full((4,4,3),150,np.uint8),
                 labels=np.full((4,4),3,np.uint8),quality=np.ones((4,4))))
         regions=[dict(subject_id='person',label='face',samples=[[0,.99,.99,4,2]])]
+        updates=[]
         with patch('local_parent_ownership.project',return_value=vertices), \
              patch('local_parent_ownership.refine',side_effect=lambda rgb,allowed,labels,quality,known,**kw:(labels,quality,{})), \
              patch('local_parent_ownership.source_colors',side_effect=lambda ids,*args:{f:np.full((7,3),.6) for f in ids}):
             proposal=build(rows,regions,[],[],vertices,faces,None,None,None,None)
+            reported=build(rows,regions,[],[],vertices,faces,None,None,None,None,
+                           progress=lambda *update:updates.append(update))
+            self.assertEqual(reported,proposal)
+            stopped=[False]
+            def cancel_on_update(*update):stopped[0]=True
+            with self.assertRaisesRegex(RuntimeError,'parent_coverage_cancelled'):
+                build(rows,regions,[],[],vertices,faces,None,None,None,None,
+                      cancelled=lambda:stopped[0],progress=cancel_on_update)
+        self.assertTrue(any('校验父级覆盖' in update[1] for update in updates))
+        self.assertTrue(any('匹配连续边界' in update[1] for update in updates))
+        self.assertTrue(all(update[0]=='ownership' for update in updates))
         self.assertEqual(proposal['roots'][0][0:2],[0,3])
         self.assertEqual(len(proposal['roots'][0][2]),2)
         self.assertEqual(proposal['audit']['added_by_color_only'],0)

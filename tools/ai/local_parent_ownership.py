@@ -105,10 +105,13 @@ def source_colors(face_ids, faces, uv, colors, materials, material_ids, samples=
 
 
 def build(observations, regions, parent_details, shapes, vertices, faces, uv, colors,
-          materials, material_ids, cancelled=None):
+          materials, material_ids, cancelled=None, progress=None):
     from local_face_landmarks import surface_neighbors
     from local_parent_projection import coverage_labels
     checkpoint=cancelled or (lambda:False)
+    def report(detail, completed=0, total=0):
+        if checkpoint():raise RuntimeError('parent_coverage_cancelled')
+        if progress:progress('ownership',detail,completed,total)
     subjects=sorted({r['subject_id'] for r in regions})
     if len(subjects)!=1 or not observations:
         return None
@@ -124,6 +127,7 @@ def build(observations, regions, parent_details, shapes, vertices, faces, uv, co
         if score>=.9 and views>=2:known[f]=3;reliable.add(f)
     for shape in shapes:
         barriers.update(shape['accepted_faces']);barriers.update(shape['rejected_faces'])
+    report('建立父级区域拓扑')
     neighbors=surface_neighbors(vertices,faces)
     # The completion budget is measured from fixed evidence seeds, never from
     # already repaired colors. A classifier's direct pixel witnesses may add
@@ -143,7 +147,7 @@ def build(observations, regions, parent_details, shapes, vertices, faces, uv, co
         reference=(np.asarray(references,np.uint8)[:,None,:],np.asarray(reference_labels,np.uint8)[:,None])
     records=[];mixed=defaultdict(lambda:defaultdict(list));library={};view_audit=[]
     cameras=[];visible_scope=set()
-    for observation in observations:
+    for view_index, observation in enumerate(observations):
         if checkpoint():raise RuntimeError('parent_coverage_cancelled')
         camera=observation['camera'];ids=observation['ids'];valid=ids>=0
         rgb=observation['rgb'];known_pixels=np.zeros(ids.shape,np.uint8)
@@ -155,13 +159,15 @@ def build(observations, regions, parent_details, shapes, vertices, faces, uv, co
         # No arbitrary expansion beyond actual semantic/seed pixel support.
         seed=(known_pixels>0)|((observation['quality']>=.9)&np.isin(observation['labels'],(1,3,4)))
         allowed=binary_dilation(seed,iterations=POLICY['local_pixel_band'])&foreground
-        selected,quality,report=refine(rgb,allowed,observation['labels'],observation['quality'],known_pixels,reference=reference)
+        report('细化父级视角 '+camera.name,view_index,len(observations))
+        selected,quality,refinement=refine(rgb,allowed,observation['labels'],observation['quality'],known_pixels,reference=reference)
         selected[~allowed]=0;quality[~allowed]=0
         xy=project(vertices,camera.basis,camera.center,camera.half_height,camera.size)[faces][...,:2]
         lower=xy.min(1);upper=xy.max(1)
         in_frame=(lower[:,0]>=0)&(lower[:,1]>=0)&(upper[:,0]<=ids.shape[1])&(upper[:,1]<=ids.shape[0])
         # Backfaces and depth/occlusion are checked again natively, including
         # triangles smaller than a pixel. Raster occupancy is not required.
+        report('校验父级覆盖 '+camera.name,view_index,len(observations))
         category,coverage=coverage_labels(xy,selected,quality)
         category=whole_root_labels(category,coverage)
         root_labels=np.where(in_frame,category,255).astype(np.uint8)
@@ -169,7 +175,7 @@ def build(observations, regions, parent_details, shapes, vertices, faces, uv, co
         record_index=len(records)
         records.append(dict(family=observation['family'],resolution=camera.size/camera.half_height,root_labels=root_labels))
         cameras.append(dict(family=observation['family'],direction=camera.basis[2].tolist(),distance=float(np.ptp(vertices,axis=0).max()*4+1)))
-        view_audit.append(dict(name=camera.name,family=observation['family'],root_candidates=int((category>0).sum()),refinement=report))
+        view_audit.append(dict(name=camera.name,family=observation['family'],root_candidates=int((category>0).sum()),refinement=refinement))
         boundary=visible_faces[(category[visible_faces]==0)&in_frame[visible_faces]]
         boundaries={}
         for parent,c in CLASSES.items():
@@ -181,7 +187,11 @@ def build(observations, regions, parent_details, shapes, vertices, faces, uv, co
                 if len(polygon)<3:continue
                 key=f'parent/{record_index}/{c}/{i}'
                 library[key]=polygon.tolist()
-                boundaries[c].append((key,polygon,hierarchy[0,i,3]>=0))
+                # Bounds belong to the view's fixed contour, not each source
+                # face. Reuse them instead of rescanning every contour vertex
+                # for each of the many boundary faces.
+                boundaries[c].append((key,polygon.min(0),polygon.max(0),hierarchy[0,i,3]>=0))
+        report('匹配连续边界 '+camera.name,view_index,len(observations))
         for face in boundary:
             triangle=xy[face]
             if area(triangle)<.02:continue
@@ -190,12 +200,13 @@ def build(observations, regions, parent_details, shapes, vertices, faces, uv, co
             if np.abs(inverse).max()>1e5:continue
             for c,curves in boundaries.items():
                 keys=[];holes=[]
-                for key,polygon,is_hole in curves:
-                    if np.any(polygon.max(0)<lower[face]) or np.any(polygon.min(0)>upper[face]):continue
+                for key,curve_lower,curve_upper,is_hole in curves:
+                    if np.any(curve_upper<lower[face]) or np.any(curve_lower>upper[face]):continue
                     (holes if is_hole else keys).append(key)
                 if keys:
                     mixed[int(face)][c].append(dict(family=observation['family'],camera=record_index,
                         matrix=inverse.tolist(),contour_ids=keys,exclude_contour_ids=holes))
+    report('合并独立视角投票',len(observations),len(observations))
     accepted,conflicting,vote_views=family_votes(records,count)
     # Establish direct semantic seeds using raster witnesses, then complete at
     # most three real surface rings inside the independently supported masks.
@@ -219,6 +230,7 @@ def build(observations, regions, parent_details, shapes, vertices, faces, uv, co
     # Root-class disagreement remains blocked. It is not a substitute for
     # clipping two classes within the same independently supported triangle.
     mixed_ids=[f for f in sorted(mixed) if f in scope and f not in root_set and not accepted[f]]
+    report('采样已确权区域的原始纹理')
     samples=source_colors(sorted(set(root_ids)|set(mixed_ids)),faces,uv,colors,materials,material_ids)
     mixed_colors=source_colors(mixed_ids,faces,uv,colors,materials,material_ids,COLOR_SAMPLES)
     roots=[];parts=[]

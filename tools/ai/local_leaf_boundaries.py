@@ -102,6 +102,17 @@ class AnalyticVisibility:
         included = np.flatnonzero((upper[:,0] >= 0) & (upper[:,1] >= 0) &
                                  (lower[:,0] <= shape[1]) & (lower[:,1] <= shape[0]))
         self.triangles = triangles[included]
+        # clip_triangle accepts half-plane cross products down to -1e-9.
+        # Bound that relaxed triangle too, especially for thin slivers: an
+        # ordinary exact AABB would incorrectly skip its tolerated contacts.
+        edges = self.triangles[:,1:] - self.triangles[:,:1]
+        determinant = np.abs(edges[:,0,0]*edges[:,1,1]-edges[:,0,1]*edges[:,1,0])
+        slack = np.full(len(included), np.inf)
+        np.divide(1e-9, determinant, out=slack, where=determinant>0)
+        span = upper[included]-lower[included]
+        padding = 3*slack[:,None]*np.maximum(span,np.finfo(float).tiny)
+        padding += 32*np.finfo(float).eps*np.maximum(1,np.abs(self.triangles).max((1,2)))[:,None]
+        self.lower, self.upper = lower[included]-padding, upper[included]+padding
         self.face_ids = included
         self.depths = (vertices @ self.direction)[faces[included]]
         self.buckets = {}
@@ -131,7 +142,13 @@ class AnalyticVisibility:
         hi = np.floor(np.minimum(triangle.max(0),self.shape[::-1])/self.CELL).astype(int)
         candidates = {i for y in range(lo[1],hi[1]+1) for x in range(lo[0],hi[0]+1)
                       for i in self.buckets.get((x,y),[])}
-        for index in sorted(candidates):
+        # A spatial bucket contains many tiny triangles that do not intersect
+        # this face at all. Reject only disjoint bounding boxes before the exact
+        # clipping/depth proof, preserving its original face order and tolerance.
+        indices = np.asarray(sorted(candidates), dtype=np.intp)
+        lower, upper = clipped.min(0), clipped.max(0)
+        overlaps = np.all(self.upper[indices] >= lower, axis=1) & np.all(self.lower[indices] <= upper, axis=1)
+        for index in indices[overlaps]:
             if self.face_ids[index] == face:
                 continue
             occluder = self.triangles[index]

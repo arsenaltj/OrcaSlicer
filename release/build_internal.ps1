@@ -209,7 +209,11 @@ if (-not $SkipTargetedTests) {
     & $pythonPath @guardrailArguments
     if ($LASTEXITCODE -ne 0) { throw 'Python integration guardrail tests failed.' }
 
-    & $cmakePath --build $buildPath --config Release --target slic3rutils_tests --parallel
+    if ($updatedCacheText -match '(?m)^CMAKE_GENERATOR:INTERNAL=Visual Studio') {
+        & $cmakePath --build $buildPath --config Release --target slic3rutils_tests -- /m:1 /p:CL_MPCount=2 /p:UseMultiToolTask=true /p:EnforceProcessCountAcrossBuilds=true
+    } else {
+        & $cmakePath --build $buildPath --config Release --target slic3rutils_tests --parallel 2
+    }
     if ($LASTEXITCODE -ne 0) { throw 'slic3rutils_tests build failed.' }
     $testExecutable = Join-Path $buildPath 'tests\slic3rutils\Release\slic3rutils_tests.exe'
     if (-not (Test-Path -LiteralPath $testExecutable -PathType Leaf)) {

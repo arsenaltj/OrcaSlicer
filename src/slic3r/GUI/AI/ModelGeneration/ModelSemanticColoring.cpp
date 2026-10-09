@@ -702,7 +702,8 @@ struct ModelSemanticColoring::Impl {
                                     }
                                     if (!details->compatible(source.geometry_id, source.mesh.indices.size())) throw std::runtime_error("Local shape source mapping changed.");
                                     result->shape_details = std::move(details);
-                                } else result->shape_error = local.process.reason;
+                                } else result->shape_error = local.process.diagnostic.empty() ? local.process.reason :
+                                    local.process.diagnostic + " [" + local.process.reason + "]";
                             } else result->shape_error = reason.empty() ? "local_semantic_runtime_disabled" : reason;
                           } catch (const std::exception& error) {
                               result->shape_details=refresh_parent ? retained_shapes : nullptr;

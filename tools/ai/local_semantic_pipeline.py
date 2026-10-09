@@ -369,7 +369,7 @@ def analyze(source, native_packet, source_sha256, model_loader, on_view=None, ca
     try:
         from local_contour_proposals import build as build_contours
         contour_proposal = build_contours(face_observations, result['regions'], shape_details,
-                                         vertices, faces, cancelled)
+                                         vertices, faces, cancelled, progress=progress)
     except Exception as error:
         contour_diagnostic = type(error).__name__
     if progress: progress("ownership", "建立连续裁切与父级证据", 2, 3)
@@ -390,7 +390,7 @@ def analyze(source, native_packet, source_sha256, model_loader, on_view=None, ca
             raise ValueError('Semantic source changed during parent analysis')
         from local_parent_ownership import build as build_parents
         parent_proposal = build_parents(parent_observations, result['regions'], parent_details, shape_details,
-            vertices, faces, uv, colors, materials, material_ids, cancelled)
+            vertices, faces, uv, colors, materials, material_ids, cancelled, progress=progress)
     except Exception as error:
         parent_diagnostic = type(error).__name__ + ':' + str(error)[:160]
     checkpoint()

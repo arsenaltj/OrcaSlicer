@@ -83,7 +83,7 @@ def load_config(path: Path) -> dict:
             raise WorkerError("invalid_config_path")
         if not Path(value).is_absolute():
             raise WorkerError("config_requires_absolute_path")
-    for key, minimum, maximum in (("cpu_threads", 1, 8), ("timeout_seconds", 10, 600),
+    for key, minimum, maximum in (("cpu_threads", 1, 8), ("timeout_seconds", 10, 1200),
                                   ("cache_bytes", 0, 4 * 1024**3)):
         value = config[key]
         if type(value) is not int or not minimum <= value <= maximum:

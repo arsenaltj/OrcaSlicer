@@ -20,6 +20,7 @@
 #include <boost/filesystem/fstream.hpp>
 #include <boost/nowide/convert.hpp>
 #include <boost/nowide/cstdlib.hpp>
+#include <boost/log/trivial.hpp>
 #include <boost/process.hpp>
 #include <boost/interprocess/sync/file_lock.hpp>
 #include <boost/interprocess/sync/scoped_lock.hpp>
@@ -49,6 +50,25 @@ using Json = nlohmann::json;
 constexpr size_t max_config_bytes = 16 * 1024;
 constexpr size_t max_response_bytes = 64 * 1024;
 constexpr const char* schema = "orcaslicer.local-semantic-worker.v1";
+
+void timed_out(Result& result, const Configuration& config, const char* operation,
+               std::chrono::steady_clock::time_point started, const PortraitProgress& last,
+               uint64_t sequence = 0)
+{
+    const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::steady_clock::now() - started).count();
+    result.status = Status::TimedOut;
+    result.reason = "semantic_timeout";
+    result.diagnostic = "本地人像处理超时（本步骤已用 " + std::to_string(elapsed) +
+        " 秒，上限 " + std::to_string(config.timeout_seconds) + " 秒）。最后步骤：" + last.detail +
+        "。处理前版本已保留；请保留日志与原始模型用于排查。";
+    // Only fixed operation names and numbers enter the ordinary log. Model
+    // paths, runtime configuration and arbitrary worker text stay out of it.
+    BOOST_LOG_TRIVIAL(warning) << "Local portrait worker timeout: operation=" << operation
+        << ", limit_seconds=" << config.timeout_seconds << ", elapsed_seconds=" << elapsed
+        << ", cpu_threads=" << config.cpu_threads << ", stage=" << int(last.stage)
+        << ", sequence=" << sequence << ", completed=" << last.completed << ", total=" << last.total;
+}
 
 // Each launch owns a new group. In particular, a Windows venv launcher exiting
 // does not imply that its worker or that worker's descendants have exited.
@@ -212,7 +232,7 @@ Json strict_json(const std::string& bytes)
 bool valid(const Configuration& c)
 {
     return c.python_executable.is_absolute() && c.weights_directory.is_absolute() &&
-        c.cpu_threads >= 1 && c.cpu_threads <= 8 && c.timeout_seconds >= 10 && c.timeout_seconds <= 600 &&
+        c.cpu_threads >= 1 && c.cpu_threads <= 8 && c.timeout_seconds >= 10 && c.timeout_seconds <= 1200 &&
         c.cache_bytes <= 4ULL * 1024 * 1024 * 1024;
 }
 unsigned long long integer(const Json& j, const char* key, unsigned long long low, unsigned long long high)
@@ -498,7 +518,7 @@ bool complete_probe(const Json& response)
         response.at("mesh_requests_ready").is_boolean() && response.at("mesh_requests_ready")==false &&
         response.at("network_policy")=="python-audit-hook-and-offline-flags; not-native-OS-sandbox" &&
         response.at("probe_seconds").is_number() && std::isfinite(response.at("probe_seconds").get<double>()) &&
-        response.at("probe_seconds").get<double>()>=0 && response.at("probe_seconds").get<double>()<=600;
+        response.at("probe_seconds").get<double>()>=0 && response.at("probe_seconds").get<double>()<=1200;
 }
 } // namespace
 
@@ -544,7 +564,7 @@ bool read_configuration(const fs::path& file, Configuration& destination, std::s
             (std::string(key) == "python_executable" ? c.python_executable : c.weights_directory) = from_utf8(text);
         }
         c.cpu_threads = unsigned(integer(j, "cpu_threads", 1, 8));
-        c.timeout_seconds = unsigned(integer(j, "timeout_seconds", 10, 600));
+        c.timeout_seconds = unsigned(integer(j, "timeout_seconds", 10, 1200));
         c.cache_bytes = integer(j, "cache_bytes", 0, 4ULL * 1024 * 1024 * 1024);
         if (!valid(c)) throw std::runtime_error("path");
         destination = std::move(c); reason.clear(); return true;
@@ -569,7 +589,7 @@ bool read_runtime_configuration(const fs::path& file, const fs::path& installed_
         c.python_executable = installed_runtime / "python" / "python.exe";
         c.weights_directory = installed_runtime / "weights";
         c.enabled = true;
-        c.timeout_seconds = 600;
+        c.timeout_seconds = 1200;
         if (!valid(c) || !fs::is_regular_file(c.python_executable)) throw std::runtime_error("missing");
         for (const char* name : {"mobilenet0.25_Final.pth", "face_parsing.farl.celebm.main_ema_181500_jit.pt", "face_landmarker.task"})
             if (!fs::is_regular_file(c.weights_directory / name)) throw std::runtime_error("missing");
@@ -582,7 +602,7 @@ static Result inspect_runtime(const Configuration& c, const fs::path& script, co
 {
     Result result;
     const auto finish = [&] {
-        if (cancelled.load()) { result.status=Status::Cancelled; result.reason="cancelled"; result.response_json.clear(); }
+        if (cancelled.load()) { result.status=Status::Cancelled; result.reason="cancelled"; result.response_json.clear(); result.diagnostic.clear(); }
         return result;
     };
     if (cancelled.load()) { result.status = Status::Cancelled; result.reason = "cancelled"; return finish(); }
@@ -638,11 +658,15 @@ static Result inspect_runtime(const Configuration& c, const fs::path& script, co
             process::std_err > process::null, *owned.group);
 #endif
         failure_reason="local_worker_wait_failed";
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(c.timeout_seconds);
+        const auto started = std::chrono::steady_clock::now();
+        const auto deadline = started + std::chrono::seconds(c.timeout_seconds);
         while (child->running()) {
             if (cancelled.load()) { stop(); result.status = Status::Cancelled; result.reason = "cancelled"; return finish(); }
-            if (std::chrono::steady_clock::now() >= deadline) { stop(); result.status = Status::TimedOut;
-                result.reason = "semantic_timeout"; return finish(); }
+            if (std::chrono::steady_clock::now() >= deadline) {
+                stop(); timed_out(result,c,identity_only ? "runtime_identity" : "runtime_probe",started,
+                    {PortraitStage::Preparing,identity_only ? "校验离线运行时与权重身份" : "测试离线识别运行时"});
+                return finish();
+            }
             if (oversized(response_path) || oversized(result.request_directory / "result.json.partial")) {
                 stop(); result.reason = "semantic_output_too_large"; return finish();
             }
@@ -689,7 +713,7 @@ MeshResult analyze(const Configuration& c, const fs::path& directory, const fs::
     auto& state=result.process;
     const auto finish=[&]() -> MeshResult {
         if(cancelled.load()) {
-            state.status=Status::Cancelled; state.reason="cancelled"; state.response_json.clear(); result.evidence={}; result.cache_hit=false;
+            state.status=Status::Cancelled; state.reason="cancelled"; state.response_json.clear(); state.diagnostic.clear(); result.evidence={}; result.cache_hit=false;
         }
         return std::move(result);
     };
@@ -891,7 +915,7 @@ MeshResult analyze(const Configuration& c, const fs::path& directory, const fs::
 #ifdef _WIN32
         process::wenvironment wide_env(env);
         std::vector<std::wstring> arguments{L"-I",script.wstring(),L"--request",request_path.wstring(),L"--config",config_path.wstring(),L"--output",response_path.wstring()};
-        if (progress) arguments.push_back(L"--progress");
+        arguments.push_back(L"--progress"); // Retain timeout diagnostics even without a UI subscriber.
         child=std::make_unique<process::child>(c.python_executable.wstring(), process::args(arguments),wide_env,
             process::start_dir(state.request_directory.wstring()),process::std_out>process::null,
             process::std_err>process::null,process::windows::create_no_window,*owned.group,
@@ -900,7 +924,7 @@ MeshResult analyze(const Configuration& c, const fs::path& directory, const fs::
         owned.resume();
 #else
         std::vector<std::string> arguments{"-I",script.string(),"--request",request_path.string(),"--config",config_path.string(),"--output",response_path.string()};
-        if (progress) arguments.push_back("--progress");
+        arguments.push_back("--progress");
         child=std::make_unique<process::child>(c.python_executable.string(), process::args(arguments),env,
             process::start_dir(state.request_directory.string()),process::std_out>process::null,process::std_err>process::null,*owned.group);
 #endif
@@ -909,21 +933,34 @@ MeshResult analyze(const Configuration& c, const fs::path& directory, const fs::
                 oversized(state.request_directory/(entry.first+".partial"),entry.second)) return true;
             return false;
         };
-        const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(c.timeout_seconds);
+        const auto started=std::chrono::steady_clock::now();
+        const auto deadline=started+std::chrono::seconds(c.timeout_seconds);
+        BOOST_LOG_TRIVIAL(info) << "Local portrait worker started: operation=mesh_evidence, limit_seconds="
+            << c.timeout_seconds << ", cpu_threads=" << c.cpu_threads << ", face_count=" << native.indices.size();
         failure="local_semantic_request_wait_failed";
         uint64_t progress_sequence = 0;
+        PortraitProgress last_progress{PortraitStage::Preparing,"启动离线识别并校验输入"};
         auto progress_at = std::chrono::steady_clock::now();
         while(child->running()) {
-            if (progress && std::chrono::steady_clock::now() >= progress_at) {
+            if (std::chrono::steady_clock::now() >= progress_at) {
                 progress_at = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
                 try {
                     PortraitProgress update;
                     if (decode_portrait_worker_progress(bounded_read(state.request_directory/"progress.json",4096),
-                        request_id,source_hash,geometry_id,progress_sequence,update)) progress->report(update);
+                        request_id,source_hash,geometry_id,progress_sequence,update)) {
+                        last_progress=update;
+                        if (progress) progress->report(update);
+                        BOOST_LOG_TRIVIAL(info) << "Local portrait worker progress: stage=" << int(update.stage)
+                            << ", sequence=" << progress_sequence << ", completed=" << update.completed
+                            << ", total=" << update.total << ", elapsed_ms="
+                            << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-started).count();
+                    }
                 } catch (...) {} // Missing/partial/foreign telemetry never changes results.
             }
             if(cancelled.load()) {stop();return finish();}
-            if(std::chrono::steady_clock::now()>=deadline) {stop();state.status=Status::TimedOut;state.reason="semantic_timeout";return finish();}
+            if(std::chrono::steady_clock::now()>=deadline) {
+                stop();timed_out(state,c,"mesh_evidence",started,last_progress,progress_sequence);return finish();
+            }
             if(outputs_oversized()) {
                 stop();state.reason="semantic_output_too_large";return finish();
             }
