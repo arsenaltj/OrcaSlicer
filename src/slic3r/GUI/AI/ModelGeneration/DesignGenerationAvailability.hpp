@@ -15,6 +15,7 @@ inline bool design_generation_available(const ModelGenerationUIInput& input,
     return service_available && !busy && palette_ready &&
         post_generation_return_to_design_allowed(workbench) &&
         (!input.image_path.empty() || !input.prompt.empty()) &&
+        input.prompt.size() <= ModelGenerationPresentation::MAX_MODEL_INPUT_BYTES &&
         ModelGenerationPresentation::is_supported_style(input.style) &&
         (input.style != "custom" || !input.custom_style.empty());
 }

@@ -46,6 +46,31 @@ TEST_CASE("A retained model candidate permits a new design but active work and u
     CHECK_FALSE(design_generation_available(input, true, false, workbench, false));
 }
 
+TEST_CASE("An oversized UTF-8 draft disables design generation even with an image and recovers after editing", "[UiRedesign][ImageDesignDraft]")
+{
+    ModelGenerationUIInput input;
+    input.style = "sculpture";
+    PostGenerationUiState workbench;
+    workbench.status = PostGenerationUiState::Status::Ready;
+    const std::string character = "\xe7\x8c\xab";
+    for (const auto& image : {"", "reference.png"}) {
+        input.image_path = image;
+        input.prompt.clear();
+        for (int index = 0; index < 666; ++index) input.prompt += character;
+        input.prompt += "ab";
+        REQUIRE(input.prompt.size() == ModelGenerationPresentation::MAX_MODEL_INPUT_BYTES);
+        CHECK(design_generation_available(input, true, false, workbench, true));
+        input.prompt += character;
+        const auto retained = input.prompt;
+        CHECK_FALSE(design_generation_available(input, true, false, workbench, true));
+        CHECK(input.prompt == retained);
+        input.prompt = character;
+        CHECK(design_generation_available(input, true, false, workbench, true));
+        input.prompt.assign(ModelGenerationPresentation::MAX_MODEL_INPUT_BYTES + 1, 'a');
+        CHECK_FALSE(design_generation_available(input, true, false, workbench, true));
+    }
+}
+
 TEST_CASE("A new image design supplies a missing historical style without altering its source record", "[UiRedesign][ImageDesignDraft]")
 {
     ModelGenerationUIInput historical;
