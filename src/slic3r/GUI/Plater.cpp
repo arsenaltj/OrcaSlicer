@@ -72,7 +72,6 @@
 #include "libslic3r/Format/DRC.hpp"
 #include "libslic3r/Format/STEP.hpp"
 #include "libslic3r/Format/AMF.hpp"
-//#include "libslic3r/Format/3mf.hpp"
 #include "libslic3r/Format/bbs_3mf.hpp"
 #include "libslic3r/GCode/ThumbnailData.hpp"
 #include "libslic3r/Model.hpp"
@@ -9733,7 +9732,7 @@ wxString Plater::priv::get_export_file(GUI::FileType file_type)
         break;
     }
 
-    fs::path output_file = get_export_file_path(file_type);
+    fs::path output_file = file_type == FT_3MF ? default_model_project_path(get_export_file_path(file_type)) : get_export_file_path(file_type);
     trace_stage("dialog.after_path");
 
     wxString dlg_title;

@@ -4,6 +4,7 @@
 #include "WorkbenchStyle.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include "slic3r/GUI/AI/Model/BeautyMetadata.hpp"
+#include "slic3r/GUI/AIModelOutputDirectory.hpp"
 #include "slic3r/GUI/I18N.hpp"
 #include "slic3r/GUI/Widgets/ComboBox.hpp"
 #include <boost/filesystem.hpp>
@@ -16,6 +17,7 @@
 #include <wx/sizer.h>
 #include <wx/slider.h>
 #include <wx/stattext.h>
+#include <wx/textentry.h>
 #include <wx/settings.h>
 #include <wx/wrapsizer.h>
 #include <algorithm>
@@ -25,7 +27,7 @@ namespace Slic3r::GUI {
 namespace {
 nlohmann::json read_metadata(const boost::filesystem::path& model, bool include_draft)
 {
-    const auto root = boost::filesystem::path(data_dir()) / "generated_models";
+    const auto& root = ai_model_output_directory().root();
     const auto path = AI::beauty_metadata_path(model, root);
     nlohmann::json metadata = nlohmann::json::object();
     if (boost::filesystem::exists(path)) {
@@ -216,6 +218,11 @@ BeautyWorkbenchControls::BeautyWorkbenchControls(wxWindow* parent, ModelPreview3
     m_boundary->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { if (on_boundary_adjust) on_boundary_adjust(); });
     m_undo->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { if (on_undo) on_undo(); });
     m_redo->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { if (on_redo) on_redo(); });
+    // Tool buttons and the reparented footer must use the same transaction
+    // history as the canvas. Native text fields retain their own undo.
+    m_history_key_host = wxGetTopLevelParent(this);
+    if (m_history_key_host)
+        m_history_key_host->Bind(wxEVT_CHAR_HOOK, &BeautyWorkbenchControls::on_history_key, this);
     m_save->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { if (on_save) on_save(); });
     m_preview_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { if (on_preview) on_preview(); });
     m_accept->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { if (on_accept) on_accept(); });
@@ -672,7 +679,7 @@ void BeautyWorkbenchControls::attach_actions(wxWindow* footer)
         if (button == m_undo || button == m_redo) {
             const wxString label = button->GetLabel();
             button->SetName(label);
-            button->SetToolTip(label);
+            button->SetToolTip(label + (button == m_undo ? " (Ctrl+Z)" : " (Ctrl+Y / Ctrl+Shift+Z)"));
             button->SetLabel(wxEmptyString);
             button->SetIcon(button == m_undo ? "topbar_undo" : "topbar_redo");
             button->SetMinSize(FromDIP(wxSize(32, 32)));
@@ -694,8 +701,25 @@ void BeautyWorkbenchControls::set_history_permissions(bool undo, bool redo)
 double BeautyWorkbenchControls::displacement_mm() const { return m_displacement ? 0.1 * m_displacement->GetValue() : 0.; }
 double BeautyWorkbenchControls::falloff_mm() const { return m_falloff ? 0.1 * m_falloff->GetValue() : 1.; }
 
+void BeautyWorkbenchControls::on_history_key(wxKeyEvent& event)
+{
+    const auto key = event.GetKeyCode();
+    if (!m_visible || !IsShownOnScreen() || !event.CmdDown() || event.AltDown() ||
+        (key != 'Z' && key != 'Y') || (key == 'Y' && event.ShiftDown()) ||
+        dynamic_cast<wxTextEntry*>(wxWindow::FindFocus())) {
+        event.Skip();
+        return;
+    }
+    const bool redo = key == 'Y' || event.ShiftDown();
+    if (redo) {
+        if (m_redo->IsEnabled() && on_redo) on_redo();
+    } else if (m_undo->IsEnabled() && on_undo) on_undo();
+}
+
 BeautyWorkbenchControls::~BeautyWorkbenchControls()
 {
+    if (m_history_key_host)
+        m_history_key_host->Unbind(wxEVT_CHAR_HOOK, &BeautyWorkbenchControls::on_history_key, this);
     m_partition_timer.Stop();
     cancel_partition();
     if (m_partition_worker.joinable()) m_partition_worker.join();

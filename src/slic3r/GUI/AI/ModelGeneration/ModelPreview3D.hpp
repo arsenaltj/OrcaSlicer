@@ -250,9 +250,10 @@ public:
             if (!event.ControlDown() && (event.GetKeyCode() == 'F' || event.GetKeyCode() == 'f')) {
                 focus_selection(); return;
             }
-            if (m_beauty_view && m_beauty_history && event.ControlDown() &&
-                (event.GetKeyCode() == 'Z' || event.GetKeyCode() == 'z')) {
-                m_beauty_history(event.ShiftDown()); return;
+            if (m_beauty_view && m_beauty_history && event.CmdDown() && !event.AltDown() &&
+                (event.GetKeyCode() == 'Z' || event.GetKeyCode() == 'z' ||
+                 ((event.GetKeyCode() == 'Y' || event.GetKeyCode() == 'y') && !event.ShiftDown()))) {
+                m_beauty_history(event.ShiftDown() || event.GetKeyCode() == 'Y' || event.GetKeyCode() == 'y'); return;
             }
             if (!m_selection_enabled) {
                 event.Skip();

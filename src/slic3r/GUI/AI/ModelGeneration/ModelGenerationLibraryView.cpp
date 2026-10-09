@@ -1029,6 +1029,11 @@ wxWindow* ModelGenerationPanel::create_library_card(const GeneratedModelEntry& e
         });
         actions->Add(reuse_geometry, 0, wxEXPAND | wxBOTTOM, FromDIP(4));
         reuse_geometry->Show(!entry.design_only);
+        auto* export_copy = new wxButton(card, wxID_ANY, entry.design_only ? _L("导出图片") : _L("导出模型"),
+            wxDefaultPosition, wxSize(FromDIP(104), -1));
+        export_copy->SetToolTip(_L("导出已保存资产的独立副本。GLB 保留材质和贴图；打印参数请在切片工作区保存 3MF。"));
+        export_copy->Bind(wxEVT_BUTTON, [this, entry](wxCommandEvent&) { export_library_entry(entry); });
+        actions->Add(export_copy, 0, wxEXPAND | wxBOTTOM, FromDIP(4));
         auto* remove = new wxButton(card, wxID_ANY, _L("删除本地"), wxDefaultPosition, wxSize(FromDIP(104), -1));
         remove->Bind(wxEVT_BUTTON, [this, entry](wxCommandEvent&) {
             delete_library_entry(entry);

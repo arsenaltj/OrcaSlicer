@@ -240,7 +240,8 @@
     {
       "id": "printer_adapter",
       "path": "src/slic3r/GUI/Redesign/OrcaPrinterAdapter.cpp",
-      "needle": "bool OrcaPrinterAdapter::start_print()"
+      "needle": "bool OrcaPrinterAdapter::review_print(wxWindow* parent) const",
+      "detail": "Native print review retains device/version guards; matching native preview result blocks export/review for out-of-bed toolpaths, including the wipe tower."
     },
     {
       "id": "accepted_ux_controls",
@@ -271,6 +272,30 @@
       "needle": "void RedesignShell::build_model_workflow()"
     },
     {
+      "id": "assets_workspace",
+      "path": "src/slic3r/GUI/Redesign/AssetsWorkspace.cpp",
+      "needle": "void AssetsWorkspace::load_gallery()",
+      "detail": "Local assets retain their history owner. The installed gallery and public catalog previews load lazily through WebView and support offline browse/filter/detail; HTTPS downloads open in the browser, arbitrary file navigation is blocked."
+    },
+    {
+      "id": "library_export",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationAssetsView.cpp",
+      "needle": "void ModelGenerationPanel::export_library_entry",
+      "detail": "Accepted snapshots export GLB/images under installation/models/exports. Shared output storage and child environment use installation/models; old data-dir history is copied without replacing existing versions."
+    },
+    {
+      "id": "install_model_storage",
+      "path": "src/slic3r/GUI/AIModelOutputDirectory.hpp",
+      "needle": "bool migrate_legacy_history",
+      "detail": "Executable-relative models directory, preserved legacy data-dir originals, no replacement of existing install-local files, and an unchanged absolute child output environment."
+    },
+    {
+      "id": "project_save",
+      "path": "src/slic3r/GUI/Redesign/RedesignModelWorkflow.cpp",
+      "needle": "void RedesignShell::save_print_project()",
+      "detail": "Explicit 3MF Save As delegates to Plater, retaining native colors, presets, placement and dirty-state handling; the default destination is installation/models/projects."
+    },
+    {
       "id": "workbench_check",
       "path": "src/slic3r/GUI/AI/ModelGeneration/PostGenerationWorkbenchCheck.cpp",
       "needle": "bool ModelGenerationPanel::request_check_workbench()"
@@ -294,6 +319,16 @@
       "id": "workbench_import",
       "path": "src/slic3r/GUI/PlaterWorkbenchImport.ipp",
       "needle": "AI::ModelImportResult Plater::import_workbench_model("
+    },
+    {
+      "id": "workbench_async_import",
+      "path": "src/slic3r/GUI/PlaterWorkbenchImportAsync.ipp",
+      "needle": "bool Plater::import_workbench_model_async("
+    },
+    {
+      "id": "workbench_import_ui_guard",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/WorkbenchImportUiGuard.hpp",
+      "needle": "class WorkbenchImportUiGuard"
     },
     {
       "id": "workbench_slice",
@@ -749,12 +784,15 @@
     {
       "id": "history",
       "label": "历史与恢复",
-      "detail": "保存任务和资产，重新打开历史结果",
+      "detail": "保存任务和资产，重新打开历史结果；查看模型目录、导出独立 GLB/图片副本并浏览模型图库",
       "boundary": "恢复已有记录不等于重新生成",
       "group": "资产与工作区",
       "evidence": [
         "history",
-        "restore"
+        "restore",
+        "assets_workspace",
+        "library_export",
+        "install_model_storage"
       ],
       "modules": [
         "generation"
@@ -786,12 +824,13 @@
     {
       "id": "workspace",
       "label": "工程准备",
-      "detail": "在 Orca 中管理模型、工程与编辑上下文",
+      "detail": "在 Orca 中管理模型、工程与编辑上下文；显式保存含耗材色和打印参数的 3MF 工程",
       "boundary": "沿用原生工作区和编辑能力",
       "group": "资产与工作区",
       "evidence": [
         "desktop_host",
-        "generation_host"
+        "generation_host",
+        "project_save"
       ],
       "modules": [
         "desktop",
@@ -950,12 +989,14 @@
     {
       "id": "workbench_color_review",
       "label": "配色确认",
-      "detail": "导入前可独立撤销地修改真实工程色槽，复用原生、自动与手动匹配及局部改色",
+      "detail": "导入前可撤销地修改工程色槽，复用原生/自动/手动匹配；后台交接共享 UI 守卫，避免跨线程复制窗口弱引用",
       "boundary": "取消导入不提交模型，保留已确认的工程改色；导入前校验模型、耗材与摆放",
       "group": "资产与工作区",
       "evidence": [
         "workbench_color_review",
-        "workbench_import"
+        "workbench_import",
+        "workbench_async_import",
+        "workbench_import_ui_guard"
       ],
       "modules": [
         "generation",
@@ -967,7 +1008,7 @@
       "id": "printer",
       "label": "打印机工作区",
       "detail": "打印准备、实时监控、暂停确认与媒体查看复用原生打印和设备接口",
-      "boundary": "确认后重新核对设备及已上报任务标识；缺失状态明确显示，实机控制与摄像头链路尚待验证",
+      "boundary": "确认后重新核对设备及已上报任务标识；同一切片结果的原生预览越界检查阻止导出/打印；缺失状态明确显示，实机控制与摄像头链路尚待验证",
       "group": "设备与打印",
       "evidence": [
         "printer_workspace",

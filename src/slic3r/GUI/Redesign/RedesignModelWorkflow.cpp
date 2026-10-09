@@ -2,6 +2,8 @@
 #include "RedesignShell.hpp"
 #include "RedesignFeatureFlags.hpp"
 #include "RedesignTheme.hpp"
+#include "AssetsWorkspace.hpp"
+#include "AssetsWorkspacePolicy.hpp"
 #include "PrinterWorkspace.hpp"
 #include "OrcaPrinterAdapter.hpp"
 #include "../AI/ModelGeneration/ModelGenerationFeatureHost.hpp"
@@ -270,10 +272,14 @@ void RedesignShell::build_model_workflow()
         else start_workbench_slice();
     });
     native_commands->Add(m_native_slice_start, 0, wxRIGHT, FromDIP(8));
+    m_native_slice_save = command(m_native_slice_commands, _L("保存工程 3MF"));
+    m_native_slice_save->SetToolTip(_L("保存模型、耗材颜色、摆放和打印参数；无需先切片。"));
+    m_native_slice_save->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { save_print_project(); });
+    native_commands->Add(m_native_slice_save, 0, wxRIGHT, FromDIP(8));
     m_native_slice_export = command(m_native_slice_commands, _L("导出 G-code"), true);
     m_native_slice_export->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         auto* plate = m_plater->get_partplate_list().get_curr_plate();
-        if (plate && plate->is_slice_result_ready_for_export()) m_plater->export_gcode(false);
+        if (plate && OrcaPrinterAdapter(m_plater).snapshot().gcode_ready) m_plater->export_gcode(false);
     });
     native_commands->Add(m_native_slice_export, 0);
     m_native_slice_print = command(m_native_slice_commands, _L("去打印"), true);
@@ -372,11 +378,15 @@ void RedesignShell::build_model_workflow()
     m_slice_start = command(settings, _L("开始切片"), true);
     root->Add(m_slice_start, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
     m_slice_start->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { start_workbench_slice(); });
+    m_slice_save = command(settings, _L("保存工程（3MF）"));
+    m_slice_save->SetToolTip(_L("保存模型、耗材颜色、摆放和打印参数；G-code 需切片后单独导出。"));
+    root->Add(m_slice_save, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
+    m_slice_save->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { save_print_project(); });
     m_slice_export = command(settings, _L("导出 G-code"), true);
     root->Add(m_slice_export, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
     m_slice_export->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         auto* plate = m_plater->get_partplate_list().get_curr_plate();
-        if (plate && plate->is_slice_result_ready_for_export()) m_plater->export_gcode(false);
+        if (plate && OrcaPrinterAdapter(m_plater).snapshot().gcode_ready) m_plater->export_gcode(false);
     });
     m_slice_print = command(settings, _L("去打印"), true);
     root->Add(m_slice_print, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
@@ -498,6 +508,16 @@ void RedesignShell::build_model_workflow()
             weak->CallAfter([weak] { if (weak && weak->m_plater) refresh_native_sidebar(*weak->m_plater); });
     });
     m_model_generation_host->set_workbench_listener([weak](const auto& state) { if (weak) weak->apply_workbench_state(state); });
+    Bind(wxEVT_IDLE, [weak](wxIdleEvent& event) {
+        event.Skip();
+        if (!weak || weak->m_active_page != Page::Model || weak->m_model_view != ModelView::Preview ||
+            weak->m_slicing_state.official.phase != OfficialSlicePhase::Completed) return;
+        // The native preview finishes loading after the completion callback.
+        // Refresh only when its result changes, without re-running analysis.
+        const bool outside = OrcaPrinterAdapter(weak->m_plater).preview_toolpath_outside();
+        if (outside != weak->m_preview_toolpath_outside)
+            weak->apply_slicing_state(weak->m_slicing_state);
+    });
     m_model_generation_host->set_workbench_results_handler([weak] { if (weak) weak->show_model_view(ModelView::Result); });
     m_model_generation_host->set_workbench_import_handler([weak](const auto& request) { if (weak) weak->confirm_workbench_import(request); });
     if (m_slicing_host) m_slicing_host->set_workbench_listener([weak](const auto& state) { if (weak) weak->apply_slicing_state(state); });
@@ -576,6 +596,7 @@ void RedesignShell::refresh_workflow_layout()
 void RedesignShell::apply_workbench_state(const PostGenerationWorkbenchState& state)
 {
     m_workbench_state = state;
+    refresh_project_save_actions();
     if (m_slice_check_status) {
         set_wrapped_label(m_slice_check_status, state.check.summary.empty()
             ? _L("未执行检查") : wxString::FromUTF8(state.check.summary), FromDIP(246));
@@ -814,9 +835,10 @@ void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
         else detail = wxString::FromUTF8(diagnostic);
         status = (state.official.workspace_mutated ? _L("方案已应用。") : wxString()) + detail;
     }
-    if (state.official.phase == OfficialSlicePhase::Completed && plate && plate->is_slice_result_valid()) {
+    m_preview_toolpath_outside = OrcaPrinterAdapter(m_plater).preview_toolpath_outside();
+    if (state.official.phase == OfficialSlicePhase::Completed && plate) {
         const auto* result = plate->get_slice_result();
-        if (result && result->toolpath_outside)
+        if (m_preview_toolpath_outside || (result && result->toolpath_outside))
             status = _L("路径超出热床，请调整模型或擦料塔位置后重新切片。");
         else if (!plate->is_slice_result_ready_for_export())
             status = _L("切片完成，导出前请处理预览中的错误。");
@@ -842,8 +864,9 @@ void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
     m_slice_cancel->Show(state.analyzing);
     m_ai_slicing_tab->Enable(!running);
     m_native_slicing_tab->Enable(!running);
-    m_slice_export->Enable(plate && plate->is_slice_result_ready_for_export());
+    m_slice_export->Enable(OrcaPrinterAdapter(m_plater).snapshot().gcode_ready);
     m_native_slice_export->Enable(m_slice_export->IsEnabled());
+    refresh_project_save_actions();
     const bool can_open_print = !m_import_in_progress && OrcaPrinterAdapter(m_plater).snapshot().gcode_ready;
     m_slice_print->Enable(can_open_print);
     m_native_slice_print->Enable(can_open_print);
@@ -852,6 +875,39 @@ void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
     m_slice_status->GetParent()->Layout();
     if (auto* scroll = dynamic_cast<wxScrolledWindow*>(m_slice_status->GetParent())) scroll->FitInside();
     m_native_slice_commands->Layout();
+}
+
+bool RedesignShell::can_save_print_project() const
+{
+    return print_project_save_available(m_plater && !m_plater->model().objects.empty(), m_import_in_progress,
+        m_slicing_state.official.phase == AI::SmartSlicing::OfficialSlicePhase::Slicing,
+        m_workbench_state.dirty, m_workbench_state.actions.status);
+}
+
+void RedesignShell::refresh_project_save_actions()
+{
+    const bool available = can_save_print_project();
+    if (m_assets_workspace) m_assets_workspace->set_project_available(available);
+    if (m_slice_save) m_slice_save->Enable(available);
+    if (m_native_slice_save) m_native_slice_save->Enable(available);
+}
+
+void RedesignShell::save_print_project()
+{
+    if (!can_save_print_project()) {
+        wxMessageBox(_L("请先保存美颜结果并导入切片工程，或等待当前操作完成。"),
+            _L("保存打印工程"), wxOK | wxICON_INFORMATION, this);
+        return;
+    }
+    // The native Save As command owns 3MF serialization, overwrite confirmation,
+    // preset metadata and the project's saved/dirty state.
+    try {
+        m_plater->save_project(true);
+    } catch (const boost::filesystem::filesystem_error&) {
+        wxMessageBox(_L("无法写入安装目录下的 models/projects 文件夹，请检查写入权限。"),
+            _L("保存打印工程"), wxOK | wxICON_ERROR, this);
+    }
+    refresh_project_save_actions();
 }
 
 void RedesignShell::start_workbench_slice()

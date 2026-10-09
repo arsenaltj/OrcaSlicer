@@ -2706,7 +2706,7 @@ void ModelGenerationPanel::import_local_artifact(const boost::filesystem::path& 
         } else if (result.outcome == AI::ModelImportOutcome::RepairFailed) {
             m_status->SetLabel(_L("自动网格修复失败，模型未导入。"));
             m_result_summary->SetLabel(
-                _L("原始模型和修复诊断已保留在 generated_models。") + from_u8(result.error));
+                _L("原始模型和修复诊断已保留在模型文件夹。") + from_u8(result.error));
         } else {
             m_status->SetLabel(_L("无法导入生成的模型。"));
             m_result_summary->SetLabel(_L("模型已保留在本地，请调整耗材配置后重试。"));
@@ -4506,7 +4506,7 @@ void ModelGenerationPanel::record_library_print_feedback(const std::string& job_
     metadata["print_feedback"] = feedback;
     metadata["print_feedback_at"] = std::time(nullptr);
     if (!write_json(metadata_path, metadata)) {
-        m_status->SetLabel(_L("无法保存打印结果，请检查 generated_models 是否可写。"));
+        m_status->SetLabel(_L("无法保存打印结果，请检查模型文件夹是否可写。"));
         return;
     }
     m_client.record_journey_event(
@@ -4549,7 +4549,7 @@ void ModelGenerationPanel::delete_library_entry(const GeneratedModelEntry& entry
     const auto asset_path = entry.design_only ? entry.preview_path : entry.model_path;
     boost::system::error_code ec;
     if (!boost::filesystem::is_directory(root, ec) || !path_is_inside(root, asset_path)) {
-        m_status->SetLabel(_L("删除已阻止：模型路径不在 generated_models 中。"));
+        m_status->SetLabel(_L("删除已阻止：模型路径不在模型文件夹中。"));
         return;
     }
     if (entry.design_only && !read_design_history_entry(root, entry.job_id, false)) {

@@ -693,12 +693,12 @@ TEST_CASE("Existing model history takes precedence over design entries and remai
     CHECK(has_persisted_generation_assets(temporary.path(), id));
 }
 
-TEST_CASE("AI model history follows the Orca data directory across launch locations",
+TEST_CASE("AI model history follows the Orca installation directory across launch locations",
           "[ModelGenerationPresentation][AIModelOutputDirectory]")
 {
     namespace fs = boost::filesystem;
     ScopedTemporaryDir temporary("orca-model-output");
-    const fs::path user_data = temporary.path() / "user data";
+    const fs::path installation = temporary.path() / "Orca installation";
     const fs::path first_launch = temporary.path() / "first launch";
     const fs::path second_launch = temporary.path() / "second launch";
     fs::create_directories(first_launch);
@@ -707,10 +707,10 @@ TEST_CASE("AI model history follows the Orca data directory across launch locati
         DYNAMIC_SECTION((override_value == nullptr ? "unset override" : "empty override")) {
             ScopedEnvironmentValue environment("ORCASLICER_AI_OUTPUT_DIR", override_value);
             ScopedWorkingDirectory working_directory(first_launch);
-            const Slic3r::GUI::AIModelOutputDirectory first(user_data);
+            const Slic3r::GUI::AIModelOutputDirectory first(installation);
             fs::current_path(second_launch);
-            const Slic3r::GUI::AIModelOutputDirectory second(user_data);
-            CHECK(first.root() == user_data / "generated_models");
+            const Slic3r::GUI::AIModelOutputDirectory second(installation);
+            CHECK(first.root() == installation / "models");
             CHECK(second.root() == first.root());
             CHECK_FALSE(fs::exists(first.root()));
             CHECK_FALSE(fs::exists(first_launch / "generated_models"));
@@ -778,18 +778,63 @@ TEST_CASE("AI model paths retain Unicode in the Windows child environment",
     ScopedTemporaryDir temporary("orca-model-output");
     ScopedEnvironmentValue environment("ORCASLICER_AI_OUTPUT_DIR", nullptr);
     ScopedEnvironmentValue unrelated("ORCA_MODEL_OUTPUT_TEST_UNRELATED", "not-for-child");
-    const boost::filesystem::path user_data = temporary.path() / L"\u7528\u6237 \u6a21\u578b";
-    const Slic3r::GUI::AIModelOutputDirectory directory(user_data);
+    const boost::filesystem::path installation = temporary.path() / L"\u7528\u6237 \u6a21\u578b";
+    const Slic3r::GUI::AIModelOutputDirectory directory(installation);
     boost::process::environment inherited;
     inherited["ORCA_MODEL_OUTPUT_TEST_EXISTING"] = "preserved";
     boost::process::wenvironment launch_environment(inherited);
     directory.configure_child_environment(launch_environment);
     CHECK(launch_environment[L"ORCASLICER_AI_OUTPUT_DIR"].to_string() ==
-          (user_data / "generated_models").wstring());
+          (installation / "models").wstring());
     CHECK(launch_environment[L"ORCA_MODEL_OUTPUT_TEST_EXISTING"].to_string() == L"preserved");
     CHECK(launch_environment.find(L"ORCA_MODEL_OUTPUT_TEST_UNRELATED") == launch_environment.end());
 }
 #endif
+
+TEST_CASE("Install-local model storage imports old history without replacing saved versions",
+          "[ModelGenerationPresentation][AIModelOutputDirectory]")
+{
+    namespace fs = boost::filesystem;
+    ScopedTemporaryDir temporary("orca-install-model-history");
+    ScopedEnvironmentValue environment("ORCASLICER_AI_OUTPUT_DIR", nullptr);
+    const fs::path legacy = temporary.path() / "user/generated_models";
+    const Slic3r::GUI::AIModelOutputDirectory directory(temporary.path() / "install");
+    fs::create_directories(legacy / "downloads");
+    fs::create_directories(legacy / "11111111-1111-4111-8111-111111111111");
+    fs::ofstream(legacy / "downloads/painted.glb") << "old-saved-colors";
+    fs::ofstream(legacy / "11111111-1111-4111-8111-111111111111/job.json") << "{\"artifact_path\":\"model.glb\"}";
+    fs::ofstream(legacy / "11111111-1111-4111-8111-111111111111/model.glb") << "original-model";
+    fs::create_directories(directory.root() / "downloads");
+    fs::ofstream(directory.root() / "downloads/painted.glb") << "new-install-version";
+    std::string error;
+    REQUIRE(directory.migrate_legacy_history(legacy, error));
+    CHECK(error.empty());
+    CHECK(fs::file_size(directory.root() / "downloads/painted.glb") == std::string("new-install-version").size());
+    CHECK(fs::file_size(legacy / "downloads/painted.glb") == std::string("old-saved-colors").size());
+    CHECK(fs::exists(directory.root() / "11111111-1111-4111-8111-111111111111/model.glb"));
+    CHECK(fs::exists(directory.root() / "11111111-1111-4111-8111-111111111111/job.json"));
+    REQUIRE(directory.migrate_legacy_history(legacy, error));
+    CHECK(fs::exists(legacy / "11111111-1111-4111-8111-111111111111/model.glb"));
+    CHECK(fs::is_directory(directory.root() / "exports"));
+    CHECK(fs::is_directory(directory.root() / "projects"));
+}
+
+TEST_CASE("Model history initialization reports an unusable install directory and retains originals",
+          "[ModelGenerationPresentation][AIModelOutputDirectory]")
+{
+    namespace fs = boost::filesystem;
+    ScopedTemporaryDir temporary("orca-install-model-failure");
+    ScopedEnvironmentValue environment("ORCASLICER_AI_OUTPUT_DIR", nullptr);
+    const fs::path legacy = temporary.path() / "user/generated_models";
+    fs::create_directories(legacy);
+    fs::ofstream(legacy / "model.glb") << "preserved-original";
+    fs::ofstream(temporary.path() / "blocked-install") << "a-file";
+    const Slic3r::GUI::AIModelOutputDirectory directory(temporary.path() / "blocked-install");
+    std::string error;
+    CHECK_FALSE(directory.migrate_legacy_history(legacy, error));
+    CHECK_FALSE(error.empty());
+    CHECK(fs::file_size(legacy / "model.glb") == std::string("preserved-original").size());
+}
 
 TEST_CASE("model-generation progress maps service phases to stable UI milestones",
           "[ModelGenerationPresentation]")

@@ -3,6 +3,7 @@
 #include "slic3r/GUI/Redesign/OrcaBusinessAdapter.hpp"
 #include "slic3r/GUI/Redesign/RedesignState.hpp"
 #include "slic3r/GUI/Redesign/ImageHistoryPagination.hpp"
+#include "slic3r/GUI/Redesign/AssetsWorkspacePolicy.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationHost.hpp"
 #include "slic3r/GUI/Redesign/RedesignModelRoute.hpp"
 
@@ -12,6 +13,33 @@
 #include <string>
 
 using namespace Slic3r::GUI;
+
+TEST_CASE("The model gallery embeds only its installed page and delegates external links", "[UiRedesign][AssetsWorkspace]")
+{
+    CHECK(gallery_navigation("file", "", true) == GalleryNavigation::Embedded);
+    CHECK(gallery_navigation("file", "localhost", true) == GalleryNavigation::Embedded);
+    CHECK(gallery_navigation("file", "") == GalleryNavigation::Blocked);
+    CHECK(gallery_navigation("file", "models.example.com", true) == GalleryNavigation::Blocked);
+    CHECK(gallery_navigation("https", "arsenaltj.github.io") == GalleryNavigation::Browser);
+    CHECK(gallery_navigation("https", "models.example.com") == GalleryNavigation::Browser);
+    CHECK(gallery_navigation("https", "arsenaltj.github.io.example.com") == GalleryNavigation::Browser);
+    for (const auto& scheme : {"file", "javascript", "bbl", "wxfs", "http", ""})
+        CHECK(gallery_navigation(scheme, "arsenaltj.github.io") == GalleryNavigation::Blocked);
+    CHECK(gallery_navigation("https", "") == GalleryNavigation::Blocked);
+}
+
+TEST_CASE("Saving the print project waits for import and unsaved model edits", "[UiRedesign][AssetsWorkspace]")
+{
+    using Status = PostGenerationUiState::Status;
+    CHECK(print_project_save_available(true, false, false, false, Status::Ready));
+    CHECK(print_project_save_available(true, false, false, false, Status::Empty));
+    CHECK_FALSE(print_project_save_available(false, false, false, false, Status::Ready));
+    CHECK_FALSE(print_project_save_available(true, true, false, false, Status::Ready));
+    CHECK_FALSE(print_project_save_available(true, false, true, false, Status::Ready));
+    CHECK_FALSE(print_project_save_available(true, false, false, true, Status::Ready));
+    for (const auto status : {Status::Editing, Status::Processing, Status::CandidateReady, Status::ComparingBefore})
+        CHECK_FALSE(print_project_save_available(true, false, false, false, status));
+}
 
 TEST_CASE("Image history pagination exposes each record exactly once", "[UiRedesign][ImageHistoryPagination]")
 {

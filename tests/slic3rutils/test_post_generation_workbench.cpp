@@ -3,6 +3,7 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include "slic3r/GUI/AI/ModelGeneration/PostGenerationUiState.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchImportSession.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/WorkbenchImportUiGuard.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchProjectColor.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchModelInspection.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/BeautyColorPaint.hpp"
@@ -11,8 +12,51 @@
 #include "slic3r/GUI/AI/Orca/OrcaPlateRevisionConfig.hpp"
 #include "slic3r/GUI/AI/Orca/WorkbenchModelDecode.hpp"
 #include <future>
+#include <memory>
+#include <type_traits>
+#include <vector>
 
 using namespace Slic3r::GUI;
+
+TEST_CASE("background import handoffs preserve the UI tracker list and source guard", "[WorkbenchImportUiGuard][PostGenerationWorkbench]")
+{
+    struct Window : wxTrackable {};
+    using Guard = WorkbenchImportUiGuard<Window>;
+    static_assert(!std::is_copy_constructible_v<Guard>);
+    auto window = std::make_unique<Window>();
+    bool source_current = true;
+    auto guard = std::make_shared<Guard>(window.get(),
+        [weak = wxWeakRef<Window>(window.get()), &source_current] { return weak && source_current; });
+    auto* trackers = window->GetFirst();
+    auto pending = std::async(std::launch::async, [guard] {
+        std::vector<std::function<bool()>> callbacks;
+        for (size_t index = 0; index < 256; ++index)
+            callbacks.emplace_back([guard] { return guard->current(); });
+        return callbacks;
+    }).get();
+    CHECK(window->GetFirst() == trackers);
+    for (const auto& callback : pending) CHECK(callback());
+    source_current = false;
+    CHECK_FALSE(pending.back()());
+    pending.clear();
+    guard.reset();
+    CHECK(window->GetFirst() == nullptr);
+}
+
+TEST_CASE("a delayed import callback skips a destroyed window without consulting its source", "[WorkbenchImportUiGuard][PostGenerationWorkbench]")
+{
+    struct Window : wxTrackable {};
+    auto window = std::make_unique<Window>();
+    size_t source_checks = 0;
+    auto guard = std::make_shared<WorkbenchImportUiGuard<Window>>(window.get(), [&] { ++source_checks; return true; });
+    auto pending = std::async(std::launch::async, [guard] {
+        return std::function<bool()>([guard] { return guard->current(); });
+    }).get();
+    window.reset();
+    CHECK(guard->window() == nullptr);
+    CHECK_FALSE(pending());
+    CHECK(source_checks == 0);
+}
 
 TEST_CASE("partition filling preserves protected and unrelated face colors", "[BeautyManualColor][PostGenerationWorkbench]")
 {

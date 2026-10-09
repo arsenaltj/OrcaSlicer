@@ -308,6 +308,7 @@ private:
                              const std::string& color_intent_sha256,
                              const std::string& job_id, const wxString& title);
     void delete_library_entry(const GeneratedModelEntry& entry);
+    void export_library_entry(const GeneratedModelEntry& entry);
     void update_library_provider_tasks(const std::string& job_id,
                                        const AIModelGenerationClient::JobStatus& status);
     void update_library_import_status(const std::string& job_id);

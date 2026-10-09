@@ -1,5 +1,6 @@
 #include "RedesignShell.hpp"
 #include "ImageHistorySidebar.hpp"
+#include "AssetsWorkspace.hpp"
 #include "RedesignTheme.hpp"
 #include "RedesignFeatureFlags.hpp"
 #include "RedesignModelRoute.hpp"
@@ -1332,16 +1333,23 @@ void RedesignShell::build_image_workspace()
     prompt_surface->SetSizer(prompt_sizer);
     m_prompt = new PromptTextCtrl(prompt_surface, wxSize(-1, FromDIP(118)));
     m_prompt->SetBackgroundColour(control_colour());
-    m_prompt->SetMaxLength(800);
     style_text(m_prompt, wxColour(230, 230, 233), 10);
     // wxWidgets emulates hints for multiline controls and remembers the current text colour.
     m_prompt->SetHint(text("描述你想创作的内容，例如：一只可爱的小猫。"));
     prompt_sizer->Add(m_prompt, 1, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(12));
-    auto* prompt_count = label(prompt_surface, "0/800", 9);
+    auto* prompt_count = label(prompt_surface, "0/2000 UTF-8 字节", 9);
     style_text(prompt_count, secondary_text_colour(), 9);
     prompt_sizer->Add(prompt_count, 0, wxALIGN_RIGHT | wxRIGHT | wxBOTTOM, FromDIP(12));
-    m_prompt->Bind(wxEVT_TEXT, [this, prompt_count](wxCommandEvent& event) {
-        prompt_count->SetLabel(wxString::Format("%lu/800", static_cast<unsigned long>(m_prompt->GetValue().length())));
+    m_prompt->Bind(wxEVT_TEXT, [this, prompt_count, prompt_surface](wxCommandEvent& event) {
+        const auto encoded = m_prompt->GetValue().ToUTF8();
+        const size_t bytes = encoded ? encoded.length() : 0;
+        const bool over_limit = bytes > ModelGenerationPresentation::MAX_MODEL_INPUT_BYTES;
+        prompt_count->SetLabel(wxString::Format("%zu/%zu", bytes,
+            ModelGenerationPresentation::MAX_MODEL_INPUT_BYTES) + text(" UTF-8 字节") +
+            (over_limit ? text("（已超限）") : wxString()));
+        prompt_count->SetForegroundColour(over_limit ? wxColour(255, 128, 112) : secondary_text_colour());
+        prompt_count->SetToolTip(text("中文通常占3字节。超限时保留完整文字，请精简后生成。"));
+        prompt_surface->Layout();
         if (!m_applying_model_generation_state)
             synchronize_generation_input();
         event.Skip();
@@ -1534,9 +1542,7 @@ void RedesignShell::build_image_workspace()
     m_preview_host->Bind(wxEVT_SIZE, resize_center);
     update_image_state();
 
-    m_assets_page = new wxPanel(m_content_host, wxID_ANY);
-    m_assets_page->SetBackgroundColour(background_colour());
-    m_assets_page->SetSizer(new wxBoxSizer(wxVERTICAL));
+    m_assets_page = m_assets_workspace = new AssetsWorkspace(m_content_host, [this] { save_print_project(); });
     m_content_host->GetSizer()->Add(m_assets_page, 1, wxEXPAND);
     m_assets_page->Hide();
     m_pages[static_cast<std::size_t>(Page::Assets)] = m_assets_page;
@@ -1656,7 +1662,7 @@ void RedesignShell::connect_model_generation_host()
 
     apply_model_generation_state(m_model_generation_host->snapshot());
     wxWeakRef<RedesignShell> weak(this);
-    m_model_generation_host->mount_assets(m_assets_page);
+    m_model_generation_host->mount_assets(m_assets_workspace->local_assets_host());
     m_model_generation_host->set_history_navigation_handler([weak](bool design) {
         if (!weak || !weak->m_model_generation_host) return;
         weak->navigate_to(design ? Page::Image : Page::Model);
@@ -1682,6 +1688,13 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
         return;
     const bool history_changed = state.design_ready &&
         (!m_model_generation_state.design_ready || state.job_id != m_model_generation_state.job_id);
+    // An invalid draft must survive a host snapshot while the user edits it.
+    // Loading another job still replaces the form with that job's input.
+    bool preserve_over_limit_prompt = false;
+    if (m_prompt && !state.busy && state.job_id == m_model_generation_state.job_id) {
+        const auto encoded = m_prompt->GetValue().ToUTF8();
+        preserve_over_limit_prompt = encoded && encoded.length() > ModelGenerationPresentation::MAX_MODEL_INPUT_BYTES;
+    }
     if (route_action == RedesignModelRouteAction::Model || route_action == RedesignModelRouteAction::Image) {
         m_model_route_locked = route_action == RedesignModelRouteAction::Model;
         m_model_route_session = state.model_generation_session;
@@ -1698,7 +1711,8 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
         m_submit_in_progress = false;
 
     m_applying_model_generation_state = true;
-    if (m_prompt != nullptr && m_prompt->GetValue().ToStdString(wxConvUTF8) != state.input.prompt)
+    if (m_prompt != nullptr && !preserve_over_limit_prompt &&
+        m_prompt->GetValue().ToStdString(wxConvUTF8) != state.input.prompt)
         m_prompt->SetValue(wxString::FromUTF8(state.input.prompt.c_str()));
     if (m_style_choice != nullptr) {
         const int style_selection = ModelGenerationPresentation::style_selection(state.input.style);
@@ -2448,6 +2462,7 @@ bool RedesignShell::navigate_to(Page page)
     switch (page) {
     case Page::Assets:
         m_active_tab_id = wxString::FromUTF8(kRedesignAssetsTabId);
+        refresh_project_save_actions();
         if (m_model_generation_host) m_model_generation_host->request_refresh_history();
         break;
     case Page::Image:

@@ -72,7 +72,7 @@ PrinterWorkspaceSnapshot OrcaPrinterAdapter::snapshot() const
             state.can_slice = !m_plater->only_gcode_mode() && !m_plater->using_exported_file() &&
                               plate->can_slice() && plate->has_printable_instances();
             state.gcode_ready = plate->is_slice_result_ready_for_export() && !state.slicing &&
-                                !m_plater->is_export_gcode_scheduled();
+                                !m_plater->is_export_gcode_scheduled() && !preview_toolpath_outside();
             if (state.gcode_ready) {
                 state.gcode_name = m_plater->get_export_gcode_filename(".gcode", true).ToUTF8().data();
                 if (state.gcode_name.empty())
@@ -155,6 +155,17 @@ PrinterWorkspaceSnapshot OrcaPrinterAdapter::snapshot() const
         }
     }
     return state;
+}
+
+bool OrcaPrinterAdapter::preview_toolpath_outside() const
+{
+    auto* plate = m_plater ? m_plater->get_partplate_list().get_curr_plate() : nullptr;
+    const auto* result = plate ? plate->get_slice_result() : nullptr;
+    auto* canvas = m_plater ? m_plater->get_preview_canvas3D() : nullptr;
+    if (!result || !canvas || !plate->is_slice_result_valid()) return false;
+    const auto& preview = canvas->get_gcode_viewer();
+    // Preview checks include the wipe tower. Ignore a previous plate/result.
+    return preview.has_data() && preview.loaded_result_id() == result->id && !preview.is_contained_in_bed();
 }
 
 std::vector<PrinterWorkspaceDevice> OrcaPrinterAdapter::devices() const

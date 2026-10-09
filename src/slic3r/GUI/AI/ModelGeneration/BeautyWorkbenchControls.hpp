@@ -105,6 +105,7 @@ public:
     std::function<void(size_t)> on_color_slot_changed;
 
 private:
+    void on_history_key(wxKeyEvent& event);
     void update_text();
     void wrap_status(wxStaticText* label);
     void update_secondary_details();
@@ -128,6 +129,7 @@ private:
         std::optional<AI::ShapeLockSet> locks;
     };
     wxWeakRef<ModelPreview3D> m_preview;
+    wxWeakRef<wxWindow> m_history_key_host;
     AI::IPrintablePaletteProvider& m_palette;
     std::function<void()> m_layout_changed;
     wxStaticText* m_status {nullptr};

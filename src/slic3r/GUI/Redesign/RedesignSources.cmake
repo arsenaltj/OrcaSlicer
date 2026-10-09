@@ -33,6 +33,9 @@ set(ORCA_REDESIGN_WORKFLOW_SOURCES
     GUI/Redesign/ImageHistorySidebar.cpp
     GUI/Redesign/ImageHistorySidebar.hpp
     GUI/Redesign/ImageHistoryPagination.hpp
+    GUI/Redesign/AssetsWorkspace.cpp
+    GUI/Redesign/AssetsWorkspace.hpp
+    GUI/Redesign/AssetsWorkspacePolicy.hpp
     GUI/Redesign/RedesignModelRoute.hpp
     GUI/Redesign/RedesignShell.cpp
     GUI/Redesign/RedesignModelWorkflow.cpp

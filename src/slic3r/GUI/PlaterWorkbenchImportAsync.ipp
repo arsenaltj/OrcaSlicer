@@ -28,9 +28,9 @@ bool Plater::import_workbench_model_async(const AI::ModelImportRequest& request,
     options.workbench_review = true;
     auto obj_mapper = workbench_obj_color_mapper(this, request.color_mode,
         OrcaWorkspaceAdapter(this, {}).printable_palette(), prepared->result, prepared->dialog_cancelled, true);
-    wxWeakRef<Plater> weak(this);
+    const auto ui_guard = std::make_shared<WorkbenchImportUiGuard<Plater>>(this, std::move(asset_current));
     return queue_job(get_ui_job_worker(),
-        [weak, request, session, prepared, progress, asset_current, options = std::move(options),
+        [ui_guard, request, session, prepared, progress, options = std::move(options),
          obj_mapper = std::move(obj_mapper)](Job::Ctl& ctl) mutable {
             const auto started = std::chrono::steady_clock::now();
             auto last = started;
@@ -41,9 +41,9 @@ bool Plater::import_workbench_model_async(const AI::ModelImportRequest& request,
                 prepared->result.outcome = outcome;
             };
             auto ui = [&](std::function<void()> action) {
-                ctl.call_on_main_thread([weak, session, asset_current, action = std::move(action), prepared] {
-                    if (!weak || session->cancelled()) return;
-                    if (!asset_current()) {
+                ctl.call_on_main_thread([ui_guard, session, action = std::move(action), prepared] {
+                    if (!ui_guard->window() || session->cancelled()) return;
+                    if (!ui_guard->current()) {
                         prepared->result.error = "The working model changed during import.";
                         session->cancel();
                         return;
@@ -92,7 +92,10 @@ bool Plater::import_workbench_model_async(const AI::ModelImportRequest& request,
                 }
                 auto import_path = path;
                 if (obj_match) {
-                    import_path = fs::path(Slic3r::temporary_dir()) / "ai-import" / ("orcaslicer-ai-glb-" + source_hash + ".obj");
+                    // A cancelled or completed import may retain its native input.
+                    // Reserve a separate working file for each retry; never overwrite it.
+                    import_path = fs::path(Slic3r::temporary_dir()) / "ai-import" /
+                        fs::unique_path("orcaslicer-ai-glb-" + source_hash + "-%%%%%%%%.obj");
                     if (!AI::write_model_artifact(import_path, source.its, source_colors.vertex_colors, prepared->result.error)) return;
                     options.source_units_in_meters = false;
                 }
@@ -110,7 +113,7 @@ bool Plater::import_workbench_model_async(const AI::ModelImportRequest& request,
                     if (!notify(WorkbenchImportPhase::Colors, "等待配色确认")) return;
                     ui([&] {
                         if (wxMessageBox(_L("此匹配方式将重新分配局部改色的耗材。继续？"), _L("配色确认"),
-                            wxYES_NO | wxNO_DEFAULT | wxICON_WARNING, weak.get()) != wxYES) session->cancel();
+                            wxYES_NO | wxNO_DEFAULT | wxICON_WARNING, ui_guard->window()) != wxYES) session->cancel();
                     });
                     if (stopped()) return;
                 }
@@ -156,7 +159,7 @@ bool Plater::import_workbench_model_async(const AI::ModelImportRequest& request,
                     } else {
                         ui([&] {
                             if (progress) progress(WorkbenchImportPhase::Colors, "等待配色确认");
-                            accepted = weak->p->run_textured_mesh_import_dialog(detached, mapping,
+                            accepted = ui_guard->window()->p->run_textured_mesh_import_dialog(detached, mapping,
                                 [session] { return session->cancelled(); }, {}, &options);
                         });
                     }
@@ -207,8 +210,8 @@ bool Plater::import_workbench_model_async(const AI::ModelImportRequest& request,
             BOOST_LOG_TRIVIAL(info) << "[WorkbenchImport] preparation_ms=" <<
                 std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
         },
-        [weak, session, prepared, progress, completion, asset_current, workspace_current](bool cancelled, std::exception_ptr& error) {
-            if (!weak || !session->valid()) { error = nullptr; return; }
+        [ui_guard, session, prepared, progress, completion, workspace_current](bool cancelled, std::exception_ptr& error) {
+            if (!ui_guard->window() || !session->valid()) { error = nullptr; return; }
             if (error) {
                 try { std::rethrow_exception(error); } catch (const std::exception& e) { prepared->result.error = e.what(); }
                 error = nullptr;
@@ -216,13 +219,13 @@ bool Plater::import_workbench_model_async(const AI::ModelImportRequest& request,
             if (cancelled || session->cancelled()) {
                 if (prepared->result.error.empty()) prepared->result.outcome = AI::ModelImportOutcome::Cancelled;
             } else if (prepared->result.error.empty() && prepared->source_unchanged && prepared->model) {
-                if (!asset_current() || !workspace_current()) prepared->result.error = "The model, materials or project changed during import. Reopen color matching.";
+                if (!ui_guard->current() || !workspace_current()) prepared->result.error = "The model, materials or project changed during import. Reopen color matching.";
                 else if (session->advance(WorkbenchImportPhase::Committing)) {
                     if (progress) progress(WorkbenchImportPhase::Committing, {});
                     size_t index = 0;
                     const auto started = std::chrono::steady_clock::now();
                     try {
-                        if (weak->commit_local_print_model(*prepared->model->objects.front(), prepared->bundle.get(), index, prepared->result.error))
+                        if (ui_guard->window()->commit_local_print_model(*prepared->model->objects.front(), prepared->bundle.get(), index, prepared->result.error))
                             prepared->result.outcome = AI::ModelImportOutcome::Imported;
                     } catch (const std::exception& e) { prepared->result.error = e.what(); }
                     BOOST_LOG_TRIVIAL(info) << "[WorkbenchImport] commit_ms=" <<

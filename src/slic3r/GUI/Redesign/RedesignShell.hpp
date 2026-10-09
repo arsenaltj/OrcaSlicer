@@ -38,6 +38,7 @@ class Plater;
 class SmartSlicingFeatureHost;
 class PrinterWorkspace;
 class ImageHistorySidebar;
+class AssetsWorkspace;
 
 class RedesignShell final : public wxPanel
 {
@@ -67,6 +68,7 @@ private:
 
     void build_image_workspace();
     wxPanel* m_assets_page {nullptr};
+    AssetsWorkspace* m_assets_workspace {nullptr};
     wxPanel* build_model_workspace();
     wxPanel* create_placeholder_page(const wxString& title, const wxString& body);
     void connect_model_generation_host();
@@ -110,6 +112,9 @@ private:
     void finish_import_loading();
     void check_import_first_frame();
     void open_print_preparation();
+    bool can_save_print_project() const;
+    void refresh_project_save_actions();
+    void save_print_project();
 
     wxBoxSizer* m_sizer { nullptr };
     wxPanel* m_content_host { nullptr };
@@ -128,6 +133,7 @@ private:
     wxWindow* m_slice_cancel { nullptr };
     wxWindow* m_slice_keep_mesh { nullptr };
     wxWindow* m_slice_export { nullptr };
+    wxWindow* m_slice_save { nullptr };
     wxWindow* m_slice_print { nullptr };
     std::array<wxWindow*, 3> m_slice_goals { nullptr, nullptr, nullptr };
     wxStaticText* m_slice_details { nullptr };
@@ -139,6 +145,7 @@ private:
     wxStaticText* m_native_slice_status { nullptr };
     wxWindow* m_native_slice_start { nullptr };
     wxWindow* m_native_slice_export { nullptr };
+    wxWindow* m_native_slice_save { nullptr };
     wxWindow* m_native_slice_print { nullptr };
     wxWindow* m_return_slice { nullptr };
     Plater* m_plater { nullptr };
@@ -148,6 +155,7 @@ private:
     SmartSlicingWorkbenchState m_slicing_state;
     ModelView m_model_view {ModelView::Result};
     bool m_native_slicing {false};
+    bool m_preview_toolpath_outside {false};
     bool m_import_in_progress {false};
     bool m_import_switching_view {false};
     bool m_import_awaiting_frame {false};
