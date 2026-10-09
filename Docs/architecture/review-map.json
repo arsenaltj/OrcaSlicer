@@ -165,6 +165,11 @@
       "needle": "bool ModelGenerationPanel::request_enable_portrait(bool enabled)"
     },
     {
+      "id": "workbench_portrait_optimization",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationPortrait.cpp",
+      "needle": "bool ModelGenerationPanel::request_portrait_optimization(wxString& reason)"
+    },
+    {
       "id": "workbench_color_review",
       "path": "src/slic3r/GUI/AI/ModelGeneration/PostGenerationWorkbenchHost.cpp",
       "needle": "bool ModelGenerationPanel::request_workbench_color_matching()"
@@ -757,6 +762,16 @@
       "boundary": "默认关闭；数据不兼容时拒绝启用；观感待用户验收",
       "group": "资产与工作区",
       "evidence": ["workbench_portrait"],
+      "modules": ["generation"],
+      "impact_scope": "evidence"
+    },
+    {
+      "id": "workbench_portrait_optimization",
+      "label": "普通人像优化与连续裁切",
+      "detail": "左侧人像入口、真实阶段与时间、连续裁切编辑、候选保存与可恢复草稿",
+      "boundary": "通用模式隐藏；历史恢复不重算；R6 独立；运行时失败禁止静默回退；视觉仍为部分改善候选",
+      "group": "资产与工作区",
+      "evidence": ["workbench_portrait_optimization"],
       "modules": ["generation"],
       "impact_scope": "evidence"
     },

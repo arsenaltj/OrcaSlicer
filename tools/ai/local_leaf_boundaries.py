@@ -188,7 +188,7 @@ def reconstruct_projection(projection, vertices, faces):
     return transform, residual
 
 
-def source_brow_contour(projection, accepted, core, permitted, legal, landmark_band):
+def source_brow_contour(projection, accepted, core, permitted, legal, landmark_band, all_components=False):
     from local_face_landmarks import polygon_mask
     ids,valid = projection.ids,projection.valid
     candidate = valid & np.isin(ids,list(set(accepted) | set(permitted)))
@@ -229,11 +229,13 @@ def source_brow_contour(projection, accepted, core, permitted, legal, landmark_b
     contours,_ = cv2.findContours(smoothed.astype(np.uint8),cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_NONE)
     if not contours:
         raise ValueError('BROW_SOURCE_BOUNDARY_UNAVAILABLE')
-    contour = max(contours,key=cv2.contourArea).reshape(-1,2).astype(float)+.5
-    if area(contour) < 1:
+    supported = [c.reshape(-1,2).astype(float)+.5 for c in contours if cv2.contourArea(c) >= 1]
+    if not supported:
         raise ValueError('BROW_SOURCE_BOUNDARY_UNAVAILABLE')
+    contour = supported if all_components else max(supported,key=area)
     return contour,{'foreground_seed_pixels':int(fg.sum()),'source_pixels':int(foreground.sum()),
-                    'component_count':len(seed_components),'source_delta_l':skin_lightness-float(np.median(lab[fg,0]))}
+                    'component_count':len(seed_components),'retained_contours':len(supported) if all_components else 1,
+                    'source_delta_l':skin_lightness-float(np.median(lab[fg,0]))}
 
 
 def boundary_band(accepted, neighbors):

@@ -189,6 +189,7 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     m_workbench_check_status = new wxStaticText(check_host, wxID_ANY, _L("尚未检查"));
     m_workbench_check_status->SetForegroundColour(wxColour(170, 170, 176));
     controls->Add(m_workbench_check_status, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
+    check_contents->Add(build_portrait_optimization(check_host), 0, wxEXPAND | wxBOTTOM, FromDIP(8));
     section_parent = scroll;
     controls = m_workbench_settings_groups[1];
     heading(_L("工程耗材颜色"));

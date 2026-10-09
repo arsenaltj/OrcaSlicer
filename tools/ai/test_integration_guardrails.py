@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import copy
 import importlib.util
 import json
@@ -20,6 +21,8 @@ SPEC.loader.exec_module(GUARDRAILS)
 
 
 class IntegrationGuardrailTests(unittest.TestCase):
+    expected_architecture_findings: list[dict] = []
+
     def setUp(self) -> None:
         self.document = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
 
@@ -48,6 +51,7 @@ class IntegrationGuardrailTests(unittest.TestCase):
                 "src/slic3r/AI/Contracts/IModelArtifactConsumer.hpp",
                 "src/slic3r/AI/Contracts/IPrintablePaletteProvider.hpp",
                 "src/slic3r/AI/Contracts/LocalPrintColorResult.hpp",
+                "src/slic3r/AI/Contracts/ProtectedRegionManifest.hpp",
                 "src/slic3r/GUI/AI/Orca/OrcaWorkspaceAdapter.hpp",
             },
             set(self.document["boundaries"]["allowed_cross_feature_contracts"]),
@@ -196,9 +200,9 @@ class IntegrationGuardrailTests(unittest.TestCase):
         self.assertIn("kMinPhysicalColorChannels = 1;", color_contract)
         self.assertIn("kMaxPhysicalColorChannels = 6;", color_contract)
         self.assertIn("BeautyWorkbenchControls* m_beauty_controls", panel_header)
-        self.assertIn("new BeautyWorkbenchControls(scroll, m_model_preview, m_palette_provider", beauty_view)
-        self.assertIn("for(const auto& channel:palette.physical_channels)", beauty_controls)
-        self.assertIn("AI::is_valid_physical_channel_set(palette.physical_channels)", beauty_controls)
+        self.assertIn("new BeautyWorkbenchControls(m_finishing_panel, m_model_preview, m_palette_provider", beauty_view)
+        self.assertIn("m_beauty_controls->on_available_colors = [this] { return local_recolor_palette(); };", beauty_view)
+        self.assertIn("const auto colors = on_available_colors();", beauty_controls)
 
         self.assertIn('palette_sources.Add(_L("不限制颜色"))', panel_source)
         self.assertIn('palette_sources.Add(_L("读取耗材颜色"))', panel_source)
@@ -330,8 +334,9 @@ class IntegrationGuardrailTests(unittest.TestCase):
 
         self.assertTrue(any(error["code"] == "build.source_ownership" for error in errors))
 
-    def test_repository_architecture_budgets_pass(self) -> None:
-        self.assertEqual([], GUARDRAILS.validate_architecture_budgets(self.document, REPO_ROOT))
+    def test_repository_architecture_budgets_match_expected_findings(self) -> None:
+        self.assertCountEqual(self.expected_architecture_findings,
+                              GUARDRAILS.validate_architecture_budgets(self.document, REPO_ROOT))
 
     def test_architecture_line_budget_rejects_growth(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -778,12 +783,31 @@ class IntegrationGuardrailTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertEqual(1 if self.expected_architecture_findings else 0,
+                         completed.returncode, completed.stderr)
         report = json.loads(completed.stdout)
-        self.assertTrue(report["ok"])
+        self.assertEqual(not self.expected_architecture_findings, report["ok"])
         self.assertTrue(report["git_checks_skipped"])
-        self.assertEqual([], report["errors"])
+        self.assertCountEqual(self.expected_architecture_findings, report["errors"])
 
 
 if __name__ == "__main__":
-    unittest.main()
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--internal-package-report", type=Path)
+    parser.add_argument("--source-manifest", type=Path)
+    args, remaining = parser.parse_known_args()
+    if args.internal_package_report:
+        if not args.source_manifest:
+            parser.error("Internal budget expectations require a verified source manifest.")
+        sys.path.insert(0, str(REPO_ROOT / "scripts"))
+        from package_integration_check import internal_budget_expectation
+        from package_source_identity import capture
+        try:
+            record = json.loads(args.internal_package_report.read_text(encoding="utf-8-sig"))
+            source = capture(REPO_ROOT, args.source_manifest)
+            IntegrationGuardrailTests.expected_architecture_findings = internal_budget_expectation(record, source)
+        except (OSError, ValueError, KeyError) as exc:
+            parser.error(str(exc))
+        print(f"Internal package tests retain {len(IntegrationGuardrailTests.expected_architecture_findings)} "
+              "known architecture findings; integration has not passed.", flush=True)
+    unittest.main(argv=[sys.argv[0], *remaining])

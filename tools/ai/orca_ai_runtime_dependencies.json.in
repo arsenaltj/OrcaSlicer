@@ -12,6 +12,26 @@
       "wheel": "@ORCA_AI_PILLOW_WHEEL_FILENAME@",
       "source_url": "@ORCA_AI_PILLOW_WHEEL_URL@",
       "sha256": "@ORCA_AI_PILLOW_WHEEL_SHA256@"
+    },
+    {
+      "name": "numpy",
+      "version": "@ORCA_AI_NUMPY_VERSION@",
+      "architecture": "@ORCA_AI_RUNTIME_ARCHITECTURE@",
+      "wheel": "@ORCA_AI_NUMPY_WHEEL_FILENAME@",
+      "source_url": "@ORCA_AI_NUMPY_WHEEL_URL@",
+      "sha256": "@ORCA_AI_NUMPY_WHEEL_SHA256@"
+    },
+    {
+      "name": "opencv-python-headless",
+      "version": "@ORCA_AI_OPENCV_VERSION@",
+      "architecture": "@ORCA_AI_RUNTIME_ARCHITECTURE@",
+      "wheel": "@ORCA_AI_OPENCV_WHEEL_FILENAME@",
+      "source_url": "@ORCA_AI_OPENCV_WHEEL_URL@",
+      "sha256": "@ORCA_AI_OPENCV_WHEEL_SHA256@"
     }
-  ]
+  ],
+  "weights_manifest": "resources/beauty-runtime/runtime-manifest.json",
+  "network": "offline",
+  "provider_calls": false,
+  "model_download": false
 }

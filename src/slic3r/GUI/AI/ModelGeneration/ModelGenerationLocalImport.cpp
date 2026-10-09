@@ -44,7 +44,7 @@ void ModelGenerationPanel::choose_local_model() {
             weak->m_busy=false;weak->refresh_controls();
             if(!success){weak->m_status->SetLabel(_L("导入未完成：")+wxString::FromUTF8(error));return;}
             weak->load_library_entries();
-            weak->load_library_entry(destination,{},{},{},{},false,{},{},{},id,_L("本地导入模型"));
+            weak->load_library_entry(destination,{},{},{},{},false,{},{},{},id,_L("本地导入模型"), true);
         });
     });}catch(const std::exception& e){m_busy=false;refresh_controls();m_status->SetLabel(wxString::FromUTF8(e.what()));}
 }

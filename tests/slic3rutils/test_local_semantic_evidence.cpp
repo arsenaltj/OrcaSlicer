@@ -64,6 +64,38 @@ TEST_CASE("body clothing evidence remains automatic and cannot acquire user auth
     CHECK_FALSE(out.regions[0].locked_physical_slot.has_value());
 }
 
+TEST_CASE("Body parent proof remains independent of old facial semantics", "[LocalSemanticEvidence]") {
+    auto f=fixture();f.payload["subjects"]=Json::array({"person-a"});f.payload["regions"].erase(1);
+    f.payload["parent_details"]=Json::array({Json::array({2,"person-a","body-skin",.99,3,2})});
+    Semantic::Evidence out;std::string error;
+    REQUIRE(Semantic::decode(f.payload.dump(),f.expected,f.binding,out,error));
+    REQUIRE(out.parent_samples.size()==1);
+    CHECK(out.parent_samples[0][2]=="body-skin");
+    CHECK(out.face_regions[2]==-1);
+    CHECK(out.known_faces==1);
+    SECTION("Single view") {f.payload["parent_details"][0][5]=1;}
+    SECTION("Another person") {f.payload["parent_details"][0][1]="person-b";}
+    SECTION("Frozen facial face") {f.payload["parent_details"][0][0]=0;}
+    SECTION("Duplicate") {f.payload["parent_details"].push_back(f.payload["parent_details"][0]);}
+    SECTION("Low confidence") {f.payload["parent_details"][0][3]=.89;}
+    fails_without_replacement(f,f.payload.dump());
+}
+
+TEST_CASE("Body clothing confidence preserves strong dominance for parent cleanup", "[LocalSemanticEvidence]") {
+    auto f=fixture();f.payload["regions"][0]["label"]="cloth";
+    f.payload["regions"][0]["samples"][0]=Json::array({0,.93,1.,3,2});
+    Semantic::Evidence out;std::string error;
+    REQUIRE(Semantic::decode(f.payload.dump(),f.expected,f.binding,out,error));
+    REQUIRE(out.parent_samples.size()==2);
+    CHECK(out.parent_samples[0][2]=="cloth");
+    CHECK(out.parent_samples[0][3]==.93);
+    f.payload["regions"][0]["samples"][0][2]=.94;
+    REQUIRE(Semantic::decode(f.payload.dump(),f.expected,f.binding,out,error));
+    CHECK(out.regions[0].label=="cloth"); // Old v1 semantic decoding remains readable.
+    REQUIRE(out.parent_samples.size()==1);
+    CHECK(out.parent_samples[0][2]=="face");
+}
+
 TEST_CASE("optional eye hints stay inside a host verified eye without changing semantic confidence", "[LocalSemanticEvidence]")
 {
     auto f=fixture();

@@ -220,6 +220,9 @@ void ModelGenerationPanel::accept_model_finishing()
         metadata["preserves_unselected_face_colors"] = true;
     }
     metadata["face_color_intent"] = m_model_preview->face_color_metadata();
+    if (m_finishing_candidate_baked_appearance.is_object() &&
+        m_finishing_candidate_baked_appearance.value("model_sha256",std::string())==m_finishing_result.output_sha256)
+        metadata["baked_portrait_appearance"]=m_finishing_candidate_baked_appearance;
     const auto leaf_edits=m_model_preview->leaf_edit_metadata();
     if (!leaf_edits.is_null() && !leaf_edits.empty()) metadata["beauty_leaf_edit"]=leaf_edits;
     metadata["color_trial"] = m_model_preview->color_trial_metadata();
@@ -466,19 +469,41 @@ void ModelGenerationPanel::redo_model_finishing()
 }
 
 void ModelGenerationPanel::stop_model_finishing()
+
 {
+
     if (m_finishing_canceled) m_finishing_canceled->store(true);
+
     if (m_finishing_worker.joinable()) m_finishing_worker.join();
+
+    m_residual_review.reset();
+
+    if(m_model_preview)m_model_preview->clear_portrait_residual_preview();
+
+    if(m_beauty_controls)m_beauty_controls->set_residual_review(false);
+
     m_finishing_running = false;
+
     // Publication may complete while the close request waits for the worker.
+
     if (m_beauty_publication_committed && m_beauty_publication_committed->load() && !m_finishing_candidate.empty()) {
+
         m_finishing_accepted_path = m_finishing_candidate;
+
         m_beauty_accepted_files.push_back(m_finishing_candidate);
+
     }
+
     clear_unaccepted_beauty_candidates();
+
     if (!m_finishing_candidate.empty() && m_finishing_candidate != m_finishing_accepted_path) {
+
         boost::system::error_code ignored; boost::filesystem::remove(m_finishing_candidate, ignored);
+
     }
+
     m_finishing_candidate.clear();
+
 }
+
 } // namespace Slic3r::GUI

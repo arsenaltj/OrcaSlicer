@@ -26,7 +26,9 @@ PLACEHOLDER = re.compile(r"(?:your[_ -].*|<[^>]+>|\$\{[^}]+\}|placeholder|change
 ASSIGNMENT = re.compile(r'''(?<![\w.-])["']?([\w.-]{0,128}(?:api_key|api_token|access_token|auth_token|secret|password|OPENAI_PRO_API))["']?\s*[:=]\s*["']([^"'\r\n]*)["']''', re.I)
 TOKEN = re.compile(rb"(?:\bsk-[A-Za-z0-9_-]{20,}|\btsk_[A-Za-z0-9_-]{20,}|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----)")
 # Bounded support for the pinned 646 MB offline face parsing model.
-MAX_FILE = 768 * 1024 * 1024
+MAX_FILE = 256 * 1024 * 1024
+MAX_STREAM_FILE = 1024 * 1024 * 1024
+SCAN_CHUNK = 8 * 1024 * 1024
 MAX_TOTAL = 4 * 1024 * 1024 * 1024
 MAX_ENTRIES = 100000
 
@@ -35,6 +37,10 @@ MAX_ENTRIES = 100000
 # edits (including appended credentials) invalidate this classification. Keep the
 # candidate in config_fields and continue every other scan of the same file.
 TOOLTIP_EMOJI_BUNDLE_SHA256 = "a4040f542802a7c939c6823986b239a334fffd4eadbb41961f051052e7ccdfdf"
+AUDITED_LIBRARY_LITERALS = json.loads(
+    Path(__file__).with_name("package_literal_classifications.json").read_text(encoding="utf-8"))
+TEXT_EXTENSIONS = (".json", ".env", ".ini", ".cfg", ".conf", ".txt", ".ps1", ".bat", ".cmd", ".py",
+                   ".js", ".ts", ".yml", ".yaml", ".xml", ".toml", ".properties")
 
 
 # Exact audited dependency bytes and specific public example literals only.
@@ -84,20 +90,122 @@ class Inspection:
         if classification == "CREDENTIAL_MATERIAL_VALIDITY_UNKNOWN":
             self.findings.append(entry)
 
+    def archive(self, member, stream, depth, prefix=b""):
+        lower = member.lower()
+        if prefix not in (b"PK\x03\x04", b"PK\x05\x06") and not lower.endswith(
+                (".zip", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".gz", ".bz2")):
+            return False
+        if depth >= 3:
+            self.gap(member, "nested_archive_depth_limit")
+            return True
+        try:
+            if prefix in (b"PK\x03\x04", b"PK\x05\x06") or lower.endswith(".zip"):
+                with zipfile.ZipFile(stream) as archive:
+                    self.zip(archive, member + "!", depth + 1)
+            elif lower.endswith((".tar", ".tar.gz", ".tgz", ".tar.bz2")):
+                with tarfile.open(fileobj=stream, mode="r:*") as archive:
+                    entries, targets, duplicates = [], {}, set()
+                    for index, entry in enumerate(archive):
+                        if index >= MAX_ENTRIES:
+                            raise ValueError("entry_limit")
+                        entries.append(entry)
+                        key = PurePosixPath(entry.name.replace("\\", "/")).as_posix()
+                        if key in targets:
+                            duplicates.add(key)
+                        targets[key] = entry
+                    for entry in entries:
+                        name = member + "!" + entry.name
+                        key = PurePosixPath(entry.name.replace("\\", "/")).as_posix()
+                        if (not safe_member(entry.name) or key in duplicates or
+                                not (entry.isfile() or entry.isdir() or entry.islnk())):
+                            self.gap(name, "unsafe_archive_member")
+                            continue
+                        if entry.isdir():
+                            continue
+                        # Inspect hardlink aliases without extracting or asking
+                        # tarfile to follow links. Resolve only internal, unique
+                        # members ending at a regular file, with a bounded walk.
+                        target, seen = entry, set()
+                        while target.islnk():
+                            if not safe_member(target.linkname):
+                                target = None
+                                break
+                            link = PurePosixPath(target.linkname.replace("\\", "/")).as_posix()
+                            if link in seen or link in duplicates or len(seen) >= 64:
+                                target = None
+                                break
+                            seen.add(link)
+                            target = targets.get(link)
+                            if target is None or not safe_member(target.name):
+                                break
+                        if target is None or not target.isfile():
+                            self.gap(name, "unsafe_archive_hardlink")
+                            continue
+                        with archive.extractfile(target) as child:
+                            self.scan_stream(name, child, target.size, depth + 1)
+            else:
+                decoder = gzip.GzipFile(fileobj=stream) if lower.endswith(".gz") else bz2.BZ2File(stream)
+                with decoder:
+                    data = decoder.read(MAX_FILE + 1)
+                if len(data) > MAX_FILE:
+                    self.gap(member, "decompressed_size_limit")
+                else:
+                    self.scan(member.rsplit(".", 1)[0], data, depth + 1)
+        except (OSError, EOFError, ValueError, RuntimeError, tarfile.TarError, zipfile.BadZipFile, NotImplementedError):
+            self.gap(member, "nested_archive_unreadable")
+        return True
+
+    def scan_stream(self, member, stream, size, depth=0):
+        if size < 0:
+            raise ValueError("invalid_member_size")
+        if size > MAX_STREAM_FILE or self.bytes + size > MAX_TOTAL:
+            self.gap(member, "inspection_size_limit")
+            return
+        if size <= MAX_FILE:
+            data = stream.read(size + 1)
+            if len(data) != size:
+                raise ValueError("member_size_changed")
+            self.scan(member, data, depth)
+            return
+        self.files += 1
+        self.bytes += size
+        if self.files > MAX_ENTRIES:
+            raise ValueError("entry_limit")
+        if member.lower().endswith(TEXT_EXTENSIONS):
+            self.gap(member, "structured_text_size_limit")
+            return
+        # Large model archives are spooled once; seeking within a compressed
+        # parent ZIP would repeatedly decompress hundreds of megabytes.
+        with tempfile.TemporaryFile() as spool:
+            consumed, overlap, prefix, found = 0, b"", b"", False
+            while True:
+                chunk = stream.read(SCAN_CHUNK)
+                if not chunk:
+                    break
+                consumed += len(chunk)
+                if consumed > size:
+                    raise ValueError("member_size_changed")
+                if not prefix:
+                    prefix = chunk[:4]
+                window = overlap + chunk
+                if TOKEN.search(window) or TOKEN.search(window.replace(b"\x00", b"")):
+                    found = True
+                overlap = window[-256:]
+                spool.write(chunk)
+            if consumed != size:
+                raise ValueError("member_size_changed")
+            if found:
+                self.findings.append({"member": member, "category": "TOKEN_OR_PRIVATE_KEY_PATTERN_VALIDITY_UNKNOWN"})
+            spool.seek(0)
+            if not self.archive(member, spool, depth, prefix) and member.lower().endswith((".7z", ".rar", ".xz")):
+                self.gap(member, "unsupported_nested_archive")
+
     def scan(self, member, data, depth=0):
         self.files += 1
         self.bytes += len(data)
         if self.files > MAX_ENTRIES or len(data) > MAX_FILE or self.bytes > MAX_TOTAL:
             raise ValueError("inspection_limit")
-        if data[:4] in (b"PK\x03\x04", b"PK\x05\x06") or member.lower().endswith(".zip"):
-            if depth >= 3:
-                self.gap(member, "nested_archive_depth_limit")
-                return
-            try:
-                with zipfile.ZipFile(io.BytesIO(data)) as archive:
-                    self.zip(archive, member + "!", depth + 1)
-            except (OSError, ValueError, RuntimeError, zipfile.BadZipFile, NotImplementedError):
-                self.gap(member, "nested_zip_unreadable")
+        if self.archive(member, io.BytesIO(data), depth, data[:4]):
             return
         lower = member.lower()
         compression = next(((suffix, opener) for suffix, opener in
@@ -146,7 +254,7 @@ class Inspection:
         # Scan binary byte strings too; UTF-16 configs are decoded separately.
         if TOKEN.search(data) or TOKEN.search(data.replace(b"\x00", b"")):
             self.findings.append({"member": member, "category": "TOKEN_OR_PRIVATE_KEY_PATTERN_VALIDITY_UNKNOWN"})
-        if not member.lower().endswith((".json", ".env", ".ini", ".cfg", ".conf", ".txt", ".ps1", ".bat", ".cmd", ".py", ".js", ".ts", ".yml", ".yaml", ".xml", ".toml", ".properties")):
+        if not member.lower().endswith(TEXT_EXTENSIONS):
             return
         encoding = "utf-16" if data.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig"
         text = data.decode(encoding, errors="replace")
@@ -171,6 +279,8 @@ class Inspection:
                             walk(value)
                 walk(parsed)
         else:
+            file_hash = hashlib.sha256(data).hexdigest()
+            normalized = member.replace("\\", "/")
             for match in ASSIGNMENT.finditer(text):
                 if (match[1] == "secret" and match[2] == "\u3299\ufe0f"
                         and member.replace("\\", "/").endswith("resources/tooltip/main.js")
@@ -183,6 +293,13 @@ class Inspection:
                     self.config_fields.append({"member": member, "field": match[1],
                                                "category": "PUBLIC_DEPENDENCY_EXAMPLE_OR_PROTOCOL_LITERAL",
                                                "evidence": "exact_audited_dependency_sha256_and_literal"})
+                    continue
+                audited = next((record for path, record in AUDITED_LIBRARY_LITERALS.items()
+                    if normalized == path or normalized.endswith("/" + path)), None)
+                if (audited and file_hash == audited["file_sha256"] and
+                        hashlib.sha256(match[2].encode("utf-8")).hexdigest() in audited["fields"].get(match[1], [])):
+                    self.config_fields.append({"member": member, "field": match[1],
+                        "category": "AUDITED_PUBLIC_LIBRARY_LITERAL", "evidence": "exact_file_and_literal_sha256"})
                     continue
                 self.field(member, match[1], match[2])
 
@@ -197,11 +314,12 @@ class Inspection:
                 continue
             if info.is_dir():
                 continue
-            if info.file_size > MAX_FILE or self.bytes + info.file_size > MAX_TOTAL:
+            if info.file_size > MAX_STREAM_FILE or self.bytes + info.file_size > MAX_TOTAL:
                 self.gap(name, "inspection_size_limit")
                 continue
             try:
-                self.scan(name, archive.read(info), depth)
+                with archive.open(info) as stream:
+                    self.scan_stream(name, stream, info.file_size, depth)
             except (OSError, ValueError, RuntimeError, zipfile.BadZipFile, NotImplementedError):
                 self.gap(name, "member_unreadable_or_limit")
 
@@ -244,10 +362,8 @@ def inspect(path, seven_zip=None):
                     if file.is_symlink() or (hasattr(file, "is_junction") and file.is_junction()):
                         check.gap(name, "extracted_link")
                     elif file.is_file():
-                        if file.stat().st_size > MAX_FILE:
-                            check.gap(name, "inspection_size_limit")
-                        else:
-                            check.scan(name, file.read_bytes())
+                        with file.open("rb") as stream:
+                            check.scan_stream(name, stream, file.stat().st_size)
         else:
             raise ValueError("unsupported_artifact")
         with path.open("rb") as stream:

@@ -64,7 +64,11 @@ public:
     bool request_return_overview();
     bool request_workbench_color_matching();
     bool request_enable_portrait(bool enabled);
+    bool request_semantic_mode(SemanticMode mode);
+    bool request_portrait_optimization();
+    void cancel_portrait_optimization();
     void set_service_availability(bool available, const std::string& message);
+    void set_service_availability(bool available, bool generation_available, const std::string& message);
     void shutdown();
 
 private:

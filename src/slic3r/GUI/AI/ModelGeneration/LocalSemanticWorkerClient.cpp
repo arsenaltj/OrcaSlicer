@@ -12,6 +12,7 @@
 #include <unistd.h>
 #endif
 #include "LocalSemanticWorkerClient.hpp"
+#include "PortraitWorkerProgress.hpp"
 #include "LocalSemanticCachePublication.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include "slic3r/GUI/AI/Model/LocalSemanticGeometry.hpp"
@@ -254,7 +255,8 @@ std::string bytes_hash(const std::string& text)
 std::string canonical_hash(const Json& value) { return bytes_hash(value.dump()); }
 
 const std::map<std::string,size_t> semantic_output_limits={{"result.json",max_response_bytes},
-    {"rendered.bin",LocalSemanticGeometry::max_bytes},{"evidence.json",LocalSemanticEvidence::max_bytes}};
+    {"rendered.bin",LocalSemanticGeometry::max_bytes},{"evidence.json",LocalSemanticEvidence::max_bytes},
+    {"contours.json",128*1024*1024}};
 struct CachedEvidence {
     std::string request_id;
     std::map<std::string,std::string> files;
@@ -375,8 +377,10 @@ std::optional<CachedEvidence> read_cache(const fs::path& root,const std::string&
         CachedEvidence cached;cached.request_id=manifest.at("request_id").get<std::string>();
         if(cached.request_id.empty() || cached.request_id.size()>96 ||
             cached.request_id.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")!=std::string::npos ||
-            !exact_keys(manifest.at("files"),{"result.json","rendered.bin","evidence.json"})) return false;
+            (!exact_keys(manifest.at("files"),{"result.json","rendered.bin","evidence.json"}) &&
+             !exact_keys(manifest.at("files"),{"result.json","rendered.bin","evidence.json","contours.json"}))) return false;
         for(const auto& limit:semantic_output_limits) {
+            if(limit.first=="contours.json" && !manifest.at("files").contains(limit.first)) continue;
             const auto& metadata=manifest.at("files").at(limit.first);
             if(!exact_keys(metadata,{"bytes","sha256"})) return false;
             const auto size=integer(metadata,"bytes",1,limit.second);
@@ -399,6 +403,7 @@ CacheWriteReport write_cache(const fs::path& root,const std::string& key,unsigne
         report.operation="payload_validation";
         Json files=Json::object();unsigned long long size=0;
         for(const auto& limit:semantic_output_limits) {
+            if(limit.first=="contours.json" && !cached.files.count(limit.first)) continue;
             const auto& raw=cached.files.at(limit.first);
             if(raw.empty() || raw.size()>limit.second) return false;
             files[limit.first]={{"bytes",raw.size()},{"sha256",bytes_hash(raw)}};size+=raw.size();
@@ -470,6 +475,7 @@ bool complete_probe(const Json& response)
     const auto& packages=id.at("packages");
     if (!packages.is_object()) return false;
     auto required_packages=packages;
+    required_packages.erase("scipy");
     for (const char* name:{"opencv-python","opencv-contrib-python","opencv-python-headless","opencv-contrib-python-headless"})
         required_packages.erase(name);
     const bool eyes=packages.contains("mediapipe");
@@ -545,6 +551,15 @@ bool read_configuration(const fs::path& file, Configuration& destination, std::s
     } catch (...) { reason = "invalid_semantic_configuration"; return false; }
 }
 
+fs::path runtime_modules_directory(const fs::path& resources)
+{
+    const auto bundled = resources / "beauty-runtime";
+    if (fs::exists(bundled)) return bundled / "modules";
+    const auto legacy = resources / "tools" / "ai" / "beauty_semantics";
+    if (fs::is_regular_file(legacy / "local_semantic_worker.py")) return legacy;
+    return resources / "tools" / "ai";
+}
+
 bool read_runtime_configuration(const fs::path& file, const fs::path& installed_runtime,
                                 Configuration& destination, std::string& reason)
 {
@@ -554,7 +569,7 @@ bool read_runtime_configuration(const fs::path& file, const fs::path& installed_
         c.python_executable = installed_runtime / "python" / "python.exe";
         c.weights_directory = installed_runtime / "weights";
         c.enabled = true;
-        c.timeout_seconds = 300;
+        c.timeout_seconds = 600;
         if (!valid(c) || !fs::is_regular_file(c.python_executable)) throw std::runtime_error("missing");
         for (const char* name : {"mobilenet0.25_Final.pth", "face_parsing.farl.celebm.main_ema_181500_jit.pt", "face_landmarker.task"})
             if (!fs::is_regular_file(c.weights_directory / name)) throw std::runtime_error("missing");
@@ -597,6 +612,7 @@ static Result inspect_runtime(const Configuration& c, const fs::path& script, co
             if (const char* value = boost::nowide::getenv(name)) env[name] = value;
         env["PYTHONNOUSERSITE"] = "1"; env["HF_HUB_OFFLINE"] = "1";
         env["TRANSFORMERS_OFFLINE"] = "1"; env["HF_HUB_DISABLE_TELEMETRY"] = "1";
+        if(c.python_executable.parent_path().parent_path().filename()=="beauty-runtime") env["ORCA_LOCAL_AI_REQUIRE_MANIFEST"]="1";
         env["OMP_NUM_THREADS"] = std::to_string(c.cpu_threads); env["MKL_NUM_THREADS"] = std::to_string(c.cpu_threads);
         failure_reason="local_worker_launch_failed";
         owned.prepare();
@@ -667,7 +683,7 @@ Result probe(const Configuration& c, const fs::path& script, const fs::path& req
 
 MeshResult analyze(const Configuration& c, const fs::path& directory, const fs::path& request_root,
                    const fs::path& source, const indexed_triangle_set& native, const std::atomic<bool>& cancelled,
-                   const fs::path& cache_root)
+                   const fs::path& cache_root, std::shared_ptr<PortraitOptimizationTask> progress)
 {
     MeshResult result;
     auto& state=result.process;
@@ -697,7 +713,8 @@ MeshResult analyze(const Configuration& c, const fs::path& directory, const fs::
         if(cancelled.load()) return finish();
         std::vector<std::string> module_names={"glb_artifact.py","local_semantic_worker.py","local_semantic_geometry.py",
             "local_semantic_render.py","local_semantic_transform.py","local_semantic_views.py","local_semantic_projection.py",
-            "local_semantic_pipeline.py","local_semantic_request.py","local_eye_landmarks.py","local_face_landmarks.py","local_shape_constraints.py","local_brow_boundary.py","local_body_regions.py"};
+            "local_semantic_pipeline.py","local_semantic_request.py","local_eye_landmarks.py","local_face_landmarks.py","local_shape_constraints.py","local_brow_boundary.py","local_body_regions.py",
+            "local_contour_proposals.py","local_surface_contours.py","local_leaf_boundaries.py","beauty_leaf_domain.py","local_parent_ownership.py","local_parent_boundary.py","local_parent_projection.py"};
         // The exact native raster binary joins both identity maps only when
         // installed; an absent accelerator uses the pixel-identical Python path.
         if(fs::exists(directory/"local_semantic_raster.dll"))module_names.push_back("local_semantic_raster.dll");
@@ -721,7 +738,9 @@ MeshResult analyze(const Configuration& c, const fs::path& directory, const fs::
         if(modules.contains("local_semantic_raster.dll"))policy_modules["local_semantic_raster.dll"]=modules.at("local_semantic_raster.dll");
         policy_modules["local_shape_constraints.py"]=modules.at("local_shape_constraints.py");
         policy_modules["local_brow_boundary.py"]=modules.at("local_brow_boundary.py");
-        const Json policy={{"version","visible-face-semantic-v7-farl-sides-source-brow-boundary"},{"label_schema","farl-celebm-face19-subset-v1"},
+        for(const char* name:{"local_contour_proposals.py","local_surface_contours.py","local_leaf_boundaries.py","beauty_leaf_domain.py","local_parent_ownership.py","local_parent_boundary.py","local_parent_projection.py"})
+            policy_modules[name]=modules.at(name);
+        const Json policy={{"version","visible-face-semantic-v12-parent-local-views"},{"label_schema","farl-celebm-face19-subset-v1"},
                            {"modules_sha256",policy_modules}};
         const auto policy_hash=canonical_hash(policy);
         if(!fs::is_regular_file(source) || fs::file_size(source)>512ULL*1024*1024) throw std::runtime_error("source_size");
@@ -756,7 +775,11 @@ MeshResult analyze(const Configuration& c, const fs::path& directory, const fs::
                 throw std::runtime_error("response_identity");
             if(state.exit_code==2 && response.at("status")=="unavailable" &&
                 exact_keys(response,{"schema","worker_version","request_id","status","error_code"}) && response.at("error_code").is_string()) {
-                state.reason="local_semantic_analysis_unavailable";return false;
+                const auto code=response.at("error_code").get<std::string>();
+                state.reason="local_semantic_analysis_unavailable";
+                if (code.size() <= 96 && std::all_of(code.begin(),code.end(),[](unsigned char c) { return std::isalnum(c) || c=='_'; }))
+                    state.reason += ": " + code;
+                return false;
             }
             if(state.exit_code!=0 || response.at("status")!="ok" || !exact_keys(response,
                 {"schema","worker_version","request_id","status","identity","runtime_fingerprint","policy_sha256","files","statistics"}) ||
@@ -766,7 +789,8 @@ MeshResult analyze(const Configuration& c, const fs::path& directory, const fs::
                 AI::model_artifact_sha256(source)!=source_hash || AI::model_artifact_sha256(state.request_directory/"native.bin")!=native_hash)
                 throw std::runtime_error("stale_input_or_runtime");
             const auto& files=response.at("files");
-            if(!exact_keys(files,{"rendered.bin","evidence.json"})) throw std::runtime_error("output_files");
+            if(!exact_keys(files,{"rendered.bin","evidence.json"}) &&
+               !exact_keys(files,{"rendered.bin","evidence.json","contours.json"})) throw std::runtime_error("output_files");
             auto read_output=[&](const char* name,size_t limit) {
                 const auto& metadata=files.at(name);
                 if(!exact_keys(metadata,{"bytes","sha256"}) || !metadata.at("sha256").is_string() ||
@@ -792,6 +816,22 @@ MeshResult analyze(const Configuration& c, const fs::path& directory, const fs::
             if(!LocalSemanticEvidence::decode(evidence_bytes,expected,binding,result.evidence,error))
                 throw std::runtime_error("evidence_decode");
             result.evidence_sha256=bytes_hash(evidence_bytes);
+            result.contour_request=nullptr;
+            if(files.contains("contours.json")) {
+                auto contours=strict_json(read_output("contours.json",128*1024*1024));
+                if(contours.at("schema")!="orca.surface-partition-request/v1") throw std::runtime_error("contour_schema");
+                const auto& binding=contours.at("identity");
+                if(binding.at("geometry_id")!=geometry_id || binding.at("source_sha256")!=source_hash ||
+                   binding.at("face_count")!=native.indices.size() || binding.at("runtime_sha256")!=runtime_hash ||
+                   binding.at("policy_sha256")!=policy_hash || binding.at("evidence_sha256")!=result.evidence_sha256 ||
+                   binding.at("baseline_sha256")!=result.evidence_sha256 ||
+                   !binding.at("boundary_policy_sha256").is_string() ||
+                   !AI::is_lowercase_sha256(binding.at("boundary_policy_sha256").get<std::string>()) ||
+                   contours.at("existing_added_triangles")!=0 ||
+                   integer(contours,"triangle_budget",0,20000)!=std::min(size_t(20000),native.indices.size()*2/100))
+                    throw std::runtime_error("contour_identity");
+                result.contour_request=std::move(contours);
+            }
             const auto& statistics=response.at("statistics");
             std::map<std::string,unsigned long long> statistic_limits;
             for(const char* key:{"face_count","visible_faces","unseen_faces","ambiguous_faces","cross_subject_faces",
@@ -816,17 +856,31 @@ MeshResult analyze(const Configuration& c, const fs::path& directory, const fs::
         const auto cache_key=canonical_hash(Json({{"schema","orcaslicer.semantic-cache-key.v1"},
             {"source_sha256",source_hash},{"native_sha256",native_hash},{"geometry_id",geometry_id},
             {"runtime_sha256",runtime_hash},{"policy_sha256",policy_hash},{"cpu_threads",c.cpu_threads}}));
+        auto timing_history = [&](bool cache_hit) {
+            if (!progress) return;
+            const auto timing_key = progress->history_key() + cache_key + (cache_hit ? "-cached" : "-cold");
+            std::vector<PortraitOptimizationTask::Durations> samples;
+            try {
+                const auto history = strict_json(bounded_read(request_root.parent_path().parent_path()/"portrait-timing.json",128*1024));
+                if (history.contains(timing_key)) samples=history.at(timing_key).get<decltype(samples)>();
+            } catch (...) {}
+            progress->history(timing_key, std::move(samples));
+        };
         if(auto cached=read_cache(cache_root,cache_key,c.cache_bytes)) {
             try {
                 if(validate(cached->files.at("result.json"),cached->request_id,0,
                     [&](const char* name,size_t) {return cached->files.at(name);}) && !cancelled.load()) {
-                    result.cache_hit=true;touch_cache(cache_root,cache_key);return finish();
+                    result.cache_hit=true;touch_cache(cache_root,cache_key);
+                    timing_history(true);
+                    if (progress) progress->report({PortraitStage::Ownership,"同源缓存已通过几何、运行时与策略校验",1,1});
+                    return finish();
                 }
             } catch(...) {} // A bad cache is only a miss. Fresh outputs still need every proof.
             state.status=Status::Unavailable;state.reason.clear();state.response_json.clear();state.exit_code=-1;
-            result.evidence={};validated_files.clear();
+            result.evidence={};result.contour_request=nullptr;validated_files.clear();
         }
         if(cancelled.load()) return finish();
+        timing_history(false);
         process::environment env;env.clear();
         for(const char* name:{"SYSTEMROOT","WINDIR","TEMP","TMP","TMPDIR"})
             if(const char* value=boost::nowide::getenv(name)) env[name]=value;
@@ -836,18 +890,18 @@ MeshResult analyze(const Configuration& c, const fs::path& directory, const fs::
         owned.prepare();
 #ifdef _WIN32
         process::wenvironment wide_env(env);
-        child=std::make_unique<process::child>(c.python_executable.wstring(),
-            process::args(std::vector<std::wstring>{L"-I",script.wstring(),L"--request",request_path.wstring(),
-                L"--config",config_path.wstring(),L"--output",response_path.wstring()}),wide_env,
+        std::vector<std::wstring> arguments{L"-I",script.wstring(),L"--request",request_path.wstring(),L"--config",config_path.wstring(),L"--output",response_path.wstring()};
+        if (progress) arguments.push_back(L"--progress");
+        child=std::make_unique<process::child>(c.python_executable.wstring(), process::args(arguments),wide_env,
             process::start_dir(state.request_directory.wstring()),process::std_out>process::null,
             process::std_err>process::null,process::windows::create_no_window,*owned.group,
             process::extend::on_setup = [](auto& exec) { exec.creation_flags |= CREATE_SUSPENDED; },
             process::extend::on_success = [&](auto& exec) { owned.primary_thread = exec.proc_info.hThread; });
         owned.resume();
 #else
-        child=std::make_unique<process::child>(c.python_executable.string(),
-            process::args(std::vector<std::string>{"-I",script.string(),"--request",request_path.string(),
-                "--config",config_path.string(),"--output",response_path.string()}),env,
+        std::vector<std::string> arguments{"-I",script.string(),"--request",request_path.string(),"--config",config_path.string(),"--output",response_path.string()};
+        if (progress) arguments.push_back("--progress");
+        child=std::make_unique<process::child>(c.python_executable.string(), process::args(arguments),env,
             process::start_dir(state.request_directory.string()),process::std_out>process::null,process::std_err>process::null,*owned.group);
 #endif
         const auto outputs_oversized=[&] {
@@ -857,7 +911,17 @@ MeshResult analyze(const Configuration& c, const fs::path& directory, const fs::
         };
         const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(c.timeout_seconds);
         failure="local_semantic_request_wait_failed";
+        uint64_t progress_sequence = 0;
+        auto progress_at = std::chrono::steady_clock::now();
         while(child->running()) {
+            if (progress && std::chrono::steady_clock::now() >= progress_at) {
+                progress_at = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
+                try {
+                    PortraitProgress update;
+                    if (decode_portrait_worker_progress(bounded_read(state.request_directory/"progress.json",4096),
+                        request_id,source_hash,geometry_id,progress_sequence,update)) progress->report(update);
+                } catch (...) {} // Missing/partial/foreign telemetry never changes results.
+            }
             if(cancelled.load()) {stop();return finish();}
             if(std::chrono::steady_clock::now()>=deadline) {stop();state.status=Status::TimedOut;state.reason="semantic_timeout";return finish();}
             if(outputs_oversized()) {

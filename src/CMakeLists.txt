@@ -280,7 +280,7 @@ if (WIN32)
                 --python-root "$<TARGET_FILE_DIR:OrcaSlicer>/python"
                 --expect-python "${_bundled_python_version}"
                 --expect-pillow "${ORCA_AI_PILLOW_VERSION}"
-            COMMENT "Staging and verifying pinned Pillow in the isolated AI runtime"
+            COMMENT "Staging and verifying the isolated local AI runtime"
             VERBATIM)
     endif()
 

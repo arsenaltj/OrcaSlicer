@@ -1002,10 +1002,8 @@ if(WIN32 AND ORCA_AI_WINDOWS_INSTALLER)
     if(_orca_ai_target_arch MATCHES "arm64|aarch64")
         set(ORCA_AI_RUNTIME_ARCHITECTURE "arm64")
         set(ORCA_AI_PILLOW_WHEEL_FILENAME "pillow-12.2.0-cp312-cp312-win_arm64.whl")
-        set(ORCA_AI_PILLOW_WHEEL_URL
-            "https://files.pythonhosted.org/packages/10/e1/542a474affab20fd4a0f1836cb234e8493519da6b76899e30bcc5d990b8b/pillow-12.2.0-cp312-cp312-win_arm64.whl")
-        set(ORCA_AI_PILLOW_WHEEL_SHA256
-            "af73337013e0b3b46f175e79492d96845b16126ddf79c438d7ea7ff27783a414")
+        set(ORCA_AI_PILLOW_WHEEL_URL "https://files.pythonhosted.org/packages/10/e1/542a474affab20fd4a0f1836cb234e8493519da6b76899e30bcc5d990b8b/pillow-12.2.0-cp312-cp312-win_arm64.whl")
+        set(ORCA_AI_PILLOW_WHEEL_SHA256 "af73337013e0b3b46f175e79492d96845b16126ddf79c438d7ea7ff27783a414")
     elseif(_orca_ai_target_arch MATCHES "amd64|x86_64|x64")
         set(ORCA_AI_RUNTIME_ARCHITECTURE "x64")
         set(ORCA_AI_PILLOW_WHEEL_FILENAME "pillow-12.2.0-cp312-cp312-win_amd64.whl")
@@ -1015,7 +1013,7 @@ if(WIN32 AND ORCA_AI_WINDOWS_INSTALLER)
             "7f84204dee22a783350679a0333981df803dac21a0190d706a50475e361c93f5")
     else()
         message(FATAL_ERROR
-            "The Windows AI installer supports only x64 and arm64; target architecture was '${_orca_ai_target_arch}'")
+            "The Windows AI installer supports x64 and arm64; target architecture was '${_orca_ai_target_arch}'")
     endif()
 
     set(ORCA_AI_WHEEL_CACHE_DIR "${CMAKE_BINARY_DIR}/_deps/orca_ai_wheels")
@@ -1063,6 +1061,8 @@ if(WIN32 AND ORCA_AI_WINDOWS_INSTALLER)
        OR NOT _orca_ai_pillow_native_modules)
         message(FATAL_ERROR "The verified Pillow wheel did not contain the expected CPython runtime files")
     endif()
+
+    include("${CMAKE_SOURCE_DIR}/cmake/OrcaPortraitOfflineDependencies.cmake")
 
     set(ORCA_AI_RUNTIME_DEPENDENCIES_FILE "${CMAKE_BINARY_DIR}/orca_ai_runtime_dependencies.json")
     configure_file(
@@ -1505,11 +1505,7 @@ set (CPACK_PACKAGE_CHECKSUM SHA256)
 set (CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
 set (CPACK_NSIS_EXECUTABLES_DIRECTORY ".")
 # set (CPACK_NSIS_MODIFY_PATH "ON")
-if(WIN32 AND ORCA_AI_WINDOWS_INSTALLER)
-    set(CPACK_PACKAGE_EXECUTABLES "orca-slicer;OrcaSlicer AI")
-else()
-    set(CPACK_PACKAGE_EXECUTABLES "orca-slicer;OrcaSlicer")
-endif()
+
 set(CPACK_CREATE_DESKTOP_LINKS "orca-slicer")
 set (CPACK_RESOURCE_FILE_LICENSE ${CMAKE_SOURCE_DIR}/LICENSE.txt) # must also include in install command
 

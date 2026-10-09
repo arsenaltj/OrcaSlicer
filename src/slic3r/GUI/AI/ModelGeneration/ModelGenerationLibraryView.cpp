@@ -869,7 +869,7 @@ void ModelGenerationPanel::load_design_library_entry(const std::string& job_id)
                 if (ModelGenerationPresentation::is_transient_sidecar_poll_error(error)) {
                     // A restarted sidecar has a new nonce. Discovery performs a
                     // fresh authenticated challenge; never replay a paid POST.
-                    weak->set_service_availability(false, error);
+                    weak->set_service_availability(false, false, error);
                     weak->m_status->SetLabel(_L("服务连接已失效，当前内容已保留。\n正在重新检测，就绪后请重新打开设计。"));
                     if (weak->m_service_retry_handler) weak->m_service_retry_handler();
                     return;
@@ -1003,7 +1003,7 @@ wxWindow* ModelGenerationPanel::create_library_card(const GeneratedModelEntry& e
         reuse_geometry->SetToolTip(
             _L("保留这个历史模型的网格与脸部造型，使用当前确认图片重新生成颜色"));
         reuse_geometry->Enable(
-            m_service_available && !m_busy && !m_job_id.empty() && m_job_preview_expected &&
+            m_generation_available && !m_busy && !m_job_id.empty() && m_job_preview_expected &&
             (m_ready || m_awaiting_confirmation) && entry.job_id != m_job_id);
         reuse_geometry->Bind(wxEVT_BUTTON, [this, job_id = entry.job_id, title_text = entry.title](wxCommandEvent&) {
             on_retexture_from_library(job_id, title_text);
