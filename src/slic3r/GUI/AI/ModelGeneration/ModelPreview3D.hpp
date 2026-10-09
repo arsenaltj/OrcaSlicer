@@ -3145,7 +3145,6 @@ private:
                     m_manual_color_model->render(shader);
                     glsafe(::glDepthFunc(depth_func));
                 }
-                if (multisample) glsafe(::glEnable(GL_MULTISAMPLE));
                 if (dither) glsafe(::glEnable(GL_DITHER));
                 if ((m_selection_model || m_protection_model) && m_selection_enabled &&
                     m_selection_overlay_visible && !m_selection_preview_suppressed) {
