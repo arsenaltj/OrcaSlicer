@@ -55,11 +55,11 @@ py -3.12 .\scripts\portrait_dependencies.py prepare --archive "D:\Downloads\port
 ```powershell
 $portraitInit = (Resolve-Path .tmp/portrait-dependencies/portrait-dependencies.cmake).Path.Replace('\', '/')
 $env:ORCA_SLICER_CMAKE_ARGS = '-C "' + $portraitInit + '" -DORCA_AI_WINDOWS_INSTALLER=ON -DORCA_AI_DISTRIBUTION_CHANNEL=internal'
-.\build_win.bat -ds -i --vs 2022 --arch x64 --config release --deps-dir .tmp/dev/deps-build --build-dir .tmp/dev/build -j 2
+.\build_win.bat -ds -i --vs 2022 --arch x64 --config release --deps-dir "$PWD/.tmp/dev/deps-build" --build-dir "$PWD/.tmp/dev/build" -j 2
 if ($LASTEXITCODE -ne 0) { throw '构建失败，请保留日志并查看最早的具体错误。' }
 ```
 
-此环境变量仅作用于当前 PowerShell 会话；如果已有其他 `ORCA_SLICER_CMAKE_ARGS`，请合并保留所需参数。路径应避开 `&` 和 `!` 等批处理特殊字符。`-j 2` 限制编译并行度，可按内存调整。不要给首次构建加 `--no-configure`。
+此环境变量仅作用于当前 PowerShell 会话；如果已有其他 `ORCA_SLICER_CMAKE_ARGS`，请合并保留所需参数。`$PWD` 将构建目录传为本机绝对路径，避免依赖子目录解析相对路径。路径应避开 `&` 和 `!` 等批处理特殊字符。`-j 2` 限制编译并行度，可按内存调整。不要给首次构建加 `--no-configure`。
 
 初始缓存会设置本机的三个目录，并准备本构建目录的 wheel 缓存：
 
