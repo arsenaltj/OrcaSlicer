@@ -74,6 +74,12 @@ integration result, source cleanliness and channel. An exception is labelled
 does not approve remote integration or public release and does not change the
 architecture lock.
 
+The wrapper also supplies the verified internal report to the guardrail tests.
+Their repository-budget and JSON CLI assertions then require exactly the recorded
+findings, including failure status; all other tests remain unchanged. Running the
+test suite normally still requires zero findings. The recorded package source
+identity is checked before using these expectations.
+
 ## Package contents and tester configuration
 
 Internal shared packages contain no provider credentials, user images or generated

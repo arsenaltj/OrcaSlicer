@@ -54,6 +54,21 @@ def packaging_decision(report: object, source: dict, known: object = None, *, ch
     return result
 
 
+def internal_budget_expectation(record: object, source: dict) -> list:
+    """Let package tests check exact recorded findings without changing release tests."""
+    if not isinstance(record, dict) or record.get("distribution_channel") != "internal":
+        raise ValueError("Budget expectations require an explicit internal package record.")
+    if (record.get("source_identity_sha256") != source.get("source_identity_sha256")
+            or record.get("source_clean") is not source.get("source_clean")):
+        raise ValueError("Internal package record does not match the verified source identity.")
+    report = record.get("integration_report")
+    decision = packaging_decision(report, source, report, channel="internal")
+    if (decision["status"] != "KNOWN_ARCHITECTURE_BUDGET_FINDINGS"
+            or record.get("decision") != decision):
+        raise ValueError("Only an approved, unchanged architecture-budget record may set test expectations.")
+    return report["errors"]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, required=True)

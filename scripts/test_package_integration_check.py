@@ -4,7 +4,7 @@ from __future__ import annotations
 import copy
 import unittest
 
-from package_integration_check import packaging_decision
+from package_integration_check import internal_budget_expectation, packaging_decision
 
 
 class PackageIntegrationTests(unittest.TestCase):
@@ -92,6 +92,28 @@ class PackageIntegrationTests(unittest.TestCase):
             with self.subTest(clean=clean):
                 self.assertFalse(packaging_decision(self.known, dict(self.source, source_clean=clean),
                                                    self.known, channel="internal")["package_allowed"])
+
+    def test_internal_test_expectations_preserve_exact_budget_failures(self):
+        record = {"distribution_channel": "internal", "source_clean": False,
+                  "source_identity_sha256": self.source["source_identity_sha256"],
+                  "integration_report": self.known,
+                  "decision": packaging_decision(self.known, self.source, self.known, channel="internal")}
+        self.assertEqual(self.known["errors"], internal_budget_expectation(record, self.source))
+        for key, value in (("distribution_channel", "release"), ("source_clean", True),
+                           ("source_identity_sha256", "other"), ("decision", {}),
+                           ("integration_report", dict(self.known, git_checks_skipped=True))):
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                internal_budget_expectation(dict(record, **{key: value}), self.source)
+
+    def test_non_budget_and_passing_reports_cannot_set_internal_test_expectations(self):
+        for report in (dict(self.known, ok=True, errors=[]),
+                       dict(self.known, errors=[{"code": "source.credentials", "message": "secret"}])):
+            record = {"distribution_channel": "internal", "source_clean": False,
+                      "source_identity_sha256": self.source["source_identity_sha256"],
+                      "integration_report": report,
+                      "decision": packaging_decision(report, self.source, report, channel="internal")}
+            with self.assertRaises(ValueError):
+                internal_budget_expectation(record, self.source)
 
     def test_skipped_git_checks_block_even_when_report_says_pass(self):
         for report in (dict(self.known, git_checks_skipped=True), dict(self.known, ok=True, errors=[], git_checks_skipped=True)):
