@@ -9,6 +9,8 @@
     "src/slic3r/GUI/AIServiceManager.hpp",
     "src/slic3r/GUI/AISidecarClient.cpp",
     "src/slic3r/GUI/AISidecarClient.hpp",
+    "src/slic3r/GUI/Redesign/ModelGalleryWorkspace.hpp",
+    "src/slic3r/GUI/Redesign/ModelGalleryPolicy.hpp",
     "tools/ai",
     "tests/slic3rutils"
   ],
@@ -213,6 +215,12 @@
       "id": "image_history",
       "path": "src/slic3r/GUI/Redesign/ImageHistorySidebar.cpp",
       "needle": "struct ImageHistorySidebar::Impl"
+    },
+    {
+      "id": "model_gallery",
+      "path": "src/slic3r/GUI/Redesign/ModelGalleryWorkspace.hpp",
+      "needle": "void ModelGalleryWorkspace::load_gallery()",
+      "detail": "Installed public catalog and previews load lazily in Assets; HTTPS links open externally without an application command or file bridge."
     },
     {
       "id": "reuse_design",
@@ -926,6 +934,16 @@
       "modules": [
         "desktop"
       ],
+      "impact_scope": "evidence"
+    },
+    {
+      "id": "gallery",
+      "label": "模型图库",
+      "detail": "资产页离线浏览公开预览，支持分类、搜索、格式筛选、排序与详情",
+      "boundary": "下载交给默认浏览器；外部模型服务可用性未确认时明确提示，导入由用户另行操作",
+      "group": "资产与图库",
+      "evidence": ["model_gallery"],
+      "modules": ["desktop"],
       "impact_scope": "evidence"
     }
   ],

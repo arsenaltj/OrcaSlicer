@@ -3,6 +3,7 @@
 #include "slic3r/GUI/Redesign/OrcaBusinessAdapter.hpp"
 #include "slic3r/GUI/Redesign/RedesignState.hpp"
 #include "slic3r/GUI/Redesign/ImageHistoryPagination.hpp"
+#include "slic3r/GUI/Redesign/ModelGalleryPolicy.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationHost.hpp"
 #include "slic3r/GUI/Redesign/RedesignModelRoute.hpp"
 #include "slic3r/GUI/Redesign/ImageDesignDraft.hpp"
@@ -249,6 +250,20 @@ TEST_CASE("Confirmation defaults retain risk refusal and explicit cancellation",
     CHECK(redesign_dialog_default_result(wxYES_NO | wxCANCEL | wxCANCEL_DEFAULT) == wxID_CANCEL);
     CHECK(redesign_dialog_default_result(wxOK | wxCANCEL) == wxID_OK);
     CHECK(redesign_dialog_default_result(wxOK | wxCANCEL | wxCANCEL_DEFAULT) == wxID_CANCEL);
+}
+
+TEST_CASE("The model gallery embeds only its installed page and delegates external links", "[UiRedesign][ModelGallery]")
+{
+    CHECK(gallery_navigation("file", "", true) == GalleryNavigation::Embedded);
+    CHECK(gallery_navigation("file", "localhost", true) == GalleryNavigation::Embedded);
+    CHECK(gallery_navigation("file", "") == GalleryNavigation::Blocked);
+    CHECK(gallery_navigation("file", "models.example.com", true) == GalleryNavigation::Blocked);
+    CHECK(gallery_navigation("https", "arsenaltj.github.io") == GalleryNavigation::Browser);
+    CHECK(gallery_navigation("https", "models.example.com") == GalleryNavigation::Browser);
+    CHECK(gallery_navigation("https", "arsenaltj.github.io.example.com") == GalleryNavigation::Browser);
+    for (const auto& scheme : {"file", "javascript", "bbl", "wxfs", "http", ""})
+        CHECK(gallery_navigation(scheme, "arsenaltj.github.io") == GalleryNavigation::Blocked);
+    CHECK(gallery_navigation("https", "") == GalleryNavigation::Blocked);
 }
 
 TEST_CASE("Image history pagination exposes each record exactly once", "[UiRedesign][ImageHistoryPagination]")
