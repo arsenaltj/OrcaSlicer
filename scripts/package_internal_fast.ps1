@@ -144,7 +144,7 @@ $sourceIdentity | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $sourceReco
 
 $integrationReportPath = Join-Path $resolvedOutputDir 'integration-check.json'
 $integrationArguments = @('-I', (Join-Path $repoRoot 'scripts\package_integration_check.py'),
-    '--root', $repoRoot, '--report', $integrationReportPath)
+    '--root', $repoRoot, '--report', $integrationReportPath, '--channel', 'internal')
 if ($SourceManifest) { $integrationArguments += @('--source-manifest', (Resolve-Path -LiteralPath $SourceManifest).Path) }
 if ($KnownIntegrationReport) { $integrationArguments += @('--known-report', $KnownIntegrationReport) }
 & $bundledPython @integrationArguments
@@ -152,6 +152,9 @@ if ($LASTEXITCODE -ne 0) {
     throw "AI integration guardrails failed with exit code $LASTEXITCODE."
 }
 $integrationValidation = Get-Content -LiteralPath $integrationReportPath -Raw | ConvertFrom-Json
+if (-not $integrationValidation.decision.integration_passed) {
+    $packageKind = 'internal-validation'
+}
 
 # An incremental build is normally a no-op, but it prevents a stale binary from
 # being relabelled with the current source revision.

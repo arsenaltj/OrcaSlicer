@@ -60,14 +60,19 @@ startup/service health, history/state recovery, relevant editing undo/redo,
 color-import cancel/confirm and preparation-page handoff, plus ordinary Orca
 regressions. Report package creation and GUI acceptance separately.
 
-For an explicitly requested internal snapshot with already documented architecture
+For an explicitly requested internal test package with already documented architecture
 diff budget findings, `-KnownIntegrationReport <prior-full-check.json>` records a
 narrow exception. It requires `-SourceManifest`, the same source HEAD, complete Git
-checks, and exactly the same finding codes and messages. Every check still runs;
-new findings, changed budgets, non-budget failures, and clean release candidates
-remain blocked. `integration-check.json` and the package manifest preserve the
-actual failed integration result. This option does not approve remote integration
-or public release and does not change the architecture lock.
+checks, and exactly the same finding codes and messages. Clean committed source
+and complete uncommitted snapshots may both use this exception. The internal
+packager explicitly supplies `--channel internal`; the standalone check defaults
+to `release`, which cannot use budget exceptions. Every check still runs; new
+findings, changed budgets, non-budget failures and release packages remain blocked.
+`integration-check.json` and the package manifest preserve the actual failed
+integration result, source cleanliness and channel. An exception is labelled
+`internal-validation`, including when built on the integration branch. This option
+does not approve remote integration or public release and does not change the
+architecture lock.
 
 ## Package contents and tester configuration
 
