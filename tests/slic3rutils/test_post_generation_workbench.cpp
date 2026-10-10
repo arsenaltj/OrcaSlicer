@@ -2,12 +2,241 @@
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include "slic3r/GUI/AI/ModelGeneration/PostGenerationUiState.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/WorkbenchImportSession.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/WorkbenchImportUiGuard.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchProjectColor.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchModelInspection.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/BeautyColorPaint.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchTransactionController.hpp"
 #include "slic3r/GUI/AI/SmartSlicing/SmartSlicingWorkbenchState.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaPlateRevisionConfig.hpp"
+#include "slic3r/GUI/AI/Orca/WorkbenchModelDecode.hpp"
+#include <future>
+#include <memory>
+#include <type_traits>
+#include <vector>
 
 using namespace Slic3r::GUI;
+
+TEST_CASE("background import handoffs preserve the UI tracker list and source guard", "[WorkbenchImportUiGuard][PostGenerationWorkbench]")
+{
+    struct Window : wxTrackable {};
+    using Guard = WorkbenchImportUiGuard<Window>;
+    static_assert(!std::is_copy_constructible_v<Guard>);
+    auto window = std::make_unique<Window>();
+    bool source_current = true;
+    auto guard = std::make_shared<Guard>(window.get(),
+        [weak = wxWeakRef<Window>(window.get()), &source_current] { return weak && source_current; });
+    auto* trackers = window->GetFirst();
+    auto pending = std::async(std::launch::async, [guard] {
+        std::vector<std::function<bool()>> callbacks;
+        for (size_t index = 0; index < 256; ++index)
+            callbacks.emplace_back([guard] { return guard->current(); });
+        return callbacks;
+    }).get();
+    CHECK(window->GetFirst() == trackers);
+    for (const auto& callback : pending) CHECK(callback());
+    source_current = false;
+    CHECK_FALSE(pending.back()());
+    pending.clear();
+    guard.reset();
+    CHECK(window->GetFirst() == nullptr);
+}
+
+TEST_CASE("a delayed import callback skips a destroyed window without consulting its source", "[WorkbenchImportUiGuard][PostGenerationWorkbench]")
+{
+    struct Window : wxTrackable {};
+    auto window = std::make_unique<Window>();
+    size_t source_checks = 0;
+    auto guard = std::make_shared<WorkbenchImportUiGuard<Window>>(window.get(), [&] { ++source_checks; return true; });
+    auto pending = std::async(std::launch::async, [guard] {
+        return std::function<bool()>([guard] { return guard->current(); });
+    }).get();
+    window.reset();
+    CHECK(guard->window() == nullptr);
+    CHECK_FALSE(pending());
+    CHECK(source_checks == 0);
+}
+
+TEST_CASE("partition filling preserves protected and unrelated face colors", "[BeautyManualColor][PostGenerationWorkbench]")
+{
+    using namespace Slic3r::AI::SurfaceSelectionPersistence;
+    const std::array<float, 3> red {1.f, 0.f, 0.f}, blue {0.f, 0.f, 1.f};
+    const FaceColorOverrides before {{1, blue}, {3, blue}};
+    SelectionState selection;
+    selection.selected = {1, 1, 1, 0};
+    selection.protected_faces = {0, 1, 0, 0};
+    const auto result = paint_beauty_face_colors(before, selection, {0, 1, 2, 3, 99}, red);
+    REQUIRE(result.changed == 2);
+    CHECK(result.colors == FaceColorOverrides({{0, red}, {1, blue}, {2, red}, {3, blue}}));
+    CHECK(selection.protected_faces == std::vector<uint8_t>({0, 1, 0, 0}));
+    const std::string geometry(64, 'a');
+    FaceColorOverrides restored;
+    std::string error;
+    REQUIRE(decode_colors(encode_colors(result.colors, 4, geometry), 4, geometry, restored, error));
+    CHECK(restored == result.colors);
+    CHECK_FALSE(decode_colors(encode_colors(result.colors, 4, geometry), 4, std::string(64, 'b'), restored, error));
+}
+
+TEST_CASE("a paint stroke changes only touched faces even when a whole partition is selected", "[BeautyManualColor][PostGenerationWorkbench]")
+{
+    using namespace Slic3r::AI::SurfaceSelectionPersistence;
+    SelectionState selection;
+    selection.selected = {1, 1, 1, 1};
+    const std::array<float, 3> red {1.f, 0.f, 0.f};
+    const auto result = paint_beauty_face_colors({}, selection, {1, 1, 99}, red);
+    REQUIRE(result.changed == 1);
+    CHECK(result.colors == FaceColorOverrides({{1, red}}));
+    CHECK(paint_beauty_face_colors(result.colors, selection, {1}, red).changed == 0);
+    CHECK(paint_beauty_face_colors(result.colors, selection, {2}, {-1.f, 0.f, 0.f}).changed == 0);
+    CHECK(paint_beauty_face_colors(result.colors, selection, {2}, {NAN, 0.f, 0.f}).colors == result.colors);
+}
+
+TEST_CASE("manual strokes undo independently and a new stroke replaces the redo branch", "[BeautyManualColor][PostGenerationWorkbench]")
+{
+    using namespace Slic3r::AI::SurfaceSelectionPersistence;
+    FaceColorOverrides current;
+    BeautyWorkbenchTransactionController history;
+    SelectionState selection;
+    selection.selected = {1, 1, 1};
+    const auto stroke = [&](size_t face, const std::array<float, 3>& color) {
+        const auto before = current;
+        const auto result = paint_beauty_face_colors(current, selection, {face}, color);
+        if (!result.changed) return;
+        current = result.colors;
+        BeautyWorkbenchTransactionController::Entry entry;
+        entry.kind = BeautyWorkbenchTransactionController::OperationKind::AppearanceRecolor;
+        entry.undo = [&, before] { current = before; };
+        entry.redo = [&, after = current] { current = after; };
+        history.record(std::move(entry));
+    };
+    const std::array<float, 3> red {1.f, 0.f, 0.f}, blue {0.f, 0.f, 1.f};
+    stroke(0, red);
+    stroke(1, blue);
+    stroke(1, blue);
+    CHECK(history.undo_count() == 2);
+    REQUIRE(history.undo());
+    CHECK(current == FaceColorOverrides({{0, red}}));
+    REQUIRE(history.redo());
+    CHECK(current == FaceColorOverrides({{0, red}, {1, blue}}));
+    REQUIRE(history.undo());
+    stroke(2, blue);
+    CHECK_FALSE(history.redo());
+    CHECK(current == FaceColorOverrides({{0, red}, {2, blue}}));
+    REQUIRE(history.undo());
+    REQUIRE(history.undo());
+    CHECK(current.empty());
+}
+
+TEST_CASE("background workbench decoding preserves native geometry units and texture handoff", "[PostGenerationWorkbench][UiRedesign][TextureImport]")
+{
+    using namespace Slic3r;
+    const std::string file = GENERATE("20mm_cube.obj", "model_artifact/textured.obj", "model_artifact/vertex-material-color.obj",
+        "model_artifact/textured.glb", "model_artifact/outward-textured.glb", "model_artifact/vertex-material-color.glb",
+        "model_artifact/transformed.glb", "model_artifact/nested-negative-nodes.glb");
+    const auto path = boost::filesystem::path(std::string(TEST_DATA_DIR)) / file;
+    DecodedWorkbenchModel decoded;
+    std::string error;
+    const bool loaded = std::async(std::launch::async, [&] { return decode_workbench_model(path, decoded, error); }).get();
+    INFO(error);
+    REQUIRE(loaded);
+    const bool meters = path.extension() == ".glb";
+    if (meters) decoded.mesh.scale(1000.f);
+    auto actual = assemble_workbench_model(decoded, path, meters);
+    auto expected = Model::read_from_file(path.string(), nullptr, nullptr, LoadStrategy::LoadModel);
+    if (meters) expected.convert_from_meters(false);
+    REQUIRE(actual->objects.size() == expected.objects.size());
+    const auto* av = actual->objects.front()->volumes.front();
+    const auto* ev = expected.objects.front()->volumes.front();
+    const auto& am = av->mesh().its;
+    const auto& em = ev->mesh().its;
+    REQUIRE(am.vertices.size() == em.vertices.size());
+    REQUIRE(am.indices.size() == em.indices.size());
+    for (size_t i = 0; i < am.vertices.size(); ++i)
+        CHECK_THAT((am.vertices[i].cast<double>() + av->get_offset() - em.vertices[i].cast<double>() - ev->get_offset()).norm(),
+            Catch::Matchers::WithinAbs(0., 1e-4));
+    for (size_t i = 0; i < am.indices.size(); ++i) CHECK(am.indices[i] == em.indices[i]);
+    CHECK(av->source.is_converted_from_meters == ev->source.is_converted_from_meters);
+    CHECK(av->source.input_file == ev->source.input_file);
+    REQUIRE(bool(actual->texture_mesh) == bool(expected.texture_mesh));
+    if (actual->texture_mesh) {
+        const auto& at = *actual->texture_mesh;
+        const auto& et = *expected.texture_mesh;
+        CHECK(at.vertices == et.vertices);
+        CHECK(at.indices == et.indices);
+        CHECK(at.uvs == et.uvs);
+        CHECK(at.uv_coords == et.uv_coords);
+        CHECK(at.uv_indices == et.uv_indices);
+        CHECK(at.material_ids == et.material_ids);
+        CHECK(at.material_colors == et.material_colors);
+        CHECK(at.material_texture_map == et.material_texture_map);
+        CHECK(at.precomputed_face_colors == et.precomputed_face_colors);
+        CHECK(at.precomputed_vertex_colors == et.precomputed_vertex_colors);
+        REQUIRE(at.textures.size() == et.textures.size());
+        for (size_t i = 0; i < at.textures.size(); ++i) CHECK(at.textures[i].data == et.textures[i].data);
+    }
+}
+
+TEST_CASE("cancelled decoding leaves no model or texture to commit", "[PostGenerationWorkbench][UiRedesign]")
+{
+    DecodedWorkbenchModel decoded;
+    std::string error;
+    const auto path = boost::filesystem::path(std::string(TEST_DATA_DIR)) / "20mm_cube.obj";
+    int polls = 0;
+    CHECK_FALSE(decode_workbench_model(path, decoded, error, [&] { return ++polls >= 3; }));
+    CHECK_FALSE(error.empty());
+    CHECK(decoded.mesh.empty());
+    CHECK_FALSE(decoded.texture);
+}
+
+TEST_CASE("cancelling model preparation prevents a late project commit", "[PostGenerationWorkbench][UiRedesign]")
+{
+    const auto phase = GENERATE(WorkbenchImportPhase::Reading, WorkbenchImportPhase::Colors, WorkbenchImportPhase::Placement);
+    WorkbenchImportSession session;
+    REQUIRE(session.advance(phase));
+    REQUIRE(session.can_cancel());
+    REQUIRE(session.cancel());
+    CHECK_FALSE(session.advance(WorkbenchImportPhase::Committing));
+    CHECK_FALSE(session.advance(WorkbenchImportPhase::UpdatingView));
+    CHECK_FALSE(session.cancel());
+    CHECK(session.cancelled());
+}
+
+TEST_CASE("project import commits once and cannot cancel an adopted model", "[PostGenerationWorkbench][UiRedesign]")
+{
+    WorkbenchImportSession session;
+    REQUIRE(session.advance(WorkbenchImportPhase::Placement));
+    REQUIRE(session.advance(WorkbenchImportPhase::Committing));
+    CHECK_FALSE(session.advance(WorkbenchImportPhase::Committing));
+    CHECK_FALSE(session.can_cancel());
+    CHECK_FALSE(session.cancel());
+    REQUIRE(session.advance(WorkbenchImportPhase::UpdatingView));
+    CHECK_FALSE(session.advance(WorkbenchImportPhase::Colors));
+    REQUIRE(session.advance(WorkbenchImportPhase::Completed));
+    CHECK_FALSE(session.advance(WorkbenchImportPhase::Committing));
+}
+
+TEST_CASE("closed import sessions reject queued UI updates and commits", "[PostGenerationWorkbench][UiRedesign]")
+{
+    WorkbenchImportSession session;
+    REQUIRE(session.advance(WorkbenchImportPhase::Colors));
+    session.invalidate();
+    CHECK_FALSE(session.valid());
+    CHECK(session.cancelled());
+    CHECK_FALSE(session.advance(WorkbenchImportPhase::Placement));
+    CHECK_FALSE(session.advance(WorkbenchImportPhase::Committing));
+}
+
+TEST_CASE("unavailable AI slicing uses native parameters while valid AI and retry retain priority", "[SmartSlicing][UiRedesign]")
+{
+    CHECK(workbench_slice_route(false, false, false, false, true) == WorkbenchSliceRoute::Native);
+    CHECK(workbench_slice_route(false, false, false, true, true) == WorkbenchSliceRoute::AiCandidate);
+    CHECK(workbench_slice_route(false, false, true, true, true) == WorkbenchSliceRoute::AiRetry);
+    CHECK(workbench_slice_route(true, false, true, true, true) == WorkbenchSliceRoute::Native);
+    CHECK(workbench_slice_route(true, false, true, true, false) == WorkbenchSliceRoute::Unavailable);
+    CHECK(workbench_slice_route(false, false, false, false, false) == WorkbenchSliceRoute::Unavailable);
+    CHECK(workbench_slice_route(false, true, true, true, true) == WorkbenchSliceRoute::Unavailable);
+}
 
 TEST_CASE("ordinary region optimization remains available without portrait protection", "[PostGenerationWorkbench]")
 {
@@ -33,6 +262,9 @@ TEST_CASE("project color changes use physical slot identity and preserve unrelat
     palette.physical_channels = {first, fourth};
     DynamicPrintConfig config;
     config.set_key_value("filament_colour", new ConfigOptionStrings({"#FFFFFF", "#111111", "#222222", "#FFFFFF"}));
+    const std::vector<std::string> display_colors = {"#FFFFFF", "#111111 #222222", "#222222", "#FFFFFF"};
+    config.set_key_value("filament_multi_colour", new ConfigOptionStrings(display_colors));
+    config.set_key_value("filament_colour_type", new ConfigOptionStrings({"1", "0", "1", "0"}));
     config.set_key_value("layer_height", new ConfigOptionFloat(0.2));
     bool changed = true;
     std::string error;
@@ -41,9 +273,20 @@ TEST_CASE("project color changes use physical slot identity and preserve unrelat
     const auto& colors = config.option<ConfigOptionStrings>("filament_colour")->values;
     CHECK(colors.at(0) == "#FFFFFF");
     CHECK(colors.at(3) == "#AB12CD");
+    const auto& display = config.option<ConfigOptionStrings>("filament_multi_colour")->values;
+    const auto& types = config.option<ConfigOptionStrings>("filament_colour_type")->values;
+    CHECK(display.at(3) == colors.at(3));
+    CHECK(types.at(3) == "1");
+    CHECK(display.at(1) == display_colors.at(1));
+    CHECK(types.at(1) == "0");
     CHECK(config.option<ConfigOptionFloat>("layer_height")->value == 0.2);
     REQUIRE(prepare_workbench_project_color(config, palette.physical_channels, 3, "#ab12cd", changed, error));
     CHECK_FALSE(changed);
+    // Older workbench edits could save the RGB value with stale native icon data.
+    config.option<ConfigOptionStrings>("filament_multi_colour")->values.at(3) = "#FFFFFF";
+    REQUIRE(prepare_workbench_project_color(config, palette.physical_channels, 3, "#ab12cd", changed, error));
+    CHECK(changed);
+    CHECK(display.at(3) == colors.at(3));
     const auto before = config;
     CHECK_FALSE(prepare_workbench_project_color(config, palette.physical_channels, 1, "#000000", changed, error));
     CHECK_FALSE(error.empty());

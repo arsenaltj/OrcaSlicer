@@ -14,6 +14,7 @@
 
 #include "Selection.hpp"
 #include "AI/AIDesktopFeatureHost.hpp"
+#include "AI/ModelGeneration/WorkbenchImportSession.hpp"
 
 #include "libslic3r/enum_bitmask.hpp"
 #include "libslic3r/Preset.hpp"
@@ -72,6 +73,7 @@ namespace UndoRedo {
 namespace GUI {
 class SmartSlicingFeatureHost;
 namespace LocalPrintColorCommit { struct Prepared; }
+namespace LocalPrintModelImport { struct PlacementSnapshot; }
 struct ModelColorImportResult;
 struct TextureImportOptions;
 class SyncAmsInfoDialog;

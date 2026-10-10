@@ -2081,6 +2081,34 @@ class ObjGenerationTests(unittest.TestCase):
         self.assertTrue(attempt["provider_error_retryable"])
         self.assertTrue(attempt["provider_error_ambiguous"])
 
+    def test_unsubmitted_upload_failure_is_recorded_as_safe_retry(self):
+        gateway = mock.Mock()
+        gateway.start_or_reuse_model_task.side_effect = SIDECAR.ProviderGatewayError(
+            "Could not connect to Tripo while uploading the model reference.",
+            code="provider_upload_unavailable",
+            category="upload",
+            provider="tripo",
+            operation="model_input_upload",
+            retryable=True,
+            ambiguous=False,
+        )
+
+        with mock.patch.object(SIDECAR, "_MODEL_PROVIDER_GATEWAY", gateway):
+            SIDECAR._generate_job(
+                self.job,
+                "printable object",
+                False,
+                self._paid_authorization(),
+            )
+
+        self.assertEqual(self.job.state, "failed")
+        self.assertTrue(SIDECAR._can_retry_unsubmitted_model(self.job))
+        attempt = self.job.attempts[0]
+        self.assertEqual(attempt["provider_error_code"], "provider_upload_unavailable")
+        self.assertEqual(attempt["provider_error_category"], "upload")
+        self.assertTrue(attempt["provider_error_retryable"])
+        self.assertFalse(attempt["provider_error_ambiguous"])
+
     def test_shutdown_poll_interruption_keeps_paid_attempt_resumable(self):
         gateway = self._provider_gateway("existing-generation")
         gateway.wait_for_task.side_effect = SIDECAR.ProviderGatewayError(

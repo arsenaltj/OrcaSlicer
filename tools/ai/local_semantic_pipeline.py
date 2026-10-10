@@ -16,10 +16,10 @@ import local_face_landmarks as face_landmarks
 import local_body_regions as body_regions
 import local_semantic_geometry as geometry
 import local_semantic_render as render
-from local_semantic_views import coarse_cameras, focus_camera
+from local_semantic_views import coarse_cameras, focus_camera, parent_cameras
 from local_semantic_projection import Observation, project, LABEL_NAMES, SUPPORTED_LABELS
 
-POLICY_VERSION = 'visible-face-semantic-v7-farl-sides-source-brow-boundary'
+POLICY_VERSION = 'visible-face-semantic-v12-parent-local-views'
 MAX_OBSERVATION_PIXELS = 16 * 1024 * 1024
 
 
@@ -196,7 +196,7 @@ def _sync_shape_details(projection, feature_details, shape_details, audit):
     return result
 
 
-def analyze(source, native_packet, source_sha256, model_loader, on_view=None, cancelled=None, refine_brows=True):
+def analyze(source, native_packet, source_sha256, model_loader, on_view=None, cancelled=None, refine_brows=True, progress=None):
     """Return raw regions and the actual render mesh for subsequent host proof.
 
     The preliminary exact fingerprint match is intentionally narrower than the
@@ -218,6 +218,7 @@ def analyze(source, native_packet, source_sha256, model_loader, on_view=None, ca
         raise ValueError('Native/render surface does not match exactly')
     del native_vertices, native_faces
     checkpoint()
+    if progress: progress("recognizing", "加载离线模型权重")
     torch, detector, parser, weights = model_loader()
     checkpoint()
     supported = np.array([i for i, name in enumerate(LABEL_NAMES) if name in SUPPORTED_LABELS])
@@ -225,27 +226,34 @@ def analyze(source, native_packet, source_sha256, model_loader, on_view=None, ca
     observations, reports, candidates = [], [], []
     eye_observations, face_observations = [], []
     body_observations = []
+    parent_observations = []
     body_failed = False
     observation_pixels = 0
     visible_surface = np.zeros(len(faces), dtype=bool)
     ambiguous = ambiguous_triangles(vertices, faces)
     sided = render.double_sided_faces(materials, material_ids)
 
-    def process_view(camera, allow_focus, family):
+    def process_view(camera, allow_focus, family, parent_only=False):
         nonlocal observation_pixels, body_failed
         checkpoint()
         ids, depths, bary = render.raster(vertices, faces, camera.basis, camera.center,
                                            camera.half_height, camera.size, sided)
         visible = ids >= 0
         ids[visible & ambiguous[np.maximum(ids, 0)]] = -1
-        visible_surface[ids[ids >= 0]] = True
+        if not parent_only:
+            visible_surface[ids[ids >= 0]] = True
         checkpoint()
         projected = render.project(vertices, camera.basis, camera.center, camera.half_height, camera.size)
         rgb = render.shade(faces, uv, colors, materials, material_ids, ids, bary, projected)
-        if allow_focus and not body_failed and getattr(parser, 'body_regions', None) is not None:
+        local_body = None
+        if (allow_focus or parent_only) and not body_failed and getattr(parser, 'body_regions', None) is not None:
             try:
-                body_observations.append(body_regions.observe(parser.body_regions, rgb, ids, family))
+                local_body = body_regions.observe(parser.body_regions, rgb, ids, family)
+                if not parent_only:
+                    body_observations.append(local_body)
             except Exception:
+                if parent_only:
+                    raise  # A partial supplement must not claim a complete parent pass.
                 body_failed = True
                 body_observations.clear()  # Never fuse a partial failed run.
         checkpoint()
@@ -277,7 +285,8 @@ def analyze(source, native_packet, source_sha256, model_loader, on_view=None, ca
                 confidence = confidence.detach().cpu().numpy().astype(np.float32)
                 labels = labels.detach().cpu().numpy().astype(np.uint8)
                 for j, i in enumerate(keep):
-                    observations.append(Observation(camera.name, ids, labels[j], confidence[j], float(scores[i]), view_family=family))
+                    if not parent_only:
+                        observations.append(Observation(camera.name, ids, labels[j], confidence[j], float(scores[i]), view_family=family))
                     observation_pixels += ids.size
                     observed = (ids >= 0) & np.isin(labels[j], supported) & (confidence[j] >= .9)
                     report['detections'].append({'score': float(scores[i]), 'rectangle': rects[i].tolist(),
@@ -291,16 +300,20 @@ def analyze(source, native_packet, source_sha256, model_loader, on_view=None, ca
             else:
                 labels = np.empty((0, camera.size, camera.size), dtype=np.uint8)
                 confidence = np.empty(labels.shape, dtype=np.float32)
-        if keep and getattr(parser, 'eye_landmarks', None) is not None:
+        if keep and not parent_only and getattr(parser, 'eye_landmarks', None) is not None:
             try:
                 eye_observations.extend(eye_landmarks.observe(parser.eye_landmarks, rgb, ids))
                 source_pixels = render.source_texture_projection(faces, uv, materials, material_ids, ids, bary, projected)
                 face_observations.extend(face_landmarks.observe(parser.eye_landmarks, rgb, ids, bary, vertices, faces, camera, family, source_pixels))
             except Exception:
                 pass  # Missing eye hints must not discard valid raw semantics.
+        from local_parent_ownership import observe as observe_parents
+        body = local_body if parent_only else next((row for row in body_observations if row[0] == family), None) if allow_focus else None
+        parent_observations.append(observe_parents(camera, family, rgb, ids, depths, bary, labels, confidence, body))
         if on_view is not None:
             on_view(report, rgb, ids, depths, bary, labels, confidence)
         reports.append(report)
+        if progress: progress("ownership" if parent_only else "recognizing", "完成视角 " + camera.name, len(reports), 0)
 
     for camera in cameras:
         process_view(camera, True, camera.name)
@@ -312,6 +325,7 @@ def analyze(source, native_packet, source_sha256, model_loader, on_view=None, ca
     checkpoint()
     if file_sha256(source) != source_sha256:
         raise ValueError('Semantic source changed during analysis')
+    if progress: progress("ownership", "融合独立视角与可见区域归属")
     result = project(observations, len(faces))
     # Parsing and shape inference remain separate. Extra crops do not add FaRL
     # confidence or multiply a parent crop's semantic votes.
@@ -339,17 +353,54 @@ def analyze(source, native_packet, source_sha256, model_loader, on_view=None, ca
             for item in shape_details if item['label'] in ('le', 're') and item.get('nested_faces')]
     if not shape_details:
         eyes = eye_landmarks.associate(eye_observations, result['regions'])
+    parent_details = []
     if body_observations:
         blocked = {f for hint in feature_details for f in hint['faces']}
         blocked.update(f for hint in feature_details for path in hint.get('anchor_paths', []) for f in path)
         result = body_regions.supplement(result, body_observations, vertices, faces, blocked)
         result['statistics'].update(visible_faces=int(visible_surface.sum()),
                                     unseen_faces=int(len(faces)-visible_surface.sum()))
+        blocked.update(f for shape in shape_details for f in shape.get('rejected_faces', []))
+        parent_details = body_regions.parent_details(result, body_observations, vertices, faces, blocked)
     checkpoint()
+    if progress: progress("ownership", "校验五官边界与父级覆盖", 1, 3)
+    contour_proposal = None
+    contour_diagnostic = ''
+    try:
+        from local_contour_proposals import build as build_contours
+        contour_proposal = build_contours(face_observations, result['regions'], shape_details,
+                                         vertices, faces, cancelled, progress=progress)
+    except Exception as error:
+        contour_diagnostic = type(error).__name__
+    if progress: progress("ownership", "建立连续裁切与父级证据", 2, 3)
+    parent_proposal = None
+    parent_diagnostic = ''
+    try:
+        # Add evidence around the observed head without changing the already
+        # established face/eye/lip projection or its shape proposals.
+        supplemental = parent_cameras(vertices, faces, result['regions'])
+        available = max(0, 16-len(parent_observations))
+        if len(supplemental) > available:
+            parent_diagnostic = 'parent_local_view_budget_exhausted'
+        for camera in supplemental[:available]:
+            checkpoint()
+            if progress: progress("ownership", "补充局部独立视角 " + camera.name)
+            process_view(camera, False, camera.name, parent_only=True)
+        if file_sha256(source) != source_sha256:
+            raise ValueError('Semantic source changed during parent analysis')
+        from local_parent_ownership import build as build_parents
+        parent_proposal = build_parents(parent_observations, result['regions'], parent_details, shape_details,
+            vertices, faces, uv, colors, materials, material_ids, cancelled, progress=progress)
+    except Exception as error:
+        parent_diagnostic = type(error).__name__ + ':' + str(error)[:160]
+    checkpoint()
+    if progress: progress("ownership", "区域证据生成完成，等待原生校验", 3, 3)
     runtime = {'python': sys.version.split()[0], 'bits': struct.calcsize('P')*8,
                'packages': {name: importlib.metadata.version(name) for name in ('torch','torchvision','pyfacer','numpy','Pillow')}}
     return {'projection': result, 'eye_details': eyes,
+            'parent_details': parent_details, 'parent_proposal': parent_proposal, 'parent_diagnostic': parent_diagnostic,
             'feature_details': feature_details, 'shape_details': shape_details, 'shape_audit': shape_audit,
+            'contour_proposal': contour_proposal, 'contour_diagnostic': contour_diagnostic,
             'vertices': vertices, 'faces': faces, 'render_geometry_id': rendered_id,
             'runtime': runtime, 'render_visible_faces': int(visible_surface.sum()),
             'render_unseen_faces': int(len(faces)-visible_surface.sum()),

@@ -15,6 +15,7 @@
 #include <nlohmann/json.hpp>
 #include <wx/filename.h>
 #include <wx/stdpaths.h>
+#include <wx/msgdlg.h>
 
 #include <array>
 #include <algorithm>
@@ -160,7 +161,14 @@ AIServiceManager::AIServiceManager(std::string endpoint)
     : m_endpoint(std::move(endpoint))
     , m_lifetime(std::make_shared<int>(0))
 {
-    (void)ai_model_output_directory();
+    std::string storage_error;
+    if (!ai_model_output_directory().migrate_legacy_history(boost::filesystem::path(Slic3r::data_dir()) / "generated_models", storage_error)) {
+        BOOST_LOG_TRIVIAL(error) << "Install-local model history initialization failed: " << storage_error;
+        wxGetApp().CallAfter([] {
+            wxMessageBox(_L("无法写入安装目录下的 models 文件夹。请检查安装目录的写入权限；原模型历史仍保留在用户数据目录。"),
+                _L("模型保存目录"), wxOK | wxICON_ERROR, wxGetApp().GetTopWindow());
+        });
+    }
     if (m_endpoint == DEFAULT_LOCAL_ENDPOINT && !has_explicit_sidecar_endpoint() &&
         !AISidecarClient::initialize_local_session())
         BOOST_LOG_TRIVIAL(error) << "Unable to initialize local AI sidecar session protection; autostart will remain disabled.";

@@ -90,6 +90,12 @@ public:
     std::function<size_t(const std::string&)> on_auto_detail_match;
     std::function<void()> on_import_secondary_evidence;
     std::function<void()> on_regenerate_readonly_evidence;
+    std::function<void()> on_residual_proposal;
+    std::function<void()> on_residual_apply;
+    std::function<void()> on_residual_cancel;
+    void set_residual_review(bool ready, bool actionable = true) {
+        m_residual_review=ready; m_residual_actionable=ready && actionable; update_text();
+    }
     std::function<bool(wxString&)> on_reoptimize;
     std::function<void()> on_preview;
     std::function<void()> on_accept;
@@ -98,11 +104,14 @@ public:
     std::function<bool()> on_partition_started;
     std::function<void(bool)> on_partition_finished;
     std::function<void()> on_pick_mode;
+    std::function<void()> on_fill_color;
+    std::function<void()> on_paint_mode;
     std::function<void(const std::string&, std::function<void()>, std::function<void()>)> on_record;
     std::function<std::vector<std::string>()> on_available_colors;
     std::function<void(size_t)> on_color_slot_changed;
 
 private:
+    void on_history_key(wxKeyEvent& event);
     void update_text();
     void wrap_status(wxStaticText* label);
     void update_secondary_details();
@@ -126,12 +135,17 @@ private:
         std::optional<AI::ShapeLockSet> locks;
     };
     wxWeakRef<ModelPreview3D> m_preview;
+    wxWeakRef<wxWindow> m_history_key_host;
     AI::IPrintablePaletteProvider& m_palette;
     std::function<void()> m_layout_changed;
     wxStaticText* m_status {nullptr};
     wxStaticText* m_secondary_status {nullptr};
     Button* m_import_secondary {nullptr};
     Button* m_regenerate_evidence {nullptr};
+    Button* m_residual_proposal {nullptr};
+    Button* m_residual_apply {nullptr};
+    Button* m_residual_cancel {nullptr};
+    bool m_residual_review {false}, m_residual_actionable {false};
     Button* m_unlock_shapes {nullptr};
     WorkbenchSwitch* m_preview_protected {nullptr};
     wxPanel* m_preview_protected_row {nullptr};
@@ -139,6 +153,8 @@ private:
     wxStaticText* m_operation_label {nullptr};
     Button* m_details_toggle {nullptr};
     ComboBox* m_color_slot {nullptr};
+    Button* m_fill_color {nullptr};
+    Button* m_paint_color {nullptr};
     std::vector<std::string> m_palette_colors;
     ComboBox* m_auto_region {nullptr};
     ComboBox* m_auto_detail {nullptr};

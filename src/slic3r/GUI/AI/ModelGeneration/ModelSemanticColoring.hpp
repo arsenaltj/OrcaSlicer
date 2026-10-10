@@ -4,6 +4,7 @@
 #include "slic3r/GUI/GLModel.hpp"
 #include "SemanticRegionEvidence.hpp"
 #include "PortraitShapeDetails.hpp"
+#include "PortraitOptimization.hpp"
 #include <filesystem>
 #include <memory>
 
@@ -12,13 +13,19 @@ namespace Slic3r::GUI {
 std::string semantic_region_runtime_identity(const std::filesystem::path& runtime);
 std::filesystem::path semantic_region_runtime_directory();
 std::string portrait_shape_runtime_fingerprint();
+bool portrait_recognition_enabled();
 std::shared_ptr<const SemanticRegionEvidence> load_legacy_semantic_region_evidence(
     const AI::SemanticColoring::MeshSnapshot&, const std::filesystem::path& runtime,
     const std::filesystem::path& cache, const std::string& runtime_identity, std::string& error);
 
 GLModel::Geometry build_semantic_colored_geometry(
     const AI::SemanticColoring::MeshSnapshot&, const AI::SemanticColoring::FaceColors&,
-    const AI::SemanticColoring::SubfaceColors&, const AI::SemanticColoring::Cancel& = {});
+    const AI::SemanticColoring::SubfaceColors&, const AI::SemanticColoring::Cancel& = {},
+    const nlohmann::json* surface_partition = nullptr,
+    const std::map<std::string,AI::SemanticColoring::Color>* cell_colors = nullptr);
+
+bool decode_semantic_result(const nlohmann::json&,const std::string& geometry,size_t face_count,
+    AI::SemanticColoring::FaceColors&,AI::SemanticColoring::SubfaceColors&);
 
 bool decode_semantic_result(const nlohmann::json&,const std::string& geometry,size_t face_count,
     AI::SemanticColoring::FaceColors&,AI::SemanticColoring::SubfaceColors&);
@@ -30,6 +37,12 @@ public:
     using Snapshot = AI::SemanticColoring::MeshSnapshot;
     using Color = AI::SemanticColoring::Color;
     using FaceColors = AI::SemanticColoring::FaceColors;
+    struct SavedAppearance {
+        std::string geometry_id;
+        size_t face_count = 0;
+        FaceColors faces;
+        AI::SemanticColoring::SubfaceColors subfaces;
+    };
     struct Result {
         GLModel::Geometry geometry;
         FaceColors automatic;
@@ -48,6 +61,11 @@ public:
         double elapsed_ms {0};
         std::shared_ptr<const PortraitShapeDetails> shape_details;
         std::string shape_error;
+        // Parent cleanup is an optional, source-bound post-processing candidate.
+        // A zero count means the existing semantic result was retained.
+        size_t parent_repair_cells {0};
+        std::string parent_repair_status;
+        nlohmann::json parent_repair_audit;
     };
     ModelSemanticColoring(std::filesystem::path runtime, std::filesystem::path cache);
     ~ModelSemanticColoring();
@@ -56,7 +74,12 @@ public:
     bool request(std::shared_ptr<const Snapshot>, std::vector<Color> mapping_palette, std::vector<Color> target_palette,
                  std::vector<Color> portrait_card, FaceColors manual,
                  std::filesystem::path source_path = {},
-                 std::shared_ptr<const PortraitShapeDetails> shapes = {});
+                 std::shared_ptr<const PortraitShapeDetails> shapes = {},
+                 std::vector<std::string> palette_roles = {},
+                 bool allow_boundary_upgrade = true,
+                 std::map<std::string, Color> manual_cells = {},
+                 std::shared_ptr<PortraitOptimizationTask> progress = {},
+                 std::shared_ptr<const SavedAppearance> saved_appearance = {});
     void cancel();
     std::unique_ptr<Result> poll();
     bool busy() const;

@@ -278,6 +278,7 @@ public:
     // void _render_calibration_thumbnail_framebuffer(ThumbnailData& thumbnail_data, unsigned int w, unsigned int h, const ThumbnailsParams& thumbnail_params, PartPlateList& partplate_list, OpenGLManager& opengl_manager);
     // void render_calibration_thumbnail(ThumbnailData& thumbnail_data, unsigned int w, unsigned int h, const ThumbnailsParams& thumbnail_params, PartPlateList& partplate_list, OpenGLManager& opengl_manager);
     bool has_data() const { return !m_viewer.get_extrusion_roles().empty(); }
+    unsigned int loaded_result_id() const { return m_last_result_id; }
 
     bool can_export_toolpaths() const;
     std::vector<int> get_plater_extruder();

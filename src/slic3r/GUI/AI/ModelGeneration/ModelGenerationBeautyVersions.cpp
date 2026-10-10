@@ -152,6 +152,7 @@ bool ModelGenerationPanel::show_finishing_version(const boost::filesystem::path&
 void ModelGenerationPanel::select_local_finishing_version(const boost::filesystem::path& path, const std::string& id)
 {
     ++m_sequence;
+    ++m_model_generation_session;
     m_poll_timer.Stop();
     m_job_id.clear(); m_job_palette.clear(); m_job_palette_roles.clear();
     m_job_use_printable_colors = false;
@@ -171,6 +172,10 @@ void ModelGenerationPanel::select_local_finishing_version(const boost::filesyste
 void ModelGenerationPanel::accept_model_finishing()
 {
     if (m_busy || m_finishing_running || m_workbench_check_running || m_finishing_candidate.empty()) return;
+    if (m_finishing_workbench && m_beauty_manual_color_dirty) {
+        request_save_and_return();
+        return;
+    }
     if (m_finishing_workbench && m_beauty_transactions &&
         !m_beauty_transactions->begin(BeautyWorkbenchTransactionController::OperationKind::AcceptCandidate)) {
         m_finishing_status->SetLabel(_L("当前仍有 Beauty 处理正在进行，请先完成或取消。"));
@@ -219,6 +224,9 @@ void ModelGenerationPanel::accept_model_finishing()
         metadata["preserves_unselected_face_colors"] = true;
     }
     metadata["face_color_intent"] = m_model_preview->face_color_metadata();
+    if (m_finishing_candidate_baked_appearance.is_object() &&
+        m_finishing_candidate_baked_appearance.value("model_sha256",std::string())==m_finishing_result.output_sha256)
+        metadata["baked_portrait_appearance"]=m_finishing_candidate_baked_appearance;
     const auto leaf_edits=m_model_preview->leaf_edit_metadata();
     if (!leaf_edits.is_null() && !leaf_edits.empty()) metadata["beauty_leaf_edit"]=leaf_edits;
     metadata["color_trial"] = m_model_preview->color_trial_metadata();
@@ -341,6 +349,7 @@ void ModelGenerationPanel::accept_model_finishing()
                     self->m_finishing_restore_selection = {};
                     self->m_beauty_session_source.reset();
                 }
+                self->m_beauty_manual_color_dirty = false;
                 if (self->m_beauty_controls) self->m_beauty_controls->mark_saved();
                 if (self->m_beauty_transactions) {
                     self->m_beauty_transactions->finish(true, false);
@@ -355,6 +364,7 @@ void ModelGenerationPanel::accept_model_finishing()
                             self->m_finishing_redo_path.clear();
                             self->m_finishing_source_context = {};
                             self->m_beauty_session_source.reset();
+                            self->m_beauty_manual_color_dirty = false;
                             if (self->m_beauty_controls) self->m_beauty_controls->mark_saved();
                             self->m_workbench_check_result = {};
                             self->refresh_controls();
@@ -402,7 +412,8 @@ void ModelGenerationPanel::accept_model_finishing()
 
 void ModelGenerationPanel::discard_model_finishing()
 {
-    if (m_busy || m_workbench_check_running || m_finishing_candidate.empty()) return;
+    if (m_busy || m_workbench_check_running || (m_finishing_candidate.empty() &&
+        !(m_beauty_session_source && m_beauty_controls && m_beauty_controls->has_changes()))) return;
     const auto discarded = m_finishing_candidate;
     const bool beauty = bool(m_beauty_session_source);
     if (m_beauty_session_source) {
@@ -465,19 +476,41 @@ void ModelGenerationPanel::redo_model_finishing()
 }
 
 void ModelGenerationPanel::stop_model_finishing()
+
 {
+
     if (m_finishing_canceled) m_finishing_canceled->store(true);
+
     if (m_finishing_worker.joinable()) m_finishing_worker.join();
+
+    m_residual_review.reset();
+
+    if(m_model_preview)m_model_preview->clear_portrait_residual_preview();
+
+    if(m_beauty_controls)m_beauty_controls->set_residual_review(false);
+
     m_finishing_running = false;
+
     // Publication may complete while the close request waits for the worker.
+
     if (m_beauty_publication_committed && m_beauty_publication_committed->load() && !m_finishing_candidate.empty()) {
+
         m_finishing_accepted_path = m_finishing_candidate;
+
         m_beauty_accepted_files.push_back(m_finishing_candidate);
+
     }
+
     clear_unaccepted_beauty_candidates();
+
     if (!m_finishing_candidate.empty() && m_finishing_candidate != m_finishing_accepted_path) {
+
         boost::system::error_code ignored; boost::filesystem::remove(m_finishing_candidate, ignored);
+
     }
+
     m_finishing_candidate.clear();
+
 }
+
 } // namespace Slic3r::GUI

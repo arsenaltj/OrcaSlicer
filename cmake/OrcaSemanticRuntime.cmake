@@ -38,7 +38,7 @@ endfunction()
 # Call in the directory that creates the final executable target. Staging is
 # explicit, offline, and separate from the sidecar's source-resource junction.
 function(orca_stage_semantic_runtime target)
-    if(NOT ORCA_ENABLE_MEDIAPIPE_NATIVE OR NOT ORCA_SEMANTIC_RUNTIME_DIR)
+    if(NOT ORCA_AI_PORTRAIT_RECOGNITION OR NOT ORCA_ENABLE_MEDIAPIPE_NATIVE OR NOT ORCA_SEMANTIC_RUNTIME_DIR)
         return()
     endif()
     get_property(_semantic_cmake_dir GLOBAL PROPERTY ORCA_SEMANTIC_CMAKE_DIR)

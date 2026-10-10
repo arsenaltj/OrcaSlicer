@@ -25,7 +25,7 @@ void ModelGenerationPanel::synchronize_workbench_project_palette(bool activate_p
     if (m_model_preview_ready) m_model_preview->synchronize_project_colors(activate_preview);
     auto* contents = m_workbench_project_colors->GetSizer();
     contents->Clear(true);
-    const bool enabled = bool(m_project_color_edit) && post_generation_ui_state().can_edit && m_finishing_candidate.empty();
+    const bool enabled = workbench_snapshot().can_edit_project_colors;
     for (const auto& channel : channels) {
         const wxColour color(wxString::FromUTF8(channel.display_color));
         if (!color.IsOk()) continue;
@@ -46,7 +46,7 @@ void ModelGenerationPanel::synchronize_workbench_project_palette(bool activate_p
             // The picker runs a nested event loop; palette refresh can replace this swatch.
             if (!weak || weak->m_shutdown) return;
             weak->CallAfter([weak, slot] {
-                if (weak && !weak->m_shutdown && weak->m_project_color_edit)
+                if (weak && !weak->m_shutdown && weak->m_project_color_edit && weak->workbench_snapshot().can_edit_project_colors)
                     weak->m_project_color_edit(slot);
             });
         });

@@ -277,7 +277,7 @@ void ModelGenerationPanel::finish_model_preview_download(const boost::filesystem
         m_status->SetLabel(_L("模型解析失败，已保留本地文件。"));
         m_result_summary->SetLabel(_L("无法显示 3D 预览：") + from_u8(error));
         m_model_stats->SetLabel(_L("模型预览不可用"));
-        m_model_preview_message->SetLabel(_L("请重试下载，或检查 generated_models/downloads 中的模型文件。"));
+        m_model_preview_message->SetLabel(_L("请重试下载，或在资产页打开模型文件夹检查下载的模型。"));
         refresh_controls();
     });
 }

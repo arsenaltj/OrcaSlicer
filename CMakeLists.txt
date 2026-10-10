@@ -1311,6 +1311,7 @@ if (WIN32)
             "${CMAKE_SOURCE_DIR}/tools/ai/glb_artifact.py"
             ${ORCA_LOCAL_SEMANTIC_RUNTIME_FILES}
             "${CMAKE_SOURCE_DIR}/tools/ai/model_input_image_quality.py" "${CMAKE_SOURCE_DIR}/tools/ai/model_job_support.py" "${CMAKE_SOURCE_DIR}/tools/ai/model_provider_gateway.py"
+            "${CMAKE_SOURCE_DIR}/tools/ai/design_generation_timing.py"
             "${CMAKE_SOURCE_DIR}/tools/ai/model_refinement.py"
             "${CMAKE_SOURCE_DIR}/tools/ai/network_policy.py"
             "${CMAKE_SOURCE_DIR}/tools/ai/openai_preprocessor.py"
@@ -1421,16 +1422,13 @@ set (CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/OrcaSlicer/OrcaSlicer")
 set (CPACK_PACKAGE_ICON "${CMAKE_SOURCE_DIR}/resources/images\\\\OrcaSlicer.ico")
 set (CPACK_NSIS_MUI_ICON "${CPACK_PACKAGE_ICON}")
 set (CPACK_NSIS_MUI_UNIICON "${CPACK_PACKAGE_ICON}")
-set (CPACK_NSIS_INSTALLED_ICON_NAME  "$INSTDIR\\\\orca-slicer.exe")
+set (CPACK_NSIS_INSTALLED_ICON_NAME "orca-slicer.exe")
 set (CPACK_PACKAGE_CHECKSUM SHA256)
 set (CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
 set (CPACK_NSIS_EXECUTABLES_DIRECTORY ".")
 # set (CPACK_NSIS_MODIFY_PATH "ON")
-if(WIN32 AND ORCA_AI_WINDOWS_INSTALLER)
-    set(CPACK_PACKAGE_EXECUTABLES "orca-slicer;OrcaSlicer AI")
-else()
-    set(CPACK_PACKAGE_EXECUTABLES "orca-slicer;OrcaSlicer")
-endif()
+
+set(CPACK_PACKAGE_EXECUTABLES "orca-slicer" "${CPACK_PACKAGE_INSTALL_DIRECTORY}")
 set(CPACK_CREATE_DESKTOP_LINKS "orca-slicer")
 set (CPACK_RESOURCE_FILE_LICENSE ${CMAKE_SOURCE_DIR}/LICENSE.txt) # must also include in install command
 

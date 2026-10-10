@@ -177,3 +177,5 @@ bool Plater::rollback_main_snapshot_exact(const UndoRedo::ActionSnapshotIdentity
     }
     return true;
 }
+
+#include "PlaterProjectConfirmation.ipp"

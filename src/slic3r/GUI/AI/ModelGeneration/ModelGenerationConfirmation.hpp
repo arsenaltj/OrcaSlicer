@@ -12,8 +12,10 @@ namespace Slic3r::GUI {
 class ModelGenerationConfirmation final : public RedesignMessageDialog, public AIThemeOwner {
 public:
     ModelGenerationConfirmation(wxWindow* parent, const wxString& message,
-                                const wxString& title, const wxString& action)
-        : RedesignMessageDialog(parent, message, title, wxYES_NO | wxNO_DEFAULT, true, true),
+                                const wxString& title, const wxString& action,
+                                int minimum_message_height = 105)
+        : RedesignMessageDialog(parent, message, title, wxYES_NO | wxNO_DEFAULT,
+            RedesignMessageDialog::Appearance::GenerationConfirmation, minimum_message_height, true),
           m_release_timer(this) {
         set_action_label(wxID_YES, action);
         set_action_label(wxID_NO, _L("取消"));

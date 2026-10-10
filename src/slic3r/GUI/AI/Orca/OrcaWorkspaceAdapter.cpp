@@ -12,9 +12,11 @@
 #include "slic3r/GUI/GUI_ObjectList.hpp"
 #include "slic3r/GUI/GUI_Utils.hpp"
 #include "slic3r/GUI/MsgDialog.hpp"
+#include "slic3r/GUI/Redesign/RedesignMessageDialog.hpp"
 #include "slic3r/GUI/ObjColorDialog.hpp"
 #include "slic3r/GUI/ModelColorImportResult.hpp"
 #include "slic3r/GUI/Plater.hpp"
+#include "slic3r/GUI/PresetComboBoxes.hpp"
 #include "slic3r/GUI/PartPlate.hpp"
 #include "libslic3r/Format/OBJ.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
@@ -220,6 +222,15 @@ std::function<bool()> OrcaWorkspaceAdapter::capture_import_guard() const
     };
 }
 
+bool OrcaWorkspaceAdapter::import_workbench_artifact_async(const AI::ModelImportRequest& request,
+    std::shared_ptr<WorkbenchImportSession> session, WorkbenchImportProgress progress,
+    WorkbenchImportCompletion completion, std::function<bool()> asset_current)
+{
+    // The asynchronous caller keeps its loading surface until the first frame.
+    return m_plater && m_plater->import_workbench_model_async(request, std::move(session), std::move(progress),
+        std::move(completion), std::move(asset_current));
+}
+
 bool OrcaWorkspaceAdapter::set_project_filament_color(size_t slot, const std::string& color,
     const std::function<bool()>& current, std::string& error)
 {
@@ -237,6 +248,12 @@ bool OrcaWorkspaceAdapter::set_project_filament_color(size_t slot, const std::st
     if (!m_plater->apply_project_config(std::move(config), bundle.filament_presets,
             "Change project filament color", error)) return false;
     m_plater->on_config_change(bundle.full_config());
+    // The native preparation panel may be hidden while its spool colors change.
+    for (auto* combo : m_plater->sidebar().combos_filament())
+        if (combo) combo->update();
+    m_plater->sidebar().update_mixed_filament_list();
+    m_plater->sidebar().update_dynamic_filament_list();
+    if (auto* objects = wxGetApp().obj_list()) objects->update_filament_colors();
     m_plater->get_partplate_list().invalid_all_slice_result();
     m_plater->update_project_dirty_from_presets();
     bundle.export_selections(*wxGetApp().app_config);
@@ -245,18 +262,18 @@ bool OrcaWorkspaceAdapter::set_project_filament_color(size_t slot, const std::st
 }
 
 ObjImportColorFn workbench_obj_color_mapper(Plater* plater, AI::ImportColorMode mode,
-    const AI::PrintablePaletteSnapshot& palette, AI::ModelImportResult& result, bool& cancelled)
+    const AI::PrintablePaletteSnapshot& palette, AI::ModelImportResult& result, bool& cancelled, bool defer_apply)
 {
     if (mode == AI::ImportColorMode::AutoMap)
         return make_obj_color_mapper(palette.project_colors, palette.compatible_slots, result.colors_applied,
             result.source_color_count, result.mapped_color_count);
-    return [plater, colors = palette.project_colors, &result, &cancelled](ObjDialogInOut& input) {
+    return [plater, colors = palette.project_colors, &result, &cancelled, defer_apply](ObjDialogInOut& input) {
         input.preserve_input_colors = true;
         result.source_color_count = std::set<RGBA>(input.input_colors.begin(), input.input_colors.end()).size();
         ObjColorDialog dialog(plater, input, colors, Sidebar::should_show_SEMM_buttons());
         if (dialog.ShowModal() != wxID_OK) { input.cancelled = cancelled = true; return; }
         result.mapped_color_count = std::set<unsigned char>(input.filament_ids.begin(), input.filament_ids.end()).size();
-        result.colors_applied = input.deal_vertex_color ?
+        if (!defer_apply) result.colors_applied = input.deal_vertex_color ?
             Model::obj_import_vertex_color_deal(input.filament_ids, input.first_extruder_id, input.model) :
             Model::obj_import_face_color_deal(input.filament_ids, input.first_extruder_id, input.model);
     };
@@ -489,13 +506,11 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
             if (!same_source && objects[i]->volumes.size() == 1)
                 same_source = same_generated_artifact_name(objects[i]->volumes.front()->source.input_file, path.string());
             if (!same_source) continue;
-            RichMessageDialog repeat(m_plater,
+            const int answer = show_redesign_confirmation(m_plater,
                 _L("工程中已有这份模型。更新配色会替换它的耗材分配，保留位置、比例及其他设置；可撤销。\n"
                    "新增副本会使用 Orca 自动摆放。") + "\n\n" + wxString::FromUTF8(objects[i]->name),
-                _L("同一模型再次导入"), wxYES_NO | wxCANCEL | wxICON_QUESTION);
-            repeat.SetButtonLabel(wxID_YES, _L("更新配色"));
-            repeat.SetButtonLabel(wxID_NO, _L("新增并摆放"));
-            const int answer = repeat.ShowModal();
+                _L("同一模型再次导入"), {wxYES_NO | wxCANCEL, 105,
+                    {{wxID_YES, _L("更新配色"), true}, {wxID_NO, _L("新增并摆放")}, {wxID_CANCEL, _L("Cancel")}}});
             if (answer == wxID_CANCEL) {
                 result.outcome = AI::ModelImportOutcome::Cancelled;
                 workflow.finish_ai_workflow(false, _L("已取消，本次未导入；已有模型保留。"), true);

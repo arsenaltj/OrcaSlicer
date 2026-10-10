@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PostGenerationUiState.hpp"
+#include "PortraitOptimization.hpp"
 #include "slic3r/AI/Contracts/IPrintablePaletteProvider.hpp"
 #include <algorithm>
 #include <cstdint>
@@ -33,6 +34,8 @@ struct PostGenerationWorkbenchState {
     std::string model_path;
     std::string candidate_path;
     bool editing {false};
+    SemanticMode semantic_mode {SemanticMode::General};
+    PortraitOptimizationState portrait_optimization;
     bool portrait_enabled {false};
     bool portrait_available {false};
     std::string portrait_unavailable_reason;

@@ -13,7 +13,7 @@ namespace Slic3r::GUI {
 
 void ModelGenerationPanel::ensure_workbench_check()
 {
-    if (m_shutdown || !m_model_preview_ready || m_workbench_check_running || m_finishing_running ||
+    if (m_shutdown || m_workbench_import_running || !m_model_preview_ready || m_workbench_check_running || m_finishing_running ||
         m_busy || m_model_preview->semantic_processing() || m_model_preview->selection_busy() ||
         !m_finishing_candidate.empty() || (m_beauty_controls && m_beauty_controls->has_changes())) return;
     if (m_workbench_check_path == m_displayed_model_path.string() && m_workbench_check_revision == m_sequence &&
@@ -130,6 +130,7 @@ bool ModelGenerationPanel::request_check_workbench()
                     self->m_workbench_check_result = {};
                     self->m_workbench_check_result.status = WorkbenchCheckStatus::Failed;
                     self->m_workbench_check_result.summary = "模型文件在检查期间已变化，已丢弃结果，请重新加载。";
+                    self->m_status->SetLabel(wxString::FromUTF8(self->m_workbench_check_result.summary));
                     self->refresh_controls();
                     return;
                 }
@@ -178,6 +179,7 @@ bool ModelGenerationPanel::request_check_workbench()
                         self->m_workbench_check_result.summary = "安全修复预览失败，原模型保留：" + error;
                     }
                 }
+                self->m_status->SetLabel(wxString::FromUTF8(self->m_workbench_check_result.summary));
                 self->refresh_controls();
                 self->update_finishing_selection();
                 self->publish_workbench_state();
@@ -188,6 +190,7 @@ bool ModelGenerationPanel::request_check_workbench()
         m_workbench_check_result.status = WorkbenchCheckStatus::Failed;
         m_workbench_check_result.phase = WorkbenchCheckPhase::Idle;
         m_workbench_check_result.summary = error.what();
+        m_status->SetLabel(wxString::FromUTF8(m_workbench_check_result.summary));
         refresh_controls();
         return false;
     }

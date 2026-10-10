@@ -3,8 +3,35 @@
 #include "slic3r/GUI/TextureImportDialog.hpp"
 #include "slic3r/GUI/ProjectConfigRestore.hpp"
 #include "libslic3r/Model.hpp"
+#include "libslic3r/FilamentMixer.hpp"
+#include <cmath>
 
 namespace Slic3r::GUI {
+
+inline std::vector<TextureFilamentEntry> workbench_texture_filaments(const PresetBundle& bundle)
+{
+    std::vector<TextureFilamentEntry> entries;
+    const auto& config = bundle.project_config;
+    for (size_t slot = 0; slot < bundle.filament_presets.size(); ++slot) {
+        TextureFilamentEntry entry;
+        entry.dialog_index = int(slot);
+        entry.project_config_index = slot;
+        entry.color_hex = config.opt_string("filament_colour", slot);
+        entry.kind = config.opt_bool("filament_is_mixed", slot)
+            ? TextureFilamentKind::ExistingMixed : TextureFilamentKind::ExistingPhysical;
+        if (const auto* preset = bundle.filaments.find_preset(bundle.filament_presets[slot])) {
+            const auto* types = preset->config.option<ConfigOptionStrings>("filament_type");
+            if (types && !types->values.empty()) entry.type = types->get_at(0);
+        }
+        if (entry.kind == TextureFilamentKind::ExistingMixed) {
+            entry.mixed_components = parse_mixed_components(config.opt_string("filament_mixed_components", slot));
+            for (double ratio : parse_mixed_ratios(config.opt_string("filament_mixed_sublayer_ratios", slot), entry.mixed_components.size()))
+                entry.mixed_ratios.push_back(int(std::lround(ratio * 100.)));
+        }
+        entries.push_back(std::move(entry));
+    }
+    return entries;
+}
 
 inline bool stage_workbench_texture_import(ModelObject& object, const PaintedMesh& painted,
     std::vector<FilamentMatch> matches, const std::vector<TextureFilamentEntry>& entries,

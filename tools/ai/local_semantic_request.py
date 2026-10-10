@@ -22,16 +22,19 @@ REQUEST_SCHEMA = 'orcaslicer.local-semantic-request.v1'
 RESPONSE_SCHEMA = 'orcaslicer.local-semantic-response.v1'
 WORKER_VERSION = 'local-semantic-request-cpu-v1'
 LABEL_SCHEMA = 'farl-celebm-face19-subset-v1'
-POLICY_VERSION = 'visible-face-semantic-v7-farl-sides-source-brow-boundary'
+POLICY_VERSION = 'visible-face-semantic-v12-parent-local-views'
 MODULES = ('glb_artifact.py', 'local_semantic_worker.py', 'local_semantic_geometry.py',
            'local_semantic_render.py', 'local_semantic_transform.py', 'local_semantic_views.py',
-           'local_semantic_projection.py', 'local_semantic_pipeline.py', 'local_semantic_request.py', 'local_eye_landmarks.py', 'local_face_landmarks.py', 'local_shape_constraints.py', 'local_brow_boundary.py', 'local_body_regions.py')
+           'local_semantic_projection.py', 'local_semantic_pipeline.py', 'local_semantic_request.py', 'local_eye_landmarks.py', 'local_face_landmarks.py', 'local_shape_constraints.py', 'local_brow_boundary.py', 'local_body_regions.py',
+           'local_contour_proposals.py', 'local_surface_contours.py', 'local_leaf_boundaries.py', 'beauty_leaf_domain.py', 'local_parent_ownership.py', 'local_parent_boundary.py', 'local_parent_projection.py')
 POLICY_MODULES = ('local_semantic_render.py', 'local_semantic_transform.py', 'local_semantic_views.py',
-                  'local_semantic_projection.py', 'local_semantic_pipeline.py', 'local_eye_landmarks.py', 'local_face_landmarks.py', 'local_shape_constraints.py', 'local_brow_boundary.py', 'local_body_regions.py')
+                  'local_semantic_projection.py', 'local_semantic_pipeline.py', 'local_eye_landmarks.py', 'local_face_landmarks.py', 'local_shape_constraints.py', 'local_brow_boundary.py', 'local_body_regions.py',
+                  'local_contour_proposals.py', 'local_surface_contours.py', 'local_leaf_boundaries.py', 'beauty_leaf_domain.py', 'local_parent_ownership.py', 'local_parent_boundary.py', 'local_parent_projection.py')
 RASTER_ACCELERATOR = 'local_semantic_raster.dll'
 PACKAGES = ('torch', 'torchvision', 'pyfacer', 'numpy', 'Pillow')
 MAX_RENDER_BYTES = 96_000_184
 MAX_EVIDENCE_BYTES = 128 * 1024 * 1024
+MAX_CONTOUR_BYTES = 128 * 1024 * 1024
 MAX_RESPONSE_BYTES = 64 * 1024
 _IDENTIFIER = re.compile(r'[A-Za-z0-9_.-]{1,96}')
 _SHA = re.compile(r'[0-9a-f]{64}')
@@ -135,7 +138,7 @@ def _validate_config(config, worker):
              type(config['enabled']) is bool, 'invalid_config')
     _absolute(config['python_executable'], 'invalid_config')
     _absolute(config['weights_directory'], 'invalid_config')
-    for key, low, high in (('cpu_threads', 1, 8), ('timeout_seconds', 10, 600), ('cache_bytes', 0, 4 * 1024**3)):
+    for key, low, high in (('cpu_threads', 1, 8), ('timeout_seconds', 10, 1200), ('cache_bytes', 0, 4 * 1024**3)):
         _require(type(config[key]) is int and low <= config[key] <= high, 'invalid_config')
     _require(config['enabled'], 'semantic_disabled')
     _require(os.path.samefile(config['python_executable'], sys.executable), 'interpreter_identity_mismatch')
@@ -178,6 +181,23 @@ def _validate_projection(value, face_count, labels):
             previous = face
             seen.add(face)
     return len(seen)
+
+
+def _validate_parent_details(samples, projection, face_count, shapes=()):
+    _require(type(samples) is list and len(samples) <= face_count, 'invalid_parent_details')
+    known = {row[0] for region in projection['regions'] for row in region['samples']}
+    known.update(face for shape in shapes for field in ('accepted_faces', 'rejected_faces') for face in shape[field])
+    subjects = projection['subjects']
+    previous = -1
+    for row in samples:
+        _require(type(row) is list and len(row) == 6, 'invalid_parent_details')
+        face, subject, label, confidence, pixels, views = row
+        _require(type(face) is int and previous < face < face_count and face not in known
+                 and len(subjects) == 1 and subject == subjects[0] and label == 'body-skin'
+                 and type(confidence) in (int, float) and math.isfinite(confidence) and .9 <= confidence <= 1
+                 and type(views) is int and 2 <= views <= 8 and type(pixels) is int
+                 and views <= pixels <= 8 * 1024**2, 'invalid_parent_details')
+        previous = face
 
 
 def _validate_eye_details(hints, regions):
@@ -349,7 +369,7 @@ def _publish(path, raw, limit):
     return {'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}
 
 
-def _execute(request, config, request_dir, worker, directory):
+def _execute(request, config, request_dir, worker, directory, progress=None):
     source = _validate_request(request)
     _validate_config(config, worker)
     owned = _absolute(request_dir, 'invalid_request_directory').resolve(strict=True)
@@ -359,7 +379,7 @@ def _execute(request, config, request_dir, worker, directory):
              'invalid_native_packet')
     _require(184 <= native_path.stat().st_size <= MAX_RENDER_BYTES, 'invalid_native_packet')
     _require(source.is_file() and 0 < source.stat().st_size <= 512 * 1024**2, 'invalid_source_path')
-    for name in ('rendered.bin', 'evidence.json', 'result.json'):
+    for name in ('rendered.bin', 'evidence.json', 'contours.json', 'result.json'):
         for suffix in ('', '.partial'):
             path = owned / (name + suffix)
             _require(not path.exists() and not path.is_symlink(), 'output_already_exists')
@@ -393,7 +413,7 @@ def _execute(request, config, request_dir, worker, directory):
         return models
 
     try:
-        result = pipeline.analyze(source, native_path, request['source_sha256'], model_loader)
+        result = pipeline.analyze(source, native_path, request['source_sha256'], model_loader, **({'progress': progress} if progress else {}))
     finally:
         for task in optional_tasks:
             if task is not None:
@@ -427,6 +447,9 @@ def _execute(request, config, request_dir, worker, directory):
     if result.get('shape_details'):
         _validate_shape_details(result['shape_details'], projection['regions'], request['face_count'])
         evidence['shape_details'] = result['shape_details']
+    if result.get('parent_details'):
+        _validate_parent_details(result['parent_details'], projection, request['face_count'], result.get('shape_details', ()))
+        evidence['parent_details'] = result['parent_details']
     rendered = geometry.encode(vertices, faces, request['source_sha256'])
     encoded_evidence = _json_bytes(evidence)
     _require(len(rendered) <= MAX_RENDER_BYTES and len(encoded_evidence) <= MAX_EVIDENCE_BYTES, 'output_too_large')
@@ -437,6 +460,23 @@ def _execute(request, config, request_dir, worker, directory):
              _probe_identity(worker, weights) == before, 'runtime_identity_changed')
     files = {'rendered.bin': _publish(owned/'rendered.bin', rendered, MAX_RENDER_BYTES),
              'evidence.json': _publish(owned/'evidence.json', encoded_evidence, MAX_EVIDENCE_BYTES)}
+    if result.get('contour_proposal') is not None or result.get('parent_proposal') is not None or result.get('parent_diagnostic'):
+        proposal = result.get('contour_proposal') or dict(policy={}, faces=[], curve_library={}, audit=[])
+        contour_identity = {key: evidence[key] for key in
+                            ('source_sha256', 'geometry_id', 'face_count', 'runtime_sha256', 'policy_sha256')}
+        contour_identity.update(evidence_sha256=hashlib.sha256(encoded_evidence).hexdigest(),
+                                baseline_sha256=hashlib.sha256(encoded_evidence).hexdigest(),
+                                boundary_policy_sha256=canonical_hash(proposal['policy']))
+        contours = dict(schema='orca.surface-partition-request/v1', identity=contour_identity,
+                        existing_added_triangles=0, triangle_budget=min(20000, request['face_count'] * 2 // 100),
+                        faces=proposal['faces'], curve_library=proposal['curve_library'], audit=proposal['audit'])
+        contours['parent_diagnostic'] = result.get('parent_diagnostic','')
+        if result.get('parent_proposal') is not None:
+            contours['parent_proposal'] = result['parent_proposal']
+            contours['parent_proposal']['identity'] = {key:evidence[key] for key in ('source_sha256','geometry_id','face_count','runtime_sha256','policy_sha256')}
+            contours['parent_proposal']['identity']['evidence_sha256'] = hashlib.sha256(encoded_evidence).hexdigest()
+            contours['parent_proposal']['proposal_policy_sha256'] = canonical_hash(result['parent_proposal']['policy'])
+        files['contours.json'] = _publish(owned/'contours.json', _json_bytes(contours), MAX_CONTOUR_BYTES)
     response = {'schema': RESPONSE_SCHEMA, 'worker_version': WORKER_VERSION, 'request_id': request['request_id'],
                 'status': 'ok', 'identity': identity, 'runtime_fingerprint': canonical_hash(identity),
                 'policy_sha256': policy, 'files': files, 'statistics': stats}
@@ -444,7 +484,7 @@ def _execute(request, config, request_dir, worker, directory):
     return response
 
 
-def execute_request(request, config, request_dir):
+def execute_request(request, config, request_dir, progress=None):
     """Publish verified payloads and return response; caller publishes result last.
 
     Raises RequestError with a fixed code. Existing outputs are never replaced.
@@ -452,7 +492,7 @@ def execute_request(request, config, request_dir):
     """
     try:
         worker, directory = _bootstrap()
-        return _execute(request, config, request_dir, worker, directory)
+        return _execute(request, config, request_dir, worker, directory, progress)
     except RequestError:
         raise
     except ImportError:
@@ -462,11 +502,33 @@ def execute_request(request, config, request_dir):
         raise RequestError(code if code in _WORKER_ERRORS else 'local_semantic_request_failed') from None
 
 
+class ProgressWriter:
+    """Request-owned optional telemetry. Never changes verified result contracts."""
+    def __init__(self, directory, request):
+        self.path = Path(directory) / 'progress.json'
+        self.identity = {k: request[k] for k in ('request_id', 'source_sha256', 'geometry_id')}
+        self.sequence = 0
+
+    def __call__(self, stage, detail, completed=0, total=0):
+        if stage not in ('recognizing', 'ownership', 'coloring'):
+            return
+        self.sequence += 1
+        payload = dict(self.identity, schema='orca.portrait-progress/v1', sequence=self.sequence,
+                       stage=stage, detail=str(detail)[:256], completed=int(completed), total=int(total))
+        temporary = self.path.with_suffix('.partial')
+        try:
+            temporary.write_bytes(_json_bytes(payload))
+            temporary.replace(self.path)
+        except OSError:
+            pass  # Optional telemetry cannot invalidate a verified result.
+
+
 def main(argv=None):
     args = argparse.ArgumentParser(description=__doc__)
     args.add_argument('--request', type=Path, required=True)
     args.add_argument('--config', type=Path, required=True)
     args.add_argument('--output', type=Path, required=True)
+    args.add_argument('--progress', action='store_true')
     options = args.parse_args(argv)
     request_id, output = '', None
     try:
@@ -481,7 +543,8 @@ def main(argv=None):
         if isinstance(request, dict) and isinstance(request.get('request_id'), str) and _IDENTIFIER.fullmatch(request['request_id']):
             request_id = request['request_id']
         config = worker.load_config(config_path)
-        response = execute_request(request, config, request_path.parent)
+        response = execute_request(request, config, request_path.parent,
+                                   ProgressWriter(request_path.parent, request) if options.progress else None)
     except Exception as error:
         code = str(error) if isinstance(error, RequestError) or str(error) in _WORKER_ERRORS else 'local_semantic_request_failed'
         response = {'schema': RESPONSE_SCHEMA, 'worker_version': WORKER_VERSION, 'request_id': request_id,

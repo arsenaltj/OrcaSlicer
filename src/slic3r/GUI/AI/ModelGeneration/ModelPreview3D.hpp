@@ -7,6 +7,7 @@
 #include "slic3r/GUI/AI/Model/SurfaceSelectionState.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include "slic3r/GUI/AI/Model/BeautyLeafEdits.hpp"
+#include "slic3r/GUI/AI/Model/BeautyCellEdits.hpp"
 #include "SecondaryRegionEvidence.hpp"
 #include "ReadonlyEvidenceRender.hpp"
 #include "ModelColorPreviewShader.hpp"
@@ -19,6 +20,8 @@
 #include "ModelPreviewPalette.hpp"
 #include "ModelPreviewColorControls.hpp"
 #include "ModelSemanticColoring.hpp"
+#include "PortraitResidualProposal.hpp"
+#include "PortraitResidualRequest.hpp"
 #include "slic3r/GUI/I18N.hpp"
 #include <unordered_set>
 #include <functional>
@@ -57,6 +60,7 @@
 #include <exception>
 #include <functional>
 #include <memory>
+#include <map>
 #include <optional>
 #include <set>
 #include <string>
@@ -69,7 +73,7 @@ namespace Slic3r::GUI {
 class ModelPreview3D final : public wxPanel
 {
 public:
-    enum class SelectionGesture { Lasso, Brush, Protect, Similar, Orbit };
+    enum class SelectionGesture { Lasso, Brush, Protect, Similar, Orbit, Paint };
     using SelectionState = AI::SurfaceSelectionPersistence::SelectionState;
     using FaceColorOverrides = AI::SurfaceSelectionPersistence::FaceColorOverrides;
     using SubfaceColorOverrides = AI::SemanticColoring::SubfaceColors;
@@ -139,7 +143,8 @@ public:
             m_trial_toggle_started = std::chrono::steady_clock::now();
             m_color_trial_enabled = m_color_trial->enabled();
             m_trial_palette = m_color_trial->colors();
-            if (!m_suppress_semantic_change) update_semantic_coloring();
+            // Only the host semantic command may start recognition.
+            if (!m_suppress_semantic_change && m_portrait_input_changed) m_portrait_input_changed();
             m_canvas->Refresh(false);
             if (m_color_trial_changed) m_color_trial_changed(m_trial_palette.size());
             BOOST_LOG_TRIVIAL(info) << "AI color trial toggled: enabled=" << m_color_trial_enabled
@@ -249,6 +254,11 @@ public:
         m_canvas->Bind(wxEVT_KEY_DOWN, [this](wxKeyEvent& event) {
             if (!event.ControlDown() && (event.GetKeyCode() == 'F' || event.GetKeyCode() == 'f')) {
                 focus_selection(); return;
+            }
+            if (m_beauty_view && m_beauty_history && event.CmdDown() && !event.AltDown() &&
+                (event.GetKeyCode() == 'Z' || event.GetKeyCode() == 'z' ||
+                 ((event.GetKeyCode() == 'Y' || event.GetKeyCode() == 'y') && !event.ShiftDown()))) {
+                m_beauty_history(event.ShiftDown() || event.GetKeyCode() == 'Y' || event.GetKeyCode() == 'y'); return;
             }
             if (!m_selection_enabled) {
                 event.Skip();
@@ -614,7 +624,7 @@ public:
     bool load_prepared_model(PreparedModel&& prepared, const std::vector<std::string>& palette,
                              size_t& triangle_count, Vec3d& dimensions, size_t& color_count, std::string& error)
     {
-        if (m_context == nullptr || !m_context->IsOK() || !m_canvas->SetCurrent(*m_context)) {
+        if (m_canvas == nullptr || m_context == nullptr || !m_context->IsOK() || !m_canvas->SetCurrent(*m_context)) {
             error = "OpenGL preview context is unavailable.";
             return false;
         }
@@ -661,7 +671,7 @@ public:
         m_semantic_source = std::move(prepared.semantic_source);
         m_portrait_shapes = std::move(prepared.shape_details);
         m_shapes_unlocked = prepared.shapes_unlocked;
-        if (m_portrait_shapes && m_portrait_shapes->locks.leaf_domain) m_pending_leaf_edits=std::move(prepared.leaf_edits);
+        if (m_portrait_shapes && m_portrait_shapes->derived_boundary()) m_pending_leaf_edits=std::move(prepared.leaf_edits);
         m_region_runtime_identity = std::move(prepared.region_runtime_identity);
         m_region_evidence = std::move(prepared.region_evidence);
         m_region_evidence_error = std::move(prepared.region_evidence_error);
@@ -686,9 +696,11 @@ public:
             m_color_trial->restore(*prepared.color_trial);
             m_suppress_semantic_change = false;
         }
-        if (!prepared.saved_semantic_faces.empty() || !prepared.saved_semantic_subfaces.empty())
+        if (!prepared.saved_semantic_faces.empty() || !prepared.saved_semantic_subfaces.empty() ||
+            (m_portrait_shapes && m_portrait_shapes->surface_partition))
             set_saved_semantic_result(std::move(prepared.saved_semantic_faces), std::move(prepared.saved_semantic_subfaces));
         if (prepared.color_trial) synchronize_project_bound_semantics(*prepared.color_trial, m_color_trial->state());
+        if(m_portrait_shapes && m_portrait_shapes->derived_boundary()) ensure_region_editor();
         m_paint_diagnostics_logged = false;
         m_render_diagnostics_logged = false;
         default_view();
@@ -709,6 +721,7 @@ public:
         clear_current_preview();
         m_models = std::move(cached->models);
         m_texture_model = std::move(cached->texture_model);
+        m_manual_color_model = std::move(cached->manual_color_model);
         m_pending_mesh = std::move(cached->mesh);
         m_pending_vertex_colors = std::move(cached->vertex_colors);
         m_geometry_id = std::move(cached->geometry_id);
@@ -716,7 +729,7 @@ public:
         m_semantic_source = std::move(cached->semantic_source);
         m_portrait_shapes = std::move(cached->shape_details);
         m_shapes_unlocked = cached->shapes_unlocked;
-        if (m_portrait_shapes && m_portrait_shapes->locks.leaf_domain) m_pending_leaf_edits=std::move(cached->leaf_edits);
+        if (m_portrait_shapes && m_portrait_shapes->derived_boundary()) m_pending_leaf_edits=std::move(cached->leaf_edits);
         m_region_runtime_identity = semantic_region_runtime_identity(semantic_region_runtime_directory());
         m_region_evidence_error = std::move(cached->region_evidence_error);
         m_region_evidence = std::move(cached->region_evidence);
@@ -794,7 +807,7 @@ private:
         if (m_semantic_controller) m_semantic_controller->cancel();
         m_semantic_source.reset(); m_automatic_face_colors.clear(); m_automatic_subface_colors.clear();
         m_portrait_shapes.reset(); m_shapes_unlocked = false; m_leaf_editing.reset();
-        m_manual_leaf_colors.clear(); m_pending_leaf_edits=nullptr;
+        m_manual_leaf_colors.clear(); m_manual_cell_colors.clear(); m_pending_leaf_edits=nullptr;
         m_saved_semantic_faces.clear(); m_saved_semantic_subfaces.clear();
         m_semantic_analysis.reset(); m_semantic_ready = false;
         m_semantic_error.clear();
@@ -815,12 +828,14 @@ private:
             m_canvas->SetCurrent(*m_context);
         m_models.clear();
         m_texture_model.reset();
+        m_manual_color_model.reset(); m_manual_corner_normals.clear();
         m_surface_vertices.clear();
         m_original_surface_colors.clear();
         m_exact_surface_display = false;
         m_workbench_grid.reset();
         m_workbench_grid_geometry.clear();
         m_semantic_model.reset();
+        m_residual_preview_model.reset();
         m_partition_model.reset();
         m_beauty_pick = {};
         m_selection_model.reset();
@@ -987,29 +1002,50 @@ public:
         return m_region_editor->ready() ? m_region_editor : nullptr;
     }
     void prepare_beauty_editor() { ensure_region_editor(); }
+    bool beauty_editor_failed() const { return m_region_prepare_failed; }
     bool leaf_editing() const { return bool(m_leaf_editing); }
+    bool cell_editing() const { return m_leaf_editing && m_leaf_editing->contour(); }
     uint64_t leaf_edit_revision() const { return m_leaf_edit_revision; }
     nlohmann::json leaf_edit_metadata() const {
         if (!m_leaf_editing || !m_portrait_shapes) return m_pending_leaf_edits;
+        if(cell_editing()) return AI::BeautyCellEdits::encode(*m_leaf_editing,m_manual_cell_colors,selection_state());
         return AI::BeautyLeafEdits::capture(*m_leaf_editing,m_portrait_shapes->locks,m_manual_leaf_colors,selection_state())
             .encode(*m_leaf_editing,m_portrait_shapes->locks);
     }
     bool restore_leaf_edits(const nlohmann::json& value) {
         ++m_leaf_edit_revision;
-        if (value.is_null() || value.empty()) { m_manual_leaf_colors.clear(); m_pending_leaf_edits=nullptr; refresh_leaf_colors(); return true; }
+        if (value.is_null() || value.empty()) { m_manual_leaf_colors.clear();m_manual_cell_colors.clear(); m_pending_leaf_edits=nullptr; refresh_leaf_colors(); return true; }
         if (!m_leaf_editing) { m_pending_leaf_edits=value; ensure_region_editor(); return true; }
         try {
+            if(cell_editing()) {
+                const auto state=AI::BeautyCellEdits::decode(value,*m_leaf_editing);
+                m_manual_cell_colors=state.colors;m_pending_leaf_edits=nullptr;
+                restore_selection_state(state.selection);refresh_leaf_colors();return true;
+            }
             const auto state=AI::BeautyLeafEdits::decode(value,*m_leaf_editing,m_portrait_shapes->locks);
             m_manual_leaf_colors=state.colors; m_pending_leaf_edits=nullptr;
             restore_selection_state(state.selection); refresh_leaf_colors(); return true;
         } catch (const std::exception& error) {
             BOOST_LOG_TRIVIAL(warning)<<"Leaf editing state rejected: "<<error.what();
-            m_manual_leaf_colors.clear(); m_pending_leaf_edits=nullptr; refresh_leaf_colors(); return false;
+            m_manual_leaf_colors.clear();m_manual_cell_colors.clear(); m_pending_leaf_edits=nullptr; refresh_leaf_colors(); return false;
         }
     }
     bool paint_selected_leaves(const RGBA& color) {
         if (!m_leaf_editing || !m_region_editor->ready()) return false;
         auto state=selection_state(); constrain_shape_selection(state);
+        if(cell_editing()) {
+            auto colors=m_manual_cell_colors;std::set<std::string> selected;
+            for(size_t i=0;i<state.selected.size();++i) if(state.selected[i]) selected.insert(m_leaf_editing->cells->cell_id(i));
+            size_t painted=0;
+            for(const auto& id:selected) {
+                const auto triangles=m_leaf_editing->cells->indices(id);
+                if(std::any_of(triangles.begin(),triangles.end(),[&](size_t f){return f<state.protected_faces.size() && state.protected_faces[f];})) continue;
+                colors[id]={color[0],color[1],color[2]};++painted;
+            }
+            if(!painted) return false;
+            AI::BeautyCellEdits::encode(*m_leaf_editing,colors,state);
+            m_manual_cell_colors=std::move(colors);++m_leaf_edit_revision;refresh_leaf_colors();return true;
+        }
         auto colors=m_manual_leaf_colors; size_t painted=0;
         for (size_t i=0;i<state.selected.size();++i) if (state.selected[i] &&
             (i>=state.protected_faces.size() || !state.protected_faces[i])) {
@@ -1021,12 +1057,14 @@ public:
     }
     void refresh_leaf_colors() {
         if (!m_leaf_editing || !m_semantic_source || !m_context || !m_canvas->SetCurrent(*m_context)) return;
-        auto geometry=build_semantic_colored_geometry(*m_semantic_source,import_face_color_overrides(true),import_subface_color_overrides(true));
+        const auto cells=import_cell_color_overrides();
+        auto geometry=build_semantic_colored_geometry(*m_semantic_source,import_face_color_overrides(true),import_subface_color_overrides(true),{},
+            m_portrait_shapes ? m_portrait_shapes->surface_partition.get() : nullptr,&cells);
         if (geometry.is_empty()) return;
         auto model=std::make_unique<GLModel>(); model->init_from(std::move(geometry)); m_semantic_model=std::move(model);
         m_semantic_ready=true; m_canvas->Refresh(false);
     }
-    size_t editing_face_count() const { return m_leaf_editing ? m_leaf_editing->keys.size() : m_triangle_count; }
+    size_t editing_face_count() const { return m_leaf_editing ? m_leaf_editing->size() : m_triangle_count; }
     std::string beauty_geometry_id() const { return m_leaf_editing ? m_leaf_editing->surface->geometry_id : m_geometry_id; }
     std::shared_ptr<const AI::BeautySurface> beauty_leaf_surface() const { return m_leaf_editing ? m_leaf_editing->surface : nullptr; }
     std::vector<PortraitShapeDetails::Detail> portrait_detail_catalog(const std::string& parent = {}) const {
@@ -1080,10 +1118,210 @@ public:
         return result;
     }
     std::shared_ptr<const PortraitShapeDetails> portrait_shape_details() const { return m_portrait_shapes; }
+    std::map<std::string,AI::SemanticColoring::Color> import_cell_color_overrides() const {
+        if(!m_portrait_shapes || !m_portrait_shapes->surface_partition) return {};
+        auto result=m_portrait_shapes->cell_colors;
+        const std::map<size_t,AI::SemanticColoring::Color> manual_roots(m_face_color_overrides.begin(),m_face_color_overrides.end());
+        for(const auto& face:m_portrait_shapes->surface_partition->at("faces")) {
+            const auto manual=manual_roots.find(face.at("source_face_id"));
+            if(manual!=manual_roots.end()) for(const auto& cell:face.at("cells")) result[cell.at("id")]=manual->second;
+        }
+        for(const auto& entry:m_manual_cell_colors) result[entry.first]=entry.second;
+        return result;
+    }
+    FaceColorOverrides implicit_cell_colors(FaceColorOverrides colors) const {
+        if(!cell_editing()) return colors;
+        std::map<size_t,AI::SemanticColoring::Color> result(colors.begin(),colors.end());
+        for(const auto& entry:m_manual_cell_colors) if(entry.first.compare(0,7,"source:")==0) {
+            const auto mapped=m_leaf_editing->cells->indices(entry.first);
+            result[m_leaf_editing->source_face(mapped.front())]=entry.second;
+        }
+        return {result.begin(),result.end()};
+    }
+    SubfaceColorOverrides contour_subfaces(SubfaceColorOverrides colors) const {
+        if(!m_portrait_shapes || !m_portrait_shapes->surface_partition) return colors;
+        std::set<size_t> explicit_roots;
+        for(const auto& face:m_portrait_shapes->surface_partition->at("faces")) explicit_roots.insert(face.at("source_face_id").get<size_t>());
+        colors.erase(std::remove_if(colors.begin(),colors.end(),[&](const auto& item){return explicit_roots.count(item.face_id)!=0;}),colors.end());
+        return colors;
+    }
+    // Build a conservative local residual request from the verified portrait
+    // surface. The request contains no provider endpoint or
+    // credential and excludes every currently locked face.
+    nlohmann::json portrait_residual_request() const {
+        if(cell_editing() || (m_portrait_shapes && m_portrait_shapes->surface_partition))
+            throw std::invalid_argument("residual_cleanup_paused_for_contour_candidate");
+        if (!m_portrait_shapes || !m_portrait_shapes->compatible(m_geometry_id,m_triangle_count) ||
+            !m_color_trial || m_color_trial->semantic_palette().empty() ||
+            m_portrait_shapes->runtime_fingerprint!=portrait_shape_runtime_fingerprint())
+            throw std::invalid_argument("verified_local_portrait_evidence_unavailable");
+        const auto editor=m_leaf_editing ? m_leaf_editing->canonical_editor : m_region_editor;
+        if(!editor || !editor->ready()) throw std::invalid_argument("verified_parent_topology_unavailable");
+        const auto& locks=m_portrait_shapes->locks;
+        PortraitShapeCache::verified_source(boost::filesystem::path(Slic3r::data_dir())/"cache",locks.source_sha256);
+        nlohmann::json request = {
+            {"schema", "orca.portrait-residual-request/v1"},
+            {"source_sha256", locks.source_sha256}, {"geometry_id", m_geometry_id},
+            {"face_count", m_triangle_count}, {"evidence_sha256", locks.evidence_sha256},
+            {"shape_lock_sha256", PortraitShapeCache::digest(locks.encode().dump())},
+            {"runtime_sha256", locks.runtime_sha256}, {"policy_sha256", locks.policy_sha256},
+            {"candidate_sha256",AI::model_artifact_sha256(m_model_path)},
+            {"palette",m_color_trial->semantic_palette()},
+            {"appearance_sha256",PortraitShapeCache::digest(semantic_result_metadata().dump())},
+            {"manual_sha256",PortraitShapeCache::digest(face_color_metadata().dump())},
+            {"leaf_revision",m_leaf_edit_revision},
+            {"remaining_triangle_budget", 15}, {"frozen_faces", nlohmann::json::array()},
+            {"units", nlohmann::json::array()}
+        };
+        std::set<size_t> frozen;
+        if (m_portrait_shapes) for (const auto& lock : m_portrait_shapes->locks.locks)
+            frozen.insert(lock.locked_faces.begin(), lock.locked_faces.end());
+        for (const auto face : frozen) request["frozen_faces"].push_back(face);
+        std::set<size_t> blocked=frozen;
+        blocked.insert(m_portrait_shapes->reserved_faces.begin(),m_portrait_shapes->reserved_faces.end());
+        for(const auto& color:m_face_color_overrides) blocked.insert(color.first);
+        for(const auto& color:m_manual_leaf_colors) blocked.insert(color.first.source_face_id);
+        for(const auto& color:import_subface_color_overrides()) blocked.insert(color.face_id);
+        for(size_t f=0;f<m_protected_faces.size();++f) if(m_protected_faces[f])
+            blocked.insert(m_leaf_editing ? m_leaf_editing->source_face(f) : f);
+        request["units"]=PortraitResidual::parent_units(*m_portrait_shapes,m_color_trial->semantic_palette(),
+            m_color_trial->semantic_portrait_card(),import_face_color_overrides(),blocked,editor->face_adjacency());
+        request["audit"]={{"total_faces",m_triangle_count},{"blocked_faces",blocked.size()},
+            {"verified_parent_samples",m_portrait_shapes->parent_samples.size()}};
+        return request;
+    }
+    // Apply only a user-approved, identity-matched local proposal.  This is
+    // deliberately separate from proposal generation so a stale or malformed
+    // result can never mutate the current preview.
+    bool apply_portrait_residual_proposal(const PortraitResidual::Document& document,
+                                          size_t& applied, size_t& skipped, std::string& error) {
+        applied = skipped = 0;
+        error.clear();
+        try {
+            const auto request=portrait_residual_request();
+            document.bind_to_request(request,PortraitShapeCache::digest(request.dump()));
+            const auto expected=PortraitResidual::Document::decode_identity(request);
+            if (document.status != "READY" && document.status != "PROTECTED_R9") {
+                error = "residual_proposal_not_ready"; return false;
+            }
+            if (!m_region_evidence || !m_region_evidence->compatible(m_geometry_id, m_triangle_count, m_region_runtime_identity)) {
+                error = "residual_region_evidence_unavailable"; return false;
+            }
+            if (m_portrait_shapes && !m_portrait_shapes->locks.compatible(
+                    m_geometry_id, expected.source_sha256, m_triangle_count,
+                    expected.evidence_sha256, expected.runtime_sha256, expected.policy_sha256)) {
+                error = "residual_shape_lock_drift"; return false;
+            }
+
+            std::set<size_t> locked_faces;
+            std::set<AI::BeautyLeafKey> locked_leaves;
+            if (m_portrait_shapes) for (const auto& lock : m_portrait_shapes->locks.locks) {
+                locked_faces.insert(lock.locked_faces.begin(), lock.locked_faces.end());
+                locked_leaves.insert(lock.locked_leaves.begin(), lock.locked_leaves.end());
+            }
+            const auto key_from = [](const std::array<size_t, 3>& value) {
+                return AI::BeautyLeafKey{value[0], uint8_t(value[1]), uint8_t(value[2])};
+            };
+            auto root_colors = std::map<size_t, std::array<float, 3>>(
+                m_face_color_overrides.begin(), m_face_color_overrides.end());
+            auto leaf_colors = m_manual_leaf_colors;
+            size_t changed_roots = 0, changed_leaves = 0;
+            for (const auto& item : document.proposals) {
+                if (!item.actionable_with_target() || item.status != "PROPOSED") { ++skipped; continue; }
+                if (item.subject_id.empty() || item.parent_region.empty() ||
+                    std::find(m_portrait_shapes->subjects.begin(),m_portrait_shapes->subjects.end(),item.subject_id)==m_portrait_shapes->subjects.end() ||
+                    (item.kind == "skin" && item.parent_region != "skin") ||
+                    (item.kind == "hair" && item.parent_region != "hair") ||
+                    (item.kind == "cloth" && item.parent_region != "cloth") || item.view_support < 2) {
+                    ++skipped; continue;
+                }
+                const std::array<float, 3> target = *item.target_rgb;
+                bool valid = true;
+                for (const auto face : item.source_faces) {
+                    if (item.leaf_keys.empty() && (locked_faces.count(face) ||
+                        (m_portrait_shapes && m_portrait_shapes->locks.leaf_domain &&
+                         std::any_of(locked_leaves.begin(), locked_leaves.end(), [face](const auto& key) {
+                             return key.source_face_id == face;
+                         })))) { valid = false; break; }
+                }
+                if (!valid) { ++skipped; continue; }
+                if (!item.leaf_keys.empty()) {
+                    if (!m_leaf_editing && !ensure_region_editor()) { ++skipped; continue; }
+                    if (!m_leaf_editing) { ++skipped; continue; }
+                    for (const auto& encoded : item.leaf_keys) {
+                        const auto key = key_from(encoded);
+                        if (locked_leaves.count(key) || !std::binary_search(item.source_faces.begin(), item.source_faces.end(), key.source_face_id)) {
+                            valid = false; break;
+                        }
+                        try { (void)m_leaf_editing->index(key); }
+                        catch (...) { valid = false; break; }
+                    }
+                }
+                if (!valid) { ++skipped; continue; }
+                size_t local_changes = 0;
+                if (item.leaf_keys.empty()) {
+                    for (const auto face : item.source_faces) if (!root_colors.count(face)) {
+                        root_colors[face] = target; ++local_changes;
+                    }
+                    if (local_changes) changed_roots += local_changes;
+                } else {
+                    for (const auto& encoded : item.leaf_keys) {
+                        const auto key = key_from(encoded);
+                        // An existing explicit root color is a higher-priority
+                        // manual edit and therefore blocks AI leaf paint.
+                        if (root_colors.count(key.source_face_id) || leaf_colors.count(key)) continue;
+                        leaf_colors[key] = {target[0], target[1], target[2]}; ++local_changes;
+                    }
+                    if (local_changes) changed_leaves += local_changes;
+                }
+                if (!local_changes) ++skipped;
+            }
+            if (!changed_roots && !changed_leaves) { error = "no_safe_residual_proposals"; return false; }
+            m_face_color_overrides.clear();
+            m_face_color_overrides.reserve(root_colors.size());
+            for (const auto& item : root_colors) m_face_color_overrides.emplace_back(item.first, item.second);
+            if (changed_leaves) {
+                m_manual_leaf_colors = std::move(leaf_colors);
+                m_pending_leaf_edits = nullptr;
+                ++m_leaf_edit_revision;
+                if (m_leaf_editing && m_portrait_shapes)
+                    (void)AI::BeautyLeafEdits::capture(*m_leaf_editing, m_portrait_shapes->locks,
+                        m_manual_leaf_colors, selection_state());
+            }
+            if (m_leaf_editing && (changed_leaves || changed_roots)) refresh_leaf_colors();
+            else if (m_semantic_ready) rebuild_semantic_preview_from_cached_result();
+            else if (m_canvas) m_canvas->Refresh(false);
+            applied = changed_roots + changed_leaves;
+            return true;
+        } catch (const std::exception& exception) {
+            error = exception.what();
+            return false;
+        } catch (...) {
+            error = "residual_apply_failed";
+            return false;
+        }
+    }
+    bool preview_portrait_residual(const PortraitResidual::Document& document,std::string& error) {
+        try {
+            const auto request=portrait_residual_request();
+            document.bind_to_request(request,PortraitShapeCache::digest(request.dump()));
+            auto roots=import_face_color_overrides();
+            auto children=import_subface_color_overrides();
+            std::map<size_t,std::array<float,3>> colors(roots.begin(),roots.end());
+            for(const auto& item:document.proposals) if(item.actionable_with_target() && item.leaf_keys.empty())
+                for(const auto face:item.source_faces) colors[face]=*item.target_rgb;
+            roots.assign(colors.begin(),colors.end());
+            auto geometry=build_semantic_colored_geometry(*m_semantic_source,roots,children);
+            if(!m_context || !m_canvas->SetCurrent(*m_context)) throw std::runtime_error("preview_context_unavailable");
+            auto model=std::make_unique<GLModel>();model->init_from(std::move(geometry));
+            m_residual_preview_model=std::move(model);m_canvas->Refresh(false);error.clear();return true;
+        } catch(const std::exception& e) {error=e.what();return false;}
+    }
+    void clear_portrait_residual_preview() { m_residual_preview_model.reset();if(m_canvas)m_canvas->Refresh(false); }
     bool portrait_shapes_unlocked() const { return m_shapes_unlocked; }
     void restore_portrait_shapes(std::shared_ptr<const PortraitShapeDetails> details, bool unlocked = false) {
         const bool changed_domain = m_portrait_shapes && details &&
-            (m_portrait_shapes->locks.encode() != details->locks.encode() ||
+            (m_portrait_shapes->boundary_fingerprint() != details->boundary_fingerprint() ||
              (m_portrait_shapes->surface_ownership ? m_portrait_shapes->surface_ownership->fingerprint() : std::string()) !=
              (details->surface_ownership ? details->surface_ownership->fingerprint() : std::string()));
         if (m_leaf_editing && (!details || changed_domain)) {
@@ -1092,19 +1330,22 @@ public:
             m_leaf_editing.reset();
             m_protected_faces.clear(); m_foreground_faces.clear(); m_selection_domain.clear();
             m_selection_history.clear(); m_selection_redo.clear();
-            m_manual_leaf_colors.clear(); m_pending_leaf_edits=nullptr;
+            m_manual_leaf_colors.clear();m_manual_cell_colors.clear(); m_pending_leaf_edits=nullptr;
         }
         m_portrait_shapes = details && details->compatible(m_geometry_id, m_triangle_count) ? std::move(details) : nullptr;
         m_shapes_unlocked = m_portrait_shapes && unlocked;
-        if (m_portrait_shapes && m_portrait_shapes->locks.leaf_domain && !m_leaf_editing && m_region_editor->ready()) {
+        if (m_portrait_shapes && m_portrait_shapes->derived_boundary() && !m_leaf_editing && m_region_editor->ready()) {
             cancel_surface_selection();
             m_pending_mesh = m_region_editor->mesh(); m_pending_vertex_colors = m_region_editor->vertex_colors();
             m_pending_selection = selection_state();
             m_region_editor = std::make_shared<AI::VertexColorRegionEditor>();
             ensure_region_editor();
         }
+        if(m_portrait_shapes && m_portrait_shapes->derived_boundary() && !m_leaf_editing) ensure_region_editor();
     }
     const AI::ShapeLockSet* active_shape_locks() const {
+        if(m_portrait_shapes && m_portrait_shapes->surface_partition)
+            return !m_shapes_unlocked && m_leaf_editing ? &m_leaf_editing->editing_locks : nullptr;
         return m_portrait_shapes && !m_shapes_unlocked && !m_portrait_shapes->locks.empty() ? &m_portrait_shapes->locks : nullptr;
     }
     nlohmann::json portrait_shape_metadata(const boost::filesystem::path& model = {}) const {
@@ -1115,6 +1356,7 @@ public:
     }
     void constrain_shape_selection(SelectionState& state, bool parent_selection = false) const {
         if (m_leaf_editing && active_shape_locks()) { m_leaf_editing->constrain(state,parent_selection); return; }
+        if (cell_editing()) { m_leaf_editing->normalize_cells(state); return; }
         if (!active_shape_locks() || state.selected.size() != m_triangle_count) return;
         const auto owned = m_portrait_shapes->ownership();
         bool has_locked = false;
@@ -1330,10 +1572,11 @@ public:
     }
     bool semantic_processing() const { return m_semantic_controller && m_semantic_controller->busy(); }
     bool semantic_reoptimization_available() const {
-        return !semantic_processing() && m_has_model && bool(m_semantic_source) && m_color_trial &&
+        return portrait_recognition_enabled() && !semantic_processing() && m_has_model && bool(m_semantic_source) && m_color_trial &&
             !m_color_trial->colors().empty() && m_color_trial->colors().size() <= 6;
     }
     wxString semantic_reoptimization_reason() const {
+        if (!portrait_recognition_enabled()) return _L("当前版本可直接自动划区、分区填色和画笔涂色。");
         if (semantic_processing()) return _L("正在识别人像区域，请等待完成或取消。");
         if (!m_has_model) return _L("当前没有已加载模型。");
         if (!m_semantic_source) return _L("当前模型缺少可用于人像识别的面颜色输入。");
@@ -1343,8 +1586,9 @@ public:
     }
     const wxString& semantic_error() const { return m_semantic_error; }
     std::vector<int32_t> beauty_semantic_labels() const {
-        const bool parents=m_leaf_editing && m_portrait_shapes && m_portrait_shapes->surface_ownership;
-        if (!semantic_regions_ready() && !parents) return {};
+        const bool parents=m_leaf_editing && !cell_editing() && m_portrait_shapes && m_portrait_shapes->surface_ownership;
+        const bool contour_parents=cell_editing() && m_portrait_shapes && m_portrait_shapes->surface_partition;
+        if (!semantic_regions_ready() && !parents && !contour_parents) return {};
         std::vector<int32_t> labels;
         labels.reserve(m_triangle_count);
         for (size_t face = 0; face < m_triangle_count; ++face) {
@@ -1368,6 +1612,7 @@ public:
         }
         if (m_leaf_editing) labels = m_leaf_editing->expand(labels,int32_t(-1));
         if (parents) m_portrait_shapes->surface_ownership->overlay_labels(m_leaf_editing->keys,labels);
+        if (cell_editing() && m_portrait_shapes) m_portrait_shapes->overlay_parent_labels(*m_leaf_editing,labels);
         if (m_portrait_shapes) {
             const auto offset = int32_t(AI::SemanticColoring::label_count + (secondary_regions_ready() ? m_secondary_region_evidence->regions.size() : 0));
             const auto details = portrait_detail_catalog();
@@ -1453,8 +1698,9 @@ public:
     size_t select_semantic_region(const std::string& region, bool record_history = true)
     {
         m_semantic_selection_protected = m_semantic_selection_low_confidence = 0;
-        const bool parents=m_leaf_editing && m_portrait_shapes && m_portrait_shapes->surface_ownership;
-        if ((!semantic_regions_ready() && !parents) || !region_editing_ready()) return 0;
+        const bool parents=m_leaf_editing && !cell_editing() && m_portrait_shapes && m_portrait_shapes->surface_ownership;
+        const bool contour_parents=cell_editing() && m_portrait_shapes && m_portrait_shapes->surface_partition;
+        if ((!semantic_regions_ready() && !parents && !contour_parents) || !region_editing_ready()) return 0;
         if (!m_region_editor->ready()) {
             m_deferred_selection = [this, region, record_history] { select_semantic_region(region, record_history); };
             ensure_region_editor();
@@ -1465,24 +1711,25 @@ public:
         if (semantic_regions_ready()) match = m_region_evidence->select(region,m_leaf_editing ? m_leaf_editing->collapse(state) : state);
         else { match.selection=state; match.selection.selected.assign(state.selected.size(),0); }
         if (!match.selected) {
-            if (!parents || (region!="skin" && region!="clothes")) return 0;
+            if ((!parents && !contour_parents) || (region!="skin" && region!="clothes")) return 0;
             match.selection=state;
             match.selection.selected.assign(state.selected.size(),0);
             match.selection.foreground.assign(state.selected.size(),0);
             match.selection.domain.assign(state.selected.size(),0);
         }
-        if (m_leaf_editing && match.selected) {
+        if (m_leaf_editing && match.selection.selected.size() != m_leaf_editing->size()) {
             match.selection = m_leaf_editing->expand(match.selection);
             match.selection.protected_faces = state.protected_faces;
             for (size_t i = 0; i < match.selection.selected.size(); ++i)
                 if (i < state.protected_faces.size() && state.protected_faces[i]) match.selection.selected[i] = 0;
         }
         if (parents) {
-            if (match.selection.selected.size()!=m_leaf_editing->keys.size()) {
+            if (match.selection.selected.size()!=m_leaf_editing->size()) {
                 match.selection=state;match.selection.selected.assign(state.selected.size(),0);
             }
             m_portrait_shapes->surface_ownership->overlay_selection(region,m_leaf_editing->keys,match.selection);
         }
+        if (contour_parents) m_portrait_shapes->overlay_parent_selection(region,*m_leaf_editing,match.selection);
         m_semantic_selection_protected = match.protected_count;
         m_semantic_selection_low_confidence = match.low_confidence;
         constrain_shape_selection(match.selection, true);
@@ -1525,18 +1772,23 @@ public:
     void set_semantic_completion_callback(std::function<void(bool)> callback) {
         m_semantic_completion = std::move(callback);
     }
+    void restore_manual_face_colors(FaceColorOverrides colors) { m_face_color_overrides = std::move(colors); }
     const FaceColorOverrides& face_color_overrides() const { return m_face_color_overrides; }
+    size_t paint_beauty_faces(const std::vector<size_t>& faces, const RGBA& color);
+    bool restore_beauty_face_colors(const FaceColorOverrides& colors);
+    void set_paint_commit_callback(std::function<void(const std::vector<size_t>&)> callback) { m_paint_commit = std::move(callback); }
+    void set_beauty_history_callback(std::function<void(bool)> callback) { m_beauty_history = std::move(callback); }
     FaceColorOverrides import_face_color_overrides(bool use_current_trial = true) const {
         if (use_current_trial && !m_semantic_analysis && !m_saved_semantic_faces.empty())
             { auto result=AI::SemanticColoring::compose(m_saved_semantic_faces,m_face_color_overrides,true);
-              auto children=SubfaceColorOverrides{}; AI::compose_leaf_colors(result,children,m_manual_leaf_colors); return result; }
+              auto children=SubfaceColorOverrides{}; AI::compose_leaf_colors(result,children,m_manual_leaf_colors); return implicit_cell_colors(std::move(result)); }
         const bool semantic = use_current_trial && m_color_trial_enabled &&
             m_color_trial->semantic_optimization() && m_semantic_ready && m_semantic_analysis;
         auto automatic = semantic
             ? AI::SemanticColoring::apply_semantic_region_slot_overrides(m_automatic_face_colors, *m_semantic_analysis,
                 m_color_trial->semantic_region_slots(), m_color_trial->semantic_palette())
             : m_automatic_face_colors;
-        if (semantic && !(m_portrait_shapes && m_portrait_shapes->locks.leaf_domain)) {
+        if (semantic && !(m_portrait_shapes && m_portrait_shapes->derived_boundary())) {
             FaceColorOverrides locked;
             if (m_portrait_shapes) for (const auto& item : m_automatic_face_colors)
                 if (m_portrait_shapes->locks.face_locked(item.first)) locked.push_back(item);
@@ -1547,19 +1799,19 @@ public:
         auto children=SubfaceColorOverrides{};
         if (semantic && m_portrait_shapes && m_portrait_shapes->locks.leaf_domain)
             AI::preserve_locked_leaf_colors(m_portrait_shapes->locks,m_automatic_face_colors,m_automatic_subface_colors,result,children);
-        AI::compose_leaf_colors(result,children,m_manual_leaf_colors); return result;
+        AI::compose_leaf_colors(result,children,m_manual_leaf_colors); return implicit_cell_colors(std::move(result));
     }
     SubfaceColorOverrides import_subface_color_overrides(bool use_current_trial = true) const {
         if (use_current_trial && !m_semantic_analysis && !m_saved_semantic_subfaces.empty())
             { auto result=AI::SemanticColoring::compose_subfaces(m_saved_semantic_subfaces,m_face_color_overrides,true);
-              auto roots=FaceColorOverrides{}; AI::compose_leaf_colors(roots,result,m_manual_leaf_colors); return result; }
+              auto roots=FaceColorOverrides{}; AI::compose_leaf_colors(roots,result,m_manual_leaf_colors); return contour_subfaces(std::move(result)); }
         const bool semantic = use_current_trial && m_color_trial_enabled &&
             m_color_trial->semantic_optimization() && m_semantic_ready && m_semantic_analysis;
         auto automatic = semantic
             ? AI::SemanticColoring::apply_semantic_region_slot_overrides(m_automatic_subface_colors, *m_semantic_analysis,
                 m_color_trial->semantic_region_slots(), m_color_trial->semantic_palette())
             : m_automatic_subface_colors;
-        if (semantic && !(m_portrait_shapes && m_portrait_shapes->locks.leaf_domain)) {
+        if (semantic && !(m_portrait_shapes && m_portrait_shapes->derived_boundary())) {
             auto faces = m_automatic_face_colors;
             compose_portrait_shapes(*m_semantic_analysis, m_portrait_shapes.get(), faces, automatic);
         }
@@ -1568,7 +1820,7 @@ public:
             m_color_trial->semantic_region_slots(),m_color_trial->semantic_palette()) : FaceColorOverrides{};
         if (semantic && m_portrait_shapes && m_portrait_shapes->locks.leaf_domain)
             AI::preserve_locked_leaf_colors(m_portrait_shapes->locks,m_automatic_face_colors,m_automatic_subface_colors,roots,result);
-        AI::compose_leaf_colors(roots,result,m_manual_leaf_colors); return result;
+        AI::compose_leaf_colors(roots,result,m_manual_leaf_colors); return contour_subfaces(std::move(result));
     }
     nlohmann::json semantic_color_metadata() const {
         if (!m_semantic_analysis) return nlohmann::json::object();
@@ -1598,7 +1850,10 @@ public:
     bool region_selection_failed() const { return m_region_prepare_failed; }
     bool set_saved_semantic_result(FaceColorOverrides faces, SubfaceColorOverrides subfaces) {
         if (!m_semantic_source || !m_context || !m_canvas->SetCurrent(*m_context)) return false;
-        auto geometry = build_semantic_colored_geometry(*m_semantic_source, faces, subfaces);
+        const auto cell_colors=import_cell_color_overrides();
+        auto geometry = build_semantic_colored_geometry(*m_semantic_source, faces, subfaces,{},
+            m_portrait_shapes && m_portrait_shapes->surface_partition ? m_portrait_shapes->surface_partition.get() : nullptr,
+            &cell_colors);
         if (geometry.is_empty()) return false;
         auto model = std::make_unique<GLModel>();
         model->init_from(std::move(geometry));
@@ -1771,6 +2026,15 @@ public:
     }
     ModelPreviewColorControls::State color_trial_state() const { return m_color_trial->state(); }
     wxWindow* build_workbench_palette(wxWindow* parent) { return m_color_trial->build_workbench_palette(parent); }
+    wxWindow* build_workbench_mode(wxWindow* parent, std::function<void(bool)> mode, std::function<void()> cancel) {
+        m_color_trial->on_semantic_mode = std::move(mode); m_color_trial->on_semantic_cancel = std::move(cancel);
+        return m_color_trial->build_workbench_mode(parent);
+    }
+    void set_portrait_mode(bool enabled) { m_color_trial->set_semantic_mode(enabled); m_canvas->Refresh(false); }
+    bool has_saved_portrait_result() const { return bool(m_portrait_shapes) || !m_saved_semantic_faces.empty() || m_semantic_ready; }
+    void set_portrait_progress(std::shared_ptr<PortraitOptimizationTask> task) { m_portrait_progress = std::move(task); }
+    void set_portrait_input_changed(std::function<void()> fn) { m_portrait_input_changed = std::move(fn); }
+    void after_next_preview_frame(std::function<void()> fn) { m_after_preview_frame = std::move(fn); m_canvas->Refresh(false); }
     void synchronize_project_colors(bool activate = false) {
         const auto before = m_color_trial->state();
         m_suppress_semantic_change = true;
@@ -1778,6 +2042,7 @@ public:
         m_suppress_semantic_change = false;
         m_color_trial_enabled = m_color_trial->enabled();
         m_trial_palette = m_color_trial->colors();
+        if (changed && m_portrait_input_changed) m_portrait_input_changed();
         if (changed) synchronize_project_bound_semantics(before, m_color_trial->state());
         m_canvas->Refresh(false);
     }
@@ -1803,6 +2068,19 @@ public:
             if (!manual_faces.count(item.first) && !manual_leaf(item.first, 0, 0)) recolor(item.second);
         for (auto& item : m_saved_semantic_subfaces)
             if (!manual_faces.count(item.face_id) && !manual_leaf(item.face_id, item.path.depth, item.path.value)) recolor(item.color);
+        if (m_portrait_shapes && m_portrait_shapes->surface_partition) {
+            auto shapes = std::make_shared<PortraitShapeDetails>(*m_portrait_shapes);
+            for (const auto& row : shapes->surface_partition->at("faces")) {
+                const auto face = row.at("source_face_id").get<size_t>();
+                if (manual_faces.count(face)) continue;
+                for (const auto& cell : row.at("cells")) {
+                    const auto id = cell.at("id").get<std::string>();
+                    if (m_manual_cell_colors.count(id)) continue;
+                    if (auto color = shapes->cell_colors.find(id); color != shapes->cell_colors.end()) recolor(color->second);
+                }
+            }
+            m_portrait_shapes = std::move(shapes);
+        }
         if (!m_semantic_analysis && (!m_saved_semantic_faces.empty() || !m_saved_semantic_subfaces.empty()))
             set_saved_semantic_result(m_saved_semantic_faces, m_saved_semantic_subfaces);
         else rebuild_semantic_preview_from_cached_result();
@@ -1895,8 +2173,8 @@ public:
         std::vector<uint8_t> expected(m_region_editor->selected_faces().size(), 0);
         if (m_leaf_editing) {
             const std::set<size_t> roots(face_indices.begin(),face_indices.end());
-            for (size_t i=0;i<m_leaf_editing->keys.size();++i)
-                expected[i]=roots.count(m_leaf_editing->keys[i].source_face_id)?1:0;
+            for (size_t i=0;i<m_leaf_editing->size();++i)
+                expected[i]=roots.count(m_leaf_editing->source_face(i))?1:0;
             return std::any_of(expected.begin(),expected.end(),[](auto value){return value!=0;}) && expected==m_region_editor->selected_faces();
         }
         bool has_valid_face = false;
@@ -2011,8 +2289,8 @@ public:
         std::vector<size_t> editing_indices;
         if (m_leaf_editing) {
             std::set<size_t> roots(face_indices.begin(),face_indices.end());
-            for (size_t i = 0; i < m_leaf_editing->keys.size(); ++i)
-                if (roots.count(m_leaf_editing->keys[i].source_face_id)) editing_indices.push_back(i);
+            for (size_t i = 0; i < m_leaf_editing->size(); ++i)
+                if (roots.count(m_leaf_editing->source_face(i))) editing_indices.push_back(i);
         }
         const size_t localized = m_region_editor->select_faces(m_leaf_editing ? editing_indices : face_indices);
         if (localized == 0)
@@ -2030,6 +2308,7 @@ private:
     struct CachedPreview {
         std::vector<std::unique_ptr<GLModel>> models;
         std::unique_ptr<ModelPreviewTexture> texture_model;
+        std::unique_ptr<GLModel> manual_color_model;
         indexed_triangle_set mesh;
         std::vector<RGBA> vertex_colors;
         BoundingBoxf3 bounds;
@@ -2096,12 +2375,14 @@ private:
         for (const auto& model : m_models)
             bytes += model->cpu_memory_used() + model->gpu_memory_used();
         if (m_texture_model) bytes += m_texture_model->memory_used();
+        if (m_manual_color_model) bytes += m_manual_color_model->cpu_memory_used() + m_manual_color_model->gpu_memory_used();
         constexpr size_t cache_limit = size_t(384) * 1024 * 1024;
         if (bytes > cache_limit)
             return;
         m_cached_preview = std::make_unique<CachedPreview>();
         m_cached_preview->geometry_id = m_geometry_id;
         m_cached_preview->face_color_overrides = m_face_color_overrides;
+        m_cached_preview->manual_color_model = std::move(m_manual_color_model);
         m_cached_preview->semantic_source = m_semantic_source;
         m_cached_preview->region_evidence = m_region_evidence;
         m_cached_preview->region_runtime_identity = m_region_runtime_identity;
@@ -2210,13 +2491,17 @@ private:
                     } else if (task->regions)
                         task->success = task->editor.initialize(task->mesh, task->colors, task->error, canceled);
                     else task->success = task->editor.initialize_for_picking(task->mesh, task->colors, task->error, canceled);
-                    if (task->success && task->shapes && task->shapes->locks.leaf_domain) {
+                    if (task->success && task->shapes && (task->shapes->locks.leaf_domain ||
+                        (task->shapes->surface_partition && task->shapes->contour_locks))) {
                         auto leaf_editor = std::make_shared<AI::VertexColorRegionEditor>();
                         if (task->source_editor)
                             task->success = leaf_editor->initialize(task->source_editor->mesh(), task->source_editor->vertex_colors(), task->error, canceled);
                         else
                             *leaf_editor = std::move(task->editor);
-                        if (task->success)
+                        if (task->success && task->shapes->surface_partition && task->shapes->contour_locks)
+                            task->leaves = AI::BeautyLeafEditing::build_cells(*task->shapes->contour_locks,
+                                *task->shapes->surface_partition, std::move(leaf_editor), task->shapes->base_colors);
+                        else if (task->success)
                             task->leaves = AI::BeautyLeafEditing::build(task->shapes->locks, std::move(leaf_editor), task->shapes->base_colors,
                                 task->shapes->surface_ownership ? &task->shapes->surface_ownership->editing_domain : nullptr);
                     }
@@ -2277,7 +2562,13 @@ private:
             m_foreground_faces = std::move(state.foreground); m_selection_domain = std::move(state.domain);
             rebuild_selection_model();
         }
-        if (!m_pending_leaf_edits.is_null()) restore_leaf_edits(m_pending_leaf_edits);
+        if (!m_pending_leaf_edits.is_null() && !restore_leaf_edits(m_pending_leaf_edits)) {
+            m_region_prepare_failed = true;
+            m_deferred_selection = {};
+            show_region_preparation_status(_L("裁切编辑数据恢复失败，保存候选尚未就绪。"));
+            return;
+        }
+        else if(m_leaf_editing) refresh_leaf_colors();
         m_region_prepare_status->Hide();
         Layout();
         auto deferred = std::move(m_deferred_selection);
@@ -2432,6 +2723,12 @@ private:
             BOOST_LOG_TRIVIAL(warning) << "Surface selection failed: " << task->error;
             notify_selection_changed(); return;
         }
+        if (task->gesture == SelectionGesture::Paint) {
+            // Paint only this stroke, not a previously selected whole partition.
+            if (m_paint_commit) m_paint_commit(task->result.faces);
+            m_region_prepare_status->Hide();
+            notify_selection_changed(); m_canvas->Refresh(false); return;
+        }
         const auto before = selection_state();
         auto selected = m_region_editor->selected_faces();
         if (m_protected_faces.size() != selected.size()) m_protected_faces.assign(selected.size(), 0);
@@ -2507,7 +2804,13 @@ private:
         if (selection_busy()) return;
         const auto hit = m_region_editor->pick_surface(origin,direction);
         const std::optional<size_t> face = hit ? std::optional<size_t>(hit->face) : std::nullopt;
-        if (hit && m_leaf_editing && !(m_leaf_editing->hit_key(*hit) == m_leaf_editing->keys[hit->face])) return;
+        if(hit && cell_editing()) {
+            Vec3d bary=Vec3d::Zero();
+            const auto& triangle=m_leaf_editing->cells->triangles.at(hit->face);
+            for(size_t k=0;k<3;++k) bary+=hit->barycentric[k]*triangle.corners[k];
+            const auto mapped=m_leaf_editing->cells->locate(triangle.source_face_id,bary);
+            (void)mapped;
+        } else if (hit && m_leaf_editing && !(m_leaf_editing->hit_key(*hit) == m_leaf_editing->keys[hit->face])) return;
         if (!face)
             return;
         if (!ensure_region_editor(true)) {
@@ -2813,22 +3116,21 @@ private:
                     shader->set_uniform(("preview_rgb[" + std::to_string(i) + "]").c_str(), m_trial_palette[i]);
                     shader->set_uniform(("preview_lab[" + std::to_string(i) + "]").c_str(), PreviewPalette::to_lab(m_color_trial->mapping_colors()[i]));
                 }
-                // Pure separation must not introduce intermediate colors at
-                // multisample edges or through framebuffer dithering. Restore
-                // both states immediately after drawing the trial surface.
+                // Display antialiasing never feeds back into material ownership.
                 const bool pure_separation = m_color_trial_enabled && !m_gray_view && !m_color_trial->lighting();
-                const bool multisample = pure_separation && ::glIsEnabled(GL_MULTISAMPLE);
                 const bool dither = pure_separation && ::glIsEnabled(GL_DITHER);
                 if (pure_separation) {
-                    glsafe(::glDisable(GL_MULTISAMPLE));
                     glsafe(::glDisable(GL_DITHER));
                 }
                 GLint polygon_mode[2]={GL_FILL,GL_FILL};
                 ::glGetIntegerv(GL_POLYGON_MODE,polygon_mode);
                 if(m_wireframe_view)glsafe(::glPolygonMode(GL_FRONT_AND_BACK,GL_LINE));
-                if (m_semantic_ready && m_semantic_model && ((m_color_trial_enabled && m_color_trial->semantic_optimization()) ||
+                if(m_residual_preview_model) {
+                    shader->set_uniform("preview_color_count",0);
+                    m_residual_preview_model->render(shader);
+                } else if (m_semantic_ready && m_semantic_model && ((m_color_trial_enabled && m_color_trial->semantic_optimization()) ||
                     (m_beauty_view && (!m_saved_semantic_faces.empty() || !m_saved_semantic_subfaces.empty())) ||
-                    (m_leaf_editing && !m_manual_leaf_colors.empty())) &&
+                    (m_leaf_editing && (!m_manual_leaf_colors.empty() || !m_manual_cell_colors.empty()))) &&
                     !m_gray_view && !(m_beauty_view && m_beauty_original_view))
                     m_semantic_model->render(shader);
                 else if (m_texture_model && !m_gray_view && !m_exact_surface_display)
@@ -2836,7 +3138,14 @@ private:
                 else for (const std::unique_ptr<GLModel>& model : m_models)
                     model->render(shader);
                 if(m_wireframe_view)glsafe(::glPolygonMode(GL_FRONT_AND_BACK,polygon_mode[0]));
-                if (multisample) glsafe(::glEnable(GL_MULTISAMPLE));
+                if (m_manual_color_model && !m_residual_preview_model && m_beauty_view && !m_gray_view && !m_beauty_original_view) {
+                    shader->set_uniform("preview_texture_enabled", false);
+                    GLint depth_func = GL_LESS;
+                    glsafe(::glGetIntegerv(GL_DEPTH_FUNC, &depth_func));
+                    glsafe(::glDepthFunc(GL_LEQUAL));
+                    m_manual_color_model->render(shader);
+                    glsafe(::glDepthFunc(depth_func));
+                }
                 if (dither) glsafe(::glEnable(GL_DITHER));
                 if ((m_selection_model || m_protection_model) && m_selection_enabled &&
                     m_selection_overlay_visible && !m_selection_preview_suppressed) {
@@ -2926,6 +3235,10 @@ private:
             m_pending_library_thumbnail_sha.clear();
             cache_library_model_thumbnail(artifact_sha);
         }
+        if (frame_submitted && m_after_preview_frame) {
+            auto completed = std::move(m_after_preview_frame);
+            CallAfter(std::move(completed));
+        }
         if (m_trial_toggle_started) {
             BOOST_LOG_TRIVIAL(info) << "AI color trial frame submitted: enabled=" << m_color_trial_enabled
                 << ", elapsed_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -2953,12 +3266,18 @@ private:
     wxTimer m_semantic_timer;
     std::unique_ptr<ModelSemanticColoring> m_semantic_controller;
     std::function<void(bool)> m_semantic_completion;
+    std::shared_ptr<PortraitOptimizationTask> m_portrait_progress;
+    std::function<void()> m_portrait_input_changed, m_after_preview_frame;
     std::shared_ptr<const AI::SemanticColoring::MeshSnapshot> m_semantic_source;
     std::shared_ptr<const PortraitShapeDetails> m_portrait_shapes;
     std::shared_ptr<AI::BeautyLeafEditing> m_leaf_editing;
     std::map<AI::BeautyLeafKey,AI::SemanticColoring::Color> m_manual_leaf_colors;
+    std::map<std::string,AI::SemanticColoring::Color> m_manual_cell_colors;
     nlohmann::json m_pending_leaf_edits;
     uint64_t m_leaf_edit_revision{0};
+    uint64_t m_semantic_submission_edit_revision{0};
+    FaceColorOverrides m_semantic_submission_manual;
+    bool m_semantic_submission_unlocked{false};
     bool m_shapes_unlocked {false};
     std::shared_ptr<const AI::SemanticColoring::Analysis> m_semantic_analysis;
     std::shared_ptr<const SemanticRegionEvidence> m_region_evidence;
@@ -2967,6 +3286,7 @@ private:
     std::string m_secondary_region_evidence_error;
     size_t m_semantic_selection_protected {0}, m_semantic_selection_low_confidence {0};
     std::unique_ptr<GLModel> m_semantic_model;
+    std::unique_ptr<GLModel> m_residual_preview_model;
     bool m_semantic_ready {false};
     wxString m_semantic_error;
     FaceColorOverrides m_automatic_face_colors;
@@ -2995,6 +3315,10 @@ private:
     std::vector<std::unique_ptr<GLModel>> m_models;
     std::unique_ptr<ModelPreviewTexture> m_texture_model;
     std::unique_ptr<GLModel> m_selection_model;
+    std::unique_ptr<GLModel> m_manual_color_model;
+    std::vector<Vec3f> m_manual_corner_normals;
+    std::function<void(const std::vector<size_t>&)> m_paint_commit;
+    std::function<void(bool)> m_beauty_history;
     std::unique_ptr<GLModel> m_protection_model;
     std::unique_ptr<GLModel> m_partition_model;
     std::function<void(size_t)> m_beauty_pick;

@@ -64,8 +64,10 @@ private:
 
 inline bool is_model_provider_not_configured(const std::string& error)
 {
-    // The client currently exposes the sidecar's message, not its error code.
-    return error == "Model generation is not configured.";
+    // Accept legacy messages as well as current structured provider rejections.
+    return error == "Model generation is not configured." ||
+           error == "feature_unavailable: Model generation is not configured." ||
+           error.rfind("provider_not_configured: ", 0) == 0;
 }
 
 } // namespace Slic3r::GUI::ModelGenerationPresentation

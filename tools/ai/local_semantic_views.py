@@ -75,3 +75,42 @@ def focus_camera(parent, rectangle, ids, depths, selected, name):
     if not np.isfinite(center).all() or not 0 < half_height < parent.half_height:
         return None
     return Camera(name, parent.basis.copy(), center, half_height, 768)
+
+
+def parent_cameras(vertices, faces, regions):
+    """Four independent parent-only views anchored to observed face geometry.
+
+    These are new viewing directions, not additional votes from the same crop.
+    They supply evidence only: native visibility, ownership, saved detail locks
+    and manual-color priority still decide whether any surface may change.
+    """
+    if len({r['subject_id'] for r in regions}) != 1:
+        return []
+    selected = sorted({int(s[0]) for r in regions if r['label'] in ('face', 'nose')
+                       for s in r['samples'] if s[1] >= .95 and s[2] >= .95 and s[4] >= 2})
+    if len(selected) < 32:
+        return []
+    vertices, faces = np.asarray(vertices), np.asarray(faces)
+    if min(selected) < 0 or max(selected) >= len(faces):
+        raise ValueError('Parent camera source identity mismatch')
+    triangles = vertices[faces[selected]].astype(np.float64)
+    direction = np.cross(triangles[:, 1]-triangles[:, 0], triangles[:, 2]-triangles[:, 0]).sum(0)
+    direction[2] = 0.
+    norm = np.linalg.norm(direction)
+    if not np.isfinite(triangles).all() or not np.isfinite(norm) or norm < 1e-12:
+        return []
+    direction /= norm
+    low, high = np.quantile(triangles.mean(1), [.01, .99], axis=0)
+    center = (low+high)/2
+    extent = float(np.linalg.norm(high-low)*.58*1.18)
+    if not math.isfinite(extent) or extent <= 0:
+        return []
+    result = []
+    for yaw in (-65, -25, 25, 65):
+        angle = math.radians(yaw)
+        d = np.array([direction[0]*math.cos(angle)-direction[1]*math.sin(angle),
+                      direction[0]*math.sin(angle)+direction[1]*math.cos(angle), 0.])
+        right = np.cross([0., 0., 1.], d); right /= np.linalg.norm(right)
+        result.append(Camera(f'parent-independent-{yaw}', np.stack((right, np.cross(d, right), d)),
+                             center.copy(), extent, 768))
+    return result

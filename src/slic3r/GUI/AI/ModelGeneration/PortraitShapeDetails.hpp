@@ -5,6 +5,7 @@
 #include "slic3r/GUI/AI/Model/BeautyRecognition.hpp"
 #include "PortraitSurfaceOwnership.hpp"
 #include "PortraitColorInheritance.hpp"
+#include "PortraitPaletteRoles.hpp"
 #include "slic3r/AI/ModelGeneration/SemanticColoring/SemanticColoring.hpp"
 #include <iomanip>
 #include <sstream>
@@ -17,6 +18,7 @@ struct PortraitShapeDetails {
         std::string key, subject, label, parent, status;
         std::vector<size_t> faces;
         std::vector<std::string> reasons;
+        size_t unit_count=0;
     };
     AI::ShapeLockSet locks;
     std::vector<RGBA> base_colors;
@@ -24,21 +26,118 @@ struct PortraitShapeDetails {
     // Complete validated evidence context, including people without shape locks.
     std::vector<std::string> subjects;
     std::string runtime_fingerprint;
+    nlohmann::json parent_samples = nlohmann::json::array();
+    // Parent evidence may be refreshed without changing an accepted contour's identity.
+    nlohmann::json parent_evidence_identity = nlohmann::json::object();
+    // Optional current-source proposals live in their own content-addressed
+    // sidecar. They do not change the accepted facial evidence identity.
+    std::shared_ptr<const nlohmann::json> parent_proposal;
+    std::map<size_t,std::string> parent_verified_roots;
+    std::map<std::string,AI::SemanticColoring::Color> parent_source_colors;
+    nlohmann::json parent_coverage_audit = nlohmann::json::object();
     std::shared_ptr<const PortraitSurfaceOwnership> surface_ownership;
     std::string ownership_diagnostic;
     std::shared_ptr<const PortraitColorInheritance> color_inheritance;
+    std::shared_ptr<const AI::BeautySurfaceShapeLock> contour_locks;
+    std::shared_ptr<const nlohmann::json> surface_partition;
+    std::map<std::string,AI::SemanticColoring::Color> cell_colors;
+    std::map<size_t,std::string> confirmed_parent_roots;
+    std::map<std::string,std::string> confirmed_parent_cell_labels;
+    std::string color_diagnostic;
+    nlohmann::json parent_cleanup_audit = nlohmann::json::object();
+
+    void validate_parent_identity() const {
+        if (parent_evidence_identity.empty()) return; // Old source-bound contexts remain readable.
+        const auto& identity=parent_evidence_identity;
+        LocalSemanticEvidence::detail::keys(identity,{"source_sha256","geometry_id","face_count",
+            "evidence_sha256","runtime_sha256","policy_sha256","host_runtime_fingerprint"});
+        if(identity.at("source_sha256")!=locks.source_sha256 || identity.at("geometry_id")!=locks.geometry_id ||
+            identity.at("face_count")!=locks.face_count) throw std::invalid_argument("Parent source identity changed.");
+        for(const auto* key:{"evidence_sha256","runtime_sha256","policy_sha256","host_runtime_fingerprint"})
+            if(!AI::ShapeLockSet::sha256(identity.at(key).get<std::string>()))
+                throw std::invalid_argument("Invalid parent evidence identity.");
+    }
+    bool current_parent_evidence(const std::string& fingerprint) const {
+        if(fingerprint.empty()) return false;
+        validate_parent_identity();
+        return parent_evidence_identity.empty() ? runtime_fingerprint==fingerprint && !parent_samples.empty() :
+            parent_evidence_identity.at("host_runtime_fingerprint")==fingerprint;
+    }
+    void bind_parent_evidence(const LocalSemanticEvidence::Evidence& evidence,
+                             const std::string& hash, const std::string& fingerprint) {
+        const auto& identity=evidence.identity;
+        if(identity.source_sha256!=locks.source_sha256 || identity.geometry_id!=locks.geometry_id ||
+            identity.face_count!=locks.face_count || evidence.subjects!=subjects)
+            throw std::invalid_argument("Fresh parent evidence belongs to a different source or subject.");
+        const nlohmann::json binding={{"source_sha256",identity.source_sha256},{"geometry_id",identity.geometry_id},
+            {"face_count",identity.face_count},{"evidence_sha256",hash},{"runtime_sha256",identity.runtime_sha256},
+            {"policy_sha256",identity.policy_sha256},{"host_runtime_fingerprint",fingerprint}};
+        PortraitShapeDetails candidate;candidate.locks.geometry_id=locks.geometry_id;
+        candidate.locks.source_sha256=locks.source_sha256;candidate.locks.face_count=locks.face_count;
+        candidate.parent_evidence_identity=binding;candidate.validate_parent_identity();
+        parent_evidence_identity=binding;parent_samples=evidence.parent_samples;
+        parent_proposal.reset();parent_verified_roots.clear();parent_source_colors.clear();
+        parent_coverage_audit=nlohmann::json::object();
+    }
+
+    std::map<std::string,std::string> confirmed_parent_cells() const {
+        auto result = confirmed_parent_cell_labels;
+        for (const auto& root : confirmed_parent_roots) result.emplace("source:" + std::to_string(root.first), root.second);
+        if (surface_partition) for (const auto& face : surface_partition->at("faces")) for (const auto& cell : face.at("cells")) {
+            const auto label = cell.at("label").get<std::string>();
+            if (label == "skin" || label == "cloth") result.emplace(cell.at("id").get<std::string>(), label);
+        }
+        return result;
+    }
+    void overlay_parent_labels(const AI::BeautyLeafEditing& editing, std::vector<int32_t>& labels) const {
+        if (!editing.cells || labels.size() != editing.size()) return;
+        const auto parents = confirmed_parent_cells();
+        for (size_t i=0; i<labels.size(); ++i) {
+            const auto found = parents.find(editing.cells->cell_id(i));
+            if (found != parents.end()) labels[i] = int32_t(found->second == "skin" ?
+                AI::SemanticColoring::Label::BodySkin : AI::SemanticColoring::Label::Clothes);
+        }
+    }
+    void overlay_parent_selection(const std::string& region, const AI::BeautyLeafEditing& editing,
+                                   AI::SurfaceSelectionPersistence::SelectionState& state) const {
+        if (!editing.cells || state.selected.size() != editing.size()) return;
+        const auto parents = confirmed_parent_cells();
+        for (size_t i=0; i<state.selected.size(); ++i) {
+            const auto found = parents.find(editing.cells->cell_id(i));
+            if (found == parents.end()) continue;
+            const bool matches = region == (found->second == "skin" ? "skin" : "clothes");
+            const bool protected_cell = i < state.protected_faces.size() && state.protected_faces[i];
+            state.selected[i] = matches && !protected_cell;
+            if (i < state.foreground.size()) state.foreground[i] = state.selected[i];
+            if (i < state.domain.size()) state.domain[i] = matches;
+        }
+    }
+
+    bool derived_boundary() const { return bool(surface_partition) || bool(locks.leaf_domain); }
+    bool has_locks() const { return contour_locks ? !contour_locks->document.at("locks").empty() : !locks.empty(); }
+    std::string boundary_fingerprint() const {
+        return contour_locks ? contour_locks->fingerprint(*surface_partition) : AI::beauty_leaf_digest(locks.encode().dump());
+    }
+    std::string mapping_fingerprint() const {
+        return surface_partition ? surface_partition->at("partition_sha256").get<std::string>() :
+            locks.leaf_domain ? locks.leaf_domain->fingerprint() : std::string();
+    }
 
     bool compatible(const std::string& geometry, size_t faces) const {
         return locks.geometry_id == geometry && locks.face_count == faces && base_colors.size() == faces &&
             locks.compatible(geometry, locks.source_sha256, faces) &&
+            (!surface_partition || (contour_locks && surface_partition->at("geometry_id")==geometry &&
+                surface_partition->at("source_sha256")==locks.source_sha256 && surface_partition->at("face_count")==faces)) &&
             (!surface_ownership || (surface_ownership->editing_domain.canonical_geometry_id == geometry &&
                 surface_ownership->editing_domain.source_face_count == faces));
     }
     static std::string parent(const std::string& label) {
-        return label == "lb" || label == "rb" || label == "re" || label == "le" || label == "iris" ? "eyes" : "lips";
+        return label == "lb" || label == "rb" || label == "re" || label == "le" || label == "iris" ||
+            label.compare(0,11,"periocular-")==0 ? "eyes" : "lips";
     }
     std::vector<Detail> catalog(const std::string& group = {}, const AI::BeautyLeafEditing* editing = nullptr) const {
         std::vector<Detail> result;
+        if(contour_locks && !editing) return result;
         for (const auto& lock : (editing ? editing->editing_locks.locks : locks.locks)) {
             if (!lock.nested_faces.empty() && lock.label != "re" && lock.label != "le")
                 throw std::invalid_argument("Nested iris detail requires an eye parent.");
@@ -51,10 +150,23 @@ struct PortraitShapeDetails {
             if (!lock.nested_faces.empty()) result.push_back({lock.subject_id + ":" + lock.label + ":iris", lock.subject_id,
                 "iris", "eyes", lock.status, lock.nested_faces, lock.reasons});
         }
+        if(editing && editing->cells) for(auto& detail:result) {
+            std::set<std::string> ids;
+            for(auto face:detail.faces) ids.insert(editing->cells->cell_id(face));
+            detail.unit_count=ids.size();
+        }
         return result;
     }
     std::vector<uint8_t> ownership() const {
         std::vector<uint8_t> result(locks.face_count, 0);
+        if(surface_partition) {
+            for(const auto& face:surface_partition->at("faces")) for(const auto& cell:face.at("cells"))
+                if(AI::ShapeLockSet::supported_label(cell.at("label")) ||
+                   cell.at("label").get<std::string>().compare(0,5,"iris-")==0 ||
+                   cell.at("label").get<std::string>().compare(0,11,"periocular-")==0)
+                    result.at(face.at("source_face_id"))=1;
+            return result;
+        }
         for (const auto& lock : locks.locks) for (const auto face : lock.locked_faces) result.at(face) = 1;
         return result;
     }
@@ -195,6 +307,20 @@ inline AI::SemanticColoring::FaceColors match_portrait_shape_colors(const Portra
     return result;
 }
 
+inline AI::SemanticColoring::FaceColors match_portrait_shape_role_colors(const PortraitShapeDetails& details,
+    const std::vector<AI::SemanticColoring::Color>& palette,const std::vector<std::string>& roles) {
+    if(!valid_portrait_roles(roles,palette.size())) throw std::invalid_argument("Invalid portrait color roles.");
+    std::map<size_t,AI::SemanticColoring::Color> result;
+    for(const auto& detail:details.catalog()) {
+        const auto role=portrait_detail_role(detail.label,palette.size());
+        if(role.empty()) continue;
+        const auto slot=std::find(roles.begin(),roles.end(),role);
+        if(slot==roles.end()) continue;
+        for(auto face:detail.faces) result.emplace(face,palette.at(size_t(slot-roles.begin())));
+    }
+    return {result.begin(),result.end()};
+}
+
 namespace PortraitShapeCache {
 inline constexpr size_t maximum_bytes = 128ULL * 1024 * 1024;
 inline boost::filesystem::path source_path(const boost::filesystem::path& root, const std::string& hash) {
@@ -232,13 +358,62 @@ inline std::string digest(const std::string& bytes) {
     for (unsigned int i = 0; i < size; ++i) stream << std::hex << std::setw(2) << std::setfill('0') << unsigned(output[i]);
     return stream.str();
 }
+inline nlohmann::json write_addressed(const boost::filesystem::path& root,const std::string& directory,
+    const std::string& schema,const nlohmann::json& value) {
+    const auto bytes=value.dump();
+    if(bytes.size()>maximum_bytes) throw std::invalid_argument("Contour sidecar exceeds its size limit.");
+    const auto hash=digest(bytes);const auto owner=root/directory;const auto file=owner/(hash+".json");
+    if(boost::filesystem::is_symlink(owner) || boost::filesystem::is_symlink(file)) throw std::invalid_argument("Unsafe contour sidecar.");
+    boost::filesystem::create_directories(owner);
+    if(boost::filesystem::exists(file)) {
+        if(AI::model_artifact_sha256(file)!=hash) throw std::invalid_argument("Contour sidecar changed.");
+    } else {
+        const auto temporary=owner/boost::filesystem::unique_path("contour-%%%%-%%%%.tmp");
+        try {
+            boost::filesystem::ofstream output(temporary,std::ios::binary);output<<bytes;output.close();
+            if(!output) throw std::runtime_error("Cannot write contour sidecar.");
+            boost::filesystem::rename(temporary,file);
+        } catch(...) {boost::system::error_code error;boost::filesystem::remove(temporary,error);throw;}
+    }
+    return {{"schema",schema},{"path",directory+"/"+hash+".json"},{"sha256",hash}};
+}
+inline nlohmann::json read_addressed(const boost::filesystem::path& root,const std::string& directory,
+    const std::string& schema,const nlohmann::json& reference) {
+    const auto hash=reference.at("sha256").get<std::string>();
+    if(reference.size()!=3 || reference.at("schema")!=schema || !AI::ShapeLockSet::sha256(hash) ||
+       reference.at("path")!=directory+"/"+hash+".json") throw std::invalid_argument("Unsafe contour sidecar reference.");
+    const auto file=root/directory/(hash+".json");
+    if(boost::filesystem::is_symlink(root/directory) || boost::filesystem::is_symlink(file) ||
+       !boost::filesystem::is_regular_file(file) || boost::filesystem::file_size(file)>maximum_bytes ||
+       AI::model_artifact_sha256(file)!=hash) throw std::invalid_argument("Contour sidecar identity changed.");
+    boost::filesystem::ifstream input(file,std::ios::binary);nlohmann::json value;input>>value;return value;
+}
 inline nlohmann::json save(const PortraitShapeDetails& details, const boost::filesystem::path& root) {
     if (!details.compatible(details.locks.geometry_id, details.locks.face_count)) throw std::invalid_argument("Invalid portrait shape context.");
+    details.validate_parent_identity();
     verified_source(root, details.locks.source_sha256);
     auto lock_reference = details.locks.empty() ? nlohmann::json() : AI::write_shape_lock_sidecar(root, details.locks).encode();
     nlohmann::json document = {{"schema", "orca.portrait-shape-context/v1"}, {"identity", details.locks.encode()},
         {"shape_lock_ref", lock_reference}, {"base_colors", details.base_colors}, {"reserved_faces", details.reserved_faces},
-        {"runtime_fingerprint", details.runtime_fingerprint}, {"subjects", details.subjects}};
+        {"runtime_fingerprint", details.runtime_fingerprint}, {"subjects", details.subjects},
+        {"parent_samples", details.parent_samples}};
+    if(!details.parent_evidence_identity.empty())document["parent_evidence_identity"]=details.parent_evidence_identity;
+    if(details.surface_partition) {
+        document["schema"]="orca.portrait-shape-context/v2";
+        const auto partition_ref=write_addressed(root,"surface-partitions","orca.surface-partition-reference/v1",*details.surface_partition);
+        auto locks=details.contour_locks->document;locks["partition_ref"]=partition_ref;
+        AI::BeautySurfaceShapeLock::decode(locks,*details.surface_partition,AI::BeautySurfaceShapeLock::identity(*details.surface_partition),partition_ref.at("sha256"));
+        document["surface_partition_ref"]=partition_ref;
+        document["surface_lock_ref"]=write_addressed(root,"shape-locks","orca.beauty-shape-lock-reference/v3",locks);
+        document["color_diagnostic"]=details.color_diagnostic;
+        document["cell_colors"]=details.cell_colors;
+        document["confirmed_parent_roots"]=details.confirmed_parent_roots;
+        document["confirmed_parent_cell_labels"]=details.confirmed_parent_cell_labels;
+        document["parent_cleanup_audit"]=details.parent_cleanup_audit;
+        document["parent_coverage_audit"]=details.parent_coverage_audit;
+        if(details.parent_proposal)document["parent_proposal_ref"]=write_addressed(root,"parent-proposals",
+            "orca.portrait-parent-proposal-reference/v1",*details.parent_proposal);
+    }
     if (details.surface_ownership)
         document["ownership_ref"] = PortraitOwnershipCache::save(*details.surface_ownership, details.locks, root);
     if (details.color_inheritance)
@@ -273,10 +448,12 @@ inline std::shared_ptr<const PortraitShapeDetails> load(const nlohmann::json& re
         !boost::filesystem::is_regular_file(file) || boost::filesystem::file_size(file) > maximum_bytes ||
         AI::model_artifact_sha256(file) != hash) throw std::invalid_argument("Portrait shape cache hash changed.");
     boost::filesystem::ifstream stream(file, std::ios::binary); nlohmann::json document; stream >> document;
-    if (document.at("schema") != "orca.portrait-shape-context/v1") throw std::invalid_argument("Invalid portrait shape context.");
+    if (document.at("schema") != "orca.portrait-shape-context/v1" && document.at("schema")!="orca.portrait-shape-context/v2")
+        throw std::invalid_argument("Invalid portrait shape context.");
     const auto saved_runtime = document.at("runtime_fingerprint").get<std::string>();
     const bool stale_runtime = saved_runtime != runtime_fingerprint;
-    if (stale_runtime && !preserve_old_source) throw std::invalid_argument("Portrait shape runtime changed.");
+    if (stale_runtime && !preserve_old_source && document.at("schema")!="orca.portrait-shape-context/v2")
+        throw std::invalid_argument("Portrait shape runtime changed.");
     auto result = std::make_shared<PortraitShapeDetails>();
     const auto& identity = document.at("identity");
     result->locks = AI::ShapeLockSet::decode(identity, geometry, identity.at("source_sha256").get<std::string>(), count,
@@ -285,6 +462,53 @@ inline std::shared_ptr<const PortraitShapeDetails> load(const nlohmann::json& re
         const auto sidecar = AI::read_shape_lock_sidecar(root, AI::ShapeLockReference::decode(document.at("shape_lock_ref")),
             geometry, result->locks.source_sha256, count, result->locks.evidence_sha256, result->locks.runtime_sha256, result->locks.policy_sha256);
         if (sidecar.encode() != result->locks.encode()) throw std::invalid_argument("Portrait shape sidecar changed.");
+    }
+    if(document.at("schema")=="orca.portrait-shape-context/v2") {
+        auto partition=read_addressed(root,"surface-partitions","orca.surface-partition-reference/v1",document.at("surface_partition_ref"));
+        const auto lock_doc=read_addressed(root,"shape-locks","orca.beauty-shape-lock-reference/v3",document.at("surface_lock_ref"));
+        const auto expected=AI::BeautySurfaceShapeLock::identity(partition);
+        if(expected.at("geometry_id")!=geometry || expected.at("source_sha256")!=result->locks.source_sha256 ||
+           expected.at("face_count")!=count || expected.at("evidence_sha256")!=result->locks.evidence_sha256 ||
+           expected.at("runtime_sha256")!=result->locks.runtime_sha256 || expected.at("policy_sha256")!=result->locks.policy_sha256)
+            throw std::invalid_argument("Contour context source changed.");
+        result->contour_locks=std::make_shared<AI::BeautySurfaceShapeLock>(AI::BeautySurfaceShapeLock::decode(
+            lock_doc,partition,expected,document.at("surface_partition_ref").at("sha256")));
+        result->surface_partition=std::make_shared<nlohmann::json>(std::move(partition));
+        result->cell_colors=document.value("cell_colors",std::map<std::string,AI::SemanticColoring::Color>{});
+        result->confirmed_parent_roots=document.value("confirmed_parent_roots",std::map<size_t,std::string>{});
+        result->confirmed_parent_cell_labels=document.value("confirmed_parent_cell_labels",std::map<std::string,std::string>{});
+        result->color_diagnostic=document.value("color_diagnostic",std::string());
+        result->parent_cleanup_audit=document.value("parent_cleanup_audit",nlohmann::json::object());
+        result->parent_coverage_audit=document.value("parent_coverage_audit",nlohmann::json::object());
+        if(!result->parent_coverage_audit.is_object() || result->parent_coverage_audit.dump().size()>16384)
+            throw std::invalid_argument("Invalid parent coverage audit.");
+        if(!result->parent_cleanup_audit.is_object() || result->parent_cleanup_audit.dump().size()>16384)
+            throw std::invalid_argument("Invalid parent cleanup audit.");
+        if(result->color_diagnostic.size()>1024) throw std::invalid_argument("Invalid contour color diagnostic.");
+        std::set<std::string> cell_ids;
+        std::set<size_t> explicit_roots;
+        for (const auto& face : result->surface_partition->at("faces")) explicit_roots.insert(face.at("source_face_id").get<size_t>());
+        for (const auto& root : result->confirmed_parent_roots)
+            if (root.first >= count || explicit_roots.count(root.first) || (root.second != "skin" && root.second != "cloth"))
+                throw std::invalid_argument("Confirmed parent root leaves its partition.");
+        std::set<std::string> frozen_cells;
+        for (const auto& lock : result->contour_locks->document.at("locks"))
+            for (const auto* field : {"locked_cells", "nested_cells", "periocular_cells"})
+                for (const auto& id : lock.value(field,nlohmann::json::array())) frozen_cells.insert(id.get<std::string>());
+        for(const auto& face:result->surface_partition->at("faces")) for(const auto& cell:face.at("cells")) {
+            const auto id=cell.at("id").get<std::string>(), label=cell.at("label").get<std::string>();
+            cell_ids.insert(id);
+            if (AI::ShapeLockSet::supported_label(label) || label=="teeth" ||
+                label.compare(0,5,"iris-")==0 || label.compare(0,11,"periocular-")==0) frozen_cells.insert(id);
+        }
+        for(const auto& entry:result->confirmed_parent_cell_labels)
+            if(!cell_ids.count(entry.first) || frozen_cells.count(entry.first) ||
+               (entry.second!="skin" && entry.second!="cloth"))
+                throw std::invalid_argument("Confirmed parent cell leaves its editable domain.");
+        for(const auto& entry:result->cell_colors) {
+            if(!cell_ids.count(entry.first)) throw std::invalid_argument("Contour color leaves its partition.");
+            for(float c:entry.second) if(!std::isfinite(c) || c<0 || c>1) throw std::invalid_argument("Invalid contour color.");
+        }
     }
     result->base_colors = document.at("base_colors").get<std::vector<RGBA>>();
     if (result->base_colors.size() != count) throw std::invalid_argument("Portrait source colors changed.");
@@ -299,6 +523,41 @@ inline std::shared_ptr<const PortraitShapeDetails> load(const nlohmann::json& re
                 throw std::invalid_argument("Invalid portrait subject context.");
     }
     result->runtime_fingerprint = saved_runtime;
+    if(document.contains("parent_evidence_identity")) {
+        result->parent_evidence_identity=document.at("parent_evidence_identity");
+        result->validate_parent_identity();
+    }
+    const bool stale_parent=result->parent_evidence_identity.empty() ? stale_runtime :
+        result->parent_evidence_identity.at("host_runtime_fingerprint")!=runtime_fingerprint;
+    if(!stale_parent && document.contains("parent_proposal_ref")) {
+        auto proposal=read_addressed(root,"parent-proposals","orca.portrait-parent-proposal-reference/v1",document.at("parent_proposal_ref"));
+        if(proposal.at("schema")!="orca.portrait-parent-proposal/v1" || result->parent_evidence_identity.empty())
+            throw std::invalid_argument("Unbound parent proposal.");
+        for(const auto* key:{"source_sha256","geometry_id","face_count","evidence_sha256","runtime_sha256","policy_sha256"})
+            if(proposal.at("identity").at(key)!=result->parent_evidence_identity.at(key))throw std::invalid_argument("Saved parent proposal identity drift.");
+        result->parent_proposal=std::make_shared<nlohmann::json>(std::move(proposal));
+    }
+    if (!stale_parent && document.contains("parent_samples")) {
+        const auto& samples=document.at("parent_samples");
+        if (!samples.is_array() || samples.size()>count) throw std::invalid_argument("Invalid parent observations.");
+        size_t previous=0; bool first=true;
+        for (const auto& sample:samples) {
+            if (!sample.is_array() || sample.size()!=6) throw std::invalid_argument("Invalid parent observation.");
+            const auto f=LocalSemanticEvidence::detail::index(sample.at(0),count-1);
+            const auto subject=sample.at(1).get<std::string>(), label=sample.at(2).get<std::string>();
+            const auto confidence=LocalSemanticEvidence::detail::probability(sample.at(3));
+            const auto views=LocalSemanticEvidence::detail::index(sample.at(5),16);
+            const auto pixels=LocalSemanticEvidence::detail::index(sample.at(4),16*4096*4096);
+            if ((!first && f<=previous) || std::find(result->subjects.begin(),result->subjects.end(),subject)==result->subjects.end() ||
+                (label!="face" && label!="nose" && label!="lr" && label!="rr" && label!="neck" &&
+                 label!="hair" && label!="cloth" && label!="body-skin") || confidence<.85 || !views || pixels<views ||
+                (label=="body-skin" && (confidence<.9 || views<2)))
+                throw std::invalid_argument("Invalid parent observation support.");
+            previous=f;first=false;
+        }
+        result->parent_samples=samples;
+    }
+    if(stale_parent)result->parent_evidence_identity=nlohmann::json::object();
     if (!stale_runtime && document.contains("ownership_ref")) {
         try { result->surface_ownership = PortraitOwnershipCache::load(document.at("ownership_ref"), root, result->locks); }
         catch (const std::exception& e) { result->ownership_diagnostic = e.what(); }
@@ -311,7 +570,7 @@ inline std::shared_ptr<const PortraitShapeDetails> load(const nlohmann::json& re
     }
     verified_source(root, result->locks.source_sha256);
     // An old runtime may supply verified source colors, never old boundaries.
-    if (stale_runtime) result->locks.locks.clear();
+    if (stale_runtime && !result->surface_partition) result->locks.locks.clear();
     return result;
 }
 } // namespace PortraitShapeCache

@@ -1,7 +1,11 @@
 #pragma once
+#include "slic3r/GUI/Redesign/RedesignMessageDialog.hpp"
+#include "slic3r/GUI/AIModelOutputDirectory.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/WorkbenchImportUiGuard.hpp"
 #include "slic3r/GUI/AI/Orca/FilamentColorPack.hpp"
 #include "slic3r/GUI/AI/Orca/LocalPrintModelImport.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaWorkspaceAdapter.hpp"
 #include "slic3r/GUI/AI/Orca/ModelColorUpdate.hpp"
 #include "slic3r/GUI/AI/Orca/WorkbenchTextureImport.hpp"
+#include "slic3r/GUI/AI/Orca/WorkbenchModelDecode.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"

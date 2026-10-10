@@ -13,6 +13,8 @@ param(
 
     [string] $SourceManifest,
 
+    [string] $KnownIntegrationReport,
+
     [switch] $ValidateOnly
 )
 
@@ -44,6 +46,10 @@ $bundledPython = $pythonMatch.Groups[1].Value.Trim()
 $sourceArguments = @('-I', (Join-Path $repoRoot 'scripts\package_source_identity.py'), '--root', $repoRoot)
 if (-not [string]::IsNullOrWhiteSpace($SourceManifest)) {
     $sourceArguments += @('--manifest', (Resolve-Path -LiteralPath $SourceManifest).Path)
+}
+if ($KnownIntegrationReport) {
+    if (-not $SourceManifest) { throw 'A source snapshot manifest is required with KnownIntegrationReport.' }
+    $KnownIntegrationReport = (Resolve-Path -LiteralPath $KnownIntegrationReport).Path
 }
 function Get-PackageSourceIdentity {
     $sourceJson = & $bundledPython @sourceArguments
@@ -136,15 +142,24 @@ New-Item -ItemType Directory -Path $resolvedOutputDir -Force | Out-Null
 $sourceRecordPath = Join-Path $resolvedOutputDir 'source-snapshot.json'
 $sourceIdentity | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $sourceRecordPath -Encoding utf8
 
-& $bundledPython -I (Join-Path $repoRoot 'scripts\verify_ai_integration.py')
+$integrationReportPath = Join-Path $resolvedOutputDir 'integration-check.json'
+$integrationArguments = @('-I', (Join-Path $repoRoot 'scripts\package_integration_check.py'),
+    '--root', $repoRoot, '--report', $integrationReportPath, '--channel', 'internal')
+if ($SourceManifest) { $integrationArguments += @('--source-manifest', (Resolve-Path -LiteralPath $SourceManifest).Path) }
+if ($KnownIntegrationReport) { $integrationArguments += @('--known-report', $KnownIntegrationReport) }
+& $bundledPython @integrationArguments
 if ($LASTEXITCODE -ne 0) {
     throw "AI integration guardrails failed with exit code $LASTEXITCODE."
+}
+$integrationValidation = Get-Content -LiteralPath $integrationReportPath -Raw | ConvertFrom-Json
+if (-not $integrationValidation.decision.integration_passed) {
+    $packageKind = 'internal-validation'
 }
 
 # An incremental build is normally a no-op, but it prevents a stale binary from
 # being relabelled with the current source revision.
 if ($cacheText -match '(?m)^CMAKE_GENERATOR:INTERNAL=Visual Studio') {
-    & $cmakeExecutable --build $resolvedBuildDir --config Release --target OrcaSlicer_app_gui -- /m:2 /p:CL_MPCount=1 /p:UseMultiToolTask=false /p:BuildInParallel=false /nologo /v:minimal
+    & $cmakeExecutable --build $resolvedBuildDir --config Release --target OrcaSlicer_app_gui -- /m:1 /p:CL_MPCount=2 /p:UseMultiToolTask=true /p:EnforceProcessCountAcrossBuilds=true /nologo /v:minimal
 } else {
     & $cmakeExecutable --build $resolvedBuildDir --config Release --target OrcaSlicer_app_gui --parallel 2
 }
@@ -198,19 +213,8 @@ if (-not $versionLine) {
 }
 $version = $versionLine.Matches[0].Groups[1].Value
 
-$generatorPlatformLine = Select-String -LiteralPath $cmakeCache -Pattern '^CMAKE_GENERATOR_PLATFORM:[^=]+=(.+)$' | Select-Object -First 1
-$processorLine = Select-String -LiteralPath $cmakeCache -Pattern '^CMAKE_SYSTEM_PROCESSOR:[^=]+=(.+)$' | Select-Object -First 1
-$configuredArchitecture = if ($generatorPlatformLine) {
-    $generatorPlatformLine.Matches[0].Groups[1].Value
-} elseif ($processorLine) {
-    $processorLine.Matches[0].Groups[1].Value
-} else {
-    ''
-}
-if ($configuredArchitecture -notmatch '^(?i:x64|amd64|x86_64|arm64|aarch64)$') {
-    throw "Unsupported or missing Windows package architecture: '$configuredArchitecture'."
-}
-$architecture = if ($configuredArchitecture -match '^(?i:arm64|aarch64)$') { 'arm64' } else { 'x64' }
+. (Join-Path $PSScriptRoot 'package_windows_architecture.ps1')
+$architecture = Resolve-PackageWindowsArchitecture -BuildDir $resolvedBuildDir
 $runtimeDependenciesPath = Join-Path $resolvedBuildDir 'orca_ai_runtime_dependencies.json'
 if (-not (Test-Path -LiteralPath $runtimeDependenciesPath -PathType Leaf)) {
     throw 'Pinned AI runtime dependency metadata is missing. Reconfigure this build directory.'
@@ -327,6 +331,7 @@ $releaseManifest = [ordered]@{
         installer_report = "$finalName.contents.json"
         portable_report = "$portableName.contents.json"
     }
+    integration_validation = $integrationValidation
     portable = $portableName
     portable_sha256 = $portableHash
     sidecar_version = $buildInfo.sidecar_version

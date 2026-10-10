@@ -21,6 +21,7 @@ class OrcaPrinterAdapter final
 public:
     explicit OrcaPrinterAdapter(Plater* plater) : m_plater(plater) {}
     PrinterWorkspaceSnapshot snapshot() const;
+    bool preview_toolpath_outside() const;
     std::vector<PrinterWorkspaceDevice> devices() const;
     bool select_device(const std::string& id) const;
     bool review_print(wxWindow* parent) const;

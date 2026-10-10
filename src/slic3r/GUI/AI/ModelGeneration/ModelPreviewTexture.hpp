@@ -37,6 +37,8 @@ public:
                         const AI::SurfaceSelectionPersistence::FaceColorOverrides& overrides = {}) {
         if (surface.faces.size() != mesh.indices.size() || normals.size() != mesh.indices.size()*3)
             throw std::runtime_error("Preview texture does not match the model faces.");
+        if (!GLAD_GL_VERSION_2_0 || ::glGetIntegerv == nullptr)
+            throw std::runtime_error("OpenGL texture preview is not initialized.");
         GLint maximum=0; ::glGetIntegerv(GL_MAX_TEXTURE_SIZE,&maximum);
         for (const auto& image : surface.images)
             if (image.width<=0 || image.height<=0 || image.width>maximum || image.height>maximum ||

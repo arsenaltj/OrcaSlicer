@@ -1,6 +1,8 @@
 if(WIN32)
     option(ORCA_AI_WINDOWS_INSTALLER "Package the integrated local AI runtime in the Windows installer" OFF)
+    option(ORCA_AI_PORTRAIT_RECOGNITION "Package the experimental offline portrait recognizer" OFF)
 endif()
+set(ORCA_AI_PORTRAIT_ENABLED_JSON false)
 
 # The image preprocessing pipeline imports Pillow at Sidecar startup. Keep the
 # Windows AI runtime self-contained: fetch one architecture-specific CPython
@@ -74,6 +76,13 @@ if(WIN32 AND ORCA_AI_WINDOWS_INSTALLER)
         message(FATAL_ERROR "The verified Pillow wheel did not contain the expected CPython runtime files")
     endif()
 
+    if(ORCA_AI_PORTRAIT_RECOGNITION)
+        include("${CMAKE_SOURCE_DIR}/cmake/OrcaPortraitOfflineDependencies.cmake")
+        if(NOT ORCA_PORTRAIT_STAGE_DIR)
+            message(FATAL_ERROR "Experimental portrait recognition needs its verified offline runtime")
+        endif()
+        set(ORCA_AI_PORTRAIT_ENABLED_JSON true)
+    endif()
     set(ORCA_AI_RUNTIME_DEPENDENCIES_FILE "${CMAKE_BINARY_DIR}/orca_ai_runtime_dependencies.json")
     configure_file(
         "${CMAKE_SOURCE_DIR}/tools/ai/orca_ai_runtime_dependencies.json.in"

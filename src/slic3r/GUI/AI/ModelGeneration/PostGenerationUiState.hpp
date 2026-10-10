@@ -25,6 +25,12 @@ inline bool post_generation_asset_switch_allowed(bool busy, bool finishing_runni
         !comparing_before && !has_changes;
 }
 
+inline bool post_generation_return_to_design_allowed(const PostGenerationUiState& state)
+{
+    return state.status != PostGenerationUiState::Status::Loading &&
+           state.status != PostGenerationUiState::Status::Processing;
+}
+
 // Keep workbench state derivation independent from wxWidgets and file
 // lifetimes so the same rules can be checked by unit tests.
 inline PostGenerationUiState derive_post_generation_ui_state(

@@ -12,6 +12,22 @@ import local_semantic_transform as transforms
 
 
 class VisibilityTests(unittest.TestCase):
+    def test_source_boundary_samples_texture_without_vertex_tint_and_marks_untextured_pixels(self):
+        faces = np.array([[0,1,2],[0,1,2]])
+        uv = np.full((3,2), .5)
+        texture = np.full((2,2,3), [1.,0.,0.])
+        materials = [renderer.Material(np.ones(3),texture,{},{}),
+                     renderer.Material(np.ones(3),None,{}, {})]
+        ids = np.array([[0,1,-1]])
+        bary = np.full((1,3,3), 1/3)
+        rgb, valid, returned_uv = renderer.source_texture_projection(
+            faces,uv,materials,np.array([0,1]),ids,bary)
+        np.testing.assert_array_equal(rgb[0,0], [255,0,0])
+        np.testing.assert_array_equal(valid, [[True,False,False]])
+        np.testing.assert_array_equal(returned_uv, uv)
+        tinted = renderer.shade(faces,uv,np.zeros((3,3)),materials,np.array([0,1]),ids,bary)
+        np.testing.assert_array_equal(tinted[0,0], [0,0,0])
+
     def test_occluded_surface_never_receives_front_pixels(self):
         vertices = np.array([[-.8,-.8,0],[.8,-.8,0],[0,.8,0],[-.8,-.8,1],[.8,-.8,1],[0,.8,1]])
         faces = np.array([[0,1,2],[3,4,5]])

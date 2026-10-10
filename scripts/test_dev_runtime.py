@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -57,6 +58,43 @@ class RuntimeTests(unittest.TestCase):
         self.write(".tmp/build/install_manifest.txt", "\n".join(str(p) for p in self.runtime.rglob("*") if p.is_file()))
         return dev.finish_install(self.root, self.build, dev.preflight(self.root, self.build))
 
+    def test_separate_trial_checks_its_own_bytes_and_preserves_the_open_runtime(self):
+        self.prepare()
+        trial = self.root / ".tmp/qa/run"
+        shutil.copytree(self.runtime, trial)
+        installed = [p.relative_to(trial).as_posix() for p in trial.rglob("*") if p.is_file()]
+        original = dev.verify_runtime(self.root, self.build, installed)
+        self.assertEqual(dev.verify_runtime(self.root, self.build, installed, trial), original)
+        (trial / "OrcaSlicer.dll").write_text("mismatched new trial")
+        with self.assertRaisesRegex(ValueError, "Runtime does not match"):
+            dev.verify_runtime(self.root, self.build, installed, trial)
+        self.assertEqual(dev.verify_runtime(self.root, self.build, installed), original)
+        with self.assertRaisesRegex(ValueError, "inside this checkout"):
+            dev.verify_runtime(self.root, self.build, [], self.root / "external-trial")
+
+    def test_partition_runtime_rejects_stale_heavy_resources_and_capability_mismatch(self):
+        self.prepare()
+        cache = self.build / "CMakeCache.txt"
+        cache.write_text(cache.read_text() + "\nORCA_AI_PORTRAIT_RECOGNITION:BOOL=OFF\n")
+        for prefix in (".tmp/build/", ".tmp/dev/run/resources/tools/ai/"):
+            self.write(prefix + "orca_ai_runtime_dependencies.json", '{"portrait_recognition":{"enabled":false}}')
+        dev.verify_runtime(self.root, self.build, [])
+        for name, retired in (("resources/beauty-runtime/python/python.exe", "resources/beauty-runtime"),
+                              ("ai/portrait_semantics/libmediapipe.dll", "ai/portrait_semantics"),
+                              ("resources/tools/ai/portrait_parent_cleanup_partition.json",
+                               "resources/tools/ai/portrait_parent_cleanup_partition.json")):
+            with self.subTest(resource=name):
+                self.write(".tmp/dev/run/" + name, "obsolete runtime")
+                with self.assertRaisesRegex(ValueError, "retired portrait resources"):
+                    dev.verify_runtime(self.root, self.build, [])
+                target = self.runtime / retired
+                if target.is_dir(): shutil.rmtree(target)
+                else: target.unlink()
+        self.write(".tmp/build/orca_ai_runtime_dependencies.json", '{"portrait_recognition":{"enabled":true}}')
+        self.write(".tmp/dev/run/resources/tools/ai/orca_ai_runtime_dependencies.json", '{"portrait_recognition":{"enabled":true}}')
+        with self.assertRaisesRegex(ValueError, "inconsistent portrait capabilities"):
+            dev.verify_runtime(self.root, self.build, [])
+
     def test_installed_beauty_runtime_is_checked_against_configured_source(self):
         self.prepare()
         cache = self.build / 'CMakeCache.txt'
@@ -85,6 +123,86 @@ class RuntimeTests(unittest.TestCase):
         self.write(".tmp/frozen/local_semantic_raster.dll", "modified dependency")
         with self.assertRaisesRegex(ValueError, "raster binary identity changed"):
             dev.verify_runtime(self.root, self.build, [name])
+
+    def prepare_cpu_portrait(self):
+        self.prepare()
+        stage = self.build / "_deps/portrait-offline-fixture"
+        self.write(".tmp/build/src/cmake_install.cmake",
+                   'file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/resources/beauty-runtime" '
+                   'TYPE DIRECTORY FILES "' + stage.as_posix() + '/")\n')
+        cache = self.build / "CMakeCache.txt"
+        cache.write_text(cache.read_text() + "\nORCA_BEAUTY_RUNTIME_ROOT:PATH=\n")
+        manifest = {"schema": "orca.offline-portrait-runtime/v1", "network": "offline",
+                    "provider_calls": False, "files": {}, "modules": {}}
+        installed = []
+        for name, contents in (("modules/worker.py", "verified module"), ("models/weights.bin", "pinned weights")):
+            self.write(".tmp/build/_deps/portrait-offline-fixture/" + name, contents)
+            self.write(".tmp/dev/run/resources/beauty-runtime/" + name, contents)
+            file = stage / name
+            manifest["files"][name] = {"size": file.stat().st_size, "sha256": dev.digest(file)}
+            if name.startswith("modules/"):
+                manifest["modules"][file.name] = manifest["files"][name]
+            installed.append("resources/beauty-runtime/" + name)
+        self.write(".tmp/build/_deps/portrait-offline-fixture/runtime-manifest.json", json.dumps(manifest))
+        self.write(".tmp/build/Release/local_semantic_raster.dll", "compiled accelerator")
+        raster = self.build / "Release/local_semantic_raster.dll"
+        record = {"size": raster.stat().st_size, "sha256": dev.digest(raster)}
+        manifest["files"]["modules/local_semantic_raster.dll"] = record
+        manifest["modules"]["local_semantic_raster.dll"] = record
+        manifest["raster_required"] = True
+        self.write(".tmp/dev/run/resources/beauty-runtime/runtime-manifest.json", json.dumps(manifest))
+        installed.append("resources/beauty-runtime/runtime-manifest.json")
+        for name in ("resources/tools/ai/local_semantic_raster.dll",
+                     "resources/beauty-runtime/modules/local_semantic_raster.dll"):
+            self.write(".tmp/dev/run/" + name, "compiled accelerator")
+            installed.append(name)
+        return stage, installed
+
+    def test_prepared_cpu_bundle_accepts_only_the_built_accelerator_seal(self):
+        stage, installed = self.prepare_cpu_portrait()
+        original = dev.digest(stage / "runtime-manifest.json")
+        checks = dev.verify_runtime(self.root, self.build, installed)
+        self.assertTrue(set(installed).issubset(checks))
+        self.assertEqual(dev.digest(stage / "runtime-manifest.json"), original)
+        for key, value in (("network", "online"), ("raster_required", False)):
+            with self.subTest(key=key):
+                target = self.runtime / "resources/beauty-runtime/runtime-manifest.json"
+                previous = target.read_text()
+                changed = json.loads(previous)
+                changed[key] = value
+                target.write_text(json.dumps(changed))
+                with self.assertRaisesRegex(ValueError, "manifest does not match"):
+                    dev.verify_runtime(self.root, self.build, installed)
+                target.write_text(previous)
+
+    def test_prepared_cpu_bundle_rejects_stale_native_module_and_model_bytes(self):
+        _, installed = self.prepare_cpu_portrait()
+        for name in (".tmp/build/Release/local_semantic_raster.dll",
+                     ".tmp/dev/run/resources/tools/ai/local_semantic_raster.dll",
+                     ".tmp/dev/run/resources/beauty-runtime/modules/local_semantic_raster.dll",
+                     ".tmp/dev/run/resources/beauty-runtime/modules/worker.py",
+                     ".tmp/build/_deps/portrait-offline-fixture/models/weights.bin"):
+            with self.subTest(name=name):
+                target = self.root / name
+                previous = target.read_bytes()
+                target.write_bytes(b"different bytes")
+                with self.assertRaisesRegex(ValueError, "does not match"):
+                    dev.verify_runtime(self.root, self.build, installed)
+                target.write_bytes(previous)
+
+    def test_prepared_cpu_bundle_rejects_ambiguous_source_and_missing_seal_members(self):
+        _, installed = self.prepare_cpu_portrait()
+        script = self.build / "src/cmake_install.cmake"
+        previous = script.read_text()
+        script.write_text(previous + previous)
+        with self.assertRaisesRegex(ValueError, "configured portrait runtime source"):
+            dev.verify_runtime(self.root, self.build, installed)
+        script.write_text(previous)
+        for name in ("resources/beauty-runtime/runtime-manifest.json",
+                     "resources/beauty-runtime/modules/local_semantic_raster.dll"):
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(ValueError, "missing its manifest or accelerator"):
+                    dev.verify_runtime(self.root, self.build, [item for item in installed if item != name])
 
     def test_preflight_is_read_only_and_accepts_dirty_detached_checkout(self):
         dev.git(self.root, "checkout", "--detach", "-q")
@@ -229,6 +347,25 @@ class RuntimeTests(unittest.TestCase):
         self.write("CMakeLists.txt", 'set(ORCA_AI_SIDECAR_RUNTIME_FILES ${UNKNOWN_COMPONENT})\ninstall(FILES)')
         with self.assertRaisesRegex(ValueError, "Unsupported sidecar runtime variable"):
             dev.modules(self.root)
+
+    def test_duplicate_shared_modules_are_checked_and_refreshed_once(self):
+        self.write("CMakeLists.txt", 'set(ORCA_AI_SIDECAR_RUNTIME_FILES\n'
+                   '"${CMAKE_SOURCE_DIR}/tools/ai/provider.py"\n'
+                   '${ORCA_LOCAL_SEMANTIC_RUNTIME_FILES}\n)\ninstall(FILES)\n')
+        self.write("tools/ai/local_semantic_runtime_files.cmake",
+                   'set(ORCA_LOCAL_SEMANTIC_RUNTIME_FILES\n'
+                   '"${CMAKE_SOURCE_DIR}/tools/ai/provider.py"\n'
+                   '"${CMAKE_SOURCE_DIR}/tools/ai/worker.py"\n'
+                   '"${CMAKE_SOURCE_DIR}/tools/ai/worker.py"\n)')
+        self.write("tools/ai/worker.py", "original")
+        self.write(".tmp/dev/run/resources/tools/ai/worker.py", "original")
+        self.assertEqual(dev.modules(self.root), ["provider.py", "worker.py"])
+        self.prepare()
+        self.write(".tmp/dev/run/resources/tools/ai/worker.py", "stale module")
+        with self.assertRaisesRegex(ValueError, "Runtime does not match.*worker.py"):
+            dev.verify_runtime(self.root, self.build, [])
+        self.write("tools/ai/worker.py", "updated")
+        self.assertEqual(dev.update_sidecar(self.root, self.build)["updated_modules"], ["worker.py"])
 
 
 class OfflineSelectionTests(unittest.TestCase):

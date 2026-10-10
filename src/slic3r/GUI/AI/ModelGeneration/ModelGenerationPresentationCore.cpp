@@ -232,6 +232,12 @@ int display_progress(const AIModelGenerationClient::JobStatus& status)
     return 0;
 }
 
+bool is_supported_style(const std::string& style)
+{
+    return style == "sculpture" || style == "realistic" ||
+           std::find(STYLIZED_STYLE_IDS.begin(), STYLIZED_STYLE_IDS.end(), style) != STYLIZED_STYLE_IDS.end();
+}
+
 int style_selection(const std::string& style)
 {
     if (style == "realistic" || style == "enamel_inlay") return 1;
@@ -240,23 +246,15 @@ int style_selection(const std::string& style)
 
 int stylized_style_selection(const std::string& style)
 {
-    if (style == "portrait_sketch") return 0;
-    if (style == "low_poly") return 2;
-    if (style == "relief") return 3;
-    if (style == "ink_relief") return 4;
-    if (style == "diorama") return 5;
-    if (style == "custom") return 6;
-    return 1;
+    const auto selected = std::find(STYLIZED_STYLE_IDS.begin(), STYLIZED_STYLE_IDS.end(), style);
+    return selected == STYLIZED_STYLE_IDS.end() ? 1 : static_cast<int>(selected - STYLIZED_STYLE_IDS.begin());
 }
 
 std::string selected_style(int family, int stylized)
 {
-    static constexpr std::array<const char*, 7> variants {
-        "portrait_sketch", "cartoon", "low_poly", "relief", "ink_relief", "diorama", "custom"
-    };
     if (family == 0) return "sculpture";
     if (family == 1) return "realistic";
-    return variants[stylized >= 0 && stylized < static_cast<int>(variants.size()) ? stylized : 1];
+    return STYLIZED_STYLE_IDS[stylized >= 0 && stylized < static_cast<int>(STYLIZED_STYLE_IDS.size()) ? stylized : 1];
 }
 
 bool style_uses_printable_colors(const std::string& style)

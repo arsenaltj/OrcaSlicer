@@ -1,0 +1,15 @@
+{
+  "archive": {
+    "bytes": 1031187130,
+    "name": "portrait-deps-win-x64-cp312-20261009-r1.zip",
+    "sha256": "3768747bdb09b565e0928d0cf2b72ff4d32b0bcedd831174ccefc4f045b612b7",
+    "url": "https://github.com/arsenaltj/OrcaSlicer/releases/download/portrait-deps-win-x64-cp312-20261009-r1/portrait-deps-win-x64-cp312-20261009-r1.zip"
+  },
+  "manifest": {
+    "bytes": 5211030,
+    "sha256": "8dd24a8b06029746c43b52020a4e6f383b56a910d2e82856281356583dea9ec9"
+  },
+  "platform": "windows-x64-cp312-cpu",
+  "schema": "orca.portrait-build-dependencies/v1",
+  "version": "portrait-deps-win-x64-cp312-20261009-r1"
+}

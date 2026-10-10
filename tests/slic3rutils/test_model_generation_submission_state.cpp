@@ -80,6 +80,10 @@ TEST_CASE("Configuration rejection is distinguished from ambiguous transport and
           "[ModelGenerationSubmissionState][SidecarRecovery]")
 {
     CHECK(is_model_provider_not_configured("Model generation is not configured."));
+    CHECK(is_model_provider_not_configured("feature_unavailable: Model generation is not configured."));
+    CHECK(is_model_provider_not_configured("provider_not_configured: Hunyuan credentials are missing."));
+    CHECK_FALSE(is_model_provider_not_configured("feature_unavailable: Image generation is not configured."));
+    CHECK_FALSE(is_model_provider_not_configured("image_provider_not_configured: Image credentials are missing."));
     CHECK_FALSE(is_model_provider_not_configured("AI sidecar request timed out."));
     CHECK_FALSE(is_model_provider_not_configured("Model generation request failed with HTTP 503."));
     CHECK_FALSE(is_model_provider_not_configured("Tripo authentication failed."));

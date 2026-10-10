@@ -126,10 +126,30 @@ wxString localized_job_status(const AIModelGenerationClient::JobStatus& status)
             message = _L("模型服务当前请求过多，请稍后手动重试；程序不会自动创建新的付费任务。");
         else if (status.provider_error_code == "provider_timeout")
             message = _L("模型服务响应超时。请确认服务端没有遗留任务后再手动重试，避免重复计费。");
+        else if (status.provider_error_code == "sidecar_unavailable")
+            message = _L("本地 AI 服务不可用，请先重新检测服务；当前任务和输入已保留。");
         else if (status.provider_error_code == "provider_unavailable")
-            message = _L("模型服务暂时不可用，请稍后手动重试；程序不会自动创建新的付费任务。");
+            message = _L("本地 AI 服务已连接，但 Tripo 暂时不可达。请检查代理或网络后恢复当前任务；不会自动创建新的付费任务。");
+        else if (status.provider_error_code == "provider_upload_unavailable" ||
+                 status.provider_error_code == "provider_upload_timeout" ||
+                 status.provider_error_code == "provider_upload_rate_limited")
+            message = _L("参考图上传到 Tripo 失败，尚未创建付费 3D 任务。请检查代理或网络后重试，程序会有限重试上传。");
+        else if (status.provider_error_code == "provider_upload_failed")
+            message = _L("参考图上传失败，尚未创建付费 3D 任务。请检查图片和服务配置后重试。");
+        else if (status.provider_error_code == "artifact_download_failed")
+            message = _L("Tripo 任务已返回，但模型文件下载或校验失败。可以恢复当前任务重试下载，不会重复创建付费任务。");
+        else if (status.provider_error_code == "model_validation_failed")
+            message = _L("模型文件已返回，但本地校验未通过。请保留诊断信息后重试或返回 2D 设计。");
         else
             message = status.message.empty() ? _L("生成任务失败。") : localized_service_error(status.message);
+        if (!status.provider_error_category.empty())
+            message += "\n" + _L("故障分类：") + from_u8(status.provider_error_category);
+        if (!status.provider_task_id.empty())
+            message += "\n" + _L("Provider 任务 ID：") + from_u8(status.provider_task_id);
+        if (!status.provider_conversion_task_id.empty())
+            message += "\n" + _L("转换任务 ID：") + from_u8(status.provider_conversion_task_id);
+        if (status.provider_error_ambiguous)
+            message += "\n" + _L("提交结果不明确，请先确认服务端任务状态，避免重复计费。");
         if (!status.id.empty())
             message += "\n" + _L("诊断 ID：") + from_u8(status.id);
         return message;

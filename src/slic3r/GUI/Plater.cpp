@@ -72,7 +72,6 @@
 #include "libslic3r/Format/DRC.hpp"
 #include "libslic3r/Format/STEP.hpp"
 #include "libslic3r/Format/AMF.hpp"
-//#include "libslic3r/Format/3mf.hpp"
 #include "libslic3r/Format/bbs_3mf.hpp"
 #include "libslic3r/GCode/ThumbnailData.hpp"
 #include "libslic3r/Model.hpp"
@@ -9733,7 +9732,7 @@ wxString Plater::priv::get_export_file(GUI::FileType file_type)
         break;
     }
 
-    fs::path output_file = get_export_file_path(file_type);
+    fs::path output_file = file_type == FT_3MF ? default_model_project_path(get_export_file_path(file_type)) : get_export_file_path(file_type);
     trace_stage("dialog.after_path");
 
     wxString dlg_title;
@@ -14549,6 +14548,7 @@ std::vector<size_t> Plater::physical_filament_config_indices() const
 
 #include "PlaterTextureImport.ipp"
 #include "PlaterWorkbenchImport.ipp"
+#include "PlaterWorkbenchImportAsync.ipp"
 
 Sidebar&        Plater::sidebar()           { return *p->sidebar; }
 const Model&    Plater::model() const       { return p->model; }
@@ -17146,45 +17146,6 @@ void Plater::reset_with_confirm()
         // BBS: jump to plater panel
         wxGetApp().mainframe->select_tab(TAB_ID_HOME);
     }
-}
-
-// BBS: save logic
-int GUI::Plater::close_with_confirm(std::function<bool(bool)> second_check)
-{
-    if (up_to_date(false, false)) {
-        if (second_check && !second_check(false)) return wxID_CANCEL;
-        model().set_backup_path("");
-        return wxID_NO;
-    }
-
-    MessageDialog dlg(static_cast<wxWindow*>(this), _L("The current project has unsaved changes. Would you like to save before continuing\?"),
-        wxString(SLIC3R_APP_FULL_NAME) + " - " + _L("Save"), wxYES_NO | wxCANCEL | wxYES_DEFAULT | wxCENTRE);
-    dlg.show_dsa_button(_L("Remember my choice."));
-    auto choise = wxGetApp().app_config->get("save_project_choise");
-    auto result = choise.empty() ? dlg.ShowModal() : choise == "yes" ? wxID_YES : wxID_NO;
-    if (result == wxID_CANCEL)
-        return result;
-    else {
-        if (dlg.get_checkbox_state())
-            wxGetApp().app_config->set("save_project_choise", result == wxID_YES ? "yes" : "no");
-        if (result == wxID_YES) {
-            result = save_project();
-            if (result == wxID_CANCEL) {
-                if (choise.empty())
-                    return result;
-                else
-                    result = wxID_NO;
-            }
-        }
-    }
-
-    if (second_check && !second_check(result == wxID_YES)) return wxID_CANCEL;
-
-    model().set_backup_path("");
-    up_to_date(true, false);
-    up_to_date(true, true);
-
-    return result;
 }
 
 //BBS: trigger a restore project event

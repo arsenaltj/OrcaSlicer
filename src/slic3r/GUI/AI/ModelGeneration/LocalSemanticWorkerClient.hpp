@@ -2,6 +2,8 @@
 
 #include <atomic>
 #include <string>
+#include "PortraitOptimization.hpp"
+#include <memory>
 #include <boost/filesystem/path.hpp>
 #include "slic3r/GUI/AI/Model/LocalSemanticEvidence.hpp"
 
@@ -12,17 +14,23 @@ struct Configuration {
     boost::filesystem::path python_executable;
     boost::filesystem::path weights_directory;
     unsigned cpu_threads = 4;
-    unsigned timeout_seconds = 120;
+    unsigned timeout_seconds = 1200;
     unsigned long long cache_bytes = 1024ULL * 1024 * 1024;
 };
 
 // Paths come only from the application's explicit data-directory configuration,
 // never a model-adjacent document. Failure leaves the destination unchanged.
 bool read_configuration(const boost::filesystem::path& file, Configuration& destination, std::string& reason);
+// The installed package owns this capability. Stale resources cannot enable it.
+bool portrait_recognition_enabled(const boost::filesystem::path& resources);
 // Explicit user configuration wins, including disabled/invalid configuration.
 // Otherwise use only the fixed runtime shipped beside application resources.
 bool read_runtime_configuration(const boost::filesystem::path& file,
     const boost::filesystem::path& installed_runtime, Configuration& destination, std::string& reason);
+
+// A packaged runtime owns its verified modules. Never fall back to another
+// copy when that bundle exists but is incomplete. Older developer layouts remain readable.
+boost::filesystem::path runtime_modules_directory(const boost::filesystem::path& resources);
 
 // Remove only a caller-owned immediate child of the disposable request parent.
 // Call after the owned worker has stopped. Already removed is successful.
@@ -33,6 +41,8 @@ enum class Status { Ready, Disabled, Unavailable, Cancelled, TimedOut };
 struct Result {
     Status status = Status::Unavailable;
     std::string reason;
+    // Human-readable context, separate from the stable machine error code.
+    std::string diagnostic;
     std::string response_json;
     int exit_code = -1;
     boost::filesystem::path request_directory;
@@ -58,6 +68,7 @@ struct MeshResult {
     Result process;
     LocalSemanticEvidence::Evidence evidence;
     std::string evidence_sha256;
+    nlohmann::json contour_request;
     bool cache_hit = false;
     CacheWriteReport cache_write;
 };
@@ -71,6 +82,7 @@ struct MeshResult {
 MeshResult analyze(const Configuration& config, const boost::filesystem::path& installed_directory,
                    const boost::filesystem::path& request_root, const boost::filesystem::path& source,
                    const indexed_triangle_set& native_mesh, const std::atomic<bool>& cancelled,
-                   const boost::filesystem::path& cache_root = {});
+                   const boost::filesystem::path& cache_root = {},
+                   std::shared_ptr<PortraitOptimizationTask> progress = {});
 
 } // namespace Slic3r::GUI::LocalSemanticWorker

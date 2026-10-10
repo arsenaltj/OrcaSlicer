@@ -1,6 +1,6 @@
 import unittest
 import numpy as np
-from local_body_regions import supplement
+from local_body_regions import supplement, parent_details
 
 
 class BodyRegionsTests(unittest.TestCase):
@@ -38,6 +38,21 @@ class BodyRegionsTests(unittest.TestCase):
     def test_invalid_scores_rejected(self):
         o=self.obs('a',[4]*7);o[3][:]=np.nan
         with self.assertRaises(ValueError):supplement(self.p,[o],self.v,self.f)
+
+    def test_arm_skin_is_separate_from_the_historical_neck_semantics(self):
+        views=[self.obs('front',[0,0,2,2,2,2,0]),self.obs('side',[0,0,2,2,2,2,0])]
+        rows=parent_details(self.p,views,self.v,self.f)
+        self.assertEqual([r[0] for r in rows],[2,4,5])
+        self.assertTrue(all(r[2]=='body-skin' and r[5]==2 for r in rows))
+        self.assertNotIn(2,self.labels(supplement(self.p,views,self.v,self.f)))
+
+    def test_body_parent_proof_preserves_frozen_and_conflicting_regions(self):
+        a=self.obs('front',[2]*7);b=self.obs('side',[2]*7)
+        self.assertNotIn(4,[r[0] for r in parent_details(self.p,[a,b],self.v,self.f,blocked=[4])])
+        b[2][0,2]=4
+        self.assertNotIn(2,[r[0] for r in parent_details(self.p,[a,b],self.v,self.f)])
+        self.assertEqual(parent_details(self.p,[a],self.v,self.f),[])
+        with self.assertRaises(ValueError):parent_details(self.p,[a,a],self.v,self.f)
 
 
 if __name__=='__main__':unittest.main()

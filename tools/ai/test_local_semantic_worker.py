@@ -38,7 +38,7 @@ class LocalSemanticWorkerTests(unittest.TestCase):
     def test_explicit_unicode_config_and_resource_limits(self):
         self.assertEqual(worker.load_config(self.write_config()), self.config)
         for field, value in (("cpu_threads", 0), ("cpu_threads", 9), ("cpu_threads", True),
-                             ("timeout_seconds", 9), ("timeout_seconds", 601),
+                             ("timeout_seconds", 9), ("timeout_seconds", 1201),
                              ("cache_bytes", -1), ("cache_bytes", 4 * 1024**3 + 1),
                              ("enabled", 1), ("python_executable", "python"),
                              ("weights_directory", "relative"), ("weights_directory", "x\0x")):
@@ -46,6 +46,12 @@ class LocalSemanticWorkerTests(unittest.TestCase):
                 changed = {**self.config, field: value}
                 with self.assertRaises(worker.WorkerError):
                     worker.load_config(self.write_config(changed))
+
+    def test_twenty_minute_timeout_is_accepted_without_changing_explicit_shorter_limits(self):
+        for seconds in (10, 120, 600, 1200):
+            with self.subTest(seconds=seconds):
+                config = {**self.config, "timeout_seconds": seconds}
+                self.assertEqual(worker.load_config(self.write_config(config)), config)
 
     def test_config_rejects_unknown_keys_duplicates_and_nonfinite_values(self):
         path = self.write_config({**self.config, "shell_command": "forbidden"})

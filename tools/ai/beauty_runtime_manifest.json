@@ -2,8 +2,20 @@
   "schema": "orcaslicer.beauty-semantic-runtime.v1",
   "runtime_namespace": "beauty_semantics",
   "cache_namespace": "beauty_semantics",
+  "residual_proposal": "portrait_residual_proposal.py",
+  "residual_protocol": "orca.portrait-residual-proposal/v1",
+  "residual_cache_namespace": "portrait_residuals",
   "worker": "local_semantic_worker.py",
   "protocol": "orcaslicer.local-semantic-worker.v1",
+  "contour_proposals": "local_contour_proposals.py",
+  "contour_protocol": "orca.surface-partition-request/v1",
+  "boundary_policy": "visible-face-semantic-v8-source-contour-workbench",
   "network": "offline",
-  "weights": "application-configured"
+  "weights": "application-configured",
+  "dependencies": {
+    "required_for_semantics": ["torch", "torchvision", "pyfacer", "mediapipe", "numpy", "scipy", "Pillow", "opencv-python-headless"],
+    "required_for_residual_review": ["numpy", "opencv-python-headless"]
+  },
+  "model_download": false,
+  "provider_calls": false
 }

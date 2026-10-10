@@ -19,7 +19,8 @@ namespace Slic3r::GUI {
 
 bool ModelGenerationUIInput::operator==(const ModelGenerationUIInput& other) const
 {
-    return image_path == other.image_path && prompt == other.prompt && style == other.style;
+    return image_path == other.image_path && prompt == other.prompt && style == other.style &&
+           custom_style == other.custom_style;
 }
 
 bool ModelGenerationUIOptions::operator==(const ModelGenerationUIOptions& other) const
@@ -44,11 +45,22 @@ bool ModelGenerationUIState::same_content(const ModelGenerationUIState& other) c
            service_availability_known == other.service_availability_known && busy == other.busy &&
            can_generate_design == other.can_generate_design && can_generate_model == other.can_generate_model &&
            can_stop == other.can_stop && can_retry_service == other.can_retry_service &&
+           can_retry_model == other.can_retry_model &&
            can_restore_latest == other.can_restore_latest && can_import == other.can_import &&
            can_restart == other.can_restart && design_ready == other.design_ready && model_ready == other.model_ready &&
-           model_generation_context == other.model_generation_context && inputs_match_job == other.inputs_match_job &&
-           progress == other.progress && job_id == other.job_id && job_state == other.job_state &&
-           job_phase == other.job_phase && status_text == other.status_text && summary_text == other.summary_text &&
+           model_generation_context == other.model_generation_context &&
+           model_generation_session == other.model_generation_session && inputs_match_job == other.inputs_match_job &&
+           progress == other.progress && job_id == other.job_id && model_asset_id == other.model_asset_id &&
+           job_state == other.job_state &&
+           design_elapsed_seconds == other.design_elapsed_seconds &&
+           design_estimated_seconds == other.design_estimated_seconds &&
+           job_phase == other.job_phase && provider_error_code == other.provider_error_code &&
+           provider_error_category == other.provider_error_category && provider_name == other.provider_name &&
+           provider_task_id == other.provider_task_id &&
+           provider_conversion_task_id == other.provider_conversion_task_id &&
+           provider_error_retryable == other.provider_error_retryable &&
+           provider_error_ambiguous == other.provider_error_ambiguous &&
+           status_text == other.status_text && summary_text == other.summary_text &&
            workflow_phase == other.workflow_phase && workflow_guidance == other.workflow_guidance &&
            cost_summary == other.cost_summary && original_image_path == other.original_image_path &&
            design_image_path == other.design_image_path && model_path == other.model_path &&
@@ -127,6 +139,7 @@ struct ModelGenerationFeatureHost::Impl
         if (shutdown_requested)
             return;
         shutdown_requested = true;
+        if (import_session) import_session->invalidate();
         if (model_generation != nullptr) {
             model_generation->set_ui_state_listener({});
             model_generation->set_workbench_listener({});
@@ -146,6 +159,7 @@ struct ModelGenerationFeatureHost::Impl
     std::unique_ptr<OrcaWorkspaceAdapter> workspace;
     ModelGenerationPanel* model_generation { nullptr };
     bool shutdown_requested { false };
+    std::shared_ptr<WorkbenchImportSession> import_session;
 };
 
 ModelGenerationFeatureHost::ModelGenerationFeatureHost(wxWindow* parent, Plater* plater,
@@ -167,6 +181,43 @@ void ModelGenerationFeatureHost::set_workbench_import_handler(std::function<void
 AI::ModelImportResult ModelGenerationFeatureHost::import_workbench_model(const AI::ModelImportRequest& request)
 {
     return m_impl->workspace->import_workbench_artifact(request);
+}
+
+bool ModelGenerationFeatureHost::import_workbench_model_async(const AI::ModelImportRequest& request,
+    std::shared_ptr<WorkbenchImportSession> session, WorkbenchImportProgress progress,
+    WorkbenchImportCompletion completion)
+{
+    if (m_impl->shutdown_requested || m_impl->import_session) return false;
+    const auto source = workbench_snapshot();
+    if (!source.can_import_for_slicing || source.model_path != request.artifact.local_path) return false;
+    wxWeakRef<ModelGenerationPanel> panel(m_impl->model_generation);
+    auto current = [panel, source] {
+        if (!panel) return false;
+        const auto latest = panel->workbench_snapshot();
+        return latest.revision == source.revision && latest.asset_id == source.asset_id &&
+            latest.model_path == source.model_path && latest.candidate_path.empty() && !latest.dirty;
+    };
+    m_impl->import_session = session;
+    panel->set_workbench_import_running(true);
+    bool started = false;
+    try {
+        started = m_impl->workspace->import_workbench_artifact_async(request, session, std::move(progress),
+            [this, panel, session, completion = std::move(completion)](const auto& result) {
+                if (!session->valid()) return;
+                m_impl->import_session.reset();
+                if (panel) panel->set_workbench_import_running(false);
+                if (completion) completion(result);
+            }, std::move(current));
+    } catch (...) {
+        m_impl->import_session.reset();
+        if (panel) panel->set_workbench_import_running(false);
+        throw;
+    }
+    if (!started) {
+        m_impl->import_session.reset();
+        if (panel) panel->set_workbench_import_running(false);
+    }
+    return started;
 }
 
 wxWindow* ModelGenerationFeatureHost::panel() const
@@ -212,6 +263,11 @@ bool ModelGenerationFeatureHost::request_generate_model()
     return m_impl->model_generation != nullptr && m_impl->model_generation->request_generate_model();
 }
 
+bool ModelGenerationFeatureHost::request_retry_model()
+{
+    return m_impl->model_generation != nullptr && m_impl->model_generation->request_retry_model();
+}
+
 bool ModelGenerationFeatureHost::request_stop()
 {
     return m_impl->model_generation != nullptr && m_impl->model_generation->request_stop();
@@ -242,6 +298,11 @@ bool ModelGenerationFeatureHost::request_refresh_history()
     return m_impl->model_generation != nullptr && m_impl->model_generation->request_refresh_history();
 }
 
+bool ModelGenerationFeatureHost::request_open_image_history(const std::string& job_id)
+{
+    return m_impl->model_generation != nullptr && m_impl->model_generation->request_open_image_history(job_id);
+}
+
 bool ModelGenerationFeatureHost::request_open_history(const std::string& job_id)
 {
     return m_impl->model_generation != nullptr && m_impl->model_generation->request_open_history(job_id);
@@ -262,6 +323,11 @@ void ModelGenerationFeatureHost::set_workbench_results_handler(std::function<voi
     m_impl->model_generation->set_workbench_results_handler(std::move(handler));
 }
 
+void ModelGenerationFeatureHost::set_workbench_return_to_design_handler(std::function<void()> handler)
+{
+    m_impl->model_generation->set_workbench_return_to_design_handler(std::move(handler));
+}
+
 bool ModelGenerationFeatureHost::request_open_workbench() { return m_impl->model_generation->request_open_workbench(); }
 void ModelGenerationFeatureHost::mount_workbench(wxWindow* parent) { m_impl->model_generation->mount_workbench(parent); }
 void ModelGenerationFeatureHost::mount_assets(wxWindow* parent) { m_impl->model_generation->mount_assets(parent); }
@@ -280,13 +346,29 @@ bool ModelGenerationFeatureHost::request_enable_portrait(bool enabled) { return 
 
 void ModelGenerationFeatureHost::set_service_availability(bool available, const std::string& message)
 {
+    set_service_availability(available, available, message);
+}
+
+void ModelGenerationFeatureHost::set_service_availability(bool available, bool generation_available, const std::string& message)
+{
     if (m_impl->model_generation != nullptr)
-        m_impl->model_generation->set_service_availability(available, message);
+        m_impl->model_generation->set_service_availability(available, generation_available, message);
 }
 
 void ModelGenerationFeatureHost::shutdown()
 {
     m_impl->shutdown();
+}
+
+bool ModelGenerationFeatureHost::request_semantic_mode(SemanticMode mode) {
+    return !m_impl->shutdown_requested && m_impl->model_generation->request_semantic_mode(mode);
+}
+bool ModelGenerationFeatureHost::request_portrait_optimization() {
+    wxString reason;
+    return !m_impl->shutdown_requested && m_impl->model_generation->request_portrait_optimization(reason);
+}
+void ModelGenerationFeatureHost::cancel_portrait_optimization() {
+    if (!m_impl->shutdown_requested) m_impl->model_generation->cancel_portrait_optimization();
 }
 
 } // namespace Slic3r::GUI

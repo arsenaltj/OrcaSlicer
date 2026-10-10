@@ -49,9 +49,21 @@ inline bool prepare_workbench_project_color(DynamicPrintConfig& config,
     auto previous = colors->values[slot];
     std::transform(previous.begin(), previous.end(), previous.begin(),
         [](unsigned char value) { return char(std::toupper(value)); });
-    if (previous == color) return true;
-    colors->values[slot] = std::move(color);
-    changed = true;
+    changed = previous != color;
+    // Native spool icons use the color pack, even for a single physical color.
+    // Keep the selected slot's display metadata in the same undo transaction.
+    auto sync_display_option = [&](const char* key, const std::string& value) {
+        if (auto* option = config.option<ConfigOptionStrings>(key)) {
+            if (slot >= option->values.size()) option->values.resize(slot + 1);
+            if (option->values[slot] != value) {
+                option->values[slot] = value;
+                changed = true;
+            }
+        }
+    };
+    sync_display_option("filament_multi_colour", color);
+    sync_display_option("filament_colour_type", "1");
+    if (changed) colors->values[slot] = std::move(color);
     return true;
 }
 
