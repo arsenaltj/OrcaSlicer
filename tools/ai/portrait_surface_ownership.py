@@ -8,7 +8,7 @@ import numpy as np
 from beauty_leaf_domain import LeafKey, digest, domain, validate_keys
 from local_face_landmarks import OVAL, surface_neighbors
 from local_leaf_boundaries import BoundaryView, reconstruct_projection
-from portrait_r5_boundaries import load_views
+from local_face_view_io import load_views
 
 POLICY = {'algorithm': 'r6-parent-ownership/v1', 'minimum_confidence': .9,
           'minimum_dominance': .85, 'minimum_view_families': 2,

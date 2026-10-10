@@ -148,8 +148,8 @@
     },
     {
       "id": "stop_model",
-      "path": "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationArtifactFlow.cpp",
-      "needle": "void ModelGenerationPanel::on_stop"
+      "path": "tools/ai/model_job_application.py",
+      "needle": "def stop(self, job_id: str"
     },
     {
       "id": "provider_authorization",
@@ -158,23 +158,23 @@
     },
     {
       "id": "generation_job",
-      "path": "tools/ai/orca_ai_sidecar.py",
+      "path": "tools/ai/model_contracts.py",
       "needle": "class Job:"
     },
     {
       "id": "submit_generation",
-      "path": "tools/ai/orca_ai_sidecar.py",
-      "needle": "    def _generate(self, job_id: str)"
+      "path": "tools/ai/model_job_application.py",
+      "needle": "    def generate(self, job_id: str"
     },
     {
       "id": "history",
-      "path": "tools/ai/orca_ai_sidecar.py",
+      "path": "tools/ai/model_job_repository.py",
       "needle": "def _persist_job("
     },
     {
       "id": "restore",
-      "path": "tools/ai/orca_ai_sidecar.py",
-      "needle": "def _restore_jobs("
+      "path": "tools/ai/model_job_lifecycle.py",
+      "needle": "    def restore_jobs(self,"
     },
     {
       "id": "slicing_states",
@@ -228,8 +228,8 @@
     },
     {
       "id": "saved_model_check",
-      "path": "tools/ai/orca_ai_sidecar.py",
-      "needle": "def _check_saved_model",
+      "path": "tools/ai/model_quality_workflow.py",
+      "needle": "    def check_saved_model(self,",
       "detail": "Registered saved artifact structural check; private snapshot and SHA/mm binding; no generation job."
     },
     {
@@ -342,8 +342,8 @@
     },
     {
       "id": "reuse_design",
-      "path": "tools/ai/orca_ai_sidecar.py",
-      "needle": "def _reuse_design_job("
+      "path": "tools/ai/model_job_lifecycle.py",
+      "needle": "    def reuse_design_job(self,"
     },
     {
       "id": "protected_region_manifest",
@@ -374,6 +374,77 @@
       "id": "workbench_portrait_optimization",
       "path": "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationPortrait.cpp",
       "needle": "bool ModelGenerationPanel::request_portrait_optimization(wxString& reason)"
+    },
+    {
+      "id": "image_preprocessing_policy",
+      "path": "tools/ai/image_preprocessing_policy.py",
+      "needle": "def build_image_preprocessing_policy(",
+      "detail": "Local keyword evidence selects non-portrait structure and text rules; real print dimensions are design intentions, with portrait/unknown behavior retained."
+    },
+    {
+      "id": "image_reference_prompt",
+      "path": "tools/ai/openai_preprocessor.py",
+      "needle": "def build_geometry_reference_prompt(",
+      "detail": "Shared production/debug prompt boundary; one image edit retains provider pixels and unrestricted creation colors."
+    },
+    {
+      "id": "image_preprocessing_prompt_rules",
+      "path": "tools/ai/image_preprocessing_prompts.py",
+      "needle": "PORTRAIT_RULES =",
+      "detail": "Editable shared/style/portrait/subject/feature/material/text/print rules; legacy portrait/unknown prompt bytes retained."
+    },
+    {
+      "id": "image_reference_prompt_layers",
+      "path": "tools/ai/openai_preprocessor.py",
+      "needle": "def build_geometry_reference_prompt_layers(",
+      "detail": "Ordered production prompt parts with exact editable rule keys; standalone debug exports text spans and content hashes."
+    },
+    {
+      "id": "nonportrait_reference_review",
+      "path": "tools/ai/nonportrait_reference.py",
+      "needle": "def review_nonportrait_reference(",
+      "detail": "Local silhouette advice and explicitly enabled, cached single-request semantic review; neither proves 3D connectivity or printability."
+    },
+    {
+      "id": "image_preprocessing_debug",
+      "path": "tools/ai/image_preprocessing_debug.py",
+      "needle": "def main(",
+      "detail": "Standalone dry-run, existing-image comparison and optional matte reference; supplied views remain unverified and do not submit a 3D task."
+    },
+    {
+      "id": "generation_transport",
+      "path": "tools/ai/orca_ai_sidecar.py",
+      "needle": "class Handler("
+    },
+    {
+      "id": "design_application",
+      "path": "tools/ai/design_workflow.py",
+      "needle": "class DesignWorkflow:"
+    },
+    {
+      "id": "model_application",
+      "path": "tools/ai/model_generation_workflow.py",
+      "needle": "class ModelGenerationWorkflow:"
+    },
+    {
+      "id": "job_application",
+      "path": "tools/ai/model_job_application.py",
+      "needle": "class ModelJobApplication:"
+    },
+    {
+      "id": "job_lifecycle",
+      "path": "tools/ai/model_job_lifecycle.py",
+      "needle": "class ModelJobLifecycle:"
+    },
+    {
+      "id": "atomic_catalog",
+      "path": "tools/ai/capability_catalog.py",
+      "needle": "CAPABILITIES = ("
+    },
+    {
+      "id": "atomic_runtime",
+      "path": "tools/ai/model_runtime_files.cmake",
+      "needle": "set(ORCA_MODEL_CAPABILITY_RUNTIME_FILES"
     }
   ],
   "journeys": [
@@ -396,7 +467,9 @@
             "awaiting_palette_confirmation"
           ],
           "evidence": [
-            "generation_job"
+            "generation_job",
+            "design_application",
+            "job_application"
           ]
         },
         {
@@ -409,7 +482,8 @@
           ],
           "evidence": [
             "generate_confirmation",
-            "submit_generation"
+            "submit_generation",
+            "job_application"
           ]
         },
         {
@@ -423,7 +497,8 @@
           ],
           "evidence": [
             "submit_generation",
-            "provider_authorization"
+            "provider_authorization",
+            "model_application"
           ]
         },
         {
@@ -436,7 +511,8 @@
           ],
           "evidence": [
             "generation_job",
-            "history"
+            "history",
+            "job_lifecycle"
           ]
         },
         {
@@ -532,6 +608,14 @@
             }
           ]
         }
+      ],
+      "state_sources": [
+        "generation_job",
+        "design_application",
+        "model_application",
+        "job_application",
+        "job_lifecycle",
+        "generation_transport"
       ]
     },
     {
@@ -716,7 +800,9 @@
       "boundary": "等待设计及配色确认",
       "group": "设计与生成",
       "evidence": [
-        "generation_job"
+        "generation_job",
+        "design_application",
+        "job_application"
       ],
       "modules": [
         "generation"
@@ -754,7 +840,8 @@
       "group": "设计与生成",
       "evidence": [
         "submit_generation",
-        "provider_authorization"
+        "provider_authorization",
+        "model_application"
       ],
       "modules": [
         "generation"
@@ -775,7 +862,8 @@
         "generation_job",
         "history",
         "import_model",
-        "model_workflow_shell"
+        "model_workflow_shell",
+        "job_lifecycle"
       ],
       "modules": [
         "generation"

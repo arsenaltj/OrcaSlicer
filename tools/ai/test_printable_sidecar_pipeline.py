@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 import sys
 from pathlib import Path
 import tempfile
@@ -86,7 +87,7 @@ class PrintableSidecarIntegrationTests(unittest.TestCase):
             input_path = Path(directory) / "input.png"
             Image.new("RGB", (96, 96), "white").save(input_path)
             job.input_path = input_path
-            with mock.patch.object(sidecar, "preprocess_image", side_effect=lambda _source, _instruction, output, *_args: synthetic_preview(output)):
+            with mock.patch.object(sidecar, "preprocess_image", side_effect=lambda _source, _instruction, output, *_args, **_kwargs: synthetic_preview(output)):
                 sidecar._preprocess_image_job(job, input_path, "保留主体")
 
             self.assertNotEqual(job.raw_preview_path, job.preview_path)
@@ -99,6 +100,74 @@ class PrintableSidecarIntegrationTests(unittest.TestCase):
             self.assertEqual(job.raw_preview_path.read_bytes(), job.preview_path.read_bytes())
             with Image.open(sidecar._model_generation_reference(job)) as reference:
                 self.assertEqual(reference.getpixel((100, 100))[:3], (210, 55, 50))
+
+    def test_nonportrait_worker_forwards_print_scale_keeps_pixels_and_recovers_policy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job = self.make_job(directory, "image")
+            job.style, job.generation_profile = "realistic", "quality"
+            input_path = synthetic_preview(Path(directory)/"source.png")
+            original = input_path.read_bytes()
+            job.input_path = input_path
+            job.image_metrics["source_filename"] = "glass-vase.png"
+            with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test-key", "ORCASLICER_AI_NONPORTRAIT_REVIEW": ""}), \
+                 mock.patch.object(sidecar, "preprocess_image", side_effect=lambda _source, _prompt, output, *_args, **_kwargs: synthetic_preview(output)) as edit, \
+                 mock.patch.object(sidecar, "review_prepared_reference") as portrait, \
+                 mock.patch.object(sidecar, "complete_vision_once") as semantic:
+                sidecar._preprocess_image_job(job, input_path, "保留主体")
+            self.assertEqual(job.state, "awaiting_confirmation", job.message)
+            edit.assert_called_once()
+            portrait.assert_not_called()
+            semantic.assert_not_called()
+            self.assertEqual(edit.call_args.kwargs["print_settings"], job.print_settings)
+            self.assertEqual(edit.call_args.kwargs["preprocessing_options"]["filename"], "glass-vase.png")
+            policy = job.image_metrics["image_preprocessing_policy"]
+            self.assertEqual(policy["subject"], "hard_surface")
+            self.assertEqual(policy["material_risks"], ["transparent"])
+            self.assertEqual(policy["print_constraints"]["minimum_feature_mm"], 2)
+            self.assertEqual(job.image_metrics["nonportrait_reference_quality"]["semantic_review"]["status"], "not_requested")
+            self.assertEqual(sidecar._load_job(job.directory).image_metrics["image_preprocessing_policy"], policy)
+            self.assertEqual(input_path.read_bytes(), original)
+            self.assertEqual(job.preview_path.read_bytes(), job.raw_preview_path.read_bytes())
+            self.assertEqual(sidecar._model_generation_reference(job), job.raw_preview_path)
+
+    def test_nonportrait_opt_in_review_is_advice_and_failure_never_restarts_image_edit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job = self.make_job(directory, "image")
+            input_path = synthetic_preview(Path(directory)/"input.png")
+            job.input_path = input_path
+            with mock.patch.dict(os.environ, {"ORCASLICER_AI_NONPORTRAIT_REVIEW": "1"}), \
+                 mock.patch.object(sidecar, "preprocess_image", side_effect=lambda _source, _prompt, output, *_args, **_kwargs: synthetic_preview(output)) as edit, \
+                 mock.patch.object(sidecar, "complete_vision_once", side_effect=sidecar.OpenAIPreprocessorError("unavailable")) as review:
+                sidecar._preprocess_image_job(job, input_path, "雨伞")
+            self.assertEqual(job.state, "awaiting_confirmation", job.message)
+            edit.assert_called_once()
+            review.assert_called_once()
+            self.assertEqual(job.image_metrics["nonportrait_reference_quality"]["semantic_review"]["status"], "unavailable")
+
+    def test_nonportrait_diagnostic_write_failure_preserves_generated_design(self):
+        with tempfile.TemporaryDirectory() as directory:
+            job = self.make_job(directory, "image")
+            input_path = synthetic_preview(Path(directory)/"input.png")
+            job.input_path = input_path
+            with mock.patch.object(sidecar, "preprocess_image", side_effect=lambda _source, _prompt, output, *_args, **_kwargs: synthetic_preview(output)) as edit, \
+                 mock.patch.object(sidecar, "review_nonportrait_reference", side_effect=OSError("report storage unavailable")):
+                sidecar._preprocess_image_job(job, input_path, "挖掘机")
+            self.assertEqual(job.state, "awaiting_confirmation", job.message)
+            self.assertEqual(job.image_metrics["nonportrait_reference_quality"]["status"], "unavailable")
+            edit.assert_called_once()
+            self.assertEqual(job.preview_path.read_bytes(), job.raw_preview_path.read_bytes())
+
+    def test_uploaded_filename_is_an_advisory_basename(self):
+        handler = sidecar.Handler.__new__(sidecar.Handler)
+        boundary = "reference-boundary"
+        body = (f'--{boundary}\r\nContent-Disposition: form-data; name="image"; filename="C:/fakepath/glass-vase.png"\r\n'
+                f'Content-Type: image/png\r\n\r\nimage-bytes\r\n--{boundary}--\r\n').encode()
+        handler.headers = {"Content-Type": "multipart/form-data; boundary="+boundary}
+        handler._read_body = mock.Mock(return_value=body)
+        fields, image, content_type = handler._read_image_multipart()
+        self.assertEqual(fields["_source_filename"], "glass-vase.png")
+        self.assertEqual(image, b"image-bytes")
+        self.assertEqual(content_type, "image/png")
 
     def test_quality_portrait_geometry_reference_inherits_validated_alpha(self):
         with tempfile.TemporaryDirectory() as directory:

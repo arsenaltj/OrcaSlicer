@@ -348,6 +348,25 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unsupported sidecar runtime variable"):
             dev.modules(self.root)
 
+    def test_model_capabilities_are_verified_and_refreshed_with_other_components(self):
+        self.write("CMakeLists.txt", 'set(ORCA_AI_SIDECAR_RUNTIME_FILES\n'
+                   '"${CMAKE_SOURCE_DIR}/tools/ai/provider.py"\n'
+                   '${ORCA_LOCAL_SEMANTIC_RUNTIME_FILES}\n'
+                   '${ORCA_MODEL_CAPABILITY_RUNTIME_FILES}\n)\ninstall(FILES)\n')
+        self.write("tools/ai/local_semantic_runtime_files.cmake",
+                   'set(ORCA_LOCAL_SEMANTIC_RUNTIME_FILES "${CMAKE_SOURCE_DIR}/tools/ai/provider.py")')
+        self.write("tools/ai/model_runtime_files.cmake",
+                   'set(ORCA_MODEL_CAPABILITY_RUNTIME_FILES "${CMAKE_SOURCE_DIR}/tools/ai/application.py")')
+        self.write("tools/ai/application.py", "original application")
+        self.write(".tmp/dev/run/resources/tools/ai/application.py", "original application")
+        self.assertEqual(dev.modules(self.root), ["provider.py", "application.py"])
+        self.prepare()
+        self.write(".tmp/dev/run/resources/tools/ai/application.py", "stale application")
+        with self.assertRaisesRegex(ValueError, "Runtime does not match.*application.py"):
+            dev.verify_runtime(self.root, self.build, [])
+        self.assertEqual(dev.update_sidecar(self.root, self.build)["updated_modules"], ["application.py"])
+        self.assertEqual((self.runtime / "resources/tools/ai/application.py").read_text(), "original application")
+
     def test_duplicate_shared_modules_are_checked_and_refreshed_once(self):
         self.write("CMakeLists.txt", 'set(ORCA_AI_SIDECAR_RUNTIME_FILES\n'
                    '"${CMAKE_SOURCE_DIR}/tools/ai/provider.py"\n'

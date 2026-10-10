@@ -16,14 +16,8 @@ TOOLS_AI = REPO_ROOT / "tools" / "ai"
 
 
 def packaged_runtime_files() -> list[Path]:
-    cmake = (REPO_ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
-    block = re.search(r"set\(ORCA_AI_SIDECAR_RUNTIME_FILES\s+(.*?)\)", cmake, re.DOTALL)
-    if block is None:
-        raise AssertionError("CMake AI runtime file list is missing")
-    names = re.findall(r'"\$\{CMAKE_SOURCE_DIR\}/tools/ai/([^"/]+\.py)"', block[1])
-    if not names:
-        raise AssertionError("CMake AI runtime file list is empty")
-    return [TOOLS_AI / name for name in names]
+    from scripts.dev_runtime import modules
+    return [TOOLS_AI / name for name in modules(REPO_ROOT)]
 
 
 class PackagedSidecarTests(unittest.TestCase):

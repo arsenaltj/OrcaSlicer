@@ -196,6 +196,18 @@ class ArchitectureReviewTests(unittest.TestCase):
         ar.enrich_business(report, config, source, source)
         self.assertEqual(report["business"]["flows"][0]["impact"]["kind"], "unchanged")
 
+    def test_moved_state_keeps_identity_and_current_source_location(self):
+        config = {"modules": [], "evidence": [
+            {"id": "host", "path": "host.py", "needle": "job.state"},
+            {"id": "atom", "path": "atom.py", "needle": "job.state"}],
+            "journeys": [{"id": "generation", "state_source": "host", "state_sources": ["atom", "host"],
+                          "extractor": "python_job_state", "state_meanings": {"ready": "ready"}, "phases": []}],
+            "business_flows": []}
+        report = {"changes": [{"path": "atom.py"}], "potential_files": []}
+        ar.enrich_business(report, config, {"host.py": b'job.state = "ready"'}, {"atom.py": b'job.state = "ready"'})
+        state = report["business"]["journeys"][0]["states"][0]
+        self.assertEqual((state["name"], state["delta"], state["path"], state["line"]), ("ready", "existing", "atom.py", 1))
+
     def test_branch_inventory_excludes_removed_and_unobserved_states(self):
         journey = {"label": "流程", "phases": [], "rules": [{"title": "条件"}, {"title": "恢复"}],
                    "states": [{"name": "Waiting", "delta": "existing"}, {"name": "Old", "delta": "removed"}],

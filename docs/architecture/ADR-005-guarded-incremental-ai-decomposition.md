@@ -52,6 +52,14 @@ The release contract states that an internal fast package is not promotable, a c
 
 **Separate desktop microservices:** rejected by ADR-004 due to process, port, installer and debugging overhead.
 
+## 2026-10-11 implemented capability decomposition
+
+The user made file-level capability composition the current priority. Model validation, storage, color/mesh operations and legacy portrait reference implementations now live in independent modules. Design, model generation, artifact handling, quality and job lifecycle use explicit port dataclasses. The existing HTTP host invokes `ModelJobApplication`; compatibility exports retain old callable names without duplicating implementations.
+
+The Sidecar remains the process/session/HTTP composition root. Its budget is reduced from 9450 to 2000 lines. Integration checks reject missing packaged modules/entrypoints, capability import cycles, reverse HTTP/UI dependencies and dynamic namespace injection; capability files are bounded at 1500 lines. The runtime component is explicitly installed by CMake and understood by the development refresh helper. Multi-file state extraction preserves Job state identity across file moves.
+
+Capability discovery and recipes are read-only metadata. They expose availability/confirmation boundaries and do not create provider work or apply native changes. Native import/preparation/slicing keep their current ports and transaction requirements. The color workbench and portions of GUI session state remain host-bound; this decision does not claim that all GUI code has been made independent. See [capability ownership and composition](../../tools/ai/README_atomic_capabilities.md).
+
 ## References
 
 - `docs/architecture/ADR-003-upstream-lineage-ai-integration.md`

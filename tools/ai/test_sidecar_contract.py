@@ -101,6 +101,31 @@ def temporary_environment(**values):
 
 
 class SidecarHealthContractTests(unittest.TestCase):
+    def test_atomic_catalog_requires_native_client_and_never_creates_work(self):
+        token = "a5" * 32
+        proof = hmac.new(token.encode(), f"client:{PRODUCTION.SIDECAR_SESSION_NONCE}".encode(), hashlib.sha256).hexdigest()
+        with temporary_environment(ORCASLICER_AI_SESSION_TOKEN=token, ORCASLICER_AI_REQUIRE_SESSION="1"), \
+             mock.patch.object(PRODUCTION, "_submit") as submit, \
+             mock.patch.object(PRODUCTION, "preprocess_image") as image, \
+             sidecar_server(PRODUCTION.Handler) as port:
+            url = f"http://127.0.0.1:{port}/v1/orcaslicer/capabilities"
+            with self.assertRaises(urllib.error.HTTPError) as denied:
+                urllib.request.urlopen(url, timeout=5)
+            self.assertEqual(denied.exception.code, 401)
+            request = urllib.request.Request(url, headers={"X-OrcaSlicer-Client": "native"})
+            with self.assertRaises(urllib.error.HTTPError) as unproved:
+                urllib.request.urlopen(request, timeout=5)
+            self.assertEqual(unproved.exception.code, 401)
+            request.add_header("X-OrcaSlicer-Session-Proof", proof)
+            with urllib.request.urlopen(request, timeout=5) as response:
+                catalog = json.load(response)
+            self.assertEqual(catalog["schema"], "orca-atomic-capabilities-v1")
+            capabilities = {item["id"]: item for item in catalog["capabilities"]}
+            self.assertTrue(capabilities["model.generate"]["confirmation"])
+            self.assertIsNone(capabilities["slice.apply"]["available"])
+            submit.assert_not_called()
+            image.assert_not_called()
+
     def setUp(self):
         original_open = urllib.request.OpenerDirector.open
         def local_only(opener, request, *args, **kwargs):
