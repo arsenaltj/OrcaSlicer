@@ -1,6 +1,16 @@
 [
   {
     "pr": 25,
+    "run": 38069406291,
+    "head": "f5c0b0d3b87044ac7caf77f50fe05a39df4dd282",
+    "base": "012c98d83a6d738b7ca5cbbc503d4aa4a1bc7262",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "模型生成原子能力解耦与按类型前处理规则",
+    "path": "pr/25/f5c0b0d3b87044ac7caf77f50fe05a39df4dd282/38069406291",
+    "created": "2026-10-10T16:55:12+00:00"
+  },
+  {
+    "pr": 25,
     "run": 38068937344,
     "head": "af91eb9aa5eb6e276c09f47eff84b9ccf43e9bc1",
     "base": "012c98d83a6d738b7ca5cbbc503d4aa4a1bc7262",

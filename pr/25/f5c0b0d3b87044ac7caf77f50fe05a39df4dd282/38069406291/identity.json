@@ -1,0 +1,25 @@
+{
+  "pr": 25,
+  "run": 38069406291,
+  "head": "f5c0b0d3b87044ac7caf77f50fe05a39df4dd282",
+  "base": "012c98d83a6d738b7ca5cbbc503d4aa4a1bc7262",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "模型生成原子能力解耦与按类型前处理规则",
+  "path": "pr/25/f5c0b0d3b87044ac7caf77f50fe05a39df4dd282/38069406291",
+  "created": "2026-10-10T16:55:12+00:00",
+  "files": {
+    "index.html": "788a251edcce938eedb9daa39be7aa45bc31b2226ea3a05cec2c3af4c8411d9d",
+    "details.html": "d29a78db3b5e2631136aaceb1848c9346fa63de336d9b6fdfb034e3eea039cae",
+    "report.json": "fc0754fe3e05d2b3765d2f65c2274f2cb1b0330bfea6ba776a5555c79e6154bc",
+    "summary.md": "be1b9869ba2eef329a0fe06cb746dd1748e025bab8e9717b06c70953ca27315f",
+    "archify-receipts.json": "3b667adc199685c7c24eb78889cb5a6d6a74a2b7d5d06da8a219a11b25046aa4",
+    "l0-context.html": "35ceaee4821b556abdc8c0227fe59dc3acff88cba471d1e425ab8f7445405dcc",
+    "l0-context.json": "c12e289fb503e3917335feb70620dff655677f8142e267a69d066072a1e13cb7",
+    "l1-modules.html": "01eaa91bc0beed40006fbc0d1be9e75e9ff67bdfb558c3c3c736916e04a61ea8",
+    "l1-modules.json": "b6764e901e4d6188d52779ec3eb27470a8d69a6acb8abd400ed547266c4e0055",
+    "l2-generation.html": "f101802e002c795e22d556cff74d4e7e799048939932abd411f4bdbfcbb3cdb2",
+    "l2-generation.json": "22841df17bdd3edd92088ee1fee4594a28035678b0ca9359a3ab1b7cc160d872",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}
