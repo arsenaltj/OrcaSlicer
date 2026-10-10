@@ -1,3 +1,11 @@
+# 2026-10-10 当前：fork Actions 已恢复，重触 PR24 当前候选
+
+主线：PR24 当前 head `5d9c79f110d922652abd2eac72f32f10164ebd15`、base `a65035aaa9fba1afbe809fb176451e4cc82acaa8`、候选 `735bd4f1dbf425be1be8ef95b6feca5af5f62f1a`；open、可合并且无冲突，实际状态 blocked/unmerged。
+本轮：用户要求查未合入原因。GitHub 必需严格 Windows 构建，源/候选无 checks/status；Actions 页面明确显示 “Workflows on this fork have been disabled”，说明 GitHub 为减少 fork 的无效计算停用了整个仓库工作流。API 的 enabled true/workflow active 未反映此执行端停用，不能据此认为 CI 已可用；目标分支触发配置存在，未发现需改业务源码的触发错误。
+未结：用户明确批准重新启用仓库 Actions；真实页面点击恢复后显示 “Actions Enabled”，停用页面已消失。reviews 为 0；GitHub 审批数量也为 0，团队 SOP 的非作者复核/维护人合入仍待完成。必需 Windows CI 须在新事件中产生，原性能与 UX 难项保持。
+下一步：本次只追加具体根因及已授权恢复的两份状态文档，并正常推送同一 PR24，触发新 synchronize 候选；核对精确 head/base/candidate 的 CI。代码/已验运行时不变，不为文档重编或重复 AI/GUI，不重跑旧 candidate 冒充新提交通过。
+计划变更：定位并修复 fork 工作流停用的具体阻塞，替代先前“无 CI、原因未确认”；保护与团队合入流程保持，不增加功能/设备/通知任务。停用/启用截图及诊断留本轮忽略目录。
+
 # 2026-10-10 本轮：轻量回退及旅程修复提交主线 PR24
 
 主线：用户新增明确提交 `codex/team/integration` 授权，沿用现有开发分支和 PR24；fetch 后集成仍为 `a65035aaa9fba1afbe809fb176451e4cc82acaa8`，开发分支与远端均为 `38da2c93ea11d7bab5ccebe695047a2e92b77216`，无新增冲突。

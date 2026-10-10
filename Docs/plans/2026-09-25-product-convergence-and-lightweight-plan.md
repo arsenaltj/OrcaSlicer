@@ -1,3 +1,11 @@
+## 2026-10-10 PR24 未合入原因核查（承接提交主线）
+
+用户要求查当前合入卡点。PR24 head `5d9c79f110d922652abd2eac72f32f10164ebd15`、base `a65035aaa9fba1afbe809fb176451e4cc82acaa8`、候选 `735bd4f1dbf425be1be8ef95b6feca5af5f62f1a`；mergeable true、draft false、mergeable_state blocked，未合入。当前必需严格 Windows 构建检查缺失，head/candidate 均无 checks/status，reviews 0；GitHub 服务端审批数量为 0，团队非作者复核是另行保留的 SOP 要求。
+
+只读 API 显示 Actions enabled true、相关 workflow active，最近运行停留在 10-09 北京时间的旧集成版本；目标分支的 pull_request 触发配置存在。真实 Actions 页面进一步明确提示 “Workflows on this fork have been disabled”，解释 GitHub 为减少 fork 的无效计算停用了工作流。这是当前 CI 没启动的已定位根因，与早前 dispatch 的 disabled 错误相符；不能用设置 API 的 enabled 单字段覆盖页面执行状态。截图在 `.tmp/ux-performance-journey-20261009/pr24-actions-disabled-20261010.jpg`，不上传私有运行证据。
+
+恢复入口为重新启用此仓库工作流，会恢复配置中的定时任务；用户已明确批准，真实页面恢复后显示 “Actions Enabled”，停用页面消失，启用截图保留同一忽略目录。此前被丢弃的新提交事件尚无当前运行；将这两份具体根因/恢复记录提交并正常推送原 PR24，触发新 synchronize，而非重跑旧 candidate。仅文档变化，代码与已验 17,304 文件运行时不变，按文档范围核对，不重编或重做付费/GUI旅程。新 head/base/candidate 和各阶段实际检查结果在 PR24 绑定后再决定合入；非作者复核/维护人流程及保护保持，不以本机通过替代 CI。其余已提交功能、轻量回退和性能/UX 未结不变。
+
 ## 2026-10-10 轻量回退和旅程修复提交主线（承接 UX/N 与 C.4）
 
 用户明确要求将上述本机修改提交 `codex/team/integration`，并确认 PR24 是否包含上次融合。继续原 checkout、`codex/ui-redesign-printer-ux-integration-20261006` 与 PR24；新增提交授权替代上一节本地交付限制，不另建分支或 PR。远端核对集成为 `a65035aaa9fba1afbe809fb176451e4cc82acaa8`，开发线本地/远端均为 `38da2c93ea11d7bab5ccebe695047a2e92b77216`，集成已是开发线祖先，无新增冲突。PR24 已含同事 `4066439c2f80ad781c784196195f02483b0c64c7`、此前主线和本地优化的融合；本轮默认关闭重型识别，保留其余 UX 与普通分区/填色/画笔。
