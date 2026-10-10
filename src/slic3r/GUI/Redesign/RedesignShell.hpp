@@ -188,6 +188,7 @@ private:
     wxTextCtrl* m_custom_style { nullptr };
     int m_last_stylized_style { 1 };
     wxPanel* m_provider_choice { nullptr };
+    wxPanel* m_face_limit_choice { nullptr };
     std::string m_selected_style_id { "sculpture" };
     wxStaticText* m_upload_hint { nullptr };
     wxStaticText* m_upload_status { nullptr };

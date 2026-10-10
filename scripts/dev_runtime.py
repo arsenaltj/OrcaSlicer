@@ -94,10 +94,11 @@ def modules(root: Path) -> list[str]:
     remainder = block.replace("${CMAKE_SOURCE_DIR}", "")
     if re.search(r"\$\{[^}]+\}", remainder):
         raise ValueError("Unsupported sidecar runtime variable; update modules() before refreshing")
-    names = re.findall(r'\$\{CMAKE_SOURCE_DIR\}/tools/ai/([A-Za-z0-9_]+\.py)', block)
-    if not names or len(names) != len(set(names)):
+    names = re.findall(r'\$\{CMAKE_SOURCE_DIR\}/tools/ai/([A-Za-z0-9_]+\.(?:py|json))', block)
+    if not names:
         raise ValueError("Invalid CMake sidecar runtime list")
-    return names
+    # Shared files can appear in both the top-level and component lists.
+    return list(dict.fromkeys(names))
 
 
 def refresh_catalogs(root: Path) -> dict:
@@ -134,12 +135,18 @@ def verify_runtime(root: Path, build: Path, installed: list[str]) -> dict:
     pairs["resources/tools/ai/orca_ai_runtime_dependencies.json"] = build / "orca_ai_runtime_dependencies.json"
     cache = (build / "CMakeCache.txt").read_text(encoding="utf-8")
     raster = re.search(r"^ORCA_BEAUTY_RASTER_BINARY:FILEPATH=(.+)$", cache, re.MULTILINE)
-    if raster:
+    if raster and raster[1].strip():
         source = Path(raster[1].strip())
         expected = re.search(r"^ORCA_BEAUTY_RASTER_SHA256:STRING=([0-9a-f]{64})$", cache, re.MULTILINE)
         if expected is None or not source.is_file() or digest(source) != expected[1]:
             raise ValueError("Preserved Beauty raster binary identity changed")
         pairs["resources/tools/ai/local_semantic_raster.dll"] = source
+    else:
+        source = build / "Release/local_semantic_raster.dll"
+        if "resources/tools/ai/local_semantic_raster.dll" in installed:
+            pairs["resources/tools/ai/local_semantic_raster.dll"] = source
+    if "resources/beauty-runtime/modules/local_semantic_raster.dll" in installed:
+        pairs["resources/beauty-runtime/modules/local_semantic_raster.dll"] = source
     # uv is installed from CMake's configured/downloaded tool, not resources/.
     uv_name = "resources/tools/uv/uv.exe"
     if uv_name in installed:
@@ -157,13 +164,33 @@ def verify_runtime(root: Path, build: Path, installed: list[str]) -> dict:
         checks[name] = digest(target)
     # The install manifest proves membership; compare resource bytes as well.
     beauty = re.search(r"^ORCA_BEAUTY_RUNTIME_ROOT:PATH=(.+)$", cache, re.MULTILINE)
+    beauty_source = Path(beauty[1].strip()) if beauty and beauty[1].strip() else None
+    native_install = build / "src/cmake_install.cmake"
+    if beauty_source is None and native_install.is_file():
+        staged = re.findall(
+            r'file\(INSTALL DESTINATION "\$\{CMAKE_INSTALL_PREFIX\}/resources/beauty-runtime"'
+            r' TYPE DIRECTORY FILES "([^"]+)"\)', native_install.read_text(encoding="utf-8"))
+        if len(staged) == 1:
+            beauty_source = Path(staged[0])
     for name in installed:
         if name.startswith("resources/") and not name.startswith("resources/tools/ai/") and name not in pairs:
             source = source_path(root, name)
             if name.startswith("resources/beauty-runtime/"):
-                if beauty is None:
+                if beauty_source is None:
                     raise ValueError("Cannot identify configured beauty runtime source")
-                source = source_path(Path(beauty[1].strip()), name.removeprefix("resources/beauty-runtime/"))
+                source = source_path(beauty_source, name.removeprefix("resources/beauty-runtime/"))
+                if name == "resources/beauty-runtime/runtime-manifest.json" and \
+                        "resources/beauty-runtime/modules/local_semantic_raster.dll" in pairs:
+                    # Installation seals the compiled DLL into the staged manifest.
+                    expected_manifest = read_json(source)
+                    raster_path = runtime / "resources/beauty-runtime/modules/local_semantic_raster.dll"
+                    record = {"size": raster_path.stat().st_size, "sha256": digest(raster_path)}
+                    expected_manifest["files"]["modules/local_semantic_raster.dll"] = record
+                    expected_manifest["modules"]["local_semantic_raster.dll"] = record
+                    expected_manifest["raster_required"] = True
+                    if read_json(runtime / name) != expected_manifest:
+                        raise ValueError(f"Runtime resource does not match source: {name}")
+                    continue
             if not source.is_file() or digest(source) != checks[name]:
                 raise ValueError(f"Runtime resource does not match source: {name}")
     for name in ("python/python.exe", "python/pythonw.exe", "resources/i18n/zh_CN/OrcaSlicer.mo"):

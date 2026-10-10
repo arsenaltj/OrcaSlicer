@@ -4,6 +4,7 @@
 #include "slic3r/GUI/Redesign/RedesignState.hpp"
 #include "slic3r/GUI/Redesign/ImageHistoryPagination.hpp"
 #include "slic3r/GUI/Redesign/ModelGalleryPolicy.hpp"
+#include "slic3r/GUI/Redesign/ModelFaceLimitChoice.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationHost.hpp"
 #include "slic3r/GUI/Redesign/RedesignModelRoute.hpp"
 #include "slic3r/GUI/Redesign/ImageDesignDraft.hpp"
@@ -16,6 +17,53 @@
 #include <string>
 
 using namespace Slic3r::GUI;
+
+TEST_CASE("Changing the model face target selects compatible geometry and retains other options", "[UiRedesign][ModelFaceLimitChoice]")
+{
+    ModelGenerationUIOptions options;
+    CHECK(options.face_limit == 1000000);
+    CHECK(options.geometry_quality == "standard");
+    CHECK((model_face_limit_choices(options) == std::vector<int> {1000000, 2000000}));
+    options.texture_quality = "detailed";
+    options.output_format = "obj";
+    const auto high = model_generation_options_for_face_limit(options, 2000000);
+    CHECK(high.face_limit == 2000000);
+    CHECK(high.geometry_quality == "detailed");
+    CHECK(high.texture_quality == options.texture_quality);
+    CHECK(high.output_format == options.output_format);
+    CHECK(high.provider == options.provider);
+    CHECK(model_generation_options_for_face_limit(high, 1000000) == options);
+}
+
+TEST_CASE("Historical face targets are displayed without rewriting retained generation options", "[UiRedesign][ModelFaceLimitChoice]")
+{
+    ModelGenerationUIOptions historical;
+    historical.face_limit = 300000;
+    historical.geometry_quality = "detailed";
+    const auto retained = historical;
+    CHECK((model_face_limit_choices(historical) == std::vector<int> {1000000, 2000000, 300000}));
+    CHECK(historical == retained);
+    const auto new_options = model_generation_options_for_face_limit(historical, 1000000);
+    CHECK(new_options.geometry_quality == "standard");
+    CHECK((model_face_limit_choices(new_options) == std::vector<int> {1000000, 2000000}));
+    historical.face_limit = 1000000;
+    CHECK((model_face_limit_choices(historical) == std::vector<int> {1000000, 2000000}));
+    CHECK(historical.geometry_quality == "detailed");
+}
+
+TEST_CASE("Hunyuan face choices exclude unsupported detailed geometry", "[UiRedesign][ModelFaceLimitChoice]")
+{
+    ModelGenerationUIOptions options;
+    options.provider = "hunyuan";
+    CHECK(model_face_limit_choices(options) == std::vector<int> {1000000});
+    options.texture_quality = "detailed";
+    const auto compatible = model_generation_options_for_face_limit(options, 2000000);
+    CHECK(compatible.face_limit == 1000000);
+    CHECK(compatible.geometry_quality == "standard");
+    CHECK(compatible.texture_quality == "standard");
+    options.face_limit = 300000;
+    CHECK((model_face_limit_choices(options) == std::vector<int> {1000000, 300000}));
+}
 
 TEST_CASE("A retained model candidate permits a new design but active work and unavailable services do not", "[UiRedesign][ImageDesignDraft]")
 {

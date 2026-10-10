@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -229,6 +230,51 @@ class RuntimeTests(unittest.TestCase):
         self.write("CMakeLists.txt", 'set(ORCA_AI_SIDECAR_RUNTIME_FILES ${UNKNOWN_COMPONENT})\ninstall(FILES)')
         with self.assertRaisesRegex(ValueError, "Unsupported sidecar runtime variable"):
             dev.modules(self.root)
+
+    def test_shared_component_data_is_deduplicated_and_verified(self):
+        self.write("CMakeLists.txt", 'set(ORCA_AI_SIDECAR_RUNTIME_FILES\n'
+                   '"${CMAKE_SOURCE_DIR}/tools/ai/provider.py"\n'
+                   '${ORCA_LOCAL_SEMANTIC_RUNTIME_FILES}\n)\ninstall(FILES)\n')
+        self.write("tools/ai/local_semantic_runtime_files.cmake",
+                   'set(ORCA_LOCAL_SEMANTIC_RUNTIME_FILES '
+                   '"${CMAKE_SOURCE_DIR}/tools/ai/provider.py" '
+                   '"${CMAKE_SOURCE_DIR}/tools/ai/config.json")')
+        self.write("tools/ai/config.json", '{"version":1}')
+        self.write(".tmp/dev/run/resources/tools/ai/config.json", '{"version":1}')
+        self.assertEqual(dev.modules(self.root), ["provider.py", "config.json"])
+        self.prepare()
+        self.write(".tmp/dev/run/resources/tools/ai/config.json", '{"version":2}')
+        with self.assertRaisesRegex(ValueError, "Runtime does not match"):
+            dev.verify_runtime(self.root, self.build, [])
+
+    def test_staged_beauty_manifest_matches_the_installed_raster_seal(self):
+        self.prepare()
+        cache = self.build / "CMakeCache.txt"
+        cache.write_text(cache.read_text() + '\nORCA_BEAUTY_RUNTIME_ROOT:PATH=\n'
+                         'ORCA_BEAUTY_RASTER_BINARY:FILEPATH=\n')
+        stage = self.build / "_deps/portrait-offline-fixture"
+        self.write(".tmp/build/src/cmake_install.cmake",
+                   'file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/resources/beauty-runtime" '
+                   'TYPE DIRECTORY FILES "' + stage.as_posix() + '/")')
+        manifest = {"files": {}, "modules": {}, "network": "offline"}
+        self.write(".tmp/build/_deps/portrait-offline-fixture/runtime-manifest.json", json.dumps(manifest))
+        self.write(".tmp/build/Release/local_semantic_raster.dll", "compiled raster")
+        raster = "resources/beauty-runtime/modules/local_semantic_raster.dll"
+        self.write(".tmp/dev/run/" + raster, "compiled raster")
+        record = {"size": (self.runtime / raster).stat().st_size, "sha256": dev.digest(self.runtime / raster)}
+        manifest["files"]["modules/local_semantic_raster.dll"] = record
+        manifest["modules"]["local_semantic_raster.dll"] = record
+        manifest["raster_required"] = True
+        name = "resources/beauty-runtime/runtime-manifest.json"
+        self.write(".tmp/dev/run/" + name, json.dumps(manifest))
+        self.assertIn(name, dev.verify_runtime(self.root, self.build, [name, raster]))
+        manifest["network"] = "unexpected"
+        self.write(".tmp/dev/run/" + name, json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError, "Runtime resource does not match"):
+            dev.verify_runtime(self.root, self.build, [name, raster])
+        self.write(".tmp/dev/run/" + raster, "stale raster")
+        with self.assertRaisesRegex(ValueError, "Runtime does not match"):
+            dev.verify_runtime(self.root, self.build, [name, raster])
 
 
 class OfflineSelectionTests(unittest.TestCase):
