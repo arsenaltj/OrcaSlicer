@@ -148,8 +148,8 @@
     },
     {
       "id": "stop_model",
-      "path": "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationArtifactFlow.cpp",
-      "needle": "void ModelGenerationPanel::on_stop"
+      "path": "tools/ai/model_job_application.py",
+      "needle": "def stop(self, job_id: str"
     },
     {
       "id": "provider_authorization",
