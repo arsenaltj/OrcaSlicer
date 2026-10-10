@@ -1,6 +1,16 @@
 [
   {
     "pr": 24,
+    "run": 38025834967,
+    "head": "459cfe22eeaccc451e1864d80ab36d5dcb645b44",
+    "base": "a65035aaa9fba1afbe809fb176451e4cc82acaa8",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "融合同事 UX 与本机优化，默认使用轻量分区",
+    "path": "pr/24/459cfe22eeaccc451e1864d80ab36d5dcb645b44/38025834967",
+    "created": "2026-10-10T04:59:55+00:00"
+  },
+  {
+    "pr": 24,
     "run": 37774673473,
     "head": "78d2f1a3a94c5b2d202f839669b4fa03c41b5ca2",
     "base": "a65035aaa9fba1afbe809fb176451e4cc82acaa8",
