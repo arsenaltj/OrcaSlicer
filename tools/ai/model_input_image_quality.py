@@ -10,10 +10,14 @@ from __future__ import annotations
 from collections import deque
 from io import BytesIO
 from pathlib import Path
-import re
 from typing import Any, Iterable
 
 from PIL import Image, ImageFilter
+
+try:
+    from .image_preprocessing_policy import SUBJECT_KEYWORDS, classify_reference_subject
+except ImportError:
+    from image_preprocessing_policy import SUBJECT_KEYWORDS, classify_reference_subject
 
 
 QUALITY_SCHEMA_VERSION = 1
@@ -23,16 +27,7 @@ RECOMMENDABLE_STYLES = (
     "portrait_sketch", "ink_relief", "cartoon", "sculpture", "low_poly", "relief", "realistic", "diorama",
 )
 
-_SUBJECT_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("scene", ("场景", "群像", "多人", "多物体", "街景", "风景", "scene", "group", "landscape")),
-    ("flat_graphic", ("logo", "标志", "图标", "文字", "字体", "徽章", "标牌", "海报", "icon", "badge", "sign")),
-    ("effects", ("烟雾", "火焰", "液体", "水花", "透明", "玻璃", "smoke", "fire", "flame", "liquid", "glass")),
-    ("portrait", ("人像", "人物", "头像", "肖像", "自拍", "男士", "女士", "男孩", "女孩", "portrait", "person", "people", "face", "selfie", "man", "woman", "boy", "girl")),
-    ("animal", ("宠物", "动物", "猫", "狗", "兔", "鸟", "鱼", "马", "熊", "龙", "cat", "dog", "pet", "animal", "rabbit", "bird", "horse", "bear", "dragon")),
-    ("architecture", ("建筑", "房屋", "大楼", "塔", "桥", "寺庙", "城堡", "亭", "architecture", "building", "house", "tower", "bridge", "temple", "castle")),
-    ("hard_surface", ("汽车", "车辆", "机器人", "机甲", "机器", "产品", "家具", "相机", "手机", "工具", "vehicle", "car", "robot", "machine", "product", "furniture", "camera", "phone", "tool")),
-    ("organic", ("花", "植物", "树", "盆景", "食物", "蛋糕", "水果", "蔬菜", "plant", "flower", "tree", "bonsai", "food", "cake", "fruit", "vegetable")),
-)
+_SUBJECT_KEYWORDS = SUBJECT_KEYWORDS
 
 
 class ModelInputImageQualityError(RuntimeError):
@@ -326,16 +321,8 @@ def assess_model_input_image(
 
 
 def _keyword_category(text: str) -> str:
-    normalized = text.casefold()
-    latin_tokens = set(re.findall(r"[a-z0-9]+", normalized))
-    for category, keywords in _SUBJECT_KEYWORDS:
-        for keyword in keywords:
-            if keyword.isascii():
-                if keyword in latin_tokens:
-                    return category
-            elif keyword in normalized:
-                return category
-    return ""
+    subject = classify_reference_subject(text)["subject"]
+    return "" if subject == "unknown" else subject
 
 
 def _style_image_metrics(image_data: bytes | bytearray) -> dict[str, float | int]:
@@ -423,7 +410,8 @@ def recommend_printable_style(
         raise ModelInputImageQualityError("A reference image is required for style recommendation.")
     quality = assess_model_input_image(image_data)
     image_metrics = _style_image_metrics(image_data)
-    category = _keyword_category(f"{prompt} {filename}")
+    routing = classify_reference_subject(prompt, filename=filename)
+    category = routing["subject"] if routing["subject"] != "unknown" else ""
     confidence = "high" if category else "medium"
     if not category and image_metrics["portrait_likelihood"] >= 1.0:
         category = "portrait"
@@ -468,4 +456,6 @@ def recommend_printable_style(
         "subject": category or "unknown",
         "confidence": confidence,
         "local_only": True,
+        "subject_evidence": routing["evidence"],
+        "material_risks": routing["material_risks"],
     }

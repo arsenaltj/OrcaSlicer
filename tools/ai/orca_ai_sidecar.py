@@ -48,10 +48,12 @@ from openai_preprocessor import (
     IDENTITY_FIRST_PORTRAIT_STYLES,
     OpenAIPreprocessorError,
     complete_vision,
+    complete_vision_once,
     complete_text,
     edit_image,
     generate_geometry_reference_image,
     image_provider_status,
+    image_preprocessing_policy,
     PORTRAIT_FACE_LOCK_FILENAME,
     preprocess_image,
     recommend_printable_palette,
@@ -130,6 +132,7 @@ from printable_model_quality import (
 )
 from printable_visual_quality import REPORT_FILENAME as VISUAL_QUALITY_FILENAME, review_model_visual_quality
 from printable_reference_visual_quality import review_prepared_reference
+from nonportrait_reference import review_nonportrait_reference
 from printable_palette import (
     LEGACY_DEFAULT_PRINTABLE_COLORS,
     MAX_PRINTABLE_COLORS,
@@ -3414,8 +3417,10 @@ def _apply_preview_visual_quality_gate(job: Job, report: Mapping[str, Any]) -> l
 def _assess_job_preview_visual_quality(job: Job, original: Path) -> dict[str, Any] | None:
     """Gate high-quality realistic portrait previews before paid 3D submission."""
 
+    preprocessing = job.image_metrics.get("image_preprocessing_policy", {})
     if (
         job.source != "image"
+        or (isinstance(preprocessing, Mapping) and preprocessing.get("specialized", False))
         or job.style not in IDENTITY_FIRST_PORTRAIT_STYLES
         or job.generation_profile != "quality"
         or job.model_reference_path is None
@@ -3977,9 +3982,13 @@ def _preprocess_image_job(job: Job, input_path: Path, instruction: str) -> None:
     preview = job.directory / "preview.png"
     try:
         _stop_boundary(job)
+        options = {"filename": str(job.image_metrics.get("source_filename", input_path.name))}
+        policy = image_preprocessing_policy(instruction, job.style, custom_style=job.custom_style, print_settings=job.print_settings,
+                                             preprocessing_options=options)
+        job.image_metrics["image_preprocessing_policy"] = policy
         with _JOBS_LOCK:
             job.phase = "image_generation"
-            job.message = "The image service is preparing the printable portrait; this usually takes one to three minutes."
+            job.message = "The image service is preparing the model reference; this usually takes one to three minutes."
             job.progress = 11
             _persist_job(job)
         preprocess_image(
@@ -3992,6 +4001,8 @@ def _preprocess_image_job(job: Job, input_path: Path, instruction: str) -> None:
             job.palette_roles,
             job.custom_style,
             geometry_reference,
+            print_settings=job.print_settings,
+            preprocessing_options=options,
         )
         # Test adapters and older compatible preprocessors may not implement
         # the optional sculptural snapshot yet. Preserve the previous behavior
@@ -4000,7 +4011,7 @@ def _preprocess_image_job(job: Job, input_path: Path, instruction: str) -> None:
             shutil.copyfile(raw_preview, geometry_reference)
         with _JOBS_LOCK:
             job.phase = "checking_image"
-            job.message = "The generated portrait is being checked for identity, framing, and usable detail."
+            job.message = "The generated subject is being checked for structure, framing, and usable detail."
             job.progress = 12
             _persist_job(job)
         _validate_image_file(
@@ -4039,7 +4050,22 @@ def _preprocess_image_job(job: Job, input_path: Path, instruction: str) -> None:
             minimum_edge=MIN_MODEL_REFERENCE_EDGE,
             require_visual_detail=True,
         )
-        _assess_job_preview_visual_quality(job, input_path)
+        if policy["specialized"]:
+            _stop_boundary(job)
+            semantic_review = os.environ.get("ORCASLICER_AI_NONPORTRAIT_REVIEW", "").strip() == "1"
+            try:
+                job.image_metrics["nonportrait_reference_quality"] = review_nonportrait_reference(
+                    input_path, raw_preview, policy, job.directory / "nonportrait-review",
+                    completion=complete_vision_once if semantic_review else None,
+                    reviewer_model=os.environ.get("OPENAI_TEXT_MODEL", "gpt-5.4") if semantic_review else "",
+                )
+            except (OSError, ValueError):
+                job.image_metrics["nonportrait_reference_quality"] = {
+                    "status": "unavailable", "warnings": ["reference_quality_unavailable"],
+                    "physical_print_qualified": False,
+                }
+        else:
+            _assess_job_preview_visual_quality(job, input_path)
         (job.directory / "preview-colors.json").write_text(
             json.dumps(
                 {
@@ -4064,7 +4090,14 @@ def _preprocess_image_job(job: Job, input_path: Path, instruction: str) -> None:
             job.preprocess_failure = {}
             job.state = "awaiting_confirmation"
             job.phase = "awaiting_confirmation"
-            job.message = _printable_preview_message(job, "Review the prepared image before generation.")
+            reference_review = job.image_metrics.get("nonportrait_reference_quality", {})
+            notice = (
+                "Compare parts, openings, viewpoint and subject lettering with the original before generation."
+                if any(str(code).startswith("reference_") and str(code).endswith("_changed")
+                       for code in reference_review.get("warnings", [])) else
+                "Review the prepared image before generation."
+            )
+            job.message = _printable_preview_message(job, notice)
             job.progress = 15
             _complete_design_timing(job)
             _persist_job(job)
@@ -8325,6 +8358,9 @@ class Handler(BaseHTTPRequestHandler):
             if name == "image":
                 image = payload
                 image_content_type = part.get_content_type().lower()
+                # Keep only an advisory basename, never a client-supplied path.
+                filename = part.get_filename() or ""
+                fields["_source_filename"] = re.split(r"[\\/]", filename)[-1][:256]
             else:
                 if len(payload) > MAX_PROMPT_BYTES:
                     raise RequestError("invalid_request", f"{name} exceeds the 2000-byte limit.", 400)
@@ -8757,6 +8793,7 @@ class Handler(BaseHTTPRequestHandler):
                        provider=_generation_provider(fields), generation_options=fields)
         job.palette_recommendation_confirmed = palette_recommendation_confirmed
         job.user_prompt = user_instruction
+        job.image_metrics["source_filename"] = fields.get("_source_filename", "")
         suffix = ".png" if detected_type == "image/png" else ".jpg"
         input_path = job.directory / f"input-{uuid.uuid4().hex}{suffix}"
         try:

@@ -374,6 +374,42 @@
       "id": "workbench_portrait_optimization",
       "path": "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationPortrait.cpp",
       "needle": "bool ModelGenerationPanel::request_portrait_optimization(wxString& reason)"
+    },
+    {
+      "id": "image_preprocessing_policy",
+      "path": "tools/ai/image_preprocessing_policy.py",
+      "needle": "def build_image_preprocessing_policy(",
+      "detail": "Local keyword evidence selects non-portrait structure and text rules; real print dimensions are design intentions, with portrait/unknown behavior retained."
+    },
+    {
+      "id": "image_reference_prompt",
+      "path": "tools/ai/openai_preprocessor.py",
+      "needle": "def build_geometry_reference_prompt(",
+      "detail": "Shared production/debug prompt boundary; one image edit retains provider pixels and unrestricted creation colors."
+    },
+    {
+      "id": "image_preprocessing_prompt_rules",
+      "path": "tools/ai/image_preprocessing_prompts.py",
+      "needle": "PORTRAIT_RULES =",
+      "detail": "Editable shared/style/portrait/subject/feature/material/text/print rules; legacy portrait/unknown prompt bytes retained."
+    },
+    {
+      "id": "image_reference_prompt_layers",
+      "path": "tools/ai/openai_preprocessor.py",
+      "needle": "def build_geometry_reference_prompt_layers(",
+      "detail": "Ordered production prompt parts with exact editable rule keys; standalone debug exports text spans and content hashes."
+    },
+    {
+      "id": "nonportrait_reference_review",
+      "path": "tools/ai/nonportrait_reference.py",
+      "needle": "def review_nonportrait_reference(",
+      "detail": "Local silhouette advice and explicitly enabled, cached single-request semantic review; neither proves 3D connectivity or printability."
+    },
+    {
+      "id": "image_preprocessing_debug",
+      "path": "tools/ai/image_preprocessing_debug.py",
+      "needle": "def main(",
+      "detail": "Standalone dry-run, existing-image comparison and optional matte reference; supplied views remain unverified and do not submit a 3D task."
     }
   ],
   "journeys": [

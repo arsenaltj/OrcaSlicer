@@ -1312,6 +1312,10 @@ if (WIN32)
             ${ORCA_LOCAL_SEMANTIC_RUNTIME_FILES}
             "${CMAKE_SOURCE_DIR}/tools/ai/model_input_image_quality.py" "${CMAKE_SOURCE_DIR}/tools/ai/model_job_support.py" "${CMAKE_SOURCE_DIR}/tools/ai/model_provider_gateway.py"
             "${CMAKE_SOURCE_DIR}/tools/ai/design_generation_timing.py"
+            "${CMAKE_SOURCE_DIR}/tools/ai/image_preprocessing_policy.py"
+            "${CMAKE_SOURCE_DIR}/tools/ai/image_preprocessing_prompts.py"
+            "${CMAKE_SOURCE_DIR}/tools/ai/image_preprocessing_debug.py"
+            "${CMAKE_SOURCE_DIR}/tools/ai/nonportrait_reference.py"
             "${CMAKE_SOURCE_DIR}/tools/ai/model_refinement.py"
             "${CMAKE_SOURCE_DIR}/tools/ai/network_policy.py"
             "${CMAKE_SOURCE_DIR}/tools/ai/openai_preprocessor.py"
