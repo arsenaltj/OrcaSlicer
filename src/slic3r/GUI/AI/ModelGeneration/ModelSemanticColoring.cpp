@@ -109,6 +109,11 @@ std::filesystem::path semantic_region_runtime_directory()
     return error ? std::filesystem::path {} : std::filesystem::path(executable.native()).parent_path() / "ai" / "portrait_semantics";
 }
 
+bool portrait_recognition_enabled()
+{
+    return LocalSemanticWorker::portrait_recognition_enabled(boost::filesystem::path(Slic3r::resources_dir()));
+}
+
 std::string portrait_shape_runtime_fingerprint()
 {
     LocalSemanticWorker::Configuration config;

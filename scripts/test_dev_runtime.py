@@ -58,6 +58,43 @@ class RuntimeTests(unittest.TestCase):
         self.write(".tmp/build/install_manifest.txt", "\n".join(str(p) for p in self.runtime.rglob("*") if p.is_file()))
         return dev.finish_install(self.root, self.build, dev.preflight(self.root, self.build))
 
+    def test_separate_trial_checks_its_own_bytes_and_preserves_the_open_runtime(self):
+        self.prepare()
+        trial = self.root / ".tmp/qa/run"
+        shutil.copytree(self.runtime, trial)
+        installed = [p.relative_to(trial).as_posix() for p in trial.rglob("*") if p.is_file()]
+        original = dev.verify_runtime(self.root, self.build, installed)
+        self.assertEqual(dev.verify_runtime(self.root, self.build, installed, trial), original)
+        (trial / "OrcaSlicer.dll").write_text("mismatched new trial")
+        with self.assertRaisesRegex(ValueError, "Runtime does not match"):
+            dev.verify_runtime(self.root, self.build, installed, trial)
+        self.assertEqual(dev.verify_runtime(self.root, self.build, installed), original)
+        with self.assertRaisesRegex(ValueError, "inside this checkout"):
+            dev.verify_runtime(self.root, self.build, [], self.root / "external-trial")
+
+    def test_partition_runtime_rejects_stale_heavy_resources_and_capability_mismatch(self):
+        self.prepare()
+        cache = self.build / "CMakeCache.txt"
+        cache.write_text(cache.read_text() + "\nORCA_AI_PORTRAIT_RECOGNITION:BOOL=OFF\n")
+        for prefix in (".tmp/build/", ".tmp/dev/run/resources/tools/ai/"):
+            self.write(prefix + "orca_ai_runtime_dependencies.json", '{"portrait_recognition":{"enabled":false}}')
+        dev.verify_runtime(self.root, self.build, [])
+        for name, retired in (("resources/beauty-runtime/python/python.exe", "resources/beauty-runtime"),
+                              ("ai/portrait_semantics/libmediapipe.dll", "ai/portrait_semantics"),
+                              ("resources/tools/ai/portrait_parent_cleanup_partition.json",
+                               "resources/tools/ai/portrait_parent_cleanup_partition.json")):
+            with self.subTest(resource=name):
+                self.write(".tmp/dev/run/" + name, "obsolete runtime")
+                with self.assertRaisesRegex(ValueError, "retired portrait resources"):
+                    dev.verify_runtime(self.root, self.build, [])
+                target = self.runtime / retired
+                if target.is_dir(): shutil.rmtree(target)
+                else: target.unlink()
+        self.write(".tmp/build/orca_ai_runtime_dependencies.json", '{"portrait_recognition":{"enabled":true}}')
+        self.write(".tmp/dev/run/resources/tools/ai/orca_ai_runtime_dependencies.json", '{"portrait_recognition":{"enabled":true}}')
+        with self.assertRaisesRegex(ValueError, "inconsistent portrait capabilities"):
+            dev.verify_runtime(self.root, self.build, [])
+
     def test_installed_beauty_runtime_is_checked_against_configured_source(self):
         self.prepare()
         cache = self.build / 'CMakeCache.txt'

@@ -3659,8 +3659,9 @@ void ModelGenerationPanel::select_style(const std::string& style, bool user_sele
     const bool multicolor = style_uses_printable_colors(current_style());
     if (m_use_printable_colors != nullptr)
         m_use_printable_colors->SetValue(multicolor);
-    if (m_import_color_mode != nullptr)
-        m_import_color_mode->SetSelection(multicolor ? 0 : 2);
+    // Generation style does not decide how a finished model is imported. A
+    // natural-color or sculpture result may be painted afterwards; retain the
+    // explicit import choice and the initial NativeMatch default.
     refresh_palette();
     refresh_controls();
 }

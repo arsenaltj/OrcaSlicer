@@ -3372,7 +3372,7 @@ void GLCanvas3D::on_idle(wxIdleEvent& evt)
     // Canvas initialization precedes ImGui's font atlas during staged startup.
     // Notifications and toolbar state may measure text, so pause them together
     // with rendering until the startup owner has prepared the fonts.
-    if (!m_initialized || !m_enable_render)
+    if (!m_initialized || !m_enable_render || !_is_shown_on_screen())
         return;
 
     m_dirty |= m_main_toolbar.update_items_state();

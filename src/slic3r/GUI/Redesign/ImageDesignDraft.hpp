@@ -20,6 +20,17 @@ inline bool image_design_restores_input(const ModelGenerationUIState& state,
     return state.model_generation_session > current.model_generation_session;
 }
 
+inline bool image_design_refreshes_history(const ModelGenerationUIState& state,
+                                          const ModelGenerationUIState& current)
+{
+    // A preview can arrive before the completed job is persisted. Refresh again
+    // when the design becomes final so that history does not retain that early scan.
+    return state.design_ready && (!current.design_ready || state.job_id != current.job_id ||
+        state.design_image_path != current.design_image_path ||
+        (state.stage == ModelGenerationUIStage::DesignReady &&
+         current.stage != ModelGenerationUIStage::DesignReady));
+}
+
 // A successful upload starts a new image draft even when the same file is
 // selected again. The retained 3D asset/task is not this draft's 2D result.
 class ImageDesignDraft

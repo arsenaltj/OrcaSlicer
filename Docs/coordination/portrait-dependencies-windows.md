@@ -2,6 +2,10 @@
 
 更新：2026-10-09。适用分支：`codex/team/integration`。
 
+当前默认版本使用自动分区、分区填色与画笔，不携带重型人像识别资源，普通 Windows AI 构建不需要下载下列约 1 GB 附件。`ORCA_AI_PORTRAIT_RECOGNITION` 默认 OFF；安装能力清单同时关闭识别，旧运行文件或历史配置不能自动重新启用。
+
+以下仅用于显式研究这套实验人像算法。它在本机单人样本耗时约 22 分钟，尚未达到 ≤60 秒和 ≤100 MB 的产品约束；不作为默认交付。继续实验时须同时明确设置 `-DORCA_AI_PORTRAIT_RECOGNITION=ON` 并准备完整固定依赖，不能删减完整性检查。
+
 此文解决首次构建报 `Offline portrait packaging requires verified weights and local CPU site-packages`、缺少人像权重或 CPU Python 包的问题。人像识别在本地运行，不需要配置 Tripo 等云端 Provider；云端生成的服务配置是另一项工作。
 
 ## 1. 下载什么
@@ -54,7 +58,7 @@ py -3.12 .\scripts\portrait_dependencies.py prepare --archive "D:\Downloads\port
 
 ```powershell
 $portraitInit = (Resolve-Path .tmp/portrait-dependencies/portrait-dependencies.cmake).Path.Replace('\', '/')
-$env:ORCA_SLICER_CMAKE_ARGS = '-C "' + $portraitInit + '" -DORCA_AI_WINDOWS_INSTALLER=ON -DORCA_AI_DISTRIBUTION_CHANNEL=internal'
+$env:ORCA_SLICER_CMAKE_ARGS = '-C "' + $portraitInit + '" -DORCA_AI_WINDOWS_INSTALLER=ON -DORCA_AI_DISTRIBUTION_CHANNEL=internal -DORCA_AI_PORTRAIT_RECOGNITION=ON'
 .\build_win.bat -ds -i --vs 2022 --arch x64 --config release --deps-dir "$PWD/.tmp/dev/deps-build" --build-dir "$PWD/.tmp/dev/build" -j 2
 if ($LASTEXITCODE -ne 0) { throw '构建失败，请保留日志并查看最早的具体错误。' }
 ```

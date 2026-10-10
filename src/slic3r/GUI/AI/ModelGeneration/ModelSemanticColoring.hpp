@@ -13,6 +13,7 @@ namespace Slic3r::GUI {
 std::string semantic_region_runtime_identity(const std::filesystem::path& runtime);
 std::filesystem::path semantic_region_runtime_directory();
 std::string portrait_shape_runtime_fingerprint();
+bool portrait_recognition_enabled();
 std::shared_ptr<const SemanticRegionEvidence> load_legacy_semantic_region_evidence(
     const AI::SemanticColoring::MeshSnapshot&, const std::filesystem::path& runtime,
     const std::filesystem::path& cache, const std::string& runtime_identity, std::string& error);

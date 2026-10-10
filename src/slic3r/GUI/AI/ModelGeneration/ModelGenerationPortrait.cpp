@@ -131,12 +131,14 @@ wxWindow* ModelGenerationPanel::build_portrait_optimization(wxWindow* parent)
     wrapper->SetSizer(layout); m_portrait_card->Hide();
     m_portrait_timer.SetOwner(this, wxWindow::NewControlId());
     Bind(wxEVT_TIMER, [this](wxTimerEvent&) { update_portrait_optimization(); }, m_portrait_timer.GetId());
-    m_portrait_timer.Start(250);
+    if (portrait_recognition_enabled()) m_portrait_timer.Start(250);
+    else wrapper->Hide();
     return wrapper;
 }
 
 bool ModelGenerationPanel::request_semantic_mode(SemanticMode mode)
 {
+    if (mode == SemanticMode::Portrait && !portrait_recognition_enabled()) return false;
     if (m_shutdown || !m_model_preview || (m_portrait_task && m_portrait_task->snapshot().running()) ||
         m_portrait_draft_before || !m_finishing_candidate.empty()) return false;
     if (mode == m_semantic_mode) return true;
@@ -229,6 +231,8 @@ void ModelGenerationPanel::portrait_preview_ready()
 void ModelGenerationPanel::update_portrait_optimization()
 {
     if (m_shutdown || !m_portrait_card || !m_model_preview) return;
+    if (m_semantic_mode != SemanticMode::Portrait &&
+        !m_portrait_card->IsShown() && (!m_portrait_task || !m_portrait_task->snapshot().running())) return;
     if (m_portrait_task && m_portrait_task->snapshot().running() && m_portrait_preview_draft &&
         m_model_preview->beauty_editor_failed()) {
         const auto draft=std::move(m_portrait_preview_draft);

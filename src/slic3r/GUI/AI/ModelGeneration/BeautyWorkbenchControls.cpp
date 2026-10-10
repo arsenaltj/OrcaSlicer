@@ -9,6 +9,7 @@
 #include "slic3r/GUI/Widgets/ComboBox.hpp"
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
+#include <boost/log/trivial.hpp>
 #include <wx/button.h>
 #include <wx/bmpcbox.h>
 #include <wx/dcmemory.h>
@@ -21,6 +22,7 @@
 #include <wx/settings.h>
 #include <wx/wrapsizer.h>
 #include <algorithm>
+#include <chrono>
 #include <exception>
 
 namespace Slic3r::GUI {
@@ -774,6 +776,7 @@ void BeautyWorkbenchControls::cancel_partition()
 void BeautyWorkbenchControls::start_partition(const nlohmann::json& saved)
 {
     if (!m_ready || m_partition_task || m_processing) return;
+    const auto started = std::chrono::steady_clock::now();
     const auto pending_source = std::move(m_pending_secondary_partition_source);
     m_pending_secondary_partition_source.clear();
     if (on_partition_started && !on_partition_started()) {
@@ -797,7 +800,7 @@ void BeautyWorkbenchControls::start_partition(const nlohmann::json& saved)
         for (const auto& lock : task->locks->locks) for (const auto face : lock.locked_faces)
             labels[face] = int32_t(AI::SemanticColoring::Label::FaceSkin);
     try {
-        m_partition_worker = std::thread([task, surface, editor, labels, semantic_names] {
+        m_partition_worker = std::thread([task, surface, editor, labels, semantic_names, started] {
             try {
                 task->surface = surface ? surface : AI::BeautySurface::build(editor->mesh(), editor->vertex_colors(), {},
                     [task] { return task->canceled.load(); });
@@ -810,6 +813,12 @@ void BeautyWorkbenchControls::start_partition(const nlohmann::json& saved)
                 if (task->locks && (!task->restoring || !task->locks->preserves(task->result, task->result)))
                     task->locks->isolate(task->result, *task->surface);
             } catch (const std::exception& error) { task->error = error.what(); }
+            BOOST_LOG_TRIVIAL(info) << "[BeautyPartition] compute_ms=" <<
+                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count()
+                << " faces=" << editor->mesh().indices.size()
+                << " regions=" << task->result.piece_count()
+                << " restoring=" << task->restoring << " cancelled=" << task->canceled.load()
+                << " success=" << task->error.empty();
             task->done.store(true);
         });
         m_partition_timer.Start(100);

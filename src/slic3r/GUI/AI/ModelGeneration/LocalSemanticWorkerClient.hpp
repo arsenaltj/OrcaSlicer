@@ -21,6 +21,8 @@ struct Configuration {
 // Paths come only from the application's explicit data-directory configuration,
 // never a model-adjacent document. Failure leaves the destination unchanged.
 bool read_configuration(const boost::filesystem::path& file, Configuration& destination, std::string& reason);
+// The installed package owns this capability. Stale resources cannot enable it.
+bool portrait_recognition_enabled(const boost::filesystem::path& resources);
 // Explicit user configuration wins, including disabled/invalid configuration.
 // Otherwise use only the fixed runtime shipped beside application resources.
 bool read_runtime_configuration(const boost::filesystem::path& file,

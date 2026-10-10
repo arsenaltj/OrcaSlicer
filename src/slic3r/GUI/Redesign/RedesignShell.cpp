@@ -1109,6 +1109,8 @@ public:
 
     void SetPlaceholder(const wxString& placeholder, PlaceholderMode mode)
     {
+        if (!m_bitmap.IsOk() && m_placeholder == placeholder && m_placeholder_mode == mode)
+            return;
         m_bitmap = wxNullBitmap;
         m_placeholder = placeholder;
         m_placeholder_mode = mode;
@@ -1119,7 +1121,7 @@ public:
             m_animation_timer.Stop();
             m_spinner_frame = 0;
         }
-        Refresh();
+        Refresh(false);
     }
 
     void SetDesignTiming(const std::string& job_id, double elapsed, double estimate)
@@ -1269,6 +1271,12 @@ void RedesignShell::build_image_workspace()
         // RoundedPanel paints its face separately from its inherited surrounding colour.
         // Match the child background to the face so transparent icon assets do not show a square.
         item->SetBackgroundColour(wxColour(33, 33, 35));
+        if (index == 2) {
+            item->SetName(text("设置"));
+            item->SetToolTip(text("设置"));
+            item->SetCursor(wxCursor(wxCURSOR_HAND));
+            item->Bind(wxEVT_LEFT_UP, [](wxMouseEvent&) { wxGetApp().open_preferences(); });
+        }
         navigation_sizer->Add(item, 0, wxALIGN_CENTER | wxBOTTOM, FromDIP(index == 3 ? 21 : 40));
     }
 
@@ -1698,8 +1706,7 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
     const auto image_stage = m_image_design_draft.stage(state);
     const bool preserve_model_workbench = model_generation_preserves_workbench(state, route_action,
         m_active_page == Page::Model && m_model_view == ModelView::Workbench);
-    const bool history_changed = state.design_ready &&
-        (!m_model_generation_state.design_ready || state.job_id != m_model_generation_state.job_id);
+    const bool history_changed = image_design_refreshes_history(state, m_model_generation_state);
     // An invalid draft must survive a host snapshot while the user edits it.
     // Loading another job still replaces the form with that job's input.
     bool preserve_over_limit_prompt = false;
@@ -1783,7 +1790,10 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
     ImagePreview::PlaceholderMode placeholder_mode = ImagePreview::PlaceholderMode::Idle;
     bool show_design_bitmap = false;
     const auto update_design_preview = [&]() {
-        if (state.design_image_path.empty() || m_design_image_state == ImageState::Failed) {
+        if (state.design_image_path.empty()) {
+            placeholder = text("当前模型没有关联设计图");
+            placeholder_mode = ImagePreview::PlaceholderMode::Idle;
+        } else if (m_design_image_state == ImageState::Failed) {
             placeholder = text("2D 设计图无法显示");
             placeholder_mode = ImagePreview::PlaceholderMode::Error;
         } else if (m_design_image_state == ImageState::Loading) {
@@ -1876,7 +1886,7 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
         placeholder_mode = ImagePreview::PlaceholderMode::Generating;
         break;
     case ModelGenerationUIStage::ModelReady:
-        primary_label = text("重新生成 2D 设计图");
+        primary_label = state.design_image_path.empty() ? text("生成 2D 设计图") : text("重新生成 2D 设计图");
         primary_enabled = m_input_sync_ok && state.can_generate_design && editable;
         update_design_preview();
         break;
@@ -1900,16 +1910,23 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
             m_result_preview->ClearDesignTiming();
     }
     if (m_generate_button != nullptr) {
-        m_generate_button->SetLabel(primary_label);
-        m_generate_button->Enable(primary_enabled);
-        m_generate_button->Refresh();
+        if (m_generate_button->GetLabel() != primary_label || m_generate_button->IsEnabled() != primary_enabled) {
+            m_generate_button->SetLabel(primary_label);
+            m_generate_button->Enable(primary_enabled);
+            m_generate_button->Refresh(false);
+        }
     }
     if (m_secondary_action_button != nullptr) {
-        m_secondary_action_button->SetLabel(secondary_label);
-        m_secondary_action_button->Enable(m_secondary_action != SecondaryAction::None &&
-            (m_secondary_action != SecondaryAction::ReturnToDesign || can_return_to_image_design()));
-        m_secondary_action_button->Show(m_secondary_action != SecondaryAction::None);
-        m_secondary_action_button->Refresh();
+        const bool enabled = m_secondary_action != SecondaryAction::None &&
+            (m_secondary_action != SecondaryAction::ReturnToDesign || can_return_to_image_design());
+        const bool shown = m_secondary_action != SecondaryAction::None;
+        if (m_secondary_action_button->GetLabel() != secondary_label ||
+            m_secondary_action_button->IsEnabled() != enabled || m_secondary_action_button->IsShown() != shown) {
+            m_secondary_action_button->SetLabel(secondary_label);
+            m_secondary_action_button->Enable(enabled);
+            m_secondary_action_button->Show(shown);
+            m_secondary_action_button->Refresh(false);
+        }
     }
 
     // Connection presentation is owned by set_service_status(). Generation

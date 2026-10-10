@@ -580,10 +580,26 @@ fs::path runtime_modules_directory(const fs::path& resources)
     return resources / "tools" / "ai";
 }
 
+bool portrait_recognition_enabled(const fs::path& resources)
+{
+    try {
+        const auto manifest = strict_json(bounded_read(resources / "tools" / "ai" /
+            "orca_ai_runtime_dependencies.json", max_config_bytes));
+        const auto& enabled = manifest.at("portrait_recognition").at("enabled");
+        return enabled.is_boolean() && enabled.get<bool>();
+    } catch (...) { return false; }
+}
+
 bool read_runtime_configuration(const fs::path& file, const fs::path& installed_runtime,
                                 Configuration& destination, std::string& reason)
 {
     try {
+        const auto resources = installed_runtime.parent_path();
+        if (fs::exists(resources / "tools" / "ai" / "orca_ai_runtime_dependencies.json") &&
+            !portrait_recognition_enabled(resources)) {
+            reason = "portrait_recognition_disabled";
+            return false;
+        }
         if (fs::exists(file)) return read_configuration(file, destination, reason);
         Configuration c;
         c.python_executable = installed_runtime / "python" / "python.exe";

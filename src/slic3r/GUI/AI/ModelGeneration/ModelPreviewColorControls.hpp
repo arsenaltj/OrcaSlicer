@@ -181,7 +181,10 @@ public:
         container->SetSizer(contents);
         return container;
     }
-    void set_semantic_mode(bool portrait) { m_host_portrait_mode = portrait; m_semantic->SetValue(portrait); update(); }
+    void set_semantic_mode(bool portrait) {
+        if (m_host_portrait_mode == portrait && m_semantic->GetValue() == portrait) return;
+        m_host_portrait_mode = portrait; m_semantic->SetValue(portrait); update();
+    }
     wxWindow* build_workbench_palette(wxWindow* parent) {
         auto* container = new wxPanel(parent);
         container->SetBackgroundColour(parent->GetBackgroundColour());

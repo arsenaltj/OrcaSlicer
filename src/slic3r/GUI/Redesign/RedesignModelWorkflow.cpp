@@ -98,15 +98,24 @@ WorkbenchButton* command(wxWindow* parent, const wxString& label, bool accent = 
     return button;
 }
 
-void set_wrapped_label(wxStaticText* label, const wxString& text, int width)
+bool set_control_label(wxWindow* control, const wxString& text)
+{
+    if (control->GetLabel() == text) return false;
+    control->SetLabel(text);
+    return true;
+}
+
+bool set_wrapped_label(wxStaticText* label, const wxString& text, int width)
 {
     wxClientDC dc(label);
     dc.SetFont(label->GetFont());
     wxString wrapped;
     const wxSize extent = Label::split_lines(dc, width, text, wrapped);
-    label->SetLabel(wrapped);
+    const bool changed = set_control_label(label, wrapped);
     // MSW can retain the previous control height after wrapping a longer label.
-    label->SetMinSize(wxSize(-1, extent.y + label->FromDIP(2)));
+    const wxSize minimum(-1, extent.y + label->FromDIP(2));
+    if (label->GetMinSize() != minimum) { label->SetMinSize(minimum); return true; }
+    return changed;
 }
 
 wxString goal_status(GoalResultStatus status)
@@ -795,6 +804,7 @@ void RedesignShell::select_slicing_tab(bool native)
 
 void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
 {
+    const bool goal_changed = state.selected_goal != m_slicing_state.selected_goal || m_slice_displayed_palette.empty();
     const bool completed = state.official.phase == OfficialSlicePhase::Completed &&
         m_slicing_state.official.phase != OfficialSlicePhase::Completed;
     m_slicing_state = state;
@@ -815,8 +825,10 @@ void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
             vertices += volume->mesh().its.vertices.size();
         }
     }
-    m_slice_model_stats->SetLabel(wxString::Format(_L("面数  %zu\n顶点数  %zu"), faces, vertices));
+    bool layout_changed = set_control_label(m_slice_model_stats,
+        wxString::Format(_L("面数  %zu\n顶点数  %zu"), faces, vertices));
     if (state.palette != m_slice_displayed_palette) {
+        layout_changed = true;
         m_slice_displayed_palette = state.palette;
         m_slice_palette->Clear(true);
         for (size_t i = 0; i < state.palette.size(); ++i) {
@@ -842,15 +854,17 @@ void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
             state.diagnostic == "printability_action_required" ? _L("暂不可用") :
             !state.analyzing && !state.candidates[i] && goal.status == GoalResultStatus::Analyzing
                 ? _L("待分析") : goal_status(goal.status);
-        m_slice_goals[i]->SetLabel(titles[i] + "\n" + layer + "\n" + availability);
+        layout_changed = set_control_label(m_slice_goals[i], titles[i] + "\n" + layer + "\n" + availability) || layout_changed;
         m_slice_goals[i]->Enable(state.official.phase != OfficialSlicePhase::Slicing && !state.official.workspace_mutated);
         auto* button = static_cast<WorkbenchButton*>(m_slice_goals[i]);
-        button->SetBorderWidth(state.selected_goal == RECOMMENDATION_GOALS[i] ? FromDIP(1) : 0);
-        button->SetBorderColor(RedesignTheme::accent_colour());
+        if (goal_changed) {
+            button->SetBorderWidth(state.selected_goal == RECOMMENDATION_GOALS[i] ? FromDIP(1) : 0);
+            button->SetBorderColor(RedesignTheme::accent_colour());
+        }
     }
     const size_t selected = static_cast<size_t>(state.selected_goal);
-    set_wrapped_label(m_slice_details, state.candidates[selected]
-        ? candidate_details(state.effective_parameters[selected], state.metrics[selected]) : _L("暂无可用方案"), FromDIP(230));
+    layout_changed = set_wrapped_label(m_slice_details, state.candidates[selected]
+        ? candidate_details(state.effective_parameters[selected], state.metrics[selected]) : _L("暂无可用方案"), FromDIP(230)) || layout_changed;
     wxString status;
     if (state.analyzing) status = state.session.state == RecommendationSessionState::Canceled
         ? _L("正在取消分析…") : _L("正在分析三种方案…");
@@ -894,25 +908,26 @@ void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
         else if (!plate->is_slice_result_ready_for_export())
             status = _L("切片完成，导出前请处理预览中的错误。");
     }
-    set_wrapped_label(m_slice_status, status.empty() ? _L("准备切片") : status, FromDIP(246));
-    set_wrapped_label(m_native_slice_status, m_native_slicing && state.official.phase == OfficialSlicePhase::Rejected &&
-        state.official.diagnostic_code.empty() ? _L("准备切片") : status, FromDIP(290));
-    m_slice_keep_mesh->Show(state.can_keep_current_mesh && !state.analyzing);
+    const wxString native_status = m_native_slicing && state.official.phase == OfficialSlicePhase::Rejected &&
+        state.official.diagnostic_code.empty() ? _L("准备切片") : status;
+    layout_changed = m_slice_keep_mesh->Show(state.can_keep_current_mesh && !state.analyzing) || layout_changed;
     const bool running = state.official.phase == OfficialSlicePhase::Slicing;
     const auto route = workbench_slice_route(m_native_slicing, running || m_import_in_progress,
         state.can_retry, state.can_start, state.can_start_native);
     if (!m_native_slicing && route == WorkbenchSliceRoute::Native) {
         status += (status.empty() ? wxString() : "\n") + _L("将使用当前工程参数切片。");
-        set_wrapped_label(m_slice_status, status, FromDIP(246));
     } else if (route == WorkbenchSliceRoute::Unavailable && !running && !state.native_blocked_reason.empty()) {
         status += (status.empty() ? wxString() : "\n") + wxString::FromUTF8(state.native_blocked_reason);
-        set_wrapped_label(m_slice_status, status, FromDIP(246));
     }
+    // Publish the final message once. Applying an intermediate message on each
+    // poll briefly changed the label height and repainted the entire sidebar.
+    layout_changed = set_wrapped_label(m_slice_status, status.empty() ? _L("准备切片") : status, FromDIP(246)) || layout_changed;
+    layout_changed = set_wrapped_label(m_native_slice_status, native_status, FromDIP(290)) || layout_changed;
     m_slice_start->Enable(route != WorkbenchSliceRoute::Unavailable);
-    m_slice_start->SetLabel(state.can_retry && !m_native_slicing ? _L("重试切片") : _L("开始切片"));
+    layout_changed = set_control_label(m_slice_start, state.can_retry && !m_native_slicing ? _L("重试切片") : _L("开始切片")) || layout_changed;
     m_native_slice_start->Enable(!running && (m_model_view == ModelView::Preview || m_slice_start->IsEnabled()));
     m_slice_analyze->Enable(state.can_analyze);
-    m_slice_cancel->Show(state.analyzing);
+    layout_changed = m_slice_cancel->Show(state.analyzing) || layout_changed;
     m_ai_slicing_tab->Enable(!running);
     m_native_slicing_tab->Enable(!running);
     m_slice_export->Enable(OrcaPrinterAdapter(m_plater).snapshot().gcode_ready);
@@ -923,9 +938,11 @@ void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
     m_native_slice_print->Enable(can_open_print);
     if (completed && m_model_view == ModelView::Slicing && m_active_page == Page::Model)
         show_model_view(ModelView::Preview);
-    m_slice_status->GetParent()->Layout();
-    if (auto* scroll = dynamic_cast<wxScrolledWindow*>(m_slice_status->GetParent())) scroll->FitInside();
-    m_native_slice_commands->Layout();
+    if (layout_changed) {
+        m_slice_status->GetParent()->Layout();
+        if (auto* scroll = dynamic_cast<wxScrolledWindow*>(m_slice_status->GetParent())) scroll->FitInside();
+        m_native_slice_commands->Layout();
+    }
 }
 
 bool RedesignShell::can_save_print_project() const

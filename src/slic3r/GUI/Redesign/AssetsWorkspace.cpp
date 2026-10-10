@@ -109,6 +109,10 @@ void AssetsWorkspace::load_gallery()
             m_gallery->Layout();
             return;
         }
+        m_web->SetBackgroundColour(RedesignTheme::background_colour());
+        // Keep the browser's initial white about:blank surface out of the UI.
+        // The surrounding panel and loading status remain visible until ready.
+        m_web->Hide();
         m_gallery->GetSizer()->Add(m_web, 1, wxEXPAND);
         // Only the installed entry page stays embedded. External links have no
         // application command or filesystem bridge and open in the browser.
@@ -126,16 +130,22 @@ void AssetsWorkspace::load_gallery()
             event.Veto();
             if (navigation_for(event.GetURL()) != GalleryNavigation::Blocked) open_browser(event.GetURL());
         });
-        m_web->Bind(wxEVT_WEBVIEW_LOADED, [this](wxWebViewEvent&) {
+        m_web->Bind(wxEVT_WEBVIEW_LOADED, [this](wxWebViewEvent& event) {
+            if (event.GetURL() == "about:blank" ||
+                navigation_for(event.GetURL()) != GalleryNavigation::Embedded) return;
             m_gallery_status->SetLabel(_L("预览可离线浏览；下载完成后，在“我的资产”导入模型。"));
+            m_web->Show();
             m_gallery->Layout();
         });
         m_web->Bind(wxEVT_WEBVIEW_ERROR, [this](wxWebViewEvent&) {
+            m_web->Hide();
             m_gallery_status->SetLabel(_L("模型图库暂时无法加载。可刷新重试或在浏览器打开；本地资产仍可使用。"));
             m_gallery->Layout();
         });
         m_gallery->Layout();
     }
+    m_web->Hide();
+    m_gallery->Layout();
     WebView::LoadUrl(m_web, installed_gallery_url());
 }
 

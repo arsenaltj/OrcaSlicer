@@ -74,7 +74,7 @@ size_t ModelPreview3D::paint_beauty_faces(const std::vector<size_t>& faces, cons
 
 void ModelPreview3D::update_semantic_coloring()
 {
-    if (!m_has_model || !m_semantic_source || !m_color_trial_enabled || !m_color_trial->semantic_optimization()) {
+    if (!portrait_recognition_enabled() || !m_has_model || !m_semantic_source || !m_color_trial_enabled || !m_color_trial->semantic_optimization()) {
         if (m_semantic_controller) m_semantic_controller->cancel();
         m_color_trial->set_semantic_region_availability({});
         m_color_trial->set_semantic_status(wxEmptyString, false);

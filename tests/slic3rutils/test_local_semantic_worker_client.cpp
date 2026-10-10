@@ -203,6 +203,30 @@ TEST_CASE("Installed beauty runtime is relocatable and respects explicit opt out
     write(file,"broken");CHECK_FALSE(W::read_runtime_configuration(file,root,value,reason));
 }
 
+TEST_CASE("Partition-only packages cannot enable recognition from leftover runtime or explicit configuration", "[LocalSemanticWorkerClient][PortraitRuntimePolicy][AI]")
+{
+    ScopedTemporaryDir temporary;
+    const auto resources=temporary.path()/"resources",root=resources/"beauty-runtime";
+    fs::create_directories(root/"python");fs::create_directories(root/"weights");
+    fs::create_directories(resources/"tools"/"ai");
+    write(root/"python"/"python.exe","fixture");
+    for(const char* name:{"mobilenet0.25_Final.pth","face_parsing.farl.celebm.main_ema_181500_jit.pt","face_landmarker.task"})
+        write(root/"weights"/name,"fixture");
+    const auto file=temporary.path()/"config.json",manifest=resources/"tools"/"ai"/"orca_ai_runtime_dependencies.json";
+    write(file,config_json(root).dump());
+    W::Configuration value;value.cpu_threads=7;std::string reason;
+    const std::string policy=GENERATE("{\"portrait_recognition\":{\"enabled\":false}}",
+        "{\"portrait_recognition\":{\"enabled\":\"true\"}}","{}","broken");
+    write(manifest,policy);
+    CHECK_FALSE(W::portrait_recognition_enabled(resources));
+    CHECK_FALSE(W::read_runtime_configuration(file,root,value,reason));
+    CHECK(reason=="portrait_recognition_disabled");CHECK(value.cpu_threads==7);
+    write(manifest,"{\"portrait_recognition\":{\"enabled\":true}}");
+    CHECK(W::portrait_recognition_enabled(resources));
+    REQUIRE(W::read_runtime_configuration(file,root,value,reason));
+    CHECK(value.enabled);
+}
+
 TEST_CASE("Semantic worker accepts twenty minutes and rejects a larger limit without changing settings", "[LocalSemanticWorkerClient][AI]")
 {
     ScopedTemporaryDir temporary;

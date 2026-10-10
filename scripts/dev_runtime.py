@@ -149,8 +149,17 @@ def refresh_catalogs(root: Path) -> dict:
     return {"updated_catalogs": updated}
 
 
-def verify_runtime(root: Path, build: Path, installed: list[str]) -> dict:
-    runtime = root / ".tmp/dev/run"
+def verify_runtime(root: Path, build: Path, installed: list[str], runtime: Path | None = None) -> dict:
+    # A separate trial can retain an open older runtime while using the same
+    # source/cache checks. Never accept an external or linked install directory.
+    runtime = runtime if runtime is not None else root / ".tmp/dev/run"
+    if not runtime.resolve().is_relative_to((root / ".tmp").resolve()):
+        raise ValueError("Trial runtime must remain inside this checkout's .tmp directory")
+    for path in (runtime, *runtime.parents):
+        if path == root:
+            break
+        if path.is_symlink() or path.is_junction():
+            raise ValueError("Trial runtime must remain unlinked inside this checkout")
     for name in installed:
         if not source_path(runtime, name).is_file():
             raise ValueError(f"Runtime is incomplete: {name}; run dev.ps1 again")
@@ -160,6 +169,15 @@ def verify_runtime(root: Path, build: Path, installed: list[str]) -> dict:
     pairs["resources/tools/ai/orca_ai_build_info.json"] = build / "orca_ai_build_info.json"
     pairs["resources/tools/ai/orca_ai_runtime_dependencies.json"] = build / "orca_ai_runtime_dependencies.json"
     cache = (build / "CMakeCache.txt").read_text(encoding="utf-8")
+    if re.search(r"^ORCA_AI_PORTRAIT_RECOGNITION:BOOL=OFF$", cache, re.MULTILINE):
+        metadata = read_json(build / "orca_ai_runtime_dependencies.json")
+        if metadata.get("portrait_recognition", {}).get("enabled") is not False:
+            raise ValueError("Partition-only runtime has inconsistent portrait capabilities")
+        leftovers = ("resources/beauty-runtime", "ai/portrait_semantics",
+                     *("resources/tools/ai/portrait_parent_cleanup_" + name + ".json"
+                       for name in ("catalog", "fangfei", "partition", "locks")))
+        if any((runtime / name).exists() for name in leftovers):
+            raise ValueError("Partition-only runtime contains retired portrait resources")
     raster = re.search(r"^ORCA_BEAUTY_RASTER_BINARY:FILEPATH=(.+)$", cache, re.MULTILINE)
     if raster:
         source = Path(raster[1].strip())

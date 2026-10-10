@@ -92,6 +92,33 @@ TEST_CASE("A new image design supplies a missing historical style without alteri
     CHECK(image_design_input_for_editing(historical).style == "sculpture");
 }
 
+TEST_CASE("Finalizing an already visible preview refreshes image history once", "[UiRedesign][ImageDesignDraft]")
+{
+    ModelGenerationUIState preview;
+    preview.job_id = "design-job";
+    preview.design_ready = true;
+    preview.design_image_path = "design/preview.png";
+    preview.stage = ModelGenerationUIStage::GeneratingDesign;
+    auto ready = preview;
+    ready.stage = ModelGenerationUIStage::DesignReady;
+    CHECK(image_design_refreshes_history(ready, preview));
+    ++ready.revision;
+    CHECK_FALSE(image_design_refreshes_history(ready, ready));
+    auto changed = ready;
+    changed.design_image_path = "design/final.png";
+    CHECK(image_design_refreshes_history(changed, ready));
+    changed = ready;
+    changed.job_id = "another-design";
+    CHECK(image_design_refreshes_history(changed, ready));
+    auto not_ready = ready;
+    not_ready.design_ready = false;
+    CHECK(image_design_refreshes_history(ready, not_ready));
+    CHECK_FALSE(image_design_refreshes_history(not_ready, ready));
+    auto model = ready;
+    model.stage = ModelGenerationUIStage::GeneratingModel;
+    CHECK_FALSE(image_design_refreshes_history(model, ready));
+}
+
 TEST_CASE("Explicit history switches restore both image inputs while refreshes retain a new draft", "[UiRedesign][ImageDesignDraft]")
 {
     ModelGenerationUIState current;

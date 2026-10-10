@@ -22,7 +22,7 @@ if(WIN32)
 endif()
 
 set(ORCA_BEAUTY_RUNTIME_ROOT "" CACHE PATH "Prepared portable beauty recognition runtime (no downloads)")
-if(ORCA_BEAUTY_RUNTIME_ROOT)
+if(ORCA_BEAUTY_RUNTIME_ROOT AND ORCA_AI_PORTRAIT_RECOGNITION)
     if(NOT EXISTS "${ORCA_BEAUTY_RUNTIME_ROOT}/runtime-manifest.json" OR
        NOT EXISTS "${ORCA_BEAUTY_RUNTIME_ROOT}/python/python.exe")
         message(FATAL_ERROR "Incomplete portable beauty runtime")

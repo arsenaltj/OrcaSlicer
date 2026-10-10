@@ -1572,10 +1572,11 @@ public:
     }
     bool semantic_processing() const { return m_semantic_controller && m_semantic_controller->busy(); }
     bool semantic_reoptimization_available() const {
-        return !semantic_processing() && m_has_model && bool(m_semantic_source) && m_color_trial &&
+        return portrait_recognition_enabled() && !semantic_processing() && m_has_model && bool(m_semantic_source) && m_color_trial &&
             !m_color_trial->colors().empty() && m_color_trial->colors().size() <= 6;
     }
     wxString semantic_reoptimization_reason() const {
+        if (!portrait_recognition_enabled()) return _L("当前版本可直接自动划区、分区填色和画笔涂色。");
         if (semantic_processing()) return _L("正在识别人像区域，请等待完成或取消。");
         if (!m_has_model) return _L("当前没有已加载模型。");
         if (!m_semantic_source) return _L("当前模型缺少可用于人像识别的面颜色输入。");
