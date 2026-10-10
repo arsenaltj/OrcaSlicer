@@ -14,6 +14,7 @@ TOOLS_AI = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS_AI))
 
 import orca_ai_sidecar as sidecar
+import model_request as MODEL_REQUEST
 import openai_preprocessor
 
 
@@ -78,10 +79,10 @@ class ImagePathStabilityTests(unittest.TestCase):
 
     def test_image_resource_limits_still_apply(self):
         data = image_bytes(size=32)
-        with mock.patch.object(sidecar, "MAX_TEXTURE_PIXELS", 16):
+        with mock.patch.object(MODEL_REQUEST, "MAX_TEXTURE_PIXELS", 16):
             with self.assertRaisesRegex(ValueError, "megapixels"):
                 sidecar._validate_image_data(data, minimum_edge=1)
-        with mock.patch.object(sidecar, "MAX_IMAGE_BYTES", len(data) - 1):
+        with mock.patch.object(MODEL_REQUEST, "MAX_IMAGE_BYTES", len(data) - 1):
             with self.assertRaisesRegex(ValueError, "20 MB"):
                 sidecar._validate_image_data(data, minimum_edge=1)
 

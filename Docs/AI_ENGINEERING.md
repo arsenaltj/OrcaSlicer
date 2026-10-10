@@ -14,6 +14,8 @@
 
 ## 按任务定位
 
+当前能力文件、同事分工及后续极简界面组合入口见 [原子能力说明](../tools/ai/README_atomic_capabilities.md)。模型生成应用层以 `ModelJobApplication` 为入口；不要在 HTTP Handler 或新视图里再写一份设计/生成/恢复规则。能力目录会明确原生接口和仍依赖旧面板的工作台。
+
 | 任务 | 先读 | 再沿调用链阅读 |
 |---|---|---|
 | 生成界面/结果交互 | [ModelGeneration FeatureHost](../src/slic3r/GUI/AI/ModelGeneration/ModelGenerationFeatureHost.hpp) | `ModelGenerationPanel.cpp`、`ModelGenerationPresentation*`、`ModelGenerationArtifactFlow.cpp`、`AIModelGenerationClient.cpp` |
