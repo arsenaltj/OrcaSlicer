@@ -43,6 +43,7 @@ class Button : public StaticBox
     bool canFocus  = true;
     bool isCenter    = true;
     bool vertical    = false;
+    int leftPadding = 0;
 
     static const int buttonWidth = 200;
     static const int buttonHeight = 50;
@@ -65,6 +66,10 @@ public:
     void SetMaxSize(const wxSize& size) override;
 
     void SetPaddingSize(const wxSize& size);
+
+    // Adds an explicit inset for left-aligned content. Regular padding affects
+    // sizing; this opt-in inset also affects the painted content position.
+    void SetLeftPadding(int size);
 
     void SetStyle(const ButtonStyle style /*= ButtonStyle::Regular*/, const ButtonType type /*= ButtonType::None*/);
 

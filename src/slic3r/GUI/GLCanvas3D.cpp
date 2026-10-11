@@ -1294,6 +1294,14 @@ bool GLCanvas3D::init()
     if (m_multisample_allowed)
         glsafe(::glEnable(GL_MULTISAMPLE));
 
+    // Presentation flags must not suppress the first-time native resources.
+    // The first visible canvas can already be in the AI slicing page.
+    const bool compact_slicing = m_compact_slicing_tools;
+    if (compact_slicing) use_compact_slicing_tools(false);
+    ScopeGuard restore_slicing_tools([this, compact_slicing] {
+        if (compact_slicing) use_compact_slicing_tools(true);
+    });
+
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": before m_layers_editing init";
     if (m_main_toolbar.is_enabled())
         m_layers_editing.init();
@@ -8680,7 +8688,8 @@ void GLCanvas3D::_render_overlays()
 
     //BBS: GUI refactor: GLToolbar
     //move gizmos behind of main
-    _render_gizmos_overlay();
+    if (!m_compact_slicing_tools)
+        _render_gizmos_overlay();
 
     if (m_layers_editing.last_object_id >= 0 && m_layers_editing.object_max_z() > 0.0f)
         m_layers_editing.render_overlay(*this);
@@ -8707,9 +8716,10 @@ void GLCanvas3D::_render_overlays()
     }
     m_labels.render(sorted_instances);
 
-    _render_3d_navigator();
-
-    _render_canvas_toolbar();
+    if (!m_compact_slicing_tools) {
+        _render_3d_navigator();
+        _render_canvas_toolbar();
+    }
 }
 
 void GLCanvas3D::_render_style_editor()

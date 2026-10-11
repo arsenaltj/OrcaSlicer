@@ -538,6 +538,8 @@ private:
     GLGizmosManager m_gizmos;
     //BBS: GUI refactor: GLToolbar
     mutable GLToolbar m_main_toolbar;
+    bool m_compact_slicing_tools {false};
+    std::array<bool, 6> m_saved_slicing_tools {};
     mutable GLToolbar m_separator_toolbar;
     mutable IMToolbar m_sel_plate_toolbar;
     mutable GLToolbar m_assemble_view_toolbar;
@@ -884,6 +886,22 @@ public:
     void enable_gizmos(bool enable) { m_gizmos.set_enabled(enable); }
     void enable_selection(bool enable) { m_selection.set_enabled(enable); }
     void enable_main_toolbar(bool enable) { m_main_toolbar.set_enabled(enable); }
+    // Temporary presentation only; native toolbar availability is restored
+    // exactly when leaving the AI page or switching to the native tab.
+    void use_compact_slicing_tools(bool compact) {
+        if (compact == m_compact_slicing_tools) return;
+        m_compact_slicing_tools = compact;
+        if (compact) m_saved_slicing_tools = {m_main_toolbar.is_enabled(), m_sel_plate_toolbar.is_enabled(),
+            m_assemble_view_toolbar.is_enabled(), m_return_toolbar.is_enabled(), m_separator_toolbar.is_enabled(),
+            m_gizmos.is_enabled()};
+        m_main_toolbar.set_enabled(compact ? false : m_saved_slicing_tools[0]);
+        m_sel_plate_toolbar.set_enabled(compact ? false : m_saved_slicing_tools[1]);
+        m_assemble_view_toolbar.set_enabled(compact ? false : m_saved_slicing_tools[2]);
+        m_return_toolbar.set_enabled(compact ? false : m_saved_slicing_tools[3]);
+        m_separator_toolbar.set_enabled(compact ? false : m_saved_slicing_tools[4]);
+        m_gizmos.set_enabled(compact ? false : m_saved_slicing_tools[5]);
+        set_as_dirty();
+    }
     //BBS: GUI refactor: GLToolbar
     void _update_select_plate_toolbar_stats_item(bool force_selected = false);
     void reset_select_plate_toolbar_selection();

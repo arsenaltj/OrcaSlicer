@@ -3,6 +3,9 @@
 #include "ModelGalleryWorkspace.hpp"
 #include "ModelFaceLimitChoice.hpp"
 #include "RedesignTheme.hpp"
+#include "RedesignSlicingTools.hpp"
+#include "RedesignSlicingControls.hpp"
+#include "../BBLTopbar.hpp"
 #include "RedesignFeatureFlags.hpp"
 #include "RedesignMessageDialog.hpp"
 #include "RedesignModelRoute.hpp"
@@ -1175,6 +1178,16 @@ RedesignShell::~RedesignShell()
 
 void RedesignShell::disconnect_model_generation_host()
 {
+    m_slice_tools.reset();
+    if (m_slice_stats_overlay) { m_slice_stats_overlay->Destroy(); m_slice_stats_overlay=nullptr; }
+    if (m_slice_progress_overlay) { m_slice_progress_overlay->Destroy(); m_slice_progress_overlay=nullptr; }
+    if (m_plater) {
+        m_plater->get_view3D_canvas3D()->use_compact_slicing_tools(false);
+        m_plater->get_preview_canvas3D()->use_compact_slicing_tools(false);
+        if (m_saved_collapse_toolbar) m_plater->get_collapse_toolbar().set_enabled(*m_saved_collapse_toolbar);
+    }
+    if (auto* frame = dynamic_cast<MainFrame*>(wxGetTopLevelParent(this)))
+        if (frame->topbar()) frame->topbar()->ShowCompactSlicingTitlebar(false);
     m_import_timer.Stop();
     if (m_import_session) m_import_session->invalidate();
     if (m_print_page != nullptr)
@@ -1587,7 +1600,9 @@ wxPanel* RedesignShell::build_model_workspace()
 
     m_model_stage_title = new wxStaticText(m_model_page, wxID_ANY, text("3D 模型"));
     style_text(m_model_stage_title, primary_text_colour(), 24, true);
-    outer->Add(m_model_stage_title, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(42));
+    auto* header = new wxBoxSizer(wxHORIZONTAL);
+    header->Add(m_model_stage_title, 0, wxALIGN_CENTER_VERTICAL);
+    outer->Add(header, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(42));
     m_model_stage_status = new wxStaticText(m_model_page, wxID_ANY, text("完成 2D 设计后可开始生成 3D 模型"));
     style_text(m_model_stage_status, secondary_text_colour(), 11);
     m_model_stage_status->Wrap(FromDIP(760));

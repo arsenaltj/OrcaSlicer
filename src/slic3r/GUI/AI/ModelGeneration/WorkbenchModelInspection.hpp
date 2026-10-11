@@ -9,18 +9,13 @@
 
 namespace Slic3r::GUI {
 
-inline WorkbenchCheckResult inspect_workbench_model(const boost::filesystem::path& path,
+inline WorkbenchCheckResult inspect_workbench_mesh(const TriangleMesh& mesh,
     const std::function<bool()>& canceled = {})
 {
     WorkbenchCheckResult result;
     try {
-        result.model_sha256 = AI::model_artifact_sha256(path);
-        TriangleMesh mesh;
-        ObjInfo colors;
-        std::string error;
-        if (!AI::load_model_artifact(path, mesh, colors, error, canceled)) throw std::runtime_error(error);
-        const auto surface = AI::BeautySurface::build_for_appearance(mesh.its, colors.vertex_colors, {}, canceled);
-        if (!surface || result.model_sha256.empty()) throw std::runtime_error("Topology inspection unavailable.");
+        const auto surface = AI::BeautySurface::build_for_appearance(mesh.its, {}, {}, canceled);
+        if (!surface) throw std::runtime_error("Topology inspection unavailable.");
         result.boundary_edges = surface->boundary_edges;
         result.nonmanifold_edges = surface->nonmanifold_edges;
         std::set<std::array<uint32_t, 3>> unique;
@@ -52,6 +47,19 @@ inline WorkbenchCheckResult inspect_workbench_model(const boost::filesystem::pat
         result.status = WorkbenchCheckStatus::Failed;
         result.summary = error.what();
     }
+    return result;
+}
+
+inline WorkbenchCheckResult inspect_workbench_model(const boost::filesystem::path& path,
+    const std::function<bool()>& canceled = {})
+{
+    TriangleMesh mesh; ObjInfo colors; std::string error;
+    if (!AI::load_model_artifact(path, mesh, colors, error, canceled)) {
+        WorkbenchCheckResult result; result.status = WorkbenchCheckStatus::Failed; result.summary = error; return result;
+    }
+    auto result = inspect_workbench_mesh(mesh, canceled);
+    result.model_sha256 = AI::model_artifact_sha256(path);
+    if (result.model_sha256.empty()) { result.status = WorkbenchCheckStatus::Failed; result.summary = "Topology inspection unavailable."; }
     return result;
 }
 

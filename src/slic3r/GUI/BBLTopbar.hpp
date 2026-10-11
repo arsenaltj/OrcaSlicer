@@ -73,6 +73,7 @@ public:
     void SaveNormalRect();
 
     void ShowCalibrationButton(bool show = true);
+    void ShowCompactSlicingTitlebar(bool compact);
 
 protected:
 #ifdef __WXMSW__
@@ -80,6 +81,7 @@ protected:
 #endif
 
 private:
+    void UpdateCompactSlicingVisibility();
     wxFrame* m_frame;
     wxAuiToolBarItem* m_file_menu_item;
     wxAuiToolBarItem* m_dropdown_menu_item;
@@ -111,4 +113,8 @@ private:
     bool m_skip_popup_file_menu;
     bool m_skip_popup_dropdown_menu;
     bool m_skip_popup_calib_menu;
+    bool m_compact_slicing {false};
+    bool m_compact_context_bound {false};
+    bool m_saved_slicing_title_visible {true};
+    std::vector<std::pair<wxAuiToolBarItem*, bool>> m_saved_slicing_commands;
 };

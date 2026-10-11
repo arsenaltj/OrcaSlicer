@@ -39,6 +39,10 @@ class Plater;
 class SmartSlicingFeatureHost;
 class PrinterWorkspace;
 class ImageHistorySidebar;
+class RedesignSlicingTools;
+class SlicingCanvasOverlay;
+class WorkbenchPaletteChoice;
+class WorkbenchSlider;
 
 class RedesignShell final : public wxPanel
 {
@@ -113,6 +117,10 @@ private:
     void finish_import_loading();
     void check_import_first_frame();
     void open_print_preparation();
+    void update_slicing_tools();
+    void change_slicing_palette();
+    void show_slicing_palette_details();
+    void layout_slicing_overlays();
     bool navigate_to_impl(Page page, bool allow_locked_image_view);
     // User navigation to the image page may inspect the current design while
     // a model submission still owns the route. This path keeps the route lock
@@ -139,10 +147,27 @@ private:
     wxWindow* m_slice_print { nullptr };
     std::array<wxWindow*, 3> m_slice_goals { nullptr, nullptr, nullptr };
     wxStaticText* m_slice_details { nullptr };
+    wxPanel* m_slice_parameter_panel {nullptr};
+    std::array<wxStaticText*, 6> m_slice_parameter_values {};
     wxStaticText* m_slice_status { nullptr };
     wxStaticText* m_slice_check_status { nullptr };
     wxStaticText* m_slice_model_stats { nullptr };
     wxBoxSizer* m_slice_palette { nullptr };
+    wxPanel* m_slice_palette_host {nullptr};
+    WorkbenchPaletteChoice* m_slice_color_mode {nullptr};
+    WorkbenchPaletteChoice* m_slice_color_source {nullptr};
+    WorkbenchSlider* m_slice_color_count {nullptr};
+    wxStaticText* m_slice_color_count_label {nullptr};
+    wxWindow* m_slice_palette_all {nullptr};
+    wxWindow* m_slice_parameters_all {nullptr};
+    wxWindow* m_slice_check {nullptr};
+    std::unique_ptr<RedesignSlicingTools> m_slice_tools;
+    SlicingCanvasOverlay* m_slice_stats_overlay {nullptr};
+    SlicingCanvasOverlay* m_slice_progress_overlay {nullptr};
+    int m_slice_committed_count {6};
+    int m_slice_progress_percent {0};
+    wxString m_slice_progress_stage;
+    bool m_slice_camera_fitted {false};
     std::vector<std::string> m_slice_displayed_palette;
     wxStaticText* m_native_slice_status { nullptr };
     wxWindow* m_native_slice_start { nullptr };
@@ -166,9 +191,12 @@ private:
     wxStaticText* m_import_elapsed {nullptr};
     wxWindow* m_import_cancel {nullptr};
     wxTimer m_import_timer;
+    wxTimer m_slice_camera_retry_timer;
+    int m_slice_camera_retry_attempts {0};
     std::chrono::steady_clock::time_point m_import_started;
     std::chrono::steady_clock::time_point m_import_view_started;
     bool m_saved_sidebar_collapsed {false};
+    std::optional<bool> m_saved_collapse_toolbar;
     std::string m_pending_workbench_job;
     PrinterWorkspace* m_print_page { nullptr };
     wxPanel* m_image_settings_panel { nullptr };

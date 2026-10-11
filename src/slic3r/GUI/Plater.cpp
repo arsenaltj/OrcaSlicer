@@ -13447,6 +13447,13 @@ void Plater::priv::set_project_filename(const wxString& filename)
         wxGetApp().mainframe->add_to_recent_projects(filename);
 }
 
+bool Plater::cancel_current_slice()
+{
+    if (p->background_process.idle()) return false;
+    p->background_process.stop();
+    return true;
+}
+
 void Plater::priv::init_notification_manager()
 {
     if (!notification_manager)

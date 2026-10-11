@@ -503,6 +503,51 @@ void BBLTopbar::ShowCalibrationButton(bool show)
     Refresh();
 }
 
+void BBLTopbar::ShowCompactSlicingTitlebar(bool compact)
+{
+    if (m_compact_slicing == compact) return;
+    m_compact_slicing = compact;
+    if (compact) {
+        if (!m_compact_context_bound) {
+            m_compact_context_bound = true;
+            Bind(wxEVT_CONTEXT_MENU, [this](wxContextMenuEvent& event) {
+                if (m_compact_slicing && m_file_menu) PopupMenu(m_file_menu);
+                else event.Skip();
+            });
+        }
+        m_saved_slicing_commands.clear();
+        m_saved_slicing_title_visible = m_title_ctrl && m_title_ctrl->IsShown();
+        for (int id : std::initializer_list<int>{ID_TOP_FILE_MENU, ID_TOP_DROPDOWN_MENU, wxID_SAVE, wxID_UNDO, wxID_REDO, ID_CALIB, ID_MODEL_STORE}) {
+            auto* item = FindTool(id);
+            if (!item || !item->GetSizerItem()) continue;
+            m_saved_slicing_commands.emplace_back(item, item->GetSizerItem()->IsShown());
+        }
+    }
+    UpdateCompactSlicingVisibility();
+}
+
+void BBLTopbar::UpdateCompactSlicingVisibility()
+{
+    // Realize recreates AUI sizer items. Apply visibility to those new items,
+    // then move hidden commands after the layout has placed visible tools.
+    Realize();
+    for (auto& saved : m_saved_slicing_commands) {
+        auto* item = saved.first->GetSizerItem(); if (!item) continue;
+        item->Show(!m_compact_slicing && saved.second);
+    }
+    if (m_title_ctrl) m_title_ctrl->Show(!m_compact_slicing && m_saved_slicing_title_visible);
+    m_sizer->Layout();
+    if (m_compact_slicing) for (auto& saved : m_saved_slicing_commands)
+        if (auto* item = saved.first->GetSizerItem()) item->SetDimension({-1000,0},{0,0});
+    // AUI may shrink the toolbar to the remaining visible tools while the
+    // compact slicing layout is active. Restore the frame-wide titlebar when
+    // returning to the native workspace so the gray client background cannot
+    // appear beside a short black toolbar.
+    if (!m_compact_slicing && GetParent())
+        SetSize(GetParent()->GetClientSize().GetWidth(), m_toolbar_h);
+    Refresh();
+}
+
 void BBLTopbar::OnModelStoreClicked(wxAuiToolBarEvent& event)
 {
     //GUI::wxGetApp().load_url(wxString(wxGetApp().app_config->get_web_host_url() + MODEL_STORE_URL));
@@ -630,6 +675,7 @@ void BBLTopbar::Rescale() {
     item->SetBitmap(create_scaled_bitmap("topbar_close", this, TOPBAR_ICON_SIZE));
 
     Realize();
+    if (m_compact_slicing) UpdateCompactSlicingVisibility();
 }
 
 void BBLTopbar::OnIconize(wxAuiToolBarEvent& event)

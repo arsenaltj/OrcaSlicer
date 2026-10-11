@@ -152,6 +152,16 @@
       "needle": "void RedesignShell::build_model_workflow()"
     },
     {
+      "id": "slicing_project_tools",
+      "path": "src/slic3r/GUI/Redesign/RedesignSlicingTools.hpp",
+      "needle": "class RedesignSlicingTools final"
+    },
+    {
+      "id": "slicing_goal_selection",
+      "path": "src/slic3r/GUI/AI/SmartSlicing/SmartSlicingWorkbenchState.hpp",
+      "needle": "class WorkbenchGoalSelection"
+    },
+    {
       "id": "workbench_check",
       "path": "src/slic3r/GUI/AI/ModelGeneration/PostGenerationWorkbenchCheck.cpp",
       "needle": "bool ModelGenerationPanel::request_check_workbench()"
@@ -816,12 +826,13 @@
     {
       "id": "workspace",
       "label": "工程准备",
-      "detail": "在 Orca 中管理模型、工程与编辑上下文",
-      "boundary": "沿用原生工作区和编辑能力",
+      "detail": "在 Orca 中管理模型与工程；切片页检查当前模型，并以可撤销事务更新区域配色",
+      "boundary": "沿用原生工作区，配色保留其它对象与物理耗材配置，工程变化使旧结果失效",
       "group": "资产与工作区",
       "evidence": [
         "desktop_host",
-        "generation_host"
+        "generation_host",
+        "slicing_project_tools"
       ],
       "modules": [
         "desktop",
@@ -850,11 +861,12 @@
     {
       "id": "comparison",
       "label": "候选比较",
-      "detail": "规划候选，试切基线并比较方案",
-      "boundary": "工作区版本变化使方案失效",
+      "detail": "切片页自动分析三种目标，初始未选，展示真实参数与试切结果供用户选择",
+      "boundary": "显式选择绑定工作区版本，工程变化使候选与选择失效",
       "group": "方案决策与输出",
       "evidence": [
-        "slicing_plan"
+        "slicing_plan",
+        "slicing_goal_selection"
       ],
       "modules": [
         "slicing"
@@ -889,8 +901,8 @@
     {
       "id": "slicing",
       "label": "正式切片",
-      "detail": "应用选定参数，跟踪正式切片结果",
-      "boundary": "区分完成、失败和工作区失效",
+      "detail": "应用用户明确选择的有效方案，跟踪正式切片进度与结果；原生切片由原生模式发起",
+      "boundary": "区分完成、失败和工作区失效，不隐式从 AI 降级为原生切片",
       "group": "方案决策与输出",
       "evidence": [
         "slicing_apply",
