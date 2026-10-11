@@ -16,6 +16,55 @@ using Slic3r::Vec3d;
 namespace selection = Slic3r::AI::SurfaceSelectionPersistence;
 namespace trial = Slic3r::AI::ColorTrialPersistence;
 
+TEST_CASE("Manual region edits export the displayed palette without recomputing trial colors", "[ModelPreviewState][ManualTrialImport][Regression]")
+{
+    using Controls = Slic3r::GUI::ModelPreviewColorControls;
+    Controls::State saved;
+    saved.source = 2;
+    saved.colors = {{.1f, .2f, .3f}, {.4f, .5f, .6f}};
+    saved.semantic_palette = {{.8f, .2f, .3f}, {.8f, .2f, .3f}};
+    saved.semantic_optimization = true;
+    CHECK(Controls::manual_import_palette(saved) == saved.semantic_palette);
+    saved.semantic_optimization = false;
+    CHECK(Controls::manual_import_palette(saved) == saved.colors);
+    saved.semantic_optimization = true;
+    saved.colors.resize(8, saved.colors.front());
+    CHECK(Controls::manual_import_palette(saved) == saved.colors);
+}
+
+TEST_CASE("Restored manual trial history exposes an import palette without a new edit", "[ModelPreviewState][ManualTrialImport][Regression]")
+{
+    using Controls = Slic3r::GUI::ModelPreviewColorControls;
+    const std::string fingerprint(64, 'a');
+    trial::State original;
+    original.source = 2; original.count = 2; original.enabled = false;
+    original.colors = {{.7f, .2f, .3f}, {.4f, .5f, .6f}};
+    original.mapping_colors = {{.1f, .2f, .3f}, {.4f, .5f, .6f}};
+    original.semantic_palette = {{.9f, .2f, .3f}, {.4f, .5f, .6f}};
+    original.semantic_mapping_palette = original.mapping_colors;
+    Controls::State restored;
+    std::string error;
+    REQUIRE(trial::decode(trial::encode(original, 20, fingerprint), 20, fingerprint, restored, error));
+    REQUIRE(restored.manual_colors.empty());
+    CHECK(Controls::manual_import_palette(restored) == original.semantic_palette);
+    CHECK(restored.mapping_colors == original.mapping_colors);
+}
+
+TEST_CASE("Manual trial import colors survive alternate sources and same-workpiece snapshots", "[ModelPreviewState][ManualTrialImport][Regression]")
+{
+    using Controls = Slic3r::GUI::ModelPreviewColorControls;
+    Controls::State saved;
+    saved.source = 2; saved.semantic_optimization = false;
+    saved.colors = {{.9f, .2f, .3f}, {.9f, .2f, .3f}, {.1f, .5f, .6f}};
+    const auto manual = Controls::manual_import_palette(saved);
+    saved.manual_colors = manual;
+    saved.source = GENERATE(0, 1, 3);
+    saved.colors = {{.1f, .2f, .3f}};
+    const Controls::State reloaded = saved;
+    CHECK(Controls::manual_import_palette(reloaded) == manual);
+    CHECK(Controls::manual_import_palette(reloaded).size() == 3);
+}
+
 TEST_CASE("Texture upload rejects an uninitialized OpenGL loader without calling it", "[ModelPreviewState]")
 {
     // A cold start has a canvas/context before GLAD has loaded its entry points.

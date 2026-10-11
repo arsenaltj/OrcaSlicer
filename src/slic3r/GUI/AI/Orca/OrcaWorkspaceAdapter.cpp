@@ -2,6 +2,7 @@
 #include "OrcaWorkspaceAdapter.hpp"
 #include "OrcaModelPreparationPanel.hpp"
 #include "OrcaFilamentSelection.hpp"
+#include "WorkbenchPrinterFilaments.hpp"
 #include "ModelColorUpdate.hpp"
 #include "OrcaPaletteSnapshotBuilder.hpp"
 #include "OrcaPrintPaletteSnapshot.hpp"
@@ -20,6 +21,8 @@
 #include "slic3r/GUI/PartPlate.hpp"
 #include "libslic3r/Format/OBJ.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
+#include <algorithm>
+#include <cctype>
 #include "slic3r/GUI/AI/Model/SurfaceSelectionState.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchProjectColor.hpp"
 #include "libslic3r/FilamentMixer.hpp"
@@ -202,7 +205,12 @@ TextureImportOptions model_import_color_options(const AI::ModelImportRequest& re
 std::vector<AI::PhysicalFilamentChannel> OrcaWorkspaceAdapter::project_filament_channels() const
 {
     if (!m_plater || !wxGetApp().preset_bundle) return {};
-    return workbench_project_channels(wxGetApp().preset_bundle->project_config);
+    const auto state = PrinterFilamentConfig::capture(*wxGetApp().preset_bundle);
+    std::vector<AI::PhysicalFilamentChannel> result;
+    for (const auto& slot : state.slots)
+        if (slot.exists && slot.configured)
+            result.push_back({slot.slot, slot.color, slot.material, slot.compatible});
+    return result;
 }
 
 AI::ModelImportResult OrcaWorkspaceAdapter::import_workbench_artifact(const AI::ModelImportRequest& request)

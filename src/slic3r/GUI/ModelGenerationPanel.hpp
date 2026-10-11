@@ -18,6 +18,7 @@
 
 #include <boost/filesystem/path.hpp>
 #include <wx/image.h>
+#include <wx/button.h>
 #include <wx/panel.h>
 #include <wx/timer.h>
 #include <wx/weakref.h>
@@ -126,6 +127,7 @@ public:
         m_workbench_return_to_design = std::move(handler);
     }
     PostGenerationWorkbenchState workbench_snapshot() const;
+    std::vector<FilamentColorPack> project_filament_color_sources() const;
     void set_workbench_listener(PostGenerationWorkbenchListener listener);
     void set_project_color_handler(std::function<void(size_t)> handler,
         std::function<std::vector<AI::PhysicalFilamentChannel>()> slots = {})
@@ -133,6 +135,9 @@ public:
         m_project_color_edit = std::move(handler);
         m_project_channels_provider = std::move(slots);
     }
+    void set_project_filament_edit_handler(std::function<void(size_t)> handler);
+    void set_project_filament_delete_handler(std::function<void(size_t)> handler)
+    { m_project_filament_delete = std::move(handler); }
     void synchronize_workbench_project_palette(bool activate_preview = false);
 
 private:
@@ -168,10 +173,18 @@ private:
     bool m_workbench_auto_repair {false};
     void ensure_workbench_check();
     std::function<void(size_t)> m_project_color_edit;
+    std::function<void(size_t)> m_project_filament_delete;
     std::function<std::vector<AI::PhysicalFilamentChannel>()> m_project_channels_provider;
     AI::PrintablePaletteSnapshot m_workbench_project_palette;
     std::vector<AI::PhysicalFilamentChannel> m_workbench_project_channels;
+    std::string m_workbench_filament_signature;
     wxPanel* m_workbench_project_colors {nullptr};
+    wxStaticText* m_workbench_project_summary {nullptr};
+    WorkbenchButton* m_workbench_apply_project_filaments {nullptr};
+    WorkbenchButton* m_workbench_configure_filaments {nullptr};
+    WorkbenchButton* m_workbench_add_filament {nullptr};
+    WorkbenchButton* m_workbench_sync_filaments {nullptr};
+    void apply_workbench_printer_filaments();
     wxTimer m_workbench_sync_timer;
     bool m_save_and_return {false};
     std::function<void()> m_workbench_results;

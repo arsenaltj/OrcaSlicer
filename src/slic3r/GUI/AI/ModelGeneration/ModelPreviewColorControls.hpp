@@ -3,9 +3,11 @@
 #include "ModelPreviewPalette.hpp"
 #include "../Model/ColorTrialState.hpp"
 #include "PortraitColorPackMapping.hpp"
+#include "PrinterFilamentPreview.hpp"
 #include "WorkbenchStyle.hpp"
 #include "slic3r/GUI/AI/Orca/FilamentColorPack.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
+#include "slic3r/GUI/AI/Orca/WorkbenchPrinterFilaments.hpp"
 #include "slic3r/GUI/I18N.hpp"
 #include "slic3r/GUI/Widgets/ComboBox.hpp"
 #include "libslic3r/PresetBundle.hpp"
@@ -29,8 +31,8 @@
 
 namespace Slic3r::GUI {
 namespace SemanticColoring = AI::SemanticColoring;
-// Trial colors do not modify the project. The separate color-pack action
-// explicitly applies a physical-slot card through the Orca adapter.
+// Trial colors do not modify the project. Real slot edits use the native
+// printer-filament configuration dialog.
 class ModelPreviewColorControls final : public wxPanel {
 public:
     using Color = PreviewPalette::Color;
@@ -231,7 +233,7 @@ public:
         row->Add(m_toggle, 0, wxRIGHT, FromDIP(6));
         m_source = new wxChoice(this, wxID_ANY);
         m_source->Append(_L("自动建议"));
-        m_source->Append(_L("当前工程耗材"));
+        m_source->Append(_L("打印机耗材"));
         m_source->Append(_L("手动试色"));
         m_packs = load_filament_color_packs();
         for (const auto& pack : m_packs) m_source->Append(wxString::FromUTF8(pack.name));
@@ -266,21 +268,9 @@ public:
         m_semantic_status->Hide();
         m_semantic->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent&) { if (on_semantic_mode) on_semantic_mode(m_semantic->GetValue()); });
         m_semantic_cancel->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { if (on_semantic_cancel) on_semantic_cancel(); });
-        auto* pack_button = new wxButton(this, wxID_ANY, _L("应用 / 保存耗材包…"));
-        m_detail_commands = {m_toggle, reset, m_semantic_cancel, pack_button};
-        box->Add(pack_button, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(6));
-        pack_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-            const bool applied = show_filament_color_packs(this);
-            const wxString selected = m_source->GetStringSelection();
-            while (m_source->GetCount() > 3) m_source->Delete(3);
-            m_packs = load_filament_color_packs();
-            for (const auto& pack : m_packs) m_source->Append(wxString::FromUTF8(pack.name));
-            m_source->SetStringSelection(selected);
-            if (!applied) return;
-            read_project(); m_source->SetSelection(1);
-            m_notice = _L("已应用工程色卡；原有涂色范围保留，当前显示实际耗材配色。");
-            recompute();
-        });
+        // Color cards are trial-only. Project filament configuration is owned by
+        // the printer-filament workbench and is deliberately not writable here.
+        m_detail_commands = {m_toggle, reset, m_semantic_cancel};
         m_lighting = new wxCheckBox(this, wxID_ANY, _L("光照立体展示"));
         m_lighting->SetValue(false);
         m_lighting->SetToolTip(_L("默认用纯色色块检查分色。开启后添加光照明暗，屏幕上会看到更多深浅，但基础颜色数量不变。"));
@@ -335,8 +325,8 @@ public:
         SetSizer(box);
         m_toggle->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
             if (m_source->GetSelection() == 1 && read_project()) {
-                m_notice = _L("工程耗材已变化，已恢复原色，请重新对照。");
-                recompute(false); return;
+                m_notice = _L("打印机耗材已变化，已恢复原色，请重新对照。");
+                m_enabled = false; changed(); return;
             }
             if (m_colors.empty()) return;
             m_enabled = !m_enabled; changed();
@@ -344,7 +334,12 @@ public:
         m_source->Bind(wxEVT_CHOICE, [this](wxCommandEvent&) {
             for (auto* lock : m_locks) lock->SetValue(false);
             m_notice.clear();
-            if (m_source->GetSelection() == 1) read_project();
+            if (m_source->GetSelection() == 1) {
+                read_project(); m_enabled = false;
+                m_bound_project_identity.clear(); m_project_color_slots.clear(); m_project_semantic_slots.clear();
+                m_notice = _L("请使用工作台的“应用打印机耗材”按钮，保留模型原有分区并预览匹配。");
+                changed(); return;
+            }
             recompute();
         });
         m_count->Bind(wxEVT_SPINCTRL, [this](wxSpinEvent&) {
@@ -400,6 +395,7 @@ public:
     }
     void load(std::shared_ptr<const PreviewPalette::Histogram> histogram, std::vector<Color> colors) {
         m_histogram = std::move(histogram); m_colors = std::move(colors); m_mapping_colors = m_colors;
+        m_suggestion_colors = m_colors; m_manual_colors.clear();
         m_model_suggestion_count = m_colors.size();
         read_project();
         m_initial_count = int(PreviewPalette::initial_trial_color_count(m_project_filament_count, m_model_suggestion_count));
@@ -421,12 +417,47 @@ public:
     }
     void clear() {
         m_histogram.reset(); m_colors.clear(); m_mapping_colors.clear();
+        m_suggestion_colors.clear(); m_manual_colors.clear();
         m_semantic_colors.clear(); m_semantic_mapping.clear(); m_semantic_card.clear(); m_semantic_roles.clear();
         m_semantic_region_slots = SemanticColoring::default_semantic_region_slot_bindings;
         m_region_available = {};
         m_enabled = false; Hide();
     }
     const std::vector<Color>& colors() const { return m_colors; }
+    void refresh_saved_color_packs() {
+        // Keep existing source indices stable for history and 3MF state.
+        const int selected = m_source->GetSelection();
+        for (auto& pack : load_filament_color_packs()) {
+            const auto found = std::find_if(m_packs.begin(), m_packs.end(),
+                [&](const FilamentColorPack& cached) { return cached.name == pack.name; });
+            if (found != m_packs.end()) *found = std::move(pack);
+            else {
+                m_source->Append(wxString::FromUTF8(pack.name));
+                if (m_workbench_source) m_workbench_source->Append(wxString::FromUTF8(pack.name));
+                m_packs.push_back(std::move(pack));
+            }
+        }
+        m_source->SetSelection(selected);
+        sync_workbench_detail_choices();
+    }
+    std::vector<FilamentColorPack> configuration_color_sources() const {
+        auto make = [](const std::string& name, const std::vector<Color>& colors) {
+            FilamentColorPack pack; pack.name = name;
+            for (size_t i = 0; i < colors.size(); ++i) {
+                const auto c = wx_color(colors[i]);
+                pack.colors.push_back(c.GetAsString(wxC2S_HTML_SYNTAX).ToUTF8().data());
+                pack.labels.push_back("槽位 " + std::to_string(i + 1));
+            }
+            return pack;
+        };
+        std::vector<FilamentColorPack> result;
+        if (!m_suggestion_colors.empty()) result.push_back(make(u8"自动建议", m_suggestion_colors));
+        const auto manual = manual_import_palette(state());
+        if (!manual.empty()) result.push_back(make(u8"手动试色", manual));
+        const auto saved = load_filament_color_packs();
+        result.insert(result.end(), saved.begin(), saved.end());
+        return result;
+    }
     const std::vector<Color>& mapping_colors() const { return m_mapping_colors; }
     bool enabled() const { return m_enabled; }
     bool lighting() const { return m_lighting->GetValue(); }
@@ -435,22 +466,37 @@ public:
         if (!different && !activate) return false;
         if (m_source->GetSelection() != 1) return false;
         auto saved = state();
-        if (m_project_colors.empty() || !AI::ColorTrialPersistence::synchronize_project_targets(
+        if (!m_project_error.empty() || m_project_colors.empty() || !AI::ColorTrialPersistence::synchronize_project_targets(
                 saved, m_project_slots, m_project_colors, m_project_slot_identity)) {
             m_enabled = false;
-            m_notice = _L("工程打印机或耗材槽位已变化，请重新确认配色来源。");
+            m_notice = _L("打印机或耗材槽位已变化，请重新应用打印机耗材。");
             changed(); return true;
         }
         m_colors = std::move(saved.colors);
         m_semantic_colors = std::move(saved.semantic_palette);
         m_count->SetValue(int(m_colors.size()));
-        m_notice = _L("工程耗材颜色已同步，原有区域对应关系保留。");
+        m_notice = _L("打印机耗材已同步，原有区域对应关系保留。");
         changed(); return true;
+    }
+    const std::vector<Color>& project_colors() const { return m_project_colors; }
+    bool project_matching_valid() const {
+        return m_source->GetSelection() != 1 || (m_enabled && m_project_error.empty() &&
+            m_bound_project_identity == m_project_slot_identity);
+    }
+    bool apply_project_filament_palette() {
+        read_project();
+        if (!m_project_error.empty()) return false;
+        auto saved = state();
+        if (!PrinterFilamentPreview::apply(saved, m_project_slots, m_project_colors, m_project_slot_identity)) return false;
+        saved.notice = _L("已将模型预览匹配到打印机耗材；保存或导入后提交，可撤销。");
+        restore(saved);
+        return true;
     }
     void activate_for_beauty_semantics() {
         if (m_colors.empty() || m_colors.size() > 6) return;
         m_enabled = true;
         m_semantic->SetValue(true);
+        m_manual_colors = manual_import_palette(state());
         update();
     }
     bool semantic_optimization() const { return m_semantic->GetValue() && m_colors.size() <= 6; }
@@ -478,7 +524,17 @@ public:
     }
     struct State : AI::ColorTrialPersistence::State {
         wxString project_signature, notice;
+        // Same-workpiece reloads retain the import source even after switching
+        // away from manual trial. The on-disk trial schema stays compatible.
+        std::vector<Color> manual_colors;
     };
+    static std::vector<Color> manual_import_palette(const State& saved) {
+        if (saved.source != 2) return saved.manual_colors;
+        if (saved.semantic_optimization && saved.colors.size() <= 6 &&
+            !saved.semantic_palette.empty() && saved.semantic_palette.size() == saved.colors.size())
+            return saved.semantic_palette;
+        return saved.colors;
+    }
     State state() const {
         State saved;
         saved.colors = m_colors; saved.mapping_colors = m_mapping_colors;
@@ -486,6 +542,7 @@ public:
         saved.source = m_source->GetSelection(); saved.count = m_count->GetValue();
         saved.enabled = m_enabled; saved.fidelity = m_fidelity->GetValue(); saved.lighting = lighting();
         saved.project_signature = m_project_signature; saved.notice = m_notice;
+        saved.manual_colors = m_manual_colors;
         saved.semantic_optimization = m_semantic->GetValue();
         saved.semantic_region_slots = m_semantic_region_slots;
         saved.semantic_role_uids=m_semantic_roles;
@@ -513,6 +570,7 @@ public:
         m_source->SetSelection(saved.source); m_count->SetValue(saved.count);
         m_fidelity->SetValue(saved.fidelity); m_lighting->SetValue(saved.lighting);
         m_colors = saved.colors; m_mapping_colors = saved.mapping_colors;
+        m_manual_colors = manual_import_palette(saved);
         m_semantic_colors = saved.semantic_palette; m_semantic_mapping = saved.semantic_mapping_palette;
         m_semantic_card = saved.semantic_portrait_card;
         m_semantic_roles=saved.semantic_role_uids.empty() ? portrait_roles_for_card(
@@ -536,6 +594,7 @@ public:
     std::function<void()> on_changed;
     std::function<void()> on_region_changed;
     std::function<void()> on_project_colors_changed;
+    std::function<void(size_t)> on_project_color_edit;
 private:
     static wxColour wx_color(Color c) {
         return wxColour(int(std::lround(c[0]*255)), int(std::lround(c[1]*255)), int(std::lround(c[2]*255)));
@@ -543,40 +602,21 @@ private:
     // Same source as the native textured import: logical project slots. Existing
     // mixed recipes are excluded, never misreported as physical loaded materials.
     bool read_project() {
-        std::vector<Color> colors; std::vector<wxString> names;
-        std::vector<size_t> slots;
-        wxString signature, error;
-        nlohmann::json identity = nlohmann::json::array();
-        size_t filament_count = 0;
-        auto* bundle = wxGetApp().preset_bundle;
-        if (bundle) {
-            const auto* values = bundle->project_config.option<ConfigOptionStrings>("filament_colour");
-            const auto* mixed = bundle->project_config.option<ConfigOptionBools>("filament_is_mixed");
-            signature = wxString::FromUTF8(bundle->printers.get_edited_preset().name);
-            identity.push_back(bundle->printers.get_edited_preset().name);
-            for (size_t i = 0; i < bundle->filament_presets.size(); ++i) {
-                const bool is_mixed = mixed && i < mixed->values.size() && mixed->values[i];
-                const std::string hex = values && i < values->values.size() ? values->values[i] : "";
-                signature += wxString::Format("|%u:%d:", unsigned(i), int(is_mixed)) + wxString::FromUTF8(hex) + wxString::FromUTF8(bundle->filament_presets[i]);
-                if (is_mixed) continue;
-                identity.push_back({i, bundle->filament_presets[i]});
-                ++filament_count;
-                const wxColour color(wxString::FromUTF8(hex));
-                if (hex.size() != 7 || hex.front() != '#' || !color.IsOk()) { error = _L("工程存在未配置的耗材颜色，请到准备页补全。"); continue; }
-                colors.push_back({color.Red()/255.f, color.Green()/255.f, color.Blue()/255.f});
-                slots.push_back(i);
-                names.push_back(wxString::Format(_L("工程耗材 %u · "), unsigned(i + 1)) + wxString::FromUTF8(bundle->filament_presets[i]));
-            }
+        std::vector<Color> colors; std::vector<wxString> names; std::vector<size_t> slots;
+        WorkbenchPrinterFilaments snapshot;
+        if (const auto* bundle = wxGetApp().preset_bundle) snapshot = PrinterFilamentConfig::capture(*bundle);
+        for (const auto& slot : snapshot.slots) if (slot.exists && slot.configured) {
+            const wxColour color(wxString::FromUTF8(slot.color));
+            colors.push_back({color.Red()/255.f, color.Green()/255.f, color.Blue()/255.f});
+            slots.push_back(slot.slot);
+            names.push_back(wxString::Format(_L("打印机耗材 %u · "), unsigned(slot.slot+1)) + wxString::FromUTF8(slot.preset));
         }
-        if (filament_count > PreviewPalette::max_preview_colors)
-            error = _L("工程实体耗材超过结果对照支持的 32 个可涂色槽位，请先在准备页整理未使用槽位。");
-        if (colors.empty() && error.empty()) error = _L("尚未读取到实体耗材，请在准备页配置，或选择手动试色。");
-        if (!error.empty()) colors.clear();
+        const wxString signature = wxString::FromUTF8(snapshot.signature);
         const bool different = signature != m_project_signature;
-        m_project_signature = signature; m_project_filament_count = filament_count;
-        m_project_colors = std::move(colors); m_project_names = std::move(names); m_project_error = error;
-        m_project_slots = std::move(slots);
-        m_project_slot_identity = identity.dump();
+        m_project_signature = signature; m_project_filament_count = snapshot.physical_count;
+        m_project_colors = std::move(colors); m_project_names = std::move(names);
+        m_project_error = snapshot.ready ? wxString{} : wxString::FromUTF8(snapshot.reason.empty() ? "请配置打印机耗材" : snapshot.reason);
+        m_project_slots = std::move(slots); m_project_slot_identity = snapshot.identity;
         return different;
     }
     void recompute(bool enable = true) {
@@ -590,22 +630,11 @@ private:
             m_semantic_roles.clear();
             m_colors = m_project_colors;
             m_semantic_colors = m_colors; m_semantic_mapping = m_colors; m_semantic_card.clear();
-            const auto card = portrait_card_colors();
-            const bool recognized_card = portrait_card_slot_mapping(m_colors, card).enabled;
-            if (recognized_card) m_semantic_card = card;
             m_mapping_colors = m_colors;
-            if (recognized_card) apply_portrait_mapping();
             m_project_color_slots = m_project_slots;
             m_project_semantic_slots = m_project_slots;
             m_bound_project_identity = m_project_slot_identity;
-            if (m_colors != m_project_colors) {
-                m_project_color_slots.clear();
-                for (const auto& color : m_colors) {
-                    const auto found = std::find(m_project_colors.begin(), m_project_colors.end(), color);
-                    if (found == m_project_colors.end()) { m_bound_project_identity.clear(); break; }
-                    m_project_color_slots.push_back(m_project_slots[size_t(found - m_project_colors.begin())]);
-                }
-            }
+            if (!m_project_error.empty()) { m_colors.clear(); m_mapping_colors.clear(); }
             if (!m_colors.empty()) m_count->SetValue(int(m_colors.size()));
         } else if (source >= 3 && size_t(source - 3) < m_packs.size()) {
             m_semantic_roles.clear();
@@ -617,7 +646,7 @@ private:
             m_mapping_colors = m_colors; m_count->SetValue(int(m_colors.size()));
             m_semantic_colors = m_colors; m_semantic_mapping = m_colors; m_semantic_card.clear();
             if (m_packs[source - 3].name == young_portrait_color_pack().name) m_semantic_card = portrait_card_colors();
-            m_notice = _L("色卡仅用于试色；点击“应用 / 保存耗材包”可切换工程耗材。");
+            m_notice = _L("色卡仅用于试色；如需改变真实耗材，请回到打印机耗材配置。");
             if (m_packs[source - 3].name == young_portrait_color_pack().name) apply_portrait_mapping();
         } else if (source == 0) {
             m_semantic_roles.clear();
@@ -627,6 +656,7 @@ private:
             }
             m_colors = m_histogram->trial_palette(size_t(m_count->GetValue()), locked, m_fidelity->GetValue());
             m_mapping_colors = m_colors;
+            m_suggestion_colors = m_colors;
             m_semantic_colors = m_colors; m_semantic_mapping = m_colors; m_semantic_card.clear();
             for (size_t i = 0; i < PreviewPalette::max_preview_colors; ++i) m_locks[i]->SetValue(i < m_colors.size() &&
                 std::find(locked.begin(), locked.end(), m_colors[i]) != locked.end());
@@ -667,10 +697,16 @@ private:
                 std::chrono::steady_clock::now() - started).count();
     }
     void edit_color(size_t i) {
+        // In printer-filament mode a swatch represents a real slot. Open the
+        // native draft configuration instead of silently creating a trial color.
+        if (m_source->GetSelection() == 1) {
+            if (on_project_color_edit && i < m_project_slots.size()) on_project_color_edit(m_project_slots[i]);
+            return;
+        }
         if (semantic_optimization() && i < semantic_palette().size()) {
             const auto original = semantic_palette();
             wxColourData data; data.SetColour(wx_color(original[i])); data.SetChooseFull(true);
-            wxColourDialog dialog(this, &data); dialog.SetTitle(_L("修改区域试色颜色（不改工程耗材）"));
+            wxColourDialog dialog(this, &data); dialog.SetTitle(_L("修改区域试色颜色（不改打印机耗材）"));
             if (dialog.ShowModal() != wxID_OK) return;
             const wxColour color = dialog.GetColourData().GetColour();
             const Color replacement {color.Red()/255.f, color.Green()/255.f, color.Blue()/255.f};
@@ -678,14 +714,14 @@ private:
             m_semantic_colors = original; m_semantic_colors[i] = replacement;
             for (auto& target : m_colors) if (target == original[i]) target = replacement;
             sync_active_palette_state();
-            m_source->SetSelection(2); m_notice = _L("已保留区域对应关系；工程耗材未修改。");
+            m_source->SetSelection(2); m_notice = _L("已保留区域对应关系；打印机耗材未修改。");
             m_enabled = true;
             changed(); return;
         }
         if (i >= m_colors.size()) return;
         wxColourData data; data.SetColour(wx_color(m_colors[i])); data.SetChooseFull(true);
         wxColourDialog dialog(this, &data);
-        dialog.SetTitle(_L("修改试色颜色（不改工程耗材）"));
+        dialog.SetTitle(_L("修改试色颜色（不改打印机耗材）"));
         if (dialog.ShowModal() != wxID_OK) return;
         const wxColour color = dialog.GetColourData().GetColour();
         const Color previous = m_colors[i];
@@ -697,10 +733,15 @@ private:
         // Preserve the source assignment when a target color is edited. Editing
         // green to blue must recolor that group, not make the blue target unused.
         m_source->SetSelection(2);
-        m_notice = _L("已转为手动试色，保留各色对应范围；工程耗材未修改。");
+        m_notice = _L("已转为手动试色，保留各色对应范围；打印机耗材未修改。");
         m_locks[i]->SetValue(true); recompute();
     }
-    void changed() { update(); if (on_changed) on_changed(); }
+    void changed() {
+        // Every manual path (ordinary edit, region edit, recompute and restore)
+        // captures the displayed targets before the host can reload the model.
+        m_manual_colors = manual_import_palette(state());
+        update(); if (on_changed) on_changed();
+    }
     void region_changed() { update(); if (on_region_changed) on_region_changed(); }
     static std::vector<Color> portrait_card_colors() {
         std::vector<Color> colors;
@@ -788,12 +829,12 @@ private:
             m_workbench_source->Enable(m_workbench_editable && bool(m_histogram));
             m_workbench_count->SetValue(m_count->GetValue());
             m_workbench_count->Enable(m_workbench_editable && bool(m_histogram) && (source == 0 || source == 2));
-            m_workbench_count_label->SetLabel(wxString::Format(_L("%d 色"), m_count->GetValue()));
+            m_workbench_count_label->SetLabel(source == 1 ? wxString::Format(_L("%u 个打印机耗材"), unsigned(m_project_colors.size())) : wxString::Format(_L("%d 色"), m_count->GetValue()));
         }
-        const auto& displayed_colors = semantic_optimization() ? semantic_palette() : m_colors;
+        const auto& displayed_colors = source == 1 ? m_project_colors : semantic_optimization() ? semantic_palette() : m_colors;
         const auto& region_palette = semantic_optimization() ? semantic_palette() : m_colors;
         Show(bool(m_histogram));
-        m_toggle->Enable(!m_colors.empty());
+        m_toggle->Enable(source != 1 && !m_colors.empty());
         m_toggle->SetLabel(m_enabled ? _L("查看原色") : wxString::Format(_L("预览 %u 色"), unsigned(m_colors.size())));
         m_count->Enable(source == 0 || source == 2); m_fidelity->Enable(source == 0);
         m_semantic->Enable(m_colors.size() <= 6);
@@ -834,17 +875,17 @@ private:
             m_swatches[i]->SetMinSize(wxSize(
                 std::max(FromDIP(64), m_swatches[i]->GetTextExtent(hex).x + FromDIP(16)), FromDIP(26)));
             m_swatches[i]->SetForegroundColour((color.Red()*299 + color.Green()*587 + color.Blue()*114 > 145000) ? *wxBLACK : *wxWHITE);
-            const auto project_color = std::find(m_project_colors.begin(), m_project_colors.end(), displayed_colors[i]);
-            const size_t project_index = size_t(std::distance(m_project_colors.begin(), project_color));
+            // Preserve slot identity when two physical slots have the same RGB.
+            const size_t project_index = i;
             m_swatches[i]->SetToolTip((source == 1 && project_index < m_project_names.size() ? m_project_names[project_index] + " · " : "") +
-                (semantic_optimization() ? _L("区域配色候选 · ") : source != 0 && i < m_mapping_colors.size() ? wx_color(m_mapping_colors[i]).GetAsString(wxC2S_HTML_SYNTAX) + " → " : "") + hex + _L(" · 点击改为试色颜色"));
+                hex + (source == 1 ? _L(" · 点击配置真实耗材") : _L(" · 点击改为试色颜色")));
             m_locks[i]->SetToolTip(_L("固定此颜色，重新推荐时不被其他颜色合并。") + hex);
         }
         wxString text = m_enabled ? (lighting()
             ? wxString::Format(_L("立体展示 · %u 种基础色；光照会增加明暗深浅。"), unsigned(m_colors.size()))
             : wxString::Format(_L("纯分色 · %u 种色块，与所选色卡一致，无光照明暗。"), unsigned(m_colors.size())))
             : _L("原色显示 · ");
-        text += source == 1 ? _L("使用工程耗材色卡。") : source == 2 ? _L("手动试色。") : source >= 3 ? _L("耗材包试色。") : _L("可点击改色并勾选保留。");
+        text += source == 1 ? _L("使用打印机耗材色卡。") : source == 2 ? _L("手动试色。") : source >= 3 ? _L("耗材包试色。") : _L("可点击改色并勾选保留。");
         text += _L("仅供配色对照，不代表实际打印效果；");
         text += m_enabled ? _L("导入时可沿用当前试色，或从模型原色重新配色。") : _L("原色导入时可重新选择目标颜色数量，再匹配实际耗材。");
         if (source == 1 && !m_project_error.empty()) text += "\n" + m_project_error;
@@ -959,6 +1000,7 @@ private:
     std::array<wxCheckBox*, PreviewPalette::max_preview_colors> m_locks {};
     std::shared_ptr<const PreviewPalette::Histogram> m_histogram;
     std::vector<Color> m_colors, m_project_colors, m_mapping_colors;
+    std::vector<Color> m_suggestion_colors, m_manual_colors;
     std::vector<std::string> m_semantic_roles;
     std::vector<wxString> m_project_names;
     std::vector<size_t> m_project_slots;

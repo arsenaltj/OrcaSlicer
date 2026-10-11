@@ -1,6 +1,7 @@
 #pragma once
 
 #include "libslic3r/PresetBundle.hpp"
+#include "PrinterFilamentSlotRemap.hpp"
 #include "libslic3r/FilamentMixer.hpp"
 #include "slic3r/Utils/ProjectConfigUndo.hpp"
 
@@ -9,7 +10,7 @@ namespace Slic3r::GUI::ProjectConfigRestore {
 // Check a restored slot table against the installed presets before moving the
 // model history. This validates native state, not physical print capabilities.
 inline bool validate(const DynamicPrintConfig& config, const std::vector<std::string>& presets,
-    const PresetBundle& installed, std::string& error)
+    const PresetBundle& installed, std::string& error, bool pending_history = false)
 {
     error.clear();
     const size_t count=presets.size();
@@ -20,23 +21,31 @@ inline bool validate(const DynamicPrintConfig& config, const std::vector<std::st
     for(const char* key:{"filament_colour","filament_multi_colour","filament_colour_type",
         "filament_mixed_components","filament_mixed_sublayer_ratios","filament_mixed_gradient_range","filament_mixed_gradient_curve"}) {
         const auto* option=config.option<ConfigOptionStrings>(key);
-        if(!option || option->values.size()!=count) return fail("The restored material string arrays are incomplete.");
+        if(!option || (pending_history ? option->values.size()>count : option->values.size()!=count)) return fail("The restored material string arrays are incomplete.");
     }
     for(const char* key:{"filament_is_mixed","filament_mixed_gradient","filament_mixed_gradient_per_part"}) {
         const auto* option=config.option<ConfigOptionBools>(key);
-        if(!option || option->values.size()!=count) return fail("The restored material flag arrays are incomplete.");
+        if(!option || (pending_history ? option->values.size()>count : option->values.size()!=count)) return fail("The restored material flag arrays are incomplete.");
     }
     for(const char* key:{"filament_map","filament_nozzle_map","filament_volume_map"}) {
         const auto* option=config.option<ConfigOptionInts>(key);
-        if(!option || option->values.size()!=count) return fail("The restored material routing arrays are incomplete.");
+        if(!option || (pending_history ? option->values.size()>count : option->values.size()!=count)) return fail("The restored material routing arrays are incomplete.");
     }
     const auto* multiplier=config.option<ConfigOptionFloats>("flush_multiplier");
     const auto* matrix=config.option<ConfigOptionFloats>("flush_volumes_matrix");
     const auto* volumes=config.option<ConfigOptionFloats>("flush_volumes_vector");
     const size_t nozzles=installed.get_printer_extruder_count();
-    if(!multiplier || !matrix || !volumes || nozzles==0 || count<nozzles ||
-        multiplier->values.size()!=nozzles || matrix->values.size()!=count*count*nozzles || volumes->values.size()!=count*2)
+    if(!multiplier || !matrix || !volumes || nozzles==0 || (!pending_history && count<nozzles) ||
+        (pending_history ? (multiplier->values.empty() || multiplier->values.size()>nozzles ||
+            matrix->values.size()>count*count*nozzles || volumes->values.size()>count*2) :
+            (multiplier->values.size()!=nozzles || matrix->values.size()!=count*count*nozzles || volumes->values.size()!=count*2)))
         return fail("The restored purge settings do not match the printer and material slots.");
+    if(pending_history) {
+        const auto* flags = config.option<ConfigOptionBools>("filament_is_mixed");
+        if (std::any_of(flags->values.begin(), flags->values.end(), [](auto v) { return v; }))
+            return validate(config, presets, installed, error);
+        return true;
+    }
     if(!validate_mixed_filament_params(config.option<ConfigOptionBools>("filament_is_mixed")->values,
         config.option<ConfigOptionStrings>("filament_mixed_components")->values,
         config.option<ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values,
@@ -54,6 +63,15 @@ inline ColorCache prepare_cache(size_t count, const PresetBundle& live)
 {
     auto cache=live.ams_multi_color_filment;
     cache.resize(count);
+    return cache;
+}
+
+inline ColorCache prepare_cache(const DynamicPrintConfig& config, size_t count)
+{
+    ColorCache cache(count);
+    const auto* multi = config.option<ConfigOptionStrings>("filament_multi_colour");
+    if (multi) for (size_t i = 0; i < std::min(count, multi->values.size()); ++i)
+        cache[i] = split_string(multi->values[i], ' ');
     return cache;
 }
 

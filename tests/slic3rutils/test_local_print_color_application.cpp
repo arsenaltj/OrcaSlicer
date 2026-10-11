@@ -14,6 +14,8 @@
 #include "libslic3r/Semver.hpp"
 #include "test_utils.hpp"
 #include "local_print_recipe_fixture.hpp"
+#include "slic3r/GUI/AI/Orca/WorkbenchPrinterFilaments.hpp"
+#include "slic3r/GUI/PrinterFilamentSlotRemap.hpp"
 #include "slic3r/GUI/AI/Orca/LocalPrintRecipeTransition.hpp"
 #include "slic3r/GUI/AI/Orca/LocalPrintColorRestore.hpp"
 #include "slic3r/GUI/AI/Model/LocalPrintColorState.hpp"
@@ -1066,4 +1068,46 @@ TEST_CASE("committed color version files survive a later refresh exception", "[L
     } catch (const std::runtime_error&) {}
     CHECK(boost::filesystem::exists(asset));
     CHECK(boost::filesystem::exists(record));
+}
+
+
+TEST_CASE("substituted physical and mixed slots retain references after native 3MF saving", "[PrinterFilaments][LocalPrintRecipeApplication]")
+{
+    RecipeApplicationFixture fixture(2);
+    auto material=fixture.bundle.filaments.default_preset().config;
+    material.set_key_value("filament_type",new ConfigOptionStrings({"PLA"}));
+    fixture.bundle.filaments.load_preset("","Loaded roundtrip PLA",material,false);
+    fixture.bundle.filament_presets.assign(3,"Loaded roundtrip PLA");
+    GUI::LocalPrintRecipeApplication::Prepared staged;std::string error;
+    REQUIRE(GUI::LocalPrintRecipeApplication::prepare(fixture.mesh,fixture.mesh.its,fixture.result,fixture.snapshot,fixture.bundle,staged,error));
+    Model model;auto* object=model.add_object();object->name="substituted filament roundtrip";
+    auto* volume=object->add_volume(TriangleMesh(fixture.mesh),ModelVolumeType::MODEL_PART,false);
+    object->add_instance()->set_offset(Vec3d(50,60,0));
+    REQUIRE(GUI::LocalPrintRecipeApplication::apply_painting(*volume,std::move(staged.painting),error));
+    object->config.set("support_filament",2);
+    auto bundle=*staged.bundle;
+    REQUIRE(GUI::PrinterFilamentConfig::remove(bundle,1,2,error));
+    Model draft(model);GUI::PrinterFilamentSlotRemap::prepare(draft,{{},1,2},3,
+        staged.bundle->project_config.option<ConfigOptionBools>("filament_is_mixed")->values);
+    GUI::PrinterFilamentSlotRemap::commit(model,draft);
+    auto config=bundle.full_config();
+    ScopedTemporaryDir backup("substitute-source");model.set_backup_path(backup.string());
+    ScopedTemporaryFile file(".3mf");const auto path=file.string();PlateData plate;plate.plate_index=0;
+    StoreParams params;params.path=path.c_str();params.model=&model;params.config=&config;
+    params.strategy=SaveStrategy::Zip64|SaveStrategy::Silence;params.plate_data_list.push_back(&plate);
+    REQUIRE(store_bbs_3mf(params));
+    Model restored;ScopedTemporaryDir restored_backup("substitute-restored");restored.set_backup_path(restored_backup.string());
+    DynamicPrintConfig restored_config;ConfigSubstitutionContext substitutions{ForwardCompatibilitySubstitutionRule::Enable};
+    PlateDataPtrs plates;std::vector<Preset*> presets;bool is_bbl=false,is_orca=false;Semver version;
+    const bool loaded=load_bbs_3mf(path.c_str(),&restored_config,&substitutions,&restored,&plates,&presets,
+        &is_bbl,&is_orca,&version,nullptr,LoadStrategy::LoadModel|LoadStrategy::LoadConfig);
+    release_PlateData_list(plates);for(auto* preset:presets)delete preset;
+    REQUIRE(loaded);REQUIRE(restored.objects.size()==1);REQUIRE(restored.objects[0]->volumes.size()==1);
+    CHECK(restored.objects[0]->config.opt_int("support_filament")==2);
+    auto* reopened=restored.objects[0]->volumes[0];CHECK(reopened->extruder_id()==3);
+    CHECK(reopened->mmu_segmentation_facets.get_facets(*reopened,EnforcerBlockerType::Extruder3).indices.size()==fixture.result.face_count);
+    CHECK(Application::same_surface_partition(fixture.mesh.its,reopened->mesh().its));
+    for(const auto* key:{"filament_colour","filament_is_mixed","filament_mixed_components","filament_mixed_sublayer_ratios"}) {
+        REQUIRE(restored_config.option(key));CHECK(restored_config.option(key)->serialize()==config.option(key)->serialize());
+    }
 }

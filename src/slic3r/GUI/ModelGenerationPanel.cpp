@@ -81,6 +81,11 @@
 #include <utility>
 
 namespace Slic3r::GUI {
+
+void ModelGenerationPanel::set_project_filament_edit_handler(std::function<void(size_t)> handler)
+{
+    if (m_model_preview) m_model_preview->set_project_filament_edit_handler(std::move(handler));
+}
 using namespace ModelGenerationStatusText;
 using namespace ModelGenerationPresentation;
 namespace {
