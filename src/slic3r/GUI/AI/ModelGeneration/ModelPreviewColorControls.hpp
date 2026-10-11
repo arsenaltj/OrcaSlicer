@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ModelPreviewPalette.hpp"
+#include "ModelPreviewColorState.hpp"
 #include "../Model/ColorTrialState.hpp"
 #include "PortraitColorPackMapping.hpp"
 #include "WorkbenchStyle.hpp"
@@ -476,9 +477,7 @@ public:
             if (auto* grandparent = parent->GetParent()) grandparent->Layout();
         }
     }
-    struct State : AI::ColorTrialPersistence::State {
-        wxString project_signature, notice;
-    };
+    using State = ModelPreviewColorState;
     State state() const {
         State saved;
         saved.colors = m_colors; saved.mapping_colors = m_mapping_colors;

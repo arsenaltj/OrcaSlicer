@@ -2,6 +2,7 @@
 #include "ModelGenerationInputStyle.hpp"
 #include "ModelGenerationPresentation.hpp"
 #include "ModelLibraryExport.hpp"
+#include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include "slic3r/GUI/AIModelOutputDirectory.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/MsgDialog.hpp"
@@ -63,6 +64,48 @@ void ModelGenerationPanel::export_library_entry(const GeneratedModelEntry& entry
         if (!wxLaunchDefaultApplication(path))
             wxMessageBox(_L("副本已保存，但无法打开文件夹：") + from_path(destination), _L("导出完成"), wxOK, this);
     }
+}
+
+bool ModelGenerationPanel::request_library_action(ModelLibraryCommand command, const ModelLibraryEntry& entry)
+{
+    if (!can_replace_model_asset()) return false;
+    initialize_for_shell_host();
+    if (!m_page_initialized || !can_replace_model_asset()) return false;
+    switch (command) {
+    case ModelLibraryCommand::OpenImage: return request_open_image_history(entry.job_id);
+    case ModelLibraryCommand::OpenModel:
+        load_library_entry(entry.model_path, entry.reference_image_path, entry.ai_image_path, entry.palette,
+            entry.palette_roles, entry.use_printable_colors, entry.color_intent_path, entry.color_intent_schema,
+            entry.color_intent_sha256, entry.job_id, entry.title);
+        return true;
+    case ModelLibraryCommand::Import: {
+        AI::ModelImportRequest request;
+        request.artifact.local_path = entry.model_path; request.artifact.job_id = entry.job_id;
+        request.artifact.format = AI::model_artifact_format(entry.model_path);
+        request.artifact.generation_palette = entry.palette; request.artifact.used_printable_colors = entry.use_printable_colors;
+        if (!entry.color_intent_path.empty() && AIModelGenerationClient::validate_color_intent_manifest_file(
+                entry.color_intent_path, entry.color_intent_schema, entry.color_intent_sha256, entry.model_path))
+            request.artifact.color_intent_manifest = AI::ColorIntentManifestRef {
+                entry.color_intent_path.string(), entry.color_intent_schema, entry.color_intent_sha256};
+        const auto result = m_artifact_consumer.import_artifact(request);
+        if (result.imported()) update_library_import_status(entry.job_id);
+        else if (result.outcome != AI::ModelImportOutcome::Cancelled)
+            wxMessageBox(result.error.empty() ? _L("无法导入这个模型，请检查文件和耗材配置。") : wxString::FromUTF8(result.error),
+                _L("导入未完成"), wxOK | wxICON_ERROR, wxGetTopLevelParent(this));
+        return result.imported();
+    }
+    case ModelLibraryCommand::Retexture: on_retexture_from_library(entry.job_id, entry.title); return true;
+    case ModelLibraryCommand::Remove: delete_library_entry(entry); return true;
+    case ModelLibraryCommand::MatchColors: return false; // Provided by the independent color host.
+    }
+    return false;
+}
+
+void ModelGenerationPanel::request_library_local_import()
+{
+    if (!can_replace_model_asset()) return;
+    initialize_for_shell_host();
+    if (m_page_initialized && can_replace_model_asset()) choose_local_model();
 }
 
 void ModelGenerationPanel::mount_assets(wxWindow* parent)

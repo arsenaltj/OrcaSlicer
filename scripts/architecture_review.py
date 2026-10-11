@@ -517,12 +517,18 @@ def enrich_business(report, config, before, after):
     by_id = {item["id"]: item for item in evidence}
     journeys = []
     for journey in config.get("journeys", []):
-        path = by_id[journey["state_source"]]["path"]
-        current = extract_states(after[path], journey["extractor"]) if path in after else {}
-        baseline = extract_states(before[path], journey["extractor"]) if path in before else {}
+        source_ids = journey.get("state_sources") or [journey["state_source"]]
+        paths = list(dict.fromkeys(by_id[source_id]["path"] for source_id in source_ids))
+        def collect_states(sources):
+            states = {}
+            for path in paths:
+                for name, line in (extract_states(sources[path], journey["extractor"]) if path in sources else {}).items():
+                    states.setdefault(name, (path, line))
+            return states
+        current, baseline = collect_states(after), collect_states(before)
         rows = [{"name": name, "meaning": journey["state_meanings"].get(name, "说明待补充，请复核新状态"),
-                 "known": name in journey["state_meanings"], "path": path,
-                 "line": current.get(name, baseline.get(name)),
+                 "known": name in journey["state_meanings"], "path": (current.get(name) or baseline[name])[0],
+                 "line": (current.get(name) or baseline[name])[1],
                  "delta": "added" if name not in baseline else "removed" if name not in current else "existing"}
                 for name in sorted(current.keys() | baseline.keys())]
         phases = [{**phase, "impact": path_impact(report, [by_id[e]["path"] for e in phase["evidence"] if e in by_id])}

@@ -111,7 +111,8 @@ class DesignTimingTests(unittest.TestCase):
                  mock.patch.object(sidecar.time, "monotonic", return_value=100) as clock, \
                  mock.patch.object(sidecar, "_validate_image_file", return_value=SimpleNamespace(content_type="image/png")), \
                  mock.patch.object(sidecar, "_assess_reference_advice"), \
-                 mock.patch.object(sidecar, "_assess_job_preview_visual_quality"):
+                 mock.patch.object(sidecar, "_assess_job_preview_visual_quality"), \
+                 mock.patch.object(sidecar, "review_nonportrait_reference", return_value={"status": "advisory"}):
                 job = sidecar._new_job(source)
                 def generate(*args, **kwargs):
                     Path(args[1] if source == "text" else args[2]).write_bytes(b"mock image")

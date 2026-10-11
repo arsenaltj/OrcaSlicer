@@ -1,6 +1,11 @@
 #pragma once
 
 #include "AIModelGenerationClient.hpp"
+#include "AI/ModelGeneration/BeautyCandidateSnapshot.hpp"
+#include "AI/ModelGeneration/BeautyWorkbenchSession.hpp"
+#include "AI/ModelGeneration/ModelLibraryEntry.hpp"
+#include "AI/ModelGeneration/ModelLibraryApplication.hpp"
+#include "AI/ModelGeneration/ModelLibraryLoader.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationHost.hpp"
 #include "slic3r/AI/Contracts/IModelArtifactConsumer.hpp"
 #include "slic3r/AI/Contracts/IPrintablePaletteProvider.hpp"
@@ -75,6 +80,9 @@ public:
     void shutdown();
     void initialize_for_shell_host();
     void mount_assets(wxWindow* parent);
+    bool request_library_action(ModelLibraryCommand command, const ModelLibraryEntry& entry);
+    bool library_asset_switch_allowed() const { return can_replace_model_asset(); }
+    void request_library_local_import();
     void unmount_assets();
     void set_history_navigation_handler(std::function<void(bool)> handler) { m_history_navigation = std::move(handler); }
     void set_ui_state_listener(ModelGenerationUIStateListener listener);
@@ -136,6 +144,7 @@ public:
     void synchronize_workbench_project_palette(bool activate_preview = false);
 
 private:
+    using GeneratedModelEntry = ModelLibraryEntry;
     PostGenerationWorkbenchListener m_workbench_listener;
     wxWindow* m_assets_home_parent {nullptr};
     std::function<void(bool)> m_history_navigation;
@@ -316,7 +325,6 @@ private:
     void discard_model_finishing();
     void stop_model_finishing();
     void select_local_finishing_version(const boost::filesystem::path& path, const std::string& id);
-    struct GeneratedModelEntry;
     void load_library_entries(bool for_shell = false);
     static std::vector<GeneratedModelEntry> read_library_entries(
         const boost::filesystem::path& root, const std::atomic<bool>& cancelled);
@@ -347,33 +355,6 @@ private:
     void record_library_print_feedback(const std::string& job_id, const std::string& feedback);
     void refresh_library();
 
-    struct GeneratedModelEntry
-    {
-        wxString title;
-        wxString details;
-        wxString search_text;
-        boost::filesystem::path model_path;
-        boost::filesystem::path preview_path;
-        boost::filesystem::path reference_image_path;
-        boost::filesystem::path ai_image_path;
-        boost::filesystem::path color_intent_path;
-        std::vector<std::string> palette;
-        AIModelGenerationClient::PaletteRoles palette_roles;
-        std::string color_intent_schema;
-        std::string color_intent_sha256;
-        std::string job_id;
-        std::string provider_name;
-        std::string provider_task_id;
-        std::string provider_conversion_task_id;
-        std::time_t generated_at { 0 };
-        std::time_t imported_at { 0 };
-        size_t triangle_count { 0 };
-        double load_seconds { 0.0 };
-        std::string print_feedback;
-        bool use_printable_colors { false };
-        bool design_only { false };
-        bool accepted_finishing { false };
-    };
 
     AI::IModelArtifactConsumer&    m_artifact_consumer;
     AI::IPrintablePaletteProvider& m_palette_provider;
@@ -450,7 +431,8 @@ private:
     std::vector<wxWindow*> m_library_thumbnail_targets;
     bool m_library_scan_pending {false};
     BeautyWorkbenchControls* m_beauty_controls {nullptr};
-    std::unique_ptr<BeautyWorkbenchTransactionController> m_beauty_transactions;
+    BeautyWorkbenchSession<BeautyCandidateSnapshot> m_beauty_session;
+    BeautyWorkbenchTransactionController* m_beauty_transactions {&m_beauty_session.transactions()};
     wxWindow* m_workflow_panel {nullptr};
     wxPanel* m_comparison_panel {nullptr};
     wxScrolledWindow* m_model_page {nullptr};
@@ -514,31 +496,6 @@ private:
     std::string m_finishing_candidate_secondary_error;
     std::vector<std::string> m_finishing_color_palette;
     std::function<void()> m_finishing_redo_preview;
-    struct BeautyCandidateSnapshot {
-        boost::filesystem::path source;
-        boost::filesystem::path candidate;
-        std::string model_sha256;
-        std::string geometry_id;
-        std::string id;
-        AI::ModelFinishingResult result;
-        AI::ModelFinishingOptions options;
-        AI::SurfaceSelectionPersistence::SelectionState selection;
-        ModelPreviewColorControls::State color_trial;
-        std::vector<std::pair<size_t, std::array<float, 3>>> face_overrides;
-        AI::SemanticColoring::FaceColors semantic_faces;
-        AI::SemanticColoring::SubfaceColors semantic_subfaces;
-        nlohmann::json semantic_provenance;
-        std::shared_ptr<const SemanticRegionEvidence> region_evidence;
-        std::string region_evidence_error;
-        std::shared_ptr<const SecondaryRegionEvidence> secondary_evidence;
-        std::string secondary_evidence_error;
-        std::shared_ptr<const PortraitShapeDetails> shape_details;
-        bool shapes_unlocked {false};
-        bool manual_color_dirty {false};
-        bool dirty {false};
-        nlohmann::json leaf_edits;
-        std::shared_ptr<const BeautyPartitionSnapshot> partition;
-    };
     BeautyCandidateSnapshot capture_beauty_candidate() const;
     std::function<void()> capture_model_context();
     void reset_beauty_asset();
@@ -546,15 +503,16 @@ private:
     void record_beauty_candidate(BeautyWorkbenchTransactionController::OperationKind kind,
                                  std::shared_ptr<BeautyCandidateSnapshot> before);
     void clear_unaccepted_beauty_candidates(size_t start = 0);
-    std::vector<boost::filesystem::path> m_beauty_candidate_files;
-    std::vector<boost::filesystem::path> m_beauty_accepted_files;
-    std::shared_ptr<BeautyCandidateSnapshot> m_beauty_session_source;
-    std::shared_ptr<BeautyCandidateSnapshot> m_beauty_reoptimization_before;
-    std::shared_ptr<BeautyCandidateSnapshot> m_portrait_draft_before;
-    std::shared_ptr<BeautyCandidateSnapshot> m_portrait_preview_draft;
-    size_t m_beauty_session_undo_base {0};
-    size_t m_beauty_session_file_base {0};
-    bool m_beauty_manual_color_dirty {false};
+    // View aliases preserve one authoritative session during compatibility use.
+    std::vector<boost::filesystem::path>& m_beauty_candidate_files {m_beauty_session.draft().candidate_files};
+    std::vector<boost::filesystem::path>& m_beauty_accepted_files {m_beauty_session.draft().accepted_files};
+    std::shared_ptr<BeautyCandidateSnapshot>& m_beauty_session_source {m_beauty_session.draft().source};
+    std::shared_ptr<BeautyCandidateSnapshot>& m_beauty_reoptimization_before {m_beauty_session.draft().reoptimization_before};
+    std::shared_ptr<BeautyCandidateSnapshot>& m_portrait_draft_before {m_beauty_session.draft().portrait_before};
+    std::shared_ptr<BeautyCandidateSnapshot>& m_portrait_preview_draft {m_beauty_session.draft().portrait_preview};
+    size_t& m_beauty_session_undo_base {m_beauty_session.draft().undo_base};
+    size_t& m_beauty_session_file_base {m_beauty_session.draft().file_base};
+    bool& m_beauty_manual_color_dirty {m_beauty_session.draft().manual_color_dirty};
 
     std::thread m_library_import_worker;
     wxStaticText*   m_prompt_label { nullptr };
@@ -678,9 +636,7 @@ private:
     wxButton*       m_library_previous { nullptr };
     wxButton*       m_library_next { nullptr };
     wxTimer         m_library_timer;
-    struct LibraryLoadState;
-    std::shared_ptr<LibraryLoadState> m_library_load_state;
-    std::thread     m_library_worker;
+    std::unique_ptr<ModelLibraryLoader> m_library_load_state;
     size_t         m_library_page { 0 };
     size_t         m_library_page_size { 12 };
     uint64_t       m_library_revision { 0 };
