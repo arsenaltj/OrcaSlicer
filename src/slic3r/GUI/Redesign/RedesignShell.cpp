@@ -1178,16 +1178,27 @@ RedesignShell::~RedesignShell()
 
 void RedesignShell::disconnect_model_generation_host()
 {
+    // shutdown(), MainFrame's destructor and this panel's destructor share
+    // this cleanup. Child windows may already be gone on subsequent calls.
+    if (!m_model_generation_host && !m_slicing_host && !m_plater_original_parent) return;
+    m_native_theme.restore();
     m_slice_tools.reset();
     if (m_slice_stats_overlay) { m_slice_stats_overlay->Destroy(); m_slice_stats_overlay=nullptr; }
     if (m_slice_progress_overlay) { m_slice_progress_overlay->Destroy(); m_slice_progress_overlay=nullptr; }
     if (m_plater) {
         m_plater->get_view3D_canvas3D()->use_compact_slicing_tools(false);
         m_plater->get_preview_canvas3D()->use_compact_slicing_tools(false);
+        m_plater->get_view3D_canvas3D()->use_workbench_appearance(false);
+        m_plater->get_preview_canvas3D()->use_workbench_appearance(false);
         if (m_saved_collapse_toolbar) m_plater->get_collapse_toolbar().set_enabled(*m_saved_collapse_toolbar);
     }
-    if (auto* frame = dynamic_cast<MainFrame*>(wxGetTopLevelParent(this)))
-        if (frame->topbar()) frame->topbar()->ShowCompactSlicingTitlebar(false);
+    if (auto* frame = dynamic_cast<MainFrame*>(wxGetTopLevelParent(this))) {
+        if (frame->topbar()) {
+            frame->topbar()->ShowCompactSlicingTitlebar(false);
+            frame->topbar()->ShowNativeWorkspaceTools(false);
+        }
+        frame->mount_native_workspace_tools(nullptr);
+    }
     m_import_timer.Stop();
     if (m_import_session) m_import_session->invalidate();
     if (m_print_page != nullptr)

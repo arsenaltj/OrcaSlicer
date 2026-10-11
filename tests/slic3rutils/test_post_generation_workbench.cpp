@@ -9,6 +9,7 @@
 #include "slic3r/GUI/AI/Orca/OrcaPlateRevisionConfig.hpp"
 #include "slic3r/GUI/AI/Orca/WorkbenchModelDecode.hpp"
 #include "slic3r/GUI/AI/Orca/SlicingModelPalette.hpp"
+#include "slic3r/GUI/Redesign/RedesignModelRoute.hpp"
 #include <future>
 
 using namespace Slic3r::GUI;
@@ -366,6 +367,22 @@ TEST_CASE("native slicing rejects late completions and retains an active run unt
     CHECK(session.result().phase == OfficialSlicePhase::Completed);
     session.refresh(original);
     CHECK(session.result().phase == OfficialSlicePhase::Failed);
+    CHECK_FALSE(session.result().can_print);
+}
+
+TEST_CASE("Returning to AI waits for native slicing to drain after a workspace change", "[SmartSlicing][UiRedesign]")
+{
+    NativeSliceSession session;
+    const Slic3r::AI::SmartSlicing::WorkspaceRevision original {1,2,3,"original"};
+    const Slic3r::AI::SmartSlicing::WorkspaceRevision changed {2,2,3,"changed"};
+    session.start(original);
+    session.refresh(changed);
+    REQUIRE(session.result().phase == Slic3r::AI::SmartSlicing::OfficialSlicePhase::Failed);
+    // The UI phase can already report failure while the native worker still
+    // owns the project. A phase-only guard would allow a premature switch.
+    CHECK_FALSE(workbench_mode_switch_allowed(false, session.pending(), false, false));
+    session.complete(false, changed, "cancelled");
+    CHECK(workbench_mode_switch_allowed(false, session.pending(), false, false));
     CHECK_FALSE(session.result().can_print);
 }
 

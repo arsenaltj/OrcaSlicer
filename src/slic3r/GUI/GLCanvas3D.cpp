@@ -1384,9 +1384,19 @@ void GLCanvas3D::on_change_color_mode(bool is_dark, bool reinit) {
     }
 }
 
-void GLCanvas3D::use_workbench_appearance()
+void GLCanvas3D::use_workbench_appearance(bool active)
 {
-    m_workbench_appearance = true;
+    if (!active && !m_workbench_appearance) return;
+    m_workbench_appearance = active;
+    if (!active) {
+        on_change_color_mode(wxGetApp().dark_mode());
+        wxGetApp().plater()->get_partplate_list().on_change_color_mode(wxGetApp().dark_mode());
+        set_as_dirty();
+        return;
+    }
+    m_gcode_viewer.get_layers_slider()->on_change_color_mode(true);
+    m_gcode_viewer.get_moves_slider()->on_change_color_mode(true);
+    wxGetApp().plater()->get_notification_manager()->on_change_color_mode(true);
     if (m_is_dark) return;
     m_is_dark = true;
     m_gcode_viewer.on_change_color_mode(true);

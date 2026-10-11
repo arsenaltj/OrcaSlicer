@@ -74,6 +74,8 @@ public:
 
     void ShowCalibrationButton(bool show = true);
     void ShowCompactSlicingTitlebar(bool compact);
+    wxControl* NativeWorkspaceHost() const { return m_native_workspace_host; }
+    void ShowNativeWorkspaceTools(bool show);
 
 protected:
 #ifdef __WXMSW__
@@ -114,6 +116,8 @@ private:
     bool m_skip_popup_dropdown_menu;
     bool m_skip_popup_calib_menu;
     bool m_compact_slicing {false};
+    wxControl* m_native_workspace_host {nullptr};
+    bool m_native_workspace_tools {false};
     bool m_compact_context_bound {false};
     bool m_saved_slicing_title_visible {true};
     std::vector<std::pair<wxAuiToolBarItem*, bool>> m_saved_slicing_commands;

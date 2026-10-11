@@ -12,6 +12,7 @@
 #include "wxExtensions.hpp"
 #include "Plater.hpp"
 #include "MainFrame.hpp"
+#include "Redesign/RedesignTheme.hpp"
 #include "WebViewDialog.hpp"
 #include "PartPlate.hpp"
 
@@ -63,7 +64,9 @@ CenteredTitle::CenteredTitle(wxWindow* parent)
     Create(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
     Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
         wxBufferedPaintDC dc(this);
-        dc.SetBackground(wxBrush(wxColour(38, 46, 48)));
+        const auto* frame = wxGetApp().mainframe;
+        dc.SetBackground(wxBrush(frame && frame->is_redesign_shell_active()
+            ? RedesignTheme::panel_colour() : wxColour(38, 46, 48)));
         dc.Clear();
 
         dc.SetTextForeground(*wxWHITE);
@@ -119,7 +122,9 @@ public:
 
 void BBLTopbarArt::DrawBackground(wxDC& dc, wxWindow* wnd, const wxRect& rect)
 {
-    dc.SetBrush(wxBrush(wxColour(38, 46, 48)));
+    const auto* frame = wxGetApp().mainframe;
+    dc.SetBrush(wxBrush(frame && frame->is_redesign_shell_active()
+        ? RedesignTheme::panel_colour() : wxColour(38, 46, 48)));
     wxRect clipRect = rect;
     clipRect.y -= 8;
     clipRect.height += 8;
@@ -130,6 +135,9 @@ void BBLTopbarArt::DrawBackground(wxDC& dc, wxWindow* wnd, const wxRect& rect)
 
 void BBLTopbarArt::DrawButton(wxDC& dc, wxWindow* wnd, const wxAuiToolBarItem& item, const wxRect& rect)
 {
+    const auto* frame = wxGetApp().mainframe;
+    const wxColour highlight = frame && frame->is_redesign_shell_active()
+        ? wxColour(70, 70, 73) : StateColor::darkModeColorFor("#009688");
     int textWidth = 0, textHeight = 0;
     wxFontMetrics fm;
 
@@ -181,19 +189,19 @@ void BBLTopbarArt::DrawButton(wxDC& dc, wxWindow* wnd, const wxAuiToolBarItem& i
     {
         if (item.GetState() & wxAUI_BUTTON_STATE_PRESSED)
         {
-            dc.SetPen(wxPen(StateColor::darkModeColorFor("#009688"))); // ORCA
-            dc.SetBrush(wxBrush(StateColor::darkModeColorFor("#009688"))); // ORCA
+            dc.SetPen(wxPen(highlight));
+            dc.SetBrush(wxBrush(highlight));
             dc.DrawRectangle(rect);
         }
         else if ((item.GetState() & wxAUI_BUTTON_STATE_HOVER) || item.IsSticky())
         {
-            dc.SetPen(wxPen(StateColor::darkModeColorFor("#009688"))); // ORCA
-            dc.SetBrush(wxBrush(StateColor::darkModeColorFor("#009688"))); // ORCA
+            dc.SetPen(wxPen(highlight));
+            dc.SetBrush(wxBrush(highlight));
 
             // draw an even lighter background for checked item hovers (since
             // the hover background is the same color as the check background)
             if (item.GetState() & wxAUI_BUTTON_STATE_CHECKED)
-                dc.SetBrush(wxBrush(StateColor::darkModeColorFor("#009688"))); // ORCA
+                dc.SetBrush(wxBrush(highlight));
 
             dc.DrawRectangle(rect);
         }
@@ -201,8 +209,8 @@ void BBLTopbarArt::DrawButton(wxDC& dc, wxWindow* wnd, const wxAuiToolBarItem& i
         {
             // it's important to put this code in an else statement after the
             // hover, otherwise hovers won't draw properly for checked items
-            dc.SetPen(wxPen(StateColor::darkModeColorFor("#009688"))); // ORCA
-            dc.SetBrush(wxBrush(StateColor::darkModeColorFor("#009688"))); // ORCA
+            dc.SetPen(wxPen(highlight));
+            dc.SetBrush(wxBrush(highlight));
             dc.DrawRectangle(rect);
         }
     }
@@ -335,6 +343,11 @@ void BBLTopbar::Init(wxFrame* parent)
     this->AddSpacer(FromDIP(25));
     //this->AddStretchSpacer(1);
 
+    m_native_workspace_host = new wxControl(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
+    m_native_workspace_host->SetBackgroundColour(wxColour(34,34,38));
+    m_native_workspace_host->SetSizer(new wxBoxSizer(wxHORIZONTAL));
+    AddControl(m_native_workspace_host, wxEmptyString);
+    m_native_workspace_host->Hide();
     m_title_ctrl = new CenteredTitle(this);
     m_title_ctrl->SetFont(Label::Body_12);
     // The title is a child control of the AUI toolbar. Keep a small amount of
@@ -536,16 +549,34 @@ void BBLTopbar::UpdateCompactSlicingVisibility()
         item->Show(!m_compact_slicing && saved.second);
     }
     if (m_title_ctrl) m_title_ctrl->Show(!m_compact_slicing && m_saved_slicing_title_visible);
+    if (m_native_workspace_host) {
+        if (auto* item = FindTool(m_native_workspace_host->GetId()))
+            if (item->GetSizerItem()) item->GetSizerItem()->Show(m_native_workspace_tools);
+        m_native_workspace_host->Show(m_native_workspace_tools);
+    }
     m_sizer->Layout();
     if (m_compact_slicing) for (auto& saved : m_saved_slicing_commands)
         if (auto* item = saved.first->GetSizerItem()) item->SetDimension({-1000,0},{0,0});
-    // AUI may shrink the toolbar to the remaining visible tools while the
-    // compact slicing layout is active. Restore the frame-wide titlebar when
-    // returning to the native workspace so the gray client background cannot
-    // appear beside a short black toolbar.
-    if (!m_compact_slicing && GetParent())
+    // Realize may shrink the toolbar to its tool minimum. Both slicing modes
+    // still need a frame-wide titlebar and window controls at the right edge.
+    if (GetParent())
         SetSize(GetParent()->GetClientSize().GetWidth(), m_toolbar_h);
     Refresh();
+}
+
+void BBLTopbar::ShowNativeWorkspaceTools(bool show)
+{
+    if (m_native_workspace_tools == show) return;
+    m_native_workspace_tools = show;
+    if (show) {
+        m_native_workspace_host->GetSizer()->SetSizeHints(m_native_workspace_host);
+        // AddControl cached the empty host's size before its buttons existed.
+        // Realize uses that cached size rather than the control's new minimum.
+        if (auto* item = FindTool(m_native_workspace_host->GetId()))
+            item->SetMinSize(m_native_workspace_host->GetEffectiveMinSize());
+        m_native_workspace_host->Layout();
+    }
+    UpdateCompactSlicingVisibility();
 }
 
 void BBLTopbar::OnModelStoreClicked(wxAuiToolBarEvent& event)

@@ -60,6 +60,9 @@ public:
 
     void SetTextColor(StateColor const &color);
 
+    const StateColor& GetTextColor() const { return text_color; }
+    const StateColor& GetLabelColor() const { return label_color; }
+
     virtual void Rescale();
 
     virtual bool Enable(bool enable = true) override;

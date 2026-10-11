@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ImageDesignDraft.hpp"
+#include "NativeWorkspaceTheme.hpp"
 #include "../AI/ModelGeneration/ModelGenerationHost.hpp"
 #include "../AI/ModelGeneration/PostGenerationWorkbenchState.hpp"
 #include "../AI/ModelGeneration/WorkbenchImportSession.hpp"
@@ -60,6 +61,7 @@ public:
     void set_service_status(AIServiceStatus status);
     bool owns_model_workflow() const;
     bool native_workspace_visible() const;
+    bool native_slicing_visible() const { return native_workspace_visible() && m_native_slicing; }
     void start_slicing_from_workspace();
     void refresh_workflow_layout();
     void show_printer_media();
@@ -121,6 +123,8 @@ private:
     void change_slicing_palette();
     void show_slicing_palette_details();
     void layout_slicing_overlays();
+    void refresh_native_theme();
+    bool slicing_mode_switch_allowed() const;
     bool navigate_to_impl(Page page, bool allow_locked_image_view);
     // User navigation to the image page may inspect the current design while
     // a model submission still owns the route. This path keeps the route lock
@@ -134,7 +138,11 @@ private:
     wxPanel* m_workbench_page { nullptr };
     wxPanel* m_slicing_page { nullptr };
     wxPanel* m_slicing_settings { nullptr };
-    wxPanel* m_native_slice_commands { nullptr };
+    wxWindow* m_native_return_ai {nullptr};
+    wxWindow* m_native_return_overview {nullptr};
+    wxWindow* m_native_prepare {nullptr};
+    wxWindow* m_native_preview {nullptr};
+    NativeWorkspaceTheme m_native_theme;
     wxPanel* m_native_plater_host { nullptr };
     wxPanel* m_ai_slicing_controls { nullptr };
     wxWindow* m_ai_slicing_tab { nullptr };
@@ -169,10 +177,6 @@ private:
     wxString m_slice_progress_stage;
     bool m_slice_camera_fitted {false};
     std::vector<std::string> m_slice_displayed_palette;
-    wxStaticText* m_native_slice_status { nullptr };
-    wxWindow* m_native_slice_start { nullptr };
-    wxWindow* m_native_slice_export { nullptr };
-    wxWindow* m_native_slice_print { nullptr };
     wxWindow* m_return_slice { nullptr };
     Plater* m_plater { nullptr };
     wxWindow* m_plater_original_parent { nullptr };

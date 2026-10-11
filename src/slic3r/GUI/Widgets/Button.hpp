@@ -75,6 +75,8 @@ public:
 
     void SetTextColor(StateColor const &color);
 
+    const StateColor& GetTextColor() const { return text_color; }
+
     void SetTextColorNormal(wxColor const &color);
 
     void SetSelected(bool selected = true) { m_selected = selected; }

@@ -1145,6 +1145,7 @@ void SmartSlicingFeatureHost::set_workbench_active(bool active, bool ai_mode)
     if (m_impl->workbench_active == active && m_impl->workbench_ai_mode == ai_mode) return;
     m_impl->workbench_active = active;
     m_impl->workbench_ai_mode = ai_mode;
+    if (m_impl->entry_button) m_impl->entry_button->Show(!active);
     if (active) {
         m_impl->show(false);
         m_impl->recommendation_revision_timer->Start(1000);

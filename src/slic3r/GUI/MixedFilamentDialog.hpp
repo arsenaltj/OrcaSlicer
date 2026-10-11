@@ -2,6 +2,7 @@
 #define slic3r_MixedFilamentDialog_hpp_
 
 #include <array>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -26,6 +27,7 @@ namespace GUI {
 
 class GradientCurveEditor;
 class RatioLabelPanel;
+class NativeWorkspaceTheme;
 
 struct MixedFilamentResult {
     std::vector<unsigned int> components;   // 1-based physical filament indices
@@ -63,6 +65,7 @@ protected:
 
 private:
     void build_ui();
+    void apply_workbench_theme();
     wxBoxSizer* create_preview_panel();
     wxBoxSizer* create_material_selection();
     wxBoxSizer* create_ratio_slider();
@@ -117,6 +120,7 @@ private:
 
     MixedFilamentResult         m_result;
     bool                        m_edit_mode{false};
+    std::unique_ptr<NativeWorkspaceTheme> m_workbench_theme;
     std::vector<std::string>    m_physical_colors;
     std::vector<std::string>    m_physical_names;
     std::vector<std::string>    m_physical_types;

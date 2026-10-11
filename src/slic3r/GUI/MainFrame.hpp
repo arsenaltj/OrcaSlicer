@@ -290,6 +290,8 @@ public:
 
 	void        update_title_colour_after_set_title();
     void        show_option(bool show);
+    void        mount_native_workspace_tools(wxWindow* host);
+    void        slice_native_workspace();
     void        init_tabpanel();
     void        register_ai_assistant();
     void        create_preset_tabs();
@@ -445,6 +447,8 @@ public:
     mutable int m_slice_select{ eSliceAll };
     // Button* m_publish_btn{ nullptr };
     SideButton* m_slice_btn{ nullptr };
+    wxBoxSizer* m_native_side_tools {nullptr};
+    wxWindow* m_native_side_tools_parent {nullptr};
     SideButton* m_slice_option_btn{ nullptr };
     SideButton* m_print_btn{ nullptr };
     SideButton* m_print_option_btn{ nullptr };
