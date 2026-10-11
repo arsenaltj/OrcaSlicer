@@ -1,0 +1,37 @@
+# Model capability and compatibility-view membership is explicit.
+set(ORCA_MODEL_WORKSPACE_SOURCES
+    GUI/AI/ModelGeneration/ModelGenerationUIState.cpp
+    GUI/AI/ModelGeneration/ModelLibraryEntry.hpp
+    GUI/AI/ModelGeneration/ModelLibraryRepository.hpp
+    GUI/AI/ModelGeneration/ModelLibraryRepository.cpp
+    GUI/AI/ModelGeneration/ModelLibraryLoader.hpp
+    GUI/AI/ModelGeneration/ModelLibraryLoaderFactory.hpp
+    GUI/AI/ModelGeneration/ModelLibraryLoaderFactory.cpp
+    GUI/AI/ModelGeneration/ModelLibraryApplication.hpp
+    GUI/AI/ModelGeneration/ModelLibraryPanel.hpp
+    GUI/AI/ModelGeneration/ModelLibraryPanel.cpp
+    GUI/AI/ModelGeneration/BeautyWorkbenchSession.hpp
+    GUI/AI/ModelGeneration/BeautyCandidateSnapshot.hpp
+    GUI/AI/ModelGeneration/ModelWorkspaceCapabilities.hpp
+    GUI/AI/ModelGeneration/ModelWorkspaceFeatureHost.hpp
+    GUI/AI/ModelGeneration/ModelWorkspaceFeatureHost.cpp
+    GUI/AI/ColorMatching/ColorMatchingSession.hpp
+    GUI/AI/ColorMatching/ColorMatchingComputation.hpp
+    GUI/AI/ColorMatching/ColorMatchingComputation.cpp
+    GUI/AI/ColorMatching/ColorMatchingFeatureHost.hpp
+    GUI/AI/ColorMatching/ColorMatchingFeatureHost.cpp
+    GUI/ModelGenerationPanel.cpp
+    GUI/AI/ModelGeneration/ModelGenerationLibraryView.cpp
+    GUI/AI/ModelGeneration/ModelGenerationArtifactFlow.cpp
+    GUI/AI/ModelGeneration/ModelGenerationFeatureHost.cpp
+    GUI/AI/ModelGeneration/ModelGenerationPresentation.cpp
+    GUI/AI/ModelGeneration/ModelGenerationPresentationCore.cpp
+    GUI/AI/ModelGeneration/ModelGenerationStatusText.cpp
+    GUI/ModelGenerationPanel.hpp
+    GUI/AI/ModelGeneration/ModelGenerationFeatureHost.hpp
+    GUI/AI/ModelGeneration/ModelGenerationHost.hpp
+    GUI/AI/ModelGeneration/ModelGenerationPresentation.hpp
+    GUI/AI/ModelGeneration/ModelGenerationStatusText.hpp
+    GUI/AI/ModelGeneration/ModelPreview3D.hpp
+    GUI/AI/ModelGeneration/ModelPreviewColorState.hpp
+)

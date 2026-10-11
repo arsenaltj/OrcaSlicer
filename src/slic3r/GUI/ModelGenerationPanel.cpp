@@ -459,7 +459,6 @@ ModelGenerationPanel::ModelGenerationPanel(wxWindow* parent, AI::IModelArtifactC
     , m_client(AISidecarClient::default_endpoint())
     , m_poll_timer(this, POLL_TIMER_ID)
 {
-    m_beauty_transactions = std::make_unique<BeautyWorkbenchTransactionController>();
     SetBackgroundColour(*wxWHITE);
     Bind(wxEVT_TIMER, &ModelGenerationPanel::on_poll, this, POLL_TIMER_ID);
     // A tab may be selected before the frame is shown. Idle covers that first

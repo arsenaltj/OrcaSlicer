@@ -24,8 +24,8 @@
 | 原生模型导入 | `AI/Contracts/IModelArtifactConsumer.hpp`、`GUI/AI/Orca/OrcaWorkspaceAdapter.*` | ModelImportRequest → ModelImportResult | 既有中立接口；实际应用仍需原生工作区/线程/撤销事务 |
 | 尺寸与底座 | `GUI/AI/Orca/OrcaModelPreparation.*` | source/options → proposal；source/proposal → apply | 既有计算与应用两步；提案不改变原件，应用需原生快照 |
 | 智能切片 | `AI/SmartSlicing/Application`、`Domain`、`Ports` | 工作区快照 → 风险/候选/比较/应用 | 既有独立 CMake 核心；GUI 通过工作区和试切片接口连接 |
-| 美颜工作台 | `GUI/AI/Model`、`GUI/AI/ModelGeneration` | 原模型/色板/操作 → 配色和编辑状态 | 底层算法已分文件；交互、部分事务/状态仍绑定 ModelGenerationPanel |
-| 资源图库与重设计外壳 | `GUI/Redesign`、ModelGenerationFeatureHost | 用户动作/状态 → 视图 | 视图和部分会话仍有面板依赖；没有宣布全 GUI 已原子化 |
+| 美颜工作台 | `GUI/AI/Model`、`BeautyWorkbenchSession.hpp` | 原模型/色板/操作 → 配色和编辑状态 | 算法、候选及撤销会话已独立；复杂美颜布局继续作为兼容视图 |
+| 资源图库与重设计外壳 | `ModelLibraryApplication`、`ModelWorkspaceFeatureHost`、`GUI/Redesign` | 用户动作/状态 → 视图 | 图库与配色有独立组合入口；现有生成外壳通过适配器接入 |
 
 ## 依赖方向
 
@@ -69,7 +69,36 @@ result = application.execute_job("generate", job_id, {"prepared_prompt": reviewe
 
 这段分阶段组合不会跳过 Job 校验、付费授权、重复提交保护、已有任务恢复和取消逻辑。恢复有供应商任务 ID 的任务使用原有 `resume_existing`，不能拿新任务代替恢复。界面改成一个输入框/少量按钮时，仍应保留设计确认和原生候选应用的必要决策。
 
-目录已提供三种组合清单：图片到模型、文字到模型、已有模型到切片候选。清单不是自动执行器：客户端按阶段状态组织交互，通过原生接口完成导入/准备/切片；Sidecar 不越权宣称原生能力可以经 HTTP 执行。配色工作台完全摆脱旧面板的会话/事务依赖仍是下一阶段任务。
+目录提供四种组合清单：图片到模型、文字到模型、已有模型到切片候选、本地资产到配色。清单不是自动执行器：客户端按阶段状态组织交互，通过原生接口完成导入/准备/切片；Sidecar 不宣称原生能力可以经 HTTP 执行。
+
+## 原生配色、图库与极简 GUI
+
+| 能力 / 分工文件 | 自己持有的状态 | 外部依赖与消费者 |
+|---|---|---|
+| `ColorMatchingSession.hpp` | 草稿、确认结果、撤销/重做、工作线程/取消/操作版本、目标身份值 | 不持有 Plater 或窗口；现有 LocalPrintColorPanel 使用同一会话，结果按源/几何/操作版本发布，确认按当前材料/工艺校验 |
+| `ColorMatchingComputation.hpp/.cpp` | 单次冻结请求与计算结果 | 显式源文件、拓扑、色板、识别配置/临时目录、取消；可同步或在调用方线程运行，不发 GUI 回调 |
+| `BeautyWorkbenchSession.hpp` / `BeautyCandidateSnapshot.hpp` | 原始/候选快照、候选及已接受文件、事务历史、会话和人像草稿基点 | 快照校验、预览恢复、候选文件移除由显式 Ports 提供；旧美颜窗口已接回同一会话 |
+| `ModelLibraryEntry.hpp` / `ModelLibraryRepository.hpp/.cpp` | 资产列表投影、读取器的摘要缓存 | 输入根目录和取消；可维护根目录内的摘要缓存，不读 GUI 配置、不创建面板。投影不代替完整历史/草稿文档 |
+| `ModelLibraryLoader.hpp` / `ModelLibraryLoaderFactory.*` | 一个扫描/缩略图工作线程、排队/取消、带版本结果 | 读取和缩略图解码 Ports；只传普通像素，UI 主动取结果，坏缩略图不移除资产 |
+| `ModelLibraryApplication.hpp` | 当前列表、过滤、操作版本/资产 ID | 替换许可和命令 Ports，过期令牌/未完成编辑不调用动作；打开图/模型、导入、换贴图、删除由接入方提供 |
+| `ModelLibraryPanel.*` | 搜索、分类、选择、按钮和布局 | 只接应用/加载器；导出沿用独立 ModelLibraryExport，原件保持 |
+| `ColorMatchingFeatureHost.*` | 配色窗口生命周期、共享会话 | 原生 Plater 适配器与导航回调；可单独创建，关闭视图保留草稿，再次进入同源保留编辑 |
+| `ModelWorkspaceCapabilities.hpp` / `ModelWorkspaceFeatureHost.*` | 组合生命周期 | 前者组合库应用和配色会话，后者装配可替换原生视图；不导入/创建 ModelGenerationPanel |
+
+现有 `ModelGenerationFeatureHost` 的资产挂载与本地配色入口实际调用上述独立组合宿主。旧生成/复杂美颜布局仍是兼容视图适配器；新界面浏览资产、打开本地配色不需要构造它。新的设计确认/付费生成仍使用前述客户端/API，完整美颜交互可使用 `BeautyWorkbenchSession` 配合自己的预览恢复端口。原生预览、工程导入与撤销必须在当前工作区/UI 线程通过 Orca 适配器完成。
+
+资产动作的写入、收费确认与删除确认由接入方的动作端口负责；应用层的有效令牌只证明当前选择仍有效。宿主卸载或动作策略替换会使旧令牌失效，许可回调返回后也会重新检查列表身份。
+
+```cpp
+// container 是新界面自己的 wxWindow，需已设置 sizer。
+// workspace 是当前 Orca 工程；无需创建旧生成面板。
+ModelWorkspaceFeatureHost features(model_root, workspace, navigate_to_prepare);
+features.mount_assets(container);
+// 默认“打开模型”直接打开独立配色视图。
+// 需要设计图、美颜、导入等动作时，注入 ModelLibraryApplication::Ports。
+```
+
+核心能力不创建 wxWindow。资产/预览投影的显示字符串沿用 wxString，与旧历史文案兼容；这不是完全去除 wx 基础库的 SDK。新组合构造、取消/过期结果、材料/工艺变化、撤销失败和已接受文件保护见 `tests/slic3rutils/test_atomic_model_capabilities.cpp`。实现状态、匹配构建和真实主窗口证据维护在主计划/短状态，示例本身不等同 GUI 验收。
 
 独立组合用例见 `test_atomic_capabilities.py`：无 HTTP/旧面板导入，真实本地设计文件生成，等待确认，确认后仅排队一个模型任务，授权未消费，再次提交被拒。提供商被隔离，不代表新的真实 3D 或 GUI 验收。
 
@@ -85,4 +114,4 @@ result = application.execute_job("generate", job_id, {"prepared_prompt": reviewe
 
 `model_runtime_files.cmake` 明确列出新的生产模块，主 CMake 和快捷刷新均使用该组件。集成校验检查入口存在、打包成员一致、循环依赖、host/UI 反向依赖及动态命名空间注入；单个能力文件上限 1500 行，Sidecar 上限由 9450 降为 2000 行。现有 upstream/shared/native 门禁保留。架构映射支持从多个文件提取同一 Job 状态，移动文件不再误报状态删除。
 
-相关检查：`scripts/verify_ai_integration.py --json`、`test_atomic_capabilities.py`、`test_packaged_sidecar.py`、`scripts/test_atomic_capabilities_architecture.py`、`scripts/test_architecture_review.py` 及相应 Sidecar/模型回归。原生代码未在本次改写；既有 GUI 旅程不能自动升级为本次架构验收，完整部署和集成 CI 状态另行记录于主计划和短状态。
+`ModelWorkspaceSources.cmake` 显式列出原生能力与兼容视图成员，共享 CMake 预算不放宽。原生核心文件禁止导入旧面板/宿主及窗口/工程状态，视图适配器也禁止导入旧生成面板；每个新增能力文件上限 500 行。相关检查：`scripts/verify_ai_integration.py --json`、`test_atomic_capabilities.py`、`test_packaged_sidecar.py`、`scripts/test_atomic_capabilities_architecture.py`、`scripts/test_architecture_review.py` 与原生 AtomicModelCapabilities/配色/图库/美颜回归。完整部署和集成 CI 状态另行记录于主计划和短状态。

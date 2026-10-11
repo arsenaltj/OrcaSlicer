@@ -7,11 +7,13 @@
 
 namespace Slic3r::GUI {
 class Plater;
+class ColorMatchingSession;
 // Offline color tools embedded in the existing finishing workbench.
 class LocalPrintColorPanel final : public wxPanel, public AIThemeOwner {
 public:
     LocalPrintColorPanel(wxWindow* parent, Plater* plater, std::function<void()> prepare_navigation,
-                        std::function<void()> back_to_workbench = {});
+                        std::function<void()> back_to_workbench = {},
+                        std::shared_ptr<ColorMatchingSession> session = {});
     ~LocalPrintColorPanel() override;
     bool open_artifact(const AI::GeneratedModelArtifact& artifact);
     void shutdown();

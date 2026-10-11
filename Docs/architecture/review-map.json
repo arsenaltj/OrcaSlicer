@@ -279,8 +279,8 @@
     },
     {
       "id": "library_export",
-      "path": "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationAssetsView.cpp",
-      "needle": "void ModelGenerationPanel::export_library_entry",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/ModelLibraryExport.hpp",
+      "needle": "inline bool export_model_library_copy",
       "detail": "Accepted snapshots export GLB/images under installation/models/exports. Shared output storage and child environment use installation/models; old data-dir history is copied without replacing existing versions."
     },
     {
@@ -312,8 +312,23 @@
     },
     {
       "id": "workbench_color_review",
-      "path": "src/slic3r/GUI/AI/ModelGeneration/PostGenerationWorkbenchHost.cpp",
-      "needle": "bool ModelGenerationPanel::request_workbench_color_matching()"
+      "path": "src/slic3r/GUI/AI/ColorMatching/ColorMatchingSession.hpp",
+      "needle": "class ColorMatchingSession final"
+    },
+    {
+      "id": "model_library_application",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/ModelLibraryApplication.hpp",
+      "needle": "class ModelLibraryApplication final"
+    },
+    {
+      "id": "minimal_model_gui",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/ModelWorkspaceFeatureHost.hpp",
+      "needle": "class ModelWorkspaceFeatureHost final"
+    },
+    {
+      "id": "beauty_session",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchSession.hpp",
+      "needle": "class BeautyWorkbenchSession final"
     },
     {
       "id": "workbench_import",

@@ -16,6 +16,7 @@ namespace Slic3r::GUI {
 
 class ModelGenerationPanel;
 class Plater;
+class ModelWorkspaceFeatureHost;
 
 class ModelGenerationFeatureHost final
 {
@@ -31,6 +32,7 @@ public:
     ModelGenerationFeatureHost& operator=(const ModelGenerationFeatureHost&) = delete;
 
     wxWindow* panel() const;
+    ModelWorkspaceFeatureHost& workspace_capabilities();
     void initialize_for_shell();
     void mount_assets(wxWindow* parent);
     void unmount_assets();

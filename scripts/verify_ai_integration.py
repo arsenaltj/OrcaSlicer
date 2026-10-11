@@ -1337,6 +1337,10 @@ def validate_gui_feature_boundaries(repo_root: Path) -> list[dict[str, str]]:
     plater_cpp = read("src/slic3r/GUI/Plater.cpp")
     panel_cpp = read("src/slic3r/GUI/ModelGenerationPanel.cpp")
     gui_cmake = read("src/slic3r/CMakeLists.txt")
+    if "${ORCA_MODEL_WORKSPACE_SOURCES}" in gui_cmake:
+        if "include(${CMAKE_CURRENT_SOURCE_DIR}/GUI/AI/ModelGeneration/ModelWorkspaceSources.cmake)" not in gui_cmake:
+            errors.append(_issue("build.source_ownership", "model workspace membership is not included"))
+        gui_cmake += read("src/slic3r/GUI/AI/ModelGeneration/ModelWorkspaceSources.cmake")
 
     for forbidden in (
         'ModelGenerationPanel.hpp',
@@ -1531,6 +1535,54 @@ def validate_dependency_boundaries(repo_root: Path) -> list[dict[str, str]]:
     return errors
 
 
+def validate_native_model_capabilities(repo_root: Path) -> list[dict[str, str]]:
+    """The minimal composition must not depend on the legacy model window."""
+    errors: list[dict[str, str]] = []
+    core = (
+        "ModelGeneration/ModelLibraryEntry.hpp", "ModelGeneration/ModelLibraryRepository.hpp",
+        "ModelGeneration/ModelLibraryRepository.cpp", "ModelGeneration/ModelLibraryLoader.hpp",
+        "ModelGeneration/ModelLibraryApplication.hpp", "ModelGeneration/BeautyWorkbenchSession.hpp",
+        "ModelGeneration/ModelWorkspaceCapabilities.hpp", "ModelGeneration/BeautyCandidateSnapshot.hpp",
+        "ModelGeneration/ModelPreviewColorState.hpp", "ModelGeneration/ModelGenerationUIState.cpp",
+        "ColorMatching/ColorMatchingSession.hpp", "ColorMatching/ColorMatchingComputation.hpp",
+        "ColorMatching/ColorMatchingComputation.cpp",
+    )
+    adapters = (
+        "ModelGeneration/ModelLibraryLoaderFactory.hpp", "ModelGeneration/ModelLibraryLoaderFactory.cpp",
+        "ModelGeneration/ModelLibraryPanel.hpp", "ModelGeneration/ModelLibraryPanel.cpp",
+        "ModelGeneration/ModelWorkspaceFeatureHost.hpp", "ModelGeneration/ModelWorkspaceFeatureHost.cpp",
+        "ColorMatching/ColorMatchingFeatureHost.hpp", "ColorMatching/ColorMatchingFeatureHost.cpp",
+    )
+    cmake = (repo_root / "src/slic3r/CMakeLists.txt").read_text(encoding="utf-8")
+    component = repo_root / "src/slic3r/GUI/AI/ModelGeneration/ModelWorkspaceSources.cmake"
+    if "${ORCA_MODEL_WORKSPACE_SOURCES}" not in cmake or "include(${CMAKE_CURRENT_SOURCE_DIR}/GUI/AI/ModelGeneration/ModelWorkspaceSources.cmake)" not in cmake:
+        errors.append(_issue("capability.native_package", "model workspace component is not composed into the GUI target"))
+    if component.is_file():
+        cmake += component.read_text(encoding="utf-8")
+    for name in core + adapters:
+        relative = "GUI/AI/" + name
+        path = repo_root / "src/slic3r" / relative
+        try:
+            source = path.read_text(encoding="utf-8")
+        except OSError:
+            errors.append(_issue("capability.native_file", f"missing native capability: {name}"))
+            continue
+        includes = re.findall(r'^\s*#\s*include\s*[<"]([^">]+)', source, re.MULTILINE)
+        if any(Path(include).name in {"ModelGenerationPanel.hpp", "ModelGenerationFeatureHost.hpp"} for include in includes):
+            errors.append(_issue("capability.legacy_panel", f"{name} imports a legacy window host"))
+        if name in core and any(Path(include).name in {"GUI_App.hpp", "Plater.hpp", "LocalPrintColorPanel.hpp", "wx/panel.h"} or
+                                include in {"wx/panel.h", "wx/window.h", "wx/dialog.h"} for include in includes):
+            errors.append(_issue("capability.native_ui", f"{name} imports native UI/project state"))
+        if relative not in cmake:
+            errors.append(_issue("capability.native_package", f"{name} is not explicitly in the native build"))
+        if len(source.splitlines()) > 500:
+            errors.append(_issue("capability.native_size", f"{name} exceeds the 500-line capability budget"))
+    host = (repo_root / "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationFeatureHost.cpp").read_text(encoding="utf-8")
+    if "capabilities->mount_assets(parent)" not in host or "capabilities->open_colors" not in host:
+        errors.append(_issue("capability.native_consumer", "existing desktop host does not compose the new capabilities"))
+    return errors
+
+
 def validate_atomic_capabilities(repo_root: Path) -> list[dict[str, str]]:
     """Enforce capability files, packaging and one-way dependency boundaries without importing providers."""
     errors: list[dict[str, str]] = []
@@ -1640,6 +1692,7 @@ def validate(lock_path: Path, repo_root: Path, skip_git: bool = False) -> dict[s
         errors.extend(validate_model_generation_import_boundary(repo_root))
         errors.extend(validate_dependency_boundaries(repo_root))
         errors.extend(validate_atomic_capabilities(repo_root))
+        errors.extend(validate_native_model_capabilities(repo_root))
         errors.extend(validate_architecture_budgets(document, repo_root))
         if not skip_git:
             git_errors, git_details = validate_git(document, repo_root)

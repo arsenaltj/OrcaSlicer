@@ -1,0 +1,38 @@
+#pragma once
+#include "ModelPreviewColorState.hpp"
+#include "slic3r/AI/ModelGeneration/SemanticColoring/SemanticColoring.hpp"
+#include "slic3r/GUI/AI/Model/ModelFinishing.hpp"
+#include "slic3r/GUI/AI/Model/SurfaceSelectionState.hpp"
+#include <nlohmann/json.hpp>
+
+namespace Slic3r::GUI {
+struct SemanticRegionEvidence;
+struct SecondaryRegionEvidence;
+struct BeautyPartitionSnapshot;
+struct PortraitShapeDetails;
+struct BeautyCandidateSnapshot {
+    boost::filesystem::path source;
+    boost::filesystem::path candidate;
+    std::string model_sha256;
+    std::string geometry_id;
+    std::string id;
+    AI::ModelFinishingResult result;
+    AI::ModelFinishingOptions options;
+    AI::SurfaceSelectionPersistence::SelectionState selection;
+    ModelPreviewColorState color_trial;
+    std::vector<std::pair<size_t, std::array<float, 3>>> face_overrides;
+    AI::SemanticColoring::FaceColors semantic_faces;
+    AI::SemanticColoring::SubfaceColors semantic_subfaces;
+    nlohmann::json semantic_provenance;
+    std::shared_ptr<const SemanticRegionEvidence> region_evidence;
+    std::string region_evidence_error;
+    std::shared_ptr<const SecondaryRegionEvidence> secondary_evidence;
+    std::string secondary_evidence_error;
+    std::shared_ptr<const PortraitShapeDetails> shape_details;
+    bool shapes_unlocked {false};
+    bool manual_color_dirty {false};
+    bool dirty {false};
+    nlohmann::json leaf_edits;
+    std::shared_ptr<const BeautyPartitionSnapshot> partition;
+};
+}
