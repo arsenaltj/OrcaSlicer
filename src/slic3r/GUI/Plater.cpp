@@ -1,7 +1,7 @@
 #include <glad/gl.h>
-#include "AI/Orca/FilamentColorPack.hpp"
 #include "Plater.hpp"
 #include "Redesign/RedesignMessageDialog.hpp"
+#include "Redesign/RedesignTheme.hpp"
 #include "AI/Orca/LocalPrintModelImport.hpp"
 #include "AI/Orca/OrcaWorkspaceAdapter.hpp"
 #include "AI/Orca/ModelColorUpdate.hpp"
@@ -3102,11 +3102,6 @@ Sidebar::Sidebar(Plater *parent)
     update_filaments_area_height(); // ORCA
 
     wrapper_sizer->Add(p->m_panel_filament_content, 0, wxEXPAND);
-    auto* color_packs = new wxButton(p->m_filament_area_wrapper, wxID_ANY, _L("耗材色卡包…"));
-    color_packs->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { show_filament_color_packs(this); });
-    wrapper_sizer->Add(color_packs, 0, wxEXPAND | wxTOP | wxBOTTOM, FromDIP(4));
-
-
     // ---- Mixed-color filament section ----
     // A mixed filament is a virtual slot realized from 2-3 physical filaments at slicing time.
     // Everything here stays hidden until at least two physical filaments exist, so a single
@@ -4039,10 +4034,20 @@ void Sidebar::update_mixed_filament_list()
 
     wxWindowUpdateLocker noUpdates(this);
 
-    const wxColour mc_bg     = StateColor::darkModeColorFor(*wxWHITE);
-    const wxColour mc_border = StateColor::darkModeColorFor(wxColour("#CECECE"));
-    const wxColour mc_text   = StateColor::darkModeColorFor(wxColour("#262E30"));
-    const wxColour mc_dim    = StateColor::darkModeColorFor(wxColour("#ACACAC"));
+    // The native workspace owns its own dark palette while the rest of Orca may
+    // still be in the light system theme. These rows are owner-drawn, so the
+    // palette must be resolved here instead of relying on a later window theme
+    // pass to recolor pixels that the paint handler draws itself.
+    const bool redesign_workspace = wxGetApp().mainframe &&
+        wxGetApp().mainframe->is_redesign_shell_active();
+    const wxColour mc_bg = redesign_workspace ? RedesignTheme::panel_colour() :
+        StateColor::darkModeColorFor(*wxWHITE);
+    const wxColour mc_border = redesign_workspace ? wxColour(82, 82, 87) :
+        StateColor::darkModeColorFor(wxColour("#CECECE"));
+    const wxColour mc_text = redesign_workspace ? wxColour(230, 230, 233) :
+        StateColor::darkModeColorFor(wxColour("#262E30"));
+    const wxColour mc_dim = redesign_workspace ? wxColour(176, 176, 182) :
+        StateColor::darkModeColorFor(wxColour("#ACACAC"));
 
     auto& project_config = wxGetApp().preset_bundle->project_config;
     auto mixed_indices = plater->mixed_filament_config_indices();
@@ -4263,6 +4268,8 @@ void Sidebar::update_mixed_filament_list()
             int cp_gap        = FromDIP(2);
             int cp_pct_gap    = FromDIP(4);
             bool cp_is_dark   = wxGetApp().dark_mode();
+            bool cp_redesign  = redesign_workspace;
+            int  cp_radius    = FromDIP(6);
 
             // Build per-component colour list for the lambda
             std::vector<wxColour> cp_colours;
@@ -4299,7 +4306,7 @@ void Sidebar::update_mixed_filament_list()
 
             content_panel->Bind(wxEVT_PAINT, [content_panel, mc_bg, mc_border, mc_text, mc_dim,
                                                cp_pad, cp_swatch_sz, cp_sep_margin, cp_pct_left,
-                                               cp_gap, cp_pct_gap, cp_is_dark,
+                                               cp_gap, cp_pct_gap, cp_is_dark, cp_redesign, cp_radius,
                                                cp_is_gradient,
                                                draw_ids, draw_ratios, draw_colours, draw_valid](wxPaintEvent&) {
                 wxBufferedPaintDC dc(content_panel);
@@ -4307,7 +4314,10 @@ void Sidebar::update_mixed_filament_list()
 
                 dc.SetBrush(wxBrush(mc_bg));
                 dc.SetPen(wxPen(mc_border, 1));
-                dc.DrawRectangle(0, 0, sz.GetWidth(), sz.GetHeight());
+                if (cp_redesign)
+                    dc.DrawRoundedRectangle(0, 0, sz.GetWidth(), sz.GetHeight(), cp_radius);
+                else
+                    dc.DrawRectangle(0, 0, sz.GetWidth(), sz.GetHeight());
 
                 dc.SetFont(::Label::Body_13);
                 int x = cp_pad;

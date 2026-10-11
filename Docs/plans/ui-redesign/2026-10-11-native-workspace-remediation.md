@@ -52,3 +52,19 @@
 - 使用最终运行实例 PID `18484` 和副本 `native-cancel-fixture-round3.3mf` 实际走查。切片进行中截图确认：模型半透明、左上角进度为 5%、右下角为深色进度通知并提供橙色取消按钮；“返回 AI”和“返回模型总览”在可访问性树中均为 disabled。切片完成后通知消失，真实统计区保持深色不透明背景，右侧层图/路径滑块为灰色轨道和黄色手柄。
 - 将层高从 0.08 mm 改为 0.081 mm 后重新触发切片，确认动态状态仍可进入并在完成后显示真实统计（1233 层、约 99.99% 预览状态）；未修改用户原始工程。既有取消流程和往返 AI 证据仍保留于 `native-cancelled-round3.png`、`native-preview-round3.png`。
 - 当前窗口仍停留在最终版本的 Orca 原生预览页；返回入口、统计面板、滑块和原生参数页可见。未发送设备打印，未调用新的付费生成服务。
+
+## 混色条目修复与最终验收（2026-10-12）
+
+- 根因确认：`Sidebar::update_mixed_filament_list()` 的混色条目使用自绘 `wxEVT_PAINT`，此前固定以白色背景和浅色主题文字绘制；原生工作区的主题递归无法覆盖自绘像素。
+- 修复：在原生工作区激活时使用 `RedesignTheme` 深色面板色、浅色主/次文字和弱边框，并将条目绘制为圆角矩形；普通 Orca 页面继续使用原有浅色绘制。修改文件为 `src/slic3r/GUI/Plater.cpp`。
+- 实际窗口验证：使用最终运行目录 `.tmp/dev/run` 启动的修正版和副本 `ux-20261011-native/native-cancel-fixture-round3.3mf`。进入“准备 → orca原生”，创建 Mixed Filament 后，侧栏条目保持深色面板背景，标题、比例文字为浅色，真实色块与编号/比例可见；点击条目可打开 `Edit Mixed Filament` 弹窗，取消关闭路径正常。未修改用户原始工程，未发送设备打印。
+- 定向 C++ 回归：`./dev.ps1 CppTest -TestSuite slic3rutils_tests -TestLabel 'UiRedesign|PostGenerationWorkbench|ProjectConfigUndo|SmartSlicing|ModelPreviewPalette' -Jobs 8` 通过，360 项；日志 `.tmp/dev/logs/20261012-001820-997/result.json`，源码身份 `52ccf6a09e242514056f06d57fb355d229e2ebf1a62918212bc65916f95ef301`。
+- `git diff --check` 通过。当前仅保留 `Plater.cpp` 的未提交修改；本轮未提交或推送。
+
+## 移除非原生色卡包入口（2026-10-12）
+
+- 对照确认：`耗材色卡包…` 由项目自定义的 `FilamentColorPack` 功能在提交 `6c992edc39` 追加；其父版本的原生耗材侧栏仅包含实体耗材槽位和 Mixed Filament 入口，没有该按钮。因此它不属于 Orca 原生准备页交互。
+- 修改：从 `src/slic3r/GUI/Plater.cpp` 移除准备页按钮及其专用头文件引用；保留 Mixed Filament 创建/编辑、耗材槽位和其他已有色卡功能代码，避免影响模型生成页已有能力。
+- 实际窗口复验：使用 `.tmp/dev/run` 新构建启动，打开 `native-cancel-fixture-round3.3mf`，进入“准备 → orca原生”；“耗材色卡包…”已消失，实体耗材槽位、Mixed Filament 区域和工艺参数面板连续显示。
+- 本轮完整应用构建/安装通过，日志 `.tmp/dev/logs/20261012-003922-090/result.json`，来源身份 `ff3cf04443367adb3e13ce9a9cfd54c215a66fdeaff241bda80e9d8a7a8f3d68`；`OrcaSlicer.dll` SHA256 `7566546306FB5080C7324917E8279B96C175378DA978D5DE9A34882572C41002`。
+- 定向 C++ 测试通过：360/360，日志 `.tmp/dev/logs/20261012-005552-568/result.json`；`git diff --check` 通过。本轮未提交或推送。
