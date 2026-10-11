@@ -1,0 +1,25 @@
+{
+  "pr": 25,
+  "run": 38113629653,
+  "head": "96c2b3480781864ccd50024c348808a265fd3b4f",
+  "base": "012c98d83a6d738b7ca5cbbc503d4aa4a1bc7262",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "按文件解耦模型生成、配色会话与图库，提供极简 GUI 组合入口",
+  "path": "pr/25/96c2b3480781864ccd50024c348808a265fd3b4f/38113629653",
+  "created": "2026-10-11T05:07:51+00:00",
+  "files": {
+    "index.html": "ca5d90c47bddf944a85313ddcd465a6f1ff54daa24b7600f0c5c2373cbeeaa0b",
+    "details.html": "7d8f1455097e7af9956b2d737fe7a295e6845e63324bc1366e99f7484ecb6dc8",
+    "report.json": "39b578d6a44b1ad1d6c1679ae1171632a4544c9f98aa794595ee9e330353a792",
+    "summary.md": "a7a5d18173d5b9a7cea32296255794178bb56230d3c180a6aa6c295b66b0da3b",
+    "archify-receipts.json": "ab1fe868475c703a24c21a0cdbcb7653eb8d3d389976742c5022f6823684a392",
+    "l0-context.html": "35ceaee4821b556abdc8c0227fe59dc3acff88cba471d1e425ab8f7445405dcc",
+    "l0-context.json": "c12e289fb503e3917335feb70620dff655677f8142e267a69d066072a1e13cb7",
+    "l1-modules.html": "ca9ebf0a1fd3ad663be3cb8e3f689848a561e5827391e0c97c703d1e7dd39923",
+    "l1-modules.json": "5e756ca266aec0c0dbf17b1754ce23891073a53c5e9d09274e163f35698cccab",
+    "l2-generation.html": "f101802e002c795e22d556cff74d4e7e799048939932abd411f4bdbfcbb3cdb2",
+    "l2-generation.json": "22841df17bdd3edd92088ee1fee4594a28035678b0ca9359a3ab1b7cc160d872",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}

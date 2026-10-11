@@ -1,6 +1,16 @@
 [
   {
     "pr": 25,
+    "run": 38113629653,
+    "head": "96c2b3480781864ccd50024c348808a265fd3b4f",
+    "base": "012c98d83a6d738b7ca5cbbc503d4aa4a1bc7262",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "按文件解耦模型生成、配色会话与图库，提供极简 GUI 组合入口",
+    "path": "pr/25/96c2b3480781864ccd50024c348808a265fd3b4f/38113629653",
+    "created": "2026-10-11T05:07:51+00:00"
+  },
+  {
+    "pr": 25,
     "run": 38069406291,
     "head": "f5c0b0d3b87044ac7caf77f50fe05a39df4dd282",
     "base": "012c98d83a6d738b7ca5cbbc503d4aa4a1bc7262",
