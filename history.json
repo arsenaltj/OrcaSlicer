@@ -1,5 +1,15 @@
 [
   {
+    "pr": 29,
+    "run": 38284762776,
+    "head": "bbe3b2b04c9992d084c0f5eec9c09160857380df",
+    "base": "5a2777150b8e6c1c33f8e9ef7dc123e63959e8a1",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "稳定3D资产列表与局部导入加载，保留修复模型拓扑和3MF精度",
+    "path": "pr/29/bbe3b2b04c9992d084c0f5eec9c09160857380df/38284762776",
+    "created": "2026-10-12T17:35:26+00:00"
+  },
+  {
     "pr": 28,
     "run": 38253038313,
     "head": "95838bc54e7f0e0b3d6f78037064388be02f3862",

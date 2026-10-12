@@ -1,0 +1,25 @@
+{
+  "pr": 29,
+  "run": 38284762776,
+  "head": "bbe3b2b04c9992d084c0f5eec9c09160857380df",
+  "base": "5a2777150b8e6c1c33f8e9ef7dc123e63959e8a1",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "稳定3D资产列表与局部导入加载，保留修复模型拓扑和3MF精度",
+  "path": "pr/29/bbe3b2b04c9992d084c0f5eec9c09160857380df/38284762776",
+  "created": "2026-10-12T17:35:26+00:00",
+  "files": {
+    "index.html": "419d9d30ce17c500db55555e79ef952067b99be30b4d3cd1492cf7bb342133b8",
+    "details.html": "8067e01b1bfc563156e101056dbc7dd10183dac7cdbd6b92cb4a52d46648d179",
+    "report.json": "0ff48ae661f98321f9da8426a8e3fcb66ad568d132b0eecd31160f5c15be54b5",
+    "summary.md": "b02113747dba1d8d275f526aec79bd6ee81ddb6769924fae1ec079042a45e488",
+    "archify-receipts.json": "cbfa5a22c476807dfb2fb885c15146d4953e3d24217c1012a9c176deba9b674c",
+    "l0-context.html": "35ceaee4821b556abdc8c0227fe59dc3acff88cba471d1e425ab8f7445405dcc",
+    "l0-context.json": "c12e289fb503e3917335feb70620dff655677f8142e267a69d066072a1e13cb7",
+    "l1-modules.html": "1881a271e854db97c9260288dce0f9ba90cee2ead6c2bf0c97fcef35d2552fb9",
+    "l1-modules.json": "cfa4d930278e4bda3832375c5292853a979ae6f3692fcd76da1a30ffca5356db",
+    "l2-generation.html": "f101802e002c795e22d556cff74d4e7e799048939932abd411f4bdbfcbb3cdb2",
+    "l2-generation.json": "22841df17bdd3edd92088ee1fee4594a28035678b0ca9359a3ab1b7cc160d872",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}
