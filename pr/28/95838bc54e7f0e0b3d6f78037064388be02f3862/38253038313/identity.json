@@ -1,0 +1,25 @@
+{
+  "pr": 28,
+  "run": 38253038313,
+  "head": "95838bc54e7f0e0b3d6f78037064388be02f3862",
+  "base": "0e303c529ebd5bf5966cda059e9ddea7d087bcb7",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "修复生成后模型候选接受、安全导入与打印机耗材自动保存",
+  "path": "pr/28/95838bc54e7f0e0b3d6f78037064388be02f3862/38253038313",
+  "created": "2026-10-12T13:06:42+00:00",
+  "files": {
+    "index.html": "15af7c2d922b9b2f5d10030fd03eebdc2357ad882d061d3ed1fbbebe5105dff1",
+    "details.html": "a5fd0a9901fa6b7a67ffa9c26b53071341190bb9dc0f3251cc0ce3e3ff837892",
+    "report.json": "e7ec7281d642b3e49f8b567f622055bbb23f8507a44ae935053147d21c8491d6",
+    "summary.md": "e3fb5db718c6216137cb357e948c738eb771608a0de58c156f46f2436e51db0b",
+    "archify-receipts.json": "c9381729f9249b9ab2ae6dccd579c292eba0aef04cbbd8532acac95ec1e4206b",
+    "l0-context.html": "35ceaee4821b556abdc8c0227fe59dc3acff88cba471d1e425ab8f7445405dcc",
+    "l0-context.json": "c12e289fb503e3917335feb70620dff655677f8142e267a69d066072a1e13cb7",
+    "l1-modules.html": "8683cb43857da229bcf2334f23ba7b3b3500e607d55fef3f62eb3256038efc01",
+    "l1-modules.json": "7f98961ba6efa5e2637d32d979ca56edff7c0cea1ac6921b31005407d14041ec",
+    "l2-generation.html": "f101802e002c795e22d556cff74d4e7e799048939932abd411f4bdbfcbb3cdb2",
+    "l2-generation.json": "22841df17bdd3edd92088ee1fee4594a28035678b0ca9359a3ab1b7cc160d872",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}

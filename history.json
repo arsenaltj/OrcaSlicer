@@ -1,5 +1,15 @@
 [
   {
+    "pr": 28,
+    "run": 38253038313,
+    "head": "95838bc54e7f0e0b3d6f78037064388be02f3862",
+    "base": "0e303c529ebd5bf5966cda059e9ddea7d087bcb7",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "修复生成后模型候选接受、安全导入与打印机耗材自动保存",
+    "path": "pr/28/95838bc54e7f0e0b3d6f78037064388be02f3862/38253038313",
+    "created": "2026-10-12T13:06:42+00:00"
+  },
+  {
     "pr": 27,
     "run": 38213730031,
     "head": "087306265be4dc2c97a506863fbbe6a08e1f0cbf",
