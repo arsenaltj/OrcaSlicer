@@ -29,7 +29,7 @@ public:
     void notify_slice_completed(bool success, const std::string& failure_code);
     SmartSlicingWorkbenchState workbench_snapshot() const;
     void set_workbench_listener(SmartSlicingWorkbenchListener listener);
-    void set_workbench_active(bool active);
+    void set_workbench_active(bool active, bool ai_mode = true);
     bool analyze_workbench();
     bool keep_current_mesh_and_analyze(const AI::SmartSlicing::WorkspaceRevision& reviewed_revision);
     bool select_goal(AI::SmartSlicing::RecommendationGoal goal);

@@ -39,6 +39,11 @@ public:
 
     void SetBackgroundColor2(StateColor const &color);
 
+    double GetCornerRadiusValue() const { return radius; }
+    const StateColor& GetBorderColor() const { return border_color; }
+    const StateColor& GetBackgroundColor() const { return background_color; }
+    const StateColor& GetBackgroundColor2() const { return background_color2; }
+
     static wxColor GetParentBackgroundColor(wxWindow * parent);
 
     void ShowBadge(bool show);

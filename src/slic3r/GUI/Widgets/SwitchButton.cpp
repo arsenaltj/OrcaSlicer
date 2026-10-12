@@ -5,6 +5,7 @@
 
 #include "../wxExtensions.hpp"
 #include "../GUI_App.hpp"
+#include "../Redesign/RedesignTheme.hpp"
 #include "slic3r/GUI/I18N.hpp"
 #include "../Utils/MacDarkMode.hpp"
 #include "../Utils/WxFontUtils.hpp"
@@ -35,6 +36,18 @@ SwitchButton::SwitchButton(wxWindow* parent, wxWindowID id)
 {
 	SetBackgroundColour(StaticBox::GetParentBackgroundColor(parent));
 	Bind(wxEVT_TOGGLEBUTTON, [this](auto& e) { update(); e.Skip(); });
+    Bind(wxEVT_PAINT, [this](wxPaintEvent& event) {
+        if (GetName() != "ai_content_color" || !labels[0].IsEmpty()) { event.Skip(); return; }
+        wxPaintDC paint(this); wxGCDC dc(paint);
+        dc.SetBackground(wxBrush(GetBackgroundColour())); dc.Clear();
+        const auto size = GetClientSize();
+        dc.SetPen(*wxTRANSPARENT_PEN);
+        dc.SetBrush(wxBrush(GetValue() && IsEnabled() ? Slic3r::GUI::RedesignTheme::accent_colour() : wxColour(70,70,73)));
+        dc.DrawRoundedRectangle(GetClientRect(), size.y / 2.);
+        dc.SetBrush(wxBrush(GetValue() ? wxColour(22,22,25) : wxColour(190,190,196)));
+        const int radius = std::max(1, size.y/2-FromDIP(2));
+        dc.DrawCircle(GetValue() ? size.x-size.y/2 : size.y/2, size.y/2, radius);
+    });
 	SetFont(Label::Body_12);
 
 #ifdef __WXGTK__
@@ -169,14 +182,20 @@ void SwitchButton::Rescale()
 #else
                 wxDC &dc2(memdc);
 #endif
-				dc2.SetBrush(wxBrush(track_color.colorForStates(state)));
-				dc2.SetPen(wxPen(track_color.colorForStates(state)));
+                const bool redesign = GetName() == "ai_content_color";
+                const wxColour track = redesign ? wxColour(70,70,73) : track_color.colorForStates(state);
+                const wxColour thumb = redesign ? Slic3r::GUI::RedesignTheme::accent_colour()
+                    : thumb_color.colorForStates(StateColor::Checked | StateColor::Enabled);
+			dc2.SetBrush(wxBrush(track));
+			dc2.SetPen(wxPen(track));
                 dc2.DrawRoundedRectangle(wxRect({0, 0}, trackSize), trackSize.y / 2.0);
-				dc2.SetBrush(wxBrush(thumb_color.colorForStates(StateColor::Checked | StateColor::Enabled)));
-				dc2.SetPen(wxPen(thumb_color.colorForStates(StateColor::Checked | StateColor::Enabled)));
+			dc2.SetBrush(wxBrush(thumb));
+			dc2.SetPen(wxPen(thumb));
                 dc2.DrawRoundedRectangle(wxRect({ i == 0 ? BS : (trackSize.x - thumbSize.x - BS), BS}, thumbSize), thumbSize.y / 2.0);
 			}
-            memdc.SetTextForeground(text_color.colorForStates(state ^ StateColor::Checked));
+            const bool redesign = GetName() == "ai_content_color";
+            memdc.SetTextForeground(redesign ? (i == 0 ? wxColour(22,22,25) : wxColour(230,230,233))
+                : text_color.colorForStates(state ^ StateColor::Checked));
             auto text_y = BS + (thumbSize.y - textSize[0].y) / 2;
 #ifdef __APPLE__
             if (Slic3r::is_mac_version_15()) {
@@ -184,7 +203,8 @@ void SwitchButton::Rescale()
             }
 #endif
             memdc.DrawText(labels[0], {BS + (thumbSize.x - textSize[0].x) / 2, text_y});
-            memdc.SetTextForeground(text_color2.count() == 0 ? text_color.colorForStates(state) : text_color2.colorForStates(state));
+            memdc.SetTextForeground(redesign ? (i == 1 ? wxColour(22,22,25) : wxColour(230,230,233))
+                : text_color2.count() == 0 ? text_color.colorForStates(state) : text_color2.colorForStates(state));
             auto text_y_1 = BS + (thumbSize.y - textSize[1].y) / 2;
 #ifdef __APPLE__
             if (Slic3r::is_mac_version_15()) {
@@ -342,8 +362,10 @@ void ModeSwitchButton::doRender(wxDC& dc)
         double dot_dist = (bounds.width - bounds.height) * 0.50;
 
         // Track
-        dc.SetPen(wxPen(track_border.colorForStates(states), 1));
-        dc.SetBrush(wxBrush(track_background.colorForStates(states)));
+        const bool redesign = GetName() == "ai_content_color";
+        const wxColour track = redesign ? Slic3r::GUI::RedesignTheme::accent_colour() : track_background.colorForStates(states);
+        dc.SetPen(wxPen(redesign ? track : track_border.colorForStates(states), 1));
+        dc.SetBrush(wxBrush(track));
         wxRect track_rc = bounds;
         track_rc.width = int(v_center * 2.0 + dot_dist * m_selection);
         dc.DrawRoundedRectangle(track_rc, v_center);
@@ -351,7 +373,8 @@ void ModeSwitchButton::doRender(wxDC& dc)
         // Dots
         dc.SetPen(*wxTRANSPARENT_PEN);
         for (int idx = 0; idx < 3; ++idx) {
-            dc.SetBrush(wxBrush((idx <= m_selection ? dot_active : dot_dimmed).colorForStates(states)));
+            dc.SetBrush(wxBrush(redesign ? (idx <= m_selection ? wxColour(22,22,25) : wxColour(126,126,130))
+                : (idx <= m_selection ? dot_active : dot_dimmed).colorForStates(states)));
             dc.DrawCircle(wxPoint(v_center + dot_dist * idx, v_center), track_rc.height * (double)(idx == m_selection ? 0.32 : 0.16));
         }
     }

@@ -81,7 +81,7 @@ std::vector<size_t> GLGizmosManager::get_selectable_idxs() const
 //BBS: GUI refactor: GLToolbar&&Gizmo adjust
 GLGizmosManager::EType GLGizmosManager::get_gizmo_from_mouse(const Vec2d &mouse_pos) const
 {
-    if (! m_enabled)
+    if (!m_enabled || m_parent.compact_slicing_tools())
         return Undefined;
 
     float icons_size = m_layout.scaled_icons_size();
@@ -613,7 +613,7 @@ void GLGizmosManager::render_painter_assemble_view() const
 
 void GLGizmosManager::render_overlay()
 {
-    if (!m_enabled)
+    if (!m_enabled || m_parent.compact_slicing_tools())
         return;
 
     if (m_icons_texture_dirty)

@@ -1,6 +1,9 @@
 #include "CheckBox.hpp"
 
 #include "../wxExtensions.hpp"
+#include "../Redesign/RedesignTheme.hpp"
+#include <wx/dcclient.h>
+#include <wx/dcgraph.h>
 
 #ifdef __WXGTK__
 #include "../GUI_Utils.hpp"
@@ -22,6 +25,29 @@ CheckBox::CheckBox(wxWindow *parent, int id)
 	if (parent)
 		SetBackgroundColour(parent->GetBackgroundColour());
 	Bind(wxEVT_TOGGLEBUTTON, [this](auto& e) { m_half_checked = false; update(); e.Skip(); });
+    Bind(wxEVT_PAINT, [this](wxPaintEvent& event) {
+        if (GetName() != "ai_content_color") { event.Skip(); return; }
+        wxPaintDC paint(this);
+        wxGCDC dc(paint);
+        dc.SetBackground(wxBrush(GetBackgroundColour())); dc.Clear();
+        const auto size = GetClientSize();
+        const int edge = std::min(size.x, size.y) - FromDIP(3);
+        if (edge <= 0) return;
+        const wxRect box((size.x-edge)/2, (size.y-edge)/2, edge, edge);
+        const bool checked = GetValue() || m_half_checked;
+        const wxColour accent = IsEnabled() ? Slic3r::GUI::RedesignTheme::accent_colour() : wxColour(82,82,87);
+        dc.SetPen(wxPen(checked || HasFocus() ? accent : wxColour(82,82,87), FromDIP(1)));
+        dc.SetBrush(wxBrush(checked ? accent : wxColour(25,25,27)));
+        dc.DrawRoundedRectangle(box, FromDIP(2));
+        if (checked) {
+            dc.SetPen(wxPen(wxColour(22,22,25), FromDIP(2)));
+            if (m_half_checked) dc.DrawLine(box.x+edge/4, box.y+edge/2, box.x+3*edge/4, box.y+edge/2);
+            else {
+                dc.DrawLine(box.x+edge/5, box.y+edge/2, box.x+2*edge/5, box.y+3*edge/4);
+                dc.DrawLine(box.x+2*edge/5, box.y+3*edge/4, box.x+4*edge/5, box.y+edge/4);
+            }
+        }
+    });
 #ifdef __WXOSX__ // State not fully implement on MacOS
     Bind(wxEVT_SET_FOCUS, &CheckBox::updateBitmap, this);
     Bind(wxEVT_KILL_FOCUS, &CheckBox::updateBitmap, this);

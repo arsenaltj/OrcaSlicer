@@ -1,3 +1,11 @@
+# 2026-10-12 当前：E2 / UX/N 四次 UX 提交本地融合
+
+主线：PR25 已合入，固定集成基线 `39e4df20a4`；将源 `05a7eca851` 及之前三次 UX 提交融合到本地 `codex/team/integration`，远端跟踪仍为 `origin/codex/team/integration`，本轮不推送。
+本轮：保留原子能力/资产/配色架构，接入面数选择与 AI/原生切片 UX；修复条件 JSON 运行时核验及 AI/原生切换后撤销快照缺字节崩溃。编译、定向回归和真实导入/100 层切片/保存重开/双模式撤销重做通过，完整证据见主计划首节及本机 `.tmp/dev/ui4-qa/`。
+未结：sidecar 认证/健康正常，但本机缺图像服务配置，在线生成不可用；真实 AI 候选、大模型取消/性能、跨平台和实物未验。原 E1/E3/E4/E5、UX/N 与六次 3D 对照未结保持。
+下一步：最终源码/产物身份以 `.tmp/dev/ui4-qa/final-verification.json` 为准；用户提供现有图像配置路径后继续服务配置，其他体验反馈沿本地融合版处理，远端集成另按明确授权和团队 SOP。
+计划变更：执行用户已批准的本地融合方案，验收发现的撤销崩溃纳入同范围修复；没有新增付费、设备调用或发布范围。
+
 # 2026-10-11 当前：E2 配色、图库与原生 GUI 组合交付
 
 主线：PR24 已合入；本轮 fetch 后集成仍为 `012c98d83a6d738b7ca5cbbc503d4aa4a1bc7262`，继续 `codex/task/atomic-capabilities-20261010` 与 [PR25](https://github.com/arsenaltj/OrcaSlicer/pull/25)，指向 `codex/team/integration`。提交版本和 CI 以 PR25 当前 head 为准；已推送与实际合入分开记录，当前未合入。

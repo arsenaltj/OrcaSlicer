@@ -1,3 +1,17 @@
+## 2026-10-12 E2 / UX/N：本机四次 UX 提交融合与撤销崩溃修复
+
+用户授权执行四次提交融合、Windows 构建和 sidecar 验证。目标基线为本 checkout 的 `codex/team/integration` / `origin/codex/team/integration`：`39e4df20a434c1ed52b44411dbcc87d6d67347a5`（PR25 已合入；下方 PR25 未合入描述为历史）。来源 `D:/OrcaSlicer` 的最近四次提交为 `80e1e8396d`、`5b066da6b0`、`047a704dcb`、`05a7eca851`，固定源 head `05a7eca851607ee0c0ab45d47533edbbbb773980`。在本 checkout 的 `codex/merge-ui-last4-20261012` 解决冲突并验证，再将本地 integration 快进至本节所在合并提交；保留源目录，不推送远端、不替代团队 PR/评审流程。
+
+本会话负责 MainFrame/Plater/Redesign 的宿主接线、运行时校验与相关测试。保留当前原子能力、AssetsWorkspace、配色会话、显式 3MF 保存及生命周期；新原生导航接入现有 MainFrame 的 `.ipp` 分工，原生外观与混色列表从 Plater 分离为两个包含文件，未放宽文件预算，不修改 AI Contracts 或 libslic3r。接入 100/200 万面选项、AI/原生切片界面和删除非原生颜色包入口。安装验证发现条件 JSON 被错误要求：运行时清单现在遵循 CMake 的人像识别 ON/OFF，未知条件明确失败，继续验证文件缺失、内容与刷新结果。
+
+真实 GUI 首轮发现阻断缺陷：AI 页面禁用整个 Gizmo 管理器来隐藏工具栏，导致撤销快照跳过 Gizmo 数据，切回原生后读取 1 字节枚举时发生 `cereal::Exception`。失败进程 17192 的日志和步骤保留于 `.tmp/dev/ui4-qa/crash-evidence.json` 及 `.tmp/dev/data/log/debug_Mon_Oct_12_11_37_41_17192.log.0`。已改为只隐藏工具栏渲染和鼠标命中，保留 Gizmo 启用状态及原生撤销序列化，不吞掉异常、不清空历史规避失败。
+
+验证：融合后的相关原生测试 371/371；崩溃修复后界面/工程历史定向复验 87/87（与 371 集合重叠，不累加），证据 `.tmp/dev/logs/20261012-105950-559`、`.tmp/dev/logs/20261012-115302-884`。运行时 Python 32/32、sidecar 离线契约 71/71、架构工具 20/20；完整 AI Git 集成守卫、README 架构同步及四视图各 9/9 通过。完整修复版 Run `20261012-121109-811` 五步通过并启动进程 53252。最终提交的构建身份与 sidecar 验证结果存于 `.tmp/dev/ui4-qa/final-verification.json`，该文件是本机证据，不随源码提交；工作树架构报告在 `.tmp/architecture-review/ui4-merge/`，静态覆盖有限，不替代功能验证。
+
+真实主窗口使用本 checkout 的匹配 EXE/DLL/资源、独立 `.tmp/dev/data` 和测试模型副本：100/200 万面选择、STL 导入、AI/原生切换、显式 100 层原生切片/预览、3MF 保存/重开通过。完整重现“AI 页导入→原生切片→保存→Ctrl+Z→Ctrl+Y”，修复后撤销清空该导入、重做恢复 12 面/8 顶点；切回 AI 画布重复撤销/重做也通过。资产列表和 43 件离线图库浏览正常，旧工程/模型原件保持。保存工程 `.tmp/dev/ui4-qa/cube20-fixed.3mf`，失败前工程另存保留。未执行打印机命令或新增付费生成。
+
+sidecar 在 `127.0.0.1:18764` 启动，真实主窗口会话认证与 `/health` 均返回 200，退出时认证 shutdown 正常。本机 Tripo 配置存在，但图像供应商 `OPENAI_API_KEY` / `OPENAI_PRO_API` 缺失，界面正确显示生成不可用；不称在线生成全链路可用。已请求用户提供现有本机配置路径（不粘贴密钥），未得到路径前不创建付费任务。当前 Voron 测试预设下 AI 候选暂不可用，已验证原生切片；在线供应商、AI 三方案真实试切、大模型取消/性能、跨平台/多 DPI/实物保持未验，原 E1/E3/E4/E5、UX/N 及前六次 3D 对照未结不升级。返回点为 E2 已保留能力之上的本地融合版；后续按用户配置/体验反馈继续。
+
 ## 2026-10-11 E2 续做：配色会话、图库与 GUI 组合边界
 
 用户明确继续 PR25，并授权验证后提交集成主线。本轮沿 `codex/task/atomic-capabilities-20261010` 的 `f5c0b0d3`，PR25 当前 open/unmerged，集成基线仍为 PR24 的 `012c98d8`。承接 E2 与 A.1，不恢复延期性能/识别实验，不新增付费调用。

@@ -1347,7 +1347,7 @@ wxBoxSizer* MainFrame::create_side_tools()
 {
     enable_multi_machine = wxGetApp().is_enable_multi_machine();
     int em = em_unit();
-    wxBoxSizer* sizer = new wxBoxSizer(wxHORIZONTAL);
+    wxBoxSizer* sizer = m_native_side_tools = new wxBoxSizer(wxHORIZONTAL);
 
     m_slice_select = eSlicePlate;
     m_print_select = ePrintPlate;
