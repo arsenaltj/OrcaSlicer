@@ -1,0 +1,25 @@
+{
+  "pr": 26,
+  "run": 38194165483,
+  "head": "afdcf24158a3b515f76de57617e38c6c745418ad",
+  "base": "39e4df20a434c1ed52b44411dbcc87d6d67347a5",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "Fix printer filament configuration and palette import workflows",
+  "path": "pr/26/afdcf24158a3b515f76de57617e38c6c745418ad/38194165483",
+  "created": "2026-10-12T02:04:21+00:00",
+  "files": {
+    "index.html": "2a935dd3fcec97973539560d4a88438d9cd84af5983ba6f5d025d8e644ac9ce8",
+    "details.html": "65bbbeda4132773730f3e9a06caa30c3fb17712d5d5cabcbc3855b409195837d",
+    "report.json": "bace49991819ed74cd2644f8352a372d4088aeae0b540e5ebf85df6135824449",
+    "summary.md": "952a1ab7a70b55b487db29b2c779e7f2f1aa7ded7ae503acd4e0bb51cd452a76",
+    "archify-receipts.json": "936165f1a6a292c97e67ffb45c44b7ea54dd22cb76ad75291d0e4fc33f5e96a4",
+    "l0-context.html": "35ceaee4821b556abdc8c0227fe59dc3acff88cba471d1e425ab8f7445405dcc",
+    "l0-context.json": "c12e289fb503e3917335feb70620dff655677f8142e267a69d066072a1e13cb7",
+    "l1-modules.html": "010f1c4e24fa5bdd9e3741719b17abdd230466f56c55156af794a66706f20c80",
+    "l1-modules.json": "80f5508ac72d38661327e22e5306496c63ffd615e6038dc741fe2b8d66c3aac5",
+    "l2-generation.html": "f101802e002c795e22d556cff74d4e7e799048939932abd411f4bdbfcbb3cdb2",
+    "l2-generation.json": "22841df17bdd3edd92088ee1fee4594a28035678b0ca9359a3ab1b7cc160d872",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}

@@ -1,5 +1,15 @@
 [
   {
+    "pr": 26,
+    "run": 38194165483,
+    "head": "afdcf24158a3b515f76de57617e38c6c745418ad",
+    "base": "39e4df20a434c1ed52b44411dbcc87d6d67347a5",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "Fix printer filament configuration and palette import workflows",
+    "path": "pr/26/afdcf24158a3b515f76de57617e38c6c745418ad/38194165483",
+    "created": "2026-10-12T02:04:21+00:00"
+  },
+  {
     "pr": 25,
     "run": 38113629653,
     "head": "96c2b3480781864ccd50024c348808a265fd3b4f",
