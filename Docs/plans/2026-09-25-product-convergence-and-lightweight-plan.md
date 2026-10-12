@@ -4,6 +4,8 @@
 
 合并版本验证完成：代码merge提交 `e356db70f6db5c7b8e5916c4dd6a11dea9e8fea8`，同步集成完整SHA `0e303c529ebd5bf5966cda059e9ddea7d087bcb7`。Windows固定目录Release Build `20261012-205746-693`成功，源码身份 `acbd4467b9397847e9fde7251fc455183563a16dcd20c57cd5135cfff1866e62`，DLL SHA256 `4feab8e8b747b667f28483b43a2240a9fe869ddba5863bb91a51d5eb3de16e27`；Build内捆绑运行时PNG round-trip通过，未覆盖用户已验的旧run或打包。C++三组277/33/88通过，按测试名去重391项（重叠7项），证据`20261012-201158-551`、`20261012-205706-638`和`workbench-mainline-ui-regression.log`；运行时32项与架构工具20项通过。集成Git守卫未跳过、README当前、diff通过。提交模式架构报告绑定上述merge/head和base，四张图均9/9；用户明确“验证完成”绑定前一版本，合并后GUI未重复验收、实物/设备及完整原计划未结保持。PR按本次授权正常提交，不直接推送integration，不发送团队消息。
 
+远端交付：[PR28](https://github.com/arsenaltj/OrcaSlicer/pull/28) 已创建为open/非Draft，目标codex/team/integration；GitHub确认MERGEABLE，无冲突，当前AI/架构检查已启动。发布源6735991e049f691566a72daa2028407f6e1d84c3，随本条文档状态提交更新最终head；源码不变。尚未合入主线，当前候选CI、非作者复核和维护人合入待完成，不擅自启用候选工作流或绕过门禁。
+
 ## 2026-10-12 授权续修：五项工作台体验与事务修复（新版已安装，实际GUI与样本切片通过）
 
 承接生成后拓扑与打印机耗材项，同一 `D:/TEST/OrcaSlicer` / `codex/team/integration`，HEAD `afdcf24158a3b515f76de57617e38c6c745418ad`，保留既有修改、模型、配置与其他工作区。用户已确认允许固定多喷嘴1..N实体耗材、其余喷嘴空闲；超过容量的色卡自动选基础色并使用兼容原生叠色；应用自动保存模型和配方。槽位身份、单喷嘴换料容量、旧文件和来源序号保持。本轮无提交、推送、打包、付费生成或发送打印任务。
