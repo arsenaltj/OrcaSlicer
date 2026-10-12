@@ -38,11 +38,52 @@ void ModelGenerationPanel::mount_workbench(wxWindow* parent)
 
 void ModelGenerationPanel::unmount_workbench()
 {
+    restore_workbench_import_history();
     if (!m_workbench_shell || m_workbench_shell->GetParent() == this) return;
     if (auto* sizer = m_workbench_shell->GetContainingSizer()) sizer->Detach(m_workbench_shell);
     m_workbench_shell->Reparent(this);
     GetSizer()->Add(m_workbench_shell, 1, wxEXPAND);
     m_workbench_shell->Hide();
+}
+
+wxWindow* ModelGenerationPanel::workbench_import_viewport() const { return m_workbench_view_host; }
+wxWindow* ModelGenerationPanel::workbench_import_history() const { return m_workbench_history_panel; }
+
+void ModelGenerationPanel::mount_workbench_import_history(wxWindow* parent)
+{
+    if (!parent || !m_workbench_history_panel || m_workbench_history_home) return;
+    m_workbench_history_home = m_workbench_history_panel->GetParent();
+    if (auto* sizer = m_workbench_history_panel->GetContainingSizer()) sizer->Detach(m_workbench_history_panel);
+    m_workbench_history_panel->Reparent(parent);
+    parent->GetSizer()->Add(m_workbench_history_panel, 1, wxEXPAND);
+    m_workbench_history_panel->Show(m_workbench_import_history_was_shown);
+    parent->Layout();
+}
+
+void ModelGenerationPanel::restore_workbench_import_history()
+{
+    if (!m_workbench_history_home) return;
+    if (auto* sizer = m_workbench_history_panel->GetContainingSizer()) sizer->Detach(m_workbench_history_panel);
+    m_workbench_history_panel->Reparent(m_workbench_history_home);
+    m_workbench_history_home->GetSizer()->Add(m_workbench_history_panel, 0,
+        wxEXPAND | wxTOP | wxBOTTOM | wxLEFT, FromDIP(12));
+    m_workbench_history_panel->Show(m_workbench_import_history_was_shown);
+    m_workbench_history_home->Layout();
+    m_workbench_history_home = nullptr;
+}
+
+void ModelGenerationPanel::set_workbench_import_feedback(bool active)
+{
+    if (active == m_workbench_import_feedback) return;
+    if (active) m_workbench_import_history_was_shown = m_workbench_history_panel->IsShown();
+    m_workbench_import_feedback = active;
+    m_workbench_settings->Enable(!active);
+    m_workbench_view_host->Enable(!active);
+    // The Windows GL surface can overpaint a sibling loading panel. Keep its
+    // CPU model and camera, but suspend the preview window until import ends.
+    if (m_model_preview) m_model_preview->Show(!active);
+    m_workbench_history_toggle->Enable(!active);
+    refresh_workbench_history();
 }
 
 std::vector<std::string> ModelGenerationPanel::local_recolor_palette() const
@@ -140,7 +181,7 @@ PostGenerationWorkbenchState ModelGenerationPanel::workbench_snapshot() const
 
 bool ModelGenerationPanel::can_replace_model_asset() const
 {
-    return !m_shutdown && !m_portrait_draft_before &&
+    return !m_shutdown && !m_workbench_import_feedback && !m_portrait_draft_before &&
         !(m_portrait_task && m_portrait_task->snapshot().running()) && post_generation_asset_switch_allowed(m_busy || m_preview_download_in_flight || m_workbench_check_running || m_workbench_import_running,
         m_finishing_running, (m_beauty_transactions && m_beauty_transactions->processing()) ||
             (m_model_preview && m_model_preview->semantic_processing()),

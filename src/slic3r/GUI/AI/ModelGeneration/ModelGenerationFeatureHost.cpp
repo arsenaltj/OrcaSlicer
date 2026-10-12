@@ -289,6 +289,11 @@ void ModelGenerationFeatureHost::set_workbench_return_to_design_handler(std::fun
 
 bool ModelGenerationFeatureHost::request_open_workbench() { return m_impl->model_generation->request_open_workbench(); }
 void ModelGenerationFeatureHost::mount_workbench(wxWindow* parent) { m_impl->model_generation->mount_workbench(parent); }
+wxWindow* ModelGenerationFeatureHost::workbench_import_viewport() const { return m_impl->model_generation->workbench_import_viewport(); }
+wxWindow* ModelGenerationFeatureHost::workbench_import_history() const { return m_impl->model_generation->workbench_import_history(); }
+void ModelGenerationFeatureHost::mount_workbench_import_history(wxWindow* parent) { m_impl->model_generation->mount_workbench_import_history(parent); }
+void ModelGenerationFeatureHost::restore_workbench_import_history() { m_impl->model_generation->restore_workbench_import_history(); }
+void ModelGenerationFeatureHost::set_workbench_import_feedback(bool active) { m_impl->model_generation->set_workbench_import_feedback(active); }
 void ModelGenerationFeatureHost::mount_assets(wxWindow* parent) { m_impl->capabilities->mount_assets(parent); }
 void ModelGenerationFeatureHost::unmount_assets() { m_impl->capabilities->unmount_assets(); }
 void ModelGenerationFeatureHost::set_history_navigation_handler(std::function<void(bool)> handler)

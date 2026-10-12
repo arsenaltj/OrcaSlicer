@@ -16,7 +16,7 @@ bool ModelGenerationUIOptions::operator==(const ModelGenerationUIOptions& other)
 
 bool ModelGenerationUIHistoryEntry::operator==(const ModelGenerationUIHistoryEntry& other) const
 {
-    return job_id == other.job_id && title == other.title && details == other.details &&
+    return asset_key == other.asset_key && job_id == other.job_id && title == other.title && details == other.details &&
            design_only == other.design_only && thumbnail_width == other.thumbnail_width &&
            thumbnail_height == other.thumbnail_height && thumbnail_rgb == other.thumbnail_rgb &&
            thumbnail_alpha == other.thumbnail_alpha;

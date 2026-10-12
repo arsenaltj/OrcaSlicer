@@ -94,7 +94,7 @@ inline bool stage_workbench_texture_import(ModelObject& object, const PaintedMes
         match.filament_index = slots[match.filament_index];
         base = std::min(base, match.filament_index + 1);
     }
-    if (!apply_painted_mesh_to_volume(painted, matches, *object.volumes.front()))
+    if (!apply_painted_mesh_to_volume(painted, matches, *object.volumes.front(), true))
         return fail("Native color painting could not be applied to the detached model.");
     object.volumes.front()->config.set("extruder", base);
     object.config.set("extruder", base);

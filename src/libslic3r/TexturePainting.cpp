@@ -547,9 +547,10 @@ std::vector<FilamentMatch> match_clusters_to_filaments(
 bool apply_painted_mesh_to_volume(
     const PaintedMesh& painted,
     const std::vector<FilamentMatch>& matches,
-    ModelVolume& volume)
+    ModelVolume& volume, bool preserve_source_coordinates)
 {
-    if (painted.face_colors.empty() || matches.empty())
+    if (painted.face_colors.empty() || matches.empty() ||
+        (preserve_source_coordinates && !volume.source.mesh_offset.isZero()))
         return false;
 
     const auto& cluster_colors = painted.cluster_colors;
@@ -638,7 +639,9 @@ bool apply_painted_mesh_to_volume(
     // re-centering, the volume offset (which was computed for the original
     // centered mesh) no longer matches, causing the model to float or clip.
     // Pass false to keep source.mesh_offset unchanged.
-    volume.center_geometry_after_creation(false);
+    // Workbench placement uses double transforms; translating the float mesh
+    // here can collapse repaired near-coincident positions before seam joining.
+    if (!preserve_source_coordinates) volume.center_geometry_after_creation(false);
     volume.invalidate_convex_hull_2d();
 
     // Mesh geometry has been replaced; any per-face annotation indexed

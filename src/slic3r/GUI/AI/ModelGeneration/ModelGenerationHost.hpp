@@ -45,6 +45,9 @@ enum class ModelGenerationUIStage
 
 struct ModelGenerationUIHistoryEntry
 {
+    std::string asset_key, thumbnail_source;
+    bool thumbnail_ready {false};
+    uint64_t thumbnail_revision {0};
     std::string job_id;
     std::string title;
     std::string details;

@@ -22,7 +22,7 @@
 using namespace Slic3r;
 using namespace Slic3r::GUI;
 
-static void verify_centered_workbench_paint(const boost::filesystem::path& path, bool meters)
+static void verify_source_frame_workbench_paint(const boost::filesystem::path& path, bool meters)
 {
     TriangleMesh source;
     ObjInfo colors;
@@ -43,7 +43,7 @@ static void verify_centered_workbench_paint(const boost::filesystem::path& path,
         painted.face_colors.push_back(painted.cluster_colors[face % 2]);
     std::vector<FilamentMatch> matches(2);
     for (int i = 0; i < 2; ++i) { matches[i].cluster_index = i; matches[i].filament_index = i; }
-    REQUIRE(apply_painted_mesh_to_volume(painted, matches, *volume));
+    REQUIRE(apply_painted_mesh_to_volume(painted, matches, *volume, true));
     REQUIRE(LocalPrintColorApplication::same_surface_partition(source.its, volume->mesh().its, false));
     CHECK_THAT((volume->get_offset() - offset).norm(), Catch::Matchers::WithinAbs(0., 1e-4));
     auto painting = volume->mmu_segmentation_facets.get_data();
@@ -61,20 +61,20 @@ static void verify_centered_workbench_paint(const boost::filesystem::path& path,
 TEST_CASE("Background GLB texture painting preserves millimeter position and local subfaces", "[WorkbenchTextureImport][WorkbenchImportUnits]")
 {
     const auto file = GENERATE("outward-textured.glb", "transformed.glb", "vertex-material-color.glb");
-    verify_centered_workbench_paint(boost::filesystem::path(TEST_DATA_DIR) / "model_artifact" / file, true);
+    verify_source_frame_workbench_paint(boost::filesystem::path(TEST_DATA_DIR) / "model_artifact" / file, true);
 }
 
-TEST_CASE("Background colored OBJ painting centers source coordinates exactly once", "[WorkbenchTextureImport][WorkbenchImportUnits]")
+TEST_CASE("Background colored OBJ painting preserves the source coordinate frame", "[WorkbenchTextureImport][WorkbenchImportUnits]")
 {
     const auto file = GENERATE("transformed.obj", "vertex-material-color.obj");
-    verify_centered_workbench_paint(boost::filesystem::path(TEST_DATA_DIR) / "model_artifact" / file, false);
+    verify_source_frame_workbench_paint(boost::filesystem::path(TEST_DATA_DIR) / "model_artifact" / file, false);
 }
 
-TEST_CASE("A local GLB import fixture retains source face identity after centered texture painting", "[.WorkbenchImportQA]")
+TEST_CASE("A local GLB import fixture retains source face identity after texture painting", "[.WorkbenchImportQA]")
 {
     const char* fixture = std::getenv("ORCASLICER_MODEL_ARTIFACT_FIXTURE");
     REQUIRE(fixture);
-    verify_centered_workbench_paint(boost::filesystem::path(fixture), true);
+    verify_source_frame_workbench_paint(boost::filesystem::path(fixture), true);
 }
 
 TEST_CASE("Workbench physical capacity follows multiple heads while single nozzle feeding remains available", "[WorkbenchFilamentCapacity]")
@@ -173,8 +173,10 @@ TEST_CASE("Over capacity workbench staging rejects before changing private geome
 TEST_CASE("Four physical filaments and a fifth layered color retain subfaces through native 3MF storage", "[WorkbenchFilamentCapacity][WorkbenchTextureImport]")
 {
     const auto source = its_make_cube(10,10,10);
-    Model model;
-    auto* object = model.add_object("layered color", "source.obj", TriangleMesh(source));
+    DecodedWorkbenchModel decoded; decoded.mesh = TriangleMesh(source);
+    auto storage = assemble_workbench_model(decoded, "source.obj", false);
+    Model& model = *storage;
+    auto* object = model.objects.front();
     object->add_instance();
     PresetBundle staged;
     staged.set_num_filaments(4, "#808080");

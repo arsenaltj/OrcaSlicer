@@ -350,12 +350,9 @@ void ModelGenerationPanel::refresh_model_finishing()
         page->Layout(); page->FitInside();
     }
     if (m_workbench_history_scroller) {
-        const bool can_switch_version = post_generation_ui_state().can_switch_version;
-        if (m_workbench_history_upload) m_workbench_history_upload->Enable(can_switch_version);
-        const bool switch_state_changed = m_workbench_history_scroller->IsEnabled() != can_switch_version;
-        m_workbench_history_scroller->Enable(can_switch_version);
-        if (switch_state_changed && m_finishing_workbench)
-            refresh_workbench_history();
+        // Browsing is independent of replacing the active asset. In particular
+        // importing or checking must not disable the scrollbar or reset cards.
+        update_workbench_history_actions();
     }
     if (m_finishing_workbench) {
         const auto state = post_generation_ui_state();

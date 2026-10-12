@@ -23,6 +23,7 @@
 #include "slic3r/GUI/AI/SmartSlicing/SmartSlicingWorkbenchState.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaPlateRevisionConfig.hpp"
 #include "slic3r/GUI/AI/Orca/WorkbenchModelDecode.hpp"
+#include "slic3r/GUI/AI/Orca/LocalPrintModelImport.hpp"
 #include "slic3r/GUI/AI/Orca/SlicingModelPalette.hpp"
 #include "slic3r/GUI/Redesign/RedesignModelRoute.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/PrinterFilamentPreview.hpp"
@@ -135,7 +136,7 @@ TEST_CASE("A local repaired model remains closed through native color import", "
         painted.face_colors.push_back(painted.cluster_colors[face % 2]);
     std::vector<FilamentMatch> matches(2);
     for (int i = 0; i < 2; ++i) { matches[i].cluster_index = i; matches[i].filament_index = i; }
-    REQUIRE(apply_painted_mesh_to_volume(painted, matches, *volume));
+    REQUIRE(apply_painted_mesh_to_volume(painted, matches, *volume, true));
     const auto before_painting = volume->mmu_segmentation_facets.get_data();
     AI::ModelImportResult imported;
     TriangleMesh final_mesh = volume->mesh();
@@ -177,6 +178,156 @@ TEST_CASE("A local repaired model remains closed through native color import", "
         boost::filesystem::copy_file(native, output_directory / "repaired.3mf");
     }
     CHECK(AI::model_artifact_sha256(source) == source_hash);
+}
+
+TEST_CASE("Native workbench painting preserves distinct near-coincident repaired coordinates", "[WorkbenchTopology][WorkbenchImportUnits]")
+{
+    using namespace Slic3r;
+    // Separate closed tetrahedra face each other across a representable gap.
+    // Subtracting their bbox center in float would erase that gap and join
+    // their faces during the final seam pass.
+    indexed_triangle_set raw;
+    raw.vertices = {{0,0,0}, {0,1,0}, {0,0,1}, {-10,0,0},
+                    {1e-8f,0,0}, {1e-8f,1,0}, {1e-8f,0,1}, {1,0,0}};
+    raw.indices = {{0,1,2}, {0,3,1}, {0,2,3}, {1,3,2},
+                   {4,6,5}, {4,5,7}, {4,7,6}, {5,6,7}};
+    REQUIRE(workbench_topology_safe(inspect_workbench_mesh(TriangleMesh(raw))));
+    DecodedWorkbenchModel decoded;
+    decoded.mesh = TriangleMesh(raw);
+    auto model = assemble_workbench_model(decoded, "near-coincident.obj", false);
+    auto* volume = model->objects.front()->volumes.front();
+    CHECK(volume->mesh().its.vertices == raw.vertices);
+    PaintedMesh painted;
+    painted.cluster_colors = {{200,100,50}, {50,100,200}};
+    for (size_t face = 0; face < raw.indices.size(); ++face) {
+        const int begin = int(painted.vertices.size());
+        for (int vertex : raw.indices[face]) {
+            const auto& p = raw.vertices[vertex]; painted.vertices.push_back({p.x(),p.y(),p.z()});
+        }
+        painted.indices.push_back({begin,begin+1,begin+2});
+        painted.face_colors.push_back(painted.cluster_colors[face % 2]);
+    }
+    std::vector<FilamentMatch> matches(2);
+    for (int i = 0; i < 2; ++i) { matches[i].cluster_index = i; matches[i].filament_index = i; }
+    REQUIRE(apply_painted_mesh_to_volume(painted, matches, *volume, true));
+    const auto painting = volume->mmu_segmentation_facets.get_data();
+    TriangleMesh final_mesh = volume->mesh();
+    AI::ModelImportResult result; std::string error;
+    const bool safe = prepare_workbench_import_topology(final_mesh, false, result, error);
+    INFO(error);
+    REQUIRE(safe);
+    CHECK_FALSE(result.topology_risk);
+    CHECK(final_mesh.its.indices.size() == raw.indices.size());
+    volume->set_mesh(std::move(final_mesh));
+    CHECK(volume->mmu_segmentation_facets.get_data() == painting);
+    std::unique_ptr<Model> placed;
+    REQUIRE(LocalPrintModelImport::prepare(*model->objects.front(), {100,100}, {300,300}, placed, error));
+    CHECK(workbench_topology_safe(inspect_workbench_mesh(placed->objects.front()->volumes.front()->mesh())));
+    // Save a shared-mesh copy too: archive loading must preserve the source
+    // frame for both the first volume and subsequent shared volumes.
+    placed->add_object(*placed->objects.front());
+    ScopedTemporaryDir directory("source-frame-roundtrip");
+    ScopedTemporaryDir backup("source-frame-backup"); placed->set_backup_path(backup.string());
+    const std::string native_path = (boost::filesystem::path(directory.string()) / "placed.3mf").string();
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    PlateData plate; plate.plate_index = 0;
+    StoreParams params; params.path = native_path.c_str(); params.model = placed.get(); params.config = &config;
+    params.strategy = SaveStrategy::Zip64 | SaveStrategy::Silence | SaveStrategy::SplitModel | SaveStrategy::ShareMesh;
+    params.plate_data_list.push_back(&plate);
+    REQUIRE(store_bbs_3mf(params));
+    Model restored; ScopedTemporaryDir restored_backup("source-frame-restored"); restored.set_backup_path(restored_backup.string());
+    DynamicPrintConfig restored_config;
+    ConfigSubstitutionContext substitutions {ForwardCompatibilitySubstitutionRule::Enable};
+    PlateDataPtrs plates; std::vector<Preset*> presets; bool bbl = false, orca = false; Semver version;
+    const bool loaded = load_bbs_3mf(native_path.c_str(), &restored_config, &substitutions, &restored, &plates,
+        &presets, &bbl, &orca, &version, nullptr, LoadStrategy::LoadModel | LoadStrategy::LoadConfig);
+    release_PlateData_list(plates); for (auto* preset : presets) delete preset;
+    REQUIRE(loaded);
+    REQUIRE(restored.objects.size() == 2);
+    CHECK(restored.objects[0]->volumes[0]->get_mesh_shared_ptr() == restored.objects[1]->volumes[0]->get_mesh_shared_ptr());
+    for (const auto* object : restored.objects) {
+        const auto* reopened = object->volumes.front();
+        CHECK(workbench_topology_safe(inspect_workbench_mesh(reopened->mesh())));
+        CHECK(reopened->mmu_segmentation_facets.get_data() == painting);
+        CHECK(reopened->mesh().its.vertices == volume->mesh().its.vertices);
+        CHECK_THAT((object->instance_bounding_box(0).center() - placed->objects.front()->instance_bounding_box(0).center()).norm(),
+            Catch::Matchers::WithinAbs(0., 1e-6));
+    }
+}
+
+TEST_CASE("A checked local artifact retains its topology through native placement and painting", "[.WorkbenchArtifactImportQA]")
+{
+    using namespace Slic3r;
+    const char* fixture = std::getenv("ORCASLICER_MODEL_ARTIFACT_FIXTURE");
+    REQUIRE(fixture);
+    const boost::filesystem::path path(fixture);
+    const auto original_hash = AI::model_artifact_sha256(path);
+    std::string error;
+    TriangleMesh source; ObjInfo colors;
+    REQUIRE(AI::load_model_artifact(path, source, colors, error));
+    const auto describe = [&](const char* stage, const TriangleMesh& mesh) {
+        const auto check = inspect_workbench_mesh(mesh);
+        std::cout << stage << ": " << check.summary << " native_open=" << its_num_open_edges(mesh.its) << '\n';
+        return check;
+    };
+    REQUIRE(workbench_topology_safe(describe("artifact", source)));
+    DecodedWorkbenchModel decoded;
+    REQUIRE(decode_workbench_model(path, decoded, error));
+    REQUIRE(workbench_topology_safe(describe("decoded", decoded.mesh)));
+    auto model = assemble_workbench_model(decoded, path, false);
+    auto* volume = model->objects.front()->volumes.front();
+    REQUIRE(workbench_topology_safe(describe("assembled", volume->mesh())));
+    REQUIRE(model->texture_mesh);
+    PaintedMesh painted;
+    painted.vertices = model->texture_mesh->vertices;
+    painted.indices = model->texture_mesh->indices;
+    painted.cluster_colors = {{204,128,77}, {242,242,242}};
+    for (size_t face = 0; face < painted.indices.size(); ++face)
+        painted.face_colors.push_back(painted.cluster_colors[face % 2]);
+    std::vector<FilamentMatch> matches(2);
+    for (int i = 0; i < 2; ++i) { matches[i].cluster_index = i; matches[i].filament_index = i; }
+    REQUIRE(apply_painted_mesh_to_volume(painted, matches, *volume, true));
+    REQUIRE(workbench_topology_safe(describe("painted", volume->mesh())));
+    const auto painting = volume->mmu_segmentation_facets.get_data();
+    TriangleMesh final_mesh = volume->mesh();
+    AI::ModelImportResult result;
+    const bool safe = prepare_workbench_import_topology(final_mesh, false, result, error);
+    describe("final", final_mesh);
+    INFO(error);
+    REQUIRE(safe);
+    CHECK_FALSE(result.topology_risk);
+    CHECK(its_num_open_edges(final_mesh.its) == 0);
+    REQUIRE(LocalPrintColorApplication::same_surface_partition(source.its, final_mesh.its, false));
+    volume->set_mesh(std::move(final_mesh));
+    model->texture_mesh.reset();
+    std::unique_ptr<Model> placed;
+    REQUIRE(LocalPrintModelImport::prepare(*model->objects.front(), {100,100}, {300,300}, placed, error));
+    auto* placed_volume = placed->objects.front()->volumes.front();
+    REQUIRE(workbench_topology_safe(describe("placed", placed_volume->mesh())));
+    CHECK(placed_volume->mmu_segmentation_facets.get_data() == painting);
+    ScopedTemporaryDir directory("artifact-import-qa");
+    ScopedTemporaryDir backup("artifact-import-backup"); placed->set_backup_path(backup.string());
+    const std::string native_path = (boost::filesystem::path(directory.string()) / "imported.3mf").string();
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    PlateData plate; plate.plate_index = 0;
+    StoreParams params; params.path = native_path.c_str(); params.model = placed.get(); params.config = &config;
+    params.strategy = SaveStrategy::Zip64 | SaveStrategy::Silence; params.plate_data_list.push_back(&plate);
+    REQUIRE(store_bbs_3mf(params));
+    Model restored; ScopedTemporaryDir restored_backup("artifact-import-restored"); restored.set_backup_path(restored_backup.string());
+    DynamicPrintConfig restored_config;
+    ConfigSubstitutionContext substitutions {ForwardCompatibilitySubstitutionRule::Enable};
+    PlateDataPtrs plates; std::vector<Preset*> presets; bool bbl = false, orca = false; Semver version;
+    const bool loaded = load_bbs_3mf(native_path.c_str(), &restored_config, &substitutions, &restored, &plates,
+        &presets, &bbl, &orca, &version, nullptr, LoadStrategy::LoadModel | LoadStrategy::LoadConfig);
+    release_PlateData_list(plates); for (auto* preset : presets) delete preset;
+    REQUIRE(loaded);
+    REQUIRE(restored.objects.size() == 1);
+    auto* reopened = restored.objects.front()->volumes.front();
+    REQUIRE(workbench_topology_safe(describe("reopened", reopened->mesh())));
+    CHECK(its_num_open_edges(reopened->mesh().its) == 0);
+    CHECK(reopened->mesh().its.indices.size() == source.its.indices.size());
+    CHECK(reopened->mmu_segmentation_facets.get_data() == painting);
+    CHECK(AI::model_artifact_sha256(path) == original_hash);
 }
 
 TEST_CASE("Final color import stitches exact seams without changing faces or subface painting", "[WorkbenchTopology]")
@@ -469,7 +620,7 @@ TEST_CASE("background workbench decoding preserves native geometry units and tex
             Catch::Matchers::WithinAbs(0., 1e-4));
     for (size_t i = 0; i < am.indices.size(); ++i) CHECK(am.indices[i] == em.indices[i]);
     CHECK(av->source.is_converted_from_meters == ev->source.is_converted_from_meters);
-    CHECK_THAT((av->source.mesh_offset - ev->source.mesh_offset).norm(),
+    CHECK_THAT(av->source.mesh_offset.norm(),
         Catch::Matchers::WithinAbs(0., 1e-6));
     CHECK(av->source.input_file == ev->source.input_file);
     REQUIRE(bool(actual->texture_mesh) == bool(expected.texture_mesh));
@@ -478,8 +629,7 @@ TEST_CASE("background workbench decoding preserves native geometry units and tex
         const auto& et = *expected.texture_mesh;
         if (path.extension() == ".obj") {
             // The legacy OBJ loader centers texture vertices. Workbench
-            // painting consumes raw source coordinates and subtracts the
-            // recorded offset once, matching the GLB painting contract.
+            // painting retains raw source coordinates, matching GLB.
             REQUIRE(at.vertices.size() == et.vertices.size());
             for (size_t i = 0; i < at.vertices.size(); ++i)
                 for (int axis = 0; axis < 3; ++axis)

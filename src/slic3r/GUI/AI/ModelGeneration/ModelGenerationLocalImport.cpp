@@ -127,7 +127,8 @@ void ModelGenerationPanel::import_local_model(const boost::filesystem::path& sou
             // Keep the local token through parsing: neither phase may stop
             // a remote generation job or commit a late canceled preview.
             operation->parsing=true;
-            weak->load_library_entries();
+            weak->cancel_library_loading();
+            weak->load_library_entries(weak->m_finishing_workbench);
             weak->load_library_entry(destination,reference_image_path,ai_image_path,
                 {},{},false,{},{},{},id,
                 open_beauty?_L("3D 美颜副本"):_L("本地导入模型"), true);

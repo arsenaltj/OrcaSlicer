@@ -454,6 +454,7 @@ void ModelGenerationPanel::accept_model_finishing()
                 self->finish_printer_filament_application(true);
                 self->m_workbench_history_filter = self->m_workbench_history_page = 0;
                 if (self->m_workbench_history_search) self->m_workbench_history_search->ChangeValue(wxEmptyString);
+                self->cancel_library_loading();
                 self->load_library_entries(self->m_finishing_workbench);
                 self->refresh_controls();
                 self->update_finishing_selection();

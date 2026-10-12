@@ -20,6 +20,8 @@ public:
         bool scan {false}, for_shell {false};
         boost::filesystem::path root;
         std::vector<ModelLibraryEntry> entries;
+        // Optional destination indices when only changed thumbnails are decoded.
+        std::vector<size_t> indices;
         int edge {96};
         std::atomic<bool> cancelled {false};
     };
@@ -46,6 +48,7 @@ public:
 
     bool submit(std::shared_ptr<Request> request) {
         if (!request) return false;
+        if (!request->indices.empty() && request->indices.size() != request->entries.size()) return false;
         std::lock_guard<std::mutex> lock(m_mutex);
         if (m_stopping) return false;
         cancel_locked();
@@ -96,11 +99,12 @@ private:
                 if (!m_stopping && !request->cancelled) m_snapshot = std::move(snapshot);
             } else {
                 for (size_t index = 0; index < request->entries.size() && !request->cancelled; ++index) {
-                    Thumbnail thumbnail {request->revision, index, request->for_shell};
+                    const size_t destination = request->indices.empty() ? index : request->indices.at(index);
+                    Thumbnail thumbnail {request->revision, destination, request->for_shell};
                     try {
                         if (m_ports.thumbnail) thumbnail = m_ports.thumbnail(request->entries[index], request->edge, request->cancelled);
                     } catch (...) {} // A bad thumbnail never removes an asset.
-                    thumbnail.revision = request->revision; thumbnail.index = index; thumbnail.for_shell = request->for_shell;
+                    thumbnail.revision = request->revision; thumbnail.index = destination; thumbnail.for_shell = request->for_shell;
                     std::lock_guard<std::mutex> lock(m_mutex);
                     if (m_stopping || request->cancelled) break;
                     m_thumbnails.push_back(std::move(thumbnail));

@@ -938,6 +938,28 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
 
         typedef std::vector<Metadata> MetadataList;
 
+        // A zero recorded source shift means vertices were saved in their
+        // original frame. Preserve that frame and use the stored component
+        // transform; float re-centering can collapse near-coincident vertices
+        // of a repaired mesh. Older centered volumes and external files keep
+        // their existing loading behavior. No new archive metadata is needed.
+        static bool has_unshifted_source_geometry(const MetadataList& metadata)
+        {
+            unsigned offsets = 0;
+            bool has_source = false;
+            for (const auto& item : metadata) {
+                if (item.key == SOURCE_FILE_KEY) has_source = !item.value.empty();
+                unsigned axis = item.key == SOURCE_OFFSET_X_KEY ? 1u :
+                    item.key == SOURCE_OFFSET_Y_KEY ? 2u : item.key == SOURCE_OFFSET_Z_KEY ? 4u : 0u;
+                if (!axis) continue;
+                char* end = nullptr;
+                const double value = std::strtod(item.value.c_str(), &end);
+                if (end == item.value.c_str() || *end != '\0' || value != 0.) return false;
+                offsets |= axis;
+            }
+            return has_source && offsets == 7u;
+        }
+
         struct ObjectMetadata
         {
             struct VolumeMetadata
@@ -5282,7 +5304,8 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                 if (triangle_mesh.volume() < 0)
                     triangle_mesh.flip_triangles();
 
-                volume = object.add_volume(std::move(triangle_mesh));
+                volume = object.add_volume(std::move(triangle_mesh), ModelVolumeType::MODEL_PART,
+                    !has_unshifted_source_geometry(volume_data->metadata));
 
                 if (shared_mesh_id != -1)
                     //for some cases the shared mesh is in other plate and not loaded in cli slicing
@@ -5486,7 +5509,8 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             if (triangle_mesh.volume() < 0)
                 triangle_mesh.flip_triangles();
 
-			ModelVolume* volume = object.add_volume(std::move(triangle_mesh));
+			ModelVolume* volume = object.add_volume(std::move(triangle_mesh), ModelVolumeType::MODEL_PART,
+                !has_unshifted_source_geometry(volume_data.metadata));
             // stores the volume matrix taken from the metadata, if present
             if (has_transform)
                 volume->source.transform = Slic3r::Geometry::Transformation(volume_matrix_to_object);

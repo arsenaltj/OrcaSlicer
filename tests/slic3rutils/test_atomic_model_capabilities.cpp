@@ -2,6 +2,8 @@
 #include "test_utils.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelWorkspaceCapabilities.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelLibraryLoader.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/WorkbenchHistorySnapshot.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/WorkbenchImportPresentation.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchSession.hpp"
 #include "slic3r/GUI/AI/ColorMatching/ColorMatchingComputation.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
@@ -12,6 +14,76 @@
 
 using namespace Slic3r;
 using namespace Slic3r::GUI;
+
+TEST_CASE("Saved versions in one task retain independent asset and thumbnail identities", "[AtomicModelCapabilities][WorkbenchHistory]")
+{
+    ModelLibraryEntry original, saved;
+    original.job_id = "task"; original.model_path = "original.obj";
+    saved = original; saved.model_path = "saved.obj";
+    CHECK(workbench_history_key(original) != workbench_history_key(saved));
+    const auto identity = workbench_history_key(original);
+    original.title = "Renamed";
+    CHECK(workbench_history_key(original) == identity);
+    ModelGenerationUIHistoryEntry previous, next;
+    previous.asset_key = workbench_history_key(saved); previous.thumbnail_source = "source96";
+    previous.thumbnail_ready = true; previous.thumbnail_revision = 7;
+    previous.thumbnail_width = 1; previous.thumbnail_height = 1; previous.thumbnail_rgb = {10, 20, 30};
+    next.asset_key = previous.asset_key; next.thumbnail_source = previous.thumbnail_source;
+    REQUIRE(retain_workbench_thumbnail(next, previous));
+    CHECK(next.thumbnail_rgb == previous.thumbnail_rgb); CHECK(next.thumbnail_revision == 7);
+    next.asset_key = workbench_history_key(original);
+    CHECK_FALSE(retain_workbench_thumbnail(next, previous));
+}
+
+TEST_CASE("Changed thumbnail sources DPI and unfinished decodes invalidate only their cached image", "[AtomicModelCapabilities][WorkbenchHistory]")
+{
+    ModelGenerationUIHistoryEntry previous, next;
+    previous.asset_key = next.asset_key = "model";
+    previous.thumbnail_source = next.thumbnail_source = "stamp72";
+    CHECK_FALSE(retain_workbench_thumbnail(next, previous));
+    previous.thumbnail_ready = true;
+    CHECK(retain_workbench_thumbnail(next, previous)); // Unavailable thumbnail is also a completed decode.
+    next.thumbnail_source = "stamp96";
+    CHECK_FALSE(retain_workbench_thumbnail(next, previous));
+    ModelLibraryEntry entry;
+    entry.ai_image_path = "missing-primary.png"; entry.reference_image_path = "missing-fallback.png";
+    const auto signature = workbench_thumbnail_source(entry, 72);
+    CHECK(workbench_thumbnail_source(entry, 96) != signature);
+    entry.reference_image_path = "different.png";
+    CHECK(workbench_thumbnail_source(entry, 72) != signature);
+}
+
+TEST_CASE("Partial thumbnail requests publish into their original asset slots", "[AtomicModelCapabilities][WorkbenchHistory]")
+{
+    ModelLibraryLoader loader({{}, [](const auto&, int, const auto&) {
+        ModelLibraryLoader::Thumbnail result {0, 0}; result.width = result.height = 1; result.rgb = {4, 5, 6}; return result;
+    }});
+    auto request = std::make_shared<ModelLibraryLoader::Request>();
+    request->revision = 23; request->for_shell = true; request->entries.resize(2); request->indices = {3, 8};
+    request->indices.pop_back(); CHECK_FALSE(loader.submit(request));
+    request->indices.push_back(8);
+    REQUIRE(loader.submit(request));
+    std::optional<ModelLibraryLoader::Snapshot> snapshot;
+    std::vector<ModelLibraryLoader::Thumbnail> results, batch;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (results.size() < 2 && std::chrono::steady_clock::now() < deadline) {
+        loader.take(snapshot, batch); results.insert(results.end(), batch.begin(), batch.end()); std::this_thread::yield();
+    }
+    loader.stop(); REQUIRE(results.size() == 2);
+    CHECK(results[0].index == 3); CHECK(results[1].index == 8);
+    CHECK(results[0].revision == 23); CHECK(results[1].for_shell);
+}
+
+TEST_CASE("Import feedback remains inside the center viewport across sidebar sizes and clipping", "[AtomicModelCapabilities][WorkbenchImportPresentation]")
+{
+    const wxRect content(0, 0, 1200, 800);
+    const auto center = workbench_import_feedback_bounds(wxRect(280, 12, 628, 776), content);
+    CHECK(center == wxRect(280, 12, 628, 776));
+    CHECK(center.GetRight() < 920); // Visible right asset rail.
+    CHECK(workbench_import_feedback_bounds(wxRect(-100, 10, 600, 780), content) == wxRect(0, 10, 500, 780));
+    CHECK(workbench_import_feedback_bounds(wxRect(280, 0, 900, 900), wxRect(0, 0, 900, 600)) == wxRect(280, 0, 620, 600));
+    CHECK(workbench_import_feedback_bounds(wxRect(1300, 0, 100, 100), content).IsEmpty());
+}
 namespace Matching = LocalPrintColorMatching;
 
 namespace {
