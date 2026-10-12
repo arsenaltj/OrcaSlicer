@@ -12,6 +12,7 @@
 #include "OrcaPrinterAdapter.hpp"
 #include "../AI/ModelGeneration/ModelGenerationFeatureHost.hpp"
 #include "../AI/ModelGeneration/WorkbenchStyle.hpp"
+#include "../AI/ModelGeneration/WorkbenchImportPresentation.hpp"
 #include "../AI/SmartSlicing/SmartSlicingFeatureHost.hpp"
 #include "../GUI_App.hpp"
 #include "../I18N.hpp"
@@ -544,6 +545,11 @@ void RedesignShell::build_model_workflow()
     m_native_plater_host->SetMinSize(wxSize(1, 1));
     m_native_plater_host->SetSizer(new wxBoxSizer(wxVERTICAL));
     row->Add(m_native_plater_host, 1, wxEXPAND);
+    m_import_history_host = new wxPanel(m_slicing_page);
+    m_import_history_host->SetBackgroundColour(RedesignTheme::background_colour());
+    m_import_history_host->SetSizer(new wxBoxSizer(wxVERTICAL));
+    row->Add(m_import_history_host, 0, wxEXPAND | wxTOP | wxBOTTOM | wxLEFT, FromDIP(12));
+    m_import_history_host->Hide();
     m_content_host->GetSizer()->Add(m_slicing_page, 1, wxEXPAND);
     m_slicing_page->Hide();
     m_slice_model_stats = new wxStaticText(settings, wxID_ANY, wxEmptyString);
@@ -622,11 +628,10 @@ void RedesignShell::build_model_workflow()
     });
     loading->AddStretchSpacer();
     m_import_loading->Hide();
-    m_content_host->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
+    m_content_host->Bind(wxEVT_SIZE, [weak](wxSizeEvent& event) {
         event.Skip();
-        if (m_import_loading && m_import_in_progress) {
-            m_import_loading->SetSize(m_content_host->GetClientRect());
-            m_import_loading->Layout();
+        if (weak && weak->m_import_loading && weak->m_import_in_progress) {
+            weak->CallAfter([weak] { if (weak) weak->layout_import_loading(); });
         }
     });
     m_import_timer.SetOwner(this, wxWindow::NewControlId());
@@ -634,6 +639,7 @@ void RedesignShell::build_model_workflow()
         m_import_elapsed->SetLabel(wxString::Format(_L("已用时 %.1f 秒"),
             std::chrono::duration<double>(std::chrono::steady_clock::now() - m_import_started).count()));
         m_import_loading->Layout();
+        layout_import_loading();
         check_import_first_frame();
     }, m_import_timer.GetId());
     m_slice_camera_retry_timer.SetOwner(this, wxWindow::NewControlId());
@@ -818,6 +824,7 @@ void RedesignShell::refresh_workflow_layout()
     m_content_host->Layout();
     Layout();
     if (m_import_in_progress && m_import_loading) {
+        layout_import_loading();
         m_import_loading->Raise();
         m_import_loading->Refresh(false);
         m_import_loading->Update();
@@ -886,16 +893,15 @@ void RedesignShell::confirm_workbench_import(const AI::ModelImportRequest& reque
     m_import_in_progress = true;
     m_import_started = std::chrono::steady_clock::now();
     m_import_session = std::make_shared<WorkbenchImportSession>();
-    m_import_loading->SetSize(m_content_host->GetClientRect());
+    m_model_generation_host->set_workbench_import_feedback(true);
+    layout_import_loading();
     m_import_elapsed->SetLabel(_L("已用时 0.0 秒"));
-    m_import_loading->Show();
     m_import_loading->Raise();
     update_import_loading(WorkbenchImportPhase::Reading);
     m_import_loading->Update();
     BOOST_LOG_TRIVIAL(info) << "[WorkbenchImport] feedback_ms=" <<
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - m_import_started).count();
-    m_workbench_page->Disable();
-    m_slicing_page->Disable();
+    m_slicing_settings->Disable();
     m_import_timer.Start(100);
     wxWeakRef<RedesignShell> weak(this);
     const auto session = m_import_session;
@@ -918,14 +924,22 @@ void RedesignShell::confirm_workbench_import(const AI::ModelImportRequest& reque
                     }
                     weak->update_import_loading(WorkbenchImportPhase::UpdatingView);
                     weak->m_slice_camera_fitted = false;
+                    auto* history = weak->m_model_generation_host->workbench_import_history();
+                    if (history && history->IsShown()) {
+                        weak->m_import_history_host->SetMinSize(wxSize(history->GetSize().x, -1));
+                        weak->m_model_generation_host->mount_workbench_import_history(weak->m_import_history_host);
+                        weak->m_import_history_host->Show();
+                    }
                     weak->m_import_switching_view = true;
                     weak->navigate_to(Page::Model);
                     weak->show_model_view(ModelView::Slicing);
+                    weak->m_plater->Disable();
                     weak->m_import_switching_view = false;
                     auto* canvas = weak->m_plater->get_current_canvas3D();
                     weak->m_import_frame_baseline = canvas->rendered_frames();
                     weak->m_import_view_started = std::chrono::steady_clock::now();
                     weak->m_import_awaiting_frame = true;
+                    weak->layout_import_loading();
                     canvas->set_as_dirty();
                     canvas->get_wxglcanvas()->Refresh(false);
                 });
@@ -962,6 +976,26 @@ void RedesignShell::update_import_loading(WorkbenchImportPhase phase, const std:
     if (phase == WorkbenchImportPhase::Committing) m_import_loading->Update();
 }
 
+void RedesignShell::layout_import_loading()
+{
+    if (!m_import_in_progress || !m_import_loading || !m_model_generation_host) return;
+    wxWindow* viewport = m_model_view == ModelView::Slicing ? m_plater->get_current_canvas3D()->get_wxglcanvas()
+        : m_model_generation_host->workbench_import_viewport();
+    if (!viewport) return;
+    // Native GL overlays must be children of the canvas to survive buffer
+    // swaps. The workbench preview is suspended while its sibling is shown.
+    wxWindow* owner = m_model_view == ModelView::Slicing ? viewport : m_content_host;
+    if (m_import_loading->GetParent() != owner) m_import_loading->Reparent(owner);
+    wxRect bounds(owner->ScreenToClient(viewport->ClientToScreen(wxPoint(0, 0))), viewport->GetClientSize());
+    bounds = workbench_import_feedback_bounds(bounds, owner->GetClientRect());
+    if (bounds.IsEmpty()) { m_import_loading->Hide(); return; }
+    if (m_import_loading->GetRect() != bounds) {
+        m_import_loading->SetSize(bounds); m_import_loading->Layout();
+    }
+    m_import_loading->Show();
+    m_import_loading->Raise();
+}
+
 void RedesignShell::finish_import_loading()
 {
     BOOST_LOG_TRIVIAL(info) << "[WorkbenchImport] total_ms=" <<
@@ -973,8 +1007,12 @@ void RedesignShell::finish_import_loading()
     if (m_import_session) m_import_session->advance(WorkbenchImportPhase::Completed);
     m_import_session.reset();
     m_import_loading->Hide();
-    m_workbench_page->Enable();
-    m_slicing_page->Enable();
+    if (m_import_loading->GetParent() != m_content_host) m_import_loading->Reparent(m_content_host);
+    m_model_generation_host->restore_workbench_import_history();
+    m_import_history_host->Hide();
+    m_model_generation_host->set_workbench_import_feedback(false);
+    m_slicing_settings->Enable();
+    m_plater->Enable();
     refresh_workflow_layout();
     if (m_slicing_host) apply_slicing_state(m_slicing_host->workbench_snapshot());
 }

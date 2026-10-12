@@ -346,6 +346,21 @@
       "needle": "class WorkbenchImportUiGuard"
     },
     {
+      "id": "workbench_history_cards",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationWorkbenchHistory.cpp",
+      "needle": "void ModelGenerationPanel::refresh_workbench_history()"
+    },
+    {
+      "id": "workbench_history_snapshot",
+      "path": "src/slic3r/GUI/AI/ModelGeneration/WorkbenchHistorySnapshot.hpp",
+      "needle": "inline std::string workbench_history_key("
+    },
+    {
+      "id": "workbench_import_loading",
+      "path": "src/slic3r/GUI/Redesign/RedesignModelWorkflow.cpp",
+      "needle": "void RedesignShell::layout_import_loading()"
+    },
+    {
       "id": "workbench_slice",
       "path": "src/slic3r/GUI/AI/SmartSlicing/SmartSlicingFeatureHost.cpp",
       "needle": "AI::SmartSlicing::OfficialSliceResult SmartSlicingFeatureHost::start_workbench_slice("
@@ -902,7 +917,7 @@
     {
       "id": "history",
       "label": "历史与恢复",
-      "detail": "保存任务和资产，重新打开历史结果；查看模型目录、导出独立 GLB/图片副本并浏览模型图库",
+      "detail": "保存任务和资产，重新打开历史结果；按任务及模型路径复用卡片和缩略图，保持搜索、分页与滚动；查看模型目录、导出独立 GLB/图片副本并浏览模型图库",
       "boundary": "恢复已有记录不等于重新生成",
       "group": "资产与工作区",
       "evidence": [
@@ -910,7 +925,9 @@
         "restore",
         "assets_workspace",
         "library_export",
-        "install_model_storage"
+        "install_model_storage",
+        "workbench_history_cards",
+        "workbench_history_snapshot"
       ],
       "modules": [
         "generation"
@@ -920,14 +937,16 @@
     {
       "id": "import",
       "label": "模型导入",
-      "detail": "将校验后的模型、颜色和新对象摆放作为一次可撤销事务交给 Orca",
-      "boundary": "导入不自动切片或更换预设",
+      "detail": "将校验后的模型、颜色和新对象摆放作为一次可撤销事务交给 Orca；加载仅覆盖中央视口，右侧资产栏保留至原生首帧，保留源坐标避免浮点居中损坏拓扑",
+      "boundary": "导入不自动切片或更换预设；加载期间允许资产浏览，禁止切换及修改模型；取消、失败和首帧超时统一恢复布局与权限",
       "group": "资产与工作区",
       "evidence": [
         "import_model",
         "beauty_physical_handoff",
         "beauty_target_colors",
-        "workbench_import"
+        "workbench_import",
+        "workbench_async_import",
+        "workbench_import_loading"
       ],
       "modules": [
         "generation",

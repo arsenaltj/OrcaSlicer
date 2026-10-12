@@ -452,6 +452,7 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     m_workbench_model_status->SetForegroundColour(wxColour(255, 194, 39));
     toolbar->Add(m_workbench_model_status, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
     m_workbench_history_toggle = command(workspace, toolbar, wxEmptyString, [this](wxCommandEvent&) {
+        if (m_workbench_import_feedback || m_workbench_import_running) return;
         m_workbench_history_user_open = !m_workbench_history_panel->IsShown();
         m_workbench_history_collapsed = !m_workbench_history_user_open;
         m_workbench_editing = false;

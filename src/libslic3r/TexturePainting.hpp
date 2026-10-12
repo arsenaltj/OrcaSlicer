@@ -125,7 +125,7 @@ double compute_delta_e(
 bool apply_painted_mesh_to_volume(
     const PaintedMesh& painted,
     const std::vector<FilamentMatch>& matches,
-    ModelVolume& volume);
+    ModelVolume& volume, bool preserve_source_coordinates = false);
 
 // Decode a TextureImage (which may contain raw PNG/JPEG bytes) into BGR pixel data.
 // On success, populates out_pixels (BGR, 3 bytes/pixel) and sets out_w/out_h.

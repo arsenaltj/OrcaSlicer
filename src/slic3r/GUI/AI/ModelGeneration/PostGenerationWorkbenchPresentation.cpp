@@ -215,6 +215,7 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
     // Layout sends synchronous size events back to this refresh function.
     m_refreshing_workbench_layout = true;
     const auto state = post_generation_ui_state();
+    update_workbench_history_actions();
     const auto title_path = !m_finishing_candidate.empty() && !m_finishing_source.empty()
         ? m_finishing_source : m_displayed_model_path;
     wxString model_name = title_path.empty() ? _L("未加载模型")
@@ -267,13 +268,15 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
     m_workbench_footer->Show(m_workbench_editing || m_finishing_running || !m_finishing_candidate.empty() ||
                             (m_beauty_transactions && m_beauty_transactions->processing()));
     const bool history_was_shown = m_workbench_history_panel->IsShown();
-    m_workbench_history_panel->Show(!m_workbench_editing && !m_workbench_history_collapsed);
+    if (!m_workbench_import_feedback)
+        m_workbench_history_panel->Show(!m_workbench_editing && !m_workbench_history_collapsed);
     const wxString history_action = m_workbench_editing ? _L("返回历史模型") :
         m_workbench_history_panel->IsShown() ? _L("收起历史模型") : _L("展开历史模型");
     m_workbench_history_toggle->SetName(history_action);
     m_workbench_history_toggle->SetToolTip(history_action);
     static_cast<WorkbenchButton*>(m_workbench_history_toggle)->set_drawer_open(
         m_workbench_editing || m_workbench_history_panel->IsShown());
+    m_workbench_history_toggle->Enable(!m_workbench_import_feedback);
     m_workbench_edit->Enable(m_model_preview_ready || m_finishing_running);
     const auto snapshot = workbench_snapshot();
     if (m_workbench_project_summary) {

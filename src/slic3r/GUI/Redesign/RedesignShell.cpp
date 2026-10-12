@@ -1203,6 +1203,13 @@ void RedesignShell::disconnect_model_generation_host()
     }
     m_import_timer.Stop();
     if (m_import_session) m_import_session->invalidate();
+    // The native Plater outlives this shell. Return its temporary loading
+    // child before detaching it so paint handlers cannot retain this shell.
+    if (m_import_loading) {
+        m_import_loading->Hide();
+        if (m_import_loading->GetParent() != m_content_host)
+            m_import_loading->Reparent(m_content_host);
+    }
     if (m_print_page != nullptr)
         m_print_page->set_active(false);
     if (m_slicing_host) {

@@ -48,12 +48,27 @@ AI::ModelImportResult Plater::import_workbench_model(const AI::ModelImportReques
             obj_mapper = workbench_obj_color_mapper(this, request.color_mode,
                 OrcaWorkspaceAdapter(this, {}).printable_palette(), result, cancelled);
         }
-        Model detached = Model::read_from_file(import_path.string(), nullptr, nullptr, LoadStrategy::LoadModel,
-            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, 0, std::move(obj_mapper));
+        DecodedWorkbenchModel decoded;
+        if (!decode_workbench_model(import_path, decoded, result.error, {}, obj_match)) return fail(result.error);
+        if (options.source_units_in_meters) decoded.mesh.scale(1000.f);
+        auto detached_storage = assemble_workbench_model(decoded, import_path, options.source_units_in_meters);
+        auto& detached = *detached_storage;
+        if (obj_match && (!decoded.colors.vertex_colors.empty() ||
+            (!decoded.colors.face_colors.empty() && !decoded.colors.has_uv_png))) {
+            ObjDialogInOut input {};
+            input.model = &detached;
+            input.first_extruder_id = 1;
+            input.deal_vertex_color = !decoded.colors.vertex_colors.empty();
+            input.is_single_color = !input.deal_vertex_color && decoded.colors.is_single_mtl;
+            input.lost_material_name = decoded.colors.lost_material_name;
+            input.input_colors = input.deal_vertex_color ? std::move(decoded.colors.vertex_colors) : std::move(decoded.colors.face_colors);
+            obj_mapper(input);
+            cancelled = cancelled || input.cancelled;
+            if (!cancelled && !result.colors_applied) return fail("The selected material mapping could not be applied.");
+        }
         if (cancelled) return fail({}, AI::ModelImportOutcome::Cancelled);
         if (detached.objects.size() != 1 || detached.objects.front()->volumes.size() != 1)
             return fail("This working copy requires one model-part volume.");
-        apply_texture_import_units(detached, &options);
         auto& object = *detached.objects.front();
         auto staged = std::make_unique<PresetBundle>(*wxGetApp().preset_bundle);
         if (request.color_mode == AI::ImportColorMode::SingleColor) {

@@ -121,6 +121,7 @@ private:
     void start_workbench_slice();
     void update_import_loading(WorkbenchImportPhase phase, const std::string& message = {});
     void finish_import_loading();
+    void layout_import_loading();
     void check_import_first_frame();
     void open_print_preparation();
     bool can_save_print_project() const;
@@ -200,6 +201,7 @@ private:
     size_t m_import_frame_baseline {0};
     std::shared_ptr<WorkbenchImportSession> m_import_session;
     wxPanel* m_import_loading {nullptr};
+    wxPanel* m_import_history_host {nullptr};
     wxStaticText* m_import_stage {nullptr};
     wxStaticText* m_import_elapsed {nullptr};
     wxWindow* m_import_cancel {nullptr};

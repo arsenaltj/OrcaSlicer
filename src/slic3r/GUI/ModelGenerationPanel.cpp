@@ -215,6 +215,7 @@ bool ModelGenerationPanel::request_refresh_history()
 {
     if (m_shutdown || !m_page_initialized)
         return false;
+    cancel_library_loading();
     load_library_entries(true);
     return true;
 }
