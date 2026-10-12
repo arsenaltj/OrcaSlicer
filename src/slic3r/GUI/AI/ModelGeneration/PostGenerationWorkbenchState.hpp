@@ -27,6 +27,20 @@ struct WorkbenchCheckResult {
     size_t degenerate_faces {0}, duplicate_faces {0}, inconsistent_edges {0};
 };
 
+// Native workbench configuration is independent of the six-channel AI port.
+// An absent slot is a UI placeholder; it is never a fabricated loaded spool.
+struct WorkbenchFilamentSlot {
+    size_t slot {0};
+    std::string color, preset, material, reason;
+    bool configured {false}, compatible {false}, removable {false}, exists {false};
+};
+struct WorkbenchPrinterFilaments {
+    std::string printer, identity, signature, reason;
+    size_t nozzles {0}, physical_count {0};
+    std::vector<WorkbenchFilamentSlot> slots;
+    bool ready {false};
+};
+
 struct PostGenerationWorkbenchState {
     PostGenerationUiState actions;
     std::uint64_t revision {0};
@@ -51,6 +65,9 @@ struct PostGenerationWorkbenchState {
     bool can_print {false};
     AI::PrintablePaletteSnapshot project_palette;
     std::vector<AI::PhysicalFilamentChannel> project_channels;
+    WorkbenchPrinterFilaments printer_filaments;
+    bool can_apply_printer_filaments {false};
+    std::string apply_filaments_reason;
 };
 
 inline bool workbench_region_optimization_allowed(const PostGenerationUiState& actions,

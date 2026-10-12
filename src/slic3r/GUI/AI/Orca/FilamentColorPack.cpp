@@ -33,9 +33,9 @@ FilamentColorPack current_pack() {
         if (mixed && i < mixed->values.size() && mixed->values[i]) continue;
         pack.colors.push_back(colors->values[i]);
         pack.labels.push_back(bundle->filament_presets[i]);
+        pack.presets.push_back(bundle->filament_presets[i]);
         pack.multi_colors.push_back(multi && i < multi->values.size() ? multi->values[i] : colors->values[i]);
         pack.color_types.push_back(types && i < types->values.size() ? types->values[i] : "");
-        if (pack.colors.size() == 6) break;
     }
     return pack;
 }
@@ -47,7 +47,8 @@ void save_pack(const FilamentColorPack& pack) {
         json = nlohmann::json::parse(input);
         if (!json.is_array()) throw std::runtime_error("Invalid color pack library");
     }
-    const nlohmann::json saved{{"name", pack.name}, {"colors", pack.colors}, {"labels", pack.labels},
+    const nlohmann::json saved{{"schema", "orca.filament-pack/v2"}, {"name", pack.name}, {"colors", pack.colors}, {"labels", pack.labels},
+        {"presets", pack.presets},
         {"multi_colors", pack.multi_colors}, {"color_types", pack.color_types}};
     bool replaced = false;
     for (auto& item : json) {
@@ -58,8 +59,44 @@ void save_pack(const FilamentColorPack& pack) {
     if (!replaced) json.push_back(saved);
     auto tmp = pack_file(); tmp += ".tmp";
     { boost::filesystem::ofstream out(tmp); out << json.dump(2); out.close(); if (!out) throw std::runtime_error("Could not save color pack"); }
+#ifdef _WIN32
+    // Native replacement retries transient Windows scanner/file-sharing locks.
+    // Keep the old library until the complete temporary file is ready.
+    if (const auto error = rename_file(tmp.string(), pack_file().string()))
+        throw std::system_error(error, "Could not replace color pack library");
+#else
     boost::filesystem::rename(tmp, pack_file());
+#endif
 }
+}
+
+FilamentColorPack capture_current_filament_color_pack(const PresetBundle& bundle, const std::string& name)
+{
+    FilamentColorPack pack;
+    pack.name = name;
+    const auto* colors = bundle.project_config.option<ConfigOptionStrings>("filament_colour");
+    const auto* mixed = bundle.project_config.option<ConfigOptionBools>("filament_is_mixed");
+    const auto* multi = bundle.project_config.option<ConfigOptionStrings>("filament_multi_colour");
+    const auto* types = bundle.project_config.option<ConfigOptionStrings>("filament_colour_type");
+    for (size_t i = 0; colors && i < bundle.filament_presets.size() && i < colors->values.size(); ++i) {
+        if (mixed && i < mixed->values.size() && mixed->values[i]) continue;
+        pack.colors.push_back(colors->values[i]);
+        pack.labels.push_back(bundle.filament_presets[i]);
+        pack.presets.push_back(bundle.filament_presets[i]);
+        pack.multi_colors.push_back(multi && i < multi->values.size() ? multi->values[i] : colors->values[i]);
+        pack.color_types.push_back(types && i < types->values.size() ? types->values[i] : "");
+    }
+    return pack;
+}
+
+bool save_filament_color_pack(const FilamentColorPack& pack)
+{
+    if (!pack.valid_physical()) return false;
+    try { save_pack(pack); return true; }
+    catch (const std::exception& error) {
+        BOOST_LOG_TRIVIAL(error) << "Could not save filament color pack: " << error.what();
+        return false;
+    }
 }
 
 std::vector<FilamentColorPack> load_filament_color_packs() {
@@ -73,9 +110,11 @@ std::vector<FilamentColorPack> load_filament_color_packs() {
             try {
                 FilamentColorPack pack{item.at("name").get<std::string>(), item.at("colors").get<std::vector<std::string>>(),
                     item.at("labels").get<std::vector<std::string>>()};
+                pack.presets = item.value("presets", std::vector<std::string>{});
                 pack.multi_colors = item.value("multi_colors", std::vector<std::string>{});
                 pack.color_types = item.value("color_types", std::vector<std::string>{});
-                if (pack.valid() && pack.name != packs.front().name) packs.push_back(std::move(pack));
+                const bool physical = item.value("schema", std::string{}) == "orca.filament-pack/v2";
+                if ((physical ? pack.valid_physical() : pack.valid()) && pack.name != packs.front().name) packs.push_back(std::move(pack));
             } catch (const std::exception&) { /* One bad card must not hide later valid cards. */ }
         }
     } catch (const std::exception&) { /* Malformed user cards never prevent opening Orca. */ }
@@ -113,17 +152,17 @@ bool show_filament_color_packs(wxWindow* parent) {
     };
     choice->Bind(wxEVT_CHOICE, [&](wxCommandEvent&) { update_card(); });
     auto* description = new wxStaticText(&dialog, wxID_ANY,
-        _L("按顺序更新前几个实体耗材槽，数量不足时补齐。其他槽位保留。\n"
+        _L("按顺序更新实体耗材槽，数量不足时补齐。其他槽位保留。\n"
            "所有使用这些槽位的模型都会换色，局部涂色范围保留。\n"
            "切换前自动保存旧色卡；可再次应用恢复颜色，新增槽位保留。\n"
            "沿用现有材料打印参数；请按真实装料核对槽位。\n"
            "年轻向配色含蓝色、不含绿色；色卡不代表实物色准或叠色标定。"));
     layout->Add(description, 0, wxEXPAND | wxALL, dialog.FromDIP(12));
-    auto* save = new wxButton(&dialog, wxID_ANY, _L("保存当前工程色卡（前六槽）…"));
+    auto* save = new wxButton(&dialog, wxID_ANY, _L("保存当前工程实体耗材色卡…"));
     layout->Add(save, 0, wxLEFT | wxRIGHT | wxBOTTOM, dialog.FromDIP(12));
     save->Bind(wxEVT_BUTTON, [&](wxCommandEvent&) {
         auto pack = current_pack();
-        if (!pack.valid()) { wxMessageBox(_L("请选择 1 至 6 个已配置颜色的实体耗材后保存。"), _L("保存色卡"), wxOK, &dialog); return; }
+        if (!pack.valid_physical()) { wxMessageBox(_L("请选择已配置颜色和材料预设的实体耗材后保存。"), _L("保存色卡"), wxOK, &dialog); return; }
         wxTextEntryDialog naming(&dialog, _L("给这组色卡命名，之后可快速切换。"), _L("保存当前工程色卡"));
         if (naming.ShowModal() != wxID_OK || naming.GetValue().Strip(wxString::both).empty()) return;
         pack.name = naming.GetValue().Strip(wxString::both).ToUTF8().data();
@@ -141,7 +180,7 @@ bool show_filament_color_packs(wxWindow* parent) {
     dialog.SetSizer(layout); update_card(); dialog.Fit(); dialog.CentreOnParent();
     if (dialog.ShowModal() != wxID_OK) return false;
     const auto pack = packs.at(choice->GetSelection());
-    if (!pack.valid()) return false;
+    if (!(pack.presets.empty() ? pack.valid() : pack.valid_physical())) return false;
     const size_t needed = pack.colors.size() > bundle->num_physical_filaments()
         ? pack.colors.size() - bundle->num_physical_filaments() : 0;
     if (std::max(bundle->filament_presets.size(), plater->sidebar().combos_filament().size()) + needed > MAXIMUM_EXTRUDER_NUMBER) {
@@ -153,7 +192,7 @@ bool show_filament_color_packs(wxWindow* parent) {
     // Retain an explicit previous card rather than adding a misleading model
     // undo entry that cannot restore the material configuration.
     auto previous_card = current_pack();
-    if (previous_card.valid()) {
+    if (previous_card.valid_physical()) {
         previous_card.name = u8"上次应用前色卡";
         try { save_pack(previous_card); }
         catch (const std::exception&) {

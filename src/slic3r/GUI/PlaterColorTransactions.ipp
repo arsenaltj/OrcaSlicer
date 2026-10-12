@@ -1,6 +1,10 @@
 // Included in Plater's public interface. Implemented in PlaterUndoRedo.ipp.
 bool apply_project_config(DynamicPrintConfig config, std::vector<std::string> presets,
     const std::string& action, std::string& error);
+bool apply_printer_filament_config(const PresetBundle& staged, const std::vector<size_t>& inserted,
+    int removed, int replacement, std::string& error);
+bool apply_printer_filament_config(const PresetBundle& staged,
+    const std::vector<PrinterFilamentSlotRemap::Change>& changes, std::string& error);
 bool apply_local_print_colors(ModelVolume& volume, LocalPrintColorCommit::Prepared& painting,
     const PresetBundle* staged, std::string& error);
 // One new color-assigned model and its optional material table share an Action.

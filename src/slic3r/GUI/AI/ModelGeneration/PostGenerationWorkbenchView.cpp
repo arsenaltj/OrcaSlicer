@@ -1,4 +1,6 @@
 #include "slic3r/GUI/ModelGenerationPanel.hpp"
+#include "slic3r/GUI/Plater.hpp"
+#include "slic3r/GUI/AI/Orca/OrcaFilamentSelection.hpp"
 #include "ModelGenerationPresentation.hpp"
 #include "ModelPreview3D.hpp"
 #include "BeautyWorkbenchControls.hpp"
@@ -12,6 +14,7 @@
 #include "slic3r/GUI/GUI.hpp"
 #include "slic3r/GUI/GUI_Utils.hpp"
 #include "slic3r/GUI/Plater.hpp"
+#include "slic3r/GUI/AI/Orca/OrcaFilamentSelection.hpp"
 #include "slic3r/GUI/PartPlate.hpp"
 #include "slic3r/GUI/Widgets/Button.hpp"
 #include "slic3r/GUI/Widgets/TextInput.hpp"
@@ -29,6 +32,7 @@
 #include <wx/msgdlg.h>
 #include <wx/menu.h>
 #include <wx/textctrl.h>
+#include <wx/textdlg.h>
 #include <wx/tglbtn.h>
 #include <wx/scrolwin.h>
 #include <wx/settings.h>
@@ -192,11 +196,6 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     check_contents->Add(build_portrait_optimization(check_host), 0, wxEXPAND | wxBOTTOM, FromDIP(8));
     section_parent = scroll;
     controls = m_workbench_settings_groups[1];
-    heading(_L("工程耗材颜色"));
-    m_workbench_project_colors = new wxPanel(scroll);
-    m_workbench_project_colors->SetBackgroundColour(scroll->GetBackgroundColour());
-    m_workbench_project_colors->SetSizer(new wxGridSizer(5, FromDIP(6), FromDIP(6)));
-    controls->Add(m_workbench_project_colors, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
     m_workbench_palette_heading = heading(_L("多色模型"));
     controls->Add(m_model_preview->build_workbench_palette(scroll), 0, wxEXPAND | wxBOTTOM, FromDIP(8));
     m_workbench_palette_details = command(scroll, controls, _L("色卡详情"), [this](wxCommandEvent&) {
@@ -228,6 +227,77 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
                 static_cast<unsigned long long>(count)));
     });
     controls->Add(m_workbench_palette_status, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
+    heading(_L("打印机耗材"));
+    m_workbench_project_summary = new wxStaticText(scroll, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, wxST_NO_AUTORESIZE);
+    m_workbench_project_summary->SetForegroundColour(wxColour(190, 190, 196));
+    controls->Add(m_workbench_project_summary, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
+    auto* filament_scroll = new WorkbenchScrolledWindow(scroll, wxID_ANY, wxDefaultPosition,
+        wxDefaultSize, wxVSCROLL | wxBORDER_NONE);
+    filament_scroll->SetScrollRate(0, FromDIP(12));
+    m_workbench_project_colors = filament_scroll;
+    m_workbench_project_colors->SetBackgroundColour(scroll->GetBackgroundColour());
+    m_workbench_project_colors->SetSizer(new wxBoxSizer(wxVERTICAL));
+    controls->Add(m_workbench_project_colors, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
+    auto filament_action = [&](const wxString& label, auto handler) {
+        auto* button = new WorkbenchButton(scroll,label);
+        button->SetMinSize(FromDIP(wxSize(1,36))); button->Bind(wxEVT_BUTTON,handler);
+        controls->Add(button,0,wxEXPAND|wxBOTTOM,FromDIP(6)); return button;
+    };
+    m_workbench_configure_filaments = filament_action(_L("配置耗材"),[this](wxCommandEvent&){
+        if(m_project_color_edit && workbench_snapshot().can_edit_project_colors)m_project_color_edit(size_t(-1));
+    });
+    m_workbench_add_filament = filament_action(_L("增加耗材"),[this](wxCommandEvent&){
+        if(!workbench_snapshot().can_edit_project_colors || !wxGetApp().plater())return;
+        show_orca_filament_selection(wxGetTopLevelParent(m_workbench_shell),*wxGetApp().plater(),size_t(-1),true,
+            m_model_preview ? m_model_preview->configuration_color_sources() : std::vector<FilamentColorPack>{});
+        synchronize_workbench_project_palette(true);
+    });
+    m_workbench_sync_filaments = filament_action(_L("同步设备耗材"),[this](wxCommandEvent&){
+        auto* plater=wxGetApp().plater();
+        if(!workbench_snapshot().can_edit_project_colors || !plater || !plater->get_machine_sync_status())return;
+        plater->sidebar().sync_ams_list();
+        synchronize_workbench_project_palette(true);
+    });
+    auto* save_filament_pack = filament_action(_L("保存为色卡组合"), [this](wxCommandEvent&) {
+        const auto snapshot = workbench_snapshot();
+        auto* bundle = wxGetApp().preset_bundle;
+        if (!bundle || !snapshot.printer_filaments.ready) {
+            wxMessageBox(_L("请先完成并提交所有兼容的打印机耗材配置。"), _L("保存色卡组合"), wxOK | wxICON_INFORMATION, wxGetTopLevelParent(m_workbench_shell));
+            return;
+        }
+        wxTextEntryDialog naming(wxGetTopLevelParent(m_workbench_shell), _L("为当前打印机耗材命名，之后可在配置窗口导入。"), _L("保存色卡组合"));
+        if (naming.ShowModal() != wxID_OK || naming.GetValue().Strip(wxString::both).empty()) return;
+        const std::string name = into_u8(naming.GetValue().Strip(wxString::both));
+        if (name == young_portrait_color_pack().name || name == u8"上次应用前色卡") {
+            wxMessageBox(_L("请使用其他名称，预制色卡和恢复色卡由系统保留。"), _L("保存色卡组合"), wxOK | wxICON_INFORMATION, wxGetTopLevelParent(m_workbench_shell));
+            return;
+        }
+        auto pack = capture_current_filament_color_pack(*bundle, name);
+        if (!save_filament_color_pack(pack)) {
+            wxMessageBox(_L("色卡组合保存失败，请检查本地配置目录或耗材槽位。"), _L("保存色卡组合"), wxOK | wxICON_ERROR, wxGetTopLevelParent(m_workbench_shell));
+            return;
+        }
+        if (m_model_preview) m_model_preview->refresh_saved_color_packs();
+        wxMessageBox(_L("色卡组合已保存，可在“配置耗材”的导入来源中选择：") + "\n" + from_u8(name) +
+            "\n\n" + _L("保存位置：") + "\n" + from_u8((boost::filesystem::path(data_dir()) / "filament_color_packs.json").string()),
+            _L("保存色卡组合"), wxOK | wxICON_INFORMATION, wxGetTopLevelParent(m_workbench_shell));
+    });
+    save_filament_pack->SetToolTip(_L("保存已确认的实体耗材颜色和材料预设；混色虚拟槽不会保存。"));
+    m_workbench_apply_project_filaments = new WorkbenchButton(scroll, _L("应用打印机耗材"));
+    m_workbench_apply_project_filaments->SetMinSize(FromDIP(wxSize(1, 44)));
+    m_workbench_apply_project_filaments->SetName("workbench_primary_apply_filaments");
+    m_workbench_apply_project_filaments->SetBackgroundColor(StateColor(
+        std::pair<wxColour, int>(wxColour(255, 214, 72), StateColor::Hovered),
+        std::pair<wxColour, int>(wxColour(255, 194, 39), StateColor::Normal),
+        std::pair<wxColour, int>(wxColour(92, 86, 55), StateColor::Disabled)));
+    m_workbench_apply_project_filaments->SetTextColor(StateColor(
+        std::pair<wxColour, int>(wxColour(35, 35, 30), StateColor::Normal),
+        std::pair<wxColour, int>(wxColour(125, 120, 92), StateColor::Disabled)));
+    m_workbench_apply_project_filaments->SetToolTip(_L("将模型颜色匹配到已配置的打印机耗材；配置完整后可用。"));
+    m_workbench_apply_project_filaments->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        apply_workbench_printer_filaments();
+    });
+    controls->Add(m_workbench_apply_project_filaments, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
     controls = m_workbench_settings_groups[2];
     m_workbench_beauty_heading = heading(_L("3D 美颜"), &m_workbench_beauty_info,
         _L("打开美颜工具，预览后接受修改；原件保留。"));

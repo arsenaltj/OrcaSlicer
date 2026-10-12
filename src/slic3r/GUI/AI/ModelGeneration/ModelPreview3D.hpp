@@ -2025,6 +2025,14 @@ public:
         return true;
     }
     ModelPreviewColorControls::State color_trial_state() const { return m_color_trial->state(); }
+    std::vector<FilamentColorPack> configuration_color_sources() const { return m_color_trial->configuration_color_sources(); }
+    void refresh_saved_color_packs() { m_color_trial->refresh_saved_color_packs(); }
+    void set_project_filament_edit_handler(std::function<void(size_t)> handler) {
+        m_color_trial->on_project_color_edit = std::move(handler);
+    }
+    bool apply_project_filament_palette();
+    bool project_matching_valid() const { return m_color_trial->project_matching_valid(); }
+    FaceColorOverrides printer_filament_export_faces() const;
     wxWindow* build_workbench_palette(wxWindow* parent) { return m_color_trial->build_workbench_palette(parent); }
     wxWindow* build_workbench_mode(wxWindow* parent, std::function<void(bool)> mode, std::function<void()> cancel) {
         m_color_trial->on_semantic_mode = std::move(mode); m_color_trial->on_semantic_cancel = std::move(cancel);
@@ -2087,6 +2095,7 @@ public:
     }
     void set_workbench_palette_editable(bool editable) { m_color_trial->set_workbench_editable(editable); }
     void show_workbench_palette_details() {
+        m_color_trial->refresh_saved_color_packs();
         if (!m_has_model) return;
         set_color_controls_visible(false);
         wxDialog dialog(this, wxID_ANY, _L("色卡详情"), wxDefaultPosition, FromDIP(wxSize(620, 560)),

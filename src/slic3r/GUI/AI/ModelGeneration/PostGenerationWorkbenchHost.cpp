@@ -3,6 +3,7 @@
 #include "BeautyWorkbenchControls.hpp"
 #include "BeautyWorkbenchTransactionController.hpp"
 #include "ModelPreview3D.hpp"
+#include "slic3r/GUI/AI/Orca/WorkbenchPrinterFilaments.hpp"
 #include "ModelGenerationPresentation.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include "slic3r/GUI/AI/Model/BeautySurface.hpp"
@@ -18,6 +19,11 @@
 #include <wx/msgdlg.h>
 
 namespace Slic3r::GUI {
+
+std::vector<FilamentColorPack> ModelGenerationPanel::project_filament_color_sources() const
+{
+    return m_model_preview ? m_model_preview->configuration_color_sources() : std::vector<FilamentColorPack>{};
+}
 
 void ModelGenerationPanel::mount_workbench(wxWindow* parent)
 {
@@ -80,6 +86,7 @@ PostGenerationWorkbenchState ModelGenerationPanel::workbench_snapshot() const
     state.dirty = m_beauty_controls && m_beauty_controls->has_changes();
     state.project_palette = m_palette_provider.printable_palette();
     state.project_channels = m_project_channels_provider ? m_project_channels_provider() : state.project_palette.physical_channels;
+    if (wxGetApp().preset_bundle) state.printer_filaments = PrinterFilamentConfig::capture(*wxGetApp().preset_bundle);
     state.can_edit_project_colors = state.actions.can_edit && m_finishing_candidate.empty() && bool(m_project_color_edit);
     state.can_reoptimize_regions = workbench_region_optimization_allowed(state.actions,
         !m_finishing_candidate.empty(), m_model_preview && m_model_preview->semantic_reoptimization_available());
@@ -98,7 +105,16 @@ PostGenerationWorkbenchState ModelGenerationPanel::workbench_snapshot() const
     state.actions.can_switch_version = state.actions.can_switch_version && !portrait_blocked;
     state.actions.can_import = state.actions.can_import && !portrait_blocked;
     state.can_edit_project_colors = state.can_edit_project_colors && !portrait_blocked;
+    state.can_apply_printer_filaments = state.can_edit_project_colors && state.printer_filaments.ready &&
+        !(m_model_preview && m_model_preview->selection_busy());
+    state.apply_filaments_reason = !state.printer_filaments.ready ? state.printer_filaments.reason :
+        !state.can_apply_printer_filaments ? "模型处理中或存在未接受候选，请先完成当前操作" : "";
     state.can_import_for_slicing = state.actions.can_import && state.check.status != WorkbenchCheckStatus::Running;
+    if (m_model_preview && !m_model_preview->project_matching_valid()) {
+        state.actions.can_import = false;
+        state.can_import_for_slicing = false;
+        state.apply_filaments_reason = "打印机或耗材槽位已变化，请重新应用打印机耗材";
+    }
     if (m_model_preview) {
         state.faces = m_model_preview->triangle_count();
         state.vertices = m_model_preview->vertex_count();
@@ -236,6 +252,11 @@ bool ModelGenerationPanel::request_workbench_results()
 bool ModelGenerationPanel::request_save_and_return()
 {
     if (!post_generation_ui_state().can_edit) return false;
+    m_model_preview->synchronize_project_colors();
+    if (!m_model_preview->project_matching_valid()) {
+        m_finishing_status->SetLabel(_L("打印机或槽位已变化，请重新应用打印机耗材后保存。"));
+        return false;
+    }
     m_save_and_return = true;
     if (m_beauty_manual_color_dirty) {
         if (m_beauty_transactions && !m_beauty_transactions->begin(

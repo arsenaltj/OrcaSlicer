@@ -4,6 +4,9 @@
 #include "slic3r/GUI/AI/ModelGeneration/ModelPreviewPalette.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/PortraitColorPackMapping.hpp"
 #include "slic3r/GUI/AI/Orca/FilamentColorPack.hpp"
+#include "test_utils.hpp"
+#include <boost/filesystem/fstream.hpp>
+#include <nlohmann/json.hpp>
 #include <limits>
 
 using namespace Slic3r::GUI::PreviewPalette;
@@ -237,6 +240,112 @@ TEST_CASE("Color packs reject incomplete and nonphysical color cards", "[Filamen
     SECTION("More than six physical colors") { pack.colors.push_back("#FFFFFF"); pack.labels.push_back("extra"); }
     SECTION("Unnamed card") { pack.name.clear(); }
     REQUIRE_FALSE(pack.valid());
+}
+
+TEST_CASE("Physical filament cards retain complete slot order beyond the legacy six-color preview", "[FilamentColorPack]")
+{
+    Slic3r::GUI::FilamentColorPack pack;
+    pack.name = "printer-8";
+    for (size_t i = 0; i < 8; ++i) {
+        pack.colors.push_back(i % 2 ? "#112233" : "#AABBCC");
+        pack.labels.push_back("slot " + std::to_string(i + 1));
+        pack.presets.push_back("PLA " + std::to_string(i + 1));
+    }
+    CHECK_FALSE(pack.valid());
+    CHECK(pack.valid_physical());
+    pack.presets.pop_back();
+    CHECK_FALSE(pack.valid_physical());
+}
+
+namespace {
+struct ScopedColorPackLibrary : ScopedTemporaryDir {
+    const std::string previous = Slic3r::data_dir();
+    ScopedColorPackLibrary() : ScopedTemporaryDir("orca-color-pack") { Slic3r::set_data_dir(string()); }
+    ~ScopedColorPackLibrary() { Slic3r::set_data_dir(previous); }
+    boost::filesystem::path file() const { return path() / "filament_color_packs.json"; }
+};
+}
+
+TEST_CASE("Saved physical color cards reload and replace all slots without merging equal colors", "[FilamentColorPack][Regression]")
+{
+    using namespace Slic3r::GUI;
+    ScopedColorPackLibrary library;
+    FilamentColorPack pack;
+    pack.name = u8"已保存的八槽组合";
+    for (size_t i = 0; i < 8; ++i) {
+        pack.colors.push_back("#AABBCC");
+        pack.labels.push_back("slot " + std::to_string(i + 1));
+        pack.presets.push_back("PLA " + std::to_string(i + 1));
+        pack.multi_colors.push_back("#AABBCC #112233");
+        pack.color_types.push_back("0");
+    }
+    REQUIRE(save_filament_color_pack(pack));
+    REQUIRE(boost::filesystem::exists(library.file()));
+    auto cards = load_filament_color_packs();
+    REQUIRE(cards.size() == 2);
+    CHECK(cards.back().name == pack.name);
+    CHECK(cards.back().colors == pack.colors);
+    CHECK(cards.back().presets == pack.presets);
+    CHECK(cards.back().multi_colors == pack.multi_colors);
+    CHECK(cards.back().color_types == pack.color_types);
+    pack.colors[7] = "#112233";
+    REQUIRE(save_filament_color_pack(pack));
+    cards = load_filament_color_packs();
+    REQUIRE(cards.size() == 2);
+    CHECK(cards.back().colors == pack.colors);
+    pack.name = "another card";
+    REQUIRE(save_filament_color_pack(pack));
+    cards = load_filament_color_packs();
+    REQUIRE(cards.size() == 3);
+    CHECK(cards.back().name == pack.name);
+}
+
+TEST_CASE("Saving a physical card retains legacy cards and writes a complete v2 schema", "[FilamentColorPack][Regression]")
+{
+    using namespace Slic3r::GUI;
+    ScopedColorPackLibrary library;
+    const nlohmann::json legacy{{"name", "old trial"}, {"colors", {"#123456"}}, {"labels", {"old slot"}}};
+    { boost::filesystem::ofstream output(library.file()); output << nlohmann::json::array({legacy}); }
+    const FilamentColorPack pack{"new physical", {"#FFFFFF"}, {"slot"}, {"PLA"}};
+    REQUIRE(save_filament_color_pack(pack));
+    boost::filesystem::ifstream input(library.file());
+    const auto saved = nlohmann::json::parse(input);
+    REQUIRE(saved.size() == 2);
+    CHECK(saved[0] == legacy);
+    CHECK(saved[1]["schema"] == "orca.filament-pack/v2");
+    CHECK(saved[1]["presets"] == pack.presets);
+    const auto cards = load_filament_color_packs();
+    REQUIRE(cards.size() == 3);
+    CHECK(cards[1].name == "old trial");
+    CHECK(cards[2].presets == pack.presets);
+}
+
+TEST_CASE("Failed color card saves preserve the existing library", "[FilamentColorPack][Regression]")
+{
+    using namespace Slic3r::GUI;
+    ScopedColorPackLibrary library;
+    const FilamentColorPack valid{"physical", {"#FFFFFF"}, {"slot"}, {"PLA"}};
+    SECTION("Invalid physical card") {
+        REQUIRE(save_filament_color_pack(valid));
+        auto invalid = valid; invalid.presets.clear();
+        CHECK_FALSE(save_filament_color_pack(invalid));
+        const auto cards = load_filament_color_packs();
+        REQUIRE(cards.size() == 2);
+        CHECK(cards.back().presets == valid.presets);
+    }
+    SECTION("Malformed existing library") {
+        const std::string original = "{broken json";
+        { boost::filesystem::ofstream output(library.file()); output << original; }
+        CHECK_FALSE(save_filament_color_pack(valid));
+        boost::filesystem::ifstream input(library.file());
+        const std::string retained((std::istreambuf_iterator<char>(input)), {});
+        CHECK(retained == original);
+    }
+    SECTION("Unwritable library path") {
+        boost::filesystem::create_directory(library.file());
+        CHECK_FALSE(save_filament_color_pack(valid));
+        CHECK(boost::filesystem::is_directory(library.file()));
+    }
 }
 
 TEST_CASE("Preview palettes stay bounded and deterministic for a color gradient", "[ModelPreviewPalette]")

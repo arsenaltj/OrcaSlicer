@@ -276,11 +276,29 @@ void ModelGenerationPanel::refresh_post_generation_workbench()
         m_workbench_editing || m_workbench_history_panel->IsShown());
     m_workbench_edit->Enable(m_model_preview_ready || m_finishing_running);
     const auto snapshot = workbench_snapshot();
+    if (m_workbench_project_summary) {
+        const auto& filaments = snapshot.printer_filaments;
+        m_workbench_project_summary->SetLabel(wxString::FromUTF8(filaments.printer)+
+            wxString::Format(_L("\n%llu 个喷嘴 · %llu 个实体槽位"),static_cast<unsigned long long>(filaments.nozzles),
+                static_cast<unsigned long long>(filaments.physical_count)) +
+            (snapshot.apply_filaments_reason.empty() ? wxString{} : "\n" + wxString::FromUTF8(snapshot.apply_filaments_reason)));
+        m_workbench_project_summary->Wrap(FromDIP(235));
+    }
+    m_workbench_configure_filaments->Enable(snapshot.can_edit_project_colors);
+    m_workbench_add_filament->Enable(snapshot.can_edit_project_colors && wxGetApp().preset_bundle && wxGetApp().preset_bundle->filament_presets.size()<32);
+    const bool device = wxGetApp().plater() && wxGetApp().plater()->get_machine_sync_status();
+    m_workbench_sync_filaments->Enable(snapshot.can_edit_project_colors && device);
+    m_workbench_sync_filaments->SetToolTip(device?_L("使用原生设备耗材同步流程"):_L("当前没有可同步的同型号设备；可离线配置耗材"));
     if (m_workbench_return_to_design_button)
         m_workbench_return_to_design_button->Enable(post_generation_return_to_design_allowed(state));
     m_workbench_check->SetLabel(m_workbench_check_running ? _L("取消") : _L("检查"));
     m_workbench_check->Enable(m_workbench_check_running || (state.can_edit && m_finishing_candidate.empty() && !snapshot.dirty));
     for (wxWindow* color : m_workbench_project_colors->GetChildren()) color->Enable(snapshot.can_edit_project_colors);
+    if (m_workbench_apply_project_filaments) {
+        m_workbench_apply_project_filaments->Enable(snapshot.can_apply_printer_filaments);
+        m_workbench_apply_project_filaments->SetToolTip(snapshot.can_apply_printer_filaments
+            ? _L("模型匹配到真实耗材，预览可撤销；不修改装料颜色") : wxString::FromUTF8(snapshot.apply_filaments_reason));
+    }
     m_workbench_palette_details->Enable(state.can_edit && m_finishing_candidate.empty());
     m_model_preview->set_workbench_palette_editable(state.can_edit && m_finishing_candidate.empty());
     m_workbench_original->SetValue(m_model_preview->beauty_original_view());

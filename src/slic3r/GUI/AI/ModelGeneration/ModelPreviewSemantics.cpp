@@ -4,6 +4,65 @@
 #include <wx/stdpaths.h>
 
 namespace Slic3r::GUI {
+bool ModelPreview3D::apply_project_filament_palette()
+{
+    m_suppress_semantic_change = true;
+    const bool applied = m_color_trial->apply_project_filament_palette();
+    m_suppress_semantic_change = false;
+    if (!applied) return false;
+    const auto& palette = m_color_trial->project_colors();
+    auto recolor = [&palette](auto& color) {
+        const auto& target = palette[PrinterFilamentPreview::nearest({color[0], color[1], color[2]}, palette)];
+        for (size_t i = 0; i < 3; ++i) color[i] = target[i];
+    };
+    for (auto& item : m_face_color_overrides) recolor(item.second);
+    for (auto& item : m_automatic_face_colors) recolor(item.second);
+    for (auto& item : m_automatic_subface_colors) recolor(item.color);
+    for (auto& item : m_saved_semantic_faces) recolor(item.second);
+    for (auto& item : m_saved_semantic_subfaces) recolor(item.color);
+    for (auto& item : m_manual_leaf_colors) recolor(item.second);
+    for (auto& item : m_manual_cell_colors) recolor(item.second);
+    if (m_portrait_shapes) {
+        auto shapes = std::make_shared<PortraitShapeDetails>(*m_portrait_shapes);
+        for (auto& item : shapes->cell_colors) recolor(item.second);
+        m_portrait_shapes = std::move(shapes);
+    }
+    if (!m_face_color_overrides.empty() && !restore_beauty_face_colors(m_face_color_overrides)) return false;
+    ++m_leaf_edit_revision;
+    if (m_leaf_editing) refresh_leaf_colors();
+    else if (!m_semantic_analysis && (!m_saved_semantic_faces.empty() || !m_saved_semantic_subfaces.empty()))
+        set_saved_semantic_result(m_saved_semantic_faces, m_saved_semantic_subfaces);
+    else rebuild_semantic_preview_from_cached_result();
+    m_canvas->Refresh(false);
+    return true;
+}
+
+ModelPreview3D::FaceColorOverrides ModelPreview3D::printer_filament_export_faces() const
+{
+    auto result = import_face_color_overrides(true);
+    const auto trial = m_color_trial->state();
+    if (trial.source != 1 || !project_matching_valid()) return result;
+    const auto& mesh = m_semantic_source ? m_semantic_source->mesh :
+        m_region_editor->ready() ? m_region_editor->mesh() : m_pending_mesh;
+    const auto& vertex = m_semantic_source ? m_semantic_source->vertex_colors :
+        m_region_editor->ready() ? m_region_editor->vertex_colors() : m_pending_vertex_colors;
+    std::unordered_set<size_t> assigned;
+    for (const auto& item : result) assigned.insert(item.first);
+    for (size_t face = 0; face < mesh.indices.size(); ++face) {
+        if (assigned.count(face)) continue;
+        PreviewPalette::Color color{.7f, .7f, .7f};
+        if (m_semantic_source && m_semantic_source->face_colors.size() == mesh.indices.size()) {
+            const auto& rgba = m_semantic_source->face_colors[face];
+            color = {rgba[0], rgba[1], rgba[2]};
+        } else if (vertex.size() == mesh.vertices.size()) {
+            color = {0.f, 0.f, 0.f};
+            for (const int v : mesh.indices[face]) for (size_t c = 0; c < 3; ++c) color[c] += vertex[size_t(v)][c] / 3.f;
+        }
+        result.emplace_back(face, trial.colors[PrinterFilamentPreview::nearest(color, trial.mapping_colors)]);
+    }
+    return result;
+}
+
 bool ModelPreview3D::restore_beauty_face_colors(const FaceColorOverrides& colors)
 {
     if (!m_has_model || !m_semantic_source || !m_context || !m_canvas->SetCurrent(*m_context)) return false;
