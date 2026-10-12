@@ -51,3 +51,27 @@ TEST_CASE("CGAL repair still succeeds without a cancellation request", "[MeshBoo
     REQUIRE(MeshBoolean::cgal::repair(mesh, nullptr, &error));
     REQUIRE(its_num_open_edges(mesh.its) == 0);
 }
+
+TEST_CASE("CGAL repair fills an actual hole and exports a closed solid without intersections", "[MeshBoolean][WorkbenchTopology]") {
+    TriangleMesh mesh = make_cube(10., 10., 10.);
+    mesh.its.indices.pop_back();
+    std::string error;
+    REQUIRE(MeshBoolean::cgal::repair(mesh, nullptr, &error));
+    CHECK(its_num_open_edges(mesh.its) == 0);
+    CHECK_FALSE(MeshBoolean::cgal::does_self_intersect(mesh));
+    CHECK(mesh.volume() > 0.f);
+}
+
+TEST_CASE("failed CGAL solid repair leaves a planar source and diagnostics untouched", "[MeshBoolean][WorkbenchTopology]") {
+    indexed_triangle_set its;
+    its.vertices = {{0,0,0}, {10,0,0}, {0,10,0}};
+    its.indices = {{0,1,2}};
+    TriangleMesh mesh(its);
+    RepairedMeshErrors diagnostics; diagnostics.edges_fixed = 7;
+    std::string error;
+    CHECK_FALSE(MeshBoolean::cgal::repair(mesh, &diagnostics, &error));
+    CHECK(mesh.its.vertices == its.vertices);
+    CHECK(mesh.its.indices == its.indices);
+    CHECK(diagnostics.edges_fixed == 7);
+    CHECK_FALSE(error.empty());
+}

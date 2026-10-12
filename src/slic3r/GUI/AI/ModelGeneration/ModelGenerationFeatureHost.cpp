@@ -1,6 +1,7 @@
 #include "ModelGenerationFeatureHost.hpp"
 #include "ModelWorkspaceFeatureHost.hpp"
 #include "ModelGenerationPresentation.hpp"
+#include "WorkbenchImportEligibility.hpp"
 
 #include "slic3r/GUI/AI/Orca/OrcaWorkspaceAdapter.hpp"
 #include "slic3r/GUI/ModelGenerationPanel.hpp"
@@ -145,13 +146,14 @@ bool ModelGenerationFeatureHost::import_workbench_model_async(const AI::ModelImp
 {
     if (m_impl->shutdown_requested || m_impl->import_session) return false;
     const auto source = workbench_snapshot();
-    if (!source.can_import_for_slicing || source.model_path != request.artifact.local_path) return false;
+    if (!workbench_import_request_allowed(source, request)) return false;
     wxWeakRef<ModelGenerationPanel> panel(m_impl->model_generation);
     auto current = [panel, source] {
         if (!panel) return false;
         const auto latest = panel->workbench_snapshot();
         return latest.revision == source.revision && latest.asset_id == source.asset_id &&
-            latest.model_path == source.model_path && latest.candidate_path.empty() && !latest.dirty;
+            latest.model_path == source.model_path && latest.candidate_path.empty() && !latest.dirty &&
+            latest.check.model_sha256 == source.check.model_sha256;
     };
     m_impl->import_session = session;
     panel->set_workbench_import_running(true);

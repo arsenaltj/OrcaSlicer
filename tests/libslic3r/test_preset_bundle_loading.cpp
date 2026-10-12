@@ -740,7 +740,7 @@ TEST_CASE("Sizing the filament list to a multi-tool nozzle count keeps mixed slo
 // its own, so a physical count derived from that list reports a slot no per-filament array has
 // yet. That is what made the extruder-count handler conclude there was nothing to add and leave
 // the new sidebar combo with no colour to draw.
-TEST_CASE("The physical filament count is not fooled by a lone filament_presets top-up", "[Preset][Bundle][FilamentMixer]")
+TEST_CASE("Nozzle changes do not fabricate loaded physical filaments", "[Preset][Bundle][FilamentMixer]")
 {
     PresetBundle bundle;
 
@@ -750,7 +750,7 @@ TEST_CASE("The physical filament count is not fooled by a lone filament_presets 
             { 0.4, 0.4, 0.4, 0.4, 0.4 };
         bundle.update_multi_material_filament_presets();
 
-        REQUIRE(bundle.filament_presets.size() == 5);   // the top-up moved this list on its own
+        REQUIRE(bundle.filament_presets.size() == 4);   // The fifth nozzle remains idle.
         REQUIRE(bundle.project_config.option<ConfigOptionStrings>("filament_colour")->values.size() == 4);
         CHECK(bundle.num_physical_filaments() == 4);
     }
@@ -763,7 +763,7 @@ TEST_CASE("The physical filament count is not fooled by a lone filament_presets 
             { 0.4, 0.4, 0.4, 0.4, 0.4, 0.4 };
         bundle.update_multi_material_filament_presets();
 
-        REQUIRE(bundle.filament_presets.size() == 6);
+        REQUIRE(bundle.filament_presets.size() == 5);
         REQUIRE(bundle.project_config.option<ConfigOptionStrings>("filament_colour")->values.size() == 5);
         CHECK(bundle.num_physical_filaments() == 4);
         CHECK(bundle.num_mixed_filaments() == 1);
@@ -779,7 +779,7 @@ TEST_CASE("New filament colours are placed by array position", "[Preset][Bundle]
     bundle.printers.get_edited_preset().config.option<ConfigOptionFloats>("nozzle_diameter", true)->values =
         { 0.4, 0.4, 0.4, 0.4, 0.4 };
     bundle.update_multi_material_filament_presets();
-    REQUIRE(bundle.filament_presets.size() == 5);
+    REQUIRE(bundle.filament_presets.size() == 4);
     REQUIRE(bundle.project_config.option<ConfigOptionStrings>("filament_colour")->values.size() == 4);
 
     // The call Sidebar::add_custom_filament makes once the extruder count opens a slot.
@@ -922,33 +922,33 @@ TEST_CASE("Sizing down to the nozzle count plus mixes is what eats the mixed tai
     }
 }
 
-TEST_CASE("Fixed multi-tool printers protect hardware filament slots and expose only surplus slots", "[Preset][Bundle][FilamentSlots]")
+TEST_CASE("Fixed multi-tool printers permit idle nozzles while retaining one loaded material", "[Preset][Bundle][FilamentSlots]")
 {
     PresetBundle bundle;
     auto &printer_config = bundle.printers.get_edited_preset().config;
     printer_config.option<ConfigOptionFloats>("nozzle_diameter", true)->values = { 0.4, 0.4, 0.4, 0.4 };
     printer_config.option<ConfigOptionBool>("single_extruder_multi_material", true)->value = false;
 
-    SECTION("the four hardware slots cannot be removed") {
+    SECTION("loaded slots can be removed while hardware nozzles remain") {
         bundle.set_num_filaments(4u, std::string("#FF0000"));
 
         CHECK(bundle.fixed_physical_filament_count() == 4);
         for (size_t i = 0; i < 4; ++i) {
-            CHECK_FALSE(bundle.can_remove_physical_filament(i));
-            CHECK_FALSE(bundle.can_remove_filament(i));
+            CHECK(bundle.can_remove_physical_filament(i));
+            CHECK(bundle.can_remove_filament(i));
         }
         CHECK(bundle.can_add_mixed_filament());
     }
 
-    SECTION("physical project slots beyond the four hardware slots can be removed") {
+    SECTION("all real slots use the same safe removal rule") {
         bundle.set_num_filaments(9u, std::string("#FF0000"));
 
         for (size_t i = 0; i < 4; ++i)
-            CHECK_FALSE(bundle.can_remove_physical_filament(i));
+            CHECK(bundle.can_remove_physical_filament(i));
         for (size_t i = 4; i < 9; ++i)
             CHECK(bundle.can_remove_physical_filament(i));
         CHECK(bundle.can_merge_filament(4, 0));
-        CHECK_FALSE(bundle.can_merge_filament(0, 4));
+        CHECK(bundle.can_merge_filament(0, 4));
     }
 }
 
@@ -975,7 +975,7 @@ TEST_CASE("Mixed slots do not change which physical project slots are removable"
     REQUIRE(bundle.num_physical_filaments() == 4);
     REQUIRE(bundle.num_mixed_filaments() == 1);
     for (size_t i = 0; i < 4; ++i)
-        CHECK_FALSE(bundle.can_remove_physical_filament(i));
+        CHECK(bundle.can_remove_physical_filament(i));
     CHECK(bundle.is_mixed_filament(4));
     CHECK(bundle.can_remove_filament(4));
     CHECK(bundle.project_config.option<ConfigOptionStrings>("filament_mixed_components")->values[4] == "1,4");
@@ -1031,4 +1031,32 @@ TEST_CASE("Physical filament removal fails closed for invalid indices and missin
     CHECK(bundle.fixed_physical_filament_count() == 0);
     CHECK_FALSE(bundle.can_remove_physical_filament(0));
     CHECK_FALSE(bundle.can_remove_physical_filament(1));
+}
+
+TEST_CASE("equal sized purge matrices still normalize changed nozzle and material layouts", "[FilamentSlots][FilamentMixer]")
+{
+    PresetBundle bundle;
+    auto& printer = bundle.printers.get_edited_preset().config;
+    printer.option<ConfigOptionFloats>("nozzle_diameter", true)->values = {0.4};
+    bundle.set_num_filaments(4);
+    auto* matrix = bundle.project_config.option<ConfigOptionFloats>("flush_volumes_matrix");
+    for (size_t i = 0; i < matrix->values.size(); ++i) matrix->values[i] = double(i + 1);
+    bundle.project_config.option<ConfigOptionFloats>("flush_volumes_vector")->values = {10,20,30,40,50,60,70,80};
+    printer.option<ConfigOptionFloats>("nozzle_diameter", true)->values = {0.4,0.4,0.4,0.4};
+    bundle.set_num_filaments(2);
+    CHECK(bundle.filament_presets.size() == 2);
+    const auto& volumes = bundle.project_config.option<ConfigOptionFloats>("flush_volumes_vector")->values;
+    REQUIRE(volumes.size() == 4);
+    for (size_t i = 0; i < 4; ++i)
+        CHECK_THAT(volumes[i], Catch::Matchers::WithinAbs(double((i + 1) * 10), 1e-8));
+    CHECK(bundle.project_config.option<ConfigOptionFloats>("flush_multiplier")->values.size() == 4);
+    REQUIRE(matrix->values.size() == 16);
+    CHECK_THAT(matrix->values[1], Catch::Matchers::WithinAbs(2.0, 1e-8));
+    CHECK_THAT(matrix->values[2], Catch::Matchers::WithinAbs(5.0, 1e-8));
+    for (size_t nozzle = 1; nozzle < 4; ++nozzle) {
+        CHECK_THAT(matrix->values[nozzle*4], Catch::Matchers::WithinAbs(0.0, 1e-8));
+        CHECK_THAT(matrix->values[nozzle*4 + 1], Catch::Matchers::WithinAbs(50.0, 1e-8));
+        CHECK_THAT(matrix->values[nozzle*4 + 2], Catch::Matchers::WithinAbs(50.0, 1e-8));
+        CHECK_THAT(matrix->values[nozzle*4 + 3], Catch::Matchers::WithinAbs(0.0, 1e-8));
+    }
 }

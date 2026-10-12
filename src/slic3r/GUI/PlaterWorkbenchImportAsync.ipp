@@ -26,6 +26,7 @@ bool Plater::import_workbench_model_async(const AI::ModelImportRequest& request,
     auto workspace_current = OrcaWorkspaceAdapter(this, {}).capture_import_guard();
     auto options = model_import_color_options(request);
     options.workbench_review = true;
+    configure_workbench_filament_capacity(options, prepared->bundle->printers.get_edited_preset().config);
     auto obj_mapper = workbench_obj_color_mapper(this, request.color_mode,
         OrcaWorkspaceAdapter(this, {}).printable_palette(), prepared->result, prepared->dialog_cancelled, true);
     const auto ui_guard = std::make_shared<WorkbenchImportUiGuard<Plater>>(this, std::move(asset_current));
@@ -66,6 +67,9 @@ bool Plater::import_workbench_model_async(const AI::ModelImportRequest& request,
                 const fs::path path(request.artifact.local_path);
                 const auto source_hash = AI::model_artifact_sha256(path);
                 if (source_hash.empty()) { fail("The working model is missing or invalid.", AI::ModelImportOutcome::InvalidArtifact); return; }
+                if (!request.topology_check_sha256.empty() && request.topology_check_sha256 != source_hash) {
+                    fail("模型与最近一次拓扑检查不一致，请重新检查后导入。", AI::ModelImportOutcome::InvalidArtifact); return;
+                }
                 if (stopped()) return;
                 const bool obj_match = request.color_mode == AI::ImportColorMode::AutoMap || request.color_mode == AI::ImportColorMode::ManualMatch;
                 const bool local_colors = !request.face_color_overrides.empty() || !request.subface_color_overrides.empty();
@@ -172,7 +176,8 @@ bool Plater::import_workbench_model_async(const AI::ModelImportRequest& request,
                         bool staged = false;
                         ui([&] {
                             staged = stage_workbench_texture_import(object, mapping.painted, mapping.matches,
-                                mapping.filament_entries, mapping.new_mixed_filaments, *prepared->bundle, prepared->result.error);
+                                mapping.filament_entries, mapping.new_mixed_filaments, *prepared->bundle, prepared->result.error,
+                                options.physical_filament_limit);
                         });
                         if (!staged) return;
                         prepared->result.colors_applied = true;
@@ -194,6 +199,18 @@ bool Plater::import_workbench_model_async(const AI::ModelImportRequest& request,
                         prepared->result.subface_color_count = request.subface_color_overrides.size();
                     }
                 }
+                if (!notify(WorkbenchImportPhase::Colors, "正在复检最终网格")) return;
+                TriangleMesh final_mesh = object.volumes.front()->mesh();
+                if (!prepare_workbench_import_topology(final_mesh, request.topology_risk_confirmed,
+                    prepared->result, prepared->result.error, stopped)) {
+                    prepared->result.outcome = AI::ModelImportOutcome::RepairFailed;
+                    return;
+                }
+                ui([&] {
+                    object.volumes.front()->set_mesh(std::move(final_mesh));
+                    object.volumes.front()->set_new_unique_id();
+                });
+                if (stopped()) return;
                 detached.texture_mesh.reset();
                 if (!notify(WorkbenchImportPhase::Placement)) return;
                 bool created = false;

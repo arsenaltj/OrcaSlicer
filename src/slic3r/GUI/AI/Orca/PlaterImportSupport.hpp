@@ -8,4 +8,5 @@
 #include "slic3r/GUI/AI/Orca/ModelColorUpdate.hpp"
 #include "slic3r/GUI/AI/Orca/WorkbenchTextureImport.hpp"
 #include "slic3r/GUI/AI/Orca/WorkbenchModelDecode.hpp"
+#include "slic3r/GUI/AI/Orca/WorkbenchImportTopology.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"

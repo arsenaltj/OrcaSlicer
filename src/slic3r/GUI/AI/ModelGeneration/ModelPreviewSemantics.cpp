@@ -4,22 +4,32 @@
 #include <wx/stdpaths.h>
 
 namespace Slic3r::GUI {
-bool ModelPreview3D::apply_project_filament_palette()
+bool ModelPreview3D::apply_project_filament_palette(const std::vector<size_t>* bindings)
 {
+    const auto before = m_color_trial->state();
     m_suppress_semantic_change = true;
-    const bool applied = m_color_trial->apply_project_filament_palette();
+    const bool applied = bindings ? m_color_trial->apply_project_filament_bindings(*bindings) : m_color_trial->apply_project_filament_palette();
     m_suppress_semantic_change = false;
     if (!applied) return false;
     const auto& palette = m_color_trial->project_colors();
-    auto recolor = [&palette](auto& color) {
-        const auto& target = palette[PrinterFilamentPreview::nearest({color[0], color[1], color[2]}, palette)];
+    const auto after = m_color_trial->state();
+    auto recolor = [&palette, &before, &after, bindings](auto& color) {
+        const auto& target = bindings
+            ? after.colors[PrinterFilamentPreview::nearest({color[0], color[1], color[2]}, before.colors)]
+            : palette[PrinterFilamentPreview::nearest({color[0], color[1], color[2]}, palette)];
         for (size_t i = 0; i < 3; ++i) color[i] = target[i];
     };
+    auto recolor_semantic = [&](auto& color) {
+        if (bindings && !before.semantic_palette.empty()) {
+            const auto& target = after.semantic_palette[PrinterFilamentPreview::nearest({color[0], color[1], color[2]}, before.semantic_palette)];
+            for (size_t i = 0; i < 3; ++i) color[i] = target[i];
+        } else recolor(color);
+    };
     for (auto& item : m_face_color_overrides) recolor(item.second);
-    for (auto& item : m_automatic_face_colors) recolor(item.second);
-    for (auto& item : m_automatic_subface_colors) recolor(item.color);
-    for (auto& item : m_saved_semantic_faces) recolor(item.second);
-    for (auto& item : m_saved_semantic_subfaces) recolor(item.color);
+    for (auto& item : m_automatic_face_colors) recolor_semantic(item.second);
+    for (auto& item : m_automatic_subface_colors) recolor_semantic(item.color);
+    for (auto& item : m_saved_semantic_faces) recolor_semantic(item.second);
+    for (auto& item : m_saved_semantic_subfaces) recolor_semantic(item.color);
     for (auto& item : m_manual_leaf_colors) recolor(item.second);
     for (auto& item : m_manual_cell_colors) recolor(item.second);
     if (m_portrait_shapes) {

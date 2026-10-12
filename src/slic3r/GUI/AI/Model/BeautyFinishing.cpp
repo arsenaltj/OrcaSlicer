@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <stdexcept>
+#include <limits>
 
 namespace Slic3r::AI {
 namespace {
@@ -206,11 +207,127 @@ ModelFinishingResult finish_beauty_artifact(const boost::filesystem::path& sourc
     if (options.beauty_puzzle) return finish_puzzle_artifact(source,destination,options,canceled);
     ModelFinishingResult result;
     bool owns_output=false;
+    boost::filesystem::path converted_source;
     auto checkpoint=[&]{if(canceled && canceled())throw std::runtime_error("Beauty edit cancelled.");};
     try {
         if(options.beauty_appearance==options.beauty_deform || options.smooth_surface || options.repair_mesh ||
             options.recolor_selected || options.clean_color_spots)
             throw std::runtime_error("Choose either local appearance or the geometry trial.");
+        if (options.beauty_appearance && model_artifact_format(source) == "obj" &&
+            model_artifact_format(destination) == "obj") {
+            if (boost::filesystem::exists(destination)) throw std::runtime_error("Choose a new output model version.");
+            checkpoint(); result.source_sha256 = model_artifact_sha256(source);
+            TriangleMesh mesh; ObjInfo colors; std::string error;
+            if (!load_model_artifact(source, mesh, colors, error)) throw std::runtime_error(error);
+            const auto document = BeautyDocument::decode(options.beauty_document,
+                SurfaceSelectionPersistence::geometry_fingerprint(mesh.its), mesh.its.indices.size());
+            const auto& paint = options.appearance;
+            if (!paint.leaves.empty() || !paint.cells.empty() || paint.hue_degrees != 0 ||
+                paint.saturation != 1 || paint.brightness != 0 || paint.denoise != 0 || paint.soften != 0 ||
+                paint.face_weights.size() != mesh.its.indices.size() || paint.face_target_colors.size() != mesh.its.indices.size())
+                throw std::runtime_error("OBJ saving requires verified whole-face absolute colours; subface edits are preserved in the draft.");
+            std::vector<uint8_t> selected(mesh.its.indices.size(), 0);
+            for (size_t face : options.selected_faces) {
+                if (face >= selected.size()) throw std::runtime_error("Beauty selection belongs to another model.");
+                selected[face] = 1;
+            }
+            if (options.selected_faces.empty()) throw std::runtime_error("Select a local region before editing.");
+            auto protection = document.protection();
+            if (!options.beauty_protected_faces.empty()) {
+                if (options.beauty_protected_faces.size() != selected.size()) throw std::runtime_error("Protection belongs to another model.");
+                for (size_t face = 0; face < selected.size(); ++face) {
+                    if (options.beauty_protected_faces[face] > 1) throw std::runtime_error("Invalid protection mask.");
+                    protection[face] |= options.beauty_protected_faces[face];
+                }
+            }
+            if (colors.vertex_colors.size() != mesh.its.vertices.size()) throw std::runtime_error("OBJ colours are unavailable.");
+            indexed_triangle_set output; std::vector<RGBA> output_colors;
+            output.vertices.reserve(mesh.its.indices.size() * 3); output.indices.reserve(mesh.its.indices.size());
+            output_colors.reserve(mesh.its.indices.size() * 3);
+            for (size_t face = 0; face < mesh.its.indices.size(); ++face) {
+                if ((face & 4095) == 0) checkpoint();
+                const float weight = paint.face_weights[face];
+                if (!std::isfinite(weight) || weight < 0 || weight > 1 || ((!selected[face] || protection[face]) && weight != 0))
+                    throw std::runtime_error("Appearance weights extend outside the selected surface.");
+                for (float channel : paint.face_target_colors[face])
+                    if (!std::isfinite(channel) || channel < 0 || channel > 1) throw std::runtime_error("Invalid absolute appearance colour.");
+                const int first = int(output.vertices.size());
+                for (int corner : mesh.its.indices[face]) {
+                    output.vertices.push_back(mesh.its.vertices[corner]);
+                    auto color = colors.vertex_colors[corner];
+                    for (size_t channel = 0; channel < 3; ++channel)
+                        color[channel] = color[channel] * (1.f - weight) + paint.face_target_colors[face][channel] * weight;
+                    output_colors.push_back(color);
+                }
+                output.indices.emplace_back(first, first + 1, first + 2);
+            }
+            // Keep the exact original millimetre floats. A GLB metre roundtrip
+            // can merge distinct near-coincident corners in repaired dense meshes.
+            if (!write_model_artifact(destination, output, output_colors, error)) throw std::runtime_error(error);
+            owns_output = true; checkpoint();
+            if (model_artifact_sha256(source) != result.source_sha256) throw std::runtime_error("Source changed while editing; reload it.");
+            TriangleMesh saved; ObjInfo saved_colors;
+            if (!load_model_artifact(destination, saved, saved_colors, error)) throw std::runtime_error(error);
+            if (saved.its.indices.size() != mesh.its.indices.size()) throw std::runtime_error("Appearance changed the face count.");
+            for (size_t face = 0; face < mesh.its.indices.size(); ++face) {
+                if ((face & 4095) == 0) checkpoint();
+                for (int corner = 0; corner < 3; ++corner)
+                    if (saved.its.vertices[saved.its.indices[face][corner]] != mesh.its.vertices[mesh.its.indices[face][corner]])
+                        throw std::runtime_error("Appearance changed an ordered triangle corner.");
+            }
+            result.faces_before = result.faces_after = mesh.its.indices.size(); result.vertices = saved.its.vertices.size();
+            const auto size = mesh.bounding_box().size(); for (int axis = 0; axis < 3; ++axis) result.dimensions[axis] = size[axis];
+            result.output_sha256 = model_artifact_sha256(destination);
+            checkpoint(); result.success = true; owns_output = false; return result;
+        }
+        // Topology candidates are OBJ snapshots. Archive their appearance in a
+        // private GLB before using the existing texture/corner colour writer.
+        // Face ordinals are rebound only after every ordered corner is verified.
+        if (options.beauty_appearance && model_artifact_format(source) == "obj" &&
+            model_artifact_format(destination) == "glb") {
+            if (boost::filesystem::exists(destination)) throw std::runtime_error("Choose a new output model version.");
+            checkpoint();
+            const auto source_hash = model_artifact_sha256(source);
+            TriangleMesh original, converted; ObjInfo original_colors, converted_colors; std::string error;
+            if (!load_model_artifact(source, original, original_colors, error)) throw std::runtime_error(error);
+            const auto original_id = SurfaceSelectionPersistence::geometry_fingerprint(original.its);
+            auto document = BeautyDocument::decode(options.beauty_document, original_id, original.its.indices.size());
+            const auto temporary = destination.parent_path() / boost::filesystem::unique_path(".appearance-source-%%%%-%%%%.glb");
+            if (!archive_local_model(source, temporary, error)) throw std::runtime_error(error);
+            converted_source = temporary;
+            checkpoint();
+            if (!load_model_artifact(temporary, converted, converted_colors, error)) throw std::runtime_error(error);
+            if (converted.its.indices.size() != original.its.indices.size())
+                throw std::runtime_error("OBJ appearance conversion changed the face order; the original model is preserved.");
+            for (size_t face = 0; face < original.its.indices.size(); ++face) {
+                if ((face & 4095) == 0) checkpoint();
+                for (int corner = 0; corner < 3; ++corner) {
+                    const auto& a = original.its.vertices[original.its.indices[face][corner]];
+                    const auto& b = converted.its.vertices[converted.its.indices[face][corner]];
+                    const float tolerance = std::max(1e-5f, a.cwiseAbs().maxCoeff() * 8.f * std::numeric_limits<float>::epsilon());
+                    if ((a - b).cwiseAbs().maxCoeff() > tolerance)
+                        throw std::runtime_error("OBJ appearance conversion changed an ordered face; the original model is preserved.");
+                }
+            }
+            auto rebound = options;
+            document.geometry_id = SurfaceSelectionPersistence::geometry_fingerprint(converted.its);
+            rebound.beauty_document = document.encode();
+            rebound.beauty_surface.reset();
+            if (!rebound.appearance.canonical_geometry_id.empty()) {
+                if (rebound.appearance.canonical_geometry_id != original_id)
+                    throw std::runtime_error("Appearance partitions belong to another model.");
+                rebound.appearance.canonical_geometry_id = document.geometry_id;
+            }
+            result = finish_beauty_artifact(temporary, destination, rebound, canceled);
+            owns_output = result.success;
+            checkpoint();
+            if (model_artifact_sha256(source) != source_hash)
+                throw std::runtime_error("Source changed while editing; reload it.");
+            result.source_sha256 = source_hash;
+            owns_output = false;
+            boost::system::error_code ignored; boost::filesystem::remove(converted_source, ignored);
+            return result;
+        }
         if(model_artifact_format(source)!="glb" || model_artifact_format(destination)!="glb")
             throw std::runtime_error("The new beauty tools currently require a GLB model with embedded materials.");
         if(boost::filesystem::exists(destination))throw std::runtime_error("Choose a new output model version.");
@@ -266,19 +383,31 @@ ModelFinishingResult finish_beauty_artifact(const boost::filesystem::path& sourc
         if(model_artifact_sha256(source)!=result.source_sha256)throw std::runtime_error("Source changed while editing; reload it.");
         TriangleMesh saved;ObjInfo saved_colors;
         if(!load_model_artifact(destination,saved,saved_colors,error))throw std::runtime_error(error);
-        if(saved.its.indices!=mesh.its.indices || saved.its.vertices.size()!=mesh.its.vertices.size())
+        if (saved.its.indices.size() != mesh.its.indices.size())
             throw std::runtime_error("The edited artifact changed its triangle correspondence.");
-        if(options.beauty_appearance && saved.its.vertices!=mesh.its.vertices)
-            throw std::runtime_error("Appearance editing changed the geometry.");
+        if (options.beauty_appearance) {
+            // Adjacent faces with different colours need coincident private
+            // corners. Their vertex indices may change, their face identity may not.
+            for (size_t face = 0; face < mesh.its.indices.size(); ++face) {
+                if ((face & 4095) == 0) checkpoint();
+                for (int corner = 0; corner < 3; ++corner)
+                    if (saved.its.vertices[saved.its.indices[face][corner]] !=
+                        mesh.its.vertices[mesh.its.indices[face][corner]])
+                        throw std::runtime_error("Appearance editing changed an ordered triangle corner.");
+            }
+        } else if (saved.its.indices != mesh.its.indices || saved.its.vertices.size() != mesh.its.vertices.size())
+            throw std::runtime_error("The edited artifact changed its triangle correspondence.");
         result.faces_after=saved.its.indices.size();
         const auto size=saved.bounding_box().size();
         for(int i=0;i<3;++i)result.dimensions[i]=size[i];
         result.output_sha256=model_artifact_sha256(destination);
         checkpoint();result.success=true;owns_output=false;
     } catch(const std::exception& e) {
+        result.success=false;
         result.canceled=result.canceled || (canceled && canceled());result.error=e.what();
     }
     if(owns_output) {boost::system::error_code ignored;boost::filesystem::remove(destination,ignored);}
+    if (!converted_source.empty()) {boost::system::error_code ignored;boost::filesystem::remove(converted_source,ignored);}
     return result;
 }
 } // namespace Slic3r::AI

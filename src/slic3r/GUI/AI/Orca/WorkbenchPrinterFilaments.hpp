@@ -4,6 +4,7 @@
 #include "slic3r/GUI/ProjectConfigRestore.hpp"
 #include "libslic3r/Print.hpp"
 #include "FilamentColorPack.hpp"
+#include "WorkbenchFilamentRecipes.hpp"
 #include <functional>
 #include <optional>
 #include <numeric>
@@ -19,6 +20,8 @@ inline GUI::WorkbenchPrinterFilaments capture(const PresetBundle& bundle)
     const auto& printer = bundle.printers.get_edited_preset().config;
     const auto* nozzles = printer.option<ConfigOptionFloats>("nozzle_diameter");
     state.nozzles = nozzles ? nozzles->values.size() : 0;
+    state.physical_capacity = state.nozzles > 1 && !printer.opt_bool("single_extruder_multi_material") &&
+        !bundle.is_bbl_vendor() ? state.nozzles : 32;
     nlohmann::json identity = {{"printer", state.printer}, {"nozzles", nozzles ? nozzles->serialize() : ""},
         {"slots", nlohmann::json::array()}};
     const auto* colors = bundle.project_config.option<ConfigOptionStrings>("filament_colour");
@@ -28,14 +31,27 @@ inline GUI::WorkbenchPrinterFilaments capture(const PresetBundle& bundle)
     for (size_t i = 0; i < count; ++i) {
         const bool mixed = bundle.is_mixed_filament(i);
         identity["slots"].push_back({i, mixed, bundle.filament_presets[i]});
-        if (mixed) continue;
+        if (mixed) {
+            WorkbenchMixedFilament recipe;
+            recipe.slot = i;
+            recipe.color = colors && i < colors->values.size() ? colors->values[i] : "";
+            recipe.valid = WorkbenchFilamentRecipes::valid_recipe(bundle, i);
+            const auto ids = parse_mixed_components(bundle.project_config.opt_string("filament_mixed_components", i));
+            const auto ratios = parse_mixed_ratios(bundle.project_config.opt_string("filament_mixed_sublayer_ratios", i), ids.size());
+            for (size_t j = 0; j < ids.size(); ++j) {
+                if (j) recipe.recipe += " + ";
+                recipe.recipe += std::to_string(ids[j]) + "号 " + std::to_string(int(std::lround(ratios[j] * 100))) + "%";
+            }
+            if (!recipe.valid) recipe.reason = "配方引用、材料或温度不兼容";
+            state.mixed.push_back(std::move(recipe));
+            continue;
+        }
         WorkbenchFilamentSlot slot;
         slot.slot = i; slot.exists = true; slot.preset = bundle.filament_presets[i];
         slot.color = colors && i < colors->values.size() ? colors->values[i] : "";
         std::transform(slot.color.begin(), slot.color.end(), slot.color.begin(),
             [](unsigned char c) { return char(std::toupper(c)); });
-        slot.removable = bundle.can_remove_physical_filament(i) && bundle.num_physical_filaments() > state.nozzles &&
-            (state.nozzles <= 1 || state.slots.size() >= state.nozzles);
+        slot.removable = bundle.can_remove_physical_filament(i);
         const auto* preset = bundle.filaments.find_preset(slot.preset, false);
         if (preset) {
             const auto* type = preset->config.option<ConfigOptionStrings>("filament_type");
@@ -54,13 +70,11 @@ inline GUI::WorkbenchPrinterFilaments capture(const PresetBundle& bundle)
         state.slots.push_back(std::move(slot));
     }
     state.physical_count = state.slots.size();
-    for (size_t i = count; state.slots.size() < state.nozzles; ++i) {
-        WorkbenchFilamentSlot slot; slot.slot = i; slot.reason = "待配置耗材预设和装料颜色";
-        state.slots.push_back(std::move(slot));
-    }
+    state.idle_nozzles = state.nozzles > state.physical_count ? state.nozzles - state.physical_count : 0;
     // Actual loaded color/material changes also retire an old match: manual
     // overlays carry appearance, not native slot references.
     for (const auto& slot : state.slots) identity["loaded"].push_back({slot.slot, slot.color, slot.material, slot.compatible});
+    for (const auto& recipe : state.mixed) identity["recipes"].push_back({recipe.slot, recipe.color, recipe.recipe, recipe.valid});
     state.identity = identity.dump();
     nlohmann::json signature = identity;
     for (const auto& key : bundle.project_config.keys())
@@ -72,7 +86,8 @@ inline GUI::WorkbenchPrinterFilaments capture(const PresetBundle& bundle)
     }
     state.signature = signature.dump();
     if (!state.nozzles) state.reason = "请选择 FFF 打印机";
-    else if (state.physical_count < state.nozzles) state.reason = "实体耗材数量不足，请补全喷嘴对应的真实耗材";
+    else if (!state.physical_count) state.reason = "请配置至少一个真实耗材";
+    else if (state.physical_count > state.physical_capacity) state.reason = "实体耗材超过喷嘴容量，请减少实体槽或导入色卡自动生成叠色";
     else if (count > size_t(EnforcerBlockerType::ExtruderMax)) state.reason = "原生涂色和预览最多支持 32 个槽位";
     else for (const auto& slot : state.slots) if (!slot.configured || !slot.compatible) { state.reason = slot.reason; break; }
     if (state.reason.empty() && state.nozzles == 1 && types.size() > 1 &&
@@ -146,7 +161,7 @@ inline bool remove(PresetBundle& staged, size_t slot, size_t replacement, std::s
     const auto target = std::find_if(state.slots.begin(), state.slots.end(), [replacement](const auto& s) { return s.slot == replacement; });
     if (source == state.slots.end() || !source->removable || slot == replacement ||
         target == state.slots.end() || !target->exists || !target->configured || !target->compatible) {
-        error = "基础槽位不能删除；请选择已配置且兼容的实体替代耗材"; return false;
+        error = "至少保留一个实体耗材；请选择已配置且兼容的实体替代耗材"; return false;
     }
     // Resolve every recipe before shrinking the native arrays. Duplicated mix
     // components are unsafe (including gradients), and are rejected by validation.
@@ -199,7 +214,8 @@ inline bool import_color_pack(PresetBundle& staged, const FilamentColorPack& pac
     PresetBundle candidate(staged);
     auto pending_changes = changes;
     auto state = capture(candidate);
-    const size_t target = std::max(pack.colors.size(), state.nozzles);
+    const auto bases = WorkbenchFilamentRecipes::select_bases(pack.colors, state.physical_capacity);
+    const size_t target = bases.size();
     if (!state.nozzles || target > limit || candidate.filament_presets.size() > limit ||
         (target > state.physical_count && target - state.physical_count > limit - candidate.filament_presets.size())) {
         error = "实体与混色槽位总数无法容纳此色卡，未导入"; return false;
@@ -217,17 +233,18 @@ inline bool import_color_pack(PresetBundle& staged, const FilamentColorPack& pac
         }
         pending_changes.push_back({{at}, -1, -1});
     }
-    for (size_t i = 0; i < pack.colors.size(); ++i) {
+    for (size_t i = 0; i < bases.size(); ++i) {
+        const size_t source_index = bases[i];
         const size_t at = state.slots[i].slot;
         auto& name = candidate.filament_presets[at];
-        const std::string desired = pack.presets.empty() ? name : pack.presets[i];
+        const std::string desired = pack.presets.empty() ? name : pack.presets[source_index];
         const auto* preset = candidate.filaments.find_preset(desired, false);
         name = preset && preset->is_compatible ? desired : "";
-        candidate.project_config.option<ConfigOptionStrings>("filament_colour")->values[at] = pack.colors[i];
+        candidate.project_config.option<ConfigOptionStrings>("filament_colour")->values[at] = pack.colors[source_index];
         candidate.project_config.option<ConfigOptionStrings>("filament_multi_colour")->values[at] =
-            pack.multi_colors.empty() ? pack.colors[i] : pack.multi_colors[i];
+            pack.multi_colors.empty() ? pack.colors[source_index] : pack.multi_colors[source_index];
         candidate.project_config.option<ConfigOptionStrings>("filament_colour_type")->values[at] =
-            pack.color_types.empty() ? "1" : pack.color_types[i];
+            pack.color_types.empty() ? "1" : pack.color_types[source_index];
     }
     while ((state = capture(candidate)).physical_count > target) {
         const auto& source = state.slots.back();
@@ -259,6 +276,13 @@ inline bool import_color_pack(PresetBundle& staged, const FilamentColorPack& pac
             error = "无法减少实体耗材槽位，配置草稿保持原状"; return false;
         }
         pending_changes.push_back({{}, int(source.slot), int(*replacement)});
+    }
+    if (pack.colors.size() > target && capture(candidate).ready) {
+        std::vector<size_t> bindings;
+        const size_t old_count = candidate.filament_presets.size();
+        if (!WorkbenchFilamentRecipes::stage_targets(candidate, pack.colors, bindings, error)) return false;
+        for (size_t at = old_count; at < candidate.filament_presets.size(); ++at)
+            pending_changes.push_back({{at}, -1, -1});
     }
     staged.project_config = std::move(candidate.project_config);
     staged.filament_presets = std::move(candidate.filament_presets);

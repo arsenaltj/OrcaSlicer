@@ -202,7 +202,7 @@ void ModelGenerationPanel::export_semantic_candidate()
     }
     m_finishing_id = "finish-semantic-" + new_request_id();
     m_finishing_candidate_baked_appearance = nullptr;
-    const auto destination = temp_path(m_finishing_id, "glb");
+    const auto destination = temp_path(m_finishing_id, AI::model_artifact_format(source) == "obj" ? "obj" : "glb");
     m_finishing_canceled = std::make_shared<std::atomic<bool>>(false);
     m_beauty_publication_committed.reset();
     const auto canceled = m_finishing_canceled;

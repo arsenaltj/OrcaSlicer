@@ -362,6 +362,18 @@ void ModelGenerationPanel::refresh_model_finishing()
         m_beauty_controls->set_history_permissions(state.can_undo, state.can_redo);
         refresh_post_generation_workbench();
     }
+    if (m_apply_filaments_saving && !m_save_and_return && !m_busy && !m_finishing_running) {
+        // Restoration refreshes controls before the export callback sets its
+        // final failure message. Wait for that callback to finish before rollback.
+        wxWeakRef<ModelGenerationPanel> weak(this);
+        CallAfter([weak] {
+            if (!weak || weak->m_shutdown || !weak->m_apply_filaments_saving ||
+                weak->m_save_and_return || weak->m_busy || weak->m_finishing_running) return;
+            weak->m_workbench_operation_notice = into_u8(weak->m_finishing_status->GetLabel());
+            weak->finish_printer_filament_application(false);
+            weak->refresh_controls();
+        });
+    }
     // Paint the final visible surfaces after thawing, before returning from a mode switch.
     workbench_updates.reset();
     if (repaint_layout) repaint_workbench_surface(m_workbench_shell);
@@ -380,6 +392,9 @@ void ModelGenerationPanel::reset_beauty_asset()
     m_workbench_check_running = m_workbench_auto_repair = false;
     m_workbench_check_path.clear();
     m_workbench_check_result = {};
+    m_workbench_operation_notice.clear();
+    m_applied_filaments_saved_model.clear();
+    m_applied_filaments_saved_signature.clear();
     clear_unaccepted_beauty_candidates();
     m_finishing_source.clear();
     m_finishing_candidate.clear();
@@ -479,23 +494,70 @@ bool ModelGenerationPanel::restore_beauty_candidate(const BeautyCandidateSnapsho
     const auto path = snapshot.candidate.empty() ? snapshot.source : snapshot.candidate;
     if (!is_nonempty_model(path)) return false;
     if (snapshot.model_sha256.empty() || AI::model_artifact_sha256(path) != snapshot.model_sha256) return false;
+    if (snapshot.project_config && wxGetApp().plater()) {
+        const size_t retained = snapshot.project_presets.size();
+        for (const auto& plate : wxGetApp().plater()->model().plates_custom_gcodes)
+            for (const auto& code : plate.second.gcodes)
+                if ((code.type == CustomGCode::ColorChange || code.type == CustomGCode::ToolChange) &&
+                    code.extruder > int(retained)) {
+                    m_workbench_operation_notice = "准备页换色指令仍使用本次新增叠色，请先移除该引用再撤销耗材应用";
+                    refresh_controls(); return false;
+                }
+        for (const auto* object : wxGetApp().plater()->model().objects) {
+            auto used = [&](const auto& config) {
+                for (const char* key : {"extruder", "support_filament", "support_interface_filament"})
+                    if (config.has(key) && config.opt_int(key) > int(retained)) return true;
+                return false;
+            };
+            bool referenced = used(object->config);
+            for (const auto& range : object->layer_config_ranges) referenced = referenced || used(range.second);
+            for (const auto* volume : object->volumes) {
+                referenced = referenced || used(volume->config);
+                for (int slot : volume->get_extruders()) referenced = referenced || slot > int(retained);
+            }
+            if (referenced) {
+                m_workbench_operation_notice = "准备页对象仍使用本次新增叠色，请先撤销该模型导入再撤销耗材应用";
+                refresh_controls(); return false;
+            }
+        }
+    }
+    std::string config_error;
+    if (snapshot.project_config && (!wxGetApp().preset_bundle || !wxGetApp().plater() ||
+        !ProjectConfigRestore::validate(*snapshot.project_config, snapshot.project_presets, *wxGetApp().preset_bundle, config_error))) {
+        m_workbench_operation_notice = "无法恢复耗材配置：" + config_error; return false;
+    }
     const auto view = m_model_preview->view_state();
     size_t triangles = 0, colors = 0;
     Vec3d dimensions;
     std::string error;
     const auto metadata = AI::beauty_metadata_path(path, generated_models_root());
-    bool restored = false;
-    if (m_model_preview->face_color_overrides() != snapshot.face_overrides) {
-        // A same-file cache hit retains the current GPU color draft. Restore
-        // the snapshot's appearance explicitly before retiring that draft.
-        ModelPreview3D::PreparedModel prepared;
-        restored = ModelPreview3D::prepare_model(path, prepared, error, snapshot.face_overrides, metadata) &&
-            m_model_preview->load_prepared_model(std::move(prepared), {}, triangles, dimensions, colors, error);
-    } else {
-        restored = m_model_preview->load_model(path, {}, triangles, dimensions, colors, error,
-                                               snapshot.face_overrides, metadata);
+    // Prepare without retiring the current preview. A native commit rejection
+    // must leave both the model and its unsaved appearance unchanged.
+    ModelPreview3D::PreparedModel prepared;
+    if (!ModelPreview3D::prepare_model(path, prepared, error, snapshot.face_overrides, metadata)) {
+        m_finishing_status->SetLabel(_L("版本恢复失败，当前模型保持不变：") + from_u8(error));
+        return false;
     }
-    if (!restored) {
+    bool config_changed = false;
+    if (snapshot.project_config) {
+        auto& bundle = *wxGetApp().preset_bundle;
+        config_changed = bundle.project_config != *snapshot.project_config || bundle.filament_presets != snapshot.project_presets;
+        PresetBundle staged(bundle);
+        staged.project_config = *snapshot.project_config;
+        staged.filament_presets = snapshot.project_presets;
+        std::vector<PrinterFilamentSlotRemap::Change> changes;
+        for (size_t count = bundle.filament_presets.size(); count > snapshot.project_presets.size(); --count)
+            changes.push_back({{}, int(count - 1), 0});
+        for (size_t at = bundle.filament_presets.size(); at < snapshot.project_presets.size(); ++at)
+            changes.push_back({{at}, -1, -1});
+        if (!wxGetApp().plater()->apply_printer_filament_config(staged, changes, config_error)) {
+            m_workbench_operation_notice = "无法恢复耗材配置：" + config_error; return false;
+        }
+    }
+    if (!m_model_preview->load_prepared_model(std::move(prepared), {}, triangles, dimensions, colors, error)) {
+        // Only undo the configuration action just committed above; a no-op
+        // restoration must never undo an unrelated project action.
+        if (config_changed) wxGetApp().plater()->undo();
         m_finishing_status->SetLabel(_L("版本恢复失败，当前模型保持不变：") + from_u8(error));
         return false;
     }

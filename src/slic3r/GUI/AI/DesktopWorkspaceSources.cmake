@@ -5,6 +5,7 @@ set(ORCA_DESKTOP_WORKSPACE_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/../PlaterAIFeatureHosts.ipp
     ${CMAKE_CURRENT_LIST_DIR}/Orca/OrcaPrintConfirmation.cpp
     ${CMAKE_CURRENT_LIST_DIR}/Orca/OrcaPrintConfirmation.hpp
+    ${CMAKE_CURRENT_LIST_DIR}/Orca/WorkbenchFilamentRecipes.cpp
     ${CMAKE_CURRENT_LIST_DIR}/Orca/OrcaFilamentSelection.cpp
     ${CMAKE_CURRENT_LIST_DIR}/Orca/OrcaFilamentSelection.hpp
     ${CMAKE_CURRENT_LIST_DIR}/../Redesign/PrinterWorkspace.cpp

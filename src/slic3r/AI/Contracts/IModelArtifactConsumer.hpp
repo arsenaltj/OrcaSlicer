@@ -82,6 +82,11 @@ struct ModelImportRequest
     // Desktop preparation intent only. Never serialized into a provider job or
     // applied to geometry by importing; the user must confirm in preparation.
     bool suggest_base_preparation {false};
+    // Explicit exception path for an unchecked/open model. This metadata is
+    // retained by the native preparation flow and never means slicing passed.
+    bool topology_risk_confirmed {false};
+    std::string topology_risk_reason;
+    std::string topology_check_sha256;
 };
 
 enum class ModelImportOutcome
@@ -101,6 +106,8 @@ struct ModelImportResult
     bool               color_mapping_collapsed { false };
     bool               manual_coloring_required { false };
     bool               manual_repair_required { false };
+    bool               topology_risk { false };
+    std::string        topology_risk_reason;
     size_t             source_color_count { 0 };
     size_t             mapped_color_count { 0 };
     size_t             subface_color_count { 0 };

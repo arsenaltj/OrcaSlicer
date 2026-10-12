@@ -97,8 +97,9 @@ struct TextureImportOptions {
     int initial_color_smoothing = -1;
     size_t physical_filament_limit = 0;
     bool preserve_existing_filaments = false;
-    // Ordinary imports retain legacy mixing. Workbench matching requires
-    // verified material and process conditions before using mixed recipes.
+    // Ordinary imports retain legacy mixing. Desktop workbench adapters may
+    // enable reviewed layered recipes using the active multi-head capacity;
+    // this does not certify material calibration or printed color accuracy.
     bool allow_unverified_mixed_filaments = true;
     bool z_up = false;
     bool source_units_in_meters = false;

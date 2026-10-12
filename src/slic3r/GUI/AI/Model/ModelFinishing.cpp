@@ -5,6 +5,8 @@
 #include "VertexColorRegionEditor.hpp"
 
 #include "libslic3r/Point.hpp"
+#include "libslic3r/MeshBoolean.hpp"
+#include "libslic3r/AABBTreeIndirect.hpp"
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
 #include <openssl/evp.h>
@@ -17,6 +19,7 @@
 #include <locale>
 #include <map>
 #include <memory>
+#include <optional>
 #include <queue>
 #include <set>
 #include <sstream>
@@ -632,6 +635,102 @@ ModelFinishingResult finish_model_artifact(const boost::filesystem::path& source
         return finish_beauty_artifact(source, destination, options, canceled);
     if (options.recolor_selected)
         return finish_recolored_artifact(source, destination, options, canceled);
+    // Workbench topology repair uses the native CGAL whole-mesh path. It is
+    // isolated from the legacy OBJ smoothing routine so boundary cycles and
+    // non-manifold vertices are actually repaired on a temporary copy.
+    if (options.repair_mesh && !options.smooth_surface && options.selected_faces.empty() &&
+        (model_artifact_format(source) == "obj" || model_artifact_format(source) == "glb") &&
+        model_artifact_format(destination) == "obj") {
+        ModelFinishingResult result;
+        try {
+            if (boost::filesystem::exists(destination)) throw std::runtime_error("The output already exists; choose a new model version.");
+            auto check_cancel = [&] { if (canceled && canceled()) throw Canceled {}; };
+            check_cancel();
+            result.source_sha256 = file_hash(source, canceled);
+            TriangleMesh mesh; ObjInfo info; std::string error;
+            if (!load_model_artifact(source, mesh, info, error, canceled)) throw std::runtime_error(error);
+            const auto original_vertices = mesh.its.vertices;
+            const auto original_faces = mesh.its.indices;
+            auto original_colors = info.vertex_colors;
+            result.faces_before = mesh.its.indices.size();
+            result.vertices = mesh.its.vertices.size();
+            if (original_colors.size() != original_vertices.size())
+                original_colors.assign(original_vertices.size(), RGBA {1.f, 1.f, 1.f, 1.f});
+            RepairedMeshErrors repaired_errors;
+            if (!MeshBoolean::cgal::repair(mesh, &repaired_errors, &error,
+                [&] { return canceled && canceled(); }))
+                throw std::runtime_error(error.empty() ? "CGAL mesh repair failed." : error);
+            check_cancel();
+            result.removed_degenerate_faces = std::max(0, repaired_errors.degenerate_facets);
+            result.removed_duplicate_faces = std::max(0, repaired_errors.facets_removed - repaired_errors.degenerate_facets);
+            result.reversed_faces = std::max(0, repaired_errors.facets_reversed + repaired_errors.backwards_edges);
+            result.faces_after = mesh.its.indices.size();
+            result.vertices = mesh.its.vertices.size();
+            // Exact source vertices retain their sampled appearance. Newly
+            // created intersection/patch vertices sample the closest source
+            // triangle; never silently copy vertex zero when a lookup misses.
+            const double diagonal = std::max(1e-6, mesh.bounding_box().size().cast<double>().norm());
+            const double cell = std::max(1e-6, diagonal * 1e-5);
+            struct Key { long long x, y, z; bool operator==(const Key& o) const { return x == o.x && y == o.y && z == o.z; } };
+            struct Hash { size_t operator()(const Key& k) const { size_t h = std::hash<long long>{}(k.x); h ^= std::hash<long long>{}(k.y) + 0x9e3779b9 + (h << 6) + (h >> 2); h ^= std::hash<long long>{}(k.z) + 0x9e3779b9 + (h << 6) + (h >> 2); return h; } };
+            auto key_of = [cell](const auto& p) { return Key {std::llround(p.x() / cell), std::llround(p.y() / cell), std::llround(p.z() / cell)}; };
+            std::unordered_map<Key, std::vector<size_t>, Hash> grid;
+            grid.reserve(original_vertices.size());
+            for (size_t i = 0; i < original_vertices.size(); ++i) grid[key_of(original_vertices[i])].push_back(i);
+            std::vector<RGBA> colors(mesh.its.vertices.size(), RGBA {1.f, 1.f, 1.f, 1.f});
+            std::optional<AABBTreeIndirect::Tree<3, float>> source_tree;
+            for (size_t i = 0; i < mesh.its.vertices.size(); ++i) {
+                if ((i & 4095) == 0) check_cancel();
+                const auto base = key_of(mesh.its.vertices[i]);
+                size_t best = 0; double best_distance = std::numeric_limits<double>::max();
+                for (long long dx = -1; dx <= 1; ++dx) for (long long dy = -1; dy <= 1; ++dy) for (long long dz = -1; dz <= 1; ++dz) {
+                    const auto it = grid.find(Key {base.x + dx, base.y + dy, base.z + dz});
+                    if (it == grid.end()) continue;
+                    for (size_t candidate : it->second) {
+                        const double distance = (original_vertices[candidate].cast<double>() - mesh.its.vertices[i].cast<double>()).squaredNorm();
+                        if (distance < best_distance) { best_distance = distance; best = candidate; }
+                    }
+                }
+                if (best_distance != std::numeric_limits<double>::max()) {
+                    colors[i] = original_colors[best];
+                } else {
+                    if (!source_tree) source_tree = AABBTreeIndirect::build_aabb_tree_over_indexed_triangle_set(original_vertices, original_faces);
+                    size_t face = 0;
+                    Vec3d nearest;
+                    const Vec3d query = mesh.its.vertices[i].cast<double>();
+                    const double distance = AABBTreeIndirect::squared_distance_to_indexed_triangle_set(
+                        original_vertices, original_faces, *source_tree, query, face, nearest);
+                    if (distance < 0. || face >= original_faces.size())
+                        throw std::runtime_error("Repair appearance mapping failed; the original model is preserved.");
+                    const auto& f = original_faces[face];
+                    const Vec3d a = original_vertices[f[0]].cast<double>();
+                    const Vec3d u = original_vertices[f[1]].cast<double>() - a;
+                    const Vec3d v = original_vertices[f[2]].cast<double>() - a;
+                    const Vec3d q = nearest - a;
+                    const double uu = u.dot(u), uv = u.dot(v), vv = v.dot(v);
+                    const double denominator = uu * vv - uv * uv;
+                    if (denominator <= 0.) throw std::runtime_error("Repair appearance mapping encountered an invalid source face.");
+                    const double y = std::clamp((vv * q.dot(u) - uv * q.dot(v)) / denominator, 0., 1.);
+                    const double z = std::clamp((uu * q.dot(v) - uv * q.dot(u)) / denominator, 0., 1. - y);
+                    for (size_t channel = 0; channel < 4; ++channel)
+                        colors[i][channel] = float((1. - y - z) * original_colors[f[0]][channel] +
+                            y * original_colors[f[1]][channel] + z * original_colors[f[2]][channel]);
+                }
+            }
+            check_cancel();
+            if (file_hash(source, canceled) != result.source_sha256)
+                throw std::runtime_error("The source model changed during repair; the candidate was discarded.");
+            if (!write_model_artifact(destination, mesh.its, colors, error)) throw std::runtime_error(error);
+            result.output_sha256 = file_hash(destination, canceled);
+            result.success = true;
+            result.changed_edit_record = repaired_errors.repaired() ||
+                mesh.its.indices != original_faces || mesh.its.vertices != original_vertices;
+            return result;
+        } catch (const Canceled&) { result.canceled = true; }
+          catch (const std::exception& error) { result.error = error.what(); }
+        boost::system::error_code ignored; boost::filesystem::remove(destination, ignored);
+        return result;
+    }
     if (model_artifact_format(source) == "obj" && model_artifact_format(destination) == "obj")
         return finish_model_obj(source, destination, options, canceled);
     ModelFinishingResult result;
@@ -639,8 +738,13 @@ ModelFinishingResult finish_model_artifact(const boost::filesystem::path& source
     auto output_obj = destination; output_obj += ".edited.obj";
     bool owns_input = false, owns_output = false, owns_destination = false;
     try {
-        const bool preserve_glb = model_artifact_format(source) == "glb";
-        if (preserve_glb && (model_artifact_format(destination) != "glb" || !options.smooth_surface ||
+        // Topology repair may change triangle and vertex identity.  The
+        // texture-preserving GLB writer intentionally rejects that case; for
+        // a GLB repair candidate we publish a validated OBJ snapshot carrying
+        // the imported vertex colours while retaining the original GLB.
+        const bool preserve_glb = model_artifact_format(source) == "glb" &&
+            model_artifact_format(destination) == "glb";
+        if (preserve_glb && (!options.smooth_surface ||
                             options.repair_mesh || options.clean_color_spots))
             throw std::runtime_error("To preserve GLB textures and materials, use surface smoothing without mesh repair or color cleanup and save as GLB.");
         if (boost::filesystem::exists(destination) || boost::filesystem::exists(input_obj) || boost::filesystem::exists(output_obj))

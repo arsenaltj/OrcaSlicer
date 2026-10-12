@@ -98,18 +98,19 @@ TEST_CASE("safe mesh repair is rechecked without mutating the original asset", "
     CHECK(read(f.source) == original);
 }
 
-TEST_CASE("safe mesh repair retains unrepairable open boundary warnings", "[ModelFinishing][PostGenerationWorkbench]")
+TEST_CASE("unrepairable planar geometry preserves the original and creates no printable candidate", "[ModelFinishing][WorkbenchTopology]")
 {
     Fixture f;
     f.write(std::string(colored_square) + "f 1 2 3\n");
     ModelFinishingOptions options;
     options.smooth_surface = false;
     options.repair_mesh = true;
-    REQUIRE(finish_model_artifact(f.source, f.output, options).success);
-    const auto inspected = GUI::inspect_workbench_model(f.output);
-    CHECK(inspected.status == GUI::WorkbenchCheckStatus::Attention);
-    CHECK(inspected.boundary_edges > 0);
-    CHECK_FALSE(inspected.summary.empty());
+    const auto original = read(f.source);
+    const auto result = finish_model_artifact(f.source, f.output, options);
+    CHECK_FALSE(result.success);
+    CHECK_FALSE(result.error.empty());
+    CHECK_FALSE(boost::filesystem::exists(f.output));
+    CHECK(read(f.source) == original);
 }
 
 TEST_CASE("Local recoloring creates a comparable model version with exact isolated face colors", "[ModelFinishing][LocalRecolor]")
