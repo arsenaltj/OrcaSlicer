@@ -242,7 +242,8 @@ void RedesignShell::start_slicing_from_workspace()
 bool RedesignShell::slicing_mode_switch_allowed() const
 {
     return workbench_mode_switch_allowed(m_import_in_progress, m_plater && m_plater->is_background_process_slicing(),
-        m_slicing_state.official.phase == OfficialSlicePhase::Slicing, m_slice_tools && m_slice_tools->busy());
+        m_slicing_state.official.phase == OfficialSlicePhase::Slicing, m_slice_tools && m_slice_tools->busy(),
+        m_slicing_state.analyzing);
 }
 
 void RedesignShell::refresh_native_theme()
@@ -289,7 +290,7 @@ void RedesignShell::build_model_workflow()
             };
             add_navigation(m_native_return_ai, _L("← AI 智能切片"), [](auto& shell) { shell.select_slicing_tab(false); });
             add_navigation(m_native_return_overview, _L("返回模型总览"), [](auto& shell) {
-                if (shell.slicing_mode_switch_allowed()) shell.open_model_workbench();
+                shell.return_model_overview();
             });
             add_navigation(m_native_prepare, _L("Prepare"), [](auto& shell) { shell.show_model_view(ModelView::Slicing); });
             add_navigation(m_native_preview, _L("Preview"), [](auto& shell) { shell.show_model_view(ModelView::Preview); });
@@ -305,6 +306,16 @@ void RedesignShell::build_model_workflow()
     auto* root = new wxBoxSizer(wxVERTICAL);
     settings->SetSizer(root);
     row->Add(settings, 0, wxEXPAND | wxRIGHT, FromDIP(8));
+    m_slice_return_overview = command(settings, _L("← 返回模型总览"));
+    m_slice_return_overview->SetName("slicing-return-model-overview");
+    m_slice_return_overview->SetMinSize(FromDIP(wxSize(-1,40)));
+    m_slice_return_overview->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { return_model_overview(); });
+    root->Add(m_slice_return_overview, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(16));
+    m_slice_save = command(settings, _L("保存工程（3MF）"));
+    m_slice_save->SetToolTip(_L("保存模型、耗材颜色、摆放和打印参数；G-code 需切片后单独导出。"));
+    root->AddSpacer(FromDIP(8));
+    root->Add(m_slice_save, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(16));
+    m_slice_save->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { save_print_project(); });
     auto* scroll = new WorkbenchScrolledWindow(settings, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVSCROLL);
     scroll->SetBackgroundColour(RedesignTheme::panel_colour());
     scroll->SetScrollRate(0, FromDIP(12));
@@ -422,7 +433,7 @@ void RedesignShell::build_model_workflow()
     RedesignTheme::style_text(beauty,RedesignTheme::primary_text_colour(),12);
     controls->Add(beauty, 0, wxEXPAND);
     beauty->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-        if (open_model_workbench()) m_model_generation_host->request_enter_beauty();
+        if (slicing_mode_switch_allowed() && open_model_workbench()) m_model_generation_host->request_enter_beauty();
     });
     heading(_L("切片"));
     m_ai_slicing_controls = new WorkbenchPanel(scroll, true);
@@ -518,10 +529,6 @@ void RedesignShell::build_model_workflow()
     ai->Add(m_slice_start, 0, wxEXPAND | wxALL, FromDIP(16));
     controls->Add(m_ai_slicing_controls,0,wxEXPAND);
     m_slice_start->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { start_workbench_slice(); });
-    m_slice_save = command(settings, _L("保存工程（3MF）"));
-    m_slice_save->SetToolTip(_L("保存模型、耗材颜色、摆放和打印参数；G-code 需切片后单独导出。"));
-    root->Add(m_slice_save, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
-    m_slice_save->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { save_print_project(); });
     m_slice_export = command(settings, _L("导出 G-code"), true);
     m_slice_export->Hide();
     m_slice_export->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
@@ -728,6 +735,12 @@ bool RedesignShell::open_model_workbench()
     return true;
 }
 
+void RedesignShell::return_model_overview()
+{
+    if (slicing_mode_switch_allowed() && open_model_workbench())
+        m_model_generation_host->request_return_overview();
+}
+
 void RedesignShell::show_model_view(ModelView view)
 {
     if (!owns_model_workflow() || (m_import_in_progress && !m_import_switching_view)) return;
@@ -787,6 +800,7 @@ void RedesignShell::refresh_workflow_layout()
     m_return_slice->Hide();
     if (m_slicing_host) m_slicing_host->set_workbench_active(slicing, !m_native_slicing);
     const bool compact = slicing && !m_native_slicing;
+    if (compact && !m_plater->is_sidebar_collapsed()) m_plater->collapse_sidebar(true);
     m_plater->get_view3D_canvas3D()->use_compact_slicing_tools(compact);
     m_plater->get_preview_canvas3D()->use_compact_slicing_tools(compact);
     if (compact && !m_saved_collapse_toolbar) {
@@ -805,6 +819,7 @@ void RedesignShell::refresh_workflow_layout()
         }
     }
     if (native) refresh_native_theme();
+    m_slice_return_overview->Enable(slicing_mode_switch_allowed());
     if (m_native_return_ai) {
         const bool can_switch = slicing_mode_switch_allowed();
         m_native_return_ai->Enable(can_switch);
@@ -1296,8 +1311,10 @@ void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
     m_slice_analyze->Enable(state.can_analyze);
     layout_changed = m_slice_cancel->Show(state.analyzing || running) || layout_changed;
     m_slice_cancel->SetLabel(running ? _L("取消切片") : _L("取消分析"));
-    m_ai_slicing_tab->Enable(!running);
-    m_native_slicing_tab->Enable(!running);
+    const bool can_switch = slicing_mode_switch_allowed();
+    m_ai_slicing_tab->Enable(can_switch);
+    m_native_slicing_tab->Enable(can_switch);
+    m_slice_return_overview->Enable(can_switch);
     static_cast<WorkbenchButton*>(m_ai_slicing_tab)->SetTextColor(StateColor(m_native_slicing
         ? RedesignTheme::secondary_text_colour() : RedesignTheme::primary_text_colour()));
     static_cast<WorkbenchButton*>(m_native_slicing_tab)->SetTextColor(StateColor(m_native_slicing
@@ -1307,8 +1324,8 @@ void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
     const bool can_open_print = !running && !m_import_in_progress && !m_slice_tools->busy() && OrcaPrinterAdapter(m_plater).snapshot().gcode_ready;
     m_slice_print->Enable(can_open_print);
     if (m_native_return_ai) {
-        m_native_return_ai->Enable(slicing_mode_switch_allowed());
-        m_native_return_overview->Enable(slicing_mode_switch_allowed());
+        m_native_return_ai->Enable(can_switch);
+        m_native_return_overview->Enable(can_switch);
     }
     if (completed && m_model_view == ModelView::Slicing && m_active_page == Page::Model)
         show_model_view(ModelView::Preview);

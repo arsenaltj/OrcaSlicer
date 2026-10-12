@@ -1964,12 +1964,14 @@ void GLCanvas3D::update_volumes_colors_by_extruder()
 
 bool GLCanvas3D::is_collapse_toolbar_on_left() const
 {
+    if (m_compact_slicing_tools) return false;
     auto state = wxGetApp().plater()->get_sidebar_docking_state();
     return state == Sidebar::Left;
 }
 
 float GLCanvas3D::get_collapse_toolbar_width() const
 {
+    if (m_compact_slicing_tools) return 0;
     GLToolbar& collapse_toolbar = wxGetApp().plater()->get_collapse_toolbar();
     const auto state            = wxGetApp().plater()->get_sidebar_docking_state();
 
@@ -1978,6 +1980,7 @@ float GLCanvas3D::get_collapse_toolbar_width() const
 
 float GLCanvas3D::get_collapse_toolbar_height() const
 {
+    if (m_compact_slicing_tools) return 0;
     GLToolbar& collapse_toolbar = wxGetApp().plater()->get_collapse_toolbar();
     const auto state            = wxGetApp().plater()->get_sidebar_docking_state();
 
@@ -2297,7 +2300,7 @@ void GLCanvas3D::render(bool only_init)
         if (tooltip.empty())
             tooltip = m_assemble_view_toolbar.get_tooltip();
 
-	    if (tooltip.empty())
+        if (!m_compact_slicing_tools && tooltip.empty())
             tooltip = wxGetApp().plater()->get_collapse_toolbar().get_tooltip();
 
         // BBS
@@ -3924,8 +3927,10 @@ void GLCanvas3D::on_key(wxKeyEvent& evt)
                     post_event(SimpleEvent(EVT_GLCANVAS_TAB));
                 }
                 else if (keyCode == WXK_TAB && evt.ShiftDown() && !evt.ControlDown() && ! wxGetApp().is_gcode_viewer()) {
-                    // Collapse side-panel with Shift+Tab
-                    post_event(SimpleEvent(EVT_GLCANVAS_COLLAPSE_SIDEBAR));
+                    // The AI slicing page owns its settings; keep native
+                    // sidebar shortcuts inside the native workspace.
+                    if (!m_compact_slicing_tools)
+                        post_event(SimpleEvent(EVT_GLCANVAS_COLLAPSE_SIDEBAR));
                 }
                 else if (keyCode == WXK_SHIFT) {
                     translationProcessor.process(evt);
@@ -4462,7 +4467,7 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
         return;
     }
 
-    if (!mouse_in_layer_editing && wxGetApp().plater()->get_collapse_toolbar().on_mouse(evt, *this)) {
+    if (!m_compact_slicing_tools && !mouse_in_layer_editing && wxGetApp().plater()->get_collapse_toolbar().on_mouse(evt, *this)) {
         if (evt.LeftUp() || evt.MiddleUp() || evt.RightUp())
             mouse_up_cleanup();
         m_mouse.set_start_position_3D_as_invalid();
@@ -8760,7 +8765,7 @@ void GLCanvas3D::_check_and_update_toolbar_icon_scale()
 {
     // Update collapse toolbar
     GLToolbar& collapse_toolbar = wxGetApp().plater()->get_collapse_toolbar();
-    collapse_toolbar.set_enabled(wxGetApp().plater()->get_sidebar_docking_state() != Sidebar::None);
+    collapse_toolbar.set_enabled(!m_compact_slicing_tools && wxGetApp().plater()->get_sidebar_docking_state() != Sidebar::None);
 
     // Don't update a toolbar scale, when we are on a Preview
     if (wxGetApp().plater()->is_preview_shown()) {
@@ -9863,6 +9868,7 @@ void GLCanvas3D::_render_separator_toolbar_left() const
 
 void GLCanvas3D::_render_collapse_toolbar() const
 {
+    if (m_compact_slicing_tools) return;
     auto&      plater              = *wxGetApp().plater();
     const auto sidebar_docking_dir = plater.get_sidebar_docking_state();
     if (sidebar_docking_dir == Sidebar::None) {

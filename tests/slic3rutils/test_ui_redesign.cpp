@@ -18,6 +18,16 @@
 
 using namespace Slic3r::GUI;
 
+TEST_CASE("Slicing navigation waits for analysis and workspace operations to finish", "[UiRedesign][WorkbenchNavigation]")
+{
+    CHECK(workbench_mode_switch_allowed(false, false, false, false, false));
+    CHECK_FALSE(workbench_mode_switch_allowed(false, false, false, false, true));
+    CHECK_FALSE(workbench_mode_switch_allowed(true, false, false, false, false));
+    CHECK_FALSE(workbench_mode_switch_allowed(false, true, false, false, false));
+    CHECK_FALSE(workbench_mode_switch_allowed(false, false, true, false, false));
+    CHECK_FALSE(workbench_mode_switch_allowed(false, false, false, true, false));
+}
+
 TEST_CASE("Changing the model face target selects compatible geometry and retains other options", "[UiRedesign][ModelFaceLimitChoice]")
 {
     ModelGenerationUIOptions options;
