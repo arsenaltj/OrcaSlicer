@@ -71,6 +71,7 @@ namespace UndoRedo {
 }
 
 namespace GUI {
+namespace PrinterFilamentSlotRemap { struct Change; }
 class SmartSlicingFeatureHost;
 namespace LocalPrintColorCommit { struct Prepared; }
 namespace LocalPrintModelImport { struct PlacementSnapshot; }

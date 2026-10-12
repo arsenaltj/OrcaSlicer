@@ -4,6 +4,8 @@
 
 #include "slic3r/GUI/AI/Orca/OrcaWorkspaceAdapter.hpp"
 #include "slic3r/GUI/ModelGenerationPanel.hpp"
+#include "slic3r/GUI/AI/Orca/OrcaFilamentSelection.hpp"
+#include "slic3r/GUI/Plater.hpp"
 
 #include <boost/log/trivial.hpp>
 #include <wx/colour.h>
@@ -42,50 +44,30 @@ struct ModelGenerationFeatureHost::Impl
                     return opened;
                 }, [this] { model_generation->request_library_local_import(); }});
         model_generation->set_project_color_handler([this](size_t slot) {
-            const auto state = model_generation->workbench_snapshot();
             auto* owner = wxGetTopLevelParent(model_generation);
-            if (!state.can_edit_project_colors) {
-                wxMessageBox(_L("模型正在处理或存在未接受候选，暂时不能修改工程耗材颜色。"),
-                    _L("工程耗材颜色"), wxOK | wxICON_WARNING, owner);
+            if (!model_generation->workbench_snapshot().can_edit_project_colors) {
+                wxMessageBox(_L("模型正在处理或存在未接受候选，暂时不能配置打印机耗材。"),
+                    _L("打印机耗材"), wxOK | wxICON_WARNING, owner);
                 return;
             }
-            const auto& channels = state.project_channels;
-            const auto selected = std::find_if(channels.begin(), channels.end(),
-                [slot](const auto& channel) { return channel.slot == slot; });
-            if (selected == channels.end()) {
-                wxMessageBox(_L("工程耗材槽位已变化，请重新选择颜色。"),
-                    _L("工程耗材颜色"), wxOK | wxICON_WARNING, owner);
-                return;
-            }
-            const auto current = workspace->capture_import_guard();
-            wxColourData data;
-            data.SetColour(wxColour(wxString::FromUTF8(selected->display_color)));
-            data.SetChooseFull(true);
-            // The feature panel is hidden when its workbench is mounted in the shell.
-            wxColourDialog picker(owner, &data);
-            picker.SetTitle(wxString::Format(_L("工程耗材 %u 的颜色"), unsigned(slot + 1)));
-            if (picker.ShowModal() != wxID_OK) {
-#ifdef __WXMSW__
-                const auto diagnostic = ::CommDlgExtendedError();
-                if (diagnostic != 0) {
-                    BOOST_LOG_TRIVIAL(error) << "Project filament color dialog failed: " << diagnostic;
-                    wxMessageBox(wxString::Format(_L("无法打开选色窗口，Windows 错误：%lu。"),
-                        static_cast<unsigned long>(diagnostic)), _L("工程耗材颜色"), wxOK | wxICON_ERROR, owner);
-                }
-#endif
-                return;
-            }
-            std::string error;
-            const auto latest = model_generation->workbench_snapshot();
-            if (!latest.can_edit_project_colors || latest.revision != state.revision || latest.asset_id != state.asset_id ||
-                !workspace->set_project_filament_color(slot,
-                    picker.GetColourData().GetColour().GetAsString(wxC2S_HTML_SYNTAX).ToStdString(), current, error)) {
-                if (error.empty()) error = "模型或工程状态已变化，请重新选择颜色。";
-                wxMessageBox(wxString::FromUTF8(error), _L("工程耗材颜色"), wxOK | wxICON_ERROR, owner);
-                return;
-            }
+            show_orca_filament_selection(owner, *wxGetApp().plater(), slot, false,
+                model_generation->project_filament_color_sources());
             model_generation->synchronize_workbench_project_palette(true);
         }, [this] { return workspace->project_filament_channels(); });
+        model_generation->set_project_filament_edit_handler([this](size_t slot) {
+            auto* owner = wxGetTopLevelParent(model_generation);
+            if (!model_generation->workbench_snapshot().can_edit_project_colors) return;
+            show_orca_filament_selection(owner, *wxGetApp().plater(), slot, false,
+                model_generation->project_filament_color_sources());
+            model_generation->synchronize_workbench_project_palette(true);
+        });
+        model_generation->set_project_filament_delete_handler([this](size_t slot) {
+            auto* owner = wxGetTopLevelParent(model_generation);
+            auto* plater = wxGetApp().plater();
+            if (!plater || !model_generation->workbench_snapshot().can_edit_project_colors) return;
+            delete_orca_printer_filament(owner, *plater, slot);
+            model_generation->synchronize_workbench_project_palette(true);
+        });
         model_generation->set_ui_state_listener([this](const ModelGenerationUIState& state) {
             const bool assets_changed = state.model_asset_id != latest_state.model_asset_id ||
                 (latest_state.busy && !state.busy && !state.job_id.empty());
@@ -119,6 +101,8 @@ struct ModelGenerationFeatureHost::Impl
             model_generation->set_color_matching_handler({});
             model_generation->set_workbench_import_handler({});
             model_generation->set_project_color_handler({});
+            model_generation->set_project_filament_edit_handler({});
+            model_generation->set_project_filament_delete_handler({});
             model_generation->shutdown();
         }
     }

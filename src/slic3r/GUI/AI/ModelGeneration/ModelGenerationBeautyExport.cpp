@@ -102,6 +102,7 @@ void ModelGenerationPanel::export_semantic_candidate()
     const auto portrait_task = m_portrait_task && m_portrait_task->snapshot().running() ? m_portrait_task : nullptr;
     if (portrait_task) portrait_task->report({PortraitStage::Saving, "校验颜色与连续裁切，准备保存候选",0,0});
     if (!m_model_preview || (!m_model_preview->semantic_regions_ready() && !m_model_preview->leaf_editing() &&
+        m_model_preview->color_trial_state().source != 1 &&
         m_model_preview->face_color_overrides().empty()) ||
         !is_nonempty_model(m_finishing_candidate.empty() ? m_displayed_model_path : m_finishing_candidate)) {
         if (auto before = std::move(m_beauty_reoptimization_before)) restore_beauty_candidate(*before);
@@ -129,7 +130,7 @@ void ModelGenerationPanel::export_semantic_candidate()
         m_beauty_session_file_base = m_beauty_candidate_files.size();
     }
     const size_t faces = m_model_preview->triangle_count();
-    const auto overrides = m_model_preview->import_face_color_overrides(true);
+    const auto overrides = m_model_preview->printer_filament_export_faces();
     const auto subfaces = m_model_preview->import_subface_color_overrides(true);
     const auto cell_colors=m_model_preview->import_cell_color_overrides();
     const auto baked_semantic=m_model_preview->semantic_result_metadata();

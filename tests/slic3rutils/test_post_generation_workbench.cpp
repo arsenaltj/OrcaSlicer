@@ -13,6 +13,9 @@
 #include "slic3r/GUI/AI/Orca/WorkbenchModelDecode.hpp"
 #include "slic3r/GUI/AI/Orca/SlicingModelPalette.hpp"
 #include "slic3r/GUI/Redesign/RedesignModelRoute.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/PrinterFilamentPreview.hpp"
+#include "slic3r/GUI/AI/Orca/WorkbenchPrinterFilaments.hpp"
+#include "slic3r/GUI/PrinterFilamentSlotRemap.hpp"
 #include <future>
 #include <memory>
 #include <type_traits>
@@ -571,4 +574,432 @@ TEST_CASE("a failed history replacement preserves actions for the retained valid
     CHECK(recovered.status == PostGenerationUiState::Status::Ready);
     CHECK(recovered.can_edit);
     CHECK(recovered.can_import);
+}
+
+
+static Slic3r::PresetBundle printer_filament_fixture(size_t nozzles, size_t slots)
+{
+    using namespace Slic3r;
+    PresetBundle bundle;
+    auto material = bundle.filaments.default_preset().config;
+    material.set_key_value("filament_type", new ConfigOptionStrings({"PLA"}));
+    material.set_key_value("nozzle_temperature", new ConfigOptionInts({210}));
+    material.set_key_value("nozzle_temperature_range_low", new ConfigOptionInts({190}));
+    material.set_key_value("nozzle_temperature_range_high", new ConfigOptionInts({230}));
+    bundle.filaments.load_preset("", "Loaded PLA", material, false);
+    bundle.printers.get_edited_preset().config.option<ConfigOptionFloats>("nozzle_diameter",true)->values.assign(nozzles,.4);
+    bundle.printers.get_edited_preset().config.option<ConfigOptionBool>("single_extruder_multi_material",true)->value=false;
+    bundle.set_num_filaments(unsigned(slots),"#123456");
+    bundle.filament_presets.assign(slots,"Loaded PLA");
+    bundle.project_config.option<ConfigOptionStrings>("filament_colour")->values.assign(slots,"#123456");
+    bundle.project_config.option<ConfigOptionStrings>("filament_multi_colour")->values.assign(slots,"#123456");
+    return bundle;
+}
+
+TEST_CASE("printer filament readiness requires actual colors for every nozzle and excludes virtual slots", "[PrinterFilaments][PostGenerationWorkbench]")
+{
+    using namespace Slic3r;
+    const size_t nozzles=GENERATE(1u,4u,6u);
+    auto bundle=printer_filament_fixture(nozzles,nozzles);
+    auto state=PrinterFilamentConfig::capture(bundle);
+    REQUIRE(state.ready); CHECK(state.nozzles==nozzles); CHECK(state.physical_count==nozzles);
+    for(const auto& slot:state.slots) CHECK_FALSE(slot.removable);
+    auto draft=bundle;
+    draft.project_config.option<ConfigOptionStrings>("filament_colour")->values.back().clear();
+    CHECK_FALSE(PrinterFilamentConfig::capture(draft).ready);
+    CHECK(bundle.project_config!=draft.project_config);
+    CHECK(PrinterFilamentConfig::capture(bundle).ready);
+    draft.project_config.option<ConfigOptionBools>("filament_is_mixed")->values.back()=true;
+    state=PrinterFilamentConfig::capture(draft);
+    CHECK(state.physical_count==nozzles-1); CHECK(state.slots.size()==nozzles); CHECK_FALSE(state.ready);
+}
+
+TEST_CASE("multiple nozzle base slots stay protected when native material removal is permissive", "[PrinterFilaments][PostGenerationWorkbench]")
+{
+    using namespace Slic3r;
+    const size_t nozzles = GENERATE(4u, 6u);
+    auto bundle = printer_filament_fixture(nozzles, nozzles + 1);
+    bundle.printers.get_edited_preset().config.option<ConfigOptionBool>("single_extruder_multi_material")->value = true;
+    REQUIRE(bundle.can_remove_physical_filament(0));
+    const auto state = PrinterFilamentConfig::capture(bundle);
+    for (size_t i = 0; i < nozzles; ++i) CHECK_FALSE(state.slots[i].removable);
+    CHECK(state.slots.back().removable);
+    std::string error;
+    CHECK_FALSE(PrinterFilamentConfig::remove(bundle, 0, nozzles, error));
+    REQUIRE(PrinterFilamentConfig::remove(bundle, nozzles, 0, error));
+    CHECK(bundle.num_physical_filaments() == nozzles);
+}
+
+TEST_CASE("physical filament lists retain equal colors and more than six slot identities", "[PrinterFilaments][PostGenerationWorkbench]")
+{
+    auto bundle=printer_filament_fixture(1,9);
+    auto state=PrinterFilamentConfig::capture(bundle);
+    REQUIRE(state.ready); REQUIRE(state.slots.size()==9);
+    for(size_t i=0;i<state.slots.size();++i){CHECK(state.slots[i].slot==i);CHECK(state.slots[i].color=="#123456");}
+    const auto identity=state.identity;
+    bundle.printers.get_edited_preset().config.option<Slic3r::ConfigOptionFloats>("nozzle_diameter")->values={.6};
+    CHECK(PrinterFilamentConfig::capture(bundle).identity!=identity);
+    bundle.filaments.find_preset("Loaded PLA",false)->is_compatible=false;
+    CHECK_FALSE(PrinterFilamentConfig::capture(bundle).ready);
+}
+
+TEST_CASE("draft filament additions cancel without changing live colors and protect the nozzle floor", "[PrinterFilaments][PostGenerationWorkbench]")
+{
+    using namespace Slic3r;
+    const size_t nozzles=GENERATE(1u,4u,6u);
+    auto live=printer_filament_fixture(nozzles,nozzles);
+    const auto before=live.project_config; const auto names=live.filament_presets;
+    auto draft=live; const auto inserted=PrinterFilamentConfig::add(draft);
+    CHECK(inserted==nozzles); CHECK(draft.filament_presets.size()==nozzles+1);
+    CHECK_FALSE(PrinterFilamentConfig::capture(draft).ready);
+    draft.filament_presets[inserted]="Loaded PLA";
+    draft.project_config.option<ConfigOptionStrings>("filament_colour")->values[inserted]="#123456";
+    REQUIRE(PrinterFilamentConfig::capture(draft).ready);
+    std::string error; CHECK_FALSE(PrinterFilamentConfig::remove(draft,0,inserted,error));
+    REQUIRE(PrinterFilamentConfig::remove(draft,inserted,0,error));
+    CHECK(draft.filament_presets==names);
+    CHECK(live.project_config==before); CHECK(live.filament_presets==names);
+}
+
+TEST_CASE("filament deletion substitutes mixed references or rejects duplicate components without live writes", "[PrinterFilaments][PostGenerationWorkbench]")
+{
+    using namespace Slic3r;
+    auto live=printer_filament_fixture(1,4);
+    live.project_config.option<ConfigOptionBools>("filament_is_mixed")->values[3]=true;
+    live.project_config.option<ConfigOptionStrings>("filament_mixed_components")->values[3]="1,3";
+    live.project_config.option<ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values[3]="0.5,0.5";
+    const auto before=live.project_config; std::string error;
+    auto draft=live; REQUIRE(PrinterFilamentConfig::remove(draft,2,1,error));
+    CHECK(draft.project_config.option<ConfigOptionStrings>("filament_mixed_components")->values[2]=="1,2");
+    draft=live; CHECK_FALSE(PrinterFilamentConfig::remove(draft,2,0,error)); CHECK_FALSE(error.empty());
+    CHECK(live.project_config==before);
+    draft=live; const auto inserted=PrinterFilamentConfig::add(draft);
+    CHECK(inserted==3); CHECK(draft.is_mixed_filament(4));
+    CHECK(draft.project_config.option<ConfigOptionStrings>("filament_mixed_components")->values[4]=="1,3");
+}
+
+TEST_CASE("explicit compatible replacement can delete an extra spool of a different material", "[PrinterFilaments][PostGenerationWorkbench]")
+{
+    using namespace Slic3r;
+    auto live = printer_filament_fixture(4,5);
+    auto petg = live.filaments.find_preset("Loaded PLA", false)->config;
+    petg.option<ConfigOptionStrings>("filament_type")->values = {"PETG"};
+    live.filaments.load_preset("", "Loaded PETG", petg, false);
+    live.filament_presets.back() = "Loaded PETG";
+    const auto before = live.project_config;
+    const auto names = live.filament_presets;
+    auto staged = live;
+    std::string error;
+    REQUIRE(PrinterFilamentConfig::remove(staged,4,0,error));
+    CHECK(staged.num_physical_filaments() == 4);
+    CHECK(staged.filament_presets.front() == "Loaded PLA");
+    CHECK(live.project_config == before);
+    CHECK(live.filament_presets == names);
+    staged = live;
+    staged.filaments.find_preset("Loaded PLA", false)->is_compatible = false;
+    CHECK_FALSE(PrinterFilamentConfig::remove(staged,4,0,error));
+    CHECK(staged.filament_presets == names);
+}
+
+TEST_CASE("printer matching preserves source groups and semantic bindings and can use slots beyond six", "[PrinterFilaments][PostGenerationWorkbench]")
+{
+    using Color=PreviewPalette::Color;
+    Slic3r::AI::ColorTrialPersistence::State state;
+    const Color red{1,0,0}, blue{0,0,1};
+    state.colors={red,blue};state.mapping_colors={Color{.8f,.1f,.1f},Color{.1f,.1f,.8f}};state.count=2;
+    state.semantic_palette=state.colors;state.semantic_mapping_palette=state.mapping_colors;
+    state.semantic_region_slots={0,1,0,1};state.source=2;
+    const auto before=state;
+    const std::vector<Color> actual={Color{.1f,.1f,.1f},red,red,Color{.3f,.3f,.3f},Color{.4f,.4f,.4f},Color{.5f,.5f,.5f},blue};
+    const std::vector<size_t> slots={0,1,2,3,4,5,8};
+    REQUIRE(PrinterFilamentPreview::apply(state,slots,actual,"printer-A"));
+    CHECK(state.mapping_colors==before.mapping_colors);CHECK(state.semantic_mapping_palette==before.semantic_mapping_palette);
+    CHECK(state.semantic_region_slots==before.semantic_region_slots);CHECK(state.project_color_slots==std::vector<size_t>{1,8});
+    CHECK_FALSE(Slic3r::AI::ColorTrialPersistence::synchronize_project_targets(state,slots,actual,"printer-B"));
+    state.project_color_slots[0]=2;state.project_semantic_slots[0]=2;
+    REQUIRE(PrinterFilamentPreview::apply(state,slots,actual,"printer-A"));CHECK(state.project_color_slots[0]==2);
+    BeautyWorkbenchTransactionController history;
+    const auto after=state; history.record({BeautyWorkbenchTransactionController::OperationKind::AppearanceRecolor,"Apply printer filaments",
+        [&]{state=before;},[&]{state=after;}});
+    REQUIRE(history.undo());CHECK(state.mapping_colors==before.mapping_colors);CHECK(state.source==2);
+    REQUIRE(history.redo());CHECK(state.project_color_slots==after.project_color_slots);
+    const std::string geometry(64,'a');
+    Slic3r::AI::ColorTrialPersistence::State restored;std::string error;
+    REQUIRE(Slic3r::AI::ColorTrialPersistence::decode(Slic3r::AI::ColorTrialPersistence::encode(state,12,geometry),12,geometry,restored,error));
+    CHECK(restored.project_color_slots==state.project_color_slots);CHECK(restored.mapping_colors==state.mapping_colors);
+}
+
+TEST_CASE("deleting a filament remaps object support painting and layer references without moving geometry", "[PrinterFilaments][PostGenerationWorkbench]")
+{
+    using namespace Slic3r;
+    const int target=GENERATE(0,3);
+    Model live;auto* object=live.add_object();auto* volume=object->add_volume(TriangleMesh(its_make_cube(10,10,10)));
+    object->config.set("extruder",3);object->config.set("support_filament",3);object->config.set("support_interface_filament",0);
+    volume->config.set("extruder",4);object->layer_config_ranges[{0.,1.}].set("extruder",3);
+    TriangleSelector selector(volume->mesh());selector.set_facet(0,EnforcerBlockerType::Extruder3);selector.set_facet(1,EnforcerBlockerType::Extruder4);
+    volume->mmu_segmentation_facets.set(selector);
+    const auto geometry=volume->mesh().its.vertices;
+    Model draft(live);PrinterFilamentSlotRemap::prepare(draft,{{},2,target},3,{});
+    PrinterFilamentSlotRemap::commit(live,draft);
+    const int expected=target==0?1:3;
+    CHECK(object->config.opt_int("extruder")==expected);CHECK(object->config.opt_int("support_filament")==expected);
+    CHECK(object->config.opt_int("support_interface_filament")==0);CHECK(volume->config.opt_int("extruder")==3);
+    CHECK(object->layer_config_ranges.begin()->second.opt_int("extruder")==expected);
+    TriangleSelector painted(volume->mesh());painted.deserialize(volume->mmu_segmentation_facets.get_data());
+    CHECK(painted.get_facets(EnforcerBlockerType(expected)).indices.size()>=1);CHECK(painted.get_facets(EnforcerBlockerType::Extruder4).indices.empty());
+    CHECK(volume->mesh().its.vertices==geometry);
+}
+
+TEST_CASE("plate sequences and routes follow inserted and substituted filament identities", "[PrinterFilaments][PostGenerationWorkbench]")
+{
+    using namespace Slic3r;
+    DynamicPrintConfig config;
+    config.set_key_value("filament_map",new ConfigOptionInts({1,2,3,4}));
+    config.set_key_value("first_layer_print_sequence",new ConfigOptionInts({1,2,3,4}));
+    config.set_key_value("other_layers_print_sequence_nums",new ConfigOptionInt(1));
+    config.set_key_value("other_layers_print_sequence",new ConfigOptionInts({1,10,4,3,2,1}));
+    PrinterFilamentSlotRemap::plate_config(config,{{},2,0});
+    CHECK(config.option<ConfigOptionInts>("filament_map")->values==std::vector<int>{1,2,4});
+    CHECK(config.option<ConfigOptionInts>("first_layer_print_sequence")->values==std::vector<int>{1,2,3});
+    CHECK(config.option<ConfigOptionInts>("other_layers_print_sequence")->values==std::vector<int>{1,10,3,1,2});
+    PrinterFilamentSlotRemap::plate_config(config,{{2},-1,-1});
+    CHECK(config.option<ConfigOptionInts>("filament_map")->values==std::vector<int>{1,2,1,4});
+    CHECK(config.option<ConfigOptionInts>("first_layer_print_sequence")->values==std::vector<int>{1,2,4,3});
+}
+
+
+TEST_CASE("new filament sequence entries follow later insertions before mixed slots", "[PrinterFilaments][PostGenerationWorkbench]")
+{
+    using namespace Slic3r;
+    DynamicPrintConfig config;
+    config.set_key_value("first_layer_print_sequence", new ConfigOptionInts({1,2,3,4}));
+    config.set_key_value("other_layers_print_sequence_nums", new ConfigOptionInt(1));
+    config.set_key_value("other_layers_print_sequence", new ConfigOptionInts({1,10,4,3,2,1}));
+    // A pending nozzle slot was appended, then another physical slot was
+    // inserted ahead of an existing virtual recipe. Both new identities survive.
+    PrinterFilamentSlotRemap::plate_config(config, {{4,2},-1,-1});
+    CHECK(config.option<ConfigOptionInts>("first_layer_print_sequence")->values == std::vector<int>{1,2,4,5,6,3});
+    CHECK(config.option<ConfigOptionInts>("other_layers_print_sequence")->values == std::vector<int>{1,10,5,4,2,1,6,3});
+}
+
+TEST_CASE("short native filament tables show pending nozzle slots and refuse incompatible or oversized configurations", "[PrinterFilaments][PostGenerationWorkbench]")
+{
+    using namespace Slic3r;
+    const size_t nozzles=GENERATE(4u,6u);
+    auto bundle=printer_filament_fixture(nozzles,nozzles);
+    bundle.filament_presets.resize(1);
+    bundle.project_config.option<ConfigOptionStrings>("filament_colour")->values.resize(1);
+    auto state=PrinterFilamentConfig::capture(bundle);
+    CHECK_FALSE(state.ready);CHECK(state.physical_count==1);REQUIRE(state.slots.size()==nozzles);
+    for(size_t i=1;i<nozzles;++i){CHECK_FALSE(state.slots[i].exists);CHECK_FALSE(state.slots[i].configured);CHECK_FALSE(state.slots[i].removable);}
+    bundle=printer_filament_fixture(1,33);
+    state=PrinterFilamentConfig::capture(bundle);CHECK_FALSE(state.ready);CHECK(state.slots.size()==33);
+    bundle=printer_filament_fixture(1,2);
+    auto& bad=bundle.filaments.find_preset("Loaded PLA",false)->config;
+    bad.option<ConfigOptionInts>("nozzle_temperature")->values={260};
+    CHECK_FALSE(PrinterFilamentConfig::capture(bundle).ready);
+}
+
+static FilamentColorPack filament_import_card(size_t count)
+{
+    auto pack = young_portrait_color_pack();
+    pack.colors.resize(count, "#123456");
+    pack.labels.resize(count, "extra spool");
+    return pack;
+}
+
+TEST_CASE("color card imports grow physical slots to the entire ordered palette", "[PrinterFilamentImport][PostGenerationWorkbench]")
+{
+    const size_t nozzles = GENERATE(1u, 4u, 6u);
+    const size_t before = GENERATE(4u, 5u, 6u);
+    const size_t colors = GENERATE(6u, 8u, 32u);
+    auto live = printer_filament_fixture(nozzles, std::max(nozzles, before));
+    const auto names = live.filament_presets;
+    const auto project = live.project_config;
+    auto draft = live;
+    auto pack = filament_import_card(colors);
+    std::vector<PrinterFilamentConfig::SlotChange> changes;
+    std::string error;
+    REQUIRE(PrinterFilamentConfig::import_color_pack(draft, pack, changes, error));
+    const auto state = PrinterFilamentConfig::capture(draft);
+    REQUIRE(state.ready);
+    REQUIRE(state.physical_count == colors);
+    REQUIRE(state.slots.size() == colors);
+    for (size_t i = 0; i < colors; ++i) {
+        CHECK(state.slots[i].slot == i);
+        CHECK(state.slots[i].color == pack.colors[i]);
+        CHECK(state.slots[i].preset == "Loaded PLA");
+    }
+    CHECK(PrinterFilamentSlotRemap::validate(changes, names.size(), colors));
+    CHECK(live.project_config == project);
+    CHECK(live.filament_presets == names);
+}
+
+TEST_CASE("color card imports shrink extra slots while retaining the printer nozzle floor", "[PrinterFilamentImport][PostGenerationWorkbench]")
+{
+    const size_t nozzles = GENERATE(1u, 4u, 6u);
+    const size_t colors = GENERATE(2u, 4u, 6u);
+    auto live = printer_filament_fixture(nozzles, 8);
+    auto draft = live;
+    std::vector<PrinterFilamentConfig::SlotChange> changes;
+    std::string error;
+    size_t choices = 0;
+    REQUIRE(PrinterFilamentConfig::import_color_pack(draft, filament_import_card(colors), changes, error,
+        [&](const auto& source, const auto& targets) -> std::optional<size_t> {
+            CHECK(source.removable);
+            ++choices;
+            return targets.front().slot;
+        }));
+    const auto state = PrinterFilamentConfig::capture(draft);
+    CHECK(state.ready);
+    CHECK(state.physical_count == std::max(nozzles, colors));
+    CHECK(choices == 8 - std::max(nozzles, colors));
+    CHECK(PrinterFilamentSlotRemap::validate(changes, 8, draft.filament_presets.size()));
+    CHECK(live.filament_presets.size() == 8);
+}
+
+TEST_CASE("cancelled or invalid card reductions preserve the entire draft and its pending changes", "[PrinterFilamentImport][PostGenerationWorkbench]")
+{
+    auto draft = printer_filament_fixture(4, 8);
+    const auto project = draft.project_config;
+    const auto names = draft.filament_presets;
+    std::vector<PrinterFilamentConfig::SlotChange> changes;
+    std::string error;
+    size_t choices = 0;
+    CHECK_FALSE(PrinterFilamentConfig::import_color_pack(draft, filament_import_card(4), changes, error,
+        [&](const auto&, const auto& targets) -> std::optional<size_t> {
+            if (++choices == 2) return std::nullopt;
+            return targets.front().slot;
+        }));
+    CHECK(choices == 2);
+    CHECK(draft.project_config == project);
+    CHECK(draft.filament_presets == names);
+    CHECK(changes.empty());
+    CHECK_FALSE(error.empty());
+    CHECK_FALSE(PrinterFilamentConfig::import_color_pack(draft, filament_import_card(4), changes, error,
+        [](const auto&, const auto&) -> std::optional<size_t> { return 999; }));
+    CHECK(draft.project_config == project);
+    CHECK(draft.filament_presets == names);
+}
+
+TEST_CASE("virtual mixtures keep their identities and do not consume card colors", "[PrinterFilamentImport][PostGenerationWorkbench]")
+{
+    using namespace Slic3r;
+    auto live = printer_filament_fixture(4, 6);
+    live.project_config.option<ConfigOptionBools>("filament_is_mixed")->values.back() = true;
+    live.project_config.option<ConfigOptionStrings>("filament_mixed_components")->values.back() = "1,5";
+    live.project_config.option<ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values.back() = "0.5,0.5";
+    auto draft = live;
+    std::vector<PrinterFilamentConfig::SlotChange> changes;
+    std::string error;
+    REQUIRE(PrinterFilamentConfig::import_color_pack(draft, filament_import_card(8), changes, error));
+    CHECK(PrinterFilamentConfig::capture(draft).physical_count == 8);
+    CHECK(draft.filament_presets.size() == 9);
+    CHECK(draft.is_mixed_filament(8));
+    CHECK(draft.project_config.option<ConfigOptionStrings>("filament_mixed_components")->values[8] == "1,5");
+    REQUIRE(PrinterFilamentConfig::import_color_pack(draft, filament_import_card(4), changes, error,
+        [](const auto&, const auto& targets) -> std::optional<size_t> { return targets.back().slot; }));
+    CHECK(PrinterFilamentConfig::capture(draft).physical_count == 4);
+    CHECK(draft.is_mixed_filament(4));
+    CHECK(draft.project_config.option<ConfigOptionStrings>("filament_mixed_components")->values[4] == "1,4");
+    CHECK(PrinterFilamentSlotRemap::validate(changes, 6, 5));
+
+    draft = live;
+    changes.clear();
+    const auto project = draft.project_config;
+    CHECK_FALSE(PrinterFilamentConfig::import_color_pack(draft, filament_import_card(32), changes, error));
+    CHECK(draft.project_config == project);
+    CHECK(changes.empty());
+}
+
+TEST_CASE("card import leaves missing or incompatible material choices pending without dropping colors", "[PrinterFilamentImport][PostGenerationWorkbench]")
+{
+    using namespace Slic3r;
+    auto draft = printer_filament_fixture(4, 5);
+    auto incompatible = draft.filaments.find_preset("Loaded PLA", false)->config;
+    draft.filaments.load_preset("", "Incompatible PLA", incompatible, false);
+    draft.filaments.find_preset("Incompatible PLA", false)->is_compatible = false;
+    auto pack = filament_import_card(6);
+    pack.presets = {"Loaded PLA", "missing", "Incompatible PLA", "Loaded PLA", "Loaded PLA", "Loaded PLA"};
+    std::vector<PrinterFilamentConfig::SlotChange> changes;
+    std::string error;
+    REQUIRE(PrinterFilamentConfig::import_color_pack(draft, pack, changes, error));
+    const auto state = PrinterFilamentConfig::capture(draft);
+    CHECK_FALSE(state.ready);
+    CHECK(state.physical_count == 6);
+    for (size_t i = 0; i < 6; ++i) CHECK(state.slots[i].color == pack.colors[i]);
+    CHECK(state.slots[1].preset.empty());
+    CHECK(state.slots[2].preset.empty());
+    draft.filament_presets[1] = "Loaded PLA";
+    draft.filament_presets[2] = "Loaded PLA";
+    CHECK(PrinterFilamentConfig::capture(draft).ready);
+}
+
+TEST_CASE("successive card imports replay additions and deletions through object painting and plate references", "[PrinterFilamentImport][PostGenerationWorkbench]")
+{
+    using namespace Slic3r;
+    auto draft = printer_filament_fixture(4, 8);
+    draft.project_config.option<ConfigOptionBools>("filament_is_mixed")->values[7] = true;
+    draft.project_config.option<ConfigOptionStrings>("filament_mixed_components")->values[7] = "1,7";
+    draft.project_config.option<ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values[7] = "0.5,0.5";
+    const auto mixed = draft.project_config.option<ConfigOptionBools>("filament_is_mixed")->values;
+    Model model;
+    auto* object = model.add_object();
+    auto* volume = object->add_volume(TriangleMesh(its_make_cube(10,10,10)));
+    object->config.set("extruder", 7);
+    volume->config.set("extruder", 8);
+    TriangleSelector selector(volume->mesh());
+    selector.set_facet(0, EnforcerBlockerType::Extruder7);
+    selector.set_facet(1, EnforcerBlockerType::Extruder8);
+    volume->mmu_segmentation_facets.set(selector);
+    const auto vertices = volume->mesh().its.vertices;
+    std::vector<PrinterFilamentConfig::SlotChange> changes;
+    std::string error;
+    auto choose = [](const auto&, const auto& targets) -> std::optional<size_t> { return targets.back().slot; };
+    REQUIRE(PrinterFilamentConfig::import_color_pack(draft, filament_import_card(4), changes, error, choose));
+    REQUIRE(PrinterFilamentConfig::import_color_pack(draft, filament_import_card(8), changes, error, choose));
+    REQUIRE(PrinterFilamentConfig::import_color_pack(draft, filament_import_card(6), changes, error, choose));
+    REQUIRE(PrinterFilamentSlotRemap::validate(changes, 8, 7));
+    PrinterFilamentSlotRemap::prepare(model, changes, 8, mixed);
+    CHECK(object->config.opt_int("extruder") == 4);
+    CHECK(volume->config.opt_int("extruder") == 7);
+    TriangleSelector painted(volume->mesh());
+    painted.deserialize(volume->mmu_segmentation_facets.get_data());
+    CHECK_FALSE(painted.get_facets(EnforcerBlockerType::Extruder4).indices.empty());
+    CHECK_FALSE(painted.get_facets(EnforcerBlockerType::Extruder7).indices.empty());
+    CHECK(painted.get_facets(EnforcerBlockerType::Extruder8).indices.empty());
+    CHECK(volume->mesh().its.vertices == vertices);
+    DynamicPrintConfig plate;
+    plate.set_key_value("first_layer_print_sequence", new ConfigOptionInts({1,2,3,4,5,6,7,8}));
+    for (const auto& change : changes) PrinterFilamentSlotRemap::plate_config(plate, change);
+    auto sequence = plate.option<ConfigOptionInts>("first_layer_print_sequence")->values;
+    std::sort(sequence.begin(), sequence.end());
+    CHECK(sequence == std::vector<int>{1,2,3,4,5,6,7});
+}
+
+TEST_CASE("returning to an identical filament card can still change model references", "[PrinterFilamentImport][PostGenerationWorkbench]")
+{
+    using namespace Slic3r;
+    auto live = printer_filament_fixture(4, 8);
+    const auto full_card = capture_current_filament_color_pack(live);
+    auto shorter = full_card;
+    shorter.colors.resize(4); shorter.labels.resize(4); shorter.presets.resize(4);
+    shorter.multi_colors.resize(4); shorter.color_types.resize(4);
+    auto draft = live;
+    std::vector<PrinterFilamentConfig::SlotChange> changes;
+    std::string error;
+    REQUIRE(PrinterFilamentConfig::import_color_pack(draft, shorter, changes, error,
+        [](const auto&, const auto& targets) -> std::optional<size_t> { return targets.back().slot; }));
+    REQUIRE(PrinterFilamentConfig::import_color_pack(draft, full_card, changes, error));
+    REQUIRE(draft.project_config == live.project_config);
+    REQUIRE(draft.filament_presets == live.filament_presets);
+    CHECK_FALSE(UndoRedo::ProjectConfigUndo::Change::capture(live.project_config, live.filament_presets,
+        draft.project_config, draft.filament_presets));
+    Model model;
+    auto* object = model.add_object();
+    object->add_volume(TriangleMesh(its_make_cube(10,10,10)));
+    object->config.set("extruder", 7);
+    REQUIRE(PrinterFilamentSlotRemap::validate(changes, 8, 8));
+    PrinterFilamentSlotRemap::prepare(model, changes, 8, {});
+    CHECK(object->config.opt_int("extruder") == 4);
 }

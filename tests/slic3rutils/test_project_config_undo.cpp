@@ -212,3 +212,41 @@ TEST_CASE("native history binds config payloads only to fresh ordinary actions",
     steps.erase(steps.begin()+2,steps.end());CHECK(lifetime.expired());
     UndoRedo::Stack empty;CHECK_FALSE(empty.record_project_config_change({}));
 }
+
+
+TEST_CASE("pending native slot arrays can be recovered by undo without accepting them as a configured commit", "[PrinterFilaments][ProjectConfigUndo]")
+{
+    Test::RecipeApplicationFixture fixture(2);
+    auto& bundle=fixture.bundle;
+    for(auto& name:bundle.filament_presets) name=bundle.filaments.default_preset().name;
+    auto pending=bundle.project_config;
+    pending.option<ConfigOptionStrings>("filament_colour")->values.resize(1);
+    const auto before=pending;std::string error;
+    CHECK_FALSE(GUI::ProjectConfigRestore::validate(pending,bundle.filament_presets,bundle,error));
+    REQUIRE(GUI::ProjectConfigRestore::validate(pending,bundle.filament_presets,bundle,error,true));
+    auto change=ConfigUndo::Change::capture(pending,bundle.filament_presets,bundle.project_config,bundle.filament_presets);
+    auto steps=history();steps.erase(steps.begin()+1,steps.begin()+3);
+    REQUIRE(UndoRedo::record_project_config_change(steps,40,change));
+    ConfigUndo::Prepared restored;
+    REQUIRE(ConfigUndo::prepare_jump(steps,40,10,bundle.project_config,bundle.filament_presets,restored,error));
+    CHECK(restored.config==before);
+    auto cache=GUI::ProjectConfigRestore::prepare_cache(restored.config,restored.filament_presets.size());
+    GUI::ProjectConfigRestore::commit(restored,cache,bundle);
+    CHECK(bundle.project_config==before);
+    ConfigUndo::Prepared redone;
+    REQUIRE(ConfigUndo::prepare_jump(steps,10,40,bundle.project_config,bundle.filament_presets,redone,error));
+    REQUIRE(GUI::ProjectConfigRestore::validate(redone.config,redone.filament_presets,bundle,error));
+    cache=GUI::ProjectConfigRestore::prepare_cache(redone.config,redone.filament_presets.size());
+    GUI::ProjectConfigRestore::commit(redone,cache,bundle);
+    CHECK(bundle.project_config.option<ConfigOptionStrings>("filament_colour")->values.size()==3);
+}
+
+TEST_CASE("restoring actual multicolor metadata rebuilds the native display cache", "[PrinterFilaments][ProjectConfigUndo]")
+{
+    Test::RecipeApplicationFixture fixture(2);
+    auto config=fixture.bundle.project_config;
+    config.option<ConfigOptionStrings>("filament_multi_colour")->values={"#123456 #ABCDEF","#FEDCBA",""};
+    const auto cache=GUI::ProjectConfigRestore::prepare_cache(config,3);
+    REQUIRE(cache.size()==3);CHECK(cache[0]==std::vector<std::string>{"#123456","#ABCDEF"});
+    CHECK(cache[1]==std::vector<std::string>{"#FEDCBA"});
+}

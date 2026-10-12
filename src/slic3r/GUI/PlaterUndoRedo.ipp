@@ -19,7 +19,7 @@ bool Plater::apply_project_config(DynamicPrintConfig config, std::vector<std::st
     auto change = UndoRedo::ProjectConfigUndo::Change::capture(bundle.project_config, bundle.filament_presets, config, presets);
     if (!change) return true;
     UndoRedo::ProjectConfigUndo::Prepared prepared {std::move(config), std::move(presets), true};
-    auto cache = ProjectConfigRestore::prepare_cache(prepared.filament_presets.size(), bundle);
+    auto cache = ProjectConfigRestore::prepare_cache(prepared.config, prepared.filament_presets.size());
     const size_t before = p->undo_redo_stack().active_snapshot_time();
     TakeSnapshot snapshot(this, action);
     if (p->undo_redo_stack().active_snapshot_time() == before || !p->undo_redo_stack().record_project_config_change(std::move(change))) {
@@ -30,6 +30,67 @@ bool Plater::apply_project_config(DynamicPrintConfig config, std::vector<std::st
     return true;
 }
 
+
+bool Plater::apply_printer_filament_config(const PresetBundle& staged, const std::vector<size_t>& inserted,
+    int removed, int replacement, std::string& error)
+{
+    return apply_printer_filament_config(staged,
+        std::vector<PrinterFilamentSlotRemap::Change>{{inserted, removed, replacement}}, error);
+}
+
+bool Plater::apply_printer_filament_config(const PresetBundle& staged,
+    const std::vector<PrinterFilamentSlotRemap::Change>& changes, std::string& error)
+{
+    auto& bundle = *wxGetApp().preset_bundle;
+    if (!ProjectConfigRestore::validate(staged.project_config, staged.filament_presets, bundle, error)) return false;
+    const size_t old_count = bundle.filament_presets.size(), count = staged.filament_presets.size();
+    if (!PrinterFilamentSlotRemap::validate(changes, old_count, count)) {
+        error = "The material slot transition is invalid."; return false;
+    }
+    const auto* mixed = bundle.project_config.option<ConfigOptionBools>("filament_is_mixed");
+    Model prepared(model());
+    PrinterFilamentSlotRemap::prepare(prepared, changes, old_count, mixed ? mixed->values : std::vector<unsigned char>{});
+    std::vector<DynamicPrintConfig> plates;
+    for (int i = 0; i < get_partplate_list().get_plate_count(); ++i) {
+        plates.push_back(*get_partplate_list().get_plate(i)->config());
+        for (const auto& change : changes) PrinterFilamentSlotRemap::plate_config(plates.back(), change);
+    }
+    // Prepare references before the native snapshot; config, painting and plate
+    // routes are recorded by the same project action.
+    const bool structural_edit = std::any_of(changes.begin(), changes.end(), [](const auto& change) {
+        return !change.inserted.empty() || change.removed >= 0;
+    });
+    if (structural_edit && staged.project_config == bundle.project_config && staged.filament_presets == bundle.filament_presets) {
+        // Shrinking then growing a draft can restore identical settings
+        // while model/paint references still change. Record a native model
+        // action even when there is no project-config delta to attach.
+        if (!p->can_begin_project_config_change()) {
+            error = "Finish the current editing operation before applying colors."; return false;
+        }
+        const size_t before = p->undo_redo_stack().active_snapshot_time();
+        TakeSnapshot snapshot(this, "Configure printer filaments");
+        if (p->undo_redo_stack().active_snapshot_time() == before) {
+            error = "Unable to record material references in the project history."; return false;
+        }
+    } else if (!apply_project_config(staged.project_config, staged.filament_presets, "Configure printer filaments", error)) return false;
+    PrinterFilamentSlotRemap::commit(model(), prepared);
+    size_t current_count = old_count;
+    for (const auto& change : changes) {
+        for (size_t at : change.inserted) get_partplate_list().on_filament_added(int(++current_count));
+        if (change.removed >= 0) get_partplate_list().on_filament_deleted(int(--current_count), change.removed);
+    }
+    for (size_t i = 0; i < plates.size(); ++i) get_partplate_list().get_plate(int(i))->config()->swap(plates[i]);
+    on_config_change(bundle.full_config());
+    on_filament_count_change(count);
+    sidebar().update_dynamic_filament_list();
+    sidebar().update_mixed_filament_list();
+    sidebar().obj_list()->update_objects_list_filament_column(count);
+    get_partplate_list().invalid_all_slice_result();
+    bundle.export_selections(*wxGetApp().app_config);
+    update_project_dirty_from_presets();
+    update();
+    return true;
+}
 
 bool Plater::apply_local_print_colors(ModelVolume& volume, LocalPrintColorCommit::Prepared& painting,
     const PresetBundle* staged, std::string& error)
@@ -54,7 +115,7 @@ bool Plater::apply_local_print_colors(ModelVolume& volume, LocalPrintColorCommit
             staged->project_config, staged->filament_presets);
         if (change) {
             config = {staged->project_config, staged->filament_presets, true};
-            cache = ProjectConfigRestore::prepare_cache(config.filament_presets.size(), bundle);
+            cache = ProjectConfigRestore::prepare_cache(config.config, config.filament_presets.size());
         }
     }
     const size_t before = p->undo_redo_stack().active_snapshot_time();
@@ -77,7 +138,7 @@ bool Plater::priv::undo_redo_to(std::vector<UndoRedo::Snapshot>::const_iterator 
     auto& bundle = *wxGetApp().preset_bundle;
     if (!undo_redo_stack().prepare_project_config_jump(it_snapshot->timestamp, bundle.project_config,
             bundle.filament_presets, restored_config, config_error) ||
-        (restored_config.changed && !ProjectConfigRestore::validate(restored_config.config, restored_config.filament_presets, bundle, config_error))) {
+        (restored_config.changed && !ProjectConfigRestore::validate(restored_config.config, restored_config.filament_presets, bundle, config_error, true))) {
         GUI::show_error(q, wxString::FromUTF8(config_error.c_str()));
         return false;
     }
@@ -85,7 +146,7 @@ bool Plater::priv::undo_redo_to(std::vector<UndoRedo::Snapshot>::const_iterator 
         GUI::show_error(q, _L("Cannot restore material settings across printer technologies."));
         return false;
     }
-    auto restored_cache = restored_config.changed ? ProjectConfigRestore::prepare_cache(restored_config.filament_presets.size(), bundle) : ProjectConfigRestore::ColorCache{};
+    auto restored_cache = restored_config.changed ? ProjectConfigRestore::prepare_cache(restored_config.config, restored_config.filament_presets.size()) : ProjectConfigRestore::ColorCache{};
     // Make sure that no updating function calls take_snapshot until we are done.
     SuppressSnapshots snapshot_supressor(q);
 
@@ -323,7 +384,7 @@ bool Plater::commit_local_print_model(const ModelObject& object, const PresetBun
             staged->project_config, staged->filament_presets);
         if (change) {
             config = {staged->project_config, staged->filament_presets, true};
-            cache = ProjectConfigRestore::prepare_cache(config.filament_presets.size(), bundle);
+            cache = ProjectConfigRestore::prepare_cache(config.config, config.filament_presets.size());
         }
     }
     model().objects.reserve(model().objects.size() + 1);
