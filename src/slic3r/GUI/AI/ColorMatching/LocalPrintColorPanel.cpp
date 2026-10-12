@@ -1,4 +1,6 @@
 #include "LocalPrintColorPanel.hpp"
+#include "ColorMatchingSession.hpp"
+#include "ColorMatchingComputation.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/ModelGenerationInputStyle.hpp"
 #include "slic3r/GUI/Widgets/Label.hpp"
 #include <wx/wrapsizer.h>
@@ -64,15 +66,16 @@ nlohmann::json read_record(const fs::path& path)
 
 struct LocalPrintColorPanel::Impl {
     Impl(LocalPrintColorPanel* page, Plater* workspace, std::function<void()> navigation,
-         std::function<void()> back_to_workbench)
+         std::function<void()> back_to_workbench, std::shared_ptr<ColorMatchingSession> shared_session)
         : owner(page), plater(workspace), adapter(workspace, {}), navigate(std::move(navigation)),
-          return_to_origin(back_to_workbench ? back_to_workbench : navigate)
+          return_to_origin(back_to_workbench ? back_to_workbench : navigate),
+          session_owner(shared_session ? std::move(shared_session) : std::make_shared<ColorMatchingSession>()), session(*session_owner)
     {
         const bool from_workbench = static_cast<bool>(back_to_workbench);
         auto* root = new wxBoxSizer(wxVERTICAL);
         auto* top = new wxWrapSizer(wxHORIZONTAL);
         if (back_to_workbench) {
-            add_button(top, _L("返回美颜工具"), std::move(back_to_workbench));
+            add_button(top, _L("返回上一步"), std::move(back_to_workbench));
         } else {
         add_button(top, _L("打开准备页选中模型"), [this] { open_selected(); });
         add_button(top, _L("打开本地彩色模型"), [this] {
@@ -178,7 +181,7 @@ struct LocalPrintColorPanel::Impl {
         apply_button = add_button(footer_actions, _L("确认配色并应用到准备页"), [this] { apply(false); });
         apply_button->SetName("input_primary");
         defer_button = add_button(footer_actions, _L("稍后匹配，保留原色资产"), [this] { apply(true); });
-        add_button(footer_actions, from_workbench ? _L("取消配色，返回美颜") : _L("取消本次调整"), [this] {
+        add_button(footer_actions, from_workbench ? _L("取消配色，返回上一步") : _L("取消本次调整"), [this] {
             if (busy) {
                 cancel = true;
                 message(_L("正在取消计算，准备页未修改。"));
@@ -275,20 +278,18 @@ struct LocalPrintColorPanel::Impl {
             _L("正在对照原色 · 取消勾选查看匹配结果") :
             restored_confirmation ? _L("正在预览已恢复的确认配色") : _L("正在预览匹配结果 · 尚未应用到准备页"));
         else preview_status->SetLabel(_L("暂无可应用结果 · 请查看下方说明"));
-        const bool physical_application = std::none_of(computed.targets.begin(), computed.targets.end(),
-            [](const auto& target) { return bool(target.recipe); });
         accept_error->Enable(!busy && covered);
         apply_button->SetToolTip(stale_context ? stale_reason : wxString());
-        apply_button->Enable(!busy && !stale_context && !pending_count && !original->GetValue() && covered && physical_application && (computed.unresolved_count() == 0 || accept_error->GetValue()));
+        apply_button->Enable(valid_count && session.can_apply(adapter.printable_palette(), size_t(requested),
+            original->GetValue(), accept_error->GetValue()));
         defer_button->Enable(!busy && !input.faces.empty());
         ModelGenerationInputStyle::apply_control(apply_button, ModelGenerationInputStyle::Role::PrimaryAction);
     }
-    void shutdown() { stopped = true; ++operation_revision; cancel = true; if (worker.joinable()) worker.join(); }
-    void checkpoint() { undo.push_back(input.identity); redo.clear(); }
+    void shutdown() { session.shutdown(); }
+    void checkpoint() { session.checkpoint(); }
     void restore(std::vector<AI::LocalPrintColorResult>& from, std::vector<AI::LocalPrintColorResult>& to)
     {
-        if (busy || from.empty()) return;
-        to.push_back(input.identity); input.identity = std::move(from.back()); from.pop_back();
+        if (!session.restore(&from == &redo)) return;
         count->SetValue(int(input.identity.requested_color_count)); compute();
     }
     void edit_selection(bool lock)
@@ -678,61 +679,11 @@ struct LocalPrintColorPanel::Impl {
         wxWeakRef<LocalPrintColorPanel> weak(owner);
         worker = std::thread([this, weak, task = std::move(task), recipe_input = std::move(recipe_input), topology, source, config_path, module_directory,
                              temporary_parent, semantic_cache, recognize_details, revision, expected_source, expected_geometry]() mutable {
-            Matching::Computation result;
-            std::shared_ptr<const LocalSemanticEvidence::Evidence> evidence;
-            wxString notice;
-            fs::path owned_request;
-            try {
-                if (recognize_details) {
-                    try {
-                        LocalSemanticWorker::Configuration config; std::string reason;
-                        if (!fs::exists(config_path)) notice = _L("未启用本地细节识别，按原色匹配。\n");
-                        else if (!LocalSemanticWorker::read_configuration(config_path, config, reason))
-                            notice = _L("本地识别配置不可用，按原色匹配。\n");
-                        else if (!config.enabled) notice = _L("本地细节识别已关闭，按原色匹配。\n");
-                        else if (AI::model_artifact_format(source) != "glb")
-                            notice = _L("此文件暂不支持本地细节识别，按原色匹配。\n");
-                        else {
-                            fs::create_directories(temporary_parent);
-                            const auto request = temporary_parent / fs::unique_path("page-%%%%-%%%%-%%%%");
-                            if (!fs::create_directory(request)) throw std::runtime_error("Unable to create an owned local request.");
-                            owned_request = request;
-                            auto analyzed = LocalSemanticWorker::analyze(config, module_directory, owned_request, source, *topology, cancel, semantic_cache);
-                            if (analyzed.process.status == LocalSemanticWorker::Status::Cancelled) result.cancelled = true;
-                            else if (analyzed.process.status == LocalSemanticWorker::Status::Ready) {
-                                std::vector<AI::PrintColorRegion> merged;
-                                if (LocalSemanticDraft::merge_regions(task.identity, analyzed.evidence, merged, reason)) {
-                                    task.identity.regions = std::move(merged);
-                                    evidence = std::make_shared<const LocalSemanticEvidence::Evidence>(std::move(analyzed.evidence));
-                                    if (analyzed.cache_hit) notice = _L("已复用通过校验的本地识别结果，本次未运行识别模型。\n");
-                                } else notice = _L("识别结果与当前局部设置不兼容，保留现有设置匹配。\n");
-                            } else if (analyzed.process.status == LocalSemanticWorker::Status::TimedOut)
-                                notice = _L("本地细节识别超时，按现有原色和局部设置匹配。\n");
-                            else notice = _L("本地细节识别未完成，按现有原色和局部设置匹配。\n");
-                        }
-                    } catch (const std::exception&) {
-                        notice = _L("本地细节识别不可用，按现有原色和局部设置匹配。\n");
-                    }
-                }
-                if (cancel.load()) result.cancelled = true;
-                if (!result.cancelled && AI::print_color_mode(task.identity.requested_color_count) == AI::PrintColorMode::Layered) {
-                    auto catalog = LocalPrintColorRecipes::enumerate(recipe_input);
-                    if (catalog.cancelled) result.cancelled = true;
-                    task.recipe_catalog = std::make_shared<const LocalPrintColorRecipes::Catalog>(std::move(catalog));
-                }
-                if (!result.cancelled)
-                    result = LocalPrintColorBoundaryRefinement::compute_guarded(task, *topology);
-                if (result.ok() && AI::model_artifact_sha256(source) != expected_source)
-                    result.error = "Original model changed during color matching. Reopen the model.";
-            } catch (const std::exception& error) { result.error = error.what(); }
-            // These are disposable files from this one owned invocation. Original
-            // assets and version records never live beneath this request root.
-            wxString cleanup_notice;
-            if (!owned_request.empty()) {
-                std::string reason;
-                if (!LocalSemanticWorker::cleanup_request(owned_request, temporary_parent, reason))
-                    cleanup_notice = _L("本次识别的临时文件未能完全清理。\n");
-            }
+            auto outcome = compute_color_matching({std::move(task), std::move(recipe_input), topology, source,
+                config_path, module_directory, temporary_parent, semantic_cache, recognize_details}, cancel);
+            auto result = std::move(outcome.matching);
+            auto evidence = std::move(outcome.evidence);
+            const auto notice = _L(outcome.notice), cleanup_notice = _L(outcome.cleanup_notice);
             wxGetApp().CallAfter([this, weak, result = std::move(result), evidence, notice, cleanup_notice, recognize_details, revision,
                                  expected_source, expected_geometry]() mutable {
                 if (!weak || stopped || revision != operation_revision) return;
@@ -746,9 +697,11 @@ struct LocalPrintColorPanel::Impl {
                     input.identity.regions = result.result.regions;
                     initial = input.identity;
                 }
-                computed = std::move(result.result);
+                if (!session.publish(revision, expected_source, expected_geometry, std::move(result))) {
+                    message(_L("结果已失效，请重新匹配。")); refresh(); return;
+                }
                 if (!cleanup_notice.empty()) computed.notices.push_back("Local semantic request cleanup incomplete.");
-                has_result = true; display_palette(); display(); refresh();
+                display_palette(); display(); refresh();
             });
         });
     }
@@ -973,24 +926,39 @@ struct LocalPrintColorPanel::Impl {
     wxCheckBox* original {nullptr}; wxCheckBox* select {nullptr}; wxCheckBox* accept_error {nullptr}; wxTextCtrl* report {nullptr};
     Button* apply_button {nullptr}; Button* defer_button {nullptr};
     Button* rematch_button {nullptr}; wxStaticText* preview_status {nullptr}; wxFlexGridSizer* palette_grid {nullptr};
-    std::thread worker; std::atomic<bool> cancel {false}; bool busy {false}; bool stopped {false}; bool has_result {false};
-    bool restored_confirmation {false};
-    uint64_t operation_revision {0};
+    std::shared_ptr<ColorMatchingSession> session_owner;
+    ColorMatchingSession& session;
+    // Compatibility view aliases refer to one session; there is no second draft.
+    std::thread& worker {session.operation().worker};
+    std::atomic<bool>& cancel {session.operation().cancel};
+    bool& busy {session.operation().busy}; bool& stopped {session.operation().stopped};
+    bool& has_result {session.draft().has_result}; bool& restored_confirmation {session.draft().restored_confirmation};
+    uint64_t& operation_revision {session.operation().revision};
     std::shared_ptr<const LocalSemanticEvidence::Evidence> semantic_evidence;
     wxString semantic_notice, layer_notice;
-    Button* layer_button {nullptr}; Button* layer_cancel_button {nullptr}; bool layer_busy {false};
-    AI::GeneratedModelArtifact artifact; ObjectID target_volume; std::string model_name;
-    fs::path workbench_source_path;
-    std::string target_source; ObjectBase::Timestamp target_paint_stamp {0}, target_config_stamp {0};
-    AI::PrintablePaletteSnapshot snapshot;
-    Matching::Input input; AI::LocalPrintColorResult initial, computed;
-    indexed_triangle_set source_mesh, native_mesh; std::vector<RGBA> source_colors;
-    std::vector<AI::LocalPrintColorResult> undo, redo;
+    Button* layer_button {nullptr}; Button* layer_cancel_button {nullptr};
+    bool& layer_busy {session.operation().layer_busy};
+    AI::GeneratedModelArtifact& artifact {session.draft().artifact};
+    ObjectID& target_volume {session.draft().target_volume};
+    std::string& model_name {session.draft().model_name};
+    fs::path& workbench_source_path {session.draft().workbench_source_path};
+    std::string& target_source {session.draft().target_source};
+    ObjectBase::Timestamp& target_paint_stamp {session.draft().target_paint_stamp};
+    ObjectBase::Timestamp& target_config_stamp {session.draft().target_config_stamp};
+    AI::PrintablePaletteSnapshot& snapshot {session.draft().snapshot};
+    Matching::Input& input {session.draft().input};
+    AI::LocalPrintColorResult& initial {session.draft().initial};
+    AI::LocalPrintColorResult& computed {session.draft().computed};
+    indexed_triangle_set& source_mesh {session.draft().source_mesh};
+    indexed_triangle_set& native_mesh {session.draft().native_mesh};
+    std::vector<RGBA>& source_colors {session.draft().source_colors};
+    std::vector<AI::LocalPrintColorResult>& undo {session.draft().undo};
+    std::vector<AI::LocalPrintColorResult>& redo {session.draft().redo};
 };
 
 LocalPrintColorPanel::LocalPrintColorPanel(wxWindow* parent, Plater* plater, std::function<void()> navigation,
-                                         std::function<void()> back_to_workbench)
-    : wxPanel(parent), m_impl(std::make_unique<Impl>(this, plater, std::move(navigation), std::move(back_to_workbench)))
+                                         std::function<void()> back_to_workbench, std::shared_ptr<ColorMatchingSession> session)
+    : wxPanel(parent), m_impl(std::make_unique<Impl>(this, plater, std::move(navigation), std::move(back_to_workbench), std::move(session)))
 {
     SetName("color_matching");
     apply_ai_theme(true);

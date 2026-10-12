@@ -1,3 +1,4 @@
+include(${CMAKE_CURRENT_SOURCE_DIR}/GUI/AI/ModelGeneration/ModelWorkspaceSources.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/GUI/Redesign/RedesignSources.cmake)
 cmake_minimum_required(VERSION 3.13)
 project(libslic3r_gui)
@@ -7,6 +8,7 @@ include(PrecompiledHeader)
 add_subdirectory(AI)
 
 set(SLIC3R_GUI_SOURCES
+    ${ORCA_MODEL_WORKSPACE_SOURCES}
     BuildInfo.hpp
     GUI/Widgets/AnimaController.hpp
     GUI/Widgets/AnimaController.cpp
@@ -365,8 +367,6 @@ set(SLIC3R_GUI_SOURCES
     GUI/AI/ModelGeneration/BeautyPreparationTicket.hpp
     GUI/AIModelGenerationClient.cpp
     GUI/AIModelGenerationClient.hpp
-    GUI/ModelGenerationPanel.cpp GUI/AI/ModelGeneration/ModelGenerationLibraryView.cpp GUI/AI/ModelGeneration/ModelGenerationArtifactFlow.cpp GUI/AI/ModelGeneration/ModelGenerationFeatureHost.cpp GUI/AI/ModelGeneration/ModelGenerationPresentation.cpp GUI/AI/ModelGeneration/ModelGenerationPresentationCore.cpp GUI/AI/ModelGeneration/ModelGenerationStatusText.cpp
-    GUI/ModelGenerationPanel.hpp GUI/AI/ModelGeneration/ModelGenerationFeatureHost.hpp GUI/AI/ModelGeneration/ModelGenerationHost.hpp GUI/AI/ModelGeneration/ModelGenerationPresentation.hpp GUI/AI/ModelGeneration/ModelGenerationStatusText.hpp GUI/AI/ModelGeneration/ModelPreview3D.hpp
     GUI/AISidecarClient.cpp
     GUI/AISidecarClient.hpp
     GUI/AIServiceManager.cpp

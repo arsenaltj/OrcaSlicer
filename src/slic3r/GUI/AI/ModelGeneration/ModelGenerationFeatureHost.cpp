@@ -1,4 +1,6 @@
 #include "ModelGenerationFeatureHost.hpp"
+#include "ModelWorkspaceFeatureHost.hpp"
+#include "ModelGenerationPresentation.hpp"
 
 #include "slic3r/GUI/AI/Orca/OrcaWorkspaceAdapter.hpp"
 #include "slic3r/GUI/ModelGenerationPanel.hpp"
@@ -19,57 +21,6 @@
 
 namespace Slic3r::GUI {
 
-bool ModelGenerationUIInput::operator==(const ModelGenerationUIInput& other) const
-{
-    return image_path == other.image_path && prompt == other.prompt && style == other.style &&
-           custom_style == other.custom_style;
-}
-
-bool ModelGenerationUIOptions::operator==(const ModelGenerationUIOptions& other) const
-{
-    return provider == other.provider && face_limit == other.face_limit &&
-           geometry_quality == other.geometry_quality && texture_quality == other.texture_quality &&
-           output_format == other.output_format;
-}
-
-bool ModelGenerationUIHistoryEntry::operator==(const ModelGenerationUIHistoryEntry& other) const
-{
-    return job_id == other.job_id && title == other.title && details == other.details &&
-           design_only == other.design_only && thumbnail_width == other.thumbnail_width &&
-           thumbnail_height == other.thumbnail_height && thumbnail_rgb == other.thumbnail_rgb &&
-           thumbnail_alpha == other.thumbnail_alpha;
-}
-
-bool ModelGenerationUIState::same_content(const ModelGenerationUIState& other) const
-{
-    return stage == other.stage && input == other.input && options == other.options &&
-           service_available == other.service_available &&
-           service_availability_known == other.service_availability_known && busy == other.busy &&
-           can_generate_design == other.can_generate_design && can_generate_model == other.can_generate_model &&
-           can_stop == other.can_stop && can_retry_service == other.can_retry_service &&
-           can_retry_model == other.can_retry_model &&
-           can_restore_latest == other.can_restore_latest && can_import == other.can_import &&
-           can_restart == other.can_restart && design_ready == other.design_ready && model_ready == other.model_ready &&
-           model_generation_context == other.model_generation_context &&
-           model_generation_session == other.model_generation_session && inputs_match_job == other.inputs_match_job &&
-           progress == other.progress && job_id == other.job_id && model_asset_id == other.model_asset_id &&
-           job_state == other.job_state &&
-           design_elapsed_seconds == other.design_elapsed_seconds &&
-           design_estimated_seconds == other.design_estimated_seconds &&
-           job_phase == other.job_phase && provider_error_code == other.provider_error_code &&
-           provider_error_category == other.provider_error_category && provider_name == other.provider_name &&
-           provider_task_id == other.provider_task_id &&
-           provider_conversion_task_id == other.provider_conversion_task_id &&
-           provider_error_retryable == other.provider_error_retryable &&
-           provider_error_ambiguous == other.provider_error_ambiguous &&
-           status_text == other.status_text && summary_text == other.summary_text &&
-           workflow_phase == other.workflow_phase && workflow_guidance == other.workflow_guidance &&
-           cost_summary == other.cost_summary && original_image_path == other.original_image_path &&
-           design_image_path == other.design_image_path && model_path == other.model_path &&
-           history_entries == other.history_entries && history_loading == other.history_loading &&
-           history_error == other.history_error;
-}
-
 struct ModelGenerationFeatureHost::Impl
 {
     Impl(wxWindow* parent, Plater* plater, NavigateAfterImportFn navigate_after_import, RetryServiceFn retry_service)
@@ -77,6 +28,21 @@ struct ModelGenerationFeatureHost::Impl
     {
         BOOST_LOG_TRIVIAL(info) << "AI model generation startup: creating model generation panel";
         model_generation = new ModelGenerationPanel(parent, *workspace, *workspace);
+        capabilities = std::make_unique<ModelWorkspaceFeatureHost>(ModelGenerationPresentation::generated_models_root(),
+            plater, navigate_after_import, ModelLibraryApplication::Ports {
+                [this] { return model_generation && model_generation->library_asset_switch_allowed(); },
+                [this, parent](ModelLibraryCommand command, const ModelLibraryEntry& entry) {
+                    if (command == ModelLibraryCommand::MatchColors) {
+                        AI::GeneratedModelArtifact artifact; artifact.local_path = entry.model_path;
+                        artifact.job_id = entry.job_id; artifact.generation_palette = entry.palette;
+                        return capabilities->open_colors(parent, artifact);
+                    }
+                    const bool opened = model_generation->request_library_action(command, entry);
+                    if (opened && history_navigation && (command == ModelLibraryCommand::OpenModel || command == ModelLibraryCommand::OpenImage))
+                        history_navigation(command == ModelLibraryCommand::OpenImage);
+                    if (opened && (command == ModelLibraryCommand::Remove || command == ModelLibraryCommand::Import)) capabilities->refresh_assets();
+                    return opened;
+                }, [this] { model_generation->request_library_local_import(); }});
         model_generation->set_project_color_handler([this](size_t slot) {
             auto* owner = wxGetTopLevelParent(model_generation);
             if (!model_generation->workbench_snapshot().can_edit_project_colors) {
@@ -103,14 +69,17 @@ struct ModelGenerationFeatureHost::Impl
             model_generation->synchronize_workbench_project_palette(true);
         });
         model_generation->set_ui_state_listener([this](const ModelGenerationUIState& state) {
+            const bool assets_changed = state.model_asset_id != latest_state.model_asset_id ||
+                (latest_state.busy && !state.busy && !state.job_id.empty());
             latest_state = state;
+            if (assets_changed) capabilities->refresh_assets();
             if (state_listener)
                 state_listener(latest_state);
         });
         model_generation->set_service_retry_handler(std::move(retry_service));
         model_generation->set_prepare_navigation_handler(std::move(navigate_after_import));
-        model_generation->set_color_matching_handler([this, plater](const AI::GeneratedModelArtifact& artifact) {
-            model_generation->show_workbench_color_matching(artifact, plater);
+        model_generation->set_color_matching_handler([this, parent](const AI::GeneratedModelArtifact& artifact) {
+            capabilities->open_colors(parent, artifact);
         });
         model_generation->Hide();
         BOOST_LOG_TRIVIAL(info) << "AI model generation startup: model generation panel created";
@@ -121,6 +90,7 @@ struct ModelGenerationFeatureHost::Impl
         if (shutdown_requested)
             return;
         shutdown_requested = true;
+        if (capabilities) capabilities->shutdown();
         if (import_session) import_session->invalidate();
         if (model_generation != nullptr) {
             model_generation->set_ui_state_listener({});
@@ -141,6 +111,8 @@ struct ModelGenerationFeatureHost::Impl
     ModelGenerationUIStateListener state_listener;
 
     std::unique_ptr<OrcaWorkspaceAdapter> workspace;
+    std::unique_ptr<ModelWorkspaceFeatureHost> capabilities;
+    std::function<void(bool)> history_navigation;
     ModelGenerationPanel* model_generation { nullptr };
     bool shutdown_requested { false };
     std::shared_ptr<WorkbenchImportSession> import_session;
@@ -279,6 +251,7 @@ bool ModelGenerationFeatureHost::request_import()
 
 bool ModelGenerationFeatureHost::request_refresh_history()
 {
+    m_impl->capabilities->refresh_assets();
     return m_impl->model_generation != nullptr && m_impl->model_generation->request_refresh_history();
 }
 
@@ -314,10 +287,10 @@ void ModelGenerationFeatureHost::set_workbench_return_to_design_handler(std::fun
 
 bool ModelGenerationFeatureHost::request_open_workbench() { return m_impl->model_generation->request_open_workbench(); }
 void ModelGenerationFeatureHost::mount_workbench(wxWindow* parent) { m_impl->model_generation->mount_workbench(parent); }
-void ModelGenerationFeatureHost::mount_assets(wxWindow* parent) { m_impl->model_generation->mount_assets(parent); }
-void ModelGenerationFeatureHost::unmount_assets() { m_impl->model_generation->unmount_assets(); }
+void ModelGenerationFeatureHost::mount_assets(wxWindow* parent) { m_impl->capabilities->mount_assets(parent); }
+void ModelGenerationFeatureHost::unmount_assets() { m_impl->capabilities->unmount_assets(); }
 void ModelGenerationFeatureHost::set_history_navigation_handler(std::function<void(bool)> handler)
-{ m_impl->model_generation->set_history_navigation_handler(std::move(handler)); }
+{ m_impl->history_navigation = handler; m_impl->model_generation->set_history_navigation_handler(std::move(handler)); }
 void ModelGenerationFeatureHost::unmount_workbench() { m_impl->model_generation->unmount_workbench(); }
 void ModelGenerationFeatureHost::set_color_matching_handler(std::function<void(const AI::GeneratedModelArtifact&)> handler)
 {
@@ -354,5 +327,7 @@ bool ModelGenerationFeatureHost::request_portrait_optimization() {
 void ModelGenerationFeatureHost::cancel_portrait_optimization() {
     if (!m_impl->shutdown_requested) m_impl->model_generation->cancel_portrait_optimization();
 }
+
+ModelWorkspaceFeatureHost& ModelGenerationFeatureHost::workspace_capabilities() { return *m_impl->capabilities; }
 
 } // namespace Slic3r::GUI

@@ -15,6 +15,9 @@ from pathlib import Path
 from unittest import mock
 
 from PIL import Image, ImageDraw
+import model_artifact_workflow as ARTIFACT_WORKFLOW
+import portrait_multiview_workflow as PORTRAIT_WORKFLOW
+import model_obj_io as MODEL_IO
 
 
 TOOLS_AI = Path(__file__).resolve().parent
@@ -1944,10 +1947,10 @@ class ObjGenerationTests(unittest.TestCase):
 
         with (
             mock.patch.object(SIDECAR, "edit_image", side_effect=create_sheet) as edit,
-            mock.patch.object(SIDECAR, "_validate_image_file"),
-            mock.patch.object(SIDECAR, "split_multiview_sheet", return_value=material_views),
+            mock.patch.object(PORTRAIT_WORKFLOW, "_validate_image_file"),
+            mock.patch.object(PORTRAIT_WORKFLOW, "split_multiview_sheet", return_value=material_views),
             mock.patch.object(
-                SIDECAR,
+                PORTRAIT_WORKFLOW,
                 "process_multiview_crops",
                 return_value=(
                     material_views,
@@ -1974,14 +1977,14 @@ class ObjGenerationTests(unittest.TestCase):
                 ),
             ),
             mock.patch.object(
-                SIDECAR, "assess_model_input_image", return_value={"model_input_eligible": True}
+                PORTRAIT_WORKFLOW, "assess_model_input_image", return_value={"model_input_eligible": True}
             ),
             mock.patch.object(
-                SIDECAR,
+                PORTRAIT_WORKFLOW,
                 "review_multiview_sheet",
                 return_value={"status": "pass", "score": 97, "checks": {}},
             ),
-            mock.patch.object(SIDECAR, "write_multiview_manifest", side_effect=write_manifest) as manifest_writer,
+            mock.patch.object(PORTRAIT_WORKFLOW, "write_multiview_manifest", side_effect=write_manifest) as manifest_writer,
         ):
             first = SIDECAR._ensure_portrait_multiview(self.job)
             second = SIDECAR._ensure_portrait_multiview(self.job)
@@ -2332,33 +2335,33 @@ class ObjGenerationTests(unittest.TestCase):
             return {"status": "not_needed"}
 
         with (
-            mock.patch.object(SIDECAR, "_validate_obj_vertex_colors"),
-            mock.patch.object(SIDECAR, "_quantize_vertex_color_obj", side_effect=quantize),
-            mock.patch.object(SIDECAR, "_normalize_obj_for_orca"),
-            mock.patch.object(SIDECAR, "project_front_portrait_materials", side_effect=project),
+            mock.patch.object(ARTIFACT_WORKFLOW, "_validate_obj_vertex_colors"),
+            mock.patch.object(ARTIFACT_WORKFLOW, "_quantize_vertex_color_obj", side_effect=quantize),
+            mock.patch.object(ARTIFACT_WORKFLOW, "_normalize_obj_for_orca"),
+            mock.patch.object(ARTIFACT_WORKFLOW, "project_front_portrait_materials", side_effect=project),
             mock.patch.object(
-                SIDECAR, "_stabilize_portrait_obj_materials",
+                ARTIFACT_WORKFLOW, "_stabilize_portrait_obj_materials",
                 side_effect=lambda *_args: events.append(("material", {})),
             ),
-            mock.patch.object(SIDECAR, "_remove_small_detached_obj_components", return_value={}),
-            mock.patch.object(SIDECAR, "_repair_small_obj_topology_defects"),
+            mock.patch.object(ARTIFACT_WORKFLOW, "_remove_small_detached_obj_components", return_value={}),
+            mock.patch.object(ARTIFACT_WORKFLOW, "_repair_small_obj_topology_defects"),
             mock.patch.object(
-                SIDECAR,
+                ARTIFACT_WORKFLOW,
                 "_capture_portrait_front_face_details",
                 return_value=({7: (1, 2, 3)}, {"status": "captured", "vertex_count": 3}),
             ) as capture_face,
-            mock.patch.object(SIDECAR, "_restore_portrait_front_face_details") as restore_face,
+            mock.patch.object(ARTIFACT_WORKFLOW, "_restore_portrait_front_face_details") as restore_face,
             mock.patch.object(
-                SIDECAR, "_consolidate_tiny_obj_color_components",
+                ARTIFACT_WORKFLOW, "_consolidate_tiny_obj_color_components",
                 side_effect=lambda _path, report: events.append(("consolidate", {"report": report.name})),
             ),
-            mock.patch.object(SIDECAR, "_regularize_obj_color_boundaries"),
+            mock.patch.object(ARTIFACT_WORKFLOW, "_regularize_obj_color_boundaries"),
             mock.patch.object(
-                SIDECAR, "_stabilize_portrait_obj_garment_regions",
+                ARTIFACT_WORKFLOW, "_stabilize_portrait_obj_garment_regions",
                 side_effect=lambda *_args: events.append(("garment", {})),
             ),
-            mock.patch.object(SIDECAR, "_validate_obj_palette"),
-            mock.patch.object(SIDECAR, "_write_obj_vertex_color_metrics"),
+            mock.patch.object(ARTIFACT_WORKFLOW, "_validate_obj_palette"),
+            mock.patch.object(ARTIFACT_WORKFLOW, "_write_obj_vertex_color_metrics"),
             mock.patch.object(SIDECAR, "_validate_artifact"),
             mock.patch.object(SIDECAR, "analyze_printable_obj", return_value={"status": "pass"}),
             mock.patch.object(SIDECAR, "write_model_quality_report"),
@@ -2415,34 +2418,34 @@ class ObjGenerationTests(unittest.TestCase):
             return {"status": "rendered", "views": []}
 
         with (
-            mock.patch.object(SIDECAR, "_validate_obj_vertex_colors"),
-            mock.patch.object(SIDECAR, "_quantize_vertex_color_obj", side_effect=quantize),
-            mock.patch.object(SIDECAR, "_normalize_obj_for_orca"),
-            mock.patch.object(SIDECAR, "render_model_views", side_effect=render),
+            mock.patch.object(ARTIFACT_WORKFLOW, "_validate_obj_vertex_colors"),
+            mock.patch.object(ARTIFACT_WORKFLOW, "_quantize_vertex_color_obj", side_effect=quantize),
+            mock.patch.object(ARTIFACT_WORKFLOW, "_normalize_obj_for_orca"),
+            mock.patch.object(ARTIFACT_WORKFLOW, "render_model_views", side_effect=render),
             mock.patch.object(
-                SIDECAR, "_review_portrait_rear_plate_masks", return_value={"status": "pass"},
+                ARTIFACT_WORKFLOW, "_review_portrait_rear_plate_masks", return_value={"status": "pass"},
             ),
-            mock.patch.object(SIDECAR, "_write_mesh_repair_report"),
+            mock.patch.object(ARTIFACT_WORKFLOW, "_write_mesh_repair_report"),
             mock.patch.object(
                 SIDECAR, "_prepare_portrait_geometry_material_views",
                 return_value=(semantic_views, {"status": "prepared"}),
             ),
             mock.patch.object(
-                SIDECAR, "project_front_portrait_materials",
+                ARTIFACT_WORKFLOW, "project_front_portrait_materials",
                 side_effect=lambda *_args, **kwargs: events.append(("front", kwargs)),
             ),
             mock.patch.object(
-                SIDECAR, "project_geometry_aligned_portrait_materials",
+                ARTIFACT_WORKFLOW, "project_geometry_aligned_portrait_materials",
                 side_effect=lambda *_args, **_kwargs: events.append(("geometry", {})),
             ),
-            mock.patch.object(SIDECAR, "_stabilize_portrait_obj_materials"),
-            mock.patch.object(SIDECAR, "_remove_small_detached_obj_components", return_value={}),
-            mock.patch.object(SIDECAR, "_repair_small_obj_topology_defects"),
-            mock.patch.object(SIDECAR, "_consolidate_tiny_obj_color_components"),
-            mock.patch.object(SIDECAR, "_regularize_obj_color_boundaries"),
-            mock.patch.object(SIDECAR, "_stabilize_portrait_obj_garment_regions"),
-            mock.patch.object(SIDECAR, "_validate_obj_palette"),
-            mock.patch.object(SIDECAR, "_write_obj_vertex_color_metrics"),
+            mock.patch.object(ARTIFACT_WORKFLOW, "_stabilize_portrait_obj_materials"),
+            mock.patch.object(ARTIFACT_WORKFLOW, "_remove_small_detached_obj_components", return_value={}),
+            mock.patch.object(ARTIFACT_WORKFLOW, "_repair_small_obj_topology_defects"),
+            mock.patch.object(ARTIFACT_WORKFLOW, "_consolidate_tiny_obj_color_components"),
+            mock.patch.object(ARTIFACT_WORKFLOW, "_regularize_obj_color_boundaries"),
+            mock.patch.object(ARTIFACT_WORKFLOW, "_stabilize_portrait_obj_garment_regions"),
+            mock.patch.object(ARTIFACT_WORKFLOW, "_validate_obj_palette"),
+            mock.patch.object(ARTIFACT_WORKFLOW, "_write_obj_vertex_color_metrics"),
             mock.patch.object(SIDECAR, "_validate_artifact"),
             mock.patch.object(SIDECAR, "analyze_printable_obj", return_value={"status": "pass"}),
             mock.patch.object(SIDECAR, "write_model_quality_report"),
@@ -3283,14 +3286,14 @@ class ObjGenerationTests(unittest.TestCase):
     def test_zip_file_count_limit_is_enforced(self):
         raw = self.job.directory / "artifact-raw.download"
         self._write_package(raw)
-        with mock.patch.object(SIDECAR, "MAX_ARCHIVE_FILES", 2):
+        with mock.patch.object(MODEL_IO, "MAX_ARCHIVE_FILES", 2):
             with self.assertRaisesRegex(SIDECAR.TripoError, "number of files"):
                 SIDECAR._prepare_obj_artifact(raw, self.job.directory, self.palette)
 
     def test_zip_unpacked_size_limit_is_enforced(self):
         raw = self.job.directory / "artifact-raw.download"
         self._write_package(raw)
-        with mock.patch.object(SIDECAR, "MAX_UNPACKED_BYTES", 4):
+        with mock.patch.object(MODEL_IO, "MAX_UNPACKED_BYTES", 4):
             with self.assertRaisesRegex(SIDECAR.TripoError, "too large"):
                 SIDECAR._prepare_obj_artifact(raw, self.job.directory, self.palette)
 

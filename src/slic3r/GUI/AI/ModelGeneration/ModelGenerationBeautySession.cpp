@@ -439,7 +439,7 @@ std::function<void()> ModelGenerationPanel::capture_model_context()
     };
 }
 
-ModelGenerationPanel::BeautyCandidateSnapshot ModelGenerationPanel::capture_beauty_candidate() const
+BeautyCandidateSnapshot ModelGenerationPanel::capture_beauty_candidate() const
 {
     BeautyCandidateSnapshot snapshot;
     snapshot.source = m_finishing_source.empty() ? m_displayed_model_path : m_finishing_source;
@@ -553,32 +553,18 @@ void ModelGenerationPanel::record_beauty_candidate(BeautyWorkbenchTransactionCon
 {
     if (!m_finishing_workbench || !m_beauty_transactions || !before) return;
     auto after = std::make_shared<BeautyCandidateSnapshot>(capture_beauty_candidate());
-    m_beauty_candidate_files.push_back(after->candidate);
-    const auto valid = [](const BeautyCandidateSnapshot& snapshot) {
-        const auto& path = snapshot.candidate.empty() ? snapshot.source : snapshot.candidate;
-        return is_nonempty_model(path) && !snapshot.model_sha256.empty() &&
-            AI::model_artifact_sha256(path) == snapshot.model_sha256;
-    };
-    m_beauty_transactions->record({kind, "Beauty candidate",
-        {}, {},
-        [before, valid] { return valid(*before); },
-        [after, valid] { return valid(*after); },
-        [this, before] { return restore_beauty_candidate(*before); },
-        [this, after] { return restore_beauty_candidate(*after); }});
+    m_beauty_session.record(kind, std::move(before), std::move(after), {
+        [](const BeautyCandidateSnapshot& snapshot) {
+            const auto& path = snapshot.candidate.empty() ? snapshot.source : snapshot.candidate;
+            return is_nonempty_model(path) && !snapshot.model_sha256.empty() && AI::model_artifact_sha256(path) == snapshot.model_sha256;
+        },
+        [this](const BeautyCandidateSnapshot& snapshot) { return restore_beauty_candidate(snapshot); }, {}});
 }
 
 void ModelGenerationPanel::clear_unaccepted_beauty_candidates(size_t start)
 {
-    if (start > m_beauty_candidate_files.size()) return;
-    for (size_t index = start; index < m_beauty_candidate_files.size(); ++index) {
-        const auto& path = m_beauty_candidate_files[index];
-        if (path.empty() || path == m_finishing_accepted_path ||
-            std::find(m_beauty_accepted_files.begin(), m_beauty_accepted_files.end(), path) != m_beauty_accepted_files.end())
-            continue;
-        boost::system::error_code ignored;
-        boost::filesystem::remove(path, ignored);
-    }
-    m_beauty_candidate_files.resize(start);
+    m_beauty_session.clear_candidates(start, m_finishing_accepted_path, {{}, {},
+        [](const boost::filesystem::path& path) { boost::system::error_code ignored; boost::filesystem::remove(path, ignored); }});
 }
 
 } // namespace Slic3r::GUI

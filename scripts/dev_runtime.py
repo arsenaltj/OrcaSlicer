@@ -87,9 +87,15 @@ def setup_identity(root: Path, build: Path) -> dict:
 def modules(root: Path) -> list[str]:
     cmake = (root / "CMakeLists.txt").read_text(encoding="utf-8")
     block = cmake.split("set(ORCA_AI_SIDECAR_RUNTIME_FILES", 1)[1].split("install(FILES", 1)[0]
-    if "${ORCA_LOCAL_SEMANTIC_RUNTIME_FILES}" in block:
-        component = root / "tools/ai/local_semantic_runtime_files.cmake"
-        block = block.replace("${ORCA_LOCAL_SEMANTIC_RUNTIME_FILES}", component.read_text(encoding="utf-8"))
+    components = {
+        "ORCA_LOCAL_SEMANTIC_RUNTIME_FILES": "tools/ai/local_semantic_runtime_files.cmake",
+        "ORCA_MODEL_CAPABILITY_RUNTIME_FILES": "tools/ai/model_runtime_files.cmake",
+    }
+    for variable, relative_path in components.items():
+        marker = "${" + variable + "}"
+        if marker in block:
+            component = root / relative_path
+            block = block.replace(marker, component.read_text(encoding="utf-8"))
     # Never silently omit a newly introduced component variable.
     remainder = block.replace("${CMAKE_SOURCE_DIR}", "")
     if re.search(r"\$\{[^}]+\}", remainder):

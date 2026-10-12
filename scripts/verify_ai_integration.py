@@ -8,6 +8,7 @@ identities and runtime metadata. It must never contain provider credentials.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 from pathlib import Path, PurePosixPath
 import re
@@ -1336,6 +1337,10 @@ def validate_gui_feature_boundaries(repo_root: Path) -> list[dict[str, str]]:
     plater_cpp = read("src/slic3r/GUI/Plater.cpp")
     panel_cpp = read("src/slic3r/GUI/ModelGenerationPanel.cpp")
     gui_cmake = read("src/slic3r/CMakeLists.txt")
+    if "${ORCA_MODEL_WORKSPACE_SOURCES}" in gui_cmake:
+        if "include(${CMAKE_CURRENT_SOURCE_DIR}/GUI/AI/ModelGeneration/ModelWorkspaceSources.cmake)" not in gui_cmake:
+            errors.append(_issue("build.source_ownership", "model workspace membership is not included"))
+        gui_cmake += read("src/slic3r/GUI/AI/ModelGeneration/ModelWorkspaceSources.cmake")
 
     for forbidden in (
         'ModelGenerationPanel.hpp',
@@ -1530,6 +1535,139 @@ def validate_dependency_boundaries(repo_root: Path) -> list[dict[str, str]]:
     return errors
 
 
+def validate_native_model_capabilities(repo_root: Path) -> list[dict[str, str]]:
+    """The minimal composition must not depend on the legacy model window."""
+    errors: list[dict[str, str]] = []
+    core = (
+        "ModelGeneration/ModelLibraryEntry.hpp", "ModelGeneration/ModelLibraryRepository.hpp",
+        "ModelGeneration/ModelLibraryRepository.cpp", "ModelGeneration/ModelLibraryLoader.hpp",
+        "ModelGeneration/ModelLibraryApplication.hpp", "ModelGeneration/BeautyWorkbenchSession.hpp",
+        "ModelGeneration/ModelWorkspaceCapabilities.hpp", "ModelGeneration/BeautyCandidateSnapshot.hpp",
+        "ModelGeneration/ModelPreviewColorState.hpp", "ModelGeneration/ModelGenerationUIState.cpp",
+        "ColorMatching/ColorMatchingSession.hpp", "ColorMatching/ColorMatchingComputation.hpp",
+        "ColorMatching/ColorMatchingComputation.cpp",
+    )
+    adapters = (
+        "ModelGeneration/ModelLibraryLoaderFactory.hpp", "ModelGeneration/ModelLibraryLoaderFactory.cpp",
+        "ModelGeneration/ModelLibraryPanel.hpp", "ModelGeneration/ModelLibraryPanel.cpp",
+        "ModelGeneration/ModelWorkspaceFeatureHost.hpp", "ModelGeneration/ModelWorkspaceFeatureHost.cpp",
+        "ColorMatching/ColorMatchingFeatureHost.hpp", "ColorMatching/ColorMatchingFeatureHost.cpp",
+    )
+    cmake = (repo_root / "src/slic3r/CMakeLists.txt").read_text(encoding="utf-8")
+    component = repo_root / "src/slic3r/GUI/AI/ModelGeneration/ModelWorkspaceSources.cmake"
+    if "${ORCA_MODEL_WORKSPACE_SOURCES}" not in cmake or "include(${CMAKE_CURRENT_SOURCE_DIR}/GUI/AI/ModelGeneration/ModelWorkspaceSources.cmake)" not in cmake:
+        errors.append(_issue("capability.native_package", "model workspace component is not composed into the GUI target"))
+    if component.is_file():
+        cmake += component.read_text(encoding="utf-8")
+    for name in core + adapters:
+        relative = "GUI/AI/" + name
+        path = repo_root / "src/slic3r" / relative
+        try:
+            source = path.read_text(encoding="utf-8")
+        except OSError:
+            errors.append(_issue("capability.native_file", f"missing native capability: {name}"))
+            continue
+        includes = re.findall(r'^\s*#\s*include\s*[<"]([^">]+)', source, re.MULTILINE)
+        if any(Path(include).name in {"ModelGenerationPanel.hpp", "ModelGenerationFeatureHost.hpp"} for include in includes):
+            errors.append(_issue("capability.legacy_panel", f"{name} imports a legacy window host"))
+        if name in core and any(Path(include).name in {"GUI_App.hpp", "Plater.hpp", "LocalPrintColorPanel.hpp", "wx/panel.h"} or
+                                include in {"wx/panel.h", "wx/window.h", "wx/dialog.h"} for include in includes):
+            errors.append(_issue("capability.native_ui", f"{name} imports native UI/project state"))
+        if relative not in cmake:
+            errors.append(_issue("capability.native_package", f"{name} is not explicitly in the native build"))
+        if len(source.splitlines()) > 500:
+            errors.append(_issue("capability.native_size", f"{name} exceeds the 500-line capability budget"))
+    host = (repo_root / "src/slic3r/GUI/AI/ModelGeneration/ModelGenerationFeatureHost.cpp").read_text(encoding="utf-8")
+    if "capabilities->mount_assets(parent)" not in host or "capabilities->open_colors" not in host:
+        errors.append(_issue("capability.native_consumer", "existing desktop host does not compose the new capabilities"))
+    return errors
+
+
+def validate_atomic_capabilities(repo_root: Path) -> list[dict[str, str]]:
+    """Enforce capability files, packaging and one-way dependency boundaries without importing providers."""
+    errors: list[dict[str, str]] = []
+    try:
+        catalog_path = repo_root / "tools/ai/capability_catalog.py"
+        catalog = ast.parse(catalog_path.read_text(encoding="utf-8"))
+        assignments = {n.targets[0].id: n.value for n in catalog.body
+                       if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name)}
+        modules = ast.literal_eval(assignments["ATOMIC_MODULES"])
+        if not isinstance(modules, tuple) or len(modules) != len(set(modules)) or not modules:
+            raise ValueError("atomic module membership must be a nonempty unique tuple")
+        if any(not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9_]*", name) for name in modules):
+            raise ValueError("atomic module names must be local Python module names")
+        runtime_list = (repo_root / "tools/ai/model_runtime_files.cmake").read_text(encoding="utf-8")
+        packaged = set(re.findall(r'/tools/ai/([a-z0-9_]+)\.py"', runtime_list))
+        if packaged != set(modules) | {"capability_catalog"}:
+            errors.append(_issue("capability.package", "atomic membership and explicit runtime file list differ"))
+        cmake = (repo_root / "CMakeLists.txt").read_text(encoding="utf-8")
+        if ('include("${CMAKE_SOURCE_DIR}/tools/ai/model_runtime_files.cmake")' not in cmake
+                or "${ORCA_MODEL_CAPABILITY_RUNTIME_FILES}" not in cmake):
+            errors.append(_issue("capability.package", "atomic runtime component is not wired into installation"))
+
+        graphs: dict[str, set[str]] = {}
+        for name in modules:
+            path = repo_root / "tools/ai" / f"{name}.py"
+            source = path.read_text(encoding="utf-8")
+            tree = ast.parse(source)
+            dependencies = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    dependencies.update(alias.name for alias in node.names)
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    dependencies.add(node.module)
+                elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                    if node.func.id in {"exec", "eval", "globals", "__import__"}:
+                        errors.append(_issue("capability.dynamic_binding", f"{name} uses dynamic namespace execution"))
+            for dependency in dependencies:
+                if dependency.split(".")[0] in {"orca_ai_sidecar", "wx", "tkinter", "PyQt5", "PyQt6"} or dependency == "http.server":
+                    errors.append(_issue("capability.host_dependency", f"{name} imports host/UI {dependency}"))
+            if len(source.splitlines()) > 1500:
+                errors.append(_issue("capability.size", f"{name} exceeds the 1500-line capability file budget"))
+            graphs[name] = {dependency.split(".")[0] for dependency in dependencies} & set(modules)
+
+        visited, active = set(), set()
+        def visit(name: str) -> None:
+            if name in active:
+                errors.append(_issue("capability.cycle", f"atomic dependency cycle at {name}"))
+                return
+            if name in visited:
+                return
+            active.add(name)
+            for dependency in sorted(graphs[name]):
+                visit(dependency)
+            active.remove(name)
+            visited.add(name)
+        for name in modules:
+            visit(name)
+
+        ids = set()
+        for call in assignments["CAPABILITIES"].elts:
+            capability_id, _, source_name, entrypoint = [ast.literal_eval(n) for n in call.args[:4]]
+            if capability_id in ids:
+                errors.append(_issue("capability.id", f"duplicate capability id: {capability_id}"))
+            ids.add(capability_id)
+            if not isinstance(source_name, str) or source_name.startswith("/") or ".." in PurePosixPath(source_name).parts:
+                raise ValueError("capability source must be a repository-relative file")
+            content = (repo_root / source_name).read_text(encoding="utf-8")
+            if source_name.endswith(".py"):
+                body = ast.parse(content).body
+                for part in entrypoint.split("."):
+                    match = next((n for n in body if isinstance(n, (ast.FunctionDef, ast.ClassDef)) and n.name == part), None)
+                    if match is None:
+                        errors.append(_issue("capability.entrypoint", f"{capability_id} entrypoint missing: {source_name}:{entrypoint}"))
+                        break
+                    body = match.body
+            elif re.search(r"\b" + re.escape(entrypoint) + r"\b", content) is None:
+                errors.append(_issue("capability.entrypoint", f"{capability_id} native entrypoint missing"))
+        for recipe in ast.literal_eval(assignments["RECIPES"]):
+            if recipe["automatic_execution"] is not False or not set(recipe["steps"]) <= ids:
+                errors.append(_issue("capability.recipe", f"invalid or implicit-execution recipe: {recipe['id']}"))
+    except (OSError, SyntaxError, KeyError, ValueError, TypeError, AttributeError) as exc:
+        errors.append(_issue("capability.layout", f"cannot validate atomic capabilities: {exc}"))
+    return errors
+
+
 def validate(lock_path: Path, repo_root: Path, skip_git: bool = False) -> dict[str, Any]:
     report: dict[str, Any] = {
         "ok": False,
@@ -1553,6 +1691,8 @@ def validate(lock_path: Path, repo_root: Path, skip_git: bool = False) -> dict[s
         errors.extend(validate_gui_feature_boundaries(repo_root))
         errors.extend(validate_model_generation_import_boundary(repo_root))
         errors.extend(validate_dependency_boundaries(repo_root))
+        errors.extend(validate_atomic_capabilities(repo_root))
+        errors.extend(validate_native_model_capabilities(repo_root))
         errors.extend(validate_architecture_budgets(document, repo_root))
         if not skip_git:
             git_errors, git_details = validate_git(document, repo_root)

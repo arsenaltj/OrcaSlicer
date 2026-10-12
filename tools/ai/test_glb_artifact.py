@@ -134,7 +134,7 @@ class GlbArtifactTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {'ORCASLICER_AI_OUTPUT_DIR': str(self.root / 'jobs')}):
             job = sidecar._new_job('text', ())
             job.attempts = [{'conversion_task_id': 'already-paid-conversion'}]
-            with mock.patch.object(sidecar, '_download_conversion', return_value=self.root / 'legacy.obj') as download:
+            with mock.patch.object(sidecar.ModelArtifactWorkflow, 'download_conversion', return_value=self.root / 'legacy.obj') as download:
                 result = sidecar._download_generation_artifact(job, 'generation', 1, True)
             self.assertEqual(result.suffix, '.obj')
             download.assert_called_once_with(job, 'generation', 'obj', 1, True)

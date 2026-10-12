@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ModelPreviewPalette.hpp"
+#include "ModelPreviewColorState.hpp"
 #include "../Model/ColorTrialState.hpp"
 #include "PortraitColorPackMapping.hpp"
 #include "PrinterFilamentPreview.hpp"
@@ -522,12 +523,9 @@ public:
             if (auto* grandparent = parent->GetParent()) grandparent->Layout();
         }
     }
-    struct State : AI::ColorTrialPersistence::State {
-        wxString project_signature, notice;
-        // Same-workpiece reloads retain the import source even after switching
-        // away from manual trial. The on-disk trial schema stays compatible.
-        std::vector<Color> manual_colors;
-    };
+    using State = ModelPreviewColorState;
+    // Same-workpiece reloads retain the import source even after switching
+    // away from manual trial. The on-disk trial schema stays compatible.
     static std::vector<Color> manual_import_palette(const State& saved) {
         if (saved.source != 2) return saved.manual_colors;
         if (saved.semantic_optimization && saved.colors.size() <= 6 &&

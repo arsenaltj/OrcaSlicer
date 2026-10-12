@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+try:
+    from . import image_preprocessing_prompts as prompt_rules
+except ImportError:
+    import image_preprocessing_prompts as prompt_rules
+
 import base64
 import binascii
 import http.client
@@ -18,6 +23,11 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
+
+try:
+    from .image_preprocessing_policy import build_image_preprocessing_policy, subject_structure_layers
+except ImportError:
+    from image_preprocessing_policy import build_image_preprocessing_policy, subject_structure_layers
 
 try:
     from .ai_diagnostics import classify_connection_error, event as diagnostic_event, exception_details, safe_endpoint
@@ -56,71 +66,7 @@ _IMAGE_QUALITY_VALUES = {"low", "medium", "high", "auto"}
 # is evidence only; it must never be used to paste source pixels into a preview.
 PORTRAIT_FACE_LOCK_FILENAME = "portrait-face-restore-mask.png"
 
-STYLE_PROFILES = {
-    "sculpture": (
-        "Change only the visible material treatment into one monochrome museum-quality plaster, clay, stone, or matte resin "
-        "sculpture. Preserve the source subject one-for-one: the same identity, face, age, expression, body proportions, pose, "
-        "silhouette, crop, clothing, accessories, objects, count, placement, and visible details. Do not redesign, beautify, "
-        "exaggerate, add, remove, reveal, or reconstruct anything. Use gentle carved planes and broad connected forms only where "
-        "needed for a printable single-material result. Keep every source-visible opening, handle, wheel, limb, tier, and base; "
-        "monochrome means one material, not fewer components."
-    ),
-    "realistic": (
-        "Create a multi-color realistic collectible while changing as little as possible beyond material and color treatment. "
-        "Preserve the source subject one-for-one: the same recognizable identity, face, age, expression, anatomy, proportions, "
-        "pose, silhouette, crop, clothing, accessories, objects, count, placement, and visible details. Use believable naturally colored "
-        "materials and restrained realistic modeling; do not stylize facial proportions, invent detail, genericize manufactured "
-        "parts, or alter the composition. When the subject is a real person, use the shape language of a highly faithful "
-        "polychrome portrait sculpture or faithful 3D scan: carry identity in the actual face silhouette and sculpted anatomical "
-        "planes while keeping source-faithful large material colors. Prioritize likeness over idealized attractiveness: retain "
-        "the person's natural adult facial asymmetry and landmark proportions instead of applying a beauty-filter, toy, game-avatar, "
-        "or generic commercial-character face. Mildly groom skin and hair surfaces only; never enlarge the eyes or irises, lift both "
-        "brows into a stock expression, narrow the nose, widen the smile, taper the jaw into a V, or shorten the lower face. Do not "
-        "pursue photographic beauty lighting or painted skin detail at the expense of recognizable three-dimensional facial geometry."
-    ),
-    "portrait_sketch": (
-        "Restyle the same real person as an identity-first portrait sketch sculpture. Preserve the exact recognizable identity, "
-        "adult age, expression, facial silhouette, landmark spacing, asymmetry, hairstyle, pose, crop, clothing, and accessories. "
-        "Use restrained exaggeration only to clarify an already-present brow, cheek, smile fold, jaw transition, or gesture; never "
-        "replace the person with a generic caricature, idealized celebrity, doll, anime face, or stock street-artist template. Translate "
-        "tone into expressive material or relief forms with continuous sculptural modeling. Prefer a few confident, "
-        "printer-width contour grooves and connected planes over drawn texture. Use only semantically truthful masses, and do not force every "
-        "selected color to appear when that would create a tiny or false region."
-    ),
-    "cartoon": (
-        "Restyle the same subject as a friendly cute cartoon collectible, especially for portraits that look harsh when rendered "
-        "realistically. Preserve recognizable identity, age, expression, hairstyle, pose, clothing, accessories, visible objects, "
-        "subject count, crop, and composition. Use rounded connected forms, clean large shapes, and modest playful simplification. "
-        "Do not replace the face with a generic doll or anime face, do not enlarge eyes excessively, and do not add or remove "
-        "elements. Make the result cute through expression, clean curves, and material treatment rather than changing identity, "
-        "age, anatomy, or the subject's distinctive proportions."
-    ),
-    "low_poly": (
-        "Restyle the same subject as a deliberate low-poly printable model built from broad, clean planar facets. Preserve the "
-        "recognizable silhouette, viewpoint, component count, pose, and identity-defining proportions, but replace fragile surface "
-        "detail, fur, foliage, fabric texture, and shallow ornament with a small number of sturdy geometric planes. Keep every "
-        "load-bearing connection visibly fused and avoid random triangulation noise or razor-thin spikes."
-    ),
-    "relief": (
-        "Convert the source into a printable shallow bas-relief mounted on one simple solid plaque. Preserve the source-facing "
-        "silhouette and recognizable internal contours while expressing depth with a few broad raised levels. Do not reconstruct "
-        "an unseen back side, create undercuts, detach foreground elements, or add a decorative frame unless it is already requested."
-    ),
-    "ink_relief": (
-        "Convert the complete visible composition into one printmaking- and woodcut-inspired ink relief on a simple solid backing plaque. "
-        "Preserve subject identity, viewpoint, count, silhouette, and recognizable internal contours. Organize positive and negative space "
-        "into two to four broad value masses, and turn only the most important brush or cut marks into connected, printer-width embossed or "
-        "engraved strokes. Use shallow stepped depth and solid opaque regions; forbid translucent washes, wet-on-wet gradients, gray mist, "
-        "micro-halftone dots, stippling, hairline hatching, and floating ink flecks. Use only semantically truthful masses, and do not force "
-        "every selected color to appear when that would create a tiny or false region."
-    ),
-    "diorama": (
-        "Restyle the complete visible composition as one compact printable miniature diorama. Preserve the main subjects, their "
-        "relative placement, viewpoint, and scene identity, but merge the ground and supporting elements into one stable base. "
-        "Simplify distant detail into layered masses, keep subject count unchanged, and avoid floating props, loose foliage, thin "
-        "rails, or deep hidden cavities."
-    ),
-}
+STYLE_PROFILES = prompt_rules.STYLE_PROFILES
 
 LEGACY_STYLE_ALIASES = {
     "q_cartoon": "cartoon",
@@ -651,59 +597,19 @@ def _designer_toy_palette_direction(
 
 def _portrait_display_base_direction() -> str:
     return (
-        "Portrait base policy: every generated portrait must be free of a separate display base. Do not preserve, recreate, or invent "
-        "a source-visible base, seat, floor contact, support, plinth, disc, pedestal, or shared display platform. Preserve actual "
-        "source-visible anatomy, including a person's pelvis, legs, or feet, as part of the subject itself. Always keep the generated portrait "
-        "base-free and finish the visible lower torso or clothing with a clean printable boundary. "
-        "Do not use a shadow-only contact or a floating fragment to imply a base. Orca may add a selectable round, oval, or rectangular "
-        "display base after generation, once the user has completed geometry and colour editing. "
+        prompt_rules.PORTRAIT_RULES['display_base']
     )
 
 
 def _portrait_identity_geometry_direction() -> str:
     return (
-        "Real-person identity geometry rule: preserve adult age, source-visible feminine or masculine presentation, face width "
-        "and length, hair part and sweep, hairline, visible ears, eye spacing and "
-        "shape, eyebrow arc, nose bridge/width/tip, mouth width, smile asymmetry, cheek volume, jaw contour, and chin length. "
-        "Match the source landmark ratios rather than a memorized attractive face: inter-eye distance, visible eye opening, brow-to-eye "
-        "distance, nose width and projection, nose-to-mouth distance, mouth width, upper-to-lower lip balance, cheek width, and the lower "
-        "facial third must stay source-faithful. Preserve small left-right differences in eyelids, brows, smile corners, cheeks, and jaw. "
-        "Encode the eyelids, nose, cheekbones, smile folds, mouth corners, and jaw transition as restrained modelable relief and "
-        "silhouette, not only as gradients, highlights, makeup, or thin painted lines. Keep teeth as one shallow readable smile "
-        "band rather than many tiny separate teeth. Never turn an adult into a big-eyed childlike, game-avatar, beauty-filtered, or generic "
-        "doll face. Do not make both eyes wider or rounder than the source, and do not replace natural facial asymmetry with perfect symmetry. Preserve "
-        "the exact source-visible crossed-arm order, exposed wrist and hand count, jacket lapels, and inner neckline; group fingers "
-        "into sturdy forms, fuse wrists to sleeves and forearms, and never mirror or invent a second hand. A watch may be "
-        "simplified into one solid fitted band. Preserve garment coverage exactly around every clothed arm: if a jacket or sleeve "
-        "covers an elbow, upper arm, forearm, or wrist in the source, continue that same garment as one closed tube around the "
-        "underside, side, and occluded back. Never invent a bare elbow, upper arm, or forearm behind a crossed arm, and never use "
-        "skin color as an inferred shadow on clothing. Skin is allowed only on source-visible face, ears, neck, hands, and exposed "
-        "wrist areas. With crossed arms, preserve every clearly visible hand, but do not turn a thin partially occluded skin sliver "
-        "into a stripe across the jacket: either show it as one compact, anatomically bounded hand/wrist region or keep that ambiguous "
-        "sliver fully tucked beneath the existing sleeve without changing the arm order. Do not age the person up, change their presentation, broaden or narrow the face, "
-        "or replace an asymmetric hairstyle with a generic centered cap of hair. "
+        prompt_rules.PORTRAIT_RULES['identity_geometry']
     )
 
 
 def _difficult_structure_direction() -> str:
     return (
-        "Difficult-structure rule: for a vehicle, machine, tool, or articulated product, keep every wheel, bucket, blade, lens, "
-        "mirror, handle, and moving attachment connected through visibly overlapping solid pin housings, axles, arms, or thick "
-        "opaque rods. Each structural joint must be a positive-volume union: extend every axle, piston rod, hinge pin, arm, and "
-        "brace visibly inside the receiving housing, with generous overlap on both sides. Butt contact, near-touching tips, cast "
-        "shadows, painted lines, and a loose pin beside the machine do not count as a connection. Keep a bucket or blade merged "
-        "to its final arm through one thickened joint block; keep every linkage merged back to the main chassis. Preserve readable "
-        "joint gaps as shallow recessed grooves instead of separating an attachment into another island. If a realistic linkage "
-        "cannot remain fused, simplify it into one solid load-bearing brace while preserving the outer silhouette and function. "
-        "For a fan, feather screen, wing, sail, umbrella canopy, leaf, or other broad thin surface, give the surface visible finite "
-        "thickness and fuse its ribs into a continuous rim, hub, body, or trunk; never use a paper-thin single sheet. For an open "
-        "umbrella, make the central shaft penetrate and fuse into the canopy hub and the lowest support, embed every rib along the "
-        "canopy instead of leaving wire-like struts, and use shallow panel grooves rather than separated fabric panels. For a fan "
-        "tail or feather display, fuse the screen to a broad body or support mass instead of relying on isolated feather tips or "
-        "thin legs alone. "
-        "When an explicitly requested group contains two or more separate people, characters, or animals as one display model, "
-        "place every subject on one shared low integrated base while preserving exact count, spacing, left-right order, pose, and "
-        "individual silhouettes; do not fuse their bodies together merely to obtain connectivity. "
+        prompt_rules.LEGACY_RULES['difficult_structure']
     )
 
 
@@ -711,19 +617,11 @@ def _style_support_override(style: str) -> str:
     canonical_style = LEGACY_STYLE_ALIASES.get(style, style)
     if canonical_style in {"relief", "ink_relief"}:
         return (
-            "RELIEF SUPPORT OVERRIDE — highest priority for this style: the one simple solid backing plaque is mandatory, "
-            "including for people, animals, products, machines, furniture, and complete scenes. This overrides both the portrait "
-            "display-base rule and the non-human base-free rule. Compress the entire visible composition into a shallow front-facing "
-            "relief fused across broad contact areas to that plaque; never return a free-standing figurine, product, or diorama. "
-            "Keep a clean visible plaque margin around the raised subject and do not add a second pedestal, floor, or decorative frame. "
+            prompt_rules.SUPPORT_RULES['relief']
         )
     if canonical_style == "diorama":
         return (
-            "DIORAMA SUPPORT OVERRIDE — highest priority for this style: one shared low terrain or floor base with a flat underside "
-            "is mandatory and overrides the non-human base-free rule. Fuse every requested subject and prop to that one base. Preserve "
-            "only source-visible or explicitly requested scene elements. For an isolated subject, use a minimal plain contact platform "
-            "without inventing rocks, plants, furniture, buildings, signs, or other decorative scenery. Never return a base-free product "
-            "shot or an ordinary display figurine with no scene-level ground relationship. "
+            prompt_rules.SUPPORT_RULES['diorama']
         )
     return ""
 
@@ -732,62 +630,43 @@ def _non_realistic_text_cleanup_direction(style: str) -> str:
     if LEGACY_STYLE_ALIASES.get(style, style) == "realistic":
         return ""
     return (
-        "NON-REALISTIC TEXT CLEANUP — high priority: remove every readable word, brand, logo, serial number, label, watermark, "
-        "and pseudo-letter from the subject as well as the background. Preserve the panel, badge, or engraving footprint only as "
-        "one blank recessed panel, broad unlettered groove, or solid color block. Do not copy source glyphs and do not invent "
-        "plausible substitute spelling. "
+        prompt_rules.LEGACY_RULES['non_realistic_text_cleanup']
     )
 
 
 def _solid_background_direction() -> str:
     return (
-        "Use one uniform opaque solid-color studio background, preferably neutral mid-gray. "
-        "Choose a different uniform tone if needed to clearly separate the background from every subject region, "
-        "including white clothing, hair and the base; never recolor the subject to create contrast. "
-        "Do not request transparency or draw a transparency checkerboard, checker pattern, grid, tiles, "
-        "background texture, gradient, scenery, floor shadow or halo. Replace any such backdrop in the source image. "
-        "Preserve the complete subject and base with clear empty margins on all sides. "
+        prompt_rules.COMMON_RULES['solid_background']
     )
 
 
+def _prompt_layer(name: str, rule: str, text: str) -> dict[str, str]:
+    return {"id": name, "rule": rule, "text": text}
+
+
 def _image_to_3d_composition_direction(transparent_background: bool = False, style: str = "") -> str:
+    return "".join(layer["text"] for layer in _image_to_3d_composition_layers(transparent_background, style))
+
+
+def _image_to_3d_composition_layers(transparent_background: bool = False, style: str = "") -> list[dict[str, str]]:
+    canonical = LEGACY_STYLE_ALIASES.get(style, style)
+    support_key = "relief" if canonical in {"relief", "ink_relief"} else "diorama" if canonical == "diorama" else "legacy_nonhuman_base"
     support_override = _style_support_override(style)
     if support_override:
         support_direction = support_override
     else:
         support_direction = (
-            "Except for an explicitly source-visible support, a non-human standing, seated, crouched, lying, wheeled, "
-            "naturally stable, or cleanly cropped subject must remain base-free when the source is base-free. Do not add a disc, "
-            "plinth, stand, platform, presentation base, floor slab, or pedestal to a non-human subject unless the user explicitly "
-            "requests one. "
+            prompt_rules.SUPPORT_RULES['legacy_nonhuman_base']
         )
-    return (
-        "Recompose the selected primary subject as a clean product-shot reference for image-to-3D rather than editing the "
-        "photograph in place. Center the exact requested subject or explicitly requested subject group as one readable composition on "
-        + ("a transparent background" if transparent_background else "a uniform opaque solid-color background")
-        + ", show a coherent complete silhouette, and use a front or gentle three-quarter view. Do not add or preserve a presentation "
-        "base, support, floor slab, or contact surface; a source-visible functional part may remain only when it is part of the "
-        "subject itself. "
-        + support_direction
-        + _portrait_display_base_direction()
-        + _difficult_structure_direction()
-        + "If a thin visible part would otherwise become disconnected, use the smallest integrated material bridge or subtle "
-        "thickening needed for continuity rather than adding a display base. Remove scenery, floor shadows, text, logos, watermarks, camera UI, "
-        "color cards, and unrelated people, plants, props, or landmarks. Do not combine separate scene elements into one object. "
-        "Choose every subject named by the user when visible. If the user explicitly requests multiple subjects, a pair, a group, "
-        "or a set, preserve the exact requested count, identities, left-right order, relative spacing, poses, and accessories as one "
-        "closed composition; never silently drop, merge, duplicate, or replace a requested member. Otherwise choose the visually "
-        "dominant foreground subject. "
-        "Apply these source-dependent framing rules: if the complete person, animal, or object is visible, preserve the complete "
-        "head-to-toe or whole-object form and its existing pose. If a person is cropped before the knees or only the upper body is "
-        "visible, create a deliberately finished bust or half-body collectible: preserve only the visible head, torso, arms, and "
-        "clothing, end the lower torso with a clean printable boundary and do not invent "
-        "a pelvis, legs, or feet. If the source is a multi-subject scenic photograph and the user did not explicitly request a "
-        "pair, group, set, or exact subject count, isolate exactly one requested or dominant subject and omit all secondary subjects "
-        "and background scenery. Never duplicate a face, limb, tower, statue, accessory, or architectural element. "
-        "Determine this source crop and visible anatomical extent before applying style or palette. Changing palette mode, palette "
-        "colors, or print constraints must not change full-body versus bust framing or reveal anatomy outside the source crop. "
-    )
+    return [
+        _prompt_layer('legacy.composition_intro', 'LEGACY_RULES.composition_intro', (prompt_rules.LEGACY_RULES['composition_intro'])),
+        _prompt_layer('legacy.background_and_support', 'LEGACY_RULES.composition_support', ('a transparent background' if transparent_background else 'a uniform opaque solid-color background') + (prompt_rules.LEGACY_RULES['composition_support'])),
+        _prompt_layer('style.support', f'SUPPORT_RULES.{support_key}', support_direction),
+        _prompt_layer('portrait.display_base', 'PORTRAIT_RULES.display_base', (_portrait_display_base_direction())),
+        _prompt_layer('legacy.difficult_structure', 'LEGACY_RULES.difficult_structure', (_difficult_structure_direction())),
+        _prompt_layer('legacy.isolation_and_groups', 'LEGACY_RULES.isolation_and_groups', (prompt_rules.LEGACY_RULES['isolation_and_groups'])),
+        _prompt_layer('portrait.source_crop', 'PORTRAIT_RULES.source_crop', (prompt_rules.PORTRAIT_RULES['source_crop'])),
+    ]
 
 
 def preprocess_text(
@@ -851,7 +730,7 @@ def _vision_image_data(path: Path) -> tuple[str, bytes]:
         raise OpenAIPreprocessorError("A review image could not be decoded.") from None
 
 
-def complete_vision(system_prompt: str, user_content: str, image_paths: tuple[Path, ...]) -> str:
+def complete_vision(system_prompt: str, user_content: str, image_paths: tuple[Path, ...], *, allow_retry: bool = True) -> str:
     if not isinstance(system_prompt, str) or not system_prompt.strip():
         raise OpenAIPreprocessorError("A system prompt is required.")
     if not isinstance(user_content, str) or not user_content.strip():
@@ -876,7 +755,7 @@ def complete_vision(system_prompt: str, user_content: str, image_paths: tuple[Pa
                 },
             }
         )
-    _, _, model, _ = _config()
+    base, key, model, _ = _config()
     payload = {
         "model": model,
         "messages": [
@@ -884,15 +763,21 @@ def complete_vision(system_prompt: str, user_content: str, image_paths: tuple[Pa
             {"role": "user", "content": content},
         ],
     }
-    result = _provider_request(
-        "/chat/completions",
-        json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
-        "application/json",
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    result = (
+        _provider_request("/chat/completions", body, "application/json") if allow_retry else
+        _request_with_provider("/chat/completions", body, "application/json",
+                               base=base, key=key, provider_source="legacy_text")
     )
     response = _completion_content(result).strip()
     if not response:
         raise OpenAIPreprocessorError("The preprocessing service returned an empty response.")
     return response
+
+
+def complete_vision_once(system_prompt: str, user_content: str, image_paths: tuple[Path, ...]) -> str:
+    """One opt-in vision request, including on ambiguous network failure."""
+    return complete_vision(system_prompt, user_content, image_paths, allow_retry=False)
 
 
 def _bounded_recommendation_text(value: Any, field: str, maximum_bytes: int) -> str:
@@ -1380,6 +1265,18 @@ def _style_preview_prompt(
     custom_style: str = "",
     geometry_reference: bool = False,
 ) -> str:
+    return "".join(layer["text"] for layer in _style_preview_layers(instruction, palette, style, shadow_color, palette_roles, custom_style, geometry_reference))
+
+
+def _style_preview_layers(
+    instruction: str,
+    palette: tuple[str, ...],
+    style: str = "sculpture",
+    shadow_color: str = "blue",
+    palette_roles: Mapping[str, str] | None = None,
+    custom_style: str = "",
+    geometry_reference: bool = False,
+) -> list[dict[str, str]]:
     canonical_style = LEGACY_STYLE_ALIASES.get(style, style)
     style_profile = (
         _style_profile(style, custom_style)
@@ -1387,15 +1284,7 @@ def _style_preview_prompt(
         else _designer_toy_profile(style, custom_style) if palette else _style_profile(style, custom_style)
     )
     realistic_identity_lock = (
-        "IDENTITY-FIRST PORTRAIT LOCK — highest priority when the source contains a real person: make the smallest "
-        "possible face edit. Treat the source head and face as a locked geometric reference, not inspiration for a newly "
-        "drawn attractive person. Keep the face bounding box relative to the shoulders, head angle, eye centers and eyelid "
-        "openings, brow heights, nose tip and nostril width, mouth corners, tooth exposure, cheek outline, jaw corners, and "
-        "chin endpoint aligned to the source at the same scale. Do not substitute a generic professional portrait, narrow or "
-        "symmetrize the face, enlarge both eyes, or widen the smile. Preserve identity through modelable facial planes and "
-        "relief, not a photographic face overlay. Render the face in the same coherent sculptural material and lighting as "
-        "the head and body; surface simplification must not move, resize, or reshape identity landmarks. Before returning, compare the source "
-        "and result face at equal size and correct any landmark drift. "
+        prompt_rules.PORTRAIT_RULES['identity_lock']
         if canonical_style in IDENTITY_FIRST_PORTRAIT_STYLES and (palette or geometry_reference) else ""
     )
     color_direction = (
@@ -1406,55 +1295,24 @@ def _style_preview_prompt(
             allow_meaningful_subset=canonical_style in PRINT_NATIVE_ARTISTIC_STYLES,
         )
         if palette
-        else "Use coherent natural colors that fit the subject and selected style. Preserve useful tonal modeling with broad, "
-        "contiguous color regions for shape readability. "
+        else prompt_rules.MATERIAL_RULES['legacy_preview_colors']
     )
-    return (
-        "Transform the supplied reference into a polished designer-ready style preview for later image-to-3D. "
-        "The supplied source image is the authority for the primary subject's identity and recognizable structure. "
-        + realistic_identity_lock
-        + "User style and subject direction: "
-        + instruction.strip()
-        + "\nSelected style profile: "
-        + style_profile
-        + " "
-        + _non_realistic_text_cleanup_direction(canonical_style)
-        + "\nImage-to-3D composition contract: "
-        + _image_to_3d_composition_direction(bool(palette), canonical_style)
-        + (_solid_background_direction() if not palette else "")
-        + "Treat the source as a closed visual inventory. Preserve its exact viewpoint (front, three-quarter, side, or rear), "
-        "facing direction, left-right arrangement, silhouette, component count, negative spaces, and all identity-defining "
-        "asymmetry. Never mirror the subject or substitute a more typical example of its category. "
-        + "Preserve the chosen subject's recognizable identity, facial expression, hairstyle, signature clothing or structural "
-        "features, and visible pose. Simplify fine hair strands, fingers, jewelry, fabric patterns, foliage-like texture, and shallow "
-        "surface noise into a few sturdy, connected, modelable forms. Do not turn the chosen person, animal, statue, building, or "
-        "object into a different subject. For a person, preserve the exact head angle and gaze direction, adult or child age, face "
-        "aspect ratio, cheekbone placement, chin length, jaw contour, skin-tone relationships, hairline, curls, braids, facial hair, "
-        "eyewear, headwear, visible hands, finger grouping, and hand-to-object contact; do not "
-        "enlarge the eyes, shrink the nose or mouth, narrow the jaw, or replace the face with a generic doll face. For an animal, "
-        "preserve its species or breed cues, ear shape and count, muzzle length, eye color, limb count, tail pose, and exact coat, "
-        "feather, shell, or scale markings; do not invent a white muzzle, chest patch, socks, blaze, or spots that are absent from "
-        "the source. For a product, vehicle, machine, or prop, preserve the exact number and relative placement of wheels, handles, "
-        "openings, windows, lenses, dials, buttons, straps, tools, rods, and antennas; do not merge, duplicate, swap, or genericize "
-        "them. For architecture or a statue, preserve tier and opening counts, gestures, symmetry or deliberate asymmetry, and any "
-        "source-visible base; never invent a pedestal when none exists. Keep each meaningful thin support, spoke, cable, rail, branch, "
-        "or antenna connected; if printability requires it, thicken it subtly instead of deleting or duplicating it. "
-        "For a plant, bonsai, coral, antler, feather fan, or other branching organic subject, use fewer overlapping solid clusters "
-        "and visibly fuse every cluster through sturdy branches or stems to the trunk, body, or base; do not leave contact-only "
-        "shells or isolated leaf pads. "
-        "Do not invent unseen anatomy; use the explicit bust treatment for cropped people instead. "
-        + _portrait_identity_geometry_direction()
-        + color_direction
-        + (
-            "This is the geometry reference. Preserve continuous tonal modeling and soft broad diffuse "
-            "lighting so silhouette, facial landmarks, joints, folds, and sculptural planes remain legible. Preserve broad natural "
-            "material groups together with their gradients, texture and fine color detail. Do not bake lighting or cast shadows into geometry. "
-            if geometry_reference else ""
-        )
-        + "Avoid dithering and tiny color speckles. Do not return the unchanged source as a whole. Preserve a person's "
-        "identity in the generated shape, not by pasting original photo pixels onto the face. Do not copy source-background "
-        "shadows, gray halos, or photographic texture around the head into the generated reference."
-    )
+    return [
+        _prompt_layer('common.authority', 'COMMON_RULES.legacy_reference_authority', (prompt_rules.COMMON_RULES['legacy_reference_authority'])),
+        _prompt_layer('portrait.identity_lock', 'PORTRAIT_RULES.identity_lock', (realistic_identity_lock)),
+        _prompt_layer('user.instruction', 'user', ('User style and subject direction: ') + (instruction.strip())),
+        _prompt_layer('style.profile', f'STYLE_PROFILES.{canonical_style}' if canonical_style != CUSTOM_STYLE_ID else 'user.custom_style', '\nSelected style profile: ' + style_profile + ' '),
+        _prompt_layer('legacy.text_cleanup', 'LEGACY_RULES.non_realistic_text_cleanup', (_non_realistic_text_cleanup_direction(canonical_style))),
+        _prompt_layer('legacy.composition_label', 'composer', ('\nImage-to-3D composition contract: ')),
+        *_image_to_3d_composition_layers(bool(palette), canonical_style),
+        _prompt_layer('common.background', 'COMMON_RULES.solid_background', (_solid_background_direction() if not palette else '')),
+        _prompt_layer('common.inventory', 'COMMON_RULES.legacy_source_inventory', (prompt_rules.COMMON_RULES['legacy_source_inventory'])),
+        _prompt_layer('legacy.subject_preservation', 'LEGACY_RULES.subject_preservation', (prompt_rules.LEGACY_RULES['subject_preservation'])),
+        _prompt_layer('portrait.identity_geometry', 'PORTRAIT_RULES.identity_geometry', (_portrait_identity_geometry_direction())),
+        _prompt_layer('material.preview_colors', 'MATERIAL_RULES.legacy_preview_colors', (color_direction)),
+        _prompt_layer('common.geometry_lighting', 'COMMON_RULES.legacy_geometry_lighting', (prompt_rules.COMMON_RULES['legacy_geometry_lighting'] if geometry_reference else '')),
+        _prompt_layer('portrait.no_photo_overlay', 'PORTRAIT_RULES.no_photo_overlay', (prompt_rules.PORTRAIT_RULES['no_photo_overlay'])),
+    ]
 
 
 def build_style_preview_prompt(
@@ -1464,57 +1322,137 @@ def build_style_preview_prompt(
     shadow_color: str = "blue",
     palette_roles: Mapping[str, str] | None = None,
     custom_style: str = "",
+    *,
+    print_settings: Mapping[str, Any] | None = None,
+    preprocessing_options: Mapping[str, Any] | None = None,
 ) -> str:
     """Return the exact provider prompt used for image-to-image previews.
 
     Benchmark and support tooling use this public boundary to persist an
     auditable request without duplicating the production prompt contract.
     """
-    return _unrestricted_creation_prompt(instruction, style, custom_style, from_image=True)
+    return build_geometry_reference_prompt(instruction, style, custom_style,
+                                          print_settings=print_settings, preprocessing_options=preprocessing_options)
 
 
 def build_geometry_reference_prompt(
     instruction: str,
     style: str = "sculpture",
     custom_style: str = "",
+    *,
+    print_settings: Mapping[str, Any] | None = None,
+    preprocessing_options: Mapping[str, Any] | None = None,
 ) -> str:
     """Return the unrestricted creation prompt used by the production path."""
-    return _unrestricted_creation_prompt(instruction, style, custom_style, from_image=True)
+    return _unrestricted_creation_prompt(instruction, style, custom_style, from_image=True,
+                                         print_settings=print_settings, preprocessing_options=preprocessing_options)
+
+
+def build_geometry_reference_prompt_layers(
+    instruction: str,
+    style: str = "sculpture",
+    custom_style: str = "",
+    *,
+    print_settings: Mapping[str, Any] | None = None,
+    preprocessing_options: Mapping[str, Any] | None = None,
+) -> list[dict[str, str]]:
+    """Expose exact ordered production prompt parts and their editable rule keys.
+
+    Concatenating text reproduces the provider prompt without extra separators.
+    Empty conditional layers remain visible so style gating is inspectable.
+    """
+    if not isinstance(instruction, str) or not instruction.strip():
+        raise OpenAIPreprocessorError("An image-generation instruction is required.")
+    policy = image_preprocessing_policy(instruction, style, custom_style=custom_style,
+                                        print_settings=print_settings, preprocessing_options=preprocessing_options)
+    if policy["specialized"]:
+        return _nonportrait_creation_layers(instruction, style, custom_style, policy)
+    if policy["material_proxy"]:
+        raise OpenAIPreprocessorError("Matte geometry mode requires an explicitly identified non-portrait subject.")
+    canonical = LEGACY_STYLE_ALIASES.get(style, style)
+    layers = _style_preview_layers(instruction, (), style, custom_style=custom_style, geometry_reference=True)
+    layers.append(_prompt_layer("portrait.surface", "PORTRAIT_RULES.surface",
+                                prompt_rules.PORTRAIT_RULES["surface"] if canonical in IDENTITY_FIRST_PORTRAIT_STYLES else ""))
+    layers.append(_prompt_layer("material.unrestricted", "MATERIAL_RULES.unrestricted_creation",
+                                prompt_rules.MATERIAL_RULES["unrestricted_creation"]))
+    layers.append(_prompt_layer("style.sculpture_tonal", "MATERIAL_RULES.sculpture_tonal",
+                                prompt_rules.MATERIAL_RULES["sculpture_tonal"] if canonical == "sculpture" else ""))
+    return layers
+
+
+def image_preprocessing_policy(instruction: str, style: str, *,
+                               custom_style: str = "",
+                               print_settings: Mapping[str, Any] | None = None,
+                               preprocessing_options: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    if preprocessing_options is not None and not isinstance(preprocessing_options, Mapping):
+        raise OpenAIPreprocessorError("Image preprocessing options must be a mapping.")
+    options = dict(preprocessing_options or {})
+    allowed = {"filename", "category_hint", "subject_text", "material_proxy"}
+    if set(options) - allowed:
+        raise OpenAIPreprocessorError("Unsupported image preprocessing options.")
+    if any(not isinstance(options[key], str) for key in ("filename", "category_hint", "subject_text") if key in options):
+        raise OpenAIPreprocessorError("Image preprocessing text options must be strings.")
+    policy = build_image_preprocessing_policy(instruction, LEGACY_STYLE_ALIASES.get(style, style),
+                                              print_settings=print_settings, **options)
+    policy["custom_style"] = custom_style
+    return policy
+
+
+def _nonportrait_creation_prompt(instruction: str, style: str, custom_style: str,
+                                policy: Mapping[str, Any]) -> str:
+    return "".join(layer["text"] for layer in _nonportrait_creation_layers(instruction, style, custom_style, policy))
+
+
+def _nonportrait_creation_layers(instruction: str, style: str, custom_style: str,
+                                policy: Mapping[str, Any]) -> list[dict[str, str]]:
+    canonical = LEGACY_STYLE_ALIASES.get(style, style)
+    profile = _style_profile(style, custom_style)
+    profile = prompt_rules.NONPORTRAIT_STYLE_PROFILES.get(canonical, profile)
+    profile_rule = (f"NONPORTRAIT_STYLE_PROFILES.{canonical}" if canonical in prompt_rules.NONPORTRAIT_STYLE_PROFILES
+                    else "user.custom_style" if canonical == CUSTOM_STYLE_ID else f"STYLE_PROFILES.{canonical}")
+    support_key = "relief" if canonical in {"relief", "ink_relief"} else "diorama" if canonical == "diorama" else "source_functional"
+    support = prompt_rules.SUPPORT_RULES[support_key]
+    text = prompt_rules.TEXT_RULES[policy["subject_text"]]
+    material_key = ("matte_proxy" if policy["material_proxy"] else "nonportrait_sculpture" if canonical == "sculpture"
+                    else "nonportrait_ink_relief" if canonical == "ink_relief" else "nonportrait_natural")
+    material = prompt_rules.MATERIAL_RULES[material_key]
+    return [
+        _prompt_layer('common.authority', 'COMMON_RULES.reference_authority', (prompt_rules.COMMON_RULES['reference_authority'])),
+        _prompt_layer('user.instruction', 'user', (instruction.strip())),
+        _prompt_layer('style.profile', profile_rule, '\nSelected style: ' + profile),
+        _prompt_layer('common.inventory', 'COMMON_RULES.source_inventory', (prompt_rules.COMMON_RULES['source_inventory'])),
+        _prompt_layer('style.support', f'SUPPORT_RULES.{support_key}', support),
+        _prompt_layer('common.background', 'COMMON_RULES.solid_background', (_solid_background_direction())),
+        _prompt_layer('subject.text', f'TEXT_RULES.{policy["subject_text"]}', text),
+        *subject_structure_layers(policy),
+        _prompt_layer('material.reference', f'MATERIAL_RULES.{material_key}', ' ' + material),
+        _prompt_layer('common.lighting_and_groups', 'COMMON_RULES.lighting_and_groups', (prompt_rules.COMMON_RULES['lighting_and_groups'])),
+    ]
 
 
 def _unrestricted_creation_prompt(
-    instruction: str, style: str, custom_style: str, *, from_image: bool
+    instruction: str, style: str, custom_style: str, *, from_image: bool,
+    print_settings: Mapping[str, Any] | None = None,
+    preprocessing_options: Mapping[str, Any] | None = None,
 ) -> str:
     if not isinstance(instruction, str) or not instruction.strip():
         raise OpenAIPreprocessorError("An image-generation instruction is required.")
+    if from_image:
+        return "".join(layer["text"] for layer in build_geometry_reference_prompt_layers(
+            instruction, style, custom_style, print_settings=print_settings, preprocessing_options=preprocessing_options))
     # Keep the tested identity, composition and geometry rules. Only the color
     # policy changes; a new palette mode must not redesign the subject.
     prompt = (
-        _style_preview_prompt(instruction, (), style, custom_style=custom_style, geometry_reference=True)
-        if from_image else
         _text_image_prompt(instruction, (), style, custom_style=custom_style, geometry_reference=True)
     )
     portrait_surface = (
-        " For a real-person subject, refine the surface conservatively while keeping the locked facial geometry. "
-        "Reduce capture noise, isolated specular glare and transient skin blemishes; retain age cues, characteristic "
-        "creases, moles, freckles and deliberate makeup. Do not smooth away the eyelid rim, nostril boundary, lip edge "
-        "or the individual shape of the mouth. Keep lips, eyebrows, irises, sclera, hairline and clothing boundaries "
-        "distinct at the intended reference-image scale without enlarging or outlining them. "
-        "Use neutral white-balanced, broad diffuse illumination: enough gentle shading to read facial planes, with "
-        "no colored rim light, hard cast shadow across the face, oily highlight or beauty-filter whitening. "
-        "Keep the person's natural skin hue consistent across face, ears, neck and visible hands, including shaded "
-        "areas; preserve natural local variation rather than making skin one flat swatch. Lighting darkness must not "
-        "be interpreted as a different skin material, painted dirt, a deep wrinkle or a geometric hole. "
-        "For multiple people, retain each person's own facial proportions and skin tone independently; never average "
-        "their faces or swap their features. A user's explicitly requested lighting or intentional color remains controlling. "
+        prompt_rules.PORTRAIT_RULES['surface']
         if LEGACY_STYLE_ALIASES.get(style, style) in IDENTITY_FIRST_PORTRAIT_STYLES else ""
     )
     return prompt + portrait_surface + (
-        " Preserve natural colors, continuous gradients, texture, subtle skin tones and material detail. "
-        "There is no printer color palette or color-count limit. Do not quantize, posterize, flatten colors, "
-        "or impose solid-color regions for printing. A color explicitly requested by the user remains intentional. "
+        prompt_rules.MATERIAL_RULES['unrestricted_creation']
     ) + (
-        "The selected monochrome sculpture style intentionally keeps its single-material appearance; preserve tonal shading within that style."
+        prompt_rules.MATERIAL_RULES['sculpture_tonal']
         if LEGACY_STYLE_ALIASES.get(style, style) == "sculpture" else ""
     )
 
@@ -1702,19 +1640,28 @@ def preprocess_image(
     palette_roles: Mapping[str, str] | None = None,
     custom_style: str = "",
     geometry_output_path: str | os.PathLike[str] | None = None,
+    *,
+    print_settings: Mapping[str, Any] | None = None,
+    preprocessing_options: Mapping[str, Any] | None = None,
 ) -> Path:
     if not isinstance(instruction, str) or not instruction.strip():
         raise OpenAIPreprocessorError("An image-edit instruction is required.")
     canonical_style = LEGACY_STYLE_ALIASES.get(style, style)
+    if preprocessing_options is not None and not isinstance(preprocessing_options, Mapping):
+        raise OpenAIPreprocessorError("Image preprocessing options must be a mapping.")
+    options = {"filename": Path(input_path).name, **dict(preprocessing_options or {})}
+    policy = image_preprocessing_policy(instruction, style, custom_style=custom_style, print_settings=print_settings,
+                                        preprocessing_options=options)
     result = edit_image(
         input_path,
-        build_geometry_reference_prompt(instruction, style, custom_style),
+        build_geometry_reference_prompt(instruction, style, custom_style,
+                                       print_settings=print_settings, preprocessing_options=options),
         output_path,
         # Match the solid-backdrop prompt at the transport boundary so a
         # compatible provider is never asked to simulate transparency.
         background="opaque",
     )
-    if canonical_style in IDENTITY_FIRST_PORTRAIT_STYLES:
+    if canonical_style in IDENTITY_FIRST_PORTRAIT_STYLES and not policy["specialized"]:
         # Retain detection evidence for portrait routing/crops, not compositing.
         # A source-space oval cannot align a newly generated head and can copy
         # photographic background into the geometry reference as a gray halo.
@@ -1724,15 +1671,13 @@ def preprocess_image(
         # A user-confirmed preview action may issue at most one billed Image2
         # request. Keep its pixels intact and reuse that result for geometry;
         # source likeness belongs in generated shape, not a photo overlay.
-        if geometry_output_path is not None:
-            geometry_output = Path(geometry_output_path)
-            try:
-                geometry_output.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(result, geometry_output)
-            except OSError:
-                raise OpenAIPreprocessorError(
-                    "The sculptural portrait reference could not be saved."
-                ) from None
+    if geometry_output_path is not None:
+        geometry_output = Path(geometry_output_path)
+        try:
+            geometry_output.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(result, geometry_output)
+        except OSError:
+            raise OpenAIPreprocessorError("The generated image reference could not be saved.") from None
     return result
 
 
