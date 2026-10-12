@@ -7,6 +7,11 @@ namespace Slic3r::GUI {
 
 enum class RedesignModelRouteAction { Ignore, Refresh, Model, Image };
 
+inline bool workbench_mode_switch_allowed(bool importing, bool native_slicing, bool official_slicing, bool editing)
+{
+    return !importing && !native_slicing && !official_slicing && !editing;
+}
+
 inline bool model_generation_return_to_design_allowed(const ModelGenerationUIState& state,
     const PostGenerationUiState& workbench, bool shell_operation_in_progress)
 {

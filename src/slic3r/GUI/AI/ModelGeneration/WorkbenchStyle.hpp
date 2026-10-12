@@ -465,9 +465,9 @@ public:
             const auto size = GetClientSize();
             dc.SetPen(HasFocus() ? wxPen(wxColour(105, 105, 112), FromDIP(1)) : *wxTRANSPARENT_PEN);
             dc.SetBrush(wxBrush(GetBackgroundColour()));
-            dc.DrawRoundedRectangle(0, 0, size.x - 1, size.y - 1, FromDIP(9));
+            dc.DrawRoundedRectangle(0, 0, size.x - 1, size.y - 1, FromDIP(m_corner_radius));
             dc.SetFont(GetFont());
-            dc.SetTextForeground(IsEnabled() ? wxColour(235, 235, 235) : wxColour(105, 105, 110));
+            dc.SetTextForeground(IsEnabled() ? m_text_colour : wxColour(105, 105, 110));
             const int inset = FromDIP(12);
             const wxString label = wxControl::Ellipsize(GetLabel(), dc, wxELLIPSIZE_END,
                 std::max(0, size.x - 2 * inset - FromDIP(16)));
@@ -484,8 +484,11 @@ public:
         Rescale();
     }
     void SetMinSize(const wxSize&) override {
-        ComboBox::SetMinSize(FromDIP(wxSize(1, 42)));
+        ComboBox::SetMinSize(FromDIP(wxSize(1, m_minimum_height)));
     }
+    void set_minimum_height(int height) { m_minimum_height=height; SetMinSize(wxDefaultSize); }
+    void set_corner_radius(int radius) { m_corner_radius=radius; Refresh(false); }
+    void set_text_colour(const wxColour& colour) { m_text_colour=colour; Refresh(false); }
     void Rescale() override {
         ComboBox::Rescale();
         const auto arrow = ScalableBitmap(this, "workbench_palette_arrow", 10).bmp().ConvertToImage();
@@ -500,6 +503,9 @@ public:
     }
 private:
     wxBitmap m_up, m_down;
+    int m_minimum_height {42};
+    int m_corner_radius {9};
+    wxColour m_text_colour {235, 235, 235};
 };
 
 // Custom Button caches pixel metrics and bitmap-only icons. Keep the workbench's
@@ -543,6 +549,10 @@ public:
     void SetPaddingSize(const wxSize& size) {
         m_padding = ToDIP(size);
         Button::SetPaddingSize(size);
+    }
+    void SetLeftPadding(int size) {
+        m_left_padding = ToDIP(size);
+        Button::SetLeftPadding(size);
     }
     void SetCornerRadius(double radius) {
         m_radius = ToDIP(int(radius));
@@ -604,6 +614,7 @@ public:
     void rescale_workbench() {
         Button::SetMaxSize(FromDIP(m_maximum));
         Button::SetPaddingSize(FromDIP(m_padding));
+        Button::SetLeftPadding(FromDIP(m_left_padding));
         Button::SetCornerRadius(FromDIP(m_radius));
         Button::SetMinSize(FromDIP(m_minimum));
         if (!m_asset.empty()) refresh_icon();
@@ -647,6 +658,7 @@ private:
     wxSize m_minimum {wxDefaultSize};
     wxSize m_maximum {wxDefaultSize};
     wxSize m_padding {8, 6};
+    int m_left_padding {0};
     int m_radius {8};
     std::string m_asset;
     int m_edge {16};
@@ -690,11 +702,12 @@ public:
             dc.SetBrush(wxBrush(GetBackgroundColour()));
             dc.SetPen(m_selected ? wxPen(wxColour(255, 194, 39), FromDIP(1)) : *wxTRANSPARENT_PEN);
             const auto size = GetClientSize();
-            dc.DrawRoundedRectangle(0, 0, size.x - 1, size.y - 1, FromDIP(9));
+            dc.DrawRoundedRectangle(0, 0, size.x - 1, size.y - 1, FromDIP(m_radius));
         });
         Bind(wxEVT_SIZE, [this](wxSizeEvent& event) { update_shape(); event.Skip(); });
     }
     void set_selected(bool selected) { m_selected = selected; Refresh(false); }
+    void set_corner_radius(int radius) { m_radius=radius; update_shape(); Refresh(false); }
     void SetMinSize(const wxSize& size) override {
         m_minimum = ToDIP(size);
         wxPanel::SetMinSize(size);
@@ -708,7 +721,7 @@ private:
 #ifdef __WXMSW__
         if (!m_clip_children) return;
         const wxSize size = GetClientSize();
-        const int radius = FromDIP(9);
+        const int radius = FromDIP(m_radius);
         if (size.x <= 0 || size.y <= 0 || (size == m_shape_size && radius == m_shape_radius)) return;
         HRGN region = ::CreateRoundRectRgn(0, 0, size.x + 1, size.y + 1, 2 * radius, 2 * radius);
         if (!region) return;
@@ -722,6 +735,7 @@ private:
 #endif
     }
     bool m_selected {false};
+    int m_radius {9};
     bool m_clip_children {false};
     wxSize m_minimum {wxDefaultSize};
 #ifdef __WXMSW__

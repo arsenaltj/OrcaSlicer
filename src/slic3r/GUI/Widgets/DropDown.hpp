@@ -97,6 +97,9 @@ public:
 
     void SetSelectorBackgroundColor(StateColor const &color);
 
+    const StateColor& GetTextColor() const { return text_color; }
+    const StateColor& GetSelectorBackgroundColor() const { return selector_background_color; }
+
     void SetUseContentWidth(bool use, bool limit_max_content_width = false);
 
     void SetAlignIcon(bool align);

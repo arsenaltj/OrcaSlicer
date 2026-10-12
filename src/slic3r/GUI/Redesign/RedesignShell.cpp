@@ -1,7 +1,11 @@
 #include "RedesignShell.hpp"
 #include "ImageHistorySidebar.hpp"
 #include "AssetsWorkspace.hpp"
+#include "ModelFaceLimitChoice.hpp"
 #include "RedesignTheme.hpp"
+#include "RedesignSlicingTools.hpp"
+#include "RedesignSlicingControls.hpp"
+#include "../BBLTopbar.hpp"
 #include "RedesignFeatureFlags.hpp"
 #include "RedesignMessageDialog.hpp"
 #include "RedesignModelRoute.hpp"
@@ -454,6 +458,10 @@ public:
             case WXK_ESCAPE:
                 dismiss_popup();
                 break;
+            case WXK_TAB:
+                dismiss_popup();
+                HandleAsNavigationKey(event);
+                break;
             default:
                 event.Skip();
                 break;
@@ -615,8 +623,10 @@ public:
 private:
     void choose(int selection)
     {
-        m_owner->select_from_popup(selection);
+        // The selection callback may replace the choices and destroy this popup.
+        auto* owner = m_owner;
         Dismiss();
+        owner->select_from_popup(selection);
     }
 
     StylePicker* m_owner;
@@ -646,7 +656,7 @@ void StylePicker::select_from_popup(int selection)
 
 void StylePicker::set_choices(wxArrayString choices, int selection)
 {
-    if (m_popup != nullptr) {
+    if (m_choices != choices && m_popup != nullptr) {
         m_popup->Destroy();
         m_popup = nullptr;
     }
@@ -1170,6 +1180,27 @@ RedesignShell::~RedesignShell()
 
 void RedesignShell::disconnect_model_generation_host()
 {
+    // shutdown(), MainFrame's destructor and this panel's destructor share
+    // this cleanup. Child windows may already be gone on subsequent calls.
+    if (!m_model_generation_host && !m_slicing_host && !m_plater_original_parent) return;
+    m_native_theme.restore();
+    m_slice_tools.reset();
+    if (m_slice_stats_overlay) { m_slice_stats_overlay->Destroy(); m_slice_stats_overlay=nullptr; }
+    if (m_slice_progress_overlay) { m_slice_progress_overlay->Destroy(); m_slice_progress_overlay=nullptr; }
+    if (m_plater) {
+        m_plater->get_view3D_canvas3D()->use_compact_slicing_tools(false);
+        m_plater->get_preview_canvas3D()->use_compact_slicing_tools(false);
+        m_plater->get_view3D_canvas3D()->use_workbench_appearance(false);
+        m_plater->get_preview_canvas3D()->use_workbench_appearance(false);
+        if (m_saved_collapse_toolbar) m_plater->get_collapse_toolbar().set_enabled(*m_saved_collapse_toolbar);
+    }
+    if (auto* frame = dynamic_cast<MainFrame*>(wxGetTopLevelParent(this))) {
+        if (frame->topbar()) {
+            frame->topbar()->ShowCompactSlicingTitlebar(false);
+            frame->topbar()->ShowNativeWorkspaceTools(false);
+        }
+        frame->mount_native_workspace_tools(nullptr);
+    }
     m_import_timer.Stop();
     if (m_import_session) m_import_session->invalidate();
     if (m_print_page != nullptr)
@@ -1377,6 +1408,22 @@ void RedesignShell::build_image_workspace()
     m_provider_choice = provider_picker;
     settings_content->Add(provider_picker, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
 
+    const wxArrayString face_limit_choices {text("100 万面（低模，推荐）"), text("200 万面（高模）")};
+    auto* face_limit_picker = new StylePicker(settings_content_host, face_limit_choices, [this](int selection) {
+        if (m_applying_model_generation_state)
+            return;
+        const auto choices = model_face_limit_choices(m_generation_options);
+        if (selection < 0 || selection >= static_cast<int>(choices.size()))
+            return;
+        m_generation_options = model_generation_options_for_face_limit(m_generation_options, choices[selection]);
+        on_generation_option_changed();
+    });
+    face_limit_picker->SetName("model-face-limit-choice");
+    face_limit_picker->SetWindowStyleFlag(face_limit_picker->GetWindowStyleFlag() | wxWANTS_CHARS);
+    m_face_limit_choice = face_limit_picker;
+    settings_content->AddSpacer(FromDIP(12));
+    settings_content->Add(face_limit_picker, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(21));
+
     auto* style_label_control = new wxStaticText(settings_content_host, wxID_ANY, text("风格"));
     style_text(style_label_control, primary_text_colour(), 13, true);
     settings_content->Add(style_label_control, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(21));
@@ -1573,7 +1620,9 @@ wxPanel* RedesignShell::build_model_workspace()
 
     m_model_stage_title = new wxStaticText(m_model_page, wxID_ANY, text("3D 模型"));
     style_text(m_model_stage_title, primary_text_colour(), 24, true);
-    outer->Add(m_model_stage_title, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(42));
+    auto* header = new wxBoxSizer(wxHORIZONTAL);
+    header->Add(m_model_stage_title, 0, wxALIGN_CENTER_VERTICAL);
+    outer->Add(header, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(42));
     m_model_stage_status = new wxStaticText(m_model_page, wxID_ANY, text("完成 2D 设计后可开始生成 3D 模型"));
     style_text(m_model_stage_status, secondary_text_colour(), 11);
     m_model_stage_status->Wrap(FromDIP(760));
@@ -1778,6 +1827,13 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
         picker->Show(provider_visible);
         picker->Enable(options_editable);
         picker->set_interactive(options_editable);
+    }
+    if (m_face_limit_choice != nullptr) {
+        auto* picker = static_cast<StylePicker*>(m_face_limit_choice);
+        const bool face_limit_editable = options_editable && picker->choice_count() > 1;
+        picker->Show(provider_visible);
+        picker->Enable(face_limit_editable);
+        picker->set_interactive(face_limit_editable);
     }
 
     wxString primary_label = text("生成 2D 设计图");
@@ -2017,6 +2073,18 @@ void RedesignShell::apply_generation_options(const ModelGenerationUIOptions& opt
     m_generation_options = options;
     if (m_provider_choice != nullptr)
         static_cast<StylePicker*>(m_provider_choice)->set_selection(options.provider == "hunyuan" ? 1 : 0);
+    if (m_face_limit_choice != nullptr) {
+        auto* picker = static_cast<StylePicker*>(m_face_limit_choice);
+        wxArrayString choices;
+        int selection = 0;
+        for (const int face_limit : model_face_limit_choices(options)) {
+            if (face_limit == options.face_limit)
+                selection = static_cast<int>(choices.size());
+            choices.Add(face_limit == 2000000 ? text("200 万面（高模）") :
+                        face_limit == 300000 ? text("30 万面（历史设置）") : text("100 万面（低模，推荐）"));
+        }
+        picker->set_choices(std::move(choices), selection);
+    }
 }
 
 void RedesignShell::on_generation_option_changed()

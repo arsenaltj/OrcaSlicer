@@ -6,6 +6,8 @@
 #include "RedesignTheme.hpp"
 #include "AssetsWorkspace.hpp"
 #include "AssetsWorkspacePolicy.hpp"
+#include "RedesignSlicingControls.hpp"
+#include "RedesignSlicingTools.hpp"
 #include "PrinterWorkspace.hpp"
 #include "OrcaPrinterAdapter.hpp"
 #include "../AI/ModelGeneration/ModelGenerationFeatureHost.hpp"
@@ -17,6 +19,7 @@
 #include "../BBLTopbar.hpp"
 #include "../Plater.hpp"
 #include "../GLCanvas3D.hpp"
+#include "../BackgroundSlicingProcess.hpp"
 #include "../PresetComboBoxes.hpp"
 #include "../Widgets/SpinInput.hpp"
 #include "../Widgets/Label.hpp"
@@ -32,6 +35,7 @@
 #include <wx/textctrl.h>
 #include <wx/weakref.h>
 #include <wx/activityindicator.h>
+#include <wx/colordlg.h>
 #include <boost/log/trivial.hpp>
 #include <sstream>
 
@@ -39,46 +43,32 @@ namespace Slic3r::GUI {
 namespace {
 using namespace AI::SmartSlicing;
 
-void style_native_sidebar(wxWindow* window, const std::vector<wxWindow*>& swatches,
-                          const wxColour& surface = RedesignTheme::panel_colour())
+bool fit_slicing_camera(Plater& plater)
 {
-    if (std::find(swatches.begin(), swatches.end(), window) != swatches.end()) return;
-    window->SetName("ai_content_color");
-    window->SetBackgroundColour(surface);
-    window->SetForegroundColour(wxColour(230, 230, 233));
-    wxColour child_surface = surface;
-    if (auto* box = dynamic_cast<StaticBox*>(window)) {
-        child_surface = dynamic_cast<TextInput*>(window) || dynamic_cast<SpinInput*>(window)
-            ? wxColour(70, 70, 73) : surface;
-        box->SetBackgroundColor(child_surface);
-        box->SetBorderColor(wxColour(82, 82, 87));
-        box->SetCornerRadius(window->FromDIP(6));
+    auto* plate = plater.get_partplate_list().get_curr_plate();
+    if (!plate) return false;
+    BoundingBoxf3 bounds;
+    const auto& objects = plater.model().objects;
+    const int selected = plater.get_selection().get_object_idx();
+    for (size_t i = 0; i < objects.size(); ++i) {
+        const auto* object = objects[i];
+        if (!object || (selected >= 0 && int(i) != selected)) continue;
+        for (size_t j = 0; j < object->instances.size(); ++j)
+            if (plate->contain_instance(int(i), int(j))) bounds.merge(object->instance_bounding_box(j));
     }
-    if (auto* input = dynamic_cast<TextInput*>(window)) {
-        input->SetTextColor(wxColour(230, 230, 233));
-        input->SetLabelColor(wxColour(230, 230, 233));
-        if (auto* combo = dynamic_cast<ComboBox*>(input)) {
-            auto& drop = combo->GetDropDown();
-            drop.SetBackgroundColour(child_surface);
-            drop.SetTextColor(wxColour(230, 230, 233));
-            drop.SetSelectorBackgroundColor(wxColour(85, 85, 90));
-        }
-    } else if (auto* input = dynamic_cast<SpinInput*>(window)) {
-        input->SetTextColor(wxColour(230, 230, 233));
-        input->SetLabelColor(wxColour(190, 190, 196));
-    } else if (auto* button = dynamic_cast<Button*>(window)) {
-        button->SetTextColor(wxColour(230, 230, 233));
-    }
-    for (wxWindow* child : window->GetChildren()) style_native_sidebar(child, swatches, child_surface);
-    window->Refresh(false);
-}
-
-void refresh_native_sidebar(Plater& plater)
-{
-    std::vector<wxWindow*> swatches;
-    for (auto* combo : plater.sidebar().combos_filament())
-        if (combo && combo->clr_picker) swatches.push_back(combo->clr_picker);
-    style_native_sidebar(&plater.sidebar(), swatches);
+    if (!bounds.defined) return false;
+    auto& camera = plater.get_camera();
+    camera.select_view("front");
+    const double distance = camera.get_distance();
+    // A shallow front view and space around the model match the design's
+    // composition. Auxiliary geometry remains rendered, but doesn't size it.
+    camera.look_at(bounds.center() + distance * Vec3d(0., -.93969262, .34202014),
+        bounds.center(), Vec3d::UnitZ());
+    // Keep the model prominent in the Figma-sized canvas while leaving a
+    // small breathing room around the silhouette.
+    camera.zoom_to_box(bounds, 1.1);
+    plater.get_current_canvas3D()->set_as_dirty();
+    return true;
 }
 
 WorkbenchButton* command(wxWindow* parent, const wxString& label, bool accent = false)
@@ -243,15 +233,39 @@ bool RedesignShell::native_workspace_visible() const
 
 void RedesignShell::start_slicing_from_workspace()
 {
-    if (!m_import_in_progress && native_workspace_visible()) start_workbench_slice();
+    if (m_import_in_progress || !native_workspace_visible()) return;
+    if (m_native_slicing) {
+        if (auto* frame = dynamic_cast<MainFrame*>(wxGetTopLevelParent(this))) frame->slice_native_workspace();
+    } else start_workbench_slice();
+}
+
+bool RedesignShell::slicing_mode_switch_allowed() const
+{
+    return workbench_mode_switch_allowed(m_import_in_progress, m_plater && m_plater->is_background_process_slicing(),
+        m_slicing_state.official.phase == OfficialSlicePhase::Slicing, m_slice_tools && m_slice_tools->busy());
+}
+
+void RedesignShell::refresh_native_theme()
+{
+    if (!native_slicing_visible()) return;
+    std::vector<wxWindow*> swatches;
+    for (auto* combo : m_plater->sidebar().combos_filament())
+        if (combo && combo->clr_picker) swatches.push_back(combo->clr_picker);
+    // These controls already have the workbench's selected/disabled styling.
+    for (auto* navigation : {m_native_return_ai, m_native_return_overview, m_native_prepare, m_native_preview})
+        if (navigation) swatches.push_back(navigation);
+    m_native_theme.apply(&m_plater->sidebar(), swatches);
+    if (auto* frame = dynamic_cast<MainFrame*>(wxGetTopLevelParent(this)))
+        if (frame->topbar()) m_native_theme.apply(frame->topbar()->NativeWorkspaceHost(), swatches);
 }
 
 void RedesignShell::build_model_workflow()
 {
     if (!RedesignFeatureFlags::model_workflow_review_enabled() || !m_model_generation_host || !m_plater) return;
+    wxWeakRef<RedesignShell> weak(this);
     auto* history = command(m_model_page, _L("打开历史模型"));
     history->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { open_model_workbench(); });
-    m_model_page->GetSizer()->Insert(2, history, 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(42));
+    m_model_stage_title->GetContainingSizer()->Add(history, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(24));
     m_workbench_page = new wxPanel(m_content_host);
     m_workbench_page->SetBackgroundColour(RedesignTheme::background_colour());
     m_workbench_page->SetSizer(new wxBoxSizer(wxVERTICAL));
@@ -263,45 +277,31 @@ void RedesignShell::build_model_workflow()
     m_slicing_page->SetBackgroundColour(RedesignTheme::background_colour());
     auto* page = new wxBoxSizer(wxVERTICAL);
     m_slicing_page->SetSizer(page);
-    m_native_slice_commands = new wxPanel(m_slicing_page);
-    m_native_slice_commands->SetBackgroundColour(RedesignTheme::panel_colour());
-    auto* native_commands = new wxBoxSizer(wxHORIZONTAL);
-    m_native_slice_commands->SetSizer(native_commands);
-    auto* native_back = command(m_native_slice_commands, _L("返回模型总览"));
-    native_back->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { open_model_workbench(); });
-    native_commands->Add(native_back, 0, wxRIGHT, FromDIP(8));
-    auto* native_ai_tab = command(m_native_slice_commands, _L("AI 智能切片"));
-    native_ai_tab->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { select_slicing_tab(false); });
-    native_commands->Add(native_ai_tab, 0, wxRIGHT, FromDIP(8));
-    m_native_slice_status = new wxStaticText(m_native_slice_commands, wxID_ANY, wxEmptyString);
-    RedesignTheme::style_text(m_native_slice_status, RedesignTheme::secondary_text_colour(), 9);
-    native_commands->Add(m_native_slice_status, 1, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(8));
-    native_commands->AddStretchSpacer();
-    m_native_slice_start = command(m_native_slice_commands, _L("开始切片"), true);
-    m_native_slice_start->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-        if (m_model_view == ModelView::Preview) show_model_view(ModelView::Slicing);
-        else start_workbench_slice();
-    });
-    native_commands->Add(m_native_slice_start, 0, wxRIGHT, FromDIP(8));
-    m_native_slice_save = command(m_native_slice_commands, _L("保存工程 3MF"));
-    m_native_slice_save->SetToolTip(_L("保存模型、耗材颜色、摆放和打印参数；无需先切片。"));
-    m_native_slice_save->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { save_print_project(); });
-    native_commands->Add(m_native_slice_save, 0, wxRIGHT, FromDIP(8));
-    m_native_slice_export = command(m_native_slice_commands, _L("导出 G-code"), true);
-    m_native_slice_export->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-        auto* plate = m_plater->get_partplate_list().get_curr_plate();
-        if (plate && OrcaPrinterAdapter(m_plater).snapshot().gcode_ready) m_plater->export_gcode(false);
-    });
-    native_commands->Add(m_native_slice_export, 0);
-    m_native_slice_print = command(m_native_slice_commands, _L("去打印"), true);
-    native_commands->Add(m_native_slice_print, 0, wxLEFT, FromDIP(8));
-    m_native_slice_print->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { open_print_preparation(); });
-    page->Add(m_native_slice_commands, 0, wxEXPAND | wxALL, FromDIP(8));
+    if (auto* frame = dynamic_cast<MainFrame*>(wxGetTopLevelParent(this))) {
+        if (auto* topbar = frame->topbar()) {
+            auto* host = topbar->NativeWorkspaceHost();
+            auto* navigation = host->GetSizer();
+            auto add_navigation = [&](wxWindow*& field, const wxString& label, auto action) {
+                field = command(host, label);
+                field->SetMinSize(FromDIP(wxSize(-1,28)));
+                field->Bind(wxEVT_BUTTON, [weak, action](wxCommandEvent&) { if (weak) action(*weak); });
+                navigation->Add(field, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
+            };
+            add_navigation(m_native_return_ai, _L("← AI 智能切片"), [](auto& shell) { shell.select_slicing_tab(false); });
+            add_navigation(m_native_return_overview, _L("返回模型总览"), [](auto& shell) {
+                if (shell.slicing_mode_switch_allowed()) shell.open_model_workbench();
+            });
+            add_navigation(m_native_prepare, _L("Prepare"), [](auto& shell) { shell.show_model_view(ModelView::Slicing); });
+            add_navigation(m_native_preview, _L("Preview"), [](auto& shell) { shell.show_model_view(ModelView::Preview); });
+            frame->mount_native_workspace_tools(host);
+        }
+    }
     auto* row = new wxBoxSizer(wxHORIZONTAL);
-    page->Add(row, 1, wxEXPAND);
-    auto* settings = m_slicing_settings = new wxPanel(m_slicing_page);
-    settings->SetBackgroundColour(RedesignTheme::panel_colour());
-    settings->SetMinSize(FromDIP(wxSize(280, -1)));
+    page->Add(row, 1, wxEXPAND | wxTOP, FromDIP(2));
+    auto* settings = m_slicing_settings = new WorkbenchPanel(m_slicing_page, true);
+    settings->SetBackgroundColour(wxColour(34,34,38));
+    static_cast<WorkbenchPanel*>(settings)->set_corner_radius(12);
+    settings->SetMinSize(FromDIP(wxSize(372, -1)));
     auto* root = new wxBoxSizer(wxVERTICAL);
     settings->SetSizer(root);
     row->Add(settings, 0, wxEXPAND | wxRIGHT, FromDIP(8));
@@ -310,74 +310,194 @@ void RedesignShell::build_model_workflow()
     scroll->SetScrollRate(0, FromDIP(12));
     auto* controls = new wxBoxSizer(wxVERTICAL);
     scroll->SetSizer(controls);
-    root->Add(scroll, 1, wxEXPAND | wxALL, FromDIP(12));
+    auto* inset = new wxBoxSizer(wxHORIZONTAL);
+    inset->AddSpacer(FromDIP(24)); inset->Add(scroll,1,wxEXPAND); inset->AddSpacer(FromDIP(7));
+    root->Add(inset, 1, wxEXPAND | wxTOP, FromDIP(12));
 
     auto heading = [&](const wxString& title) {
+        auto* line = new wxBoxSizer(wxHORIZONTAL);
         auto* label = new wxStaticText(scroll, wxID_ANY, title);
-        RedesignTheme::style_text(label, RedesignTheme::primary_text_colour(), 10);
-        controls->Add(label, 0, wxEXPAND | wxTOP | wxBOTTOM, FromDIP(10));
+        RedesignTheme::style_text(label, RedesignTheme::primary_text_colour(), 12);
+        line->Add(label, 0, wxALIGN_CENTER_VERTICAL);
+        if (title == _L("检查修复") || title == _L("3D 美颜")) {
+            auto* info = slicing_link(scroll, wxEmptyString);
+            info->SetPaddingSize(FromDIP(wxSize(0,0)));
+            info->set_scaled_icon("workbench_info",16);
+            info->SetMinSize(FromDIP(wxSize(24,24)));
+            info->SetName(title + _L("信息"));
+            line->Add(info, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(6));
+            info->Bind(wxEVT_BUTTON, [this, title](wxCommandEvent&) {
+                wxMessageBox(title == _L("检查修复") ? wxString::FromUTF8(m_slice_tools->check().summary.empty()
+                    ? "检查当前打印板模型的开放边、非流形边、退化面、重复面和方向。" : m_slice_tools->check().summary)
+                    : _L("进入现有 3D 美颜工作台；保存并重新导入后更新当前工程。"), title, wxOK, this);
+            });
+        }
+        controls->Add(line, 0, wxEXPAND | wxTOP | wxBOTTOM, FromDIP(12));
     };
     heading(_L("检查修复"));
-    m_slice_check_status = new wxStaticText(scroll, wxID_ANY, _L("未执行检查"));
-    RedesignTheme::style_text(m_slice_check_status, RedesignTheme::primary_text_colour(), 9);
-    controls->Add(m_slice_check_status, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
+    auto* check_row = new WorkbenchPanel(scroll, true);
+    check_row->set_corner_radius(12);
+    check_row->SetBackgroundColour(slicing_control_colour());
+    auto* check_sizer = new wxBoxSizer(wxHORIZONTAL); check_row->SetSizer(check_sizer);
+    m_slice_check = slicing_link(check_row, _L("一键检查"));
+    static_cast<WorkbenchButton*>(m_slice_check)->SetCenter(false);
+    static_cast<WorkbenchButton*>(m_slice_check)->SetPaddingSize(FromDIP(wxSize(16,0)));
+    static_cast<WorkbenchButton*>(m_slice_check)->SetLeftPadding(FromDIP(16));
+    m_slice_check->SetMinSize(FromDIP(wxSize(-1,56)));
+    RedesignTheme::style_text(m_slice_check,RedesignTheme::primary_text_colour(),12);
+    check_sizer->Add(m_slice_check, 1, wxEXPAND);
+    m_slice_check_status = new SlicingCheckBadge(check_row);
+    m_slice_check_status->SetLabel(_L("未检查"));
+    RedesignTheme::style_text(m_slice_check_status, RedesignTheme::secondary_text_colour(), 9);
+    auto badge_font=m_slice_check_status->GetFont(); badge_font.SetFractionalPointSize(10.5);
+    m_slice_check_status->SetFont(badge_font);
+    check_sizer->Add(m_slice_check_status, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(16));
+    m_slice_check->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { m_slice_tools->request_check(); });
+    controls->Add(check_row, 0, wxEXPAND);
     heading(_L("多色模型"));
+    m_slice_color_mode = new WorkbenchPaletteChoice(scroll);
+    m_slice_color_mode->set_minimum_height(56);
+    m_slice_color_mode->set_corner_radius(12);
+    m_slice_color_mode->set_text_colour(wxColour(222,222,223));
+    m_slice_color_mode->SetBackgroundColour(slicing_control_colour());
+    m_slice_color_mode->Append(_L("通用模式")); m_slice_color_mode->Append(_L("人像模式"));
+    m_slice_color_mode->SetSelection(0); m_slice_color_mode->SetName("slicing-color-mode");
+    RedesignTheme::style_text(m_slice_color_mode, RedesignTheme::primary_text_colour(), 12);
+    controls->Add(m_slice_color_mode, 0, wxEXPAND | wxBOTTOM, FromDIP(12));
+    auto* color_panel = new WorkbenchPanel(scroll, true);
+    color_panel->set_corner_radius(12);
+    color_panel->SetBackgroundColour(slicing_control_colour());
+    auto* color_sizer = new wxBoxSizer(wxVERTICAL); color_panel->SetSizer(color_sizer);
+    m_slice_color_source = new WorkbenchPaletteChoice(color_panel);
+    m_slice_color_source->set_minimum_height(56);
+    m_slice_color_source->set_corner_radius(12);
+    m_slice_color_source->set_text_colour(wxColour(222,222,223));
+    m_slice_color_source->SetBackgroundColour(slicing_control_colour());
+    m_slice_color_source->Append(_L("AI 建议")); m_slice_color_source->Append(_L("当前工程耗材"));
+    m_slice_color_source->Append(_L("手动试色"));
+    for (const auto& pack : load_filament_color_packs()) m_slice_color_source->Append(wxString::FromUTF8(pack.name));
+    m_slice_color_source->SetSelection(0); m_slice_color_source->SetName("slicing-color-source");
+    RedesignTheme::style_text(m_slice_color_source, RedesignTheme::primary_text_colour(), 12);
+    color_sizer->Add(m_slice_color_source, 0, wxEXPAND);
+    auto* separator = new wxPanel(color_panel); separator->SetBackgroundColour(wxColour(47,47,51));
+    separator->SetMinSize(FromDIP(wxSize(-1,1)));
+    color_sizer->Add(separator, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(16));
+    m_slice_color_count_label = new wxStaticText(color_panel, wxID_ANY, _L("6色"), wxDefaultPosition,
+        wxDefaultSize, wxALIGN_CENTER);
+    RedesignTheme::style_text(m_slice_color_count_label, RedesignTheme::primary_text_colour(), 10);
+    color_sizer->Add(m_slice_color_count_label, 0, wxEXPAND | wxTOP | wxBOTTOM, FromDIP(12));
+    m_slice_color_count = new WorkbenchSlider(color_panel, wxID_ANY, 6, 1, 32,
+        RedesignTheme::accent_colour(), "workbench_slider_thumb");
+    m_slice_color_count->SetName("slicing-color-count");
+    color_sizer->Add(m_slice_color_count, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(16));
+    controls->Add(color_panel, 0, wxEXPAND | wxBOTTOM, FromDIP(12));
+    m_slice_color_mode->Bind(wxEVT_COMBOBOX, [this](wxCommandEvent&) {
+        m_slice_color_count->SetRange(1, m_slice_color_mode->GetSelection() == 1 ? 6 : 32);
+        change_slicing_palette();
+    });
+    m_slice_color_source->Bind(wxEVT_COMBOBOX, [this](wxCommandEvent&) { change_slicing_palette(); });
+    m_slice_color_count->Bind(wxEVT_SLIDER, [this](wxCommandEvent&) {
+        m_slice_color_count_label->SetLabel(wxString::Format(_L("%d色"),m_slice_color_count->GetValue()));
+    });
+    auto commit_count = [this](wxScrollEvent&) {
+        if (m_slice_color_count->GetValue() != m_slice_committed_count) change_slicing_palette();
+    };
+    m_slice_color_count->Bind(wxEVT_SCROLL_THUMBRELEASE, commit_count);
+    m_slice_color_count->Bind(wxEVT_SCROLL_CHANGED, commit_count);
+    m_slice_palette_host = new wxPanel(scroll); m_slice_palette_host->SetBackgroundColour(scroll->GetBackgroundColour());
     m_slice_palette = new wxBoxSizer(wxVERTICAL);
-    controls->Add(m_slice_palette, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
-    auto* colors = command(scroll, _L("配色确认"));
-    controls->Add(colors, 0, wxEXPAND);
-    colors->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { open_model_workbench(); });
+    m_slice_palette_host->SetSizer(m_slice_palette);
+    controls->Add(m_slice_palette_host, 0, wxEXPAND);
+    m_slice_palette_all = slicing_link(scroll, _L("查看全部  ›"));
+    controls->Add(m_slice_palette_all, 0, wxALIGN_RIGHT | wxTOP, FromDIP(6));
+    m_slice_palette_all->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        show_slicing_palette_details();
+    });
     heading(_L("3D 美颜"));
     auto* beauty = command(scroll, _L("3D 美颜工作台"));
+    beauty->SetBackgroundColor(StateColor(slicing_control_colour()));
+    beauty->SetCornerRadius(FromDIP(12));
+    beauty->set_navigation_assets({},"workbench_native_arrow");
+    beauty->SetMinSize(FromDIP(wxSize(-1,56)));
+    RedesignTheme::style_text(beauty,RedesignTheme::primary_text_colour(),12);
     controls->Add(beauty, 0, wxEXPAND);
     beauty->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         if (open_model_workbench()) m_model_generation_host->request_enter_beauty();
     });
     heading(_L("切片"));
+    m_ai_slicing_controls = new WorkbenchPanel(scroll, true);
+    static_cast<WorkbenchPanel*>(m_ai_slicing_controls)->set_corner_radius(12);
+    m_ai_slicing_controls->SetBackgroundColour(slicing_control_colour());
+    auto* ai = new wxBoxSizer(wxVERTICAL);
+    m_ai_slicing_controls->SetSizer(ai);
     auto* tabs = new wxBoxSizer(wxHORIZONTAL);
-    m_ai_slicing_tab = command(scroll, _L("AI 智能切片"));
-    m_native_slicing_tab = command(scroll, _L("Orca 原生"));
+    m_ai_slicing_tab = slicing_link(m_ai_slicing_controls, _L("AI 智能切片"));
+    m_native_slicing_tab = slicing_link(m_ai_slicing_controls, _L("orca原生"));
+    RedesignTheme::style_medium_text(m_ai_slicing_tab,RedesignTheme::primary_text_colour(),12);
+    RedesignTheme::style_medium_text(m_native_slicing_tab,RedesignTheme::secondary_text_colour(),12);
+    m_ai_slicing_tab->SetMinSize(FromDIP(wxSize(-1,40)));
+    m_native_slicing_tab->SetMinSize(FromDIP(wxSize(-1,40)));
     tabs->Add(m_ai_slicing_tab, 1, wxEXPAND | wxRIGHT, FromDIP(4));
     tabs->Add(m_native_slicing_tab, 1, wxEXPAND);
-    controls->Add(tabs, 0, wxEXPAND | wxBOTTOM, FromDIP(12));
+    ai->Add(tabs, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
     m_ai_slicing_tab->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { select_slicing_tab(false); });
     m_native_slicing_tab->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { select_slicing_tab(true); });
 
-    m_ai_slicing_controls = new wxPanel(scroll);
-    m_ai_slicing_controls->SetBackgroundColour(RedesignTheme::control_colour());
-    auto* ai = new wxBoxSizer(wxVERTICAL);
-    m_ai_slicing_controls->SetSizer(ai);
-    auto* goals = new wxGridSizer(2, FromDIP(8), FromDIP(8));
+    auto* goals = new wxGridSizer(2, FromDIP(12), FromDIP(12));
     const std::array<wxString, 3> titles {_L("综合最优"), _L("速度优先"), _L("质量优先")};
     for (size_t i = 0; i < titles.size(); ++i) {
-        auto* button = command(m_ai_slicing_controls, titles[i]);
-        button->set_multiline_label();
-        button->SetMinSize(FromDIP(wxSize(112, 72)));
-        button->SetBackgroundColour(m_ai_slicing_controls->GetBackgroundColour());
+        auto* button = new SlicingGoalCard(m_ai_slicing_controls, titles[i]);
         button->Bind(wxEVT_BUTTON, [this, i](wxCommandEvent&) {
             if (m_slicing_host) m_slicing_host->select_goal(RECOMMENDATION_GOALS[i]);
         });
         m_slice_goals[i] = button;
         goals->Add(button, 0, wxEXPAND);
     }
-    ai->Add(goals, 0, wxEXPAND | wxALL, FromDIP(8));
-    m_slice_details = new wxStaticText(m_ai_slicing_controls, wxID_ANY, _L("尚未分析"));
-    RedesignTheme::style_text(m_slice_details, RedesignTheme::primary_text_colour(), 9);
-    ai->Add(m_slice_details, 0, wxEXPAND | wxALL, FromDIP(10));
-    m_slice_analyze = command(m_ai_slicing_controls, _L("分析三种方案"));
+    ai->Add(goals, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
+    m_slice_parameter_panel = new wxPanel(m_ai_slicing_controls);
+    m_slice_parameter_panel->SetBackgroundColour(m_ai_slicing_controls->GetBackgroundColour());
+    auto* parameters = new wxFlexGridSizer(2, FromDIP(12), FromDIP(12)); parameters->AddGrowableCol(0);
+    m_slice_parameter_panel->SetSizer(parameters);
+    const std::array<wxString,6> names{_L("层高"),_L("墙数"),_L("填充率"),_L("打印速度"),_L("支撑"),_L("预计时间")};
+    for (size_t i=0; i<names.size(); ++i) {
+        auto* label = new wxStaticText(m_slice_parameter_panel,wxID_ANY,names[i]);
+        RedesignTheme::style_text(label,RedesignTheme::secondary_text_colour(),12);
+        parameters->Add(label,0,wxALIGN_CENTER_VERTICAL);
+        auto* value = m_slice_parameter_values[i] = new wxStaticText(m_slice_parameter_panel,wxID_ANY,"—");
+        RedesignTheme::style_text(value,RedesignTheme::primary_text_colour(),12);
+        parameters->Add(value,0,wxALIGN_RIGHT | wxALIGN_CENTER_VERTICAL);
+    }
+    ai->Add(m_slice_parameter_panel,0,wxEXPAND | wxALL,FromDIP(16));
+    m_slice_parameter_panel->Hide();
+    m_slice_details = new wxStaticText(m_ai_slicing_controls, wxID_ANY, wxEmptyString); m_slice_details->Hide();
+    m_slice_parameters_all = slicing_link(m_ai_slicing_controls,_L("查看全部  ›"));
+    ai->Add(m_slice_parameters_all,0,wxALIGN_RIGHT | wxRIGHT,FromDIP(16));
+    m_slice_parameters_all->Hide();
+    m_slice_parameters_all->Bind(wxEVT_BUTTON,[this](wxCommandEvent&) {
+        wxMessageBox(m_slice_details->GetLabel(),_L("切片参数"),wxOK,this);
+    });
+    m_slice_analyze = slicing_link(m_ai_slicing_controls, _L("重新分析"));
     ai->Add(m_slice_analyze, 0, wxEXPAND | wxALL, FromDIP(8));
+    m_slice_analyze->Hide();
     m_slice_analyze->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         if (m_slicing_host) { m_slicing_host->analyze_workbench(); apply_slicing_state(m_slicing_host->workbench_snapshot()); }
     });
-    controls->Add(m_ai_slicing_controls, 0, wxEXPAND);
-    m_slice_status = new wxStaticText(scroll, wxID_ANY, _L("准备切片"));
+    m_slice_status = new wxStaticText(m_ai_slicing_controls, wxID_ANY, wxEmptyString);
     RedesignTheme::style_text(m_slice_status, RedesignTheme::secondary_text_colour(), 9);
-    controls->Add(m_slice_status, 0, wxEXPAND | wxTOP | wxBOTTOM, FromDIP(12));
-    m_slice_cancel = command(scroll, _L("取消分析"));
-    controls->Add(m_slice_cancel, 0, wxEXPAND);
-    m_slice_cancel->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { if (m_slicing_host) m_slicing_host->cancel_workbench_analysis(); });
-    m_slice_keep_mesh = command(scroll, _L("保留当前网格并分析"));
-    controls->Add(m_slice_keep_mesh, 0, wxEXPAND | wxTOP, FromDIP(8));
+    ai->Add(m_slice_status, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(16));
+    m_slice_status->Hide();
+    m_slice_status->SetCursor(wxCURSOR_HAND);
+    m_slice_status->Bind(wxEVT_LEFT_UP,[this](wxMouseEvent&) {
+        wxMessageBox(m_slice_status->GetToolTipText(),_L("切片状态"),wxOK,this);
+    });
+    m_slice_cancel = slicing_link(m_ai_slicing_controls, _L("取消分析"));
+    ai->Add(m_slice_cancel, 0, wxEXPAND); m_slice_cancel->Hide();
+    m_slice_cancel->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        if (m_slicing_state.official.phase == OfficialSlicePhase::Slicing) m_plater->cancel_current_slice();
+        else if (m_slicing_host) m_slicing_host->cancel_workbench_analysis();
+    });
+    m_slice_keep_mesh = command(m_ai_slicing_controls, _L("保留当前网格并分析"));
+    ai->Add(m_slice_keep_mesh, 0, wxEXPAND | wxALL, FromDIP(12)); m_slice_keep_mesh->Hide();
     m_slice_keep_mesh->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         if (!m_slicing_host) return;
         const auto reviewed = m_slicing_host->workbench_snapshot();
@@ -386,24 +506,39 @@ void RedesignShell::build_model_workflow()
                 _L("保留当前网格"), {wxYES_NO | wxNO_DEFAULT}) != wxID_YES) return;
         m_slicing_host->keep_current_mesh_and_analyze(reviewed.preflight->revision);
     });
-    m_slice_start = command(settings, _L("开始切片"), true);
-    root->Add(m_slice_start, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
+    m_slice_start = command(m_ai_slicing_controls, _L("开始切片"), true);
+    static_cast<WorkbenchButton*>(m_slice_start)->SetCornerRadius(FromDIP(12));
+    static_cast<WorkbenchButton*>(m_slice_start)->SetBackgroundColor(StateColor(
+        std::pair<wxColour,int>(wxColour(68,68,69),StateColor::Disabled),
+        std::pair<wxColour,int>(wxColour(82,82,84),StateColor::Hovered),
+        std::pair<wxColour,int>(wxColour(68,68,69),StateColor::Normal)));
+    static_cast<WorkbenchButton*>(m_slice_start)->SetTextColor(StateColor(
+        std::pair<wxColour,int>(wxColour(126,126,130),StateColor::Disabled),
+        std::pair<wxColour,int>(wxColour(229,229,230),StateColor::Normal)));
+    ai->Add(m_slice_start, 0, wxEXPAND | wxALL, FromDIP(16));
+    controls->Add(m_ai_slicing_controls,0,wxEXPAND);
     m_slice_start->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { start_workbench_slice(); });
     m_slice_save = command(settings, _L("保存工程（3MF）"));
     m_slice_save->SetToolTip(_L("保存模型、耗材颜色、摆放和打印参数；G-code 需切片后单独导出。"));
     root->Add(m_slice_save, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
     m_slice_save->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { save_print_project(); });
     m_slice_export = command(settings, _L("导出 G-code"), true);
-    root->Add(m_slice_export, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
+    m_slice_export->Hide();
     m_slice_export->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         auto* plate = m_plater->get_partplate_list().get_curr_plate();
         if (plate && OrcaPrinterAdapter(m_plater).snapshot().gcode_ready) m_plater->export_gcode(false);
     });
     m_slice_print = command(settings, _L("去打印"), true);
-    root->Add(m_slice_print, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
+    static_cast<WorkbenchButton*>(m_slice_print)->SetCornerRadius(FromDIP(12));
+    static_cast<WorkbenchButton*>(m_slice_print)->SetBackgroundColor(StateColor(
+        std::pair<wxColour,int>(wxColour(100,82,38),StateColor::Disabled),
+        std::pair<wxColour,int>(wxColour(255,210,78),StateColor::Hovered),
+        std::pair<wxColour,int>(RedesignTheme::accent_colour(),StateColor::Normal)));
+    m_slice_print->SetMinSize(FromDIP(wxSize(-1,48)));
+    root->Add(m_slice_print, 0, wxEXPAND | wxALL, FromDIP(16));
     m_slice_print->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { open_print_preparation(); });
     auto* return_slice = m_return_slice = command(settings, _L("返回切片参数"));
-    root->Add(return_slice, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(12));
+    return_slice->Hide();
     return_slice->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { show_model_view(ModelView::Slicing); });
     m_native_plater_host = new wxPanel(m_slicing_page);
     m_native_plater_host->SetMinSize(wxSize(1, 1));
@@ -411,9 +546,9 @@ void RedesignShell::build_model_workflow()
     row->Add(m_native_plater_host, 1, wxEXPAND);
     m_content_host->GetSizer()->Add(m_slicing_page, 1, wxEXPAND);
     m_slicing_page->Hide();
-    m_slice_model_stats = new wxStaticText(scroll, wxID_ANY, wxEmptyString);
+    m_slice_model_stats = new wxStaticText(settings, wxID_ANY, wxEmptyString);
     RedesignTheme::style_text(m_slice_model_stats, RedesignTheme::secondary_text_colour(), 9);
-    controls->Add(m_slice_model_stats, 0, wxEXPAND | wxTOP, FromDIP(12));
+    m_slice_model_stats->Hide();
     m_plater_original_parent = m_plater->GetParent();
     m_saved_sidebar_collapsed = m_plater->is_sidebar_collapsed();
     if (auto* sizer = m_plater->GetContainingSizer()) sizer->Detach(m_plater);
@@ -421,6 +556,37 @@ void RedesignShell::build_model_workflow()
     m_native_plater_host->GetSizer()->Add(m_plater, 1, wxEXPAND);
     m_plater->Hide();
     m_slicing_host = m_plater->smart_slicing_feature_host();
+    m_slice_tools = std::make_unique<RedesignSlicingTools>(*m_plater, [this] {
+        update_slicing_tools();
+        if (m_slicing_host) apply_slicing_state(m_slicing_host->workbench_snapshot());
+    });
+    auto* canvas = m_plater->get_view3D_canvas3D()->get_wxglcanvas();
+    m_slice_stats_overlay = new SlicingCanvasOverlay(canvas);
+    m_slice_stats_overlay->SetSize(FromDIP(10),FromDIP(10),FromDIP(210),FromDIP(112));
+    m_slice_progress_overlay = new SlicingCanvasOverlay(canvas);
+    m_slice_progress_overlay->SetSize(FromDIP(wxSize(250,96)));
+    m_slice_stats_overlay->Hide(); m_slice_progress_overlay->Hide();
+    canvas->Bind(wxEVT_SIZE,[weak](wxSizeEvent& event) { event.Skip(); if (weak) weak->layout_slicing_overlays(); });
+    canvas->Bind(EVT_GLCANVAS_OBJECT_SELECT, [weak](SimpleEvent& event) {
+        event.Skip();
+        if (weak) weak->CallAfter([weak] {
+            if (weak && weak->native_workspace_visible()) {
+                weak->update_slicing_tools();
+                if (weak->m_slicing_host) weak->apply_slicing_state(weak->m_slicing_host->workbench_snapshot());
+            }
+        });
+    });
+    m_plater->get_preview_canvas3D()->get_wxglcanvas()->Bind(wxEVT_SIZE,[weak](wxSizeEvent& event) {
+        event.Skip(); if (weak) weak->layout_slicing_overlays();
+    });
+    m_plater->Bind(EVT_SLICING_UPDATE,[weak](SlicingStatusEvent& event) {
+        event.Skip();
+        if (!weak || !weak->native_workspace_visible() || weak->m_native_slicing ||
+            weak->m_slicing_state.official.phase != OfficialSlicePhase::Slicing) return;
+        weak->m_slice_progress_percent = std::clamp(event.status.percent,0,100);
+        weak->m_slice_progress_stage = wxString::FromUTF8(event.status.text);
+        weak->m_slice_progress_overlay->update(weak->m_slice_progress_stage,weak->m_slice_progress_percent);
+    });
 
     m_import_loading = new wxPanel(m_content_host);
     m_import_loading->SetBackgroundColour(RedesignTheme::background_colour());
@@ -470,8 +636,23 @@ void RedesignShell::build_model_workflow()
         m_import_loading->Layout();
         check_import_first_frame();
     }, m_import_timer.GetId());
+    m_slice_camera_retry_timer.SetOwner(this, wxWindow::NewControlId());
+    Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
+        if (!native_workspace_visible() || m_slice_camera_fitted ||
+            m_model_view != ModelView::Slicing || !m_plater ||
+            ++m_slice_camera_retry_attempts > 30) {
+            m_slice_camera_retry_timer.Stop();
+            return;
+        }
+        auto* canvas = m_plater->get_current_canvas3D();
+        if (!canvas->is_initialized() || canvas->rendered_frames() == 0)
+            return;
+        if (fit_slicing_camera(*m_plater)) {
+            m_slice_camera_fitted = true;
+            m_slice_camera_retry_timer.Stop();
+        }
+    }, m_slice_camera_retry_timer.GetId());
 
-    wxWeakRef<RedesignShell> weak(this);
     m_plater->get_view3D_canvas3D()->get_wxglcanvas()->Bind(wxEVT_PAINT, [weak](wxPaintEvent& event) {
         event.Skip();
         if (weak && weak->m_import_awaiting_frame)
@@ -485,7 +666,7 @@ void RedesignShell::build_model_workflow()
                 weak->m_model_view == ModelView::Workbench && !weak->m_workbench_state.editing &&
                 weak->m_workbench_state.can_edit_project_colors;
             event.Enable(!weak->m_import_in_progress && (workbench || (weak->native_workspace_visible() &&
-                weak->m_model_view == ModelView::Slicing)) && weak->m_plater->can_undo());
+                (weak->m_model_view == ModelView::Slicing || weak->m_model_view == ModelView::Preview))) && weak->m_plater->can_undo());
         }, wxID_UNDO);
         topbar->Bind(wxEVT_UPDATE_UI, [weak](wxUpdateUIEvent& event) {
             if (!weak) { event.Skip(); return; }
@@ -493,20 +674,22 @@ void RedesignShell::build_model_workflow()
                 weak->m_model_view == ModelView::Workbench && !weak->m_workbench_state.editing &&
                 weak->m_workbench_state.can_edit_project_colors;
             event.Enable(!weak->m_import_in_progress && (workbench || (weak->native_workspace_visible() &&
-                weak->m_model_view == ModelView::Slicing)) && weak->m_plater->can_redo());
+                (weak->m_model_view == ModelView::Slicing || weak->m_model_view == ModelView::Preview))) && weak->m_plater->can_redo());
         }, wxID_REDO);
     }
     Bind(wxEVT_CHAR_HOOK, [weak](wxKeyEvent& event) {
         const auto key = event.GetKeyCode();
-        if (!weak || weak->m_active_page != Page::Model || weak->m_model_view != ModelView::Workbench ||
+        if (!weak || weak->m_active_page != Page::Model ||
+            (weak->m_model_view != ModelView::Workbench && !weak->native_workspace_visible()) ||
             !event.CmdDown() || event.AltDown() || event.ShiftDown() || (key != 'Z' && key != 'Y') ||
             dynamic_cast<wxTextEntry*>(wxWindow::FindFocus())) {
             event.Skip();
             return;
         }
-    if (weak->m_import_in_progress) return;
-        // Beauty owns preview history even before a candidate file exists.
-        if (weak->m_workbench_state.editing || !weak->m_workbench_state.can_edit_project_colors) {
+        if (weak->m_import_in_progress) return;
+        // Beauty owns its preview history; native slicing owns project history.
+        if (weak->m_model_view == ModelView::Workbench &&
+            (weak->m_workbench_state.editing || !weak->m_workbench_state.can_edit_project_colors)) {
             event.Skip();
             return;
         }
@@ -516,7 +699,7 @@ void RedesignShell::build_model_workflow()
     m_plater->sidebar().Bind(wxEVT_CHILD_FOCUS, [weak](wxChildFocusEvent& event) {
         event.Skip();
         if (weak && weak->native_workspace_visible() && weak->m_native_slicing)
-            weak->CallAfter([weak] { if (weak && weak->m_plater) refresh_native_sidebar(*weak->m_plater); });
+            weak->CallAfter([weak] { if (weak) weak->refresh_native_theme(); });
     });
     m_model_generation_host->set_workbench_listener([weak](const auto& state) { if (weak) weak->apply_workbench_state(state); });
     Bind(wxEVT_IDLE, [weak](wxIdleEvent& event) {
@@ -563,17 +746,26 @@ void RedesignShell::show_model_view(ModelView view)
     m_model_view = view;
     m_active_tab_id = view == ModelView::Preview ? TAB_ID_PREVIEW :
         view == ModelView::Slicing ? TAB_ID_PREPARE : TAB_ID_GENERATE_3D;
-    if (m_slicing_host) m_slicing_host->set_workbench_active(view == ModelView::Slicing || view == ModelView::Preview);
+    if (m_slicing_host) m_slicing_host->set_workbench_active(view == ModelView::Slicing || view == ModelView::Preview, !m_native_slicing);
     if (view == ModelView::Slicing || view == ModelView::Preview) {
         m_plater->select_view_3D(view == ModelView::Preview ? "Preview" : "3D");
         m_plater->get_current_canvas3D()->use_workbench_appearance();
         m_plater->collapse_sidebar(!m_native_slicing);
         if (m_native_slicing) {
             if (auto* parameters = wxGetApp().params_panel()) parameters->OnActivate();
-            refresh_native_sidebar(*m_plater);
+            refresh_native_theme();
         }
+        if (view == ModelView::Slicing && !m_native_slicing && m_slice_tools->check().status == WorkbenchCheckStatus::NotRun)
+            m_slice_tools->request_check();
     }
     refresh_workflow_layout();
+    if (!m_import_in_progress && !m_slice_camera_fitted && view == ModelView::Slicing) {
+        // Project loading and GL volume creation can finish after the route
+        // change. Retry briefly until the real model bounds and viewport are
+        // available; a single early CallAfter otherwise fits an empty plate.
+        m_slice_camera_retry_attempts = 0;
+        m_slice_camera_retry_timer.Start(100);
+    }
     if (view == ModelView::Result) update_model_page(m_model_generation_state);
 }
 
@@ -587,17 +779,42 @@ void RedesignShell::refresh_workflow_layout()
     m_slicing_page->Show(slicing);
     m_plater->Show(slicing);
     m_slicing_settings->Show(!m_native_slicing);
-    m_native_slice_commands->Show(m_native_slicing);
-    m_native_slice_start->SetLabel(m_model_view == ModelView::Preview ? _L("返回切片参数") : _L("开始切片"));
-    m_native_slice_start->Enable(m_model_view == ModelView::Preview || m_slice_start->IsEnabled());
     m_plater->get_current_canvas3D()->enable_render(slicing);
     if (slicing) m_plater->get_current_canvas3D()->set_as_dirty();
-    m_slice_export->Show(m_model_view == ModelView::Preview);
-    m_slice_print->Show(m_model_view == ModelView::Preview);
-    m_native_slice_print->Show(m_model_view == ModelView::Preview);
-    m_slice_start->Show(m_model_view != ModelView::Preview);
-    m_return_slice->Show(m_model_view == ModelView::Preview);
-    if (m_slicing_host) m_slicing_host->set_workbench_active(slicing);
+    m_slice_export->Hide();
+    m_slice_print->Show(!m_native_slicing);
+    m_slice_start->Show(!m_native_slicing);
+    m_return_slice->Hide();
+    if (m_slicing_host) m_slicing_host->set_workbench_active(slicing, !m_native_slicing);
+    const bool compact = slicing && !m_native_slicing;
+    m_plater->get_view3D_canvas3D()->use_compact_slicing_tools(compact);
+    m_plater->get_preview_canvas3D()->use_compact_slicing_tools(compact);
+    if (compact && !m_saved_collapse_toolbar) {
+        m_saved_collapse_toolbar = m_plater->get_collapse_toolbar().is_enabled();
+        m_plater->get_collapse_toolbar().set_enabled(false);
+    } else if (!compact && m_saved_collapse_toolbar) {
+        m_plater->get_collapse_toolbar().set_enabled(*m_saved_collapse_toolbar); m_saved_collapse_toolbar.reset();
+    }
+    const bool native = slicing && m_native_slicing;
+    if (!native) m_native_theme.restore();
+    if (auto* frame = dynamic_cast<MainFrame*>(wxGetTopLevelParent(this))) {
+        if (native) frame->show_option(true);
+        if (frame->topbar()) {
+            frame->topbar()->ShowCompactSlicingTitlebar(compact);
+            frame->topbar()->ShowNativeWorkspaceTools(native);
+        }
+    }
+    if (native) refresh_native_theme();
+    if (m_native_return_ai) {
+        const bool can_switch = slicing_mode_switch_allowed();
+        m_native_return_ai->Enable(can_switch);
+        m_native_return_overview->Enable(can_switch);
+        static_cast<WorkbenchButton*>(m_native_prepare)->SetTextColor(StateColor(m_model_view == ModelView::Slicing
+            ? RedesignTheme::accent_colour() : RedesignTheme::primary_text_colour()));
+        static_cast<WorkbenchButton*>(m_native_preview)->SetTextColor(StateColor(m_model_view == ModelView::Preview
+            ? RedesignTheme::accent_colour() : RedesignTheme::primary_text_colour()));
+    }
+    layout_slicing_overlays();
     m_content_host->Layout();
     Layout();
     if (m_import_in_progress && m_import_loading) {
@@ -615,10 +832,6 @@ void RedesignShell::apply_workbench_state(const PostGenerationWorkbenchState& st
         m_model_back_to_design_button->Enable(can_return_to_image_design());
     if (m_image_page_view_only)
         apply_model_generation_state(m_model_generation_state);
-    if (m_slice_check_status) {
-        set_wrapped_label(m_slice_check_status, state.check.summary.empty()
-            ? _L("未执行检查") : wxString::FromUTF8(state.check.summary), FromDIP(246));
-    }
     if (!m_pending_workbench_job.empty() && state.asset_id == m_pending_workbench_job && state.actions.can_edit) {
         m_pending_workbench_job.clear();
         open_model_workbench();
@@ -704,6 +917,7 @@ void RedesignShell::confirm_workbench_import(const AI::ModelImportRequest& reque
                         return;
                     }
                     weak->update_import_loading(WorkbenchImportPhase::UpdatingView);
+                    weak->m_slice_camera_fitted = false;
                     weak->m_import_switching_view = true;
                     weak->navigate_to(Page::Model);
                     weak->show_model_view(ModelView::Slicing);
@@ -770,6 +984,11 @@ void RedesignShell::check_import_first_frame()
     if (!m_import_awaiting_frame || !m_plater) return;
     auto* canvas = m_plater->get_current_canvas3D();
     if (canvas->is_initialized() && canvas->rendered_frames() > m_import_frame_baseline) {
+        // Imported GL volumes and the final viewport size are available only
+        // after the first visible frame. Fitting earlier can select the bed.
+        if (!m_slice_camera_fitted) {
+            m_slice_camera_fitted = fit_slicing_camera(*m_plater);
+        }
         finish_import_loading();
     } else if (std::chrono::steady_clock::now() - m_import_view_started > std::chrono::seconds(15)) {
         finish_import_loading();
@@ -784,19 +1003,167 @@ void RedesignShell::open_print_preparation()
     if (navigate_to(Page::Print)) m_print_page->show_prepare();
 }
 
+void RedesignShell::change_slicing_palette()
+{
+    if (!m_slice_tools || !m_slice_tools->editable() || m_slicing_state.official.phase == OfficialSlicePhase::Slicing) return;
+    std::vector<PreviewPalette::Color> colors;
+    if (m_slice_color_source->GetSelection() == 2) {
+        for (const auto& hex : m_slice_tools->palette()) colors.push_back(RedesignSlicingTools::rgb(hex));
+        if (colors.empty()) return;
+        // Manual colors are logical targets, subsequently mapped to compatible
+        // physical slots. The picker never edits shared spool configuration.
+        const auto guard=OrcaWorkspaceAdapter(m_plater,{}).capture_import_guard();
+        wxColourData data; data.SetColour(wxColour(wxString::FromUTF8(m_slice_tools->palette().front())));
+        wxColourDialog picker(this,&data);
+        if (picker.ShowModal() != wxID_OK || !guard || !guard()) return;
+        const auto c=picker.GetColourData().GetColour();
+        colors.front()={c.Red()/255.f,c.Green()/255.f,c.Blue()/255.f};
+    }
+    m_slice_committed_count=m_slice_color_count->GetValue();
+    m_slice_color_count_label->SetLabel(wxString::Format(_L("%d色"),m_slice_committed_count));
+    m_slice_tools->request_colors(m_slice_color_mode->GetSelection()==1,m_slice_color_source->GetSelection(),
+        size_t(m_slice_committed_count),std::move(colors));
+}
+
+void RedesignShell::show_slicing_palette_details()
+{
+    if (!m_slice_tools) return;
+    const auto current=m_slice_tools->palette();
+    wxDialog dialog(this,wxID_ANY,_L("模型配色"),wxDefaultPosition,FromDIP(wxSize(510,430)),wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER);
+    dialog.SetBackgroundColour(RedesignTheme::panel_colour());
+    auto* root=new wxBoxSizer(wxVERTICAL); dialog.SetSizer(root);
+    auto* scroll=new WorkbenchScrolledWindow(&dialog,wxID_ANY,wxDefaultPosition,wxDefaultSize,wxVSCROLL);
+    scroll->SetBackgroundColour(dialog.GetBackgroundColour()); scroll->SetScrollRate(0,FromDIP(16));
+    auto* grid=new wxGridSizer(3,FromDIP(10),FromDIP(10)); scroll->SetSizer(grid);
+    std::vector<PreviewPalette::Color> targets;
+    for (const auto& hex:current) targets.push_back(RedesignSlicingTools::rgb(hex));
+    for (size_t i=0;i<current.size();++i) {
+        auto* swatch=command(scroll,wxString::FromUTF8(current[i]));
+        swatch->SetBackgroundColor(StateColor(wxColour(wxString::FromUTF8(current[i]))));
+        swatch->Enable(m_slice_tools->editable());
+        swatch->Bind(wxEVT_BUTTON,[&dialog,&targets,swatch,i](wxCommandEvent&) {
+            wxColourData data;
+            const auto& c=targets[i]; data.SetColour(wxColour(int(c[0]*255+.5f),int(c[1]*255+.5f),int(c[2]*255+.5f)));
+            wxColourDialog picker(&dialog,&data);
+            if (picker.ShowModal()!=wxID_OK) return;
+            const auto color=picker.GetColourData().GetColour();
+            targets[i]={color.Red()/255.f,color.Green()/255.f,color.Blue()/255.f};
+            swatch->SetBackgroundColor(StateColor(color)); swatch->SetLabel(color.GetAsString(wxC2S_HTML_SYNTAX));
+        });
+        grid->Add(swatch,0,wxEXPAND);
+    }
+    root->Add(scroll,1,wxEXPAND | wxALL,FromDIP(20));
+    auto* note=new wxStaticText(&dialog,wxID_ANY,wxString::FromUTF8(m_slice_tools->message().empty()
+        ? "修改模型区域的目标颜色，匹配到当前兼容耗材槽；取消不会更新工程。" : m_slice_tools->message()));
+    RedesignTheme::style_text(note,RedesignTheme::secondary_text_colour(),10); note->Wrap(FromDIP(460));
+    root->Add(note,0,wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM,FromDIP(20));
+    root->Add(dialog.CreateSeparatedButtonSizer(wxOK | wxCANCEL),0,wxEXPAND | wxALL,FromDIP(16));
+    if (auto* apply=dialog.FindWindow(wxID_OK)) apply->Enable(m_slice_tools->editable() && !targets.empty());
+    dialog.CenterOnParent();
+    // An intervening native project edit is rejected by the tools' guard.
+    const auto guard=OrcaWorkspaceAdapter(m_plater,{}).capture_import_guard();
+    if (dialog.ShowModal()!=wxID_OK || !guard || !guard()) return;
+    bool changed=false;
+    for (size_t i=0;i<targets.size();++i) changed |= targets[i]!=RedesignSlicingTools::rgb(current[i]);
+    if (!changed) return;
+    m_slice_color_source->SetSelection(2);
+    m_slice_tools->request_colors(m_slice_color_mode->GetSelection()==1,2,size_t(m_slice_color_count->GetValue()),std::move(targets));
+}
+
+void RedesignShell::update_slicing_tools()
+{
+    if (!m_slice_tools) return;
+    m_slice_tools->refresh();
+    const bool editable=m_slice_tools->editable() && m_slicing_state.official.phase != OfficialSlicePhase::Slicing;
+    m_slice_color_mode->Enable(editable); m_slice_color_source->Enable(editable); m_slice_color_count->Enable(editable);
+    const auto edit_reason=wxString::FromUTF8(m_slice_tools->editability_reason());
+    m_slice_color_mode->SetToolTip(edit_reason); m_slice_color_source->SetToolTip(edit_reason);
+    m_slice_color_count->SetToolTip(edit_reason);
+    m_slice_color_count_label->SetToolTip(wxString::FromUTF8(m_slice_tools->message()));
+    m_slice_check->Enable(!m_slice_tools->busy() && m_slicing_state.official.phase != OfficialSlicePhase::Slicing);
+    const auto& check=m_slice_tools->check();
+    const std::array<wxString,6> labels{_L("未检查"),_L("检查中"),_L("正常"),_L("需注意"),_L("异常"),_L("检查失败")};
+    m_slice_check_status->SetLabel(labels[size_t(check.status)]);
+    m_slice_check_status->SetForegroundColour(check.status==WorkbenchCheckStatus::Normal ? wxColour(255,255,255)
+        : check.status==WorkbenchCheckStatus::Invalid || check.status==WorkbenchCheckStatus::Failed ? wxColour(255,150,146)
+        : RedesignTheme::primary_text_colour());
+    m_slice_check_status->SetBackgroundColour(check.status==WorkbenchCheckStatus::Normal ? wxColour(21,194,82)
+        : slicing_control_colour());
+    m_slice_check_status->SetMinSize(FromDIP(wxSize(check.status==WorkbenchCheckStatus::Failed ? 80 : 60,36)));
+    m_slice_check_status->Refresh(false);
+    m_slice_check_status->SetToolTip(wxString::FromUTF8(check.summary));
+    const auto& palette=m_slice_tools->palette();
+    m_slice_palette_all->Show(palette.size()>6 || m_slicing_state.has_selected_goal || !m_slice_tools->message().empty());
+    if (!palette.empty() && !m_slice_tools->busy() && !m_slice_color_count->HasCapture()) {
+        m_slice_committed_count=int(std::clamp(palette.size(),size_t(1),
+            m_slice_color_mode->GetSelection()==1 ? size_t(6) : size_t(32)));
+        m_slice_color_count->SetValue(m_slice_committed_count);
+        m_slice_color_count_label->SetLabel(wxString::Format(_L("%d色"),m_slice_committed_count));
+    }
+    if (palette==m_slice_displayed_palette) return;
+    m_slice_displayed_palette=palette;
+    m_slice_palette->Clear(true);
+    auto* grid=new wxGridSizer(3,FromDIP(6),FromDIP(6));
+    for (size_t i=0;i<std::min(size_t(6),palette.size());++i) {
+        const wxColour color(wxString::FromUTF8(palette[i]));
+        auto* swatch=command(m_slice_palette_host,wxString::FromUTF8(palette[i]));
+        swatch->SetName("slicing-color-"+wxString::Format("%zu",i+1));
+        swatch->SetMinSize(FromDIP(wxSize(96,28))); swatch->SetCornerRadius(0);
+        swatch->SetBackgroundColor(StateColor(color));
+        swatch->SetTextColor(StateColor(color.Red()*.2126+color.Green()*.7152+color.Blue()*.0722>140
+            ? wxColour(22,22,25) : wxColour(255,255,255)));
+        RedesignTheme::style_text(swatch,RedesignTheme::primary_text_colour(),9);
+        swatch->Bind(wxEVT_BUTTON,[this,i](wxCommandEvent&) {
+            if (!m_slice_tools->editable()) return;
+            const auto current=m_slice_tools->palette(); if (i>=current.size()) return;
+            const auto guard=OrcaWorkspaceAdapter(m_plater,{}).capture_import_guard();
+            wxColourData data; data.SetColour(wxColour(wxString::FromUTF8(current[i])));
+            wxColourDialog picker(this,&data);
+            if (picker.ShowModal()!=wxID_OK || !guard || !guard()) return;
+            std::vector<PreviewPalette::Color> targets;
+            for (const auto& hex:current) targets.push_back(RedesignSlicingTools::rgb(hex));
+            const auto c=picker.GetColourData().GetColour(); targets[i]={c.Red()/255.f,c.Green()/255.f,c.Blue()/255.f};
+            m_slice_color_source->SetSelection(2);
+            m_slice_tools->request_colors(m_slice_color_mode->GetSelection()==1,2,
+                size_t(m_slice_color_count->GetValue()),std::move(targets));
+        });
+        grid->Add(swatch,0,wxEXPAND);
+    }
+    m_slice_palette->Add(grid,0,wxEXPAND);
+    m_slice_palette_host->Layout();
+}
+
+void RedesignShell::layout_slicing_overlays()
+{
+    if (!m_slice_stats_overlay || !m_plater) return;
+    const bool visible=native_workspace_visible() && !m_native_slicing;
+    auto* canvas=m_plater->get_current_canvas3D()->get_wxglcanvas();
+    if (m_slice_stats_overlay->GetParent()!=canvas) {
+        m_slice_stats_overlay->Reparent(canvas); m_slice_progress_overlay->Reparent(canvas);
+    }
+    const auto size=canvas->GetClientSize();
+    m_slice_stats_overlay->SetSize(FromDIP(4),0,FromDIP(331),FromDIP(144));
+    m_slice_progress_overlay->SetSize(std::max(FromDIP(10),size.x-FromDIP(440)),
+        std::max(FromDIP(10),size.y-FromDIP(134)),FromDIP(320),FromDIP(46));
+    m_slice_stats_overlay->Show(visible);
+    m_slice_progress_overlay->Show(visible && m_slicing_state.official.phase==OfficialSlicePhase::Slicing);
+    if (visible) { m_slice_stats_overlay->Raise(); m_slice_progress_overlay->Raise(); }
+}
+
 void RedesignShell::select_slicing_tab(bool native)
 {
-    if (m_import_in_progress || !m_slicing_host || m_slicing_state.official.phase == OfficialSlicePhase::Slicing) return;
+    if (!m_slicing_host || !slicing_mode_switch_allowed()) return;
     const bool changed = m_native_slicing != native;
     m_native_slicing = native;
     m_ai_slicing_controls->Show(!native);
     m_plater->collapse_sidebar(!native);
     if (native) {
         if (auto* parameters = wxGetApp().params_panel()) parameters->OnActivate();
-        refresh_native_sidebar(*m_plater);
+        refresh_native_theme();
     }
-    if (native) m_slicing_host->cancel_workbench_analysis();
-    else if (changed || m_slicing_state.session.state != RecommendationSessionState::Ready) m_slicing_host->analyze_workbench();
+    m_slicing_host->set_workbench_active(native_workspace_visible(), !native);
+    if (!native && !changed && !m_slicing_state.analyzing && m_slicing_state.session.state != RecommendationSessionState::Ready)
+        m_slicing_host->analyze_workbench();
     apply_slicing_state(m_slicing_host->workbench_snapshot());
     m_slicing_page->Layout();
     refresh_workflow_layout();
@@ -804,10 +1171,14 @@ void RedesignShell::select_slicing_tab(bool native)
 
 void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
 {
-    const bool goal_changed = state.selected_goal != m_slicing_state.selected_goal || m_slice_displayed_palette.empty();
+    const bool began = state.official.phase == OfficialSlicePhase::Slicing && m_slicing_state.official.phase != OfficialSlicePhase::Slicing;
     const bool completed = state.official.phase == OfficialSlicePhase::Completed &&
         m_slicing_state.official.phase != OfficialSlicePhase::Completed;
     m_slicing_state = state;
+    if (began) {
+        m_slice_progress_percent = 0; m_slice_progress_stage = _L("正在切片…");
+        m_slice_progress_overlay->update(m_slice_progress_stage,0);
+    }
     if (!m_slice_start) return;
     auto* plate = m_plater->get_partplate_list().get_curr_plate();
     size_t faces = 0, vertices = 0;
@@ -825,46 +1196,48 @@ void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
             vertices += volume->mesh().its.vertices.size();
         }
     }
-    bool layout_changed = set_control_label(m_slice_model_stats,
-        wxString::Format(_L("面数  %zu\n顶点数  %zu"), faces, vertices));
-    if (state.palette != m_slice_displayed_palette) {
-        layout_changed = true;
-        m_slice_displayed_palette = state.palette;
-        m_slice_palette->Clear(true);
-        for (size_t i = 0; i < state.palette.size(); ++i) {
-            auto* parent = m_slice_model_stats->GetParent();
-            auto* line = new wxBoxSizer(wxHORIZONTAL);
-            auto* swatch = new wxPanel(parent, wxID_ANY, wxDefaultPosition, FromDIP(wxSize(18, 18)));
-            swatch->SetBackgroundColour(wxColour(wxString::FromUTF8(state.palette[i])));
-            line->Add(swatch, 0, wxRIGHT, FromDIP(8));
-            auto* label = new wxStaticText(parent, wxID_ANY, wxString::Format("%zu  %s", i + 1,
-                wxString::FromUTF8(state.palette[i])));
-            RedesignTheme::style_text(label, RedesignTheme::primary_text_colour(), 9);
-            line->Add(label, 1, wxALIGN_CENTER_VERTICAL);
-            m_slice_palette->Add(line, 0, wxEXPAND | wxBOTTOM, FromDIP(4));
-        }
-    }
+    auto grouped_count = [](size_t count) {
+        auto value = std::to_string(count);
+        for (int offset = int(value.size()) - 3; offset > 0; offset -= 3)
+            value.insert(size_t(offset), ",");
+        return wxString::FromUTF8(value);
+    };
+    const auto stats = _L("拓扑\t三角面\n面数\t") + grouped_count(faces) +
+        _L("\n顶点数\t") + grouped_count(vertices);
+    bool layout_changed = set_control_label(m_slice_model_stats, stats);
+    m_slice_stats_overlay->update(stats);
+    update_slicing_tools();
     const std::array<wxString, 3> titles {_L("综合最优"), _L("速度优先"), _L("质量优先")};
     for (size_t i = 0; i < titles.size(); ++i) {
         const auto& goal = state.session.recommendation.goal_result(RECOMMENDATION_GOALS[i]);
-        wxString layer = _L("层高待分析");
+        wxString layer;
         for (const auto& parameter : state.effective_parameters[i])
             if (parameter.key == "layer_height") { layer = parameter_value(parameter); break; }
         const wxString availability = !state.analyzing && !state.candidates[i] &&
             state.diagnostic == "printability_action_required" ? _L("暂不可用") :
             !state.analyzing && !state.candidates[i] && goal.status == GoalResultStatus::Analyzing
                 ? _L("待分析") : goal_status(goal.status);
-        layout_changed = set_control_label(m_slice_goals[i], titles[i] + "\n" + layer + "\n" + availability) || layout_changed;
-        m_slice_goals[i]->Enable(state.official.phase != OfficialSlicePhase::Slicing && !state.official.workspace_mutated);
-        auto* button = static_cast<WorkbenchButton*>(m_slice_goals[i]);
-        if (goal_changed) {
-            button->SetBorderWidth(state.selected_goal == RECOMMENDATION_GOALS[i] ? FromDIP(1) : 0);
-            button->SetBorderColor(RedesignTheme::accent_colour());
-        }
+        m_slice_goals[i]->Enable(state.candidates[i].has_value() &&
+            state.official.phase != OfficialSlicePhase::Slicing && !state.official.workspace_mutated && !m_slice_tools->busy());
+        auto* button = static_cast<SlicingGoalCard*>(m_slice_goals[i]);
+        button->update(layer.empty() ? availability : layer,
+            state.has_selected_goal && state.selected_goal == RECOMMENDATION_GOALS[i]);
+        button->SetToolTip(layer+"\n"+availability);
     }
     const size_t selected = static_cast<size_t>(state.selected_goal);
-    layout_changed = set_wrapped_label(m_slice_details, state.candidates[selected]
-        ? candidate_details(state.effective_parameters[selected], state.metrics[selected]) : _L("暂无可用方案"), FromDIP(230)) || layout_changed;
+    const bool has_parameters = state.has_selected_goal && state.candidates[selected].has_value();
+    layout_changed = set_control_label(m_slice_details, has_parameters ? candidate_details(state.effective_parameters[selected], state.metrics[selected]) : wxString()) || layout_changed;
+    layout_changed = m_slice_parameter_panel->Show(has_parameters) || layout_changed;
+    layout_changed = m_slice_parameters_all->Show(has_parameters) || layout_changed;
+    const std::array<std::string,5> keys{"layer_height","wall_loops","sparse_infill_density","outer_wall_speed","enable_support"};
+    for (size_t i=0; i<keys.size(); ++i) {
+        wxString value = "—";
+        if (has_parameters) for (const auto& parameter : state.effective_parameters[selected])
+            if (parameter.key == keys[i]) { value = parameter_value(parameter); break; }
+        m_slice_parameter_values[i]->SetLabel(value);
+    }
+    m_slice_parameter_values[5]->SetLabel(has_parameters && state.metrics[selected] && state.metrics[selected]->estimated_time_seconds.known()
+        ? wxString::Format(_L("%.0f 分钟"),*state.metrics[selected]->estimated_time_seconds.value/60.) : wxString("—"));
     wxString status;
     if (state.analyzing) status = state.session.state == RecommendationSessionState::Canceled
         ? _L("正在取消分析…") : _L("正在分析三种方案…");
@@ -908,47 +1281,62 @@ void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
         else if (!plate->is_slice_result_ready_for_export())
             status = _L("切片完成，导出前请处理预览中的错误。");
     }
-    const wxString native_status = m_native_slicing && state.official.phase == OfficialSlicePhase::Rejected &&
-        state.official.diagnostic_code.empty() ? _L("准备切片") : status;
+    m_slice_status->SetToolTip(status);
+    const bool needs_attention = !state.analyzing && !state.diagnostic.empty();
+    layout_changed = m_slice_status->Show(needs_attention || state.official.phase == OfficialSlicePhase::Failed) || layout_changed;
+    layout_changed = set_wrapped_label(m_slice_status, needs_attention ? _L("方案暂不可用 · 查看原因") : status, FromDIP(285)) || layout_changed;
+    layout_changed = m_slice_analyze->Show(needs_attention || state.official.phase == OfficialSlicePhase::Failed) || layout_changed;
+    m_slice_analyze->SetToolTip(status);
     layout_changed = m_slice_keep_mesh->Show(state.can_keep_current_mesh && !state.analyzing) || layout_changed;
-    const bool running = state.official.phase == OfficialSlicePhase::Slicing;
-    const auto route = workbench_slice_route(m_native_slicing, running || m_import_in_progress,
+    const bool running = state.official.phase == OfficialSlicePhase::Slicing || m_plater->is_background_process_slicing();
+    const auto route = workbench_slice_route(m_native_slicing, running || m_import_in_progress || m_slice_tools->busy(),
         state.can_retry, state.can_start, state.can_start_native);
-    if (!m_native_slicing && route == WorkbenchSliceRoute::Native) {
-        status += (status.empty() ? wxString() : "\n") + _L("将使用当前工程参数切片。");
-    } else if (route == WorkbenchSliceRoute::Unavailable && !running && !state.native_blocked_reason.empty()) {
-        status += (status.empty() ? wxString() : "\n") + wxString::FromUTF8(state.native_blocked_reason);
-    }
-    // Publish the final message once. Applying an intermediate message on each
-    // poll briefly changed the label height and repainted the entire sidebar.
-    layout_changed = set_wrapped_label(m_slice_status, status.empty() ? _L("准备切片") : status, FromDIP(246)) || layout_changed;
-    layout_changed = set_wrapped_label(m_native_slice_status, native_status, FromDIP(290)) || layout_changed;
     m_slice_start->Enable(route != WorkbenchSliceRoute::Unavailable);
-    layout_changed = set_control_label(m_slice_start, state.can_retry && !m_native_slicing ? _L("重试切片") : _L("开始切片")) || layout_changed;
-    m_native_slice_start->Enable(!running && (m_model_view == ModelView::Preview || m_slice_start->IsEnabled()));
+    m_slice_start->SetLabel(state.can_retry && !m_native_slicing ? _L("重试切片") : _L("开始切片"));
     m_slice_analyze->Enable(state.can_analyze);
-    layout_changed = m_slice_cancel->Show(state.analyzing) || layout_changed;
+    layout_changed = m_slice_cancel->Show(state.analyzing || running) || layout_changed;
+    m_slice_cancel->SetLabel(running ? _L("取消切片") : _L("取消分析"));
     m_ai_slicing_tab->Enable(!running);
     m_native_slicing_tab->Enable(!running);
+    static_cast<WorkbenchButton*>(m_ai_slicing_tab)->SetTextColor(StateColor(m_native_slicing
+        ? RedesignTheme::secondary_text_colour() : RedesignTheme::primary_text_colour()));
+    static_cast<WorkbenchButton*>(m_native_slicing_tab)->SetTextColor(StateColor(m_native_slicing
+        ? RedesignTheme::primary_text_colour() : RedesignTheme::secondary_text_colour()));
     m_slice_export->Enable(OrcaPrinterAdapter(m_plater).snapshot().gcode_ready);
-    m_native_slice_export->Enable(m_slice_export->IsEnabled());
     refresh_project_save_actions();
-    const bool can_open_print = !m_import_in_progress && OrcaPrinterAdapter(m_plater).snapshot().gcode_ready;
+    const bool can_open_print = !running && !m_import_in_progress && !m_slice_tools->busy() && OrcaPrinterAdapter(m_plater).snapshot().gcode_ready;
     m_slice_print->Enable(can_open_print);
-    m_native_slice_print->Enable(can_open_print);
+    if (m_native_return_ai) {
+        m_native_return_ai->Enable(slicing_mode_switch_allowed());
+        m_native_return_overview->Enable(slicing_mode_switch_allowed());
+    }
     if (completed && m_model_view == ModelView::Slicing && m_active_page == Page::Model)
         show_model_view(ModelView::Preview);
+    else if (!m_native_slicing && !running && plate && !plate->is_slice_result_valid() &&
+             m_model_view == ModelView::Preview && m_active_page == Page::Model) {
+        wxWeakRef<RedesignShell> weak(this);
+        CallAfter([weak] {
+            if (!weak || !weak->native_workspace_visible() || weak->m_model_view != ModelView::Preview ||
+                weak->m_slicing_state.official.phase == OfficialSlicePhase::Slicing ||
+                weak->m_plater->is_background_process_slicing()) return;
+            auto* current = weak->m_plater->get_partplate_list().get_curr_plate();
+            if (current && !current->is_slice_result_valid()) weak->show_model_view(ModelView::Slicing);
+        });
+    }
     if (layout_changed) {
         m_slice_status->GetParent()->Layout();
         if (auto* scroll = dynamic_cast<wxScrolledWindow*>(m_slice_status->GetParent())) scroll->FitInside();
-        m_native_slice_commands->Layout();
+        if (auto* scroll = dynamic_cast<wxScrolledWindow*>(m_ai_slicing_controls->GetParent())) scroll->FitInside();
     }
+    layout_slicing_overlays();
+    if (m_native_slicing) refresh_native_theme();
 }
 
 bool RedesignShell::can_save_print_project() const
 {
     return print_project_save_available(m_plater && !m_plater->model().objects.empty(), m_import_in_progress,
-        m_slicing_state.official.phase == AI::SmartSlicing::OfficialSlicePhase::Slicing,
+        m_slicing_state.official.phase == AI::SmartSlicing::OfficialSlicePhase::Slicing ||
+            (m_plater && m_plater->is_background_process_slicing()) || (m_slice_tools && m_slice_tools->busy()),
         m_workbench_state.dirty, m_workbench_state.actions.status);
 }
 
@@ -957,7 +1345,6 @@ void RedesignShell::refresh_project_save_actions()
     const bool available = can_save_print_project();
     if (m_assets_workspace) m_assets_workspace->set_project_available(available);
     if (m_slice_save) m_slice_save->Enable(available);
-    if (m_native_slice_save) m_native_slice_save->Enable(available);
 }
 
 void RedesignShell::save_print_project()
@@ -980,7 +1367,7 @@ void RedesignShell::save_print_project()
 
 void RedesignShell::start_workbench_slice()
 {
-    if (m_import_in_progress || !m_slicing_host) return;
+    if (m_import_in_progress || !m_slicing_host || !m_slice_tools || m_slice_tools->busy()) return;
     const auto reviewed = m_slicing_host->workbench_snapshot();
     const auto route = workbench_slice_route(m_native_slicing, reviewed.official.phase == OfficialSlicePhase::Slicing,
         reviewed.can_retry, reviewed.can_start, reviewed.can_start_native);

@@ -21,6 +21,8 @@
 #include "I18N.hpp"
 #include "GUI.hpp"
 #include "GUI_App.hpp"
+#include "MainFrame.hpp"
+#include "Redesign/NativeWorkspaceTheme.hpp"
 #include "GradientCurveEditor.hpp"
 #include "FilamentBitmapUtils.hpp"
 #include "wxExtensions.hpp"
@@ -38,6 +40,19 @@ static constexpr int MIN_COMPONENT_RATIO = 10;
 
 // Section headings and the placeholder text share one muted tone; light key, resolved at each use.
 static const wxColour COLOR_LABEL_MUTED("#6B6A6A");
+
+static wxColour mixed_dialog_colour(const wxColour& light)
+{
+    if (!wxGetApp().mainframe || !wxGetApp().mainframe->is_redesign_shell_active())
+        return StateColor::darkModeColorFor(light);
+    if (light == *wxWHITE) return RedesignTheme::panel_colour();
+    if (light == wxColour("#F8F8F8")) return wxColour(70,70,73);
+    if (light == wxColour("#262E30")) return wxColour(230,230,233);
+    if (light == wxColour("#009688")) return RedesignTheme::accent_colour();
+    if (light == wxColour("#CECECE") || light == wxColour("#EEEEEE")) return wxColour(82,82,87);
+    if (light == COLOR_LABEL_MUTED || light == wxColour("#ACACAC")) return wxColour(176,176,182);
+    return StateColor::darkModeColorFor(light);
+}
 
 // Lightweight self-painting label used for both dual-color and triple-color
 // ratio percentage display.  Hover shows a rounded-rect background; click
@@ -84,20 +99,20 @@ private:
         wxSize sz = GetClientSize();
 
         wxColour parent_bg = GetParent() ? GetParent()->GetBackgroundColour()
-                                         : StateColor::darkModeColorFor(*wxWHITE);
+                                         : mixed_dialog_colour(*wxWHITE);
         dc.SetBrush(wxBrush(parent_bg));
         dc.SetPen(*wxTRANSPARENT_PEN);
         dc.DrawRectangle(0, 0, sz.GetWidth(), sz.GetHeight());
 
         if (m_hovered) {
-            dc.SetBrush(wxBrush(StateColor::darkModeColorFor(wxColour("#F8F8F8"))));
-            dc.SetPen(wxPen(StateColor::darkModeColorFor(wxColour("#CECECE")), 1));
+            dc.SetBrush(wxBrush(mixed_dialog_colour(wxColour("#F8F8F8"))));
+            dc.SetPen(wxPen(mixed_dialog_colour(wxColour("#CECECE")), 1));
             dc.DrawRoundedRectangle(0, 0, sz.GetWidth(), sz.GetHeight(), FromDIP(3));
         }
 
         dc.SetFont(GetFont());
-        dc.SetTextForeground(m_hovered ? StateColor::darkModeColorFor(wxColour("#009688"))
-                                       : StateColor::darkModeColorFor(wxColour("#262E30")));
+        dc.SetTextForeground(m_hovered ? mixed_dialog_colour(wxColour("#009688"))
+                                       : mixed_dialog_colour(wxColour("#262E30")));
         wxSize ts = dc.GetTextExtent(m_text);
         int x = (sz.GetWidth()  - ts.GetWidth())  / 2;
         int y = (sz.GetHeight() - ts.GetHeight()) / 2;
@@ -144,6 +159,7 @@ MixedFilamentDialog::MixedFilamentDialog(wxWindow* parent,
     }
     build_ui();
     wxGetApp().UpdateDlgDarkUI(this);
+    apply_workbench_theme();
 }
 
 MixedFilamentDialog::~MixedFilamentDialog()
@@ -186,6 +202,21 @@ MixedFilamentDialog::MixedFilamentDialog(wxWindow* parent,
     }
     build_ui();
     wxGetApp().UpdateDlgDarkUI(this);
+    apply_workbench_theme();
+}
+
+void MixedFilamentDialog::apply_workbench_theme()
+{
+    if (!wxGetApp().mainframe || !wxGetApp().mainframe->is_redesign_shell_active()) return;
+    if (!m_workbench_theme) m_workbench_theme = std::make_unique<NativeWorkspaceTheme>();
+    std::vector<wxWindow*> swatches;
+    if (m_recommendation_scroll)
+        for (auto* child : m_recommendation_scroll->GetChildren()) swatches.push_back(child);
+    m_workbench_theme->apply(this, swatches);
+    if (m_btn_ok) {
+        m_btn_ok->SetBackgroundColor(RedesignTheme::accent_colour());
+        m_btn_ok->SetTextColor(wxColour(22,22,25));
+    }
 }
 
 void MixedFilamentDialog::on_dpi_changed(const wxRect&)
@@ -465,8 +496,8 @@ void MixedFilamentDialog::start_ratio_editor(size_t idx, wxWindow* anchor, const
         commit_ratio_editor(true);
 
     if (!m_ratio_editor_panel) {
-        wxColour bg = StateColor::darkModeColorFor(wxColour("#F8F8F8"));
-        wxColour fg = StateColor::darkModeColorFor(wxColour("#262E30"));
+        wxColour bg = mixed_dialog_colour(wxColour("#F8F8F8"));
+        wxColour fg = mixed_dialog_colour(wxColour("#262E30"));
 
         m_ratio_editor_panel = new wxPanel(this, wxID_ANY, wxDefaultPosition,
                                            wxDefaultSize, wxBORDER_SIMPLE);
@@ -559,6 +590,7 @@ void MixedFilamentDialog::start_ratio_editor(size_t idx, wxWindow* anchor, const
     m_ratio_editor_panel->Raise();
     m_ratio_editor->SetFocus();
     m_ratio_editor->SelectAll();
+    apply_workbench_theme();
     m_ratio_editor_panel->Refresh();
     Update();
 }
@@ -609,7 +641,7 @@ void MixedFilamentDialog::commit_ratio_editor_from_background(wxMouseEvent& e)
 
 void MixedFilamentDialog::build_ui()
 {
-    SetBackgroundColour(StateColor::darkModeColorFor(*wxWHITE));
+    SetBackgroundColour(mixed_dialog_colour(*wxWHITE));
     Bind(wxEVT_LEFT_DOWN, &MixedFilamentDialog::commit_ratio_editor_from_background, this);
     SetSize(FromDIP(439), FromDIP(580));
 
@@ -668,7 +700,7 @@ wxBoxSizer* MixedFilamentDialog::create_preview_panel()
         wxSize sz = m_preview_canvas->GetClientSize();
         size_t n = num_components();
 
-        dc.SetBrush(wxBrush(StateColor::darkModeColorFor(*wxWHITE)));
+        dc.SetBrush(wxBrush(mixed_dialog_colour(*wxWHITE)));
         dc.SetPen(*wxTRANSPARENT_PEN);
         dc.DrawRectangle(0, 0, sz.GetWidth(), sz.GetHeight());
 
@@ -696,11 +728,10 @@ wxBoxSizer* MixedFilamentDialog::create_preview_panel()
 
             // Mask corners: overdraw a thick background-colored rounded rect frame
             // so the inner edge forms the desired rounded corners.
-            // Known limitation: this assumes the panel background equals
-            // darkModeColorFor(white).  wxGraphicsContext::Clip(path) is not
+            // The frame follows the dialog surface. wxGraphicsContext::Clip(path) is not
             // available in our wxWidgets build (only Clip(wxRegion) exists).
             int r = static_cast<int>(radius);
-            wxColour bg = StateColor::darkModeColorFor(*wxWHITE);
+            wxColour bg = mixed_dialog_colour(*wxWHITE);
             dc.SetBrush(*wxTRANSPARENT_BRUSH);
             dc.SetPen(wxPen(bg, r * 2));
             dc.DrawRoundedRectangle(x0 - r, y0 - r, swatch_sz + r * 2, swatch_sz + r * 2, radius * 2);
@@ -721,7 +752,7 @@ wxBoxSizer* MixedFilamentDialog::create_preview_panel()
     sizer->Add(m_preview_canvas, 0, wxALIGN_CENTER);
 
     auto* label = new wxStaticText(this, wxID_ANY, _L("Effect Preview"));
-    label->SetForegroundColour(StateColor::darkModeColorFor(COLOR_LABEL_MUTED));
+    label->SetForegroundColour(mixed_dialog_colour(COLOR_LABEL_MUTED));
     label->SetFont(::Label::Body_13);
     sizer->Add(label, 0, wxALIGN_CENTER | wxTOP, FromDIP(4));
 
@@ -739,8 +770,8 @@ wxBoxSizer* MixedFilamentDialog::create_material_selection()
         wxBufferedPaintDC dc(m_summary_panel);
         wxSize sz = m_summary_panel->GetClientSize();
 
-        wxColour sum_bg   = StateColor::darkModeColorFor(wxColour("#F8F8F8"));
-        wxColour sum_text = StateColor::darkModeColorFor(wxColour("#262E30"));
+        wxColour sum_bg   = mixed_dialog_colour(wxColour("#F8F8F8"));
+        wxColour sum_text = mixed_dialog_colour(wxColour("#262E30"));
         dc.SetBrush(wxBrush(sum_bg));
         dc.SetPen(*wxTRANSPARENT_PEN);
         dc.DrawRectangle(0, 0, sz.GetWidth(), sz.GetHeight());
@@ -797,7 +828,7 @@ wxBoxSizer* MixedFilamentDialog::create_material_selection()
     sizer->Add(m_summary_panel, 0, wxEXPAND);
 
     auto* sel_label = new wxStaticText(this, wxID_ANY, _L("Select Mixed Materials"));
-    sel_label->SetForegroundColour(StateColor::darkModeColorFor(COLOR_LABEL_MUTED));
+    sel_label->SetForegroundColour(mixed_dialog_colour(COLOR_LABEL_MUTED));
     sel_label->SetFont(::Label::Body_12);
     sizer->Add(sel_label, 0, wxTOP, FromDIP(6));
 
@@ -845,7 +876,7 @@ wxBoxSizer* MixedFilamentDialog::create_ratio_slider()
     auto* sizer = new wxBoxSizer(wxVERTICAL);
 
     auto* ratio_label = new wxStaticText(this, wxID_ANY, _L("Ratio"));
-    ratio_label->SetForegroundColour(StateColor::darkModeColorFor(COLOR_LABEL_MUTED));
+    ratio_label->SetForegroundColour(mixed_dialog_colour(COLOR_LABEL_MUTED));
     ratio_label->SetFont(::Label::Body_12);
     sizer->Add(ratio_label, 0, wxBOTTOM, FromDIP(4));
 
@@ -983,7 +1014,7 @@ wxBoxSizer* MixedFilamentDialog::create_triangle_picker()
     int panel_h = FromDIP(160);
     m_triangle_panel = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxSize(panel_w, panel_h));
     m_triangle_panel->SetMinSize(wxSize(panel_w, panel_h));
-    m_triangle_panel->SetBackgroundColour(StateColor::darkModeColorFor(*wxWHITE));
+    m_triangle_panel->SetBackgroundColour(mixed_dialog_colour(*wxWHITE));
     m_triangle_panel->SetBackgroundStyle(wxBG_STYLE_PAINT);
 
     auto get_vertices = [this]() -> std::tuple<TriPoint, TriPoint, TriPoint> {
@@ -1007,7 +1038,7 @@ wxBoxSizer* MixedFilamentDialog::create_triangle_picker()
         wxSize sz = m_triangle_panel->GetClientSize();
         auto [v0, v1, v2] = get_vertices();
 
-        wxColour tri_bg = StateColor::darkModeColorFor(*wxWHITE);
+        wxColour tri_bg = mixed_dialog_colour(*wxWHITE);
         dc.SetBrush(wxBrush(tri_bg));
         dc.SetPen(*wxTRANSPARENT_PEN);
         dc.DrawRectangle(0, 0, sz.GetWidth(), sz.GetHeight());
@@ -1054,7 +1085,7 @@ wxBoxSizer* MixedFilamentDialog::create_triangle_picker()
                 }
             }
 
-            mdc.SetPen(wxPen(StateColor::darkModeColorFor(wxColour("#CECECE")), 1));
+            mdc.SetPen(wxPen(mixed_dialog_colour(wxColour("#CECECE")), 1));
             mdc.SetBrush(*wxTRANSPARENT_BRUSH);
             wxPoint pts[3] = {{(int)v0.x, (int)v0.y}, {(int)v1.x, (int)v1.y}, {(int)v2.x, (int)v2.y}};
             mdc.DrawPolygon(3, pts);
@@ -1080,7 +1111,7 @@ wxBoxSizer* MixedFilamentDialog::create_triangle_picker()
             int top_label_y = std::max(0, (int)(v0.y - ts0.GetHeight() - FromDIP(4)));
 
             dc.SetFont(::Label::Body_12);
-            dc.SetTextForeground(StateColor::darkModeColorFor(COLOR_LABEL_MUTED));
+            dc.SetTextForeground(mixed_dialog_colour(COLOR_LABEL_MUTED));
             dc.DrawText(_L("Ratio"), FromDIP(2), top_label_y);
 
             // Position the real RatioLabelPanel children
@@ -1240,20 +1271,20 @@ wxBoxSizer* MixedFilamentDialog::create_recommendation_grid()
 
     auto* title_sizer = new wxBoxSizer(wxHORIZONTAL);
     auto* rec_label = new wxStaticText(this, wxID_ANY, _L("Mixing Recommendations"));
-    rec_label->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#ACACAC")));
+    rec_label->SetForegroundColour(mixed_dialog_colour(wxColour("#ACACAC")));
     rec_label->SetFont(::Label::Body_10);
     title_sizer->Add(rec_label, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(4));
 
     auto* rec_line = new wxPanel(this, wxID_ANY);
     rec_line->SetMinSize(wxSize(-1, 1));
-    rec_line->SetBackgroundColour(StateColor::darkModeColorFor(wxColour("#EEEEEE")));
+    rec_line->SetBackgroundColour(mixed_dialog_colour(wxColour("#EEEEEE")));
     title_sizer->Add(rec_line, 1, wxALIGN_CENTER_VERTICAL);
 
     outer->Add(title_sizer, 0, wxEXPAND | wxBOTTOM, FromDIP(4));
 
     m_recommendation_scroll = new wxScrolledWindow(this, wxID_ANY, wxDefaultPosition, wxSize(-1, FromDIP(116)));
     m_recommendation_scroll->SetScrollRate(0, 5);
-    m_recommendation_scroll->SetBackgroundColour(StateColor::darkModeColorFor(wxColour("#F8F8F8")));
+    m_recommendation_scroll->SetBackgroundColour(mixed_dialog_colour(wxColour("#F8F8F8")));
 
     m_recommendation_grid = new wxWrapSizer(wxHORIZONTAL, wxREMOVE_LEADING_SPACES);
     auto* scroll_inner_sizer = new wxBoxSizer(wxVERTICAL);
@@ -1699,6 +1730,7 @@ void MixedFilamentDialog::on_recommendation_clicked_triple(unsigned int a, unsig
 
 void MixedFilamentDialog::update_preview()
 {
+    apply_workbench_theme();
     if (m_preview_canvas)  m_preview_canvas->Refresh();
     if (m_summary_panel)   m_summary_panel->Refresh();
     if (m_ratio_bar)       m_ratio_bar->Refresh();
@@ -1710,11 +1742,11 @@ void MixedFilamentDialog::paint_warning_panel(wxPaintEvent&)
     wxBufferedPaintDC dc(m_warning_panel);
     wxSize sz = m_warning_panel->GetClientSize();
 
-    dc.SetBrush(wxBrush(StateColor::darkModeColorFor(*wxWHITE)));
+    dc.SetBrush(wxBrush(mixed_dialog_colour(*wxWHITE)));
     dc.SetPen(*wxTRANSPARENT_PEN);
     dc.DrawRectangle(0, 0, sz.GetWidth(), sz.GetHeight());
 
-    dc.SetBrush(wxBrush(StateColor::darkModeColorFor(wxColour("#F8F8F8"))));
+    dc.SetBrush(wxBrush(mixed_dialog_colour(wxColour("#F8F8F8"))));
     dc.SetPen(wxPen(StateColor::darkModeColorFor(wxColour("#D01B1B")), 1));
     dc.DrawRoundedRectangle(0, 0, sz.GetWidth(), sz.GetHeight(), FromDIP(4));
 
@@ -1840,7 +1872,7 @@ void MixedFilamentDialog::update_gradient_direction_items()
         int bmp_w = swatch_sz + gap + arrow_w + gap + swatch_sz;
         int bmp_h = swatch_sz;
 
-        wxColour dir_text = StateColor::darkModeColorFor(wxColour("#262E30"));
+        wxColour dir_text = mixed_dialog_colour(wxColour("#262E30"));
 
         return make_alpha_bitmap(bmp_w, bmp_h, [&](wxDC& dc) {
             dc.SetFont(::Label::Body_13);

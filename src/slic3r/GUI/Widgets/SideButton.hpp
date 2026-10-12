@@ -55,6 +55,12 @@ public:
 
     void SetIconOffset(const int offset);
 
+    const StateColor& GetForegroundColor() const { return text_color; }
+    const StateColor& GetBackgroundColor() const { return background_color; }
+    const StateColor& GetBorderColor() const { return border_color; }
+    wxColour GetBottomColour() const { return bottom_color; }
+    double GetCornerRadiusValue() const { return radius; }
+
 private:
     wxSize textSize;
     wxSize minSize;

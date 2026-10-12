@@ -62,6 +62,9 @@ public:
 
     void SetTextColor(StateColor const &color);
 
+    const StateColor& GetTextColor() const { return text_color; }
+    const StateColor& GetLabelColor() const { return label_color; }
+
     void SetSize(wxSize const &size);
 
     void Rescale();
