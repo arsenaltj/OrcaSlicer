@@ -3154,14 +3154,28 @@ void GCodeViewer::render_legend(float &legend_height, int canvas_width, int canv
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f * m_scale); // ORCA add window rounding to modernize / match style
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0,0.0));
     ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(1.0f,1.0f,1.0f,0.6f));
-    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.00f, 0.59f, 0.53f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.00f, 0.59f, 0.53f, 1.0f));
+    const bool redesign = wxGetApp().mainframe && wxGetApp().mainframe->is_redesign_shell_active();
+    const ImVec4 header = redesign ? ImVec4(.27f,.27f,.29f,1.f) : ImVec4(0.00f,0.59f,0.53f,1.f);
+    ImGui::PushStyleColor(ImGuiCol_Header, header);
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, header);
     ImGui::PushStyleColor(ImGuiCol_ScrollbarGrab, ImVec4(0.42f, 0.42f, 0.42f, 1.00f));
     ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabHovered, ImVec4(0.93f, 0.93f, 0.93f, 1.00f));
     ImGui::PushStyleColor(ImGuiCol_ScrollbarGrabActive, ImVec4(0.93f, 0.93f, 0.93f, 1.00f));
     //ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(1.f, 1.f, 1.f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_Border, {1, 0, 0, 0});
-    ImGui::SetNextWindowBgAlpha(0.8f);
+    const int extra_colors = redesign ? 9 : 0;
+    if (redesign) {
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(35.f/255.f,35.f/255.f,38.f/255.f,1));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1,1,1,.86f));
+        ImGui::PushStyleColor(ImGuiCol_CheckMark, ImVec4(1,.76f,.15f,1));
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(.27f,.27f,.29f,1));
+        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(.33f,.33f,.35f,1));
+        ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(.33f,.33f,.35f,1));
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(.27f,.27f,.29f,1));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(.33f,.33f,.35f,1));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(.33f,.33f,.35f,1));
+    }
+    ImGui::SetNextWindowBgAlpha(redesign ? 1.f : 0.8f);
     const float max_height = 0.75f * static_cast<float>(cnv_size.get_height());
     const float child_height = 0.3333f * max_height;
     ImGui::SetNextWindowSizeConstraints({ 0.0f, 0.0f }, { -1.0f, max_height });
@@ -3567,7 +3581,7 @@ void GCodeViewer::render_legend(float &legend_height, int canvas_width, int canv
         ImGui::SameLine(window_width);                // ORCA use stored window width while folded. This prevents annoying position change on fold/expand button
         ImGui::Dummy({ 0, 0 });
         imgui.end();
-        ImGui::PopStyleColor(7);
+        ImGui::PopStyleColor(7 + extra_colors);
         ImGui::PopStyleVar(2);
         return;
     }
@@ -4735,7 +4749,7 @@ void GCodeViewer::render_legend(float &legend_height, int canvas_width, int canv
 
     legend_height = ImGui::GetCurrentWindow()->Size.y;
     imgui.end();
-    ImGui::PopStyleColor(7);
+    ImGui::PopStyleColor(7 + extra_colors);
     ImGui::PopStyleVar(2);
 }
 

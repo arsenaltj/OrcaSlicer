@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ImageDesignDraft.hpp"
+#include "NativeWorkspaceTheme.hpp"
 #include "../AI/ModelGeneration/ModelGenerationHost.hpp"
 #include "../AI/ModelGeneration/PostGenerationWorkbenchState.hpp"
 #include "../AI/ModelGeneration/WorkbenchImportSession.hpp"
@@ -40,6 +41,10 @@ class SmartSlicingFeatureHost;
 class PrinterWorkspace;
 class ImageHistorySidebar;
 class AssetsWorkspace;
+class RedesignSlicingTools;
+class SlicingCanvasOverlay;
+class WorkbenchPaletteChoice;
+class WorkbenchSlider;
 
 class RedesignShell final : public wxPanel
 {
@@ -57,6 +62,7 @@ public:
     void set_service_status(AIServiceStatus status);
     bool owns_model_workflow() const;
     bool native_workspace_visible() const;
+    bool native_slicing_visible() const { return native_workspace_visible() && m_native_slicing; }
     void start_slicing_from_workspace();
     void refresh_workflow_layout();
     void show_printer_media();
@@ -120,6 +126,12 @@ private:
     bool can_save_print_project() const;
     void refresh_project_save_actions();
     void save_print_project();
+    void update_slicing_tools();
+    void change_slicing_palette();
+    void show_slicing_palette_details();
+    void layout_slicing_overlays();
+    void refresh_native_theme();
+    bool slicing_mode_switch_allowed() const;
     bool navigate_to_impl(Page page, bool allow_locked_image_view);
     // User navigation to the image page may inspect the current design while
     // a model submission still owns the route. This path keeps the route lock
@@ -133,7 +145,11 @@ private:
     wxPanel* m_workbench_page { nullptr };
     wxPanel* m_slicing_page { nullptr };
     wxPanel* m_slicing_settings { nullptr };
-    wxPanel* m_native_slice_commands { nullptr };
+    wxWindow* m_native_return_ai {nullptr};
+    wxWindow* m_native_return_overview {nullptr};
+    wxWindow* m_native_prepare {nullptr};
+    wxWindow* m_native_preview {nullptr};
+    NativeWorkspaceTheme m_native_theme;
     wxPanel* m_native_plater_host { nullptr };
     wxPanel* m_ai_slicing_controls { nullptr };
     wxWindow* m_ai_slicing_tab { nullptr };
@@ -147,16 +163,28 @@ private:
     wxWindow* m_slice_print { nullptr };
     std::array<wxWindow*, 3> m_slice_goals { nullptr, nullptr, nullptr };
     wxStaticText* m_slice_details { nullptr };
+    wxPanel* m_slice_parameter_panel {nullptr};
+    std::array<wxStaticText*, 6> m_slice_parameter_values {};
     wxStaticText* m_slice_status { nullptr };
     wxStaticText* m_slice_check_status { nullptr };
     wxStaticText* m_slice_model_stats { nullptr };
     wxBoxSizer* m_slice_palette { nullptr };
+    wxPanel* m_slice_palette_host {nullptr};
+    WorkbenchPaletteChoice* m_slice_color_mode {nullptr};
+    WorkbenchPaletteChoice* m_slice_color_source {nullptr};
+    WorkbenchSlider* m_slice_color_count {nullptr};
+    wxStaticText* m_slice_color_count_label {nullptr};
+    wxWindow* m_slice_palette_all {nullptr};
+    wxWindow* m_slice_parameters_all {nullptr};
+    wxWindow* m_slice_check {nullptr};
+    std::unique_ptr<RedesignSlicingTools> m_slice_tools;
+    SlicingCanvasOverlay* m_slice_stats_overlay {nullptr};
+    SlicingCanvasOverlay* m_slice_progress_overlay {nullptr};
+    int m_slice_committed_count {6};
+    int m_slice_progress_percent {0};
+    wxString m_slice_progress_stage;
+    bool m_slice_camera_fitted {false};
     std::vector<std::string> m_slice_displayed_palette;
-    wxStaticText* m_native_slice_status { nullptr };
-    wxWindow* m_native_slice_start { nullptr };
-    wxWindow* m_native_slice_export { nullptr };
-    wxWindow* m_native_slice_save { nullptr };
-    wxWindow* m_native_slice_print { nullptr };
     wxWindow* m_return_slice { nullptr };
     Plater* m_plater { nullptr };
     wxWindow* m_plater_original_parent { nullptr };
@@ -176,9 +204,12 @@ private:
     wxStaticText* m_import_elapsed {nullptr};
     wxWindow* m_import_cancel {nullptr};
     wxTimer m_import_timer;
+    wxTimer m_slice_camera_retry_timer;
+    int m_slice_camera_retry_attempts {0};
     std::chrono::steady_clock::time_point m_import_started;
     std::chrono::steady_clock::time_point m_import_view_started;
     bool m_saved_sidebar_collapsed {false};
+    std::optional<bool> m_saved_collapse_toolbar;
     std::string m_pending_workbench_job;
     PrinterWorkspace* m_print_page { nullptr };
     wxPanel* m_image_settings_panel { nullptr };
@@ -198,6 +229,7 @@ private:
     wxTextCtrl* m_custom_style { nullptr };
     int m_last_stylized_style { 1 };
     wxPanel* m_provider_choice { nullptr };
+    wxPanel* m_face_limit_choice { nullptr };
     std::string m_selected_style_id { "sculpture" };
     wxStaticText* m_upload_hint { nullptr };
     wxStaticText* m_upload_status { nullptr };

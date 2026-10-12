@@ -121,6 +121,12 @@ void Button::SetPaddingSize(const wxSize& size)
     messureSize();
 }
 
+void Button::SetLeftPadding(int size)
+{
+    leftPadding = std::max(0, size);
+    Refresh(false);
+}
+
 void Button::SetTextColor(StateColor const& color)
 {
     text_color = color;
@@ -333,6 +339,8 @@ void Button::render(wxDC& dc)
     }
     // start draw
     wxPoint pt = rcContent.GetLeftTop();
+    if (!isCenter)
+        pt.x += leftPadding;
     if (icon.bmp().IsOk()) {
         if (vertical)
             pt.x += (rcContent.width - szIcon.x) / 2;

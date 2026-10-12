@@ -4,6 +4,8 @@
 #include <wx/display.h>
 #include <wx/dcgraph.h>
 #include "../GUI_App.hpp"
+#include "../MainFrame.hpp"
+#include "../Redesign/RedesignTheme.hpp"
 
 
 
@@ -80,6 +82,9 @@ void SidePopup::Popup(wxWindow* focus)
 void SidePopup::Create()
 {
     wxSizer* sizer = new wxBoxSizer(wxVERTICAL);
+    const auto* frame = Slic3r::GUI::wxGetApp().mainframe;
+    const bool redesign = frame && frame->is_redesign_shell_active();
+    if (redesign) SetBackgroundColour(Slic3r::GUI::RedesignTheme::panel_colour());
 
     int max_width = 0;
     int height = 0;
@@ -90,6 +95,16 @@ void SidePopup::Create()
 
     for (auto btn : btn_list)
     {
+        if (redesign) {
+            const StateColor background(std::pair<wxColour, int>(wxColour(55,55,58), StateColor::Disabled),
+                std::pair<wxColour, int>(wxColour(85,85,90), StateColor::Hovered),
+                std::pair<wxColour, int>(wxColour(70,70,73), StateColor::Normal));
+            btn->SetBackgroundColor(background);
+            btn->SetBorderColor(background);
+            btn->SetForegroundColor(StateColor(std::pair<wxColour, int>(wxColour(126,126,130), StateColor::Disabled),
+                std::pair<wxColour, int>(wxColour(230,230,233), StateColor::Normal)));
+            btn->SetBottomColour(GetBackgroundColour());
+        }
         wxSize size = btn->GetMinSize();
         height += size.y;
         size.x = max_width;

@@ -21,8 +21,28 @@ inline WorkbenchSliceRoute workbench_slice_route(bool native_tab, bool running, 
     if (running) return WorkbenchSliceRoute::Unavailable;
     if (!native_tab && can_retry) return WorkbenchSliceRoute::AiRetry;
     if (!native_tab && can_start_ai) return WorkbenchSliceRoute::AiCandidate;
-    return can_start_native ? WorkbenchSliceRoute::Native : WorkbenchSliceRoute::Unavailable;
+    return native_tab && can_start_native ? WorkbenchSliceRoute::Native : WorkbenchSliceRoute::Unavailable;
 }
+
+// The coordinator's calculation goal is not a user selection. A selection is
+// usable only in the workspace the user reviewed, including after Undo/Redo.
+class WorkbenchGoalSelection {
+public:
+    bool select(AI::SmartSlicing::RecommendationGoal goal, const AI::SmartSlicing::WorkspaceRevision& revision) {
+        const auto& goals = AI::SmartSlicing::RECOMMENDATION_GOALS;
+        if (!revision.valid() || std::find(goals.begin(), goals.end(), goal) == goals.end()) return false;
+        m_goal = goal; m_revision = revision; return true;
+    }
+    std::optional<AI::SmartSlicing::RecommendationGoal> selected(
+        const AI::SmartSlicing::WorkspaceRevision& revision) const {
+        return m_revision && *m_revision == revision ? m_goal : std::nullopt;
+    }
+    bool has_selection() const { return m_goal.has_value(); }
+    void clear() { m_goal.reset(); m_revision.reset(); }
+private:
+    std::optional<AI::SmartSlicing::RecommendationGoal> m_goal;
+    std::optional<AI::SmartSlicing::WorkspaceRevision> m_revision;
+};
 
 inline std::vector<AI::SmartSlicing::ConfigPatchEntry> effective_candidate_parameters(
     std::vector<AI::SmartSlicing::ConfigPatchEntry> baseline,
@@ -94,6 +114,7 @@ struct SmartSlicingWorkbenchState
 {
     AI::SmartSlicing::RecommendationSessionSnapshot session;
     AI::SmartSlicing::RecommendationGoal selected_goal {AI::SmartSlicing::RecommendationGoal::Balanced};
+    bool has_selected_goal {false};
     std::array<std::optional<AI::SmartSlicing::SliceCandidate>, 3> candidates;
     std::array<std::optional<AI::SmartSlicing::TrialMetrics>, 3> metrics;
     std::array<std::vector<AI::SmartSlicing::ConfigPatchEntry>, 3> effective_parameters;

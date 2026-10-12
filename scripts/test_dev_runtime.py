@@ -387,6 +387,73 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(dev.update_sidecar(self.root, self.build)["updated_modules"], ["worker.py"])
 
 
+    def configure_conditional_data(self, enabled):
+        self.write("CMakeLists.txt", 'set(ORCA_AI_SIDECAR_RUNTIME_FILES\n'
+                   '"${CMAKE_SOURCE_DIR}/tools/ai/provider.py"\n'
+                   '${ORCA_LOCAL_SEMANTIC_RUNTIME_FILES}\n)\ninstall(FILES)\n')
+        self.write("tools/ai/local_semantic_runtime_files.cmake",
+                   'set(ORCA_LOCAL_SEMANTIC_RUNTIME_FILES)\n'
+                   'if(ORCA_AI_PORTRAIT_RECOGNITION)\n'
+                   'list(APPEND ORCA_LOCAL_SEMANTIC_RUNTIME_FILES '
+                   '"${CMAKE_SOURCE_DIR}/tools/ai/portrait_parent_cleanup_catalog.json")\nendif()\n')
+        self.write("tools/ai/portrait_parent_cleanup_catalog.json", '{"version":1}')
+        if enabled is not None:
+            cache = self.build / "CMakeCache.txt"
+            cache.write_text(cache.read_text() + "\nORCA_AI_PORTRAIT_RECOGNITION:BOOL=" + enabled + "\n")
+
+    def test_disabled_portrait_data_is_neither_required_nor_refreshed(self):
+        self.prepare()
+        self.configure_conditional_data("OFF")
+        for prefix in (".tmp/build/", ".tmp/dev/run/resources/tools/ai/"):
+            self.write(prefix + "orca_ai_runtime_dependencies.json", '{"portrait_recognition":{"enabled":false}}')
+        self.assertEqual(dev.modules(self.root, self.build), ["provider.py"])
+        dev.finish_install(self.root, self.build, dev.preflight(self.root, self.build))
+        self.write("tools/ai/provider.py", "updated")
+        self.assertEqual(dev.update_sidecar(self.root, self.build)["updated_modules"], ["provider.py"])
+        self.assertFalse((self.runtime / "resources/tools/ai/portrait_parent_cleanup_catalog.json").exists())
+
+    def test_enabled_portrait_data_is_required_verified_and_refreshed(self):
+        self.prepare()
+        self.configure_conditional_data("ON")
+        name = "resources/tools/ai/portrait_parent_cleanup_catalog.json"
+        with self.assertRaisesRegex(ValueError, "Runtime does not match.*catalog.json"):
+            dev.verify_runtime(self.root, self.build, [])
+        self.write(".tmp/dev/run/" + name, '{"version":1}')
+        dev.finish_install(self.root, self.build, dev.preflight(self.root, self.build))
+        self.write("tools/ai/portrait_parent_cleanup_catalog.json", '{"version":2}')
+        with self.assertRaisesRegex(ValueError, "Runtime does not match.*catalog.json"):
+            dev.verify_runtime(self.root, self.build, [])
+        self.assertEqual(dev.update_sidecar(self.root, self.build)["updated_modules"],
+                         ["portrait_parent_cleanup_catalog.json"])
+        self.assertEqual((self.runtime / name).read_text(), '{"version":2}')
+
+    def test_unresolved_runtime_conditions_fail_closed(self):
+        self.configure_conditional_data(None)
+        for build in (None, self.build):
+            with self.assertRaisesRegex(ValueError, "Cannot resolve configured portrait"):
+                dev.modules(self.root, build)
+        path = self.root / "tools/ai/local_semantic_runtime_files.cmake"
+        path.write_text(path.read_text().replace("ORCA_AI_PORTRAIT_RECOGNITION", "UNKNOWN_OPTION"))
+        with self.assertRaisesRegex(ValueError, "Unsupported sidecar runtime condition"):
+            dev.modules(self.root, self.build)
+
+    def test_shared_component_data_is_deduplicated_and_verified(self):
+        self.write("CMakeLists.txt", 'set(ORCA_AI_SIDECAR_RUNTIME_FILES\n'
+                   '"${CMAKE_SOURCE_DIR}/tools/ai/provider.py"\n'
+                   '${ORCA_LOCAL_SEMANTIC_RUNTIME_FILES}\n)\ninstall(FILES)\n')
+        self.write("tools/ai/local_semantic_runtime_files.cmake",
+                   'set(ORCA_LOCAL_SEMANTIC_RUNTIME_FILES '
+                   '"${CMAKE_SOURCE_DIR}/tools/ai/provider.py" '
+                   '"${CMAKE_SOURCE_DIR}/tools/ai/config.json")')
+        self.write("tools/ai/config.json", '{"version":1}')
+        self.write(".tmp/dev/run/resources/tools/ai/config.json", '{"version":1}')
+        self.assertEqual(dev.modules(self.root), ["provider.py", "config.json"])
+        self.prepare()
+        self.write(".tmp/dev/run/resources/tools/ai/config.json", '{"version":2}')
+        with self.assertRaisesRegex(ValueError, "Runtime does not match"):
+            dev.verify_runtime(self.root, self.build, [])
+
+
 class OfflineSelectionTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="orca-offline-selection-")

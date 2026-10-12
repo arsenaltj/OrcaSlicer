@@ -84,7 +84,7 @@ def setup_identity(root: Path, build: Path) -> dict:
     return identity(root)
 
 
-def modules(root: Path) -> list[str]:
+def modules(root: Path, build: Path | None = None) -> list[str]:
     cmake = (root / "CMakeLists.txt").read_text(encoding="utf-8")
     block = cmake.split("set(ORCA_AI_SIDECAR_RUNTIME_FILES", 1)[1].split("install(FILES", 1)[0]
     components = {
@@ -95,12 +95,24 @@ def modules(root: Path) -> list[str]:
         marker = "${" + variable + "}"
         if marker in block:
             component = root / relative_path
-            block = block.replace(marker, component.read_text(encoding="utf-8"))
+            content = component.read_text(encoding="utf-8")
+            portrait = re.compile(
+                r"^if\(ORCA_AI_PORTRAIT_RECOGNITION\)\s*\n(.*?)^endif\(\)[ \t]*$",
+                re.MULTILINE | re.DOTALL)
+            if portrait.search(content):
+                cache = (build / "CMakeCache.txt").read_text(encoding="utf-8") if build else ""
+                enabled = re.search(r"^ORCA_AI_PORTRAIT_RECOGNITION:BOOL=(ON|OFF)$", cache, re.MULTILINE)
+                if enabled is None:
+                    raise ValueError("Cannot resolve configured portrait runtime files")
+                content = portrait.sub(lambda match: match[1] if enabled[1] == "ON" else "", content)
+            if re.search(r"^[ \t]*(?:if|elseif|else|endif)\s*\(", content, re.MULTILINE):
+                raise ValueError("Unsupported sidecar runtime condition; update modules() before refreshing")
+            block = block.replace(marker, content)
     # Never silently omit a newly introduced component variable.
     remainder = block.replace("${CMAKE_SOURCE_DIR}", "")
     if re.search(r"\$\{[^}]+\}", remainder):
         raise ValueError("Unsupported sidecar runtime variable; update modules() before refreshing")
-    names = re.findall(r'\$\{CMAKE_SOURCE_DIR\}/tools/ai/([A-Za-z0-9_]+\.py)', block)
+    names = re.findall(r'\$\{CMAKE_SOURCE_DIR\}/tools/ai/([A-Za-z0-9_]+\.(?:py|json))', block)
     if not names:
         raise ValueError("Invalid CMake sidecar runtime list")
     # CMake permits the same source in a shared component and its caller.
@@ -171,7 +183,7 @@ def verify_runtime(root: Path, build: Path, installed: list[str], runtime: Path 
             raise ValueError(f"Runtime is incomplete: {name}; run dev.ps1 again")
     checks = {name: digest(source_path(runtime, name)) for name in installed}
     pairs = {name: build / "src/Release" / name for name in ("orca-slicer.exe", "OrcaSlicer.dll")}
-    pairs.update({"resources/tools/ai/" + name: root / "tools/ai" / name for name in modules(root)})
+    pairs.update({"resources/tools/ai/" + name: root / "tools/ai" / name for name in modules(root, build)})
     pairs["resources/tools/ai/orca_ai_build_info.json"] = build / "orca_ai_build_info.json"
     pairs["resources/tools/ai/orca_ai_runtime_dependencies.json"] = build / "orca_ai_runtime_dependencies.json"
     cache = (build / "CMakeCache.txt").read_text(encoding="utf-8")
@@ -270,7 +282,7 @@ def update_sidecar(root: Path, build: Path) -> dict:
             current[key] != state["source"][key] for key in ("native_identity", "native_configuration")):
         raise ValueError("Native sources/resources/build configuration changed; use dev.ps1 Run")
     runtime = root / ".tmp/dev/run"
-    refreshable = {"resources/tools/ai/" + name for name in modules(root)}
+    refreshable = {"resources/tools/ai/" + name for name in modules(root, build)}
     for name in state["installed_files"]:
         target = source_path(runtime, name)
         if not target.is_file():
@@ -281,7 +293,7 @@ def update_sidecar(root: Path, build: Path) -> dict:
         if digest(runtime / name) != state["hashes"][name] or digest(build / "src/Release" / name) != state["hashes"][name]:
             raise ValueError("Native binaries changed; use dev.ps1 Run")
     copied = []
-    for name in modules(root):
+    for name in modules(root, build):
         source = source_path(root, "tools/ai/" + name)
         target = source_path(runtime, "resources/tools/ai/" + name)
         if not target.is_file() or digest(source) != digest(target):

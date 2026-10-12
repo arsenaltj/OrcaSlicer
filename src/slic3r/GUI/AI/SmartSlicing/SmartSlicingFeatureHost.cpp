@@ -478,7 +478,7 @@ struct SmartSlicingFeatureHost::Impl
         join_recommendation_worker();
         clear_recommendation_results();
         clear_recommendation_projection();
-        if (recommendation_revision_timer)
+        if (recommendation_revision_timer && !workbench_active)
             recommendation_revision_timer->Stop();
 
         candidate_capture = workspace->capture_candidate_search_input();
@@ -609,12 +609,31 @@ struct SmartSlicingFeatureHost::Impl
         refresh_native_slice_revision();
         if (versioned_apply_workflow->active_transaction()) {
             workbench_official = versioned_apply_workflow->poll();
+            if (workbench_official.phase == AI::SmartSlicing::OfficialSlicePhase::Slicing)
+                observed_workbench_revision = current_native_revision();
+            else if (observed_workbench_revision && *observed_workbench_revision != current_native_revision() &&
+                     !workbench_official.can_retry_slice) {
+                goal_selection.clear();
+                if (workbench_active && workbench_ai_mode && !recommendation_worker_state.running()) {
+                    observed_workbench_revision = current_native_revision(); auto_analyze();
+                }
+            }
             publish_workbench();
             return;
         }
         recommendation_coordinator.check_deadline();
         refresh_recommendation_revision();
         drain_recommendation_results();
+        if (workbench_active && workbench_ai_mode && !native_session.pending()) {
+            const auto current = current_native_revision();
+            if (current.valid() && (!observed_workbench_revision || *observed_workbench_revision != current)) {
+                goal_selection.clear();
+                if (recommendation_worker_state.running()) {
+                    trial_executor->cancel_trial_slice();
+                    cancel_recommendation_session(AI::SmartSlicing::RecommendationCancellationReason::WorkspaceChanged);
+                } else { observed_workbench_revision = current; auto_analyze(); }
+            }
+        }
         const auto& snapshot = recommendation_coordinator.snapshot();
         const bool analyzing = snapshot.recommendation.baseline.status ==
                                    AI::SmartSlicing::GoalResultStatus::Analyzing ||
@@ -628,6 +647,7 @@ struct SmartSlicingFeatureHost::Impl
             !analyzing && !recommendation_worker_state.running() &&
             recommendation_revision_timer)
             recommendation_revision_timer->Stop();
+        if (workbench_active) publish_workbench();
     }
 
     void publish_recommendation_snapshot()
@@ -654,7 +674,7 @@ struct SmartSlicingFeatureHost::Impl
             CancelRecommendationSessionCommand{snapshot.workflow_id, snapshot.attempt_id, reason});
         recommendation_coordinator.process_all();
         publish_recommendation_snapshot();
-        if (recommendation_revision_timer)
+        if (recommendation_revision_timer && !workbench_active)
             recommendation_revision_timer->Stop();
     }
 
@@ -1049,6 +1069,8 @@ struct SmartSlicingFeatureHost::Impl
         if (state.session.state == RecommendationSessionState::Canceled || !candidate_session_plan)
             state.session.recommendation = {};
         state.selected_goal = selected_goal;
+        state.has_selected_goal = versioned_apply_workflow->active_transaction() ? goal_selection.has_selection() :
+            goal_selection.selected(current_native_revision()).has_value();
         state.official = workbench_official;
         state.diagnostic = candidate_session_diagnostic;
         state.analyzing = recommendation_worker_state.running();
@@ -1102,7 +1124,7 @@ struct SmartSlicingFeatureHost::Impl
             }
         }
         const auto& candidate = state.candidates[static_cast<size_t>(selected_goal)];
-        if (candidate && !native_session.pending() && !versioned_apply_workflow->active_transaction()) {
+        if (state.has_selected_goal && candidate && !native_session.pending() && !versioned_apply_workflow->active_transaction()) {
             try { state.can_start = AI::SmartSlicing::ApplyService().capture_ready_binding(apply_context(*candidate)).accepted(); }
             catch (...) { state.can_start = false; }
         }
@@ -1178,6 +1200,10 @@ struct SmartSlicingFeatureHost::Impl
     SmartSlicingWorkbenchListener workbench_listener;
     StartOfficialSliceFn native_slice;
     bool workbench_active {false};
+    bool workbench_ai_mode {true};
+    WorkbenchGoalSelection goal_selection;
+    std::optional<AI::SmartSlicing::WorkspaceRevision> observed_workbench_revision;
+    std::function<void()> auto_analyze;
     NativeSliceSession native_session;
     uint64_t workbench_command_sequence {0};
 };
@@ -1185,7 +1211,7 @@ struct SmartSlicingFeatureHost::Impl
 SmartSlicingFeatureHost::SmartSlicingFeatureHost(Plater& plater, wxAuiManager& aui_manager, Sidebar& sidebar,
                                                  StartOfficialSliceFn start_official_slice)
     : m_impl(std::make_unique<Impl>(plater, aui_manager, sidebar, std::move(start_official_slice)))
-{}
+{ m_impl->auto_analyze = [this] { analyze_workbench(); }; }
 
 SmartSlicingFeatureHost::~SmartSlicingFeatureHost() = default;
 
@@ -1228,13 +1254,17 @@ void SmartSlicingFeatureHost::set_workbench_listener(SmartSlicingWorkbenchListen
     m_impl->publish_workbench();
 }
 
-void SmartSlicingFeatureHost::set_workbench_active(bool active)
+void SmartSlicingFeatureHost::set_workbench_active(bool active, bool ai_mode)
 {
-    if (m_impl->workbench_active == active) return;
+    if (m_impl->workbench_active == active && m_impl->workbench_ai_mode == ai_mode) return;
     m_impl->workbench_active = active;
+    m_impl->workbench_ai_mode = ai_mode;
+    if (m_impl->entry_button) m_impl->entry_button->Show(!active);
     if (active) {
         m_impl->show(false);
         m_impl->recommendation_revision_timer->Start(1000);
+        if (ai_mode) analyze_workbench();
+        else cancel_workbench_analysis();
     } else cancel_workbench_analysis();
 }
 
@@ -1253,6 +1283,8 @@ bool SmartSlicingFeatureHost::analyze_workbench()
     if (!m_impl->versioned_apply_workflow->retire_completed_transaction()) return false;
     if (!m_impl->native_session.reset()) return false;
     m_impl->workbench_official = {};
+    m_impl->goal_selection.clear();
+    m_impl->observed_workbench_revision = m_impl->current_native_revision();
     m_impl->workspace->set_usage_purpose(UsagePurpose::General);
     m_impl->cancel_recommendation_session(RecommendationCancellationReason::ModeChanged);
     m_impl->candidate_session_plan.reset();
@@ -1290,6 +1322,9 @@ bool SmartSlicingFeatureHost::select_goal(AI::SmartSlicing::RecommendationGoal g
         m_impl->versioned_apply_workflow->active_transaction()) return false;
     if (std::find(AI::SmartSlicing::RECOMMENDATION_GOALS.begin(), AI::SmartSlicing::RECOMMENDATION_GOALS.end(), goal) ==
         AI::SmartSlicing::RECOMMENDATION_GOALS.end()) return false;
+    m_impl->refresh_recommendation_revision();
+    if (!m_impl->workbench_candidate(goal) ||
+        !m_impl->goal_selection.select(goal, m_impl->current_native_revision())) return false;
     m_impl->selected_goal = goal;
     m_impl->publish_workbench();
     return true;
@@ -1309,7 +1344,7 @@ AI::SmartSlicing::OfficialSliceResult SmartSlicingFeatureHost::start_workbench_s
         m_impl->refresh_recommendation_revision();
         const auto current = workbench_snapshot();
         const auto index = static_cast<size_t>(current.selected_goal);
-        if (!current.can_start || current.selected_goal != reviewed.selected_goal ||
+        if (!current.has_selected_goal || !reviewed.has_selected_goal || !current.can_start || current.selected_goal != reviewed.selected_goal ||
             current.session.publication_revision != reviewed.session.publication_revision ||
             current.session.workflow_id != reviewed.session.workflow_id ||
             current.session.attempt_id != reviewed.session.attempt_id ||
@@ -1325,6 +1360,8 @@ AI::SmartSlicing::OfficialSliceResult SmartSlicingFeatureHost::start_workbench_s
             request, m_impl->apply_context(*current.candidates[index]));
     }
     m_impl->recommendation_revision_timer->Start(1000);
+    if (m_impl->workbench_official.workspace_mutated)
+        m_impl->observed_workbench_revision = m_impl->current_native_revision();
     m_impl->publish_workbench();
     return m_impl->workbench_official;
 }

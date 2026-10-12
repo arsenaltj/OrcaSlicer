@@ -23,6 +23,8 @@
 #include "slic3r/GUI/AI/SmartSlicing/SmartSlicingWorkbenchState.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaPlateRevisionConfig.hpp"
 #include "slic3r/GUI/AI/Orca/WorkbenchModelDecode.hpp"
+#include "slic3r/GUI/AI/Orca/SlicingModelPalette.hpp"
+#include "slic3r/GUI/Redesign/RedesignModelRoute.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/PrinterFilamentPreview.hpp"
 #include "slic3r/GUI/AI/Orca/WorkbenchPrinterFilaments.hpp"
 #include "slic3r/GUI/PrinterFilamentSlotRemap.hpp"
@@ -548,15 +550,98 @@ TEST_CASE("closed import sessions reject queued UI updates and commits", "[PostG
     CHECK_FALSE(session.advance(WorkbenchImportPhase::Committing));
 }
 
-TEST_CASE("unavailable AI slicing uses native parameters while valid AI and retry retain priority", "[SmartSlicing][UiRedesign]")
+TEST_CASE("AI slicing requires a candidate and native slicing requires its explicit tab", "[SmartSlicing][UiRedesign]")
 {
-    CHECK(workbench_slice_route(false, false, false, false, true) == WorkbenchSliceRoute::Native);
+    CHECK(workbench_slice_route(false, false, false, false, true) == WorkbenchSliceRoute::Unavailable);
     CHECK(workbench_slice_route(false, false, false, true, true) == WorkbenchSliceRoute::AiCandidate);
     CHECK(workbench_slice_route(false, false, true, true, true) == WorkbenchSliceRoute::AiRetry);
     CHECK(workbench_slice_route(true, false, true, true, true) == WorkbenchSliceRoute::Native);
     CHECK(workbench_slice_route(true, false, true, true, false) == WorkbenchSliceRoute::Unavailable);
     CHECK(workbench_slice_route(false, false, false, false, false) == WorkbenchSliceRoute::Unavailable);
     CHECK(workbench_slice_route(false, true, true, true, true) == WorkbenchSliceRoute::Unavailable);
+}
+
+TEST_CASE("workbench goals require explicit selection in the reviewed workspace", "[SmartSlicing][UiRedesign]")
+{
+    using namespace Slic3r::AI::SmartSlicing;
+    WorkbenchGoalSelection selection;
+    WorkspaceRevision revision{1, 2, 3, "project"};
+    CHECK_FALSE(selection.selected(revision));
+    CHECK_FALSE(selection.select(RecommendationGoal::Balanced, {}));
+    REQUIRE(selection.select(RecommendationGoal::Quality, revision));
+    CHECK(selection.selected(revision) == RecommendationGoal::Quality);
+    auto changed = revision;
+    ++changed.config_revision;
+    CHECK_FALSE(selection.selected(changed));
+    ++changed.model_revision;
+    CHECK_FALSE(selection.selected(changed));
+    selection.clear();
+    CHECK_FALSE(selection.selected(revision));
+}
+
+TEST_CASE("slicing palette prepares subface colors atomically without changing other models", "[UiRedesign][ProjectConfigUndo]")
+{
+    using namespace Slic3r;
+    Model model;
+    auto* object = model.add_object("target", "target.obj", TriangleMesh(its_make_cube(20., 20., 20.)));
+    auto* volume = object->volumes.front();
+    auto* other = model.add_object("other", "other.obj", TriangleMesh(its_make_cube(10., 10., 10.)));
+    SlicingModelPalette::Selector selector(volume->mesh());
+    REQUIRE(selector.set_facet_midpoint_subfaces(0, EnforcerBlockerType::Extruder1,
+        {{1, 0, EnforcerBlockerType::Extruder2}}));
+    volume->mmu_segmentation_facets.set_data(selector.serialize());
+    const auto before = volume->mmu_segmentation_facets.get_data();
+    const auto unrelated = other->volumes.front()->mmu_segmentation_facets.get_data();
+    LocalPrintColorApplication::PreparedPainting painting;
+    std::vector<size_t> slots;
+    std::string error;
+    const std::vector<PreviewPalette::Color> colors{{1.f, 0.f, 0.f}, {0.f, 0.f, 1.f}};
+    CHECK_FALSE(SlicingModelPalette::prepare(volume->mesh(), before, 1, colors, {false, false},
+        {colors[1]}, painting, slots, error));
+    CHECK(volume->mmu_segmentation_facets.get_data() == before);
+    REQUIRE(SlicingModelPalette::prepare(volume->mesh(), before, 1, colors, {true, true},
+        {colors[1]}, painting, slots, error));
+    CHECK(slots == std::vector<size_t>{1});
+    LocalPrintColorCommit::Prepared prepared;
+    REQUIRE(LocalPrintColorCommit::prepare(*volume, std::move(painting), "target.obj", prepared, error));
+    REQUIRE(LocalPrintColorCommit::validate(*volume, prepared, error));
+    CHECK(volume->mmu_segmentation_facets.get_data() == before);
+    LocalPrintColorCommit::commit(*volume, prepared);
+    CHECK(SlicingModelPalette::base_extruder(*volume) == 2);
+    CHECK_FALSE(volume->mmu_segmentation_facets.get_data() == before);
+    CHECK(other->volumes.front()->mmu_segmentation_facets.get_data() == unrelated);
+    CHECK_FALSE(LocalPrintColorCommit::validate(*volume, prepared, error));
+}
+
+TEST_CASE("slicing automatic colors reduce painted regions and respect the selected source", "[UiRedesign][ProjectConfigUndo]")
+{
+    using namespace Slic3r;
+    const std::vector<PreviewPalette::Color> colors{{0.f,0.f,0.f}, {1.f,1.f,1.f}, {0.f,1.f,0.f}, {1.f,0.f,0.f}};
+    PreviewPalette::Histogram histogram;
+    histogram.add(0x000000, 100.);
+    histogram.add(0xffffff, 100.);
+    histogram.add(0x00ff00, 100.);
+    histogram.add(0xff0000, 100.);
+    const auto automatic = SlicingModelPalette::select_targets(histogram, colors, {true,true,true,true}, 2, 0);
+    REQUIRE(automatic.size() == 2);
+    CHECK(SlicingModelPalette::select_targets(histogram, colors, {false,true,false,true}, 4, 1) ==
+        std::vector<PreviewPalette::Color>{colors[1],colors[3]});
+    CHECK(SlicingModelPalette::select_targets(histogram, colors, {true,true,true,true}, 2, 2, {colors[3]}) ==
+        std::vector<PreviewPalette::Color>{colors[3]});
+    CHECK(SlicingModelPalette::select_targets(histogram, colors, {true,true,true,true}, 2, 0, {}, {colors[2]}) ==
+        std::vector<PreviewPalette::Color>{colors[2]});
+    const TriangleMesh mesh(its_make_cube(20.,20.,20.));
+    SlicingModelPalette::Selector selector(mesh);
+    for (size_t face = 0; face < mesh.facets_count(); ++face)
+        selector.set_facet(face, static_cast<EnforcerBlockerType>(face % 4 + 1));
+    const auto original = selector.serialize();
+    LocalPrintColorApplication::PreparedPainting prepared;
+    std::vector<size_t> slots;
+    std::string error;
+    REQUIRE(SlicingModelPalette::prepare(mesh, original, 1, colors, {true,true,true,true}, automatic, prepared, slots, error));
+    CHECK(slots.size() <= 2);
+    CHECK_FALSE(prepared.data == original);
+    CHECK(selector.serialize() == original);
 }
 
 TEST_CASE("ordinary region optimization remains available without portrait protection", "[PostGenerationWorkbench]")
@@ -733,6 +818,22 @@ TEST_CASE("native slicing rejects late completions and retains an active run unt
     CHECK(session.result().phase == OfficialSlicePhase::Completed);
     session.refresh(original);
     CHECK(session.result().phase == OfficialSlicePhase::Failed);
+    CHECK_FALSE(session.result().can_print);
+}
+
+TEST_CASE("Returning to AI waits for native slicing to drain after a workspace change", "[SmartSlicing][UiRedesign]")
+{
+    NativeSliceSession session;
+    const Slic3r::AI::SmartSlicing::WorkspaceRevision original {1,2,3,"original"};
+    const Slic3r::AI::SmartSlicing::WorkspaceRevision changed {2,2,3,"changed"};
+    session.start(original);
+    session.refresh(changed);
+    REQUIRE(session.result().phase == Slic3r::AI::SmartSlicing::OfficialSlicePhase::Failed);
+    // The UI phase can already report failure while the native worker still
+    // owns the project. A phase-only guard would allow a premature switch.
+    CHECK_FALSE(workbench_mode_switch_allowed(false, session.pending(), false, false));
+    session.complete(false, changed, "cancelled");
+    CHECK(workbench_mode_switch_allowed(false, session.pending(), false, false));
     CHECK_FALSE(session.result().can_print);
 }
 

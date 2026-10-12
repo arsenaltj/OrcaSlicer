@@ -1,3 +1,27 @@
+void MainFrame::mount_native_workspace_tools(wxWindow* host)
+{
+    if (!m_native_side_tools || !m_slice_btn || !m_print_btn) return;
+    auto* current = m_slice_btn->GetParent()->GetParent();
+    if (host == current) return;
+    if (host) m_native_side_tools_parent = current;
+    else host = m_native_side_tools_parent;
+    if (!host || !current->GetSizer() || !host->GetSizer()) return;
+    current->GetSizer()->Detach(m_native_side_tools);
+    m_slice_btn->GetParent()->Reparent(host);
+    m_print_btn->GetParent()->Reparent(host);
+    host->GetSizer()->Add(m_native_side_tools, 0, wxALIGN_CENTER_VERTICAL);
+    host->Layout();
+    current->Layout();
+}
+
+void MainFrame::slice_native_workspace()
+{
+    if (!m_slice_btn || !is_prepare_or_preview_tab()) return;
+    wxCommandEvent event(wxEVT_BUTTON, m_slice_btn->GetId());
+    event.SetEventObject(m_slice_btn);
+    m_slice_btn->GetEventHandler()->ProcessEvent(event);
+}
+
 // Native workspace and redesigned surface composition.
 
 namespace {
@@ -686,6 +710,8 @@ bool MainFrame::route_legacy_command_to_redesign(const char *command, const wxSt
         if (!m_plater || m_plater->is_background_process_slicing()) return true;
         return !m_redesign_shell->navigate_to_tab(TAB_ID_PREPARE);
     }
+    if (m_redesign_shell && m_redesign_shell->native_slicing_visible() && tab_id != TAB_ID_MONITOR)
+        return false;
     if (is_prepare_or_preview_tab() && tab_id != TAB_ID_MONITOR &&
         std::strcmp(command, "Ctrl+Shift+G") != 0 && std::strcmp(command, "Print button") != 0 &&
         std::strcmp(command, "Ctrl+P") != 0)

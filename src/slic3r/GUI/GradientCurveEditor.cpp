@@ -316,15 +316,16 @@ void GradientCurveEditor::on_paint(wxPaintEvent& /*evt*/)
     // Resolve theme colors every paint so dark-mode toggles (no re-construction) take
     // effect without an explicit listener. Window bg is read from GUI_App, not
     // GetBackgroundColour(), since the latter is snapshotted at construction time.
-    const wxColour bg            = wxGetApp().get_window_default_clr();
-    const wxColour grid_color    = StateColor::darkModeColorFor(kGridColor);
-    const wxColour axis_color    = StateColor::darkModeColorFor(kAxisColor);
-    const wxColour label_muted   = StateColor::darkModeColorFor(kLabelMuted);
-    const wxColour label_strong  = StateColor::darkModeColorFor(kLabelStrong);
-    const wxColour point_fill    = StateColor::darkModeColorFor(*wxWHITE);
+    const bool workbench = GetName() == "ai_content_color";
+    const wxColour bg            = workbench ? GetBackgroundColour() : wxGetApp().get_window_default_clr();
+    const wxColour grid_color    = workbench ? wxColour(82,82,87) : StateColor::darkModeColorFor(kGridColor);
+    const wxColour axis_color    = workbench ? wxColour(176,176,182) : StateColor::darkModeColorFor(kAxisColor);
+    const wxColour label_muted   = workbench ? wxColour(176,176,182) : StateColor::darkModeColorFor(kLabelMuted);
+    const wxColour label_strong  = workbench ? wxColour(230,230,233) : StateColor::darkModeColorFor(kLabelStrong);
+    const wxColour point_fill    = workbench ? bg : StateColor::darkModeColorFor(*wxWHITE);
     // Softer than axis_color: the curve outline only has to lift the curve off the
     // background, it must not compete with the structural axis / grid.
-    const wxColour outline_color = StateColor::darkModeColorFor(kOutlineColor);
+    const wxColour outline_color = workbench ? wxColour(176,176,182) : StateColor::darkModeColorFor(kOutlineColor);
 
     wxAutoBufferedPaintDC raw_dc(this);
     raw_dc.SetBackground(wxBrush(bg));
