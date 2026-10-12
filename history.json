@@ -1,5 +1,15 @@
 [
   {
+    "pr": 27,
+    "run": 38213730031,
+    "head": "087306265be4dc2c97a506863fbbe6a08e1f0cbf",
+    "base": "6d2885b190aa2de62f4d26f5bb11e650ca70628f",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "Codex/pr local UI filament 20261012",
+    "path": "pr/27/087306265be4dc2c97a506863fbbe6a08e1f0cbf/38213730031",
+    "created": "2026-10-12T06:44:06+00:00"
+  },
+  {
     "pr": 26,
     "run": 38194165483,
     "head": "afdcf24158a3b515f76de57617e38c6c745418ad",

@@ -1,0 +1,25 @@
+{
+  "pr": 27,
+  "run": 38213730031,
+  "head": "087306265be4dc2c97a506863fbbe6a08e1f0cbf",
+  "base": "6d2885b190aa2de62f4d26f5bb11e650ca70628f",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "Codex/pr local UI filament 20261012",
+  "path": "pr/27/087306265be4dc2c97a506863fbbe6a08e1f0cbf/38213730031",
+  "created": "2026-10-12T06:44:06+00:00",
+  "files": {
+    "index.html": "64e4432fb5a210e3db4c5f54a8ac201151c7323a99da7df83a56123107c08fcb",
+    "details.html": "dc9922cbaf1c1a80bf69faaaf72db32be4e0b618d900f19f2c4f766b3c33d40c",
+    "report.json": "72fc7f92afbfbf7f8418ce766905d4afac97ed6cdb33bd464e74d779b5cb57c2",
+    "summary.md": "133c8b8a781b66992797d648c3ce5febdda12c33b2f75885148ad40bde18fd2e",
+    "archify-receipts.json": "b290ed4eea541eb6979811f50f0880e8d4191d416b026c57792d63fcd986319a",
+    "l0-context.html": "35ceaee4821b556abdc8c0227fe59dc3acff88cba471d1e425ab8f7445405dcc",
+    "l0-context.json": "c12e289fb503e3917335feb70620dff655677f8142e267a69d066072a1e13cb7",
+    "l1-modules.html": "bfd1f3f037163cfb03b9e80bf10ca9cb10bb4d348e2dc8c178ea788e0ebc2d12",
+    "l1-modules.json": "eff210fea890185ea5fbc32cf21debf6e1e47727ece4589a018c1b3c151c1199",
+    "l2-generation.html": "f101802e002c795e22d556cff74d4e7e799048939932abd411f4bdbfcbb3cdb2",
+    "l2-generation.json": "22841df17bdd3edd92088ee1fee4594a28035678b0ca9359a3ab1b7cc160d872",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}
