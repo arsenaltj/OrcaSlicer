@@ -35,7 +35,7 @@ inline bool validate(const DynamicPrintConfig& config, const std::vector<std::st
     const auto* matrix=config.option<ConfigOptionFloats>("flush_volumes_matrix");
     const auto* volumes=config.option<ConfigOptionFloats>("flush_volumes_vector");
     const size_t nozzles=installed.get_printer_extruder_count();
-    if(!multiplier || !matrix || !volumes || nozzles==0 || (!pending_history && count<nozzles) ||
+    if(!multiplier || !matrix || !volumes || nozzles==0 ||
         (pending_history ? (multiplier->values.empty() || multiplier->values.size()>nozzles ||
             matrix->values.size()>count*count*nozzles || volumes->values.size()>count*2) :
             (multiplier->values.size()!=nozzles || matrix->values.size()!=count*count*nozzles || volumes->values.size()!=count*2)))

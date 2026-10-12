@@ -196,6 +196,15 @@ private:
     void apply_workbench_printer_filaments();
     wxTimer m_workbench_sync_timer;
     bool m_save_and_return {false};
+    std::string m_workbench_operation_notice;
+    bool m_apply_filaments_saving {false};
+    std::shared_ptr<BeautyCandidateSnapshot> m_apply_filaments_before;
+    std::shared_ptr<PresetBundle> m_apply_filaments_staged;
+    std::string m_apply_filaments_source_identity;
+    boost::filesystem::path m_applied_filaments_saved_model;
+    std::string m_applied_filaments_saved_signature;
+    void finish_printer_filament_application(bool success);
+    bool commit_printer_filament_application(std::string& error);
     std::function<void()> m_workbench_results;
     std::function<void()> m_workbench_return_to_design;
     void finish_workbench_save();

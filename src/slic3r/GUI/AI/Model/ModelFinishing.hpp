@@ -92,10 +92,10 @@ ModelFinishingResult finish_model_obj(
     const ModelFinishingOptions& options,
     const std::function<bool()>& canceled = {});
 
-// Supports OBJ and GLB sources and preserves the selected output format.
-// Pure GLB smoothing retains source UVs, materials, textures and node transforms
-// in a separate GLB version. Unsupported geometry structures and topology edits
-// fail explicitly. Explicit recoloring remains a separate vertex-color export.
+// Supports OBJ and GLB sources. Pure GLB smoothing retains source UVs,
+// materials, textures and node transforms in a separate GLB version. Whole
+// mesh topology repair is exported as a temporary vertex-colour OBJ candidate
+// when the source is GLB; the original textured GLB is never replaced.
 ModelFinishingResult finish_model_artifact(
     const boost::filesystem::path& source,
     const boost::filesystem::path& destination,

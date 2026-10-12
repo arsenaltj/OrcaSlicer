@@ -1,11 +1,23 @@
+#include "slic3r/GUI/TextureImportModel.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include "slic3r/GUI/AI/ModelGeneration/PostGenerationUiState.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchImportSession.hpp"
+#include "slic3r/GUI/AI/ModelGeneration/WorkbenchImportEligibility.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchImportUiGuard.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchProjectColor.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/WorkbenchModelInspection.hpp"
+#include "slic3r/GUI/AI/Model/ModelFinishing.hpp"
+#include "slic3r/GUI/AI/Model/BeautyDocument.hpp"
+#include "slic3r/GUI/AI/Orca/AIImportSeamRepair.hpp"
+#include "slic3r/GUI/AI/Orca/WorkbenchImportTopology.hpp"
+#include "libslic3r/Format/bbs_3mf.hpp"
+#include "libslic3r/Semver.hpp"
+#include "libslic3r/FilamentMixer.hpp"
+#include "test_utils.hpp"
+#include <boost/filesystem/fstream.hpp>
+#include <cstdlib>
 #include "slic3r/GUI/AI/ModelGeneration/BeautyColorPaint.hpp"
 #include "slic3r/GUI/AI/ModelGeneration/BeautyWorkbenchTransactionController.hpp"
 #include "slic3r/GUI/AI/SmartSlicing/SmartSlicingWorkbenchState.hpp"
@@ -22,6 +34,301 @@
 #include <vector>
 
 using namespace Slic3r::GUI;
+
+TEST_CASE("An OBJ repair snapshot saves physical face colors through the appearance pipeline", "[WorkbenchTopology][BeautyAppearance]")
+{
+    using namespace Slic3r;
+    ScopedTemporaryDir directory("repair-appearance");
+    const boost::filesystem::path source = boost::filesystem::path(directory.string()) / "repaired.obj";
+    const auto format = GENERATE("obj", "glb");
+    const auto destination = source.parent_path() / (std::string("applied.") + format);
+    const auto cube = its_make_cube(10, 10, 10);
+    std::string error;
+    REQUIRE(AI::write_model_artifact(source, cube, std::vector<RGBA>(cube.vertices.size(), {0.2f, 0.4f, 0.6f, 1.f}), error));
+    const auto source_hash = AI::model_artifact_sha256(source);
+    TriangleMesh original; ObjInfo colors;
+    REQUIRE(AI::load_model_artifact(source, original, colors, error));
+    AI::BeautyDocument document;
+    document.geometry_id = AI::SurfaceSelectionPersistence::geometry_fingerprint(original.its);
+    document.face_count = original.its.indices.size(); document.face_patch.assign(document.face_count, 0);
+    AI::ModelFinishingOptions options;
+    options.smooth_surface = options.repair_mesh = false; options.beauty_appearance = true;
+    options.beauty_document = document.encode();
+    options.appearance.face_weights.assign(document.face_count, 1.f);
+    for (size_t face = 0; face < document.face_count; ++face) {
+        options.selected_faces.push_back(face);
+        options.appearance.face_target_colors.push_back(face % 2 ? std::array<float, 3>{1.f, 0.f, 0.f} : std::array<float, 3>{0.f, 1.f, 0.f});
+    }
+    const auto saved = AI::finish_model_artifact(source, destination, options);
+    INFO(saved.error);
+    REQUIRE(saved.success);
+    CHECK(saved.source_sha256 == source_hash);
+    TriangleMesh output; ObjInfo painted;
+    REQUIRE(AI::load_model_artifact(destination, output, painted, error));
+    REQUIRE(output.its.indices.size() == original.its.indices.size());
+    for (size_t face = 0; face < output.its.indices.size(); ++face) for (int corner = 0; corner < 3; ++corner) {
+        const auto id = output.its.indices[face][corner];
+        CHECK((output.its.vertices[id] - original.its.vertices[original.its.indices[face][corner]]).norm() < 1e-4f);
+        for (int channel = 0; channel < 3; ++channel)
+            CHECK_THAT(painted.vertex_colors[id][channel], Catch::Matchers::WithinAbs(options.appearance.face_target_colors[face][channel], 0.005f));
+    }
+    AI::ModelImportResult imported;
+    REQUIRE(prepare_workbench_import_topology(output, false, imported, error));
+    CHECK_FALSE(imported.topology_risk);
+    CHECK(AI::model_artifact_sha256(source) == source_hash);
+    const auto cancelled_path = source.parent_path() / (std::string("cancelled.") + format);
+    const auto cancelled = AI::finish_model_artifact(source, cancelled_path, options, [] { return true; });
+    CHECK(cancelled.canceled);
+    CHECK_FALSE(boost::filesystem::exists(cancelled_path));
+}
+
+TEST_CASE("A local repaired model remains closed through native color import", "[.WorkbenchRepairQA]")
+{
+    using namespace Slic3r;
+    const char* fixture = std::getenv("ORCASLICER_MODEL_ARTIFACT_FIXTURE");
+    REQUIRE(fixture);
+    const boost::filesystem::path source(fixture);
+    const auto source_hash = AI::model_artifact_sha256(source);
+    const auto directory = boost::filesystem::temp_directory_path() / boost::filesystem::unique_path("orca-repair-qa-%%%%%%%%");
+    boost::filesystem::create_directories(directory);
+    struct Cleanup {
+        boost::filesystem::path path;
+        ~Cleanup() { boost::system::error_code ec; boost::filesystem::remove_all(path, ec); }
+    } cleanup {directory};
+    const auto candidate = directory / "repaired.obj";
+    AI::ModelFinishingOptions options;
+    options.smooth_surface = false;
+    options.repair_mesh = true;
+    const auto repaired = AI::finish_model_artifact(source, candidate, options);
+    INFO(repaired.error);
+    REQUIRE(repaired.success);
+    REQUIRE(repaired.changed());
+    if (const char* output = std::getenv("ORCASLICER_REPAIR_QA_OUTPUT")) {
+        boost::filesystem::create_directories(output);
+        boost::filesystem::copy_file(candidate, boost::filesystem::path(output) / "candidate.obj");
+    }
+    const auto check = inspect_workbench_model(candidate);
+    INFO(check.summary);
+    if (const char* report = std::getenv("ORCASLICER_REPAIR_QA_REPORT")) {
+        boost::filesystem::ofstream output(report);
+        output << nlohmann::json {{"source_sha256", source_hash}, {"faces_before", repaired.faces_before},
+            {"faces_after", repaired.faces_after}, {"summary", check.summary}, {"status", int(check.status)}}.dump(2);
+    }
+    CHECK(check.boundary_edges == 0);
+    CHECK(check.nonmanifold_edges == 0);
+    CHECK(check.nonmanifold_vertices == 0);
+    CHECK(check.self_intersections == 0);
+    CHECK(check.status == WorkbenchCheckStatus::Normal);
+    DecodedWorkbenchModel decoded;
+    std::string error;
+    REQUIRE(decode_workbench_model(candidate, decoded, error));
+    CHECK(its_num_open_edges(decoded.mesh.its) == 0);
+    auto model = assemble_workbench_model(decoded, candidate, false);
+    REQUIRE(model->texture_mesh);
+    auto* volume = model->objects.front()->volumes.front();
+    const auto face_corners = volume->mesh().its;
+    PaintedMesh painted;
+    painted.vertices = model->texture_mesh->vertices;
+    painted.indices = model->texture_mesh->indices;
+    painted.cluster_colors = {{204,128,77}, {242,242,242}};
+    for (size_t face = 0; face < painted.indices.size(); ++face)
+        painted.face_colors.push_back(painted.cluster_colors[face % 2]);
+    std::vector<FilamentMatch> matches(2);
+    for (int i = 0; i < 2; ++i) { matches[i].cluster_index = i; matches[i].filament_index = i; }
+    REQUIRE(apply_painted_mesh_to_volume(painted, matches, *volume));
+    const auto before_painting = volume->mmu_segmentation_facets.get_data();
+    AI::ModelImportResult imported;
+    TriangleMesh final_mesh = volume->mesh();
+    const bool topology_ok = prepare_workbench_import_topology(final_mesh, false, imported, error);
+    INFO(error);
+    REQUIRE(topology_ok);
+    CHECK_FALSE(imported.topology_risk);
+    CHECK(its_num_open_edges(final_mesh.its) == 0);
+    REQUIRE(LocalPrintColorApplication::same_surface_partition(face_corners, final_mesh.its, false));
+    volume->set_mesh(std::move(final_mesh));
+    CHECK(volume->mmu_segmentation_facets.get_data() == before_painting);
+    model->texture_mesh.reset();
+    model->objects.front()->add_instance();
+    ScopedTemporaryDir backup("repaired-qa-backup"); model->set_backup_path(backup.string());
+    const auto native = directory / "repaired.3mf";
+    const std::string native_path = native.string();
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    PlateData plate; plate.plate_index = 0;
+    StoreParams params; params.path = native_path.c_str(); params.model = model.get(); params.config = &config;
+    params.strategy = SaveStrategy::Zip64 | SaveStrategy::Silence; params.plate_data_list.push_back(&plate);
+    REQUIRE(store_bbs_3mf(params));
+    Model restored; ScopedTemporaryDir restored_backup("repaired-qa-restored"); restored.set_backup_path(restored_backup.string());
+    DynamicPrintConfig restored_config;
+    ConfigSubstitutionContext substitutions {ForwardCompatibilitySubstitutionRule::Enable};
+    PlateDataPtrs plates; std::vector<Preset*> presets; bool bbl = false, orca = false; Semver version;
+    const bool loaded = load_bbs_3mf(native_path.c_str(), &restored_config, &substitutions, &restored, &plates,
+        &presets, &bbl, &orca, &version, nullptr, LoadStrategy::LoadModel | LoadStrategy::LoadConfig);
+    release_PlateData_list(plates); for (auto* preset : presets) delete preset;
+    REQUIRE(loaded);
+    REQUIRE(restored.objects.size() == 1);
+    auto* reopened = restored.objects.front()->volumes.front();
+    CHECK(its_num_open_edges(reopened->mesh().its) == 0);
+    CHECK_FALSE(MeshBoolean::cgal::does_self_intersect(reopened->mesh()));
+    CHECK(reopened->mmu_segmentation_facets.get_data() == before_painting);
+    if (const char* output = std::getenv("ORCASLICER_REPAIR_QA_OUTPUT")) {
+        const boost::filesystem::path output_directory(output);
+        boost::filesystem::create_directories(output_directory);
+        boost::filesystem::copy_file(candidate, output_directory / "repaired.obj");
+        boost::filesystem::copy_file(native, output_directory / "repaired.3mf");
+    }
+    CHECK(AI::model_artifact_sha256(source) == source_hash);
+}
+
+TEST_CASE("Final color import stitches exact seams without changing faces or subface painting", "[WorkbenchTopology]")
+{
+    using namespace Slic3r;
+    const auto source = its_make_cube(10, 10, 10);
+    indexed_triangle_set seams;
+    for (const auto& face : source.indices) {
+        const int offset = int(seams.vertices.size());
+        for (int corner : face) seams.vertices.push_back(source.vertices[corner]);
+        seams.indices.emplace_back(offset, offset + 1, offset + 2);
+    }
+    Model model;
+    auto* volume = model.add_object()->add_volume(TriangleMesh(seams));
+    TriangleSelector selector(volume->mesh());
+    for (size_t face = 0; face < seams.indices.size(); ++face)
+        selector.set_facet(int(face), face % 2 ? EnforcerBlockerType::Extruder1 : EnforcerBlockerType::Extruder2);
+    volume->mmu_segmentation_facets.set(selector);
+    const auto painting = volume->mmu_segmentation_facets.get_data();
+    const auto original = volume->mesh().its;
+    TriangleMesh candidate = volume->mesh();
+    AI::ModelImportResult result;
+    std::string error;
+    REQUIRE(prepare_workbench_import_topology(candidate, false, result, error));
+    CHECK_FALSE(result.topology_risk);
+    CHECK(its_num_open_edges(candidate.its) == 0);
+    REQUIRE(LocalPrintColorApplication::same_surface_partition(original, candidate.its, false));
+    volume->set_mesh(std::move(candidate));
+    CHECK(volume->mmu_segmentation_facets.get_data() == painting);
+}
+
+TEST_CASE("A genuine hole cannot pass normal import and a confirmed exception stays risky", "[WorkbenchTopology]")
+{
+    using namespace Slic3r;
+    auto its = its_make_cube(10, 10, 10);
+    its.indices.pop_back();
+    TriangleMesh mesh(its);
+    AI::ModelImportResult result;
+    std::string error;
+    CHECK_FALSE(prepare_workbench_import_topology(mesh, false, result, error));
+    CHECK(result.topology_risk);
+    CHECK_FALSE(error.empty());
+    CHECK(mesh.its.vertices == its.vertices);
+    CHECK(mesh.its.indices == its.indices);
+    error.clear();
+    REQUIRE(prepare_workbench_import_topology(mesh, true, result, error));
+    CHECK(result.topology_risk);
+    CHECK(result.manual_repair_required);
+    CHECK_FALSE(result.topology_risk_reason.empty());
+}
+
+TEST_CASE("Closed fans sharing a vertex remain unsafe while independent closed shells can import", "[WorkbenchTopology]")
+{
+    using namespace Slic3r;
+    auto first = its_make_cube(10, 10, 10);
+    auto second = its_make_cube(10, 10, 10);
+    for (auto& vertex : second.vertices) vertex += Vec3f(10, 10, 10);
+    its_merge(first, second);
+    TriangleMesh touching(first);
+    its_merge_vertices(touching.its);
+    CHECK(its_num_open_edges(touching.its) == 0);
+    const auto bad = inspect_workbench_mesh(touching);
+    CHECK(bad.nonmanifold_vertices == 1);
+    CHECK_FALSE(workbench_topology_safe(bad));
+    for (auto& vertex : second.vertices) vertex += Vec3f(10, 10, 10);
+    auto disjoint = its_make_cube(10, 10, 10); its_merge(disjoint, second);
+    const auto good = inspect_workbench_mesh(TriangleMesh(disjoint));
+    CHECK(good.isolated_components == 2);
+    CHECK(workbench_topology_safe(good));
+}
+
+TEST_CASE("Canceled or unavailable final topology checks cannot authorize an import", "[WorkbenchTopology]")
+{
+    using namespace Slic3r;
+    AI::ModelImportResult result;
+    std::string error;
+    TriangleMesh empty;
+    CHECK_FALSE(prepare_workbench_import_topology(empty, true, result, error));
+    TriangleMesh mesh(its_make_cube(10, 10, 10));
+    CHECK_FALSE(prepare_workbench_import_topology(mesh, true, result, error, [] { return true; }));
+}
+
+TEST_CASE("confirmed risky imports reach the asynchronous host without claiming topology safety", "[WorkbenchImportEligibility]")
+{
+    PostGenerationWorkbenchState state;
+    state.actions.can_import = true;
+    state.model_path = "generated/portrait.glb";
+    state.can_force_import = true;
+    state.check.status = WorkbenchCheckStatus::Invalid;
+    state.check.model_sha256 = std::string(64, 'a');
+    Slic3r::AI::ModelImportRequest request;
+    request.artifact.local_path = state.model_path;
+    request.topology_check_sha256 = state.check.model_sha256;
+    CHECK_FALSE(workbench_import_request_allowed(state, request));
+    request.topology_risk_confirmed = true;
+    CHECK(workbench_import_request_allowed(state, request));
+    CHECK_FALSE(state.can_import_for_slicing);
+
+    SECTION("a changed model or topology report invalidates confirmation") {
+        request.artifact.local_path = "generated/other.glb";
+        CHECK_FALSE(workbench_import_request_allowed(state, request));
+        request.artifact.local_path = state.model_path;
+        request.topology_check_sha256 = std::string(64, 'b');
+        CHECK_FALSE(workbench_import_request_allowed(state, request));
+    }
+    SECTION("pending edits and repair processing remain blocked") {
+        state.dirty = true;
+        CHECK_FALSE(workbench_import_request_allowed(state, request));
+        state.dirty = false;
+        state.candidate_path = "generated/repair.obj";
+        CHECK_FALSE(workbench_import_request_allowed(state, request));
+        state.candidate_path.clear();
+        state.check.candidate_status = RepairCandidateStatus::Ready;
+        CHECK_FALSE(workbench_import_request_allowed(state, request));
+        state.check.candidate_status = RepairCandidateStatus::Generating;
+        CHECK_FALSE(workbench_import_request_allowed(state, request));
+        state.check.candidate_status = RepairCandidateStatus::None;
+        state.check.status = WorkbenchCheckStatus::Running;
+        CHECK_FALSE(workbench_import_request_allowed(state, request));
+    }
+    SECTION("busy projects and invalid filament matching cannot use the exception") {
+        state.actions.can_import = false;
+        CHECK_FALSE(workbench_import_request_allowed(state, request));
+        state.actions.can_import = true;
+        state.can_force_import = false;
+        CHECK_FALSE(workbench_import_request_allowed(state, request));
+    }
+}
+
+TEST_CASE("closed and explicitly unchecked imports use their own current evidence", "[WorkbenchImportEligibility]")
+{
+    PostGenerationWorkbenchState state;
+    state.actions.can_import = true;
+    state.model_path = "generated/closed.obj";
+    state.check.status = WorkbenchCheckStatus::Normal;
+    state.check.model_sha256 = std::string(64, 'c');
+    state.can_import_for_slicing = true;
+    Slic3r::AI::ModelImportRequest request;
+    request.artifact.local_path = state.model_path;
+    request.topology_check_sha256 = state.check.model_sha256;
+    CHECK(workbench_import_request_allowed(state, request));
+
+    state.can_import_for_slicing = false;
+    state.can_force_import = true;
+    state.check = {};
+    request.topology_check_sha256.clear();
+    CHECK_FALSE(workbench_import_request_allowed(state, request));
+    request.topology_risk_confirmed = true;
+    CHECK(workbench_import_request_allowed(state, request));
+    state.check.model_sha256 = std::string(64, 'd');
+    CHECK_FALSE(workbench_import_request_allowed(state, request));
+}
 
 TEST_CASE("background import handoffs preserve the UI tracker list and source guard", "[WorkbenchImportUiGuard][PostGenerationWorkbench]")
 {
@@ -162,12 +469,23 @@ TEST_CASE("background workbench decoding preserves native geometry units and tex
             Catch::Matchers::WithinAbs(0., 1e-4));
     for (size_t i = 0; i < am.indices.size(); ++i) CHECK(am.indices[i] == em.indices[i]);
     CHECK(av->source.is_converted_from_meters == ev->source.is_converted_from_meters);
+    CHECK_THAT((av->source.mesh_offset - ev->source.mesh_offset).norm(),
+        Catch::Matchers::WithinAbs(0., 1e-6));
     CHECK(av->source.input_file == ev->source.input_file);
     REQUIRE(bool(actual->texture_mesh) == bool(expected.texture_mesh));
     if (actual->texture_mesh) {
         const auto& at = *actual->texture_mesh;
         const auto& et = *expected.texture_mesh;
-        CHECK(at.vertices == et.vertices);
+        if (path.extension() == ".obj") {
+            // The legacy OBJ loader centers texture vertices. Workbench
+            // painting consumes raw source coordinates and subtracts the
+            // recorded offset once, matching the GLB painting contract.
+            REQUIRE(at.vertices.size() == et.vertices.size());
+            for (size_t i = 0; i < at.vertices.size(); ++i)
+                for (int axis = 0; axis < 3; ++axis)
+                    CHECK_THAT(at.vertices[i][axis] - float(ev->source.mesh_offset[axis]),
+                        Catch::Matchers::WithinAbs(et.vertices[i][axis], 1e-5f));
+        } else CHECK(at.vertices == et.vertices);
         CHECK(at.indices == et.indices);
         CHECK(at.uvs == et.uvs);
         CHECK(at.uv_coords == et.uv_coords);
@@ -405,11 +723,11 @@ TEST_CASE("all physical project slots remain editable beyond the generation limi
     CHECK(colors.at(1) == "#111111");
 }
 
-TEST_CASE("safe automatic repair rejects texture and identity bound edits", "[PostGenerationWorkbench]")
+TEST_CASE("OBJ and GLB repairs use candidates while pending versions and unsaved edits stay blocked", "[WorkbenchTopology][PostGenerationWorkbench]")
 {
     CHECK(workbench_safe_repair_allowed("obj", false, false, false));
-    CHECK_FALSE(workbench_safe_repair_allowed("glb", false, false, false));
-    CHECK_FALSE(workbench_safe_repair_allowed("obj", true, false, false));
+    CHECK(workbench_safe_repair_allowed("glb", false, false, false));
+    CHECK(workbench_safe_repair_allowed("obj", true, false, false));
     CHECK_FALSE(workbench_safe_repair_allowed("obj", false, true, false));
     CHECK_FALSE(workbench_safe_repair_allowed("obj", false, false, true));
 }
@@ -596,14 +914,14 @@ static Slic3r::PresetBundle printer_filament_fixture(size_t nozzles, size_t slot
     return bundle;
 }
 
-TEST_CASE("printer filament readiness requires actual colors for every nozzle and excludes virtual slots", "[PrinterFilaments][PostGenerationWorkbench]")
+TEST_CASE("printer filament readiness validates loaded spools and permits idle nozzles", "[PrinterFilaments][PostGenerationWorkbench]")
 {
     using namespace Slic3r;
     const size_t nozzles=GENERATE(1u,4u,6u);
     auto bundle=printer_filament_fixture(nozzles,nozzles);
     auto state=PrinterFilamentConfig::capture(bundle);
     REQUIRE(state.ready); CHECK(state.nozzles==nozzles); CHECK(state.physical_count==nozzles);
-    for(const auto& slot:state.slots) CHECK_FALSE(slot.removable);
+    for(const auto& slot:state.slots) CHECK(slot.removable == (nozzles > 1));
     auto draft=bundle;
     draft.project_config.option<ConfigOptionStrings>("filament_colour")->values.back().clear();
     CHECK_FALSE(PrinterFilamentConfig::capture(draft).ready);
@@ -611,10 +929,10 @@ TEST_CASE("printer filament readiness requires actual colors for every nozzle an
     CHECK(PrinterFilamentConfig::capture(bundle).ready);
     draft.project_config.option<ConfigOptionBools>("filament_is_mixed")->values.back()=true;
     state=PrinterFilamentConfig::capture(draft);
-    CHECK(state.physical_count==nozzles-1); CHECK(state.slots.size()==nozzles); CHECK_FALSE(state.ready);
+    CHECK(state.physical_count==nozzles-1); CHECK(state.slots.size()==nozzles-1); CHECK(state.ready == (nozzles > 1));
 }
 
-TEST_CASE("multiple nozzle base slots stay protected when native material removal is permissive", "[PrinterFilaments][PostGenerationWorkbench]")
+TEST_CASE("multiple nozzle spools can be removed safely while at least one remains", "[PrinterFilaments][PostGenerationWorkbench]")
 {
     using namespace Slic3r;
     const size_t nozzles = GENERATE(4u, 6u);
@@ -622,10 +940,11 @@ TEST_CASE("multiple nozzle base slots stay protected when native material remova
     bundle.printers.get_edited_preset().config.option<ConfigOptionBool>("single_extruder_multi_material")->value = true;
     REQUIRE(bundle.can_remove_physical_filament(0));
     const auto state = PrinterFilamentConfig::capture(bundle);
-    for (size_t i = 0; i < nozzles; ++i) CHECK_FALSE(state.slots[i].removable);
+    for (size_t i = 0; i < nozzles; ++i) CHECK(state.slots[i].removable);
     CHECK(state.slots.back().removable);
     std::string error;
-    CHECK_FALSE(PrinterFilamentConfig::remove(bundle, 0, nozzles, error));
+    auto original = bundle;
+    CHECK(PrinterFilamentConfig::remove(original, 0, nozzles, error));
     REQUIRE(PrinterFilamentConfig::remove(bundle, nozzles, 0, error));
     CHECK(bundle.num_physical_filaments() == nozzles);
 }
@@ -643,7 +962,7 @@ TEST_CASE("physical filament lists retain equal colors and more than six slot id
     CHECK_FALSE(PrinterFilamentConfig::capture(bundle).ready);
 }
 
-TEST_CASE("draft filament additions cancel without changing live colors and protect the nozzle floor", "[PrinterFilaments][PostGenerationWorkbench]")
+TEST_CASE("draft filament additions preserve live configuration and cannot exceed fixed nozzle capacity", "[PrinterFilaments][PostGenerationWorkbench]")
 {
     using namespace Slic3r;
     const size_t nozzles=GENERATE(1u,4u,6u);
@@ -654,8 +973,10 @@ TEST_CASE("draft filament additions cancel without changing live colors and prot
     CHECK_FALSE(PrinterFilamentConfig::capture(draft).ready);
     draft.filament_presets[inserted]="Loaded PLA";
     draft.project_config.option<ConfigOptionStrings>("filament_colour")->values[inserted]="#123456";
-    REQUIRE(PrinterFilamentConfig::capture(draft).ready);
-    std::string error; CHECK_FALSE(PrinterFilamentConfig::remove(draft,0,inserted,error));
+    CHECK(PrinterFilamentConfig::capture(draft).ready == (nozzles == 1));
+    std::string error;
+    auto alternative = draft;
+    CHECK(PrinterFilamentConfig::remove(alternative,0,inserted,error));
     REQUIRE(PrinterFilamentConfig::remove(draft,inserted,0,error));
     CHECK(draft.filament_presets==names);
     CHECK(live.project_config==before); CHECK(live.filament_presets==names);
@@ -782,7 +1103,7 @@ TEST_CASE("new filament sequence entries follow later insertions before mixed sl
     CHECK(config.option<ConfigOptionInts>("other_layers_print_sequence")->values == std::vector<int>{1,10,5,4,2,1,6,3});
 }
 
-TEST_CASE("short native filament tables show pending nozzle slots and refuse incompatible or oversized configurations", "[PrinterFilaments][PostGenerationWorkbench]")
+TEST_CASE("short native filament tables leave nozzles idle and reject incompatible or oversized configurations", "[PrinterFilaments][PostGenerationWorkbench]")
 {
     using namespace Slic3r;
     const size_t nozzles=GENERATE(4u,6u);
@@ -790,8 +1111,8 @@ TEST_CASE("short native filament tables show pending nozzle slots and refuse inc
     bundle.filament_presets.resize(1);
     bundle.project_config.option<ConfigOptionStrings>("filament_colour")->values.resize(1);
     auto state=PrinterFilamentConfig::capture(bundle);
-    CHECK_FALSE(state.ready);CHECK(state.physical_count==1);REQUIRE(state.slots.size()==nozzles);
-    for(size_t i=1;i<nozzles;++i){CHECK_FALSE(state.slots[i].exists);CHECK_FALSE(state.slots[i].configured);CHECK_FALSE(state.slots[i].removable);}
+    CHECK(state.ready); CHECK(state.physical_count==1); REQUIRE(state.slots.size()==1);
+    CHECK(state.idle_nozzles == nozzles - 1);
     bundle=printer_filament_fixture(1,33);
     state=PrinterFilamentConfig::capture(bundle);CHECK_FALSE(state.ready);CHECK(state.slots.size()==33);
     bundle=printer_filament_fixture(1,2);
@@ -808,9 +1129,172 @@ static FilamentColorPack filament_import_card(size_t count)
     return pack;
 }
 
+TEST_CASE("partially loaded printers retain their spools through native normalization", "[PrinterFilamentRecipes][PrinterFilaments]")
+{
+    const size_t nozzles = GENERATE(4u, 6u);
+    const size_t spools = nozzles - 2;
+    auto bundle = printer_filament_fixture(nozzles, spools);
+    bundle.update_filament_count();
+    bundle.update_multi_material_filament_presets();
+    const auto state = PrinterFilamentConfig::capture(bundle);
+    CHECK(state.ready);
+    CHECK(state.physical_count == spools);
+    CHECK(state.idle_nozzles == 2);
+    CHECK(bundle.filament_presets.size() == spools);
+    CHECK(bundle.get_printer_extruder_count() == nozzles);
+    std::string error;
+    const bool valid = ProjectConfigRestore::validate(bundle.project_config, bundle.filament_presets, bundle, error);
+    INFO(error);
+    CHECK(valid);
+}
+
+TEST_CASE("over capacity color packs choose native reconstruction bases and create only virtual extras", "[PrinterFilamentRecipes][PrinterFilamentImport]")
+{
+    const size_t nozzles = GENERATE(4u, 6u);
+    auto live = printer_filament_fixture(nozzles, 2);
+    auto staged = live;
+    auto pack = filament_import_card(nozzles + 2);
+    pack.colors = {"#FFFFFF", "#000000", "#FF0000", "#FFFF00", "#FF8080", "#FF8000", "#0000FF", "#8080FF"};
+    pack.colors.resize(nozzles + 2);
+    const auto bases = WorkbenchFilamentRecipes::select_bases(pack.colors, nozzles);
+    REQUIRE(bases.size() == nozzles);
+    CHECK(std::is_sorted(bases.begin(), bases.end()));
+    CHECK(WorkbenchFilamentRecipes::select_bases(pack.colors, nozzles) == bases);
+    std::vector<size_t> first(nozzles); std::iota(first.begin(), first.end(), 0);
+    CHECK(WorkbenchFilamentRecipes::reconstruction_error(pack.colors, bases) <=
+        WorkbenchFilamentRecipes::reconstruction_error(pack.colors, first) + 1e-6);
+    std::vector<PrinterFilamentConfig::SlotChange> changes;
+    std::string error;
+    REQUIRE(PrinterFilamentConfig::import_color_pack(staged, pack, changes, error));
+    const auto state = PrinterFilamentConfig::capture(staged);
+    INFO(error);
+    REQUIRE(state.ready);
+    CHECK(state.physical_count == nozzles);
+    for (size_t i = 0; i < nozzles; ++i) CHECK(state.slots[i].color == pack.colors[bases[i]]);
+    REQUIRE_FALSE(state.mixed.empty());
+    for (const auto& recipe : state.mixed) CHECK(recipe.valid);
+    CHECK(PrinterFilamentSlotRemap::validate(changes, live.filament_presets.size(), staged.filament_presets.size()));
+    CHECK(live.filament_presets.size() == 2);
+    auto before = staged.project_config;
+    auto names = staged.filament_presets;
+    std::vector<size_t> bindings;
+    REQUIRE(WorkbenchFilamentRecipes::stage_targets(staged, pack.colors, bindings, error));
+    CHECK(staged.project_config == before);
+    CHECK(staged.filament_presets == names); // Repeated application reuses recipes.
+}
+
+TEST_CASE("large packs select deterministic bases without losing duplicate slot identities", "[PrinterFilamentRecipes]")
+{
+    auto colors = filament_import_card(12).colors;
+    const auto bases = WorkbenchFilamentRecipes::select_bases(colors, 4);
+    CHECK(bases.size() == 4);
+    CHECK(WorkbenchFilamentRecipes::select_bases(colors, 4) == bases);
+    std::vector<std::string> same(9, "#123456");
+    CHECK(WorkbenchFilamentRecipes::select_bases(same, 6) == std::vector<size_t>{0,1,2,3,4,5});
+    auto staged = printer_filament_fixture(4, 2);
+    std::vector<size_t> bindings;
+    std::string error;
+    const bool valid = WorkbenchFilamentRecipes::stage_targets(staged, {"#123456", "#123456"}, bindings, error, {1,0});
+    INFO(error);
+    REQUIRE(valid);
+    CHECK(bindings == std::vector<size_t>{1,0});
+    CHECK(staged.filament_presets.size() == 2);
+}
+
+TEST_CASE("automatic recipes fail atomically for incompatible material or temperature", "[PrinterFilamentRecipes]")
+{
+    using namespace Slic3r;
+    const bool different_type = GENERATE(false, true);
+    auto staged = printer_filament_fixture(4, 2);
+    auto material = staged.filaments.find_preset("Loaded PLA", false)->config;
+    if (different_type) material.option<ConfigOptionStrings>("filament_type")->values = {"PETG"};
+    else material.option<ConfigOptionInts>("nozzle_temperature")->values = {260};
+    staged.filaments.load_preset("", "Other material", material, false);
+    staged.filament_presets[1] = "Other material";
+    const auto before = staged.project_config;
+    const auto names = staged.filament_presets;
+    std::vector<size_t> bindings {31};
+    std::string error;
+    CHECK_FALSE(WorkbenchFilamentRecipes::stage_targets(staged, {"#777777"}, bindings, error));
+    CHECK_FALSE(error.empty());
+    CHECK(staged.project_config == before);
+    CHECK(staged.filament_presets == names);
+    CHECK(bindings == std::vector<size_t>{31});
+}
+
+TEST_CASE("explicit mixed slot matching preserves groups and survives color trial persistence", "[PrinterFilamentRecipes]")
+{
+    Slic3r::AI::ColorTrialPersistence::State state;
+    state.colors = {{1,0,0}, {0,0,1}};
+    state.mapping_colors = state.colors;
+    state.semantic_palette = state.colors;
+    state.semantic_mapping_palette = state.colors;
+    state.count = 2; state.source = 2;
+    const auto before = state;
+    const std::vector<PreviewPalette::Color> targets {{1,0,0}, {.5f,0,.5f}, {1,0,0}, {.5f,0,.5f}};
+    REQUIRE(PrinterFilamentPreview::apply_bound(state, {1,7,1,7}, targets, "printer-with-recipe"));
+    CHECK(state.mapping_colors == before.mapping_colors);
+    CHECK(state.project_color_slots == std::vector<size_t>{1,7});
+    CHECK(state.project_semantic_slots == std::vector<size_t>{1,7});
+    Slic3r::AI::ColorTrialPersistence::State restored;
+    std::string error;
+    REQUIRE(Slic3r::AI::ColorTrialPersistence::decode(Slic3r::AI::ColorTrialPersistence::encode(state, 12, std::string(64,'a')),
+        12, std::string(64,'a'), restored, error));
+    CHECK(restored.project_color_slots == state.project_color_slots);
+    CHECK_FALSE(PrinterFilamentPreview::apply_bound(state, {1}, targets, "stale"));
+    CHECK(state.project_color_slots == restored.project_color_slots);
+}
+
+TEST_CASE("publication accepts only the checked closed candidate and binds its own hash", "[WorkbenchCandidateAcceptance]")
+{
+    using namespace Slic3r;
+    ScopedTemporaryFile source(".obj"), candidate(".obj");
+    auto cube = its_make_cube(10,10,10);
+    std::vector<std::array<float,4>> colors(cube.vertices.size(), {1,0,0,1});
+    std::string error;
+    REQUIRE(AI::write_model_artifact(source.path(), cube, colors, error));
+    REQUIRE(AI::write_model_artifact(candidate.path(), cube, colors, error));
+    auto repair = inspect_workbench_model(candidate.path());
+    repair.source_sha256 = AI::model_artifact_sha256(source.path());
+    repair.candidate_sha256 = repair.model_sha256;
+    repair.candidate_status = RepairCandidateStatus::Ready;
+    auto accepted = inspect_workbench_publication(candidate.path(), source.path(), &repair);
+    CHECK(accepted.candidate_status == RepairCandidateStatus::Accepted);
+    CHECK(accepted.status == WorkbenchCheckStatus::Normal);
+    CHECK(accepted.model_sha256 == repair.candidate_sha256);
+    CHECK_THROWS(inspect_workbench_publication(candidate.path(), source.path(), &repair, [] { return true; }));
+    auto stale = repair; stale.source_sha256 = std::string(64,'b');
+    CHECK_THROWS(inspect_workbench_publication(candidate.path(), source.path(), &stale));
+    { boost::filesystem::ofstream out(candidate.path(), std::ios::app); out << "\n# changed\n"; }
+    CHECK_THROWS(inspect_workbench_publication(candidate.path(), source.path(), &repair));
+}
+
+TEST_CASE("existing legal recipes refresh estimated colors and retain slot identities", "[PrinterFilamentRecipes]")
+{
+    using namespace Slic3r;
+    auto draft = printer_filament_fixture(4, 4);
+    const auto estimated = blend_color_multi({"#FF0000", "#0000FF"}, {50,50});
+    draft.project_config.option<ConfigOptionStrings>("filament_colour")->values = {"#FF0000", "#0000FF", "#876543", estimated};
+    for (size_t i : {2u, 3u}) {
+        draft.project_config.option<ConfigOptionBools>("filament_is_mixed")->values[i] = true;
+        draft.project_config.option<ConfigOptionStrings>("filament_mixed_components")->values[i] = "1,2";
+        draft.project_config.option<ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values[i] = "0.5,0.5";
+    }
+    REQUIRE(WorkbenchFilamentRecipes::valid_recipe(draft, 2));
+    auto expected = draft.project_config;
+    expected.option<ConfigOptionStrings>("filament_colour")->values[2] = estimated;
+    expected.option<ConfigOptionStrings>("filament_multi_colour")->values[2] = estimated;
+    std::vector<size_t> bindings;
+    std::string error;
+    REQUIRE(WorkbenchFilamentRecipes::stage_targets(draft, {estimated, estimated}, bindings, error, {2,3}));
+    CHECK(bindings == std::vector<size_t>{2,3});
+    CHECK(draft.project_config == expected);
+    CHECK(draft.filament_presets.size() == 4);
+}
+
 TEST_CASE("color card imports grow physical slots to the entire ordered palette", "[PrinterFilamentImport][PostGenerationWorkbench]")
 {
-    const size_t nozzles = GENERATE(1u, 4u, 6u);
+    const size_t nozzles = 1u;
     const size_t before = GENERATE(4u, 5u, 6u);
     const size_t colors = GENERATE(6u, 8u, 32u);
     auto live = printer_filament_fixture(nozzles, std::max(nozzles, before));
@@ -835,7 +1319,7 @@ TEST_CASE("color card imports grow physical slots to the entire ordered palette"
     CHECK(live.filament_presets == names);
 }
 
-TEST_CASE("color card imports shrink extra slots while retaining the printer nozzle floor", "[PrinterFilamentImport][PostGenerationWorkbench]")
+TEST_CASE("color card imports shrink extra slots and allow idle nozzles", "[PrinterFilamentImport][PostGenerationWorkbench]")
 {
     const size_t nozzles = GENERATE(1u, 4u, 6u);
     const size_t colors = GENERATE(2u, 4u, 6u);
@@ -852,8 +1336,8 @@ TEST_CASE("color card imports shrink extra slots while retaining the printer noz
         }));
     const auto state = PrinterFilamentConfig::capture(draft);
     CHECK(state.ready);
-    CHECK(state.physical_count == std::max(nozzles, colors));
-    CHECK(choices == 8 - std::max(nozzles, colors));
+    CHECK(state.physical_count == std::min(nozzles > 1 ? nozzles : size_t(32), colors));
+    CHECK(choices == 8 - std::min(nozzles > 1 ? nozzles : size_t(32), colors));
     CHECK(PrinterFilamentSlotRemap::validate(changes, 8, draft.filament_presets.size()));
     CHECK(live.filament_presets.size() == 8);
 }
@@ -885,7 +1369,7 @@ TEST_CASE("cancelled or invalid card reductions preserve the entire draft and it
 TEST_CASE("virtual mixtures keep their identities and do not consume card colors", "[PrinterFilamentImport][PostGenerationWorkbench]")
 {
     using namespace Slic3r;
-    auto live = printer_filament_fixture(4, 6);
+    auto live = printer_filament_fixture(1, 6);
     live.project_config.option<ConfigOptionBools>("filament_is_mixed")->values.back() = true;
     live.project_config.option<ConfigOptionStrings>("filament_mixed_components")->values.back() = "1,5";
     live.project_config.option<ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values.back() = "0.5,0.5";
@@ -915,7 +1399,7 @@ TEST_CASE("virtual mixtures keep their identities and do not consume card colors
 TEST_CASE("card import leaves missing or incompatible material choices pending without dropping colors", "[PrinterFilamentImport][PostGenerationWorkbench]")
 {
     using namespace Slic3r;
-    auto draft = printer_filament_fixture(4, 5);
+    auto draft = printer_filament_fixture(1, 5);
     auto incompatible = draft.filaments.find_preset("Loaded PLA", false)->config;
     draft.filaments.load_preset("", "Incompatible PLA", incompatible, false);
     draft.filaments.find_preset("Incompatible PLA", false)->is_compatible = false;
@@ -938,7 +1422,7 @@ TEST_CASE("card import leaves missing or incompatible material choices pending w
 TEST_CASE("successive card imports replay additions and deletions through object painting and plate references", "[PrinterFilamentImport][PostGenerationWorkbench]")
 {
     using namespace Slic3r;
-    auto draft = printer_filament_fixture(4, 8);
+    auto draft = printer_filament_fixture(1, 8);
     draft.project_config.option<ConfigOptionBools>("filament_is_mixed")->values[7] = true;
     draft.project_config.option<ConfigOptionStrings>("filament_mixed_components")->values[7] = "1,7";
     draft.project_config.option<ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values[7] = "0.5,0.5";
@@ -980,7 +1464,7 @@ TEST_CASE("successive card imports replay additions and deletions through object
 TEST_CASE("returning to an identical filament card can still change model references", "[PrinterFilamentImport][PostGenerationWorkbench]")
 {
     using namespace Slic3r;
-    auto live = printer_filament_fixture(4, 8);
+    auto live = printer_filament_fixture(1, 8);
     const auto full_card = capture_current_filament_color_pack(live);
     auto shorter = full_card;
     shorter.colors.resize(4); shorter.labels.resize(4); shorter.presets.resize(4);

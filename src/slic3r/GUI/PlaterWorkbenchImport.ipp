@@ -12,6 +12,8 @@ AI::ModelImportResult Plater::import_workbench_model(const AI::ModelImportReques
         const fs::path path(request.artifact.local_path);
         const auto source_hash = AI::model_artifact_sha256(path);
         if (source_hash.empty()) return fail("The working model is missing or invalid.", AI::ModelImportOutcome::InvalidArtifact);
+        if (!request.topology_check_sha256.empty() && request.topology_check_sha256 != source_hash)
+            return fail("模型与最近一次拓扑检查不一致，请重新检查后导入。", AI::ModelImportOutcome::InvalidArtifact);
         const auto workspace_unchanged = OrcaWorkspaceAdapter(this, {}).capture_import_guard();
         TriangleMesh source;
         ObjInfo source_colors;
@@ -26,6 +28,7 @@ AI::ModelImportResult Plater::import_workbench_model(const AI::ModelImportReques
             return fail({}, AI::ModelImportOutcome::Cancelled);
         TextureImportOptions options = model_import_color_options(request);
         options.workbench_review = true;
+        configure_workbench_filament_capacity(options, wxGetApp().preset_bundle->printers.get_edited_preset().config);
         if (request.matched_colors && request.color_mode == AI::ImportColorMode::NativeMatch) {
             const auto& matched = *request.matched_colors;
             if (!matched.valid() || matched.source_sha256 != source_hash ||
@@ -66,7 +69,8 @@ AI::ModelImportResult Plater::import_workbench_model(const AI::ModelImportReques
             else if (mapping.matched_colors) result.colors_applied = true;
             else {
                 if (!stage_workbench_texture_import(object, mapping.painted, mapping.matches,
-                        mapping.filament_entries, mapping.new_mixed_filaments, *staged, result.error)) return fail(result.error);
+                        mapping.filament_entries, mapping.new_mixed_filaments, *staged, result.error,
+                        options.physical_filament_limit)) return fail(result.error);
                 result.colors_applied = true;
                 result.source_color_count = mapping.painted.cluster_colors.size();
                 std::set<int> used;
@@ -85,6 +89,11 @@ AI::ModelImportResult Plater::import_workbench_model(const AI::ModelImportReques
                 result.subface_color_count = request.subface_color_overrides.size();
             }
         }
+        TriangleMesh final_mesh = object.volumes.front()->mesh();
+        if (!prepare_workbench_import_topology(final_mesh, request.topology_risk_confirmed, result, result.error))
+            return fail(result.error, AI::ModelImportOutcome::RepairFailed);
+        object.volumes.front()->set_mesh(std::move(final_mesh));
+        object.volumes.front()->set_new_unique_id();
         detached.texture_mesh.reset();
         if (source_hash != AI::model_artifact_sha256(path) || !workspace_unchanged())
             return fail("The model, materials or project changed during confirmation. Reopen color matching.");

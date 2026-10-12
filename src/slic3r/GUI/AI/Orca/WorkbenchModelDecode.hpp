@@ -62,11 +62,9 @@ inline bool decode_workbench_model(const boost::filesystem::path& path, DecodedW
             }
             decoded.texture = std::move(texture);
         }
-        if (decoded.texture) {
-            const Vec3f shift = decoded.mesh.bounding_box().center().cast<float>();
-            for (auto& vertex : decoded.texture->vertices)
-                for (int axis = 0; axis < 3; ++axis) vertex[axis] -= shift[axis];
-        }
+        // Painting expects source coordinates and applies source.mesh_offset
+        // after add_object centers the printable volume. Keep OBJ appearance
+        // in that same frame; centering it here would apply the shift twice.
     } else if (boost::algorithm::iequals(path.extension().string(), ".glb")) {
         auto texture = std::make_shared<TexturedMesh>();
         if (!load_assimp_textured_model(path.string(), *texture, &error) || stopped()) return false;
@@ -105,6 +103,10 @@ inline std::unique_ptr<Model> assemble_workbench_model(DecodedWorkbenchModel& de
     auto* object = model->add_object(path.filename().string().c_str(), path.string().c_str(), std::move(decoded.mesh));
     object->input_file = path.string();
     object->volumes.front()->source.is_converted_from_meters = converted_from_meters;
+    // The worker scales geometry before add_object centers it. Native loaders
+    // center in source units before converting, and painting expects the
+    // recorded source offset in those original units.
+    if (converted_from_meters) object->volumes.front()->source.mesh_offset /= 1000.;
     model->texture_mesh = std::move(decoded.texture);
     return model;
 }

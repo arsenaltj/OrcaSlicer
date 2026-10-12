@@ -227,7 +227,14 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
                 static_cast<unsigned long long>(count)));
     });
     controls->Add(m_workbench_palette_status, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
-    heading(_L("打印机耗材"));
+    auto* filament_heading = new wxBoxSizer(wxHORIZONTAL);
+    auto* filament_title = new wxStaticText(scroll, wxID_ANY, _L("打印机耗材"));
+    filament_title->SetForegroundColour(wxColour(238, 240, 244));
+    filament_heading->Add(filament_title, 1, wxALIGN_CENTER_VERTICAL);
+    auto* filament_more = new WorkbenchButton(scroll, _L("更多 ▾"));
+    filament_more->SetMinSize(FromDIP(wxSize(66, 28)));
+    filament_heading->Add(filament_more, 0, wxALIGN_CENTER_VERTICAL);
+    controls->Add(filament_heading, 0, wxEXPAND | wxTOP | wxBOTTOM, FromDIP(8));
     m_workbench_project_summary = new wxStaticText(scroll, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, wxST_NO_AUTORESIZE);
     m_workbench_project_summary->SetForegroundColour(wxColour(190, 190, 196));
     controls->Add(m_workbench_project_summary, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
@@ -238,10 +245,28 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     m_workbench_project_colors->SetBackgroundColour(scroll->GetBackgroundColour());
     m_workbench_project_colors->SetSizer(new wxBoxSizer(wxVERTICAL));
     controls->Add(m_workbench_project_colors, 0, wxEXPAND | wxBOTTOM, FromDIP(8));
+    filament_scroll->Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
+        auto* contents = m_workbench_project_colors->GetSizer();
+        if (contents && contents->GetItemCount()) {
+            if (auto* grid = dynamic_cast<wxFlexGridSizer*>(contents->GetItem(size_t(0))->GetSizer())) {
+                const int columns = m_workbench_project_colors->GetClientSize().x >= FromDIP(340) ? 2 : 1;
+                if (grid->GetCols() != columns) {
+                    grid->RemoveGrowableCol(0);
+                    if (grid->GetCols() == 2) grid->RemoveGrowableCol(1);
+                    grid->SetCols(columns);
+                    grid->AddGrowableCol(0);
+                    if (columns == 2) grid->AddGrowableCol(1);
+                    m_workbench_project_colors->Layout();
+                    static_cast<wxScrolledWindow*>(m_workbench_project_colors)->FitInside();
+                }
+            }
+        }
+        event.Skip();
+    });
     auto filament_action = [&](const wxString& label, auto handler) {
         auto* button = new WorkbenchButton(scroll,label);
         button->SetMinSize(FromDIP(wxSize(1,36))); button->Bind(wxEVT_BUTTON,handler);
-        controls->Add(button,0,wxEXPAND|wxBOTTOM,FromDIP(6)); return button;
+        button->Hide(); return button;
     };
     m_workbench_configure_filaments = filament_action(_L("配置耗材"),[this](wxCommandEvent&){
         if(m_project_color_edit && workbench_snapshot().can_edit_project_colors)m_project_color_edit(size_t(-1));
@@ -282,6 +307,23 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
             "\n\n" + _L("保存位置：") + "\n" + from_u8((boost::filesystem::path(data_dir()) / "filament_color_packs.json").string()),
             _L("保存色卡组合"), wxOK | wxICON_INFORMATION, wxGetTopLevelParent(m_workbench_shell));
     });
+    filament_more->Bind(wxEVT_BUTTON, [this, save_filament_pack](wxCommandEvent&) {
+        wxMenu menu;
+        const std::array<WorkbenchButton*, 4> actions {m_workbench_configure_filaments,
+            m_workbench_add_filament, m_workbench_sync_filaments, save_filament_pack};
+        const std::array<wxString, 4> labels {_L("配置耗材"), _L("增加耗材"), _L("同步设备耗材"), _L("保存为色卡组合")};
+        const int first = wxWindow::NewControlId(4);
+        for (size_t i = 0; i < actions.size(); ++i) {
+            menu.Append(first + int(i), labels[i]);
+            menu.Enable(first + int(i), actions[i]->IsEnabled());
+        }
+        const int chosen = m_workbench_settings_scroll->GetPopupMenuSelectionFromUser(menu);
+        if (chosen >= first && chosen < first + 4) {
+            auto* button = actions[size_t(chosen - first)];
+            wxCommandEvent command(wxEVT_BUTTON, button->GetId());
+            command.SetEventObject(button); button->GetEventHandler()->ProcessEvent(command);
+        }
+    });
     save_filament_pack->SetToolTip(_L("保存已确认的实体耗材颜色和材料预设；混色虚拟槽不会保存。"));
     m_workbench_apply_project_filaments = new WorkbenchButton(scroll, _L("应用打印机耗材"));
     m_workbench_apply_project_filaments->SetMinSize(FromDIP(wxSize(1, 44)));
@@ -293,7 +335,7 @@ wxWindow* ModelGenerationPanel::build_post_generation_workbench(wxWindow* parent
     m_workbench_apply_project_filaments->SetTextColor(StateColor(
         std::pair<wxColour, int>(wxColour(35, 35, 30), StateColor::Normal),
         std::pair<wxColour, int>(wxColour(125, 120, 92), StateColor::Disabled)));
-    m_workbench_apply_project_filaments->SetToolTip(_L("将模型颜色匹配到已配置的打印机耗材；配置完整后可用。"));
+    m_workbench_apply_project_filaments->SetToolTip(_L("将模型颜色匹配到真实耗材和兼容叠色配方，自动保存；配置有效后可用。"));
     m_workbench_apply_project_filaments->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         apply_workbench_printer_filaments();
     });

@@ -484,6 +484,23 @@ public:
         return m_source->GetSelection() != 1 || (m_enabled && m_project_error.empty() &&
             m_bound_project_identity == m_project_slot_identity);
     }
+    void set_project_configuration_override(std::shared_ptr<const PresetBundle> bundle) {
+        m_project_configuration_override = std::move(bundle);
+        read_project();
+    }
+    bool apply_project_filament_bindings(const std::vector<size_t>& bindings) {
+        read_project();
+        auto saved = state();
+        std::vector<Color> matched;
+        for (size_t slot : bindings) {
+            const auto found = std::find(m_project_slots.begin(), m_project_slots.end(), slot);
+            if (found == m_project_slots.end()) return false;
+            matched.push_back(m_project_colors[size_t(found - m_project_slots.begin())]);
+        }
+        if (!PrinterFilamentPreview::apply_bound(saved, bindings, matched, m_project_slot_identity)) return false;
+        saved.notice = _L("正在应用并自动保存打印机耗材与叠色配方……");
+        restore(saved); return true;
+    }
     bool apply_project_filament_palette() {
         read_project();
         if (!m_project_error.empty()) return false;
@@ -599,15 +616,23 @@ private:
     }
     // Same source as the native textured import: logical project slots. Existing
     // mixed recipes are excluded, never misreported as physical loaded materials.
+    std::shared_ptr<const PresetBundle> m_project_configuration_override;
     bool read_project() {
         std::vector<Color> colors; std::vector<wxString> names; std::vector<size_t> slots;
         WorkbenchPrinterFilaments snapshot;
-        if (const auto* bundle = wxGetApp().preset_bundle) snapshot = PrinterFilamentConfig::capture(*bundle);
+        if (const auto* bundle = m_project_configuration_override ? m_project_configuration_override.get() : wxGetApp().preset_bundle) snapshot = PrinterFilamentConfig::capture(*bundle);
         for (const auto& slot : snapshot.slots) if (slot.exists && slot.configured) {
             const wxColour color(wxString::FromUTF8(slot.color));
             colors.push_back({color.Red()/255.f, color.Green()/255.f, color.Blue()/255.f});
             slots.push_back(slot.slot);
             names.push_back(wxString::Format(_L("打印机耗材 %u · "), unsigned(slot.slot+1)) + wxString::FromUTF8(slot.preset));
+        }
+        for (const auto& recipe : snapshot.mixed) if (recipe.valid) {
+            const wxColour color(wxString::FromUTF8(recipe.color));
+            if (!color.IsOk()) continue;
+            colors.push_back({color.Red()/255.f, color.Green()/255.f, color.Blue()/255.f});
+            slots.push_back(recipe.slot);
+            names.push_back(wxString::Format(_L("叠色 %u · "), unsigned(recipe.slot + 1)) + wxString::FromUTF8(recipe.recipe));
         }
         const wxString signature = wxString::FromUTF8(snapshot.signature);
         const bool different = signature != m_project_signature;

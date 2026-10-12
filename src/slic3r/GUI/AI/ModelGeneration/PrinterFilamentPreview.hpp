@@ -18,6 +18,23 @@ inline size_t nearest(const Color& color, const std::vector<Color>& colors)
     return result;
 }
 
+// Explicit native identities chosen by the compatible recipe planner.
+inline bool apply_bound(AI::ColorTrialPersistence::State& state, const std::vector<size_t>& bindings,
+    const std::vector<Color>& matched, const std::string& identity)
+{
+    const size_t count = state.colors.size() + state.semantic_palette.size();
+    if (identity.empty() || bindings.size() != count || matched.size() != count || state.colors.empty()) return false;
+    auto updated = state;
+    updated.colors.assign(matched.begin(), matched.begin() + state.colors.size());
+    updated.semantic_palette.assign(matched.begin() + state.colors.size(), matched.end());
+    updated.project_color_slots.assign(bindings.begin(), bindings.begin() + state.colors.size());
+    updated.project_semantic_slots.assign(bindings.begin() + state.colors.size(), bindings.end());
+    updated.source = 1; updated.enabled = true; updated.count = int(updated.colors.size());
+    updated.project_slot_identity = identity;
+    if (!AI::ColorTrialPersistence::detail::valid_state(updated)) return false;
+    state = std::move(updated); return true;
+}
+
 // Keep source centers and region indices: matching changes only target colors.
 // Prefer an existing bound slot on equal RGB, rather than merging slot identity.
 inline bool apply(AI::ColorTrialPersistence::State& state, const std::vector<size_t>& slots,

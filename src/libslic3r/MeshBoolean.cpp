@@ -22,6 +22,7 @@
 #include <CGAL/Polygon_mesh_processing/repair.h>
 #include <CGAL/Polygon_mesh_processing/remesh.h>
 #include <CGAL/Polygon_mesh_processing/repair_polygon_soup.h>
+#include <CGAL/Polygon_mesh_processing/repair_self_intersections.h>
 #include <CGAL/Polygon_mesh_processing/orientation.h>
 #include <CGAL/Polygon_mesh_processing/stitch_borders.h>
 #include <CGAL/Polygon_mesh_processing/triangulate_hole.h>
@@ -677,16 +678,43 @@ bool repair(TriangleMesh& mesh, RepairedMeshErrors* repaired_errors, std::string
             return false;
         }
 
-        // 8) Resolve self-intersections only after the mesh is closed. Keep the
-        // repaired shell if the optional union cannot produce a closed result.
+        // Unioning a mesh with itself does not resolve intersections inside
+        // that mesh. Repair the intersecting patches on the candidate and
+        // require an independently checked closed result before publishing it.
         if (canceled())
             return false;
-        _EpicMesh union_mesh;
-        {
-            CgalRepairStageTimer stage("corefine_and_compute_union", num_vertices(cgal_mesh), num_faces(cgal_mesh));
-            if (PMP::corefine_and_compute_union(cgal_mesh, cgal_mesh, union_mesh) && CGAL::is_closed(union_mesh))
-                cgal_mesh = std::move(union_mesh);
+        if (PMP::does_self_intersect(cgal_mesh)) {
+            const _EpicMesh closed_source = cgal_mesh;
+            CgalRepairStageTimer stage("repair_self_intersections", num_vertices(cgal_mesh), num_faces(cgal_mesh));
+            bool resolved = false;
+            try {
+                resolved = PMP::experimental::remove_self_intersections(cgal_mesh,
+                    CGAL::parameters::number_of_iterations(7).apply_per_connected_component(false)
+                        .use_smoothing(true).preserve_genus(false));
+            } catch (const std::exception& e) {
+                BOOST_LOG_TRIVIAL(warning) << "[CgalRepair] local intersection repair failed: " << e.what();
+            }
             stage.finish(num_vertices(cgal_mesh), num_faces(cgal_mesh));
+            if (canceled()) return false;
+            if (!resolved || num_faces(cgal_mesh) == 0 || !CGAL::is_closed(cgal_mesh) || PMP::does_self_intersect(cgal_mesh)) {
+                // The existing libigl/CGAL solid-union implementation handles
+                // overlapping patches that local hole filling cannot resolve.
+                // Start from the untouched closed shell, not the failed patch.
+                CgalRepairStageTimer union_stage("solid_self_union", num_vertices(closed_source), num_faces(closed_source));
+                _EpicMesh compact_source = closed_source;
+                compact_source.collect_garbage();
+                TriangleMesh solid(cgal_to_indexed_triangle_set(compact_source));
+                if (solid.volume() < 0.f) solid.flip_triangles();
+                MeshBoolean::self_union(solid);
+                if (canceled()) return false;
+                if (solid.empty() || its_num_open_edges(solid.its) != 0 || does_self_intersect(solid)) {
+                    if (error) *error = "Repair failed: self-intersections remain after solid union.";
+                    return false;
+                }
+                cgal_mesh.clear();
+                triangle_mesh_to_cgal(solid.its.vertices, solid.its.indices, cgal_mesh);
+                union_stage.finish(num_vertices(cgal_mesh), num_faces(cgal_mesh));
+            }
         }
 
         // 9) Ensure outward orientation
@@ -701,6 +729,9 @@ bool repair(TriangleMesh& mesh, RepairedMeshErrors* repaired_errors, std::string
         // 10) Convert back
         if (canceled())
             return false;
+        // Local patch repair deletes Surface_mesh vertices. The exporter uses
+        // their integer descriptors, which must be compact before conversion.
+        cgal_mesh.collect_garbage();
         indexed_triangle_set its;
         {
             CgalRepairStageTimer stage("cgal_to_indexed_triangle_set", num_vertices(cgal_mesh), num_faces(cgal_mesh));
@@ -711,10 +742,45 @@ bool repair(TriangleMesh& mesh, RepairedMeshErrors* repaired_errors, std::string
             return false;
 
         RepairedMeshErrors errs{};
-        errs.facets_removed = 0;
-        errs.edges_fixed    = 0;
-
-        mesh = TriangleMesh(std::move(its), errs);
+        errs.facets_removed = int(mesh.its.indices.size() > its.indices.size()
+            ? mesh.its.indices.size() - its.indices.size() : 0);
+        for (const auto& face : mesh.its.indices) {
+            const auto a = mesh.its.vertices[face[1]] - mesh.its.vertices[face[0]];
+            const auto b = mesh.its.vertices[face[2]] - mesh.its.vertices[face[0]];
+            if (a.cross(b).squaredNorm() == 0.f) ++errs.degenerate_facets;
+        }
+        errs.edges_fixed = int(its_num_open_edges(mesh.its));
+        TriangleMesh candidate(std::move(its), errs);
+        if (candidate.volume() < 0.f) candidate.flip_triangles();
+        // CGAL constructs points in double precision, while Orca stores floats.
+        // Repair residual intersections in that actual storage representation
+        // rather than accepting a double-only solution. Bound the retries and
+        // keep the caller's mesh untouched if quantization cannot be repaired.
+        for (size_t attempt = 0; attempt < 3 && !candidate.empty() && does_self_intersect(candidate); ++attempt) {
+            if (canceled()) return false;
+            CgalRepairStageTimer stage("repair_float_intersections", candidate.its.vertices.size(), candidate.its.indices.size());
+            _EpicMesh rounded;
+            triangle_mesh_to_cgal(candidate.its.vertices, candidate.its.indices, rounded);
+            if (!PMP::experimental::remove_self_intersections(rounded,
+                CGAL::parameters::number_of_iterations(7).apply_per_connected_component(false)
+                    .use_smoothing(true).preserve_genus(false)) || !CGAL::is_closed(rounded)) break;
+            rounded.collect_garbage();
+            candidate = TriangleMesh(cgal_to_indexed_triangle_set(rounded), errs);
+            if (candidate.volume() < 0.f) candidate.flip_triangles();
+            stage.finish(candidate.its.vertices.size(), candidate.its.indices.size());
+        }
+        // Float conversion is part of the delivery format. A closed CGAL mesh
+        // alone is insufficient if rounding reintroduces intersections.
+        const size_t open = its_num_open_edges(candidate.its);
+        const bool intersecting = !candidate.empty() && does_self_intersect(candidate);
+        if (candidate.empty() || !std::isfinite(candidate.volume()) || candidate.volume() <= 0.f ||
+            open != 0 || intersecting) {
+            if (error) *error = "Repair failed: exported mesh volume=" + std::to_string(candidate.volume()) +
+                ", open edges=" + std::to_string(open) + ", self-intersections=" + std::to_string(intersecting) + ".";
+            return false;
+        }
+        if (canceled()) return false;
+        mesh = std::move(candidate);
 
         if (repaired_errors)
             *repaired_errors = errs;
