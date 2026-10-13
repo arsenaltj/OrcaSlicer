@@ -104,7 +104,6 @@ bool Plater::import_workbench_model_async(const AI::ModelImportRequest& request,
                     if (stopped()) prepared->result.error.clear();
                     return;
                 }
-                if (options.source_units_in_meters) decoded.mesh.scale(1000.f);
                 std::unique_ptr<Model> detached_model;
                 ui([&] { detached_model = assemble_workbench_model(decoded, import_path, options.source_units_in_meters); });
                 if (stopped() || !detached_model) return;

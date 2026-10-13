@@ -146,7 +146,6 @@ TEST_CASE("background workbench decoding preserves native geometry units and tex
     INFO(error);
     REQUIRE(loaded);
     const bool meters = path.extension() == ".glb";
-    if (meters) decoded.mesh.scale(1000.f);
     auto actual = assemble_workbench_model(decoded, path, meters);
     auto expected = Model::read_from_file(path.string(), nullptr, nullptr, LoadStrategy::LoadModel);
     if (meters) expected.convert_from_meters(false);
@@ -162,6 +161,7 @@ TEST_CASE("background workbench decoding preserves native geometry units and tex
             Catch::Matchers::WithinAbs(0., 1e-4));
     for (size_t i = 0; i < am.indices.size(); ++i) CHECK(am.indices[i] == em.indices[i]);
     CHECK(av->source.is_converted_from_meters == ev->source.is_converted_from_meters);
+    CHECK_THAT((av->source.mesh_offset - ev->source.mesh_offset).norm(), Catch::Matchers::WithinAbs(0., 1e-12));
     CHECK(av->source.input_file == ev->source.input_file);
     REQUIRE(bool(actual->texture_mesh) == bool(expected.texture_mesh));
     if (actual->texture_mesh) {
@@ -179,6 +179,27 @@ TEST_CASE("background workbench decoding preserves native geometry units and tex
         CHECK(at.precomputed_vertex_colors == et.precomputed_vertex_colors);
         REQUIRE(at.textures.size() == et.textures.size());
         for (size_t i = 0; i < at.textures.size(); ++i) CHECK(at.textures[i].data == et.textures[i].data);
+
+        // Exercise the color handoff as well as initial geometry: a wrong
+        // source offset can be hidden by later recentering of the replacement.
+        PaintedMesh painted;
+        painted.vertices = at.vertices;
+        painted.indices = at.indices;
+        painted.cluster_colors = {{255, 0, 0}};
+        painted.face_colors.assign(painted.indices.size(), painted.cluster_colors.front());
+        FilamentMatch match;
+        match.cluster_index = 0;
+        match.filament_index = 0;
+        REQUIRE(apply_painted_mesh_to_volume(painted, {match}, *actual->objects.front()->volumes.front()));
+        REQUIRE(apply_painted_mesh_to_volume(painted, {match}, *expected.objects.front()->volumes.front()));
+        const auto& painted_actual = av->mesh().its;
+        const auto& painted_expected = ev->mesh().its;
+        REQUIRE(painted_actual.vertices.size() == painted_expected.vertices.size());
+        REQUIRE(painted_actual.indices.size() == painted_expected.indices.size());
+        for (size_t i = 0; i < painted_actual.vertices.size(); ++i)
+            CHECK_THAT((painted_actual.vertices[i] - painted_expected.vertices[i]).norm(), Catch::Matchers::WithinAbs(0., 1e-6));
+        for (size_t i = 0; i < painted_actual.indices.size(); ++i) CHECK(painted_actual.indices[i] == painted_expected.indices[i]);
+        CHECK(av->mmu_segmentation_facets.get_data() == ev->mmu_segmentation_facets.get_data());
     }
 }
 
