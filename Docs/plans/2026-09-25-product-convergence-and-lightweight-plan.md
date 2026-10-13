@@ -1,3 +1,15 @@
+## 2026-10-13 E2 / UX-08：工作台导入摆盘居中（实现、Windows构建及本机实窗验收完成）
+
+用户先授权本地提交，已生成 `a8f860392f feat(ui): finalize color import dialog convergence`，包含上一轮导入单位修正和配色UI收敛；分支仍为 `codex/pr-local-ui-filament-20261012`，跟踪 `origin/codex/pr-local-ui-filament-20261012`，本地领先2笔，未push/PR。其后只读分析定位靠边根因为 `067377a6ca1 feat(ux): connect startup, model workbench and slicing review flow` 新增 `LocalPrintModelImport::place()` 无条件重排并关闭最终居中；旧原生导入和旧AI配色路径均先取中心/最近空位。旧真实350×350盘的工作台工程XY为317.720368/316.00541、原生为175/175，模型几何相同；7dabcd2312等合并仅传播此变化。当前用户明确确认执行适配层修复，不修改Orca底层摆盘、切片、G-code、网格、格式、单位、契约或供应商。
+
+负责会话/分支为本会话/上述分支，基线a8f860392f；实施仅修改 `src/slic3r/GUI/AI/Orca/LocalPrintModelImport.hpp` 和 `tests/slic3rutils/test_local_print_color_application.cpp`。保留现有prepare与placement snapshot的中心/最近空位结果，使用原生凸包/间距/禁区检查验证位置，有效即保留；无效才调用原生Arrange，先使用默认最终对齐，结果若越界/碰撞再调用原生无最终对齐模式，最终仍验证真实可打印边界和间距，失败不写回模型。非矩形盘的包围框外角用原生虚拟禁区表达，调用原生矩形接口，不依赖Points对等距顶点的圆盘推断。复核沿用libnest2d的方角扩张、轮廓方向和先局部偏移后旋转平移的顺序，固定障碍沿用Arrange的2×EPSILON容差。真实占用盘验证曾被复核拒绝；匿名斜边轮廓回归定位到接触点约0.0000024 mm²的数值交叠，兜底调用原生摆盘时额外预留2×EPSILON（0.0002 mm），最终按原间距验证，未放宽安全检查。原生加载、ArrangeJob、libnest2d、切片、配置和3MF源码保持。
+
+自动验收：空盘与最近空位保留、旋转/缩放/Z及网格不变；已有对象/禁区/擦料塔不移动；菱形/凹形/偏移打印盘安全兜底；满盘和超高失败保留原件；相关导入事务/取消/迟到结果消费者。最终CppTest `20261013-121007-091` 53/53通过（12 LocalPrintModelImport + 41 PostGenerationWorkbench，不重复计标签），包含斜边圆柱轮廓与旋转回归。此前52项和所有失败候选日志仅作过程证据，不能替代最终版本；未禁用/降级检查。Windows增量Run `20261013-121241-633` 五步通过，17136个安装文件匹配，Python运行时通过。源码身份8b8a1ca594f553f257551aa22dbe166e09b155174eca56617763626e9e9f24de、native身份c1796428b606d84b2027f3d1c9a0a8e088ad82abd0b1922474518096e633481f；EXE b138afbc76abfbbf0c8106286138bbe5c50672aa6590bf9a1fd5aa0436caf055、DLL 38f649e0f45c6e44cc3b81822cd87846a4761dae3e8caf84660bea928052784f。完成后仅补状态文档，不改变已验原生源码。本轮不涉及架构契约/锚点/运行模块变更，不启动旧实验或被拒的smart-slicing比较。
+
+实窗验收：在 `.tmp/dev/placement-center-qa/` 独立配置及现有真实965440面GLB/OBJ副本中完成工作台历史恢复、原生配色确认、空盘导入与撤销重做、保存及新进程重开；原生OBJ添加/单色确认/撤销在先前匹配候选完成，其消费者源码未改。最终版本进程39556与22440复验空盘导入、两模型导入与撤销重做、原生全盘视图、3MF保存及新进程重开。centered-final.3mf确认XY=175/175，几何与上轮单位修正后的真实工程一致；occupied-final.3mf原模型仍175/175，新模型127.524011/222.066983，两凸包间距2.000049720 mm。原模型变换/网格/面色、完整配置与擦料塔保持；occupied-reopened-final.3mf的归一化元数据/位置/几何/配置一致，原件保护哈希通过。最终两个sidecar实例均认证/health 200、shutdown 202及stopped，应用正常退出，无隐式切片或新生成。完整证据为本机忽略目录的verification.json、project-evidence.json、occupied-evidence.json和完整日志。
+
+剩余：用户体验反馈待回收；旧N5最终视觉验收和旧59项、多DPI/GPU、跨平台、模型拓扑及实物未结继续保留，图像供应商缺配置仍限制在线生图。本轮摆盘修复本机交付完成，按用户要求将修复、定向回归及相关状态文档纳入本次本地提交，尚未推送；复用已通过的源码匹配验证，无付费生成和设备调用。
+
 ## 2026-10-12—13 E2 / UX-08 / N5：Figma 配色弹窗 UI 收敛（实现/构建已完成，最终实窗待恢复）
 
 用户最初要求先检查 Figma `TafDZMN6dVlTTT5DX1LwCF` 的 `15:914`“叠色”节点并分析截图差异，随后已确认实施下述UI方案，以设计稿一致性为最高优先级，业务逻辑暂不改。负责会话/分支为本会话 `codex/pr-local-ui-filament-20261012` / `f6fa7cc9ad846d81e2a4d91a7bf5278684b70da5`；上一轮导入单位修正的3份生产源码和2份测试保持未提交原字节，其构建/实窗证据继续有效。不接管其他工作区或扩展旧执行队列；下文初次分析和拟议方案作为决定来源保留。
