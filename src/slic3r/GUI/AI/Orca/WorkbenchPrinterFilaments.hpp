@@ -283,7 +283,70 @@ inline bool import_color_pack(PresetBundle& staged, const FilamentColorPack& pac
         if (!WorkbenchFilamentRecipes::stage_targets(candidate, pack.colors, bindings, error)) return false;
         for (size_t at = old_count; at < candidate.filament_presets.size(); ++at)
             pending_changes.push_back({{at}, -1, -1});
+
+        // A previous card may have left virtual mix slots behind. Keep only
+        // slots used by this card and remap any model references from removed
+        // virtual slots to a live card slot. This makes the native slot count
+        // exactly match the card entry count after every switch.
+        std::set<size_t> retained(bindings.begin(), bindings.end());
+        const size_t desired_total = pack.colors.size();
+        for (size_t at = candidate.filament_presets.size(); at-- > 0 &&
+             candidate.filament_presets.size() > desired_total;) {
+            if (!candidate.is_mixed_filament(at) || retained.count(at)) continue;
+            size_t replacement = size_t(-1);
+            for (const size_t slot : retained) if (slot != at) { replacement = slot; break; }
+            if (replacement == size_t(-1)) {
+                const auto current = capture(candidate);
+                if (!current.slots.empty()) replacement = current.slots.front().slot;
+            }
+            if (replacement == size_t(-1) || replacement == at) {
+                error = "色卡切换缺少可用替代槽位，配置草稿保持原状"; return false;
+            }
+            candidate.update_num_filaments(unsigned(at));
+            pending_changes.push_back({{}, int(at), int(replacement)});
+            std::set<size_t> shifted;
+            for (const size_t slot : retained)
+                if (slot != at) shifted.insert(slot > at ? slot - 1 : slot);
+            retained.swap(shifted);
+            for (auto& binding : bindings) if (binding > at) --binding;
+        }
+        if (candidate.filament_presets.size() != desired_total) {
+            error = "色卡切换后槽位数量无法与色卡保持一致，配置草稿保持原状"; return false;
+        }
+    } else if (candidate.filament_presets.size() > pack.colors.size()) {
+        // The card fits within the physical nozzle capacity. Any old virtual
+        // recipes are still stale and must be removed as well.
+        std::set<size_t> retained;
+        for (size_t i = 0; i < candidate.filament_presets.size(); ++i)
+            if (!candidate.is_mixed_filament(i) && i < pack.colors.size()) retained.insert(i);
+        for (size_t at = candidate.filament_presets.size(); at-- > 0 &&
+             candidate.filament_presets.size() > pack.colors.size();) {
+            if (!candidate.is_mixed_filament(at) || retained.count(at)) continue;
+            const auto current = capture(candidate);
+            if (current.slots.empty()) { error = "色卡切换缺少可用实体耗材，配置草稿保持原状"; return false; }
+            const size_t replacement = current.slots.front().slot;
+            candidate.update_num_filaments(unsigned(at));
+            pending_changes.push_back({{}, int(at), int(replacement)});
+            std::set<size_t> shifted;
+            for (const size_t slot : retained)
+                if (slot != at) shifted.insert(slot > at ? slot - 1 : slot);
+            retained.swap(shifted);
+        }
+        if (candidate.filament_presets.size() != pack.colors.size()) {
+            error = "色卡切换后槽位数量无法与色卡保持一致，配置草稿保持原状"; return false;
+        }
     }
+    if (candidate.filament_presets.size() != pack.colors.size()) {
+        error = "色卡切换后槽位数量无法与色卡保持一致，配置草稿保持原状"; return false;
+    }
+    // A staged card may intentionally leave a slot without a compatible
+    // material preset.  The dialog will keep that color and ask the user to
+    // choose a compatible preset before completion.  Only run the complete
+    // project validation once every slot is ready; structural validation above
+    // still guarantees that the card and native slot arrays have matching
+    // lengths.
+    if (capture(candidate).ready &&
+        !ProjectConfigRestore::validate(candidate.project_config, candidate.filament_presets, candidate, error)) return false;
     staged.project_config = std::move(candidate.project_config);
     staged.filament_presets = std::move(candidate.filament_presets);
     changes = std::move(pending_changes);

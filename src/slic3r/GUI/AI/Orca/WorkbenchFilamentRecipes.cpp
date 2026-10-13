@@ -157,6 +157,10 @@ bool stage_targets(PresetBundle& staged, const std::vector<std::string>& targets
 {
     PresetBundle candidate(staged);
     std::vector<size_t> result;
+    // A color-card entry represents one independent output slot. Never bind
+    // two entries to the same native physical or virtual slot; duplicate RGB
+    // entries therefore retain their separate card identities.
+    std::set<size_t> used_slots;
     std::vector<ColorDecomposePhysicalFilament> physical;
     for (size_t i = 0; i < candidate.filament_presets.size(); ++i) if (!candidate.is_mixed_filament(i)) {
         const auto* preset = candidate.filaments.find_preset(candidate.filament_presets[i], false);
@@ -189,12 +193,12 @@ bool stage_targets(PresetBundle& staged, const std::vector<std::string>& targets
         ColorDecomposeRgb rgb;
         if (!color_decompose_hex_to_rgb(target, rgb)) { error = "目标色无效"; return false; }
         std::optional<size_t> exact;
-        for (const auto& spool : physical) if (distance(target, spool.color_hex) == 0) {
+        for (const auto& spool : physical) if (!used_slots.count(spool.filament_index - 1) && distance(target, spool.color_hex) == 0) {
             if (!exact) exact = spool.filament_index - 1;
             if (target_index < preferred.size() && preferred[target_index] == spool.filament_index - 1)
                 exact = preferred[target_index];
         }
-        if (exact) { result.push_back(*exact); continue; }
+        if (exact) { used_slots.insert(*exact); result.push_back(*exact); continue; }
         ColorDecomposeRecipeResult best;
         double best_error = std::numeric_limits<double>::max();
         for (size_t seed = 0; seed < physical.size(); ++seed) {
@@ -215,7 +219,7 @@ bool stage_targets(PresetBundle& staged, const std::vector<std::string>& targets
         // Prefer existing legal recipes when they reproduce this target at
         // least as well as a new estimate, retaining native slot identities.
         std::optional<size_t> existing;
-        for (size_t i = 0; i < candidate.filament_presets.size(); ++i) if (valid_recipe(candidate, i)) {
+        for (size_t i = 0; i < candidate.filament_presets.size(); ++i) if (!used_slots.count(i) && valid_recipe(candidate, i)) {
             ColorDecomposeRgb stored;
             const auto hex = candidate.project_config.opt_string("filament_colour", unsigned(i));
             if (!color_decompose_hex_to_rgb(hex, stored)) continue;
@@ -225,7 +229,7 @@ bool stage_targets(PresetBundle& staged, const std::vector<std::string>& targets
                 best_error = delta; existing = i;
             }
         }
-        if (existing) { result.push_back(*existing); continue; }
+        if (existing) { used_slots.insert(*existing); result.push_back(*existing); continue; }
         if (!best.valid) {
             error = "目标色 " + target + " 没有材料/温度兼容的叠色配方；请调整实体耗材"; return false;
         }
@@ -259,6 +263,7 @@ bool stage_targets(PresetBundle& staged, const std::vector<std::string>& targets
         candidate.project_config.option<ConfigOptionStrings>("filament_mixed_components")->values[slot] = ids;
         candidate.project_config.option<ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values[slot] = ratios;
         if (!valid_recipe(candidate, slot)) { error = "新叠色配方验证失败"; return false; }
+        used_slots.insert(slot);
         result.push_back(slot);
     }
     if (!ProjectConfigRestore::validate(candidate.project_config, candidate.filament_presets, candidate, error)) return false;

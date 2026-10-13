@@ -1492,6 +1492,30 @@ TEST_CASE("color card imports shrink extra slots and allow idle nozzles", "[Prin
     CHECK(live.filament_presets.size() == 8);
 }
 
+TEST_CASE("switching an over-capacity color card keeps total slots equal to card colors", "[PrinterFilamentImport][PostGenerationWorkbench]")
+{
+    auto draft = printer_filament_fixture(4, 4);
+    std::vector<PrinterFilamentConfig::SlotChange> changes;
+    std::string error;
+    REQUIRE(PrinterFilamentConfig::import_color_pack(draft, filament_import_card(6), changes, error));
+    auto state = PrinterFilamentConfig::capture(draft);
+    INFO(error);
+    REQUIRE(state.ready);
+    CHECK(state.physical_count == 4);
+    CHECK(state.mixed.size() == 2);
+    CHECK(draft.filament_presets.size() == 6);
+
+    changes.clear();
+    REQUIRE(PrinterFilamentConfig::import_color_pack(draft, filament_import_card(4), changes, error));
+    state = PrinterFilamentConfig::capture(draft);
+    INFO(error);
+    REQUIRE(state.ready);
+    CHECK(state.physical_count == 4);
+    CHECK(state.mixed.empty());
+    CHECK(draft.filament_presets.size() == 4);
+    CHECK(PrinterFilamentSlotRemap::validate(changes, 6, 4));
+}
+
 TEST_CASE("cancelled or invalid card reductions preserve the entire draft and its pending changes", "[PrinterFilamentImport][PostGenerationWorkbench]")
 {
     auto draft = printer_filament_fixture(4, 8);
@@ -1528,15 +1552,14 @@ TEST_CASE("virtual mixtures keep their identities and do not consume card colors
     std::string error;
     REQUIRE(PrinterFilamentConfig::import_color_pack(draft, filament_import_card(8), changes, error));
     CHECK(PrinterFilamentConfig::capture(draft).physical_count == 8);
-    CHECK(draft.filament_presets.size() == 9);
-    CHECK(draft.is_mixed_filament(8));
-    CHECK(draft.project_config.option<ConfigOptionStrings>("filament_mixed_components")->values[8] == "1,5");
+    CHECK(draft.filament_presets.size() == 8);
+    CHECK_FALSE(draft.is_mixed_filament(7));
     REQUIRE(PrinterFilamentConfig::import_color_pack(draft, filament_import_card(4), changes, error,
         [](const auto&, const auto& targets) -> std::optional<size_t> { return targets.back().slot; }));
     CHECK(PrinterFilamentConfig::capture(draft).physical_count == 4);
-    CHECK(draft.is_mixed_filament(4));
-    CHECK(draft.project_config.option<ConfigOptionStrings>("filament_mixed_components")->values[4] == "1,4");
-    CHECK(PrinterFilamentSlotRemap::validate(changes, 6, 5));
+    CHECK(draft.filament_presets.size() == 4);
+    CHECK_FALSE(draft.is_mixed_filament(3));
+    CHECK(PrinterFilamentSlotRemap::validate(changes, 6, 4));
 
     draft = live;
     changes.clear();
@@ -1593,14 +1616,14 @@ TEST_CASE("successive card imports replay additions and deletions through object
     REQUIRE(PrinterFilamentConfig::import_color_pack(draft, filament_import_card(4), changes, error, choose));
     REQUIRE(PrinterFilamentConfig::import_color_pack(draft, filament_import_card(8), changes, error, choose));
     REQUIRE(PrinterFilamentConfig::import_color_pack(draft, filament_import_card(6), changes, error, choose));
-    REQUIRE(PrinterFilamentSlotRemap::validate(changes, 8, 7));
+    REQUIRE(PrinterFilamentSlotRemap::validate(changes, 8, 6));
     PrinterFilamentSlotRemap::prepare(model, changes, 8, mixed);
     CHECK(object->config.opt_int("extruder") == 4);
-    CHECK(volume->config.opt_int("extruder") == 7);
+    CHECK(volume->config.opt_int("extruder") == 1);
     TriangleSelector painted(volume->mesh());
     painted.deserialize(volume->mmu_segmentation_facets.get_data());
     CHECK_FALSE(painted.get_facets(EnforcerBlockerType::Extruder4).indices.empty());
-    CHECK_FALSE(painted.get_facets(EnforcerBlockerType::Extruder7).indices.empty());
+    CHECK_FALSE(painted.get_facets(EnforcerBlockerType::Extruder1).indices.empty());
     CHECK(painted.get_facets(EnforcerBlockerType::Extruder8).indices.empty());
     CHECK(volume->mesh().its.vertices == vertices);
     DynamicPrintConfig plate;
@@ -1608,7 +1631,7 @@ TEST_CASE("successive card imports replay additions and deletions through object
     for (const auto& change : changes) PrinterFilamentSlotRemap::plate_config(plate, change);
     auto sequence = plate.option<ConfigOptionInts>("first_layer_print_sequence")->values;
     std::sort(sequence.begin(), sequence.end());
-    CHECK(sequence == std::vector<int>{1,2,3,4,5,6,7});
+    CHECK(sequence == std::vector<int>{1,2,3,4,5,6});
 }
 
 TEST_CASE("returning to an identical filament card can still change model references", "[PrinterFilamentImport][PostGenerationWorkbench]")
