@@ -30,10 +30,10 @@ static void verify_source_frame_workbench_paint(const boost::filesystem::path& p
     REQUIRE(AI::load_model_artifact(path, source, colors, error));
     DecodedWorkbenchModel decoded;
     REQUIRE(decode_workbench_model(path, decoded, error));
-    if (meters) decoded.mesh.scale(1000.f);
     auto model = assemble_workbench_model(decoded, path, meters);
     REQUIRE(model->texture_mesh);
     auto* volume = model->objects.front()->volumes.front();
+    REQUIRE(LocalPrintColorApplication::same_surface_partition(source.its, volume->mesh().its, false));
     const auto offset = volume->get_offset();
     PaintedMesh painted;
     painted.vertices = model->texture_mesh->vertices;

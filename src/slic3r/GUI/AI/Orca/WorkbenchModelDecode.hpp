@@ -96,7 +96,7 @@ inline bool decode_workbench_model(const boost::filesystem::path& path, DecodedW
 
 // Only call on the UI thread: Model and its children allocate global IDs.
 inline std::unique_ptr<Model> assemble_workbench_model(DecodedWorkbenchModel& decoded,
-    const boost::filesystem::path& path, bool converted_from_meters)
+    const boost::filesystem::path& path, bool source_units_in_meters)
 {
     auto model = std::make_unique<Model>();
     // Dense repaired meshes can contain distinct float coordinates closer
@@ -110,9 +110,11 @@ inline std::unique_ptr<Model> assemble_workbench_model(DecodedWorkbenchModel& de
     volume->source.input_file = path.string();
     volume->source.object_idx = 0;
     volume->source.volume_idx = 0;
-    volume->source.is_converted_from_meters = converted_from_meters;
     object->config.set("extruder", 1);
     model->texture_mesh = std::move(decoded.texture);
+    // Keep the zero source offset in the texture's units. Use Orca's native
+    // conversion once, after assembly, for both workbench import paths.
+    if (source_units_in_meters) model->convert_from_meters(false);
     return model;
 }
 

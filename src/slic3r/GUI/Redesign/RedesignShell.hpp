@@ -113,6 +113,7 @@ private:
     enum class ModelView { Result, Workbench, Slicing, Preview };
     void build_model_workflow();
     bool open_model_workbench();
+    void return_model_overview();
     void show_model_view(ModelView view);
     void apply_workbench_state(const PostGenerationWorkbenchState& state);
     void apply_slicing_state(const SmartSlicingWorkbenchState& state);
@@ -146,6 +147,7 @@ private:
     wxPanel* m_workbench_page { nullptr };
     wxPanel* m_slicing_page { nullptr };
     wxPanel* m_slicing_settings { nullptr };
+    wxWindow* m_slice_return_overview {nullptr};
     wxWindow* m_native_return_ai {nullptr};
     wxWindow* m_native_return_overview {nullptr};
     wxWindow* m_native_prepare {nullptr};

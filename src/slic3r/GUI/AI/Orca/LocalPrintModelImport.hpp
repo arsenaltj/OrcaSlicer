@@ -58,26 +58,77 @@ inline bool place(ModelObject& object, const Polygon& bed, const arrangement::Ar
     // FirstFit skips negative bin IDs as unfit, even for a new moving item.
     polygon.bed_idx = 0;
     polygon.height = object.instance_bounding_box(0).size().z();
-    arrangement::ArrangePolygons moving {polygon};
     arrangement::ArrangeParams params(scale_(2.));
     params.allow_rotations = false;
-    params.do_final_align = false;
     params.parallel = false;
     params.printable_height = float(height);
     params.progressind = [](unsigned, std::string) {};
     // Orca's arranger expects the spacing to be applied to the input polygons.
-    moving.front().inflation = params.min_obj_distance / 2;
+    polygon.inflation = params.min_obj_distance / 2;
     auto fixed = obstacles;
+    // Feed the native rectangular packer the actual bed's non-printable corners
+    // as its existing virtual exclusions. All results still require exact-bed validation.
+    const auto bounds = bed.bounding_box();
+    const auto non_printable_corners = diff_ex({ExPolygon(bounds.polygon())}, {ExPolygon(bed)});
+    for (const auto& area : non_printable_corners) {
+        arrangement::ArrangePolygon excluded;
+        excluded.poly = area;
+        excluded.bed_idx = 0;
+        excluded.is_virt_object = true;
+        fixed.push_back(std::move(excluded));
+    }
     arrangement::update_unselected_items_inflation(fixed, &config, params);
-    arrangement::arrange(moving, fixed, bed.points, params);
+    auto native_footprint = [](const arrangement::ArrangePolygon& item, double inflation) {
+        // Match libnest2d's libslic3r backend: square joins in local coordinates,
+        // then rotate/translate. Miter joins reject valid native corner contacts.
+        ExPolygon local(item.poly.contour);
+        if (local.contour.is_counter_clockwise()) local.contour.reverse();
+        auto footprint = offset_ex(local, float(inflation), ClipperLib::jtSquare);
+        for (auto& area : footprint) {
+            area.rotate(item.rotation);
+            area.translate(item.translation.x(), item.translation.y());
+        }
+        return footprint;
+    };
+    auto fits = [&](const arrangement::ArrangePolygon& candidate) {
+        if (candidate.bed_idx != 0) return false;
+        const auto footprint = native_footprint(candidate, candidate.inflation);
+        if (footprint.empty() || !diff_ex(footprint, {ExPolygon(bed)}).empty()) return false;
+        for (const auto& obstacle : fixed) {
+            // Match Arrange's existing fixed-item numerical tolerance.
+            const auto inflation = double(obstacle.inflation) - scaled(2. * EPSILON);
+            if (obstacle.bed_idx == 0 && !intersection_ex(footprint,
+                native_footprint(obstacle, inflation)).empty()) return false;
+        }
+        return true;
+    };
+    // Preserve Orca's center/nearest-empty-cell position when it is safe. The
+    // arranger is a fallback, using its native final alignment and fixed items.
+    if (fits(polygon)) return true;
+    arrangement::ArrangePolygons moving {polygon};
+    auto arrange_on_plate = [&] {
+        // Integer NFP contact points may overlap an offset contour by a few
+        // units. Ask the native packer for its existing 2*EPSILON extra margin;
+        // validate against the original clearance, never relax that check.
+        moving.front().inflation = polygon.inflation + scaled(2. * EPSILON);
+        arrangement::arrange(moving, fixed, bounds, params);
+        moving.front().inflation = polygon.inflation;
+    };
+    arrange_on_plate();
+    // Final alignment may shift the packed item outside an irregular bed or
+    // into a fixed obstacle. Retain native packing without that optional shift.
+    if (!fits(moving.front())) {
+        params.do_final_align = false;
+        moving = {polygon};
+        arrange_on_plate();
+    }
     const auto& placed = moving.front();
     if (placed.bed_idx != 0 || !diff_ex({placed.transformed_poly()}, {ExPolygon(bed)}).empty()) {
         error = "The model does not fit on the current plate. The working copy has been retained."; return false;
     }
-    for (const auto& obstacle : obstacles)
-        if (obstacle.bed_idx == 0 && !intersection_ex({placed.transformed_poly()}, {obstacle.transformed_poly()}).empty()) {
-            error = "The new model overlaps an existing object or excluded area."; return false;
-        }
+    if (!fits(placed)) {
+        error = "The new model cannot be placed with the required plate and obstacle clearance."; return false;
+    }
     auto offset = instance->get_offset();
     offset.x() = unscale<double>(placed.translation.x());
     offset.y() = unscale<double>(placed.translation.y());

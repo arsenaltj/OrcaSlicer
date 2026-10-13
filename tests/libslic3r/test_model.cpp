@@ -152,6 +152,52 @@ TEST_CASE("Native textured imports retain closed geometry through color applicat
     CHECK(model.objects.size() == 1);
 }
 
+TEST_CASE("Painted mesh unit conversion preserves nearby corners at a nonzero source offset", "[Model][ModelImport][ModelVertexColors]")
+{
+    const int unit_conversion = GENERATE(0, 1, 2);
+    CAPTURE(unit_conversion);
+    float nearby_z = 0.05f;
+    for (int i = 0; i < 3; ++i) nearby_z = std::nextafter(nearby_z, 1.f);
+    const float adjacent = std::nextafter(nearby_z, 1.f);
+    indexed_triangle_set source;
+    source.vertices = {Vec3f(0.f, 0.f, nearby_z), Vec3f(0.f, 0.f, adjacent),
+                       Vec3f(0.01f, 0.f, 0.f), Vec3f(0.f, 0.01f, 0.1f)};
+    source.indices = {Vec3i32(0, 2, 1), Vec3i32(0, 1, 3), Vec3i32(0, 3, 2), Vec3i32(1, 2, 3)};
+    Model model;
+    auto* volume = model.add_object("nearby corners", "nearby.obj", TriangleMesh(source))->volumes.front();
+    const Vec3d source_offset = volume->source.mesh_offset;
+    REQUIRE(source_offset.z() > 0.);
+    double unit_scale = 1.;
+    if (unit_conversion == 1) {
+        model.convert_from_imperial_units(false);
+        unit_scale = 25.4;
+    } else if (unit_conversion == 2) {
+        model.convert_from_meters(false);
+        unit_scale = 1000.;
+    }
+    const Vec3d expected_offset = volume->get_offset();
+    PaintedMesh painted;
+    for (const auto& vertex : source.vertices) painted.vertices.push_back({vertex.x(), vertex.y(), vertex.z()});
+    for (const auto& face : source.indices) painted.indices.push_back({face[0], face[1], face[2]});
+    painted.cluster_colors = {{255, 0, 0}, {0, 0, 255}};
+    for (size_t face = 0; face < source.indices.size(); ++face)
+        painted.face_colors.push_back(painted.cluster_colors[face % 2]);
+    std::vector<FilamentMatch> matches(2);
+    for (int i = 0; i < 2; ++i) { matches[i].cluster_index = i; matches[i].filament_index = i; }
+    REQUIRE(apply_painted_mesh_to_volume(painted, matches, *volume));
+    const auto& result = volume->mesh().its;
+    REQUIRE(result.vertices.size() == source.vertices.size());
+    REQUIRE(result.indices.size() == source.indices.size());
+    for (size_t face = 0; face < source.indices.size(); ++face) CHECK(result.indices[face] == source.indices[face]);
+    const double expected_gap = (double(adjacent) - double(nearby_z)) * unit_scale;
+    const double actual_gap = double(result.vertices[1].z()) - double(result.vertices[0].z());
+    CHECK_THAT(actual_gap, Catch::Matchers::WithinRel(expected_gap, 1e-4));
+    CHECK_THAT((volume->source.mesh_offset - source_offset).norm(), Catch::Matchers::WithinAbs(0., 1e-12));
+    CHECK_THAT((volume->get_offset() - expected_offset).norm(), Catch::Matchers::WithinAbs(0., 1e-6));
+    CHECK(volume->mmu_segmentation_facets.has_facets(*volume, EnforcerBlockerType::Extruder1));
+    CHECK(volume->mmu_segmentation_facets.has_facets(*volume, EnforcerBlockerType::Extruder2));
+}
+
 TEST_CASE("Native GLB imports use print axes independently of the meter conversion choice", "[Model][ModelImport][GltfAxes]")
 {
     const std::string path = std::string(TEST_DATA_DIR) + "/model_artifact/baseline.glb";

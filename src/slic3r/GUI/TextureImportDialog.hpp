@@ -349,6 +349,9 @@ private:
     void update_confirm_button_state();
     void style_confirm_button(bool dirty);
     void style_workbench_review();
+    void update_workbench_review_shape();
+    void paint_workbench_review_surface(wxWindow* surface, wxDC& dc) const;
+    wxBitmap m_review_background;
 
     Slic3r::TexturedMesh               m_textured_mesh;
     TextureImportOptions               m_options;

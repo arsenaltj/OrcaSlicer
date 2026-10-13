@@ -597,6 +597,7 @@ TEST_CASE("background workbench decoding preserves native geometry units and tex
     const std::string file = GENERATE("20mm_cube.obj", "model_artifact/textured.obj", "model_artifact/vertex-material-color.obj",
         "model_artifact/textured.glb", "model_artifact/outward-textured.glb", "model_artifact/vertex-material-color.glb",
         "model_artifact/transformed.glb", "model_artifact/nested-negative-nodes.glb");
+    CAPTURE(file);
     const auto path = boost::filesystem::path(std::string(TEST_DATA_DIR)) / file;
     DecodedWorkbenchModel decoded;
     std::string error;
@@ -604,7 +605,6 @@ TEST_CASE("background workbench decoding preserves native geometry units and tex
     INFO(error);
     REQUIRE(loaded);
     const bool meters = path.extension() == ".glb";
-    if (meters) decoded.mesh.scale(1000.f);
     auto actual = assemble_workbench_model(decoded, path, meters);
     auto expected = Model::read_from_file(path.string(), nullptr, nullptr, LoadStrategy::LoadModel);
     if (meters) expected.convert_from_meters(false);
@@ -647,6 +647,44 @@ TEST_CASE("background workbench decoding preserves native geometry units and tex
         CHECK(at.precomputed_vertex_colors == et.precomputed_vertex_colors);
         REQUIRE(at.textures.size() == et.textures.size());
         for (size_t i = 0; i < at.textures.size(); ++i) CHECK(at.textures[i].data == et.textures[i].data);
+
+        // Exercise the color handoff as well as initial geometry: a wrong
+        // source offset can be hidden by later recentering of the replacement.
+        PaintedMesh painted;
+        painted.vertices = at.vertices;
+        painted.indices = at.indices;
+        painted.cluster_colors = {{255, 0, 0}};
+        painted.face_colors.assign(painted.indices.size(), painted.cluster_colors.front());
+        FilamentMatch match;
+        match.cluster_index = 0;
+        match.filament_index = 0;
+        // The workbench retains the source frame; ordinary native imports
+        // still center the mesh. Compare their world geometry, not the
+        // different local coordinates produced by those two policies.
+        const auto source_geometry = am;
+        const Vec3d original_offset = av->get_offset();
+        REQUIRE(apply_painted_mesh_to_volume(painted, {match}, *actual->objects.front()->volumes.front(), true));
+        REQUIRE(apply_painted_mesh_to_volume(painted, {match}, *expected.objects.front()->volumes.front()));
+        const auto& painted_actual = av->mesh().its;
+        const auto& painted_expected = ev->mesh().its;
+        REQUIRE(painted_actual.vertices.size() == painted_expected.vertices.size());
+        REQUIRE(painted_actual.indices.size() == painted_expected.indices.size());
+        CHECK_THAT((av->get_offset() - original_offset).norm(), Catch::Matchers::WithinAbs(0., 1e-6));
+        // UV seams may duplicate texture vertices that the printable mesh
+        // welded. Preserve ordered face corners independently of that aliasing.
+        REQUIRE(painted_actual.indices.size() == source_geometry.indices.size());
+        for (size_t face = 0; face < painted_actual.indices.size(); ++face)
+            for (int corner = 0; corner < 3; ++corner)
+                CHECK_THAT((painted_actual.vertices[painted_actual.indices[face][corner]] -
+                    source_geometry.vertices[source_geometry.indices[face][corner]]).norm(),
+                    Catch::Matchers::WithinAbs(0., 1e-6));
+        for (size_t i = 0; i < painted_actual.vertices.size(); ++i) {
+            CHECK_THAT((painted_actual.vertices[i].cast<double>() + av->get_offset() -
+                painted_expected.vertices[i].cast<double>() - ev->get_offset()).norm(),
+                Catch::Matchers::WithinAbs(0., 1e-4));
+        }
+        for (size_t i = 0; i < painted_actual.indices.size(); ++i) CHECK(painted_actual.indices[i] == painted_expected.indices[i]);
+        CHECK(av->mmu_segmentation_facets.get_data() == ev->mmu_segmentation_facets.get_data());
     }
 }
 

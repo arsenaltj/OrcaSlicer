@@ -560,24 +560,6 @@ bool apply_painted_mesh_to_volume(
             color_to_filament[cluster_colors[m.cluster_index]] = m.filament_index;
     }
 
-    indexed_triangle_set its;
-    its.vertices.resize(painted.vertices.size());
-    for (size_t i = 0; i < painted.vertices.size(); ++i) {
-        its.vertices[i] = Vec3f(
-            painted.vertices[i][0],
-            painted.vertices[i][1],
-            painted.vertices[i][2]);
-    }
-    its.indices.resize(painted.indices.size());
-    for (size_t i = 0; i < painted.indices.size(); ++i) {
-        its.indices[i] = Vec3i32(
-            painted.indices[i][0],
-            painted.indices[i][1],
-            painted.indices[i][2]);
-    }
-
-    TriangleMesh new_mesh(std::move(its));
-
     // The volume already went through ModelObject::add_volume ->
     // center_geometry_after_creation, which translated its mesh by
     // -source.mesh_offset (and folded that shift into the volume
@@ -593,20 +575,31 @@ bool apply_painted_mesh_to_volume(
     // Model::convert_* scales the printable volumes but leaves texture_mesh
     // in the source units. Convert both its painted geometry and recorded
     // offset to millimetres before replacing a converted volume.
-    Vec3d mesh_offset = volume.source.mesh_offset;
+    const Vec3d source_offset = volume.source.mesh_offset;
     double unit_scale = 1.0;
     if (volume.source.is_converted_from_meters)
         unit_scale = 1000.0;
     else if (volume.source.is_converted_from_inches)
         unit_scale = 25.4;
-    if (unit_scale != 1.0) {
-        new_mesh.scale(unit_scale);
-        mesh_offset *= unit_scale;
+    const Vec3d mesh_offset = source_offset * unit_scale;
+    indexed_triangle_set its;
+    its.vertices.resize(painted.vertices.size());
+    for (size_t i = 0; i < painted.vertices.size(); ++i) {
+        const auto& vertex = painted.vertices[i];
+        // Center before scaling, with no intermediate float coordinates.
+        // Nearby source corners can collapse if their uncentered, scaled
+        // coordinates are rounded before the recorded offset is subtracted.
+        its.vertices[i] = ((Vec3d(vertex[0], vertex[1], vertex[2]) - source_offset) * unit_scale).cast<float>();
     }
-
-    if (!mesh_offset.isApprox(Vec3d::Zero()))
-        new_mesh.translate(-mesh_offset.cast<float>());
+    its.indices.resize(painted.indices.size());
+    for (size_t i = 0; i < painted.indices.size(); ++i) {
+        const auto& face = painted.indices[i];
+        its.indices[i] = Vec3i32(face[0], face[1], face[2]);
+    }
+    TriangleMesh new_mesh(std::move(its));
     new_mesh.set_init_shift(mesh_offset);
+    BOOST_LOG_TRIVIAL(debug) << "apply_painted_mesh_to_volume: source_offset=" << source_offset.transpose()
+                            << " unit_scale=" << unit_scale << " offset_mm=" << mesh_offset.transpose();
 
     // Log bbox drift for diagnostics. Subdivision + CGAL polygon-soup
     // repair routinely changes vertex count and bbox, so moderate drift
