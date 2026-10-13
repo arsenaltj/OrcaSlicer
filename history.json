@@ -1,5 +1,15 @@
 [
   {
+    "pr": 31,
+    "run": 38381000471,
+    "head": "bbd732bbf132117f73fd481e7f150b7c029c5641",
+    "base": "383b872dd1559ea97b046d6c78be3ced7f863676",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "Persist printer filament match through native import",
+    "path": "pr/31/bbd732bbf132117f73fd481e7f150b7c029c5641/38381000471",
+    "created": "2026-10-13T10:08:48+00:00"
+  },
+  {
     "pr": 30,
     "run": 38360530505,
     "head": "f7b20a9d95f23ef8ef4c13b858077e0899dae464",
