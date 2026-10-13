@@ -7,8 +7,11 @@
 #include <cstdint>
 #include <array>
 #include <cmath>
+#include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
+#include <nlohmann/json.hpp>
 
 namespace Slic3r::AI {
 
@@ -54,6 +57,9 @@ struct ModelMatchedColors {
     std::vector<PhysicalFilamentChannel> palette;
     std::vector<size_t> face_slots;
     std::vector<MixedColorRecipe> mixed_recipes;
+    // Optional native configuration fingerprints. Empty values preserve older
+    // beauty-puzzle records; new workbench snapshots populate both.
+    std::string material_fingerprint, process_fingerprint;
     bool valid() const {
         if (!is_lowercase_sha256(source_sha256) || !is_lowercase_sha256(geometry_id) ||
             face_slots.empty() || face_slots.size() > 2000000 ||
@@ -64,6 +70,89 @@ struct ModelMatchedColors {
         return true;
     }
 };
+
+// Internal persistence for an accepted workbench printer-filament match.
+// This is deliberately optional metadata; older model records simply omit it.
+inline nlohmann::json encode_model_matched_colors(const ModelMatchedColors& value)
+{
+    if (!value.valid()) throw std::invalid_argument("Invalid matched printer-filament snapshot.");
+    nlohmann::json palette = nlohmann::json::array();
+    for (const auto& channel : value.palette)
+        palette.push_back({{"slot", channel.slot}, {"color", channel.display_color},
+                           {"material", channel.material_type}, {"compatible", channel.compatible}});
+    nlohmann::json recipes = nlohmann::json::array();
+    for (const auto& recipe : value.mixed_recipes) {
+        nlohmann::json components = nlohmann::json::array();
+        for (const auto& component : recipe.components)
+            components.push_back({component.slot, component.ratio});
+        recipes.push_back({{"slot", recipe.existing_virtual_slot ? *recipe.existing_virtual_slot : 255},
+                           {"color", recipe.target_color}, {"components", components},
+                           {"settings", recipe.native_settings_fingerprint}, {"uniform", recipe.uniform_color}});
+    }
+    return {{"schema", "orca.applied-printer-filament-match/v1"},
+            {"source_sha256", value.source_sha256}, {"geometry_id", value.geometry_id},
+            {"palette", palette}, {"mixed_recipes", recipes}, {"face_slots", value.face_slots},
+            {"material_fingerprint", value.material_fingerprint}, {"process_fingerprint", value.process_fingerprint}};
+}
+
+inline bool decode_model_matched_colors(const nlohmann::json& doc, ModelMatchedColors& output,
+                                       std::string& error)
+{
+    error.clear();
+    auto fail = [&](const char* message) { error = message; return false; };
+    if (!doc.is_object() || doc.value("schema", std::string{}) != "orca.applied-printer-filament-match/v1")
+        return fail("Unsupported applied printer-filament snapshot.");
+    if (!doc.contains("source_sha256") || !doc["source_sha256"].is_string() ||
+        !doc.contains("geometry_id") || !doc["geometry_id"].is_string() ||
+        !doc.contains("palette") || !doc["palette"].is_array() ||
+        !doc.contains("mixed_recipes") || !doc["mixed_recipes"].is_array() ||
+        !doc.contains("face_slots") || !doc["face_slots"].is_array())
+        return fail("Incomplete applied printer-filament snapshot.");
+    ModelMatchedColors parsed;
+    parsed.source_sha256 = doc["source_sha256"].get<std::string>();
+    parsed.geometry_id = doc["geometry_id"].get<std::string>();
+    if (doc.contains("material_fingerprint") && !doc["material_fingerprint"].is_string())
+        return fail("Invalid material fingerprint in applied snapshot.");
+    if (doc.contains("process_fingerprint") && !doc["process_fingerprint"].is_string())
+        return fail("Invalid process fingerprint in applied snapshot.");
+    parsed.material_fingerprint = doc.value("material_fingerprint", std::string{});
+    parsed.process_fingerprint = doc.value("process_fingerprint", std::string{});
+    for (const auto& item : doc["palette"]) {
+        if (!item.is_object() || !item.contains("slot") || !item.contains("color") ||
+            !item.contains("material") || !item.contains("compatible") || !item["slot"].is_number_unsigned() ||
+            !item["color"].is_string() || !item["material"].is_string() || !item["compatible"].is_boolean())
+            return fail("Invalid physical channel in applied snapshot.");
+        parsed.palette.push_back({item["slot"].get<size_t>(), item["color"].get<std::string>(),
+                                  item["material"].get<std::string>(), item["compatible"].get<bool>()});
+    }
+    for (const auto& item : doc["mixed_recipes"]) {
+        if (!item.is_object() || !item.contains("slot") || !item.contains("color") ||
+            !item.contains("components") || !item["slot"].is_number_unsigned() ||
+            !item["color"].is_string() || !item["components"].is_array())
+            return fail("Invalid mixed recipe in applied snapshot.");
+        const size_t slot = item["slot"].get<size_t>();
+        if (slot >= 255) return fail("Invalid mixed recipe slot.");
+        MixedColorRecipe recipe;
+        recipe.existing_virtual_slot = slot;
+        recipe.target_color = item["color"].get<std::string>();
+        if (item.contains("settings") && !item["settings"].is_string()) return fail("Invalid mixed recipe settings.");
+        if (item.contains("settings")) recipe.native_settings_fingerprint = item["settings"].get<std::string>();
+        if (item.contains("uniform") && !item["uniform"].is_boolean()) return fail("Invalid mixed recipe state.");
+        if (item.contains("uniform")) recipe.uniform_color = item["uniform"].get<bool>();
+        for (const auto& component : item["components"]) {
+            if (!component.is_array() || component.size() != 2 || !component[0].is_number_unsigned() ||
+                !component[1].is_number()) return fail("Invalid mixed recipe component.");
+            recipe.components.push_back({component[0].get<size_t>(), component[1].get<double>()});
+        }
+        parsed.mixed_recipes.push_back(std::move(recipe));
+    }
+    for (const auto& item : doc["face_slots"])
+        if (!item.is_number_unsigned()) return fail("Invalid face slot in applied snapshot.");
+        else parsed.face_slots.push_back(item.get<size_t>());
+    if (!parsed.valid()) return fail("Applied printer-filament snapshot failed validation.");
+    output = std::move(parsed);
+    return true;
+}
 
 struct ModelImportRequest
 {
