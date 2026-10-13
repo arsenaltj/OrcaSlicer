@@ -311,6 +311,10 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
         const auto& matched=*request.matched_colors;
         const auto current=printable_palette();
         bool palette_matches=matched.palette.size()==current.physical_channels.size();
+        if (!matched.material_fingerprint.empty())
+            palette_matches = palette_matches && matched.material_fingerprint == current.material_fingerprint;
+        if (!matched.process_fingerprint.empty())
+            palette_matches = palette_matches && matched.process_fingerprint == current.process_fingerprint;
         for(const auto& saved:matched.palette) {
             const auto found=std::find_if(current.physical_channels.begin(),current.physical_channels.end(),[&](const auto& c){
                 return c.slot==saved.slot && c.display_color==saved.display_color && c.material_type==saved.material_type && c.compatible==saved.compatible;

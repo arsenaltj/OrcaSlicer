@@ -245,7 +245,7 @@ bool stage_targets(PresetBundle& staged, const std::vector<std::string>& targets
             std::sort(stored.begin(), stored.end());
             if (stored == normalized) { reused = i; break; }
         }
-        if (reused) { result.push_back(*reused); continue; }
+        if (reused) { used_slots.insert(*reused); result.push_back(*reused); continue; }
         const size_t slot = candidate.filament_presets.size();
         if (slot >= 32) { error = "叠色配方超过原生32槽上限"; return false; }
         const auto multi = candidate.project_config.option<ConfigOptionStrings>("filament_multi_colour")->values;

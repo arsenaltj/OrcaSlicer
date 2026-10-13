@@ -178,6 +178,7 @@ void show_orca_filament_selection(wxWindow* parent, Plater& plater, size_t selec
     }
     auto state = PrinterFilamentConfig::capture(staged);
     auto drafts = state.slots;
+    auto mixed_drafts = state.mixed;
 
     wxDialog dialog(wxGetTopLevelParent(parent), wxID_ANY, _L("配置打印机耗材"), wxDefaultPosition,
         wxDefaultSize, wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER);
@@ -232,6 +233,16 @@ void show_orca_filament_selection(wxWindow* parent, Plater& plater, size_t selec
     }
     root->Add(actions, 0, wxALIGN_RIGHT | wxBOTTOM, dialog.FromDIP(8));
     std::vector<std::string> available;
+    auto physical_row = [&] {
+        const int row = slots->GetSelection();
+        return row >= 0 && size_t(row) < drafts.size() ? row : wxNOT_FOUND;
+    };
+    auto mixed_row = [&] {
+        const int row = slots->GetSelection();
+        return row >= 0 && size_t(row) >= drafts.size() &&
+            size_t(row - int(drafts.size())) < mixed_drafts.size()
+            ? row - int(drafts.size()) : wxNOT_FOUND;
+    };
     auto write_drafts = [&] {
         for (const auto& draft : drafts) {
             // Pending nozzle rows can outnumber the native table when
@@ -248,12 +259,19 @@ void show_orca_filament_selection(wxWindow* parent, Plater& plater, size_t selec
         if (!pending_targets.empty() && PrinterFilamentConfig::capture(staged).ready) {
             const size_t old_count = staged.filament_presets.size();
             std::vector<size_t> bindings;
-            if (WorkbenchFilamentRecipes::stage_targets(staged, pending_targets, bindings, recipe_error))
+            if (WorkbenchFilamentRecipes::stage_targets(staged, pending_targets, bindings, recipe_error) &&
+                PrinterFilamentConfig::trim_unused_mixed_slots(staged, bindings, pending_targets.size(), slot_changes, recipe_error)) {
                 for (size_t at = old_count; at < staged.filament_presets.size(); ++at) slot_changes.push_back({{at}, -1, -1});
+                pending_targets.clear();
+                drafts = PrinterFilamentConfig::capture(staged).slots;
+                mixed_drafts = PrinterFilamentConfig::capture(staged).mixed;
+            }
         }
         const auto current = PrinterFilamentConfig::capture(staged);
         done->Enable(current.ready && recipe_error.empty());
-        status->SetLabel(!recipe_error.empty() ? from_u8(recipe_error) : current.ready ? _L("已配置；完成后保存真实耗材并使旧匹配失效，请重新应用打印机耗材。") : from_u8(current.reason));
+        status->SetLabel(!recipe_error.empty() ? from_u8(recipe_error) : current.ready ?
+            wxString::Format(_L("已配置 %llu 个实体槽和 %llu 个叠色槽；完成后保存真实耗材并使旧匹配失效。"),
+                static_cast<unsigned long long>(current.physical_count), static_cast<unsigned long long>(current.mixed.size())) : from_u8(current.reason));
         add->Enable(staged.filament_presets.size() < size_t(EnforcerBlockerType::ExtruderMax) && current.physical_count < current.physical_capacity);
         apply_control(done, Role::PrimaryAction);
     };
@@ -266,13 +284,29 @@ void show_orca_filament_selection(wxWindow* parent, Plater& plater, size_t selec
             labels.push_back(wxString::Format(_L("耗材 %llu"), static_cast<unsigned long long>(draft.slot + 1)) +
                 "\n" + (color.IsOk() ? from_u8(draft.color) : _L("待配置颜色")));
         }
+        for (const auto& mix : mixed_drafts) {
+            const wxColour color(from_u8(mix.color));
+            colors.push_back(color);
+            labels.push_back(wxString::Format(_L("叠色 %llu"), static_cast<unsigned long long>(mix.slot + 1)) +
+                "\n" + (color.IsOk() ? from_u8(mix.color) : _L("待配置颜色")));
+        }
         slots->SetLabels(std::move(labels), std::move(colors));
     };
     auto refresh = [&] {
+        validity();
         update_slot_colors();
         presets->Clear(); available.clear();
-        const int row = slots->GetSelection();
-        if (row == wxNOT_FOUND || size_t(row) >= drafts.size()) { catalog->Disable(); custom->Disable(); validity(); return; }
+        const int row = physical_row();
+        const int mix = mixed_row();
+        if (mix != wxNOT_FOUND) {
+            catalog->Disable(); custom->Disable();
+            const auto& recipe = mixed_drafts[size_t(mix)];
+            const wxColour color(from_u8(recipe.color));
+            swatch->SetBackgroundColour(color.IsOk() ? color : wxColour(70,70,75)); swatch->Refresh();
+            color_text->SetLabel(from_u8(recipe.recipe) + "\n" + (recipe.valid ? _L("估算叠色；实物色准以装料为准") : from_u8(recipe.reason)));
+            dialog.Layout(); return;
+        }
+        if (row == wxNOT_FOUND) { catalog->Disable(); custom->Disable(); dialog.Layout(); return; }
         auto& draft = drafts[size_t(row)];
         for (const auto& preset : bundle->filaments.get_presets()) {
             if (!preset.is_compatible || !preset.is_visible) continue;
@@ -285,12 +319,13 @@ void show_orca_filament_selection(wxWindow* parent, Plater& plater, size_t selec
         const wxColour color(from_u8(draft.color));
         swatch->SetBackgroundColour(color.IsOk() ? color : wxColour(70,70,75)); swatch->Refresh();
         color_text->SetLabel(draft.color.empty() ? _L("待配置装料颜色") : from_u8(draft.color) + "\n" + _L("实际颜色以装料为准"));
-        validity(); dialog.Layout();
+        dialog.Layout();
     };
     auto rebuild = [&] {
         const int previous = slots->GetSelection();
         update_slot_colors();
-        if (!drafts.empty()) slots->SetSelection(std::min(std::max(0,previous),int(drafts.size()-1)));
+        const size_t total = drafts.size() + mixed_drafts.size();
+        if (total) slots->SetSelection(std::min(std::max(0,previous),int(total-1)));
         refresh();
     };
     auto import_source = [&](const FilamentColorPack& pack) {
@@ -313,20 +348,24 @@ void show_orca_filament_selection(wxWindow* parent, Plater& plater, size_t selec
         if (!PrinterFilamentConfig::import_color_pack(staged, pack, slot_changes, error, choose_replacement)) {
             status->SetLabel(from_u8(error)); dialog.Layout(); return;
         }
-        pending_targets = pack.colors.size() > initial.physical_capacity ? pack.colors : std::vector<std::string>{};
-        drafts = PrinterFilamentConfig::capture(staged).slots;
+        const auto imported = PrinterFilamentConfig::capture(staged);
+        pending_targets = imported.ready ? std::vector<std::string>{} : pack.colors;
+        drafts = imported.slots;
+        mixed_drafts = imported.mixed;
         rebuild();
         const auto current = PrinterFilamentConfig::capture(staged);
-        status->SetLabel(wxString::Format(_L("已导入 %llu 色，当前 %llu 个实体耗材槽，额外颜色使用叠色；"),
-            static_cast<unsigned long long>(pack.colors.size()), static_cast<unsigned long long>(current.physical_count)) +
+        status->SetLabel(wxString::Format(_L("已导入 %llu 色，当前 %llu 个实体槽 + %llu 个叠色槽；"),
+            static_cast<unsigned long long>(pack.colors.size()), static_cast<unsigned long long>(current.physical_count),
+            static_cast<unsigned long long>(current.mixed.size())) +
             (current.ready ? _L("请核对实际装料后完成提交。") : from_u8(current.reason)));
         dialog.Layout();
     };
     rebuild();
     for (size_t i=0;i<drafts.size();++i) if(drafts[i].slot==selected_slot) slots->SetSelection(int(i));
+    for (size_t i=0;i<mixed_drafts.size();++i) if(mixed_drafts[i].slot==selected_slot) slots->SetSelection(int(drafts.size()+i));
     slots->Bind(wxEVT_LISTBOX,[&](wxCommandEvent&){refresh();});
     presets->Bind(wxEVT_LISTBOX,[&](wxCommandEvent&){
-        const int row=slots->GetSelection(), choice=presets->GetSelection();
+        const int row=physical_row(), choice=presets->GetSelection();
         if(row==wxNOT_FOUND || choice==wxNOT_FOUND) return;
         auto& draft=drafts[size_t(row)];
         draft.preset = available[size_t(choice)];
@@ -338,21 +377,21 @@ void show_orca_filament_selection(wxWindow* parent, Plater& plater, size_t selec
         import_source(import_sources[size_t(choice - 1)]);
     });
     auto set_color = [&](const wxColour& color, const std::string& multi, const std::string& type) {
-        const int row=slots->GetSelection(); if(row==wxNOT_FOUND || !color.IsOk()) return;
+        const int row=physical_row(); if(row==wxNOT_FOUND || !color.IsOk()) return;
         auto& draft=drafts[size_t(row)]; draft.color=into_u8(color.GetAsString(wxC2S_HTML_SYNTAX));
         staged.project_config.option<ConfigOptionStrings>("filament_multi_colour")->values[draft.slot]=multi.empty()?draft.color:multi;
         staged.project_config.option<ConfigOptionStrings>("filament_colour_type")->values[draft.slot]=type;
         refresh();
     };
     custom->Bind(wxEVT_BUTTON,[&](wxCommandEvent&){
-        const int row=slots->GetSelection();if(row==wxNOT_FOUND)return;
+        const int row=physical_row();if(row==wxNOT_FOUND)return;
         wxColourData data; const wxColour color(from_u8(drafts[size_t(row)].color));
         if(color.IsOk())data.SetColour(color);data.SetChooseFull(true);
         wxColourDialog picker(&dialog,&data);picker.SetTitle(_L("自定义实际装料颜色"));
         if(picker.ShowModal()==wxID_OK)set_color(picker.GetColourData().GetColour(),"","1");
     });
     catalog->Bind(wxEVT_BUTTON,[&](wxCommandEvent&){
-        const int row=slots->GetSelection();if(row==wxNOT_FOUND)return;
+        const int row=physical_row();if(row==wxNOT_FOUND)return;
         const auto& draft=drafts[size_t(row)];const auto* preset=bundle->filaments.find_preset(draft.preset,false);if(!preset)return;
         FilamentColor current;const wxColour color(from_u8(draft.color));if(color.IsOk())current.m_colors.insert(color);
         FilamentPickerDialog picker(&dialog,from_u8(preset->filament_id),current,preset->name);
@@ -365,7 +404,9 @@ void show_orca_filament_selection(wxWindow* parent, Plater& plater, size_t selec
     add->Bind(wxEVT_BUTTON,[&](wxCommandEvent&){
         if(staged.filament_presets.size() >= size_t(EnforcerBlockerType::ExtruderMax) || PrinterFilamentConfig::capture(staged).physical_count >= initial.physical_capacity) return; write_drafts();
         const auto at=PrinterFilamentConfig::add(staged);slot_changes.push_back({{at}, -1, -1});
-        drafts=PrinterFilamentConfig::capture(staged).slots;rebuild();slots->SetSelection(int(drafts.size()-1));refresh();
+        const auto current=PrinterFilamentConfig::capture(staged);
+        drafts=current.slots; mixed_drafts=current.mixed; rebuild();
+        slots->SetSelection(int(drafts.size()-1)); refresh();
     });
     cancel->Bind(wxEVT_BUTTON,[&](wxCommandEvent&){dialog.EndModal(wxID_CANCEL);});
     done->Bind(wxEVT_BUTTON,[&](wxCommandEvent&){
@@ -375,10 +416,12 @@ void show_orca_filament_selection(wxWindow* parent, Plater& plater, size_t selec
         if (!pending_targets.empty()) {
             const size_t old_count = staged.filament_presets.size();
             std::vector<size_t> bindings;
-            if (!WorkbenchFilamentRecipes::stage_targets(staged, pending_targets, bindings, error)) {
+            if (!WorkbenchFilamentRecipes::stage_targets(staged, pending_targets, bindings, error) ||
+                !PrinterFilamentConfig::trim_unused_mixed_slots(staged, bindings, pending_targets.size(), slot_changes, error)) {
                 status->SetLabel(from_u8(error)); dialog.Layout(); return;
             }
             for (size_t at = old_count; at < staged.filament_presets.size(); ++at) slot_changes.push_back({{at}, -1, -1});
+            pending_targets.clear();
         }
         const auto ready = PrinterFilamentConfig::capture(staged);
         if (!ready.ready) error = ready.reason;
@@ -398,21 +441,51 @@ void delete_orca_printer_filament(wxWindow* parent, Plater& plater, size_t slot)
     auto* bundle=wxGetApp().preset_bundle;if(!bundle)return;
     const auto initial=PrinterFilamentConfig::capture(*bundle);
     const auto source=std::find_if(initial.slots.begin(),initial.slots.end(),[slot](const auto& s){return s.slot==slot;});
-    if(source==initial.slots.end() || !source->removable){wxMessageBox(_L("至少保留一个实体耗材；其他槽位删除需要合法替代耗材。"),_L("打印机耗材"),wxOK|wxICON_INFORMATION,parent);return;}
+    const bool mixed = slot < bundle->filament_presets.size() && bundle->is_mixed_filament(slot);
+    if (!mixed && (source==initial.slots.end() || !source->removable)) {
+        wxMessageBox(_L("至少保留一个实体耗材；其他槽位删除需要合法替代耗材。"),_L("打印机耗材"),wxOK|wxICON_INFORMATION,parent);return;
+    }
+    if (mixed && (slot + 1 != bundle->filament_presets.size() || initial.slots.empty())) {
+        wxMessageBox(_L("只能删除末尾叠色槽，并且至少保留一个实体耗材。"),_L("打印机耗材"),wxOK|wxICON_INFORMATION,parent);return;
+    }
     const auto before=bundle->project_config;const auto names=bundle->filament_presets;
     wxArrayString labels;std::vector<size_t> targets;
     for(const auto& target:initial.slots)if(target.slot!=slot && target.exists && target.configured && target.compatible){
         PresetBundle staged(*bundle);std::string error;
-        if(!PrinterFilamentConfig::remove(staged,slot,target.slot,error))continue;
+        const bool valid = mixed ? PrinterFilamentConfig::remove_mixed(staged,slot,target.slot,error)
+            : PrinterFilamentConfig::remove(staged,slot,target.slot,error);
+        if(!valid)continue;
         targets.push_back(target.slot);labels.Add(wxString::Format(_L("耗材 %llu · "),static_cast<unsigned long long>(target.slot+1))+from_u8(target.preset)+" · "+from_u8(target.color));
     }
     if(targets.empty()){wxMessageBox(_L("没有合法替代耗材；此槽位不能安全删除。请先配置兼容耗材或调整混色配方。"),_L("打印机耗材"),wxOK|wxICON_INFORMATION,parent);return;}
-    wxSingleChoiceDialog dialog(wxGetTopLevelParent(parent),_L("选择替代耗材。对象、涂色和混色配方会同时更新；取消不删除。"),_L("删除打印机耗材"),labels);
-    if(dialog.ShowModal()!=wxID_OK)return;
+
+    bool has_reference = false;
+    const int reference = int(slot + 1);
+    for (const auto* object : plater.model().objects) {
+        for (const auto* config : {&object->config}) for (const auto* key : {"extruder", "support_filament", "support_interface_filament"})
+            if (config->has(key) && config->opt_int(key) == reference) has_reference = true;
+        for (const auto* volume : object->volumes)
+            for (const auto* key : {"extruder", "support_filament", "support_interface_filament"})
+                if (volume->config.has(key) && volume->config.opt_int(key) == reference) has_reference = true;
+        for (const auto* volume : object->volumes)
+            if (!volume->mmu_segmentation_facets.empty() &&
+                volume->mmu_segmentation_facets.has_facets(*volume, EnforcerBlockerType(reference)))
+                has_reference = true;
+    }
+    for (const auto& plate : plater.model().plates_custom_gcodes)
+        for (const auto& code : plate.second.gcodes) if (code.extruder == reference) has_reference = true;
+    size_t replacement = targets.front();
+    if (has_reference) {
+        wxSingleChoiceDialog dialog(wxGetTopLevelParent(parent),_L("选择替代耗材。对象、涂色和混色配方会同时更新；取消不删除。"),_L("删除打印机耗材"),labels);
+        if(dialog.ShowModal()!=wxID_OK)return;
+        if (dialog.GetSelection() < 0 || size_t(dialog.GetSelection()) >= targets.size()) return;
+        replacement = targets[size_t(dialog.GetSelection())];
+    }
     if(before!=bundle->project_config || names!=bundle->filament_presets || initial.signature!=PrinterFilamentConfig::capture(*bundle).signature){wxMessageBox(_L("配置已变化，请重新选择。"),_L("打印机耗材"),wxOK|wxICON_WARNING,parent);return;}
-    const auto replacement=targets[size_t(dialog.GetSelection())];PresetBundle staged(*bundle);std::string error;
-    if(!PrinterFilamentConfig::remove(staged,slot,replacement,error) ||
-       !plater.apply_printer_filament_config(staged,{},int(slot),int(replacement),error))
+    PresetBundle staged(*bundle);std::string error;
+    const bool valid = mixed ? PrinterFilamentConfig::remove_mixed(staged,slot,replacement,error)
+        : PrinterFilamentConfig::remove(staged,slot,replacement,error);
+    if(!valid || !plater.apply_printer_filament_config(staged,{},int(slot),int(replacement),error))
         wxMessageBox(from_u8(error),_L("删除未提交"),wxOK|wxICON_ERROR,parent);
 }
 }

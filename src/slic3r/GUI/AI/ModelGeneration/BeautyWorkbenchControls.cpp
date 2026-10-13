@@ -1103,6 +1103,24 @@ void BeautyWorkbenchControls::prepare_import(const boost::filesystem::path& path
     // Only accepted history may enter a native project. Draft detection uses
     // the same bounded reader without making unsaved edits authoritative.
     const auto metadata = read_metadata(path, false);
+    if (request.color_mode == AI::ImportColorMode::NativeMatch &&
+        metadata.contains("applied_printer_filament_match")) {
+        if (!metadata.contains("model_sha256") || !metadata["model_sha256"].is_string() ||
+            metadata["model_sha256"].get<std::string>() != AI::model_artifact_sha256(path))
+            throw std::runtime_error("已应用的打印机耗材匹配与当前模型文件不一致，请重新应用打印机耗材。");
+        AI::ModelMatchedColors matched;
+        std::string error;
+        if (!AI::decode_model_matched_colors(metadata["applied_printer_filament_match"], matched, error))
+            throw std::runtime_error("已保存的打印机耗材匹配无效，请回工作台重新应用。" + error);
+        request.matched_colors = std::move(matched);
+        // The accepted artifact already contains the applied appearance. The
+        // per-face slot snapshot is authoritative and must not be rematched
+        // from stale color overrides or a second palette.
+        request.color_trial.reset();
+        request.face_color_overrides.clear();
+        request.subface_color_overrides.clear();
+        return;
+    }
     if(!metadata.contains("beauty_workbench"))return;
     const auto& record=metadata.at("beauty_workbench");
     if(!record.contains("puzzle"))return;

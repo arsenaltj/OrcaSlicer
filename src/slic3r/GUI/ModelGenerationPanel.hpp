@@ -35,6 +35,7 @@
 #include <functional>
 #include <memory>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <thread>
@@ -201,7 +202,9 @@ private:
     bool m_apply_filaments_saving {false};
     std::shared_ptr<BeautyCandidateSnapshot> m_apply_filaments_before;
     std::shared_ptr<PresetBundle> m_apply_filaments_staged;
+    std::vector<PrinterFilamentSlotRemap::Change> m_apply_filaments_changes;
     std::string m_apply_filaments_source_identity;
+    std::optional<AI::ModelMatchedColors> m_apply_filaments_match;
     boost::filesystem::path m_applied_filaments_saved_model;
     std::string m_applied_filaments_saved_signature;
     void finish_printer_filament_application(bool success);

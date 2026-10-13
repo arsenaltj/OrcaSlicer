@@ -193,6 +193,77 @@ inline bool remove(PresetBundle& staged, size_t slot, size_t replacement, std::s
     return true;
 }
 
+// Keep a color-card draft bounded to the card entries after recipe generation.
+// Mixed slots are native suffix entries, so removing from the tail preserves
+// every physical nozzle slot and lets the existing remap transaction update
+// model, painting, and plate references atomically.
+inline bool trim_unused_mixed_slots(PresetBundle& staged, std::vector<size_t>& bindings,
+    size_t desired_total, std::vector<PrinterFilamentSlotRemap::Change>& changes, std::string& error)
+{
+    std::set<size_t> retained(bindings.begin(), bindings.end());
+    while (staged.filament_presets.size() > desired_total) {
+        const size_t at = staged.filament_presets.size() - 1;
+        if (!staged.is_mixed_filament(at) || retained.count(at)) {
+            error = "色卡切换后存在无法安全清理的实体或叠色槽位";
+            return false;
+        }
+        size_t replacement = size_t(-1);
+        const auto current = capture(staged);
+        if (!current.slots.empty()) replacement = current.slots.front().slot;
+        for (const size_t slot : retained) if (slot != at) { replacement = slot; break; }
+        if (replacement == size_t(-1)) {
+            error = "色卡切换缺少可用替代槽位，配置草稿保持原状";
+            return false;
+        }
+        staged.update_num_filaments(unsigned(at));
+        changes.push_back({{}, int(at), int(replacement)});
+        std::set<size_t> shifted;
+        for (const size_t slot : retained)
+            if (slot != at) shifted.insert(slot > at ? slot - 1 : slot);
+        retained.swap(shifted);
+        for (auto& binding : bindings) if (binding > at) --binding;
+    }
+    if (staged.filament_presets.size() != desired_total) {
+        error = "色卡切换后槽位数量无法与色卡保持一致，配置草稿保持原状";
+        return false;
+    }
+    return true;
+}
+
+// Remove one virtual recipe at the native suffix. The replacement is used by
+// the shared remap transaction for any model or painting references; recipe
+// components themselves must never point at another virtual slot.
+inline bool remove_mixed(PresetBundle& staged, size_t slot, size_t replacement, std::string& error)
+{
+    const auto* replacement_preset = replacement < staged.filament_presets.size()
+        ? staged.filaments.find_preset(staged.filament_presets[replacement], false) : nullptr;
+    const auto* colors = staged.project_config.option<ConfigOptionStrings>("filament_colour");
+    if (slot >= staged.filament_presets.size() || !staged.is_mixed_filament(slot) ||
+        slot + 1 != staged.filament_presets.size() || replacement >= slot ||
+        staged.is_mixed_filament(replacement) || !replacement_preset || !replacement_preset->is_compatible ||
+        !colors || replacement >= colors->values.size() || !AI::is_rgb_hex_color(colors->values[replacement])) {
+        error = "只能删除末尾叠色槽，并选择有效实体耗材作为替代";
+        return false;
+    }
+    const auto components = staged.project_config.option<ConfigOptionStrings>("filament_mixed_components");
+    if (components) for (size_t i = 0; i < slot && i < components->values.size(); ++i) {
+        const auto ids = parse_mixed_components(components->values[i]);
+        if (std::find(ids.begin(), ids.end(), unsigned(slot + 1)) != ids.end()) {
+            error = "该叠色槽仍被其他配方引用，无法删除";
+            return false;
+        }
+    }
+    PresetBundle candidate(staged);
+    candidate.update_num_filaments(unsigned(slot));
+    auto validation_presets = candidate.filament_presets;
+    for (auto& name : validation_presets)
+        if (!candidate.filaments.find_preset(name, false)) name = staged.filament_presets[replacement];
+    if (!ProjectConfigRestore::validate(candidate.project_config, validation_presets, candidate, error)) return false;
+    staged.project_config = std::move(candidate.project_config);
+    staged.filament_presets = std::move(candidate.filament_presets);
+    return true;
+}
+
 using SlotChange = PrinterFilamentSlotRemap::Change;
 using ChooseReplacement = std::function<std::optional<size_t>(const WorkbenchFilamentSlot&,
     const std::vector<WorkbenchFilamentSlot>&)>;
@@ -277,65 +348,15 @@ inline bool import_color_pack(PresetBundle& staged, const FilamentColorPack& pac
         }
         pending_changes.push_back({{}, int(source.slot), int(*replacement)});
     }
+    std::vector<size_t> bindings;
     if (pack.colors.size() > target && capture(candidate).ready) {
-        std::vector<size_t> bindings;
         const size_t old_count = candidate.filament_presets.size();
         if (!WorkbenchFilamentRecipes::stage_targets(candidate, pack.colors, bindings, error)) return false;
         for (size_t at = old_count; at < candidate.filament_presets.size(); ++at)
             pending_changes.push_back({{at}, -1, -1});
-
-        // A previous card may have left virtual mix slots behind. Keep only
-        // slots used by this card and remap any model references from removed
-        // virtual slots to a live card slot. This makes the native slot count
-        // exactly match the card entry count after every switch.
-        std::set<size_t> retained(bindings.begin(), bindings.end());
-        const size_t desired_total = pack.colors.size();
-        for (size_t at = candidate.filament_presets.size(); at-- > 0 &&
-             candidate.filament_presets.size() > desired_total;) {
-            if (!candidate.is_mixed_filament(at) || retained.count(at)) continue;
-            size_t replacement = size_t(-1);
-            for (const size_t slot : retained) if (slot != at) { replacement = slot; break; }
-            if (replacement == size_t(-1)) {
-                const auto current = capture(candidate);
-                if (!current.slots.empty()) replacement = current.slots.front().slot;
-            }
-            if (replacement == size_t(-1) || replacement == at) {
-                error = "色卡切换缺少可用替代槽位，配置草稿保持原状"; return false;
-            }
-            candidate.update_num_filaments(unsigned(at));
-            pending_changes.push_back({{}, int(at), int(replacement)});
-            std::set<size_t> shifted;
-            for (const size_t slot : retained)
-                if (slot != at) shifted.insert(slot > at ? slot - 1 : slot);
-            retained.swap(shifted);
-            for (auto& binding : bindings) if (binding > at) --binding;
-        }
-        if (candidate.filament_presets.size() != desired_total) {
-            error = "色卡切换后槽位数量无法与色卡保持一致，配置草稿保持原状"; return false;
-        }
-    } else if (candidate.filament_presets.size() > pack.colors.size()) {
-        // The card fits within the physical nozzle capacity. Any old virtual
-        // recipes are still stale and must be removed as well.
-        std::set<size_t> retained;
-        for (size_t i = 0; i < candidate.filament_presets.size(); ++i)
-            if (!candidate.is_mixed_filament(i) && i < pack.colors.size()) retained.insert(i);
-        for (size_t at = candidate.filament_presets.size(); at-- > 0 &&
-             candidate.filament_presets.size() > pack.colors.size();) {
-            if (!candidate.is_mixed_filament(at) || retained.count(at)) continue;
-            const auto current = capture(candidate);
-            if (current.slots.empty()) { error = "色卡切换缺少可用实体耗材，配置草稿保持原状"; return false; }
-            const size_t replacement = current.slots.front().slot;
-            candidate.update_num_filaments(unsigned(at));
-            pending_changes.push_back({{}, int(at), int(replacement)});
-            std::set<size_t> shifted;
-            for (const size_t slot : retained)
-                if (slot != at) shifted.insert(slot > at ? slot - 1 : slot);
-            retained.swap(shifted);
-        }
-        if (candidate.filament_presets.size() != pack.colors.size()) {
-            error = "色卡切换后槽位数量无法与色卡保持一致，配置草稿保持原状"; return false;
-        }
     }
+    if (candidate.filament_presets.size() > pack.colors.size() &&
+        !trim_unused_mixed_slots(candidate, bindings, pack.colors.size(), pending_changes, error)) return false;
     if (candidate.filament_presets.size() != pack.colors.size()) {
         error = "色卡切换后槽位数量无法与色卡保持一致，配置草稿保持原状"; return false;
     }

@@ -269,6 +269,20 @@ void ModelGenerationPanel::accept_model_finishing()
         for (const auto& key : m_apply_filaments_staged->project_config.keys())
             metadata["printer_filament_configuration"]["project"][key] = m_apply_filaments_staged->project_config.option(key)->serialize();
     }
+    if (filament_application && m_apply_filaments_match) {
+        auto matched = *m_apply_filaments_match;
+        // The applied preview is captured before publication; bind the saved
+        // face assignments to the exact accepted artifact that import opens.
+        matched.source_sha256 = m_finishing_result.output_sha256;
+        matched.geometry_id = m_model_preview->geometry_id();
+        if (!matched.valid()) {
+            m_save_and_return = false;
+            if (m_beauty_transactions) m_beauty_transactions->finish(false, false, "invalid printer-filament match snapshot");
+            report(_L("耗材匹配快照无效，未保存本次应用。"));
+            return;
+        }
+        metadata["applied_printer_filament_match"] = AI::encode_model_matched_colors(matched);
+    }
     const auto provenance = m_model_preview->semantic_color_metadata();
     metadata["semantic_color_state"] = provenance.empty()
         ? m_finishing_candidate_semantic_provenance : provenance;

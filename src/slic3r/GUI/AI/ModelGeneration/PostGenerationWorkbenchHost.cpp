@@ -278,6 +278,13 @@ bool ModelGenerationPanel::request_workbench_color_matching()
         const int mode = m_import_color_mode ? m_import_color_mode->GetSelection() : 0;
         request.color_mode = mode == 1 ? AI::ImportColorMode::AutoMap : mode == 2 ? AI::ImportColorMode::SingleColor :
             mode == 3 ? AI::ImportColorMode::ManualMatch : AI::ImportColorMode::NativeMatch;
+        if (request.color_mode == AI::ImportColorMode::NativeMatch &&
+            m_model_preview->color_trial_state().source == 1 &&
+            (m_beauty_manual_color_dirty || (m_beauty_controls && m_beauty_controls->has_changes()))) {
+            m_workbench_operation_notice = "应用打印机耗材后存在未保存的局部改色，请先重新应用打印机耗材再导入。";
+            refresh_post_generation_workbench();
+            return false;
+        }
         const auto trial = m_model_preview->import_color_mapping(true);
         AI::ModelColorTrial choice {trial.mapping_colors, trial.target_colors};
         if (trial.enabled && choice.valid()) request.color_trial = std::move(choice);

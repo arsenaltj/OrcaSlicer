@@ -1149,6 +1149,28 @@ TEST_CASE("filament deletion substitutes mixed references or rejects duplicate c
     CHECK(draft.project_config.option<ConfigOptionStrings>("filament_mixed_components")->values[4]=="1,3");
 }
 
+TEST_CASE("mixed filament recipes can be removed from the suffix with a native slot remap", "[PrinterFilaments][PostGenerationWorkbench]")
+{
+    using namespace Slic3r;
+    auto live = printer_filament_fixture(4, 4);
+    live.set_num_filaments(5, "#8A6A5A");
+    live.filament_presets[4] = live.filament_presets[0];
+    live.project_config.option<ConfigOptionBools>("filament_is_mixed")->values[4] = true;
+    live.project_config.option<ConfigOptionStrings>("filament_mixed_components")->values[4] = "1,2";
+    live.project_config.option<ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values[4] = "0.5,0.5";
+    const auto before = live;
+    auto staged = live;
+    std::string error;
+    REQUIRE(PrinterFilamentConfig::remove_mixed(staged, 4, 0, error));
+    CHECK(staged.filament_presets.size() == 4);
+    CHECK(PrinterFilamentConfig::capture(staged).mixed.empty());
+    CHECK(live.filament_presets.size() == before.filament_presets.size());
+    CHECK(live.project_config == before.project_config);
+    staged = live;
+    CHECK_FALSE(PrinterFilamentConfig::remove_mixed(staged, 3, 0, error));
+    CHECK(staged.filament_presets.size() == live.filament_presets.size());
+}
+
 TEST_CASE("explicit compatible replacement can delete an extra spool of a different material", "[PrinterFilaments][PostGenerationWorkbench]")
 {
     using namespace Slic3r;
@@ -1393,6 +1415,23 @@ TEST_CASE("explicit mixed slot matching preserves groups and survives color tria
     CHECK(restored.project_color_slots == state.project_color_slots);
     CHECK_FALSE(PrinterFilamentPreview::apply_bound(state, {1}, targets, "stale"));
     CHECK(state.project_color_slots == restored.project_color_slots);
+}
+
+TEST_CASE("portrait semantic palette shares one printer slot binding per logical color", "[PrinterFilamentPreview][PostGenerationWorkbench]")
+{
+    Slic3r::AI::ColorTrialPersistence::State state;
+    state.colors = {{1,0,0}, {0,1,0}, {0,0,1}, {1,1,0}, {1,0,1}, {0,1,1}};
+    state.mapping_colors = state.colors;
+    state.semantic_palette = {{.9f,0,0}, {0,.9f,0}, {0,0,.9f}, {.9f,.9f,0}, {.9f,0,.9f}, {0,.9f,.9f}};
+    state.semantic_mapping_palette = state.semantic_palette;
+    state.count = 6; state.source = 1; state.enabled = true;
+    const std::vector<size_t> bindings {0, 1, 2, 3, 4, 5};
+    REQUIRE(PrinterFilamentPreview::apply_bound(state, bindings, state.colors, "four-nozzle-printer"));
+    CHECK(state.project_color_slots == bindings);
+    CHECK(state.project_semantic_slots == bindings);
+    CHECK(state.colors.size() == 6);
+    CHECK(state.semantic_palette.size() == 6);
+    CHECK(state.semantic_palette == state.colors);
 }
 
 TEST_CASE("publication accepts only the checked closed candidate and binds its own hash", "[WorkbenchCandidateAcceptance]")
