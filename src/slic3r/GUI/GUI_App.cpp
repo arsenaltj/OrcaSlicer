@@ -366,11 +366,16 @@ public:
         m_progress_bg_color = StateColor::darkModeColorFor(wxColour("#DFDFDF"));
         m_progress_fg_color = StateColor::darkModeColorFor(wxColour("#009688"));
         m_progress_h = FromDIP(6);
-        bool dark_mode = m_fg_color != wxColour("#6B6A6A");
         wxSize sz  = m_window->GetClientSize();
         BitmapCache bmp_cache;
-        if (!m_redesign)
-            m_logo_bmp = *bmp_cache.load_svg(dark_mode ? "splash_logo_dark" : "splash_logo", sz.GetWidth(), sz.GetHeight());
+        const double spacing = std::min(1.0, double(sz.y) / FromDIP(590));
+        const int logo_size = m_redesign ?
+            std::min(int(FromDIP(176) * spacing), sz.x - FromDIP(48)) :
+            int(sz.x * 142.0 / 480.0);
+        if (logo_size > 0) {
+            if (const wxBitmap* logo = bmp_cache.load_png("startup_logo", logo_size, logo_size))
+                m_logo_bmp = *logo;
+        }
 
         m_window->Bind(wxEVT_PAINT, &SplashScreen::OnPaint, this);
         m_window->Refresh();
@@ -381,7 +386,7 @@ public:
     {
         wxPaintDC dc(m_window);
         if (m_redesign) {
-            StartupSplashView::paint(m_window, dc, m_text_version, m_text_action, m_progress);
+            StartupSplashView::paint(m_window, dc, m_text_version, m_text_action, m_progress, m_logo_bmp);
             return;
         }
         wxSize c_sz = m_window->GetClientSize();
@@ -389,7 +394,8 @@ public:
         dc.SetBackground(wxBrush(m_bg_color));
         dc.Clear();
         if (m_logo_bmp.IsOk())
-            dc.DrawBitmap(m_logo_bmp, 0, 0, true);
+            dc.DrawBitmap(m_logo_bmp, (c_sz.x - m_logo_bmp.GetWidth()) / 2,
+                          int(c_sz.y * 80.54 / 480.0), true);
 
         wxRect rc = wxRect(0, 0, c_sz.GetWidth(), 0);
         dc.SetTextForeground(m_fg_color);

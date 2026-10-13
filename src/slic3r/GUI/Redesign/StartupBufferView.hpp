@@ -2,6 +2,7 @@
 
 #include "RedesignTheme.hpp"
 #include "../I18N.hpp"
+#include "../BitmapCache.hpp"
 #include "../Widgets/Button.hpp"
 
 #include <algorithm>
@@ -45,6 +46,7 @@ public:
         layout->Add(m_toolbar, 0, wxEXPAND);
         layout->AddStretchSpacer();
         SetSizer(layout);
+        load_logo();
         rescale();
         Bind(wxEVT_PAINT, [this](wxPaintEvent&) { paint(); });
         Bind(wxEVT_SIZE, [this](wxSizeEvent& event) {
@@ -55,6 +57,7 @@ public:
         });
 #ifdef __WXMSW__
         Bind(wxEVT_DPI_CHANGED, [this](wxDPIChangedEvent& event) {
+            load_logo();
             rescale();
             event.Skip();
         });
@@ -77,6 +80,16 @@ public:
 
 private:
     bool frame_available() const { return m_frame && !m_frame->IsBeingDeleted(); }
+
+    void load_logo()
+    {
+        BitmapCache cache;
+        const unsigned size = unsigned(std::max(1, FromDIP(180)));
+        if (const wxBitmap* bitmap = cache.load_png("startup_logo", size, size))
+            m_logo = *bitmap;
+        else
+            m_logo = wxNullBitmap;
+    }
 
     Button* add_action(wxBoxSizer* row, const wxString& icon, const wxString& tooltip,
                        std::function<void()> action, bool close = false)
@@ -135,12 +148,14 @@ private:
         const int top = std::max(FromDIP(64), bounds.y / 2 - FromDIP(176));
         const int icon = FromDIP(180);
         auto graphics = std::unique_ptr<wxGraphicsContext>(wxGraphicsContext::Create(dc));
-        if (graphics) {
+        if (graphics && !m_logo.IsOk()) {
             graphics->SetPen(*wxTRANSPARENT_PEN);
             graphics->SetBrush(wxBrush(wxColour(116, 116, 119)));
             graphics->DrawRoundedRectangle((bounds.x - icon) / 2.0, top, icon, icon, FromDIP(24));
         }
         graphics.reset();
+        if (m_logo.IsOk())
+            dc.DrawBitmap(m_logo, (bounds.x - m_logo.GetWidth()) / 2, top, true);
         const auto label = [&](const wxString& text, int pixels, int offset,
                                const wxColour& colour, wxFontWeight weight) {
             dc.SetFont(font(pixels, weight));
@@ -160,6 +175,7 @@ private:
     Button* m_maximize = nullptr;
     std::vector<Button*> m_actions;
     wxString m_message;
+    wxBitmap m_logo;
     bool m_show_brand = true;
 };
 

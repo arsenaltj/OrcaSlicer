@@ -265,6 +265,22 @@
 下一步：交付当前同分支PR后继续原N9有界真实消费者；原03-01、08/12视觉/键盘和原N2～N7按映射未结推进，不重复付费或普通保存充验收。共享MainFrame/Plater/CMake/Contracts先协调，团队各用独立暖构建/开发数据。运行入口见[快速开发](quick-development.md)，`./dev.ps1 -NoLaunch`后 `./dev.ps1 Sidecar`；安装前保护dirty并正常退出准确实例。详细本机证据为`.tmp/dev/figma-ux/0930-N4/pr18-handoff-audit.json`与原verification/review，历史完整权威原字节已在同忽略目录pre-handoff-docs备份。
 
 计划变更／同步：范围及59验收不变，仅用户明确授权本次同分支协作交付。get_goal本轮实际active，原objective旧N4文字不代表当前恢复点，不能称全计划完成。正式权限审查不绕过旧拒绝；不删除资产/草稿、不发设备命令、不强退/重复启动。每轮以约定五行收尾。
+
+# 2026-10-13 当前：启动页与任务栏品牌图标替换
+
+主线：沿用 `codex/task/workbench-topology-filaments-20261012`，保留既有耗材快照、导入和个人技能修改。
+本轮：使用用户提供的黑色圆环图形生成居中的白色圆角方形资源；启动页新旧绘制路径均读取 `startup_logo.png`，Windows EXE 与窗口标题图标更新为同一多尺寸 ICO，保持安装资源路径不变。
+未结：真实用户视觉接受和多 DPI/GPU 组合未验；未生成安装包、未发送打印任务。Logo 修改已提交并进入 PR32。
+下一步：等待 PR32 的 CI 和非作者复核；用户可从 `.tmp/dev/run/orca-slicer.exe` 启动验证。
+计划变更：本轮仅处理启动/任务栏品牌资产，不改变工作台、耗材、导入和模型数据逻辑。
+
+# 2026-10-13 当前：启动缓冲页与首次配置向导 Logo 替换
+
+主线：沿用 `codex/task/workbench-topology-filaments-20261012`，保留既有启动页资源和其他未提交修改；Logo 改动已进入 PR32。
+本轮：将同一份 `startup_logo.png` 接入 `StartupBufferView` 启动缓冲页和 `StartupSetupDialog` 首次配置欢迎页；未改变向导文案、布局、按钮和配置流程，DPI 变化时重新缩放资源。
+验证：`CppTest -TestSuite slic3rutils_tests -TestLabel UiRedesign -Jobs 2` 通过；固定 `.tmp/dev/build` 的 Release 增量构建、安装、运行时和 Python 检查通过，证据为 `.tmp/dev/logs/20261013-194653-778/result.json` 与 `.tmp/dev/logs/20261013-194834-505/result.json`。
+未结：真实用户视觉接受和多 DPI/GPU 组合仍待用户验证；本轮未生成安装包。
+下一步：使用 `.tmp/dev/run/orca-slicer.exe` 启动并观察启动缓冲页及首次配置欢迎页的 Logo 位置和圆角效果；PR32 等待 CI 与复核。
 # 2026-10-13 当前：应用打印机耗材后的导入一致性快照
 
 主线：沿用 `codex/task/workbench-topology-filaments-20261012`，保留既有未提交耗材、资产和个人技能修改。

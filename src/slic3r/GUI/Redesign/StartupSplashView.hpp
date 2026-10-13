@@ -26,7 +26,7 @@ inline wxFont font(wxWindow* window, int design_pixels)
 }
 
 inline void paint(wxWindow* window, wxDC& dc, const wxString& version,
-                  const wxString& message, int progress)
+                  const wxString& message, int progress, const wxBitmap& logo)
 {
     const wxSize bounds = window->GetClientSize();
     dc.SetBackground(wxBrush(wxColour(32, 32, 34)));
@@ -39,13 +39,15 @@ inline void paint(wxWindow* window, wxDC& dc, const wxString& version,
     const auto y = [window, spacing](int value) { return int(window->FromDIP(value) * spacing); };
     const int icon_size = std::min(y(176), bounds.x - window->FromDIP(48));
     auto graphics = std::unique_ptr<wxGraphicsContext>(wxGraphicsContext::CreateFromUnknownDC(dc));
-    if (graphics && icon_size > 0) {
+    if (graphics && icon_size > 0 && !logo.IsOk()) {
         graphics->SetPen(*wxTRANSPARENT_PEN);
-        graphics->SetBrush(wxBrush(wxColour(217, 217, 217)));
+        graphics->SetBrush(*wxWHITE_BRUSH);
         graphics->DrawRoundedRectangle((bounds.x - icon_size) / 2.0, y(98),
                                        icon_size, icon_size, y(24));
     }
     graphics.reset();
+    if (logo.IsOk())
+        dc.DrawBitmap(logo, (bounds.x - logo.GetWidth()) / 2, y(98), true);
 
     const auto draw_label = [&](const wxString& label, int pixels, int top, const wxColour& colour) {
         dc.SetFont(font(window, pixels));
