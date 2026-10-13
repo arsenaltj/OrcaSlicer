@@ -1,0 +1,25 @@
+{
+  "pr": 30,
+  "run": 38360530505,
+  "head": "f7b20a9d95f23ef8ef4c13b858077e0899dae464",
+  "base": "415be0c366a07ed2b0dc13c63e94479b922e1668",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "Integrate AI slicing UX and workbench import fixes",
+  "path": "pr/30/f7b20a9d95f23ef8ef4c13b858077e0899dae464/38360530505",
+  "created": "2026-10-13T07:08:37+00:00",
+  "files": {
+    "index.html": "eaf1a48b675ff30f4a63ddd4ffb3ac8ec11bfccc0bcb87b6e30e3f7c907f4dff",
+    "details.html": "84612d5c512307607e4563bd748dd1bf671fb758106a5539882450be44ff14c5",
+    "report.json": "2d3fb752b9cc14460a98cb1d4e453aa305a9fb26c4acd3eb4bd0d39526d17b1f",
+    "summary.md": "c18262a143480a8314f302a87ca019aa0b0849623d7a6e3e9107842c5b7b34e1",
+    "archify-receipts.json": "e09e81223c456740f228b00a9d666ac57b6e28e4e3f005734d13fe3afeb8ffa9",
+    "l0-context.html": "35ceaee4821b556abdc8c0227fe59dc3acff88cba471d1e425ab8f7445405dcc",
+    "l0-context.json": "c12e289fb503e3917335feb70620dff655677f8142e267a69d066072a1e13cb7",
+    "l1-modules.html": "9e4b1d34808fa795451864b4643618a524229545e67c99c662e2b4225ec48847",
+    "l1-modules.json": "2933b80fb3eee6fe6fb6eb31cf8caa74043ca3f4bdb9680aac7283e7465d16c5",
+    "l2-generation.html": "f101802e002c795e22d556cff74d4e7e799048939932abd411f4bdbfcbb3cdb2",
+    "l2-generation.json": "22841df17bdd3edd92088ee1fee4594a28035678b0ca9359a3ab1b7cc160d872",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}

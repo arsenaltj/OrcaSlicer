@@ -1,5 +1,15 @@
 [
   {
+    "pr": 30,
+    "run": 38360530505,
+    "head": "f7b20a9d95f23ef8ef4c13b858077e0899dae464",
+    "base": "415be0c366a07ed2b0dc13c63e94479b922e1668",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "Integrate AI slicing UX and workbench import fixes",
+    "path": "pr/30/f7b20a9d95f23ef8ef4c13b858077e0899dae464/38360530505",
+    "created": "2026-10-13T07:08:37+00:00"
+  },
+  {
     "pr": 29,
     "run": 38284762776,
     "head": "bbe3b2b04c9992d084c0f5eec9c09160857380df",
