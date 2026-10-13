@@ -1,0 +1,25 @@
+{
+  "pr": 32,
+  "run": 38397435593,
+  "head": "b6308df4716812f88559fd59624d37d4751faa0e",
+  "base": "eb3c6a72499d32a31eca1f2f75102e4d17bb8288",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "feat(ui): replace startup, buffer, and setup logos",
+  "path": "pr/32/b6308df4716812f88559fd59624d37d4751faa0e/38397435593",
+  "created": "2026-10-13T12:31:15+00:00",
+  "files": {
+    "index.html": "bb894b0bd95c22e32b5398f60e2a987d7a66358add57df6fe767afd7d832bb1d",
+    "details.html": "725ef75a6b5355b22d400defc609fc174d666588d8db03c8c7608d169abb1174",
+    "report.json": "ebe26ef908b5d3039c6b11b08b2e76da461122f104d843574f2bf4a018acbb15",
+    "summary.md": "5e9d917ab24bb78310a9fb38009f88971458a5c81c38cd44bdf4c2f4d71c72ea",
+    "archify-receipts.json": "b8e4cfa9e1670c411f167dd63363e81cbd3ee3584746a3bebd292ddbaaaeb225",
+    "l0-context.html": "35ceaee4821b556abdc8c0227fe59dc3acff88cba471d1e425ab8f7445405dcc",
+    "l0-context.json": "c12e289fb503e3917335feb70620dff655677f8142e267a69d066072a1e13cb7",
+    "l1-modules.html": "fcc8f8de33deef2b7023cb2f11edfa0078ac1a4066690d7da46f93acdba888b3",
+    "l1-modules.json": "0700ed3a54ac33ee9da6459bd415e3b3c66bbcf21cb47705c85b6d73f871dc1a",
+    "l2-generation.html": "f101802e002c795e22d556cff74d4e7e799048939932abd411f4bdbfcbb3cdb2",
+    "l2-generation.json": "22841df17bdd3edd92088ee1fee4594a28035678b0ca9359a3ab1b7cc160d872",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}

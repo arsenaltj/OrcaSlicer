@@ -1,5 +1,15 @@
 [
   {
+    "pr": 32,
+    "run": 38397435593,
+    "head": "b6308df4716812f88559fd59624d37d4751faa0e",
+    "base": "eb3c6a72499d32a31eca1f2f75102e4d17bb8288",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "feat(ui): replace startup, buffer, and setup logos",
+    "path": "pr/32/b6308df4716812f88559fd59624d37d4751faa0e/38397435593",
+    "created": "2026-10-13T12:31:15+00:00"
+  },
+  {
     "pr": 31,
     "run": 38381000471,
     "head": "bbd732bbf132117f73fd481e7f150b7c029c5641",
