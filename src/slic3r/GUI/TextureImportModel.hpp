@@ -1,6 +1,7 @@
 #pragma once
 
 #include "TextureImportDialog.hpp"
+#include "TextureImportFilamentUsage.hpp"
 #include "libslic3r/Model.hpp"
 #include "AI/Orca/LocalPrintColorApplication.hpp"
 
@@ -18,6 +19,31 @@ inline std::vector<TextureFilamentEntry> workspace_texture_filaments(
             entry.type.empty() || entry.preset_name.empty()) continue;
         usable.push_back(entry);
         usable.back().dialog_index = int(usable.size() - 1);
+    }
+    // Native mixed recipes use 1-based project slots. The popup uses its
+    // filtered dialog positions, so translate references without RGB lookup.
+    if (options->allow_unverified_mixed_filaments) for (const auto& entry : entries) {
+        if (entry.kind != TextureFilamentKind::ExistingMixed || !entry.compatible ||
+            entry.mixed_components.size() < 2 || entry.mixed_components.size() != entry.mixed_ratios.size()) continue;
+        auto mixed = entry;
+        mixed.mixed_components.clear();
+        bool valid = true;
+        int sum = 0;
+        std::set<unsigned> seen;
+        for (size_t i = 0; i < entry.mixed_components.size(); ++i) {
+            const unsigned slot = entry.mixed_components[i];
+            const auto base = std::find_if(usable.begin(), usable.end(), [slot](const auto& candidate) {
+                return candidate.kind == TextureFilamentKind::ExistingPhysical && slot &&
+                    candidate.project_config_index == size_t(slot - 1);
+            });
+            if (base == usable.end() || !seen.insert(slot).second || entry.mixed_ratios[i] <= 0 ||
+                entry.mixed_ratios[i] > 100) { valid = false; break; }
+            mixed.mixed_components.push_back(unsigned(base - usable.begin() + 1));
+            sum += entry.mixed_ratios[i];
+        }
+        if (!valid || sum != 100) continue;
+        mixed.dialog_index = int(usable.size());
+        usable.push_back(std::move(mixed));
     }
     return usable;
 }
@@ -56,6 +82,22 @@ inline void apply_matched_texture_colors(Model& model,const TextureImportOptions
     }
     require(!options.matched_face_slots.empty(),"区域配色为空。");
     for(size_t slot:options.matched_face_slots)require(allowed.count(slot)!=0,"区域使用了不可用的耗材。");
+    std::set<size_t> physical_slots;
+    for (size_t slot : options.matched_face_slots) {
+        const auto entry = std::find_if(options.matched_filaments.begin(), options.matched_filaments.end(),
+            [slot](const auto& candidate) { return candidate.project_config_index == slot; });
+        if (entry->kind == TextureFilamentKind::ExistingPhysical) physical_slots.insert(slot);
+        else for (unsigned component : entry->mixed_components) {
+            const auto base = std::find_if(current.begin(), current.end(), [component](const auto& candidate) {
+                return component && candidate.project_config_index == size_t(component - 1) &&
+                    candidate.kind == TextureFilamentKind::ExistingPhysical && candidate.compatible;
+            });
+            require(base != current.end(), "叠色配方引用了不可用的实体耗材。");
+            physical_slots.insert(base->project_config_index);
+        }
+    }
+    require(options.physical_filament_limit == 0 || physical_slots.size() <= options.physical_filament_limit,
+        "区域配色使用的实体耗材超过喷头数量，请减少实体耗材或为额外颜色选择叠色配方。");
     TriangleSelector selector(volume->mesh());
     for(size_t f=0;f<options.matched_face_slots.size();++f)
         selector.set_facet(int(f),EnforcerBlockerType(int(EnforcerBlockerType::Extruder1)+int(options.matched_face_slots[f])));

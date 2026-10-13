@@ -62,11 +62,8 @@ inline bool decode_workbench_model(const boost::filesystem::path& path, DecodedW
             }
             decoded.texture = std::move(texture);
         }
-        if (decoded.texture) {
-            const Vec3f shift = decoded.mesh.bounding_box().center().cast<float>();
-            for (auto& vertex : decoded.texture->vertices)
-                for (int axis = 0; axis < 3; ++axis) vertex[axis] -= shift[axis];
-        }
+        // Keep printable geometry and appearance in the original frame.
+        // Workbench placement moves the native double transformation.
     } else if (boost::algorithm::iequals(path.extension().string(), ".glb")) {
         auto texture = std::make_shared<TexturedMesh>();
         if (!load_assimp_textured_model(path.string(), *texture, &error) || stopped()) return false;
@@ -102,12 +99,21 @@ inline std::unique_ptr<Model> assemble_workbench_model(DecodedWorkbenchModel& de
     const boost::filesystem::path& path, bool source_units_in_meters)
 {
     auto model = std::make_unique<Model>();
-    auto* object = model->add_object(path.filename().string().c_str(), path.string().c_str(), std::move(decoded.mesh));
+    // Dense repaired meshes can contain distinct float coordinates closer
+    // than an ULP at their bounding-box center. Keep those source bits and
+    // move the object with the native double transformation during placement.
+    auto* object = model->add_object();
+    object->name = path.filename().string();
     object->input_file = path.string();
+    auto* volume = object->add_volume(std::move(decoded.mesh), ModelVolumeType::MODEL_PART, false);
+    volume->name = object->name;
+    volume->source.input_file = path.string();
+    volume->source.object_idx = 0;
+    volume->source.volume_idx = 0;
+    object->config.set("extruder", 1);
     model->texture_mesh = std::move(decoded.texture);
-    // Record the centering offset in the same source units as texture_mesh.
-    // Match the native importer: conversion scales the printable geometry and
-    // volume transform, while preserving the source offset for color handoff.
+    // Keep the zero source offset in the texture's units. Use Orca's native
+    // conversion once, after assembly, for both workbench import paths.
     if (source_units_in_meters) model->convert_from_meters(false);
     return model;
 }

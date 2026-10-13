@@ -5,12 +5,15 @@
 #include "slic3r/GUI/AI/Model/SurfaceSelectionState.hpp"
 #include <nlohmann/json.hpp>
 
+namespace Slic3r { class DynamicPrintConfig; }
 namespace Slic3r::GUI {
 struct SemanticRegionEvidence;
 struct SecondaryRegionEvidence;
 struct BeautyPartitionSnapshot;
 struct PortraitShapeDetails;
 struct BeautyCandidateSnapshot {
+    std::shared_ptr<DynamicPrintConfig> project_config;
+    std::vector<std::string> project_presets;
     boost::filesystem::path source;
     boost::filesystem::path candidate;
     std::string model_sha256;

@@ -2,6 +2,7 @@
 #include "OpenGLManager.hpp"
 
 #include "TextureImportDialog.hpp"
+#include "TextureImportFilamentUsage.hpp"
 #include "AI/Orca/OrcaFilamentSelection.hpp"
 #include "Plater.hpp"
 #include "Redesign/RedesignTheme.hpp"
@@ -3211,6 +3212,7 @@ void TextureImportDialog::update_filament_color_map()
     }
     m_preview_canvas->set_filament_color_map(color_map);
     update_mapping_summary();
+    update_confirm_button_state();
 }
 
 void TextureImportDialog::update_mapping_summary()
@@ -3284,11 +3286,16 @@ void TextureImportDialog::update_mapping_summary()
             note += wxString::Format(texture_import_label("\nProject has %d physical filaments (budget %d); existing configuration retained", "\n工程已有 %d 个实体耗材，超过计划 %d 色；保留现有配置"),
                 (int)configured_physical, (int)m_options.physical_filament_limit);
     }
+    if (m_options.physical_filament_limit > 0 && physical.size() > m_options.physical_filament_limit)
+        note += wxString::Format(texture_import_label(
+            "\nUses %d physical filaments for %d heads. Select fewer physical filaments or a layered recipe before importing.",
+            "\n当前使用 %d 个实体耗材，超过 %d 个喷头；请减少实体耗材或为额外颜色选择叠色配方后导入。"),
+            int(physical.size()), int(m_options.physical_filament_limit));
     const wxString details = m_mapping_summary->GetLabel() + note;
     wxString summary = texture_import_label("Colors are matched. Change a filament below if needed.\nModel color  →  Filament to use", "已自动配色，不满意可点右侧耗材更换。\n模型颜色  →  使用耗材（同色区域一起更换）");
     if (!added.empty())
         summary += wxString::Format(texture_import_label("\nImport will add %d filaments", "\n导入将新增 %d 个耗材"), int(added.size()));
-    m_mapping_summary->SetLabel(m_show_advanced ? details : summary);
+    m_mapping_summary->SetLabel((m_show_advanced || m_options.workbench_review) ? details : summary);
     if (m_options.workbench_review && m_mapping_summary->GetParent()->GetClientSize().x > FromDIP(40))
         m_mapping_summary->Wrap(m_mapping_summary->GetParent()->GetClientSize().x);
     m_mapping_summary->GetParent()->Layout();
@@ -4856,6 +4863,11 @@ bool TextureImportDialog::has_valid_result() const
 
     if (m_mapping_rows.size() != m_current_matches.size())
         return false;
+    if (m_options.workbench_review) {
+        const auto usage = texture_import_filament_usage(m_filament_entries, m_current_matches);
+        if (!usage.valid || (m_options.physical_filament_limit > 0 &&
+            usage.physical.size() > m_options.physical_filament_limit)) return false;
+    }
 
     const int filament_count = (int)std::min(m_filament_colors_rgba.size(), max_filament_count());
     for (const auto& row : m_mapping_rows) {

@@ -7,6 +7,7 @@
 #include "ModelGenerationPresentation.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include "slic3r/GUI/AI/Model/BeautySurface.hpp"
+#include "WorkbenchModelInspection.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/I18N.hpp"
 #include <wx/weakref.h>
@@ -37,11 +38,52 @@ void ModelGenerationPanel::mount_workbench(wxWindow* parent)
 
 void ModelGenerationPanel::unmount_workbench()
 {
+    restore_workbench_import_history();
     if (!m_workbench_shell || m_workbench_shell->GetParent() == this) return;
     if (auto* sizer = m_workbench_shell->GetContainingSizer()) sizer->Detach(m_workbench_shell);
     m_workbench_shell->Reparent(this);
     GetSizer()->Add(m_workbench_shell, 1, wxEXPAND);
     m_workbench_shell->Hide();
+}
+
+wxWindow* ModelGenerationPanel::workbench_import_viewport() const { return m_workbench_view_host; }
+wxWindow* ModelGenerationPanel::workbench_import_history() const { return m_workbench_history_panel; }
+
+void ModelGenerationPanel::mount_workbench_import_history(wxWindow* parent)
+{
+    if (!parent || !m_workbench_history_panel || m_workbench_history_home) return;
+    m_workbench_history_home = m_workbench_history_panel->GetParent();
+    if (auto* sizer = m_workbench_history_panel->GetContainingSizer()) sizer->Detach(m_workbench_history_panel);
+    m_workbench_history_panel->Reparent(parent);
+    parent->GetSizer()->Add(m_workbench_history_panel, 1, wxEXPAND);
+    m_workbench_history_panel->Show(m_workbench_import_history_was_shown);
+    parent->Layout();
+}
+
+void ModelGenerationPanel::restore_workbench_import_history()
+{
+    if (!m_workbench_history_home) return;
+    if (auto* sizer = m_workbench_history_panel->GetContainingSizer()) sizer->Detach(m_workbench_history_panel);
+    m_workbench_history_panel->Reparent(m_workbench_history_home);
+    m_workbench_history_home->GetSizer()->Add(m_workbench_history_panel, 0,
+        wxEXPAND | wxTOP | wxBOTTOM | wxLEFT, FromDIP(12));
+    m_workbench_history_panel->Show(m_workbench_import_history_was_shown);
+    m_workbench_history_home->Layout();
+    m_workbench_history_home = nullptr;
+}
+
+void ModelGenerationPanel::set_workbench_import_feedback(bool active)
+{
+    if (active == m_workbench_import_feedback) return;
+    if (active) m_workbench_import_history_was_shown = m_workbench_history_panel->IsShown();
+    m_workbench_import_feedback = active;
+    m_workbench_settings->Enable(!active);
+    m_workbench_view_host->Enable(!active);
+    // The Windows GL surface can overpaint a sibling loading panel. Keep its
+    // CPU model and camera, but suspend the preview window until import ends.
+    if (m_model_preview) m_model_preview->Show(!active);
+    m_workbench_history_toggle->Enable(!active);
+    refresh_workbench_history();
 }
 
 std::vector<std::string> ModelGenerationPanel::local_recolor_palette() const
@@ -97,8 +139,13 @@ PostGenerationWorkbenchState ModelGenerationPanel::workbench_snapshot() const
     if (m_workbench_check_path == state.model_path && m_workbench_check_revision == state.revision)
         state.check = m_workbench_check_result;
     if (!state.candidate_path.empty() || state.dirty) {
-        state.check = {};
-        state.check.summary = "存在候选或未保存修改，接受并保存后自动复检。";
+        // Keep the original and candidate topology reports visible while a
+        // repair is awaiting confirmation. Import remains blocked until the
+        // candidate is accepted and checked again.
+        if (state.candidate_path.empty()) {
+            state.check = {};
+            state.check.summary = "存在未保存修改，接受并保存后自动复检。";
+        }
     }
     const bool portrait_blocked = state.portrait_optimization.running() || state.portrait_optimization.outcome == PortraitOutcome::DraftOnly;
     state.can_reoptimize_regions = state.can_reoptimize_regions && !portrait_blocked;
@@ -109,10 +156,20 @@ PostGenerationWorkbenchState ModelGenerationPanel::workbench_snapshot() const
         !(m_model_preview && m_model_preview->selection_busy());
     state.apply_filaments_reason = !state.printer_filaments.ready ? state.printer_filaments.reason :
         !state.can_apply_printer_filaments ? "模型处理中或存在未接受候选，请先完成当前操作" : "";
-    state.can_import_for_slicing = state.actions.can_import && state.check.status != WorkbenchCheckStatus::Running;
+    const bool candidate_pending = !state.candidate_path.empty() ||
+        state.check.candidate_status == RepairCandidateStatus::Generating ||
+        state.check.candidate_status == RepairCandidateStatus::Ready;
+    const bool topology_safe = workbench_topology_safe(state.check);
+    state.can_import_for_slicing = state.actions.can_import && !candidate_pending && !state.dirty && topology_safe;
+    state.can_force_import = state.actions.can_import && !candidate_pending && !state.dirty &&
+        !state.can_import_for_slicing && state.check.status != WorkbenchCheckStatus::Running;
+    state.import_has_topology_risk = state.can_force_import;
+    if (state.can_force_import)
+        state.import_topology_reason = state.check.summary.empty() ? "模型尚未通过闭合拓扑检查；继续导入仅允许尝试切片。" : state.check.summary;
     if (m_model_preview && !m_model_preview->project_matching_valid()) {
         state.actions.can_import = false;
         state.can_import_for_slicing = false;
+        state.can_force_import = false;
         state.apply_filaments_reason = "打印机或耗材槽位已变化，请重新应用打印机耗材";
     }
     if (m_model_preview) {
@@ -124,7 +181,7 @@ PostGenerationWorkbenchState ModelGenerationPanel::workbench_snapshot() const
 
 bool ModelGenerationPanel::can_replace_model_asset() const
 {
-    return !m_shutdown && !m_portrait_draft_before &&
+    return !m_shutdown && !m_workbench_import_feedback && !m_portrait_draft_before &&
         !(m_portrait_task && m_portrait_task->snapshot().running()) && post_generation_asset_switch_allowed(m_busy || m_preview_download_in_flight || m_workbench_check_running || m_workbench_import_running,
         m_finishing_running, (m_beauty_transactions && m_beauty_transactions->processing()) ||
             (m_model_preview && m_model_preview->semantic_processing()),
@@ -193,13 +250,21 @@ bool ModelGenerationPanel::request_return_overview()
 bool ModelGenerationPanel::request_workbench_color_matching()
 {
     const auto state = workbench_snapshot();
-    if (!state.can_import_for_slicing || (!m_color_matching && !m_workbench_import)) return false;
-    if (state.check.status == WorkbenchCheckStatus::NotRun || state.check.status == WorkbenchCheckStatus::Invalid ||
-        state.check.status == WorkbenchCheckStatus::Failed) {
-        const auto summary = state.check.status == WorkbenchCheckStatus::NotRun ? _L("尚未执行模型检查。") :
-            wxString::FromUTF8(state.check.summary);
-        if (show_redesign_confirmation(m_workbench_shell, summary + "\n" + _L("继续使用 Orca 原生导入校验？"),
-            _L("模型检查"), {wxYES_NO | wxNO_DEFAULT}) != wxID_YES) return false;
+    if ((!state.can_import_for_slicing && !state.can_force_import) || (!m_color_matching && !m_workbench_import)) return false;
+    if (!state.check.model_sha256.empty() &&
+        AI::model_artifact_sha256(m_displayed_model_path) != state.check.model_sha256) {
+        m_workbench_check_result = {};
+        m_workbench_check_result.status = WorkbenchCheckStatus::Failed;
+        m_workbench_check_result.summary = "模型文件已变化，请重新执行检查后再导入。";
+        refresh_post_generation_workbench();
+        return false;
+    }
+    if (state.can_force_import && !state.can_import_for_slicing) {
+        const wxString reason = wxString::FromUTF8(state.import_topology_reason);
+        if (show_redesign_confirmation(m_workbench_shell,
+            reason + "\n" + _L("仍要导入并尝试切片？切片结果将带有拓扑风险标记。"),
+            _L("拓扑风险"), {wxYES_NO | wxNO_DEFAULT}) != wxID_YES)
+            return false;
     }
     AI::GeneratedModelArtifact artifact;
     artifact.local_path = m_displayed_model_path.string();
@@ -220,6 +285,9 @@ bool ModelGenerationPanel::request_workbench_color_matching()
         for (const auto& item : m_model_preview->import_subface_color_overrides(true))
             request.subface_color_overrides.push_back({item.face_id, item.path.depth, item.path.value, item.color});
         request.face_color_geometry_id = m_model_preview->geometry_id();
+        request.topology_risk_confirmed = state.can_force_import && !state.can_import_for_slicing;
+        request.topology_risk_reason = state.import_topology_reason;
+        request.topology_check_sha256 = state.check.model_sha256;
         try { prepare_portrait_import(request); BeautyWorkbenchControls::prepare_import(m_displayed_model_path, request); }
         catch (const std::exception& error) {
             wxMessageBox(wxString::FromUTF8(error.what()), _L("配色确认"), wxOK | wxICON_ERROR, this);

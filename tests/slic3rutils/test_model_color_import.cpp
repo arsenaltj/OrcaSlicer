@@ -1,11 +1,19 @@
 #include "slic3r/GUI/TextureImportDialog.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaWorkspaceAdapter.hpp"
 #include "slic3r/GUI/AI/Orca/AIImportSeamRepair.hpp"
+#include "slic3r/GUI/AI/Orca/WorkbenchModelDecode.hpp"
+#include "slic3r/GUI/AI/Orca/WorkbenchTextureImport.hpp"
+#include "slic3r/GUI/AI/Orca/ModelColorUpdate.hpp"
 #include "libslic3r/TexturePainting.hpp"
 #include "slic3r/GUI/ModelColorImportResult.hpp"
 #include "slic3r/GUI/TextureImportModel.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
+#include "libslic3r/Format/bbs_3mf.hpp"
+#include "libslic3r/Semver.hpp"
+#include "test_utils.hpp"
 #include <boost/filesystem/fstream.hpp>
 #include <nlohmann/json.hpp>
 #include <chrono>
@@ -13,6 +21,221 @@
 
 using namespace Slic3r;
 using namespace Slic3r::GUI;
+
+static void verify_source_frame_workbench_paint(const boost::filesystem::path& path, bool meters)
+{
+    TriangleMesh source;
+    ObjInfo colors;
+    std::string error;
+    REQUIRE(AI::load_model_artifact(path, source, colors, error));
+    DecodedWorkbenchModel decoded;
+    REQUIRE(decode_workbench_model(path, decoded, error));
+    if (meters) decoded.mesh.scale(1000.f);
+    auto model = assemble_workbench_model(decoded, path, meters);
+    REQUIRE(model->texture_mesh);
+    auto* volume = model->objects.front()->volumes.front();
+    const auto offset = volume->get_offset();
+    PaintedMesh painted;
+    painted.vertices = model->texture_mesh->vertices;
+    painted.indices = model->texture_mesh->indices;
+    painted.cluster_colors = {{204,128,77}, {242,242,242}};
+    for (size_t face = 0; face < painted.indices.size(); ++face)
+        painted.face_colors.push_back(painted.cluster_colors[face % 2]);
+    std::vector<FilamentMatch> matches(2);
+    for (int i = 0; i < 2; ++i) { matches[i].cluster_index = i; matches[i].filament_index = i; }
+    REQUIRE(apply_painted_mesh_to_volume(painted, matches, *volume, true));
+    REQUIRE(LocalPrintColorApplication::same_surface_partition(source.its, volume->mesh().its, false));
+    CHECK_THAT((volume->get_offset() - offset).norm(), Catch::Matchers::WithinAbs(0., 1e-4));
+    auto painting = volume->mmu_segmentation_facets.get_data();
+    const std::array<float, 3> skin {.8f,.5f,.3f}, white {.95f,.95f,.95f};
+    REQUIRE(apply_subface_color_overrides(volume->mesh().its, volume->mesh().its, painting,
+        {{0, skin}, {1, white}}, {{0, 1, 0, white}}, error));
+    TriangleSelector restored(volume->mesh());
+    restored.deserialize(painting);
+    EnforcerBlockerType state;
+    CHECK_FALSE(restored.facet_state(0, state));
+    REQUIRE(restored.facet_state(1, state));
+    CHECK(state == EnforcerBlockerType::Extruder2);
+}
+
+TEST_CASE("Background GLB texture painting preserves millimeter position and local subfaces", "[WorkbenchTextureImport][WorkbenchImportUnits]")
+{
+    const auto file = GENERATE("outward-textured.glb", "transformed.glb", "vertex-material-color.glb");
+    verify_source_frame_workbench_paint(boost::filesystem::path(TEST_DATA_DIR) / "model_artifact" / file, true);
+}
+
+TEST_CASE("Background colored OBJ painting preserves the source coordinate frame", "[WorkbenchTextureImport][WorkbenchImportUnits]")
+{
+    const auto file = GENERATE("transformed.obj", "vertex-material-color.obj");
+    verify_source_frame_workbench_paint(boost::filesystem::path(TEST_DATA_DIR) / "model_artifact" / file, false);
+}
+
+TEST_CASE("A local GLB import fixture retains source face identity after texture painting", "[.WorkbenchImportQA]")
+{
+    const char* fixture = std::getenv("ORCASLICER_MODEL_ARTIFACT_FIXTURE");
+    REQUIRE(fixture);
+    verify_source_frame_workbench_paint(boost::filesystem::path(fixture), true);
+}
+
+TEST_CASE("Workbench physical capacity follows multiple heads while single nozzle feeding remains available", "[WorkbenchFilamentCapacity]")
+{
+    const size_t heads = GENERATE(1u, 4u, 6u);
+    DynamicPrintConfig printer;
+    printer.set_key_value("nozzle_diameter", new ConfigOptionFloats(std::vector<double>(heads, .4)));
+    TextureImportOptions options;
+    options.workbench_review = true;
+    configure_workbench_filament_capacity(options, printer);
+    CHECK(options.physical_filament_limit == (heads > 1 ? heads : 0));
+    CHECK(options.allow_unverified_mixed_filaments == (heads > 1));
+    TextureImportOptions ordinary;
+    configure_workbench_filament_capacity(ordinary, printer);
+    CHECK(ordinary.physical_filament_limit == 0);
+    CHECK(ordinary.allow_unverified_mixed_filaments);
+}
+
+TEST_CASE("Five target colors use four physical slots and one layered recipe without counting spare spools", "[WorkbenchFilamentCapacity]")
+{
+    std::vector<TextureFilamentEntry> entries(7);
+    for (size_t i = 0; i < entries.size(); ++i) {
+        entries[i].dialog_index = int(i); entries[i].project_config_index = i;
+        entries[i].color_hex = "#808080";
+    }
+    entries[6].kind = TextureFilamentKind::NewMixed;
+    entries[6].mixed_components = {1, 3}; entries[6].mixed_ratios = {50, 50};
+    std::vector<FilamentMatch> matches(5);
+    for (int i = 0; i < 4; ++i) matches[i].filament_index = i;
+    matches[4].filament_index = 6;
+    const auto usage = texture_import_filament_usage(entries, matches);
+    REQUIRE(usage.valid);
+    CHECK(usage.physical == std::set<size_t>{0,1,2,3});
+    CHECK(usage.mixed == std::set<size_t>{6});
+    CHECK(usage.added.empty());
+    SECTION("a fifth physical assignment exceeds the four head budget") {
+        matches[4].filament_index = 5;
+        const auto changed = texture_import_filament_usage(entries, matches);
+        CHECK(changed.physical.size() == 5);
+        CHECK(changed.mixed.empty());
+    }
+    SECTION("an additional recipe component also consumes a physical head") {
+        entries[6].mixed_components = {1,6};
+        CHECK(texture_import_filament_usage(entries, matches).physical.size() == 5);
+    }
+    SECTION("invalid recipes cannot disguise missing or mixed physical references") {
+        entries[6].mixed_components = {1,1};
+        CHECK_FALSE(texture_import_filament_usage(entries, matches).valid);
+        entries[6].mixed_components = {1,7};
+        CHECK_FALSE(texture_import_filament_usage(entries, matches).valid);
+        entries[6].mixed_components = {1,3}; entries[6].mixed_ratios = {50,40};
+        CHECK_FALSE(texture_import_filament_usage(entries, matches).valid);
+    }
+}
+
+TEST_CASE("Workbench existing layered recipes follow native slots through compatibility filtering", "[WorkbenchFilamentCapacity]")
+{
+    std::vector<TextureFilamentEntry> entries(5);
+    for (size_t i = 0; i < entries.size(); ++i) {
+        entries[i].project_config_index = i; entries[i].dialog_index = int(i);
+        entries[i].type = "PLA"; entries[i].preset_name = "Loaded PLA";
+    }
+    entries[0].compatible = false;
+    entries[4].kind = TextureFilamentKind::ExistingMixed;
+    entries[4].mixed_components = {2,4}; entries[4].mixed_ratios = {25,75};
+    TextureImportOptions options;
+    options.workbench_review = true; options.allow_unverified_mixed_filaments = true;
+    const auto usable = workspace_texture_filaments(entries, &options);
+    REQUIRE(usable.size() == 4);
+    CHECK(usable[3].project_config_index == 4);
+    CHECK(usable[3].mixed_components == std::vector<unsigned>{1,3});
+    entries[4].mixed_components = {1,4};
+    CHECK(workspace_texture_filaments(entries, &options).size() == 3);
+}
+
+TEST_CASE("Over capacity workbench staging rejects before changing private geometry or materials", "[WorkbenchFilamentCapacity]")
+{
+    Model model;
+    auto* object = model.add_object("private", "source.obj", TriangleMesh(its_make_cube(10,10,10)));
+    const auto before = object->volumes.front()->mesh().its;
+    PresetBundle staged;
+    const auto colors_before = staged.project_config.option<ConfigOptionStrings>("filament_colour")->values;
+    std::vector<TextureFilamentEntry> entries(5);
+    std::vector<FilamentMatch> matches(5);
+    for (int i = 0; i < 5; ++i) { entries[i].dialog_index = i; matches[i].filament_index = i; }
+    PaintedMesh painted; painted.face_colors = {{255,255,255}};
+    std::string error;
+    REQUIRE_FALSE(stage_workbench_texture_import(*object, painted, matches, entries, {}, staged, error, 4));
+    CHECK_FALSE(error.empty());
+    CHECK(staged.project_config.option<ConfigOptionStrings>("filament_colour")->values == colors_before);
+    CHECK(object->volumes.front()->mesh().its.indices == before.indices);
+    CHECK(AI::SurfaceSelectionPersistence::geometry_fingerprint(object->volumes.front()->mesh().its) ==
+        AI::SurfaceSelectionPersistence::geometry_fingerprint(before));
+}
+
+TEST_CASE("Four physical filaments and a fifth layered color retain subfaces through native 3MF storage", "[WorkbenchFilamentCapacity][WorkbenchTextureImport]")
+{
+    const auto source = its_make_cube(10,10,10);
+    DecodedWorkbenchModel decoded; decoded.mesh = TriangleMesh(source);
+    auto storage = assemble_workbench_model(decoded, "source.obj", false);
+    Model& model = *storage;
+    auto* object = model.objects.front();
+    object->add_instance();
+    PresetBundle staged;
+    staged.set_num_filaments(4, "#808080");
+    const auto presets = staged.filament_presets;
+    std::vector<TextureFilamentEntry> entries(5);
+    std::vector<FilamentMatch> matches(5);
+    PaintedMesh painted;
+    for (const auto& v : source.vertices) painted.vertices.push_back({v.x(),v.y(),v.z()});
+    for (const auto& f : source.indices) painted.indices.push_back({f.x(),f.y(),f.z()});
+    painted.cluster_colors = {{255,0,0},{0,0,0},{255,255,255},{255,128,128},{128,128,128}};
+    for (size_t f = 0; f < source.indices.size(); ++f) painted.face_colors.push_back(painted.cluster_colors[f % 5]);
+    for (int i = 0; i < 5; ++i) {
+        entries[i].dialog_index = i; entries[i].project_config_index = size_t(i);
+        entries[i].color_hex = "#808080";
+        matches[i].cluster_index = i; matches[i].filament_index = i;
+    }
+    entries[4].kind = TextureFilamentKind::NewMixed;
+    entries[4].mixed_components = {2,3}; entries[4].mixed_ratios = {50,50};
+    TextureNewMixedFilament recipe;
+    recipe.dialog_index = 4; recipe.color_hex = "#808080";
+    recipe.component_dialog_indices = {1,2}; recipe.ratios = {50,50};
+    std::string error;
+    REQUIRE(stage_workbench_texture_import(*object, painted, matches, entries, {recipe}, staged, error, 4));
+    CHECK(staged.num_physical_filaments() == 4);
+    REQUIRE(staged.filament_presets.size() == 5);
+    for (size_t i = 0; i < 4; ++i) CHECK(staged.filament_presets[i] == presets[i]);
+    REQUIRE(staged.is_mixed_filament(4));
+    CHECK(staged.project_config.opt_string("filament_mixed_components",4u) == "2,3");
+    auto* volume = object->volumes.front();
+    REQUIRE(LocalPrintColorApplication::same_surface_partition(source, volume->mesh().its, false));
+    auto painting = volume->mmu_segmentation_facets.get_data();
+    const std::array<float,3> red {1,0,0}, gray {.5f,.5f,.5f};
+    REQUIRE(apply_subface_color_overrides(volume->mesh().its, volume->mesh().its, painting,
+        {{0,red},{4,gray}}, {{0,1,0,gray}}, error));
+    volume->mmu_segmentation_facets.set_data(TriangleSelector::TriangleSplittingData(painting));
+    ScopedTemporaryDir backup("workbench-layered-source"); model.set_backup_path(backup.string());
+    ScopedTemporaryFile file(".3mf"); const std::string path = file.string();
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config(); config.apply(staged.project_config);
+    PlateData plate; plate.plate_index = 0;
+    StoreParams params; params.path = path.c_str(); params.model = &model; params.config = &config;
+    params.strategy = SaveStrategy::Zip64 | SaveStrategy::Silence; params.plate_data_list.push_back(&plate);
+    REQUIRE(store_bbs_3mf(params));
+    Model restored; ScopedTemporaryDir restored_backup("workbench-layered-restored"); restored.set_backup_path(restored_backup.string());
+    DynamicPrintConfig restored_config;
+    ConfigSubstitutionContext substitutions{ForwardCompatibilitySubstitutionRule::Enable};
+    PlateDataPtrs plates; std::vector<Preset*> restored_presets; bool bbl = false, orca = false; Semver version;
+    const bool loaded = load_bbs_3mf(path.c_str(), &restored_config, &substitutions, &restored, &plates,
+        &restored_presets, &bbl, &orca, &version, nullptr, LoadStrategy::LoadModel | LoadStrategy::LoadConfig);
+    release_PlateData_list(plates); for (auto* preset : restored_presets) delete preset;
+    REQUIRE(loaded); REQUIRE(restored.objects.size() == 1);
+    REQUIRE(restored.objects.front()->volumes.size() == 1);
+    auto* reopened = restored.objects.front()->volumes.front();
+    REQUIRE(LocalPrintColorApplication::same_surface_partition(source, reopened->mesh().its, false));
+    TriangleSelector expected(volume->mesh()); expected.deserialize(painting);
+    TriangleSelector actual(reopened->mesh()); actual.deserialize(reopened->mmu_segmentation_facets.get_data());
+    CHECK(actual.serialize() == expected.serialize());
+    CHECK(restored_config.opt_bool("filament_is_mixed",4));
+    CHECK(restored_config.opt_string("filament_mixed_components",4u) == "2,3");
+}
 
 TEST_CASE("Workbench mixed colors import as native virtual slots and reject altered mixtures before painting", "[ModelColorImport][BeautyWorkbench]") {
     const auto mesh=its_make_cube(10,10,10);Model model;

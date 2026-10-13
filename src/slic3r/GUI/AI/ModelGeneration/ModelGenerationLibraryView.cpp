@@ -8,6 +8,7 @@
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/AI/AIWindowAppearance.hpp"
 #include "ModelLibraryThumbnail.hpp"
+#include "WorkbenchHistorySnapshot.hpp"
 #include "ModelGenerationPresentation.hpp"
 #include "slic3r/GUI/AI/Model/ModelArtifact.hpp"
 #include <algorithm>
@@ -98,6 +99,8 @@ void ModelGenerationPanel::start_library_worker()
 
 void ModelGenerationPanel::cancel_library_loading()
 {
+    m_library_scan_pending = false;
+    m_library_shell_thumbnails_running = false;
     ++m_library_revision;
     m_library_refresh_pending = true;
     m_library_timer.Stop();
@@ -117,11 +120,15 @@ void ModelGenerationPanel::load_library_entries(bool for_shell)
 {
     if (m_shutdown) return;
     const bool legacy_visible = m_library_scroller != nullptr && m_library_scroller->IsShownOnScreen();
+    if (m_finishing_workbench && !legacy_visible) for_shell = true;
     if (!m_page_initialized || (!for_shell && !legacy_visible)) {
         cancel_library_loading();
         return;
     }
+    if (m_library_scan_pending && m_library_requested_by_shell == for_shell) return;
+    if (for_shell && m_library_requested_by_shell && m_library_load_state && m_library_load_state->loading()) return;
     cancel_library_loading();
+    m_library_scan_pending = true;
     m_library_requested_by_shell = for_shell;
     if (for_shell) {
         m_ui_history_loading = true;
@@ -156,9 +163,12 @@ void ModelGenerationPanel::on_library_timer(wxTimerEvent&)
     std::optional<ModelLibraryLoader::Snapshot> snapshot;
     std::vector<ModelLibraryLoader::Thumbnail> thumbnails;
     m_library_load_state->take(snapshot, thumbnails);
+    bool history_updated = false, workbench_metadata_updated = false;
     if (snapshot && snapshot->revision == m_library_revision) {
+        m_library_scan_pending = false;
+        history_updated = true;
         if (snapshot->failed) {
-            if (snapshot->for_shell) {
+            if (snapshot->for_shell || m_finishing_workbench) {
                 m_ui_history_loading = false;
                 m_ui_history_error = "历史资产读取失败，已保留当前列表。";
                 m_library_requested_by_shell = false;
@@ -174,6 +184,7 @@ void ModelGenerationPanel::on_library_timer(wxTimerEvent&)
             }
             m_library_refresh_pending = false;
         } else {
+            workbench_metadata_updated = true;
             const size_t anchor_index = m_library_page * m_library_page_size;
             const std::string anchor = anchor_index < m_library_entries.size() ? m_library_entries[anchor_index].job_id : std::string();
             const auto position = std::find_if(snapshot->entries.begin(), snapshot->entries.end(),
@@ -181,11 +192,12 @@ void ModelGenerationPanel::on_library_timer(wxTimerEvent&)
             if (!anchor.empty() && position != snapshot->entries.end())
                 m_library_page = size_t(position - snapshot->entries.begin()) / m_library_page_size;
             m_library_entries = std::move(snapshot->entries);
-            if (snapshot->for_shell) {
+            if (snapshot->for_shell || m_finishing_workbench) {
                 const auto text_to_utf8 = [](const wxString& value) {
                     const wxScopedCharBuffer encoded = value.ToUTF8();
                     return encoded ? std::string(encoded.data(), encoded.length()) : std::string();
                 };
+                auto previous = std::move(m_ui_history_entries);
                 m_ui_history_entries.clear();
                 const size_t count = m_finishing_workbench ? m_library_entries.size() :
                     std::min(m_library_page_size, m_library_entries.size());
@@ -193,14 +205,20 @@ void ModelGenerationPanel::on_library_timer(wxTimerEvent&)
                 for (size_t index = 0; index < count; ++index) {
                     const auto& source = m_library_entries[index];
                     ModelGenerationUIHistoryEntry target;
+                    target.asset_key = workbench_history_key(source);
+                    target.thumbnail_source = workbench_thumbnail_source(source, FromDIP(72));
                     target.job_id = source.job_id;
                     target.title = text_to_utf8(source.title);
                     target.details = text_to_utf8(source.details);
                     target.design_only = source.design_only;
+                    const auto cached = std::find_if(previous.begin(), previous.end(),
+                        [&](const auto& value) { return value.asset_key == target.asset_key; });
+                    if (cached != previous.end()) retain_workbench_thumbnail(target, *cached);
                     m_ui_history_entries.emplace_back(std::move(target));
                 }
                 m_ui_history_error.clear();
-                m_ui_history_thumbnails_pending = m_ui_history_entries.size();
+                m_ui_history_thumbnails_pending = std::count_if(m_ui_history_entries.begin(), m_ui_history_entries.end(),
+                    [](const auto& value) { return !value.thumbnail_ready; });
                 if (m_ui_history_entries.empty()) {
                     m_ui_history_loading = false;
                     m_library_requested_by_shell = false;
@@ -211,7 +229,6 @@ void ModelGenerationPanel::on_library_timer(wxTimerEvent&)
                         m_ui_history_loading = false;
                         m_ui_history_thumbnails_pending = 0;
                     }
-                    publish_ui_state();
                     if (!legacy_visible) request_library_thumbnails(true);
                 }
             }
@@ -221,34 +238,39 @@ void ModelGenerationPanel::on_library_timer(wxTimerEvent&)
             }
         }
     }
-    const bool workbench_updated = snapshot.has_value() || !thumbnails.empty();
     // Applying decoded pixels creates wxImage/wxBitmap objects on the UI
     // thread. Keep each timer tick bounded so opening the history page stays
     // interactive while the worker continues decoding the rest of the page.
     constexpr size_t max_thumbnails_per_tick = 2;
     size_t applied = 0;
     for (const auto& thumbnail : thumbnails) {
+        if (thumbnail.revision != m_library_revision) continue;
+        const auto targets = thumbnail.for_shell ? m_ui_history_entries.size() : m_library_thumbnails.size();
+        if (thumbnail.index >= targets) continue;
         if (applied++ >= max_thumbnails_per_tick) {
             m_library_load_state->defer(thumbnail);
             continue;
         }
-        if (thumbnail.revision != m_library_revision)
-            continue;
         if (thumbnail.for_shell) {
             if (thumbnail.index >= m_ui_history_entries.size())
                 continue;
             auto& target = m_ui_history_entries[thumbnail.index];
+            const bool changed = !target.thumbnail_ready || target.thumbnail_width != thumbnail.width ||
+                target.thumbnail_height != thumbnail.height || target.thumbnail_rgb != thumbnail.rgb || target.thumbnail_alpha != thumbnail.alpha;
             target.thumbnail_width = thumbnail.width;
             target.thumbnail_height = thumbnail.height;
             target.thumbnail_rgb = thumbnail.rgb;
             target.thumbnail_alpha = thumbnail.alpha;
+            target.thumbnail_ready = true;
+            if (changed) target.thumbnail_revision = m_library_revision;
+            history_updated = history_updated || changed;
             if (m_ui_history_thumbnails_pending > 0)
                 --m_ui_history_thumbnails_pending;
             if (m_ui_history_thumbnails_pending == 0) {
                 m_ui_history_loading = false;
                 m_library_requested_by_shell = false;
+                m_library_shell_thumbnails_running = false;
             }
-            publish_ui_state();
             continue;
         }
         if (thumbnail.index >= m_library_thumbnails.size()) continue;
@@ -264,9 +286,10 @@ void ModelGenerationPanel::on_library_timer(wxTimerEvent&)
         }
         static_cast<LibraryThumbnail*>(m_library_thumbnails[thumbnail.index])->set_image(image);
     }
-    if (workbench_updated && m_finishing_workbench) {
+    if (history_updated) publish_ui_state();
+    if (history_updated && m_finishing_workbench) {
         refresh_workbench_history();
-        refresh_post_generation_workbench();
+        if (workbench_metadata_updated) refresh_post_generation_workbench();
     }
     // DPI changes invalidate only the visible page; the worker cache keys
     // include pixel size, and themes repaint via the normal AI appearance path.
@@ -283,6 +306,8 @@ void ModelGenerationPanel::on_library_timer(wxTimerEvent&)
 
 void ModelGenerationPanel::request_library_thumbnails(bool for_shell)
 {
+    if (for_shell && m_library_scan_pending) return;
+    if (for_shell && m_library_shell_thumbnails_running && m_library_shell_thumbnail_edge == FromDIP(72)) return;
     cancel_library_loading();
     start_library_worker();
     m_library_requested_by_shell = for_shell;
@@ -292,8 +317,18 @@ void ModelGenerationPanel::request_library_thumbnails(bool for_shell)
     request->for_shell = for_shell;
     request->edge = for_shell ? FromDIP(72) : m_library_thumbnail_edge;
     if (for_shell) {
+        m_library_shell_thumbnail_edge = request->edge;
         const auto end = std::min(m_ui_history_entries.size(), m_library_entries.size());
-        request->entries.assign(m_library_entries.begin(), m_library_entries.begin() + end);
+        for (size_t i = 0; i < end; ++i) {
+            auto& target = m_ui_history_entries[i];
+            const auto signature = workbench_thumbnail_source(m_library_entries[i], request->edge);
+            if (target.thumbnail_source != signature) { target.thumbnail_source = signature; target.thumbnail_ready = false; }
+            if (!target.thumbnail_ready) { request->entries.push_back(m_library_entries[i]); request->indices.push_back(i); }
+        }
+        m_ui_history_thumbnails_pending = request->entries.size();
+        m_ui_history_loading = !request->entries.empty();
+        if (request->entries.empty()) { m_library_requested_by_shell = false; return; }
+        m_library_shell_thumbnails_running = true;
     } else {
         const auto begin = std::min(m_library_page * m_library_page_size, m_library_filtered_indices.size());
         const auto end = std::min(begin + m_library_page_size, m_library_filtered_indices.size());

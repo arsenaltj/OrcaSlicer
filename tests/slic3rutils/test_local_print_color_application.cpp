@@ -634,12 +634,13 @@ TEST_CASE("source face correspondence rejects edits beyond native recentering", 
     CHECK(painting.geometry_id == "unchanged");
 }
 
-TEST_CASE("saved local color groups bind to the recentered mesh after a real 3MF round trip", "[LocalPrintColorApplication]")
+TEST_CASE("Saved local color groups survive source and centered frames through a real 3MF round trip", "[LocalPrintColorApplication]")
 {
     Model model;
     auto* object = model.add_object(); object->name = "color round trip";
     TriangleMesh source(its_make_cube(10, 20, 30)); source.translate(Vec3f(0.1f, 0.2f, 0.3f));
-    auto* volume = object->add_volume(TriangleMesh(source), ModelVolumeType::MODEL_PART, false);
+    const bool source_frame = GENERATE(true, false);
+    auto* volume = object->add_volume(TriangleMesh(source), ModelVolumeType::MODEL_PART, !source_frame);
     volume->source.input_file = "orca-color-round-trip.glb";
     object->add_instance()->set_offset(Vec3d(110, 75, 0));
     auto result = exact_cube_result(source);
@@ -664,7 +665,11 @@ TEST_CASE("saved local color groups bind to the recentered mesh after a real 3MF
     release_PlateData_list(plates); for (auto* preset : presets) delete preset;
     REQUIRE(loaded); REQUIRE(restored.objects.size() == 1); REQUIRE(restored.objects.front()->volumes.size() == 1);
     auto* reopened = restored.objects.front()->volumes.front();
-    CHECK(AI::SurfaceSelectionPersistence::geometry_fingerprint(reopened->mesh().its) != result.geometry_id);
+    const auto reopened_geometry = AI::SurfaceSelectionPersistence::geometry_fingerprint(reopened->mesh().its);
+    if (source_frame) CHECK(reopened_geometry == result.geometry_id);
+    else CHECK(reopened_geometry != result.geometry_id);
+    CHECK_THAT((restored.objects.front()->instance_bounding_box(0).center() - object->instance_bounding_box(0).center()).norm(),
+        Catch::Matchers::WithinAbs(0., 1e-5));
     REQUIRE(Application::same_surface_partition(source.its, reopened->mesh().its));
     CHECK(Application::matches_saved_painting(reopened->mesh(), source.its, reopened->mmu_segmentation_facets.get_data(), result));
     REQUIRE(Application::prepare_from_source(reopened->mesh(), source.its, result, "materials", "process", painting, error));

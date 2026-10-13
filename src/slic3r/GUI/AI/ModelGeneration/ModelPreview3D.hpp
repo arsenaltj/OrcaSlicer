@@ -2024,13 +2024,15 @@ public:
         m_canvas->Refresh(false);
         return true;
     }
+    bool showing_model(const boost::filesystem::path& path) const { return m_has_model && path == m_model_path && same_stamp(m_model_stamp, file_stamp(path)); }
     ModelPreviewColorControls::State color_trial_state() const { return m_color_trial->state(); }
     std::vector<FilamentColorPack> configuration_color_sources() const { return m_color_trial->configuration_color_sources(); }
     void refresh_saved_color_packs() { m_color_trial->refresh_saved_color_packs(); }
     void set_project_filament_edit_handler(std::function<void(size_t)> handler) {
         m_color_trial->on_project_color_edit = std::move(handler);
     }
-    bool apply_project_filament_palette();
+    bool apply_project_filament_palette(const std::vector<size_t>* bindings = nullptr);
+    void set_project_configuration_override(std::shared_ptr<const PresetBundle> bundle) { m_color_trial->set_project_configuration_override(std::move(bundle)); }
     bool project_matching_valid() const { return m_color_trial->project_matching_valid(); }
     FaceColorOverrides printer_filament_export_faces() const;
     wxWindow* build_workbench_palette(wxWindow* parent) { return m_color_trial->build_workbench_palette(parent); }

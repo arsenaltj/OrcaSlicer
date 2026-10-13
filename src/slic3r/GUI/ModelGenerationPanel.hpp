@@ -34,6 +34,7 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <map>
 #include <set>
 #include <string>
 #include <thread>
@@ -196,6 +197,15 @@ private:
     void apply_workbench_printer_filaments();
     wxTimer m_workbench_sync_timer;
     bool m_save_and_return {false};
+    std::string m_workbench_operation_notice;
+    bool m_apply_filaments_saving {false};
+    std::shared_ptr<BeautyCandidateSnapshot> m_apply_filaments_before;
+    std::shared_ptr<PresetBundle> m_apply_filaments_staged;
+    std::string m_apply_filaments_source_identity;
+    boost::filesystem::path m_applied_filaments_saved_model;
+    std::string m_applied_filaments_saved_signature;
+    void finish_printer_filament_application(bool success);
+    bool commit_printer_filament_application(std::string& error);
     std::function<void()> m_workbench_results;
     std::function<void()> m_workbench_return_to_design;
     void finish_workbench_save();
@@ -318,6 +328,11 @@ private:
     void set_finishing_workbench(bool enabled);
 public:
     void mount_workbench(wxWindow* parent);
+    wxWindow* workbench_import_viewport() const;
+    wxWindow* workbench_import_history() const;
+    void mount_workbench_import_history(wxWindow* parent);
+    void restore_workbench_import_history();
+    void set_workbench_import_feedback(bool active);
     void unmount_workbench();
 private:
     PostGenerationUiState post_generation_ui_state() const;
@@ -329,6 +344,7 @@ private:
     void update_region_mode();
     wxWindow* build_workbench_history(wxWindow* parent);
     void refresh_workbench_history();
+    void update_workbench_history_actions();
     void rescale_post_generation_workbench();
     void preview_model_finishing();
     void paint_beauty_color(const std::vector<size_t>& faces);
@@ -437,12 +453,15 @@ private:
     Button* m_workbench_history_first {nullptr};
     Button* m_workbench_history_last {nullptr};
     size_t m_workbench_history_page {0};
+    size_t m_workbench_history_pages {1};
     int m_workbench_history_filter {0};
     std::array<Button*, 4> m_workbench_history_filters {};
     std::vector<wxWindow*> m_workbench_thumbnails;
     std::vector<size_t> m_workbench_thumbnail_entries;
     std::vector<wxWindow*> m_library_thumbnail_targets;
     bool m_library_scan_pending {false};
+    bool m_library_shell_thumbnails_running {false};
+    int m_library_shell_thumbnail_edge {0};
     BeautyWorkbenchControls* m_beauty_controls {nullptr};
     BeautyWorkbenchSession<BeautyCandidateSnapshot> m_beauty_session;
     BeautyWorkbenchTransactionController* m_beauty_transactions {&m_beauty_session.transactions()};
@@ -452,6 +471,12 @@ private:
     wxPanel* m_workbench_history_panel {nullptr};
     wxScrolledWindow* m_workbench_history_scroller {nullptr};
     wxBoxSizer* m_workbench_history_sizer {nullptr};
+    wxGridSizer* m_workbench_history_grid {nullptr};
+    std::map<std::string, wxWindow*> m_workbench_history_cards;
+    std::vector<std::string> m_workbench_history_visible_keys;
+    wxWindow* m_workbench_history_home {nullptr};
+    bool m_workbench_import_feedback {false};
+    bool m_workbench_import_history_was_shown {false};
     wxStaticText* m_workbench_history_status {nullptr};
     wxButton* m_finishing_shortcut {nullptr};
     wxChoice* m_finishing_tool {nullptr};

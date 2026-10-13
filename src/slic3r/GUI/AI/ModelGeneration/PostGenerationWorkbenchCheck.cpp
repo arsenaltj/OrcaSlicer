@@ -32,7 +32,10 @@ bool ModelGenerationPanel::request_check_workbench()
     const auto revision = m_sequence;
     const auto asset = m_displayed_model_job_id;
     const auto id = "finish-" + ModelGenerationPresentation::new_request_id();
-    const auto destination = source.parent_path() / (id + ".obj");
+    // Candidates are deliberately written beside the source and never replace
+    // it.  GLB repairs are exported as a colour-carrying OBJ because topology
+    // changes cannot be represented by the texture-preserving GLB editor.
+    const auto destination = source.parent_path() / ("orcaslicer-ai-" + id + ".obj");
     const auto partition = m_beauty_controls ? m_beauty_controls->capture_partition() : nullptr;
     const bool bound_edits = !m_model_preview->face_color_overrides().empty() || m_model_preview->leaf_editing() ||
         m_model_preview->semantic_result_active() || bool(m_model_preview->semantic_region_evidence()) ||
@@ -57,6 +60,7 @@ bool ModelGenerationPanel::request_check_workbench()
         m_workbench_check_worker = std::thread([weak, source, destination, revision, asset, id, canceled,
             attempts, previous_result, repair_allowed, bound_edits] {
             auto result = inspect_workbench_model(source, [canceled] { return canceled->load(); });
+            const auto source_check = result;
             const auto source_hash = result.model_sha256;
             const std::string key = asset + "|" + source_hash;
             AI::ModelFinishingResult repair;
@@ -64,7 +68,7 @@ bool ModelGenerationPanel::request_check_workbench()
             options.smooth_surface = false;
             options.repair_mesh = true;
             const bool attempted = result.status != WorkbenchCheckStatus::Failed && !source_hash.empty() &&
-                repair_allowed && !attempts.count(key) && !canceled->load();
+                !workbench_topology_safe(result) && repair_allowed && !attempts.count(key) && !canceled->load();
             auto progress = [weak, source, revision, canceled](WorkbenchCheckPhase phase, const std::string& text) {
                 wxGetApp().CallAfter([weak, source, revision, canceled, phase, text] {
                     if (!weak || weak->m_shutdown || canceled->load() || revision != weak->m_sequence ||
@@ -74,23 +78,69 @@ bool ModelGenerationPanel::request_check_workbench()
                     weak->refresh_post_generation_workbench();
                 });
             };
+            result.source_sha256 = source_hash;
+            result.candidate_status = attempted ? RepairCandidateStatus::Generating : RepairCandidateStatus::None;
             if (attempted) {
                 progress(WorkbenchCheckPhase::Repairing, "正在执行安全修复；原始模型保留……");
                 repair = AI::finish_model_artifact(source, destination, options, [canceled] { return canceled->load(); });
                 if (repair.success && repair.changed() && !canceled->load()) {
                     progress(WorkbenchCheckPhase::Rechecking, "正在复检安全修复后的模型……");
+                    const auto before_faces = result.before_faces, before_vertices = result.before_vertices;
                     result = inspect_workbench_model(destination, [canceled] { return canceled->load(); });
+                    const auto after_faces = result.before_faces, after_vertices = result.before_vertices;
+                    const auto candidate_hash = result.model_sha256;
+                    result.source_sha256 = source_hash;
+                    // The import gate always hashes the currently displayed
+                    // original while a candidate is pending or rejected.
+                    result.model_sha256 = source_hash;
+                    result.before_faces = before_faces;
+                    result.before_vertices = before_vertices;
+                    result.after_faces = after_faces;
+                    result.after_vertices = after_vertices;
+                    result.candidate_status = RepairCandidateStatus::Ready;
+                    result.candidate_path = destination.string();
+                    result.candidate_sha256 = candidate_hash;
+                    result.appearance_mapped = !bound_edits;
+                    result.appearance_confidence = bound_edits ? 0.0 : 1.0;
+                    result.appearance_reason = bound_edits
+                        ? "候选几何改变了面身份；局部涂色、语义和保护编辑需要重新确认。"
+                        : "顶点颜色与模型几何保持可验证映射。";
+                    const bool candidate_ok = workbench_topology_safe(result);
+                    if (!candidate_ok) {
+                        const auto candidate_summary = result.summary;
+                        // Rejected candidate statistics must not certify the
+                        // original whose digest the import gate is checking.
+                        result = source_check;
+                        result.source_sha256 = source_hash;
+                        result.after_faces = after_faces;
+                        result.after_vertices = after_vertices;
+                        result.candidate_status = RepairCandidateStatus::Failed;
+                        result.candidate_path.clear();
+                        result.candidate_sha256.clear();
+                        result.repair_reason = "修复候选复检未通过，原模型保留。候选检查：" + candidate_summary;
+                    }
                     result.removed_faces = repair.removed_degenerate_faces + repair.removed_duplicate_faces;
                     result.reversed_faces = repair.reversed_faces;
-                    result.repair_reason = "已清理 " + std::to_string(result.removed_faces) + " 个面，校正 " +
+                    const std::string changes = "已清理 " + std::to_string(result.removed_faces) + " 个面，校正 " +
                         std::to_string(result.reversed_faces) + " 个面。";
+                    if (candidate_ok) result.repair_reason = changes;
+                    else result.repair_reason += " " + changes;
+                    result.repair_reason += " 修复前 " + std::to_string(before_faces) + " 面/" +
+                        std::to_string(before_vertices) + " 点，修复后 " + std::to_string(after_faces) +
+                        " 面/" + std::to_string(after_vertices) + " 点。";
                 } else if (!repair.success && !canceled->load()) {
+                    result.candidate_status = RepairCandidateStatus::Failed;
+                    result.candidate_path.clear();
                     result.repair_reason = "安全修复失败，原模型保留：" + repair.error;
                     if (result.status == WorkbenchCheckStatus::Normal) result.status = WorkbenchCheckStatus::Attention;
+                } else if (!canceled->load()) {
+                    result.candidate_status = RepairCandidateStatus::Failed;
+                    result.candidate_path.clear();
+                    result.repair_reason = "修复未产生可验证的拓扑变化，原模型保留。";
                 }
             } else if (result.status != WorkbenchCheckStatus::Failed) {
                 result.repair_reason = AI::model_artifact_format(source) == "glb"
-                    ? result.status == WorkbenchCheckStatus::Normal ? "" : "GLB 暂不支持保留贴图的网格修复；当前拓扑问题仍保留。"
+                    ? result.status == WorkbenchCheckStatus::Normal ? "" : "GLB 修复候选将以保留顶点颜色的 OBJ 预览生成，原始 GLB 保留。"
                     : bound_edits ? "当前模型含选区、语义、保护或局部配色标注；无法安全重映射面身份，未自动修改。"
                     : "此版本已自动尝试安全修复；撤销后不会重新应用。";
                 if (source_hash == previous_result.model_sha256 && !previous_result.repair_reason.empty()) {
@@ -103,7 +153,7 @@ bool ModelGenerationPanel::request_check_workbench()
             }
             auto prepared = std::make_shared<ModelPreview3D::PreparedModel>();
             std::string error;
-            if (repair.success && repair.changed() && result.status != WorkbenchCheckStatus::Failed && !canceled->load()) {
+            if (repair.success && repair.changed() && result.candidate_status == RepairCandidateStatus::Ready && !canceled->load()) {
                 try { ModelPreview3D::prepare_model(destination, *prepared, error, {}, {}, true,
                     [canceled] { return canceled->load(); }); }
                 catch (const std::exception& e) { error = e.what(); }
@@ -121,6 +171,8 @@ bool ModelGenerationPanel::request_check_workbench()
                 if (canceled->load()) {
                     cleanup();
                     result.status = WorkbenchCheckStatus::Failed;
+                    result.candidate_status = RepairCandidateStatus::Failed;
+                    result.candidate_path.clear();
                     result.summary = "已取消检查与修复，当前模型保持不变。";
                     result.repair_reason.clear();
                 } else if (attempted) self->m_workbench_repair_attempts.insert(key);
@@ -135,6 +187,7 @@ bool ModelGenerationPanel::request_check_workbench()
                     return;
                 }
                 if (!canceled->load() && repair.success && repair.changed() && error.empty() &&
+                    result.candidate_status == RepairCandidateStatus::Ready &&
                     result.status != WorkbenchCheckStatus::Failed) {
                     auto before = std::make_shared<BeautyCandidateSnapshot>(self->capture_beauty_candidate());
                     self->m_beauty_session_source = before;
@@ -162,15 +215,14 @@ bool ModelGenerationPanel::request_check_workbench()
                         self->m_beauty_candidate_files.push_back(destination);
                         if (self->m_beauty_transactions) self->m_beauty_transactions->mark_preview_ready();
                         self->m_workbench_repair_attempts.insert(id + "|" + repair.output_sha256);
-                        self->m_workbench_auto_repair = true;
-                        self->accept_model_finishing();
-                        if (!self->m_finishing_running && !self->m_finishing_candidate.empty()) {
-                            const auto reason = self->m_finishing_status->GetLabel();
-                            self->m_workbench_auto_repair = false;
-                            self->discard_model_finishing();
-                            self->m_workbench_check_result.status = WorkbenchCheckStatus::Failed;
-                            self->m_workbench_check_result.summary = reason.ToUTF8().data();
-                        }
+                        // Keep the repaired mesh as an explicit candidate. The
+                        // existing Beauty footer provides Accept/Discard and
+                        // therefore preserves undo/redo and the original file.
+                        self->m_workbench_auto_repair = false;
+                        self->m_workbench_check_result.candidate_status = RepairCandidateStatus::Ready;
+                        self->m_workbench_check_result.candidate_path = destination.string();
+                        self->m_workbench_check_result.candidate_sha256 = repair.output_sha256;
+                        self->m_workbench_check_result.summary += "\n修复候选已生成，请预览后接受或保留原模型。";
                     }
                 } else {
                     cleanup();

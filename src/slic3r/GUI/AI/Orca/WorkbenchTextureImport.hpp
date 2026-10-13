@@ -1,6 +1,7 @@
 #pragma once
 
 #include "slic3r/GUI/TextureImportDialog.hpp"
+#include "slic3r/GUI/TextureImportFilamentUsage.hpp"
 #include "slic3r/GUI/ProjectConfigRestore.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/FilamentMixer.hpp"
@@ -35,11 +36,16 @@ inline std::vector<TextureFilamentEntry> workbench_texture_filaments(const Prese
 
 inline bool stage_workbench_texture_import(ModelObject& object, const PaintedMesh& painted,
     std::vector<FilamentMatch> matches, const std::vector<TextureFilamentEntry>& entries,
-    const std::vector<TextureNewMixedFilament>& mixed, PresetBundle& staged, std::string& error)
+    const std::vector<TextureNewMixedFilament>& mixed, PresetBundle& staged, std::string& error,
+    size_t physical_limit = 0)
 {
     auto fail = [&](const char* message) { error = message; return false; };
     if (object.volumes.size() != 1 || !object.volumes.front()->is_model_part() ||
         painted.face_colors.empty() || matches.empty()) return fail("The detached color result is incomplete.");
+    const auto usage = texture_import_filament_usage(entries, matches);
+    if (!usage.valid) return fail("叠色配方或实体耗材引用无效，本次未导入。");
+    if (physical_limit && usage.physical.size() > physical_limit)
+        return fail("实体耗材数量超过当前喷头数量，请为额外颜色选择叠色配方。");
     std::vector<int> slots(entries.size(), -1);
     for (const auto& entry : entries) {
         if (entry.dialog_index < 0 || size_t(entry.dialog_index) >= slots.size()) return fail("Invalid material mapping index.");
@@ -88,7 +94,7 @@ inline bool stage_workbench_texture_import(ModelObject& object, const PaintedMes
         match.filament_index = slots[match.filament_index];
         base = std::min(base, match.filament_index + 1);
     }
-    if (!apply_painted_mesh_to_volume(painted, matches, *object.volumes.front()))
+    if (!apply_painted_mesh_to_volume(painted, matches, *object.volumes.front(), true))
         return fail("Native color painting could not be applied to the detached model.");
     object.volumes.front()->config.set("extruder", base);
     object.config.set("extruder", base);

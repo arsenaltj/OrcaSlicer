@@ -293,6 +293,8 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
     AI::ModelImportResult result;
     result.color_mode = request.color_mode;
     result.subface_color_count = request.subface_color_overrides.size();
+    result.topology_risk = request.topology_risk_confirmed;
+    result.topology_risk_reason = request.topology_risk_reason;
     TriangleMesh semantic_source_mesh;
     const indexed_triangle_set* semantic_source_its = nullptr;
     if (m_plater == nullptr || !AI::is_model_artifact(request.artifact.local_path)) {
@@ -652,6 +654,15 @@ AI::ModelImportResult OrcaWorkspaceAdapter::import_artifact(const AI::ModelImpor
     } else {
         workflow.update_ai_workflow_step(Sidebar::AICheckMesh, Sidebar::AIWorkflowStatus::Success,
             stitched_volumes ? _L("已闭合纹理接缝，保留已选颜色") : _L("封闭网格"));
+    }
+    if (request.topology_risk_confirmed) {
+        // Preserve the explicit exception as a permanent preparation risk;
+        // even if the importer did not independently rediscover the hole,
+        // downstream slicing must not present this model as topology-safe.
+        result.manual_repair_required = true;
+        result.topology_risk = true;
+        workflow.update_ai_workflow_step(Sidebar::AICheckMesh, Sidebar::AIWorkflowStatus::Warning,
+            _L("已按用户确认导入；当前模型带拓扑风险，仅允许尝试切片"));
     }
 
     if (update_existing != size_t(-1) && (loaded.size() != 1 || result.manual_repair_required)) {

@@ -3205,9 +3205,8 @@ void PresetBundle::set_num_filaments(unsigned int n, std::string new_color)
     ConfigOptionInts* filament_nozzle_map = project_config.option<ConfigOptionInts>("filament_nozzle_map");
     ConfigOptionInts* filament_volume_map = project_config.option<ConfigOptionInts>("filament_volume_map");
 
-    // Which slots are new is a fact about the arrays below, not about filament_presets:
-    // update_multi_material_filament_presets() tops that list up to the nozzle count on its own,
-    // so it can already sit at the new size while every array below is still at the old one.
+    // Preset names and configuration arrays may be normalized separately.
+    // Array positions determine which loaded slots are actually new.
     const size_t old_slot_count = filament_color->values.size();
 
     filament_color->resize(n);
@@ -3389,8 +3388,7 @@ bool PresetBundle::can_remove_physical_filament(size_t config_index) const
     if (printer_config.opt_bool("single_extruder_multi_material") || is_bbl_vendor())
         return true;
 
-    const size_t fixed_count = fixed_physical_filament_count();
-    return fixed_count > 0 && size_t(physical_it - physical_indices.begin()) >= fixed_count;
+    return fixed_physical_filament_count() > 0; // Unloaded nozzles stay idle; keep one actual spool.
 }
 
 bool PresetBundle::can_remove_filament(size_t config_index) const
@@ -4231,7 +4229,7 @@ void PresetBundle::update_filament_count()
 {
     if (printers.get_edited_preset().printer_technology() != ptFFF)
         return;
-    const size_t num_extruders = static_cast<size_t>(get_printer_extruder_count());
+    const size_t num_extruders = 1; // Nozzle count is independent of loaded filament count.
     if (filament_presets.size() >= num_extruders)
         return;
     filament_presets.resize(num_extruders, filament_presets.empty()
@@ -5728,19 +5726,16 @@ void PresetBundle::update_multi_material_filament_presets(size_t to_delete_filam
     if (printers.get_edited_preset().printer_technology() != ptFFF)
         return;
 
-    // Orca: when the number of existing filament presets is less than the number of extruders, we will append new filament presets with the
-    // same value as the last existing one.
-    //
-    // Verify and select the filament presets.
+    // Loaded materials may leave hardware nozzles idle.
     size_t num_filaments = this->filament_presets.size();
 
     auto* nozzle_diameter = static_cast<const ConfigOptionFloats*>(printers.get_edited_preset().config.option("nozzle_diameter"));
     size_t num_extruders  = nozzle_diameter->values.size();
-    if (num_extruders > num_filaments) { // Verify validity of the current filament presets.
+    if (num_filaments == 0) { // Keep one material; additional nozzles may remain idle.
         for (size_t i = 0; i < std::min(this->filament_presets.size(), num_extruders); ++i)
             this->filament_presets[i] = this->filaments.find_preset(this->filament_presets[i], true)->name;
         // Append the rest of filament presets.
-        this->filament_presets.resize(num_extruders, this->filament_presets.empty() ? this->filaments.first_visible().name :
+        this->filament_presets.resize(1, this->filament_presets.empty() ? this->filaments.first_visible().name :
                                                                                       this->filament_presets.back());
         num_filaments = this->filament_presets.size();
     }
@@ -5750,24 +5745,23 @@ void PresetBundle::update_multi_material_filament_presets(size_t to_delete_filam
     // Now verify if flush_volumes_matrix has proper size (it is used to deduce number of extruders in wipe tower generator):
     std::vector<double> old_matrix = this->project_config.option<ConfigOptionFloats>("flush_volumes_matrix")->values;
     size_t old_nozzle_nums = this->project_config.option<ConfigOptionFloats>("flush_multiplier")->values.size();
-    size_t old_number_of_filaments = size_t(sqrt(old_matrix.size() / old_nozzle_nums) + EPSILON);
+    size_t old_number_of_filaments = old_nozzle_nums ? size_t(sqrt(old_matrix.size() / old_nozzle_nums) + EPSILON) : 0;
     size_t nozzle_nums = get_printer_extruder_count();
     if (old_nozzle_nums != nozzle_nums) {
         std::vector<double>& f_multiplier = this->project_config.option<ConfigOptionFloats>("flush_multiplier")->values;
         f_multiplier.resize(nozzle_nums, 1.f);
     }
 
-    if (old_matrix.size() != num_filaments * num_filaments * nozzle_nums) {
-        // First verify if purging volumes presets for each extruder matches number of extruders
-        std::vector<double>& filaments = this->project_config.option<ConfigOptionFloats>("flush_volumes_vector")->values;
-        while (filaments.size() < 2* num_filaments) {
-            filaments.push_back(filaments.size()>1 ? filaments[0] : 140.);  // copy the values from the first extruder
-            filaments.push_back(filaments.size()>1 ? filaments[1] : 140.);
-        }
-        while (filaments.size() > 2* num_filaments) {
-            filaments.pop_back();
-            filaments.pop_back();
-        }
+    // Different slot/nozzle layouts can have the same flattened matrix size.
+    // Normalize the vector independently and compare the layout as well.
+    std::vector<double>& filaments = this->project_config.option<ConfigOptionFloats>("flush_volumes_vector")->values;
+    const double first_load = filaments.empty() ? 140. : filaments[0];
+    const double first_unload = filaments.size() < 2 ? 140. : filaments[1];
+    while (filaments.size() < 2 * num_filaments)
+        filaments.push_back(filaments.size() % 2 ? first_unload : first_load);
+    filaments.resize(2 * num_filaments);
+    if (old_number_of_filaments != num_filaments || old_nozzle_nums != nozzle_nums ||
+        old_matrix.size() != num_filaments * num_filaments * nozzle_nums) {
 
         size_t old_matrix_size = old_number_of_filaments * old_number_of_filaments;
         size_t new_matrix_size = num_filaments * num_filaments;
