@@ -50,7 +50,6 @@ AI::ModelImportResult Plater::import_workbench_model(const AI::ModelImportReques
         }
         DecodedWorkbenchModel decoded;
         if (!decode_workbench_model(import_path, decoded, result.error, {}, obj_match)) return fail(result.error);
-        if (options.source_units_in_meters) decoded.mesh.scale(1000.f);
         auto detached_storage = assemble_workbench_model(decoded, import_path, options.source_units_in_meters);
         auto& detached = *detached_storage;
         if (obj_match && (!decoded.colors.vertex_colors.empty() ||

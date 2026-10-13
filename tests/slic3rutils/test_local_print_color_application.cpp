@@ -24,6 +24,44 @@
 using namespace Slic3r;
 namespace Application = GUI::LocalPrintColorApplication;
 
+TEST_CASE("safe working copy placement retains the native center or nearest empty position", "[LocalPrintModelImport]")
+{
+    Test::RecipeApplicationFixture fixture(2);
+    const int scenario = GENERATE(0, 1, 2);
+    const Vec2d origin = scenario == 2 ? Vec2d(420, -250) : Vec2d::Zero();
+    const Vec2d position = origin + (scenario == 1 ? Vec2d(75, 50) : Vec2d(50, 50));
+    Model source;
+    auto* object = source.add_object(); object->input_file = "working.glb";
+    auto* volume = object->add_volume(TriangleMesh(its_make_cube(15, 20, 25)));
+    volume->source.input_file = object->input_file;
+    std::unique_ptr<Model> prepared; std::string error;
+    REQUIRE(GUI::LocalPrintModelImport::prepare(*object, position, {100, 100}, prepared, error));
+    auto* instance = prepared->objects.front()->instances.front();
+    instance->set_rotation({0, 0, .2});
+    instance->set_scaling_factor({1.1, .8, 1});
+    instance->set_assemble_transformation(instance->get_transformation());
+    const auto matrix = instance->get_matrix();
+    const auto assembly = instance->get_assemble_transformation().get_matrix();
+    const auto vertices = prepared->objects.front()->volumes.front()->mesh().its.vertices;
+    Polygon bed = Polygon::new_scale({{0, 0}, {100, 0}, {100, 100}, {0, 100}});
+    bed.translate(scale_(origin.x()), scale_(origin.y()));
+    arrangement::ArrangePolygons obstacles;
+    if (scenario == 1) {
+        arrangement::ArrangePolygon fixed;
+        fixed.poly = ExPolygon(Polygon::new_scale({{30, 30}, {60, 30}, {60, 70}, {30, 70}}));
+        fixed.bed_idx = 0; obstacles.push_back(fixed);
+    }
+    REQUIRE(GUI::LocalPrintModelImport::place(*prepared->objects.front(), bed, obstacles,
+        fixture.bundle.full_config(), 100., error));
+    CHECK(error.empty());
+    CHECK(instance->get_matrix().matrix() == matrix.matrix());
+    CHECK(instance->get_assemble_transformation().get_matrix().matrix() == assembly.matrix());
+    CHECK_THAT(prepared->objects.front()->instance_bounding_box(0).center().x(), Catch::Matchers::WithinAbs(position.x(), 1e-6));
+    CHECK_THAT(prepared->objects.front()->instance_bounding_box(0).center().y(), Catch::Matchers::WithinAbs(position.y(), 1e-6));
+    CHECK(prepared->objects.front()->volumes.front()->mesh().its.vertices == vertices);
+    CHECK(object->instances.empty());
+}
+
 TEST_CASE("working copy placement uses available plate space without moving fixed obstacles", "[LocalPrintModelImport]")
 {
     Test::RecipeApplicationFixture fixture(2);
@@ -51,6 +89,95 @@ TEST_CASE("working copy placement uses available plate space without moving fixe
     CHECK(diff_ex({placed.transformed_poly()}, {ExPolygon(bed)}).empty());
     CHECK(obstacles.front().translation == fixed.translation);
     CHECK(object->instances.empty());
+}
+
+TEST_CASE("working copy placement accepts native spacing between curved model silhouettes", "[LocalPrintModelImport]")
+{
+    Test::RecipeApplicationFixture fixture(2);
+    Model source; auto* object = source.add_object(); object->input_file = "working.glb";
+    auto* volume = object->add_volume(TriangleMesh(its_make_cylinder(32., 100., PI / 9.)));
+    volume->source.input_file = object->input_file;
+    std::unique_ptr<Model> prepared; std::string error;
+    REQUIRE(GUI::LocalPrintModelImport::prepare(*object, {175, 175}, {350, 350}, prepared, error));
+    auto* instance = prepared->objects.front()->instances.front();
+    instance->set_rotation({0, 0, GENERATE(0., .23)});
+    instance->set_scaling_factor({1., .8, 1.});
+    arrangement::ArrangePolygon fixed;
+    instance->get_arrange_polygon(&fixed, fixture.bundle.full_config());
+    fixed.bed_idx = 0;
+    const auto before = instance->get_matrix();
+    const auto mesh = prepared->objects.front()->volumes.front()->mesh().its.vertices;
+    const Polygon bed = Polygon::new_scale({{0, 0}, {350, 0}, {350, 350}, {0, 350}});
+    const bool placed = GUI::LocalPrintModelImport::place(*prepared->objects.front(), bed, {fixed},
+        fixture.bundle.full_config(), 350., error);
+    INFO(error);
+    REQUIRE(placed);
+    arrangement::ArrangePolygon result;
+    instance->get_arrange_polygon(&result, fixture.bundle.full_config());
+    // Independent physical clearance check, away from integer contact rounding.
+    CHECK(intersection_ex(offset_ex(result.transformed_poly(), scale_(.99), ClipperLib::jtRound),
+        offset_ex(fixed.transformed_poly(), scale_(.99), ClipperLib::jtRound)).empty());
+    CHECK(diff_ex({result.transformed_poly()}, {ExPolygon(bed)}).empty());
+    CHECK((instance->get_offset().head<2>() - Vec2d(175, 175)).norm() > 1.);
+    CHECK(instance->get_matrix().matrix().block<3, 3>(0, 0) == before.matrix().block<3, 3>(0, 0));
+    CHECK_THAT(instance->get_offset().z(), Catch::Matchers::WithinAbs(before.translation().z(), 1e-12));
+    CHECK(prepared->objects.front()->volumes.front()->mesh().its.vertices == mesh);
+}
+
+TEST_CASE("working copy placement keeps clearance from objects excluded regions and wipe towers", "[LocalPrintModelImport]")
+{
+    Test::RecipeApplicationFixture fixture(2);
+    const int obstacle_kind = GENERATE(0, 1, 2);
+    Model source; auto* object = source.add_object(); object->input_file = "working.glb";
+    auto* volume = object->add_volume(TriangleMesh(its_make_cube(15, 15, 15)));
+    volume->source.input_file = object->input_file;
+    std::unique_ptr<Model> prepared; std::string error;
+    // No physical overlap, but only 1 mm clearance instead of the existing 2 mm.
+    REQUIRE(GUI::LocalPrintModelImport::prepare(*object, {50, 50}, {100, 100}, prepared, error));
+    const Polygon bed = Polygon::new_scale({{0, 0}, {100, 0}, {100, 100}, {0, 100}});
+    arrangement::ArrangePolygon fixed;
+    fixed.poly = ExPolygon(Polygon::new_scale({{58.5, 30}, {80, 30}, {80, 70}, {58.5, 70}}));
+    fixed.bed_idx = 0; fixed.is_virt_object = obstacle_kind == 1; fixed.is_wipe_tower = obstacle_kind == 2;
+    arrangement::ArrangePolygons obstacles {fixed};
+    REQUIRE(GUI::LocalPrintModelImport::place(*prepared->objects.front(), bed, obstacles,
+        fixture.bundle.full_config(), 100., error));
+    arrangement::ArrangePolygon placed;
+    prepared->objects.front()->instances.front()->get_arrange_polygon(&placed, fixture.bundle.full_config());
+    CHECK(intersection_ex(offset_ex(placed.transformed_poly(), scale_(.99)),
+        offset_ex(fixed.transformed_poly(), scale_(.99))).empty());
+    CHECK(diff_ex(offset_ex(placed.transformed_poly(), scale_(.99)), {ExPolygon(bed)}).empty());
+    CHECK(obstacles.front().poly == fixed.poly);
+    CHECK(obstacles.front().translation == fixed.translation);
+    CHECK(obstacles.front().is_virt_object == fixed.is_virt_object);
+    CHECK(obstacles.front().is_wipe_tower == fixed.is_wipe_tower);
+}
+
+TEST_CASE("working copy placement falls back within a nonrectangular or translated plate", "[LocalPrintModelImport]")
+{
+    Test::RecipeApplicationFixture fixture(2);
+    const bool translated = GENERATE(false, true);
+    const bool concave = GENERATE(false, true);
+    const Vec2d origin = translated ? Vec2d(420, -250) : Vec2d::Zero();
+    Model source; auto* object = source.add_object(); object->input_file = "working.glb";
+    auto* volume = object->add_volume(TriangleMesh(its_make_cube(15, 15, 15)));
+    volume->source.input_file = object->input_file;
+    std::unique_ptr<Model> prepared; std::string error;
+    REQUIRE(GUI::LocalPrintModelImport::prepare(*object, origin + (concave ? Vec2d(50, 50) : Vec2d(90, 90)), {100, 100}, prepared, error));
+    Polygon bed = concave
+        ? Polygon::new_scale({{0, 0}, {100, 0}, {100, 35}, {35, 35}, {35, 100}, {0, 100}})
+        : Polygon::new_scale({{50, 0}, {100, 50}, {50, 100}, {0, 50}});
+    bed.translate(scale_(origin.x()), scale_(origin.y()));
+    const auto before = prepared->objects.front()->instances.front()->get_offset();
+    const bool placed_ok = GUI::LocalPrintModelImport::place(*prepared->objects.front(), bed, {}, fixture.bundle.full_config(), 100., error);
+    INFO(error);
+    CAPTURE(translated, concave);
+    REQUIRE(placed_ok);
+    auto* instance = prepared->objects.front()->instances.front();
+    arrangement::ArrangePolygon placed; instance->get_arrange_polygon(&placed, fixture.bundle.full_config());
+    CHECK(diff_ex(offset_ex(placed.transformed_poly(), scale_(.99)), {ExPolygon(bed)}).empty());
+    CHECK((instance->get_offset().head<2>() - before.head<2>()).norm() > 1.);
+    CHECK_THAT(instance->get_offset().z(), Catch::Matchers::WithinAbs(before.z(), 1e-12));
+    CHECK(instance->get_assemble_transformation().get_matrix().matrix() == instance->get_matrix().matrix());
 }
 
 TEST_CASE("a full plate or excessive model height retains the working copy and rejects import", "[LocalPrintModelImport]")
