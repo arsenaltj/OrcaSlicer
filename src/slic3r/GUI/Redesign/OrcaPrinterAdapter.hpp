@@ -22,6 +22,9 @@ public:
     explicit OrcaPrinterAdapter(Plater* plater) : m_plater(plater) {}
     PrinterWorkspaceSnapshot snapshot() const;
     bool preview_toolpath_outside() const;
+    // Returns a user-facing explanation of the native G-code boundary check.
+    // The string is empty when no current preview is outside the build volume.
+    std::string preview_toolpath_diagnostic() const;
     std::vector<PrinterWorkspaceDevice> devices() const;
     bool select_device(const std::string& id) const;
     bool review_print(wxWindow* parent) const;

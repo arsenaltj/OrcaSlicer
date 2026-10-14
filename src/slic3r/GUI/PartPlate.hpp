@@ -654,6 +654,10 @@ class PartPlateList : public ObjectBase
 
 public:
     void set_default_wipe_tower_pos_for_plate(int plate_idx, bool init_pos = false);
+    // Keep the serialized project position and the model-side wipe tower in sync
+    // after a position recalculation. The model copy is consumed by Print/G-code
+    // generation and must not retain the previous plate coordinate.
+    void sync_wipe_tower_positions_to_model();
     class BedTextureInfo {
     public:
         class TexturePart {

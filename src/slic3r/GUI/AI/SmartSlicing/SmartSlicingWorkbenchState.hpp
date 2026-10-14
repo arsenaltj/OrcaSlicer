@@ -5,6 +5,7 @@
 #include "slic3r/AI/SmartSlicing/Domain/TrialMetrics.hpp"
 #include "slic3r/AI/SmartSlicing/Domain/PrintabilityReport.hpp"
 #include "slic3r/AI/SmartSlicing/Ports/IOfficialSliceGateway.hpp"
+#include "slic3r/AI/SmartSlicing/Domain/SmartSliceTypes.hpp"
 
 #include <array>
 #include <algorithm>
@@ -132,6 +133,15 @@ struct SmartSlicingWorkbenchState
     std::string native_blocked_reason;
     bool native_execution {false};
     bool can_keep_current_mesh {false};
+
+    // Lightweight, millisecond-scale recommendations are the user-facing
+    // SmartSlice plans.  Once selected they are translated into the native
+    // plate config and sent through Orca's normal slicing entry point.  The
+    // legacy candidate arrays remain available for compatibility with the
+    // isolated trial workflow, but are not a prerequisite for native slicing.
+    std::optional<AI::SmartSlicing::SmartAnalysisResult> lightweight_analysis;
+    bool lightweight_analyzing {false};
+    bool lightweight_stale {false};
 };
 
 using SmartSlicingWorkbenchListener = std::function<void(const SmartSlicingWorkbenchState&)>;

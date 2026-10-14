@@ -1575,6 +1575,7 @@ void GCodeViewer::reset()
     //BBS: should also reset the result id
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(": current result id %1% ")%m_last_result_id;
     m_last_result_id = -1;
+    m_gcode_result = nullptr;
     //BBS: add only gcode mode
     m_only_gcode_in_preview = false;
 

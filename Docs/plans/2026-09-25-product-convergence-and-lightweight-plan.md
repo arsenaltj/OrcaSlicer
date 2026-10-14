@@ -1,3 +1,59 @@
+# 2026-10-14 SmartSlice：详情弹框单一自绘内容面板已实现，待视觉复验
+
+已按用户确认实施：详情滚动内容使用双缓冲自绘面板，滚动条移到外层 viewport 作为兄弟窗口，内部 `wxScrolledWindow` 只负责滚动和虚拟高度。这样移除了原生 `wxStaticText` 与 Windows bit-blit 的残影组合，并将滚动单位绑定到实际字体行高。Windows Release 构建、固定运行目录安装、SmartSlice 定向测试、架构守卫和 diff 检查通过；真实滚轮/拖拽/DPI 视觉验收仍待用户窗口确认。
+
+
+用户真实窗口复验确认擦料塔越界提示已消失，但详情参数弹框下滑仍出现顶部裁切和“预计耗材”重复残留。源码中详情数据只生成一条预计耗材，问题来自 Windows `wxScrolledWindow::ScrollWindow()` 对 `wxStaticText` 子窗口的 bit-blit 局部重绘与同层级自绘滚动条叠加；前一轮 `Refresh/Update` 和延后 `FitInside()` 已不足以消除旧像素。待用户确认后改为单一 owner-drawn 内容面板，按实际字体行高绘制全文并由外层滚动容器提供滚动，保留现有暗色主题和交互契约。
+
+
+已按截图原因实施最小修复：滚动后刷新 `wxScrolledWindow` 和详情 `wxStaticText`，并将 `FitInside()` 延后到最终布局后；DPI 重排同样重新计算虚拟滚动范围。SmartSlice 数据生成、详情文本和暗色滚动条交互保持不变。
+
+增量编译、SmartSlice 定向测试、集成守卫和差异检查均通过。由于用户正在使用的 `.tmp/dev/run/orca-slicer.exe`（PID 19768）及其 sidecar 仍占用运行目录，最新构建尚未安装到 `.tmp/dev/run`；待用户关闭当前窗口后继续 Run 五步并进行真实 GUI 复验。
+
+# 2026-10-14 SmartSlice：详情弹框滚轮重绘异常定位
+
+用户真实窗口反馈：滚轮向上后，详情顶部文字出现裁切，底部多条“预计耗材”重复显示。当前 `lightweight_detail_rows()` 只生成一条预计耗材行，源码没有重复数据来源；主要怀疑 `wxScrolledWindow::ScrollWindow()` 搭配子窗口 `wxStaticText` 和自绘滚动条直接子窗口时，Windows 局部滚动未完整失效，产生旧帧残影。次要风险是详情对话框在最终 `Layout()` 前调用 `FitInside()`，导致虚拟高度和滚动范围可能滞后。
+
+本轮只完成源码定位和证据登记，不修改代码、不重编译。待确认的修复顺序：滚动后刷新内容/容器并将 `FitInside()` 移到最终布局之后；若仍有残影，再将自绘滚动条改为滚动容器外层的叠加兄弟窗口或把详情文本改为单一自绘内容面板。
+
+# 2026-10-14 SmartSlice：详情弹框滚动条主题修正交付
+
+用户已授权实施详情参数弹框滚动条暗色主题方案：隐藏 Windows 原生白色滚动条，使用 Redesign 暗色轨道与灰色/悬停/拖动滑块，并保留滚轮、轨道翻页、滑块拖拽和 DPI 缩放。另修正轨道滚动调用保留横向视图原点，避免 wxScrolledWindow 在特殊布局下抖动。
+
+源码范围：`src/slic3r/GUI/Redesign/RedesignMessageDialog.cpp/.hpp`。`[SmartSlice]` 定向测试 5 cases / 54 assertions、`git diff --check`、`python scripts/verify_ai_integration.py --json` 均通过；Windows Release Run `20261014-114626-656` 五步通过并安装到 `D:\OrcaSlicer-version\OrcaSlicer\.tmp\dev\run`。
+
+GUI状态：当前 CUA 会话 `cua.getState()` 仍返回 `apps: []`，且未暴露 `listApps`/`listWindows`，因此不把静态构建当作真实 GUI 通过；用户将直接启动最新运行目录完成滚轮、拖拽、轨道翻页和关闭后的工作台验收。
+
+验收边界：本轮不改变 SmartSlice 算法、推荐参数、配置注入、原生切片流程或详情行契约；用户反馈具体 UI 行为后再决定是否追加修正。
+
+# 2026-10-14 SmartSlice：方案详情折叠与状态文案收敛
+
+用户已授权实施两项 UI 调整：选择 AI 模式后摘要最多显示 8 条参数；仅当完整详情超过 8 条时显示“查看全部”，并使用与当前 Redesign 工作台一致的深色圆角详情弹框，支持遮罩、滚动和统一关闭按钮。轻量推荐与正式候选共用详情行模型，完整内容仍可查看。工作台主状态只显示“推荐方案已生成”，不再显示“可直接原生切片”尾缀；原生流程说明保留在“重新分析”的帮助提示中，SmartSlice 算法、参数注入和 Orca 原生切片调度不变。
+
+源码范围：`RedesignShell.hpp`、`RedesignModelWorkflow.cpp`、`RedesignMessageDialog.hpp/.cpp`。SmartSlice 定向测试 `20261014-105346-111` 的 5 cases / 54 assertions 全部通过；Windows Release 增量 Run `20261014-105643-457` 的 catalogs/build/install/runtime-check/python-check 五步通过，运行目录为 `.tmp/dev/run`。`verify_ai_integration.py --json` 和 `git diff --check` 通过。Computer-use 当前未提供合法 Orca 窗口，故 8 行布局、弹框外观和状态文案仍不能记为 GUI 通过。
+
+# 2026-10-13 SmartSlice：重启 Codex 后 Computer-use 重试结果
+
+用户已重启 Codex 桌面应用并要求再次使用 Computer-use。已重新初始化 `cua_repl`；`cua.getState()` 仍返回 `apps: []`，仅有浏览器清单，当前运行时调用 `cua.listWindows()` / `cua.listApps()` 也显示未暴露该接口。未取得合法 Orca 窗口对象，未执行 UI 注入，GUI 验收继续保持未通过。该证据说明窗口枚举/trusted RPC 尚未连接，不涉及用户授权不足。代码、构建产物和既有测试状态不变，待工具恢复后继续导入模型、三卡片切换、开始原生切片及取消/撤销/失败恢复验收。
+
+# 2026-10-13 SmartSlice：预检不阻塞原生切片、估算校准与本轮验证
+
+用户已确认实施两个调整：SmartSlice 新增的正式预检只做提示，不阻塞三种推荐方案注入 Orca 原生配置和 `Plater::reslice()` 路径；时间/耗材估算按建议的分路径启发式并使用当前有效 Orca 统计校准。已完成：`SmartSlicingFeatureHost` 选择轻量方案后原子写入当前 `PartPlate::config()`，直接进入现有原生切片调度；`SmartSlicingEngine` 分别计算外壁、内壁、填充、支撑、移动与加速度开销，Speed/Balanced/Quality 参数与耗时保持有序；工作台在轻量结果完成后显示“推荐方案已生成 · 可直接原生切片”和可用的“重新分析”入口。预检原因继续可见为诊断提示，原生 `plate->can_slice()` 仍作为 Orca 自身模型/工程状态检查。
+
+验证证据：Windows Release 增量 `CppTest`（`20261013-232700-449`）的 `[SmartSlice]` 5 cases / 54 assertions 全部通过，新增原生 3 小时基线校准与 Speed < Balanced < Quality 估算回归；`Run -NoLaunch`（`20261013-232904-762`）catalogs/build/install/runtime-check/python-check 五步通过并安装到 `.tmp/dev/run`；`verify_ai_integration.py --json`、`git diff --check` 通过。真实 GUI 仍未验：PID 53308 的匹配程序响应正常，但 computer-use `cua.getState()` 返回空 `apps`，无法取得合法窗口句柄，因此未注入 UI 操作，也未把启动证据写成 GUI 通过。
+
+剩余验收：恢复 trusted RPC 后，固定真实模型验证自动分析、三模式切换、点击开始切片后参数注入及原生切片完成/取消/撤销/失败恢复；若用户先行复验，入口为 `D:\OrcaSlicer-version\OrcaSlicer\.tmp\dev\run\orca-slicer.exe`。本轮不提交、不推送、不发布。
+
+## 2026-10-13 SmartSlice：真实 GUI 验收重试及工具阻塞证据
+
+用户已明确授权按 SmartSlice 方案实施并要求使用 computer use 完成真实 GUI 验收。本轮重新初始化 `cua_repl`，首次状态调用 `cua.getState()` 返回空 Windows 应用清单；按项目 computer-use 技能初始化 `@oai/sky` 后，两次 `sky.list_apps()`（含 2 秒恢复重试）均返回 `Trusted RPC service is not configured: sky`。当前 `cua` 运行时也未暴露 `getApp`/`listWindows`，无法取得由工具返回的合法 Orca 窗口对象。未执行任何 UI 注入、模型导入或切片动作，也没有代码改动；现有构建/定向测试只作为前置条件，不能替代 GUI 验收。真实 GUI 验收仍待 Windows Computer Use trusted RPC 恢复后继续，固定范围为导入模型、观察“分析中…”、三模式卡片切换、正式候选、开始切片以及取消/撤销/失败恢复。当前不提交、不推送、不发布。
+
+## 2026-10-13 SmartSlice：预检阻塞与轻量/正式并发修复
+
+用户反馈新运行程序在模型进入切片页面后，三张 AI 卡片均显示“暂不可用”。代码审查确认原实现先执行正式可打印性预检；预检若因开放网格、打印空间或能力/耗材问题进入 `AwaitingRiskDecision`，会在启动轻量分析前返回。原实现的轻量分析还嵌在正式候选 worker 内，二者串行，未完全满足“自动前置分析并发生成三套方案”的规划。已将轻量分析抽为独立 `lightweight_worker`：两条预检路径均捕获不可变 `TriangleMeshSnapshot` 并后台计算，正式候选 worker 可并行运行；预检阻塞时的轻量结果只用于 UI 展示，正式参数应用仍受候选/预检事务约束。
+
+修复后 Windows Release Build `20261013-192909-786`、`[SmartSlice]` 44 assertions / 4 cases、`verify_ai_integration.py --json` 与 `git diff --check` 均通过。`./dev.ps1 -NoLaunch` 安装后，`./dev.ps1` 启动匹配运行时 PID 49024，启动证据 `.tmp/dev/logs/20261013-193510-570/result.json`。真实 GUI 可见状态尚未由 computer-use 或用户复验确认；正式切片、取消/撤销/失败恢复仍保持未验。
+
 ## 2026-10-13 E2 / UX-08：最新 integration 融合版已构建安装（待用户测试确认后再提交 PR）
 
 用户明确要求先获取远程最新代码，再将本地已提交但尚未集成的代码基于最新版本提交、解决冲突并合入。负责会话/分支仍为本会话 / `codex/pr-local-ui-filament-20261012`；本地恢复点 `418c749368ae329583699e8b587f56dcb088f2f0`，集成基线 `415be0c366a07ed2b0dc13c63e94479b922e1668`。旧PR27于2026-10-12合入的是087306265b；后续4166c35613、f6fa7cc9ad、a8f860392f和418c749368尚未进入集成。采用普通merge保留历史，不重放或强推共享提交；后续PR目标仍为codex/team/integration，非作者复核和维护者人工合入按团队SOP。
@@ -1318,3 +1374,22 @@ PR 作者报告已有新控件的真实窗口、预览、前后对比和保存�
 产物身份：[完整 Run](../../.tmp/dev/logs/20261011-182741-000/result.json) 五步通过，17,257 个安装文件与 EXE/DLL/资源/Python 核对成功，状态 PREPARED（NoLaunch）。构建、最终 CppTest 与 Run 的 native_identity 均为 `eca93c9dc1834dbe991a5d5ecca8fecba52c279ae727de14988a7f9d312d2e7e`，源码/配置/逐文件记录在各自 before.json 和 `.tmp/dev/runtime-state.json`；DLL SHA-256 `08a9dcd81d59516364b944cd1ce2c12eaa0a0359f5362158b59c75e83ab65a7a`，EXE `6185299e71132dcf008085b9bc8e917a1ddc41d7196e645aebfa2f5a66aadb34`。收尾仅更新状态文档，原生代码身份保持。失败/主动暂停的旧构建日志保留，不充当最终验证证据。
 
 剩余验收与恢复条件：本会话未提供 computer-use 的 node_repl/sky 工具，未实际启动或操作新窗口；真实工作台按钮可见性、配置取消/提交失败恢复、撤销重做、保存/历史恢复与准备页一致性，以及纹理/渐变模型预览和保存外观一致性仍需主窗口核验。设备同步需实际可用设备，当前未实测；用户视觉接受、实物打印色准另列未验。已准备 [独立配置启动入口](../../.tmp/dev/logs/Start-Printer-Filament-QA.cmd)、`.tmp/dev/data/printer-filament-qa/models` 的已有彩色 GLB/原生 3MF 副本及 [原件/副本哈希](../../.tmp/dev/logs/printer-filament-qa-models.json)。具备 GUI 工具时继续这条验收，不重跑未变代码或增加付费/打印任务；源码、原始样本及其他 checkout 保留。
+## 2026-10-13 SmartSlice：端侧规则分析与三模式推荐（代码完成，GUI 验收受 CUA 阻塞）
+
+用户已明确授权按既定方案实施：基于现有 `SmartSlicingFeatureHost`、`SmartSlicingCoordinator`、`Print::apply` 与 Orca 后台切片调度，新增纯端侧 C++17 轻量分析，不创建第二套正式切片流程。本轮沿当前 checkout 完成以下实现：
+
+- `src/slic3r/AI/SmartSlicing/Domain/SmartSliceTypes.hpp/.cpp` 定义跨线程 UI 契约，包含 `ModelMetrics`、`SliceRecommendation`、`SmartAnalysisResult`、机器/耗材快照及三种 `SliceMode`。
+- `src/slic3r/AI/SmartSlicing/Application/SmartSlicingEngine.hpp/.cpp` 实现规则启发式和快速解析估算；`SmartSlicingEngineNative.cpp` 保留 owner-thread `ModelObject`/`TriangleMesh` 入口，FeatureHost 只向 worker 传 `TriangleMeshSnapshot`。层高、线宽、速度、密度和支撑角均做有限值与物理范围夹紧，阈值在代码注释中标注喷嘴工艺窗口/悬垂经验来源。
+- `src/slic3r/GUI/AI/Orca/SmartSliceApplier.hpp/.cpp` 将推荐映射到 `DynamicPrintConfig` 的层高、壁数、填充、外壁速度、支撑、支撑角、Arachne、线宽和可选自适应层高；调用 `Print::apply`，调度失败或异常时按捕获基线回滚，正式流程仍由已有版本化候选/官方切片网关启动。
+- `SmartSlicingFeatureHost` 在 owner thread 捕获不可变模型/配置快照，后台线程异步计算并用 attempt 版本防止迟到结果污染工作区；`RedesignModelWorkflow` 在正式候选完成前显示“分析中/轻量估算”，可切换三张卡片并展示层高、墙数、填充、外壁速度、支撑、估算时间、耗材和质量评分。正式开始切片仍要求现有候选事务就绪。
+
+验证证据：`.tmp/dev/logs/20261013-180106-248/result.json` 的 `catalogs/build/install/runtime-check/python-check` 五步成功，源码身份为 `dd2719fa2d32b061278420f2d22f2c297cc99424f745cb3534be02b495cc2016`；`.tmp/dev/build/tests/slic3rutils/Release/slic3rutils_tests.exe "[SmartSlice]"` 通过 44 assertions / 4 cases；`python scripts/verify_ai_integration.py --json` 通过且未跳过 Git；`git diff --check` 通过。完整运行时已启动并响应，但 CUA 后端返回空 Windows apps，缺少 `getApp`/`listWindows`，因此没有执行或冒充真实 GUI 功能验收。当前不提交、不推送、不发布、不打印。
+
+剩余与恢复条件：恢复可用 Windows CUA 后，使用匹配运行时和独立配置导入真实模型，验证自动分析状态、三模式参数切换、正式切片、取消/撤销/失败恢复，并核对轻量估算被正式统计替换；多 DPI/GPU、跨平台和实物打印仍按原计划保持未验。该增量不改变现有架构锚点，架构守卫已通过。
+
+
+# 2026-10-13 SmartSlice 截图反馈：轻量结果/正式候选分层修正
+
+用户反馈三张卡片已经显示层高与参数，但底部仍显示“方案暂不可用”、开始切片为灰色，并询问“重新分析”是否真正重跑三套方案。代码追踪确认：轻量 `SmartSlicingEngine` 已独立完成三模式规则分析；正式候选受 `SmartSlicingCoordinator` 可打印性预检和版本化 `ApplyService` 约束。预检阻塞时 `candidate_session_diagnostic=printability_action_required`，UI 原先以通用 `diagnostic` 直接覆盖状态文案，造成轻量结果被误读为不可用；没有正式候选时 `state.can_start=false` 是安全设计，避免把轻量估算直接注入 Orca 配置并触发切片。
+
+本轮仅修正 `RedesignModelWorkflow.cpp` 的状态表达：轻量完成且预检阻塞显示“轻量方案已生成 · 正式切片暂不可用”，保留详细预检原因和重新分析提示；开始切片继续禁用并给出明确悬浮原因；重新分析提示明确执行预检、轻量分析及预检通过后的正式候选搜索。Windows 增量构建、SmartSlice 定向测试、架构守卫和 diff 检查通过。真实 GUI 因当前 Computer Use 无合法 Windows 窗口后端保持未验。
