@@ -1388,8 +1388,23 @@ PR 作者报告已有新控件的真实窗口、预览、前后对比和保存�
 剩余与恢复条件：恢复可用 Windows CUA 后，使用匹配运行时和独立配置导入真实模型，验证自动分析状态、三模式参数切换、正式切片、取消/撤销/失败恢复，并核对轻量估算被正式统计替换；多 DPI/GPU、跨平台和实物打印仍按原计划保持未验。该增量不改变现有架构锚点，架构守卫已通过。
 
 
+## 2026-10-14 SmartSlice：确认弹框内容模式隔离与构建交付
+
+用户反馈生成 3D 模型确认弹框、生成 2D 设计图确认弹框受到 SmartSlice 详情弹框滚动修复影响。本轮已按“显式内容模式隔离”方案修改 `RedesignMessageDialog`：默认 `Native` 保留确认弹框的原生 `wxScrolledWindow + wxStaticText` 路径，`show_redesign_details()` 显式使用 `OwnerDrawnDetails` 保留 SmartSlice 详情弹框的暗色自绘滚动实现。未改变生成业务逻辑、按钮、遮罩、计时防误触或 SmartSlice 数据/切片流程。
+
+验证：Windows `Run -NoLaunch` 五步成功，结果为 [`20261014-214122-879`](../../.tmp/dev/logs/20261014-214122-879/result.json)，运行目录为 `D:\OrcaSlicer-version\OrcaSlicer\.tmp\dev\run`；`git diff --check` 与 `python scripts/verify_ai_integration.py --json` 通过。真实 GUI 视觉验收因 Computer-use 未提供合法 Orca 窗口对象保持待用户复验。本轮不提交、不推送、不发布。
+
 # 2026-10-13 SmartSlice 截图反馈：轻量结果/正式候选分层修正
 
 用户反馈三张卡片已经显示层高与参数，但底部仍显示“方案暂不可用”、开始切片为灰色，并询问“重新分析”是否真正重跑三套方案。代码追踪确认：轻量 `SmartSlicingEngine` 已独立完成三模式规则分析；正式候选受 `SmartSlicingCoordinator` 可打印性预检和版本化 `ApplyService` 约束。预检阻塞时 `candidate_session_diagnostic=printability_action_required`，UI 原先以通用 `diagnostic` 直接覆盖状态文案，造成轻量结果被误读为不可用；没有正式候选时 `state.can_start=false` 是安全设计，避免把轻量估算直接注入 Orca 配置并触发切片。
 
 本轮仅修正 `RedesignModelWorkflow.cpp` 的状态表达：轻量完成且预检阻塞显示“轻量方案已生成 · 正式切片暂不可用”，保留详细预检原因和重新分析提示；开始切片继续禁用并给出明确悬浮原因；重新分析提示明确执行预检、轻量分析及预检通过后的正式候选搜索。Windows 增量构建、SmartSlice 定向测试、架构守卫和 diff 检查通过。真实 GUI 因当前 Computer Use 无合法 Windows 窗口后端保持未验。
+# 2026-10-14 UI-09：3D 生成结果页与工作台候选状态隔离（实现及构建完成，GUI 待验）
+
+用户确认实施修复：后台网格检查生成的安全修复候选仍由工作台处理，但不得复用“美颜预览”状态覆盖 3D 生成结果页，也不能因实际导入被候选阻塞而隐藏“打开工作台”。
+
+已完成：`ModelGenerationUIState` 增加 `can_open_workbench`；`ModelGenerationPanel::publish_ui_state()` 在模型预览已加载且空闲时发布该导航能力；`RedesignShell` 将结果页入口绑定到导航能力，旧非 Redesign 导入路径继续使用严格 `can_import`；`refresh_model_finishing()` 在结果页保持“3D 模型已生成，可打开工作台查看与检查”，进入工作台后保留检查/美颜候选状态。
+
+验证：`UiRedesign` 78/78 通过（新增候选阻塞时工作台仍可导航回归）；Windows `Run -NoLaunch` 五步通过并安装到 `.tmp/dev/run`，结果 [20261014-233617-791](../../.tmp/dev/logs/20261014-233617-791/result.json)，source identity `dd269320e8178219a323493b05c090099af827981c5756d16477169183f63e61`；架构守卫与 `git diff --check` 通过。
+
+未结：Computer-use 后端仍返回空窗口清单，真实窗口视觉操作待用户复验；本轮不改变实际导入门槛、拓扑候选接受/放弃流程或 Orca 原生切片接口。

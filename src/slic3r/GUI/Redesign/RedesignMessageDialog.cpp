@@ -533,10 +533,11 @@ RedesignMessageDialog::RedesignMessageDialog(wxWindow* parent, const wxString& m
                                              int minimum_message_height, bool scroll_message,
                                              const std::vector<RedesignDialogAction>& actions,
                                              const wxString& checkbox_label,
-                                             bool checkbox_checked)
+                                             bool checkbox_checked,
+                                             ContentMode content_mode)
     : DPIDialog(parent, wxID_ANY, caption, wxDefaultPosition, wxDefaultSize,
                 wxBORDER_NONE | wxFRAME_NO_TASKBAR | wxFRAME_SHAPED)
-    , m_appearance(appearance), m_original_message(message)
+    , m_appearance(appearance), m_content_mode(content_mode), m_original_message(message)
 {
     const bool design = appearance == Appearance::GenerationConfirmation;
     const bool compact = appearance != Appearance::Standard;
@@ -589,7 +590,8 @@ RedesignMessageDialog::RedesignMessageDialog(wxWindow* parent, const wxString& m
     m_icon = new DialogStatusIcon(this, (style & wxICON_WARNING) != 0);
     if (!compact) content_sizer->Add(m_icon, 0, wxTOP, FromDIP(2));
     else m_icon->Hide();
-    if (scroll_message) {
+    const bool owner_drawn_details = scroll_message && m_content_mode == ContentMode::OwnerDrawnDetails;
+    if (owner_drawn_details) {
         m_details_viewport = new RedesignDetailsViewport(this, wxID_ANY,
             wxDefaultPosition, wxDefaultSize, wxVSCROLL);
         m_message_view = m_details_viewport->scroller();
@@ -597,6 +599,16 @@ RedesignMessageDialog::RedesignMessageDialog(wxWindow* parent, const wxString& m
         m_details_content = new RedesignDetailsContentPanel(m_message_view, message);
         m_message_window = m_details_content;
         m_details_viewport->set_content_window(m_details_content);
+    } else if (scroll_message) {
+        // Keep the established confirmation-dialog body.  The custom
+        // owner-drawn viewport is reserved for the SmartSlice details view;
+        // generation confirmations still rely on wxStaticText's native
+        // sizing and the confirmation-specific wrapping path below.
+        m_message_view = new wxScrolledWindow(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVSCROLL);
+        m_message_view->SetBackgroundColour(RedesignTheme::panel_colour());
+        m_message_view->SetScrollRate(0, FromDIP(12));
+        m_message = new wxStaticText(m_message_view, wxID_ANY, message);
+        m_message_window = m_message;
     } else {
         m_message = new wxStaticText(this, wxID_ANY, message);
         m_message_window = m_message;
@@ -612,9 +624,11 @@ RedesignMessageDialog::RedesignMessageDialog(wxWindow* parent, const wxString& m
         auto* body = new wxBoxSizer(wxVERTICAL);
         body->Add(m_message_window, 0, wxEXPAND);
         m_message_view->SetSizer(body);
-        m_details_viewport->SetMinSize(wxSize(FromDIP(m_message_width),
+        wxWindow* scroll_host = m_details_viewport ? static_cast<wxWindow*>(m_details_viewport) :
+            static_cast<wxWindow*>(m_message_view);
+        scroll_host->SetMinSize(wxSize(FromDIP(m_message_width),
             std::min(m_message_window->GetBestSize().y, FromDIP(240))));
-        content_sizer->Add(m_details_viewport, 1, wxEXPAND);
+        content_sizer->Add(scroll_host, 1, wxEXPAND);
     } else content_sizer->Add(m_message_window, 1, wxLEFT, FromDIP(compact ? 0 : 16));
     root->AddSpacer(FromDIP(compact ? 8 : 24));
     root->Add(content_sizer, scroll_message ? 1 : 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(24));
@@ -656,13 +670,17 @@ RedesignMessageDialog::RedesignMessageDialog(wxWindow* parent, const wxString& m
     root->SetSizeHints(this);
     SetSize(wxSize(FromDIP(m_dialog_width), GetSize().y));
     if (m_message_view) {
-        m_details_viewport->SetMinSize(wxSize(FromDIP(m_message_width), FromDIP(48)));
+        wxWindow* scroll_host = m_details_viewport ? static_cast<wxWindow*>(m_details_viewport) :
+            static_cast<wxWindow*>(m_message_view);
+        scroll_host->SetMinSize(wxSize(FromDIP(m_message_width), FromDIP(48)));
         SetMinSize(FromDIP(wxSize(m_dialog_width, 200)));
         const int available = wxGetTopLevelParent(parent)->GetClientSize().y - FromDIP(32);
         SetSize(wxSize(GetSize().x, std::max(FromDIP(200), std::min(GetSize().y, available))));
+        if (!m_details_viewport)
+            m_message_view->FitInside();
     }
     Layout();
-    if (m_message_view) {
+    if (m_details_viewport) {
         // Calculate the virtual scroll height only after the dialog and its
         // child sizers have their final client sizes.  Doing this earlier can
         // leave a stale range and clip the first/last text row after scrolling.
@@ -800,7 +818,7 @@ void RedesignMessageDialog::on_dpi_changed(const wxRect& suggested_rect)
     GetSizer()->SetSizeHints(this);
     SetSize(wxSize(FromDIP(m_dialog_width), GetSize().y));
     Layout();
-    if (m_message_view) {
+    if (m_details_viewport) {
         m_details_viewport->FitInside();
     }
     update_shape();
@@ -885,7 +903,8 @@ int show_redesign_details(wxWindow* parent, const wxString& message,
 
     RedesignMessageDialog dialog(dimmed ? static_cast<wxWindow*>(&shade) : parent,
         message, caption, wxOK, RedesignMessageDialog::Appearance::Compact,
-        0, true);
+        0, true, {}, wxEmptyString, false,
+        RedesignMessageDialog::ContentMode::OwnerDrawnDetails);
     dialog.set_action_label(wxID_OK, _L("关闭"));
     return dialog.ShowModal();
 }

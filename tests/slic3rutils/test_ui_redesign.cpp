@@ -731,6 +731,19 @@ TEST_CASE("Displayed model asset changes are published without an active generat
     CHECK(current.same_content(updated));
 }
 
+TEST_CASE("Workbench navigation remains available while model import is gated", "[UiRedesign][ModelGenerationRoute]")
+{
+    ModelGenerationUIState current;
+    current.model_ready = true;
+    current.can_import = false; // An unaccepted check/Beauty candidate is pending.
+    current.can_open_workbench = true;
+    CHECK_FALSE(current.same_content(ModelGenerationUIState{}));
+
+    auto updated = current;
+    updated.can_open_workbench = false;
+    CHECK_FALSE(current.same_content(updated));
+}
+
 TEST_CASE("Custom style edits publish new snapshots while preserving the unfinished draft", "[UiRedesign]")
 {
     ModelGenerationUIState current;

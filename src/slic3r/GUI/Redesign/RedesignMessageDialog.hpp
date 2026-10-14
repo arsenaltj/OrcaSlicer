@@ -53,6 +53,11 @@ class RedesignMessageDialog : public DPIDialog
 {
 public:
     enum class Appearance { Standard, Compact, GenerationConfirmation };
+    // Scrolling is shared by confirmation and details dialogs, but their
+    // content implementations are intentionally separate.  Confirmation
+    // dialogs keep the native wxStaticText layout; only the long details
+    // dialog opts into the owner-drawn viewport.
+    enum class ContentMode { Native, OwnerDrawnDetails };
     RedesignMessageDialog(wxWindow* parent, const wxString& message,
                           const wxString& caption = wxEmptyString, long style = wxOK, bool compact = false,
                           bool scroll_message = false);
@@ -63,7 +68,8 @@ public:
                           int minimum_message_height = 105, bool scroll_message = false,
                           const std::vector<RedesignDialogAction>& actions = {},
                           const wxString& checkbox_label = wxEmptyString,
-                          bool checkbox_checked = false);
+                          bool checkbox_checked = false,
+                          ContentMode content_mode = ContentMode::Native);
     bool checkbox_checked() const;
     void set_dismiss_result(int result) { m_cancel_result = result; }
 
@@ -82,6 +88,7 @@ private:
     int m_message_min_height { -1 };
     bool m_stacked_actions { false };
     Appearance m_appearance { Appearance::Standard };
+    ContentMode m_content_mode { ContentMode::Native };
     wxString m_original_message;
     wxPoint m_drag_offset;
     wxWindow* m_drag_source { nullptr };

@@ -2406,7 +2406,9 @@ void RedesignShell::update_model_page(const ModelGenerationUIState& state)
         } else if (!m_loaded_model_path.empty()) {
             visual_label.clear();
             visual_mode = ImagePreview::PlaceholderMode::Idle;
-            if (state.can_import) {
+            const bool model_action_available = owns_model_workflow()
+                ? state.can_open_workbench : state.can_import;
+            if (model_action_available) {
                 m_model_page_action = ModelPageAction::Import;
                 action_label = owns_model_workflow() ? text("打开工作台") : text("导入");
             }
@@ -2450,7 +2452,9 @@ void RedesignShell::update_model_page(const ModelGenerationUIState& state)
 void RedesignShell::ensure_model_preview(const ModelGenerationUIState& state)
 {
     if (owns_model_workflow() && m_model_view != ModelView::Result) return;
-    if (m_model_preview_3d == nullptr || !state.model_ready || state.busy || !state.can_import ||
+    const bool model_action_available = owns_model_workflow()
+        ? state.can_open_workbench : state.can_import;
+    if (m_model_preview_3d == nullptr || !state.model_ready || state.busy || !model_action_available ||
         state.model_path.empty())
         return;
     const wxString decoded = wxString::FromUTF8(state.model_path.c_str());

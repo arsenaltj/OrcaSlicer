@@ -323,7 +323,14 @@ void ModelGenerationPanel::refresh_model_finishing()
     m_finishing_redo->Show(!m_finishing_workbench && !m_finishing_redo_path.empty() && !pending && !m_finishing_running);
     m_finishing_redo->Enable(editable);
     if (pending || m_finishing_running || transaction_busy) {
-        m_status->SetLabel(m_workbench_check_running ? _L("正在检查与安全修复，可旋转、缩放或取消。")
+        // A generated-model result can have an automatic topology candidate
+        // from the background workbench check.  That candidate belongs to the
+        // workbench review flow; it must not relabel the generation page as a
+        // Beauty preview or remove its workbench entry point.
+        const bool generation_result = m_ui_model_generation_context && !m_finishing_workbench;
+        m_status->SetLabel(generation_result && !m_workbench_check_running && !m_finishing_running
+            ? _L("3D 模型已生成，可打开工作台查看与检查。")
+            : m_workbench_check_running ? _L("正在检查与安全修复，可旋转、缩放或取消。")
             : m_finishing_running ? _L("正在本地处理，可切换页面或取消。")
             : transaction_busy ? _L("正在处理人像区域，可旋转、缩放、查看日志或取消。")
             : _L("美颜预览就绪，接受新版本后可导入。"));

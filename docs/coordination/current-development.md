@@ -1,3 +1,21 @@
+# 2026-10-14 3D 生成结果页状态隔离与工作台入口修复
+
+主线：承接用户授权，修复新生成 3D 模型结果页被后台模型检查候选错误覆盖的问题；保留实际导入和候选安全约束。
+本轮：在 `ModelGenerationUIState` 增加独立的 `can_open_workbench` 状态；Redesign 结果页使用该导航状态显示“打开工作台”，实际 `can_import` 仍按未接受候选和脏状态严格控制。后台候选存在时，生成结果页保持“3D 模型已生成，可打开工作台查看与检查”，进入工作台后继续显示检查/美颜候选流程。
+验证：`UiRedesign` 定向 C++ 测试 78/78 通过，结果 [20261014-225705-465](../../.tmp/dev/logs/20261014-225705-465/result.json)；`Run -NoLaunch` 五步通过，结果 [20261014-233617-791](../../.tmp/dev/logs/20261014-233617-791/result.json)，source identity `dd269320e8178219a323493b05c090099af827981c5756d16477169183f63e61`，运行目录为 `D:\OrcaSlicer-version\OrcaSlicer\.tmp\dev\run`；`verify_ai_integration.py --json`、`git diff --check` 通过。
+未结：Computer-use 仍未提供合法 Orca 窗口对象，本轮未将真实 3D 生成结果页、自动检查候选和“打开工作台”点击操作记为视觉验收通过。
+下一步：用户启动最新运行目录，生成或恢复 3D 模型，确认结果页状态不再显示“美颜预览就绪”、右下角“打开工作台”可见且可进入工作台；进入工作台后再确认候选接受/放弃和实际导入门槛保持有效。
+计划变更：新增 UI-09 状态契约隔离；不提交、不推送、不发布。
+
+# 2026-10-14 SmartSlice：隔离生成确认弹框与详情弹框并构建交付
+
+主线：承接用户授权；只修复弹框内容实现的串扰，保留既有 SmartSlice 详情弹框的暗色自绘滚动体验。
+本轮：为 `RedesignMessageDialog` 增加显式 `ContentMode`；默认确认弹框走原生 `wxScrolledWindow + wxStaticText`，只有 `show_redesign_details()` 选择 `OwnerDrawnDetails`。2D/3D 生成确认共用的 `show_generation_confirmation()` 因而恢复原有布局、按钮、遮罩与防误触逻辑，详情弹框继续使用外层 viewport 与自绘内容面板。
+验证：`Run -NoLaunch` 五步通过（catalogs/build/install/runtime-check/python-check），结果 [20261014-214122-879](../../.tmp/dev/logs/20261014-214122-879/result.json)，源码身份 `618788167d22225ca24d5b68d9da6873df7c7d8f423af3ada874041f8688b969`；`git diff --check`、`python scripts/verify_ai_integration.py --json` 通过；运行目录 EXE/DLL 已更新。
+未结：Computer-use 仍未提供合法 Orca 窗口对象，本轮没有把真实 2D/3D 确认弹框和 SmartSlice 详情弹框视觉操作写成已通过。
+下一步：用户运行 `D:\OrcaSlicer-version\OrcaSlicer\.tmp\dev\run\orca-slicer.exe`，分别打开 3D/2D 生成确认弹框和 SmartSlice 详情弹框，核对原生确认布局与详情暗色滚动条；若有回归沿当前未提交修改继续修正。
+计划变更：UI-08 从“共享滚动实现”收敛为“按内容模式隔离”；本轮不提交、不推送、不发布。
+
 # 2026-10-14 当前：同步远程 integration、解决文档冲突并构建最新 Windows 版本
 
 主线：在 `codex/team/integration` 保留本地 SmartSlice 提交，同时同步 `origin/codex/team/integration` 的模型生成、打印机耗材、启动资源和回归测试更新。
