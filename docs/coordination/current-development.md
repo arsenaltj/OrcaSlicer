@@ -1,3 +1,11 @@
+# 2026-10-14 当前：同步远程 integration、解决文档冲突并构建最新 Windows 版本
+
+主线：在 `codex/team/integration` 保留本地 SmartSlice 提交，同时同步 `origin/codex/team/integration` 的模型生成、打印机耗材、启动资源和回归测试更新。
+本轮：执行 `git fetch origin` 后合并远程 10 个提交；唯一冲突为本状态文档，已保留本地 SmartSlice 与远程耗材/启动记录双方完整内容，未覆盖或删除源码差异。合并提交为 `31065746fc824692b5ad65557194246ebd0099e5`。
+验证：架构守卫 `python scripts/verify_ai_integration.py --json` 通过；`git diff --check` 通过；SmartSlice 定向 C++ 测试 5/5 通过（100%，结果 `.tmp/dev/logs/20261014-192804-476/result.json`）；`Run -NoLaunch` 五步通过，运行目录 `.tmp/dev/run`，结果 `.tmp/dev/logs/20261014-201116-603/result.json`，source identity `9548f9ca26bd4d8decfc64da6ce3ea8ae6ac72964a8b0026687f9245efb17db4`。
+未结：本轮未执行真实 Orca 主窗口视觉验收；Computer-use 窗口后端此前不可用，不能以启动成功替代 GUI 通过。未推送远程、未创建 PR、未制作发布包。
+下一步：用户可运行 `D:\OrcaSlicer-version\OrcaSlicer\.tmp\dev\run\orca-slicer.exe` 做真实 GUI 验证；若反馈回归，沿当前合并提交继续定位。
+计划变更：远程 integration 更新已纳入当前分支；本轮只构建内部开发 EXE，不改变 SmartSlice 既定流程和发布边界。
 # 2026-10-14 SmartSlice：详情弹框改为外层 viewport 与自绘内容面板，待用户视觉复验
 
 主线：承接用户授权；只修详情参数弹框滚动渲染，不触碰 SmartSlice 数据、参数注入或原生切片流程。
