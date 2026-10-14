@@ -1593,6 +1593,46 @@ TEST_CASE("switching an over-capacity color card keeps total slots equal to card
     CHECK(PrinterFilamentSlotRemap::validate(changes, 6, 4));
 }
 
+TEST_CASE("color card cleanup compacts retained mixed recipes before tail deletion", "[PrinterFilamentImport][PrinterFilamentRecipes][PostGenerationWorkbench]")
+{
+    using namespace Slic3r;
+    auto draft = printer_filament_fixture(4, 7);
+    for (size_t slot = 4; slot < 7; ++slot) {
+        draft.project_config.option<ConfigOptionBools>("filament_is_mixed")->values[slot] = true;
+        draft.project_config.option<ConfigOptionStrings>("filament_mixed_components")->values[slot] = "1,2";
+        draft.project_config.option<ConfigOptionStrings>("filament_mixed_sublayer_ratios")->values[slot] = "0.5,0.5";
+        draft.project_config.option<ConfigOptionStrings>("filament_colour")->values[slot] = "#8A6A5A";
+        draft.project_config.option<ConfigOptionStrings>("filament_multi_colour")->values[slot] = "#8A6A5A";
+    }
+    std::vector<size_t> bindings {0, 1, 2, 3, 6};
+    std::vector<PrinterFilamentConfig::SlotChange> changes;
+    std::string error;
+    REQUIRE(PrinterFilamentConfig::trim_unused_mixed_slots(draft, bindings, 5, changes, error));
+    INFO(error);
+    REQUIRE(draft.filament_presets.size() == 5);
+    CHECK(draft.is_mixed_filament(4));
+    CHECK(std::find(bindings.begin(), bindings.end(), 4) != bindings.end());
+    REQUIRE(changes.size() == 2);
+    CHECK(changes.front().removed == 6);
+    CHECK(changes.front().replacement == 4);
+    CHECK(changes.back().removed == 5);
+    CHECK(PrinterFilamentSlotRemap::validate(changes, 7, 5));
+}
+
+TEST_CASE("printer palette application trims surplus physical slots before mixed cleanup", "[PrinterFilamentImport][PrinterFilamentRecipes][PostGenerationWorkbench]")
+{
+    using namespace Slic3r;
+    auto draft = printer_filament_fixture(4, 6);
+    std::vector<size_t> bindings {0, 1, 2, 3};
+    std::vector<PrinterFilamentConfig::SlotChange> changes;
+    std::string error;
+    REQUIRE(PrinterFilamentConfig::trim_unused_physical_slots(draft, bindings, 4, changes, error));
+    INFO(error);
+    CHECK(PrinterFilamentConfig::capture(draft).physical_count == 4);
+    CHECK(draft.filament_presets.size() == 4);
+    CHECK(PrinterFilamentSlotRemap::validate(changes, 6, 4));
+}
+
 TEST_CASE("cancelled or invalid card reductions preserve the entire draft and its pending changes", "[PrinterFilamentImport][PostGenerationWorkbench]")
 {
     auto draft = printer_filament_fixture(4, 8);

@@ -498,6 +498,11 @@ public:
             matched.push_back(m_project_colors[size_t(found - m_project_slots.begin())]);
         }
         if (!PrinterFilamentPreview::apply_bound(saved, bindings, matched, m_project_slot_identity)) return false;
+        // Selecting the printer palette is the explicit activation point for
+        // legacy workpieces as well. Older accepted models persisted the
+        // printer source with enabled=false, which made the subsequent face
+        // export reject the match even though the slot identity was valid.
+        saved.enabled = true;
         saved.notice = _L("正在应用并自动保存打印机耗材与叠色配方……");
         restore(saved); return true;
     }
@@ -506,6 +511,11 @@ public:
         if (!m_project_error.empty()) return false;
         auto saved = state();
         if (!PrinterFilamentPreview::apply(saved, m_project_slots, m_project_colors, m_project_slot_identity)) return false;
+        // Applying the palette must activate the project match. This also
+        // upgrades old saved color-trial records that kept source=1 but
+        // enabled=false, allowing a complete face-to-slot snapshot to be
+        // captured and saved.
+        saved.enabled = true;
         saved.notice = _L("已将模型预览匹配到打印机耗材；保存或导入后提交，可撤销。");
         restore(saved);
         return true;

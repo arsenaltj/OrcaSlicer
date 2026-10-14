@@ -193,6 +193,48 @@ inline bool remove(PresetBundle& staged, size_t slot, size_t replacement, std::s
     return true;
 }
 
+// The workbench application path receives a logical card directly, without
+// opening the staged configuration dialog.  It therefore needs the same
+// physical-slot reduction that card import performs before mixed-slot cleanup.
+// Always use the native remove/validation path so object, painting and recipe
+// references are remapped atomically by the caller's undo transaction.
+inline bool trim_unused_physical_slots(PresetBundle& staged, std::vector<size_t>& bindings,
+    size_t desired_physical, std::vector<PrinterFilamentSlotRemap::Change>& changes, std::string& error)
+{
+    while (true) {
+        const auto state = capture(staged);
+        if (state.physical_count <= desired_physical) return true;
+        if (state.slots.empty()) {
+            error = "色卡切换后没有可保留的实体耗材槽位";
+            return false;
+        }
+        const auto source = state.slots.back();
+        std::optional<size_t> replacement;
+        auto try_replacement = [&](size_t slot) {
+            if (replacement || slot == source.slot) return;
+            const auto candidate = std::find_if(state.slots.begin(), state.slots.end(),
+                [slot](const auto& item) { return item.slot == slot && item.configured && item.compatible; });
+            if (candidate == state.slots.end()) return;
+            PresetBundle probe(staged);
+            std::string reason;
+            if (remove(probe, source.slot, slot, reason)) replacement = slot;
+        };
+        // Prefer an identity already used by the current logical card, then
+        // fall back to any compatible physical slot.
+        for (const size_t slot : bindings) try_replacement(slot);
+        for (const auto& slot : state.slots) try_replacement(slot.slot);
+        if (!replacement || !remove(staged, source.slot, *replacement, error)) {
+            if (error.empty()) error = "没有合法替代耗材，无法按当前色卡减少实体槽位";
+            return false;
+        }
+        changes.push_back({{}, int(source.slot), int(*replacement)});
+        for (auto& binding : bindings) {
+            if (binding == source.slot) binding = *replacement;
+            else if (binding > source.slot) --binding;
+        }
+    }
+}
+
 // Keep a color-card draft bounded to the card entries after recipe generation.
 // Mixed slots are native suffix entries, so removing from the tail preserves
 // every physical nozzle slot and lets the existing remap transaction update
@@ -203,9 +245,58 @@ inline bool trim_unused_mixed_slots(PresetBundle& staged, std::vector<size_t>& b
     std::set<size_t> retained(bindings.begin(), bindings.end());
     while (staged.filament_presets.size() > desired_total) {
         const size_t at = staged.filament_presets.size() - 1;
-        if (!staged.is_mixed_filament(at) || retained.count(at)) {
+        if (!staged.is_mixed_filament(at)) {
             error = "色卡切换后存在无法安全清理的实体或叠色槽位";
             return false;
+        }
+        // Recipes are native suffix slots, but reusing an older recipe can
+        // leave an unused mixed slot before a recipe needed by the new card.
+        // Native deletion is tail-only, so move the retained recipe into the
+        // first unretained mixed slot before deleting the old tail.  The
+        // model/painting reference is recorded as a normal removal remap;
+        // geometry and physical slot identities are unchanged.
+        if (retained.count(at)) {
+            const auto destination = [&]() -> size_t {
+                for (size_t i = 0; i < at; ++i)
+                    if (staged.is_mixed_filament(i) && !retained.count(i)) return i;
+                return size_t(-1);
+            }();
+            if (destination == size_t(-1)) {
+                error = "色卡切换后存在无法安全清理的实体或叠色槽位";
+                return false;
+            }
+            auto copy_string = [&](const char* key) {
+                auto* option = staged.project_config.option<ConfigOptionStrings>(key);
+                if (option && at < option->values.size() && destination < option->values.size())
+                    option->values[destination] = option->values[at];
+            };
+            auto copy_bool = [&](const char* key) {
+                auto* option = staged.project_config.option<ConfigOptionBools>(key);
+                if (option && at < option->values.size() && destination < option->values.size())
+                    option->values[destination] = option->values[at];
+            };
+            auto copy_int = [&](const char* key) {
+                auto* option = staged.project_config.option<ConfigOptionInts>(key);
+                if (option && at < option->values.size() && destination < option->values.size())
+                    option->values[destination] = option->values[at];
+            };
+            staged.filament_presets[destination] = staged.filament_presets[at];
+            for (const auto* key : {"filament_colour", "filament_multi_colour", "filament_colour_type",
+                "filament_mixed_components", "filament_mixed_sublayer_ratios", "filament_mixed_gradient_range",
+                "filament_mixed_gradient_curve"}) copy_string(key);
+            for (const auto* key : {"filament_is_mixed", "filament_mixed_gradient", "filament_mixed_gradient_per_part"})
+                copy_bool(key);
+            for (const auto* key : {"filament_map", "filament_nozzle_map", "filament_volume_map"}) copy_int(key);
+            if (at < staged.ams_multi_color_filment.size() && destination < staged.ams_multi_color_filment.size())
+                staged.ams_multi_color_filment[destination] = staged.ams_multi_color_filment[at];
+            retained.erase(at);
+            retained.insert(destination);
+            for (auto& binding : bindings) if (binding == at) binding = destination;
+            // Delete the old tail and remap any references to the retained
+            // recipe into its compacted slot.
+            staged.update_num_filaments(unsigned(at));
+            changes.push_back({{}, int(at), int(destination)});
+            continue;
         }
         size_t replacement = size_t(-1);
         const auto current = capture(staged);

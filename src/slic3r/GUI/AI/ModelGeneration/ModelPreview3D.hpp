@@ -138,7 +138,14 @@ public:
         Bind(wxEVT_TIMER, [this](wxTimerEvent&) { finish_semantic_coloring(); }, m_semantic_timer.GetId());
         m_color_trial->Hide();
         m_controls_scroll->Hide();
-        m_color_trial->on_project_colors_changed = [this] { synchronize_project_colors(); };
+        m_color_trial->on_project_colors_changed = [this] {
+            // A filament transaction commits a remapped model before the
+            // workbench has a chance to refresh its palette.  Defer this
+            // callback until the transaction has published the new slot
+            // table; otherwise the old face/semantic caches can be walked
+            // while their slot identities are being removed.
+            if (!m_project_color_sync_suspended) synchronize_project_colors();
+        };
         m_color_trial->on_changed = [this] {
             m_trial_toggle_started = std::chrono::steady_clock::now();
             m_color_trial_enabled = m_color_trial->enabled();
@@ -994,6 +1001,47 @@ public:
         m_exact_surface_display = !colors.empty();
         m_color_trial_enabled = false;
         m_canvas->Refresh(false);
+        return true;
+    }
+    // A surface-color preview is a separate display mode used by the native
+    // color matcher.  It writes encoded colors directly into the GL vertex
+    // attributes and disables the trial palette.  Applying printer filaments
+    // must leave that mode before the workbench can show physical/mixed slot
+    // colors again.
+    bool clear_surface_color_display() {
+        if (!m_exact_surface_display) return true;
+        const size_t expected = m_triangle_count * 3 * 8;
+        if (m_models.size() != 1 || m_surface_vertices.size() != expected ||
+            m_original_surface_colors.size() != m_triangle_count * 3)
+            return false;
+        for (size_t vertex = 0; vertex < m_original_surface_colors.size(); ++vertex) {
+            const auto& original = m_original_surface_colors[vertex];
+            m_surface_vertices[vertex * 8 + 6] = original.x();
+            m_surface_vertices[vertex * 8 + 7] = original.y();
+        }
+        if (!m_models.front()->update_vertex_attributes(m_surface_vertices)) return false;
+        m_exact_surface_display = false;
+        return true;
+    }
+    // Make printer-filament application the visible source of truth for the
+    // current workbench frame.  This is intentionally separate from matching
+    // and persistence so a failed save can still roll the model back.
+    bool activate_printer_filament_preview() {
+        if (!m_color_trial || m_color_trial->state().source != 1 ||
+            !m_color_trial->state().enabled || m_color_trial->colors().empty())
+            return false;
+        if (!clear_surface_color_display()) return false;
+        m_beauty_original_view = false;
+        m_color_trial_enabled = true;
+        m_trial_palette = m_color_trial->colors();
+        if (m_semantic_ready) rebuild_semantic_preview_from_cached_result();
+        else if (!m_face_color_overrides.empty() && !restore_beauty_face_colors(m_face_color_overrides)) return false;
+        BOOST_LOG_TRIVIAL(info) << "AI printer-filament preview activated: source="
+            << m_color_trial->state().source << ", colors=" << m_trial_palette.size()
+            << ", semantic_ready=" << m_semantic_ready
+            << ", exact_surface_display=" << m_exact_surface_display
+            << ", original_view=" << m_beauty_original_view;
+        if (m_canvas) m_canvas->Refresh(false);
         return true;
     }
     // Beauty adapters consume the already prepared immutable surface editor;
@@ -2026,6 +2074,7 @@ public:
     }
     bool showing_model(const boost::filesystem::path& path) const { return m_has_model && path == m_model_path && same_stamp(m_model_stamp, file_stamp(path)); }
     ModelPreviewColorControls::State color_trial_state() const { return m_color_trial->state(); }
+    const std::vector<PreviewPalette::Color>& project_colors() const { return m_color_trial->project_colors(); }
     std::vector<FilamentColorPack> configuration_color_sources() const { return m_color_trial->configuration_color_sources(); }
     void refresh_saved_color_packs() { m_color_trial->refresh_saved_color_packs(); }
     void set_project_filament_edit_handler(std::function<void(size_t)> handler) {
@@ -2056,6 +2105,7 @@ public:
         if (changed) synchronize_project_bound_semantics(before, m_color_trial->state());
         m_canvas->Refresh(false);
     }
+    void set_project_color_sync_suspended(bool suspended) { m_project_color_sync_suspended = suspended; }
     void synchronize_project_bound_semantics(const ModelPreviewColorControls::State& before,
         const ModelPreviewColorControls::State& after) {
         if (before.semantic_palette == after.semantic_palette) return;
@@ -3305,6 +3355,7 @@ private:
     FaceColorOverrides m_saved_semantic_faces;
     SubfaceColorOverrides m_saved_semantic_subfaces;
     bool m_suppress_semantic_change {false};
+    bool m_project_color_sync_suspended {false};
     ModelPreviewColorControls* m_color_trial {nullptr};
     std::vector<PreviewPalette::Color> m_trial_palette;
     std::shared_ptr<const PreviewPalette::Histogram> m_trial_histogram;

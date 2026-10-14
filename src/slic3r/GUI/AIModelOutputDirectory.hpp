@@ -13,11 +13,16 @@ namespace Slic3r::GUI {
 class AIModelOutputDirectory
 {
 public:
-    explicit AIModelOutputDirectory(const boost::filesystem::path& installation_directory)
+    explicit AIModelOutputDirectory(const boost::filesystem::path& installation_directory,
+                                    const boost::filesystem::path& user_data_directory = {})
     {
         const char* configured = boost::nowide::getenv("ORCASLICER_AI_OUTPUT_DIR");
         const boost::filesystem::path selected = configured != nullptr && configured[0] != '\0'
-            ? boost::filesystem::path(configured) : installation_directory / "models";
+            ? boost::filesystem::path(configured)
+            // Generated models are user data. Never default to the executable's
+            // directory: normal Windows installs live below Program Files and
+            // are not writable by standard users.
+            : (user_data_directory.empty() ? installation_directory : user_data_directory) / "models";
         m_root = boost::filesystem::absolute(selected).lexically_normal();
         m_custom_output = configured != nullptr && configured[0] != '\0';
     }
@@ -78,9 +83,17 @@ private:
 
 inline const AIModelOutputDirectory& ai_model_output_directory()
 {
-    // The actual executable location anchors both desktop history and the child
-    // process output. Neither data-dir overrides nor file dialogs change it.
-    static const AIModelOutputDirectory directory(into_path(wxStandardPaths::Get().GetExecutablePath()).parent_path());
+    // Keep generated assets in Orca's selected per-user data directory. The
+    // executable's directory is commonly under Program Files and is read-only
+    // for standard Windows users. Use wx's path only during the very early
+    // startup window before GUI_App has selected data_dir(). An explicit
+    // ORCASLICER_AI_OUTPUT_DIR still wins for managed deployments.
+    const boost::filesystem::path user_data = !Slic3r::data_dir().empty()
+        ? boost::filesystem::path(Slic3r::data_dir())
+        : into_path(wxStandardPaths::Get().GetUserDataDir());
+    static const AIModelOutputDirectory directory(
+        into_path(wxStandardPaths::Get().GetExecutablePath()).parent_path(),
+        user_data);
     return directory;
 }
 

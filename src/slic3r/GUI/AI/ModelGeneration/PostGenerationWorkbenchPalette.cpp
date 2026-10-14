@@ -83,6 +83,8 @@ void ModelGenerationPanel::apply_workbench_printer_filaments()
     std::string error;
     const auto state = PrinterFilamentConfig::capture(*bundle);
     const auto trial = m_model_preview->color_trial_state();
+    const bool stale_project_match = trial.source == 1 && !trial.project_slot_identity.empty() &&
+        trial.project_slot_identity != state.identity;
     if (m_applied_filaments_saved_model == m_displayed_model_path &&
         m_applied_filaments_saved_signature == state.signature && trial.source == 1 &&
         !m_beauty_manual_color_dirty && (!m_beauty_controls || !m_beauty_controls->has_changes())) {
@@ -96,7 +98,13 @@ void ModelGenerationPanel::apply_workbench_printer_filaments()
         // let apply_bound reuse those slot identities for both palettes.
         // Appending both palettes here doubled a six-color portrait card to
         // twelve targets and consequently created surplus mix slots.
-        const auto& source_colors = trial.colors.empty() ? trial.semantic_palette : trial.colors;
+        // A stale printer match may still contain a deleted mixed color.  In
+        // that case rebuild from the live native palette so stage_targets()
+        // cannot recreate the removed recipe.  A valid match keeps the trial
+        // palette and its explicit slot bindings.
+        std::vector<PreviewPalette::Color> source_colors;
+        if (stale_project_match) source_colors = m_model_preview->project_colors();
+        else source_colors = trial.colors.empty() ? trial.semantic_palette : trial.colors;
         for (const auto& c : source_colors)
             targets.push_back(color_decompose_rgb_to_hex({static_cast<unsigned char>(std::lround(c[0]*255)),
                 static_cast<unsigned char>(std::lround(c[1]*255)), static_cast<unsigned char>(std::lround(c[2]*255))}));
@@ -111,6 +119,10 @@ void ModelGenerationPanel::apply_workbench_printer_filaments()
         // transaction so model/painting references stay undoable.
         for (size_t at = bundle->filament_presets.size(); at < staged->filament_presets.size(); ++at)
             changes.push_back({{at}, -1, -1});
+        if (!PrinterFilamentConfig::trim_unused_physical_slots(*staged, bindings, targets.size(), changes, error)) {
+            m_workbench_operation_notice = error;
+            refresh_controls(); publish_workbench_state(); return;
+        }
         if (!PrinterFilamentConfig::trim_unused_mixed_slots(*staged, bindings, targets.size(), changes, error)) {
             m_workbench_operation_notice = error;
             refresh_controls(); publish_workbench_state(); return;
@@ -123,6 +135,14 @@ void ModelGenerationPanel::apply_workbench_printer_filaments()
         m_workbench_operation_notice = "耗材匹配失败，原模型和工程配置保持不变";
         refresh_controls(); return;
     }
+    if (!m_model_preview->activate_printer_filament_preview()) {
+        m_model_preview->set_project_configuration_override({});
+        restore_beauty_candidate(*before);
+        m_workbench_operation_notice = "耗材已匹配，但预览刷新失败，原模型和工程配置保持不变";
+        refresh_controls(); return;
+    }
+    if (m_workbench_original) m_workbench_original->SetValue(false);
+    if (m_beauty_controls) m_beauty_controls->synchronize_preview_options();
     m_apply_filaments_match = capture_applied_filament_match(
         *staged, *m_model_preview, AI::model_artifact_sha256(m_displayed_model_path));
     if (!m_apply_filaments_match) {

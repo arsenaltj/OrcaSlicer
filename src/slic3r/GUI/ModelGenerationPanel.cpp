@@ -391,7 +391,12 @@ void ModelGenerationPanel::publish_ui_state()
     state.can_import = m_import->IsEnabled();
     state.can_restart = m_discard->IsEnabled();
     state.design_ready = m_style_preview_ready;
-    state.model_ready = m_ready;
+    // Once the local artifact has been parsed successfully, the result page
+    // remains a model-ready page even if a later sidecar poll loses the
+    // transient `ready` state.  The artifact itself is the authoritative
+    // source for the workbench action at this point.
+    state.model_ready = m_ready ||
+        (m_model_preview_ready && is_nonempty_model(m_displayed_model_path));
     state.inputs_match_job = m_job_id.empty() || job_inputs_match();
     state.progress = m_generation_progress->GetValue();
     state.job_id = m_job_id;
@@ -3007,9 +3012,9 @@ void ModelGenerationPanel::refresh_controls()
         ((local_import_active && !local_import->cancel->load()) || m_design_history_loading || (busy && !m_job_id.empty() &&
         (local_model_loading || m_preview_download_in_flight || m_service_available))));
     m_retry_service->Enable(!m_service_available && !busy && static_cast<bool>(m_service_retry_handler));
-    m_import->Enable((local_artifact || m_service_available) && !busy &&
-                     m_ready && !stale_job &&
-                     (m_model_preview_ready || !m_artifact_download_started));
+    m_import->Enable(model_import_action_enabled(
+        m_ready, m_model_preview_ready, is_nonempty_model(m_displayed_model_path),
+        local_artifact || m_service_available, busy, stale_job, m_artifact_download_started));
     m_recheck_model->Enable(m_service_available && !busy && !m_quality_check_busy && !m_visual_check_busy &&
                             m_model_preview_ready && !m_displayed_model_job_id.empty());
     m_visual_review_model->Enable(m_generation_available && !busy && !m_quality_check_busy && !m_visual_check_busy &&
@@ -3031,7 +3036,8 @@ void ModelGenerationPanel::refresh_controls()
     m_generate->Show(m_service_available && !busy && m_awaiting_confirmation);
     m_stop->Show(busy && !m_saving_generation_options && !m_ui_stopping);
     m_retry_service->Show(!m_service_available && !busy);
-    m_import->Show(!busy && m_ready && !stale_job);
+    m_import->Show(model_import_action_visible(
+        m_ready, m_model_preview_ready, is_nonempty_model(m_displayed_model_path), busy, stale_job));
     m_discard->Show(!busy && has_restartable_work);
     if (!busy && ((m_job_id.empty() && !m_ready) || stale_job))
         update_progress(0, 1, _L("输入"));
@@ -4326,6 +4332,19 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
     std::map<std::string, std::string> encoded_fields;
     if (!history_metadata->take_if_current(library_metadata_path(job_id), metadata, encoded_fields))
         metadata = read_json(library_metadata_path(job_id));
+    // Accepted local finishing records already passed the repair candidate
+    // gate before they were published.  Older records do not carry a full
+    // topology report, but a saved repair with no boundary or non-manifold
+    // edges is still a stronger signal than re-running repair against the
+    // source GLB.  Re-running here creates a fresh unaccepted candidate and
+    // consequently disables the printer-filament controls for an otherwise
+    // editable historical version.
+    const bool accepted_repaired_history = metadata.is_object() &&
+        metadata.value("source", std::string()) == "local_finishing" &&
+        metadata.value("finishing", nlohmann::json::object()).is_object() &&
+        metadata["finishing"].value("repair_mesh", false) &&
+        metadata["finishing"].value("boundary_edges", size_t {1}) == 0 &&
+        metadata["finishing"].value("nonmanifold_edges", size_t {1}) == 0;
     if (metadata.is_object()) {
         metadata["schema_version"] = std::max(4, metadata.value("schema_version", 0));
         metadata["triangle_count"] = triangle_count;
@@ -4469,6 +4488,20 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
         m_preview_book->SetSelection(0);
     apply_preview_stage(true);
     m_model_preview->refresh();
+    if (accepted_repaired_history) {
+        // Reuse the accepted version's persisted repair result.  This keeps
+        // the workbench editable immediately after reopening an old model;
+        // newly loaded or unaccepted models still go through ensure_workbench_check().
+        m_workbench_check_path = model_path.string();
+        m_workbench_check_revision = m_sequence;
+        m_workbench_check_result = {};
+        m_workbench_check_result.status = WorkbenchCheckStatus::Normal;
+        m_workbench_check_result.phase = WorkbenchCheckPhase::Idle;
+        m_workbench_check_result.model_sha256 = AI::model_artifact_sha256(model_path);
+        m_workbench_check_result.before_faces = triangle_count;
+        m_workbench_check_result.after_faces = triangle_count;
+        m_workbench_check_result.summary = "已接受版本，沿用保存时的安全修复结果。";
+    }
     refresh_controls();
     const uint64_t sequence = m_sequence;
     wxWeakRef<ModelGenerationPanel> weak(this);
@@ -5023,6 +5056,11 @@ void ModelGenerationPanel::set_preview_empty(const wxString& message)
         m_preview_zoom->SetLabel("100%");
     m_preview_message->SetLabel(message);
     update_preview_view();
+}
+
+void ModelGenerationPanel::set_project_color_sync_suspended(bool suspended)
+{
+    if (m_model_preview) m_model_preview->set_project_color_sync_suspended(suspended);
 }
 
 } // namespace Slic3r::GUI

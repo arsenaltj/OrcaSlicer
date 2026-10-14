@@ -334,9 +334,12 @@ void ModelGenerationPanel::export_semantic_candidate()
                         self->m_finishing_candidate_secondary_evidence = self->m_model_preview->secondary_region_evidence();
                         self->m_finishing_candidate_secondary_error = self->m_model_preview->secondary_region_evidence_error();
                         self->m_model_preview->restore_color_trial_without_recognition(color_state);
-                        if (!edits_restored || !self->m_model_preview->set_saved_semantic_result(
-                                self->m_finishing_candidate_semantic_faces,
-                                self->m_finishing_candidate_semantic_subfaces)) {
+                        const bool semantic_restored = self->m_model_preview->set_saved_semantic_result(
+                            self->m_finishing_candidate_semantic_faces,
+                            self->m_finishing_candidate_semantic_subfaces);
+                        const bool printer_preview_restored = color_state.source != 1 ||
+                            self->m_model_preview->activate_printer_filament_preview();
+                        if (!edits_restored || !semantic_restored || !printer_preview_restored) {
                             self->m_save_and_return = false;
                             boost::system::error_code ignored;
                             boost::filesystem::remove(destination, ignored);
@@ -352,6 +355,10 @@ void ModelGenerationPanel::export_semantic_candidate()
                         }
                         self->m_model_preview->synchronize_project_bound_semantics(
                             color_state, self->m_model_preview->color_trial_state());
+                        if (color_state.source == 1) {
+                            if (self->m_workbench_original) self->m_workbench_original->SetValue(false);
+                            if (self->m_beauty_controls) self->m_beauty_controls->synchronize_preview_options();
+                        }
                         self->m_finishing_candidate = destination;
                         self->m_beauty_manual_color_dirty = false;
                         self->m_finishing_candidate_baked_appearance = baked;

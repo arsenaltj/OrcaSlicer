@@ -53,6 +53,27 @@ WorkbenchAccess workbench_access(bool model_ready, bool has_local_model, bool lo
     return model_ready && has_local_model ? WorkbenchAccess::Available : WorkbenchAccess::NeedsModel;
 }
 
+bool model_import_action_enabled(bool model_ready, bool model_preview_ready,
+                                 bool has_displayed_model, bool source_available,
+                                 bool busy, bool stale_job, bool artifact_download_started)
+{
+    const bool loaded_local_model = model_preview_ready && has_displayed_model;
+    const bool can_reload_model = model_ready && !artifact_download_started;
+    // A stale input/palette only blocks starting a new generation.  Once the
+    // generated artifact has been loaded, importing that exact artifact is
+    // still a valid operation and may use the import color settings.
+    return source_available && !busy && (loaded_local_model || can_reload_model) &&
+           (!stale_job || loaded_local_model);
+}
+
+bool model_import_action_visible(bool model_ready, bool model_preview_ready,
+                                 bool has_displayed_model, bool busy, bool stale_job)
+{
+    const bool loaded_local_model = model_preview_ready && has_displayed_model;
+    return !busy && (model_ready || loaded_local_model) &&
+           (!stale_job || loaded_local_model);
+}
+
 WorkspaceView workspace_destination(WorkspaceAction action, WorkspaceView current, bool /*has_model*/)
 {
     switch (action) {
