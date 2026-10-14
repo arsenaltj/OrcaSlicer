@@ -261,6 +261,36 @@ TEST_CASE("process mix recipes require one to three normalized unique components
     CHECK_FALSE(is_valid_mixed_color_recipe(recipe));
 }
 
+TEST_CASE("applied printer filament matches round trip by slot identity", "[AIContracts][MatchedColors]")
+{
+    ModelMatchedColors saved;
+    saved.source_sha256 = std::string(64, 'a');
+    saved.geometry_id = std::string(64, 'b');
+    saved.palette = {{0, "#112233", "PLA", true}, {1, "#445566", "PLA", true}};
+    saved.mixed_recipes.push_back({"#334455", {{0, 0.5}, {1, 0.5}}, 2, {}, true});
+    saved.face_slots = {0, 2, 1, 2};
+    REQUIRE(saved.valid());
+    const auto encoded = encode_model_matched_colors(saved);
+    ModelMatchedColors restored;
+    std::string error;
+    REQUIRE(decode_model_matched_colors(encoded, restored, error));
+    CHECK(restored.source_sha256 == saved.source_sha256);
+    CHECK(restored.geometry_id == saved.geometry_id);
+    CHECK(restored.face_slots == saved.face_slots);
+    REQUIRE(restored.mixed_recipes.size() == 1);
+    CHECK(restored.mixed_recipes.front().existing_virtual_slot == 2);
+    REQUIRE(restored.mixed_recipes.front().components.size() == saved.mixed_recipes.front().components.size());
+    for (size_t i = 0; i < restored.mixed_recipes.front().components.size(); ++i) {
+        CHECK(restored.mixed_recipes.front().components[i].slot == saved.mixed_recipes.front().components[i].slot);
+        CHECK(restored.mixed_recipes.front().components[i].ratio == Catch::Approx(saved.mixed_recipes.front().components[i].ratio));
+    }
+
+    auto invalid = encoded;
+    invalid["face_slots"][1] = 99;
+    CHECK_FALSE(decode_model_matched_colors(invalid, restored, error));
+    CHECK_FALSE(error.empty());
+}
+
 TEST_CASE("typed printable palette rebuilds the legacy flat projection", "[AIContracts][ColorIntent]")
 {
     PrintablePaletteSnapshot palette;

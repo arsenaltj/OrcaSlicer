@@ -167,10 +167,13 @@ PostGenerationWorkbenchState ModelGenerationPanel::workbench_snapshot() const
     if (state.can_force_import)
         state.import_topology_reason = state.check.summary.empty() ? "模型尚未通过闭合拓扑检查；继续导入仅允许尝试切片。" : state.check.summary;
     if (m_model_preview && !m_model_preview->project_matching_valid()) {
+        // A slot deletion or replacement invalidates the saved match.  Keep
+        // applying enabled so the user can explicitly rebuild it from the
+        // current native slots; only the old import snapshot is blocked.
         state.actions.can_import = false;
         state.can_import_for_slicing = false;
         state.can_force_import = false;
-        state.apply_filaments_reason = "打印机或耗材槽位已变化，请重新应用打印机耗材";
+        state.apply_filaments_reason = "旧匹配已失效，点击应用打印机耗材将按当前槽位重新匹配";
     }
     if (m_model_preview) {
         state.faces = m_model_preview->triangle_count();
@@ -278,6 +281,13 @@ bool ModelGenerationPanel::request_workbench_color_matching()
         const int mode = m_import_color_mode ? m_import_color_mode->GetSelection() : 0;
         request.color_mode = mode == 1 ? AI::ImportColorMode::AutoMap : mode == 2 ? AI::ImportColorMode::SingleColor :
             mode == 3 ? AI::ImportColorMode::ManualMatch : AI::ImportColorMode::NativeMatch;
+        if (request.color_mode == AI::ImportColorMode::NativeMatch &&
+            m_model_preview->color_trial_state().source == 1 &&
+            (m_beauty_manual_color_dirty || (m_beauty_controls && m_beauty_controls->has_changes()))) {
+            m_workbench_operation_notice = "应用打印机耗材后存在未保存的局部改色，请先重新应用打印机耗材再导入。";
+            refresh_post_generation_workbench();
+            return false;
+        }
         const auto trial = m_model_preview->import_color_mapping(true);
         AI::ModelColorTrial choice {trial.mapping_colors, trial.target_colors};
         if (trial.enabled && choice.valid()) request.color_trial = std::move(choice);
@@ -321,8 +331,18 @@ bool ModelGenerationPanel::request_save_and_return()
 {
     if (!post_generation_ui_state().can_edit) return false;
     m_model_preview->synchronize_project_colors();
-    if (!m_model_preview->project_matching_valid()) {
+    // Applying printer filaments deliberately starts from an invalidated
+    // project match: the staged bundle contains the new slot identities and
+    // must be committed before the match can become valid again.  The normal
+    // save path still requires a valid match, while the application path is
+    // protected by commit_printer_filament_application()'s source signature
+    // check and rolls back on any failure.
+    if (!m_apply_filaments_saving && !m_model_preview->project_matching_valid()) {
         m_finishing_status->SetLabel(_L("打印机或槽位已变化，请重新应用打印机耗材后保存。"));
+        m_status->SetLabel(m_finishing_status->GetLabel());
+        m_workbench_operation_notice = "打印机或槽位已变化，请重新应用打印机耗材后保存。";
+        refresh_controls();
+        publish_workbench_state();
         return false;
     }
     m_save_and_return = true;

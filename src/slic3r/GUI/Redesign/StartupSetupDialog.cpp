@@ -515,6 +515,8 @@ public:
             for (auto* button : {m_next, m_previous}) button->SetCornerRadius(FromDIP(12));
             m_warning->Rescale();
             m_globe->SetBitmap(ScalableBitmap(m_panel, "redesign_startup_globe", 102).bmp());
+            m_welcome_logo = setup_image(this, resources_dir() + "/images/startup_logo.png", wxSize(120, 120));
+            m_welcome_logo_control->SetBitmap(m_welcome_logo);
             m_collapse->SetBitmap(ScalableBitmap(m_content, "redesign_startup_collapse", 133).bmp());
             refresh();
             arrange();
@@ -638,6 +640,8 @@ private:
     {
         m_title = label(_L("欢迎使用 ----"), 32, RedesignTheme::accent_colour());
         m_welcome = label(_L("---- 需要几步安装步骤，让我们开始吧！"), 20, wxColour(117, 117, 118));
+        m_welcome_logo = setup_image(this, resources_dir() + "/images/startup_logo.png", wxSize(120, 120));
+        m_welcome_logo_control = new wxStaticBitmap(m_panel, wxID_ANY, m_welcome_logo);
         m_globe = new wxStaticBitmap(m_panel, wxID_ANY, ScalableBitmap(m_panel, "redesign_startup_globe", 102).bmp());
         m_region = new SetupRegionPicker(m_panel, [this](StartupSetupRegion region) {
             m_service.choose_region(region);
@@ -793,6 +797,7 @@ private:
         m_title->SetLabel(welcome ? _L("欢迎使用 ----") : region ? _L("选择地区") :
                            printers ? _L("选择打印机") : _L("选择耗材"));
         m_welcome->Show(welcome);
+        m_welcome_logo_control->Show(welcome);
         m_globe->Show(region);
         m_region->Show(region);
         m_region->set_region(state.draft.region);
@@ -866,6 +871,7 @@ private:
         const bool welcome = state.page == StartupSetupPage::Welcome;
         const bool region = state.page == StartupSetupPage::Region;
         place(m_title, 16, welcome ? 232 : 32, 660, 48);
+        place(m_welcome_logo_control, 286, 72, 120, 120);
         place(m_welcome, 24, 290, 644, 60);
         place(m_globe, 295, 125, 102, 102);
         place(m_region, 178, 260, 336, 56);
@@ -914,10 +920,7 @@ private:
         gc->SetPen(*wxTRANSPARENT_PEN);
         gc->SetBrush(wxBrush(setup_face()));
         gc->DrawRoundedRectangle(0, 0, size.x, size.y, FromDIP(16));
-        if (m_service.snapshot().page == StartupSetupPage::Welcome) {
-            gc->SetBrush(wxBrush(wxColour(217, 217, 217)));
-            gc->DrawRoundedRectangle(FromDIP(286), FromDIP(72), FromDIP(120), FromDIP(120), FromDIP(24));
-        } else if (m_service.snapshot().page == StartupSetupPage::Filaments) {
+        if (m_service.snapshot().page == StartupSetupPage::Filaments) {
             gc->SetBrush(*wxTRANSPARENT_BRUSH);
             gc->SetPen(wxPen(wxColour(62, 62, 62), FromDIP(1)));
             gc->DrawRectangle(FromDIP(24), FromDIP(130), FromDIP(644), FromDIP(250));
@@ -942,6 +945,8 @@ private:
     wxPanel* m_panel = nullptr;
     wxStaticText* m_title = nullptr;
     wxStaticText* m_welcome = nullptr;
+    wxStaticBitmap* m_welcome_logo_control = nullptr;
+    wxBitmap m_welcome_logo;
     wxStaticBitmap* m_globe = nullptr;
     SetupRegionPicker* m_region = nullptr;
     std::array<SetupPrinterCard*, 3> m_cards{};

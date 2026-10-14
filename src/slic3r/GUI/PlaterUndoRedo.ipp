@@ -80,12 +80,36 @@ bool Plater::apply_printer_filament_config(const PresetBundle& staged,
         if (change.removed >= 0) get_partplate_list().on_filament_deleted(int(--current_count), change.removed);
     }
     for (size_t i = 0; i < plates.size(); ++i) get_partplate_list().get_plate(int(i))->config()->swap(plates[i]);
-    on_config_change(bundle.full_config());
-    on_filament_count_change(count);
-    sidebar().update_dynamic_filament_list();
-    sidebar().update_mixed_filament_list();
-    sidebar().obj_list()->update_objects_list_filament_column(count);
-    get_partplate_list().invalid_all_slice_result();
+    // PrinterFilamentSlotRemap::prepare/commit has already rewritten model
+    // object assignments and painted facets for structural changes.  Running
+    // the generic count-change path afterwards would deserialize the already
+    // remapped facet annotations a second time.  That is unsafe for legacy
+    // workpieces with painted mixed slots and was the source of a crash when
+    // deleting the last mixed recipe.  Keep the UI/table refresh, but leave
+    // the model topology pass to the transaction that prepared the copy.
+    const bool removed_slot = std::any_of(changes.begin(), changes.end(), [](const auto& change) {
+        return change.removed >= 0;
+    });
+    if (removed_slot) {
+        // A legacy painted workpiece can contain facet annotations that the
+        // normal Plater config notification path tries to deserialize again.
+        // The transaction above already committed the complete remap.  Keep
+        // this narrow delete path to the data that must be synchronized and
+        // let the workbench refresh its own controls; native sidebar rebuilds
+        // are deferred until the next normal Plater refresh.
+        update_filament_colors_in_full_config();
+        get_partplate_list().set_filament_count(int(count));
+        get_partplate_list().invalid_all_slice_result();
+    } else {
+        on_config_change(bundle.full_config());
+        on_filament_count_change(count);
+    }
+    if (!removed_slot) {
+        sidebar().update_dynamic_filament_list();
+        sidebar().update_mixed_filament_list();
+        sidebar().obj_list()->update_objects_list_filament_column(count);
+        get_partplate_list().invalid_all_slice_result();
+    }
     bundle.export_selections(*wxGetApp().app_config);
     update_project_dirty_from_presets();
     update();
