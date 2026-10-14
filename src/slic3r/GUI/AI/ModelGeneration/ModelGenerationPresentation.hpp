@@ -41,6 +41,15 @@ bool design_preview_reload_available(const std::string& job_id, bool inputs_matc
 enum class WorkbenchAccess { Available, NeedsModel, Loading, Busy };
 WorkbenchAccess workbench_access(bool model_ready, bool has_local_model, bool loading, bool busy);
 
+// A generated model remains importable after the editable generation inputs
+// change.  The stale-input flag must require regeneration, but it must not
+// hide an already loaded local artifact from the workbench action.
+bool model_import_action_enabled(bool model_ready, bool model_preview_ready,
+                                 bool has_displayed_model, bool source_available,
+                                 bool busy, bool stale_job, bool artifact_download_started);
+bool model_import_action_visible(bool model_ready, bool model_preview_ready,
+                                 bool has_displayed_model, bool busy, bool stale_job);
+
 // Read-only projection of the current model check; preview readiness is not a
 // structural verdict or an import guarantee.
 bool model_quality_matches_artifact(const AIModelGenerationClient::ModelQuality& quality,

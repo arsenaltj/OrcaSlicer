@@ -148,6 +148,7 @@ public:
     void set_project_filament_edit_handler(std::function<void(size_t)> handler);
     void set_project_filament_delete_handler(std::function<void(size_t)> handler)
     { m_project_filament_delete = std::move(handler); }
+    void set_project_color_sync_suspended(bool suspended);
     void synchronize_workbench_project_palette(bool activate_preview = false);
 
 private:

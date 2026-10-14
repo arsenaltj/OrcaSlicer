@@ -28,6 +28,15 @@
 - AI 生成与智能切片在 Orca 主窗口内；Orca 管项目、配置、切片、G-code 与预览。导入不静默切片或改预设，智能切片建议须显式应用、可比较及撤销。AI 离线/关闭时保留普通 Orca 行为。
 - C++17 / wxWidgets / CMake，保持可移植性、3MF、预设及手动流程兼容。`src/slic3r/AI/Contracts` 管跨模块契约，`src/slic3r/AI/SmartSlicing` 管决策，`src/slic3r/GUI/AI` 管宿主/适配器，`tools/ai` 管供应商；供应商策略不进入 libslic3r。共享边界另读 `docs/architecture/ai-integration-lock.json`。
 
+## 安装包模型目录权限回归记录（2026-10-13）
+
+- 根因：提交 `349d7df970` 为统一模型图库、我的资产、下载、导出和项目文件的入口，将 `AIModelOutputDirectory` 的默认路径从用户数据目录下的 `generated_models` 改成了“可执行文件所在目录/models”。这属于输出目录策略变更，不是 NSIS 安装目录本身必须可写的要求。
+- 触发条件：Windows 安装包通常位于 `C:\Program Files\...`。普通用户对该目录没有写权限；`AIServiceManager` 启动时会创建 `models/downloads`、`exports`、`projects` 并迁移历史，因此启动阶段弹出“无法写入安装目录下的 models 文件夹”。资产页的“打开模型文件夹”也会指向同一个不可写目录。
+- 影响范围：AI 模型历史、下载文件、导出副本、项目草稿及模型文件夹入口受影响；程序和只读资源本身不应写入安装目录。此问题与本地 AI 侧车是否连接无关，也不能用“服务已连接”证明远端图片生成请求成功。
+- 修复规则：默认输出必须位于 `Slic3r::data_dir()/models`，早期启动尚未选定 `data_dir()` 时才回退到 wx 用户数据目录；仅显式设置 `ORCASLICER_AI_OUTPUT_DIR` 时允许使用其他路径。安装目录按只读资源处理。旧 `data_dir()/generated_models` 历史迁移到新用户目录时保留原文件，迁移失败不得删除原历史。
+- 打包验收：任何 Windows Release 安装包必须在标准用户、安装到 `Program Files` 的条件下启动并打开模型文件夹；检查实际路径不包含安装目录，且能创建 `models/downloads`、`models/exports`、`models/projects`。同时区分模型目录权限问题与 2D 图片服务的远端认证、网络、限流或下载失败，并要求后者提供 `orca-ai-sidecar.log` 和诊断 ID。
+- 相关实现与回归：`src/slic3r/GUI/AIModelOutputDirectory.hpp`、`src/slic3r/GUI/AIServiceManager.cpp`、`tests/slic3rutils/test_model_generation_presentation.cpp`。本次修复保留显式输出目录覆盖、旧历史迁移和用户运行实例，未改变安装位置或外部 API。
+
 ## 按需交付与操作边界
 
 - 本地开发/构建不以干净工作树、commit、push、PR、远程 CI 或团队通知为前置。内部包可用基线加完整哈希快照；明确需要时才读[交接流程](Docs/coordination/validation-handoff.md)和 `release/README.md`，使用 `release/build_internal.ps1`。

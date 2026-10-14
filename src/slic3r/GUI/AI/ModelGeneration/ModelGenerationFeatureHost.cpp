@@ -12,6 +12,7 @@
 #include <wx/colour.h>
 #include <wx/colordlg.h>
 #include <wx/msgdlg.h>
+#include <wx/weakref.h>
 #include "slic3r/GUI/I18N.hpp"
 #include <wx/window.h>
 #ifdef __WXMSW__
@@ -66,8 +67,18 @@ struct ModelGenerationFeatureHost::Impl
             auto* owner = wxGetTopLevelParent(model_generation);
             auto* plater = wxGetApp().plater();
             if (!plater || !model_generation->workbench_snapshot().can_edit_project_colors) return;
+            model_generation->set_project_color_sync_suspended(true);
             delete_orca_printer_filament(owner, *plater, slot);
-            model_generation->synchronize_workbench_project_palette(true);
+            model_generation->set_project_color_sync_suspended(false);
+            // The handler is invoked by a swatch button.  Rebuilding the
+            // palette synchronously destroys that button while Windows is
+            // still dispatching its click message; the next deletion then
+            // re-enters wxWindow::MSWWindowProc with a stale window.  Defer
+            // the refresh until the current event has fully unwound.
+            wxWeakRef<ModelGenerationPanel> weak(model_generation);
+            wxGetApp().CallAfter([weak] {
+                if (weak) weak->synchronize_workbench_project_palette(true);
+            });
         });
         model_generation->set_ui_state_listener([this](const ModelGenerationUIState& state) {
             const bool assets_changed = state.model_asset_id != latest_state.model_asset_id ||

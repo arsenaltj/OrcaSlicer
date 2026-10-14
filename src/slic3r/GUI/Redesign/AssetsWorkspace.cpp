@@ -80,7 +80,9 @@ AssetsWorkspace::AssetsWorkspace(wxWindow* parent, std::function<void()> save_pr
     });
     refresh->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { load_gallery(); });
     browser->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { open_browser(gallery_url); });
-    select_gallery(false);
+    // The gallery is the primary landing view for the assets workspace. Local
+    // assets remain available through the adjacent tab and import flow.
+    select_gallery(true);
 }
 
 void AssetsWorkspace::set_project_available(bool available)

@@ -718,6 +718,19 @@ TEST_CASE("AI model history follows the Orca installation directory across launc
     }
 }
 
+TEST_CASE("AI model history can be anchored in writable per-user data",
+          "[ModelGenerationPresentation][AIModelOutputDirectory]")
+{
+    namespace fs = boost::filesystem;
+    ScopedTemporaryDir temporary("orca-model-output-user-data");
+    const fs::path installation = temporary.path() / "Program Files" / "OrcaSlicer";
+    const fs::path user_data = temporary.path() / "AppData" / "OrcaSlicer";
+    ScopedEnvironmentValue environment("ORCASLICER_AI_OUTPUT_DIR", nullptr);
+    const Slic3r::GUI::AIModelOutputDirectory directory(installation, user_data);
+    CHECK(directory.root() == user_data / "models");
+    CHECK(directory.root() != installation / "models");
+}
+
 TEST_CASE("AI model history preserves an explicit absolute output directory",
           "[ModelGenerationPresentation][AIModelOutputDirectory]")
 {
@@ -874,6 +887,26 @@ TEST_CASE("model-generation progress maps service phases to stable UI milestones
     status.phase.clear();
     status.state = "ready";
     REQUIRE(display_progress(status) == 100);
+}
+
+TEST_CASE("loaded model remains importable when generation inputs become stale",
+          "[ModelGenerationPresentation][ModelImportAction]")
+{
+    // A printer filament update can change the current palette after the
+    // remote job finished.  That requires regeneration for a new model, but
+    // must not remove the action for the already loaded artifact.
+    CHECK(model_import_action_enabled(true, true, true, true, false, true, true));
+    CHECK(model_import_action_visible(true, true, true, false, true));
+
+    // Before the preview is loaded, only the explicit reload path is valid.
+    CHECK_FALSE(model_import_action_enabled(true, false, false, true, false, true, true));
+    CHECK(model_import_action_enabled(true, false, false, true, false, false, false));
+    CHECK_FALSE(model_import_action_visible(true, false, false, false, true));
+
+    // A missing local artifact cannot be imported just because the inputs are
+    // stale, and a busy download never exposes a usable action.
+    CHECK_FALSE(model_import_action_enabled(true, true, false, true, false, true, false));
+    CHECK_FALSE(model_import_action_enabled(true, true, true, true, true, false, false));
 }
 
 TEST_CASE("Server palette corrections preserve previews without overwriting user edits", "[ModelGenerationPresentation]")
