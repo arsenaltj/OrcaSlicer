@@ -6,11 +6,13 @@
 #include "slic3r/GUI/AI/Orca/OrcaSmartSlicingAdapter.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaTrialSliceExecutor.hpp"
 #include "slic3r/GUI/AI/Orca/OrcaWorkflowRuntimeStore.hpp"
+#include "slic3r/GUI/AI/Orca/SmartSliceApplier.hpp"
 #include "slic3r/GUI/AI/SmartSlicing/SmartSlicingPanel.hpp"
 #include "slic3r/GUI/AI/SmartSlicing/SmartSlicingPresenter.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/GUI_ObjectList.hpp"
 #include "slic3r/GUI/GLCanvas3D.hpp"
+#include "slic3r/GUI/PartPlate.hpp"
 #include "slic3r/GUI/Plater.hpp"
 #include "slic3r/GUI/MainFrame.hpp"
 #include "slic3r/GUI/Notebook.hpp"
@@ -23,6 +25,8 @@
 #include "slic3r/AI/SmartSlicing/Application/SmartSlicingCoordinator.hpp"
 #include "slic3r/AI/SmartSlicing/Application/TrialSliceScheduler.hpp"
 #include "slic3r/AI/SmartSlicing/Application/VersionedApplyWorkflow.hpp"
+#include "slic3r/AI/SmartSlicing/Application/SmartSlicingEngine.hpp"
+#include "libslic3r/PrintConfig.hpp"
 
 #include <wx/aui/framemanager.h>
 #include <wx/button.h>
@@ -170,6 +174,66 @@ bool prepare_parameter_patch(Plater& plater, const AI::SmartSlicing::SliceCandid
         return false;
     }
     return true;
+}
+
+double config_speed_or(const DynamicPrintConfig& config, const char* key, double fallback)
+{
+    if (const auto* option = config.option<ConfigOptionFloatsNullable>(key);
+        option != nullptr && !option->values.empty() && std::isfinite(option->values.front()) &&
+        option->values.front() > 0.0)
+        return option->values.front();
+    return fallback;
+}
+
+AI::SmartSlicing::MachinePreset capture_machine_preset(const DynamicPrintConfig& config)
+{
+    AI::SmartSlicing::MachinePreset machine;
+    if (const auto* nozzle = config.option<ConfigOptionFloats>("nozzle_diameter");
+        nozzle != nullptr && !nozzle->values.empty())
+        machine.nozzle_diameter_mm = nozzle->values.front();
+    if (const auto* minimum = config.option<ConfigOptionFloat>("min_layer_height"); minimum != nullptr)
+        machine.minimum_layer_height_mm = minimum->value;
+    if (const auto* maximum = config.option<ConfigOptionFloat>("max_layer_height"); maximum != nullptr)
+        machine.maximum_layer_height_mm = maximum->value;
+    if (const auto* speed = config.option<ConfigOptionFloatsNullable>("outer_wall_speed");
+        speed != nullptr && !speed->values.empty() && std::isfinite(speed->values.front()) &&
+        speed->values.front() > 0.0)
+        machine.maximum_outer_wall_speed_mm_s = speed->values.front();
+    if (const auto* flow = config.option<ConfigOptionFloats>("filament_max_volumetric_speed");
+        flow != nullptr && !flow->values.empty())
+        machine.maximum_volumetric_speed_mm3_s = flow->values.front();
+    machine.inner_wall_speed_mm_s = config_speed_or(config, "inner_wall_speed", machine.inner_wall_speed_mm_s);
+    machine.sparse_infill_speed_mm_s = config_speed_or(config, "sparse_infill_speed", machine.sparse_infill_speed_mm_s);
+    machine.internal_solid_infill_speed_mm_s = config_speed_or(
+        config, "internal_solid_infill_speed", machine.internal_solid_infill_speed_mm_s);
+    machine.top_surface_speed_mm_s = config_speed_or(config, "top_surface_speed", machine.top_surface_speed_mm_s);
+    machine.support_speed_mm_s = config_speed_or(config, "support_speed", machine.support_speed_mm_s);
+    machine.travel_speed_mm_s = config_speed_or(config, "travel_speed", machine.travel_speed_mm_s);
+    machine.default_acceleration_mm_s2 = config_speed_or(
+        config, "default_acceleration", machine.default_acceleration_mm_s2);
+    machine.outer_wall_acceleration_mm_s2 = config_speed_or(
+        config, "outer_wall_acceleration", machine.outer_wall_acceleration_mm_s2);
+    if (const auto* layer = config.option<ConfigOptionFloat>("layer_height"); layer != nullptr)
+        machine.baseline_layer_height_mm = layer->value;
+    if (const auto* walls = config.option<ConfigOptionInt>("wall_loops"); walls != nullptr)
+        machine.baseline_wall_loops = walls->value;
+    if (const auto* infill = config.option<ConfigOptionPercent>("sparse_infill_density"); infill != nullptr)
+        machine.baseline_infill_density_percent = infill->value;
+    if (const auto* support = config.option<ConfigOptionBool>("enable_support"); support != nullptr)
+        machine.baseline_support_enabled = support->value;
+    return machine;
+}
+
+AI::SmartSlicing::FilamentPreset capture_filament_preset(const DynamicPrintConfig& config)
+{
+    AI::SmartSlicing::FilamentPreset filament;
+    if (const auto* density = config.option<ConfigOptionFloats>("filament_density");
+        density != nullptr && !density->values.empty())
+        filament.density_g_cm3 = density->values.front();
+    if (const auto* flow = config.option<ConfigOptionFloats>("filament_max_volumetric_speed");
+        flow != nullptr && !flow->values.empty())
+        filament.maximum_volumetric_speed_mm3_s = flow->values.front();
+    return filament;
 }
 
 bool prepare_parameter_patch(Plater& plater, const AI::SmartSlicing::SliceCandidate& candidate,
@@ -467,6 +531,105 @@ struct SmartSlicingFeatureHost::Impl
         event.Skip();
     }
 
+    void start_lightweight_only_analysis()
+    {
+        using namespace AI::SmartSlicing;
+
+        // A printability preflight may intentionally block the formal trial
+        // candidates (for example, an open mesh), but it must not suppress
+        // the independent, read-only geometry recommendations.  Keep this
+        // worker separate from the trial worker so entering this path never
+        // blocks the UI while the quick metrics are computed.
+        if (lightweight_worker.joinable())
+            lightweight_worker.join();
+
+        std::optional<OrcaModelFeatureInput> mesh;
+        MachinePreset machine;
+        FilamentPreset filament;
+        if (wxGetApp().preset_bundle != nullptr) {
+            DynamicPrintConfig config = wxGetApp().preset_bundle->full_config();
+            PartPlate* plate = plater.get_partplate_list().get_curr_plate();
+            if (plate != nullptr)
+                config.apply(*plate->config(), true);
+            machine = capture_machine_preset(config);
+            filament = capture_filament_preset(config);
+            // A valid native result for the current plate is the most useful
+            // calibration anchor available without running three extra full
+            // slices.  It is read-only and ignored when the plate is stale.
+            if (plate != nullptr && plate->is_slice_result_valid() && plate->get_slice_result() != nullptr) {
+                const auto& statistics = plate->get_slice_result()->print_statistics;
+                machine.native_baseline_time_seconds = statistics.modes[
+                    static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Normal)].time;
+                double total_volume_mm3 = 0.0;
+                for (const auto& [_, volume] : statistics.total_volumes_per_extruder)
+                    if (std::isfinite(volume) && volume > 0.0)
+                        total_volume_mm3 += volume;
+                machine.native_baseline_material_grams = total_volume_mm3 * filament.density_g_cm3 / 1000.0;
+            }
+            ModelFeatureAnalysisLimits limits;
+            limits.maximum_working_memory_bytes = 256ull * 1024ull * 1024ull;
+            const auto captured = workspace->capture_model_feature_inputs({}, limits);
+            if (captured.completed() && !captured.inputs.empty())
+                mesh = captured.inputs.front();
+        }
+
+        uint64_t attempt = 0;
+        {
+            std::lock_guard<std::mutex> lock(lightweight_mutex);
+            attempt = ++last_lightweight_attempt;
+            lightweight_analysis.reset();
+            lightweight_analyzing = mesh.has_value();
+            lightweight_stale = false;
+            lightweight_diagnostic = mesh ? std::string{} : "smart_slice_geometry_unavailable";
+        }
+        if (!mesh) {
+            publish_workbench();
+            return;
+        }
+
+        try {
+            lightweight_worker = std::thread([this, mesh = std::move(mesh), machine, filament, attempt]() mutable {
+                try {
+                    const SmartAnalysisResult analysis =
+                        SmartSlicingEngine().AnalyzeAndPrecompute(mesh->mesh, machine, filament);
+                    std::lock_guard<std::mutex> lock(lightweight_mutex);
+                    if (attempt == last_lightweight_attempt) {
+                        lightweight_analysis = analysis;
+                        lightweight_analyzing = false;
+                        lightweight_diagnostic = analysis.completed ? std::string{} : analysis.diagnostic_code;
+                    }
+                } catch (...) {
+                    std::lock_guard<std::mutex> lock(lightweight_mutex);
+                    if (attempt == last_lightweight_attempt) {
+                        lightweight_analyzing = false;
+                        lightweight_diagnostic = "smart_slice_analysis_failed";
+                    }
+                }
+            });
+        } catch (...) {
+            {
+                std::lock_guard<std::mutex> lock(lightweight_mutex);
+                if (attempt == last_lightweight_attempt) {
+                    lightweight_analyzing = false;
+                    lightweight_diagnostic = "smart_slice_analysis_worker_start_failed";
+                }
+            }
+            publish_workbench();
+        }
+    }
+
+    void drain_lightweight_worker()
+    {
+        if (!lightweight_worker.joinable()) return;
+        bool running = false;
+        {
+            std::lock_guard<std::mutex> lock(lightweight_mutex);
+            running = lightweight_analyzing;
+        }
+        if (!running)
+            lightweight_worker.join();
+    }
+
     void start_candidate_search_session()
     {
         using namespace AI::SmartSlicing;
@@ -489,6 +652,11 @@ struct SmartSlicingFeatureHost::Impl
             clear_recommendation_projection();
             return;
         }
+
+        // Capture and analyze immutable geometry in a dedicated worker. The
+        // formal candidate worker below can therefore proceed concurrently;
+        // no ModelObject pointer crosses the thread boundary.
+        start_lightweight_only_analysis();
         candidate_search = CandidateSearchPipeline().search(*candidate_capture.input);
         CandidateSearchSessionPlanResult planned = CandidateSearchSessionPlanner().plan(
             *candidate_search, legacy_snapshot.workflow_id, ++last_recommendation_attempt);
@@ -601,6 +769,7 @@ struct SmartSlicingFeatureHost::Impl
         if (!recommendation_worker_state.running() &&
             recommendation_worker.joinable())
             join_recommendation_worker();
+        drain_lightweight_worker();
         publish_recommendation_snapshot();
     }
 
@@ -667,6 +836,15 @@ struct SmartSlicingFeatureHost::Impl
     void cancel_recommendation_session(AI::SmartSlicing::RecommendationCancellationReason reason)
     {
         using namespace AI::SmartSlicing;
+        {
+            std::lock_guard<std::mutex> lock(lightweight_mutex);
+            ++last_lightweight_attempt;
+            if (lightweight_analyzing) {
+                lightweight_analyzing = false;
+                lightweight_stale = true;
+                lightweight_diagnostic = "smart_slice_analysis_canceled";
+            }
+        }
         const RecommendationSessionSnapshot& snapshot = recommendation_coordinator.snapshot();
         if (snapshot.workflow_id == 0 || snapshot.attempt_id == 0)
             return;
@@ -738,6 +916,8 @@ struct SmartSlicingFeatureHost::Impl
         cancel_recommendation_session(AI::SmartSlicing::RecommendationCancellationReason::Shutdown);
         trial_executor->cancel_trial_slice();
         join_recommendation_worker();
+        if (lightweight_worker.joinable())
+            lightweight_worker.join();
         clear_recommendation_results();
         presenter.reset();
         if (panel != nullptr)
@@ -811,6 +991,88 @@ struct SmartSlicingFeatureHost::Impl
                 plater.undo();
             return { false, false, "candidate_apply_rolled_back" };
         }
+    }
+
+    bool apply_lightweight_plan(const AI::SmartSlicing::SliceRecommendation& plan,
+                                std::string& diagnostic)
+    {
+        if (!wxIsMainThread()) {
+            diagnostic = "smart_slice_apply_requires_owner_thread";
+            return false;
+        }
+        if (plater.inside_snapshot_capture() ||
+            plater.get_view3D_canvas3D()->get_gizmos_manager().is_running()) {
+            diagnostic = "smart_slice_apply_busy";
+            return false;
+        }
+        if (wxGetApp().preset_bundle == nullptr) {
+            diagnostic = "current_config_unavailable";
+            return false;
+        }
+        PartPlate* plate = plater.get_partplate_list().get_curr_plate();
+        if (plate == nullptr) {
+            diagnostic = "current_plate_unavailable";
+            return false;
+        }
+
+        DynamicPrintConfig base_config = wxGetApp().preset_bundle->full_config();
+        base_config.apply(*plate->config(), true);
+        DynamicPrintConfig patched_config;
+        if (!SmartSliceApplier::BuildConfig(base_config, plan, patched_config, &diagnostic))
+            return false;
+
+        static constexpr const char* PLAN_KEYS[] = {
+            "layer_height", "wall_loops", "sparse_infill_density", "sparse_infill_pattern",
+            "outer_wall_line_width", "outer_wall_speed", "enable_support", "support_threshold_angle",
+            "support_type", "wall_generator", "adaptive_layer_height"};
+        bool changed = false;
+        for (const char* key : PLAN_KEYS) {
+            const ConfigOption* before = base_config.option(key);
+            const ConfigOption* after = patched_config.option(key);
+            if (after == nullptr)
+                continue;
+            if (before == nullptr || before->type() != after->type() || *before != *after) {
+                changed = true;
+                break;
+            }
+        }
+
+        try {
+            plater.select_view_3D("3D");
+            {
+                Plater::TakeSnapshot transaction(&plater, "Apply SmartSlice Recommendation");
+                for (const char* key : PLAN_KEYS) {
+                    const ConfigOption* replacement = patched_config.option(key);
+                    if (replacement != nullptr)
+                        plate->config()->set_key_value(key, replacement->clone());
+                }
+
+                // Recompute the prime tower after the final AI parameters are
+                // installed. The initial plate position may have been chosen
+                // before the model height and effective layer height were
+                // known, which can make the tower/brim grow beyond the bed.
+                // Keep project_config and ModelWipeTower identical so the
+                // native Print/G-code path consumes the corrected coordinate.
+                PartPlateList& plate_list = plater.get_partplate_list();
+                plate_list.set_default_wipe_tower_pos_for_plate(plate->get_index(), false);
+                plate_list.sync_wipe_tower_positions_to_model();
+                if (changed)
+                    plate->update_slice_result_valid_state(false);
+                plater.update_title_dirty_status();
+            }
+        } catch (const std::exception& error) {
+            if (plater.can_undo())
+                plater.undo();
+            diagnostic = error.what();
+            return false;
+        } catch (...) {
+            if (plater.can_undo())
+                plater.undo();
+            diagnostic = "smart_slice_apply_exception";
+            return false;
+        }
+        diagnostic.clear();
+        return true;
     }
 
     OrcaVersionedApplyResult apply_plan(const AI::SmartSlicing::AtomicApplyPlan& plan)
@@ -1074,6 +1336,15 @@ struct SmartSlicingFeatureHost::Impl
         state.official = workbench_official;
         state.diagnostic = candidate_session_diagnostic;
         state.analyzing = recommendation_worker_state.running();
+        {
+            std::lock_guard<std::mutex> lock(lightweight_mutex);
+            state.lightweight_analysis = lightweight_analysis;
+            state.lightweight_analyzing = lightweight_analyzing;
+            state.lightweight_stale = lightweight_stale;
+            if (state.diagnostic.empty() && !lightweight_diagnostic.empty())
+                state.diagnostic = lightweight_diagnostic;
+        }
+        state.analyzing = state.analyzing || state.lightweight_analyzing;
         state.can_analyze = !state.analyzing && !native_session.pending() &&
             workbench_official.phase != OfficialSlicePhase::Slicing;
         state.can_retry = workbench_official.can_retry_slice;
@@ -1096,14 +1367,9 @@ struct SmartSlicingFeatureHost::Impl
             state.machine_reasons = preflight.context->machine_capability.reasons;
             state.material_reasons = preflight.context->material_compatibility.reasons;
         }
-        if (preflight.state == WorkflowState::AwaitingRiskDecision && state.preflight) {
-            state.can_keep_current_mesh = state.preflight->has_blocking_issue() &&
-                std::all_of(state.preflight->issues.begin(), state.preflight->issues.end(), [](const auto& issue) {
-                    return !issue.blocks_trial_slice || (issue.code == IssueCode::OpenMesh &&
-                        issue.requires_user_decision && std::find(issue.resolution_codes.begin(),
-                            issue.resolution_codes.end(), "keep_current_mesh") != issue.resolution_codes.end());
-                });
-        }
+        // SmartSlice preflight is diagnostic-only in the three-card flow.  It
+        // never exposes an "accept risk" action or blocks native slicing.
+        state.can_keep_current_mesh = false;
         if (wxGetApp().preset_bundle) {
             const auto& config = wxGetApp().preset_bundle->project_config;
             if (const auto* colors = config.option<ConfigOptionStrings>("filament_colour"))
@@ -1124,7 +1390,28 @@ struct SmartSlicingFeatureHost::Impl
             }
         }
         const auto& candidate = state.candidates[static_cast<size_t>(selected_goal)];
-        if (state.has_selected_goal && candidate && !native_session.pending() && !versioned_apply_workflow->active_transaction()) {
+        AI::SmartSlicing::SliceMode selected_mode = AI::SmartSlicing::SliceMode::BALANCED;
+        if (selected_goal == AI::SmartSlicing::RecommendationGoal::Speed)
+            selected_mode = AI::SmartSlicing::SliceMode::SPEED;
+        else if (selected_goal == AI::SmartSlicing::RecommendationGoal::Quality)
+            selected_mode = AI::SmartSlicing::SliceMode::QUALITY;
+        bool quick_plan_ready = false;
+        {
+            std::lock_guard<std::mutex> lock(lightweight_mutex);
+            quick_plan_ready = state.has_selected_goal && lightweight_analysis.has_value() &&
+                lightweight_analysis->completed && lightweight_analysis->find(selected_mode) != nullptr;
+        }
+        if (quick_plan_ready && state.can_start_native && !native_session.pending() &&
+            !versioned_apply_workflow->active_transaction()) {
+            // A selected lightweight plan is intentionally sufficient to enter
+            // Orca's native slicer.  SmartSlice capability/preflight evidence
+            // remains diagnostic-only and is never an additional gate here.
+            state.can_start = true;
+        } else if (state.has_selected_goal && candidate && !native_session.pending() &&
+                   !versioned_apply_workflow->active_transaction()) {
+            // Keep the legacy formal-candidate route available for older
+            // sessions and future experiments, but it is no longer required
+            // for the normal three-card workflow.
             try { state.can_start = AI::SmartSlicing::ApplyService().capture_ready_binding(apply_context(*candidate)).accepted(); }
             catch (...) { state.can_start = false; }
         }
@@ -1185,6 +1472,7 @@ struct SmartSlicingFeatureHost::Impl
     std::unique_ptr<wxTimer> recommendation_revision_timer;
     RecommendationHostEventBindings recommendation_event_bindings;
     std::thread recommendation_worker;
+    std::thread lightweight_worker;
     AI::SmartSlicing::RecommendationWorkerState recommendation_worker_state;
     mutable std::mutex recommendation_result_mutex;
     std::deque<AI::SmartSlicing::RecommendationTaskResult> recommendation_results;
@@ -1206,6 +1494,12 @@ struct SmartSlicingFeatureHost::Impl
     std::function<void()> auto_analyze;
     NativeSliceSession native_session;
     uint64_t workbench_command_sequence {0};
+    mutable std::mutex lightweight_mutex;
+    std::optional<AI::SmartSlicing::SmartAnalysisResult> lightweight_analysis;
+    std::string lightweight_diagnostic;
+    bool lightweight_analyzing {false};
+    bool lightweight_stale {false};
+    uint64_t last_lightweight_attempt {0};
 };
 
 SmartSlicingFeatureHost::SmartSlicingFeatureHost(Plater& plater, wxAuiManager& aui_manager, Sidebar& sidebar,
@@ -1293,14 +1587,13 @@ bool SmartSlicingFeatureHost::analyze_workbench()
     m_impl->candidate_session_diagnostic.clear();
     m_impl->coordinator->cancel();
     m_impl->coordinator->start();
-    const auto& preflight = m_impl->coordinator->snapshot();
-    if (preflight.state != WorkflowState::ReadyForCandidatePlanning) {
-        m_impl->candidate_session_diagnostic = preflight.detail;
-        m_impl->publish_workbench();
-        return false;
-    }
-    m_impl->start_candidate_search_session();
-    return m_impl->candidate_session_plan.has_value();
+    // The three-card workflow is deliberately independent from the legacy
+    // formal candidate search.  Preflight is still captured for diagnostics,
+    // but it never blocks the native recommendation path.
+    m_impl->candidate_session_diagnostic.clear();
+    m_impl->start_lightweight_only_analysis();
+    m_impl->publish_workbench();
+    return true;
 }
 
 bool SmartSlicingFeatureHost::keep_current_mesh_and_analyze(
@@ -1312,8 +1605,10 @@ bool SmartSlicingFeatureHost::keep_current_mesh_and_analyze(
         m_impl->publish_workbench();
         return false;
     }
-    m_impl->start_candidate_search_session();
-    return m_impl->candidate_session_plan.has_value();
+    m_impl->candidate_session_diagnostic.clear();
+    m_impl->start_lightweight_only_analysis();
+    m_impl->publish_workbench();
+    return true;
 }
 
 bool SmartSlicingFeatureHost::select_goal(AI::SmartSlicing::RecommendationGoal goal)
@@ -1323,8 +1618,17 @@ bool SmartSlicingFeatureHost::select_goal(AI::SmartSlicing::RecommendationGoal g
     if (std::find(AI::SmartSlicing::RECOMMENDATION_GOALS.begin(), AI::SmartSlicing::RECOMMENDATION_GOALS.end(), goal) ==
         AI::SmartSlicing::RECOMMENDATION_GOALS.end()) return false;
     m_impl->refresh_recommendation_revision();
-    if (!m_impl->workbench_candidate(goal) ||
-        !m_impl->goal_selection.select(goal, m_impl->current_native_revision())) return false;
+    const auto revision = m_impl->current_native_revision();
+    const bool quick_available = [&] {
+        std::lock_guard<std::mutex> lock(m_impl->lightweight_mutex);
+        const auto mode = goal == AI::SmartSlicing::RecommendationGoal::Speed ? AI::SmartSlicing::SliceMode::SPEED :
+            goal == AI::SmartSlicing::RecommendationGoal::Quality ? AI::SmartSlicing::SliceMode::QUALITY :
+            AI::SmartSlicing::SliceMode::BALANCED;
+        return m_impl->lightweight_analysis && m_impl->lightweight_analysis->completed &&
+               m_impl->lightweight_analysis->find(mode) != nullptr;
+    }();
+    if ((!m_impl->workbench_candidate(goal) && !quick_available) ||
+        !m_impl->goal_selection.select(goal, revision)) return false;
     m_impl->selected_goal = goal;
     m_impl->publish_workbench();
     return true;
@@ -1344,12 +1648,40 @@ AI::SmartSlicing::OfficialSliceResult SmartSlicingFeatureHost::start_workbench_s
         m_impl->refresh_recommendation_revision();
         const auto current = workbench_snapshot();
         const auto index = static_cast<size_t>(current.selected_goal);
-        if (!current.has_selected_goal || !reviewed.has_selected_goal || !current.can_start || current.selected_goal != reviewed.selected_goal ||
-            current.session.publication_revision != reviewed.session.publication_revision ||
-            current.session.workflow_id != reviewed.session.workflow_id ||
-            current.session.attempt_id != reviewed.session.attempt_id ||
-            current.session.workspace_revision != reviewed.session.workspace_revision ||
-            !reviewed.candidates[index] || !current.candidates[index] ||
+        if (!current.has_selected_goal || !reviewed.has_selected_goal || !current.can_start ||
+            current.selected_goal != reviewed.selected_goal ||
+            current.session.workspace_revision != reviewed.session.workspace_revision)
+            return {OfficialSlicePhase::Rejected, "reviewed_candidate_changed"};
+
+        SliceMode selected_mode = SliceMode::BALANCED;
+        if (current.selected_goal == RecommendationGoal::Speed)
+            selected_mode = SliceMode::SPEED;
+        else if (current.selected_goal == RecommendationGoal::Quality)
+            selected_mode = SliceMode::QUALITY;
+
+        std::optional<SliceRecommendation> lightweight_plan;
+        {
+            std::lock_guard<std::mutex> lock(m_impl->lightweight_mutex);
+            if (m_impl->lightweight_analysis && m_impl->lightweight_analysis->completed) {
+                if (const SliceRecommendation* plan = m_impl->lightweight_analysis->find(selected_mode))
+                    lightweight_plan = *plan;
+            }
+        }
+        if (lightweight_plan) {
+            // The selected card is a native-process patch, not a second slice
+            // engine.  Apply it atomically, then call the same native route
+            // used by the Orca tab.  Machine/material capability preflight is
+            // deliberately not consulted here.
+            std::string diagnostic;
+            if (!m_impl->apply_lightweight_plan(*lightweight_plan, diagnostic))
+                return {OfficialSlicePhase::Rejected,
+                        diagnostic.empty() ? "smart_slice_plan_apply_failed" : std::move(diagnostic)};
+            m_impl->workbench_official = {};
+            start_native_slice();
+            return m_impl->workbench_official;
+        }
+
+        if (!reviewed.candidates[index] || !current.candidates[index] ||
             apply_candidate_payload_digest(*current.candidates[index]) != apply_candidate_payload_digest(*reviewed.candidates[index]))
             return {OfficialSlicePhase::Rejected, "reviewed_candidate_changed"};
         VersionedApplyRequest request;

@@ -167,7 +167,10 @@ private:
     std::array<wxWindow*, 3> m_slice_goals { nullptr, nullptr, nullptr };
     wxStaticText* m_slice_details { nullptr };
     wxPanel* m_slice_parameter_panel {nullptr};
-    std::array<wxStaticText*, 6> m_slice_parameter_values {};
+    // The compact slicing summary shows at most eight rows. The complete
+    // recommendation remains available through the themed details dialog.
+    std::array<wxStaticText*, 8> m_slice_parameter_labels {};
+    std::array<wxStaticText*, 8> m_slice_parameter_values {};
     wxStaticText* m_slice_status { nullptr };
     wxStaticText* m_slice_check_status { nullptr };
     wxStaticText* m_slice_model_stats { nullptr };

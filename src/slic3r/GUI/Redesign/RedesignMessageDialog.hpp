@@ -17,6 +17,8 @@ namespace Slic3r::GUI {
 
 class RedesignDialogActionButton;
 class RedesignDialogCloseButton;
+class RedesignDetailsContentPanel;
+class RedesignDetailsViewport;
 
 struct RedesignDialogAction {
     wxWindowID id;
@@ -51,6 +53,11 @@ class RedesignMessageDialog : public DPIDialog
 {
 public:
     enum class Appearance { Standard, Compact, GenerationConfirmation };
+    // Scrolling is shared by confirmation and details dialogs, but their
+    // content implementations are intentionally separate.  Confirmation
+    // dialogs keep the native wxStaticText layout; only the long details
+    // dialog opts into the owner-drawn viewport.
+    enum class ContentMode { Native, OwnerDrawnDetails };
     RedesignMessageDialog(wxWindow* parent, const wxString& message,
                           const wxString& caption = wxEmptyString, long style = wxOK, bool compact = false,
                           bool scroll_message = false);
@@ -61,7 +68,8 @@ public:
                           int minimum_message_height = 105, bool scroll_message = false,
                           const std::vector<RedesignDialogAction>& actions = {},
                           const wxString& checkbox_label = wxEmptyString,
-                          bool checkbox_checked = false);
+                          bool checkbox_checked = false,
+                          ContentMode content_mode = ContentMode::Native);
     bool checkbox_checked() const;
     void set_dismiss_result(int result) { m_cancel_result = result; }
 
@@ -80,12 +88,16 @@ private:
     int m_message_min_height { -1 };
     bool m_stacked_actions { false };
     Appearance m_appearance { Appearance::Standard };
+    ContentMode m_content_mode { ContentMode::Native };
     wxString m_original_message;
     wxPoint m_drag_offset;
     wxWindow* m_drag_source { nullptr };
     wxPanel* m_title_bar { nullptr };
     wxStaticText* m_title { nullptr };
     wxStaticText* m_message { nullptr };
+    wxWindow* m_message_window { nullptr };
+    RedesignDetailsContentPanel* m_details_content { nullptr };
+    RedesignDetailsViewport* m_details_viewport { nullptr };
     wxScrolledWindow* m_message_view { nullptr };
     wxCheckBox* m_checkbox { nullptr };
     wxPanel* m_icon { nullptr };
@@ -96,6 +108,12 @@ private:
 
 int show_redesign_confirmation(wxWindow* parent, const wxString& message,
                               const wxString& caption, const RedesignConfirmationOptions& options = {});
+
+// Shows a read-only, scrollable details view using the same rounded dark
+// dialog and dimmed backdrop as the redesign workflow. The helper is intended
+// for long recommendation summaries and has a single localized close action.
+int show_redesign_details(wxWindow* parent, const wxString& message,
+                          const wxString& caption);
 
 // Returns wxID_YES only for an affirmative action. Closing/Escape return wxID_NO.
 int show_generation_confirmation(wxWindow* parent, const wxString& message,

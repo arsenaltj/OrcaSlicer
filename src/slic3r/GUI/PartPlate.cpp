@@ -4468,6 +4468,11 @@ void PartPlateList::set_default_wipe_tower_pos_for_plate(int plate_idx, bool ini
         f_volume_maps = wxGetApp().preset_bundle->get_default_nozzle_volume_types_for_filaments(filament_maps);
     }
     DynamicPrintConfig full_config = wxGetApp().preset_bundle->full_config(false, filament_maps, f_volume_maps);
+    // The default position used to be sized from the preset-only config. When
+    // SmartSlice changes the per-plate layer height, the final tower depth can
+    // grow after the initial position was chosen. Include the effective plate
+    // overrides so this clamp uses the same values as the upcoming slice.
+    full_config.apply(*part_plate->config(), true);
     float w = dynamic_cast<const ConfigOptionFloat *>(full_config.option("prime_tower_width"))->value;
     float v = dynamic_cast<const ConfigOptionFloat *>(full_config.option("prime_volume"))->value;
     bool enable_wrapping = false;
@@ -4520,6 +4525,26 @@ void PartPlateList::set_default_wipe_tower_pos_for_plate(int plate_idx, bool ini
     ConfigOptionFloat wt_y_opt(y);
     dynamic_cast<ConfigOptionFloats *>(proj_cfg.option("wipe_tower_x"))->set_at(&wt_x_opt, plate_idx, 0);
     dynamic_cast<ConfigOptionFloats *>(proj_cfg.option("wipe_tower_y"))->set_at(&wt_y_opt, plate_idx, 0);
+}
+
+void PartPlateList::sync_wipe_tower_positions_to_model()
+{
+    if (m_model == nullptr || wxGetApp().preset_bundle == nullptr)
+        return;
+
+    const DynamicPrintConfig &proj_cfg = wxGetApp().preset_bundle->project_config;
+    const ConfigOptionFloats *tower_x = proj_cfg.option<ConfigOptionFloats>("wipe_tower_x");
+    const ConfigOptionFloats *tower_y = proj_cfg.option<ConfigOptionFloats>("wipe_tower_y");
+    if (tower_x == nullptr || tower_y == nullptr)
+        return;
+
+    const size_t count = std::min(tower_x->values.size(), tower_y->values.size());
+    m_model->wipe_tower.positions.resize(count);
+    for (size_t plate_idx = 0; plate_idx < count; ++plate_idx)
+        m_model->wipe_tower.positions[plate_idx] = Vec2d(tower_x->get_at(plate_idx), tower_y->get_at(plate_idx));
+
+    const DynamicPrintConfig &print_config = wxGetApp().preset_bundle->prints.get_edited_preset().config;
+    m_model->wipe_tower.rotation = print_config.opt_float("wipe_tower_rotation_angle");
 }
 
 //this may be happened after machine changed

@@ -11,10 +11,13 @@
 #include "../Plater.hpp"
 #include "../GLCanvas3D.hpp"
 #include "../ImGuiWrapper.hpp"
+#include "libslic3r/BuildVolume.hpp"
 #include "libslic3r/PresetBundle.hpp"
 
 #include <boost/filesystem/path.hpp>
 #include <algorithm>
+#include <array>
+#include <sstream>
 
 namespace Slic3r::GUI {
 namespace {
@@ -166,6 +169,64 @@ bool OrcaPrinterAdapter::preview_toolpath_outside() const
     const auto& preview = canvas->get_gcode_viewer();
     // Preview checks include the wipe tower. Ignore a previous plate/result.
     return preview.has_data() && preview.loaded_result_id() == result->id && !preview.is_contained_in_bed();
+}
+
+std::string OrcaPrinterAdapter::preview_toolpath_diagnostic() const
+{
+    auto* plate = m_plater ? m_plater->get_partplate_list().get_curr_plate() : nullptr;
+    const auto* result = plate ? plate->get_slice_result() : nullptr;
+    auto* canvas = m_plater ? m_plater->get_preview_canvas3D() : nullptr;
+    if (!result || !canvas || !plate->is_slice_result_valid()) return {};
+
+    const auto& preview = canvas->get_gcode_viewer();
+    if (!preview.has_data() || preview.loaded_result_id() != result->id || preview.is_contained_in_bed()) return {};
+
+    const auto* parsed = preview.get_gcode_result();
+    if (!parsed || !m_plater) return _u8L("路径超出热床边界，请检查模型摆放或擦料塔位置。");
+
+    // Reuse BuildVolume::all_paths_inside(), the same native predicate used by
+    // GCodeViewer, but run it per extrusion role group so the UI can identify
+    // the actual source.  Travel/custom moves are deliberately excluded by
+    // BuildVolume's native move_valid predicate.
+    enum class PathGroup { Model, Support, SkirtOrBrim, WipeTower };
+    std::array<bool, 4> group_outside{};
+    auto group_for_role = [](const ExtrusionRole role) {
+        if (role == erSupportMaterial || role == erSupportMaterialInterface || role == erSupportTransition)
+            return PathGroup::Support;
+        if (role == erSkirt || role == erBrim)
+            return PathGroup::SkirtOrBrim;
+        if (role == erWipeTower)
+            return PathGroup::WipeTower;
+        return PathGroup::Model;
+    };
+    const auto& build_volume = m_plater->build_volume();
+    for (const auto group : {PathGroup::Model, PathGroup::Support, PathGroup::SkirtOrBrim, PathGroup::WipeTower}) {
+        GCodeProcessorResult grouped;
+        const auto group_index = static_cast<size_t>(group);
+        for (const auto& move : parsed->moves) {
+            if (move.type == EMoveType::Extrude && move.extrusion_role != erCustom &&
+                move.width != 0.f && move.height != 0.f && group_for_role(move.extrusion_role) == group)
+                grouped.moves.push_back(move);
+        }
+        if (!grouped.moves.empty())
+            group_outside[group_index] = !build_volume.all_paths_inside(grouped, BoundingBoxf3());
+    }
+
+    std::ostringstream detail;
+    detail << _u8L("检测到超出热床边界的 G-code 路径：");
+    bool listed = false;
+    const auto append = [&](const std::string& text) {
+        if (listed) detail << _u8L("、");
+        detail << text;
+        listed = true;
+    };
+    if (group_outside[static_cast<size_t>(PathGroup::Model)]) append(_u8L("模型/墙体/填充"));
+    if (group_outside[static_cast<size_t>(PathGroup::Support)]) append(_u8L("支撑"));
+    if (group_outside[static_cast<size_t>(PathGroup::SkirtOrBrim)]) append(_u8L("裙边或 Brim"));
+    if (group_outside[static_cast<size_t>(PathGroup::WipeTower)]) append(_u8L("擦料塔"));
+    if (!listed) detail << _u8L("未知挤出路径");
+    detail << _u8L("。请在 Orca 原生预览中定位越界路径后调整模型、支撑或擦料塔位置并重新切片。");
+    return detail.str();
 }
 
 std::vector<PrinterWorkspaceDevice> OrcaPrinterAdapter::devices() const

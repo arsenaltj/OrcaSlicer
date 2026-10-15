@@ -109,6 +109,8 @@ add_executable(${_TEST_NAME}_tests
     test_smart_slicing_workflow.cpp
     test_smart_slicing_performance_acceptance.cpp
     test_smart_slicing_six_nozzle_validation.cpp
+    test_smart_slice_engine.cpp
+    test_smart_slice_applier.cpp
     ../fff_print/test_helpers.cpp
     )
 

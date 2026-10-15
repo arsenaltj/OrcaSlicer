@@ -76,6 +76,10 @@ struct ModelGenerationUIState
     bool can_retry_model { false };
     bool can_restore_latest { false };
     bool can_import { false };
+    // Opening the redesigned model workbench is a navigation action.  It can
+    // remain available while an unaccepted Beauty/check candidate keeps the
+    // actual import-to-prepare action disabled.
+    bool can_open_workbench { false };
     bool can_restart { false };
     bool design_ready { false };
     bool model_ready { false };

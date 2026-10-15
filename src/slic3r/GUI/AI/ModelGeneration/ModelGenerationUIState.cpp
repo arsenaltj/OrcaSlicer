@@ -31,6 +31,7 @@ bool ModelGenerationUIState::same_content(const ModelGenerationUIState& other) c
            can_stop == other.can_stop && can_retry_service == other.can_retry_service &&
            can_retry_model == other.can_retry_model &&
            can_restore_latest == other.can_restore_latest && can_import == other.can_import &&
+           can_open_workbench == other.can_open_workbench &&
            can_restart == other.can_restart && design_ready == other.design_ready && model_ready == other.model_ready &&
            model_generation_context == other.model_generation_context &&
            model_generation_session == other.model_generation_session && inputs_match_job == other.inputs_match_job &&

@@ -11,6 +11,8 @@ set(ORCA_AI_SMART_SLICING_SOURCES
     SmartSlicing/Application/CandidateSelectionTaskMapper.hpp
     SmartSlicing/Application/LocalModelFeatureAnalyzer.cpp
     SmartSlicing/Application/LocalModelFeatureAnalyzer.hpp
+    SmartSlicing/Application/SmartSlicingEngine.cpp
+    SmartSlicing/Application/SmartSlicingEngine.hpp
     SmartSlicing/Application/PrintabilityInspector.cpp
     SmartSlicing/Application/PrintabilityInspector.hpp
     SmartSlicing/Application/ProtectedRegionBinder.cpp
@@ -68,6 +70,8 @@ set(ORCA_AI_SMART_SLICING_SOURCES
     SmartSlicing/Domain/SliceCandidate.hpp
     SmartSlicing/Domain/SlicingMetrics.hpp
     SmartSlicing/Domain/SmartSlicingTypes.hpp
+    SmartSlicing/Domain/SmartSliceTypes.cpp
+    SmartSlicing/Domain/SmartSliceTypes.hpp
     SmartSlicing/Domain/TrialMetrics.cpp
     SmartSlicing/Domain/TrialMetrics.hpp
     SmartSlicing/Domain/WorkflowResourceBudget.hpp

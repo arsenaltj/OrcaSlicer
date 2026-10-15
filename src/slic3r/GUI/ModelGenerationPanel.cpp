@@ -397,6 +397,12 @@ void ModelGenerationPanel::publish_ui_state()
     // source for the workbench action at this point.
     state.model_ready = m_ready ||
         (m_model_preview_ready && is_nonempty_model(m_displayed_model_path));
+    // The redesigned result page must still offer navigation into the
+    // workbench when a topology/Beauty candidate blocks importing the model
+    // into the prepare page.  `can_import` intentionally keeps the stricter
+    // candidate and dirty-state checks for the actual import operation.
+    state.can_open_workbench = state.model_ready && !state.busy &&
+        m_model_preview_ready && is_nonempty_model(m_displayed_model_path);
     state.inputs_match_job = m_job_id.empty() || job_inputs_match();
     state.progress = m_generation_progress->GetValue();
     state.job_id = m_job_id;

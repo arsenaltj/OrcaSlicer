@@ -183,7 +183,7 @@ private:
     bool m_gl_data_initialized{ false };
     unsigned int m_last_result_id{ 0 };
     //BBS: save m_gcode_result as well
-    const GCodeProcessorResult* m_gcode_result;
+    const GCodeProcessorResult* m_gcode_result{ nullptr };
     std::array<unsigned int, static_cast<size_t>(EMoveType::Count)> m_move_type_counts{};
     std::array<std::array<float, static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Count)>, static_cast<size_t>(EMoveType::Count)> m_move_type_times{};
     std::array<float, static_cast<size_t>(EMoveType::Count)> m_move_type_distances{};
@@ -279,6 +279,11 @@ public:
     // void render_calibration_thumbnail(ThumbnailData& thumbnail_data, unsigned int w, unsigned int h, const ThumbnailsParams& thumbnail_params, PartPlateList& partplate_list, OpenGLManager& opengl_manager);
     bool has_data() const { return !m_viewer.get_extrusion_roles().empty(); }
     unsigned int loaded_result_id() const { return m_last_result_id; }
+    // Expose the parsed result to presentation adapters that need to explain a
+    // native preview diagnostic.  The viewer does not own this object; it is
+    // held by the current Print/plate and is only valid while that result is
+    // loaded, just like loaded_result_id() and the bounding-box accessors.
+    const GCodeProcessorResult* get_gcode_result() const { return m_gcode_result; }
 
     bool can_export_toolpaths() const;
     std::vector<int> get_plater_extruder();
