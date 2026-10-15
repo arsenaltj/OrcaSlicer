@@ -45,6 +45,38 @@ TEST_CASE("Changing the model face target selects compatible geometry and retain
     CHECK(model_generation_options_for_face_limit(high, 1000000) == options);
 }
 
+TEST_CASE("Primary action separates changed 2D inputs from changed 3D options", "[UiRedesign][ModelGenerationAction]")
+{
+    ModelGenerationUIState state;
+    state.stage = ModelGenerationUIStage::ModelReady;
+    state.design_ready = true;
+    state.inputs_match_job = true;
+    state.model_options_match = false;
+    CHECK(redesign_primary_action(state, state.stage) == RedesignPrimaryAction::Model);
+
+    state.inputs_match_job = false;
+    CHECK(redesign_primary_action(state, state.stage) == RedesignPrimaryAction::Design);
+
+    state.inputs_match_job = true;
+    state.model_options_match = false;
+    state.stage = ModelGenerationUIStage::DesignReady;
+    CHECK(redesign_primary_action(state, state.stage) == RedesignPrimaryAction::Model);
+
+    state.model_options_match = true;
+    CHECK(redesign_primary_action(state, state.stage) == RedesignPrimaryAction::Model);
+
+    state.stage = ModelGenerationUIStage::ModelReady;
+    CHECK(redesign_primary_action(state, state.stage) == RedesignPrimaryAction::Design);
+
+    state.model_options_match = false;
+    state.design_ready = false;
+    CHECK(redesign_primary_action(state, state.stage) == RedesignPrimaryAction::Design);
+
+    state.stage = ModelGenerationUIStage::DesignReady;
+    state.inputs_match_job = false;
+    CHECK(redesign_primary_action(state, state.stage) == RedesignPrimaryAction::Design);
+}
+
 TEST_CASE("Historical face targets are displayed without rewriting retained generation options", "[UiRedesign][ModelFaceLimitChoice]")
 {
     ModelGenerationUIOptions historical;
@@ -320,6 +352,34 @@ TEST_CASE("Cancelling design confirmation keeps the new draft empty until a conf
     CHECK(draft.stage(state) == ModelGenerationUIStage::Failed);
     state.stage = ModelGenerationUIStage::DesignReady;
     CHECK(draft.stage(state) == ModelGenerationUIStage::DesignReady);
+}
+
+TEST_CASE("Replacing a design retains regeneration intent when upload clears the old preview", "[UiRedesign][ImageDesignDraft]")
+{
+    ModelGenerationUIState state;
+    state.revision = 20;
+    state.model_generation_session = 3;
+    state.design_image_path = "history/design.png";
+    ImageDesignDraft draft;
+    draft.begin(state);
+    state.design_image_path.clear();
+    ++state.revision;
+    draft.observe(state);
+    CHECK(draft.replaces_design());
+
+    // Another upload and a cancelled confirmation still replace that design.
+    draft.begin(state);
+    draft.begin_submission();
+    ++state.revision;
+    draft.end_submission(state);
+    CHECK(draft.replaces_design());
+
+    ++state.revision;
+    ++state.model_generation_session;
+    draft.observe(state);
+    CHECK_FALSE(draft.replaces_design());
+    draft.begin(state);
+    CHECK_FALSE(draft.replaces_design());
 }
 
 TEST_CASE("A history selection replaces the draft while old notifications cannot restore its result", "[UiRedesign][ImageDesignDraft]")

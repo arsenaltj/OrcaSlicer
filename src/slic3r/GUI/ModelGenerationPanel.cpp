@@ -145,7 +145,9 @@ bool ModelGenerationPanel::request_generate_design()
 
 bool ModelGenerationPanel::request_generate_model()
 {
-    if (m_shutdown || !m_page_initialized || m_generate == nullptr || !m_generate->IsEnabled())
+    const bool reuse_ready_model = can_reuse_ready_model_design();
+    if (m_shutdown || !m_page_initialized || m_generate == nullptr ||
+        (!m_generate->IsEnabled() && !reuse_ready_model))
         return false;
     wxCommandEvent event;
     on_generate(event);
@@ -380,7 +382,11 @@ void ModelGenerationPanel::publish_ui_state()
     state.service_availability_known = m_service_availability_known;
     state.busy = m_busy || m_preview_download_in_flight || m_saving_generation_options;
     state.can_generate_design = can_generate_design_from_shell();
-    state.can_generate_model = m_generate->IsEnabled();
+    state.inputs_match_job = job_inputs_match();
+    state.model_options_match = model_options_match_job();
+    const bool can_reuse_model = can_reuse_ready_model_design() && !state.busy &&
+        m_generation_available && generation_options_valid();
+    state.can_generate_model = m_generate->IsEnabled() || can_reuse_model;
     state.can_stop = m_stop->IsEnabled();
     state.can_retry_service = m_retry_service->IsEnabled();
     state.can_retry_model = m_generation_available && !state.busy && (m_job_state == "failed" || m_job_state == "stopped") && !m_job_id.empty() &&
@@ -403,7 +409,6 @@ void ModelGenerationPanel::publish_ui_state()
     // candidate and dirty-state checks for the actual import operation.
     state.can_open_workbench = state.model_ready && !state.busy &&
         m_model_preview_ready && is_nonempty_model(m_displayed_model_path);
-    state.inputs_match_job = m_job_id.empty() || job_inputs_match();
     state.progress = m_generation_progress->GetValue();
     state.job_id = m_job_id;
     state.model_asset_id = m_displayed_model_job_id;
@@ -3775,6 +3780,34 @@ AIModelGenerationClient::GenerationOptions ModelGenerationPanel::current_generat
     return options;
 }
 
+std::string ModelGenerationPanel::model_generation_source_job_id() const
+{
+    if (!m_job_id.empty())
+        return m_job_id;
+    if (m_library_model_loaded && m_history_model_design_reusable && m_model_preview_ready &&
+        !m_displayed_model_job_id.empty())
+        return m_displayed_model_job_id;
+    return {};
+}
+
+bool ModelGenerationPanel::model_options_match_job() const
+{
+    if (model_generation_source_job_id().empty())
+        return true;
+    const auto current = current_generation_options();
+    return current.provider == m_job_generation_options.provider &&
+           current.face_limit == m_job_generation_options.face_limit &&
+           current.geometry_quality == m_job_generation_options.geometry_quality &&
+           current.texture_quality == m_job_generation_options.texture_quality &&
+           current.output_format == m_job_generation_options.output_format;
+}
+
+bool ModelGenerationPanel::can_reuse_ready_model_design() const
+{
+    return m_ready && m_model_preview_ready && m_style_preview_ready && !m_awaiting_confirmation &&
+        !model_generation_source_job_id().empty() && job_inputs_match() && !model_options_match_job();
+}
+
 void ModelGenerationPanel::refresh_provider_options()
 {
     if (!m_provider || !m_quality || !m_geometry_quality || !m_texture_quality || !m_output_format)
@@ -3876,9 +3909,10 @@ bool ModelGenerationPanel::job_base_inputs_match() const
         settings.shadow_color == m_job_print_settings.shadow_color;
     const bool palette_count_matches = !use_printable_colors() || m_palette_source == nullptr || m_palette_source->GetSelection() != 2 ||
                                        current_palette_color_count() == m_job_palette_color_count;
-    return m_job_id.empty() || (m_prompt->GetValue() == m_job_prompt && m_selected_image_path == m_job_image_path &&
-                                 current_style() == m_job_style && current_custom_style() == m_job_custom_style &&
-                                 palette_count_matches && print_matches);
+    return (m_job_id.empty() && !m_library_model_loaded) ||
+        (m_prompt->GetValue() == m_job_prompt && m_selected_image_path == m_job_image_path &&
+         current_style() == m_job_style && current_custom_style() == m_job_custom_style &&
+         palette_count_matches && print_matches);
 }
 
 void ModelGenerationPanel::remove_custom_color(const std::string& color)
@@ -4443,6 +4477,8 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
     m_model_views_available = false;
     m_heatmap_available = false;
     m_style_preview_ready = ai_image.IsOk();
+    m_local_image_history = false;
+    m_history_model_design_reusable = ai_image.IsOk() && input_string("source") == "image";
     m_style_preview_placeholder = ai_image.IsOk()
         ? wxString()
         : _L("该历史记录未保存 AI 生成图");
@@ -4472,6 +4508,10 @@ void ModelGenerationPanel::load_library_entry(const boost::filesystem::path& mod
             : _L("当前历史模型已加载，处理结果将另存为新版本。"));
     show_model_comparison();
     m_library_model_loaded = true;
+    // Historical records do not persist every print-control value. Compare
+    // later edits against the restored controls, as active-job restore does.
+    m_job_print_settings = current_print_settings();
+    m_job_palette_color_count = current_palette_color_count();
     restore_portrait_draft();
     clear_model_quality();
     update_progress(100, 4, _L("检查并导入"));

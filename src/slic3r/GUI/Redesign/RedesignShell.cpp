@@ -1843,7 +1843,8 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
         picker->set_interactive(face_limit_editable);
     }
 
-    wxString primary_label = text("生成 2D 设计图");
+    wxString primary_label = m_image_design_draft.replaces_design()
+        ? text("重新生成 2D 设计图") : text("生成 2D 设计图");
     // The host validates both prompt-only and image inputs; editability still
     // blocks submission while an image is loading.
     bool primary_enabled = m_input_sync_ok && state.can_generate_design && editable;
@@ -1949,8 +1950,14 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
         placeholder_mode = ImagePreview::PlaceholderMode::Generating;
         break;
     case ModelGenerationUIStage::ModelReady:
-        primary_label = state.design_image_path.empty() ? text("生成 2D 设计图") : text("重新生成 2D 设计图");
-        primary_enabled = m_input_sync_ok && state.can_generate_design && editable;
+        if (redesign_primary_action(state, image_stage) == RedesignPrimaryAction::Model) {
+            primary_label = text("生成 3D 模型");
+            primary_enabled = m_input_sync_ok && m_option_sync_ok && state.can_generate_model &&
+                              m_design_image_state == ImageState::Ready && editable;
+        } else {
+            primary_label = state.design_image_path.empty() ? text("生成 2D 设计图") : text("重新生成 2D 设计图");
+            primary_enabled = m_input_sync_ok && state.can_generate_design && editable;
+        }
         update_design_preview();
         break;
     case ModelGenerationUIStage::Input:
@@ -2205,8 +2212,10 @@ void RedesignShell::request_generate_design()
 
 void RedesignShell::request_generate_model()
 {
+    const bool model_ready_reuse = m_model_generation_state.stage == ModelGenerationUIStage::ModelReady &&
+        m_model_generation_state.inputs_match_job && !m_model_generation_state.model_options_match;
     if (m_submit_in_progress || m_image_design_draft.pending() || !generation_input_editable() ||
-        m_model_generation_state.stage != ModelGenerationUIStage::DesignReady ||
+        (!model_ready_reuse && m_model_generation_state.stage != ModelGenerationUIStage::DesignReady) ||
         !m_model_generation_state.inputs_match_job || m_design_image_state != ImageState::Ready)
         return;
     m_submit_in_progress = true;
@@ -2228,8 +2237,8 @@ void RedesignShell::request_generate_model()
 
 void RedesignShell::request_primary_action()
 {
-    if (m_image_design_draft.stage(m_model_generation_state) == ModelGenerationUIStage::DesignReady &&
-        m_model_generation_state.inputs_match_job)
+    const auto stage = m_image_design_draft.stage(m_model_generation_state);
+    if (redesign_primary_action(m_model_generation_state, stage) == RedesignPrimaryAction::Model)
         request_generate_model();
     else
         request_generate_design();

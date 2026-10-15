@@ -1,3 +1,24 @@
+# 2026-10-15 UI-10：返回图像设计后的生成按钮分流（实现及限定 GUI 通过）
+
+目标与授权：用户授权修复并测试验收；已完成 3D 模型返回图像页，仅修改 3D 精度应复用设计图生成新模型，修改描述、参考图或风格应重新生成 2D。负责会话为本会话，分支 `codex/team/integration`，基线 `a1f412779467dfd4b1b71e29c8f723db60b6f9ad`；保留其他未提交文档及 SmartSlice HTML。
+
+实现范围：`ModelGenerationHost.hpp`、`ModelGenerationUIState.cpp` 分开发布 2D 输入匹配和 3D 参数匹配；`RedesignModelRoute.hpp`、`RedesignShell.cpp` 统一按钮文案、启用状态与点击分派；`ModelGenerationPanel.hpp/.cpp` 支持保留设计图的 image 来源历史模型，并按恢复后的控件建立输入基准；`ModelGenerationSubmission.cpp` 在确认后复用设计创建独立任务，取消确认不覆盖原比较基准，准备失败保留原任务/模型；`ImageDesignDraft.hpp` 保留换图时“替换已有设计”的意图，避免宿主清空旧预览后错误显示首次生成文案；回归位于 `test_ui_redesign.cpp`。
+
+按钮规则：DesignReady 且 2D 输入未变时显示“生成 3D 模型”；ModelReady 有可复用设计图、2D 输入未变且 3D 参数变化时同样显示“生成 3D 模型”。描述/风格/参考图及其他影响 2D 的输入变化优先重新生成设计图；仅参数变化后再恢复原值，保持已完成模型原有的“重新生成 2D 设计图”行为。缺失设计图、任务忙、输入未同步和服务不可用继续受原能力门槛控制；首次空白草稿仍显示“生成 2D 设计图”。
+
+自动验证：最新 [UiRedesign C++ 测试](../../.tmp/dev/logs/20261015-181253-378/result.json) 80/80 通过，覆盖按钮优先级、参数恢复、缺图、草稿与历史切换、重复换图及取消后的替换意图；`run_ai_offline_tests.py --pattern test_image_history_reuse.py` 6/6 通过，覆盖旧任务保留、重启恢复、缺图和活跃任务拒绝，无新供应商调用。`verify_ai_integration.py --json`（保留 Git 检查）及 diff 检查通过。
+
+运行身份：[Windows Run](../../.tmp/dev/logs/20261015-181619-587/result.json) 的 catalogs/build/install/runtime-check/python-check 五步通过，EXE/DLL/资源/sidecar 安装到 `.tmp/dev/run`；source identity `f251cdc5a787cbbf469bfd87114f5f4ccff93ab54774ff3a2ea280f1ad031ef8`，native identity `26c337c5f1e6721477245aafa91ead5fc6e5f75638a436b0782f5695292553b5` 与 80 项测试匹配。收尾仅增量更新两份状态文档，不触发原生重编。
+
+真实 GUI：通过 Computer Use 操作真实主窗口和 `.tmp/dev/data/models` 历史副本。前一匹配构建 [175915-318](../../.tmp/dev/logs/20261015-175915-318/result.json) 已实际验证历史模型→返回图像页→100 万改 200 万→生成 3D；键盘修改描述/切换风格→重新生成 2D；恢复描述/风格→生成 3D；精度恢复 100 万→重新生成 2D，再改 200 万→生成 3D。该轮换图发现文案遗漏，已修复并在最新 PID 30056 / 窗口 2435020 中复验：空白初始页显示生成 2D；加载固定模型 `f8fd6d5c-ab00-4f79-91df-24080e4a067e` 后返回图像页，仅改 200 万显示生成 3D；原生文件对话框换参考图后显示重新生成 2D，旧预览清空时仍保持正确文案。原始 metadata/GLB/参考图/设计图四项 SHA-256 全部保持，验收实例通过窗口关闭按钮正常退出。完整身份与限定结果见 [验证记录](../../.tmp/dev/model-generation-action-qa/verification.json)。
+
+未结与恢复条件：隔离环境显示在线图片生成服务不可用，生成按钮禁用；付费确认弹框取消及新 3D 提交未做真实 GUI 验收，不将文案/离线测试当作端到端通过。在线服务可用且有明确预算后补验确认取消、旧模型保留和新任务提交。代码复核确认当前 active-model 路径的状态、选项比较、异步序列守卫和原始资产保护没有已确认高风险回归；历史模型复用目前只对 metadata `source == "image"` 且有 AI 设计图的记录开放，`text_image` 历史记录的仅参数修改会回退到重新生成 2D，是否扩大由后续产品决定。未新增付费生成、提交、推送、发布或实物打印，不接管其他 UI/SmartSlice 未结。
+
+# 2026-10-15 SmartSlice 架构说明与优化路线确认
+
+已新增 [SmartSlice 实现原理与优化路线 HTML 说明](../architecture/smart-slicing-implementation.html)。文档基于当前分支源码确认：SmartSlice 负责端侧离线规则推荐和快速估算，用户显式选择后将参数原子化写入 Orca 当前打印板配置，最终由 Orca 原生切片、G-code、统计和预览完成正式结果。后续优化按“原生统计校准 → 几何/能力特征增强 → 选择性原生试切片 → 多目标与反馈闭环 → 基准回归”分阶段推进，不复制第二套切片器，不把估算写成正式统计。
+
+
 # 2026-10-14 SmartSlice：详情弹框单一自绘内容面板已实现，待视觉复验
 
 已按用户确认实施：详情滚动内容使用双缓冲自绘面板，滚动条移到外层 viewport 作为兄弟窗口，内部 `wxScrolledWindow` 只负责滚动和虚拟高度。这样移除了原生 `wxStaticText` 与 Windows bit-blit 的残影组合，并将滚动单位绑定到实际字体行高。Windows Release 构建、固定运行目录安装、SmartSlice 定向测试、架构守卫和 diff 检查通过；真实滚轮/拖拽/DPI 视觉验收仍待用户窗口确认。
