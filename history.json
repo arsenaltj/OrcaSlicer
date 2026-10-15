@@ -1,5 +1,15 @@
 [
   {
+    "pr": 34,
+    "run": 38665296509,
+    "head": "5b7babcb2b0676fa52a9a5d1bf2a0ead4589dacc",
+    "base": "6ae0b28e71b090a53f82fcbfc74d742b81bd6085",
+    "repository": "arsenaltj/OrcaSlicer",
+    "title": "fix: restore model generation workbench flow",
+    "path": "pr/34/5b7babcb2b0676fa52a9a5d1bf2a0ead4589dacc/38665296509",
+    "created": "2026-10-15T01:25:42+00:00"
+  },
+  {
     "pr": 33,
     "run": 38546211566,
     "head": "d1c5a69001b370433bdeb5115671b3d24ac7df68",

@@ -1,0 +1,25 @@
+{
+  "pr": 34,
+  "run": 38665296509,
+  "head": "5b7babcb2b0676fa52a9a5d1bf2a0ead4589dacc",
+  "base": "6ae0b28e71b090a53f82fcbfc74d742b81bd6085",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "fix: restore model generation workbench flow",
+  "path": "pr/34/5b7babcb2b0676fa52a9a5d1bf2a0ead4589dacc/38665296509",
+  "created": "2026-10-15T01:25:42+00:00",
+  "files": {
+    "index.html": "7301d090b1bbd98f3fab2f3f964c380879428a40e5dc0ea09c10ebec2b26d86f",
+    "details.html": "5c40382696cc0da32d72bca7358bf70cb7ee370b033c04ef3c30179f8aa8a4c4",
+    "report.json": "f72ecdddb74cc0ca880fe257fd5bc2b1cee898a93d30f7edcf2beea4b39da84b",
+    "summary.md": "aa034e2fbeeee05a24ecaec2510d00b1ead1ed254eb74f6f0700da2c1937e7df",
+    "archify-receipts.json": "9eab10f5045e7c01e6b37d8477a0e45e1354fda03f4d6d59c06f5866592d48b5",
+    "l0-context.html": "35ceaee4821b556abdc8c0227fe59dc3acff88cba471d1e425ab8f7445405dcc",
+    "l0-context.json": "c12e289fb503e3917335feb70620dff655677f8142e267a69d066072a1e13cb7",
+    "l1-modules.html": "926f6a1264a7f6239e46532fa6449237201e147d3e7bd577200979452bb97ca3",
+    "l1-modules.json": "e6a2c21a7420b4e45b459501d15ab5a5ed7151103aabeb4bf965201a0950ae4d",
+    "l2-generation.html": "f101802e002c795e22d556cff74d4e7e799048939932abd411f4bdbfcbb3cdb2",
+    "l2-generation.json": "22841df17bdd3edd92088ee1fee4594a28035678b0ca9359a3ab1b7cc160d872",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}
