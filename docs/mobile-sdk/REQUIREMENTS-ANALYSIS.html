@@ -1,0 +1,754 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="桌面 SDK、移动端、后端和数据库架构；一期局域网需求规格与二、三期开发框架。">
+<title>3D 打印平台工程架构与三期需求分析报告 · v1.1</title>
+<style>
+:root{color-scheme:light;--ink:#203040;--muted:#566b7d;--line:#d8e3ec;--accent:#1d4ed8;--surface:#f3f7fb}
+*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:24px}body{margin:0;background:var(--surface);color:var(--ink);font:16px/1.8 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}
+a{color:#1d4ed8;text-underline-offset:3px;overflow-wrap:anywhere}.skip{position:absolute;left:12px;top:-100px}.skip:focus{top:12px;background:white;z-index:5;padding:10px}
+.layout{max-width:1540px;display:grid;grid-template-columns:268px minmax(0,1fr);gap:28px;margin:28px auto;padding:0 24px}
+nav{position:sticky;top:24px;align-self:start;background:white;border:1px solid var(--line);border-radius:12px;padding:20px;max-height:calc(100vh - 48px);overflow-y:auto;font-size:13px}
+nav summary{font-size:16px;font-weight:700;color:#1e3a8a;cursor:pointer}nav ul{list-style:none;padding:0;margin:12px 0 0}nav li{margin:4px 0}nav a{color:#40556b;text-decoration:none;display:block;padding:3px 0}nav a:hover{color:#1d4ed8;text-decoration:underline}.toc-level-2{font-weight:700;border-top:1px solid #edf2f7;padding-top:7px}.toc-level-3{padding-left:12px;font-size:12px}
+main{min-width:0;background:white;border:1px solid var(--line);border-radius:14px;padding:40px 46px}.eyebrow{color:var(--muted);font-size:13px;letter-spacing:.12em}.toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:16px 0 28px}.tag{font-size:12px;border-radius:99px;padding:3px 10px;background:#eff6ff;color:#1e40af;border:1px solid #dbeafe}.toolbar a,.toolbar button{border:1px solid var(--line);padding:5px 12px;background:#fff;border-radius:6px;font:inherit;font-size:13px;cursor:pointer;text-decoration:none;color:#345}
+h1{font-size:30px;line-height:1.45;letter-spacing:.01em;color:#153d75;margin:0 0 24px;padding-bottom:20px;border-bottom:3px solid #2563eb}h2{font-size:24px;color:#1e40af;border-bottom:1px solid var(--line);margin:44px 0 18px;padding-bottom:10px}h3{font-size:20px;color:#25496b;margin:32px 0 12px}h4{font-size:17px;color:#1f4a65;margin:28px 0 10px;padding:10px 14px;border-left:4px solid #7ba6d1;background:#f3f8fc;border-radius:0 6px 6px 0}h2,h3,h4{break-after:avoid}p{margin:12px 0}li{margin:5px 0}ul,ol{padding-left:25px}
+code{font:13px/1.7 Consolas,ui-monospace,monospace;background:#edf3f8;padding:2px 5px;border-radius:4px;overflow-wrap:anywhere}pre{overflow:auto;max-width:100%;padding:18px;background:#f5f8fc;border:1px solid var(--line);border-radius:8px;line-height:1.6;font-size:12px}pre code{white-space:pre;overflow-wrap:normal;background:none;padding:0;line-height:inherit;font-size:inherit}.table-wrap{max-width:100%;overflow:auto;margin:18px 0}table{width:100%;border-collapse:collapse;font-size:13px;line-height:1.7}th,td{border:1px solid var(--line);padding:10px 12px;text-align:left;vertical-align:top;min-width:95px}th{background:#edf4ff;color:#1e3a8a}tbody tr:nth-child(even){background:#fbfdff}footer{margin-top:40px;padding-top:18px;border-top:1px solid var(--line);font-size:13px;color:var(--muted)}
+@media(max-width:1000px){.layout{grid-template-columns:220px minmax(0,1fr);padding:0 14px;gap:14px}main{padding:28px}nav{padding:16px}}
+@media(max-width:720px){html{scroll-behavior:auto}.layout{display:block;margin:12px auto;padding:0 10px}nav{position:static;max-height:260px;margin-bottom:14px}main{padding:22px 18px}h1{font-size:24px}h2{font-size:22px}h3{font-size:19px}pre{font-size:11px}th,td{padding:8px}.eyebrow{font-size:11px}}
+@page{size:A4;margin:16mm 13mm}@media print{html{scroll-behavior:auto}body{background:white;font-size:10pt}.layout{display:block;max-width:none;margin:0;padding:0}nav,.toolbar,.skip{display:none}main{border:0;padding:0}h1{font-size:22pt}h2{font-size:17pt}h3{font-size:13pt}h4{font-size:11pt}pre{white-space:pre-wrap;overflow:visible;font-size:7pt}pre code{white-space:pre-wrap}.table-wrap{overflow:visible}table{font-size:8pt;table-layout:fixed}th,td{min-width:0;word-break:break-word;padding:6px}thead{display:table-header-group}tr{break-inside:avoid}a{color:inherit;text-decoration:none}}
+</style></head><body><a class="skip" href="#content">跳转到正文</a><div class="layout"><nav aria-label="报告目录"><details open><summary>报告目录</summary><ul><li class="toc-level-2"><a href="#section-2">结论</a></li>
+<li class="toc-level-2"><a href="#section-3">影响范围</a></li>
+<li class="toc-level-2"><a href="#section-4">关键发现</a></li>
+<li class="toc-level-3"><a href="#section-5">3.1 整体架构</a></li>
+<li class="toc-level-3"><a href="#section-7">3.2 仓库和代码工程规划</a></li>
+<li class="toc-level-3"><a href="#section-12">3.3 统一契约和状态模型</a></li>
+<li class="toc-level-3"><a href="#section-16">3.4 三期开发计划总览</a></li>
+<li class="toc-level-3"><a href="#section-17">3.5 一期详细需求规格</a></li>
+<li class="toc-level-3"><a href="#section-32">3.6 一期非功能需求</a></li>
+<li class="toc-level-3"><a href="#section-37">3.7 二期需求框架</a></li>
+<li class="toc-level-3"><a href="#section-38">3.8 三期需求框架</a></li>
+<li class="toc-level-2"><a href="#section-39">风险</a></li>
+<li class="toc-level-2"><a href="#section-40">建议</a></li>
+<li class="toc-level-3"><a href="#section-41">5.1 模块依赖和并行开发</a></li>
+<li class="toc-level-3"><a href="#section-42">5.2 一期交付清单</a></li>
+<li class="toc-level-3"><a href="#section-43">5.3 建议执行顺序与评审口径</a></li>
+<li class="toc-level-2"><a href="#section-44">证据</a></li>
+<li class="toc-level-3"><a href="#section-45">6.1 依据与材料索引</a></li>
+<li class="toc-level-3"><a href="#section-46">6.2 验证范围</a></li>
+<li class="toc-level-3"><a href="#section-47">6.3 页面复核记录</a></li>
+<li class="toc-level-2"><a href="#section-48">未完成项</a></li>
+<li class="toc-level-3"><a href="#section-49">7.1 待确认事项</a></li>
+<li class="toc-level-3"><a href="#section-50">7.2 尚待实施或验证的事项</a></li></ul></details></nav><main id="content"><div class="eyebrow">REQUIREMENTS &amp; ARCHITECTURE · 2026-10-16</div><div class="toolbar"><span class="tag">v1.1 · 需求评审稿</span><span class="tag">一期 13 · 二期 11 · 三期 10</span><a href="REQUIREMENTS-ANALYSIS.md">阅读 Markdown</a><button type="button" onclick="window.print()">打印 / 保存 PDF</button></div><h1 id="section-1">3D 打印平台工程架构与三期需求分析报告</h1>
+<ul><li>报告类型：需求与系统架构分析（按工作区 analysis-report 模板整理）</li>
+<li>文档版本：1.1；原报告版本：1.0</li>
+<li>任务 ID：<code>task-20261016013901509-0f210b</code></li>
+<li>父任务：<code>task-20261015124945955-67069d</code></li>
+<li>报告时间：2026-10-16 14:17:12 +08:00（Asia/Shanghai）</li>
+<li>报告状态：待需求评审；本次完成文档规范化，功能实现尚未验收</li>
+<li>分析仓库：<code>OrcaSlicer</code></li>
+<li>分析分支：<code>task/task-20261016013901509-0f210b</code></li>
+<li>分析版本：HEAD <code>a1f412779467dfd4b1b71e29c8f723db60b6f9ad</code> + 未提交工作树；HEAD 不能单独代表本报告输入</li>
+<li>工作树：<code>D:/Codex/worktrees/OrcaSlicer/task-20261016013901509-0f210b</code></li>
+<li>差异身份：<a href="../../../../../artifacts/task-20261016013901509-0f210b/evidence/report-standardization-20261016/source-state.json">源版本、工作树状态与逐文件 SHA-256</a></li>
+<li>权威归档目录：<code>D:/Codex/artifacts/task-20261016013901509-0f210b/reports</code>；工程内文件为同步阅读副本</li>
+<li>阅读入口：<a href="REQUIREMENTS-ANALYSIS.md">Markdown</a> · <a href="REQUIREMENTS-ANALYSIS.html">HTML</a></li></ul>
+<h2 id="section-2">结论</h2>
+<p>产品不是单一的移动端控制工具，而是由桌面端、移动端和平台后端共同组成的 3D 打印平台：</p>
+<pre><code>桌面端：完整建模、切片、打印工作台和高级设备能力
+移动端：设备管理、局域网控制、监控、模型库、社区、账号和支付
+后端：账号、设备、打印任务、模型、社区、AI、切片、支付、通知和远程链路
+数据库：业务数据、任务状态、权益账本、内容元数据和审计记录
+基础设施：对象存储、CDN、队列、搜索、实时网关、监控和部署</code></pre>
+<p>本报告采用以下工程决策：</p>
+<ol><li><code>OrcaSlicer::MobileSDK</code> 是桌面端和移动端之间的共享核心契约，不包含桌面 UI、Python、供应商 DLL 和商业服务实现。</li>
+<li>桌面端继续保留完整的 <code>libslic3r</code>、桌面 GUI 和高级工作台，通过适配层使用 MobileSDK DTO。</li>
+<li>移动端使用 Flutter 承载产品页面和业务流程，通过 Kotlin/Swift 原生层处理系统能力，通过 C ABI/FFI 使用 C++ SDK。</li>
+<li>后端第一阶段采用模块化单体、Worker 和实时网关；账号、设备、支付、模型和社区按领域隔离，后续再按负载拆分服务。</li>
+<li>一期先完成局域网闭环，不把远程 Relay、AI 供应商、支付商城和完整社区塞入一期验收范围。</li>
+<li>一期切片以远程或桌面生成的 G-code 为主；移动端本地完整切片留到后续阶段。</li></ol>
+<p>本次整理仅调整报告结构、归档目录、版本身份、证据引用和阅读体验。原有三期需求内容全部保留；一期明确规格仍为 13 个需求包，二期为 11 个框架包，三期为 10 个框架包。需求编号表示规划单元，不表示已实现或通过验收。</p>
+<p>一期交付主线保持为：移动端通过 SDK 在同一局域网内发现/手动添加设备、连接、监控状态并执行基础控制。账号与云端数据底座可以独立开发；互联网或后端不可用不能成为局域网验收的前置条件。</p>
+<h2 id="section-3">影响范围</h2>
+<div class="table-wrap"><table><thead><tr><th scope="col">工程/领域</th><th scope="col">职责与交付物</th><th scope="col">当前报告约束</th></tr></thead><tbody><tr><td>桌面端与共享 SDK</td><td>中立契约、C ABI、协议适配、构建产物、桌面适配边界</td><td>SDK 独立于桌面 UI；现有实现仍待独立编译和协议验证</td></tr>
+<tr><td>Android/iOS 移动端</td><td>Flutter 页面、原生发现与权限、SDK 桥接、局域网监控与控制</td><td>一期优先完成局域网使用闭环</td></tr>
+<tr><td>平台后端</td><td>身份、设备元数据；后续扩展任务、模型、社区、支付权益</td><td>一期不转发局域网命令；后续使用稳定 API/事件</td></tr>
+<tr><td>数据库与存储</td><td>关系数据、迁移、任务事件、文件元数据、对象存储</td><td>一期只实现必要表；文件本体不进入业务表</td></tr>
+<tr><td>验证与运维</td><td>协议模拟器、真机验证、产物身份、诊断和迁移记录</td><td>文档检查不能替代 SDK 构建、设备联调或真机验收</td></tr></tbody></table></div>
+<div class="table-wrap"><table><thead><tr><th scope="col">本轮变更对象</th><th scope="col">操作</th></tr></thead><tbody><tr><td>用户审核产物</td><td>新增标准归档 <code>reports/analysis-report.md</code>、<code>analysis-report.html</code></td></tr>
+<tr><td>原工程报告</td><td>同步更新 <code>Docs/mobile-sdk/REQUIREMENTS-ANALYSIS.md/.html</code>，保留原入口</td></tr>
+<tr><td>可复核材料</td><td>保存旧版报告、源版本快照、需求保留校验和页面检查结果</td></tr>
+<tr><td>SDK、应用、后端与数据库代码</td><td>本轮不修改；后续实现范围以一期需求包和验收条件为准</td></tr></tbody></table></div>
+<h2 id="section-4">关键发现</h2>
+<h3 id="section-5">3.1 整体架构</h3>
+<pre><code>┌──────────────────────────────────────────────────────────────┐
+│                        移动端 Mobile App                     │
+│ Flutter UI / Feature / Repository                           │
+│ Android Kotlin Adapter / iOS Swift Adapter                   │
+└──────────────────────────────┬───────────────────────────────┘
+                               │ HTTPS / WebSocket / FFI
+                               ▼
+┌──────────────────────────────┴───────────────────────────────┐
+│                       Platform Backend                       │
+│ API/BFF · Identity · Device · Print Job · Model · Billing   │
+│ Community · AI Job · Slicing Job · Notification · Admin     │
+│ Realtime Gateway · Worker · Audit                            │
+└──────────────┬──────────────────┬─────────────────┬──────────┘
+               │                  │                 │
+               ▼                  ▼                 ▼
+        PostgreSQL          Object Storage/CDN   Queue/Search
+               │
+               ▼
+┌──────────────────────────────────────────────────────────────┐
+│                 OrcaSlicer Desktop / Edge Connector           │
+│ Desktop Adapter · Local Slicing · Printer Protocol Adapter   │
+│                       OrcaSlicer::MobileSDK                  │
+└──────────────────────────────┬───────────────────────────────┘
+                               ▼
+                         3D 打印机</code></pre>
+<h4 id="section-6">3.1.1 数据面和控制面</h4>
+<p>局域网控制和远程控制必须分成两个层面：</p>
+<pre><code>控制面：身份、设备注册、权限、会话、信令、审计和路径协调
+数据面：局域网直连、P2P、云端 Relay、摄像头和文件传输</code></pre>
+<p>一期只实现局域网直连。二期增加云端控制面和远程 Relay；三期再根据设备能力增加 P2P、边缘 Connector 和多设备调度。</p>
+<p>打印控制和摄像头传输也要分开。摄像头中断不能影响暂停、恢复和停止等控制命令。</p>
+<h3 id="section-7">3.2 仓库和代码工程规划</h3>
+<p>推荐的产品级仓库布局如下：</p>
+<pre><code>repos/
+├── OrcaSlicer/                  # 桌面端、libslic3r、MobileSDK 源码
+├── orca-mobile/                 # Flutter 应用、Android/iOS 宿主和插件
+├── orca-platform/               # 账号、设备、模型、社区、支付和任务后端
+└── orca-infra/                  # 部署、环境、数据库迁移、监控和密钥配置</code></pre>
+<p>SDK 在接口和 ABI 稳定前保留在 OrcaSlicer 仓库。稳定后可以发布为独立 <code>orca-mobile-sdk</code> 版本包，但不能在移动端仓库复制一份 C++ 核心。</p>
+<h4 id="section-8">3.2.1 OrcaSlicer 桌面端</h4>
+<pre><code>OrcaSlicer/
+├── src/orca_sdk/
+│   ├── include/orca/sdk/          # 中立公共头文件
+│   ├── Connectivity.*             # LAN/P2P/Relay 路径和状态机
+│   ├── CommandEnvelope.*          # 控制命令信封
+│   ├── ModelGeneration.*          # AI 任务和产物 DTO
+│   ├── Slicing.*                  # 本地/远程切片契约
+│   └── CMakeLists.txt
+├── src/slic3r/GUI/                # 桌面 GUI
+├── src/slic3r/Utils/              # 桌面连接和厂商适配
+├── tests/mobile_sdk/              # SDK 契约测试
+├── tests/slic3rutils/             # 桌面工具测试
+└── Docs/mobile-sdk/</code></pre>
+<p>桌面端适配关系：</p>
+<pre><code>Desktop GUI / Workbench
+        ↓ DTO 转换
+OrcaSlicer::MobileSDK
+        ↓
+Desktop Adapter / libslic3r / 文件系统 / 厂商扩展</code></pre>
+<p>桌面 GUI 可以使用 <code>wxWidgets</code>、<code>Model</code>、<code>PrintConfig</code> 和完整工作区对象，但这些类型只能在桌面适配层转换，不能进入 MobileSDK 公共头文件。</p>
+<h4 id="section-9">3.2.2 移动端</h4>
+<pre><code>orca-mobile/
+├── apps/mobile/
+│   ├── lib/
+│   │   ├── app/                   # 路由、主题、启动和环境
+│   │   ├── features/
+│   │   │   ├── account/
+│   │   │   ├── devices/
+│   │   │   ├── printer_monitor/
+│   │   │   ├── print_jobs/
+│   │   │   ├── model_library/
+│   │   │   ├── community/
+│   │   │   ├── billing/
+│   │   │   └── ai/
+│   │   ├── domain/                # Use Case、状态和领域实体
+│   │   ├── data/                  # API、缓存和持久化
+│   │   └── presentation/          # 页面和组件
+│   ├── packages/
+│   │   ├── api_client/            # OpenAPI 客户端
+│   │   ├── mobile_sdk_bridge/     # C ABI/FFI 和平台通道
+│   │   ├── model_viewer/          # 3D/G-code 预览抽象
+│   │   └── design_system/
+│   ├── native/android/            # Kotlin、NSD、通知、前台服务
+│   ├── native/ios/                # Swift、Bonjour、权限、通知
+│   └── integration_test/
+└── pubspec.yaml</code></pre>
+<p>移动端不能直接访问数据库、支付服务端密钥、AI Provider 或厂商私有云。所有账户、权益、模型下载和远程命令都必须经过后端授权。</p>
+<h4 id="section-10">3.2.3 后端</h4>
+<pre><code>orca-platform/
+├── apps/
+│   ├── api/                       # 公共 API/BFF
+│   ├── realtime-gateway/          # WebSocket、设备状态和命令
+│   ├── worker/                    # AI、切片、媒体、审核、通知
+│   ├── admin-api/                 # 运营、审核、订单和客服
+│   └── scheduler/                 # 超时、重试、对账和清理
+├── packages/
+│   ├── contracts/                 # OpenAPI、事件和命令 Schema
+│   ├── identity/
+│   ├── organization/
+│   ├── device/
+│   ├── print-job/
+│   ├── model-catalog/
+│   ├── community/
+│   ├── billing/
+│   ├── entitlement/
+│   ├── ai-job/
+│   ├── slicing-job/
+│   ├── moderation/
+│   ├── notification/
+│   ├── search/
+│   ├── storage/
+│   └── audit/
+├── migrations/
+└── tests/</code></pre>
+<p>第一阶段后端可以是一个部署单元，但每个领域使用独立模块、独立迁移目录和明确的事件接口，避免业务模块直接读写其他模块的表。</p>
+<h4 id="section-11">3.2.4 数据库和存储</h4>
+<p>关系数据库保存业务元数据和状态：</p>
+<pre><code>users
+organizations
+organization_members
+printers
+printer_capabilities
+printer_bindings
+printer_sessions
+print_jobs
+print_job_events
+model_assets
+model_versions
+model_entitlements
+slicing_jobs
+ai_jobs
+orders
+payment_transactions
+entitlement_ledger
+community_posts
+comments
+moderation_cases
+audit_events</code></pre>
+<p>对象存储保存大文件：</p>
+<pre><code>models/{model_id}/{version_id}/source.3mf
+models/{model_id}/{version_id}/preview.glb
+models/{model_id}/{version_id}/thumbnail.webp
+slicing/{job_id}/output.gcode
+prints/{print_job_id}/snapshot.jpg</code></pre>
+<p>数据库不保存 STL、3MF、OBJ、GLB、G-code 或视频本体，只保存文件大小、SHA-256、媒体类型、版本和对象存储引用。</p>
+<h3 id="section-12">3.3 统一契约和状态模型</h3>
+<h4 id="section-13">3.3.1 SDK 契约</h4>
+<p>一期公共 SDK 至少包括：</p>
+<ul><li><code>ConnectionPath</code>：LAN、P2P、Relay；</li>
+<li><code>ConnectionStateMachine</code>：发现、探测、连接、已连接、切换、离线；</li>
+<li><code>PrinterCapability</code>：状态流、G-code 上传、开始/暂停/恢复/停止；</li>
+<li><code>PrinterStatus</code>：设备状态、进度、温度、当前文件和错误；</li>
+<li><code>CommandEnvelope</code>：会话、设备、命令、序列号、过期时间和 payload；</li>
+<li><code>ModelJob</code>：AI 任务、产物和错误；</li>
+<li><code>SlicingRequest</code> / <code>SlicingResult</code>：切片输入、引擎、配置、产物和进度。</li></ul>
+<h4 id="section-14">3.3.2 API 契约</h4>
+<div class="table-wrap"><table><thead><tr><th scope="col">接口</th><th scope="col">用途</th><th scope="col">一期方式</th></tr></thead><tbody><tr><td>Local SDK API</td><td>移动端调用本地打印 SDK</td><td>C ABI/FFI</td></tr>
+<tr><td>Query API</td><td>账号、设备和配置查询</td><td>HTTPS/JSON，最小化</td></tr>
+<tr><td>Command API</td><td>后端转发打印命令</td><td>二期启用</td></tr>
+<tr><td>Realtime API</td><td>状态、进度和消息</td><td>一期本地事件，二期 WebSocket</td></tr>
+<tr><td>Artifact API</td><td>模型和 G-code 文件</td><td>二期启用</td></tr>
+<tr><td>Payment Webhook</td><td>支付交易回调</td><td>二期启用</td></tr></tbody></table></div>
+<h4 id="section-15">3.3.3 任务模型</h4>
+<p>AI、切片和打印都使用任务化状态：</p>
+<pre><code>created → validating → running → completed
+                         ├──────→ failed
+                         └──────→ canceled</code></pre>
+<p>每个任务必须具备：</p>
+<pre><code>request_id       客户端幂等键
+job_id           服务端或本地任务 ID
+state            状态
+progress         进度
+artifact_id      结果产物
+artifact_sha256  内容校验
+error_code       稳定错误码
+retryable        是否可以重试</code></pre>
+<h3 id="section-16">3.4 三期开发计划总览</h3>
+<div class="table-wrap"><table><thead><tr><th scope="col">阶段</th><th scope="col">产品目标</th><th scope="col">交付重点</th><th scope="col">主要不做内容</th></tr></thead><tbody><tr><td>一期</td><td>局域网打印闭环</td><td>SDK 封装、移动端 LAN 连接、状态监控、基础控制、最小账号/设备底座</td><td>远程 Relay、付费模型、完整社区、完整本地切片</td></tr>
+<tr><td>二期</td><td>平台化和远程化</td><td>多协议、设备云端管理、AI、云切片、模型库、支付权益、基础社区</td><td>创作者结算、高级推荐、复杂 P2P 调度</td></tr>
+<tr><td>三期</td><td>生态化和专业化</td><td>P2P/边缘、完整社区、模型交易、创作者生态、本地切片、团队和推荐</td><td>根据运营数据决定的实验功能</td></tr></tbody></table></div>
+<h3 id="section-17">3.5 一期详细需求规格</h3>
+<h4 id="section-18">3.5.1 一期目标和边界</h4>
+<p>一期完成下面的端到端场景：</p>
+<pre><code>用户打开移动端
+    ↓
+授予局域网权限或输入打印机 IP
+    ↓
+发现/连接打印机
+    ↓
+读取设备能力和当前状态
+    ↓
+持续显示温度、进度、文件和错误
+    ↓
+执行暂停、恢复、停止等基础控制
+    ↓
+断开或切换页面后重新连接并对账</code></pre>
+<p>一期支持范围建议：</p>
+<ul><li>首批协议：优先 Moonraker；协议抽象必须可接入 OctoPrint/PrusaLink。</li>
+<li>连接方式：局域网直连，支持自动发现和手动 IP。</li>
+<li>移动端：Android 和 iOS 各一套真机验证。</li>
+<li>控制命令：状态读取、开始、暂停、恢复、停止；高风险命令需要二次确认。</li>
+<li>账号：最小登录和设备绑定能力，不阻塞局域网临时连接。</li>
+<li>后端：账号、设备元数据和诊断接口；不承担一期局域网控制转发。</li>
+<li>数据库：完成一期所需的最小表和迁移，不提前实现完整商城和社区模型。</li></ul>
+<h4 id="section-19">3.5.2 P1-SDK-01：中立契约稳定化</h4>
+<p><strong>目标</strong>：让桌面端和移动端依赖同一组不含桌面类型的公共契约。</p>
+<p><strong>输入和范围</strong>：</p>
+<ul><li>现有 <code>src/orca_sdk/include/orca/sdk/</code>；</li>
+<li>连接路径和状态机；</li>
+<li>命令信封；</li>
+<li>打印机能力和状态 DTO；</li>
+<li>AI 和切片任务 DTO。</li></ul>
+<p><strong>需求</strong>：</p>
+<ol><li>所有公共字段有明确类型、默认值和协议版本。</li>
+<li>JSON 序列化字段稳定，未知扩展字段不能破坏基础解析。</li>
+<li>公共头文件不包含 wxWidgets、Python、GUI、Boost filesystem 或厂商类型。</li>
+<li>命令必须校验 session、device、command、sequence 和过期时间。</li>
+<li>同一 <code>command_id</code> 可以识别幂等重试。</li>
+<li>连接路径发生切换后必须标记需要重新同步设备状态。</li></ol>
+<p><strong>验收</strong>：</p>
+<ul><li><code>MobileSDK</code> 独立目标可被桌面和测试目标链接；</li>
+<li>契约测试覆盖正常、缺字段、错误版本、过期和重复命令；</li>
+<li>不依赖桌面 GUI 和 Python；</li>
+<li>版本字段可在移动端诊断信息中读取。</li></ul>
+<p><strong>可独立开发</strong>：是。</p>
+<p><strong>依赖</strong>：无；当前任务已经提供基础实现。</p>
+<h4 id="section-20">3.5.3 P1-SDK-02：C ABI 和异步 SDK 门面</h4>
+<p><strong>目标</strong>：让 Android/iOS 宿主以稳定方式调用 C++ SDK。</p>
+<p><strong>需求</strong>：</p>
+<ol><li>新增 C ABI 门面，避免移动端直接绑定 C++ 模板、异常和 STL 布局。</li>
+<li>使用不透明句柄表示 SDK 实例、连接会话和任务。</li>
+<li>提供创建、销毁、发现、连接、断开、读取状态和发送命令接口。</li>
+<li>提供事件回调或事件拉取接口，事件包含类型、序列号、时间和 JSON/结构化 payload。</li>
+<li>所有异步操作提供取消和错误回调。</li>
+<li>C ABI 错误码稳定，错误详情可诊断但不含凭据。</li>
+<li>明确线程模型：SDK 内部线程不得直接触碰 Flutter/UI 线程。</li></ol>
+<p><strong>推荐接口形态</strong>：</p>
+<pre><code>orca_sdk_create()
+      ↓
+orca_sdk_discover()
+      ↓
+orca_sdk_connect(device)
+      ↓
+orca_sdk_poll_event() / callback
+      ↓
+orca_sdk_send_command(command)
+      ↓
+orca_sdk_disconnect()
+      ↓
+orca_sdk_destroy()</code></pre>
+<p><strong>验收</strong>：</p>
+<ul><li>Windows 桌面测试可以调用 C ABI；</li>
+<li>Android/iOS 桥接不需要了解 C++ 类布局；</li>
+<li>异步回调不会在 SDK 销毁后触发；</li>
+<li>连接断开、取消和重复销毁不会崩溃；</li>
+<li>提供 C ABI 头文件、版本号和最小示例。</li></ul>
+<p><strong>可独立开发</strong>：是。</p>
+<p><strong>依赖</strong>：P1-SDK-01。</p>
+<h4 id="section-21">3.5.4 P1-SDK-03：局域网协议适配器</h4>
+<p><strong>目标</strong>：通过一个真实协议打通 SDK 到打印机的局域网链路。</p>
+<p><strong>首批建议</strong>：实现 Moonraker 适配器，同时保持 <code>IPrinterProtocolAdapter</code> 可接入其他协议。</p>
+<p><strong>需求</strong>：</p>
+<ol><li>支持手动 IP/端口配置。</li>
+<li>支持 HTTP/JSON-RPC 请求。</li>
+<li>支持 WebSocket 状态订阅；不支持订阅时回退到轮询。</li>
+<li>支持设备探测、能力读取、状态读取。</li>
+<li>支持 G-code 文件上传接口抽象。</li>
+<li>支持开始、暂停、恢复和停止命令。</li>
+<li>连接断开后使用退避重连，不重复执行非幂等命令。</li>
+<li>连接重建后先读取完整状态，再恢复实时订阅。</li>
+<li>每条控制命令关联 <code>session_id</code>、<code>command_id</code> 和设备回执。</li>
+<li>将协议错误转换为稳定 SDK 错误码。</li></ol>
+<p><strong>状态字段最低集合</strong>：</p>
+<ul><li>设备在线状态；</li>
+<li>打印状态；</li>
+<li>当前文件；</li>
+<li>打印进度；</li>
+<li>喷嘴温度和目标温度；</li>
+<li>热床温度和目标温度；</li>
+<li>当前错误；</li>
+<li>更新时间；</li>
+<li>协议适配器版本。</li></ul>
+<p><strong>验收</strong>：</p>
+<ul><li>真实设备或协议模拟器可以完成发现、连接、订阅、断开和重连；</li>
+<li>断网后不重复启动打印；</li>
+<li>状态订阅中断后可以重新对账；</li>
+<li>暂停、恢复和停止命令具有明确回执；</li>
+<li>Moonraker 契约测试覆盖 HTTP、WebSocket 和错误响应。</li></ul>
+<p><strong>可独立开发</strong>：是。</p>
+<p><strong>依赖</strong>：P1-SDK-01；C ABI 接入可与适配器并行。</p>
+<h4 id="section-22">3.5.5 P1-SDK-04：SDK 构建和移动产物</h4>
+<p><strong>目标</strong>：输出移动端可以消费的 SDK 产物。</p>
+<p><strong>需求</strong>：</p>
+<ol><li>CMake 支持桌面静态库或共享库。</li>
+<li>Android 生成 AAR/JNI 或供 Flutter FFI 使用的原生库。</li>
+<li>iOS 生成 XCFramework 或供 Flutter FFI 使用的 Framework。</li>
+<li>产物携带 SDK contract version 和 source commit。</li>
+<li>产物不包含桌面 GUI、Python、供应商 DLL 和开发机路径。</li>
+<li>SDK 头文件、二进制和示例的版本一致。</li>
+<li>移动端仓库通过版本号引用产物，不复制 SDK 源码。</li></ol>
+<p><strong>验收</strong>：</p>
+<ul><li>从干净构建目录可以生成目标平台产物；</li>
+<li>Android/iOS 宿主可以链接并读取版本信息；</li>
+<li>SDK 产物在没有桌面工作区的环境中可以运行协议契约测试；</li>
+<li>构建清单记录编译器、平台、SDK 版本和源代码身份。</li></ul>
+<p><strong>可独立开发</strong>：是。</p>
+<p><strong>依赖</strong>：P1-SDK-01、P1-SDK-02。</p>
+<h4 id="section-23">3.5.6 P1-MOB-01：移动端应用骨架</h4>
+<p><strong>目标</strong>：建立 Android/iOS 共用的 Flutter 产品骨架。</p>
+<p><strong>需求</strong>：</p>
+<ul><li>环境配置：开发、测试、生产；</li>
+<li>路由和主题；</li>
+<li>设备列表、设备详情和监控页面；</li>
+<li>统一错误展示和重试；</li>
+<li>生命周期管理；</li>
+<li>日志开关；</li>
+<li>SDK 版本诊断页；</li>
+<li>原生权限申请入口。</li></ul>
+<p><strong>验收</strong>：</p>
+<ul><li>Android 和 iOS 真机可以安装和启动；</li>
+<li>页面切换不会丢失连接状态；</li>
+<li>SDK 事件不会直接更新已销毁页面；</li>
+<li>发生错误时用户能看到可操作的提示；</li>
+<li>开发环境可以切换模拟器和真实局域网设备。</li></ul>
+<p><strong>可独立开发</strong>：是。</p>
+<p><strong>依赖</strong>：P1-SDK-02 的接口定义；可以先用 Mock SDK。</p>
+<h4 id="section-24">3.5.7 P1-MOB-02：局域网发现和手动连接</h4>
+<p><strong>目标</strong>：让用户在移动端找到并连接局域网打印机。</p>
+<p><strong>需求</strong>：</p>
+<ol><li>首次进入设备页申请 Android/iOS 本地网络权限。</li>
+<li>支持自动发现；发现失败时支持手动输入 IP、端口和协议类型。</li>
+<li>设备卡片显示地址、协议、型号、在线状态和最近连接时间。</li>
+<li>连接前执行协议探测和能力读取。</li>
+<li>保存已授权设备的非敏感连接信息。</li>
+<li>支持删除设备、重新配对和修改地址。</li>
+<li>将发现、探测、连接和认证错误区分显示。</li></ol>
+<p><strong>验收</strong>：</p>
+<ul><li>在同一局域网内能发现首批协议设备；</li>
+<li>手动 IP 可以绕过发现完成连接；</li>
+<li>无局域网权限时给出系统设置引导；</li>
+<li>不同协议不会错误显示为同一设备；</li>
+<li>设备列表可以恢复上次连接信息但不会保存明文密钥。</li></ul>
+<p><strong>可独立开发</strong>：是。</p>
+<p><strong>依赖</strong>：P1-MOB-01、P1-SDK-02、P1-SDK-03。</p>
+<h4 id="section-25">3.5.8 P1-MOB-03：打印状态监控</h4>
+<p><strong>目标</strong>：在移动端持续展示打印机当前状态。</p>
+<p><strong>监控字段</strong>：</p>
+<ul><li>连接路径和连接质量；</li>
+<li>设备在线状态；</li>
+<li>打印状态；</li>
+<li>当前文件；</li>
+<li>进度和预计剩余时间（设备提供时）；</li>
+<li>喷嘴/热床当前温度和目标温度；</li>
+<li>当前层数（设备提供时）；</li>
+<li>错误、告警和最后更新时间；</li>
+<li>当前协议和 SDK 版本。</li></ul>
+<p><strong>需求</strong>：</p>
+<ol><li>优先使用订阅状态流，协议不支持时使用有节流的轮询。</li>
+<li>页面显示“正在连接、已连接、状态过期、已断开、离线”等明确状态。</li>
+<li>状态时间戳超过阈值时不能继续显示为实时数据。</li>
+<li>重新连接后先执行状态对账，再恢复页面实时更新。</li>
+<li>页面销毁后停止 UI 订阅，但不能误关闭其他页面使用的共享连接。</li>
+<li>支持下拉刷新和手动重试。</li></ol>
+<p><strong>验收</strong>：</p>
+<ul><li>打印状态变化可以在移动端正确反映；</li>
+<li>断网、恢复网络和打印机重启后状态最终一致；</li>
+<li>状态流异常不会导致 App 崩溃或重复订阅；</li>
+<li>温度、进度和错误信息与协议模拟器一致；</li>
+<li>使用录制数据可以进行无设备 UI 回归测试。</li></ul>
+<p><strong>可独立开发</strong>：是。</p>
+<p><strong>依赖</strong>：P1-MOB-02、P1-SDK-03。</p>
+<h4 id="section-26">3.5.9 P1-MOB-04：基础打印控制</h4>
+<p><strong>目标</strong>：通过移动端使用 SDK 的幂等控制能力。</p>
+<p><strong>一期命令</strong>：</p>
+<ul><li><code>printer.start</code>；</li>
+<li><code>printer.pause</code>；</li>
+<li><code>printer.resume</code>；</li>
+<li><code>printer.stop</code>；</li>
+<li><code>printer.refresh_status</code>。</li></ul>
+<p><strong>需求</strong>：</p>
+<ol><li>高风险的停止命令必须二次确认。</li>
+<li>每次点击只生成一个 <code>command_id</code>。</li>
+<li>网络重试复用原 <code>command_id</code>，不能生成重复动作。</li>
+<li>命令执行期间显示发送中、已接受、已完成、失败和状态未知。</li>
+<li>状态未知时不能自动重复发送停止、开始等非幂等命令。</li>
+<li>控制成功后重新读取设备状态。</li>
+<li>无控制权限或设备能力不支持时，按钮不可用并解释原因。</li></ol>
+<p><strong>验收</strong>：</p>
+<ul><li>暂停、恢复和停止在协议模拟器上能够完成闭环；</li>
+<li>请求超时不会导致重复命令；</li>
+<li>设备拒绝命令时显示稳定错误码和用户提示；</li>
+<li>页面退出再进入后可以显示最终设备状态；</li>
+<li>所有命令都有本地诊断记录。</li></ul>
+<p><strong>可独立开发</strong>：是。</p>
+<p><strong>依赖</strong>：P1-MOB-03、P1-SDK-02、P1-SDK-03。</p>
+<h4 id="section-27">3.5.10 P1-MOB-05：本地缓存和诊断</h4>
+<p><strong>目标</strong>：保证局域网短时断开时用户仍能看到最后状态，并能定位问题。</p>
+<p><strong>需求</strong>：</p>
+<ul><li>缓存设备基本信息、最后状态和时间戳；</li>
+<li>不缓存明文密码、Token 或支付凭证；</li>
+<li>保存最近连接错误、命令结果和 SDK 版本；</li>
+<li>支持导出脱敏诊断包；</li>
+<li>支持清除本地设备和诊断数据；</li>
+<li>日志按大小和时间滚动。</li></ul>
+<p><strong>验收</strong>：</p>
+<ul><li>App 重启后可恢复设备列表；</li>
+<li>过期状态明确标记为缓存数据；</li>
+<li>诊断包不包含凭据和完整模型文件；</li>
+<li>日志出现异常时可以定位发现、连接、协议和命令阶段。</li></ul>
+<p><strong>可独立开发</strong>：是。</p>
+<p><strong>依赖</strong>：P1-MOB-01。</p>
+<h4 id="section-28">3.5.11 P1-BE-01：最小账号服务</h4>
+<p><strong>目标</strong>：为后续模型、支付和远程功能建立稳定身份，不阻塞一期局域网直连。</p>
+<p><strong>一期范围</strong>：</p>
+<ul><li>注册、登录、刷新会话和退出；</li>
+<li>用户基本资料；</li>
+<li>设备绑定关系；</li>
+<li>账号注销；</li>
+<li>登录审计；</li>
+<li>开发环境测试账号。</li></ul>
+<p><strong>一期不做</strong>：</p>
+<ul><li>订阅支付；</li>
+<li>创作者结算；</li>
+<li>社交登录的全部供应商接入；</li>
+<li>企业组织的完整计费模型。</li></ul>
+<p><strong>需求</strong>：</p>
+<ol><li>账号 API 只返回稳定用户 ID 和会话信息，不返回内部数据库对象。</li>
+<li>设备绑定操作需要用户身份和明确授权。</li>
+<li>局域网临时连接可以在未登录状态使用，但不能获得远程控制或云端权益。</li>
+<li>所有登录和设备绑定操作写入审计事件。</li></ol>
+<p><strong>验收</strong>：</p>
+<ul><li>移动端可以登录、退出和恢复会话；</li>
+<li>Token 失效后能引导重新登录；</li>
+<li>删除账号后设备绑定关系被撤销；</li>
+<li>未登录用户不能访问后续需要身份的后端接口。</li></ul>
+<p><strong>可独立开发</strong>：是。</p>
+<p><strong>依赖</strong>：P1-DB-01；移动端可以先使用 Mock API。</p>
+<h4 id="section-29">3.5.12 P1-BE-02：设备注册和能力查询</h4>
+<p><strong>目标</strong>：保存用户已知设备的元数据，但不把一期局域网控制转移到云端。</p>
+<p><strong>接口建议</strong>：</p>
+<pre><code>POST   /api/v1/devices
+GET    /api/v1/devices
+GET    /api/v1/devices/{device_id}
+PATCH  /api/v1/devices/{device_id}
+DELETE /api/v1/devices/{device_id}
+GET    /api/v1/devices/{device_id}/capabilities</code></pre>
+<p><strong>需求</strong>：</p>
+<ul><li>设备 ID、名称、型号、协议、地址摘要和能力；</li>
+<li>用户与设备绑定、解绑和共享预留；</li>
+<li>设备能力版本化；</li>
+<li>不保存局域网明文密码；</li>
+<li>后端记录最后一次同步时间，但一期不要求后端实时控制。</li></ul>
+<p><strong>验收</strong>：</p>
+<ul><li>移动端可以注册局域网设备元数据；</li>
+<li>同一用户重复注册不会生成重复设备；</li>
+<li>设备解绑后不能从账号 API 查询；</li>
+<li>能力字段可以向后兼容扩展。</li></ul>
+<p><strong>可独立开发</strong>：是。</p>
+<p><strong>依赖</strong>：P1-BE-01、P1-DB-01。</p>
+<h4 id="section-30">3.5.13 P1-DB-01：一期数据库和迁移</h4>
+<p><strong>目标</strong>：提供账号、设备、打印会话和审计的最小数据底座。</p>
+<p><strong>一期表</strong>：</p>
+<pre><code>users
+sessions
+printers
+printer_bindings
+printer_capabilities
+printer_sessions
+print_jobs
+print_job_events
+audit_events</code></pre>
+<p><strong>需求</strong>：</p>
+<ol><li>所有表有主键、创建时间、更新时间和必要的软删除策略。</li>
+<li>设备绑定使用唯一约束，避免重复注册。</li>
+<li>打印会话与本地连接会话分开建模。</li>
+<li>打印任务事件采用追加写入，不能覆盖历史状态。</li>
+<li>数据库迁移可在空库和上一版本库上重复验证。</li>
+<li>测试数据和生产密钥分离。</li></ol>
+<p><strong>验收</strong>：</p>
+<ul><li>空库初始化成功；</li>
+<li>迁移升级和回滚策略有记录；</li>
+<li>账号、设备和审计查询有索引；</li>
+<li>删除账号后符合数据保留策略；</li>
+<li>集成测试可以创建账号、绑定设备和写入打印会话。</li></ul>
+<p><strong>可独立开发</strong>：是。</p>
+<p><strong>依赖</strong>：无。</p>
+<h4 id="section-31">3.5.14 P1-QA-01：局域网端到端验证</h4>
+<p><strong>目标</strong>：用协议模拟器和至少一台真实设备验证移动端闭环。</p>
+<p><strong>测试层次</strong>：</p>
+<ol><li>SDK 契约单元测试；</li>
+<li>协议适配器测试；</li>
+<li>C ABI 测试；</li>
+<li>Flutter Mock SDK 测试；</li>
+<li>Android/iOS 真机局域网测试；</li>
+<li>断网、重连、重启和命令幂等测试。</li></ol>
+<p><strong>一期必须覆盖</strong>：</p>
+<ul><li>自动发现失败后手动 IP 连接；</li>
+<li>局域网权限拒绝和恢复；</li>
+<li>打印机断电重启；</li>
+<li>WebSocket 中断；</li>
+<li>状态过期；</li>
+<li>暂停/恢复/停止超时；</li>
+<li>重复点击和网络重试；</li>
+<li>App 进入后台再恢复；</li>
+<li>多个页面共享一个设备连接；</li>
+<li>设备不支持某项能力。</li></ul>
+<p><strong>验收</strong>：</p>
+<ul><li>关键路径全部有可重复测试步骤；</li>
+<li>测试报告包含设备、系统、SDK 和协议版本；</li>
+<li>失败用例有日志和命令 ID；</li>
+<li>不以“界面显示成功”代替设备状态回执。</li></ul>
+<p><strong>可独立开发</strong>：是。</p>
+<p><strong>依赖</strong>：各模块提供可测试接口。</p>
+<h3 id="section-32">3.6 一期非功能需求</h3>
+<h4 id="section-33">3.6.1 可靠性</h4>
+<ul><li>连接状态必须可恢复；</li>
+<li>连接重建后先状态对账，再恢复命令；</li>
+<li>任何重试都必须区分幂等和非幂等命令；</li>
+<li>摄像头、日志和页面异常不能影响打印控制；</li>
+<li>设备状态过期时明确显示，不继续伪装实时。</li></ul>
+<h4 id="section-34">3.6.2 安全</h4>
+<ul><li>不在移动端包内保存厂商密钥、支付密钥或 AI Provider Key；</li>
+<li>不在日志中记录密码、Token 和完整授权头；</li>
+<li>所有控制命令都带 session、device、command 和过期时间；</li>
+<li>绑定和解绑必须有身份校验；</li>
+<li>诊断包默认脱敏。</li></ul>
+<h4 id="section-35">3.6.3 可观测性</h4>
+<p>每次连接和控制至少记录：</p>
+<pre><code>device_id
+session_id
+command_id
+protocol_adapter
+connection_path
+sdk_version
+state_before
+state_after
+error_code
+timestamp</code></pre>
+<h4 id="section-36">3.6.4 一期性能目标</h4>
+<p>这些是验收目标，需在真实设备和参考机型上校准：</p>
+<ul><li>同局域网自动发现结果通常在 5 秒内出现；</li>
+<li>手动 IP 连接在协议正常时 5 秒内给出成功或明确失败；</li>
+<li>状态订阅中断后 10 秒内进入“状态过期”或断开提示；</li>
+<li>网络恢复后 15 秒内完成状态重新对账；</li>
+<li>页面滚动和状态更新不能造成明显卡顿；</li>
+<li>大量状态事件需要节流，不能每个底层事件都触发完整页面重建。</li></ul>
+<h3 id="section-37">3.7 二期需求框架</h3>
+<p>二期目标是从“局域网工具”升级为“平台化产品”。下面给出可拆分的需求包，接口细节在一期验收后冻结。</p>
+<div class="table-wrap"><table><thead><tr><th scope="col">编号</th><th scope="col">模块</th><th scope="col">主要需求</th><th scope="col">产物</th></tr></thead><tbody><tr><td>P2-SDK-01</td><td>多协议连接</td><td>OctoPrint、PrusaLink、厂商 HTTP/WebSocket 适配器</td><td>协议插件和契约测试</td></tr>
+<tr><td>P2-CONN-02</td><td>远程连接</td><td>设备注册、信令、Relay、会话租约、状态对账</td><td>Realtime Gateway、Relay 客户端</td></tr>
+<tr><td>P2-MOB-03</td><td>远程监控</td><td>云端设备列表、远程状态、推送和异常通知</td><td>移动端远程监控</td></tr>
+<tr><td>P2-DEV-04</td><td>设备管理</td><td>多设备、设备共享、能力和固件信息</td><td>设备域扩展</td></tr>
+<tr><td>P2-AI-05</td><td>AI Gateway</td><td>文本/图片任务、重试、取消、产物下载和配额</td><td>AI Job 服务</td></tr>
+<tr><td>P2-SLICE-06</td><td>云端切片</td><td>上传模型、打印机/材料配置、切片任务和 G-code</td><td>Slicing Worker</td></tr>
+<tr><td>P2-MODEL-07</td><td>模型库</td><td>上传、解析、缩略图、3D 预览、搜索、标签和下载</td><td>Model Catalog</td></tr>
+<tr><td>P2-BILL-08</td><td>支付权益</td><td>订阅、AI 额度、模型购买、退款、权益恢复</td><td>Billing/Entitlement</td></tr>
+<tr><td>P2-COMM-09</td><td>基础社区</td><td>作者、评论、点赞、收藏、关注、举报</td><td>Community/Moderation</td></tr>
+<tr><td>P2-ADMIN-10</td><td>运营后台</td><td>内容审核、设备支持、订单查询、任务重试</td><td>Admin API/Web</td></tr>
+<tr><td>P2-NOTIFY-11</td><td>通知系统</td><td>打印完成、异常、订单和任务通知</td><td>Push/Inbox</td></tr></tbody></table></div>
+<p>二期的关键约束：</p>
+<ul><li>云端控制命令继续复用 <code>CommandEnvelope</code>；</li>
+<li>AI、切片和打印任务都必须可取消、可恢复和可审计；</li>
+<li>模型文件使用对象存储和签名下载地址；</li>
+<li>支付交易必须转换为统一权益，不让每个业务模块直接判断支付状态；</li>
+<li>远程控制和摄像头转发分开；</li>
+<li>复杂切片优先放到 Worker，不把完整桌面工作台塞进移动端。</li></ul>
+<h3 id="section-38">3.8 三期需求框架</h3>
+<p>三期目标是形成内容、设备和创作者生态，并支持专业用户和团队使用。</p>
+<div class="table-wrap"><table><thead><tr><th scope="col">编号</th><th scope="col">模块</th><th scope="col">主要需求</th></tr></thead><tbody><tr><td>P3-SDK-01</td><td>本地切片 SDK</td><td>C ABI、Android AAR/JNI、iOS XCFramework、内存预算和取消</td></tr>
+<tr><td>P3-SDK-02</td><td>高级预览</td><td>G-code 分层、路径动画、多材料和设备差异预览</td></tr>
+<tr><td>P3-CONN-03</td><td>P2P/Edge</td><td>设备侧 Connector、NAT 穿透、TURN、边缘离线能力</td></tr>
+<tr><td>P3-PRINT-04</td><td>打印编排</td><td>多打印机队列、批量任务、失败恢复和任务调度</td></tr>
+<tr><td>P3-MODEL-05</td><td>模型生态</td><td>Remix、版本分支、授权、合集、打印成果和模型质量报告</td></tr>
+<tr><td>P3-MARKET-06</td><td>创作者商业化</td><td>付费模型、分成、结算、优惠和版权处理</td></tr>
+<tr><td>P3-COMM-07</td><td>社区增长</td><td>推荐、专题、活动、排行榜、创作者主页和消息</td></tr>
+<tr><td>P3-TEAM-08</td><td>团队能力</td><td>组织、角色、审批、共享打印机、配额和审计</td></tr>
+<tr><td>P3-DATA-09</td><td>数据平台</td><td>行为分析、打印成功率、模型质量和运营指标</td></tr>
+<tr><td>P3-EXT-10</td><td>扩展生态</td><td>协议插件、设备能力插件、材料和配置扩展</td></tr></tbody></table></div>
+<p>三期的重点不是简单增加页面，而是保证模型版本、打印机能力、切片配置、支付权益和打印结果之间可追溯。</p>
+<h2 id="section-39">风险</h2>
+<div class="table-wrap"><table><thead><tr><th scope="col">编号</th><th scope="col">风险/限制</th><th scope="col">影响与处理要求</th></tr></thead><tbody><tr><td>R-01</td><td>首批设备、协议和控制命令范围尚待确认</td><td>当前以 Moonraker 为建议基线；开发前冻结测试设备及协议版本</td></tr>
+<tr><td>R-02</td><td>SDK 契约不等于完整移动 SDK</td><td>C ABI 生命周期、异步回调、产物构建和协议适配需单独实现验收</td></tr>
+<tr><td>R-03</td><td>移动端权限、后台恢复和局域网发现存在平台差异</td><td>保留手动 IP 回退；Android/iOS 分别用真机验证</td></tr>
+<tr><td>R-04</td><td>重连与超时可能造成重复控制</td><td>复用 command_id；非幂等命令状态未知时先对账</td></tr>
+<tr><td>R-05</td><td>账号设备记录与局域网控制授权不能混用</td><td>绑定云端元数据不等于已获得设备凭据或可控制权限</td></tr>
+<tr><td>R-06</td><td>一期膨胀为全平台开发</td><td>支付、商城、社区、AI、远程链路和完整本地切片继续按后续阶段展开</td></tr>
+<tr><td>R-07</td><td>许可证和专有组件边界待评审</td><td>保留为 SDK 商业分发前置检查；本报告不构成法律结论</td></tr>
+<tr><td>R-08</td><td>尚无本轮功能执行证据</td><td>先前任务记录中的构建环境限制仍待复核；本轮未运行 C++ 编译、移动端真机和真实打印机验收</td></tr></tbody></table></div>
+<h2 id="section-40">建议</h2>
+<h3 id="section-41">5.1 模块依赖和并行开发</h3>
+<pre><code>P1-SDK-01 ──┬── P1-SDK-02 ──┬── P1-SDK-04 ──┬── Mobile SDK 绑定
+            │                └── P1-MOB-01 ── P1-MOB-02 ── P1-MOB-03 ── P1-MOB-04
+            └── P1-SDK-03 ───────────────────┘
+
+P1-DB-01 ─── P1-BE-01 ─── P1-BE-02
+
+P1-SDK-03 + P1-MOB-03 + P1-BE-02
+                    ↓
+              P1-QA-01 局域网端到端</code></pre>
+<p>可以并行开发的工作：</p>
+<ul><li>SDK 契约和 C ABI；</li>
+<li>协议模拟器和 Moonraker 适配器；</li>
+<li>Flutter 页面和 Mock SDK；</li>
+<li>Android/iOS 权限和发现插件；</li>
+<li>数据库迁移和最小账号服务；</li>
+<li>集成测试夹具和状态录制。</li></ul>
+<p>必须串行确认的工作：</p>
+<ul><li>SDK 公共字段和错误码冻结后再生成移动端绑定；</li>
+<li>协议状态模型稳定后再做监控页面最终验收；</li>
+<li>设备绑定和权限模型确定后再接远程控制；</li>
+<li>模型权益和支付账本确定后再做付费下载；</li>
+<li>版本化模型产物确定后再做本地切片和打印任务追溯。</li></ul>
+<h3 id="section-42">5.2 一期交付清单</h3>
+<p>一期完成标准是：</p>
+<ul><li><code>OrcaSlicer::MobileSDK</code> 契约和测试通过；</li>
+<li>C ABI 门面和版本信息可用；</li>
+<li>首批局域网协议适配器可连接真实设备或协议模拟器；</li>
+<li>Android/iOS 可以自动发现或手动输入 IP；</li>
+<li>移动端可以查看在线状态、打印状态、温度、进度和错误；</li>
+<li>移动端可以执行暂停、恢复、停止等基础控制；</li>
+<li>断网、重连、设备重启和重复命令有明确处理；</li>
+<li>最小账号、设备绑定和数据库迁移可运行；</li>
+<li>所有关键命令都有日志和回执；</li>
+<li>有 Android/iOS 真机测试记录；</li>
+<li>有 SDK、移动端、后端和数据库的版本兼容记录。</li></ul>
+<h3 id="section-43">5.3 建议执行顺序与评审口径</h3>
+<ol><li>确认首批设备、命令范围和一期摄像头边界，冻结 P1-SDK-01 中立契约。</li>
+<li>分别推进 C ABI 门面、首批协议适配器、移动端 Mock SDK 骨架和数据库/最小账号服务。</li>
+<li>接入 Android/iOS 产物和局域网发现后，按连接 → 状态监控 → 控制回执完成设备闭环。</li>
+<li>将账号/设备元数据验证与纯局域网链路分开执行，避免云端故障阻塞本地能力验收。</li>
+<li>用一期交付清单评审一期完成情况；二、三期框架只作为后续细化输入。</li></ol>
+<p>此顺序表达依赖关系，未承诺日历工期、团队人数或固定上线日期。</p>
+<h2 id="section-44">证据</h2>
+<h3 id="section-45">6.1 依据与材料索引</h3>
+<div class="table-wrap"><table><thead><tr><th scope="col">材料</th><th scope="col">用途</th></tr></thead><tbody><tr><td><a href="../../../../../artifacts/task-20261016013901509-0f210b/evidence/report-standardization-20261016/original/REQUIREMENTS-ANALYSIS.md">原 Markdown 报告</a></td><td>规范化前的需求基线，保留全部原始章节</td></tr>
+<tr><td><a href="../../../../../artifacts/task-20261016013901509-0f210b/evidence/report-standardization-20261016/original/REQUIREMENTS-ANALYSIS.html">原 HTML 报告</a></td><td>规范化前的浏览版备份</td></tr>
+<tr><td><a href="PROJECT-TOPOLOGY.md">工程拓扑</a></td><td>桌面、移动、后端和基础设施边界</td></tr>
+<tr><td><a href="API.md">MobileSDK API</a></td><td>现有 SDK 数据契约和接口说明</td></tr>
+<tr><td><a href="../../../../../control/tasks/task-20261016013901509-0f210b/DECISIONS.md">任务决策</a></td><td>已记录的工程边界与切片演进决策</td></tr>
+<tr><td><a href="C:/Users/1/.agents/skills/codex-task-continuation/codex-task-continuation/SKILL.md">新版任务 Skill</a></td><td>用户审核产物目录与报告身份规范</td></tr>
+<tr><td><a href="../../../../../control/templates/reports/analysis-report.md">分析报告模板</a></td><td>结论、影响范围、关键发现、风险、建议、证据和未完成项</td></tr>
+<tr><td><a href="../../../../../artifacts/task-20261016013901509-0f210b/evidence/report-standardization-20261016/source-state.json">源版本与未提交差异清单</a></td><td>HEAD、分支、工作树状态及文件 SHA-256</td></tr>
+<tr><td><a href="../../../../../artifacts/task-20261016013901509-0f210b/evidence/report-standardization-20261016/validation.json">内容与结构校验</a></td><td>需求编号、原文保留、目录锚点、表格、编码与链接检查</td></tr>
+<tr><td><a href="../../../../../artifacts/task-20261016013901509-0f210b/evidence/report-standardization-20261016/delivery-manifest.json">本轮交付文件清单</a></td><td>MD/HTML、阅读副本和证据的哈希及身份</td></tr>
+<tr><td><a href="../../../../../artifacts/task-20261016013901509-0f210b/evidence/report-standardization-20261016/build-report.cjs">可复现报告生成器</a></td><td>从备份重建标准版与工程阅读副本</td></tr></tbody></table></div>
+<h3 id="section-46">6.2 验证范围</h3>
+<ul><li>本轮执行文档结构、需求编号完整性、旧正文保留、UTF-8 编码、HTML 目录锚点、本地链接、无外部资源及报告文件哈希核对。</li>
+<li>页面截图和静态页面检查属于文档可读性证据；不代表打印、支付或其他产品功能通过。</li>
+<li>不沿用旧报告“已打开预览”等描述作为视觉验收；本轮生成的实际页面材料单独归档。</li>
+<li>SDK 编译、Android/iOS 真机、真实设备与数据库迁移未在本轮运行，继续保持未验收。</li></ul>
+<h3 id="section-47">6.3 页面复核记录</h3>
+<ul><li><a href="../../../../../artifacts/task-20261016013901509-0f210b/evidence/report-standardization-20261016/browser-check.json">浏览器与视口检查结果</a>：Microsoft Edge 检查桌面 1440px 与窄屏 390px；正文无页面级横向溢出，目录锚点均有效。</li>
+<li><a href="../../../../../artifacts/task-20261016013901509-0f210b/evidence/report-standardization-20261016/desktop-preview.png">桌面页面截图</a> · <a href="../../../../../artifacts/task-20261016013901509-0f210b/evidence/report-standardization-20261016/mobile-preview.png">窄屏页面截图</a> · <a href="../../../../../artifacts/task-20261016013901509-0f210b/evidence/report-standardization-20261016/requirements-preview.png">一期需求详情截图</a>。</li>
+<li>页面检查只覆盖报告展示；未执行任何打印设备或移动 App 功能验收。</li></ul>
+<h2 id="section-48">未完成项</h2>
+<h3 id="section-49">7.1 待确认事项</h3>
+<p>以下事项不阻塞本报告，但在一期开发开始前需要确认：</p>
+<ol><li>首批真实打印机型号和协议是否以 Moonraker 为主；</li>
+<li>一期是否允许未登录用户使用局域网控制；</li>
+<li>首期控制范围是否包含开始打印，还是只做暂停/恢复/停止；</li>
+<li>移动端是否需要摄像头快照，还是二期再做视频；</li>
+<li>账号后端的部署环境和身份提供商；</li>
+<li>C ABI 由 Flutter FFI 直接消费，还是同时发布 AAR/XCFramework；</li>
+<li>OrcaSlicer 切片核心的许可证、第三方依赖和商业分发边界；</li>
+<li>一期真实设备测试机和协议模拟器的归属。</li></ol>
+<p>在这些事项确认前，建议保持接口可扩展，不把厂商专有字段和支付供应商字段写进公共 SDK 契约。</p>
+<h3 id="section-50">7.2 尚待实施或验证的事项</h3>
+<ul><li>需求评审：报告已按新规范整理，首批设备、登录策略、开始打印和摄像头范围仍待明确。</li>
+<li>实现交付：一期 13 个需求包仍需按任务和证据逐项确认，不能以报告存在认定完成。</li>
+<li>工具链与验证：在可用构建环境运行 SDK/C ABI 构建、协议适配测试和 Android/iOS 产物检查。</li>
+<li>现场验证：执行局域网发现、手动连接、状态流、断网重连、控制回执和真机测试。</li>
+<li>后续细化：二、三期在相应阶段补齐详细规格、接口、数据模型和验收标准。</li>
+<li>发布状态：本轮仅本地报告交付，未提交、推送或发布产品。</li></ul><footer>任务 task-20261016013901509-0f210b · 文档规范化交付 · 本页不代表产品功能验收通过</footer></main></div></body></html>

@@ -11,7 +11,13 @@ add_subdirectory(dev-utils)
 
 find_package(libnoise REQUIRED)
 
+add_subdirectory(orca_sdk)
+
 add_subdirectory(libslic3r)
+
+if (ORCA_MOBILE_SDK_ONLY)
+    return()
+endif()
 
 if (SLIC3R_GUI)
     add_subdirectory(glad)
@@ -158,7 +164,7 @@ if (NOT WIN32 AND NOT APPLE)
     configure_file(${CMAKE_CURRENT_SOURCE_DIR}/dev-utils/platform/unix/build_linux_image.sh.in ${CMAKE_CURRENT_BINARY_DIR}/build_linux_image.sh USE_SOURCE_PERMISSIONS @ONLY)
 endif ()
 
-target_link_libraries(OrcaSlicer libslic3r cereal::cereal)
+target_link_libraries(OrcaSlicer libslic3r cereal::cereal OrcaSlicer::MobileSDK)
 # target_include_directories(OrcaSlicer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/slic3r)
 if (APPLE)
 #    add_compile_options(-stdlib=libc++)
