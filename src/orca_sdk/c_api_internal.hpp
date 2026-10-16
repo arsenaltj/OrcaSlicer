@@ -13,15 +13,13 @@
 #include <vector>
 
 struct orca_sdk_event_record;
+struct orca_sdk_native;
+struct orca_sdk_session_native;
+struct orca_sdk_task_native;
 
 namespace orca_sdk_internal {
 
-enum class handle_kind : uint8_t {
-    sdk,
-    session,
-    task,
-};
-
+enum class handle_kind : uint8_t { sdk, session, task };
 struct handle_token;
 
 class handle_guard {
@@ -39,21 +37,16 @@ public:
     void release() noexcept;
 
 private:
-    friend handle_guard acquire(void* object, handle_kind kind) noexcept;
+    friend handle_guard acquire(void* handle, handle_kind kind) noexcept;
     friend void retire(handle_guard& guard) noexcept;
-
     handle_guard(std::shared_ptr<handle_token> token, void* object) noexcept
-        : m_token(std::move(token))
-        , m_object(object)
-    {
-    }
-
+        : m_token(std::move(token)), m_object(object) {}
     std::shared_ptr<handle_token> m_token;
     void* m_object{nullptr};
 };
 
-handle_guard acquire(void* object, handle_kind kind) noexcept;
-void register_handle(void* object, handle_kind kind, void* owner);
+handle_guard acquire(void* handle, handle_kind kind) noexcept;
+void* register_handle(void* object, handle_kind kind, void* owner);
 void retire(handle_guard& guard) noexcept;
 void retire_owned_handles(void* owner) noexcept;
 void wait_idle(const std::shared_ptr<handle_token>& token) noexcept;
@@ -67,14 +60,18 @@ uint64_t now_millis() noexcept;
 orca_sdk_error_t write_view(orca_sdk_string_t* output, const std::string& value) noexcept;
 void reset_event(orca_sdk_event_t* event) noexcept;
 void fill_event(const orca_sdk_event_record& record, orca_sdk_event_t* event) noexcept;
+void deliver_event(orca_sdk_event_t* output, orca_sdk_session_native* session,
+                   orca_sdk_event_record event);
+void clear_event_delivery(orca_sdk_event_t* output) noexcept;
+void clear_session_event_deliveries(orca_sdk_session_native* session) noexcept;
+bool has_delivered_event(orca_sdk_task_native* task) noexcept;
 
 } // namespace orca_sdk_internal
 
-struct orca_sdk {
+struct orca_sdk_native {
     static constexpr uint64_t kMagic = UINT64_C(0x4f52434153444b31);
-
     uint64_t magic{kMagic};
-    orca_sdk_internal::handle_token* token{nullptr};
+    orca_sdk_t* handle{nullptr};
     std::mutex mutex;
     uint32_t session_count{0};
     bool shutting_down{false};
@@ -86,17 +83,17 @@ struct orca_sdk_event_record {
     uint64_t sequence{0};
     uint64_t timestamp_ms{0};
     orca_sdk_task_t* task{nullptr};
+    orca_sdk_task_native* task_state{nullptr};
     std::string task_id;
     std::string message;
     std::string payload;
 };
 
-struct orca_sdk_task {
+struct orca_sdk_task_native {
     static constexpr uint64_t kMagic = UINT64_C(0x4f52434154415331);
-
     uint64_t magic{kMagic};
-    orca_sdk_internal::handle_token* token{nullptr};
-    orca_sdk_session_t* session{nullptr};
+    orca_sdk_task_t* handle{nullptr};
+    orca_sdk_session_native* session{nullptr};
     uint64_t numeric_id{0};
     std::string id;
     std::string payload;
@@ -106,29 +103,24 @@ struct orca_sdk_task {
     bool user_destroyed{false};
 };
 
-struct orca_sdk_session {
+struct orca_sdk_session_native {
     static constexpr uint64_t kMagic = UINT64_C(0x4f52434153455331);
-
     uint64_t magic{kMagic};
-    orca_sdk_internal::handle_token* token{nullptr};
-    orca_sdk_t* sdk{nullptr};
+    orca_sdk_session_t* handle{nullptr};
+    orca_sdk_t* sdk_handle{nullptr};
+    orca_sdk_native* sdk{nullptr};
     std::mutex mutex;
     std::condition_variable condition;
     std::deque<orca_sdk_event_record> events;
-    std::deque<orca_sdk_event_record> delivered_events;
-    std::vector<std::unique_ptr<orca_sdk_task_t>> tasks;
+    std::vector<std::unique_ptr<orca_sdk_task_native>> tasks;
     std::thread worker;
     uint64_t next_task_id{1};
     uint64_t next_event_sequence{1};
     uint64_t wake_generation{0};
     bool stopping{false};
 
-    explicit orca_sdk_session(orca_sdk_t* owner)
-        : sdk(owner)
-    {
-    }
-
-    ~orca_sdk_session();
+    explicit orca_sdk_session_native(orca_sdk_native* owner) : sdk(owner) {}
+    ~orca_sdk_session_native();
     void start_worker();
     void worker_main() noexcept;
     void enqueue_event(orca_sdk_event_record event);

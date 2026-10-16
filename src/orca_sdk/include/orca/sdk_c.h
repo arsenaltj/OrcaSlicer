@@ -132,7 +132,7 @@ ORCA_SDK_API orca_sdk_error_t orca_sdk_session_submit_task(
     const orca_sdk_task_request_t* request,
     orca_sdk_task_t** out_task);
 ORCA_SDK_API orca_sdk_error_t orca_sdk_task_cancel(orca_sdk_task_t* task);
-/* After task_destroy succeeds, every task API returns INVALID_HANDLE. */
+/* A pending task, or a terminal task with an uncleared task event, returns BUSY from task_destroy. After task_destroy succeeds, every task API returns INVALID_HANDLE. */
 ORCA_SDK_API orca_sdk_error_t orca_sdk_task_destroy(orca_sdk_task_t* task);
 ORCA_SDK_API orca_sdk_error_t orca_sdk_task_get_id(
     const orca_sdk_task_t* task,
@@ -145,6 +145,7 @@ ORCA_SDK_API orca_sdk_error_t orca_sdk_poll_event(
     orca_sdk_session_t* session,
     uint32_t timeout_ms,
     orca_sdk_event_t* out_event);
+/* Releases the storage backing the most recently polled event for this output. */
 ORCA_SDK_API orca_sdk_error_t orca_sdk_event_clear(orca_sdk_event_t* event);
 /* Wakeup is a broadcast edge for pollers already waiting on this session. */
 ORCA_SDK_API orca_sdk_error_t orca_sdk_wakeup(orca_sdk_session_t* session);

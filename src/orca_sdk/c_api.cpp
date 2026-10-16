@@ -12,6 +12,7 @@
 namespace orca_sdk_internal {
 
 struct handle_token {
+    uintptr_t handle_value{0};
     void* object{nullptr};
     handle_kind kind{handle_kind::sdk};
     void* owner{nullptr};
@@ -23,13 +24,26 @@ namespace {
 
 std::mutex g_handles_mutex;
 std::condition_variable g_handles_condition;
-std::unordered_map<void*, std::shared_ptr<handle_token>> g_handles;
+std::unordered_map<uintptr_t, std::shared_ptr<handle_token>> g_handles;
+uintptr_t g_next_handle_value = static_cast<uintptr_t>(0x10000u);
+
+struct event_delivery {
+    orca_sdk_session_native* session{nullptr};
+    orca_sdk_event_record record;
+};
+
+std::mutex g_event_mutex;
+std::unordered_map<const orca_sdk_event_t*, std::unique_ptr<event_delivery>> g_event_deliveries;
+
+uintptr_t handle_key(const void* handle) noexcept
+{
+    return reinterpret_cast<uintptr_t>(handle);
+}
 
 } // namespace
 
 handle_guard::handle_guard(handle_guard&& other) noexcept
-    : m_token(std::move(other.m_token))
-    , m_object(other.m_object)
+    : m_token(std::move(other.m_token)), m_object(other.m_object)
 {
     other.m_object = nullptr;
 }
@@ -54,7 +68,6 @@ void handle_guard::release() noexcept
 {
     if (!m_token)
         return;
-
     {
         std::lock_guard<std::mutex> lock(g_handles_mutex);
         if (m_token->active != 0)
@@ -65,43 +78,46 @@ void handle_guard::release() noexcept
     m_object = nullptr;
 }
 
-handle_guard acquire(void* object, handle_kind kind) noexcept
+handle_guard acquire(void* handle, handle_kind kind) noexcept
 {
-    if (object == nullptr)
+    if (handle == nullptr)
         return {};
-
     std::lock_guard<std::mutex> lock(g_handles_mutex);
-    const auto it = g_handles.find(object);
+    const auto it = g_handles.find(handle_key(handle));
     if (it == g_handles.end() || !it->second->alive || it->second->kind != kind)
         return {};
     ++it->second->active;
-    return handle_guard(it->second, object);
+    return handle_guard(it->second, it->second->object);
 }
 
-void register_handle(void* object, handle_kind kind, void* owner)
+void* register_handle(void* object, handle_kind kind, void* owner)
 {
     if (object == nullptr)
-        throw std::invalid_argument("cannot register a null handle");
+        throw std::invalid_argument("cannot register a null handle object");
+
+    std::lock_guard<std::mutex> lock(g_handles_mutex);
+    constexpr uintptr_t kHandleStep = static_cast<uintptr_t>(0x10u);
+    if (g_next_handle_value == 0 ||
+        g_next_handle_value > std::numeric_limits<uintptr_t>::max() - kHandleStep)
+        throw std::bad_alloc();
 
     auto token = std::make_shared<handle_token>();
+    token->handle_value = g_next_handle_value;
     token->object = object;
     token->kind = kind;
     token->owner = owner;
-
-    std::lock_guard<std::mutex> lock(g_handles_mutex);
-    const auto [it, inserted] = g_handles.emplace(object, std::move(token));
-    if (!inserted)
-        throw std::logic_error("handle is already registered");
+    g_next_handle_value += kHandleStep;
+    g_handles.emplace(token->handle_value, token);
+    return reinterpret_cast<void*>(token->handle_value);
 }
 
 void retire(handle_guard& guard) noexcept
 {
-    if (!guard.m_token || guard.m_object == nullptr)
+    if (!guard.m_token)
         return;
-
     std::lock_guard<std::mutex> lock(g_handles_mutex);
     guard.m_token->alive = false;
-    const auto it = g_handles.find(guard.m_object);
+    const auto it = g_handles.find(guard.m_token->handle_value);
     if (it != g_handles.end() && it->second == guard.m_token)
         g_handles.erase(it);
 }
@@ -110,10 +126,9 @@ void retire_owned_handles(void* owner) noexcept
 {
     if (owner == nullptr)
         return;
-
     std::lock_guard<std::mutex> lock(g_handles_mutex);
-    for (const auto& [object, token] : g_handles) {
-        (void)object;
+    for (const auto& [handle, token] : g_handles) {
+        (void)handle;
         if (token->owner == owner)
             token->alive = false;
     }
@@ -123,7 +138,6 @@ void wait_idle(const std::shared_ptr<handle_token>& token) noexcept
 {
     if (!token)
         return;
-
     std::unique_lock<std::mutex> lock(g_handles_mutex);
     g_handles_condition.wait(lock, [&] { return token->active == 0; });
 }
@@ -132,7 +146,6 @@ void wait_owned_handles(void* owner) noexcept
 {
     if (owner == nullptr)
         return;
-
     for (;;) {
         std::unique_lock<std::mutex> lock(g_handles_mutex);
         auto it = std::find_if(g_handles.begin(), g_handles.end(), [owner](const auto& entry) {
@@ -143,7 +156,7 @@ void wait_owned_handles(void* owner) noexcept
         const auto token = it->second;
         if (token->active != 0)
             g_handles_condition.wait(lock, [&] { return token->active == 0; });
-        const auto current = g_handles.find(token->object);
+        const auto current = g_handles.find(token->handle_value);
         if (current != g_handles.end() && current->second == token)
             g_handles.erase(current);
     }
@@ -168,7 +181,6 @@ bool valid_utf8(orca_sdk_string_t value) noexcept
         size_t continuation_count = 0;
         uint32_t code_point = 0;
         uint32_t minimum = 0;
-
         if (first <= 0x7f) {
             continue;
         } else if (first >= 0xc2 && first <= 0xdf) {
@@ -186,7 +198,6 @@ bool valid_utf8(orca_sdk_string_t value) noexcept
         } else {
             return false;
         }
-
         if (continuation_count > length - index)
             return false;
         for (size_t i = 0; i < continuation_count; ++i) {
@@ -268,6 +279,52 @@ void fill_event(const orca_sdk_event_record& record, orca_sdk_event_t* event) no
         event->status = ORCA_SDK_E_BUFFER_TOO_SMALL;
 }
 
+void deliver_event(orca_sdk_event_t* output, orca_sdk_session_native* session,
+                   orca_sdk_event_record event)
+{
+    std::lock_guard<std::mutex> lock(g_event_mutex);
+    g_event_deliveries.erase(output);
+    auto delivery = std::make_unique<event_delivery>();
+    delivery->session = session;
+    delivery->record = std::move(event);
+    const auto [it, inserted] = g_event_deliveries.emplace(output, std::move(delivery));
+    if (!inserted)
+        throw std::logic_error("event output is already registered");
+    fill_event(it->second->record, output);
+}
+
+void clear_event_delivery(orca_sdk_event_t* output) noexcept
+{
+    if (output == nullptr)
+        return;
+    std::lock_guard<std::mutex> lock(g_event_mutex);
+    g_event_deliveries.erase(output);
+}
+
+void clear_session_event_deliveries(orca_sdk_session_native* session) noexcept
+{
+    if (session == nullptr)
+        return;
+    std::lock_guard<std::mutex> lock(g_event_mutex);
+    for (auto it = g_event_deliveries.begin(); it != g_event_deliveries.end();) {
+        if (it->second->session == session)
+            it = g_event_deliveries.erase(it);
+        else
+            ++it;
+    }
+}
+
+bool has_delivered_event(orca_sdk_task_native* task) noexcept
+{
+    if (task == nullptr)
+        return false;
+    std::lock_guard<std::mutex> lock(g_event_mutex);
+    return std::any_of(g_event_deliveries.begin(), g_event_deliveries.end(),
+                       [task](const auto& entry) {
+                           return entry.second->record.task_state == task;
+                       });
+}
+
 } // namespace orca_sdk_internal
 
 namespace {
@@ -293,9 +350,30 @@ orca_sdk_error_t validate_output(void* output, uint32_t struct_size, size_t requ
     return ORCA_SDK_OK;
 }
 
+orca_sdk_t* public_sdk_handle(void* value)
+{
+    return reinterpret_cast<orca_sdk_t*>(value);
+}
+
+orca_sdk_session_t* public_session_handle(void* value)
+{
+    return reinterpret_cast<orca_sdk_session_t*>(value);
+}
+
+orca_sdk_task_t* public_task_handle(void* value)
+{
+    return reinterpret_cast<orca_sdk_task_t*>(value);
+}
+
+bool has_queued_event(const orca_sdk_session_native* session, const orca_sdk_task_native* task)
+{
+    return std::any_of(session->events.begin(), session->events.end(),
+                       [task](const auto& event) { return event.task_state == task; });
+}
+
 } // namespace
 
-orca_sdk_session::~orca_sdk_session()
+orca_sdk_session_native::~orca_sdk_session_native()
 {
     {
         std::lock_guard<std::mutex> lock(mutex);
@@ -304,14 +382,16 @@ orca_sdk_session::~orca_sdk_session()
     condition.notify_all();
     if (worker.joinable())
         worker.join();
+    events.clear();
+    tasks.clear();
 }
 
-void orca_sdk_session::start_worker()
+void orca_sdk_session_native::start_worker()
 {
     worker = std::thread([this] { worker_main(); });
 }
 
-void orca_sdk_session::enqueue_event(orca_sdk_event_record event)
+void orca_sdk_session_native::enqueue_event(orca_sdk_event_record event)
 {
     event.sequence = next_event_sequence++;
     event.timestamp_ms = orca_sdk_internal::now_millis();
@@ -319,11 +399,11 @@ void orca_sdk_session::enqueue_event(orca_sdk_event_record event)
     condition.notify_all();
 }
 
-void orca_sdk_session::worker_main() noexcept
+void orca_sdk_session_native::worker_main() noexcept
 {
     try {
         for (;;) {
-            orca_sdk_task_t* task = nullptr;
+            orca_sdk_task_native* task = nullptr;
             {
                 std::unique_lock<std::mutex> lock(mutex);
                 condition.wait(lock, [this] {
@@ -348,25 +428,18 @@ void orca_sdk_session::worker_main() noexcept
             std::lock_guard<std::mutex> lock(mutex);
             if (stopping)
                 return;
-            if (task->state != ORCA_SDK_TASK_PENDING || task->cancel_requested)
+            if (task->state != ORCA_SDK_TASK_PENDING || task->cancel_requested || task->user_destroyed)
                 continue;
             task->state = ORCA_SDK_TASK_COMPLETED;
-            enqueue_event({
-                ORCA_SDK_EVENT_TASK_COMPLETED,
-                ORCA_SDK_OK,
-                0,
-                0,
-                task,
-                task->id,
-                "task completed",
-                task->payload,
-            });
+            enqueue_event({ORCA_SDK_EVENT_TASK_COMPLETED, ORCA_SDK_OK, 0, 0,
+                           task->handle, task, task->id, "task completed", task->payload});
         }
     } catch (...) {
         try {
             std::lock_guard<std::mutex> lock(mutex);
             if (!stopping)
-                enqueue_event({ORCA_SDK_EVENT_ERROR, ORCA_SDK_E_INTERNAL, 0, 0, nullptr, {}, "worker failure", {}});
+                enqueue_event({ORCA_SDK_EVENT_ERROR, ORCA_SDK_E_INTERNAL, 0, 0,
+                               nullptr, nullptr, {}, "worker failure", {}});
         } catch (...) {
         }
     }
@@ -462,9 +535,11 @@ orca_sdk_error_t orca_sdk_create(const orca_sdk_options_t* options, orca_sdk_t**
         if (options != nullptr && options->struct_size < sizeof(uint32_t))
             return ORCA_SDK_E_STRUCT_TOO_SMALL;
 
-        auto sdk = std::make_unique<orca_sdk_t>();
-        orca_sdk_internal::register_handle(sdk.get(), handle_kind::sdk, nullptr);
-        *out_sdk = sdk.release();
+        auto sdk = std::make_unique<orca_sdk_native>();
+        void* handle = orca_sdk_internal::register_handle(sdk.get(), handle_kind::sdk, nullptr);
+        sdk->handle = public_sdk_handle(handle);
+        *out_sdk = sdk->handle;
+        sdk.release();
         return ORCA_SDK_OK;
     });
 }
@@ -475,22 +550,19 @@ orca_sdk_error_t orca_sdk_destroy(orca_sdk_t* sdk)
         auto sdk_handle = acquire_sdk(sdk);
         if (!sdk_handle)
             return ORCA_SDK_E_INVALID_HANDLE;
+        auto* state = static_cast<orca_sdk_native*>(sdk_handle.object());
         const auto token = sdk_handle.token();
         {
-            std::lock_guard<std::mutex> lock(sdk->mutex);
-            if (sdk->shutting_down || sdk->session_count != 0)
+            std::lock_guard<std::mutex> lock(state->mutex);
+            if (state->shutting_down || state->session_count != 0)
                 return ORCA_SDK_E_BUSY;
-            sdk->shutting_down = true;
-            sdk->magic = 0;
+            state->shutting_down = true;
+            state->magic = 0;
         }
-
-        // Retire the registry entry before releasing the final guard. No C ABI
-        // call can start after this point, while calls already in flight keep
-        // the object alive until their guards are released.
         orca_sdk_internal::retire(sdk_handle);
         sdk_handle.release();
         orca_sdk_internal::wait_idle(token);
-        delete sdk;
+        delete state;
         return ORCA_SDK_OK;
     });
 }
@@ -507,6 +579,7 @@ orca_sdk_error_t orca_sdk_session_create(
         auto sdk_handle = acquire_sdk(sdk);
         if (!sdk_handle)
             return ORCA_SDK_E_INVALID_HANDLE;
+        auto* sdk_state = static_cast<orca_sdk_native*>(sdk_handle.object());
         if (options != nullptr && options->struct_size < sizeof(uint32_t))
             return ORCA_SDK_E_STRUCT_TOO_SMALL;
         if (options != nullptr &&
@@ -516,24 +589,26 @@ orca_sdk_error_t orca_sdk_session_create(
             !orca_sdk_internal::valid_utf8(options->device_id))
             return ORCA_SDK_E_INVALID_ARGUMENT;
 
-        auto session = std::make_unique<orca_sdk_session_t>(sdk);
+        auto session = std::make_unique<orca_sdk_session_native>(sdk_state);
         {
-            std::lock_guard<std::mutex> lock(sdk->mutex);
-            if (sdk->shutting_down)
+            std::lock_guard<std::mutex> lock(sdk_state->mutex);
+            if (sdk_state->shutting_down)
                 return ORCA_SDK_E_BUSY;
-            ++sdk->session_count;
+            ++sdk_state->session_count;
         }
         try {
             session->start_worker();
-            orca_sdk_internal::register_handle(session.get(), handle_kind::session, sdk);
+            void* handle = orca_sdk_internal::register_handle(session.get(), handle_kind::session, sdk_state);
+            session->handle = public_session_handle(handle);
+            session->sdk_handle = sdk_state->handle;
         } catch (...) {
             {
-                std::lock_guard<std::mutex> lock(sdk->mutex);
-                --sdk->session_count;
+                std::lock_guard<std::mutex> lock(sdk_state->mutex);
+                --sdk_state->session_count;
             }
             throw;
         }
-        *out_session = session.release();
+        *out_session = session.release()->handle;
         return ORCA_SDK_OK;
     });
 }
@@ -544,36 +619,39 @@ orca_sdk_error_t orca_sdk_session_destroy(orca_sdk_session_t* session)
         auto session_handle = acquire_session(session);
         if (!session_handle)
             return ORCA_SDK_E_INVALID_HANDLE;
+        auto* state = static_cast<orca_sdk_session_native*>(session_handle.object());
         const auto token = session_handle.token();
-        orca_sdk_t* sdk = session->sdk;
-
         {
-            std::lock_guard<std::mutex> lock(session->mutex);
-            if (session->stopping)
+            std::lock_guard<std::mutex> lock(state->mutex);
+            if (state->stopping)
                 return ORCA_SDK_E_BUSY;
-            session->stopping = true;
-            session->magic = 0;
+            state->stopping = true;
+            state->magic = 0;
         }
-        orca_sdk_internal::retire_owned_handles(session);
         orca_sdk_internal::retire(session_handle);
-        session->condition.notify_all();
-        if (session->worker.joinable())
-            session->worker.join();
+        state->condition.notify_all();
+        if (state->worker.joinable())
+            state->worker.join();
 
-        // Existing task calls are allowed to finish, but no task call can
-        // start once destruction begins. Delete the task storage only after
-        // every in-flight task operation has released its guard.
-        orca_sdk_internal::wait_owned_handles(session);
         session_handle.release();
         orca_sdk_internal::wait_idle(token);
-
-        auto sdk_handle = acquire_sdk(sdk);
-        if (sdk_handle) {
-            std::lock_guard<std::mutex> lock(sdk->mutex);
-            if (sdk->session_count != 0)
-                --sdk->session_count;
+        // After all session calls are idle, no task API can pass its stopping check.
+        orca_sdk_internal::retire_owned_handles(state);
+        orca_sdk_internal::wait_owned_handles(state);
+        orca_sdk_internal::clear_session_event_deliveries(state);
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            state->events.clear();
         }
-        delete session;
+
+        auto sdk_handle = acquire_sdk(state->sdk_handle);
+        if (sdk_handle) {
+            auto* sdk_state = static_cast<orca_sdk_native*>(sdk_handle.object());
+            std::lock_guard<std::mutex> lock(sdk_state->mutex);
+            if (sdk_state->session_count != 0)
+                --sdk_state->session_count;
+        }
+        delete state;
         return ORCA_SDK_OK;
     });
 }
@@ -590,6 +668,7 @@ orca_sdk_error_t orca_sdk_session_submit_task(
         auto session_handle = acquire_session(session);
         if (!session_handle)
             return ORCA_SDK_E_INVALID_HANDLE;
+        auto* session_state = static_cast<orca_sdk_session_native*>(session_handle.object());
         if (request == nullptr || request->struct_size < sizeof(uint32_t))
             return request == nullptr ? ORCA_SDK_E_INVALID_ARGUMENT : ORCA_SDK_E_STRUCT_TOO_SMALL;
 
@@ -607,29 +686,23 @@ orca_sdk_error_t orca_sdk_session_submit_task(
         if (!orca_sdk_internal::valid_utf8(payload))
             return ORCA_SDK_E_INVALID_ARGUMENT;
 
-        std::lock_guard<std::mutex> lock(session->mutex);
-        if (session->stopping)
+        std::lock_guard<std::mutex> lock(session_state->mutex);
+        if (session_state->stopping)
             return ORCA_SDK_E_BUSY;
-        auto task = std::make_unique<orca_sdk_task_t>();
-        task->session = session;
-        task->numeric_id = session->next_task_id++;
+        auto task = std::make_unique<orca_sdk_task_native>();
+        task->session = session_state;
+        task->numeric_id = session_state->next_task_id++;
         task->id = "task-" + std::to_string(task->numeric_id);
         task->payload = orca_sdk_internal::copy_string(payload);
-        orca_sdk_task_t* task_pointer = task.get();
-        orca_sdk_internal::register_handle(task_pointer, handle_kind::task, session);
-        session->tasks.push_back(std::move(task));
-        session->enqueue_event({
-            ORCA_SDK_EVENT_TASK_SUBMITTED,
-            ORCA_SDK_OK,
-            0,
-            0,
-            task_pointer,
-            task_pointer->id,
-            "task submitted",
-            {},
-        });
-        *out_task = task_pointer;
-        session->condition.notify_all();
+        auto* task_state = task.get();
+        void* handle = orca_sdk_internal::register_handle(task_state, handle_kind::task, session_state);
+        task_state->handle = public_task_handle(handle);
+        session_state->tasks.push_back(std::move(task));
+        session_state->enqueue_event({ORCA_SDK_EVENT_TASK_SUBMITTED, ORCA_SDK_OK, 0, 0,
+                                      task_state->handle, task_state, task_state->id,
+                                      "task submitted", {}});
+        *out_task = task_state->handle;
+        session_state->condition.notify_all();
         return ORCA_SDK_OK;
     });
 }
@@ -640,26 +713,20 @@ orca_sdk_error_t orca_sdk_task_cancel(orca_sdk_task_t* task)
         auto task_handle = acquire_task(task);
         if (!task_handle)
             return ORCA_SDK_E_INVALID_HANDLE;
-        orca_sdk_session_t* session = task->session;
+        auto* task_state = static_cast<orca_sdk_task_native*>(task_handle.object());
+        auto* session = task_state->session;
         std::lock_guard<std::mutex> lock(session->mutex);
-        if (task->magic != orca_sdk_task_t::kMagic || task->user_destroyed)
+        if (session->stopping || task_state->magic != orca_sdk_task_native::kMagic || task_state->user_destroyed)
             return ORCA_SDK_E_INVALID_HANDLE;
-        if (task->state != ORCA_SDK_TASK_PENDING)
+        if (task_state->state != ORCA_SDK_TASK_PENDING)
             return ORCA_SDK_E_ALREADY_COMPLETE;
-        task->cancel_requested = true;
-        task->state = ORCA_SDK_TASK_CANCELED;
-        if (!task->cancel_event_enqueued) {
-            task->cancel_event_enqueued = true;
-            session->enqueue_event({
-                ORCA_SDK_EVENT_TASK_CANCELED,
-                ORCA_SDK_E_CANCELED,
-                0,
-                0,
-                task,
-                task->id,
-                "task canceled",
-                {},
-            });
+        task_state->cancel_requested = true;
+        task_state->state = ORCA_SDK_TASK_CANCELED;
+        if (!task_state->cancel_event_enqueued) {
+            task_state->cancel_event_enqueued = true;
+            session->enqueue_event({ORCA_SDK_EVENT_TASK_CANCELED, ORCA_SDK_E_CANCELED, 0, 0,
+                                    task_state->handle, task_state, task_state->id,
+                                    "task canceled", {}});
         }
         session->condition.notify_all();
         return ORCA_SDK_OK;
@@ -673,17 +740,31 @@ orca_sdk_error_t orca_sdk_task_destroy(orca_sdk_task_t* task)
         if (!task_handle)
             return ORCA_SDK_E_INVALID_HANDLE;
         const auto token = task_handle.token();
-        orca_sdk_session_t* session = task->session;
+        auto* task_state = static_cast<orca_sdk_task_native*>(task_handle.object());
+        auto* session = task_state->session;
         {
             std::lock_guard<std::mutex> lock(session->mutex);
-            if (task->magic != orca_sdk_task_t::kMagic || task->user_destroyed)
+            if (session->stopping || task_state->magic != orca_sdk_task_native::kMagic || task_state->user_destroyed)
                 return ORCA_SDK_E_INVALID_HANDLE;
-            task->user_destroyed = true;
-            task->magic = 0;
+            if (task_state->state == ORCA_SDK_TASK_PENDING ||
+                has_queued_event(session, task_state) ||
+                orca_sdk_internal::has_delivered_event(task_state))
+                return ORCA_SDK_E_BUSY;
+            task_state->user_destroyed = true;
+            task_state->magic = 0;
         }
         orca_sdk_internal::retire(task_handle);
         task_handle.release();
         orca_sdk_internal::wait_idle(token);
+        {
+            std::lock_guard<std::mutex> lock(session->mutex);
+            const auto it = std::find_if(session->tasks.begin(), session->tasks.end(),
+                                         [task_state](const auto& candidate) {
+                                             return candidate.get() == task_state;
+                                         });
+            if (it != session->tasks.end())
+                session->tasks.erase(it);
+        }
         return ORCA_SDK_OK;
     });
 }
@@ -698,11 +779,11 @@ orca_sdk_error_t orca_sdk_task_get_id(
             return ORCA_SDK_E_INVALID_HANDLE;
         if (out_task_id == nullptr)
             return ORCA_SDK_E_INVALID_ARGUMENT;
-        auto* mutable_task = static_cast<orca_sdk_task_t*>(task_handle.object());
-        std::lock_guard<std::mutex> lock(mutable_task->session->mutex);
-        if (mutable_task->magic != orca_sdk_task_t::kMagic || mutable_task->user_destroyed)
+        auto* task_state = static_cast<orca_sdk_task_native*>(task_handle.object());
+        std::lock_guard<std::mutex> lock(task_state->session->mutex);
+        if (task_state->session->stopping || task_state->magic != orca_sdk_task_native::kMagic || task_state->user_destroyed)
             return ORCA_SDK_E_INVALID_HANDLE;
-        return orca_sdk_internal::write_view(out_task_id, mutable_task->id);
+        return orca_sdk_internal::write_view(out_task_id, task_state->id);
     });
 }
 
@@ -714,11 +795,11 @@ orca_sdk_error_t orca_sdk_task_get_state(const orca_sdk_task_t* task, uint32_t* 
             return ORCA_SDK_E_INVALID_HANDLE;
         if (out_state == nullptr)
             return ORCA_SDK_E_INVALID_ARGUMENT;
-        auto* mutable_task = static_cast<orca_sdk_task_t*>(task_handle.object());
-        std::lock_guard<std::mutex> lock(mutable_task->session->mutex);
-        if (mutable_task->magic != orca_sdk_task_t::kMagic || mutable_task->user_destroyed)
+        auto* task_state = static_cast<orca_sdk_task_native*>(task_handle.object());
+        std::lock_guard<std::mutex> lock(task_state->session->mutex);
+        if (task_state->session->stopping || task_state->magic != orca_sdk_task_native::kMagic || task_state->user_destroyed)
             return ORCA_SDK_E_INVALID_HANDLE;
-        *out_state = mutable_task->state;
+        *out_state = task_state->state;
         return ORCA_SDK_OK;
     });
 }
@@ -733,36 +814,38 @@ orca_sdk_error_t orca_sdk_poll_event(
         if (!session_handle)
             return ORCA_SDK_E_INVALID_HANDLE;
         const orca_sdk_error_t output_result = validate_output(
-            out_event,
-            out_event == nullptr ? 0 : out_event->struct_size,
-            sizeof(orca_sdk_event_t));
+            out_event, out_event == nullptr ? 0 : out_event->struct_size, sizeof(orca_sdk_event_t));
         if (output_result != ORCA_SDK_OK)
             return output_result;
+        auto* session_state = static_cast<orca_sdk_session_native*>(session_handle.object());
 
-        std::unique_lock<std::mutex> lock(session->mutex);
-        const uint64_t observed_wake = session->wake_generation;
-        const auto ready = [session, observed_wake] {
-            return session->stopping || session->wake_generation != observed_wake || !session->events.empty();
+        std::unique_lock<std::mutex> lock(session_state->mutex);
+        const uint64_t observed_wake = session_state->wake_generation;
+        const auto ready = [session_state, observed_wake] {
+            return session_state->stopping || session_state->wake_generation != observed_wake ||
+                   !session_state->events.empty();
         };
         if (!ready()) {
             if (timeout_ms == 0) {
                 return ORCA_SDK_E_TIMEOUT;
             } else if (timeout_ms == ORCA_SDK_WAIT_INFINITE) {
-                session->condition.wait(lock, ready);
-            } else if (!session->condition.wait_for(lock, std::chrono::milliseconds(timeout_ms), ready)) {
+                session_state->condition.wait(lock, ready);
+            } else if (!session_state->condition.wait_for(lock, std::chrono::milliseconds(timeout_ms), ready)) {
                 return ORCA_SDK_E_TIMEOUT;
             }
         }
-        if (session->stopping)
+        if (session_state->stopping)
             return ORCA_SDK_E_INVALID_HANDLE;
-        if (session->events.empty() && session->wake_generation != observed_wake)
+        if (session_state->events.empty() && session_state->wake_generation != observed_wake)
             return ORCA_SDK_E_WAKEUP;
-        if (session->events.empty())
+        if (session_state->events.empty())
             return ORCA_SDK_E_TIMEOUT;
 
-        session->delivered_events.push_back(std::move(session->events.front()));
-        session->events.pop_front();
-        orca_sdk_internal::fill_event(session->delivered_events.back(), out_event);
+        orca_sdk_event_record event = std::move(session_state->events.front());
+        session_state->events.pop_front();
+        // Keep the session lock while registering the delivery. task_destroy
+        // uses the same order, so it cannot retire this task between pop/fill.
+        orca_sdk_internal::deliver_event(out_event, session_state, std::move(event));
         return ORCA_SDK_OK;
     });
 }
@@ -774,6 +857,7 @@ orca_sdk_error_t orca_sdk_event_clear(orca_sdk_event_t* event)
             return ORCA_SDK_E_INVALID_ARGUMENT;
         if (event->struct_size < sizeof(uint32_t))
             return ORCA_SDK_E_STRUCT_TOO_SMALL;
+        orca_sdk_internal::clear_event_delivery(event);
         orca_sdk_internal::reset_event(event);
         return ORCA_SDK_OK;
     });
@@ -785,13 +869,14 @@ orca_sdk_error_t orca_sdk_wakeup(orca_sdk_session_t* session)
         auto session_handle = acquire_session(session);
         if (!session_handle)
             return ORCA_SDK_E_INVALID_HANDLE;
+        auto* session_state = static_cast<orca_sdk_session_native*>(session_handle.object());
         {
-            std::lock_guard<std::mutex> lock(session->mutex);
-            if (session->stopping)
+            std::lock_guard<std::mutex> lock(session_state->mutex);
+            if (session_state->stopping)
                 return ORCA_SDK_E_INVALID_HANDLE;
-            ++session->wake_generation;
+            ++session_state->wake_generation;
         }
-        session->condition.notify_all();
+        session_state->condition.notify_all();
         return ORCA_SDK_OK;
     });
 }

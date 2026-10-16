@@ -56,6 +56,7 @@ TEST_CASE("Mobile SDK C ABI cancels a pending task across threads", "[MobileSDK]
     REQUIRE(orca_sdk_poll_event(session, 1000, &event) == ORCA_SDK_OK);
     REQUIRE(event.type == ORCA_SDK_EVENT_TASK_CANCELED);
     REQUIRE(event.status == ORCA_SDK_E_CANCELED);
+    REQUIRE(orca_sdk_event_clear(&event) == ORCA_SDK_OK);
     REQUIRE(orca_sdk_task_get_state(task, nullptr) == ORCA_SDK_E_INVALID_ARGUMENT);
 
     REQUIRE(orca_sdk_task_destroy(task) == ORCA_SDK_OK);
