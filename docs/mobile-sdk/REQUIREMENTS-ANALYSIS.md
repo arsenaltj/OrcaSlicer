@@ -1,14 +1,14 @@
 # 3D 打印平台工程架构与三期需求分析报告
 
 - 报告类型：需求与系统架构分析（按工作区 analysis-report 模板整理）
-- 文档版本：1.1；原报告版本：1.0
+- 文档版本：1.3；原报告版本：1.2
 - 任务 ID：`task-20261016013901509-0f210b`
 - 父任务：`task-20261015124945955-67069d`
-- 报告时间：2026-10-16 14:17:12 +08:00（Asia/Shanghai）
-- 报告状态：待需求评审；本次完成文档规范化，功能实现尚未验收
+- 报告更新时间：2026-10-17（Asia/Shanghai）
+- 报告状态：待需求评审；父任务 SDK-only 整合与自动化门禁已验证，真实 transport/设备仍未验收
 - 分析仓库：`OrcaSlicer`
 - 分析分支：`task/task-20261016013901509-0f210b`
-- 分析版本：HEAD `a1f412779467dfd4b1b71e29c8f723db60b6f9ad` + 未提交工作树；HEAD 不能单独代表本报告输入
+- 分析版本：代码整合基线 `d0516f9e2edc3ce0816d7529f9f41457435c0b0f`；报告同步副本记录本轮实现与验证结果
 - 工作树：`D:/Codex/worktrees/OrcaSlicer/task-20261016013901509-0f210b`
 - 差异身份：[源版本、工作树状态与逐文件 SHA-256](../../../../../artifacts/task-20261016013901509-0f210b/evidence/report-standardization-20261016/source-state.json)
 - 权威归档目录：`D:/Codex/artifacts/task-20261016013901509-0f210b/reports`；工程内文件为同步阅读副本
@@ -35,7 +35,7 @@
 5. 一期先完成局域网闭环，不把远程 Relay、AI 供应商、支付商城和完整社区塞入一期验收范围。
 6. 一期切片以远程或桌面生成的 G-code 为主；移动端本地完整切片留到后续阶段。
 
-本次整理仅调整报告结构、归档目录、版本身份、证据引用和阅读体验。原有三期需求内容全部保留；一期明确规格仍为 13 个需求包，二期为 11 个框架包，三期为 10 个框架包。需求编号表示规划单元，不表示已实现或通过验收。
+本次报告保留原有三期需求内容，并新增父任务 SDK 整合结果、验证边界和未完成事项；一期明确规格仍为 13 个需求包，二期为 11 个框架包，三期为 10 个框架包。需求编号表示规划单元，不表示整期功能已实现或通过验收。
 
 一期交付主线保持为：移动端通过 SDK 在同一局域网内发现/手动添加设备、连接、监控状态并执行基础控制。账号与云端数据底座可以独立开发；互联网或后端不可用不能成为局域网验收的前置条件。
 
@@ -43,19 +43,27 @@
 
 | 工程/领域 | 职责与交付物 | 当前报告约束 |
 |---|---|---|
-| 桌面端与共享 SDK | 中立契约、C ABI、协议适配、构建产物、桌面适配边界 | SDK 独立于桌面 UI；现有实现仍待独立编译和协议验证 |
+| 桌面端与共享 SDK | 中立契约、C ABI、协议适配、构建产物、桌面适配边界 | SDK 独立于桌面 UI；C ABI/Moonraker 已整合并通过 SDK-only 构建与测试，真实 transport/设备仍待验证 |
 | Android/iOS 移动端 | Flutter 页面、原生发现与权限、SDK 桥接、局域网监控与控制 | 一期优先完成局域网使用闭环 |
 | 平台后端 | 身份、设备元数据；后续扩展任务、模型、社区、支付权益 | 一期不转发局域网命令；后续使用稳定 API/事件 |
 | 数据库与存储 | 关系数据、迁移、任务事件、文件元数据、对象存储 | 一期只实现必要表；文件本体不进入业务表 |
-| 验证与运维 | 协议模拟器、真机验证、产物身份、诊断和迁移记录 | 文档检查不能替代 SDK 构建、设备联调或真机验收 |
+| 验证与运维 | 协议模拟器、真机验证、产物身份、诊断和迁移记录 | Fake transport 契约测试和 SDK-only 门禁已通过；真实设备联调、Android/iOS 真机和现场验收仍未完成 |
 
 | 本轮变更对象 | 操作 |
 |---|---|
 | 用户审核产物 | 新增标准归档 `reports/analysis-report.md`、`analysis-report.html` |
 | 原工程报告 | 同步更新 `Docs/mobile-sdk/REQUIREMENTS-ANALYSIS.md/.html`，保留原入口 |
 | 可复核材料 | 保存旧版报告、源版本快照、需求保留校验和页面检查结果 |
-| SDK、应用、后端与数据库代码 | 本轮不修改；后续实现范围以一期需求包和验收条件为准 |
+| 父任务 SDK 代码 | 整合 SDK core、C ABI 和 Moonraker 验收提交；保留 SDK-only 根 CMake 注册范围例外，去除旧重复实现 |
 
+**本轮实现同步（2026-10-17）**：
+
+- 父 worktree 以 SDK core 提交 `a092eb01ec6087b58ec794402621d0ae95a083f9`、C ABI runtime 提交 `ff1b7e6c4e52b6ed8ba828d0f35a84861d5cac3d`、P1-SDK-02 验收提交 `ed76f26d5a42985b65c171cee10a4716c6bef1fb` 和 P1-SDK-03 验收提交 `49b21694a487ebd71e7489cc79df0100f51219b7` 为实现来源，父 worktree 的代码整合基线为 `d0516f9e2edc3ce0816d7529f9f41457435c0b0f`。旧未提交 SDK 快照另存为 Git stash `06b9843cc5be8294279e4ce095903141ea8a215c`，未恢复重复的 C ABI/Moonraker 实现。
+- C ABI 当前采用按 session FIFO 排队的事件拉取语义；`orca_sdk_poll_event` 为事件分配 session 内单调递增的 sequence 和 timestamp，并把 task、task_id、message 和 payload 视图绑定到调用者的 `orca_sdk_event_t`。视图由 `orca_sdk_event_clear` 释放，复用同一输出结构进行下一次成功 poll 也会清理上一次 delivery；任务仍有排队或已交付但未清理的事件时，`orca_sdk_task_destroy` 返回 `ORCA_SDK_E_BUSY`。当前整合面没有 callback 注册接口；阻塞 poll 在 session 销毁时返回 invalid handle，显式 wakeup 返回 `ORCA_SDK_E_WAKEUP`。
+- `orca_sdk_task_cancel` 只接受 pending task；成功后任务状态为 `ORCA_SDK_TASK_CANCELED`，并发出一次 `ORCA_SDK_EVENT_TASK_CANCELED`、状态码 `ORCA_SDK_E_CANCELED` 的事件；终态任务再次取消返回 `ORCA_SDK_E_ALREADY_COMPLETE`。
+- Moonraker 将有限打印进度钳制到 `[0,1]`；`cancelled` 和 `canceled` 两种设备状态均映射为 SDK 的 `PrinterState::Completed`，这与 C ABI 任务取消事件是两条独立语义。
+- Moonraker 通过可注入的 HTTP/WebSocket transport 接口实现；当前契约测试只使用 `FakeHttp` 和 `FakeWebSocket`。本轮没有真实 HTTP/WebSocket transport 或真实打印机，真实 transport/设备联调仍未验证。
+- 本轮验证已覆盖 VS 17 2022 x64 SDK-only configure/build、32 个全量 CTest、`MobileSDK` 32 个、`CABI` 17 个、`Moonraker` 8 个、`threading` 7 个标签测试、boundary check、C ABI exports 和 C11 header；这些门禁均通过。
 ## 关键发现
 
 ### 3.1 整体架构
@@ -406,7 +414,11 @@ orca_sdk_destroy()
 - 连接断开、取消和重复销毁不会崩溃；
 - 提供 C ABI 头文件、版本号和最小示例。
 
+**本轮整合状态**：P1-SDK-02 已由父 worktree 的 `ed76f26d5a42985b65c171cee10a4716c6bef1fb` 整合并验证。事件接口当前以 poll-only 拉取为准，事件存储、清理、任务销毁 busy 保护、wakeup、取消映射和句柄生命周期语义见本报告的实现同步记录；Android/iOS bridge 和真实移动宿主尚未验证。
+
 **可独立开发**：是。
+
+**依赖**：P1-SDK-01。**可独立开发**：是。
 
 **依赖**：P1-SDK-01。
 
@@ -449,7 +461,11 @@ orca_sdk_destroy()
 - 暂停、恢复和停止命令具有明确回执；
 - Moonraker 契约测试覆盖 HTTP、WebSocket 和错误响应。
 
+**本轮整合状态**：P1-SDK-03 已由父 worktree 的 `49b21694a487ebd71e7489cc79df0100f51219b7` 整合并验证。Moonraker 覆盖 Fake transport 下的 HTTP/JSON-RPC、WebSocket 订阅、轮询回退、重连对账、错误映射、进度范围和取消状态归一；真实 transport、协议模拟器以外的设备以及打印机现场尚未验证。
+
 **可独立开发**：是。
+
+**依赖**：P1-SDK-01；C ABI 接入可与适配器并行。**可独立开发**：是。
 
 **依赖**：P1-SDK-01；C ABI 接入可与适配器并行。
 
@@ -868,13 +884,13 @@ timestamp
 | 编号 | 风险/限制 | 影响与处理要求 |
 |---|---|---|
 | R-01 | 首批设备、协议和控制命令范围尚待确认 | 当前以 Moonraker 为建议基线；开发前冻结测试设备及协议版本 |
-| R-02 | SDK 契约不等于完整移动 SDK | C ABI 生命周期、异步回调、产物构建和协议适配需单独实现验收 |
+| R-02 | SDK 契约不等于完整移动 SDK | C ABI poll-only 事件语义和 Moonraker Fake transport 契约已有父任务门禁；callback、Android/iOS bridge、真实 transport 和设备联调仍需独立验收 |
 | R-03 | 移动端权限、后台恢复和局域网发现存在平台差异 | 保留手动 IP 回退；Android/iOS 分别用真机验证 |
 | R-04 | 重连与超时可能造成重复控制 | 复用 command_id；非幂等命令状态未知时先对账 |
 | R-05 | 账号设备记录与局域网控制授权不能混用 | 绑定云端元数据不等于已获得设备凭据或可控制权限 |
 | R-06 | 一期膨胀为全平台开发 | 支付、商城、社区、AI、远程链路和完整本地切片继续按后续阶段展开 |
 | R-07 | 许可证和专有组件边界待评审 | 保留为 SDK 商业分发前置检查；本报告不构成法律结论 |
-| R-08 | 尚无本轮功能执行证据 | 先前任务记录中的构建环境限制仍待复核；本轮未运行 C++ 编译、移动端真机和真实打印机验收 |
+| R-08 | 自动化门禁不能替代现场验收 | VS SDK-only configure/build、CTest、boundary、exports 和 C11 已通过；真实 transport/设备、Android/iOS 真机和现场打印仍未验证 |
 
 ## 建议
 
@@ -958,7 +974,7 @@ P1-SDK-03 + P1-MOB-03 + P1-BE-02
 - 本轮执行文档结构、需求编号完整性、旧正文保留、UTF-8 编码、HTML 目录锚点、本地链接、无外部资源及报告文件哈希核对。
 - 页面截图和静态页面检查属于文档可读性证据；不代表打印、支付或其他产品功能通过。
 - 不沿用旧报告“已打开预览”等描述作为视觉验收；本轮生成的实际页面材料单独归档。
-- SDK 编译、Android/iOS 真机、真实设备与数据库迁移未在本轮运行，继续保持未验收。
+- VS 17 2022 x64 SDK-only configure/build、CTest 全量和标签测试、boundary check、C ABI exports/C11 已通过；Android/iOS 真机、真实 transport/设备与数据库迁移仍未验收。
 
 ### 6.3 页面复核记录
 
@@ -987,7 +1003,7 @@ P1-SDK-03 + P1-MOB-03 + P1-BE-02
 
 - 需求评审：报告已按新规范整理，首批设备、登录策略、开始打印和摄像头范围仍待明确。
 - 实现交付：一期 13 个需求包仍需按任务和证据逐项确认，不能以报告存在认定完成。
-- 工具链与验证：在可用构建环境运行 SDK/C ABI 构建、协议适配测试和 Android/iOS 产物检查。
-- 现场验证：执行局域网发现、手动连接、状态流、断网重连、控制回执和真机测试。
+- 工具链与验证：VS 17 2022 x64 SDK-only configure/build、CTest 全量和标签测试、boundary check、C ABI exports/C11 已通过；Android/iOS 产物和 bridge 检查仍待运行。
+- 现场验证：真实 HTTP/WebSocket transport、协议模拟器以外的设备、局域网发现、状态流、断网重连、控制回执和真机测试仍待执行。
 - 后续细化：二、三期在相应阶段补齐详细规格、接口、数据模型和验收标准。
-- 发布状态：本轮仅本地报告交付，未提交、推送或发布产品。
+- 发布状态：父 worktree 已生成本地整合提交，尚未推送或发布；旧 SDK 快照保留在 stash `06b9843cc5be8294279e4ce095903141ea8a215c`。
