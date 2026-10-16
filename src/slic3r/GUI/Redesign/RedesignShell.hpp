@@ -200,6 +200,7 @@ private:
     ModelView m_model_view {ModelView::Result};
     bool m_native_slicing {false};
     bool m_preview_toolpath_outside {false};
+    bool m_slice_completion_retry_pending {false};
     bool m_import_in_progress {false};
     bool m_import_switching_view {false};
     bool m_import_awaiting_frame {false};

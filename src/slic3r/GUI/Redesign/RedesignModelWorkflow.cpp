@@ -555,7 +555,9 @@ void RedesignShell::build_model_workflow()
     m_slice_cancel = slicing_link(m_ai_slicing_controls, _L("取消分析"));
     ai->Add(m_slice_cancel, 0, wxEXPAND); m_slice_cancel->Hide();
     m_slice_cancel->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-        if (m_slicing_state.official.phase == OfficialSlicePhase::Slicing) m_plater->cancel_current_slice();
+        if (workbench_slice_running(m_plater && m_plater->is_background_process_slicing(),
+                                    m_slicing_state.official.phase))
+            m_plater->cancel_current_slice();
         else if (m_slicing_host) m_slicing_host->cancel_workbench_analysis();
     });
     m_slice_keep_mesh = command(m_ai_slicing_controls, _L("保留当前网格并分析"));
@@ -645,7 +647,8 @@ void RedesignShell::build_model_workflow()
     m_plater->Bind(EVT_SLICING_UPDATE,[weak](SlicingStatusEvent& event) {
         event.Skip();
         if (!weak || !weak->native_workspace_visible() || weak->m_native_slicing ||
-            weak->m_slicing_state.official.phase != OfficialSlicePhase::Slicing) return;
+            !workbench_slice_running(weak->m_plater && weak->m_plater->is_background_process_slicing(),
+                                     weak->m_slicing_state.official.phase)) return;
         // The native Plater listener and this redesign listener receive the
         // same event.  Keep the native notification hidden on the AI page so
         // users see one progress surface while retaining the native cancel
@@ -812,6 +815,16 @@ void RedesignShell::show_model_view(ModelView view)
     // idempotent so a nested callback cannot repeatedly mutate the wx layout
     // while the original event is still being dispatched.
     if (m_active_page == Page::Model && m_model_view == view) {
+        // Applying another SmartSlice plan temporarily returns Plater to the
+        // 3D panel so the parameters can be installed.  The workbench route
+        // remains Preview during that operation, so entering the same route
+        // again must still restore Plater's actual preview panel and reload
+        // the current G-code result.
+        if (view == ModelView::Preview && m_plater && !m_plater->is_preview_shown()) {
+            m_plater->select_view_3D("Preview");
+            m_plater->get_current_canvas3D()->use_workbench_appearance();
+            m_plater->collapse_sidebar(!m_native_slicing);
+        }
         refresh_workflow_layout();
         if (view == ModelView::Result)
             update_model_page(m_model_generation_state);
@@ -1114,7 +1127,9 @@ void RedesignShell::open_print_preparation()
 
 void RedesignShell::change_slicing_palette()
 {
-    if (!m_slice_tools || !m_slice_tools->editable() || m_slicing_state.official.phase == OfficialSlicePhase::Slicing) return;
+    if (!m_slice_tools || !m_slice_tools->editable() ||
+        workbench_slice_running(m_plater && m_plater->is_background_process_slicing(),
+                                m_slicing_state.official.phase)) return;
     std::vector<PreviewPalette::Color> colors;
     if (m_slice_color_source->GetSelection() == 2) {
         for (const auto& hex : m_slice_tools->palette()) colors.push_back(RedesignSlicingTools::rgb(hex));
@@ -1183,13 +1198,15 @@ void RedesignShell::update_slicing_tools()
 {
     if (!m_slice_tools) return;
     m_slice_tools->refresh();
-    const bool editable=m_slice_tools->editable() && m_slicing_state.official.phase != OfficialSlicePhase::Slicing;
+    const bool running = workbench_slice_running(m_plater && m_plater->is_background_process_slicing(),
+                                                 m_slicing_state.official.phase);
+    const bool editable=m_slice_tools->editable() && !running;
     m_slice_color_mode->Enable(editable); m_slice_color_source->Enable(editable); m_slice_color_count->Enable(editable);
     const auto edit_reason=wxString::FromUTF8(m_slice_tools->editability_reason());
     m_slice_color_mode->SetToolTip(edit_reason); m_slice_color_source->SetToolTip(edit_reason);
     m_slice_color_count->SetToolTip(edit_reason);
     m_slice_color_count_label->SetToolTip(wxString::FromUTF8(m_slice_tools->message()));
-    m_slice_check->Enable(!m_slice_tools->busy() && m_slicing_state.official.phase != OfficialSlicePhase::Slicing);
+    m_slice_check->Enable(!m_slice_tools->busy() && !running);
     const auto& check=m_slice_tools->check();
     const std::array<wxString,6> labels{_L("未检查"),_L("检查中"),_L("正常"),_L("需注意"),_L("异常"),_L("检查失败")};
     m_slice_check_status->SetLabel(labels[size_t(check.status)]);
@@ -1255,7 +1272,9 @@ void RedesignShell::layout_slicing_overlays()
     m_slice_progress_overlay->SetSize(std::max(FromDIP(10),size.x-FromDIP(440)),
         std::max(FromDIP(10),size.y-FromDIP(134)),FromDIP(320),FromDIP(46));
     m_slice_stats_overlay->Show(visible);
-    m_slice_progress_overlay->Show(visible && m_slicing_state.official.phase==OfficialSlicePhase::Slicing);
+    const bool running = workbench_slice_running(m_plater->is_background_process_slicing(),
+                                                 m_slicing_state.official.phase);
+    m_slice_progress_overlay->Show(visible && running);
     if (visible) { m_slice_stats_overlay->Raise(); m_slice_progress_overlay->Raise(); }
 }
 
@@ -1280,11 +1299,39 @@ void RedesignShell::select_slicing_tab(bool native)
 
 void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
 {
-    const bool began = state.official.phase == OfficialSlicePhase::Slicing && m_slicing_state.official.phase != OfficialSlicePhase::Slicing;
+    const bool background_slicing = m_plater && m_plater->is_background_process_slicing();
+    const bool running = workbench_slice_running(background_slicing, state.official.phase);
+    // The previous SmartSlice phase is the last UI snapshot.  Use it as the
+    // edge detector; the current Plater flag is intentionally not reused here
+    // because it would make a newly started background job look old already.
+    const bool previously_running = m_slicing_state.official.phase == OfficialSlicePhase::Slicing;
+    const bool began = running && !previously_running;
     const bool completed = state.official.phase == OfficialSlicePhase::Completed &&
-        m_slicing_state.official.phase != OfficialSlicePhase::Completed;
+        !background_slicing && m_slicing_state.official.phase != OfficialSlicePhase::Completed;
     m_slicing_state = state;
-    if (!m_native_slicing && native_workspace_visible() && state.official.phase == OfficialSlicePhase::Slicing) {
+    if (state.official.phase == OfficialSlicePhase::Completed && background_slicing &&
+        (m_model_view == ModelView::Slicing || m_model_view == ModelView::Preview) &&
+        m_active_page == Page::Model &&
+        !m_slice_completion_retry_pending) {
+        // Plater publishes the completion event before it clears its running
+        // flag. Defer one snapshot until that event returns so the successful
+        // result can enter the native preview route without polling.
+        m_slice_completion_retry_pending = true;
+        wxWeakRef<RedesignShell> weak(this);
+        CallAfter([weak] {
+            if (!weak) return;
+            weak->m_slice_completion_retry_pending = false;
+            if (!weak->m_plater || weak->m_active_page != Page::Model ||
+                (weak->m_model_view != ModelView::Slicing && weak->m_model_view != ModelView::Preview) ||
+                weak->m_plater->is_background_process_slicing()) return;
+            if (weak->m_slicing_host)
+                weak->apply_slicing_state(weak->m_slicing_host->workbench_snapshot());
+            auto* plate = weak->m_plater->get_partplate_list().get_curr_plate();
+            if (plate && plate->is_slice_result_valid())
+                weak->show_model_view(ModelView::Preview);
+        });
+    }
+    if (!m_native_slicing && native_workspace_visible() && running) {
         if (auto* notifications = m_plater->get_notification_manager())
             notifications->set_slicing_progress_hidden();
     }
@@ -1341,7 +1388,7 @@ void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
             !state.analyzing && state.candidates[i] ? goal_status(goal.status) :
             state.analyzing ? _L("分析中…") : _L("待分析");
         m_slice_goals[i]->Enable((state.candidates[i].has_value() || quick_available) &&
-            state.official.phase != OfficialSlicePhase::Slicing && !state.official.workspace_mutated && !m_slice_tools->busy());
+            !running && !state.official.workspace_mutated && !m_slice_tools->busy());
         auto* button = static_cast<SlicingGoalCard*>(m_slice_goals[i]);
         button->update(layer.empty() ? availability : layer,
             state.has_selected_goal && state.selected_goal == RECOMMENDATION_GOALS[i]);
@@ -1401,7 +1448,7 @@ void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
         status = _L("推荐方案已生成");
     else if (state.diagnostic == "workspace_changed") status = _L("工程已变化，请重新分析。");
     else if (!state.diagnostic.empty()) status = _L("分析未完成：") + wxString::FromUTF8(state.diagnostic);
-    if (state.official.phase == OfficialSlicePhase::Slicing) status = _L("正在正式切片…");
+    if (running) status = _L("正在正式切片…");
     else if (state.official.phase == OfficialSlicePhase::Completed) status = _L("切片完成");
     else if (!state.official.diagnostic_code.empty()) {
         const auto& diagnostic = state.official.diagnostic_code;
@@ -1414,7 +1461,7 @@ void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
         status = (state.official.workspace_mutated ? _L("方案已应用。") : wxString()) + detail;
     }
     m_preview_toolpath_outside = OrcaPrinterAdapter(m_plater).preview_toolpath_outside();
-    if (state.official.phase == OfficialSlicePhase::Completed && plate) {
+    if (state.official.phase == OfficialSlicePhase::Completed && !background_slicing && plate) {
         const auto* result = plate->get_slice_result();
         const bool toolpath_outside = m_preview_toolpath_outside || (result && result->toolpath_outside);
         if (toolpath_outside) {
@@ -1427,25 +1474,26 @@ void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
     }
     m_slice_status->SetToolTip(status);
     const bool needs_attention = !state.analyzing && !state.diagnostic.empty();
-    const bool recommendation_ready = lightweight_ready && state.official.phase != OfficialSlicePhase::Slicing &&
+    const bool recommendation_ready = lightweight_ready && !running &&
         state.official.phase != OfficialSlicePhase::Completed;
     // Keep the outcome and the explicit retry action visible after the
     // background worker completes.  The three-card flow is usable even when
     // the diagnostic-only SmartSlice preflight reports an issue, so hiding
     // these controls based solely on `diagnostic` made a completed analysis
     // look unavailable and removed the only way to rerun it.
-    const bool show_analysis_status = state.analyzing || recommendation_ready || needs_attention ||
+    const bool show_analysis_status = running || state.analyzing || recommendation_ready || needs_attention ||
         state.official.phase == OfficialSlicePhase::Failed;
     layout_changed = m_slice_status->Show(show_analysis_status) || layout_changed;
-    const wxString status_label = recommendation_ready
+    const wxString status_label = running
+        ? status
+        : recommendation_ready
         ? _L("推荐方案已生成")
         : (needs_attention ? _L("方案暂不可用 · 查看原因") : status);
     layout_changed = set_wrapped_label(m_slice_status, status_label, FromDIP(285)) || layout_changed;
-    layout_changed = m_slice_analyze->Show(show_analysis_status && state.official.phase != OfficialSlicePhase::Slicing) || layout_changed;
+    layout_changed = m_slice_analyze->Show(show_analysis_status && !running) || layout_changed;
     m_slice_analyze->SetLabel(_L("重新分析"));
     m_slice_analyze->SetToolTip(_L("重新执行三种轻量分析；选择方案后将直接使用 Orca 原生切片。"));
-    layout_changed = m_slice_keep_mesh->Show(state.can_keep_current_mesh && !state.analyzing) || layout_changed;
-    const bool running = state.official.phase == OfficialSlicePhase::Slicing || m_plater->is_background_process_slicing();
+    layout_changed = m_slice_keep_mesh->Show(state.can_keep_current_mesh && !state.analyzing && !running) || layout_changed;
     const auto route = workbench_slice_route(m_native_slicing, running || m_import_in_progress || m_slice_tools->busy(),
         state.can_retry, state.can_start, state.can_start_native);
     m_slice_start->Enable(route != WorkbenchSliceRoute::Unavailable);
@@ -1476,15 +1524,17 @@ void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
         m_native_return_ai->Enable(can_switch);
         m_native_return_overview->Enable(can_switch);
     }
-    if (completed && m_model_view == ModelView::Slicing && m_active_page == Page::Model)
+    if (completed && m_active_page == Page::Model &&
+        (m_model_view == ModelView::Slicing || m_model_view == ModelView::Preview) &&
+        plate && plate->is_slice_result_valid())
         show_model_view(ModelView::Preview);
     else if (!m_native_slicing && !running && plate && !plate->is_slice_result_valid() &&
              m_model_view == ModelView::Preview && m_active_page == Page::Model) {
         wxWeakRef<RedesignShell> weak(this);
         CallAfter([weak] {
             if (!weak || !weak->native_workspace_visible() || weak->m_model_view != ModelView::Preview ||
-                weak->m_slicing_state.official.phase == OfficialSlicePhase::Slicing ||
-                weak->m_plater->is_background_process_slicing()) return;
+                workbench_slice_running(weak->m_plater->is_background_process_slicing(),
+                                        weak->m_slicing_state.official.phase)) return;
             auto* current = weak->m_plater->get_partplate_list().get_curr_plate();
             if (current && !current->is_slice_result_valid()) weak->show_model_view(ModelView::Slicing);
         });
@@ -1501,8 +1551,8 @@ void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
 bool RedesignShell::can_save_print_project() const
 {
     return print_project_save_available(m_plater && !m_plater->model().objects.empty(), m_import_in_progress,
-        m_slicing_state.official.phase == AI::SmartSlicing::OfficialSlicePhase::Slicing ||
-            (m_plater && m_plater->is_background_process_slicing()) || (m_slice_tools && m_slice_tools->busy()),
+        workbench_slice_running(m_plater && m_plater->is_background_process_slicing(),
+            m_slicing_state.official.phase) || (m_slice_tools && m_slice_tools->busy()),
         m_workbench_state.dirty, m_workbench_state.actions.status);
 }
 
@@ -1535,7 +1585,8 @@ void RedesignShell::start_workbench_slice()
 {
     if (m_import_in_progress || !m_slicing_host || !m_slice_tools || m_slice_tools->busy()) return;
     const auto reviewed = m_slicing_host->workbench_snapshot();
-    const auto route = workbench_slice_route(m_native_slicing, reviewed.official.phase == OfficialSlicePhase::Slicing,
+    const auto route = workbench_slice_route(m_native_slicing,
+        workbench_slice_running(m_plater && m_plater->is_background_process_slicing(), reviewed.official.phase),
         reviewed.can_retry, reviewed.can_start, reviewed.can_start_native);
     if (route == WorkbenchSliceRoute::Unavailable) { apply_slicing_state(reviewed); return; }
     if (route == WorkbenchSliceRoute::Native) {

@@ -71,7 +71,8 @@ public:
                 if (volume && volume->is_model_part()) meshes.push_back(volume->mesh());
         }
         if (meshes.empty()) return false;
-        m_guard = OrcaWorkspaceAdapter(&m_plater, {}).capture_import_guard();
+        m_guard = OrcaWorkspaceAdapter(&m_plater, {}).capture_topology_guard();
+        m_check_guard = m_guard;
         m_check.status = WorkbenchCheckStatus::Running;
         m_work = std::async(std::launch::async, [this, meshes = std::move(meshes)] {
             Result result; result.is_check = true; result.check.status = WorkbenchCheckStatus::Normal;

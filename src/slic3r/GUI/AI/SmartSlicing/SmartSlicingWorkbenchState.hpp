@@ -16,6 +16,16 @@ namespace Slic3r::GUI {
 
 enum class WorkbenchSliceRoute { Unavailable, AiRetry, AiCandidate, Native };
 
+// The native worker and the SmartSlice state are updated by different event
+// paths.  Keep the UI locked while either source still reports an active
+// slice, so a stale phase cannot make the user start a second job or hide the
+// progress/cancel controls early.
+inline bool workbench_slice_running(bool native_background_slicing,
+                                    AI::SmartSlicing::OfficialSlicePhase phase)
+{
+    return native_background_slicing || phase == AI::SmartSlicing::OfficialSlicePhase::Slicing;
+}
+
 inline WorkbenchSliceRoute workbench_slice_route(bool native_tab, bool running, bool can_retry,
     bool can_start_ai, bool can_start_native)
 {

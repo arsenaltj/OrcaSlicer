@@ -749,6 +749,16 @@ TEST_CASE("AI slicing requires a candidate and native slicing requires its expli
     CHECK(workbench_slice_route(false, true, true, true, true) == WorkbenchSliceRoute::Unavailable);
 }
 
+TEST_CASE("native background slicing keeps the workbench running through a stale phase", "[SmartSlicing][UiRedesign]")
+{
+    using namespace Slic3r::AI::SmartSlicing;
+    CHECK(workbench_slice_running(true, OfficialSlicePhase::Rejected));
+    CHECK(workbench_slice_running(true, OfficialSlicePhase::Failed));
+    CHECK(workbench_slice_running(false, OfficialSlicePhase::Slicing));
+    CHECK_FALSE(workbench_slice_running(false, OfficialSlicePhase::Completed));
+    CHECK_FALSE(workbench_slice_running(false, OfficialSlicePhase::Failed));
+}
+
 TEST_CASE("workbench goals require explicit selection in the reviewed workspace", "[SmartSlicing][UiRedesign]")
 {
     using namespace Slic3r::AI::SmartSlicing;
