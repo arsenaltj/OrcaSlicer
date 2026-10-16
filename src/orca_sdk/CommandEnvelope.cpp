@@ -97,5 +97,3 @@ const char* command_validation_error_name(CommandValidationError error)
 }
 
 } // namespace Orca::SDK
-
-
