@@ -1,3 +1,57 @@
+# 2026-10-16 Redesign 切片页精简（用户 GUI 验收通过）
+
+主线：精简 Redesign“3D 模型→切片”页面，只移除指定展示控件，保留检查修复、AI/原生切片、模式卡片、进度、耗材统计、层高滑块和底层能力。
+本轮：左侧“多色模型”和“3D 美颜”控件继续创建并维护状态，但归入不参与页面布局的隐藏父容器；左上拓扑/面数/顶点数浮层固定隐藏；`GCodeViewer` 增加调用级显示参数，Redesign 切片/预览页面通过 `GLCanvas3D` 临时抑制右下 G-code 命令文本，离开页面与清理宿主时恢复，未改全局用户开关。
+验证：`UiRedesign` 定向 C++ 测试 83/83 通过 [`20261016-221125-110`](../../.tmp/dev/logs/20261016-221125-110/result.json)；完整 Windows Build 通过 [`20261016-224627-009`](../../.tmp/dev/logs/20261016-224627-009/result.json)；`verify_ai_integration.py --json` 返回 `ok: true`；`Run -NoLaunch` 五步通过并安装到 `.tmp/dev/run` [`20261016-224857-656`](../../.tmp/dev/logs/20261016-224857-656/result.json)，产品源码身份 `581b76702448e807639db5e145dd78da7058f8d41cb0f64ff02cf78f5957f25b`。
+未结：用户已在真实窗口确认本轮功能正常；普通 Orca Preview 的跨页面显示设置未形成单独截图证据，代码仍保留全局开关并在离开 Redesign 页面时恢复临时抑制状态。
+下一步：按用户授权提交当前已构建源码和对应测试；后续如有新的视觉调整，沿 Redesign 展示层单独推进。
+计划变更：新增并完成“Redesign 切片页精简”交付项；保留已验证的连续切片修复和模式卡片历史状态，纳入本次本地提交，不推送、不发布。
+
+# 2026-10-16 SmartSlice：连续切片 Preview 路由修复（已安装，待用户 GUI 验收）
+
+主线：修复后续 AI 模式切片已成功但工作台仍停留 3D、没有 G-code 预览与右侧统计的问题。
+本轮：在 `RedesignModelWorkflow.cpp` 中让完成事件在工作台处于 `Slicing` 或 `Preview` 时都延迟等待后台切片标志清零；完成结果有效后统一进入 Preview。`show_model_view(Preview)` 的同视图早退现在会检测 Plater 实际面板，若仍是 3D 则重新选择 Preview，触发当前 G-code 载入。
+验证：Windows 增量 Build [`20261016-144607-064`](../../.tmp/dev/logs/20261016-144607-064/result.json) 成功；SmartSlice C++ 定向测试 [`20261016-144827-321`](../../.tmp/dev/logs/20261016-144827-321/result.json) 通过；`verify_ai_integration.py --json` 返回 `ok: true`；`git diff --check` 通过。源码身份 `cf77063431f7af620708c508f8dc4527ff3d4613c0f17644ac0de78feff668d8`。
+未结：真实连续三模式切片、Preview 工具路径和统计展示尚未记为 GUI 通过；已安装并启动新版本 PID 22272，保留给用户手动测试。
+下一步：用户在新窗口验证“第一次切片→切换另一 AI 模式→第二次切片”的 Preview 与统计刷新；如日志仍无 `select preview`，继续沿该完成回调链路排查。
+计划变更：新增“Preview 实际面板与工作台视图状态分裂”的代码修复项；保留原生切片成功证据、拓扑检查 guard 修复和完成竞态修复，不提交、不推送、不发布。
+
+# 2026-10-16 SmartSlice：连续切片仍停留在 3D 的根因（代码未改，待修复）
+
+主线：承接用户反馈“第一次切片后再次切片无预览/统计，移动模型后恢复”，继续定位完成后的视图与 G-code 刷新链路。
+本轮：核对 PID 25292 的运行日志和当前源码。12:37:22、12:37:38、12:37:50 三次任务均启动后台切片；12:37:28、12:37:44、12:38:00 均出现 `export gcode finished`、`status 0`、结果有效、`slice completed success=true`、`completion phase=4`。第二次和第三次完成后没有新的 `select preview` 或 `GCodeViewer::load_as_gcode`，所以故障在完成后的 UI/预览刷新，不在切片引擎。
+根因：第一次完成时 `apply_slicing_state()` 只在 `m_model_view == Slicing` 才调用 `show_model_view(Preview)`；第一次切片后工作台已是 Preview。第二次 AI 方案应用的 `apply_lightweight_plan()` 又直接调用 `plater.select_view_3D("3D")`，但没有同步 `m_model_view`，形成“工作台认为 Preview、Plater 实际是 3D”的分裂状态。后续完成事件 phase=Completed 只发布状态，不再触发 Preview 路由；Plater 的 `Preview::load_print_as_fff()` 还会因 `m_loaded_print`/GCodeViewer shell 缓存而跳过真正的 G-code 载入。源码证据为 `RedesignModelWorkflow.cpp:817-829,1299-1320,1516-1517`、`SmartSlicingFeatureHost.cpp:1041-1060`、`GUI_Preview.cpp:634-639`、`GCodeViewer.cpp:2218-2224`。
+验证：对照旧日志 PID 10384，首次完成紧接 `select preview` + `load_as_gcode`；重复切片完成只见 `load_shells: already loaded`，直到后续再次触发 Preview 才出现 `load_as_gcode`。该时间序列与用户“稍微移动后恢复”一致，说明移动动作触发了额外的场景/视图刷新而非修复了切片本体。
+未结：需要在 C++ 中统一“AI 应用前切回 3D”和工作台 `m_model_view` 的状态，或在每次 `notify_slice_completed()` 后无条件按当前有效结果重新加载 Preview/G-code；还需保留 Plater 完成回调的 `m_is_slicing` 竞态处理。当前只完成根因定位，没有修改、构建或安装。
+下一步：按用户授权实施最小状态路由修复，先覆盖“Preview 中切换 AI 模式→开始切片→完成”以及连续三模式切片，再用真实窗口核对预览工具路径和右侧统计。
+计划变更：新增“工作台视图状态与 Plater 当前面板分裂导致连续切片结果不刷新”诊断项；上一轮拓扑 guard 与完成竞态修复保留，不将本轮日志中的成功切片误写成 GUI 通过。
+
+# 2026-10-16 SmartSlice：拓扑检查状态与 AI 模式切换解耦（已安装，GUI待复验）
+
+主线：修复检查修复显示“未检查”导致用户误判后续 AI 模式切片失败的问题。
+本轮：保留通用完整工程 guard 给导入/配色异步操作；新增 `capture_topology_guard()`，检查结果只绑定当前打印板身份和模型 revision，不再绑定全局/打印板切片参数。AI 模式改变层高、墙数、填充、支撑等配置后，已完成的拓扑检查继续有效；模型、部件时间戳/网格摘要、实例归属或当前打印板变化仍会清空检查结果。未把拓扑检查状态加入原生切片门禁。
+验证：`OrcaSlicer_app_gui` 增量 Build [20261016-121435-204](../../.tmp/dev/logs/20261016-121435-204/result.json) 成功；SmartSlicing C++ 定向测试 [20261016-121619-332](../../.tmp/dev/logs/20261016-121619-332/result.json) 通过 290 cases；`verify_ai_integration.py --json`、`git diff --check` 通过。Build 产物已生成，但 `Run -NoLaunch` 安装被 PID 10384 的旧 `orca-slicer.exe` 和 PID 10180 的旧 sidecar 占用而按脚本保护规则拒绝。
+未结：固定运行目录安装已完成，但 Computer-use 仍未提供可操作的 Orca 窗口（`apps: []`，也没有 `listWindows`），因此没有把真实三模式切片和“检查状态保持正常”记为 GUI 通过；当前匹配版本 PID 25292 保持运行供用户复验。
+下一步：在当前窗口完成“检查→切换另一 AI 模式→开始切片→连续切片”的验证，并分别核对预览与右侧统计；如需继续自动化，先恢复 Windows Computer-use 窗口后端。
+计划变更：新增 SmartSlice 拓扑检查 guard 解耦项；完成固定运行目录安装并启动匹配版本；不改变原生切片算法、切片门禁、预览路由和上一轮未提交修改，不提交、不推送。
+
+# 2026-10-16 SmartSlice：切片完成后预览路由竞态修复（待安装与 GUI 复验）
+
+主线：修复用户截图中的“G-code 已生成但仍停留在原始模型、右侧没有切片结果数据”问题。
+本轮：核对 PID 31520 的最新日志，09:39:58 和 09:45:34 均记录 `export gcode finished`、`status 0`、结果有效、`slice completed success=true`、`completion phase=4`，但完成回调前没有新的 Preview 路由；根因是 Plater 在 `notify_slice_completed()` 时仍保持 `m_is_slicing=true`，工作台的完成边沿被后台运行标志挡住，之后没有再次发布状态。工作台现在在该竞态下排队一次 `CallAfter`，等事件返回、后台标志清零后重新取快照并切换 `ModelView::Preview`。
+验证：Windows 增量 Build [20261016-100804-999](../../.tmp/dev/logs/20261016-100804-999/result.json) 成功；SmartSlice C++ 定向测试 [20261016-101056-122](../../.tmp/dev/logs/20261016-101056-122/result.json) 通过；`verify_ai_integration.py --json`、`git diff --check` 通过；源码身份 `985e896f83259a8cfd32476ea403b82aa395c20f6d6beb4f7a9002fb743f9921`。
+未结：用户当前 PID 31520 仍加载旧 `.tmp/dev/run` 文件，未关闭实例前不能安装新 DLL；Computer-use 初始化返回 `Trusted RPC service is not configured: sky`，因此本轮不能直接点击窗口或把视觉结果记为通过。
+下一步：用户正常关闭当前实例后执行 `Run -NoLaunch` 更新固定运行目录，再用同一模型依次验证综合最优、速度优先、质量优先及连续切片；确认完成后进入 Preview、显示工具路径和耗材/时间/层数统计。
+计划变更：新增完成事件到预览路由的状态竞态修复；不改原生切片算法、不改 Plater 核心事件顺序、不提交、不推送。
+
+# 2026-10-15 SmartSlice：连续切片状态同步修复
+
+主线：修复 SmartSlice 工作台把原生后台切片的短暂旧 phase 误显示成“自动中断/未完成”的状态竞态。
+本轮：统一以 `is_background_process_slicing()` 或 `OfficialSlicePhase::Slicing` 判定运行中，锁定三种模式、保持进度/取消控件和“正在正式切片”文案，后台停止后才发布完成；新增 stale-phase 回归，SmartSlice 定向测试 290/290 通过，Windows 构建及架构守卫通过。修复版 PID 13732 的真实运行日志已记录 09:30 和 09:31 两次连续切片，均导出 G-code、`status 0`、`slice completed success=true`、`completion phase=4`。
+未结：CUA `cua.getState()` 仍返回 `apps: []`，无法代替真实窗口点击；另有 21:41 的独立 `ACCESS_VIOLATION` 崩溃，发生在切片完成后，不归因于本次切片状态修复。
+下一步：连续切片状态修复已有真实日志证据；如需继续查崩溃，单独分析 crash 日志与 DynamicPrintConfig 高频更新。
+计划变更：新增连续切片状态同步修复项；源码保持未提交，未关闭用户配置或原始模型。
+
 # 2026-10-15 UI-10：返回图像设计后的生成按钮分流
 
 主线：区分 2D 输入变更与 3D 参数变更，修复已完成模型返回图像页后仅改精度仍要求重做 2D 的问题。
@@ -493,3 +547,12 @@
 未结：混合输入历史的产品语义、在线确认取消/提交失败后的当前页体验待有服务和预算时补验；不影响已完成的本地按钮验收结论。
 下一步：若要求历史 `text_image` 也复用设计图，单独授权后补条件并增加回归；若接受当前边界，保持代码不变，仅补在线失败/取消验收。
 计划变更：UI-10 增加风险复核记录；不提交、不推送、不发布。
+
+# 2026-10-16 SmartSlice：切片完成后保留 AI 模式选择状态
+
+主线：修复三张 AI 模式卡片在成功切片后因配置 revision 变化而失去选中提示的问题。
+本轮：增加独立的待切片/最近成功模式历史；成功完成后卡片保留边框并显示勾标，当前新选择与上次成功模式可同时区分；模型或打印板 revision 变化会使历史标记失效，失败/取消不覆盖历史成功模式；详情优先展示最近成功模式参数。
+未结：匹配版本已安装到 `.tmp/dev/run`，未启动；真实 GUI 的卡片边框/勾标、模式切换及连续切片仍待用户复验。
+下一步：用户运行 `.tmp/dev/run/orca-slicer.exe`，验证“首次切片→切换模式→再次切片”时卡片边框/勾标和详情保持正确。
+计划变更：新增 SmartSlice 模式选择历史显示项；不改变原生切片算法和切片门禁，不提交、不推送。
+验证：SmartSlicing 定向 CppTest 292/292 通过（`20261016-181338-031`）；Run -NoLaunch 的 catalogs/build/install/runtime-check/python-check 五步通过（`20261016-211052-896`，源码身份 `889c03442f995bf4b01038c1d7742ea3e0bb5efab9ecc4a0dd0cd5d5b775db2a`）；`verify_ai_integration.py --json` 与 `git diff --check` 通过。安装成功不替代 GUI 验收。

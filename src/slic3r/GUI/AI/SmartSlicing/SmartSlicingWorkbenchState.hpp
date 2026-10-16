@@ -55,6 +55,57 @@ private:
     std::optional<AI::SmartSlicing::WorkspaceRevision> m_revision;
 };
 
+// Keep the mode used by the last successful native slice independent from the
+// revision-bound selection that is still eligible to start a new slice.
+class WorkbenchSliceGoalHistory {
+public:
+    void begin(AI::SmartSlicing::RecommendationGoal goal)
+    {
+        m_pending_goal = goal;
+        m_pending_revision.reset();
+    }
+
+    void begin(AI::SmartSlicing::RecommendationGoal goal,
+               const AI::SmartSlicing::WorkspaceRevision& revision)
+    {
+        m_pending_goal = goal;
+        m_pending_revision = revision.valid() ? std::optional<AI::SmartSlicing::WorkspaceRevision>(revision) : std::nullopt;
+    }
+
+    void complete(bool success, const AI::SmartSlicing::WorkspaceRevision& revision)
+    {
+        const bool same_model_and_plate = !m_pending_revision ||
+            (m_pending_revision->model_revision == revision.model_revision &&
+             m_pending_revision->plate_revision == revision.plate_revision);
+        if (success && m_pending_goal && revision.valid() && same_model_and_plate) {
+            m_last_sliced_goal = m_pending_goal;
+            m_last_sliced_revision = revision;
+        }
+        m_pending_goal.reset();
+        m_pending_revision.reset();
+    }
+
+    void cancel() { m_pending_goal.reset(); m_pending_revision.reset(); }
+
+    std::optional<AI::SmartSlicing::RecommendationGoal> pending_goal() const { return m_pending_goal; }
+
+    std::optional<AI::SmartSlicing::RecommendationGoal> last_sliced_goal(
+        const AI::SmartSlicing::WorkspaceRevision& current) const
+    {
+        if (!m_last_sliced_goal || !m_last_sliced_revision || !current.valid() ||
+            m_last_sliced_revision->model_revision != current.model_revision ||
+            m_last_sliced_revision->plate_revision != current.plate_revision)
+            return std::nullopt;
+        return m_last_sliced_goal;
+    }
+
+private:
+    std::optional<AI::SmartSlicing::RecommendationGoal> m_pending_goal;
+    std::optional<AI::SmartSlicing::WorkspaceRevision> m_pending_revision;
+    std::optional<AI::SmartSlicing::RecommendationGoal> m_last_sliced_goal;
+    std::optional<AI::SmartSlicing::WorkspaceRevision> m_last_sliced_revision;
+};
+
 inline std::vector<AI::SmartSlicing::ConfigPatchEntry> effective_candidate_parameters(
     std::vector<AI::SmartSlicing::ConfigPatchEntry> baseline,
     const AI::SmartSlicing::ParameterProposal& proposal)
@@ -126,6 +177,8 @@ struct SmartSlicingWorkbenchState
     AI::SmartSlicing::RecommendationSessionSnapshot session;
     AI::SmartSlicing::RecommendationGoal selected_goal {AI::SmartSlicing::RecommendationGoal::Balanced};
     bool has_selected_goal {false};
+    std::optional<AI::SmartSlicing::RecommendationGoal> pending_slice_goal;
+    std::optional<AI::SmartSlicing::RecommendationGoal> last_sliced_goal;
     std::array<std::optional<AI::SmartSlicing::SliceCandidate>, 3> candidates;
     std::array<std::optional<AI::SmartSlicing::TrialMetrics>, 3> metrics;
     std::array<std::vector<AI::SmartSlicing::ConfigPatchEntry>, 3> effective_parameters;
@@ -153,6 +206,24 @@ struct SmartSlicingWorkbenchState
     bool lightweight_analyzing {false};
     bool lightweight_stale {false};
 };
+
+inline bool workbench_goal_is_currently_selected(
+    const SmartSlicingWorkbenchState& state, AI::SmartSlicing::RecommendationGoal goal)
+{
+    return state.has_selected_goal && state.selected_goal == goal;
+}
+
+inline bool workbench_goal_was_last_sliced(
+    const SmartSlicingWorkbenchState& state, AI::SmartSlicing::RecommendationGoal goal)
+{
+    return state.last_sliced_goal && *state.last_sliced_goal == goal;
+}
+
+inline bool workbench_goal_is_pending(
+    const SmartSlicingWorkbenchState& state, AI::SmartSlicing::RecommendationGoal goal)
+{
+    return state.pending_slice_goal && *state.pending_slice_goal == goal;
+}
 
 using SmartSlicingWorkbenchListener = std::function<void(const SmartSlicingWorkbenchState&)>;
 

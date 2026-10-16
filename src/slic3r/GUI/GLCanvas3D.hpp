@@ -522,6 +522,7 @@ private:
     std::optional<ColorRGBA> m_workspace_background;
     bool m_workspace_toolbar_theme_dirty = false;
     bool m_workbench_appearance = false;
+    bool m_suppress_gcode_window {false};
     wxGLCanvas* m_canvas;
     wxGLContext* m_context;
     SceneRaycaster m_scene_raycaster;
@@ -787,6 +788,11 @@ public:
     void reset_explosion_ratio() { m_explosion_ratio = 1.0; }
     void on_change_color_mode(bool is_dark, bool reinit = true);
     void use_workbench_appearance(bool active = true);
+    void suppress_gcode_window(bool suppress) {
+        if (m_suppress_gcode_window == suppress) return;
+        m_suppress_gcode_window = suppress;
+        m_dirty = true;
+    }
     const bool get_dark_mode_status() { return m_is_dark; }
     // A workspace surface may override only the backdrop, preserving native content colors.
     void set_workspace_background(std::optional<ColorRGBA> color) {

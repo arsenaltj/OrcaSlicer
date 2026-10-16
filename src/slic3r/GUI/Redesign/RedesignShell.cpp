@@ -1190,6 +1190,8 @@ void RedesignShell::disconnect_model_generation_host()
     if (m_plater) {
         m_plater->get_view3D_canvas3D()->use_compact_slicing_tools(false);
         m_plater->get_preview_canvas3D()->use_compact_slicing_tools(false);
+        m_plater->get_view3D_canvas3D()->suppress_gcode_window(false);
+        m_plater->get_preview_canvas3D()->suppress_gcode_window(false);
         m_plater->get_view3D_canvas3D()->use_workbench_appearance(false);
         m_plater->get_preview_canvas3D()->use_workbench_appearance(false);
         if (m_saved_collapse_toolbar) m_plater->get_collapse_toolbar().set_enabled(*m_saved_collapse_toolbar);

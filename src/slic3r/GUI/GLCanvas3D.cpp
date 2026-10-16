@@ -8712,7 +8712,8 @@ void GLCanvas3D::_render_wireframe_overlay()
 //BBS: GUI refactor: add canvas size as parameters
 void GLCanvas3D::_render_gcode(int canvas_width, int canvas_height)
 {
-    m_gcode_viewer.render(canvas_width, canvas_height, SLIDER_RIGHT_MARGIN * GCODE_VIEWER_SLIDER_SCALE);
+    m_gcode_viewer.render(canvas_width, canvas_height, SLIDER_RIGHT_MARGIN * GCODE_VIEWER_SLIDER_SCALE,
+                          !m_suppress_gcode_window);
     IMSlider *layers_slider = m_gcode_viewer.get_layers_slider();
     IMSlider *moves_slider  = m_gcode_viewer.get_moves_slider();
 

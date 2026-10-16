@@ -35,9 +35,16 @@ public:
             buffer.SetBackground(wxBrush(GetParent()->GetBackgroundColour())); buffer.Clear();
             wxGCDC dc(buffer);
             const auto size = GetClientSize();
-            dc.SetPen(m_selected ? wxPen(RedesignTheme::accent_colour(), FromDIP(1)) : *wxTRANSPARENT_PEN);
+            dc.SetPen((m_selected || m_recently_sliced) ?
+                wxPen(RedesignTheme::accent_colour(), FromDIP(1)) : *wxTRANSPARENT_PEN);
             dc.SetBrush(wxBrush(wxColour(68, 68, 69)));
             dc.DrawRoundedRectangle(0, 0, size.x-1, size.y-1, FromDIP(12));
+            if (m_recently_sliced) {
+                const int x = size.x - FromDIP(15), y = FromDIP(14);
+                dc.SetPen(wxPen(RedesignTheme::accent_colour(), FromDIP(2)));
+                dc.DrawLine(x - FromDIP(5), y, x - FromDIP(2), y + FromDIP(3));
+                dc.DrawLine(x - FromDIP(2), y + FromDIP(3), x + FromDIP(4), y - FromDIP(4));
+            }
             dc.SetPen(*wxTRANSPARENT_PEN);
             dc.SetBrush(wxBrush(wxColour(229, 229, 230)));
             const int x = FromDIP(10), y = (size.y-FromDIP(24))/2;
@@ -55,14 +62,15 @@ public:
         });
         RedesignTheme::style_text(this, RedesignTheme::primary_text_colour(), 12);
     }
-    void update(const wxString& layer, bool selected) {
-        if (m_layer == layer && m_selected == selected) return;
-        m_layer = layer; m_selected = selected;
+    void update(const wxString& layer, bool selected, bool recently_sliced) {
+        if (m_layer == layer && m_selected == selected && m_recently_sliced == recently_sliced) return;
+        m_layer = layer; m_selected = selected; m_recently_sliced = recently_sliced;
         wxWindow::SetLabel(m_title+"\n"+layer); Refresh(false);
     }
 private:
     wxString m_title, m_layer;
     bool m_selected{false};
+    bool m_recently_sliced{false};
 };
 
 inline WorkbenchButton* slicing_link(wxWindow* parent, const wxString& label) {
