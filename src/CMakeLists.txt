@@ -12,6 +12,7 @@ add_subdirectory(dev-utils)
 find_package(libnoise REQUIRED)
 
 add_subdirectory(orca_sdk)
+add_subdirectory(orca_connectivity_moonraker)
 
 add_subdirectory(libslic3r)
 

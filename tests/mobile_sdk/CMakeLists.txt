@@ -8,10 +8,12 @@ endif()
 
 add_executable(${_TEST_NAME}_tests
     test_mobile_sdk_contracts.cpp
+    test_moonraker_adapter.cpp
 )
 
 target_link_libraries(${_TEST_NAME}_tests PRIVATE
     OrcaSlicer::MobileSDK
+    OrcaSlicer::MoonrakerAdapter
     Catch2::Catch2WithMain
 )
 set_property(TARGET ${_TEST_NAME}_tests PROPERTY FOLDER "tests")
