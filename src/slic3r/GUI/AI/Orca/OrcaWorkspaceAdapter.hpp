@@ -37,6 +37,10 @@ public:
         WorkbenchImportCompletion completion, std::function<bool()> asset_current);
     // Opaque freshness check for a modal confirmation without exposing slicing types.
     std::function<bool()> capture_import_guard() const;
+    // Topology checks are independent of global slicing parameters. Keep the
+    // guard tied to the active plate and model/instance revision only, so an
+    // AI slicing-mode change does not discard a valid mesh inspection.
+    std::function<bool()> capture_topology_guard() const;
     bool set_project_filament_color(size_t slot, const std::string& color,
         const std::function<bool()>& current, std::string& error);
 

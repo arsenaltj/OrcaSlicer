@@ -1187,9 +1187,12 @@ void RedesignShell::disconnect_model_generation_host()
     m_slice_tools.reset();
     if (m_slice_stats_overlay) { m_slice_stats_overlay->Destroy(); m_slice_stats_overlay=nullptr; }
     if (m_slice_progress_overlay) { m_slice_progress_overlay->Destroy(); m_slice_progress_overlay=nullptr; }
+    if (m_slice_camera_loading) { m_slice_camera_loading->Destroy(); m_slice_camera_loading=nullptr; }
     if (m_plater) {
         m_plater->get_view3D_canvas3D()->use_compact_slicing_tools(false);
         m_plater->get_preview_canvas3D()->use_compact_slicing_tools(false);
+        m_plater->get_view3D_canvas3D()->suppress_gcode_window(false);
+        m_plater->get_preview_canvas3D()->suppress_gcode_window(false);
         m_plater->get_view3D_canvas3D()->use_workbench_appearance(false);
         m_plater->get_preview_canvas3D()->use_workbench_appearance(false);
         if (m_saved_collapse_toolbar) m_plater->get_collapse_toolbar().set_enabled(*m_saved_collapse_toolbar);
@@ -1202,6 +1205,9 @@ void RedesignShell::disconnect_model_generation_host()
         frame->mount_native_workspace_tools(nullptr);
     }
     m_import_timer.Stop();
+    m_slice_camera_retry_timer.Stop();
+    m_slice_camera_loading_pending = false;
+    m_slice_camera_waiting_for_frame = false;
     if (m_import_session) m_import_session->invalidate();
     // The native Plater outlives this shell. Return its temporary loading
     // child before detaching it so paint handlers cannot retain this shell.
@@ -1843,7 +1849,8 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
         picker->set_interactive(face_limit_editable);
     }
 
-    wxString primary_label = text("生成 2D 设计图");
+    wxString primary_label = m_image_design_draft.replaces_design()
+        ? text("重新生成 2D 设计图") : text("生成 2D 设计图");
     // The host validates both prompt-only and image inputs; editability still
     // blocks submission while an image is loading.
     bool primary_enabled = m_input_sync_ok && state.can_generate_design && editable;
@@ -1949,8 +1956,14 @@ void RedesignShell::apply_model_generation_state(const ModelGenerationUIState& s
         placeholder_mode = ImagePreview::PlaceholderMode::Generating;
         break;
     case ModelGenerationUIStage::ModelReady:
-        primary_label = state.design_image_path.empty() ? text("生成 2D 设计图") : text("重新生成 2D 设计图");
-        primary_enabled = m_input_sync_ok && state.can_generate_design && editable;
+        if (redesign_primary_action(state, image_stage) == RedesignPrimaryAction::Model) {
+            primary_label = text("生成 3D 模型");
+            primary_enabled = m_input_sync_ok && m_option_sync_ok && state.can_generate_model &&
+                              m_design_image_state == ImageState::Ready && editable;
+        } else {
+            primary_label = state.design_image_path.empty() ? text("生成 2D 设计图") : text("重新生成 2D 设计图");
+            primary_enabled = m_input_sync_ok && state.can_generate_design && editable;
+        }
         update_design_preview();
         break;
     case ModelGenerationUIStage::Input:
@@ -2205,8 +2218,10 @@ void RedesignShell::request_generate_design()
 
 void RedesignShell::request_generate_model()
 {
+    const bool model_ready_reuse = m_model_generation_state.stage == ModelGenerationUIStage::ModelReady &&
+        m_model_generation_state.inputs_match_job && !m_model_generation_state.model_options_match;
     if (m_submit_in_progress || m_image_design_draft.pending() || !generation_input_editable() ||
-        m_model_generation_state.stage != ModelGenerationUIStage::DesignReady ||
+        (!model_ready_reuse && m_model_generation_state.stage != ModelGenerationUIStage::DesignReady) ||
         !m_model_generation_state.inputs_match_job || m_design_image_state != ImageState::Ready)
         return;
     m_submit_in_progress = true;
@@ -2228,8 +2243,8 @@ void RedesignShell::request_generate_model()
 
 void RedesignShell::request_primary_action()
 {
-    if (m_image_design_draft.stage(m_model_generation_state) == ModelGenerationUIStage::DesignReady &&
-        m_model_generation_state.inputs_match_job)
+    const auto stage = m_image_design_draft.stage(m_model_generation_state);
+    if (redesign_primary_action(m_model_generation_state, stage) == RedesignPrimaryAction::Model)
         request_generate_model();
     else
         request_generate_design();

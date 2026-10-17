@@ -749,6 +749,16 @@ TEST_CASE("AI slicing requires a candidate and native slicing requires its expli
     CHECK(workbench_slice_route(false, true, true, true, true) == WorkbenchSliceRoute::Unavailable);
 }
 
+TEST_CASE("native background slicing keeps the workbench running through a stale phase", "[SmartSlicing][UiRedesign]")
+{
+    using namespace Slic3r::AI::SmartSlicing;
+    CHECK(workbench_slice_running(true, OfficialSlicePhase::Rejected));
+    CHECK(workbench_slice_running(true, OfficialSlicePhase::Failed));
+    CHECK(workbench_slice_running(false, OfficialSlicePhase::Slicing));
+    CHECK_FALSE(workbench_slice_running(false, OfficialSlicePhase::Completed));
+    CHECK_FALSE(workbench_slice_running(false, OfficialSlicePhase::Failed));
+}
+
 TEST_CASE("workbench goals require explicit selection in the reviewed workspace", "[SmartSlicing][UiRedesign]")
 {
     using namespace Slic3r::AI::SmartSlicing;
@@ -765,6 +775,58 @@ TEST_CASE("workbench goals require explicit selection in the reviewed workspace"
     CHECK_FALSE(selection.selected(changed));
     selection.clear();
     CHECK_FALSE(selection.selected(revision));
+}
+
+TEST_CASE("successful slicing remembers its goal without treating config changes as model changes",
+          "[SmartSlicing][UiRedesign]")
+{
+    using namespace Slic3r::AI::SmartSlicing;
+    WorkbenchSliceGoalHistory history;
+    WorkspaceRevision revision{11, 21, 31, "project"};
+    history.begin(RecommendationGoal::Quality);
+    history.complete(true, revision);
+    CHECK(history.last_sliced_goal(revision) == RecommendationGoal::Quality);
+
+    auto config_changed = revision;
+    ++config_changed.config_revision;
+    CHECK(history.last_sliced_goal(config_changed) == RecommendationGoal::Quality);
+
+    auto model_changed = revision;
+    ++model_changed.model_revision;
+    CHECK_FALSE(history.last_sliced_goal(model_changed));
+    auto plate_changed = revision;
+    ++plate_changed.plate_revision;
+    CHECK_FALSE(history.last_sliced_goal(plate_changed));
+
+    WorkbenchSliceGoalHistory guarded;
+    guarded.begin(RecommendationGoal::Speed, revision);
+    guarded.complete(true, model_changed);
+    CHECK_FALSE(guarded.last_sliced_goal(model_changed));
+}
+
+TEST_CASE("failed slicing does not replace the last successful goal and current selection stays distinct",
+          "[SmartSlicing][UiRedesign]")
+{
+    using namespace Slic3r::AI::SmartSlicing;
+    WorkbenchSliceGoalHistory history;
+    WorkspaceRevision revision{12, 22, 32, "project"};
+    history.begin(RecommendationGoal::Balanced);
+    history.complete(true, revision);
+    history.begin(RecommendationGoal::Speed);
+    history.complete(false, revision);
+    CHECK(history.last_sliced_goal(revision) == RecommendationGoal::Balanced);
+
+    SmartSlicingWorkbenchState state;
+    state.has_selected_goal = true;
+    state.selected_goal = RecommendationGoal::Speed;
+    state.pending_slice_goal = RecommendationGoal::Quality;
+    state.last_sliced_goal = RecommendationGoal::Balanced;
+    CHECK(workbench_goal_is_currently_selected(state, RecommendationGoal::Speed));
+    CHECK_FALSE(workbench_goal_is_currently_selected(state, RecommendationGoal::Balanced));
+    CHECK(workbench_goal_was_last_sliced(state, RecommendationGoal::Balanced));
+    CHECK_FALSE(workbench_goal_was_last_sliced(state, RecommendationGoal::Speed));
+    CHECK(workbench_goal_is_pending(state, RecommendationGoal::Quality));
+    CHECK_FALSE(workbench_goal_is_pending(state, RecommendationGoal::Balanced));
 }
 
 TEST_CASE("slicing palette prepares subface colors atomically without changing other models", "[UiRedesign][ProjectConfigUndo]")

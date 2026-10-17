@@ -38,6 +38,7 @@ class ImageDesignDraft
 public:
     void begin(const ModelGenerationUIState& state)
     {
+        m_replaces_design = m_replaces_design || !state.design_image_path.empty();
         m_pending = true;
         m_submission_requested = false;
         m_revision = state.revision;
@@ -52,8 +53,10 @@ public:
         // GeneratingDesign only after confirmation; history opens a new session.
         if (state.model_generation_session > m_model_session ||
             (m_submission_requested && state.stage == ModelGenerationUIStage::GeneratingDesign &&
-             !state.model_generation_context))
+             !state.model_generation_context)) {
             m_pending = false;
+            m_replaces_design = false;
+        }
     }
 
     void begin_submission() { m_submission_requested = true; }
@@ -64,6 +67,7 @@ public:
     }
 
     bool pending() const { return m_pending; }
+    bool replaces_design() const { return m_pending && m_replaces_design; }
     ModelGenerationUIStage stage(const ModelGenerationUIState& state) const
     {
         return m_pending ? ModelGenerationUIStage::Input : state.stage;
@@ -71,6 +75,7 @@ public:
 
 private:
     bool m_pending {false};
+    bool m_replaces_design {false};
     bool m_submission_requested {false};
     std::uint64_t m_revision {0};
     std::uint64_t m_model_session {0};

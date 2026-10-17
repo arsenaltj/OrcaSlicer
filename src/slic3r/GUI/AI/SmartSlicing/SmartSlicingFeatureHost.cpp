@@ -1327,12 +1327,15 @@ struct SmartSlicingFeatureHost::Impl
     {
         using namespace AI::SmartSlicing;
         SmartSlicingWorkbenchState state;
+        const auto current_revision = current_native_revision();
         state.session = recommendation_coordinator.snapshot();
         if (state.session.state == RecommendationSessionState::Canceled || !candidate_session_plan)
             state.session.recommendation = {};
         state.selected_goal = selected_goal;
         state.has_selected_goal = versioned_apply_workflow->active_transaction() ? goal_selection.has_selection() :
-            goal_selection.selected(current_native_revision()).has_value();
+            goal_selection.selected(current_revision).has_value();
+        state.pending_slice_goal = slice_goal_history.pending_goal();
+        state.last_sliced_goal = slice_goal_history.last_sliced_goal(current_revision);
         state.official = workbench_official;
         state.diagnostic = candidate_session_diagnostic;
         state.analyzing = recommendation_worker_state.running();
@@ -1485,6 +1488,7 @@ struct SmartSlicingFeatureHost::Impl
     std::map<std::string, AI::SmartSlicing::TrialMetrics> trial_metrics;
     AI::SmartSlicing::RecommendationGoal selected_goal {AI::SmartSlicing::RecommendationGoal::Balanced};
     AI::SmartSlicing::OfficialSliceResult workbench_official;
+    WorkbenchSliceGoalHistory slice_goal_history;
     SmartSlicingWorkbenchListener workbench_listener;
     StartOfficialSliceFn native_slice;
     bool workbench_active {false};
@@ -1533,6 +1537,9 @@ void SmartSlicingFeatureHost::notify_slice_completed(bool success, const std::st
         m_impl->official_gateway->notify_slice_completed(success, failure_code);
     BOOST_LOG_TRIVIAL(info) << "[ModelWorkflow] completion phase=" << int(m_impl->workbench_official.phase)
         << " diagnostic=" << m_impl->workbench_official.diagnostic_code;
+    m_impl->slice_goal_history.complete(
+        success && m_impl->workbench_official.phase == AI::SmartSlicing::OfficialSlicePhase::Completed,
+        m_impl->current_native_revision());
     m_impl->publish_workbench();
 }
 
@@ -1642,8 +1649,12 @@ AI::SmartSlicing::OfficialSliceResult SmartSlicingFeatureHost::start_workbench_s
     if (m_impl->versioned_apply_workflow->active_transaction()) {
         const auto current = workbench_snapshot();
         if (!current.can_retry) return {OfficialSlicePhase::Rejected, "slice_retry_not_allowed"};
+        if (current.has_selected_goal)
+            m_impl->slice_goal_history.begin(current.selected_goal, m_impl->current_native_revision());
         m_impl->workbench_official = m_impl->versioned_apply_workflow->retry(
             *m_impl->versioned_apply_workflow->active_transaction());
+        if (m_impl->workbench_official.phase != OfficialSlicePhase::Slicing)
+            m_impl->slice_goal_history.cancel();
     } else {
         m_impl->refresh_recommendation_revision();
         const auto current = workbench_snapshot();
@@ -1676,8 +1687,10 @@ AI::SmartSlicing::OfficialSliceResult SmartSlicingFeatureHost::start_workbench_s
             if (!m_impl->apply_lightweight_plan(*lightweight_plan, diagnostic))
                 return {OfficialSlicePhase::Rejected,
                         diagnostic.empty() ? "smart_slice_plan_apply_failed" : std::move(diagnostic)};
+            m_impl->slice_goal_history.begin(current.selected_goal, m_impl->current_native_revision());
             m_impl->workbench_official = {};
-            start_native_slice();
+            if (!start_native_slice())
+                m_impl->slice_goal_history.cancel();
             return m_impl->workbench_official;
         }
 
@@ -1688,8 +1701,11 @@ AI::SmartSlicing::OfficialSliceResult SmartSlicingFeatureHost::start_workbench_s
         request.command_id = "workbench-" + std::to_string(current.session.workflow_id) + "-" +
             std::to_string(current.session.attempt_id) + "-" + std::to_string(++m_impl->workbench_command_sequence);
         request.confirmation.confirmed_risks = confirmations;
+        m_impl->slice_goal_history.begin(current.selected_goal, m_impl->current_native_revision());
         m_impl->workbench_official = m_impl->versioned_apply_workflow->start(
             request, m_impl->apply_context(*current.candidates[index]));
+        if (m_impl->workbench_official.phase != OfficialSlicePhase::Slicing)
+            m_impl->slice_goal_history.cancel();
     }
     m_impl->recommendation_revision_timer->Start(1000);
     if (m_impl->workbench_official.workspace_mutated)

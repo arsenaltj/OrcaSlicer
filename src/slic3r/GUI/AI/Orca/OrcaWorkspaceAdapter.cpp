@@ -230,6 +230,26 @@ std::function<bool()> OrcaWorkspaceAdapter::capture_import_guard() const
     };
 }
 
+std::function<bool()> OrcaWorkspaceAdapter::capture_topology_guard() const
+{
+    if (!m_plater) return [] { return false; };
+    const auto* plate = m_plater->get_partplate_list().get_curr_plate();
+    if (!plate) return [] { return false; };
+
+    // model_revision is deliberately separate from config_revision in the
+    // workspace contract. It includes model/volume timestamps, mesh summary,
+    // instance transforms and the current plate's instance membership, while
+    // AI slicing modes only change the global/plate slicing configuration.
+    const auto plate_id = plate->id().id;
+    const auto model_revision = OrcaSmartSlicingAdapter(m_plater).current_revision().model_revision;
+    return [plater = m_plater, plate_id, model_revision] {
+        if (!plater) return false;
+        const auto* current_plate = plater->get_partplate_list().get_curr_plate();
+        if (!current_plate || current_plate->id().id != plate_id) return false;
+        return OrcaSmartSlicingAdapter(plater).current_revision().model_revision == model_revision;
+    };
+}
+
 bool OrcaWorkspaceAdapter::import_workbench_artifact_async(const AI::ModelImportRequest& request,
     std::shared_ptr<WorkbenchImportSession> session, WorkbenchImportProgress progress,
     WorkbenchImportCompletion completion, std::function<bool()> asset_current)

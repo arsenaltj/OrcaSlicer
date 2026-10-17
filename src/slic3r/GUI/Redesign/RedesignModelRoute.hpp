@@ -7,6 +7,21 @@ namespace Slic3r::GUI {
 
 enum class RedesignModelRouteAction { Ignore, Refresh, Model, Image };
 
+enum class RedesignPrimaryAction { Design, Model };
+
+inline RedesignPrimaryAction redesign_primary_action(const ModelGenerationUIState& state,
+    ModelGenerationUIStage effective_stage)
+{
+    // A changed 2D input always wins.  A changed 3D option can reuse the
+    // confirmed design image and only fork a new model task from ModelReady.
+    if (effective_stage == ModelGenerationUIStage::DesignReady && state.inputs_match_job)
+        return RedesignPrimaryAction::Model;
+    if (effective_stage == ModelGenerationUIStage::ModelReady && state.design_ready && state.inputs_match_job &&
+        !state.model_options_match)
+        return RedesignPrimaryAction::Model;
+    return RedesignPrimaryAction::Design;
+}
+
 inline bool workbench_mode_switch_allowed(bool importing, bool native_slicing, bool official_slicing, bool editing,
     bool analyzing = false)
 {

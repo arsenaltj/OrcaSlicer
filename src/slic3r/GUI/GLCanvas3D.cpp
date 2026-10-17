@@ -1363,6 +1363,10 @@ void GLCanvas3D::on_change_color_mode(bool is_dark, bool reinit) {
     // Toolbar
     if (m_canvas_type == CanvasView3D) {
         const bool toolbar_dark = is_dark || m_workspace_background.has_value();
+        m_main_toolbar.set_dark_mode(toolbar_dark);
+        m_separator_toolbar.set_dark_mode(toolbar_dark);
+        m_assemble_view_toolbar.set_dark_mode(toolbar_dark);
+        wxGetApp().plater()->get_collapse_toolbar().set_dark_mode(toolbar_dark);
         m_gizmos.on_change_color_mode(toolbar_dark);
         if (reinit) {
             // reset svg
@@ -6918,6 +6922,11 @@ void GLCanvas3D::_update_slice_error_status()
 
 void GLCanvas3D::_switch_toolbars_icon_filename(bool dark)
 {
+    m_main_toolbar.set_dark_mode(dark);
+    m_separator_toolbar.set_dark_mode(dark);
+    m_assemble_view_toolbar.set_dark_mode(dark);
+    wxGetApp().plater()->get_collapse_toolbar().set_dark_mode(dark);
+
     BackgroundTexture::Metadata background_data;
     background_data.filename = dark ? "toolbar_background_dark.png" : "toolbar_background.png";
     background_data.left = 16;
@@ -8712,7 +8721,8 @@ void GLCanvas3D::_render_wireframe_overlay()
 //BBS: GUI refactor: add canvas size as parameters
 void GLCanvas3D::_render_gcode(int canvas_width, int canvas_height)
 {
-    m_gcode_viewer.render(canvas_width, canvas_height, SLIDER_RIGHT_MARGIN * GCODE_VIEWER_SLIDER_SCALE);
+    m_gcode_viewer.render(canvas_width, canvas_height, SLIDER_RIGHT_MARGIN * GCODE_VIEWER_SLIDER_SCALE,
+                          !m_suppress_gcode_window);
     IMSlider *layers_slider = m_gcode_viewer.get_layers_slider();
     IMSlider *moves_slider  = m_gcode_viewer.get_moves_slider();
 
@@ -8808,8 +8818,8 @@ void GLCanvas3D::_check_and_update_toolbar_icon_scale()
 #if BBS_TOOLBAR_ON_TOP
     float collapse_toolbar_width = collapse_toolbar.is_enabled() ? collapse_toolbar.get_width() : 0;
 
-    float top_tb_width = m_main_toolbar.get_width() + m_gizmos.get_scaled_total_width() + m_assemble_view_toolbar.get_width() + m_separator_toolbar.get_width() + collapse_toolbar_width * 2;
-    int   items_cnt = m_main_toolbar.get_visible_items_cnt() + m_gizmos.get_selectable_icons_cnt() + m_assemble_view_toolbar.get_visible_items_cnt() + m_separator_toolbar.get_visible_items_cnt() + collapse_toolbar.get_visible_items_cnt();
+    float top_tb_width = get_effective_main_toolbar_width() + m_gizmos.get_scaled_total_width() + get_effective_assemble_view_toolbar_width() + get_effective_separator_toolbar_width() + collapse_toolbar_width * 2;
+    int   items_cnt = (m_main_toolbar.is_enabled() ? m_main_toolbar.get_visible_items_cnt() : 0) + m_gizmos.get_selectable_icons_cnt() + (m_assemble_view_toolbar.is_enabled() ? m_assemble_view_toolbar.get_visible_items_cnt() : 0) + (m_separator_toolbar.is_enabled() ? m_separator_toolbar.get_visible_items_cnt() : 0) + (collapse_toolbar.is_enabled() ? collapse_toolbar.get_visible_items_cnt() : 0);
     float noitems_width = top_tb_width - size * items_cnt; // width of separators and borders in top toolbars
 
     // calculate scale needed for items in all top toolbars
@@ -8867,7 +8877,7 @@ void GLCanvas3D::_render_overlays()
 
     //BBS: GUI refactor: GLToolbar
     //move gizmos behind of main
-    if (!m_compact_slicing_tools)
+    if (!m_compact_slicing_tools || m_slicing_gizmos_visible)
         _render_gizmos_overlay();
 
     if (m_layers_editing.last_object_id >= 0 && m_layers_editing.object_max_z() > 0.0f)
@@ -8895,8 +8905,8 @@ void GLCanvas3D::_render_overlays()
     }
     m_labels.render(sorted_instances);
 
+    _render_3d_navigator();
     if (!m_compact_slicing_tools) {
-        _render_3d_navigator();
         _render_canvas_toolbar();
     }
 }
@@ -9065,9 +9075,9 @@ int GLCanvas3D::get_main_toolbar_offset() const
     const float cnv_width              = get_canvas_size().get_width();
     const float collapse_toolbar_width = get_collapse_toolbar_width() * 2;
     const float gizmo_width            = m_gizmos.get_scaled_total_width();
-    const float assemble_width         = m_assemble_view_toolbar.get_width();
-    const float separator_width        = m_separator_toolbar.get_width();
-    const float toolbar_total_width    = m_main_toolbar.get_width() + separator_width + gizmo_width + assemble_width + collapse_toolbar_width;
+    const float assemble_width         = get_effective_assemble_view_toolbar_width();
+    const float separator_width        = get_effective_separator_toolbar_width();
+    const float toolbar_total_width    = get_effective_main_toolbar_width() + separator_width + gizmo_width + assemble_width + collapse_toolbar_width;
 
     if (cnv_width < toolbar_total_width) {
         return is_collapse_toolbar_on_left() ? collapse_toolbar_width : 0;

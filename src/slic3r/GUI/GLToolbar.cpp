@@ -1538,7 +1538,7 @@ bool GLToolbar::generate_icons_texture()
 //    if (sprite_size_px % 2 != 0)
 //        sprite_size_px += 1;
 
-    bool res = m_icons_texture.load_from_svg_files_as_sprites_array(filenames, states, sprite_size_px, false);
+    bool res = m_icons_texture.load_from_svg_files_as_sprites_array(filenames, states, sprite_size_px, false, m_dark_mode);
     if (res)
         m_icons_texture_dirty = false;
 
