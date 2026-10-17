@@ -542,6 +542,9 @@ private:
     //BBS: GUI refactor: GLToolbar
     mutable GLToolbar m_main_toolbar;
     bool m_compact_slicing_tools {false};
+    // Redesign keeps the native main toolbar hidden, but may expose the
+    // model-editing Gizmo row and its Position/Rotation/Scale inputs.
+    bool m_slicing_gizmos_visible {false};
     std::array<bool, 5> m_saved_slicing_tools {};
     mutable GLToolbar m_separator_toolbar;
     mutable IMToolbar m_sel_plate_toolbar;
@@ -902,6 +905,12 @@ public:
     void enable_selection(bool enable) { m_selection.set_enabled(enable); }
     void enable_main_toolbar(bool enable) { m_main_toolbar.set_enabled(enable); }
     bool compact_slicing_tools() const { return m_compact_slicing_tools; }
+    bool slicing_gizmos_visible() const { return m_slicing_gizmos_visible; }
+    void set_slicing_gizmos_visible(bool visible) {
+        if (visible == m_slicing_gizmos_visible) return;
+        m_slicing_gizmos_visible = visible;
+        set_as_dirty();
+    }
     // Temporary presentation only; native toolbar availability is restored
     // exactly when leaving the AI page or switching to the native tab.
     void use_compact_slicing_tools(bool compact) {
@@ -943,10 +952,13 @@ public:
     int get_main_toolbar_offset() const;
     int get_main_toolbar_height() const { return m_main_toolbar.get_height(); }
     int get_main_toolbar_width() const { return m_main_toolbar.get_width(); }
+    float get_effective_main_toolbar_width() const { return m_main_toolbar.is_enabled() ? m_main_toolbar.get_width() : 0.0f; }
     float get_assemble_view_toolbar_width() const { return m_assemble_view_toolbar.get_width(); }
+    float get_effective_assemble_view_toolbar_width() const { return m_assemble_view_toolbar.is_enabled() ? m_assemble_view_toolbar.get_width() : 0.0f; }
     float get_assemble_view_toolbar_height() const { return m_assemble_view_toolbar.get_height(); }
     float get_assembly_paint_toolbar_width() const { return m_paint_toolbar_width; }
     float get_separator_toolbar_width() const { return m_separator_toolbar.get_width(); }
+    float get_effective_separator_toolbar_width() const { return m_separator_toolbar.is_enabled() ? m_separator_toolbar.get_width() : 0.0f; }
     float get_separator_toolbar_height() const { return m_separator_toolbar.get_height(); }
     bool  is_collapse_toolbar_on_left() const;
     float get_collapse_toolbar_width() const;

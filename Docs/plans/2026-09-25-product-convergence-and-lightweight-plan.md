@@ -1,3 +1,13 @@
+# 2026-10-17 Redesign/原生 Gizmo 深色主题可读性（已实施，待 GUI 验收）
+
+用户确认实施“选中模型后顶部操作面板按钮在深色主题下看不清”的修复。源码对照确认 AI 紧凑切片页和普通 Orca 原生页共用 `GLTexture` 状态纹理链路；工作区通过 `m_workspace_background` 强制深色工具栏时，原实现仍从全局 `dark_color_mode` 读取浅色普通态 `#2b3436`，并使用过暗的深色禁用态 `#4c4c55`，因此按钮在深色背景上对比度不足。
+
+实现：`GLTexture::load_from_svg_files_as_sprites_array()` 增加显式 `dark_mode` 重载，未传参的 IconManager 等调用仍保持原全局主题行为；`GLToolbar` 增加主题状态，`GLCanvas3D` 在主题切换和工作区重主题时同步主、分隔、装配、折叠工具栏；`GLGizmosManager` 直接使用自身实际主题生成 Gizmo 状态纹理。深色禁用态提高至 `#8a8a94`，不改变状态机、图标资源或模型编辑/撤销链路。
+
+验证：Windows `Run -NoLaunch` 五步 `catalogs/build/install/runtime-check/python-check` 全部退出码 0，证据 [`20261017-204626-070`](../../.tmp/dev/logs/20261017-204626-070/result.json)，源码身份 `f487a278e885737ce2a312f3400349608ce3ab255c76c4f7df083f7de69468a9`；构建与安装 DLL SHA256 均为 `84194B41C9F5551F974BB403AF79C61206E6544468045BACAEB011362005AA46`；`UiRedesign` 定向 C++ 回归 83/83 通过，证据 [`20261017-212543-131`](../../.tmp/dev/logs/20261017-212543-131/result.json)；`verify_ai_integration.py --json` 与 `git diff --check` 通过。
+
+当前范围：未启动程序，真实 AI/原生页面、深色/浅色切换、多 DPI 与禁用状态视觉仍待用户验收；保持现有未提交源码及上一轮修改，不纳入无关未跟踪 `Docs/architecture/smart-slicing-implementation.html`。
+
 # 2026-10-16 SmartSlice：完成事件到预览路由竞态修复
 
 目标与授权：承接用户真实窗口截图，修复原生切片已成功但 SmartSlice 工作台停留在模型视图的问题；范围为完成事件同步和预览路由，不改变切片算法、推荐参数或原生 G-code 生成。
@@ -1532,7 +1542,31 @@ PR 作者报告已有新控件的真实窗口、预览、前后对比和保存�
 
 当前验收与剩余：10-17 用户明确反馈“上面问题已修复”，并提供包含缩小模型、擦料塔与左下导航器的切片中截图，上一轮初始大小/擦料塔取景及导航器缺失问题按用户反馈通过。多对象、所有导航器点击/拖动及 AI/原生准备/Preview 往返未形成逐项证据，保留验证边界，不从截图推断完整组合通过。未提交、推送、发布或付费生成，未触及无关未跟踪架构 HTML。
 
-## 2026-10-17 Redesign：切片页原生模型编辑工具栏分析（未改代码）
+## 2026-10-17 Redesign：切片页原生模型编辑工具栏（已实施、待用户 GUI 验收）
+
+用户已授权实施。沿现有 `codex/team/integration` checkout，新增 `GLCanvas3D::m_slicing_gizmos_visible` 只控制紧凑 AI 切片页的原生模型编辑 Gizmo 行渲染与鼠标命中；`RedesignModelWorkflow::refresh_workflow_layout()` 在 AI 切片/Preview 开启，在离开页面关闭。紧凑模式仍隐藏原生主工具栏、侧栏及此前移除的多色、美颜、拓扑统计和 G-code 文本。保留 Gizmo 管理器启用状态，避免破坏选择、撤销快照和原生 `do_move/do_rotate/do_scale` 编辑流程；普通 Orca 页面不变。
+
+验证：`dev.ps1 Run -NoLaunch -Jobs 2` 的 catalogs/build/install/runtime-check/python-check 五步退出码均为 0，结果 [`20261017-120019-351`](../../.tmp/dev/logs/20261017-120019-351/result.json)；`UiRedesign` 定向 C++ 回归 83/83 通过，结果 [`20261017-120555-379`](../../.tmp/dev/logs/20261017-120555-379/result.json)；`scripts/verify_ai_integration.py --json` 返回 `ok: true`；`git diff --check` 通过。源码身份 `b873f18500de58d30e78b00385b857a7526444be1844b0e8f4f19c33800ed735`，构建与安装 DLL SHA256 `C59EB15318F7D31F58D71B5A013E50E75524ACAF59CEBC072A47155021D481C8`。
+
+未结：GUI 尚未启动或操作，用户承接工具栏、数值面板、模型编辑、撤销/重做和页面往返验收；多选择粒度、DPI/短窗口及普通页面恢复未形成真实证据。
+
+下一步：用户运行 `.tmp/dev/run/orca-slicer.exe` 进行真实窗口验收；若反馈回归，继续沿本轮未提交修改修正。
+
+计划变更：本项由“只读分析、等待授权”推进为“代码已实施、已安装、待用户 GUI 验收”；不提交、不推送、不发布，无关未跟踪 `Docs/architecture/smart-slicing-implementation.html` 不纳入本轮。
+
+## 2026-10-17 Redesign：切片页取景与原生 Gizmo 居中（已安装，待用户 GUI 验收）
+
+用户确认实施两个显示问题：模型初始视觉位置偏下，以及顶部原生模型编辑工具栏向右偏移。沿现有 `codex/team/integration` checkout，修改 `RedesignModelWorkflow.cpp`、`GLCanvas3D.cpp`、`GLCanvas3D.hpp` 和 `GLGizmosManager.cpp`。
+
+取景修复：`fit_slicing_camera()` 将当前模型实例、活动擦料塔和当前打印板范围保留为联合取景包围盒，但使用打印板中心作为相机焦点；调用 `Camera::zoom_to_box()` 后恢复该焦点，避免擦料塔把模型中心拉偏。保留当前正面/浅俯视方向、1.5 取景边距和画布就绪重试流程，不持续重置用户手动相机。
+
+工具栏修复：新增主工具栏、分隔栏和装配工具栏的有效可见宽度；紧凑 AI 页面中 disabled 的原生工具栏不再参与整体居中、Gizmo 鼠标命中、顶部绘制及图标缩放，激活后的 Position/Rotation/Scale/Size 输入窗口沿同一可见边界定位。普通 Orca 页面仍使用原有完整工具栏布局，X/Y/Z 面板仍遵循选中模型并激活 Move/Rotate/Scale 后显示的原生交互。
+
+验证：`UiRedesign` 定向 C++ 回归通过 [20261017-163718-820](../../.tmp/dev/logs/20261017-163718-820/result.json)；`scripts/verify_ai_integration.py --json` 返回 `ok: true`；[Run 20261017-171143-024](../../.tmp/dev/logs/20261017-171143-024/result.json) 的 catalogs/build/install/runtime-check/python-check 五步退出码均为 0，已安装到 `D:/OrcaSlicer-version/OrcaSlicer/.tmp/dev/run`；构建与安装 `OrcaSlicer.dll` SHA256 均为 `897213EA7A0882BCA5F453E44EA65549ECB7179DBB21C1AF93DB8BC5D2232AAD`；`git diff --check` 通过。
+
+当前验收与剩余：未启动应用或操作用户窗口，真实模型居中、擦料塔完整可见、工具栏居中、数值面板编辑、不同 DPI/短窗口和页面往返仍待用户 GUI 验收；未提交、未推送、未发布，无关未跟踪架构 HTML 保持不纳入本轮。
+
+### 原分析记录
 
 用户问题：截图顶部空出的原生 Orca 工具区域是否能在当前 Redesign 切片页显示，并能对当前模型修改高度及 X/Y/Z 数值。
 

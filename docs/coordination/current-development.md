@@ -1,3 +1,45 @@
+# 2026-10-17 Redesign/原生 Gizmo 深色主题可读性（已构建安装，待用户 GUI 验收）
+
+主线：修复 AI 紧凑切片页与 Orca 原生页共用的顶部模型编辑工具栏在深色背景上普通/禁用状态对比度不足的问题。
+
+本轮：`GLTexture` 新增显式深色主题状态纹理入口，保留其他调用的全局主题兼容；`GLGizmosManager`、主工具栏、分隔栏、装配栏和折叠栏都从实际工作区主题传递状态，不再只读取全局 `dark_color_mode`。深色禁用图标由 `#4c4c55` 调整为 `#8a8a94`，普通浅色页面和模型编辑逻辑保持不变。
+
+验证：`dev.ps1 Run -NoLaunch -Jobs 2` 五步全部退出码 0，结果 [`20261017-204626-070`](../../.tmp/dev/logs/20261017-204626-070/result.json)，已安装到 `.tmp/dev/run`；构建与运行目录 `OrcaSlicer.dll` SHA256 均为 `84194B41C9F5551F974BB403AF79C61206E6544468045BACAEB011362005AA46`；`UiRedesign` 定向 C++ 回归 83/83 通过，结果 [`20261017-212543-131`](../../.tmp/dev/logs/20261017-212543-131/result.json)；`scripts/verify_ai_integration.py --json` 返回 `ok: true`，`git diff --check` 通过。
+
+未结：本轮未启动应用或操作用户窗口；AI 页和普通 Orca 页在选中模型后按钮可读性、禁用态辨识度、主题切换及不同 DPI 仍待用户在匹配运行目录实测。未提交、未推送；无关未跟踪架构 HTML 不纳入本轮。
+
+下一步：用户运行 `D:/OrcaSlicer-version/OrcaSlicer/.tmp/dev/run/orca-slicer.exe`，分别在 AI 切片页和原生页选中模型，确认 Move/Rotate/Scale 工具及禁用按钮在深色背景上清晰可辨，并核对浅色主题恢复。
+
+计划变更：新增“Gizmo 顶部操作面板深色主题可读性”实施项；保留上一轮取景、工具栏居中、原生编辑和页面精简修改，等待真实 GUI 验收。
+
+# 2026-10-17 Redesign 切片页取景与原生 Gizmo 居中（已安装，待用户 GUI 验收）
+
+主线：承接用户授权，修正 AI 紧凑切片页模型初始视觉中心偏下，以及顶部原生模型编辑 Gizmo 工具栏向右偏移的问题。
+
+本轮：将模型/打印板焦点与模型、擦料塔、打印板联合取景范围分离；相机缩放联合范围后恢复打印板焦点，避免擦料塔改变模型位置。新增有效可见工具栏宽度，紧凑模式下隐藏的主工具栏、分隔栏和装配栏不再参与居中、鼠标命中、输入面板锚点和图标缩放；普通 Orca 工具栏逻辑保持不变。
+
+验证：`UiRedesign` 定向 C++ 回归通过，结果 [`20261017-163718-820`](../../.tmp/dev/logs/20261017-163718-820/result.json)；`scripts/verify_ai_integration.py --json` 返回 `ok: true`；`dev.ps1 Run -NoLaunch -Jobs 2` 的 catalogs/build/install/runtime-check/python-check 五步退出码均为 0，结果 [`20261017-171143-024`](../../.tmp/dev/logs/20261017-171143-024/result.json)，已安装到 `.tmp/dev/run`；构建与安装 `OrcaSlicer.dll` SHA256 均为 `897213EA7A0882BCA5F453E44EA65549ECB7179DBB21C1AF93DB8BC5D2232AAD`；`git diff --check` 通过。
+
+未结：本轮未启动应用或操作用户窗口，模型视觉居中、擦料塔边界、顶部工具栏和激活后的 X/Y/Z 输入面板仍需用户在匹配运行目录实测；不同 DPI、短窗口、Preview 往返及普通页面恢复尚未形成真实 GUI 证据。
+
+下一步：用户运行 `D:/OrcaSlicer-version/OrcaSlicer/.tmp/dev/run/orca-slicer.exe`，在 AI 切片页确认模型主体居中、擦料塔完整可见，选中模型后核对 Move/Rotate/Scale 工具和 Position/Rotation/Scale/Size 输入面板。
+
+计划变更：新增“Redesign 切片页取景与 Gizmo 居中”实施项；代码已构建并安装，保持未提交、未推送、未启动；无关未跟踪架构 HTML 继续不纳入本轮。
+
+# 2026-10-17 Redesign 切片页原生模型编辑工具栏（已实施、待用户 GUI 验收）
+
+主线：承接用户授权，在 AI 紧凑切片页恢复 Orca 原生 Move / Rotate / Scale 模型编辑 Gizmo 工具栏及顶部 Position、Rotation、Scale/Size 的 X/Y/Z 数值面板；继续隐藏页面此前明确移除的主工具栏、侧栏、多色、美颜、拓扑统计和 G-code 文本。
+
+本轮：新增画布级 `m_slicing_gizmos_visible` 展示开关。紧凑模式下只解耦模型编辑 Gizmo 的渲染和鼠标命中，保留 Gizmo 管理器启用状态、选择、撤销快照及 `do_move/do_rotate/do_scale` 原生编辑链路；进入 AI 切片/Preview 时开启，离开页面时由工作流布局关闭。未改变普通 Orca 页面行为或切片引擎。
+
+验证：Windows 增量构建成功；`dev.ps1 Run -NoLaunch -Jobs 2` 的 catalogs/build/install/runtime-check/python-check 五步全部退出码 0，结果 [`20261017-120019-351`](../../.tmp/dev/logs/20261017-120019-351/result.json)，安装到 `.tmp/dev/run`，源码身份 `b873f18500de58d30e78b00385b857a7526444be1844b0e8f4f19c33800ed735`，构建与安装 `OrcaSlicer.dll` SHA256 均为 `C59EB15318F7D31F58D71B5A013E50E75524ACAF59CEBC072A47155021D481C8`。`UiRedesign` 定向 C++ 回归 83/83 通过 [`20261017-120555-379`](../../.tmp/dev/logs/20261017-120555-379/result.json)，`verify_ai_integration.py --json` 返回 `ok: true`，`git diff --check` 通过。
+
+未结：未启动应用或操作用户窗口；用户需在匹配运行目录验证工具栏显示、Move/Rotate/Scale 打开、Position/Rotation/Scale/Size 的 X/Y/Z 输入、模型变化和撤销/重做，以及离开 AI 页后普通 Orca 工具栏恢复。多选择粒度、DPI 和 Preview 往返仍未形成真实 GUI 证据。
+
+下一步：用户运行 `D:/OrcaSlicer-version/OrcaSlicer/.tmp/dev/run/orca-slicer.exe`，在 AI 切片页选择模型并核对顶部原生编辑工具；反馈问题后沿当前未提交源码继续修正。
+
+计划变更：原“原生模型编辑工具栏分析”由“待授权”改为“已实施、待用户 GUI 验收”；本轮未提交、未推送、未启动程序；无关未跟踪架构 HTML 保持不纳入源码交付。
+
 # 2026-10-17 Redesign 切片页原生模型编辑工具栏分析（未改代码）
 
 主线：用户询问截图中模型区域上方 Orca 原生模型编辑工具栏及 X/Y/Z 数值面板能否在 Redesign 切片页显示、编辑是否有效；本轮仅分析。

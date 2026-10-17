@@ -63,37 +63,45 @@ bool fit_slicing_camera(Plater& plater)
         canvas->set_as_dirty();
         return false;
     }
-    BoundingBoxf3 bounds;
+    BoundingBoxf3 model_bounds;
     const auto& objects = plater.model().objects;
     for (size_t i = 0; i < objects.size(); ++i) {
         const auto* object = objects[i];
         if (!object) continue;
         for (size_t j = 0; j < object->instances.size(); ++j)
-            if (plate->contain_instance(int(i), int(j))) bounds.merge(object->instance_bounding_box(j));
+            if (plate->contain_instance(int(i), int(j))) model_bounds.merge(object->instance_bounding_box(j));
     }
-    if (!bounds.defined) return false;
+    if (!model_bounds.defined) return false;
+    BoundingBoxf3 frame_bounds = model_bounds;
     // Wipe towers are GL auxiliary volumes, not objects in the model.
     size_t wipe_towers = 0;
     for (const auto* volume : canvas->get_volumes().volumes) {
         if (volume && volume->is_active && volume->is_wipe_tower &&
             volume->object_idx() == 1000 + plate->get_index()) {
-            bounds.merge(volume->transformed_bounding_box());
+            frame_bounds.merge(volume->transformed_bounding_box());
             ++wipe_towers;
         }
     }
     // Include this plate's working area without its printable-height box.
     BoundingBoxf3 bed = plate->get_bounding_box();
+    Vec3d focus_target = model_bounds.center();
     if (bed.defined) {
         bed.min.z() = bed.max.z() = 0.;
-        bounds.merge(bed);
+        frame_bounds.merge(bed);
+        // Match Orca's native plate view: the bed anchors the initial focus,
+        // while auxiliary volumes only enlarge the framing bounds.
+        focus_target = bed.center();
     }
     camera.select_view("right");
     const double distance = camera.get_distance();
     // Generated people face +X, so frame the current plate from that direction
     // with a shallow downward angle.
-    camera.look_at(bounds.center() + distance * Vec3d(.93969262, 0., .34202014),
-        bounds.center(), Vec3d::UnitZ());
-    camera.zoom_to_box(bounds, 1.5);
+    camera.look_at(focus_target + distance * Vec3d(.93969262, 0., .34202014),
+        focus_target, Vec3d::UnitZ());
+    camera.zoom_to_box(frame_bounds, 1.5);
+    // zoom_to_box() recenters on frame_bounds; restore the plate/model focus
+    // so the wipe tower cannot pull the model toward the edge of the canvas.
+    camera.set_target(focus_target);
     canvas->set_as_dirty();
     BOOST_LOG_TRIVIAL(info) << "[RedesignCamera] plate=" << plate->get_index()
         << " viewport=" << viewport[2] << "x" << viewport[3]
@@ -912,6 +920,10 @@ void RedesignShell::refresh_workflow_layout()
     if (compact && !m_plater->is_sidebar_collapsed()) m_plater->collapse_sidebar(true);
     m_plater->get_view3D_canvas3D()->use_compact_slicing_tools(compact);
     m_plater->get_preview_canvas3D()->use_compact_slicing_tools(compact);
+    // Keep the native main toolbar and sidebar hidden, while exposing the
+    // model-editing Gizmo row and its numeric transform panel in AI slicing.
+    m_plater->get_view3D_canvas3D()->set_slicing_gizmos_visible(compact);
+    m_plater->get_preview_canvas3D()->set_slicing_gizmos_visible(compact);
     m_plater->get_view3D_canvas3D()->suppress_gcode_window(slicing);
     m_plater->get_preview_canvas3D()->suppress_gcode_window(slicing);
     if (compact && !m_saved_collapse_toolbar) {

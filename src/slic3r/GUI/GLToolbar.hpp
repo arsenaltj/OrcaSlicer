@@ -324,6 +324,7 @@ private:
     EType m_type;
     std::string m_name;
     bool m_enabled;
+    bool m_dark_mode{false};
     GLTexture m_icons_texture;
     bool m_icons_texture_dirty;
     mutable GLTexture m_images_texture;
@@ -375,6 +376,11 @@ public:
 
     bool is_enabled() const { return m_enabled; }
     void set_enabled(bool enable) { m_enabled = enable; }
+    void set_dark_mode(bool dark) {
+        if (m_dark_mode == dark) return;
+        m_dark_mode = dark;
+        m_icons_texture_dirty = true;
+    }
 
     //BBS: GUI refactor: GLToolbar
     bool add_item(const GLToolbarItem::Data& data, GLToolbarItem::EType type = GLToolbarItem::Action);
