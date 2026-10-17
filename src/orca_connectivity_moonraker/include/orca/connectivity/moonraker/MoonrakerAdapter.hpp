@@ -21,6 +21,7 @@ struct MoonrakerHttpRequest {
     std::map<std::string, std::string> form_fields;
     std::string upload_source;
     std::string upload_filename;
+    std::string upload_sha256;
 };
 
 struct MoonrakerHttpResponse {
@@ -33,6 +34,7 @@ class IMoonrakerHttpTransport {
 public:
     virtual ~IMoonrakerHttpTransport() = default;
     virtual MoonrakerHttpResponse perform(const MoonrakerHttpRequest& request) = 0;
+    virtual void cancel() {}
 };
 
 class IMoonrakerWebSocketTransport {
@@ -112,7 +114,8 @@ private:
                                   std::string body = {},
                                   std::map<std::string, std::string> form_fields = {},
                                   std::string upload_source = {},
-                                  std::string upload_filename = {}) const;
+                                  std::string upload_filename = {},
+                                  std::string upload_sha256 = {}) const;
     PrinterOperationResult result_from_response(const MoonrakerHttpResponse& response,
                                                 bool parse_json_envelope = true) const;
     bool parse_server_info(const MoonrakerHttpResponse& response);

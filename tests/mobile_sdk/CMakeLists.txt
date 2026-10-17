@@ -9,6 +9,7 @@ endif()
 add_executable(${_TEST_NAME}_tests
     test_mobile_sdk_contracts.cpp
     test_moonraker_adapter.cpp
+    test_moonraker_transport.cpp
 )
 
 target_link_libraries(${_TEST_NAME}_tests PRIVATE

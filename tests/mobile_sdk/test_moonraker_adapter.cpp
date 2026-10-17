@@ -252,6 +252,16 @@ TEST_CASE("Moonraker falls back to polling and reconciles after reconnect", "[Mo
 
 TEST_CASE("Moonraker WebSocket faults switch to polling fallback", "[Moonraker][MobileSDK]")
 {
+    SECTION("cancelled request")
+    {
+        auto http = std::make_shared<FakeHttp>();
+        http->handler = [](const MoonrakerHttpRequest&) { return MoonrakerHttpResponse{0, "", "Moonraker HTTP request cancelled"}; };
+        MoonrakerAdapter adapter(http);
+        REQUIRE_FALSE(adapter.probe(endpoint()));
+        REQUIRE(adapter.last_result().code == "moonraker.cancelled");
+        REQUIRE_FALSE(adapter.last_result().retryable);
+    }
+
     SECTION("invalid JSON")
     {
         auto http = std::make_shared<FakeHttp>();
@@ -378,6 +388,7 @@ TEST_CASE("Moonraker upload and print commands use stable transport requests", "
     REQUIRE(http->requests[1].form_fields.at("root") == "gcodes");
     REQUIRE(http->requests[1].upload_source == "file:///tmp/benchy.gcode");
     REQUIRE(http->requests[1].upload_filename == "benchy.gcode");
+    REQUIRE(http->requests[1].upload_sha256 == "sha256");
     REQUIRE(nlohmann::json::parse(http->requests[2].body).at("filename") == "gcodes/uploaded.gcode");
     REQUIRE(nlohmann::json::parse(http->requests[3].body).at("script") == "PAUSE");
     REQUIRE(nlohmann::json::parse(http->requests[4].body).at("script") == "RESUME");
@@ -404,6 +415,16 @@ TEST_CASE("Moonraker maps HTTP and JSON fault matrix to stable errors", "[Moonra
         REQUIRE_FALSE(adapter.probe(endpoint()));
         REQUIRE(adapter.last_result().code == "moonraker.transport_error");
         REQUIRE(adapter.last_result().retryable);
+    }
+
+    SECTION("cancelled request")
+    {
+        auto http = std::make_shared<FakeHttp>();
+        http->handler = [](const MoonrakerHttpRequest&) { return MoonrakerHttpResponse{0, "", "Moonraker HTTP request cancelled"}; };
+        MoonrakerAdapter adapter(http);
+        REQUIRE_FALSE(adapter.probe(endpoint()));
+        REQUIRE(adapter.last_result().code == "moonraker.cancelled");
+        REQUIRE_FALSE(adapter.last_result().retryable);
     }
 
     SECTION("invalid JSON")

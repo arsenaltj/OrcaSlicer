@@ -130,7 +130,7 @@ PrinterOperationResult MoonrakerAdapter::upload_gcode(const GcodeUploadRequest& 
 
     std::map<std::string, std::string> form_fields{{"root", "gcodes"}, {"print", "false"}};
     const auto response = perform("POST", "/server/files/upload", {}, std::move(form_fields),
-                                  request.source_uri, request.filename);
+                                  request.source_uri, request.filename, request.sha256);
     const auto result = result_from_response(response, true);
     if (!result.success) {
         m_last_result = result;
@@ -507,7 +507,8 @@ MoonrakerHttpResponse MoonrakerAdapter::perform(std::string method,
                                                 std::string body,
                                                 std::map<std::string, std::string> form_fields,
                                                 std::string upload_source,
-                                                std::string upload_filename) const
+                                                std::string upload_filename,
+                                  std::string upload_sha256) const
 {
     if (!m_http) {
         return {0, {}, "Moonraker HTTP transport is unavailable"};
@@ -517,6 +518,7 @@ MoonrakerHttpResponse MoonrakerAdapter::perform(std::string method,
     request.form_fields = std::move(form_fields);
     request.upload_source = std::move(upload_source);
     request.upload_filename = std::move(upload_filename);
+    request.upload_sha256 = std::move(upload_sha256);
     if (!request.body.empty()) {
         request.headers.emplace("Content-Type", "application/json");
     }
@@ -533,6 +535,16 @@ PrinterOperationResult MoonrakerAdapter::result_from_response(const MoonrakerHtt
         return failure_result("moonraker.not_found", error_message(response), false);
     }
     if (!response.error.empty()) {
+        const auto error = map_state(response.error);
+        if (error.find("cancelled") != std::string::npos || error.find("canceled") != std::string::npos) {
+            return failure_result("moonraker.cancelled", response.error, false);
+        }
+        if (error.find("sha-256") != std::string::npos) {
+            return failure_result("moonraker.integrity_error", response.error, false);
+        }
+        if (error.find("timed out") != std::string::npos || error.find("timeout") != std::string::npos) {
+            return failure_result("moonraker.timeout", response.error, true);
+        }
         return failure_result("moonraker.transport_error", response.error, true);
     }
     if (!is_success_status(response.status_code)) {
