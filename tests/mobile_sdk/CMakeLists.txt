@@ -6,11 +6,14 @@ if (NOT COMMAND orcaslicer_discover_tests)
     endfunction()
 endif()
 
-add_executable(${_TEST_NAME}_tests
+set(_moonraker_test_sources
     test_mobile_sdk_contracts.cpp
     test_moonraker_adapter.cpp
-    test_moonraker_transport.cpp
 )
+if (ORCA_MOONRAKER_CONCRETE_TRANSPORT_AVAILABLE)
+    list(APPEND _moonraker_test_sources test_moonraker_transport.cpp)
+endif()
+add_executable(${_TEST_NAME}_tests ${_moonraker_test_sources})
 
 target_link_libraries(${_TEST_NAME}_tests PRIVATE
     OrcaSlicer::MobileSDK

@@ -2,7 +2,11 @@
 
 #include "orca/connectivity/moonraker/MoonrakerAdapter.hpp"
 
+#include <atomic>
+#include <chrono>
 #include <functional>
+#include <mutex>
+#include <thread>
 #include <initializer_list>
 #include <map>
 #include <memory>
@@ -17,17 +21,20 @@ using Catch::Matchers::WithinRel;
 namespace {
 
 struct FakeHttp final : IMoonrakerHttpTransport {
+    mutable std::mutex mutex;
     std::vector<MoonrakerHttpRequest> requests;
     std::function<MoonrakerHttpResponse(const MoonrakerHttpRequest&)> handler;
 
     MoonrakerHttpResponse perform(const MoonrakerHttpRequest& request) override
     {
+        std::lock_guard<std::mutex> lock(mutex);
         requests.push_back(request);
         return handler ? handler(request) : MoonrakerHttpResponse{500, {}, "no fake response"};
     }
 };
 
 struct FakeWebSocket final : IMoonrakerWebSocketTransport {
+    mutable std::mutex mutex;
     bool connect_result{true};
     bool send_result{true};
     bool connected{false};
@@ -42,6 +49,7 @@ struct FakeWebSocket final : IMoonrakerWebSocketTransport {
                  MessageHandler message_handler,
                  CloseHandler close_handler) override
     {
+        std::lock_guard<std::mutex> lock(mutex);
         url = target;
         headers = request_headers;
         on_message = std::move(message_handler);
@@ -52,24 +60,36 @@ struct FakeWebSocket final : IMoonrakerWebSocketTransport {
 
     bool send(const std::string& payload) override
     {
+        std::lock_guard<std::mutex> lock(mutex);
         sent.push_back(payload);
         return send_result && connected;
     }
 
     void close() override
     {
+        std::lock_guard<std::mutex> lock(mutex);
         connected = false;
     }
 
     void emit(const std::string& payload)
     {
-        if (on_message) on_message(payload);
+        MessageHandler callback;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            callback = on_message;
+        }
+        if (callback) callback(payload);
     }
 
     void disconnect_from_server()
     {
-        connected = false;
-        if (on_close) on_close();
+        CloseHandler callback;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            connected = false;
+            callback = on_close;
+        }
+        if (callback) callback();
     }
 };
 
@@ -462,4 +482,46 @@ TEST_CASE("Moonraker maps HTTP and JSON fault matrix to stable errors", "[Moonra
         REQUIRE_FALSE(adapter.poll_status());
         REQUIRE(adapter.last_result().code == "moonraker.protocol_error");
     }
+}
+
+TEST_CASE("Moonraker adapter serializes callbacks with synchronous operations and teardown", "[Moonraker][MobileSDK][Concurrency]")
+{
+    auto http = std::make_shared<FakeHttp>();
+    install_standard_http(http, "printing", 0.25);
+    auto websocket = std::make_shared<FakeWebSocket>();
+    auto adapter = std::make_unique<MoonrakerAdapter>(http, websocket, "concurrent-key");
+    REQUIRE(adapter->probe(endpoint()));
+    REQUIRE(adapter->subscribe_status());
+    websocket->emit(R"({"jsonrpc":"2.0","method":"notify_status_update","params":[{"print_stats":{"state":"printing","progress":0.7}}]})");
+    REQUIRE(adapter->get_status().state == PrinterState::Printing);
+
+    std::atomic_bool start{false};
+    std::atomic_bool all_status_ok{true};
+    std::vector<std::thread> workers;
+    for (int index = 0; index < 3; ++index) {
+        workers.emplace_back([&]() {
+            while (!start.load()) std::this_thread::yield();
+            for (int count = 0; count < 50; ++count) {
+                websocket->emit(R"({"jsonrpc":"2.0","method":"notify_status_update","params":[{"print_stats":{"state":"printing","progress":0.7}}]})");
+            }
+        });
+    }
+    workers.emplace_back([&]() {
+        while (!start.load()) std::this_thread::yield();
+        for (int count = 0; count < 50; ++count) {
+            const auto status = adapter->get_status();
+            if (status.state != PrinterState::Printing) all_status_ok.store(false);
+        }
+    });
+    start.store(true);
+    for (auto& worker : workers) worker.join();
+
+    REQUIRE(all_status_ok.load());
+    REQUIRE(adapter->get_status().state == PrinterState::Printing);
+    adapter.reset();
+
+    // The transport can retain callback functors after close. They must become
+    // no-ops once the adapter lifetime has ended.
+    websocket->emit(R"({"jsonrpc":"2.0","method":"notify_status_update","params":[{"print_stats":{"state":"error"}}]})");
+    websocket->disconnect_from_server();
 }

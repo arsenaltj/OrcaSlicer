@@ -298,7 +298,11 @@ public:
               error_code& ec) override
     {
         beast::flat_buffer buffer;
-        beast::get_lowest_layer(socket).expires_after(timeout);
+        if (timeout.count() > 0) {
+            beast::get_lowest_layer(socket).expires_after(timeout);
+        } else {
+            beast::get_lowest_layer(socket).expires_never();
+        }
         socket.read(buffer, ec);
         if (!ec) payload = beast::buffers_to_string(buffer.data());
         return !ec;
@@ -404,7 +408,11 @@ public:
               error_code& ec) override
     {
         beast::flat_buffer buffer;
-        beast::get_lowest_layer(socket).expires_after(timeout);
+        if (timeout.count() > 0) {
+            beast::get_lowest_layer(socket).expires_after(timeout);
+        } else {
+            beast::get_lowest_layer(socket).expires_never();
+        }
         socket.read(buffer, ec);
         if (!ec) payload = beast::buffers_to_string(buffer.data());
         return !ec;
@@ -711,38 +719,98 @@ std::string MoonrakerHttpTransport::last_error() const
 }
 
 struct MoonrakerWebSocketTransport::Impl : std::enable_shared_from_this<MoonrakerWebSocketTransport::Impl> {
+    using MessageHandler = IMoonrakerWebSocketTransport::MessageHandler;
+    using CloseHandler = IMoonrakerWebSocketTransport::CloseHandler;
+
+    struct Connection {
+        ~Connection()
+        {
+            // A natural reader EOF can invoke on_close, and that callback may
+            // reconnect before this reader returns. The thread object then
+            // belongs to the last self-reference on the reader thread.
+            if (reader.joinable()) reader.detach();
+        }
+
+        std::shared_ptr<WebSocketSession> session;
+        MessageHandler on_message;
+        CloseHandler on_close;
+        std::atomic_bool connected{false};
+        std::atomic_bool stopping{false};
+        std::mutex write_mutex;
+        std::thread reader;
+    };
+
     explicit Impl(MoonrakerTransportOptions value) : options(std::move(value)) {}
 
     MoonrakerTransportOptions options;
     net::io_context io;
-    mutable std::mutex mutex;
-    std::mutex write_mutex;
-    std::shared_ptr<WebSocketSession> session;
-    std::thread reader;
-    IMoonrakerWebSocketTransport::MessageHandler on_message;
-    IMoonrakerWebSocketTransport::CloseHandler on_close;
-    bool connected{false};
-    bool stopping{false};
+    // connect(), close() and the synchronous teardown of a reader are one
+    // serialized lifecycle operation. The reader never takes this lock while
+    // running a user callback, so a callback may reconnect safely.
+    std::mutex operation_mutex;
+    mutable std::mutex state_mutex;
+    std::shared_ptr<Connection> active;
     std::string error;
 
     void set_error(std::string value)
     {
-        std::lock_guard<std::mutex> lock(mutex);
+        std::lock_guard<std::mutex> lock(state_mutex);
         error = std::move(value);
     }
 
     std::string last_error() const
     {
-        std::lock_guard<std::mutex> lock(mutex);
+        std::lock_guard<std::mutex> lock(state_mutex);
         return error;
+    }
+
+    void stop_connection(const std::shared_ptr<Connection>& connection)
+    {
+        if (!connection) return;
+
+        connection->stopping.store(true, std::memory_order_release);
+        connection->connected.store(false, std::memory_order_release);
+        if (connection->session) {
+            // cancel() is deliberately separate from write_mutex: it must be
+            // able to wake a reader blocked in read().
+            connection->session->cancel();
+        }
+
+        std::thread reader;
+        if (connection->reader.joinable()) {
+            if (connection->reader.get_id() == std::this_thread::get_id()) {
+                // A user callback may reconnect or close from the reader
+                // thread. Detach only this old reader; its per-connection
+                // state prevents it from touching the replacement connection.
+                connection->reader.detach();
+            } else {
+                reader = std::move(connection->reader);
+            }
+        }
+        if (reader.joinable()) reader.join();
+
+        if (connection->session) {
+            std::lock_guard<std::mutex> write_lock(connection->write_mutex);
+            connection->session->close();
+        }
+        connection->on_message = {};
+        connection->on_close = {};
     }
 
     bool connect(const std::string& url,
                  const std::map<std::string, std::string>& headers,
-                 IMoonrakerWebSocketTransport::MessageHandler message_handler,
-                 IMoonrakerWebSocketTransport::CloseHandler close_handler)
+                 MessageHandler message_handler,
+                 CloseHandler close_handler)
     {
-        close();
+        std::lock_guard<std::mutex> operation_lock(operation_mutex);
+
+        std::shared_ptr<Connection> old_connection;
+        {
+            std::lock_guard<std::mutex> lock(state_mutex);
+            old_connection = std::exchange(active, {});
+        }
+        stop_connection(old_connection);
+
         ParsedWebSocketUrl parsed;
         std::string open_error;
         if (!parse_websocket_url(url, parsed, open_error)) {
@@ -764,31 +832,41 @@ struct MoonrakerWebSocketTransport::Impl : std::enable_shared_from_this<Moonrake
             return false;
         }
 
+        auto connection = std::make_shared<Connection>();
+        connection->session = std::move(new_session);
+        connection->on_message = std::move(message_handler);
+        connection->on_close = std::move(close_handler);
+        connection->connected.store(true, std::memory_order_release);
         {
-            std::lock_guard<std::mutex> lock(mutex);
-            session = std::move(new_session);
-            on_message = std::move(message_handler);
-            on_close = std::move(close_handler);
-            connected = true;
-            stopping = false;
+            std::lock_guard<std::mutex> lock(state_mutex);
+            active = connection;
             error.clear();
         }
+
         const auto self = shared_from_this();
-        reader = std::thread([self]() { self->read_loop(); });
+        connection->reader = std::thread([self, connection]() { self->read_loop(connection); });
         return true;
     }
 
     bool send(const std::string& payload)
     {
-        std::shared_ptr<WebSocketSession> current;
+        std::shared_ptr<Connection> connection;
         {
-            std::lock_guard<std::mutex> lock(mutex);
-            if (!connected || !session) return false;
-            current = session;
+            std::lock_guard<std::mutex> lock(state_mutex);
+            connection = active;
         }
-        std::lock_guard<std::mutex> write_lock(write_mutex);
+        if (!connection || !connection->connected.load(std::memory_order_acquire) ||
+            connection->stopping.load(std::memory_order_acquire)) {
+            return false;
+        }
+
+        std::lock_guard<std::mutex> write_lock(connection->write_mutex);
+        if (!connection->connected.load(std::memory_order_acquire) ||
+            connection->stopping.load(std::memory_order_acquire)) {
+            return false;
+        }
         std::string send_error;
-        if (!current->write(payload, options.total_timeout, send_error)) {
+        if (!connection->session->write(payload, options.total_timeout, send_error)) {
             set_error(std::move(send_error));
             return false;
         }
@@ -797,71 +875,43 @@ struct MoonrakerWebSocketTransport::Impl : std::enable_shared_from_this<Moonrake
 
     void close()
     {
-        std::shared_ptr<WebSocketSession> current;
-        bool called_from_reader = false;
+        std::lock_guard<std::mutex> operation_lock(operation_mutex);
+        std::shared_ptr<Connection> connection;
         {
-            std::lock_guard<std::mutex> lock(mutex);
-            current = session;
-            stopping = true;
-            connected = false;
-            called_from_reader = reader.joinable() && reader.get_id() == std::this_thread::get_id();
+            std::lock_guard<std::mutex> lock(state_mutex);
+            connection = std::exchange(active, {});
         }
-        {
-            std::lock_guard<std::mutex> write_lock(write_mutex);
-            if (current) current->cancel();
-        }
-        if (reader.joinable()) {
-            if (called_from_reader) {
-                reader.detach();
-            } else {
-                reader.join();
-            }
-        }
-        if (!called_from_reader) {
-            std::lock_guard<std::mutex> write_lock(write_mutex);
-            if (current) current->close();
-            std::lock_guard<std::mutex> lock(mutex);
-            if (session == current) session.reset();
-            on_message = {};
-            on_close = {};
-        }
+        stop_connection(connection);
     }
 
-    void read_loop()
+    void read_loop(const std::shared_ptr<Connection>& connection)
     {
-        std::shared_ptr<WebSocketSession> current;
-        {
-            std::lock_guard<std::mutex> lock(mutex);
-            current = session;
-        }
-        if (!current) return;
-
         error_code ec;
-        while (true) {
-            {
-                std::lock_guard<std::mutex> lock(mutex);
-                if (stopping || !connected) break;
-            }
+        while (!connection->stopping.load(std::memory_order_acquire) &&
+               connection->connected.load(std::memory_order_acquire)) {
             std::string payload;
-            if (!current->read(payload, options.total_timeout, ec)) break;
-            IMoonrakerWebSocketTransport::MessageHandler handler;
-            {
-                std::lock_guard<std::mutex> lock(mutex);
-                if (stopping || !connected) break;
-                handler = on_message;
-            }
+            ec.clear();
+            if (!connection->session->read(payload, options.read_idle_timeout, ec)) break;
+            if (connection->stopping.load(std::memory_order_acquire) ||
+                !connection->connected.load(std::memory_order_acquire)) break;
+            auto handler = connection->on_message;
             if (handler) handler(payload);
         }
 
-        IMoonrakerWebSocketTransport::CloseHandler close_handler;
+        CloseHandler close_handler;
         bool notify = false;
         {
-            std::lock_guard<std::mutex> lock(mutex);
-            notify = connected && !stopping;
-            connected = false;
-            if (ec) error = "Moonraker WebSocket disconnected: " + ec.message();
-            close_handler = on_close;
-            if (session == current) session.reset();
+            std::lock_guard<std::mutex> lock(state_mutex);
+            const bool is_active = active == connection;
+            connection->connected.store(false, std::memory_order_release);
+            if (is_active) {
+                active.reset();
+                if (ec && !connection->stopping.load(std::memory_order_acquire)) {
+                    error = "Moonraker WebSocket disconnected: " + ec.message();
+                }
+                close_handler = connection->on_close;
+                notify = !connection->stopping.load(std::memory_order_acquire);
+            }
         }
         if (notify && close_handler) close_handler();
     }

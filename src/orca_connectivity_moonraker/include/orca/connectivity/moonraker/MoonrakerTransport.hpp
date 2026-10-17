@@ -12,6 +12,10 @@ namespace Orca::SDK {
 struct MoonrakerTransportOptions {
     std::chrono::milliseconds connect_timeout{std::chrono::seconds(10)};
     std::chrono::milliseconds total_timeout{std::chrono::seconds(30)};
+    // Zero means an open-ended read. A WebSocket may legitimately be quiet
+    // for longer than the request timeout; callers can opt into an idle
+    // timeout when the printer policy requires one.
+    std::chrono::milliseconds read_idle_timeout{0};
     bool verify_tls{true};
     std::string ca_file;
     std::string api_key;

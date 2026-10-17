@@ -14,9 +14,12 @@
 #include <fstream>
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
+#include <utility>
 
 using namespace Orca::SDK;
 namespace beast = boost::beast;
@@ -82,8 +85,12 @@ private:
 
 class LoopbackWebSocketServer {
 public:
-    explicit LoopbackWebSocketServer(std::string response)
+    explicit LoopbackWebSocketServer(std::string response,
+                                     bool close_after_response = true,
+                                     bool send_response = true)
         : response(std::move(response))
+        , close_after_response(close_after_response)
+        , send_response(send_response)
         , acceptor(io, {tcp::v4(), 0})
     {
         thread = std::thread([this]() { run(); });
@@ -107,44 +114,55 @@ public:
         std::lock_guard<std::mutex> lock(state_mutex);
         return payload;
     }
+    unsigned connection_count() const { return connections.load(); }
 
 private:
     void run()
     {
-        tcp::socket socket(io);
-        error_code ec;
-        acceptor.accept(socket, ec);
-        if (ec || stopping.load()) return;
+        while (!stopping.load()) {
+            tcp::socket socket(io);
+            error_code ec;
+            acceptor.accept(socket, ec);
+            if (stopping.load()) break;
+            if (ec) continue;
 
-        websocket::stream<tcp::socket> ws(std::move(socket));
-        http::request<http::string_body> request;
-        ws.accept(request, ec);
-        if (ec) return;
-        {
-            std::lock_guard<std::mutex> lock(state_mutex);
-            api_key = request["X-Api-Key"].to_string();
-        }
+            websocket::stream<tcp::socket> ws(std::move(socket));
+            http::request<http::string_body> request;
+            ws.accept(request, ec);
+            if (ec) continue;
+            connections.fetch_add(1);
+            {
+                std::lock_guard<std::mutex> lock(state_mutex);
+                api_key = request["X-Api-Key"].to_string();
+            }
 
-        beast::flat_buffer buffer;
-        ws.read(buffer, ec);
-        if (ec) return;
-        {
-            std::lock_guard<std::mutex> lock(state_mutex);
-            payload = beast::buffers_to_string(buffer.data());
+            beast::flat_buffer buffer;
+            ws.read(buffer, ec);
+            if (!ec) {
+                std::lock_guard<std::mutex> lock(state_mutex);
+                payload = beast::buffers_to_string(buffer.data());
+            }
+            if (!ec && send_response) {
+                ws.text(true);
+                ws.write(net::buffer(response), ec);
+            }
+            if (!ec && close_after_response) {
+                std::this_thread::sleep_for(200ms);
+                ws.close(websocket::close_code::normal, ec);
+            }
         }
-        ws.text(true);
-        ws.write(net::buffer(response), ec);
-        std::this_thread::sleep_for(200ms);
-        ws.close(websocket::close_code::normal, ec);
     }
 
     std::string response;
+    bool close_after_response{true};
+    bool send_response{true};
     mutable std::mutex state_mutex;
     std::string api_key;
     std::string payload;
     net::io_context io;
     tcp::acceptor acceptor;
     std::atomic_bool stopping{false};
+    std::atomic_uint connections{0};
     std::thread thread;
 };
 
@@ -287,4 +305,113 @@ TEST_CASE("Concrete Moonraker WebSocket transport sends headers and receives cal
     REQUIRE(server.received_header() == "websocket-key");
     REQUIRE(server.received_payload().find("printer.objects.subscribe") != std::string::npos);
     transport.close();
+}
+
+TEST_CASE("Concrete Moonraker WebSocket reconnect from a message callback keeps the new reader", "[Moonraker][Transport][Concurrency]")
+{
+    LoopbackWebSocketServer server(R"({"method":"notify_status_update","params":[{"print_stats":{"state":"printing"}}]})");
+    MoonrakerWebSocketTransport transport;
+    const auto url = "ws://127.0.0.1:" + std::to_string(server.port()) + "/websocket";
+
+    std::mutex mutex;
+    std::condition_variable condition;
+    unsigned messages = 0;
+    std::atomic_bool reconnect_ok{false};
+    auto handler = std::make_shared<IMoonrakerWebSocketTransport::MessageHandler>();
+    *handler = [&](const std::string&) {
+        unsigned count;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            count = ++messages;
+        }
+        if (count == 1) {
+            reconnect_ok = transport.connect(url, {}, *handler, []() {});
+            if (reconnect_ok) reconnect_ok = transport.send(R"({"jsonrpc":"2.0","method":"printer.objects.subscribe"})");
+        }
+        condition.notify_all();
+    };
+
+    REQUIRE(transport.connect(url, {}, *handler, []() {}));
+    REQUIRE(transport.send(R"({"jsonrpc":"2.0","method":"printer.objects.subscribe"})"));
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        REQUIRE(condition.wait_for(lock, 3s, [&]() { return messages >= 2; }));
+    }
+    REQUIRE(reconnect_ok.load());
+    REQUIRE(server.connection_count() >= 2);
+    transport.close();
+}
+
+TEST_CASE("Concrete Moonraker WebSocket serializes concurrent close send and reconnect", "[Moonraker][Transport][Concurrency]")
+{
+    LoopbackWebSocketServer server(R"({"result":null})");
+    MoonrakerWebSocketTransport transport;
+    const auto url = "ws://127.0.0.1:" + std::to_string(server.port()) + "/websocket";
+    REQUIRE(transport.connect(url, {}, [](const std::string&) {}, []() {}));
+
+    std::atomic_bool start{false};
+    std::vector<std::thread> workers;
+    for (int index = 0; index < 4; ++index) {
+        workers.emplace_back([&]() {
+            while (!start.load()) std::this_thread::yield();
+            for (int count = 0; count < 40; ++count) {
+                transport.send("{}" );
+            }
+        });
+    }
+    workers.emplace_back([&]() {
+        while (!start.load()) std::this_thread::yield();
+        for (int count = 0; count < 8; ++count) {
+            transport.close();
+            transport.connect(url, {}, [](const std::string&) {}, []() {});
+        }
+    });
+    start.store(true);
+    for (auto& worker : workers) worker.join();
+    transport.close();
+    REQUIRE(server.connection_count() >= 1);
+}
+
+TEST_CASE("Concrete Moonraker WebSocket does not treat a quiet connection as idle timeout", "[Moonraker][Transport][Timeout]")
+{
+    SECTION("default read timeout is disabled")
+    {
+        LoopbackWebSocketServer server({}, false, false);
+        MoonrakerTransportOptions options;
+        options.total_timeout = 100ms;
+        MoonrakerWebSocketTransport transport(options);
+        std::atomic_uint closes{0};
+        REQUIRE(transport.connect(
+            "ws://127.0.0.1:" + std::to_string(server.port()) + "/websocket",
+            {}, [](const std::string&) {}, [&]() { closes.fetch_add(1); }));
+        std::this_thread::sleep_for(250ms);
+        REQUIRE(closes.load() == 0);
+        transport.close();
+    }
+
+    SECTION("an explicit read idle timeout closes the connection")
+    {
+        LoopbackWebSocketServer server({}, false, false);
+        MoonrakerTransportOptions options;
+        options.total_timeout = 1s;
+        options.read_idle_timeout = 75ms;
+        MoonrakerWebSocketTransport transport(options);
+        std::mutex mutex;
+        std::condition_variable condition;
+        bool closed = false;
+        REQUIRE(transport.connect(
+            "ws://127.0.0.1:" + std::to_string(server.port()) + "/websocket",
+            {}, [](const std::string&) {}, [&]() {
+                {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    closed = true;
+                }
+                condition.notify_all();
+            }));
+        {
+            std::unique_lock<std::mutex> lock(mutex);
+            REQUIRE(condition.wait_for(lock, 2s, [&]() { return closed; }));
+        }
+        transport.close();
+    }
 }

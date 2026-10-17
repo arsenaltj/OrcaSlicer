@@ -6,6 +6,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
 #include <vector>
@@ -81,13 +82,13 @@ public:
     bool reconnect_and_reconcile();
     bool poll_status();
 
-    bool websocket_connected() const { return m_websocket_connected; }
-    bool polling_fallback() const { return m_polling_fallback; }
-    bool connected() const { return m_connected; }
-    const std::set<std::string>& available_objects() const { return m_available_objects; }
-    const MoonrakerServerInfo& server_info() const { return m_server_info; }
-    const PrinterOperationResult& last_result() const { return m_last_result; }
-    const std::string& last_uploaded_path() const { return m_last_uploaded_path; }
+    bool websocket_connected() const;
+    bool polling_fallback() const;
+    bool connected() const;
+    std::set<std::string> available_objects() const;
+    MoonrakerServerInfo server_info() const;
+    PrinterOperationResult last_result() const;
+    std::string last_uploaded_path() const;
 
 private:
     MoonrakerAdapter(const MoonrakerAdapter&) = delete;
@@ -121,11 +122,17 @@ private:
     bool parse_server_info(const MoonrakerHttpResponse& response);
     bool parse_object_list(const MoonrakerHttpResponse& response);
     bool parse_status(const MoonrakerHttpResponse& response);
+    bool handle_websocket_message_for_generation(const std::string& payload,
+                                                 std::uint64_t generation);
     bool apply_status_update(const nlohmann::json& status);
     bool send_gcode(const std::string& script);
     bool send_print_start(const std::string& filename);
     bool set_failure(std::string code, std::string message, bool retryable);
 
+    struct CallbackGuard;
+
+    mutable std::recursive_mutex m_mutex;
+    std::shared_ptr<CallbackGuard> m_callback_guard;
     std::shared_ptr<IMoonrakerHttpTransport> m_http;
     std::shared_ptr<IMoonrakerWebSocketTransport> m_websocket;
     DeviceEndpoint m_endpoint;
@@ -136,6 +143,7 @@ private:
     std::string m_last_uploaded_path;
     PrinterOperationResult m_last_result{success_result()};
     std::uint64_t m_next_rpc_id{1};
+    std::uint64_t m_websocket_generation{0};
     bool m_has_endpoint{false};
     bool m_connected{false};
     bool m_websocket_connected{false};

@@ -12,6 +12,15 @@ cmake_minimum_required(VERSION 3.13)
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
 option(ORCA_MOBILE_SDK_ONLY "Configure only the public MobileSDK and its open-source contract tests" OFF)
+set(ORCA_SDK_DEPENDENCY_PREFIX "" CACHE PATH
+    "Optional dependency prefix for SDK-only CURL, OpenSSL, ZLIB and Boost headers/libraries")
+set(ORCA_MOONRAKER_CONCRETE_TRANSPORT "AUTO" CACHE STRING
+    "Build the concrete Moonraker libcurl/Boost.Beast transport (AUTO, ON or OFF)")
+set_property(CACHE ORCA_MOONRAKER_CONCRETE_TRANSPORT PROPERTY STRINGS AUTO ON OFF)
+
+if (ORCA_SDK_DEPENDENCY_PREFIX)
+    list(INSERT CMAKE_PREFIX_PATH 0 "${ORCA_SDK_DEPENDENCY_PREFIX}")
+endif()
 
 if (WIN32)
     # Detect known CI environments
@@ -165,6 +174,10 @@ option(SLIC3R_ASAN              "Enable ASan on Clang and GCC" 0)
 option(ORCA_BUILD_PYTHON_STUBGEN_MODULE "Build importable Python module for pybind11-stubgen" ON)
 set(ORCA_BUNDLED_UV_EXECUTABLE "" CACHE FILEPATH "Path to a uv executable to bundle for Python package installation. Leave empty to auto-download.")
 if (ORCA_MOBILE_SDK_ONLY)
+    # The SDK-only path returns before the desktop dependency setup below. Keep
+    # the repository's CMake modules available for optional CURL/ZLIB lookup,
+    # while leaving the concrete transport discoverable without BoostConfig.cmake.
+    list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/modules")
     set(CMAKE_CXX_STANDARD 17)
     set(CMAKE_CXX_STANDARD_REQUIRED ON)
     option(BUILD_TESTS "Build unit tests" OFF)
