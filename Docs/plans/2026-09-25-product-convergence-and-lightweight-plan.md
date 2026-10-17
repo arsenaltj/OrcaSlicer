@@ -1503,3 +1503,55 @@ PR 作者报告已有新控件的真实窗口、预览、前后对比和保存�
 验证：`UiRedesign` 定向 C++ 测试 83/83 通过 [20261016-221125-110](../../.tmp/dev/logs/20261016-221125-110/result.json)；完整 Windows Build [20261016-224627-009](../../.tmp/dev/logs/20261016-224627-009/result.json) 成功；`scripts/verify_ai_integration.py --json` 返回 `ok: true`；最终 [Run 20261016-224857-656](../../.tmp/dev/logs/20261016-224857-656/result.json) 的 catalogs/build/install/runtime-check/python-check 五步通过，安装目录为 `.tmp/dev/run`，产品源码身份 `581b76702448e807639db5e145dd78da7058f8d41cb0f64ff02cf78f5957f25b`。状态文档在最终安装后增量更新，不改变产品源码或安装产物。
 
 验收边界与剩余：用户已在安装后的真实窗口确认本轮功能正常，指定模块和两处浮层隐藏、其余切片页面能力保留。普通 Orca Preview 的跨页面显示设置未形成单独截图证据；实现未改全局偏好，并在离开 Redesign 页面或释放宿主时恢复临时抑制状态。模式卡片保留最近成功切片状态和连续切片 Preview 修复继续沿用；按用户授权提交当前源码，不推送、不发布。
+
+## 2026-10-16 Redesign：切片页初始相机正面取景与缩放修复（10-17 用户反馈问题已修复）
+
+问题与根因：AI 生成人像采用 Z-up、面朝 `+X` 的模型约定，而 Redesign 切片页原先使用 Orca 的 `front` 相机从 `-Y` 方向观察，所以人像进入页面时接近侧面。原实现还优先按残留选中对象取包围盒，并用 `zoom_to_box(..., 1.1)` 只留较小边距，导致模型显得过大，多对象工程也可能只按单个对象构图。
+
+第一轮实现（10-16）：仅调整 `src/slic3r/GUI/Redesign/RedesignModelWorkflow.cpp` 的 `fit_slicing_camera()`。包围盒覆盖当前打印板全部模型实例；相机从 `+X` 方向观察模型中心并保留约 20 度俯角；缩放边距改为 Orca 通用模型适配使用的 `1.25`。模型几何和实例变换不修改，切片流程、Preview 路由及用户进入页面后的相机交互保持原行为。
+
+验证：`git diff --check` 通过；`UiRedesign` 定向 C++ 测试 83/83 通过 [20261016-234429-034](../../.tmp/dev/logs/20261016-234429-034/result.json)；完整 Windows Build 的构建步骤退出码为 0 [20261016-234618-538](../../.tmp/dev/logs/20261016-234618-538/result.json)；`scripts/verify_ai_integration.py --json` 返回 `ok: true`；[Run 20261016-234717-750](../../.tmp/dev/logs/20261016-234717-750/result.json) 的 catalogs/build/install/runtime-check/python-check 五步退出码均为 0，已安装到 `.tmp/dev/run`，源码身份 `56d4bb5c3b74e4b652930a6a65af709b2c28bb145d7a7d0aec8c8aea29f14b6b`，没有启动应用。
+
+第一轮验收反馈：10-17 用户截图确认视角改善，但初始模型仍偏大、需要滚轮缩小才能看见擦料塔，因此第一轮缩放验收未通过；同板多对象取景仍待验证。负责会话沿本会话，分支 `codex/team/integration`；以下补充分析与导航器确认当时只更新两份状态文档，后续统一实施和当前验证结果见本项末尾。
+
+10-17 补充分析：`RedesignModelWorkflow.cpp:52-68` 只收集当前板 `model().objects` 的实例包围盒；擦料塔由 `GLCanvas3D.cpp:3044-3107` 按启用状态、耗材和当前板条件创建，实际位于 GL volume 集合中，`3DScene.cpp:952-968` 将其标为 `is_wipe_tower`，不属于上述模型实例集合。因而当前取景既没有合并塔的位置/大小，也仅以模型中心为相机目标。`Camera.cpp:592-600` 按 `viewport / (projected_extent * margin)` 计算缩放，`1.1` 改为 `1.25` 仅将限制方向包围盒占比从约 91% 降为 80%，仍是偏近的模型展示构图，无法保证远离模型的塔入镜。`m_slice_camera_fitted` 在首次成功后阻止重复适配，仅在重新导入时显式重置，后来生成/改变的辅助体不会自动纳入；不能据此断言所有普通页面往返都会重置用户相机。
+
+时机与日志边界：`check_import_first_frame()` 已等待可见帧后再适配；但适配发生在 `finish_import_loading()` 隐藏导入历史栏和再次布局之前，尚未显式验证最终 viewport 稳定。PID 30660 来自 `.tmp/dev/run/orca-slicer.exe`；`C:/Users/mooreb/AppData/Roaming/OrcaSlicer/log/debug_Sat_Oct_17_00_01_23_30660.log.0` 的 00:02:13 提交与 00:02:15 完成记录支持导入正常结束，现有日志没有切片页相机/塔屏幕范围，无法证明该次塔究竟处在画外、被模型遮挡或尚未创建。工作台外观函数没有专门隐藏塔。首帧/布局和塔创建时序保留为待验证因素，不冒充已证实主因。
+
+建议实施范围与恢复点：保留已改善的正面方向，改为合并当前板模型、实际启用的擦料塔及适量板面上下文后适配，在最终布局和相关 GL 辅助体就绪后只完成一次初始取景；缩放需同时满足联合范围可见与模型有足够留白，不能只扩大固定系数。用户本轮授权为继续分析，尚未实施此后续方案，未构建、未操作或关闭用户实例、未提交；已有源码 SHA256 `4198a20b1993d22a697797380067010515393888c86c22e99d2dcddce05c00de` 保持。
+
+10-17 补充确认（原生左下角 3D 导航器，待统一实施）：用户明确要求暂不修改代码，先确认是否存在带 X/Y/Z 且可辅助转动视角的控件。`GLCanvas3D::_render_3d_navigator()`（`GLCanvas3D.cpp:6297-6397`）即原生实现：左边位置为 0、顶部为显示区高度减控件尺寸，固定画布左下角；X/Y/Z 标识及六个标准方向面由 ImGuizmo 绘制，拖动或点击只更新 `camera.set_rotation()` 和投影类型，不修改模型几何/实例旋转。此控件区别于床面原点的静态世界坐标轴。
+
+隐藏原因与边界：本机 `OrcaSlicer.conf` 中 `show_3d_navigator=true`，全局开关已开启；`GLCanvas3D.cpp:8899-8902` 却将导航器和画布工具栏一并置于 `!m_compact_slicing_tools` 下，而 `RedesignModelWorkflow.cpp:880-883` 为 AI 切片和 Preview 启用该紧凑模式。因此当前页面没有显示该导航器。后续如用户授权统一实施，可将导航器的渲染与紧凑工具栏隐藏解耦，继续尊重全局显示偏好，不恢复此前明确移除的模块/浮层；与联合取景一起验证准备/预览、点击/拖动和页面往返。此次只确认并更新两份状态文档，没有修改产品源码、配置、构建或安装产物，也未操作用户窗口。
+
+10-17 授权统一实施（当前交付）：用户明确要求“开始修改”。沿 `codex/team/integration`，修改范围为 `RedesignModelWorkflow.cpp` 和 `GLCanvas3D.cpp`，继续保留第一轮正面方向。取景包围盒合并当前板全部模型实例、该板 GL 集合中活动的擦料塔实际变换包围盒，以及当前板 Z=0 平面范围，不纳入其他打印板或整台打印机高度；边距为 1.5，使联合投影包围盒在限制方向最多占约三分之二。导入首帧到达后先完成导入收尾、收起历史栏，再启动已有 100ms 重试定时器；适配等待画布尺寸与相机 viewport 一致、场景无延迟重载且原生待执行缩放已消费，成功后沿用一次适配标志。新增 `[RedesignCamera]` 日志记录板号、画布尺寸、塔数量、边距及缩放值，便于真实反馈定位。此逻辑不旋转实体，也不持续重置用户手动相机。
+
+导航器实现：将 `_render_3d_navigator()` 移出紧凑工具栏条件，AI 准备/Preview 页也可显示原生 X/Y/Z/方向立方体，原函数仍遵循 `show_3d_navigator` 偏好；其他已隐藏工具栏、模块和浮层继续保持当前策略，普通 Orca 的导航器渲染及原生 ImGuizmo 输入路径不变。
+
+当前验证与安装：`UiRedesign` 定向 C++ 回归 83/83 通过 [20261017-002003-105](../../.tmp/dev/logs/20261017-002003-105/result.json)；`verify_ai_integration.py --json` 返回 `ok: true`（保留 Git 检查）；[Run 20261017-002200-282](../../.tmp/dev/logs/20261017-002200-282/result.json) 的 catalogs/build/install/runtime-check/python-check 五步退出码均为 0，完整 Windows 主程序已构建并安装到 `D:/OrcaSlicer-version/OrcaSlicer/.tmp/dev/run`，未启动应用。测试和安装记录的源码身份均为 `3cff9b89827fa7541d412181e99892806a2b66121caae42c7085179908ccc91e`，安装及构建的 `OrcaSlicer.dll` SHA256 同为 `872a88944742e5234bd08ba885c4e7e1a24c809cd42b08e44263148d25c6df58`。安装后仅更新两份状态文档；diff 检查通过。复用已有回归，没有增加仅验证常量或源码文本的测试。
+
+当前验收与剩余：10-17 用户明确反馈“上面问题已修复”，并提供包含缩小模型、擦料塔与左下导航器的切片中截图，上一轮初始大小/擦料塔取景及导航器缺失问题按用户反馈通过。多对象、所有导航器点击/拖动及 AI/原生准备/Preview 往返未形成逐项证据，保留验证边界，不从截图推断完整组合通过。未提交、推送、发布或付费生成，未触及无关未跟踪架构 HTML。
+
+## 2026-10-17 Redesign：切片页原生模型编辑工具栏分析（未改代码）
+
+用户问题：截图顶部空出的原生 Orca 工具区域是否能在当前 Redesign 切片页显示，并能对当前模型修改高度及 X/Y/Z 数值。
+
+源码结论：此处涉及两层原生能力。`GLGizmosManager` 注册 Move、Rotate、Scale 等模型编辑 Gizmo，并在 `do_render_overlay()` 中绘制工具栏；激活后由 `GizmoObjectManipulation` 绘制顶部输入窗口，提供 Position、Rotation、Scale/Size 的 X/Y/Z。`GizmoObjectManipulation::change_position_value()`、`change_rotation_value()`、`change_size_value()` 和 `change_scale_value()` 通过 Selection 变换、`GLCanvas3D::do_move/do_rotate/do_scale`、Undo 快照和场景刷新，编辑链路本身可作用于当前模型/实例/部件。
+
+当前不可见原因：AI 切片和 Preview 页面在 `RedesignModelWorkflow::refresh_workflow_layout()` 中启用 `use_compact_slicing_tools(true)` 并收起侧栏。紧凑模式下 `GLGizmosManager::render_overlay()` 直接返回，`get_gizmo_from_mouse()` 也直接返回 `Undefined`，所以工具栏不渲染、鼠标不能从该栏打开 Gizmo。3D/Preview 原生画布仍启用了 picking、moving、gizmos、selection，故直接选中和已有鼠标编辑路径与数值栏的可见性是两个独立问题。
+
+可行性与待授权范围：可以实现，但应针对性解耦“模型编辑 Gizmo 工具栏/数值面板”和紧凑模式下被隐藏的主工具栏；保留已移除的多色、美颜、拓扑统计、G-code 文本等页面策略。实施后需验证不同选择粒度（实例、对象、部件）、Position/Rotation/Scale/Size 的 X/Y/Z 输入、撤销/重做、模型 revision 与检查状态更新，以及切片前后页面切换。
+
+当前状态：本轮只读源码分析，未修改产品代码、构建、安装或操作窗口；等待用户明确实施。
+
+## 2026-10-17 Redesign：切片进度浮层与左下 3D 导航器水平对齐（已安装，待用户视觉验收）
+
+目标与授权：用户认为切片中右下角进度浮层过于靠上，期望下移至与左下 3D 导航器同一水平线上。分析后用户明确授权“修改代码”；负责会话沿本会话，分支 `codex/team/integration`，本轮产品修改范围为 `RedesignModelWorkflow.cpp` 的浮层定位，保留上一轮取景和导航器未提交修改。
+
+已确认原因：`layout_slicing_overlays()`（`RedesignModelWorkflow.cpp:1301-1317`）将浮层顶部设为 `canvas_height - FromDIP(134)`、高度为 `FromDIP(46)`，所以其底部距画布底边 88 DIP，中心距底边 111 DIP。`_render_3d_navigator()`（`GLCanvas3D.cpp:6331-6358`）将导航器放在左下 128×128 DIP 对应的缩放区域，其区域中心距底边约 64 DIP。两个区域中心相差约 47 DIP，与截图中进度浮层明显高于导航器的现象一致。浮层文字位于顶部，进度条位于内部 30 DIP、厚 8 DIP，适合整体下移后共同对齐。
+
+实现：以文字和进度条整体区域的垂直中心对齐导航器区域中心；依据导航器 128 DIP 区域高度和进度浮层 46 DIP 高度计算，正常窗口顶部为画布高度减 87 DIP，比原实现下移约 47 DIP。进度尺寸和定位高度均使用所属画布 `FromDIP()` 换算，复用已有 wx 尺寸事件重新布局，并用有序上下界的 `std::clamp` 保留 10 DIP 边距和极小窗口定位。原水平位置、进度更新及显示条件保持既有行为。
+
+验证与安装：[Run 20261017-004001-785](../../.tmp/dev/logs/20261017-004001-785/result.json) 的 catalogs/build/install/runtime-check/python-check 五步退出码均为 0；源码身份为 `c16bd9a7c3790b410587bd9a27f15d4ad57e0d5af4fe4bb288b8cd423172b70d`。构建产物 `.tmp/dev/build/src/Release/OrcaSlicer.dll` 与安装文件 `.tmp/dev/run/OrcaSlicer.dll` 的 SHA256 均为 `350c4ef068debbe6790e10f6389aca42f4ce94e0ab82c61ef967f3e799ca6ed1`。`git diff --check` 通过；本轮为显示位置调整，未新增仅验证常量或源码文本的测试，也未将上一轮 83/83 回归记为本轮位置验收。安装后仅增量更新两份状态文档。
+
+当前状态与剩余：已安装到 `D:/OrcaSlicer-version/OrcaSlicer/.tmp/dev/run`，未启动应用、操作用户窗口、提交或推送；实际视觉由用户测试。待确认切片中不同百分比、窗口/DPI、小窗口边界、准备/Preview 页面及导航器隐藏偏好下的显示。上一轮取景和导航器修复的用户通过反馈继续有效；无关未跟踪架构 HTML 未修改。

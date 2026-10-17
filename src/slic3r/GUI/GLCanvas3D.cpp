@@ -8896,8 +8896,8 @@ void GLCanvas3D::_render_overlays()
     }
     m_labels.render(sorted_instances);
 
+    _render_3d_navigator();
     if (!m_compact_slicing_tools) {
-        _render_3d_navigator();
         _render_canvas_toolbar();
     }
 }

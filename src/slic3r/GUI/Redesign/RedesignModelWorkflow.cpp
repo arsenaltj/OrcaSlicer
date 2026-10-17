@@ -49,27 +49,55 @@ bool fit_slicing_camera(Plater& plater)
 {
     auto* plate = plater.get_partplate_list().get_curr_plate();
     if (!plate) return false;
+    auto* canvas = plater.get_current_canvas3D();
+    if (!canvas || canvas->is_reload_delayed()) return false;
+    auto& camera = plater.get_camera();
+    const auto size = canvas->get_canvas_size();
+    const auto& viewport = camera.get_viewport();
+    // The import history panel is removed before fitting. Wait until the
+    // canvas has rendered at its resulting size and consumed native zooms.
+    if (size.get_width() <= 0 || size.get_height() <= 0 ||
+        viewport[2] != int(size.get_width()) || viewport[3] != int(size.get_height()) ||
+        camera.requires_zoom_to_bed || camera.requires_zoom_to_volumes ||
+        camera.requires_zoom_to_plate > REQUIRES_ZOOM_TO_PLATE_IDLE) {
+        canvas->set_as_dirty();
+        return false;
+    }
     BoundingBoxf3 bounds;
     const auto& objects = plater.model().objects;
-    const int selected = plater.get_selection().get_object_idx();
     for (size_t i = 0; i < objects.size(); ++i) {
         const auto* object = objects[i];
-        if (!object || (selected >= 0 && int(i) != selected)) continue;
+        if (!object) continue;
         for (size_t j = 0; j < object->instances.size(); ++j)
             if (plate->contain_instance(int(i), int(j))) bounds.merge(object->instance_bounding_box(j));
     }
     if (!bounds.defined) return false;
-    auto& camera = plater.get_camera();
-    camera.select_view("front");
+    // Wipe towers are GL auxiliary volumes, not objects in the model.
+    size_t wipe_towers = 0;
+    for (const auto* volume : canvas->get_volumes().volumes) {
+        if (volume && volume->is_active && volume->is_wipe_tower &&
+            volume->object_idx() == 1000 + plate->get_index()) {
+            bounds.merge(volume->transformed_bounding_box());
+            ++wipe_towers;
+        }
+    }
+    // Include this plate's working area without its printable-height box.
+    BoundingBoxf3 bed = plate->get_bounding_box();
+    if (bed.defined) {
+        bed.min.z() = bed.max.z() = 0.;
+        bounds.merge(bed);
+    }
+    camera.select_view("right");
     const double distance = camera.get_distance();
-    // A shallow front view and space around the model match the design's
-    // composition. Auxiliary geometry remains rendered, but doesn't size it.
-    camera.look_at(bounds.center() + distance * Vec3d(0., -.93969262, .34202014),
+    // Generated people face +X, so frame the current plate from that direction
+    // with a shallow downward angle.
+    camera.look_at(bounds.center() + distance * Vec3d(.93969262, 0., .34202014),
         bounds.center(), Vec3d::UnitZ());
-    // Keep the model prominent in the Figma-sized canvas while leaving a
-    // small breathing room around the silhouette.
-    camera.zoom_to_box(bounds, 1.1);
-    plater.get_current_canvas3D()->set_as_dirty();
+    camera.zoom_to_box(bounds, 1.5);
+    canvas->set_as_dirty();
+    BOOST_LOG_TRIVIAL(info) << "[RedesignCamera] plate=" << plate->get_index()
+        << " viewport=" << viewport[2] << "x" << viewport[3]
+        << " wipe_towers=" << wipe_towers << " margin=1.5 zoom=" << camera.get_zoom();
     return true;
 }
 
@@ -1114,12 +1142,15 @@ void RedesignShell::check_import_first_frame()
     if (!m_import_awaiting_frame || !m_plater) return;
     auto* canvas = m_plater->get_current_canvas3D();
     if (canvas->is_initialized() && canvas->rendered_frames() > m_import_frame_baseline) {
-        // Imported GL volumes and the final viewport size are available only
-        // after the first visible frame. Fitting earlier can select the bed.
-        if (!m_slice_camera_fitted) {
-            m_slice_camera_fitted = fit_slicing_camera(*m_plater);
-        }
         finish_import_loading();
+        // Removing import history changes the canvas size. Fit after a render
+        // at the final size, including any newly created auxiliary volumes.
+        if (!m_slice_camera_fitted && m_model_view == ModelView::Slicing) {
+            m_slice_camera_retry_attempts = 0;
+            m_slice_camera_retry_timer.Start(100);
+            canvas->set_as_dirty();
+            canvas->get_wxglcanvas()->Refresh(false);
+        }
     } else if (std::chrono::steady_clock::now() - m_import_view_started > std::chrono::seconds(15)) {
         finish_import_loading();
         wxMessageBox(_L("模型已导入工程，但视口尚未完成显示。请重新进入切片页面；无需重复导入。"),
@@ -1277,8 +1308,15 @@ void RedesignShell::layout_slicing_overlays()
     }
     const auto size=canvas->GetClientSize();
     m_slice_stats_overlay->Hide();
+    const auto progress_size = canvas->FromDIP(wxSize(320, 46));
+    const int margin = canvas->FromDIP(10);
+    // Match the native 3D navigator's 128 DIP region at the bottom left.
+    const int navigator_height = canvas->FromDIP(128);
+    const int max_y = std::max(0, size.y - progress_size.y - margin);
+    const int y = std::clamp(size.y - (navigator_height + progress_size.y) / 2,
+        std::min(margin, max_y), max_y);
     m_slice_progress_overlay->SetSize(std::max(FromDIP(10),size.x-FromDIP(440)),
-        std::max(FromDIP(10),size.y-FromDIP(134)),FromDIP(320),FromDIP(46));
+        y, progress_size.x, progress_size.y);
     const bool running = workbench_slice_running(m_plater->is_background_process_slicing(),
                                                  m_slicing_state.official.phase);
     m_slice_progress_overlay->Show(visible && running);
