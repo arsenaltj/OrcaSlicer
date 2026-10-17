@@ -1,5 +1,15 @@
 # 2026-10-17 Redesign/原生 Gizmo 深色主题可读性（已实施，待 GUI 验收）
 
+# 2026-10-17 Redesign 切片页进入时相机首帧跳变（已实施，已安装，待 GUI 验收）
+
+用户授权修复进入 AI 切片页时旧相机首帧短暂可见、随后跳到正面视角的问题。根因是共享 Plater Camera 先随 3D 画布显示，100ms 重试定时器要等 GL 首帧、最终视口尺寸和原生待缩放完成后才执行 `fit_slicing_camera()`。
+
+实现：`RedesignModelWorkflow.cpp` 增加画布级相机准备遮挡层，模型存在且紧凑切片页等待取景时覆盖画布；完成 `fit_slicing_camera()` 后等待下一次渲染帧再显示。保留未初始化/无首帧/模型体积未完成的重试，30 次后以 warning 超时释放；导入遮罩优先，原生模式、离开页面和 Shell 清理停止定时器并隐藏遮挡。未改变模型、切片、正面取景或用户手动视角逻辑。
+
+验证：Windows `Run -NoLaunch -Jobs 2` 五步通过并安装到 `.tmp/dev/run`，结果 [`20261017-224352-546`](../../.tmp/dev/logs/20261017-224352-546/result.json)，源码身份 `72ab9c44e0298612d750aab076d9e9d4423949636c5b99aa59b1d4f96b8ba159`；`UiRedesign` 83/83、`verify_ai_integration.py --json` 和 `git diff --check` 通过。
+
+当前范围：真实 GUI 尚未启动；用户需验证首次进入、再次进入、Preview 往返、导入过程和原生模式切换。源码保持本地未提交、未推送；无关未跟踪架构 HTML 不纳入。
+
 用户确认实施“选中模型后顶部操作面板按钮在深色主题下看不清”的修复。源码对照确认 AI 紧凑切片页和普通 Orca 原生页共用 `GLTexture` 状态纹理链路；工作区通过 `m_workspace_background` 强制深色工具栏时，原实现仍从全局 `dark_color_mode` 读取浅色普通态 `#2b3436`，并使用过暗的深色禁用态 `#4c4c55`，因此按钮在深色背景上对比度不足。
 
 实现：`GLTexture::load_from_svg_files_as_sprites_array()` 增加显式 `dark_mode` 重载，未传参的 IconManager 等调用仍保持原全局主题行为；`GLToolbar` 增加主题状态，`GLCanvas3D` 在主题切换和工作区重主题时同步主、分隔、装配、折叠工具栏；`GLGizmosManager` 直接使用自身实际主题生成 Gizmo 状态纹理。深色禁用态提高至 `#8a8a94`，不改变状态机、图标资源或模型编辑/撤销链路。
@@ -1553,6 +1563,14 @@ PR 作者报告已有新控件的真实窗口、预览、前后对比和保存�
 下一步：用户运行 `.tmp/dev/run/orca-slicer.exe` 进行真实窗口验收；若反馈回归，继续沿本轮未提交修改修正。
 
 计划变更：本项由“只读分析、等待授权”推进为“代码已实施、已安装、待用户 GUI 验收”；不提交、不推送、不发布，无关未跟踪 `Docs/architecture/smart-slicing-implementation.html` 不纳入本轮。
+
+## 2026-10-17 Redesign：切片页进入时相机首帧跳变（只读分析，待授权）
+
+用户反馈：每次进入 AI 切片页时，模型先以其他视角短暂显示，再快速切换到正面。本轮仅分析，不修改代码。
+
+证据与结论：最新日志 `debug_Sat_Oct_17_21_52_34_33460.log.0` 依次记录 21:53:21.038 `select view3D`、21:53:21.382 `GLCanvas3D::init`、21:53:22.830 `[RedesignCamera]`；20:21 和 17:20 的相邻进程也重复该顺序。`RedesignModelWorkflow.cpp:851-897` 先显示并开启画布，再启动 100ms 重试；重试要求首帧已交换后才调用 `fit_slicing_camera()`。共享 Plater Camera 因而先以旧状态渲染，随后才由 `select_view("right")`、`look_at()`、`zoom_to_box()` 切到最终正面。首帧的 `GLCanvas3D::render()` 还可能先消费 `requires_zoom_to_bed/plate/volumes`，造成旧相机、原生待缩放和最终取景的连续视觉变化。
+
+边界与待办：日志没有模型导入、GL 初始化或切片失败证据，这是相机初始化时序造成的显示跳变。可行修复是最终视口和原生待缩放完成前暂不揭示画布，完成一次最终相机初始化后再显示，并保留未就绪重试保护；不应持续重复适配以覆盖中间帧或用户手动视角。等待用户授权实施，当前不构建、不启动、不做 GUI 验收。
 
 ## 2026-10-17 Redesign：切片页取景与原生 Gizmo 居中（已安装，待用户 GUI 验收）
 

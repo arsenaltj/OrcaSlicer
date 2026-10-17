@@ -673,7 +673,36 @@ void RedesignShell::build_model_workflow()
     m_slice_progress_overlay = new SlicingCanvasOverlay(canvas);
     m_slice_progress_overlay->SetSize(FromDIP(wxSize(250,96)));
     m_slice_stats_overlay->Hide(); m_slice_progress_overlay->Hide();
-    canvas->Bind(wxEVT_SIZE,[weak](wxSizeEvent& event) { event.Skip(); if (weak) weak->layout_slicing_overlays(); });
+    m_slice_camera_loading = new wxPanel(canvas);
+    m_slice_camera_loading->SetName("slicing-camera-loading");
+    m_slice_camera_loading->SetBackgroundColour(RedesignTheme::background_colour());
+    m_slice_camera_loading->SetBackgroundStyle(wxBG_STYLE_PAINT);
+    m_slice_camera_loading->Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
+        wxPaintDC dc(m_slice_camera_loading);
+        dc.SetBackground(wxBrush(RedesignTheme::background_colour()));
+        dc.Clear();
+    });
+    auto* camera_loading_sizer = new wxBoxSizer(wxVERTICAL);
+    m_slice_camera_loading->SetSizer(camera_loading_sizer);
+    camera_loading_sizer->AddStretchSpacer();
+    auto* camera_loading_activity = new wxActivityIndicator(m_slice_camera_loading, wxID_ANY,
+        wxDefaultPosition, FromDIP(wxSize(32, 32)));
+    camera_loading_activity->SetForegroundColour(RedesignTheme::accent_colour());
+    camera_loading_activity->SetBackgroundColour(RedesignTheme::background_colour());
+    camera_loading_activity->Start();
+    camera_loading_sizer->Add(camera_loading_activity, 0, wxALIGN_CENTER | wxBOTTOM, FromDIP(16));
+    auto* camera_loading_label = new wxStaticText(m_slice_camera_loading, wxID_ANY, _L("正在准备模型视图…"));
+    RedesignTheme::style_text(camera_loading_label, RedesignTheme::secondary_text_colour(), 11);
+    camera_loading_sizer->Add(camera_loading_label, 0, wxALIGN_CENTER | wxLEFT | wxRIGHT, FromDIP(16));
+    camera_loading_sizer->AddStretchSpacer();
+    m_slice_camera_loading->Hide();
+    canvas->Bind(wxEVT_SIZE,[weak](wxSizeEvent& event) {
+        event.Skip();
+        if (weak) {
+            weak->layout_slicing_overlays();
+            weak->layout_slicing_camera_loading();
+        }
+    });
     canvas->Bind(EVT_GLCANVAS_OBJECT_SELECT, [weak](SimpleEvent& event) {
         event.Skip();
         if (weak) weak->CallAfter([weak] {
@@ -752,18 +781,44 @@ void RedesignShell::build_model_workflow()
     }, m_import_timer.GetId());
     m_slice_camera_retry_timer.SetOwner(this, wxWindow::NewControlId());
     Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
-        if (!native_workspace_visible() || m_slice_camera_fitted ||
-            m_model_view != ModelView::Slicing || !m_plater ||
-            ++m_slice_camera_retry_attempts > 30) {
+        if (!native_workspace_visible() || m_model_view != ModelView::Slicing || !m_plater) {
             m_slice_camera_retry_timer.Stop();
+            m_slice_camera_loading_pending = false;
+            m_slice_camera_waiting_for_frame = false;
+            layout_slicing_camera_loading();
             return;
         }
         auto* canvas = m_plater->get_current_canvas3D();
+        if (++m_slice_camera_retry_attempts > 30) {
+            BOOST_LOG_TRIVIAL(warning) << "[RedesignCamera] initial fit timed out, reveal current view";
+            m_slice_camera_fitted = true;
+            m_slice_camera_loading_pending = false;
+            m_slice_camera_waiting_for_frame = false;
+            m_slice_camera_retry_timer.Stop();
+            layout_slicing_camera_loading();
+            return;
+        }
+        if (m_slice_camera_waiting_for_frame) {
+            if (canvas->rendered_frames() > m_slice_camera_frame_baseline) {
+                m_slice_camera_waiting_for_frame = false;
+                m_slice_camera_loading_pending = false;
+                m_slice_camera_retry_timer.Stop();
+                layout_slicing_camera_loading();
+            }
+            return;
+        }
+        if (m_slice_camera_fitted) {
+            m_slice_camera_loading_pending = false;
+            m_slice_camera_retry_timer.Stop();
+            layout_slicing_camera_loading();
+            return;
+        }
         if (!canvas->is_initialized() || canvas->rendered_frames() == 0)
             return;
         if (fit_slicing_camera(*m_plater)) {
             m_slice_camera_fitted = true;
-            m_slice_camera_retry_timer.Stop();
+            m_slice_camera_frame_baseline = canvas->rendered_frames();
+            m_slice_camera_waiting_for_frame = true;
         }
     }, m_slice_camera_retry_timer.GetId());
 
@@ -889,13 +944,6 @@ void RedesignShell::show_model_view(ModelView view)
             m_slice_tools->request_check();
     }
     refresh_workflow_layout();
-    if (!m_import_in_progress && !m_slice_camera_fitted && view == ModelView::Slicing) {
-        // Project loading and GL volume creation can finish after the route
-        // change. Retry briefly until the real model bounds and viewport are
-        // available; a single early CallAfter otherwise fits an empty plate.
-        m_slice_camera_retry_attempts = 0;
-        m_slice_camera_retry_timer.Start(100);
-    }
     if (view == ModelView::Result) update_model_page(m_model_generation_state);
 }
 
@@ -955,12 +1003,31 @@ void RedesignShell::refresh_workflow_layout()
     layout_slicing_overlays();
     m_content_host->Layout();
     Layout();
+    const bool camera_fit_pending = compact && m_model_view == ModelView::Slicing &&
+        !m_slice_camera_fitted && m_plater && !m_plater->model().objects.empty();
+    if (camera_fit_pending) {
+        if (!m_slice_camera_loading_pending) {
+            m_slice_camera_loading_pending = true;
+            m_slice_camera_waiting_for_frame = false;
+            m_slice_camera_retry_attempts = 0;
+        }
+        // The import overlay owns the canvas while the model is still being
+        // committed. Start the camera retry after it is dismissed.
+        if (!m_import_in_progress && !m_slice_camera_retry_timer.IsRunning())
+            m_slice_camera_retry_timer.Start(100);
+    } else if (!compact || m_model_view != ModelView::Slicing ||
+               !m_plater || m_plater->model().objects.empty()) {
+        m_slice_camera_loading_pending = false;
+        m_slice_camera_waiting_for_frame = false;
+        m_slice_camera_retry_timer.Stop();
+    }
     if (m_import_in_progress && m_import_loading) {
         layout_import_loading();
         m_import_loading->Raise();
         m_import_loading->Refresh(false);
         m_import_loading->Update();
     }
+    layout_slicing_camera_loading();
 }
 
 void RedesignShell::apply_workbench_state(const PostGenerationWorkbenchState& state)
@@ -1056,6 +1123,8 @@ void RedesignShell::confirm_workbench_import(const AI::ModelImportRequest& reque
                     }
                     weak->update_import_loading(WorkbenchImportPhase::UpdatingView);
                     weak->m_slice_camera_fitted = false;
+                    weak->m_slice_camera_loading_pending = false;
+                    weak->m_slice_camera_waiting_for_frame = false;
                     auto* history = weak->m_model_generation_host->workbench_import_history();
                     if (history && history->IsShown()) {
                         weak->m_import_history_host->SetMinSize(wxSize(history->GetSize().x, -1));
@@ -1333,6 +1402,28 @@ void RedesignShell::layout_slicing_overlays()
                                                  m_slicing_state.official.phase);
     m_slice_progress_overlay->Show(visible && running);
     if (visible) m_slice_progress_overlay->Raise();
+}
+
+void RedesignShell::layout_slicing_camera_loading()
+{
+    if (!m_slice_camera_loading || !m_plater) return;
+    auto* canvas = m_plater->get_view3D_canvas3D()->get_wxglcanvas();
+    if (!canvas) return;
+    if (m_slice_camera_loading->GetParent() != canvas)
+        m_slice_camera_loading->Reparent(canvas);
+    const bool visible = m_slice_camera_loading_pending && !m_import_in_progress &&
+        native_workspace_visible() && !m_native_slicing && m_model_view == ModelView::Slicing;
+    const auto size = canvas->GetClientSize();
+    if (size.x <= 0 || size.y <= 0) {
+        m_slice_camera_loading->Hide();
+        return;
+    }
+    m_slice_camera_loading->SetSize(canvas->GetClientRect());
+    m_slice_camera_loading->Show(visible);
+    if (visible) {
+        m_slice_camera_loading->Raise();
+        m_slice_camera_loading->Refresh(false);
+    }
 }
 
 void RedesignShell::select_slicing_tab(bool native)

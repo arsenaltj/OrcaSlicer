@@ -132,6 +132,7 @@ private:
     void change_slicing_palette();
     void show_slicing_palette_details();
     void layout_slicing_overlays();
+    void layout_slicing_camera_loading();
     void refresh_native_theme();
     bool slicing_mode_switch_allowed() const;
     bool navigate_to_impl(Page page, bool allow_locked_image_view);
@@ -186,10 +187,14 @@ private:
     std::unique_ptr<RedesignSlicingTools> m_slice_tools;
     SlicingCanvasOverlay* m_slice_stats_overlay {nullptr};
     SlicingCanvasOverlay* m_slice_progress_overlay {nullptr};
+    wxPanel* m_slice_camera_loading {nullptr};
     int m_slice_committed_count {6};
     int m_slice_progress_percent {0};
     wxString m_slice_progress_stage;
     bool m_slice_camera_fitted {false};
+    bool m_slice_camera_loading_pending {false};
+    bool m_slice_camera_waiting_for_frame {false};
+    size_t m_slice_camera_frame_baseline {0};
     std::vector<std::string> m_slice_displayed_palette;
     wxWindow* m_return_slice { nullptr };
     Plater* m_plater { nullptr };

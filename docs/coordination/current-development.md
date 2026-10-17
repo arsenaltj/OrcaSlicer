@@ -1,3 +1,33 @@
+# 2026-10-17 Redesign 切片页进入时相机首帧跳变（已实施、已安装，待用户 GUI 验收）
+
+主线：承接用户授权，修复进入 AI 切片页时先短暂显示旧视角、随后跳到正面视角的问题。
+
+本轮：在 3D 画布上增加相机准备遮挡层；AI 切片页在模型存在且最终取景尚未完成时先遮挡旧首帧，保留 GL 首帧、原生待缩放和模型/擦料塔体积未就绪时的 100ms 重试。`fit_slicing_camera()` 成功后等待相机更新后的下一帧再释放遮挡；约 3 秒超时记录 warning 并显示当前视图，避免永久空白。导入遮罩、原生模式、离开页面和 Shell 销毁路径会清理定时器与遮挡层，未改变切片引擎、模型几何或用户后续手动旋转逻辑。
+
+验证：Windows `dev.ps1 Run -NoLaunch -Jobs 2` 的 catalogs/build/install/runtime-check/python-check 五步全部退出码 0，结果 [`20261017-224352-546`](../../.tmp/dev/logs/20261017-224352-546/result.json)，安装到 `.tmp/dev/run`；源码身份 `72ab9c44e0298612d750aab076d9e9d4423949636c5b99aa59b1d4f96b8ba159`。此前 `UiRedesign` 定向 C++ 回归 83/83 通过 [`20261017-224055-755`](../../.tmp/dev/logs/20261017-224055-755/result.json)，`scripts/verify_ai_integration.py --json` 为 `ok: true`，`git diff --check` 通过。
+
+未结：用户需启动匹配运行目录，在导入模型后进入 AI 切片页，确认不再看到旧视角首帧、最终正面取景和擦料塔显示正常；还需覆盖再次进入、Preview 往返、导入遮罩和原生模式切换。当前未启动程序、未提交、未推送；无关未跟踪 `Docs/architecture/smart-slicing-implementation.html` 不纳入本轮。
+
+下一步：用户运行 `D:/OrcaSlicer-version/OrcaSlicer/.tmp/dev/run/orca-slicer.exe` 完成真实 GUI 验收；如仍有跳变，依据新日志中的 `[RedesignCamera]` 时间序列继续定位。
+
+计划变更：本项由“只读分析，待授权”改为“已实施、已安装，待用户 GUI 验收”；保留原有取景、导航器、Gizmo、主题和页面精简项的验收边界。
+
+# 2026-10-17 Redesign 切片页进入时相机首帧跳变（根因分析记录）
+
+主线：分析用户反馈的“进入页面先显示其他视角，随后快速变为正面视角”。本轮只读日志和源码，不修改产品代码、不构建、不启动。
+
+证据：最新进程日志 `debug_Sat_Oct_17_21_52_34_33460.log.0` 在 21:53:21.038 记录 `select view3D`，21:53:21.382 完成 `GLCanvas3D::init`，21:53:22.830 才记录 `[RedesignCamera] plate=0 viewport=2088x1848 wipe_towers=1 margin=1.5 zoom=5.15556`；再次进入切片流程时 21:56:49.487 仍先复用已有 Preview/G-code 状态，21:56:51.187 才完成相机适配。相邻旧进程日志 20:21:11.932→20:21:13.608、17:20:55.127→17:20:56.909 也呈现相同顺序。
+
+根因判断：`RedesignModelWorkflow.cpp:851-897` 先选择 3D 面板、显示 Plater 并开启渲染，再启动 100ms 重试定时器；定时器要求画布已初始化且至少交换过一帧后才调用 `fit_slicing_camera()`。因此旧的共享 Plater Camera 会先被首帧显示，随后 `fit_slicing_camera()` 才调用 `camera.select_view("right")`、`look_at()` 和 `zoom_to_box()` 切到人像正面。首帧期间 `GLCanvas3D::render()`（`GLCanvas3D.cpp:2088-2115`）还可能先消费 `requires_zoom_to_bed/plate/volumes`，形成旧相机→原生待缩放→Redesign 正面取景的视觉链路。
+
+边界：模型导入、GL 初始化和切片结果日志均未显示失败；这是进入页面时相机状态与最终视口布局异步收敛造成的显示跳变，不是模型网格损坏或切片引擎问题。`m_slice_camera_fitted` 在导入回调中重置（`RedesignModelWorkflow.cpp:1058`），所以重新导入/进入切片会再次触发该首帧流程；成功适配后同一会话不会持续重置用户手动视角。
+
+处理方案：已在上方实施项中完成，在最终视口尺寸和原生待缩放处理完成前隐藏 3D 画布，完成最终相机初始化并等待下一帧后再揭示；同时保留画布未就绪、模型/擦料塔体积未完成时的重试保护。
+
+下一步：以实施项中的匹配运行目录进行真实 GUI 验收。
+
+计划变更：新增“Redesign 切片页相机首帧跳变”分析项，保留现有取景、导航器、Gizmo 和主题修改的状态及其验收边界。
+
 # 2026-10-17 Redesign/原生 Gizmo 深色主题可读性（已构建安装，待用户 GUI 验收）
 
 主线：修复 AI 紧凑切片页与 Orca 原生页共用的顶部模型编辑工具栏在深色背景上普通/禁用状态对比度不足的问题。

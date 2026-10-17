@@ -1187,6 +1187,7 @@ void RedesignShell::disconnect_model_generation_host()
     m_slice_tools.reset();
     if (m_slice_stats_overlay) { m_slice_stats_overlay->Destroy(); m_slice_stats_overlay=nullptr; }
     if (m_slice_progress_overlay) { m_slice_progress_overlay->Destroy(); m_slice_progress_overlay=nullptr; }
+    if (m_slice_camera_loading) { m_slice_camera_loading->Destroy(); m_slice_camera_loading=nullptr; }
     if (m_plater) {
         m_plater->get_view3D_canvas3D()->use_compact_slicing_tools(false);
         m_plater->get_preview_canvas3D()->use_compact_slicing_tools(false);
@@ -1204,6 +1205,9 @@ void RedesignShell::disconnect_model_generation_host()
         frame->mount_native_workspace_tools(nullptr);
     }
     m_import_timer.Stop();
+    m_slice_camera_retry_timer.Stop();
+    m_slice_camera_loading_pending = false;
+    m_slice_camera_waiting_for_frame = false;
     if (m_import_session) m_import_session->invalidate();
     // The native Plater outlives this shell. Return its temporary loading
     // child before detaching it so paint handlers cannot retain this shell.
