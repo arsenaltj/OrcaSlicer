@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <mutex>
 #include <thread>
@@ -35,9 +36,15 @@ struct FakeHttp final : IMoonrakerHttpTransport {
 
 struct FakeWebSocket final : IMoonrakerWebSocketTransport {
     mutable std::mutex mutex;
+    std::condition_variable condition;
     bool connect_result{true};
     bool send_result{true};
     bool connected{false};
+    bool block_connect{false};
+    bool connect_entered{false};
+    bool release_connect{false};
+    bool disconnect_on_send{false};
+    int close_count{0};
     std::string url;
     std::map<std::string, std::string> headers;
     std::vector<std::string> sent;
@@ -49,26 +56,67 @@ struct FakeWebSocket final : IMoonrakerWebSocketTransport {
                  MessageHandler message_handler,
                  CloseHandler close_handler) override
     {
-        std::lock_guard<std::mutex> lock(mutex);
+        std::unique_lock<std::mutex> lock(mutex);
         url = target;
         headers = request_headers;
         on_message = std::move(message_handler);
         on_close = std::move(close_handler);
+        connect_entered = true;
+        condition.notify_all();
+        condition.wait(lock, [&]() { return !block_connect || release_connect; });
         connected = connect_result;
         return connect_result;
     }
 
     bool send(const std::string& payload) override
     {
-        std::lock_guard<std::mutex> lock(mutex);
-        sent.push_back(payload);
-        return send_result && connected;
+        CloseHandler close_callback;
+        bool result = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            sent.push_back(payload);
+            result = send_result && connected;
+            if (result && disconnect_on_send) {
+                connected = false;
+                close_callback = on_close;
+            }
+        }
+        if (close_callback) close_callback();
+        return result;
     }
 
     void close() override
     {
         std::lock_guard<std::mutex> lock(mutex);
         connected = false;
+        ++close_count;
+    }
+
+    void wait_for_connect()
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        condition.wait(lock, [&]() { return connect_entered; });
+    }
+
+    void release_blocked_connect()
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            release_connect = true;
+        }
+        condition.notify_all();
+    }
+
+    bool is_connected() const
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        return connected;
+    }
+
+    int close_calls() const
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        return close_count;
     }
 
     void emit(const std::string& payload)
@@ -211,6 +259,45 @@ TEST_CASE("Moonraker subscribes only to objects reported by objects list", "[Moo
     REQUIRE_THAT(status.progress, WithinAbs(0.8, 1e-9));
     REQUIRE_THAT(status.nozzle_temperature_c, WithinRel(190.0, 1e-12));
     REQUIRE(status.current_file == "pause.gcode");
+}
+
+TEST_CASE("Moonraker close callback cannot restore a failed subscription", "[Moonraker][MobileSDK][Concurrency]")
+{
+    auto http = std::make_shared<FakeHttp>();
+    install_standard_http(http);
+    auto websocket = std::make_shared<FakeWebSocket>();
+    websocket->disconnect_on_send = true;
+    MoonrakerAdapter adapter(http, websocket);
+
+    REQUIRE(adapter.probe(endpoint()));
+    REQUIRE_FALSE(adapter.subscribe_status());
+    REQUIRE_FALSE(adapter.websocket_connected());
+    REQUIRE(adapter.polling_fallback());
+    REQUIRE(websocket->sent.size() == 1);
+}
+
+TEST_CASE("Moonraker probe closes a stale socket created by an interleaved subscription", "[Moonraker][MobileSDK][Concurrency]")
+{
+    auto http = std::make_shared<FakeHttp>();
+    install_standard_http(http);
+    auto websocket = std::make_shared<FakeWebSocket>();
+    websocket->block_connect = true;
+    MoonrakerAdapter adapter(http, websocket);
+
+    REQUIRE(adapter.probe(endpoint("first.local")));
+
+    std::atomic_bool subscribe_result{true};
+    std::thread subscriber([&]() { subscribe_result.store(adapter.subscribe_status()); });
+    websocket->wait_for_connect();
+
+    REQUIRE(adapter.probe(endpoint("second.local")));
+    websocket->release_blocked_connect();
+    subscriber.join();
+
+    REQUIRE_FALSE(subscribe_result.load());
+    REQUIRE_FALSE(adapter.websocket_connected());
+    REQUIRE_FALSE(websocket->is_connected());
+    REQUIRE(websocket->close_calls() >= 2);
 }
 
 TEST_CASE("Moonraker clamps progress to the SDK range and maps cancelled states", "[Moonraker][MobileSDK]")

@@ -73,6 +73,8 @@ struct MoonrakerAdapter::CallbackGuard {
     };
 };
 
+struct MoonrakerAdapter::ConnectionIdentity {};
+
 MoonrakerAdapter::MoonrakerAdapter(std::shared_ptr<IMoonrakerHttpTransport> http,
                                    std::shared_ptr<IMoonrakerWebSocketTransport> websocket,
                                    std::string api_key)
@@ -110,6 +112,8 @@ bool MoonrakerAdapter::probe(const DeviceEndpoint& endpoint)
     {
         std::lock_guard<std::recursive_mutex> lock(m_mutex);
         ++m_websocket_generation;
+        m_websocket_connection_identity.reset();
+        m_websocket_connected = false;
     }
     if (websocket) websocket->close();
 
@@ -293,8 +297,10 @@ bool MoonrakerAdapter::subscribe_status()
         : std::map<std::string, std::string>{{"X-Api-Key", m_api_key}};
     const auto target = websocket_url(m_endpoint);
     const auto generation = ++m_websocket_generation;
+    const auto identity = std::make_shared<ConnectionIdentity>();
+    m_websocket_connection_identity = identity;
     const auto guard = m_callback_guard;
-    const auto connected_callback = [guard, generation](const std::string& payload) {
+    const auto connected_callback = [guard, generation, identity](const std::string& payload) {
         MoonrakerAdapter* owner = nullptr;
         {
             std::lock_guard<std::mutex> guard_lock(guard->mutex);
@@ -303,9 +309,9 @@ bool MoonrakerAdapter::subscribe_status()
             owner = guard->owner;
         }
         MoonrakerAdapter::CallbackGuard::Scope scope{guard};
-        owner->handle_websocket_message_for_generation(payload, generation);
+        owner->handle_websocket_message_for_generation(payload, generation, identity);
     };
-    const auto close_callback = [guard, generation]() {
+    const auto close_callback = [guard, generation, identity]() {
         MoonrakerAdapter* owner = nullptr;
         {
             std::lock_guard<std::mutex> guard_lock(guard->mutex);
@@ -316,7 +322,9 @@ bool MoonrakerAdapter::subscribe_status()
         MoonrakerAdapter::CallbackGuard::Scope scope{guard};
         {
             std::lock_guard<std::recursive_mutex> lock(owner->m_mutex);
-            if (generation == owner->m_websocket_generation) {
+            if (generation == owner->m_websocket_generation &&
+                owner->m_websocket_connection_identity == identity) {
+                owner->m_websocket_connection_identity.reset();
                 owner->enable_polling_fallback(
                     "moonraker.websocket_disconnected",
                     "Moonraker WebSocket disconnected; polling fallback enabled",
@@ -332,7 +340,8 @@ bool MoonrakerAdapter::subscribe_status()
     const bool connected = websocket->connect(target, headers, connected_callback, close_callback);
     if (!connected) {
         lock.lock();
-        if (generation == m_websocket_generation) {
+        if (generation == m_websocket_generation &&
+            m_websocket_connection_identity == identity) {
             return enable_polling_fallback(
                 "moonraker.websocket_connect_failed",
                 "Moonraker WebSocket connection failed; polling fallback enabled",
@@ -342,7 +351,12 @@ bool MoonrakerAdapter::subscribe_status()
     }
 
     lock.lock();
-    if (generation != m_websocket_generation) return false;
+    if (generation != m_websocket_generation ||
+        m_websocket_connection_identity != identity) {
+        lock.unlock();
+        websocket->close();
+        return false;
+    }
     nlohmann::json subscribe;
     subscribe["jsonrpc"] = "2.0";
     subscribe["method"] = "printer.objects.subscribe";
@@ -352,7 +366,8 @@ bool MoonrakerAdapter::subscribe_status()
     if (!websocket->send(subscribe.dump())) {
         websocket->close();
         lock.lock();
-        if (generation == m_websocket_generation) {
+        if (generation == m_websocket_generation &&
+            m_websocket_connection_identity == identity) {
             return enable_polling_fallback(
                 "moonraker.websocket_send_failed",
                 "Moonraker WebSocket subscription failed; polling fallback enabled",
@@ -362,7 +377,12 @@ bool MoonrakerAdapter::subscribe_status()
     }
 
     lock.lock();
-    if (generation != m_websocket_generation) return false;
+    if (generation != m_websocket_generation ||
+        m_websocket_connection_identity != identity) {
+        lock.unlock();
+        websocket->close();
+        return false;
+    }
     m_websocket_connected = true;
     m_polling_fallback = false;
     m_connected = true;
@@ -377,10 +397,12 @@ bool MoonrakerAdapter::handle_websocket_message(const std::string& payload)
 }
 
 bool MoonrakerAdapter::handle_websocket_message_for_generation(const std::string& payload,
-                                                               std::uint64_t generation)
+                                                               std::uint64_t generation,
+                                                               const std::shared_ptr<ConnectionIdentity>& identity)
 {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    if (generation != m_websocket_generation) {
+    if (generation != m_websocket_generation ||
+        (identity && m_websocket_connection_identity != identity)) {
         return false;
     }
     const auto json = nlohmann::json::parse(payload, nullptr, false);
@@ -602,6 +624,7 @@ void MoonrakerAdapter::reset_probe_state(const DeviceEndpoint& endpoint)
     m_websocket_connected = false;
     m_polling_fallback = false;
     m_objects_loaded = false;
+    m_websocket_connection_identity.reset();
     ++m_websocket_generation;
 }
 
@@ -635,6 +658,7 @@ bool MoonrakerAdapter::ensure_objects_loaded()
 
 bool MoonrakerAdapter::enable_polling_fallback(std::string code, std::string message, bool retryable)
 {
+    m_websocket_connection_identity.reset();
     m_websocket_connected = false;
     m_polling_fallback = true;
     m_connected = false;

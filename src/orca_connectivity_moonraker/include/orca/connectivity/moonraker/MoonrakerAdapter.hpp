@@ -94,6 +94,9 @@ private:
     MoonrakerAdapter(const MoonrakerAdapter&) = delete;
     MoonrakerAdapter& operator=(const MoonrakerAdapter&) = delete;
 
+    struct CallbackGuard;
+    struct ConnectionIdentity;
+
     static std::string endpoint_url(const DeviceEndpoint& endpoint, const std::string& path);
     static std::string websocket_url(const DeviceEndpoint& endpoint);
     static std::string endpoint_device_id(const DeviceEndpoint& endpoint);
@@ -123,13 +126,12 @@ private:
     bool parse_object_list(const MoonrakerHttpResponse& response);
     bool parse_status(const MoonrakerHttpResponse& response);
     bool handle_websocket_message_for_generation(const std::string& payload,
-                                                 std::uint64_t generation);
+                                                 std::uint64_t generation,
+                                                 const std::shared_ptr<ConnectionIdentity>& identity = {});
     bool apply_status_update(const nlohmann::json& status);
     bool send_gcode(const std::string& script);
     bool send_print_start(const std::string& filename);
     bool set_failure(std::string code, std::string message, bool retryable);
-
-    struct CallbackGuard;
 
     mutable std::recursive_mutex m_mutex;
     std::shared_ptr<CallbackGuard> m_callback_guard;
@@ -144,6 +146,7 @@ private:
     PrinterOperationResult m_last_result{success_result()};
     std::uint64_t m_next_rpc_id{1};
     std::uint64_t m_websocket_generation{0};
+    std::shared_ptr<ConnectionIdentity> m_websocket_connection_identity;
     bool m_has_endpoint{false};
     bool m_connected{false};
     bool m_websocket_connected{false};
