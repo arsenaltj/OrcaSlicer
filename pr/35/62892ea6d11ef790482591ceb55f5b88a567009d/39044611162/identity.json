@@ -1,0 +1,25 @@
+{
+  "pr": 35,
+  "run": 39044611162,
+  "head": "62892ea6d11ef790482591ceb55f5b88a567009d",
+  "base": "a1f412779467dfd4b1b71e29c8f723db60b6f9ad",
+  "repository": "arsenaltj/OrcaSlicer",
+  "title": "Codex/task/redesign slicing ux 20261017",
+  "path": "pr/35/62892ea6d11ef790482591ceb55f5b88a567009d/39044611162",
+  "created": "2026-10-17T15:23:20+00:00",
+  "files": {
+    "index.html": "a813ed1592401e321d9b24a84c43beedbc1ad180f5ba020724c26506b1e6f2e2",
+    "details.html": "de3e0b22883683de27e36e3aec32280b83486a52db0c63331fbecac5aeb5cbfe",
+    "report.json": "1c0a34ad4fa04dd0c9b68477970e5cea69acab637be05bf0b408517c7de333c6",
+    "summary.md": "73eafa1064b7bf4ff34cdeae1a3d6fd9ce8ee45457199f0fa74c4e677a8e47c3",
+    "archify-receipts.json": "400af62cfd3e5be15f75f852c2ea77c993dda4966d963e66a641fb73baef3b3f",
+    "l0-context.html": "35ceaee4821b556abdc8c0227fe59dc3acff88cba471d1e425ab8f7445405dcc",
+    "l0-context.json": "c12e289fb503e3917335feb70620dff655677f8142e267a69d066072a1e13cb7",
+    "l1-modules.html": "202c2c92cb2b806cf98895e4a42320a18b631726ade432e2835f8eeac7a3d23e",
+    "l1-modules.json": "bb0177ffe15dca99199cc6636d13631448b670dfa58dd28ee63f7f628d90b4f4",
+    "l2-generation.html": "f101802e002c795e22d556cff74d4e7e799048939932abd411f4bdbfcbb3cdb2",
+    "l2-generation.json": "22841df17bdd3edd92088ee1fee4594a28035678b0ca9359a3ab1b7cc160d872",
+    "l2-slicing.html": "cda6dfe43ff7b3c187cf0d4ab2a9d4afe971eeee99c167e7b986fed7bbc3bbaf",
+    "l2-slicing.json": "fbda71d617df8870d91b0de7ca250489e925b9360891169d869b27576302ba32"
+  }
+}
