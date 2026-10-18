@@ -143,7 +143,7 @@ public:
 
             //BBS: GUI refactor: add canvas size
             //void render(float top, float bottom, uint64_t curr_line_id) const;
-            void render(float top, float bottom, float right, uint64_t curr_line_id) const;
+            void render(float top, float bottom, float right, uint64_t curr_line_id, bool show) const;
             void on_change_color_mode(bool is_dark) { m_is_dark = is_dark; }
 
             void stop_mapping_file();
@@ -153,7 +153,7 @@ public:
         GCodeWindow gcode_window;
         float m_scale = 1.0;
         bool m_show_marker = false;
-        void render(const bool has_render_path, float legend_height, const libvgcode::Viewer* viewer, uint32_t gcode_id, int canvas_width, int canvas_height, int right_margin, const libvgcode::EViewType& view_type);
+        void render(const bool has_render_path, float legend_height, const libvgcode::Viewer* viewer, uint32_t gcode_id, int canvas_width, int canvas_height, int right_margin, const libvgcode::EViewType& view_type, bool show_gcode_window);
     };
     struct ExtruderFilament
     {
@@ -272,7 +272,7 @@ public:
     //BBS: add all plates filament statistics
     void render_all_plates_stats(const std::vector<const GCodeProcessorResult*>& gcode_result_list, bool show = true) const;
     //BBS: GUI refactor: add canvas width and height
-    void render(int canvas_width, int canvas_height, int right_margin);
+    void render(int canvas_width, int canvas_height, int right_margin, bool show_gcode_window = true);
     //BBS
     // void _render_calibration_thumbnail_internal(ThumbnailData& thumbnail_data, const ThumbnailsParams& thumbnail_params, PartPlateList& partplate_list, OpenGLManager& opengl_manager);
     // void _render_calibration_thumbnail_framebuffer(ThumbnailData& thumbnail_data, unsigned int w, unsigned int h, const ThumbnailsParams& thumbnail_params, PartPlateList& partplate_list, OpenGLManager& opengl_manager);

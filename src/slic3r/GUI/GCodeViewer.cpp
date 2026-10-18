@@ -786,7 +786,7 @@ void GCodeViewer::SequentialView::GCodeWindow::load_gcode(const std::string& fil
 }
 
 //BBS: GUI refactor: move to right
-void GCodeViewer::SequentialView::GCodeWindow::render(float top, float bottom, float right, uint64_t curr_line_id) const
+void GCodeViewer::SequentialView::GCodeWindow::render(float top, float bottom, float right, uint64_t curr_line_id, bool show) const
 {
     // Orca: truncate long lines(>55 characters), add "..." at the end
     auto update_lines = [this](uint64_t start_id, uint64_t end_id) {
@@ -832,7 +832,7 @@ void GCodeViewer::SequentialView::GCodeWindow::render(float top, float bottom, f
     static const ImVec4 PARAMETERS_COLOR     = { 1.0f, 1.0f, 1.0f, 1.0f };
     static const ImVec4 COMMENT_COLOR        = { 0.7f, 0.7f, 0.7f, 1.0f };
 
-    if (!wxGetApp().show_gcode_window() || m_filename.empty() || m_lines_ends.empty() || curr_line_id == 0)
+    if (!show || !wxGetApp().show_gcode_window() || m_filename.empty() || m_lines_ends.empty() || curr_line_id == 0)
         return;
 
     // window height
@@ -979,7 +979,7 @@ void GCodeViewer::SequentialView::GCodeWindow::stop_mapping_file()
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": finished mapping file " << m_filename;
     }
 }
-void GCodeViewer::SequentialView::render(const bool has_render_path, float legend_height, const libvgcode::Viewer* viewer, uint32_t gcode_id, int canvas_width, int canvas_height, int right_margin, const libvgcode::EViewType& view_type)
+void GCodeViewer::SequentialView::render(const bool has_render_path, float legend_height, const libvgcode::Viewer* viewer, uint32_t gcode_id, int canvas_width, int canvas_height, int right_margin, const libvgcode::EViewType& view_type, bool show_gcode_window)
 {
     if (has_render_path && m_show_marker) {
         // marker.set_world_offset(current_offset);
@@ -994,7 +994,7 @@ void GCodeViewer::SequentialView::render(const bool has_render_path, float legen
         bottom -= wxGetApp().plater()->get_view_toolbar().get_height();
 #endif
     if (has_render_path)
-        gcode_window.render(legend_height + 2, std::max(10.f, (float)canvas_height - 40), (float)canvas_width - (float)right_margin, gcode_id);
+        gcode_window.render(legend_height + 2, std::max(10.f, (float)canvas_height - 40), (float)canvas_width - (float)right_margin, gcode_id, show_gcode_window);
 }
 
 GCodeViewer::GCodeViewer()
@@ -1601,7 +1601,7 @@ void GCodeViewer::reset()
 }
 
 //BBS: GUI refactor: add canvas width and height
-void GCodeViewer::render(int canvas_width, int canvas_height, int right_margin)
+void GCodeViewer::render(int canvas_width, int canvas_height, int right_margin, bool show_gcode_window)
 {
     glsafe(::glEnable(GL_DEPTH_TEST));
     render_shells(canvas_width, canvas_height);
@@ -1628,7 +1628,7 @@ void GCodeViewer::render(int canvas_width, int canvas_height, int right_margin)
     m_sequential_view.marker.set_world_position(libvgcode::convert(curr_vertex.position));
     m_sequential_view.marker.set_z_offset(m_z_offset + 0.5f);
     // BBS fixed buttom margin. m_moves_slider.pos_y
-    m_sequential_view.render(!m_no_render_path, legend_height, &m_viewer, m_viewer.get_current_vertex().gcode_id, canvas_width, canvas_height - bottom_margin * m_scale, right_margin * m_scale, m_viewer.get_view_type());
+    m_sequential_view.render(!m_no_render_path, legend_height, &m_viewer, m_viewer.get_current_vertex().gcode_id, canvas_width, canvas_height - bottom_margin * m_scale, right_margin * m_scale, m_viewer.get_view_type(), show_gcode_window);
 
 #if VGCODE_ENABLE_COG_AND_TOOL_MARKERS
     if (is_legend_shown()) {

@@ -89,6 +89,10 @@ struct ModelGenerationUIState
     // change the Shell route or replace the current diagnostic.
     std::uint64_t model_generation_session { 0 };
     bool inputs_match_job { true };
+    // 2D inputs and 3D generation options have different actions on the
+    // result page.  Keep the option comparison separate so changing only a
+    // face/quality/provider setting can fork a new model task.
+    bool model_options_match { true };
     int progress { 0 };
     double design_elapsed_seconds { -1.0 };
     double design_estimated_seconds { 0.0 };

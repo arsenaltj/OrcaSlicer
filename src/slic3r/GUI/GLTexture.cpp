@@ -247,12 +247,16 @@ bool GLTexture::load_from_raw_data(std::vector<unsigned char> data, unsigned int
 
 bool GLTexture::load_from_svg_files_as_sprites_array(const std::vector<std::string>& filenames, const std::vector<std::pair<int, bool>>& states, unsigned int sprite_size_px, bool compress)
 {
+    return load_from_svg_files_as_sprites_array(filenames, states, sprite_size_px, compress,
+        wxGetApp().app_config->get("dark_color_mode") == "1");
+}
+
+bool GLTexture::load_from_svg_files_as_sprites_array(const std::vector<std::string>& filenames, const std::vector<std::pair<int, bool>>& states, unsigned int sprite_size_px, bool compress, bool dark_mode)
+{
     reset();
 
     if (filenames.empty() || states.empty() || sprite_size_px == 0)
         return false;
-
-    bool dark_mode = wxGetApp().app_config->get("dark_color_mode") == "1";
 
     // every tile needs to have a 1px border around it to avoid artifacts when linear sampling on its edges
     unsigned int sprite_size_px_ex = sprite_size_px + 1;
@@ -288,7 +292,7 @@ bool GLTexture::load_from_svg_files_as_sprites_array(const std::vector<std::stri
     const unsigned char pressed_color_dark[3] = {60, 60, 65};
     const unsigned char hover_color_dark[3] = {60, 60, 65};
     const unsigned char normal_color_dark[3] = {182, 182, 182};
-    const unsigned char disable_color_dark[3] = {76, 76, 85};
+    const unsigned char disable_color_dark[3] = {138, 138, 148};
 
     NSVGrasterizer* rast = nsvgCreateRasterizer();
     if (rast == nullptr) {

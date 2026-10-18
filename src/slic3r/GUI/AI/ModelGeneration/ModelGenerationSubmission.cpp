@@ -102,26 +102,26 @@ void ModelGenerationPanel::on_generate(wxCommandEvent&)
         return;
     }
     const bool image_mode = m_job_preview_expected;
-    if (!m_awaiting_confirmation || m_job_id.empty() || !job_inputs_match() || (image_mode && !m_style_preview_ready))
+    const auto source_job_id = model_generation_source_job_id();
+    const bool can_reuse_ready_model = can_reuse_ready_model_design();
+    if ((!m_awaiting_confirmation && !can_reuse_ready_model) || source_job_id.empty() || !job_inputs_match() ||
+        (image_mode && !m_style_preview_ready))
         return;
     if (use_printable_colors() != m_job_use_printable_colors || current_palette() != m_job_palette) {
         show_input_hint(_L("颜色模式或耗材色板发生了变化，请先重新生成预览。"));
         return;
     }
-    m_job_generation_profile = current_generation_profile();
-    m_job_face_limit = current_face_limit();
-    m_job_generation_options = current_generation_options();
-    const wxString provider_label = m_job_generation_options.provider == "hunyuan" ? _L("腾讯混元3D") : wxString("Tripo");
+    const auto confirmed_options = current_generation_options();
+    const auto confirmed_profile = current_generation_profile();
+    const wxString provider_label = confirmed_options.provider == "hunyuan" ? _L("腾讯混元3D") : wxString("Tripo");
     wxString message = wxString::Format(image_mode
         ? _L("要根据当前 AI 设计图创建 1 个付费 %s 生成任务吗？")
         : _L("要根据已确认的提示词创建 1 个付费 %s 生成任务吗？"), provider_label);
     message += "\n\n" + generation_options_summary(image_mode);
-    if (m_job_generation_options.provider == "tripo" && m_job_generation_options.output_format == "obj")
+    if (confirmed_options.provider == "tripo" && confirmed_options.output_format == "obj")
         message += _L("\n本次还将创建 1 个 OBJ 转换任务，可能单独计费，费用同样未报价。");
     message += _L("\n停止：只停止本地等待；已提交的远端任务可能继续运行并计费。");
-    const SubmissionContext confirmation_context {m_job_id, m_job_generation_options.provider, m_sequence};
-    const auto confirmed_options = m_job_generation_options;
-    const auto confirmed_profile = m_job_generation_profile;
+    const SubmissionContext confirmation_context {source_job_id, confirmed_options.provider, m_sequence};
     const auto confirmed_prompt = m_prepared_prompt->GetValue();
     if (show_generation_confirmation(this, message, _L("确认生成3D模型"), 189) != wxID_YES)
         return;
@@ -132,28 +132,30 @@ void ModelGenerationPanel::on_generate(wxCommandEvent&)
         return std::tie(options.provider, options.face_limit, options.geometry_quality,
                         options.texture_quality, options.output_format);
     };
-    if (!input_editable() || !m_generation_available || !m_awaiting_confirmation || !job_inputs_match() ||
+    if (!input_editable() || !m_generation_available ||
+        (!m_awaiting_confirmation && !can_reuse_ready_model_design()) || !job_inputs_match() ||
         use_printable_colors() != m_job_use_printable_colors || current_palette() != m_job_palette ||
         option_values(current_options) != option_values(confirmed_options) ||
         current_generation_profile() != confirmed_profile || m_prepared_prompt->GetValue() != confirmed_prompt ||
-        !confirmation_context.matches(m_job_id, current_generation_options().provider, m_sequence)) {
+        !confirmation_context.matches(model_generation_source_job_id(), current_generation_options().provider, m_sequence)) {
         show_input_hint(_L("任务或输入已变化，本次没有提交。请核对当前设计后重新确认。"));
         return;
     }
-    if (m_local_image_history) {
+    if (m_local_image_history || can_reuse_ready_model) {
         m_design_history_loading = true;
         const uint64_t history_sequence = ++m_design_history_sequence;
         m_busy = true;
         const uint64_t sequence = ++m_sequence;
-        const auto source = m_job_id;
-        m_status->SetLabel(_L("正在从历史设计图准备新任务..."));
+        const auto source = source_job_id;
+        m_status->SetLabel(can_reuse_ready_model ? _L("正在保留当前模型并准备新的 3D 任务...")
+                                             : _L("正在从历史设计图准备新任务..."));
         refresh_controls();
         wxWeakRef<ModelGenerationPanel> weak(this);
         m_client.reuse_design(source,
-            [weak, sequence, history_sequence, source](AIModelGenerationClient::JobStatus status) mutable {
+            [weak, sequence, history_sequence, source, confirmed_options, confirmed_profile](AIModelGenerationClient::JobStatus status) mutable {
                 if (!weak) return;
-                wxGetApp().CallAfter([weak, sequence, history_sequence, source, status = std::move(status)] {
-                    if (!weak || weak->m_shutdown || sequence != weak->m_sequence || history_sequence != weak->m_design_history_sequence || weak->m_job_id != source) return;
+                wxGetApp().CallAfter([weak, sequence, history_sequence, source, confirmed_options, confirmed_profile, status = std::move(status)] {
+                    if (!weak || weak->m_shutdown || sequence != weak->m_sequence || history_sequence != weak->m_design_history_sequence || weak->model_generation_source_job_id() != source) return;
                     weak->m_design_history_loading = false;
                     if (status.id.empty() || status.id == source || status.state != "awaiting_confirmation") {
                         weak->m_busy = false;
@@ -163,6 +165,18 @@ void ModelGenerationPanel::on_generate(wxCommandEvent&)
                     }
                     weak->m_local_image_history = false;
                     weak->m_job_id = status.id;
+                    weak->m_job_state = status.state;
+                    weak->m_job_phase = status.phase;
+                    weak->m_job_provider_name = confirmed_options.provider;
+                    weak->m_job_provider_task_id.clear();
+                    weak->m_job_provider_conversion_task_id.clear();
+                    weak->m_provider_error_code.clear();
+                    weak->m_provider_error_category.clear();
+                    weak->m_provider_error_retryable = false;
+                    weak->m_provider_error_ambiguous = false;
+                    weak->m_job_generation_options = confirmed_options;
+                    weak->m_job_face_limit = confirmed_options.face_limit;
+                    weak->m_job_generation_profile = confirmed_profile;
                     weak->submit_confirmed_model();
                 });
             },
@@ -178,6 +192,9 @@ void ModelGenerationPanel::on_generate(wxCommandEvent&)
             });
         return;
     }
+    m_job_generation_options = confirmed_options;
+    m_job_face_limit = confirmed_options.face_limit;
+    m_job_generation_profile = confirmed_profile;
     submit_confirmed_model();
 }
 
@@ -193,6 +210,8 @@ void ModelGenerationPanel::submit_confirmed_model()
     ++m_model_generation_session;
     m_busy = true;
     m_awaiting_confirmation = false;
+    m_ready = false;
+    m_artifact_path.clear();
     m_artifact_download_started = false;
     m_model_preview_ready = false;
     m_library_model_loaded = false;

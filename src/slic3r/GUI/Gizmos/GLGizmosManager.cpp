@@ -81,7 +81,7 @@ std::vector<size_t> GLGizmosManager::get_selectable_idxs() const
 //BBS: GUI refactor: GLToolbar&&Gizmo adjust
 GLGizmosManager::EType GLGizmosManager::get_gizmo_from_mouse(const Vec2d &mouse_pos) const
 {
-    if (!m_enabled || m_parent.compact_slicing_tools())
+    if (!m_enabled || (m_parent.compact_slicing_tools() && !m_parent.slicing_gizmos_visible()))
         return Undefined;
 
     float icons_size = m_layout.scaled_icons_size();
@@ -95,10 +95,10 @@ GLGizmosManager::EType GLGizmosManager::get_gizmo_from_mouse(const Vec2d &mouse_
 
         top_x = 0.5f * cnv_w + 0.5f * (m_parent.get_assembly_paint_toolbar_width());
     } else {
-        const float separator_width = m_parent.get_separator_toolbar_width();
+        const float separator_width = m_parent.get_effective_separator_toolbar_width();
 
         top_x = m_parent.get_main_toolbar_offset();
-        top_x += m_parent.get_main_toolbar_width() + separator_width / 2 + border;
+        top_x += m_parent.get_effective_main_toolbar_width() + separator_width / 2 + border;
     }
     float top_y = 0;
     float stride_x = m_layout.scaled_stride_x();
@@ -613,7 +613,7 @@ void GLGizmosManager::render_painter_assemble_view() const
 
 void GLGizmosManager::render_overlay()
 {
-    if (!m_enabled || m_parent.compact_slicing_tools())
+    if (!m_enabled || (m_parent.compact_slicing_tools() && !m_parent.slicing_gizmos_visible()))
         return;
 
     if (m_icons_texture_dirty)
@@ -1229,8 +1229,8 @@ void GLGizmosManager::do_render_overlay() const
     }
     else {
         //BBS: GUI refactor: GLToolbar&&Gizmo adjust
-        float main_toolbar_width = (float)m_parent.get_main_toolbar_width();
-        float separator_width = (float)m_parent.get_separator_toolbar_width();
+        float main_toolbar_width = m_parent.get_effective_main_toolbar_width();
+        float separator_width = m_parent.get_effective_separator_toolbar_width();
         //float space_width = GLGizmosManager::Default_Icons_Size * wxGetApp().toolbar_icon_scale();
         //float zoomed_top_x = 0.5f *(cnv_w + main_toolbar_width - 2 * space_width - width) * inv_zoom;
 
@@ -1370,7 +1370,7 @@ bool GLGizmosManager::generate_icons_texture()
 //    if (sprite_size_px % 2 != 0)
 //        sprite_size_px += 1;
 
-    bool res = m_icons_texture.load_from_svg_files_as_sprites_array(filenames, states, sprite_size_px, false);
+    bool res = m_icons_texture.load_from_svg_files_as_sprites_array(filenames, states, sprite_size_px, false, m_is_dark);
     if (res)
         m_icons_texture_dirty = false;
 

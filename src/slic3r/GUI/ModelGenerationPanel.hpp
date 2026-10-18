@@ -288,6 +288,12 @@ private:
     std::string current_generation_profile() const;
     wxString current_generation_profile_label() const;
     AIModelGenerationClient::GenerationOptions current_generation_options() const;
+    // A ready historical model has no active polling job after it is loaded,
+    // but its persisted model job id can still be used to fork a new model
+    // task from the retained design.
+    std::string model_generation_source_job_id() const;
+    bool model_options_match_job() const;
+    bool can_reuse_ready_model_design() const;
     void refresh_provider_options();
     void persist_generation_options();
     bool generation_options_valid() const;
@@ -771,6 +777,7 @@ private:
     bool m_artifact_download_started { false };
     bool m_model_preview_ready { false };
     bool m_library_model_loaded { false };
+    bool m_history_model_design_reusable { false };
     bool m_service_available { false };
     bool m_generation_available { false };
     bool m_service_availability_known { false };
