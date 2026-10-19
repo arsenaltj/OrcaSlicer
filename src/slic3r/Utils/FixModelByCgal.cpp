@@ -1,10 +1,11 @@
 #include "FixModelByCgal.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <cmath>
 #include <condition_variable>
-#include <limits>
+#include <cstddef>
+#include <exception>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -20,7 +21,12 @@
 #include "libslic3r/Thread.hpp"
 #include "../GUI/I18N.hpp"
 
-// Orca: This file provides utilities for repairing 3D model meshes using the CGAL library, handling mesh splitting, merging, and boolean operations.
+#include "libslic3r/Format/bbs_3mf.hpp"
+#include "libslic3r/MeshRepair.hpp"
+#include "libslic3r/Model.hpp"
+#include "libslic3r/Thread.hpp"
+#include "slic3r/GUI/I18N.hpp"
+#include "slic3r/GUI/Widgets/ProgressDialog.hpp"
 
 namespace Slic3r {
 
@@ -89,36 +95,9 @@ private:
 
 bool is_not_3dimensional_part(const TriangleMesh &mesh)
 {
-    // Orca: Determines if a mesh is degenerate or represents a non-3dimensional part by checking volume and bounding box dimensions.
-    if (mesh.its.indices.empty())
-        return true;
-
-    indexed_triangle_set tmp = mesh.its;
-    its_remove_degenerate_faces(tmp, true);
-    if (tmp.indices.empty())
-        return true;
-
-    const BoundingBoxf3 bbox = mesh.bounding_box();
-    const Vec3d size = bbox.size();
-    const double min_dim = std::min(size.x(), std::min(size.y(), size.z()));
-    const double max_dim = std::max(size.x(), std::max(size.y(), size.z()));
-    if (min_dim <= EPSILON)
-        return true;
-
-    const double volume = std::abs(its_volume(mesh.its));
-    const double bbox_volume = size.x() * size.y() * size.z();
-    if (volume <= EPSILON)
-        return true;
-
-    const double min_relative_thickness = 1e-6;
-    const double min_volume_ratio = 1e-6;
-    if (min_dim / max_dim <= min_relative_thickness)
-        return true;
-    if (bbox_volume > 0.0 && volume / bbox_volume <= min_volume_ratio)
-        return true;
-
-    return false;
-}
+public:
+    const char *what() const noexcept override { return "Model repair has been canceled"; }
+};
 
 } // namespace
 
@@ -153,14 +132,11 @@ bool fix_model_with_cgal_gui(ModelObject &original_object, int volume_idx, GUI::
     }
     ModelObject& model_object = *model_object_ptr;
 
-    // Orca: Synchronization primitives for progress updates between worker thread and GUI.
-    std::mutex mtx;
-    std::condition_variable condition;
-    struct Progress {
-        std::string message;
-        int         percent  = 0;
-        bool        updated  = false;
-    } progress;
+    std::vector<ModelVolume *> volumes;
+    if (volume_idx < 0)
+        volumes = model_object.volumes;
+    else if (std::size_t(volume_idx) < model_object.volumes.size())
+        volumes.push_back(model_object.volumes[volume_idx]);
 
     bool   success = false;
     bool   staged_paint_removed = false;
@@ -170,8 +146,7 @@ bool fix_model_with_cgal_gui(ModelObject &original_object, int volume_idx, GUI::
     auto on_progress = [&mtx, &condition, &ivolume, &model_object, &progress](const std::string &msg, unsigned prcnt) {
         std::unique_lock<std::mutex> lock(mtx);
         progress.message = msg;
-        const size_t total = std::max<size_t>(1, model_object.volumes.size());
-        progress.percent = int(std::floor((float(prcnt) + float(ivolume) * 100.f) / float(total)));
+        progress.percent = percent;
         progress.updated = true;
         condition.notify_all();
     };
@@ -179,7 +154,15 @@ bool fix_model_with_cgal_gui(ModelObject &original_object, int volume_idx, GUI::
     // Orca: Worker thread that performs the actual model repair operations.
     auto worker_thread = std::thread([&model_object, volume_idx, &ivolume, on_progress, &success, &canceled, &finished, &fix_result, &staged_paint_removed, keep_painting]() {
         try {
-	        set_current_thread_name("cgal_fix_model");
+            for (std::size_t i = 0; i < volumes.size(); ++i) {
+                ModelVolume      *volume = volumes[i];
+                const std::string name   = volumes.size() > 1 ? volume->name : std::string();
+                const auto        report = [&](int percent) {
+                    if (canceled)
+                        throw RepairCanceledException();
+                    on_progress(name, int((100 * i + std::size_t(percent)) / volumes.size()));
+                };
+                report(0);
 
             size_t start_volume = volume_idx == -1 ? 0 : size_t(volume_idx);
             size_t end_volume   = volume_idx == -1 ? std::numeric_limits<size_t>::max() : size_t(volume_idx);
@@ -337,27 +320,17 @@ bool fix_model_with_cgal_gui(ModelObject &original_object, int volume_idx, GUI::
 
                 on_progress(_u8L("Repair finished"), 100);
             }
-
-            model_object.invalidate_bounding_box();
-
-            if (ivolume > 0)
-                --ivolume;
-            on_progress(_u8L("Repair finished"), 100);
-            success = true;
-            finished = true;
-        } catch (RepairCanceledException &) {
+        } catch (const RepairCanceledException &) {
             canceled = true;
-            finished = true;
-            on_progress(_u8L("Repair canceled"), 100);
-        } catch (std::exception &ex) {
-            success = false;
-            finished = true;
-            fix_result = ex.what();
-            on_progress(ex.what(), 100);
+        } catch (const std::exception &ex) {
+            errors += (errors.empty() ? "" : "\n") + std::string(ex.what());
         }
+        // Volumes repaired before a cancel or an error keep their new mesh.
+        model_object.invalidate_bounding_box();
+        finished = true;
+        on_progress(_u8L("Repair finished"), 100);
     });
 
-    // Orca: Main GUI loop to update progress dialog and handle cancellation.
     while (!finished) {
         std::unique_lock<std::mutex> lock(mtx);
         condition.wait_for(lock, std::chrono::milliseconds(250), [&progress]{ return progress.updated; });
@@ -368,14 +341,7 @@ bool fix_model_with_cgal_gui(ModelObject &original_object, int volume_idx, GUI::
             canceled = true;
         } else
             progress_dialog.Fit();
-
         progress.updated = false;
-    }
-
-    if (canceled) {
-        // Nothing to show.
-    } else if (success) {
-        fix_result.clear();
     }
 
     if (worker_thread.joinable())

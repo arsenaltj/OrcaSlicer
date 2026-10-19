@@ -4,14 +4,19 @@
 #include "ResourcePathUtils.hpp"
 
 #include <assimp/Importer.hpp>
+#include <assimp/color4.h>
 #include <assimp/config.h>
 #include <assimp/material.h>
 #include <assimp/GltfMaterial.h>
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
 
+#include <assimp/texture.h>
+#include <assimp/types.h>
+#include <assimp/vector3.h>
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/filesystem.hpp>
+#include <boost/filesystem/path.hpp>
 #include <boost/log/trivial.hpp>
 #include <boost/nowide/fstream.hpp>
 
@@ -25,6 +30,7 @@
 #include <limits>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace Slic3r {

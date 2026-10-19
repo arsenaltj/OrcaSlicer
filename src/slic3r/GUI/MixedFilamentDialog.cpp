@@ -3,16 +3,36 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <cstring>
 #include <functional>
 #include <map>
 #include <set>
+#include <wx/colour.h>
+#include <wx/gdicmn.h>
+#include <wx/event.h>
+#include "slic3r/GUI/Widgets/StateColor.hpp"
+#include <vector>
+#include <string>
+#include "slic3r/GUI/GUI_Utils.hpp"
+#include <wx/dc.h>
+#include <wx/dcmemory.h>
+#include <utility>
+#include <wx/chartype.h>
+#include <tuple>
+#include <wx/arrstr.h>
 #include <wx/image.h>
+#include <wx/panel.h>
 #include <wx/sizer.h>
 #include <wx/dcclient.h>
 #include <wx/dcbuffer.h>
 #include <wx/dcgraph.h>
 #include <wx/scrolwin.h>
+#include <wx/string.h>
 #include <wx/textctrl.h>
+#include <wx/toplevel.h>
+#include <wx/window.h>
+#include <wx/tglbtn.h>
 #include <wx/wrapsizer.h>
 #include <wx/tokenzr.h>
 
@@ -143,7 +163,6 @@ MixedFilamentDialog::MixedFilamentDialog(wxWindow* parent,
                                          const std::string& target_color)
     : DPIDialog(parent, wxID_ANY, _L("Add Mixed Filament"), wxDefaultPosition,
                 wxDefaultSize, wxCAPTION | wxCLOSE_BOX)
-    , m_edit_mode(false)
     , m_physical_colors(physical_colors)
     , m_physical_names(physical_names)
     , m_physical_types(physical_types)
@@ -182,7 +201,6 @@ MixedFilamentDialog::MixedFilamentDialog(wxWindow* parent,
     : DPIDialog(parent, wxID_ANY, _L("Edit Mixed Filament"), wxDefaultPosition,
                 wxDefaultSize, wxCAPTION | wxCLOSE_BOX)
     , m_result(existing)
-    , m_edit_mode(true)
     , m_physical_colors(physical_colors)
     , m_physical_names(physical_names)
     , m_physical_types(physical_types)
@@ -887,23 +905,8 @@ wxBoxSizer* MixedFilamentDialog::create_ratio_slider()
     m_ratio_bar->Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
         wxBufferedPaintDC dc(m_ratio_bar);
         wxSize sz = m_ratio_bar->GetClientSize();
-
-        wxColour col_a = comp_colour(0), col_b = comp_colour(1);
-
-        for (int x = 0; x < sz.GetWidth(); ++x) {
-            double t = (double)x / sz.GetWidth();
-            wxColour c = blend_colors(col_a, col_b, 1.0 - t);
-            dc.SetPen(wxPen(c));
-            dc.DrawLine(x, 0, x, sz.GetHeight());
-        }
-
-        int div_x = (int)(ratio(1) / 100.0 * sz.GetWidth());
-        // Fixed in both themes, like the triangle picker's drag handle: the divider is drawn over
-        // blended filament colour, so it has to keep its contrast against data rather than chrome.
-        dc.SetPen(wxPen(wxColour(80, 80, 80), FromDIP(4)));
-        dc.DrawLine(div_x, 0, div_x, sz.GetHeight());
-        dc.SetPen(wxPen(*wxWHITE, FromDIP(2)));
-        dc.DrawLine(div_x, 0, div_x, sz.GetHeight());
+        draw_mixed_ratio_blend_bar(dc, wxRect(0, 0, sz.GetWidth(), sz.GetHeight()),
+                                   comp_colour(0), comp_colour(1), ratio(1) / 100.0);
     });
 
     m_ratio_bar->Bind(wxEVT_LEFT_DOWN, [this](wxMouseEvent& e) {
@@ -959,52 +962,8 @@ wxBoxSizer* MixedFilamentDialog::create_ratio_slider()
 }
 
 // ---- Triangle (ternary) ratio picker ----
-
-// Barycentric coordinate utilities
-struct TriPoint { double x, y; };
-
-static double tri_signed_area2(TriPoint a, TriPoint b, TriPoint c)
-{
-    return (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
-}
-
-static bool tri_contains(TriPoint p, TriPoint v0, TriPoint v1, TriPoint v2)
-{
-    double total = tri_signed_area2(v0, v1, v2);
-    if (std::abs(total) < 1e-9) return false;
-    double s0 = tri_signed_area2(p, v1, v2) / total;
-    double s1 = tri_signed_area2(v0, p, v2) / total;
-    double s2 = 1.0 - s0 - s1;
-    return s0 >= -0.001 && s1 >= -0.001 && s2 >= -0.001;
-}
-
-static void tri_barycentric(TriPoint p, TriPoint v0, TriPoint v1, TriPoint v2,
-                            double& w0, double& w1, double& w2)
-{
-    double total = std::abs(tri_signed_area2(v0, v1, v2));
-    if (total < 1e-9) { w0 = w1 = w2 = 1.0 / 3.0; return; }
-    w0 = std::abs(tri_signed_area2(p, v1, v2)) / total;
-    w1 = std::abs(tri_signed_area2(v0, p, v2)) / total;
-    w2 = 1.0 - w0 - w1;
-    w0 = std::clamp(w0, 0.0, 1.0);
-    w1 = std::clamp(w1, 0.0, 1.0);
-    w2 = std::clamp(w2, 0.0, 1.0);
-    double s = w0 + w1 + w2;
-    if (s > 0) { w0 /= s; w1 /= s; w2 /= s; }
-}
-
-static TriPoint tri_clamp(TriPoint p, TriPoint v0, TriPoint v1, TriPoint v2)
-{
-    double w0, w1, w2;
-    tri_barycentric(p, v0, v1, v2, w0, w1, w2);
-    w0 = std::clamp(w0, 0.0, 1.0);
-    w1 = std::clamp(w1, 0.0, 1.0);
-    w2 = std::clamp(w2, 0.0, 1.0);
-    double s = w0 + w1 + w2;
-    if (s > 0) { w0 /= s; w1 /= s; w2 /= s; }
-    return {w0 * v0.x + w1 * v1.x + w2 * v2.x,
-            w0 * v0.y + w1 * v1.y + w2 * v2.y};
-}
+// The barycentric utilities (TriPoint, tri_contains, tri_barycentric, tri_clamp) live in
+// FilamentBitmapUtils so the Publish dialog can mirror this picker read-only.
 
 wxBoxSizer* MixedFilamentDialog::create_triangle_picker()
 {
@@ -1815,7 +1774,7 @@ void MixedFilamentDialog::update_ok_button_state()
             wxString parts;
             for (auto it = type_groups.begin(); it != type_groups.end(); ++it) {
                 if (!parts.empty())
-                    parts += _L(" and ");
+                    parts += "; ";
                 wxString slots;
                 for (size_t j = 0; j < it->second.size(); ++j) {
                     if (!slots.empty()) slots += ", ";
@@ -1823,7 +1782,7 @@ void MixedFilamentDialog::update_ok_button_state()
                 }
                 parts += wxString::Format(_L("Slot %s (%s)"), slots, wxString::FromUTF8(it->first));
             }
-            m_type_mismatch_msg = parts + " " + _L("cannot be mixed. Please select the same filament type.");
+            m_type_mismatch_msg = wxString::Format(_L("Different filament types cannot be mixed: %s. Please select the same filament type."), parts);
         } else {
             m_type_mismatch_msg.clear();
         }

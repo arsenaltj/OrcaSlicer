@@ -4,13 +4,32 @@
 
 #include "libslic3r/Utils.hpp"
 #include "libslic3r/Color.hpp"
+#include "BuildCommit.hpp"
 #include "GUI.hpp"
 #include "GUI_App.hpp"
 #include "MainFrame.hpp"
 #include "format.hpp"
 #include "Widgets/Button.hpp"
+#include "libslic3r_version.h"
 
+#include "slic3r/GUI/GUI_Utils.hpp"
+#include "libslic3r/libslic3r.h"
+#include "slic3r/GUI/wxExtensions.hpp"
+#include "slic3r/GUI/Widgets/Label.hpp"
+#include <vector>
 #include <wx/clipbrd.h>
+#include <wx/panel.h>
+#include <wx/wx.h>
+#include <wx/gdicmn.h>
+#include <wx/event.h>
+#include <wx/dcclient.h>
+#include <wx/dialog.h>
+#include <wx/toplevel.h>
+#include <wx/sizer.h>
+#include <wx/html/htmlwin.h>
+#include <wx/string.h>
+#include <wx/colour.h>
+#include <wx/dataobj.h>
 
 namespace Slic3r {
 namespace GUI {
@@ -312,7 +331,7 @@ AboutDialog::AboutDialog()
 
     copyright_hor_sizer->Add(copyright_ver_sizer, 0, wxLEFT, FromDIP(20));
 
-    wxStaticText *html_text = new wxStaticText(this, wxID_ANY, "Copyright(C) 2026 OrcaSlicer Pte Ltd All Rights Reserved", wxDefaultPosition, wxDefaultSize);
+    wxStaticText *html_text = new wxStaticText(this, wxID_ANY, _L("Copyright(C) 2026 OrcaSlicer Pte Ltd All Rights Reserved"), wxDefaultPosition, wxDefaultSize);
     html_text->SetForegroundColour(wxColour(107, 107, 107));
 
     copyright_ver_sizer->Add(html_text, 0, wxALL , 0);

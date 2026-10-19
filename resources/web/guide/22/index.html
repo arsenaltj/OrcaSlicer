@@ -10,9 +10,9 @@
 <link rel="stylesheet" type="text/css" href="22.css" />
 <link rel="stylesheet" type="text/css" href="../css/dark.css" />		
 <script type="text/javascript" src="test.js"></script>
-<script type="text/javascript" src="../js/jquery-3.6.0.min.js"></script>
+<script type="text/javascript" src="../../include/jquery-3.6.0.min.js"></script>
 <script type="text/javascript" src="../js/json2.js"></script>	
-<script type="text/javascript" src="../../data/text.js"></script>	
+<script type="text/javascript" src="../../include/i18n.js"></script>	
 <script type="text/javascript" src="../js/globalapi.js"></script>	
 <script type="text/javascript" src="../js/common.js"></script>
 <script type="text/javascript" src="../22/common.js"></script> <!-- ORCA use common sources for setup guide and standalone dialog -->
@@ -22,7 +22,7 @@
 </head>
 <body onLoad="OnInit()">
 <div id="Title">
-	<div class="trans" tid="t14">Filament Selection</div>
+	<div data-i18n="filament_selection">Filament Selection</div>
 </div>
 <div id="Content" class="ZScrol">
 <!-- ORCA column browser -->
@@ -31,14 +31,14 @@
 		<div class="cbr-column-title-container">
 			<div class="search-icon"></div>
 			<input type="text" class="cbr-search-bar" placeholder=" " tabindex="1"/>
-			<span class="cbr-search-placeholder trans" tid="t15">printer</span>
+			<span class="cbr-search-placeholder" data-i18n="printer">Printer</span>
 			<div class="clear-icon"></div>
 		</div>
 		<div class="cbr-content thin-scroll" id="MachineList">
 			<div class="CValues">
-				<label><input type="checkbox" mode="all" onClick="ChooseAllMachine()"  /><span class="trans" tid="t11">all</span></label>
+				<label><input type="checkbox" mode="all" onClick="ChooseAllMachine()"  /><span data-i18n="all">All</span></label>
 			</div>
-			<div class="cbr-no-items">No items</div>
+			<div class="cbr-no-items" data-i18n="no_items">No items</div>
 		</div>
 	</div>
 
@@ -46,14 +46,14 @@
 		<div class="cbr-column-title-container">
 			<div class="search-icon"></div>
 			<input type="text" class="cbr-search-bar" placeholder=" " tabindex="2"/>
-			<span class="cbr-search-placeholder trans" tid="t16">filament type</span>
+			<span class="cbr-search-placeholder" data-i18n="filament_type">Filament type</span>
 			<div class="clear-icon"></div>
 		</div>
 		<div class="cbr-content thin-scroll" id="FilatypeList">
 			<div class="CValues">
-				<label><input type="checkbox" class="trans" tid="t11" onClick="ChooseAllFilament()" /><span class="trans" tid="t11">all</span></label>	
+				<label><input type="checkbox" onClick="ChooseAllFilament()" /><span data-i18n="all">All</span></label>	
 			</div>
-			<div class="cbr-no-items">No items</div>
+			<div class="cbr-no-items" data-i18n="no_items">No items</div>
 		</div>
 	</div>
 
@@ -61,14 +61,14 @@
 		<div class="cbr-column-title-container">
 			<div class="search-icon"></div>
 			<input type="text" class="cbr-search-bar" placeholder=" " tabindex="3"/>
-			<span class="cbr-search-placeholder trans" tid="t17">vendor</span>
+			<span class="cbr-search-placeholder" data-i18n="vendor">Vendor</span>
 			<div class="clear-icon"></div>
 		</div>
 		<div class="cbr-content thin-scroll" id="VendorList">
 			<div class="CValues">
-				<label><input type="checkbox" class="trans" tid="t11" onClick="ChooseAllVendor()" /><span class="trans" tid="t11">all</span></label>
+				<label><input type="checkbox" onClick="ChooseAllVendor()" /><span data-i18n="all">All</span></label>
 			</div>
-			<div class="cbr-no-items">No items</div>
+			<div class="cbr-no-items" data-i18n="no_items">No items</div>
 		</div>
 	</div>
 
@@ -98,7 +98,7 @@
 		</div>
 		<div class="cbr-content thin-scroll" id="ItemBlockArea">
 			<!-- <label class="MItem"><input type="checkbox" class="trans" tid="t11" onClick="SelectAllFilament()" /><span class="trans" tid="t11">all</span></label> -->
-			<div class="cbr-no-items">No items</div>
+			<div class="cbr-no-items" data-i18n="no_items">No items</div>
 		</div>
 	</div>
 </div>
@@ -113,13 +113,13 @@
 <div id="NoticeMask">
 </div>
 	<div id="NoticeBody">
-	<div id="NoticeBar" class="trans" tid="t18">error</div>
+	<div id="NoticeBar" data-i18n="error">Error</div>
 	<div id="NoticeContent">
-	<div id="NoticeText" class="trans" tid="t19">At least one filament must be selected. </div>
-	<div id="NoticeText" class="trans" tid="t20">Do you want to use default filament ?</div>
+	<div id="NoticeText" data-i18n="filament_required">At least one filament must be selected.</div>
+	<div id="NoticeText" data-i18n="use_default_filament">Do you want to use the default filament?</div>
 	<div id="NoticeBtns">
-		<div class="ButtonStyleConfirm ButtonTypeChoice trans" tid="t21" onClick="ChooseDefaultFilament()">Yes</div>
-		<div class="ButtonStyleRegular ButtonTypeChoice trans" tid="t22" onClick="ShowNotice(0)">No</div>
+		<div class="ButtonStyleConfirm ButtonTypeChoice" onClick="ChooseDefaultFilament()" data-i18n="yes">Yes</div>
+		<div class="ButtonStyleRegular ButtonTypeChoice" onClick="ShowNotice(0)" data-i18n="no">No</div>
 	</div>
 	</div>
 	</div>

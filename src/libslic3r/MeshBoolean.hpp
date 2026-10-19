@@ -1,6 +1,8 @@
 #ifndef libslic3r_MeshBoolean_hpp_
 #define libslic3r_MeshBoolean_hpp_
 
+#include <Eigen/Core>
+#include "libslic3r/Point.hpp"
 #include <memory>
 #include <exception>
 #include <functional>

@@ -6,6 +6,13 @@
 #include "wx/cmdline.h"
 #include "wx/notifmsg.h"
 #include "wx/settings.h"
+#include <wx/setup.h>
+#include <wx/string.h>
+#include <wx/event.h>
+#include <string>
+#include <functional>
+#include <wx/dialog.h>
+#include <wx/accel.h>
 #include <wx/webview.h>
 
 #if wxUSE_WEBVIEW_EDGE
@@ -21,6 +28,7 @@
 #include "wx/fs_mem.h"
 #include "wx/stdpaths.h"
 #include <wx/panel.h>
+#include <wx/sizer.h>
 #include <wx/tbarbase.h>
 #include "wx/textctrl.h"
 #include <wx/timer.h>
@@ -34,7 +42,7 @@ class NetworkAgent;
 namespace GUI {
 
 
-class WebViewPanel : public wxPanel
+class WebViewPanel : public wxPanel, public LazyInstance<WebViewPanel>
 {
 public:
     WebViewPanel(wxWindow *parent);
@@ -106,6 +114,27 @@ public:
     int  get_model_mall_detail_url(std::string *url, std::string id);
 
     void update_mode();
+
+    // Shows/hides the native OrcaCloud pane beside this homepage nav column. `url` is the
+    // cloud Start URL ({web}/auth/handoff?next=…&user_id=…), which the page uses to decide
+    // whether it already has a session; empty falls back to the plain cloud page.
+    // `page_url` is a full {web} page URL: an already-open pane is navigated straight there,
+    // without re-running the handoff, which is what an explicit "open this page" wants. Empty
+    // keeps whatever page the pane holds.
+    void set_cloud_mode(bool on, const wxString& url = wxString(), const wxString& page_url = wxString());
+
+    // True while the OrcaCloud pane exists and is visible.
+    bool cloud_mode_active() const { return m_cloud_browser && m_cloud_browser->IsShown(); }
+
+    // Loads `url` in the cloud pane — the webview that owns the session handoff. Raw LoadURL (no
+    // wxURI re-serialisation) so the Complete URL's #fragment stays intact; never logged.
+    void load_cloud_url(const wxString& url);
+
+    // Clears the cloud pane's own session on an explicit desktop sign-out. If the pane has not
+    // been created yet, the sign-out is remembered and applied when it is first opened.
+    void cloud_signed_out(const wxString& signout_url);
+
+    bool Show(bool show = true) override;
 private:
     enum class LoadingState { Loading, Ready, Failed, Closing };
 
@@ -139,6 +168,7 @@ private:
     wxButton *  m_button_reload;
     wxTextCtrl *m_url{nullptr};
     wxButton *  m_button_tools;
+#endif //BBL_RELEASE_TO_PUBLIC
 
     wxMenu* m_tools_menu;
     wxMenuItem* m_tools_handle_navigation;
@@ -167,7 +197,6 @@ private:
     wxMenuItem* m_dev_tools;
 
     wxInfoBar *m_info;
-    wxStaticText* m_info_text;
 
     long m_zoomFactor;
 

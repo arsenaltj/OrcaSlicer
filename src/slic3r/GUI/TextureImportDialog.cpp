@@ -1,3 +1,6 @@
+#include <array>
+#include <cstdlib>
+#include <functional>
 #include <glad/gl.h>
 #include "OpenGLManager.hpp"
 
@@ -8,29 +11,62 @@
 #include "Redesign/RedesignTheme.hpp"
 #include "Redesign/RedesignMessageDialog.hpp"
 #include "I18N.hpp"
+#include "format.hpp"
 #include "GUI_App.hpp"
 #include "MsgDialog.hpp"
 #include "ColorDecomposeDialog.hpp"
+#include "ColorPickerDialog.hpp"
+#include "libslic3r/Color.hpp"
+#include <optional>
+#include <variant>
+#include <wx/weakref.h>
 #include "ColorDecomposeSupport.hpp"
 #include "Widgets/StateColor.hpp"
 #include "Widgets/StaticLine.hpp"
 #include "libslic3r/ColorDecomposeRecipe.hpp"
-#include "libslic3r/MeshBoolean.hpp"
+#include "libslic3r/MeshRepair.hpp"
 #include "libslic3r/TriangleSelector.hpp"
 
+#include <utility>
+#include <string>
+#include "libslic3r/Config.hpp"
+#include "slic3r/GUI/Widgets/PopupWindow.hpp"
+#include <vector>
+#include "slic3r/GUI/wxExtensions.hpp"
+#include <math.h>
+#include "slic3r/GUI/GUI_Utils.hpp"
+#include "libslic3r/TexturePainting.hpp"
+#include "slic3r/GUI/Widgets/SpinInput.hpp"
+#include "libslic3r/TriangleMesh.hpp"
+#include <memory>
+#include <mutex>
 #include <wx/button.h>
 #include <wx/colour.h>
-#include <wx/colordlg.h>
+#include <wx/dc.h>
 #include <wx/dcclient.h>
 #include <wx/dcbuffer.h>
 #include <wx/dcscreen.h>
 #include <wx/dcmemory.h>
 #include <wx/graphics.h>
 #include <wx/display.h>
+#include <wx/event.h>
 #include <wx/evtloop.h>
+#include <wx/settings.h>
+#include <wx/gdicmn.h>
+#include <wx/panel.h>
+#include <wx/popupwin.h>
+#include <wx/glcanvas.h>
+#include <wx/image.h>
+#include <wx/sizer.h>
+#include <wx/object.h>
+#include <wx/spinctrl.h>
+#include <wx/progdlg.h>
+#include <wx/peninfobase.h>
 #include <wx/statline.h>
 #include <wx/scrolwin.h>
 #include <wx/msgdlg.h>
+#include <wx/string.h>
+#include <wx/toplevel.h>
 #include <wx/utils.h>
 #include <wx/valtext.h>
 #include <wx/wrapsizer.h>
@@ -45,6 +81,8 @@
 #include <sstream>
 
 #include <boost/log/trivial.hpp>
+#include <wx/window.h>
+#include <wx/busycursor.h>
 
 namespace {
 wxColour review_surface_colour() { return wxColour(53, 53, 55); }
@@ -259,7 +297,9 @@ public:
     }
 
 private:
+#if defined(__WXMSW__) || defined(__APPLE__)
     int m_suspended_count = 0;
+#endif
 };
 
 static bool needs_filament_swatch_border(const wxColour& colour)
@@ -608,30 +648,6 @@ static wxString auto_mix_mode_label(TextureAutoMixMode mode)
                                              texture_import_label("RYBW recipe matching", "RYBW 叠色配方");
 }
 
-static wxPoint constrained_dialog_position(wxWindow* anchor, const wxSize& dialog_size)
-{
-    if (!anchor)
-        return wxDefaultPosition;
-
-    wxSize size = dialog_size;
-    if (size.x <= 0 || size.y <= 0)
-        size = wxSize(anchor->FromDIP(450), anchor->FromDIP(350));
-
-    wxPoint pos = anchor->ClientToScreen(wxPoint(0, anchor->GetSize().y));
-    wxRect display_rect;
-    int display_idx = wxDisplay::GetFromPoint(pos);
-    if (display_idx != wxNOT_FOUND)
-        display_rect = wxDisplay(display_idx).GetClientArea();
-    else
-        display_rect = wxDisplay().GetClientArea();
-
-    pos.x = std::clamp(pos.x, display_rect.GetLeft(),
-                       std::max(display_rect.GetLeft(), display_rect.GetRight() - size.x));
-    pos.y = std::clamp(pos.y, display_rect.GetTop(),
-                       std::max(display_rect.GetTop(), display_rect.GetBottom() - size.y));
-    return pos;
-}
-
 // ============================================================
 // FilamentSelectPopup
 // ============================================================
@@ -658,7 +674,6 @@ public:
         , m_entries(entries)
         , m_colors_rgba(colors_rgba)
         , m_names(names)
-        , m_existing_count(existing_count)
         , m_dialog_anchor(dialog_anchor)
         , m_on_select(std::move(on_select))
         , m_on_add_filament(std::move(on_add_filament))
@@ -674,7 +689,7 @@ public:
 
         m_content = new wxScrolledWindow(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVSCROLL);
         m_content->SetBackgroundColour(pop_bg);
-        m_content->SetScrollRate(0, FromDIP(5));
+        m_content->SetScrollRate(0, FromDIP(20));
         auto* outer = new wxBoxSizer(wxVERTICAL);
 
         const int pop_w   = std::max(FromDIP(213), popup_width);
@@ -740,7 +755,9 @@ public:
         decompose_label->SetCursor(wxCursor(decompose_enabled ? wxCURSOR_HAND : wxCURSOR_ARROW));
         if (!add_enabled)
             add_label->SetToolTip(wxString::Format(
-                _L("The project supports up to %d filaments. Extra filaments will be discarded."),
+                _L_PLURAL("The project supports up to %d filament. Extra filaments will be discarded.",
+                          "The project supports up to %d filaments. Extra filaments will be discarded.",
+                          (int)EnforcerBlockerType::ExtruderMax),
                 (int)EnforcerBlockerType::ExtruderMax));
         decompose_label->Bind(wxEVT_LEFT_DOWN, [this](wxMouseEvent&) {
             if (m_can_decompose_color && !m_can_decompose_color())
@@ -758,24 +775,22 @@ public:
             auto on_add_filament = m_on_add_filament;
             wxWindow* popup_parent = GetParent();
             wxWindow* color_anchor = m_dialog_anchor ? m_dialog_anchor : popup_parent;
+            wxWeakRef<FilamentSelectPopup> popup(this);
             m_closing_from_action = true;
-            Dismiss();
-            wxColourData cd;
-            cd.SetChooseFull(true);
-            wxColourDialog dlg(popup_parent, &cd);
-            auto move_color_dialog = [&dlg, color_anchor]() {
-                dlg.Move(constrained_dialog_position(color_anchor, dlg.GetBestSize()));
-            };
-            dlg.Bind(wxEVT_SHOW, [move_color_dialog](wxShowEvent& e) mutable {
-                e.Skip();
-                if (e.IsShown())
-                    move_color_dialog();
-            });
-            move_color_dialog();
-            if (dlg.ShowModal() == wxID_OK) {
-                wxColour clr = dlg.GetColourData().GetColour();
-                if (on_add_filament) on_add_filament(clr);
+            std::optional<wxColour> selected;
+            {
+                // Capture the stable mapping row before the transient popup is dismissed.
+                ColorPickerDialog dlg(popup_parent, ColorRGBA(0.f, 0.f, 0.f, 1.f), {}, false, color_anchor);
+                if (popup) popup->Dismiss();
+                // Dismissal can delete the popup. Only copied locals are used below.
+                if (dlg.ShowModal() == wxID_OK && dlg.selection()) {
+                    const auto& color = std::get<ColorRGBA>(*dlg.selection());
+                    selected = wxColour(static_cast<unsigned char>(std::lround(color.r() * 255.f)),
+                                        static_cast<unsigned char>(std::lround(color.g() * 255.f)),
+                                        static_cast<unsigned char>(std::lround(color.b() * 255.f)));
+                }
             }
+            if (selected && on_add_filament) on_add_filament(*selected);
         });
 
         m_content->SetSizer(outer);
@@ -857,7 +872,7 @@ private:
             : wxColour(128, 128, 128);
 
         wxString name_str = (idx < m_names.size()) ? filament_name_to_wx_string(m_names[idx])
-                                                    : wxString::Format("Filament %d", display_number((int)idx));
+                                                    : wxString::Format(_L("Filament %d"), display_number((int)idx));
         row->SetToolTip(name_str);
 
         row->Bind(wxEVT_PAINT, [this, idx, sq, sq_r, sq_x, gap1, fil_clr, name_str, row_bg, hover_bg, name_fg](wxPaintEvent& e) {
@@ -940,7 +955,7 @@ private:
         row->SetBackgroundColour(row_bg);
         row->SetBackgroundStyle(wxBG_STYLE_PAINT);
         row->SetCursor(wxCursor(wxCURSOR_HAND));
-        row->SetToolTip(entry.name.empty() ? wxString::Format("Filament %d", display_number(idx)) : filament_name_to_wx_string(entry.name));
+        row->SetToolTip(entry.name.empty() ? wxString::Format(_L("Filament %d"), display_number(idx)) : filament_name_to_wx_string(entry.name));
 
         row->Bind(wxEVT_PAINT, [this, entry, idx, row_bg, hover_bg, name_fg](wxPaintEvent& e) {
             auto* p = static_cast<wxPanel*>(e.GetEventObject());
@@ -1024,7 +1039,6 @@ private:
     std::vector<TextureFilamentEntry>          m_entries;
     std::vector<std::array<float, 4>>          m_colors_rgba;
     std::vector<std::string>                   m_names;
-    size_t                                     m_existing_count = 0;
     wxWindow*                                  m_dialog_anchor = nullptr;
     std::function<void(int)>                   m_on_select;
     std::function<void(wxColour)>              m_on_add_filament;
@@ -1941,7 +1955,7 @@ TextureImportDialog::TextureImportDialog(
         entry.dialog_index = (int)i;
         entry.color_hex = texture_normalize_color_hex(entry.color_hex);
         if (entry.name.empty())
-            entry.name = "Filament " + std::to_string(i + 1);
+            entry.name = GUI::format(_u8L("Filament %d"), i + 1);
         m_filament_color_strs.push_back(entry.color_hex);
         m_filament_names.push_back(entry.name);
         m_filament_colors_rgba.push_back(parse_color_string(entry.color_hex));
@@ -2671,7 +2685,9 @@ void TextureImportDialog::build_bottom_buttons(wxSizer* sizer)
     }
     m_drop_warning_label = new wxStaticText(this, wxID_ANY,
         wxString::Format(
-            _L("The project supports up to %d filaments. Extra filaments will be discarded."),
+            _L_PLURAL("The project supports up to %d filament. Extra filaments will be discarded.",
+                      "The project supports up to %d filaments. Extra filaments will be discarded.",
+                      (int)max_filament_count()),
             (int)max_filament_count()));
     m_drop_warning_label->SetForegroundColour(StateColor::darkModeColorFor(wxColour("#FF6F00")));
     m_drop_warning_label->SetFont(texture_import_section_title_font(this));
@@ -2881,25 +2897,25 @@ void TextureImportDialog::start_computation(bool auto_color, bool initial)
     settings.face_color_overrides = m_options.face_color_overrides;
     settings.smooth_weight     = m_param_smooth / 10.0;
     settings.mesh_repair_decision = m_mesh_repair_decision;
-    // BBS repairs the mesh through the Windows 3D SDK, which is only available on Windows
-    // builds that ship the SDK. Orca's CGAL-based repair (MeshBoolean::cgal::repair) works
-    // on all three platforms, so use that instead.
     settings.mesh_repair_callback = [](const indexed_triangle_set& mesh,
                                        indexed_triangle_set&       repaired_mesh,
                                        std::function<void(const char*, unsigned)> progress_callback,
                                        std::function<bool()>       cancel_callback,
                                        std::string*                error_message) -> bool {
-        if (cancel_callback && cancel_callback())
-            return false;
         if (progress_callback)
             progress_callback(_u8L("Repairing mesh").c_str(), 0);
 
+        struct Canceled {};
         TriangleMesh tm(mesh);
-        if (!MeshBoolean::cgal::repair(tm, nullptr, error_message))
+        try {
+            if (!repair_mesh(tm, nullptr, error_message, [&cancel_callback](int) {
+                    if (cancel_callback && cancel_callback())
+                        throw Canceled();
+                }))
+                return false;
+        } catch (const Canceled &) {
             return false;
-
-        if (cancel_callback && cancel_callback())
-            return false;
+        }
         repaired_mesh = tm.its;
         if (progress_callback)
             progress_callback(_u8L("Repairing mesh").c_str(), 100);
@@ -3032,7 +3048,7 @@ void TextureImportDialog::on_computation_complete(wxCommandEvent&)
         m_filament_entries[i].color_hex = i < m_filament_color_strs.size() ?
             texture_normalize_color_hex(m_filament_color_strs[i]) : "#808080";
         m_filament_entries[i].name = i < m_filament_names.size() ?
-            m_filament_names[i] : "Filament " + std::to_string(i + 1);
+            m_filament_names[i] : GUI::format(_u8L("Filament %d"), i + 1);
     }
     m_new_filament_colors.clear();
     m_new_filament_preset_names.clear();
@@ -3190,8 +3206,9 @@ void TextureImportDialog::on_mesh_repair_decision_required(wxCommandEvent&)
         }
         return;
     }
-    m_mesh_repair_decision = Slic3r::TexturePaintingSettings::MeshRepairDecision::ImportWithoutRepair;
-#endif
+    m_mesh_repair_decision = (ret == wxID_NO)
+        ? Slic3r::TexturePaintingSettings::MeshRepairDecision::RepairAndImport
+        : Slic3r::TexturePaintingSettings::MeshRepairDecision::ImportWithoutRepair;
 
     start_computation(auto_color, initial);
 }
@@ -3557,7 +3574,7 @@ void TextureImportDialog::compact_used_virtual_filaments()
     for (size_t i = 0; i < existing_count; ++i) {
         compact_colors.push_back(old_colors[i]);
         compact_color_strs.push_back(i < old_color_strs.size() ? old_color_strs[i] : "");
-        compact_names.push_back(i < old_names.size() ? old_names[i] : "Filament " + std::to_string(i + 1));
+        compact_names.push_back(i < old_names.size() ? old_names[i] : GUI::format(_u8L("Filament %d"), i + 1));
         TextureFilamentEntry entry = i < old_entries.size() ? old_entries[i] : TextureFilamentEntry{};
         entry.dialog_index = (int)i;
         entry.color_hex = texture_normalize_color_hex(compact_color_strs.back());
@@ -4365,7 +4382,7 @@ void TextureImportDialog::rebuild_mapping_rows()
     auto get_filament_label = [this, display_number](int idx) -> wxString {
         if (idx >= 0 && idx < (int)m_filament_names.size())
             return filament_name_to_wx_string(m_filament_names[idx]);
-        return wxString::Format("Filament %d", display_number(idx));
+        return wxString::Format(_L("Filament %d"), display_number(idx));
     };
 
     const wxColour dash_clr = m_options.workbench_review ? wxColour(77, 77, 79) : StateColor::darkModeColorFor(wxColour("#ACACAC"));
