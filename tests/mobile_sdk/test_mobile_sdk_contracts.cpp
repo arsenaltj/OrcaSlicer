@@ -124,6 +124,29 @@ TEST_CASE("Connection path selection stays sticky while the active path is healt
     REQUIRE_FALSE(selection.requires_state_sync);
 }
 
+TEST_CASE("Connection state JSON round trips every v1.7 state", "[MobileSDK]")
+{
+    const std::array<std::pair<ConnectionState, const char*>, 11> states{{
+        {ConnectionState::Disconnected, "disconnected"},
+        {ConnectionState::Discovering, "discovering"},
+        {ConnectionState::Probing, "probing"},
+        {ConnectionState::Connecting, "connecting"},
+        {ConnectionState::Connected, "connected"},
+        {ConnectionState::Switching, "switching"},
+        {ConnectionState::Offline, "offline"},
+        {ConnectionState::Pairing, "pairing"},
+        {ConnectionState::Authenticating, "authenticating"},
+        {ConnectionState::StateSyncing, "state_syncing"},
+        {ConnectionState::Expired, "expired"},
+    }};
+
+    for (const auto& [state, name] : states) {
+        const nlohmann::json encoded = state;
+        REQUIRE(encoded.get<std::string>() == name);
+        REQUIRE(encoded.get<ConnectionState>() == state);
+    }
+}
+
 TEST_CASE("Command envelope validates identity sequence and expiry", "[MobileSDK]")
 {
     CommandEnvelope command;
@@ -147,12 +170,47 @@ TEST_CASE("Command envelope validates identity sequence and expiry", "[MobileSDK
     REQUIRE(command.validate(120, &detail) == CommandValidationError::Expired);
     REQUIRE(detail == "command has expired");
 
-    command.sequence = 0;
-    REQUIRE(command.validate(100) == CommandValidationError::InvalidSequence);
+    auto invalid = command;
+    invalid.sequence = 0;
+    REQUIRE(invalid.validate(100) == CommandValidationError::InvalidSequence);
+
+    invalid = command;
+    invalid.protocol_version = "orca.command/v2";
+    REQUIRE(invalid.validate(100) == CommandValidationError::UnsupportedProtocolVersion);
+
+    invalid = command;
+    invalid.protocol_version.clear();
+    REQUIRE(invalid.validate(100) == CommandValidationError::MissingProtocolVersion);
+
+    invalid = command;
+    invalid.device_id.clear();
+    REQUIRE(invalid.validate(100) == CommandValidationError::MissingDeviceId);
+
+    invalid = command;
+    invalid.command_id.clear();
+    REQUIRE(invalid.validate(100) == CommandValidationError::MissingCommandId);
+
+    invalid = command;
+    invalid.type.clear();
+    REQUIRE(invalid.validate(100) == CommandValidationError::MissingType);
 
     nlohmann::json incomplete = command.to_json();
     incomplete.erase("session_id");
-    REQUIRE_FALSE(CommandEnvelope::from_json(incomplete).has_value());
+    REQUIRE_FALSE(CommandEnvelope::from_json(incomplete, &detail).has_value());
+    REQUIRE(detail == "session_id is required");
+
+    auto different_command = command;
+    different_command.command_id = "command-2";
+    auto different_session = command;
+    different_session.session_id = "session-2";
+    auto different_device = command;
+    different_device.device_id = "printer-2";
+    auto different_payload = command;
+    different_payload.payload["reason"] = "system_request";
+    REQUIRE_FALSE(command.is_retry_of(different_command));
+    REQUIRE_FALSE(command.is_retry_of(different_session));
+    REQUIRE_FALSE(command.is_retry_of(different_device));
+    REQUIRE_FALSE(command.is_retry_of(different_payload));
 }
 
 TEST_CASE("AI and slicing DTOs round trip through versioned JSON", "[MobileSDK]")
@@ -221,6 +279,42 @@ TEST_CASE("Printer contracts serialize without desktop types", "[MobileSDK]")
     REQUIRE(capability_json.at("pause_print").get<bool>());
     REQUIRE(capability_json.at("resume_print").get<bool>());
     REQUIRE(capability_json.at("stop_print").get<bool>());
+    REQUIRE(capability_json.at("pause_resume").get<bool>());
+    REQUIRE(capability_json.at("cancel").get<bool>() == capability.stop_print);
+
+    const auto decoded_capability = capability_json.get<PrinterCapability>();
+    REQUIRE(decoded_capability.status_stream);
+    REQUIRE(decoded_capability.device_pairing);
+    REQUIRE(decoded_capability.certificate_authentication);
+    REQUIRE(decoded_capability.upload_gcode);
+    REQUIRE(decoded_capability.resumable_upload);
+    REQUIRE(decoded_capability.start_print);
+    REQUIRE(decoded_capability.pause_print);
+    REQUIRE(decoded_capability.resume_print);
+    REQUIRE(decoded_capability.stop_print);
+    REQUIRE(decoded_capability.pause_resume);
+    REQUIRE(decoded_capability.cancel);
+
+    const nlohmann::json legacy_capability = {
+        {"status_stream", true},
+        {"upload_gcode", true},
+        {"pause_resume", true},
+        {"cancel", true},
+    };
+    const auto decoded_legacy_capability = legacy_capability.get<PrinterCapability>();
+    REQUIRE(decoded_legacy_capability.pause_resume);
+    REQUIRE(decoded_legacy_capability.pause_print);
+    REQUIRE(decoded_legacy_capability.resume_print);
+    REQUIRE(decoded_legacy_capability.cancel);
+    REQUIRE(decoded_legacy_capability.stop_print);
+
+    const auto legacy_round_trip = nlohmann::json(decoded_legacy_capability).get<PrinterCapability>();
+    REQUIRE(legacy_round_trip.pause_resume);
+    REQUIRE(legacy_round_trip.pause_print);
+    REQUIRE(legacy_round_trip.resume_print);
+    REQUIRE(legacy_round_trip.cancel);
+    REQUIRE(legacy_round_trip.stop_print);
+
     REQUIRE(status_json.at("state").get<std::string>() == "printing");
     REQUIRE(status_json.at("current_file").get<std::string>() == "plate_1.gcode");
 
@@ -256,6 +350,8 @@ TEST_CASE("TransferJob and RemoteSession round trip with unknown extensions", "[
     const auto decoded_transfer = transfer_json.get<TransferJob>();
     REQUIRE(decoded_transfer.file_id == "file-1");
     REQUIRE(decoded_transfer.size_bytes == 4096);
+    REQUIRE(decoded_transfer.digest_algorithm == "sha256");
+    REQUIRE(decoded_transfer.digest == "abc123");
     REQUIRE(decoded_transfer.uploaded_offset == 2048);
     REQUIRE(decoded_transfer.state == TransferJobState::Uploading);
     REQUIRE(decoded_transfer.retry_policy == TransferRetryPolicy::ExponentialBackoff);

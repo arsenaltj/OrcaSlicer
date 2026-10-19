@@ -361,6 +361,14 @@ void from_json(const nlohmann::json& json, DeviceEndpoint& value)
 
 void to_json(nlohmann::json& json, const PrinterCapability& value)
 {
+    // Keep the legacy aggregate fields and the v1.7 split fields in sync so
+    // either representation can safely round-trip through the JSON contract.
+    const bool pause_print = value.pause_print || value.pause_resume;
+    const bool resume_print = value.resume_print || value.pause_resume;
+    const bool stop_print = value.stop_print || value.cancel;
+    const bool pause_resume = value.pause_resume || value.pause_print || value.resume_print;
+    const bool cancel = value.cancel || value.stop_print;
+
     json = {
         {"status_stream", value.status_stream},
         {"device_pairing", value.device_pairing},
@@ -369,12 +377,12 @@ void to_json(nlohmann::json& json, const PrinterCapability& value)
         {"upload_gcode", value.upload_gcode},
         {"resumable_upload", value.resumable_upload},
         {"start_print", value.start_print},
-        {"pause_print", value.pause_print},
-        {"resume_print", value.resume_print},
-        {"stop_print", value.stop_print},
+        {"pause_print", pause_print},
+        {"resume_print", resume_print},
+        {"stop_print", stop_print},
         {"local_discovery", value.local_discovery},
-        {"pause_resume", value.pause_resume},
-        {"cancel", value.cancel},
+        {"pause_resume", pause_resume},
+        {"cancel", cancel},
     };
 }
 
@@ -387,11 +395,13 @@ void from_json(const nlohmann::json& json, PrinterCapability& value)
     value.upload_gcode = json.value("upload_gcode", false);
     value.resumable_upload = json.value("resumable_upload", false);
     value.start_print = json.value("start_print", false);
-    value.pause_resume = json.value("pause_resume", false);
-    value.cancel = json.value("cancel", false);
-    value.pause_print = json.value("pause_print", value.pause_resume);
-    value.resume_print = json.value("resume_print", value.pause_resume);
-    value.stop_print = json.value("stop_print", value.cancel);
+    const bool legacy_pause_resume = json.value("pause_resume", false);
+    const bool legacy_cancel = json.value("cancel", false);
+    value.pause_print = json.value("pause_print", false) || legacy_pause_resume;
+    value.resume_print = json.value("resume_print", false) || legacy_pause_resume;
+    value.stop_print = json.value("stop_print", false) || legacy_cancel;
+    value.pause_resume = legacy_pause_resume || value.pause_print || value.resume_print;
+    value.cancel = legacy_cancel || value.stop_print;
     value.local_discovery = json.value("local_discovery", false);
 }
 
