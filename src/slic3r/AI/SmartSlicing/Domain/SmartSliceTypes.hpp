@@ -111,8 +111,8 @@ struct SliceRecommendation
     bool arachne_wall_generator{true};
     double line_width_mm{0.42};
 
-    // These values are fast estimates.  Native slice statistics supersede
-    // them after the official slice completes.
+    // These values are fast estimates. Native trial or official slice
+    // statistics supersede them before they are shown as final time metrics.
     double estimated_time_seconds{0.0};
     double estimated_material_grams{0.0};
     double surface_quality_score{0.0};
