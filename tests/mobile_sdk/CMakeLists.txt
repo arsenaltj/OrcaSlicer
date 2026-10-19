@@ -6,14 +6,21 @@ if (NOT COMMAND orcaslicer_discover_tests)
     endfunction()
 endif()
 
+# ORCA_MOBILE_SDK_ONLY bypasses src/CMakeLists.txt; register the adapter here for the SDK-only test graph.
+if (NOT TARGET OrcaSlicer::WonderMakerAdapter)
+    add_subdirectory(${CMAKE_SOURCE_DIR}/src/orca_connectivity_wondermaker ${CMAKE_BINARY_DIR}/orca_connectivity_wondermaker)
+endif()
+
 add_executable(${_TEST_NAME}_tests
     test_mobile_sdk_contracts.cpp
     test_moonraker_adapter.cpp
+    test_wondermaker_adapter.cpp
 )
 
 target_link_libraries(${_TEST_NAME}_tests PRIVATE
     OrcaSlicer::MobileSDK
     OrcaSlicer::MoonrakerAdapter
+    OrcaSlicer::WonderMakerAdapter
     Catch2::Catch2WithMain
 )
 set_property(TARGET ${_TEST_NAME}_tests PROPERTY FOLDER "tests")
