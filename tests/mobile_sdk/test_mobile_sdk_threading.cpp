@@ -30,36 +30,53 @@ TEST_CASE("Mobile SDK C ABI wakeup interrupts a blocking poll", "[MobileSDK][CAB
     REQUIRE(orca_sdk_destroy(sdk) == ORCA_SDK_OK);
 }
 
-TEST_CASE("Mobile SDK C ABI cancels a pending task across threads", "[MobileSDK][CABI][threading]")
+TEST_CASE("Mobile SDK C ABI cancels pending non-SYNC facade tasks across threads", "[MobileSDK][CABI][threading]")
 {
     orca_sdk_t* sdk = nullptr;
     orca_sdk_session_t* session = nullptr;
     REQUIRE(orca_sdk_create(nullptr, &sdk) == ORCA_SDK_OK);
     REQUIRE(orca_sdk_session_create(sdk, nullptr, &session) == ORCA_SDK_OK);
 
-    orca_sdk_task_request_t request{};
-    request.struct_size = static_cast<uint32_t>(sizeof(request));
-    request.kind = ORCA_SDK_TASK_KIND_SYNC;
-    orca_sdk_task_t* task = nullptr;
-    REQUIRE(orca_sdk_session_submit_task(session, &request, &task) == ORCA_SDK_OK);
+    const uint32_t kinds[] = {
+        ORCA_SDK_TASK_KIND_CONNECT,
+        ORCA_SDK_TASK_KIND_COMMAND,
+        ORCA_SDK_TASK_KIND_TRANSFER,
+    };
+    const char payload[] = "{\"device_id\":\"printer-1\",\"command_id\":\"cmd-1\"}";
+    for (const uint32_t kind : kinds) {
+        orca_sdk_task_request_t request{};
+        request.struct_size = static_cast<uint32_t>(sizeof(request));
+        request.kind = kind;
+        request.payload_utf8.data = payload;
+        request.payload_utf8.size = static_cast<uint32_t>(sizeof(payload) - 1u);
+        orca_sdk_task_t* task = nullptr;
+        REQUIRE(orca_sdk_session_submit_task(session, &request, &task) == ORCA_SDK_OK);
 
-    orca_sdk_event_t event{};
-    event.struct_size = static_cast<uint32_t>(sizeof(event));
-    REQUIRE(orca_sdk_poll_event(session, 1000, &event) == ORCA_SDK_OK);
-    REQUIRE(event.type == ORCA_SDK_EVENT_TASK_SUBMITTED);
+        auto submitted = orca_sdk_event_t{};
+        submitted.struct_size = static_cast<uint32_t>(sizeof(submitted));
+        REQUIRE(orca_sdk_poll_event(session, 1000, &submitted) == ORCA_SDK_OK);
+        REQUIRE(submitted.type == ORCA_SDK_EVENT_TASK_SUBMITTED);
+        REQUIRE(submitted.task == task);
+        REQUIRE(orca_sdk_event_clear(&submitted) == ORCA_SDK_OK);
 
-    std::atomic<orca_sdk_error_t> result{ORCA_SDK_E_INTERNAL};
-    std::thread canceler([&] { result.store(orca_sdk_task_cancel(task)); });
-    canceler.join();
-    REQUIRE(result.load() == ORCA_SDK_OK);
+        std::atomic<orca_sdk_error_t> result{ORCA_SDK_E_INTERNAL};
+        std::thread canceler([&] { result.store(orca_sdk_task_cancel(task)); });
+        canceler.join();
+        REQUIRE(result.load() == ORCA_SDK_OK);
 
-    REQUIRE(orca_sdk_poll_event(session, 1000, &event) == ORCA_SDK_OK);
-    REQUIRE(event.type == ORCA_SDK_EVENT_TASK_CANCELED);
-    REQUIRE(event.status == ORCA_SDK_E_CANCELED);
-    REQUIRE(orca_sdk_event_clear(&event) == ORCA_SDK_OK);
-    REQUIRE(orca_sdk_task_get_state(task, nullptr) == ORCA_SDK_E_INVALID_ARGUMENT);
+        auto canceled = orca_sdk_event_t{};
+        canceled.struct_size = static_cast<uint32_t>(sizeof(canceled));
+        REQUIRE(orca_sdk_poll_event(session, 1000, &canceled) == ORCA_SDK_OK);
+        REQUIRE(canceled.type == ORCA_SDK_EVENT_TASK_CANCELED);
+        REQUIRE(canceled.task == task);
+        REQUIRE(canceled.status == ORCA_SDK_E_CANCELED);
+        REQUIRE(orca_sdk_event_clear(&canceled) == ORCA_SDK_OK);
+        uint32_t state = ORCA_SDK_TASK_PENDING;
+        REQUIRE(orca_sdk_task_get_state(task, &state) == ORCA_SDK_OK);
+        REQUIRE(state == ORCA_SDK_TASK_CANCELED);
+        REQUIRE(orca_sdk_task_destroy(task) == ORCA_SDK_OK);
+    }
 
-    REQUIRE(orca_sdk_task_destroy(task) == ORCA_SDK_OK);
     REQUIRE(orca_sdk_session_destroy(session) == ORCA_SDK_OK);
     REQUIRE(orca_sdk_destroy(sdk) == ORCA_SDK_OK);
 }

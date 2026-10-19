@@ -3,6 +3,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <atomic>
+#include <cstddef>
 #include <cstring>
 #include <string>
 #include <thread>
@@ -194,6 +195,59 @@ TEST_CASE("Mobile SDK C ABI rejects invalid JSON for v1.7 facade tasks", "[Mobil
     request.payload_utf8.size = static_cast<uint32_t>(sizeof(invalid_json) - 1u);
     orca_sdk_task_t* task = nullptr;
     REQUIRE(orca_sdk_session_submit_task(session, &request, &task) == ORCA_SDK_E_INVALID_ARGUMENT);
+    REQUIRE(task == nullptr);
+
+    REQUIRE(orca_sdk_session_destroy(session) == ORCA_SDK_OK);
+    REQUIRE(orca_sdk_destroy(sdk) == ORCA_SDK_OK);
+}
+
+TEST_CASE("Mobile SDK C ABI reports timeout for an empty event queue", "[MobileSDK][CABI]")
+{
+    orca_sdk_t* sdk = nullptr;
+    orca_sdk_session_t* session = nullptr;
+    REQUIRE(orca_sdk_create(nullptr, &sdk) == ORCA_SDK_OK);
+    REQUIRE(orca_sdk_session_create(sdk, nullptr, &session) == ORCA_SDK_OK);
+
+    auto event = event_output();
+    REQUIRE(orca_sdk_poll_event(session, 0, &event) == ORCA_SDK_E_TIMEOUT);
+    REQUIRE(orca_sdk_poll_event(session, 1, &event) == ORCA_SDK_E_TIMEOUT);
+
+    REQUIRE(orca_sdk_session_destroy(session) == ORCA_SDK_OK);
+    REQUIRE(orca_sdk_destroy(sdk) == ORCA_SDK_OK);
+}
+
+TEST_CASE("Mobile SDK C ABI accepts and rejects truncated task requests by available fields", "[MobileSDK][CABI]")
+{
+    orca_sdk_t* sdk = nullptr;
+    orca_sdk_session_t* session = nullptr;
+    REQUIRE(orca_sdk_create(nullptr, &sdk) == ORCA_SDK_OK);
+    REQUIRE(orca_sdk_session_create(sdk, nullptr, &session) == ORCA_SDK_OK);
+
+    orca_sdk_task_request_t too_small{};
+    too_small.struct_size = static_cast<uint32_t>(sizeof(uint32_t) - 1u);
+    orca_sdk_task_t* task = nullptr;
+    REQUIRE(orca_sdk_session_submit_task(session, &too_small, &task) == ORCA_SDK_E_STRUCT_TOO_SMALL);
+    REQUIRE(task == nullptr);
+
+    orca_sdk_task_request_t sync_prefix{};
+    sync_prefix.struct_size = static_cast<uint32_t>(sizeof(uint32_t));
+    REQUIRE(orca_sdk_session_submit_task(session, &sync_prefix, &task) == ORCA_SDK_OK);
+    REQUIRE(task != nullptr);
+    auto submitted = event_output();
+    REQUIRE(orca_sdk_poll_event(session, 1000, &submitted) == ORCA_SDK_OK);
+    REQUIRE(submitted.type == ORCA_SDK_EVENT_TASK_SUBMITTED);
+    REQUIRE(orca_sdk_event_clear(&submitted) == ORCA_SDK_OK);
+    auto completed = event_output();
+    REQUIRE(orca_sdk_poll_event(session, 1000, &completed) == ORCA_SDK_OK);
+    REQUIRE(completed.type == ORCA_SDK_EVENT_TASK_COMPLETED);
+    REQUIRE(orca_sdk_event_clear(&completed) == ORCA_SDK_OK);
+    REQUIRE(orca_sdk_task_destroy(task) == ORCA_SDK_OK);
+
+    orca_sdk_task_request_t kind_prefix{};
+    kind_prefix.struct_size = static_cast<uint32_t>(offsetof(orca_sdk_task_request_t, payload_utf8));
+    kind_prefix.kind = ORCA_SDK_TASK_KIND_CONNECT;
+    task = nullptr;
+    REQUIRE(orca_sdk_session_submit_task(session, &kind_prefix, &task) == ORCA_SDK_E_INVALID_ARGUMENT);
     REQUIRE(task == nullptr);
 
     REQUIRE(orca_sdk_session_destroy(session) == ORCA_SDK_OK);
