@@ -54,7 +54,7 @@ connection.begin_probe();
 
 std::array<PathObservation, 3> paths{{
     {ConnectionPath::Lan, true, true, 4, 0},
-    {ConnectionPath::P2p, false, false, 0, 0},
+    {ConnectionPath::RemoteBroker, false, false, 0, 0},
     {ConnectionPath::Relay, true, true, 120, 0},
 }};
 
@@ -121,4 +121,4 @@ MobileSDK 的核心文件、契约测试和边界检查脚本都保留在公开�
 - [需求与三期开发规划 · Markdown](REQUIREMENTS-ANALYSIS.md)
 - [需求与三期开发规划 · HTML](REQUIREMENTS-ANALYSIS.html)
 
-以上文件是工程内同步阅读副本。用户审核的权威版本位于 `D:/Codex/artifacts/task-20261016013901509-0f210b/reports/analysis-report.md` 和 `analysis-report.html`，原报告备份、版本身份、文件哈希及校验记录位于该任务的 `evidence/report-standardization-20261016/`。
+以上文件是工程内同步阅读副本。用户审核的权威版本由工作区任务产物管理；本仓库文档不写入机器绝对路径。
