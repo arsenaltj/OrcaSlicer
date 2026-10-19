@@ -53,9 +53,10 @@ Platform Backend ───────► Object Storage / CDN / Search / Queue
 第一阶段保留三个主要代码仓库和一个部署仓库：
 
 ```text
-D:/Codex/repos/
+repos/
 ├── OrcaSlicer/                  # 现有桌面端和共享 C++ 核心
 ├── orca-mobile/                 # Flutter 移动端和 Android/iOS 宿主
+├── orca-frontend/               # 用户前台与管理后台 monorepo，按应用编译隔离
 ├── orca-platform/               # 账号、社区、支付、设备和任务后端
 └── orca-infra/                  # 环境、部署、数据库迁移和运行配置
 ```
@@ -112,65 +113,41 @@ MobileSDK DTO 和命令
 
 ## 4. Mobile App 仓库
 
-移动端建议使用 Flutter 作为产品 UI 和业务编排层，原生平台层负责系统生命周期和设备能力。
+本节以工作区中 `orca-mobile` 仓库的当前代码为准。Flutter 应用、FFI bridge、平台服务和测试都在同一个移动端仓库中，当前没有 `apps/mobile/` 或顶层 `native/` 目录。
 
 ```text
 orca-mobile/
-├── apps/mobile/
-│   ├── lib/
-│   │   ├── app/                   # 路由、主题、应用启动
-│   │   ├── features/
-│   │   │   ├── account/           # 登录、账号、家庭和团队
-│   │   │   ├── devices/           # 打印机列表、配对、状态
-│   │   │   ├── print_jobs/        # 上传、切片、打印和历史
-│   │   │   ├── model_library/     # 模型库、搜索、下载和预览
-│   │   │   ├── community/         # 动态、评论、点赞和关注
-│   │   │   ├── billing/           # 商品、订阅、订单和权益展示
-│   │   │   ├── ai/                # AI 生成任务
-│   │   │   └── settings/
-│   │   ├── domain/                # 移动端用例、状态和实体
-│   │   ├── data/                  # API、缓存和持久化
-│   │   └── presentation/          # 页面和组件
-│   ├── packages/
-│   │   ├── api_client/            # OpenAPI 生成的客户端
-│   │   ├── mobile_sdk_bridge/     # C ABI/FFI 与平台通道封装
-│   │   ├── model_viewer/          # 3D 模型和 G-code 预览抽象
-│   │   └── design_system/         # 产品 UI 组件
-│   ├── native/
-│   │   ├── android/               # Kotlin、前台服务、NSD、通知
-│   │   ├── ios/                   # Swift、Bonjour、后台、通知
-│   │   └── cpp/                   # SDK 产物接入和平台桥接
-│   ├── integration_test/
-│   └── tool/
-├── pubspec.yaml
-└── melos.yaml
+├── lib/
+│   ├── app/                      # 配置、启动、路由、主题、会话
+│   ├── core/                     # Mock、错误、日志、本地化、设计系统
+│   └── features/                 # shell、discover、devices、monitor、mine、services、settings
+├── packages/
+│   ├── printer_client/           # PrinterClient、模型、Mock/Unavailable 实现
+│   ├── orca_sdk_bridge/          # C ABI/FFI、Native/Mock SDK bridge
+│   └── platform_services/        # Android/iOS 平台能力抽象
+├── android/                      # Android 宿主、JNI/FFI 原生库和权限
+├── ios/                          # iOS 宿主工程
+├── integration_test/             # App smoke 和 Android SDK FFI 集成测试
+├── test/                         # Flutter、Widget、FFI、生命周期和 Mock 测试
+├── tool/                         # 环境校验、配置校验、Android SDK 构建工具
+├── config/                       # development/test/production 配置样例
+├── docs/                         # ownership、handoff、模块和参考分析文档
+├── pubspec.yaml                  # 根应用和三个本地 package 依赖
+├── sdk.lock.json                 # MobileSDK 产物和 ABI 锁定信息
+└── BUILDING.md / DECISIONS.md
 ```
 
-移动端内部依赖方向：
+当前代码依赖方向：
 
 ```text
-页面
-  ↓
-Feature Controller / State
-  ↓
-Use Case
-  ↓
-Repository
-  ├── Platform API Client
-  ├── Local Cache
-  └── MobileSDK Bridge
+lib/features + lib/core
+          ↓
+packages/printer_client   packages/orca_sdk_bridge   packages/platform_services
+          ↓                         ↓                         ↓
+     Mock/Unavailable       C ABI/FFI bridge          Android/iOS host
 ```
 
-移动端不能直接调用：
-
-- AI Provider；
-- 支付服务商后端；
-- 对象存储管理密钥；
-- 厂商私有云凭据；
-- 数据库；
-- 未经过权限检查的打印机命令。
-
-模型文件、切片结果和视频资源通过后端颁发的签名地址下载；移动端只保存短期缓存和必要的离线数据。
+真实打印机协议、WonderMaker 适配器和后端 API Client 尚未进入当前基线；后续应在既有 `packages/` 边界内新增，并先冻结公共契约。
 
 ### 4.1 原生平台层边界
 
@@ -204,45 +181,38 @@ Native GPU Renderer 或 C++ Parser
 
 ## 5. Platform Backend 仓库
 
-后端第一阶段采用模块化单体，配合独立 Worker 和实时网关。不要在第一天拆成大量微服务。
+本节以工作区中 `orca-platform` 仓库的当前代码为准。当前仓库是 NestJS 模块化单体基线，不是已经拆分好的多应用后端。
 
 ```text
 orca-platform/
-├── apps/
-│   ├── api/                       # 公共 API/BFF
-│   ├── realtime-gateway/          # WebSocket、设备状态和命令转发
-│   ├── worker/                    # AI、切片、媒体、审核和通知任务
-│   ├── admin-api/                 # 运营、审核、订单和客服
-│   └── scheduler/                 # 超时、重试和对账任务
-├── packages/
-│   ├── contracts/
-│   │   ├── openapi/
-│   │   ├── events/
-│   │   └── printer-command/
-│   ├── identity/
-│   ├── organization/
-│   ├── device/
-│   ├── print-job/
-│   ├── model-catalog/
-│   ├── community/
-│   ├── billing/
-│   ├── entitlement/
-│   ├── ai-job/
-│   ├── slicing-job/
-│   ├── moderation/
-│   ├── notification/
-│   ├── search/
-│   ├── storage/
-│   └── audit/
-├── migrations/
-├── tests/
-│   ├── contract/
-│   ├── integration/
-│   └── e2e/
-└── deploy/
+├── src/
+│   ├── main.ts / bootstrap.ts / app.module.ts
+│   ├── common/                   # errors、logging、request-context
+│   ├── config/                   # 环境和配置校验
+│   ├── database/                 # PostgreSQL 连接和事务服务
+│   └── modules/
+│       ├── health/               # liveness/readiness
+│       ├── contracts/            # OpenAPI 文档入口
+│       ├── identity/             # 当前为 501 预留
+│       ├── devices/              # 当前为 501 预留
+│       └── audit/                # 内部审计写入
+├── contracts/
+│   ├── http/openapi.yaml         # HTTP 契约唯一来源
+│   └── events/README.md          # 事件契约入口
+├── db/
+│   ├── migrations/               # 001_initial.sql
+│   └── seeds/                    # development seed
+├── deploy/                       # Dockerfile、Compose 和本地部署样例
+├── scripts/                      # migrate、seed、compose 和数据库辅助
+├── test/                         # unit、contract、integration、fixtures
+├── docs/                         # ownership、modules-roadmap、handoff
+├── package.json / tsconfig.json / nest-cli.json
+└── BUILDING.md / README.md
 ```
 
-后端模块可以共用一个数据库集群，但表和迁移按领域隔离。账号、订单、模型权益和打印任务不要互相直接读表，跨模块操作通过领域服务或事件完成。
+当前可确认的后端能力包括健康检查、配置校验、请求上下文、错误格式、日志、PostgreSQL 迁移/种子、内部审计、OpenAPI 契约和开发部署基线。identity/devices 仍返回 501，正式账号、设备注册、能力查询、实时网关、远程命令、Worker 和管理 API 尚未形成独立目录或业务实现。
+
+第一阶段继续保持模块化单体。后续只有在接口、负载和部署边界稳定后，才考虑把 realtime、worker 或 admin API 拆成独立进程或应用；这些属于演进目标，不作为当前仓库结构描述。
 
 ### 5.1 账号与设备
 
@@ -358,6 +328,23 @@ Device Command
 ```
 
 模型生成和云端切片只生成产物，不直接控制打印机。打印控制必须经过独立的 `PrintJob` 和设备权限检查。
+
+### 5.5 用户前台与管理后台
+
+用户前台和管理后台放在同一个 `orca-frontend` 前端 monorepo 中，通过应用目录和编译目标隔离，均通过版本化契约访问 `orca-platform`：
+
+```text
+orca-frontend/apps/web    ── 用户 API / Events ──┐
+                                                  ├── orca-platform
+orca-frontend/apps/admin  ── admin-api / 管理事件 ┘
+```
+
+- `orca-frontend/apps/web` 负责用户账号、设备、打印任务、模型、切片、通知和远程控制入口。
+- `orca-frontend/apps/admin` 负责管理员登录、RBAC、用户/设备支持、打印任务重试、内容审核、审计和诊断。
+- 两个应用共享仓库但独立入口、依赖边界、会话、路由、构建配置、CI/CD、环境、产物和发布回滚；共享只限版本化 OpenAPI、事件 Schema、设计 token 和不依赖应用的基础 UI 包。
+- `apps/web` 的编译不能拉入 `apps/admin` 的页面和管理员依赖；`apps/admin` 的编译也不能依赖用户前台业务模块。共享包不能反向依赖任一应用。
+- `orca-platform` 的 `api` 面向用户前台，`admin-api` 面向管理后台；后端服务端必须再次校验用户权限和管理员 RBAC。
+- 一期在同一仓库交付两个可独立编译的前台/管理后台骨架和契约测试，二期交付业务页面，三期交付团队、内容运营和数据分析页面。
 
 ## 6. API 与事件契约
 
