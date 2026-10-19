@@ -99,4 +99,3 @@ Real-device acceptance is a separate gate requiring the specified WonderMaker ha
 AI Gateway clients, real cloud slicing, production remote MQTT/TLS, video transport, and classic ICE/TURN P2P are outside the一期 SDK delivery. P2P remains a phase-three optional extension unless a later supplier decision explicitly moves it into a remote MVP gate.
 
 For detailed interfaces, use [the MobileSDK API reference](../../Docs/mobile-sdk/API.md). For the repository-level mobile guide, see [Docs/mobile-sdk/README.md](../../Docs/mobile-sdk/README.md).
-
