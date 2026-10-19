@@ -10,16 +10,28 @@ using namespace Orca::SDK;
 
 namespace {
 
-std::array<PathObservation, 3> all_paths(bool lan, bool p2p, bool relay)
+std::array<PathObservation, 3> all_paths(bool lan, bool remote_broker, bool relay)
 {
     return {{
         {ConnectionPath::Lan, lan, lan, 4, 0},
-        {ConnectionPath::P2p, p2p, p2p, 35, 0},
+        {ConnectionPath::RemoteBroker, remote_broker, remote_broker, 35, 0},
         {ConnectionPath::Relay, relay, relay, 120, 0},
     }};
 }
 
 } // namespace
+
+TEST_CASE("MobileSDK preserves legacy connection state numeric values", "[MobileSDK]")
+{
+    static_assert(static_cast<uint8_t>(ConnectionState::Connecting) == 3);
+    static_assert(static_cast<uint8_t>(ConnectionState::Connected) == 4);
+    static_assert(static_cast<uint8_t>(ConnectionState::Switching) == 5);
+    static_assert(static_cast<uint8_t>(ConnectionState::Offline) == 6);
+    static_assert(static_cast<uint8_t>(ConnectionState::Pairing) > static_cast<uint8_t>(ConnectionState::Offline));
+    static_assert(static_cast<uint8_t>(ConnectionState::Authenticating) > static_cast<uint8_t>(ConnectionState::Offline));
+    static_assert(static_cast<uint8_t>(ConnectionState::StateSyncing) > static_cast<uint8_t>(ConnectionState::Offline));
+    static_assert(static_cast<uint8_t>(ConnectionState::Expired) > static_cast<uint8_t>(ConnectionState::Offline));
+}
 
 TEST_CASE("MobileSDK exposes a shared desktop build identity", "[MobileSDK]")
 {
@@ -30,7 +42,7 @@ TEST_CASE("MobileSDK exposes a shared desktop build identity", "[MobileSDK]")
     REQUIRE(std::string(mobile_sdk_source_commit_short()).size() > 0);
 }
 
-TEST_CASE("Connection path selection follows LAN P2P relay priority", "[MobileSDK]")
+TEST_CASE("Connection path selection follows LAN RemoteBroker relay priority", "[MobileSDK]")
 {
     ConnectionPathSelector selector;
 
@@ -42,7 +54,7 @@ TEST_CASE("Connection path selection follows LAN P2P relay priority", "[MobileSD
 
     selection = selector.select(all_paths(false, true, true));
     REQUIRE(selection.available);
-    REQUIRE(selection.path == ConnectionPath::P2p);
+    REQUIRE(selection.path == ConnectionPath::RemoteBroker);
     REQUIRE(selection.changed);
     REQUIRE(selection.requires_state_sync);
 
@@ -56,7 +68,15 @@ TEST_CASE("Connection path selection follows LAN P2P relay priority", "[MobileSD
     REQUIRE(selection.requires_state_sync);
 }
 
-TEST_CASE("Connection state machine exposes discovery probe switch and offline transitions", "[MobileSDK]")
+TEST_CASE("Connection path JSON emits RemoteBroker and accepts legacy P2P", "[MobileSDK]")
+{
+    nlohmann::json encoded = ConnectionPath::RemoteBroker;
+    REQUIRE(encoded.get<std::string>() == "remote_broker");
+    REQUIRE(nlohmann::json("p2p").get<ConnectionPath>() == ConnectionPath::RemoteBroker);
+    REQUIRE(nlohmann::json("remote_broker").get<ConnectionPath>() == ConnectionPath::RemoteBroker);
+}
+
+TEST_CASE("Connection state machine covers pairing authentication sync expiration and offline transitions", "[MobileSDK]")
 {
     ConnectionStateMachine machine;
     machine.begin_discovery();
@@ -64,13 +84,30 @@ TEST_CASE("Connection state machine exposes discovery probe switch and offline t
 
     machine.begin_probe();
     REQUIRE(machine.state() == ConnectionState::Probing);
+    machine.begin_pairing();
+    REQUIRE(machine.state() == ConnectionState::Pairing);
+    machine.begin_authentication();
+    REQUIRE(machine.state() == ConnectionState::Authenticating);
     REQUIRE(machine.select_path(all_paths(true, true, true)).path == ConnectionPath::Lan);
     REQUIRE(machine.state() == ConnectionState::Connecting);
 
     machine.mark_connected();
     REQUIRE(machine.state() == ConnectionState::Connected);
-    REQUIRE(machine.select_path(all_paths(false, true, true)).path == ConnectionPath::P2p);
+    REQUIRE(machine.select_path(all_paths(false, true, true)).path == ConnectionPath::RemoteBroker);
     REQUIRE(machine.state() == ConnectionState::Switching);
+    REQUIRE(machine.state_sync_required());
+
+    machine.begin_state_sync();
+    REQUIRE(machine.state() == ConnectionState::StateSyncing);
+    machine.mark_state_synchronized();
+    REQUIRE(machine.state() == ConnectionState::Connected);
+    REQUIRE_FALSE(machine.state_sync_required());
+
+    machine.mark_state_expired();
+    REQUIRE(machine.state() == ConnectionState::Expired);
+    REQUIRE(machine.state_sync_required());
+    REQUIRE(machine.select_path(all_paths(false, true, true)).path == ConnectionPath::RemoteBroker);
+    REQUIRE(machine.state() == ConnectionState::Expired);
 
     REQUIRE(machine.select_path(all_paths(false, false, false)).requires_state_sync);
     REQUIRE(machine.state() == ConnectionState::Offline);
@@ -79,10 +116,10 @@ TEST_CASE("Connection state machine exposes discovery probe switch and offline t
 TEST_CASE("Connection path selection stays sticky while the active path is healthy", "[MobileSDK]")
 {
     ConnectionPathSelector selector;
-    REQUIRE(selector.select(all_paths(false, true, true)).path == ConnectionPath::P2p);
+    REQUIRE(selector.select(all_paths(false, true, true)).path == ConnectionPath::RemoteBroker);
 
     const auto selection = selector.select(all_paths(true, true, true));
-    REQUIRE(selection.path == ConnectionPath::P2p);
+    REQUIRE(selection.path == ConnectionPath::RemoteBroker);
     REQUIRE_FALSE(selection.changed);
     REQUIRE_FALSE(selection.requires_state_sync);
 }
@@ -154,22 +191,95 @@ TEST_CASE("Printer contracts serialize without desktop types", "[MobileSDK]")
 {
     PrinterCapability capability;
     capability.status_stream = true;
+    capability.device_pairing = true;
+    capability.certificate_authentication = true;
     capability.upload_gcode = true;
+    capability.resumable_upload = true;
     capability.start_print = true;
+    capability.pause_print = true;
+    capability.resume_print = true;
+    capability.stop_print = true;
 
     PrinterStatus status;
     status.device_id = "printer-1";
     status.state = PrinterState::Printing;
     status.progress = 0.5;
     status.current_file = "plate_1.gcode";
+    status.device_time_epoch_seconds = 1700000000;
+    status.event_sequence = 42;
+    status.last_sync_epoch_seconds = 1700000001;
+    status.state_expired = true;
+    status.connection_path = ConnectionPath::Lan;
+    status.protocol_version = "wondermaker.lan/v1";
 
     const auto capability_json = nlohmann::json(capability);
     const auto status_json = nlohmann::json(status);
     REQUIRE(capability_json.at("status_stream").get<bool>());
+    REQUIRE(capability_json.at("device_pairing").get<bool>());
+    REQUIRE(capability_json.at("certificate_authentication").get<bool>());
+    REQUIRE(capability_json.at("resumable_upload").get<bool>());
+    REQUIRE(capability_json.at("pause_print").get<bool>());
+    REQUIRE(capability_json.at("resume_print").get<bool>());
+    REQUIRE(capability_json.at("stop_print").get<bool>());
     REQUIRE(status_json.at("state").get<std::string>() == "printing");
     REQUIRE(status_json.at("current_file").get<std::string>() == "plate_1.gcode");
 
     const auto decoded = status_json.get<PrinterStatus>();
     REQUIRE(decoded.state == PrinterState::Printing);
     REQUIRE_THAT(decoded.progress, Catch::Matchers::WithinAbs(0.5, 1e-9));
+    REQUIRE(decoded.device_time_epoch_seconds == 1700000000);
+    REQUIRE(decoded.event_sequence == 42);
+    REQUIRE(decoded.last_sync_epoch_seconds == 1700000001);
+    REQUIRE(decoded.state_expired);
+    REQUIRE(decoded.connection_path == ConnectionPath::Lan);
+    REQUIRE(decoded.protocol_version == "wondermaker.lan/v1");
+
+    auto future_status = status_json;
+    future_status["future_field"] = true;
+    REQUIRE(future_status.get<PrinterStatus>().event_sequence == 42);
+}
+
+TEST_CASE("TransferJob and RemoteSession round trip with unknown extensions", "[MobileSDK]")
+{
+    TransferJob transfer;
+    transfer.file_id = "file-1";
+    transfer.size_bytes = 4096;
+    transfer.digest_algorithm = "sha256";
+    transfer.digest = "abc123";
+    transfer.uploaded_offset = 2048;
+    transfer.state = TransferJobState::Uploading;
+    transfer.retry_policy = TransferRetryPolicy::ExponentialBackoff;
+    transfer.device_download_state = DeviceDownloadState::Downloading;
+
+    auto transfer_json = nlohmann::json(transfer);
+    transfer_json["future_field"] = "ignored";
+    const auto decoded_transfer = transfer_json.get<TransferJob>();
+    REQUIRE(decoded_transfer.file_id == "file-1");
+    REQUIRE(decoded_transfer.size_bytes == 4096);
+    REQUIRE(decoded_transfer.uploaded_offset == 2048);
+    REQUIRE(decoded_transfer.state == TransferJobState::Uploading);
+    REQUIRE(decoded_transfer.retry_policy == TransferRetryPolicy::ExponentialBackoff);
+    REQUIRE(decoded_transfer.device_download_state == DeviceDownloadState::Downloading);
+
+    RemoteSession session;
+    session.device_id = "printer-1";
+    session.platform_session = "platform-session-1";
+    session.device_certificate_id = "certificate-1";
+    session.connection_path = ConnectionPath::RemoteBroker;
+    session.provider = "broker-provider";
+    session.lease_expires_at_epoch_seconds = 1700000300;
+    session.state_sync_required = true;
+    session.state_synced = false;
+
+    auto session_json = nlohmann::json(session);
+    session_json["future_field"] = 7;
+    const auto decoded_session = session_json.get<RemoteSession>();
+    REQUIRE(decoded_session.device_id == "printer-1");
+    REQUIRE(decoded_session.platform_session == "platform-session-1");
+    REQUIRE(decoded_session.device_certificate_id == "certificate-1");
+    REQUIRE(decoded_session.connection_path == ConnectionPath::RemoteBroker);
+    REQUIRE(decoded_session.provider == "broker-provider");
+    REQUIRE(decoded_session.lease_expires_at_epoch_seconds == 1700000300);
+    REQUIRE(decoded_session.state_sync_required);
+    REQUIRE_FALSE(decoded_session.state_synced);
 }
