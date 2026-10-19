@@ -20,6 +20,13 @@ int orca_sdk_c_header_compile_probe(void)
     request.payload_utf8 = string;
     event.payload = bytes;
 
+    _Static_assert(ORCA_SDK_TASK_KIND_DISCOVER == 2u, "discover kind must remain stable");
+    _Static_assert(ORCA_SDK_TASK_KIND_CONNECT == 3u, "connect kind must remain stable");
+    _Static_assert(ORCA_SDK_TASK_KIND_DISCONNECT == 4u, "disconnect kind must remain stable");
+    _Static_assert(ORCA_SDK_TASK_KIND_STATUS == 5u, "status kind must remain stable");
+    _Static_assert(ORCA_SDK_TASK_KIND_COMMAND == 6u, "command kind must remain stable");
+    _Static_assert(ORCA_SDK_TASK_KIND_TRANSFER == 7u, "transfer kind must remain stable");
+
     return (int)(options.struct_size + session_options.struct_size + request.struct_size +
                  event.struct_size + request.payload_utf8.size + event.payload.size);
 }

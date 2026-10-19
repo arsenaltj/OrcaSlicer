@@ -109,6 +109,97 @@ TEST_CASE("Mobile SDK C ABI submits and polls an explicit length task", "[Mobile
     REQUIRE(orca_sdk_destroy(sdk) == ORCA_SDK_OK);
 }
 
+
+TEST_CASE("Mobile SDK C ABI accepts v1.7 JSON facade task kinds", "[MobileSDK][CABI]")
+{
+    orca_sdk_t* sdk = nullptr;
+    orca_sdk_session_t* session = nullptr;
+    REQUIRE(orca_sdk_create(nullptr, &sdk) == ORCA_SDK_OK);
+    REQUIRE(orca_sdk_session_create(sdk, nullptr, &session) == ORCA_SDK_OK);
+
+    const char payload[] = "{\"device_id\":\"printer-1\",\"command_id\":\"cmd-1\"}";
+    const uint32_t kinds[] = {
+        ORCA_SDK_TASK_KIND_DISCOVER,
+        ORCA_SDK_TASK_KIND_CONNECT,
+        ORCA_SDK_TASK_KIND_DISCONNECT,
+        ORCA_SDK_TASK_KIND_STATUS,
+        ORCA_SDK_TASK_KIND_COMMAND,
+        ORCA_SDK_TASK_KIND_TRANSFER,
+    };
+    for (const uint32_t kind : kinds) {
+        orca_sdk_task_request_t request{};
+        request.struct_size = static_cast<uint32_t>(sizeof(request));
+        request.kind = kind;
+        request.payload_utf8.data = payload;
+        request.payload_utf8.size = static_cast<uint32_t>(sizeof(payload) - 1u);
+
+        orca_sdk_task_t* task = nullptr;
+        REQUIRE(orca_sdk_session_submit_task(session, &request, &task) == ORCA_SDK_OK);
+        REQUIRE(task != nullptr);
+
+        orca_sdk_event_t submitted = event_output();
+        REQUIRE(orca_sdk_poll_event(session, 1000, &submitted) == ORCA_SDK_OK);
+        REQUIRE(submitted.type == ORCA_SDK_EVENT_TASK_SUBMITTED);
+        REQUIRE(submitted.task == task);
+        REQUIRE(orca_sdk_event_clear(&submitted) == ORCA_SDK_OK);
+
+        orca_sdk_event_t completed = event_output();
+        REQUIRE(orca_sdk_poll_event(session, 1000, &completed) == ORCA_SDK_OK);
+        REQUIRE(completed.type == ORCA_SDK_EVENT_TASK_COMPLETED);
+        REQUIRE(completed.status == ORCA_SDK_OK);
+        REQUIRE(completed.payload.size == sizeof(payload) - 1u);
+        REQUIRE(std::memcmp(completed.payload.data, payload, sizeof(payload) - 1u) == 0);
+        REQUIRE(orca_sdk_event_clear(&completed) == ORCA_SDK_OK);
+        REQUIRE(orca_sdk_task_destroy(task) == ORCA_SDK_OK);
+    }
+
+    REQUIRE(orca_sdk_session_destroy(session) == ORCA_SDK_OK);
+    REQUIRE(orca_sdk_destroy(sdk) == ORCA_SDK_OK);
+}
+
+TEST_CASE("Mobile SDK C ABI keeps unsupported task kinds stable", "[MobileSDK][CABI]")
+{
+    orca_sdk_t* sdk = nullptr;
+    orca_sdk_session_t* session = nullptr;
+    REQUIRE(orca_sdk_create(nullptr, &sdk) == ORCA_SDK_OK);
+    REQUIRE(orca_sdk_session_create(sdk, nullptr, &session) == ORCA_SDK_OK);
+
+    const char payload[] = "{}";
+    orca_sdk_task_request_t request{};
+    request.struct_size = static_cast<uint32_t>(sizeof(request));
+    request.kind = 0xffffu;
+    request.payload_utf8.data = payload;
+    request.payload_utf8.size = static_cast<uint32_t>(sizeof(payload) - 1u);
+    orca_sdk_task_t* task = nullptr;
+    REQUIRE(orca_sdk_session_submit_task(session, &request, &task) == ORCA_SDK_E_UNSUPPORTED);
+    REQUIRE(task == nullptr);
+
+    REQUIRE(orca_sdk_session_destroy(session) == ORCA_SDK_OK);
+    REQUIRE(orca_sdk_destroy(sdk) == ORCA_SDK_OK);
+}
+
+
+TEST_CASE("Mobile SDK C ABI rejects invalid JSON for v1.7 facade tasks", "[MobileSDK][CABI]")
+{
+    orca_sdk_t* sdk = nullptr;
+    orca_sdk_session_t* session = nullptr;
+    REQUIRE(orca_sdk_create(nullptr, &sdk) == ORCA_SDK_OK);
+    REQUIRE(orca_sdk_session_create(sdk, nullptr, &session) == ORCA_SDK_OK);
+
+    const char invalid_json[] = "{\"device_id\":}";
+    orca_sdk_task_request_t request{};
+    request.struct_size = static_cast<uint32_t>(sizeof(request));
+    request.kind = ORCA_SDK_TASK_KIND_CONNECT;
+    request.payload_utf8.data = invalid_json;
+    request.payload_utf8.size = static_cast<uint32_t>(sizeof(invalid_json) - 1u);
+    orca_sdk_task_t* task = nullptr;
+    REQUIRE(orca_sdk_session_submit_task(session, &request, &task) == ORCA_SDK_E_INVALID_ARGUMENT);
+    REQUIRE(task == nullptr);
+
+    REQUIRE(orca_sdk_session_destroy(session) == ORCA_SDK_OK);
+    REQUIRE(orca_sdk_destroy(sdk) == ORCA_SDK_OK);
+}
+
 TEST_CASE("Mobile SDK C ABI validates struct size and UTF-8", "[MobileSDK][CABI]")
 {
     orca_sdk_t* sdk = nullptr;

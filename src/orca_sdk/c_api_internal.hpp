@@ -54,6 +54,7 @@ void wait_owned_handles(void* owner) noexcept;
 
 bool has_field(uint32_t struct_size, size_t offset, size_t field_size) noexcept;
 bool valid_utf8(orca_sdk_string_t value) noexcept;
+bool valid_json_payload(orca_sdk_string_t value) noexcept;
 std::string copy_string(orca_sdk_string_t value);
 uint64_t now_millis() noexcept;
 
@@ -96,6 +97,7 @@ struct orca_sdk_task_native {
     orca_sdk_session_native* session{nullptr};
     uint64_t numeric_id{0};
     std::string id;
+    uint32_t kind{ORCA_SDK_TASK_KIND_SYNC};
     std::string payload;
     uint32_t state{ORCA_SDK_TASK_PENDING};
     bool cancel_requested{false};

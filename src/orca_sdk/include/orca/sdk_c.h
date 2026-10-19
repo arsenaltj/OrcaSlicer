@@ -85,6 +85,13 @@ typedef struct orca_sdk_event {
 
 enum {
     ORCA_SDK_TASK_KIND_SYNC = 1u,
+    /* JSON payload task kinds for the v1.7 asynchronous C ABI facade. */
+    ORCA_SDK_TASK_KIND_DISCOVER = 2u,
+    ORCA_SDK_TASK_KIND_CONNECT = 3u,
+    ORCA_SDK_TASK_KIND_DISCONNECT = 4u,
+    ORCA_SDK_TASK_KIND_STATUS = 5u,
+    ORCA_SDK_TASK_KIND_COMMAND = 6u,
+    ORCA_SDK_TASK_KIND_TRANSFER = 7u,
 };
 
 enum {

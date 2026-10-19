@@ -5,6 +5,7 @@
 #include <cstring>
 #include <limits>
 #include <new>
+#include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
@@ -211,6 +212,19 @@ bool valid_utf8(orca_sdk_string_t value) noexcept
             return false;
     }
     return true;
+}
+
+bool valid_json_payload(orca_sdk_string_t value) noexcept
+{
+    if (!valid_utf8(value) || value.size == 0)
+        return false;
+    try {
+        const auto parsed = nlohmann::json::parse(
+            value.data, value.data + value.size, nullptr, false);
+        return !parsed.is_discarded();
+    } catch (...) {
+        return false;
+    }
 }
 
 std::string copy_string(orca_sdk_string_t value)
@@ -677,13 +691,26 @@ orca_sdk_error_t orca_sdk_session_submit_task(
         if (orca_sdk_internal::has_field(request->struct_size,
                                          offsetof(orca_sdk_task_request_t, kind), sizeof(request->kind)))
             kind = request->kind;
-        if (kind != ORCA_SDK_TASK_KIND_SYNC)
+        switch (kind) {
+        case ORCA_SDK_TASK_KIND_SYNC:
+        case ORCA_SDK_TASK_KIND_DISCOVER:
+        case ORCA_SDK_TASK_KIND_CONNECT:
+        case ORCA_SDK_TASK_KIND_DISCONNECT:
+        case ORCA_SDK_TASK_KIND_STATUS:
+        case ORCA_SDK_TASK_KIND_COMMAND:
+        case ORCA_SDK_TASK_KIND_TRANSFER:
+            break;
+        default:
             return ORCA_SDK_E_UNSUPPORTED;
+        }
         if (orca_sdk_internal::has_field(request->struct_size,
                                          offsetof(orca_sdk_task_request_t, payload_utf8),
                                          sizeof(request->payload_utf8)))
             payload = request->payload_utf8;
         if (!orca_sdk_internal::valid_utf8(payload))
+            return ORCA_SDK_E_INVALID_ARGUMENT;
+        if (kind != ORCA_SDK_TASK_KIND_SYNC &&
+            !orca_sdk_internal::valid_json_payload(payload))
             return ORCA_SDK_E_INVALID_ARGUMENT;
 
         std::lock_guard<std::mutex> lock(session_state->mutex);
@@ -693,6 +720,7 @@ orca_sdk_error_t orca_sdk_session_submit_task(
         task->session = session_state;
         task->numeric_id = session_state->next_task_id++;
         task->id = "task-" + std::to_string(task->numeric_id);
+        task->kind = kind;
         task->payload = orca_sdk_internal::copy_string(payload);
         auto* task_state = task.get();
         void* handle = orca_sdk_internal::register_handle(task_state, handle_kind::task, session_state);

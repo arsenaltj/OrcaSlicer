@@ -39,7 +39,7 @@ add_library(OrcaSlicer::MobileSDK ALIAS orca_mobile_sdk)
 add_library(orca_mobile_sdk_ffi SHARED ${ORCA_MOBILE_SDK_SOURCES})
 add_library(OrcaSlicer::MobileSDKShared ALIAS orca_mobile_sdk_ffi)
 set_target_properties(orca_mobile_sdk_ffi PROPERTIES
-    OUTPUT_NAME "orca_mobile_sdk_ffi"
+    OUTPUT_NAME "orca_mobile_sdk_c"
     WINDOWS_EXPORT_ALL_SYMBOLS OFF
 )
 
