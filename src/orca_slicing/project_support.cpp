@@ -408,7 +408,12 @@ DynamicPrintConfig quality_config(const DynamicPrintConfig& base, const std::str
     const double layer_height = quality == "fine" ? 0.12 : quality == "fast" ? 0.28 : 0.20;
     DynamicPrintConfig result(base);
     result.set("layer_height", layer_height, true);
+#ifdef ORCA_MOBILE_ANDROID
+    // The Android P1 core intentionally omits CGAL triangulation; keep the first gate deterministic.
+    result.set("enable_prime_tower", false, true);
+#endif
     return result;
 }
 
 } // namespace orca::slicing
+
