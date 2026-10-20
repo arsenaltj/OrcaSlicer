@@ -116,7 +116,8 @@ target_compile_definitions(libslic3r_mobile PUBLIC
     TBB_USE_CAPTURED_EXCEPTION=0
     BOOST_ALL_NO_LIB=1
     BOOST_ERROR_CODE_HEADER_ONLY=1
-    BOOST_SYSTEM_NO_DEPRECATED=1)
+    BOOST_SYSTEM_NO_DEPRECATED=1
+    ORCA_CHECK_GCODE_PLACEHOLDERS=0)
 target_compile_options(libslic3r_mobile PRIVATE -fvisibility=hidden)
 target_include_directories(libslic3r_mobile
     PRIVATE "${ORCA_SOURCE_ROOT}/src/libslic3r"
@@ -158,6 +159,7 @@ if(_boost_module_includes)
     target_include_directories(libslic3r_mobile PUBLIC ${_boost_module_includes})
 endif()
 target_include_directories(libslic3r_mobile PUBLIC "${cereal_SOURCE_DIR}/include")
+
 
 
 
