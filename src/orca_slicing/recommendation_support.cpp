@@ -15,16 +15,16 @@ Json diff_json(const Slic3r::DynamicPrintConfig& base, const Slic3r::DynamicPrin
     for (const auto& key : base.diff(candidate)) {
         const auto* before = base.option(key);
         const auto* after = candidate.option(key);
-        result[key] = Json{{"before", before ? before->serialize() : Json()},
-                           {"after", after ? after->serialize() : Json()}};
+        result[key] = Json{{"before", before ? Json(before->serialize()) : Json()},
+                           {"after", after ? Json(after->serialize()) : Json()}};
     }
     for (const auto& key : candidate.diff(base)) {
         if (result.contains(key))
             continue;
         const auto* before = base.option(key);
         const auto* after = candidate.option(key);
-        result[key] = Json{{"before", before ? before->serialize() : Json()},
-                           {"after", after ? after->serialize() : Json()}};
+        result[key] = Json{{"before", before ? Json(before->serialize()) : Json()},
+                           {"after", after ? Json(after->serialize()) : Json()}};
     }
     return result;
 }
@@ -112,7 +112,7 @@ Json select_recommendation(const Json& completedTrials, const std::string& prefe
     if (preference == "speed") {
         for (const Json* trial : valid) {
             if (std::make_tuple(metric(*trial, "printTimeSeconds"), metric(*trial, "filamentGrams"), tie_key(trial)) <
-                std::make_tuple(metric(selected, "printTimeSeconds"), metric(selected, "filamentGrams"), tie_key(selected)))
+                std::make_tuple(metric(*selected, "printTimeSeconds"), metric(*selected, "filamentGrams"), tie_key(selected)))
                 selected = trial;
         }
     } else if (preference == "quality") {
@@ -122,7 +122,7 @@ Json select_recommendation(const Json& completedTrials, const std::string& prefe
         };
         for (const Json* trial : valid) {
             if (std::make_tuple(quality_rank(trial), metric(*trial, "printTimeSeconds"), tie_key(trial)) <
-                std::make_tuple(quality_rank(selected), metric(selected, "printTimeSeconds"), tie_key(selected)))
+                std::make_tuple(quality_rank(selected), metric(*selected, "printTimeSeconds"), tie_key(selected)))
                 selected = trial;
         }
     } else {
@@ -157,4 +157,5 @@ Json select_recommendation(const Json& completedTrials, const std::string& prefe
 }
 
 } // namespace orca::slicing
+
 
