@@ -97,7 +97,7 @@ set(_mobile_excludes
     "/SLAPrint.cpp$" "/SLAPrintSteps.cpp$"
     "/Format/AssimpImport.cpp$" "/Format/DRC.cpp$" "/Format/OBJ.cpp$" "/Format/objparser.cpp$"
     "/Format/SL1.cpp$" "/Format/STEP.cpp$" "/Format/svg.cpp$"
-    "/TexturePainting.cpp$" "/TextureToColor/"
+    "/TexturePainting.cpp$" "/ObjColorUtils.cpp$" "/TextureToColor/"
     "/PNGReadWrite.cpp$" "/MeshBoolean.cpp$" "/CutSurface.cpp$" "/IntersectionPoints.cpp$"
     "/Triangulation.cpp$" "/TryCatchSignal"
     "/OpenVDBUtils.cpp$" "/Geometry/VoronoiUtilsCgal.cpp$"
@@ -161,6 +161,7 @@ if(_boost_module_includes)
     target_include_directories(libslic3r_mobile PUBLIC "${libnoise_SOURCE_DIR}")
 endif()
 target_include_directories(libslic3r_mobile PUBLIC "${cereal_SOURCE_DIR}/include")
+
 
 
 
