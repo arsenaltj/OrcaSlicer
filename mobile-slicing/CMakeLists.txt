@@ -31,7 +31,7 @@ set(TBB_TEST OFF CACHE BOOL "" FORCE)
 set(TBB_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(TBB_BUILD_SHARED OFF CACHE BOOL "" FORCE)
 set(TBB_ENABLE_IPO OFF CACHE BOOL "" FORCE)
-set(TBBMALLOC_BUILD OFF CACHE BOOL "" FORCE)
+set(TBBMALLOC_BUILD ON CACHE BOOL "" FORCE)
 set(JUST_INSTALL_CEREAL ON CACHE BOOL "" FORCE)
 set(SKIP_PERFORMANCE_COMPARISON ON CACHE BOOL "" FORCE)
 set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -43,6 +43,9 @@ FetchContent_Declare(tbb
     URL https://github.com/oneapi-src/oneTBB/archive/refs/tags/v2021.5.0.zip
     URL_HASH SHA256=83ea786c964a384dd72534f9854b419716f412f9d43c0be88d41874763e7bb47)
 FetchContent_MakeAvailable(tbb)
+if(TARGET tbbmalloc AND ANDROID)
+    set_target_properties(tbbmalloc PROPERTIES LINK_FLAGS "" LINK_DEPENDS "")
+endif()
 FetchContent_Declare(eigen
     URL https://gitlab.com/libeigen/eigen/-/archive/5.0.1/eigen-5.0.1.zip
     URL_HASH SHA256=0dbb1f9e3aaad66f352c03227d8c983f6f0b49e0b07e71a7300f4abcc01aee12)
@@ -74,7 +77,7 @@ add_subdirectory("${ORCA_DEPS_SOURCE}/nlohmann" "deps/nlohmann")
 add_subdirectory("${ORCA_DEPS_SOURCE}/fast_float" "deps/fast_float")
 add_subdirectory("${ORCA_DEPS_SOURCE}/admesh" "deps/admesh")
 target_include_directories(admesh SYSTEM PUBLIC "${ORCA_SOURCE_ROOT}/src")
-target_link_libraries(admesh PUBLIC orca_boost_headers)
+target_link_libraries(admesh PUBLIC orca_boost_headers Boost::log)
 add_library(clipper STATIC "${ORCA_DEPS_SOURCE}/clipper/clipper_z.cpp")
 target_include_directories(clipper SYSTEM PUBLIC "${ORCA_DEPS_SOURCE}/clipper" "${ORCA_SOURCE_ROOT}/src")
 target_link_libraries(clipper PUBLIC Eigen3::Eigen TBB::tbb)
@@ -129,7 +132,7 @@ configure_file("${ORCA_SOURCE_ROOT}/src/libslic3r/libslic3r_version.h.in" "${CMA
 
 target_link_libraries(libslic3r_mobile PUBLIC
     Eigen3::Eigen admesh libigl libnest2d miniz qoi semver::semver expat clipper Clipper2 glu-libtess mcut qhull
-    TBB::tbb
+    TBB::tbb TBB::tbbmalloc
     orca_boost_headers cereal
     Boost::filesystem Boost::system Boost::thread Boost::log
     Boost::locale Boost::regex Boost::chrono Boost::date_time Boost::iostreams Boost::atomic
