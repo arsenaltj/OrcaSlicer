@@ -104,7 +104,7 @@ set(_mobile_excludes
     "/ObjColorUtils.cpp$"
     "/TexturePainting.cpp$" "/TextureToColor/"
     "/PNGReadWrite.cpp$" "/MeshBoolean.cpp$" "/CutSurface.cpp$" "/IntersectionPoints.cpp$"
-    "/TryCatchSignal"
+    "/Triangulation.cpp$" "/TryCatchSignal"
     "/OpenVDBUtils.cpp$" "/Geometry/VoronoiUtilsCgal.cpp$"
     "/Shape/TextShape.cpp$" "/Emboss.cpp"
     "/pchheader.cpp$"
@@ -113,6 +113,7 @@ set(_mobile_excludes
 foreach(_pattern IN LISTS _mobile_excludes)
     list(FILTER ORCA_LIBSLIC3R_CPP EXCLUDE REGEX "${_pattern}")
 endforeach()
+list(APPEND ORCA_LIBSLIC3R_CPP "${ORCA_SOURCE_ROOT}/src/libslic3r/MobileTriangulation.cpp")
 
 add_library(libslic3r_mobile STATIC ${ORCA_LIBSLIC3R_CPP})
 target_compile_definitions(libslic3r_mobile PUBLIC
