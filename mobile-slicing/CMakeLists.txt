@@ -97,6 +97,7 @@ set(_mobile_excludes
     "/SLAPrint.cpp$" "/SLAPrintSteps.cpp$"
     "/Format/AssimpImport.cpp$" "/Format/DRC.cpp$" "/Format/OBJ.cpp$" "/Format/objparser.cpp$"
     "/Format/SL1.cpp$" "/Format/STEP.cpp$" "/Format/svg.cpp$"
+    "/ObjColorUtils.cpp$"
     "/TexturePainting.cpp$" "/TextureToColor/"
     "/PNGReadWrite.cpp$" "/MeshBoolean.cpp$" "/CutSurface.cpp$" "/IntersectionPoints.cpp$"
     "/Triangulation.cpp$" "/TryCatchSignal"
