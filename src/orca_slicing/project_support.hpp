@@ -22,7 +22,7 @@ struct LoadedProject {
 // Paths are UTF-8. Overrides are a JSON object of native option values (scalars or
 // arrays); native serialized strings are accepted. Throws std::exception on failure.
 // Transforms: [] or [{objectIndex, instanceIndex (optional), translation:[x,y,z],
-// rotation:[x,y,z] (degrees), scale:[x,y,z]}]. Components replace instance values;
+// rotation:[x,y,z] (radians), scale:[x,y,z]}]. Components replace instance values;
 // omitted components retain the source transform. Geometry and paint stay intact.
 LoadedProject load_project(const std::string& inputPath,
                            const Json& configOverrides = Json::object(),
