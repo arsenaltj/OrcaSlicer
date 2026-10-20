@@ -31,6 +31,13 @@ set(TBB_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(TBB_BUILD_SHARED OFF CACHE BOOL "" FORCE)
 set(TBB_ENABLE_IPO OFF CACHE BOOL "" FORCE)
 set(TBBMALLOC_BUILD OFF CACHE BOOL "" FORCE)
+set(JUST_INSTALL_CEREAL ON CACHE BOOL "" FORCE)
+set(SKIP_PERFORMANCE_COMPARISON ON CACHE BOOL "" FORCE)
+set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(cereal
+    URL https://github.com/USCiLab/cereal/archive/refs/tags/v1.3.0.zip
+    URL_HASH SHA256=71642cb54658e98c8f07a0f0d08bf9766f1c3771496936f6014169d3726d9657)
+FetchContent_MakeAvailable(cereal)
 FetchContent_Declare(tbb
     URL https://github.com/oneapi-src/oneTBB/archive/refs/tags/v2021.5.0.zip
     URL_HASH SHA256=83ea786c964a384dd72534f9854b419716f412f9d43c0be88d41874763e7bb47)
@@ -119,7 +126,7 @@ configure_file("${ORCA_SOURCE_ROOT}/src/libslic3r/libslic3r_version.h.in" "${CMA
 target_link_libraries(libslic3r_mobile PUBLIC
     Eigen3::Eigen admesh libigl libnest2d miniz qoi semver::semver expat clipper Clipper2 glu-libtess mcut qhull
     TBB::tbb
-    orca_boost_headers
+    orca_boost_headers cereal::cereal
     Boost::filesystem Boost::system Boost::thread Boost::log
     Boost::locale Boost::regex Boost::chrono Boost::date_time Boost::iostreams Boost::atomic
     noise::noise
