@@ -103,7 +103,7 @@ set(_mobile_excludes
     "/OpenVDBUtils.cpp$" "/Geometry/VoronoiUtilsCgal.cpp$"
     "/Shape/TextShape.cpp$" "/Emboss.cpp"
     "/pchheader.cpp$"
-    "/GCodeSender.cpp$" "/ProjectTask.cpp"
+    "/GCodeSender.cpp$" "/GCode/Thumbnails.cpp$" "/ProjectTask.cpp"
 )
 foreach(_pattern IN LISTS _mobile_excludes)
     list(FILTER ORCA_LIBSLIC3R_CPP EXCLUDE REGEX "${_pattern}")
@@ -161,6 +161,7 @@ if(_boost_module_includes)
     target_include_directories(libslic3r_mobile PUBLIC "${libnoise_SOURCE_DIR}")
 endif()
 target_include_directories(libslic3r_mobile PUBLIC "${cereal_SOURCE_DIR}/include")
+
 
 
 
