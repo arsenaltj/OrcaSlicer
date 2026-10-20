@@ -8,11 +8,12 @@
 #include <admesh/stl.h>
 
 #include <string_view>
+#include <cstdint>
 
 namespace Slic3r {
 
 struct GCodeProcessorResult;
-enum class BuildVolume_Type : char {
+enum class BuildVolume_Type : int8_t {
   // Not set yet or undefined.
   Invalid = -1,
   // Rectangular print bed. Most common, cheap to work with.
@@ -164,3 +165,4 @@ private:
 } // namespace Slic3r
 
 #endif // slic3r_BuildVolume_hpp_
+
