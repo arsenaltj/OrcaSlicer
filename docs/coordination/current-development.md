@@ -1,3 +1,41 @@
+# 2026-10-20 当前：UI-08 方案卡片间距与选中边框（已修改并构建，待用户 GUI 验收）
+
+主线：承接用户对 AI 智能切片页两个视觉问题的确认，调整 Tab 与三张方案卡片的层次间距，并统一选中状态的黄色外框。
+
+本轮：`RedesignModelWorkflow.cpp` 在 AI/Orca 模式入口与“综合最优/速度优先/质量优先”卡片之间增加 `8 DIP` 垂直间距；`RedesignSlicingControls.hpp` 将选中卡片改为黄色外层填充加内缩卡片背景，四边固定 `1 DIP` 可见厚度，最近成功切片只保留右上角勾选标记，不再叠加整圈黄色边框。
+
+验证：Windows `dev.ps1 Run -NoLaunch -Jobs 8` 的 `catalogs/build/install/runtime-check/python-check` 五步全部退出码 0，结果 [`20261020-231831-547`](../../.tmp/dev/logs/20261020-231831-547/result.json)，运行入口为 `D:/OrcaSlicer-version/OrcaSlicer/.tmp/dev/run/orca-slicer.exe`。本轮真实窗口已启动并关闭隔离 QA 实例；候选分析在测试工程中保持“分析中”，方案卡片主观视觉仍由用户复验。`git diff --check` 通过。
+
+未结：用户需在最新 EXE 中进入 AI 智能切片页，确认 Tab 与方案卡片之间的空隙、三张卡片切换时黄色外框厚度一致，以及最近成功状态仅显示勾选。
+
+下一步：用户直接运行上述 EXE 进行视觉测试；如有偏差沿当前 `codex/team/integration` 未提交改动继续修正。
+
+计划变更：UI-08 新增“Tab 与方案卡片间距、选中边框一致性”交付项，由实施中推进为已修改并构建、待用户 GUI 验收；不提交、不推送、不发布。
+
+# 2026-10-20 当前：UI-08 三处交互与主题补充（已构建及本机实窗验证）
+
+主线：用户已授权修复 AI/原生切片入口、原生标题栏和参数区滚动条，并要求使用 Computer Use 验证真实 GUI，发现问题持续修正。
+
+本轮：已实现两模式入口的分隔、选中/悬停及键盘反馈；工程标题左对齐，完整六项按钮组统一靠右；参数页使用局部暗色滚动条。真实 GUI 首轮发现拖到底部参数空白，补充完整虚拟页布局后复测通过。最终五步构建结果 [20261020-211815-589](../../.tmp/dev/logs/20261020-211815-589/result.json)，入口 `D:/OrcaSlicer-version/OrcaSlicer/.tmp/dev/run/orca-slicer.exe`。
+
+未结：用户主观视觉反馈、其他 DPI/GPU、短窗口极限、忙时禁用及完整名称提示悬停未验；旧 SmartSlice、N5 及其他历史待验事项保留。导出仅验证保存对话框及取消，未发送打印。
+
+下一步：用户可启动完整运行目录查看效果；后续反馈沿当前 `codex/team/integration` 未提交改动修正。Computer Use 已完成模式往返、滚动/搜索/焦点定位、原生单盘切片/预览/导出入口、普通浅色 Orca 回归；独立工程和证据位于 [QA 记录](../../.tmp/dev/slicing-chrome-qa/verification.json)，测试实例已正常退出。
+
+计划变更：UI-08 本日三项由实施中更新为已实现、构建及本机实窗验证；第 2 项保持“标题左对齐、整组按钮靠右”的最新决定，BUILD-20261020 和历史待验事项保留。完整状态见主计划本日 UI-08。
+
+# 2026-10-20 当前：BUILD-20261020 最新集成代码 Windows EXE 已构建
+
+主线：按用户要求构建已更新的 `codex/team/integration`，提交 `aee65644545f2746ea08f6efccb73bc853a3db5f`；本轮仅本机构建及状态记录。
+
+本轮：补编安装清单要求的 `orca_mobile_sdk_ffi` 后，`dev.ps1 Run -NoLaunch -Jobs 8` 五步全部通过；完整运行入口为 `D:/OrcaSlicer-version/OrcaSlicer/.tmp/dev/run/orca-slicer.exe`，证据见 [结果](../../.tmp/dev/logs/20261020-202414-680/result.json)，详细身份与安装失败修复记录见主计划 `BUILD-20261020`。
+
+未结：本轮未启动 GUI，既有界面和真实流程验收仍待用户反馈。
+
+下一步：用户从上述完整运行目录启动新版本；需要隔离配置时使用 `--datadir D:/OrcaSlicer-version/OrcaSlicer/.tmp/dev/data`。
+
+计划变更：新增本机构建交付证据；原有 Redesign、SmartSlice 与模型生成事项及验收状态继续保留。
+
 # 2026-10-19 Redesign 智能切片详情内嵌（已实施、已安装，待用户 GUI 验收）
 
 主线：承接用户要求，取消智能切片详情的“查看全部”跳转，让预估指标和全部方案参数直接显示在左侧边栏。

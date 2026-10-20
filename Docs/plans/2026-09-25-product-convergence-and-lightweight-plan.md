@@ -1,3 +1,41 @@
+# 2026-10-20 UI-08 补充：Tab 与方案卡片视觉间距、选中边框（已修改并构建，待用户 GUI 验收）
+
+用户确认实施两个视觉调整：AI 智能切片/Orca 原生 Tab 与下方三张方案卡片之间增加空隙；三张卡片选中时的黄色外圈统一粗细并改善绘制观感。负责会话为本会话，沿 `codex/team/integration` 当前 checkout 修改，不操作用户原始模型和配置。
+
+实现范围：`RedesignModelWorkflow.cpp` 在 Tab 行后增加 `8 DIP` 垂直间距；`RedesignSlicingControls.hpp` 以黄色外层填充和内缩卡片背景绘制选中态，统一四边 `1 DIP` 边框厚度；`m_recently_sliced` 只绘制右上角勾选标记，避免最近成功状态与当前选中状态叠加成第二圈黄色边框。未改变方案选择、参数应用、正式 Orca 原生切片和历史状态契约。
+
+验证：Windows `dev.ps1 Run -NoLaunch -Jobs 8` 的 `catalogs/build/install/runtime-check/python-check` 五步通过，结果 [`20261020-231831-547`](../../.tmp/dev/logs/20261020-231831-547/result.json)，运行入口 `D:/OrcaSlicer-version/OrcaSlicer/.tmp/dev/run/orca-slicer.exe`；`git diff --check` 通过。已启动并关闭隔离 QA 实例，候选分析未完成，未将卡片视觉写成已验收。
+
+验收边界：用户在最新运行目录中确认 Tab 与卡片之间的间距、三张卡片切换时黄色外框四边一致、最近成功方案只显示勾选；不同 DPI/GPU、短窗口及忙时禁用状态继续保留为未验。
+
+下一步：用户直接运行匹配 EXE 完成视觉验收；如反馈不符，沿当前未提交源码继续修正和构建。本轮不提交、不推送、不发布。
+
+# 2026-10-20 UI-08 补充：模式入口、原生标题栏与参数滚动条（已实现、构建及本机实窗验证）
+
+授权与版本：用户提供三张当前主窗口截图，先分析方案，随后明确“开始修复，并使用 computer use 技能测试真实 GUI 效果，如果测试有问题不符合预期，持续修改代码”，已授权三项整体实施、构建与真实窗口复测。负责会话为本会话，分支 `codex/team/integration`，HEAD `aee65644545f2746ea08f6efccb73bc853a3db5f`；保留此前 BUILD-20261020 的准备证据，使用本 checkout 增量构建和独立 QA 配置，不改用户原件或运行实例。
+
+1. 模式入口：`RedesignSlicingControls.hpp` 新增 `SlicingModeButton`，复用原 Button 输入状态；`RedesignModelWorkflow.cpp` 将两入口改为等宽点击区，中间加入深色竖分隔，选中使用略亮底色和黄色短下划线，并提供悬停、手型、键盘焦点及禁用绘制。文案为“AI 智能切片 / Orca 原生”，原切换回调保留。本轮未独立读取 Figma 原稿，不声明像素一致。
+
+2. 原生标题栏：`BBLTopbar.cpp/.hpp` 将弹性标题项前置、完整宿主后置，最终顺序为基础工具 → 左对齐工程标题 → “← AI 智能切片、返回模型总览、准备、预览、切片单盘、导出 G-code 文件” → 窗口控制。六项原实例、事件及下拉入口保留；标题吸收余宽、右侧省略，设置完整名称 tooltip；离开内嵌原生页恢复标题居中。按用户最新决定，早期“居中标题＋仅两个按钮靠右”方案已被替代。
+
+3. 参数区滚动条：`ParamsPanel.cpp` 在原 `PageScrolledWindow` 外增加兄弟滚动条和私有视口，保留原滚动对象、滚动单位及 `EnsureVisible()`；`ParamsPanelScrollbar.hpp` 提供局部主题入口。深色轨道、灰色滑块及悬停/拖动反馈仅在嵌入原生页启用，离开及 Shell 清理时恢复系统滚动条。首轮实窗发现拖到底部会出现参数空白，原因是隐藏系统滚动条后默认布局没有展开全部虚拟内容；第二次构建补充主题模式下完整虚拟页布局，复测中部、底部、搜索和焦点定位均正常。未改切片算法、参数业务或全局主题。
+
+构建证据：最终 `dev.ps1 Run -NoLaunch -Jobs 8` 的 catalogs/build/install/runtime-check/python-check 五步通过，结果 [20261020-211815-589](../../.tmp/dev/logs/20261020-211815-589/result.json)，源码快照身份 `8f3c5872d030dd6ad3735a31d9e1ce228df7991c8dec3a17d8e9242854417133`；完整运行入口 `D:/OrcaSlicer-version/OrcaSlicer/.tmp/dev/run/orca-slicer.exe`。首轮构建 [20261020-205514-204](../../.tmp/dev/logs/20261020-205514-204/result.json) 仅保留过程证据，滚动条缺陷以最终版本复验替代。收尾仅改状态文档，生产源码与构建快照核对匹配；`git diff --check` 通过。本轮 UI 变化以真实 GUI 为主要验证，不新增镜像实现的单元测试，不触发无关架构门禁。
+
+真实 GUI：使用 computer-use 技能的 `node_repl + @oai/sky`，在 `.tmp/dev/slicing-chrome-qa/` 独立配置和已有立方体历史副本完成。首轮验证分隔、选中、悬停、Tab 焦点及 Space 激活、长标题省略、标题拖动/双击最大化；最终版本 PID 19968 验证历史恢复→显式导入→AI/原生往返、六项按钮位置、参数滚轮/滑块中底部/轨道翻页/分类/搜索定位/屏外焦点自动滚动、主题重入，以及单盘切片完成→预览→导出菜单和保存对话框→取消→准备→返回总览，标题恢复居中。再以 `ORCASLICER_UI_REDESIGN=0` 的独立 PID 18192 重开已保存工程，普通浅色参数页仍使用系统滚动条，滚轮和拖到底部正常。两实例均正常退出，原模型哈希保护检查、产物/源码身份和具体限制见 [verification.json](../../.tmp/dev/slicing-chrome-qa/verification.json)。未提交付费生成、发送打印、提交或推送。
+
+剩余与恢复条件：本机为 Windows、200% DPI、Intel Arc 140T；其他 DPI/GPU、跨平台、短窗口极限布局、忙时 Tab 禁用和完整名称 tooltip 的可见悬停尚未实测，不能记为通过。缩窗尝试受现有最小尺寸限制。G-code 验证截至保存对话框及取消，未导出实际文件或实物打印；用户主观视觉验收仍待反馈。旧 SmartSlice、N5 及其他历史待验事项保留，不因本项局部通过改为整体通过。
+
+# 2026-10-20 BUILD-20261020：最新集成代码 Windows EXE（已完成）
+
+目标与授权：用户已更新远端代码，要求编译构建 EXE。负责会话为本会话，沿用 `codex/team/integration`，源码提交 `aee65644545f2746ea08f6efccb73bc853a3db5f`；开始及构建完成时工作区均干净。复用本 checkout 的 `.tmp/dev/build`、`.tmp/dev/run` 与本机工具链，未修改产品源码或构建脚本；收尾只更新主计划和短状态。
+
+构建与失败修正：首次双并行构建在确认本机 16 逻辑处理器、约 32 GB 内存后主动中止，记录 [20261020-194045-347](../../.tmp/dev/logs/20261020-194045-347/result.json)；改用 `dev.ps1 Run -NoLaunch -Jobs 8`，主程序 Release 编译成功，但安装清单还要求 GUI 目标未依赖的 `orca_mobile_sdk_ffi`，因缺少 `orca_mobile_sdk_c.dll` 失败，原始证据为 [20261020-195038-808](../../.tmp/dev/logs/20261020-195038-808/result.json)。在同一构建锁下补编 `orca_mobile_sdk_ffi` 成功，日志 [sdk-ffi-build.log](../../.tmp/dev/logs/20261020-195038-808/sdk-ffi-build.log)，随后重新执行原 Run 命令。此项记录构建入口的现有依赖缺口，本轮未扩展修改 SDK 或桌面构建关系。
+
+验收与产物：最终 [20261020-202414-680](../../.tmp/dev/logs/20261020-202414-680/result.json) 为 `PREPARED`，catalogs/build/install/runtime-check/python-check 五步全部退出码 0；完整运行目录含 17147 个已核对安装文件，入口 `D:/OrcaSlicer-version/OrcaSlicer/.tmp/dev/run/orca-slicer.exe`。构建源码身份为 `719f0184ac182773b9ff5fe4f0cb7ff0d800f26fba2dd7d52f17dd669b25535f`；EXE 构建/安装 SHA256 均为 `50e52f01e4015000241fc648ed03df5004b1f6446dcb79e0872dd4ed23ae4c39`，主 DLL 均为 `f0984365632f36810bf504b2ed88ddf865ad71fe1313590f9124ba1aba19754f`，SDK DLL 均为 `007aa059a6f342fcf7b27c3df67dd216223dd4c03ad11cbff79bcd2824e51114`。内置 Python 3.12.13、Pillow 12.2.0 和隔离原生 PNG 往返检查通过。
+
+范围与剩余：本轮完成本地 EXE 构建及完整运行目录准备，未启动应用、生成安装包、提交、推送或发布；未新增逻辑测试，编译与运行文件检查不替代真实 GUI 验收。既有 Redesign、SmartSlice 和模型生成待验事项继续保留，按匹配新版本由用户承接。
+
 # 2026-10-19 Redesign 智能切片详情内嵌（已实施、已安装，待用户 GUI 验收）
 
 用户授权将截图中的智能切片详情改为左侧边栏完整展示：移除“查看全部”跳转，预估时间、预计耗材及其他预估指标置于信息列表最前面，切换三种方案时随方案更新。

@@ -18,6 +18,7 @@
 #include "../I18N.hpp"
 #include "../MainFrame.hpp"
 #include "../BBLTopbar.hpp"
+#include "../ParamsPanelScrollbar.hpp"
 #include "../Plater.hpp"
 #include "../GLCanvas3D.hpp"
 #include "../BackgroundSlicingProcess.hpp"
@@ -370,6 +371,8 @@ void RedesignShell::refresh_native_theme()
     for (auto* navigation : {m_native_return_ai, m_native_return_overview, m_native_prepare, m_native_preview})
         if (navigation) swatches.push_back(navigation);
     m_native_theme.apply(&m_plater->sidebar(), swatches);
+    if (auto* parameters = wxGetApp().params_panel())
+        set_parameter_scrollbar_theme(parameters->get_paged_view(), true, RedesignTheme::panel_colour());
     if (auto* frame = dynamic_cast<MainFrame*>(wxGetTopLevelParent(this)))
         if (frame->topbar()) m_native_theme.apply(frame->topbar()->NativeWorkspaceHost(), swatches);
 }
@@ -562,15 +565,16 @@ void RedesignShell::build_model_workflow()
     auto* ai = new wxBoxSizer(wxVERTICAL);
     m_ai_slicing_controls->SetSizer(ai);
     auto* tabs = new wxBoxSizer(wxHORIZONTAL);
-    m_ai_slicing_tab = slicing_link(m_ai_slicing_controls, _L("AI 智能切片"));
-    m_native_slicing_tab = slicing_link(m_ai_slicing_controls, _L("orca原生"));
-    RedesignTheme::style_medium_text(m_ai_slicing_tab,RedesignTheme::primary_text_colour(),12);
-    RedesignTheme::style_medium_text(m_native_slicing_tab,RedesignTheme::secondary_text_colour(),12);
-    m_ai_slicing_tab->SetMinSize(FromDIP(wxSize(-1,40)));
-    m_native_slicing_tab->SetMinSize(FromDIP(wxSize(-1,40)));
-    tabs->Add(m_ai_slicing_tab, 1, wxEXPAND | wxRIGHT, FromDIP(4));
+    m_ai_slicing_tab = new SlicingModeButton(m_ai_slicing_controls, _L("AI 智能切片"));
+    m_native_slicing_tab = new SlicingModeButton(m_ai_slicing_controls, _L("Orca 原生"));
+    auto* divider = new wxPanel(m_ai_slicing_controls);
+    divider->SetBackgroundColour(wxColour(8, 8, 10));
+    divider->SetMinSize(FromDIP(wxSize(2, 24)));
+    tabs->Add(m_ai_slicing_tab, 1, wxEXPAND);
+    tabs->Add(divider, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, FromDIP(4));
     tabs->Add(m_native_slicing_tab, 1, wxEXPAND);
     ai->Add(tabs, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(12));
+    ai->AddSpacer(FromDIP(8));
     m_ai_slicing_tab->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { select_slicing_tab(false); });
     m_native_slicing_tab->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { select_slicing_tab(true); });
 
@@ -992,7 +996,11 @@ void RedesignShell::refresh_workflow_layout()
         m_plater->get_collapse_toolbar().set_enabled(*m_saved_collapse_toolbar); m_saved_collapse_toolbar.reset();
     }
     const bool native = slicing && m_native_slicing;
-    if (!native) m_native_theme.restore();
+    if (!native) {
+        if (auto* parameters = wxGetApp().params_panel())
+            set_parameter_scrollbar_theme(parameters->get_paged_view(), false);
+        m_native_theme.restore();
+    }
     if (auto* frame = dynamic_cast<MainFrame*>(wxGetTopLevelParent(this))) {
         if (native) frame->show_option(true);
         if (frame->topbar()) {
@@ -1700,10 +1708,8 @@ void RedesignShell::apply_slicing_state(const SmartSlicingWorkbenchState& state)
     m_ai_slicing_tab->Enable(can_switch);
     m_native_slicing_tab->Enable(can_switch);
     m_slice_return_overview->Enable(can_switch);
-    static_cast<WorkbenchButton*>(m_ai_slicing_tab)->SetTextColor(StateColor(m_native_slicing
-        ? RedesignTheme::secondary_text_colour() : RedesignTheme::primary_text_colour()));
-    static_cast<WorkbenchButton*>(m_native_slicing_tab)->SetTextColor(StateColor(m_native_slicing
-        ? RedesignTheme::primary_text_colour() : RedesignTheme::secondary_text_colour()));
+    static_cast<SlicingModeButton*>(m_ai_slicing_tab)->SetValue(!m_native_slicing);
+    static_cast<SlicingModeButton*>(m_native_slicing_tab)->SetValue(m_native_slicing);
     m_slice_export->Enable(OrcaPrinterAdapter(m_plater).snapshot().gcode_ready);
     refresh_project_save_actions();
     const bool can_open_print = !running && !m_import_in_progress && !m_slice_tools->busy() && OrcaPrinterAdapter(m_plater).snapshot().gcode_ready;

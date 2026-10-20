@@ -13,6 +13,7 @@
 #include "PrinterWorkspace.hpp"
 #include "../MainFrame.hpp"
 #include "../GUI_App.hpp"
+#include "../ParamsPanelScrollbar.hpp"
 #include "../AI/AIDesktopFeatureHost.hpp"
 #include "../AI/ModelGeneration/ModelGenerationPresentation.hpp"
 #include "../AI/ModelGeneration/ModelPreview3D.hpp"
@@ -1183,6 +1184,8 @@ void RedesignShell::disconnect_model_generation_host()
     // shutdown(), MainFrame's destructor and this panel's destructor share
     // this cleanup. Child windows may already be gone on subsequent calls.
     if (!m_model_generation_host && !m_slicing_host && !m_plater_original_parent) return;
+    if (auto* parameters = wxGetApp().params_panel())
+        set_parameter_scrollbar_theme(parameters->get_paged_view(), false);
     m_native_theme.restore();
     m_slice_tools.reset();
     if (m_slice_stats_overlay) { m_slice_stats_overlay->Destroy(); m_slice_stats_overlay=nullptr; }

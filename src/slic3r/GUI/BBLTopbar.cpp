@@ -70,6 +70,7 @@ CenteredTitle::CenteredTitle(wxWindow* parent)
         dc.Clear();
 
         dc.SetTextForeground(*wxWHITE);
+        dc.SetFont(GetFont());
 
         wxFontMetrics fm = dc.GetFontMetrics();
         int textHeight = fm.ascent + fm.descent;
@@ -78,7 +79,7 @@ CenteredTitle::CenteredTitle(wxWindow* parent)
         wxString ellipsized = wxControl::Ellipsize(m_title, dc, wxELLIPSIZE_END, wxMax(0, rect.GetWidth() - FromDIP(8)));
 
         int y = rect.y + (rect.height - textHeight) / 2 + 1;
-        int x = rect.x + ((ellipsized != m_title)                      // is ellipsized
+        int x = rect.x + ((m_left_aligned || ellipsized != m_title)     // is ellipsized
             ? FromDIP(4)                                               // align to left when clipped
             : (rect.width - dc.GetTextExtent(m_title).GetWidth()) / 2); // centered when has available space
 
@@ -103,6 +104,7 @@ CenteredTitle::CenteredTitle(wxWindow* parent)
 
 void CenteredTitle::SetTitle(const wxString& title) {
     m_title = title;
+    SetToolTip(title);
     Refresh();
 }
 
@@ -343,11 +345,6 @@ void BBLTopbar::Init(wxFrame* parent)
     this->AddSpacer(FromDIP(25));
     //this->AddStretchSpacer(1);
 
-    m_native_workspace_host = new wxControl(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
-    m_native_workspace_host->SetBackgroundColour(wxColour(34,34,38));
-    m_native_workspace_host->SetSizer(new wxBoxSizer(wxHORIZONTAL));
-    AddControl(m_native_workspace_host, wxEmptyString);
-    m_native_workspace_host->Hide();
     m_title_ctrl = new CenteredTitle(this);
     m_title_ctrl->SetFont(Label::Body_12);
     // The title is a child control of the AUI toolbar. Keep a small amount of
@@ -374,6 +371,12 @@ void BBLTopbar::Init(wxFrame* parent)
     });
     wxAuiToolBarItem* title_item = this->AddControl(m_title_ctrl, "");
     title_item->SetProportion(1); 
+
+    m_native_workspace_host = new wxControl(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
+    m_native_workspace_host->SetBackgroundColour(wxColour(34,34,38));
+    m_native_workspace_host->SetSizer(new wxBoxSizer(wxHORIZONTAL));
+    AddControl(m_native_workspace_host, wxEmptyString);
+    m_native_workspace_host->Hide();
 
     this->AddSpacer(FromDIP(25));
     //this->AddStretchSpacer(1);
@@ -568,6 +571,7 @@ void BBLTopbar::ShowNativeWorkspaceTools(bool show)
 {
     if (m_native_workspace_tools == show) return;
     m_native_workspace_tools = show;
+    m_title_ctrl->SetLeftAligned(show);
     if (show) {
         m_native_workspace_host->GetSizer()->SetSizeHints(m_native_workspace_host);
         // AddControl cached the empty host's size before its buttons existed.

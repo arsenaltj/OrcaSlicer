@@ -7,6 +7,51 @@
 namespace Slic3r::GUI {
 inline wxColour slicing_control_colour() { return wxColour(21, 21, 23); }
 
+class SlicingModeButton final : public Button {
+public:
+    SlicingModeButton(wxWindow* parent, const wxString& label) : Button(parent, label) {
+        SetMinSize(FromDIP(wxSize(0, 40)));
+        SetCursor(wxCursor(wxCURSOR_HAND));
+        RedesignTheme::style_medium_text(this, RedesignTheme::primary_text_colour(), 12);
+        // Register all painted states with Button's existing input handler.
+        SetBackgroundColor(StateColor(
+            std::make_pair(wxColour(21, 21, 23), int(StateColor::Disabled)),
+            std::make_pair(wxColour(58, 58, 62), int(StateColor::Pressed)),
+            std::make_pair(wxColour(48, 48, 52), int(StateColor::Hovered)),
+            std::make_pair(wxColour(38, 38, 42), int(StateColor::Checked)),
+            std::make_pair(wxColour(21, 21, 23), int(StateColor::Normal))));
+        SetBorderColor(StateColor(
+            std::make_pair(RedesignTheme::accent_colour(), int(StateColor::Focused)),
+            std::make_pair(wxColour(21, 21, 23), int(StateColor::Normal))));
+        Bind(wxEVT_PAINT, [this](wxPaintEvent&) {
+            wxAutoBufferedPaintDC dc(this);
+            const int states = state_handler.states();
+            const auto size = GetClientSize();
+            dc.SetBackground(wxBrush(background_color.colorForStatesNoDark(states)));
+            dc.Clear();
+            dc.SetFont(GetFont());
+            dc.SetTextForeground(!IsEnabled() ? wxColour(105, 105, 112) :
+                GetValue() ? RedesignTheme::primary_text_colour() : wxColour(184, 184, 192));
+            dc.DrawLabel(GetLabel(), wxRect(size), wxALIGN_CENTER);
+            if (GetValue()) {
+                dc.SetPen(*wxTRANSPARENT_PEN);
+                dc.SetBrush(wxBrush(IsEnabled() ? RedesignTheme::accent_colour() : wxColour(105, 105, 112)));
+                const int width = std::min(FromDIP(40), size.x);
+                dc.DrawRectangle((size.x - width) / 2, size.y - FromDIP(3), width, FromDIP(3));
+            }
+            if (IsEnabled() && (states & StateColor::Focused)) {
+                dc.SetPen(wxPen(RedesignTheme::accent_colour(), FromDIP(1), wxPENSTYLE_DOT));
+                dc.SetBrush(*wxTRANSPARENT_BRUSH);
+                dc.DrawRectangle(GetClientRect().Deflate(FromDIP(3)));
+            }
+        });
+        Bind(wxEVT_DPI_CHANGED, [this](wxDPIChangedEvent& event) {
+            SetMinSize(FromDIP(wxSize(0, 40)));
+            event.Skip();
+        });
+    }
+};
+
 class SlicingCheckBadge final : public wxStaticText {
 public:
     explicit SlicingCheckBadge(wxWindow* parent) : wxStaticText(parent, wxID_ANY, wxEmptyString) {
@@ -35,10 +80,24 @@ public:
             buffer.SetBackground(wxBrush(GetParent()->GetBackgroundColour())); buffer.Clear();
             wxGCDC dc(buffer);
             const auto size = GetClientSize();
-            dc.SetPen((m_selected || m_recently_sliced) ?
-                wxPen(RedesignTheme::accent_colour(), FromDIP(1)) : *wxTRANSPARENT_PEN);
-            dc.SetBrush(wxBrush(wxColour(68, 68, 69)));
-            dc.DrawRoundedRectangle(0, 0, size.x-1, size.y-1, FromDIP(12));
+            const int border = std::max(1, FromDIP(1));
+            const int radius = FromDIP(12);
+            const wxColour card_colour(68, 68, 69);
+            dc.SetPen(*wxTRANSPARENT_PEN);
+            if (m_selected) {
+                // Fill an outer frame and an inset card instead of centering a
+                // pen on the control edge. This keeps the visible ring exactly
+                // one DIP wide on every side and at high-DPI rounded corners.
+                dc.SetBrush(wxBrush(RedesignTheme::accent_colour()));
+                dc.DrawRoundedRectangle(0, 0, size.x, size.y, radius);
+                dc.SetBrush(wxBrush(card_colour));
+                dc.DrawRoundedRectangle(border, border,
+                    std::max(0, size.x - border * 2), std::max(0, size.y - border * 2),
+                    std::max(0, radius - border));
+            } else {
+                dc.SetBrush(wxBrush(card_colour));
+                dc.DrawRoundedRectangle(0, 0, size.x, size.y, radius);
+            }
             if (m_recently_sliced) {
                 const int x = size.x - FromDIP(15), y = FromDIP(14);
                 dc.SetPen(wxPen(RedesignTheme::accent_colour(), FromDIP(2)));
