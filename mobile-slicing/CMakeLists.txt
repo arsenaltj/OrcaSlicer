@@ -22,6 +22,10 @@ FetchContent_Declare(boost
     URL https://github.com/boostorg/boost/releases/download/boost-1.84.0/boost-1.84.0.tar.gz
     URL_HASH SHA256=4d27e9efed0f6f152dc28db6430b9d3dfb40c0345da7342eaa5a987dde57bd95)
 FetchContent_MakeAvailable(boost)
+FetchContent_GetProperties(boost)
+file(GLOB _orca_boost_component_includes LIST_DIRECTORIES true "${boost_SOURCE_DIR}/libs/*/include")
+add_library(orca_boost_headers INTERFACE)
+target_include_directories(orca_boost_headers INTERFACE "${boost_SOURCE_DIR}" "${boost_SOURCE_DIR}/libs/headers/include" ${_orca_boost_component_includes})
 set(TBB_TEST OFF CACHE BOOL "" FORCE)
 set(TBB_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(TBB_BUILD_SHARED OFF CACHE BOOL "" FORCE)
@@ -61,7 +65,8 @@ set(EXPAT_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 add_subdirectory("${ORCA_DEPS_SOURCE}/nlohmann" "deps/nlohmann")
 add_subdirectory("${ORCA_DEPS_SOURCE}/fast_float" "deps/fast_float")
 add_subdirectory("${ORCA_DEPS_SOURCE}/admesh" "deps/admesh")
-target_link_libraries(admesh PUBLIC Boost::headers)
+target_include_directories(admesh SYSTEM PUBLIC "${ORCA_SOURCE_ROOT}/src")
+target_link_libraries(admesh PUBLIC orca_boost_headers)
 add_library(clipper STATIC "${ORCA_DEPS_SOURCE}/clipper/clipper_z.cpp")
 target_include_directories(clipper SYSTEM PUBLIC "${ORCA_DEPS_SOURCE}/clipper" "${ORCA_SOURCE_ROOT}/src")
 target_link_libraries(clipper PUBLIC Eigen3::Eigen TBB::tbb)
@@ -77,7 +82,7 @@ add_subdirectory("${ORCA_DEPS_SOURCE}/semver" "deps/semver")
 
 add_library(libnest2d INTERFACE)
 target_include_directories(libnest2d INTERFACE "${ORCA_DEPS_SOURCE}/libnest2d/include")
-target_link_libraries(libnest2d INTERFACE NLopt::nlopt Boost::headers TBB::tbb)
+target_link_libraries(libnest2d INTERFACE NLopt::nlopt orca_boost_headers TBB::tbb)
 
 file(GLOB_RECURSE ORCA_LIBSLIC3R_CPP CONFIGURE_DEPENDS "${ORCA_SOURCE_ROOT}/src/libslic3r/*.cpp")
 set(_mobile_excludes
@@ -114,6 +119,7 @@ configure_file("${ORCA_SOURCE_ROOT}/src/libslic3r/libslic3r_version.h.in" "${CMA
 target_link_libraries(libslic3r_mobile PUBLIC
     Eigen3::Eigen admesh libigl libnest2d miniz qoi semver::semver expat clipper Clipper2 glu-libtess mcut qhull
     TBB::tbb
+    orca_boost_headers
     Boost::filesystem Boost::system Boost::thread Boost::log
     Boost::locale Boost::regex Boost::chrono Boost::date_time Boost::iostreams Boost::atomic
     noise::noise
