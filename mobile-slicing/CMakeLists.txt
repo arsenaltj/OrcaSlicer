@@ -104,7 +104,7 @@ set(_mobile_excludes
     "/ObjColorUtils.cpp$"
     "/TexturePainting.cpp$" "/TextureToColor/"
     "/PNGReadWrite.cpp$" "/MeshBoolean.cpp$" "/CutSurface.cpp$" "/IntersectionPoints.cpp$"
-    "/Triangulation.cpp$" "/TryCatchSignal"
+    "/TryCatchSignal"
     "/OpenVDBUtils.cpp$" "/Geometry/VoronoiUtilsCgal.cpp$"
     "/Shape/TextShape.cpp$" "/Emboss.cpp"
     "/pchheader.cpp$"
