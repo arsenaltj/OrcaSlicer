@@ -73,7 +73,7 @@ add_subdirectory("${ORCA_DEPS_SOURCE}/nlohmann" "deps/nlohmann")
 add_subdirectory("${ORCA_DEPS_SOURCE}/fast_float" "deps/fast_float")
 add_subdirectory("${ORCA_DEPS_SOURCE}/admesh" "deps/admesh")
 target_include_directories(admesh PUBLIC "${ORCA_SOURCE_ROOT}/src")
-target_link_libraries(admesh PUBLIC Boost::headers)
+
 add_library(clipper STATIC "${ORCA_DEPS_SOURCE}/clipper/clipper_z.cpp")
 target_include_directories(clipper SYSTEM PUBLIC "${ORCA_DEPS_SOURCE}/clipper" "${ORCA_SOURCE_ROOT}/src")
 target_link_libraries(clipper PUBLIC Eigen3::Eigen TBB::tbb)
@@ -89,7 +89,7 @@ add_subdirectory("${ORCA_DEPS_SOURCE}/semver" "deps/semver")
 
 add_library(libnest2d INTERFACE)
 target_include_directories(libnest2d INTERFACE "${ORCA_DEPS_SOURCE}/libnest2d/include")
-target_link_libraries(libnest2d INTERFACE NLopt::nlopt Boost::headers TBB::tbb)
+target_link_libraries(libnest2d INTERFACE NLopt::nlopt TBB::tbb)
 
 file(GLOB_RECURSE ORCA_LIBSLIC3R_CPP CONFIGURE_DEPENDS "${ORCA_SOURCE_ROOT}/src/libslic3r/*.cpp")
 set(_mobile_excludes
@@ -161,6 +161,7 @@ if(_boost_module_includes)
     target_include_directories(libslic3r_mobile PUBLIC "${libnoise_SOURCE_DIR}")
 endif()
 target_include_directories(libslic3r_mobile PUBLIC "${cereal_SOURCE_DIR}/include")
+
 
 
 
