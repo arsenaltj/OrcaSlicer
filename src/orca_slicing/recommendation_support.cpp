@@ -111,7 +111,7 @@ Json select_recommendation(const Json& completedTrials, const std::string& prefe
     const Json* selected = valid.front();
     if (preference == "speed") {
         for (const Json* trial : valid) {
-            if (std::make_tuple(metric(trial, "printTimeSeconds"), metric(trial, "filamentGrams"), tie_key(trial)) <
+            if (std::make_tuple(metric(*trial, "printTimeSeconds"), metric(*trial, "filamentGrams"), tie_key(trial)) <
                 std::make_tuple(metric(selected, "printTimeSeconds"), metric(selected, "filamentGrams"), tie_key(selected)))
                 selected = trial;
         }
@@ -121,7 +121,7 @@ Json select_recommendation(const Json& completedTrials, const std::string& prefe
             return quality == "quality" || quality == "fine" ? 0 : quality == "balanced" || quality == "standard" ? 1 : 2;
         };
         for (const Json* trial : valid) {
-            if (std::make_tuple(quality_rank(trial), metric(trial, "printTimeSeconds"), tie_key(trial)) <
+            if (std::make_tuple(quality_rank(trial), metric(*trial, "printTimeSeconds"), tie_key(trial)) <
                 std::make_tuple(quality_rank(selected), metric(selected, "printTimeSeconds"), tie_key(selected)))
                 selected = trial;
         }
@@ -131,16 +131,16 @@ Json select_recommendation(const Json& completedTrials, const std::string& prefe
         double min_grams = std::numeric_limits<double>::max();
         double max_grams = 0.0;
         for (const Json* trial : valid) {
-            min_time = std::min(min_time, metric(trial, "printTimeSeconds"));
-            max_time = std::max(max_time, metric(trial, "printTimeSeconds"));
-            min_grams = std::min(min_grams, metric(trial, "filamentGrams"));
-            max_grams = std::max(max_grams, metric(trial, "filamentGrams"));
+            min_time = std::min(min_time, metric(*trial, "printTimeSeconds"));
+            max_time = std::max(max_time, metric(*trial, "printTimeSeconds"));
+            min_grams = std::min(min_grams, metric(*trial, "filamentGrams"));
+            max_grams = std::max(max_grams, metric(*trial, "filamentGrams"));
         }
         const double time_span = max_time - min_time;
         const double grams_span = max_grams - min_grams;
         auto score = [&](const Json* trial) {
-            const double time_score = time_span > 0.0 ? (metric(trial, "printTimeSeconds") - min_time) / time_span : 0.0;
-            const double grams_score = grams_span > 0.0 ? (metric(trial, "filamentGrams") - min_grams) / grams_span : 0.0;
+            const double time_score = time_span > 0.0 ? (metric(*trial, "printTimeSeconds") - min_time) / time_span : 0.0;
+            const double grams_score = grams_span > 0.0 ? (metric(*trial, "filamentGrams") - min_grams) / grams_span : 0.0;
             return 0.65 * time_score + 0.35 * grams_score;
         };
         for (const Json* trial : valid) {
@@ -157,3 +157,4 @@ Json select_recommendation(const Json& completedTrials, const std::string& prefe
 }
 
 } // namespace orca::slicing
+
