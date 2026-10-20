@@ -18,6 +18,14 @@ set(BOOST_ENABLE_CMAKE ON CACHE BOOL "" FORCE)
 set(BOOST_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
 set(BOOST_SKIP_INSTALL_RULES ON CACHE BOOL "" FORCE)
 set(BOOST_INCLUDE_LIBRARIES "system;filesystem;thread;log;locale;regex;chrono;date_time;iostreams;atomic" CACHE STRING "" FORCE)
+FetchContent_Declare(cereal
+    URL https://github.com/USCiLab/cereal/archive/refs/tags/v1.3.0.zip
+    URL_HASH SHA256=71642cb54658e98c8f07a0f0d08bf9766f1c3771496936f6014169d3726d9657)
+FetchContent_MakeAvailable(cereal)
+if(TARGET cereal AND NOT TARGET cereal::cereal)
+    add_library(cereal::cereal ALIAS cereal)
+endif()
+
 FetchContent_Declare(boost
     URL https://github.com/boostorg/boost/releases/download/boost-1.84.0/boost-1.84.0.tar.gz
     URL_HASH SHA256=4d27e9efed0f6f152dc28db6430b9d3dfb40c0345da7342eaa5a987dde57bd95)
@@ -146,4 +154,5 @@ endif()
 if(_boost_module_includes)
     target_include_directories(libslic3r_mobile PUBLIC ${_boost_module_includes})
 endif()
+
 
