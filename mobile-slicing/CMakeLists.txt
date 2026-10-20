@@ -120,7 +120,7 @@ target_link_libraries(libslic3r_mobile PUBLIC
     ${CMAKE_DL_LIBS} log)
 
 if(EXISTS "${ORCA_SOURCE_ROOT}/src/orca_slicing/c_api.cpp" AND EXISTS "${ORCA_SOURCE_ROOT}/src/orca_slicing/engine.cpp")
-    add_library(orca_slicing_c SHARED "${ORCA_SOURCE_ROOT}/src/orca_slicing/c_api.cpp" "${ORCA_SOURCE_ROOT}/src/orca_slicing/engine.cpp")
+    add_library(orca_slicing_c SHARED "${ORCA_SOURCE_ROOT}/src/orca_slicing/c_api.cpp" "${ORCA_SOURCE_ROOT}/src/orca_slicing/engine.cpp" "${ORCA_SOURCE_ROOT}/src/orca_slicing/project_support.cpp" "${ORCA_SOURCE_ROOT}/src/orca_slicing/recommendation_support.cpp" "${ORCA_SOURCE_ROOT}/src/orca_slicing/android_jni.cpp")
     target_compile_definitions(orca_slicing_c PRIVATE ORCA_MOBILE_ANDROID=1)
     target_include_directories(orca_slicing_c PRIVATE "${ORCA_SOURCE_ROOT}/src/orca_slicing/include" "${ORCA_SOURCE_ROOT}/src")
     target_link_libraries(orca_slicing_c PRIVATE libslic3r_mobile log)
@@ -137,3 +137,4 @@ if(TARGET orca_slicing_c)
     install(TARGETS orca_slicing_c LIBRARY DESTINATION lib)
 endif()
 install(TARGETS orca_mobile_stl_gate RUNTIME DESTINATION bin)
+
