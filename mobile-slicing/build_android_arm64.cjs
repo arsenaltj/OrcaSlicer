@@ -16,5 +16,6 @@ function run(a) {
     if (r.status !== 0) process.exit(r.status || 1);
 }
 run(args);
-run(['--build', build, '--target', 'libslic3r_mobile', '-j2']);
+run(['--build', build, '--target', 'libslic3r_mobile', '-j'+(process.env.JOBS || '2')]);
+
 
