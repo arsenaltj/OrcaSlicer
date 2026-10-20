@@ -254,6 +254,7 @@ _finished:
 #ifndef ORCA_MOBILE_ANDROID
 // Build a plain geometry ModelObject from a textured mesh. The texture itself is carried
 // separately on Model::texture_mesh and consumed by the texture import dialog.
+#ifndef ORCA_MOBILE_ANDROID
 static void add_textured_mesh_to_model(Model& model, TexturedMesh& tex_mesh, const std::string& input_file)
 {
     std::string object_name = boost::filesystem::path(input_file).filename().string();
