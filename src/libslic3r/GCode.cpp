@@ -3104,6 +3104,7 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
             if (!thumbnails.empty())
                 GCodeThumbnails::export_thumbnails_to_file(
                     thumbnail_cb, print.get_plate_index(), thumbnails, [&file](const char* sz) { file.write(sz); }, [&print]() { print.throw_if_canceled(); });
+        }
 #endif
         }
     }
