@@ -62,7 +62,7 @@ Json slice_one(const Json& request, const EventSink& sink, std::atomic<bool>& ca
     if (canceled.load()) throw std::runtime_error("SLICING_CANCELED");
 
     Slic3r::DynamicPrintConfig config = quality_config(project.config, quality == "smart" ? "standard" : quality);
-    const auto outputRoot = stdfs::path(value_or(request, "outputDir", (stdstdfs::path(workspace) / "results").string()));
+    const auto outputRoot = stdfs::path(value_or(request, "outputDir", (stdfs::path(workspace) / "results").string()));
     stdfs::create_directories(outputRoot);
     const auto temp = outputRoot / (job + "-" + attempt + ".gcode.partial");
     const auto final = outputRoot / (job + "-" + attempt + ".gcode");
@@ -139,3 +139,4 @@ Json Engine::execute(const Json& request, const EventSink& sink)
     throw std::runtime_error("OPERATION_UNSUPPORTED");
 }
 } // namespace orca::slicing
+
