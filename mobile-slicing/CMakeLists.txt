@@ -122,6 +122,7 @@ target_compile_options(libslic3r_mobile PRIVATE -fvisibility=hidden)
 target_include_directories(libslic3r_mobile
     PRIVATE "${ORCA_SOURCE_ROOT}/src/libslic3r"
     PUBLIC "${ORCA_SOURCE_ROOT}/src" "${CMAKE_CURRENT_BINARY_DIR}/generated")
+set(ORCA_CHECK_GCODE_PLACEHOLDERS "0" CACHE STRING "" FORCE)
 configure_file("${ORCA_SOURCE_ROOT}/src/libslic3r/libslic3r_version.h.in" "${CMAKE_CURRENT_BINARY_DIR}/generated/libslic3r_version.h" @ONLY)
 
 target_link_libraries(libslic3r_mobile PUBLIC
@@ -159,6 +160,7 @@ if(_boost_module_includes)
     target_include_directories(libslic3r_mobile PUBLIC ${_boost_module_includes})
 endif()
 target_include_directories(libslic3r_mobile PUBLIC "${cereal_SOURCE_DIR}/include")
+
 
 
 
