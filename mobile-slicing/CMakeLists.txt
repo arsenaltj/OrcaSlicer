@@ -18,6 +18,9 @@ set(BOOST_ENABLE_CMAKE ON CACHE BOOL "" FORCE)
 set(BOOST_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
 set(BOOST_SKIP_INSTALL_RULES ON CACHE BOOL "" FORCE)
 set(BOOST_INCLUDE_LIBRARIES "system;filesystem;thread;log;locale;regex;chrono;date_time;iostreams;atomic" CACHE STRING "" FORCE)
+if(DEFINED CEREAL_SOURCE_DIR)
+    set(FETCHCONTENT_SOURCE_DIR_CEREAL "${CEREAL_SOURCE_DIR}")
+endif()
 FetchContent_Declare(cereal
     URL https://github.com/USCiLab/cereal/archive/refs/tags/v1.3.0.zip
     URL_HASH SHA256=71642cb54658e98c8f07a0f0d08bf9766f1c3771496936f6014169d3726d9657)
@@ -154,5 +157,6 @@ endif()
 if(_boost_module_includes)
     target_include_directories(libslic3r_mobile PUBLIC ${_boost_module_includes})
 endif()
+
 
 
