@@ -4,6 +4,7 @@
     #include <charconv>
 #endif
 #include <stdexcept>
+#include <sstream>
 
 #include <fast_float/fast_float.h>
 
@@ -86,4 +87,5 @@ std::string float_to_string_decimal_point(double value, int precision/* = -1*/)
 
 
 } // namespace Slic3r
+
 
