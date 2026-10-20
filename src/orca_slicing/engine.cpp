@@ -12,7 +12,7 @@
 #include <numeric>
 #include <stdexcept>
 
-namespace fs = std::filesystem;
+namespace stdfs = std::filesystem;
 namespace orca::slicing {
 namespace {
 
@@ -44,12 +44,12 @@ std::string value_or(const Json& j, const char* key, const std::string& fallback
     return j.contains(key) && j[key].is_string() ? j[key].get<std::string>() : fallback;
 }
 
-Json slice_one(const Json& request, const EventSink& sink, std::atomic<bool>& canceled)
+Json slice_one(const Json& request, const EventSink& sink, std::atomic<bool>& canceled, const std::string& workspace)
 {
     const std::string job = value_or(request, "jobId", "native-job");
     const std::string attempt = value_or(request, "attemptId", "native-attempt");
     const std::string input = value_or(request, "inputPath");
-    if (input.empty() || !fs::is_regular_file(input))
+    if (input.empty() || !stdfs::is_regular_file(input))
         throw std::runtime_error("INPUT_NOT_FOUND");
     const std::string quality = value_or(request, "quality", "standard");
     if (quality != "standard" && quality != "fine" && quality != "fast" && quality != "smart")
@@ -61,9 +61,9 @@ Json slice_one(const Json& request, const EventSink& sink, std::atomic<bool>& ca
     emit(sink, job, attempt, "analyzing", 12, "模型解析完成", describe_project(project));
     if (canceled.load()) throw std::runtime_error("SLICING_CANCELED");
 
-    DynamicPrintConfig config = quality_config(project.config, quality == "smart" ? "standard" : quality);
-    const auto outputRoot = fs::path(value_or(request, "outputDir", (fs::path(workspace_) / "results").string()));
-    fs::create_directories(outputRoot);
+    Slic3r::DynamicPrintConfig config = quality_config(project.config, quality == "smart" ? "standard" : quality);
+    const auto outputRoot = stdfs::path(value_or(request, "outputDir", (stdstdfs::path(workspace) / "results").string()));
+    stdfs::create_directories(outputRoot);
     const auto temp = outputRoot / (job + "-" + attempt + ".gcode.partial");
     const auto final = outputRoot / (job + "-" + attempt + ".gcode");
     const auto scene = outputRoot / (job + "-" + attempt + ".scene");
@@ -86,15 +86,15 @@ Json slice_one(const Json& request, const EventSink& sink, std::atomic<bool>& ca
     if (canceled.load()) throw std::runtime_error("SLICING_CANCELED");
     Slic3r::GCodeProcessorResult gcode;
     const std::string generated = print.export_gcode(temp.string(), &gcode, nullptr);
-    if (generated.empty() || !fs::is_regular_file(generated)) throw std::runtime_error("GCODE_NOT_CREATED");
+    if (generated.empty() || !stdfs::is_regular_file(generated)) throw std::runtime_error("GCODE_NOT_CREATED");
     if (canceled.load()) throw std::runtime_error("SLICING_CANCELED");
     std::error_code ec;
-    fs::rename(generated, final, ec);
+    stdfs::rename(generated, final, ec);
     if (ec) {
-        fs::copy_file(generated, final, fs::copy_options::overwrite_existing, ec);
-        fs::remove(generated, ec);
+        stdfs::copy_file(generated, final, stdfs::copy_options::overwrite_existing, ec);
+        stdfs::remove(generated, ec);
     }
-    if (!fs::is_regular_file(final)) throw std::runtime_error("GCODE_COMMIT_FAILED");
+    if (!stdfs::is_regular_file(final)) throw std::runtime_error("GCODE_COMMIT_FAILED");
     emit(sink, job, attempt, "committed", 100, "切片产物已提交");
 
     double filament = 0.0;
@@ -119,10 +119,10 @@ Json Engine::execute(const Json& request, const EventSink& sink)
 {
     canceled_.store(false);
     const std::string operation = value_or(request, "operation", "slice");
-    if (operation == "capabilities") return Json::parse(orca_slicing_capabilities());
+    if (operation == "capabilities") return Json{{"available",true},{"nativeSlicing",true},{"nativeRecommendation",true},{"remoteAI",false},{"qualities",Json::array({"standard","fine","fast","smart"})}};
     if (operation == "slice" || operation == "validate") {
         std::lock_guard<std::mutex> lock(printMutex_);
-        return slice_one(request, sink, canceled_);
+        return slice_one(request, sink, canceled_, workspace_);
     }
     if (operation == "recommend") {
         const std::string input = value_or(request, "inputPath");
