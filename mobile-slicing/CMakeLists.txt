@@ -35,8 +35,8 @@ set(JUST_INSTALL_CEREAL ON CACHE BOOL "" FORCE)
 set(SKIP_PERFORMANCE_COMPARISON ON CACHE BOOL "" FORCE)
 set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(cereal
-    URL https://github.com/USCiLab/cereal/archive/refs/tags/v1.3.0.zip
-    URL_HASH SHA256=71642cb54658e98c8f07a0f0d08bf9766f1c3771496936f6014169d3726d9657)
+    URL https://mirror.nju.edu.cn/macports/distfiles/cereal/cereal-1.3.0.tar.gz
+    URL_HASH SHA256=9E6AAC6FA2835BBC0361718945D0FE468C6B1283A212A271257A1F1A8C418991)
 FetchContent_MakeAvailable(cereal)
 FetchContent_Declare(tbb
     URL https://github.com/oneapi-src/oneTBB/archive/refs/tags/v2021.5.0.zip
